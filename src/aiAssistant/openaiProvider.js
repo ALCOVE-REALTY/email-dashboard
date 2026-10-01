@@ -652,13 +652,14 @@ async function callOpenAi(apiKey, messages, toolChoice) {
       // effort leaves far more of MAX_TOKENS free for the actual visible
       // reply (see MAX_TOKENS' own comment for the live failure this
       // prevents).
-      // 'minimal' (not 'low') - every one of this app's questions, even
-      // the "hard" ones (which direction a relationship goes, cascading
-      // counts), is really just picking a tool and reading its result
-      // back correctly - genuine multi-step reasoning never happens here,
-      // the real computation is in tools.js. Less thinking time directly
-      // means a faster reply with no accuracy cost for this kind of task.
-      reasoning_effort: 'minimal',
+      // Tried 'minimal' for speed - found live, reproducible 3/3: it
+      // broke "ei mash e ke ke join korlo" (and likely other cases),
+      // the model falsely claiming it had no system access even though
+      // the tool call had already succeeded and returned real data: at
+      // minimal effort it sometimes doesn't actually process the tool
+      // result before replying. 'low' doesn't show this, so reverted -
+      // accuracy over speed when the two trade off.
+      reasoning_effort: 'low',
       messages,
       tools: TOOL_DEFS,
       tool_choice: toolChoice
