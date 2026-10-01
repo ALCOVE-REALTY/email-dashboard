@@ -1,8 +1,7 @@
 const crypto = require('crypto');
 
-const OTP_WINDOW_MS = 5 * 60 * 1000;
 const SESSION_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
-const RESEND_COOLDOWN_MS = 45 * 1000;
+const APPROVAL_TOKEN_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 const MAX_VERIFY_ATTEMPTS = 5;
 const COOKIE_NAME = 'hr_session';
 
@@ -29,41 +28,10 @@ function base64url(buf) {
   return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
-function requireOtpSecret() {
-  const secret = process.env.HR_OTP_SECRET;
-  if (!secret) throw new Error('HR_OTP_SECRET is not configured');
-  return secret;
-}
-
 function requireSessionSecret() {
   const secret = process.env.HR_SESSION_SECRET;
   if (!secret) throw new Error('HR_SESSION_SECRET is not configured');
   return secret;
-}
-
-// ---------- OTP: stateless, HMAC-derived from email + a 5-minute time step.
-// No storage anywhere - identical result on any serverless instance / cold start.
-
-function otpForStep(email, timeStep) {
-  const digest = hmac(requireOtpSecret(), normalizeEmail(email) + ':' + timeStep);
-  const code = digest.readUInt32BE(0) % 1000000;
-  return String(code).padStart(6, '0');
-}
-
-function currentTimeStep() {
-  return Math.floor(Date.now() / OTP_WINDOW_MS);
-}
-
-function generateOtp(email) {
-  return otpForStep(email, currentTimeStep());
-}
-
-// Accepts the current and previous window (10 minutes effective validity).
-function verifyOtp(email, submittedCode) {
-  const code = String(submittedCode || '').trim();
-  const step = currentTimeStep();
-  return timingSafeEqualStr(code, otpForStep(email, step)) ||
-    timingSafeEqualStr(code, otpForStep(email, step - 1));
 }
 
 // ---------- Small signed cookies (hand-rolled, no cookie-parser needed for one value).
@@ -106,7 +74,19 @@ function readSignedCookie(secret, raw) {
   }
 }
 
-function setCookie(res, name, value, maxAgeMs) {
+// Whether to mark the cookie Secure (HTTPS-only) - found live: gating
+// this on process.env.VERCEL specifically meant it silently stopped
+// applying at all once the app moved to a different (still HTTPS) host,
+// the same class of bug as orgChartServerPdf.js's launchBrowser check.
+// req.secure covers a direct HTTPS connection; x-forwarded-proto covers
+// the common case of TLS being terminated by a reverse proxy in front of
+// the app (both Vercel and the new deploy platform do this), so either
+// signal being true is enough.
+function isHttpsRequest(req) {
+  return Boolean(req && (req.secure || String(req.get && req.get('x-forwarded-proto') || '').toLowerCase() === 'https'));
+}
+
+function setCookie(req, res, name, value, maxAgeMs) {
   const parts = [
     name + '=' + encodeURIComponent(value),
     'Path=/',
@@ -114,24 +94,24 @@ function setCookie(res, name, value, maxAgeMs) {
     'SameSite=Lax',
     'Max-Age=' + Math.round(maxAgeMs / 1000)
   ];
-  if (process.env.VERCEL) parts.push('Secure');
+  if (isHttpsRequest(req)) parts.push('Secure');
   res.append('Set-Cookie', parts.join('; '));
 }
 
-function clearCookie(res, name) {
+function clearCookie(req, res, name) {
   const parts = [name + '=', 'Path=/', 'HttpOnly', 'SameSite=Lax', 'Max-Age=0'];
-  if (process.env.VERCEL) parts.push('Secure');
+  if (isHttpsRequest(req)) parts.push('Secure');
   res.append('Set-Cookie', parts.join('; '));
 }
 
 // ---------- Session
 
-function createSession(res, email) {
+function createSession(req, res, email) {
   const value = signedCookieValue(requireSessionSecret(), {
     email: normalizeEmail(email),
     exp: Date.now() + SESSION_MAX_AGE_MS
   });
-  setCookie(res, COOKIE_NAME, value, SESSION_MAX_AGE_MS);
+  setCookie(req, res, COOKIE_NAME, value, SESSION_MAX_AGE_MS);
 }
 
 function readSession(req) {
@@ -142,8 +122,30 @@ function readSession(req) {
   return { email: payload.email };
 }
 
-function destroySession(res) {
-  clearCookie(res, COOKIE_NAME);
+function destroySession(req, res) {
+  clearCookie(req, res, COOKIE_NAME);
+}
+
+// ---------- Sign-up approval links (emailed to the admin) - a signed,
+// stateless token (same HMAC pattern as the session cookie, same secret,
+// no separate config needed) embedding the requester's email + which
+// action (approve/deny) + an expiry, so the link itself can't be forged
+// or replayed past its own window, and clicking it needs no login.
+
+function createApprovalToken(email, action) {
+  return signedCookieValue(requireSessionSecret(), {
+    email: normalizeEmail(email),
+    action,
+    exp: Date.now() + APPROVAL_TOKEN_MAX_AGE_MS
+  });
+}
+
+function verifyApprovalToken(token, expectedAction) {
+  const payload = readSignedCookie(requireSessionSecret(), token);
+  if (!payload || !payload.email || !payload.action || !payload.exp) return null;
+  if (payload.action !== expectedAction) return null;
+  if (Date.now() > payload.exp) return null;
+  return { email: payload.email };
 }
 
 // A short-lived session cookie VALUE (not written to any response) for the
@@ -161,8 +163,8 @@ function createEphemeralSessionCookieValue(email, ttlMs) {
 }
 
 function requireHrAuth(req, res, next) {
-  if (!process.env.HR_OTP_SECRET || !process.env.HR_SESSION_SECRET) {
-    return res.status(500).send('Missing configuration: HR_OTP_SECRET / HR_SESSION_SECRET.');
+  if (!process.env.HR_SESSION_SECRET) {
+    return res.status(500).send('Missing configuration: HR_SESSION_SECRET.');
   }
   const session = readSession(req);
   if (!session) {
@@ -175,21 +177,22 @@ function requireHrAuth(req, res, next) {
 
 // ---------- Interview Panel scoped session
 // A second, distinct session for an HR team member granted access to only
-// the Interview Panel section (via interviewPanelAccessService's admin-set
-// email+6-digit-password credential, not an OTP). requireInterviewPanelAccess
+// the Interview Panel section (via interviewPanelAccessService's own
+// admin-set email+6-digit-password credential, separate from the main
+// sign-in system below). requireInterviewPanelAccess
 // accepts EITHER this OR a full admin hr_session - every other admin route
 // keeps using requireHrAuth alone, so a scoped session can't reach them.
 
 const IP_COOKIE_NAME = 'ip_session';
 const IP_SESSION_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
-function createInterviewPanelSession(res, email) {
+function createInterviewPanelSession(req, res, email) {
   const value = signedCookieValue(requireSessionSecret(), {
     email: normalizeEmail(email),
     scope: 'interviewPanel',
     exp: Date.now() + IP_SESSION_MAX_AGE_MS
   });
-  setCookie(res, IP_COOKIE_NAME, value, IP_SESSION_MAX_AGE_MS);
+  setCookie(req, res, IP_COOKIE_NAME, value, IP_SESSION_MAX_AGE_MS);
 }
 
 function readInterviewPanelSession(req) {
@@ -200,13 +203,13 @@ function readInterviewPanelSession(req) {
   return { email: payload.email, scope: 'interviewPanel' };
 }
 
-function destroyInterviewPanelSession(res) {
-  clearCookie(res, IP_COOKIE_NAME);
+function destroyInterviewPanelSession(req, res) {
+  clearCookie(req, res, IP_COOKIE_NAME);
 }
 
 function requireInterviewPanelAccess(req, res, next) {
-  if (!process.env.HR_OTP_SECRET || !process.env.HR_SESSION_SECRET) {
-    return res.status(500).send('Missing configuration: HR_OTP_SECRET / HR_SESSION_SECRET.');
+  if (!process.env.HR_SESSION_SECRET) {
+    return res.status(500).send('Missing configuration: HR_SESSION_SECRET.');
   }
   const adminSession = readSession(req);
   if (adminSession) {
@@ -220,28 +223,30 @@ function requireInterviewPanelAccess(req, res, next) {
   }
   if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'Not logged in' });
   // /workforce.html is the shared shell both a full admin and a scoped
-  // team member land on - with no session at all, the general OTP login
-  // is the sensible default (a scoped user only ever reaches this page
-  // via their own direct /interview-panel-login link in the first place).
+  // team member land on - with no session at all, the general sign-in
+  // page is the sensible default (a scoped user only ever reaches this
+  // page via their own direct /interview-panel-login link in the first
+  // place).
   return res.redirect('/login');
 }
 
-// ---------- Interview Panel login attempt limiting (own cookie namespace,
-// separate from the OTP one above, so the two flows never interact).
+// ---------- Login attempt limiting (own cookie namespace per prefix, so
+// the main sign-in and the separate Interview Panel login never share or
+// interfere with each other's attempt counts).
 
-function ipLoginAttemptsCookieName(email) {
-  return 'ip_login_at_' + crypto.createHash('sha256').update(normalizeEmail(email)).digest('hex').slice(0, 16);
+function loginAttemptsCookieName(prefix, email) {
+  return prefix + '_' + crypto.createHash('sha256').update(normalizeEmail(email)).digest('hex').slice(0, 16);
 }
 
-function tooManyInterviewPanelLoginAttempts(req, email) {
+function tooManyLoginAttemptsFor(prefix, req, email) {
   const cookies = parseCookies(req);
-  const payload = readSignedCookie(requireSessionSecret(), cookies[ipLoginAttemptsCookieName(email)]);
+  const payload = readSignedCookie(requireSessionSecret(), cookies[loginAttemptsCookieName(prefix, email)]);
   return Boolean(payload && payload.blockedUntil && Date.now() < payload.blockedUntil);
 }
 
-function recordFailedInterviewPanelLogin(req, res, email) {
+function recordFailedLoginFor(prefix, req, res, email) {
   const cookies = parseCookies(req);
-  const name = ipLoginAttemptsCookieName(email);
+  const name = loginAttemptsCookieName(prefix, email);
   const payload = readSignedCookie(requireSessionSecret(), cookies[name]);
   const windowMs = 15 * 60 * 1000;
   const now = Date.now();
@@ -249,63 +254,38 @@ function recordFailedInterviewPanelLogin(req, res, email) {
   const count = stillInWindow ? payload.count + 1 : 1;
   const windowStart = stillInWindow ? payload.windowStart : now;
   const blockedUntil = count >= MAX_VERIFY_ATTEMPTS ? windowStart + windowMs : 0;
-  setCookie(res, name, signedCookieValue(requireSessionSecret(), { count, windowStart, blockedUntil }), windowMs);
+  setCookie(req, res, name, signedCookieValue(requireSessionSecret(), { count, windowStart, blockedUntil }), windowMs);
 }
 
-// ---------- Resend cooldown + verify-attempt limiting (both stateless, per-email signed cookies).
-
-function cooldownCookieName(email) {
-  return 'hr_otp_cd_' + crypto.createHash('sha256').update(normalizeEmail(email)).digest('hex').slice(0, 16);
+function tooManyInterviewPanelLoginAttempts(req, email) {
+  return tooManyLoginAttemptsFor('ip_login_at', req, email);
 }
-
-function checkAndSetResendCooldown(req, res, email) {
-  const name = cooldownCookieName(email);
-  const cookies = parseCookies(req);
-  const payload = readSignedCookie(requireOtpSecret(), cookies[name]);
-  if (payload && payload.until && Date.now() < payload.until) {
-    return Math.ceil((payload.until - Date.now()) / 1000);
-  }
-  const until = Date.now() + RESEND_COOLDOWN_MS;
-  setCookie(res, name, signedCookieValue(requireOtpSecret(), { until }), RESEND_COOLDOWN_MS);
-  return 0;
+function recordFailedInterviewPanelLogin(req, res, email) {
+  return recordFailedLoginFor('ip_login_at', req, res, email);
 }
-
-function attemptsCookieName(email) {
-  return 'hr_otp_at_' + crypto.createHash('sha256').update(normalizeEmail(email)).digest('hex').slice(0, 16);
+function tooManyLoginAttempts(req, email) {
+  return tooManyLoginAttemptsFor('hr_login_at', req, email);
 }
-
-function tooManyAttempts(req, email) {
-  const cookies = parseCookies(req);
-  const payload = readSignedCookie(requireOtpSecret(), cookies[attemptsCookieName(email)]);
-  return Boolean(payload && payload.step === currentTimeStep() && payload.count >= MAX_VERIFY_ATTEMPTS);
-}
-
-function recordFailedAttempt(req, res, email) {
-  const cookies = parseCookies(req);
-  const payload = readSignedCookie(requireOtpSecret(), cookies[attemptsCookieName(email)]);
-  const step = currentTimeStep();
-  const count = payload && payload.step === step ? payload.count + 1 : 1;
-  setCookie(res, attemptsCookieName(email), signedCookieValue(requireOtpSecret(), { step, count }), OTP_WINDOW_MS);
+function recordFailedLogin(req, res, email) {
+  return recordFailedLoginFor('hr_login_at', req, res, email);
 }
 
 module.exports = {
   normalizeEmail,
   isValidEmail,
-  generateOtp,
-  verifyOtp,
   createSession,
   readSession,
   destroySession,
   createEphemeralSessionCookieValue,
   requireHrAuth,
-  checkAndSetResendCooldown,
-  tooManyAttempts,
-  recordFailedAttempt,
-  RESEND_COOLDOWN_MS,
+  createApprovalToken,
+  verifyApprovalToken,
   createInterviewPanelSession,
   readInterviewPanelSession,
   destroyInterviewPanelSession,
   requireInterviewPanelAccess,
   tooManyInterviewPanelLoginAttempts,
-  recordFailedInterviewPanelLogin
+  recordFailedInterviewPanelLogin,
+  tooManyLoginAttempts,
+  recordFailedLogin
 };

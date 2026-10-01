@@ -10,6 +10,7 @@ const gmailService = require('./src/gmailService');
 const workforceRoutes = require('./src/workforceRoutes');
 const insuranceRoutes = require('./src/insuranceRoutes');
 const hrAuth = require('./src/hrAuth');
+const hrUserStore = require('./src/hrUserStore');
 const emailService = require('./src/emailService');
 const movementTracker = require('./src/movementTracker');
 const snapshotScheduler = require('./src/dailySnapshotScheduler');
@@ -188,43 +189,113 @@ app.get('/interview/interviewer/:token', (req, res) => {
   sendNoStore(res, path.join(__dirname, 'public', 'interview-interviewer.html'));
 });
 
-app.post('/api/hr-auth/request-otp', async (req, res) => {
+// Base URL for the admin approval links emailed out below - same
+// PUBLIC_BASE_URL-first, host-header-fallback pattern as
+// interviewPanelRoutes.js/workforceRoutes.js (see their own comments for
+// why PUBLIC_BASE_URL wins over a Vercel/deploy-platform-assigned host).
+function publicBaseUrl(req) {
+  if (process.env.PUBLIC_BASE_URL) return process.env.PUBLIC_BASE_URL.replace(/\/$/, '');
+  return req.protocol + '://' + req.get('host') + basePath.basePathFor(req);
+}
+
+const HR_ADMIN_EMAIL = hrAuth.normalizeEmail(process.env.HR_ADMIN_EMAIL || 'subhodeep@alcoverealty.in');
+
+app.post('/api/hr-auth/signup', async (req, res) => {
   const email = hrAuth.normalizeEmail(req.body.email);
+  const password = String(req.body.password || '');
   if (!hrAuth.isValidEmail(email)) {
     return res.status(400).json({ error: 'Enter a valid email address' });
   }
-  const waitSeconds = hrAuth.checkAndSetResendCooldown(req, res, email);
-  if (waitSeconds > 0) {
-    return res.status(429).json({ error: 'Please wait before requesting another code', waitSeconds });
+  if (!hrUserStore.isStrongPassword(password)) {
+    return res.status(400).json({ error: 'Password does not meet the requirements above' });
+  }
+  const result = await hrUserStore.createPendingUser(email, password);
+  if (result && result.error === 'exists_approved') {
+    return res.status(409).json({ error: 'An account already exists for this email - please log in instead.' });
+  }
+  if (result && result.error === 'exists_pending') {
+    return res.status(409).json({ error: 'A request for this email is already waiting for approval.' });
+  }
+  if (result && result.error) {
+    return res.status(500).json({ error: 'Could not submit your request right now. Please try again.' });
   }
   try {
-    const code = hrAuth.generateOtp(email);
-    await emailService.sendOtpEmail(email, code);
-    res.json({ ok: true, cooldownSeconds: Math.round(hrAuth.RESEND_COOLDOWN_MS / 1000) });
+    const base = publicBaseUrl(req);
+    const approveUrl = base + '/api/hr-auth/approve?token=' + encodeURIComponent(hrAuth.createApprovalToken(email, 'approve'));
+    const denyUrl = base + '/api/hr-auth/deny?token=' + encodeURIComponent(hrAuth.createApprovalToken(email, 'deny'));
+    await emailService.sendAccessRequestEmail(HR_ADMIN_EMAIL, email, approveUrl, denyUrl);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error('[hr-auth] failed to send access-request email:', err.message);
+    // The account is already saved as pending either way - an admin who
+    // knows to check can still approve it some other way, so this isn't
+    // surfaced as a failure to the person signing up.
   }
+  res.json({ ok: true, status: 'pending' });
 });
 
-app.post('/api/hr-auth/verify-otp', (req, res) => {
+// Polled by the sign-up page while it waits - lets that tab show "Request
+// Approved" and move itself to the login screen the moment the admin
+// actually clicks Approve, without the admin needing to tell anyone.
+app.get('/api/hr-auth/signup-status', async (req, res) => {
+  const email = hrAuth.normalizeEmail(req.query.email);
+  if (!hrAuth.isValidEmail(email)) return res.status(400).json({ error: 'Invalid email' });
+  const user = await hrUserStore.getUser(email);
+  res.json({ status: user ? user.status : 'none' });
+});
+
+function approvalResponseHtml(title, message) {
+  return (
+    '<!doctype html><html><head><meta charset="utf-8"><title>' + title + '</title>' +
+    '<meta name="viewport" content="width=device-width, initial-scale=1">' +
+    '<style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;' +
+    'background:#F7F5FC;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:24px;}' +
+    '.card{background:#fff;border-radius:16px;padding:36px 32px;max-width:420px;text-align:center;' +
+    'box-shadow:0 8px 28px rgba(28,32,53,0.12);}' +
+    'h1{font-size:20px;color:#1C2035;margin:0 0 12px;}p{color:#5b6169;font-size:14px;line-height:1.5;margin:0;}</style>' +
+    '</head><body><div class="card"><h1>' + title + '</h1><p>' + message + '</p></div></body></html>'
+  );
+}
+
+// Clicked straight from the admin's inbox - no login needed, the signed
+// token in the link IS the authorization (see hrAuth.createApprovalToken).
+app.get('/api/hr-auth/approve', async (req, res) => {
+  const payload = hrAuth.verifyApprovalToken(req.query.token, 'approve');
+  if (!payload) return res.status(400).send(approvalResponseHtml('Link expired or invalid', 'This approval link is no longer valid.'));
+  const ok = await hrUserStore.approveUser(payload.email);
+  if (!ok) return res.status(404).send(approvalResponseHtml('Request not found', 'Could not find a pending request for ' + payload.email + '.'));
+  res.send(approvalResponseHtml('Access approved', payload.email + ' can now log in with the password they set at sign-up.'));
+});
+
+app.get('/api/hr-auth/deny', async (req, res) => {
+  const payload = hrAuth.verifyApprovalToken(req.query.token, 'deny');
+  if (!payload) return res.status(400).send(approvalResponseHtml('Link expired or invalid', 'This link is no longer valid.'));
+  await hrUserStore.denyUser(payload.email);
+  res.send(approvalResponseHtml('Request denied', payload.email + ' has been denied access.'));
+});
+
+app.post('/api/hr-auth/login', async (req, res) => {
   const email = hrAuth.normalizeEmail(req.body.email);
-  const code = req.body.code;
-  if (!hrAuth.isValidEmail(email) || !code) {
-    return res.status(400).json({ error: 'Email and code are required' });
+  const password = String(req.body.password || '');
+  if (!hrAuth.isValidEmail(email) || !password) {
+    return res.status(400).json({ error: 'Email and password are required' });
   }
-  if (hrAuth.tooManyAttempts(req, email)) {
-    return res.status(429).json({ error: 'Too many attempts. Request a new code.' });
+  if (hrAuth.tooManyLoginAttempts(req, email)) {
+    return res.status(429).json({ error: 'Too many attempts. Please try again later.' });
   }
-  if (!hrAuth.verifyOtp(email, code)) {
-    hrAuth.recordFailedAttempt(req, res, email);
-    return res.status(401).json({ error: 'Incorrect or expired code' });
+  const result = await hrUserStore.verifyLogin(email, password);
+  if (!result.ok) {
+    hrAuth.recordFailedLogin(req, res, email);
+    if (result.reason === 'no_account') return res.status(401).json({ error: 'No account found for this email. Please sign up first.' });
+    if (result.reason === 'pending') return res.status(403).json({ error: 'Your access request is still waiting for approval.' });
+    if (result.reason === 'denied') return res.status(403).json({ error: 'Your access request was denied. Contact your HR admin.' });
+    return res.status(401).json({ error: 'Incorrect email or password' });
   }
-  hrAuth.createSession(res, email);
+  hrAuth.createSession(req, res, email);
   // Clears any leftover scoped ip_session on this browser - otherwise a
   // stale one wouldn't matter here (requireHrAuth never looks at it), but
   // it's the same reasoning as clearing hr_session below: one browser
   // should only ever be in one mode at a time.
-  hrAuth.destroyInterviewPanelSession(res);
+  hrAuth.destroyInterviewPanelSession(req, res);
   res.json({ ok: true });
 });
 
@@ -232,8 +303,8 @@ app.post('/api/hr-auth/logout', (req, res) => {
   // Destroys whichever of the two ever got set - harmless no-op for the
   // one that wasn't, so the same Logout button works for both a full
   // admin and an Interview-Panel-scoped team member.
-  hrAuth.destroySession(res);
-  hrAuth.destroyInterviewPanelSession(res);
+  hrAuth.destroySession(req, res);
+  hrAuth.destroyInterviewPanelSession(req, res);
   res.json({ ok: true });
 });
 
@@ -265,13 +336,13 @@ app.post('/api/interview-panel-login', async (req, res) => {
       hrAuth.recordFailedInterviewPanelLogin(req, res, email);
       return res.status(401).json({ error: 'Incorrect email or password' });
     }
-    hrAuth.createInterviewPanelSession(res, email);
+    hrAuth.createInterviewPanelSession(req, res, email);
     // A browser that's still holding a full admin hr_session (e.g. the
     // admin's own device, testing this login without logging out of their
     // own account first) would otherwise keep landing on the full
     // dashboard - requireInterviewPanelAccess checks the admin session
     // first, so it wins even though this scoped login just succeeded.
-    hrAuth.destroySession(res);
+    hrAuth.destroySession(req, res);
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.message });

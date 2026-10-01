@@ -1,143 +1,193 @@
-const emailStep = document.getElementById('emailStep');
-const otpStep = document.getElementById('otpStep');
-const emailForm = document.getElementById('emailForm');
-const emailInput = document.getElementById('emailInput');
-const sendOtpBtn = document.getElementById('sendOtpBtn');
-const emailError = document.getElementById('emailError');
+const steps = {
+  signUp: document.getElementById('signUpStep'),
+  waiting: document.getElementById('waitingStep'),
+  approved: document.getElementById('approvedStep'),
+  logIn: document.getElementById('logInStep')
+};
 
-const otpForm = document.getElementById('otpForm');
-const otpBoxes = Array.from(document.querySelectorAll('.otp-box'));
-const otpEmailLabel = document.getElementById('otpEmailLabel');
-const otpError = document.getElementById('otpError');
-const verifyBtn = document.getElementById('verifyBtn');
-const backBtn = document.getElementById('backBtn');
-const resendRow = document.getElementById('resendRow');
-const resendCountdown = document.getElementById('resendCountdown');
-const resendBtn = document.getElementById('resendBtn');
+function showStep(name) {
+  Object.values(steps).forEach((s) => { s.hidden = true; });
+  steps[name].hidden = false;
+}
 
-let currentEmail = '';
-let countdownTimer = null;
+// Relative URLs throughout (matches this app's existing login.js
+// convention) - resolve correctly against the current page whether
+// that's the bare domain or a path-prefixed one (/p/email-dashboard/
+// on the new deploy platform), no rewriting needed either way.
+async function postJson(url, body) {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Something went wrong');
+  return data;
+}
 
 function showError(el, message) {
   el.textContent = message;
   el.hidden = false;
 }
-
 function hideError(el) {
   el.hidden = true;
 }
 
-function startCountdown(seconds) {
-  clearInterval(countdownTimer);
-  let remaining = seconds;
-  resendRow.hidden = false;
-  resendBtn.hidden = true;
-  const tick = () => {
-    const m = String(Math.floor(remaining / 60)).padStart(2, '0');
-    const s = String(remaining % 60).padStart(2, '0');
-    resendCountdown.textContent = m + ':' + s;
-    if (remaining <= 0) {
-      clearInterval(countdownTimer);
-      resendRow.hidden = true;
-      resendBtn.hidden = false;
-      return;
-    }
-    remaining -= 1;
-  };
-  tick();
-  countdownTimer = setInterval(tick, 1000);
+// ---------- Password visibility toggles (shared by all 3 password inputs)
+
+document.querySelectorAll('.auth-eye').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    const input = document.getElementById(btn.dataset.for);
+    const show = input.type === 'password';
+    input.type = show ? 'text' : 'password';
+    btn.classList.toggle('is-visible', show);
+  });
+});
+
+// ---------- Sign Up
+
+const suEmail = document.getElementById('suEmail');
+const suPassword = document.getElementById('suPassword');
+const suRepeat = document.getElementById('suRepeat');
+const suRepeatWrap = document.getElementById('suRepeatWrap');
+const suRepeatError = document.getElementById('suRepeatError');
+const suTerms = document.getElementById('suTerms');
+const suError = document.getElementById('suError');
+const suSubmitBtn = document.getElementById('suSubmitBtn');
+const strengthBar = document.getElementById('strengthBar');
+const criteriaItems = Array.from(document.querySelectorAll('#suCriteria li'));
+
+const RULES = {
+  len: (p) => p.length >= 8,
+  upper: (p) => /[A-Z]/.test(p),
+  lower: (p) => /[a-z]/.test(p),
+  num: (p) => /[0-9]/.test(p),
+  special: (p) => /[^A-Za-z0-9]/.test(p)
+};
+
+function passwordScore(p) {
+  return Object.values(RULES).filter((fn) => fn(p)).length;
 }
 
-async function requestOtp(email) {
-  const res = await fetch('api/hr-auth/request-otp', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email })
+function updateStrengthUi() {
+  const p = suPassword.value;
+  criteriaItems.forEach((li) => {
+    const rule = li.dataset.rule;
+    li.classList.toggle('met', RULES[rule](p));
   });
-  const data = await res.json();
-  if (!res.ok) throw Object.assign(new Error(data.error || 'Failed to send code'), { waitSeconds: data.waitSeconds });
-  return data;
+  const score = passwordScore(p);
+  const bars = Array.from(strengthBar.children);
+  // Simple 4-segment fill: 0-1 criteria -> 1 bar, up to 5 criteria -> 4 bars.
+  const filledCount = Math.min(4, Math.ceil((score / 5) * 4));
+  bars.forEach((bar, i) => {
+    bar.className = i < filledCount ? (score >= 5 ? 'filled-strong' : 'filled-weak') : '';
+  });
+  return score === 5;
 }
 
-emailForm.addEventListener('submit', async (e) => {
+function updateRepeatUi() {
+  const mismatch = suRepeat.value.length > 0 && suRepeat.value !== suPassword.value;
+  suRepeatWrap.classList.toggle('auth-input-error', mismatch);
+  suRepeatError.hidden = !mismatch;
+  return !mismatch && suRepeat.value.length > 0;
+}
+
+suPassword.addEventListener('input', () => { updateStrengthUi(); updateRepeatUi(); });
+suRepeat.addEventListener('input', updateRepeatUi);
+
+document.getElementById('signUpForm').addEventListener('submit', async (e) => {
   e.preventDefault();
-  hideError(emailError);
-  const email = emailInput.value.trim();
-  sendOtpBtn.disabled = true;
-  sendOtpBtn.textContent = 'Sending…';
-  try {
-    const data = await requestOtp(email);
-    currentEmail = email;
-    otpEmailLabel.textContent = email;
-    emailStep.hidden = true;
-    otpStep.hidden = false;
-    otpBoxes.forEach((b) => { b.value = ''; });
-    otpBoxes[0].focus();
-    startCountdown(data.cooldownSeconds || 45);
-  } catch (err) {
-    showError(emailError, err.waitSeconds ? 'Please wait ' + err.waitSeconds + 's before trying again' : err.message);
-  } finally {
-    sendOtpBtn.disabled = false;
-    sendOtpBtn.textContent = 'Send OTP';
-  }
-});
-
-backBtn.addEventListener('click', () => {
-  clearInterval(countdownTimer);
-  otpStep.hidden = true;
-  emailStep.hidden = false;
-  hideError(otpError);
-});
-
-resendBtn.addEventListener('click', async () => {
-  hideError(otpError);
-  try {
-    const data = await requestOtp(currentEmail);
-    startCountdown(data.cooldownSeconds || 45);
-  } catch (err) {
-    showError(otpError, err.waitSeconds ? 'Please wait ' + err.waitSeconds + 's before trying again' : err.message);
-  }
-});
-
-otpBoxes.forEach((box, i) => {
-  box.addEventListener('input', () => {
-    box.value = box.value.replace(/\D/g, '').slice(0, 1);
-    if (box.value && i < otpBoxes.length - 1) otpBoxes[i + 1].focus();
-  });
-  box.addEventListener('keydown', (e) => {
-    if (e.key === 'Backspace' && !box.value && i > 0) otpBoxes[i - 1].focus();
-  });
-  box.addEventListener('paste', (e) => {
-    const digits = (e.clipboardData.getData('text') || '').replace(/\D/g, '').slice(0, otpBoxes.length);
-    if (!digits) return;
-    e.preventDefault();
-    digits.split('').forEach((d, idx) => { if (otpBoxes[idx]) otpBoxes[idx].value = d; });
-    otpBoxes[Math.min(digits.length, otpBoxes.length - 1)].focus();
-  });
-});
-
-otpForm.addEventListener('submit', async (e) => {
-  e.preventDefault();
-  hideError(otpError);
-  const code = otpBoxes.map((b) => b.value).join('');
-  if (code.length !== 6) {
-    showError(otpError, 'Enter all 6 digits');
+  hideError(suError);
+  const strong = updateStrengthUi();
+  const repeatOk = updateRepeatUi();
+  if (!strong) {
+    showError(suError, 'Please meet all password requirements above.');
     return;
   }
-  verifyBtn.disabled = true;
-  verifyBtn.textContent = 'Verifying…';
+  if (!repeatOk) {
+    showError(suError, 'Passwords do not match.');
+    return;
+  }
+  if (!suTerms.checked) {
+    showError(suError, 'Please agree to the Terms and Privacy Policy.');
+    return;
+  }
+  suSubmitBtn.disabled = true;
+  suSubmitBtn.textContent = 'Submitting…';
   try {
-    const res = await fetch('api/hr-auth/verify-otp', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: currentEmail, code })
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Verification failed');
+    await postJson('api/hr-auth/signup', { email: suEmail.value.trim(), password: suPassword.value });
+    startWaitingFor(suEmail.value.trim());
+  } catch (err) {
+    showError(suError, err.message);
+  } finally {
+    suSubmitBtn.disabled = false;
+    suSubmitBtn.textContent = 'Sign Up';
+  }
+});
+
+// ---------- Waiting for approval (polls every 4s; stops on tab close)
+
+let pollTimer = null;
+
+function startWaitingFor(email) {
+  showStep('waiting');
+  clearInterval(pollTimer);
+  pollTimer = setInterval(async () => {
+    try {
+      const res = await fetch('api/hr-auth/signup-status?email=' + encodeURIComponent(email));
+      const data = await res.json();
+      if (data.status === 'approved') {
+        clearInterval(pollTimer);
+        showStep('approved');
+        setTimeout(() => {
+          document.getElementById('liEmail').value = email;
+          showStep('logIn');
+        }, 1600);
+      } else if (data.status === 'denied') {
+        clearInterval(pollTimer);
+        showStep('signUp');
+        showError(suError, 'Your access request was denied. Contact your HR admin.');
+      }
+    } catch {
+      // A transient network blip while waiting isn't shown as an error -
+      // the next poll a few seconds later just tries again.
+    }
+  }, 4000);
+}
+
+// ---------- Log In
+
+const liEmail = document.getElementById('liEmail');
+const liPassword = document.getElementById('liPassword');
+const liError = document.getElementById('liError');
+const liSubmitBtn = document.getElementById('liSubmitBtn');
+
+document.getElementById('logInForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  hideError(liError);
+  liSubmitBtn.disabled = true;
+  liSubmitBtn.textContent = 'Logging in…';
+  try {
+    await postJson('api/hr-auth/login', { email: liEmail.value.trim(), password: liPassword.value });
     window.location.href = 'workforce.html';
   } catch (err) {
-    showError(otpError, err.message);
-    verifyBtn.disabled = false;
-    verifyBtn.textContent = 'Verify OTP';
+    showError(liError, err.message);
+  } finally {
+    liSubmitBtn.disabled = false;
+    liSubmitBtn.textContent = 'Log In';
   }
+});
+
+document.getElementById('forgotBtn').addEventListener('click', () => {
+  showError(liError, 'Please contact your HR admin to reset your password.');
+});
+
+// ---------- Switch between the two forms
+
+document.getElementById('goToLoginBtn').addEventListener('click', () => {
+  clearInterval(pollTimer);
+  showStep('logIn');
+});
+document.getElementById('goToSignUpBtn').addEventListener('click', () => {
+  showStep('signUp');
 });

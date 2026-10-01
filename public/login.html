@@ -3,63 +3,119 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
-  <title>Workforce Intelligence — Login</title>
-  <link rel="stylesheet" href="styles.css?v=9" />
-  <link rel="stylesheet" href="login.css?v=2" />
+  <title>Workforce Intelligence — Sign In</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="login.css?v=3" />
 </head>
 <body>
-  <div class="login-shell">
-    <div class="login-brand">
-      <div class="login-brand-icon">
-        <svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-      </div>
-      <div class="login-wordmark">Workforce<span>Intelligence</span></div>
+  <div class="auth-shell">
+    <h1 class="auth-wordmark">Workforce<span>Intelligence</span></h1>
+
+    <div class="auth-card">
+
+      <!-- ===================== SIGN UP ===================== -->
+      <section id="signUpStep" class="auth-step">
+        <form id="signUpForm" novalidate>
+          <label class="auth-label" for="suEmail">E-mail</label>
+          <div class="auth-input">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+            <input type="email" id="suEmail" placeholder="e.g. johndoe@gmail.com" autocomplete="email" required />
+          </div>
+
+          <label class="auth-label" for="suPassword">Password</label>
+          <div class="auth-input">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+            <input type="password" id="suPassword" placeholder="Create a password" autocomplete="new-password" required />
+            <button type="button" class="auth-eye" data-for="suPassword" aria-label="Show password">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+            </button>
+          </div>
+
+          <div class="auth-strength-bar" id="strengthBar">
+            <span></span><span></span><span></span><span></span>
+          </div>
+          <ul class="auth-criteria" id="suCriteria">
+            <li data-rule="len"><span class="dot"></span>At least 8 characters</li>
+            <li data-rule="upper"><span class="dot"></span>One uppercase letter</li>
+            <li data-rule="lower"><span class="dot"></span>One lowercase letter</li>
+            <li data-rule="num"><span class="dot"></span>One number</li>
+            <li data-rule="special"><span class="dot"></span>One special character</li>
+          </ul>
+
+          <label class="auth-label" for="suRepeat">Repeat Password</label>
+          <div class="auth-input" id="suRepeatWrap">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+            <input type="password" id="suRepeat" placeholder="Repeat your password" autocomplete="new-password" required />
+            <button type="button" class="auth-eye" data-for="suRepeat" aria-label="Show password">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+            </button>
+          </div>
+          <div class="auth-field-error" id="suRepeatError" hidden>Passwords do not match</div>
+
+          <label class="auth-check">
+            <input type="checkbox" id="suTerms" required />
+            <span>I agree to the <strong>Terms</strong> and <strong>Privacy Policy</strong></span>
+          </label>
+
+          <button type="submit" class="auth-btn" id="suSubmitBtn">Sign Up</button>
+          <div class="auth-error" id="suError" hidden></div>
+        </form>
+        <div class="auth-switch">Already have an account? <button type="button" class="auth-link-btn" id="goToLoginBtn">Log in</button></div>
+      </section>
+
+      <!-- ===================== WAITING FOR APPROVAL ===================== -->
+      <section id="waitingStep" class="auth-step" hidden>
+        <div class="auth-waiting-icon">
+          <svg viewBox="0 0 24 24" width="34" height="34" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+        </div>
+        <h2 class="auth-step-title">Waiting for Approval</h2>
+        <p class="auth-sub">Your request has been sent to the admin.<br>You'll be able to log in once it's approved.</p>
+        <div class="auth-spinner"></div>
+      </section>
+
+      <!-- ===================== REQUEST APPROVED ===================== -->
+      <section id="approvedStep" class="auth-step" hidden>
+        <div class="auth-approved-icon">
+          <svg viewBox="0 0 24 24" width="34" height="34" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+        </div>
+        <h2 class="auth-step-title">Request Approved</h2>
+        <p class="auth-sub">You can now log in with your e-mail and password.</p>
+      </section>
+
+      <!-- ===================== LOG IN ===================== -->
+      <section id="logInStep" class="auth-step" hidden>
+        <form id="logInForm" novalidate>
+          <label class="auth-label" for="liEmail">E-mail</label>
+          <div class="auth-input">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+            <input type="email" id="liEmail" placeholder="e.g. johndoe@gmail.com" autocomplete="email" required />
+          </div>
+
+          <div class="auth-label-row">
+            <label class="auth-label" for="liPassword">Password</label>
+            <button type="button" class="auth-forgot-btn" id="forgotBtn">Forgot password?</button>
+          </div>
+          <div class="auth-input">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+            <input type="password" id="liPassword" placeholder="Enter your password" autocomplete="current-password" required />
+            <button type="button" class="auth-eye" data-for="liPassword" aria-label="Show password">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+            </button>
+          </div>
+
+          <button type="submit" class="auth-btn" id="liSubmitBtn">Log In</button>
+          <div class="auth-error" id="liError" hidden></div>
+        </form>
+        <div class="auth-switch">Don't have an account? <button type="button" class="auth-link-btn" id="goToSignUpBtn">Sign up</button></div>
+      </section>
+
     </div>
 
-    <section id="emailStep" class="login-step">
-      <h1>Welcome Back</h1>
-      <div class="login-sub">Please login to continue</div>
-
-      <form id="emailForm">
-        <input type="email" id="emailInput" placeholder="Enter your work email" autocomplete="email" required />
-        <button type="submit" class="login-btn" id="sendOtpBtn">Send OTP</button>
-      </form>
-      <div class="login-helper">Secure access with email OTP</div>
-      <div class="login-error" id="emailError" hidden></div>
-    </section>
-
-    <section id="otpStep" class="login-step" hidden>
-      <button type="button" class="login-back" id="backBtn" aria-label="Back">
-        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
-      </button>
-
-      <div class="login-otp-icon">
-        <svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h4l2 3h4l2-3h4"/><path d="M5.5 6h13l1.5 6v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-6l1.5-6z"/></svg>
-      </div>
-      <h1>Verify Your Email</h1>
-      <div class="login-sub">We've sent a 6-digit OTP to<br><strong id="otpEmailLabel"></strong></div>
-
-      <form id="otpForm">
-        <div class="otp-boxes" id="otpBoxes">
-          <input inputmode="numeric" maxlength="1" class="otp-box" />
-          <input inputmode="numeric" maxlength="1" class="otp-box" />
-          <input inputmode="numeric" maxlength="1" class="otp-box" />
-          <input inputmode="numeric" maxlength="1" class="otp-box" />
-          <input inputmode="numeric" maxlength="1" class="otp-box" />
-          <input inputmode="numeric" maxlength="1" class="otp-box" />
-        </div>
-        <div class="login-resend" id="resendRow">
-          Resend OTP in <strong id="resendCountdown">00:45</strong>
-        </div>
-        <button type="button" class="login-link-btn" id="resendBtn" hidden>Resend OTP</button>
-        <button type="submit" class="login-btn" id="verifyBtn">Verify OTP</button>
-      </form>
-      <div class="login-error" id="otpError" hidden></div>
-    </section>
-
-    <div class="login-footer">© 2026 Alcove Realty</div>
+    <div class="auth-footer">© 2026 Alcove Realty</div>
   </div>
 
-  <script src="login.js?v=1"></script>
+  <script src="login.js?v=2"></script>
 </body>
 </html>
