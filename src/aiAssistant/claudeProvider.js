@@ -89,6 +89,11 @@ const SYSTEM_PROMPT =
   'employeeName), is a complete, real, successful answer, not missing data - state it plainly ' +
   '(e.g. "0 employees joined this month so far"). Only an explicit error field in the tool result ' +
   'means something actually went wrong. ' +
+  'Concrete example: if get_joining_this_month returns {"rows":[],"footer":{"value":0}}, the ONLY ' +
+  'correct reply is a short PLAIN sentence stating 0 (e.g. "Ei mash e 0 jon active employee join ' +
+  'korechen" / "0 employees joined this month so far") - do NOT say you lack access, do NOT offer ' +
+  'to check again later, do NOT ask which department/status they want first; 0 is already the ' +
+  'complete, final, real answer to exactly what was asked. ' +
   'If a tool result includes unmatchedFilters, one of the values you passed (e.g. a department ' +
   'or designation) does not match anything real in the data at all - do NOT report a count of 0 ' +
   'as if it were a real answer. Say plainly that you could not find that value, and mention a ' +
