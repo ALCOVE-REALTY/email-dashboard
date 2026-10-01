@@ -139,7 +139,9 @@ async function generateOrgChartPdfBuffer({ email, department, baseUrl }) {
     const lap = (label) => console.log('[orgChartServerPdf]', label, Date.now() - t0, 'ms');
     const runExportFlow = (async () => {
       await page.goto(
-        url.origin + '/workforce.html?embedded=1&serverRenderDept=' + encodeURIComponent(department),
+        // baseUrl, not url.origin: origin drops a path prefix (/p/<slug>), and
+        // the headless browser then renders the platform's 404 page instead.
+        baseUrl.replace(/\/+$/, '') + '/workforce.html?embedded=1&serverRenderDept=' + encodeURIComponent(department),
         { waitUntil: 'domcontentloaded' }
       );
       lap('goto done');

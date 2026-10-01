@@ -26,7 +26,8 @@ const WHATSAPP_FORM_LABELS = {
 // is the fallback for local dev, where PUBLIC_BASE_URL isn't set.
 function baseUrl(req) {
   if (process.env.PUBLIC_BASE_URL) return process.env.PUBLIC_BASE_URL.replace(/\/$/, '');
-  return req.protocol + '://' + req.get('host');
+  // Behind the platform the app lives under a prefix; keep it in absolute links.
+  return req.protocol + '://' + req.get('host') + require('./basePath').basePathFor(req);
 }
 
 router.get('/', async (req, res) => {

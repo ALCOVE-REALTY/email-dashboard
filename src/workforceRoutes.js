@@ -422,7 +422,8 @@ router.get('/org-chart-pdf', async (req, res) => {
 // throwaway hostname. Falls back to the request's own host for local dev.
 function baseUrl(req) {
   if (process.env.PUBLIC_BASE_URL) return process.env.PUBLIC_BASE_URL.replace(/\/$/, '');
-  return req.protocol + '://' + req.get('host');
+  // Behind the platform the app lives under a prefix; keep it in absolute links.
+  return req.protocol + '://' + req.get('host') + require('./basePath').basePathFor(req);
 }
 
 // Server-side export: our OWN headless browser drives the exact same
