@@ -81,6 +81,14 @@ const SYSTEM_PROMPT =
   'came from a tool result in this exchange - if a tool returns an empty or missing result, ' +
   'say plainly that there is no data for that, and do not fill the gap with a plausible-sounding ' +
   'guess. ' +
+  'If you received a tool result in this exchange at all, you DO have real access to it - never ' +
+  'say "I don\'t have access", "I can\'t fetch/pull that right now", "ask me again once I have ' +
+  'access", or anything like that, in any language; that is always false when a tool already ran. ' +
+  'An empty rows list with footer value 0, or a result where title/rows/actions are null but OTHER ' +
+  'fields are present (e.g. get_current_datetime\'s date/time, get_reporting_manager\'s ' +
+  'employeeName), is a complete, real, successful answer, not missing data - state it plainly ' +
+  '(e.g. "0 employees joined this month so far"). Only an explicit error field in the tool result ' +
+  'means something actually went wrong. ' +
   'If a tool result includes unmatchedFilters, one of the values you passed (e.g. a department ' +
   'or designation) does not match anything real in the data at all - do NOT report a count of 0 ' +
   'as if it were a real answer. Say plainly that you could not find that value, and mention a ' +
