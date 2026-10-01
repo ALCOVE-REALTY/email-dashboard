@@ -25,7 +25,16 @@ const API_URL = 'https://api.openai.com/v1/chat/completions';
 // counting questions - data lookup itself (tools.js) is unchanged, this
 // only changes which model decides what was asked and reports back on it.
 const MODEL = process.env.OPENAI_MODEL || 'gpt-5';
-const MAX_TOKENS = 1024;
+// gpt-5 is a reasoning model - its internal "thinking" is billed out of
+// this same completion-token budget, before any visible reply text.
+// Found live: at the old value (1024, fine for gpt-4o-mini, which has no
+// separate reasoning phase) a real request spent all 1024 on
+// reasoning_tokens and returned completely empty visible content
+// (finish_reason:'length'). Raised well above what reasoning plus a
+// short reply should ever need, and reasoning_effort (see callOpenAi) is
+// kept low since this is a routing/classification task, not something
+// that benefits from deep reasoning.
+const MAX_TOKENS = 4096;
 
 // Used only for [[DRAFT]] replies (see REPLY_MARKER_RE) - actual written
 // documents (mails, letters, translations, summaries, notices) need real
@@ -35,7 +44,7 @@ const MAX_TOKENS = 1024;
 // (much rarer) request that's actually asking for a finished piece of
 // writing.
 const DRAFT_MODEL = process.env.OPENAI_DRAFT_MODEL || 'gpt-5.4';
-const DRAFT_MAX_TOKENS = 2048;
+const DRAFT_MAX_TOKENS = 4096;
 
 const DRAFT_SYSTEM_PROMPT =
   'You write professional mails, letters, translations, summaries, explanations and notices for ' +
@@ -638,6 +647,12 @@ async function callOpenAi(apiKey, messages, toolChoice) {
       // confirmed live, the exact same "Unsupported parameter" error found
       // and fixed for the draft model earlier applies here too.
       max_completion_tokens: MAX_TOKENS,
+      // Keeps the reasoning phase short - this call only ever has to pick
+      // a tool/write a short reply, not solve anything hard, and a lower
+      // effort leaves far more of MAX_TOKENS free for the actual visible
+      // reply (see MAX_TOKENS' own comment for the live failure this
+      // prevents).
+      reasoning_effort: 'low',
       messages,
       tools: TOOL_DEFS,
       tool_choice: toolChoice
@@ -711,7 +726,7 @@ async function callOpenAiDraft(apiKey, message, history, toolResult) {
       Authorization: 'Bearer ' + apiKey,
       'content-type': 'application/json'
     },
-    body: JSON.stringify({ model: DRAFT_MODEL, max_completion_tokens: DRAFT_MAX_TOKENS, messages: msgs })
+    body: JSON.stringify({ model: DRAFT_MODEL, max_completion_tokens: DRAFT_MAX_TOKENS, reasoning_effort: 'low', messages: msgs })
   });
   if (!resp.ok) {
     const bodyText = await resp.text().catch(() => '');
@@ -733,6 +748,9 @@ function buildCardFallback(card) {
   if (!card || !card.footer || typeof card.footer.value === 'undefined') return null;
   const title = String(card.title || 'Result').replace(/\s*\(Top \d+\)\s*$/, '');
   let sentence = title + ' - ' + card.footer.label + ': ' + card.footer.value + '.';
+  if (typeof card.cascadingTotal === 'number') {
+    sentence += ' Total including their whole team chain: ' + card.cascadingTotal + '.';
+  }
   const shown = (card.rows || card.tableRows || []).length;
   if (shown && card.footer.value > shown) {
     sentence += ' First ' + shown + ' shown, rest in the card.';
@@ -803,7 +821,8 @@ async function getResponse({ message, history, user }) {
               fullRows: toolResult.fullRows || null,
               fullTableRows: toolResult.fullTableRows || null,
               footer: toolResult.footer || null,
-              note: toolResult.note || null
+              note: toolResult.note || null,
+              cascadingTotal: typeof toolResult.cascadingTotal === 'number' ? toolResult.cascadingTotal : null
             }
           : null;
         actions = toolResult.actions || null;
@@ -849,9 +868,6 @@ async function getResponse({ message, history, user }) {
     });
 
     const followUpContent = (assistantMessage && assistantMessage.content) || '';
-    if (!followUpContent) {
-      return { reply: '[DEBUG empty followup] finish_reason=' + (choice && choice.finish_reason) + ' usage2=' + JSON.stringify(usage2) + ' msg=' + JSON.stringify(assistantMessage).slice(0, 400), card: null, actions: null };
-    }
     const markerMatch = followUpContent.match(REPLY_MARKER_RE);
     if (markerMatch && markerMatch[1] === 'DRAFT') {
       const draftData = await callOpenAiDraft(apiKey, message, history, modelFacingToolResult);
