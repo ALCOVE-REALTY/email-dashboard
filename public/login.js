@@ -21,7 +21,11 @@ async function postJson(url, body) {
     body: JSON.stringify(body)
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || 'Something went wrong');
+  if (!res.ok) {
+    // TEMPORARY: data.debugMessage (when present) shows the real server-
+    // side cause, since there's no server log access on the new host yet.
+    throw new Error((data.error || 'Something went wrong') + (data.debugMessage ? ' [' + data.debugMessage + ']' : ''));
+  }
   return data;
 }
 

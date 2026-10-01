@@ -217,7 +217,9 @@ app.post('/api/hr-auth/signup', async (req, res) => {
     return res.status(409).json({ error: 'A request for this email is already waiting for approval.' });
   }
   if (result && result.error) {
-    return res.status(500).json({ error: 'Could not submit your request right now. Please try again.' });
+    // TEMPORARY: includes the real cause in the response (debugMessage) -
+    // no server log access on the new host yet. Revert once diagnosed.
+    return res.status(500).json({ error: 'Could not submit your request right now. Please try again.', debugMessage: result.debugMessage });
   }
   try {
     const base = publicBaseUrl(req);
