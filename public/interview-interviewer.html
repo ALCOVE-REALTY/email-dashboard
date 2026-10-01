@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="robots" content="noindex, nofollow" />
+<title>Interviewer Evaluation Form - Alcove Realty</title>
+<link rel="stylesheet" href="/styles.css?v=2" />
+<link rel="stylesheet" href="/interview-forms.css?v=4" />
+</head>
+<body>
+<div class="iv-shell">
+  <div class="iv-brand">
+    <img class="iv-brand-logo" src="/assets/alcove-logo.png" alt="Alcove Realty" />
+    <span class="iv-brand-kicker">Interviewer Panel</span>
+  </div>
+
+  <div id="ivLoading" class="iv-loading">Loading interview form&hellip;</div>
+
+  <div id="ivPanel" class="iv-panel" hidden>
+    <h1>Interviewer Evaluation Form</h1>
+    <p class="iv-panel-sub">Review the candidate's details below, then complete your assessment. Once submitted, this form cannot be edited again.</p>
+
+    <div class="iv-readonly-box" id="ivCandidateBox">
+      <div class="iv-readonly-title">Candidate Details</div>
+    </div>
+
+    <form id="ivForm">
+      <div class="iv-section-title">Evaluation</div>
+      <div class="iv-eval-legend">
+        <span><b>A</b> Outstanding</span>
+        <span><b>B+</b> V.Good</span>
+        <span><b>B</b> Good</span>
+        <span><b>C</b> Average</span>
+        <span><b>D</b> Below Average</span>
+      </div>
+      <div class="iv-eval-table" id="ivGradeFields"></div>
+
+      <div class="iv-overall-card">
+        <div class="iv-overall-label">Overall Grade <span class="iv-overall-hint">(calculated automatically from the criteria above)</span></div>
+        <div class="iv-overall-body" id="ivOverallBody">
+          <span class="iv-overall-placeholder">Select the criteria above to calculate</span>
+        </div>
+      </div>
+
+      <div class="iv-section-title">Decision</div>
+      <div class="iv-field">
+        <label for="f_interviewStatus">Interview Status<span class="iv-required">*</span></label>
+        <select id="f_interviewStatus" name="interviewStatus" required>
+          <option value="">Select&hellip;</option>
+          <option value="Selected">Selected</option>
+          <option value="Shortlisted">Shortlisted</option>
+          <option value="Rejected">Rejected</option>
+        </select>
+      </div>
+      <div class="iv-field" id="ivItSummaryField" hidden>
+        <label>IT Requirements</label>
+        <div class="iv-it-summary" id="ivItSummary"></div>
+        <button type="button" class="iv-link-btn" id="ivEditItRequirements">Edit IT Requirements</button>
+      </div>
+
+      <div class="iv-field">
+        <label for="f_newRejoinedReplacement">New / Rejoined / Replacement<span class="iv-required">*</span></label>
+        <select id="f_newRejoinedReplacement" name="newRejoinedReplacement" required>
+          <option value="">Select&hellip;</option>
+          <option value="New">New</option>
+          <option value="Rejoined">Rejoined</option>
+          <option value="Replacement">Replacement</option>
+        </select>
+      </div>
+      <div class="iv-field" id="ivReplacementFieldWrap" hidden>
+        <label for="f_replacementForName">Name of Replacement<span class="iv-required">*</span></label>
+        <input type="text" id="f_replacementForName" name="replacementForName" />
+      </div>
+      <div class="iv-field">
+        <label for="f_interviewerComments">Interviewer Comments<span class="iv-required">*</span></label>
+        <textarea id="f_interviewerComments" name="interviewerComments" required></textarea>
+      </div>
+
+      <div class="iv-section-title">Interview Panel List</div>
+      <div id="ivPanelistRows"></div>
+      <button type="button" class="iv-add-panelist-btn" id="ivAddPanelist">+ Add Panel Member</button>
+
+      <div class="iv-section-title">Additional Note</div>
+      <div class="iv-field">
+        <textarea id="f_additionalNote" name="additionalNote"></textarea>
+      </div>
+
+      <button type="submit" class="iv-btn" id="ivSubmitBtn">Submit Evaluation</button>
+      <div class="iv-error" id="ivError" hidden></div>
+    </form>
+  </div>
+
+  <!-- IT Requirements popup - opens when Interview Status is set to
+       Selected, same idea as the app's Send Mail compose popup: a small
+       overlay card the interviewer must complete before it closes. -->
+  <div id="ivItOverlay" class="iv-overlay" hidden>
+    <div class="iv-overlay-card" role="dialog" aria-modal="true" aria-labelledby="ivItOverlayTitle">
+      <h3 id="ivItOverlayTitle">IT Requirements</h3>
+      <p class="iv-panel-sub" style="margin-bottom:16px;">Select at least one that applies to this candidate.</p>
+      <label class="iv-checkbox-row" id="ivItLaptopRow">
+        <input type="checkbox" id="ivItLaptop" />
+        <span>Laptop</span>
+      </label>
+      <label class="iv-checkbox-row" id="ivItMailRow">
+        <input type="checkbox" id="ivItMail" />
+        <span>Official Mail ID</span>
+      </label>
+      <label class="iv-checkbox-row" id="ivItSimRow">
+        <input type="checkbox" id="ivItSim" />
+        <span>Official SIM</span>
+      </label>
+      <div class="iv-it-divider"><span>OR</span></div>
+      <label class="iv-checkbox-row" id="ivItNotApplicableRow">
+        <input type="checkbox" id="ivItNotApplicable" />
+        <span>Not Applicable for this Role <em>(e.g. Peon / Support Staff)</em></span>
+      </label>
+      <div class="iv-error" id="ivItError" hidden>Please select at least one option before continuing.</div>
+      <button type="button" class="iv-btn" id="ivItOkBtn" style="margin-top:16px;">OK</button>
+    </div>
+  </div>
+
+  <div id="ivStateAlready" class="iv-panel iv-state iv-state-success" hidden>
+    <div class="iv-state-icon"><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></div>
+    <h2>Already Submitted</h2>
+    <p>This evaluation has already been submitted and cannot be edited again. Thank you.</p>
+  </div>
+
+  <div id="ivStateDone" class="iv-panel iv-state iv-state-success" hidden>
+    <div class="iv-state-icon"><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></div>
+    <h2>Evaluation Submitted</h2>
+    <p>Thank you for completing this interview evaluation. You may close this page now.</p>
+  </div>
+
+  <div id="ivStateWait" class="iv-panel iv-state iv-state-wait" hidden>
+    <div class="iv-state-icon"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg></div>
+    <h2>Not Ready Yet</h2>
+    <p>The candidate hasn't submitted their details yet. Please check back once they have.</p>
+  </div>
+
+  <div id="ivStateError" class="iv-panel iv-state iv-state-error" hidden>
+    <div class="iv-state-icon"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg></div>
+    <h2>Link Not Valid</h2>
+    <p id="ivStateErrorMsg">This link is invalid or has expired.</p>
+  </div>
+</div>
+<script src="/interview-interviewer.js?v=4"></script>
+</body>
+</html>

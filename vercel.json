@@ -1,0 +1,34 @@
+{
+  "functions": {
+    "api/index.js": {
+      "includeFiles": "{public/**,src/assets/**,src/views/**,node_modules/chart.js/dist/chart.umd.js,node_modules/pdfkit/js/data/**,node_modules/pdfkit/js/standard-fonts/**,node_modules/pdfkit/lib/**,node_modules/@sparticuz/chromium/**}",
+      "excludeFiles": "node_modules/**/{*.map,*.d.ts,README*,readme*,CHANGELOG*,LICENSE*,test/**,tests/**,__tests__/**}",
+      "maxDuration": 30,
+      "memory": 1024
+    }
+  },
+  "headers": [
+    {
+      "source": "/",
+      "headers": [{ "key": "Cache-Control", "value": "no-store, must-revalidate" }]
+    },
+    {
+      "source": "/workforce.html",
+      "headers": [{ "key": "Cache-Control", "value": "no-store, must-revalidate" }]
+    },
+    {
+      "source": "/login",
+      "headers": [{ "key": "Cache-Control", "value": "no-store, must-revalidate" }]
+    },
+    {
+      "source": "/mail",
+      "headers": [{ "key": "Cache-Control", "value": "no-store, must-revalidate" }]
+    }
+  ],
+  "rewrites": [
+    { "source": "/(.*)", "destination": "/api/index" }
+  ],
+  "crons": [
+    { "path": "/api/internal/snapshot-movement", "schedule": "0 20 * * *" }
+  ]
+}

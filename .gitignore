@@ -1,0 +1,10 @@
+node_modules/
+.env
+token.json
+credentials.json
+*.log
+service-account.json
+apps-script-department-webhook.gs
+
+.vercel
+.env*

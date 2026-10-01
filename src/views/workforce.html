@@ -1,0 +1,1768 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <title>Workforce Intelligence</title>
+  <link rel="stylesheet" href="styles.css?v=9" />
+  <link rel="stylesheet" href="workforce.css?v=132" />
+</head>
+<body>
+  <div class="wf-shell">
+    <header class="wf-topbar">
+      <div class="wf-brand">
+        <button class="wf-icon-btn" id="menuBtn" title="Menu" aria-label="Open menu" aria-expanded="false">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+        </button>
+        <h1 class="wf-wordmark">Workforce<span>Intelligence</span></h1>
+      </div>
+      <div class="wf-topbar-actions">
+        <button class="wf-icon-btn" id="refreshBtn" title="Refresh" aria-label="Refresh">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+        </button>
+        <button class="wf-ai-btn" id="hrAssistantBtn" title="HR Assistant (AI agent)" aria-label="HR Assistant (AI agent)">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M10 3.6V5.6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="10" cy="2.6" r="1.1" fill="currentColor"/><rect x="2.6" y="5.6" width="14.8" height="12.8" rx="4.2" stroke="currentColor" stroke-width="1.8"/><circle cx="7.2" cy="11.4" r="1.35" fill="currentColor"/><circle cx="13" cy="11.4" r="1.35" fill="currentColor"/><path d="M7.8 15.2H12.4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M20 3.2L20.9 5.3L23 6.2L20.9 7.1L20 9.2L19.1 7.1L17 6.2L19.1 5.3Z" fill="#3FBFA8"/></svg>
+        </button>
+        <button class="wf-avatar" id="profileAvatar" title="Tap to change photo" aria-label="Upload profile photo">—</button>
+        <input type="file" id="profilePhotoInput" accept="image/*" hidden />
+      </div>
+    </header>
+
+    <div class="wf-drawer-backdrop" id="wfDrawerBackdrop" hidden></div>
+    <nav class="wf-drawer" id="wfDrawer" hidden aria-label="Menu">
+      <div class="wf-drawer-head">
+        <button class="wf-avatar lg" id="drawerAvatar" title="Tap to change photo" aria-label="Upload profile photo">—</button>
+        <div class="wf-drawer-name" id="drawerName">—</div>
+        <div class="wf-drawer-email" id="drawerEmail"></div>
+      </div>
+
+      <button class="wf-drawer-item" data-view="overview" aria-pressed="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/></svg>Dashboard
+      </button>
+      <button class="wf-drawer-item" data-view="directory" aria-pressed="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>Employee Data
+      </button>
+      <button class="wf-drawer-item" data-view="joining" aria-pressed="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>Joining
+      </button>
+      <button class="wf-drawer-item" data-view="tenure" aria-pressed="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>Tenure
+      </button>
+      <button class="wf-drawer-item" data-view="movement" aria-pressed="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>Workforce Movement
+      </button>
+
+      <button class="wf-drawer-item wf-drawer-group" id="demographicsToggle" aria-expanded="false" aria-controls="demographicsSubmenu">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>Demographics
+        <svg class="wf-drawer-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+      </button>
+      <div class="wf-drawer-submenu" id="demographicsSubmenu" hidden>
+        <button class="wf-drawer-subitem" data-view="ageDistribution" aria-pressed="false">Age Distribution</button>
+        <button class="wf-drawer-subitem" data-view="genderDistribution" aria-pressed="false">Gender Distribution</button>
+        <button class="wf-drawer-subitem" data-view="collarDistribution" aria-pressed="false">Category Distribution</button>
+      </div>
+
+      <button class="wf-drawer-item" data-view="doerManagement" aria-pressed="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M5 21v-2a7 7 0 0 1 14 0v2"/></svg>Doer Management
+      </button>
+      <button class="wf-drawer-item" data-view="orgChart" aria-pressed="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="6" rx="1"/><rect x="3" y="15" width="6" height="6" rx="1"/><rect x="15" y="15" width="6" height="6" rx="1"/><path d="M12 9v3M6 15v-3h12v3"/></svg>Organization Chart
+      </button>
+      <button class="wf-drawer-item" data-view="healthInsurance" aria-pressed="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><line x1="12" y1="8" x2="12" y2="14"/><line x1="9" y1="11" x2="15" y2="11"/></svg>Health Insurance
+      </button>
+      <button class="wf-drawer-item" data-view="interviewPanel" aria-pressed="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>Interview Panel
+      </button>
+      <button class="wf-drawer-item" data-view="letterGenerator" aria-pressed="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="13" y2="17"/></svg>Letter Generator
+      </button>
+      <button class="wf-drawer-item" data-view="insights" aria-pressed="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6"/><path d="M10 22h4"/><path d="M15.09 14c.18-.98.65-1.74 1.41-2.5A4.65 4.65 0 0 0 18 8 6 6 0 0 0 6 8c0 1 .23 2.23 1.5 3.5.76.76 1.23 1.52 1.41 2.5"/></svg>Insights
+      </button>
+      <button class="wf-drawer-item" data-view="quality" aria-pressed="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>Data Quality
+      </button>
+      <button class="wf-drawer-item" data-view="profile" aria-pressed="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M5 21v-2a7 7 0 0 1 14 0v2"/></svg>Profile
+      </button>
+
+      <div class="wf-drawer-spacer"></div>
+      <div class="wf-drawer-divider"></div>
+      <button class="wf-drawer-item danger" id="logoutBtn" type="button">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>Logout
+      </button>
+    </nav>
+
+    <!-- HR Assistant (AI agent) - see public/hrAssistant.js. Lives outside
+         every wf-view section, at the top level of wf-shell, so it stays
+         reachable from wherever the common header is, regardless of
+         which view is currently active. -->
+    <div class="wf-ai-panel" id="hrAssistantPanel" hidden role="dialog" aria-label="HR Assistant">
+      <div class="wf-ai-panel-head">
+        <span class="wf-ai-panel-icon">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M10 3.6V5.6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="10" cy="2.6" r="1.1" fill="currentColor"/><rect x="2.6" y="5.6" width="14.8" height="12.8" rx="4.2" stroke="currentColor" stroke-width="1.8"/><circle cx="7.2" cy="11.4" r="1.35" fill="currentColor"/><circle cx="13" cy="11.4" r="1.35" fill="currentColor"/><path d="M7.8 15.2H12.4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M20 3.2L20.9 5.3L23 6.2L20.9 7.1L20 9.2L19.1 7.1L17 6.2L19.1 5.3Z" fill="#3FBFA8"/></svg>
+        </span>
+        <span class="wf-ai-panel-title">
+          HR Assistant
+          <small>(SUBH)</small>
+        </span>
+        <button class="wf-icon-btn" id="hrAssistantNewChatBtn" title="New Chat" aria-label="New Chat">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <path d="M20 12.6V17.4A3.6 3.6 0 0 1 16.4 21H6.6A3.6 3.6 0 0 1 3 17.4V7.6A3.6 3.6 0 0 1 6.6 4H11.4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+  <path d="M17.4 3.2L20.8 6.6L12.8 14.6H9.4V11.2Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
+        </button>
+        <button class="wf-icon-btn" id="hrAssistantHistoryBtn" title="Chat History" aria-label="Chat History">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <rect x="2.6" y="4" width="18.8" height="14.4" rx="4" stroke="currentColor" stroke-width="1.8"/>
+  <path d="M8 18.4L8 21.4L11.6 18.4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M7.4 9.4H16.6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+  <path d="M7.4 13H13.4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+</svg>
+        </button>
+        <button class="wf-icon-btn" id="hrAssistantCloseBtn" title="Close" aria-label="Close HR Assistant">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="wf-ai-messages" id="hrAssistantMessages"></div>
+      <div class="wf-ai-input-area">
+        <div class="wf-ai-attachment-chip" id="hrAssistantAttachmentChip" hidden>
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a5 5 0 0 1-7.07-7.07l9.19-9.19a3.5 3.5 0 0 1 4.95 4.95l-9.2 9.19a1.5 1.5 0 0 1-2.12-2.12l8.49-8.48"/></svg>
+          <span class="wf-ai-attachment-chip-name" id="hrAssistantAttachmentName"></span>
+          <button type="button" class="wf-ai-attachment-chip-remove" id="hrAssistantAttachmentRemove" aria-label="Remove attachment">
+            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+        <form class="wf-ai-input-row" id="hrAssistantForm" autocomplete="off">
+          <button type="button" class="wf-ai-plus-btn" id="hrAssistantPlusBtn" aria-label="Add to chat">
+            <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          </button>
+          <div class="wf-ai-input-pill">
+            <input type="text" id="assistantQuestion" name="assistantQuestion" placeholder="Ask your assistant…" autocomplete="off" autocorrect="off" autocapitalize="sentences" spellcheck="false" />
+            <button type="button" class="wf-ai-mic-btn" id="hrAssistantMicBtn" aria-label="Voice input">
+              <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3z"/><path d="M19 11a7 7 0 0 1-14 0"/><line x1="12" y1="18" x2="12" y2="22"/></svg>
+            </button>
+          </div>
+          <button type="submit" class="wf-ai-send-btn" aria-label="Send">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="12" x2="19" y2="12"/><polyline points="13 6 19 12 13 18"/></svg>
+          </button>
+        </form>
+      </div>
+    </div>
+
+    <!-- "View Report" - a clean, read-only view of exactly one chat
+         report's own full data (no truncation), opened by the generic
+         View Report/Download buttons every report-shaped card gets (see
+         public/hrAssistant.js). Reuses the existing .wf-modal-overlay
+         dialog convention (Send Mail compose, etc.) rather than a new
+         pattern. -->
+    <div class="wf-modal-overlay" id="hrReportViewOverlay" hidden>
+      <div class="wf-report-view" role="dialog" aria-label="Report">
+        <div class="wf-report-view-head">
+          <div>
+            <h3 id="hrReportViewTitle"></h3>
+            <div class="wf-report-view-meta" id="hrReportViewMeta"></div>
+          </div>
+          <button type="button" class="wf-icon-btn" id="hrReportViewCloseBtn" aria-label="Close">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+        <div class="wf-report-view-body">
+          <div class="wf-report-view-table-scroll">
+            <table class="wf-report-view-table" id="hrReportViewTable"></table>
+          </div>
+        </div>
+        <div class="wf-report-view-foot">
+          <span id="hrReportViewTotal"></span>
+          <button type="button" class="wf-ai-action-btn download" id="hrReportViewDownloadBtn">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="M7 11l5 5 5-5"/><path d="M5 21h14"/></svg>
+            <span>Download</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Hidden native pickers for the "Add to chat" sheet - no accept/capture
+         restriction on the plain Files picker so it works for any file type
+         on both Android and iOS; Camera uses capture to jump straight to the
+         device camera instead of a chooser. -->
+    <input type="file" id="hrAssistantCameraInput" accept="image/*" capture="environment" hidden>
+    <input type="file" id="hrAssistantPhotoInput" accept="image/*" hidden>
+    <input type="file" id="hrAssistantFileInput" hidden>
+
+    <div class="wf-ai-sheet-backdrop" id="hrAssistantSheetBackdrop" hidden></div>
+    <div class="wf-ai-sheet" id="hrAssistantSheet" hidden role="dialog" aria-label="Add to chat">
+      <div class="wf-ai-sheet-handle" id="hrAssistantSheetHandle"></div>
+      <div class="wf-ai-sheet-head">
+        <button type="button" class="wf-ai-sheet-close" id="hrAssistantSheetCloseBtn" aria-label="Close">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+        <span class="wf-ai-sheet-title">Add to chat</span>
+      </div>
+      <div class="wf-ai-sheet-tiles">
+        <button type="button" class="wf-ai-sheet-tile" id="hrAssistantTileCamera">
+          <span class="wf-ai-sheet-tile-icon">
+            <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+          </span>
+          Camera
+        </button>
+        <button type="button" class="wf-ai-sheet-tile" id="hrAssistantTilePhotos">
+          <span class="wf-ai-sheet-tile-icon">
+            <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
+          </span>
+          Photos
+        </button>
+        <button type="button" class="wf-ai-sheet-tile" id="hrAssistantTileFiles">
+          <span class="wf-ai-sheet-tile-icon">
+            <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+          </span>
+          Files
+        </button>
+      </div>
+    </div>
+
+    <!-- Chat History - a draggable bottom sheet (three snap points: collapsed/
+         expanded/closed - see hrAssistant.js) opened from the panel header's
+         history icon. "View All History" hands off to the full-screen panel
+         right below it, sharing the same list-rendering/search code. -->
+    <div class="wf-ai-history-sheet-backdrop" id="hrHistorySheetBackdrop" hidden></div>
+    <div class="wf-ai-history-sheet" id="hrHistorySheet" hidden role="dialog" aria-label="Recent Chats">
+      <div class="wf-ai-history-sheet-handle" id="hrHistorySheetHandle"></div>
+      <div class="wf-ai-history-head">
+        <span class="wf-ai-history-head-icon">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+        </span>
+        <span class="wf-ai-history-head-title">Recent Chats</span>
+        <button type="button" class="wf-icon-btn" id="hrHistorySheetCloseBtn" aria-label="Close">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="wf-ai-history-search">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input type="text" id="hrHistorySheetSearch" placeholder="Search chats…" autocomplete="off" autocorrect="off" spellcheck="false" />
+        <button type="button" class="wf-ai-history-search-clear" id="hrHistorySheetSearchClear" hidden aria-label="Clear search">
+          <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="wf-ai-history-list" id="hrHistorySheetList"></div>
+      <button type="button" class="wf-ai-history-viewall" id="hrHistoryViewAllBtn">
+        <span>View All History</span>
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+      </button>
+    </div>
+
+    <div class="wf-ai-history-full" id="hrHistoryFullPanel" hidden role="dialog" aria-label="All Chat History">
+      <div class="wf-ai-history-full-head">
+        <button type="button" class="wf-icon-btn" id="hrHistoryFullBackBtn" aria-label="Back">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        </button>
+        <h2>All Chats</h2>
+        <button type="button" class="wf-icon-btn" id="hrHistoryFullCloseBtn" aria-label="Close">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="wf-ai-history-search">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input type="text" id="hrHistoryFullSearch" placeholder="Search chats…" autocomplete="off" autocorrect="off" spellcheck="false" />
+        <button type="button" class="wf-ai-history-search-clear" id="hrHistoryFullSearchClear" hidden aria-label="Clear search">
+          <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="wf-ai-history-list" id="hrHistoryFullList"></div>
+      <div class="wf-ai-history-full-footer">
+        <button type="button" class="wf-ai-history-clearall" id="hrHistoryClearAllBtn">Clear All History</button>
+      </div>
+    </div>
+
+    <!-- Overview -->
+    <section id="overviewView" class="wf-view" hidden>
+      <div class="wf-greeting">
+        <div class="wf-greeting-sub" id="greetingTime">Good Morning,</div>
+        <div class="wf-greeting-name" id="greetingName">—</div>
+        <div class="wf-greeting-sub">Here's what's happening today.</div>
+      </div>
+      <div class="kpi-grid" id="kpiGrid">
+        <div class="loading"><div class="spinner"></div></div>
+      </div>
+
+      <div class="wf-grid-2">
+        <div class="wf-panel">
+          <div class="wf-panel-head">
+            <h3>Employee Status Distribution</h3>
+          </div>
+          <div class="wf-donut-row">
+            <div class="wf-canvas-wrap wf-canvas-wrap--donut"><canvas id="statusDonut"></canvas></div>
+            <ul class="wf-legend" id="statusLegend"></ul>
+          </div>
+        </div>
+
+        <div class="wf-panel">
+          <div class="wf-panel-head">
+            <h3>Employment Type</h3>
+          </div>
+          <div class="wf-stat-pair" id="employmentTypeStats"></div>
+        </div>
+      </div>
+
+      <div class="wf-grid-2">
+        <div class="wf-panel">
+          <div class="wf-panel-head">
+            <h3>Department Wise Headcount (Active)</h3>
+            <button class="wf-link-btn" data-jump="departmentFull">View all →</button>
+          </div>
+          <ul class="wf-bar-list" id="deptBarList"></ul>
+        </div>
+
+        <div class="wf-panel">
+          <div class="wf-panel-head">
+            <h3>Location Wise Headcount (Active)</h3>
+            <button class="wf-link-btn" data-jump="locationFull">View all →</button>
+          </div>
+          <div class="wf-donut-row">
+            <div class="wf-canvas-wrap wf-canvas-wrap--donut"><canvas id="locationDonut"></canvas></div>
+            <ul class="wf-legend" id="locationLegend"></ul>
+          </div>
+        </div>
+      </div>
+
+      <div class="wf-panel">
+        <div class="wf-panel-head">
+          <h3>Joining Trend (Monthly)</h3>
+          <button class="wf-link-btn" data-jump="movement">View report →</button>
+        </div>
+        <div class="wf-canvas-wrap wf-canvas-wrap--line"><canvas id="joiningLineChart"></canvas></div>
+      </div>
+
+    </section>
+
+    <!-- Employee Data -->
+    <section id="directoryView" class="wf-view" hidden>
+      <!-- Employee list -->
+      <div id="directoryListPanel">
+        <div class="wf-page-head">
+          <button class="wf-icon-btn" data-back aria-label="Back to Dashboard">
+            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+          </button>
+          <h2>Employee Data</h2>
+        </div>
+
+        <div class="wf-greeting-sub" id="directoryTotalLabel">Active Employees</div>
+        <div class="wf-completeness-num" id="directoryTotalCount" style="margin-bottom:14px;">—</div>
+
+        <div style="display:flex; gap:8px; margin-bottom:10px;">
+          <div style="position:relative; flex:1;">
+            <input type="search" id="wfSearch" placeholder="Search employee…" autocomplete="off" style="width:100%; background:var(--surface); border:1px solid var(--line); border-radius:11px; padding:10px 12px 10px 34px; font:inherit; font-size:.85rem; color:var(--ink);" />
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="var(--muted)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="position:absolute; left:11px; top:50%; transform:translateY(-50%);"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          </div>
+          <button class="wf-icon-btn" id="filterToggleBtn" aria-expanded="false" aria-label="Filters" title="Filters">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
+          </button>
+        </div>
+
+        <div class="wf-filterbar" id="wfFilterbar" hidden>
+          <select id="filterStatus">
+            <option value="">All statuses</option>
+            <option value="ACTIVE" selected>Active</option>
+            <option value="NOTICE PERIOD">Notice Period</option>
+            <option value="INACTIVE">Inactive</option>
+          </select>
+          <select id="filterEmploymentType">
+            <option value="">All employment types</option>
+            <option value="Confirmed">Confirmed</option>
+            <option value="Probation">Probation</option>
+          </select>
+          <select id="filterDepartment">
+            <option value="">All departments</option>
+          </select>
+          <select id="filterCollar">
+            <option value="">All collars</option>
+          </select>
+          <select id="filterLocation">
+            <option value="">All locations</option>
+          </select>
+          <select id="filterReportingManager">
+            <option value="">All reporting managers</option>
+          </select>
+          <button class="wf-clear-btn" id="clearFilters">Clear filters</button>
+        </div>
+
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap; margin-bottom:14px;">
+          <div class="wf-result-summary" id="resultSummary"></div>
+          <span style="display:flex; gap:14px; align-items:center; flex-wrap:nowrap; overflow-x:auto; max-width:100%; margin-left:auto;">
+            <button class="wf-send-mail-btn" id="sendDoerBreakupMail" type="button" hidden>
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h4l2 3h4l2-3h4"/><path d="M5.5 6h13l1.5 6v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-6l1.5-6z"/></svg>
+              <span>Send Mail</span>
+            </button>
+            <button class="wf-send-mail-btn" id="sendBirthdayMail" type="button" hidden>
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h4l2 3h4l2-3h4"/><path d="M5.5 6h13l1.5 6v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-6l1.5-6z"/></svg>
+              <span>Send Mail</span>
+            </button>
+            <button class="wf-link-btn" id="exportDoerBreakupPdf" type="button" hidden>⬇ Export Dept. Breakup</button>
+            <button class="wf-icon-btn" id="sharePendingConfirmationsPdf" type="button" hidden aria-label="Share Pending Confirmations PDF" title="Share PDF">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+            </button>
+            <button class="wf-link-btn" id="exportPendingConfirmationsPdf" type="button" hidden>⬇ Pending Confirmations</button>
+            <button class="wf-icon-btn" id="shareEmployeesPdf" type="button" aria-label="Share Employee Data PDF" title="Share PDF">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+            </button>
+            <button class="wf-link-btn" id="exportEmployeesPdf" type="button">⬇ Export PDF</button>
+          </span>
+        </div>
+        <p class="wf-inline-error" id="employeesShareError" hidden></p>
+        <p class="wf-inline-error" id="pendingConfirmationsShareError" hidden></p>
+
+        <ul class="wf-emp-list" id="employeeList"></ul>
+      </div>
+
+      <!-- Employee profile -->
+      <div id="directoryDetailPanel" hidden>
+        <div class="wf-page-head">
+          <button class="wf-icon-btn" id="empDetailBackBtn" aria-label="Back to Employee Data">
+            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+          </button>
+          <h2>Employee Profile</h2>
+        </div>
+        <div id="empDetailBody"></div>
+      </div>
+    </section>
+
+    <!-- Joining -->
+    <section id="joiningView" class="wf-view" hidden>
+      <div class="wf-page-head">
+        <button class="wf-icon-btn" data-back aria-label="Back to Dashboard">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        </button>
+        <h2>Joining</h2>
+      </div>
+      <div class="wf-panel">
+        <div class="wf-panel-head">
+          <div class="wf-subtabs" id="joiningTabs" style="margin-bottom:0; border-bottom:none;">
+            <button class="wf-subtab" data-jtab="upcoming" aria-pressed="true">Upcoming</button>
+            <button class="wf-subtab" data-jtab="recent" aria-pressed="false">Recent</button>
+          </div>
+          <span style="display:flex; gap:10px; align-items:center;">
+            <button class="wf-icon-btn" id="shareJoiningsPdf" type="button" aria-label="Share Upcoming Joinings PDF" title="Share PDF">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+            </button>
+            <button class="wf-link-btn" id="exportJoiningsPdf" type="button">⬇ Export PDF</button>
+          </span>
+        </div>
+        <p class="wf-inline-error" id="joiningsShareError" hidden></p>
+        <ul class="wf-join-list" id="joiningList"><li class="empty">Loading…</li></ul>
+      </div>
+    </section>
+
+    <!-- Print-only report (Upcoming Joinings / Employee Data exports share this
+         one container - each export handler fills in title/subtitle/head/body
+         fresh before printing) - isolated via @media print in workforce.css -->
+    <div id="printReport">
+      <div class="print-report-head">
+        <h1 id="printReportTitle">Upcoming Joinings Report</h1>
+        <div class="print-meta">Alcove Realty · <span id="printReportSubtitle"></span>Generated <span id="printReportDate"></span></div>
+      </div>
+      <table>
+        <thead>
+          <tr id="printReportHead"><th>Name</th><th>Designation</th><th>Company</th><th>Date of Joining</th><th>Days Remaining</th></tr>
+        </thead>
+        <tbody id="printReportBody"></tbody>
+      </table>
+    </div>
+
+    <!-- Exit / Attrition / Workforce Movement: honestly blocked, not faked -->
+    <section id="exitView" class="wf-view" hidden>
+      <div class="wf-page-head">
+        <button class="wf-icon-btn" data-back aria-label="Back to Dashboard">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        </button>
+        <h2>Exit</h2>
+      </div>
+      <div class="wf-unavailable">
+        <h3>Exit &amp; Resignation Analytics — Data not available</h3>
+        <p>The Employee_Master sheet has no Exit Date, Resignation Date, or Last Working Date column. STATUS = INACTIVE
+          marks that someone left, but not when — so exit trends, monthly/quarterly/yearly exits, and department-wise
+          exits can't be calculated without guessing. Add a dated exit field to the sheet and this tab will populate
+          automatically.</p>
+      </div>
+    </section>
+
+    <section id="attritionView" class="wf-view" hidden>
+      <div class="wf-page-head">
+        <button class="wf-icon-btn" data-back aria-label="Back to Dashboard">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        </button>
+        <h2>Attrition</h2>
+      </div>
+      <div class="wf-unavailable">
+        <h3>Attrition Analytics — Data not available</h3>
+        <p>Attrition rate = exits in a period ÷ headcount at the start of that period. Both need dated exit records,
+          which the source sheet doesn't have yet. Rather than approximate with an undated INACTIVE flag, this tab
+          stays empty until exit dates are trackable.</p>
+      </div>
+    </section>
+
+    <section id="movementView" class="wf-view" hidden>
+      <div class="wf-page-head">
+        <button class="wf-icon-btn" data-back aria-label="Back to Dashboard">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        </button>
+        <h2>Workforce Movement</h2>
+      </div>
+
+      <div class="wf-panel">
+        <div class="wf-subtabs" id="movementTrendTabs">
+          <button class="wf-subtab" data-mtab="monthly" aria-pressed="true">Monthly</button>
+          <button class="wf-subtab" data-mtab="quarterly" aria-pressed="false">Quarterly</button>
+          <button class="wf-subtab" data-mtab="yearly" aria-pressed="false">Yearly</button>
+        </div>
+      </div>
+
+      <div class="wf-panel">
+        <div class="wf-panel-head wf-panel-head--icon">
+          <span class="wf-panel-icon">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 17 9 11 13 15 21 6"/><polyline points="14 6 21 6 21 13"/></svg>
+          </span>
+          <span>
+            <h3 id="movementTrendTitle">Joining Trend (Monthly)</h3>
+            <p class="wf-note">Total joining count over the selected period</p>
+          </span>
+        </div>
+        <div class="wf-canvas-wrap wf-canvas-wrap--line"><canvas id="movementTrendChart"></canvas></div>
+      </div>
+
+      <div class="kpi-grid" id="movementStatsGrid">
+        <div class="loading"><div class="spinner"></div></div>
+      </div>
+
+      <div class="wf-panel">
+        <div class="wf-panel-head wf-panel-head--icon">
+          <span class="wf-panel-icon">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 1l4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><path d="M7 23l-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
+          </span>
+          <span>
+            <h3>Employee Movements</h3>
+            <p class="wf-note">Movements during the selected period</p>
+          </span>
+        </div>
+        <div class="kpi-grid" id="movementBreakdownGrid">
+          <div class="loading"><div class="spinner"></div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Employee Movements detail - shared by Inter-Department Transfers,
+         Promotions, Company Transfers, and Location Transfers; which one is
+         showing is decided in JS (movementDetailType) before this opens. -->
+    <section id="movementDetailView" class="wf-view" hidden>
+      <div class="wf-page-head">
+        <button class="wf-icon-btn" data-back aria-label="Back to Dashboard">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        </button>
+        <h2 id="movementDetailTitle">Inter-Department Transfers</h2>
+        <span style="display:flex; gap:10px; align-items:center; margin-left:auto;">
+          <button class="wf-icon-btn" id="shareMovementDetailPdf" type="button" aria-label="Share PDF" title="Share PDF">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+          </button>
+          <button class="wf-link-btn" id="exportMovementDetailPdf" type="button">⬇ Export PDF</button>
+        </span>
+      </div>
+      <p class="wf-inline-error" id="movementDetailShareError" hidden></p>
+      <div class="wf-panel">
+        <div class="wf-movement-count-row">
+          <p class="wf-note" id="movementDetailCount" style="margin:0;"></p>
+          <!-- Only shown for Promotions (movementDetailType === 'designation') -
+               clicking a name in the list below is how a letter gets
+               generated now, so this just points HR at that. -->
+          <p class="wf-generate-letter-hint" id="movementDetailHint" hidden>To generate the letter, kindly click on the employee name.</p>
+        </div>
+        <ul class="wf-join-list" id="movementDetailList">
+          <li class="empty"><div class="loading"><div class="spinner"></div></div></li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- Generate Letter form - one shared form for both letter types, only
+         the Designation section is Promotion & Increment-specific
+         (openLetterForm() hides it for Increment-only); every other
+         section, including Notice Period, applies to both. Compensation/
+         Notice Period/Increment Year have no real data source anywhere in
+         the sheets, so they're genuine manual-entry fields, not prefilled
+         guesses. Reached either straight from a Promotions-row click
+         (always Promotion & Increment) or from the drawer's Letter
+         Generator (any type it supports). -->
+    <section id="letterFormView" class="wf-view" hidden>
+      <div class="wf-page-head">
+        <button class="wf-icon-btn" data-back aria-label="Back">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        </button>
+        <h2>Generate Letter</h2>
+      </div>
+
+      <div class="wf-panel">
+        <div class="wf-letter-type-card wf-letter-form-header" aria-pressed="true">
+          <span class="wf-letter-type-icon" id="letterFormHeaderIcon"></span>
+          <span class="wf-letter-type-body">
+            <span class="wf-letter-type-title" id="letterFormHeaderTitle">Promotion &amp; Increment Letter</span>
+            <span class="wf-letter-type-sub" id="letterFormHeaderSub">Designation change with revised compensation</span>
+          </span>
+        </div>
+
+        <h3 class="wf-letter-form-section-title">Title</h3>
+        <div class="wf-letter-form-field">
+          <select id="letterFormTitle">
+            <option>Mr.</option>
+            <option>Mrs.</option>
+            <option>Miss.</option>
+          </select>
+        </div>
+
+        <h3 class="wf-letter-form-section-title">Company Name</h3>
+        <div class="wf-letter-form-field">
+          <select id="letterFormCompanyName">
+            <option value="">Select</option>
+          </select>
+        </div>
+
+        <!-- Both letter types get this - the prefix itself switches
+             between AR/HR/Pro./ and AR/HR/Inc./ in openLetterForm(). -->
+        <div id="letterFormRefNoSection">
+          <h3 class="wf-letter-form-section-title">Ref. No.</h3>
+          <div class="wf-letter-form-field">
+            <div class="wf-letter-refno-row">
+              <span class="wf-letter-refno-prefix" id="letterFormRefNoPrefix">AR/HR/Pro./</span>
+              <input type="text" id="letterFormRefNo" placeholder="2026-27/000" />
+            </div>
+          </div>
+        </div>
+
+        <div id="letterFormDesignationSection">
+          <h3 class="wf-letter-form-section-title">Designation</h3>
+          <div class="wf-letter-form-row">
+            <div class="wf-letter-form-field">
+              <label for="letterFormFromDesignation">Current Designation</label>
+              <input type="text" id="letterFormFromDesignation" placeholder="e.g. Deputy Manager - Sales" />
+            </div>
+            <div class="wf-letter-form-field">
+              <label for="letterFormToDesignation">Promoted To</label>
+              <input type="text" id="letterFormToDesignation" placeholder="e.g. AGM - Sales" />
+            </div>
+          </div>
+        </div>
+
+        <div id="letterFormCompensationSection">
+          <h3 class="wf-letter-form-section-title">Compensation</h3>
+          <div class="wf-letter-form-row">
+            <div class="wf-letter-form-field">
+              <label for="letterFormCurrentGross">Current Monthly Gross</label>
+              <input type="number" id="letterFormCurrentGross" placeholder="₹ 0" min="0" inputmode="numeric" />
+            </div>
+            <div class="wf-letter-form-field">
+              <label for="letterFormRevisedGross">Revised Monthly Gross</label>
+              <input type="number" id="letterFormRevisedGross" placeholder="₹ 0" min="0" inputmode="numeric" />
+            </div>
+          </div>
+        </div>
+
+        <div id="letterFormNoticeSection">
+          <h3 class="wf-letter-form-section-title">Notice Period</h3>
+          <div class="wf-letter-form-row">
+            <div class="wf-letter-form-field">
+              <label for="letterFormCurrentNotice">Current Notice Period</label>
+              <select id="letterFormCurrentNotice">
+                <option value="">Select</option>
+                <option>1 month</option>
+                <option>2 months</option>
+                <option>3 months</option>
+              </select>
+            </div>
+            <div class="wf-letter-form-field">
+              <label for="letterFormRevisedNotice">Revised To</label>
+              <select id="letterFormRevisedNotice">
+                <option value="">Select</option>
+                <option>1 month</option>
+                <option>2 months</option>
+                <option>3 months</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <!-- Hidden entirely for Confirmation Letter (openLetterForm()) -
+             Position/DOJ/Confirmation Date are all pulled from the picked
+             employee's own record automatically, no manual entry at all. -->
+        <div id="letterFormEffectiveDateSection">
+          <h3 class="wf-letter-form-section-title">Effective Date</h3>
+          <div class="wf-letter-form-field">
+            <input type="date" id="letterFormEffectiveDate" />
+          </div>
+        </div>
+
+        <div id="letterFormIncrementYearSection">
+          <h3 class="wf-letter-form-section-title">Eligible for next Increment</h3>
+          <div class="wf-letter-form-field">
+            <label for="letterFormIncrementYear">Year</label>
+            <select id="letterFormIncrementYear"></select>
+          </div>
+        </div>
+
+        <div class="error-banner" id="letterFormError" hidden></div>
+      </div>
+
+      <button type="button" class="wf-letter-proceed-btn" id="letterGeneratePdfBtn">
+        <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="13" y2="17"/></svg>
+        <span>Generate PDF</span>
+      </button>
+      <p class="wf-letter-form-caption">Review the details before generating the final letter.</p>
+    </section>
+
+    <!-- Generate Letter success screen. View PDF / Download fetch and
+         open/save a real generated PDF (see letterPdf.js) - #letterPdfNote
+         only shows up if that request actually fails. -->
+    <section id="letterSuccessView" class="wf-view" hidden>
+      <div class="wf-page-head">
+        <button class="wf-icon-btn" data-back aria-label="Back">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        </button>
+        <h2>Generate Letter</h2>
+      </div>
+
+      <div class="wf-letter-success">
+        <div class="wf-letter-success-icon">
+          <svg viewBox="0 0 24 24" width="34" height="34" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+        </div>
+        <h3>Letter Generated Successfully</h3>
+        <p class="wf-note" id="letterSuccessSub"></p>
+
+        <div class="wf-panel wf-letter-success-card">
+          <div class="wf-letter-success-row">
+            <span class="wf-letter-type-icon tone-move-blue">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M5 21v-2a7 7 0 0 1 14 0v2"/></svg>
+            </span>
+            <span class="wf-letter-type-body">
+              <span class="wf-letter-type-sub">Employee</span>
+              <span class="wf-letter-type-title" id="letterSuccessEmployee">—</span>
+            </span>
+          </div>
+          <div class="wf-letter-success-row">
+            <span class="wf-letter-type-icon tone-move-purple">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+            </span>
+            <span class="wf-letter-type-body">
+              <span class="wf-letter-type-sub">Letter Type</span>
+              <span class="wf-letter-type-title" id="letterSuccessType">—</span>
+            </span>
+          </div>
+          <div class="wf-letter-success-row">
+            <span class="wf-letter-type-icon tone-move-green">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+            </span>
+            <span class="wf-letter-type-body">
+              <span class="wf-letter-type-sub" id="letterSuccessDateLabel">Effective Date</span>
+              <span class="wf-letter-type-title" id="letterSuccessDate">—</span>
+            </span>
+          </div>
+        </div>
+
+        <div class="wf-letter-success-actions">
+          <button type="button" class="wf-letter-outline-btn" id="letterViewPdfBtn">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+            <span>View PDF</span>
+          </button>
+          <button type="button" class="wf-letter-proceed-btn" id="letterDownloadBtn">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            <span>Download</span>
+          </button>
+        </div>
+        <p class="wf-note wf-letter-success-note" id="letterPdfNote" hidden></p>
+      </div>
+    </section>
+
+    <!-- Letter Generator - a general entry point into letter generation
+         (Promotions' own "Generate Letter" flow stays as its own separate
+         shortcut). Both fields are mandatory; what happens after Proceed
+         is wired up separately later - only Increment Letter and Promotion
+         & Increment have a real template behind them so far (see
+         letterPdf.js), the other 9 types don't exist yet. -->
+    <section id="letterGeneratorView" class="wf-view" hidden>
+      <div class="wf-page-head">
+        <button class="wf-icon-btn" data-back aria-label="Back to Dashboard">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        </button>
+        <h2>Letter Generator</h2>
+      </div>
+
+      <div class="wf-panel">
+        <p class="wf-note" style="margin-top:0;">Generate HR letters — pick a letter type, fill in the details, and download as PDF</p>
+
+        <h3 class="wf-letter-form-section-title">Select Letter Type</h3>
+        <div class="wf-letter-form-field">
+          <select id="letterGenType">
+            <option value="">Select</option>
+            <option>Letter of Intent</option>
+            <option>Appointment Letter</option>
+            <option>Confirmation Letter</option>
+            <option>Probation Extension Letter</option>
+            <option>Increment Letter</option>
+            <option>Promotion &amp; Increment</option>
+            <option>Non-Disclosure Agreement</option>
+            <option>Warning Letter</option>
+            <option>Termination Letter</option>
+            <option>Release Letter</option>
+            <option>Experience Letter</option>
+          </select>
+        </div>
+
+        <h3 class="wf-letter-form-section-title">Select Employee</h3>
+        <div class="wf-emp-picker" id="letterGenEmployeePicker">
+          <input type="text" id="letterGenEmployeeSearch" placeholder="Search active employees by name or ID" autocomplete="off" />
+          <input type="hidden" id="letterGenEmployeeId" />
+          <ul class="wf-emp-picker-list" id="letterGenEmployeeList" hidden></ul>
+        </div>
+
+        <div class="error-banner" id="letterGenError" hidden></div>
+        <p class="wf-note wf-letter-success-note" id="letterGenNote" hidden></p>
+      </div>
+
+      <button type="button" class="wf-letter-proceed-btn" id="letterGenProceedBtn">
+        <span>Proceed</span>
+        <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+      </button>
+    </section>
+
+    <!-- Interview Panel - digitized replacement for the printed "Interview
+         Assessment Sheet". List/detail toggle inside one section, same
+         pattern as Directory's directoryListPanel/directoryDetailPanel. -->
+    <section id="interviewPanelView" class="wf-view" hidden>
+      <div class="wf-page-head">
+        <button class="wf-icon-btn" data-back id="ipPageBackBtn" aria-label="Back">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        </button>
+        <h2>Interview Panel</h2>
+      </div>
+
+      <div id="interviewPanelListPanel">
+        <div style="display:flex; justify-content:flex-end; gap:8px; margin-bottom:12px;">
+          <button type="button" class="wf-ip-team-access-btn" id="ipTeamAccessBtn" hidden>
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+            Team Access
+          </button>
+          <button type="button" class="wf-ip-new-btn" id="ipNewCandidateBtn">+ New Candidate</button>
+        </div>
+        <div class="wf-panel" id="ipNamePromptPanel" hidden>
+          <p class="wf-note" style="margin-top:0;">Enter the candidate's name to generate their application link.</p>
+          <input type="text" id="ipNewCandidateNameInput" placeholder="Candidate Name" style="width:100%; background:var(--paper); border:1px solid var(--line); border-radius:10px; padding:10px 12px; font:inherit; font-size:.88rem; color:var(--ink); margin-bottom:10px;" />
+          <div style="display:flex; gap:8px;">
+            <button type="button" class="wf-link-btn" id="ipNamePromptCancel">Cancel</button>
+            <button type="button" class="wf-letter-proceed-btn" id="ipNamePromptSubmit" style="margin:0; flex:1;">Create</button>
+          </div>
+          <div class="error-banner" id="ipListError" hidden style="margin-top:10px;"></div>
+        </div>
+
+        <div id="ipNewLinksPanel" class="wf-panel" hidden>
+          <p class="wf-note" style="margin-top:0;">Candidate record created — share these links manually (email, WhatsApp, etc).</p>
+          <div class="wf-ip-link-row">
+            <span>Candidate Form Link</span>
+            <div class="wf-ip-link-copy">
+              <a href="#" id="ipNewCandidateLink" target="_blank" rel="noopener" class="wf-ip-link-anchor"></a>
+              <button type="button" class="wf-icon-btn" data-copy-target="ipNewCandidateLink" aria-label="Copy candidate link">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+              </button>
+              <button type="button" class="wf-icon-btn wf-whatsapp-btn" data-whatsapp-target="ipNewCandidateLink" data-whatsapp-type="candidate" aria-label="Send candidate link via WhatsApp">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M12.04 2C6.58 2 2.13 6.45 2.13 11.91c0 1.75.46 3.45 1.32 4.95L2 22l5.25-1.38c1.45.79 3.08 1.21 4.79 1.21h.01c5.46 0 9.91-4.45 9.91-9.91C21.96 6.45 17.5 2 12.04 2zm5.75 14.02c-.24.68-1.39 1.32-1.9 1.4-.5.08-1.05.15-3.34-.7-2.8-1.05-4.6-3.85-4.74-4.03-.14-.18-1.14-1.51-1.14-2.88 0-1.37.72-2.04.98-2.32.26-.28.56-.34.75-.34h.53c.17 0 .4-.02.62.47.24.55.8 1.9.87 2.04.07.14.11.31.02.5-.09.19-.14.31-.28.47-.14.16-.29.36-.42.48-.14.13-.28.28-.12.55.16.27.71 1.17 1.53 1.89 1.05.93 1.94 1.22 2.21 1.36.27.14.43.12.59-.07.16-.19.68-.79.86-1.06.18-.27.36-.22.6-.13.24.09 1.55.73 1.81.86.27.14.44.2.51.31.07.11.07.61-.17 1.29z"/></svg>
+              </button>
+            </div>
+          </div>
+          <div class="wf-ip-link-row">
+            <span>Interviewer Form Link</span>
+            <div class="wf-ip-link-copy">
+              <a href="#" id="ipNewInterviewerLink" target="_blank" rel="noopener" class="wf-ip-link-anchor"></a>
+              <button type="button" class="wf-icon-btn" data-copy-target="ipNewInterviewerLink" aria-label="Copy interviewer link">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+              </button>
+              <button type="button" class="wf-icon-btn wf-whatsapp-btn" data-whatsapp-target="ipNewInterviewerLink" data-whatsapp-type="interviewer" aria-label="Send interviewer link via WhatsApp">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M12.04 2C6.58 2 2.13 6.45 2.13 11.91c0 1.75.46 3.45 1.32 4.95L2 22l5.25-1.38c1.45.79 3.08 1.21 4.79 1.21h.01c5.46 0 9.91-4.45 9.91-9.91C21.96 6.45 17.5 2 12.04 2zm5.75 14.02c-.24.68-1.39 1.32-1.9 1.4-.5.08-1.05.15-3.34-.7-2.8-1.05-4.6-3.85-4.74-4.03-.14-.18-1.14-1.51-1.14-2.88 0-1.37.72-2.04.98-2.32.26-.28.56-.34.75-.34h.53c.17 0 .4-.02.62.47.24.55.8 1.9.87 2.04.07.14.11.31.02.5-.09.19-.14.31-.28.47-.14.16-.29.36-.42.48-.14.13-.28.28-.12.55.16.27.71 1.17 1.53 1.89 1.05.93 1.94 1.22 2.21 1.36.27.14.43.12.59-.07.16-.19.68-.79.86-1.06.18-.27.36-.22.6-.13.24.09 1.55.73 1.81.86.27.14.44.2.51.31.07.11.07.61-.17 1.29z"/></svg>
+              </button>
+            </div>
+          </div>
+          <button type="button" class="wf-link-btn" id="ipDismissNewLinks" style="margin-top:10px;">Done</button>
+        </div>
+
+        <div class="wf-panel">
+          <div style="position:relative; margin-bottom:12px;">
+            <input type="search" id="ipSearchInput" placeholder="Search by name or position…" autocomplete="off" style="width:100%; background:var(--surface); border:1px solid var(--line); border-radius:11px; padding:10px 12px 10px 34px; font:inherit; font-size:.85rem; color:var(--ink);" />
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="var(--muted)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="position:absolute; left:11px; top:50%; transform:translateY(-50%);"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          </div>
+          <div class="wf-ip-filter-row">
+            <button type="button" class="wf-ip-filter-pill" data-ip-filter="all" aria-pressed="true">All</button>
+            <button type="button" class="wf-ip-filter-pill" data-ip-filter="completed" aria-pressed="false">Completed</button>
+            <button type="button" class="wf-ip-filter-pill" data-ip-filter="pendingCandidate" aria-pressed="false">Pending Candidates</button>
+            <button type="button" class="wf-ip-filter-pill" data-ip-filter="pendingInterviewer" aria-pressed="false">Pending Interviewer</button>
+          </div>
+        </div>
+
+        <div class="wf-panel">
+          <ul class="wf-emp-list" id="ipCandidateRows">
+            <li class="empty"><div class="loading"><div class="spinner"></div></div></li>
+          </ul>
+        </div>
+      </div>
+
+      <div id="interviewPanelDetailPanel" hidden>
+        <!-- Shown while the record isn't Completed yet - a 2-step progress
+             tracker instead of the full record, since most of it is still
+             blank. Once both steps are done, re-opening this candidate from
+             the list shows ipDetailFullPanel instead (see openInterviewPanelDetail). -->
+        <div class="wf-panel" id="ipDetailStepperPanel" hidden>
+          <h3 class="wf-letter-form-section-title" style="margin-top:0;" id="ipStepperCandidateName">Candidate</h3>
+          <div class="wf-ip-stepper">
+            <div class="wf-ip-step" id="ipStepCandidate">
+              <div class="wf-ip-step-dot">1</div>
+              <div class="wf-ip-step-body">
+                <div class="wf-ip-step-title">Candidate Details</div>
+                <span class="wf-ip-status tone-important" id="ipStepCandidateStatus">Pending Candidate</span>
+              </div>
+            </div>
+            <div class="wf-ip-step" id="ipStepInterviewer">
+              <div class="wf-ip-step-dot">2</div>
+              <div class="wf-ip-step-body">
+                <div class="wf-ip-step-title">Interviewer Evaluation</div>
+                <span class="wf-ip-status tone-important" id="ipStepInterviewerStatus">Pending Interviewer</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="wf-panel" id="ipDetailLinksPanel" hidden>
+          <div class="wf-ip-link-row">
+            <span>Candidate Form Link</span>
+            <div class="wf-ip-link-copy">
+              <a href="#" id="ipDetailCandidateLink" target="_blank" rel="noopener" class="wf-ip-link-anchor"></a>
+              <button type="button" class="wf-icon-btn" data-copy-target="ipDetailCandidateLink" aria-label="Copy candidate link">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+              </button>
+              <button type="button" class="wf-icon-btn wf-whatsapp-btn" data-whatsapp-target="ipDetailCandidateLink" data-whatsapp-type="candidate" aria-label="Send candidate link via WhatsApp">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M12.04 2C6.58 2 2.13 6.45 2.13 11.91c0 1.75.46 3.45 1.32 4.95L2 22l5.25-1.38c1.45.79 3.08 1.21 4.79 1.21h.01c5.46 0 9.91-4.45 9.91-9.91C21.96 6.45 17.5 2 12.04 2zm5.75 14.02c-.24.68-1.39 1.32-1.9 1.4-.5.08-1.05.15-3.34-.7-2.8-1.05-4.6-3.85-4.74-4.03-.14-.18-1.14-1.51-1.14-2.88 0-1.37.72-2.04.98-2.32.26-.28.56-.34.75-.34h.53c.17 0 .4-.02.62.47.24.55.8 1.9.87 2.04.07.14.11.31.02.5-.09.19-.14.31-.28.47-.14.16-.29.36-.42.48-.14.13-.28.28-.12.55.16.27.71 1.17 1.53 1.89 1.05.93 1.94 1.22 2.21 1.36.27.14.43.12.59-.07.16-.19.68-.79.86-1.06.18-.27.36-.22.6-.13.24.09 1.55.73 1.81.86.27.14.44.2.51.31.07.11.07.61-.17 1.29z"/></svg>
+              </button>
+            </div>
+          </div>
+          <div class="wf-ip-link-row">
+            <span>Interviewer Form Link</span>
+            <div class="wf-ip-link-copy">
+              <a href="#" id="ipDetailInterviewerLink" target="_blank" rel="noopener" class="wf-ip-link-anchor"></a>
+              <button type="button" class="wf-icon-btn" data-copy-target="ipDetailInterviewerLink" aria-label="Copy interviewer link">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+              </button>
+              <button type="button" class="wf-icon-btn wf-whatsapp-btn" data-whatsapp-target="ipDetailInterviewerLink" data-whatsapp-type="interviewer" aria-label="Send interviewer link via WhatsApp">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M12.04 2C6.58 2 2.13 6.45 2.13 11.91c0 1.75.46 3.45 1.32 4.95L2 22l5.25-1.38c1.45.79 3.08 1.21 4.79 1.21h.01c5.46 0 9.91-4.45 9.91-9.91C21.96 6.45 17.5 2 12.04 2zm5.75 14.02c-.24.68-1.39 1.32-1.9 1.4-.5.08-1.05.15-3.34-.7-2.8-1.05-4.6-3.85-4.74-4.03-.14-.18-1.14-1.51-1.14-2.88 0-1.37.72-2.04.98-2.32.26-.28.56-.34.75-.34h.53c.17 0 .4-.02.62.47.24.55.8 1.9.87 2.04.07.14.11.31.02.5-.09.19-.14.31-.28.47-.14.16-.29.36-.42.48-.14.13-.28.28-.12.55.16.27.71 1.17 1.53 1.89 1.05.93 1.94 1.22 2.21 1.36.27.14.43.12.59-.07.16-.19.68-.79.86-1.06.18-.27.36-.22.6-.13.24.09 1.55.73 1.81.86.27.14.44.2.51.31.07.11.07.61-.17 1.29z"/></svg>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Shown once the record is Completed - the full record + PDF. -->
+        <div class="wf-panel" id="ipDetailFullPanel" hidden>
+          <div id="ipDetailBody"></div>
+        </div>
+        <button type="button" class="wf-letter-proceed-btn" id="ipDownloadPdfBtn" hidden>
+          <span>Download PDF</span>
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3M6 11l6 6 6-6"/><path d="M4 21h16"/></svg>
+        </button>
+        <p class="wf-ip-pdf-note" id="ipPdfIncompleteMsg" hidden>To download the PDF, please complete the full interview process first.</p>
+      </div>
+    </section>
+
+    <!-- Tenure -->
+    <section id="tenureView" class="wf-view" hidden>
+      <div class="wf-page-head">
+        <button class="wf-icon-btn" data-back aria-label="Back to Dashboard">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        </button>
+        <h2>Tenure</h2>
+        <button class="wf-icon-btn" id="shareTenurePdf" type="button" style="margin-left:auto;" aria-label="Share Tenure PDF" title="Share PDF">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+        </button>
+      </div>
+      <p class="wf-inline-error" id="tenureShareError" hidden></p>
+      <div class="wf-panel">
+        <div class="wf-dist-table" id="tenureRows"></div>
+        <p class="wf-note" id="tenureNote"></p>
+      </div>
+      <div class="wf-panel" style="display:flex; justify-content:center;">
+        <div class="wf-canvas-wrap wf-canvas-wrap--donut" style="width:170px; height:170px;">
+          <canvas id="tenureDonut"></canvas>
+          <div class="wf-donut-center">
+            <b id="tenureDonutTotal">—</b>
+            <span>Total</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Insights -->
+    <section id="insightsView" class="wf-view" hidden>
+      <div class="wf-page-head">
+        <button class="wf-icon-btn" data-back aria-label="Back to Dashboard">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        </button>
+        <h2>Insights</h2>
+      </div>
+      <div class="wf-panel">
+        <div class="wf-panel-head"><h3>All Insights</h3></div>
+        <ul class="wf-insights-full" id="insightsFull"><li class="empty">Loading…</li></ul>
+      </div>
+    </section>
+
+    <!-- Data Quality -->
+    <section id="qualityView" class="wf-view" hidden>
+      <div class="wf-page-head">
+        <button class="wf-icon-btn" data-back aria-label="Back to Dashboard">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        </button>
+        <h2>Data Quality</h2>
+      </div>
+      <div class="wf-panel" id="qualityCompletenessPanel">
+        <div class="loading"><div class="spinner"></div></div>
+      </div>
+      <div class="wf-panel">
+        <div class="wf-panel-head"><h3>Missing Data</h3></div>
+        <div id="qualityMissingRows"></div>
+      </div>
+      <div class="wf-panel" id="duplicatesPanel" hidden>
+        <div class="wf-panel-head"><h3>Duplicate Employee IDs</h3></div>
+        <ul class="wf-bar-list" id="duplicatesList"></ul>
+      </div>
+    </section>
+
+    <!-- Department Wise Headcount (full list, Active only) -->
+    <section id="departmentFullView" class="wf-view" hidden>
+      <div class="wf-page-head">
+        <button class="wf-icon-btn" data-back aria-label="Back to Dashboard">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        </button>
+        <h2>Department Wise Headcount (Active)</h2>
+        <button class="wf-icon-btn" id="shareDepartmentBreakdownPdf" type="button" style="margin-left:auto;" aria-label="Share Department Headcount PDF" title="Share PDF">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+        </button>
+      </div>
+      <p class="wf-inline-error" id="departmentBreakdownShareError" hidden></p>
+      <div class="wf-panel">
+        <ul class="wf-bar-list" id="departmentFullBarList">
+          <li class="empty"><div class="loading"><div class="spinner"></div></div></li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- Location Wise Headcount (full list, Active only) -->
+    <section id="locationFullView" class="wf-view" hidden>
+      <div class="wf-page-head">
+        <button class="wf-icon-btn" data-back aria-label="Back to Dashboard">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        </button>
+        <h2>Location Wise Headcount (Active)</h2>
+      </div>
+      <div class="wf-panel">
+        <ul class="wf-bar-list" id="locationFullBarList">
+          <li class="empty"><div class="loading"><div class="spinner"></div></div></li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- Doer Management: headcount grouped by Reporting DOER (Active only) -->
+    <section id="doerManagementView" class="wf-view" hidden>
+      <div class="wf-page-head">
+        <button class="wf-icon-btn" data-back aria-label="Back to Dashboard">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        </button>
+        <h2>Doer Management</h2>
+      </div>
+      <div class="wf-panel">
+        <div class="wf-panel-head">
+          <h3>Reporting DOER Wise Headcount (Active)</h3>
+          <span style="display:flex; gap:10px; align-items:center;">
+            <button class="wf-icon-btn" id="shareDoerBreakdownPdf" type="button" aria-label="Share Reporting DOER Headcount PDF" title="Share PDF">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+            </button>
+            <button class="wf-link-btn" id="exportDoerManagementPdf" type="button">⬇ Export PDF</button>
+          </span>
+        </div>
+        <p class="wf-inline-error" id="doerBreakdownShareError" hidden></p>
+        <div class="wf-dist-table" id="doerRows">
+          <div class="loading"><div class="spinner"></div></div>
+        </div>
+        <p class="wf-note" id="doerNote"></p>
+      </div>
+      <div class="wf-panel" style="display:flex; justify-content:center;">
+        <div class="wf-canvas-wrap wf-canvas-wrap--donut wf-canvas-wrap--donut-lg" style="width:220px; height:220px;">
+          <canvas id="doerDonut"></canvas>
+          <div class="wf-donut-center">
+            <b id="doerDonutTotal">—</b>
+            <span>Total</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Organization Chart: department-wise, HOD + Collar-grouped designation cards -->
+    <section id="orgChartView" class="wf-view" hidden>
+      <div class="wf-page-head">
+        <button class="wf-icon-btn" data-back aria-label="Back to Dashboard">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        </button>
+        <h2>Organization Chart</h2>
+      </div>
+      <div class="wf-panel">
+        <div class="wf-panel-head" style="flex-wrap:wrap; gap:10px;">
+          <select id="orgChartDeptSelect" style="flex:1; min-width:200px;">
+            <option value="">Select a department…</option>
+          </select>
+          <button class="wf-link-btn" id="exportOrgChartPdf" type="button" hidden>⬇ Export PDF</button>
+        </div>
+      </div>
+      <div id="orgChartContent"></div>
+      <!-- Print-only deeper hierarchy tree (see renderOrgChartPdfTreeHtml)
+           - the on-screen #orgChartContent cards view above is untouched;
+           this is filled fresh from /api/workforce/org-chart-pdf right
+           before window.print() and hidden/cleared again afterward. -->
+      <div id="orgChartPrintContent" hidden></div>
+    </section>
+
+    <!-- Health Insurance -->
+    <section id="healthInsuranceView" class="wf-view" hidden>
+      <div class="wf-page-head">
+        <button class="wf-icon-btn" data-back aria-label="Back to Dashboard">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        </button>
+        <span class="hi-page-icon"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><line x1="12" y1="8" x2="12" y2="14"/><line x1="9" y1="11" x2="15" y2="11"/></svg></span>
+        <span>
+          <h2>Health Insurance</h2>
+          <p class="wf-note" style="margin:0;">Employee &amp; Family Coverage Management</p>
+        </span>
+      </div>
+
+      <div class="kpi-grid" id="hiStatsGrid">
+        <div class="loading"><div class="spinner"></div></div>
+      </div>
+
+      <div class="wf-panel" id="hiRenewalPanel" hidden>
+        <div class="hi-renewal-row">
+          <span class="hi-renewal-icon"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg></span>
+          <span class="hi-renewal-text">
+            <b>Policy Renewal</b>
+            <span class="hi-renewal-due" id="hiRenewalDue"></span>
+          </span>
+          <span class="hi-renewal-pct" id="hiRenewalPct"></span>
+        </div>
+        <div class="wf-progress-track"><div class="wf-progress-fill" id="hiRenewalBar" style="width:0%"></div></div>
+      </div>
+
+      <div class="wf-panel">
+        <div class="wf-panel-head">
+          <h3>Coverage Overview</h3>
+        </div>
+        <div class="wf-donut-row">
+          <div class="wf-canvas-wrap wf-canvas-wrap--donut">
+            <canvas id="hiCoverageDonut"></canvas>
+            <div class="wf-donut-center"><b id="hiCoverageDonutTotal">—</b><span>Total</span></div>
+          </div>
+          <ul class="wf-legend" id="hiCoverageLegend"></ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- Policy Information (Health Insurance drill-down) -->
+    <section id="hiPolicyInfoView" class="wf-view" hidden>
+      <div class="wf-page-head">
+        <button class="wf-icon-btn" data-back aria-label="Back to Health Insurance">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        </button>
+        <span class="hi-page-icon"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><line x1="12" y1="8" x2="12" y2="14"/><line x1="9" y1="11" x2="15" y2="11"/></svg></span>
+        <span>
+          <h2>Policy Information</h2>
+          <p class="wf-note" style="margin:0;">Group Mediclaim Policy details</p>
+        </span>
+      </div>
+
+      <div class="wf-panel">
+        <div class="hi-policy-info-grid" id="hiPolicyInfoGrid">
+          <div class="loading"><div class="spinner"></div></div>
+        </div>
+        <div id="hiPolicyInfoBanner"></div>
+      </div>
+
+      <!-- Policy Documents - live from the shared Drive folder's root
+           (see policyDocumentsService.js) -->
+      <div class="wf-panel">
+        <div class="wf-panel-head"><h3>Policy Documents</h3></div>
+        <div style="position:relative; margin-bottom:10px;">
+          <input type="search" id="policyDocsSearch" placeholder="Search documents..." autocomplete="off" style="width:100%; background:var(--surface); border:1px solid var(--line); border-radius:11px; padding:10px 12px 10px 34px; font:inherit; font-size:.85rem; color:var(--ink);" />
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="var(--muted)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="position:absolute; left:11px; top:50%; transform:translateY(-50%);"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        </div>
+        <p class="wf-inline-error" id="policyDocsShareError" hidden></p>
+        <ul class="hi-doc-list" id="policyDocsList"><li class="empty">Loading…</li></ul>
+      </div>
+    </section>
+
+    <!-- Covered Employees (Health Insurance drill-down) -->
+    <section id="coveredEmployeesView" class="wf-view" hidden>
+      <div class="wf-page-head">
+        <button class="wf-icon-btn" data-back aria-label="Back to Health Insurance">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        </button>
+        <span class="hi-page-icon"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><line x1="12" y1="8" x2="12" y2="14"/><line x1="9" y1="11" x2="15" y2="11"/></svg></span>
+        <span>
+          <h2>Covered Employees</h2>
+          <p class="wf-note" style="margin:0;">View &amp; manage insured employees</p>
+        </span>
+      </div>
+
+      <div style="display:flex; gap:8px; margin-bottom:10px;">
+        <div style="position:relative; flex:1;">
+          <input type="search" id="hiCeSearch" placeholder="Search by name / ID" autocomplete="off" style="width:100%; background:var(--surface); border:1px solid var(--line); border-radius:11px; padding:10px 12px 10px 34px; font:inherit; font-size:.85rem; color:var(--ink);" />
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="var(--muted)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="position:absolute; left:11px; top:50%; transform:translateY(-50%);"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        </div>
+        <button class="wf-icon-btn" id="hiCeFilterToggleBtn" aria-expanded="false" aria-label="Filters" title="Filters">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
+        </button>
+      </div>
+
+      <div class="wf-filterbar" id="hiCeFilterbar" hidden>
+        <select id="hiCeDeptFilter"><option value="">All departments</option></select>
+        <select id="hiCeDesigFilter"><option value="">All designations</option></select>
+        <select id="hiCeStatusFilter"><option value="">All statuses</option></select>
+        <button class="wf-clear-btn" id="hiCeClearFilters">Clear filters</button>
+      </div>
+
+      <div class="hi-ce-total-row">
+        <span>Total Covered Employees: <b id="hiCeTotalCount">—</b></span>
+        <button class="wf-link-btn" id="exportHiCePdf" type="button">⬇ Export PDF</button>
+      </div>
+
+      <ul class="wf-emp-list" id="hiCeList">
+        <li class="empty"><div class="loading"><div class="spinner"></div></div></li>
+      </ul>
+    </section>
+
+    <!-- Exits (Health Insurance drill-down, from the Deletions tab) -->
+    <section id="hiExitsView" class="wf-view" hidden>
+      <div class="wf-page-head">
+        <button class="wf-icon-btn" data-back aria-label="Back to Health Insurance">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        </button>
+        <span class="hi-page-icon"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><line x1="12" y1="8" x2="12" y2="14"/><line x1="9" y1="11" x2="15" y2="11"/></svg></span>
+        <span>
+          <h2>Pending Exits</h2>
+          <p class="wf-note" style="margin:0;">Employees awaiting policy removal</p>
+        </span>
+      </div>
+
+      <div style="display:flex; gap:8px; margin-bottom:10px;">
+        <div style="position:relative; flex:1;">
+          <input type="search" id="hiExitsSearch" placeholder="Search by name / ID" autocomplete="off" style="width:100%; background:var(--surface); border:1px solid var(--line); border-radius:11px; padding:10px 12px 10px 34px; font:inherit; font-size:.85rem; color:var(--ink);" />
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="var(--muted)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="position:absolute; left:11px; top:50%; transform:translateY(-50%);"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        </div>
+        <button class="wf-icon-btn" id="hiExitsFilterToggleBtn" aria-expanded="false" aria-label="Filters" title="Filters">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
+        </button>
+      </div>
+
+      <div class="wf-filterbar" id="hiExitsFilterbar" hidden>
+        <select id="hiExitsDeptFilter"><option value="">All departments</option></select>
+        <select id="hiExitsDesigFilter"><option value="">All designations</option></select>
+        <select id="hiExitsStatusFilter"><option value="">All statuses</option></select>
+        <button class="wf-clear-btn" id="hiExitsClearFilters">Clear filters</button>
+      </div>
+
+      <div class="hi-ce-total-row">
+        <span>Total Exits: <b id="hiExitsTotalCount">—</b></span>
+        <span style="display:flex; gap:10px; align-items:center;">
+          <button class="wf-send-mail-btn" id="sendHiExitsMail" type="button">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h4l2 3h4l2-3h4"/><path d="M5.5 6h13l1.5 6v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-6l1.5-6z"/></svg>
+            <span>Send Mail</span>
+          </button>
+          <button class="wf-link-btn" id="exportHiExitsPdf" type="button">⬇ Export PDF</button>
+        </span>
+      </div>
+
+      <ul class="wf-emp-list" id="hiExitsList">
+        <li class="empty"><div class="loading"><div class="spinner"></div></div></li>
+      </ul>
+    </section>
+
+    <!-- New Addition Requests (Health Insurance drill-down, from the
+         Additions tab) - same list/design/Send Mail as Pending Exits. -->
+    <section id="hiAdditionsView" class="wf-view" hidden>
+      <div class="wf-page-head">
+        <button class="wf-icon-btn" data-back aria-label="Back to Health Insurance">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        </button>
+        <span class="hi-page-icon"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg></span>
+        <span>
+          <h2>New Addition Requests</h2>
+          <p class="wf-note" style="margin:0;">Employees awaiting policy addition</p>
+        </span>
+      </div>
+
+      <div style="display:flex; gap:8px; margin-bottom:10px;">
+        <div style="position:relative; flex:1;">
+          <input type="search" id="hiAdditionsSearch" placeholder="Search by name / ID" autocomplete="off" style="width:100%; background:var(--surface); border:1px solid var(--line); border-radius:11px; padding:10px 12px 10px 34px; font:inherit; font-size:.85rem; color:var(--ink);" />
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="var(--muted)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="position:absolute; left:11px; top:50%; transform:translateY(-50%);"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        </div>
+        <button class="wf-icon-btn" id="hiAdditionsFilterToggleBtn" aria-expanded="false" aria-label="Filters" title="Filters">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
+        </button>
+      </div>
+
+      <div class="wf-filterbar" id="hiAdditionsFilterbar" hidden>
+        <select id="hiAdditionsDeptFilter"><option value="">All departments</option></select>
+        <select id="hiAdditionsDesigFilter"><option value="">All designations</option></select>
+        <select id="hiAdditionsStatusFilter"><option value="">All statuses</option></select>
+        <button class="wf-clear-btn" id="hiAdditionsClearFilters">Clear filters</button>
+      </div>
+
+      <div class="hi-ce-total-row">
+        <span>Total Additions: <b id="hiAdditionsTotalCount">—</b></span>
+        <span style="display:flex; gap:10px; align-items:center;">
+          <button class="wf-send-mail-btn" id="sendHiAdditionsMail" type="button">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h4l2 3h4l2-3h4"/><path d="M5.5 6h13l1.5 6v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-6l1.5-6z"/></svg>
+            <span>Send Mail</span>
+          </button>
+          <button class="wf-link-btn" id="exportHiAdditionsPdf" type="button">⬇ Export PDF</button>
+        </span>
+      </div>
+
+      <ul class="wf-emp-list" id="hiAdditionsList">
+        <li class="empty"><div class="loading"><div class="spinner"></div></div></li>
+      </ul>
+    </section>
+
+    <!-- Total Exits (Health Insurance drill-down, from the Deletions tab) -
+         same list/design as Pending Exits' Exits page, but a separate page
+         with no Send Mail button. -->
+    <section id="hiTotalExitsView" class="wf-view" hidden>
+      <div class="wf-page-head">
+        <button class="wf-icon-btn" data-back aria-label="Back to Health Insurance">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        </button>
+        <span class="hi-page-icon"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><line x1="12" y1="8" x2="12" y2="14"/><line x1="9" y1="11" x2="15" y2="11"/></svg></span>
+        <span>
+          <h2>Total Exits</h2>
+          <p class="wf-note" style="margin:0;">Employees removed from the policy</p>
+        </span>
+      </div>
+
+      <div style="display:flex; gap:8px; margin-bottom:10px;">
+        <div style="position:relative; flex:1;">
+          <input type="search" id="hiTeSearch" placeholder="Search by name / ID" autocomplete="off" style="width:100%; background:var(--surface); border:1px solid var(--line); border-radius:11px; padding:10px 12px 10px 34px; font:inherit; font-size:.85rem; color:var(--ink);" />
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="var(--muted)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="position:absolute; left:11px; top:50%; transform:translateY(-50%);"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        </div>
+        <button class="wf-icon-btn" id="hiTeFilterToggleBtn" aria-expanded="false" aria-label="Filters" title="Filters">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
+        </button>
+      </div>
+
+      <div class="wf-filterbar" id="hiTeFilterbar" hidden>
+        <select id="hiTeDeptFilter"><option value="">All departments</option></select>
+        <select id="hiTeDesigFilter"><option value="">All designations</option></select>
+        <select id="hiTeStatusFilter"><option value="">All statuses</option></select>
+        <button class="wf-clear-btn" id="hiTeClearFilters">Clear filters</button>
+      </div>
+
+      <div class="hi-ce-total-row">
+        <span>Total Exits: <b id="hiTeTotalCount">—</b></span>
+        <button class="wf-link-btn" id="exportHiTeExitsPdf" type="button">⬇ Export PDF</button>
+      </div>
+
+      <ul class="wf-emp-list" id="hiTeList">
+        <li class="empty"><div class="loading"><div class="spinner"></div></div></li>
+      </ul>
+    </section>
+
+    <!-- Family Members (Health Insurance drill-down, from Member List) -->
+    <section id="hiFamilyMembersView" class="wf-view" hidden>
+      <div class="wf-page-head">
+        <button class="wf-icon-btn" data-back aria-label="Back to Health Insurance">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        </button>
+        <span class="hi-page-icon"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><line x1="12" y1="8" x2="12" y2="14"/><line x1="9" y1="11" x2="15" y2="11"/></svg></span>
+        <span>
+          <h2>Family Members</h2>
+          <p class="wf-note" style="margin:0;">Dependents covered under the policy</p>
+        </span>
+      </div>
+
+      <div style="display:flex; gap:8px; margin-bottom:10px;">
+        <div style="position:relative; flex:1;">
+          <input type="search" id="hiFmSearch" placeholder="Search by name / ID" autocomplete="off" style="width:100%; background:var(--surface); border:1px solid var(--line); border-radius:11px; padding:10px 12px 10px 34px; font:inherit; font-size:.85rem; color:var(--ink);" />
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="var(--muted)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="position:absolute; left:11px; top:50%; transform:translateY(-50%);"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        </div>
+        <button class="wf-icon-btn" id="hiFmFilterToggleBtn" aria-expanded="false" aria-label="Filters" title="Filters">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
+        </button>
+      </div>
+
+      <div class="wf-filterbar" id="hiFmFilterbar" hidden>
+        <select id="hiFmDeptFilter"><option value="">All departments</option></select>
+        <select id="hiFmRelationFilter"><option value="">All relationships</option></select>
+        <button class="wf-clear-btn" id="hiFmClearFilters">Clear filters</button>
+      </div>
+
+      <div class="hi-ce-total-row">
+        <span>Total Family Members: <b id="hiFmTotalCount">—</b></span>
+        <button class="wf-link-btn" id="exportHiFmPdf" type="button">⬇ Export PDF</button>
+      </div>
+
+      <ul class="wf-emp-list" id="hiFmList">
+        <li class="empty"><div class="loading"><div class="spinner"></div></div></li>
+      </ul>
+    </section>
+
+    <!-- Total Insured Lives (Health Insurance drill-down, from Member List) -->
+    <section id="hiTotalLivesView" class="wf-view" hidden>
+      <div class="wf-page-head">
+        <button class="wf-icon-btn" data-back aria-label="Back to Health Insurance">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        </button>
+        <span class="hi-page-icon"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><line x1="12" y1="8" x2="12" y2="14"/><line x1="9" y1="11" x2="15" y2="11"/></svg></span>
+        <span>
+          <h2>Total Insured Lives</h2>
+          <p class="wf-note" style="margin:0;">Every employee &amp; family member covered</p>
+        </span>
+      </div>
+
+      <div style="display:flex; gap:8px; margin-bottom:10px;">
+        <div style="position:relative; flex:1;">
+          <input type="search" id="hiTlSearch" placeholder="Search by name / ID" autocomplete="off" style="width:100%; background:var(--surface); border:1px solid var(--line); border-radius:11px; padding:10px 12px 10px 34px; font:inherit; font-size:.85rem; color:var(--ink);" />
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="var(--muted)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="position:absolute; left:11px; top:50%; transform:translateY(-50%);"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        </div>
+        <button class="wf-icon-btn" id="hiTlFilterToggleBtn" aria-expanded="false" aria-label="Filters" title="Filters">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
+        </button>
+      </div>
+
+      <div class="wf-filterbar" id="hiTlFilterbar" hidden>
+        <select id="hiTlDeptFilter"><option value="">All departments</option></select>
+        <select id="hiTlRelationFilter"><option value="">All relationships</option></select>
+        <button class="wf-clear-btn" id="hiTlClearFilters">Clear filters</button>
+      </div>
+
+      <div class="hi-ce-total-row">
+        <span>Total Insured Lives: <b id="hiTlTotalCount">—</b></span>
+        <button class="wf-link-btn" id="exportHiTlPdf" type="button">⬇ Export PDF</button>
+      </div>
+
+      <ul class="wf-emp-list" id="hiTlList">
+        <li class="empty"><div class="loading"><div class="spinner"></div></div></li>
+      </ul>
+    </section>
+
+    <!-- Family Premium breakdown (Health Insurance drill-down) - same
+         distribution-table design as Age Distribution, no donut chart. -->
+    <section id="hiFamilyPremiumView" class="wf-view" hidden>
+      <div class="wf-page-head">
+        <button class="wf-icon-btn" data-back aria-label="Back to Health Insurance">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        </button>
+        <span class="hi-page-icon"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><line x1="12" y1="8" x2="12" y2="14"/><line x1="9" y1="11" x2="15" y2="11"/></svg></span>
+        <span>
+          <h2>Family Premium</h2>
+          <p class="wf-note" style="margin:0;">Breakdown by relationship</p>
+        </span>
+      </div>
+      <div class="wf-panel">
+        <div class="wf-dist-table" id="hiFamilyPremiumRows">
+          <div class="loading"><div class="spinner"></div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Annual Premium breakdown (Health Insurance drill-down) - same
+         design as Family Premium, but across every status (not just
+         Active) and including the Employees group, matching how Annual
+         Premium itself is totalled. -->
+    <section id="hiAnnualPremiumView" class="wf-view" hidden>
+      <div class="wf-page-head">
+        <button class="wf-icon-btn" data-back aria-label="Back to Health Insurance">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        </button>
+        <span class="hi-page-icon"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><line x1="12" y1="8" x2="12" y2="14"/><line x1="9" y1="11" x2="15" y2="11"/></svg></span>
+        <span>
+          <h2>Annual Premium</h2>
+          <p class="wf-note" style="margin:0;">Breakdown by relationship · all statuses</p>
+        </span>
+      </div>
+      <div class="wf-panel">
+        <div class="wf-dist-table" id="hiAnnualPremiumRows">
+          <div class="loading"><div class="spinner"></div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Age Distribution (Demographics) -->
+    <section id="ageDistributionView" class="wf-view" hidden>
+      <div class="wf-page-head">
+        <button class="wf-icon-btn" data-back aria-label="Back to Dashboard">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        </button>
+        <h2>Age Distribution</h2>
+        <button class="wf-icon-btn" id="shareAgeDistributionPdf" type="button" style="margin-left:auto;" aria-label="Share Age Distribution PDF" title="Share PDF">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+        </button>
+      </div>
+      <p class="wf-inline-error" id="ageDistributionShareError" hidden></p>
+      <div class="wf-panel">
+        <div class="wf-dist-table" id="ageRows">
+          <div class="loading"><div class="spinner"></div></div>
+        </div>
+        <p class="wf-note" id="ageNote"></p>
+      </div>
+      <div class="wf-panel" style="display:flex; justify-content:center;">
+        <div class="wf-canvas-wrap wf-canvas-wrap--donut wf-canvas-wrap--donut-lg" style="width:220px; height:220px;">
+          <canvas id="ageDonut"></canvas>
+          <div class="wf-donut-center">
+            <b id="ageDonutTotal">—</b>
+            <span>Total</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Gender Distribution (Demographics) -->
+    <section id="genderDistributionView" class="wf-view" hidden>
+      <div class="wf-page-head">
+        <button class="wf-icon-btn" data-back aria-label="Back to Dashboard">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        </button>
+        <h2>Gender Distribution</h2>
+        <button class="wf-icon-btn" id="shareGenderDistributionPdf" type="button" style="margin-left:auto;" aria-label="Share Gender Distribution PDF" title="Share PDF">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+        </button>
+      </div>
+      <p class="wf-inline-error" id="genderDistributionShareError" hidden></p>
+      <div class="wf-panel">
+        <div class="wf-dist-table" id="genderRows">
+          <div class="loading"><div class="spinner"></div></div>
+        </div>
+        <p class="wf-note" id="genderNote"></p>
+      </div>
+      <div class="wf-panel" style="display:flex; justify-content:center;">
+        <div class="wf-canvas-wrap wf-canvas-wrap--donut wf-canvas-wrap--donut-lg" style="width:220px; height:220px;">
+          <canvas id="genderDonut"></canvas>
+          <div class="wf-donut-center">
+            <b id="genderDonutTotal">—</b>
+            <span>Total</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Category Distribution (Demographics) - same design/format as Age and
+         Gender Distribution above. Internal id/element names still say
+         "collar" (matches splitByCollar/formatCollar elsewhere) - only the
+         user-facing text says "Category" (see loadCollarDistributionView,
+         public/workforce.js, for the table's own "Category" column header). -->
+    <section id="collarDistributionView" class="wf-view" hidden>
+      <div class="wf-page-head">
+        <button class="wf-icon-btn" data-back aria-label="Back to Dashboard">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        </button>
+        <h2>Category Distribution</h2>
+        <button class="wf-icon-btn" id="shareCollarDistributionPdf" type="button" style="margin-left:auto;" aria-label="Share Category Distribution PDF" title="Share PDF">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+        </button>
+      </div>
+      <p class="wf-inline-error" id="collarDistributionShareError" hidden></p>
+      <div class="wf-panel">
+        <div class="wf-dist-table" id="collarRows">
+          <div class="loading"><div class="spinner"></div></div>
+        </div>
+      </div>
+      <div class="wf-panel" style="display:flex; justify-content:center;">
+        <div class="wf-canvas-wrap wf-canvas-wrap--donut wf-canvas-wrap--donut-lg" style="width:220px; height:220px;">
+          <canvas id="collarDonut"></canvas>
+          <div class="wf-donut-center">
+            <b id="collarDonutTotal">—</b>
+            <span>Total</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Profile -->
+    <section id="profileView" class="wf-view" hidden>
+      <div class="wf-page-head">
+        <button class="wf-icon-btn" data-back aria-label="Back to Dashboard">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        </button>
+        <h2>Profile</h2>
+      </div>
+      <div class="wf-panel" style="text-align:center;">
+        <button class="wf-avatar lg" id="profileAvatarLg" style="margin:0 auto 8px;" title="Tap to change photo" aria-label="Upload profile photo">—</button>
+        <div class="wf-note" style="margin:0 0 12px;">Tap photo to change it</div>
+        <div class="wf-profile-name-row" id="profileNameRow"></div>
+        <div style="font-size:.82rem; color:var(--muted); margin-bottom:18px;" id="profileEmail"></div>
+        <button class="wf-clear-btn" id="profileLogoutBtn" type="button">Logout</button>
+      </div>
+    </section>
+  </div>
+
+  <!-- Shared "Send Mail" compose popup (Doer Management, Insights Birthday
+       point, and any future Send Mail button) - defaults come pre-filled
+       from the Mail Id sheet, editable before the actual send. Sits outside
+       .wf-shell so its fixed overlay is never clipped by anything inside. -->
+  <!-- One shared popup for all 4 WhatsApp buttons (Candidate/Interviewer
+       link, in both the "just created" panel and the detail view) - which
+       link+type it's currently sending is tracked in JS, not in the markup. -->
+  <div class="wf-modal-overlay" id="ipWhatsappOverlay" hidden>
+    <div class="wf-mail-compose" role="dialog" aria-modal="true" aria-label="Send via WhatsApp">
+      <div class="wf-mail-compose-head">
+        <h3>Send via WhatsApp</h3>
+        <button class="wf-icon-btn" id="ipWhatsappCloseBtn" type="button" aria-label="Close">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="wf-mail-compose-body">
+        <!-- Candidate: a free-text number, since candidates aren't in the
+             employee master. -->
+        <div class="wf-mail-field" id="ipWhatsappPhoneField">
+          <span class="wf-mail-field-label" id="ipWhatsappFieldLabel">Candidate's WhatsApp No.</span>
+          <input type="tel" id="ipWhatsappPhoneInput" class="wf-ip-whatsapp-phone-input" placeholder="e.g. 98765 43210" autocomplete="off" />
+          <p class="wf-ip-field-error" id="ipWhatsappPhoneError" hidden></p>
+        </div>
+        <!-- Interviewer: a search-select against the real active-employee
+             list, since the interviewer is always one of our own people -
+             their number comes from HR Master's own Contact Number column,
+             never typed by hand. -->
+        <div class="wf-mail-field" id="ipWhatsappEmployeeField" hidden style="position:relative;">
+          <span class="wf-mail-field-label">Interviewer's WhatsApp No.</span>
+          <input type="text" id="ipWhatsappEmployeeSearchInput" class="wf-ip-whatsapp-phone-input" placeholder="Search employee by name" autocomplete="off" />
+          <ul class="wf-mail-suggest" id="ipWhatsappEmployeeSuggest" hidden></ul>
+          <p class="wf-ip-field-error" id="ipWhatsappEmployeeError" hidden></p>
+        </div>
+        <p class="wf-mail-compose-error" id="ipWhatsappError" hidden></p>
+      </div>
+      <div class="wf-mail-compose-foot">
+        <button class="wf-clear-btn" id="ipWhatsappBackBtn" type="button">Back</button>
+        <button class="wf-send-mail-btn" id="ipWhatsappSendBtn" type="button">
+          <span>Send</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Admin-only: grants/revokes a scoped login (email + 6-digit password,
+       not OTP) that only ever unlocks the Interview Panel section - see
+       hrAuth.js's ip_session and interviewPanelAccessService.js. -->
+  <div class="wf-modal-overlay" id="teamAccessOverlay" hidden>
+    <div class="wf-mail-compose" role="dialog" aria-modal="true" aria-label="Team Access">
+      <div class="wf-mail-compose-head">
+        <h3>Team Access</h3>
+        <button class="wf-icon-btn" id="teamAccessCloseBtn" type="button" aria-label="Close">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+
+      <div id="teamAccessListPage">
+        <div class="wf-mail-compose-body">
+          <p class="wf-note" style="margin-top:0;">Grant a team member their own login that only unlocks Interview Panel - nothing else in this dashboard. Tap an email below to change its password.</p>
+          <ul class="wf-emp-list" id="teamAccessList" style="margin-bottom:16px;">
+            <li class="empty">Loading…</li>
+          </ul>
+          <div class="wf-mail-field">
+            <span class="wf-mail-field-label">Email</span>
+            <input type="email" id="teamAccessEmailInput" placeholder="teammate@alcoverealty.in" autocomplete="off" style="width:100%; background:var(--paper); border:1px solid var(--line); border-radius:10px; padding:10px 12px; font:inherit; font-size:.88rem; color:var(--ink);" />
+          </div>
+          <div class="wf-mail-field">
+            <span class="wf-mail-field-label">6-Digit Password</span>
+            <input type="text" id="teamAccessPasswordInput" inputmode="numeric" maxlength="6" placeholder="••••••" autocomplete="off" style="width:100%; background:var(--paper); border:1px solid var(--line); border-radius:10px; padding:10px 12px; font:inherit; font-size:.88rem; color:var(--ink); letter-spacing:0.2em;" />
+          </div>
+          <p class="wf-mail-compose-error" id="teamAccessError" hidden></p>
+        </div>
+        <div class="wf-mail-compose-foot">
+          <button class="wf-clear-btn" id="teamAccessCancelBtn" type="button">Close</button>
+          <button class="wf-send-mail-btn" id="teamAccessSaveBtn" type="button">
+            <span>Grant Access</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Page 2, inside the same popup: change one existing teammate's password. -->
+      <div id="teamAccessEditPage" hidden>
+        <div class="wf-mail-compose-body">
+          <button type="button" class="wf-link-btn" id="teamAccessBackBtn" style="margin-bottom:14px;">&larr; Back</button>
+          <p class="wf-note" style="margin-top:0;">Set a new 6-digit password for <strong id="teamAccessEditEmail"></strong>.</p>
+          <div class="wf-mail-field">
+            <span class="wf-mail-field-label">New 6-Digit Password</span>
+            <input type="text" id="teamAccessEditPasswordInput" inputmode="numeric" maxlength="6" placeholder="••••••" autocomplete="off" style="width:100%; background:var(--paper); border:1px solid var(--line); border-radius:10px; padding:10px 12px; font:inherit; font-size:.88rem; color:var(--ink); letter-spacing:0.2em;" />
+          </div>
+          <p class="wf-mail-compose-error" id="teamAccessEditError" hidden></p>
+        </div>
+        <div class="wf-mail-compose-foot">
+          <button class="wf-clear-btn" id="teamAccessEditCancelBtn" type="button">Cancel</button>
+          <button class="wf-send-mail-btn" id="teamAccessEditSaveBtn" type="button">
+            <span>Update Password</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="wf-modal-overlay" id="mailComposeOverlay" hidden>
+    <div class="wf-mail-compose" role="dialog" aria-modal="true" aria-label="Send Mail">
+      <div class="wf-mail-compose-head">
+        <h3>Send Mail</h3>
+        <button class="wf-icon-btn" id="mailComposeCloseBtn" type="button" aria-label="Close">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="wf-mail-compose-body">
+        <div class="wf-mail-field">
+          <span class="wf-mail-field-label">To</span>
+          <div class="wf-mail-chip-input" id="mailToChipInput">
+            <input type="text" id="mailToInput" autocomplete="off" placeholder="Add recipient..." />
+          </div>
+          <ul class="wf-mail-suggest" id="mailToSuggest" hidden></ul>
+        </div>
+        <div class="wf-mail-field">
+          <span class="wf-mail-field-label">Cc</span>
+          <div class="wf-mail-chip-input" id="mailCcChipInput">
+            <input type="text" id="mailCcInput" autocomplete="off" placeholder="Add recipient..." />
+          </div>
+          <ul class="wf-mail-suggest" id="mailCcSuggest" hidden></ul>
+        </div>
+        <p class="wf-mail-compose-error" id="mailComposeError" hidden></p>
+      </div>
+      <div class="wf-mail-compose-foot">
+        <button class="wf-clear-btn" id="mailComposeCancelBtn" type="button">Cancel</button>
+        <button class="wf-send-mail-btn" id="mailComposeSendBtn" type="button">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h4l2 3h4l2-3h4"/><path d="M5.5 6h13l1.5 6v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-6l1.5-6z"/></svg>
+          <span>Send Mail</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Employee Insurance Profile (Health Insurance drill-down) - opened by
+       clicking any employee name row in Covered Employees / Family Members
+       / Total Insured Lives / Pending Exits / New Addition Requests / Total
+       Exits. A modal (not a separate .wf-view page) since the same card is
+       reachable from 6 different list contexts, and this keeps each list's
+       own scroll position/filters untouched underneath. -->
+  <div class="wf-modal-overlay" id="hiEmpProfileOverlay" hidden>
+    <div class="wf-mail-compose hi-ep-card" role="dialog" aria-modal="true" aria-label="Employee Insurance Profile">
+      <div class="wf-mail-compose-head">
+        <h3>Employee Insurance Profile</h3>
+        <button class="wf-icon-btn" id="hiEmpProfileCloseBtn" type="button" aria-label="Close">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="wf-mail-compose-body" id="hiEmpProfileBody">
+        <div class="loading"><div class="spinner"></div></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="vendor/chart.js/chart.umd.js"></script>
+  <script src="workforce.js?v=254"></script>
+  <script src="hrAssistant.js?v=1"></script>
+</body>
+</html>

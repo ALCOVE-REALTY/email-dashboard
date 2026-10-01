@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="robots" content="noindex, nofollow" />
+<title>Candidate Interview Application - Alcove Realty</title>
+<link rel="stylesheet" href="/styles.css?v=2" />
+<link rel="stylesheet" href="/interview-forms.css?v=5" />
+</head>
+<body>
+<div class="iv-shell">
+  <div class="iv-brand">
+    <img class="iv-brand-logo" src="/assets/alcove-logo.png" alt="Alcove Realty" />
+    <span class="iv-brand-kicker">Interview Panel</span>
+  </div>
+
+  <div id="ivLoading" class="iv-loading">Loading your application form&hellip;</div>
+
+  <div id="ivPanel" class="iv-panel" hidden>
+    <h1>Candidate Interview Application</h1>
+    <p class="iv-panel-sub">Please fill in your details below. Once submitted, this form cannot be edited again.</p>
+    <form id="ivForm">
+      <div class="iv-section-title">Personal Details</div>
+      <div class="iv-field"><label for="f_name">Full Name<span class="iv-required">*</span></label><input type="text" id="f_name" name="name" required /></div>
+      <div class="iv-field-row">
+        <div class="iv-field"><label for="f_contactNo">Contact No<span class="iv-required">*</span></label><input type="tel" id="f_contactNo" name="contactNo" required /></div>
+        <div class="iv-field"><label for="f_email">Email</label><input type="email" id="f_email" name="email" /></div>
+      </div>
+      <div class="iv-field-row">
+        <div class="iv-field"><label for="f_qualification">Qualification</label><input type="text" id="f_qualification" name="qualification" /></div>
+        <div class="iv-field"><label for="f_experience">Experience</label><input type="text" id="f_experience" name="experience" placeholder="e.g. 3 Years" /></div>
+      </div>
+      <div class="iv-field"><label for="f_currentPosition">Current Position</label><input type="text" id="f_currentPosition" name="currentPosition" /></div>
+
+      <div class="iv-section-title">Interview Details</div>
+      <div class="iv-field"><label for="f_positionAppliedFor">Position Applied For<span class="iv-required">*</span></label><input type="text" id="f_positionAppliedFor" name="positionAppliedFor" required /></div>
+      <div class="iv-field-row">
+        <div class="iv-field"><label for="f_interviewDate">Interview Date</label><input type="date" id="f_interviewDate" name="interviewDate" /></div>
+        <div class="iv-field"><label for="f_interviewPlace">Interview Place</label><input type="text" id="f_interviewPlace" name="interviewPlace" /></div>
+      </div>
+      <div class="iv-field-row">
+        <div class="iv-field">
+          <label for="f_interviewMode">Interview Mode</label>
+          <select id="f_interviewMode" name="interviewMode">
+            <option value="">Select&hellip;</option>
+            <option value="Face to Face">Face to Face</option>
+            <option value="Telephonic">Telephonic</option>
+            <option value="Video Call">Video Call</option>
+          </select>
+        </div>
+        <div class="iv-field"><label for="f_referenceName">Reference Name</label><input type="text" id="f_referenceName" name="referenceName" /></div>
+      </div>
+
+      <div class="iv-section-title">Company &amp; Compensation</div>
+      <div class="iv-field"><label for="f_presentLastCompany">Present / Last Company</label><input type="text" id="f_presentLastCompany" name="presentLastCompany" /></div>
+      <div class="iv-field"><label for="f_designation">Designation</label><input type="text" id="f_designation" name="designation" /></div>
+      <div class="iv-field-row">
+        <div class="iv-field"><label for="f_currentLastSalaryDrawn">Present / Last Salary drawn</label><input type="text" id="f_currentLastSalaryDrawn" name="currentLastSalaryDrawn" /></div>
+        <div class="iv-field"><label for="f_expectedSalary">Expected Salary</label><input type="text" id="f_expectedSalary" name="expectedSalary" /></div>
+      </div>
+      <div class="iv-field"><label for="f_noticePeriod">Notice Period</label><input type="text" id="f_noticePeriod" name="noticePeriod" /></div>
+
+      <div class="iv-section-title">Alcove Projects</div>
+      <div class="iv-field">
+        <label for="f_workedOnAlcoveProjects">Worked on any Alcove projects earlier?</label>
+        <select id="f_workedOnAlcoveProjects" name="workedOnAlcoveProjects">
+          <option value="">Select&hellip;</option>
+          <option value="Yes">Yes</option>
+          <option value="No">No</option>
+        </select>
+      </div>
+      <div class="iv-field" id="f_alcoveProjectsDetailsWrap" hidden>
+        <label for="f_alcoveProjectsDetails">If yes, please give details</label>
+        <textarea id="f_alcoveProjectsDetails" name="alcoveProjectsDetails"></textarea>
+      </div>
+
+      <div class="iv-section-title">CV / Resume</div>
+      <div class="iv-field">
+        <label for="f_cv">Upload CV / Resume</label>
+        <label class="iv-upload-box" id="ivUploadBox" for="f_cv">
+          <input type="file" id="f_cv" accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document" />
+          <div id="ivUploadContent">
+            <div class="iv-upload-icon">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/><line x1="12" y1="12" x2="12" y2="18"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
+            </div>
+            <div class="iv-upload-title">Tap to upload or choose file</div>
+            <div class="iv-upload-hint">PDF, DOC, DOCX (Max 4MB)</div>
+          </div>
+        </label>
+        <p class="iv-upload-error" id="ivUploadError" hidden></p>
+        <input type="hidden" id="f_cvLink" name="cvLink" />
+      </div>
+
+      <button type="submit" class="iv-btn" id="ivSubmitBtn">Submit Application</button>
+      <div class="iv-error" id="ivError" hidden></div>
+    </form>
+  </div>
+
+  <div id="ivStateAlready" class="iv-panel iv-state iv-state-success" hidden>
+    <div class="iv-state-icon"><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></div>
+    <h2>Already Submitted</h2>
+    <p>This application has already been submitted and cannot be edited again. Thank you.</p>
+  </div>
+
+  <div id="ivStateDone" class="iv-panel iv-state iv-state-success" hidden>
+    <div class="iv-state-icon"><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></div>
+    <h2>Application Submitted</h2>
+    <p>Thank you. Your interview panel will be in touch. You may close this page now.</p>
+  </div>
+
+  <div id="ivStateError" class="iv-panel iv-state iv-state-error" hidden>
+    <div class="iv-state-icon"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg></div>
+    <h2>Link Not Valid</h2>
+    <p id="ivStateErrorMsg">This link is invalid or has expired.</p>
+  </div>
+</div>
+<script src="/interview-candidate.js?v=4"></script>
+</body>
+</html>

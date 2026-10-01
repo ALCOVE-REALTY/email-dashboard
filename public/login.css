@@ -1,0 +1,160 @@
+/* Login/OTP page - shares color tokens and fonts from styles.css but is its
+   own standalone layout (no bottom nav, no .device mobile-inbox chrome). */
+body {
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-bottom: 0;
+}
+
+.login-shell {
+  width: 100%;
+  max-width: 420px;
+  min-height: 100vh;
+  padding: 48px 28px 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+
+.login-brand {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-bottom: 34px;
+}
+
+.login-brand-icon {
+  width: 60px;
+  height: 60px;
+  border-radius: 16px;
+  background: var(--accent-bg);
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 14px;
+}
+
+.login-wordmark {
+  font-family: "Iowan Old Style", "Palatino Linotype", Georgia, ui-serif, serif;
+  font-weight: 700;
+  font-size: 1.4rem;
+  line-height: 1.15;
+  color: var(--ink);
+}
+.login-wordmark span { display: block; color: var(--accent); }
+
+.login-step { width: 100%; flex: 1; display: flex; flex-direction: column; align-items: center; position: relative; }
+
+.login-step h1 { margin: 0 0 4px; font-size: 1.3rem; font-weight: 700; color: var(--ink); }
+.login-sub { font-size: 0.85rem; color: var(--muted); line-height: 1.5; margin-bottom: 26px; }
+
+#emailForm, #otpForm, #loginForm { width: 100%; display: flex; flex-direction: column; gap: 14px; }
+
+#emailInput,
+.login-input {
+  width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 13px 14px;
+  font: inherit;
+  font-size: 0.9rem;
+  color: var(--ink);
+  text-align: left;
+}
+#emailInput:focus-visible,
+.login-input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.login-btn {
+  width: 100%;
+  background: var(--accent);
+  color: var(--accent-ink);
+  border: none;
+  border-radius: 12px;
+  padding: 14px;
+  font: inherit;
+  font-size: 0.92rem;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 6px 14px var(--shadow);
+}
+.login-btn:disabled { opacity: 0.65; cursor: default; }
+.login-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.login-helper { font-size: 0.76rem; color: var(--muted); margin-top: 16px; }
+
+.login-error {
+  margin-top: 14px;
+  background: var(--important-bg);
+  color: var(--important);
+  border-radius: 10px;
+  padding: 9px 12px;
+  font-size: 0.8rem;
+}
+
+.login-back {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  color: var(--ink);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 1px 3px var(--shadow);
+}
+
+.login-otp-icon {
+  width: 76px;
+  height: 76px;
+  border-radius: 50%;
+  background: var(--accent-bg);
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 46px 0 20px;
+}
+
+.otp-boxes { display: flex; gap: 8px; justify-content: center; }
+.otp-box {
+  width: 44px;
+  height: 54px;
+  border-radius: 12px;
+  border: 1.5px solid var(--line);
+  background: var(--surface);
+  text-align: center;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 1.2rem;
+  font-weight: 700;
+  color: var(--ink);
+}
+.otp-box:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-bg); }
+
+.login-resend { font-size: 0.8rem; color: var(--muted); }
+.login-resend strong { color: var(--ink); }
+
+.login-link-btn {
+  background: none;
+  border: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 4px;
+}
+
+.login-footer { font-size: 0.7rem; color: var(--muted); padding-top: 24px; }
+
+@media (max-width: 380px) {
+  .otp-box { width: 38px; height: 48px; }
+}

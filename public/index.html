@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mail Management</title>
+  <link rel="stylesheet" href="styles.css?v=7" />
+</head>
+<body>
+  <div class="device">
+    <header class="mail-topbar">
+      <div class="brand">
+        <div class="brand-icon">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h4l2 3h4l2-3h4"/><path d="M5.5 6h13l1.5 6v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-6l1.5-6z"/></svg>
+        </div>
+        <div>
+          <h1>Mail Management</h1>
+          <div class="subtitle" id="subtitle">Loading…</div>
+        </div>
+      </div>
+      <div class="header-actions">
+        <button class="wf-icon-btn" id="refreshBtn" title="Refresh" aria-label="Refresh">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+        </button>
+        <button class="wf-avatar" id="profileAvatar" title="Subhodeep Kundu Chowdhury — click to change photo" aria-label="Upload profile photo">SK</button>
+        <input type="file" id="profilePhotoInput" accept="image/*" hidden />
+      </div>
+    </header>
+
+    <div class="tabbar" role="tablist" id="tabs">
+      <button class="tab-pill" data-category="recent" role="tab" aria-pressed="false">
+        Recent <span class="count" id="count-recent">–</span>
+      </button>
+      <button class="tab-pill" data-category="unread" role="tab" aria-pressed="false">
+        Unread <span class="count" id="count-unread">–</span>
+      </button>
+      <button class="tab-pill" data-category="important" role="tab" aria-pressed="false">
+        Important <span class="count" id="count-important">–</span>
+      </button>
+      <button class="tab-pill" data-category="candidates" role="tab" aria-pressed="false">
+        Job Applications <span class="count" id="count-candidates">–</span>
+      </button>
+      <button class="tab-pill" data-category="joinings" role="tab" aria-pressed="false">
+        Upcoming Joinings <span class="count" id="count-joinings">–</span>
+      </button>
+    </div>
+
+    <div class="section-head" id="sectionHead">
+      <span class="dot"></span>
+      <h2 id="sectionTitle">Recent mail</h2>
+    </div>
+
+    <div class="search-row" id="searchRow">
+      <input type="search" id="searchInput" placeholder="Search your mails…" autocomplete="off" />
+    </div>
+
+    <div id="list"><div class="loading"><div class="spinner"></div></div></div>
+  </div>
+
+  <nav class="bottom-nav">
+    <a class="bottom-nav-item" href="workforce.html" aria-current="false">
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/></svg>
+      <span>Overview</span>
+    </a>
+    <a class="bottom-nav-item" href="workforce.html" aria-current="false">
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+      <span>Workforce Intelligence</span>
+    </a>
+    <button class="bottom-nav-item" aria-current="true">
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h4l2 3h4l2-3h4"/><path d="M5.5 6h13l1.5 6v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-6l1.5-6z"/></svg>
+      <span>Mail Management</span>
+    </button>
+  </nav>
+
+  <script src="profile.js?v=2"></script>
+  <script src="app.js?v=4"></script>
+</body>
+</html>

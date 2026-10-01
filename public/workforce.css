@@ -1,0 +1,3974 @@
+/* Workforce's layout is a wide multi-column dashboard, not mail's centered
+   single-column view — override the base body's flex-centering.
+   padding-bottom (bottom-nav clearance) is already set in styles.css. */
+body {
+  display: block;
+  padding-bottom: 0; /* no bottom-nav on this page anymore - the drawer replaces it */
+}
+
+/* Vivid 4-color set for Workforce Movement's cards only - the app's own
+   semantic tokens (accent/resolved/important/candidate) are deliberately
+   muted for everyday UI, but this page's mockup calls for a more
+   saturated blue/purple/green/red pastel-card look. Scoped as its own
+   tokens (not touching styles.css's shared theme) so no other page is
+   affected. */
+:root {
+  --move-blue: #2563eb;
+  --move-blue-bg: #dbeafe;
+  --move-purple: #7c3aed;
+  --move-purple-bg: #ede9fe;
+  --move-green: #16a34a;
+  --move-green-bg: #dcfce7;
+  --move-red: #dc2626;
+  --move-red-bg: #fee2e2;
+  --move-orange: #ea580c;
+  --move-orange-bg: #ffedd5;
+  --wf-ai-wash-1: rgba(29, 92, 99, 0.10);
+  --wf-ai-wash-2: rgba(29, 92, 99, 0.05);
+  --wf-ai-subhead: #5c7876;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --move-blue: #60a5fa;
+    --move-blue-bg: #1e3a5f;
+    --move-purple: #a78bfa;
+    --move-purple-bg: #3b2f63;
+    --move-green: #4ade80;
+    --move-green-bg: #1e3f2c;
+    --move-red: #f87171;
+    --move-red-bg: #4a1f1f;
+    --move-orange: #fb923c;
+    --move-orange-bg: #4a2f14;
+    --wf-ai-wash-1: rgba(79, 169, 163, 0.16);
+    --wf-ai-wash-2: rgba(79, 169, 163, 0.08);
+    --wf-ai-subhead: #8fada9;
+  }
+}
+:root[data-theme="dark"] {
+  --move-blue: #60a5fa;
+  --move-blue-bg: #1e3a5f;
+  --move-purple: #a78bfa;
+  --move-purple-bg: #3b2f63;
+  --move-green: #4ade80;
+  --move-green-bg: #1e3f2c;
+  --move-red: #f87171;
+  --move-red-bg: #4a1f1f;
+  --move-orange: #fb923c;
+  --move-orange-bg: #4a2f14;
+  --wf-ai-wash-1: rgba(79, 169, 163, 0.16);
+  --wf-ai-wash-2: rgba(79, 169, 163, 0.08);
+  --wf-ai-subhead: #8fada9;
+}
+
+.wf-shell {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 18px 20px 40px;
+}
+
+/* ---------- Top bar ---------- */
+
+.wf-topbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.wf-brand {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.wf-wordmark {
+  margin: 0;
+  font-family: "Iowan Old Style", "Palatino Linotype", Georgia, ui-serif, serif;
+  font-weight: 700;
+  font-size: 1.15rem;
+  line-height: 1.15;
+  color: var(--ink);
+}
+.wf-wordmark span { display: block; color: var(--accent); }
+
+.wf-topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+/* ---------- Sub-page header (back arrow + title) ---------- */
+
+.wf-page-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 18px;
+}
+.wf-page-head h2 {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+/* ---------- Drawer menu ---------- */
+
+.wf-drawer-backdrop[hidden] { display: none; }
+.wf-drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 25, 27, 0.5);
+  z-index: 40;
+}
+
+.wf-drawer[hidden] { display: none; }
+.wf-drawer {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: min(300px, 82vw);
+  background: var(--surface);
+  box-shadow: 8px 0 30px rgba(0, 0, 0, 0.2);
+  z-index: 41;
+  overflow-y: auto;
+  padding: 24px 14px 14px;
+  display: flex;
+  flex-direction: column;
+}
+
+.wf-drawer-head {
+  padding: 0 10px 18px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 10px;
+}
+.wf-drawer-name { font-size: 0.98rem; font-weight: 700; color: var(--ink); margin-top: 10px; }
+.wf-drawer-email { font-size: 0.76rem; color: var(--muted); word-break: break-all; }
+
+.wf-drawer-item[hidden] { display: none; }
+.wf-drawer-item {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  background: none;
+  border: none;
+  text-align: left;
+  padding: 11px 10px;
+  border-radius: 11px;
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--ink);
+  cursor: pointer;
+}
+.wf-drawer-item svg { width: 18px; height: 18px; color: var(--muted); flex-shrink: 0; }
+.wf-drawer-item[aria-pressed="true"] { background: var(--accent-bg); color: var(--accent); }
+.wf-drawer-item[aria-pressed="true"] svg { color: var(--accent); }
+.wf-drawer-item.danger { color: var(--important); }
+.wf-drawer-item.danger svg { color: var(--important); }
+.wf-drawer-item:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.wf-drawer-chevron {
+  margin-left: auto;
+  width: 14px;
+  height: 14px;
+  transition: transform 0.15s ease;
+}
+.wf-drawer-group[aria-expanded="true"] .wf-drawer-chevron { transform: rotate(180deg); }
+
+.wf-drawer-submenu[hidden] { display: none; }
+.wf-drawer-submenu { position: relative; padding-left: 27px; margin: 2px 0 4px; }
+.wf-drawer-submenu::before {
+  content: "";
+  position: absolute;
+  left: 14px;
+  top: 2px;
+  bottom: 18px;
+  border-left: 1.5px dashed var(--line);
+}
+
+.wf-drawer-subitem {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: none;
+  border: none;
+  text-align: left;
+  padding: 9px 10px;
+  font: inherit;
+  font-size: 0.83rem;
+  font-weight: 600;
+  color: var(--ink);
+  cursor: pointer;
+  width: 100%;
+  border-radius: 9px;
+}
+.wf-drawer-subitem::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
+}
+.wf-drawer-subitem[aria-pressed="true"] { background: var(--accent-bg); color: var(--accent); }
+.wf-drawer-subitem:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.wf-drawer-spacer { flex: 1; }
+.wf-drawer-divider { height: 1px; background: var(--line); margin: 8px 10px; }
+
+/* ---------- Profile name edit ---------- */
+
+.wf-profile-name-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--ink);
+}
+.wf-profile-name-row .wf-icon-btn { width: 28px; height: 28px; }
+.wf-profile-name-row .wf-icon-btn svg { width: 13px; height: 13px; }
+.wf-profile-name-edit {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.wf-profile-name-edit input {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 7px 10px;
+  font: inherit;
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: var(--ink);
+  text-align: center;
+  width: 180px;
+}
+
+/* ---------- Greeting (Overview) ---------- */
+
+.wf-greeting { margin-bottom: 18px; }
+.wf-greeting-sub { font-size: 0.82rem; color: var(--muted); }
+.wf-greeting-name { font-size: 1.2rem; font-weight: 700; color: var(--ink); margin: 2px 0; }
+
+/* ---------- KPI cards ---------- */
+
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 14px;
+  margin-bottom: 20px;
+}
+
+.kpi-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 16px;
+  box-shadow: 0 2px 6px var(--shadow);
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  transition: box-shadow 0.15s ease, transform 0.15s ease;
+}
+.kpi-card:hover { box-shadow: 0 6px 16px var(--shadow); transform: translateY(-2px); }
+.kpi-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.kpi-card:disabled { cursor: default; opacity: 0.7; }
+.kpi-card:disabled:hover { box-shadow: 0 2px 6px var(--shadow); transform: none; }
+
+.kpi-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.kpi-body { min-width: 0; }
+
+.kpi-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.78rem;
+  color: var(--muted);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.kpi-num {
+  display: block;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--ink);
+  line-height: 1.3;
+}
+.kpi-num.na { font-size: 1rem; color: var(--muted); }
+.kpi-num .live-dot { margin-left: 6px; vertical-align: middle; }
+
+.kpi-delta-row { display: block; margin-top: 2px; font-size: 0.72rem; }
+.kpi-delta { font-weight: 700; }
+.kpi-delta.up { color: var(--resolved); }
+.kpi-delta.down { color: var(--important); }
+.kpi-delta.flat { color: var(--muted); }
+.kpi-delta-sub { color: var(--muted); font-weight: 500; }
+
+.kpi-card.tone-accent .kpi-icon { background: var(--accent-bg); color: var(--accent); }
+.kpi-card.tone-active .kpi-icon { background: var(--resolved-bg); color: var(--resolved); }
+.kpi-card.tone-notice .kpi-icon { background: var(--warning-bg); color: var(--warning); }
+.kpi-card.tone-inactive .kpi-icon { background: var(--important-bg); color: var(--important); }
+.kpi-card.tone-probation .kpi-icon { background: var(--candidate-bg); color: var(--candidate); }
+.kpi-card.tone-confirmed .kpi-icon { background: var(--resolved-bg); color: var(--resolved); }
+
+.live-dot {
+  display: inline-block;
+  position: relative;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--resolved);
+  flex-shrink: 0;
+}
+.live-dot::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: var(--resolved);
+  animation: live-pulse 1.6s ease-out infinite;
+}
+@keyframes live-pulse {
+  0% { transform: scale(1); opacity: 0.7; }
+  100% { transform: scale(3); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .live-dot::after { animation: none; opacity: 0; }
+}
+
+/* ---------- Panels / chart cards ---------- */
+
+.wf-grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.wf-panel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 16px;
+  box-shadow: 0 2px 6px var(--shadow);
+  margin-bottom: 14px;
+}
+.wf-grid-2 .wf-panel { margin-bottom: 0; }
+
+.wf-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.wf-panel-head h3 {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+/* ---------- Workforce Movement (icon-boxed panel heads, pill trend
+   tabs, tinted stat cards) - scoped to #movementView so no other page's
+   panels/tabs/kpi-cards are affected ---------- */
+
+.wf-panel-head--icon { align-items: flex-start; justify-content: flex-start; }
+.wf-panel-head--icon .wf-panel-icon { margin-top: 1px; }
+.wf-panel-head--icon .wf-note { margin: 3px 0 0; }
+
+.wf-panel-icon {
+  width: 38px;
+  height: 38px;
+  border-radius: 11px;
+  background: var(--accent-bg);
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+#movementTrendTabs {
+  display: flex;
+  gap: 4px;
+  background: var(--other-bg);
+  border-radius: 12px;
+  padding: 4px;
+  border-bottom: none;
+  margin-bottom: 0;
+}
+#movementTrendTabs .wf-subtab {
+  flex: 1;
+  text-align: center;
+  padding: 10px 0;
+  border-radius: 9px;
+  border-bottom: none;
+  margin-bottom: 0;
+  color: var(--muted);
+  transition: background 0.15s ease, color 0.15s ease;
+}
+#movementTrendTabs .wf-subtab[aria-pressed="true"] {
+  background: var(--accent);
+  color: #fff;
+}
+
+#movementView .kpi-card { border: none; }
+#movementView .kpi-card.tone-move-blue { background: var(--move-blue-bg); }
+#movementView .kpi-card.tone-move-blue .kpi-icon { color: var(--move-blue); }
+#movementView .kpi-card.tone-move-purple { background: var(--move-purple-bg); }
+#movementView .kpi-card.tone-move-purple .kpi-icon { color: var(--move-purple); }
+#movementView .kpi-card.tone-move-green { background: var(--move-green-bg); }
+#movementView .kpi-card.tone-move-green .kpi-icon { color: var(--move-green); }
+#movementView .kpi-card.tone-move-red { background: var(--move-red-bg); }
+#movementView .kpi-card.tone-move-red .kpi-icon { color: var(--move-red); }
+#movementView .kpi-card .kpi-icon { background: var(--surface); }
+
+/* Health Insurance's 8-card grid - same vivid full-card-tint pattern as
+   Workforce Movement, reusing the same color tokens (plus orange, which
+   only this page needs). */
+#healthInsuranceView .kpi-card { border: none; cursor: default; }
+#healthInsuranceView .kpi-card:hover { transform: none; box-shadow: 0 2px 6px var(--shadow); }
+#healthInsuranceView .kpi-card.tone-ins-blue { background: var(--move-blue-bg); }
+#healthInsuranceView .kpi-card.tone-ins-blue .kpi-icon,
+#healthInsuranceView .kpi-card.tone-ins-blue .kpi-label,
+#healthInsuranceView .kpi-card.tone-ins-blue .kpi-num { color: var(--move-blue); }
+#healthInsuranceView .kpi-card.tone-ins-purple { background: var(--move-purple-bg); }
+#healthInsuranceView .kpi-card.tone-ins-purple .kpi-icon,
+#healthInsuranceView .kpi-card.tone-ins-purple .kpi-label,
+#healthInsuranceView .kpi-card.tone-ins-purple .kpi-num { color: var(--move-purple); }
+#healthInsuranceView .kpi-card.tone-ins-green { background: var(--move-green-bg); }
+#healthInsuranceView .kpi-card.tone-ins-green .kpi-icon,
+#healthInsuranceView .kpi-card.tone-ins-green .kpi-label,
+#healthInsuranceView .kpi-card.tone-ins-green .kpi-num { color: var(--move-green); }
+#healthInsuranceView .kpi-card.tone-ins-red { background: var(--move-red-bg); }
+#healthInsuranceView .kpi-card.tone-ins-red .kpi-icon,
+#healthInsuranceView .kpi-card.tone-ins-red .kpi-label,
+#healthInsuranceView .kpi-card.tone-ins-red .kpi-num { color: var(--move-red); }
+#healthInsuranceView .kpi-card.tone-ins-orange { background: var(--move-orange-bg); }
+#healthInsuranceView .kpi-card.tone-ins-orange .kpi-icon,
+#healthInsuranceView .kpi-card.tone-ins-orange .kpi-label,
+#healthInsuranceView .kpi-card.tone-ins-orange .kpi-num { color: var(--move-orange); }
+#healthInsuranceView .kpi-card .kpi-icon { background: var(--surface); }
+#healthInsuranceView .kpi-card .kpi-label { font-weight: 700; }
+/* Caption (e.g. "FY 26-27", "Pending") a touch smaller/lighter than the
+   shared .kpi-delta-sub default, matching the mockup's faint small print
+   under the bold colored count. */
+#healthInsuranceView .kpi-card .kpi-delta-sub { font-size: 0.7rem; font-weight: 400; opacity: 0.75; }
+/* Health Insurance's labels ("New Addition Requests", "Total Insured
+   Lives") are longer than most other kpi-cards - the shared .kpi-label is
+   nowrap, which let long labels push the card past the screen edge on
+   mobile instead of wrapping (same issue Workforce Movement's cards hit
+   earlier). Scoped to just this grid so other kpi-cards' single-line
+   labels elsewhere stay exactly as they are. */
+#healthInsuranceView .kpi-card .kpi-label { white-space: normal; line-height: 1.25; }
+
+.hi-page-icon {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: var(--move-blue-bg);
+  color: var(--move-blue);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+/* Policy Information panel - manually-entered fields (Insurer Name, TPA,
+   dates, Sum Insured...), each with a small pencil icon to edit inline.
+   Each field gets its own colored icon (rotating through the same
+   move-blue/purple/green/orange/red tones the rest of Health Insurance
+   already uses) so the page reads as a lively info card, not a plain list. */
+.hi-policy-info-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+/* A field's optional group (e.g. "Sum Insured") renders as ONE shared box -
+   a heading with no value/pencil of its own, followed by its sub-fields
+   inside that same card - instead of each sub-field getting its own box.
+   Spans both grid columns and stacks vertically (title, then a mini-grid
+   of sub-fields), unlike a plain .hi-policy-info-field's icon+label row. */
+.hi-policy-info-group-box {
+  grid-column: 1 / -1;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+.hi-policy-info-group-title-row { display: flex; align-items: center; gap: 10px; }
+.hi-policy-info-group-title { font-size: 0.85rem; color: var(--ink); margin-bottom: 0; }
+.hi-policy-info-subgrid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px 16px; }
+.hi-policy-info-subfield { min-width: 0; }
+.hi-policy-info-field {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+  background: var(--other-bg);
+  border-radius: 12px;
+  padding: 12px;
+}
+.hi-policy-info-icon {
+  width: 34px;
+  height: 34px;
+  min-width: 34px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.hi-policy-info-icon.tone-ins-blue { background: var(--move-blue-bg); color: var(--move-blue); }
+.hi-policy-info-icon.tone-ins-purple { background: var(--move-purple-bg); color: var(--move-purple); }
+.hi-policy-info-icon.tone-ins-green { background: var(--move-green-bg); color: var(--move-green); }
+.hi-policy-info-icon.tone-ins-orange { background: var(--move-orange-bg); color: var(--move-orange); }
+.hi-policy-info-icon.tone-ins-red { background: var(--move-red-bg); color: var(--move-red); }
+.hi-policy-info-body { min-width: 0; flex: 1; }
+.hi-policy-info-label { display: block; font-size: 0.72rem; color: var(--muted); font-weight: 600; margin-bottom: 3px; }
+/* Combined-class override: the "Sum Insured" group heading carries both
+   .hi-policy-info-label and .hi-policy-info-group-title, and this rule
+   (equal specificity, declared last) is what actually wins the cascade -
+   without it, .hi-policy-info-label's smaller styling above was silently
+   overriding .hi-policy-info-group-title's intended larger heading size,
+   no matter which order the two rules were in. Color stays the same
+   muted tone as the other field labels above it - only size/weight differ. */
+.hi-policy-info-label.hi-policy-info-group-title { font-size: 0.85rem; color: var(--muted); font-weight: 700; margin-bottom: 0; }
+.hi-policy-info-value-row { display: flex; align-items: center; gap: 6px; }
+.hi-policy-info-value { font-size: 0.88rem; font-weight: 700; color: var(--ink); overflow-wrap: anywhere; }
+.hi-policy-info-value.na { color: var(--muted); font-weight: 500; }
+.hi-policy-info-edit-btn {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 2px;
+  flex-shrink: 0;
+  display: flex;
+}
+.hi-policy-info-edit-btn:hover { color: var(--accent); }
+.hi-policy-info-input {
+  width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  padding: 5px 8px;
+  font: inherit;
+  font-size: 0.86rem;
+  font-weight: 700;
+  color: var(--ink);
+}
+@media (max-width: 420px) {
+  .hi-policy-info-grid { grid-template-columns: 1fr; }
+}
+
+.hi-policy-info-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  background: var(--accent-bg);
+  color: var(--accent);
+  border-radius: 12px;
+  padding: 12px 14px;
+  margin-top: 14px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  line-height: 1.4;
+}
+.hi-policy-info-banner svg { flex-shrink: 0; margin-top: 1px; }
+
+/* Policy Documents / Employee E-Cards (Policy Information page) - live
+   Drive file lists, same row shape as .wf-emp-list but for a file instead
+   of a person: an icon circle, name + size/date meta, and a trailing
+   download link instead of a chevron (nothing to navigate to - the row
+   itself isn't clickable, only the download link is). */
+.hi-doc-list { list-style: none; margin: 0; padding: 0; }
+.hi-doc-list li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  padding: 11px 13px;
+  margin-bottom: 9px;
+}
+.hi-doc-list li.empty,
+.hi-doc-list li.error-banner { display: block; border: none; background: none; padding: 8px 0; }
+.hi-doc-icon {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: var(--other-bg);
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.hi-doc-icon svg { width: 19px; height: 19px; }
+.hi-doc-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.hi-doc-name { font-size: 0.85rem; font-weight: 700; color: var(--ink); overflow-wrap: break-word; }
+.hi-doc-meta { font-size: 0.74rem; color: var(--muted); margin-top: 2px; }
+.hi-doc-download {
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  transition: background 0.15s ease;
+}
+.hi-doc-download:hover,
+.hi-doc-download:focus-visible { background: var(--accent-bg); }
+.hi-doc-download:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.hi-doc-download svg { width: 17px; height: 17px; }
+.hi-doc-actions { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
+.hi-doc-share {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  transition: background 0.15s ease;
+}
+.hi-doc-share:hover,
+.hi-doc-share:focus-visible { background: var(--accent-bg); }
+.hi-doc-share:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.hi-doc-share svg { width: 15px; height: 15px; }
+.hi-doc-share:disabled { opacity: 0.6; cursor: default; }
+.hi-renewal-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.hi-renewal-icon {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: var(--move-blue-bg);
+  color: var(--move-blue);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.hi-renewal-text { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.hi-renewal-text b { font-size: 0.88rem; color: var(--ink); }
+.hi-renewal-due { font-size: 0.78rem; color: var(--important); font-weight: 600; }
+.hi-renewal-pct { font-size: 0.9rem; font-weight: 700; color: var(--ink); }
+#hiRenewalPanel .wf-progress-fill { background: var(--move-blue); }
+
+/* ---------- Covered Employees (Health Insurance drill-down) ---------- */
+
+.hi-ce-total-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.85rem;
+  color: var(--ink);
+  margin-bottom: 12px;
+}
+.hi-ce-total-row b { color: var(--accent); }
+.hi-ce-name-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.hi-ce-sub { font-size: 0.74rem; color: var(--ink); font-weight: 600; margin-top: 3px; }
+
+/* Employee Movements' labels ("Inter-Department Transfers") are longer than
+   any other kpi-card in the app - the shared .kpi-label is nowrap, which
+   let long labels push the card past the screen edge instead of wrapping.
+   Scoped to just this grid so every other kpi-card's single-line labels
+   elsewhere stay exactly as they are. */
+#movementBreakdownGrid .kpi-label { white-space: normal; line-height: 1.25; }
+
+.wf-link-btn {
+  background: none;
+  border: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  padding: 0;
+}
+.wf-link-btn:hover { text-decoration: underline; }
+.wf-link-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* Same solid-accent primary-CTA look as login.css's .login-btn, sized down
+   to sit inline in a page header row instead of full-width. */
+.wf-send-mail-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  border: none;
+  border-radius: 10px;
+  padding: 8px 14px;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 3px 8px var(--shadow);
+  white-space: nowrap;
+}
+.wf-send-mail-btn:hover { filter: brightness(1.06); }
+.wf-send-mail-btn:disabled { opacity: 0.65; cursor: default; box-shadow: none; }
+/* .wf-send-mail-btn's own display: inline-flex above is an author-origin
+   rule, which always wins over the browser's built-in [hidden] {
+   display: none } (a user-agent-origin rule - origin beats specificity,
+   so equal specificity doesn't matter here) - without this, toggling the
+   hidden attribute (sendDoerBreakupMail's syncVariantButtons show/hide)
+   had no visual effect and the button stayed visible everywhere,
+   regardless of directoryReportVariant. .wf-link-btn never hit this
+   because it doesn't declare display at all. */
+.wf-send-mail-btn[hidden] { display: none; }
+.wf-send-mail-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.wf-donut-row {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+
+.wf-canvas-wrap { position: relative; }
+.wf-canvas-wrap--donut { width: 130px; height: 130px; flex-shrink: 0; }
+.wf-canvas-wrap--line { height: 220px; }
+
+.wf-donut-center {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+.wf-donut-center b { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 1.1rem; font-weight: 700; color: var(--ink); }
+.wf-donut-center span { font-size: 0.68rem; color: var(--muted); }
+.wf-canvas-wrap--donut-lg .wf-donut-center b { font-size: 1.8rem; }
+.wf-canvas-wrap--donut-lg .wf-donut-center span { font-size: 0.8rem; }
+
+/* ---------- Age Distribution table ---------- */
+
+.wf-dist-table { display: flex; flex-direction: column; }
+.wf-dist-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.82rem;
+}
+.wf-dist-row:last-of-type { border-bottom: none; }
+
+.wf-dist-row.clickable {
+  cursor: pointer;
+  margin: 0 -8px;
+  padding: 10px 8px;
+  border-radius: 8px;
+  transition: background 0.15s ease;
+}
+.wf-dist-row.clickable:hover,
+.wf-dist-row.clickable:focus-visible { background: var(--accent-bg); }
+.wf-dist-row.clickable:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.wf-dist-header { font-weight: 700; color: var(--ink); font-size: 0.78rem; padding-bottom: 12px; }
+.wf-dist-label-col { flex: 1; display: flex; align-items: center; gap: 10px; min-width: 0; color: var(--ink); font-weight: 600; }
+.wf-dist-header .wf-dist-label-col { color: var(--muted); font-weight: 700; }
+.wf-dist-num-col {
+  width: 76px;
+  flex-shrink: 0;
+  text-align: right;
+  white-space: nowrap;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  color: var(--ink);
+}
+.wf-dist-header .wf-dist-num-col { color: var(--muted); font-family: inherit; font-weight: 700; }
+.wf-dist-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+
+.wf-dist-total-row {
+  background: var(--accent-bg);
+  border-radius: 11px;
+  padding: 10px 12px;
+  margin-top: 6px;
+  border-bottom: none;
+}
+.wf-dist-total-row .wf-dist-label-col,
+.wf-dist-total-row .wf-dist-num-col { color: var(--accent); font-weight: 700; }
+.wf-dist-total-icon {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.wf-dist-total-icon svg { width: 14px; height: 14px; }
+
+
+.wf-legend {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  flex: 1;
+  min-width: 0;
+  font-size: 0.8rem;
+}
+
+.wf-legend li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+}
+
+.wf-legend li.sub { padding-left: 18px; color: var(--muted); font-size: 0.76rem; }
+
+.wf-legend li.clickable {
+  cursor: pointer;
+  margin: 0 -8px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  transition: background 0.15s ease;
+}
+.wf-legend li.clickable:hover,
+.wf-legend li.clickable:focus-visible { background: var(--accent-bg); }
+.wf-legend li.clickable:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+.wf-legend-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.wf-legend-dot.outline { border: 2px solid currentColor; background: none; width: 7px; height: 7px; }
+
+.wf-legend-name { flex: 1; color: var(--ink); }
+.wf-legend-value {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  color: var(--ink);
+}
+.wf-legend-pct { color: var(--muted); font-size: 0.74rem; margin-left: 4px; }
+
+.wf-stat-pair {
+  display: flex;
+  align-items: center;
+  justify-content: space-around;
+  text-align: center;
+  padding: 8px 0;
+}
+
+.wf-stat-pair .stat-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto 8px;
+}
+.wf-stat-pair .stat-icon.probation { background: var(--candidate-bg); color: var(--candidate); }
+.wf-stat-pair .stat-icon.confirmed { background: var(--resolved-bg); color: var(--resolved); }
+
+.wf-stat-pair .stat-label { font-size: 0.78rem; color: var(--muted); font-weight: 600; margin-bottom: 2px; }
+.wf-stat-pair .stat-num {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  font-size: 1.4rem;
+  font-weight: 700;
+  color: var(--ink);
+}
+.wf-stat-pair .stat-pct { font-size: 0.74rem; color: var(--muted); }
+.wf-stat-pair .stat-divider { width: 1px; align-self: stretch; background: var(--line); }
+
+.wf-stat-pair .stat-block.clickable {
+  cursor: pointer;
+  border-radius: 12px;
+  padding: 4px 10px;
+  transition: background 0.15s ease;
+}
+.wf-stat-pair .stat-block.clickable:hover,
+.wf-stat-pair .stat-block.clickable:focus-visible { background: var(--accent-bg); }
+.wf-stat-pair .stat-block.clickable:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* ---------- Bar list ---------- */
+
+.wf-bar-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.wf-bar-list li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0;
+}
+
+.wf-bar-icon {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: var(--accent-bg);
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.wf-bar-main { flex: 1; min-width: 0; }
+.wf-bar-name {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: normal;
+  line-height: 1.25;
+  font-size: 0.85rem;
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.wf-bar-track {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--other-bg);
+  margin-top: 6px;
+  overflow: hidden;
+}
+.wf-bar-fill { height: 100%; background: var(--accent); border-radius: 999px; }
+
+.wf-bar-count {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  color: var(--ink);
+  font-size: 0.85rem;
+  flex-shrink: 0;
+  min-width: 32px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.wf-bar-pct { color: var(--muted); font-size: 0.74rem; font-weight: 500; flex-shrink: 0; }
+
+.wf-bar-list li.clickable {
+  cursor: pointer;
+  margin: 0 -8px;
+  padding: 10px 8px;
+  border-radius: 10px;
+  transition: background 0.15s ease;
+}
+.wf-bar-list li.clickable:hover,
+.wf-bar-list li.clickable:focus-visible { background: var(--accent-bg); }
+.wf-bar-list li.clickable:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+.wf-bar-list li.wf-bar-total-row {
+  background: var(--accent-bg);
+  border-radius: 11px;
+  padding: 10px 12px;
+  margin-top: 6px;
+}
+.wf-bar-list li.wf-bar-total-row .wf-bar-icon { background: var(--surface); }
+.wf-bar-list li.wf-bar-total-row .wf-bar-name,
+.wf-bar-list li.wf-bar-total-row .wf-bar-count,
+.wf-bar-list li.wf-bar-total-row .wf-bar-pct { color: var(--accent); font-weight: 700; }
+
+/* ---------- Insights ---------- */
+
+.wf-insights-full {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.wf-insights-full li {
+  position: relative;
+  padding-left: 16px;
+  font-size: 0.84rem;
+  color: var(--ink);
+  line-height: 1.6;
+}
+.wf-insights-full li::before {
+  content: "•";
+  position: absolute;
+  left: 0;
+  color: var(--warning);
+  font-weight: 700;
+}
+.wf-insights-full li { padding: 6px 0 6px 16px; border-bottom: 1px solid var(--line); }
+.wf-insights-full li:last-child { border-bottom: none; }
+
+/* Every insight point drills into its own filtered Employee Data list (see
+   insightItemHtml/applyFiltersAndShowDirectory, workforce.js) - same
+   hover/focus affordance as .wf-dist-row.clickable and the Dashboard status
+   legend's own .clickable rows elsewhere in this file. */
+.wf-insights-full li.clickable {
+  cursor: pointer;
+  margin: 0 -8px;
+  padding: 8px 8px 8px 24px;
+  border-radius: 8px;
+  transition: background 0.15s ease;
+}
+.wf-insights-full li.clickable::before { left: 8px; }
+.wf-insights-full li.clickable:hover,
+.wf-insights-full li.clickable:focus-visible { background: var(--accent-bg); }
+.wf-insights-full li.clickable:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* ---------- Filter bar (Employee Data) ---------- */
+
+.wf-filterbar[hidden] { display: none; }
+.wf-filterbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.wf-filterbar input[type="search"] {
+  flex: 1 1 220px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 9px 12px;
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--ink);
+}
+
+.wf-filterbar select {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 9px 10px;
+  font: inherit;
+  font-size: 0.82rem;
+  color: var(--ink);
+}
+
+.wf-clear-btn {
+  background: var(--other-bg);
+  border: 1px solid var(--line);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 600;
+  padding: 9px 12px;
+  border-radius: 10px;
+  cursor: pointer;
+}
+.wf-clear-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.wf-result-summary {
+  font-size: 0.78rem;
+  color: var(--muted);
+  margin-bottom: 10px;
+}
+
+/* ---------- Range pills (Joining tab) ---------- */
+
+.wf-range-pills { display: flex; gap: 6px; flex-wrap: wrap; }
+.wf-range-pill {
+  background: var(--other-bg);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.74rem;
+  font-weight: 700;
+  padding: 6px 11px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.wf-range-pill[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.wf-range-pill:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ---------- Sub-tabs (Joining: Upcoming / Recent) ---------- */
+
+.wf-subtabs { display: flex; gap: 20px; border-bottom: 1px solid var(--line); margin-bottom: 14px; }
+.wf-subtab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 700;
+  padding: 8px 0;
+  cursor: pointer;
+  margin-bottom: -1px;
+}
+.wf-subtab[aria-pressed="true"] { color: var(--accent); border-bottom-color: var(--accent); }
+.wf-subtab:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ---------- Joining candidate list (date badge + name/role) ---------- */
+
+.wf-join-list { list-style: none; margin: 0; padding: 0; }
+.wf-join-list li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 0;
+  border-bottom: 1px solid var(--line);
+}
+.wf-join-list li:last-child { border-bottom: none; }
+
+.wf-join-badge-wrap { display: flex; flex-direction: column; align-items: center; gap: 4px; flex-shrink: 0; }
+.wf-join-main { flex: 1; min-width: 0; }
+.wf-join-name { word-break: break-word; }
+.wf-join-sub { word-break: break-word; }
+
+.wf-join-badge {
+  width: 44px;
+  height: 44px;
+  border-radius: 11px;
+  border: 1.5px solid var(--accent);
+  color: var(--accent);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.wf-join-badge b { font-size: 0.92rem; line-height: 1; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+.wf-join-badge span { font-size: 0.6rem; font-weight: 700; text-transform: uppercase; }
+
+.wf-join-countdown {
+  font-size: 0.6rem;
+  font-weight: 700;
+  color: var(--accent);
+  background: var(--accent-bg);
+  padding: 1px 6px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.wf-join-name { font-size: 0.85rem; font-weight: 700; color: var(--ink); }
+.wf-join-sub { font-size: 0.74rem; color: var(--muted); margin-top: 2px; }
+
+.wf-transfer-route { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.wf-transfer-route svg { flex-shrink: 0; color: var(--accent); }
+
+.wf-movement-count-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+/* One line, not two - stacked under the count (instead of squeezed beside
+   it) so it gets the panel's full width to fit in, plus a slightly smaller
+   size so the full sentence clears even a narrow phone screen. */
+.wf-generate-letter-hint { margin: 0; font-size: 0.7rem; font-weight: 600; color: var(--accent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wf-generate-letter-hint[hidden] { display: none; }
+
+/* Promotions-only: each row's name is clickable straight into Generate
+   Letter (see the "clickable" class added in loadMovementDetail) - the
+   other three movement types keep plain, non-interactive rows. */
+.wf-join-list li.clickable { cursor: pointer; border-radius: 8px; }
+.wf-join-list li.clickable:hover .wf-join-name { color: var(--accent); }
+.wf-join-list li.clickable:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* ---------- Employee list ---------- */
+
+.wf-emp-list { list-style: none; margin: 0; padding: 0; }
+.wf-emp-list li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  padding: 11px 13px;
+  margin-bottom: 9px;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  width: 100%;
+}
+.wf-emp-list li:hover { border-color: var(--accent); }
+.wf-emp-list li:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.wf-emp-avatar {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  background: var(--other-bg);
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.wf-emp-avatar svg { width: 22px; height: 22px; }
+
+.wf-emp-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.wf-emp-name { font-size: 0.86rem; font-weight: 700; color: var(--ink); }
+.wf-emp-meta { font-size: 0.74rem; color: var(--muted); margin-top: 2px; }
+.wf-emp-meta .wf-status-chip { padding: 1px 7px; font-size: 0.62rem; }
+.wf-emp-role { font-size: 0.74rem; color: var(--muted); margin-top: 1px; }
+
+.wf-emp-chevron {
+  color: var(--move-blue);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.wf-emp-chevron svg { width: 16px; height: 16px; }
+
+/* ---------- Employee profile (detail) ---------- */
+
+.wf-emp-profile-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 16px;
+  margin-bottom: 14px;
+}
+.wf-emp-profile-avatar {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: var(--other-bg);
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.wf-emp-profile-avatar svg { width: 34px; height: 34px; }
+.wf-emp-profile-info { flex: 1; min-width: 0; }
+.wf-emp-profile-name-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.wf-emp-profile-name-row .name { font-size: 1.02rem; font-weight: 700; color: var(--ink); }
+.wf-emp-profile-sub { font-size: 0.78rem; color: var(--muted); margin-top: 3px; }
+.wf-emp-mail-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.wf-field-section {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 14px 16px;
+  margin-bottom: 14px;
+}
+.wf-field-section h4 { margin: 0 0 6px; font-size: 0.82rem; font-weight: 700; color: var(--accent); }
+.wf-field-row {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--line);
+}
+.wf-field-row:last-child { border-bottom: none; }
+.wf-field-icon {
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  background: var(--accent-bg);
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.wf-field-icon svg { width: 15px; height: 15px; }
+.wf-field-label { flex: 1; font-size: 0.78rem; color: var(--muted); }
+.wf-field-value { font-size: 0.82rem; font-weight: 600; color: var(--ink); text-align: right; max-width: 55%; word-break: break-word; }
+
+.wf-work-summary-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+.wf-work-summary-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px;
+  text-align: center;
+}
+.wf-work-summary-card .wf-ws-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: var(--accent-bg);
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto 6px;
+}
+.wf-work-summary-card .wf-ws-label { font-size: 0.68rem; color: var(--muted); }
+.wf-work-summary-card .wf-ws-value { font-size: 0.88rem; font-weight: 700; color: var(--ink); margin-top: 2px; }
+
+.wf-status-chip {
+  display: inline-block;
+  font-size: 0.68rem;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+.wf-status-chip.active { background: var(--resolved-bg); color: var(--resolved); }
+.wf-status-chip.notice { background: var(--warning-bg); color: var(--warning); }
+.wf-status-chip.inactive { background: var(--important-bg); color: var(--important); }
+
+/* ---------- Unavailable state (Exit / Attrition / Movement) ---------- */
+
+.wf-unavailable {
+  background: var(--surface);
+  border: 1px dashed var(--line);
+  border-radius: 14px;
+  padding: 28px 24px;
+  text-align: center;
+  max-width: 560px;
+  margin: 20px auto;
+}
+.wf-unavailable h3 { margin: 0 0 10px; color: var(--ink); font-size: 1rem; }
+.wf-unavailable p { margin: 0; color: var(--muted); font-size: 0.85rem; line-height: 1.6; }
+
+.wf-note { font-size: 0.78rem; color: var(--muted); margin: 12px 0 0; }
+
+/* ---------- 3-column stat rows (Tenure) and label/value rows (Missing Data) ---------- */
+
+.wf-row-3col {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.83rem;
+}
+.wf-row-3col:last-child { border-bottom: none; }
+.wf-row-3col .wf-row-label { flex: 1; color: var(--ink); font-weight: 600; }
+.wf-row-3col .wf-row-value {
+  width: 60px;
+  text-align: right;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  color: var(--muted);
+}
+.wf-row-3col .wf-row-pct {
+  width: 56px;
+  text-align: right;
+  font-weight: 700;
+  color: var(--ink);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+.wf-stat-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.85rem;
+}
+.wf-stat-row:last-child { border-bottom: none; }
+.wf-stat-row .wf-row-label { color: var(--ink); font-weight: 600; }
+.wf-stat-row .wf-row-value {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-weight: 700;
+  color: var(--ink);
+}
+.wf-stat-row.ok .wf-row-value { color: var(--resolved); }
+.wf-stat-row.warn .wf-row-value { color: var(--important); }
+
+/* ---------- Big stat + progress bar (Data Quality completeness) ---------- */
+
+.wf-completeness-label { font-size: 0.78rem; color: var(--muted); font-weight: 600; margin-bottom: 6px; }
+.wf-completeness-num {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 1.9rem;
+  font-weight: 700;
+  color: var(--ink);
+}
+.wf-progress-track {
+  height: 9px;
+  border-radius: 999px;
+  background: var(--other-bg);
+  overflow: hidden;
+  margin-top: 12px;
+}
+.wf-progress-fill { height: 100%; border-radius: 999px; background: var(--resolved); }
+
+/* ---------- Shared states ---------- */
+
+.empty {
+  color: var(--muted);
+  font-size: 0.85rem;
+  padding: 8px 4px;
+}
+
+.error-banner {
+  background: var(--important-bg);
+  color: var(--important);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 0.82rem;
+  margin-bottom: 14px;
+}
+
+@media (max-width: 860px) {
+  .wf-grid-2 { grid-template-columns: 1fr; }
+  .kpi-grid { grid-template-columns: repeat(2, 1fr); }
+}
+
+@media (max-width: 640px) {
+  .wf-shell { padding: 14px 14px 32px; }
+  .wf-wordmark { font-size: 1.05rem; }
+}
+
+@media (max-width: 460px) {
+  .kpi-card { padding: 11px; gap: 9px; }
+  .kpi-icon { width: 34px; height: 34px; }
+  .kpi-icon svg { width: 16px; height: 16px; }
+  .kpi-label { font-size: 0.68rem; }
+  .kpi-num { font-size: 1.1rem; }
+
+  /* The fixed-size donut plus its legend's count+percentage no longer fit
+     on one line at this width without the numbers clipping at the right
+     edge - shrink the donut and let each legend row wrap instead. */
+  .wf-canvas-wrap--donut { width: 96px; height: 96px; }
+  .wf-donut-row { gap: 12px; }
+  .wf-legend { font-size: 0.72rem; }
+  .wf-legend li { flex-wrap: wrap; row-gap: 2px; }
+  .wf-legend-value, .wf-legend-pct { flex-shrink: 0; }
+}
+
+/* ---------- Organization Chart ---------- */
+
+#orgChartDeptSelect {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 9px 10px;
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--ink);
+}
+
+.org-chart {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  overflow: hidden;
+  margin-top: 14px;
+}
+
+.org-chart-top-row {
+  display: flex;
+  align-items: stretch;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 16px 16px 0;
+}
+
+.org-chart-banner {
+  flex: 1 1 320px;
+  background: linear-gradient(135deg, #1f3a5f, #2563eb);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 20px 22px;
+  border-radius: 14px;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+.org-chart-banner-icon {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.15);
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.org-chart-banner-text { display: flex; flex-direction: column; gap: 2px; }
+.org-chart-banner-title { font-size: 1.3rem; font-weight: 800; line-height: 1.15; }
+.org-chart-banner-subtitle { font-size: 1.05rem; font-weight: 700; color: #bfdbfe; }
+.org-chart-banner-tagline { font-size: 0.78rem; color: rgba(255, 255, 255, 0.85); margin-top: 4px; }
+
+.org-chart-info-card {
+  flex: 0 1 300px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: 0 4px 14px var(--shadow);
+  padding: 14px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  justify-content: center;
+}
+.org-chart-info-row { display: flex; align-items: center; gap: 8px; font-size: 0.82rem; }
+.org-chart-info-icon { width: 20px; height: 20px; color: var(--accent); flex-shrink: 0; }
+.org-chart-info-icon svg { width: 100%; height: 100%; }
+.org-chart-info-label { color: var(--muted); min-width: 110px; }
+.org-chart-info-sep { color: var(--muted); }
+.org-chart-info-value { font-weight: 700; color: var(--ink); }
+
+/* HOD picker - only rendered (see orgChartHodInfoRow) when a department
+   actually has more than one real HOD tagged to it. The trigger button
+   is deliberately styled to look identical to the plain HOD text next to
+   it (same .org-chart-info-value inside it), just with a small caret
+   added, so it doesn't look like a form control sitting oddly in an
+   otherwise plain info row. */
+.org-chart-hod-picker { position: relative; display: inline-flex; }
+.org-chart-hod-picker-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+}
+.org-chart-hod-picker-caret { color: var(--accent); flex-shrink: 0; }
+/* right: 0 (instead of left: 0) opens the list toward the left - the
+   trigger button sits on the right side of the info card (after the
+   "HOD :" label), which itself sits on the right side of the whole
+   chart, so anchoring from the left pushed the list further right and
+   straight into .org-chart's own overflow: hidden edge, clipping it. */
+.org-chart-hod-picker-list {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 4px;
+  min-width: 180px;
+  max-width: min(260px, calc(100vw - 32px));
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 8px 20px var(--shadow);
+  padding: 4px;
+  z-index: 20;
+  list-style: none;
+}
+.org-chart-hod-picker-list li {
+  padding: 7px 10px;
+  border-radius: 7px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--ink);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.org-chart-hod-picker-list li:hover { background: var(--surface-hover, rgba(0, 0, 0, 0.04)); }
+.org-chart-hod-picker-list li.active { background: var(--accent); color: #fff; }
+
+.org-chart-tree {
+  padding: 26px 20px 6px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.org-chart-hod-box {
+  background: #1f3a5f;
+  color: #fff;
+  border-radius: 14px;
+  padding: 16px 28px;
+  text-align: center;
+  box-shadow: 0 6px 18px rgba(31, 58, 95, 0.35);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  max-width: 300px;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+.org-chart-hod-avatar {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.15);
+  border: 2px solid rgba(255, 255, 255, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 6px;
+}
+.org-chart-hod-avatar svg { width: 22px; height: 22px; }
+
+/* Director (Reporting DOER) box - same shape as the HOD box beneath it,
+   but the banner's own gradient so it visually reads as the top of the
+   hierarchy rather than a second identical box. */
+.org-chart-director-box {
+  background: linear-gradient(135deg, #1f3a5f, #2563eb);
+  box-shadow: 0 6px 18px rgba(37, 99, 235, 0.35);
+}
+.org-chart-hod-title { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; color: #bfdbfe; font-weight: 700; }
+.org-chart-hod-name { font-size: 1.05rem; font-weight: 800; }
+.org-chart-hod-role { font-size: 0.78rem; color: #bfdbfe; font-weight: 600; margin-top: 2px; }
+
+/* PDF-export-only: when a department has more than one real Director,
+   each becomes its own column below the Managing Director box (see
+   renderOrgChartPdfTreeHtml) - everything inside a column (its own HOD
+   box(es) and their White/Blue Collar cards) still uses the exact same
+   pieces/classes as the plain single-Director PDF, just wrapped in one
+   column per Director instead of always exactly one. */
+/* flex-wrap: nowrap (not wrap) is deliberate - a wrapped second row of
+   Director/HOD columns has no clean way to connect its own bus line
+   back up to the shared parent above (the single-bus-per-fan-out
+   technique here assumes one row), so busy departments instead stay in
+   one (possibly very wide) row and get shrunk to fit the page by
+   scaleOrgChartPdfTreeToFit, rather than wrapping into a
+   visually-disconnected second row. */
+.org-chart-pdf-directors-row {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  gap: 22px;
+  flex-wrap: nowrap;
+}
+.org-chart-pdf-director-col {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.org-chart-pdf-hod-block {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+/* When a Director has more than one real HOD, they fan out side by side
+   under a shared bus line instead of stacking one after another -
+   reuses the exact same bus+tick+arrow technique as the designation
+   cards row below each HOD (org-chart-cards-row/org-chart-card), just
+   wrapping a full HOD sub-branch (leader box + their own cards) in each
+   slot instead of a single card. */
+/* flex-wrap: nowrap - same reasoning as .org-chart-pdf-directors-row
+   above. */
+.org-chart-pdf-hods-row {
+  position: relative;
+  display: flex;
+  flex-wrap: nowrap;
+  justify-content: center;
+  width: fit-content;
+  margin-left: auto;
+  margin-right: auto;
+}
+.org-chart-pdf-hod-slot {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+/* Positioned by JS (positionOrgChartPdfHodBuses) once the real slot
+   widths are known - see the print rule above for why. */
+.org-chart-pdf-hods-bus { display: none; }
+
+/* Director -> HOD: a line + down-arrowhead sized to fit entirely inside
+   this gap (line 19px + arrowhead 7px = the 26px gap itself), so the
+   arrow's tip lands exactly on the HOD box's own top edge instead of
+   poking into it or stopping short of it. */
+.org-chart-connector-down { position: relative; width: 2px; height: 26px; margin: 0 auto; }
+.org-chart-connector-down::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 2px;
+  height: 19px;
+  background: #000;
+}
+.org-chart-connector-down::after {
+  content: "";
+  position: absolute;
+  top: 19px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 0;
+  height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 7px solid #000;
+}
+
+/* HOD (or the previous section's cards) down to the White/Blue Collar
+   pill - a plain line, no arrowhead of its own; the pill sits directly
+   on top of it (see .org-chart-pill-connector below for where the
+   single arrowhead for this whole descent actually lives), so the pill
+   reads as a label sitting mid-line rather than a separate hop. */
+.org-chart-branch-connector { width: 2px; height: 26px; background: #000; margin: 0 auto; }
+/* Between the White Collar row and the Blue Collar pill specifically,
+   this connector follows a .org-chart-cards-row - which carries its own
+   20px margin-bottom (space before the footer, when a row is the very
+   last thing on the chart) - so without this, the line only drew across
+   its own 26px and left that 20px as an unbridged blank gap above it,
+   making the line look like it starts floating in mid-air instead of
+   reaching all the way back up to the last row of cards. Pulling the
+   connector up by that same 20px and adding it to the connector's own
+   height closes the gap without touching the row's margin itself (still
+   needed as-is when a row is the chart's last element). print has its
+   own compact spacing already and never had this gap (its own -
+   different - margin/line values happen to already touch), so this is
+   scoped off there. */
+body:not(.printing-org-chart) .org-chart-cards-row + .org-chart-branch-connector {
+  margin-top: -20px;
+  height: 46px;
+}
+
+/* Pill down to the cards row: same line+arrowhead idea as
+   .org-chart-connector-down above, sized to this gap's own 20px so the
+   tip lands exactly on the cards row's own top edge (where its bus line
+   sits) - this is the one arrowhead for the whole HOD-to-cards descent. */
+.org-chart-pill-connector { position: relative; width: 2px; height: 20px; margin: 0 auto; }
+.org-chart-pill-connector::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 2px;
+  height: 13px;
+  background: #000;
+}
+.org-chart-pill-connector::after {
+  content: "";
+  position: absolute;
+  top: 13px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 0;
+  height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 7px solid #000;
+}
+
+/* When a section holds exactly one designation card (either genuinely,
+   or after filtering everyone else out to Inactive), the bus line below
+   - built to fan out sideways into several cards sharing one line - has
+   nothing left to fan out to, and shows as a tiny stray line/second
+   arrowhead sitting just above the card's own. Hide it and let that
+   single card's own arrow (already sized correctly to reach up to this
+   connector) be the only arrowhead, the same as everywhere else with
+   just one path down. (The equivalent single-column case, where every
+   card ends up alone on its own line regardless of count, is handled
+   separately below at 480px.) */
+.org-chart-cards-row:has(> .org-chart-card:only-child)::before {
+  display: none;
+}
+.org-chart-pill-connector:has(+ .org-chart-cards-row > .org-chart-card:only-child)::before {
+  height: 20px;
+}
+.org-chart-pill-connector:has(+ .org-chart-cards-row > .org-chart-card:only-child)::after {
+  content: none;
+}
+
+.org-chart-pill {
+  background: #dbeafe;
+  color: #1e3a5f;
+  font-weight: 800;
+  font-size: 0.85rem;
+  padding: 8px 24px;
+  border-radius: 999px;
+  text-align: center;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+
+.org-chart-cards-row {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  /* Flex's default align-items: stretch was forcing every card in the
+     row to the height of its tallest sibling, so a 1-person card looked
+     identical in size to a 5-person card next to it. Cards should size
+     to their own employee list instead. */
+  align-items: flex-start;
+  gap: 16px;
+  padding-top: 26px;
+  width: fit-content;
+  max-width: 100%;
+  margin-left: auto;
+  margin-right: auto;
+  margin-bottom: 20px;
+}
+/* Inset by 103px (2px short of 105px, half the 210px card width below) so
+   the line reaches into that card's own 2px-wide tick rather than
+   stopping exactly at its center - ending precisely on the center left a
+   hairline gap at the corner (sub-pixel rounding between the tick's
+   %-based centering and this line's px inset), this overlap guarantees
+   they visibly fuse into one line, matching the first/last card's own
+   down-arrow instead of overshooting to the row's outer edge. */
+.org-chart-cards-row::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 103px;
+  right: 103px;
+  height: 2px;
+  background: #000;
+}
+
+/* Hidden here (on screen, and in the standalone single-level PDF, both
+   of which keep using the ::before above) - only shown, measured and
+   positioned by JS, inside the PDF tree specifically (see the print
+   rule further down and positionOrgChartPdfFanBuses). */
+.org-chart-cards-row-bus { display: none; }
+
+.org-chart-card {
+  position: relative;
+  width: 210px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--card-tint, var(--surface));
+  box-shadow: 0 2px 8px var(--shadow);
+}
+/* top: -27px extends 1px past the row's own 26px padding-top, for the
+   same overlap reason as the bus line's 103px inset above. height: 21px
+   (not the full 27px down to the card) stops the tick where the
+   arrowhead's own wide edge begins (border-top: 6px below) - the
+   arrowhead narrows to a point as it nears the card, so letting the
+   tick run underneath that narrowing point made the tick's own width
+   visibly stick out past the arrow's edges near the tip, reading as a
+   smudged blob instead of a clean triangle. */
+.org-chart-card::before {
+  content: "";
+  position: absolute;
+  top: -27px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 2px;
+  height: 21px;
+  background: #000;
+}
+.org-chart-card::after {
+  content: "";
+  position: absolute;
+  top: -6px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 0;
+  height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 6px solid #000;
+}
+.org-chart-card-head {
+  background: var(--card-color, var(--accent));
+  color: #fff;
+  font-weight: 700;
+  font-size: 0.78rem;
+  padding: 9px 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-top-left-radius: 11px;
+  border-top-right-radius: 11px;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+.org-chart-card-head-icon { display: flex; flex-shrink: 0; opacity: 0.9; }
+.org-chart-card-head-icon svg { width: 13px; height: 13px; }
+.org-chart-card-body { padding: 9px 10px; display: flex; flex-direction: column; gap: 8px; }
+.org-chart-card-emp { display: flex; align-items: center; gap: 8px; }
+.org-chart-card-emp-icon {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--card-color, var(--accent));
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  opacity: 0.85;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+.org-chart-card-emp-icon svg { width: 12px; height: 12px; }
+.org-chart-card-emp-text { display: flex; flex-direction: column; font-size: 0.78rem; line-height: 1.3; }
+.org-chart-card-emp-text b { color: var(--ink); font-weight: 700; }
+.org-chart-card-emp-text span { color: var(--muted); font-size: 0.72rem; }
+
+/* Below 480px (two 210px cards + a 16px gap no longer fit side by side),
+   every card in a row wraps onto its own line - the bus line above them
+   (built for fanning out sideways into several cards on the SAME line)
+   has nothing left to fan out to, and just shows as a stray horizontal
+   bar with its own arrowhead sitting right above each card's own
+   arrowhead, i.e. one visible gap-with-a-line looking like two broken
+   arrows instead of one. Below this width there's exactly one column,
+   so it's simpler to just chain each card straight to the one above it
+   (or to the pill, for the very first) with a single arrow each,
+   correctly sized to the smaller actual gaps involved instead of the
+   bus line's larger one. */
+@media (max-width: 480px) {
+  .org-chart-cards-row::before { display: none; }
+  /* No bus line to arrive at any more - let the line run the full 20px
+     down to where the first card's own arrow takes over instead of
+     stopping partway for an arrowhead that's now redundant. */
+  .org-chart-pill-connector::before { height: 20px; }
+  .org-chart-pill-connector::after { content: none; }
+  /* The first card's own arrow (unchanged - still sized for the row's
+     26px padding-top above it) is now the only arrowhead completing
+     this descent. Every card after it, though, sits only 16px (the
+     row's own flex gap) below the card before it, not 26px - resize
+     just those so the tip still lands exactly on the next card instead
+     of overshooting up into the previous one. */
+  .org-chart-cards-row .org-chart-card:not(:first-child)::before {
+    top: -16px;
+    height: 10px;
+  }
+  .org-chart-cards-row .org-chart-card:not(:first-child)::after {
+    top: -6px;
+  }
+}
+
+.org-chart-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 14px 22px;
+  border-top: 1px solid var(--line);
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--accent);
+  font-style: italic;
+}
+.org-chart-footer-icon { width: 16px; height: 16px; flex-shrink: 0; }
+
+/* ---------- Printable report (Upcoming Joinings) ---------- */
+
+#printReport { display: none; }
+
+@media print {
+  body * { visibility: hidden; }
+  #printReport, #printReport * { visibility: visible; }
+  #printReport {
+    display: block;
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    padding: 24px;
+  }
+  .print-report-head { border-bottom: 2px solid #1d5c63; padding-bottom: 10px; margin-bottom: 16px; }
+  .print-report-head h1 { margin: 0 0 4px; font-size: 1.3rem; color: #1d5c63; }
+  .print-meta { font-size: 0.8rem; color: #5b6169; }
+  #printReport table { width: 100%; border-collapse: collapse; font-size: 0.82rem; border: 1px solid #c3ccc8; }
+  #printReport th, #printReport td { text-align: left; padding: 7px 9px; border: 1px solid #c3ccc8; }
+  #printReport thead th { background: #eef0ed; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em; color: #1d5c63; }
+  #printReport tbody tr:nth-child(even) { background: #f7f9f8; }
+  #printReport tbody tr { break-inside: avoid; }
+  #printReport tbody tr.print-section-row { break-after: avoid; }
+  #printReport tbody tr.print-section-row td {
+    background: #1d5c63;
+    color: #fff;
+    font-weight: 700;
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 6px 9px;
+  }
+  #printReport thead { display: table-header-group; }
+
+  /* Doer Breakup report only: its own Department + HOD heading style,
+     separate from print-section-row (used elsewhere for Collar headers) so
+     this change doesn't touch any other report. print-color-adjust is set
+     explicitly because browsers otherwise auto-lighten ("ink-saving mode")
+     saturated background colors when printing/saving as PDF, which is what
+     made the previous shared dark-teal style look washed-out/grey here. */
+  #printReport tbody tr.print-doer-dept-row { break-after: avoid; }
+  #printReport tbody tr.print-doer-dept-row td {
+    background: #1f3a5f;
+    color: #fff;
+    font-weight: 700;
+    font-size: 0.74rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 7px 9px;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  /* Doer Breakup report only: a middle heading level nested under each
+     print-doer-dept-row (Department) - one per real HOD-1 actually found
+     among this DOER's own employees within that department (a department
+     can have more than one, e.g. Accounts under Archana Shroff has both
+     Niraj Goel and Pawan Kumar Dhanuka - see exportDoerBreakupPdf,
+     workforce.js), each with just their own people under them. Indented
+     (padding-left) and a lighter navy than the Department row above it, so
+     the nesting reads at a glance; employees with no HOD-1 tag skip this
+     level entirely and sit straight under the Department row instead. */
+  #printReport tbody tr.print-doer-hod-row { break-after: avoid; }
+  #printReport tbody tr.print-doer-hod-row td {
+    background: #3c5978;
+    color: #fff;
+    font-weight: 700;
+    font-size: 0.71rem;
+    text-transform: uppercase;
+    letter-spacing: 0.045em;
+    padding: 6px 9px 6px 20px;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  /* Doer Breakup report only: the lightest heading level, nested under
+     print-doer-hod-row (or straight under print-doer-dept-row for
+     employees with no HOD-1) - one per Collar group, tinted per collar
+     type so all three heading levels stay visually distinct at a glance. */
+  #printReport tbody tr.print-subsection-row { break-after: avoid; }
+  #printReport tbody tr.print-subsection-row td {
+    font-weight: 700;
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 5px 9px;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  #printReport tbody tr.print-subsection-white td { background: #dce9f7; color: #1d4e8f; }
+  #printReport tbody tr.print-subsection-blue td { background: #d8eef0; color: #1d5c63; }
+  #printReport tbody tr.print-subsection-groupd td { background: #ece0f3; color: #6b3a8f; }
+  #printReport tbody tr.print-subsection-other td { background: #eef0ed; color: #4a4a4a; }
+
+  /* Upcoming Confirmations report only: a wider, taller blank cell for the
+     HOD's physical signature - every other report's columns are unaffected. */
+  #printReport th.print-signature-col,
+  #printReport td.print-signature-col { min-width: 170px; height: 46px; }
+}
+
+/* Organization Chart export prints #orgChartPrintContent - a separate,
+   PDF-only deeper Managing Director -> Director(s) -> HOD(s) -> cards
+   tree (see renderOrgChartPdfTreeHtml), built from the same leader-box/
+   pill/cards-row pieces the on-screen #orgChartContent cards view uses,
+   just arranged deeper for departments with more than one real Director
+   or HOD - the on-screen view itself is untouched. Toggled by adding
+   "printing-org-chart" to <body> right before window.print() (which
+   also fills and un-hides #orgChartPrintContent) and removing/re-hiding
+   both again on afterprint. #printReport is force-hidden here too (with
+   !important, since its own unconditional "#printReport { visibility:
+   visible }" rule above would otherwise outrank a plain class selector)
+   so a stale table from a previously-generated report can't leak into
+   this export.
+
+   Deliberately NOT wrapped in @media print (unlike every other print
+   block on this page) - positionOrgChartPdfFanBuses needs to measure
+   real rendered box positions (Director/HOD box widths vary a lot
+   department to department) to place the multi-Director/multi-HOD bus
+   lines correctly, and that has to happen before window.print() is
+   even called, while the page is still in screen media - print media
+   styles are only guaranteed active during the print render itself, not
+   during 'beforeprint' (confirmed empirically: print layout wasn't yet
+   applied when that event fired). Applying these rules as soon as the
+   class is added, instead of waiting for actual print, causes no
+   on-screen glitch: #orgChartContent goes display:none in this exact
+   same ruleset, synchronously, before the browser's next paint. */
+  /* Chromium's print/PDF engine paints the page's base background layer
+     (body's own --paper grey) at a size that, measured directly against
+     the exported PDF's own raw content stream, comes out about 19.5%
+     larger in both dimensions than the actual page - a real mismatch in
+     Chromium's own print compositor, reproducible regardless of every
+     CSS/margin/viewport lever tried, so it isn't something to chase
+     further from here. Overriding the color itself, not the size, sidesteps
+     it entirely: even oversized, this layer now paints white, so the
+     grey never has a color to show through as. */
+  body.printing-org-chart { background: #fff; }
+  body.printing-org-chart * { visibility: hidden; }
+  body.printing-org-chart #printReport,
+  body.printing-org-chart #printReport * {
+    visibility: hidden !important;
+  }
+  body.printing-org-chart #orgChartPrintContent,
+  body.printing-org-chart #orgChartPrintContent * {
+    visibility: visible;
+  }
+  /* width: 297mm (landscape A4's own true width) instead of 100% -
+     100% would resolve against the browser's actual current viewport
+     (this block runs before window.print() even starts, see the
+     comment above), which varies by device and is usually nowhere near
+     the true print page width (a phone's few-hundred-px-wide screen,
+     for one) - a fixed width keeps every measurement/layout decision
+     here (fit-content row widths, flex-wrap points, the bus-line
+     positioning) consistent with the actual print output regardless of
+     what device or window size this runs on. */
+  /* height: 210mm (landscape A4's own true height) alongside the width
+     above, and an explicit white background - without both, this box is
+     only ever as tall as its own content (auto height) and paints
+     nothing outside its own children, so anywhere the tree doesn't
+     reach, the app shell's own grey background (behind this absolutely-
+     positioned box) shows through as a visible grey band along the
+     bottom and, whenever content is short, down past the wrapper's own
+     narrower width too - this box needs to BE the full white page, not
+     just wrap whatever content happens to be in it. */
+  body.printing-org-chart #orgChartPrintContent {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 297mm;
+    height: 210mm;
+    padding: 8mm 10mm;
+    background: #fff;
+  }
+  /* visibility: hidden keeps everything else in normal flow, so the rest
+     of the app shell still contributes its full height to the document -
+     Chromium's print pagination then adds extra blank pages to cover
+     that invisible-but-present height, even though #orgChartPrintContent
+     itself fits on one page once compacted below. display: none actually
+     removes it from flow so the document collapses to just the chart's
+     own height. */
+  body.printing-org-chart .wf-shell > *:not(#orgChartView),
+  body.printing-org-chart #orgChartView > *:not(#orgChartPrintContent) {
+    display: none !important;
+  }
+
+  /* Connector lines (HOD stack + the pill-to-cards "bus" line + each
+     card's own tick up to that bus) are plain background-color bars, and
+     browsers strip non-essential background colors when printing unless
+     told otherwise - without this they were invisible in the exported
+     PDF even though they show fine on screen, which is what made the
+     hierarchy hard to read there. Forced to solid black here (on screen
+     they use the app's pale --line grey, which read as barely-there
+     white on the printed page) to read clearly on paper. */
+  body.printing-org-chart .org-chart-connector-down,
+  body.printing-org-chart .org-chart-branch-connector,
+  body.printing-org-chart .org-chart-pill-connector,
+  body.printing-org-chart .org-chart-cards-row::before {
+    background: #000;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  /* The Director->HOD and HOD->pill connectors grew their own
+     ::before/::after line+arrowhead treatment for the on-screen view
+     (see the base rules) - keep the PDF's simpler flat-bar look
+     (unchanged from before) by switching those back off here. */
+  body.printing-org-chart .org-chart-connector-down::before,
+  body.printing-org-chart .org-chart-connector-down::after,
+  body.printing-org-chart .org-chart-pill-connector::before,
+  body.printing-org-chart .org-chart-pill-connector::after {
+    content: none;
+  }
+  /* Replaced by the real .org-chart-card-tick/-arrow elements below (see
+     orgChartCardHtml's own comment) - hidden here rather than deleted, so
+     the on-screen card list (never printed, unaffected by any of this)
+     keeps using these exactly as before. */
+  body.printing-org-chart .org-chart-card::before,
+  body.printing-org-chart .org-chart-card::after {
+    content: none;
+  }
+  /* Each card's own tick line ends in a downward arrowhead pointing into
+     that designation's box, matching the reference chart's style -
+     geometry (left/top/width/height/border-widths) is set entirely by
+     normalizeOrgChartCardConnectorSizes, not here, so every card renders
+     at the exact same physical size regardless of the tree's own zoom
+     factor (see that function's own comment for why that has to be
+     computed rather than just authored as a plain CSS size). */
+  body.printing-org-chart .org-chart-card-tick {
+    display: block;
+    position: absolute;
+    background: #000;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  body.printing-org-chart .org-chart-card-arrow {
+    display: block;
+    position: absolute;
+    width: 0;
+    height: 0;
+    border-style: solid;
+    border-left-color: transparent;
+    border-right-color: transparent;
+    border-top-color: #000;
+    /* border-style: solid above applies to all four sides, including the
+       bottom - which normalizeOrgChartCardConnectorSizes never gives a
+       width (only left/right/top), so it was left at the default medium
+       (~3px) width with a default currentColor (black), rendering as a
+       stray extra border segment that distorted the triangle instead of
+       leaving a clean point. The original ::after version never had this
+       problem: it set each side via the border-left/-right/-top
+       shorthand individually, so border-bottom's style stayed at its own
+       default (none, i.e. invisible) rather than inheriting "solid" from
+       a shared property the way it does here. */
+    border-bottom: 0;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  /* Same cards/tree markup and layout logic as the on-screen view - only
+     sizing is scaled down here so a busy department (many designations,
+     each listing every employee by name) still fits one landscape page.
+     overflow: visible overrides the base rule's own overflow: hidden
+     (there to clip an on-screen-only dropdown elsewhere, see that rule's
+     own comment) - scaleOrgChartPdfTreeToFit measures a busy department's
+     Directors/HODs row overflowing past .org-chart's own box on purpose
+     (that's how it detects the tree needs shrinking at all), and now
+     scales .org-chart with transform rather than the old zoom, which
+     never shrinks .org-chart's own box the way zoom incidentally did -
+     without this override that overflow would get silently clipped by
+     .org-chart's own edge instead of scaling down into view. */
+  body.printing-org-chart .org-chart { border: none; border-radius: 0; margin-top: 0; overflow: visible; }
+  /* space-between (instead of the on-screen default flex-start, where the
+     banner's flex:1 grows to fill the row) keeps the info card pinned to
+     the right while the banner below is free to shrink to its own
+     content width, leaving the gap between them empty instead of solid
+     blue. */
+  body.printing-org-chart .org-chart-top-row { padding: 0 0 6px; gap: 8px; justify-content: space-between; }
+  /* Matches .org-chart-info-card's own flex: 0 1 300px below, so the two
+     header boxes come out the same width instead of the banner shrinking
+     to its own (much shorter) text content. */
+  body.printing-org-chart .org-chart-banner { padding: 6px 10px; gap: 8px; border-radius: 6px; flex: 0 1 300px; }
+  body.printing-org-chart .org-chart-banner-icon { width: 26px; height: 26px; border-width: 1px; }
+  body.printing-org-chart .org-chart-banner-icon svg { width: 14px; height: 14px; }
+  body.printing-org-chart .org-chart-banner-title { font-size: 0.85rem; }
+  body.printing-org-chart .org-chart-banner-subtitle { font-size: 0.66rem; }
+  body.printing-org-chart .org-chart-banner-tagline { font-size: 0.56rem; margin-top: 1px; }
+  body.printing-org-chart .org-chart-info-card { padding: 5px 10px; gap: 3px; }
+  body.printing-org-chart .org-chart-info-row { font-size: 0.6rem; gap: 5px; }
+  body.printing-org-chart .org-chart-info-icon { width: 11px; height: 11px; }
+  body.printing-org-chart .org-chart-info-label { min-width: 62px; }
+  /* The HOD picker is a screen-only interaction (per explicit request,
+     the PDF stays exactly as it already was) - the caret and dropdown
+     never show here, and the trigger button collapses back to looking
+     like the same plain text every other info row value already is. */
+  body.printing-org-chart .org-chart-hod-picker-caret,
+  body.printing-org-chart .org-chart-hod-picker-list {
+    display: none !important;
+  }
+  body.printing-org-chart .org-chart-hod-picker-btn { cursor: default; }
+
+  body.printing-org-chart .org-chart-tree { padding: 6px 4px 2px; }
+  body.printing-org-chart .org-chart-hod-box { padding: 4px 12px; border-radius: 6px; max-width: none; gap: 1px; }
+  body.printing-org-chart .org-chart-hod-avatar { width: 16px; height: 16px; margin-bottom: 1px; border-width: 1px; }
+  body.printing-org-chart .org-chart-hod-avatar svg { width: 9px; height: 9px; }
+  body.printing-org-chart .org-chart-hod-title { font-size: 0.48rem; }
+  body.printing-org-chart .org-chart-hod-name { font-size: 0.66rem; }
+  body.printing-org-chart .org-chart-hod-role { font-size: 0.52rem; margin-top: 0; }
+  body.printing-org-chart .org-chart-connector-down,
+  body.printing-org-chart .org-chart-branch-connector { height: 6px; }
+  /* A branch-connector immediately followed by a single leader box (no
+     bus, e.g. Saurabh Baid -> Kishor Kumar Daga) is otherwise only 6px -
+     visibly shorter than the 9px gap every OTHER box-drop uses (a box
+     hanging from a fan-out bus: .org-chart-pdf-directors-row/-hods-row's
+     own padding-top: 9px above). Matching it to that same 9px, only for
+     this specific shape (:has() with a next-sibling combinator matches
+     only when the very next element is a leader box - a bus fan-out or a
+     pill is untouched), is the one general layout rule the SVG connector
+     lengths themselves are measured from - no other gap, box, or line
+     changes. */
+  body.printing-org-chart .org-chart-branch-connector:has(+ .org-chart-hod-box) { height: 9px; }
+  body.printing-org-chart .org-chart-pill-connector { height: 5px; }
+  body.printing-org-chart .org-chart-pill { padding: 2px 10px; font-size: 0.54rem; }
+
+  /* Single SVG connector overlay (drawOrgChartPdfConnectorsSvg in
+     workforce.js) replaces the four old connector mechanisms below,
+     drawn from each box/pill/card's own real measured position instead
+     of four independently-positioned pieces that could disagree with
+     each other. None of their own layout-affecting sizing changes here -
+     .org-chart-connector-down/.org-chart-branch-connector/
+     .org-chart-pill-connector keep occupying their exact same height
+     (visibility: hidden, not display: none, so the gap they create stays
+     exactly as it was) so the SVG lands on precisely the same old
+     positions; only their own painted bar/tick/arrow becomes invisible,
+     print-only, never touching the on-screen view these same elements
+     are also shared with. */
+  body.printing-org-chart .org-chart-connector-down,
+  body.printing-org-chart .org-chart-branch-connector,
+  body.printing-org-chart .org-chart-pill-connector {
+    /* !important: without it, this loses to #orgChartPrintContent *'s
+       own unconditional visibility: visible rule above (an ID selector
+       always outranks a two-class one, regardless of source order) -
+       confirmed via direct getComputedStyle inspection that these
+       elements were still rendering their old solid-black bar underneath
+       the new SVG line without this, just invisibly so (identical color
+       and near-identical position to the line drawn on top of it). */
+    visibility: hidden !important;
+  }
+  body.printing-org-chart .org-chart-pdf-hods-bus,
+  body.printing-org-chart .org-chart-cards-row-bus,
+  body.printing-org-chart .org-chart-card-tick,
+  body.printing-org-chart .org-chart-card-arrow {
+    display: none !important;
+  }
+  /* Made invisible by painting them transparent, not content: none -
+     content: none removes the pseudo-element's generated box entirely,
+     which changed what scaleOrgChartPdfTreeToFit measures for a row
+     containing these (confirmed by direct A/B testing: a busy, multi-
+     Director/HOD department came out at a visibly different scale with
+     content: none, identical with this). Painting transparent keeps the
+     exact same box/geometry these rows were already sized and measured
+     around - just invisible, same as visibility: hidden achieves for the
+     flow connectors above, for the same reason. */
+  body.printing-org-chart .org-chart-pdf-hod-slot::before,
+  body.printing-org-chart .org-chart-pdf-director-col::before {
+    background: transparent !important;
+  }
+  body.printing-org-chart .org-chart-pdf-hod-slot::after,
+  body.printing-org-chart .org-chart-pdf-director-col::after {
+    border-left-color: transparent !important;
+    border-right-color: transparent !important;
+    border-top-color: transparent !important;
+  }
+  body.printing-org-chart .org-chart-tree { position: relative; }
+  .org-chart-pdf-connectors-svg {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    overflow: visible;
+    pointer-events: none;
+  }
+
+  /* A third tier (HOD, under a Director) reads as one step down from the
+     Director box above it - same navy box, just a size notch smaller,
+     rather than introducing a whole new visual style for it. */
+  body.printing-org-chart .org-chart-pdf-sub-hod-box { padding: 3px 9px; gap: 0; }
+  body.printing-org-chart .org-chart-pdf-sub-hod-box .org-chart-hod-avatar { width: 13px; height: 13px; }
+  body.printing-org-chart .org-chart-pdf-sub-hod-box .org-chart-hod-avatar svg { width: 7px; height: 7px; }
+  body.printing-org-chart .org-chart-pdf-sub-hod-box .org-chart-hod-name { font-size: 0.58rem; }
+  body.printing-org-chart .org-chart-pdf-sub-hod-box .org-chart-hod-role { font-size: 0.46rem; }
+  /* padding-top: 9px matches the director-col tick's own 9px height
+     below, so the tick starts exactly at this row's top edge (where the
+     connector-down from the MD box ends) with no gap or overlap. */
+  body.printing-org-chart .org-chart-pdf-directors-row { gap: 14px; padding-top: 9px; }
+  body.printing-org-chart .org-chart-pdf-hod-block:not(:first-child) { margin-top: 4px; }
+
+  /* Same bus+tick+arrow geometry as org-chart-cards-row/org-chart-card
+     above (padding-top 9px = tick height 9px, arrow tip at -4px+4px=0
+     touching the HOD box exactly), just fanning out HOD sub-branches
+     instead of designation cards. */
+  body.printing-org-chart .org-chart-pdf-hods-row { gap: 14px; padding-top: 9px; }
+  /* Unlike the fixed-width designation cards row above, each HOD slot
+     here is only as wide as its OWN cards content (which varies a lot -
+     one HOD might have one card, another six) - a plain edge-to-edge
+     bus line would badly overshoot past whichever slot is narrower than
+     the row's own full width. .org-chart-pdf-hods-bus is a real element
+     (not a ::before) specifically so JS can measure each slot's actual
+     leader-box center and position it exactly between the first and
+     last one - see positionOrgChartPdfHodBuses in workforce.js. */
+  body.printing-org-chart .org-chart-pdf-hods-bus {
+    display: block;
+    position: absolute;
+    top: 0;
+    height: 1px;
+    background: #000;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  /* Same tick+arrow geometry for both fan-out levels - HOD slots under a
+     Director, and Director columns under the Managing Director. height:
+     5px (not 9px, matching .org-chart-card::before's own fix and
+     reasoning above) stops the tick where the arrowhead's wide edge
+     starts, instead of running underneath its narrowing point and
+     sticking out past its sides. */
+  body.printing-org-chart .org-chart-pdf-hod-slot::before,
+  body.printing-org-chart .org-chart-pdf-director-col::before {
+    content: "";
+    position: absolute;
+    top: -9px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 2px;
+    height: 5px;
+    background: #000;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  body.printing-org-chart .org-chart-pdf-hod-slot::after,
+  body.printing-org-chart .org-chart-pdf-director-col::after {
+    content: "";
+    position: absolute;
+    top: -4px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 0;
+    height: 0;
+    border-left: 3px solid transparent;
+    border-right: 3px solid transparent;
+    border-top: 4px solid #000;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  /* width: fit-content (instead of the on-screen 100%) shrinks the row to
+     exactly however wide its own cards + gaps are, so the bus line below
+     starts and ends precisely at the first and last card's own tick/
+     arrow instead of overshooting past them - the on-screen 6% inset
+     only ever looked right by coincidence, for rows with enough cards to
+     fill most of the row's width. Inset by 51px (2px short of 53px, half
+     of the 106px card width below) so it reaches 2px into that card's
+     2px-wide tick rather than stopping exactly at the tick's own center -
+     landing exactly on that center line left a hairline gap at the
+     corner (sub-pixel rounding between the tick's %-based centering and
+     the bus line's px inset), this overlap guarantees they visibly
+     fuse into one continuous line with no seam. */
+  body.printing-org-chart .org-chart-cards-row { gap: 6px; padding-top: 8px; margin-bottom: 6px; width: fit-content; max-width: 100%; margin-left: auto; margin-right: auto; }
+  /* A HOD (or, for a department with no separate Director tier, the
+     whole page) with enough designation groups to outgrow one line can
+     have the flex-wrap: wrap above split its cards across two physical
+     sub-rows - fine when every sub-row ends up with exactly one card
+     (a plain vertical stack, still one continuous connector down each
+     card in turn), but when a sub-row holds two or more, the bus-line
+     math below (which only ever measures the first and last card's own
+     center) has no way to represent two separate rows - cards stranded
+     on that second sub-row lost their real connector entirely and read
+     as stray disconnected boxes. preventPartialCardWraps (in JS, run
+     before scaleOrgChartPdfTreeToFit) detects exactly that case
+     beforehand and sets flex-wrap: nowrap and max-width: none directly
+     as inline style on just the rows that need it (inline style wins
+     over this class rule), leaving every other row's own compact wrap -
+     and print size - untouched. */
+  /* Always the JS-measured .org-chart-cards-row-bus now, never the
+     fixed-51px-inset ::before above - that fixed inset assumed every
+     card is exactly the standalone 106px, which stops holding as soon as
+     a row can also be running through scaleOrgChartPdfTreeToFit (rounding
+     at an arbitrary zoom level can shift a card's real width by a
+     fraction of a px). positionOrgChartPdfFanBuses already measures
+     every .org-chart-cards-row unconditionally, tree-nested or not, so
+     there's no case left where the cheaper fixed version is still safe. */
+  body.printing-org-chart .org-chart-cards-row::before {
+    display: none;
+  }
+  body.printing-org-chart .org-chart-cards-row-bus {
+    display: block;
+    position: absolute;
+    top: 0;
+    height: 1px;
+    background: #000;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  /* A section with exactly one designation card has nothing for the bus
+     line to fan out to - without this it still draws as a tiny stray
+     line sitting just above that one card's own arrow. That card's own
+     tick already reaches this connector correctly on its own (same as
+     any other card), so hiding the bus line here just leaves the one
+     continuous arrow the section actually needs. */
+  body.printing-org-chart .org-chart-cards-row:has(> .org-chart-card:only-child)::before,
+  body.printing-org-chart .org-chart-cards-row:has(> .org-chart-card:only-child) > .org-chart-cards-row-bus {
+    display: none;
+  }
+  body.printing-org-chart .org-chart-card { width: 106px; border-radius: 5px; }
+  /* Matches the card's own 5px radius here (on screen: 11px, for its
+     12px card) so the head's corners still nest inside the card's,
+     rather than the on-screen sizing showing through at print scale. */
+  body.printing-org-chart .org-chart-card-head { border-top-left-radius: 4px; border-top-right-radius: 4px; }
+  body.printing-org-chart .org-chart-card-head { padding: 2px 6px; font-size: 0.5rem; gap: 3px; }
+  body.printing-org-chart .org-chart-card-head-icon svg { width: 8px; height: 8px; }
+  body.printing-org-chart .org-chart-card-body { padding: 3px 6px; gap: 2px; }
+  body.printing-org-chart .org-chart-card-emp { gap: 4px; }
+  body.printing-org-chart .org-chart-card-emp-icon { width: 10px; height: 10px; border-width: 0; }
+  body.printing-org-chart .org-chart-card-emp-icon svg { width: 6px; height: 6px; }
+  body.printing-org-chart .org-chart-card-emp-text { font-size: 0.46rem; line-height: 1.1; }
+  body.printing-org-chart .org-chart-card-emp-text span { font-size: 0.42rem; }
+
+  body.printing-org-chart .org-chart-footer { padding: 4px 8px; font-size: 0.5rem; border-top: none; margin-top: 20px; }
+  body.printing-org-chart .org-chart-footer-icon { width: 9px; height: 9px; }
+
+/* .wf-letter-type-card and friends started out as the (now removed) Select
+   Letter Type screen's single-select cards; kept here because the form's
+   own static header and the success screen's summary rows still reuse
+   them. */
+.wf-letter-type-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  text-align: left;
+  background: var(--other-bg);
+  border: 2px solid transparent;
+  border-radius: 14px;
+  padding: 14px;
+  font: inherit;
+  cursor: pointer;
+}
+.wf-letter-type-card[aria-pressed="true"] {
+  background: var(--accent-bg);
+  border-color: var(--accent);
+}
+.wf-letter-type-icon {
+  width: 40px;
+  height: 40px;
+  min-width: 40px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.wf-letter-type-icon.tone-move-blue { background: var(--move-blue-bg); color: var(--move-blue); }
+.wf-letter-type-icon.tone-move-green { background: var(--move-green-bg); color: var(--move-green); }
+.wf-letter-type-icon.tone-move-purple { background: var(--move-purple-bg); color: var(--move-purple); }
+.wf-letter-type-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.wf-letter-type-title { font-size: 0.92rem; font-weight: 700; color: var(--ink); }
+.wf-letter-type-sub { font-size: 0.78rem; color: var(--muted); }
+.wf-letter-proceed-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  border: none;
+  border-radius: 14px;
+  padding: 15px;
+  margin-top: 18px;
+  font: inherit;
+  font-size: 0.94rem;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 6px 14px var(--shadow);
+}
+.wf-letter-proceed-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* Generate Letter form. Reuses .wf-letter-type-card as a static
+   (non-interactive) header instead of a new card style. */
+.wf-letter-form-header { cursor: default; margin-bottom: 18px; }
+.wf-letter-form-section-title { font-size: 0.82rem; font-weight: 700; color: var(--ink); margin: 18px 0 10px; }
+.wf-letter-form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.wf-letter-form-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.wf-letter-form-field label { font-size: 0.72rem; font-weight: 600; color: var(--muted); }
+.wf-letter-form-field input,
+.wf-letter-form-field select {
+  width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--ink);
+}
+.wf-letter-form-field input:focus-visible,
+.wf-letter-form-field select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.wf-letter-form-caption { margin: 10px 0 0; font-size: 0.76rem; color: var(--muted); text-align: center; }
+
+/* Ref. No. - a fixed prefix ("AR/HR/Pro./") the letter's own numbering
+   convention never changes, plus the one part that actually changes per
+   letter, both inside one bordered box so it reads as a single field. */
+.wf-letter-refno-row {
+  display: flex;
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0 12px;
+}
+.wf-letter-refno-row:focus-within { outline: 2px solid var(--accent); outline-offset: 1px; }
+.wf-letter-refno-prefix { font-size: 0.85rem; font-weight: 600; color: var(--muted); white-space: nowrap; padding: 10px 0; }
+.wf-letter-refno-row input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  padding: 10px 0 10px 2px;
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--ink);
+}
+.wf-letter-refno-row input:focus-visible { outline: none; }
+
+/* Generate Letter, step 3 - success. */
+.wf-letter-success { display: flex; flex-direction: column; align-items: center; text-align: center; padding: 8px 4px 4px; }
+.wf-letter-success-icon {
+  width: 76px;
+  height: 76px;
+  border-radius: 50%;
+  background: var(--resolved-bg);
+  color: var(--resolved);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 16px;
+}
+.wf-letter-success h3 { margin: 0 0 6px; font-size: 1.05rem; }
+.wf-letter-success > .wf-note { margin: 0 0 18px; max-width: 320px; }
+.wf-letter-success-card { width: 100%; display: flex; flex-direction: column; gap: 14px; text-align: left; margin-bottom: 18px; }
+.wf-letter-success-row { display: flex; align-items: center; gap: 12px; }
+.wf-letter-success-actions { display: flex; gap: 10px; width: 100%; }
+.wf-letter-success-actions .wf-letter-outline-btn,
+.wf-letter-success-actions .wf-letter-proceed-btn { flex: 1; margin: 0; }
+.wf-letter-outline-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: var(--surface);
+  color: var(--accent);
+  border: 2px solid var(--accent);
+  border-radius: 14px;
+  padding: 13px;
+  font: inherit;
+  font-size: 0.9rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+.wf-letter-outline-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.wf-letter-success-note { margin-top: 14px; font-size: 0.76rem; }
+.wf-letter-success-note[hidden] { display: none; }
+
+/* Letter Generator's employee picker - a search box + a floating results
+   list (native <select> can't have a search box inside it), restricted to
+   active employees only. */
+.wf-emp-picker { position: relative; }
+.wf-emp-picker input[type="text"] {
+  width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--ink);
+}
+.wf-emp-picker input[type="text"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.wf-emp-picker-list {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  max-height: 260px;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 6px 16px var(--shadow);
+  list-style: none;
+  margin: 0;
+  padding: 6px 0;
+  z-index: 20;
+}
+.wf-emp-picker-list[hidden] { display: none; }
+.wf-emp-picker-list li { padding: 9px 12px; cursor: pointer; font-size: 0.85rem; color: var(--ink); }
+.wf-emp-picker-list li:hover, .wf-emp-picker-list li.active { background: var(--accent-bg); color: var(--accent); }
+.wf-emp-picker-sub { display: block; font-size: 0.72rem; color: var(--muted); }
+.wf-emp-picker-list li:hover .wf-emp-picker-sub, .wf-emp-picker-list li.active .wf-emp-picker-sub { color: inherit; opacity: 0.8; }
+.wf-emp-picker-list li.empty { color: var(--muted); cursor: default; }
+.wf-emp-picker-list li.empty:hover { background: none; color: var(--muted); }
+
+/* ---------- Send Mail compose popup ---------- */
+/* Shared by every "Send Mail" button (Doer Management, Insights Birthday
+   point, any future one) - a small Gmail-compose-style overlay with
+   editable To/Cc chip fields, pre-filled from the Mail Id sheet's own
+   defaults but changeable before the actual send. Centered dialog, not a
+   side drawer, since this is a short-lived focused action rather than
+   navigation - same dimmed-backdrop convention as .wf-drawer-backdrop. */
+.wf-modal-overlay[hidden] { display: none; }
+.wf-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 25, 27, 0.5);
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+
+.wf-mail-compose {
+  background: var(--surface);
+  border-radius: 16px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.3);
+  width: min(420px, 100%);
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.wf-mail-compose-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 16px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.wf-mail-compose-head h3 { margin: 0; font-size: 1rem; color: var(--ink); }
+
+.wf-mail-compose-body { padding: 14px 16px; overflow-y: auto; }
+
+/* The interviewer employee-search dropdown is absolutely positioned (see
+   .wf-mail-suggest) so it doesn't add to this body's own flow height - the
+   body's overflow-y:auto was clipping it short and forcing a scroll to see
+   the rest of the matches. Only this popup needs the fix; Team Access and
+   Send Mail still use the shared .wf-mail-compose-body scroll as before. */
+#ipWhatsappOverlay .wf-mail-compose-body { overflow: visible; }
+#ipWhatsappEmployeeSuggest { max-height: 300px; }
+
+/* Employee Insurance Profile popup - wider than the other .wf-mail-compose
+   popups since it holds a policy-info grid + a member table, not just a
+   couple of form fields. */
+.hi-ep-card { width: min(480px, 100%); }
+.hi-ep-section-title { font-size: 0.82rem; font-weight: 700; color: var(--ink); margin-bottom: 8px; }
+/* Family Members / Premium Breakdown split the popup's width evenly instead
+   of clustering to the left like every other .wf-subtabs usage (those sit
+   above a full-width panel with room to spare either side). */
+.hi-ep-tabs { justify-content: space-between; }
+.hi-ep-tabs .wf-subtab { flex: 1; text-align: center; }
+/* E-Card row's Download/Share buttons - same flat .hi-doc-download/
+   .hi-doc-share icons (no visible chip/border, just a hover highlight) as
+   Policy Documents' own row, not the Interview Panel's filled-circle
+   .wf-icon-btn style. */
+.hi-ep-ecard-actions { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
+/* Generic small inline error line - used under the E-Card Share button and
+   the Upcoming Joinings Share button (both file-share flows that can fail
+   to fetch). */
+.wf-inline-error { margin: -6px 0 14px; font-size: 0.78rem; color: var(--important); font-weight: 600; }
+.wf-inline-error[hidden] { display: none; }
+
+.wf-mail-field { position: relative; margin-bottom: 14px; }
+.wf-mail-field:last-child { margin-bottom: 0; }
+.wf-mail-field-label { display: block; font-size: 0.76rem; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 6px; }
+
+.wf-ip-whatsapp-phone-input {
+  width: 100%;
+  background: var(--paper);
+  border: 1.5px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font: inherit;
+  font-size: 0.88rem;
+  color: var(--ink);
+}
+.wf-ip-whatsapp-phone-input:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-bg); }
+.wf-ip-whatsapp-phone-input.invalid { border-color: var(--important); }
+.wf-ip-whatsapp-phone-input.invalid:focus-visible { box-shadow: 0 0 0 3px var(--important-bg); }
+.wf-ip-field-error { margin: 6px 0 0; font-size: 0.76rem; color: var(--important); font-weight: 600; }
+
+/* The chip field itself looks like a text input (border/radius/padding),
+   but is really a flex container holding real chip elements plus one
+   actual <input> that shrinks/grows to fill whatever room is left -
+   clicking anywhere in it focuses that inner input, same as Gmail's own
+   To/Cc fields. */
+.wf-mail-chip-input {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-height: 42px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 6px 8px;
+  cursor: text;
+}
+.wf-mail-chip-input:focus-within { border-color: var(--accent); }
+.wf-mail-chip-input input {
+  flex: 1;
+  min-width: 80px;
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--ink);
+  padding: 4px 2px;
+}
+.wf-mail-chip-input input:focus { outline: none; }
+
+.wf-mail-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--accent-bg);
+  color: var(--accent);
+  border-radius: 999px;
+  padding: 4px 6px 4px 10px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  max-width: 100%;
+}
+.wf-mail-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wf-mail-chip button {
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  font-size: 0.9rem;
+  line-height: 1;
+  padding: 0;
+}
+.wf-mail-chip button:hover { background: rgba(0, 0, 0, 0.08); }
+
+/* Suggestion dropdown - same visual language as .wf-emp-picker-list. */
+.wf-mail-suggest {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  max-height: 220px;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 6px 16px var(--shadow);
+  list-style: none;
+  margin: 0;
+  padding: 6px 0;
+  z-index: 20;
+}
+.wf-mail-suggest[hidden] { display: none; }
+.wf-mail-suggest li { padding: 9px 12px; cursor: pointer; font-size: 0.85rem; color: var(--ink); }
+.wf-mail-suggest li:hover, .wf-mail-suggest li.active { background: var(--accent-bg); color: var(--accent); }
+.wf-mail-suggest-sub { display: block; font-size: 0.72rem; color: var(--muted); }
+.wf-mail-suggest li:hover .wf-mail-suggest-sub, .wf-mail-suggest li.active .wf-mail-suggest-sub { color: inherit; opacity: 0.8; }
+.wf-mail-suggest li.empty { color: var(--muted); cursor: default; }
+.wf-mail-suggest li.empty:hover { background: none; color: var(--muted); }
+
+.wf-mail-compose-error {
+  margin: 10px 0 0;
+  font-size: 0.8rem;
+  color: var(--important);
+}
+.wf-mail-compose-error[hidden] { display: none; }
+
+.wf-mail-compose-foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 12px 16px 16px;
+  border-top: 1px solid var(--line);
+}
+
+/* ---------- Interview Panel ---------- */
+.wf-note-inline { font-size: 0.78rem; color: var(--muted); }
+
+.wf-ip-status {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.wf-ip-status.tone-important { background: var(--important-bg); color: var(--important); }
+.wf-ip-status.tone-warning { background: var(--warning-bg); color: var(--warning); }
+.wf-ip-status.tone-resolved { background: var(--resolved-bg); color: var(--resolved); }
+
+.wf-ip-status-row { margin-bottom: 16px; }
+
+.wf-ip-link-row { margin-bottom: 14px; }
+.wf-ip-link-row:last-of-type { margin-bottom: 0; }
+.wf-ip-link-row > span {
+  display: block;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+.wf-ip-link-copy { display: flex; align-items: center; gap: 8px; }
+.wf-ip-link-anchor {
+  flex: 1;
+  min-width: 0;
+  display: block;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 9px 11px;
+  font-size: 0.8rem;
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-color: transparent;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wf-ip-link-anchor:hover,
+.wf-ip-link-anchor:focus-visible { text-decoration-color: var(--accent); }
+.wf-ip-link-anchor:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.wf-ip-link-copy .wf-icon-btn { flex-shrink: 0; }
+.wf-whatsapp-btn { color: #25d366; border-color: #25d36655; }
+.wf-whatsapp-btn:hover { color: #1da851; border-color: #1da851; }
+
+.wf-ip-detail-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px 16px;
+  margin-bottom: 6px;
+}
+.wf-ip-detail-item { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.wf-ip-detail-item span { font-size: 0.72rem; color: var(--muted); }
+.wf-ip-detail-item b { font-size: 0.86rem; color: var(--ink); word-break: break-word; }
+@media (max-width: 480px) {
+  .wf-ip-detail-grid { grid-template-columns: 1fr; }
+}
+
+.wf-ip-new-btn {
+  flex-shrink: 0;
+  background: var(--accent);
+  color: var(--accent-ink);
+  border: none;
+  border-radius: 999px;
+  padding: 8px 14px;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 2px 6px var(--shadow);
+  white-space: nowrap;
+}
+.wf-ip-new-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.wf-ip-team-access-btn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--move-blue);
+  color: #fff;
+  border: 1px solid var(--move-blue);
+  border-radius: 999px;
+  padding: 8px 13px;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  box-shadow: 0 2px 6px var(--shadow);
+}
+.wf-ip-team-access-btn:hover { opacity: 0.9; }
+.wf-ip-team-access-btn:focus-visible { outline: 2px solid var(--move-blue); outline-offset: 2px; }
+.wf-ip-team-access-btn[hidden] { display: none; }
+
+.wf-ip-team-revoke-btn {
+  flex-shrink: 0;
+  background: var(--important-bg);
+  color: var(--important);
+  border: none;
+  border-radius: 999px;
+  padding: 6px 12px;
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+.wf-ip-team-revoke-btn:disabled { opacity: 0.6; cursor: default; }
+
+.wf-ip-team-email-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  font-size: 0.86rem;
+  font-weight: 700;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: transparent;
+  word-break: break-all;
+}
+.wf-ip-team-email-btn:hover,
+.wf-ip-team-email-btn:focus-visible { color: var(--accent); text-decoration-color: var(--accent); }
+
+.wf-ip-team-meta-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 3px;
+}
+
+.wf-ip-filter-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.wf-ip-filter-pill {
+  /* Sized to its own label, not stretched to match the others - "All"
+     stays a small pill instead of ballooning to the width of "Pending
+     Interviewer". */
+  flex: 0 0 auto;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 7px 13px;
+  font: inherit;
+  font-size: 0.74rem;
+  font-weight: 700;
+  color: var(--muted);
+  text-align: center;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.wf-ip-filter-pill:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* Each pill's active color matches its status's own badge tone (see
+   ipStatusBadge/IP_STATUS_TONE in workforce.js) - "All" keeps the app's
+   base accent since it has no single status of its own. */
+.wf-ip-filter-pill[data-ip-filter="all"][aria-pressed="true"] { background: var(--accent-bg); border-color: var(--accent); color: var(--accent); }
+.wf-ip-filter-pill[data-ip-filter="completed"][aria-pressed="true"] { background: var(--resolved-bg); border-color: var(--resolved); color: var(--resolved); }
+.wf-ip-filter-pill[data-ip-filter="pendingCandidate"][aria-pressed="true"] { background: var(--important-bg); border-color: var(--important); color: var(--important); }
+.wf-ip-filter-pill[data-ip-filter="pendingInterviewer"][aria-pressed="true"] { background: var(--warning-bg); border-color: var(--warning); color: var(--warning); }
+
+.wf-ip-pdf-note {
+  margin: 12px 0 0;
+  background: var(--warning-bg);
+  color: var(--warning);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-align: center;
+}
+
+.wf-ip-stepper { position: relative; }
+.wf-ip-step { display: flex; gap: 12px; position: relative; padding-bottom: 26px; }
+.wf-ip-step:last-child { padding-bottom: 0; }
+.wf-ip-step:not(:last-child)::after {
+  content: '';
+  position: absolute;
+  left: 13px;
+  top: 28px;
+  bottom: 0;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--line);
+  overflow: hidden;
+}
+/* Step 1 done but step 2 still pending: a green stripe flows down the
+   connecting line toward step 2, like an online order tracker animating
+   between two stops - not yet the solid, settled green of a finished line. */
+.wf-ip-step.done:not(.wf-ip-step-complete):not(:last-child)::after {
+  background: repeating-linear-gradient(180deg, var(--resolved) 0 10px, var(--line) 10px 20px);
+  background-size: 100% 20px;
+  animation: wf-ip-line-flow 0.8s linear infinite;
+}
+/* Step 2 also done: the whole connecting line settles to a solid, static
+   green - the animation stops here. */
+.wf-ip-step.wf-ip-step-complete:not(:last-child)::after {
+  background: var(--resolved);
+  animation: none;
+}
+@keyframes wf-ip-line-flow {
+  from { background-position: 0 -20px; }
+  to { background-position: 0 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .wf-ip-step.done:not(.wf-ip-step-complete):not(:last-child)::after { animation: none; }
+}
+.wf-ip-step-dot {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--other-bg);
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 0.8rem;
+  flex-shrink: 0;
+  z-index: 1;
+}
+.wf-ip-step.done .wf-ip-step-dot { background: var(--resolved); color: var(--accent-ink); }
+.wf-ip-step-body { padding-top: 3px; }
+.wf-ip-step-title { font-size: 0.9rem; font-weight: 700; color: var(--ink); margin-bottom: 5px; }
+
+/* ---------- HR Assistant (AI agent) - see public/hrAssistant.js ---------- */
+
+.wf-ai-btn {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 1px 3px var(--shadow);
+  flex-shrink: 0;
+}
+.wf-ai-btn:hover { background: var(--accent-bg); }
+
+/* No backdrop layer any more - the panel now fills the entire screen
+   below the app header with no gap (see hrAssistant.js's
+   syncPanelToViewport), so there's no dimmed background left to show
+   through it. top/bottom below are just a sane pre-JS default; JS sets
+   both explicitly the moment the panel opens, and keeps them in sync
+   with window.visualViewport so the bottom edge tracks the visible
+   viewport (above the on-screen keyboard) rather than the full layout
+   viewport (behind it). */
+.wf-ai-panel[hidden] { display: none; }
+.wf-ai-panel {
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  max-width: 480px;
+  margin: 0 auto;
+  z-index: 51;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  /* One continuous soft mint-to-white wash behind the whole panel - the
+     header paints its own opaque fill over it below, and the messages
+     list and input row both stay transparent so this shows through
+     unbroken behind both (see the input-bar redesign: it must not read as
+     a separate boxed section sitting on a different background). */
+  background-color: var(--surface);
+  background-image:
+    radial-gradient(circle at 105% -6%, var(--wf-ai-wash-1), transparent 42%),
+    radial-gradient(circle at -12% 104%, var(--wf-ai-wash-1), transparent 42%),
+    linear-gradient(180deg, var(--wf-ai-wash-2), transparent 55%);
+}
+
+/* Styled to match .wf-page-head (the "Tenure"-style section header) -
+   same background (the page's own, not a white bar), same title
+   typography, same horizontal alignment - so the panel reads as a normal
+   section rather than a separate floating overlay. Only this rule set is
+   new; .wf-page-head itself is untouched, so every other section that
+   uses it is unaffected. */
+.wf-ai-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 18px 20px 0;
+  margin-bottom: 18px;
+  background: var(--paper);
+  flex-shrink: 0;
+}
+.wf-ai-panel-icon {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--accent-ink);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.wf-ai-panel-title {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--ink);
+  flex: 1;
+  min-width: 0;
+}
+/* Reads as a quiet name label, not a competing second title - upright
+   (never italic), uppercase, wide-tracked and small, in a muted
+   teal-grey distinct from the plain grey .wf-muted text elsewhere. */
+.wf-ai-panel-title small {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  font-weight: 600;
+  font-style: normal;
+  text-transform: uppercase;
+  letter-spacing: 2.4px;
+  color: var(--wf-ai-subhead);
+}
+
+.wf-ai-messages {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  -webkit-overflow-scrolling: touch;
+  /* No background of its own - the wash lives on .wf-ai-panel (see above)
+     so it runs continuously behind this and the input row with no seam;
+     this element only scrolls its own content, not the background. */
+}
+
+.wf-ai-welcome {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 30px 16px 6px;
+}
+.wf-ai-welcome-badge {
+  position: relative;
+  width: 104px;
+  height: 104px;
+  border-radius: 50%;
+  background: var(--accent-bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-bottom: 18px;
+}
+.wf-ai-welcome-robot { color: var(--accent); }
+.wf-ai-welcome-sparkle {
+  position: absolute;
+  top: -2px;
+  right: -6px;
+  color: var(--accent);
+}
+.wf-ai-welcome-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 14px 22px;
+  max-width: 300px;
+}
+.wf-ai-welcome-greeting {
+  margin: 0 0 4px;
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--accent);
+  line-height: 1.4;
+}
+.wf-ai-welcome-tagline {
+  margin: 0 0 4px;
+  font-size: 0.88rem;
+  font-weight: 400;
+  color: var(--ink);
+  line-height: 1.4;
+}
+.wf-ai-welcome-tagline-strong {
+  font-weight: 700;
+}
+.wf-ai-welcome-sub {
+  margin: 0;
+  font-size: 0.76rem;
+  color: var(--muted);
+  opacity: 0.75;
+}
+
+.wf-ai-msg { display: flex; }
+.wf-ai-msg.user { justify-content: flex-end; }
+.wf-ai-msg.assistant { justify-content: flex-start; }
+.wf-ai-msg-col { display: flex; flex-direction: column; gap: 4px; max-width: 85%; }
+.wf-ai-msg.user .wf-ai-msg-col { align-items: flex-end; }
+.wf-ai-msg.assistant .wf-ai-msg-col { align-items: flex-start; }
+.wf-ai-msg-attachment {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.72rem;
+  color: var(--muted);
+  background: var(--accent-bg);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 3px 10px;
+}
+.wf-ai-bubble {
+  max-width: 100%;
+  padding: 10px 13px;
+  border-radius: 14px;
+  font-size: 0.86rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.wf-ai-msg.user .wf-ai-bubble { background: var(--accent); color: var(--accent-ink); border-bottom-right-radius: 4px; }
+.wf-ai-msg.assistant .wf-ai-bubble { background: var(--accent-bg); color: var(--ink); border-bottom-left-radius: 4px; }
+
+.wf-ai-loading-row { display: flex; align-items: flex-end; gap: 8px; max-width: 85%; }
+.wf-ai-loading-avatar {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--accent-ink);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.wf-ai-loading-bubble {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 13px;
+  border-radius: 14px;
+  border-bottom-left-radius: 4px;
+  background: var(--accent-bg);
+  color: var(--muted);
+  font-size: 0.86rem;
+  line-height: 1.45;
+}
+.wf-ai-loading-dots { display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.wf-ai-loading-dots span {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--muted);
+  animation: wf-ai-loading-fade 1.2s ease-in-out infinite;
+}
+.wf-ai-loading-dots span:nth-child(2) { animation-delay: 0.2s; }
+.wf-ai-loading-dots span:nth-child(3) { animation-delay: 0.4s; }
+@keyframes wf-ai-loading-fade {
+  0%, 80%, 100% { opacity: 0.25; }
+  40% { opacity: 1; }
+}
+
+.wf-ai-card {
+  max-width: 92%;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 12px 14px;
+  box-shadow: 0 1px 3px var(--shadow);
+}
+.wf-ai-card-title { font-size: 0.86rem; font-weight: 700; color: var(--ink); margin-bottom: 8px; }
+.wf-ai-card-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 0.8rem;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--line);
+}
+.wf-ai-card-row:last-of-type { border-bottom: none; }
+.wf-ai-card-row .label { color: var(--muted); min-width: 0; overflow-wrap: anywhere; }
+.wf-ai-card-row .value { color: var(--ink); font-weight: 700; text-align: right; min-width: 0; overflow-wrap: anywhere; }
+.wf-ai-card-footer {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--ink);
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 2px solid var(--line);
+}
+.wf-ai-card-note {
+  font-size: 0.74rem;
+  color: var(--muted);
+  font-style: italic;
+  margin-top: 8px;
+  line-height: 1.4;
+}
+.wf-ai-card-table-scroll {
+  overflow-x: auto;
+  margin: 0 -14px 8px;
+  padding: 0 14px;
+  -webkit-overflow-scrolling: touch;
+}
+.wf-ai-card-table { border-collapse: collapse; width: 100%; min-width: 480px; font-size: 0.78rem; }
+.wf-ai-card-table th {
+  text-align: left;
+  color: var(--muted);
+  font-weight: 700;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  padding: 0 10px 6px 0;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+.wf-ai-card-table td {
+  color: var(--ink);
+  padding: 6px 10px 6px 0;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+.wf-ai-card-table tr:last-of-type td { border-bottom: none; }
+
+.wf-ai-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; max-width: 92%; }
+.wf-ai-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  border: 1.5px solid var(--accent);
+  border-radius: 999px;
+  padding: 8px 14px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+.wf-ai-action-btn:hover { filter: brightness(1.05); }
+.wf-ai-action-btn.outline { background: transparent; color: var(--accent); }
+.wf-ai-action-btn.download { background: var(--accent); color: var(--accent-ink); }
+
+/* Download format choice - a small popover anchored under the Download
+   button, only shown when the chat message didn't already name a format
+   (e.g. "PDF e dao" skips straight to the download, see hrAssistant.js). */
+.wf-ai-actions { position: relative; }
+.wf-download-format-menu {
+  position: absolute;
+  z-index: 5;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.18);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 140px;
+}
+.wf-download-format-menu button {
+  background: transparent;
+  border: none;
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 0.82rem;
+  color: var(--ink);
+  cursor: pointer;
+}
+.wf-download-format-menu button:hover { background: var(--panel-soft, rgba(0, 0, 0, 0.05)); }
+
+/* "View Report" - a clean read-only view of one report's full data,
+   reusing the .wf-modal-overlay backdrop convention. */
+.wf-report-view {
+  background: var(--surface);
+  border-radius: 16px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.3);
+  width: min(720px, 100%);
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+}
+.wf-report-view-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid var(--line);
+}
+.wf-report-view-head h3 { margin: 0 0 4px; font-size: 1.05rem; color: var(--ink); }
+.wf-report-view-meta { font-size: 0.78rem; color: var(--muted); }
+.wf-report-view-body { padding: 16px 20px; overflow-y: auto; }
+.wf-report-view-table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.wf-report-view-table { border-collapse: collapse; width: 100%; min-width: 420px; font-size: 0.84rem; }
+.wf-report-view-table th {
+  text-align: left;
+  color: var(--muted);
+  font-weight: 700;
+  font-size: 0.74rem;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  padding: 0 12px 8px 0;
+  border-bottom: 1.5px solid var(--line);
+  white-space: nowrap;
+  position: sticky;
+  top: 0;
+  background: var(--surface);
+}
+.wf-report-view-table td {
+  color: var(--ink);
+  padding: 8px 12px 8px 0;
+  border-bottom: 1px solid var(--line);
+}
+.wf-report-view-table tr:last-of-type td { border-bottom: none; }
+.wf-report-view-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 20px 18px;
+  border-top: 1px solid var(--line);
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.wf-ai-input-area {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+}
+
+.wf-ai-attachment-chip[hidden] { display: none; }
+.wf-ai-attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: calc(100% - 20px);
+  margin: 8px 10px 0;
+  padding: 6px 10px;
+  background: var(--accent-bg);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 0.78rem;
+  color: var(--ink);
+}
+.wf-ai-attachment-chip-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wf-ai-attachment-chip-remove {
+  background: none;
+  border: none;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.wf-ai-attachment-chip-remove:hover { color: var(--ink); }
+
+/* Deliberately no background, border or shadow here - the row sits
+   directly on .wf-ai-panel's own continuous wash, not on a separate boxed
+   bar, matching the ChatGPT-app look this was asked to match. */
+.wf-ai-input-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  padding-bottom: max(12px, env(safe-area-inset-bottom));
+  flex-shrink: 0;
+}
+.wf-ai-plus-btn, .wf-ai-mic-btn, .wf-ai-send-btn {
+  width: 44px;
+  height: 44px;
+  flex-shrink: 0;
+  border: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+}
+.wf-ai-plus-btn, .wf-ai-mic-btn {
+  border-radius: 50%;
+  background: none;
+  color: var(--muted);
+}
+.wf-ai-plus-btn:hover, .wf-ai-mic-btn:hover { color: var(--ink); }
+.wf-ai-mic-btn[hidden] { display: none; }
+.wf-ai-mic-btn.recording {
+  background: var(--accent);
+  color: var(--accent-ink);
+  animation: wfAiMicPulse 1s ease-in-out infinite;
+}
+@keyframes wfAiMicPulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.12); }
+}
+
+/* The pill groups only the text field and the mic - the "+" and send
+   button sit outside it as their own elements, per the ChatGPT-style
+   layout this was asked to match. */
+.wf-ai-input-pill {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  background: var(--accent-bg);
+  border-radius: 999px;
+  padding-left: 16px;
+}
+.wf-ai-input-pill input {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: none;
+  padding: 12px 0;
+  font: inherit;
+  font-size: 0.9rem;
+  color: var(--ink);
+}
+.wf-ai-input-pill input:focus { outline: none; }
+.wf-ai-input-pill:focus-within { box-shadow: 0 0 0 2px var(--wf-ai-wash-1); }
+.wf-ai-send-btn {
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+.wf-ai-send-btn:disabled { opacity: 0.5; cursor: default; }
+
+/* "Add to chat" bottom sheet, opened by the "+" button in the input row. */
+.wf-ai-sheet-backdrop[hidden] { display: none; }
+.wf-ai-sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 25, 27, 0.45);
+  z-index: 60;
+  opacity: 0;
+  transition: opacity 0.25s ease;
+}
+.wf-ai-sheet-backdrop.open { opacity: 1; }
+
+.wf-ai-sheet[hidden] { display: none; }
+.wf-ai-sheet {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  max-width: 480px;
+  margin: 0 auto;
+  background: var(--surface);
+  border-radius: 18px 18px 0 0;
+  box-shadow: 0 -8px 30px rgba(0, 0, 0, 0.2);
+  z-index: 61;
+  padding: 8px 18px calc(18px + env(safe-area-inset-bottom));
+  transform: translateY(100%);
+  transition: transform 0.25s ease;
+}
+.wf-ai-sheet.open { transform: translateY(0); }
+.wf-ai-sheet.dragging { transition: none; }
+.wf-ai-sheet-handle {
+  width: 36px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--line);
+  margin: 6px auto 14px;
+}
+.wf-ai-sheet-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+.wf-ai-sheet-close {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: none;
+  border: none;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.wf-ai-sheet-close:hover { color: var(--ink); }
+.wf-ai-sheet-title { font-size: 1rem; font-weight: 700; color: var(--ink); }
+.wf-ai-sheet-tiles { display: flex; gap: 10px; }
+.wf-ai-sheet-tile {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  background: none;
+  border: none;
+  padding: 14px 8px 18px;
+  cursor: pointer;
+  color: var(--ink);
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+.wf-ai-sheet-tile-icon {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  background: var(--accent-bg);
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.wf-ai-sheet-tile:active .wf-ai-sheet-tile-icon { filter: brightness(0.95); }
+
+/* ---------- Chat History: draggable bottom sheet + full-screen panel ---------- */
+
+.wf-ai-history-sheet-backdrop[hidden] { display: none; }
+.wf-ai-history-sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 25, 27, 0.45);
+  z-index: 70;
+  opacity: 0;
+}
+/* Opacity is driven continuously from JS as the sheet's own position (see
+   applySheetY in hrAssistant.js) - this only adds the easing for the
+   release-triggered snap, so raw finger-tracking during an active drag
+   stays instant instead of lagging behind a transition. */
+.wf-ai-history-sheet-backdrop.animating { transition: opacity 0.32s cubic-bezier(0.32, 0.72, 0, 1); }
+
+.wf-ai-history-sheet[hidden] { display: none; }
+.wf-ai-history-sheet {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  max-width: 480px;
+  margin: 0 auto;
+  background: var(--surface);
+  border-radius: 18px 18px 0 0;
+  box-shadow: 0 -8px 30px rgba(0, 0, 0, 0.2);
+  z-index: 71;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  height: 0;
+  /* Animating height (not a translateY transform) so the sheet's bottom
+     edge - and the "View All History" footer pinned to it - always stays
+     flush with the real viewport bottom at every snap point, collapsed
+     included; only how much shows above it changes. A spring-ish ease so
+     drag-release snaps feel like a "smooth slide" - disabled (see
+     .dragging) while a finger is actively moving it, so it tracks 1:1. */
+  transition: height 0.32s cubic-bezier(0.32, 0.72, 0, 1);
+}
+.wf-ai-history-sheet.dragging { transition: none; }
+.wf-ai-history-sheet-handle {
+  flex-shrink: 0;
+  padding: 10px 0 6px;
+  cursor: grab;
+  touch-action: none;
+}
+.wf-ai-history-sheet-handle::before {
+  content: '';
+  display: block;
+  width: 36px;
+  height: 4px;
+  margin: 0 auto;
+  border-radius: 999px;
+  background: var(--line);
+}
+
+.wf-ai-history-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 18px 14px;
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+.wf-ai-history-head-icon {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--accent-bg);
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.wf-ai-history-head-title { font-size: 1.05rem; font-weight: 700; color: var(--ink); flex: 1; min-width: 0; }
+
+.wf-ai-history-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 14px 18px;
+  padding: 9px 12px;
+  background: var(--accent-bg);
+  border-radius: 999px;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+.wf-ai-history-search input {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: none;
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--ink);
+}
+.wf-ai-history-search input:focus { outline: none; }
+.wf-ai-history-search-clear[hidden] { display: none; }
+.wf-ai-history-search-clear {
+  background: none;
+  border: none;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.wf-ai-history-search-clear:hover { color: var(--ink); }
+
+.wf-ai-history-list {
+  flex: 1;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 0 8px 8px;
+  overscroll-behavior: contain;
+}
+.wf-ai-history-group-label {
+  padding: 12px 10px 6px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.wf-ai-history-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 10px;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+}
+.wf-ai-history-row:last-child { border-bottom: none; }
+.wf-ai-history-row-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--accent-bg);
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.wf-ai-history-row-main { flex: 1; min-width: 0; }
+.wf-ai-history-row-title {
+  font-size: 0.86rem;
+  font-weight: 700;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wf-ai-history-row-preview {
+  font-size: 0.78rem;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: 1px;
+}
+.wf-ai-history-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  color: var(--muted);
+}
+.wf-ai-history-row-time { font-size: 0.72rem; white-space: nowrap; }
+.wf-ai-history-row-delete {
+  background: none;
+  border: none;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+}
+.wf-ai-history-row-delete:hover { color: var(--important); background: var(--important-bg); }
+
+.wf-ai-history-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 48px 20px;
+  color: var(--muted);
+  text-align: center;
+  font-size: 0.85rem;
+}
+
+.wf-ai-history-viewall {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  flex-shrink: 0;
+  margin: 0 14px;
+  padding: 13px;
+  margin-bottom: max(14px, env(safe-area-inset-bottom));
+  background: var(--accent-bg);
+  color: var(--accent);
+  border: none;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.wf-ai-history-full[hidden] { display: none; }
+.wf-ai-history-full {
+  position: fixed;
+  inset: 0;
+  max-width: 480px;
+  margin: 0 auto;
+  background: var(--paper);
+  z-index: 72;
+  display: flex;
+  flex-direction: column;
+}
+.wf-ai-history-full-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: max(18px, env(safe-area-inset-top)) 20px 0;
+  margin-bottom: 14px;
+  flex-shrink: 0;
+}
+.wf-ai-history-full-head h2 { margin: 0; font-size: 1.1rem; font-weight: 700; color: var(--ink); flex: 1; min-width: 0; }
+.wf-ai-history-full > .wf-ai-history-search { margin: 0 20px 14px; }
+.wf-ai-history-full > .wf-ai-history-list { padding: 0 12px 8px; }
+.wf-ai-history-full-footer {
+  flex-shrink: 0;
+  padding: 10px 20px max(14px, env(safe-area-inset-bottom));
+}
+.wf-ai-history-clearall {
+  width: 100%;
+  padding: 13px;
+  background: none;
+  border: 1px solid var(--important);
+  color: var(--important);
+  border-radius: 999px;
+  font-size: 0.85rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+@media (max-width: 480px) {
+  .wf-ai-panel, .wf-ai-sheet, .wf-ai-history-sheet, .wf-ai-history-full { max-width: none; }
+}

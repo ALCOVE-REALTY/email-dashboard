@@ -1,0 +1,699 @@
+:root {
+  --ink: #181b1d;
+  --paper: #eef3f2;
+  --surface: #ffffff;
+  --line: #dde4e2;
+  --accent: #1d5c63;
+  --accent-ink: #ffffff;
+  --accent-bg: #e3eeed;
+  --important: #c0392b;
+  --important-bg: #fbeae8;
+  --resolved: #5b8c5a;
+  --resolved-bg: #eef4ec;
+  --muted: #5b6169;
+  --other-bg: #eef0ed;
+  --candidate: #a6702a;
+  --candidate-bg: #f7ecdd;
+  --warning: #c9700a;
+  --warning-bg: #faedd9;
+  --shadow: rgba(18, 40, 42, 0.08);
+
+  /* Header brand band — stays constant across light/dark themes */
+  --header-from: #123f44;
+  --header-to: #1d6d76;
+  --header-ink: #f4f9f8;
+  --header-ink-dim: rgba(244, 249, 248, 0.72);
+  --header-ring: rgba(244, 249, 248, 0.32);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ink: #eceeec;
+    --paper: #14171a;
+    --surface: #1c2023;
+    --line: #2c3033;
+    --accent: #4fa9a3;
+    --accent-ink: #0d1516;
+    --accent-bg: #172b2a;
+    --important: #e8776a;
+    --important-bg: #2a1a19;
+    --resolved: #8ec08c;
+    --resolved-bg: #182219;
+    --muted: #9aa0a6;
+    --other-bg: #23282b;
+    --candidate: #d9a35c;
+    --candidate-bg: #2b2116;
+    --warning: #e0972f;
+    --warning-bg: #2b2013;
+    --shadow: rgba(0, 0, 0, 0.35);
+  }
+}
+
+* { box-sizing: border-box; }
+
+/* No blue/grey tap-highlight box on touch anywhere in the app, and no
+   leftover focus outline from a tap - keyboard :focus-visible still gets
+   one. Deliberately no replacement press effect (tint/scale/ripple):
+   tapping performs the action with no visual flash. */
+html, * {
+  -webkit-tap-highlight-color: transparent;
+}
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* Buttons and ARIA-button controls (every clickable control in this app,
+   from nav items to icon buttons) are never selectable text and never
+   trigger the iOS long-press callout menu. Everything else - report
+   tables, chat messages, any other prose - is untouched. */
+button,
+[role="button"] {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* If any element ever exceeds the viewport width by even a pixel (a long
+   name, a long address, a wide row), the whole page becomes horizontally
+   pannable on mobile - it visibly shifts left/right when touched. This is
+   the standard guard against that: the page itself can never scroll
+   sideways, no matter what overflows inside it. */
+html, body { overflow-x: hidden; }
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  display: flex;
+  justify-content: center;
+  padding-bottom: 76px; /* clearance for the fixed bottom nav, shared by both pages */
+}
+
+.device {
+  width: 100%;
+  max-width: 480px;
+  min-height: 100vh;
+  background: var(--paper);
+  padding: 18px 20px 40px;
+}
+
+/* Mail page header — deliberately scoped under .mail-topbar (not bare
+   `header`/`h1`) so nothing here can bleed into workforce.html's header,
+   which shares this stylesheet for its color tokens. */
+.mail-topbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.mail-topbar .brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.mail-topbar .brand-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: var(--accent-bg);
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.mail-topbar .brand-icon svg { display: block; }
+
+.mail-topbar h1 {
+  font-family: "Iowan Old Style", "Palatino Linotype", Georgia, ui-serif, serif;
+  font-size: 1.3rem;
+  font-weight: 700;
+  margin: 0;
+  color: var(--ink);
+  text-wrap: balance;
+}
+
+.mail-topbar .subtitle {
+  font-size: 0.76rem;
+  color: var(--muted);
+  margin-top: 2px;
+  word-break: break-all;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* Shared topbar icon-button + avatar - used on both the Mail Management
+   and Workforce Management pages so the two headers match. */
+.wf-icon-btn[hidden] { display: none; }
+.wf-icon-btn {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 1px 3px var(--shadow);
+  flex-shrink: 0;
+}
+.wf-icon-btn:hover { color: var(--accent); border-color: var(--accent); }
+.wf-icon-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.wf-icon-btn:disabled { cursor: default; opacity: 0.8; }
+.wf-icon-btn.spinning { color: var(--accent); border-color: var(--accent); }
+.wf-icon-btn.spinning svg { animation: wf-spin 0.8s linear infinite; }
+
+@keyframes wf-spin {
+  to { transform: rotate(360deg); }
+}
+
+.wf-avatar {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--accent-ink);
+  border: none;
+  padding: 0;
+  font: inherit;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.82rem;
+  font-weight: 700;
+  flex-shrink: 0;
+  cursor: pointer;
+  overflow: hidden;
+}
+.wf-avatar:hover { box-shadow: 0 0 0 3px var(--accent-bg); }
+.wf-avatar:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.wf-avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.wf-avatar.lg { width: 64px; height: 64px; font-size: 1.3rem; }
+
+.tabbar {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 2px 2px 8px;
+  margin: 0 -2px 18px;
+  scrollbar-width: none;
+}
+.tabbar::-webkit-scrollbar { display: none; }
+
+.tab-pill {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 8px 13px;
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--muted);
+  white-space: nowrap;
+  cursor: pointer;
+  box-shadow: 0 1px 2px var(--shadow);
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+.tab-pill:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.tab-pill .count {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.7rem;
+  font-weight: 700;
+  background: var(--other-bg);
+  color: var(--ink);
+  padding: 1px 7px;
+  border-radius: 999px;
+}
+
+.tab-pill[aria-pressed="true"] .count { background: rgba(255, 255, 255, 0.28); color: inherit; }
+
+.tab-pill[data-category="unread"][aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.tab-pill[data-category="important"][aria-pressed="true"] { background: var(--important); border-color: var(--important); color: var(--accent-ink); }
+.tab-pill[data-category="recent"][aria-pressed="true"] { background: var(--ink); border-color: var(--ink); color: var(--paper); }
+.tab-pill[data-category="candidates"][aria-pressed="true"] { background: var(--candidate); border-color: var(--candidate); color: var(--accent-ink); }
+.tab-pill[data-category="joinings"][aria-pressed="true"] { background: var(--resolved); border-color: var(--resolved); color: var(--accent-ink); }
+
+.section-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 2px 10px;
+}
+
+.section-head .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.section-head.important .dot { background: var(--important); }
+.section-head.unread .dot { background: var(--accent); }
+.section-head.recent .dot { background: var(--muted); }
+.section-head.candidates .dot { background: var(--candidate); }
+.section-head.joinings .dot { background: var(--resolved); }
+
+.section-head h2 {
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  margin: 0;
+}
+
+.search-row { margin: 0 2px 14px; }
+
+#searchInput {
+  width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 9px 12px;
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--ink);
+}
+#searchInput::placeholder { color: var(--muted); }
+#searchInput:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.section { margin-bottom: 24px; }
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 14px 15px;
+  margin-bottom: 10px;
+  box-shadow: 0 2px 6px var(--shadow);
+  position: relative;
+  overflow: hidden;
+}
+
+.card.important::before {
+  content: "";
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 4px;
+  background: var(--important);
+}
+
+.card-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 3px;
+}
+
+.from {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.time {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.68rem;
+  color: var(--muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.card-top-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.delete-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  line-height: 1;
+  padding: 3px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--muted);
+  opacity: 0.7;
+  transition: color 0.15s ease, opacity 0.15s ease;
+}
+.delete-btn svg { display: block; }
+.delete-btn:hover { opacity: 1; color: var(--important); }
+.delete-btn:disabled { opacity: 0.3; cursor: default; }
+.delete-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; opacity: 1; }
+
+.open-toggle {
+  display: block;
+  width: 100%;
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+}
+.open-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+
+.subject {
+  font-size: 0.92rem;
+  font-weight: 600;
+  margin-bottom: 3px;
+  text-wrap: balance;
+}
+
+.card.is-unread .subject { font-weight: 800; }
+.card.is-unread .from { color: var(--ink); }
+
+.snippet {
+  font-size: 0.82rem;
+  color: var(--muted);
+  line-height: 1.4;
+  margin-bottom: 10px;
+}
+
+.full-body {
+  display: none;
+  margin: 0 0 10px;
+  padding: 10px 0 0;
+  border-top: 1px solid var(--line);
+}
+.full-body.open { display: block; }
+
+.body-text {
+  font-size: 0.85rem;
+  line-height: 1.55;
+  color: var(--ink);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 340px;
+  overflow-y: auto;
+}
+
+.reply-btn {
+  background: var(--other-bg);
+  color: var(--ink);
+  border: none;
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: 0.76rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.reply-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.composer {
+  display: none;
+  margin-top: 10px;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+.composer.open { display: block; }
+
+.composer textarea {
+  width: 100%;
+  min-height: 64px;
+  background: var(--paper);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 0.85rem;
+  font-family: inherit;
+  resize: vertical;
+}
+.composer textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.composer-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+  align-items: center;
+}
+
+.btn-send {
+  background: var(--accent);
+  color: var(--accent-ink);
+  border: none;
+  border-radius: 8px;
+  padding: 7px 14px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+.btn-send:disabled { opacity: 0.6; cursor: default; }
+.btn-send:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+
+.btn-cancel {
+  background: none;
+  color: var(--muted);
+  border: none;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 7px 6px;
+}
+
+.status-msg {
+  font-size: 0.76rem;
+  color: var(--muted);
+  margin-top: 8px;
+}
+.status-msg.error { color: var(--important); }
+.status-msg.success { color: var(--resolved); font-weight: 600; }
+
+.empty {
+  color: var(--muted);
+  font-size: 0.85rem;
+  padding: 8px 4px;
+}
+
+.loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 0;
+}
+
+.spinner {
+  width: 26px;
+  height: 26px;
+  border: 3px solid var(--line);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner { animation-duration: 1.8s; }
+}
+
+.loading-inline {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px 0;
+}
+
+.spinner-sm {
+  width: 17px;
+  height: 17px;
+  border-width: 2px;
+}
+
+.error-banner {
+  background: var(--important-bg);
+  color: var(--important);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 0.82rem;
+  margin-bottom: 14px;
+}
+
+.report-card {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: 0 2px 8px var(--shadow);
+  overflow: hidden;
+}
+
+.report-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line);
+  background: linear-gradient(180deg, var(--other-bg), var(--surface));
+}
+
+.report-header h3 {
+  margin: 0;
+  font-family: "Iowan Old Style", "Palatino Linotype", Georgia, ui-serif, serif;
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.report-sub {
+  font-size: 0.74rem;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+.report-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  flex-shrink: 0;
+  align-items: flex-end;
+}
+
+.report-stat {
+  font-size: 0.68rem;
+  font-weight: 700;
+  padding: 3px 9px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.report-stat.soon { background: var(--important-bg); color: var(--important); }
+.report-stat.month { background: var(--candidate-bg); color: var(--candidate); }
+
+.table-wrap {
+  overflow-x: auto;
+}
+
+.joinings-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+
+.joinings-table th,
+.joinings-table td {
+  padding: 11px 12px;
+  text-align: left;
+  vertical-align: middle;
+}
+
+.joinings-table th:first-child,
+.joinings-table td.col-sl {
+  white-space: nowrap;
+}
+
+.joinings-table td.col-doj {
+  white-space: nowrap;
+}
+
+.joinings-table thead th {
+  background: var(--other-bg);
+  color: var(--muted);
+  font-size: 0.66rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 700;
+}
+
+.joinings-table tbody tr:not(:last-child) td {
+  border-bottom: 1px solid var(--line);
+}
+
+.joinings-table tbody tr:nth-child(even) {
+  background: color-mix(in srgb, var(--other-bg) 45%, transparent);
+}
+
+.joinings-table tbody tr.row-soon {
+  background: color-mix(in srgb, var(--important-bg) 55%, transparent);
+}
+
+.joinings-table td.col-sl {
+  color: var(--muted);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.joinings-table td.col-name {
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.doj-date {
+  display: block;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.doj-badge {
+  display: inline-block;
+  margin-top: 3px;
+  font-size: 0.64rem;
+  font-weight: 700;
+  padding: 1px 7px;
+  border-radius: 999px;
+}
+.doj-badge.soon { background: var(--important-bg); color: var(--important); }
+.doj-badge.month { background: var(--candidate-bg); color: var(--candidate); }
+.doj-badge.later { background: var(--resolved-bg); color: var(--resolved); }
+
+/* ---------- Bottom nav — shared across the Mail and Workforce pages ---------- */
+
+.bottom-nav {
+  position: fixed;
+  bottom: 0; left: 0; right: 0;
+  display: flex;
+  background: var(--surface);
+  border-top: 1px solid var(--line);
+  box-shadow: 0 -2px 10px var(--shadow);
+  z-index: 20;
+}
+
+.bottom-nav-item {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 9px 4px 8px;
+  background: none;
+  border: none;
+  color: var(--muted);
+  text-decoration: none;
+  font: inherit;
+  font-size: 0.66rem;
+  font-weight: 700;
+  cursor: pointer;
+  text-align: center;
+}
+.bottom-nav-item[aria-current="true"] { color: var(--accent); }
+.bottom-nav-item:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }

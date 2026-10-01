@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="noindex, nofollow" />
+  <title>Interview Panel — Login</title>
+  <link rel="stylesheet" href="styles.css?v=9" />
+  <link rel="stylesheet" href="login.css?v=2" />
+</head>
+<body>
+  <div class="login-shell">
+    <div class="login-brand">
+      <div class="login-brand-icon">
+        <svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+      </div>
+      <div class="login-wordmark">Interview<span>Panel</span></div>
+    </div>
+
+    <section id="loginStep" class="login-step">
+      <h1>Welcome</h1>
+      <div class="login-sub">Log in with the email and password your admin shared with you.</div>
+
+      <form id="loginForm">
+        <input type="email" id="emailInput" class="login-input" placeholder="Registered email" autocomplete="email" required />
+        <input type="password" id="passwordInput" class="login-input" placeholder="6-digit password" inputmode="numeric" maxlength="6" autocomplete="current-password" required />
+        <button type="submit" class="login-btn" id="loginBtn">Log In</button>
+      </form>
+      <div class="login-error" id="loginError" hidden></div>
+    </section>
+
+    <div class="login-footer">© 2026 Alcove Realty</div>
+  </div>
+
+  <script src="interview-panel-login.js?v=1"></script>
+</body>
+</html>
