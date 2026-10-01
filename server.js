@@ -9,6 +9,10 @@ const insuranceRoutes = require('./src/insuranceRoutes');
 const hrAuth = require('./src/hrAuth');
 const emailService = require('./src/emailService');
 const movementTracker = require('./src/movementTracker');
+const snapshotScheduler = require('./src/dailySnapshotScheduler');
+// One client for the daily-snapshot lock, shared by the endpoint and the
+// in-process scheduler so both claim the same per-day key.
+const snapshotRedis = snapshotScheduler.makeRedis();
 const interviewPanelRoutes = require('./src/interviewPanelRoutes');
 const interviewPublicRoutes = require('./src/interviewPublicRoutes');
 const interviewPanelAccessRoutes = require('./src/interviewPanelAccessRoutes');
@@ -377,7 +381,11 @@ app.get('/api/internal/snapshot-movement', async (req, res) => {
     return res.status(401).json({ error: 'Unauthorized' });
   }
   try {
-    const result = await movementTracker.runDailySnapshot();
+    // Same per-day claim the in-process scheduler takes, so a still-enabled
+    // Vercel cron and prod's scheduler can never both run the same day.
+    const result = await snapshotScheduler.runIfUnclaimed({
+      tracker: movementTracker, redis: snapshotRedis, now: new Date()
+    });
     res.json({ ok: true, ...result });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -526,6 +534,9 @@ if (!process.env.VERCEL) {
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Email dashboard running at http://localhost:${PORT} (and on your LAN IP, port ${PORT})`);
   });
+  // Off Vercel there is no Vercel Cron, so this process runs the daily
+  // movement snapshot itself (opt-in: MOVEMENT_SNAPSHOT_SCHEDULER=1).
+  snapshotScheduler.start({ tracker: movementTracker, redis: snapshotRedis });
 }
 
 module.exports = app;
