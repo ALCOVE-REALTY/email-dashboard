@@ -769,6 +769,7 @@ async function getResponse({ message, history, user }) {
   let choice = data.choices && data.choices[0];
   let assistantMessage = choice && choice.message;
   const usage1 = data.usage || null;
+  console.log('[hr-assistant][debug] firstCall finish_reason=' + (choice && choice.finish_reason) + ' message=' + JSON.stringify(assistantMessage).slice(0, 500) + ' fullData=' + JSON.stringify(data).slice(0, 300));
 
   // At most one tool round-trip - every tool here is a single, direct
   // lookup with no reason for the model to chain multiple calls together;
