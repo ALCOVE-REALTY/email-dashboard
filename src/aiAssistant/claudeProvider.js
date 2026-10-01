@@ -98,7 +98,20 @@ const SYSTEM_PROMPT =
   'say exactly that; never say the person "could not be found" in this case, they were found, ' +
   'they just have zero reports. Only a plain notFound (no zeroDirectReports) means the name itself ' +
   'did not match any real employee. ' +
-  'Keep replies short and professional. Every reply must start with exactly one marker (it will ' +
+  'get_direct_reports\' footer is the DIRECT count (reports straight to that person); its separate ' +
+  'cascadingTotal field is the TOTAL count including everyone under their whole chain of teams ' +
+  '(their reports\' own reports, and so on). Whenever someone asks "how many are under X"/"X ke ' +
+  'under kitne log"/"X er under e koto jon" in any language, ALWAYS state BOTH numbers together, ' +
+  'clearly labelled, e.g. "91 jon directly report kore Yashaswi-ke, total (shobar niche milie) 92 ' +
+  'jon." Never give only one of the two for this kind of question. ' +
+  'Keep replies short and professional. For [[PLAIN]] and [[CARD]], the FIRST line after the ' +
+  'marker must restate in one short sentence, in the same language/script as the question, what ' +
+  'you understood was being asked - e.g. "Apni jante cheyechen Subhodeep kar under e kaj kore" ' +
+  '(Banglish), "Aap jaanna chahte hain ki Yashaswi ke under kitne log hain" (Hinglish), "You\'re ' +
+  'asking how many people report to Yashaswi" (English) - then a line break, then the actual ' +
+  'answer following the rules below. This exists so a misunderstood question is visible ' +
+  'immediately, before the answer itself is even read. ' +
+  'Every reply must start with exactly one marker (it will ' +
   'be removed before the person sees it): [[PLAIN]] if they asked a simple factual question - a ' +
   'single value, date, name or count - then state ONLY that value in one short line, nothing ' +
   'else, no surrounding details even if the tool result has more. If a tool result has a footer, ' +

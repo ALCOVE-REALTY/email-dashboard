@@ -822,7 +822,7 @@ async function directReports(name) {
     // exist at all (e.g. an individual contributor with no direct reports).
     const realEmployee = employees.find((e) => e.status === 'ACTIVE' && employeeService.containsAllWords(e.name, q));
     if (realEmployee) {
-      return { title: null, rows: null, actions: null, employeeName: realEmployee.name, zeroDirectReports: true };
+      return { title: null, rows: null, actions: null, employeeName: realEmployee.name, zeroDirectReports: true, cascadingTotal: 0 };
     }
     return { title: null, rows: null, actions: [{ label: 'Open Employee Data', view: 'directory' }], notFound: q };
   }
@@ -837,8 +837,48 @@ async function directReports(name) {
     title: 'Reporting to ' + resolvedName + (rest > 0 ? ' (Top ' + CARD_ROW_LIMIT + ')' : ''),
     rows: shown.map(mapRow),
     fullRows: matches.map(mapRow),
-    footer: { label: 'Total', value: matches.length }
+    footer: { label: 'Direct Reports', value: matches.length },
+    // Found live: "how many are under X" answers were easy to mistake for
+    // only direct reports when the person actually meant the whole chain
+    // below X (their reports' own reports, and so on). Both numbers are
+    // always given together now so neither is ambiguous. BFS over the
+    // same combined reportingManager/reportingDoer relation directReports
+    // itself uses, so the two numbers are always consistent with each
+    // other (direct <= cascading, same underlying definition of "under").
+    cascadingTotal: countAllUnderManager(resolvedName, employees)
   };
+}
+
+// BFS down the org from rootName: each active employee whose
+// reportingManager OR reportingDoer resolves to someone already counted
+// (starting from rootName itself) is counted once, then their own name
+// becomes a new search key for the next level - visitedIds/seenKeys
+// guard against double-counting or an accidental cycle in the sheet's
+// own manager data.
+function countAllUnderManager(rootName, employees) {
+  const visitedIds = new Set();
+  const seenKeys = new Set([employeeService.normalizeKey(rootName)]);
+  let frontier = Array.from(seenKeys);
+  let total = 0;
+  while (frontier.length) {
+    const nextFrontier = [];
+    frontier.forEach((key) => {
+      employees.forEach((e) => {
+        if (e.status !== 'ACTIVE' || visitedIds.has(e.employeeId)) return;
+        if (e.reportingManagerKey === key || e.reportingDoerKey === key) {
+          visitedIds.add(e.employeeId);
+          total++;
+          const childKey = employeeService.normalizeKey(e.name);
+          if (!seenKeys.has(childKey)) {
+            seenKeys.add(childKey);
+            nextFrontier.push(childKey);
+          }
+        }
+      });
+    });
+    frontier = nextFrontier;
+  }
+  return total;
 }
 
 // The OPPOSITE direction from directReports above: "who is X's manager/
