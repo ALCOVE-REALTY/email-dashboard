@@ -1,14 +1,11 @@
 /* Sign-up / Log-in - design language matched to a provided reference
-   (hexagon-patterned background, white rounded card, blue-to-purple
-   gradient primary button, Manrope type), not shared with the rest of
-   this app's own teal-accented styles.css - this page is fully
+   (hexagon-patterned lavender background, white rounded card, blue-to-
+   purple gradient primary button, Manrope type), not shared with the
+   rest of this app's own teal-accented styles.css - this page is fully
    self-contained. */
 :root {
-  --auth-bg-white: #FFFFFF;
-  --auth-bg-mint-soft: #F3FAF6;
-  --auth-bg-mint: #EAF7F0;
-  --auth-bg-mint-deep: #D8F0E3;
-  --auth-hex-line: #DCEBE2;
+  --auth-bg-1: #eef0fb;
+  --auth-bg-2: #fbeef5;
   --auth-primary: #605dff;
   --auth-primary-dark: #1C2035;
   --auth-secondary: #5da8ff;
@@ -29,20 +26,10 @@ body {
   min-height: 100vh;
   font-family: 'Manrope', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
   color: var(--auth-text);
-  /* White center (behind the card) easing out to a soft mint at the
-     corners/edges, plus a thin outline-only hexagon texture on top -
-     premium/corporate, not a saturated consumer-app gradient. */
-  background-color: var(--auth-bg-white);
-  background-image:
-    radial-gradient(ellipse 120% 100% at 50% 32%,
-      var(--auth-bg-white) 0%,
-      var(--auth-bg-mint-soft) 55%,
-      var(--auth-bg-mint) 80%,
-      var(--auth-bg-mint-deep) 100%),
-    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='72' height='41.6' viewBox='0 0 72 41.6'%3E%3Cg fill='none' stroke='%23DCEBE2' stroke-width='1' opacity='0.55'%3E%3Cpolygon points='60,20.8 48,41.6 24,41.6 12,20.8 24,0 48,0'/%3E%3Cpolygon points='24,0 12,20.8 -12,20.8 -24,0 -12,-20.8 12,-20.8'/%3E%3Cpolygon points='24,0 12,20.8 -12,20.8 -24,0 -12,-20.8 12,-20.8' transform='translate(72,0)'/%3E%3Cpolygon points='24,0 12,20.8 -12,20.8 -24,0 -12,-20.8 12,-20.8' transform='translate(0,41.6)'/%3E%3Cpolygon points='24,0 12,20.8 -12,20.8 -24,0 -12,-20.8 12,-20.8' transform='translate(72,41.6)'/%3E%3C/g%3E%3C/svg%3E");
-  background-repeat: no-repeat, repeat;
-  background-size: cover, 72px 41.6px;
-  background-attachment: fixed, fixed;
+  background:
+    radial-gradient(circle at 15% 8%, rgba(96,93,255,0.08) 0, transparent 45%),
+    linear-gradient(160deg, var(--auth-bg-1), var(--auth-bg-2));
+  background-attachment: fixed;
   display: flex;
   justify-content: center;
   padding: 40px 16px 32px;
