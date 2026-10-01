@@ -161,7 +161,11 @@ async function appendTurn(email, conversationId, { userText, userAttachment, ass
     return convo.id;
   } catch (err) {
     console.error('[chat-history] appendTurn failed:', err.message);
-    return null;
+    // TEMPORARY diagnostic (conversationId is coming back null on the new
+    // deploy platform host, not reproduced on Vercel) - surfacing the real
+    // error instead of swallowing it, since there's no server log access
+    // for this host yet. Revert to `return null;` once diagnosed.
+    return 'DEBUG_ERR:' + err.message;
   }
 }
 
