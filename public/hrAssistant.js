@@ -139,7 +139,7 @@
       for (let i = 0; i < dotCount; i++) dots.appendChild(document.createElement('span'));
       label.textContent = labelText;
     }
-    setStage(2, 'Thinking..');
+    setStage(2, 'Khujchi…');
 
     bubble.appendChild(dots);
     bubble.appendChild(label);
@@ -149,7 +149,7 @@
     messagesEl.appendChild(row);
     scrollToBottom();
 
-    row._loadingTimerId = setTimeout(() => setStage(3, 'AI is preparing your response...'), 2000);
+    row._loadingTimerId = setTimeout(() => setStage(3, 'Ektu shomoy lagche, khujchi...'), 2000);
     return row;
   }
 
@@ -1074,7 +1074,10 @@
     history.push({ role: 'user', text });
     const loadingRow = addLoadingBubble();
 
-    try {
+    // One request attempt; throws on any non-OK response (including a
+    // Vercel function timeout, which comes back as a non-JSON error
+    // page, not just a network failure) so the caller can retry it.
+    async function attemptChatRequest() {
       const resp = await fetch('/api/workforce/hr-assistant/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1085,12 +1088,22 @@
           attachmentName: attachment ? attachment.name : null
         })
       });
-      removeLoadingBubble(loadingRow);
-      if (!resp.ok) {
-        addBubble('assistant', 'Unable to retrieve the requested information. Please try again.');
-        return;
+      if (!resp.ok) throw new Error('chat request failed: ' + resp.status);
+      return resp.json();
+    }
+
+    try {
+      let data;
+      try {
+        data = await attemptChatRequest();
+      } catch (firstErr) {
+        // The stronger AI sometimes takes long enough to hit a timeout -
+        // a single automatic retry covers that transient case so the
+        // person doesn't have to notice a failure and retry it
+        // themselves; only a second failure is shown as a real error.
+        data = await attemptChatRequest();
       }
-      const data = await resp.json();
+      removeLoadingBubble(loadingRow);
       if (data.conversationId) currentConversationId = data.conversationId;
       addBubble('assistant', data.reply || 'Done.');
       history.push({ role: 'assistant', text: data.reply || '' });
@@ -1103,7 +1116,7 @@
       }
     } catch (err) {
       removeLoadingBubble(loadingRow);
-      addBubble('assistant', 'Something went wrong. Please try again.');
+      addBubble('assistant', 'Ektu shomoy lagche, abar try korun.');
     } finally {
       input.disabled = false;
       if (sendBtn) sendBtn.disabled = false;
