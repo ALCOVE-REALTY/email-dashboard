@@ -12,8 +12,8 @@ function showStep(name) {
 
 // Relative URLs throughout (matches this app's existing login.js
 // convention) - resolve correctly against the current page whether
-// that's the bare domain or a path-prefixed one (/p/email-dashboard/
-// on the new deploy platform), no rewriting needed either way.
+// that's the bare domain or a path-prefixed one (/p/<slug>/ on the
+// deploy platform), no rewriting needed either way.
 async function postJson(url, body) {
   const res = await fetch(url, {
     method: 'POST',
