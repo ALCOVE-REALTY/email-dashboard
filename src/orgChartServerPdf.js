@@ -38,7 +38,18 @@ const LOCALE_ARG = '--lang=en-GB';
 
 async function launchBrowser() {
   const { launch } = await import('puppeteer-core');
-  if (process.env.VERCEL) {
+  // Found live: this used to gate on process.env.VERCEL specifically, so
+  // moving off Vercel to a different Linux host (still a real server,
+  // just not Vercel) silently broke this - PUPPETEER_EXECUTABLE_PATH
+  // wasn't set there either, so launchBrowser threw, the caller's catch-
+  // all swallowed it, and the button silently fell back to the old
+  // per-device print-dialog export instead of the direct-download PDF.
+  // The real constraint @sparticuz/chromium has is Linux (its binary is
+  // Linux-only, see the dev-machine note below) - checking that directly
+  // covers Vercel AND any other real Linux server, not just Vercel by
+  // name, and still falls through to PUPPETEER_EXECUTABLE_PATH for an
+  // explicit override or a non-Linux dev machine.
+  if (process.platform === 'linux' && !process.env.PUPPETEER_EXECUTABLE_PATH) {
     const { default: chromium } = await import('@sparticuz/chromium');
     return launch({
       executablePath: await chromium.executablePath(),
@@ -46,10 +57,10 @@ async function launchBrowser() {
       headless: true
     });
   }
-  // Local dev only - @sparticuz/chromium ships a Linux-only binary (built
-  // for Vercel/Lambda's own runtime), so it can't launch on a Windows or
-  // Mac dev machine. PUPPETEER_EXECUTABLE_PATH lets a developer point at
-  // any local Chromium/Chrome install for testing this module directly.
+  // Local dev only (or an explicit override) - @sparticuz/chromium ships
+  // a Linux-only binary, so it can't launch on a Windows or Mac dev
+  // machine. PUPPETEER_EXECUTABLE_PATH lets a developer point at any
+  // local Chromium/Chrome install for testing this module directly.
   const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
   if (!executablePath) {
     throw new Error('Set PUPPETEER_EXECUTABLE_PATH to a local Chromium/Chrome install for dev testing.');
