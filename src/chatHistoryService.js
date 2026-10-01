@@ -160,12 +160,12 @@ async function appendTurn(email, conversationId, { userText, userAttachment, ass
 
     return convo.id;
   } catch (err) {
+    // Confirmed live: on the new deploy-platform host this is the same
+    // Redis-permissions NOPERM cause as hrUserStore's signup failure
+    // (that host's Redis key rejects SET) - an infra/credentials fix,
+    // not something to work around here. Still fails soft either way.
     console.error('[chat-history] appendTurn failed:', err.message);
-    // TEMPORARY diagnostic (conversationId is coming back null on the new
-    // deploy platform host, not reproduced on Vercel) - surfacing the real
-    // error instead of swallowing it, since there's no server log access
-    // for this host yet. Revert to `return null;` once diagnosed.
-    return 'DEBUG_ERR:' + err.message;
+    return null;
   }
 }
 
