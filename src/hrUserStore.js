@@ -76,8 +76,7 @@ async function getUser(email) {
 // of a generic failure for the (common) case of someone signing up twice.
 async function createPendingUser(email, password) {
   const redis = getClient();
-  // TEMPORARY diagnostic - see the catch block below for why.
-  if (!redis) return { error: 'unavailable', debugMessage: 'getClient() returned null - KV_REST_API_URL/TOKEN not set on this host' };
+  if (!redis) return { error: 'unavailable' };
   if (!isStrongPassword(password)) return { error: 'weak_password' };
   try {
     const existing = await getUser(email);
@@ -96,12 +95,7 @@ async function createPendingUser(email, password) {
     return user;
   } catch (err) {
     console.error('[hr-user-store] createPendingUser failed:', err.message);
-    // TEMPORARY diagnostic (signup is failing on the new deploy platform
-    // host, no server log access there yet) - carrying the real error
-    // message through instead of a generic 'unavailable', so the route
-    // can surface it. Revert to `return { error: 'unavailable' };` once
-    // diagnosed.
-    return { error: 'unavailable', debugMessage: err.message };
+    return { error: 'unavailable' };
   }
 }
 
