@@ -2,6 +2,9 @@ require('dotenv').config();
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
+// Root-absolute URLs in HTML/JS break under a path prefix (/p/<slug>/ on the
+// Employee Deploy Platform) - see src/basePath.js.
+const basePath = require('./src/basePath');
 const { getAuthUrl, handleCallback, isAuthenticated, getConfigStatus } = require('./src/auth');
 const gmailService = require('./src/gmailService');
 const workforceRoutes = require('./src/workforceRoutes');
@@ -88,6 +91,7 @@ app.get('/oauth2callback', async (req, res) => {
 // deliberately more aggressive than the static middleware's max-age:0.
 function sendNoStore(res, filePath) {
   res.set('Cache-Control', 'no-store, must-revalidate');
+  if (filePath.endsWith('.html')) return basePath.sendHtml(res.req, res, filePath);
   res.sendFile(filePath);
 }
 
@@ -111,11 +115,9 @@ const ASSET_VERSION = process.env.VERCEL_GIT_COMMIT_SHA || String(Date.now());
 // source (any number; it's always overwritten) can be replaced with the
 // real, current one before the response goes out.
 function sendNoStoreWithAssetVersion(res, filePath) {
-  let html = fs.readFileSync(filePath, 'utf8');
-  html = html.replace(/(workforce\.(?:css|js))\?v=\d+/g, '$1?v=' + ASSET_VERSION);
   res.set('Cache-Control', 'no-store, must-revalidate');
-  res.set('Content-Type', 'text/html; charset=utf-8');
-  res.send(html);
+  basePath.sendHtml(res.req, res, filePath, (html) =>
+    html.replace(/(workforce\.(?:css|js))\?v=\d+/g, '$1?v=' + ASSET_VERSION));
 }
 
 // The bare domain is now the link shared with directors, so it goes straight
@@ -279,6 +281,15 @@ app.post('/api/interview-panel-login', async (req, res) => {
 // max-age: 0 forces the browser to revalidate (conditional GET) every time
 // instead of silently serving a stale cached copy of app.js/workforce.js —
 // we've hit that exact "my change isn't showing up" issue more than once.
+// HTML out of public/ goes through the same base-path rewrite as the routed
+// pages above; everything else (js, css, images) is served untouched below.
+const PUBLIC_DIR = path.join(__dirname, 'public');
+app.use((req, res, next) => {
+  if ((req.method !== 'GET' && req.method !== 'HEAD') || !req.path.endsWith('.html')) return next();
+  const file = path.resolve(PUBLIC_DIR, '.' + decodeURIComponent(req.path));
+  if (!file.startsWith(PUBLIC_DIR + path.sep) || !fs.existsSync(file)) return next();
+  basePath.sendHtml(req, res, file);
+});
 app.use(express.static(path.join(__dirname, 'public'), {
   etag: true,
   lastModified: true,

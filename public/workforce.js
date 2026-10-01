@@ -7172,8 +7172,8 @@ async function openInterviewPanelDetail(id) {
     const record = data.candidate;
 
     if (record.candidateToken) {
-      setIpLinkAnchor('ipDetailCandidateLink', window.location.origin + '/interview/candidate/' + record.candidateToken);
-      setIpLinkAnchor('ipDetailInterviewerLink', window.location.origin + '/interview/interviewer/' + record.interviewerToken);
+      setIpLinkAnchor('ipDetailCandidateLink', window.location.origin + (window.__APP_BASE__ || '') + '/interview/candidate/' + record.candidateToken);
+      setIpLinkAnchor('ipDetailInterviewerLink', window.location.origin + (window.__APP_BASE__ || '') + '/interview/interviewer/' + record.interviewerToken);
     }
 
     // The tracker is populated from the two real submission timestamps
