@@ -5131,6 +5131,7 @@ let lastEmployeeList = [];
 // stale PDF from a previous department/filter never gets shared - the
 // button's own click handler always reads whatever this currently is.
 let directoryPdfPrefetch = null;
+let shareEmployeesBtnOriginalHtml = null;
 
 async function loadEmployees(forceRefresh) {
   const requestId = ++currentRequestId;
@@ -5163,12 +5164,15 @@ async function loadEmployees(forceRefresh) {
   // actually ready removes that race instead of hoping the user waits long
   // enough on their own.
   const shareEmployeesBtn = document.getElementById('shareEmployeesPdf');
-  // .spinning is the same "working on it" treatment the Refresh button
-  // already uses elsewhere in this file - without it, a disabled Share
-  // button looks identical to an enabled one (just barely dimmer), so
-  // tapping it while the PDF is still prefetching looked like it was
-  // simply doing nothing instead of still loading.
-  if (shareEmployeesBtn) { shareEmployeesBtn.disabled = true; shareEmployeesBtn.classList.add('spinning'); }
+  // Same round spinner shareFile() itself swaps in while actually sharing -
+  // without this, a disabled Share button looked identical to an enabled
+  // one (just barely dimmer), so tapping it while the PDF was still
+  // prefetching looked like it was simply doing nothing instead of loading.
+  if (shareEmployeesBtn) {
+    if (shareEmployeesBtnOriginalHtml === null) shareEmployeesBtnOriginalHtml = shareEmployeesBtn.innerHTML;
+    shareEmployeesBtn.disabled = true;
+    shareEmployeesBtn.innerHTML = '<span class="spinner spinner-sm"></span>';
+  }
   try {
     const data = await fetchJson('/api/workforce/employees?' + params.toString());
     if (requestId !== currentRequestId) return;
@@ -5181,7 +5185,7 @@ async function loadEmployees(forceRefresh) {
       const unlockShareBtn = () => {
         if (requestId !== currentRequestId || !shareEmployeesBtn) return;
         shareEmployeesBtn.disabled = false;
-        shareEmployeesBtn.classList.remove('spinning');
+        shareEmployeesBtn.innerHTML = shareEmployeesBtnOriginalHtml;
       };
       // A failed prefetch still unlocks the button - clicking it then falls
       // back to shareFile's own fresh fetch (and its usual error banner if
@@ -5189,12 +5193,12 @@ async function loadEmployees(forceRefresh) {
       directoryPdfPrefetch.then(unlockShareBtn, unlockShareBtn);
     } else if (shareEmployeesBtn) {
       shareEmployeesBtn.disabled = false;
-      shareEmployeesBtn.classList.remove('spinning');
+      shareEmployeesBtn.innerHTML = shareEmployeesBtnOriginalHtml;
     }
   } catch (err) {
     if (requestId !== currentRequestId) return;
     employeeList.innerHTML = '<li class="error-banner">' + escapeHtml(err.message) + '</li>';
-    if (shareEmployeesBtn) { shareEmployeesBtn.disabled = false; shareEmployeesBtn.classList.remove('spinning'); }
+    if (shareEmployeesBtn) { shareEmployeesBtn.disabled = false; shareEmployeesBtn.innerHTML = shareEmployeesBtnOriginalHtml; }
   }
 }
 
