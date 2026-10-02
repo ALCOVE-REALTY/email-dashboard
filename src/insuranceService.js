@@ -1,4 +1,5 @@
 const { getSheetsReadOnlyClient } = require('./sheetsAuth');
+const { logRefreshFailure } = require('./refreshLog');
 
 // Separate spreadsheet from HR Master Data - "Mediclaim Addition & Deletion
 // Automation", shared with the same service account, read-only here.
@@ -214,7 +215,7 @@ async function getInsuranceData({ forceRefresh = false } = {}) {
 
   if (!hasCache) return (await refreshCache()).data;
   if (forceRefresh) return (await refreshCache()).data;
-  if (isStale) refreshCache().catch(() => {});
+  if (isStale) refreshCache().catch((err) => logRefreshFailure('insurance', err));
   return cache.data;
 }
 

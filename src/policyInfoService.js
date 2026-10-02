@@ -1,4 +1,5 @@
 const { getSheetsWriteClient } = require('./sheetsAuth');
+const { logRefreshFailure } = require('./refreshLog');
 
 // Stored in the Movement Tracker spreadsheet - the one sheet the service
 // account can write to (see movementTracker.js's own note on this); the
@@ -92,7 +93,7 @@ async function getCachedRows() {
   const hasCache = Boolean(cache.rows);
   const isStale = !hasCache || Date.now() - cache.fetchedAt >= CACHE_TTL_MS;
   if (!hasCache) return (await refreshCache()).rows;
-  if (isStale) refreshCache().catch(() => {});
+  if (isStale) refreshCache().catch((err) => logRefreshFailure('policy-info', err));
   return cache.rows;
 }
 
