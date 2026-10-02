@@ -5163,7 +5163,12 @@ async function loadEmployees(forceRefresh) {
   // actually ready removes that race instead of hoping the user waits long
   // enough on their own.
   const shareEmployeesBtn = document.getElementById('shareEmployeesPdf');
-  if (shareEmployeesBtn) shareEmployeesBtn.disabled = true;
+  // .spinning is the same "working on it" treatment the Refresh button
+  // already uses elsewhere in this file - without it, a disabled Share
+  // button looks identical to an enabled one (just barely dimmer), so
+  // tapping it while the PDF is still prefetching looked like it was
+  // simply doing nothing instead of still loading.
+  if (shareEmployeesBtn) { shareEmployeesBtn.disabled = true; shareEmployeesBtn.classList.add('spinning'); }
   try {
     const data = await fetchJson('/api/workforce/employees?' + params.toString());
     if (requestId !== currentRequestId) return;
@@ -5173,18 +5178,23 @@ async function loadEmployees(forceRefresh) {
         if (!res.ok) throw new Error('Could not share the report - please try again.');
         return res.blob();
       });
-      const unlockShareBtn = () => { if (requestId === currentRequestId && shareEmployeesBtn) shareEmployeesBtn.disabled = false; };
+      const unlockShareBtn = () => {
+        if (requestId !== currentRequestId || !shareEmployeesBtn) return;
+        shareEmployeesBtn.disabled = false;
+        shareEmployeesBtn.classList.remove('spinning');
+      };
       // A failed prefetch still unlocks the button - clicking it then falls
       // back to shareFile's own fresh fetch (and its usual error banner if
       // that fails too), same as before this prefetch existed.
       directoryPdfPrefetch.then(unlockShareBtn, unlockShareBtn);
     } else if (shareEmployeesBtn) {
       shareEmployeesBtn.disabled = false;
+      shareEmployeesBtn.classList.remove('spinning');
     }
   } catch (err) {
     if (requestId !== currentRequestId) return;
     employeeList.innerHTML = '<li class="error-banner">' + escapeHtml(err.message) + '</li>';
-    if (shareEmployeesBtn) shareEmployeesBtn.disabled = false;
+    if (shareEmployeesBtn) { shareEmployeesBtn.disabled = false; shareEmployeesBtn.classList.remove('spinning'); }
   }
 }
 
