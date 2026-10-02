@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="login.css?v=3" />
+  <link rel="stylesheet" href="login.css?v=5" />
 </head>
 <body>
   <div class="auth-shell">
@@ -19,13 +19,14 @@
       <section id="signUpStep" class="auth-step" hidden>
         <form id="signUpForm" novalidate>
           <label class="auth-label" for="suEmail">E-mail</label>
-          <div class="auth-input">
+          <div class="auth-input" id="suEmailWrap">
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
             <input type="email" id="suEmail" placeholder="e.g. johndoe@gmail.com" autocomplete="email" required />
           </div>
+          <div class="auth-field-error" id="suEmailError" hidden>Enter a valid email</div>
 
           <label class="auth-label" for="suPassword">Password</label>
-          <div class="auth-input">
+          <div class="auth-input" id="suPasswordWrap">
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
             <input type="password" id="suPassword" placeholder="Create a password" autocomplete="new-password" required />
             <button type="button" class="auth-eye" data-for="suPassword" aria-label="Show password">
@@ -43,6 +44,7 @@
             <li data-rule="num"><span class="dot"></span>One number</li>
             <li data-rule="special"><span class="dot"></span>One special character</li>
           </ul>
+          <div class="auth-field-error" id="suMissingError" hidden></div>
 
           <label class="auth-label" for="suRepeat">Repeat Password</label>
           <div class="auth-input" id="suRepeatWrap">
@@ -53,16 +55,17 @@
             </button>
           </div>
           <div class="auth-field-error" id="suRepeatError" hidden>Passwords do not match</div>
+          <div class="auth-field-success" id="suRepeatSuccess" hidden>Passwords match</div>
 
           <label class="auth-check">
             <input type="checkbox" id="suTerms" required />
             <span>I agree to the <strong>Terms</strong> and <strong>Privacy Policy</strong></span>
           </label>
 
-          <button type="submit" class="auth-btn" id="suSubmitBtn">Sign Up</button>
+          <button type="submit" class="auth-btn" id="suSubmitBtn" disabled>Sign Up</button>
           <div class="auth-error" id="suError" hidden></div>
         </form>
-        <div class="auth-switch">Already have an account? <button type="button" class="auth-link-btn" id="goToLoginBtn">Log in</button></div>
+        <div class="auth-switch">Already have an account? <button type="button" class="auth-link-btn" id="goToLoginBtn">Log In</button></div>
       </section>
 
       <!-- ===================== WAITING FOR APPROVAL ===================== -->
@@ -88,10 +91,11 @@
       <section id="logInStep" class="auth-step">
         <form id="logInForm" novalidate>
           <label class="auth-label" for="liEmail">E-mail</label>
-          <div class="auth-input">
+          <div class="auth-input" id="liEmailWrap">
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
             <input type="email" id="liEmail" placeholder="e.g. johndoe@gmail.com" autocomplete="email" required />
           </div>
+          <div class="auth-field-error" id="liEmailError" hidden>Enter a valid email</div>
 
           <div class="auth-label-row">
             <label class="auth-label" for="liPassword">Password</label>
@@ -108,7 +112,7 @@
           <button type="submit" class="auth-btn" id="liSubmitBtn">Log In</button>
           <div class="auth-error" id="liError" hidden></div>
         </form>
-        <div class="auth-switch">Don't have an account? <button type="button" class="auth-link-btn" id="goToSignUpBtn">Sign up</button></div>
+        <div class="auth-switch">Don't have an account? <button type="button" class="auth-link-btn" id="goToSignUpBtn">Sign Up</button></div>
       </section>
 
     </div>
@@ -116,6 +120,6 @@
     <div class="auth-footer">© 2026 Alcove Realty</div>
   </div>
 
-  <script src="login.js?v=2"></script>
+  <script src="login.js?v=4"></script>
 </body>
 </html>

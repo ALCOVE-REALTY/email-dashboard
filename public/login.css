@@ -125,9 +125,15 @@ body {
 }
 .auth-eye.is-visible { color: var(--auth-primary); }
 
-#suRepeatWrap.auth-input-error { border-color: var(--auth-danger); }
+.auth-input.auth-input-error { border-color: var(--auth-danger); }
 .auth-field-error {
   color: var(--auth-danger);
+  font-size: 12.5px;
+  font-weight: 400;
+  margin-top: 6px;
+}
+.auth-field-success {
+  color: var(--auth-success);
   font-size: 12.5px;
   font-weight: 600;
   margin-top: 6px;
@@ -143,10 +149,12 @@ body {
   height: 4px;
   border-radius: 2px;
   background: #e7e8f0;
+  transition: background-color 0.25s ease;
 }
-.auth-strength-bar span.filled-weak { background: #f2b84b; }
-.auth-strength-bar span.filled-mid { background: #f2b84b; }
-.auth-strength-bar span.filled-strong { background: var(--auth-success); }
+.auth-strength-bar span.bar-red { background: var(--auth-danger); }
+.auth-strength-bar span.bar-orange { background: #f2994a; }
+.auth-strength-bar span.bar-yellow { background: #f2c94c; }
+.auth-strength-bar span.bar-green { background: var(--auth-success); }
 
 .auth-criteria {
   list-style: none;

@@ -47,15 +47,22 @@ document.querySelectorAll('.auth-eye').forEach((btn) => {
 // ---------- Sign Up
 
 const suEmail = document.getElementById('suEmail');
+const suEmailWrap = document.getElementById('suEmailWrap');
+const suEmailError = document.getElementById('suEmailError');
 const suPassword = document.getElementById('suPassword');
+const suPasswordWrap = document.getElementById('suPasswordWrap');
 const suRepeat = document.getElementById('suRepeat');
 const suRepeatWrap = document.getElementById('suRepeatWrap');
 const suRepeatError = document.getElementById('suRepeatError');
+const suRepeatSuccess = document.getElementById('suRepeatSuccess');
+const suMissingError = document.getElementById('suMissingError');
 const suTerms = document.getElementById('suTerms');
 const suError = document.getElementById('suError');
 const suSubmitBtn = document.getElementById('suSubmitBtn');
 const strengthBar = document.getElementById('strengthBar');
 const criteriaItems = Array.from(document.querySelectorAll('#suCriteria li'));
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const RULES = {
   len: (p) => p.length >= 8,
@@ -65,41 +72,111 @@ const RULES = {
   special: (p) => /[^A-Za-z0-9]/.test(p)
 };
 
+const RULE_LABELS = {
+  len: 'at least 8 characters',
+  upper: 'one uppercase letter',
+  lower: 'one lowercase letter',
+  num: 'one number',
+  special: 'one special character'
+};
+
+let emailTouched = false;
+
 function passwordScore(p) {
   return Object.values(RULES).filter((fn) => fn(p)).length;
 }
 
+function isEmailValid() {
+  return EMAIL_RE.test(suEmail.value.trim());
+}
+
+function updateEmailUi() {
+  const valid = isEmailValid();
+  const showErr = emailTouched && suEmail.value.length > 0 && !valid;
+  suEmailWrap.classList.toggle('auth-input-error', showErr);
+  suEmailError.hidden = !showErr;
+  return valid;
+}
+
 function updateStrengthUi() {
   const p = suPassword.value;
+  const met = {};
   criteriaItems.forEach((li) => {
     const rule = li.dataset.rule;
-    li.classList.toggle('met', RULES[rule](p));
+    met[rule] = RULES[rule](p);
+    li.classList.toggle('met', met[rule]);
   });
   const score = passwordScore(p);
   const bars = Array.from(strengthBar.children);
-  // Simple 4-segment fill: 0-1 criteria -> 1 bar, up to 5 criteria -> 4 bars.
-  const filledCount = Math.min(4, Math.ceil((score / 5) * 4));
+  let fillCount = 0;
+  let barClass = '';
+  if (p.length > 0) {
+    if (score <= 3) { fillCount = 1; barClass = 'bar-red'; }
+    else if (score === 4) { fillCount = 2; barClass = 'bar-orange'; }
+    else if (score === 5 && p.length < 12) { fillCount = 3; barClass = 'bar-yellow'; }
+    else if (score === 5 && p.length >= 12) { fillCount = 4; barClass = 'bar-green'; }
+  }
   bars.forEach((bar, i) => {
-    bar.className = i < filledCount ? (score >= 5 ? 'filled-strong' : 'filled-weak') : '';
+    bar.className = i < fillCount ? barClass : '';
   });
+
+  const missing = Object.keys(RULE_LABELS).filter((rule) => !met[rule]);
+  if (missing.length > 0 && p.length > 0) {
+    suMissingError.textContent = 'Missing: ' + missing.map((r) => RULE_LABELS[r]).join(', ');
+    suMissingError.hidden = false;
+  } else {
+    suMissingError.hidden = true;
+  }
+
+  suPasswordWrap.classList.toggle('auth-input-error', p.length > 0 && score < 5);
+
   return score === 5;
 }
 
 function updateRepeatUi() {
-  const mismatch = suRepeat.value.length > 0 && suRepeat.value !== suPassword.value;
+  const hasValue = suRepeat.value.length > 0;
+  const mismatch = hasValue && suRepeat.value !== suPassword.value;
+  const match = hasValue && !mismatch;
   suRepeatWrap.classList.toggle('auth-input-error', mismatch);
   suRepeatError.hidden = !mismatch;
-  return !mismatch && suRepeat.value.length > 0;
+  suRepeatSuccess.hidden = !match;
+  return match;
 }
 
-suPassword.addEventListener('input', () => { updateStrengthUi(); updateRepeatUi(); });
-suRepeat.addEventListener('input', updateRepeatUi);
+function updateSubmitEnabled() {
+  const emailOk = isEmailValid();
+  const strongOk = passwordScore(suPassword.value) === 5;
+  const repeatOk = suRepeat.value.length > 0 && suRepeat.value === suPassword.value;
+  suSubmitBtn.disabled = !(emailOk && strongOk && repeatOk && suTerms.checked);
+}
+
+suEmail.addEventListener('input', () => {
+  emailTouched = true;
+  updateEmailUi();
+  updateSubmitEnabled();
+});
+suPassword.addEventListener('input', () => {
+  updateStrengthUi();
+  updateRepeatUi();
+  updateSubmitEnabled();
+});
+suRepeat.addEventListener('input', () => {
+  updateRepeatUi();
+  updateSubmitEnabled();
+});
+suTerms.addEventListener('change', updateSubmitEnabled);
 
 document.getElementById('signUpForm').addEventListener('submit', async (e) => {
   e.preventDefault();
   hideError(suError);
+  const emailOk = updateEmailUi();
   const strong = updateStrengthUi();
   const repeatOk = updateRepeatUi();
+  updateSubmitEnabled();
+  if (!emailOk) {
+    showError(suError, 'Please enter a valid email address.');
+    return;
+  }
   if (!strong) {
     showError(suError, 'Please meet all password requirements above.');
     return;
@@ -120,8 +197,8 @@ document.getElementById('signUpForm').addEventListener('submit', async (e) => {
   } catch (err) {
     showError(suError, err.message);
   } finally {
-    suSubmitBtn.disabled = false;
     suSubmitBtn.textContent = 'Sign Up';
+    updateSubmitEnabled();
   }
 });
 
@@ -158,13 +235,35 @@ function startWaitingFor(email) {
 // ---------- Log In
 
 const liEmail = document.getElementById('liEmail');
+const liEmailWrap = document.getElementById('liEmailWrap');
+const liEmailError = document.getElementById('liEmailError');
 const liPassword = document.getElementById('liPassword');
 const liError = document.getElementById('liError');
 const liSubmitBtn = document.getElementById('liSubmitBtn');
 
+let liEmailTouched = false;
+
+function updateLiEmailUi() {
+  const valid = EMAIL_RE.test(liEmail.value.trim());
+  const showErr = liEmailTouched && liEmail.value.length > 0 && !valid;
+  liEmailWrap.classList.toggle('auth-input-error', showErr);
+  liEmailError.hidden = !showErr;
+  return valid;
+}
+
+liEmail.addEventListener('input', () => {
+  liEmailTouched = true;
+  updateLiEmailUi();
+});
+
 document.getElementById('logInForm').addEventListener('submit', async (e) => {
   e.preventDefault();
   hideError(liError);
+  liEmailTouched = true;
+  if (!updateLiEmailUi()) {
+    showError(liError, 'Please enter a valid email address.');
+    return;
+  }
   liSubmitBtn.disabled = true;
   liSubmitBtn.textContent = 'Logging in…';
   try {
