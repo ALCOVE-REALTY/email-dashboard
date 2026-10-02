@@ -172,18 +172,28 @@
       list.hidden = false;
       trigger.classList.add('is-open');
       wrapper.classList.add('wfu-popup-open');
-      window.addEventListener('scroll', close, true);
-      window.addEventListener('resize', close, true);
+      // Re-anchor on scroll/resize instead of closing - closing here was
+      // the bug: on a phone, tapping the search box opens the on-screen
+      // keyboard, which fires a resize (and often a scroll, as the page
+      // nudges the focused field into view) - that was closing the list
+      // the instant it tried to open. Repositioning keeps it open and
+      // correctly placed through all of that.
+      window.addEventListener('scroll', positionList, true);
+      window.addEventListener('resize', positionList, true);
+      // No auto-focus on the search box here - opening the list should
+      // never itself summon the keyboard. The keyboard only appears once
+      // the user deliberately taps into the search box themselves.
       if (searchInput) {
         searchInput.value = '';
         filterItems();
-        setTimeout(function () { searchInput.focus(); }, 0);
       }
     }
     function close() {
       list.hidden = true;
       trigger.classList.remove('is-open');
       wrapper.classList.remove('wfu-popup-open');
+      window.removeEventListener('scroll', positionList, true);
+      window.removeEventListener('resize', positionList, true);
       window.removeEventListener('scroll', close, true);
       window.removeEventListener('resize', close, true);
     }
