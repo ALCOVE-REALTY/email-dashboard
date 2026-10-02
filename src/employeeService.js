@@ -1,6 +1,7 @@
 const { getSheetsReadOnlyClient, hasServiceAccount } = require('./sheetsAuth');
 const analytics = require('./workforceAnalytics');
 const { logRefreshFailure } = require('./refreshLog');
+const cacheBus = require('./cacheBus');
 
 const SHEET_ID = process.env.HR_SHEET_ID || '1I1vJJy5vXDMysBvXkXREImNZORr6ko1OMvPoNo984RI';
 const TAB_NAME = 'Employee_Master';
@@ -145,12 +146,14 @@ function buildDisplayNames(employees, field) {
 let cache = {
   employees: null,
   fetchedAt: 0,
+  gen: -1,
   departmentNames: new Map(),
   locationNames: new Map(),
   reportingManagerNames: new Map(),
   doerNames: new Map()
 };
 let inFlight = null;
+let inFlightGen = -1;
 
 async function fetchRawRows() {
   const sheets = getSheetsReadOnlyClient();
@@ -166,14 +169,19 @@ async function fetchRawRows() {
 function refreshCache() {
   // Collapse concurrent callers into a single in-flight fetch instead of
   // hammering the Sheets API when several report requests land at once.
-  if (inFlight) return inFlight;
+  // A fetch that started before the sheet last changed is not reused: it
+  // may return the pre-edit rows (see cacheBus.js).
+  if (inFlight && inFlightGen === cacheBus.current()) return inFlight;
 
-  inFlight = (async () => {
+  const gen = cacheBus.current();
+  inFlightGen = gen;
+  const p = (async () => {
     const rows = await fetchRawRows();
     const employees = rows.map(parseRow).filter(Boolean);
     cache = {
       employees,
       fetchedAt: Date.now(),
+      gen,
       departmentNames: buildDisplayNames(employees, 'department'),
       locationNames: buildDisplayNames(employees, 'location'),
       reportingManagerNames: buildDisplayNames(employees, 'reportingManager'),
@@ -181,9 +189,10 @@ function refreshCache() {
     };
     return cache;
   })();
+  inFlight = p;
 
-  return inFlight.finally(() => {
-    inFlight = null;
+  return p.finally(() => {
+    if (inFlight === p) inFlight = null;
   });
 }
 
@@ -195,7 +204,8 @@ const MIN_FORCED_REFRESH_INTERVAL_MS = 3000;
 
 async function getEmployeeData({ forceRefresh = false } = {}) {
   const now = Date.now();
-  const hasCache = Boolean(cache.employees);
+  // Filled before the sheet last changed = no cache: wait for a live read.
+  const hasCache = Boolean(cache.employees) && cache.gen === cacheBus.current();
   const isStale = !hasCache || now - cache.fetchedAt >= CACHE_TTL_MS;
   const justFetched = hasCache && now - cache.fetchedAt < MIN_FORCED_REFRESH_INTERVAL_MS;
 
@@ -227,28 +237,32 @@ function getConfigStatus() {
 // a completely different range/shape.
 const COMPANY_LIST_TAB = 'MASTER';
 const COMPANY_LIST_RANGE = `'${COMPANY_LIST_TAB}'!Q2:Q`;
-let companyListCache = { companies: null, fetchedAt: 0 };
+let companyListCache = { companies: null, fetchedAt: 0, gen: -1 };
 let companyListInFlight = null;
+let companyListInFlightGen = -1;
 
 function refreshCompanyListCache() {
-  if (companyListInFlight) return companyListInFlight;
-  companyListInFlight = (async () => {
+  if (companyListInFlight && companyListInFlightGen === cacheBus.current()) return companyListInFlight;
+  const gen = cacheBus.current();
+  companyListInFlightGen = gen;
+  const p = (async () => {
     const sheets = getSheetsReadOnlyClient();
     const res = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: COMPANY_LIST_RANGE });
     const companies = (res.data.values || [])
       .map((r) => (r[0] || '').trim())
       .filter(Boolean)
       .sort((a, b) => a.localeCompare(b));
-    companyListCache = { companies, fetchedAt: Date.now() };
+    companyListCache = { companies, fetchedAt: Date.now(), gen };
     return companyListCache;
   })();
-  return companyListInFlight.finally(() => {
-    companyListInFlight = null;
+  companyListInFlight = p;
+  return p.finally(() => {
+    if (companyListInFlight === p) companyListInFlight = null;
   });
 }
 
 async function getCompanyList() {
-  const hasCache = Boolean(companyListCache.companies);
+  const hasCache = Boolean(companyListCache.companies) && companyListCache.gen === cacheBus.current();
   const isStale = !hasCache || Date.now() - companyListCache.fetchedAt >= CACHE_TTL_MS;
   if (!hasCache) return (await refreshCompanyListCache()).companies;
   if (isStale) refreshCompanyListCache().catch((err) => logRefreshFailure('company-list', err));
