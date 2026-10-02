@@ -5,8 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <meta name="robots" content="noindex, nofollow" />
 <title>Interviewer Evaluation Form - Alcove Realty</title>
-<link rel="stylesheet" href="/styles.css?v=2" />
-<link rel="stylesheet" href="/interview-forms.css?v=4" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/interview-forms.css?v=6" />
 </head>
 <body>
 <div class="iv-shell">
@@ -25,16 +27,26 @@
       <div class="iv-readonly-title">Candidate Details</div>
     </div>
 
+    <div class="iv-progress-wrap">
+      <div class="iv-progress-top">
+        <span class="iv-progress-copy">Fill in the required fields to complete your evaluation.</span>
+        <span class="iv-progress-pct" id="ivProgressPct">0% COMPLETE</span>
+      </div>
+      <div class="iv-progress-bar"><div class="iv-progress-fill" id="ivProgressFill"></div></div>
+    </div>
+
     <form id="ivForm">
       <div class="iv-section-title">Evaluation</div>
-      <div class="iv-eval-legend">
-        <span><b>A</b> Outstanding</span>
-        <span><b>B+</b> V.Good</span>
-        <span><b>B</b> Good</span>
-        <span><b>C</b> Average</span>
-        <span><b>D</b> Below Average</span>
+      <div class="iv-section-group">
+        <div class="iv-eval-legend">
+          <span><b>A</b> Outstanding</span>
+          <span><b>B+</b> V.Good</span>
+          <span><b>B</b> Good</span>
+          <span><b>C</b> Average</span>
+          <span><b>D</b> Below Average</span>
+        </div>
+        <div class="iv-eval-table" id="ivGradeFields"></div>
       </div>
-      <div class="iv-eval-table" id="ivGradeFields"></div>
 
       <div class="iv-overall-card">
         <div class="iv-overall-label">Overall Grade <span class="iv-overall-hint">(calculated automatically from the criteria above)</span></div>
@@ -44,37 +56,48 @@
       </div>
 
       <div class="iv-section-title">Decision</div>
-      <div class="iv-field">
-        <label for="f_interviewStatus">Interview Status<span class="iv-required">*</span></label>
-        <select id="f_interviewStatus" name="interviewStatus" required>
-          <option value="">Select&hellip;</option>
-          <option value="Selected">Selected</option>
-          <option value="Shortlisted">Shortlisted</option>
-          <option value="Rejected">Rejected</option>
-        </select>
-      </div>
-      <div class="iv-field" id="ivItSummaryField" hidden>
-        <label>IT Requirements</label>
-        <div class="iv-it-summary" id="ivItSummary"></div>
-        <button type="button" class="iv-link-btn" id="ivEditItRequirements">Edit IT Requirements</button>
-      </div>
+      <div class="iv-section-group">
+        <div class="iv-field">
+          <label for="f_interviewStatus">Interview Status<span class="iv-required">*</span></label>
+          <div class="iv-input-wrap" id="f_interviewStatusWrap">
+            <span class="iv-input-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/></svg></span>
+            <select id="f_interviewStatus" name="interviewStatus" required>
+              <option value="">Select&hellip;</option>
+              <option value="Selected">Selected</option>
+              <option value="Shortlisted">Shortlisted</option>
+              <option value="Rejected">Rejected</option>
+            </select>
+          </div>
+        </div>
+        <div class="iv-field" id="ivItSummaryField" hidden>
+          <label>IT Requirements</label>
+          <div class="iv-it-summary" id="ivItSummary"></div>
+          <button type="button" class="iv-link-btn" id="ivEditItRequirements">Edit IT Requirements</button>
+        </div>
 
-      <div class="iv-field">
-        <label for="f_newRejoinedReplacement">New / Rejoined / Replacement<span class="iv-required">*</span></label>
-        <select id="f_newRejoinedReplacement" name="newRejoinedReplacement" required>
-          <option value="">Select&hellip;</option>
-          <option value="New">New</option>
-          <option value="Rejoined">Rejoined</option>
-          <option value="Replacement">Replacement</option>
-        </select>
-      </div>
-      <div class="iv-field" id="ivReplacementFieldWrap" hidden>
-        <label for="f_replacementForName">Name of Replacement<span class="iv-required">*</span></label>
-        <input type="text" id="f_replacementForName" name="replacementForName" />
-      </div>
-      <div class="iv-field">
-        <label for="f_interviewerComments">Interviewer Comments<span class="iv-required">*</span></label>
-        <textarea id="f_interviewerComments" name="interviewerComments" required></textarea>
+        <div class="iv-field">
+          <label for="f_newRejoinedReplacement">New / Rejoined / Replacement<span class="iv-required">*</span></label>
+          <div class="iv-input-wrap" id="f_newRejoinedReplacementWrap">
+            <span class="iv-input-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></span>
+            <select id="f_newRejoinedReplacement" name="newRejoinedReplacement" required>
+              <option value="">Select&hellip;</option>
+              <option value="New">New</option>
+              <option value="Rejoined">Rejoined</option>
+              <option value="Replacement">Replacement</option>
+            </select>
+          </div>
+        </div>
+        <div class="iv-field" id="ivReplacementFieldWrap" hidden>
+          <label for="f_replacementForName">Name of Replacement<span class="iv-required">*</span></label>
+          <div class="iv-input-wrap">
+            <span class="iv-input-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 4-6 8-6s8 2 8 6"/></svg></span>
+            <input type="text" id="f_replacementForName" name="replacementForName" />
+          </div>
+        </div>
+        <div class="iv-field">
+          <label for="f_interviewerComments">Interviewer Comments<span class="iv-required">*</span></label>
+          <textarea id="f_interviewerComments" name="interviewerComments" required></textarea>
+        </div>
       </div>
 
       <div class="iv-section-title">Interview Panel List</div>
@@ -82,8 +105,10 @@
       <button type="button" class="iv-add-panelist-btn" id="ivAddPanelist">+ Add Panel Member</button>
 
       <div class="iv-section-title">Additional Note</div>
-      <div class="iv-field">
-        <textarea id="f_additionalNote" name="additionalNote"></textarea>
+      <div class="iv-section-group">
+        <div class="iv-field">
+          <textarea id="f_additionalNote" name="additionalNote"></textarea>
+        </div>
       </div>
 
       <button type="submit" class="iv-btn" id="ivSubmitBtn">Submit Evaluation</button>
@@ -144,6 +169,7 @@
     <p id="ivStateErrorMsg">This link is invalid or has expired.</p>
   </div>
 </div>
-<script src="/interview-interviewer.js?v=4"></script>
+<script src="/interview-forms-ui.js?v=1"></script>
+<script src="/interview-interviewer.js?v=5"></script>
 </body>
 </html>

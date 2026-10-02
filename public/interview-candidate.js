@@ -119,6 +119,17 @@
     showOnly(stateError);
   }
 
+  // ---------- Presentation-only enhancement (custom select/calendar
+  // overlays + progress bar) - purely visual, reads/writes the same real
+  // form elements above, so none of the logic in this file changes.
+  var progressRecalc = null;
+  if (window.IVForms) {
+    IVForms.enhanceSelect(document.getElementById('f_interviewMode'), document.getElementById('f_interviewModeWrap'), 'Select…');
+    IVForms.enhanceSelect(workedSelect, document.getElementById('f_workedOnAlcoveProjectsWrap'), 'Select…');
+    IVForms.enhanceDate(document.getElementById('f_interviewDate'), document.getElementById('f_interviewDateWrap'));
+    progressRecalc = IVForms.initProgress(form, document.getElementById('ivProgressFill'), document.getElementById('ivProgressPct'));
+  }
+
   fetch('/api/interview/candidate/' + encodeURIComponent(token))
     .then(function (r) { return r.json().then(function (data) { return { status: r.status, data: data }; }); })
     .then(function (res) {
@@ -131,6 +142,7 @@
         return;
       }
       showOnly(panelEl);
+      if (progressRecalc) progressRecalc();
     })
     .catch(function () { showError('Something went wrong loading this form. Please try again.'); });
 

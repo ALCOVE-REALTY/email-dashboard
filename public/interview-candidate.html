@@ -5,8 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <meta name="robots" content="noindex, nofollow" />
 <title>Candidate Interview Application - Alcove Realty</title>
-<link rel="stylesheet" href="/styles.css?v=2" />
-<link rel="stylesheet" href="/interview-forms.css?v=5" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/interview-forms.css?v=6" />
 </head>
 <body>
 <div class="iv-shell">
@@ -20,76 +22,190 @@
   <div id="ivPanel" class="iv-panel" hidden>
     <h1>Candidate Interview Application</h1>
     <p class="iv-panel-sub">Please fill in your details below. Once submitted, this form cannot be edited again.</p>
+
+    <div class="iv-progress-wrap">
+      <div class="iv-progress-top">
+        <span class="iv-progress-copy">Fill in the required fields to complete your application.</span>
+        <span class="iv-progress-pct" id="ivProgressPct">0% COMPLETE</span>
+      </div>
+      <div class="iv-progress-bar"><div class="iv-progress-fill" id="ivProgressFill"></div></div>
+    </div>
+
     <form id="ivForm">
       <div class="iv-section-title">Personal Details</div>
-      <div class="iv-field"><label for="f_name">Full Name<span class="iv-required">*</span></label><input type="text" id="f_name" name="name" required /></div>
-      <div class="iv-field-row">
-        <div class="iv-field"><label for="f_contactNo">Contact No<span class="iv-required">*</span></label><input type="tel" id="f_contactNo" name="contactNo" required /></div>
-        <div class="iv-field"><label for="f_email">Email</label><input type="email" id="f_email" name="email" /></div>
+      <div class="iv-section-group">
+        <div class="iv-field">
+          <label for="f_name">Full Name<span class="iv-required">*</span></label>
+          <div class="iv-input-wrap">
+            <span class="iv-input-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 4-6 8-6s8 2 8 6"/></svg></span>
+            <input type="text" id="f_name" name="name" required />
+          </div>
+        </div>
+        <div class="iv-field-row">
+          <div class="iv-field">
+            <label for="f_contactNo">Contact No<span class="iv-required">*</span></label>
+            <div class="iv-input-wrap">
+              <span class="iv-input-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.8 19.8 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.8 19.8 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.12.81.3 1.6.54 2.37a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.71-1.11a2 2 0 0 1 2.11-.45c.77.24 1.56.42 2.37.54A2 2 0 0 1 22 16.92z"/></svg></span>
+              <input type="tel" id="f_contactNo" name="contactNo" required />
+            </div>
+          </div>
+          <div class="iv-field">
+            <label for="f_email">Email</label>
+            <div class="iv-input-wrap">
+              <span class="iv-input-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg></span>
+              <input type="email" id="f_email" name="email" />
+            </div>
+          </div>
+        </div>
+        <div class="iv-field-row">
+          <div class="iv-field">
+            <label for="f_qualification">Qualification</label>
+            <div class="iv-input-wrap">
+              <span class="iv-input-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 10 12 5 2 10l10 5 10-5z"/><path d="M6 12v5c0 1.66 2.69 3 6 3s6-1.34 6-3v-5"/></svg></span>
+              <input type="text" id="f_qualification" name="qualification" />
+            </div>
+          </div>
+          <div class="iv-field">
+            <label for="f_experience">Experience</label>
+            <div class="iv-input-wrap">
+              <span class="iv-input-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg></span>
+              <input type="text" id="f_experience" name="experience" placeholder="e.g. 3 Years" />
+            </div>
+          </div>
+        </div>
+        <div class="iv-field">
+          <label for="f_currentPosition">Current Position</label>
+          <div class="iv-input-wrap">
+            <span class="iv-input-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="5"/><path d="M8.21 13.89 7 23l5-3 5 3-1.21-9.12"/></svg></span>
+            <input type="text" id="f_currentPosition" name="currentPosition" />
+          </div>
+        </div>
       </div>
-      <div class="iv-field-row">
-        <div class="iv-field"><label for="f_qualification">Qualification</label><input type="text" id="f_qualification" name="qualification" /></div>
-        <div class="iv-field"><label for="f_experience">Experience</label><input type="text" id="f_experience" name="experience" placeholder="e.g. 3 Years" /></div>
-      </div>
-      <div class="iv-field"><label for="f_currentPosition">Current Position</label><input type="text" id="f_currentPosition" name="currentPosition" /></div>
 
       <div class="iv-section-title">Interview Details</div>
-      <div class="iv-field"><label for="f_positionAppliedFor">Position Applied For<span class="iv-required">*</span></label><input type="text" id="f_positionAppliedFor" name="positionAppliedFor" required /></div>
-      <div class="iv-field-row">
-        <div class="iv-field"><label for="f_interviewDate">Interview Date</label><input type="date" id="f_interviewDate" name="interviewDate" /></div>
-        <div class="iv-field"><label for="f_interviewPlace">Interview Place</label><input type="text" id="f_interviewPlace" name="interviewPlace" /></div>
-      </div>
-      <div class="iv-field-row">
+      <div class="iv-section-group">
         <div class="iv-field">
-          <label for="f_interviewMode">Interview Mode</label>
-          <select id="f_interviewMode" name="interviewMode">
-            <option value="">Select&hellip;</option>
-            <option value="Face to Face">Face to Face</option>
-            <option value="Telephonic">Telephonic</option>
-            <option value="Video Call">Video Call</option>
-          </select>
+          <label for="f_positionAppliedFor">Position Applied For<span class="iv-required">*</span></label>
+          <div class="iv-input-wrap">
+            <span class="iv-input-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg></span>
+            <input type="text" id="f_positionAppliedFor" name="positionAppliedFor" required />
+          </div>
         </div>
-        <div class="iv-field"><label for="f_referenceName">Reference Name</label><input type="text" id="f_referenceName" name="referenceName" /></div>
+        <div class="iv-field-row">
+          <div class="iv-field">
+            <label for="f_interviewDate">Interview Date</label>
+            <div class="iv-input-wrap" id="f_interviewDateWrap">
+              <input type="date" id="f_interviewDate" name="interviewDate" />
+            </div>
+          </div>
+          <div class="iv-field">
+            <label for="f_interviewPlace">Interview Place</label>
+            <div class="iv-input-wrap">
+              <span class="iv-input-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg></span>
+              <input type="text" id="f_interviewPlace" name="interviewPlace" />
+            </div>
+          </div>
+        </div>
+        <div class="iv-field-row">
+          <div class="iv-field">
+            <label for="f_interviewMode">Interview Mode</label>
+            <div class="iv-input-wrap" id="f_interviewModeWrap">
+              <span class="iv-input-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg></span>
+              <select id="f_interviewMode" name="interviewMode">
+                <option value="">Select&hellip;</option>
+                <option value="Face to Face">Face to Face</option>
+                <option value="Telephonic">Telephonic</option>
+                <option value="Video Call">Video Call</option>
+              </select>
+            </div>
+          </div>
+          <div class="iv-field">
+            <label for="f_referenceName">Reference Name</label>
+            <div class="iv-input-wrap">
+              <span class="iv-input-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 4-6 8-6s8 2 8 6"/></svg></span>
+              <input type="text" id="f_referenceName" name="referenceName" />
+            </div>
+          </div>
+        </div>
       </div>
 
       <div class="iv-section-title">Company &amp; Compensation</div>
-      <div class="iv-field"><label for="f_presentLastCompany">Present / Last Company</label><input type="text" id="f_presentLastCompany" name="presentLastCompany" /></div>
-      <div class="iv-field"><label for="f_designation">Designation</label><input type="text" id="f_designation" name="designation" /></div>
-      <div class="iv-field-row">
-        <div class="iv-field"><label for="f_currentLastSalaryDrawn">Present / Last Salary drawn</label><input type="text" id="f_currentLastSalaryDrawn" name="currentLastSalaryDrawn" /></div>
-        <div class="iv-field"><label for="f_expectedSalary">Expected Salary</label><input type="text" id="f_expectedSalary" name="expectedSalary" /></div>
+      <div class="iv-section-group">
+        <div class="iv-field">
+          <label for="f_presentLastCompany">Present / Last Company</label>
+          <div class="iv-input-wrap">
+            <span class="iv-input-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="2" width="16" height="20" rx="1"/><path d="M9 22v-4h6v4M9 7h1M14 7h1M9 11h1M14 11h1M9 15h1M14 15h1"/></svg></span>
+            <input type="text" id="f_presentLastCompany" name="presentLastCompany" />
+          </div>
+        </div>
+        <div class="iv-field">
+          <label for="f_designation">Designation</label>
+          <div class="iv-input-wrap">
+            <span class="iv-input-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="5"/><path d="M8.21 13.89 7 23l5-3 5 3-1.21-9.12"/></svg></span>
+            <input type="text" id="f_designation" name="designation" />
+          </div>
+        </div>
+        <div class="iv-field-row">
+          <div class="iv-field">
+            <label for="f_currentLastSalaryDrawn">Present / Last Salary drawn</label>
+            <div class="iv-input-wrap">
+              <span class="iv-input-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 7H3a1 1 0 0 0-1 1v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a1 1 0 0 0-1-1z"/><path d="M16 12h2"/><path d="M3 7l1-3h16l1 3"/></svg></span>
+              <input type="text" id="f_currentLastSalaryDrawn" name="currentLastSalaryDrawn" />
+            </div>
+          </div>
+          <div class="iv-field">
+            <label for="f_expectedSalary">Expected Salary</label>
+            <div class="iv-input-wrap">
+              <span class="iv-input-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 7H3a1 1 0 0 0-1 1v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a1 1 0 0 0-1-1z"/><path d="M16 12h2"/><path d="M3 7l1-3h16l1 3"/></svg></span>
+              <input type="text" id="f_expectedSalary" name="expectedSalary" />
+            </div>
+          </div>
+        </div>
+        <div class="iv-field">
+          <label for="f_noticePeriod">Notice Period</label>
+          <div class="iv-input-wrap">
+            <span class="iv-input-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg></span>
+            <input type="text" id="f_noticePeriod" name="noticePeriod" />
+          </div>
+        </div>
       </div>
-      <div class="iv-field"><label for="f_noticePeriod">Notice Period</label><input type="text" id="f_noticePeriod" name="noticePeriod" /></div>
 
       <div class="iv-section-title">Alcove Projects</div>
-      <div class="iv-field">
-        <label for="f_workedOnAlcoveProjects">Worked on any Alcove projects earlier?</label>
-        <select id="f_workedOnAlcoveProjects" name="workedOnAlcoveProjects">
-          <option value="">Select&hellip;</option>
-          <option value="Yes">Yes</option>
-          <option value="No">No</option>
-        </select>
-      </div>
-      <div class="iv-field" id="f_alcoveProjectsDetailsWrap" hidden>
-        <label for="f_alcoveProjectsDetails">If yes, please give details</label>
-        <textarea id="f_alcoveProjectsDetails" name="alcoveProjectsDetails"></textarea>
+      <div class="iv-section-group">
+        <div class="iv-field">
+          <label for="f_workedOnAlcoveProjects">Worked on any Alcove projects earlier?</label>
+          <div class="iv-input-wrap" id="f_workedOnAlcoveProjectsWrap">
+            <span class="iv-input-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="2" width="16" height="20" rx="1"/><path d="M9 22v-4h6v4M9 7h1M14 7h1M9 11h1M14 11h1M9 15h1M14 15h1"/></svg></span>
+            <select id="f_workedOnAlcoveProjects" name="workedOnAlcoveProjects">
+              <option value="">Select&hellip;</option>
+              <option value="Yes">Yes</option>
+              <option value="No">No</option>
+            </select>
+          </div>
+        </div>
+        <div class="iv-field" id="f_alcoveProjectsDetailsWrap" hidden>
+          <label for="f_alcoveProjectsDetails">If yes, please give details</label>
+          <textarea id="f_alcoveProjectsDetails" name="alcoveProjectsDetails"></textarea>
+        </div>
       </div>
 
       <div class="iv-section-title">CV / Resume</div>
-      <div class="iv-field">
-        <label for="f_cv">Upload CV / Resume</label>
-        <label class="iv-upload-box" id="ivUploadBox" for="f_cv">
-          <input type="file" id="f_cv" accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document" />
-          <div id="ivUploadContent">
-            <div class="iv-upload-icon">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/><line x1="12" y1="12" x2="12" y2="18"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
+      <div class="iv-section-group">
+        <div class="iv-field">
+          <label for="f_cv">Upload CV / Resume</label>
+          <label class="iv-upload-box" id="ivUploadBox" for="f_cv">
+            <input type="file" id="f_cv" accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document" />
+            <div id="ivUploadContent">
+              <div class="iv-upload-icon">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/><line x1="12" y1="12" x2="12" y2="18"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
+              </div>
+              <div class="iv-upload-title">Tap to upload or choose file</div>
+              <div class="iv-upload-hint">PDF, DOC, DOCX (Max 4MB)</div>
             </div>
-            <div class="iv-upload-title">Tap to upload or choose file</div>
-            <div class="iv-upload-hint">PDF, DOC, DOCX (Max 4MB)</div>
-          </div>
-        </label>
-        <p class="iv-upload-error" id="ivUploadError" hidden></p>
-        <input type="hidden" id="f_cvLink" name="cvLink" />
+          </label>
+          <p class="iv-upload-error" id="ivUploadError" hidden></p>
+          <input type="hidden" id="f_cvLink" name="cvLink" />
+        </div>
       </div>
 
       <button type="submit" class="iv-btn" id="ivSubmitBtn">Submit Application</button>
@@ -115,6 +231,7 @@
     <p id="ivStateErrorMsg">This link is invalid or has expired.</p>
   </div>
 </div>
-<script src="/interview-candidate.js?v=4"></script>
+<script src="/interview-forms-ui.js?v=1"></script>
+<script src="/interview-candidate.js?v=5"></script>
 </body>
 </html>

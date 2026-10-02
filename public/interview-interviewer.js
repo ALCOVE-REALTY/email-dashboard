@@ -75,6 +75,16 @@
     showOnly(stateError);
   }
 
+  // ---------- Presentation-only enhancement (custom select overlays +
+  // progress bar) - purely visual, reads/writes the same real form
+  // elements below, so none of the logic in this file changes.
+  var progressRecalc = null;
+  if (window.IVForms) {
+    IVForms.enhanceSelect(statusSelect, document.getElementById('f_interviewStatusWrap'), 'Select…');
+    IVForms.enhanceSelect(replacementSelect, document.getElementById('f_newRejoinedReplacementWrap'), 'Select…');
+    progressRecalc = IVForms.initProgress(form, document.getElementById('ivProgressFill'), document.getElementById('ivProgressPct'));
+  }
+
   // ---------- Evaluation grid ----------
 
   function buildGradeRow(key, label) {
@@ -260,6 +270,7 @@
     row.innerHTML =
       '<div class="iv-panelist-top">' +
         '<div class="iv-panelist-search-wrap">' +
+          '<span class="iv-input-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></span>' +
           '<input type="text" class="iv-panelist-search" placeholder="Search employee by name" autocomplete="off" />' +
           '<ul class="iv-panelist-suggest" hidden></ul>' +
         '</div>' +
@@ -371,6 +382,7 @@
       addPanelistRow();
       loadPanelEmployees();
       showOnly(panelEl);
+      if (progressRecalc) progressRecalc();
     })
     .catch(function () { showError('Something went wrong loading this form. Please try again.'); });
 
