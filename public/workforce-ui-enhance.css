@@ -69,7 +69,7 @@
   color: var(--accent);
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  margin: 20px 0 10px;
+  margin: 10px 0 10px;
 }
 .wfu-section-title:first-child { margin-top: 0; }
 .wfu-section-title::after { content: ''; flex: 1; height: 1px; background: var(--line); }
@@ -82,6 +82,13 @@
 }
 .wfu-section-group .wf-panel:last-child,
 .wfu-section-group .kpi-grid { margin-bottom: 14px; }
+
+/* A grid item defaults to min-width:auto, so a card can refuse to shrink
+   below its own label/number's natural width even when its 1fr track is
+   narrower - that's what was pushing the right-hand column (Total
+   Employees / Inactive Employees) past the edge of the screen. */
+.kpi-card { min-width: 0; }
+.kpi-card .kpi-label { overflow-wrap: break-word; }
 
 /* ---------- Custom select overlay (real <select> kept, fully functional -
    see workforce-ui-enhance.js) ---------- */
