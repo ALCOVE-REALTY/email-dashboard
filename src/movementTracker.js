@@ -8,6 +8,7 @@
 const { getSheetsReadOnlyClient, getSheetsWriteClient } = require('./sheetsAuth');
 const employeeService = require('./employeeService');
 const { logRefreshFailure } = require('./refreshLog');
+const cacheBus = require('./cacheBus');
 
 // Deliberately a separate spreadsheet from HR Master Data - this is the
 // only file the app ever writes to, keeping the write-scoped service
@@ -232,16 +233,21 @@ async function fetchChangeLogRows(config) {
   }
 }
 
+const changeLogInFlightGen = {};
+
 function refreshChangeLogCache(config) {
   const key = config.logTab;
-  if (changeLogInFlight[key]) return changeLogInFlight[key];
-  changeLogInFlight[key] = (async () => {
+  if (changeLogInFlight[key] && changeLogInFlightGen[key] === cacheBus.current()) return changeLogInFlight[key];
+  const gen = cacheBus.current();
+  changeLogInFlightGen[key] = gen;
+  const p = (async () => {
     const rows = await fetchChangeLogRows(config);
-    changeLogCache[key] = { rows, fetchedAt: Date.now() };
+    changeLogCache[key] = { rows, fetchedAt: Date.now(), gen };
     return changeLogCache[key];
   })();
-  return changeLogInFlight[key].finally(() => {
-    changeLogInFlight[key] = null;
+  changeLogInFlight[key] = p;
+  return p.finally(() => {
+    if (changeLogInFlight[key] === p) changeLogInFlight[key] = null;
   });
 }
 
@@ -252,6 +258,16 @@ const MIN_FORCED_REFRESH_INTERVAL_MS = 3000;
 async function getChangeLogRows(config, { forceRefresh = false } = {}) {
   const key = config.logTab;
   const entry = changeLogCache[key];
+  if (entry && entry.gen !== cacheBus.current()) {
+    // The sheet changed since this was read: wait for the live log. If that
+    // read fails, the old rows are still better than showing 0.
+    try {
+      return (await refreshChangeLogCache(config)).rows;
+    } catch (err) {
+      logRefreshFailure(`movement:${key}`, err);
+      return entry.rows;
+    }
+  }
   if (!entry) {
     // Nothing cached yet: a failed first read shows as 0 (as it always has)
     // but is not cached, so the next request tries again.

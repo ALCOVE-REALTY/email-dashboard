@@ -1,5 +1,6 @@
 const { getSheetsReadOnlyClient } = require('./sheetsAuth');
 const { logRefreshFailure } = require('./refreshLog');
+const cacheBus = require('./cacheBus');
 
 // Separate spreadsheet from HR Master Data - "Mediclaim Addition & Deletion
 // Automation", shared with the same service account, read-only here.
@@ -194,23 +195,27 @@ async function getBirthdayMailRecipients() {
   return blocks.length ? { to: blocks[0].to, cc: blocks[0].cc } : null;
 }
 
-let cache = { data: null, fetchedAt: 0 };
+let cache = { data: null, fetchedAt: 0, gen: -1 };
 let inFlight = null;
+let inFlightGen = -1;
 
 function refreshCache() {
-  if (inFlight) return inFlight;
-  inFlight = (async () => {
+  if (inFlight && inFlightGen === cacheBus.current()) return inFlight;
+  const gen = cacheBus.current();
+  inFlightGen = gen;
+  const p = (async () => {
     const data = await fetchRaw();
-    cache = { data, fetchedAt: Date.now() };
+    cache = { data, fetchedAt: Date.now(), gen };
     return cache;
   })();
-  return inFlight.finally(() => {
-    inFlight = null;
+  inFlight = p;
+  return p.finally(() => {
+    if (inFlight === p) inFlight = null;
   });
 }
 
 async function getInsuranceData({ forceRefresh = false } = {}) {
-  const hasCache = Boolean(cache.data);
+  const hasCache = Boolean(cache.data) && cache.gen === cacheBus.current();
   const isStale = !hasCache || Date.now() - cache.fetchedAt >= CACHE_TTL_MS;
 
   if (!hasCache) return (await refreshCache()).data;

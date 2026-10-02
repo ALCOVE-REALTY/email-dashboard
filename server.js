@@ -13,6 +13,7 @@ const hrAuth = require('./src/hrAuth');
 const hrUserStore = require('./src/hrUserStore');
 const emailService = require('./src/emailService');
 const movementTracker = require('./src/movementTracker');
+const cacheBus = require('./src/cacheBus');
 const snapshotScheduler = require('./src/dailySnapshotScheduler');
 // One client for the daily-snapshot lock, shared by the endpoint and the
 // in-process scheduler so both claim the same per-day key.
@@ -472,6 +473,21 @@ app.get('/api/internal/snapshot-movement', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// "A sheet just changed" - called by the HR sheets' Apps Script on every
+// edit (and once more after ChangeLogSync has written the movement log), so
+// the next page load reads live instead of serving up to 2 minutes of cached
+// data. Changes no data itself: it only marks every Sheets cache out of date
+// (see src/cacheBus.js). Same CRON_SECRET as the other internal endpoints.
+app.post('/api/internal/sheets-changed', (req, res) => {
+  const expected = process.env.CRON_SECRET;
+  const provided = (req.headers.authorization || '').replace(/^Bearer\s+/, '');
+  if (!expected || provided !== expected) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  const generation = cacheBus.invalidate();
+  res.json({ ok: true, generation });
 });
 
 // Instant counterpart to the daily cron above - the HR sheet's own onEdit

@@ -1,5 +1,6 @@
 const { getSheetsWriteClient } = require('./sheetsAuth');
 const { logRefreshFailure } = require('./refreshLog');
+const cacheBus = require('./cacheBus');
 
 // Stored in the Movement Tracker spreadsheet - the one sheet the service
 // account can write to (see movementTracker.js's own note on this); the
@@ -56,8 +57,9 @@ async function createTabWithHeader(sheets) {
 // the Sheets API's per-minute read quota). Same 2-minute cache + in-flight
 // dedup pattern as employeeService/insuranceService/movementTracker.
 const CACHE_TTL_MS = 2 * 60 * 1000;
-let cache = { rows: null, fetchedAt: 0 };
+let cache = { rows: null, fetchedAt: 0, gen: -1 };
 let inFlight = null;
+let inFlightGen = -1;
 
 // Tries the read directly first (1 API call, the overwhelmingly common
 // case once the tab exists) instead of unconditionally paying for a
@@ -78,19 +80,22 @@ async function fetchRows() {
 }
 
 function refreshCache() {
-  if (inFlight) return inFlight;
-  inFlight = (async () => {
+  if (inFlight && inFlightGen === cacheBus.current()) return inFlight;
+  const gen = cacheBus.current();
+  inFlightGen = gen;
+  const p = (async () => {
     const rows = await fetchRows();
-    cache = { rows, fetchedAt: Date.now() };
+    cache = { rows, fetchedAt: Date.now(), gen };
     return cache;
   })();
-  return inFlight.finally(() => {
-    inFlight = null;
+  inFlight = p;
+  return p.finally(() => {
+    if (inFlight === p) inFlight = null;
   });
 }
 
 async function getCachedRows() {
-  const hasCache = Boolean(cache.rows);
+  const hasCache = Boolean(cache.rows) && cache.gen === cacheBus.current();
   const isStale = !hasCache || Date.now() - cache.fetchedAt >= CACHE_TTL_MS;
   if (!hasCache) return (await refreshCache()).rows;
   if (isStale) refreshCache().catch((err) => logRefreshFailure('policy-info', err));
@@ -137,7 +142,7 @@ async function savePolicyInfoField(key, value) {
   // Keep the cache in sync with what was just written instead of leaving it
   // stale until the next refresh, or forcing an extra live read right after
   // the write we just made.
-  cache = { rows, fetchedAt: Date.now() };
+  cache = { rows, fetchedAt: Date.now(), gen: cacheBus.current() };
   return rowsToValues(rows);
 }
 
