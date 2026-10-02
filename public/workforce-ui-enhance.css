@@ -1,0 +1,139 @@
+/* Purely visual layer on top of the existing Workforce Intelligence
+   dashboard - same colors/fonts/tokens as workforce.css and styles.css
+   (reuses their existing CSS variables directly, no new palette), loaded
+   AFTER both so these rules only ADD smoother motion/structure, never
+   change a color. No markup here is read by workforce.js except the
+   purely-visual select overlay built by workforce-ui-enhance.js, which
+   keeps every real <select>'s id/name/value/change-event exactly as
+   before - see that file's own comment for details. */
+
+/* ---------- Smoother hover/focus motion on existing controls ---------- */
+
+.wf-icon-btn,
+.wf-ai-btn,
+.wf-avatar,
+.wf-link-btn,
+.wf-clear-btn,
+.wf-range-pill {
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
+}
+.wf-icon-btn:hover,
+.wf-ai-btn:hover { transform: translateY(-1px); }
+.wf-link-btn:hover { transform: translateY(-1px); text-decoration: none; }
+
+.wf-panel {
+  transition: box-shadow 0.18s ease, transform 0.18s ease;
+}
+.wf-panel:hover { box-shadow: 0 8px 20px var(--shadow); }
+
+.wf-filterbar input[type="search"],
+.wf-filterbar select,
+.wf-letter-form-field input,
+.wf-letter-form-field select {
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.wf-filterbar input[type="search"]:focus-visible,
+.wf-letter-form-field input:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-bg);
+}
+
+#wfSearch { transition: border-color 0.15s ease, box-shadow 0.15s ease; }
+#wfSearch:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-bg); }
+
+/* ---------- Labeled, sunken section groups (Overview dashboard) ---------- */
+
+.wfu-section-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.72rem;
+  font-weight: 800;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin: 20px 0 10px;
+}
+.wfu-section-title:first-child { margin-top: 0; }
+.wfu-section-title::after { content: ''; flex: 1; height: 1px; background: var(--line); }
+
+.wfu-section-group {
+  background: var(--other-bg);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 14px 12px 2px;
+}
+.wfu-section-group .wf-panel:last-child,
+.wfu-section-group .kpi-grid { margin-bottom: 14px; }
+
+/* ---------- Custom select overlay (real <select> kept, fully functional -
+   see workforce-ui-enhance.js) ---------- */
+
+.wfu-select-wrap {
+  position: relative;
+  display: inline-block;
+  vertical-align: middle;
+  max-width: 100%;
+}
+.wfu-select-wrap select.wfu-select-native {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  pointer-events: none;
+}
+.wfu-select-trigger {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 9px 11px;
+  font: inherit;
+  font-size: 0.82rem;
+  color: var(--ink);
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+}
+.wfu-select-trigger:hover { border-color: var(--accent); }
+.wfu-select-trigger.is-open { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-bg); }
+.wfu-select-trigger-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+.wfu-select-trigger-label.is-placeholder { color: var(--muted); }
+.wfu-select-chevron { flex-shrink: 0; width: 13px; height: 13px; color: var(--muted); display: flex; transition: transform 0.16s ease; }
+.wfu-select-trigger.is-open .wfu-select-chevron { transform: rotate(180deg); }
+
+.wfu-select-list {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  min-width: 160px;
+  max-height: 240px;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 14px 32px var(--shadow);
+  padding: 6px;
+  opacity: 0;
+  transform: translateY(-6px) scale(0.98);
+  pointer-events: none;
+  transition: opacity 0.16s cubic-bezier(.4,0,.2,1), transform 0.16s cubic-bezier(.4,0,.2,1);
+}
+.wfu-select-list:not([hidden]) { opacity: 1; transform: translateY(0) scale(1); pointer-events: auto; }
+.wfu-select-item {
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 0.82rem;
+  color: var(--ink);
+}
+.wfu-select-item:hover { background: var(--accent-bg); }
+.wfu-select-item.is-selected { background: var(--accent-bg); color: var(--accent); font-weight: 700; }
