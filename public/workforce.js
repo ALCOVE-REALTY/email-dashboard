@@ -5131,7 +5131,6 @@ let lastEmployeeList = [];
 // stale PDF from a previous department/filter never gets shared - the
 // button's own click handler always reads whatever this currently is.
 let directoryPdfPrefetch = null;
-let shareEmployeesBtnOriginalHtml = null;
 
 async function loadEmployees(forceRefresh) {
   const requestId = ++currentRequestId;
@@ -5150,29 +5149,23 @@ async function loadEmployees(forceRefresh) {
   });
   if (forceRefresh) params.set('refresh', '1');
   directoryPdfPrefetch = null;
-  // The Share button stays disabled/spinning until the PDF it would share
-  // has actually finished preparing - see the prefetch kickoff below.
-  // navigator.share() only works within a short window of the click itself
-  // ("user activation"); a smaller department's (e.g. FIRE's) PDF settles
-  // fast enough that awaiting an already-resolved promise inside the click
-  // handler keeps that window intact, but a bigger one (MEP, Facade, ...)
-  // or a slow/cold server request can still be in flight when the user
-  // taps Share, and awaiting an UNRESOLVED promise from inside the click
-  // handler loses that window exactly like the original fetch-on-click bug
-  // did - the browser silently falls back to a plain download instead of
-  // the native share sheet. Disabling the button until the file is
-  // actually ready removes that race instead of hoping the user waits long
-  // enough on their own.
-  const shareEmployeesBtn = document.getElementById('shareEmployeesPdf');
-  // Same round spinner shareFile() itself swaps in while actually sharing -
-  // without this, a disabled Share button looked identical to an enabled
-  // one (just barely dimmer), so tapping it while the PDF was still
-  // prefetching looked like it was simply doing nothing instead of loading.
-  if (shareEmployeesBtn) {
-    if (shareEmployeesBtnOriginalHtml === null) shareEmployeesBtnOriginalHtml = shareEmployeesBtn.innerHTML;
-    shareEmployeesBtn.disabled = true;
-    shareEmployeesBtn.innerHTML = '<span class="spinner spinner-sm"></span>';
-  }
+  // The Share button itself stays untouched (normal icon, always
+  // clickable) while this prefetch runs quietly in the background - same
+  // as every other Share button in the app. shareFile() already shows its
+  // own round spinner the instant it's clicked and keeps it up for however
+  // long the PDF (prefetched or not) takes to resolve, so the only visible
+  // loading state is the one the user's own click produced, never one that
+  // appears on its own before they've touched anything.
+  //
+  // Trade-off worth knowing: shareFile() awaits this promise, and
+  // navigator.share() needs to run within a short window of the user's tap
+  // ("user activation"). For a department whose PDF is still mid-render
+  // when tapped (a big one, or a cold server), that await can outlast the
+  // window, and the browser then silently falls back to a plain download
+  // instead of opening the native share sheet - the file still reaches the
+  // user, just not via the share popup. A disabled-until-ready button
+  // avoided that at the cost of feeling broken before the user ever
+  // clicked; this keeps the button honest instead.
   try {
     const data = await fetchJson('/api/workforce/employees?' + params.toString());
     if (requestId !== currentRequestId) return;
@@ -5182,23 +5175,10 @@ async function loadEmployees(forceRefresh) {
         if (!res.ok) throw new Error('Could not share the report - please try again.');
         return res.blob();
       });
-      const unlockShareBtn = () => {
-        if (requestId !== currentRequestId || !shareEmployeesBtn) return;
-        shareEmployeesBtn.disabled = false;
-        shareEmployeesBtn.innerHTML = shareEmployeesBtnOriginalHtml;
-      };
-      // A failed prefetch still unlocks the button - clicking it then falls
-      // back to shareFile's own fresh fetch (and its usual error banner if
-      // that fails too), same as before this prefetch existed.
-      directoryPdfPrefetch.then(unlockShareBtn, unlockShareBtn);
-    } else if (shareEmployeesBtn) {
-      shareEmployeesBtn.disabled = false;
-      shareEmployeesBtn.innerHTML = shareEmployeesBtnOriginalHtml;
     }
   } catch (err) {
     if (requestId !== currentRequestId) return;
     employeeList.innerHTML = '<li class="error-banner">' + escapeHtml(err.message) + '</li>';
-    if (shareEmployeesBtn) { shareEmployeesBtn.disabled = false; shareEmployeesBtn.innerHTML = shareEmployeesBtnOriginalHtml; }
   }
 }
 
