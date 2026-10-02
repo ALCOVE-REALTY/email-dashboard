@@ -660,7 +660,7 @@ async function loadOverview(forceRefresh) {
     // endpoints this used to list separately - see /movement-bundle's own
     // comment (workforceRoutes.js) for why firing several of these at once
     // was itself part of the problem it's warming ahead of.
-    '/api/workforce/movement-bundle'
+    '/api/workforce/movement-bundle?refresh=1'
   ]);
   try {
     const [overview, activeBreakdowns, trend] = await Promise.all([
@@ -4334,7 +4334,7 @@ async function renderMovementBreakdown() {
   // workforceRoutes.js). Same fix shape as the Health Insurance bundle.
   let bundle;
   try {
-    bundle = await fetchJson('/api/workforce/movement-bundle');
+    bundle = await fetchJson('/api/workforce/movement-bundle?refresh=1');
   } catch (err) {
     // Leave every tile at its N/A placeholder - same as before, a tracker
     // fetch hiccup here shouldn't crash the rest of the Dashboard/Movement view.

@@ -1006,11 +1006,12 @@ router.get('/doer-breakdown/pdf', async (req, res) => {
 // Letter needs the full history, not just a recent slice.
 router.get('/movement-bundle', async (req, res) => {
   try {
+    const opts = { forceRefresh: wantsForceRefresh(req) };
     const [department, designation, company, location] = await Promise.all([
-      movementTracker.getTransfersInLastDays(365),
-      movementTracker.getPromotionsInLastDays(3650),
-      movementTracker.getCompanyTransfersInLastDays(365),
-      movementTracker.getLocationTransfersInLastDays(365)
+      movementTracker.getTransfersInLastDays(365, opts),
+      movementTracker.getPromotionsInLastDays(3650, opts),
+      movementTracker.getCompanyTransfersInLastDays(365, opts),
+      movementTracker.getLocationTransfersInLastDays(365, opts)
     ]);
     res.json({ department, designation, company, location });
   } catch (err) {

@@ -238,16 +238,27 @@ function refreshChangeLogCache(config) {
   });
 }
 
-async function getChangeLogRows(config) {
+// Same floor as employeeService's: a forced read within 3s of the last one
+// reuses it rather than spending Sheets quota on an identical answer.
+const MIN_FORCED_REFRESH_INTERVAL_MS = 3000;
+
+async function getChangeLogRows(config, { forceRefresh = false } = {}) {
   const key = config.logTab;
   const entry = changeLogCache[key];
   if (!entry) return (await refreshChangeLogCache(config)).rows;
+  // Opening or refreshing the Dashboard/Movement view waits for the live log
+  // instead of showing up to 2 minutes of stale rows. Without this, the first
+  // load after a change always showed the old numbers (the refresh only ran
+  // in the background), so a sheet edit took an extra reload to appear.
+  if (forceRefresh && Date.now() - entry.fetchedAt >= MIN_FORCED_REFRESH_INTERVAL_MS) {
+    return (await refreshChangeLogCache(config)).rows;
+  }
   if (Date.now() - entry.fetchedAt >= CACHE_TTL_MS) refreshChangeLogCache(config).catch(() => {});
   return entry.rows;
 }
 
-async function getChangesInLastDays(config, days = 365) {
-  const rows = await getChangeLogRows(config);
+async function getChangesInLastDays(config, days = 365, opts = {}) {
+  const rows = await getChangeLogRows(config, opts);
   const cutoff = new Date();
   cutoff.setDate(cutoff.getDate() - days);
   const inWindow = rows.filter((r) => {
@@ -260,20 +271,20 @@ async function getChangesInLastDays(config, days = 365) {
   };
 }
 
-async function getTransfersInLastDays(days = 365) {
-  const data = await getChangesInLastDays(FIELD_CONFIGS.department, days);
+async function getTransfersInLastDays(days = 365, opts = {}) {
+  const data = await getChangesInLastDays(FIELD_CONFIGS.department, days, opts);
   return { total: data.total, items: data.items.map((it) => ({ ...it, fromDept: it.from, toDept: it.to })) };
 }
-async function getPromotionsInLastDays(days = 365) {
-  const data = await getChangesInLastDays(FIELD_CONFIGS.designation, days);
+async function getPromotionsInLastDays(days = 365, opts = {}) {
+  const data = await getChangesInLastDays(FIELD_CONFIGS.designation, days, opts);
   return { total: data.total, items: data.items.map((it) => ({ ...it, fromDesignation: it.from, toDesignation: it.to })) };
 }
-async function getCompanyTransfersInLastDays(days = 365) {
-  const data = await getChangesInLastDays(FIELD_CONFIGS.company, days);
+async function getCompanyTransfersInLastDays(days = 365, opts = {}) {
+  const data = await getChangesInLastDays(FIELD_CONFIGS.company, days, opts);
   return { total: data.total, items: data.items.map((it) => ({ ...it, fromCompany: it.from, toCompany: it.to })) };
 }
-async function getLocationTransfersInLastDays(days = 365) {
-  const data = await getChangesInLastDays(FIELD_CONFIGS.location, days);
+async function getLocationTransfersInLastDays(days = 365, opts = {}) {
+  const data = await getChangesInLastDays(FIELD_CONFIGS.location, days, opts);
   return { total: data.total, items: data.items.map((it) => ({ ...it, fromLocation: it.from, toLocation: it.to })) };
 }
 
