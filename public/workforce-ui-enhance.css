@@ -43,8 +43,20 @@
   box-shadow: 0 0 0 3px var(--accent-bg);
 }
 
-#wfSearch { transition: border-color 0.15s ease, box-shadow 0.15s ease; }
-#wfSearch:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-bg); }
+/* Every search bar in the app (Employee Data, Interview Panel, Health
+   Insurance, Policy Documents...) shares this exact same markup pattern
+   already, so one rule covers all of them - same box, same size/position,
+   just a smooth colored ring on focus instead of the plain default. */
+.wf-shell input[type="search"] { transition: border-color 0.15s ease, box-shadow 0.15s ease; }
+.wf-shell input[type="search"]:focus-visible,
+.wf-shell input[type="search"]:focus {
+  outline: none;
+  /* !important only to beat this input's own inline border-color (set
+     directly on the element in the markup) - nothing else on the page
+     uses this selector, so it can't clobber anything else. */
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 0 3px var(--accent-bg);
+}
 
 /* ---------- Labeled, sunken section groups (Overview dashboard) ---------- */
 
