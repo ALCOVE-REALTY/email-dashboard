@@ -675,7 +675,7 @@ async function loadOverview(forceRefresh) {
     jsonPrefetchCache.set('/api/workforce/breakdowns?status=ACTIVE', Promise.resolve(activeBreakdowns));
 
     kpiGrid.innerHTML =
-      kpiCard({ key: 'active', label: 'Active Employees', value: overview.active, tone: 'active', icon: 'active', live: true }) +
+      kpiCard({ key: 'active', label: 'Active Employees', value: overview.active, tone: 'active', icon: 'active', liveNum: true }) +
       kpiCard({ key: 'total', label: 'Total Employees', value: overview.total, tone: 'accent', icon: 'total' }) +
       kpiCard({ key: 'notice', label: 'Notice Period', value: overview.noticePeriod, tone: 'notice', icon: 'notice' }) +
       kpiCard({ key: 'inactive', label: 'Inactive Employees', value: overview.inactive, tone: 'inactive', icon: 'inactive' });

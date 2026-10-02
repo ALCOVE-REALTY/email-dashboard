@@ -89,6 +89,12 @@
    Employees / Inactive Employees) past the edge of the screen. */
 .kpi-card { min-width: 0; }
 .kpi-card .kpi-label { overflow-wrap: break-word; }
+/* The shared .kpi-label is nowrap by default (see workforce.css) - fine
+   for short labels, but "Total Employees"/"Inactive Employees" were still
+   a hair too wide for the now-narrower card and spilled a letter past the
+   edge instead of wrapping. Same fix already used for the longer labels
+   on Health Insurance / Movement's own kpi-grids: let this one wrap too. */
+#kpiGrid .kpi-label { white-space: normal; line-height: 1.25; }
 
 /* ---------- Custom select overlay (real <select> kept, fully functional -
    see workforce-ui-enhance.js) ---------- */
