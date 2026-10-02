@@ -7,6 +7,7 @@
 // just by this file's own discipline.
 const { getSheetsReadOnlyClient, getSheetsWriteClient } = require('./sheetsAuth');
 const employeeService = require('./employeeService');
+const { logRefreshFailure } = require('./refreshLog');
 
 // Deliberately a separate spreadsheet from HR Master Data - this is the
 // only file the app ever writes to, keeping the write-scoped service
@@ -221,7 +222,13 @@ async function fetchChangeLogRows(config) {
     // no write scope at all) - the cron/webhook writers below do that via
     // ensureTabs, so until one of them runs, this just reads as a clean 0
     // instead of failing, same as before.
-    return [];
+    //
+    // ONLY that case. Anything else (the per-minute read quota, a network
+    // blip) is rethrown: it used to read as "no changes" too, which cached
+    // an empty log and showed every movement card as 0 until the next
+    // refresh. Rethrown, the cache keeps its last good rows instead.
+    if (/Unable to parse range/i.test((err && err.message) || '')) return [];
+    throw err;
   }
 }
 
@@ -245,15 +252,29 @@ const MIN_FORCED_REFRESH_INTERVAL_MS = 3000;
 async function getChangeLogRows(config, { forceRefresh = false } = {}) {
   const key = config.logTab;
   const entry = changeLogCache[key];
-  if (!entry) return (await refreshChangeLogCache(config)).rows;
+  if (!entry) {
+    // Nothing cached yet: a failed first read shows as 0 (as it always has)
+    // but is not cached, so the next request tries again.
+    try {
+      return (await refreshChangeLogCache(config)).rows;
+    } catch (err) {
+      logRefreshFailure(`movement:${key}`, err);
+      return [];
+    }
+  }
   // Opening or refreshing the Dashboard/Movement view waits for the live log
   // instead of showing up to 2 minutes of stale rows. Without this, the first
   // load after a change always showed the old numbers (the refresh only ran
   // in the background), so a sheet edit took an extra reload to appear.
   if (forceRefresh && Date.now() - entry.fetchedAt >= MIN_FORCED_REFRESH_INTERVAL_MS) {
-    return (await refreshChangeLogCache(config)).rows;
+    try {
+      return (await refreshChangeLogCache(config)).rows;
+    } catch (err) {
+      logRefreshFailure(`movement:${key}`, err);
+      return entry.rows;
+    }
   }
-  if (Date.now() - entry.fetchedAt >= CACHE_TTL_MS) refreshChangeLogCache(config).catch(() => {});
+  if (Date.now() - entry.fetchedAt >= CACHE_TTL_MS) refreshChangeLogCache(config).catch((err) => logRefreshFailure(`movement:${key}`, err));
   return entry.rows;
 }
 

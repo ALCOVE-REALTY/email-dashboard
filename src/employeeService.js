@@ -1,5 +1,6 @@
 const { getSheetsReadOnlyClient, hasServiceAccount } = require('./sheetsAuth');
 const analytics = require('./workforceAnalytics');
+const { logRefreshFailure } = require('./refreshLog');
 
 const SHEET_ID = process.env.HR_SHEET_ID || '1I1vJJy5vXDMysBvXkXREImNZORr6ko1OMvPoNo984RI';
 const TAB_NAME = 'Employee_Master';
@@ -208,7 +209,7 @@ async function getEmployeeData({ forceRefresh = false } = {}) {
     return refreshCache();
   }
   if (isStale) {
-    refreshCache().catch(() => {});
+    refreshCache().catch((err) => logRefreshFailure('employees', err));
   }
   return cache;
 }
@@ -250,7 +251,7 @@ async function getCompanyList() {
   const hasCache = Boolean(companyListCache.companies);
   const isStale = !hasCache || Date.now() - companyListCache.fetchedAt >= CACHE_TTL_MS;
   if (!hasCache) return (await refreshCompanyListCache()).companies;
-  if (isStale) refreshCompanyListCache().catch(() => {});
+  if (isStale) refreshCompanyListCache().catch((err) => logRefreshFailure('company-list', err));
   return companyListCache.companies;
 }
 
