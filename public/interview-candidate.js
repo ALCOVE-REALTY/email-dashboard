@@ -103,7 +103,9 @@
           cvInput.value = '';
           cvLinkInput.value = '';
           resetUploadBox();
+          if (progressRecalc) progressRecalc();
         });
+        if (progressRecalc) progressRecalc();
       })
       .catch(function () {
         uploadBox.classList.remove('uploading');
@@ -122,12 +124,40 @@
   // ---------- Presentation-only enhancement (custom select/calendar
   // overlays + progress bar) - purely visual, reads/writes the same real
   // form elements above, so none of the logic in this file changes.
+  //
+  // Progress counts every sub-heading of the form (not just the required
+  // ones) as an equal share of 100% - "If yes, give details" only counts
+  // while it's actually shown, and CV/Resume counts once the upload has
+  // produced a cvLink.
+  var PROGRESS_FIELD_IDS = [
+    'f_name', 'f_contactNo', 'f_email', 'f_qualification', 'f_experience', 'f_currentPosition',
+    'f_positionAppliedFor', 'f_interviewDate', 'f_interviewPlace', 'f_interviewMode', 'f_referenceName',
+    'f_presentLastCompany', 'f_designation', 'f_currentLastSalaryDrawn', 'f_expectedSalary', 'f_noticePeriod',
+    'f_workedOnAlcoveProjects'
+  ];
+  function candidateProgressCount() {
+    var total = 0, filled = 0;
+    PROGRESS_FIELD_IDS.forEach(function (id) {
+      var el = document.getElementById(id);
+      if (!el) return;
+      total++;
+      if (el.value && el.value.trim()) filled++;
+    });
+    if (!alcoveDetailsWrap.hidden) {
+      total++;
+      var details = document.getElementById('f_alcoveProjectsDetails');
+      if (details.value && details.value.trim()) filled++;
+    }
+    total++; // CV / Resume
+    if (cvLinkInput.value) filled++;
+    return { total: total, filled: filled };
+  }
   var progressRecalc = null;
   if (window.IVForms) {
     IVForms.enhanceSelect(document.getElementById('f_interviewMode'), document.getElementById('f_interviewModeWrap'), 'Select…');
     IVForms.enhanceSelect(workedSelect, document.getElementById('f_workedOnAlcoveProjectsWrap'), 'Select…');
     IVForms.enhanceDate(document.getElementById('f_interviewDate'), document.getElementById('f_interviewDateWrap'));
-    progressRecalc = IVForms.initProgress(form, document.getElementById('ivProgressFill'), document.getElementById('ivProgressPct'));
+    progressRecalc = IVForms.initProgress(form, document.getElementById('ivProgressFill'), document.getElementById('ivProgressPct'), candidateProgressCount);
   }
 
   fetch('/api/interview/candidate/' + encodeURIComponent(token))

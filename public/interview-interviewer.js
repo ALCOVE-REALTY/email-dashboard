@@ -78,11 +78,32 @@
   // ---------- Presentation-only enhancement (custom select overlays +
   // progress bar) - purely visual, reads/writes the same real form
   // elements below, so none of the logic in this file changes.
+  //
+  // Progress counts every sub-heading of the form (not just the required
+  // ones) as an equal share of 100% - IT Requirements and Name of
+  // Replacement only count while they're actually shown.
+  function interviewerProgressCount() {
+    var total = 0, filled = 0;
+    COMPETENCIES.forEach(function (c) {
+      total++;
+      var grid = form.querySelector('[data-grade-field="' + c.key + '"]');
+      if (grid && grid.querySelector('.iv-grade-btn.active')) filled++;
+    });
+    total++; if (statusSelect.value) filled++;
+    if (!itSummaryField.hidden) { total++; if (itConfirmed) filled++; }
+    total++; if (replacementSelect.value) filled++;
+    if (!replacementFieldWrap.hidden) { total++; if (replacementNameInput.value.trim()) filled++; }
+    total++; if (document.getElementById('f_interviewerComments').value.trim()) filled++;
+    total++; // Interview Panel List
+    if (Array.prototype.some.call(panelistRowsEl.children, function (row) { return !!row.getSelected(); })) filled++;
+    total++; if (document.getElementById('f_additionalNote').value.trim()) filled++;
+    return { total: total, filled: filled };
+  }
   var progressRecalc = null;
   if (window.IVForms) {
     IVForms.enhanceSelect(statusSelect, document.getElementById('f_interviewStatusWrap'), 'Select…');
     IVForms.enhanceSelect(replacementSelect, document.getElementById('f_newRejoinedReplacementWrap'), 'Select…');
-    progressRecalc = IVForms.initProgress(form, document.getElementById('ivProgressFill'), document.getElementById('ivProgressPct'));
+    progressRecalc = IVForms.initProgress(form, document.getElementById('ivProgressFill'), document.getElementById('ivProgressPct'), interviewerProgressCount);
   }
 
   // ---------- Evaluation grid ----------
@@ -149,6 +170,7 @@
       b.classList.toggle('active', b === btn);
     });
     recomputeOverallGrade();
+    if (progressRecalc) progressRecalc();
   });
 
   // ---------- IT Requirements popup ----------
@@ -230,6 +252,7 @@
     itConfirmed = true;
     closeItOverlay();
     renderItSummary();
+    if (progressRecalc) progressRecalc();
   });
 
   itOverlay.addEventListener('click', function (e) {
@@ -309,6 +332,7 @@
         (emp.designation ? '<span>Designation: <b>' + escapeHtml(emp.designation) + '</b></span>' : '') +
         (emp.department ? '<span>Dept: <b>' + escapeHtml(emp.department) + '</b></span>' : '');
       suggestEl.hidden = true;
+      if (progressRecalc) progressRecalc();
     }
 
     function escapeHtml(s) {
@@ -332,7 +356,10 @@
       if (searchInput.value.trim() && !selected) searchInput.dispatchEvent(new Event('input'));
     });
 
-    row.querySelector('.iv-panelist-remove').addEventListener('click', function () { row.remove(); });
+    row.querySelector('.iv-panelist-remove').addEventListener('click', function () {
+      row.remove();
+      if (progressRecalc) progressRecalc();
+    });
     row.getSelected = function () { return selected; };
     panelistRowsEl.appendChild(row);
   }

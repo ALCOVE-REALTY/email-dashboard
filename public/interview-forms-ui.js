@@ -258,7 +258,11 @@ window.IVForms = (function () {
     return { close: close };
   }
 
-  function initProgress(formEl, fillEl, labelEl) {
+  // countFn(), supplied by each page, returns { total, filled } counting every
+  // sub-heading of that specific form (not just the required ones) - each
+  // sub-heading is worth an equal share of 100%, and a conditionally-hidden
+  // one (e.g. "If yes, give details") only counts while it's actually shown.
+  function initProgress(formEl, fillEl, labelEl, countFn) {
     function isFilled(el) {
       if (!el) return false;
       if (el.type === 'checkbox' || el.type === 'radio') return el.checked;
@@ -267,13 +271,18 @@ window.IVForms = (function () {
     function isVisible(el) {
       return !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
     }
+    function defaultCount() {
+      var fields = Array.prototype.filter.call(formEl.querySelectorAll('[required]'), isVisible);
+      return { total: fields.length, filled: fields.filter(isFilled).length };
+    }
     function recalc() {
-      var required = Array.prototype.filter.call(formEl.querySelectorAll('[required]'), isVisible);
-      var total = required.length;
-      var filled = required.filter(isFilled).length;
+      var c = (typeof countFn === 'function') ? countFn() : defaultCount();
+      var total = c.total || 0;
+      var filled = c.filled || 0;
       var pct = total ? Math.round((filled / total) * 100) : 100;
       if (fillEl) fillEl.style.width = pct + '%';
-      if (labelEl) labelEl.textContent = pct + '% COMPLETE';
+      if (labelEl) labelEl.textContent = pct + '%';
+      return pct;
     }
     formEl.addEventListener('input', recalc);
     formEl.addEventListener('change', recalc);

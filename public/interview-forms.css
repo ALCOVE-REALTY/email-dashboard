@@ -159,16 +159,30 @@ body {
 /* ---------- Progress indicator ---------- */
 
 .iv-progress-wrap { margin: 2px 0 24px; }
-.iv-progress-top { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
-.iv-progress-copy { font-size: 12px; color: var(--text-muted); }
-.iv-progress-pct {
-  font-size: 12px;
+.iv-progress-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+.iv-progress-copy { font-size: 12px; color: var(--text-muted); padding-top: 2px; }
+.iv-progress-pct-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  flex-shrink: 0;
+  line-height: 1.15;
+}
+.iv-progress-pct-num {
+  font-size: 20px;
   font-weight: 800;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.01em;
   background: var(--gradient);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
+  white-space: nowrap;
+}
+.iv-progress-pct-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: var(--text-muted);
   white-space: nowrap;
 }
 .iv-progress-bar { height: 6px; border-radius: 999px; background: var(--border-light); overflow: hidden; }
