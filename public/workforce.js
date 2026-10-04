@@ -3880,8 +3880,8 @@ const joiningGlowPlugin = {
   beforeDatasetsDraw(chart) {
     const ctx = chart.ctx;
     ctx.save();
-    ctx.shadowColor = 'rgba(139, 92, 246, .45)';
-    ctx.shadowBlur = 14;
+    ctx.shadowColor = 'rgba(139, 92, 246, .3)';
+    ctx.shadowBlur = 10;
     ctx.shadowOffsetY = 6;
   },
   afterDatasetsDraw(chart) {
@@ -3932,7 +3932,7 @@ function renderJoiningLine(canvasId, buckets, onPointClick) {
   }
   const ctx = canvas.getContext('2d');
   const areaGradient = ctx.createLinearGradient(0, 0, 0, canvas.clientHeight || 220);
-  areaGradient.addColorStop(0, '#8B5CF659');
+  areaGradient.addColorStop(0, '#8B5CF645');
   areaGradient.addColorStop(1, '#8B5CF600');
   // Reference's line stroke is itself a 3-colour gradient (--wi-line-grad:
   // blue -> purple -> pink), not a flat accent colour.
@@ -3977,11 +3977,15 @@ function renderJoiningLine(canvasId, buckets, onPointClick) {
           enabled: true,
           backgroundColor: '#030229',
           displayColors: false,
-          padding: 8,
-          cornerRadius: 10,
+          // Same size as the plain month-count labels (11px/700) - was
+          // 13px/800, reading visibly bigger than every other number on
+          // the chart. Padding/corner-radius shrunk to match the smaller
+          // text instead of leaving the box oversized around it.
+          padding: 6,
+          cornerRadius: 8,
           caretSize: 5,
           titleFont: { size: 0 },
-          bodyFont: { size: 13, weight: '800' },
+          bodyFont: { size: 11, weight: '700' },
           callbacks: {
             title: () => '',
             label: (item) => Number(item.parsed.y).toLocaleString('en-IN')
