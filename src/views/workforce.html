@@ -278,75 +278,71 @@
     </div>
 
     <!-- Overview -->
-    <section id="overviewView" class="wf-view" hidden>
-      <div class="wf-greeting">
+    <section id="overviewView" class="wf-view wf-dash-flow" hidden>
+      <div class="wf-greeting m-up">
         <div class="wf-greeting-sub" id="greetingTime">Good Morning,</div>
         <div class="wf-greeting-name" id="greetingName">—</div>
         <div class="wf-greeting-sub">Here's what's happening today.</div>
       </div>
-      <div class="wfu-section-title">Overview</div>
-      <div class="wfu-section-group">
-        <div class="kpi-grid" id="kpiGrid">
-          <div class="loading"><div class="spinner"></div></div>
+
+      <div class="wf-dash-section-label m-up" style="animation-delay:.05s">
+        <span>OVERVIEW</span>
+        <span class="wf-dash-hairline"></span>
+      </div>
+
+      <div class="kpi-grid" id="kpiGrid">
+        <div class="loading"><div class="spinner"></div></div>
+      </div>
+
+      <div class="wf-panel m-up" style="animation-delay:.3s">
+        <div class="wf-panel-head">
+          <h3>Employee Status Distribution</h3>
         </div>
-
-        <div class="wf-grid-2">
-          <div class="wf-panel m-up" style="animation-delay:.3s">
-            <div class="wf-panel-head">
-              <h3>Employee Status Distribution</h3>
-            </div>
-            <div class="wf-donut-row">
-              <div class="wf-canvas-wrap wf-canvas-wrap--donut">
-                <canvas id="statusDonut"></canvas>
-                <div class="wf-donut-center" aria-hidden="true">
-                  <span class="wf-donut-center-label">Total</span>
-                  <span class="wf-donut-center-value" id="statusDonutTotal">—</span>
-                </div>
-              </div>
-              <ul class="wf-legend" id="statusLegend"></ul>
+        <div class="wf-donut-row">
+          <div class="wf-canvas-wrap wf-canvas-wrap--donut">
+            <canvas id="statusDonut"></canvas>
+            <div class="wf-donut-center" aria-hidden="true">
+              <span class="wf-donut-center-label">Total</span>
+              <span class="wf-donut-center-value" id="statusDonutTotal">—</span>
             </div>
           </div>
-
-          <div class="wf-panel m-up" style="animation-delay:.36s">
-            <div class="wf-panel-head">
-              <h3>Employment Type</h3>
-            </div>
-            <div class="wf-stat-pair" id="employmentTypeStats"></div>
-            <div class="wf-employment-split" id="employmentTypeSplit"></div>
-          </div>
+          <ul class="wf-legend" id="statusLegend"></ul>
         </div>
       </div>
 
-      <div class="wfu-section-title">Workforce Breakdown</div>
-      <div class="wfu-section-group">
-        <div class="wf-grid-2">
-          <div class="wf-panel m-up" style="animation-delay:.42s">
-            <div class="wf-panel-head">
-              <h3>Department Wise Headcount (Active)</h3>
-              <button class="wf-link-btn" data-jump="departmentFull">View all →</button>
-            </div>
-            <ul class="wf-bar-list" id="deptBarList"></ul>
-          </div>
-
-          <div class="wf-panel m-up" style="animation-delay:.48s">
-            <div class="wf-panel-head">
-              <h3>Location Wise Headcount (Active)</h3>
-              <button class="wf-link-btn" data-jump="locationFull">View all →</button>
-            </div>
-            <div class="wf-donut-row">
-              <div class="wf-canvas-wrap wf-canvas-wrap--donut"><canvas id="locationDonut"></canvas></div>
-              <ul class="wf-legend" id="locationLegend"></ul>
-            </div>
-          </div>
+      <div class="wf-panel m-up" style="animation-delay:.36s">
+        <div class="wf-panel-head">
+          <h3>Employment Type</h3>
         </div>
+        <div class="wf-stat-pair" id="employmentTypeStats"></div>
+        <div class="wf-employment-split" id="employmentTypeSplit"></div>
+      </div>
 
-        <div class="wf-panel m-up" style="animation-delay:.54s">
-          <div class="wf-panel-head">
-            <h3>Joining Trend (Monthly)</h3>
-            <button class="wf-link-btn" data-jump="movement">View report →</button>
-          </div>
-          <div class="wf-canvas-wrap wf-canvas-wrap--line"><canvas id="joiningLineChart"></canvas></div>
+      <div class="wf-panel m-up" style="animation-delay:.42s">
+        <div class="wf-panel-head">
+          <h3>Department Wise Headcount (Active)</h3>
+          <button class="wf-link-btn" data-jump="departmentFull">View all →</button>
         </div>
+        <ul class="wf-bar-list" id="deptBarList"></ul>
+      </div>
+
+      <div class="wf-panel m-up" style="animation-delay:.48s">
+        <div class="wf-panel-head">
+          <h3>Location Wise Headcount (Active)</h3>
+          <button class="wf-link-btn" data-jump="locationFull">View all →</button>
+        </div>
+        <div class="wf-donut-row">
+          <div class="wf-canvas-wrap wf-canvas-wrap--donut"><canvas id="locationDonut"></canvas></div>
+          <ul class="wf-legend" id="locationLegend"></ul>
+        </div>
+      </div>
+
+      <div class="wf-panel m-up" style="animation-delay:.54s">
+        <div class="wf-panel-head">
+          <h3>Joining Trend (Monthly)</h3>
+          <button class="wf-link-btn" data-jump="movement">View report →</button>
+        </div>
+        <div class="wf-canvas-wrap wf-canvas-wrap--line"><canvas id="joiningLineChart"></canvas></div>
       </div>
 
     </section>

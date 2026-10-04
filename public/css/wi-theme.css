@@ -296,11 +296,21 @@ body { background: var(--wi-bg); }
 .wf-legend li { gap: 7px; }
 .wf-employment-split { background: #EEEEF6; }
 .wf-panel .wf-link-btn { font-size: 14px; text-align: start; }
-/* Reference spaces every Dashboard section via a single flex-column gap
-   (16px), not per-panel margins - switch to the same mechanism here so
-   .wf-panel can drop its own margin-bottom without the stacked panels
-   (e.g. the 2-col grid above "Joining Trend") touching each other. */
-.wfu-section-group { display: flex; flex-direction: column; gap: 16px; }
+/* Reference spaces every Dashboard section (greeting, label, KPI grid,
+   and every card below it) via ONE flex-column gap (16px) on the
+   whole view, not per-element margins, and every card below the KPI
+   grid is full-width/stacked - no 2-column pairing anywhere except
+   the KPI tiles themselves. */
+.wf-dash-flow { display: flex; flex-direction: column; gap: 16px; }
+.wf-greeting, .kpi-grid { margin-bottom: 0; }
+.wf-dash-section-label {
+  display: flex; align-items: center; gap: 12px;
+  font-size: 13px; font-weight: 800; letter-spacing: .14em;
+  color: var(--wi-primary);
+}
+.wf-dash-hairline { flex: 1 1 auto; height: 1px; background: var(--wi-border-3); }
+#greetingTime { display: flex; align-items: center; gap: 6px; }
+.wf-bar-icon { width: 44px; height: 44px; border-radius: var(--wi-r-tile); }
 .wf-panel { margin-bottom: 0; }
 
 /* ---- Text action (Export PDF, View all...) ---- */
