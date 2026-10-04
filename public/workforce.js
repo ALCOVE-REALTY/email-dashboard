@@ -5125,6 +5125,19 @@ clearFiltersBtn.addEventListener('click', () => {
   loadEmployees();
 });
 
+// Presentation-only: tinted initials avatar (reference design) instead of
+// a generic person icon - reads only the name already in the row's own
+// data, cycles through a fixed 5-color palette by row position.
+const AVATAR_PALETTE = ['av-1', 'av-2', 'av-3', 'av-4', 'av-5'];
+function avatarInitials(name) {
+  const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return '?';
+  return (parts[0][0] + (parts.length > 1 ? parts[parts.length - 1][0] : '')).toUpperCase();
+}
+function avatarToneClass(i) {
+  return AVATAR_PALETTE[i % AVATAR_PALETTE.length];
+}
+
 let lastEmployeeList = [];
 // The Employee Data Share button's in-flight/settled PDF fetch - see
 // shareFile's prefetchedBlobPromise param. Reset every time this runs so a
@@ -5253,7 +5266,7 @@ function renderEmployees(data) {
     .map(
       (e, i) =>
         '<li data-emp-idx="' + i + '">' +
-          '<span class="wf-emp-avatar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + PERSON_ICON + '</svg></span>' +
+          '<span class="wf-emp-avatar ' + avatarToneClass(i) + '">' + escapeHtml(avatarInitials(e.name)) + '</span>' +
           '<span class="wf-emp-main">' +
             '<span class="wf-emp-name">' + escapeHtml(e.name) + '</span>' +
             '<span class="wf-emp-meta">' + escapeHtml(e.employeeId) + ' · <span class="wf-status-chip ' + statusChipClass(e.status) + '">' + escapeHtml(e.status) + '</span></span>' +

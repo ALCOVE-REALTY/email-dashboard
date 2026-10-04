@@ -286,6 +286,49 @@ body { background: var(--wi-bg); }
 .wf-bar-track { display: block; }
 .wf-bar-fill { display: block; background: var(--wi-bar-grad); }
 
+/* ---- Employee Data: list rows ---- */
+.wf-emp-list li { border-radius: var(--wi-r-card); padding: 14px 14px; box-shadow: var(--wi-sh-card); }
+.wf-emp-avatar {
+  width: 52px; height: 52px;
+  font-weight: 800; font-size: 16px;
+  display: flex; align-items: center; justify-content: center;
+}
+.wf-emp-avatar svg { display: none; } /* initials text now, not the old icon */
+.wf-emp-avatar.av-1 { background: #EEF0FF; color: #3138B8; }
+.wf-emp-avatar.av-2 { background: #E5F7FF; color: #08739C; }
+.wf-emp-avatar.av-3 { background: #FFF6E0; color: #8F6000; }
+.wf-emp-avatar.av-4 { background: #FFEDE8; color: #C2361A; }
+.wf-emp-avatar.av-5 { background: #F3EEFF; color: #6D3FD6; }
+.wf-emp-name { font-size: 17px; font-weight: 800; }
+.wf-emp-chevron {
+  width: 34px; height: 34px;
+  border-radius: 50%;
+  background: var(--wi-primary-50);
+  color: var(--wi-primary);
+}
+.wf-status-chip { font-weight: 800; letter-spacing: 0.04em; }
+.wf-emp-role { text-transform: uppercase; }
+
+.wf-emp-summary-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  background: var(--wi-surface);
+  border-radius: var(--wi-r-card);
+  box-shadow: var(--wi-sh-card);
+  padding: 16px;
+  margin-bottom: 14px;
+}
+.wf-emp-summary-icon {
+  width: 44px; height: 44px; flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--wi-green-50);
+  color: var(--wi-green);
+  display: flex; align-items: center; justify-content: center;
+}
+.wf-emp-summary-body { display: flex; flex-direction: column; gap: 2px; }
+.wf-emp-summary-num-row { display: flex; align-items: center; gap: 8px; }
+
 /* ============================================================
    New: shared toast component (markup added in workforce.html,
    shown/hidden only by the new wi-motion.js helper - no existing
