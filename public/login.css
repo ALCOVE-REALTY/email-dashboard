@@ -55,24 +55,33 @@ body {
   background: #FAFAFB;
   display: flex;
   justify-content: center;
-  /* Reference uses 96px top padding for Log In specifically, 40px for
-     every other step (Sign Up, Waiting, Approved) - only the top value
-     differs. body.is-logIn is toggled by login.js's showStep(). */
-  padding: 40px 16px 30px;
 }
-body.is-logIn { padding-top: 96px; }
 
+/* §6b: the gradient+honeycomb must reach the very top/bottom edge of the
+   column with no white strip, at every viewport and the full scroll height
+   on Sign Up. Padding used to live on body, pushing .auth-shell (and its
+   background) down by 40-96px before anything was painted. Padding and
+   background now live on the SAME box (.auth-shell): CSS backgrounds paint
+   from the padding edge outward by default, so the gradient still fills
+   that inset area while the padding still insets the wordmark/card/footer
+   exactly as before. min-height:100dvh guarantees full-viewport coverage
+   even when Login's shorter content would otherwise leave the box short. */
 .auth-shell {
   position: relative;
   z-index: 1;
   width: 100%;
   max-width: 460px;
-  min-height: 100%;
+  min-height: 100dvh;
   display: flex;
   flex-direction: column;
   align-items: center;
   background: linear-gradient(180deg, var(--auth-bg-1) 0%, var(--auth-bg-2) 45%, var(--auth-bg-3) 100%);
+  /* Reference uses 96px top padding for Log In specifically, 40px for
+     every other step (Sign Up, Waiting, Approved) - only the top value
+     differs. body.is-logIn is toggled by login.js's showStep(). */
+  padding: 40px 16px 30px;
 }
+body.is-logIn .auth-shell { padding-top: 96px; }
 
 /* Honeycomb texture + 4 pulsing hexagons - confined to the column's own
    box (an SVG clips its own drawing to its width/height by default, so

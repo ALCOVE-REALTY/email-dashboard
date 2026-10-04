@@ -316,7 +316,10 @@ body { background: var(--wi-bg); }
    the KPI tiles themselves. */
 .wf-dash-flow, .wf-view-flow { display: flex; flex-direction: column; gap: 16px; }
 .wf-dash-flow[hidden], .wf-view-flow[hidden] { display: none; }
-.wf-greeting, .kpi-grid { margin-bottom: 0; }
+/* §6b: greeting sits 4px inside the 16px shell padding (20px total) so
+   its text lines up with OVERVIEW below it, not with the cards' 16px edge. */
+.wf-greeting { margin-bottom: 0; padding: 4px 4px 0; }
+.kpi-grid { margin-bottom: 0; }
 .wf-dash-section-label {
   display: flex; align-items: center; gap: 12px;
   font-size: 13px; font-weight: 800; letter-spacing: .14em;
@@ -336,16 +339,30 @@ body { background: var(--wi-bg); }
 .wf-view-flow > .wf-emp-summary-card,
 .wf-view-flow > .wf-filterbar { margin-bottom: 0; }
 
-/* ---- Text action (Export PDF, View all...) ---- */
+/* ---- Text action (Export PDF, View all...) - was plain text, the
+   emoji arrow (not an icon) replaced with an inline SVG in the markup;
+   this just lays that icon+text out inline. ---- */
 .wf-link-btn {
+  display: inline-flex; align-items: center; gap: 6px;
   color: var(--wi-primary);
   font-weight: 800;
 }
+/* Search + filter row's round filter button: reference specs 50px,
+   this reused the generic 46px icon-button size instead. */
+#filterToggleBtn { width: 50px; height: 50px; }
+#wfSearch { height: 50px; border-radius: var(--wi-r-input); border-color: var(--wi-border); }
 .wf-link-btn:hover { color: var(--wi-primary-700); text-decoration: none; }
 
-/* ---- Live dot (Active Employees / Total Insured Lives) ---- */
+/* ---- Live dot (Active Employees / Total Insured Lives). Keeps main's own
+   pulse mechanism (::after scale+fade, workforce.css) - only recolors it;
+   the pseudo-element's own background was still the old --resolved green,
+   one shade off from the dot itself now using --wi-live, which read as a
+   dull, mismatched ring frozen behind the brighter dot. ---- */
 .live-dot {
   background: var(--wi-live) !important;
+}
+.live-dot::after {
+  background: var(--wi-live);
 }
 
 /* ---- Dashboard: Department Wise Headcount bars use a gradient, not a
