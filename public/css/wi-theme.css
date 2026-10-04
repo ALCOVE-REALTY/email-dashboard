@@ -167,7 +167,12 @@ body { background: var(--wi-bg); }
   -webkit-backdrop-filter: blur(12px);
   backdrop-filter: blur(12px);
   border-bottom: none;
-  padding: 14px 16px 12px;
+  /* Horizontal padding dropped: .wf-topbar is a direct child of
+     .wf-shell, which already supplies 20px side padding to every view
+     below it - adding 16px more here shifted the menu button and
+     profile avatar 16px right of where every other view's content
+     (page-head back button, greeting text, cards) actually sits. */
+  padding: 14px 0 12px;
 }
 .wf-wordmark { font-weight: 800; font-size: 19px; line-height: 1.05; color: var(--wi-ink); }
 .wf-wordmark span { color: var(--wi-primary); }
