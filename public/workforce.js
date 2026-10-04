@@ -982,7 +982,7 @@ function renderEmploymentTypeStats(overview) {
 function renderDeptBarList(rows, shareTotal, targetId) {
   const max = rows.length ? rows[0].count : 1;
   document.getElementById(targetId || 'deptBarList').innerHTML = rows.length
-    ? rows.map((r) => barListItem(deptIconFor(r.name), r.name, r.count, max, shareTotal, 'department')).join('')
+    ? rows.map((r, i) => barListItem(deptIconFor(r.name), r.name, r.count, max, shareTotal, 'department', null, i)).join('')
     : '<li class="empty">No department data</li>';
 }
 
@@ -998,12 +998,10 @@ async function loadDepartmentFullView() {
     const max = rows.length ? rows[0].count : 1;
     const total = rows.reduce((sum, r) => sum + r.count, 0);
     listEl.innerHTML = rows.length
-      ? rows.map((r) => barListItem(deptIconFor(r.name), r.name, r.count, max, overview.active, 'department')).join('') +
+      ? rows.map((r, i) => barListItem(deptIconFor(r.name), r.name, r.count, max, overview.active, 'department', null, i)).join('') +
         '<li class="wf-bar-total-row">' +
           '<span class="wf-bar-icon">' + icon('total', 18) + '</span>' +
-          '<span class="wf-bar-main"><span class="wf-bar-name">Total</span></span>' +
-          '<span class="wf-bar-count">' + total + '</span>' +
-          '<span class="wf-bar-pct">100%</span>' +
+          '<span class="wf-bar-main"><span class="wf-bar-top-row"><span class="wf-bar-name">Total</span><span class="wf-bar-count">' + total + '</span><span class="wf-bar-pct">100%</span></span></span>' +
         '</li>'
       : '<li class="empty">No department data</li>';
   } catch (err) {
@@ -1037,12 +1035,10 @@ async function loadLocationFullView() {
     // so a row's icon here matches its chart slice color for the top 6 shown there.
     const palette = generateCategoricalPalette(rows.length);
     listEl.innerHTML = rows.length
-      ? rows.map((r, i) => barListItem('location', r.name, r.count, max, overview.active, 'location', palette[i])).join('') +
+      ? rows.map((r, i) => barListItem('location', r.name, r.count, max, overview.active, 'location', palette[i], i)).join('') +
         '<li class="wf-bar-total-row">' +
           '<span class="wf-bar-icon">' + icon('total', 18) + '</span>' +
-          '<span class="wf-bar-main"><span class="wf-bar-name">Total</span></span>' +
-          '<span class="wf-bar-count">' + total + '</span>' +
-          '<span class="wf-bar-pct">100%</span>' +
+          '<span class="wf-bar-main"><span class="wf-bar-top-row"><span class="wf-bar-name">Total</span><span class="wf-bar-count">' + total + '</span><span class="wf-bar-pct">100%</span></span></span>' +
         '</li>'
       : '<li class="empty">No location data</li>';
   } catch (err) {
@@ -3739,7 +3735,18 @@ document.getElementById('hiTeClearFilters').addEventListener('click', () => {
   applyHiTotalExitsFilters();
 });
 
-function barListItem(iconName, name, count, max, shareTotal, filterKey, iconColor) {
+// Reference's exact 6-tone cycle for a bar row's icon tile (copied from
+// its own rendered markup, method A2) - row 5 repeats row 1's colours.
+const BAR_ICON_TINTS = [
+  { bg: '#EEF0FF', fg: '#4C55E8' },
+  { bg: '#E5F7FF', fg: '#0A8FC2' },
+  { bg: '#FFF6E0', fg: '#B57900' },
+  { bg: '#FFEDE8', fg: '#E0401C' },
+  { bg: '#EEF0FF', fg: '#4C55E8' },
+  { bg: '#F3EEFF', fg: '#8B5CF6' }
+];
+
+function barListItem(iconName, name, count, max, shareTotal, filterKey, iconColor, index) {
   const pct = Math.max(4, Math.round((count / max) * 100));
   const share = shareTotal ? Math.round((count / shareTotal) * 1000) / 10 : null;
   // Kebab-case the filterKey for the HTML attribute name - needed for
@@ -3749,17 +3756,21 @@ function barListItem(iconName, name, count, max, shareTotal, filterKey, iconColo
   const filterAttr = filterKey ? ' data-' + filterKey.replace(/([A-Z])/g, '-$1').toLowerCase() + '="' + escapeHtml(name) + '"' : '';
   // When an explicit color is given (the location "View all" list matches
   // its rows to the donut chart's palette), tint the icon's background and
-  // recolor the icon itself so a row is visually tied to its chart slice.
-  const iconStyle = iconColor ? ' style="background:' + iconColor + '1a; color:' + iconColor + '"' : '';
+  // recolor the icon itself so a row is visually tied to its chart slice -
+  // otherwise cycle the reference's own fixed 6-tone sequence.
+  const tint = iconColor ? { bg: iconColor + '1a', fg: iconColor } : BAR_ICON_TINTS[(index || 0) % BAR_ICON_TINTS.length];
+  const delay = (0.7 + (index || 0) * 0.08).toFixed(2) + 's';
   return (
     '<li class="clickable" tabindex="0" role="button"' + filterAttr + '>' +
-      '<span class="wf-bar-icon"' + iconStyle + '>' + icon(iconName, 18) + '</span>' +
+      '<span class="wf-bar-icon" style="background:' + tint.bg + '; color:' + tint.fg + '">' + icon(iconName, 18) + '</span>' +
       '<span class="wf-bar-main">' +
-        '<span class="wf-bar-name">' + escapeHtml(name) + '</span>' +
-        '<span class="wf-bar-track"><span class="wf-bar-fill" style="width:' + pct + '%"></span></span>' +
+        '<span class="wf-bar-top-row">' +
+          '<span class="wf-bar-name">' + escapeHtml(name) + '</span>' +
+          '<span class="wf-bar-count">' + count + '</span>' +
+          (share !== null ? '<span class="wf-bar-pct">' + share + '%</span>' : '') +
+        '</span>' +
+        '<span class="wf-bar-track"><span class="wf-bar-fill m-grow" style="width:' + pct + '%; animation-delay:' + delay + '"></span></span>' +
       '</span>' +
-      '<span class="wf-bar-count">' + count + '</span>' +
-      (share !== null ? '<span class="wf-bar-pct">(' + share + '%)</span>' : '') +
     '</li>'
   );
 }

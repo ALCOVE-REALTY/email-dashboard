@@ -393,8 +393,19 @@ body { background: var(--wi-bg); }
    as an inline element its height/width were being silently ignored -
    the bar itself has likely never been visible, before or after this
    change, until now. */
-.wf-bar-track { display: block; }
-.wf-bar-fill { display: block; background: var(--wi-bar-grad); }
+.wf-bar-track { display: block; height: 5px; border-radius: 5px; background: #EEEEF6; margin-top: 7px; }
+.wf-bar-fill { display: block; border-radius: 5px; background: var(--wi-bar-grad); }
+/* Name/count/percent now share one line (reference), with the bar
+   spanning the full width on its own line below - base CSS put count/
+   percent as separate flex items after the whole name+bar block instead,
+   floating them vertically centred next to everything rather than lined
+   up with just the name. */
+.wf-bar-top-row { display: flex; align-items: baseline; gap: 6px; }
+.wf-bar-top-row .wf-bar-name {
+  flex: 1 1 auto; -webkit-line-clamp: 1; font-size: 14px; font-weight: 800; color: var(--wi-ink);
+}
+.wf-bar-top-row .wf-bar-count { font-family: inherit; font-size: 16px; font-weight: 800; color: var(--wi-ink); }
+.wf-bar-top-row .wf-bar-pct { font-size: 12px; color: var(--wi-muted); width: 42px; text-align: right; flex-shrink: 0; }
 
 /* ---- Dashboard: Employment Type icon circles (58px, yellow/indigo -
    were 44px using the candidate/resolved tones, unrelated to this
