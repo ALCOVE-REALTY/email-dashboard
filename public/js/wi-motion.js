@@ -162,6 +162,8 @@
     var canvases = root.matches('canvas[id]') ? [root] : [];
     canvases = canvases.concat(Array.prototype.slice.call(root.querySelectorAll('canvas[id]')));
     canvases.forEach(function (c) {
+      var replay = window.__wiChartReplay && window.__wiChartReplay[c.id];
+      if (replay) { replay(); return; }
       var chart = window.__wiCharts && window.__wiCharts[c.id];
       if (chart && typeof chart.reset === 'function') {
         chart.reset();

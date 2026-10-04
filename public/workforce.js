@@ -63,6 +63,16 @@ const charts = {};
 // chart's entrance animation (reset()+update() - no data/config change) when
 // its view is revisited; nothing here is new application behaviour.
 window.__wiCharts = charts;
+// Line charts don't reliably replay their draw-in animation via
+// reset()+update() (confirmed: the canvas stays blank, then the final
+// state appears in one frame, no visible animation) - Chart.js's own
+// entrance animation only reliably fires for a freshly-created instance.
+// A render function that creates a line chart registers a closure here
+// (same function, same arguments it was already called with) so the
+// replay engine can redo the exact same real-data render instead -
+// guaranteed correct since it's the identical call that worked the first
+// time, not a new code path.
+window.__wiChartReplay = {};
 
 function escapeHtml(s) {
   return String(s || '')
@@ -3869,14 +3879,19 @@ const joiningValueLabelsPlugin = {
     const meta = chart.getDatasetMeta(0);
     const values = chart.data.datasets[0].data;
     const ctx = chart.ctx;
+    // The tapped/hovered point already shows its number inside the dark
+    // tooltip pill right above it - also drawing this plain-text label for
+    // that same point doubled up the number right next to the pill.
+    const activeIndex = (chart.getActiveElements()[0] || {}).index;
     ctx.save();
-    ctx.font = '600 11px system-ui, -apple-system, sans-serif';
+    ctx.font = '800 11px system-ui, -apple-system, sans-serif';
     ctx.fillStyle = chartColors().ink;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'bottom';
     meta.data.forEach((point, i) => {
       const value = values[i];
       if (value === null || value === undefined) return;
+      if (i === activeIndex) return;
       ctx.fillText(String(value), point.x, point.y - 10);
     });
     ctx.restore();
@@ -3968,6 +3983,8 @@ function renderJoiningLine(canvasId, buckets, onPointClick) {
     },
     plugins: [joiningValueLabelsPlugin]
   });
+
+  window.__wiChartReplay[canvasId] = function () { renderJoiningLine(canvasId, buckets, onPointClick); };
 }
 
 // ---------- Employee Insurance Profile (Health Insurance drill-down) ----------
