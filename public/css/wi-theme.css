@@ -63,6 +63,32 @@
   --wi-sh-drawer:12px 0 40px rgba(3,2,41,.18);
   --wi-focus:0 0 0 4px rgba(76,85,232,.12);
   --wi-backdrop:rgba(3,2,41,.42);
+
+  /* ---- Re-point workforce.css's OWN existing tokens at the new
+     palette. workforce.css (and the Dashboard's chartColors(), which
+     reads these same custom properties via getComputedStyle at chart-
+     render time) already uses these names consistently everywhere -
+     overriding their VALUES here recolors the whole app's existing
+     component system (donuts, every kpi-card tone, pills, focus rings,
+     success/warning/danger states) without editing workforce.css or
+     workforce.js at all. --candidate/--candidate-bg and --header-from/
+     --header-to are deliberately left alone - they belong to the old
+     Mail Management page's own "candidates" tab and header band, which
+     this redesign doesn't touch. */
+  --ink: var(--wi-ink);
+  --paper: var(--wi-bg);
+  --line: var(--wi-border);
+  --accent: var(--wi-primary);
+  --accent-bg: var(--wi-primary-50);
+  --important: var(--wi-red);
+  --important-bg: var(--wi-red-50);
+  --resolved: var(--wi-green);
+  --resolved-bg: var(--wi-green-50);
+  --muted: var(--wi-muted);
+  --other-bg: var(--wi-surface-3);
+  --warning: var(--wi-yellow);
+  --warning-bg: var(--wi-yellow-50);
+  --shadow: rgba(3,2,41,.05);
 }
 
 /* ---------- Base ---------- */
@@ -250,6 +276,15 @@ body { background: var(--wi-bg); }
 .live-dot {
   background: var(--wi-live) !important;
 }
+
+/* ---- Dashboard: Department Wise Headcount bars use a gradient, not a
+   flat fill. Also fixes a pre-existing bug (not introduced by this
+   redesign): .wf-bar-track is a bare <span> with no "display" set, so
+   as an inline element its height/width were being silently ignored -
+   the bar itself has likely never been visible, before or after this
+   change, until now. */
+.wf-bar-track { display: block; }
+.wf-bar-fill { display: block; background: var(--wi-bar-grad); }
 
 /* ============================================================
    New: shared toast component (markup added in workforce.html,
