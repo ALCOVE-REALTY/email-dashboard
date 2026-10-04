@@ -286,6 +286,30 @@ body { background: var(--wi-bg); }
 .wf-bar-track { display: block; }
 .wf-bar-fill { display: block; background: var(--wi-bar-grad); }
 
+/* ---- Dashboard: donut center "Total" label + count-up (markup added
+   in workforce.html, value filled by renderStatusDonut() itself) ---- */
+.wf-canvas-wrap--donut { position: relative; }
+.wf-donut-center {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  pointer-events: none;
+}
+.wf-donut-center-label { font-size: 11px; font-weight: 700; color: var(--wi-muted); }
+.wf-donut-center-value { font-size: 18px; font-weight: 800; color: var(--wi-ink); }
+
+/* ---- Dashboard: Employment Type icon circles (58px, yellow/indigo -
+   were 44px using the candidate/resolved tones, unrelated to this
+   redesign's palette) + the animated split bar underneath ---- */
+.wf-stat-pair .stat-icon { width: 58px; height: 58px; }
+.wf-stat-pair .stat-icon svg { width: 26px; height: 26px; }
+.wf-stat-pair .stat-icon.probation { background: var(--wi-yellow-50); color: var(--wi-yellow-600); }
+.wf-stat-pair .stat-icon.confirmed { background: var(--wi-primary-50); color: var(--wi-primary); }
+.wf-employment-split {
+  display: flex; gap: 3px; height: 8px; border-radius: 8px; overflow: hidden;
+  margin-top: 16px; background: var(--wi-surface-3);
+}
+.wf-employment-split-seg { border-radius: 8px; }
+
 /* ---- Employee Data: list rows ---- */
 .wf-emp-list li { border-radius: var(--wi-r-card); padding: 14px 14px; box-shadow: var(--wi-sh-card); }
 .wf-emp-avatar {
