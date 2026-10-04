@@ -1132,16 +1132,10 @@ async function loadDoerManagementView() {
 }
 
 function renderDoerDonut(rows, palette) {
-  destroyChart('doerDonut');
-  const ctx = document.getElementById('doerDonut');
-  charts.doerDonut = new Chart(ctx, {
-    type: 'doughnut',
-    data: {
-      labels: rows.map((r) => r.name),
-      datasets: [{ data: rows.map((r) => r.count), backgroundColor: palette, borderWidth: 2, borderColor: chartColors().surface }]
-    },
-    options: { cutout: '62%', plugins: { legend: { display: false }, tooltip: { enabled: true } } }
-  });
+  document.getElementById('doerDonut').innerHTML = buildDonutSvg(
+    'mMaskDoer',
+    rows.map((r, i) => ({ value: r.count, color: palette[i % palette.length] }))
+  );
 }
 
 const doerRowsEl = document.getElementById('doerRows');
@@ -2825,26 +2819,24 @@ document.getElementById('hiPolicyInfoGrid').addEventListener('click', (e) => {
 
 function renderHiCoverageDonut(coverage, total) {
   const c = chartColors();
+  // Spec's own fixed relation palette (§2 "Insurance relation Self/
+  // Spouse/Children/Parents"), not the generic semantic tokens - those
+  // put Spouse/Children on the wrong colours (yellow/candidate instead of
+  // cyan/yellow).
   const buckets = [
-    { key: 'employees', label: 'Employees', color: c.accent },
-    { key: 'spouse', label: 'Spouse', color: c.warning },
-    { key: 'children', label: 'Children', color: c.candidate },
-    { key: 'parents', label: 'Parents', color: c.important }
+    { key: 'employees', label: 'Employees', color: '#4C55E8' },
+    { key: 'spouse', label: 'Spouse', color: '#45D1FF' },
+    { key: 'children', label: 'Children', color: '#FFBE2E' },
+    { key: 'parents', label: 'Parents', color: '#FF5B37' }
   ];
   if (coverage.other > 0) buckets.push({ key: 'other', label: 'Other', color: c.muted });
 
   document.getElementById('hiCoverageDonutTotal').textContent = (total || 0).toLocaleString();
 
-  destroyChart('hiCoverageDonut');
-  const ctx = document.getElementById('hiCoverageDonut');
-  charts.hiCoverageDonut = new Chart(ctx, {
-    type: 'doughnut',
-    data: {
-      labels: buckets.map((b) => b.label),
-      datasets: [{ data: buckets.map((b) => coverage[b.key] || 0), backgroundColor: buckets.map((b) => b.color), borderWidth: 0 }]
-    },
-    options: { cutout: '68%', plugins: { legend: { display: false }, tooltip: { enabled: true } } }
-  });
+  document.getElementById('hiCoverageDonut').innerHTML = buildDonutSvg(
+    'mMaskHiCoverage',
+    buckets.map((b) => ({ value: coverage[b.key] || 0, color: b.color }))
+  );
 
   const denom = total || 1;
   document.getElementById('hiCoverageLegend').innerHTML = buckets
@@ -6361,17 +6353,10 @@ document.getElementById('shareTenurePdf').addEventListener('click', (e) => {
 // that, so this donut is just the visual summary (matches the reference).
 function renderTenureDonut(buckets) {
   const palette = distributionPalette();
-
-  destroyChart('tenureDonut');
-  const ctx = document.getElementById('tenureDonut');
-  charts.tenureDonut = new Chart(ctx, {
-    type: 'doughnut',
-    data: {
-      labels: buckets.map((b) => b.label),
-      datasets: [{ data: buckets.map((b) => b.count), backgroundColor: buckets.map((_, i) => palette[i % palette.length]), borderWidth: 2, borderColor: chartColors().surface }]
-    },
-    options: { cutout: '68%', plugins: { legend: { display: false }, tooltip: { enabled: true } } }
-  });
+  document.getElementById('tenureDonut').innerHTML = buildDonutSvg(
+    'mMaskTenure',
+    buckets.map((b, i) => ({ value: b.count, color: palette[i % palette.length] }))
+  );
 }
 
 // ---------- Age Distribution (Demographics) ----------
@@ -6434,17 +6419,10 @@ document.getElementById('shareAgeDistributionPdf').addEventListener('click', (e)
 
 function renderAgeDonut(buckets) {
   const palette = distributionPalette();
-
-  destroyChart('ageDonut');
-  const ctx = document.getElementById('ageDonut');
-  charts.ageDonut = new Chart(ctx, {
-    type: 'doughnut',
-    data: {
-      labels: buckets.map((b) => b.label),
-      datasets: [{ data: buckets.map((b) => b.count), backgroundColor: buckets.map((_, i) => palette[i % palette.length]), borderWidth: 2, borderColor: chartColors().surface }]
-    },
-    options: { cutout: '62%', plugins: { legend: { display: false }, tooltip: { enabled: true } } }
-  });
+  document.getElementById('ageDonut').innerHTML = buildDonutSvg(
+    'mMaskAge',
+    buckets.map((b, i) => ({ value: b.count, color: palette[i % palette.length] }))
+  );
 }
 
 async function loadGenderDistributionView() {
@@ -6490,16 +6468,10 @@ document.getElementById('shareGenderDistributionPdf').addEventListener('click', 
 
 function renderGenderDonut(buckets) {
   const palette = distributionPalette();
-  destroyChart('genderDonut');
-  const ctx = document.getElementById('genderDonut');
-  charts.genderDonut = new Chart(ctx, {
-    type: 'doughnut',
-    data: {
-      labels: buckets.map((b) => b.label),
-      datasets: [{ data: buckets.map((b) => b.count), backgroundColor: buckets.map((_, i) => palette[i % palette.length]), borderWidth: 2, borderColor: chartColors().surface }]
-    },
-    options: { cutout: '62%', plugins: { legend: { display: false }, tooltip: { enabled: true } } }
-  });
+  document.getElementById('genderDonut').innerHTML = buildDonutSvg(
+    'mMaskGender',
+    buckets.map((b, i) => ({ value: b.count, color: palette[i % palette.length] }))
+  );
 }
 
 async function loadCollarDistributionView() {
@@ -6540,16 +6512,10 @@ document.getElementById('shareCollarDistributionPdf').addEventListener('click', 
 
 function renderCollarDonut(buckets) {
   const palette = distributionPalette();
-  destroyChart('collarDonut');
-  const ctx = document.getElementById('collarDonut');
-  charts.collarDonut = new Chart(ctx, {
-    type: 'doughnut',
-    data: {
-      labels: buckets.map((b) => b.label),
-      datasets: [{ data: buckets.map((b) => b.count), backgroundColor: buckets.map((_, i) => palette[i % palette.length]), borderWidth: 2, borderColor: chartColors().surface }]
-    },
-    options: { cutout: '62%', plugins: { legend: { display: false }, tooltip: { enabled: true } } }
-  });
+  document.getElementById('collarDonut').innerHTML = buildDonutSvg(
+    'mMaskCollar',
+    buckets.map((b, i) => ({ value: b.count, color: palette[i % palette.length] }))
+  );
 }
 
 // ---------- Insights tab ----------
