@@ -301,7 +301,8 @@ body { background: var(--wi-bg); }
    whole view, not per-element margins, and every card below the KPI
    grid is full-width/stacked - no 2-column pairing anywhere except
    the KPI tiles themselves. */
-.wf-dash-flow { display: flex; flex-direction: column; gap: 16px; }
+.wf-dash-flow, .wf-view-flow { display: flex; flex-direction: column; gap: 16px; }
+.wf-dash-flow[hidden], .wf-view-flow[hidden] { display: none; }
 .wf-greeting, .kpi-grid { margin-bottom: 0; }
 .wf-dash-section-label {
   display: flex; align-items: center; gap: 12px;
