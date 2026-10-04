@@ -526,6 +526,14 @@ body { background: var(--wi-bg); }
    circles off-centre within their own half (confirmed via position
    audit: 14px x offset on the Probation icon). ---- */
 .wf-stat-pair { display: grid; grid-template-columns: 1fr auto 1fr; justify-content: initial; }
+/* Employment Type's split bar (probation/confirmed) - 8px tall, slightly
+   thicker than Department Wise's own 5px bars (both copied from the
+   reference's own rendered markup, method A2). */
+.wf-split-bar {
+  display: flex; gap: 3px; height: 8px; border-radius: 8px;
+  overflow: hidden; margin-top: 16px; background: #EEEEF6;
+}
+.wf-split-fill { border-radius: 8px; }
 .wf-emp-profile-head { border-radius: var(--wi-r-card-lg); box-shadow: var(--wi-sh-card); border: none; margin-bottom: 0; padding: 16px 14px; gap: 12px; }
 .wf-emp-profile-avatar {
   width: 60px; height: 60px;

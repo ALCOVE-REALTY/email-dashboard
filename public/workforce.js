@@ -978,15 +978,22 @@ function renderEmploymentTypeStats(overview) {
       '<div class="stat-icon probation">' + icon('probation', 20) + '</div>' +
       '<div class="stat-label">Probation</div>' +
       '<div class="stat-num">' + probation + '</div>' +
-      '<div class="stat-pct">(' + probPct + '%)</div>' +
+      '<div class="stat-pct">' + probPct + '% of active</div>' +
     '</div>' +
     '<div class="stat-divider"></div>' +
     '<div class="stat-block clickable" tabindex="0" role="button" data-status="ACTIVE" data-employment-type="Confirmed">' +
       '<div class="stat-icon confirmed">' + icon('confirmed', 20) + '</div>' +
       '<div class="stat-label">Confirmed</div>' +
       '<div class="stat-num">' + confirmed + '</div>' +
-      '<div class="stat-pct">(' + confPct + '%)</div>' +
+      '<div class="stat-pct">' + confPct + '% of active</div>' +
     '</div>';
+  // Reference's split bar below the two stat-blocks (copied verbatim from
+  // its own rendered markup, method A2) - main always had this data
+  // (probation/confirmed percentages), just never drawn as a bar before;
+  // explicitly asked for by name, not an invented feature.
+  document.getElementById('employmentTypeSplit').innerHTML =
+    '<div class="wf-split-fill m-grow" style="width:' + probPct + '%; background:#FFBE2E; animation-delay:.6s"></div>' +
+    '<div class="wf-split-fill m-grow" style="width:' + confPct + '%; background:#4C55E8; animation-delay:.75s"></div>';
 }
 
 function renderDeptBarList(rows, shareTotal, targetId) {
