@@ -78,7 +78,6 @@ const suSubmitBtn = document.getElementById('suSubmitBtn');
 const suBtnText = document.getElementById('suBtnText');
 const suBtnSpinner = document.getElementById('suBtnSpinner');
 const strengthBar = document.getElementById('strengthBar');
-const suStrengthLabel = document.getElementById('suStrengthLabel');
 const criteriaItems = Array.from(document.querySelectorAll('#suCriteria li'));
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -127,24 +126,18 @@ function updateStrengthUi() {
   });
   const score = passwordScore(p);
   const bars = Array.from(strengthBar.children);
-  // Same 4-level mapping as the reference: 0-1 rules met = Weak, 2-3 =
-  // Fair, 4 = Good, 5 = Strong - no extra length gate beyond the rules
-  // the criteria list already shows.
+  // Visual-only recolor of the 4 bars main already had (same reference
+  // thresholds: 0-1 rules met = red, 2-3 = orange, 4 = yellow, 5 =
+  // green). No text label - main never showed a "Weak/Fair/Good/Strong"
+  // word anywhere, only this bar, so none is added here either.
   const LVL_CLASS = ['', 'bar-red', 'bar-orange', 'bar-yellow', 'bar-green'];
-  const LVL_TEXT = ['', 'Weak', 'Fair', 'Good', 'Strong'];
   let lvl = 0;
   if (p.length > 0) lvl = score >= 5 ? 4 : score >= 4 ? 3 : score >= 2 ? 2 : 1;
   const fillCount = lvl;
   const barClass = LVL_CLASS[lvl];
-  const strengthText = lvl ? LVL_TEXT[lvl] + ' password' : '';
   bars.forEach((bar, i) => {
     bar.className = i < fillCount ? barClass : '';
   });
-  if (suStrengthLabel) {
-    suStrengthLabel.hidden = !strengthText;
-    suStrengthLabel.textContent = strengthText;
-    suStrengthLabel.className = 'auth-strength-label' + (barClass ? ' label-' + barClass.replace('bar-', '') : '');
-  }
 
   const missing = Object.keys(RULE_LABELS).filter((rule) => !met[rule]);
   if (missing.length > 0 && p.length > 0) {

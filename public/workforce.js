@@ -898,10 +898,6 @@ function renderStatusDonut(overview) {
     }
   });
 
-  const totalEl = document.getElementById('statusDonutTotal');
-  if (totalEl && window.wiCountUp) window.wiCountUp(totalEl, { value: overview.total || 0 });
-  else if (totalEl) totalEl.textContent = (overview.total || 0).toLocaleString('en-IN');
-
   const total = overview.total || 1;
   const pct = (n) => Math.round((n / total) * 1000) / 10;
   document.getElementById('statusLegend').innerHTML =
@@ -953,13 +949,6 @@ function renderEmploymentTypeStats(overview) {
       '<div class="stat-num">' + confirmed + '</div>' +
       '<div class="stat-pct">(' + confPct + '%)</div>' +
     '</div>';
-
-  const splitEl = document.getElementById('employmentTypeSplit');
-  if (splitEl) {
-    splitEl.innerHTML =
-      '<div class="wf-employment-split-seg m-grow" style="width:' + probPct + '%; background:var(--wi-yellow); animation-delay:.6s"></div>' +
-      '<div class="wf-employment-split-seg m-grow" style="width:' + confPct + '%; background:var(--wi-primary); animation-delay:.75s"></div>';
-  }
 }
 
 function renderDeptBarList(rows, shareTotal, targetId) {

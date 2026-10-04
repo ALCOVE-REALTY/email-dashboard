@@ -161,6 +161,15 @@ body { background: var(--wi-bg); }
    Shared chrome
    ============================================================ */
 
+/* ---- Shell: constant 16px horizontal padding at every width, matching
+   the reference's own consistent side padding (topbar and every page's
+   own content div both use 16px, never more/less). The base stylesheet
+   reduces .wf-shell to 14px under 640px via its own media query (a
+   pre-existing narrow-phone tweak) - overridden here since the position
+   audit confirmed it's what pushed every element 2px off from the
+   reference at 390px. */
+.wf-shell { padding-left: 16px; padding-right: 16px; }
+
 /* ---- Top bar ---- */
 .wf-topbar {
   background: rgba(250,250,251,.92);
@@ -299,7 +308,6 @@ body { background: var(--wi-bg); }
 .wf-donut-row { gap: 14px; }
 .wf-legend { font-size: 13px; }
 .wf-legend li { gap: 7px; }
-.wf-employment-split { background: #EEEEF6; }
 .wf-panel .wf-link-btn { font-size: 14px; text-align: start; }
 /* Reference spaces every Dashboard section (greeting, label, KPI grid,
    and every card below it) via ONE flex-column gap (16px) on the
@@ -313,6 +321,7 @@ body { background: var(--wi-bg); }
   display: flex; align-items: center; gap: 12px;
   font-size: 13px; font-weight: 800; letter-spacing: .14em;
   color: var(--wi-primary);
+  padding: 6px 4px 0;
 }
 .wf-dash-hairline { flex: 1 1 auto; height: 1px; background: var(--wi-border-3); }
 #greetingTime { display: flex; align-items: center; gap: 6px; }
@@ -348,29 +357,15 @@ body { background: var(--wi-bg); }
 .wf-bar-track { display: block; }
 .wf-bar-fill { display: block; background: var(--wi-bar-grad); }
 
-/* ---- Dashboard: donut center "Total" label + count-up (markup added
-   in workforce.html, value filled by renderStatusDonut() itself) ---- */
-.wf-canvas-wrap--donut { position: relative; }
-.wf-donut-center {
-  position: absolute; inset: 0;
-  display: flex; flex-direction: column; align-items: center; justify-content: center;
-  pointer-events: none;
-}
-.wf-donut-center-label { font-size: 11px; font-weight: 700; color: var(--wi-muted); }
-.wf-donut-center-value { font-size: 18px; font-weight: 800; color: var(--wi-ink); }
-
 /* ---- Dashboard: Employment Type icon circles (58px, yellow/indigo -
    were 44px using the candidate/resolved tones, unrelated to this
-   redesign's palette) + the animated split bar underneath ---- */
+   redesign's palette). No donut centre total / split bar here - main
+   never showed either on this screen, so neither was added (see
+   phase3-review/CHANGE-LIST.md). ---- */
 .wf-stat-pair .stat-icon { width: 58px; height: 58px; }
 .wf-stat-pair .stat-icon svg { width: 26px; height: 26px; }
 .wf-stat-pair .stat-icon.probation { background: var(--wi-yellow-50); color: var(--wi-yellow-600); }
 .wf-stat-pair .stat-icon.confirmed { background: var(--wi-primary-50); color: var(--wi-primary); }
-.wf-employment-split {
-  display: flex; gap: 3px; height: 8px; border-radius: 8px; overflow: hidden;
-  margin-top: 16px; background: var(--wi-surface-3);
-}
-.wf-employment-split-seg { border-radius: 8px; }
 
 /* ---- Employee Data: list rows ---- */
 .wf-emp-list li { border-radius: var(--wi-r-card); padding: 14px 14px; box-shadow: var(--wi-sh-card); }
@@ -430,6 +425,13 @@ body { background: var(--wi-bg); }
 .wf-join-countdown { background: var(--wi-green-pill); color: var(--wi-green-700); }
 .wf-join-name { font-size: 16px; font-weight: 800; }
 .wf-subtab { font-size: 15px; font-weight: 800; border-bottom-width: 3px; }
+
+/* ---- Dashboard: Employment Type's two stat-blocks were flex
+   justify-content:space-around (distributes by content width), not
+   the reference's CSS grid 50/50 split - this shifted both icon
+   circles off-centre within their own half (confirmed via position
+   audit: 14px x offset on the Probation icon). ---- */
+.wf-stat-pair { display: grid; grid-template-columns: 1fr auto 1fr; justify-content: initial; }
 .wf-emp-profile-head { border-radius: var(--wi-r-card-lg); box-shadow: var(--wi-sh-card); border: none; margin-bottom: 0; }
 .wf-emp-profile-avatar {
   width: 60px; height: 60px;
