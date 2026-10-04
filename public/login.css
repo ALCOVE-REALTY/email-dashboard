@@ -269,6 +269,8 @@ body.is-logIn { padding-top: 96px; }
   height: 22px;
   margin: 0;
   accent-color: var(--auth-primary);
+  color: var(--auth-text);
+  border-color: var(--auth-border);
   flex-shrink: 0;
 }
 .auth-check strong { font-weight: 700; }
