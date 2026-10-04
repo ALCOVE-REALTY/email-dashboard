@@ -350,7 +350,7 @@
     <!-- Employee Data -->
     <section id="directoryView" class="wf-view" hidden>
       <!-- Employee list -->
-      <div id="directoryListPanel">
+      <div id="directoryListPanel" class="wf-view-flow">
         <div class="wf-page-head">
           <button class="wf-icon-btn" data-back aria-label="Back to Dashboard">
             <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
@@ -371,7 +371,7 @@
           </span>
         </div>
 
-        <div style="display:flex; gap:8px; margin-bottom:10px;">
+        <div style="display:flex; gap:8px;">
           <div style="position:relative; flex:1;">
             <input type="search" id="wfSearch" placeholder="Search employee…" autocomplete="off" style="width:100%; background:var(--surface); border:1px solid var(--line); border-radius:11px; padding:10px 12px 10px 34px; font:inherit; font-size:.85rem; color:var(--ink);" />
             <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="var(--muted)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="position:absolute; left:11px; top:50%; transform:translateY(-50%);"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -408,7 +408,7 @@
           <button class="wf-clear-btn" id="clearFilters">Clear filters</button>
         </div>
 
-        <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap; margin-bottom:14px;">
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap;">
           <div class="wf-result-summary" id="resultSummary"></div>
           <span style="display:flex; gap:14px; align-items:center; flex-wrap:nowrap; overflow-x:auto; max-width:100%; margin-left:auto;">
             <button class="wf-send-mail-btn" id="sendDoerBreakupMail" type="button" hidden>
