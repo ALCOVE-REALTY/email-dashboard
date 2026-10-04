@@ -24,7 +24,7 @@
   --wi-primary:#4C55E8; --wi-primary-700:#3138B8; --wi-primary-800:#2A2F9E;
   --wi-primary-50:#EEF0FF; --wi-primary-ring:#C9CCFA; --wi-primary-soft:#F2F3FF;
   --wi-ink:#030229; --wi-text:#1E1D3A; --wi-text-2:#3A3950; --wi-muted:#5F5E73; --wi-faint:#A9A8BA; --wi-placeholder:#8C8BA3;
-  --wi-bg:#FAFAFB; --wi-surface:#FFFFFF; --wi-surface-2:#F7F7FB; --wi-surface-3:#F4F4FA; --wi-surface-4:#F6F6FA;
+  --wi-bg:#FAFAFB; --wi-surface:#FFFFFF; --wi-surface-2:#F7F7FB; --wi-surface-3:#F4F4FA; --wi-surface-4:#F6F6FA; --wi-surface-5:#FBFBFF;
   --wi-border:#EDEDF3; --wi-border-2:#E3E4F5; --wi-border-3:#E6E6EF; --wi-divider:#F0F0F6;
 
   /* accents (base / dark text / tint) */
@@ -256,14 +256,52 @@ body { background: var(--wi-bg); }
 .wf-mail-compose-foot { border-top: 1px solid var(--wi-divider); }
 
 /* ---- Generic panel / card ---- */
-.wf-panel, .kpi-card {
+.wf-panel {
   background: var(--wi-surface);
-  border-color: var(--wi-border);
+  border: none;
   border-radius: var(--wi-r-card);
+  padding: 18px;
   box-shadow: var(--wi-sh-card);
 }
 .wf-panel-head h3 { font-weight: 800; color: var(--wi-ink); }
+
+/* ---- KPI stat card (Dashboard's 2x2 tiles) - its own radius/border/
+   padding, not the generic panel's - and the narrow-screen media query
+   in workforce.css (@media max-width:460px) shrinks it below what the
+   mobile reference itself wants at 390px, so every value is restated
+   here unconditionally (this file loads last, so it wins regardless of
+   that query being active). ---- */
+.kpi-card {
+  background: var(--wi-surface);
+  border: none;
+  border-radius: 18px;
+  box-shadow: var(--wi-sh-card);
+  padding: 14px; gap: 10px;
+  color: var(--wi-ink);
+  transition: transform .18s ease, box-shadow .25s ease, background .2s ease;
+}
 .kpi-card:hover { box-shadow: 0 8px 20px rgba(3,2,41,.08); }
+.kpi-icon { width: 44px; height: 44px; }
+.kpi-icon svg { width: 21px; height: 21px; }
+.kpi-label { font-size: 13px; }
+.kpi-num { font-size: 24px; }
+
+/* ---- Dashboard: donut canvas + legend - narrow-screen media query in
+   workforce.css shrinks the donut below what the 390px reference itself
+   wants, and the legend's own rem-based font-size computes smaller than
+   13px under this app's root font scale. ---- */
+.wf-canvas-wrap--donut { width: 130px; height: 130px; }
+.wf-donut-row { gap: 14px; }
+.wf-legend { font-size: 13px; }
+.wf-legend li { gap: 7px; }
+.wf-employment-split { background: #EEEEF6; }
+.wf-panel .wf-link-btn { font-size: 14px; text-align: start; }
+/* Reference spaces every Dashboard section via a single flex-column gap
+   (16px), not per-panel margins - switch to the same mechanism here so
+   .wf-panel can drop its own margin-bottom without the stacked panels
+   (e.g. the 2-col grid above "Joining Trend") touching each other. */
+.wfu-section-group { display: flex; flex-direction: column; gap: 16px; }
+.wf-panel { margin-bottom: 0; }
 
 /* ---- Text action (Export PDF, View all...) ---- */
 .wf-link-btn {
@@ -367,7 +405,7 @@ body { background: var(--wi-bg); }
 .wf-emp-profile-avatar.av-4 { background: #FFEDE8; color: #C2361A; }
 .wf-emp-profile-avatar.av-5 { background: #F3EEFF; color: #6D3FD6; }
 .wf-emp-profile-name-row .name { font-size: 19px; font-weight: 800; }
-.wf-emp-mail-btn { width: 44px; height: 44px; border-radius: 50%; border: 1.5px solid var(--wi-border-2); }
+.wf-emp-mail-btn { width: 44px; height: 44px; border-radius: 14px; border: 1px solid var(--wi-border-2); color: var(--wi-primary); }
 
 .wf-field-section { border-radius: var(--wi-r-card); box-shadow: var(--wi-sh-card); border: none; }
 .wf-field-section h4 {
@@ -379,7 +417,12 @@ body { background: var(--wi-bg); }
 .wf-field-icon svg { width: 19px; height: 19px; }
 .wf-field-value.is-empty { color: var(--wi-faint); font-weight: 600; }
 
-.wf-work-summary-card { border-radius: var(--wi-r-card); box-shadow: var(--wi-sh-card); border: none; }
+.wf-field-section:has(.wf-work-summary-grid) h4 { margin-bottom: 14px; }
+.wf-work-summary-card {
+  border-radius: 18px; padding: 16px 10px;
+  border: 1px solid var(--wi-border-2); background: var(--wi-surface-5);
+  box-shadow: none;
+}
 
 /* ============================================================
    New: shared toast component (markup added in workforce.html,

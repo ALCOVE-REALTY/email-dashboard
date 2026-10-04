@@ -679,6 +679,7 @@ async function loadOverview(forceRefresh) {
       kpiCard({ key: 'total', label: 'Total Employees', value: overview.total, tone: 'accent', icon: 'total' }) +
       kpiCard({ key: 'notice', label: 'Notice Period', value: overview.noticePeriod, tone: 'notice', icon: 'notice' }) +
       kpiCard({ key: 'inactive', label: 'Inactive Employees', value: overview.inactive, tone: 'inactive', icon: 'inactive' });
+    if (window.wiStagger) window.wiStagger(kpiGrid.querySelectorAll('.kpi-card'), { base: 80, step: 60 });
 
     renderStatusDonut(overview);
     renderEmploymentTypeStats(overview);
