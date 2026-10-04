@@ -5,9 +5,24 @@ const steps = {
   logIn: document.getElementById('logInStep')
 };
 
+// Presentation-only: CSS animations don't replay just because a
+// previously-rendered element becomes visible again, so the title/card
+// m-up entrance (which the reference gets "for free" since it re-renders
+// its whole subtree on every state change) needs an explicit retrigger
+// each time this app's persistent DOM swaps steps.
+function replayUp(el) {
+  if (!el) return;
+  el.classList.remove('m-up');
+  void el.offsetWidth;
+  el.classList.add('m-up');
+}
+
 function showStep(name) {
   Object.values(steps).forEach((s) => { s.hidden = true; });
   steps[name].hidden = false;
+  document.body.classList.toggle('is-logIn', name === 'logIn');
+  replayUp(document.querySelector('.auth-wordmark'));
+  replayUp(document.querySelector('.auth-card'));
 }
 
 // Relative URLs throughout (matches this app's existing login.js
@@ -26,7 +41,8 @@ async function postJson(url, body) {
 }
 
 function showError(el, message) {
-  el.textContent = message;
+  const textEl = el.querySelector('span') || el;
+  textEl.textContent = message;
   el.hidden = false;
 }
 function hideError(el) {
@@ -111,15 +127,16 @@ function updateStrengthUi() {
   });
   const score = passwordScore(p);
   const bars = Array.from(strengthBar.children);
-  let fillCount = 0;
-  let barClass = '';
-  let strengthText = '';
-  if (p.length > 0) {
-    if (score <= 3) { fillCount = 1; barClass = 'bar-red'; strengthText = 'Weak'; }
-    else if (score === 4) { fillCount = 2; barClass = 'bar-orange'; strengthText = 'Fair'; }
-    else if (score === 5 && p.length < 12) { fillCount = 3; barClass = 'bar-yellow'; strengthText = 'Good'; }
-    else if (score === 5 && p.length >= 12) { fillCount = 4; barClass = 'bar-green'; strengthText = 'Strong'; }
-  }
+  // Same 4-level mapping as the reference: 0-1 rules met = Weak, 2-3 =
+  // Fair, 4 = Good, 5 = Strong - no extra length gate beyond the rules
+  // the criteria list already shows.
+  const LVL_CLASS = ['', 'bar-red', 'bar-orange', 'bar-yellow', 'bar-green'];
+  const LVL_TEXT = ['', 'Weak', 'Fair', 'Good', 'Strong'];
+  let lvl = 0;
+  if (p.length > 0) lvl = score >= 5 ? 4 : score >= 4 ? 3 : score >= 2 ? 2 : 1;
+  const fillCount = lvl;
+  const barClass = LVL_CLASS[lvl];
+  const strengthText = lvl ? LVL_TEXT[lvl] + ' password' : '';
   bars.forEach((bar, i) => {
     bar.className = i < fillCount ? barClass : '';
   });
@@ -311,3 +328,9 @@ document.getElementById('goToLoginBtn').addEventListener('click', () => {
 document.getElementById('goToSignUpBtn').addEventListener('click', () => {
   showStep('signUp');
 });
+
+// logInStep is the step shown by default (no "hidden" attribute in the
+// HTML), so it never goes through showStep() on first load - set the
+// matching body class once here so its 96px top padding applies from
+// the start, not just after a later switch back to Log In.
+document.body.classList.add('is-logIn');

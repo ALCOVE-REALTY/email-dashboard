@@ -39,25 +39,48 @@
 .m-fade { animation: mFade .3s ease both; }
 .m-hex { animation: mHex 4s ease-in-out infinite; }
 .m-shake { animation: mShake .4s ease; }
-.m-press { transition: transform .18s ease, box-shadow .25s ease, filter .2s ease; }
+.m-press { transition: transform .18s ease, box-shadow .25s ease, background .2s ease; }
 .m-press:active { transform: scale(.97); }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
 
 body {
   margin: 0;
   min-height: 100vh;
-  font-family: 'Nunito', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  font-family: 'Nunito', system-ui, sans-serif;
   color: var(--auth-text);
-  background: linear-gradient(180deg, var(--auth-bg-1) 0%, var(--auth-bg-2) 45%, var(--auth-bg-3) 100%);
+  /* Flat, matching the rest of the app's own outside-column background -
+     the gradient + honeycomb live inside .auth-shell (the column) only,
+     same rule as modals/drawer/toasts staying column-width everywhere
+     else in this app. */
+  background: #FAFAFB;
   display: flex;
   justify-content: center;
-  padding: 40px 16px 32px;
+  /* Reference uses 96px top padding for Log In specifically, 40px for
+     every other step (Sign Up, Waiting, Approved) - only the top value
+     differs. body.is-logIn is toggled by login.js's showStep(). */
+  padding: 40px 16px 30px;
+}
+body.is-logIn { padding-top: 96px; }
+
+.auth-shell {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: 460px;
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  background: linear-gradient(180deg, var(--auth-bg-1) 0%, var(--auth-bg-2) 45%, var(--auth-bg-3) 100%);
 }
 
-/* Honeycomb texture + 4 pulsing hexagons, full-viewport, behind everything -
-   same geometry/colors as the reference's own inline SVG. */
+/* Honeycomb texture + 4 pulsing hexagons - confined to the column's own
+   box (an SVG clips its own drawing to its width/height by default, so
+   this never bleeds into the "outside the column" background even
+   without overflow:hidden, which would otherwise clip .auth-card's own
+   drop shadow at the column edges). */
 .auth-hex-bg {
-  position: fixed;
+  position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
@@ -65,28 +88,21 @@ body {
   z-index: 0;
 }
 
-.auth-shell {
-  position: relative;
-  z-index: 1;
-  width: 100%;
-  max-width: 460px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-}
-
 .auth-wordmark {
+  position: relative;
   font-size: 38px;
   font-weight: 800;
   line-height: 1.05;
   text-align: center;
-  margin: 8px 0 24px;
+  margin: 0;
   color: var(--auth-text);
 }
 .auth-wordmark span { display: block; color: var(--auth-primary); }
 
 .auth-card {
+  position: relative;
   width: 100%;
+  margin-top: 30px;
   background: var(--auth-surface);
   border-radius: 28px;
   padding: 26px 20px 24px;
@@ -122,10 +138,12 @@ body {
   padding: 0 10px 0 16px;
   height: 56px;
   background: #fff;
-  transition: border-color 0.2s, box-shadow 0.2s;
 }
-.auth-input:focus-within {
-  border-color: var(--auth-primary);
+/* .m-inp (added to every input wrapper) carries the focus-within border/
+   shadow behaviour, matching the reference's own shared rule exactly. */
+.m-inp { transition: border-color .2s ease, box-shadow .2s ease; }
+.m-inp:focus-within {
+  border-color: var(--auth-primary) !important;
   box-shadow: 0 0 0 4px rgba(76, 85, 232, .12);
 }
 .auth-input svg { flex-shrink: 0; color: var(--auth-muted); }
@@ -144,7 +162,7 @@ body {
 .auth-eye {
   background: none;
   border: none;
-  padding: 4px;
+  padding: 0;
   width: 40px;
   height: 40px;
   cursor: pointer;
@@ -174,38 +192,33 @@ body {
 }
 
 .auth-strength-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  margin-top: 10px;
+  margin-top: 12px;
 }
 .auth-strength-bar {
   display: flex;
   gap: 6px;
-  flex: 1;
 }
 .auth-strength-bar span {
   flex: 1;
   height: 6px;
   border-radius: 3px;
   background: #E3E3EE;
-  transition: background-color 0.25s ease;
+  transition: background 0.3s;
 }
 .auth-strength-bar span.bar-red { background: var(--auth-danger); }
 .auth-strength-bar span.bar-orange { background: var(--auth-fair); }
 .auth-strength-bar span.bar-yellow { background: var(--auth-yellow); }
 .auth-strength-bar span.bar-green { background: var(--auth-success); }
 .auth-strength-label {
+  display: block;
+  margin-top: 6px;
   font-size: 12px;
   font-weight: 800;
-  flex-shrink: 0;
-  min-width: 0;
 }
 .auth-strength-label[hidden] { display: none; }
 .auth-strength-label.label-red { color: var(--auth-danger); }
 .auth-strength-label.label-orange { color: var(--auth-fair); }
-.auth-strength-label.label-yellow { color: var(--auth-yellow); }
+.auth-strength-label.label-yellow { color: #B57900; }
 .auth-strength-label.label-green { color: var(--auth-success); }
 
 .auth-criteria {
@@ -219,7 +232,7 @@ body {
 .auth-criteria li {
   font-size: 14px;
   font-weight: 600;
-  color: var(--auth-muted);
+  color: var(--auth-placeholder);
   display: flex;
   align-items: center;
   gap: 10px;
@@ -244,11 +257,11 @@ body {
 
 .auth-check {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 12px;
-  margin: 20px 0 4px;
+  margin: 18px 0 0;
   font-size: 15px;
-  color: var(--auth-text-2, var(--auth-text));
+  color: #3A3950;
   cursor: pointer;
 }
 .auth-check input {
@@ -264,7 +277,6 @@ body {
   width: 100%;
   margin-top: 22px;
   height: 56px;
-  padding: 0 14px;
   border: none;
   border-radius: var(--auth-radius);
   background: linear-gradient(90deg, var(--auth-secondary), var(--auth-primary));
@@ -281,6 +293,7 @@ body {
 }
 .auth-btn:hover { filter: brightness(1.05); }
 .auth-btn:disabled { opacity: 0.45; cursor: default; box-shadow: none; }
+#suSubmitBtn { transition: opacity .2s; }
 .auth-btn-spinner {
   width: 18px; height: 18px;
   border-radius: 50%;
@@ -324,6 +337,7 @@ body {
   color: var(--auth-muted);
   font-weight: 600;
 }
+#signUpStep .auth-switch { margin-top: 18px; }
 
 .auth-step-title {
   text-align: center;
@@ -363,14 +377,11 @@ body {
 }
 
 .auth-footer {
-  margin-top: 28px;
+  position: relative;
+  margin-top: 34px;
   font-size: 14px;
   font-weight: 600;
   color: var(--auth-placeholder);
-  text-align: center;
+  text-align: start;
 }
 
-@media (max-width: 420px) {
-  .auth-card { padding: 24px 18px 20px; }
-  .auth-wordmark { font-size: 32px; }
-}
