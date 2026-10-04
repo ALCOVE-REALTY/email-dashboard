@@ -14,7 +14,6 @@ const toolCallLog = require('./aiAssistant/toolCallLog');
 const chatHistoryService = require('./chatHistoryService');
 
 const router = express.Router();
-const EMPLOYEE_LIST_CAP = 1000;
 
 function configErrorMessage(missing) {
   return 'Missing configuration: ' + missing.join(', ') + '.';
@@ -188,7 +187,7 @@ router.get('/employees', async (req, res) => {
       forceRefresh: wantsForceRefresh(req)
     });
     const filtered = employeeService.filterEmployees(employees, req.query);
-    const items = filtered.slice(0, EMPLOYEE_LIST_CAP).map((e) => ({
+    const items = filtered.map((e) => ({
       employeeId: e.employeeId,
       name: e.name,
       department: departmentNames.get(e.departmentKey) || e.department,
@@ -216,7 +215,7 @@ router.get('/employees', async (req, res) => {
     }));
     res.json({
       total: filtered.length,
-      truncated: filtered.length > items.length,
+      truncated: false,
       items
     });
   } catch (err) {
