@@ -5933,11 +5933,12 @@ document.getElementById('filterToggleBtn').addEventListener('click', () => {
 });
 
 function fieldRow(iconPath, label, value) {
+  const hasValue = !!value;
   return (
     '<div class="wf-field-row">' +
       '<span class="wf-field-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + iconPath + '</svg></span>' +
       '<span class="wf-field-label">' + escapeHtml(label) + '</span>' +
-      '<span class="wf-field-value">' + escapeHtml(value || '—') + '</span>' +
+      '<span class="wf-field-value' + (hasValue ? '' : ' is-empty') + '">' + escapeHtml(value || '—') + '</span>' +
     '</div>'
   );
 }
@@ -5968,7 +5969,7 @@ function showEmployeeDetail(e) {
 
   document.getElementById('empDetailBody').innerHTML =
     '<div class="wf-emp-profile-head">' +
-      '<span class="wf-emp-profile-avatar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + PERSON_ICON + '</svg></span>' +
+      '<span class="wf-emp-profile-avatar ' + avatarToneClass(0) + '">' + escapeHtml(avatarInitials(e.name)) + '</span>' +
       '<span class="wf-emp-profile-info">' +
         '<span class="wf-emp-profile-name-row">' +
           '<span class="name">' + escapeHtml(e.name) + '</span>' +
