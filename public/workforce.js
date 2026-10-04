@@ -59,6 +59,10 @@ let activeView = 'overview';
 let viewHistory = [];
 const loadedViews = new Set();
 const charts = {};
+// Exposes the same registry object (not a copy) so wi-motion.js can replay a
+// chart's entrance animation (reset()+update() - no data/config change) when
+// its view is revisited; nothing here is new application behaviour.
+window.__wiCharts = charts;
 
 function escapeHtml(s) {
   return String(s || '')
@@ -610,7 +614,8 @@ function kpiCard({ key, label, value, tone, icon: iconName, clickable, title, li
           (live ? '<span class="live-dot" title="Live"></span>' : '') +
         '</span>' +
         (noValue ? '' :
-          '<span class="kpi-num' + (isNa ? ' na' : '') + '">' + displayValue +
+          '<span class="kpi-num' + (isNa ? ' na' : '') + '">' +
+            '<span class="wi-countup">' + displayValue + '</span>' +
             (liveNum ? '<span class="live-dot" title="Live"></span>' : '') +
           '</span>'
         ) +
