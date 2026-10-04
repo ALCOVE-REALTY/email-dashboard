@@ -387,6 +387,41 @@ function chartColors() {
   };
 }
 
+// Reference's donut technique (captured verbatim from the running
+// reference, WI-Redesign-Kit CLAUDE_CODE_PROMPT.md §6b): a <mask> holding
+// one circle whose stroke sweeps in via .m-sweep (already in wi-motion's
+// CSS), revealing a <g> of per-segment circles underneath it - each
+// segment its own stroke-dasharray arc, 1.5 gap between them, the single
+// largest-value segment drawn at stroke-width 40, every other at 26.
+// Builds markup only (ids/classes it sets are new, presentation-only) -
+// never touches values coming in via `segments`.
+function buildDonutSvg(maskId, segments) {
+  const C = 502.65; // 2*pi*80
+  const GAP = 1.5;
+  const total = segments.reduce((sum, s) => sum + s.value, 0) || 1;
+  const maxVal = Math.max.apply(null, segments.map((s) => s.value));
+  let offset = 0;
+  const circles = segments
+    .filter((s) => s.value > 0)
+    .map((s) => {
+      const len = (s.value / total) * C;
+      const width = s.value === maxVal ? 40 : 26;
+      const circle =
+        '<circle cx="100" cy="100" r="80" fill="none" stroke="' + s.color + '" class="m-seg" stroke-width="' + width +
+        '" stroke-dasharray="' + len.toFixed(2) + ' ' + C + '" stroke-dashoffset="' + (-offset).toFixed(2) +
+        '" transform="rotate(-90 100 100)"></circle>';
+      offset += len + GAP;
+      return circle;
+    })
+    .join('');
+  return (
+    '<defs><mask id="' + maskId + '" maskUnits="userSpaceOnUse" x="0" y="0" width="200" height="200">' +
+      '<circle class="m-sweep" cx="100" cy="100" r="80" fill="none" stroke="#FFFFFF" stroke-width="52" stroke-dasharray="503 503" transform="rotate(-90 100 100)"></circle>' +
+    '</mask></defs>' +
+    '<g mask="url(#' + maskId + ')">' + circles + '</g>'
+  );
+}
+
 function destroyChart(key) {
   if (charts[key]) {
     charts[key].destroy();
@@ -885,23 +920,11 @@ function applyFiltersAndShowDirectory(filters, reportVariant) {
 
 function renderStatusDonut(overview) {
   const c = chartColors();
-  destroyChart('statusDonut');
-  const ctx = document.getElementById('statusDonut');
-  charts.statusDonut = new Chart(ctx, {
-    type: 'doughnut',
-    data: {
-      labels: ['Active', 'Notice Period', 'Inactive'],
-      datasets: [{
-        data: [overview.active, overview.noticePeriod, overview.inactive],
-        backgroundColor: [c.resolved, c.warning, c.important],
-        borderWidth: 0
-      }]
-    },
-    options: {
-      cutout: '68%',
-      plugins: { legend: { display: false }, tooltip: { enabled: true } }
-    }
-  });
+  document.getElementById('statusDonut').innerHTML = buildDonutSvg('mMaskStatus', [
+    { value: overview.active, color: c.resolved },
+    { value: overview.noticePeriod, color: c.warning },
+    { value: overview.inactive, color: c.important }
+  ]);
 
   const total = overview.total || 1;
   const pct = (n) => Math.round((n / total) * 1000) / 10;
@@ -3802,31 +3825,30 @@ function generateCategoricalPalette(count) {
   return colors;
 }
 
+// Reference's exact 6-colour sequence for this donut (§2 "Generic category
+// palette") - distinct from generateCategoricalPalette (the older
+// golden-angle generator still used by views not yet redesigned).
+const LOCATION_PALETTE = ['#4C55E8', '#45D1FF', '#FFBE2E', '#FF5B37', '#E356F0', '#3DD598'];
+const LOCATION_OTHER_COLOR = '#D6D5E2';
+
 function renderLocationDonut(rows) {
-  // The donut itself draws every location as its own wedge/color (a true,
-  // fully-accurate breakdown of the whole Active headcount) - only the
-  // text legend beneath it stays capped at the top 6, matching Department
+  // Legend stays capped at the top 6 named locations (matching Department
   // Wise Headcount's own pattern so the dashboard doesn't get overwhelmed
-  // with 19 rows of text. The full named list lives on "View all"
-  // (loadLocationFullView). generateCategoricalPalette is index-based, so
-  // the legend's 6 colors are the same as the chart's first 6 wedges.
-  const palette = generateCategoricalPalette(rows.length);
+  // with 19 rows of text; the full named list lives on "View all" -
+  // loadLocationFullView). The DONUT itself groups everything past the
+  // top 6 into one grey "other" wedge (display grouping only - same
+  // totals, legend unchanged) per the reference.
   const top = rows.slice(0, 6);
+  const rest = rows.slice(6);
   const total = rows.reduce((sum, r) => sum + r.count, 0) || 1;
 
-  destroyChart('locationDonut');
-  const ctx = document.getElementById('locationDonut');
-  charts.locationDonut = new Chart(ctx, {
-    type: 'doughnut',
-    data: {
-      labels: rows.map((r) => r.name),
-      datasets: [{ data: rows.map((r) => r.count), backgroundColor: palette, borderWidth: 0 }]
-    },
-    options: { cutout: '68%', plugins: { legend: { display: false } } }
-  });
+  const segments = top.map((r, i) => ({ value: r.count, color: LOCATION_PALETTE[i] }));
+  const restTotal = rest.reduce((sum, r) => sum + r.count, 0);
+  if (restTotal > 0) segments.push({ value: restTotal, color: LOCATION_OTHER_COLOR });
+  document.getElementById('locationDonut').innerHTML = buildDonutSvg('mMaskLocation', segments);
 
   document.getElementById('locationLegend').innerHTML = top.length
-    ? top.map((r, i) => legendRow(palette[i], r.name, r.count, Math.round((r.count / total) * 1000) / 10, false, { status: 'ACTIVE', location: r.name })).join('')
+    ? top.map((r, i) => legendRow(LOCATION_PALETTE[i], r.name, r.count, Math.round((r.count / total) * 1000) / 10, false, { status: 'ACTIVE', location: r.name })).join('')
     : '<li class="empty">No location data</li>';
 }
 
@@ -3855,9 +3877,15 @@ function renderJoiningLine(canvasId, buckets, onPointClick) {
   destroyChart(canvasId);
   const canvas = document.getElementById(canvasId);
   const ctx = canvas.getContext('2d');
-  const gradient = ctx.createLinearGradient(0, 0, 0, canvas.clientHeight || 220);
-  gradient.addColorStop(0, c.accent + '3d');
-  gradient.addColorStop(1, c.accent + '00');
+  const areaGradient = ctx.createLinearGradient(0, 0, 0, canvas.clientHeight || 220);
+  areaGradient.addColorStop(0, '#8B5CF62e');
+  areaGradient.addColorStop(1, '#8B5CF600');
+  // Reference's line stroke is itself a 3-colour gradient (--wi-line-grad:
+  // blue -> purple -> pink), not a flat accent colour.
+  const lineGradient = ctx.createLinearGradient(0, 0, canvas.clientWidth || 358, 0);
+  lineGradient.addColorStop(0, '#45A3FF');
+  lineGradient.addColorStop(0.5, '#8B5CF6');
+  lineGradient.addColorStop(1, '#E356F0');
 
   charts[canvasId] = new Chart(ctx, {
     type: 'line',
@@ -3865,24 +3893,47 @@ function renderJoiningLine(canvasId, buckets, onPointClick) {
       labels: buckets.map((b) => b.label),
       datasets: [{
         data: buckets.map((b) => b.count),
-        borderColor: c.accent,
-        backgroundColor: gradient,
-        pointBackgroundColor: c.accent,
-        pointBorderColor: c.surface,
-        pointBorderWidth: 1.5,
-        pointRadius: 4,
-        pointHoverRadius: 6,
-        // A much bigger invisible tap target than the 4px visible dot -
+        borderColor: lineGradient,
+        backgroundColor: areaGradient,
+        pointBackgroundColor: '#fff',
+        pointBorderColor: '#A78BFA',
+        pointBorderWidth: 2.5,
+        pointRadius: 4.5,
+        // Selected/tapped point grows to 15px with a thicker #8B5CF6 border
+        // (reference's "tap a point to select it" look).
+        pointHoverRadius: 7.5,
+        pointHoverBorderColor: '#8B5CF6',
+        pointHoverBorderWidth: 4,
+        pointHoverBackgroundColor: '#fff',
+        // A much bigger invisible tap target than the visible dot -
         // Chart.js's default hit area is tiny and hard to land a finger on.
         pointHitRadius: onPointClick ? 16 : 1,
-        borderWidth: 2,
+        borderWidth: 3,
         fill: true,
         tension: 0.35
       }]
     },
     options: {
       layout: { padding: { top: 22 } },
-      plugins: { legend: { display: false }, tooltip: { enabled: true } },
+      plugins: {
+        legend: { display: false },
+        // Dark rounded pill showing just the value above the tapped point
+        // (reference: "a dark #030229 label pill").
+        tooltip: {
+          enabled: true,
+          backgroundColor: '#030229',
+          displayColors: false,
+          padding: 8,
+          cornerRadius: 10,
+          caretSize: 5,
+          titleFont: { size: 0 },
+          bodyFont: { size: 13, weight: '800' },
+          callbacks: {
+            title: () => '',
+            label: (item) => Number(item.parsed.y).toLocaleString('en-IN')
+          }
+        }
+      },
       // 'index' + intersect:false means a tap anywhere along that month's
       // vertical column registers, not just a pixel-precise hit on the
       // point itself - the default ('nearest' + intersect:true) is what
@@ -4460,8 +4511,9 @@ async function loadMovementDetail() {
               '<span class="wf-join-main">' +
                 '<span class="wf-join-name">' + escapeHtml(it.name) + '</span>' +
                 '<span class="wf-join-sub wf-transfer-route">' +
-                  escapeHtml(it[meta.fromKey]) +
-                  '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>' +
+                  '<span class="wf-transfer-arrow tone-' + meta.tone + '" title="' + escapeHtml(meta.fromLabel + ': ' + it[meta.fromKey]) + '">' +
+                    '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>' +
+                  '</span>' +
                   escapeHtml(it[meta.toKey]) +
                 '</span>' +
               '</span>' +

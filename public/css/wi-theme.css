@@ -89,6 +89,14 @@
   --warning: var(--wi-yellow);
   --warning-bg: var(--wi-yellow-50);
   --shadow: rgba(3,2,41,.05);
+  /* Workforce Movement's 4 tinted cards (and Health Insurance's, same
+     variables) were still the pre-redesign hex values - never migrated
+     to the wi- palette (confirmed via colour audit: #2563eb/#7c3aed/
+     #16a34a/#dc2626 don't exist anywhere in the §2 token table). */
+  --move-blue: var(--wi-primary); --move-blue-bg: var(--wi-primary-50);
+  --move-purple: var(--wi-purple); --move-purple-bg: var(--wi-purple-50);
+  --move-green: var(--wi-green); --move-green-bg: var(--wi-green-50);
+  --move-red: var(--wi-red); --move-red-bg: var(--wi-red-50);
 }
 
 /* ---------- Base ---------- */
@@ -469,13 +477,45 @@ body { background: var(--wi-bg); }
 .wf-join-name { font-size: 16px; font-weight: 800; }
 .wf-subtab { font-size: 15px; font-weight: 800; border-bottom-width: 3px; }
 
+/* ---- Workforce Movement: Monthly/Quarterly/Yearly is the reference's
+   SEGMENTED control (a sliding pill track), not underline tabs - the only
+   other .wf-subtabs user, Joining's Upcoming/Recent, keeps the shared
+   underline style untouched; this is scoped to #movementTrendTabs only. ---- */
+#movementTrendTabs {
+  display: flex; gap: 0; background: var(--wi-surface-3);
+  border-radius: 14px; padding: 4px; border-bottom: none; margin-bottom: 0;
+}
+#movementTrendTabs .wf-subtab {
+  flex: 1; text-align: center; border-bottom: none; border-radius: 10px;
+  padding: 8px 0; color: var(--wi-muted);
+  transition: background .2s ease, color .2s ease, box-shadow .2s ease;
+}
+#movementTrendTabs .wf-subtab[aria-pressed="true"] {
+  background: var(--wi-primary); color: #fff;
+  box-shadow: 0 6px 14px rgba(76,85,232,.3);
+}
+
+/* ---- Movement list rows: reference shows only "-> To" (the arrow inside
+   a small tinted circle, coloured per movement type), not "From -> To" as
+   plain text - the "From" value stays available as a tooltip (title=) on
+   the circle instead of being dropped, rather than discarding real data. ---- */
+.wf-transfer-route { display: flex; align-items: center; gap: 6px; }
+.wf-transfer-arrow {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; border-radius: 50%; flex-shrink: 0;
+}
+.wf-transfer-arrow.tone-move-blue { background: var(--move-blue-bg); color: var(--move-blue); }
+.wf-transfer-arrow.tone-move-green { background: var(--move-green-bg); color: var(--move-green); }
+.wf-transfer-arrow.tone-move-red { background: var(--move-red-bg); color: var(--move-red); }
+.wf-transfer-arrow.tone-move-purple { background: var(--move-purple-bg); color: var(--move-purple); }
+
 /* ---- Dashboard: Employment Type's two stat-blocks were flex
    justify-content:space-around (distributes by content width), not
    the reference's CSS grid 50/50 split - this shifted both icon
    circles off-centre within their own half (confirmed via position
    audit: 14px x offset on the Probation icon). ---- */
 .wf-stat-pair { display: grid; grid-template-columns: 1fr auto 1fr; justify-content: initial; }
-.wf-emp-profile-head { border-radius: var(--wi-r-card-lg); box-shadow: var(--wi-sh-card); border: none; margin-bottom: 0; }
+.wf-emp-profile-head { border-radius: var(--wi-r-card-lg); box-shadow: var(--wi-sh-card); border: none; margin-bottom: 0; padding: 16px 14px; gap: 12px; }
 .wf-emp-profile-avatar {
   width: 60px; height: 60px;
   box-shadow: 0 0 0 4px var(--wi-surface-2);
@@ -487,10 +527,28 @@ body { background: var(--wi-bg); }
 .wf-emp-profile-avatar.av-3 { background: #FFF6E0; color: #8F6000; }
 .wf-emp-profile-avatar.av-4 { background: #FFEDE8; color: #C2361A; }
 .wf-emp-profile-avatar.av-5 { background: #F3EEFF; color: #6D3FD6; }
-.wf-emp-profile-name-row .name { font-size: 19px; font-weight: 800; }
-.wf-emp-mail-btn { width: 44px; height: 44px; border-radius: 14px; border: 1px solid var(--wi-border-2); color: var(--wi-primary); }
+/* Reference never wraps this row even with a long name + the ACTIVE pill
+   + the mail button all sharing one line - the name truncates with an
+   ellipsis instead (flex:1 1 auto + overflow:hidden), the pill never
+   shrinks (flex:0 0 auto). This app's flex-wrap:wrap (base CSS) let a
+   long name push the pill onto its own line instead. */
+.wf-emp-profile-name-row { flex-wrap: nowrap; gap: 7px; min-width: 0; }
+.wf-emp-profile-name-row .name {
+  font-size: 19px; font-weight: 800;
+  flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.wf-emp-profile-name-row .wf-status-chip {
+  flex: 0 0 auto;
+  display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; font-size: 10.5px;
+}
+.wf-emp-profile-name-row .wf-status-chip.active::before {
+  content: ''; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--wi-green-600); flex-shrink: 0;
+}
+.wf-emp-profile-sub { font-size: 13px; font-weight: 700; }
+.wf-emp-mail-btn { width: 44px; height: 44px; border-radius: 14px; border: 1px solid var(--wi-border-2); color: var(--wi-primary); flex-shrink: 0; }
 
-.wf-field-section { border-radius: var(--wi-r-card); box-shadow: var(--wi-sh-card); border: none; margin-bottom: 0; }
+.wf-field-section { border-radius: var(--wi-r-card); box-shadow: var(--wi-sh-card); border: none; margin-bottom: 0; padding: 16px 18px; }
 .wf-field-section h4 {
   font-size: 17px; font-weight: 800; margin: 0 0 4px;
   color: var(--wi-primary-700);
