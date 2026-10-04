@@ -168,7 +168,7 @@ body { background: var(--wi-bg); }
    pre-existing narrow-phone tweak) - overridden here since the position
    audit confirmed it's what pushed every element 2px off from the
    reference at 390px. */
-.wf-shell { padding-left: 16px; padding-right: 16px; }
+.wf-shell { padding-left: 16px; padding-right: 16px; padding-top: 0; }
 
 /* ---- Top bar ---- */
 .wf-topbar {
@@ -347,6 +347,20 @@ body { background: var(--wi-bg); }
   color: var(--wi-primary);
   font-weight: 800;
 }
+/* Several of these buttons also carry the `hidden` attribute (they're
+   reused across views - e.g. Doer Management's own Export Dept. Breakup/
+   Pending Confirmations links sit in the same shared row markup as
+   Employee Data's Export PDF, hidden there). Author display:inline-flex
+   above wins over the UA [hidden]{display:none} rule regardless of
+   specificity, so without this they rendered anyway, took up real layout
+   width, and pushed Share/Export PDF off their reference position. */
+.wf-link-btn[hidden] { display: none; }
+/* Reference's Export PDF sits in the same row as its Share circle, same
+   46px height (via padding, no box) so the two sit flush - not its own
+   text-line height. Scoped to "right after a round icon button" (the
+   actual, repeated Share+Export pattern), not every .wf-link-btn (the
+   in-panel "View all" / "View report" links keep their plain text size). */
+.wf-icon-btn + .wf-link-btn { height: 46px; padding: 0 2px 0 6px; font-size: 15px; }
 /* Search + filter row's round filter button: reference specs 50px,
    this reused the generic 46px icon-button size instead. */
 #filterToggleBtn { width: 50px; height: 50px; }
@@ -405,6 +419,18 @@ body { background: var(--wi-bg); }
   color: var(--wi-primary);
 }
 .wf-status-chip { font-weight: 800; letter-spacing: 0.04em; }
+/* Employee Data row pill: workforce.css's own .wf-emp-meta scoped rule
+   shrinks this to padding:1px 7px/0.62rem - well under the reference's
+   pill spec (radius 999, padding 3px 9px, 11px/800). */
+.wf-emp-meta { font-size: 13px; }
+.wf-emp-meta .wf-status-chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; font-size: 11px; }
+/* Reference's ACTIVE pill has a small solid dot before the text (its
+   INACTIVE/NOTICE PERIOD pills don't) - a ::before keeps every existing
+   .wf-status-chip call site (9+ across the app) untouched. */
+.wf-emp-meta .wf-status-chip.active::before {
+  content: ''; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--wi-green-600); flex-shrink: 0;
+}
 .wf-emp-role { text-transform: uppercase; }
 
 .wf-emp-summary-card {
