@@ -59,7 +59,10 @@ const suMissingError = document.getElementById('suMissingError');
 const suTerms = document.getElementById('suTerms');
 const suError = document.getElementById('suError');
 const suSubmitBtn = document.getElementById('suSubmitBtn');
+const suBtnText = document.getElementById('suBtnText');
+const suBtnSpinner = document.getElementById('suBtnSpinner');
 const strengthBar = document.getElementById('strengthBar');
+const suStrengthLabel = document.getElementById('suStrengthLabel');
 const criteriaItems = Array.from(document.querySelectorAll('#suCriteria li'));
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -110,15 +113,21 @@ function updateStrengthUi() {
   const bars = Array.from(strengthBar.children);
   let fillCount = 0;
   let barClass = '';
+  let strengthText = '';
   if (p.length > 0) {
-    if (score <= 3) { fillCount = 1; barClass = 'bar-red'; }
-    else if (score === 4) { fillCount = 2; barClass = 'bar-orange'; }
-    else if (score === 5 && p.length < 12) { fillCount = 3; barClass = 'bar-yellow'; }
-    else if (score === 5 && p.length >= 12) { fillCount = 4; barClass = 'bar-green'; }
+    if (score <= 3) { fillCount = 1; barClass = 'bar-red'; strengthText = 'Weak'; }
+    else if (score === 4) { fillCount = 2; barClass = 'bar-orange'; strengthText = 'Fair'; }
+    else if (score === 5 && p.length < 12) { fillCount = 3; barClass = 'bar-yellow'; strengthText = 'Good'; }
+    else if (score === 5 && p.length >= 12) { fillCount = 4; barClass = 'bar-green'; strengthText = 'Strong'; }
   }
   bars.forEach((bar, i) => {
     bar.className = i < fillCount ? barClass : '';
   });
+  if (suStrengthLabel) {
+    suStrengthLabel.hidden = !strengthText;
+    suStrengthLabel.textContent = strengthText;
+    suStrengthLabel.className = 'auth-strength-label' + (barClass ? ' label-' + barClass.replace('bar-', '') : '');
+  }
 
   const missing = Object.keys(RULE_LABELS).filter((rule) => !met[rule]);
   if (missing.length > 0 && p.length > 0) {
@@ -190,14 +199,16 @@ document.getElementById('signUpForm').addEventListener('submit', async (e) => {
     return;
   }
   suSubmitBtn.disabled = true;
-  suSubmitBtn.textContent = 'Submitting…';
+  suBtnText.textContent = 'Submitting…';
+  suBtnSpinner.hidden = false;
   try {
     await postJson('api/hr-auth/signup', { email: suEmail.value.trim(), password: suPassword.value });
     startWaitingFor(suEmail.value.trim());
   } catch (err) {
     showError(suError, err.message);
   } finally {
-    suSubmitBtn.textContent = 'Sign Up';
+    suBtnText.textContent = 'Sign Up';
+    suBtnSpinner.hidden = true;
     updateSubmitEnabled();
   }
 });
@@ -240,6 +251,9 @@ const liEmailError = document.getElementById('liEmailError');
 const liPassword = document.getElementById('liPassword');
 const liError = document.getElementById('liError');
 const liSubmitBtn = document.getElementById('liSubmitBtn');
+const liBtnText = document.getElementById('liBtnText');
+const liBtnSpinner = document.getElementById('liBtnSpinner');
+const authCard = document.querySelector('.auth-card');
 
 let liEmailTouched = false;
 
@@ -265,15 +279,22 @@ document.getElementById('logInForm').addEventListener('submit', async (e) => {
     return;
   }
   liSubmitBtn.disabled = true;
-  liSubmitBtn.textContent = 'Logging in…';
+  liBtnText.textContent = 'Logging in…';
+  liBtnSpinner.hidden = false;
   try {
     await postJson('api/hr-auth/login', { email: liEmail.value.trim(), password: liPassword.value });
     window.location.href = 'workforce.html';
   } catch (err) {
     showError(liError, err.message);
+    if (authCard) {
+      authCard.classList.remove('m-shake');
+      void authCard.offsetWidth;
+      authCard.classList.add('m-shake');
+    }
   } finally {
     liSubmitBtn.disabled = false;
-    liSubmitBtn.textContent = 'Log In';
+    liBtnText.textContent = 'Log In';
+    liBtnSpinner.hidden = true;
   }
 });
 

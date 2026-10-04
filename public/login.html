@@ -6,12 +6,20 @@
   <title>Workforce Intelligence — Sign In</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="login.css?v=5" />
+  <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="login.css?v=6" />
 </head>
 <body>
+  <svg class="auth-hex-bg" aria-hidden="true">
+    <defs><pattern id="mHexPat" width="56" height="100" patternUnits="userSpaceOnUse"><path d="M28 66L0 50L0 16L28 0L56 16L56 50L28 66L28 100" fill="none" stroke="#4C55E8" stroke-opacity=".09" stroke-width="1.5"></path><path d="M28 0L28 34L0 50L0 84L28 100L56 84L56 50L28 34" fill="none" stroke="#4C55E8" stroke-opacity=".09" stroke-width="1.5"></path></pattern></defs>
+    <rect width="100%" height="100%" fill="url(#mHexPat)"></rect>
+    <path class="m-hex" d="M84 116L56 100L56 66L84 50L112 66L112 100Z" fill="#4C55E8" fill-opacity=".07"></path>
+    <path class="m-hex" style="animation-delay: 1.3s" d="M308 216L280 200L280 166L308 150L336 166L336 200Z" fill="#8B5CF6" fill-opacity=".08"></path>
+    <path class="m-hex" style="animation-delay: 2.4s" d="M56 716L28 700L28 666L56 650L84 666L84 700Z" fill="#E356F0" fill-opacity=".07"></path>
+    <path class="m-hex" style="animation-delay: .7s" d="M336 766L308 750L308 716L336 700L364 716L364 750Z" fill="#4C55E8" fill-opacity=".07"></path>
+  </svg>
   <div class="auth-shell">
-    <h1 class="auth-wordmark">Workforce<span>Intelligence</span></h1>
+    <h1 class="auth-wordmark m-up">Workforce<span>Intelligence</span></h1>
 
     <div class="auth-card">
 
@@ -34,15 +42,18 @@
             </button>
           </div>
 
-          <div class="auth-strength-bar" id="strengthBar">
-            <span></span><span></span><span></span><span></span>
+          <div class="auth-strength-row">
+            <div class="auth-strength-bar" id="strengthBar">
+              <span></span><span></span><span></span><span></span>
+            </div>
+            <span class="auth-strength-label" id="suStrengthLabel" hidden></span>
           </div>
           <ul class="auth-criteria" id="suCriteria">
-            <li data-rule="len"><span class="dot"></span>At least 8 characters</li>
-            <li data-rule="upper"><span class="dot"></span>One uppercase letter</li>
-            <li data-rule="lower"><span class="dot"></span>One lowercase letter</li>
-            <li data-rule="num"><span class="dot"></span>One number</li>
-            <li data-rule="special"><span class="dot"></span>One special character</li>
+            <li data-rule="len"><span class="dot"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>At least 8 characters</li>
+            <li data-rule="upper"><span class="dot"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>One uppercase letter</li>
+            <li data-rule="lower"><span class="dot"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>One lowercase letter</li>
+            <li data-rule="num"><span class="dot"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>One number</li>
+            <li data-rule="special"><span class="dot"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>One special character</li>
           </ul>
           <div class="auth-field-error" id="suMissingError" hidden></div>
 
@@ -62,7 +73,7 @@
             <span>I agree to the <strong>Terms</strong> and <strong>Privacy Policy</strong></span>
           </label>
 
-          <button type="submit" class="auth-btn" id="suSubmitBtn" disabled>Sign Up</button>
+          <button type="submit" class="auth-btn m-press" id="suSubmitBtn" disabled><span class="auth-btn-spinner" id="suBtnSpinner" hidden></span><span id="suBtnText">Sign Up</span></button>
           <div class="auth-error" id="suError" hidden></div>
         </form>
         <div class="auth-switch">Already have an account? <button type="button" class="auth-link-btn" id="goToLoginBtn">Log In</button></div>
@@ -109,7 +120,7 @@
             </button>
           </div>
 
-          <button type="submit" class="auth-btn" id="liSubmitBtn">Log In</button>
+          <button type="submit" class="auth-btn m-press" id="liSubmitBtn"><span class="auth-btn-spinner" id="liBtnSpinner" hidden></span><span id="liBtnText">Log In</span></button>
           <div class="auth-error" id="liError" hidden></div>
         </form>
         <div class="auth-switch">Don't have an account? <button type="button" class="auth-link-btn" id="goToSignUpBtn">Sign Up</button></div>
