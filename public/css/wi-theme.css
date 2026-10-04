@@ -404,6 +404,19 @@ body { background: var(--wi-bg); }
 
 /* ---- Employee Profile ---- */
 #empDetailBody { display: flex; flex-direction: column; gap: 16px; }
+
+/* ---- Joining: date box + "in N days" pill - were a plain 44px indigo-
+   border square and an indigo countdown pill, not the reference's 56px
+   tinted-fill box and GREEN "due soon" pill. ---- */
+.wf-join-badge {
+  width: 56px; height: 56px; border-radius: 16px;
+  background: var(--wi-primary-50); border-color: var(--wi-primary-ring); color: var(--wi-primary-700);
+}
+.wf-join-badge b { font-size: 21px; font-weight: 800; font-family: inherit; }
+.wf-join-badge span { font-size: 10px; letter-spacing: .08em; }
+.wf-join-countdown { background: var(--wi-green-pill); color: var(--wi-green-700); }
+.wf-join-name { font-size: 16px; font-weight: 800; }
+.wf-subtab { font-size: 15px; font-weight: 800; border-bottom-width: 3px; }
 .wf-emp-profile-head { border-radius: var(--wi-r-card-lg); box-shadow: var(--wi-sh-card); border: none; margin-bottom: 0; }
 .wf-emp-profile-avatar {
   width: 60px; height: 60px;
