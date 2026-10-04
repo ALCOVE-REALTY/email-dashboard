@@ -3872,6 +3872,23 @@ function renderLocationDonut(rows) {
     : '<li class="empty">No location data</li>';
 }
 
+// Soft purple glow under/around the line, matching the reference's own
+// visibly stronger, glowing area fill (ours was reading as a faint,
+// barely-there wash by comparison).
+const joiningGlowPlugin = {
+  id: 'joiningGlow',
+  beforeDatasetsDraw(chart) {
+    const ctx = chart.ctx;
+    ctx.save();
+    ctx.shadowColor = 'rgba(139, 92, 246, .45)';
+    ctx.shadowBlur = 14;
+    ctx.shadowOffsetY = 6;
+  },
+  afterDatasetsDraw(chart) {
+    chart.ctx.restore();
+  }
+};
+
 const joiningValueLabelsPlugin = {
   id: 'joiningValueLabels',
   afterDatasetsDraw(chart) {
@@ -3883,8 +3900,10 @@ const joiningValueLabelsPlugin = {
     // that same point doubled up the number right next to the pill.
     const activeIndex = (chart.getActiveElements()[0] || {}).index;
     ctx.save();
-    ctx.font = '800 11px system-ui, -apple-system, sans-serif';
-    ctx.fillStyle = chartColors().ink;
+    // Softer than pure ink-black (#030229) - the reference's own value
+    // labels read as a dark slate, not a harsh solid black.
+    ctx.font = '700 11px system-ui, -apple-system, sans-serif';
+    ctx.fillStyle = '#3A3950';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'bottom';
     meta.data.forEach((point, i) => {
@@ -3913,7 +3932,7 @@ function renderJoiningLine(canvasId, buckets, onPointClick) {
   }
   const ctx = canvas.getContext('2d');
   const areaGradient = ctx.createLinearGradient(0, 0, 0, canvas.clientHeight || 220);
-  areaGradient.addColorStop(0, '#8B5CF62e');
+  areaGradient.addColorStop(0, '#8B5CF659');
   areaGradient.addColorStop(1, '#8B5CF600');
   // Reference's line stroke is itself a 3-colour gradient (--wi-line-grad:
   // blue -> purple -> pink), not a flat accent colour.
@@ -3999,7 +4018,7 @@ function renderJoiningLine(canvasId, buckets, onPointClick) {
           }
         : undefined
     },
-    plugins: [joiningValueLabelsPlugin]
+    plugins: [joiningGlowPlugin, joiningValueLabelsPlugin]
   });
 
   window.__wiChartReplay[canvasId] = function () { renderJoiningLine(canvasId, buckets, onPointClick); };
