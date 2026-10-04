@@ -403,7 +403,8 @@ body { background: var(--wi-bg); }
 .wf-emp-summary-num-row { display: flex; align-items: center; gap: 8px; }
 
 /* ---- Employee Profile ---- */
-.wf-emp-profile-head { border-radius: var(--wi-r-card-lg); box-shadow: var(--wi-sh-card); border: none; }
+#empDetailBody { display: flex; flex-direction: column; gap: 16px; }
+.wf-emp-profile-head { border-radius: var(--wi-r-card-lg); box-shadow: var(--wi-sh-card); border: none; margin-bottom: 0; }
 .wf-emp-profile-avatar {
   width: 60px; height: 60px;
   box-shadow: 0 0 0 4px var(--wi-surface-2);
@@ -418,7 +419,7 @@ body { background: var(--wi-bg); }
 .wf-emp-profile-name-row .name { font-size: 19px; font-weight: 800; }
 .wf-emp-mail-btn { width: 44px; height: 44px; border-radius: 14px; border: 1px solid var(--wi-border-2); color: var(--wi-primary); }
 
-.wf-field-section { border-radius: var(--wi-r-card); box-shadow: var(--wi-sh-card); border: none; }
+.wf-field-section { border-radius: var(--wi-r-card); box-shadow: var(--wi-sh-card); border: none; margin-bottom: 0; }
 .wf-field-section h4 {
   font-size: 17px; font-weight: 800; margin: 0 0 4px;
   color: var(--wi-primary-700);
