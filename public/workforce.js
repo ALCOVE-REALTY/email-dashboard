@@ -3901,6 +3901,16 @@ function renderJoiningLine(canvasId, buckets, onPointClick) {
   const c = chartColors();
   destroyChart(canvasId);
   const canvas = document.getElementById(canvasId);
+  // Reference wraps this chart in .m-reveal (a clip-path wipe, left to
+  // right) - re-trigger it here (remove+reflow+re-add) so switching
+  // Monthly/Quarterly/Yearly replays the reveal too, not just a first
+  // visit (view-level revisits already replay it generically).
+  const wrap = canvas.closest('.wf-canvas-wrap');
+  if (wrap) {
+    wrap.classList.remove('m-reveal');
+    void wrap.offsetWidth;
+    wrap.classList.add('m-reveal');
+  }
   const ctx = canvas.getContext('2d');
   const areaGradient = ctx.createLinearGradient(0, 0, 0, canvas.clientHeight || 220);
   areaGradient.addColorStop(0, '#8B5CF62e');
@@ -3965,8 +3975,17 @@ function renderJoiningLine(canvasId, buckets, onPointClick) {
       // made this feel unclickable on a phone.
       interaction: onPointClick ? { mode: 'index', intersect: false } : undefined,
       scales: {
-        x: { grid: { display: false }, ticks: { color: c.muted, font: { size: 10 } } },
-        y: { beginAtZero: true, grid: { color: c.line }, ticks: { color: c.muted, font: { size: 10 } } }
+        x: {
+          grid: { display: false },
+          ticks: buckets.length > 4
+            ? { color: c.muted, font: { size: 10 }, maxRotation: 42, minRotation: 42 }
+            : { color: c.muted, font: { size: 10 } }
+        },
+        y: {
+          beginAtZero: true,
+          grid: { color: '#EDEDF3', borderDash: [3, 3], drawBorder: false },
+          ticks: { color: c.muted, font: { size: 10 } }
+        }
       },
       onClick: onPointClick
         ? (evt, elements) => {
