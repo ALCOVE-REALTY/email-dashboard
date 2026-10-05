@@ -104,6 +104,20 @@
 .wf-shell, .wf-shell * { font-family: var(--wi-font); }
 body { background: var(--wi-bg); }
 
+/* ---- Global scrollbar: a thin, always-visible, styled grey thumb (not
+   the browser default / auto-hide-on-idle one) everywhere a scrollbar can
+   appear - the page itself and every popup/modal/dropdown's own internal
+   scroll area, since scrollbar styling isn't inherited and has to target
+   every element via "*" rather than one container. Two spots had
+   previously hidden their scrollbar entirely (Org Chart's dropdown list,
+   the Health Insurance employee-profile popup body) - overridden below
+   so they also pick this up instead of staying scrollbar-less. ---- */
+* { scrollbar-width: thin; scrollbar-color: var(--wi-faint) transparent; }
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb { background: var(--wi-faint); border-radius: 999px; }
+*::-webkit-scrollbar-thumb:hover { background: var(--wi-muted); }
+
 /* ============================================================
    Motion library — copied verbatim from CLAUDE_CODE_PROMPT.md §4
    ============================================================ */
@@ -912,8 +926,6 @@ body { background: var(--wi-bg); }
 }
 .wfu-select-wrap:has(#orgChartDeptSelect) .wfu-select-search input { font-size: 15px; color: var(--wi-ink); }
 .wfu-select-wrap:has(#orgChartDeptSelect) .wfu-select-search input::placeholder { color: var(--wi-placeholder); }
-.wfu-select-wrap:has(#orgChartDeptSelect) .wfu-select-items { scrollbar-width: none; }
-.wfu-select-wrap:has(#orgChartDeptSelect) .wfu-select-items::-webkit-scrollbar { display: none; }
 .wfu-select-wrap:has(#orgChartDeptSelect) .wfu-select-item {
   padding: 13px 12px; border-radius: 12px; font-size: 15px; font-weight: 600; color: var(--wi-ink);
 }
@@ -1031,8 +1043,7 @@ body { background: var(--wi-bg); }
 .hi-ep-card .wf-mail-compose-head { border-bottom: 1px solid var(--wi-divider); padding: 10px 18px 14px; }
 .hi-ep-card .wf-mail-compose-head h3 { font-size: 1rem; font-weight: 800; }
 .hi-ep-card .wf-mail-compose-head .wf-icon-btn { border: 1px solid var(--wi-border); box-shadow: none; }
-.hi-ep-card .wf-mail-compose-body { background: var(--wi-bg); scrollbar-width: none; }
-.hi-ep-card .wf-mail-compose-body::-webkit-scrollbar { display: none; }
+.hi-ep-card .wf-mail-compose-body { background: var(--wi-bg); }
 
 .hi-ep-card .wf-emp-profile-head {
   border: none; border-radius: 20px; padding: 16px; box-shadow: 0 4px 16px rgba(3,2,41,.05); background: var(--wi-surface);
@@ -1078,7 +1089,7 @@ body { background: var(--wi-bg); }
   background: var(--wi-surface); border-radius: 16px; padding: 10px 12px; box-shadow: 0 4px 14px rgba(3,2,41,.04);
   display: flex; flex-direction: column; gap: 4px; font-size: 11px; font-weight: 700; color: var(--wi-muted);
 }
-.hi-ep-card .hi-ce-total-row b { font-size: 16px; font-weight: 800; color: #3138B8; }
+.hi-ep-card .hi-ce-total-row b { font-size: 0.85rem; font-weight: 800; color: #3138B8; }
 
 .hi-ep-card .wf-dist-table { background: var(--wi-surface); border-radius: 20px; padding: 12px 14px; box-shadow: 0 4px 16px rgba(3,2,41,.05); }
 .hi-ep-card .wf-dist-header { font-size: 0.78rem; font-weight: 700; color: var(--wi-muted); border-bottom: 1px solid var(--wi-border); padding-bottom: 12px; }
