@@ -1013,7 +1013,7 @@ body { background: var(--wi-bg); }
 .hi-list-view .wf-emp-meta, .hi-list-view .wf-emp-role { font-size: 0.7rem; font-weight: 600; color: var(--wi-muted); }
 .hi-list-view .hi-ce-sub {
   display: inline-flex; align-items: center; gap: 5px; align-self: flex-start;
-  margin-top: 3px; padding: 3px 9px; border-radius: 10px; background: var(--wi-surface-3);
+  margin-top: 3px; padding: 2px 8px; border-radius: 9px; background: var(--wi-surface-3);
   font-size: 0.7rem; font-weight: 600; color: var(--wi-ink);
 }
 .hi-list-view .hi-ce-sub svg { width: 11px; height: 11px; color: var(--wi-primary); flex-shrink: 0; }
