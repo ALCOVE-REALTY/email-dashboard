@@ -6714,6 +6714,25 @@ const QUALITY_FIELDS = [
   { key: 'email', label: 'Email' }
 ];
 
+// Presentation-only icons for Data Quality's completeness circle + each
+// Missing Data row's status tile (ok = check, bad = warning triangle) -
+// which icon/colour shows is still driven entirely by the real count
+// already computed below, never new logic.
+const QUALITY_ICON_SHIELD = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>';
+const QUALITY_ICON_CHECK = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>';
+const QUALITY_ICON_WARN = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0zM12 9v4M12 17h.01"/></svg>';
+
+function qualityRow(label, count) {
+  const bad = !!count;
+  return (
+    '<div class="wf-stat-row' + (bad ? ' warn' : ' ok') + '">' +
+      '<span class="wi-dq-tile ' + (bad ? 'wi-dq-tile--bad' : 'wi-dq-tile--ok') + '">' + (bad ? QUALITY_ICON_WARN : QUALITY_ICON_CHECK) + '</span>' +
+      '<span class="wf-row-label">' + escapeHtml(label) + '</span>' +
+      '<span class="wi-dq-pill wi-countup ' + (bad ? 'wi-dq-pill--bad' : 'wi-dq-pill--ok') + '">' + count + '</span>' +
+    '</div>'
+  );
+}
+
 async function loadQualityView() {
   const completenessEl = document.getElementById('qualityCompletenessPanel');
   completenessEl.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
@@ -6724,22 +6743,19 @@ async function loadQualityView() {
     const completenessPct = totalPoints ? Math.round(((totalPoints - missingSum) / totalPoints) * 1000) / 10 : 100;
 
     completenessEl.innerHTML =
-      '<div class="wf-completeness-label">Data Completeness</div>' +
-      '<div class="wf-completeness-num">' + completenessPct + '%</div>' +
-      '<div class="wf-progress-track"><div class="wf-progress-fill" style="width:' + completenessPct + '%"></div></div>';
+      '<div class="wi-dq-head">' +
+        '<span class="wi-dq-ic">' + QUALITY_ICON_SHIELD + '</span>' +
+        '<span class="wi-dq-head-text">' +
+          '<span class="wf-completeness-label">Data Completeness</span>' +
+          '<span class="wf-completeness-num">' + completenessPct + '%</span>' +
+        '</span>' +
+      '</div>' +
+      '<div class="wf-progress-track"><div class="wf-progress-fill m-grow" style="width:' + completenessPct + '%; animation-delay:.5s"></div></div>';
 
     document.getElementById('qualityMissingRows').innerHTML = QUALITY_FIELDS
-      .map((f) => (
-        '<div class="wf-stat-row' + (data.missing[f.key] ? ' warn' : ' ok') + '">' +
-          '<span class="wf-row-label">' + escapeHtml(f.label) + '</span>' +
-          '<span class="wf-row-value">' + data.missing[f.key] + '</span>' +
-        '</div>'
-      ))
+      .map((f) => qualityRow(f.label, data.missing[f.key]))
       .join('') +
-      '<div class="wf-stat-row' + (data.duplicateIds.length ? ' warn' : ' ok') + '">' +
-        '<span class="wf-row-label">Duplicate Employee IDs</span>' +
-        '<span class="wf-row-value">' + data.duplicateIds.length + '</span>' +
-      '</div>';
+      qualityRow('Duplicate Employee IDs', data.duplicateIds.length);
 
     const dupPanel = document.getElementById('duplicatesPanel');
     if (data.duplicateIds.length) {

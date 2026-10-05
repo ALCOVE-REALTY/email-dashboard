@@ -597,6 +597,43 @@ body { background: var(--wi-bg); }
 .wf-join-name { font-size: 0.85rem; font-weight: 700; }
 .wf-subtab { font-size: 0.85rem; font-weight: 700; border-bottom-width: 3px; }
 
+/* ---- Data Quality: icon tile on the completeness card + a status
+   icon/pill on each Missing Data row (geometry/row order/counts/text all
+   stay exactly as main - these add a coloured tile+pill inside each
+   existing row). Scoped to #qualityCompletenessPanel/#qualityMissingRows
+   since .wf-completeness-num/.wf-progress-track/.wf-stat-row are shared
+   with Employee Data's own summary count + Health Insurance's renewal
+   bar. Bar growth reuses the existing .m-grow system (same easing the
+   Department/Policy Renewal bars already use) and the pill numbers reuse
+   the generic wi-countup/data-wi-enter="list" replay systems - no new
+   keyframes needed. ---- */
+.wi-dq-head { display: flex; align-items: center; gap: 14px; }
+.wi-dq-head-text { display: flex; flex-direction: column; }
+.wi-dq-ic {
+  width: 48px; height: 48px; border-radius: 50%; flex: 0 0 auto;
+  background: var(--wi-green-pill); color: var(--wi-green-700);
+  display: flex; align-items: center; justify-content: center;
+}
+#qualityCompletenessPanel .wf-completeness-label { font-weight: 700; margin-bottom: 0; }
+#qualityCompletenessPanel .wf-completeness-num { color: var(--wi-ink); font-weight: 800; }
+#qualityCompletenessPanel .wf-progress-track { height: 10px; border-radius: 10px; background: #EEEEF6; margin-top: 14px; }
+#qualityCompletenessPanel .wf-progress-fill { background: linear-gradient(90deg, #3DD598, #1F9D6B); }
+#qualityMissingRows .wf-stat-row { gap: 12px; border-bottom-color: #F0F0F6; }
+#qualityMissingRows .wf-row-label { flex: 1; color: var(--wi-ink); font-weight: 800; }
+.wi-dq-tile {
+  width: 38px; height: 38px; border-radius: 12px; flex: 0 0 auto;
+  display: flex; align-items: center; justify-content: center;
+}
+.wi-dq-tile--ok { background: var(--wi-green-pill); color: var(--wi-green-700); }
+.wi-dq-tile--bad { background: var(--wi-red-50); color: var(--wi-red-700); }
+.wi-dq-pill {
+  min-width: 64px; height: 30px; border-radius: 999px; flex: 0 0 auto;
+  display: inline-flex; align-items: center; justify-content: center;
+  padding: 0 12px; box-sizing: border-box; font-weight: 800; font-family: inherit;
+}
+.wi-dq-pill--ok { background: var(--wi-green-pill); color: var(--wi-green-700); }
+.wi-dq-pill--bad { background: var(--wi-red-50); color: var(--wi-red-700); }
+
 /* ---- Workforce Movement: Monthly/Quarterly/Yearly is the reference's
    SEGMENTED control (a sliding pill track), not underline tabs - the only
    other .wf-subtabs user, Joining's Upcoming/Recent, keeps the shared
