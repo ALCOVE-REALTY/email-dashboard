@@ -198,8 +198,11 @@
     const badge = document.createElement('div');
     badge.className = 'wf-ai-welcome-badge m-float';
     badge.innerHTML =
-      (window.wiBadge ? window.wiBadge(104, 'm-fblink-3s') : '') +
-      '<svg class="wf-ai-welcome-sparkle wf-ai-welcome-sparkle-lg m-twinkle" viewBox="0 0 24 24" width="24" height="24" fill="#FFBE2E"><path d="M12 2l2.2 7.8L22 12l-7.8 2.2L12 22l-2.2-7.8L2 12l7.8-2.2z"/></svg>' +
+      // Main's robot icon was 72x72 inside this same 104px circle (16px
+      // of padding each side) - the new badge SVG matches that exact
+      // icon-box size now, just with the new artwork, same circle.
+      (window.wiBadge ? window.wiBadge(72, 'm-fblink-3s') : '') +
+      '<svg class="wf-ai-welcome-sparkle wf-ai-welcome-sparkle-lg m-twinkle" viewBox="0 0 24 24" width="22" height="22" fill="#FFBE2E"><path d="M12 2l2.2 7.8L22 12l-7.8 2.2L12 22l-2.2-7.8L2 12l7.8-2.2z"/></svg>' +
       '<svg class="wf-ai-welcome-sparkle wf-ai-welcome-sparkle-sm m-twinkle" style="animation-delay:.8s" viewBox="0 0 24 24" width="13" height="13" fill="#4C55E8"><path d="M12 2l2.2 7.8L22 12l-7.8 2.2L12 22l-2.2-7.8L2 12l7.8-2.2z"/></svg>';
 
     const card = document.createElement('div');

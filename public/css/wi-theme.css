@@ -715,7 +715,11 @@ body { background: var(--wi-bg); }
   box-shadow: 0 18px 40px rgba(76,85,232,.18);
 }
 .wf-ai-welcome-sparkle { position: absolute; color: inherit; }
-.wf-ai-welcome-sparkle-lg { top: -4px; right: -6px; }
+/* Main had one sparkle (22x22, top:-2px;right:-6px) - this is its direct
+   equivalent, resized/repositioned to match exactly. The second small
+   sparkle has no main counterpart (an explicit new-look addition, kept
+   as-is per Section 10). */
+.wf-ai-welcome-sparkle-lg { top: -2px; right: -6px; }
 .wf-ai-welcome-sparkle-sm { bottom: 4px; left: -10px; }
 .wf-ai-welcome-card {
   margin-top: 18px; border-radius: 18px; padding: 14px 22px; max-width: 300px;
@@ -727,7 +731,7 @@ body { background: var(--wi-bg); }
 }
 .wf-ai-welcome-tagline { font-size: 0.88rem; font-weight: 400; color: var(--wi-text); }
 .wf-ai-welcome-tagline-strong { font-weight: 700; }
-.wf-ai-welcome-sub { font-size: 0.76rem; color: var(--wi-muted); opacity: 1; margin-top: 2px; }
+.wf-ai-welcome-sub { font-size: 0.76rem; color: var(--wi-muted); opacity: 1; }
 
 /* Message bubbles - user indigo/white (already close), bot now white
    bordered instead of a tinted fill, both with a pop-in entrance */
