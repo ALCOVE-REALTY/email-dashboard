@@ -733,7 +733,7 @@ body { background: var(--wi-bg); }
   font-size: 0.95rem; font-weight: 700; color: var(--wi-primary-700);
   display: flex; align-items: center; justify-content: center; gap: 8px;
 }
-.wf-ai-welcome-tagline { font-size: 0.88rem; font-weight: 400; color: var(--wi-text); }
+.wf-ai-welcome-tagline { font-size: 0.8rem; font-weight: 400; color: var(--wi-text); }
 .wf-ai-welcome-tagline-strong { font-weight: 700; }
 .wf-ai-welcome-sub { font-size: 0.76rem; color: var(--wi-muted); opacity: 1; }
 
