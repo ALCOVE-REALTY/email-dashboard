@@ -6107,7 +6107,7 @@ function showEmployeeDetail(e) {
 
 
   document.getElementById('empDetailBody').innerHTML =
-    '<div class="wf-emp-profile-head">' +
+    '<div class="wf-emp-profile-head" data-wi-enter="block">' +
       '<span class="wf-emp-profile-avatar ' + avatarToneClass(0) + '">' + escapeHtml(avatarInitials(e.name)) + '</span>' +
       '<span class="wf-emp-profile-info">' +
         '<span class="wf-emp-profile-name-row">' +
@@ -6120,48 +6120,56 @@ function showEmployeeDetail(e) {
       (e.email ? '<a class="wf-emp-mail-btn" href="mailto:' + encodeURIComponent(e.email) + '" aria-label="Email"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + FIELD_ICONS.mail + '</svg></a>' : '') +
     '</div>' +
 
-    '<div class="wf-field-section">' +
+    '<div class="wf-field-section" data-wi-enter="block">' +
       '<h4>Personal &amp; Official Details</h4>' +
-      fieldRow(FIELD_ICONS.id, 'Emp. No.', e.employeeId) +
-      fieldRow(FIELD_ICONS.person, 'Name', e.name) +
-      fieldRow(FIELD_ICONS.badge, 'Designation', e.designation) +
-      fieldRow(FIELD_ICONS.building, 'Department', e.department) +
-      fieldRow(FIELD_ICONS.collar, 'Collar Type', e.groupD) +
-      fieldRow(FIELD_ICONS.pin, 'Location', e.location) +
-      fieldRow(FIELD_ICONS.users, 'Reporting DOER', e.reportingDoer) +
-      fieldRow(FIELD_ICONS.calendar, 'DOJ', formatDate(e.doj)) +
-      fieldRow(FIELD_ICONS.clock, 'Tenure', e.tenure) +
-      fieldRow(FIELD_ICONS.clock, 'Total Years of Exp.', e.totalExperience) +
-      fieldRow(FIELD_ICONS.calendar, 'Date of Birth', formatDate(e.dob)) +
+      '<div data-wi-enter="list">' +
+        fieldRow(FIELD_ICONS.id, 'Emp. No.', e.employeeId) +
+        fieldRow(FIELD_ICONS.person, 'Name', e.name) +
+        fieldRow(FIELD_ICONS.badge, 'Designation', e.designation) +
+        fieldRow(FIELD_ICONS.building, 'Department', e.department) +
+        fieldRow(FIELD_ICONS.collar, 'Collar Type', e.groupD) +
+        fieldRow(FIELD_ICONS.pin, 'Location', e.location) +
+        fieldRow(FIELD_ICONS.users, 'Reporting DOER', e.reportingDoer) +
+        fieldRow(FIELD_ICONS.calendar, 'DOJ', formatDate(e.doj)) +
+        fieldRow(FIELD_ICONS.clock, 'Tenure', e.tenure) +
+        fieldRow(FIELD_ICONS.clock, 'Total Years of Exp.', e.totalExperience) +
+        fieldRow(FIELD_ICONS.calendar, 'Date of Birth', formatDate(e.dob)) +
+      '</div>' +
     '</div>' +
 
-    '<div class="wf-field-section">' +
+    '<div class="wf-field-section" data-wi-enter="block">' +
       '<h4>Identification Details</h4>' +
-      fieldRow(FIELD_ICONS.shield, 'UAN Number', e.uan) +
-      fieldRow(FIELD_ICONS.shield, 'ESI Number', e.esiNumber) +
-      fieldRow(FIELD_ICONS.mail, 'Email ID- Official', e.email) +
-      fieldRow(FIELD_ICONS.mail, 'Email ID- Personal', e.emailPersonal) +
-      fieldRow(FIELD_ICONS.id2, 'AADHAR CARD', e.aadhar) +
-      fieldRow(FIELD_ICONS.card, 'PAN CARD', e.pan) +
+      '<div data-wi-enter="list">' +
+        fieldRow(FIELD_ICONS.shield, 'UAN Number', e.uan) +
+        fieldRow(FIELD_ICONS.shield, 'ESI Number', e.esiNumber) +
+        fieldRow(FIELD_ICONS.mail, 'Email ID- Official', e.email) +
+        fieldRow(FIELD_ICONS.mail, 'Email ID- Personal', e.emailPersonal) +
+        fieldRow(FIELD_ICONS.id2, 'AADHAR CARD', e.aadhar) +
+        fieldRow(FIELD_ICONS.card, 'PAN CARD', e.pan) +
+      '</div>' +
     '</div>' +
 
-    '<div class="wf-field-section">' +
+    '<div class="wf-field-section" data-wi-enter="block">' +
       '<h4>Contact &amp; Address Details</h4>' +
-      fieldRow(FIELD_ICONS.phone, 'Contact number', e.contactNumber) +
-      fieldRow(FIELD_ICONS.home, 'Permanent Address', e.permanentAddress) +
-      fieldRow(FIELD_ICONS.home, 'Present Address', e.presentAddress) +
+      '<div data-wi-enter="list">' +
+        fieldRow(FIELD_ICONS.phone, 'Contact number', e.contactNumber) +
+        fieldRow(FIELD_ICONS.home, 'Permanent Address', e.permanentAddress) +
+        fieldRow(FIELD_ICONS.home, 'Present Address', e.presentAddress) +
+      '</div>' +
     '</div>' +
 
-    '<div class="wf-field-section">' +
+    '<div class="wf-field-section" data-wi-enter="block">' +
       '<h4>Employment Details</h4>' +
-      fieldRow(FIELD_ICONS.briefcase, 'Employment Type', e.employmentType) +
-      fieldRow(FIELD_ICONS.shield, 'STATUS', e.status) +
-      fieldRow(FIELD_ICONS.users, 'Reporting Manager', e.reportingManager) +
+      '<div data-wi-enter="list">' +
+        fieldRow(FIELD_ICONS.briefcase, 'Employment Type', e.employmentType) +
+        fieldRow(FIELD_ICONS.shield, 'STATUS', e.status) +
+        fieldRow(FIELD_ICONS.users, 'Reporting Manager', e.reportingManager) +
+      '</div>' +
     '</div>' +
 
-    '<div class="wf-field-section">' +
+    '<div class="wf-field-section" data-wi-enter="block">' +
       '<h4>Work Summary</h4>' +
-      '<div class="wf-work-summary-grid">' +
+      '<div class="wf-work-summary-grid" data-wi-enter="list">' +
         '<div class="wf-work-summary-card">' +
           '<div class="wf-ws-icon"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + FIELD_ICONS.clock + '</svg></div>' +
           '<div class="wf-ws-label">Tenure</div>' +
