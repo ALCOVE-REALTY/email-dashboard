@@ -621,6 +621,9 @@ body { background: var(--wi-bg); }
    .wf-emp-summary-icon's 34px/16px, and label/value/pill font-weights are
    kept at main's original 600/700 (not the look spec's bolder 700/800) -
    per direct, repeated feedback to match main's exact existing scale.
+   The completeness % itself stayed at main's own 1.9rem (a same-size-as-
+   body-text pass went too far the other way - reverted one step), while
+   the row pills' own number size was shrunk further on top of that.
    The bar is the Policy Renewal bar's own colour AND size (4px, blue
    gradient), not a new green one. Bar growth reuses the existing .m-grow
    system (same easing the Department/Policy Renewal bars already use)
@@ -635,7 +638,7 @@ body { background: var(--wi-bg); }
 }
 .wi-dq-ic svg { width: 14px; height: 14px; }
 #qualityCompletenessPanel .wf-completeness-label { font-weight: 600; margin-bottom: 0; }
-#qualityCompletenessPanel .wf-completeness-num { color: var(--wi-ink); font-weight: 700; font-size: 0.85rem; }
+#qualityCompletenessPanel .wf-completeness-num { color: var(--wi-ink); font-weight: 700; }
 #qualityCompletenessPanel .wf-progress-track { height: 4px; border-radius: 4px; background: #EEEEF6; margin-top: 14px; }
 #qualityCompletenessPanel .wf-progress-fill { background: linear-gradient(90deg, #45A3FF, #4C55E8); }
 #qualityMissingRows .wf-stat-row { gap: 12px; border-bottom-color: #F0F0F6; }
@@ -651,7 +654,7 @@ body { background: var(--wi-bg); }
   min-width: 44px; height: 22px; border-radius: 999px; flex: 0 0 auto;
   display: inline-flex; align-items: center; justify-content: center;
   padding: 0 9px; box-sizing: border-box; font-weight: 700; font-family: inherit;
-  font-size: 0.85rem;
+  font-size: 0.74rem;
 }
 .wi-dq-pill--ok { background: var(--wi-green-pill); color: var(--wi-green-700); }
 .wi-dq-pill--bad { background: var(--wi-red-50); color: var(--wi-red-700); }
