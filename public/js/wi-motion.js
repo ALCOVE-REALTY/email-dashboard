@@ -347,4 +347,19 @@
     new MutationObserver(syncEmptyState).observe(content, { childList: true });
     syncEmptyState();
   })();
+
+  // ---------- Section 8: Interview Panel stepper entrance replay. The
+  // step done/pending classes and the continuous "flowing line" in-
+  // progress animation are real state from workforce.js, untouched here -
+  // this only replays the one-time step-pop/row-fade stagger, called
+  // directly from openInterviewPanelDetail on every open (a candidate-to-
+  // candidate switch doesn't always toggle the panel's hidden attribute,
+  // so a MutationObserver alone would miss some replays). ----------
+  window.wiReplayIpStepper = function () {
+    var el = document.getElementById('interviewPanelDetailPanel');
+    if (!el) return;
+    el.classList.remove('wi-iv-anim');
+    void el.offsetWidth;
+    el.classList.add('wi-iv-anim');
+  };
 })();

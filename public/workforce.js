@@ -6819,9 +6819,9 @@ function renderInterviewPanelList() {
   });
 
   rowsEl.innerHTML = rows.length
-    ? rows.map((c) => (
+    ? rows.map((c, i) => (
         '<li data-ip-id="' + escapeHtml(c.id) + '">' +
-          '<span class="wf-emp-avatar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + PERSON_ICON + '</svg></span>' +
+          '<span class="wf-emp-avatar ' + avatarToneClass(i) + '">' + escapeHtml(avatarInitials(c.name)) + '</span>' +
           '<span class="wf-emp-main">' +
             '<span class="wf-emp-name">' + escapeHtml(c.name || 'New Candidate') + '</span>' +
             '<span class="wf-emp-meta">' + escapeHtml(c.positionAppliedFor || 'Position not yet set') + '</span>' +
@@ -7363,6 +7363,7 @@ async function openInterviewPanelDetail(id) {
   const linksPanel = document.getElementById('ipDetailLinksPanel');
   const pdfBtn = document.getElementById('ipDownloadPdfBtn');
   const pdfIncompleteMsg = document.getElementById('ipPdfIncompleteMsg');
+  document.getElementById('ipDetailHeaderCard').hidden = true;
   stepperPanel.hidden = true;
   fullPanel.hidden = true;
   linksPanel.hidden = true;
@@ -7390,6 +7391,16 @@ async function openInterviewPanelDetail(id) {
     const isComplete = record.status === 'Completed';
     stepperPanel.hidden = false;
     document.getElementById('ipStepperCandidateName').textContent = record.name || 'New Candidate';
+    // New header card (Section 8) - same real name/position already used
+    // everywhere else on this record, just also shown here as an avatar
+    // card above the stepper.
+    const headerCard = document.getElementById('ipDetailHeaderCard');
+    headerCard.hidden = false;
+    const headerAvatar = document.getElementById('ipDetailAvatar');
+    headerAvatar.className = 'wf-emp-avatar ' + avatarToneClass(0);
+    headerAvatar.textContent = avatarInitials(record.name);
+    document.getElementById('ipDetailHeaderName').textContent = record.name || 'New Candidate';
+    document.getElementById('ipDetailHeaderPos').textContent = record.positionAppliedFor || 'Position not yet set';
     const step1 = document.getElementById('ipStepCandidate');
     const step1Status = document.getElementById('ipStepCandidateStatus');
     const step2 = document.getElementById('ipStepInterviewer');
@@ -7406,6 +7417,7 @@ async function openInterviewPanelDetail(id) {
     step2.classList.toggle('done', interviewerDone);
     step2Status.textContent = interviewerDone ? 'Completed' : 'Pending Interviewer';
     step2Status.className = 'wf-ip-status tone-' + (interviewerDone ? 'resolved' : candidateDone ? 'warning' : 'important');
+    if (window.wiReplayIpStepper) window.wiReplayIpStepper();
 
     // Download PDF is always visible now, even before the process is
     // done - clicking it early explains why instead of just disappearing.

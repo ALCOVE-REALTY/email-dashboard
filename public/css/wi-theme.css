@@ -989,4 +989,152 @@ body { background: var(--wi-bg); }
 .hi-ep-card .wf-dist-total-row { margin-top: 10px; padding: 10px 12px; border-radius: 14px; background: var(--wi-primary-50); border-bottom: none; }
 .hi-ep-card .wf-dist-total-row .wf-dist-label-col, .hi-ep-card .wf-dist-total-row .wf-dist-num-col { color: #3138B8; }
 .hi-ep-card .wf-dist-total-icon { background: var(--wi-surface); }
+
+/* ============================================================
+   Section 8 - Interview Panel (+ WhatsApp/Team Access popups).
+   GEOMETRY LOCK: every selector below sets colour/font/shadow/motion
+   ONLY - no width, height, padding, margin, gap or font-size (except
+   the new avatar+name+position header card and the new WhatsApp tile,
+   both explicitly approved additions). Scoped via the existing
+   #interviewPanelView/.wi-iv root, #ipWhatsappOverlay and
+   #teamAccessOverlay ids so nothing here reaches Letter Generator,
+   Doer Management or any other page sharing these same base classes
+   (.wf-emp-list, .wf-mail-compose, .wf-ip-status...). ============ */
+.wi-iv, .wi-iv * { font-family: var(--wi-font); }
+#ipWhatsappOverlay, #teamAccessOverlay, #ipWhatsappOverlay *, #teamAccessOverlay * { font-family: var(--wi-font); }
+
+/* -- list page: Team Access / + New Candidate buttons -- */
+.wi-iv .wf-ip-team-access-btn { background: var(--wi-primary-50); border-color: #C9CCF6; color: #3138B8; box-shadow: none; }
+.wi-iv .wf-ip-new-btn { background: var(--wi-primary); color: #FFFFFF; box-shadow: 0 8px 20px rgba(76,85,232,.35); }
+.wi-iv .wf-ip-team-access-btn:active, .wi-iv .wf-ip-new-btn:active { transform: scale(.97); }
+
+/* -- search bar (border/placeholder colour only - inline style on the
+   real input wins the cascade otherwise, hence !important here only) -- */
+.wi-iv-search-wrap { transition: box-shadow .2s; border-radius: 11px; }
+.wi-iv-search-wrap:focus-within { box-shadow: 0 0 0 4px rgba(76,85,232,.12); }
+#ipSearchInput { border-color: var(--wi-border-2) !important; color: var(--wi-ink) !important; }
+#ipSearchInput:focus { border-color: var(--wi-primary) !important; outline: none; }
+#ipSearchInput::placeholder { color: var(--wi-placeholder); }
+.wi-iv-search-wrap svg { stroke: var(--wi-muted); }
+
+/* -- filter chips (reuses the existing aria-pressed toggle, no JS
+   change - "All" keeps the app's base accent tone, the other three
+   keep their own status tone, same as before, just recoloured) -- */
+.wi-iv .wf-ip-filter-pill { background: var(--wi-surface-3); border-color: var(--wi-border-2); color: var(--wi-muted); font-weight: 700; }
+.wi-iv .wf-ip-filter-pill[data-ip-filter="all"][aria-pressed="true"] { background: var(--wi-primary-50); border-color: var(--wi-primary); color: #3138B8; font-weight: 800; }
+.wi-iv .wf-ip-filter-pill[data-ip-filter="completed"][aria-pressed="true"] { background: var(--wi-green-pill); border-color: var(--wi-green-600); color: var(--wi-green-700); font-weight: 800; }
+.wi-iv .wf-ip-filter-pill[data-ip-filter="pendingCandidate"][aria-pressed="true"] { background: var(--wi-red-50); border-color: var(--wi-red); color: var(--wi-red-700); font-weight: 800; }
+.wi-iv .wf-ip-filter-pill[data-ip-filter="pendingInterviewer"][aria-pressed="true"] { background: var(--wi-yellow-50); border-color: var(--wi-yellow-600); color: var(--wi-yellow-700); font-weight: 800; }
+
+/* -- candidate cards (border instead of shadow, same card pattern
+   already used by Health Insurance's Family Members tab) -- */
+.wi-iv .wf-emp-list li { border: 1.5px solid var(--wi-border-3); box-shadow: none; background: var(--wi-surface); }
+.wi-iv .wf-emp-name { color: var(--wi-ink); font-weight: 800; }
+.wi-iv .wf-emp-meta { color: var(--wi-muted); font-weight: 600; }
+.wi-iv .wf-emp-chevron { color: var(--wi-primary); }
+
+/* -- status pills (Pending Candidate / Pending Interviewer / Completed)
+   - same 3 existing tone classes (tone-important/warning/resolved),
+   just recoloured to the exact spec hexes instead of the app's
+   generically re-pointed --important/--warning/--resolved text (those
+   are the bright/saturated shade, spec wants the darker -700 shade for
+   contrast on a light pill), plus a small solid dot added via ::before
+   (no markup change). -- */
+.wi-iv .wf-ip-status, #ipWhatsappOverlay .wf-ip-status { display: inline-flex; align-items: center; gap: 6px; }
+.wi-iv .wf-ip-status::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex: 0 0 auto; }
+.wi-iv .wf-ip-status.tone-important { background: var(--wi-red-50); color: var(--wi-red-700); }
+.wi-iv .wf-ip-status.tone-warning { background: var(--wi-yellow-50); color: var(--wi-yellow-700); }
+.wi-iv .wf-ip-status.tone-warning::before { background: var(--wi-yellow-600); }
+.wi-iv .wf-ip-status.tone-resolved { background: var(--wi-green-pill); color: var(--wi-green-700); }
+.wi-iv .wf-ip-status.tone-resolved::before { background: var(--wi-green-600); }
+
+/* -- new detail-page header card (avatar + name + position) - the one
+   geometry exception besides the WhatsApp tile, confirmed with the
+   user since main has no such card today. Sized/padded the same as
+   every other .wf-panel + .wf-emp-avatar on this page, nothing
+   bespoke. -- */
+.wi-iv-head-card { display: flex; align-items: center; gap: 14px; }
+.wi-iv-head-card[hidden] { display: none; }
+.wi-iv-head-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.wi-iv-head-name { font-size: 1.02rem; font-weight: 800; color: var(--wi-ink); }
+.wi-iv-head-pos { font-size: 0.78rem; font-weight: 600; color: var(--wi-muted); }
+/* The stepper's own name heading becomes redundant once this card
+   shows the same name - hidden only visually (textContent keeps
+   updating exactly as before, nothing removed). */
+#ipStepperCandidateName { display: none; }
+
+/* -- stepper: keep the existing flowing "in-progress" line animation
+   and done/pending colours exactly as they are (real state, not
+   something to replace) - this only adds a one-time entrance stagger
+   that replays whenever the detail view opens or a new candidate is
+   loaded (Section 1 rule), via .wi-iv-anim toggled in wi-motion.js. -- */
+.wi-iv-anim .wf-ip-step-dot { animation: wiStepPop .35s cubic-bezier(.2,.8,.2,1) .15s both; }
+.wi-iv-anim #ipStepInterviewer { animation: wiUp .45s cubic-bezier(.2,.7,.2,1) .5s both; }
+@keyframes wiStepPop { from { opacity: 0; transform: scale(.6); } to { opacity: 1; transform: scale(1); } }
+/* A done step shows a check mark instead of its number - swapped purely
+   via a pseudo-element (the real "1"/"2" text node is untouched, just
+   visually hidden), no markup or logic change. */
+.wi-iv .wf-ip-step.done .wf-ip-step-dot { font-size: 0; position: relative; }
+.wi-iv .wf-ip-step.done .wf-ip-step-dot::after { content: '\2713'; font-size: 0.95rem; font-weight: 700; color: #fff; }
+
+/* -- form links (Candidate/Interviewer Form Link rows) -- */
+.wi-iv .wf-ip-link-row > span { color: var(--wi-text-2); font-weight: 800; }
+.wi-iv .wf-ip-link-anchor { background: var(--wi-surface-3); border-color: var(--wi-border-2); color: #3138B8; font-weight: 600; text-decoration: none; }
+.wi-iv .wf-ip-link-copy .wf-icon-btn { border-color: var(--wi-border-2); color: var(--wi-ink); }
+.wi-iv .wf-whatsapp-btn { background: var(--wi-green-pill); border-color: #A7E8C3; color: #1DA851; }
+.wi-iv .wf-whatsapp-btn:hover { background: var(--wi-green-pill); border-color: #1DA851; color: #1DA851; }
+.wi-iv .wf-ip-pdf-note { background: var(--wi-yellow-50); color: var(--wi-yellow-700); }
+
+/* -- Download PDF (.wf-letter-proceed-btn, shared with Letter Generator
+   - scoped to #interviewPanelDetailPanel only) -- */
+#interviewPanelDetailPanel .wf-letter-proceed-btn { background: var(--wi-primary); color: #FFFFFF; box-shadow: 0 10px 24px rgba(76,85,232,.35); }
+#interviewPanelDetailPanel .wf-letter-proceed-btn:active { transform: scale(.97); }
+
+/* -- shared popup chrome: WhatsApp + Team Access (both plain
+   .wf-mail-compose, unlike Send Mail's restyled .wf-mail-compose--send
+   - recoloured only, same geometry as every other plain mail-compose
+   popup) -- */
+#ipWhatsappOverlay .wf-mail-compose-head, #teamAccessOverlay .wf-mail-compose-head { border-bottom-color: var(--wi-divider); }
+#ipWhatsappOverlay .wf-mail-compose-head h3, #teamAccessOverlay .wf-mail-compose-head h3 { color: var(--wi-ink); font-weight: 800; }
+#ipWhatsappOverlay .wf-mail-compose-head .wf-icon-btn, #teamAccessOverlay .wf-mail-compose-head .wf-icon-btn { background: var(--wi-surface); border-color: var(--wi-border); color: var(--wi-ink); }
+#ipWhatsappOverlay .wf-mail-compose-foot, #teamAccessOverlay .wf-mail-compose-foot { border-top-color: var(--wi-divider); }
+#ipWhatsappOverlay .wf-clear-btn, #teamAccessOverlay .wf-clear-btn { background: var(--wi-surface-3); border-color: var(--wi-border-2); color: var(--wi-ink); font-weight: 800; }
+#ipWhatsappOverlay .wf-clear-btn:active, #teamAccessOverlay .wf-clear-btn:active { transform: scale(.97); }
+#ipWhatsappOverlay .wf-mail-field-label { color: var(--wi-text-2); font-weight: 800; letter-spacing: .14em; }
+#ipWhatsappOverlay .wf-ip-whatsapp-phone-input, #teamAccessOverlay input[style] {
+  background: var(--wi-surface-2) !important; border-color: var(--wi-border-2) !important; color: var(--wi-ink) !important;
+}
+#ipWhatsappOverlay .wf-ip-whatsapp-phone-input::placeholder, #teamAccessOverlay input[style]::placeholder { color: var(--wi-placeholder); }
+#ipWhatsappOverlay .wf-ip-whatsapp-phone-input:focus-visible, #teamAccessOverlay input[style]:focus-visible {
+  border-color: var(--wi-primary) !important; box-shadow: var(--wi-focus);
+}
+#ipWhatsappOverlay .wf-ip-field-error, #ipWhatsappOverlay .wf-mail-compose-error { color: var(--wi-red-700); font-weight: 700; }
+#teamAccessOverlay .wf-send-mail-btn { background: var(--wi-primary); color: #FFFFFF; font-weight: 800; box-shadow: 0 8px 20px rgba(76,85,232,.35); }
+#teamAccessOverlay .wf-send-mail-btn:active { transform: scale(.97); }
+
+/* -- WhatsApp popup specifics: header tile, send button, results panel -- */
+.wi-wa-tile {
+  width: 40px; height: 40px; border-radius: 12px; margin-right: 12px; flex-shrink: 0;
+  background: var(--wi-green-pill); color: #1DA851;
+  display: flex; align-items: center; justify-content: center;
+}
+#ipWhatsappOverlay .wf-send-mail-btn {
+  background: #1DA851; color: #FFFFFF; font-weight: 800;
+  display: inline-flex; align-items: center; gap: 8px;
+  box-shadow: 0 8px 20px rgba(29,168,81,.35);
+}
+#ipWhatsappOverlay .wf-send-mail-btn:active { transform: scale(.97); }
+#ipWhatsappOverlay .wf-send-mail-btn:disabled { background: #B9E8CC; box-shadow: none; opacity: 1; }
+#ipWhatsappEmployeeSuggest {
+  background: var(--wi-surface); border-color: var(--wi-border); box-shadow: 0 20px 44px rgba(3,2,41,.2);
+  animation: wiDrop .25s cubic-bezier(.2,.8,.2,1) both;
+}
+#ipWhatsappEmployeeSuggest li { color: var(--wi-ink); font-weight: 800; }
+#ipWhatsappEmployeeSuggest li:hover, #ipWhatsappEmployeeSuggest li.active { background: var(--wi-surface-3); color: var(--wi-ink); }
+#ipWhatsappEmployeeSuggest .wf-mail-suggest-sub { color: var(--wi-muted); font-weight: 600; }
+@keyframes wiDrop { from { opacity: 0; transform: translateY(-8px) scale(.98); } to { opacity: 1; transform: none; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .wi-iv-anim *, #ipWhatsappEmployeeSuggest { animation: none !important; }
+}
 @media (prefers-reduced-motion: reduce) { .hi-ep-card { animation: none !important; } }
