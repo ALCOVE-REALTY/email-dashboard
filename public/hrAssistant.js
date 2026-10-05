@@ -686,7 +686,10 @@
   function historySnapPoints() {
     const vh = window.visualViewport ? window.visualViewport.height : window.innerHeight;
     return {
-      expandedHeight: Math.min(vh * 0.86, 720),
+      // "almost full height of the column, top gap 40px" - was a flat 86%
+      // of viewport height (capped 720), which didn't track a 40px gap at
+      // every screen size the way a straight subtraction does.
+      expandedHeight: Math.min(vh - 40, 720),
       collapsedHeight: Math.min(vh * 0.5, 480),
       closedHeight: 0
     };
@@ -730,29 +733,56 @@
     animateSheetTo(0);
   }
 
+  // Flick thresholds (px of drag, px/ms of velocity at release) - a fast
+  // flick closes/expands the sheet even if the finger/mouse didn't travel
+  // past the plain distance threshold, matching a native-feeling sheet.
+  const SHEET_CLOSE_PX = 90, SHEET_EXPAND_PX = 60, SHEET_FLICK_VELOCITY = 0.5;
   function sheetPointerDown(e) {
-    sheetDragState = { startY: e.clientY, startHeight: sheetHeight };
+    // The header row (an added drag surface) contains the real Close
+    // button - starting a drag gesture there too is harmless (a plain tap
+    // still fires its own click normally), but skip it anyway so a press
+    // on Close is never mistaken for the start of a drag.
+    if (e.target.closest && e.target.closest('#hrHistorySheetCloseBtn')) return;
+    sheetDragState = { startY: e.clientY, startHeight: sheetHeight, lastY: e.clientY, lastT: performance.now(), velocity: 0 };
     historySheet.classList.add('dragging');
     historySheetBackdrop.classList.remove('animating');
-    try { historySheetHandle.setPointerCapture(e.pointerId); } catch (err) { /* not supported - drag still works */ }
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch (err) { /* not supported - drag still works */ }
   }
   function sheetPointerMove(e) {
     if (!sheetDragState) return;
+    const now = performance.now();
+    sheetDragState.velocity = (e.clientY - sheetDragState.lastY) / Math.max(1, now - sheetDragState.lastT);
+    sheetDragState.lastY = e.clientY;
+    sheetDragState.lastT = now;
     const { expandedHeight } = historySnapPoints();
     const next = Math.max(0, Math.min(expandedHeight, sheetDragState.startHeight - (e.clientY - sheetDragState.startY)));
     applySheetHeight(next);
   }
   function sheetPointerUp() {
     if (!sheetDragState) return;
+    const wasExpanded = sheetDragState.startHeight >= historySnapPoints().expandedHeight - 1;
+    const draggedDownPx = sheetDragState.startHeight - sheetHeight;
+    const velocity = sheetDragState.velocity;
     sheetDragState = null;
     const { expandedHeight, collapsedHeight, closedHeight } = historySnapPoints();
-    const points = [expandedHeight, collapsedHeight, closedHeight];
-    animateSheetTo(points.reduce((a, b) => (Math.abs(sheetHeight - a) < Math.abs(sheetHeight - b) ? a : b)));
+    // Fast flick overrides plain nearest-point snapping; a slow/small drag
+    // still falls back to whichever of the 3 heights is closest.
+    if (draggedDownPx > SHEET_CLOSE_PX || velocity > SHEET_FLICK_VELOCITY) {
+      animateSheetTo(wasExpanded ? collapsedHeight : closedHeight);
+    } else if (-draggedDownPx > SHEET_EXPAND_PX || velocity < -SHEET_FLICK_VELOCITY) {
+      animateSheetTo(expandedHeight);
+    } else {
+      const points = [expandedHeight, collapsedHeight, closedHeight];
+      animateSheetTo(points.reduce((a, b) => (Math.abs(sheetHeight - a) < Math.abs(sheetHeight - b) ? a : b)));
+    }
   }
-  historySheetHandle.addEventListener('pointerdown', sheetPointerDown);
-  historySheetHandle.addEventListener('pointermove', sheetPointerMove);
-  historySheetHandle.addEventListener('pointerup', sheetPointerUp);
-  historySheetHandle.addEventListener('pointercancel', sheetPointerUp);
+  [historySheetHandle, document.getElementById('hrHistorySheetHead')].forEach((el) => {
+    if (!el) return;
+    el.addEventListener('pointerdown', sheetPointerDown);
+    el.addEventListener('pointermove', sheetPointerMove);
+    el.addEventListener('pointerup', sheetPointerUp);
+    el.addEventListener('pointercancel', sheetPointerUp);
+  });
 
   // Scroll-vs-drag: only engages a sheet-drag once the list is already
   // scrolled to the top AND the person keeps pulling down past that -

@@ -665,6 +665,12 @@ body { background: var(--wi-bg); }
 .wf-ai-history-sheet-handle span, .wf-ai-history-sheet-handle { background: transparent; }
 .wf-ai-history-row-icon { background: var(--wi-primary-50); color: var(--wi-primary); }
 .wf-ai-history-viewall { background: var(--wi-primary-50); color: var(--wi-primary-700); font-weight: 800; }
+/* Section 3 Part A: the header row is now a second drag surface (same
+   handlers as the existing handle) - give it the same grab affordance;
+   .wf-ai-history-sheet-handle already had cursor/touch-action, just
+   missing the :active state both now share. */
+.wf-ai-history-head { cursor: grab; touch-action: none; }
+.wf-ai-history-sheet-handle:active, .wf-ai-history-head:active { cursor: grabbing; }
 
 /* ============================================================
    New: shared toast component (markup added in workforce.html,
