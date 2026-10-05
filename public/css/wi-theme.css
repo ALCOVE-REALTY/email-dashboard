@@ -314,7 +314,7 @@ body { background: var(--wi-bg); }
 .wf-mail-chip {
   gap: 6px; padding: 6px 6px 6px 12px;
   background: var(--wi-primary-50); color: var(--wi-primary-700);
-  font-size: 13px; font-weight: 800;
+  font-size: 13px; font-weight: 700;
   animation: mPop .3s cubic-bezier(.2,.8,.2,1) both;
 }
 .wf-mail-chip button { width: 22px; height: 22px; background: #DDE0FF; color: var(--wi-primary-700); }
