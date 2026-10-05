@@ -288,6 +288,55 @@ body { background: var(--wi-bg); }
 .wf-mail-compose-head h3 { font-weight: 800; font-size: 20px; color: var(--wi-ink); }
 .wf-mail-compose-foot { border-top: 1px solid var(--wi-divider); }
 
+/* ---- Send Mail popup - exact reference look (method A2). The OTHER
+   modals sharing .wf-mail-compose/.wf-mail-compose-head (WhatsApp, Team
+   Access, Employee Insurance Profile) keep their own current look -
+   nothing here is scoped more broadly than it needs to be. ---- */
+.wf-mail-icon-tile {
+  width: 40px; height: 40px; border-radius: 12px;
+  background: var(--wi-primary-50); color: var(--wi-primary);
+  display: flex; align-items: center; justify-content: center;
+  margin-right: 12px; flex-shrink: 0;
+}
+.wf-mail-compose-head .wf-icon-btn { width: 44px; height: 44px; border: 1px solid var(--wi-border); box-shadow: none; }
+.wf-mail-field-label {
+  font-size: 12px; font-weight: 800; letter-spacing: .1em;
+  color: var(--wi-muted); text-transform: uppercase; margin-bottom: 8px;
+}
+.wf-mail-chip-input {
+  min-height: 52px; border-radius: var(--wi-r-input);
+  background: var(--wi-surface-2); border: 1.5px solid var(--wi-border-2);
+  padding: 10px; gap: 8px;
+  transition: border-color .2s, box-shadow .2s;
+}
+.wf-mail-chip-input:focus-within { border-color: var(--wi-primary); box-shadow: var(--wi-focus); }
+.wf-mail-chip-input input { font-size: 14px; min-width: 120px; padding: 6px 4px; }
+.wf-mail-chip {
+  gap: 6px; padding: 6px 6px 6px 12px;
+  background: var(--wi-primary-50); color: var(--wi-primary-700);
+  font-size: 13px; font-weight: 800;
+  animation: mPop .3s cubic-bezier(.2,.8,.2,1) both;
+}
+.wf-mail-chip button { width: 22px; height: 22px; background: #DDE0FF; color: var(--wi-primary-700); }
+.wf-mail-compose-foot .wf-clear-btn {
+  height: 48px; padding: 0 20px; border-radius: var(--wi-r-btn);
+  background: var(--wi-surface-3); border: 1px solid var(--wi-border-2); color: var(--wi-ink);
+  font-weight: 800; font-size: 15px;
+}
+/* ONE Send Mail button style, everywhere it appears (every page's own
+   trigger button + the popup's own send button all already share this
+   class) - the master style the reference uses throughout. */
+.wf-send-mail-btn {
+  height: 48px; padding: 0 18px; border-radius: var(--wi-r-btn);
+  background: var(--wi-primary); color: #FFFFFF;
+  font-weight: 800; font-size: 15px;
+  box-shadow: 0 8px 20px rgba(76,85,232,.35);
+  transition: transform .18s ease, box-shadow .25s ease;
+}
+.wf-send-mail-btn:active { transform: scale(.97); }
+.wf-send-mail-btn:disabled { background: #B9BCF3; box-shadow: none; opacity: 1; }
+.wf-send-mail-btn svg { width: 18px; height: 18px; }
+
 /* ---- Generic panel / card ---- */
 .wf-panel {
   background: var(--wi-surface);
