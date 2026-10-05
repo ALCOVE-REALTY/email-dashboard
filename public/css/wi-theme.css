@@ -1007,13 +1007,13 @@ body { background: var(--wi-bg); }
 }
 .hi-list-view .wf-emp-avatar { width: 42px; height: 42px; font-size: 13px; font-weight: 800; }
 .hi-list-view .wf-emp-name { font-size: 0.86rem; font-weight: 700; }
-.hi-list-view .wf-emp-meta, .hi-list-view .wf-emp-role { font-size: 0.74rem; font-weight: 600; color: var(--wi-muted); }
+.hi-list-view .wf-emp-meta, .hi-list-view .wf-emp-role { font-size: 0.7rem; font-weight: 600; color: var(--wi-muted); }
 .hi-list-view .hi-ce-sub {
-  display: inline-flex; align-items: center; gap: 6px; align-self: flex-start;
-  margin-top: 3px; padding: 4px 10px; border-radius: 10px; background: var(--wi-surface-3);
-  font-size: 0.74rem; font-weight: 600; color: var(--wi-ink);
+  display: inline-flex; align-items: center; gap: 5px; align-self: flex-start;
+  margin-top: 3px; padding: 3px 9px; border-radius: 10px; background: var(--wi-surface-3);
+  font-size: 0.7rem; font-weight: 600; color: var(--wi-ink);
 }
-.hi-list-view .hi-ce-sub svg { width: 12px; height: 12px; color: var(--wi-primary); flex-shrink: 0; }
+.hi-list-view .hi-ce-sub svg { width: 11px; height: 11px; color: var(--wi-primary); flex-shrink: 0; }
 .hi-list-view .wf-emp-chevron { color: var(--wi-primary); background: transparent; }
 
 /* -- status pills (Active/Notice/Inactive), including inside the
@@ -1080,8 +1080,8 @@ body { background: var(--wi-bg); }
 }
 .hi-ep-card #hiEpTabFamily .wf-emp-avatar { width: 42px; height: 42px; font-size: 13px; font-weight: 800; }
 .hi-ep-card #hiEpTabFamily .wf-emp-name { font-size: 0.86rem; font-weight: 700; }
-.hi-ep-card #hiEpTabFamily .wf-emp-meta { font-size: 0.74rem; font-weight: 600; color: var(--wi-muted); }
-.hi-ep-card #hiEpTabFamily .hi-ce-sub { background: none; padding: 0; margin-top: 4px; font-size: 0.74rem; font-weight: 600; color: var(--wi-ink); }
+.hi-ep-card #hiEpTabFamily .wf-emp-meta { font-size: 0.7rem; font-weight: 600; color: var(--wi-muted); }
+.hi-ep-card #hiEpTabFamily .hi-ce-sub { background: none; padding: 0; margin-top: 4px; font-size: 0.7rem; font-weight: 600; color: var(--wi-ink); }
 .hi-ep-card .hi-ce-total-row {
   display: grid; grid-template-columns: 1fr 1fr; gap: 10px; background: none; padding: 0; margin-top: 10px;
 }
