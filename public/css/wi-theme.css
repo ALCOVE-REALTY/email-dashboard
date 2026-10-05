@@ -568,8 +568,6 @@ body { background: var(--wi-bg); }
   content: ''; width: 6px; height: 6px; border-radius: 50%;
   background: var(--wi-green-600); flex-shrink: 0;
 }
-.wf-emp-role { text-transform: uppercase; }
-
 .wf-emp-summary-card {
   display: flex;
   align-items: center;
