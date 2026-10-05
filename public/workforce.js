@@ -4108,7 +4108,7 @@ async function openHiEmpProfile(employeeId, source) {
 function hiEmpProfileMemberRow(name, metaExtra, status, premium, relationship) {
   return (
     '<li style="cursor:default;">' +
-      hiRelationAvatarHtml(name, relationship) +
+      hiPlainAvatarHtml('wf-emp-avatar') +
       '<span class="wf-emp-main">' +
         '<span class="hi-ce-name-row">' +
           '<span class="wf-emp-name">' + escapeHtml(name) + '</span>' +
@@ -4128,7 +4128,7 @@ function renderHiEmpProfile(data) {
 
   hiEmpProfileBody.innerHTML =
     '<div class="wf-emp-profile-head">' +
-      '<span class="wf-emp-profile-avatar" style="background:' + HI_AVATAR_PALETTE[0].bg + ';color:' + HI_AVATAR_PALETTE[0].fg + '">' + escapeHtml(hiInitials(data.name).toUpperCase()) + '</span>' +
+      hiPlainAvatarHtml('wf-emp-profile-avatar') +
       '<div class="wf-emp-profile-info">' +
         '<div class="wf-emp-profile-name-row">' +
           '<span class="name">' + escapeHtml(data.name) + '</span>' +
@@ -5457,6 +5457,14 @@ function hiRelationAvatarHtml(name, relationship) {
   else if (/spouse|wife|husband/.test(r)) c = HI_AVATAR_PALETTE[1];
   else if (/son|daughter|child/.test(r)) c = HI_AVATAR_PALETTE[2];
   return '<span class="wf-emp-avatar" style="background:' + c.bg + ';color:' + c.fg + '">' + escapeHtml(hiInitials(name).toUpperCase()) + '</span>';
+}
+// The Employee Insurance Profile popup's own avatars (main header +
+// Family Members rows) revert to the plain PERSON_ICON glyph instead of
+// the colored-initials style above - this popup's UI design went back to
+// main's original look, unlike the rest of Health Insurance which keeps
+// the new look.
+function hiPlainAvatarHtml(cls) {
+  return '<span class="' + cls + '"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + PERSON_ICON + '</svg></span>';
 }
 // Grey "Self + N Family | ₹premium" chip's people icon - same path as the
 // existing ICONS.total glyph used for the donut/legend elsewhere in Health
