@@ -621,7 +621,7 @@ body { background: var(--wi-bg); }
 }
 .wi-dq-ic svg { width: 14px; height: 14px; }
 #qualityCompletenessPanel .wf-completeness-label { font-weight: 600; margin-bottom: 0; }
-#qualityCompletenessPanel .wf-completeness-num { color: var(--wi-ink); font-weight: 700; }
+#qualityCompletenessPanel .wf-completeness-num { color: var(--wi-ink); font-weight: 700; font-size: 0.85rem; }
 #qualityCompletenessPanel .wf-progress-track { height: 4px; border-radius: 4px; background: #EEEEF6; margin-top: 14px; }
 #qualityCompletenessPanel .wf-progress-fill { background: linear-gradient(90deg, #45A3FF, #4C55E8); }
 #qualityMissingRows .wf-stat-row { gap: 12px; border-bottom-color: #F0F0F6; }
