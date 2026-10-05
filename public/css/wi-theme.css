@@ -1190,3 +1190,82 @@ body { background: var(--wi-bg); }
   .wi-iv-anim *, #ipWhatsappEmployeeSuggest { animation: none !important; }
 }
 @media (prefers-reduced-motion: reduce) { .hi-ep-card { animation: none !important; } }
+
+/* ============================================================
+   Section 11 - Letter Generator. Step 1 found this view already
+   inheriting the app-wide font/colour re-point (Nunito, indigo
+   tokens) and already geometry/icon-correct - only specific colour/
+   weight/shadow values still used the OLDER pre-established "bright
+   accent everywhere" convention instead of the "-700 shade for
+   selected/error text" one used everywhere else in this redesign.
+   Scoped to #letterGeneratorView/#letterFormView and the specific
+   selects inside them via :has(), so other pages' selects/pickers
+   sharing these same base classes (workforce-ui-enhance.js's
+   .wfu-select-*, .wf-emp-picker-list, .error-banner) are untouched. */
+#letterGeneratorView .wf-note, #letterFormView .wf-note { font-weight: 600; }
+#letterGeneratorView .wf-letter-form-section-title,
+#letterFormView .wf-letter-form-section-title { font-weight: 800; }
+
+/* Letter Generator's own selects: type dropdown on the first page,
+   title/company/notice-period/increment-year on the form page. */
+.wfu-select-wrap:has(#letterGenType) .wfu-select-trigger,
+.wfu-select-wrap:has(#letterFormTitle) .wfu-select-trigger,
+.wfu-select-wrap:has(#letterFormCompanyName) .wfu-select-trigger,
+.wfu-select-wrap:has(#letterFormCurrentNotice) .wfu-select-trigger,
+.wfu-select-wrap:has(#letterFormRevisedNotice) .wfu-select-trigger,
+.wfu-select-wrap:has(#letterFormIncrementYear) .wfu-select-trigger {
+  border-color: var(--wi-border-2); border-width: 1.5px; font-weight: 600;
+}
+.wfu-select-wrap:has(#letterGenType) .wfu-select-chevron,
+.wfu-select-wrap:has(#letterFormTitle) .wfu-select-chevron,
+.wfu-select-wrap:has(#letterFormCompanyName) .wfu-select-chevron,
+.wfu-select-wrap:has(#letterFormCurrentNotice) .wfu-select-chevron,
+.wfu-select-wrap:has(#letterFormRevisedNotice) .wfu-select-chevron,
+.wfu-select-wrap:has(#letterFormIncrementYear) .wfu-select-chevron { color: var(--wi-ink); }
+.wfu-select-wrap:has(#letterGenType) .wfu-select-list,
+.wfu-select-wrap:has(#letterFormTitle) .wfu-select-list,
+.wfu-select-wrap:has(#letterFormCompanyName) .wfu-select-list,
+.wfu-select-wrap:has(#letterFormCurrentNotice) .wfu-select-list,
+.wfu-select-wrap:has(#letterFormRevisedNotice) .wfu-select-list,
+.wfu-select-wrap:has(#letterFormIncrementYear) .wfu-select-list {
+  box-shadow: 0 20px 44px rgba(3,2,41,.2);
+}
+.wfu-select-wrap:has(#letterGenType) .wfu-select-item,
+.wfu-select-wrap:has(#letterFormTitle) .wfu-select-item,
+.wfu-select-wrap:has(#letterFormCompanyName) .wfu-select-item,
+.wfu-select-wrap:has(#letterFormCurrentNotice) .wfu-select-item,
+.wfu-select-wrap:has(#letterFormRevisedNotice) .wfu-select-item,
+.wfu-select-wrap:has(#letterFormIncrementYear) .wfu-select-item {
+  color: var(--wi-text); font-weight: 600;
+}
+.wfu-select-wrap:has(#letterGenType) .wfu-select-item.is-selected,
+.wfu-select-wrap:has(#letterFormTitle) .wfu-select-item.is-selected,
+.wfu-select-wrap:has(#letterFormCompanyName) .wfu-select-item.is-selected,
+.wfu-select-wrap:has(#letterFormCurrentNotice) .wfu-select-item.is-selected,
+.wfu-select-wrap:has(#letterFormRevisedNotice) .wfu-select-item.is-selected,
+.wfu-select-wrap:has(#letterFormIncrementYear) .wfu-select-item.is-selected {
+  color: var(--wi-primary-700); font-weight: 800;
+}
+
+/* Employee search input + results list (Letter Generator's own picker). */
+#letterGenEmployeeSearch { border-color: var(--wi-border-2); border-width: 1.5px; }
+#letterGenEmployeeList.wf-emp-picker-list li { font-weight: 600; }
+#letterGenEmployeeList .wf-emp-picker-sub { font-weight: 600; }
+#letterGenEmployeeList.wf-emp-picker-list li:not(.empty) { font-weight: 800; }
+#letterGenEmployeeList.wf-emp-picker-list li:hover,
+#letterGenEmployeeList.wf-emp-picker-list li.active { color: var(--wi-primary-700); }
+
+/* Error banners + date/checkbox inputs, both pages. */
+#letterGeneratorView .error-banner, #letterFormView .error-banner {
+  color: var(--wi-red-700); font-weight: 700; animation: wiFade .3s ease both;
+}
+#letterFormView input[type="date"], #letterGeneratorView input[type="date"] { accent-color: var(--wi-primary); }
+#letterFormView input[type="checkbox"], #letterGeneratorView input[type="checkbox"] { accent-color: var(--wi-primary); }
+
+/* Proceed / Generate PDF button (shared .wf-letter-proceed-btn, already
+   restyled for Interview Panel's own Download PDF - add Letter
+   Generator's two instances here without touching Interview Panel's). */
+#letterGeneratorView .wf-letter-proceed-btn, #letterFormView .wf-letter-proceed-btn {
+  font-weight: 800; box-shadow: 0 10px 24px rgba(76,85,232,.35);
+}
+#letterGeneratorView .wf-letter-proceed-btn:active, #letterFormView .wf-letter-proceed-btn:active { transform: scale(.97); }
