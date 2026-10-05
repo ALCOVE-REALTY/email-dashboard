@@ -1047,6 +1047,15 @@ body { background: var(--wi-bg); }
 .wi-iv .wf-ip-status.tone-warning::before { background: var(--wi-yellow-600); }
 .wi-iv .wf-ip-status.tone-resolved { background: var(--wi-green-pill); color: var(--wi-green-700); }
 .wi-iv .wf-ip-status.tone-resolved::before { background: var(--wi-green-600); }
+/* The candidate list's status pill sits inside .wf-emp-role, which
+   uppercases real role/designation text everywhere else in the app
+   (Employee Data, Health Insurance) - that's not wanted here, so this
+   overrides it back to the status's own real text casing (e.g.
+   "Pending Candidate", not "PENDING CANDIDATE"). Also sized down a
+   notch so the pill reads proportionate to the candidate name next to
+   it rather than competing with it - list-row context only, the
+   stepper's own larger status pills are untouched. */
+.wi-iv #ipCandidateRows .wf-ip-status { text-transform: none; font-size: 0.64rem; padding: 2px 8px; }
 
 /* -- new detail-page header card (avatar + name + position) - the one
    geometry exception besides the WhatsApp tile, confirmed with the
