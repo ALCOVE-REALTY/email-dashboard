@@ -344,7 +344,7 @@
     <!-- Employee Data -->
     <section id="directoryView" class="wf-view" hidden>
       <!-- Employee list -->
-      <div id="directoryListPanel" class="wf-view-flow">
+      <div id="directoryListPanel" class="wf-view-flow" data-wi-enter="block">
         <div class="wf-page-head">
           <button class="wf-icon-btn" data-back aria-label="Back to Dashboard">
             <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
@@ -430,7 +430,7 @@
       </div>
 
       <!-- Employee profile -->
-      <div id="directoryDetailPanel" hidden>
+      <div id="directoryDetailPanel" hidden data-wi-enter="block">
         <div class="wf-page-head">
           <button class="wf-icon-btn" id="empDetailBackBtn" aria-label="Back to Employee Data">
             <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
@@ -443,13 +443,13 @@
 
     <!-- Joining -->
     <section id="joiningView" class="wf-view" hidden>
-      <div class="wf-page-head">
+      <div class="wf-page-head" data-wi-enter="block">
         <button class="wf-icon-btn" data-back aria-label="Back to Dashboard">
           <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
         </button>
         <h2>Joining</h2>
       </div>
-      <div class="wf-panel">
+      <div class="wf-panel" data-wi-enter="block">
         <div class="wf-panel-head">
           <div class="wf-subtabs" id="joiningTabs" style="margin-bottom:0; border-bottom:none;">
             <button class="wf-subtab" data-jtab="upcoming" aria-pressed="true">Upcoming</button>
@@ -485,13 +485,13 @@
 
     <!-- Exit / Attrition / Workforce Movement: honestly blocked, not faked -->
     <section id="exitView" class="wf-view" hidden>
-      <div class="wf-page-head">
+      <div class="wf-page-head" data-wi-enter="block">
         <button class="wf-icon-btn" data-back aria-label="Back to Dashboard">
           <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
         </button>
         <h2>Exit</h2>
       </div>
-      <div class="wf-unavailable">
+      <div class="wf-unavailable" data-wi-enter="block">
         <h3>Exit &amp; Resignation Analytics — Data not available</h3>
         <p>The Employee_Master sheet has no Exit Date, Resignation Date, or Last Working Date column. STATUS = INACTIVE
           marks that someone left, but not when — so exit trends, monthly/quarterly/yearly exits, and department-wise
@@ -501,13 +501,13 @@
     </section>
 
     <section id="attritionView" class="wf-view" hidden>
-      <div class="wf-page-head">
+      <div class="wf-page-head" data-wi-enter="block">
         <button class="wf-icon-btn" data-back aria-label="Back to Dashboard">
           <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
         </button>
         <h2>Attrition</h2>
       </div>
-      <div class="wf-unavailable">
+      <div class="wf-unavailable" data-wi-enter="block">
         <h3>Attrition Analytics — Data not available</h3>
         <p>Attrition rate = exits in a period ÷ headcount at the start of that period. Both need dated exit records,
           which the source sheet doesn't have yet. Rather than approximate with an undated INACTIVE flag, this tab
@@ -516,14 +516,14 @@
     </section>
 
     <section id="movementView" class="wf-view" hidden>
-      <div class="wf-page-head">
+      <div class="wf-page-head" data-wi-enter="block">
         <button class="wf-icon-btn" data-back aria-label="Back to Dashboard">
           <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
         </button>
         <h2>Workforce Movement</h2>
       </div>
 
-      <div class="wf-panel">
+      <div class="wf-panel" data-wi-enter="block">
         <div class="wf-subtabs" id="movementTrendTabs">
           <button class="wf-subtab" data-mtab="monthly" aria-pressed="true">Monthly</button>
           <button class="wf-subtab" data-mtab="quarterly" aria-pressed="false">Quarterly</button>
@@ -531,7 +531,7 @@
         </div>
       </div>
 
-      <div class="wf-panel">
+      <div class="wf-panel" data-wi-enter="block">
         <div class="wf-panel-head wf-panel-head--icon">
           <span class="wf-panel-icon">
             <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 17 9 11 13 15 21 6"/><polyline points="14 6 21 6 21 13"/></svg>
@@ -544,11 +544,11 @@
         <div class="wf-canvas-wrap wf-canvas-wrap--line m-reveal"><canvas id="movementTrendChart"></canvas></div>
       </div>
 
-      <div class="kpi-grid" id="movementStatsGrid">
+      <div class="kpi-grid" id="movementStatsGrid" data-wi-enter="block">
         <div class="loading"><div class="spinner"></div></div>
       </div>
 
-      <div class="wf-panel">
+      <div class="wf-panel" data-wi-enter="block">
         <div class="wf-panel-head wf-panel-head--icon">
           <span class="wf-panel-icon">
             <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 1l4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><path d="M7 23l-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
@@ -568,7 +568,7 @@
          Promotions, Company Transfers, and Location Transfers; which one is
          showing is decided in JS (movementDetailType) before this opens. -->
     <section id="movementDetailView" class="wf-view" hidden>
-      <div class="wf-page-head">
+      <div class="wf-page-head" data-wi-enter="block">
         <button class="wf-icon-btn" data-back aria-label="Back to Dashboard">
           <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
         </button>
@@ -581,7 +581,7 @@
         </span>
       </div>
       <p class="wf-inline-error" id="movementDetailShareError" hidden></p>
-      <div class="wf-panel">
+      <div class="wf-panel" data-wi-enter="block">
         <div class="wf-movement-count-row">
           <p class="wf-note" id="movementDetailCount" style="margin:0;"></p>
           <!-- Only shown for Promotions (movementDetailType === 'designation') -
@@ -605,14 +605,14 @@
          (always Promotion & Increment) or from the drawer's Letter
          Generator (any type it supports). -->
     <section id="letterFormView" class="wf-view" hidden>
-      <div class="wf-page-head">
+      <div class="wf-page-head" data-wi-enter="block">
         <button class="wf-icon-btn" data-back aria-label="Back">
           <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
         </button>
         <h2>Generate Letter</h2>
       </div>
 
-      <div class="wf-panel">
+      <div class="wf-panel" data-wi-enter="block">
         <div class="wf-letter-type-card wf-letter-form-header" aria-pressed="true">
           <span class="wf-letter-type-icon" id="letterFormHeaderIcon"></span>
           <span class="wf-letter-type-body">
@@ -733,14 +733,14 @@
          open/save a real generated PDF (see letterPdf.js) - #letterPdfNote
          only shows up if that request actually fails. -->
     <section id="letterSuccessView" class="wf-view" hidden>
-      <div class="wf-page-head">
+      <div class="wf-page-head" data-wi-enter="block">
         <button class="wf-icon-btn" data-back aria-label="Back">
           <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
         </button>
         <h2>Generate Letter</h2>
       </div>
 
-      <div class="wf-letter-success">
+      <div class="wf-letter-success" data-wi-enter="block">
         <div class="wf-letter-success-icon">
           <svg viewBox="0 0 24 24" width="34" height="34" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
         </div>
@@ -798,14 +798,14 @@
          & Increment have a real template behind them so far (see
          letterPdf.js), the other 9 types don't exist yet. -->
     <section id="letterGeneratorView" class="wf-view" hidden>
-      <div class="wf-page-head">
+      <div class="wf-page-head" data-wi-enter="block">
         <button class="wf-icon-btn" data-back aria-label="Back to Dashboard">
           <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
         </button>
         <h2>Letter Generator</h2>
       </div>
 
-      <div class="wf-panel">
+      <div class="wf-panel" data-wi-enter="block">
         <p class="wf-note" style="margin-top:0;">Generate HR letters — pick a letter type, fill in the details, and download as PDF</p>
 
         <h3 class="wf-letter-form-section-title">Select Letter Type</h3>
@@ -847,14 +847,14 @@
          Assessment Sheet". List/detail toggle inside one section, same
          pattern as Directory's directoryListPanel/directoryDetailPanel. -->
     <section id="interviewPanelView" class="wf-view" hidden>
-      <div class="wf-page-head">
+      <div class="wf-page-head" data-wi-enter="block">
         <button class="wf-icon-btn" data-back id="ipPageBackBtn" aria-label="Back">
           <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
         </button>
         <h2>Interview Panel</h2>
       </div>
 
-      <div id="interviewPanelListPanel">
+      <div id="interviewPanelListPanel" data-wi-enter="block">
         <div style="display:flex; justify-content:flex-end; gap:8px; margin-bottom:12px;">
           <button type="button" class="wf-ip-team-access-btn" id="ipTeamAccessBtn" hidden>
             <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
@@ -921,7 +921,7 @@
         </div>
       </div>
 
-      <div id="interviewPanelDetailPanel" hidden>
+      <div id="interviewPanelDetailPanel" hidden data-wi-enter="block">
         <!-- Shown while the record isn't Completed yet - a 2-step progress
              tracker instead of the full record, since most of it is still
              blank. Once both steps are done, re-opening this candidate from
@@ -987,7 +987,7 @@
 
     <!-- Tenure -->
     <section id="tenureView" class="wf-view wf-view-flow" hidden>
-      <div class="wf-page-head">
+      <div class="wf-page-head" data-wi-enter="block">
         <button class="wf-icon-btn" data-back aria-label="Back to Dashboard">
           <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
         </button>
@@ -997,11 +997,11 @@
         </button>
       </div>
       <p class="wf-inline-error" id="tenureShareError" hidden></p>
-      <div class="wf-panel">
+      <div class="wf-panel" data-wi-enter="block">
         <div class="wf-dist-table" id="tenureRows"></div>
         <p class="wf-note" id="tenureNote"></p>
       </div>
-      <div class="wf-panel" style="display:flex; justify-content:center;">
+      <div class="wf-panel" style="display:flex; justify-content:center;" data-wi-enter="block">
         <div class="wf-canvas-wrap wf-canvas-wrap--donut" style="width:230px; height:230px;">
           <svg id="tenureDonut" viewBox="0 0 200 200" style="display:block;"></svg>
           <div class="wf-donut-center">
@@ -1028,20 +1028,20 @@
 
     <!-- Data Quality -->
     <section id="qualityView" class="wf-view" hidden>
-      <div class="wf-page-head">
+      <div class="wf-page-head" data-wi-enter="block">
         <button class="wf-icon-btn" data-back aria-label="Back to Dashboard">
           <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
         </button>
         <h2>Data Quality</h2>
       </div>
-      <div class="wf-panel" id="qualityCompletenessPanel">
+      <div class="wf-panel" id="qualityCompletenessPanel" data-wi-enter="block">
         <div class="loading"><div class="spinner"></div></div>
       </div>
-      <div class="wf-panel">
+      <div class="wf-panel" data-wi-enter="block">
         <div class="wf-panel-head"><h3>Missing Data</h3></div>
         <div id="qualityMissingRows"></div>
       </div>
-      <div class="wf-panel" id="duplicatesPanel" hidden>
+      <div class="wf-panel" id="duplicatesPanel" hidden data-wi-enter="block">
         <div class="wf-panel-head"><h3>Duplicate Employee IDs</h3></div>
         <ul class="wf-bar-list" id="duplicatesList"></ul>
       </div>
@@ -1049,7 +1049,7 @@
 
     <!-- Department Wise Headcount (full list, Active only) -->
     <section id="departmentFullView" class="wf-view" hidden>
-      <div class="wf-page-head">
+      <div class="wf-page-head" data-wi-enter="block">
         <button class="wf-icon-btn" data-back aria-label="Back to Dashboard">
           <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
         </button>
@@ -1059,7 +1059,7 @@
         </button>
       </div>
       <p class="wf-inline-error" id="departmentBreakdownShareError" hidden></p>
-      <div class="wf-panel">
+      <div class="wf-panel" data-wi-enter="block">
         <ul class="wf-bar-list" id="departmentFullBarList">
           <li class="empty"><div class="loading"><div class="spinner"></div></div></li>
         </ul>
@@ -1068,13 +1068,13 @@
 
     <!-- Location Wise Headcount (full list, Active only) -->
     <section id="locationFullView" class="wf-view" hidden>
-      <div class="wf-page-head">
+      <div class="wf-page-head" data-wi-enter="block">
         <button class="wf-icon-btn" data-back aria-label="Back to Dashboard">
           <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
         </button>
         <h2>Location Wise Headcount (Active)</h2>
       </div>
-      <div class="wf-panel">
+      <div class="wf-panel" data-wi-enter="block">
         <ul class="wf-bar-list" id="locationFullBarList">
           <li class="empty"><div class="loading"><div class="spinner"></div></div></li>
         </ul>
@@ -1083,13 +1083,13 @@
 
     <!-- Doer Management: headcount grouped by Reporting DOER (Active only) -->
     <section id="doerManagementView" class="wf-view" hidden>
-      <div class="wf-page-head">
+      <div class="wf-page-head" data-wi-enter="block">
         <button class="wf-icon-btn" data-back aria-label="Back to Dashboard">
           <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
         </button>
         <h2>Doer Management</h2>
       </div>
-      <div class="wf-panel">
+      <div class="wf-panel" data-wi-enter="block">
         <div class="wf-panel-head">
           <h3>Reporting DOER Wise Headcount (Active)</h3>
           <span style="display:flex; gap:10px; align-items:center;">
@@ -1105,7 +1105,7 @@
         </div>
         <p class="wf-note" id="doerNote"></p>
       </div>
-      <div class="wf-panel" style="display:flex; justify-content:center;">
+      <div class="wf-panel" style="display:flex; justify-content:center;" data-wi-enter="block">
         <div class="wf-canvas-wrap wf-canvas-wrap--donut wf-canvas-wrap--donut-lg" style="width:230px; height:230px;">
           <svg id="doerDonut" viewBox="0 0 200 200" style="display:block;"></svg>
           <div class="wf-donut-center">
@@ -1118,13 +1118,13 @@
 
     <!-- Organization Chart: department-wise, HOD + Collar-grouped designation cards -->
     <section id="orgChartView" class="wf-view" hidden>
-      <div class="wf-page-head">
+      <div class="wf-page-head" data-wi-enter="block">
         <button class="wf-icon-btn" data-back aria-label="Back to Dashboard">
           <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
         </button>
         <h2>Organization Chart</h2>
       </div>
-      <div class="wf-panel">
+      <div class="wf-panel" data-wi-enter="block">
         <div class="wf-panel-head" style="flex-wrap:wrap; gap:10px;">
           <select id="orgChartDeptSelect" style="flex:1; min-width:200px;">
             <option value="">Select a department…</option>
@@ -1132,17 +1132,17 @@
           <button class="wf-link-btn" id="exportOrgChartPdf" type="button" hidden><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg><span>Export PDF</span></button>
         </div>
       </div>
-      <div id="orgChartContent"></div>
+      <div id="orgChartContent" data-wi-enter="block"></div>
       <!-- Print-only deeper hierarchy tree (see renderOrgChartPdfTreeHtml)
            - the on-screen #orgChartContent cards view above is untouched;
            this is filled fresh from /api/workforce/org-chart-pdf right
            before window.print() and hidden/cleared again afterward. -->
-      <div id="orgChartPrintContent" hidden></div>
+      <div id="orgChartPrintContent" hidden data-wi-enter="block"></div>
     </section>
 
     <!-- Health Insurance -->
     <section id="healthInsuranceView" class="wf-view" hidden>
-      <div class="wf-page-head">
+      <div class="wf-page-head" data-wi-enter="block">
         <button class="wf-icon-btn" data-back aria-label="Back to Dashboard">
           <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
         </button>
@@ -1153,11 +1153,11 @@
         </span>
       </div>
 
-      <div class="kpi-grid" id="hiStatsGrid">
+      <div class="kpi-grid" id="hiStatsGrid" data-wi-enter="block">
         <div class="loading"><div class="spinner"></div></div>
       </div>
 
-      <div class="wf-panel" id="hiRenewalPanel" hidden>
+      <div class="wf-panel" id="hiRenewalPanel" hidden data-wi-enter="block">
         <div class="hi-renewal-row">
           <span class="hi-renewal-icon"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg></span>
           <span class="hi-renewal-text">
@@ -1169,7 +1169,7 @@
         <div class="wf-progress-track"><div class="wf-progress-fill" id="hiRenewalBar" style="width:0%"></div></div>
       </div>
 
-      <div class="wf-panel">
+      <div class="wf-panel" data-wi-enter="block">
         <div class="wf-panel-head">
           <h3>Coverage Overview</h3>
         </div>
@@ -1185,7 +1185,7 @@
 
     <!-- Policy Information (Health Insurance drill-down) -->
     <section id="hiPolicyInfoView" class="wf-view" hidden>
-      <div class="wf-page-head">
+      <div class="wf-page-head" data-wi-enter="block">
         <button class="wf-icon-btn" data-back aria-label="Back to Health Insurance">
           <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
         </button>
@@ -1196,7 +1196,7 @@
         </span>
       </div>
 
-      <div class="wf-panel">
+      <div class="wf-panel" data-wi-enter="block">
         <div class="hi-policy-info-grid" id="hiPolicyInfoGrid">
           <div class="loading"><div class="spinner"></div></div>
         </div>
@@ -1205,7 +1205,7 @@
 
       <!-- Policy Documents - live from the shared Drive folder's root
            (see policyDocumentsService.js) -->
-      <div class="wf-panel">
+      <div class="wf-panel" data-wi-enter="block">
         <div class="wf-panel-head"><h3>Policy Documents</h3></div>
         <div style="position:relative; margin-bottom:10px;">
           <input type="search" id="policyDocsSearch" placeholder="Search documents..." autocomplete="off" style="width:100%; background:var(--surface); border:1px solid var(--line); border-radius:11px; padding:10px 12px 10px 34px; font:inherit; font-size:.85rem; color:var(--ink);" />
@@ -1218,7 +1218,7 @@
 
     <!-- Covered Employees (Health Insurance drill-down) -->
     <section id="coveredEmployeesView" class="wf-view" hidden>
-      <div class="wf-page-head">
+      <div class="wf-page-head" data-wi-enter="block">
         <button class="wf-icon-btn" data-back aria-label="Back to Health Insurance">
           <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
         </button>
@@ -1229,7 +1229,7 @@
         </span>
       </div>
 
-      <div style="display:flex; gap:8px; margin-bottom:10px;">
+      <div style="display:flex; gap:8px; margin-bottom:10px;" data-wi-enter="block">
         <div style="position:relative; flex:1;">
           <input type="search" id="hiCeSearch" placeholder="Search by name / ID" autocomplete="off" style="width:100%; background:var(--surface); border:1px solid var(--line); border-radius:11px; padding:10px 12px 10px 34px; font:inherit; font-size:.85rem; color:var(--ink);" />
           <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="var(--muted)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="position:absolute; left:11px; top:50%; transform:translateY(-50%);"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -1239,26 +1239,26 @@
         </button>
       </div>
 
-      <div class="wf-filterbar" id="hiCeFilterbar" hidden>
+      <div class="wf-filterbar" id="hiCeFilterbar" hidden data-wi-enter="block">
         <select id="hiCeDeptFilter"><option value="">All departments</option></select>
         <select id="hiCeDesigFilter"><option value="">All designations</option></select>
         <select id="hiCeStatusFilter"><option value="">All statuses</option></select>
         <button class="wf-clear-btn" id="hiCeClearFilters">Clear filters</button>
       </div>
 
-      <div class="hi-ce-total-row">
+      <div class="hi-ce-total-row" data-wi-enter="block">
         <span>Total Covered Employees: <b id="hiCeTotalCount">—</b></span>
         <button class="wf-link-btn" id="exportHiCePdf" type="button"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg><span>Export PDF</span></button>
       </div>
 
-      <ul class="wf-emp-list" id="hiCeList">
+      <ul class="wf-emp-list" id="hiCeList" data-wi-enter="list">
         <li class="empty"><div class="loading"><div class="spinner"></div></div></li>
       </ul>
     </section>
 
     <!-- Exits (Health Insurance drill-down, from the Deletions tab) -->
     <section id="hiExitsView" class="wf-view" hidden>
-      <div class="wf-page-head">
+      <div class="wf-page-head" data-wi-enter="block">
         <button class="wf-icon-btn" data-back aria-label="Back to Health Insurance">
           <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
         </button>
@@ -1269,7 +1269,7 @@
         </span>
       </div>
 
-      <div style="display:flex; gap:8px; margin-bottom:10px;">
+      <div style="display:flex; gap:8px; margin-bottom:10px;" data-wi-enter="block">
         <div style="position:relative; flex:1;">
           <input type="search" id="hiExitsSearch" placeholder="Search by name / ID" autocomplete="off" style="width:100%; background:var(--surface); border:1px solid var(--line); border-radius:11px; padding:10px 12px 10px 34px; font:inherit; font-size:.85rem; color:var(--ink);" />
           <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="var(--muted)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="position:absolute; left:11px; top:50%; transform:translateY(-50%);"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -1279,14 +1279,14 @@
         </button>
       </div>
 
-      <div class="wf-filterbar" id="hiExitsFilterbar" hidden>
+      <div class="wf-filterbar" id="hiExitsFilterbar" hidden data-wi-enter="block">
         <select id="hiExitsDeptFilter"><option value="">All departments</option></select>
         <select id="hiExitsDesigFilter"><option value="">All designations</option></select>
         <select id="hiExitsStatusFilter"><option value="">All statuses</option></select>
         <button class="wf-clear-btn" id="hiExitsClearFilters">Clear filters</button>
       </div>
 
-      <div class="hi-ce-total-row">
+      <div class="hi-ce-total-row" data-wi-enter="block">
         <span>Total Exits: <b id="hiExitsTotalCount">—</b></span>
         <span style="display:flex; gap:10px; align-items:center;">
           <button class="wf-send-mail-btn" id="sendHiExitsMail" type="button">
@@ -1297,7 +1297,7 @@
         </span>
       </div>
 
-      <ul class="wf-emp-list" id="hiExitsList">
+      <ul class="wf-emp-list" id="hiExitsList" data-wi-enter="list">
         <li class="empty"><div class="loading"><div class="spinner"></div></div></li>
       </ul>
     </section>
@@ -1305,7 +1305,7 @@
     <!-- New Addition Requests (Health Insurance drill-down, from the
          Additions tab) - same list/design/Send Mail as Pending Exits. -->
     <section id="hiAdditionsView" class="wf-view" hidden>
-      <div class="wf-page-head">
+      <div class="wf-page-head" data-wi-enter="block">
         <button class="wf-icon-btn" data-back aria-label="Back to Health Insurance">
           <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
         </button>
@@ -1316,7 +1316,7 @@
         </span>
       </div>
 
-      <div style="display:flex; gap:8px; margin-bottom:10px;">
+      <div style="display:flex; gap:8px; margin-bottom:10px;" data-wi-enter="block">
         <div style="position:relative; flex:1;">
           <input type="search" id="hiAdditionsSearch" placeholder="Search by name / ID" autocomplete="off" style="width:100%; background:var(--surface); border:1px solid var(--line); border-radius:11px; padding:10px 12px 10px 34px; font:inherit; font-size:.85rem; color:var(--ink);" />
           <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="var(--muted)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="position:absolute; left:11px; top:50%; transform:translateY(-50%);"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -1326,14 +1326,14 @@
         </button>
       </div>
 
-      <div class="wf-filterbar" id="hiAdditionsFilterbar" hidden>
+      <div class="wf-filterbar" id="hiAdditionsFilterbar" hidden data-wi-enter="block">
         <select id="hiAdditionsDeptFilter"><option value="">All departments</option></select>
         <select id="hiAdditionsDesigFilter"><option value="">All designations</option></select>
         <select id="hiAdditionsStatusFilter"><option value="">All statuses</option></select>
         <button class="wf-clear-btn" id="hiAdditionsClearFilters">Clear filters</button>
       </div>
 
-      <div class="hi-ce-total-row">
+      <div class="hi-ce-total-row" data-wi-enter="block">
         <span>Total Additions: <b id="hiAdditionsTotalCount">—</b></span>
         <span style="display:flex; gap:10px; align-items:center;">
           <button class="wf-send-mail-btn" id="sendHiAdditionsMail" type="button">
@@ -1344,7 +1344,7 @@
         </span>
       </div>
 
-      <ul class="wf-emp-list" id="hiAdditionsList">
+      <ul class="wf-emp-list" id="hiAdditionsList" data-wi-enter="list">
         <li class="empty"><div class="loading"><div class="spinner"></div></div></li>
       </ul>
     </section>
@@ -1353,7 +1353,7 @@
          same list/design as Pending Exits' Exits page, but a separate page
          with no Send Mail button. -->
     <section id="hiTotalExitsView" class="wf-view" hidden>
-      <div class="wf-page-head">
+      <div class="wf-page-head" data-wi-enter="block">
         <button class="wf-icon-btn" data-back aria-label="Back to Health Insurance">
           <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
         </button>
@@ -1364,7 +1364,7 @@
         </span>
       </div>
 
-      <div style="display:flex; gap:8px; margin-bottom:10px;">
+      <div style="display:flex; gap:8px; margin-bottom:10px;" data-wi-enter="block">
         <div style="position:relative; flex:1;">
           <input type="search" id="hiTeSearch" placeholder="Search by name / ID" autocomplete="off" style="width:100%; background:var(--surface); border:1px solid var(--line); border-radius:11px; padding:10px 12px 10px 34px; font:inherit; font-size:.85rem; color:var(--ink);" />
           <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="var(--muted)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="position:absolute; left:11px; top:50%; transform:translateY(-50%);"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -1374,26 +1374,26 @@
         </button>
       </div>
 
-      <div class="wf-filterbar" id="hiTeFilterbar" hidden>
+      <div class="wf-filterbar" id="hiTeFilterbar" hidden data-wi-enter="block">
         <select id="hiTeDeptFilter"><option value="">All departments</option></select>
         <select id="hiTeDesigFilter"><option value="">All designations</option></select>
         <select id="hiTeStatusFilter"><option value="">All statuses</option></select>
         <button class="wf-clear-btn" id="hiTeClearFilters">Clear filters</button>
       </div>
 
-      <div class="hi-ce-total-row">
+      <div class="hi-ce-total-row" data-wi-enter="block">
         <span>Total Exits: <b id="hiTeTotalCount">—</b></span>
         <button class="wf-link-btn" id="exportHiTeExitsPdf" type="button"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg><span>Export PDF</span></button>
       </div>
 
-      <ul class="wf-emp-list" id="hiTeList">
+      <ul class="wf-emp-list" id="hiTeList" data-wi-enter="list">
         <li class="empty"><div class="loading"><div class="spinner"></div></div></li>
       </ul>
     </section>
 
     <!-- Family Members (Health Insurance drill-down, from Member List) -->
     <section id="hiFamilyMembersView" class="wf-view" hidden>
-      <div class="wf-page-head">
+      <div class="wf-page-head" data-wi-enter="block">
         <button class="wf-icon-btn" data-back aria-label="Back to Health Insurance">
           <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
         </button>
@@ -1404,7 +1404,7 @@
         </span>
       </div>
 
-      <div style="display:flex; gap:8px; margin-bottom:10px;">
+      <div style="display:flex; gap:8px; margin-bottom:10px;" data-wi-enter="block">
         <div style="position:relative; flex:1;">
           <input type="search" id="hiFmSearch" placeholder="Search by name / ID" autocomplete="off" style="width:100%; background:var(--surface); border:1px solid var(--line); border-radius:11px; padding:10px 12px 10px 34px; font:inherit; font-size:.85rem; color:var(--ink);" />
           <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="var(--muted)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="position:absolute; left:11px; top:50%; transform:translateY(-50%);"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -1414,25 +1414,25 @@
         </button>
       </div>
 
-      <div class="wf-filterbar" id="hiFmFilterbar" hidden>
+      <div class="wf-filterbar" id="hiFmFilterbar" hidden data-wi-enter="block">
         <select id="hiFmDeptFilter"><option value="">All departments</option></select>
         <select id="hiFmRelationFilter"><option value="">All relationships</option></select>
         <button class="wf-clear-btn" id="hiFmClearFilters">Clear filters</button>
       </div>
 
-      <div class="hi-ce-total-row">
+      <div class="hi-ce-total-row" data-wi-enter="block">
         <span>Total Family Members: <b id="hiFmTotalCount">—</b></span>
         <button class="wf-link-btn" id="exportHiFmPdf" type="button"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg><span>Export PDF</span></button>
       </div>
 
-      <ul class="wf-emp-list" id="hiFmList">
+      <ul class="wf-emp-list" id="hiFmList" data-wi-enter="list">
         <li class="empty"><div class="loading"><div class="spinner"></div></div></li>
       </ul>
     </section>
 
     <!-- Total Insured Lives (Health Insurance drill-down, from Member List) -->
     <section id="hiTotalLivesView" class="wf-view" hidden>
-      <div class="wf-page-head">
+      <div class="wf-page-head" data-wi-enter="block">
         <button class="wf-icon-btn" data-back aria-label="Back to Health Insurance">
           <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
         </button>
@@ -1443,7 +1443,7 @@
         </span>
       </div>
 
-      <div style="display:flex; gap:8px; margin-bottom:10px;">
+      <div style="display:flex; gap:8px; margin-bottom:10px;" data-wi-enter="block">
         <div style="position:relative; flex:1;">
           <input type="search" id="hiTlSearch" placeholder="Search by name / ID" autocomplete="off" style="width:100%; background:var(--surface); border:1px solid var(--line); border-radius:11px; padding:10px 12px 10px 34px; font:inherit; font-size:.85rem; color:var(--ink);" />
           <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="var(--muted)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="position:absolute; left:11px; top:50%; transform:translateY(-50%);"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -1453,18 +1453,18 @@
         </button>
       </div>
 
-      <div class="wf-filterbar" id="hiTlFilterbar" hidden>
+      <div class="wf-filterbar" id="hiTlFilterbar" hidden data-wi-enter="block">
         <select id="hiTlDeptFilter"><option value="">All departments</option></select>
         <select id="hiTlRelationFilter"><option value="">All relationships</option></select>
         <button class="wf-clear-btn" id="hiTlClearFilters">Clear filters</button>
       </div>
 
-      <div class="hi-ce-total-row">
+      <div class="hi-ce-total-row" data-wi-enter="block">
         <span>Total Insured Lives: <b id="hiTlTotalCount">—</b></span>
         <button class="wf-link-btn" id="exportHiTlPdf" type="button"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg><span>Export PDF</span></button>
       </div>
 
-      <ul class="wf-emp-list" id="hiTlList">
+      <ul class="wf-emp-list" id="hiTlList" data-wi-enter="list">
         <li class="empty"><div class="loading"><div class="spinner"></div></div></li>
       </ul>
     </section>
@@ -1472,7 +1472,7 @@
     <!-- Family Premium breakdown (Health Insurance drill-down) - same
          distribution-table design as Age Distribution, no donut chart. -->
     <section id="hiFamilyPremiumView" class="wf-view" hidden>
-      <div class="wf-page-head">
+      <div class="wf-page-head" data-wi-enter="block">
         <button class="wf-icon-btn" data-back aria-label="Back to Health Insurance">
           <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
         </button>
@@ -1482,7 +1482,7 @@
           <p class="wf-note" style="margin:0;">Breakdown by relationship</p>
         </span>
       </div>
-      <div class="wf-panel">
+      <div class="wf-panel" data-wi-enter="block">
         <div class="wf-dist-table" id="hiFamilyPremiumRows">
           <div class="loading"><div class="spinner"></div></div>
         </div>
@@ -1494,7 +1494,7 @@
          Active) and including the Employees group, matching how Annual
          Premium itself is totalled. -->
     <section id="hiAnnualPremiumView" class="wf-view" hidden>
-      <div class="wf-page-head">
+      <div class="wf-page-head" data-wi-enter="block">
         <button class="wf-icon-btn" data-back aria-label="Back to Health Insurance">
           <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
         </button>
@@ -1504,7 +1504,7 @@
           <p class="wf-note" style="margin:0;">Breakdown by relationship · all statuses</p>
         </span>
       </div>
-      <div class="wf-panel">
+      <div class="wf-panel" data-wi-enter="block">
         <div class="wf-dist-table" id="hiAnnualPremiumRows">
           <div class="loading"><div class="spinner"></div></div>
         </div>
@@ -1513,7 +1513,7 @@
 
     <!-- Age Distribution (Demographics) -->
     <section id="ageDistributionView" class="wf-view wf-view-flow" hidden>
-      <div class="wf-page-head">
+      <div class="wf-page-head" data-wi-enter="block">
         <button class="wf-icon-btn" data-back aria-label="Back to Dashboard">
           <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
         </button>
@@ -1523,13 +1523,13 @@
         </button>
       </div>
       <p class="wf-inline-error" id="ageDistributionShareError" hidden></p>
-      <div class="wf-panel">
+      <div class="wf-panel" data-wi-enter="block">
         <div class="wf-dist-table" id="ageRows">
           <div class="loading"><div class="spinner"></div></div>
         </div>
         <p class="wf-note" id="ageNote"></p>
       </div>
-      <div class="wf-panel" style="display:flex; justify-content:center;">
+      <div class="wf-panel" style="display:flex; justify-content:center;" data-wi-enter="block">
         <div class="wf-canvas-wrap wf-canvas-wrap--donut wf-canvas-wrap--donut-lg" style="width:230px; height:230px;">
           <svg id="ageDonut" viewBox="0 0 200 200" style="display:block;"></svg>
           <div class="wf-donut-center">
@@ -1542,7 +1542,7 @@
 
     <!-- Gender Distribution (Demographics) -->
     <section id="genderDistributionView" class="wf-view wf-view-flow" hidden>
-      <div class="wf-page-head">
+      <div class="wf-page-head" data-wi-enter="block">
         <button class="wf-icon-btn" data-back aria-label="Back to Dashboard">
           <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
         </button>
@@ -1552,13 +1552,13 @@
         </button>
       </div>
       <p class="wf-inline-error" id="genderDistributionShareError" hidden></p>
-      <div class="wf-panel">
+      <div class="wf-panel" data-wi-enter="block">
         <div class="wf-dist-table" id="genderRows">
           <div class="loading"><div class="spinner"></div></div>
         </div>
         <p class="wf-note" id="genderNote"></p>
       </div>
-      <div class="wf-panel" style="display:flex; justify-content:center;">
+      <div class="wf-panel" style="display:flex; justify-content:center;" data-wi-enter="block">
         <div class="wf-canvas-wrap wf-canvas-wrap--donut wf-canvas-wrap--donut-lg" style="width:230px; height:230px;">
           <svg id="genderDonut" viewBox="0 0 200 200" style="display:block;"></svg>
           <div class="wf-donut-center">
@@ -1575,7 +1575,7 @@
          user-facing text says "Category" (see loadCollarDistributionView,
          public/workforce.js, for the table's own "Category" column header). -->
     <section id="collarDistributionView" class="wf-view wf-view-flow" hidden>
-      <div class="wf-page-head">
+      <div class="wf-page-head" data-wi-enter="block">
         <button class="wf-icon-btn" data-back aria-label="Back to Dashboard">
           <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
         </button>
@@ -1585,12 +1585,12 @@
         </button>
       </div>
       <p class="wf-inline-error" id="collarDistributionShareError" hidden></p>
-      <div class="wf-panel">
+      <div class="wf-panel" data-wi-enter="block">
         <div class="wf-dist-table" id="collarRows">
           <div class="loading"><div class="spinner"></div></div>
         </div>
       </div>
-      <div class="wf-panel" style="display:flex; justify-content:center;">
+      <div class="wf-panel" style="display:flex; justify-content:center;" data-wi-enter="block">
         <div class="wf-canvas-wrap wf-canvas-wrap--donut wf-canvas-wrap--donut-lg" style="width:230px; height:230px;">
           <svg id="collarDonut" viewBox="0 0 200 200" style="display:block;"></svg>
           <div class="wf-donut-center">
@@ -1603,13 +1603,13 @@
 
     <!-- Profile -->
     <section id="profileView" class="wf-view" hidden>
-      <div class="wf-page-head">
+      <div class="wf-page-head" data-wi-enter="block">
         <button class="wf-icon-btn" data-back aria-label="Back to Dashboard">
           <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
         </button>
         <h2>Profile</h2>
       </div>
-      <div class="wf-panel" style="text-align:center;">
+      <div class="wf-panel" style="text-align:center;" data-wi-enter="block">
         <button class="wf-avatar lg" id="profileAvatarLg" style="margin:0 auto 8px;" title="Tap to change photo" aria-label="Upload profile photo">—</button>
         <div class="wf-note" style="margin:0 0 12px;">Tap photo to change it</div>
         <div class="wf-profile-name-row" id="profileNameRow"></div>
