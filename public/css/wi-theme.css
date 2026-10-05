@@ -750,15 +750,20 @@ body { background: var(--wi-bg); }
 .wf-ai-loading-dots span { background: var(--wi-typing-dot); }
 .wf-ai-loading-avatar { background: transparent; color: var(--wi-primary); }
 
-/* Composer */
+/* Composer - sized down a notch from main's 44px/16px/0.9rem per direct
+   feedback (overrides Section 10's geometry lock for this one part). */
 .wf-ai-input-area { background: transparent; }
-.wf-ai-plus-btn { width: 44px; height: 44px; border-radius: 50%; background: #FFFFFF; box-shadow: var(--wi-sh-btn-icon); color: var(--wi-ink); }
+.wf-ai-input-row { padding: 10px 14px; gap: 8px; }
+.wf-ai-plus-btn, .wf-ai-mic-btn, .wf-ai-send-btn { width: 38px; height: 38px; }
+.wf-ai-plus-btn { border-radius: 50%; background: #FFFFFF; box-shadow: var(--wi-sh-btn-icon); color: var(--wi-ink); }
 .wf-ai-input-pill {
   border-radius: 999px; border: 1.5px solid var(--wi-border-2);
   box-shadow: 0 6px 18px rgba(3,2,41,.06); transition: border-color .2s, box-shadow .2s;
+  padding-left: 14px;
 }
+.wf-ai-input-pill input { padding: 9px 0; font-size: 0.82rem; }
 .wf-ai-input-pill:focus-within { border-color: var(--wi-primary); box-shadow: var(--wi-focus); }
-.wf-ai-send-btn { width: 44px; height: 44px; border-radius: 50%; background: var(--wi-primary); box-shadow: 0 8px 20px rgba(76,85,232,.38); }
+.wf-ai-send-btn { border-radius: 50%; background: var(--wi-primary); box-shadow: 0 8px 20px rgba(76,85,232,.38); }
 
 /* Recent Chats sheet - small detail corrections only, structure already
    matches the reference */
