@@ -1133,6 +1133,13 @@
         </div>
       </div>
       <div id="orgChartContent" data-wi-enter="block"></div>
+      <div class="wi-org-empty" id="orgChartEmptyState">
+        <span class="wi-org-empty-icon">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#4C55E8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6v5H9zM3 16h6v5H3zM15 16h6v5h-6zM12 8v4M6 16v-4h12v4"/></svg>
+        </span>
+        <span class="wi-org-empty-title">Select a department</span>
+        <span class="wi-org-empty-sub">The reporting structure appears here.</span>
+      </div>
       <!-- Print-only deeper hierarchy tree (see renderOrgChartPdfTreeHtml)
            - the on-screen #orgChartContent cards view above is untouched;
            this is filled fresh from /api/workforce/org-chart-pdf right

@@ -326,4 +326,25 @@
     document.addEventListener('visibilitychange', syncBlinks);
     syncBlinks();
   })();
+
+  // ---------- Section 6: Org Chart empty state. The department picker
+  // itself is already the app's existing generic select enhancer
+  // (workforce-ui-enhance.js, .wfu-select-wrap/.wfu-select-trigger/...) -
+  // restyled in wi-theme.css, scoped to just this one select via
+  // :has(#orgChartDeptSelect) - nothing to wire up here for that part.
+  // This only shows/hides the "Select a department" placeholder block,
+  // purely by watching #orgChartContent's own emptiness - it is
+  // cleared/filled by the exact same workforce.js code paths that
+  // existed before this section (loadOrgChartView, the select's change
+  // handler, loadOrgChartForDepartment). ----------
+  (function () {
+    var content = document.getElementById('orgChartContent');
+    var emptyState = document.getElementById('orgChartEmptyState');
+    if (!content || !emptyState) return;
+    function syncEmptyState() {
+      emptyState.hidden = content.innerHTML.trim() !== '';
+    }
+    new MutationObserver(syncEmptyState).observe(content, { childList: true });
+    syncEmptyState();
+  })();
 })();

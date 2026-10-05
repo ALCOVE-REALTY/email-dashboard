@@ -172,7 +172,17 @@ body { background: var(--wi-bg); }
    own class (not reusing .m-up) so it never collides with the views that
    already have .m-up hand-wired with their own tuned delays. ---- */
 @keyframes wiUp{from{opacity:0;transform:translateY(18px)}to{opacity:1;transform:none}}
-.wi-enter{animation:wiUp .6s cubic-bezier(.2,.7,.2,1) both;animation-delay:var(--wi-d,0s)}
+/* backwards, not both: holds the *from* state during animation-delay (so
+   staggered items don't flash visible early) but does NOT keep holding the
+   *to* state once the animation ends. That matters because a still-live
+   animation effect computes transform as matrix(1,0,0,1,0,0) rather than
+   the true keyword none - and per spec that still opens a new containing
+   block for any position:fixed descendant (e.g. the site's select-dropdown
+   popups), silently breaking their viewport-anchored positioning in any
+   .wi-enter card. Dropping "forwards" is a no-op visually: the animation's
+   to{} state (opacity:1, transform:none) is identical to the element's own
+   default once the animation stops applying. */
+.wi-enter{animation:wiUp .6s cubic-bezier(.2,.7,.2,1) backwards;animation-delay:var(--wi-d,0s)}
 
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 
@@ -763,3 +773,56 @@ body { background: var(--wi-bg); }
 /* The app's own max-width/centering (wf-shell) already matches the
    "same centered column at every width" requirement - intentionally
    not touched here. See .wf-shell rules in workforce.css. */
+
+/* ---- Org Chart: department select / dropdown / empty state ----
+   The picker itself is the app's existing generic select enhancer
+   (workforce-ui-enhance.js builds .wfu-select-wrap/-trigger/-list/-search/
+   -item around the real #orgChartDeptSelect on every select in the app -
+   filters, letter generator, health insurance, this one). Restyled here,
+   scoped to just this one select via :has(), so Letter Generator/filters/
+   Health Insurance keep their existing look untouched. */
+@keyframes wiFade { from { opacity: 0; } to { opacity: 1; } }
+
+.wfu-select-wrap:has(#orgChartDeptSelect) { flex: 1 1 auto; min-width: 200px; }
+.wfu-select-wrap:has(#orgChartDeptSelect) .wfu-select-trigger {
+  height: 54px; padding: 0 16px; border-radius: 14px;
+  background: var(--wi-surface); border: 1.5px solid var(--wi-border-2);
+  font-family: inherit; font-size: 15px; font-weight: 600; color: var(--wi-muted);
+}
+.wfu-select-wrap:has(#orgChartDeptSelect) .wfu-select-trigger.is-open {
+  border-color: var(--wi-primary); box-shadow: 0 0 0 4px var(--wi-primary-50); color: var(--wi-ink);
+}
+.wfu-select-wrap:has(#orgChartDeptSelect) .wfu-select-trigger-label { font-size: 15px; }
+.wfu-select-wrap:has(#orgChartDeptSelect) .wfu-select-trigger-label:not(.is-placeholder) { color: var(--wi-ink); font-weight: 800; }
+.wfu-select-wrap:has(#orgChartDeptSelect) .wfu-select-trigger-label.is-placeholder { color: var(--wi-muted); }
+.wfu-select-wrap:has(#orgChartDeptSelect) .wfu-select-chevron { width: 18px; height: 18px; }
+.wfu-select-wrap:has(#orgChartDeptSelect) .wfu-select-chevron svg { width: 18px; height: 18px; }
+
+.wfu-select-wrap:has(#orgChartDeptSelect) .wfu-select-list {
+  border-radius: 16px; border: 1px solid var(--wi-border);
+  box-shadow: 0 20px 44px rgba(3,2,41,.2); padding: 10px; max-height: 300px;
+}
+.wfu-select-wrap:has(#orgChartDeptSelect) .wfu-select-search {
+  background: var(--wi-surface-2); border: none; border-radius: 12px; height: 46px; padding: 0 12px; margin-bottom: 6px;
+}
+.wfu-select-wrap:has(#orgChartDeptSelect) .wfu-select-search input { font-size: 15px; color: var(--wi-ink); }
+.wfu-select-wrap:has(#orgChartDeptSelect) .wfu-select-search input::placeholder { color: var(--wi-placeholder); }
+.wfu-select-wrap:has(#orgChartDeptSelect) .wfu-select-items { scrollbar-width: none; }
+.wfu-select-wrap:has(#orgChartDeptSelect) .wfu-select-items::-webkit-scrollbar { display: none; }
+.wfu-select-wrap:has(#orgChartDeptSelect) .wfu-select-item {
+  padding: 13px 12px; border-radius: 12px; font-size: 15px; font-weight: 600; color: var(--wi-ink);
+}
+.wfu-select-wrap:has(#orgChartDeptSelect) .wfu-select-item:hover { background: var(--wi-surface-2); }
+.wfu-select-wrap:has(#orgChartDeptSelect) .wfu-select-item.is-selected {
+  background: var(--wi-primary-50); color: var(--wi-primary-700); font-weight: 800;
+}
+
+.wi-org-empty { padding: 30px 20px; display: flex; flex-direction: column; align-items: center; gap: 10px; text-align: center; animation: wiFade .3s ease both; }
+.wi-org-empty[hidden] { display: none; }
+.wi-org-empty-icon { width: 64px; height: 64px; border-radius: 50%; background: var(--wi-primary-50); display: flex; align-items: center; justify-content: center; }
+.wi-org-empty-title { font-size: 16px; font-weight: 800; color: var(--wi-ink); }
+.wi-org-empty-sub { font-size: 13px; font-weight: 600; color: var(--wi-muted); }
+@media (prefers-reduced-motion: reduce) {
+  .wi-org-panel, .wi-org-empty { animation: none !important; }
+  .wi-org-chev { transition: none; }
+}
