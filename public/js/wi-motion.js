@@ -362,4 +362,32 @@
     void el.offsetWidth;
     el.classList.add('wi-iv-anim');
   };
+
+  // ---------- Smooth container resize - measures height before/after a
+  // content swap (updateFn) and animates between the two instead of an
+  // abrupt snap. Used where a list loads async inside an already-open
+  // popup (e.g. Team Access's member list): without this, the popup's
+  // own pop-in settles at the short "Loading…" height, then a moment
+  // later real data arrives and the list - and the footer buttons below
+  // it - jump straight to their final height with no transition. Visual
+  // only: updateFn still does the exact same innerHTML assignment it
+  // always did, this just wraps it. ----------
+  window.wiSmoothResize = function (el, updateFn) {
+    var startH = el.getBoundingClientRect().height;
+    updateFn();
+    var endH = el.getBoundingClientRect().height;
+    el.style.height = startH + 'px';
+    el.style.overflow = 'hidden';
+    void el.offsetHeight;
+    el.style.transition = 'height .3s cubic-bezier(.2,.7,.2,1)';
+    el.style.height = endH + 'px';
+    function done(e) {
+      if (e && e.target !== el) return;
+      el.style.transition = '';
+      el.style.height = '';
+      el.style.overflow = '';
+      el.removeEventListener('transitionend', done);
+    }
+    el.addEventListener('transitionend', done);
+  };
 })();

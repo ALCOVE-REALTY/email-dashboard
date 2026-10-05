@@ -6933,20 +6933,27 @@ async function loadTeamAccessList() {
     const data = await fetch('/api/interview-panel-access').then((r) => r.json());
     if (data.error) throw new Error(data.error);
     const access = data.access || [];
-    teamAccessList.innerHTML = access.length
-      ? access.map((a) => (
-          '<li style="cursor:default;">' +
-            '<span class="wf-emp-avatar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + PERSON_ICON + '</svg></span>' +
-            '<span class="wf-emp-main">' +
-              '<button type="button" class="wf-ip-team-email-btn" data-open-email="' + escapeHtml(a.email) + '">' + escapeHtml(a.email) + '</button>' +
-              '<span class="wf-ip-team-meta-row">' +
-                '<span class="wf-emp-meta">Interview Panel only</span>' +
-                '<button type="button" class="wf-ip-team-revoke-btn" data-revoke-email="' + escapeHtml(a.email) + '">Revoke</button>' +
+    const fillList = () => {
+      teamAccessList.innerHTML = access.length
+        ? access.map((a) => (
+            '<li style="cursor:default;">' +
+              '<span class="wf-emp-avatar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + PERSON_ICON + '</svg></span>' +
+              '<span class="wf-emp-main">' +
+                '<button type="button" class="wf-ip-team-email-btn" data-open-email="' + escapeHtml(a.email) + '">' + escapeHtml(a.email) + '</button>' +
+                '<span class="wf-ip-team-meta-row">' +
+                  '<span class="wf-emp-meta">Interview Panel only</span>' +
+                  '<button type="button" class="wf-ip-team-revoke-btn" data-revoke-email="' + escapeHtml(a.email) + '">Revoke</button>' +
+                '</span>' +
               '</span>' +
-            '</span>' +
-          '</li>'
-        )).join('')
-      : '<li class="empty">No team access granted yet.</li>';
+            '</li>'
+          )).join('')
+        : '<li class="empty">No team access granted yet.</li>';
+    };
+    // Smoothed (see wiSmoothResize) - the popup's own pop-in settles at
+    // the short "Loading…" height, and without this the real list
+    // arriving a moment later snaps the footer buttons straight to
+    // their final position instead of easing into it.
+    if (window.wiSmoothResize) window.wiSmoothResize(teamAccessList, fillList); else fillList();
   } catch (err) {
     teamAccessList.innerHTML = '<li class="empty">' + escapeHtml(err.message) + '</li>';
   }
