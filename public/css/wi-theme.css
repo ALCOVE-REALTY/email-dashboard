@@ -507,12 +507,7 @@ body { background: var(--wi-bg); }
 .wf-emp-avatar.av-4 { background: #FFEDE8; color: #C2361A; }
 .wf-emp-avatar.av-5 { background: #F3EEFF; color: #6D3FD6; }
 .wf-emp-name { font-size: 0.86rem; font-weight: 700; }
-.wf-emp-chevron {
-  width: 28px; height: 28px;
-  border-radius: 50%;
-  background: var(--wi-primary-50);
-  color: var(--wi-primary);
-}
+.wf-emp-chevron { color: var(--wi-primary); background: transparent; }
 .wf-status-chip { font-weight: 800; letter-spacing: 0.04em; }
 .wf-emp-meta { font-size: 0.74rem; }
 .wf-emp-meta .wf-status-chip { display: inline-flex; align-items: center; gap: 5px; padding: 1px 7px; font-size: 0.62rem; }
@@ -898,7 +893,7 @@ body { background: var(--wi-bg); }
   font-size: 0.74rem; font-weight: 600; color: var(--wi-ink);
 }
 .hi-list-view .hi-ce-sub svg { width: 12px; height: 12px; color: var(--wi-primary); flex-shrink: 0; }
-.hi-list-view .wf-emp-chevron { width: 28px; height: 28px; border-radius: 50%; background: var(--wi-primary-50); color: var(--wi-primary); }
+.hi-list-view .wf-emp-chevron { color: var(--wi-primary); background: transparent; }
 
 /* -- status pills (Active/Notice/Inactive), including inside the
    Employee Insurance Profile sheet -- */
