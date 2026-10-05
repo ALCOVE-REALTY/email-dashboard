@@ -722,7 +722,10 @@ body { background: var(--wi-bg); }
 .wf-ai-welcome-sparkle-lg { top: -2px; right: -6px; }
 .wf-ai-welcome-sparkle-sm { bottom: 4px; left: -10px; }
 .wf-ai-welcome-card {
-  margin-top: 18px; border-radius: 18px; padding: 14px 22px; max-width: 300px;
+  /* No margin-top here - main has none; the whole gap to the hero is the
+     badge's own margin-bottom (18px) above. An earlier pass added a
+     redundant 18px here too, doubling main's actual gap - removed. */
+  border-radius: 18px; padding: 14px 22px; max-width: 300px;
   border-color: var(--wi-border); box-shadow: 0 8px 24px rgba(3,2,41,.05);
 }
 .wf-ai-welcome-greeting {
