@@ -740,7 +740,7 @@ body { background: var(--wi-bg); }
    static sparkle-star icon that used to sit there, per direct request.
    Continuous loop (not an entrance effect), same pattern as the hero's
    own float/blink/twinkle animations. */
-.m-wave { display: inline-block; transform-origin: 70% 70%; animation: mWave 2.5s ease-in-out infinite; }
+.m-wave { display: inline-block; transform-origin: 70% 70%; animation: mWave 1s ease-in-out infinite; }
 @keyframes mWave {
   0%, 100% { transform: rotate(0deg); }
   10% { transform: rotate(14deg); }
