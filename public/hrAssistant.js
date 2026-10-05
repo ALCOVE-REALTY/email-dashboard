@@ -210,20 +210,10 @@
     const greeting = document.createElement('p');
     greeting.className = 'wf-ai-welcome-greeting';
     greeting.innerHTML =
-      // A drawn icon, not the native 👋 emoji glyph - different platforms'
-      // emoji fonts bake in their own "motion line" marks beside the hand
-      // (that's what showed up as odd marks either side of it), which
-      // can't be selectively hidden since they're part of one glyph. This
-      // SVG has no such marks; the same .m-wave rotation now provides the
-      // only motion, matching cleanly everywhere.
-      '<span class="wf-ai-wave-emoji m-wave" aria-hidden="true">' +
-        '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#FFBE2E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
-          '<path d="M18.5 10V6.5a1.5 1.5 0 0 0-3 0V10"/>' +
-          '<path d="M15.5 9.5V4.5a1.5 1.5 0 0 0-3 0V10"/>' +
-          '<path d="M12.5 9.5V5a1.5 1.5 0 0 0-3 0v8"/>' +
-          '<path d="M9.5 13V8.5a1.5 1.5 0 0 0-3 0v8.5a6 6 0 0 0 6 6h1a7 7 0 0 0 7-7v-4.5a1.5 1.5 0 0 0-3 0V10"/>' +
-        '</svg>' +
-      '</span>' +
+      // Back to the native 👋 emoji per direct request (the drawn SVG
+      // replacement wasn't wanted, regardless of the earlier motion-line
+      // rendering quirk on some platforms).
+      '<span class="wf-ai-wave-emoji m-wave" style="font-size:18px;line-height:1;" aria-hidden="true">👋</span>' +
       '<span>' + (name ? 'Hello, ' + escapeHtml(name) + '!' : 'Hello!') + '</span>';
     const tagline = document.createElement('p');
     tagline.className = 'wf-ai-welcome-tagline';

@@ -422,10 +422,15 @@ body { background: var(--wi-bg); }
 .wf-greeting { margin-bottom: 0; padding: 4px 4px 0; }
 .kpi-grid { margin-bottom: 0; }
 .wf-dash-section-label {
-  display: flex; align-items: center; gap: 12px;
-  font-size: 13px; font-weight: 800; letter-spacing: .14em;
+  display: flex; align-items: center; gap: 10px;
+  font-size: 0.72rem; font-weight: 800; letter-spacing: .08em;
   color: var(--wi-primary);
   padding: 6px 4px 0;
+  /* Main's own rhythm here is tighter (10px) than the flow's general
+     16px gap used everywhere else on this page - pulled in with a
+     negative margin on this one element only, so just the
+     label-to-box gap shrinks, not the greeting-to-label gap above it. */
+  margin-bottom: -6px;
 }
 .wf-dash-hairline { flex: 1 1 auto; height: 1px; background: var(--wi-border-3); }
 #greetingTime { display: flex; align-items: center; gap: 6px; }
@@ -740,7 +745,7 @@ body { background: var(--wi-bg); }
    static sparkle-star icon that used to sit there, per direct request.
    Continuous loop (not an entrance effect), same pattern as the hero's
    own float/blink/twinkle animations. */
-.m-wave { display: inline-block; transform-origin: 70% 70%; animation: mWave 1s ease-in-out infinite; }
+.m-wave { display: inline-block; transform-origin: 70% 70%; animation: mWave 2s ease-in-out infinite; }
 @keyframes mWave {
   0%, 100% { transform: rotate(0deg); }
   10% { transform: rotate(14deg); }
