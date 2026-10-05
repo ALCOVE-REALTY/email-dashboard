@@ -3945,11 +3945,11 @@ function renderJoiningLine(canvasId, buckets, onPointClick) {
         backgroundColor: areaGradient,
         pointBackgroundColor: '#fff',
         pointBorderColor: '#A78BFA',
-        pointBorderWidth: 1.5,
-        pointRadius: 4,
+        pointBorderWidth: 1.25,
+        pointRadius: 3,
         // Selected/tapped point grows to 15px with a thicker #8B5CF6 border
         // (reference's "tap a point to select it" look).
-        pointHoverRadius: 7.5,
+        pointHoverRadius: 6,
         pointHoverBorderColor: '#8B5CF6',
         pointHoverBorderWidth: 4,
         pointHoverBackgroundColor: '#fff',
