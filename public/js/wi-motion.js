@@ -83,41 +83,39 @@
   // still mid-flight - most visibly after the tab/app was backgrounded
   // mid-count (rAF pauses while hidden, but the outer guard's timeout
   // still fires on schedule, so a later trigger can slip through before
-  // the original run has actually finished). Re-reading el.textContent at
-  // that moment captures whatever partial number the still-running tick()
-  // happens to be mid-way through, not the true final value - silently
-  // retargeting the animation to that smaller in-between number instead
-  // of the real one (the "counts 1-200, then 50-100, then 100-200"
-  // symptom). Fixed two ways: (1) a generation counter so an older,
-  // superseded tick() loop stops writing instead of racing a newer one,
-  // (2) while a run is still active, reuse its already-known target
-  // instead of re-deriving one from text that it is itself still
-  // rewriting every frame. ----------
+  // the original run has actually finished). The fix distinguishes two
+  // cases instead of treating every re-trigger the same: if nothing has
+  // touched the text since our own last frame, this is a redundant replay
+  // of the SAME run - left alone instead of restarted (restarting it is
+  // what let a paused/throttled run get clobbered by a second,
+  // wrongly-retargeted one reading its own mid-flight text as if it were
+  // final - the "counts 1-200, then 50-100, then 100-200" symptom). If
+  // the text HAS changed (a real new value just landed, e.g. switching
+  // straight from one filtered count to another before the first finished
+  // counting), that's genuinely new data - start fresh from it, which a
+  // generation counter on the OLD run makes safe (it stops writing instead
+  // of racing the new one). ----------
   window.wiCountUp = function (el, opts) {
     if (!el) return false;
     opts = opts || {};
     var hasExplicitValue = opts.value !== undefined;
-    var target, prefix, suffix, decimals;
-    if (!hasExplicitValue && el.__wiCountUpActive && el.__wiCountUpMeta) {
-      var meta = el.__wiCountUpMeta;
-      target = meta.target; prefix = meta.prefix; suffix = meta.suffix; decimals = meta.decimals;
-    } else {
-      var raw = hasExplicitValue ? opts.value : (el.textContent || '');
-      var str = String(raw);
-      var match = str.match(/-?[\d,]+(\.\d+)?/);
-      if (!match) return false;
-      target = parseFloat(match[0].replace(/,/g, ''));
-      if (!isFinite(target)) return false;
-      decimals = match[1] ? match[1].length - 1 : 0;
-      var idx = match.index;
-      prefix = opts.prefix !== undefined ? opts.prefix : str.slice(0, idx);
-      suffix = opts.suffix !== undefined ? opts.suffix : str.slice(idx + match[0].length);
+    if (!hasExplicitValue && el.__wiCountUpActive && el.textContent === el.__wiCountUpLastWritten) {
+      return false; // redundant replay of an already-running count - leave it alone
     }
+    var raw = hasExplicitValue ? opts.value : (el.textContent || '');
+    var str = String(raw);
+    var match = str.match(/-?[\d,]+(\.\d+)?/);
+    if (!match) return false;
+    var target = parseFloat(match[0].replace(/,/g, ''));
+    if (!isFinite(target)) return false;
+    var decimals = match[1] ? match[1].length - 1 : 0;
+    var idx = match.index;
+    var prefix = opts.prefix !== undefined ? opts.prefix : str.slice(0, idx);
+    var suffix = opts.suffix !== undefined ? opts.suffix : str.slice(idx + match[0].length);
     var dur = 1100;
     var start = null;
     var gen = (el.__wiCountUpGen = (el.__wiCountUpGen || 0) + 1);
     el.__wiCountUpActive = true;
-    el.__wiCountUpMeta = { target: target, prefix: prefix, suffix: suffix, decimals: decimals };
     function format(v) {
       return prefix + v.toLocaleString('en-IN', { minimumFractionDigits: decimals, maximumFractionDigits: decimals }) + suffix;
     }
@@ -126,11 +124,15 @@
       if (start === null) start = now;
       var t = Math.min(1, (now - start) / dur);
       var eased = 1 - Math.pow(1 - t, 3);
-      el.textContent = format(target * eased);
+      var text = format(target * eased);
+      el.textContent = text;
+      el.__wiCountUpLastWritten = text;
       if (t < 1) {
         requestAnimationFrame(tick);
       } else {
-        el.textContent = format(target);
+        var finalText = format(target);
+        el.textContent = finalText;
+        el.__wiCountUpLastWritten = finalText;
         el.__wiCountUpActive = false;
       }
     }
