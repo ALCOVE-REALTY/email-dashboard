@@ -290,53 +290,63 @@
         <span class="wf-dash-hairline"></span>
       </div>
 
-      <div class="kpi-grid" id="kpiGrid">
-        <div class="loading"><div class="spinner"></div></div>
-      </div>
+      <!-- Section 9: main's own single grey "Workforce Breakdown" box
+           (workforce-ui-enhance.css's .wfu-section-group), reinstated
+           here holding every Overview + former-Breakdown card in one
+           box - nothing below was deleted or restructured otherwise,
+           just regrouped under this one wrapper instead of sitting
+           directly in .wf-dash-flow. No JS hooks existed on a
+           Breakdown-specific id/class (grepped first), so there was
+           nothing to preserve as a hidden legacy wrapper. -->
+      <div class="wi-overview-box">
+        <div class="kpi-grid" id="kpiGrid">
+          <div class="loading"><div class="spinner"></div></div>
+        </div>
 
-      <div class="wf-panel m-up" style="animation-delay:.3s">
-        <div class="wf-panel-head">
-          <h3>Employee Status Distribution</h3>
+        <div class="wf-panel m-up" style="animation-delay:.3s">
+          <div class="wf-panel-head">
+            <h3>Employee Status Distribution</h3>
+          </div>
+          <div class="wf-donut-row">
+            <div class="wf-canvas-wrap wf-canvas-wrap--donut"><svg id="statusDonut" viewBox="0 0 200 200" style="display:block; filter:drop-shadow(0 6px 12px rgba(76,85,232,.14));"></svg></div>
+            <ul class="wf-legend" id="statusLegend"></ul>
+          </div>
         </div>
-        <div class="wf-donut-row">
-          <div class="wf-canvas-wrap wf-canvas-wrap--donut"><svg id="statusDonut" viewBox="0 0 200 200" style="display:block; filter:drop-shadow(0 6px 12px rgba(76,85,232,.14));"></svg></div>
-          <ul class="wf-legend" id="statusLegend"></ul>
-        </div>
-      </div>
 
-      <div class="wf-panel m-up" style="animation-delay:.36s">
-        <div class="wf-panel-head">
-          <h3>Employment Type</h3>
+        <div class="wf-panel m-up" style="animation-delay:.36s">
+          <div class="wf-panel-head">
+            <h3>Employment Type</h3>
+          </div>
+          <div class="wf-stat-pair" id="employmentTypeStats"></div>
+          <div class="wf-split-bar" id="employmentTypeSplit"></div>
         </div>
-        <div class="wf-stat-pair" id="employmentTypeStats"></div>
-        <div class="wf-split-bar" id="employmentTypeSplit"></div>
-      </div>
 
-      <div class="wf-panel m-up" style="animation-delay:.42s">
-        <div class="wf-panel-head">
-          <h3>Department Wise Headcount (Active)</h3>
-          <button class="wf-link-btn" data-jump="departmentFull">View all →</button>
+        <div class="wf-panel m-up" style="animation-delay:.42s">
+          <div class="wf-panel-head">
+            <h3>Department Wise Headcount (Active)</h3>
+            <button class="wf-link-btn" data-jump="departmentFull">View all →</button>
+          </div>
+          <ul class="wf-bar-list" id="deptBarList"></ul>
         </div>
-        <ul class="wf-bar-list" id="deptBarList"></ul>
-      </div>
 
-      <div class="wf-panel m-up" style="animation-delay:.48s">
-        <div class="wf-panel-head">
-          <h3>Location Wise Headcount (Active)</h3>
-          <button class="wf-link-btn" data-jump="locationFull">View all →</button>
+        <div class="wf-panel m-up" style="animation-delay:.48s">
+          <div class="wf-panel-head">
+            <h3>Location Wise Headcount (Active)</h3>
+            <button class="wf-link-btn" data-jump="locationFull">View all →</button>
+          </div>
+          <div class="wf-donut-row">
+            <div class="wf-canvas-wrap wf-canvas-wrap--donut"><svg id="locationDonut" viewBox="0 0 200 200" style="display:block; filter:drop-shadow(0 6px 12px rgba(76,85,232,.14));"></svg></div>
+            <ul class="wf-legend" id="locationLegend"></ul>
+          </div>
         </div>
-        <div class="wf-donut-row">
-          <div class="wf-canvas-wrap wf-canvas-wrap--donut"><svg id="locationDonut" viewBox="0 0 200 200" style="display:block; filter:drop-shadow(0 6px 12px rgba(76,85,232,.14));"></svg></div>
-          <ul class="wf-legend" id="locationLegend"></ul>
-        </div>
-      </div>
 
-      <div class="wf-panel m-up" style="animation-delay:.54s">
-        <div class="wf-panel-head">
-          <h3>Joining Trend (Monthly)</h3>
-          <button class="wf-link-btn" data-jump="movement">View report →</button>
+        <div class="wf-panel m-up" style="animation-delay:.54s">
+          <div class="wf-panel-head">
+            <h3>Joining Trend (Monthly)</h3>
+            <button class="wf-link-btn" data-jump="movement">View report →</button>
+          </div>
+          <div class="wf-canvas-wrap wf-canvas-wrap--line"><canvas id="joiningLineChart"></canvas></div>
         </div>
-        <div class="wf-canvas-wrap wf-canvas-wrap--line"><canvas id="joiningLineChart"></canvas></div>
       </div>
 
     </section>
