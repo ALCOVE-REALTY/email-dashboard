@@ -453,7 +453,7 @@ body { background: var(--wi-bg); }
   background: #F3F4FA; border: 1px solid #E9E9F2; box-shadow: none;
   border-radius: 16px; padding: 14px 12px;
 }
-.wi-overview-box > .wf-panel, .wi-overview-box > .kpi-grid { margin-bottom: 0; }
+.wi-overview-box > .wf-panel, .wi-overview-box > .kpi-grid, .wi-overview-box > .wf-grid-2 { margin-bottom: 0; }
 
 /* ---- Text action (Export PDF, View all...) - was plain text, the
    emoji arrow (not an icon) replaced with an inline SVG in the markup;
