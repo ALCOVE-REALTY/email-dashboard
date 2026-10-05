@@ -3945,8 +3945,8 @@ function renderJoiningLine(canvasId, buckets, onPointClick) {
         backgroundColor: areaGradient,
         pointBackgroundColor: '#fff',
         pointBorderColor: '#A78BFA',
-        pointBorderWidth: 2.5,
-        pointRadius: 4.5,
+        pointBorderWidth: 1.5,
+        pointRadius: 4,
         // Selected/tapped point grows to 15px with a thicker #8B5CF6 border
         // (reference's "tap a point to select it" look).
         pointHoverRadius: 7.5,
@@ -3956,7 +3956,7 @@ function renderJoiningLine(canvasId, buckets, onPointClick) {
         // A much bigger invisible tap target than the visible dot -
         // Chart.js's default hit area is tiny and hard to land a finger on.
         pointHitRadius: onPointClick ? 16 : 1,
-        borderWidth: 3,
+        borderWidth: 2,
         fill: true,
         tension: 0.35
       }]
