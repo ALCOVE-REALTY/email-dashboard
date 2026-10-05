@@ -736,6 +736,21 @@ body { background: var(--wi-bg); }
 .wf-ai-welcome-tagline { font-size: 0.8rem; font-weight: 400; color: var(--wi-text); }
 .wf-ai-welcome-tagline-strong { font-weight: 700; }
 .wf-ai-welcome-sub { font-size: 0.76rem; color: var(--wi-muted); opacity: 1; }
+/* Live waving-hand emoji in front of "Hello, <name>!" - replaces the
+   static sparkle-star icon that used to sit there, per direct request.
+   Continuous loop (not an entrance effect), same pattern as the hero's
+   own float/blink/twinkle animations. */
+.m-wave { display: inline-block; transform-origin: 70% 70%; animation: mWave 2.5s ease-in-out infinite; }
+@keyframes mWave {
+  0%, 100% { transform: rotate(0deg); }
+  10% { transform: rotate(14deg); }
+  20% { transform: rotate(-8deg); }
+  30% { transform: rotate(14deg); }
+  40% { transform: rotate(-4deg); }
+  50% { transform: rotate(10deg); }
+  60% { transform: rotate(0deg); }
+}
+@media (prefers-reduced-motion: reduce) { .m-wave { animation: none; } }
 
 /* Message bubbles - user indigo/white (already close), bot now white
    bordered instead of a tinted fill, both with a pop-in entrance */

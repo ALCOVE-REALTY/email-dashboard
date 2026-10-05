@@ -210,7 +210,7 @@
     const greeting = document.createElement('p');
     greeting.className = 'wf-ai-welcome-greeting';
     greeting.innerHTML =
-      '<svg width="18" height="18" viewBox="0 0 24 24" fill="#FFBE2E" aria-hidden="true"><path d="M12 2l2.2 7.8L22 12l-7.8 2.2L12 22l-2.2-7.8L2 12l7.8-2.2z"/></svg>' +
+      '<span class="wf-ai-wave-emoji m-wave" style="font-size:18px;line-height:1;" aria-hidden="true">👋</span>' +
       '<span>' + (name ? 'Hello, ' + escapeHtml(name) + '!' : 'Hello!') + '</span>';
     const tagline = document.createElement('p');
     tagline.className = 'wf-ai-welcome-tagline';
