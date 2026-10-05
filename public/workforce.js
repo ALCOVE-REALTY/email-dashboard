@@ -3920,16 +3920,7 @@ function renderJoiningLine(canvasId, buckets, onPointClick) {
   const c = chartColors();
   destroyChart(canvasId);
   const canvas = document.getElementById(canvasId);
-  // Reference wraps this chart in .m-reveal (a clip-path wipe, left to
-  // right) - re-trigger it here (remove+reflow+re-add) so switching
-  // Monthly/Quarterly/Yearly replays the reveal too, not just a first
-  // visit (view-level revisits already replay it generically).
   const wrap = canvas.closest('.wf-canvas-wrap');
-  if (wrap) {
-    wrap.classList.remove('m-reveal');
-    void wrap.offsetWidth;
-    wrap.classList.add('m-reveal');
-  }
   const ctx = canvas.getContext('2d');
   const areaGradient = ctx.createLinearGradient(0, 0, 0, canvas.clientHeight || 220);
   areaGradient.addColorStop(0, '#8B5CF645');
@@ -3969,6 +3960,16 @@ function renderJoiningLine(canvasId, buckets, onPointClick) {
     },
     options: {
       layout: { padding: { top: 22 } },
+      // The reference only reveals the plot (line/area/points/value
+      // labels) left-to-right - the y-axis numbers, grid and month labels
+      // are fully visible from the first frame and never move. Chart.js
+      // draws axes and data onto one shared canvas, so a single clip-path
+      // can't treat them differently; instead this chart renders
+      // complete and un-animated (animation:false) and a separate white
+      // mask div, sized to exactly chart.chartArea (the plot rectangle,
+      // excluding both axes), does the left-to-right reveal on its own -
+      // see the mask logic right after this chart is constructed below.
+      animation: false,
       plugins: {
         legend: { display: false },
         // Dark rounded pill showing just the value above the tapped point
@@ -4024,6 +4025,40 @@ function renderJoiningLine(canvasId, buckets, onPointClick) {
     },
     plugins: [joiningGlowPlugin, joiningValueLabelsPlugin]
   });
+
+  // Position the reveal mask over exactly the plot rectangle (chartArea),
+  // padded upward so it also covers the value labels drawn above the
+  // points (joiningValueLabelsPlugin, ~10-20px above chartArea.top) -
+  // widened a few px too, since a value label is centre-anchored on its
+  // point and the leftmost/rightmost one can overhang chartArea's own
+  // left/right edge slightly. Never touches the y-axis/x-axis margins
+  // outside chartArea, which is the whole point.
+  if (wrap) {
+    const area = charts[canvasId].chartArea;
+    let mask = wrap.querySelector('.wf-chart-reveal-mask');
+    if (!mask) {
+      mask = document.createElement('div');
+      mask.className = 'wf-chart-reveal-mask';
+      wrap.style.position = wrap.style.position || 'relative';
+      wrap.appendChild(mask);
+    }
+    // No left padding - chartArea.left is already the exact boundary the
+    // y-axis numbers end at, so extending left of it would cover part of
+    // them during the wipe. A little right padding only, for a value
+    // label that overhangs the last point's x position.
+    const padTop = 26, padRight = 10;
+    const maskTop = Math.max(0, area.top - padTop);
+    mask.style.left = area.left + 'px';
+    mask.style.top = maskTop + 'px';
+    mask.style.width = (area.width + padRight) + 'px';
+    // Bottom edge pinned to chartArea.bottom exactly (never past it, or
+    // it would cover part of the x-axis month labels) regardless of how
+    // much the top padding above got clamped by the viewport edge.
+    mask.style.height = (area.bottom - maskTop) + 'px';
+    mask.classList.remove('wi-chart-reveal');
+    void mask.offsetWidth; // force reflow so replaying (tab switch, view revisit) restarts the wipe
+    mask.classList.add('wi-chart-reveal');
+  }
 
   window.__wiChartReplay[canvasId] = function () { renderJoiningLine(canvasId, buckets, onPointClick); };
 }

@@ -324,6 +324,17 @@ body { background: var(--wi-bg); }
    wants, and the legend's own rem-based font-size computes smaller than
    13px under this app's root font scale. ---- */
 .wf-canvas-wrap--donut { width: 130px; height: 130px; }
+/* Joining Trend line charts: only the plot (line/area/points/value
+   labels) reveals left-to-right - the y-axis numbers, dashed grid and
+   month labels render instantly and never move. Chart.js draws axes and
+   data on one shared canvas (animation:false in its own config - see
+   renderJoiningLine), so this white mask, sized to exactly
+   chart.chartArea in JS, does the reveal itself by retreating off the
+   plot rectangle only. */
+.wf-canvas-wrap--line { position: relative; }
+.wf-chart-reveal-mask { position: absolute; background: var(--wi-surface); pointer-events: none; z-index: 2; }
+.wf-chart-reveal-mask.wi-chart-reveal { animation: wiChartReveal 1.5s cubic-bezier(.3,.6,.2,1) .4s both; }
+@keyframes wiChartReveal { from { clip-path: inset(0 0 0 0); } to { clip-path: inset(0 0 0 100%); } }
 .wf-donut-row { gap: 14px; }
 .wf-legend { font-size: 13px; }
 .wf-legend li { gap: 7px; }
