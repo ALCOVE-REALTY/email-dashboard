@@ -141,7 +141,36 @@
     }
   }
 
+  // ---------- Generic page-entrance stagger (data-wi-enter="block"/"list")
+  // - every top-level block of a view, and every row inside a repeated
+  // list, plays the same rise-and-fade every time the view is shown,
+  // with a computed top-to-bottom delay instead of a hand-placed inline
+  // one per element. Declarative: a view only needs the two data-*
+  // attributes in its markup, nothing else. ----------
+  var WI_BLOCK_START = 0.05, WI_BLOCK_STEP = 0.06;
+  var WI_ROW_START = 0.12, WI_ROW_STEP = 0.06, WI_ROW_MAX = 0.8;
+  function playWiEnter(el, delaySeconds) {
+    el.classList.remove('wi-enter');
+    el.style.setProperty('--wi-d', delaySeconds.toFixed(2) + 's');
+    void el.offsetWidth; // force reflow so the re-added class replays from the start
+    el.classList.add('wi-enter');
+  }
+  function playWiEnterList(listEl) {
+    Array.prototype.forEach.call(listEl.children, function (row, i) {
+      playWiEnter(row, Math.min(WI_ROW_START + WI_ROW_STEP * i, WI_ROW_MAX));
+    });
+  }
+  function playWiEnterView(root) {
+    var blocks = root.matches('[data-wi-enter="block"]') ? [root] : [];
+    blocks = blocks.concat(Array.prototype.slice.call(root.querySelectorAll('[data-wi-enter="block"]')));
+    blocks.forEach(function (el, i) { playWiEnter(el, WI_BLOCK_START + WI_BLOCK_STEP * i); });
+    var lists = root.matches('[data-wi-enter="list"]') ? [root] : [];
+    lists = lists.concat(Array.prototype.slice.call(root.querySelectorAll('[data-wi-enter="list"]')));
+    lists.forEach(playWiEnterList);
+  }
+
   function replaySubtree(root) {
+    playWiEnterView(root);
     var all = root.querySelectorAll('*');
     for (var i = 0; i < all.length + 1; i++) {
       var el = i === 0 ? root : all[i - 1];
@@ -207,6 +236,17 @@
           node.querySelectorAll(COUNTUP_SELECTOR).forEach(maybeCountUp);
         }
       });
+      // A data-wi-enter="list" container's rows almost always arrive via
+      // one `el.innerHTML = allRowsHtml` (every render* function in this
+      // app rebuilds a list that way, never incremental appends) - too
+      // late for the hidden-attribute replay above if the view was
+      // already visible while its own fetch was still in flight. Replay
+      // every current row with a fresh index-based delay whenever the
+      // list's children change at all, matching how it would have looked
+      // had the data been there from the start.
+      if (rec.target.nodeType === 1 && rec.target.matches && rec.target.matches('[data-wi-enter="list"]') && rec.target.offsetParent !== null) {
+        playWiEnterList(rec.target);
+      }
     });
   }).observe(document.body, { childList: true, subtree: true });
 })();

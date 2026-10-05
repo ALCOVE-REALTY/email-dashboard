@@ -163,6 +163,17 @@ body { background: var(--wi-bg); }
 .m-ring{animation:mRing 2.2s ease-out infinite}
 .m-scroll{scrollbar-width:none}
 .m-scroll::-webkit-scrollbar{display:none}
+
+/* ---- Generic page-entrance system (every view, every visit) - same
+   mUp keyframe as .m-up above, but driven by a CSS custom property so
+   wi-motion.js can assign a freshly-computed, index-based delay to any
+   element carrying data-wi-enter="block"/"list" without needing a
+   hand-placed inline animation-delay per element per view. Kept as its
+   own class (not reusing .m-up) so it never collides with the views that
+   already have .m-up hand-wired with their own tuned delays. ---- */
+@keyframes wiUp{from{opacity:0;transform:translateY(18px)}to{opacity:1;transform:none}}
+.wi-enter{animation:wiUp .6s cubic-bezier(.2,.7,.2,1) both;animation-delay:var(--wi-d,0s)}
+
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 
 /* ============================================================

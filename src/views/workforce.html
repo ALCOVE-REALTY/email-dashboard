@@ -426,7 +426,7 @@
         <p class="wf-inline-error" id="employeesShareError" hidden></p>
         <p class="wf-inline-error" id="pendingConfirmationsShareError" hidden></p>
 
-        <ul class="wf-emp-list" id="employeeList"></ul>
+        <ul class="wf-emp-list" id="employeeList" data-wi-enter="list"></ul>
       </div>
 
       <!-- Employee profile -->
@@ -1014,15 +1014,15 @@
 
     <!-- Insights -->
     <section id="insightsView" class="wf-view" hidden>
-      <div class="wf-page-head">
+      <div class="wf-page-head" data-wi-enter="block">
         <button class="wf-icon-btn" data-back aria-label="Back to Dashboard">
           <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
         </button>
         <h2>Insights</h2>
       </div>
-      <div class="wf-panel">
+      <div class="wf-panel" data-wi-enter="block">
         <div class="wf-panel-head"><h3>All Insights</h3></div>
-        <ul class="wf-insights-full" id="insightsFull"><li class="empty">Loading…</li></ul>
+        <ul class="wf-insights-full" id="insightsFull" data-wi-enter="list"><li class="empty">Loading…</li></ul>
       </div>
     </section>
 
