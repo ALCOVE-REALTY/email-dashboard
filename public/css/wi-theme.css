@@ -201,7 +201,7 @@ body { background: var(--wi-bg); }
    per direct feedback, vertical position should follow main (the live
    server), not the reference mockup, and main's own .wf-shell has an
    18px top padding above the topbar. Restored that. */
-.wf-shell { padding-left: 16px; padding-right: 16px; padding-top: 18px; }
+.wf-shell { padding-left: 16px; padding-right: 16px; padding-top: 12px; }
 
 /* ---- Top bar ---- */
 .wf-topbar {
