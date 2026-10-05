@@ -69,38 +69,70 @@
     toastTimer = setTimeout(function () { el.hidden = true; }, ms || 2500);
   };
 
-  // ---------- Count-up (1300ms, easeOutCubic, en-IN formatting) - a
+  // ---------- Count-up (1100ms, easeOutCubic, en-IN formatting) - a
   // reusable helper; each page's load function calls this on its own KPI
   // elements once its real value is in the DOM, it never invents a value
   // of its own. prefix/suffix auto-detect from the element's own text
   // (everything before/after the numeric run) when not given explicitly,
   // so a generic replay call never has to know an element's unit/symbol
-  // and never strips it (e.g. "9.6%", "N/A" left alone, "₹15.07L"). ----------
+  // and never strips it (e.g. "9.6%", "N/A" left alone, "₹15.07L").
+  //
+  // Bug fix: an element can get re-triggered (the replay-on-visit
+  // observer below fires on any unrelated ancestor's `hidden` toggle, not
+  // just a real view change) while an earlier run for the SAME element is
+  // still mid-flight - most visibly after the tab/app was backgrounded
+  // mid-count (rAF pauses while hidden, but the outer guard's timeout
+  // still fires on schedule, so a later trigger can slip through before
+  // the original run has actually finished). Re-reading el.textContent at
+  // that moment captures whatever partial number the still-running tick()
+  // happens to be mid-way through, not the true final value - silently
+  // retargeting the animation to that smaller in-between number instead
+  // of the real one (the "counts 1-200, then 50-100, then 100-200"
+  // symptom). Fixed two ways: (1) a generation counter so an older,
+  // superseded tick() loop stops writing instead of racing a newer one,
+  // (2) while a run is still active, reuse its already-known target
+  // instead of re-deriving one from text that it is itself still
+  // rewriting every frame. ----------
   window.wiCountUp = function (el, opts) {
     if (!el) return false;
     opts = opts || {};
-    var raw = opts.value !== undefined ? opts.value : (el.textContent || '');
-    var str = String(raw);
-    var match = str.match(/-?[\d,]+(\.\d+)?/);
-    if (!match) return false;
-    var target = parseFloat(match[0].replace(/,/g, ''));
-    if (!isFinite(target)) return false;
-    var decimals = match[1] ? match[1].length - 1 : 0;
-    var idx = match.index;
-    var prefix = opts.prefix !== undefined ? opts.prefix : str.slice(0, idx);
-    var suffix = opts.suffix !== undefined ? opts.suffix : str.slice(idx + match[0].length);
-    var dur = 1300;
+    var hasExplicitValue = opts.value !== undefined;
+    var target, prefix, suffix, decimals;
+    if (!hasExplicitValue && el.__wiCountUpActive && el.__wiCountUpMeta) {
+      var meta = el.__wiCountUpMeta;
+      target = meta.target; prefix = meta.prefix; suffix = meta.suffix; decimals = meta.decimals;
+    } else {
+      var raw = hasExplicitValue ? opts.value : (el.textContent || '');
+      var str = String(raw);
+      var match = str.match(/-?[\d,]+(\.\d+)?/);
+      if (!match) return false;
+      target = parseFloat(match[0].replace(/,/g, ''));
+      if (!isFinite(target)) return false;
+      decimals = match[1] ? match[1].length - 1 : 0;
+      var idx = match.index;
+      prefix = opts.prefix !== undefined ? opts.prefix : str.slice(0, idx);
+      suffix = opts.suffix !== undefined ? opts.suffix : str.slice(idx + match[0].length);
+    }
+    var dur = 1100;
     var start = null;
+    var gen = (el.__wiCountUpGen = (el.__wiCountUpGen || 0) + 1);
+    el.__wiCountUpActive = true;
+    el.__wiCountUpMeta = { target: target, prefix: prefix, suffix: suffix, decimals: decimals };
     function format(v) {
       return prefix + v.toLocaleString('en-IN', { minimumFractionDigits: decimals, maximumFractionDigits: decimals }) + suffix;
     }
     function tick(now) {
+      if (el.__wiCountUpGen !== gen) return; // superseded by a newer call for this element
       if (start === null) start = now;
       var t = Math.min(1, (now - start) / dur);
       var eased = 1 - Math.pow(1 - t, 3);
       el.textContent = format(target * eased);
-      if (t < 1) requestAnimationFrame(tick);
-      else el.textContent = format(target);
+      if (t < 1) {
+        requestAnimationFrame(tick);
+      } else {
+        el.textContent = format(target);
+        el.__wiCountUpActive = false;
+      }
     }
     requestAnimationFrame(tick);
     return true;
