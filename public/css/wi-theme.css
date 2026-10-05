@@ -438,7 +438,13 @@ body { background: var(--wi-bg); }
 /* §6b: greeting sits 4px inside the 16px shell padding (20px total) so
    its text lines up with OVERVIEW below it, not with the cards' 16px edge. */
 .wf-greeting { margin-bottom: 0; padding: 4px 4px 0; }
-.kpi-grid { margin-bottom: 0; }
+/* NOTE: no unscoped .kpi-grid{margin-bottom:0} here - the Dashboard's own
+   need for that is already covered by the more specific
+   .wi-overview-box > .kpi-grid rule below. An unscoped version used to
+   zero out every .kpi-grid's margin app-wide, which struck Health
+   Insurance's and Workforce Movement's grids too (neither sits inside a
+   flow wrapper), leaving the panel right after them flush against the
+   grid instead of main's own 20px gap. */
 .wf-dash-section-label {
   display: flex; align-items: center; gap: 10px;
   font-size: 0.72rem; font-weight: 800; letter-spacing: .08em;
@@ -967,7 +973,7 @@ body { background: var(--wi-bg); }
 /* -- KPI tinted boxes (icon left, text right - .kpi-card is already this
    shape; only colours/sizes change here) -- */
 #healthInsuranceView .kpi-card {
-  border-radius: 18px; padding: 11px; box-shadow: 0 4px 16px rgba(3,2,41,.04);
+  border-radius: 18px; padding: 9px 11px; box-shadow: 0 4px 16px rgba(3,2,41,.04);
 }
 #healthInsuranceView .kpi-card .kpi-icon { width: 34px; height: 34px; box-shadow: 0 2px 8px rgba(3,2,41,.06); }
 #healthInsuranceView .kpi-card .kpi-icon svg { width: 16px; height: 16px; }
