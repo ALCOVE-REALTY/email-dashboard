@@ -603,33 +603,40 @@ body { background: var(--wi-bg); }
    existing row). Scoped to #qualityCompletenessPanel/#qualityMissingRows
    since .wf-completeness-num/.wf-progress-track/.wf-stat-row are shared
    with Employee Data's own summary count + Health Insurance's renewal
-   bar. Bar growth reuses the existing .m-grow system (same easing the
-   Department/Policy Renewal bars already use) and the pill numbers reuse
-   the generic wi-countup/data-wi-enter="list" replay systems - no new
-   keyframes needed. ---- */
-.wi-dq-head { display: flex; align-items: center; gap: 14px; }
+   bar. Icon/tile/pill sizes match the app's existing small-icon scale
+   (.wf-emp-summary-icon's 34px/16px), not the larger sizes a first pass
+   used - per direct feedback, everything stays at main's existing scale.
+   The bar is the Policy Renewal bar's own colour AND size (4px, blue
+   gradient), not a new green one. Bar growth reuses the existing .m-grow
+   system (same easing the Department/Policy Renewal bars already use)
+   and the pill numbers reuse the generic wi-countup/data-wi-enter="list"
+   replay systems - no new keyframes needed. ---- */
+.wi-dq-head { display: flex; align-items: center; gap: 12px; }
 .wi-dq-head-text { display: flex; flex-direction: column; }
 .wi-dq-ic {
-  width: 48px; height: 48px; border-radius: 50%; flex: 0 0 auto;
+  width: 34px; height: 34px; border-radius: 50%; flex: 0 0 auto;
   background: var(--wi-green-pill); color: var(--wi-green-700);
   display: flex; align-items: center; justify-content: center;
 }
+.wi-dq-ic svg { width: 16px; height: 16px; }
 #qualityCompletenessPanel .wf-completeness-label { font-weight: 700; margin-bottom: 0; }
 #qualityCompletenessPanel .wf-completeness-num { color: var(--wi-ink); font-weight: 800; }
-#qualityCompletenessPanel .wf-progress-track { height: 10px; border-radius: 10px; background: #EEEEF6; margin-top: 14px; }
-#qualityCompletenessPanel .wf-progress-fill { background: linear-gradient(90deg, #3DD598, #1F9D6B); }
+#qualityCompletenessPanel .wf-progress-track { height: 4px; border-radius: 4px; background: #EEEEF6; margin-top: 14px; }
+#qualityCompletenessPanel .wf-progress-fill { background: linear-gradient(90deg, #45A3FF, #4C55E8); }
 #qualityMissingRows .wf-stat-row { gap: 12px; border-bottom-color: #F0F0F6; }
 #qualityMissingRows .wf-row-label { flex: 1; color: var(--wi-ink); font-weight: 800; }
 .wi-dq-tile {
-  width: 38px; height: 38px; border-radius: 12px; flex: 0 0 auto;
+  width: 30px; height: 30px; border-radius: 10px; flex: 0 0 auto;
   display: flex; align-items: center; justify-content: center;
 }
+.wi-dq-tile svg { width: 14px; height: 14px; }
 .wi-dq-tile--ok { background: var(--wi-green-pill); color: var(--wi-green-700); }
 .wi-dq-tile--bad { background: var(--wi-red-50); color: var(--wi-red-700); }
 .wi-dq-pill {
-  min-width: 64px; height: 30px; border-radius: 999px; flex: 0 0 auto;
+  min-width: 48px; height: 24px; border-radius: 999px; flex: 0 0 auto;
   display: inline-flex; align-items: center; justify-content: center;
-  padding: 0 12px; box-sizing: border-box; font-weight: 800; font-family: inherit;
+  padding: 0 10px; box-sizing: border-box; font-weight: 800; font-family: inherit;
+  font-size: 0.85rem;
 }
 .wi-dq-pill--ok { background: var(--wi-green-pill); color: var(--wi-green-700); }
 .wi-dq-pill--bad { background: var(--wi-red-50); color: var(--wi-red-700); }
