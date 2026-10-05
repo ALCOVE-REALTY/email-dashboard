@@ -3985,9 +3985,9 @@ function renderJoiningLine(canvasId, buckets, onPointClick) {
           // 13px/800, reading visibly bigger than every other number on
           // the chart. Padding/corner-radius shrunk to match the smaller
           // text instead of leaving the box oversized around it.
-          padding: 6,
-          cornerRadius: 8,
-          caretSize: 5,
+          padding: 4,
+          cornerRadius: 6,
+          caretSize: 4,
           titleFont: { size: 0 },
           bodyFont: { size: 11, weight: '700' },
           callbacks: {
