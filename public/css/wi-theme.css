@@ -303,17 +303,14 @@ body { background: var(--wi-bg); }
 .wf-drawer-divider { background: var(--wi-divider); }
 .wf-drawer-item, .wf-drawer-subitem { animation: mUp .5s cubic-bezier(.2,.7,.2,1) both; }
 
-/* ---- Modal overlay + mail-compose card (reused by every modal) ---- */
-.wf-modal-overlay {
-  background: var(--wi-backdrop);
-  animation: mFade .25s ease both;
-}
-.wf-mail-compose {
-  border-radius: var(--wi-r-modal);
-  box-shadow: var(--wi-sh-modal);
-  background: var(--wi-surface);
-  animation: mPop .3s cubic-bezier(.2,.8,.2,1) both;
-}
+/* ---- Modal overlay + mail-compose card (reused by every modal): per
+   direct feedback, the shared SHELL every popup inherits (backdrop tint,
+   card corner radius, shadow, pop-in animation) reverts to main's plain
+   original look - only the specific, separately-approved redesigns
+   inside individual popups (Health Insurance's bottom-sheet profile card,
+   WhatsApp/Team Access/Send Mail's own scoped colours and inner content
+   below) stay as they are, since those were each signed off section-by-
+   section and aren't part of this shared shell. ---- */
 .wf-mail-compose-head { border-bottom: 1px solid var(--wi-divider); }
 .wf-mail-compose-head h3 { font-weight: 800; font-size: 1rem; color: var(--wi-ink); }
 .wf-mail-compose-foot { border-top: 1px solid var(--wi-divider); }
