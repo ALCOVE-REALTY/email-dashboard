@@ -15,6 +15,30 @@
   if (window.__wiMotionLoaded) return;
   window.__wiMotionLoaded = true;
 
+  // ---------- SUBH "F / App badge" robot SVG - one shared markup
+  // generator so the header button (44px), assistant header (48px), chat
+  // hero (104px) and bot chat-bubble avatar (30px) are all the exact same
+  // design at different sizes, instead of each spot having its own
+  // hand-drawn robot. Loads after hrAssistant.js, but is only ever called
+  // from inside that file's own functions (never at its top level), which
+  // only run later, on user interaction - by then this script has already
+  // finished loading. blinkClass lets the two spots that should blink
+  // (header button, hero) opt in without the other two (assistant header,
+  // chat avatars) getting it. ----------
+  window.wiBadge = function (size, blinkClass) {
+    return '<svg width="' + size + '" height="' + size + '" viewBox="0 0 200 200" aria-hidden="true">' +
+      '<rect x="8" y="8" width="184" height="184" rx="52" fill="#4C55E8"/>' +
+      '<line x1="100" y1="44" x2="100" y2="60" stroke="#FFFFFF" stroke-width="6" stroke-linecap="round"/>' +
+      '<circle cx="100" cy="40" r="8" fill="#FFBE2E"/>' +
+      '<rect x="46" y="90" width="14" height="34" rx="7" fill="#FFFFFF" fill-opacity="0.75"/>' +
+      '<rect x="140" y="90" width="14" height="34" rx="7" fill="#FFFFFF" fill-opacity="0.75"/>' +
+      '<rect x="56" y="60" width="88" height="86" rx="32" fill="#FFFFFF"/>' +
+      '<rect x="68" y="78" width="64" height="46" rx="20" fill="#2A2F9E"/>' +
+      '<path' + (blinkClass ? ' class="' + blinkClass + '"' : '') + ' d="M81 103 Q87 95 93 103M107 103 Q113 95 119 103" fill="none" stroke="#FFFFFF" stroke-width="5" stroke-linecap="round"/>' +
+      '<path d="M93 111 Q100 117 107 111" fill="none" stroke="#FFFFFF" stroke-width="4.5" stroke-linecap="round"/>' +
+    '</svg>';
+  };
+
   // ---------- Toast ("Name updated", "Saved", "Mail sent to N
   // recipients", ...) - a brand-new, independent element; nothing in
   // workforce.js calls window.showWiToast(...) yet in this pass. ----------
@@ -249,4 +273,57 @@
       }
     });
   }).observe(document.body, { childList: true, subtree: true });
+
+  // ---------- SUBH header button: glow at rest, light-indigo ring while
+  // the assistant panel is open (CSS for .is-open already existed,
+  // nothing was ever toggling it) - mirrors the panel's own `hidden`
+  // state onto the button, never touches how the panel opens/closes. ----------
+  (function () {
+    var aiBtn = document.getElementById('hrAssistantBtn');
+    var assistant = document.getElementById('hrAssistantPanel');
+    if (!aiBtn || !assistant) return;
+    function syncRing() {
+      aiBtn.classList.toggle('is-open', !assistant.hidden);
+    }
+    new MutationObserver(syncRing).observe(assistant, { attributes: true, attributeFilter: ['hidden'] });
+    syncRing();
+  })();
+
+  // ---------- History button: indigo border + fill while the Recent
+  // Chats sheet is open (sheet height, not just `hidden`, since it opens
+  // by animating from height 0 rather than toggling a hidden attribute -
+  // see hrAssistant.js's openHistorySheet/animateSheetTo). ----------
+  (function () {
+    var histBtn = document.getElementById('hrAssistantHistoryBtn');
+    var sheet = document.getElementById('hrHistorySheet');
+    if (!histBtn || !sheet) return;
+    function syncHist() {
+      var h = parseFloat(sheet.style.height) || 0;
+      histBtn.classList.toggle('is-active', !sheet.hidden && h > 0);
+    }
+    new MutationObserver(syncHist).observe(sheet, { attributes: true, attributeFilter: ['hidden', 'style'] });
+    syncHist();
+  })();
+
+  // ---------- Synced 3s blink (Section 3 Part B - explicitly overrides
+  // the reference's own 4s, unsynced blink): every .m-fblink-3s element
+  // (the header button + the chat hero, only) shares one clock so they
+  // close their eyes on the exact same frame, however long after each
+  // other they actually appear in the DOM. ----------
+  (function () {
+    var PERIOD = 3000;
+    function syncBlinks() {
+      var offset = -(Date.now() % PERIOD);
+      document.querySelectorAll('.m-fblink-3s').forEach(function (el) {
+        el.style.animationDelay = offset + 'ms';
+      });
+    }
+    new MutationObserver(function (muts) {
+      for (var i = 0; i < muts.length; i++) {
+        if (muts[i].addedNodes.length || muts[i].attributeName === 'hidden') { syncBlinks(); break; }
+      }
+    }).observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['hidden'] });
+    document.addEventListener('visibilitychange', syncBlinks);
+    syncBlinks();
+  })();
 })();

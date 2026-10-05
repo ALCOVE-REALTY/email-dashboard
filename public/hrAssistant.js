@@ -118,14 +118,14 @@
 
   function addLoadingBubble() {
     const row = document.createElement('div');
-    row.className = 'wf-ai-msg assistant loading';
+    row.className = 'wf-ai-msg assistant loading m-pop';
 
     const inner = document.createElement('div');
     inner.className = 'wf-ai-loading-row';
 
     const avatar = document.createElement('span');
     avatar.className = 'wf-ai-loading-avatar';
-    avatar.innerHTML = LOADING_AVATAR_SVG;
+    avatar.innerHTML = window.wiBadge ? window.wiBadge(30, null) : LOADING_AVATAR_SVG;
 
     const bubble = document.createElement('div');
     bubble.className = 'wf-ai-loading-bubble';
@@ -160,7 +160,13 @@
 
   function addBubble(role, text, attachment) {
     const row = document.createElement('div');
-    row.className = 'wf-ai-msg ' + role;
+    row.className = 'wf-ai-msg ' + role + ' m-pop';
+    if (role === 'assistant' && window.wiBadge) {
+      const avatar = document.createElement('span');
+      avatar.className = 'wf-ai-bot-avatar';
+      avatar.innerHTML = window.wiBadge(30, null);
+      row.appendChild(avatar);
+    }
     const col = document.createElement('div');
     col.className = 'wf-ai-msg-col';
     if (attachment) {
@@ -190,31 +196,19 @@
     wrap.className = 'wf-ai-welcome';
 
     const badge = document.createElement('div');
-    badge.className = 'wf-ai-welcome-badge';
+    badge.className = 'wf-ai-welcome-badge m-float';
     badge.innerHTML =
-      '<svg class="wf-ai-welcome-robot" viewBox="0 0 64 64" width="72" height="72" fill="none">' +
-        '<circle cx="15" cy="35" r="5.5" fill="currentColor"/>' +
-        '<circle cx="49" cy="35" r="5.5" fill="currentColor"/>' +
-        '<rect x="14" y="16" width="36" height="34" rx="12" fill="#fff" stroke="currentColor" stroke-width="2.5"/>' +
-        '<line x1="32" y1="16" x2="32" y2="9" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>' +
-        '<circle cx="32" cy="6.5" r="3" fill="currentColor"/>' +
-        '<rect x="20" y="27" width="24" height="12" rx="6" fill="currentColor"/>' +
-        '<circle cx="26.5" cy="33" r="2.4" fill="#fff"/>' +
-        '<circle cx="37.5" cy="33" r="2.4" fill="#fff"/>' +
-        '<path d="M25 43q7 5 14 0" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>' +
-      '</svg>' +
-      '<svg class="wf-ai-welcome-sparkle" viewBox="0 0 24 24" width="22" height="22" fill="none">' +
-        '<path d="M13 2l1.8 5.2L20 9l-5.2 1.8L13 16l-1.8-5.2L6 9l5.2-1.8z" fill="currentColor"/>' +
-        '<path d="M20 14l0.9 2.1L23 17l-2.1 0.9L20 20l-0.9-2.1L17 17l2.1-0.9z" fill="currentColor"/>' +
-      '</svg>';
+      (window.wiBadge ? window.wiBadge(104, 'm-fblink-3s') : '') +
+      '<svg class="wf-ai-welcome-sparkle wf-ai-welcome-sparkle-lg m-twinkle" viewBox="0 0 24 24" width="24" height="24" fill="#FFBE2E"><path d="M12 2l2.2 7.8L22 12l-7.8 2.2L12 22l-2.2-7.8L2 12l7.8-2.2z"/></svg>' +
+      '<svg class="wf-ai-welcome-sparkle wf-ai-welcome-sparkle-sm m-twinkle" style="animation-delay:.8s" viewBox="0 0 24 24" width="13" height="13" fill="#4C55E8"><path d="M12 2l2.2 7.8L22 12l-7.8 2.2L12 22l-2.2-7.8L2 12l7.8-2.2z"/></svg>';
 
     const card = document.createElement('div');
-    card.className = 'wf-ai-welcome-card';
+    card.className = 'wf-ai-welcome-card m-up';
     const greeting = document.createElement('p');
     greeting.className = 'wf-ai-welcome-greeting';
-    greeting.textContent = name
-      ? '👋 Hello, ' + name + '!'
-      : '👋 Hello!';
+    greeting.innerHTML =
+      '<svg width="18" height="18" viewBox="0 0 24 24" fill="#FFBE2E" aria-hidden="true"><path d="M12 2l2.2 7.8L22 12l-7.8 2.2L12 22l-2.2-7.8L2 12l7.8-2.2z"/></svg>' +
+      '<span>' + (name ? 'Hello, ' + escapeHtml(name) + '!' : 'Hello!') + '</span>';
     const tagline = document.createElement('p');
     tagline.className = 'wf-ai-welcome-tagline';
     tagline.appendChild(document.createTextNode("I'm "));
