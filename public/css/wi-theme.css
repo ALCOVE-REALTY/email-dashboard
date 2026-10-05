@@ -877,7 +877,7 @@ body { background: var(--wi-bg); }
 #healthInsuranceView .hi-renewal-text b { font-size: 0.88rem; font-weight: 800; color: var(--wi-ink); }
 #healthInsuranceView .hi-renewal-due { font-size: 0.78rem; font-weight: 800; color: #C2361A; }
 #healthInsuranceView .hi-renewal-pct { font-size: 0.9rem; font-weight: 800; color: var(--wi-ink); margin-left: auto; }
-#healthInsuranceView .wf-progress-track { height: 9px; border-radius: 10px; background: #EEEEF6; }
+#healthInsuranceView .wf-progress-track { height: 4px; border-radius: 4px; background: #EEEEF6; }
 #healthInsuranceView #hiRenewalPanel .wf-progress-fill { background: linear-gradient(90deg, #45A3FF, #4C55E8); }
 
 /* -- Covered Employees / Family Members / Total Insured Lives / Pending
