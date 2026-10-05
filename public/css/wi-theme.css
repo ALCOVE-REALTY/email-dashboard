@@ -826,3 +826,159 @@ body { background: var(--wi-bg); }
   .wi-org-panel, .wi-org-empty { animation: none !important; }
   .wi-org-chev { transition: none; }
 }
+
+/* ============================================================
+   Section 7 - Health Insurance (main page, Covered Employees/
+   Exits/Additions lists, Employee Insurance Profile sheet).
+   Everything below is scoped to these views/the one modal - the
+   underlying classes (.kpi-card, .wf-emp-list li, .wf-field-section,
+   .wf-subtabs, .wf-dist-table, .wf-mail-compose...) are shared with
+   other pages (Movement, Employee Profile, Send Mail, WhatsApp, Team
+   Access) and must keep their own current look there. ============ */
+
+/* -- page header icon (all Health Insurance pages share .hi-page-icon,
+   and nothing outside this section uses that class) -- */
+.hi-page-icon { width: 46px; height: 46px; background: var(--wi-primary-50); color: var(--wi-primary); }
+#healthInsuranceView .wf-page-head h2,
+#hiPolicyInfoView .wf-page-head h2,
+.hi-list-view .wf-page-head h2 { font-size: 23px; font-weight: 800; color: var(--wi-ink); }
+#healthInsuranceView .wf-page-head .wf-note,
+#hiPolicyInfoView .wf-page-head .wf-note,
+.hi-list-view .wf-page-head .wf-note { font-size: 13px; font-weight: 600; color: var(--wi-muted); }
+
+/* -- KPI tinted boxes (icon left, text right - .kpi-card is already this
+   shape; only colours/sizes change here) -- */
+#healthInsuranceView .kpi-card {
+  border-radius: 18px; padding: 14px 12px; box-shadow: 0 4px 16px rgba(3,2,41,.04);
+}
+#healthInsuranceView .kpi-card .kpi-icon { width: 44px; height: 44px; box-shadow: 0 2px 8px rgba(3,2,41,.06); }
+#healthInsuranceView .kpi-card .kpi-icon svg { width: 20px; height: 20px; }
+#healthInsuranceView .kpi-card .kpi-label { font-size: 13px; font-weight: 800; white-space: normal; }
+#healthInsuranceView .kpi-card .kpi-num { font-family: inherit; font-size: 22px; font-weight: 800; }
+#healthInsuranceView .kpi-card .kpi-delta-sub { font-size: 12px; font-weight: 600; color: var(--wi-text-2); }
+#healthInsuranceView .kpi-card.tone-ins-green  { background: #EAF9F2; }
+#healthInsuranceView .kpi-card.tone-ins-green  .kpi-icon, #healthInsuranceView .kpi-card.tone-ins-green  .kpi-label, #healthInsuranceView .kpi-card.tone-ins-green  .kpi-num { color: #1A7F57; }
+#healthInsuranceView .kpi-card.tone-ins-blue   { background: #EEF0FF; }
+#healthInsuranceView .kpi-card.tone-ins-blue   .kpi-icon, #healthInsuranceView .kpi-card.tone-ins-blue   .kpi-label, #healthInsuranceView .kpi-card.tone-ins-blue   .kpi-num { color: #3138B8; }
+#healthInsuranceView .kpi-card.tone-ins-purple { background: #F3EEFF; }
+#healthInsuranceView .kpi-card.tone-ins-purple .kpi-icon, #healthInsuranceView .kpi-card.tone-ins-purple .kpi-label, #healthInsuranceView .kpi-card.tone-ins-purple .kpi-num { color: #6D3FD6; }
+#healthInsuranceView .kpi-card.tone-ins-orange { background: #FFF1E3; }
+#healthInsuranceView .kpi-card.tone-ins-orange .kpi-icon, #healthInsuranceView .kpi-card.tone-ins-orange .kpi-label, #healthInsuranceView .kpi-card.tone-ins-orange .kpi-num { color: #B4530A; }
+#healthInsuranceView .kpi-card.tone-ins-red    { background: #FFEDE8; }
+#healthInsuranceView .kpi-card.tone-ins-red    .kpi-icon, #healthInsuranceView .kpi-card.tone-ins-red    .kpi-label, #healthInsuranceView .kpi-card.tone-ins-red    .kpi-num { color: #C2361A; }
+#healthInsuranceView .live-dot, #healthInsuranceView .live-dot::after { background: #3DD598; }
+
+/* -- Policy Renewal card -- */
+#healthInsuranceView .hi-renewal-icon { width: 48px; height: 48px; background: var(--wi-primary-50); color: var(--wi-primary); }
+#healthInsuranceView .hi-renewal-text b { font-size: 17px; font-weight: 800; color: var(--wi-ink); }
+#healthInsuranceView .hi-renewal-due { font-size: 13px; font-weight: 800; color: #C2361A; }
+#healthInsuranceView .hi-renewal-pct { font-size: 20px; font-weight: 800; color: var(--wi-ink); margin-left: auto; }
+#healthInsuranceView .wf-progress-track { height: 10px; border-radius: 10px; background: #EEEEF6; }
+#healthInsuranceView #hiRenewalPanel .wf-progress-fill { background: linear-gradient(90deg, #45A3FF, #4C55E8); }
+
+/* -- Covered Employees / Family Members / Total Insured Lives / Pending
+   Exits / Total Exits / New Addition Requests lists - all 6 share the
+   same markup pattern and now a shared .hi-list-view marker class added
+   to their <section>. (.wf-emp-list li / .wf-emp-avatar / .wf-status-chip
+   are shared with Employee Data's own directory list, so scoped to this
+   marker, never bare.) -- */
+.hi-list-view .hi-ce-total-row { font-size: 15px; }
+.hi-list-view .hi-ce-total-row b { color: var(--wi-primary); font-weight: 800; }
+.hi-list-view .wf-emp-list li {
+  border: none; border-radius: 20px; padding: 16px; margin-bottom: 12px;
+  box-shadow: 0 4px 16px rgba(3,2,41,.05);
+}
+.hi-list-view .wf-emp-avatar { width: 52px; height: 52px; font-size: 17px; font-weight: 800; }
+.hi-list-view .wf-emp-name { font-size: 17px; font-weight: 800; }
+.hi-list-view .wf-emp-meta, .hi-list-view .wf-emp-role { font-size: 13px; font-weight: 600; color: var(--wi-muted); }
+.hi-list-view .hi-ce-sub {
+  display: inline-flex; align-items: center; gap: 6px; align-self: flex-start;
+  margin-top: 3px; padding: 4px 10px; border-radius: 10px; background: var(--wi-surface-3);
+  font-size: 13px; font-weight: 800; color: var(--wi-ink);
+}
+.hi-list-view .hi-ce-sub svg { width: 14px; height: 14px; color: var(--wi-primary); flex-shrink: 0; }
+.hi-list-view .wf-emp-chevron { width: 34px; height: 34px; border-radius: 50%; background: var(--wi-primary-50); color: var(--wi-primary); }
+
+/* -- status pills (Active/Notice/Inactive), including inside the
+   Employee Insurance Profile sheet -- */
+.hi-list-view .wf-status-chip, #hiEmpProfileOverlay .wf-status-chip {
+  border-radius: 999px; font-weight: 800; font-size: 11px; letter-spacing: .02em; padding: 3px 9px;
+}
+.hi-list-view .wf-status-chip.active, #hiEmpProfileOverlay .wf-status-chip.active { background: #E8F8F1; color: #1A7F57; }
+.hi-list-view .wf-status-chip.active::before, #hiEmpProfileOverlay .wf-status-chip.active::before {
+  content: ''; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: #1F9D6B; margin-right: 5px;
+}
+.hi-list-view .wf-status-chip.notice, #hiEmpProfileOverlay .wf-status-chip.notice,
+.hi-list-view .wf-status-chip.inactive, #hiEmpProfileOverlay .wf-status-chip.inactive { background: #FFEDE8; color: #C2361A; }
+
+/* -- Employee Insurance Profile sheet: bottom sheet over a dark backdrop,
+   not the centered .wf-mail-compose popup the other modals use -- */
+@keyframes wiSheet { from { transform: translateY(100%); } to { transform: none; } }
+.wf-modal-overlay:has(.hi-ep-card) { align-items: flex-end; justify-content: center; padding: 0; background: rgba(3,2,41,.42); }
+.hi-ep-card {
+  width: 100%; max-width: 480px; max-height: 88vh; border-radius: 28px 28px 0 0;
+  box-shadow: 0 -16px 44px rgba(3,2,41,.22); animation: wiSheet .36s cubic-bezier(.2,.8,.2,1) both;
+}
+.hi-ep-card::before {
+  content: ''; display: block; width: 44px; height: 5px; border-radius: 5px; background: var(--wi-border-2);
+  margin: 10px auto 0;
+}
+.hi-ep-card .wf-mail-compose-head { border-bottom: 1px solid var(--wi-divider); padding: 10px 18px 14px; }
+.hi-ep-card .wf-mail-compose-head h3 { font-size: 20px; font-weight: 800; }
+.hi-ep-card .wf-mail-compose-head .wf-icon-btn { width: 44px; height: 44px; border: 1px solid var(--wi-border); box-shadow: none; }
+.hi-ep-card .wf-mail-compose-body { background: var(--wi-bg); scrollbar-width: none; }
+.hi-ep-card .wf-mail-compose-body::-webkit-scrollbar { display: none; }
+
+.hi-ep-card .wf-emp-profile-head {
+  border: none; border-radius: 20px; padding: 16px; box-shadow: 0 4px 16px rgba(3,2,41,.05); background: var(--wi-surface);
+}
+.hi-ep-card .wf-emp-profile-avatar { width: 62px; height: 62px; font-size: 21px; font-weight: 800; }
+.hi-ep-card .wf-emp-profile-name-row .name { font-size: 19px; font-weight: 800; color: var(--wi-ink); }
+.hi-ep-card .wf-emp-profile-sub { font-size: 13px; font-weight: 700; color: var(--wi-muted); }
+
+.hi-ep-card .wf-field-section {
+  border: none; border-radius: 20px; padding: 6px 16px; box-shadow: 0 4px 16px rgba(3,2,41,.05); background: var(--wi-surface);
+}
+.hi-ep-card .wf-field-row { padding: 12px 0; border-bottom-color: var(--wi-divider); }
+.hi-ep-card .wf-field-icon { width: 42px; height: 42px; border-radius: 13px; background: var(--wi-primary-50); color: var(--wi-primary); }
+.hi-ep-card .wf-field-icon svg { width: 19px; height: 19px; }
+.hi-ep-card .wf-field-label { font-size: 14px; font-weight: 600; color: var(--wi-muted); }
+.hi-ep-card .wf-field-value { font-size: 15px; font-weight: 800; color: var(--wi-ink); }
+.hi-ep-card .wf-field-value.na { color: var(--wi-faint); }
+.hi-ep-card .hi-doc-share, .hi-ep-card .hi-doc-download {
+  width: 38px; height: 38px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+}
+.hi-ep-card .hi-doc-share { background: var(--wi-primary-50); color: var(--wi-primary); }
+.hi-ep-card .hi-doc-download { background: var(--wi-primary); color: #FFFFFF; }
+.hi-ep-card .hi-doc-download:hover, .hi-ep-card .hi-doc-download:focus-visible,
+.hi-ep-card .hi-doc-share:hover, .hi-ep-card .hi-doc-share:focus-visible { background: var(--wi-primary); color: #FFFFFF; }
+.hi-ep-card .hi-doc-share:hover, .hi-ep-card .hi-doc-share:focus-visible { background: var(--wi-primary-50); color: var(--wi-primary); }
+
+.hi-ep-card .wf-subtabs { border-bottom: 2px solid var(--wi-border); gap: 0; margin-bottom: 14px; }
+.hi-ep-card .wf-subtab { height: 50px; font-size: 15px; font-weight: 800; color: var(--wi-muted); border-bottom: 3px solid transparent; margin-bottom: -2px; transition: color .25s, border-color .25s; }
+.hi-ep-card .wf-subtab[aria-pressed="true"] { color: var(--wi-primary); border-bottom-color: var(--wi-primary); }
+.hi-ep-card .hi-ep-section-title { font-size: 16px; font-weight: 800; color: var(--wi-ink); }
+
+.hi-ep-card #hiEpTabFamily .wf-emp-list li {
+  border: 1.5px solid var(--wi-border-3); border-radius: 20px; background: var(--wi-surface); box-shadow: none; padding: 14px;
+}
+.hi-ep-card #hiEpTabFamily .wf-emp-avatar { width: 50px; height: 50px; font-size: 16px; font-weight: 800; }
+.hi-ep-card #hiEpTabFamily .wf-emp-name { font-size: 16px; font-weight: 800; }
+.hi-ep-card #hiEpTabFamily .wf-emp-meta { font-size: 13px; font-weight: 600; color: var(--wi-muted); }
+.hi-ep-card #hiEpTabFamily .hi-ce-sub { background: none; padding: 0; margin-top: 4px; font-size: 14px; font-weight: 800; color: var(--wi-ink); }
+.hi-ep-card .hi-ce-total-row {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 10px; background: none; padding: 0; margin-top: 10px;
+}
+.hi-ep-card .hi-ce-total-row span {
+  background: var(--wi-surface); border-radius: 16px; padding: 12px 14px; box-shadow: 0 4px 14px rgba(3,2,41,.04);
+  display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 700; color: var(--wi-muted);
+}
+.hi-ep-card .hi-ce-total-row b { font-size: 20px; font-weight: 800; color: #3138B8; }
+
+.hi-ep-card .wf-dist-table { background: var(--wi-surface); border-radius: 20px; padding: 14px 16px; box-shadow: 0 4px 16px rgba(3,2,41,.05); }
+.hi-ep-card .wf-dist-header { font-size: 13px; font-weight: 700; color: var(--wi-muted); border-bottom: 1px solid var(--wi-border); padding-bottom: 10px; }
+.hi-ep-card .wf-dist-row { padding: 14px 6px; border-bottom-color: var(--wi-divider); font-size: 15px; font-weight: 800; color: var(--wi-ink); }
+.hi-ep-card .wf-dist-total-row { margin-top: 10px; padding: 12px 6px; border-radius: 14px; background: var(--wi-primary-50); border-bottom: none; }
+.hi-ep-card .wf-dist-total-row .wf-dist-label-col, .hi-ep-card .wf-dist-total-row .wf-dist-num-col { color: #3138B8; }
+.hi-ep-card .wf-dist-total-icon { background: var(--wi-surface); }
+@media (prefers-reduced-motion: reduce) { .hi-ep-card { animation: none !important; } }

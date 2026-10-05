@@ -2957,9 +2957,9 @@ function renderCoveredEmployeesList(items) {
   listEl.innerHTML = items.length
     ? items
         .map(
-          (e) =>
+          (e, i) =>
             '<li data-employee-id="' + escapeHtml(e.employeeId) + '">' +
-              '<span class="wf-emp-avatar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + PERSON_ICON + '</svg></span>' +
+              hiAvatarHtml(e.name, i) +
               '<span class="wf-emp-main">' +
                 '<span class="hi-ce-name-row">' +
                   '<span class="wf-emp-name">' + escapeHtml(e.name) + '</span>' +
@@ -2967,7 +2967,7 @@ function renderCoveredEmployeesList(items) {
                 '</span>' +
                 '<span class="wf-emp-meta">' + escapeHtml(e.employeeId) + '</span>' +
                 '<span class="wf-emp-role">' + escapeHtml(titleCase(e.designation) || '—') + '</span>' +
-                '<span class="hi-ce-sub">' +
+                '<span class="hi-ce-sub">' + HI_FAMILY_CHIP_ICON +
                   (e.familyCount > 0 ? 'Self + ' + e.familyCount + ' Family' : 'Self only') +
                   ' &nbsp;|&nbsp; ₹' + Math.round(e.totalPremium).toLocaleString('en-IN') +
                 '</span>' +
@@ -3083,7 +3083,7 @@ function renderHiFamilyMembersList(items) {
         .map(
           (e) =>
             '<li data-employee-id="' + escapeHtml(e.employeeId) + '">' +
-              '<span class="wf-emp-avatar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + PERSON_ICON + '</svg></span>' +
+              hiRelationAvatarHtml(e.name, e.relationship) +
               '<span class="wf-emp-main">' +
                 '<span class="wf-emp-name">' + escapeHtml(e.name) + '</span>' +
                 '<span class="wf-emp-meta">' + escapeHtml(e.employeeId) + ' · ' + escapeHtml(e.relationship) + '</span>' +
@@ -3199,7 +3199,7 @@ function renderHiTotalLivesList(items) {
         .map(
           (e) =>
             '<li data-employee-id="' + escapeHtml(e.employeeId) + '">' +
-              '<span class="wf-emp-avatar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + PERSON_ICON + '</svg></span>' +
+              hiRelationAvatarHtml(e.name, e.relationship) +
               '<span class="wf-emp-main">' +
                 '<span class="wf-emp-name">' + escapeHtml(e.name) + '</span>' +
                 '<span class="wf-emp-meta">' + escapeHtml(e.employeeId) + ' · ' + escapeHtml(e.relationship) + '</span>' +
@@ -3415,16 +3415,17 @@ function renderHiExitsList(items) {
   listEl.innerHTML = items.length
     ? items
         .map(
-          (e) =>
+          (e, i) =>
             '<li data-employee-id="' + escapeHtml(e.employeeId) + '">' +
-              '<span class="wf-emp-avatar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + PERSON_ICON + '</svg></span>' +
+              hiAvatarHtml(e.name, i) +
               '<span class="wf-emp-main">' +
-                '<span class="wf-emp-name">' + escapeHtml(e.name) + '</span>' +
-                '<span class="wf-emp-meta">' + escapeHtml(e.employeeId) +
-                  (e.status ? ' · <span class="wf-status-chip ' + statusChipClass(e.status) + '">' + escapeHtml(e.status) + '</span>' : '') +
+                '<span class="hi-ce-name-row">' +
+                  '<span class="wf-emp-name">' + escapeHtml(e.name) + '</span>' +
+                  (e.status ? '<span class="wf-status-chip ' + statusChipClass(e.status) + '">' + escapeHtml(e.status) + '</span>' : '') +
                 '</span>' +
+                '<span class="wf-emp-meta">' + escapeHtml(e.employeeId) + '</span>' +
                 '<span class="wf-emp-role">' + escapeHtml(titleCase(e.designation) || '—') + '</span>' +
-                '<span class="hi-ce-sub">' + (e.familyCount > 0 ? 'Self + ' + e.familyCount + ' Family' : 'Self only') + '</span>' +
+                '<span class="hi-ce-sub">' + HI_FAMILY_CHIP_ICON + (e.familyCount > 0 ? 'Self + ' + e.familyCount + ' Family' : 'Self only') + '</span>' +
               '</span>' +
               '<span class="wf-emp-chevron"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg></span>' +
             '</li>'
@@ -3549,16 +3550,17 @@ function renderHiAdditionsList(items) {
   listEl.innerHTML = items.length
     ? items
         .map(
-          (e) =>
+          (e, i) =>
             '<li data-employee-id="' + escapeHtml(e.employeeId) + '">' +
-              '<span class="wf-emp-avatar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + PERSON_ICON + '</svg></span>' +
+              hiAvatarHtml(e.name, i) +
               '<span class="wf-emp-main">' +
-                '<span class="wf-emp-name">' + escapeHtml(e.name) + '</span>' +
-                '<span class="wf-emp-meta">' + escapeHtml(e.employeeId) +
-                  (e.status ? ' · <span class="wf-status-chip ' + statusChipClass(e.status) + '">' + escapeHtml(e.status) + '</span>' : '') +
+                '<span class="hi-ce-name-row">' +
+                  '<span class="wf-emp-name">' + escapeHtml(e.name) + '</span>' +
+                  (e.status ? '<span class="wf-status-chip ' + statusChipClass(e.status) + '">' + escapeHtml(e.status) + '</span>' : '') +
                 '</span>' +
+                '<span class="wf-emp-meta">' + escapeHtml(e.employeeId) + '</span>' +
                 '<span class="wf-emp-role">' + escapeHtml(titleCase(e.designation) || '—') + '</span>' +
-                '<span class="hi-ce-sub">' + (e.familyCount > 0 ? 'Self + ' + e.familyCount + ' Family' : 'Self only') + '</span>' +
+                '<span class="hi-ce-sub">' + HI_FAMILY_CHIP_ICON + (e.familyCount > 0 ? 'Self + ' + e.familyCount + ' Family' : 'Self only') + '</span>' +
               '</span>' +
               '<span class="wf-emp-chevron"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg></span>' +
             '</li>'
@@ -3682,16 +3684,17 @@ function renderHiTotalExitsList(items) {
   listEl.innerHTML = items.length
     ? items
         .map(
-          (e) =>
+          (e, i) =>
             '<li data-employee-id="' + escapeHtml(e.employeeId) + '">' +
-              '<span class="wf-emp-avatar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + PERSON_ICON + '</svg></span>' +
+              hiAvatarHtml(e.name, i) +
               '<span class="wf-emp-main">' +
-                '<span class="wf-emp-name">' + escapeHtml(e.name) + '</span>' +
-                '<span class="wf-emp-meta">' + escapeHtml(e.employeeId) +
-                  (e.status ? ' · <span class="wf-status-chip ' + statusChipClass(e.status) + '">' + escapeHtml(e.status) + '</span>' : '') +
+                '<span class="hi-ce-name-row">' +
+                  '<span class="wf-emp-name">' + escapeHtml(e.name) + '</span>' +
+                  (e.status ? '<span class="wf-status-chip ' + statusChipClass(e.status) + '">' + escapeHtml(e.status) + '</span>' : '') +
                 '</span>' +
+                '<span class="wf-emp-meta">' + escapeHtml(e.employeeId) + '</span>' +
                 '<span class="wf-emp-role">' + escapeHtml(titleCase(e.designation) || '—') + '</span>' +
-                '<span class="hi-ce-sub">' + (e.familyCount > 0 ? 'Self + ' + e.familyCount + ' Family' : 'Self only') + '</span>' +
+                '<span class="hi-ce-sub">' + HI_FAMILY_CHIP_ICON + (e.familyCount > 0 ? 'Self + ' + e.familyCount + ' Family' : 'Self only') + '</span>' +
               '</span>' +
               '<span class="wf-emp-chevron"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg></span>' +
             '</li>'
@@ -4102,10 +4105,10 @@ async function openHiEmpProfile(employeeId, source) {
   }
 }
 
-function hiEmpProfileMemberRow(name, metaExtra, status, premium) {
+function hiEmpProfileMemberRow(name, metaExtra, status, premium, relationship) {
   return (
     '<li style="cursor:default;">' +
-      '<span class="wf-emp-avatar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + PERSON_ICON + '</svg></span>' +
+      hiRelationAvatarHtml(name, relationship) +
       '<span class="wf-emp-main">' +
         '<span class="hi-ce-name-row">' +
           '<span class="wf-emp-name">' + escapeHtml(name) + '</span>' +
@@ -4125,7 +4128,7 @@ function renderHiEmpProfile(data) {
 
   hiEmpProfileBody.innerHTML =
     '<div class="wf-emp-profile-head">' +
-      '<span class="wf-emp-profile-avatar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + PERSON_ICON + '</svg></span>' +
+      '<span class="wf-emp-profile-avatar" style="background:' + HI_AVATAR_PALETTE[0].bg + ';color:' + HI_AVATAR_PALETTE[0].fg + '">' + escapeHtml(hiInitials(data.name).toUpperCase()) + '</span>' +
       '<div class="wf-emp-profile-info">' +
         '<div class="wf-emp-profile-name-row">' +
           '<span class="name">' + escapeHtml(data.name) + '</span>' +
@@ -4177,13 +4180,14 @@ function renderHiEmpProfile(data) {
     '<div id="hiEpTabFamily">' +
       '<div class="hi-ep-section-title">Covered Members</div>' +
       '<ul class="wf-emp-list">' +
-        hiEmpProfileMemberRow(data.name + ' (Self)', data.selfAge ? 'Age ' + escapeHtml(data.selfAge) : null, data.status, data.selfPremium) +
+        hiEmpProfileMemberRow(data.name + ' (Self)', data.selfAge ? 'Age ' + escapeHtml(data.selfAge) : null, data.status, data.selfPremium, 'self') +
         data.family
           .map((m) => hiEmpProfileMemberRow(
             m.name,
             escapeHtml(m.relationship) + (m.age ? ' · Age ' + escapeHtml(m.age) : ''),
             m.status,
-            m.premiumWithGST
+            m.premiumWithGST,
+            m.relationship
           ))
           .join('') +
       '</ul>' +
@@ -4199,8 +4203,9 @@ function renderHiEmpProfile(data) {
 }
 
 function renderHiEpPremiumBreakdown(data) {
-  const c = chartColors();
-  const groupColors = { employees: c.accent, spouse: c.warning, children: c.candidate, parents: c.important, other: c.muted };
+  // Section 7's exact relation colours (same palette as the member avatars
+  // above), not the chart's generic accent/warning/candidate tokens.
+  const groupColors = { employees: '#4C55E8', spouse: '#45D1FF', children: '#FFBE2E', parents: '#FF5B37', other: '#A9A8BA' };
   const groupKeys = Object.keys(HI_EP_PREMIUM_GROUP_LABELS).filter((k) => data.countByGroup[k] > 0);
   const totalCount = groupKeys.reduce((sum, k) => sum + data.countByGroup[k], 0);
   const totalPremium = groupKeys.reduce((sum, k) => sum + data.premiumByGroup[k], 0);
@@ -5420,6 +5425,43 @@ function titleCase(s) {
 }
 
 const PERSON_ICON = '<circle cx="12" cy="8" r="4"/><path d="M5 21v-2a7 7 0 0 1 14 0v2"/>';
+
+// Health Insurance's colored-initials avatars (Section 7) - purely a
+// presentational swap for the generic PERSON_ICON glyph used everywhere
+// else .wf-emp-avatar appears (Employee Data directory, etc.), which this
+// never touches. Cycles by row position; initials are derived from the
+// same real name string already shown next to it, nothing new is fetched.
+const HI_AVATAR_PALETTE = [
+  { bg: '#EEF0FF', fg: '#3138B8' },
+  { bg: '#E5F7FF', fg: '#08739C' },
+  { bg: '#FFF6E0', fg: '#8F6000' },
+  { bg: '#FFEDE8', fg: '#C2361A' },
+  { bg: '#F3EEFF', fg: '#6D3FD6' }
+];
+function hiInitials(name) {
+  const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
+  return ((parts[0] || '')[0] || '') + ((parts[1] || '')[0] || '') || '?';
+}
+function hiAvatarHtml(name, index) {
+  const c = HI_AVATAR_PALETTE[(index || 0) % HI_AVATAR_PALETTE.length];
+  return '<span class="wf-emp-avatar" style="background:' + c.bg + ';color:' + c.fg + '">' + escapeHtml(hiInitials(name).toUpperCase()) + '</span>';
+}
+// Family Members tab uses relation-based colours instead of a row cycle
+// (Self/Spouse/Children all get the same colour everywhere they appear,
+// regardless of list position) - matched by keyword against the real
+// relationship string from the sheet, same approach as DEPARTMENT_ICON_RULES.
+function hiRelationAvatarHtml(name, relationship) {
+  const r = String(relationship || '').toLowerCase();
+  let c = HI_AVATAR_PALETTE[3]; // parents (mother/father) + fallback
+  if (!r || r === 'self') c = HI_AVATAR_PALETTE[0];
+  else if (/spouse|wife|husband/.test(r)) c = HI_AVATAR_PALETTE[1];
+  else if (/son|daughter|child/.test(r)) c = HI_AVATAR_PALETTE[2];
+  return '<span class="wf-emp-avatar" style="background:' + c.bg + ';color:' + c.fg + '">' + escapeHtml(hiInitials(name).toUpperCase()) + '</span>';
+}
+// Grey "Self + N Family | ₹premium" chip's people icon - same path as the
+// existing ICONS.total glyph used for the donut/legend elsewhere in Health
+// Insurance, just inlined here since hi-ce-sub is plain text, not an <svg>.
+const HI_FAMILY_CHIP_ICON = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">' + ICONS.total + '</svg>';
 
 function renderEmployees(data) {
   lastEmployeeList = data.items;
