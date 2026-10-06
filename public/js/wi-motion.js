@@ -121,6 +121,31 @@
     var prefix = opts.prefix !== undefined ? opts.prefix : str.slice(0, idx);
     var suffix = opts.suffix !== undefined ? opts.suffix : str.slice(idx + match[0].length);
 
+    // Coalesce near-simultaneous writes to the same element (e.g. an
+    // approximate/prefetched value immediately followed moments later by
+    // the real final one, from two different code paths updating it) into
+    // ONE animation to whichever value turns out to be the LAST within a
+    // short window - instead of visibly animating all the way to the
+    // first value, then restarting toward the second (reads as "it counts
+    // up, then goes back down, then counts up again"). Only applies before
+    // anything is animating yet; retargeting a number that's ALREADY
+    // moving (below) applies immediately since that's just a smooth,
+    // visible continuation, not a flash/restart risk.
+    if (!el.__wiCountUpActive) {
+      clearTimeout(el.__wiCountUpCoalesceTimer);
+      el.__wiCountUpCoalesceArgs = { target: target, prefix: prefix, suffix: suffix, decimals: decimals };
+      el.__wiCountUpCoalesceTimer = setTimeout(function () {
+        var args = el.__wiCountUpCoalesceArgs;
+        el.__wiCountUpCoalesceArgs = null;
+        startWiCountUpRun(el, args.target, args.prefix, args.suffix, args.decimals);
+      }, 90);
+      return true;
+    }
+    startWiCountUpRun(el, target, prefix, suffix, decimals);
+    return true;
+  };
+
+  function startWiCountUpRun(el, target, prefix, suffix, decimals) {
     // Read the start point from OUR OWN last interpolated value, not from
     // el.textContent - by the time this runs, the caller (whatever set the
     // new real value) has already overwritten the DOM text with the NEW
@@ -169,8 +194,7 @@
       }
     }
     requestAnimationFrame(tick);
-    return true;
-  };
+  }
 
   // ---------- Staggered entrance: apply .m-up with an increasing delay
   // to a NodeList/array of elements. Reusable by any page's load
