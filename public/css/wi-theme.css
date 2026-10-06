@@ -1385,3 +1385,64 @@ body { background: var(--wi-bg); }
 @media (prefers-reduced-motion: reduce) {
   .wi-pf-avatar-wrap .wf-avatar.lg, .wi-pf-editor, .wi-pf-after { animation: none !important; }
 }
+
+/* ============================================================
+   Desktop contrast boost — COMPUTER ONLY (wide window + mouse).
+   Mobile/touch devices never match this query, so nothing here can
+   change a single mobile pixel - it only adds a border/shadow to cards,
+   round icon buttons, KPI icons and inputs that currently read flat
+   against the page background on a real monitor. Sizes are untouched:
+   `* { box-sizing: border-box; }` (styles.css) already means a 1px
+   border doesn't grow any element. Placeholder names from the spec
+   mapped to this app's real classes below (left as comments where a
+   single real class covers several placeholders at once). Colours,
+   icons, text and animations are all untouched - this file's other
+   rules decide those; this block only adds border/shadow/filter. ============ */
+@media (min-width: 768px) and (hover: hover) and (pointer: fine) {
+  body { background: #F1F2F7; }
+
+  /* wi-card/wi-dash-card/wi-emp-card/wi-kpi/wi-ins-prof/wi-ins-policy/
+     wi-member/wi-sum-tile/wi-prem-card/wi-lg-card/wi-dq-card/wi-iv-card -
+     every page's generic card shell, the KPI tile, list rows (employee/
+     candidate/family/doc), the profile head, field-section detail cards,
+     distribution tables, and the already-real wi-pf-card/wi-iv-head-card/
+     wf-ai-welcome-card/wf-emp-summary-card/hi-ce-total-row tiles. */
+  .wf-panel, .kpi-card, .wf-emp-list li, .wf-emp-profile-head, .wf-field-section,
+  .wf-dist-table, .wi-pf-card, .wi-iv-head-card, .wf-emp-summary-card,
+  .hi-ce-total-row span, .wf-ai-welcome-card, [data-wi-card] {
+    border: 1px solid #E4E5EE;
+    box-shadow: 0 1px 2px rgba(3,2,41,.06), 0 6px 18px rgba(3,2,41,.08);
+  }
+  .wi-overview-box { background: #E9EBF3; border-color: #DDDFEA; }
+
+  /* wi-round-btn/wi-back/wi-modal-x/wi-ins-x/wi-sheet-close/wi-filter/
+     wi-attach/wi-iv-copy/wi-pf-edit - every round icon button app-wide
+     (back, menu, refresh, share, filter, modal/sheet close, attach,
+     copy, the profile pencil) already shares this one class. */
+  .wf-icon-btn, [data-wi-round] {
+    border: 1px solid #E1E2EC;
+    box-shadow: 0 2px 6px rgba(3,2,41,.10);
+  }
+  .wi-kpi-ic { box-shadow: 0 0 0 1px rgba(3,2,41,.06), 0 2px 8px rgba(3,2,41,.08); }
+  .kpi-icon { box-shadow: 0 0 0 1px rgba(3,2,41,.06), 0 2px 8px rgba(3,2,41,.08); }
+
+  /* wi-subhead-icon/wi-renew-ic/wi-ins-tile/wi-sheet-icon/wi-chat-ic/
+     wi-modal-icon/wi-dq-tile/wi-org-empty-icon - page-header icons, the
+     Policy Renewal icon, field-row icon tiles, HR Assistant's panel
+     icon, Data Quality's row tiles, Org Chart's empty-state icon. */
+  .hi-page-icon, .hi-renewal-icon, .wf-field-icon, .wi-dq-tile,
+  .wi-org-empty-icon, .wf-mail-icon-tile, .wf-ai-panel-icon {
+    filter: saturate(1.15) brightness(.97);
+  }
+
+  /* wi-search/wi-input-pill/wi-chipbox/wi-org-select/wi-lg-select/
+     wi-lg-input/wi-iv-search - Employee Data's search, Send Mail's chip
+     input, Interview Panel's search, and every enhanced <select>
+     trigger app-wide (Org Chart/Letter Generator/Health Insurance/
+     filters all share .wfu-select-trigger), plus every plain
+     type="search" field (Health Insurance's own list searches). */
+  #wfSearch, .wf-mail-chip-input, .wi-iv-search-wrap, .wfu-select-trigger,
+  input[type="search"] {
+    border-color: #D9DAE6;
+  }
+}
