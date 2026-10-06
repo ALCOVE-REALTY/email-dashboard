@@ -94,7 +94,15 @@
   // straight from one filtered count to another before the first finished
   // counting), that's genuinely new data - start fresh from it, which a
   // generation counter on the OLD run makes safe (it stops writing instead
-  // of racing the new one). ----------
+  // of racing the new one).
+  //
+  // Second bug this also fixes: retargeting used to always restart from 0,
+  // so switching filters mid-count (e.g. Active -> Total before Active's
+  // count finished) made the number visibly DROP from wherever it had
+  // reached (e.g. 300) back down to 0 and count back up - read as "it goes
+  // up, then jumps back down, then goes up again". Retargeting now
+  // continues from whatever number is currently on screen instead of
+  // resetting to 0, so it only ever moves toward the new target. ----------
   window.wiCountUp = function (el, opts) {
     if (!el) return false;
     opts = opts || {};
@@ -112,6 +120,15 @@
     var idx = match.index;
     var prefix = opts.prefix !== undefined ? opts.prefix : str.slice(0, idx);
     var suffix = opts.suffix !== undefined ? opts.suffix : str.slice(idx + match[0].length);
+
+    // Read the start point from OUR OWN last interpolated value, not from
+    // el.textContent - by the time this runs, the caller (whatever set the
+    // new real value) has already overwritten the DOM text with the NEW
+    // target itself, so re-parsing el.textContent here would just read the
+    // target back and collapse startValue to it (a silent, instant snap
+    // instead of a smooth continuation).
+    var startValue = (el.__wiCountUpActive && typeof el.__wiCountUpLastNumeric === 'number') ? el.__wiCountUpLastNumeric : 0;
+
     var dur = 1100;
     var start = null;
     var gen = (el.__wiCountUpGen = (el.__wiCountUpGen || 0) + 1);
@@ -124,12 +141,15 @@
       if (start === null) start = now;
       var t = Math.min(1, (now - start) / dur);
       var eased = 1 - Math.pow(1 - t, 3);
-      var text = format(target * eased);
+      var value = startValue + (target - startValue) * eased;
+      el.__wiCountUpLastNumeric = value;
+      var text = format(value);
       el.textContent = text;
       el.__wiCountUpLastWritten = text;
       if (t < 1) {
         requestAnimationFrame(tick);
       } else {
+        el.__wiCountUpLastNumeric = target;
         var finalText = format(target);
         el.textContent = finalText;
         el.__wiCountUpLastWritten = finalText;
