@@ -466,7 +466,6 @@ body { background: var(--wi-bg); }
    together with no gap at all. */
 .wf-dash-flow > .wf-panel, .wf-view-flow > .wf-panel,
 .wf-dash-flow > .wf-page-head, .wf-view-flow > .wf-page-head,
-.wf-view-flow > .wf-emp-summary-card,
 .wf-view-flow > .wf-filterbar { margin-bottom: 0; }
 
 /* -- Section 9: single Overview box, reinstating main's own
@@ -574,30 +573,10 @@ body { background: var(--wi-bg); }
   content: ''; width: 6px; height: 6px; border-radius: 50%;
   background: var(--wi-green-600); flex-shrink: 0;
 }
-.wf-emp-summary-card {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  background: var(--wi-surface);
-  border-radius: var(--wi-r-card);
-  box-shadow: var(--wi-sh-card);
-  padding: 14px;
-  margin-bottom: 14px;
-}
-.wf-emp-summary-icon {
-  width: 34px; height: 34px; flex-shrink: 0;
-  border-radius: 50%;
-  background: var(--wi-green-50);
-  color: var(--wi-green);
-  display: flex; align-items: center; justify-content: center;
-}
-.wf-emp-summary-icon svg { width: 16px; height: 16px; }
-.wf-emp-summary-body { display: flex; flex-direction: column; gap: 2px; }
-.wf-emp-summary-num-row { display: flex; align-items: center; gap: 8px; }
-/* #directoryTotalCount only (the one real caller of this shared "big
-   stat" class here) - scoped so the Data Quality tab's own completeness
-   % keeps its existing, unrelated size. */
-.wf-emp-summary-num-row .wf-completeness-num { font-size: 1.3rem; }
+/* .wf-emp-summary-card/-icon/-body/-num-row removed - main never had a
+   card/icon here at all, just two plain text divs (directoryTotalLabel/
+   directoryTotalCount); reverted the markup in workforce.html to match,
+   per direct feedback that this box was never on main. */
 
 /* ---- Employee Profile ---- */
 #empDetailBody { display: flex; flex-direction: column; gap: 16px; }
@@ -1439,14 +1418,15 @@ body { background: var(--wi-bg); }
      every page's generic card shell, the KPI tile, list rows (employee/
      candidate/family/doc), the profile head, field-section detail cards,
      distribution tables, and the already-real wi-pf-card/wi-iv-head-card/
-     wf-ai-welcome-card/wf-emp-summary-card/hi-ce-total-row tiles. */
+     wf-ai-welcome-card/hi-ce-total-row tiles. (Employee Data's own count
+     is plain text, not a card, same as main - deliberately excluded.) */
   /* Border colour is main's own exact --line value (#dde4e2, a neutral
      grey) - the earlier indigo-tinted #C7CBE4 read as a visible "blue
      line" around every card, which main never had (its border is neutral,
      not colour-tinted). Not hue-adapted this time, same reasoning as the
      page background fix above: copy main exactly, don't reinterpret it. */
   .wf-panel, .kpi-card, .wf-emp-list li, .wf-emp-profile-head, .wf-field-section,
-  .wf-dist-table, .wi-pf-card, .wi-iv-head-card, .wf-emp-summary-card,
+  .wf-dist-table, .wi-pf-card, .wi-iv-head-card,
   .hi-ce-total-row span, .wf-ai-welcome-card, [data-wi-card] {
     border: 1.5px solid #dde4e2;
     box-shadow: 0 4px 16px rgba(45,50,90,.1);
