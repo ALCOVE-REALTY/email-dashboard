@@ -352,6 +352,14 @@ body { background: var(--wi-bg); }
   border-radius: var(--wi-r-btn);
   background: var(--wi-surface-3); border: 1px solid var(--wi-border-2); color: var(--wi-ink);
   font-weight: 800;
+  /* Matched to its sibling .wf-send-mail-btn's size (padding 8px 14px,
+     font-size 0.78rem) - main's own .wf-clear-btn is slightly bigger
+     (9px 12px/0.82rem), which read as Cancel/Close/Back looking a hair
+     larger than the primary button right next to it in every popup
+     using this shared footer. Same fix already applied to the Profile
+     page's Logout button (.wi-pf-logout) for the same reason. */
+  padding: 8px 14px;
+  font-size: 0.78rem;
 }
 /* ONE Send Mail button style, everywhere it appears (every page's own
    trigger button + the popup's own send button all already share this
