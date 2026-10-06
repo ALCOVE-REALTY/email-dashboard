@@ -136,6 +136,18 @@
     function format(v) {
       return prefix + v.toLocaleString('en-IN', { minimumFractionDigits: decimals, maximumFractionDigits: decimals }) + suffix;
     }
+    // Overwrite the caller's raw final-value text with the start value
+    // RIGHT NOW, synchronously - not on the first requestAnimationFrame
+    // callback. The browser can paint in the gap between this microtask
+    // and that first rAF callback, which is enough for the caller's
+    // untouched final value (e.g. "507") to flash on screen for one frame
+    // before dropping to the animation's start point - looking exactly
+    // like the count jumping backward. Writing synchronously here closes
+    // that window entirely.
+    el.__wiCountUpLastNumeric = startValue;
+    var firstText = format(startValue);
+    el.textContent = firstText;
+    el.__wiCountUpLastWritten = firstText;
     function tick(now) {
       if (el.__wiCountUpGen !== gen) return; // superseded by a newer call for this element
       if (start === null) start = now;
