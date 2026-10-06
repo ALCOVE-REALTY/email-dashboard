@@ -149,7 +149,7 @@
     messagesEl.appendChild(row);
     scrollToBottom();
 
-    row._loadingTimerId = setTimeout(() => setStage(3, 'AI is preparing your response...'), 2000);
+    row._loadingTimerId = setTimeout(() => setStage(3, 'Preparing your response...'), 2000);
     return row;
   }
 
