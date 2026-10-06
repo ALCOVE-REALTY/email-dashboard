@@ -961,15 +961,19 @@ body { background: var(--wi-bg); }
 #healthInsuranceView .kpi-card .kpi-label { font-size: 0.68rem; font-weight: 600; white-space: normal; }
 #healthInsuranceView .kpi-card .kpi-num { font-family: inherit; font-size: 1.1rem; font-weight: 700; }
 #healthInsuranceView .kpi-card .kpi-delta-sub { font-size: 0.7rem; font-weight: 600; color: var(--wi-text-2); }
-#healthInsuranceView .kpi-card.tone-ins-green  { background: #EAF9F2; }
+/* Box backgrounds reverted to main's own original --move-*-bg hex values
+   (confirmed from main's :root - #dbeafe/#ede9fe/#dcfce7/#fee2e2/#ffedd5),
+   not the --move-*-bg variables themselves, since those were re-pointed
+   to the new wi- palette app-wide; text/icon colours keep the new look. */
+#healthInsuranceView .kpi-card.tone-ins-green  { background: #dcfce7; }
 #healthInsuranceView .kpi-card.tone-ins-green  .kpi-icon, #healthInsuranceView .kpi-card.tone-ins-green  .kpi-label, #healthInsuranceView .kpi-card.tone-ins-green  .kpi-num { color: #1A7F57; }
-#healthInsuranceView .kpi-card.tone-ins-blue   { background: #EEF0FF; }
+#healthInsuranceView .kpi-card.tone-ins-blue   { background: #dbeafe; }
 #healthInsuranceView .kpi-card.tone-ins-blue   .kpi-icon, #healthInsuranceView .kpi-card.tone-ins-blue   .kpi-label, #healthInsuranceView .kpi-card.tone-ins-blue   .kpi-num { color: #3138B8; }
-#healthInsuranceView .kpi-card.tone-ins-purple { background: #F3EEFF; }
+#healthInsuranceView .kpi-card.tone-ins-purple { background: #ede9fe; }
 #healthInsuranceView .kpi-card.tone-ins-purple .kpi-icon, #healthInsuranceView .kpi-card.tone-ins-purple .kpi-label, #healthInsuranceView .kpi-card.tone-ins-purple .kpi-num { color: #6D3FD6; }
-#healthInsuranceView .kpi-card.tone-ins-orange { background: #FFF1E3; }
+#healthInsuranceView .kpi-card.tone-ins-orange { background: #ffedd5; }
 #healthInsuranceView .kpi-card.tone-ins-orange .kpi-icon, #healthInsuranceView .kpi-card.tone-ins-orange .kpi-label, #healthInsuranceView .kpi-card.tone-ins-orange .kpi-num { color: #B4530A; }
-#healthInsuranceView .kpi-card.tone-ins-red    { background: #FFEDE8; }
+#healthInsuranceView .kpi-card.tone-ins-red    { background: #fee2e2; }
 #healthInsuranceView .kpi-card.tone-ins-red    .kpi-icon, #healthInsuranceView .kpi-card.tone-ins-red    .kpi-label, #healthInsuranceView .kpi-card.tone-ins-red    .kpi-num { color: #C2361A; }
 #healthInsuranceView .live-dot, #healthInsuranceView .live-dot::after { background: #3DD598; }
 
