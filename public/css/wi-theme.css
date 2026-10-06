@@ -1008,6 +1008,7 @@ body { background: var(--wi-bg); }
    Employee Insurance Profile sheet -- */
 .hi-list-view .wf-status-chip, #hiEmpProfileOverlay .wf-status-chip {
   border-radius: 999px; font-weight: 800; font-size: 0.62rem; letter-spacing: .02em; padding: 1px 7px;
+  min-width: 80px; text-align: center;
 }
 .hi-list-view .wf-status-chip.active, #hiEmpProfileOverlay .wf-status-chip.active { background: #E8F8F1; color: #1A7F57; }
 .hi-list-view .wf-status-chip.active::before, #hiEmpProfileOverlay .wf-status-chip.active::before {
