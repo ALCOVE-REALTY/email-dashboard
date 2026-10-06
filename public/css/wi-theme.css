@@ -1164,8 +1164,13 @@ body { background: var(--wi-bg); }
 .wi-iv .wf-ip-link-row > span { color: var(--wi-text-2); font-weight: 800; }
 .wi-iv .wf-ip-link-anchor { background: var(--wi-surface-3); border-color: var(--wi-border-2); color: #3138B8; font-weight: 600; text-decoration: none; }
 .wi-iv .wf-ip-link-copy .wf-icon-btn { border-color: var(--wi-border-2); color: var(--wi-ink); }
-.wi-iv .wf-whatsapp-btn { background: var(--wi-green-pill); border-color: #A7E8C3; color: #1DA851; }
-.wi-iv .wf-whatsapp-btn:hover { background: var(--wi-green-pill); border-color: #1DA851; color: #1DA851; }
+/* Same specificity as the ink rule above (both 3 classes) so this wins by
+   source order instead of losing to it - the WhatsApp button carries both
+   .wf-icon-btn and .wf-whatsapp-btn, so the plain-copy-icon ink colour was
+   silently beating this one at rest, only losing on :hover by a tie-break
+   on source order. Default and hover now resolve the exact same way. */
+.wi-iv .wf-ip-link-copy .wf-whatsapp-btn { background: var(--wi-green-pill); border-color: #A7E8C3; color: #1DA851; }
+.wi-iv .wf-ip-link-copy .wf-whatsapp-btn:hover { background: var(--wi-green-pill); border-color: #1DA851; color: #1DA851; }
 .wi-iv .wf-ip-pdf-note { background: var(--wi-yellow-50); color: var(--wi-yellow-700); }
 
 /* -- Download PDF (.wf-letter-proceed-btn, shared with Letter Generator
