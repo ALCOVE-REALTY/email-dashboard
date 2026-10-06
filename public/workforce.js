@@ -4019,8 +4019,12 @@ function renderJoiningLine(canvasId, buckets, onPointClick) {
       scales: {
         x: {
           grid: { display: false },
+          // autoSkip defaults to true and was hiding every other month
+          // label on a narrow phone screen (e.g. only 6 of 12 shown) even
+          // though all 12 points still plotted - forced off so every
+          // bucket gets its own label, same as the round points above it.
           ticks: buckets.length > 4
-            ? { color: c.muted, font: { size: 10 }, maxRotation: 42, minRotation: 42 }
+            ? { color: c.muted, font: { size: 10 }, maxRotation: 42, minRotation: 42, autoSkip: false }
             : { color: c.muted, font: { size: 10 } }
         },
         y: {

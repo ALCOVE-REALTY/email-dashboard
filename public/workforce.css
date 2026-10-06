@@ -755,7 +755,7 @@ body {
 
 .wf-canvas-wrap { position: relative; }
 .wf-canvas-wrap--donut { width: 130px; height: 130px; flex-shrink: 0; }
-.wf-canvas-wrap--line { height: 220px; }
+.wf-canvas-wrap--line { height: 200px; }
 
 .wf-donut-center {
   position: absolute;
