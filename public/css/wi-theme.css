@@ -118,6 +118,16 @@ body { background: var(--wi-bg); }
 *::-webkit-scrollbar-thumb { background: var(--wi-faint); border-radius: 999px; }
 *::-webkit-scrollbar-thumb:hover { background: var(--wi-muted); }
 
+/* ---- No focus outline anywhere, on any device - per direct instruction.
+   Most buttons/icons already had their own outline:none + a soft --wi-
+   focus glow instead, but plenty of clickable elements (kpi-card,
+   .wf-emp-list li rows, panels, etc.) never got that override and were
+   falling back to the browser's own default blue focus ring - barely
+   visible on the old near-white backgrounds, much more obvious now next
+   to the desktop ash background and the new card borders. This removes
+   it everywhere, with no replacement glow, matching the request exactly. ---- */
+*:focus, *:focus-visible { outline: none; }
+
 /* ============================================================
    Motion library — copied verbatim from CLAUDE_CODE_PROMPT.md §4
    ============================================================ */
