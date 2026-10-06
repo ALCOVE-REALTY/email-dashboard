@@ -900,46 +900,22 @@ body { background: var(--wi-bg); }
    "same centered column at every width" requirement - intentionally
    not touched here. See .wf-shell rules in workforce.css. */
 
-/* ---- Org Chart: department select / dropdown / empty state ----
+/* ---- Org Chart: department select / empty state ----
    The picker itself is the app's existing generic select enhancer
    (workforce-ui-enhance.js builds .wfu-select-wrap/-trigger/-list/-search/
-   -item around the real #orgChartDeptSelect on every select in the app -
-   filters, letter generator, health insurance, this one). Restyled here,
-   scoped to just this one select via :has(), so Letter Generator/filters/
-   Health Insurance keep their existing look untouched. */
-@keyframes wiFade { from { opacity: 0; } to { opacity: 1; } }
-
+   -item around the real #orgChartDeptSelect on every select in the app).
+   Per direct feedback, its SIZE/geometry reverted to the generic select's
+   own main-matching values (deleted the :has()-scoped overrides that had
+   inflated height/font/radius/padding well past main) - the new colour
+   palette still shows, since --line/--accent/--muted/--surface etc. are
+   already re-pointed to the new tokens globally (see :root above), not by
+   this block. Only the flex-fill layout rule stays: the real <select>'s
+   own inline style="flex:1;min-width:200px" no longer reaches the page
+   once workforce-ui-enhance.js wraps it in .wfu-select-wrap, so this is a
+   geometry necessity, not a look choice. */
 .wfu-select-wrap:has(#orgChartDeptSelect) { flex: 1 1 auto; min-width: 200px; }
-.wfu-select-wrap:has(#orgChartDeptSelect) .wfu-select-trigger {
-  height: 54px; padding: 0 16px; border-radius: 14px;
-  background: var(--wi-surface); border: 1.5px solid var(--wi-border-2);
-  font-family: inherit; font-size: 15px; font-weight: 600; color: var(--wi-muted);
-}
-.wfu-select-wrap:has(#orgChartDeptSelect) .wfu-select-trigger.is-open {
-  border-color: var(--wi-primary); box-shadow: 0 0 0 4px var(--wi-primary-50); color: var(--wi-ink);
-}
-.wfu-select-wrap:has(#orgChartDeptSelect) .wfu-select-trigger-label { font-size: 15px; }
-.wfu-select-wrap:has(#orgChartDeptSelect) .wfu-select-trigger-label:not(.is-placeholder) { color: var(--wi-ink); font-weight: 800; }
-.wfu-select-wrap:has(#orgChartDeptSelect) .wfu-select-trigger-label.is-placeholder { color: var(--wi-muted); }
-.wfu-select-wrap:has(#orgChartDeptSelect) .wfu-select-chevron { width: 18px; height: 18px; }
-.wfu-select-wrap:has(#orgChartDeptSelect) .wfu-select-chevron svg { width: 18px; height: 18px; }
 
-.wfu-select-wrap:has(#orgChartDeptSelect) .wfu-select-list {
-  border-radius: 16px; border: 1px solid var(--wi-border);
-  box-shadow: 0 20px 44px rgba(3,2,41,.2); padding: 10px; max-height: 300px;
-}
-.wfu-select-wrap:has(#orgChartDeptSelect) .wfu-select-search {
-  background: var(--wi-surface-2); border: none; border-radius: 12px; height: 46px; padding: 0 12px; margin-bottom: 6px;
-}
-.wfu-select-wrap:has(#orgChartDeptSelect) .wfu-select-search input { font-size: 15px; color: var(--wi-ink); }
-.wfu-select-wrap:has(#orgChartDeptSelect) .wfu-select-search input::placeholder { color: var(--wi-placeholder); }
-.wfu-select-wrap:has(#orgChartDeptSelect) .wfu-select-item {
-  padding: 13px 12px; border-radius: 12px; font-size: 15px; font-weight: 600; color: var(--wi-ink);
-}
-.wfu-select-wrap:has(#orgChartDeptSelect) .wfu-select-item:hover { background: var(--wi-surface-2); }
-.wfu-select-wrap:has(#orgChartDeptSelect) .wfu-select-item.is-selected {
-  background: var(--wi-primary-50); color: var(--wi-primary-700); font-weight: 800;
-}
+@keyframes wiFade { from { opacity: 0; } to { opacity: 1; } }
 
 .wi-org-empty { padding: 30px 20px; display: flex; flex-direction: column; align-items: center; gap: 10px; text-align: center; animation: wiFade .3s ease both; }
 .wi-org-empty[hidden] { display: none; }
