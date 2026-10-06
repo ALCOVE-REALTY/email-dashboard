@@ -1387,18 +1387,22 @@ body { background: var(--wi-bg); }
 }
 
 /* ============================================================
-   Desktop contrast boost — COMPUTER ONLY (wide window + mouse).
-   Mobile/touch devices never match this query, so nothing here can
-   change a single mobile pixel - it only adds a border/shadow to cards,
-   round icon buttons, KPI icons and inputs that currently read flat
-   against the page background on a real monitor. Sizes are untouched:
-   `* { box-sizing: border-box; }` (styles.css) already means a 1px
-   border doesn't grow any element. Placeholder names from the spec
-   mapped to this app's real classes below (left as comments where a
-   single real class covers several placeholders at once). Colours,
-   icons, text and animations are all untouched - this file's other
-   rules decide those; this block only adds border/shadow/filter. ============ */
-@media (min-width: 768px) and (hover: hover) and (pointer: fine) {
+   Desktop contrast boost — COMPUTER ONLY (mouse, not window width).
+   No min-width here: this app always shows the same narrow phone-style
+   column even on a computer, so a real desktop browser window is often
+   narrower than a typical "tablet" breakpoint - a min-width condition
+   then never matches on an actual computer. (hover:hover) and
+   (pointer:fine) alone correctly separates "has a mouse" from
+   "touch-only" regardless of window width - a real phone/tablet reports
+   (hover:none)/(pointer:coarse) and never matches this, so mobile can't
+   change a single pixel here. Sizes are untouched: `* { box-sizing:
+   border-box; }` (styles.css) already means a 1px border doesn't grow
+   any element. Placeholder names from the spec mapped to this app's real
+   classes below (left as comments where a single real class covers
+   several placeholders at once). Colours, icons, text and animations are
+   all untouched - this file's other rules decide those; this block only
+   adds border/shadow/filter. ============ */
+@media (hover: hover) and (pointer: fine) {
   /* Per direct instruction: stop guessing new values round after round -
      match main's OWN proven recipe instead (styles.css's original
      --paper/--line/--shadow, the exact combination that already reads as
