@@ -222,6 +222,13 @@ AVATAR_IDS.forEach((id) => {
   const el = document.getElementById(id);
   if (el) el.addEventListener('click', () => profilePhotoInput.click());
 });
+// Camera badge sits visually on the avatar but is a sibling, not a child
+// (the avatar button's own innerHTML gets replaced wholesale by
+// applyAvatarIdentity()'s initials/photo swap, which would otherwise wipe
+// out a badge nested inside it) - wired to the exact same file input so
+// tapping either does the same thing.
+const profileAvatarCamBadge = document.getElementById('profileAvatarCamBadge');
+if (profileAvatarCamBadge) profileAvatarCamBadge.addEventListener('click', () => profilePhotoInput.click());
 profilePhotoInput.addEventListener('change', async () => {
   const file = profilePhotoInput.files && profilePhotoInput.files[0];
   profilePhotoInput.value = '';
@@ -244,24 +251,25 @@ function setDisplayName(name) {
   document.getElementById('drawerName').textContent = display;
   applyAvatarIdentity(currentUserEmail);
   renderProfileNameRow();
+  if (window.showWiToast) window.showWiToast('Name updated');
 }
 
 function renderProfileNameRow() {
   const row = document.getElementById('profileNameRow');
   if (!row) return;
   row.innerHTML =
-    '<span>' + escapeHtml(getDisplayName(currentUserEmail)) + '</span>' +
-    '<button class="wf-icon-btn" id="profileNameEditBtn" type="button" aria-label="Edit name" title="Edit name">' +
+    '<span class="wi-pf-name">' + escapeHtml(getDisplayName(currentUserEmail)) + '</span>' +
+    '<button class="wf-icon-btn wi-pf-edit" id="profileNameEditBtn" type="button" aria-label="Edit name" title="Edit name">' +
       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>' +
     '</button>';
   document.getElementById('profileNameEditBtn').addEventListener('click', () => {
     row.innerHTML =
-      '<span class="wf-profile-name-edit">' +
-        '<input type="text" id="profileNameInput" maxlength="60" value="' + escapeHtml(getDisplayName(currentUserEmail)) + '">' +
-        '<button class="wf-icon-btn" id="profileNameSaveBtn" type="button" aria-label="Save name" title="Save">' +
+      '<span class="wf-profile-name-edit wi-pf-editor">' +
+        '<input type="text" id="profileNameInput" class="wi-pf-input" maxlength="60" value="' + escapeHtml(getDisplayName(currentUserEmail)) + '">' +
+        '<button class="wf-icon-btn wi-pf-save" id="profileNameSaveBtn" type="button" aria-label="Save name" title="Save">' +
           '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>' +
         '</button>' +
-        '<button class="wf-icon-btn" id="profileNameCancelBtn" type="button" aria-label="Cancel" title="Cancel">' +
+        '<button class="wf-icon-btn wi-pf-cancel" id="profileNameCancelBtn" type="button" aria-label="Cancel" title="Cancel">' +
           '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>' +
         '</button>' +
       '</span>';
