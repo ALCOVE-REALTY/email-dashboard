@@ -1481,6 +1481,7 @@ body { background: var(--wi-bg); }
      type="search" field (Health Insurance's own list searches). */
   #wfSearch, .wf-mail-chip-input, .wi-iv-search-wrap, .wfu-select-trigger,
   input[type="search"] {
-    border-color: #dde4e2;
+    border-width: 1.5px; border-color: #dde4e2;
+    box-shadow: 0 4px 16px rgba(45,50,90,.1);
   }
 }
