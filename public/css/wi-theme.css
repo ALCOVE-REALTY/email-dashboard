@@ -914,6 +914,11 @@ body { background: var(--wi-bg); }
    once workforce-ui-enhance.js wraps it in .wfu-select-wrap, so this is a
    geometry necessity, not a look choice. */
 .wfu-select-wrap:has(#orgChartDeptSelect) { flex: 1 1 auto; min-width: 200px; }
+/* Export PDF text size/weight reverted to main's own .wf-link-btn values
+   (0.78rem/700) - the generic .wf-panel .wf-link-btn rule elsewhere in
+   this file bumps it to 14px/800 for other pages' "View all"-style links,
+   left untouched since only this one button was reported oversized. */
+#exportOrgChartPdf { font-size: 0.78rem; font-weight: 700; }
 
 @keyframes wiFade { from { opacity: 0; } to { opacity: 1; } }
 
