@@ -761,7 +761,7 @@ body { background: var(--wi-bg); }
 
 /* Assistant header row - 34px badge (no blink, no ring), title/sub sizing
    back to the app's original scale (colours/gradient/blink unchanged). */
-.wf-ai-panel-head { padding: 18px 16px 12px; margin-bottom: 0; background: transparent; gap: 10px; }
+.wf-ai-panel-head { padding: 10px 16px 12px; margin-bottom: 0; background: transparent; gap: 10px; }
 .wf-ai-panel-icon { width: 34px; height: 34px; border-radius: 14px; background: transparent; }
 .wf-ai-panel-title { font-size: 1.1rem; font-weight: 800; color: var(--wi-ink); line-height: 1.1; }
 .wf-ai-panel-title small {
