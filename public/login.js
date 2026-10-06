@@ -5,24 +5,9 @@ const steps = {
   logIn: document.getElementById('logInStep')
 };
 
-// Presentation-only: CSS animations don't replay just because a
-// previously-rendered element becomes visible again, so the title/card
-// m-up entrance (which the reference gets "for free" since it re-renders
-// its whole subtree on every state change) needs an explicit retrigger
-// each time this app's persistent DOM swaps steps.
-function replayUp(el) {
-  if (!el) return;
-  el.classList.remove('m-up');
-  void el.offsetWidth;
-  el.classList.add('m-up');
-}
-
 function showStep(name) {
   Object.values(steps).forEach((s) => { s.hidden = true; });
   steps[name].hidden = false;
-  document.body.classList.toggle('is-logIn', name === 'logIn');
-  replayUp(document.querySelector('.auth-wordmark'));
-  replayUp(document.querySelector('.auth-card'));
 }
 
 // Relative URLs throughout (matches this app's existing login.js
@@ -41,8 +26,7 @@ async function postJson(url, body) {
 }
 
 function showError(el, message) {
-  const textEl = el.querySelector('span') || el;
-  textEl.textContent = message;
+  el.textContent = message;
   el.hidden = false;
 }
 function hideError(el) {
@@ -75,8 +59,6 @@ const suMissingError = document.getElementById('suMissingError');
 const suTerms = document.getElementById('suTerms');
 const suError = document.getElementById('suError');
 const suSubmitBtn = document.getElementById('suSubmitBtn');
-const suBtnText = document.getElementById('suBtnText');
-const suBtnSpinner = document.getElementById('suBtnSpinner');
 const strengthBar = document.getElementById('strengthBar');
 const criteriaItems = Array.from(document.querySelectorAll('#suCriteria li'));
 
@@ -126,15 +108,14 @@ function updateStrengthUi() {
   });
   const score = passwordScore(p);
   const bars = Array.from(strengthBar.children);
-  // Visual-only recolor of the 4 bars main already had (same reference
-  // thresholds: 0-1 rules met = red, 2-3 = orange, 4 = yellow, 5 =
-  // green). No text label - main never showed a "Weak/Fair/Good/Strong"
-  // word anywhere, only this bar, so none is added here either.
-  const LVL_CLASS = ['', 'bar-red', 'bar-orange', 'bar-yellow', 'bar-green'];
-  let lvl = 0;
-  if (p.length > 0) lvl = score >= 5 ? 4 : score >= 4 ? 3 : score >= 2 ? 2 : 1;
-  const fillCount = lvl;
-  const barClass = LVL_CLASS[lvl];
+  let fillCount = 0;
+  let barClass = '';
+  if (p.length > 0) {
+    if (score <= 3) { fillCount = 1; barClass = 'bar-red'; }
+    else if (score === 4) { fillCount = 2; barClass = 'bar-orange'; }
+    else if (score === 5 && p.length < 12) { fillCount = 3; barClass = 'bar-yellow'; }
+    else if (score === 5 && p.length >= 12) { fillCount = 4; barClass = 'bar-green'; }
+  }
   bars.forEach((bar, i) => {
     bar.className = i < fillCount ? barClass : '';
   });
@@ -209,16 +190,14 @@ document.getElementById('signUpForm').addEventListener('submit', async (e) => {
     return;
   }
   suSubmitBtn.disabled = true;
-  suBtnText.textContent = 'Submitting…';
-  suBtnSpinner.hidden = false;
+  suSubmitBtn.textContent = 'Submitting…';
   try {
     await postJson('api/hr-auth/signup', { email: suEmail.value.trim(), password: suPassword.value });
     startWaitingFor(suEmail.value.trim());
   } catch (err) {
     showError(suError, err.message);
   } finally {
-    suBtnText.textContent = 'Sign Up';
-    suBtnSpinner.hidden = true;
+    suSubmitBtn.textContent = 'Sign Up';
     updateSubmitEnabled();
   }
 });
@@ -261,9 +240,6 @@ const liEmailError = document.getElementById('liEmailError');
 const liPassword = document.getElementById('liPassword');
 const liError = document.getElementById('liError');
 const liSubmitBtn = document.getElementById('liSubmitBtn');
-const liBtnText = document.getElementById('liBtnText');
-const liBtnSpinner = document.getElementById('liBtnSpinner');
-const authCard = document.querySelector('.auth-card');
 
 let liEmailTouched = false;
 
@@ -289,22 +265,15 @@ document.getElementById('logInForm').addEventListener('submit', async (e) => {
     return;
   }
   liSubmitBtn.disabled = true;
-  liBtnText.textContent = 'Logging in…';
-  liBtnSpinner.hidden = false;
+  liSubmitBtn.textContent = 'Logging in…';
   try {
     await postJson('api/hr-auth/login', { email: liEmail.value.trim(), password: liPassword.value });
     window.location.href = 'workforce.html';
   } catch (err) {
     showError(liError, err.message);
-    if (authCard) {
-      authCard.classList.remove('m-shake');
-      void authCard.offsetWidth;
-      authCard.classList.add('m-shake');
-    }
   } finally {
     liSubmitBtn.disabled = false;
-    liBtnText.textContent = 'Log In';
-    liBtnSpinner.hidden = true;
+    liSubmitBtn.textContent = 'Log In';
   }
 });
 
@@ -321,9 +290,3 @@ document.getElementById('goToLoginBtn').addEventListener('click', () => {
 document.getElementById('goToSignUpBtn').addEventListener('click', () => {
   showStep('signUp');
 });
-
-// logInStep is the step shown by default (no "hidden" attribute in the
-// HTML), so it never goes through showStep() on first load - set the
-// matching body class once here so its 96px top padding applies from
-// the start, not just after a later switch back to Log In.
-document.body.classList.add('is-logIn');

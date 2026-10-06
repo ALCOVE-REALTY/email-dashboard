@@ -6,20 +6,12 @@
   <title>Workforce Intelligence — Sign In</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="login.css?v=6" />
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="login.css?v=5" />
 </head>
 <body>
   <div class="auth-shell">
-    <svg class="auth-hex-bg" aria-hidden="true">
-      <defs><pattern id="mHexPat" width="56" height="100" patternUnits="userSpaceOnUse"><path d="M28 66L0 50L0 16L28 0L56 16L56 50L28 66L28 100" fill="none" stroke="#4C55E8" stroke-opacity=".09" stroke-width="1.5"></path><path d="M28 0L28 34L0 50L0 84L28 100L56 84L56 50L28 34" fill="none" stroke="#4C55E8" stroke-opacity=".09" stroke-width="1.5"></path></pattern></defs>
-      <rect width="100%" height="100%" fill="url(#mHexPat)"></rect>
-      <path class="m-hex" d="M84 116L56 100L56 66L84 50L112 66L112 100Z" fill="#4C55E8" fill-opacity=".07"></path>
-      <path class="m-hex" style="animation-delay: 1.3s" d="M308 216L280 200L280 166L308 150L336 166L336 200Z" fill="#8B5CF6" fill-opacity=".08"></path>
-      <path class="m-hex" style="animation-delay: 2.4s" d="M56 716L28 700L28 666L56 650L84 666L84 700Z" fill="#E356F0" fill-opacity=".07"></path>
-      <path class="m-hex" style="animation-delay: .7s" d="M336 766L308 750L308 716L336 700L364 716L364 750Z" fill="#4C55E8" fill-opacity=".07"></path>
-    </svg>
-    <h1 class="auth-wordmark m-up">Workforce<span>Intelligence</span></h1>
+    <h1 class="auth-wordmark">Workforce<span>Intelligence</span></h1>
 
     <div class="auth-card">
 
@@ -27,14 +19,14 @@
       <section id="signUpStep" class="auth-step" hidden>
         <form id="signUpForm" novalidate>
           <label class="auth-label" for="suEmail">E-mail</label>
-          <div class="auth-input m-inp" id="suEmailWrap">
+          <div class="auth-input" id="suEmailWrap">
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
             <input type="email" id="suEmail" placeholder="e.g. johndoe@gmail.com" autocomplete="email" required />
           </div>
           <div class="auth-field-error" id="suEmailError" hidden>Enter a valid email</div>
 
           <label class="auth-label" for="suPassword">Password</label>
-          <div class="auth-input m-inp" id="suPasswordWrap">
+          <div class="auth-input" id="suPasswordWrap">
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
             <input type="password" id="suPassword" placeholder="Create a password" autocomplete="new-password" required />
             <button type="button" class="auth-eye" data-for="suPassword" aria-label="Show password">
@@ -42,23 +34,20 @@
             </button>
           </div>
 
-          <div class="auth-strength-row">
-            <div class="auth-strength-bar" id="strengthBar">
-              <span></span><span></span><span></span><span></span>
-            </div>
-            <span class="auth-strength-label" id="suStrengthLabel" hidden></span>
+          <div class="auth-strength-bar" id="strengthBar">
+            <span></span><span></span><span></span><span></span>
           </div>
           <ul class="auth-criteria" id="suCriteria">
-            <li data-rule="len"><span class="dot"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>At least 8 characters</li>
-            <li data-rule="upper"><span class="dot"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>One uppercase letter</li>
-            <li data-rule="lower"><span class="dot"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>One lowercase letter</li>
-            <li data-rule="num"><span class="dot"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>One number</li>
-            <li data-rule="special"><span class="dot"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>One special character</li>
+            <li data-rule="len"><span class="dot"></span>At least 8 characters</li>
+            <li data-rule="upper"><span class="dot"></span>One uppercase letter</li>
+            <li data-rule="lower"><span class="dot"></span>One lowercase letter</li>
+            <li data-rule="num"><span class="dot"></span>One number</li>
+            <li data-rule="special"><span class="dot"></span>One special character</li>
           </ul>
           <div class="auth-field-error" id="suMissingError" hidden></div>
 
           <label class="auth-label" for="suRepeat">Repeat Password</label>
-          <div class="auth-input m-inp" id="suRepeatWrap">
+          <div class="auth-input" id="suRepeatWrap">
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
             <input type="password" id="suRepeat" placeholder="Repeat your password" autocomplete="new-password" required />
             <button type="button" class="auth-eye" data-for="suRepeat" aria-label="Show password">
@@ -73,12 +62,8 @@
             <span>I agree to the <strong>Terms</strong> and <strong>Privacy Policy</strong></span>
           </label>
 
-          <div class="auth-error" id="suError" hidden>
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4M12 17h.01M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
-            <span id="suErrorText"></span>
-          </div>
-
-          <button type="submit" class="auth-btn m-press" id="suSubmitBtn" disabled><span class="auth-btn-spinner" id="suBtnSpinner" hidden></span><span id="suBtnText">Sign Up</span></button>
+          <button type="submit" class="auth-btn" id="suSubmitBtn" disabled>Sign Up</button>
+          <div class="auth-error" id="suError" hidden></div>
         </form>
         <div class="auth-switch">Already have an account? <button type="button" class="auth-link-btn" id="goToLoginBtn">Log In</button></div>
       </section>
@@ -106,7 +91,7 @@
       <section id="logInStep" class="auth-step">
         <form id="logInForm" novalidate>
           <label class="auth-label" for="liEmail">E-mail</label>
-          <div class="auth-input m-inp" id="liEmailWrap">
+          <div class="auth-input" id="liEmailWrap">
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
             <input type="email" id="liEmail" placeholder="e.g. johndoe@gmail.com" autocomplete="email" required />
           </div>
@@ -116,7 +101,7 @@
             <label class="auth-label" for="liPassword">Password</label>
             <button type="button" class="auth-forgot-btn" id="forgotBtn">Forgot password?</button>
           </div>
-          <div class="auth-input m-inp">
+          <div class="auth-input">
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
             <input type="password" id="liPassword" placeholder="Enter your password" autocomplete="current-password" required />
             <button type="button" class="auth-eye" data-for="liPassword" aria-label="Show password">
@@ -124,19 +109,15 @@
             </button>
           </div>
 
-          <div class="auth-error" id="liError" hidden>
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4M12 17h.01M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
-            <span id="liErrorText"></span>
-          </div>
-
-          <button type="submit" class="auth-btn m-press" id="liSubmitBtn"><span class="auth-btn-spinner" id="liBtnSpinner" hidden></span><span id="liBtnText">Log In</span></button>
+          <button type="submit" class="auth-btn" id="liSubmitBtn">Log In</button>
+          <div class="auth-error" id="liError" hidden></div>
         </form>
         <div class="auth-switch">Don't have an account? <button type="button" class="auth-link-btn" id="goToSignUpBtn">Sign Up</button></div>
       </section>
 
     </div>
 
-    <div class="auth-footer m-up" style="animation-delay:.2s">© 2026 Alcove Realty</div>
+    <div class="auth-footer">© 2026 Alcove Realty</div>
   </div>
 
   <script src="login.js?v=4"></script>
