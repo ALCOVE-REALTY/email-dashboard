@@ -2963,7 +2963,7 @@ function renderCoveredEmployeesList(items) {
               '<span class="wf-emp-main">' +
                 '<span class="hi-ce-name-row">' +
                   '<span class="wf-emp-name">' + escapeHtml(e.name) + '</span>' +
-                  '<span class="wf-status-chip ' + statusChipClass(String(e.status).toUpperCase()) + '">' + escapeHtml(e.status) + '</span>' +
+                  '<span class="wf-status-chip ' + statusChipClass(String(e.status).toUpperCase()) + '">' + escapeHtml(titleCase(e.status)) + '</span>' +
                 '</span>' +
                 '<span class="wf-emp-meta">' + escapeHtml(e.employeeId) + '</span>' +
                 '<span class="wf-emp-role">' + escapeHtml(titleCase(e.designation) || '—') + '</span>' +
@@ -3421,7 +3421,7 @@ function renderHiExitsList(items) {
               '<span class="wf-emp-main">' +
                 '<span class="hi-ce-name-row">' +
                   '<span class="wf-emp-name">' + escapeHtml(e.name) + '</span>' +
-                  (e.status ? '<span class="wf-status-chip ' + statusChipClass(e.status) + '">' + escapeHtml(e.status) + '</span>' : '') +
+                  (e.status ? '<span class="wf-status-chip ' + statusChipClass(e.status) + '">' + escapeHtml(titleCase(e.status)) + '</span>' : '') +
                 '</span>' +
                 '<span class="wf-emp-meta">' + escapeHtml(e.employeeId) + '</span>' +
                 '<span class="wf-emp-role">' + escapeHtml(titleCase(e.designation) || '—') + '</span>' +
@@ -3556,7 +3556,7 @@ function renderHiAdditionsList(items) {
               '<span class="wf-emp-main">' +
                 '<span class="hi-ce-name-row">' +
                   '<span class="wf-emp-name">' + escapeHtml(e.name) + '</span>' +
-                  (e.status ? '<span class="wf-status-chip ' + statusChipClass(e.status) + '">' + escapeHtml(e.status) + '</span>' : '') +
+                  (e.status ? '<span class="wf-status-chip ' + statusChipClass(e.status) + '">' + escapeHtml(titleCase(e.status)) + '</span>' : '') +
                 '</span>' +
                 '<span class="wf-emp-meta">' + escapeHtml(e.employeeId) + '</span>' +
                 '<span class="wf-emp-role">' + escapeHtml(titleCase(e.designation) || '—') + '</span>' +
@@ -3690,7 +3690,7 @@ function renderHiTotalExitsList(items) {
               '<span class="wf-emp-main">' +
                 '<span class="hi-ce-name-row">' +
                   '<span class="wf-emp-name">' + escapeHtml(e.name) + '</span>' +
-                  (e.status ? '<span class="wf-status-chip ' + statusChipClass(e.status) + '">' + escapeHtml(e.status) + '</span>' : '') +
+                  (e.status ? '<span class="wf-status-chip ' + statusChipClass(e.status) + '">' + escapeHtml(titleCase(e.status)) + '</span>' : '') +
                 '</span>' +
                 '<span class="wf-emp-meta">' + escapeHtml(e.employeeId) + '</span>' +
                 '<span class="wf-emp-role">' + escapeHtml(titleCase(e.designation) || '—') + '</span>' +
@@ -4112,7 +4112,7 @@ function hiEmpProfileMemberRow(name, metaExtra, status, premium, relationship) {
       '<span class="wf-emp-main">' +
         '<span class="hi-ce-name-row">' +
           '<span class="wf-emp-name">' + escapeHtml(name) + '</span>' +
-          '<span class="wf-status-chip ' + statusChipClass(String(status || '').toUpperCase()) + '">' + escapeHtml(status || '—') + '</span>' +
+          '<span class="wf-status-chip ' + statusChipClass(String(status || '').toUpperCase()) + '">' + escapeHtml(titleCase(status) || '—') + '</span>' +
         '</span>' +
         (metaExtra ? '<span class="wf-emp-meta">' + metaExtra + '</span>' : '') +
         '<span class="hi-ce-sub">Premium ₹' + Math.round(premium || 0).toLocaleString('en-IN') + '</span>' +
@@ -4132,7 +4132,7 @@ function renderHiEmpProfile(data) {
       '<div class="wf-emp-profile-info">' +
         '<div class="wf-emp-profile-name-row">' +
           '<span class="name">' + escapeHtml(data.name) + '</span>' +
-          '<span class="wf-status-chip ' + statusChipClass(String(data.status || '').toUpperCase()) + '">' + escapeHtml(data.status || '—') + '</span>' +
+          '<span class="wf-status-chip ' + statusChipClass(String(data.status || '').toUpperCase()) + '">' + escapeHtml(titleCase(data.status) || '—') + '</span>' +
         '</div>' +
         '<div class="wf-emp-profile-sub">' + escapeHtml(data.employeeId) + '</div>' +
         (data.designation ? '<div class="wf-emp-profile-sub">' + escapeHtml(titleCase(data.designation)) + '</div>' : '') +
@@ -5493,7 +5493,7 @@ function renderEmployees(data) {
           '<span class="wf-emp-avatar ' + avatarToneClass(i) + '">' + escapeHtml(avatarInitials(e.name)) + '</span>' +
           '<span class="wf-emp-main">' +
             '<span class="wf-emp-name">' + escapeHtml(e.name) + '</span>' +
-            '<span class="wf-emp-meta">' + escapeHtml(e.employeeId) + ' · <span class="wf-status-chip ' + statusChipClass(e.status) + '">' + escapeHtml(e.status) + '</span></span>' +
+            '<span class="wf-emp-meta">' + escapeHtml(e.employeeId) + ' · <span class="wf-status-chip ' + statusChipClass(e.status) + '">' + escapeHtml(titleCase(e.status)) + '</span></span>' +
             '<span class="wf-emp-role">' + escapeHtml(e.designation || '—') + '</span>' +
           '</span>' +
           '<span class="wf-emp-chevron"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg></span>' +
@@ -6197,7 +6197,7 @@ function showEmployeeDetail(e) {
       '<span class="wf-emp-profile-info">' +
         '<span class="wf-emp-profile-name-row">' +
           '<span class="name">' + escapeHtml(e.name) + '</span>' +
-          '<span class="wf-status-chip ' + statusChipClass(e.status) + '">' + escapeHtml(e.status) + '</span>' +
+          '<span class="wf-status-chip ' + statusChipClass(e.status) + '">' + escapeHtml(titleCase(e.status)) + '</span>' +
         '</span>' +
         '<div class="wf-emp-profile-sub">' + escapeHtml(e.employeeId) + ' · ' + escapeHtml(e.designation || '—') + '</div>' +
         '<div class="wf-emp-profile-sub">' + escapeHtml(e.department || '—') + '</div>' +
