@@ -1387,24 +1387,18 @@ body { background: var(--wi-bg); }
 }
 
 /* ============================================================
-   Desktop contrast boost — COMPUTER ONLY (mouse, not width).
-   Originally gated on min-width:768px too, but this app always shows
-   the same narrow phone-style column even on a computer (confirmed
-   earlier in this project - "computer o mobile screen er hisabe
-   dekhai"), so a desktop browser window can easily be the SAME pixel
-   width as a phone. A min-width check then never matched on an actual
-   computer, which is exactly why the contrast boost wasn't showing up.
-   (hover:hover) and (pointer:fine) alone correctly separates "has a
-   mouse" from "touch-only" regardless of window width - a real phone/
-   tablet reports (hover:none)/(pointer:coarse) and never matches this,
-   so mobile still can't change a single pixel here. Sizes are untouched:
+   Desktop contrast boost — COMPUTER ONLY (wide window + mouse).
+   Mobile/touch devices never match this query, so nothing here can
+   change a single mobile pixel - it only adds a border/shadow to cards,
+   round icon buttons, KPI icons and inputs that currently read flat
+   against the page background on a real monitor. Sizes are untouched:
    `* { box-sizing: border-box; }` (styles.css) already means a 1px
    border doesn't grow any element. Placeholder names from the spec
    mapped to this app's real classes below (left as comments where a
    single real class covers several placeholders at once). Colours,
    icons, text and animations are all untouched - this file's other
    rules decide those; this block only adds border/shadow/filter. ============ */
-@media (hover: hover) and (pointer: fine) {
+@media (min-width: 768px) and (hover: hover) and (pointer: fine) {
   body { background: #D3D7E6; }
 
   /* wi-card/wi-dash-card/wi-emp-card/wi-kpi/wi-ins-prof/wi-ins-policy/
