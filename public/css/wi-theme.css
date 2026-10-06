@@ -1335,7 +1335,7 @@ body { background: var(--wi-bg); }
    correct globally via .wf-avatar's own re-point, untouched here. */
 .wi-pf-avatar-wrap { position: relative; display: inline-block; }
 .wi-pf-avatar-wrap .wf-avatar.lg {
-  width: 104px; height: 104px; font-size: 44px;
+  width: 92px; height: 92px; font-size: 38px;
   box-shadow: 0 0 0 6px var(--wi-yellow-50), 0 10px 24px rgba(255,190,46,.30);
   animation: wiAvatarIn .45s cubic-bezier(.2,.8,.2,1) .1s both;
 }
