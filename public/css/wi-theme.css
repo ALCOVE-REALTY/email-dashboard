@@ -1415,6 +1415,12 @@ body { background: var(--wi-bg); }
      overrides it) - not hue-adapted this time, per direct instruction to
      match the live server's own background exactly. */
   body { background: #eef3f2; }
+  /* The sticky topbar has its own semi-transparent near-white background
+     (rgba(250,250,251,.92), matching mobile's page bg so the blur blends
+     in) - on the new ash desktop page bg that same tint reads as a
+     separate white strip. Re-tinted to the same ash colour, still
+     translucent so the blur-over-scroll effect is untouched. */
+  .wf-topbar { background: rgba(238,243,242,.92); }
 
   /* wi-card/wi-dash-card/wi-emp-card/wi-kpi/wi-ins-prof/wi-ins-policy/
      wi-member/wi-sum-tile/wi-prem-card/wi-lg-card/wi-dq-card/wi-iv-card -
