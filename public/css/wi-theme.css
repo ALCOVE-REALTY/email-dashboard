@@ -1417,16 +1417,20 @@ body { background: var(--wi-bg); }
      wi-member/wi-sum-tile/wi-prem-card/wi-lg-card/wi-dq-card/wi-iv-card -
      every page's generic card shell, the KPI tile, list rows (employee/
      candidate/family/doc), the profile head, field-section detail cards,
-     distribution tables, and the already-real wi-pf-card/wi-iv-head-card/
-     wf-ai-welcome-card/hi-ce-total-row tiles. (Employee Data's own count
-     is plain text, not a card, same as main - deliberately excluded.) */
+     and the already-real wi-pf-card/wi-iv-head-card/wf-ai-welcome-card/
+     hi-ce-total-row tiles. (Employee Data's own count is plain text, not
+     a card, same as main - deliberately excluded. wf-dist-table is also
+     excluded - it always sits inside a wf-panel that already gets this
+     border, so giving it one too drew a second, tighter box hugging the
+     header row text ("Tenure Range" to "% of Total") inside the outer
+     card - a nested-box artifact, not a real main feature.) */
   /* Border colour is main's own exact --line value (#dde4e2, a neutral
      grey) - the earlier indigo-tinted #C7CBE4 read as a visible "blue
      line" around every card, which main never had (its border is neutral,
      not colour-tinted). Not hue-adapted this time, same reasoning as the
      page background fix above: copy main exactly, don't reinterpret it. */
   .wf-panel, .kpi-card, .wf-emp-list li, .wf-emp-profile-head, .wf-field-section,
-  .wf-dist-table, .wi-pf-card, .wi-iv-head-card,
+  .wi-pf-card, .wi-iv-head-card,
   .hi-ce-total-row span, .wf-ai-welcome-card, [data-wi-card] {
     border: 1.5px solid #dde4e2;
     box-shadow: 0 4px 16px rgba(45,50,90,.1);
