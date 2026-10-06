@@ -121,6 +121,20 @@
     var prefix = opts.prefix !== undefined ? opts.prefix : str.slice(0, idx);
     var suffix = opts.suffix !== undefined ? opts.suffix : str.slice(idx + match[0].length);
 
+    // A trigger can land on this element more than once for the exact
+    // same final number (several code paths can each notice "a number
+    // just appeared/changed" for what is, underneath, one single update) -
+    // replaying the full 0-to-target climb a second time for data that
+    // hasn't actually changed is exactly "it counts up, then counts up
+    // again to the same number". If this element already finished
+    // animating to this same target recently, leave the settled number
+    // alone instead of replaying it.
+    if (!el.__wiCountUpActive && el.__wiCountUpLastTarget === target &&
+        typeof el.__wiCountUpLastCompleteTime === 'number' &&
+        (Date.now() - el.__wiCountUpLastCompleteTime) < 2000) {
+      return false;
+    }
+
     // Coalesce near-simultaneous writes to the same element (e.g. an
     // approximate/prefetched value immediately followed moments later by
     // the real final one, from two different code paths updating it) into
@@ -191,6 +205,8 @@
         el.textContent = finalText;
         el.__wiCountUpLastWritten = finalText;
         el.__wiCountUpActive = false;
+        el.__wiCountUpLastTarget = target;
+        el.__wiCountUpLastCompleteTime = Date.now();
       }
     }
     requestAnimationFrame(tick);
