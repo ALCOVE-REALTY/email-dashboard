@@ -169,8 +169,16 @@ app.get('/workforce.html', hrAuth.requireInterviewPanelAccess, (req, res) => {
   sendNoStore(res, path.join(__dirname, 'src', 'views', 'workforce-shell.html'));
 });
 
+// Same desktop-only phone-frame treatment as /workforce.html above (see
+// its comment + workforce-shell.html / login-shell.html): a real phone or
+// the iframe's own embedded request gets the real page directly, anything
+// else on desktop gets the narrow-column shell wrapped around it.
 app.get('/login', (req, res) => {
-  sendNoStore(res, path.join(__dirname, 'public', 'login.html'));
+  const isMobileDevice = MOBILE_USER_AGENT.test(req.headers['user-agent'] || '');
+  if (req.query.embedded === '1' || isMobileDevice) {
+    return sendNoStore(res, path.join(__dirname, 'public', 'login.html'));
+  }
+  sendNoStore(res, path.join(__dirname, 'src', 'views', 'login-shell.html'));
 });
 
 app.get('/interview-panel-login', (req, res) => {
