@@ -3970,6 +3970,13 @@ function renderJoiningLine(canvasId, buckets, onPointClick) {
       }]
     },
     options: {
+      // Chart.js defaults maintainAspectRatio to true, which sizes the
+      // canvas from its WIDTH (a fixed 2:1 ratio) and ignores the
+      // .wf-canvas-wrap--line container's own 220px height entirely -
+      // the chart was rendering shorter than its box, leaving a dead
+      // white strip below the rotated month labels. false makes it fill
+      // the container's actual height instead.
+      maintainAspectRatio: false,
       layout: { padding: { top: 22 } },
       // The reference only reveals the plot (line/area/points/value
       // labels) left-to-right - the y-axis numbers, grid and month labels
