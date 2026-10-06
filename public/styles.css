@@ -51,6 +51,18 @@
 
 * { box-sizing: border-box; }
 
+/* Thin, modern scrollbar - same styled-thumb treatment as the Workforce
+   Intelligence app (wi-theme.css) and the Login/Sign Up page (login.css),
+   reusing this file's own --muted token. Covers every page that loads
+   this stylesheet (Mail Management, Interview Panel login); workforce.html
+   also loads this file but wi-theme.css's own copy of this rule loads
+   after it and wins, so nothing changes there. */
+* { scrollbar-width: thin; scrollbar-color: var(--muted) transparent; }
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb { background: var(--muted); border-radius: 999px; }
+*::-webkit-scrollbar-thumb:hover { background: var(--ink); }
+
 /* No blue/grey tap-highlight box on touch anywhere in the app, and no
    leftover focus outline from a tap - keyboard :focus-visible still gets
    one. Deliberately no replacement press effect (tint/scale/ripple):

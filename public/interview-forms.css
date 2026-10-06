@@ -76,6 +76,16 @@
 }
 
 * { box-sizing: border-box; }
+
+/* Thin, modern scrollbar - same styled-thumb treatment used across the
+   rest of this app (wi-theme.css/login.css), reusing this file's own
+   --text-muted token since this page stays fully self-contained. */
+* { scrollbar-width: thin; scrollbar-color: var(--text-muted) transparent; }
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb { background: var(--text-muted); border-radius: 999px; }
+*::-webkit-scrollbar-thumb:hover { background: var(--text); }
+
 html, * { -webkit-tap-highlight-color: transparent; }
 :focus:not(:focus-visible) { outline: none; }
 button, [role="button"] { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
