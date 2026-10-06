@@ -1372,6 +1372,11 @@ body { background: var(--wi-bg); }
   display: inline-flex; align-items: center; gap: 6px;
   background: var(--wi-red-50); border: none; color: var(--wi-red-700); font-weight: 800; box-shadow: none;
   transition: transform .18s ease;
+  /* Sized to match "Grant Access" (.wf-send-mail-btn): padding 8px 14px,
+     font-size 0.78rem, radius var(--wi-r-btn) - not main's own slightly
+     larger .wf-clear-btn geometry (9px 12px/0.82rem/10px), per direct
+     request. */
+  padding: 8px 14px; font-size: 0.78rem; border-radius: var(--wi-r-btn);
 }
 .wi-pf-logout svg { stroke: var(--wi-red-700); }
 .wi-pf-logout:active { transform: scale(.97); }
