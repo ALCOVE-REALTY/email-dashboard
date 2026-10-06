@@ -1440,24 +1440,29 @@ body { background: var(--wi-bg); }
      candidate/family/doc), the profile head, field-section detail cards,
      distribution tables, and the already-real wi-pf-card/wi-iv-head-card/
      wf-ai-welcome-card/wf-emp-summary-card/hi-ce-total-row tiles. */
+  /* Border colour is main's own exact --line value (#dde4e2, a neutral
+     grey) - the earlier indigo-tinted #C7CBE4 read as a visible "blue
+     line" around every card, which main never had (its border is neutral,
+     not colour-tinted). Not hue-adapted this time, same reasoning as the
+     page background fix above: copy main exactly, don't reinterpret it. */
   .wf-panel, .kpi-card, .wf-emp-list li, .wf-emp-profile-head, .wf-field-section,
   .wf-dist-table, .wi-pf-card, .wi-iv-head-card, .wf-emp-summary-card,
   .hi-ce-total-row span, .wf-ai-welcome-card, [data-wi-card] {
-    border: 1.5px solid #C7CBE4;
+    border: 1.5px solid #dde4e2;
     box-shadow: 0 4px 16px rgba(45,50,90,.1);
   }
-  .wi-overview-box { background: #DEE1F0; border-color: #C7CBE4; }
+  .wi-overview-box { background: #F3F5F4; border-color: #dde4e2; }
 
   /* wi-round-btn/wi-back/wi-modal-x/wi-ins-x/wi-sheet-close/wi-filter/
      wi-attach/wi-iv-copy/wi-pf-edit - every round icon button app-wide
      (back, menu, refresh, share, filter, modal/sheet close, attach,
      copy, the profile pencil) already shares this one class. */
   .wf-icon-btn, [data-wi-round] {
-    border: 1.5px solid #C7CBE4;
+    border: 1.5px solid #dde4e2;
     box-shadow: 0 4px 16px rgba(45,50,90,.1);
   }
-  .wi-kpi-ic { box-shadow: 0 0 0 1.5px #C7CBE4, 0 4px 16px rgba(45,50,90,.1); }
-  .kpi-icon { box-shadow: 0 0 0 1.5px #C7CBE4, 0 4px 16px rgba(45,50,90,.1); }
+  .wi-kpi-ic { box-shadow: 0 0 0 1.5px #dde4e2, 0 4px 16px rgba(45,50,90,.1); }
+  .kpi-icon { box-shadow: 0 0 0 1.5px #dde4e2, 0 4px 16px rgba(45,50,90,.1); }
 
   /* wi-subhead-icon/wi-renew-ic/wi-ins-tile/wi-sheet-icon/wi-chat-ic/
      wi-modal-icon/wi-dq-tile/wi-org-empty-icon - page-header icons, the
@@ -1476,6 +1481,6 @@ body { background: var(--wi-bg); }
      type="search" field (Health Insurance's own list searches). */
   #wfSearch, .wf-mail-chip-input, .wi-iv-search-wrap, .wfu-select-trigger,
   input[type="search"] {
-    border-color: #C7CBE4;
+    border-color: #dde4e2;
   }
 }
