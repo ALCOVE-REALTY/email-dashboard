@@ -139,7 +139,7 @@
       for (let i = 0; i < dotCount; i++) dots.appendChild(document.createElement('span'));
       label.textContent = labelText;
     }
-    setStage(2, 'Khujchi…');
+    setStage(2, 'Thinking..');
 
     bubble.appendChild(dots);
     bubble.appendChild(label);
@@ -149,7 +149,7 @@
     messagesEl.appendChild(row);
     scrollToBottom();
 
-    row._loadingTimerId = setTimeout(() => setStage(3, 'Ektu shomoy lagche, khujchi...'), 2000);
+    row._loadingTimerId = setTimeout(() => setStage(3, 'AI is preparing your response...'), 2000);
     return row;
   }
 
@@ -1146,7 +1146,7 @@
       }
     } catch (err) {
       removeLoadingBubble(loadingRow);
-      addBubble('assistant', 'Ektu shomoy lagche, abar try korun.');
+      addBubble('assistant', 'Something went wrong. Please try again.');
     } finally {
       input.disabled = false;
       if (sendBtn) sendBtn.disabled = false;
