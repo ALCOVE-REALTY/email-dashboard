@@ -1406,7 +1406,11 @@ body { background: var(--wi-bg); }
      white cards, PLUS a real 1.5px border (main never relied on shadow
      alone), hue-shifted from main's teal-grey to this redesign's indigo-
      grey so it still belongs to the new palette. */
-  body { background: #EAECF5; }
+  /* Exact value from main's own styles.css --paper token (body's
+     background there, inherited by this page since workforce.css never
+     overrides it) - not hue-adapted this time, per direct instruction to
+     match the live server's own background exactly. */
+  body { background: #eef3f2; }
 
   /* wi-card/wi-dash-card/wi-emp-card/wi-kpi/wi-ins-prof/wi-ins-policy/
      wi-member/wi-sum-tile/wi-prem-card/wi-lg-card/wi-dq-card/wi-iv-card -
