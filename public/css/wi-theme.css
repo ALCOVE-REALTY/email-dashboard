@@ -1399,7 +1399,14 @@ body { background: var(--wi-bg); }
    icons, text and animations are all untouched - this file's other
    rules decide those; this block only adds border/shadow/filter. ============ */
 @media (min-width: 768px) and (hover: hover) and (pointer: fine) {
-  body { background: #C6CBE0; }
+  /* Per direct instruction: stop guessing new values round after round -
+     match main's OWN proven recipe instead (styles.css's original
+     --paper/--line/--shadow, the exact combination that already reads as
+     "clearly visible" in production): a softly-tinted page behind pure-
+     white cards, PLUS a real 1.5px border (main never relied on shadow
+     alone), hue-shifted from main's teal-grey to this redesign's indigo-
+     grey so it still belongs to the new palette. */
+  body { background: #EAECF5; }
 
   /* wi-card/wi-dash-card/wi-emp-card/wi-kpi/wi-ins-prof/wi-ins-policy/
      wi-member/wi-sum-tile/wi-prem-card/wi-lg-card/wi-dq-card/wi-iv-card -
@@ -1410,21 +1417,21 @@ body { background: var(--wi-bg); }
   .wf-panel, .kpi-card, .wf-emp-list li, .wf-emp-profile-head, .wf-field-section,
   .wf-dist-table, .wi-pf-card, .wi-iv-head-card, .wf-emp-summary-card,
   .hi-ce-total-row span, .wf-ai-welcome-card, [data-wi-card] {
-    border: 2.5px solid #818AB8;
-    box-shadow: 0 6px 12px rgba(3,2,41,.2), 0 22px 48px rgba(3,2,41,.32);
+    border: 1.5px solid #C7CBE4;
+    box-shadow: 0 4px 16px rgba(45,50,90,.1);
   }
-  .wi-overview-box { background: #B6BBDA; border-color: #818AB8; }
+  .wi-overview-box { background: #DEE1F0; border-color: #C7CBE4; }
 
   /* wi-round-btn/wi-back/wi-modal-x/wi-ins-x/wi-sheet-close/wi-filter/
      wi-attach/wi-iv-copy/wi-pf-edit - every round icon button app-wide
      (back, menu, refresh, share, filter, modal/sheet close, attach,
      copy, the profile pencil) already shares this one class. */
   .wf-icon-btn, [data-wi-round] {
-    border: 2.5px solid #818AB8;
-    box-shadow: 0 6px 18px rgba(3,2,41,.3);
+    border: 1.5px solid #C7CBE4;
+    box-shadow: 0 4px 16px rgba(45,50,90,.1);
   }
-  .wi-kpi-ic { box-shadow: 0 0 0 2.5px rgba(3,2,41,.18), 0 6px 18px rgba(3,2,41,.26); }
-  .kpi-icon { box-shadow: 0 0 0 2.5px rgba(3,2,41,.18), 0 6px 18px rgba(3,2,41,.26); }
+  .wi-kpi-ic { box-shadow: 0 0 0 1.5px #C7CBE4, 0 4px 16px rgba(45,50,90,.1); }
+  .kpi-icon { box-shadow: 0 0 0 1.5px #C7CBE4, 0 4px 16px rgba(45,50,90,.1); }
 
   /* wi-subhead-icon/wi-renew-ic/wi-ins-tile/wi-sheet-icon/wi-chat-ic/
      wi-modal-icon/wi-dq-tile/wi-org-empty-icon - page-header icons, the
@@ -1443,6 +1450,6 @@ body { background: var(--wi-bg); }
      type="search" field (Health Insurance's own list searches). */
   #wfSearch, .wf-mail-chip-input, .wi-iv-search-wrap, .wfu-select-trigger,
   input[type="search"] {
-    border-color: #818AB8;
+    border-color: #C7CBE4;
   }
 }
