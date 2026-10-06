@@ -4064,19 +4064,22 @@ function renderJoiningLine(canvasId, buckets, onPointClick) {
       wrap.style.position = wrap.style.position || 'relative';
       wrap.appendChild(mask);
     }
-    // No left padding - chartArea.left is already the exact boundary the
-    // y-axis numbers end at, so extending left of it would cover part of
-    // them during the wipe. A little right padding only, for a value
-    // label that overhangs the last point's x position.
-    const padTop = 26, padRight = 10;
+    // A point's circle marker is centred exactly ON chartArea's own
+    // edges for the first/last bucket (x = chartArea.left for the first,
+    // y = chartArea.bottom for a 0-value last point) - with zero left/
+    // bottom padding, half that circle's radius sat outside the mask,
+    // visibly peeking out even while the mask was still fully "closed"
+    // (the first point's dot + value label sliver top-left, the lowest
+    // point's dot sliver bottom-right). padLeft/padBottom just cover the
+    // point radius (3px, 6px on hover) with a little headroom - small
+    // enough to stay clear of the y-axis numbers (to the left) and the
+    // x-axis month labels (below), confirmed visually.
+    const padTop = 26, padRight = 10, padLeft = 10, padBottom = 8;
     const maskTop = Math.max(0, area.top - padTop);
-    mask.style.left = area.left + 'px';
+    mask.style.left = (area.left - padLeft) + 'px';
     mask.style.top = maskTop + 'px';
-    mask.style.width = (area.width + padRight) + 'px';
-    // Bottom edge pinned to chartArea.bottom exactly (never past it, or
-    // it would cover part of the x-axis month labels) regardless of how
-    // much the top padding above got clamped by the viewport edge.
-    mask.style.height = (area.bottom - maskTop) + 'px';
+    mask.style.width = (area.width + padRight + padLeft) + 'px';
+    mask.style.height = (area.bottom + padBottom - maskTop) + 'px';
     mask.classList.remove('wi-chart-reveal');
     void mask.offsetWidth; // force reflow so replaying (tab switch, view revisit) restarts the wipe
     mask.classList.add('wi-chart-reveal');
