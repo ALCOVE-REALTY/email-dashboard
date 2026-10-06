@@ -681,6 +681,18 @@ body { background: var(--wi-bg); }
   box-shadow: 0 6px 14px rgba(76,85,232,.3);
 }
 
+/* Movement KPI card box backgrounds (Total Joins through Location
+   Transfers) reverted to main's own original --move-*-bg hex values, same
+   reasoning/values as Health Insurance's - the --move-*-bg variables
+   themselves are re-pointed to the new wi- palette app-wide, so this
+   can't just reference var(--move-blue-bg) etc. to reach main's true
+   original colour. Text/icon colours (var(--move-blue) etc.) keep the
+   new look, untouched. */
+#movementView .kpi-card.tone-move-blue   { background: #dbeafe; }
+#movementView .kpi-card.tone-move-green  { background: #dcfce7; }
+#movementView .kpi-card.tone-move-red    { background: #fee2e2; }
+#movementView .kpi-card.tone-move-purple { background: #ede9fe; }
+
 /* ---- Movement list rows: reference shows only "-> To" (the arrow inside
    a small tinted circle, coloured per movement type), not "From -> To" as
    plain text - the "From" value stays available as a tooltip (title=) on
