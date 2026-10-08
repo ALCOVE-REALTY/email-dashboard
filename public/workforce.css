@@ -1181,8 +1181,8 @@ body {
    that class is also used elsewhere (e.g. Employee Movements). */
 #joiningList .wf-join-sub { font-size: 0.68rem; }
 
-.wf-transfer-route { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.wf-transfer-route svg { flex-shrink: 0; color: var(--accent); }
+.wf-transfer-route { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; font-size: 0.68rem; }
+.wf-transfer-route svg { flex-shrink: 0; color: var(--accent); width: 11px; height: 11px; }
 
 .wf-movement-count-row {
   display: flex;
