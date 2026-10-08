@@ -1102,7 +1102,8 @@
     addBubble('assistant',
       intro + '\n\n' +
       'Reply ready: "' + (draft.draftReply || '(no draft - reply manually)') + '"\n\n' +
-      'Type "send", "edit: <your version>", or "skip".'
+      'Type "send", "edit: <your version>", "shorter", "more formal", "remind later", or "skip" - ' +
+      'anything else is just a normal question to me.'
     );
   }
 
@@ -1132,20 +1133,74 @@
     notificationPollTimer = null;
   }
 
-  const SEND_WORDS = /^(send|pathao|bhej do)$/i;
+  // Positive-match ONLY - found live that the old default-to-"skip"
+  // design silently swallowed a completely unrelated question ("what is
+  // your name") as an implicit skip, deleting the real pending draft in
+  // the process. Each command word may optionally be followed by a name
+  // (e.g. "skip Rahul") without changing which single active draft it
+  // applies to (only one is ever active at a time) - the name is just
+  // tolerated, not required or parsed.
+  const SEND_WORDS_RE = /^(send|pathao|bhej do)(\s+\S.*)?$/i;
+  const SKIP_RE = /^skip(\s+\S.*)?$/i;
+  const SHORTER_RE = /^shorter(\s+\S.*)?$/i;
+  const MORE_FORMAL_RE = /^more formal(\s+\S.*)?$/i;
+  const REMIND_LATER_RE = /^remind later(\s+\S.*)?$/i;
   const EDIT_PATTERN = /^edit:\s*(.+)$/i;
+
+  function isDraftCommand(text) {
+    const t = text.trim();
+    return SEND_WORDS_RE.test(t) || SKIP_RE.test(t) || SHORTER_RE.test(t) ||
+      MORE_FORMAL_RE.test(t) || REMIND_LATER_RE.test(t) || EDIT_PATTERN.test(t);
+  }
 
   async function handleWhatsappDraftReply(text) {
     const draft = activeWhatsappDraft;
     activeWhatsappDraft = null;
     addBubble('user', text);
+    const t = text.trim();
+
+    if (REMIND_LATER_RE.test(t)) {
+      // Deliberately no server call at all - the pending draft is left
+      // exactly as it is server-side, just not re-shown this turn; it
+      // surfaces again next time the panel (re)opens.
+      addBubble('assistant', 'Thik ache, porey mone korie debo.');
+      input.focus();
+      return;
+    }
+
+    if (SHORTER_RE.test(t) || MORE_FORMAL_RE.test(t)) {
+      const mode = SHORTER_RE.test(t) ? 'shorter' : 'more_formal';
+      try {
+        const resp = await fetch('/api/workforce/hr-assistant/whatsapp-revise-draft', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ contactId: draft.contactId, mode })
+        });
+        const data = await resp.json();
+        if (resp.ok && data.draftReply) {
+          activeWhatsappDraft = Object.assign({}, draft, { draftReply: data.draftReply });
+          addBubble('assistant',
+            'Updated reply: "' + data.draftReply + '"\n\n' +
+            'Type "send", "edit: <your version>", "shorter", "more formal", "remind later", or "skip".'
+          );
+        } else {
+          activeWhatsappDraft = draft; // restore - the revision failed, original draft is still the live one
+          addBubble('assistant', data.error || "Couldn't revise that - please try again.");
+        }
+      } catch (err) {
+        activeWhatsappDraft = draft;
+        addBubble('assistant', "Couldn't reach the server - please try again.");
+      }
+      input.focus();
+      return;
+    }
 
     let action = 'skip';
     let editedText = null;
-    if (SEND_WORDS.test(text.trim())) {
+    if (SEND_WORDS_RE.test(t)) {
       action = 'send';
     } else {
-      const editMatch = EDIT_PATTERN.exec(text.trim());
+      const editMatch = EDIT_PATTERN.exec(t);
       if (editMatch) { action = 'send'; editedText = editMatch[1]; }
     }
 
@@ -1181,7 +1236,7 @@
     const attachment = pendingAttachment;
     if (!text && !attachment) return;
 
-    if (activeWhatsappDraft && !attachment) {
+    if (activeWhatsappDraft && !attachment && isDraftCommand(text)) {
       input.value = '';
       handleWhatsappDraftReply(text);
       return;

@@ -1365,7 +1365,18 @@ router.post('/hr-assistant/chat', async (req, res) => {
         const action = switchMatch[1].toLowerCase();
         let reply;
         if (action === 'status') {
-          reply = 'WhatsApp auto-reply is currently ' + (await whatsappAssistant.isAutoReplyEnabled() ? 'ON' : 'OFF') + '.';
+          // Found live: reporting only the internal on/off flag read as
+          // "messages are actually being sent", when WHATSAPP_ASSISTANT_
+          // REAL_SEND (the real gate) might still be off entirely - now
+          // states the real send state explicitly so this can never be
+          // misread as "it's live".
+          const enabled = await whatsappAssistant.isAutoReplyEnabled();
+          const realSendOn = process.env.WHATSAPP_ASSISTANT_REAL_SEND === '1';
+          const onlyPhone = process.env.WHATSAPP_ASSISTANT_REAL_SEND_ONLY;
+          const sendState = !realSendOn
+            ? 'DRAFT MODE (real sending is off, nothing is being sent)'
+            : (onlyPhone ? 'real send only to ' + onlyPhone : 'real send to everyone');
+          reply = 'Auto reply: ' + (enabled ? 'ON' : 'OFF') + ' — ' + sendState + '.';
         } else {
           await whatsappAssistant.setAutoReplyEnabled(action === 'on');
           reply = 'WhatsApp auto-reply is now ' + action.toUpperCase() + '.';
@@ -1584,8 +1595,15 @@ router.post('/hr-assistant/whatsapp-reply', async (req, res) => {
     const { contactId, action, editedText } = req.body || {};
     if (!contactId || !action) return res.status(400).json({ error: 'contactId and action are required' });
 
+    // Logged here too (not just the auto-send pipeline) - found live
+    // that an untracked skip made it impossible to later tell whether a
+    // real draft was wrongly discarded or just stale test data (see
+    // conversation). Reason codes only, never message content.
     if (action === 'skip') {
+      const draftsBeforeSkip = await whatsappAssistant.listPendingDrafts();
+      const skipped = draftsBeforeSkip.find((d) => d.contactId === contactId);
       await whatsappAssistant.removePendingDraft(contactId);
+      await whatsappAssistant.logAutoReplyEvent({ senderType: skipped && skipped.type === 'group' ? 'group' : 'direct', aCase: 'manual', memoryId: null, action: 'manual_skip' });
       return res.json({ ok: true, sent: false });
     }
     if (action !== 'send') return res.status(400).json({ error: 'action must be "send" or "skip"' });
@@ -1612,7 +1630,31 @@ router.post('/hr-assistant/whatsapp-reply', async (req, res) => {
         : await whatsapp.sendWhatsAppMessage(contactId, textToSend);
     }
     await whatsappAssistant.removePendingDraft(contactId);
+    await whatsappAssistant.logAutoReplyEvent({
+      senderType: draft.type === 'group' ? 'group' : 'direct', aCase: 'manual', memoryId: null,
+      action: realSendEnabled ? (sendResult.ok ? 'manual_sent' : 'manual_send_failed') : 'manual_draft_mode'
+    });
     res.json({ ok: sendResult.ok, sent: realSendEnabled && sendResult.ok, draftMode: !realSendEnabled, text: textToSend, error: sendResult.ok ? null : sendResult.error });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// "shorter"/"more formal" chat commands (hrAssistant.js) - rewrites the
+// pending draft's text in place, never re-decides the case/fact.
+router.post('/hr-assistant/whatsapp-revise-draft', async (req, res) => {
+  try {
+    const { contactId, mode } = req.body || {};
+    if (!contactId || (mode !== 'shorter' && mode !== 'more_formal')) {
+      return res.status(400).json({ error: 'contactId and a valid mode ("shorter"/"more_formal") are required' });
+    }
+    const drafts = await whatsappAssistant.listPendingDrafts();
+    const draft = drafts.find((d) => d.contactId === contactId);
+    if (!draft) return res.status(404).json({ error: 'No pending draft for that chat (already sent/skipped?).' });
+    const revised = await whatsappAssistant.reviseDraftText(draft.draftReply || '', mode);
+    if (!revised) return res.status(500).json({ error: 'Revision came back empty - please try again.' });
+    await whatsappAssistant.updatePendingDraft(contactId, revised);
+    res.json({ ok: true, draftReply: revised });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

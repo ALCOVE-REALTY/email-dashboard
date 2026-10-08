@@ -144,6 +144,21 @@ async function removePendingDraft(contactId) {
   } catch (err) { /* best effort */ }
 }
 
+// "shorter"/"more formal" (spec: hrAssistant.js's draft-command fix) -
+// rewrites the draft text IN PLACE, same contactId/type/name/
+// messagePreview, so it's still the exact same pending entry, just with
+// revised wording.
+async function updatePendingDraft(contactId, newDraftReply) {
+  const redis = getClient();
+  if (!redis) return;
+  try {
+    const all = await listPendingDrafts();
+    const updated = all.map((d) => (d.contactId === contactId ? Object.assign({}, d, { draftReply: newDraftReply }) : d));
+    await redis.del(DRAFT_KEY);
+    for (const d of updated.reverse()) await redis.lpush(DRAFT_KEY, JSON.stringify(d));
+  } catch (err) { /* best effort */ }
+}
+
 // ---------------- Group mentions ----------------
 // New rule: groups stay excluded EXCEPT a message that tags SUBH's
 // owner. WhatsApp group mentions appear in message text as literal
@@ -752,6 +767,36 @@ const DRAFT_SYSTEM_PROMPT =
 // (DRAFT_MODEL). Conditional reasoning_effort mirrors openaiProvider.js's
 // own isReasoningModel check - a non-reasoning candidate (gpt-4.1,
 // gpt-4o-mini, ...) rejects that parameter outright with a 400.
+// "shorter"/"more formal" chat commands - rewrites an EXISTING draft's
+// wording only, never re-decides the case or touches the underlying
+// fact/guidance (those were already correct; the owner just wants the
+// phrasing adjusted) - so this is a plain text-in, text-out rewrite,
+// not a re-run of decideAutoReply.
+async function reviseDraftText(originalText, mode) {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) throw new Error('whatsappAssistant.reviseDraftText called without OPENAI_API_KEY set');
+  if (!DRAFT_MODEL) throw new Error('whatsappAssistant.reviseDraftText called without OPENAI_MODEL_MAIN set');
+  const instruction = mode === 'shorter'
+    ? 'Rewrite the given WhatsApp reply to be noticeably shorter, keeping the exact same meaning, facts, language and script - never add or drop any fact. Output ONLY the revised reply, nothing else, no quotes around it.'
+    : 'Rewrite the given WhatsApp reply to sound more formal and professional, keeping the exact same meaning, facts, language and script - never add or drop any fact. Output ONLY the revised reply, nothing else, no quotes around it.';
+  const body = { model: DRAFT_MODEL, messages: [
+    { role: 'system', content: instruction },
+    { role: 'user', content: originalText }
+  ] };
+  if (/^(gpt-5|o[0-9])/.test(DRAFT_MODEL)) body.reasoning_effort = 'low';
+  const resp = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: { Authorization: 'Bearer ' + apiKey, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  if (!resp.ok) {
+    const bodyText = await resp.text().catch(() => '');
+    throw new Error('draft revision API error ' + resp.status + (bodyText ? ': ' + bodyText.slice(0, 300) : ''));
+  }
+  const data = await resp.json();
+  return (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content || '').trim();
+}
+
 // selfFacts: optional, this sender's OWN whitelisted facts (see
 // buildSelfFacts) - production passes this from pollOnce when the 1:1
 // sender is a matched real employee; omitted/null means no real facts
@@ -1231,6 +1276,9 @@ module.exports = {
   savePendingDraft,
   listPendingDrafts,
   removePendingDraft,
+  updatePendingDraft,
+  reviseDraftText,
+  logAutoReplyEvent,
   addToAllowlist,
   addToBlocklist,
   removeFromAllowlist,
