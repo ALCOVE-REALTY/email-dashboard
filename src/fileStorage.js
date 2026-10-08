@@ -24,11 +24,12 @@ function escapeForDriveQuery(name) {
 async function findOrCreateFolder(drive, name, parentId) {
   const q = "name='" + escapeForDriveQuery(name) + "' and '" + parentId + "' in parents and " +
     "mimeType='application/vnd.google-apps.folder' and trashed=false";
-  const res = await drive.files.list({ q, fields: 'files(id,name)', spaces: 'drive' });
+  const res = await drive.files.list({ q, fields: 'files(id,name)', spaces: 'drive', supportsAllDrives: true, includeItemsFromAllDrives: true });
   if (res.data.files && res.data.files.length) return res.data.files[0].id;
   const created = await drive.files.create({
     requestBody: { name, mimeType: 'application/vnd.google-apps.folder', parents: [parentId] },
-    fields: 'id'
+    fields: 'id',
+    supportsAllDrives: true
   });
   return created.data.id;
 }
@@ -63,21 +64,22 @@ async function saveFile(buffer, { channel, senderLabel, topic, mimeType, extensi
   const created = await drive.files.create({
     requestBody: { name: filename, parents: [folderId] },
     media: { mimeType: mimeType || 'application/octet-stream', body: Readable.from(buffer) },
-    fields: 'id'
+    fields: 'id',
+    supportsAllDrives: true
   });
   return created.data.id; // fileRef = the Drive file id
 }
 
 async function getFile(fileRef) {
   const drive = getDriveClient();
-  const meta = await drive.files.get({ fileId: fileRef, fields: 'mimeType,name' });
-  const content = await drive.files.get({ fileId: fileRef, alt: 'media' }, { responseType: 'arraybuffer' });
+  const meta = await drive.files.get({ fileId: fileRef, fields: 'mimeType,name', supportsAllDrives: true });
+  const content = await drive.files.get({ fileId: fileRef, alt: 'media', supportsAllDrives: true }, { responseType: 'arraybuffer' });
   return { buffer: Buffer.from(content.data), mimeType: meta.data.mimeType, name: meta.data.name };
 }
 
 async function deleteFile(fileRef) {
   const drive = getDriveClient();
-  try { await drive.files.delete({ fileId: fileRef }); } catch (err) { /* already gone is fine */ }
+  try { await drive.files.delete({ fileId: fileRef, supportsAllDrives: true }); } catch (err) { /* already gone is fine */ }
 }
 
 module.exports = { saveFile, getFile, deleteFile };
