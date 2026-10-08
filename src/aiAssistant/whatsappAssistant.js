@@ -398,8 +398,20 @@ async function processDueAutoSends() {
   return { processed };
 }
 
+// Step 1 of the two-step go-live (spec item 7): real sending on, but
+// scoped to ONE real phone number while every other chat still goes
+// through draft mode - WHATSAPP_ASSISTANT_REAL_SEND_ONLY, if set,
+// narrows WHATSAPP_ASSISTANT_REAL_SEND=1 down to exactly that number;
+// unset (step 2 - everyone), the blanket REAL_SEND flag alone decides.
+function isRealSendAllowedFor(chatId) {
+  if (process.env.WHATSAPP_ASSISTANT_REAL_SEND !== '1') return false;
+  const onlyPhone = process.env.WHATSAPP_ASSISTANT_REAL_SEND_ONLY;
+  if (!onlyPhone) return true;
+  return whatsapp.normalizePhone(chatId) === whatsapp.normalizePhone(onlyPhone);
+}
+
 async function sendOrReportAutoReply(entry) {
-  const realSendEnabled = process.env.WHATSAPP_ASSISTANT_REAL_SEND === '1';
+  const realSendEnabled = isRealSendAllowedFor(entry.chatId);
   const who = (entry.isGroup ? 'group ' : '') + entry.name;
   const timeLabel = new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' });
 
@@ -1253,5 +1265,6 @@ module.exports = {
   checkAndPostDailySummary,
   listOpenFollowups,
   clearOpenFollowup,
-  handleIncomingMedia
+  handleIncomingMedia,
+  isRealSendAllowedFor
 };

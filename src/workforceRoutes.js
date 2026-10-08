@@ -1595,7 +1595,10 @@ router.post('/hr-assistant/whatsapp-reply', async (req, res) => {
     if (!draft) return res.status(404).json({ error: 'No pending draft for that chat (already sent/skipped?).' });
     const textToSend = (typeof editedText === 'string' && editedText.trim()) || draft.draftReply || '';
 
-    const realSendEnabled = process.env.WHATSAPP_ASSISTANT_REAL_SEND === '1';
+    // Same per-chat scoping as the auto-send path (step 1 of the
+    // two-step go-live can't be bypassed just by routing through a
+    // manually-approved never-auto draft instead).
+    const realSendEnabled = whatsappAssistant.isRealSendAllowedFor(contactId);
     let sendResult = { ok: true };
     if (realSendEnabled) {
       // sendWhatsAppMessage's own validation only accepts an 11-15 digit
