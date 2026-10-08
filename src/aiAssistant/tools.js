@@ -63,15 +63,30 @@ async function doerHeadcount() {
 // left isn't a meaningful answer to "who's joining this month" unless
 // asked for explicitly (see query_employees/list_employees/
 // group_employees for that widened case).
-// Same status-widening idea used everywhere else: includeAllStatuses
-// bypasses the Active-only default, ONLY when explicitly set true (e.g.
-// "including notice period staff" / "notice period soho"). Without it,
-// these stay Active-only no matter what.
-function statusMatches(emp, includeAllStatuses) {
-  return includeAllStatuses ? emp.status !== 'INACTIVE' : emp.status === 'ACTIVE';
+// Two independent widening flags, same meaning everywhere this file and
+// applyStatusDefault below use them - ACTIVE always included; each flag
+// adds its own one status on top, so the two can be set independently or
+// together ("including everyone"/"all staff ever" = both):
+//   includeNoticePeriod -> also include NOTICE PERIOD
+//   includeInactive     -> also include INACTIVE
+// Previously a single includeAllStatuses boolean meant different things
+// on different tools (full status-filter removal on list/group/query_
+// employees, but only "+Notice Period, still never Inactive" here) -
+// same flag name, two behaviours, a real source of wrong-looking answers
+// (e.g. "include inactive" on a birthdays question silently continued to
+// exclude people who had actually left). Split in two so every tool
+// agrees on what each flag does.
+function statusAllowed(emp, includeNoticePeriod, includeInactive) {
+  if (emp.status === 'ACTIVE') return true;
+  if (emp.status === 'NOTICE PERIOD') return Boolean(includeNoticePeriod);
+  if (emp.status === 'INACTIVE') return Boolean(includeInactive);
+  return false;
 }
-function activeScopeSuffix(includeAllStatuses) {
-  return includeAllStatuses ? ' (Active + Notice Period)' : ' (Active)';
+function scopeSuffix(includeNoticePeriod, includeInactive) {
+  if (includeNoticePeriod && includeInactive) return ' (All Statuses)';
+  if (includeInactive) return ' (Active + Inactive)';
+  if (includeNoticePeriod) return ' (Active + Notice Period)';
+  return ' (Active)';
 }
 // Same "(Top 8)" signal group_employees/directReports/etc. already put in
 // their titles when the row list is cut down to CARD_ROW_LIMIT - the
@@ -89,7 +104,7 @@ function truncationSuffix(total) {
 // real server date (see birthdaysThisMonth for why - the model can't
 // reliably do "current + 1" itself in one tool call), and can roll over
 // into next year (target's own resolved year is used, not a fixed one).
-async function joiningThisMonth(month, includeAllStatuses, monthOffset) {
+async function joiningThisMonth(month, includeNoticePeriod, includeInactive, monthOffset) {
   const { employees, departmentNames } = await employeeService.getEmployeeData();
   const now = new Date();
   const requestedMonth = Number(month);
@@ -99,7 +114,7 @@ async function joiningThisMonth(month, includeAllStatuses, monthOffset) {
   const y = target.getUTCFullYear();
   const resolvedMonthIndex = target.getUTCMonth();
   const monthLabel = target.toLocaleDateString('en-US', { month: 'long', timeZone: 'UTC' });
-  const joiners = employees.filter((e) => statusMatches(e, includeAllStatuses) && e.doj && e.doj.getUTCFullYear() === y && e.doj.getUTCMonth() === resolvedMonthIndex);
+  const joiners = employees.filter((e) => statusAllowed(e, includeNoticePeriod, includeInactive) && e.doj && e.doj.getUTCFullYear() === y && e.doj.getUTCMonth() === resolvedMonthIndex);
   const mapJoiner = (e) => ({
     label: e.name,
     value: (departmentNames.get(e.departmentKey) || e.department) + ' · ' + e.doj.toISOString().slice(0, 10)
@@ -108,25 +123,25 @@ async function joiningThisMonth(month, includeAllStatuses, monthOffset) {
     title: 'Employees Joining in ' + monthLabel + ' ' + y + truncationSuffix(joiners.length),
     rows: joiners.slice(0, CARD_ROW_LIMIT).map(mapJoiner),
     fullRows: joiners.map(mapJoiner),
-    footer: { label: 'Total Joiners' + activeScopeSuffix(includeAllStatuses), value: joiners.length }
+    footer: { label: 'Total Joiners' + scopeSuffix(includeNoticePeriod, includeInactive), value: joiners.length }
   };
 }
 
 // monthOffset 0 = this month, 1 = next month - "confirmation due next
 // month" is one of the spec's own example commands, so this needs to
 // look at a month other than the current one.
-async function pendingConfirmations(monthOffset = 0, includeAllStatuses) {
+async function pendingConfirmations(monthOffset = 0, includeNoticePeriod, includeInactive) {
   const { employees, departmentNames } = await employeeService.getEmployeeData();
   const now = new Date();
   const target = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + monthOffset, 1));
-  const list = analytics.pendingConfirmationsThisMonth(employees, target).filter((e) => statusMatches(e, includeAllStatuses));
+  const list = analytics.pendingConfirmationsThisMonth(employees, target).filter((e) => statusAllowed(e, includeNoticePeriod, includeInactive));
   const monthLabel = target.toLocaleDateString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' });
   const mapRow = (e) => ({ label: e.name, value: departmentNames.get(e.departmentKey) || e.department });
   return {
     title: 'Confirmations Due in ' + monthLabel + truncationSuffix(list.length),
     rows: list.slice(0, CARD_ROW_LIMIT).map(mapRow),
     fullRows: list.map(mapRow),
-    footer: { label: 'Total Pending' + activeScopeSuffix(includeAllStatuses), value: list.length }
+    footer: { label: 'Total Pending' + scopeSuffix(includeNoticePeriod, includeInactive), value: list.length }
   };
 }
 
@@ -144,18 +159,18 @@ async function joiningTrend() {
 // against the real server date - same reason as birthdaysThisMonth/
 // joiningThisMonth: the model cannot reliably do this date arithmetic
 // itself in one tool call.
-async function retirementThisMonth(includeAllStatuses, monthOffset) {
+async function retirementThisMonth(includeNoticePeriod, includeInactive, monthOffset) {
   const { employees, departmentNames } = await employeeService.getEmployeeData();
   const now = new Date();
   const target = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + (Number(monthOffset) || 0), 1));
-  const list = analytics.turning58ThisMonth(employees, target).filter((e) => statusMatches(e, includeAllStatuses));
+  const list = analytics.turning58ThisMonth(employees, target).filter((e) => statusAllowed(e, includeNoticePeriod, includeInactive));
   const monthLabel = target.toLocaleDateString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' });
   const mapRow = (e) => ({ label: e.name, value: departmentNames.get(e.departmentKey) || e.department });
   return {
     title: 'Employees Reaching Retirement Age in ' + monthLabel + truncationSuffix(list.length),
     rows: list.slice(0, CARD_ROW_LIMIT).map(mapRow),
     fullRows: list.map(mapRow),
-    footer: { label: 'Total' + activeScopeSuffix(includeAllStatuses), value: list.length }
+    footer: { label: 'Total' + scopeSuffix(includeNoticePeriod, includeInactive), value: list.length }
   };
 }
 
@@ -172,7 +187,7 @@ async function retirementThisMonth(includeAllStatuses, monthOffset) {
 // and then compute "current + 1" itself; it guessed instead and got the
 // wrong month (November instead of October). Offset-from-now math done
 // here, in code, against the real server date, needs no guessing.
-async function birthdaysThisMonth(month, includeAllStatuses, monthOffset) {
+async function birthdaysThisMonth(month, includeNoticePeriod, includeInactive, monthOffset) {
   const { employees } = await employeeService.getEmployeeData();
   const now = new Date();
   const requestedMonth = Number(month);
@@ -181,7 +196,7 @@ async function birthdaysThisMonth(month, includeAllStatuses, monthOffset) {
   // Year is irrelevant here - analytics.birthdaysThisMonth only compares
   // month, not year - so any year works as the reference date.
   const target = new Date(Date.UTC(now.getUTCFullYear(), targetMonthIndex, 1));
-  const list = analytics.birthdaysThisMonth(employees, target).filter((e) => statusMatches(e, includeAllStatuses));
+  const list = analytics.birthdaysThisMonth(employees, target).filter((e) => statusAllowed(e, includeNoticePeriod, includeInactive));
   const monthLabel = target.toLocaleDateString('en-US', { month: 'long', timeZone: 'UTC' });
   const mapRow = (e) => ({
     label: e.name,
@@ -191,7 +206,7 @@ async function birthdaysThisMonth(month, includeAllStatuses, monthOffset) {
     title: 'Birthdays in ' + monthLabel + truncationSuffix(list.length),
     rows: list.slice(0, CARD_ROW_LIMIT).map(mapRow),
     fullRows: list.map(mapRow),
-    footer: { label: 'Total' + activeScopeSuffix(includeAllStatuses), value: list.length }
+    footer: { label: 'Total' + scopeSuffix(includeNoticePeriod, includeInactive), value: list.length }
   };
 }
 
@@ -266,6 +281,25 @@ async function insuranceStatus(name) {
     footer: { label: 'Total Insured (incl. self)', value: profile.familyCount + 1 },
     actions: [{ label: 'Open Health Insurance', view: 'healthInsurance' }]
   };
+}
+
+// Exact-ID insurance lookup for internal callers that have already
+// resolved a specific real employee record (e.g. whatsappAssistant's
+// self-service WhatsApp draft facts) - unlike insuranceStatus above,
+// which does its own fuzzy name search, this never risks matching the
+// WRONG employee when two people share a similar name, since the
+// caller already knows exactly whose employeeId this is. Same
+// no-premium/no-sum-insured shape as insuranceStatus - a plain summary
+// string only, nothing a draft could misuse as a specific figure.
+async function insuranceStatusByEmployeeId(employeeId) {
+  const insuranceData = await insuranceService.getInsuranceData();
+  const profile = insuranceAnalytics.buildEmployeeInsuranceProfile(insuranceData.members, employeeId, {
+    includeInactive: true,
+    additions: insuranceData.additions
+  });
+  if (!profile || !profile.self) return { covered: false, summary: 'No insurance record found' };
+  const familyPart = profile.familyCount ? ', +' + profile.familyCount + ' family member' + (profile.familyCount === 1 ? '' : 's') : '';
+  return { covered: true, summary: 'Covered' + (profile.self.status ? ' (' + profile.self.status + ')' : '') + familyPart };
 }
 
 async function dataQualityIssues() {
@@ -357,28 +391,40 @@ const LIST_SORT_FIELDS = {
 // wrong-feeling-right answer. The model passes an explicit `status`
 // (any value, including 'INACTIVE'/'NOTICE PERIOD') when asked for a
 // specific status ("give me a report of inactive staff"), or
-// `includeAllStatuses: true` for "include inactive"/"including
-// everyone"/"all staff ever" - either one turns this default off; with
-// neither, status is forced to 'ACTIVE'.
-function applyActiveOnlyDefault(filters) {
+// includeNoticePeriod/includeInactive (independently or together) for
+// "include notice period"/"include inactive"/"including everyone"/"all
+// staff ever" - any of these turns the plain ACTIVE-only default off;
+// with none of them, status is forced to 'ACTIVE'. Reuses
+// employeeService's existing status/statusNot filter primitives (no new
+// filter mechanics needed): statusNot excludes exactly the one status
+// the caller did NOT ask to widen into.
+function applyStatusDefault(filters) {
   const rest = Object.assign({}, filters);
-  const includeAllStatuses = rest.includeAllStatuses;
-  delete rest.includeAllStatuses;
-  if (rest.status || includeAllStatuses) return rest;
+  const includeNoticePeriod = rest.includeNoticePeriod;
+  const includeInactive = rest.includeInactive;
+  delete rest.includeNoticePeriod;
+  delete rest.includeInactive;
+  if (rest.status) return rest;
+  if (includeNoticePeriod && includeInactive) return rest; // everyone - no status gate at all
+  if (includeInactive) { rest.statusNot = 'NOTICE PERIOD'; return rest; } // Active + Inactive
+  if (includeNoticePeriod) { rest.statusNot = 'INACTIVE'; return rest; } // Active + Notice Period
   rest.status = 'ACTIVE';
   return rest;
 }
 
 // So the card itself always states its own scope in a few words (Active /
-// a specific status / All Statuses) - not left to the model to remember
-// to mention unprompted.
+// a specific status / Active + one widened status / All Statuses) - not
+// left to the model to remember to mention unprompted. statusNot is
+// applyStatusDefault's own output for the "widen by exactly one status"
+// case (see above) - distinct from "no gate at all" (true All Statuses).
 function scopeLabelSuffix(effectiveFilters) {
   if (effectiveFilters && effectiveFilters.status) return ' (' + String(effectiveFilters.status) + ')';
+  if (effectiveFilters && effectiveFilters.statusNot) return ' (All but ' + String(effectiveFilters.statusNot) + ')';
   return ' (All Statuses)';
 }
 
 async function listEmployees(rawFilters = {}) {
-  const filters = applyActiveOnlyDefault(rawFilters);
+  const filters = applyStatusDefault(rawFilters);
   const { employees, departmentNames, locationNames, reportingManagerNames, doerNames } = await employeeService.getEmployeeData();
   const filtered = employeeService.filterEmployees(employees, filters);
 
@@ -462,8 +508,9 @@ async function groupEmployees(rawFilters = {}, groupBy = 'department') {
   // Grouping BY status is the one case where forcing status:'ACTIVE' as a
   // filter would be self-defeating - the whole point of that query is to
   // see the status breakdown itself (e.g. "how many active vs inactive").
-  const filters = groupBy === 'status' ? Object.assign({}, rawFilters) : applyActiveOnlyDefault(rawFilters);
-  delete filters.includeAllStatuses;
+  const filters = groupBy === 'status' ? Object.assign({}, rawFilters) : applyStatusDefault(rawFilters);
+  delete filters.includeNoticePeriod;
+  delete filters.includeInactive;
   const { employees, departmentNames, locationNames, reportingManagerNames, doerNames } = await employeeService.getEmployeeData();
   const filtered = employeeService.filterEmployees(employees, filters);
   const getGroupKey = GROUP_BY_FIELDS[groupBy] || GROUP_BY_FIELDS.department;
@@ -608,8 +655,9 @@ async function queryEmployees(params = {}) {
   // filter would be self-defeating - see the same exception in
   // group_employees.
   const groupByForScope = QUERY_GROUPABLE_FIELDS.includes(params.groupBy) ? params.groupBy : null;
-  const filters = groupByForScope === 'status' ? rawFilters : applyActiveOnlyDefault(rawFilters);
-  delete filters.includeAllStatuses;
+  const filters = groupByForScope === 'status' ? rawFilters : applyStatusDefault(rawFilters);
+  delete filters.includeNoticePeriod;
+  delete filters.includeInactive;
 
   const filtered = employeeService.filterEmployees(employees, filters);
 
@@ -792,7 +840,8 @@ async function directReports(name) {
   // Active-only by default, matching every other list/count tool - was
   // still including Notice Period here (an oversight from before that
   // rule existed). Widening beyond Active for this specific question can
-  // go through query_employees(reportingManager, includeAllStatuses).
+  // go through query_employees(reportingManager, includeNoticePeriod/
+  // includeInactive).
   const qKey = employeeService.normalizeKey(q);
   let matches = employees.filter(
     (e) => e.status === 'ACTIVE' && (e.reportingManagerKey === qKey || e.reportingDoerKey === qKey)
@@ -988,6 +1037,7 @@ module.exports = {
   workforceMovement,
   healthInsurancePendingAdditions,
   insuranceStatus,
+  insuranceStatusByEmployeeId,
   dataQualityIssues,
   insightsSummary,
   demographics,

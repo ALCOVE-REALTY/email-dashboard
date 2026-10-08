@@ -42,4 +42,51 @@ async function sendWhatsAppMessage(phone, message) {
   return { ok: true };
 }
 
-module.exports = { sendWhatsAppMessage, normalizePhone };
+// ---------------- Read-only (SUBH's WhatsApp assistant, Phase F) ----------------
+// Confirmed against the live gateway directly (GET, read-only, no setting
+// changed): /chats lists conversations, /messages lists recent messages
+// and accepts ?contact=<id>&limit=<n>. No ?since= time filter exists (it
+// was tried and silently ignored) - callers track their own "last seen
+// id" per chat instead, which this gateway's own monotonically
+// increasing numeric `id` field supports fine. No rate-limit headers are
+// exposed, so callers should poll gently (whatsappPollScheduler.js) and
+// back off on any error rather than retrying immediately.
+function apiBase() {
+  return WHATSAPP_API_BASE + '/api/' + WHATSAPP_PRODUCT_ID + '/' + WHATSAPP_PHONE_ID;
+}
+
+async function listChats() {
+  const res = await fetch(apiBase() + '/chats', { headers: { 'x-maytapi-key': requireToken() } });
+  if (!res.ok) throw new Error('WhatsApp /chats failed: ' + res.status);
+  const data = await res.json();
+  return Array.isArray(data.data) ? data.data : [];
+}
+
+// contactId is optional - omitted, this returns the gateway's own
+// recent-activity feed across every chat (confirmed live: this is what
+// actually reflects a brand-new 1:1 conversation right away - /chats
+// does not; a real test message from a fresh number showed up here
+// immediately but never appeared in /chats at all).
+async function listMessages(contactId, limit) {
+  let url = apiBase() + '/messages?limit=' + (Number(limit) || 20);
+  if (contactId) url += '&contact=' + encodeURIComponent(contactId);
+  const res = await fetch(url, { headers: { 'x-maytapi-key': requireToken() } });
+  if (!res.ok) throw new Error('WhatsApp /messages failed: ' + res.status);
+  const data = await res.json();
+  return Array.isArray(data.data) ? data.data : [];
+}
+
+// WhatsApp's own group JIDs are long (18+ digit) numeric IDs; every real
+// phone number this gateway has shown (country code + number) has been
+// 15 digits or fewer. Length-based rather than prefix-based (e.g.
+// "120363...") on purpose - a prefix is an observation about today's
+// data, not a documented contract, while E.164's own 15-digit max is a
+// real, durable limit. Per direct instruction, groups are excluded
+// permanently and as early as possible - this is the first check any
+// chat/message goes through, before anything else looks at it.
+function isGroupChat(contactId) {
+  const digits = String(contactId || '').replace(/\D/g, '');
+  return digits.length > 15;
+}
+
+module.exports = { sendWhatsAppMessage, normalizePhone, listChats, listMessages, isGroupChat };

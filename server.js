@@ -7,6 +7,7 @@ const fs = require('fs');
 // Employee Deploy Platform) - see src/basePath.js.
 const basePath = require('./src/basePath');
 const { getAuthUrl, handleCallback, isAuthenticated, getConfigStatus } = require('./src/auth');
+const subhDriveAuth = require('./src/subhDriveAuth');
 const gmailService = require('./src/gmailService');
 const workforceRoutes = require('./src/workforceRoutes');
 const insuranceRoutes = require('./src/insuranceRoutes');
@@ -16,6 +17,7 @@ const emailService = require('./src/emailService');
 const movementTracker = require('./src/movementTracker');
 const cacheBus = require('./src/cacheBus');
 const snapshotScheduler = require('./src/dailySnapshotScheduler');
+const whatsappPollScheduler = require('./src/whatsappPollScheduler');
 // One client for the daily-snapshot lock, shared by the endpoint and the
 // in-process scheduler so both claim the same per-day key.
 const snapshotRedis = snapshotScheduler.makeRedis();
@@ -66,7 +68,30 @@ app.get('/auth', (req, res) => {
   res.redirect(getAuthUrl());
 });
 
+// One-time consent for SUBH's own document storage (subhDriveAuth.js) -
+// a completely separate Google identity/scope from the Gmail flow below,
+// reusing the SAME registered redirect URI (so no Google Cloud Console
+// change is needed) - /oauth2callback tells the two apart by `state`.
+app.get('/subh-drive-auth', (req, res) => {
+  res.redirect(subhDriveAuth.getAuthUrl());
+});
+
 app.get('/oauth2callback', async (req, res) => {
+  if (req.query.state === subhDriveAuth.OAUTH_STATE) {
+    try {
+      const tokens = await subhDriveAuth.handleCallback(req.query.code);
+      return res.send(
+        '<pre style="white-space:pre-wrap;font-family:monospace;padding:20px;">' +
+          'SUBH Drive connected. Copy the value below into this server\'s SUBH_DRIVE_REFRESH_TOKEN ' +
+          'environment variable, then restart:\n\n' +
+          (tokens.refresh_token || '(no refresh_token returned - remove prior access via ' +
+            'https://myaccount.google.com/permissions and try again so Google issues a new one)') +
+          '</pre>'
+      );
+    } catch (err) {
+      return res.status(500).send('SUBH Drive authorization failed: ' + err.message);
+    }
+  }
   try {
     const tokens = await handleCallback(req.query.code);
     if (process.env.VERCEL) {
@@ -644,6 +669,8 @@ if (!process.env.VERCEL) {
   // Off Vercel there is no Vercel Cron, so this process runs the daily
   // movement snapshot itself (opt-in: MOVEMENT_SNAPSHOT_SCHEDULER=1).
   snapshotScheduler.start({ tracker: movementTracker, redis: snapshotRedis });
+  // SUBH's WhatsApp assistant poll loop (Phase F, opt-in: WHATSAPP_ASSISTANT_SCHEDULER=1).
+  whatsappPollScheduler.start();
 }
 
 module.exports = app;

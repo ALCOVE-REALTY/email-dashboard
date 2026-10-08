@@ -1048,7 +1048,9 @@
       const name = (document.getElementById('drawerName') && document.getElementById('drawerName').textContent.trim()) || '';
       const greetName = name && name !== '—' ? name.split(' ')[0] : '';
       addWelcome(greetName);
+      showNextWhatsappDraft();
     }
+    startNotificationPolling();
     // Deliberately no auto-focus here - the keyboard should only open when
     // the person actually taps the input, not the moment the panel opens.
   }
@@ -1061,6 +1063,7 @@
       window.visualViewport.removeEventListener('scroll', syncPanelToViewport);
     }
     window.removeEventListener('orientationchange', syncPanelToViewport);
+    stopNotificationPolling();
   }
 
   btn.addEventListener('click', openPanel);
@@ -1072,11 +1075,118 @@
   input.addEventListener('focus', () => setTimeout(syncPanelToViewport, 50));
   input.addEventListener('blur', () => setTimeout(syncPanelToViewport, 50));
 
+  // SUBH's WhatsApp assistant (Phase F, 1:1 chats + tagged groups, DRAFT-
+  // ONLY) - a pending draft is shown as one plain chat message (no new
+  // UI), and the person answers it with the EXACT same "send"/"pathao"/
+  // "bhej do" global safety phrasing used everywhere else, plus "skip"
+  // and "edit: <text>". Only one draft is ever active at a time - if
+  // several are waiting, they're shown one after another as each is
+  // resolved, which naturally satisfies "ask which one first" without
+  // new UI.
+  let activeWhatsappDraft = null;
+
+  async function showNextWhatsappDraft() {
+    let data;
+    try {
+      const resp = await fetch('/api/workforce/hr-assistant/whatsapp-pending');
+      if (!resp.ok) return;
+      data = await resp.json();
+    } catch (err) { return; }
+    const items = data && data.items;
+    if (!items || !items.length) return;
+    const draft = items[0];
+    activeWhatsappDraft = draft;
+    const intro = draft.type === 'group'
+      ? 'You were tagged in "' + (draft.name || 'a group') + '": "' + draft.messagePreview + '"'
+      : (draft.name || 'Someone') + ' asked on WhatsApp: "' + draft.messagePreview + '"';
+    addBubble('assistant',
+      intro + '\n\n' +
+      'Reply ready: "' + (draft.draftReply || '(no draft - reply manually)') + '"\n\n' +
+      'Type "send", "edit: <your version>", or "skip".'
+    );
+  }
+
+  // SUBH MEMORY / auto-reply (spec points 1c/6) - owner-only notifications
+  // ("holding reply sent, follow-up needed" / "Auto-replied to X...").
+  // Polled while the panel is open (not just on open, since these can
+  // arrive from the background poller at any time during a session);
+  // non-owners get an empty list every time (see the route's own
+  // comment), so this is a harmless no-op poll for them.
+  let notificationPollTimer = null;
+  async function pollSubhNotifications() {
+    let data;
+    try {
+      const resp = await fetch('/api/workforce/hr-assistant/subh-notifications');
+      if (!resp.ok) return;
+      data = await resp.json();
+    } catch (err) { return; }
+    (data && data.items || []).slice().reverse().forEach((n) => addBubble('assistant', n.text));
+  }
+  function startNotificationPolling() {
+    if (notificationPollTimer) return;
+    pollSubhNotifications();
+    notificationPollTimer = setInterval(pollSubhNotifications, 30000);
+  }
+  function stopNotificationPolling() {
+    clearInterval(notificationPollTimer);
+    notificationPollTimer = null;
+  }
+
+  const SEND_WORDS = /^(send|pathao|bhej do)$/i;
+  const EDIT_PATTERN = /^edit:\s*(.+)$/i;
+
+  async function handleWhatsappDraftReply(text) {
+    const draft = activeWhatsappDraft;
+    activeWhatsappDraft = null;
+    addBubble('user', text);
+
+    let action = 'skip';
+    let editedText = null;
+    if (SEND_WORDS.test(text.trim())) {
+      action = 'send';
+    } else {
+      const editMatch = EDIT_PATTERN.exec(text.trim());
+      if (editMatch) { action = 'send'; editedText = editMatch[1]; }
+    }
+
+    try {
+      const resp = await fetch('/api/workforce/hr-assistant/whatsapp-reply', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contactId: draft.contactId, action, editedText })
+      });
+      const data = await resp.json();
+      const who = (draft.type === 'group' ? 'group ' : '') + (draft.name || draft.contactId);
+      if (!resp.ok) {
+        addBubble('assistant', data.error || "Couldn't process that - please try again.");
+      } else if (action === 'skip') {
+        addBubble('assistant', 'Skipped.');
+      } else if (data.draftMode) {
+        addBubble('assistant', '[Draft mode - not actually sent yet] Sending to ' + who + ': "' + data.text + '"');
+      } else if (data.sent) {
+        addBubble('assistant', '✓ Sent to ' + who + '.');
+      } else {
+        addBubble('assistant', data.error || "Couldn't send that - please try again.");
+      }
+    } catch (err) {
+      addBubble('assistant', "Couldn't reach the server - please try again.");
+    }
+    input.focus();
+    showNextWhatsappDraft();
+  }
+
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const text = input.value.trim();
     const attachment = pendingAttachment;
     if (!text && !attachment) return;
+
+    if (activeWhatsappDraft && !attachment) {
+      input.value = '';
+      handleWhatsappDraftReply(text);
+      return;
+    }
+
     input.value = '';
     input.disabled = true;
     const sendBtn = form.querySelector('.wf-ai-send-btn');

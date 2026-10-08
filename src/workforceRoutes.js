@@ -12,6 +12,11 @@ const aiAssistant = require('./aiAssistant/provider');
 const aiRateLimiter = require('./aiAssistant/rateLimiter');
 const toolCallLog = require('./aiAssistant/toolCallLog');
 const chatHistoryService = require('./chatHistoryService');
+const whatsappAssistant = require('./aiAssistant/whatsappAssistant');
+const memoryService = require('./aiAssistant/memoryService');
+const documentRequests = require('./aiAssistant/documentRequests');
+const fileStorage = require('./fileStorage');
+const whatsapp = require('./whatsappService');
 
 const router = express.Router();
 
@@ -1346,7 +1351,100 @@ router.post('/hr-assistant/chat', async (req, res) => {
       });
     }
 
+    // Owner-only interception: SUBH MEMORY commands and the global
+    // WhatsApp auto-reply switch never reach the normal AI pipeline -
+    // both control what SUBH is allowed to actually SEND to real
+    // people, so trigger detection stays deterministic code (not the
+    // model's own judgement about when a command was meant). Trigger
+    // detection for memory itself (first word vs mentioned-elsewhere)
+    // happens inside handleMemoryMessage - here we only gate by owner
+    // + a cheap "does the word even appear" pre-filter.
+    if (memoryService.isOwner(req.hrUser.email)) {
+      const switchMatch = message.match(/^\s*auto reply (on|off|status)\s*$/i);
+      if (switchMatch) {
+        const action = switchMatch[1].toLowerCase();
+        let reply;
+        if (action === 'status') {
+          reply = 'WhatsApp auto-reply is currently ' + (await whatsappAssistant.isAutoReplyEnabled() ? 'ON' : 'OFF') + '.';
+        } else {
+          await whatsappAssistant.setAutoReplyEnabled(action === 'on');
+          reply = 'WhatsApp auto-reply is now ' + action.toUpperCase() + '.';
+        }
+        const savedConversationId = await chatHistoryService.appendTurn(req.hrUser.email, conversationId, { userText: message, assistantText: reply, card: null, actions: null }).catch(() => null);
+        return res.json({ reply, card: null, actions: null, conversationId: savedConversationId });
+      }
+
+      const memoryResult = await memoryService.handleMemoryMessage(message, req.hrUser.email, history)
+        .catch((err) => ({ reply: 'Memory command process korte giye error holo: ' + err.message }));
+      if (memoryResult) {
+        const savedConversationId = await chatHistoryService.appendTurn(req.hrUser.email, conversationId, { userText: message, assistantText: memoryResult.reply, card: null, actions: null }).catch(() => null);
+        return res.json({ reply: memoryResult.reply, card: null, actions: null, conversationId: savedConversationId });
+      }
+
+      // Never-auto-reply list (spec item 3) - add/remove by name or
+      // number, resolved against the real directory for a name.
+      const neverAutoAdd = message.match(/^\s*(.+?)\s*ke auto reply korbe na\s*$/i) || message.match(/^\s*never auto reply\s+(.+)$/i);
+      const neverAutoRemove = message.match(/^\s*remove\s+(.+?)\s+from never-auto\s*$/i);
+      if (neverAutoAdd || neverAutoRemove) {
+        const who = (neverAutoAdd || neverAutoRemove)[1].trim();
+        const resolved = await whatsappAssistant.resolvePersonToPhone(who);
+        let reply;
+        if (!resolved) {
+          reply = '"' + who + '" ke khuje pelam na (naam ba number check korun).';
+        } else {
+          const phone = resolved.phone || resolved;
+          const label = resolved.name || phone;
+          if (neverAutoAdd) { await whatsappAssistant.addToNeverAuto(phone); reply = '✓ ' + label + ' ekhon never-auto-reply list e - SUBH auto-send korbe na, draft + notification pabe.'; }
+          else { await whatsappAssistant.removeFromNeverAuto(phone); reply = '✓ ' + label + ' never-auto-reply list theke sorano holo.'; }
+        }
+        const savedConversationId = await chatHistoryService.appendTurn(req.hrUser.email, conversationId, { userText: message, assistantText: reply, card: null, actions: null }).catch(() => null);
+        return res.json({ reply, card: null, actions: null, conversationId: savedConversationId });
+      }
+
+      // Document request follow-through (spec item 5b/5d) - "<name>-er
+      // document dekhechi"/"done" marks it resolved (stays in the daily
+      // summary otherwise); "delete <name>-er document" removes the
+      // stored file early.
+      const docDone = message.match(/^\s*(.+?)[-\s]*(?:er)?\s*document\s*(?:dekhechi|done)\s*$/i);
+      const docDelete = message.match(/^\s*delete\s+(.+?)[-\s]*(?:er)?\s*document\s*$/i);
+      if (docDone || docDelete) {
+        const who = (docDone || docDelete)[1].trim();
+        const phone = await documentRequests.resolvePersonToPhone(who);
+        let reply;
+        if (!phone) {
+          reply = '"' + who + '" ke khuje pelam na.';
+        } else if (docDone) {
+          reply = (await documentRequests.markDone(phone)) ? '✓ ' + who + '-er document marked done.' : 'Oi naam-e kono document request khuje pelam na.';
+        } else {
+          reply = (await documentRequests.deleteDocument(phone)) ? '✓ ' + who + '-er document deleted.' : 'Oi naam-e kono document request khuje pelam na.';
+        }
+        const savedConversationId = await chatHistoryService.appendTurn(req.hrUser.email, conversationId, { userText: message, assistantText: reply, card: null, actions: null }).catch(() => null);
+        return res.json({ reply, card: null, actions: null, conversationId: savedConversationId });
+      }
+
+      // Open-followup resolution (not in a WhatsApp number's own
+      // commands - this is purely an owner bookkeeping command for the
+      // daily summary's "needing follow-up" list).
+      const followupDone = message.match(/^\s*(.+?)\s+follow\s*-?\s*up\s*(?:hoye geche|done)\s*$/i);
+      if (followupDone) {
+        const who = followupDone[1].trim();
+        const reply = (await whatsappAssistant.clearOpenFollowup(who)) ? '✓ ' + who + '-er follow-up cleared.' : '"' + who + '" er kono open follow-up khuje pelam na.';
+        const savedConversationId = await chatHistoryService.appendTurn(req.hrUser.email, conversationId, { userText: message, assistantText: reply, card: null, actions: null }).catch(() => null);
+        return res.json({ reply, card: null, actions: null, conversationId: savedConversationId });
+      }
+    }
+
     const result = await aiAssistant.getResponse({ message, history, user: req.hrUser });
+
+    // provider.js tags a reply with _fallback:true when the real AI
+    // provider threw and this turn silently ran on the dumb mock instead
+    // (see its own comment) - surfaced here as a response header, not a
+    // JSON field, so the reply body sent to the client is byte-identical
+    // to a normal turn; this is purely an inspectable signal (checked via
+    // the tool-log, or devtools' Network tab), never shown in the chat UI.
+    const wasFallback = Boolean(result._fallback);
+    delete result._fallback;
+    if (wasFallback) res.set('X-HR-Assistant-Mode', 'fallback');
 
     // Best-effort save - chatHistoryService never throws (see its own
     // fail-soft design), so a history outage can never turn into a
@@ -1440,6 +1538,97 @@ router.get('/hr-assistant/tool-log', async (req, res) => {
   const limit = Math.min(parseInt(req.query.limit, 10) || 100, 500);
   const items = await toolCallLog.listRecent(limit);
   res.json({ items, logAvailable: toolCallLog.isAvailable() });
+});
+
+// SUBH's WhatsApp assistant (Phase F) - 1:1 chats only (whatsappAssistant.js
+// excludes groups permanently, before any draft is ever created). DRAFT-ONLY:
+// these routes never call the real send API unless WHATSAPP_ASSISTANT_REAL_SEND=1
+// is explicitly set, which is NOT the default - "send" otherwise just reports
+// what it would have sent, same draft either way.
+router.get('/hr-assistant/whatsapp-pending', async (req, res) => {
+  const items = await whatsappAssistant.listPendingDrafts();
+  res.json({ items, available: whatsappAssistant.isAvailable() });
+});
+
+// Owner-only (spec points 1c/6 - "notify me"/"after each auto-send, post
+// in SUBH chat"). Pop semantics - returned items are cleared immediately
+// so the same notification isn't shown again on the next poll; anyone
+// other than the configured owner just gets an empty list, no error.
+router.get('/hr-assistant/subh-notifications', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.json({ items: [] });
+  const items = await whatsappAssistant.listOwnerNotifications();
+  if (items.length) await whatsappAssistant.clearOwnerNotifications();
+  res.json({ items });
+});
+
+// Owner-only document view (spec 5b/5d's "a link only I can open") -
+// the file is served by phone number, never a content-guessable id, and
+// gated behind the same owner check as every other document/memory
+// command; everyone else gets a plain 403, never served the file or
+// even told whether a request exists for that number.
+router.get('/hr-assistant/whatsapp-document/:phone', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const request = await documentRequests.getRequest(req.params.phone);
+    if (!request || !request.fileRef) return res.status(404).json({ error: 'No stored document for that number.' });
+    const file = await fileStorage.getFile(request.fileRef);
+    res.set('Content-Type', file.mimeType || request.mimeType || 'application/octet-stream');
+    res.send(file.buffer);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/hr-assistant/whatsapp-reply', async (req, res) => {
+  try {
+    const { contactId, action, editedText } = req.body || {};
+    if (!contactId || !action) return res.status(400).json({ error: 'contactId and action are required' });
+
+    if (action === 'skip') {
+      await whatsappAssistant.removePendingDraft(contactId);
+      return res.json({ ok: true, sent: false });
+    }
+    if (action !== 'send') return res.status(400).json({ error: 'action must be "send" or "skip"' });
+
+    const drafts = await whatsappAssistant.listPendingDrafts();
+    const draft = drafts.find((d) => d.contactId === contactId);
+    if (!draft) return res.status(404).json({ error: 'No pending draft for that chat (already sent/skipped?).' });
+    const textToSend = (typeof editedText === 'string' && editedText.trim()) || draft.draftReply || '';
+
+    // Same per-chat scoping as the auto-send path (step 1 of the
+    // two-step go-live can't be bypassed just by routing through a
+    // manually-approved never-auto draft instead).
+    const realSendEnabled = whatsappAssistant.isRealSendAllowedFor(contactId);
+    let sendResult = { ok: true };
+    if (realSendEnabled) {
+      // sendWhatsAppMessage's own validation only accepts an 11-15 digit
+      // phone number - a group draft's contactId is the gateway's longer
+      // (18+ digit) group id, so a real group send needs its own gateway
+      // call (not yet built - real sending stays off for groups and 1:1s
+      // alike until WHATSAPP_ASSISTANT_REAL_SEND is deliberately turned on,
+      // and group real-sending needs this addressed first either way).
+      sendResult = draft.type === 'group'
+        ? { ok: false, error: 'Real sending to a WhatsApp group is not implemented yet.' }
+        : await whatsapp.sendWhatsAppMessage(contactId, textToSend);
+    }
+    await whatsappAssistant.removePendingDraft(contactId);
+    res.json({ ok: sendResult.ok, sent: realSendEnabled && sendResult.ok, draftMode: !realSendEnabled, text: textToSend, error: sendResult.ok ? null : sendResult.error });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/hr-assistant/whatsapp-list', async (req, res) => {
+  try {
+    const { phone, list } = req.body || {};
+    if (!phone || (list !== 'allow' && list !== 'block')) {
+      return res.status(400).json({ error: 'phone and list ("allow" or "block") are required' });
+    }
+    const ok = list === 'allow' ? await whatsappAssistant.addToAllowlist(phone) : await whatsappAssistant.addToBlocklist(phone);
+    res.json({ ok });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 module.exports = router;

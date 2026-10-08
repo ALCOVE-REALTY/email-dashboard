@@ -17,33 +17,38 @@
 // receives.
 const tools = require('./tools');
 const toolCallLog = require('./toolCallLog');
+const whatsappAssistant = require('./whatsappAssistant');
+const memoryService = require('./memoryService');
 
 const API_URL = 'https://api.openai.com/v1/chat/completions';
-// Upgraded from gpt-4o-mini to gpt-5 (user's explicit, cost-approved
-// choice) for the understanding/routing + reply-wording pipeline, after
-// gpt-4o-mini proved unreliable on Banglish/Hinglish direction and
-// counting questions - data lookup itself (tools.js) is unchanged, this
-// only changes which model decides what was asked and reports back on it.
-const MODEL = process.env.OPENAI_MODEL || 'gpt-5';
-// gpt-5 is a reasoning model - its internal "thinking" is billed out of
-// this same completion-token budget, before any visible reply text.
-// Found live: at the old value (1024, fine for gpt-4o-mini, which has no
-// separate reasoning phase) a real request spent all 1024 on
+// Two-tier setup (benchmarked live against 30 real-style prompts, see
+// conversation): FAST (gpt-4o-mini, scored 100% in that benchmark at
+// ~₹10/100 requests) handles every turn by default - routing, tool
+// selection, and the reply itself. Its reply is then validated in code
+// (see validateReply below) and only regenerated on MAIN (gpt-4.1) when
+// a check actually fails, so the rare correctness gap costs nothing on
+// the other ~95%+ of turns. MAIN is also used directly for [[DRAFT]]
+// writing and WhatsApp drafts, where volume is low and quality matters
+// more than cost. Deliberately NO code default for either - a missing
+// env var fails loudly (see the guards below) rather than silently
+// falling back to gpt-5/gpt-5.4 or any other model picked in code.
+const MODEL_FAST = process.env.OPENAI_MODEL_FAST;
+const MODEL_MAIN = process.env.OPENAI_MODEL_MAIN;
+// A reasoning-family model (gpt-5/gpt-5.x/o-series) bills its internal
+// "thinking" out of this same completion-token budget, before any
+// visible reply text - found live, at the old value (1024, fine for a
+// non-reasoning model) a real request spent all 1024 on
 // reasoning_tokens and returned completely empty visible content
 // (finish_reason:'length'). Raised well above what reasoning plus a
-// short reply should ever need, and reasoning_effort (see callOpenAi) is
-// kept low since this is a routing/classification task, not something
-// that benefits from deep reasoning.
+// short reply should ever need; isReasoningModel (below) decides
+// per-call whether reasoning_effort is even sent.
 const MAX_TOKENS = 4096;
 
 // Used only for [[DRAFT]] replies (see REPLY_MARKER_RE) - actual written
-// documents (mails, letters, translations, summaries, notices) need real
-// writing quality, which the small routing model isn't good at. Kept as
-// a separate model/call so the cheap model still does all the routing
-// and data-fetching, and the pricier model is only ever invoked for the
-// (much rarer) request that's actually asking for a finished piece of
-// writing.
-const DRAFT_MODEL = process.env.OPENAI_DRAFT_MODEL || 'gpt-5.4';
+// documents (mails, letters, translations, summaries, notices) always
+// use MAIN directly, same as WhatsApp drafts, never FAST - this path is
+// low-volume and quality matters more than cost here.
+const DRAFT_MODEL = MODEL_MAIN;
 const DRAFT_MAX_TOKENS = 4096;
 
 const DRAFT_SYSTEM_PROMPT =
@@ -65,7 +70,9 @@ const DRAFT_SYSTEM_PROMPT =
   'asked to translate, translate faithfully, adding or dropping nothing.';
 
 const SYSTEM_PROMPT =
-  'Match the language and script of the user\'s most recent message only, never an earlier one. ' +
+  'Match the language and script of the user\'s most recent message only, never an earlier one - ' +
+  'for short romanised text, weigh grammar over shared vocabulary: standalone "e"/"ke" without ' +
+  '"ko"/"mein"/"hai" reads as Bengali (Banglish), "ko"/"mein"/"hai" reads as Hindi (Hinglish). ' +
   'You are the HR Assistant, an AI agent built into this company\'s internal Workforce ' +
   'Intelligence platform. Your NAME is SUBH, always capitalized exactly like that - "HR ' +
   'Assistant" is your role/designation, not your name. If asked who or what you are, say ' +
@@ -104,13 +111,16 @@ const SYSTEM_PROMPT =
   'never compute a month number yourself for these, you have no reliable way to know today\'s ' +
   'real date without a tool. ' +
   'Every report, list or count defaults to ACTIVE staff only - never include inactive/exited or ' +
-  'notice-period employees unless the person explicitly says so (naming a status like "inactive ' +
-  'staff" or "who is on notice period", or asking to "include inactive"/"including everyone"/"all ' +
-  'staff ever"). Leave status and includeAllStatuses unset on list_employees/group_employees/ ' +
-  'query_employees to get that default - do not set status to \'ACTIVE\' yourself, the tools ' +
-  'already default to it. State the basis in a few words in your own reply too, e.g. "126 active ' +
-  'employees have birthdays in October" rather than just "126" - even though the card itself also ' +
-  'labels its own scope. ' +
+  'notice-period employees unless the person explicitly says so: "include notice period"/"notice ' +
+  'period soho" -> includeNoticePeriod:true; "include inactive"/"X is inactive, give me their ' +
+  'details"/"report of inactive staff" -> includeInactive:true; "including everyone"/"all staff ' +
+  'ever" -> both true; naming one specific status directly ("inactive staff", "who is on notice ' +
+  'period") -> set status to that exact value instead, do not also set either include flag. Leave ' +
+  'status, includeNoticePeriod and includeInactive all unset on list_employees/group_employees/ ' +
+  'query_employees (and the include flags unset on the preset tools below) to get the Active-only ' +
+  'default - do not set status to \'ACTIVE\' yourself, the tools already default to it. State the ' +
+  'basis in a few words in your own reply too, e.g. "126 active employees have birthdays in ' +
+  'October" rather than just "126" - even though the card itself also labels its own scope. ' +
   'You must call a tool on every turn, including this one - there is no way to reply without ' +
   'calling one. If the message needs today\'s date, day of week, or the current time, call ' +
   'get_current_datetime - never guess it or say you don\'t know, that tool always has the real ' +
@@ -146,6 +156,10 @@ const SYSTEM_PROMPT =
   'tool yourself with the closest one if it is obvious which they meant). If a tool result has no ' +
   'unmatchedFilters but genuinely no matching rows (its note says so), that IS a real answer - say ' +
   'plainly that nothing matches those filters, as a normal [[PLAIN]] reply. ' +
+  'check_memory\'s result gives statusFact and guidance directly (no card) when a memory matches - ' +
+  'state them together as a [[PLAIN]] reply, exactly as given, never adding anything beyond them. If ' +
+  'the result has notFound instead, say plainly there is no SUBH memory for that topic/period - never ' +
+  'guess or borrow a memory from a different month/topic, even if one exists. ' +
   'get_reporting_manager\'s result gives employeeName and reportingManager directly (no card) - ' +
   'state that person\'s manager/HOD by name as a [[PLAIN]] reply. If reportingManager is empty, ' +
   'that is a real answer (this person has no one recorded above them, e.g. the most senior role) ' +
@@ -264,7 +278,8 @@ const TOOL_DEFS = [
         properties: {
           month: { type: 'integer', minimum: 1, maximum: 12, description: 'The calendar month asked about, 1-12 (e.g. 1 for January), ONLY when a specific month was actually named. Omit for "this month"/"next month"/"last month".' },
           monthOffset: { type: 'integer', enum: [-1, 0, 1], description: 'Use instead of month for relative phrasing: -1 = "last month", 0 = "this month" (default, can be omitted), 1 = "next month". Never combine with month.' },
-          includeAllStatuses: { type: 'boolean', description: 'Set true ONLY when explicitly asked to include Notice Period/inactive staff (e.g. "notice period soho", "including notice period"). Leave unset for the default (Active only).' }
+          includeNoticePeriod: { type: 'boolean', description: 'Set true ONLY when explicitly asked to include Notice Period staff (e.g. "notice period soho", "including notice period"). Leave unset for the default (Active only).' },
+          includeInactive: { type: 'boolean', description: 'Set true ONLY when explicitly asked to include inactive/exited staff (e.g. "including inactive"). Leave unset for the default (Active only).' }
         }
       }
     }
@@ -286,7 +301,8 @@ const TOOL_DEFS = [
         type: 'object',
         properties: {
           monthOffset: { type: 'integer', enum: [0, 1], description: '0 = this month, 1 = next month' },
-          includeAllStatuses: { type: 'boolean', description: 'Set true ONLY when explicitly asked to include Notice Period/inactive staff. Leave unset for the default (Active only).' }
+          includeNoticePeriod: { type: 'boolean', description: 'Set true ONLY when explicitly asked to include Notice Period staff. Leave unset for the default (Active only).' },
+          includeInactive: { type: 'boolean', description: 'Set true ONLY when explicitly asked to include inactive/exited staff. Leave unset for the default (Active only).' }
         }
       }
     }
@@ -300,7 +316,8 @@ const TOOL_DEFS = [
         type: 'object',
         properties: {
           monthOffset: { type: 'integer', enum: [-1, 0, 1], description: 'Relative to the current month: -1 = last month, 0 = this month (default, can be omitted), 1 = next month.' },
-          includeAllStatuses: { type: 'boolean', description: 'Set true ONLY when explicitly asked to include Notice Period/inactive staff. Leave unset for the default (Active only).' }
+          includeNoticePeriod: { type: 'boolean', description: 'Set true ONLY when explicitly asked to include Notice Period staff. Leave unset for the default (Active only).' },
+          includeInactive: { type: 'boolean', description: 'Set true ONLY when explicitly asked to include inactive/exited staff. Leave unset for the default (Active only).' }
         }
       }
     }
@@ -315,7 +332,8 @@ const TOOL_DEFS = [
         properties: {
           month: { type: 'integer', minimum: 1, maximum: 12, description: 'The calendar month asked about, 1-12 (e.g. 10 for October, 12 for December), ONLY when a specific month was actually named. Omit for "this month"/"next month".' },
           monthOffset: { type: 'integer', enum: [-1, 0, 1], description: 'Use instead of month for relative phrasing: -1 = "last month", 0 = "this month" (default, can be omitted), 1 = "next month". Never combine with month.' },
-          includeAllStatuses: { type: 'boolean', description: 'Set true ONLY when explicitly asked to include Notice Period/inactive staff (e.g. "notice period soho October birthday"). Leave unset for the default (Active only).' }
+          includeNoticePeriod: { type: 'boolean', description: 'Set true ONLY when explicitly asked to include Notice Period staff (e.g. "notice period soho October birthday"). Leave unset for the default (Active only).' },
+          includeInactive: { type: 'boolean', description: 'Set true ONLY when explicitly asked to include inactive/exited staff. Leave unset for the default (Active only).' }
         }
       }
     }
@@ -363,7 +381,8 @@ const TOOL_DEFS = [
           designation: { type: 'string', description: 'Substring, e.g. "engineer" matches Engineer, Jr. Engineer, Senior Engineer, etc.' },
           department: { type: 'string', description: 'Substring, e.g. "HR" matches "HR DEPT", "civil" matches every Civil sub-department.' },
           status: { type: 'string', enum: ['ACTIVE', 'INACTIVE', 'NOTICE PERIOD'], description: 'Omit this for the default (Active only) - unless groupBy is itself "status", in which case leave this unset so all statuses show in the breakdown. Only set it when the person specifically named a status, e.g. "inactive staff" -> INACTIVE, "on notice period" -> NOTICE PERIOD.' },
-          includeAllStatuses: { type: 'boolean', description: 'Set true ONLY when the person explicitly asked to include inactive/exited staff or "everyone"/"all staff ever" without naming one specific status - e.g. "including inactive", "all staff ever". Leave unset otherwise; the default is Active only.' },
+          includeNoticePeriod: { type: 'boolean', description: 'Set true ONLY when the person explicitly asked to include Notice Period staff without naming one specific status - e.g. "include notice period". Leave unset otherwise; the default is Active only.' },
+          includeInactive: { type: 'boolean', description: 'Set true ONLY when the person explicitly asked to include inactive/exited staff without naming one specific status - e.g. "including inactive". Leave unset otherwise; the default is Active only. Set BOTH this and includeNoticePeriod true for "everyone"/"all staff ever".' },
           location: { type: 'string', description: 'Substring on work location/site.' },
           gender: { type: 'string', enum: ['Male', 'Female'] },
           reportingManager: { type: 'string', description: 'Partial name of their manager (HOD-1) - matches all words in any order.' },
@@ -509,7 +528,8 @@ const TOOL_DEFS = [
           designation: { type: 'string', description: 'Substring match on designation/title, e.g. "engineer" matches Engineer, Jr. Engineer, Senior Engineer, etc.' },
           department: { type: 'string', description: 'Exact department name.' },
           status: { type: 'string', enum: ['ACTIVE', 'INACTIVE', 'NOTICE PERIOD'], description: 'Omit this for the default (Active only). Only set it when the person specifically named a status, e.g. "inactive staff" -> INACTIVE, "who is on notice period" -> NOTICE PERIOD.' },
-          includeAllStatuses: { type: 'boolean', description: 'Set true ONLY when the person explicitly asked to include inactive/exited staff or "everyone"/"all staff ever" without naming one specific status - e.g. "including inactive", "all staff ever". Leave unset otherwise; the default is Active only.' },
+          includeNoticePeriod: { type: 'boolean', description: 'Set true ONLY when the person explicitly asked to include Notice Period staff without naming one specific status - e.g. "include notice period". Leave unset otherwise; the default is Active only.' },
+          includeInactive: { type: 'boolean', description: 'Set true ONLY when the person explicitly asked to include inactive/exited staff without naming one specific status - e.g. "including inactive". Leave unset otherwise; the default is Active only. Set BOTH this and includeNoticePeriod true for "everyone"/"all staff ever".' },
           dateFrom: { type: 'string', description: 'Joining date range start, YYYY-MM-DD.' },
           dateTo: { type: 'string', description: 'Joining date range end, YYYY-MM-DD.' },
           q: { type: 'string', description: 'Free-text search across name, employee ID, email, department, designation, location.' },
@@ -536,7 +556,8 @@ const TOOL_DEFS = [
           designation: { type: 'string', description: 'Substring match on designation/title to filter by first, e.g. "engineer".' },
           department: { type: 'string' },
           status: { type: 'string', enum: ['ACTIVE', 'INACTIVE', 'NOTICE PERIOD'], description: 'Omit this for the default (Active only) - unless groupBy is itself "status", in which case leave this unset so all statuses show in the breakdown. Only set it when the person specifically named a status.' },
-          includeAllStatuses: { type: 'boolean', description: 'Set true ONLY when the person explicitly asked to include inactive/exited staff or "everyone"/"all staff ever" without naming one specific status. Leave unset otherwise; the default is Active only (except when groupBy is "status" itself, which always shows every status).' },
+          includeNoticePeriod: { type: 'boolean', description: 'Set true ONLY when explicitly asked to include Notice Period staff without naming one specific status. Leave unset otherwise; the default is Active only (except when groupBy is "status" itself, which always shows every status).' },
+          includeInactive: { type: 'boolean', description: 'Set true ONLY when explicitly asked to include inactive/exited staff without naming one specific status. Leave unset otherwise; the default is Active only (except when groupBy is "status" itself, which always shows every status). Set BOTH this and includeNoticePeriod true for "everyone"/"all staff ever".' },
           dateFrom: { type: 'string', description: 'Joining date range start, YYYY-MM-DD.' },
           dateTo: { type: 'string', description: 'Joining date range end, YYYY-MM-DD.' },
           q: { type: 'string', description: 'Free-text search to filter by first.' },
@@ -591,6 +612,52 @@ const TOOL_DEFS = [
       description: 'Get the real current date, day of week, and time (India Standard Time). Call this whenever a question needs today\'s date, the day of the week, or the current time - never guess it.',
       parameters: { type: 'object', properties: {} }
     }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'manage_whatsapp_official_list',
+      description: 'Add or remove a phone number from SUBH\'s WhatsApp assistant allow/block list (Phase F, 1:1 chats only). Use this for ANY phrasing that means "treat this number as a trusted official contact" or "never treat this number as official", in any language/script, e.g. "<number> ke official list e rakho", "add <number> to official list", "<number> ko official list me daal do", "<number> ke official list theke bad dao", "remove <number> from official list", "ei number kokhono porbe na" (paired with whichever number was just mentioned). "Official" / allow = treat this number like a known employee - a WORK-RELATED message from them still gets a reminder/draft, but a casual message from them is still personal, same as anyone else; "never" / block = always ignore this number\'s messages as personal, even a work-sounding one.',
+      parameters: {
+        type: 'object',
+        properties: {
+          phone: { type: 'string', description: 'The phone number mentioned, digits only or with a country code - normalized automatically.' },
+          list: { type: 'string', enum: ['allow', 'block'], description: '"allow" for "official list" / "trusted contact"; "block" for "never official" / "always personal".' },
+          action: { type: 'string', enum: ['add', 'remove'], description: '"add" to put the number on that list; "remove" to take it off (e.g. "remove from official list", "ar official na rakho").' }
+        },
+        required: ['phone', 'list', 'action']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'manage_whatsapp_group_block',
+      description: 'Block or unblock a WhatsApp GROUP (by name, not phone number) from SUBH\'s tagged-mention alerts (Phase F). Groups are otherwise fully excluded except a message that tags the HR manager directly - this tool stops even those tagged mentions from that one group. Use for phrasing like "<group name> block koro", "block <group name>", "unblock <group name>", "<group name> ar dekhash na".',
+      parameters: {
+        type: 'object',
+        properties: {
+          groupName: { type: 'string', description: 'The group\'s name (or a distinctive substring of it) as named in the message.' },
+          action: { type: 'string', enum: ['block', 'unblock'] }
+        },
+        required: ['groupName', 'action']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'check_memory',
+      description: 'Look up a SUBH MEMORY (a short-lived fact the owner taught SUBH, e.g. "September salary-r memory ki ache?") by topic and period - exact topic+period match only, never a different month.',
+      parameters: {
+        type: 'object',
+        properties: {
+          topic: { type: 'string', enum: memoryService.MEMORY_TOPICS },
+          periodRaw: { type: 'string', description: 'The month/date as mentioned (e.g. "september", "this month") - normalise to a bare English month name or "YYYY-MM"/"this month"/"last month"/"next month". Omit if no month was named.' }
+        },
+        required: ['topic']
+      }
+    }
   }
 ];
 
@@ -601,11 +668,11 @@ const TOOL_RUNNERS = {
   get_department_headcount: () => tools.departmentHeadcount(),
   get_location_headcount: () => tools.locationHeadcount(),
   get_doer_headcount: () => tools.doerHeadcount(),
-  get_joining_this_month: (input) => tools.joiningThisMonth(input.month, input.includeAllStatuses, input.monthOffset),
+  get_joining_this_month: (input) => tools.joiningThisMonth(input.month, input.includeNoticePeriod, input.includeInactive, input.monthOffset),
   get_joining_trend: () => tools.joiningTrend(),
-  get_pending_confirmations: (input) => tools.pendingConfirmations(input.monthOffset || 0, input.includeAllStatuses),
-  get_retirement_this_month: (input) => tools.retirementThisMonth(input.includeAllStatuses, input.monthOffset),
-  get_birthdays_this_month: (input) => tools.birthdaysThisMonth(input.month, input.includeAllStatuses, input.monthOffset),
+  get_pending_confirmations: (input) => tools.pendingConfirmations(input.monthOffset || 0, input.includeNoticePeriod, input.includeInactive),
+  get_retirement_this_month: (input) => tools.retirementThisMonth(input.includeNoticePeriod, input.includeInactive, input.monthOffset),
+  get_birthdays_this_month: (input) => tools.birthdaysThisMonth(input.month, input.includeNoticePeriod, input.includeInactive, input.monthOffset),
   get_workforce_movement: (input) => tools.workforceMovement(input.days || 90),
   get_health_insurance_pending_additions: () => tools.healthInsurancePendingAdditions(),
   get_insurance_status: (input) => tools.insuranceStatus(input.name),
@@ -623,7 +690,32 @@ const TOOL_RUNNERS = {
   prepare_letter: (input) => tools.prepareLetter({ name: input.name, letterType: input.letterType }),
   navigate_to_view: (input) => tools.navigateToView(input.view),
   no_data_needed: () => ({ title: null, rows: null, actions: null }),
-  get_current_datetime: () => tools.currentDateTime()
+  get_current_datetime: () => tools.currentDateTime(),
+  manage_whatsapp_official_list: async (input) => {
+    const result = await whatsappAssistant.manageList(input.phone, input.list, input.action);
+    return Object.assign({ title: null, rows: null, actions: null }, result);
+  },
+  manage_whatsapp_group_block: async (input) => {
+    const result = await whatsappAssistant.manageGroupBlock(input.groupName, input.action);
+    return Object.assign({ title: null, rows: null, actions: null }, result);
+  },
+  check_memory: async (input) => {
+    const now = new Date();
+    const period = input.periodRaw ? memoryService.resolvePeriod(input.periodRaw, now) : memoryService.impliedDuePeriod(input.topic, now);
+    if (!period) return { title: null, rows: null, actions: null, notFound: 'that period' };
+    // In-app colleagues are trusted HR staff, not an external WhatsApp
+    // sender - scope is intentionally not re-checked here (unlike the
+    // WhatsApp auto-reply path), only topic+period, same exact-match
+    // rule as section 4 of the spec describes.
+    const all = await memoryService.listMemories();
+    const match = all.find((m) => m.topic === input.topic && m.periodKey === period.key && !memoryService.isExpired(m, now));
+    if (!match) return { title: null, rows: null, actions: null, notFound: input.topic + ' - ' + period.label };
+    return {
+      title: null, rows: null, actions: null,
+      topic: match.topic, periodLabel: match.periodLabel, scopeLabel: match.scopeType === 'everyone' ? 'everyone' : match.scopeLabel,
+      statusFact: match.statusFact, guidance: match.guidance
+    };
+  }
 };
 
 // The language rule lives in SYSTEM_PROMPT's first line, but earlier turns
@@ -647,37 +739,77 @@ function toOpenAiMessages(history, message) {
   return msgs;
 }
 
-async function callOpenAi(apiKey, messages, toolChoice) {
+// modelOverride is for the benchmark harness only (WI-Redesign-Kit/tools/
+// _model-benchmark.mjs) - omitted, this is 100% today's production
+// behaviour (MODEL, reasoning_effort:'low' always sent). A reasoning-
+// family model (gpt-5/gpt-5.x/o-series) accepts reasoning_effort; every
+// other family (gpt-4.1, gpt-4o-mini, gpt-3.5, ...) rejects it outright
+// with a 400 (confirmed live) - isReasoningModel decides whether to send
+// it at all, so the benchmark can swap in a non-reasoning candidate
+// without that failing every single call.
+function isReasoningModel(model) {
+  return /^(gpt-5|o[0-9])/.test(model);
+}
+
+async function postChatCompletion(apiKey, body) {
   const resp = await fetch(API_URL, {
     method: 'POST',
     headers: {
       Authorization: 'Bearer ' + apiKey,
       'content-type': 'application/json'
     },
-    body: JSON.stringify({
-      model: MODEL,
-      // gpt-5 (like gpt-5.4, see callOpenAiDraft) rejects max_tokens -
-      // confirmed live, the exact same "Unsupported parameter" error found
-      // and fixed for the draft model earlier applies here too.
-      max_completion_tokens: MAX_TOKENS,
-      // Keeps the reasoning phase short - this call only ever has to pick
-      // a tool/write a short reply, not solve anything hard, and a lower
-      // effort leaves far more of MAX_TOKENS free for the actual visible
-      // reply (see MAX_TOKENS' own comment for the live failure this
-      // prevents).
-      // Tried 'minimal' for speed - found live, reproducible 3/3: it
-      // broke "ei mash e ke ke join korlo" (and likely other cases),
-      // the model falsely claiming it had no system access even though
-      // the tool call had already succeeded and returned real data: at
-      // minimal effort it sometimes doesn't actually process the tool
-      // result before replying. 'low' doesn't show this, so reverted -
-      // accuracy over speed when the two trade off.
-      reasoning_effort: 'low',
-      messages,
-      tools: TOOL_DEFS,
-      tool_choice: toolChoice
-    })
+    body: JSON.stringify(body)
   });
+  return resp;
+}
+
+async function callOpenAi(apiKey, messages, toolChoice, modelOverride) {
+  const model = modelOverride || MODEL_FAST;
+  const body = {
+    model,
+    // gpt-5 (like gpt-5.4, see callOpenAiDraft) rejects max_tokens -
+    // confirmed live, the exact same "Unsupported parameter" error found
+    // and fixed for the draft model earlier applies here too.
+    max_completion_tokens: MAX_TOKENS,
+    messages,
+    tools: TOOL_DEFS,
+    tool_choice: toolChoice
+  };
+  if (isReasoningModel(model)) {
+    // Keeps the reasoning phase short - this call only ever has to pick
+    // a tool/write a short reply, not solve anything hard, and a lower
+    // effort leaves far more of MAX_TOKENS free for the actual visible
+    // reply (see MAX_TOKENS' own comment for the live failure this
+    // prevents).
+    // Tried 'minimal' for speed - found live, reproducible 3/3: it
+    // broke "ei mash e ke ke join korlo" (and likely other cases),
+    // the model falsely claiming it had no system access even though
+    // the tool call had already succeeded and returned real data: at
+    // minimal effort it sometimes doesn't actually process the tool
+    // result before replying. 'low' doesn't show this, so reverted -
+    // accuracy over speed when the two trade off.
+    body.reasoning_effort = 'low';
+  }
+  let resp = await postChatCompletion(apiKey, body);
+  if (!resp.ok && body.reasoning_effort) {
+    // Found via the model benchmark (never seen with gpt-5 in production):
+    // some newer reasoning-family models (gpt-5.4/gpt-5.4-nano, confirmed
+    // live) reject reasoning_effort outright specifically when tools are
+    // also present ("Function tools with reasoning_effort are not
+    // supported... use /v1/responses"), even though the exact same model
+    // accepts reasoning_effort fine on a plain non-tool call. Retried once
+    // without it rather than failing outright - confirmed live this alone
+    // fixes it, at the cost of that model's own default reasoning effort
+    // for this one call.
+    const bodyText = await resp.text().catch(() => '');
+    if (/reasoning_effort/i.test(bodyText)) {
+      const retryBody = Object.assign({}, body);
+      delete retryBody.reasoning_effort;
+      resp = await postChatCompletion(apiKey, retryBody);
+    } else if (!resp.ok) {
+      throw new Error('OpenAI API error ' + resp.status + (bodyText ? ': ' + bodyText.slice(0, 200) : ''));
+    }
+  }
   if (!resp.ok) {
     const bodyText = await resp.text().catch(() => '');
     throw new Error('OpenAI API error ' + resp.status + (bodyText ? ': ' + bodyText.slice(0, 200) : ''));
@@ -691,15 +823,17 @@ async function callOpenAi(apiKey, messages, toolChoice) {
 // OpenAI's own response. cachedTokens (prompt_tokens_details.cached_tokens)
 // is surfaced separately since OpenAI bills those at a discount when the
 // system+tools prefix repeats across requests.
-function combineOpenAiUsage(u1, u2) {
-  const a = u1 || {};
-  const b = u2 || {};
-  return {
-    promptTokens: (a.prompt_tokens || 0) + (b.prompt_tokens || 0),
-    completionTokens: (a.completion_tokens || 0) + (b.completion_tokens || 0),
-    cachedTokens: ((a.prompt_tokens_details && a.prompt_tokens_details.cached_tokens) || 0) +
-      ((b.prompt_tokens_details && b.prompt_tokens_details.cached_tokens) || 0)
-  };
+function combineOpenAiUsage(...usages) {
+  let promptTokens = 0;
+  let completionTokens = 0;
+  let cachedTokens = 0;
+  usages.forEach((u) => {
+    const a = u || {};
+    promptTokens += a.prompt_tokens || 0;
+    completionTokens += a.completion_tokens || 0;
+    cachedTokens += (a.prompt_tokens_details && a.prompt_tokens_details.cached_tokens) || 0;
+  });
+  return { promptTokens, completionTokens, cachedTokens };
 }
 
 // The system prompt requires every reply to start with a [[PLAIN]] or
@@ -719,6 +853,9 @@ const REPLY_MARKER_RE = /^\s*\[\[(PLAIN|CARD|DRAFT)\]\]\s*/;
 // the conversation so far. Its raw output IS the reply, with no marker
 // of its own to strip.
 async function callOpenAiDraft(apiKey, message, history, toolResult) {
+  if (!DRAFT_MODEL) {
+    throw new Error('openaiProvider: cannot generate a [[DRAFT]] reply - OPENAI_MODEL_MAIN is not set');
+  }
   const msgs = [{ role: 'system', content: DRAFT_SYSTEM_PROMPT }];
   // This model has no tools of its own (see the comment above), so
   // today's real date is handed to it directly here - the only way it
@@ -778,6 +915,96 @@ function buildCardFallback(card) {
   return sentence;
 }
 
+// ---------------- FAST-tier reply validation / MAIN-tier escalation ----------------
+// Structural safety net for the FAST model (per the two-tier setup
+// above): rather than trusting prose alone, every data turn's reply is
+// checked in code against the real tool result and the user's own
+// message before it's ever shown. Checks are deliberately conservative
+// (favour missing a real error over wrongly escalating a correct
+// reply) - see each function's own comment for why.
+const NATIVE_SCRIPT_RE = /[ঀ-৿ऀ-ॿ]/; // Bengali / Devanagari unicode blocks
+
+// Confirmed live (see conversation) as a real gpt-5/gpt-5.4 failure
+// mode: the model claims no data access in its TEXT reply even though
+// the tool call already ran and returned real data this same turn -
+// a reasoning/wording disconnect, not an actual missing tool call
+// (tool_choice is forced on every turn, so a tool always runs).
+const STALL_PHRASE_RE = /(don'?t|doesn'?t|can'?t)\s*(have\s*)?access|access\s*(nahi|nei)/i;
+
+function extractNumbers(text) {
+  return (String(text || '').match(/\d+/g) || []).map(Number);
+}
+
+// Only checks that the tool's OWN real number(s) actually appear
+// somewhere in the reply - not that no other number appears (a reply
+// legitimately also states a preview count, e.g. "33 jon, prothom 8 jon
+// dekhano holo"). This still catches both observed failure modes: an
+// outright wrong number (gpt-4.1 answering "44" instead of 57) and a
+// stalled non-answer (no number at all).
+function numberCheckPasses(toolResult, replyText) {
+  if (!toolResult || typeof toolResult !== 'object') return true;
+  const footerVal = toolResult.footer && typeof toolResult.footer.value === 'number' ? toolResult.footer.value : null;
+  const cascading = typeof toolResult.cascadingTotal === 'number' ? toolResult.cascadingTotal : null;
+  if (footerVal === null && cascading === null) return true;
+  const nums = extractNumbers(replyText);
+  if (footerVal !== null && !nums.includes(footerVal)) return false;
+  if (cascading !== null && !nums.includes(cascading)) return false;
+  return true;
+}
+
+function stallCheckPasses(replyText) {
+  return !STALL_PHRASE_RE.test(replyText || '');
+}
+
+// Only a constraint when the user's OWN message was Roman - if they
+// themselves typed in native script, a native-script reply is correct,
+// not a violation.
+function scriptCheckPasses(message, replyText) {
+  if (NATIVE_SCRIPT_RE.test(message || '')) return true;
+  return !NATIVE_SCRIPT_RE.test(replyText || '');
+}
+
+// A "did a list/report request get the card format" check was tried
+// here (flagging a [[PLAIN]] reply to a multi-row tool result) and
+// dropped after a real benchmark run (see conversation) showed it has
+// no reliable signal in this data model: get_direct_reports ("how many
+// report to X"), get_employee_detail/get_personal_details (one
+// person's OWN fields, always multiple rows), and group_employees/
+// query_employees-with-groupBy (a department breakdown used to answer
+// one department's count) all legitimately return multiple rows for a
+// genuinely correct [[PLAIN]] single-value answer - exactly the
+// row-count-isn't-intent ambiguity SYSTEM_PROMPT itself already
+// documents. Row count alone produced only false positives (11/30 in
+// that run, 0 real catches) - this is better left to SYSTEM_PROMPT's
+// own instructions than enforced again here on an unreliable signal.
+
+function validateReply(toolResult, message, replyRaw) {
+  const match = (replyRaw || '').match(REPLY_MARKER_RE);
+  const cleaned = (match ? replyRaw.slice(match[0].length) : replyRaw || '').trim();
+  const reasons = [];
+  if (!numberCheckPasses(toolResult, cleaned)) reasons.push('number_mismatch');
+  if (!stallCheckPasses(cleaned)) reasons.push('stall_phrase');
+  if (!scriptCheckPasses(message, cleaned)) reasons.push('script_mismatch');
+  return reasons;
+}
+
+// Last-resort fallback when even MAIN's regenerated reply still fails
+// the number check - shows the tool's own real number directly rather
+// than trusting a third round of prose. Built from the raw tool result
+// (not the finalized `card`, which can be null for a PLAIN-marked turn
+// even when a real footer/cascadingTotal number exists).
+function buildNumberFallback(toolResult) {
+  if (!toolResult) return null;
+  const footerVal = toolResult.footer && typeof toolResult.footer.value === 'number' ? toolResult.footer.value : null;
+  const cascading = typeof toolResult.cascadingTotal === 'number' ? toolResult.cascadingTotal : null;
+  if (footerVal === null && cascading === null) return null;
+  const label = (toolResult.footer && toolResult.footer.label) || 'Total';
+  if (footerVal !== null && cascading !== null && cascading !== footerVal) {
+    return label + ': ' + footerVal + '. Total including their whole team chain: ' + cascading + '.';
+  }
+  return label + ': ' + (footerVal !== null ? footerVal : cascading) + '.';
+}
+
 function finalizeReply(rawContent, card, actions, fallbackText) {
   const raw = rawContent || '';
   const match = raw.match(REPLY_MARKER_RE);
@@ -790,12 +1017,20 @@ function finalizeReply(rawContent, card, actions, fallbackText) {
   };
 }
 
-async function getResponse({ message, history, user }) {
+// modelOverride: benchmark harness only (see callOpenAi's own comment) -
+// omitted, getResponse's behaviour is completely unchanged.
+async function getResponse({ message, history, user, modelOverride }) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
     // provider.js is only supposed to reach this file when a key exists,
     // but this guard makes that assumption impossible to violate silently.
     throw new Error('openaiProvider.getResponse called without OPENAI_API_KEY set');
+  }
+  if (!modelOverride && !MODEL_FAST) {
+    // No code default on purpose (see MODEL_FAST's own comment) - a
+    // missing env var must fail loudly, never silently run some other
+    // model picked in code.
+    throw new Error('openaiProvider.getResponse called without OPENAI_MODEL_FAST set');
   }
 
   const messages = toOpenAiMessages(history, message);
@@ -803,7 +1038,7 @@ async function getResponse({ message, history, user }) {
   // hole: the model physically cannot skip straight to a text answer
   // (and invent a name/number) without going through a real tool first,
   // not even for greetings/small talk (no_data_needed covers those).
-  let data = await callOpenAi(apiKey, messages, 'required');
+  let data = await callOpenAi(apiKey, messages, 'required', modelOverride);
   let choice = data.choices && data.choices[0];
   let assistantMessage = choice && choice.message;
   const usage1 = data.usage || null;
@@ -872,20 +1107,10 @@ async function getResponse({ message, history, user }) {
     // drafting a notice) with no code path here to execute that second
     // call, silently producing empty content and a generic fallback
     // reply. 'none' makes a text answer the only possible outcome.
-    data = await callOpenAi(apiKey, followUpMessages, 'none');
+    data = await callOpenAi(apiKey, followUpMessages, 'none', modelOverride);
     choice = data.choices && data.choices[0];
     assistantMessage = choice && choice.message;
     const usage2 = data.usage || null;
-    // Audit log: which tool, when, for whom, and the real token usage for
-    // both calls in this turn - never the data a tool returned (see
-    // toolCallLog.js).
-    toolCallLog.recordToolCall({
-      email: user && user.email,
-      provider: 'openai',
-      toolName: toolCall.function.name,
-      params: input,
-      usage: combineOpenAiUsage(usage1, usage2)
-    });
 
     const followUpContent = (assistantMessage && assistantMessage.content) || '';
     const markerMatch = followUpContent.match(REPLY_MARKER_RE);
@@ -896,6 +1121,16 @@ async function getResponse({ message, history, user }) {
       const draftUsage = draftData.usage || null;
       // Logged separately from the routing calls above (different model,
       // very different per-token cost) so cost review can tell them apart.
+      // Audit log for the FAST routing call that picked [[DRAFT]] - no
+      // validation/escalation applies here, it only ever had to pick a
+      // one-word marker, not write real content (see DRAFT_MODEL above).
+      toolCallLog.recordToolCall({
+        email: user && user.email,
+        provider: 'openai',
+        toolName: toolCall.function.name,
+        params: input,
+        usage: combineOpenAiUsage(usage1, usage2)
+      });
       toolCallLog.recordToolCall({
         email: user && user.email,
         provider: 'openai:' + DRAFT_MODEL,
@@ -910,7 +1145,58 @@ async function getResponse({ message, history, user }) {
       };
     }
 
-    return finalizeReply(assistantMessage && assistantMessage.content, card, actions, 'Here you go.');
+    // FAST-tier correctness check (see validateReply's own comment) -
+    // skipped when the caller picked a specific model itself
+    // (modelOverride, benchmark/test use only) since escalating there
+    // would silently swap out the exact model being measured.
+    let finalAssistantMessage = assistantMessage;
+    let escalated = false;
+    let escalationReasons = modelOverride ? [] : validateReply(toolResult, message, followUpContent);
+    let retryUsageRaw = null;
+    if (escalationReasons.length) {
+      if (!MODEL_MAIN) {
+        console.error(
+          '[hr-assistant] FAST reply failed validation (' + escalationReasons.join(',') +
+          ') but OPENAI_MODEL_MAIN is not set - cannot escalate, serving the unvalidated FAST reply.'
+        );
+      } else {
+        escalated = true;
+        const retryData = await callOpenAi(apiKey, followUpMessages, 'none', MODEL_MAIN);
+        const retryChoice = retryData.choices && retryData.choices[0];
+        const retryMessage = retryChoice && retryChoice.message;
+        const retryContent = (retryMessage && retryMessage.content) || '';
+        retryUsageRaw = retryData.usage || null;
+        const retryReasons = validateReply(toolResult, message, retryContent);
+        if (retryReasons.includes('number_mismatch')) {
+          // MAIN regenerated and still got the number wrong - stop
+          // trusting prose for this and state the tool's own real
+          // number directly (see buildNumberFallback's own comment).
+          const fallbackSentence = buildNumberFallback(toolResult);
+          const retryMarkerMatch = retryContent.match(REPLY_MARKER_RE);
+          const markerPrefix = (retryMarkerMatch && retryMarkerMatch[0]) || (markerMatch && markerMatch[0]) || '[[PLAIN]] ';
+          finalAssistantMessage = fallbackSentence ? { content: markerPrefix + fallbackSentence } : retryMessage;
+        } else {
+          finalAssistantMessage = retryMessage;
+        }
+      }
+    }
+
+    // Audit log: which tool, when, for whom, the real token usage for
+    // every call this turn made (including a failed/escalated FAST
+    // attempt - it was still billed), and whether this turn escalated -
+    // never the data a tool returned, and never message content (see
+    // toolCallLog.js).
+    toolCallLog.recordToolCall({
+      email: user && user.email,
+      provider: escalated ? 'openai+escalated:' + MODEL_MAIN : 'openai',
+      toolName: toolCall.function.name,
+      params: input,
+      usage: combineOpenAiUsage(usage1, usage2, retryUsageRaw),
+      escalated,
+      escalationReasons
+    });
+
+    return finalizeReply(finalAssistantMessage && finalAssistantMessage.content, card, actions, 'Here you go.');
   }
 
   toolCallLog.recordToolCall({
@@ -923,4 +1209,18 @@ async function getResponse({ message, history, user }) {
   return finalizeReply(assistantMessage && assistantMessage.content, null, null, "I'm not sure how to help with that yet.");
 }
 
-module.exports = { getResponse };
+module.exports = {
+  getResponse,
+  // Purely additive - exported for the model benchmark harness only
+  // (WI-Redesign-Kit/tools/_model-benchmark.mjs), so it can reuse the
+  // exact real tool defs/system prompt/reply-marker logic instead of
+  // duplicating them, with a swappable model. getResponse's own default
+  // behaviour (env-configured MODEL_FAST, with MODEL_MAIN escalation)
+  // is completely unchanged when modelOverride is passed.
+  TOOL_DEFS,
+  TOOL_RUNNERS,
+  SYSTEM_PROMPT,
+  LANGUAGE_REMINDER,
+  REPLY_MARKER_RE,
+  toOpenAiMessages
+};
