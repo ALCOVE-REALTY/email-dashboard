@@ -1176,6 +1176,10 @@ body {
 
 .wf-join-name { font-size: 0.85rem; font-weight: 700; color: var(--ink); }
 .wf-join-sub { font-size: 0.74rem; color: var(--muted); margin-top: 2px; }
+/* Joining section only (Recent + Upcoming share this one list) - scoped
+   by container id rather than shrinking .wf-join-sub everywhere, since
+   that class is also used elsewhere (e.g. Employee Movements). */
+#joiningList .wf-join-sub { font-size: 0.68rem; }
 
 .wf-transfer-route { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .wf-transfer-route svg { flex-shrink: 0; color: var(--accent); }
