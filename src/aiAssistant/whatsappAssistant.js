@@ -1069,7 +1069,7 @@ async function handleIncomingMedia(contactId, name, msg) {
     if (!resp.ok) throw new Error('download failed: ' + resp.status);
     const buffer = Buffer.from(await resp.arrayBuffer());
     const mimeType = resp.headers.get('content-type') || (msg.type === 'document' ? 'application/pdf' : 'image/jpeg');
-    const result = await documentRequests.receiveDocument(contactId, { buffer, mimeType, messageId: msg.message_id });
+    const result = await documentRequests.receiveDocument(contactId, { buffer, mimeType, messageId: msg.message_id, senderLabel: name });
     if (!result.ok) {
       await postOwnerNotification(name + '\'s file for ' + openReq.topic + ' could not be saved (' + result.reason + ').');
       return;

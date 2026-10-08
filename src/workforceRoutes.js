@@ -1571,9 +1571,9 @@ router.get('/hr-assistant/whatsapp-document/:phone', async (req, res) => {
   try {
     const request = await documentRequests.getRequest(req.params.phone);
     if (!request || !request.fileRef) return res.status(404).json({ error: 'No stored document for that number.' });
-    const buffer = await fileStorage.getFile(request.fileRef);
-    res.set('Content-Type', request.mimeType || 'application/octet-stream');
-    res.send(buffer);
+    const file = await fileStorage.getFile(request.fileRef);
+    res.set('Content-Type', file.mimeType || request.mimeType || 'application/octet-stream');
+    res.send(file.buffer);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

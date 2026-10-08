@@ -96,7 +96,7 @@ async function getOpenRequest(phone) {
 // the caller (whatsappAssistant's poll loop) turns a rejection into
 // nothing more than a log entry, never a reply to the sender (spec
 // doesn't ask for a rejection message, just silence + a log).
-async function receiveDocument(phone, { buffer, mimeType, messageId }) {
+async function receiveDocument(phone, { buffer, mimeType, messageId, senderLabel }) {
   if (buffer.length > MAX_FILE_BYTES) {
     await logDocEvent({ senderType: 'direct', fileType: mimeType, size: buffer.length, action: 'rejected_too_large' });
     return { ok: false, reason: 'too_large' };
@@ -109,9 +109,13 @@ async function receiveDocument(phone, { buffer, mimeType, messageId }) {
   if (!req) return { ok: false, reason: 'no_open_request' };
 
   const ext = /pdf/i.test(mimeType) ? 'pdf' : (/png/i.test(mimeType) ? 'png' : 'jpg');
-  const dateStr = new Date().toISOString().slice(0, 10);
-  const hint = whatsapp.normalizePhone(phone) + '_' + req.topic + '_' + dateStr;
-  const fileRef = await fileStorage.saveFile(buffer, hint, ext);
+  const fileRef = await fileStorage.saveFile(buffer, {
+    channel: 'WhatsApp',
+    senderLabel: senderLabel || whatsapp.normalizePhone(phone),
+    topic: req.topic,
+    mimeType,
+    extension: ext
+  });
 
   req.status = 'received';
   req.receivedAt = Date.now();

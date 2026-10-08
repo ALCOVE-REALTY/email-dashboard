@@ -1,46 +1,83 @@
-// Private file storage abstraction for SUBH's WhatsApp document requests
-// (whatsappAssistant.js's documentRequests module) - a small interface
-// (save/get/delete) so the STORAGE BACKEND can be swapped without
-// touching any caller.
-//
-// IMPORTANT - this app deploys to Vercel (see vercel.json/server.js's own
-// VERCEL checks), where the local filesystem is NOT persistent across
-// invocations or deployments. The implementation below writes to local
-// disk, which is fine for local dev/testing only - on the real Vercel
-// deployment it would silently lose every file. Before this goes live
-// there, this needs a real object-storage backend (Vercel Blob, S3,
-// etc.) wired in here instead - flagged explicitly rather than shipped
-// silently broken.
-const fs = require('fs');
-const path = require('path');
-const crypto = require('crypto');
+// Private file storage for SUBH's document requests (documentRequests.js)
+// - Google Drive, inside the owner's own "SUBH Documents" folder
+// (SUBH_DOCUMENTS_FOLDER_ID), via a dedicated service account
+// (driveAuth.js) the owner shares ONLY that one folder with. Two
+// channel sub-folders under it - "WhatsApp" and "Email" (the latter
+// unused until an email feature exists, created now anyway so the
+// structure is ready) - each with one month sub-folder per real month
+// (e.g. WhatsApp/2026-10), created on demand the first time that month
+// needs one.
+const { Readable } = require('stream');
+const { getDriveClient } = require('./driveAuth');
 
-const STORAGE_DIR = process.env.WHATSAPP_DOC_STORAGE_DIR || path.join(__dirname, '..', '.private-whatsapp-docs');
+const ROOT_FOLDER_ID = process.env.SUBH_DOCUMENTS_FOLDER_ID;
 
-function ensureDir() {
-  try { fs.mkdirSync(STORAGE_DIR, { recursive: true }); } catch (err) { /* best effort */ }
+// Folder ids rarely change once created - cached in memory per process
+// so a burst of uploads in the same month doesn't re-query Drive for
+// the same two folders every single time.
+const folderIdCache = new Map();
+
+function escapeForDriveQuery(name) {
+  return String(name).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 }
 
-// filename hint is cosmetic (<sender>_<topic>_<date>, per spec) - the
-// actual on-disk name adds a random suffix so two requests that happen
-// to produce the same hint never collide.
-async function saveFile(buffer, filenameHint, extension) {
-  ensureDir();
-  const safeHint = String(filenameHint || 'file').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80);
-  const ref = safeHint + '_' + crypto.randomBytes(6).toString('hex') + (extension ? '.' + extension.replace(/[^a-z0-9]/gi, '') : '');
-  const fullPath = path.join(STORAGE_DIR, ref);
-  await fs.promises.writeFile(fullPath, buffer);
-  return ref;
+async function findOrCreateFolder(drive, name, parentId) {
+  const q = "name='" + escapeForDriveQuery(name) + "' and '" + parentId + "' in parents and " +
+    "mimeType='application/vnd.google-apps.folder' and trashed=false";
+  const res = await drive.files.list({ q, fields: 'files(id,name)', spaces: 'drive' });
+  if (res.data.files && res.data.files.length) return res.data.files[0].id;
+  const created = await drive.files.create({
+    requestBody: { name, mimeType: 'application/vnd.google-apps.folder', parents: [parentId] },
+    fields: 'id'
+  });
+  return created.data.id;
 }
 
-async function getFile(ref) {
-  const fullPath = path.join(STORAGE_DIR, path.basename(ref)); // basename: never allow a ref to escape STORAGE_DIR
-  return fs.promises.readFile(fullPath);
+async function getMonthFolderId(channel, monthStr) {
+  if (!ROOT_FOLDER_ID) throw new Error('SUBH_DOCUMENTS_FOLDER_ID is not set');
+  const cacheKey = channel + '/' + monthStr;
+  if (folderIdCache.has(cacheKey)) return folderIdCache.get(cacheKey);
+  const drive = getDriveClient();
+  const channelFolderId = await findOrCreateFolder(drive, channel, ROOT_FOLDER_ID);
+  const monthFolderId = await findOrCreateFolder(drive, monthStr, channelFolderId);
+  folderIdCache.set(cacheKey, monthFolderId);
+  return monthFolderId;
 }
 
-async function deleteFile(ref) {
-  const fullPath = path.join(STORAGE_DIR, path.basename(ref));
-  try { await fs.promises.unlink(fullPath); } catch (err) { /* already gone is fine */ }
+function sanitizeNamePart(value, fallback) {
+  const cleaned = String(value || fallback).trim().replace(/[^a-zA-Z0-9_\- ]/g, '').replace(/\s+/g, '_');
+  return cleaned || fallback;
 }
 
-module.exports = { saveFile, getFile, deleteFile, STORAGE_DIR };
+// channel: 'WhatsApp' | 'Email'. senderLabel/topic feed the required
+// filename shape <sender name or number>_<topic>_<date>.<ext> - caller
+// (documentRequests.js) passes the sender's real display name when it
+// has one, else the phone number.
+async function saveFile(buffer, { channel, senderLabel, topic, mimeType, extension }) {
+  const monthStr = new Date().toISOString().slice(0, 7); // YYYY-MM
+  const folderId = await getMonthFolderId(channel, monthStr);
+  const dateStr = new Date().toISOString().slice(0, 10);
+  const filename = sanitizeNamePart(senderLabel, 'unknown') + '_' + sanitizeNamePart(topic, 'doc') + '_' + dateStr +
+    (extension ? '.' + extension.replace(/[^a-z0-9]/gi, '') : '');
+  const drive = getDriveClient();
+  const created = await drive.files.create({
+    requestBody: { name: filename, parents: [folderId] },
+    media: { mimeType: mimeType || 'application/octet-stream', body: Readable.from(buffer) },
+    fields: 'id'
+  });
+  return created.data.id; // fileRef = the Drive file id
+}
+
+async function getFile(fileRef) {
+  const drive = getDriveClient();
+  const meta = await drive.files.get({ fileId: fileRef, fields: 'mimeType,name' });
+  const content = await drive.files.get({ fileId: fileRef, alt: 'media' }, { responseType: 'arraybuffer' });
+  return { buffer: Buffer.from(content.data), mimeType: meta.data.mimeType, name: meta.data.name };
+}
+
+async function deleteFile(fileRef) {
+  const drive = getDriveClient();
+  try { await drive.files.delete({ fileId: fileRef }); } catch (err) { /* already gone is fine */ }
+}
+
+module.exports = { saveFile, getFile, deleteFile };

@@ -4,6 +4,7 @@ token.json
 credentials.json
 *.log
 service-account.json
+drive-service-account.json
 apps-script-department-webhook.gs
 
 .vercel
