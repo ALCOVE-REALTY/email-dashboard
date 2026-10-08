@@ -40,7 +40,7 @@ function isAvailable() {
 // Records one tool invocation. Never throws. `usage` (optional) is the
 // real, measured token count for the request(s) this turn made - never an
 // estimate - so real cost can be reviewed later instead of guessed at.
-async function recordToolCall({ email, provider, toolName, params, usage }) {
+async function recordToolCall({ email, provider, toolName, params, usage, escalated, escalationReasons }) {
   const redis = getClient();
   if (!redis) return;
   try {
@@ -50,7 +50,13 @@ async function recordToolCall({ email, provider, toolName, params, usage }) {
       provider: provider || 'unknown',
       tool: toolName,
       params: params && typeof params === 'object' ? params : {},
-      usage: usage && typeof usage === 'object' ? usage : null
+      usage: usage && typeof usage === 'object' ? usage : null,
+      // Whether the FAST-tier reply failed a correctness check and was
+      // regenerated on the MAIN model (see openaiProvider.js's
+      // validateReply) - reason codes only (e.g. "number_mismatch"),
+      // never the actual message content.
+      escalated: Boolean(escalated),
+      escalationReasons: Array.isArray(escalationReasons) && escalationReasons.length ? escalationReasons : null
     };
     await redis.lpush(LOG_KEY, JSON.stringify(entry));
     await redis.ltrim(LOG_KEY, 0, MAX_ENTRIES - 1);

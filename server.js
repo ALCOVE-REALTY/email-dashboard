@@ -16,6 +16,7 @@ const emailService = require('./src/emailService');
 const movementTracker = require('./src/movementTracker');
 const cacheBus = require('./src/cacheBus');
 const snapshotScheduler = require('./src/dailySnapshotScheduler');
+const whatsappPollScheduler = require('./src/whatsappPollScheduler');
 // One client for the daily-snapshot lock, shared by the endpoint and the
 // in-process scheduler so both claim the same per-day key.
 const snapshotRedis = snapshotScheduler.makeRedis();
@@ -644,6 +645,8 @@ if (!process.env.VERCEL) {
   // Off Vercel there is no Vercel Cron, so this process runs the daily
   // movement snapshot itself (opt-in: MOVEMENT_SNAPSHOT_SCHEDULER=1).
   snapshotScheduler.start({ tracker: movementTracker, redis: snapshotRedis });
+  // SUBH's WhatsApp assistant poll loop (Phase F, opt-in: WHATSAPP_ASSISTANT_SCHEDULER=1).
+  whatsappPollScheduler.start();
 }
 
 module.exports = app;
