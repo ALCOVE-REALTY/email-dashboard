@@ -1536,13 +1536,10 @@ async function generateGroupDraft(groupName, messageText, memoryFact) {
 // the same sender never gets the identical line twice in a row. Groups
 // still go through the model (generateGroupDraft) - no sender to
 // personalize for there, and holding replies there are rarer.
-function detectLang(text) {
-  if (/[ऀ-ॿ]/.test(text)) return 'hinglish';
-  if (/[ঀ-৿]/.test(text)) return 'banglish';
-  if (/\b(ko|mein|hai|kya|kaise|batao)\b/i.test(text)) return 'hinglish';
-  if (/\b(e|ke|ki|ta|naki|ache|hobe|korbo)\b/i.test(text)) return 'banglish';
-  return 'english';
-}
+// Delegates to the shared detector (src/aiAssistant/languageDetect.js),
+// also used by openaiProvider.js's in-app chat validation - kept this
+// export name since it's already wired through decideAutoReply/tests.
+const detectLang = require('./languageDetect').detectMessageLanguage;
 const INFORMAL_BENGALI_RE = /\b(tumi|tomar|tor|tui)\b/i;
 const INFORMAL_HINDI_RE = /\b(tum|tumhe|tera|tujhe|teri|tu)\b/i;
 function isInformal(text, lang) {

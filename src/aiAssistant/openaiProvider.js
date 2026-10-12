@@ -18,6 +18,7 @@
 const tools = require('./tools');
 const toolCallLog = require('./toolCallLog');
 const whatsappAssistant = require('./whatsappAssistant');
+const { detectMessageLanguage } = require('./languageDetect');
 const memoryService = require('./memoryService');
 
 const API_URL = 'https://api.openai.com/v1/chat/completions';
@@ -695,10 +696,8 @@ const TOOL_DEFS = [
       parameters: {
         type: 'object',
         properties: {
-          rangeRaw: { type: 'string', description: 'The time range exactly as meant - normalise to one of: "today" (default), "last N hours", "yesterday"/"kal", "this week". Omit for the default (today).' },
-          lang: { type: 'string', enum: ['banglish', 'hinglish', 'english'], description: 'The language/script of the owner\'s own most recent message (the one you would otherwise be matching) - "banglish" for romanised Bengali, "hinglish" for romanised Hindi, "english" for plain English. The whole reply text is pre-written in this language - get it right.' }
-        },
-        required: ['lang']
+          rangeRaw: { type: 'string', description: 'The time range exactly as meant - normalise to one of: "today" (default), "last N hours", "yesterday"/"kal", "this week". Omit for the default (today).' }
+        }
       }
     }
   },
@@ -707,16 +706,19 @@ const TOOL_DEFS = [
     function: {
       name: 'whatsapp_assistant_status',
       description: 'OWNER ONLY - use for ANY question ABOUT THE WHATSAPP ASSISTANT ITSELF rather than about message content: why/whether a reply has gone out yet, is it working, how long will it take, is auto-reply on, what mode is it in, when did it last check, e.g. "Ekhono real reply jai ni keno?", "auto reply cholche to?", "is it working?", "kitni der lagega?". Returns current mode, last poll time, any replies currently scheduled with their ETA, and the last error if any - NEVER a list of messages (use whatsapp_inbox_summary for that instead).',
-      parameters: {
-        type: 'object',
-        properties: {
-          lang: { type: 'string', enum: ['banglish', 'hinglish', 'english'], description: 'The language/script of the owner\'s own most recent message - the whole reply is pre-written in this language.' }
-        },
-        required: ['lang']
-      }
+      parameters: { type: 'object', properties: {} }
     }
   }
 ];
+
+// check_memory's deterministic "no memory found" phrasing - see the
+// runner below for why this one path is templated while a real match's
+// fact/guidance stays model-composed.
+const NO_MEMORY_TEXT = {
+  banglish: (desc) => desc + '-er jonno kono SUBH memory nei.',
+  hinglish: (desc) => desc + ' ke liye koi SUBH memory nahi hai.',
+  english: (desc) => 'There is no SUBH memory for ' + desc + '.'
+};
 
 // Maps a tool_call name back to the real tools.js function + how to pull
 // its arguments out of OpenAI's own (already-validated-by-schema) input.
@@ -756,25 +758,41 @@ const TOOL_RUNNERS = {
     const result = await whatsappAssistant.manageGroupBlock(input.groupName, input.action);
     return Object.assign({ title: null, rows: null, actions: null }, result);
   },
-  check_memory: async (input) => {
+  // "Not found" is deterministic (replyText, keyed by detectedLang) -
+  // per direct correction, this exact path (a plain English question
+  // like "does SUBH have a memory for salary this month?") was
+  // reproducibly getting answered in Banglish/Hinglish, confirmed via a
+  // controlled test to predate today's other prompt changes entirely.
+  // The real-fact FOUND branch below stays model-composed (statusFact/
+  // guidance are arbitrary admin-authored text, can't be templated) -
+  // now backed by the language reminder + validateReply's escalation
+  // instead.
+  check_memory: async (input, user, detectedLang) => {
+    const T = NO_MEMORY_TEXT[detectedLang] || NO_MEMORY_TEXT.english;
     const now = new Date();
     const period = input.periodRaw ? memoryService.resolvePeriod(input.periodRaw, now) : memoryService.impliedDuePeriod(input.topic, now);
-    if (!period) return { title: null, rows: null, actions: null, notFound: 'that period' };
+    if (!period) return { title: null, rows: null, actions: null, notFound: 'that period', replyText: T('that period') };
     // In-app colleagues are trusted HR staff, not an external WhatsApp
     // sender - scope is intentionally not re-checked here (unlike the
     // WhatsApp auto-reply path), only topic+period, same exact-match
     // rule as section 4 of the spec describes.
     const all = await memoryService.listMemories();
     const match = all.find((m) => m.topic === input.topic && m.periodKey === period.key && !memoryService.isExpired(m, now));
-    if (!match) return { title: null, rows: null, actions: null, notFound: input.topic + ' - ' + period.label };
+    if (!match) {
+      const desc = input.topic + ' - ' + period.label;
+      return { title: null, rows: null, actions: null, notFound: desc, replyText: T(desc) };
+    }
     return {
       title: null, rows: null, actions: null,
       topic: match.topic, periodLabel: match.periodLabel, scopeLabel: match.scopeType === 'everyone' ? 'everyone' : match.scopeLabel,
       statusFact: match.statusFact, guidance: match.guidance
     };
   },
-  whatsapp_inbox_summary: (input, user) => whatsappAssistant.whatsappInboxSummary(input.rangeRaw, input.lang, user && user.email),
-  whatsapp_assistant_status: (input, user) => whatsappAssistant.whatsappAssistantStatus(input.lang, user && user.email)
+  // detectedLang (deterministic, computed once in getResponse) overrides
+  // the model's own `lang` tool-call argument entirely - per direct
+  // correction, trusting the model's guess here was exactly the bug.
+  whatsapp_inbox_summary: (input, user, detectedLang) => whatsappAssistant.whatsappInboxSummary(input.rangeRaw, detectedLang, user && user.email),
+  whatsapp_assistant_status: (input, user, detectedLang) => whatsappAssistant.whatsappAssistantStatus(detectedLang, user && user.email)
 };
 
 // The language rule lives in SYSTEM_PROMPT's first line, but earlier turns
@@ -792,18 +810,33 @@ const TOOL_RUNNERS = {
 // replies that are now 100% deterministic/short-circuited and so never
 // reach this model-composition path at all any more). Only the still-
 // relevant word-level rule survives, not the now-dead example sentences.
-const LANGUAGE_REMINDER = 'Reminder: match the language and script of the message below only. ' +
-  'Banglish: negate with "-ni" (ashe ni, pathay ni, hoy ni, dey ni), never "-eche na"; say "Aj", ' +
-  'never "Aj ke". English: correct tense/negation, no literal Bengali/Hindi translation (never "has ' +
-  'came"/"did not came"). Hinglish: negate with "nahi", never a bare "na"; address as "aap"; never ' +
-  'mix a Bengali word into Hinglish or a Hindi word into Banglish.';
+// Was a static "match the language below" reminder - per direct
+// correction, the validator only ever checked SCRIPT (Roman vs Bengali/
+// Devanagari), so an English message answered in Banglish (same Roman
+// script) slipped straight through undetected. Now built per-turn from a
+// deterministic detector (languageDetect.js, no AI involved) and STATES
+// the real answer outright instead of leaving the model to infer it -
+// the detected language also drives validateReply's new language_mismatch
+// check below, so the two use the exact same source of truth.
+const LANGUAGE_NAMES = {
+  banglish: 'Banglish (Bengali written in Roman/Latin letters, e.g. "kemon acho")',
+  hinglish: 'Hinglish (Hindi written in Roman/Latin letters, e.g. "kaise ho")',
+  english: 'English'
+};
+function buildLanguageReminder(lang) {
+  return 'Reminder: the message below is in ' + LANGUAGE_NAMES[lang] + ' - reply ONLY in that, same ' +
+    'script. Banglish: negate with "-ni" (ashe ni, pathay ni, hoy ni, dey ni), never "-eche na"; say ' +
+    '"Aj", never "Aj ke". English: correct tense/negation, no literal Bengali/Hindi translation (never ' +
+    '"has came"/"did not came"). Hinglish: negate with "nahi", never a bare "na"; address as "aap"; ' +
+    'never mix a Bengali word into Hinglish or a Hindi word into Banglish.';
+}
 
-function toOpenAiMessages(history, message) {
+function toOpenAiMessages(history, message, detectedLang) {
   const msgs = [{ role: 'system', content: SYSTEM_PROMPT }];
   (history || [])
     .filter((h) => h && h.text)
     .forEach((h) => msgs.push({ role: h.role === 'assistant' ? 'assistant' : 'user', content: h.text }));
-  msgs.push({ role: 'system', content: LANGUAGE_REMINDER });
+  msgs.push({ role: 'system', content: buildLanguageReminder(detectedLang) });
   msgs.push({ role: 'user', content: message });
   return msgs;
 }
@@ -1033,6 +1066,18 @@ function scriptCheckPasses(message, replyText) {
   return !NATIVE_SCRIPT_RE.test(replyText || '');
 }
 
+// Catches exactly the gap scriptCheckPasses can't: English, Banglish and
+// Hinglish are ALL Roman script, so an English question answered in
+// Banglish passed the script check undetected (confirmed live - the
+// reported bug). Compares the SAME deterministic detector's verdict on
+// the message against its verdict on the reply, rather than re-deriving
+// the message's language here - detectedLang is already computed once
+// per turn in getResponse and threaded through.
+function languageCheckPasses(detectedLang, replyText) {
+  if (!detectedLang) return true;
+  return detectMessageLanguage(replyText) === detectedLang;
+}
+
 // A "did a list/report request get the card format" check was tried
 // here (flagging a [[PLAIN]] reply to a multi-row tool result) and
 // dropped after a real benchmark run (see conversation) showed it has
@@ -1047,13 +1092,14 @@ function scriptCheckPasses(message, replyText) {
 // that run, 0 real catches) - this is better left to SYSTEM_PROMPT's
 // own instructions than enforced again here on an unreliable signal.
 
-function validateReply(toolResult, message, replyRaw) {
+function validateReply(toolResult, message, replyRaw, detectedLang) {
   const match = (replyRaw || '').match(REPLY_MARKER_RE);
   const cleaned = (match ? replyRaw.slice(match[0].length) : replyRaw || '').trim();
   const reasons = [];
   if (!numberCheckPasses(toolResult, cleaned)) reasons.push('number_mismatch');
   if (!stallCheckPasses(cleaned)) reasons.push('stall_phrase');
   if (!scriptCheckPasses(message, cleaned)) reasons.push('script_mismatch');
+  if (!languageCheckPasses(detectedLang, cleaned)) reasons.push('language_mismatch');
   return reasons;
 }
 
@@ -1102,7 +1148,15 @@ async function getResponse({ message, history, user, modelOverride }) {
     throw new Error('openaiProvider.getResponse called without OPENAI_MODEL_FAST set');
   }
 
-  const messages = toOpenAiMessages(history, message);
+  // Deterministic, no AI call - computed once and threaded through this
+  // whole turn: stated explicitly in the language reminder (so the model
+  // doesn't have to guess), used to validate its reply actually matched,
+  // and handed to every tool whose replyText is language-specific instead
+  // of trusting the model's own `lang` tool-call argument (see each
+  // runner below) - per direct correction, the model's own guess is
+  // exactly what was getting it wrong.
+  const detectedLang = detectMessageLanguage(message);
+  const messages = toOpenAiMessages(history, message, detectedLang);
   // Forced on this FIRST call - this is what closes the hallucination
   // hole: the model physically cannot skip straight to a text answer
   // (and invent a name/number) without going through a real tool first,
@@ -1128,7 +1182,7 @@ async function getResponse({ message, history, user, modelOverride }) {
     let card = null;
     let actions = null;
     try {
-      toolResult = runner ? await runner(input, user) : { error: 'Unknown tool: ' + toolCall.function.name };
+      toolResult = runner ? await runner(input, user, detectedLang) : { error: 'Unknown tool: ' + toolCall.function.name };
       if (toolResult && !toolResult.error) {
         card = toolResult.title
           ? {
@@ -1155,17 +1209,17 @@ async function getResponse({ message, history, user, modelOverride }) {
       toolResult = { error: err.message };
     }
 
-    // whatsapp_inbox_summary/whatsapp_assistant_status's replyText is
-    // ALREADY the complete, final answer (built deterministically in
-    // code, in the right language) - found live, repeatedly, that telling
-    // the model to print a multi-line structured result "verbatim" is NOT
-    // reliable: it kept reformatting into markdown, renumbering nested
-    // items, and adding its own intro/outro sentences despite an explicit
-    // instruction not to. Skipping the follow-up completion call entirely
-    // removes that unreliable step rather than trying to word the
-    // instruction more strongly a third time.
-    if ((toolCall.function.name === 'whatsapp_inbox_summary' || toolCall.function.name === 'whatsapp_assistant_status') &&
-        toolResult && typeof toolResult.replyText === 'string') {
+    // A `replyText` field on ANY tool result means it's ALREADY the
+    // complete, final answer (built deterministically in code, in the
+    // right language - detectedLang, never the model's own guess) -
+    // found live, repeatedly, that telling the model to print a
+    // structured result "verbatim" is NOT reliable: it kept reformatting
+    // into markdown, adding its own intro/outro sentences, or (check_
+    // memory's "not found" path) answering in the wrong language despite
+    // an explicit instruction not to. Not tied to specific tool names on
+    // purpose - any tool that starts returning replyText gets this
+    // treatment automatically, no call-site change needed.
+    if (toolResult && typeof toolResult.replyText === 'string') {
       toolCallLog.recordToolCall({
         email: user && user.email,
         provider: 'openai',
@@ -1241,8 +1295,10 @@ async function getResponse({ message, history, user, modelOverride }) {
     // would silently swap out the exact model being measured.
     let finalAssistantMessage = assistantMessage;
     let escalated = false;
-    let escalationReasons = modelOverride ? [] : validateReply(toolResult, message, followUpContent);
+    let forcedLanguageRetry = false;
+    let escalationReasons = modelOverride ? [] : validateReply(toolResult, message, followUpContent, detectedLang);
     let retryUsageRaw = null;
+    let forceLangUsageRaw = null;
     if (escalationReasons.length) {
       if (!MODEL_MAIN) {
         console.error(
@@ -1256,7 +1312,7 @@ async function getResponse({ message, history, user, modelOverride }) {
         const retryMessage = retryChoice && retryChoice.message;
         const retryContent = (retryMessage && retryMessage.content) || '';
         retryUsageRaw = retryData.usage || null;
-        const retryReasons = validateReply(toolResult, message, retryContent);
+        const retryReasons = validateReply(toolResult, message, retryContent, detectedLang);
         if (retryReasons.includes('number_mismatch')) {
           // MAIN regenerated and still got the number wrong - stop
           // trusting prose for this and state the tool's own real
@@ -1265,6 +1321,21 @@ async function getResponse({ message, history, user, modelOverride }) {
           const retryMarkerMatch = retryContent.match(REPLY_MARKER_RE);
           const markerPrefix = (retryMarkerMatch && retryMarkerMatch[0]) || (markerMatch && markerMatch[0]) || '[[PLAIN]] ';
           finalAssistantMessage = fallbackSentence ? { content: markerPrefix + fallbackSentence } : retryMessage;
+        } else if (retryReasons.includes('language_mismatch')) {
+          // Escalating to MAIN still didn't fix the language - one more
+          // attempt, this time with an explicit instruction naming the
+          // exact required language (not just "match the message" - MAIN
+          // already had that and still got it wrong this turn).
+          forcedLanguageRetry = true;
+          const forceLangMessages = followUpMessages.concat([
+            { role: 'system', content: 'Your previous reply was in the wrong language. Reply ONLY in ' +
+              LANGUAGE_NAMES[detectedLang] + ', matching the user\'s own message exactly - no other language, no mixing.' }
+          ]);
+          const forceData = await callOpenAi(apiKey, forceLangMessages, 'none', MODEL_MAIN);
+          const forceChoice = forceData.choices && forceData.choices[0];
+          const forceMessage = forceChoice && forceChoice.message;
+          forceLangUsageRaw = forceData.usage || null;
+          finalAssistantMessage = forceMessage || retryMessage;
         } else {
           finalAssistantMessage = retryMessage;
         }
@@ -1278,15 +1349,18 @@ async function getResponse({ message, history, user, modelOverride }) {
     // toolCallLog.js).
     toolCallLog.recordToolCall({
       email: user && user.email,
-      provider: escalated ? 'openai+escalated:' + MODEL_MAIN : 'openai',
+      provider: escalated ? 'openai+escalated:' + MODEL_MAIN + (forcedLanguageRetry ? '+forced-lang' : '') : 'openai',
       toolName: toolCall.function.name,
       params: input,
-      usage: combineOpenAiUsage(usage1, usage2, retryUsageRaw),
+      usage: combineOpenAiUsage(usage1, usage2, retryUsageRaw, forceLangUsageRaw),
       escalated,
       escalationReasons
     });
 
-    return finalizeReply(finalAssistantMessage && finalAssistantMessage.content, card, actions, 'Here you go.');
+    return Object.assign(
+      finalizeReply(finalAssistantMessage && finalAssistantMessage.content, card, actions, 'Here you go.'),
+      { escalated, escalationReasons, forcedLanguageRetry }
+    );
   }
 
   toolCallLog.recordToolCall({
@@ -1310,7 +1384,7 @@ module.exports = {
   TOOL_DEFS,
   TOOL_RUNNERS,
   SYSTEM_PROMPT,
-  LANGUAGE_REMINDER,
+  buildLanguageReminder,
   REPLY_MARKER_RE,
   toOpenAiMessages
 };

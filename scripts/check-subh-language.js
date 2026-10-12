@@ -12,6 +12,7 @@ require('dotenv').config();
 
 const provider = require('../src/aiAssistant/openaiProvider');
 const whatsappAssistant = require('../src/aiAssistant/whatsappAssistant');
+const { detectMessageLanguage } = require('../src/aiAssistant/languageDetect');
 const { Redis } = require('@upstash/redis');
 
 const redis = new Redis({
@@ -124,6 +125,19 @@ function checkStatusText(lang, text) {
   const expected = STATUS_EXPECTATIONS[lang];
   return expected && !text.startsWith(expected) ? ['missing expected heading: "' + expected + '"'] : [];
 }
+// Regression check for the reported bug: a plain English question about
+// check_memory's "no memory found" path (e.g. "Does SUBH have a memory
+// for X this month?") was reproducibly answered in Banglish/Hinglish -
+// confirmed via a controlled A/B test to predate even today's earlier
+// prompt changes. Fixed by making that one path deterministic
+// (replyText, keyed by a real deterministic language detector, never
+// the model's own guess) - this check verifies the full real chat
+// pipeline (askChat, not a direct function call) actually produces the
+// right language end to end.
+function checkLanguageMatch(lang, text) {
+  const got = detectMessageLanguage(text);
+  return got === lang ? [] : ['language mismatch: expected ' + lang + ', detected ' + got];
+}
 function checkInboxText(lang, text) {
   const exp = INBOX_EXPECTATIONS[lang];
   const issues = [];
@@ -172,6 +186,16 @@ async function main() {
   samples.push(['hinglish', 'assistant-status', () => status('hinglish'), checkStatusText]);
   samples.push(['hinglish', 'holding', () => holding('91700000009', 'Mera confirmation letter ready hai kya?', 'Simran')]);
   samples.push(['hinglish', 'memory', () => draft('Rohit', 'Mujhe salary mil gayi kya?', SALARY_DELAY_MEMORY)]);
+
+  // ---- check_memory "not found" via the REAL full chat pipeline (3) ----
+  // Regression cases for the reported bug - these ask about a topic/
+  // period combination guaranteed not to exist, reliably hitting
+  // check_memory's deterministic notFound path through askChat (not a
+  // direct function call), so this verifies the real end-to-end routing
+  // + language choice, not just the template function in isolation.
+  samples.push(['banglish', 'check-memory-notfound', () => askChat('Insurance niye October 2024-er kono memory ache?'), checkLanguageMatch]);
+  samples.push(['english', 'check-memory-notfound', () => askChat('Is there a memory about insurance for October 2024?'), checkLanguageMatch]);
+  samples.push(['hinglish', 'check-memory-notfound', () => askChat('Insurance ke baare mein October 2024 ka koi memory hai kya?'), checkLanguageMatch]);
 
   const results = [];
   for (const [lang, category, fn, extraCheck] of samples) {
