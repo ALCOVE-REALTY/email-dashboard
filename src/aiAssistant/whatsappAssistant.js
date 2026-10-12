@@ -117,14 +117,52 @@ const removeFromBlocklist = (phone) => removeFromList(BLOCKLIST_KEY, phone);
 const isAllowlisted = (phone) => isInList(ALLOWLIST_KEY, phone);
 const isBlocklisted = (phone) => isInList(BLOCKLIST_KEY, phone);
 
+// A name the owner explicitly typed alongside a phone number when adding
+// it to the official list ("917278793115 Rahul Das ke official list e
+// rakho") or set/changed afterwards ("917278793115-er naam Rahul Das
+// koro") - one of the two legitimate name sources (see resolveSenderName
+// below), never the WhatsApp gateway's own saved contact label.
+const ALLOWLIST_NAMES_KEY = 'wa-allowlist-names';
+async function setAllowlistName(phone, name) {
+  const redis = getClient();
+  if (!redis) return false;
+  try { await redis.hset(ALLOWLIST_NAMES_KEY, { [whatsapp.normalizePhone(phone)]: name }); return true; } catch (err) { return false; }
+}
+async function getAllowlistName(phone) {
+  const redis = getClient();
+  if (!redis) return null;
+  try { return (await redis.hget(ALLOWLIST_NAMES_KEY, whatsapp.normalizePhone(phone))) || null; } catch (err) { return null; }
+}
+
 // Single entry point for the AI tool below - one function, four
 // (list, action) combinations, so the tool layer only needs one runner.
-async function manageList(phone, list, action) {
+// An optional `name` on an "allow"+"add" call also records/updates that
+// number's allowlist name in the same step.
+async function manageList(phone, list, action, name) {
   const fn = { allow: { add: addToAllowlist, remove: removeFromAllowlist }, block: { add: addToBlocklist, remove: removeFromBlocklist } };
   const picked = fn[list] && fn[list][action];
   if (!picked) return { ok: false, error: 'list must be "allow"/"block", action must be "add"/"remove"' };
   const ok = await picked(phone);
+  if (ok && list === 'allow' && action === 'add' && name) await setAllowlistName(phone, name);
   return { ok, phone: whatsapp.normalizePhone(phone), list, action };
+}
+// The ONE place a sender's display/greeting name comes from, anywhere in
+// this file - directory match (by phone) first, then a manually-set
+// allowlist name, in that order; NEVER the WhatsApp gateway's own saved
+// contact label (that's the OWNER's personal phone contact name, e.g.
+// "Personal"/"My Vi Office" - per direct correction, it must never leak
+// into a reply or notification). Returns null (not the phone number) so
+// callers can tell "no real name" apart from "use this name" - a caller
+// wanting a display fallback does `resolveSenderName(phone) || phone`
+// itself.
+async function resolveSenderName(phone) {
+  const found = await findEmployeeByPhone(phone).catch(() => null);
+  if (found && found.emp.name) return String(found.emp.name).trim();
+  const allowName = await getAllowlistName(phone);
+  return allowName || null;
+}
+function firstNameOf(fullName) {
+  return fullName ? String(fullName).trim().split(/\s+/)[0] : null;
 }
 
 // ---------------- Pending drafts ----------------
@@ -342,7 +380,7 @@ async function listAutoReplyLog(limit = 200) {
 // vs a real send vs loop-protection skipping it). messageSummary/
 // sentText are real content, deliberately - see INBOX_LOG_KEY's own
 // comment on why this log differs from AUTO_REPLY_LOG_KEY.
-async function logInboxEvent({ chatId, name, isGroup, messageSummary, aCase, sentText, outcome }) {
+async function logInboxEvent({ chatId, name, isGroup, messageSummary, aCase, sentText, outcome, arrivedAt, seenAt, scheduledSendAt, sentAt }) {
   const redis = getClient();
   if (!redis) return;
   try {
@@ -351,7 +389,12 @@ async function logInboxEvent({ chatId, name, isGroup, messageSummary, aCase, sen
       messageSummary: (messageSummary || '').slice(0, 150),
       case: aCase || null,
       sentText: sentText ? sentText.slice(0, 300) : null,
-      outcome
+      outcome,
+      // Per-message timeline (not shown in the rendered reply text, read
+      // directly from Redis when tracing a specific incident) - any of
+      // these can be undefined depending on the outcome path, which is
+      // fine, JSON.stringify just omits them.
+      arrivedAt, seenAt, scheduledSendAt, sentAt
     };
     await redis.lpush(INBOX_LOG_KEY, JSON.stringify(entry));
     await redis.ltrim(INBOX_LOG_KEY, 0, MAX_INBOX_LOG - 1);
@@ -475,15 +518,20 @@ async function sendOrReportAutoReply(entry) {
   const realSendEnabled = isRealSendAllowedFor(entry.chatId);
   const who = (entry.isGroup ? 'group ' : '') + entry.name;
   const timeLabel = new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' });
+  // Per-message timeline, threaded through from pollOnce/scheduleAutoSend -
+  // every logInboxEvent call below gets the same three fields plus its
+  // own outcome-specific sentAt (or none, for the two skip outcomes,
+  // which never actually send anything).
+  const timeline = { arrivedAt: entry.arrivedAt, seenAt: entry.seenAt, scheduledSendAt: entry.sendAt };
 
   if (await wasSameReplySentRecently(entry.chatId, entry.replyText)) {
     await logAutoReplyEvent({ senderType: entry.isGroup ? 'group' : 'direct', aCase: entry.case, memoryId: entry.memoryId, action: 'skipped_duplicate' });
-    await logInboxEvent({ chatId: entry.chatId, name: entry.name, isGroup: entry.isGroup, messageSummary: entry.summaryForOwner, aCase: entry.case, sentText: null, outcome: 'skipped_duplicate' });
+    await logInboxEvent({ chatId: entry.chatId, name: entry.name, isGroup: entry.isGroup, messageSummary: entry.summaryForOwner, aCase: entry.case, sentText: null, outcome: 'skipped_duplicate', ...timeline });
     return;
   }
   if (await isLikelyBotEcho(entry.chatId)) {
     await logAutoReplyEvent({ senderType: entry.isGroup ? 'group' : 'direct', aCase: entry.case, memoryId: entry.memoryId, action: 'skipped_possible_loop' });
-    await logInboxEvent({ chatId: entry.chatId, name: entry.name, isGroup: entry.isGroup, messageSummary: entry.summaryForOwner, aCase: entry.case, sentText: null, outcome: 'skipped_possible_loop' });
+    await logInboxEvent({ chatId: entry.chatId, name: entry.name, isGroup: entry.isGroup, messageSummary: entry.summaryForOwner, aCase: entry.case, sentText: null, outcome: 'skipped_possible_loop', ...timeline });
     return;
   }
 
@@ -491,27 +539,29 @@ async function sendOrReportAutoReply(entry) {
     const sendResult = entry.isGroup
       ? { ok: false, error: 'Real sending to a WhatsApp group is not implemented yet.' }
       : await whatsapp.sendWhatsAppMessage(entry.chatId, entry.replyText);
+    const sentAt = Date.now();
     if (sendResult.ok) {
       await recordReplySent(entry.chatId, entry.replyText);
       await recordAutoReplyAt(entry.chatId);
       await postOwnerNotification('✓ Auto-replied to ' + who + ' at ' + timeLabel + ': "' + entry.replyText + '"');
       await logAutoReplyEvent({ senderType: entry.isGroup ? 'group' : 'direct', aCase: entry.case, memoryId: entry.memoryId, action: 'sent' });
-      await logInboxEvent({ chatId: entry.chatId, name: entry.name, isGroup: entry.isGroup, messageSummary: entry.summaryForOwner, aCase: entry.case, sentText: entry.replyText, outcome: 'sent' });
+      await logInboxEvent({ chatId: entry.chatId, name: entry.name, isGroup: entry.isGroup, messageSummary: entry.summaryForOwner, aCase: entry.case, sentText: entry.replyText, outcome: 'sent', ...timeline, sentAt });
     } else {
       await postOwnerNotification('Could not auto-reply to ' + who + ': ' + (sendResult.error || 'unknown error'));
       await logAutoReplyEvent({ senderType: entry.isGroup ? 'group' : 'direct', aCase: entry.case, memoryId: entry.memoryId, action: 'send_failed' });
-      await logInboxEvent({ chatId: entry.chatId, name: entry.name, isGroup: entry.isGroup, messageSummary: entry.summaryForOwner, aCase: entry.case, sentText: entry.replyText, outcome: 'send_failed' });
+      await logInboxEvent({ chatId: entry.chatId, name: entry.name, isGroup: entry.isGroup, messageSummary: entry.summaryForOwner, aCase: entry.case, sentText: entry.replyText, outcome: 'send_failed', ...timeline, sentAt });
     }
   } else {
     // DRAFT mode (spec point 8) - the full pipeline (decide, delay,
     // loop-protection) runs for real, only the actual gateway call is
     // skipped, so a dry run here shows exactly what real auto-send
     // would do.
+    const sentAt = Date.now();
     await recordReplySent(entry.chatId, entry.replyText);
     await recordAutoReplyAt(entry.chatId);
     await postOwnerNotification('[DRAFT MODE - not actually sent] Would auto-reply to ' + who + ' at ' + timeLabel + ': "' + entry.replyText + '"');
     await logAutoReplyEvent({ senderType: entry.isGroup ? 'group' : 'direct', aCase: entry.case, memoryId: entry.memoryId, action: 'draft_mode' });
-    await logInboxEvent({ chatId: entry.chatId, name: entry.name, isGroup: entry.isGroup, messageSummary: entry.summaryForOwner, aCase: entry.case, sentText: entry.replyText, outcome: 'draft_mode' });
+    await logInboxEvent({ chatId: entry.chatId, name: entry.name, isGroup: entry.isGroup, messageSummary: entry.summaryForOwner, aCase: entry.case, sentText: entry.replyText, outcome: 'draft_mode', ...timeline, sentAt });
   }
 
   if (entry.case === 'holding' && entry.summaryForOwner) {
@@ -936,6 +986,115 @@ async function whatsappInboxSummary(rangeRaw, lang, userEmail) {
   };
 }
 
+// ---------------- Owner-only WhatsApp assistant STATUS (AI tool) ----------------
+// Separate from whatsapp_inbox_summary on purpose - per direct correction,
+// a META question about the assistant itself ("keno ekhono reply jai ni",
+// "is it working", "how long will it take") was getting the inbox
+// MESSAGE LIST instead of a direct answer about the assistant's own
+// state. This answers mode/last-poll/scheduled-ETA/last-error - never a
+// message list (that stays whatsapp_inbox_summary's job).
+async function listPendingAutoSends() {
+  const redis = getClient();
+  if (!redis) return [];
+  try {
+    const ids = await redis.zrange(PENDING_AUTOSEND_ZSET, 0, -1);
+    const entries = [];
+    for (const id of ids) {
+      const raw = await redis.get(PENDING_AUTOSEND_PREFIX + id);
+      if (raw) entries.push(typeof raw === 'string' ? JSON.parse(raw) : raw);
+    }
+    return entries.sort((a, b) => a.sendAt - b.sendAt);
+  } catch (err) { return []; }
+}
+const STATUS_TEXT = {
+  banglish: {
+    heading: (mode) => 'WhatsApp assistant-er status: ' + mode,
+    pollOk: (time) => 'Poll thik moto cholche, last check ' + time + '.',
+    pollStale: (time, mins) => '⚠️ Last poll ' + time + ' (' + mins + ' minute age) - thamke gæ thakte pare, check korun.',
+    pollUnknown: 'Scheduler ekhono kono poll complete korini - ekdom notun deploy hole ektu wait korun.',
+    scheduledNone: 'Ekhon kono reply schedule kore ni.',
+    scheduledHeader: (n) => n + 'ti reply schedule kora ache, pathano hobe:',
+    scheduledLine: (who, time) => '  ' + who + ' - ' + time + '-e pathano hobe.',
+    errorNone: 'Kono recent error nei.',
+    errorLine: (source, time) => '⚠️ Last error (' + source + ', ' + time + '): ',
+    gatewayDisconnected: (since) => '⚠️ WhatsApp ' + since + ' theke disconnected ache.'
+  },
+  hinglish: {
+    heading: (mode) => 'WhatsApp assistant ka status: ' + mode,
+    pollOk: (time) => 'Poll theek se chal raha hai, last check ' + time + '.',
+    pollStale: (time, mins) => '⚠️ Last poll ' + time + ' (' + mins + ' minute pehle) - shayad ruk gaya hai, check kariye.',
+    pollUnknown: 'Scheduler ne abhi tak koi poll complete nahi kiya hai - naya deploy hai toh thoda wait kariye.',
+    scheduledNone: 'Abhi koi reply schedule nahi hai.',
+    scheduledHeader: (n) => n + ' reply schedule hain, bheje jayenge:',
+    scheduledLine: (who, time) => '  ' + who + ' - ' + time + ' ko bheja jayega.',
+    errorNone: 'Koi recent error nahi hai.',
+    errorLine: (source, time) => '⚠️ Last error (' + source + ', ' + time + '): ',
+    gatewayDisconnected: (since) => '⚠️ WhatsApp ' + since + ' se disconnected hai.'
+  },
+  english: {
+    heading: (mode) => 'WhatsApp assistant status: ' + mode,
+    pollOk: (time) => 'Polling normally, last checked ' + time + '.',
+    pollStale: (time, mins) => '⚠️ Last poll was at ' + time + ' (' + mins + ' minutes ago) - it may be stuck, please check.',
+    pollUnknown: 'The scheduler has not completed a poll yet - if this was just deployed, give it a minute.',
+    scheduledNone: 'No replies are currently scheduled.',
+    scheduledHeader: (n) => n + ' repl' + (n === 1 ? 'y is' : 'ies are') + ' scheduled:',
+    scheduledLine: (who, time) => '  ' + who + ' - due at ' + time + '.',
+    errorNone: 'No recent errors.',
+    errorLine: (source, time) => '⚠️ Last error (' + source + ', ' + time + '): ',
+    gatewayDisconnected: (since) => '⚠️ WhatsApp has been disconnected since ' + since + '.'
+  }
+};
+function formatIstClock(ts) {
+  return new Date(ts).toLocaleTimeString('en-GB', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' });
+}
+async function whatsappAssistantStatus(lang, userEmail) {
+  if (!memoryService.isOwner(userEmail)) {
+    return { replyText: null, notOwner: true };
+  }
+  const T = STATUS_TEXT[resolveLang(lang)];
+  const lines = [];
+  const mode = describeSendMode(INBOX_TEXT[resolveLang(lang)]);
+  lines.push(T.heading(mode));
+
+  const gw = await gatewayStatusSummary();
+  if (!gw.isConnected) lines.push(T.gatewayDisconnected(gw.disconnectedSinceLabel));
+
+  const redis = getClient();
+  let heartbeat = null;
+  if (redis) { try { const raw = await redis.get(SCHEDULER_HEARTBEAT_KEY); heartbeat = raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : null; } catch (err) { /* best effort */ } }
+  if (!heartbeat) {
+    lines.push(T.pollUnknown);
+  } else {
+    const ageMin = Math.round((Date.now() - heartbeat.ts) / 60000);
+    const expectedIntervalMin = Math.max(1, Math.round((Number(process.env.WHATSAPP_POLL_INTERVAL_SECONDS) || 60) / 60));
+    if (ageMin > expectedIntervalMin * 3) lines.push(T.pollStale(formatIstClock(heartbeat.ts), ageMin));
+    else lines.push(T.pollOk(formatIstClock(heartbeat.ts)));
+  }
+
+  const pending = await listPendingAutoSends();
+  if (!pending.length) {
+    lines.push(T.scheduledNone);
+  } else {
+    lines.push(T.scheduledHeader(pending.length));
+    pending.forEach((p) => lines.push(T.scheduledLine((p.isGroup ? 'group ' : '') + (p.name || p.chatId), formatIstClock(p.sendAt))));
+  }
+
+  let pollErr = null, gwErr = null;
+  if (redis) {
+    try {
+      const rawPoll = await redis.get(SCHEDULER_LAST_ERROR_KEY + ':poll');
+      pollErr = rawPoll ? (typeof rawPoll === 'string' ? JSON.parse(rawPoll) : rawPoll) : null;
+      const rawGw = await redis.get(SCHEDULER_LAST_ERROR_KEY + ':gateway-status');
+      gwErr = rawGw ? (typeof rawGw === 'string' ? JSON.parse(rawGw) : rawGw) : null;
+    } catch (err) { /* best effort */ }
+  }
+  const latestErr = [pollErr, gwErr].filter(Boolean).sort((a, b) => b.ts - a.ts)[0];
+  if (!latestErr) lines.push(T.errorNone);
+  else lines.push(T.errorLine(latestErr.source, formatIstClock(latestErr.ts)) + latestErr.message);
+
+  return { replyText: lines.join('\n') };
+}
+
 // ---------------- Classification ----------------
 // The block list is absolute - skipped immediately, no further check.
 // The allow list means "trusted official CONTACT", not "every message
@@ -1107,6 +1266,15 @@ const DRAFT_SYSTEM_PROMPT =
   'actual reply. Use natural, casual spoken register, never textbook-formal or literary words - e.g. ' +
   '"Eta" not "Eti" - exactly how a person actually types on their phone, not how a schoolbook would ' +
   'write it. ' +
+  'NEVER open with "Namaskar", "Namaste", "Ji" or "Dear" (or any formal greeting word like them) - ' +
+  'found live, these read as a bot/call-centre script, not a real person\'s own WhatsApp message - go ' +
+  'straight to the topic instead. Match the sender\'s own formality: if THEIR message used informal ' +
+  '"tumi"/"tui"/"tor" (Bengali) or "tum"/"tera"/"tu" (Hindi), reply the same informal way; otherwise use ' +
+  'the formal "apni" (Bengali) / "aap" (Hindi) - never mix the two within one reply. You are told the ' +
+  'sender\'s first name as part of "X wrote: ..." below - if it is a real name, you may personalize by ' +
+  'starting with it (e.g. "Rahul, ..."), but never in every single reply, vary it. If you are told "The ' +
+  'sender wrote: ...", that is NOT a name - no name is known for this person, do not invent one, do not ' +
+  'address them as "The sender" or by any placeholder, just do not use a name at all. ' +
   'If (ONLY if) a "Taught memory fact" system message is given below - never describe or reuse this ' +
   'mechanism when it is absent - the owner has specifically taught SUBH this exact fact for exactly ' +
   'this topic/period/audience. The memory\'s own fact/guidance TEXT was typed by the owner in WHATEVER ' +
@@ -1220,8 +1388,21 @@ async function generateDraft(employeeName, messageText, modelOverride, selfFacts
     throw new Error('draft generation API error ' + resp.status + (bodyText ? ': ' + bodyText.slice(0, 300) : ''));
   }
   const data = await resp.json();
-  const content = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content || '').trim();
+  const content = stripForbiddenGreeting((data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content || '').trim());
   return memoryFact ? ensureMemoryGreeting(content, messageText) : content;
+}
+// Structural safety net (same principle as buildNumberFallback in
+// openaiProvider.js) - the prompt above explicitly bans these as
+// openers, but a prompt instruction alone isn't reliable enough to trust
+// completely (see this file's other "state exactly as given" lessons),
+// so this strips them if the model uses one anyway. Loops in case of a
+// double opener ("Namaskar, Ji, ...").
+const FORBIDDEN_GREETING_RE = /^\s*(namaskar|namaste|dear|ji)\s*[,.–-]*\s*/i;
+function stripForbiddenGreeting(text) {
+  let out = text || '';
+  let prev;
+  do { prev = out; out = out.replace(FORBIDDEN_GREETING_RE, ''); } while (out !== prev);
+  return out;
 }
 
 // Spec 2c's exact-match reply must start with a fixed self-introduction
@@ -1280,6 +1461,10 @@ const GROUP_DRAFT_SYSTEM_PROMPT =
   '"thank you for your message"), no restating what was asked, just the actual reply. Use natural, ' +
   'casual spoken register, never textbook-formal or literary words - e.g. "Eta" not "Eti" - exactly ' +
   'how a person actually types on their phone. ' +
+  'NEVER open with "Namaskar", "Namaste", "Ji" or "Dear" - reads as a bot/call-centre script, go ' +
+  'straight to the topic instead. There is no identified individual sender here, so never guess or ' +
+  'invent a name to address - speak to the group generally, same as the rest of this prompt already ' +
+  'says. ' +
   'If a "Taught memory fact" system message is given below, the owner has specifically taught SUBH ' +
   'this exact fact for exactly this topic/period/audience (never describe or reuse this mechanism ' +
   'when that system message is absent). The memory\'s own fact/guidance TEXT was ' +
@@ -1308,7 +1493,7 @@ const GROUP_DRAFT_SYSTEM_PROMPT =
   'For ANY question that needs a specific fact you were not given, give a brief holding reply instead, ' +
   'but TRANSLATE the holding-reply idea (checking and will update shortly) ' +
   'into the message\'s own language/script, never copy a fixed English sentence - for example: ' +
-  'Banglish in -> "Ji, check kore janacchi."; Hinglish in -> "Dekh ke abhi batata hoon."; English in -> ' +
+  'Banglish in -> "Eta dekhchi, ektu por janacchi."; Hinglish in -> "Dekh ke abhi batata hoon."; English in -> ' +
   '"Will check and update you shortly." For a casual tag with ' +
   'no real request (e.g. "kemon acho?"), reply briefly and naturally in kind, same language/script, ' +
   'optionally inviting them to say what they need - e.g. "Haan, bhalo achi! Bolun ki dorkar?" - ' +
@@ -1336,8 +1521,103 @@ async function generateGroupDraft(groupName, messageText, memoryFact) {
     throw new Error('group draft generation API error ' + resp.status + (bodyText ? ': ' + bodyText.slice(0, 300) : ''));
   }
   const data = await resp.json();
-  const content = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content || '').trim();
+  const content = stripForbiddenGreeting((data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content || '').trim());
   return memoryFact ? ensureMemoryGreeting(content, messageText) : content;
+}
+
+// ---------------- Deterministic 1:1 holding reply ----------------
+// Per direct correction: model-generated holding replies (the pure
+// "I don't have a real fact, let me check" filler, no memory/self-fact
+// involved) kept drifting into robotic phrasing ("Namaskar"/"Ji") even
+// with explicit bans in the prompt. Since this reply never states any
+// dynamic fact - it's always some phrasing of the same one idea - it can
+// be fully deterministic instead, same reasoning as the inbox summary
+// rewrite: a hand-picked pool, matching the exact tone given, rotated so
+// the same sender never gets the identical line twice in a row. Groups
+// still go through the model (generateGroupDraft) - no sender to
+// personalize for there, and holding replies there are rarer.
+function detectLang(text) {
+  if (/[ऀ-ॿ]/.test(text)) return 'hinglish';
+  if (/[ঀ-৿]/.test(text)) return 'banglish';
+  if (/\b(ko|mein|hai|kya|kaise|batao)\b/i.test(text)) return 'hinglish';
+  if (/\b(e|ke|ki|ta|naki|ache|hobe|korbo)\b/i.test(text)) return 'banglish';
+  return 'english';
+}
+const INFORMAL_BENGALI_RE = /\b(tumi|tomar|tor|tui)\b/i;
+const INFORMAL_HINDI_RE = /\b(tum|tumhe|tera|tujhe|teri|tu)\b/i;
+function isInformal(text, lang) {
+  if (lang === 'banglish') return INFORMAL_BENGALI_RE.test(text);
+  if (lang === 'hinglish') return INFORMAL_HINDI_RE.test(text);
+  return false;
+}
+const HOLDING_POOLS = {
+  banglish: {
+    formal: [
+      'Apnar bishoy-ta dekhchi, ektu por-ei janiye dicchi.',
+      'Eta check kore apnake taratari janacchi.',
+      'Apnar message-ta dekhlam, shigghiri janabo.',
+      'Ei bishoy-ta niye khoj niye apnake update debo.'
+    ],
+    informal: [
+      'Tomar bishoy-ta dekhchi, ektu por-ei janiye dicchi.',
+      'Eta check kore tomake taratari janacchi.',
+      'Tomar message-ta dekhlam, shigghiri janabo.',
+      'Ei bishoy-ta niye khoj niye tomake update debo.'
+    ]
+  },
+  hinglish: {
+    formal: [
+      'Aapke is baare mein check kar raha hoon, thodi der mein bata deta hoon.',
+      'Iska dekh ke aapko jaldi update karta hoon.',
+      'Aapka message dekh liya hai, jaldi hi bataunga.',
+      'Isko check karke aapko turant inform karta hoon.'
+    ],
+    informal: [
+      'Tumhare is baare mein check kar raha hoon, thodi der mein bata deta hoon.',
+      'Iska dekh ke tumko jaldi update karta hoon.',
+      'Tumhara message dekh liya hai, jaldi hi bataunga.',
+      'Isko check karke tumhe turant inform karta hoon.'
+    ]
+  },
+  english: {
+    formal: [
+      "Let me check on this, I'll get back to you shortly.",
+      "I'm checking on this and will update you soon.",
+      "I'll look into this and let you know shortly.",
+      'Checking on this now, will update you soon.'
+    ],
+    informal: null // English doesn't carry the same formal/informal pronoun split - one pool covers both
+  }
+};
+const HOLDING_REPLY_IDX_PREFIX = 'wa-holding-reply-idx:';
+async function pickHoldingReplyIndex(chatId, poolSize) {
+  const redis = getClient();
+  let lastIdx = -1;
+  if (redis) {
+    try {
+      const v = await redis.get(HOLDING_REPLY_IDX_PREFIX + chatId);
+      lastIdx = v === null || v === undefined ? -1 : Number(v);
+    } catch (err) { /* best effort */ }
+  }
+  let idx = Math.floor(Math.random() * poolSize);
+  if (poolSize > 1) { while (idx === lastIdx) idx = Math.floor(Math.random() * poolSize); }
+  if (redis) { try { await redis.set(HOLDING_REPLY_IDX_PREFIX + chatId, String(idx)); } catch (err) { /* best effort */ } }
+  return idx;
+}
+// English always capitalizes the pronoun "I" regardless of position in
+// the sentence - found live: naively lowercasing the first letter after
+// a name turned "I'm checking..." into "Lucy, i'm checking..." (wrong).
+function lowerFirstLetter(phrase) {
+  if (/^I(?:['’]|\s|$)/.test(phrase)) return phrase;
+  return phrase.charAt(0).toLowerCase() + phrase.slice(1);
+}
+async function buildHoldingReply(chatId, text, firstName) {
+  const lang = detectLang(text);
+  const pools = HOLDING_POOLS[lang];
+  const pool = (isInformal(text, lang) && pools.informal) || pools.formal;
+  const idx = await pickHoldingReplyIndex(chatId, pool.length);
+  const phrase = pool[idx];
+  return firstName ? firstName + ', ' + lowerFirstLetter(phrase) : phrase;
 }
 
 // ---------------- Auto-reply decision (case a/b/c) ----------------
@@ -1406,7 +1686,12 @@ async function classifyOfficialMessage(text) {
 // a classification/lookup failure here falls through to case 'holding'
 // the same as "no match found" would, since a safe generic holding
 // reply is always the correct fallback.
-async function decideAutoReply({ phone, name, text, isGroup }) {
+async function decideAutoReply({ phone, name, firstName, text, isGroup }) {
+  // What generateDraft gets told as "X wrote: ..." - a real first name
+  // when one was resolved (directory/allowlist), otherwise the generic
+  // "The sender" (never the phone-number display fallback in `name`,
+  // and never the gateway's own contact label - see resolveSenderName).
+  const senderLabel = firstName || 'The sender';
   let emp = null;
   let empForScope = null;
   if (!isGroup && phone) {
@@ -1438,7 +1723,7 @@ async function decideAutoReply({ phone, name, text, isGroup }) {
         const memoryFact = { fact: memory.statusFact, guidance: memory.guidance, documentRequested: Boolean(memory.requestsDocument) };
         const replyText = isGroup
           ? await generateGroupDraft(name, text, memoryFact)
-          : await generateDraft(name, text, undefined, null, memoryFact);
+          : await generateDraft(senderLabel, text, undefined, null, memoryFact);
         if (memory.requestsDocument && !isGroup) {
           await documentRequests.openDocumentRequest({ phone, memoryId: memory.id, topic: memory.topic, askedFor: memory.guidance });
         }
@@ -1450,12 +1735,12 @@ async function decideAutoReply({ phone, name, text, isGroup }) {
   if (!isGroup && classification.topic === 'own_record') {
     const selfFacts = await buildSelfFacts(phone).catch(() => null);
     if (selfFacts) {
-      const replyText = await generateDraft(name, text, undefined, selfFacts);
+      const replyText = await generateDraft(senderLabel, text, undefined, selfFacts);
       return { case: 'own_record', replyText, summaryForOwner: text.slice(0, 160) };
     }
   }
 
-  const replyText = isGroup ? await generateGroupDraft(name, text) : await generateDraft(name, text);
+  const replyText = isGroup ? await generateGroupDraft(name, text) : await buildHoldingReply(phone, text, firstName);
   return { case: 'holding', replyText, summaryForOwner: text.slice(0, 160) };
 }
 
@@ -1573,7 +1858,12 @@ async function pollOnce() {
 
   let chatNames = null; // only fetched once, lazily, if there's anything new to name at all
 
-  async function nameFor(id) {
+  // GROUPS ONLY below - a group's own title from the gateway's /chats is
+  // legitimate (it's the group's real name, not a personal contact
+  // label). 1:1 senders use resolveSenderName instead (directory/
+  // allowlist only) - see its own comment for why the gateway's contact
+  // name must never be used there.
+  async function groupNameFor(id) {
     if (!chatNames) {
       chatNames = new Map();
       try { (await whatsapp.listChats()).forEach((c) => chatNames.set(c.contact, c.name)); } catch (err) { /* name is cosmetic only */ }
@@ -1587,7 +1877,9 @@ async function pollOnce() {
       const newIncoming = messages.filter((m) => m.id > lastSeenId).sort((a, b) => a.id - b.id);
       if (!newIncoming.length) continue;
 
-      const name = await nameFor(contactId);
+      const resolvedName = await resolveSenderName(contactId).catch(() => null);
+      const name = resolvedName || contactId; // display fallback - the raw phone number, never the gateway's contact label
+      const firstName = firstNameOf(resolvedName);
       const highestId = newIncoming[newIncoming.length - 1].id;
       for (const msg of newIncoming) {
         results.checked++;
@@ -1601,7 +1893,15 @@ async function pollOnce() {
         if (verdict === 'official') {
           results.official++;
           if (!autoReplyOn) continue; // global kill switch (spec point 5) - seen, not acted on
-          const decision = await decideAutoReply({ phone: contactId, name, text, isGroup: false }).catch(() => null);
+          // Per-message timeline (spec: "fix latency, record per-message
+          // timestamps so this can be checked later") - arrivedAt is the
+          // gateway's own timestamp for THIS message, seenAt is when this
+          // poll tick actually decided it; the gap between them is poll-
+          // cadence/backoff latency, the gap to the eventual sentAt (added
+          // in sendOrReportAutoReply) is the delayed-send queue's own doing.
+          const arrivedAt = msg.created_at ? new Date(msg.created_at).getTime() : Date.now();
+          const seenAt = Date.now();
+          const decision = await decideAutoReply({ phone: contactId, name, firstName, text, isGroup: false }).catch(() => null);
           if (decision && decision.replyText) {
             if (await isNeverAuto(contactId)) {
               // Spec item 3: decided normally, but never auto-sent - back
@@ -1611,12 +1911,13 @@ async function pollOnce() {
               await savePendingDraft({ type: 'direct', contactId, name, messagePreview: text.slice(0, 200), draftReply: decision.replyText, createdAt: Date.now() });
               await postOwnerNotification(name + ' (never-auto list) asked: ' + text.slice(0, 160) + ' — draft ready, your review needed');
               await logAutoReplyEvent({ senderType: 'direct', aCase: decision.case, memoryId: decision.memoryId || null, action: 'never_auto_drafted' });
-              await logInboxEvent({ chatId: contactId, name, isGroup: false, messageSummary: text, aCase: decision.case, sentText: decision.replyText, outcome: 'never_auto_pending' });
+              await logInboxEvent({ chatId: contactId, name, isGroup: false, messageSummary: text, aCase: decision.case, sentText: decision.replyText, outcome: 'never_auto_pending', arrivedAt, seenAt });
             } else {
               await scheduleAutoSend({
                 chatId: contactId, isGroup: false, name,
                 replyText: decision.replyText, case: decision.case, memoryId: decision.memoryId || null,
-                summaryForOwner: decision.summaryForOwner || null
+                summaryForOwner: decision.summaryForOwner || null,
+                arrivedAt, seenAt
               });
               results.scheduled++;
             }
@@ -1641,7 +1942,7 @@ async function pollOnce() {
       const blocked = await isGroupBlocked(groupId);
       if (blocked) { results.skippedBlockedGroups += newIncoming.length; await setLastSeenId(groupId, highestId); continue; }
 
-      const name = await nameFor(groupId);
+      const name = await groupNameFor(groupId);
       for (const msg of newIncoming) {
         results.groupMessagesScanned++;
         const text = msg.content && (msg.content.text || msg.content.caption) || '';
@@ -1684,12 +1985,20 @@ module.exports = {
   logInboxEvent,
   listInboxLog,
   whatsappInboxSummary,
+  whatsappAssistantStatus,
   addToAllowlist,
   addToBlocklist,
   removeFromAllowlist,
   removeFromBlocklist,
   manageList,
+  setAllowlistName,
+  getAllowlistName,
+  resolveSenderName,
+  firstNameOf,
   classify,
+  detectLang,
+  isInformal,
+  buildHoldingReply,
   generateDraft,
   generateGroupDraft,
   addMentionId,

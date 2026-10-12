@@ -32,7 +32,10 @@ const UNIVERSAL_MISTAKES = [
   { re: /\bhave came\b/i, label: 'English: "have came"' },
   { re: /\bhas went\b/i, label: 'English: "has went"' },
   { re: /\bdid(?:n't| not) (?:came|went|did|gave|sent|ate)\b/i, label: 'English: wrong past participle after "did"' },
-  { re: /\b(?:aaya|gaya|hua|diya|bheja|kiya) na\b/i, label: 'Hinglish: Bengali-style bare "na" instead of "nahi"' }
+  { re: /\b(?:aaya|gaya|hua|diya|bheja|kiya) na\b/i, label: 'Hinglish: Bengali-style bare "na" instead of "nahi"' },
+  { re: /^\s*(namaskar|namaste|dear)\b/i, label: 'robotic greeting opener (Namaskar/Namaste/Dear)' },
+  { re: /^\s*ji[,.\s]/i, label: 'robotic greeting opener ("Ji")' },
+  { re: /\bi'(?:m|ll|ve|d)\b/, label: 'English: lowercase "i" pronoun (must always be capitalized)' }
 ];
 // "karo" deliberately excluded - it's ambiguous (Bengali "karo" = "whose",
 // Hindi "karo" = "do" imperative), found as a real false positive in Banglish
@@ -54,6 +57,15 @@ async function askChat(message) {
 }
 function draft(name, text, memoryFact) {
   return whatsappAssistant.generateDraft(name, text, undefined, null, memoryFact);
+}
+// Production's actual 1:1 holding-reply path is now buildHoldingReply
+// (deterministic), not generateDraft - test that instead so this suite
+// exercises what real messages actually go through.
+function holding(chatId, text, firstName) {
+  return whatsappAssistant.buildHoldingReply(chatId, text, firstName);
+}
+function status(lang) {
+  return whatsappAssistant.whatsappAssistantStatus(lang, OWNER_EMAIL).then((r) => r.replyText);
 }
 
 const SALARY_MEMORY = { fact: 'October salary will be credited on the 1st', guidance: 'If not received by evening, contact Accounts.', documentRequested: false };
@@ -103,6 +115,15 @@ const INBOX_EXPECTATIONS = {
     mustNotContain: [' na.']
   }
 };
+const STATUS_EXPECTATIONS = {
+  banglish: 'WhatsApp assistant-er status:',
+  english: 'WhatsApp assistant status:',
+  hinglish: 'WhatsApp assistant ka status:'
+};
+function checkStatusText(lang, text) {
+  const expected = STATUS_EXPECTATIONS[lang];
+  return expected && !text.startsWith(expected) ? ['missing expected heading: "' + expected + '"'] : [];
+}
 function checkInboxText(lang, text) {
   const exp = INBOX_EXPECTATIONS[lang];
   const issues = [];
@@ -120,36 +141,36 @@ async function main() {
   samples.push(['banglish', 'inbox-empty', () => askChat('Aj WhatsApp e kono official message eshechi naki?')]);
   samples.push(['banglish', 'inbox-empty', () => askChat('Aj ke kono message asheni ki WhatsApp e?')]);
   samples.push(['banglish', 'inbox-nonempty', () => askChat('Aj WhatsApp e ke ke message korechi, list dao'), checkInboxText]);
-  samples.push(['banglish', 'holding', () => draft('Rahul', 'Sir amar bonus kobe pabo?')]);
-  samples.push(['banglish', 'holding', () => draft('Priya', 'Office theke kono notice eshechi?')]);
+  samples.push(['banglish', 'holding', () => holding('91700000001', 'Sir amar bonus kobe pabo?', 'Rahul')]);
+  samples.push(['banglish', 'holding', () => holding('91700000002', 'Office theke kono notice eshechi?', null)]);
   samples.push(['banglish', 'memory', () => draft('Amit', 'October mashe salary kobe hobe?', SALARY_MEMORY)]);
   samples.push(['banglish', 'memory', () => draft('Sona', 'Amar PF form ki jama hoyeche?', PF_NOT_DONE_MEMORY)]);
   samples.push(['banglish', 'holding', () => draft('Dev', 'Kemon acho?')]);
-  samples.push(['banglish', 'inbox-empty', () => askChat('Kono important WhatsApp message ache ki aj?')]);
-  samples.push(['banglish', 'holding', () => draft('Mina', 'Amar confirmation letter ki ready?')]);
+  samples.push(['banglish', 'assistant-status', () => status('banglish'), checkStatusText]);
+  samples.push(['banglish', 'holding', () => holding('91700000003', 'Amar confirmation letter ki ready?', 'Mina')]);
 
   // ---- English (10) ----
   samples.push(['english', 'inbox-empty', () => askChat('Did any important WhatsApp message come in today?')]);
   samples.push(['english', 'inbox-nonempty', () => askChat('What WhatsApp messages came in today? List them.'), checkInboxText]);
-  samples.push(['english', 'holding', () => draft('John', 'Sir, when will I get my bonus?')]);
-  samples.push(['english', 'holding', () => draft('Grace', 'Has any notice come from the office today?')]);
+  samples.push(['english', 'holding', () => holding('91700000004', 'Sir, when will I get my bonus?', 'John')]);
+  samples.push(['english', 'holding', () => holding('91700000005', 'Has any notice come from the office today?', null)]);
   samples.push(['english', 'memory', () => draft('Peter', 'When will October salary be credited?', SALARY_MEMORY)]);
   samples.push(['english', 'memory', () => draft('Anna', 'Has my PF form been submitted?', PF_NOT_DONE_MEMORY)]);
   samples.push(['english', 'holding', () => draft('Tom', 'How are you?')]);
   samples.push(['english', 'status', () => whatsappAssistant.buildAutoReplyStatusReply()]);
-  samples.push(['english', 'inbox-empty', () => askChat('Nothing came in on WhatsApp today, right?')]);
-  samples.push(['english', 'holding', () => draft('Lucy', 'Is my joining letter ready?')]);
+  samples.push(['english', 'assistant-status', () => status('english'), checkStatusText]);
+  samples.push(['english', 'holding', () => holding('91700000006', 'Is my joining letter ready?', 'Lucy')]);
 
   // ---- Hinglish (10) ----
   samples.push(['hinglish', 'inbox-empty', () => askChat('Aaj WhatsApp mein koi important message aaya kya?')]);
   samples.push(['hinglish', 'inbox-nonempty', () => askChat('Aaj WhatsApp pe kisne message kiya, batao'), checkInboxText]);
-  samples.push(['hinglish', 'holding', () => draft('Raj', 'Sir, mera bonus kab milega?')]);
-  samples.push(['hinglish', 'holding', () => draft('Sunita', 'Office se koi notice aaya kya aaj?')]);
+  samples.push(['hinglish', 'holding', () => holding('91700000007', 'Sir, mera bonus kab milega?', 'Raj')]);
+  samples.push(['hinglish', 'holding', () => holding('91700000008', 'Office se koi notice aaya kya aaj?', null)]);
   samples.push(['hinglish', 'memory', () => draft('Vikas', 'October ki salary kab aayegi?', SALARY_MEMORY)]);
   samples.push(['hinglish', 'memory', () => draft('Pooja', 'Mera PF form jama hua kya?', PF_NOT_DONE_MEMORY)]);
   samples.push(['hinglish', 'holding', () => draft('Amit', 'Kaise ho?')]);
-  samples.push(['hinglish', 'inbox-empty', () => askChat('Koi zaroori WhatsApp message aaya hai kya aaj?')]);
-  samples.push(['hinglish', 'holding', () => draft('Simran', 'Mera confirmation letter ready hai kya?')]);
+  samples.push(['hinglish', 'assistant-status', () => status('hinglish'), checkStatusText]);
+  samples.push(['hinglish', 'holding', () => holding('91700000009', 'Mera confirmation letter ready hai kya?', 'Simran')]);
   samples.push(['hinglish', 'memory', () => draft('Rohit', 'Mujhe salary mil gayi kya?', SALARY_DELAY_MEMORY)]);
 
   const results = [];

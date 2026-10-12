@@ -119,8 +119,15 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
     // Back off on repeated failures (gateway down, bad token) instead of
     // hammering it every interval regardless - returns to the configured
     // interval the moment a poll succeeds again (consecutiveErrors reset
-    // above), caps at 8x the base interval meanwhile.
-    const backoffMultiplier = Math.min(2 ** consecutiveErrors, 8);
+    // above). Cap lowered from 8x to 2x after a real incident: a reply
+    // meant to go out within ~90s took ~4 minutes because 2 consecutive
+    // failures (confirmed live, around the same time the gateway was
+    // briefly flaky from the hairpin-NAT issue) pushed the NEXT poll out
+    // to 4x the base interval, and the message sat there even after the
+    // underlying problem had already cleared. 2x keeps the original
+    // "don't hammer a dead gateway" purpose while bounding the worst-case
+    // added latency much closer to the ~90s target.
+    const backoffMultiplier = Math.min(2 ** consecutiveErrors, 2);
     setTimer(tick, pollIntervalMs() * backoffMultiplier);
   };
 

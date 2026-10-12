@@ -90,6 +90,16 @@ const SYSTEM_PROMPT =
   'Assistant" is your role/designation, not your name. If asked who or what you are, say ' +
   'something like "I\'m SUBH, your HR Assistant." Refer to yourself as SUBH naturally where ' +
   'it fits in conversation, but do not force the name into every reply. ' +
+  'Every answer must be a REAL answer to what was actually asked, not a dump of raw tool output - a ' +
+  'tool result is data you reason from, never text to paste as-is (the deterministic whatsapp_* ' +
+  'replyText results are the one named exception - those ARE the final answer, print them verbatim, ' +
+  'see their own rule above). A short follow-up in the middle of a conversation ("keno?", "kokhon?", ' +
+  '"ki hoyeche?", "ekhono hoyni keno?", "why?", "since when?") answers THAT follow-up using what was ' +
+  'already discussed earlier in this same conversation - never re-paste the previous answer/list, and ' +
+  'never re-run the same tool call again just because a short word was asked, unless the follow-up ' +
+  'genuinely needs fresh data (e.g. asking the time again later). If you genuinely cannot do ' +
+  'something or do not know, say so plainly and say what the person CAN do instead - never go silent ' +
+  'or deflect with an unrelated tool result. ' +
   'You help HR staff and managers get reports, employee data, and ' +
   'perform HR tasks by calling the tools you\'re given. ' +
   'You have direct access to real employee records, not just summaries: list_employees ' +
@@ -172,15 +182,18 @@ const SYSTEM_PROMPT =
   'state them together as a [[PLAIN]] reply, exactly as given, never adding anything beyond them. If ' +
   'the result has notFound instead, say plainly there is no SUBH memory for that topic/period - never ' +
   'guess or borrow a memory from a different month/topic, even if one exists. ' +
-  'whatsapp_inbox_summary\'s result, as a [[PLAIN]] reply: if notOwner is true, say plainly that ' +
-  'WhatsApp assistant details are only available to its owner, nothing else. Otherwise the result\'s ' +
-  'replyText field is ALREADY the complete, fully-written reply in the language you passed as `lang` ' +
-  '- every line (the disconnected-gateway warning if present, the message count/list, documents ' +
-  'pending, the send-mode line) is pre-built there in correct grammar. Print replyText EXACTLY as ' +
-  'given, verbatim, unchanged - do not rephrase, re-translate, shorten, reformat, or add anything ' +
-  'before/after it. The one and only way this can go wrong is passing the wrong `lang` - get that ' +
-  'right and the rest is already correct. Never claim to know about personal messages or untagged ' +
-  'groups - those are never stored at all (replyText already reflects this, say nothing beyond it). ' +
+  'whatsapp_inbox_summary\'s and whatsapp_assistant_status\'s results, as a [[PLAIN]] reply: if ' +
+  'notOwner is true, say plainly that WhatsApp assistant details are only available to its owner, ' +
+  'nothing else. Otherwise the result\'s replyText field is ALREADY the complete, fully-written reply ' +
+  'in the language you passed as `lang` - every line is pre-built there in correct grammar. Print ' +
+  'replyText EXACTLY as given, verbatim, unchanged - do not rephrase, re-translate, shorten, reformat, ' +
+  'or add anything before/after it. The one and only way this can go wrong is passing the wrong `lang` ' +
+  '- get that right and the rest is already correct. For whatsapp_inbox_summary specifically: never ' +
+  'claim to know about personal messages or untagged groups - those are never stored at all ' +
+  '(replyText already reflects this, say nothing beyond it). ' +
+  'manage_whatsapp_official_list\'s result includes `name` when one was given - confirm it plainly ' +
+  '(e.g. "Done - 917278793115 saved as Rahul Das on the official list.") rather than just confirming ' +
+  'the list change alone. ' +
   'get_reporting_manager\'s result gives employeeName and reportingManager directly (no card) - ' +
   'state that person\'s manager/HOD by name as a [[PLAIN]] reply. If reportingManager is empty, ' +
   'that is a real answer (this person has no one recorded above them, e.g. the most senior role) ' +
@@ -638,13 +651,14 @@ const TOOL_DEFS = [
     type: 'function',
     function: {
       name: 'manage_whatsapp_official_list',
-      description: 'Add or remove a phone number from SUBH\'s WhatsApp assistant allow/block list (Phase F, 1:1 chats only). Use this for ANY phrasing that means "treat this number as a trusted official contact" or "never treat this number as official", in any language/script, e.g. "<number> ke official list e rakho", "add <number> to official list", "<number> ko official list me daal do", "<number> ke official list theke bad dao", "remove <number> from official list", "ei number kokhono porbe na" (paired with whichever number was just mentioned). "Official" / allow = treat this number like a known employee - a WORK-RELATED message from them still gets a reminder/draft, but a casual message from them is still personal, same as anyone else; "never" / block = always ignore this number\'s messages as personal, even a work-sounding one.',
+      description: 'Add or remove a phone number from SUBH\'s WhatsApp assistant allow/block list (Phase F, 1:1 chats only), and/or set the display name SUBH uses for that number. Use this for ANY phrasing that means "treat this number as a trusted official contact" or "never treat this number as official", in any language/script, e.g. "<number> ke official list e rakho", "add <number> to official list", "<number> ko official list me daal do", "<number> ke official list theke bad dao", "remove <number> from official list", "ei number kokhono porbe na" (paired with whichever number was just mentioned). Also use it (with list="allow", action="add", and `name` set) when a name is given alongside the number, e.g. "<number> <name> ke official list e rakho", "add <number> as <name> to official list" - and for JUST changing/setting the name of an already-listed number with no list/block intent, e.g. "<number>-er naam <name> koro", "set <number>\'s name to <name>" (still list="allow", action="add" - adding an already-allowed number again is harmless, it just updates the name). "Official" / allow = treat this number like a known employee - a WORK-RELATED message from them still gets a reminder/draft, but a casual message from them is still personal, same as anyone else; "never" / block = always ignore this number\'s messages as personal, even a work-sounding one.',
       parameters: {
         type: 'object',
         properties: {
           phone: { type: 'string', description: 'The phone number mentioned, digits only or with a country code - normalized automatically.' },
-          list: { type: 'string', enum: ['allow', 'block'], description: '"allow" for "official list" / "trusted contact"; "block" for "never official" / "always personal".' },
-          action: { type: 'string', enum: ['add', 'remove'], description: '"add" to put the number on that list; "remove" to take it off (e.g. "remove from official list", "ar official na rakho").' }
+          list: { type: 'string', enum: ['allow', 'block'], description: '"allow" for "official list" / "trusted contact" / setting a name; "block" for "never official" / "always personal".' },
+          action: { type: 'string', enum: ['add', 'remove'], description: '"add" to put the number on that list (or just update its name); "remove" to take it off (e.g. "remove from official list", "ar official na rakho").' },
+          name: { type: 'string', description: 'The person\'s name, ONLY if one was actually given alongside the number in this message - omit entirely otherwise, never invent one.' }
         },
         required: ['phone', 'list', 'action']
       }
@@ -684,12 +698,26 @@ const TOOL_DEFS = [
     type: 'function',
     function: {
       name: 'whatsapp_inbox_summary',
-      description: 'OWNER ONLY - summarizes what SUBH\'s WhatsApp assistant has received and done, for ANY question about WhatsApp activity in any language/phrasing, e.g. "WhatsApp-e kono important message esheche?", "aj ke ke message korechhe?", "kar reply baki?", "any pending WhatsApp?", "kisne message kiya?", "ki holo aj WhatsApp e". Covers OFFICIAL messages only (1:1 and tagged groups) - personal messages and untagged groups are never stored at all, so never imply knowledge of those.',
+      description: 'OWNER ONLY - use ONLY when they ask WHAT MESSAGES came in / who messaged / what was asked, e.g. "aj ke ke message korechhe?", "kisne message kiya?", "what messages came in today", "kar reply baki?". Returns a list of actual messages. Do NOT use this for a question ABOUT THE ASSISTANT ITSELF (why/when/status/is it working/how long) - use whatsapp_assistant_status for those instead, even if the word "message" or "reply" appears in the question. Covers OFFICIAL messages only (1:1 and tagged groups) - personal messages and untagged groups are never stored at all, so never imply knowledge of those.',
       parameters: {
         type: 'object',
         properties: {
           rangeRaw: { type: 'string', description: 'The time range exactly as meant - normalise to one of: "today" (default), "last N hours", "yesterday"/"kal", "this week". Omit for the default (today).' },
           lang: { type: 'string', enum: ['banglish', 'hinglish', 'english'], description: 'The language/script of the owner\'s own most recent message (the one you would otherwise be matching) - "banglish" for romanised Bengali, "hinglish" for romanised Hindi, "english" for plain English. The whole reply text is pre-written in this language - get it right.' }
+        },
+        required: ['lang']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'whatsapp_assistant_status',
+      description: 'OWNER ONLY - use for ANY question ABOUT THE WHATSAPP ASSISTANT ITSELF rather than about message content: why/whether a reply has gone out yet, is it working, how long will it take, is auto-reply on, what mode is it in, when did it last check, e.g. "Ekhono real reply jai ni keno?", "auto reply cholche to?", "is it working?", "kitni der lagega?". Returns current mode, last poll time, any replies currently scheduled with their ETA, and the last error if any - NEVER a list of messages (use whatsapp_inbox_summary for that instead).',
+      parameters: {
+        type: 'object',
+        properties: {
+          lang: { type: 'string', enum: ['banglish', 'hinglish', 'english'], description: 'The language/script of the owner\'s own most recent message - the whole reply is pre-written in this language.' }
         },
         required: ['lang']
       }
@@ -728,8 +756,8 @@ const TOOL_RUNNERS = {
   no_data_needed: () => ({ title: null, rows: null, actions: null }),
   get_current_datetime: () => tools.currentDateTime(),
   manage_whatsapp_official_list: async (input) => {
-    const result = await whatsappAssistant.manageList(input.phone, input.list, input.action);
-    return Object.assign({ title: null, rows: null, actions: null }, result);
+    const result = await whatsappAssistant.manageList(input.phone, input.list, input.action, input.name);
+    return Object.assign({ title: null, rows: null, actions: null }, result, { name: input.name || null });
   },
   manage_whatsapp_group_block: async (input) => {
     const result = await whatsappAssistant.manageGroupBlock(input.groupName, input.action);
@@ -752,7 +780,8 @@ const TOOL_RUNNERS = {
       statusFact: match.statusFact, guidance: match.guidance
     };
   },
-  whatsapp_inbox_summary: (input, user) => whatsappAssistant.whatsappInboxSummary(input.rangeRaw, input.lang, user && user.email)
+  whatsapp_inbox_summary: (input, user) => whatsappAssistant.whatsappInboxSummary(input.rangeRaw, input.lang, user && user.email),
+  whatsapp_assistant_status: (input, user) => whatsappAssistant.whatsappAssistantStatus(input.lang, user && user.email)
 };
 
 // The language rule lives in SYSTEM_PROMPT's first line, but earlier turns
@@ -1136,16 +1165,17 @@ async function getResponse({ message, history, user, modelOverride }) {
       toolResult = { error: err.message };
     }
 
-    // whatsapp_inbox_summary's replyText is ALREADY the complete, final
-    // answer (built deterministically in code, in the right language -
-    // see whatsappAssistant.buildInboxReplyText) - found live, repeatedly,
-    // that telling the model to print a multi-line structured result
-    // "verbatim" is NOT reliable: it kept reformatting into markdown,
-    // renumbering nested items, and adding its own intro/outro sentences
-    // despite an explicit instruction not to. Skipping the follow-up
-    // completion call entirely removes that unreliable step rather than
-    // trying to word the instruction more strongly a third time.
-    if (toolCall.function.name === 'whatsapp_inbox_summary' && toolResult && typeof toolResult.replyText === 'string') {
+    // whatsapp_inbox_summary/whatsapp_assistant_status's replyText is
+    // ALREADY the complete, final answer (built deterministically in
+    // code, in the right language) - found live, repeatedly, that telling
+    // the model to print a multi-line structured result "verbatim" is NOT
+    // reliable: it kept reformatting into markdown, renumbering nested
+    // items, and adding its own intro/outro sentences despite an explicit
+    // instruction not to. Skipping the follow-up completion call entirely
+    // removes that unreliable step rather than trying to word the
+    // instruction more strongly a third time.
+    if ((toolCall.function.name === 'whatsapp_inbox_summary' || toolCall.function.name === 'whatsapp_assistant_status') &&
+        toolResult && typeof toolResult.replyText === 'string') {
       toolCallLog.recordToolCall({
         email: user && user.email,
         provider: 'openai',
