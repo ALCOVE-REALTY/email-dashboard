@@ -28,8 +28,15 @@ function getCommitId() {
   try {
     return execSync('git rev-parse --short HEAD', { cwd: __dirname, stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
   } catch (err) {
+    // Found live: git rev-parse fails in the actual deployed container
+    // (no .git shipped with the build) - the platform-specific env vars
+    // below are a best-effort guess at what Alcove Deploy might set;
+    // 'unknown' is still fine, the heartbeat's own TIMESTAMP alone
+    // already proves liveness regardless of whether a commit id resolves.
     return process.env.GIT_COMMIT || process.env.SOURCE_VERSION || process.env.RENDER_GIT_COMMIT ||
-      process.env.VERCEL_GIT_COMMIT_SHA || process.env.HEROKU_SLUG_COMMIT || 'unknown';
+      process.env.VERCEL_GIT_COMMIT_SHA || process.env.HEROKU_SLUG_COMMIT ||
+      process.env.COMMIT_SHA || process.env.COMMIT_ID || process.env.DEPLOY_COMMIT ||
+      process.env.BUILD_COMMIT || 'unknown';
   }
 }
 const HEARTBEAT_LOG_EVERY_N_TICKS = 10;
@@ -73,9 +80,11 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
       const result = await whatsappAssistant.pollOnce();
       consecutiveErrors = 0;
       log.log('[whatsapp-assistant] poll (tick ' + tickCount + '): ' + JSON.stringify(result));
+      await whatsappAssistant.recordSchedulerError('poll', null).catch(() => {});
     } catch (err) {
       consecutiveErrors++;
       log.error('[whatsapp-assistant] poll failed (tick ' + tickCount + '): ' + err.message);
+      await whatsappAssistant.recordSchedulerError('poll', err.message).catch(() => {});
     }
     // Separate try/catch, own try block entirely - a connection-status
     // check failing (or the gateway being disconnected, which is not an
@@ -83,10 +92,16 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
     // poll's own backoff above, and vice versa.
     try {
       const gw = await whatsappAssistant.checkGatewayConnection();
-      if (gw.checked) log.log('[whatsapp-assistant] gateway status (tick ' + tickCount + '): ' + gw.status);
-      else log.error('[whatsapp-assistant] gateway status check failed (tick ' + tickCount + '): ' + gw.error);
+      if (gw.checked) {
+        log.log('[whatsapp-assistant] gateway status (tick ' + tickCount + '): ' + gw.status);
+        await whatsappAssistant.recordSchedulerError('gateway-status', null).catch(() => {});
+      } else {
+        log.error('[whatsapp-assistant] gateway status check failed (tick ' + tickCount + '): ' + gw.error);
+        await whatsappAssistant.recordSchedulerError('gateway-status', gw.error).catch(() => {});
+      }
     } catch (err) {
       log.error('[whatsapp-assistant] gateway status check failed (tick ' + tickCount + '): ' + err.message);
+      await whatsappAssistant.recordSchedulerError('gateway-status', err.message).catch(() => {});
     }
     // Heartbeat - written every tick regardless of whether the poll or
     // gateway check above succeeded, so its mere presence/freshness in

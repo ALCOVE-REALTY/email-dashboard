@@ -56,6 +56,7 @@ const GATEWAY_DISCONNECTED_SINCE_KEY = 'wa-gateway-disconnected-since';
 const GATEWAY_LAST_ALERT_AT_KEY = 'wa-gateway-last-alert-at';
 const GATEWAY_ALERT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 const SCHEDULER_HEARTBEAT_KEY = 'wa-scheduler-heartbeat';
+const SCHEDULER_LAST_ERROR_KEY = 'wa-scheduler-last-error';
 
 let client;
 let clientChecked = false;
@@ -706,6 +707,25 @@ async function recordSchedulerHeartbeat(commitId) {
   const redis = getClient();
   if (!redis) return;
   try { await redis.set(SCHEDULER_HEARTBEAT_KEY, JSON.stringify({ ts: Date.now(), commitId })); } catch (err) { /* best effort */ }
+}
+// Found necessary live: the heartbeat above proved the scheduler was
+// ticking, but wa-last-seen and wa-gateway-status both stayed frozen -
+// meaning pollOnce/checkGatewayConnection were failing on every tick,
+// silently, inside their own try/catch in whatsappPollScheduler.js (by
+// design, so one failing call never takes down the other independent
+// checks) - which meant the actual exception text was going nowhere
+// readable without server log access. This makes the last failure's
+// real message visible from Redis alone, same as the heartbeat does for
+// "is it running at all".
+// message falsy (the call just succeeded) clears any stale error instead
+// of leaving an old failure looking like a current one forever.
+async function recordSchedulerError(source, message) {
+  const redis = getClient();
+  if (!redis) return;
+  try {
+    if (!message) { await redis.del(SCHEDULER_LAST_ERROR_KEY); return; }
+    await redis.set(SCHEDULER_LAST_ERROR_KEY, JSON.stringify({ ts: Date.now(), source, message: String(message).slice(0, 500) }));
+  } catch (err) { /* best effort */ }
 }
 
 // ---------------- Owner-only WhatsApp inbox summary (AI tool) ----------------
@@ -1529,6 +1549,7 @@ module.exports = {
   gatewayStatusSummary,
   buildAutoReplyStatusReply,
   recordSchedulerHeartbeat,
+  recordSchedulerError,
   savePendingDraft,
   listPendingDrafts,
   removePendingDraft,
