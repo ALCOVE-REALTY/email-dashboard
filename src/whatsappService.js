@@ -24,13 +24,27 @@ function normalizePhone(raw) {
   return digits;
 }
 
+// Found live: the deployed container (same company server as the
+// gateway itself, both behind Caddy) got a 404 calling the PUBLIC
+// domain's /status path, while the exact same call from outside works
+// fine - a classic hairpin-NAT/same-host routing symptom. WHATSAPP_API_
+// BASE_INTERNAL lets ops point this at the gateway's own internal
+// address (Docker network / localhost port) instead, without touching
+// WHATSAPP_API_BASE (kept for any caller that genuinely needs the public
+// URL). Every call in this file - send, chats, messages, status - goes
+// through this one function, so setting the env var fixes all of them
+// at once; unset, behavior is identical to before.
+function apiBase() {
+  const base = process.env.WHATSAPP_API_BASE_INTERNAL || WHATSAPP_API_BASE;
+  return base + '/api/' + WHATSAPP_PRODUCT_ID + '/' + WHATSAPP_PHONE_ID;
+}
+
 async function sendWhatsAppMessage(phone, message) {
   const to_number = normalizePhone(phone);
   if (!/^\d{11,15}$/.test(to_number)) {
     return { ok: false, error: "Enter a valid WhatsApp number (10 digits, or with country code)." };
   }
-  const url = WHATSAPP_API_BASE + '/api/' + WHATSAPP_PRODUCT_ID + '/' + WHATSAPP_PHONE_ID + '/sendMessage';
-  const res = await fetch(url, {
+  const res = await fetch(apiBase() + '/sendMessage', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-maytapi-key': requireToken() },
     body: JSON.stringify({ to_number, type: 'text', message })
@@ -51,9 +65,6 @@ async function sendWhatsAppMessage(phone, message) {
 // increasing numeric `id` field supports fine. No rate-limit headers are
 // exposed, so callers should poll gently (whatsappPollScheduler.js) and
 // back off on any error rather than retrying immediately.
-function apiBase() {
-  return WHATSAPP_API_BASE + '/api/' + WHATSAPP_PRODUCT_ID + '/' + WHATSAPP_PHONE_ID;
-}
 
 async function listChats() {
   const res = await fetch(apiBase() + '/chats', { headers: { 'x-maytapi-key': requireToken() } });

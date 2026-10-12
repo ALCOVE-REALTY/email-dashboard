@@ -717,14 +717,20 @@ async function recordSchedulerHeartbeat(commitId) {
 // readable without server log access. This makes the last failure's
 // real message visible from Redis alone, same as the heartbeat does for
 // "is it running at all".
-// message falsy (the call just succeeded) clears any stale error instead
-// of leaving an old failure looking like a current one forever.
+// Keyed PER SOURCE (wa-scheduler-last-error:poll / :gateway-status) -
+// a single shared key was tried first and found live to hide poll's own
+// outcome entirely, since gateway-status runs second in the same tick
+// and always overwrites whatever poll just recorded, every tick,
+// regardless of which one actually failed. message falsy (the call just
+// succeeded) clears that source's key instead of leaving an old failure
+// looking like a current one forever.
 async function recordSchedulerError(source, message) {
   const redis = getClient();
   if (!redis) return;
+  const key = SCHEDULER_LAST_ERROR_KEY + ':' + source;
   try {
-    if (!message) { await redis.del(SCHEDULER_LAST_ERROR_KEY); return; }
-    await redis.set(SCHEDULER_LAST_ERROR_KEY, JSON.stringify({ ts: Date.now(), source, message: String(message).slice(0, 500) }));
+    if (!message) { await redis.del(key); return; }
+    await redis.set(key, JSON.stringify({ ts: Date.now(), source, message: String(message).slice(0, 500) }));
   } catch (err) { /* best effort */ }
 }
 
