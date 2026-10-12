@@ -173,16 +173,14 @@ const SYSTEM_PROMPT =
   'the result has notFound instead, say plainly there is no SUBH memory for that topic/period - never ' +
   'guess or borrow a memory from a different month/topic, even if one exists. ' +
   'whatsapp_inbox_summary\'s result, as a [[PLAIN]] reply: if notOwner is true, say plainly that ' +
-  'WhatsApp assistant details are only available to its owner, nothing else. Otherwise, if ' +
-  'gatewayConnected is false, say FIRST and prominently that WhatsApp has been disconnected since ' +
-  'gatewayDisconnectedSince and new messages may not be arriving at all (reconnect at ' +
-  'tools.alcoverealty.in) - this explains a low/zero count, do not present a low count as if ' +
-  'everything is normal when this is true. Then state the rangeLabel, then each item (time, who, ' +
-  'summary, status) as a short line, then documents received but not yet marked done if any, then ' +
-  'the mode (draft mode / real send only to X / real send to everyone) always, even when ' +
-  'officialMessageCount is 0 - e.g. "no official messages today. (Draft mode - real sending off)". ' +
-  'Never claim to know about personal messages or untagged groups - those are never stored at all, ' +
-  'say "official messages" specifically rather than "messages". ' +
+  'WhatsApp assistant details are only available to its owner, nothing else. Otherwise the result\'s ' +
+  'replyText field is ALREADY the complete, fully-written reply in the language you passed as `lang` ' +
+  '- every line (the disconnected-gateway warning if present, the message count/list, documents ' +
+  'pending, the send-mode line) is pre-built there in correct grammar. Print replyText EXACTLY as ' +
+  'given, verbatim, unchanged - do not rephrase, re-translate, shorten, reformat, or add anything ' +
+  'before/after it. The one and only way this can go wrong is passing the wrong `lang` - get that ' +
+  'right and the rest is already correct. Never claim to know about personal messages or untagged ' +
+  'groups - those are never stored at all (replyText already reflects this, say nothing beyond it). ' +
   'get_reporting_manager\'s result gives employeeName and reportingManager directly (no card) - ' +
   'state that person\'s manager/HOD by name as a [[PLAIN]] reply. If reportingManager is empty, ' +
   'that is a real answer (this person has no one recorded above them, e.g. the most senior role) ' +
@@ -690,8 +688,10 @@ const TOOL_DEFS = [
       parameters: {
         type: 'object',
         properties: {
-          rangeRaw: { type: 'string', description: 'The time range exactly as meant - normalise to one of: "today" (default), "last N hours", "yesterday"/"kal", "this week". Omit for the default (today).' }
-        }
+          rangeRaw: { type: 'string', description: 'The time range exactly as meant - normalise to one of: "today" (default), "last N hours", "yesterday"/"kal", "this week". Omit for the default (today).' },
+          lang: { type: 'string', enum: ['banglish', 'hinglish', 'english'], description: 'The language/script of the owner\'s own most recent message (the one you would otherwise be matching) - "banglish" for romanised Bengali, "hinglish" for romanised Hindi, "english" for plain English. The whole reply text is pre-written in this language - get it right.' }
+        },
+        required: ['lang']
       }
     }
   }
@@ -752,7 +752,7 @@ const TOOL_RUNNERS = {
       statusFact: match.statusFact, guidance: match.guidance
     };
   },
-  whatsapp_inbox_summary: (input, user) => whatsappAssistant.whatsappInboxSummary(input.rangeRaw, user && user.email)
+  whatsapp_inbox_summary: (input, user) => whatsappAssistant.whatsappInboxSummary(input.rangeRaw, input.lang, user && user.email)
 };
 
 // The language rule lives in SYSTEM_PROMPT's first line, but earlier turns
@@ -1134,6 +1134,26 @@ async function getResponse({ message, history, user, modelOverride }) {
       }
     } catch (err) {
       toolResult = { error: err.message };
+    }
+
+    // whatsapp_inbox_summary's replyText is ALREADY the complete, final
+    // answer (built deterministically in code, in the right language -
+    // see whatsappAssistant.buildInboxReplyText) - found live, repeatedly,
+    // that telling the model to print a multi-line structured result
+    // "verbatim" is NOT reliable: it kept reformatting into markdown,
+    // renumbering nested items, and adding its own intro/outro sentences
+    // despite an explicit instruction not to. Skipping the follow-up
+    // completion call entirely removes that unreliable step rather than
+    // trying to word the instruction more strongly a third time.
+    if (toolCall.function.name === 'whatsapp_inbox_summary' && toolResult && typeof toolResult.replyText === 'string') {
+      toolCallLog.recordToolCall({
+        email: user && user.email,
+        provider: 'openai',
+        toolName: toolCall.function.name,
+        params: input,
+        usage: combineOpenAiUsage(usage1, null)
+      });
+      return { reply: toolResult.replyText, card: null, actions: null };
     }
 
     // fullRows/fullTableRows (the untruncated data behind View Report/

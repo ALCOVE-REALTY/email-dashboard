@@ -765,55 +765,174 @@ function resolveInboxRange(rangeRaw) {
   }
   return { startMs: istMidnightMsDaysAgo(0), endMs: Date.now(), label: 'today' };
 }
-function describeSendMode() {
-  const realSendOn = process.env.WHATSAPP_ASSISTANT_REAL_SEND === '1';
-  const onlyPhone = process.env.WHATSAPP_ASSISTANT_REAL_SEND_ONLY;
-  if (!realSendOn) return 'Draft mode (real sending is off, nothing is being sent)';
-  return onlyPhone ? 'Real send only to ' + onlyPhone : 'Real send to everyone';
+// Every phrase here is deterministic, plain code - NOT model-composed -
+// per direct correction after repeated live grammar mistakes (wrong
+// counters, wrong tense, a stray Hindi word in a Banglish reply) proved
+// the model can't reliably reproduce exact phrasing like this turn after
+// turn. The model's only job for this tool is to pick `lang` to match
+// the owner's own message and then print the pre-built `replyText`
+// verbatim - see the tool-result instructions in openaiProvider.js.
+const INBOX_TEXT = {
+  banglish: {
+    rangeWord: { today: 'Aj', yesterday: 'Gotokal', week: 'Ei soptahe', hours: (h) => 'Gato ' + h + ' ghontay' },
+    header: (n, rangeWord) => rangeWord + ' WhatsApp-e ' + n + 'ti official message esheche:',
+    zero: (rangeWord) => rangeWord + ' WhatsApp-e kono official message ashe ni.',
+    groupHeader: (who, n) => who + ' — ' + n + 'ti message:',
+    itemLine: (time, who, text, outcome, withWho) => (withWho ? time + ' - ' + who + ': "' + text + '" - ' + outcome : '  ' + time + ' - "' + text + '" - ' + outcome),
+    outcome: {
+      draft_mode: (text) => 'Draft baniyechi (pathano hoyni - draft mode): "' + text + '"',
+      sent: (text) => 'Reply pathiyechi: "' + text + '"',
+      send_failed: () => 'Reply pathate giye error hoyeche.',
+      skipped_duplicate: () => 'Skip korechi - ek-i message 10 minute-er moddhe abar esheche.',
+      skipped_possible_loop: () => 'Skip korechi - bar bar ashche mone hocche (loop protection).',
+      never_auto_pending_waiting: () => 'Apnar jonno opekkha korche.',
+      never_auto_pending_done: () => 'Apni age-i eta dekhe niyechen.'
+    },
+    mode: {
+      draft: 'Draft mode chalu - kono reply asol-e pathano hocche na.',
+      realOnly: (phone) => 'Sudhu ' + phone + '-ke real reply pathano hocche, baki sobar jonno draft mode e ache.',
+      realAll: 'Sobar-ke real reply pathano hocche.'
+    },
+    gatewayWarning: (since) => '⚠️ WhatsApp ' + since + ' theke disconnected - notun message na-o asheche thakte pare. tools.alcoverealty.in e giye QR abar scan korun.',
+    docsLine: (list) => 'Document peyechi kintu "done" mark kori ni: ' + list + '.'
+  },
+  hinglish: {
+    rangeWord: { today: 'Aaj', yesterday: 'Kal', week: 'Is hafte', hours: (h) => 'Pichle ' + h + ' ghante' },
+    header: (n, rangeWord) => rangeWord + ' WhatsApp pe ' + n + ' official message aaye hain:',
+    zero: (rangeWord) => rangeWord + ' WhatsApp pe koi official message nahi aaya.',
+    groupHeader: (who, n) => who + ' — ' + n + ' message:',
+    itemLine: (time, who, text, outcome, withWho) => (withWho ? time + ' - ' + who + ': "' + text + '" - ' + outcome : '  ' + time + ' - "' + text + '" - ' + outcome),
+    outcome: {
+      draft_mode: (text) => 'Draft banaya hai (bheja nahi - draft mode): "' + text + '"',
+      sent: (text) => 'Reply bhej diya: "' + text + '"',
+      send_failed: () => 'Reply bhejne mein error aaya.',
+      skipped_duplicate: () => 'Skip kiya - wahi message 10 minute ke andar phir aaya.',
+      skipped_possible_loop: () => 'Skip kiya - baar baar aa raha tha (loop protection).',
+      never_auto_pending_waiting: () => 'Aapke review ka wait kar raha hai.',
+      never_auto_pending_done: () => 'Aap pehle hi dekh chuke hain.'
+    },
+    mode: {
+      draft: 'Draft mode on hai - koi reply asal mein bheja nahi ja raha.',
+      realOnly: (phone) => 'Sirf ' + phone + ' ko real reply ja raha hai; baki sabke liye draft mode hai.',
+      realAll: 'Sabko real reply bheja ja raha hai.'
+    },
+    gatewayWarning: (since) => '⚠️ WhatsApp ' + since + ' se disconnected hai - naye message nahi aa rahe honge. tools.alcoverealty.in pe jaake QR dobara scan karein.',
+    docsLine: (list) => 'Document mil gaya hai lekin "done" mark nahi kiya: ' + list + '.'
+  },
+  english: {
+    rangeWord: { today: 'today', yesterday: 'yesterday', week: 'this week', hours: (h) => 'in the last ' + h + ' hour' + (h === 1 ? '' : 's') },
+    header: (n, rangeWord) => n + ' official message' + (n === 1 ? '' : 's') + ' came in ' + rangeWord + ':',
+    zero: (rangeWord) => 'No official message came in ' + rangeWord + '.',
+    groupHeader: (who, n) => who + ' — ' + n + ' messages:',
+    itemLine: (time, who, text, outcome, withWho) => (withWho ? time + ' - ' + who + ': "' + text + '" - ' + outcome : '  ' + time + ' - "' + text + '" - ' + outcome),
+    outcome: {
+      draft_mode: (text) => 'Drafted a reply (not sent - draft mode): "' + text + '"',
+      sent: (text) => 'Reply sent: "' + text + '"',
+      send_failed: () => 'Reply failed to send.',
+      skipped_duplicate: () => 'Skipped - the same message came in again within 10 minutes.',
+      skipped_possible_loop: () => 'Skipped - looked like a repeat loop (loop protection).',
+      never_auto_pending_waiting: () => 'Waiting for your review.',
+      never_auto_pending_done: () => 'You already handled this.'
+    },
+    mode: {
+      draft: 'Draft mode is on - no reply is actually being sent.',
+      realOnly: (phone) => 'Only ' + phone + ' gets a real reply; everyone else stays in draft mode.',
+      realAll: 'Replies are being sent for real to everyone.'
+    },
+    gatewayWarning: (since) => '⚠️ WhatsApp has been disconnected since ' + since + ' - new messages may not be arriving at all. Reconnect at tools.alcoverealty.in.',
+    docsLine: (list) => 'Document(s) received but not yet marked done: ' + list + '.'
+  }
+};
+function resolveLang(lang) {
+  const key = String(lang || 'english').toLowerCase();
+  return INBOX_TEXT[key] ? key : 'english';
 }
-function describeInboxOutcome(entry, pendingPhones, followupKeys) {
-  if (entry.outcome === 'sent' || entry.outcome === 'draft_mode') {
-    let s = (entry.outcome === 'sent' ? 'Auto-replied' : 'Auto-replied (draft mode, not actually sent)') +
-      ' (case: ' + entry.case + '): "' + (entry.sentText || '') + '"';
-    if (entry.case === 'holding') s += followupKeys.has(entry.chatId) ? ' - still needs your follow-up' : ' - resolved';
-    return s;
-  }
+function rangeWordFor(T, range) {
+  if (range.label === 'yesterday') return T.rangeWord.yesterday;
+  if (range.label === 'this week') return T.rangeWord.week;
+  const hourMatch = range.label.match(/^last (\d+) hour/);
+  if (hourMatch) return T.rangeWord.hours(Number(hourMatch[1]));
+  return T.rangeWord.today;
+}
+function outcomePhraseFor(T, entry, pendingPhones, followupKeys) {
+  if (entry.outcome === 'draft_mode') return T.outcome.draft_mode(entry.sentText || '');
+  if (entry.outcome === 'sent') return T.outcome.sent(entry.sentText || '');
+  if (entry.outcome === 'send_failed') return T.outcome.send_failed();
+  if (entry.outcome === 'skipped_duplicate') return T.outcome.skipped_duplicate();
+  if (entry.outcome === 'skipped_possible_loop') return T.outcome.skipped_possible_loop();
   if (entry.outcome === 'never_auto_pending') {
-    return pendingPhones.has(entry.chatId) ? 'Draft waiting for your review (never-auto list)' : 'Already handled by you (never-auto list)';
+    return pendingPhones.has(entry.chatId) ? T.outcome.never_auto_pending_waiting() : T.outcome.never_auto_pending_done();
   }
-  if (entry.outcome === 'skipped_duplicate' || entry.outcome === 'skipped_possible_loop') return 'Skipped (loop protection)';
-  if (entry.outcome === 'send_failed') return 'Auto-reply failed to send';
   return entry.outcome;
 }
-async function whatsappInboxSummary(rangeRaw, userEmail) {
+function describeSendMode(T) {
+  const realSendOn = process.env.WHATSAPP_ASSISTANT_REAL_SEND === '1';
+  const onlyPhone = process.env.WHATSAPP_ASSISTANT_REAL_SEND_ONLY;
+  if (!realSendOn) return T.mode.draft;
+  return onlyPhone ? T.mode.realOnly(onlyPhone) : T.mode.realAll;
+}
+// Groups consecutive-or-not entries sharing the same chatId into one
+// bucket each - per direct correction ("Test number — 3ti message"
+// instead of three separate repeated lines) - bucket position is set by
+// that chatId's FIRST occurrence, so overall newest-first ordering is
+// preserved.
+function groupByChat(items) {
+  const order = [];
+  const buckets = new Map();
+  for (const item of items) {
+    if (!buckets.has(item.chatId)) { buckets.set(item.chatId, []); order.push(item.chatId); }
+    buckets.get(item.chatId).push(item);
+  }
+  return order.map((chatId) => buckets.get(chatId));
+}
+function buildInboxReplyText(lang, range, log, pendingPhones, followupKeys, pendingDocs, gw) {
+  const T = INBOX_TEXT[resolveLang(lang)];
+  const lines = [];
+  if (!gw.isConnected) lines.push(T.gatewayWarning(gw.disconnectedSinceLabel));
+
+  const rangeWord = rangeWordFor(T, range);
+  if (!log.length) {
+    lines.push(T.zero(rangeWord));
+  } else {
+    lines.push(T.header(log.length, rangeWord));
+    const groups = groupByChat(log);
+    let n = 0;
+    groups.forEach((group) => {
+      const who = (group[0].isGroup ? 'group ' : '') + (group[0].name || group[0].chatId);
+      if (group.length === 1) {
+        n++;
+        const e = group[0];
+        const time = new Date(e.ts).toLocaleString('en-GB', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+        lines.push(n + '. ' + T.itemLine(time, who, e.messageSummary || '', outcomePhraseFor(T, e, pendingPhones, followupKeys), true));
+      } else {
+        n++;
+        lines.push(n + '. ' + T.groupHeader(who, group.length));
+        group.forEach((e) => {
+          const time = new Date(e.ts).toLocaleString('en-GB', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+          lines.push(T.itemLine(time, who, e.messageSummary || '', outcomePhraseFor(T, e, pendingPhones, followupKeys), false));
+        });
+      }
+    });
+  }
+  if (pendingDocs.length) lines.push(T.docsLine(pendingDocs.map((d) => d.phone + ' (' + d.topic + ')').join(', ')));
+  lines.push(describeSendMode(T));
+  return lines.join('\n');
+}
+async function whatsappInboxSummary(rangeRaw, lang, userEmail) {
   if (!memoryService.isOwner(userEmail)) {
-    return { title: null, rows: null, actions: null, notOwner: true };
+    return { replyText: null, notOwner: true };
   }
   const range = resolveInboxRange(rangeRaw);
-  const log = (await listInboxLog(500)).filter((e) => e.ts >= range.startMs && e.ts <= range.endMs);
+  const log = (await listInboxLog(500)).filter((e) => e.ts >= range.startMs && e.ts <= range.endMs).sort((a, b) => b.ts - a.ts);
   const pendingPhones = new Set((await listPendingDrafts()).map((d) => d.contactId));
   const followupKeys = new Set((await listOpenFollowups()).map((f) => f.chatId));
   const pendingDocs = await documentRequests.listPendingReceived();
   const gw = await gatewayStatusSummary();
 
-  const items = log
-    .sort((a, b) => b.ts - a.ts)
-    .map((e) => ({
-      time: new Date(e.ts).toLocaleString('en-GB', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }),
-      who: (e.isGroup ? 'group ' : '') + (e.name || e.chatId),
-      summary: e.messageSummary || '(no text)',
-      status: describeInboxOutcome(e, pendingPhones, followupKeys)
-    }));
-
   return {
-    title: null, rows: null, actions: null,
+    replyText: buildInboxReplyText(lang, range, log, pendingPhones, followupKeys, pendingDocs, gw),
     rangeLabel: range.label,
-    officialMessageCount: items.length,
-    items,
-    pendingDocuments: pendingDocs.map((d) => ({ who: d.phone, topic: d.topic })),
-    mode: describeSendMode(),
-    gatewayConnected: gw.isConnected,
-    gatewayDisconnectedSince: gw.disconnectedSinceLabel
+    officialMessageCount: log.length
   };
 }
 

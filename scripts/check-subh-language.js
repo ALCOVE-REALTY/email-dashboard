@@ -60,9 +60,16 @@ const SALARY_MEMORY = { fact: 'October salary will be credited on the 1st', guid
 const PF_NOT_DONE_MEMORY = { fact: 'PF forms have not been submitted yet - submission opens next week', guidance: 'Please wait for the submission window to open; HR will notify everyone.', documentRequested: false };
 const SALARY_DELAY_MEMORY = { fact: 'This month salary has not been disbursed yet - delayed due to a bank issue', guidance: 'It will be credited within 2 days; please check again then.', documentRequested: false };
 
+// Covers grouping (two messages from the same sender) and three
+// different outcome phrases in one go, since the whole point of the
+// deterministic replyText rewrite was exactly this: grouping and
+// per-outcome wording, not just plain single-message grammar.
 async function seedInboxEntries() {
+  const now = Date.now();
   const entries = [
-    { ts: Date.now(), chatId: '910000000001', name: 'Rahul Verma', isGroup: false, messageSummary: 'Sir amar salary er bepare jiggesh korechi', case: 'holding', sentText: 'Checking and will update shortly.', outcome: 'draft_mode' }
+    { ts: now, chatId: '910000000001', name: 'Rahul Verma', isGroup: false, messageSummary: 'Sir amar salary er bepare jiggesh korechi', case: 'holding', sentText: 'Checking and will update shortly.', outcome: 'draft_mode' },
+    { ts: now - 1000, chatId: '910000000001', name: 'Rahul Verma', isGroup: false, messageSummary: 'Sir amar salary er bepare jiggesh korechi', case: 'holding', sentText: null, outcome: 'skipped_duplicate' },
+    { ts: now - 2000, chatId: '910000000006', name: 'Priya Sharma', isGroup: false, messageSummary: 'Office notice ache ki?', case: 'holding', sentText: 'Will check and confirm.', outcome: 'sent' }
   ];
   const jsons = entries.map((e) => JSON.stringify(e));
   for (const j of jsons) await redis.lpush(INBOX_LOG_KEY, j);
@@ -70,6 +77,39 @@ async function seedInboxEntries() {
 }
 async function cleanupInboxEntries(jsons) {
   for (const j of jsons) await redis.lrem(INBOX_LOG_KEY, 1, j);
+}
+// Inbox-summary-specific assertions - now that the per-item text is
+// built deterministically in code (whatsappAssistant.buildInboxReplyText),
+// not model-composed, these check for the EXACT expected fragments
+// rather than just the absence of known mistakes - a much stronger test
+// now that correctness is actually achievable, not just "probably ok".
+const INBOX_EXPECTATIONS = {
+  banglish: {
+    mustContain: ['ti official message esheche', '— 2ti message:', 'Draft baniyechi', 'Skip korechi', 'Reply pathiyechi'],
+    mustNotContain: [' jon official', 'asheche', 'Prothom din-er', 'ashteche nahi']
+  },
+  english: {
+    mustContain: ['official messages came in', '— 2 messages:', 'Drafted a reply', 'Skipped -', 'Reply sent'],
+    mustNotContain: ['has came', 'did not came']
+  },
+  hinglish: {
+    mustContain: ['official message aaye hain', '— 2 message:', 'Draft banaya hai', 'Skip kiya', 'Reply bhej diya'],
+    // 'ache'/'hobe' deliberately NOT checked here - the seeded messages
+    // are quoted verbatim and some are themselves in Bengali/Banglish
+    // (real senders write in whatever language they use), so those words
+    // legitimately appear inside the quotes; checking SUBH's own authored
+    // text for leaks is what UNIVERSAL_MISTAKES/checkText already does
+    // for every OTHER category.
+    mustNotContain: [' na.']
+  }
+};
+function checkInboxText(lang, text) {
+  const exp = INBOX_EXPECTATIONS[lang];
+  const issues = [];
+  if (!exp) return issues;
+  exp.mustContain.forEach((s) => { if (!text.includes(s)) issues.push('missing expected fragment: "' + s + '"'); });
+  exp.mustNotContain.forEach((s) => { if (text.includes(s)) issues.push('contains forbidden fragment: "' + s + '"'); });
+  return issues;
 }
 
 async function main() {
@@ -79,7 +119,7 @@ async function main() {
   // ---- Banglish (10) ----
   samples.push(['banglish', 'inbox-empty', () => askChat('Aj WhatsApp e kono official message eshechi naki?')]);
   samples.push(['banglish', 'inbox-empty', () => askChat('Aj ke kono message asheni ki WhatsApp e?')]);
-  samples.push(['banglish', 'inbox-nonempty', () => askChat('Aj WhatsApp e ke ke message korechi, list dao')]);
+  samples.push(['banglish', 'inbox-nonempty', () => askChat('Aj WhatsApp e ke ke message korechi, list dao'), checkInboxText]);
   samples.push(['banglish', 'holding', () => draft('Rahul', 'Sir amar bonus kobe pabo?')]);
   samples.push(['banglish', 'holding', () => draft('Priya', 'Office theke kono notice eshechi?')]);
   samples.push(['banglish', 'memory', () => draft('Amit', 'October mashe salary kobe hobe?', SALARY_MEMORY)]);
@@ -90,7 +130,7 @@ async function main() {
 
   // ---- English (10) ----
   samples.push(['english', 'inbox-empty', () => askChat('Did any important WhatsApp message come in today?')]);
-  samples.push(['english', 'inbox-nonempty', () => askChat('What WhatsApp messages came in today? List them.')]);
+  samples.push(['english', 'inbox-nonempty', () => askChat('What WhatsApp messages came in today? List them.'), checkInboxText]);
   samples.push(['english', 'holding', () => draft('John', 'Sir, when will I get my bonus?')]);
   samples.push(['english', 'holding', () => draft('Grace', 'Has any notice come from the office today?')]);
   samples.push(['english', 'memory', () => draft('Peter', 'When will October salary be credited?', SALARY_MEMORY)]);
@@ -102,7 +142,7 @@ async function main() {
 
   // ---- Hinglish (10) ----
   samples.push(['hinglish', 'inbox-empty', () => askChat('Aaj WhatsApp mein koi important message aaya kya?')]);
-  samples.push(['hinglish', 'inbox-nonempty', () => askChat('Aaj WhatsApp pe kisne message kiya, batao')]);
+  samples.push(['hinglish', 'inbox-nonempty', () => askChat('Aaj WhatsApp pe kisne message kiya, batao'), checkInboxText]);
   samples.push(['hinglish', 'holding', () => draft('Raj', 'Sir, mera bonus kab milega?')]);
   samples.push(['hinglish', 'holding', () => draft('Sunita', 'Office se koi notice aaya kya aaj?')]);
   samples.push(['hinglish', 'memory', () => draft('Vikas', 'October ki salary kab aayegi?', SALARY_MEMORY)]);
@@ -113,7 +153,7 @@ async function main() {
   samples.push(['hinglish', 'memory', () => draft('Rohit', 'Mujhe salary mil gayi kya?', SALARY_DELAY_MEMORY)]);
 
   const results = [];
-  for (const [lang, category, fn] of samples) {
+  for (const [lang, category, fn, extraCheck] of samples) {
     let text;
     try {
       text = await fn();
@@ -121,7 +161,17 @@ async function main() {
       results.push({ lang, category, text: '(ERROR: ' + err.message + ')', issues: ['call failed'] });
       continue;
     }
-    results.push({ lang, category, text, issues: checkText(lang, text) });
+    // Any inbox-* reply quotes ORIGINAL sender message text verbatim
+    // (correctly - it must never be retranslated) - since real data is
+    // seeded for this whole run, even an "inbox-empty"-phrased question
+    // can return a non-empty result containing those quotes, which can
+    // legitimately be in a different language than SUBH's own authored
+    // text around them. The generic cross-language-leak scan (meant for
+    // SUBH's own words) doesn't apply to inbox categories for this
+    // reason; checkInboxText does the precise, correct assertions where
+    // attached instead.
+    const issues = (category.startsWith('inbox') ? [] : checkText(lang, text)).concat(extraCheck ? extraCheck(lang, text) : []);
+    results.push({ lang, category, text, issues });
   }
 
   await cleanupInboxEntries(seeded);
