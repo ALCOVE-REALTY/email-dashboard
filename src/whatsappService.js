@@ -89,4 +89,18 @@ function isGroupChat(contactId) {
   return digits.length > 15;
 }
 
-module.exports = { sendWhatsAppMessage, normalizePhone, listChats, listMessages, isGroupChat };
+// Maytapi's own session-health endpoint - confirmed live (read-only GET,
+// no setting changed): {"data":{"status":"connected"|"disconnected",...}}.
+// Used by the poll scheduler's connection watchdog (whatsappAssistant.js)
+// to catch a dropped WhatsApp session (the phone needs its QR re-scanned)
+// - found necessary after a real 4-day outage went unnoticed because the
+// feed/chat endpoints above keep answering normally (with stale data)
+// even while the session itself is disconnected.
+async function getConnectionStatus() {
+  const res = await fetch(apiBase() + '/status', { headers: { 'x-maytapi-key': requireToken() } });
+  if (!res.ok) throw new Error('WhatsApp /status failed: ' + res.status);
+  const data = await res.json();
+  return (data.data && data.data.status) || 'unknown';
+}
+
+module.exports = { sendWhatsAppMessage, normalizePhone, listChats, listMessages, isGroupChat, getConnectionStatus };

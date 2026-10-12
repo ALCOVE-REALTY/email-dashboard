@@ -48,6 +48,17 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
     } catch (err) {
       consecutiveErrors++;
       log.error('[whatsapp-assistant] poll failed: ' + err.message);
+    }
+    // Separate try/catch, own try block entirely - a connection-status
+    // check failing (or the gateway being disconnected, which is not an
+    // error here, just a status value) must never affect the message
+    // poll's own backoff above, and vice versa.
+    try {
+      const gw = await whatsappAssistant.checkGatewayConnection();
+      if (gw.checked) log.log('[whatsapp-assistant] gateway status: ' + gw.status);
+      else log.error('[whatsapp-assistant] gateway status check failed: ' + gw.error);
+    } catch (err) {
+      log.error('[whatsapp-assistant] gateway status check failed: ' + err.message);
     } finally {
       polling = false;
     }

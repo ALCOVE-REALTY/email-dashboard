@@ -1376,7 +1376,10 @@ router.post('/hr-assistant/chat', async (req, res) => {
           const sendState = !realSendOn
             ? 'DRAFT MODE (real sending is off, nothing is being sent)'
             : (onlyPhone ? 'real send only to ' + onlyPhone : 'real send to everyone');
-          reply = 'Auto reply: ' + (enabled ? 'ON' : 'OFF') + ' — ' + sendState + '.';
+          const gw = await whatsappAssistant.gatewayStatusSummary();
+          const gwNote = gw.isConnected ? '' :
+            ' ⚠️ WhatsApp has been disconnected since ' + gw.disconnectedSinceLabel + ' - reconnect at tools.alcoverealty.in.';
+          reply = 'Auto reply: ' + (enabled ? 'ON' : 'OFF') + ' — ' + sendState + '.' + gwNote;
         } else {
           await whatsappAssistant.setAutoReplyEnabled(action === 'on');
           reply = 'WhatsApp auto-reply is now ' + action.toUpperCase() + '.';

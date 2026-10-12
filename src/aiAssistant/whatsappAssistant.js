@@ -51,6 +51,10 @@ const INBOX_LOG_KEY = 'wa-inbox-log';
 const MAX_INBOX_LOG = 1000;
 const NEVER_AUTO_KEY = 'wa-never-auto-list';
 const DAILY_SUMMARY_DATE_KEY = 'subh-daily-summary-date';
+const GATEWAY_STATUS_KEY = 'wa-gateway-status';
+const GATEWAY_DISCONNECTED_SINCE_KEY = 'wa-gateway-disconnected-since';
+const GATEWAY_LAST_ALERT_AT_KEY = 'wa-gateway-last-alert-at';
+const GATEWAY_ALERT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 
 let client;
 let clientChecked = false;
@@ -578,6 +582,8 @@ async function buildDailySummary() {
   const pendingDocs = await documentRequests.listPendingReceived();
 
   const lines = ['SUBH daily summary (' + date + '):'];
+  const gw = await gatewayStatusSummary();
+  if (!gw.isConnected) lines.push('⚠️ WhatsApp has been disconnected since ' + gw.disconnectedSinceLabel + ' - reconnect at tools.alcoverealty.in.');
   lines.push('Auto-replies sent yesterday: ' + sentYesterday.length +
     (Object.keys(byCase).length ? ' (' + Object.entries(byCase).map(([c, n]) => c + ': ' + n).join(', ') + ')' : ''));
   lines.push('Holding replies needing follow-up: ' + followups.length +
@@ -599,6 +605,74 @@ async function checkAndPostDailySummary() {
     await redis.set(DAILY_SUMMARY_DATE_KEY, date);
   } catch (err) { return; }
   await postOwnerNotification(await buildDailySummary());
+}
+
+// ---------------- Gateway connection watchdog ----------------
+// The WhatsApp session itself (the phone linked to tools.alcoverealty.in)
+// can silently drop - found live after a real 4-day outage went
+// unnoticed, because /chats and /messages keep answering normally (just
+// with stale data) even while the session is disconnected; only the
+// gateway's own /status endpoint actually reveals it. Checked once per
+// poll tick (whatsappPollScheduler.js), independent of message polling
+// so a status-check failure never affects the message pipeline's own
+// backoff. Alerts ONLY through postOwnerNotification (SUBH chat) - never
+// via whatsapp.sendWhatsAppMessage, since a WhatsApp message obviously
+// can't reach anyone usefully about WhatsApp itself being down.
+function formatIstDateTime(ts) {
+  return new Date(ts).toLocaleString('en-GB', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+}
+async function getGatewayState() {
+  const redis = getClient();
+  if (!redis) return { status: null, disconnectedSince: null, lastAlertAt: null };
+  try {
+    const [status, disconnectedSince, lastAlertAt] = await Promise.all([
+      redis.get(GATEWAY_STATUS_KEY), redis.get(GATEWAY_DISCONNECTED_SINCE_KEY), redis.get(GATEWAY_LAST_ALERT_AT_KEY)
+    ]);
+    return { status: status || null, disconnectedSince: Number(disconnectedSince) || null, lastAlertAt: Number(lastAlertAt) || null };
+  } catch (err) { return { status: null, disconnectedSince: null, lastAlertAt: null }; }
+}
+async function checkGatewayConnection() {
+  let liveStatus;
+  try {
+    liveStatus = await whatsapp.getConnectionStatus();
+  } catch (err) {
+    return { checked: false, error: err.message }; // transient check failure - leaves stored alert state untouched
+  }
+  const isConnected = liveStatus === 'connected';
+  const redis = getClient();
+  const state = await getGatewayState();
+
+  if (!isConnected) {
+    const since = state.disconnectedSince || Date.now();
+    const dueForAlert = !state.lastAlertAt || (Date.now() - state.lastAlertAt) >= GATEWAY_ALERT_COOLDOWN_MS;
+    if (dueForAlert) {
+      await postOwnerNotification('⚠️ WhatsApp disconnected since ' + formatIstDateTime(since) +
+        ' — open tools.alcoverealty.in → WhatsApp Dashboard and scan the QR again.');
+      if (redis) { try { await redis.set(GATEWAY_LAST_ALERT_AT_KEY, String(Date.now())); } catch (err) { /* best effort */ } }
+    }
+    if (redis) {
+      try { await redis.set(GATEWAY_STATUS_KEY, liveStatus); await redis.set(GATEWAY_DISCONNECTED_SINCE_KEY, String(since)); } catch (err) { /* best effort */ }
+    }
+  } else {
+    if (state.status && state.status !== 'connected') {
+      await postOwnerNotification('✓ WhatsApp reconnected at ' + formatIstDateTime(Date.now()) + '.');
+    }
+    if (redis) {
+      try { await redis.set(GATEWAY_STATUS_KEY, liveStatus); await redis.del(GATEWAY_DISCONNECTED_SINCE_KEY); await redis.del(GATEWAY_LAST_ALERT_AT_KEY); } catch (err) { /* best effort */ }
+    }
+  }
+  return { checked: true, status: liveStatus, isConnected };
+}
+// Read-only, no gateway call of its own - the daily summary, "auto reply
+// status" and whatsapp_inbox_summary all describe whatever
+// checkGatewayConnection (above) last observed, rather than each making
+// their own live /status request. Treats "never checked yet" (fresh
+// deploy, before the first poll tick) as connected - no false alarm
+// before the watchdog has had a chance to run even once.
+async function gatewayStatusSummary() {
+  const state = await getGatewayState();
+  const isConnected = state.status ? state.status === 'connected' : true;
+  return { isConnected, status: state.status, disconnectedSinceLabel: state.disconnectedSince ? formatIstDateTime(state.disconnectedSince) : null };
 }
 
 // ---------------- Owner-only WhatsApp inbox summary (AI tool) ----------------
@@ -661,6 +735,7 @@ async function whatsappInboxSummary(rangeRaw, userEmail) {
   const pendingPhones = new Set((await listPendingDrafts()).map((d) => d.contactId));
   const followupKeys = new Set((await listOpenFollowups()).map((f) => f.chatId));
   const pendingDocs = await documentRequests.listPendingReceived();
+  const gw = await gatewayStatusSummary();
 
   const items = log
     .sort((a, b) => b.ts - a.ts)
@@ -677,7 +752,9 @@ async function whatsappInboxSummary(rangeRaw, userEmail) {
     officialMessageCount: items.length,
     items,
     pendingDocuments: pendingDocs.map((d) => ({ who: d.phone, topic: d.topic })),
-    mode: describeSendMode()
+    mode: describeSendMode(),
+    gatewayConnected: gw.isConnected,
+    gatewayDisconnectedSince: gw.disconnectedSinceLabel
   };
 }
 
@@ -1399,6 +1476,8 @@ async function pollOnce() {
 module.exports = {
   isAvailable,
   pollOnce,
+  checkGatewayConnection,
+  gatewayStatusSummary,
   savePendingDraft,
   listPendingDrafts,
   removePendingDraft,

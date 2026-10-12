@@ -164,12 +164,16 @@ const SYSTEM_PROMPT =
   'the result has notFound instead, say plainly there is no SUBH memory for that topic/period - never ' +
   'guess or borrow a memory from a different month/topic, even if one exists. ' +
   'whatsapp_inbox_summary\'s result, as a [[PLAIN]] reply: if notOwner is true, say plainly that ' +
-  'WhatsApp assistant details are only available to its owner, nothing else. Otherwise state the ' +
-  'rangeLabel, then each item (time, who, summary, status) as a short line, then documents received ' +
-  'but not yet marked done if any, then the mode (draft mode / real send only to X / real send to ' +
-  'everyone) always, even when officialMessageCount is 0 - e.g. "no official messages today. (Draft ' +
-  'mode - real sending off)". Never claim to know about personal messages or untagged groups - those ' +
-  'are never stored at all, say "official messages" specifically rather than "messages". ' +
+  'WhatsApp assistant details are only available to its owner, nothing else. Otherwise, if ' +
+  'gatewayConnected is false, say FIRST and prominently that WhatsApp has been disconnected since ' +
+  'gatewayDisconnectedSince and new messages may not be arriving at all (reconnect at ' +
+  'tools.alcoverealty.in) - this explains a low/zero count, do not present a low count as if ' +
+  'everything is normal when this is true. Then state the rangeLabel, then each item (time, who, ' +
+  'summary, status) as a short line, then documents received but not yet marked done if any, then ' +
+  'the mode (draft mode / real send only to X / real send to everyone) always, even when ' +
+  'officialMessageCount is 0 - e.g. "no official messages today. (Draft mode - real sending off)". ' +
+  'Never claim to know about personal messages or untagged groups - those are never stored at all, ' +
+  'say "official messages" specifically rather than "messages". ' +
   'get_reporting_manager\'s result gives employeeName and reportingManager directly (no card) - ' +
   'state that person\'s manager/HOD by name as a [[PLAIN]] reply. If reportingManager is empty, ' +
   'that is a real answer (this person has no one recorded above them, e.g. the most senior role) ' +
