@@ -6,6 +6,7 @@
 // dailySnapshotScheduler.js: starts only when WHATSAPP_ASSISTANT_SCHEDULER=1,
 // so running the app locally or in a fresh environment never starts
 // reading real WhatsApp messages by accident.
+const { execSync } = require('child_process');
 const whatsappAssistant = require('./aiAssistant/whatsappAssistant');
 const documentRequests = require('./aiAssistant/documentRequests');
 
@@ -16,6 +17,23 @@ function pollIntervalMs() {
   return seconds * 1000;
 }
 
+// Best-effort, computed once at startup (not per tick - this would mean
+// spawning a subprocess every 60s for no reason). Found necessary live:
+// a real deploy whose web requests responded normally while the
+// scheduler showed zero signs of running for 10+ minutes, with no server
+// log access to see why - this heartbeat's whole point is to answer
+// "did the live process even start the scheduler, and which commit" from
+// outside the process, via Redis alone.
+function getCommitId() {
+  try {
+    return execSync('git rev-parse --short HEAD', { cwd: __dirname, stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
+  } catch (err) {
+    return process.env.GIT_COMMIT || process.env.SOURCE_VERSION || process.env.RENDER_GIT_COMMIT ||
+      process.env.VERCEL_GIT_COMMIT_SHA || process.env.HEROKU_SLUG_COMMIT || 'unknown';
+  }
+}
+const HEARTBEAT_LOG_EVERY_N_TICKS = 10;
+
 // Auto-reply (spec point 3) needs a 20-30s random delay BEFORE sending,
 // much finer-grained than the poll cadence above - this second,
 // independent tick just flushes whatever's come due since the last
@@ -25,11 +43,20 @@ const AUTOSEND_FLUSH_MS = 10 * 1000;
 
 function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval, log = console } = {}) {
   if (process.env.WHATSAPP_ASSISTANT_SCHEDULER !== '1') {
-    log.log('[whatsapp-assistant] scheduler off (set WHATSAPP_ASSISTANT_SCHEDULER=1 to enable)');
+    // Exact value (not just "it's off") - found necessary live after a
+    // real deploy where the scheduler never ran and there was no way to
+    // tell, from outside the process, whether the env var was missing,
+    // empty, or set to the wrong string (e.g. "true" instead of "1").
+    const raw = process.env.WHATSAPP_ASSISTANT_SCHEDULER;
+    const reason = 'WHATSAPP_ASSISTANT_SCHEDULER is not the string "1" (current value: ' +
+      (raw === undefined ? 'unset' : JSON.stringify(raw)) + ')';
+    log.log('[whatsapp-assistant] scheduler NOT started: ' + reason);
     return null;
   }
 
+  const commitId = getCommitId();
   let consecutiveErrors = 0;
+  let tickCount = 0;
   // Belt-and-suspenders overlap guard - the recursive setTimer pattern
   // below already can't overlap by construction (the NEXT tick is only
   // ever scheduled after THIS one's await, success or failure, fully
@@ -41,13 +68,14 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
   const tick = async () => {
     if (polling) { setTimer(tick, pollIntervalMs()); return; }
     polling = true;
+    tickCount++;
     try {
       const result = await whatsappAssistant.pollOnce();
       consecutiveErrors = 0;
-      log.log('[whatsapp-assistant] poll: ' + JSON.stringify(result));
+      log.log('[whatsapp-assistant] poll (tick ' + tickCount + '): ' + JSON.stringify(result));
     } catch (err) {
       consecutiveErrors++;
-      log.error('[whatsapp-assistant] poll failed: ' + err.message);
+      log.error('[whatsapp-assistant] poll failed (tick ' + tickCount + '): ' + err.message);
     }
     // Separate try/catch, own try block entirely - a connection-status
     // check failing (or the gateway being disconnected, which is not an
@@ -55,13 +83,24 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
     // poll's own backoff above, and vice versa.
     try {
       const gw = await whatsappAssistant.checkGatewayConnection();
-      if (gw.checked) log.log('[whatsapp-assistant] gateway status: ' + gw.status);
-      else log.error('[whatsapp-assistant] gateway status check failed: ' + gw.error);
+      if (gw.checked) log.log('[whatsapp-assistant] gateway status (tick ' + tickCount + '): ' + gw.status);
+      else log.error('[whatsapp-assistant] gateway status check failed (tick ' + tickCount + '): ' + gw.error);
     } catch (err) {
-      log.error('[whatsapp-assistant] gateway status check failed: ' + err.message);
-    } finally {
-      polling = false;
+      log.error('[whatsapp-assistant] gateway status check failed (tick ' + tickCount + '): ' + err.message);
     }
+    // Heartbeat - written every tick regardless of whether the poll or
+    // gateway check above succeeded, so its mere presence/freshness in
+    // Redis alone proves the scheduler is alive, independent of whether
+    // there's any real WhatsApp traffic to react to.
+    try {
+      await whatsappAssistant.recordSchedulerHeartbeat(commitId);
+    } catch (err) {
+      log.error('[whatsapp-assistant] heartbeat write failed (tick ' + tickCount + '): ' + err.message);
+    }
+    if (tickCount % HEARTBEAT_LOG_EVERY_N_TICKS === 0) {
+      log.log('[whatsapp-assistant] still running - tick ' + tickCount + ', commit ' + commitId);
+    }
+    polling = false;
     // Back off on repeated failures (gateway down, bad token) instead of
     // hammering it every interval regardless - returns to the configured
     // interval the moment a poll succeeds again (consecutiveErrors reset
@@ -71,7 +110,7 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
   };
 
   setTimer(tick, pollIntervalMs());
-  log.log('[whatsapp-assistant] scheduler on, polling every ' + (pollIntervalMs() / 1000) + 's');
+  log.log('[whatsapp-assistant] scheduler STARTED, polling every ' + (pollIntervalMs() / 1000) + 's (commit ' + commitId + ')');
 
   const autosendInterval = setIntervalFn(async () => {
     try {

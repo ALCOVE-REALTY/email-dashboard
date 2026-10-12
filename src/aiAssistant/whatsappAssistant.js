@@ -55,6 +55,7 @@ const GATEWAY_STATUS_KEY = 'wa-gateway-status';
 const GATEWAY_DISCONNECTED_SINCE_KEY = 'wa-gateway-disconnected-since';
 const GATEWAY_LAST_ALERT_AT_KEY = 'wa-gateway-last-alert-at';
 const GATEWAY_ALERT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+const SCHEDULER_HEARTBEAT_KEY = 'wa-scheduler-heartbeat';
 
 let client;
 let clientChecked = false;
@@ -674,6 +675,38 @@ async function gatewayStatusSummary() {
   const isConnected = state.status ? state.status === 'connected' : true;
   return { isConnected, status: state.status, disconnectedSinceLabel: state.disconnectedSince ? formatIstDateTime(state.disconnectedSince) : null };
 }
+// Fixed-format, English-only, deterministic (no AI involved) - the owner
+// types the exact command "auto reply status" to get this, never
+// translated. Extracted out of workforceRoutes.js so the status-text
+// logic has one home, directly unit-testable, instead of living inline
+// in the route handler.
+async function buildAutoReplyStatusReply() {
+  // Found live: reporting only the internal on/off flag read as "messages
+  // are actually being sent", when WHATSAPP_ASSISTANT_REAL_SEND (the real
+  // gate) might still be off entirely - states the real send state
+  // explicitly so this can never be misread as "it's live".
+  const enabled = await isAutoReplyEnabled();
+  const realSendOn = process.env.WHATSAPP_ASSISTANT_REAL_SEND === '1';
+  const onlyPhone = process.env.WHATSAPP_ASSISTANT_REAL_SEND_ONLY;
+  const sendState = !realSendOn
+    ? 'DRAFT MODE (real sending is off, nothing is being sent)'
+    : (onlyPhone ? 'real send only to ' + onlyPhone : 'real send to everyone');
+  const gw = await gatewayStatusSummary();
+  const gwNote = gw.isConnected ? '' :
+    ' ⚠️ WhatsApp has been disconnected since ' + gw.disconnectedSinceLabel + ' - reconnect at tools.alcoverealty.in.';
+  return 'Auto reply: ' + (enabled ? 'ON' : 'OFF') + ' — ' + sendState + '.' + gwNote;
+}
+// Written once per tick by whatsappPollScheduler.js, independent of
+// whether that tick's actual poll/gateway-check succeeded - the single
+// most direct way to answer "is the live scheduler actually running,
+// and which commit" from outside the process (no server log access),
+// since every other key here only updates when there's real WhatsApp
+// traffic to react to.
+async function recordSchedulerHeartbeat(commitId) {
+  const redis = getClient();
+  if (!redis) return;
+  try { await redis.set(SCHEDULER_HEARTBEAT_KEY, JSON.stringify({ ts: Date.now(), commitId })); } catch (err) { /* best effort */ }
+}
 
 // ---------------- Owner-only WhatsApp inbox summary (AI tool) ----------------
 // Backs the in-app check_memory-style tool the owner asks natural
@@ -915,6 +948,14 @@ const DRAFT_SYSTEM_PROMPT =
   'Bengali/Hindi/Banglish/Hinglish for an English message just because other examples below happen to ' +
   'be in those languages; those are tone examples only, the language to reply in always comes from ' +
   'THIS message, never from the examples. ' +
+  'Banglish grammar: negate a perfect/completed-action verb with the "-ni" suffix form (ashe ni, ' +
+  'pathay ni, hoy ni, dey ni, kore ni) - never "-eche na"/"-echhe na" (NOT "esheche na", "hoyeche ' +
+  'na", "korechhe na" - these read as broken Bengali). Say "Aj" for "today", never "Aj ke". English ' +
+  'grammar: correct tense/negation, natural phrasing, never a literal word-for-word translation (e.g. ' +
+  '"the letter hasn\'t been issued yet", never "has not came"). Hinglish grammar: negate with "nahi" ' +
+  '("aaya nahi", "nahi bheja", "hua nahi"), never a bare Bengali-style "na"; address the sender as ' +
+  '"aap" consistently; never mix a Bengali word (ache/hobe/korbo) into Hinglish, same as a Hindi word ' +
+  '(khud/nahi/hoon) must never appear in Banglish. ' +
   'Keep it to 1-2 short lines (3 only if genuinely needed) - like a real person quickly typing a reply ' +
   'on their phone, not a formal letter: no stock politeness filler ("happy to be working with you", ' +
   '"thank you for your message", "I hope this finds you well"), no restating what they asked, just the ' +
@@ -1081,6 +1122,14 @@ const GROUP_DRAFT_SYSTEM_PROMPT =
   'stays plain English in your reply - do not switch to Bengali/Hindi/Banglish/Hinglish for an English ' +
   'message just because other examples below happen to be in those languages; those are tone examples ' +
   'only, the language to reply in always comes from THIS message, never from the examples. ' +
+  'Banglish grammar: negate a perfect/completed-action verb with the "-ni" suffix form (ashe ni, ' +
+  'pathay ni, hoy ni, dey ni, kore ni) - never "-eche na"/"-echhe na" (NOT "esheche na", "hoyeche ' +
+  'na", "korechhe na" - these read as broken Bengali). Say "Aj" for "today", never "Aj ke". English ' +
+  'grammar: correct tense/negation, natural phrasing, never a literal word-for-word translation (e.g. ' +
+  '"the letter hasn\'t been issued yet", never "has not came"). Hinglish grammar: negate with "nahi" ' +
+  '("aaya nahi", "nahi bheja", "hua nahi"), never a bare Bengali-style "na"; address the sender as ' +
+  '"aap" consistently; never mix a Bengali word (ache/hobe/korbo) into Hinglish, same as a Hindi word ' +
+  '(khud/nahi/hoon) must never appear in Banglish. ' +
   'Keep it to 1-2 short lines (3 only if genuinely needed) - like a real person quickly ' +
   'typing a reply, not a formal letter: no stock politeness filler ("happy to be working with you", ' +
   '"thank you for your message"), no restating what was asked, just the actual reply. Use natural, ' +
@@ -1478,6 +1527,8 @@ module.exports = {
   pollOnce,
   checkGatewayConnection,
   gatewayStatusSummary,
+  buildAutoReplyStatusReply,
+  recordSchedulerHeartbeat,
   savePendingDraft,
   listPendingDrafts,
   removePendingDraft,

@@ -5,7 +5,8 @@
   "description": "Mobile Gmail triage dashboard with inline reply",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "check:subh-language": "node scripts/check-subh-language.js"
   },
   "dependencies": {
     "@sparticuz/chromium": "^153.0.0",

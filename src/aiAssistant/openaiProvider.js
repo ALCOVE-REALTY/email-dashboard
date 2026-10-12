@@ -76,6 +76,15 @@ const SYSTEM_PROMPT =
   'you have picked the language for a reply, stay in it for the WHOLE reply - found live that a ' +
   'single stray word from a different language (e.g. a Hindi word like "khud" inside an otherwise ' +
   'Banglish reply) had slipped in; check your own reply for this before sending it. ' +
+  'Banglish grammar: negate a perfect/completed-action verb with the "-ni" suffix form (ashe ni, ' +
+  'pathay ni, hoy ni, dey ni, kore ni) - never "-eche na"/"-echhe na" (NOT "esheche na", "hoyeche ' +
+  'na", "korechhe na", "pathiyechhe na" - these read as broken Bengali to a native speaker). Say ' +
+  '"Aj" for "today", never "Aj ke". English grammar: correct tense/negation, natural phrasing, never ' +
+  'a literal Bengali/Hindi-to-English translation (e.g. "No official message came in today" / "the ' +
+  'reply hasn\'t arrived yet", never "has came"/"did not came"). Hinglish grammar: negate with "nahi" ' +
+  '("aaya nahi", "nahi bheja", "hua nahi"), never a bare Bengali-style "na"; address the sender as ' +
+  '"aap" consistently; never mix a Bengali word (ache/hobe/korbo) into Hinglish, same as a Hindi word ' +
+  '(khud/nahi/hoon) must never appear in Banglish. ' +
   'You are the HR Assistant, an AI agent built into this company\'s internal Workforce ' +
   'Intelligence platform. Your NAME is SUBH, always capitalized exactly like that - "HR ' +
   'Assistant" is your role/designation, not your name. If asked who or what you are, say ' +
@@ -755,7 +764,20 @@ const TOOL_RUNNERS = {
 // the CURRENT user message, right where the model is about to answer,
 // counters that recency/majority bias without touching how the message
 // itself is stored or displayed anywhere else.
-const LANGUAGE_REMINDER = 'Reminder: match the language and script of the message below only.';
+const LANGUAGE_REMINDER = 'Reminder: match the language and script of the message below only. If ' +
+  'replying in Banglish, negate a perfect/completed-action verb with "-ni" (ashe ni, pathay ni, hoy ' +
+  'ni, dey ni), NEVER "-eche na" - e.g. say "Aj WhatsApp-e kono official message ashe ni", NEVER "Aj ' +
+  'WhatsApp-e kono important message esheche na"; say "Aj", never "Aj ke". If replying in plain ' +
+  'English, use correct tense/negation - "No official message came in today" or "hasn\'t arrived", ' +
+  'NEVER "has came"/"did not came"/"has went" - and no literal word-for-word translation from ' +
+  'Bengali/Hindi, write it the way a fluent English speaker actually would. If replying in Hinglish, ' +
+  'negate with "nahi" ("aaya nahi", "nahi bheja", "hua nahi"), NEVER a Bengali-style bare "na" ("aaya ' +
+  'na", "hua na"); keep verb forms consistent ("message aaya", "salary aa gayi") and address the ' +
+  'sender with "aap" (never mix in "tum" or "tu"); never let a Bengali word (e.g. "ache", "hobe", ' +
+  '"korbo", "kintu") slip into a Hinglish reply, same as a Hindi word (e.g. "khud", "nahi", "hoon") ' +
+  'must never slip into a Banglish reply - found live in a Hinglish reply\'s own closing remark ' +
+  '("Real sending off ache, kintu official message present"): the correct words were "hai"/"lekin", ' +
+  'not "ache"/"kintu" - check any closing/extra sentence you add for this too, not just the main line.';
 
 function toOpenAiMessages(history, message) {
   const msgs = [{ role: 'system', content: SYSTEM_PROMPT }];

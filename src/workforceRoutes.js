@@ -1365,21 +1365,7 @@ router.post('/hr-assistant/chat', async (req, res) => {
         const action = switchMatch[1].toLowerCase();
         let reply;
         if (action === 'status') {
-          // Found live: reporting only the internal on/off flag read as
-          // "messages are actually being sent", when WHATSAPP_ASSISTANT_
-          // REAL_SEND (the real gate) might still be off entirely - now
-          // states the real send state explicitly so this can never be
-          // misread as "it's live".
-          const enabled = await whatsappAssistant.isAutoReplyEnabled();
-          const realSendOn = process.env.WHATSAPP_ASSISTANT_REAL_SEND === '1';
-          const onlyPhone = process.env.WHATSAPP_ASSISTANT_REAL_SEND_ONLY;
-          const sendState = !realSendOn
-            ? 'DRAFT MODE (real sending is off, nothing is being sent)'
-            : (onlyPhone ? 'real send only to ' + onlyPhone : 'real send to everyone');
-          const gw = await whatsappAssistant.gatewayStatusSummary();
-          const gwNote = gw.isConnected ? '' :
-            ' ⚠️ WhatsApp has been disconnected since ' + gw.disconnectedSinceLabel + ' - reconnect at tools.alcoverealty.in.';
-          reply = 'Auto reply: ' + (enabled ? 'ON' : 'OFF') + ' — ' + sendState + '.' + gwNote;
+          reply = await whatsappAssistant.buildAutoReplyStatusReply();
         } else {
           await whatsappAssistant.setAutoReplyEnabled(action === 'on');
           reply = 'WhatsApp auto-reply is now ' + action.toUpperCase() + '.';
