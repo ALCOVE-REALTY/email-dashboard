@@ -76,15 +76,8 @@ const SYSTEM_PROMPT =
   'you have picked the language for a reply, stay in it for the WHOLE reply - found live that a ' +
   'single stray word from a different language (e.g. a Hindi word like "khud" inside an otherwise ' +
   'Banglish reply) had slipped in; check your own reply for this before sending it. ' +
-  'Banglish grammar: negate a perfect/completed-action verb with the "-ni" suffix form (ashe ni, ' +
-  'pathay ni, hoy ni, dey ni, kore ni) - never "-eche na"/"-echhe na" (NOT "esheche na", "hoyeche ' +
-  'na", "korechhe na", "pathiyechhe na" - these read as broken Bengali to a native speaker). Say ' +
-  '"Aj" for "today", never "Aj ke". English grammar: correct tense/negation, natural phrasing, never ' +
-  'a literal Bengali/Hindi-to-English translation (e.g. "No official message came in today" / "the ' +
-  'reply hasn\'t arrived yet", never "has came"/"did not came"). Hinglish grammar: negate with "nahi" ' +
-  '("aaya nahi", "nahi bheja", "hua nahi"), never a bare Bengali-style "na"; address the sender as ' +
-  '"aap" consistently; never mix a Bengali word (ache/hobe/korbo) into Hinglish, same as a Hindi word ' +
-  '(khud/nahi/hoon) must never appear in Banglish. ' +
+  'Grammar rules for Banglish/English/Hinglish negation and cross-language word leaks are restated ' +
+  'in full, right before your reply, as the LANGUAGE_REMINDER system message - follow those exactly. ' +
   'You are the HR Assistant, an AI agent built into this company\'s internal Workforce ' +
   'Intelligence platform. Your NAME is SUBH, always capitalized exactly like that - "HR ' +
   'Assistant" is your role/designation, not your name. If asked who or what you are, say ' +
@@ -651,7 +644,7 @@ const TOOL_DEFS = [
     type: 'function',
     function: {
       name: 'manage_whatsapp_official_list',
-      description: 'Add or remove a phone number from SUBH\'s WhatsApp assistant allow/block list (Phase F, 1:1 chats only), and/or set the display name SUBH uses for that number. Use this for ANY phrasing that means "treat this number as a trusted official contact" or "never treat this number as official", in any language/script, e.g. "<number> ke official list e rakho", "add <number> to official list", "<number> ko official list me daal do", "<number> ke official list theke bad dao", "remove <number> from official list", "ei number kokhono porbe na" (paired with whichever number was just mentioned). Also use it (with list="allow", action="add", and `name` set) when a name is given alongside the number, e.g. "<number> <name> ke official list e rakho", "add <number> as <name> to official list" - and for JUST changing/setting the name of an already-listed number with no list/block intent, e.g. "<number>-er naam <name> koro", "set <number>\'s name to <name>" (still list="allow", action="add" - adding an already-allowed number again is harmless, it just updates the name). "Official" / allow = treat this number like a known employee - a WORK-RELATED message from them still gets a reminder/draft, but a casual message from them is still personal, same as anyone else; "never" / block = always ignore this number\'s messages as personal, even a work-sounding one.',
+      description: 'Add/remove a phone number from SUBH\'s WhatsApp allow/block list (1:1 only), and/or set the display name for that number. Any phrasing meaning "trust this number as official" or "never treat as official", any language, e.g. "<number> ke official list e rakho", "remove <number> from official list". If a name is given alongside the number (e.g. "<number> <name> ke official list e rakho", "add <number> as <name> to official list") or the owner is JUST renaming an already-listed number ("<number>-er naam <name> koro") - set list="allow", action="add", name=<name> (re-adding an already-allowed number is harmless, it just updates the name). "Official"/allow = still needs a WORK-RELATED message to get a reminder, same as a known employee; "block" = always treat as personal.',
       parameters: {
         type: 'object',
         properties: {
@@ -793,20 +786,17 @@ const TOOL_RUNNERS = {
 // the CURRENT user message, right where the model is about to answer,
 // counters that recency/majority bias without touching how the message
 // itself is stored or displayed anywhere else.
-const LANGUAGE_REMINDER = 'Reminder: match the language and script of the message below only. If ' +
-  'replying in Banglish, negate a perfect/completed-action verb with "-ni" (ashe ni, pathay ni, hoy ' +
-  'ni, dey ni), NEVER "-eche na" - e.g. say "Aj WhatsApp-e kono official message ashe ni", NEVER "Aj ' +
-  'WhatsApp-e kono important message esheche na"; say "Aj", never "Aj ke". If replying in plain ' +
-  'English, use correct tense/negation - "No official message came in today" or "hasn\'t arrived", ' +
-  'NEVER "has came"/"did not came"/"has went" - and no literal word-for-word translation from ' +
-  'Bengali/Hindi, write it the way a fluent English speaker actually would. If replying in Hinglish, ' +
-  'negate with "nahi" ("aaya nahi", "nahi bheja", "hua nahi"), NEVER a Bengali-style bare "na" ("aaya ' +
-  'na", "hua na"); keep verb forms consistent ("message aaya", "salary aa gayi") and address the ' +
-  'sender with "aap" (never mix in "tum" or "tu"); never let a Bengali word (e.g. "ache", "hobe", ' +
-  '"korbo", "kintu") slip into a Hinglish reply, same as a Hindi word (e.g. "khud", "nahi", "hoon") ' +
-  'must never slip into a Banglish reply - found live in a Hinglish reply\'s own closing remark ' +
-  '("Real sending off ache, kintu official message present"): the correct words were "hai"/"lekin", ' +
-  'not "ache"/"kintu" - check any closing/extra sentence you add for this too, not just the main line.';
+// Kept short on purpose - this is sent on every turn, trimmed after a
+// latency complaint (confirmed via direct measurement: this constant
+// alone had grown 66 -> 1315 chars, with worked examples for WhatsApp
+// replies that are now 100% deterministic/short-circuited and so never
+// reach this model-composition path at all any more). Only the still-
+// relevant word-level rule survives, not the now-dead example sentences.
+const LANGUAGE_REMINDER = 'Reminder: match the language and script of the message below only. ' +
+  'Banglish: negate with "-ni" (ashe ni, pathay ni, hoy ni, dey ni), never "-eche na"; say "Aj", ' +
+  'never "Aj ke". English: correct tense/negation, no literal Bengali/Hindi translation (never "has ' +
+  'came"/"did not came"). Hinglish: negate with "nahi", never a bare "na"; address as "aap"; never ' +
+  'mix a Bengali word into Hinglish or a Hindi word into Banglish.';
 
 function toOpenAiMessages(history, message) {
   const msgs = [{ role: 'system', content: SYSTEM_PROMPT }];
