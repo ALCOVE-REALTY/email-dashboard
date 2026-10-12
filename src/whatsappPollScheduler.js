@@ -1,25 +1,27 @@
 // Polls SUBH's WhatsApp assistant (src/aiAssistant/whatsappAssistant.js)
-// every 3-5 minutes (randomized within that range each cycle, so several
-// server instances sharing one gateway account don't all poll at the
-// exact same moment). Opt-in, same convention as dailySnapshotScheduler.js:
-// starts only when WHATSAPP_ASSISTANT_SCHEDULER=1, so running the app
-// locally or in a fresh environment never starts reading real WhatsApp
-// messages by accident.
+// every WHATSAPP_POLL_INTERVAL_SECONDS (default 60s, configurable - was a
+// randomized 3-5 minutes; at a fixed 60s base the old "avoid several
+// instances hitting the gateway at the exact same moment" jitter isn't
+// worth the complexity any more). Opt-in, same convention as
+// dailySnapshotScheduler.js: starts only when WHATSAPP_ASSISTANT_SCHEDULER=1,
+// so running the app locally or in a fresh environment never starts
+// reading real WhatsApp messages by accident.
 const whatsappAssistant = require('./aiAssistant/whatsappAssistant');
 const documentRequests = require('./aiAssistant/documentRequests');
 
-const MIN_DELAY_MS = 3 * 60 * 1000;
-const MAX_DELAY_MS = 5 * 60 * 1000;
+const DEFAULT_POLL_INTERVAL_SECONDS = 60;
+function pollIntervalMs() {
+  const configured = Number(process.env.WHATSAPP_POLL_INTERVAL_SECONDS);
+  const seconds = configured > 0 ? configured : DEFAULT_POLL_INTERVAL_SECONDS;
+  return seconds * 1000;
+}
+
 // Auto-reply (spec point 3) needs a 20-30s random delay BEFORE sending,
-// much finer-grained than the 3-5 minute poll cadence above - this
-// second, independent tick just flushes whatever's come due since the
-// last check, it never re-decides anything (decision happens once, in
+// much finer-grained than the poll cadence above - this second,
+// independent tick just flushes whatever's come due since the last
+// check, it never re-decides anything (decision happens once, in
 // pollOnce itself).
 const AUTOSEND_FLUSH_MS = 10 * 1000;
-
-function nextDelay() {
-  return MIN_DELAY_MS + Math.random() * (MAX_DELAY_MS - MIN_DELAY_MS);
-}
 
 function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval, log = console } = {}) {
   if (process.env.WHATSAPP_ASSISTANT_SCHEDULER !== '1') {
@@ -28,8 +30,17 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
   }
 
   let consecutiveErrors = 0;
+  // Belt-and-suspenders overlap guard - the recursive setTimer pattern
+  // below already can't overlap by construction (the NEXT tick is only
+  // ever scheduled after THIS one's await, success or failure, fully
+  // finishes - never a plain setInterval, which would risk exactly that
+  // if a poll ran long), but this flag makes that guarantee explicit and
+  // keeps it true even if the scheduling pattern here ever changes.
+  let polling = false;
 
   const tick = async () => {
+    if (polling) { setTimer(tick, pollIntervalMs()); return; }
+    polling = true;
     try {
       const result = await whatsappAssistant.pollOnce();
       consecutiveErrors = 0;
@@ -37,15 +48,19 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
     } catch (err) {
       consecutiveErrors++;
       log.error('[whatsapp-assistant] poll failed: ' + err.message);
+    } finally {
+      polling = false;
     }
     // Back off on repeated failures (gateway down, bad token) instead of
-    // hammering it every 3-5 minutes regardless - caps at ~40 minutes.
+    // hammering it every interval regardless - returns to the configured
+    // interval the moment a poll succeeds again (consecutiveErrors reset
+    // above), caps at 8x the base interval meanwhile.
     const backoffMultiplier = Math.min(2 ** consecutiveErrors, 8);
-    setTimer(tick, nextDelay() * backoffMultiplier);
+    setTimer(tick, pollIntervalMs() * backoffMultiplier);
   };
 
-  setTimer(tick, nextDelay());
-  log.log('[whatsapp-assistant] scheduler on, polling every 3-5 minutes');
+  setTimer(tick, pollIntervalMs());
+  log.log('[whatsapp-assistant] scheduler on, polling every ' + (pollIntervalMs() / 1000) + 's');
 
   const autosendInterval = setIntervalFn(async () => {
     try {
