@@ -72,7 +72,10 @@ const DRAFT_SYSTEM_PROMPT =
 const SYSTEM_PROMPT =
   'Match the language and script of the user\'s most recent message only, never an earlier one - ' +
   'for short romanised text, weigh grammar over shared vocabulary: standalone "e"/"ke" without ' +
-  '"ko"/"mein"/"hai" reads as Bengali (Banglish), "ko"/"mein"/"hai" reads as Hindi (Hinglish). ' +
+  '"ko"/"mein"/"hai" reads as Bengali (Banglish), "ko"/"mein"/"hai" reads as Hindi (Hinglish). Once ' +
+  'you have picked the language for a reply, stay in it for the WHOLE reply - found live that a ' +
+  'single stray word from a different language (e.g. a Hindi word like "khud" inside an otherwise ' +
+  'Banglish reply) had slipped in; check your own reply for this before sending it. ' +
   'You are the HR Assistant, an AI agent built into this company\'s internal Workforce ' +
   'Intelligence platform. Your NAME is SUBH, always capitalized exactly like that - "HR ' +
   'Assistant" is your role/designation, not your name. If asked who or what you are, say ' +
@@ -160,6 +163,13 @@ const SYSTEM_PROMPT =
   'state them together as a [[PLAIN]] reply, exactly as given, never adding anything beyond them. If ' +
   'the result has notFound instead, say plainly there is no SUBH memory for that topic/period - never ' +
   'guess or borrow a memory from a different month/topic, even if one exists. ' +
+  'whatsapp_inbox_summary\'s result, as a [[PLAIN]] reply: if notOwner is true, say plainly that ' +
+  'WhatsApp assistant details are only available to its owner, nothing else. Otherwise state the ' +
+  'rangeLabel, then each item (time, who, summary, status) as a short line, then documents received ' +
+  'but not yet marked done if any, then the mode (draft mode / real send only to X / real send to ' +
+  'everyone) always, even when officialMessageCount is 0 - e.g. "no official messages today. (Draft ' +
+  'mode - real sending off)". Never claim to know about personal messages or untagged groups - those ' +
+  'are never stored at all, say "official messages" specifically rather than "messages". ' +
   'get_reporting_manager\'s result gives employeeName and reportingManager directly (no card) - ' +
   'state that person\'s manager/HOD by name as a [[PLAIN]] reply. If reportingManager is empty, ' +
   'that is a real answer (this person has no one recorded above them, e.g. the most senior role) ' +
@@ -658,6 +668,19 @@ const TOOL_DEFS = [
         required: ['topic']
       }
     }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'whatsapp_inbox_summary',
+      description: 'OWNER ONLY - summarizes what SUBH\'s WhatsApp assistant has received and done, for ANY question about WhatsApp activity in any language/phrasing, e.g. "WhatsApp-e kono important message esheche?", "aj ke ke message korechhe?", "kar reply baki?", "any pending WhatsApp?", "kisne message kiya?", "ki holo aj WhatsApp e". Covers OFFICIAL messages only (1:1 and tagged groups) - personal messages and untagged groups are never stored at all, so never imply knowledge of those.',
+      parameters: {
+        type: 'object',
+        properties: {
+          rangeRaw: { type: 'string', description: 'The time range exactly as meant - normalise to one of: "today" (default), "last N hours", "yesterday"/"kal", "this week". Omit for the default (today).' }
+        }
+      }
+    }
   }
 ];
 
@@ -715,7 +738,8 @@ const TOOL_RUNNERS = {
       topic: match.topic, periodLabel: match.periodLabel, scopeLabel: match.scopeType === 'everyone' ? 'everyone' : match.scopeLabel,
       statusFact: match.statusFact, guidance: match.guidance
     };
-  }
+  },
+  whatsapp_inbox_summary: (input, user) => whatsappAssistant.whatsappInboxSummary(input.rangeRaw, user && user.email)
 };
 
 // The language rule lives in SYSTEM_PROMPT's first line, but earlier turns

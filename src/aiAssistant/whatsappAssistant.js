@@ -38,6 +38,17 @@ const OWNER_NOTIFICATIONS_KEY = 'subh-owner-notifications';
 const MAX_NOTIFICATIONS = 200;
 const AUTO_REPLY_LOG_KEY = 'wa-auto-reply-log';
 const MAX_AUTO_REPLY_LOG = 2000;
+// A SEPARATE, more detailed log than AUTO_REPLY_LOG_KEY above (which is
+// deliberately content-free) - this one backs the owner-only
+// whatsapp_inbox_summary AI tool, which the owner explicitly asked to
+// be able to query real content back from ("what did SUBH send to X
+// today"). Still scoped the same as everywhere else in this feature:
+// OFFICIAL messages only (personal/untagged-group text is never stored
+// anywhere, including here), owner-only to read (enforced in the tool
+// runner, not just by prompt wording), capped list same as every other
+// log in this file.
+const INBOX_LOG_KEY = 'wa-inbox-log';
+const MAX_INBOX_LOG = 1000;
 const NEVER_AUTO_KEY = 'wa-never-auto-list';
 const DAILY_SUMMARY_DATE_KEY = 'subh-daily-summary-date';
 
@@ -320,6 +331,35 @@ async function listAutoReplyLog(limit = 200) {
   } catch (err) { return []; }
 }
 
+// One entry per official message's FINAL outcome (written at send time,
+// not decision time, so it reflects what actually happened - draft mode
+// vs a real send vs loop-protection skipping it). messageSummary/
+// sentText are real content, deliberately - see INBOX_LOG_KEY's own
+// comment on why this log differs from AUTO_REPLY_LOG_KEY.
+async function logInboxEvent({ chatId, name, isGroup, messageSummary, aCase, sentText, outcome }) {
+  const redis = getClient();
+  if (!redis) return;
+  try {
+    const entry = {
+      ts: Date.now(), chatId, name, isGroup: Boolean(isGroup),
+      messageSummary: (messageSummary || '').slice(0, 150),
+      case: aCase || null,
+      sentText: sentText ? sentText.slice(0, 300) : null,
+      outcome
+    };
+    await redis.lpush(INBOX_LOG_KEY, JSON.stringify(entry));
+    await redis.ltrim(INBOX_LOG_KEY, 0, MAX_INBOX_LOG - 1);
+  } catch (err) { /* best effort */ }
+}
+async function listInboxLog(limit = 500) {
+  const redis = getClient();
+  if (!redis) return [];
+  try {
+    const raw = await redis.lrange(INBOX_LOG_KEY, 0, Math.max(1, Math.min(limit, MAX_INBOX_LOG)) - 1);
+    return raw.map((item) => { try { return typeof item === 'string' ? JSON.parse(item) : item; } catch (err) { return null; } }).filter(Boolean);
+  } catch (err) { return []; }
+}
+
 // ---------------- Loop protection (spec point 4) ----------------
 // "Don't send the same reply to the same sender twice within 10
 // minutes" - checked right before actually sending (processDueAutoSends),
@@ -432,10 +472,12 @@ async function sendOrReportAutoReply(entry) {
 
   if (await wasSameReplySentRecently(entry.chatId, entry.replyText)) {
     await logAutoReplyEvent({ senderType: entry.isGroup ? 'group' : 'direct', aCase: entry.case, memoryId: entry.memoryId, action: 'skipped_duplicate' });
+    await logInboxEvent({ chatId: entry.chatId, name: entry.name, isGroup: entry.isGroup, messageSummary: entry.summaryForOwner, aCase: entry.case, sentText: null, outcome: 'skipped_duplicate' });
     return;
   }
   if (await isLikelyBotEcho(entry.chatId)) {
     await logAutoReplyEvent({ senderType: entry.isGroup ? 'group' : 'direct', aCase: entry.case, memoryId: entry.memoryId, action: 'skipped_possible_loop' });
+    await logInboxEvent({ chatId: entry.chatId, name: entry.name, isGroup: entry.isGroup, messageSummary: entry.summaryForOwner, aCase: entry.case, sentText: null, outcome: 'skipped_possible_loop' });
     return;
   }
 
@@ -448,9 +490,11 @@ async function sendOrReportAutoReply(entry) {
       await recordAutoReplyAt(entry.chatId);
       await postOwnerNotification('✓ Auto-replied to ' + who + ' at ' + timeLabel + ': "' + entry.replyText + '"');
       await logAutoReplyEvent({ senderType: entry.isGroup ? 'group' : 'direct', aCase: entry.case, memoryId: entry.memoryId, action: 'sent' });
+      await logInboxEvent({ chatId: entry.chatId, name: entry.name, isGroup: entry.isGroup, messageSummary: entry.summaryForOwner, aCase: entry.case, sentText: entry.replyText, outcome: 'sent' });
     } else {
       await postOwnerNotification('Could not auto-reply to ' + who + ': ' + (sendResult.error || 'unknown error'));
       await logAutoReplyEvent({ senderType: entry.isGroup ? 'group' : 'direct', aCase: entry.case, memoryId: entry.memoryId, action: 'send_failed' });
+      await logInboxEvent({ chatId: entry.chatId, name: entry.name, isGroup: entry.isGroup, messageSummary: entry.summaryForOwner, aCase: entry.case, sentText: entry.replyText, outcome: 'send_failed' });
     }
   } else {
     // DRAFT mode (spec point 8) - the full pipeline (decide, delay,
@@ -461,6 +505,7 @@ async function sendOrReportAutoReply(entry) {
     await recordAutoReplyAt(entry.chatId);
     await postOwnerNotification('[DRAFT MODE - not actually sent] Would auto-reply to ' + who + ' at ' + timeLabel + ': "' + entry.replyText + '"');
     await logAutoReplyEvent({ senderType: entry.isGroup ? 'group' : 'direct', aCase: entry.case, memoryId: entry.memoryId, action: 'draft_mode' });
+    await logInboxEvent({ chatId: entry.chatId, name: entry.name, isGroup: entry.isGroup, messageSummary: entry.summaryForOwner, aCase: entry.case, sentText: entry.replyText, outcome: 'draft_mode' });
   }
 
   if (entry.case === 'holding' && entry.summaryForOwner) {
@@ -554,6 +599,86 @@ async function checkAndPostDailySummary() {
     await redis.set(DAILY_SUMMARY_DATE_KEY, date);
   } catch (err) { return; }
   await postOwnerNotification(await buildDailySummary());
+}
+
+// ---------------- Owner-only WhatsApp inbox summary (AI tool) ----------------
+// Backs the in-app check_memory-style tool the owner asks natural
+// questions to ("WhatsApp-e kono important message esheche?", "kar
+// reply baki?") - unlike every other owner-only surface in this file
+// (which are deterministic regex commands intercepted before the AI
+// pipeline even runs), the PHRASING here is far too varied for a regex,
+// so this is a real AI tool the model can choose to call - but the
+// OWNER CHECK still happens here, in the runner, not just in the
+// model's own judgement about who's asking.
+const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+function istMidnightMsDaysAgo(daysAgo) {
+  const shifted = new Date(Date.now() + IST_OFFSET_MS);
+  shifted.setUTCHours(0, 0, 0, 0);
+  shifted.setUTCDate(shifted.getUTCDate() - daysAgo);
+  return shifted.getTime() - IST_OFFSET_MS;
+}
+function resolveInboxRange(rangeRaw) {
+  const key = String(rangeRaw || 'today').toLowerCase();
+  const hourMatch = key.match(/(\d+)\s*hour/);
+  if (hourMatch) {
+    const h = Number(hourMatch[1]) || 2;
+    return { startMs: Date.now() - h * 60 * 60 * 1000, endMs: Date.now(), label: 'last ' + h + ' hour' + (h === 1 ? '' : 's') };
+  }
+  if (/yesterday|\bkal\b/.test(key)) {
+    return { startMs: istMidnightMsDaysAgo(1), endMs: istMidnightMsDaysAgo(0), label: 'yesterday' };
+  }
+  if (/week/.test(key)) {
+    return { startMs: istMidnightMsDaysAgo(7), endMs: Date.now(), label: 'this week' };
+  }
+  return { startMs: istMidnightMsDaysAgo(0), endMs: Date.now(), label: 'today' };
+}
+function describeSendMode() {
+  const realSendOn = process.env.WHATSAPP_ASSISTANT_REAL_SEND === '1';
+  const onlyPhone = process.env.WHATSAPP_ASSISTANT_REAL_SEND_ONLY;
+  if (!realSendOn) return 'Draft mode (real sending is off, nothing is being sent)';
+  return onlyPhone ? 'Real send only to ' + onlyPhone : 'Real send to everyone';
+}
+function describeInboxOutcome(entry, pendingPhones, followupKeys) {
+  if (entry.outcome === 'sent' || entry.outcome === 'draft_mode') {
+    let s = (entry.outcome === 'sent' ? 'Auto-replied' : 'Auto-replied (draft mode, not actually sent)') +
+      ' (case: ' + entry.case + '): "' + (entry.sentText || '') + '"';
+    if (entry.case === 'holding') s += followupKeys.has(entry.chatId) ? ' - still needs your follow-up' : ' - resolved';
+    return s;
+  }
+  if (entry.outcome === 'never_auto_pending') {
+    return pendingPhones.has(entry.chatId) ? 'Draft waiting for your review (never-auto list)' : 'Already handled by you (never-auto list)';
+  }
+  if (entry.outcome === 'skipped_duplicate' || entry.outcome === 'skipped_possible_loop') return 'Skipped (loop protection)';
+  if (entry.outcome === 'send_failed') return 'Auto-reply failed to send';
+  return entry.outcome;
+}
+async function whatsappInboxSummary(rangeRaw, userEmail) {
+  if (!memoryService.isOwner(userEmail)) {
+    return { title: null, rows: null, actions: null, notOwner: true };
+  }
+  const range = resolveInboxRange(rangeRaw);
+  const log = (await listInboxLog(500)).filter((e) => e.ts >= range.startMs && e.ts <= range.endMs);
+  const pendingPhones = new Set((await listPendingDrafts()).map((d) => d.contactId));
+  const followupKeys = new Set((await listOpenFollowups()).map((f) => f.chatId));
+  const pendingDocs = await documentRequests.listPendingReceived();
+
+  const items = log
+    .sort((a, b) => b.ts - a.ts)
+    .map((e) => ({
+      time: new Date(e.ts).toLocaleString('en-GB', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }),
+      who: (e.isGroup ? 'group ' : '') + (e.name || e.chatId),
+      summary: e.messageSummary || '(no text)',
+      status: describeInboxOutcome(e, pendingPhones, followupKeys)
+    }));
+
+  return {
+    title: null, rows: null, actions: null,
+    rangeLabel: range.label,
+    officialMessageCount: items.length,
+    items,
+    pendingDocuments: pendingDocs.map((d) => ({ who: d.phone, topic: d.topic })),
+    mode: describeSendMode()
+  };
 }
 
 // ---------------- Classification ----------------
@@ -1046,7 +1171,7 @@ async function decideAutoReply({ phone, name, text, isGroup }) {
         if (memory.requestsDocument && !isGroup) {
           await documentRequests.openDocumentRequest({ phone, memoryId: memory.id, topic: memory.topic, askedFor: memory.guidance });
         }
-        return { case: 'memory', memoryId: memory.id, replyText };
+        return { case: 'memory', memoryId: memory.id, replyText, summaryForOwner: text.slice(0, 160) };
       }
     }
   }
@@ -1055,7 +1180,7 @@ async function decideAutoReply({ phone, name, text, isGroup }) {
     const selfFacts = await buildSelfFacts(phone).catch(() => null);
     if (selfFacts) {
       const replyText = await generateDraft(name, text, undefined, selfFacts);
-      return { case: 'own_record', replyText };
+      return { case: 'own_record', replyText, summaryForOwner: text.slice(0, 160) };
     }
   }
 
@@ -1122,7 +1247,7 @@ async function handleIncomingMedia(contactId, name, msg) {
     await scheduleAutoSend({
       chatId: contactId, isGroup: false, name,
       replyText: thanksReplyFor(caption), case: 'document_received', memoryId: openReq.memoryId,
-      summaryForOwner: null
+      summaryForOwner: '[sent a ' + (msg.type === 'document' ? 'document' : 'photo') + ' for ' + openReq.topic + ']'
     });
     await postOwnerNotification(
       name + ' sent a ' + (msg.type === 'document' ? 'document' : 'photo') + ' for ' + openReq.topic +
@@ -1215,6 +1340,7 @@ async function pollOnce() {
               await savePendingDraft({ type: 'direct', contactId, name, messagePreview: text.slice(0, 200), draftReply: decision.replyText, createdAt: Date.now() });
               await postOwnerNotification(name + ' (never-auto list) asked: ' + text.slice(0, 160) + ' — draft ready, your review needed');
               await logAutoReplyEvent({ senderType: 'direct', aCase: decision.case, memoryId: decision.memoryId || null, action: 'never_auto_drafted' });
+              await logInboxEvent({ chatId: contactId, name, isGroup: false, messageSummary: text, aCase: decision.case, sentText: decision.replyText, outcome: 'never_auto_pending' });
             } else {
               await scheduleAutoSend({
                 chatId: contactId, isGroup: false, name,
@@ -1279,6 +1405,9 @@ module.exports = {
   updatePendingDraft,
   reviseDraftText,
   logAutoReplyEvent,
+  logInboxEvent,
+  listInboxLog,
+  whatsappInboxSummary,
   addToAllowlist,
   addToBlocklist,
   removeFromAllowlist,
