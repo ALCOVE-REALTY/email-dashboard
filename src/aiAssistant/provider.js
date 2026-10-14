@@ -34,11 +34,15 @@
 // bodies, headers or keys) to the server console, (2) records a
 // `__provider_fallback` entry in the same tool-call log every real tool
 // call already uses (GET /hr-assistant/tool-log, any signed-in HR user
-// can check it - see that route's own comment), so a stretch of silence
-// from the real provider is never mistaken for normal activity, and (3)
-// tags the result with `_fallback: true`, stripped by the chat route
-// before the JSON reaches the client and turned into a response header
-// instead - the visible reply itself is completely unchanged.
+// can check it - see that route's own comment), (3) tags the result with
+// `_fallback: true`, stripped by the chat route before the JSON reaches
+// the client and turned into a response header instead (an inspectable
+// signal, not something shown in the UI), and (4) per direct instruction
+// ("visible fallback notice, no silent mock") prepends a plain-English
+// notice directly onto the reply TEXT itself, so the degraded reply is
+// unmistakable to whoever is actually reading the chat, not just to
+// someone checking the tool log or dev tools afterward.
+const FALLBACK_NOTICE = '⚠️ SUBH could not reach its AI backend right now, so this is a basic fallback reply, not a full answer. ';
 const mockProvider = require('./mockProvider');
 const toolCallLog = require('./toolCallLog');
 
@@ -93,7 +97,7 @@ async function getResponse({ message, history, user }) {
     } catch (err) {
       await logFallback('openai', user, err);
       const result = await mockProvider.getResponse({ message, history, user });
-      return Object.assign({}, result, { _fallback: true });
+      return Object.assign({}, result, { reply: FALLBACK_NOTICE + (result.reply || ''), _fallback: true });
     }
   } else if (providerName === 'claude') {
     try {
@@ -102,7 +106,7 @@ async function getResponse({ message, history, user }) {
     } catch (err) {
       await logFallback('claude', user, err);
       const result = await mockProvider.getResponse({ message, history, user });
-      return Object.assign({}, result, { _fallback: true });
+      return Object.assign({}, result, { reply: FALLBACK_NOTICE + (result.reply || ''), _fallback: true });
     }
   }
   return mockProvider.getResponse({ message, history, user });

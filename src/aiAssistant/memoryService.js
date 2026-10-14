@@ -266,8 +266,9 @@ async function findMemoryByDescriptor(descriptor, topicHint, periodHint) {
 // (same env var as everything else in this feature that favours
 // quality over cost) with a forced function call for reliable
 // structured output instead of parsing prose.
-const API_URL = 'https://api.openai.com/v1/chat/completions';
-const MODEL = process.env.OPENAI_MODEL_MAIN;
+const CLAUDE_API_URL = 'https://api.anthropic.com/v1/messages';
+const CLAUDE_ANTHROPIC_VERSION = '2023-06-01';
+const MODEL = process.env.CLAUDE_MODEL_MAIN;
 
 const MEMORY_COMMAND_TOOL = {
   type: 'function',
@@ -299,20 +300,26 @@ const MEMORY_COMMAND_TOOL = {
 };
 
 async function parseMemoryCommand(text) {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) throw new Error('memoryService.parseMemoryCommand called without OPENAI_API_KEY set');
-  if (!MODEL) throw new Error('memoryService.parseMemoryCommand called without OPENAI_MODEL_MAIN set');
-  const resp = await fetch(API_URL, {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) throw new Error('memoryService.parseMemoryCommand called without ANTHROPIC_API_KEY set');
+  if (!MODEL) throw new Error('memoryService.parseMemoryCommand called without CLAUDE_MODEL_MAIN set');
+  const toolDef = MEMORY_COMMAND_TOOL.function;
+  const resp = await fetch(CLAUDE_API_URL, {
     method: 'POST',
-    headers: { Authorization: 'Bearer ' + apiKey, 'content-type': 'application/json' },
+    headers: { 'x-api-key': apiKey, 'anthropic-version': CLAUDE_ANTHROPIC_VERSION, 'content-type': 'application/json' },
     body: JSON.stringify({
       model: MODEL,
-      tools: [MEMORY_COMMAND_TOOL],
-      tool_choice: { type: 'function', function: { name: 'memory_command' } },
-      messages: [
-        { role: 'system', content: 'Today\'s real date is ' + new Date().toISOString().slice(0, 10) + ' (UTC). Parse the owner\'s message about a SUBH memory.' },
-        { role: 'user', content: text }
-      ]
+      max_tokens: 1024,
+      tools: [{ name: toolDef.name, description: toolDef.description, input_schema: toolDef.parameters }],
+      // 'auto', not a forced {type:'tool'/'any'} - verified live that
+      // CLAUDE_MODEL_MAIN (claude-sonnet-5-5) rejects both outright
+      // with a 400 ("not supported for this model"). With only one
+      // tool offered, 'auto' reliably calls it anyway (confirmed
+      // live) - callers already treat a missing tool_use block as
+      // 'mention_only', a safe default for the rare case it doesn't.
+      tool_choice: { type: 'auto' },
+      system: [{ type: 'text', text: 'Today\'s real date is ' + new Date().toISOString().slice(0, 10) + ' (UTC). Parse the owner\'s message about a SUBH memory.' }],
+      messages: [{ role: 'user', content: text }]
     })
   });
   if (!resp.ok) {
@@ -320,10 +327,8 @@ async function parseMemoryCommand(text) {
     throw new Error('memory_command parse API error ' + resp.status + (bodyText ? ': ' + bodyText.slice(0, 300) : ''));
   }
   const data = await resp.json();
-  const call = data.choices && data.choices[0] && data.choices[0].message &&
-    data.choices[0].message.tool_calls && data.choices[0].message.tool_calls[0];
-  if (!call) return { kind: 'mention_only' };
-  try { return JSON.parse(call.function.arguments || '{}'); } catch (err) { return { kind: 'mention_only' }; }
+  const block = (data.content || []).find((b) => b && b.type === 'tool_use');
+  return block ? block.input : { kind: 'mention_only' };
 }
 
 const MENTION_CONFIRM_QUESTION = 'Eta memory hisabe save korbo?';

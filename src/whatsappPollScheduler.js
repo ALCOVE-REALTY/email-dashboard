@@ -10,7 +10,12 @@ const { execSync } = require('child_process');
 const whatsappAssistant = require('./aiAssistant/whatsappAssistant');
 const documentRequests = require('./aiAssistant/documentRequests');
 
-const DEFAULT_POLL_INTERVAL_SECONDS = 60;
+// Lowered 60 -> 15 after a real live incident: a reply that should have
+// gone out within ~60s took minutes, partly because the base poll
+// interval itself was too slow for a target this tight. Still
+// configurable via the env var for anyone who needs to go gentler on
+// the gateway.
+const DEFAULT_POLL_INTERVAL_SECONDS = 15;
 function pollIntervalMs() {
   const configured = Number(process.env.WHATSAPP_POLL_INTERVAL_SECONDS);
   const seconds = configured > 0 ? configured : DEFAULT_POLL_INTERVAL_SECONDS;

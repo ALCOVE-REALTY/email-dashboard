@@ -32,8 +32,6 @@ const MAX_DRAFTS = 200;
 const AUTO_REPLY_ENABLED_KEY = 'wa-auto-reply-enabled';
 const PENDING_AUTOSEND_ZSET = 'wa-pending-autosend-zset';
 const PENDING_AUTOSEND_PREFIX = 'wa-pending-autosend:';
-const LAST_REPLY_TEXT_PREFIX = 'wa-last-reply-text:';
-const LAST_AUTO_REPLY_AT_PREFIX = 'wa-last-auto-reply-at:';
 const OWNER_NOTIFICATIONS_KEY = 'subh-owner-notifications';
 const MAX_NOTIFICATIONS = 200;
 const AUTO_REPLY_LOG_KEY = 'wa-auto-reply-log';
@@ -409,59 +407,102 @@ async function listInboxLog(limit = 500) {
   } catch (err) { return []; }
 }
 
-// ---------------- Loop protection (spec point 4) ----------------
-// "Don't send the same reply to the same sender twice within 10
-// minutes" - checked right before actually sending (processDueAutoSends),
-// not at decision time, since the world can change during the 20-30s
-// delay (see scheduleAutoReply).
-const SAME_REPLY_COOLDOWN_MS = 10 * 60 * 1000;
-async function wasSameReplySentRecently(chatId, replyText) {
-  const redis = getClient();
-  if (!redis) return false;
-  try {
-    const raw = await redis.get(LAST_REPLY_TEXT_PREFIX + chatId);
-    if (!raw) return false;
-    const entry = typeof raw === 'string' ? JSON.parse(raw) : raw;
-    return entry.text === replyText && Date.now() - entry.ts < SAME_REPLY_COOLDOWN_MS;
-  } catch (err) { return false; }
-}
-async function recordReplySent(chatId, replyText) {
+// ---------------- Active conversation + history + loop protection ----------------
+// Found live: a 1:1 chat that had already exchanged one real official
+// message, then got two more real follow-ups ("Tau kobe pabo iktu
+// bolben?", "Bolun") that received NO REPLY AT ALL - classify() requires
+// a work keyword on EVERY message independently, and neither follow-up
+// happened to contain one. Once a chat has a real official message, it
+// stays an ACTIVE OFFICIAL CONVERSATION for 24h (refreshed on every
+// message in it) - every message in that window counts as official
+// regardless of keywords, same as a real person would obviously keep
+// replying to someone they're already mid-conversation with.
+const ACTIVE_CONVO_PREFIX = 'wa-active-convo:';
+const CONVO_HISTORY_PREFIX = 'wa-convo-history:';
+const CONVO_TTL_SECONDS = 24 * 60 * 60;
+const CONVO_HISTORY_MAX = 20; // kept for loop-detection lookback; only the last ~10 are ever fed to the model as context
+const FOLLOWUP_COUNT_PREFIX = 'wa-followup-count:';
+
+async function markActiveConversation(chatId) {
   const redis = getClient();
   if (!redis) return;
-  try { await redis.set(LAST_REPLY_TEXT_PREFIX + chatId, JSON.stringify({ text: replyText, ts: Date.now() })); } catch (err) { /* best effort */ }
+  try { await redis.set(ACTIVE_CONVO_PREFIX + chatId, '1', { ex: CONVO_TTL_SECONDS }); } catch (err) { /* best effort */ }
+}
+async function isActiveConversation(chatId) {
+  const redis = getClient();
+  if (!redis) return false;
+  try { return Boolean(await redis.get(ACTIVE_CONVO_PREFIX + chatId)); } catch (err) { return false; }
+}
+// Scoped to ACTIVE OFFICIAL conversations only - never called for a
+// personal-classified message, so this never stores content outside
+// what the rest of this file already treats as fair game (same
+// boundary classify() already enforces everywhere else).
+async function appendConvoHistory(chatId, direction, text) {
+  const redis = getClient();
+  if (!redis) return;
+  try {
+    await redis.lpush(CONVO_HISTORY_PREFIX + chatId, JSON.stringify({ ts: Date.now(), direction, text }));
+    await redis.ltrim(CONVO_HISTORY_PREFIX + chatId, 0, CONVO_HISTORY_MAX - 1);
+    await redis.expire(CONVO_HISTORY_PREFIX + chatId, CONVO_TTL_SECONDS);
+  } catch (err) { /* best effort */ }
+}
+// Oldest-first (natural reading order) - newest `limit` entries.
+async function getConvoHistory(chatId, limit) {
+  const redis = getClient();
+  if (!redis) return [];
+  try {
+    const raw = await redis.lrange(CONVO_HISTORY_PREFIX + chatId, 0, (limit || CONVO_HISTORY_MAX) - 1);
+    return raw.map((r) => { try { return typeof r === 'string' ? JSON.parse(r) : r; } catch (err) { return null; } }).filter(Boolean).reverse();
+  } catch (err) { return []; }
 }
 
-// "Don't auto-reply to a message that is itself an auto-reply/bot
-// message from the same chat more than once in a row" - there's no
-// gateway field marking a message as automated, so this is a practical
-// proxy: a new incoming message arriving within AUTO_REPLY_BURST_MS of
-// OUR OWN last auto-send in that same chat is treated as a likely
-// bot-echo (faster than a real person could plausibly read and type a
-// reply) and is skipped once rather than answered again immediately.
-// This interpretation is a judgement call (see conversation) - tell me
-// if it doesn't match what you had in mind.
-const AUTO_REPLY_BURST_MS = 10 * 1000;
-async function isLikelyBotEcho(chatId) {
-  const redis = getClient();
-  if (!redis) return false;
-  try {
-    const ts = await redis.get(LAST_AUTO_REPLY_AT_PREFIX + chatId);
-    return Boolean(ts) && Date.now() - Number(ts) < AUTO_REPLY_BURST_MS;
-  } catch (err) { return false; }
+// Loop protection (spec point 4) - REWORKED after the live incident
+// above: the old rules (never send the same reply twice in 10 minutes;
+// treat any new message within 10s of OUR OWN last send as a bot echo)
+// were exactly why real follow-ups went unanswered - a genuine second
+// question from a real person is neither of those things. Replaced with
+// checks on the SENDER's own incoming text instead - only an actual
+// repeat from THEM is suspicious.
+function isDuplicateIncoming(history, text) {
+  const lastIncoming = history.filter((h) => h.direction === 'in').slice(-1)[0];
+  return Boolean(lastIncoming) && lastIncoming.text === text && (Date.now() - lastIncoming.ts) < 2 * 60 * 1000;
 }
-async function recordAutoReplyAt(chatId) {
+function isBotLoopPattern(history, text) {
+  const lastTwoIncoming = history.filter((h) => h.direction === 'in').slice(-2);
+  return lastTwoIncoming.length === 2 && lastTwoIncoming.every((h) => h.text === text);
+}
+
+// Tracks how many times a real question has gone unanswered (no memory/
+// own-record fact available) in an active conversation - resets the
+// moment a real answer IS found (memory added, or it was own_record all
+// along), so the count/priority always reflects "still actually
+// waiting", not a lifetime total.
+async function incrementFollowupCount(chatId) {
+  const redis = getClient();
+  if (!redis) return 1;
+  try {
+    const n = await redis.incr(FOLLOWUP_COUNT_PREFIX + chatId);
+    await redis.expire(FOLLOWUP_COUNT_PREFIX + chatId, CONVO_TTL_SECONDS);
+    return n;
+  } catch (err) { return 1; }
+}
+async function resetFollowupCount(chatId) {
   const redis = getClient();
   if (!redis) return;
-  try { await redis.set(LAST_AUTO_REPLY_AT_PREFIX + chatId, String(Date.now())); } catch (err) { /* best effort */ }
+  try { await redis.del(FOLLOWUP_COUNT_PREFIX + chatId); } catch (err) { /* best effort */ }
 }
 
 // ---------------- Delayed auto-send queue (spec point 3) ----------------
-// The actual send is deferred by a random 20-30s (never synchronous
-// with detection) - a Redis sorted set scored by send time, flushed by
-// a short-interval tick (see whatsappPollScheduler.js) separate from
-// the main 3-5 minute poll. Decision (which case, what reply) happens
-// once, immediately, in pollOnce - only the SENDING is delayed.
-function randomDelayMs() { return (20 + Math.random() * 10) * 1000; }
+// The actual send is deferred by a random delay (never synchronous with
+// detection) - a Redis sorted set scored by send time, flushed by a
+// short-interval tick (see whatsappPollScheduler.js) separate from the
+// main poll. Decision (which case, what reply) happens once,
+// immediately, in pollOnce - only the SENDING is delayed. Narrowed from
+// 20-30s to 5-10s after a real incident where total arrived->replied
+// latency ran to minutes - this delay is the one piece of that budget
+// safe to shrink without losing its only real purpose (not look
+// instant/robotic).
+function randomDelayMs() { return (5 + Math.random() * 5) * 1000; }
 
 async function scheduleAutoSend(entry) {
   const redis = getClient();
@@ -514,6 +555,11 @@ function isRealSendAllowedFor(chatId) {
   return whatsapp.normalizePhone(chatId) === whatsapp.normalizePhone(onlyPhone);
 }
 
+// Latency alert (spec: "alert me in SUBH chat if any reply takes > 60s") -
+// checked against the real gateway arrival timestamp, not just the
+// delayed-send queue's own timing, so this catches slow POLLING too
+// (backoff, a stuck scheduler), not only a long human-like delay.
+const LATENCY_ALERT_THRESHOLD_MS = 60 * 1000;
 async function sendOrReportAutoReply(entry) {
   const realSendEnabled = isRealSendAllowedFor(entry.chatId);
   const who = (entry.isGroup ? 'group ' : '') + entry.name;
@@ -524,15 +570,20 @@ async function sendOrReportAutoReply(entry) {
   // which never actually send anything).
   const timeline = { arrivedAt: entry.arrivedAt, seenAt: entry.seenAt, scheduledSendAt: entry.sendAt };
 
-  if (await wasSameReplySentRecently(entry.chatId, entry.replyText)) {
-    await logAutoReplyEvent({ senderType: entry.isGroup ? 'group' : 'direct', aCase: entry.case, memoryId: entry.memoryId, action: 'skipped_duplicate' });
-    await logInboxEvent({ chatId: entry.chatId, name: entry.name, isGroup: entry.isGroup, messageSummary: entry.summaryForOwner, aCase: entry.case, sentText: null, outcome: 'skipped_duplicate', ...timeline });
-    return;
-  }
-  if (await isLikelyBotEcho(entry.chatId)) {
-    await logAutoReplyEvent({ senderType: entry.isGroup ? 'group' : 'direct', aCase: entry.case, memoryId: entry.memoryId, action: 'skipped_possible_loop' });
-    await logInboxEvent({ chatId: entry.chatId, name: entry.name, isGroup: entry.isGroup, messageSummary: entry.summaryForOwner, aCase: entry.case, sentText: null, outcome: 'skipped_possible_loop', ...timeline });
-    return;
+  // The old loop-protection checks (duplicate-reply-text and a "new
+  // message within 10s of our own last send" bot-echo heuristic) lived
+  // here - found live to be exactly why two real follow-up messages in
+  // an active conversation got NO reply at all. Loop protection is now
+  // based on the SENDER's own incoming message pattern instead (see
+  // isDuplicateIncoming/isBotLoopPattern, checked in pollOnce before a
+  // reply is even decided) - nothing left to check at send time.
+
+  async function alertIfSlow(sentAt) {
+    if (!entry.arrivedAt) return;
+    const latencyMs = sentAt - entry.arrivedAt;
+    if (latencyMs > LATENCY_ALERT_THRESHOLD_MS) {
+      await postOwnerNotification('⚠️ Reply to ' + who + ' took ' + Math.round(latencyMs / 1000) + 's (target: under 60s).');
+    }
   }
 
   if (realSendEnabled) {
@@ -541,9 +592,8 @@ async function sendOrReportAutoReply(entry) {
       : await whatsapp.sendWhatsAppMessage(entry.chatId, entry.replyText);
     const sentAt = Date.now();
     if (sendResult.ok) {
-      await recordReplySent(entry.chatId, entry.replyText);
-      await recordAutoReplyAt(entry.chatId);
       await postOwnerNotification('✓ Auto-replied to ' + who + ' at ' + timeLabel + ': "' + entry.replyText + '"');
+      await alertIfSlow(sentAt);
       await logAutoReplyEvent({ senderType: entry.isGroup ? 'group' : 'direct', aCase: entry.case, memoryId: entry.memoryId, action: 'sent' });
       await logInboxEvent({ chatId: entry.chatId, name: entry.name, isGroup: entry.isGroup, messageSummary: entry.summaryForOwner, aCase: entry.case, sentText: entry.replyText, outcome: 'sent', ...timeline, sentAt });
     } else {
@@ -557,15 +607,25 @@ async function sendOrReportAutoReply(entry) {
     // skipped, so a dry run here shows exactly what real auto-send
     // would do.
     const sentAt = Date.now();
-    await recordReplySent(entry.chatId, entry.replyText);
-    await recordAutoReplyAt(entry.chatId);
     await postOwnerNotification('[DRAFT MODE - not actually sent] Would auto-reply to ' + who + ' at ' + timeLabel + ': "' + entry.replyText + '"');
+    await alertIfSlow(sentAt);
     await logAutoReplyEvent({ senderType: entry.isGroup ? 'group' : 'direct', aCase: entry.case, memoryId: entry.memoryId, action: 'draft_mode' });
     await logInboxEvent({ chatId: entry.chatId, name: entry.name, isGroup: entry.isGroup, messageSummary: entry.summaryForOwner, aCase: entry.case, sentText: entry.replyText, outcome: 'draft_mode', ...timeline, sentAt });
   }
 
+  // 'holding' = a real, unanswered question with no fact available yet
+  // (needs the owner's answer) - escalates with a running count+topic so
+  // repeated follow-ups are visibly more urgent. 'acknowledged' (a pure
+  // "ok"/"thanks" with nothing to actually resolve) deliberately does
+  // NOT escalate - nothing for the owner to follow up on.
   if (entry.case === 'holding' && entry.summaryForOwner) {
-    await postOwnerNotification(who + ' asked: ' + entry.summaryForOwner + ' — holding reply sent, follow-up needed');
+    const n = entry.followupCount || 1;
+    const priority = n > 1 ? '⚠️ ' : '';
+    const topicLabel = entry.topicLabel || 'their question';
+    await postOwnerNotification(
+      priority + who + ' has asked about ' + topicLabel + ' ' + n + (n === 1 ? ' time' : ' times') +
+      ' now (latest: "' + entry.summaryForOwner + '") - needs your answer.'
+    );
     await addOpenFollowup({ name: who, chatId: entry.chatId, summary: entry.summaryForOwner, ts: Date.now() });
   }
 }
@@ -1119,7 +1179,15 @@ async function classify(phone, messageText) {
   const { employees } = await employeeService.getEmployeeData();
   const isKnownEmployee = employees.some((e) => e.contactNumber && whatsapp.normalizePhone(e.contactNumber) === normalized);
   const isTrusted = isKnownEmployee || await isAllowlisted(normalized);
-  if (isTrusted && WORK_KEYWORDS.test(messageText || '')) return 'official';
+  if (!isTrusted) return 'personal';
+  if (WORK_KEYWORDS.test(messageText || '')) return 'official';
+  // Found live: a real follow-up in an already-official conversation
+  // ("Tau kobe pabo iktu bolben?", "Bolun") has no work keyword of its
+  // own and was silently dropped as personal - never reaching
+  // decideAutoReply at all. Once a trusted number has a real official
+  // message, every message in that chat counts as part of the same
+  // conversation for 24h (see markActiveConversation), keyword or not.
+  if (await isActiveConversation(normalized)) return 'official';
 
   return 'personal';
 }
@@ -1230,7 +1298,64 @@ function styleReferenceBlock(samples) {
 // code default on purpose - a missing env var must fail loudly (see
 // generateDraft/generateGroupDraft's own guards), never silently run
 // some other model picked in code.
-const DRAFT_MODEL = process.env.OPENAI_MODEL_MAIN;
+const DRAFT_MODEL = process.env.CLAUDE_MODEL_MAIN;
+// ---------------- Claude API helpers (WhatsApp draft/classification calls) ----------------
+// These one-shot calls (draft generation/revision, classification,
+// context-aware replies) used to hit OpenAI's chat-completions endpoint
+// directly - ported to Claude's Messages API here, same plain-fetch
+// style as claudeProvider.js (see its own comments for why a forced
+// tool call uses tool_choice:{type:'tool'/'any'} and a plain-text call
+// omits `tools` entirely rather than trusting tool_choice:'none', which
+// was found live to return empty content). System-role entries in the
+// existing OpenAI-style {role, content} arrays below become Claude's
+// top-level `system` blocks; only user/assistant entries stay in
+// `messages` - every call site's own prompt content is unchanged, only
+// the transport differs.
+const CLAUDE_API_URL = 'https://api.anthropic.com/v1/messages';
+const CLAUDE_ANTHROPIC_VERSION = '2023-06-01';
+function splitSystemAndMessages(openAiStyleMessages) {
+  const system = [];
+  const messages = [];
+  (openAiStyleMessages || []).forEach((m) => {
+    if (m.role === 'system') system.push({ type: 'text', text: m.content });
+    else messages.push({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content });
+  });
+  return { system, messages };
+}
+async function postClaudeMessages(apiKey, body) {
+  const resp = await fetch(CLAUDE_API_URL, {
+    method: 'POST',
+    headers: { 'x-api-key': apiKey, 'anthropic-version': CLAUDE_ANTHROPIC_VERSION, 'content-type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  if (!resp.ok) {
+    const bodyText = await resp.text().catch(() => '');
+    throw new Error('Claude API error ' + resp.status + (bodyText ? ': ' + bodyText.slice(0, 300) : ''));
+  }
+  return resp.json();
+}
+async function callClaudeChat(apiKey, model, openAiStyleMessages, maxTokens) {
+  const { system, messages } = splitSystemAndMessages(openAiStyleMessages);
+  const data = await postClaudeMessages(apiKey, { model, max_tokens: maxTokens || 1024, system, messages });
+  return (data.content || []).filter((b) => b && b.type === 'text').map((b) => b.text).join('').trim();
+}
+async function callClaudeForcedTool(apiKey, model, openAiStyleMessages, toolName, toolSchema, maxTokens) {
+  const { system, messages } = splitSystemAndMessages(openAiStyleMessages);
+  const data = await postClaudeMessages(apiKey, {
+    model, max_tokens: maxTokens || 1024, system, messages,
+    tools: [{ name: toolName, description: toolSchema.description, input_schema: toolSchema.parameters }],
+    // 'auto', not a forced {type:'tool'/'any'} - verified live that
+    // CLAUDE_MODEL_MAIN (claude-sonnet-5-5, used here via DRAFT_MODEL)
+    // rejects both outright with a 400 ("not supported for this
+    // model"). With only one tool offered and a prompt that gives the
+    // model nothing else sensible to do, 'auto' reliably calls it
+    // anyway (confirmed live) - the caller's own fallback object
+    // already covers the rare case where it doesn't.
+    tool_choice: { type: 'auto' }
+  });
+  const block = (data.content || []).find((b) => b && b.type === 'tool_use');
+  return block ? block.input : null;
+}
 // Only ever sent alongside a REAL "Taught memory fact" message (never on
 // its own) - an illustration of the translate-don't-copy rule using a
 // placeholder topic/fact unrelated to anything real, so the model has a
@@ -1329,28 +1454,16 @@ const DRAFT_SYSTEM_PROMPT =
 // phrasing adjusted) - so this is a plain text-in, text-out rewrite,
 // not a re-run of decideAutoReply.
 async function reviseDraftText(originalText, mode) {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) throw new Error('whatsappAssistant.reviseDraftText called without OPENAI_API_KEY set');
-  if (!DRAFT_MODEL) throw new Error('whatsappAssistant.reviseDraftText called without OPENAI_MODEL_MAIN set');
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) throw new Error('whatsappAssistant.reviseDraftText called without ANTHROPIC_API_KEY set');
+  if (!DRAFT_MODEL) throw new Error('whatsappAssistant.reviseDraftText called without CLAUDE_MODEL_MAIN set');
   const instruction = mode === 'shorter'
     ? 'Rewrite the given WhatsApp reply to be noticeably shorter, keeping the exact same meaning, facts, language and script - never add or drop any fact. Output ONLY the revised reply, nothing else, no quotes around it.'
     : 'Rewrite the given WhatsApp reply to sound more formal and professional, keeping the exact same meaning, facts, language and script - never add or drop any fact. Output ONLY the revised reply, nothing else, no quotes around it.';
-  const body = { model: DRAFT_MODEL, messages: [
+  return callClaudeChat(apiKey, DRAFT_MODEL, [
     { role: 'system', content: instruction },
     { role: 'user', content: originalText }
-  ] };
-  if (/^(gpt-5|o[0-9])/.test(DRAFT_MODEL)) body.reasoning_effort = 'low';
-  const resp = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: { Authorization: 'Bearer ' + apiKey, 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
-  });
-  if (!resp.ok) {
-    const bodyText = await resp.text().catch(() => '');
-    throw new Error('draft revision API error ' + resp.status + (bodyText ? ': ' + bodyText.slice(0, 300) : ''));
-  }
-  const data = await resp.json();
-  return (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content || '').trim();
+  ]);
 }
 
 // selfFacts: optional, this sender's OWN whitelisted facts (see
@@ -1358,10 +1471,10 @@ async function reviseDraftText(originalText, mode) {
 // sender is a matched real employee; omitted/null means no real facts
 // exist for this turn, same as before (holding replies only).
 async function generateDraft(employeeName, messageText, modelOverride, selfFacts, memoryFact) {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) throw new Error('whatsappAssistant.generateDraft called without OPENAI_API_KEY set');
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) throw new Error('whatsappAssistant.generateDraft called without ANTHROPIC_API_KEY set');
   const model = modelOverride || DRAFT_MODEL;
-  if (!model) throw new Error('whatsappAssistant.generateDraft called without OPENAI_MODEL_MAIN set');
+  if (!model) throw new Error('whatsappAssistant.generateDraft called without CLAUDE_MODEL_MAIN set');
   const messages = [{ role: 'system', content: DRAFT_SYSTEM_PROMPT }];
   const styleBlock = styleReferenceBlock(await getRecentOutgoingStyleSamples());
   if (styleBlock) messages.push({ role: 'system', content: styleBlock });
@@ -1376,19 +1489,7 @@ async function generateDraft(employeeName, messageText, modelOverride, selfFacts
     });
   }
   messages.push({ role: 'user', content: employeeName + ' wrote: "' + messageText + '". Draft a short reply.' });
-  const body = { model, messages };
-  if (/^(gpt-5|o[0-9])/.test(model)) body.reasoning_effort = 'low';
-  const resp = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: { Authorization: 'Bearer ' + apiKey, 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
-  });
-  if (!resp.ok) {
-    const bodyText = await resp.text().catch(() => '');
-    throw new Error('draft generation API error ' + resp.status + (bodyText ? ': ' + bodyText.slice(0, 300) : ''));
-  }
-  const data = await resp.json();
-  const content = stripForbiddenGreeting((data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content || '').trim());
+  const content = stripForbiddenGreeting(await callClaudeChat(apiKey, model, messages));
   return memoryFact ? ensureMemoryGreeting(content, messageText) : content;
 }
 // Structural safety net (same principle as buildNumberFallback in
@@ -1500,9 +1601,9 @@ const GROUP_DRAFT_SYSTEM_PROMPT =
   'never pad it with extra lines. Never include any employee\'s personal information.';
 
 async function generateGroupDraft(groupName, messageText, memoryFact) {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) throw new Error('whatsappAssistant.generateGroupDraft called without OPENAI_API_KEY set');
-  if (!DRAFT_MODEL) throw new Error('whatsappAssistant.generateGroupDraft called without OPENAI_MODEL_MAIN set');
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) throw new Error('whatsappAssistant.generateGroupDraft called without ANTHROPIC_API_KEY set');
+  if (!DRAFT_MODEL) throw new Error('whatsappAssistant.generateGroupDraft called without CLAUDE_MODEL_MAIN set');
   const messages = [{ role: 'system', content: GROUP_DRAFT_SYSTEM_PROMPT }];
   const styleBlock = styleReferenceBlock(await getRecentOutgoingStyleSamples());
   if (styleBlock) messages.push({ role: 'system', content: styleBlock });
@@ -1511,31 +1612,11 @@ async function generateGroupDraft(groupName, messageText, memoryFact) {
     messages.push({ role: 'system', content: MEMORY_TRANSLATION_EXAMPLE });
   }
   messages.push({ role: 'user', content: 'In the group "' + groupName + '", you were tagged in this message: "' + messageText + '". Draft a short reply.' });
-  const resp = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: { Authorization: 'Bearer ' + apiKey, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: DRAFT_MODEL, messages })
-  });
-  if (!resp.ok) {
-    const bodyText = await resp.text().catch(() => '');
-    throw new Error('group draft generation API error ' + resp.status + (bodyText ? ': ' + bodyText.slice(0, 300) : ''));
-  }
-  const data = await resp.json();
-  const content = stripForbiddenGreeting((data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content || '').trim());
+  const content = stripForbiddenGreeting(await callClaudeChat(apiKey, DRAFT_MODEL, messages));
   return memoryFact ? ensureMemoryGreeting(content, messageText) : content;
 }
 
-// ---------------- Deterministic 1:1 holding reply ----------------
-// Per direct correction: model-generated holding replies (the pure
-// "I don't have a real fact, let me check" filler, no memory/self-fact
-// involved) kept drifting into robotic phrasing ("Namaskar"/"Ji") even
-// with explicit bans in the prompt. Since this reply never states any
-// dynamic fact - it's always some phrasing of the same one idea - it can
-// be fully deterministic instead, same reasoning as the inbox summary
-// rewrite: a hand-picked pool, matching the exact tone given, rotated so
-// the same sender never gets the identical line twice in a row. Groups
-// still go through the model (generateGroupDraft) - no sender to
-// personalize for there, and holding replies there are rarer.
+// ---------------- Language/formality detection ----------------
 // Delegates to the shared detector (src/aiAssistant/languageDetect.js),
 // also used by openaiProvider.js's in-app chat validation - kept this
 // export name since it's already wired through decideAutoReply/tests.
@@ -1547,74 +1628,12 @@ function isInformal(text, lang) {
   if (lang === 'hinglish') return INFORMAL_HINDI_RE.test(text);
   return false;
 }
-const HOLDING_POOLS = {
-  banglish: {
-    formal: [
-      'Apnar bishoy-ta dekhchi, ektu por-ei janiye dicchi.',
-      'Eta check kore apnake taratari janacchi.',
-      'Apnar message-ta dekhlam, shigghiri janabo.',
-      'Ei bishoy-ta niye khoj niye apnake update debo.'
-    ],
-    informal: [
-      'Tomar bishoy-ta dekhchi, ektu por-ei janiye dicchi.',
-      'Eta check kore tomake taratari janacchi.',
-      'Tomar message-ta dekhlam, shigghiri janabo.',
-      'Ei bishoy-ta niye khoj niye tomake update debo.'
-    ]
-  },
-  hinglish: {
-    formal: [
-      'Aapke is baare mein check kar raha hoon, thodi der mein bata deta hoon.',
-      'Iska dekh ke aapko jaldi update karta hoon.',
-      'Aapka message dekh liya hai, jaldi hi bataunga.',
-      'Isko check karke aapko turant inform karta hoon.'
-    ],
-    informal: [
-      'Tumhare is baare mein check kar raha hoon, thodi der mein bata deta hoon.',
-      'Iska dekh ke tumko jaldi update karta hoon.',
-      'Tumhara message dekh liya hai, jaldi hi bataunga.',
-      'Isko check karke tumhe turant inform karta hoon.'
-    ]
-  },
-  english: {
-    formal: [
-      "Let me check on this, I'll get back to you shortly.",
-      "I'm checking on this and will update you soon.",
-      "I'll look into this and let you know shortly.",
-      'Checking on this now, will update you soon.'
-    ],
-    informal: null // English doesn't carry the same formal/informal pronoun split - one pool covers both
-  }
-};
-const HOLDING_REPLY_IDX_PREFIX = 'wa-holding-reply-idx:';
-async function pickHoldingReplyIndex(chatId, poolSize) {
-  const redis = getClient();
-  let lastIdx = -1;
-  if (redis) {
-    try {
-      const v = await redis.get(HOLDING_REPLY_IDX_PREFIX + chatId);
-      lastIdx = v === null || v === undefined ? -1 : Number(v);
-    } catch (err) { /* best effort */ }
-  }
-  let idx = Math.floor(Math.random() * poolSize);
-  if (poolSize > 1) { while (idx === lastIdx) idx = Math.floor(Math.random() * poolSize); }
-  if (redis) { try { await redis.set(HOLDING_REPLY_IDX_PREFIX + chatId, String(idx)); } catch (err) { /* best effort */ } }
-  return idx;
-}
 // English always capitalizes the pronoun "I" regardless of position in
 // the sentence - found live: naively lowercasing the first letter after
 // a name turned "I'm checking..." into "Lucy, i'm checking..." (wrong).
 function lowerFirstLetter(phrase) {
   if (/^I(?:['’]|\s|$)/.test(phrase)) return phrase;
   return phrase.charAt(0).toLowerCase() + phrase.slice(1);
-}
-async function buildHoldingReply(chatId, text, firstName) {
-  const lang = detectLang(text);
-  const pools = HOLDING_POOLS[lang];
-  const pool = (isInformal(text, lang) && pools.informal) || pools.formal;
-  const idx = await pickHoldingReplyIndex(chatId, pool.length);
-  const phrase = pool[idx];
-  return firstName ? firstName + ', ' + lowerFirstLetter(phrase) : phrase;
 }
 
 // ---------------- Auto-reply decision (case a/b/c) ----------------
@@ -1632,48 +1651,113 @@ function classifyTool() {
     type: 'function',
     function: {
       name: 'classify_official_message',
-      description: 'Classify an incoming official WhatsApp message to decide how SUBH should reply.',
+      description: 'Classify an incoming official WhatsApp message to decide how SUBH should reply. A short conversation history may be given for context - use it ONLY to resolve what a context-dependent follow-up ("Tau kobe pabo?", "Bolun", "?") is actually about (the same topic as their own earlier message in this chat), never to answer FOR them.',
       parameters: {
         type: 'object',
         properties: {
           topic: {
             type: 'string',
             enum: [...memoryService.MEMORY_TOPICS, 'own_record', 'none'],
-            description: '"own_record" ONLY if asking about their OWN joining date, probation/confirmation date, department, reporting manager, or insurance COVERAGE status (not a general announcement). One of the memory topics (salary/bonus/PF/ESIC/increment/holiday/office closed/letters/insurance/other) if asking about a general announced fact affecting staff generally. "none" for anything else (policy question with no taught fact, small talk, unrelated).'
+            description: '"own_record" ONLY if asking about their OWN joining date, probation/confirmation date, department, reporting manager, or insurance COVERAGE status (not a general announcement). One of the memory topics (salary/bonus/PF/ESIC/increment/holiday/office closed/letters/insurance/other) if asking about a general announced fact affecting staff generally. "none" for anything else (policy question with no taught fact, small talk, unrelated) - including a context-dependent follow-up that even WITH history gives no real topic to resolve.'
           },
-          periodRaw: { type: 'string', description: 'ONLY if topic is a memory topic AND a specific month/date was actually named. If the sender named a month WITHOUT a year (e.g. "September", "September-er salary"), output ONLY the bare month name in English (e.g. "september") - NEVER add, guess, or infer a year yourself, even though this parameter also accepts "YYYY-MM"; that form is ONLY for when the sender EXPLICITLY said a 4-digit year themselves. Omit this field entirely if no month was named at all.' }
+          periodRaw: { type: 'string', description: 'ONLY if topic is a memory topic AND a specific month/date was actually named. If the sender named a month WITHOUT a year (e.g. "September", "September-er salary"), output ONLY the bare month name in English (e.g. "september") - NEVER add, guess, or infer a year yourself, even though this parameter also accepts "YYYY-MM"; that form is ONLY for when the sender EXPLICITLY said a 4-digit year themselves. Omit this field entirely if no month was named at all.' },
+          topicLabel: { type: 'string', description: 'A short (2-5 word) human-readable description of what they are asking/talking about, in English, for an HR manager to read, e.g. "confirmation letter", "October salary", "joining date". Resolve this from the conversation history when the current message alone is a context-dependent follow-up. Use "general conversation" if there genuinely is no identifiable subject (e.g. a plain "thanks"/"ok" with no open question behind it).' },
+          needsAnswer: { type: 'boolean', description: 'true if this message is a real question or request that needs an actual answer (even a repeated/rephrased one, e.g. "Tau kobe pabo?", "Bolun" chasing an earlier unanswered question). false ONLY for a pure acknowledgement/closing remark with nothing left to answer (e.g. "ok", "thanks", "👍", "thik ache") - look at the history: if an earlier question in this conversation is still genuinely unresolved, a short reply like "Bolun" or "?" is them STILL asking, so this must be true.' }
         },
-        required: ['topic']
+        required: ['topic', 'topicLabel', 'needsAnswer']
       }
     }
   };
 }
-async function classifyOfficialMessage(text) {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) throw new Error('whatsappAssistant.classifyOfficialMessage called without OPENAI_API_KEY set');
-  if (!DRAFT_MODEL) throw new Error('whatsappAssistant.classifyOfficialMessage called without OPENAI_MODEL_MAIN set');
-  const resp = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: { Authorization: 'Bearer ' + apiKey, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: DRAFT_MODEL,
-      tools: [classifyTool()],
-      tool_choice: { type: 'function', function: { name: 'classify_official_message' } },
-      messages: [
-        { role: 'system', content: 'Today\'s real date is ' + new Date().toISOString().slice(0, 10) + ' (UTC).' },
-        { role: 'user', content: text }
-      ]
-    })
-  });
-  if (!resp.ok) {
-    const bodyText = await resp.text().catch(() => '');
-    throw new Error('classify_official_message API error ' + resp.status + (bodyText ? ': ' + bodyText.slice(0, 300) : ''));
+// history: recent messages in THIS chat (oldest first, {direction, text}) -
+// given as plain context text, not real OpenAI conversation turns (this
+// call is a single classification of the CURRENT message, not a multi-
+// turn chat with the model itself) - lets a context-dependent follow-up
+// ("Tau kobe pabo?", "Bolun") resolve to the same topic as what they
+// asked earlier in the same real conversation, instead of classifying
+// as topic-less just because the message alone has no keyword.
+function formatHistoryBlock(history) {
+  if (!history || !history.length) return '';
+  return 'Recent conversation in this chat (oldest first, for context only - the CURRENT message to classify is the one in the user turn below, not anything here):\n' +
+    history.map((h) => (h.direction === 'in' ? 'Them: ' : 'You: ') + h.text).join('\n');
+}
+async function classifyOfficialMessage(text, history) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) throw new Error('whatsappAssistant.classifyOfficialMessage called without ANTHROPIC_API_KEY set');
+  if (!DRAFT_MODEL) throw new Error('whatsappAssistant.classifyOfficialMessage called without CLAUDE_MODEL_MAIN set');
+  const historyBlock = formatHistoryBlock(history);
+  const messages = [{ role: 'system', content: 'Today\'s real date is ' + new Date().toISOString().slice(0, 10) + ' (UTC).' }];
+  if (historyBlock) messages.push({ role: 'system', content: historyBlock });
+  messages.push({ role: 'user', content: text });
+  const fallback = { topic: 'none', topicLabel: 'general conversation', needsAnswer: true };
+  const toolDef = classifyTool().function;
+  const input = await callClaudeForcedTool(apiKey, DRAFT_MODEL, messages, toolDef.name, toolDef);
+  if (!input) return fallback;
+  return Object.assign({}, fallback, input);
+}
+
+// ---------------- Context-aware conversation reply (no fact available) ----------------
+// Replaces the old fixed-pool buildHoldingReply for 1:1 (still used for
+// groups, which have no identified sender/history to be conversational
+// about) - per direct correction after a live conversation felt
+// "awkward"/robotic and didn't use what was actually being discussed.
+// Model-composed (empathy/context genuinely can't be a fixed pool), but
+// structurally forbidden from ever inventing a timeframe - that's the
+// one thing this function is NOT allowed to get wrong, so it's enforced
+// below in code, not just prompted.
+const FORBIDDEN_TIMEFRAME_RE = /\b(ajke|ajkei|aj-i|aj|today|tomorrow|agamikal|kal|next week|is week|is hafte|ei soptahe|within\s*\d+|\d+\s*(din|days?|hours?|ghonta)|monday|tuesday|wednesday|thursday|friday|saturday|sunday|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b/i;
+function containsUnbackedTimeframePromise(text) {
+  return FORBIDDEN_TIMEFRAME_RE.test(text || '');
+}
+const SAFE_NO_PROMISE_FALLBACK = {
+  banglish: (topicLabel) => 'Bujhte parchi apni ' + topicLabel + ' niye opekkha korchen. Ami Subhodeep-er sathe kotha bole apnake exact update janabo.',
+  hinglish: (topicLabel) => 'Samajh sakta hoon aap ' + topicLabel + ' ka wait kar rahe hain. Main Subhodeep se baat karke aapko exact update bata dunga.',
+  english: (topicLabel) => "I understand you're waiting on " + topicLabel + ". I'll check with Subhodeep and confirm the exact update for you."
+};
+const CONTEXT_REPLY_SYSTEM_PROMPT =
+  'You are a caring, professional HR person replying on WhatsApp, in the MIDDLE of an ongoing real ' +
+  'conversation with one of your own contacts - you are given the recent conversation history (oldest ' +
+  'first) and their latest message. ' +
+  'You do NOT have the real answer right now - you only know what is in this conversation, nothing ' +
+  'else. NEVER invent a date, approval, policy answer, or a promise of WHEN something will be ' +
+  'resolved - not even a vague "today"/"tomorrow"/"kal"/"within 2 days"/a weekday name. The honest, ' +
+  'safe thing to say is that you will check with Subhodeep (the HR manager) and confirm - vary HOW ' +
+  'you say this, never the same sentence twice (check the history for what you already said). ' +
+  'If asked a plain question with no open issue behind it ("ok"/"thanks"/"thik ache" with nothing to ' +
+  'resolve), you may reply briefly and warmly, or decide no reply is needed at all - if so, output ' +
+  'exactly [[NO_REPLY_NEEDED]] and nothing else. ' +
+  'If this is a genuine follow-up/repeated question (visible in the history - they already asked ' +
+  'this or something close to it), acknowledge that directly and empathise briefly and genuinely if ' +
+  'they sound frustrated or have been waiting - never a template phrase, really respond to what they ' +
+  'said. Mention the actual topic naturally (you are told it below) - never just say "this"/"it". ' +
+  'NEVER open with "Namaskar"/"Namaste"/"Ji"/"Dear" - go straight to the point. Match the sender\'s own ' +
+  'language/script and apni/tumi or aap/tum formality from their OWN messages in the history. Keep it ' +
+  'to 1-3 short lines, like a real person typing on their phone, never textbook-formal. ' +
+  'Banglish negation: "-ni" (ashe ni, hoy ni), never "-eche na". English: correct tense, no literal ' +
+  'translation. Hinglish: "nahi", never a bare "na"; address as "aap". Never mix a Hindi word into ' +
+  'Banglish or a Bengali word into Hinglish.';
+async function generateConversationReply(text, history, firstName, topicLabel, needsAnswer) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) throw new Error('whatsappAssistant.generateConversationReply called without ANTHROPIC_API_KEY set');
+  if (!DRAFT_MODEL) throw new Error('whatsappAssistant.generateConversationReply called without CLAUDE_MODEL_MAIN set');
+  const lang = detectLang(text);
+  const historyBlock = formatHistoryBlock(history) || '(no earlier messages in this conversation yet)';
+  const userContent = historyBlock + '\n\nTheir latest message: "' + text + '"\n\n' +
+    'Topic: ' + topicLabel + '. ' +
+    (needsAnswer
+      ? 'This needs a real reply (not [[NO_REPLY_NEEDED]]) - you do not have the answer, see the system rules.'
+      : 'This looks like a plain acknowledgement with nothing open to resolve - use your judgement per the system rules.');
+  let content = stripForbiddenGreeting(await callClaudeChat(apiKey, DRAFT_MODEL, [
+    { role: 'system', content: CONTEXT_REPLY_SYSTEM_PROMPT },
+    { role: 'user', content: userContent }
+  ]));
+  if (content === '[[NO_REPLY_NEEDED]]') return null;
+  content = content.replace(/\[\[NO_REPLY_NEEDED\]\]/g, '').trim();
+  if (needsAnswer && containsUnbackedTimeframePromise(content)) {
+    const safe = (SAFE_NO_PROMISE_FALLBACK[lang] || SAFE_NO_PROMISE_FALLBACK.english)(topicLabel);
+    content = firstName ? firstName + ', ' + lowerFirstLetter(safe) : safe;
   }
-  const data = await resp.json();
-  const call = data.choices && data.choices[0] && data.choices[0].message &&
-    data.choices[0].message.tool_calls && data.choices[0].message.tool_calls[0];
-  if (!call) return { topic: 'none' };
-  try { return JSON.parse(call.function.arguments || '{}'); } catch (err) { return { topic: 'none' }; }
+  return content || null;
 }
 
 // The single decision point for spec section 3.1 (a/b/c) - called for
@@ -1683,7 +1767,9 @@ async function classifyOfficialMessage(text) {
 // a classification/lookup failure here falls through to case 'holding'
 // the same as "no match found" would, since a safe generic holding
 // reply is always the correct fallback.
-async function decideAutoReply({ phone, name, firstName, text, isGroup }) {
+// history: recent messages in THIS chat (1:1 only, see pollOnce) -
+// omitted entirely for groups, which have no per-sender history.
+async function decideAutoReply({ phone, name, firstName, text, isGroup, history }) {
   // What generateDraft gets told as "X wrote: ..." - a real first name
   // when one was resolved (directory/allowlist), otherwise the generic
   // "The sender" (never the phone-number display fallback in `name`,
@@ -1704,9 +1790,9 @@ async function decideAutoReply({ phone, name, firstName, text, isGroup }) {
 
   let classification;
   try {
-    classification = await classifyOfficialMessage(text);
+    classification = await classifyOfficialMessage(text, isGroup ? null : history);
   } catch (err) {
-    classification = { topic: 'none' };
+    classification = { topic: 'none', topicLabel: 'general conversation', needsAnswer: true };
   }
 
   if (classification.topic && memoryService.MEMORY_TOPICS.includes(classification.topic)) {
@@ -1724,6 +1810,9 @@ async function decideAutoReply({ phone, name, firstName, text, isGroup }) {
         if (memory.requestsDocument && !isGroup) {
           await documentRequests.openDocumentRequest({ phone, memoryId: memory.id, topic: memory.topic, askedFor: memory.guidance });
         }
+        // A real answer was found - whatever was pending for this chat
+        // is resolved now, not "still waiting".
+        if (!isGroup) await resetFollowupCount(phone);
         return { case: 'memory', memoryId: memory.id, replyText, summaryForOwner: text.slice(0, 160) };
       }
     }
@@ -1733,12 +1822,32 @@ async function decideAutoReply({ phone, name, firstName, text, isGroup }) {
     const selfFacts = await buildSelfFacts(phone).catch(() => null);
     if (selfFacts) {
       const replyText = await generateDraft(senderLabel, text, undefined, selfFacts);
+      await resetFollowupCount(phone);
       return { case: 'own_record', replyText, summaryForOwner: text.slice(0, 160) };
     }
   }
 
-  const replyText = isGroup ? await generateGroupDraft(name, text) : await buildHoldingReply(phone, text, firstName);
-  return { case: 'holding', replyText, summaryForOwner: text.slice(0, 160) };
+  // No real fact available (memory/own-record) - groups keep the old
+  // model-composed casual/holding path (no identified sender, no
+  // history to be conversational about). 1:1 uses the new context-aware
+  // generator: empathetic, mentions the real topic, never invents a
+  // timeframe, and may legitimately decide no reply is needed (a plain
+  // "ok"/"thanks" with nothing open) - see its own comment.
+  if (isGroup) {
+    const replyText = await generateGroupDraft(name, text);
+    return { case: 'holding', replyText, summaryForOwner: text.slice(0, 160) };
+  }
+  const topicLabel = classification.topicLabel || 'their question';
+  const needsAnswer = classification.needsAnswer !== false;
+  const replyText = await generateConversationReply(text, history, firstName, topicLabel, needsAnswer);
+  if (!needsAnswer) {
+    // Pure acknowledgement - may still get a short warm reply, but never
+    // escalates and never counts as "still waiting" (there's no open
+    // question here to wait on).
+    return { case: 'acknowledged', replyText, summaryForOwner: null };
+  }
+  const followupCount = await incrementFollowupCount(phone);
+  return { case: 'holding', replyText, summaryForOwner: text.slice(0, 160), topicLabel, followupCount };
 }
 
 // ---------------- Incoming document handling (spec item 5b/5c) ----------------
@@ -1898,8 +2007,22 @@ async function pollOnce() {
           // in sendOrReportAutoReply) is the delayed-send queue's own doing.
           const arrivedAt = msg.created_at ? new Date(msg.created_at).getTime() : Date.now();
           const seenAt = Date.now();
-          const decision = await decideAutoReply({ phone: contactId, name, firstName, text, isGroup: false }).catch(() => null);
+
+          // Loop protection (reworked - see isDuplicateIncoming/
+          // isBotLoopPattern's own comment for why) checked against the
+          // SENDER's own recent messages, fetched once and reused as
+          // conversation context below regardless of outcome.
+          const history = await getConvoHistory(contactId, CONVO_HISTORY_MAX);
+          if (isDuplicateIncoming(history, text) || isBotLoopPattern(history, text)) {
+            await appendConvoHistory(contactId, 'in', text);
+            continue;
+          }
+          await appendConvoHistory(contactId, 'in', text);
+          await markActiveConversation(contactId);
+
+          const decision = await decideAutoReply({ phone: contactId, name, firstName, text, isGroup: false, history: history.slice(-10) }).catch(() => null);
           if (decision && decision.replyText) {
+            await appendConvoHistory(contactId, 'out', decision.replyText);
             if (await isNeverAuto(contactId)) {
               // Spec item 3: decided normally, but never auto-sent - back
               // into the old manual pending-draft flow + a notification,
@@ -1914,6 +2037,8 @@ async function pollOnce() {
                 chatId: contactId, isGroup: false, name,
                 replyText: decision.replyText, case: decision.case, memoryId: decision.memoryId || null,
                 summaryForOwner: decision.summaryForOwner || null,
+                topicLabel: decision.topicLabel || null,
+                followupCount: decision.followupCount || null,
                 arrivedAt, seenAt
               });
               results.scheduled++;
@@ -1995,7 +2120,16 @@ module.exports = {
   classify,
   detectLang,
   isInformal,
-  buildHoldingReply,
+  generateConversationReply,
+  containsUnbackedTimeframePromise,
+  markActiveConversation,
+  isActiveConversation,
+  appendConvoHistory,
+  getConvoHistory,
+  isDuplicateIncoming,
+  isBotLoopPattern,
+  incrementFollowupCount,
+  resetFollowupCount,
   generateDraft,
   generateGroupDraft,
   addMentionId,
