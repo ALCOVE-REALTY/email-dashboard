@@ -351,6 +351,128 @@ async function clearOwnerNotifications() {
   try { await redis.del(OWNER_NOTIFICATIONS_KEY); } catch (err) { /* best effort */ }
 }
 
+// ---------------- Important Communications (SUBH Phase 1 redesign) ----------------
+// Every per-contact notification (auto-replied/holding/approval/document)
+// now has a structural home of its own (listPendingApprovals/
+// listPendingDrafts/listOpenFollowups/documentRequests - all pre-existing)
+// and is rendered from there in the new Important Communications page,
+// not from this free-text feed. Only alerts with no single WhatsApp
+// contact behind them - the gateway watchdog and the daily digest - still
+// go through postOwnerNotification, so this just reads the SAME feed and
+// keeps the ones matching their own fixed opening words (set at the exact
+// call sites in checkGatewayConnection/checkAndPostDailySummary above).
+// Peek-only (unlike the old /subh-notifications route, which cleared on
+// every read) - dismissSystemNotices is the explicit action for that.
+const SYSTEM_NOTICE_RE = /^(⚠️ WhatsApp disconnected|✓ WhatsApp reconnected|SUBH daily summary)/;
+async function listSystemNotices() {
+  const items = await listOwnerNotifications();
+  return items.filter((n) => SYSTEM_NOTICE_RE.test(n.text || ''));
+}
+async function dismissSystemNotices() {
+  await clearOwnerNotifications();
+}
+
+// One row per WhatsApp NUMBER with something outstanding right now -
+// "needs you" only (per the user's own choice): a pending data-request
+// approval, a pending draft reply, an open follow-up, or a document
+// that's arrived but isn't marked done yet. A number can carry more than
+// one outstanding item at once, and - found live, see
+// getWhatsappConversation's own comment - those items can even be for
+// DIFFERENT named requesters sharing the same number (e.g. a shared/group
+// phone). `itemCount` (not just `states`) lets the row say "3 pending"
+// instead of silently implying there's only one, and the conversation
+// detail view (getWhatsappConversation) renders a separate action group
+// per item, each labelled with its own requester name - never collapsed
+// down to a single name/summary the way an earlier version of this
+// function did.
+async function listActionableWhatsappItems() {
+  const [approvals, drafts, followups, docs, recentLog] = await Promise.all([
+    listPendingApprovals(), listPendingDrafts(), listOpenFollowups(),
+    documentRequests.listPendingReceived(), listInboxLog(300)
+  ]);
+  const nameByChat = new Map();
+  recentLog.forEach((e) => {
+    const key = whatsapp.normalizePhone(e.chatId);
+    if (e.name && !nameByChat.has(key)) nameByChat.set(key, e.name);
+  });
+  const byChat = new Map();
+  function ensure(rawChatId) {
+    const key = whatsapp.normalizePhone(rawChatId);
+    if (!byChat.has(key)) byChat.set(key, { chatId: key, items: [] });
+    return byChat.get(key);
+  }
+  approvals.forEach((a) => ensure(a.phone).items.push({ type: 'approval', name: a.name, summary: a.dataRequestSummary, ts: a.createdAt }));
+  drafts.forEach((d) => ensure(d.contactId).items.push({ type: 'draft', name: d.name, summary: d.messagePreview, ts: d.createdAt }));
+  followups.forEach((f) => ensure(f.chatId).items.push({ type: 'followup', name: f.name, summary: f.summary, ts: f.ts }));
+  docs.forEach((d) => ensure(d.phone).items.push({ type: 'document', name: null, summary: 'Sent a file for ' + d.topic, ts: d.receivedAt }));
+
+  const rows = Array.from(byChat.values()).map((row) => {
+    const latest = row.items.reduce((a, b) => (!a || b.ts > a.ts ? b : a), null);
+    const key = row.chatId;
+    return {
+      chatId: row.chatId,
+      // The row's own display name is whoever the latest item named (or,
+      // failing that, the most recent real inbox-log entry for this
+      // number) - purely a list-preview label; every item's OWN name
+      // (which may differ, see above) is preserved untouched for the
+      // conversation-detail view.
+      name: (latest && latest.name) || nameByChat.get(key) || key,
+      lastMessageText: latest ? latest.summary : '',
+      lastMessageTime: latest ? latest.ts : 0,
+      itemCount: row.items.length,
+      states: Array.from(new Set(row.items.map((i) => i.type)))
+    };
+  });
+  rows.sort((a, b) => b.lastMessageTime - a.lastMessageTime);
+  return rows;
+}
+
+// Full detail for one WhatsApp NUMBER - the real message-by-message
+// transcript (appendConvoHistory's own store, both directions) plus
+// EVERY outstanding item for it, as arrays, never a single picked-first
+// one. Found live while screenshotting this feature: one real pending
+// number here (919999999998) carries THREE separate approvals for three
+// different named requesters (Rahul/Lucy/Simran) - a shared/group number
+// sending on different people's behalf is a real case the chat-command
+// flow already handles correctly (buildPendingListQuestion's own "which
+// one?" list), so collapsing it down to a single pendingApproval here
+// would have silently hidden two of the three from this UI. Every item
+// below keeps its own name/id so the frontend can render one action
+// group per item, each clearly labelled with who it's for.
+async function getWhatsappConversation(chatIdRaw) {
+  const chatId = whatsapp.normalizePhone(chatIdRaw);
+  const [history, recentLog, approvals, drafts, followups, docs, neverAuto] = await Promise.all([
+    getConvoHistory(chatId, CONVO_HISTORY_MAX),
+    listInboxLog(300),
+    listPendingApprovals(), listPendingDrafts(), listOpenFollowups(),
+    documentRequests.listPendingReceived(), isNeverAuto(chatId)
+  ]);
+  const myLog = recentLog.filter((e) => whatsapp.normalizePhone(e.chatId) === chatId);
+  const latestLog = myLog[0] || null;
+  const myApprovals = approvals.filter((a) => whatsapp.normalizePhone(a.phone) === chatId);
+  const myDrafts = drafts.filter((d) => whatsapp.normalizePhone(d.contactId) === chatId);
+  const myFollowups = followups.filter((f) => whatsapp.normalizePhone(f.chatId) === chatId);
+  const myDocs = docs.filter((d) => whatsapp.normalizePhone(d.phone) === chatId);
+  const name = (latestLog && latestLog.name) || (myApprovals[0] && myApprovals[0].name) ||
+    (myDrafts[0] && myDrafts[0].name) || (myFollowups[0] && myFollowups[0].name) || chatId;
+  return {
+    chatId,
+    name,
+    thread: history.map((h) => ({ direction: h.direction, text: h.text, ts: h.ts })),
+    lastOutcome: latestLog ? { aCase: latestLog.aCase, outcome: latestLog.outcome } : null,
+    neverAuto,
+    pendingApprovals: myApprovals.map((a) => ({ id: a.id, name: a.name, summary: a.dataRequestSummary, text: a.preparedReplyText, error: a.preparedError })),
+    pendingDrafts: myDrafts.map((d) => ({ contactId: d.contactId, name: d.name, type: d.type, draftReply: d.draftReply })),
+    openFollowups: myFollowups.map((f) => ({ name: f.name, summary: f.summary })),
+    pendingDocuments: myDocs.map((d) => ({ topic: d.topic, fileRef: d.fileRef }))
+  };
+}
+
+async function resolveApprovalById(id) {
+  const approvals = await listPendingApprovals();
+  return approvals.find((a) => a.id === id) || null;
+}
+
 // Spec point 7: "sender type, case (memory/own-record/holding), action,
 // timestamp - never message text." Separate from toolCallLog.js (that
 // one is about the in-app AI's own tool calls, this is specifically the
@@ -2910,5 +3032,18 @@ module.exports = {
   handleApprovalCommand,
   listPendingApprovals,
   handleIncomingMedia,
-  isRealSendAllowedFor
+  isRealSendAllowedFor,
+  executeApprovalSend,
+  executeApprovalReject,
+  resolveApprovalById,
+  listSystemNotices,
+  dismissSystemNotices,
+  listActionableWhatsappItems,
+  getWhatsappConversation,
+  // Exported for scripts/check-whatsapp-engine.js only (a regression
+  // baseline, added alongside the Phase 1 UI work) - no behavior change,
+  // these already existed and ran exactly this way before.
+  FORBIDDEN_PII_LABELS,
+  cardHasForbiddenField,
+  textHasForbiddenField
 };

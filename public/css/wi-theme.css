@@ -1499,3 +1499,183 @@ body { background: var(--wi-bg); }
     box-shadow: 0 4px 16px rgba(45,50,90,.1);
   }
 }
+
+/* ======================================================================
+   SUBH Phase 1 redesign - Home "Today's Updates" + Important
+   Communications (WhatsApp) + conversation detail, all living inside the
+   existing #hrAssistantPanel overlay (public/hrAssistant.js). Every rule
+   below reuses this file's own tokens/pills/motion (--wi-primary, the
+   red/green tone pills, .m-slide/.m-pop/.m-up) - no new design system,
+   no new breakpoints (the panel is already a fixed, mobile-width,
+   max-width:480px overlay - see .wf-ai-panel in workforce.css).
+   ====================================================================== */
+
+/* .wf-ai-messages/.wf-ai-input-area both set their own `display` in
+   workforce.css with no [hidden] override - same specificity as the UA
+   stylesheet's [hidden]{display:none}, so the later (author) rule would
+   otherwise win and the element would stay visible. Toggling .hidden on
+   them from hrAssistant.js (home vs Important Communications vs a
+   conversation) needs this explicit override, same pattern
+   .wf-ai-panel[hidden] already uses just above. */
+.wf-ai-messages[hidden], .wf-ai-input-area[hidden], .wf-ai-panel-head[hidden] { display: none; }
+
+/* -- sub-page header (Important Communications / a WhatsApp conversation),
+   swapped in for the plain "HR Assistant (SUBH)" head - see
+   .wf-ai-panel-head in workforce.css for the base this extends. -- */
+.wf-comms-head[hidden] { display: none; }
+.wf-comms-head-icon {
+  width: 34px; height: 34px; border-radius: 50%; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--wi-primary-50); color: var(--wi-primary-700);
+}
+.wf-comms-head-icon.whatsapp { background: var(--wi-whatsapp-bg); color: var(--wi-whatsapp); }
+.wf-ai-panel-title small#hrCommsHeadSubtitle {
+  text-transform: none; letter-spacing: normal; font-weight: 600; font-size: 0.74rem; color: var(--wi-muted);
+}
+.wf-comms-head-badge {
+  min-width: 22px; height: 22px; border-radius: var(--wi-r-pill); flex-shrink: 0;
+  display: inline-flex; align-items: center; justify-content: center; padding: 0 7px;
+  background: var(--wi-red); color: #FFFFFF; font-weight: 800; font-size: 0.72rem;
+}
+.wf-comms-head-badge[hidden] { display: none; }
+
+/* -- Home: Today's Updates card -- */
+.wf-today-updates-card[hidden] { display: none; }
+.wf-today-updates-card {
+  display: flex; align-items: center; gap: 12px;
+  margin: 0 14px 14px; padding: 14px 14px;
+  border: none; border-radius: var(--wi-r-card); box-shadow: var(--wi-sh-card);
+  background: var(--wi-surface); font-family: inherit; text-align: left; cursor: pointer;
+  transition: transform .18s ease, box-shadow .18s ease;
+}
+.wf-today-updates-card:active { transform: scale(.98); }
+@media (hover: hover) and (pointer: fine) {
+  .wf-today-updates-card:hover { box-shadow: 0 8px 20px rgba(3,2,41,.08); }
+}
+.wf-today-updates-icon {
+  width: 40px; height: 40px; border-radius: var(--wi-r-tile); flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--wi-primary-50); color: var(--wi-primary);
+}
+.wf-today-updates-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.wf-today-updates-title-row { display: flex; align-items: center; gap: 8px; }
+.wf-today-updates-title { font-weight: 800; font-size: 0.92rem; color: var(--wi-ink); }
+.wf-today-updates-badge {
+  min-width: 20px; height: 20px; border-radius: var(--wi-r-pill); padding: 0 6px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--wi-red); color: #FFFFFF; font-weight: 800; font-size: 0.68rem;
+}
+.wf-today-updates-badge[hidden] { display: none; }
+.wf-today-updates-sub { font-size: 0.74rem; font-weight: 600; color: var(--wi-muted); }
+.wf-today-updates-chevron { color: var(--wi-faint); flex-shrink: 0; }
+
+/* -- Important Communications page -- */
+.wf-comms-page[hidden] { display: none; }
+.wf-comms-page {
+  flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  padding: 4px 14px 14px; display: flex; flex-direction: column; gap: 16px;
+}
+.wf-comms-system-strip[hidden] { display: none; }
+.wf-comms-system-strip {
+  display: flex; align-items: flex-start; gap: 10px; padding: 11px 12px;
+  border-radius: var(--wi-r-card); background: var(--wi-yellow-50); color: var(--wi-yellow-700);
+  font-size: 0.78rem; font-weight: 600; line-height: 1.4; animation: mUp .4s cubic-bezier(.2,.7,.2,1) both;
+}
+.wf-comms-system-strip-text { flex: 1; white-space: pre-line; }
+.wf-comms-system-strip-dismiss {
+  border: none; background: transparent; color: inherit; opacity: .7; cursor: pointer; flex-shrink: 0; padding: 2px;
+}
+.wf-comms-system-strip-dismiss:active { opacity: 1; transform: scale(.92); }
+.wf-comms-section { display: flex; flex-direction: column; gap: 8px; }
+.wf-comms-section-head {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 0.8rem; font-weight: 800; color: var(--wi-ink); padding: 0 2px;
+}
+.wf-comms-viewall { font-size: 0.72rem; font-weight: 700; color: var(--wi-primary); cursor: pointer; }
+.wf-comms-mail-card {
+  border-radius: var(--wi-r-card); box-shadow: var(--wi-sh-card); background: var(--wi-surface);
+  padding: 18px 14px; text-align: center; font-size: 0.78rem; font-weight: 600; color: var(--wi-muted);
+}
+.wf-comms-wa-list { display: flex; flex-direction: column; gap: 10px; }
+.wf-comms-wa-row {
+  display: flex; align-items: center; gap: 11px;
+  border-radius: var(--wi-r-card); box-shadow: var(--wi-sh-card); background: var(--wi-surface);
+  padding: 11px 12px; cursor: pointer; transition: transform .18s ease;
+  animation: mPop .3s cubic-bezier(.2,.7,.2,1) both;
+}
+.wf-comms-wa-row:active { transform: scale(.98); }
+.wf-comms-wa-row-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.wf-comms-wa-row-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.wf-comms-wa-row-name { font-size: 0.86rem; font-weight: 700; color: var(--wi-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wf-comms-wa-row-time { font-size: 0.68rem; font-weight: 600; color: var(--wi-faint); flex-shrink: 0; }
+.wf-comms-wa-row-preview { font-size: 0.76rem; color: var(--wi-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wf-comms-wa-row-badge {
+  width: 9px; height: 9px; border-radius: 50%; background: var(--wi-red); flex-shrink: 0; align-self: flex-start; margin-top: 6px;
+}
+.wf-comms-wa-row-badge.count {
+  width: auto; height: 18px; min-width: 18px; border-radius: var(--wi-r-pill); padding: 0 5px;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: #FFFFFF; font-size: 0.64rem; font-weight: 800; margin-top: 0; align-self: center;
+}
+.wf-comms-empty {
+  text-align: center; padding: 18px 10px; font-size: 0.78rem; font-weight: 600; color: var(--wi-faint);
+}
+
+/* -- WhatsApp conversation detail -- */
+.wf-convo-page[hidden] { display: none; }
+.wf-convo-page { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; display: flex; flex-direction: column; }
+.wf-convo-thread { flex: 1; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+.wf-convo-msg { max-width: 82%; display: flex; flex-direction: column; gap: 3px; }
+.wf-convo-msg.in { align-self: flex-start; }
+.wf-convo-msg.out { align-self: flex-end; align-items: flex-end; }
+.wf-convo-msg-bubble {
+  padding: 9px 12px; border-radius: 16px; font-size: 0.82rem; line-height: 1.4; white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.wf-convo-msg.in .wf-convo-msg-bubble { background: var(--wi-surface-3); color: var(--wi-ink); border-bottom-left-radius: 4px; }
+.wf-convo-msg.out .wf-convo-msg-bubble { background: var(--wi-primary-50); color: var(--wi-primary-800); border-bottom-right-radius: 4px; }
+.wf-convo-msg-time { font-size: 0.64rem; font-weight: 600; color: var(--wi-faint); padding: 0 4px; }
+.wf-convo-status-line {
+  margin: 4px 14px 0; padding: 7px 11px; border-radius: 12px; font-size: 0.72rem; font-weight: 700;
+  display: inline-flex; align-self: center; align-items: center; gap: 6px;
+  background: var(--wi-surface-3); color: var(--wi-muted);
+}
+.wf-convo-status-line.escalated { background: var(--wi-red-50); color: var(--wi-red-700); }
+.wf-convo-status-line.waiting { background: var(--wi-yellow-50); color: var(--wi-yellow-700); }
+.wf-convo-status-line.resolved { background: var(--wi-green-pill); color: var(--wi-green-700); }
+
+.wf-convo-actions { display: flex; flex-direction: column; gap: 10px; padding: 0 14px 14px; flex-shrink: 0; }
+.wf-convo-action-group {
+  border-radius: var(--wi-r-card); box-shadow: var(--wi-sh-card); background: var(--wi-surface); padding: 12px;
+  display: flex; flex-direction: column; gap: 10px; animation: mUp .4s cubic-bezier(.2,.7,.2,1) both;
+}
+.wf-convo-action-label { font-size: 0.72rem; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; color: var(--wi-muted); }
+.wf-convo-action-for { font-size: 0.74rem; font-weight: 700; color: var(--wi-primary); }
+.wf-convo-action-preview {
+  font-size: 0.8rem; color: var(--wi-ink); background: var(--wi-surface-3); border-radius: 12px; padding: 9px 11px;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.wf-convo-action-row { display: flex; gap: 8px; }
+.wf-convo-action-btn {
+  flex: 1; border: none; border-radius: var(--wi-r-btn); padding: 9px 10px; font-weight: 800; font-size: 0.8rem;
+  font-family: inherit; cursor: pointer; transition: transform .15s ease;
+}
+.wf-convo-action-btn:active { transform: scale(.96); }
+.wf-convo-action-btn.primary { background: var(--wi-primary); color: #FFFFFF; box-shadow: var(--wi-sh-primary); }
+.wf-convo-action-btn.danger { background: var(--wi-red-50); color: var(--wi-red-700); }
+.wf-convo-action-btn.outline { background: var(--wi-surface-3); color: var(--wi-ink); }
+.wf-convo-toggle-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.wf-convo-toggle-label { font-size: 0.8rem; font-weight: 700; color: var(--wi-ink); }
+.wf-convo-toggle {
+  width: 42px; height: 24px; border-radius: var(--wi-r-pill); border: none; background: var(--wi-border-2);
+  position: relative; cursor: pointer; flex-shrink: 0; transition: background .18s ease;
+}
+.wf-convo-toggle::after {
+  content: ''; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%;
+  background: #FFFFFF; box-shadow: 0 1px 3px rgba(3,2,41,.3); transition: transform .18s ease;
+}
+.wf-convo-toggle[aria-pressed="true"] { background: var(--wi-red); }
+.wf-convo-toggle[aria-pressed="true"]::after { transform: translateX(18px); }
+
+@media (prefers-reduced-motion: reduce) {
+  .wf-today-updates-card, .wf-comms-wa-row, .wf-comms-system-strip, .wf-convo-action-group { animation: none !important; transition: none !important; }
+}

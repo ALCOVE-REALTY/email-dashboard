@@ -51,6 +51,26 @@
   const reportViewTotal = document.getElementById('hrReportViewTotal');
   const reportViewCloseBtn = document.getElementById('hrReportViewCloseBtn');
   const reportViewDownloadBtn = document.getElementById('hrReportViewDownloadBtn');
+  // SUBH Phase 1 redesign - Home / Important Communications / conversation
+  // detail, all living inside this same panel (see workforce.html's own
+  // comment on hrCommsHead/hrTodayUpdatesCard/hrCommsPage/hrConvoPage).
+  const homeHead = document.querySelector('.wf-ai-panel-head:not(.wf-comms-head)');
+  const commsHead = document.getElementById('hrCommsHead');
+  const commsBackBtn = document.getElementById('hrCommsBackBtn');
+  const commsHeadIcon = document.getElementById('hrCommsHeadIcon');
+  const commsHeadTitle = document.getElementById('hrCommsHeadTitle');
+  const commsHeadSubtitle = document.getElementById('hrCommsHeadSubtitle');
+  const commsHeadBadge = document.getElementById('hrCommsHeadBadge');
+  const todayUpdatesCard = document.getElementById('hrTodayUpdatesCard');
+  const todayUpdatesBadge = document.getElementById('hrTodayUpdatesBadge');
+  const commsPage = document.getElementById('hrCommsPage');
+  const commsSystemStrip = document.getElementById('hrCommsSystemStrip');
+  const commsMailCard = document.getElementById('hrCommsMailCard');
+  const commsWaList = document.getElementById('hrCommsWaList');
+  const convoPage = document.getElementById('hrConvoPage');
+  const convoThread = document.getElementById('hrConvoThread');
+  const convoActions = document.getElementById('hrConvoActions');
+  const inputArea = document.querySelector('.wf-ai-input-area');
   if (!btn || !panel) return; // this page doesn't have the assistant markup
 
   const history = [];
@@ -1043,6 +1063,10 @@
       window.visualViewport.addEventListener('scroll', syncPanelToViewport);
     }
     window.addEventListener('orientationchange', syncPanelToViewport);
+    // Home is always the landing page on open, per the mockup - never
+    // reopens straight into Important Communications or a conversation
+    // left over from an earlier session.
+    setPanelView('home');
     if (!opened) {
       opened = true;
       const name = (document.getElementById('drawerName') && document.getElementById('drawerName').textContent.trim()) || '';
@@ -1050,7 +1074,7 @@
       addWelcome(greetName);
       showNextWhatsappDraft();
     }
-    startNotificationPolling();
+    startCommsPolling();
     // Deliberately no auto-focus here - the keyboard should only open when
     // the person actually taps the input, not the moment the panel opens.
   }
@@ -1063,7 +1087,7 @@
       window.visualViewport.removeEventListener('scroll', syncPanelToViewport);
     }
     window.removeEventListener('orientationchange', syncPanelToViewport);
-    stopNotificationPolling();
+    stopCommsPolling();
   }
 
   btn.addEventListener('click', openPanel);
@@ -1107,30 +1131,358 @@
     );
   }
 
-  // SUBH MEMORY / auto-reply (spec points 1c/6) - owner-only notifications
-  // ("holding reply sent, follow-up needed" / "Auto-replied to X...").
-  // Polled while the panel is open (not just on open, since these can
-  // arrive from the background poller at any time during a session);
-  // non-owners get an empty list every time (see the route's own
-  // comment), so this is a harmless no-op poll for them.
-  let notificationPollTimer = null;
-  async function pollSubhNotifications() {
+  // ---------- Important Communications (SUBH Phase 1 redesign) ----------
+  // Every WhatsApp notification (auto-replied/holding/approval/document)
+  // used to land as a free chat bubble via a 30s poll - per direct
+  // instruction the main chat is now ONLY the owner's own conversation
+  // with SUBH, so this poll just keeps Home's badge count current; the
+  // real content lives in the Important Communications page below,
+  // fetched fresh each time it's opened (loadCommsPage), not from here.
+  let commsPollTimer = null;
+  async function pollCommsSummary() {
     let data;
     try {
-      const resp = await fetch('/api/workforce/hr-assistant/subh-notifications');
+      const resp = await fetch('/api/workforce/hr-assistant/communications-summary');
       if (!resp.ok) return;
       data = await resp.json();
     } catch (err) { return; }
-    (data && data.items || []).slice().reverse().forEach((n) => addBubble('assistant', n.text));
+    const total = (data.importantMailsCount || 0) + (data.importantWhatsappCount || 0);
+    if (todayUpdatesBadge) {
+      todayUpdatesBadge.textContent = String(total);
+      todayUpdatesBadge.hidden = total === 0;
+    }
   }
-  function startNotificationPolling() {
-    if (notificationPollTimer) return;
-    pollSubhNotifications();
-    notificationPollTimer = setInterval(pollSubhNotifications, 30000);
+  function startCommsPolling() {
+    if (commsPollTimer) return;
+    pollCommsSummary();
+    commsPollTimer = setInterval(pollCommsSummary, 30000);
   }
-  function stopNotificationPolling() {
-    clearInterval(notificationPollTimer);
-    notificationPollTimer = null;
+  function stopCommsPolling() {
+    clearInterval(commsPollTimer);
+    commsPollTimer = null;
+  }
+
+  // Sub-page state machine scoped to this panel - no visible tab bar.
+  // Home is the only entry surface; Important Communications and a
+  // WhatsApp conversation are each reached by tapping something and left
+  // again with the back arrow in commsHead, exactly like the mockup.
+  let panelView = 'home';
+  let activeConvoChatId = null;
+
+  function setPanelView(view) {
+    panelView = view;
+    const isHome = view === 'home';
+    const isImportant = view === 'important';
+    const isConvo = view === 'conversation';
+    if (homeHead) homeHead.hidden = !isHome;
+    if (commsHead) commsHead.hidden = isHome;
+    if (todayUpdatesCard) todayUpdatesCard.hidden = !isHome;
+    messagesEl.hidden = !isHome;
+    if (commsPage) commsPage.hidden = !isImportant;
+    if (convoPage) convoPage.hidden = !isConvo;
+    if (inputArea) inputArea.hidden = isConvo;
+    if (isImportant) {
+      if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon';
+      if (commsHeadIcon) commsHeadIcon.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M22 6l-10 7L2 6"/></svg>';
+      if (commsHeadTitle) commsHeadTitle.textContent = 'Important Communications';
+    } else if (isConvo) {
+      if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon whatsapp';
+      if (commsHeadIcon) commsHeadIcon.innerHTML = '<svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M12.04 2C6.58 2 2.13 6.45 2.13 11.91c0 1.75.46 3.45 1.32 4.95L2 22l5.25-1.38c1.45.79 3.08 1.21 4.79 1.21h.01c5.46 0 9.91-4.45 9.91-9.91C21.96 6.45 17.5 2 12.04 2zm5.75 14.02c-.24.68-1.39 1.32-1.9 1.4-.5.08-1.05.15-3.34-.7-2.8-1.05-4.6-3.85-4.74-4.03-.14-.18-1.14-1.51-1.14-2.88 0-1.37.72-2.04.98-2.32.26-.28.56-.34.75-.34h.53c.17 0 .4-.02.62.47.24.55.8 1.9.87 2.04.07.14.11.31.02.5-.09.19-.14.31-.28.47-.14.16-.29.36-.42.48-.14.13-.28.28-.12.55.16.27.71 1.17 1.53 1.89 1.05.93 1.94 1.22 2.21 1.36.27.14.43.12.59-.07.16-.19.68-.79.86-1.06.18-.27.36-.22.6-.13.24.09 1.55.73 1.81.86.27.14.44.2.51.31.07.11.07.61-.17 1.29z"/></svg>';
+      if (commsHeadSubtitle) commsHeadSubtitle.textContent = '';
+    }
+  }
+
+  function formatCommsTime(ts) {
+    return typeof formatHistoryTime === 'function' ? formatHistoryTime(ts) : new Date(ts).toLocaleTimeString();
+  }
+
+  function waAvatarHtml(name, i) {
+    const initials = typeof avatarInitials === 'function' ? avatarInitials(name) : (String(name || '?').slice(0, 2).toUpperCase());
+    const cls = typeof avatarToneClass === 'function' ? avatarToneClass(i) : 'av-1';
+    return '<span class="wf-emp-avatar ' + cls + '">' + escapeHtml(initials) + '</span>';
+  }
+
+  async function dismissSystemStrip() {
+    if (commsSystemStrip) commsSystemStrip.hidden = true;
+    try {
+      await fetch('/api/workforce/hr-assistant/subh-notifications/dismiss', { method: 'POST' });
+    } catch (err) { /* best effort - it'll just show again next load */ }
+  }
+
+  async function loadCommsPage() {
+    if (commsWaList) commsWaList.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+    let data;
+    try {
+      const resp = await fetch('/api/workforce/hr-assistant/communications-summary');
+      data = await resp.json();
+    } catch (err) {
+      data = { importantMailsCount: 0, whatsappItems: [], importantWhatsappCount: 0, systemNotices: [] };
+    }
+
+    const total = (data.importantMailsCount || 0) + (data.importantWhatsappCount || 0);
+    if (commsHeadBadge) {
+      commsHeadBadge.textContent = String(total);
+      commsHeadBadge.hidden = total === 0;
+    }
+    if (commsHeadSubtitle) {
+      commsHeadSubtitle.textContent = (data.importantMailsCount || 0) + ' important mails · ' + (data.importantWhatsappCount || 0) + ' important WhatsApp';
+    }
+
+    const notices = data.systemNotices || [];
+    if (commsSystemStrip) {
+      if (notices.length) {
+        commsSystemStrip.hidden = false;
+        commsSystemStrip.innerHTML =
+          '<span class="wf-comms-system-strip-text">' + notices.map((n) => escapeHtml(n.text)).join('\n') + '</span>' +
+          '<button type="button" class="wf-comms-system-strip-dismiss" aria-label="Dismiss">' +
+            '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>' +
+          '</button>';
+        const dismissBtn = commsSystemStrip.querySelector('.wf-comms-system-strip-dismiss');
+        if (dismissBtn) dismissBtn.addEventListener('click', dismissSystemStrip);
+      } else {
+        commsSystemStrip.hidden = true;
+        commsSystemStrip.innerHTML = '';
+      }
+    }
+
+    // Phase 3 builds real Gmail-backed important mails - for now this is
+    // a plain, honest empty state rather than a fake/mocked list.
+    if (commsMailCard) commsMailCard.textContent = 'Mail connect hobe porer dhape.';
+
+    const items = data.whatsappItems || [];
+    if (commsWaList) {
+      if (!items.length) {
+        commsWaList.innerHTML = '<div class="wf-comms-empty">Kichu pending nei - shob clear!</div>';
+      } else {
+        commsWaList.innerHTML = items.map((it, i) =>
+          '<div class="wf-comms-wa-row" data-chat-id="' + escapeHtml(it.chatId) + '" role="button" tabindex="0">' +
+            waAvatarHtml(it.name, i) +
+            '<span class="wf-comms-wa-row-main">' +
+              '<span class="wf-comms-wa-row-top">' +
+                '<span class="wf-comms-wa-row-name">' + escapeHtml(it.name || it.chatId) + '</span>' +
+                '<span class="wf-comms-wa-row-time">' + (it.lastMessageTime ? formatCommsTime(it.lastMessageTime) : '') + '</span>' +
+              '</span>' +
+              '<span class="wf-comms-wa-row-preview">' + escapeHtml(it.lastMessageText || '') + '</span>' +
+            '</span>' +
+            (it.itemCount > 1
+              ? '<span class="wf-comms-wa-row-badge count">' + it.itemCount + '</span>'
+              : '<span class="wf-comms-wa-row-badge"></span>') +
+          '</div>'
+        ).join('');
+        commsWaList.querySelectorAll('.wf-comms-wa-row').forEach((row) => {
+          row.addEventListener('click', () => openConversationPage(row.dataset.chatId));
+        });
+      }
+    }
+  }
+
+  function showHome() {
+    setPanelView('home');
+  }
+
+  function showImportant() {
+    setPanelView('important');
+    loadCommsPage();
+  }
+
+  // Status line per aCase/outcome - a short, honest "what SUBH did" read
+  // rather than the raw internal enum values.
+  function convoStatusLine(lastOutcome) {
+    if (!lastOutcome) return null;
+    const { aCase, outcome } = lastOutcome;
+    if (outcome === 'sent') return { text: 'SUBH: auto-replied', tone: 'resolved' };
+    if (outcome === 'draft_mode') return { text: 'SUBH: draft ready - needs your review', tone: 'waiting' };
+    if (outcome === 'send_failed') return { text: 'SUBH: send failed - escalated', tone: 'escalated' };
+    if (outcome === 'never_auto_pending') return { text: 'SUBH: waiting for your review', tone: 'waiting' };
+    if (aCase === 'holding') return { text: 'SUBH: waiting for your answer', tone: 'waiting' };
+    return null;
+  }
+
+  async function postJson(url, body) {
+    const resp = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+    let data = {};
+    try { data = await resp.json(); } catch (err) { /* ignore */ }
+    return { ok: resp.ok, data };
+  }
+
+  // One action group PER OUTSTANDING ITEM, never collapsed to "the first
+  // one" - found live (see getWhatsappConversation's own comment) that a
+  // single WhatsApp number can carry several pending approvals for
+  // different named requesters at once, which an earlier version of this
+  // function silently reduced to just one. A group whose item names a
+  // requester different from the conversation's own header name says so
+  // explicitly ("For: <name>"), so approving/rejecting the right one is
+  // never a guess.
+  function forLabel(itemName, convoName) {
+    return (itemName && itemName !== convoName) ? ('<span class="wf-convo-action-for">For: ' + escapeHtml(itemName) + '</span>') : '';
+  }
+
+  function buildConvoActions(convo) {
+    const groups = [];
+    (convo.pendingApprovals || []).forEach((a) => {
+      groups.push(
+        '<div class="wf-convo-action-group" data-action-type="approval">' +
+          '<span class="wf-convo-action-label">Pending data request approval</span>' +
+          forLabel(a.name, convo.name) +
+          '<span class="wf-convo-action-preview">' + escapeHtml(a.error ? ('Could not prepare an answer: ' + a.error) : (a.text || '')) + '</span>' +
+          (a.error ? '' :
+            '<span class="wf-convo-action-row">' +
+              '<button type="button" class="wf-convo-action-btn primary" data-approval-action="approve" data-approval-id="' + escapeHtml(a.id) + '">Pathao</button>' +
+              '<button type="button" class="wf-convo-action-btn danger" data-approval-action="reject" data-approval-id="' + escapeHtml(a.id) + '">Na</button>' +
+            '</span>'
+          ) +
+        '</div>'
+      );
+    });
+    (convo.pendingDrafts || []).forEach((d) => {
+      groups.push(
+        '<div class="wf-convo-action-group" data-action-type="draft">' +
+          '<span class="wf-convo-action-label">Pending draft reply</span>' +
+          forLabel(d.name, convo.name) +
+          '<span class="wf-convo-action-preview">' + escapeHtml(d.draftReply || '') + '</span>' +
+          '<span class="wf-convo-action-row">' +
+            '<button type="button" class="wf-convo-action-btn primary" data-draft-action="send" data-draft-reply="' + escapeHtml(d.draftReply || '') + '">Send</button>' +
+            '<button type="button" class="wf-convo-action-btn outline" data-draft-action="edit" data-draft-reply="' + escapeHtml(d.draftReply || '') + '">Edit</button>' +
+            '<button type="button" class="wf-convo-action-btn danger" data-draft-action="skip">Skip</button>' +
+          '</span>' +
+        '</div>'
+      );
+    });
+    (convo.openFollowups || []).forEach((f) => {
+      groups.push(
+        '<div class="wf-convo-action-group" data-action-type="followup">' +
+          '<span class="wf-convo-action-label">Open follow-up</span>' +
+          forLabel(f.name, convo.name) +
+          '<span class="wf-convo-action-preview">' + escapeHtml(f.summary || '') + '</span>' +
+          '<span class="wf-convo-action-row"><button type="button" class="wf-convo-action-btn primary" data-followup-action="done">Mark done</button></span>' +
+        '</div>'
+      );
+    });
+    (convo.pendingDocuments || []).forEach((doc) => {
+      groups.push(
+        '<div class="wf-convo-action-group" data-action-type="document">' +
+          '<span class="wf-convo-action-label">Document received</span>' +
+          '<span class="wf-convo-action-preview">Sent a file for ' + escapeHtml(doc.topic || '') + '</span>' +
+          '<span class="wf-convo-action-row">' +
+            '<a class="wf-convo-action-btn outline" style="text-align:center;text-decoration:none;" href="/api/workforce/hr-assistant/whatsapp-document/' + encodeURIComponent(convo.chatId) + '" target="_blank" rel="noopener">View file</a>' +
+            '<button type="button" class="wf-convo-action-btn primary" data-document-action="done">Mark done</button>' +
+          '</span>' +
+        '</div>'
+      );
+    });
+    groups.push(
+      '<div class="wf-convo-action-group">' +
+        '<span class="wf-convo-toggle-row">' +
+          '<span class="wf-convo-toggle-label">Never auto-reply to this contact</span>' +
+          '<button type="button" class="wf-convo-toggle" id="hrConvoNeverAutoToggle" aria-pressed="' + (convo.neverAuto ? 'true' : 'false') + '"></button>' +
+        '</span>' +
+      '</div>'
+    );
+    return groups.join('');
+  }
+
+  async function openConversationPage(chatId) {
+    activeConvoChatId = chatId;
+    setPanelView('conversation');
+    if (commsHeadTitle) commsHeadTitle.textContent = 'Loading…';
+    if (convoThread) convoThread.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+    if (convoActions) convoActions.innerHTML = '';
+    await reloadConversation();
+  }
+
+  async function reloadConversation() {
+    if (!activeConvoChatId) return;
+    let convo;
+    try {
+      const resp = await fetch('/api/workforce/hr-assistant/whatsapp-conversation/' + encodeURIComponent(activeConvoChatId));
+      convo = await resp.json();
+    } catch (err) {
+      if (convoThread) convoThread.innerHTML = '<div class="wf-comms-empty">Could not load this conversation.</div>';
+      return;
+    }
+    if (commsHeadTitle) commsHeadTitle.textContent = convo.name || activeConvoChatId;
+
+    const status = convoStatusLine(convo.lastOutcome);
+    const thread = (convo.thread || []).map((m) =>
+      '<div class="wf-convo-msg ' + (m.direction === 'out' ? 'out' : 'in') + '">' +
+        '<span class="wf-convo-msg-bubble">' + escapeHtml(m.text) + '</span>' +
+        '<span class="wf-convo-msg-time">' + formatCommsTime(m.ts) + '</span>' +
+      '</div>'
+    ).join('');
+    if (convoThread) {
+      convoThread.innerHTML = (thread || '<div class="wf-comms-empty">No recent messages stored for this chat.</div>') +
+        (status ? '<span class="wf-convo-status-line ' + status.tone + '">' + escapeHtml(status.text) + '</span>' : '');
+      convoThread.scrollTop = convoThread.scrollHeight;
+    }
+
+    if (convoActions) {
+      convoActions.innerHTML = buildConvoActions(convo);
+      const approveBtn = convoActions.querySelector('[data-approval-action]');
+      convoActions.querySelectorAll('[data-approval-action]').forEach((b) => {
+        b.addEventListener('click', async () => {
+          b.disabled = true;
+          const action = b.dataset.approvalAction === 'reject' ? 'reject' : 'approve';
+          let editInstruction = null;
+          if (action === 'approve') {
+            const narrow = prompt('Pathanor age change korte chan? Blank rakhle ei text-i jabe.', '');
+            if (narrow && narrow.trim()) editInstruction = narrow.trim();
+          }
+          await postJson('/api/workforce/hr-assistant/whatsapp-approval', { id: b.dataset.approvalId, action, editInstruction });
+          await reloadConversation();
+          pollCommsSummary();
+        });
+      });
+      convoActions.querySelectorAll('[data-draft-action]').forEach((b) => {
+        b.addEventListener('click', async () => {
+          b.disabled = true;
+          const action = b.dataset.draftAction;
+          if (action === 'skip') {
+            await postJson('/api/workforce/hr-assistant/whatsapp-reply', { contactId: activeConvoChatId, action: 'skip' });
+          } else if (action === 'edit') {
+            const edited = prompt('Notun reply ki hobe?', b.dataset.draftReply || '');
+            b.disabled = false;
+            if (edited === null) return;
+            await postJson('/api/workforce/hr-assistant/whatsapp-reply', { contactId: activeConvoChatId, action: 'send', editedText: edited });
+          } else {
+            await postJson('/api/workforce/hr-assistant/whatsapp-reply', { contactId: activeConvoChatId, action: 'send' });
+          }
+          await reloadConversation();
+          pollCommsSummary();
+        });
+      });
+      convoActions.querySelectorAll('[data-followup-action]').forEach((b) => {
+        b.addEventListener('click', async () => {
+          b.disabled = true;
+          await postJson('/api/workforce/hr-assistant/whatsapp-followup-done', { chatId: activeConvoChatId });
+          await reloadConversation();
+          pollCommsSummary();
+        });
+      });
+      convoActions.querySelectorAll('[data-document-action]').forEach((b) => {
+        b.addEventListener('click', async () => {
+          b.disabled = true;
+          await postJson('/api/workforce/hr-assistant/whatsapp-document-done', { chatId: activeConvoChatId });
+          await reloadConversation();
+          pollCommsSummary();
+        });
+      });
+      const neverAutoToggle = document.getElementById('hrConvoNeverAutoToggle');
+      if (neverAutoToggle) {
+        neverAutoToggle.addEventListener('click', async () => {
+          const next = neverAutoToggle.getAttribute('aria-pressed') !== 'true';
+          neverAutoToggle.setAttribute('aria-pressed', String(next));
+          await postJson('/api/workforce/hr-assistant/whatsapp-never-auto', { chatId: activeConvoChatId, enabled: next });
+        });
+      }
+    }
+  }
+
+  if (todayUpdatesCard) todayUpdatesCard.addEventListener('click', showImportant);
+  if (commsBackBtn) {
+    commsBackBtn.addEventListener('click', () => {
+      if (panelView === 'conversation') showImportant();
+      else showHome();
+    });
   }
 
   // Positive-match ONLY - found live that the old default-to-"skip"

@@ -1657,4 +1657,98 @@ router.post('/hr-assistant/whatsapp-list', async (req, res) => {
   }
 });
 
+// ---------------- Important Communications (SUBH Phase 1 redesign) ----------------
+// Owner-only, same gate as subh-notifications/memory commands above -
+// everyone else on this shared router just gets an empty/zeroed result,
+// never an error (the Home badge and Communications page simply show
+// nothing for a non-owner, same convention as every other owner-only
+// surface here).
+router.get('/hr-assistant/communications-summary', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) {
+    return res.json({ importantMailsCount: 0, whatsappItems: [], importantWhatsappCount: 0, systemNotices: [] });
+  }
+  const [whatsappItems, systemNotices] = await Promise.all([
+    whatsappAssistant.listActionableWhatsappItems(),
+    whatsappAssistant.listSystemNotices()
+  ]);
+  res.json({
+    importantMailsCount: 0, // Phase 3
+    whatsappItems,
+    importantWhatsappCount: whatsappItems.length,
+    systemNotices
+  });
+});
+
+router.get('/hr-assistant/whatsapp-conversation/:chatId', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const convo = await whatsappAssistant.getWhatsappConversation(req.params.chatId);
+    res.json(convo);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/hr-assistant/whatsapp-approval', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const { id, action, editInstruction } = req.body || {};
+    if (!id || (action !== 'approve' && action !== 'reject')) {
+      return res.status(400).json({ error: 'id and action ("approve" or "reject") are required' });
+    }
+    const approval = await whatsappAssistant.resolveApprovalById(id);
+    if (!approval) return res.status(404).json({ error: 'That approval is no longer pending (already resolved?).' });
+    const reply = action === 'reject'
+      ? await whatsappAssistant.executeApprovalReject(approval)
+      : await whatsappAssistant.executeApprovalSend(approval, editInstruction || null);
+    res.json({ ok: true, reply });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/hr-assistant/whatsapp-followup-done', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const { chatId } = req.body || {};
+    if (!chatId) return res.status(400).json({ error: 'chatId is required' });
+    const ok = await whatsappAssistant.clearOpenFollowup(chatId);
+    res.json({ ok });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/hr-assistant/whatsapp-document-done', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const { chatId } = req.body || {};
+    if (!chatId) return res.status(400).json({ error: 'chatId is required' });
+    const ok = await documentRequests.markDone(chatId);
+    res.json({ ok });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/hr-assistant/whatsapp-never-auto', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const { chatId, enabled } = req.body || {};
+    if (!chatId || typeof enabled !== 'boolean') {
+      return res.status(400).json({ error: 'chatId and a boolean enabled are required' });
+    }
+    const ok = enabled ? await whatsappAssistant.addToNeverAuto(chatId) : await whatsappAssistant.removeFromNeverAuto(chatId);
+    res.json({ ok, enabled });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/hr-assistant/subh-notifications/dismiss', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  await whatsappAssistant.dismissSystemNotices();
+  res.json({ ok: true });
+});
+
 module.exports = router;
