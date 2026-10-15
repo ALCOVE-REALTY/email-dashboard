@@ -159,14 +159,26 @@ async function checkAsync(label, fn) {
     return d.case === 'acknowledged' && Object.values(whatsappAssistant.EMOJI_ACK_REPLY).includes(d.replyText);
   });
 
-  check('SENIOR_DESIGNATION_RE matches a real Director/VP/Head title', whatsappAssistant.SENIOR_DESIGNATION_RE.test('DIRECTOR - OPERATIONS') && whatsappAssistant.SENIOR_DESIGNATION_RE.test('VP HR') && whatsappAssistant.SENIOR_DESIGNATION_RE.test('HR HEAD'));
-  check('SENIOR_DESIGNATION_RE does NOT match an ordinary designation (found live: Radha\'s real sheet designation is "MANAGER", not "Head" - never-auto-list membership is the primary senior signal, this keyword match is only the fallback)', !whatsappAssistant.SENIOR_DESIGNATION_RE.test('MANAGER'));
-  await checkAsync('isSeniorContact is false for a number not on the never-auto list and with no senior-keyword designation', async () => (await whatsappAssistant.isSeniorContact(TEST_PHONE, { designation: 'MANAGER' })) === false);
-  await checkAsync('isSeniorContact is true purely from a senior-keyword designation, even off the never-auto list', async () => (await whatsappAssistant.isSeniorContact(TEST_PHONE, { designation: 'DIRECTOR' })) === true);
-
   await checkAsync('a genuinely unclear remark never produces a banned robotic phrase (found live: "I\'m not sure I follow... could you tell me a bit more about what you mean")', async () => {
     const d = await whatsappAssistant.decideAutoReply({ phone: TEST_PHONE, name: 'Test', firstName: 'Test', text: 'eita thik na bhaiya ki bolo', isGroup: false, history: [] });
     return Boolean(d.replyText) && !whatsappAssistant.FORBIDDEN_ROBOTIC_RE.test(d.replyText);
+  });
+
+  console.log('='.repeat(70));
+  console.log('Universal respectful/formal tone (no senior tier - EVERY sender gets the same "apni"/"aap" treatment, never "tumi"/"tum", per direct instruction)');
+  console.log('='.repeat(70));
+  const INFORMAL_RE = /\btumi\b|\btui\b|\btor\b|\btomar\b|\btum\b|\btera\b|\btu\b|\btujhe\b/i;
+  await checkAsync('a Banglish sender who writes with "tumi" still gets an "apni"-formal reply, never "tumi" back', async () => {
+    const d = await whatsappAssistant.decideAutoReply({ phone: TEST_PHONE, name: 'Test', firstName: 'Test', text: 'tumi ki bolte paro amar salary kobe asbe?', isGroup: false, history: [] });
+    return Boolean(d.replyText) && !INFORMAL_RE.test(d.replyText);
+  });
+  await checkAsync('a Hinglish sender who writes with "tum" still gets an "aap"-formal reply, never "tum" back', async () => {
+    const d = await whatsappAssistant.decideAutoReply({ phone: TEST_PHONE, name: 'Test', firstName: 'Test', text: 'tum bata sakte ho mera confirmation letter kab milega?', isGroup: false, history: [] });
+    return Boolean(d.replyText) && !INFORMAL_RE.test(d.replyText);
+  });
+  await checkAsync('a policy/approval-type question (F&F-style) gets an escalate-to-Subhodeep reply, brief and non-argumentative', async () => {
+    const d = await whatsappAssistant.decideAutoReply({ phone: TEST_PHONE, name: 'Test', firstName: 'Test', text: 'amar F&F settlement approval ki hoyeche?', isGroup: false, history: [] });
+    return Boolean(d.replyText) && /subhodeep/i.test(d.replyText) && !whatsappAssistant.FORBIDDEN_ROBOTIC_RE.test(d.replyText);
   });
 
   console.log('='.repeat(70));

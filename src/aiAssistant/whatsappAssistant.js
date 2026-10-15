@@ -2119,9 +2119,10 @@ const DRAFT_SYSTEM_PROMPT =
   'write it. ' +
   'NEVER open with "Namaskar", "Namaste", "Ji" or "Dear" (or any formal greeting word like them) - ' +
   'found live, these read as a bot/call-centre script, not a real person\'s own WhatsApp message - go ' +
-  'straight to the topic instead. Match the sender\'s own formality: if THEIR message used informal ' +
-  '"tumi"/"tui"/"tor" (Bengali) or "tum"/"tera"/"tu" (Hindi), reply the same informal way; otherwise use ' +
-  'the formal "apni" (Bengali) / "aap" (Hindi) - never mix the two within one reply. You are told the ' +
+  'straight to the topic instead. ALWAYS address the sender formally/respectfully - "apni" (Bengali) / ' +
+  '"aap" (Hindi) / polite English - no matter what, for everyone without exception, even if THEIR OWN ' +
+  'message used informal "tumi"/"tui"/"tor" (Bengali) or "tum"/"tera"/"tu" (Hindi): NEVER reply with ' +
+  '"tumi"/"tum", never mixed. You are told the ' +
   'sender\'s first name as part of "X wrote: ..." below - if it is a real name, you may personalize by ' +
   'starting with it (e.g. "Rahul, ..."), but never in every single reply, vary it. If you are told "The ' +
   'sender wrote: ...", that is NOT a name - no name is known for this person, do not invent one, do not ' +
@@ -2133,8 +2134,8 @@ const DRAFT_SYSTEM_PROMPT =
   'language to preserve: REWRITE it in the language/script of THIS sender\'s message, exactly the same ' +
   'rule this whole prompt already applies everywhere else (see the worked example right after the ' +
   'memory fact itself, if one is given). ' +
-  'Write DIRECTLY TO the sender, second person ("apni/tumi check korun", never "bolben"/"bolun" style ' +
-  'phrasing that reads as asking them to go tell someone ELSE) - this is a message straight to them, ' +
+  'Write DIRECTLY TO the sender, second person ("apni check korun", never "tumi", never "bolben"/' +
+  '"bolun" style phrasing that reads as asking them to go tell someone ELSE) - this is a message straight to them, ' +
   'not an instruction to relay. Include the FULL guidance, not a shortened paraphrase - if the ' +
   'guidance has more than one step (e.g. check something, then if that fails do X), say all of it, ' +
   'each as a direct instruction to the sender. If the memory\'s documentRequested field is true, the ' +
@@ -2299,8 +2300,8 @@ const GROUP_DRAFT_SYSTEM_PROMPT =
   'content only, not as a script/language to preserve: REWRITE it in the language/script of THIS ' +
   'tagged message, exactly the same rule this whole prompt already applies everywhere else (see the ' +
   'worked example right after the memory fact itself, if one is given). ' +
-  'Write DIRECTLY TO whoever is reading, second person ("apni/tumi check korun", never "bolben"/' +
-  '"bolun" style phrasing that reads as asking them to go tell someone ELSE). Include the FULL ' +
+  'Write DIRECTLY TO whoever is reading, second person, ALWAYS formal ("apni check korun", never ' +
+  '"tumi", never "bolben"/"bolun" style phrasing that reads as asking them to go tell someone ELSE). Include the FULL ' +
   'guidance, not a shortened paraphrase - every step of it, as a direct instruction. If the memory\'s ' +
   'documentRequested field is true, the guidance already asks for something to be sent - you MUST ' +
   'also explicitly say it should go to your PERSONAL chat on this number, since a group sender can\'t ' +
@@ -2490,7 +2491,11 @@ const CONTEXT_REPLY_SYSTEM_PROMPT =
   'You do NOT have the real answer right now - you only know what is in this conversation, nothing ' +
   'else. NEVER invent a date, approval, policy answer, or a promise of WHEN something will be ' +
   'resolved - not even a vague "today"/"tomorrow"/"kal"/"within 2 days"/a weekday name. The honest, ' +
-  'safe thing to say is that you will check with Subhodeep (the HR manager) and confirm. ' +
+  'safe thing to say is that you will check with Subhodeep (the HR manager) and confirm. For a policy ' +
+  'question, an approval, salary/F&F, or anything genuinely needing a decision, say plainly (still ' +
+  'briefly, never a long explanation) that you are escalating it to Subhodeep for his review - it will ' +
+  'reach him. Never argue with the sender and never repeat the same point back at them if they push ' +
+  'back - just calmly restate that you will escalate/check. ' +
   'CRITICAL: look at your own PAST messages in the history ("You:" lines) - never send the same or a ' +
   'near-identical sentence again, even for a different open question; if you already said something ' +
   'like "I\'ll check with Subhodeep and update you", say the SAME idea in genuinely different words this ' +
@@ -2501,8 +2506,12 @@ const CONTEXT_REPLY_SYSTEM_PROMPT =
   'said. ALWAYS mention the actual topic by name (you are told it below) - never just say "this"/"it"/ ' +
   '"your issue"/"bishoy-ta" with no topic attached; a generic reply with no named topic is a failure. ' +
   'NEVER open with "Namaskar"/"Namaste"/"Ji"/"Dear" - go straight to the point. Match the sender\'s own ' +
-  'language/script and apni/tumi or aap/tum formality from their OWN messages in the history. Keep it ' +
-  'to 1-3 short lines, like a real person typing on their phone, never textbook-formal. ' +
+  'language/script from their OWN messages in the history - but address them ALWAYS formally/' +
+  'respectfully ("apni" in Bengali, "aap" in Hindi, polite English) no matter what, for every sender ' +
+  'without exception, regardless of their role and regardless of whether THEIR OWN messages are ' +
+  'informal ("tumi"/"tui"/"tor"/"tum"/"tera"/"tu") - NEVER reply with "tumi"/"tum", never mixed. Warm ' +
+  'and courteous, never slangy. Keep it to 1-3 short lines, like a real person typing on their phone, ' +
+  'never textbook-formal, never robotic. ' +
   'Banglish negation: "-ni" (ashe ni, hoy ni), never "-eche na"; say "shighroi" or "taratari" for ' +
   '"soon", NEVER "shigghiri" (not a real word). English: correct tense, no literal translation. ' +
   'Hinglish: "nahi", never a bare "na"; address as "aap". Never mix a Hindi word into Banglish or a ' +
@@ -2616,31 +2625,6 @@ const EMOJI_ACK_REPLY = {
   banglish: '🙂 Kichu dorkar hole janaben.',
   hinglish: '🙂 Kuch chahiye to bataiyega.',
   english: '🙂 Let me know if you need anything.'
-};
-
-// Seniors (HR Head/directors/VPs) get an extra-brief, respectful,
-// never-argue-or-repeat tone (spec point 4). Checked TWO ways:
-// 1) the phone is on the owner's own never-auto list - found live that
-//    this is the more reliable signal: Radha Biswas Bhattacharjee (who
-//    the owner refers to as "HR Head" and saves in WhatsApp as such, the
-//    real person behind this whole fix) has the sheet designation
-//    "MANAGER", not "Head"/"Director"/"VP" - a title-keyword match alone
-//    would have missed her entirely. The never-auto list is exactly the
-//    owner's own curated "these people matter, handle with care" list
-//    (see addToNeverAuto/isNeverAuto), so it doubles as the senior-contact
-//    signal once populated.
-// 2) a fallback keyword match on the real directory designation, for
-//    anyone who genuinely holds one of these titles but isn't (yet) on
-//    that list.
-const SENIOR_DESIGNATION_RE = /\bhead\b|\bdirector\b|\bvice\s*president\b|\bvp\b|\bpresident\b|\bchief\b|\bceo\b|\bcoo\b|\bcfo\b/i;
-async function isSeniorContact(phone, emp) {
-  if (phone && await isNeverAuto(phone)) return true;
-  return Boolean(emp && emp.designation && SENIOR_DESIGNATION_RE.test(emp.designation));
-}
-const SENIOR_ESCALATE_REPLY = {
-  banglish: (topicLabel) => 'Bujhlam. ' + topicLabel + ' niye Subhodeep-ke janiye WhatsApp section-e escalate korchi, uni dekhe confirm korben.',
-  hinglish: (topicLabel) => 'Samajh gaya. ' + topicLabel + ' ke baare mein Subhodeep ko WhatsApp section mein escalate kar raha hoon, woh dekh kar confirm karenge.',
-  english: (topicLabel) => "Understood. I'll escalate " + topicLabel + " to Subhodeep in the WhatsApp section for his confirmation."
 };
 
 // Banned robotic phrases, checked structurally (not just prompted away) -
@@ -2807,18 +2791,13 @@ async function decideAutoReply({ phone, name, firstName, text, isGroup, history 
   // or count toward the repeated-follow-up tracker, since there's no
   // open question here to actually wait on.
   const isAcknowledgement = ['greeting', 'thanks', 'document_sent'].includes(classification.intent);
-  // Seniors (HR Head/director/VP) get a fixed, short escalate-only line
-  // instead of the full model-generated conversational reply (spec point
-  // 4) - structurally brief and never argues/repeats, rather than just
-  // prompting the model to "be brief" and hoping. The escalation itself
-  // (addOpenFollowup below) is identical either way - only the reply TEXT
-  // sent back to the senior changes.
-  if (!isAcknowledgement && await isSeniorContact(phone, emp && emp.emp)) {
-    const lang = detectLang(text);
-    const replyText = (SENIOR_ESCALATE_REPLY[lang] || SENIOR_ESCALATE_REPLY.english)(topicLabel);
-    const followupCount = await incrementFollowupCount(phone);
-    return { case: 'holding', replyText, summaryForOwner: text.slice(0, 160), topicLabel, topic: classification.topic, followupCount };
-  }
+  // No per-sender tiering (an earlier version of this fix special-cased
+  // "senior" contacts) - every sender gets the exact same brief,
+  // respectful, always-formal, never-argue-or-repeat treatment, enforced
+  // in CONTEXT_REPLY_SYSTEM_PROMPT itself rather than a separate code
+  // path, per direct instruction: "Make EVERY reply respectful... for
+  // everyone, not only seniors." The never-auto list stays empty - every
+  // sender gets a real auto-reply.
   const replyText = await generateConversationReply(text, history, firstName, topicLabel, !isAcknowledgement);
   if (isAcknowledgement) {
     return { case: 'acknowledged', replyText, summaryForOwner: null };
@@ -2836,7 +2815,7 @@ async function decideAutoReply({ phone, name, firstName, text, isGroup, history 
 // wording the spec itself gave as "the" example.
 const DOC_THANKS = {
   hinglish: 'Dhanyawad, document mil gaya. Subhodeep ko bata raha hoon, jaldi update milega.',
-  banglish: 'Dhonnobad, document peyechi. Subhodeep-ke janiye dicchi, taratari update pabe.',
+  banglish: 'Dhonnobad, document peyechi. Subhodeep-ke janiye dicchi, taratari update paben.',
   english: 'Thank you, I\'ve received the document. Letting Subhodeep know - you\'ll get an update shortly.'
 };
 function thanksReplyFor(captionText) {
@@ -3168,12 +3147,10 @@ module.exports = {
   cardHasForbiddenField,
   textHasForbiddenField,
   // Exported for scripts/check-whatsapp-engine.js only - the identity/
-  // emoji/senior-contact/robotic-phrase fix (see decideAutoReply).
+  // emoji/robotic-phrase fix (see decideAutoReply).
   IDENTITY_CONFIRM_RE,
   IDENTITY_CONFIRM_REPLY,
   isEmojiOnlyMessage,
   EMOJI_ACK_REPLY,
-  isSeniorContact,
-  SENIOR_DESIGNATION_RE,
   FORBIDDEN_ROBOTIC_RE
 };
