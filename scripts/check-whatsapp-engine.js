@@ -6,6 +6,16 @@
 // here saves a pending approval/draft/follow-up, sends a WhatsApp
 // message, or clears/resolves any real record. Run before and after a
 // change with `npm run check:whatsapp-engine` and diff the pass counts.
+//
+// If a future check needs to WRITE simulated data (not just assert on
+// real data), it MUST use scripts/testRedisNamespace.js's "test:" prefix
+// and clean up every key it created - never write under the app's real
+// key names (wa-pending-approval:*, wa-doc-request:*, etc.) with a
+// synthetic phone number. That's exactly what went wrong before this
+// rule existed: synthetic approvals for 919999999998 and document
+// requests for 919812345670-72/919000000002 sat in production Redis for
+// days and surfaced in the owner's live Important Communications page
+// before being found and deleted.
 require('dotenv').config({ path: '.env.local' });
 require('dotenv').config();
 
