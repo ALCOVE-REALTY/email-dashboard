@@ -170,10 +170,13 @@ async function retirementThisMonth(includeNoticePeriod, includeInactive, monthOf
   const target = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + (Number(monthOffset) || 0), 1));
   const list = analytics.turning58ThisMonth(employees, target).filter((e) => statusAllowed(e, includeNoticePeriod, includeInactive));
   const monthLabel = target.toLocaleDateString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' });
-  const mapRow = (e) => [e.name, e.dob ? e.dob.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) : '—', departmentNames.get(e.departmentKey) || e.department || '—'];
+  const mapRow = (e) => [e.name, departmentNames.get(e.departmentKey) || e.department || '—', e.dob ? e.dob.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) : '—'];
   return {
     title: 'Employees Reaching Retirement Age in ' + monthLabel + truncationSuffix(list.length),
-    columns: ['Name', 'DOB', 'Department'],
+    // Identity (Name) first, role/place (Department) next, date (DOB)
+    // last - per the standard column-order rule applied to every
+    // list/report tool.
+    columns: ['Name', 'Department', 'DOB'],
     tableRows: list.slice(0, CARD_ROW_LIMIT).map(mapRow),
     fullTableRows: list.map(mapRow),
     footer: { label: 'Total' + scopeSuffix(includeNoticePeriod, includeInactive), value: list.length }
@@ -204,10 +207,13 @@ async function birthdaysThisMonth(month, includeNoticePeriod, includeInactive, m
   const target = new Date(Date.UTC(now.getUTCFullYear(), targetMonthIndex, 1));
   const list = analytics.birthdaysThisMonth(employees, target).filter((e) => statusAllowed(e, includeNoticePeriod, includeInactive));
   const monthLabel = target.toLocaleDateString('en-US', { month: 'long', timeZone: 'UTC' });
-  const mapRow = (e) => [e.name, e.dob.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }), departmentNames.get(e.departmentKey) || e.department || '—'];
+  const mapRow = (e) => [e.name, departmentNames.get(e.departmentKey) || e.department || '—', e.dob.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })];
   return {
     title: 'Birthdays in ' + monthLabel + truncationSuffix(list.length),
-    columns: ['Name', 'DOB', 'Department'],
+    // Identity (Name) first, role/place (Department) next, date (DOB)
+    // last - per the standard column-order rule applied to every
+    // list/report tool.
+    columns: ['Name', 'Department', 'DOB'],
     tableRows: list.slice(0, CARD_ROW_LIMIT).map(mapRow),
     fullTableRows: list.map(mapRow),
     footer: { label: 'Total' + scopeSuffix(includeNoticePeriod, includeInactive), value: list.length }
@@ -236,10 +242,12 @@ async function workforceMovement(days = 90) {
 async function healthInsurancePendingAdditions() {
   const insuranceData = await insuranceService.getInsuranceData();
   const additions = insuranceData.additions || [];
-  const mapRow = (a) => [a.name, a.employeeId];
+  const mapRow = (a) => [a.employeeId, a.name];
   return {
     title: 'Pending Health Insurance Additions' + truncationSuffix(additions.length),
-    columns: ['Name', 'Employee ID'],
+    // Identity fields first (Employee ID, Name) - same convention as
+    // every other list/report tool.
+    columns: ['Employee ID', 'Name'],
     tableRows: additions.slice(0, CARD_ROW_LIMIT).map(mapRow),
     fullTableRows: additions.map(mapRow),
     footer: { label: 'Total Pending', value: additions.length }
@@ -610,6 +618,24 @@ const QUERY_FIELD_DEFS = {
 const QUERY_DEFAULT_FIELDS = ['employeeId', 'name', 'designation', 'department', 'status'];
 const QUERY_GROUPABLE_FIELDS = ['designation', 'department', 'status', 'location', 'gender', 'collar', 'employmentType', 'reportingManager', 'reportingDoer'];
 const QUERY_SORTABLE_FIELDS = [...Object.keys(QUERY_FIELD_DEFS), 'tenureYears', 'experienceYears'];
+
+// Standard column-order rule (every list/report tool) - identity first,
+// then role/place, everything else (dates, numbers, personal/contact
+// fields) last. QUERY_DEFAULT_FIELDS is already in this order by
+// construction; this only matters for a CUSTOM `fields` list, since the
+// model can ask for them in any order (e.g. "name, dob, department" for
+// a birthday-style ad hoc query) and nothing else would enforce the
+// rule for that case.
+const QUERY_FIELD_ORDER_CATEGORY = {
+  employeeId: 0, name: 0,
+  designation: 1, department: 1, location: 1, reportingManager: 1, reportingDoer: 1, status: 1, gender: 1, collar: 1, employmentType: 1
+};
+function reorderFieldsByColumnRule(fieldKeys) {
+  return fieldKeys
+    .map((f, i) => ({ f, i, cat: QUERY_FIELD_ORDER_CATEGORY[f] !== undefined ? QUERY_FIELD_ORDER_CATEGORY[f] : 2 }))
+    .sort((a, b) => a.cat - b.cat || a.i - b.i)
+    .map((x) => x.f);
+}
 const QUERY_DEFAULT_LIMIT = 50;
 const QUERY_MAX_LIMIT = 200;
 
@@ -713,8 +739,9 @@ async function queryEmployees(params = {}) {
     };
   }
 
-  const fields = (Array.isArray(params.fields) ? params.fields.filter((f) => QUERY_FIELD_DEFS[f]) : []);
-  const columns = fields.length ? fields : QUERY_DEFAULT_FIELDS;
+  const requestedFields = Array.isArray(params.fields) ? params.fields.filter((f) => QUERY_FIELD_DEFS[f]) : [];
+  const fields = requestedFields.length ? reorderFieldsByColumnRule(requestedFields) : QUERY_DEFAULT_FIELDS;
+  const columns = fields;
 
   const sortBy = QUERY_SORTABLE_FIELDS.includes(params.sortBy) ? params.sortBy : 'name';
   const sortDir = params.sortDir === 'desc' ? -1 : 1;

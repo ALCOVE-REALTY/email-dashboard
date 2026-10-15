@@ -3398,7 +3398,7 @@ body:not(.printing-org-chart) .org-chart-cards-row + .org-chart-branch-connector
   padding: 0 14px;
   -webkit-overflow-scrolling: touch;
 }
-.wf-ai-card-table { border-collapse: collapse; width: 100%; min-width: 480px; font-size: 0.78rem; }
+.wf-ai-card-table { border-collapse: collapse; width: 100%; min-width: 480px; font-size: 0.78rem; table-layout: fixed; }
 .wf-ai-card-table th {
   text-align: left;
   color: var(--muted);
@@ -3410,11 +3410,18 @@ body:not(.printing-org-chart) .org-chart-cards-row + .org-chart-branch-connector
   border-bottom: 1px solid var(--line);
   white-space: nowrap;
 }
+/* Long values (e.g. "CIVIL (PLOT-B) FINISHING") used to be forced onto
+   one line (white-space: nowrap) and only reachable via the scroll
+   wrapper above - easy to miss, reads as cut off. Wrapping them in the
+   cell makes the full value visible without depending on a scrollbar;
+   the scroll wrapper still kicks in as a fallback for a table with many
+   columns that genuinely doesn't fit. */
 .wf-ai-card-table td {
   color: var(--ink);
   padding: 6px 10px 6px 0;
   border-bottom: 1px solid var(--line);
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: break-word;
 }
 .wf-ai-card-table tr:last-of-type td { border-bottom: none; }
 
@@ -3488,7 +3495,7 @@ body:not(.printing-org-chart) .org-chart-cards-row + .org-chart-branch-connector
 .wf-report-view-meta { font-size: 0.78rem; color: var(--muted); }
 .wf-report-view-body { padding: 16px 20px; overflow-y: auto; }
 .wf-report-view-table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-.wf-report-view-table { border-collapse: collapse; width: 100%; min-width: 420px; font-size: 0.84rem; }
+.wf-report-view-table { border-collapse: collapse; width: 100%; min-width: 420px; font-size: 0.84rem; table-layout: fixed; }
 .wf-report-view-table th {
   text-align: left;
   color: var(--muted);
@@ -3503,10 +3510,16 @@ body:not(.printing-org-chart) .org-chart-cards-row + .org-chart-branch-connector
   top: 0;
   background: var(--surface);
 }
+/* Explicit wrap instead of leaving it to auto table layout - previously
+   had no white-space rule at all, so whether a long value like "PLANT &
+   MACHINERY" actually wrapped depended on how much room the other
+   columns left in that specific row, not a guarantee. */
 .wf-report-view-table td {
   color: var(--ink);
   padding: 8px 12px 8px 0;
   border-bottom: 1px solid var(--line);
+  white-space: normal;
+  overflow-wrap: break-word;
 }
 .wf-report-view-table tr:last-of-type td { border-bottom: none; }
 .wf-report-view-foot {

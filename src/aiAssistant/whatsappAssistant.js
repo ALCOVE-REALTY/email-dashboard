@@ -769,17 +769,17 @@ function cardToWhatsAppNumberedList(card) {
   if (card.columns && (card.fullTableRows || card.tableRows)) {
     const rows = (card.fullTableRows || card.tableRows).slice(0, 100);
     if (!rows.length) return '';
-    const nameIdx = card.columns.findIndex((c) => /name/i.test(c));
-    const primaryIdx = nameIdx >= 0 ? nameIdx : 0;
-    let secondaryIdx;
-    if (card.columns.length <= 2) {
-      secondaryIdx = primaryIdx === 0 ? 1 : 0;
-    } else if (nameIdx >= 0 && nameIdx + 1 < card.columns.length) {
-      secondaryIdx = nameIdx + 1;
-    } else {
-      secondaryIdx = primaryIdx === 0 ? 1 : 0;
-    }
-    return rows.map((r, i) => (i + 1) + '. ' + r[primaryIdx] + ' — ' + r[secondaryIdx]).join('\n');
+    // Every column is shown except a pure identity CODE (Emp Code/
+    // Employee ID) - meaningless to an external WhatsApp requester -
+    // in the same order the card itself already uses (identity/Name
+    // first, role/place next, date/number last, per the standard
+    // column-order rule every list/report tool now follows).
+    const keepIdx = card.columns
+      .map((c, i) => ({ c: String(c || ''), i }))
+      .filter(({ c }) => !/^(emp\s*code|employee\s*id)$/i.test(c.trim()))
+      .map(({ i }) => i);
+    const idx = keepIdx.length ? keepIdx : card.columns.map((_, i) => i);
+    return rows.map((r, i) => (i + 1) + '. ' + idx.map((j) => r[j]).join(' — ')).join('\n');
   }
   const rows = (card.fullRows || card.rows || []).slice(0, 100);
   if (rows.length) {

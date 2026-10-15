@@ -196,19 +196,24 @@ const SYSTEM_PROMPT =
   'see - a card only ever shows a preview of up to 8, the footer value is the true count) and ' +
   'the scope it was counted on (Active, Notice Period, Inactive, or everyone), the same way the ' +
   'footer label says it. If the tool result\'s title contains "(Top 8)" or its rows are fewer ' +
-  'than the footer value, also say plainly that only the first few names are shown and the rest ' +
-  'are in the card. For example: "October e 33 jon active employee er birthday" (not "8", even ' +
-  'though only 8 names are visible), or "Notice period soho October e 33 jon er birthday (notice ' +
-  'period e keu nei ei mase)", or "33 jon er moddhe prothom 8 jon er naam dekhano holo, baki card ' +
-  'e ache." Only claim a preview/"rest in the card" when the title actually has "(Top 8)" or the ' +
-  'rows you see are genuinely fewer than the footer total - if every row is already shown, do not ' +
-  'say any are missing. Getting the total wrong is a real error, not a stylistic choice - always ' +
-  'read it from the footer, never estimate it from what rows happen to be visible to you. ' +
-  'A [[CARD]] reply is ONLY ever that one-line intro - NEVER also write the rows out yourself as a ' +
-  'markdown table, a bullet list, or numbered lines in the same reply; the card below your text ' +
-  'already shows them, duplicating it is a real formatting bug, not a helpful extra. If you find ' +
-  'yourself writing "|---|---|" or a numbered "1. Name - Designation" list, stop - delete it, the ' +
-  'one-line intro is the entire reply. ' +
+  'than the footer value, also say plainly that only the first few names are shown and the full ' +
+  'list is in View Report - NEVER say the rest are "in the card" (the card IS what\'s on screen, ' +
+  'saying the rest are "in" it is meaningless - View Report is the actual place to see every row). ' +
+  'For example: "October e 33 jon active employee er birthday" (not "8", even though only 8 names ' +
+  'are visible), or "Notice period soho October e 33 jon er birthday (notice period e keu nei ei ' +
+  'mase)", or "33 jon er moddhe prothom 8 jon dekhano holo - puro list View Report-e" (English: ' +
+  '"...the first 8 are shown - the full list is in View Report"; Hinglish: "...pehle 8 dikhaye hain ' +
+  '- poori list View Report mein hai"). Only claim a preview/"full list in View Report" when the ' +
+  'title actually has "(Top 8)" or the rows you see are genuinely fewer than the footer total - if ' +
+  'every row is already shown, do not say any are missing. Getting the total wrong is a real error, ' +
+  'not a stylistic choice - always read it from the footer, never estimate it from what rows happen ' +
+  'to be visible to you. ' +
+  'A [[CARD]] reply is ONLY ever that one-line intro - NEVER also write the rows out yourself in ' +
+  'ANY form (a markdown table, a plain space-aligned text table, a "------" divider line, a bullet ' +
+  'list, or numbered "1. Name - Designation" lines) in the same reply; the card below your text ' +
+  'already shows them, duplicating it in any format is a real formatting bug, not a helpful extra. ' +
+  'If you find yourself writing out more than one row of the data you were just given, stop - ' +
+  'delete it, the one-line intro is the entire reply. ' +
   'Or [[DRAFT]] if the person wants an actual written document produced - use it for ANY request ' +
   'shaped like "draft/write/compose a mail/letter/notice about...", "translate this...", ' +
   '"summarise this...", "explain [policy/law] to me in writing" - always [[DRAFT]] for these, ' +
@@ -748,7 +753,7 @@ function buildCardFallback(card) {
   }
   const shown = (card.rows || card.tableRows || []).length;
   if (shown && card.footer.value > shown) {
-    sentence += ' First ' + shown + ' shown, rest in the card.';
+    sentence += ' First ' + shown + ' shown - the full list is in View Report.';
   }
   return sentence;
 }
@@ -765,12 +770,57 @@ function stripMarkdownTable(text) {
   return text.replace(MARKDOWN_TABLE_BLOCK_RE, '').replace(/\n{3,}/g, '\n\n').trim();
 }
 
+// Catches the SAME duplication the markdown-table strip above doesn't -
+// found live, a [[CARD]] reply duplicated the rows as a plain
+// space-aligned ASCII table instead ("Name  Department\n------\nX  Y"),
+// which has no "|" character at all. Rather than pattern-matching every
+// possible table-ish text shape, this checks the REAL card data directly:
+// if 2+ of the card's own row values (the first column - e.g. real
+// employee names) show up on their own lines in the reply, that's the
+// card's rows being repeated verbatim, whatever the formatting - cut the
+// text at the first such line (backing up over an immediately preceding
+// blank/separator/short-header-looking line too).
+function cardFirstColumnValues(card) {
+  if (!card) return [];
+  const rows = card.fullTableRows || card.tableRows;
+  if (rows && rows.length) return rows.map((r) => String((r && r[0]) || '')).filter(Boolean);
+  const plainRows = card.fullRows || card.rows;
+  if (plainRows && plainRows.length) return plainRows.map((r) => (r && r.label) ? String(r.label) : '').filter(Boolean);
+  return [];
+}
+function looksLikeSeparatorOrHeaderLine(line) {
+  const t = line.trim();
+  if (!t) return true;
+  if (/^[\s\-_=]+$/.test(t)) return true; // "------" / "======" style divider
+  // A short line with 2+ whitespace/tab-separated tokens and no
+  // sentence-ending punctuation reads as a table header ("Name
+  // Department"), not a real sentence.
+  return !/[.!?।]\s*$/.test(t) && t.split(/\s{2,}|\t/).length >= 2 && t.length < 60;
+}
+function stripDuplicatedCardRows(text, card) {
+  const values = cardFirstColumnValues(card);
+  if (values.length < 2) return text;
+  const lines = text.split('\n');
+  const matchedLineIdx = [];
+  lines.forEach((line, i) => {
+    const t = line.trim();
+    if (t && values.some((v) => v && t.includes(v))) matchedLineIdx.push(i);
+  });
+  if (matchedLineIdx.length < 2) return text;
+  let cut = matchedLineIdx[0];
+  while (cut > 0 && looksLikeSeparatorOrHeaderLine(lines[cut - 1])) cut--;
+  return lines.slice(0, cut).join('\n').trim();
+}
+
 function finalizeReply(rawContent, card, actions, fallbackText) {
   const raw = rawContent || '';
   const match = raw.match(REPLY_MARKER_RE);
   const isPlain = Boolean(match && match[1] === 'PLAIN');
   let cleaned = (match ? raw.slice(match[0].length) : raw).trim();
-  if (!isPlain) cleaned = stripMarkdownTable(cleaned);
+  if (!isPlain) {
+    cleaned = stripMarkdownTable(cleaned);
+    cleaned = stripDuplicatedCardRows(cleaned, card);
+  }
   return {
     reply: cleaned || buildCardFallback(card) || fallbackText,
     card: isPlain ? null : card,
