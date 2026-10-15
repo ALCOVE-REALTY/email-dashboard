@@ -112,7 +112,6 @@ const addToAllowlist = (phone) => addToList(ALLOWLIST_KEY, phone);
 const addToBlocklist = (phone) => addToList(BLOCKLIST_KEY, phone);
 const removeFromAllowlist = (phone) => removeFromList(ALLOWLIST_KEY, phone);
 const removeFromBlocklist = (phone) => removeFromList(BLOCKLIST_KEY, phone);
-const isAllowlisted = (phone) => isInList(ALLOWLIST_KEY, phone);
 const isBlocklisted = (phone) => isInList(BLOCKLIST_KEY, phone);
 
 // A name the owner explicitly typed alongside a phone number when adding
@@ -407,36 +406,20 @@ async function listInboxLog(limit = 500) {
   } catch (err) { return []; }
 }
 
-// ---------------- Active conversation + history + loop protection ----------------
-// Found live: a 1:1 chat that had already exchanged one real official
-// message, then got two more real follow-ups ("Tau kobe pabo iktu
-// bolben?", "Bolun") that received NO REPLY AT ALL - classify() requires
-// a work keyword on EVERY message independently, and neither follow-up
-// happened to contain one. Once a chat has a real official message, it
-// stays an ACTIVE OFFICIAL CONVERSATION for 24h (refreshed on every
-// message in it) - every message in that window counts as official
-// regardless of keywords, same as a real person would obviously keep
-// replying to someone they're already mid-conversation with.
-const ACTIVE_CONVO_PREFIX = 'wa-active-convo:';
+// ---------------- Conversation history + loop protection ----------------
+// Every 1:1 message to this number is official by default now (see
+// classify() above) - this history store exists purely to give
+// classifyOfficialMessage/generateConversationReply real context for
+// follow-ups ("Tau kobe pabo?", "Bolun" resolve to whatever topic was
+// already being discussed), not to decide official/personal any more.
 const CONVO_HISTORY_PREFIX = 'wa-convo-history:';
 const CONVO_TTL_SECONDS = 24 * 60 * 60;
 const CONVO_HISTORY_MAX = 20; // kept for loop-detection lookback; only the last ~10 are ever fed to the model as context
 const FOLLOWUP_COUNT_PREFIX = 'wa-followup-count:';
 
-async function markActiveConversation(chatId) {
-  const redis = getClient();
-  if (!redis) return;
-  try { await redis.set(ACTIVE_CONVO_PREFIX + chatId, '1', { ex: CONVO_TTL_SECONDS }); } catch (err) { /* best effort */ }
-}
-async function isActiveConversation(chatId) {
-  const redis = getClient();
-  if (!redis) return false;
-  try { return Boolean(await redis.get(ACTIVE_CONVO_PREFIX + chatId)); } catch (err) { return false; }
-}
-// Scoped to ACTIVE OFFICIAL conversations only - never called for a
-// personal-classified message, so this never stores content outside
-// what the rest of this file already treats as fair game (same
-// boundary classify() already enforces everywhere else).
+// Never called for a blocklisted number (classify() returns 'personal'
+// before this is ever reached) - everyone else's real conversation
+// content is fair game to store, same boundary classify() enforces.
 async function appendConvoHistory(chatId, direction, text) {
   const redis = getClient();
   if (!redis) return;
@@ -616,17 +599,23 @@ async function sendOrReportAutoReply(entry) {
   // 'holding' = a real, unanswered question with no fact available yet
   // (needs the owner's answer) - escalates with a running count+topic so
   // repeated follow-ups are visibly more urgent. 'acknowledged' (a pure
-  // "ok"/"thanks" with nothing to actually resolve) deliberately does
-  // NOT escalate - nothing for the owner to follow up on.
+  // greeting/"ok"/"thanks" with nothing to actually resolve) and
+  // 'data_holding' (approval workflow handles its own notification)
+  // deliberately do NOT escalate here - nothing for the owner to follow
+  // up on via this path.
   if (entry.case === 'holding' && entry.summaryForOwner) {
     const n = entry.followupCount || 1;
     const priority = n > 1 ? '⚠️ ' : '';
     const topicLabel = entry.topicLabel || 'their question';
+    // Natural Banglish, not an English sentence - per direct instruction
+    // this notification should read the way the owner himself phrases
+    // it (e.g. "Rahul 2 bar confirmation letter niye jiggesh korechhe"),
+    // not a formal English report.
     await postOwnerNotification(
-      priority + who + ' has asked about ' + topicLabel + ' ' + n + (n === 1 ? ' time' : ' times') +
-      ' now (latest: "' + entry.summaryForOwner + '") - needs your answer.'
+      priority + who + ' ' + n + (n === 1 ? ' bar' : ' bar') + ' ' + topicLabel + ' niye jiggesh korechhe' +
+      ' (latest: "' + entry.summaryForOwner + '") - apnar answer lagbe.'
     );
-    await addOpenFollowup({ name: who, chatId: entry.chatId, summary: entry.summaryForOwner, ts: Date.now() });
+    await addOpenFollowup({ name: who, chatId: entry.chatId, summary: entry.summaryForOwner, topic: entry.topic || null, ts: Date.now() });
   }
 }
 
@@ -667,6 +656,349 @@ async function clearOpenFollowup(nameOrChatId) {
   } catch (err) { return false; }
 }
 
+// ---------------- Proactive follow-up (spec point 7) ----------------
+// Called by workforceRoutes.js right after the owner successfully
+// creates/updates a SUBH memory (the in-app chat route, same as every
+// other owner-only command here) - if an open follow-up was waiting on
+// exactly this topic, resolve it right now instead of waiting for that
+// person to ask again. Re-checks the SAME scope rule memoryService.
+// findMatch/senderInScope already enforces for a normal incoming
+// question, so a memory scoped to one department never proactively
+// messages someone outside it just because they happened to ask about
+// the same general topic.
+async function resolveFollowupsForMemory(memory) {
+  if (!memory || !memory.topic) return [];
+  const followups = await listOpenFollowups();
+  const matching = followups.filter((f) => f.topic === memory.topic);
+  const resolved = [];
+  for (const f of matching) {
+    const emp = await findEmployeeByPhone(f.chatId).catch(() => null);
+    const empForScope = emp
+      ? { employeeId: emp.emp.employeeId, departmentName: emp.departmentNames.get(emp.emp.departmentKey) || emp.emp.department, locationName: emp.emp.location }
+      : null;
+    if (!memoryService.senderInScope(memory, empForScope, false)) continue;
+    const memoryFact = { fact: memory.statusFact, guidance: memory.guidance, documentRequested: Boolean(memory.requestsDocument) };
+    const resolvedName = await resolveSenderName(f.chatId).catch(() => null);
+    const label = firstNameOf(resolvedName) || f.name || 'The sender';
+    const replyText = await generateDraft(label, f.summary || ('Regarding ' + memory.topic), undefined, null, memoryFact).catch(() => null);
+    if (!replyText) continue;
+    // Respects the same global draft-mode switch as every other real
+    // send in this file (isRealSendAllowedFor) - a proactive message is
+    // still a real WhatsApp send, so it must not bypass the safety
+    // switch just because it was triggered by the owner's own memory
+    // command rather than the poll loop.
+    if (!isRealSendAllowedFor(f.chatId)) {
+      await postOwnerNotification('[DRAFT MODE - not actually sent] Would proactively message ' + (f.name || f.chatId) + ': "' + replyText + '"');
+      continue;
+    }
+    const sendResult = await whatsapp.sendWhatsAppMessage(f.chatId, replyText);
+    if (!sendResult.ok) continue;
+    await appendConvoHistory(f.chatId, 'out', replyText);
+    await clearOpenFollowup(f.chatId);
+    await resetFollowupCount(f.chatId);
+    await logInboxEvent({ chatId: f.chatId, name: f.name, isGroup: false, messageSummary: '[proactive follow-up: ' + memory.topic + ']', aCase: 'memory', sentText: replyText, outcome: 'sent', sentAt: Date.now() });
+    resolved.push({ name: f.name, chatId: f.chatId, replyText });
+  }
+  return resolved;
+}
+
+// ---------------- HR data-request approval workflow (spec point 6) ----------------
+// A WhatsApp request for real HR/employee data is never answered
+// directly - a fixed holding reply goes out immediately (see
+// DATA_REQUEST_HOLDING_REPLY in decideAutoReply), the real answer is
+// prepared in the background using the EXACT SAME read-only pipeline as
+// the in-app SUBH chat (claudeProvider.getResponse - same tools, same
+// active-only default, same no-PII rules, same card/plain logic), and
+// held here until the owner explicitly approves it in SUBH chat
+// (workforceRoutes.js's chat route, see handleApprovalCommand).
+const PENDING_APPROVAL_PREFIX = 'wa-pending-approval:';
+const PENDING_APPROVAL_IDS_KEY = 'wa-pending-approval-ids';
+const PENDING_APPROVAL_TTL_SECONDS = 24 * 60 * 60;
+
+async function savePendingApproval(approval) {
+  const redis = getClient();
+  if (!redis) return null;
+  const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  const record = Object.assign({}, approval, { id, createdAt: Date.now() });
+  try {
+    await redis.set(PENDING_APPROVAL_PREFIX + id, JSON.stringify(record), { ex: PENDING_APPROVAL_TTL_SECONDS });
+    await redis.sadd(PENDING_APPROVAL_IDS_KEY, id);
+  } catch (err) { /* best effort */ }
+  return id;
+}
+// Lazily prunes ids whose record has already expired (native Redis TTL)
+// instead of a separate sweep job - the id set itself has no TTL, so a
+// stale id just gets dropped here the next time anyone lists.
+async function listPendingApprovals() {
+  const redis = getClient();
+  if (!redis) return [];
+  try {
+    const ids = await redis.smembers(PENDING_APPROVAL_IDS_KEY);
+    const out = [];
+    for (const id of ids) {
+      const raw = await redis.get(PENDING_APPROVAL_PREFIX + id);
+      if (!raw) { await redis.srem(PENDING_APPROVAL_IDS_KEY, id); continue; }
+      out.push(typeof raw === 'string' ? JSON.parse(raw) : raw);
+    }
+    return out.sort((a, b) => a.createdAt - b.createdAt);
+  } catch (err) { return []; }
+}
+async function removePendingApproval(id) {
+  const redis = getClient();
+  if (!redis) return;
+  try { await redis.del(PENDING_APPROVAL_PREFIX + id); await redis.srem(PENDING_APPROVAL_IDS_KEY, id); } catch (err) { /* best effort */ }
+}
+
+// Renders a tool-result card as plain WhatsApp text - there is no card
+// UI on WhatsApp, so a list request's real content (not just a one-line
+// summary) has to be spelled out here. Handles both shapes tools.js
+// returns: a {columns, tableRows} table (list_employees/query_employees)
+// and a simpler {label, value} rows list (most other report tools).
+// Capped at 100 lines - a sane bound for a single WhatsApp message/chunk
+// set, not a data-completeness decision (the owner can always ask for a
+// narrower request if a real list is bigger than this).
+function cardToWhatsAppText(card) {
+  if (!card) return '';
+  if (card.columns && (card.fullTableRows || card.tableRows)) {
+    const rows = (card.fullTableRows || card.tableRows).slice(0, 100);
+    const nameIdx = card.columns.indexOf('Name');
+    const designationIdx = card.columns.indexOf('Designation');
+    const lines = rows.map((r, i) => nameIdx >= 0
+      ? (i + 1) + '. ' + r[nameIdx] + (designationIdx >= 0 && r[designationIdx] ? ' - ' + r[designationIdx] : '')
+      : (i + 1) + '. ' + r.join(' - '));
+    return '\n\n' + (card.title || 'List') + ':\n' + lines.join('\n');
+  }
+  const rows = (card.fullRows || card.rows || []).slice(0, 100);
+  if (rows.length) {
+    const lines = rows.map((r, i) => {
+      if (r && typeof r === 'object' && 'label' in r) return (i + 1) + '. ' + r.label + (r.value !== undefined && r.value !== null ? ': ' + r.value : '');
+      if (r && typeof r === 'object') return (i + 1) + '. ' + Object.values(r).join(' - ');
+      return (i + 1) + '. ' + String(r);
+    });
+    return '\n\n' + (card.title || 'List') + ':\n' + lines.join('\n');
+  }
+  return '';
+}
+
+// Lazy require (not a top-of-file import) - assistantShared.js, which
+// claudeProvider.js depends on, itself requires this file (for the
+// manage_whatsapp_official_list/whatsapp_inbox_summary/
+// whatsapp_assistant_status tool runners), so a top-level require here
+// would be circular. Requiring it inside the function instead resolves
+// cleanly once both modules have finished loading, same as Node's own
+// require cache would return anyway.
+async function prepareDataRequestAnswer(text) {
+  const claudeProvider = require('./claudeProvider');
+  const ownerEmail = process.env.SUBH_MEMORY_OWNER_EMAIL;
+  try {
+    const result = await claudeProvider.getResponse({ message: text, history: [], user: { email: ownerEmail } });
+    return { ok: true, replyText: result.reply, card: result.card || null };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+function truncatePreview(text, max) {
+  const t = String(text || '').trim();
+  return t.length > (max || 200) ? t.slice(0, max || 200) + '…' : t;
+}
+// Fire-and-forget from decideAutoReply - runs the real (slower) tool
+// lookup and posts the approval request to SUBH chat, without holding up
+// the fixed holding reply that already went out to the requester.
+async function prepareAndQueueDataApproval({ phone, name, text, dataRequestSummary, lang }) {
+  const prepared = await prepareDataRequestAnswer(text);
+  await savePendingApproval({
+    phone, name, requestText: text, dataRequestSummary, lang,
+    preparedReplyText: prepared.ok ? prepared.replyText : null,
+    preparedCard: prepared.ok ? prepared.card : null,
+    preparedError: prepared.ok ? null : prepared.error
+  });
+  if (!prepared.ok) {
+    await postOwnerNotification(name + ' (' + phone + ') ' + dataRequestSummary + ' chaiche, kintu SUBH answer prepare korte parini: ' + prepared.error);
+    return;
+  }
+  const countNote = prepared.card && prepared.card.footer && typeof prepared.card.footer.value === 'number'
+    ? ' — ' + prepared.card.footer.value + ' ' + String(prepared.card.footer.label || '').toLowerCase()
+    : '';
+  await postOwnerNotification(
+    name + ' (' + phone + ') ' + dataRequestSummary + ' chaiche' + countNote + '. Preview: ' + truncatePreview(prepared.replyText) +
+    '. Pathabo? (ei chat-e "pathao"/"na" likhun)'
+  );
+}
+
+// Sends over multiple messages when the real answer is too long for one
+// WhatsApp message - no confirmed document/PDF-send contract for this
+// gateway (only plain text sendMessage exists, see whatsappService.js),
+// so chunked text is the safe fallback the spec itself allows for.
+const WHATSAPP_CHUNK_SIZE = 1400;
+async function sendWhatsAppChunked(phone, text) {
+  const t = String(text || '');
+  if (t.length <= WHATSAPP_CHUNK_SIZE) return whatsapp.sendWhatsAppMessage(phone, t);
+  const chunks = [];
+  let rest = t;
+  while (rest.length) {
+    if (rest.length <= WHATSAPP_CHUNK_SIZE) { chunks.push(rest); break; }
+    let cut = rest.lastIndexOf('\n', WHATSAPP_CHUNK_SIZE);
+    if (cut < WHATSAPP_CHUNK_SIZE * 0.5) cut = rest.lastIndexOf(' ', WHATSAPP_CHUNK_SIZE);
+    if (cut <= 0) cut = WHATSAPP_CHUNK_SIZE;
+    chunks.push(rest.slice(0, cut));
+    rest = rest.slice(cut).replace(/^\s+/, '');
+  }
+  for (let i = 0; i < chunks.length; i++) {
+    const prefix = chunks.length > 1 ? '(' + (i + 1) + '/' + chunks.length + ') ' : '';
+    const result = await whatsapp.sendWhatsAppMessage(phone, prefix + chunks[i]);
+    if (!result.ok) return result;
+    if (i < chunks.length - 1) await new Promise((resolve) => setTimeout(resolve, 800));
+  }
+  return { ok: true };
+}
+
+const DATA_REJECT_REPLY = {
+  banglish: 'Dukkhito, ei tottho ekhon share kora jacche na. Aro kichu dorkar hole bolun.',
+  hinglish: 'Maaf kijiye, yeh jaankari abhi share nahi ki ja sakti. Aur kuch chahiye to bataiye.',
+  english: "Sorry, this information can't be shared right now. Let me know if you need anything else."
+};
+
+// Owner's own instruction to narrow/reshape an already-prepared answer
+// before sending (e.g. "shudhu count pathao") - rewrites using ONLY the
+// facts already fetched (the real tool result, if one exists), never a
+// fresh tool call, so this can't introduce a fact the original lookup
+// didn't actually return.
+async function narrowDataAnswer(approval, editInstruction) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey || !DRAFT_MODEL) return approval.preparedReplyText;
+  const messages = [
+    { role: 'system', content: 'Rewrite the HR answer below exactly as the owner instructs - use ONLY the facts already present in it (and the full data below, if given), never add a new fact. Output only the rewritten WhatsApp reply, nothing else, no quotes around it.' },
+    { role: 'user', content: 'Original answer: ' + approval.preparedReplyText + (approval.preparedCard ? '\nFull data: ' + JSON.stringify(approval.preparedCard).slice(0, 3000) : '') + '\n\nOwner\'s instruction: ' + editInstruction }
+  ];
+  const rewritten = await callClaudeChat(apiKey, DRAFT_MODEL, messages).catch(() => null);
+  return rewritten || approval.preparedReplyText;
+}
+
+// Both send paths below respect the same global draft-mode switch as
+// the normal auto-reply flow (isRealSendAllowedFor) - the owner's
+// approval is an ADDITIONAL gate on top of draft mode, not a replacement
+// for it; while the system is still in draft mode, even an approved
+// data request must not go out for real.
+async function executeApprovalSend(approval, editInstruction) {
+  if (approval.preparedError || !approval.preparedReplyText) {
+    await removePendingApproval(approval.id);
+    return approval.name + ' er answer ready chilo na, pathano gelo na.';
+  }
+  const textToSend = editInstruction ? await narrowDataAnswer(approval, editInstruction) : approval.preparedReplyText + cardToWhatsAppText(approval.preparedCard);
+  await removePendingApproval(approval.id);
+  if (!isRealSendAllowedFor(approval.phone)) {
+    await logInboxEvent({ chatId: approval.phone, name: approval.name, isGroup: false, messageSummary: '[data request: ' + approval.dataRequestSummary + ']', aCase: 'data_approved', sentText: textToSend, outcome: 'draft_mode', sentAt: Date.now() });
+    return '[DRAFT MODE] ' + approval.name + '-ke "' + approval.dataRequestSummary + '" pathano hoto: "' + textToSend + '"';
+  }
+  const sendResult = await sendWhatsAppChunked(approval.phone, textToSend);
+  if (!sendResult.ok) {
+    await logInboxEvent({ chatId: approval.phone, name: approval.name, isGroup: false, messageSummary: '[data request: ' + approval.dataRequestSummary + ']', aCase: 'data_approved', sentText: textToSend, outcome: 'send_failed', sentAt: Date.now() });
+    return approval.name + '-ke pathate giye error holo: ' + sendResult.error;
+  }
+  await appendConvoHistory(approval.phone, 'out', textToSend);
+  await logInboxEvent({ chatId: approval.phone, name: approval.name, isGroup: false, messageSummary: '[data request: ' + approval.dataRequestSummary + ']', aCase: 'data_approved', sentText: textToSend, outcome: 'sent', sentAt: Date.now() });
+  return '✓ ' + approval.name + '-ke "' + approval.dataRequestSummary + '" pathano holo.';
+}
+async function executeApprovalReject(approval) {
+  const replyText = DATA_REJECT_REPLY[approval.lang] || DATA_REJECT_REPLY.english;
+  await removePendingApproval(approval.id);
+  if (!isRealSendAllowedFor(approval.phone)) {
+    await logInboxEvent({ chatId: approval.phone, name: approval.name, isGroup: false, messageSummary: '[data request: ' + approval.dataRequestSummary + ']', aCase: 'data_rejected', sentText: replyText, outcome: 'draft_mode', sentAt: Date.now() });
+    return '[DRAFT MODE] ' + approval.name + '-ke reject reply pathano hoto: "' + replyText + '"';
+  }
+  const sendResult = await whatsapp.sendWhatsAppMessage(approval.phone, replyText);
+  if (sendResult.ok) await appendConvoHistory(approval.phone, 'out', replyText);
+  await logInboxEvent({ chatId: approval.phone, name: approval.name, isGroup: false, messageSummary: '[data request: ' + approval.dataRequestSummary + ']', aCase: 'data_rejected', sentText: replyText, outcome: sendResult.ok ? 'sent' : 'send_failed', sentAt: Date.now() });
+  return '✓ ' + approval.name + '-ke bole deoa holo, data pathano hoyni.';
+}
+
+function buildPendingListQuestion(pending) {
+  const lines = pending.map((p, i) => (i + 1) + ') ' + p.name + ' — ' + p.dataRequestSummary);
+  return (pending.length > 1 ? pending.length + 'ti approval pending:\n' : '') + lines.join('\n') + '\nKon-ta pathabo?';
+}
+
+// One `decision` entry per approval actually addressed in this message -
+// NOT one shared action for the whole message, since a real owner
+// message can mix actions per target in a single sentence ("1 pathao, 2
+// na" - approve #1, reject #2, per spec point 6d's own example).
+function approvalCommandTool() {
+  return {
+    type: 'function',
+    function: {
+      name: 'approval_command',
+      description: 'Decide whether the HR manager\'s message is approving, rejecting, or editing one or more pending WhatsApp HR-data-request approvals listed below. A short, ambiguous-looking message like "pathao"/"dao"/"send"/"na" is almost always about these pending approvals (that is exactly what they are waiting for) - only mark it unrelated if it is clearly about something else entirely.',
+      parameters: {
+        type: 'object',
+        properties: {
+          unrelated: { type: 'boolean', description: 'true ONLY if this message is clearly NOT about any pending approval at all (ordinary unrelated chat) - in that case `decisions` must be empty/omitted. A bare "pathao"/"dao"/"send"/"na"/"don\'t send" with pending approvals waiting is NEVER unrelated, even with no target named - that is what "ambiguous, ask which one" is for.' },
+          decisions: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                target: { type: 'integer', description: '1-based index into the pending list given above that this decision applies to. Use 0 to mean EVERY pending request at once (only for an explicit "all" phrasing like "duto-i pathao"/"sob pathao"/"both"/"send all").' },
+                action: { type: 'string', enum: ['approve', 'reject', 'edit'] },
+                editInstruction: { type: 'string', description: 'Only when action is "edit" - the owner\'s own instruction for how to narrow/change the answer, e.g. "shudhu count pathao".' }
+              },
+              required: ['target', 'action']
+            },
+            description: 'One entry per decision actually stated. "1 pathao, 2 na" with 2 pending -> [{target:1,action:"approve"},{target:2,action:"reject"}]. A bare "pathao"/"na" with MULTIPLE pending and no target identifiable at all -> leave this EMPTY (not an all-phrasing, not a specific index) so the caller asks which one.'
+          }
+        },
+        required: ['unrelated']
+      }
+    }
+  };
+}
+async function classifyApprovalCommand(text, pending) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey || !DRAFT_MODEL) return { unrelated: true, decisions: [] };
+  const listBlock = pending.map((p, i) => (i + 1) + '. ' + p.name + ' (' + p.phone + ') - ' + p.dataRequestSummary).join('\n');
+  const messages = [
+    { role: 'system', content: 'Pending WhatsApp HR-data-request approvals waiting for a decision:\n' + listBlock },
+    { role: 'user', content: text }
+  ];
+  const toolDef = approvalCommandTool().function;
+  const input = await callClaudeForcedTool(apiKey, DRAFT_MODEL, messages, toolDef.name, toolDef).catch(() => null);
+  return input || { unrelated: true, decisions: [] };
+}
+
+// Entry point from workforceRoutes.js's chat route - owner-only, checked
+// alongside handleMemoryMessage. Returns null (let normal chat proceed)
+// when nothing is pending at all, or when the model decides this
+// message isn't actually about any pending approval - never hijacks
+// ordinary chat just because a word like "pathao" could theoretically
+// apply to something else entirely.
+async function handleApprovalCommand(text, ownerEmail) {
+  if (!memoryService.isOwner(ownerEmail)) return null;
+  const pending = await listPendingApprovals();
+  if (!pending.length) return null;
+
+  const decision = await classifyApprovalCommand(text, pending).catch(() => ({ unrelated: true, decisions: [] }));
+  if (decision.unrelated) return null;
+
+  const decisions = Array.isArray(decision.decisions) ? decision.decisions : [];
+  if (!decisions.length) {
+    // Spec 6d: related to the approvals, but no specific target (and not
+    // an explicit "all") could be identified - never guess, always ask.
+    return { reply: buildPendingListQuestion(pending) };
+  }
+
+  const expanded = [];
+  decisions.forEach((d) => {
+    if (d.target === 0) pending.forEach((approval) => expanded.push({ approval, action: d.action, editInstruction: d.editInstruction }));
+    else if (pending[d.target - 1]) expanded.push({ approval: pending[d.target - 1], action: d.action, editInstruction: d.editInstruction });
+  });
+  if (!expanded.length) return { reply: buildPendingListQuestion(pending) };
+
+  const results = [];
+  for (const { approval, action, editInstruction } of expanded) {
+    if (action === 'reject') results.push(await executeApprovalReject(approval));
+    else results.push(await executeApprovalSend(approval, action === 'edit' ? editInstruction : null));
+  }
+  return { reply: results.join('\n') };
+}
+
 // ---------------- Daily summary (spec item 4) ----------------
 // No morning-brief feature exists anywhere in this app yet (checked -
 // see conversation), so this posts its own owner-only message into SUBH
@@ -692,6 +1024,7 @@ async function buildDailySummary() {
   const followups = await listOpenFollowups();
   const neverAutoPending = (await listPendingDrafts()).filter((d) => d.type === 'direct');
   const pendingDocs = await documentRequests.listPendingReceived();
+  const pendingApprovals = await listPendingApprovals();
 
   const lines = ['SUBH daily summary (' + date + '):'];
   const gw = await gatewayStatusSummary();
@@ -700,6 +1033,8 @@ async function buildDailySummary() {
     (Object.keys(byCase).length ? ' (' + Object.entries(byCase).map(([c, n]) => c + ': ' + n).join(', ') + ')' : ''));
   lines.push('Holding replies needing follow-up: ' + followups.length +
     (followups.length ? ' - ' + followups.slice(0, 10).map((f) => f.name).join(', ') : ''));
+  lines.push('HR data requests waiting for your approval: ' + pendingApprovals.length +
+    (pendingApprovals.length ? ' - ' + pendingApprovals.slice(0, 10).map((p) => p.name + ' (' + p.dataRequestSummary + ')').join(', ') : ''));
   lines.push('Never-auto messages waiting for you: ' + neverAutoPending.length +
     (neverAutoPending.length ? ' - ' + neverAutoPending.slice(0, 10).map((d) => d.name).join(', ') : ''));
   lines.push('Documents received, not yet marked done: ' + pendingDocs.length +
@@ -893,8 +1228,9 @@ const INBOX_TEXT = {
       draft_mode: (text) => 'Draft baniyechi (pathano hoyni - draft mode): "' + text + '"',
       sent: (text) => 'Reply pathiyechi: "' + text + '"',
       send_failed: () => 'Reply pathate giye error hoyeche.',
-      skipped_duplicate: () => 'Skip korechi - ek-i message 10 minute-er moddhe abar esheche.',
+      skipped_duplicate: () => 'Skip korechi - ek-i message 2 minute-er moddhe abar esheche.',
       skipped_possible_loop: () => 'Skip korechi - bar bar ashche mone hocche (loop protection).',
+      automatic: () => 'Automatic message — reply dewa hoyni.',
       never_auto_pending_waiting: () => 'Apnar jonno opekkha korche.',
       never_auto_pending_done: () => 'Apni age-i eta dekhe niyechen.'
     },
@@ -904,7 +1240,8 @@ const INBOX_TEXT = {
       realAll: 'Sobar-ke real reply pathano hocche.'
     },
     gatewayWarning: (since) => '⚠️ WhatsApp ' + since + ' theke disconnected - notun message na-o asheche thakte pare. tools.alcoverealty.in e giye QR abar scan korun.',
-    docsLine: (list) => 'Document peyechi kintu "done" mark kori ni: ' + list + '.'
+    docsLine: (list) => 'Document peyechi kintu "done" mark kori ni: ' + list + '.',
+    approvalsLine: (list) => 'Apnar approval-er jonno pending HR data request: ' + list + '.'
   },
   hinglish: {
     rangeWord: { today: 'Aaj', yesterday: 'Kal', week: 'Is hafte', hours: (h) => 'Pichle ' + h + ' ghante' },
@@ -916,8 +1253,9 @@ const INBOX_TEXT = {
       draft_mode: (text) => 'Draft banaya hai (bheja nahi - draft mode): "' + text + '"',
       sent: (text) => 'Reply bhej diya: "' + text + '"',
       send_failed: () => 'Reply bhejne mein error aaya.',
-      skipped_duplicate: () => 'Skip kiya - wahi message 10 minute ke andar phir aaya.',
+      skipped_duplicate: () => 'Skip kiya - wahi message 2 minute ke andar phir aaya.',
       skipped_possible_loop: () => 'Skip kiya - baar baar aa raha tha (loop protection).',
+      automatic: () => 'Automatic message hai — reply nahi diya gaya.',
       never_auto_pending_waiting: () => 'Aapke review ka wait kar raha hai.',
       never_auto_pending_done: () => 'Aap pehle hi dekh chuke hain.'
     },
@@ -927,7 +1265,8 @@ const INBOX_TEXT = {
       realAll: 'Sabko real reply bheja ja raha hai.'
     },
     gatewayWarning: (since) => '⚠️ WhatsApp ' + since + ' se disconnected hai - naye message nahi aa rahe honge. tools.alcoverealty.in pe jaake QR dobara scan karein.',
-    docsLine: (list) => 'Document mil gaya hai lekin "done" mark nahi kiya: ' + list + '.'
+    docsLine: (list) => 'Document mil gaya hai lekin "done" mark nahi kiya: ' + list + '.',
+    approvalsLine: (list) => 'Aapke approval ka wait kar rahe HR data request: ' + list + '.'
   },
   english: {
     rangeWord: { today: 'today', yesterday: 'yesterday', week: 'this week', hours: (h) => 'in the last ' + h + ' hour' + (h === 1 ? '' : 's') },
@@ -939,8 +1278,9 @@ const INBOX_TEXT = {
       draft_mode: (text) => 'Drafted a reply (not sent - draft mode): "' + text + '"',
       sent: (text) => 'Reply sent: "' + text + '"',
       send_failed: () => 'Reply failed to send.',
-      skipped_duplicate: () => 'Skipped - the same message came in again within 10 minutes.',
+      skipped_duplicate: () => 'Skipped - the same message came in again within 2 minutes.',
       skipped_possible_loop: () => 'Skipped - looked like a repeat loop (loop protection).',
+      automatic: () => 'Automatic message - no reply sent.',
       never_auto_pending_waiting: () => 'Waiting for your review.',
       never_auto_pending_done: () => 'You already handled this.'
     },
@@ -950,7 +1290,8 @@ const INBOX_TEXT = {
       realAll: 'Replies are being sent for real to everyone.'
     },
     gatewayWarning: (since) => '⚠️ WhatsApp has been disconnected since ' + since + ' - new messages may not be arriving at all. Reconnect at tools.alcoverealty.in.',
-    docsLine: (list) => 'Document(s) received but not yet marked done: ' + list + '.'
+    docsLine: (list) => 'Document(s) received but not yet marked done: ' + list + '.',
+    approvalsLine: (list) => 'HR data requests waiting for your approval: ' + list + '.'
   }
 };
 function resolveLang(lang) {
@@ -970,6 +1311,7 @@ function outcomePhraseFor(T, entry, pendingPhones, followupKeys) {
   if (entry.outcome === 'send_failed') return T.outcome.send_failed();
   if (entry.outcome === 'skipped_duplicate') return T.outcome.skipped_duplicate();
   if (entry.outcome === 'skipped_possible_loop') return T.outcome.skipped_possible_loop();
+  if (entry.outcome === 'automatic') return T.outcome.automatic();
   if (entry.outcome === 'never_auto_pending') {
     return pendingPhones.has(entry.chatId) ? T.outcome.never_auto_pending_waiting() : T.outcome.never_auto_pending_done();
   }
@@ -995,7 +1337,7 @@ function groupByChat(items) {
   }
   return order.map((chatId) => buckets.get(chatId));
 }
-function buildInboxReplyText(lang, range, log, pendingPhones, followupKeys, pendingDocs, gw) {
+function buildInboxReplyText(lang, range, log, pendingPhones, followupKeys, pendingDocs, gw, pendingApprovals) {
   const T = INBOX_TEXT[resolveLang(lang)];
   const lines = [];
   if (!gw.isConnected) lines.push(T.gatewayWarning(gw.disconnectedSinceLabel));
@@ -1025,6 +1367,7 @@ function buildInboxReplyText(lang, range, log, pendingPhones, followupKeys, pend
     });
   }
   if (pendingDocs.length) lines.push(T.docsLine(pendingDocs.map((d) => d.phone + ' (' + d.topic + ')').join(', ')));
+  if (pendingApprovals && pendingApprovals.length) lines.push(T.approvalsLine(pendingApprovals.map((p) => p.name + ' (' + p.dataRequestSummary + ')').join(', ')));
   lines.push(describeSendMode(T));
   return lines.join('\n');
 }
@@ -1037,10 +1380,11 @@ async function whatsappInboxSummary(rangeRaw, lang, userEmail) {
   const pendingPhones = new Set((await listPendingDrafts()).map((d) => d.contactId));
   const followupKeys = new Set((await listOpenFollowups()).map((f) => f.chatId));
   const pendingDocs = await documentRequests.listPendingReceived();
+  const pendingApprovals = await listPendingApprovals();
   const gw = await gatewayStatusSummary();
 
   return {
-    replyText: buildInboxReplyText(lang, range, log, pendingPhones, followupKeys, pendingDocs, gw),
+    replyText: buildInboxReplyText(lang, range, log, pendingPhones, followupKeys, pendingDocs, gw, pendingApprovals),
     rangeLabel: range.label,
     officialMessageCount: log.length
   };
@@ -1156,40 +1500,24 @@ async function whatsappAssistantStatus(lang, userEmail) {
 }
 
 // ---------------- Classification ----------------
-// The block list is absolute - skipped immediately, no further check.
-// The allow list means "trusted official CONTACT", not "every message
-// from them is official" - per direct correction, it only waives the
-// "is this a known employee" half of the check, not the "is this
-// message actually work-related" half. So both an allowlisted number
-// and a known active employee's contactNumber land in the same
-// "trusted" tier, and EITHER still needs a work-topic keyword match
-// before becoming official - a casual "how are you" from an allowlisted
-// number is personal, exactly like it would be from a known employee.
-// An unknown, untrusted number stays personal even with a work keyword
-// (no reminder/draft for a stranger just because they said "salary").
-// Anything still unclear defaults to personal - per direct instruction,
-// "unsure -> personal unless on my official list" - so an ambiguous
-// message is discarded rather than risk surfacing someone's private chat.
-const WORK_KEYWORDS = /salary|leave|joining|document|pf\b|esic|insurance|interview|letter|attendance|report|site|confirmation|probation|notice period|offer/i;
-
+// +918335804028 is the company's own official HR WhatsApp number - per
+// direct instruction, ~99% of 1:1 traffic to it is genuinely official,
+// so SUBH reads each message like a human HR person would instead of
+// gating on keywords or a trusted-contact list. Removed entirely (was
+// here before, found live to be the actual root cause of real follow-
+// ups going unanswered - "Tau kobe pabo?"/"Bolun" have no work keyword
+// of their own): a WORK_KEYWORDS regex gate, a known-employee/allowlist
+// "trusted contact" requirement, and the active-conversation 24h
+// extension that used to be needed to route around the keyword gate.
+// The only thing that still makes a 1:1 message 'personal' is the block
+// list - everything else is 'official' and goes to decideAutoReply,
+// which is where the real judgement call now lives: is this message
+// even from a human (reply_needed), and does it need HR data, a memory
+// answer, or a holding reply (see classifyOfficialMessage below).
 async function classify(phone, messageText) {
   const normalized = whatsapp.normalizePhone(phone);
   if (await isBlocklisted(normalized)) return 'personal';
-
-  const { employees } = await employeeService.getEmployeeData();
-  const isKnownEmployee = employees.some((e) => e.contactNumber && whatsapp.normalizePhone(e.contactNumber) === normalized);
-  const isTrusted = isKnownEmployee || await isAllowlisted(normalized);
-  if (!isTrusted) return 'personal';
-  if (WORK_KEYWORDS.test(messageText || '')) return 'official';
-  // Found live: a real follow-up in an already-official conversation
-  // ("Tau kobe pabo iktu bolben?", "Bolun") has no work keyword of its
-  // own and was silently dropped as personal - never reaching
-  // decideAutoReply at all. Once a trusted number has a real official
-  // message, every message in that chat counts as part of the same
-  // conversation for 24h (see markActiveConversation), keyword or not.
-  if (await isActiveConversation(normalized)) return 'official';
-
-  return 'personal';
+  return 'official';
 }
 
 // Matches a 1:1 sender to their OWN real employee record by PHONE NUMBER
@@ -1334,10 +1662,23 @@ async function postClaudeMessages(apiKey, body) {
   }
   return resp.json();
 }
+// Found live: claude-sonnet-5-5 (CLAUDE_MODEL_MAIN, used by every
+// caller of this function) occasionally puts its own chain-of-thought
+// inside a literal "<reasoning>...</reasoning>" block WITHIN the text
+// content itself, rather than as a separate `thinking` content block -
+// confirmed reproducible, not a one-off (2 of 8 holding replies in one
+// real test run). Stripped here, at the one shared low-level call, so
+// every caller (generateDraft, generateConversationReply, etc.) is
+// protected without each needing its own cleanup.
+const REASONING_TAG_RE = /<(?:reasoning|thinking)>[\s\S]*?<\/(?:reasoning|thinking)>/gi;
+function stripReasoningTags(text) {
+  return String(text || '').replace(REASONING_TAG_RE, '').trim();
+}
 async function callClaudeChat(apiKey, model, openAiStyleMessages, maxTokens) {
   const { system, messages } = splitSystemAndMessages(openAiStyleMessages);
   const data = await postClaudeMessages(apiKey, { model, max_tokens: maxTokens || 1024, system, messages });
-  return (data.content || []).filter((b) => b && b.type === 'text').map((b) => b.text).join('').trim();
+  const text = (data.content || []).filter((b) => b && b.type === 'text').map((b) => b.text).join('').trim();
+  return stripReasoningTags(text);
 }
 async function callClaudeForcedTool(apiKey, model, openAiStyleMessages, toolName, toolSchema, maxTokens) {
   const { system, messages } = splitSystemAndMessages(openAiStyleMessages);
@@ -1646,25 +1987,50 @@ function lowerFirstLetter(phrase) {
 // impliedDuePeriod) - this call never picks a memory id itself, so it
 // can never be tricked into "finding" an out-of-scope or wrong-period
 // memory; it only ever describes what the message is asking about.
+// +918335804028 is the company's own official HR number - SUBH reads
+// every message like a human HR person would, not by keyword matching.
+// reply_needed replaces the old needsAnswer: broadened per direct
+// instruction so a human message (including a plain greeting or "ok
+// thanks") is answered by default - the only messages that get no reply
+// at all are ones that aren't really addressed to a human in the first
+// place (OTP/bank/delivery/system/marketing/spam/another business's own
+// bot) or an exact repeat. wantsData/dataRequestSummary identify a
+// request for real HR/employee data from the database, which never gets
+// answered directly from WhatsApp - see decideAutoReply's data-request
+// branch, point 6 of the spec: always a holding reply + the owner's
+// explicit approval before anything is sent.
 function classifyTool() {
   return {
     type: 'function',
     function: {
       name: 'classify_official_message',
-      description: 'Classify an incoming official WhatsApp message to decide how SUBH should reply. A short conversation history may be given for context - use it ONLY to resolve what a context-dependent follow-up ("Tau kobe pabo?", "Bolun", "?") is actually about (the same topic as their own earlier message in this chat), never to answer FOR them.',
+      description: 'Read this WhatsApp message to the company\'s official HR number like a human HR person would, and decide how SUBH should handle it. A short conversation history may be given for context - use it to resolve what a context-dependent follow-up ("Tau kobe pabo?", "Bolun", "?") is actually about (the same topic as their own earlier message in this chat), never to answer FOR them. Treat the sender as a real person contacting HR by default - only mark it non-human if the message itself is clearly automated.',
       parameters: {
         type: 'object',
         properties: {
+          intent: {
+            type: 'string',
+            enum: ['question', 'request', 'complaint', 'follow_up', 'greeting', 'thanks', 'document_sent', 'other'],
+            description: 'What kind of message this is. "follow_up" for a short message chasing an earlier question still open in the history (resolve the real topic from there, e.g. "Tau kobe pabo?"/"Ki holo kichu bolun"). "document_sent" only when they SAY they are sending/attaching something, not an actual image/document message (those are handled separately). "greeting"/"thanks" for small talk or a closing remark with nothing open to resolve.'
+          },
+          language: {
+            type: 'string',
+            enum: ['banglish', 'hinglish', 'english', 'other'],
+            description: 'The language/script this message is actually written in. Banglish/Hinglish are Bengali/Hindi written in Roman letters, not native script.'
+          },
           topic: {
             type: 'string',
             enum: [...memoryService.MEMORY_TOPICS, 'own_record', 'none'],
-            description: '"own_record" ONLY if asking about their OWN joining date, probation/confirmation date, department, reporting manager, or insurance COVERAGE status (not a general announcement). One of the memory topics (salary/bonus/PF/ESIC/increment/holiday/office closed/letters/insurance/other) if asking about a general announced fact affecting staff generally. "none" for anything else (policy question with no taught fact, small talk, unrelated) - including a context-dependent follow-up that even WITH history gives no real topic to resolve.'
+            description: '"own_record" ONLY if asking about their OWN joining date, probation/confirmation date, department, reporting manager, or insurance COVERAGE status (not a general announcement). One of the memory topics (salary/bonus/PF/ESIC/increment/holiday/office closed/letters/insurance/other) if asking about a general announced fact affecting staff generally. "none" for anything else (policy question with no taught fact, small talk, a complaint with no specific memory topic, an automated message, unrelated) - including a context-dependent follow-up that even WITH history gives no real topic to resolve.'
           },
           periodRaw: { type: 'string', description: 'ONLY if topic is a memory topic AND a specific month/date was actually named. If the sender named a month WITHOUT a year (e.g. "September", "September-er salary"), output ONLY the bare month name in English (e.g. "september") - NEVER add, guess, or infer a year yourself, even though this parameter also accepts "YYYY-MM"; that form is ONLY for when the sender EXPLICITLY said a 4-digit year themselves. Omit this field entirely if no month was named at all.' },
-          topicLabel: { type: 'string', description: 'A short (2-5 word) human-readable description of what they are asking/talking about, in English, for an HR manager to read, e.g. "confirmation letter", "October salary", "joining date". Resolve this from the conversation history when the current message alone is a context-dependent follow-up. Use "general conversation" if there genuinely is no identifiable subject (e.g. a plain "thanks"/"ok" with no open question behind it).' },
-          needsAnswer: { type: 'boolean', description: 'true if this message is a real question or request that needs an actual answer (even a repeated/rephrased one, e.g. "Tau kobe pabo?", "Bolun" chasing an earlier unanswered question). false ONLY for a pure acknowledgement/closing remark with nothing left to answer (e.g. "ok", "thanks", "👍", "thik ache") - look at the history: if an earlier question in this conversation is still genuinely unresolved, a short reply like "Bolun" or "?" is them STILL asking, so this must be true.' }
+          topicLabel: { type: 'string', description: 'A short (2-5 word) human-readable description of what they are asking/talking about, in English, for an HR manager to read, e.g. "confirmation letter", "October salary", "attendance calculation". Resolve this from the conversation history when the current message alone is a context-dependent follow-up ("Tau kobe pabo?" after discussing a letter -> "confirmation letter", not "general conversation"). Use "general conversation" only when there genuinely is no identifiable subject at all.' },
+          replyNeeded: { type: 'boolean', description: 'true for almost every message a real human sent to HR - questions, requests, complaints, follow-ups, greetings ("kemon acho", "good morning"), thanks/acknowledgements ("ok", "thanks"). false ONLY when this message is clearly NOT a human addressing HR: an OTP/verification code, a bank/payment/delivery/courier/system notification, a marketing/promotional message, spam, a message from another business\'s own automated bot, or a WhatsApp system message. When genuinely unsure, default to true - never silently ignore a real person.' },
+          automaticReason: { type: 'string', description: 'Required only when replyNeeded is false - a short (2-6 word) reason, e.g. "bank OTP message", "delivery notification", "marketing message". Omit when replyNeeded is true.' },
+          wantsData: { type: 'boolean', description: 'true ONLY if they are asking for actual HR/employee data from the company database - counts, lists, names, headcounts, birthdays, who reports to whom, department lists, etc (e.g. "engineers-er list dao", "Yashaswi Shroff-er under-e koto staff?", "total engineers der list ta dao"). false for a question about their OWN situation (their own letter/salary/attendance), a policy question, or small talk - those go through the normal topic/memory path instead, never this one.' },
+          dataRequestSummary: { type: 'string', description: 'Required only when wantsData is true - restate exactly what data they are asking for, in plain English, e.g. "current list of engineers", "headcount under Yashaswi Shroff". Omit when wantsData is false.' }
         },
-        required: ['topic', 'topicLabel', 'needsAnswer']
+        required: ['intent', 'language', 'topic', 'topicLabel', 'replyNeeded', 'wantsData']
       }
     }
   };
@@ -1681,6 +2047,12 @@ function formatHistoryBlock(history) {
   return 'Recent conversation in this chat (oldest first, for context only - the CURRENT message to classify is the one in the user turn below, not anything here):\n' +
     history.map((h) => (h.direction === 'in' ? 'Them: ' : 'You: ') + h.text).join('\n');
 }
+// Fails open (replyNeeded:true) on an API error - per the same principle
+// as everywhere else in this file, a classification failure must never
+// silently drop a real human message; the worst case is a generic
+// holding reply going out when a sharper one would have been nicer, not
+// silence.
+const CLASSIFY_FALLBACK = { intent: 'other', language: 'english', topic: 'none', topicLabel: 'general conversation', replyNeeded: true, wantsData: false };
 async function classifyOfficialMessage(text, history) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error('whatsappAssistant.classifyOfficialMessage called without ANTHROPIC_API_KEY set');
@@ -1689,11 +2061,10 @@ async function classifyOfficialMessage(text, history) {
   const messages = [{ role: 'system', content: 'Today\'s real date is ' + new Date().toISOString().slice(0, 10) + ' (UTC).' }];
   if (historyBlock) messages.push({ role: 'system', content: historyBlock });
   messages.push({ role: 'user', content: text });
-  const fallback = { topic: 'none', topicLabel: 'general conversation', needsAnswer: true };
   const toolDef = classifyTool().function;
   const input = await callClaudeForcedTool(apiKey, DRAFT_MODEL, messages, toolDef.name, toolDef);
-  if (!input) return fallback;
-  return Object.assign({}, fallback, input);
+  if (!input) return CLASSIFY_FALLBACK;
+  return Object.assign({}, CLASSIFY_FALLBACK, input);
 }
 
 // ---------------- Context-aware conversation reply (no fact available) ----------------
@@ -1717,25 +2088,29 @@ const SAFE_NO_PROMISE_FALLBACK = {
 const CONTEXT_REPLY_SYSTEM_PROMPT =
   'You are a caring, professional HR person replying on WhatsApp, in the MIDDLE of an ongoing real ' +
   'conversation with one of your own contacts - you are given the recent conversation history (oldest ' +
-  'first) and their latest message. ' +
+  'first) and their latest message. This is the company\'s official HR number - always reply, even to a ' +
+  'plain greeting or "ok"/"thanks" with nothing open to resolve (reply briefly and warmly in kind, e.g. ' +
+  'a short "You\'re welcome"/"Doing well, thanks!" style line) - never go silent on a real message. ' +
   'You do NOT have the real answer right now - you only know what is in this conversation, nothing ' +
   'else. NEVER invent a date, approval, policy answer, or a promise of WHEN something will be ' +
   'resolved - not even a vague "today"/"tomorrow"/"kal"/"within 2 days"/a weekday name. The honest, ' +
-  'safe thing to say is that you will check with Subhodeep (the HR manager) and confirm - vary HOW ' +
-  'you say this, never the same sentence twice (check the history for what you already said). ' +
-  'If asked a plain question with no open issue behind it ("ok"/"thanks"/"thik ache" with nothing to ' +
-  'resolve), you may reply briefly and warmly, or decide no reply is needed at all - if so, output ' +
-  'exactly [[NO_REPLY_NEEDED]] and nothing else. ' +
+  'safe thing to say is that you will check with Subhodeep (the HR manager) and confirm. ' +
+  'CRITICAL: look at your own PAST messages in the history ("You:" lines) - never send the same or a ' +
+  'near-identical sentence again, even for a different open question; if you already said something ' +
+  'like "I\'ll check with Subhodeep and update you", say the SAME idea in genuinely different words this ' +
+  'time (a real person never repeats their own exact line twice in one conversation). ' +
   'If this is a genuine follow-up/repeated question (visible in the history - they already asked ' +
   'this or something close to it), acknowledge that directly and empathise briefly and genuinely if ' +
   'they sound frustrated or have been waiting - never a template phrase, really respond to what they ' +
-  'said. Mention the actual topic naturally (you are told it below) - never just say "this"/"it". ' +
+  'said. ALWAYS mention the actual topic by name (you are told it below) - never just say "this"/"it"/ ' +
+  '"your issue"/"bishoy-ta" with no topic attached; a generic reply with no named topic is a failure. ' +
   'NEVER open with "Namaskar"/"Namaste"/"Ji"/"Dear" - go straight to the point. Match the sender\'s own ' +
   'language/script and apni/tumi or aap/tum formality from their OWN messages in the history. Keep it ' +
   'to 1-3 short lines, like a real person typing on their phone, never textbook-formal. ' +
-  'Banglish negation: "-ni" (ashe ni, hoy ni), never "-eche na". English: correct tense, no literal ' +
-  'translation. Hinglish: "nahi", never a bare "na"; address as "aap". Never mix a Hindi word into ' +
-  'Banglish or a Bengali word into Hinglish.';
+  'Banglish negation: "-ni" (ashe ni, hoy ni), never "-eche na"; say "shighroi" or "taratari" for ' +
+  '"soon", NEVER "shigghiri" (not a real word). English: correct tense, no literal translation. ' +
+  'Hinglish: "nahi", never a bare "na"; address as "aap". Never mix a Hindi word into Banglish or a ' +
+  'Bengali word into Hinglish.';
 async function generateConversationReply(text, history, firstName, topicLabel, needsAnswer) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error('whatsappAssistant.generateConversationReply called without ANTHROPIC_API_KEY set');
@@ -1745,20 +2120,68 @@ async function generateConversationReply(text, history, firstName, topicLabel, n
   const userContent = historyBlock + '\n\nTheir latest message: "' + text + '"\n\n' +
     'Topic: ' + topicLabel + '. ' +
     (needsAnswer
-      ? 'This needs a real reply (not [[NO_REPLY_NEEDED]]) - you do not have the answer, see the system rules.'
-      : 'This looks like a plain acknowledgement with nothing open to resolve - use your judgement per the system rules.');
-  let content = stripForbiddenGreeting(await callClaudeChat(apiKey, DRAFT_MODEL, [
+      ? 'This needs a real reply naming the topic above - you do not have the answer, see the system rules.'
+      : 'This is a greeting/acknowledgement with nothing open to resolve - reply briefly and warmly, never silence.');
+  const messages = [
     { role: 'system', content: CONTEXT_REPLY_SYSTEM_PROMPT },
     { role: 'user', content: userContent }
-  ]));
-  if (content === '[[NO_REPLY_NEEDED]]') return null;
-  content = content.replace(/\[\[NO_REPLY_NEEDED\]\]/g, '').trim();
+  ];
+  let content = stripForbiddenGreeting(await callClaudeChat(apiKey, DRAFT_MODEL, messages));
+  // Structural backstop (same principle as containsUnbackedTimeframePromise
+  // below) - found live that the model can repeat an earlier holding line
+  // verbatim across different topics despite the prompt instruction above;
+  // one retry with the exact repeat pointed out directly is far more
+  // reliable than trusting the prompt alone to self-correct.
+  const recentOutgoing = (history || []).filter((h) => h.direction === 'out').slice(-3).map((h) => h.text);
+  if (content && recentOutgoing.includes(content)) {
+    const retryMessages = messages.concat([
+      { role: 'assistant', content },
+      { role: 'user', content: 'You already sent that exact sentence earlier in this conversation. Say the same idea in genuinely different words this time.' }
+    ]);
+    content = stripForbiddenGreeting(await callClaudeChat(apiKey, DRAFT_MODEL, retryMessages)) || content;
+  }
+  // Found live: a Banglish/Hinglish (Roman-script) reply can get a stray
+  // Bengali/Devanagari syllable mixed into an otherwise-Roman word (e.g.
+  // "pabেন" instead of "pabenn") - same principle as scriptCheckPasses in
+  // assistantShared.js, but that check only applies to the main data-chat
+  // path, not this one. Only a concern when the sender themselves wrote
+  // in Roman script - if they typed in native script, a native-script
+  // reply is correct, not a leak.
+  if (content && !NATIVE_SCRIPT_RE.test(text) && NATIVE_SCRIPT_RE.test(content)) {
+    const retryMessages = messages.concat([
+      { role: 'assistant', content },
+      { role: 'user', content: 'Your reply accidentally mixed in some native Bengali/Devanagari script. The sender wrote in Roman/Latin letters - reply ONLY in Roman letters, no native script at all.' }
+    ]);
+    const retried = stripForbiddenGreeting(await callClaudeChat(apiKey, DRAFT_MODEL, retryMessages));
+    if (retried && !NATIVE_SCRIPT_RE.test(retried)) content = retried;
+  }
   if (needsAnswer && containsUnbackedTimeframePromise(content)) {
     const safe = (SAFE_NO_PROMISE_FALLBACK[lang] || SAFE_NO_PROMISE_FALLBACK.english)(topicLabel);
     content = firstName ? firstName + ', ' + lowerFirstLetter(safe) : safe;
   }
   return content || null;
 }
+
+// Deterministic, no AI call - "who are you" is common enough and the
+// answer never varies, so this is caught up front (before even
+// classifyOfficialMessage runs) rather than trusted to the model: a
+// guaranteed-correct, instant answer beats a usually-correct one here.
+const IDENTITY_QUESTION_RE = /\b(apni|tumi)\s+ke\b|\b(apnar|tomar)\s+na?am\s+ki\b|\bwho\s+(are\s+you|r\s+u)\b|\b(aap|tum)\s+kaun\s+ho\b|\b(aapka|tera|tumhara)\s*naam\s+kya\s+hai\b/i;
+const IDENTITY_REPLY = {
+  banglish: 'Ami SUBH, Subhodeep-er HR Assistant. Apnar ki dorkar bolun.',
+  hinglish: 'Main SUBH hoon, Subhodeep ka HR Assistant. Aapko kya chahiye bataiye.',
+  english: "I'm SUBH, Subhodeep's HR Assistant. Please tell me what you need."
+};
+
+// Spec point 6a - a WhatsApp data request NEVER gets the real answer
+// directly; this exact holding line goes out immediately while the real
+// answer is prepared in the background and held for the owner's
+// explicit approval (see prepareAndQueueDataApproval below).
+const DATA_REQUEST_HOLDING_REPLY = {
+  banglish: 'Ami SUBH, Subhodeep-er HR Assistant. Ami Subhodeep-er sathe kotha bole khub shighroi apnar dorkar moto tottho pathacchi.',
+  hinglish: 'Main SUBH hoon, Subhodeep ka HR Assistant. Main Subhodeep se baat karke jaldi hi aapki zaroorat ke hisaab se jaankari bhejta hoon.',
+  english: "I'm SUBH, Subhodeep's HR Assistant. I'll check with Subhodeep and share the information you need shortly."
+};
 
 // The single decision point for spec section 3.1 (a/b/c) - called for
 // EVERY official message (1:1 official, or a tagged group message).
@@ -1770,6 +2193,11 @@ async function generateConversationReply(text, history, firstName, topicLabel, n
 // history: recent messages in THIS chat (1:1 only, see pollOnce) -
 // omitted entirely for groups, which have no per-sender history.
 async function decideAutoReply({ phone, name, firstName, text, isGroup, history }) {
+  if (!isGroup && IDENTITY_QUESTION_RE.test(text)) {
+    const lang = detectLang(text);
+    return { case: 'acknowledged', replyText: IDENTITY_REPLY[lang] || IDENTITY_REPLY.english, summaryForOwner: null };
+  }
+
   // What generateDraft gets told as "X wrote: ..." - a real first name
   // when one was resolved (directory/allowlist), otherwise the generic
   // "The sender" (never the phone-number display fallback in `name`,
@@ -1792,7 +2220,28 @@ async function decideAutoReply({ phone, name, firstName, text, isGroup, history 
   try {
     classification = await classifyOfficialMessage(text, isGroup ? null : history);
   } catch (err) {
-    classification = { topic: 'none', topicLabel: 'general conversation', needsAnswer: true };
+    classification = CLASSIFY_FALLBACK;
+  }
+
+  // Automated/non-human message (OTP, bank/delivery notification,
+  // marketing, spam, another business's bot, WhatsApp system message) -
+  // never replied to, never escalated - pollOnce logs this to the inbox
+  // as 'automatic' instead of sending/drafting anything.
+  if (!isGroup && classification.replyNeeded === false) {
+    return { case: 'automatic', replyText: null, summaryForOwner: null, automaticReason: classification.automaticReason || 'automated message' };
+  }
+
+  // Spec point 6 - a request for real HR/employee data NEVER gets
+  // answered directly on WhatsApp, always a holding reply + the owner's
+  // explicit approval first. The real answer is prepared in the
+  // background (prepareAndQueueDataApproval), not awaited here, so this
+  // fixed holding line still goes out within the normal reply latency.
+  if (!isGroup && classification.wantsData) {
+    const lang = classification.language || detectLang(text);
+    const dataRequestSummary = classification.dataRequestSummary || text.slice(0, 160);
+    prepareAndQueueDataApproval({ phone, name: senderLabel, text, dataRequestSummary, lang })
+      .catch((err) => console.error('[hr-assistant] data-request approval prep failed: ' + err.message));
+    return { case: 'data_holding', replyText: DATA_REQUEST_HOLDING_REPLY[lang] || DATA_REQUEST_HOLDING_REPLY.english, summaryForOwner: null };
   }
 
   if (classification.topic && memoryService.MEMORY_TOPICS.includes(classification.topic)) {
@@ -1830,24 +2279,25 @@ async function decideAutoReply({ phone, name, firstName, text, isGroup, history 
   // No real fact available (memory/own-record) - groups keep the old
   // model-composed casual/holding path (no identified sender, no
   // history to be conversational about). 1:1 uses the new context-aware
-  // generator: empathetic, mentions the real topic, never invents a
-  // timeframe, and may legitimately decide no reply is needed (a plain
-  // "ok"/"thanks" with nothing open) - see its own comment.
+  // generator: empathetic, always mentions the real topic, never
+  // invents a timeframe, never repeats an earlier line.
   if (isGroup) {
     const replyText = await generateGroupDraft(name, text);
     return { case: 'holding', replyText, summaryForOwner: text.slice(0, 160) };
   }
   const topicLabel = classification.topicLabel || 'their question';
-  const needsAnswer = classification.needsAnswer !== false;
-  const replyText = await generateConversationReply(text, history, firstName, topicLabel, needsAnswer);
-  if (!needsAnswer) {
-    // Pure acknowledgement - may still get a short warm reply, but never
-    // escalates and never counts as "still waiting" (there's no open
-    // question here to wait on).
+  // greeting/thanks/document_sent are acknowledgement-only intents - a
+  // real human reply always goes out (never silence, see
+  // CONTEXT_REPLY_SYSTEM_PROMPT), but these never escalate to the owner
+  // or count toward the repeated-follow-up tracker, since there's no
+  // open question here to actually wait on.
+  const isAcknowledgement = ['greeting', 'thanks', 'document_sent'].includes(classification.intent);
+  const replyText = await generateConversationReply(text, history, firstName, topicLabel, !isAcknowledgement);
+  if (isAcknowledgement) {
     return { case: 'acknowledged', replyText, summaryForOwner: null };
   }
   const followupCount = await incrementFollowupCount(phone);
-  return { case: 'holding', replyText, summaryForOwner: text.slice(0, 160), topicLabel, followupCount };
+  return { case: 'holding', replyText, summaryForOwner: text.slice(0, 160), topicLabel, topic: classification.topic, followupCount };
 }
 
 // ---------------- Incoming document handling (spec item 5b/5c) ----------------
@@ -2011,17 +2461,32 @@ async function pollOnce() {
           // Loop protection (reworked - see isDuplicateIncoming/
           // isBotLoopPattern's own comment for why) checked against the
           // SENDER's own recent messages, fetched once and reused as
-          // conversation context below regardless of outcome.
+          // conversation context below regardless of outcome. Still
+          // visible in the inbox summary (not a silent continue) - an
+          // owner checking "what came in" should see that a message
+          // arrived even when SUBH correctly chose not to reply to it.
           const history = await getConvoHistory(contactId, CONVO_HISTORY_MAX);
-          if (isDuplicateIncoming(history, text) || isBotLoopPattern(history, text)) {
+          const isDup = isDuplicateIncoming(history, text);
+          const isLoop = !isDup && isBotLoopPattern(history, text);
+          if (isDup || isLoop) {
             await appendConvoHistory(contactId, 'in', text);
+            await logInboxEvent({ chatId: contactId, name, isGroup: false, messageSummary: text, aCase: null, sentText: null, outcome: isDup ? 'skipped_duplicate' : 'skipped_possible_loop', arrivedAt, seenAt });
             continue;
           }
           await appendConvoHistory(contactId, 'in', text);
-          await markActiveConversation(contactId);
 
           const decision = await decideAutoReply({ phone: contactId, name, firstName, text, isGroup: false, history: history.slice(-10) }).catch(() => null);
-          if (decision && decision.replyText) {
+          if (decision && decision.case === 'automatic') {
+            // A real human message on this official number by default
+            // (see classify()) - but THIS one reads like an automated/
+            // non-human message (OTP, bank/delivery notification,
+            // marketing, another business's bot, a WhatsApp system
+            // message). Never replied to, never escalated to the owner,
+            // but still visible in the inbox so nothing silently
+            // vanishes without a trace.
+            results.automatic = (results.automatic || 0) + 1;
+            await logInboxEvent({ chatId: contactId, name, isGroup: false, messageSummary: text, aCase: 'automatic', sentText: null, outcome: 'automatic', arrivedAt, seenAt });
+          } else if (decision && decision.replyText) {
             await appendConvoHistory(contactId, 'out', decision.replyText);
             if (await isNeverAuto(contactId)) {
               // Spec item 3: decided normally, but never auto-sent - back
@@ -2038,6 +2503,7 @@ async function pollOnce() {
                 replyText: decision.replyText, case: decision.case, memoryId: decision.memoryId || null,
                 summaryForOwner: decision.summaryForOwner || null,
                 topicLabel: decision.topicLabel || null,
+                topic: decision.topic || null,
                 followupCount: decision.followupCount || null,
                 arrivedAt, seenAt
               });
@@ -2122,8 +2588,6 @@ module.exports = {
   isInformal,
   generateConversationReply,
   containsUnbackedTimeframePromise,
-  markActiveConversation,
-  isActiveConversation,
   appendConvoHistory,
   getConvoHistory,
   isDuplicateIncoming,
@@ -2158,6 +2622,9 @@ module.exports = {
   checkAndPostDailySummary,
   listOpenFollowups,
   clearOpenFollowup,
+  resolveFollowupsForMemory,
+  handleApprovalCommand,
+  listPendingApprovals,
   handleIncomingMedia,
   isRealSendAllowedFor
 };

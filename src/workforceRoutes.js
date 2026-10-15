@@ -1374,11 +1374,38 @@ router.post('/hr-assistant/chat', async (req, res) => {
         return res.json({ reply, card: null, actions: null, conversationId: savedConversationId });
       }
 
+      // HR-data-request approval workflow (spec point 6c/6d) - checked
+      // before the memory command and the normal AI pipeline, same
+      // reasoning as both: whether to approve/reject/edit a pending
+      // WhatsApp data request controls what actually gets sent to a real
+      // person, so it's intercepted deterministically rather than left
+      // to the normal chat flow to stumble into. Returns null (falls
+      // through) when nothing is pending or this message isn't actually
+      // about an approval at all - see handleApprovalCommand's own
+      // comment.
+      const approvalResult = await whatsappAssistant.handleApprovalCommand(message, req.hrUser.email)
+        .catch((err) => ({ reply: 'Approval process korte giye error holo: ' + err.message }));
+      if (approvalResult) {
+        const savedConversationId = await chatHistoryService.appendTurn(req.hrUser.email, conversationId, { userText: message, assistantText: approvalResult.reply, card: null, actions: null }).catch(() => null);
+        return res.json({ reply: approvalResult.reply, card: null, actions: null, conversationId: savedConversationId });
+      }
+
       const memoryResult = await memoryService.handleMemoryMessage(message, req.hrUser.email, history)
         .catch((err) => ({ reply: 'Memory command process korte giye error holo: ' + err.message }));
       if (memoryResult) {
-        const savedConversationId = await chatHistoryService.appendTurn(req.hrUser.email, conversationId, { userText: message, assistantText: memoryResult.reply, card: null, actions: null }).catch(() => null);
-        return res.json({ reply: memoryResult.reply, card: null, actions: null, conversationId: savedConversationId });
+        // Proactive follow-up (spec point 7) - a newly created/updated
+        // memory may already answer someone who's been waiting on
+        // WhatsApp; resolve that right now instead of waiting for them
+        // to ask again, and tell the owner what went out.
+        let reply = memoryResult.reply;
+        if (memoryResult.record) {
+          const resolved = await whatsappAssistant.resolveFollowupsForMemory(memoryResult.record).catch(() => []);
+          if (resolved.length) {
+            reply += '\n\nProactively janiye deoa holo: ' + resolved.map((r) => r.name + ' ("' + r.replyText + '")').join('; ');
+          }
+        }
+        const savedConversationId = await chatHistoryService.appendTurn(req.hrUser.email, conversationId, { userText: message, assistantText: reply, card: null, actions: null }).catch(() => null);
+        return res.json({ reply, card: null, actions: null, conversationId: savedConversationId });
       }
 
       // Never-auto-reply list (spec item 3) - add/remove by name or

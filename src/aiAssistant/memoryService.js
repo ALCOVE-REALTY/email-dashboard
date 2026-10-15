@@ -376,7 +376,11 @@ async function createMemory({ topic, periodRaw, scopeType, scopeValue, statusFac
   await saveMemory(record);
   await logMemoryEvent(existing ? 'updated' : 'created', id);
   const prefix = existing ? '(Replaced the earlier one on the same topic/period/scope) ' : '';
-  return { reply: prefix + buildConfirmationText(record) + (period.yearAssumed ? ' (year assumed from context)' : '') };
+  // `record` lets the caller (workforceRoutes.js) proactively resolve any
+  // open WhatsApp follow-up this new fact now actually answers (spec
+  // point 7) - additive, every existing caller that only reads `.reply`
+  // is unaffected.
+  return { reply: prefix + buildConfirmationText(record) + (period.yearAssumed ? ' (year assumed from context)' : ''), record };
 }
 
 async function handleListCommand() {
@@ -438,7 +442,13 @@ async function handleMemoryMessage(text, ownerEmail, history) {
     return { reply: 'Thik ache, save korini.' };
   }
 
-  if (!/\bmemory\b/i.test(text)) return null;
+  // "memor(y|ies)" - a bare \bmemory\b never matched the plural
+  // "memories" at all (no shared substring at the word boundary), so
+  // "list all memories" silently fell through to the normal chat
+  // pipeline instead of being treated as a memory command. "Memory:" and
+  // "memory -" already matched \bmemory\b fine (the colon/dash are their
+  // own word boundary) - only the plural needed broadening.
+  if (!/\bmemor(?:y|ies)\b/i.test(text)) return null;
 
   const parsed = await parseMemoryCommand(text);
   if (parsed.kind === 'mention_only') return { reply: MENTION_CONFIRM_QUESTION };

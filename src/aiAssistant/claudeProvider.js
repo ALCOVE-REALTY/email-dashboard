@@ -49,11 +49,20 @@ const CLAUDE_TOOL_DEFS = shared.TOOL_DEFS_NEUTRAL.map((t, i, arr) => {
   return def;
 });
 
+// Found live (whatsappAssistant.js's own copy of this fix has the full
+// story): claude-sonnet-5-5 can put its chain-of-thought inside a
+// literal "<reasoning>...</reasoning>" block WITHIN the text content
+// itself rather than a separate `thinking` block - reproducible, not a
+// one-off. MODEL_MAIN is used here for the escalation and forced-
+// language retries, so this is stripped at the one shared extraction
+// point rather than trusted to never happen.
+const REASONING_TAG_RE = /<(?:reasoning|thinking)>[\s\S]*?<\/(?:reasoning|thinking)>/gi;
 function extractText(content) {
-  return (Array.isArray(content) ? content : [])
+  const text = (Array.isArray(content) ? content : [])
     .filter((b) => b && b.type === 'text')
     .map((b) => b.text)
     .join('');
+  return text.replace(REASONING_TAG_RE, '').trim();
 }
 function extractToolUse(content) {
   return (Array.isArray(content) ? content : []).find((b) => b && b.type === 'tool_use') || null;

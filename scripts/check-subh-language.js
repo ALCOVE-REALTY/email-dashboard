@@ -1,8 +1,8 @@
 // Checks SUBH's model-generated replies (English/Banglish/Hinglish) for a
 // fixed set of known grammar mistakes - run manually after touching
-// SYSTEM_PROMPT/LANGUAGE_REMINDER (openaiProvider.js) or
+// SYSTEM_PROMPT (assistantShared.js) or CONTEXT_REPLY_SYSTEM_PROMPT/
 // DRAFT_SYSTEM_PROMPT/GROUP_DRAFT_SYSTEM_PROMPT (whatsappAssistant.js),
-// since these are real OpenAI calls, not a hardcoded-string check - a
+// since these are real Claude calls, not a hardcoded-string check - a
 // clean run only means the model behaved correctly THIS time, re-run
 // after any prompt change to catch regressions.
 //
@@ -10,7 +10,7 @@
 require('dotenv').config({ path: '.env.local' });
 require('dotenv').config();
 
-const provider = require('../src/aiAssistant/openaiProvider');
+const provider = require('../src/aiAssistant/provider');
 const whatsappAssistant = require('../src/aiAssistant/whatsappAssistant');
 const { detectMessageLanguage } = require('../src/aiAssistant/languageDetect');
 const { Redis } = require('@upstash/redis');
@@ -20,7 +20,7 @@ const redis = new Redis({
   token: process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN
 });
 const INBOX_LOG_KEY = 'wa-inbox-log';
-const OWNER_EMAIL = process.env.SUBH_MEMORY_OWNER_EMAIL || 'subhodeep@alcoverealty.in';
+const OWNER_EMAIL = process.env.SUBH_MEMORY_OWNER_EMAIL;
 
 // ---- Known-mistake patterns, checked against every reply regardless of
 // its intended language - a mistake belonging to the WRONG language
@@ -29,6 +29,7 @@ const OWNER_EMAIL = process.env.SUBH_MEMORY_OWNER_EMAIL || 'subhodeep@alcovereal
 const UNIVERSAL_MISTAKES = [
   { re: /\b\w*e(che|chhe) na\b/i, label: 'Banglish: "-eche na"/"-echhe na" instead of "-ni"' },
   { re: /\baj ke\b/i, label: 'Banglish: "Aj ke" instead of "Aj"' },
+  { re: /\bshigghiri\b/i, label: 'Banglish: "shigghiri" is not a real word - use "shighroi"/"taratari"' },
   { re: /\bhas came\b/i, label: 'English: "has came"' },
   { re: /\bhave came\b/i, label: 'English: "have came"' },
   { re: /\bhas went\b/i, label: 'English: "has went"' },
@@ -36,7 +37,8 @@ const UNIVERSAL_MISTAKES = [
   { re: /\b(?:aaya|gaya|hua|diya|bheja|kiya) na\b/i, label: 'Hinglish: Bengali-style bare "na" instead of "nahi"' },
   { re: /^\s*(namaskar|namaste|dear)\b/i, label: 'robotic greeting opener (Namaskar/Namaste/Dear)' },
   { re: /^\s*ji[,.\s]/i, label: 'robotic greeting opener ("Ji")' },
-  { re: /\bi'(?:m|ll|ve|d)\b/, label: 'English: lowercase "i" pronoun (must always be capitalized)' }
+  { re: /\bi'(?:m|ll|ve|d)\b/, label: 'English: lowercase "i" pronoun (must always be capitalized)' },
+  { re: /<(?:reasoning|thinking)>/i, label: 'leaked <reasoning>/<thinking> tag in visible reply text' }
 ];
 // "karo" deliberately excluded - it's ambiguous (Bengali "karo" = "whose",
 // Hindi "karo" = "do" imperative), found as a real false positive in Banglish
@@ -59,11 +61,12 @@ async function askChat(message) {
 function draft(name, text, memoryFact) {
   return whatsappAssistant.generateDraft(name, text, undefined, null, memoryFact);
 }
-// Production's actual 1:1 holding-reply path is now buildHoldingReply
-// (deterministic), not generateDraft - test that instead so this suite
-// exercises what real messages actually go through.
-function holding(chatId, text, firstName) {
-  return whatsappAssistant.buildHoldingReply(chatId, text, firstName);
+// Production's actual 1:1 holding-reply path (no memory/own-record fact
+// available) is generateConversationReply, conversation-history-aware -
+// test that instead of a direct function call so this suite exercises
+// what real messages actually go through.
+function holding(text, firstName, topicLabel) {
+  return whatsappAssistant.generateConversationReply(text, [], firstName, topicLabel || 'general conversation', true);
 }
 function status(lang) {
   return whatsappAssistant.whatsappAssistantStatus(lang, OWNER_EMAIL).then((r) => r.replyText);
@@ -91,11 +94,10 @@ async function seedInboxEntries() {
 async function cleanupInboxEntries(jsons) {
   for (const j of jsons) await redis.lrem(INBOX_LOG_KEY, 1, j);
 }
-// Inbox-summary-specific assertions - now that the per-item text is
-// built deterministically in code (whatsappAssistant.buildInboxReplyText),
-// not model-composed, these check for the EXACT expected fragments
-// rather than just the absence of known mistakes - a much stronger test
-// now that correctness is actually achievable, not just "probably ok".
+// Inbox-summary-specific assertions - the per-item text is built
+// deterministically in code (whatsappAssistant.buildInboxReplyText), not
+// model-composed, so these check for the EXACT expected fragments rather
+// than just the absence of known mistakes.
 const INBOX_EXPECTATIONS = {
   banglish: {
     mustContain: ['ti official message esheche', '— 2ti message:', 'Draft baniyechi', 'Skip korechi', 'Reply pathiyechi'],
@@ -125,15 +127,10 @@ function checkStatusText(lang, text) {
   const expected = STATUS_EXPECTATIONS[lang];
   return expected && !text.startsWith(expected) ? ['missing expected heading: "' + expected + '"'] : [];
 }
-// Regression check for the reported bug: a plain English question about
-// check_memory's "no memory found" path (e.g. "Does SUBH have a memory
-// for X this month?") was reproducibly answered in Banglish/Hinglish -
-// confirmed via a controlled A/B test to predate even today's earlier
-// prompt changes. Fixed by making that one path deterministic
-// (replyText, keyed by a real deterministic language detector, never
-// the model's own guess) - this check verifies the full real chat
-// pipeline (askChat, not a direct function call) actually produces the
-// right language end to end.
+// Regression check: a plain English question about check_memory's "no
+// memory found" path was reproducibly answered in Banglish/Hinglish -
+// this verifies the full real chat pipeline (askChat) actually produces
+// the right language end to end.
 function checkLanguageMatch(lang, text) {
   const got = detectMessageLanguage(text);
   return got === lang ? [] : ['language mismatch: expected ' + lang + ', detected ' + got];
@@ -146,53 +143,87 @@ function checkInboxText(lang, text) {
   exp.mustNotContain.forEach((s) => { if (text.includes(s)) issues.push('contains forbidden fragment: "' + s + '"'); });
   return issues;
 }
+// "Who are you" must get SUBH's exact deterministic identity line, same
+// language as the sender - a regression check for the fixed reply
+// (decideAutoReply's IDENTITY_QUESTION_RE short-circuit never reaches
+// the model at all, so this exercises the regex match + lang detection).
+const IDENTITY_EXPECTATIONS = {
+  banglish: 'Ami SUBH, Subhodeep-er HR Assistant.',
+  hinglish: 'Main SUBH hoon, Subhodeep ka HR Assistant.',
+  english: "I'm SUBH, Subhodeep's HR Assistant."
+};
+function checkIdentityText(lang, text) {
+  const expected = IDENTITY_EXPECTATIONS[lang];
+  return expected && !text.startsWith(expected) ? ['missing expected identity line: "' + expected + '"'] : [];
+}
+async function identityReply(text, firstName) {
+  const d = await whatsappAssistant.decideAutoReply({ phone: '919999999999', name: firstName, firstName, text, isGroup: false, history: [] });
+  return d.replyText;
+}
+// The data-request holding reply (spec point 6a) is fixed, deterministic
+// text - the model is never asked to compose it, only classification
+// decides whether to use it.
+const DATA_HOLDING_EXPECTATIONS = {
+  banglish: 'khub shighroi apnar dorkar moto tottho pathacchi',
+  hinglish: 'jaldi hi aapki zaroorat ke hisaab se jaankari bhejta hoon',
+  english: "I'll check with Subhodeep and share the information you need shortly"
+};
+function checkDataHoldingText(lang, text) {
+  const expected = DATA_HOLDING_EXPECTATIONS[lang];
+  return expected && !text.includes(expected) ? ['missing expected data-request holding phrase for ' + lang] : [];
+}
+async function dataRequestReply(text, firstName) {
+  const d = await whatsappAssistant.decideAutoReply({ phone: '919999999998', name: firstName, firstName, text, isGroup: false, history: [] });
+  return d.case === 'data_holding' ? d.replyText : '(WRONG CASE: ' + d.case + ', expected data_holding)';
+}
 
 async function main() {
   const seeded = await seedInboxEntries();
   const samples = [];
 
-  // ---- Banglish (10) ----
+  // ---- Banglish (12) ----
   samples.push(['banglish', 'inbox-empty', () => askChat('Aj WhatsApp e kono official message eshechi naki?')]);
   samples.push(['banglish', 'inbox-empty', () => askChat('Aj ke kono message asheni ki WhatsApp e?')]);
   samples.push(['banglish', 'inbox-nonempty', () => askChat('Aj WhatsApp e ke ke message korechi, list dao'), checkInboxText]);
-  samples.push(['banglish', 'holding', () => holding('91700000001', 'Sir amar bonus kobe pabo?', 'Rahul')]);
-  samples.push(['banglish', 'holding', () => holding('91700000002', 'Office theke kono notice eshechi?', null)]);
+  samples.push(['banglish', 'holding', () => holding('Sir amar bonus kobe pabo?', 'Rahul', 'bonus')]);
+  samples.push(['banglish', 'holding', () => holding('Office theke kono notice eshechi?', null, 'office notice')]);
   samples.push(['banglish', 'memory', () => draft('Amit', 'October mashe salary kobe hobe?', SALARY_MEMORY)]);
   samples.push(['banglish', 'memory', () => draft('Sona', 'Amar PF form ki jama hoyeche?', PF_NOT_DONE_MEMORY)]);
   samples.push(['banglish', 'holding', () => draft('Dev', 'Kemon acho?')]);
   samples.push(['banglish', 'assistant-status', () => status('banglish'), checkStatusText]);
-  samples.push(['banglish', 'holding', () => holding('91700000003', 'Amar confirmation letter ki ready?', 'Mina')]);
+  samples.push(['banglish', 'holding', () => holding('Amar confirmation letter ki ready?', 'Mina', 'confirmation letter')]);
+  samples.push(['banglish', 'identity', () => identityReply('Apni ke apnar nam ki?', 'Rahul'), checkIdentityText]);
+  samples.push(['banglish', 'data-request', () => dataRequestReply('Amake total engineers der list ta dao', 'Rahul'), checkDataHoldingText]);
 
-  // ---- English (10) ----
+  // ---- English (12) ----
   samples.push(['english', 'inbox-empty', () => askChat('Did any important WhatsApp message come in today?')]);
   samples.push(['english', 'inbox-nonempty', () => askChat('What WhatsApp messages came in today? List them.'), checkInboxText]);
-  samples.push(['english', 'holding', () => holding('91700000004', 'Sir, when will I get my bonus?', 'John')]);
-  samples.push(['english', 'holding', () => holding('91700000005', 'Has any notice come from the office today?', null)]);
+  samples.push(['english', 'holding', () => holding('Sir, when will I get my bonus?', 'John', 'bonus')]);
+  samples.push(['english', 'holding', () => holding('Has any notice come from the office today?', null, 'office notice')]);
   samples.push(['english', 'memory', () => draft('Peter', 'When will October salary be credited?', SALARY_MEMORY)]);
   samples.push(['english', 'memory', () => draft('Anna', 'Has my PF form been submitted?', PF_NOT_DONE_MEMORY)]);
   samples.push(['english', 'holding', () => draft('Tom', 'How are you?')]);
   samples.push(['english', 'status', () => whatsappAssistant.buildAutoReplyStatusReply()]);
   samples.push(['english', 'assistant-status', () => status('english'), checkStatusText]);
-  samples.push(['english', 'holding', () => holding('91700000006', 'Is my joining letter ready?', 'Lucy')]);
+  samples.push(['english', 'holding', () => holding('Is my joining letter ready?', 'Lucy', 'joining letter')]);
+  samples.push(['english', 'identity', () => identityReply('Who are you?', 'Lucy'), checkIdentityText]);
+  samples.push(['english', 'data-request', () => dataRequestReply('Please give me the list of all engineers', 'Lucy'), checkDataHoldingText]);
 
-  // ---- Hinglish (10) ----
+  // ---- Hinglish (12) ----
   samples.push(['hinglish', 'inbox-empty', () => askChat('Aaj WhatsApp mein koi important message aaya kya?')]);
   samples.push(['hinglish', 'inbox-nonempty', () => askChat('Aaj WhatsApp pe kisne message kiya, batao'), checkInboxText]);
-  samples.push(['hinglish', 'holding', () => holding('91700000007', 'Sir, mera bonus kab milega?', 'Raj')]);
-  samples.push(['hinglish', 'holding', () => holding('91700000008', 'Office se koi notice aaya kya aaj?', null)]);
+  samples.push(['hinglish', 'holding', () => holding('Sir, mera bonus kab milega?', 'Raj', 'bonus')]);
+  samples.push(['hinglish', 'holding', () => holding('Office se koi notice aaya kya aaj?', null, 'office notice')]);
   samples.push(['hinglish', 'memory', () => draft('Vikas', 'October ki salary kab aayegi?', SALARY_MEMORY)]);
   samples.push(['hinglish', 'memory', () => draft('Pooja', 'Mera PF form jama hua kya?', PF_NOT_DONE_MEMORY)]);
   samples.push(['hinglish', 'holding', () => draft('Amit', 'Kaise ho?')]);
   samples.push(['hinglish', 'assistant-status', () => status('hinglish'), checkStatusText]);
-  samples.push(['hinglish', 'holding', () => holding('91700000009', 'Mera confirmation letter ready hai kya?', 'Simran')]);
+  samples.push(['hinglish', 'holding', () => holding('Mera confirmation letter ready hai kya?', 'Simran', 'confirmation letter')]);
   samples.push(['hinglish', 'memory', () => draft('Rohit', 'Mujhe salary mil gayi kya?', SALARY_DELAY_MEMORY)]);
+  samples.push(['hinglish', 'identity', () => identityReply('Aap kaun ho?', 'Simran'), checkIdentityText]);
+  samples.push(['hinglish', 'data-request', () => dataRequestReply('Mujhe HR department ka headcount batao', 'Simran'), checkDataHoldingText]);
 
   // ---- check_memory "not found" via the REAL full chat pipeline (3) ----
-  // Regression cases for the reported bug - these ask about a topic/
-  // period combination guaranteed not to exist, reliably hitting
-  // check_memory's deterministic notFound path through askChat (not a
-  // direct function call), so this verifies the real end-to-end routing
-  // + language choice, not just the template function in isolation.
   samples.push(['banglish', 'check-memory-notfound', () => askChat('Insurance niye October 2024-er kono memory ache?'), checkLanguageMatch]);
   samples.push(['english', 'check-memory-notfound', () => askChat('Is there a memory about insurance for October 2024?'), checkLanguageMatch]);
   samples.push(['hinglish', 'check-memory-notfound', () => askChat('Insurance ke baare mein October 2024 ka koi memory hai kya?'), checkLanguageMatch]);
@@ -206,27 +237,30 @@ async function main() {
       results.push({ lang, category, text: '(ERROR: ' + err.message + ')', issues: ['call failed'] });
       continue;
     }
-    // Any inbox-* reply quotes ORIGINAL sender message text verbatim
-    // (correctly - it must never be retranslated) - since real data is
-    // seeded for this whole run, even an "inbox-empty"-phrased question
-    // can return a non-empty result containing those quotes, which can
-    // legitimately be in a different language than SUBH's own authored
-    // text around them. The generic cross-language-leak scan (meant for
-    // SUBH's own words) doesn't apply to inbox categories for this
-    // reason; checkInboxText does the precise, correct assertions where
-    // attached instead.
     const issues = (category.startsWith('inbox') ? [] : checkText(lang, text)).concat(extraCheck ? extraCheck(lang, text) : []);
     results.push({ lang, category, text, issues });
   }
+
+  // ---- Anti-repeat regression: two different open questions in the same
+  // conversation must never get the exact same holding sentence (spec
+  // point 3/8) ----
+  const history1 = [];
+  const reply1 = await holding('Sir amar bonus kobe pabo?', 'Rahul', 'bonus');
+  history1.push({ direction: 'in', text: 'Sir amar bonus kobe pabo?' }, { direction: 'out', text: reply1 });
+  const reply2 = await whatsappAssistant.generateConversationReply('Amar attendance thik ache?', history1, 'Rahul', 'attendance', true);
+  results.push({
+    lang: 'banglish', category: 'anti-repeat', text: reply1 + ' || ' + reply2,
+    issues: reply1 === reply2 ? ['two different topics in one conversation got the IDENTICAL reply'] : []
+  });
 
   await cleanupInboxEntries(seeded);
 
   console.log('='.repeat(70));
   let failCount = 0;
   results.forEach((r, i) => {
-    const status = r.issues.length ? 'FAIL' : 'ok';
+    const st = r.issues.length ? 'FAIL' : 'ok';
     if (r.issues.length) failCount++;
-    console.log(`[${i + 1}/${results.length}] ${status}  (${r.lang}/${r.category})`);
+    console.log(`[${i + 1}/${results.length}] ${st}  (${r.lang}/${r.category})`);
     console.log('  reply: ' + r.text);
     if (r.issues.length) console.log('  issues: ' + r.issues.join('; '));
   });
