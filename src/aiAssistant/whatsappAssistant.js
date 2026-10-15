@@ -880,9 +880,9 @@ async function prepareAndQueueDataApproval({ phone, name, text, dataRequestSumma
 // directory (never a substring match - "Ayan" must never match "Sayan"),
 // and only ever the one approved field in the outgoing message.
 const PERSON_NOT_FOUND_REPLY = {
-  banglish: (name) => name + ' naam-e kono active employee khuje pelam na.',
-  hinglish: (name) => name + ' naam ka koi active employee nahi mila.',
-  english: (name) => "I couldn't find an active employee named " + name + "."
+  banglish: (name) => name + ' naam-e kono employee khuje pelam na.',
+  hinglish: (name) => name + ' naam ka koi employee nahi mila.',
+  english: (name) => "I couldn't find an employee named " + name + "."
 };
 const CONTACT_NUMBER_LINE = {
   banglish: (name, number) => name + '-er contact number: ' + number,
@@ -893,6 +893,16 @@ const CONTACT_NOT_ON_FILE_REPLY = {
   banglish: (name) => name + '-er contact number record-e nei.',
   hinglish: (name) => name + ' ka contact number record mein nahi hai.',
   english: (name) => "There's no contact number on file for " + name + "."
+};
+// An inactive (ex-)employee is never a data-sharing decision at all - no
+// approval is ever created for one (see handlePersonLookupRequest below),
+// so "never share their data even if I approve" is structurally true:
+// there is nothing to approve. The sender gets this directly, the owner
+// is told, and that's the end of it.
+const INACTIVE_EMPLOYEE_REPLY = {
+  banglish: (name) => name + ' ekhon ar amader company-te kormorato nei — uni company chhere diyechhen. Aro kichu dorkar hole bolun.',
+  hinglish: (name) => name + ' ab hamari company mein kaam nahi karte — unhone company chhod di hai. Aur kuch chahiye toh bataiye.',
+  english: (name) => name + ' is no longer with our company — they have left. Let me know if you need anything else.'
 };
 
 // Matches whole words only, case-insensitive - "Ayan" matches "Ayan Das"
@@ -905,19 +915,39 @@ function matchesWholeWordName(fullName, query) {
   if (!queryWords.length) return false;
   return queryWords.every((qw) => nameWords.includes(qw));
 }
-async function findActiveEmployeesByWholeNameMatch(query, departmentHint) {
+// Department names in this data are punctuated ("CIVIL (PLOT-B)
+// STRUCTURE") but a sender/the model naming one in plain speech never
+// reproduces that exactly ("Civil Plot-B Structure department") - found
+// live that a plain substring check on the raw strings missed an exact,
+// correct match purely over parentheses/punctuation. Strips everything
+// but letters/digits/spaces before comparing either direction.
+function normalizeForMatch(s) {
+  return String(s || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+function departmentHintMatches(deptName, hint) {
+  const normDept = normalizeForMatch(deptName);
+  const normHint = normalizeForMatch(hint);
+  if (!normHint) return false;
+  return normDept.includes(normHint) || normHint.split(' ').every((w) => normDept.includes(w));
+}
+// Any status (ACTIVE/NOTICE PERIOD/INACTIVE) - the caller decides what to
+// do with each category (notice period is still "currently employed" for
+// this feature; inactive gets its own no-data reply, never the normal
+// approval flow at all).
+async function findEmployeesByWholeNameMatch(query, departmentHint) {
   const { employees, departmentNames } = await employeeService.getEmployeeData();
-  const active = employees.filter((e) => e.status === 'ACTIVE' && matchesWholeWordName(e.name, query));
-  const withDept = active.map((e) => ({
+  const matched = employees.filter((e) => matchesWholeWordName(e.name, query));
+  const withDept = matched.map((e) => ({
     employeeId: e.employeeId, name: e.name, designation: e.designation,
-    department: departmentNames.get(e.departmentKey) || e.department, contactNumber: e.contactNumber
+    department: departmentNames.get(e.departmentKey) || e.department,
+    contactNumber: e.contactNumber, status: e.status
   }));
   if (!departmentHint) return withDept;
   // A department hint narrows but never eliminates a real candidate - if
   // narrowing would leave zero (e.g. the hint didn't exactly match the
   // stored department name), fall back to the unnarrowed set rather than
   // silently reporting "not found" over an imprecise hint.
-  const narrowed = withDept.filter((e) => String(e.department || '').toLowerCase().includes(departmentHint.toLowerCase()));
+  const narrowed = withDept.filter((e) => departmentHintMatches(e.department, departmentHint));
   return narrowed.length ? narrowed : withDept;
 }
 
@@ -933,8 +963,20 @@ async function queuePersonContactApproval({ phone, requesterLabel, candidate, la
     preparedReplyText: outgoingText, preparedCard: null, preparedError: null,
     resolvedPersonName: candidate.name
   });
+  // Notice period is still "currently employed" for this feature (unlike
+  // inactive) - normal approval flow, just flagged so the owner knows
+  // their status while deciding.
+  const statusNote = candidate.status === 'NOTICE PERIOD' ? ', notice period-e achen' : '';
   await postOwnerNotification(
-    requesterLabel + ' (' + phone + ') ' + candidate.name + ' (' + candidate.department + ')-er contact number chaichhe. Je message jabe: \'' + outgoingText + '\'. Pathabo?'
+    requesterLabel + ' (' + phone + ') ' + candidate.name + ' (' + candidate.department + statusNote + ')-er contact number chaichhe. Je message jabe: \'' + outgoingText + '\'. Pathabo?'
+  );
+}
+
+// No approval is ever created for an inactive (ex-)employee - there is
+// nothing for the owner to approve/reject, this is purely informational.
+async function replyInactiveEmployee({ phone, requesterLabel, candidate }) {
+  await postOwnerNotification(
+    requesterLabel + ' (' + phone + ') ' + candidate.name + ' (inactive)-er contact number cheyechhilo — janiye diyechi uni ar company-te nei.'
   );
 }
 
@@ -945,17 +987,47 @@ async function handlePersonLookupRequest({ phone, name, lang, personName, person
     await postOwnerNotification('⚠️ ' + name + ' (' + phone + ') ' + (personName || 'ekjon employee') + '-er sensitive personal data (Aadhar/PAN/address/etc type) chaiche - WhatsApp-e block kora holo, kichu pathano hoyni.');
     return { case: 'acknowledged', replyText: PII_BLOCK_REPLY[lang] || PII_BLOCK_REPLY.english, summaryForOwner: null };
   }
-  const candidates = await findActiveEmployeesByWholeNameMatch(personName, department);
-  if (!candidates.length) {
-    await postOwnerNotification(name + ' (' + phone + ') "' + personName + '"-er contact number cheyechhe, kintu oi naame kono active employee pelam na.');
+
+  const allMatches = await findEmployeesByWholeNameMatch(personName, department);
+  if (!allMatches.length) {
+    await postOwnerNotification(name + ' (' + phone + ') "' + personName + '"-er contact number cheyechhe, kintu oi naame kono employee pelam na.');
     return { case: 'acknowledged', replyText: (PERSON_NOT_FOUND_REPLY[lang] || PERSON_NOT_FOUND_REPLY.english)(personName), summaryForOwner: null };
   }
-  if (candidates.length === 1) {
-    await queuePersonContactApproval({ phone, requesterLabel: name, candidate: candidates[0], lang });
+  // Notice period counts as currently employed for this feature - only a
+  // real INACTIVE record ever gets the "left the company" treatment.
+  const current = allMatches.filter((e) => e.status !== 'INACTIVE');
+  const inactive = allMatches.filter((e) => e.status === 'INACTIVE');
+
+  // Same name matches exactly one current AND one inactive person -
+  // default to the current one UNLESS a department hint was actually
+  // given and it points specifically at the inactive record instead
+  // (never the other way around - a hint matching the current record
+  // too, or matching neither precisely, never overrides the safer
+  // current-employee default).
+  if (current.length === 1 && inactive.length === 1 && department) {
+    const hintMatchesInactiveOnly =
+      departmentHintMatches(inactive[0].department, department) &&
+      !departmentHintMatches(current[0].department, department);
+    if (hintMatchesInactiveOnly) {
+      await replyInactiveEmployee({ phone, requesterLabel: name, candidate: inactive[0], lang });
+      return { case: 'acknowledged', replyText: (INACTIVE_EMPLOYEE_REPLY[lang] || INACTIVE_EMPLOYEE_REPLY.english)(inactive[0].name), summaryForOwner: null };
+    }
+  }
+
+  if (!current.length && inactive.length) {
+    // Only inactive match(es) - which one (if several) doesn't change the
+    // outcome, since no data is ever shared either way; use the first for
+    // the owner's own notification.
+    await replyInactiveEmployee({ phone, requesterLabel: name, candidate: inactive[0], lang });
+    return { case: 'acknowledged', replyText: (INACTIVE_EMPLOYEE_REPLY[lang] || INACTIVE_EMPLOYEE_REPLY.english)(inactive[0].name), summaryForOwner: null };
+  }
+
+  if (current.length === 1) {
+    await queuePersonContactApproval({ phone, requesterLabel: name, candidate: current[0], lang });
   } else {
-    for (const candidate of candidates) await queuePersonContactApproval({ phone, requesterLabel: name, candidate, lang });
-    const list = candidates.map((c, i) => (i + 1) + ') ' + c.name + ' (' + c.department + ')').join(', ');
-    await postOwnerNotification(candidates.length + ' jon "' + personName + '" ache: ' + list + '. Kar number pathabo?');
+    for (const candidate of current) await queuePersonContactApproval({ phone, requesterLabel: name, candidate, lang });
+    const list = current.map((c, i) => (i + 1) + ') ' + c.name + ' (' + c.department + ')').join(', ');
+    await postOwnerNotification(current.length + ' jon "' + personName + '" ache: ' + list + '. Kar number pathabo?');
   }
   return { case: 'data_holding', replyText: DATA_REQUEST_HOLDING_REPLY[lang] || DATA_REQUEST_HOLDING_REPLY.english, summaryForOwner: null };
 }
