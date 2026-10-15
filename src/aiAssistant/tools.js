@@ -22,10 +22,12 @@ async function departmentHeadcount() {
   const total = employees.filter(isActive).length;
   const top = rows.slice(0, CARD_ROW_LIMIT);
   const rest = rows.length - top.length;
+  const mapRow = (r) => [r.name, r.count];
   return {
     title: 'Department-wise Active Headcount' + (rest > 0 ? ' (Top ' + CARD_ROW_LIMIT + ')' : ''),
-    rows: top.map((r) => ({ label: r.name, value: r.count })),
-    fullRows: rows.map((r) => ({ label: r.name, value: r.count })),
+    columns: ['Department', 'Active Count'],
+    tableRows: top.map(mapRow),
+    fullTableRows: rows.map(mapRow),
     footer: { label: 'Total Active Employees', value: total }
   };
 }
@@ -36,10 +38,12 @@ async function locationHeadcount() {
   const total = employees.filter(isActive).length;
   const top = rows.slice(0, CARD_ROW_LIMIT);
   const rest = rows.length - top.length;
+  const mapRow = (r) => [r.name, r.count];
   return {
     title: 'Location-wise Active Headcount' + (rest > 0 ? ' (Top ' + CARD_ROW_LIMIT + ')' : ''),
-    rows: top.map((r) => ({ label: r.name, value: r.count })),
-    fullRows: rows.map((r) => ({ label: r.name, value: r.count })),
+    columns: ['Location', 'Active Count'],
+    tableRows: top.map(mapRow),
+    fullTableRows: rows.map(mapRow),
     footer: { label: 'Total Active Employees', value: total }
   };
 }
@@ -50,10 +54,12 @@ async function doerHeadcount() {
   const total = employees.filter(isActive).length;
   const top = rows.slice(0, CARD_ROW_LIMIT);
   const rest = rows.length - top.length;
+  const mapRow = (r) => [r.name, r.count];
   return {
     title: 'Reporting DOER-wise Active Headcount' + (rest > 0 ? ' (Top ' + CARD_ROW_LIMIT + ')' : ''),
-    rows: top.map((r) => ({ label: r.name, value: r.count })),
-    fullRows: rows.map((r) => ({ label: r.name, value: r.count })),
+    columns: ['Reporting DOER', 'Active Count'],
+    tableRows: top.map(mapRow),
+    fullTableRows: rows.map(mapRow),
     footer: { label: 'Total Active Employees', value: total }
   };
 }
@@ -115,14 +121,12 @@ async function joiningThisMonth(month, includeNoticePeriod, includeInactive, mon
   const resolvedMonthIndex = target.getUTCMonth();
   const monthLabel = target.toLocaleDateString('en-US', { month: 'long', timeZone: 'UTC' });
   const joiners = employees.filter((e) => statusAllowed(e, includeNoticePeriod, includeInactive) && e.doj && e.doj.getUTCFullYear() === y && e.doj.getUTCMonth() === resolvedMonthIndex);
-  const mapJoiner = (e) => ({
-    label: e.name,
-    value: (departmentNames.get(e.departmentKey) || e.department) + ' · ' + e.doj.toISOString().slice(0, 10)
-  });
+  const mapJoiner = (e) => [e.name, departmentNames.get(e.departmentKey) || e.department || '—', e.doj.toISOString().slice(0, 10)];
   return {
     title: 'Employees Joining in ' + monthLabel + ' ' + y + truncationSuffix(joiners.length),
-    rows: joiners.slice(0, CARD_ROW_LIMIT).map(mapJoiner),
-    fullRows: joiners.map(mapJoiner),
+    columns: ['Name', 'Department', 'DOJ'],
+    tableRows: joiners.slice(0, CARD_ROW_LIMIT).map(mapJoiner),
+    fullTableRows: joiners.map(mapJoiner),
     footer: { label: 'Total Joiners' + scopeSuffix(includeNoticePeriod, includeInactive), value: joiners.length }
   };
 }
@@ -136,11 +140,12 @@ async function pendingConfirmations(monthOffset = 0, includeNoticePeriod, includ
   const target = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + monthOffset, 1));
   const list = analytics.pendingConfirmationsThisMonth(employees, target).filter((e) => statusAllowed(e, includeNoticePeriod, includeInactive));
   const monthLabel = target.toLocaleDateString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' });
-  const mapRow = (e) => ({ label: e.name, value: departmentNames.get(e.departmentKey) || e.department });
+  const mapRow = (e) => [e.name, departmentNames.get(e.departmentKey) || e.department || '—'];
   return {
     title: 'Confirmations Due in ' + monthLabel + truncationSuffix(list.length),
-    rows: list.slice(0, CARD_ROW_LIMIT).map(mapRow),
-    fullRows: list.map(mapRow),
+    columns: ['Name', 'Department'],
+    tableRows: list.slice(0, CARD_ROW_LIMIT).map(mapRow),
+    fullTableRows: list.map(mapRow),
     footer: { label: 'Total Pending' + scopeSuffix(includeNoticePeriod, includeInactive), value: list.length }
   };
 }
@@ -165,11 +170,12 @@ async function retirementThisMonth(includeNoticePeriod, includeInactive, monthOf
   const target = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + (Number(monthOffset) || 0), 1));
   const list = analytics.turning58ThisMonth(employees, target).filter((e) => statusAllowed(e, includeNoticePeriod, includeInactive));
   const monthLabel = target.toLocaleDateString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' });
-  const mapRow = (e) => ({ label: e.name, value: departmentNames.get(e.departmentKey) || e.department });
+  const mapRow = (e) => [e.name, e.dob ? e.dob.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) : '—', departmentNames.get(e.departmentKey) || e.department || '—'];
   return {
     title: 'Employees Reaching Retirement Age in ' + monthLabel + truncationSuffix(list.length),
-    rows: list.slice(0, CARD_ROW_LIMIT).map(mapRow),
-    fullRows: list.map(mapRow),
+    columns: ['Name', 'DOB', 'Department'],
+    tableRows: list.slice(0, CARD_ROW_LIMIT).map(mapRow),
+    fullTableRows: list.map(mapRow),
     footer: { label: 'Total' + scopeSuffix(includeNoticePeriod, includeInactive), value: list.length }
   };
 }
@@ -188,7 +194,7 @@ async function retirementThisMonth(includeNoticePeriod, includeInactive, monthOf
 // wrong month (November instead of October). Offset-from-now math done
 // here, in code, against the real server date, needs no guessing.
 async function birthdaysThisMonth(month, includeNoticePeriod, includeInactive, monthOffset) {
-  const { employees } = await employeeService.getEmployeeData();
+  const { employees, departmentNames } = await employeeService.getEmployeeData();
   const now = new Date();
   const requestedMonth = Number(month);
   const targetMonthIndex =
@@ -198,14 +204,12 @@ async function birthdaysThisMonth(month, includeNoticePeriod, includeInactive, m
   const target = new Date(Date.UTC(now.getUTCFullYear(), targetMonthIndex, 1));
   const list = analytics.birthdaysThisMonth(employees, target).filter((e) => statusAllowed(e, includeNoticePeriod, includeInactive));
   const monthLabel = target.toLocaleDateString('en-US', { month: 'long', timeZone: 'UTC' });
-  const mapRow = (e) => ({
-    label: e.name,
-    value: e.dob.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })
-  });
+  const mapRow = (e) => [e.name, e.dob.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }), departmentNames.get(e.departmentKey) || e.department || '—'];
   return {
     title: 'Birthdays in ' + monthLabel + truncationSuffix(list.length),
-    rows: list.slice(0, CARD_ROW_LIMIT).map(mapRow),
-    fullRows: list.map(mapRow),
+    columns: ['Name', 'DOB', 'Department'],
+    tableRows: list.slice(0, CARD_ROW_LIMIT).map(mapRow),
+    fullTableRows: list.map(mapRow),
     footer: { label: 'Total' + scopeSuffix(includeNoticePeriod, includeInactive), value: list.length }
   };
 }
@@ -232,10 +236,12 @@ async function workforceMovement(days = 90) {
 async function healthInsurancePendingAdditions() {
   const insuranceData = await insuranceService.getInsuranceData();
   const additions = insuranceData.additions || [];
+  const mapRow = (a) => [a.name, a.employeeId];
   return {
     title: 'Pending Health Insurance Additions' + truncationSuffix(additions.length),
-    rows: additions.slice(0, CARD_ROW_LIMIT).map((a) => ({ label: a.name, value: a.employeeId })),
-    fullRows: additions.map((a) => ({ label: a.name, value: a.employeeId })),
+    columns: ['Name', 'Employee ID'],
+    tableRows: additions.slice(0, CARD_ROW_LIMIT).map(mapRow),
+    fullTableRows: additions.map(mapRow),
     footer: { label: 'Total Pending', value: additions.length }
   };
 }
@@ -307,11 +313,12 @@ async function dataQualityIssues() {
   const { employees } = await employeeService.getEmployeeData();
   const report = analytics.dataQualityReport(employees);
   const labels = { department: 'Missing Department', location: 'Missing Location', designation: 'Missing Designation', doj: 'Missing Date of Joining', dob: 'Missing Date of Birth', email: 'Missing Email' };
-  const rows = Object.entries(report.missing).map(([key, count]) => ({ label: labels[key] || key, value: count }));
-  rows.push({ label: 'Duplicate Employee IDs', value: report.duplicateIds.length });
+  const tableRows = Object.entries(report.missing).map(([key, count]) => [labels[key] || key, count]);
+  tableRows.push(['Duplicate Employee IDs', report.duplicateIds.length]);
   return {
     title: 'Data Quality Issues',
-    rows,
+    columns: ['Issue', 'Count'],
+    tableRows,
     footer: { label: 'Total Employees Checked', value: report.total },
     actions: [{ label: 'Open Data Quality', view: 'quality' }]
   };
@@ -337,12 +344,14 @@ async function demographics(kind) {
   }[kind];
   const view = { age: 'ageDistribution', gender: 'genderDistribution', collar: 'collarDistribution', tenure: 'tenure' }[kind];
   const title = { age: 'Age Distribution', gender: 'Gender Distribution', collar: 'Category Distribution', tenure: 'Tenure Distribution' }[kind];
+  const bucketHeader = { age: 'Age Range', gender: 'Gender', collar: 'Category', tenure: 'Tenure Range' }[kind];
   const data = fn(employees);
   return {
     title: kind === 'tenure' && data.averageTenureYears !== null
       ? title + ' (avg ' + data.averageTenureYears + ' yrs)'
       : title,
-    rows: data.buckets.map((b) => ({ label: b.label, value: b.count })),
+    columns: [bucketHeader, 'Count'],
+    tableRows: data.buckets.map((b) => [b.label, b.count]),
     footer: { label: 'Active Employees', value: data.activeCount },
     actions: [{ label: 'Open ' + title, view }]
   };
@@ -543,15 +552,16 @@ async function groupEmployees(rawFilters = {}, groupBy = 'department') {
   });
   const allRows = Array.from(counts.entries())
     .sort((a, b) => b[1] - a[1])
-    .map(([label, value]) => ({ label, value }));
+    .map(([label, value]) => [label, value]);
   const top = allRows.slice(0, CARD_ROW_LIMIT);
   const rest = allRows.length - top.length;
   const groupLabel = GROUP_BY_LABELS[groupBy] || 'Department';
 
   return {
     title: 'Employee Count by ' + groupLabel + (rest > 0 ? ' (Top ' + CARD_ROW_LIMIT + ')' : ''),
-    rows: top,
-    fullRows: allRows,
+    columns: [groupLabel, 'Count'],
+    tableRows: top,
+    fullTableRows: allRows,
     footer: { label: 'Total Matching' + (groupBy === 'status' ? '' : scopeLabelSuffix(filters)), value: filtered.length }
   };
 }
@@ -691,13 +701,14 @@ async function queryEmployees(params = {}) {
     });
     const allRows = Array.from(counts.entries())
       .sort((a, b) => b[1] - a[1])
-      .map(([label, value]) => ({ label, value }));
+      .map(([label, value]) => [label, value]);
     const top = allRows.slice(0, CARD_ROW_LIMIT);
     const rest = allRows.length - top.length;
     return {
       title: 'Employee Count by ' + def.label + (rest > 0 ? ' (Top ' + CARD_ROW_LIMIT + ')' : ''),
-      rows: top,
-      fullRows: allRows,
+      columns: [def.label, 'Count'],
+      tableRows: top,
+      fullTableRows: allRows,
       footer: { label: 'Total Matching' + (groupBy === 'status' ? '' : scopeLabelSuffix(filters)), value: filtered.length }
     };
   }
@@ -921,16 +932,28 @@ async function directReports(name) {
     return { title: null, rows: null, actions: [{ label: 'Open Employee Data', view: 'directory' }], notFound: q };
   }
 
+  // Real incident: a senior employee's OWN reportingManager field in the
+  // source sheet is their own name (presumably meaning "top of the
+  // hierarchy, nobody above them") - the whole-word match above correctly
+  // finds that field, which means the match set included the manager
+  // themselves as their own "direct report" (footer said 6, only 5 rows
+  // were real reports). A manager can never be their own report,
+  // regardless of why the underlying data looks this way - filtered out
+  // unconditionally here, not left to depend on clean source data.
+  const resolvedKey = employeeService.normalizeKey(resolvedName);
+  matches = matches.filter((e) => employeeService.normalizeKey(e.name) !== resolvedKey);
+  if (!matches.length) {
+    return { title: null, rows: null, actions: null, employeeName: resolvedName, zeroDirectReports: true, cascadingTotal: 0 };
+  }
+
   const shown = matches.slice(0, CARD_ROW_LIMIT);
   const rest = matches.length - shown.length;
-  const mapRow = (e) => ({
-    label: e.name,
-    value: (e.designation || '—') + ' · ' + (departmentNames.get(e.departmentKey) || e.department || '—')
-  });
+  const mapRow = (e) => [e.name, e.designation || '—', departmentNames.get(e.departmentKey) || e.department || '—'];
   return {
     title: 'Reporting to ' + resolvedName + (rest > 0 ? ' (Top ' + CARD_ROW_LIMIT + ')' : ''),
-    rows: shown.map(mapRow),
-    fullRows: matches.map(mapRow),
+    columns: ['Name', 'Designation', 'Department'],
+    tableRows: shown.map(mapRow),
+    fullTableRows: matches.map(mapRow),
     footer: { label: 'Direct Reports', value: matches.length },
     // Found live: "how many are under X" answers were easy to mistake for
     // only direct reports when the person actually meant the whole chain
@@ -959,6 +982,11 @@ function countAllUnderManager(rootName, employees) {
     frontier.forEach((key) => {
       employees.forEach((e) => {
         if (e.status !== 'ACTIVE' || visitedIds.has(e.employeeId)) return;
+        // Same self-reference guard as directReports above - a real
+        // employee whose own reportingManager/reportingDoer field
+        // happens to be their own name must never count as their own
+        // (cascading) report at any level of the chain, not just the root.
+        if (employeeService.normalizeKey(e.name) === key) return;
         if (e.reportingManagerKey === key || e.reportingDoerKey === key) {
           visitedIds.add(e.employeeId);
           total++;

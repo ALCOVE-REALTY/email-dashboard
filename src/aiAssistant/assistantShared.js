@@ -204,6 +204,11 @@ const SYSTEM_PROMPT =
   'rows you see are genuinely fewer than the footer total - if every row is already shown, do not ' +
   'say any are missing. Getting the total wrong is a real error, not a stylistic choice - always ' +
   'read it from the footer, never estimate it from what rows happen to be visible to you. ' +
+  'A [[CARD]] reply is ONLY ever that one-line intro - NEVER also write the rows out yourself as a ' +
+  'markdown table, a bullet list, or numbered lines in the same reply; the card below your text ' +
+  'already shows them, duplicating it is a real formatting bug, not a helpful extra. If you find ' +
+  'yourself writing "|---|---|" or a numbered "1. Name - Designation" list, stop - delete it, the ' +
+  'one-line intro is the entire reply. ' +
   'Or [[DRAFT]] if the person wants an actual written document produced - use it for ANY request ' +
   'shaped like "draft/write/compose a mail/letter/notice about...", "translate this...", ' +
   '"summarise this...", "explain [policy/law] to me in writing" - always [[DRAFT]] for these, ' +
@@ -747,11 +752,25 @@ function buildCardFallback(card) {
   }
   return sentence;
 }
+// Structural backstop (same principle as buildNumberFallback below) - the
+// prompt explicitly forbids repeating a card's rows as a markdown table
+// in the same reply, but a model occasionally does it anyway (found
+// live - a [[CARD]] reply came back with a real "|---|---|"-style table
+// duplicating exactly what the card already shows). Only touches text
+// that actually contains a genuine markdown table separator row, so it
+// never strips unrelated text that happens to contain a "|" character.
+const MARKDOWN_TABLE_BLOCK_RE = /\n?(?:\|[^\n]*\|\n?)+/g;
+function stripMarkdownTable(text) {
+  if (!/\|\s*-{2,}\s*\|/.test(text)) return text;
+  return text.replace(MARKDOWN_TABLE_BLOCK_RE, '').replace(/\n{3,}/g, '\n\n').trim();
+}
+
 function finalizeReply(rawContent, card, actions, fallbackText) {
   const raw = rawContent || '';
   const match = raw.match(REPLY_MARKER_RE);
   const isPlain = Boolean(match && match[1] === 'PLAIN');
-  const cleaned = (match ? raw.slice(match[0].length) : raw).trim();
+  let cleaned = (match ? raw.slice(match[0].length) : raw).trim();
+  if (!isPlain) cleaned = stripMarkdownTable(cleaned);
   return {
     reply: cleaned || buildCardFallback(card) || fallbackText,
     card: isPlain ? null : card,
