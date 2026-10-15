@@ -130,6 +130,46 @@ async function checkAsync(label, fn) {
   check('a genuinely different incoming message is NOT flagged a duplicate', !whatsappAssistant.isDuplicateIncoming(historyWithRecentDup, 'a completely different question'));
 
   console.log('='.repeat(70));
+  console.log('Identity remark / emoji-only / senior-contact / robotic-phrase fix (found live with Radha Biswas Bhattacharjee, a real senior HR contact)');
+  console.log('='.repeat(70));
+  // A phone that resolves to no real employee - safe to run decideAutoReply
+  // against (no real record, no real send - isRealSendAllowedFor is false
+  // locally regardless, see the draft-mode check above).
+  const TEST_PHONE = '910000000777';
+  check('IDENTITY_CONFIRM_RE matches a REMARK about the bot ("this is your HR assistant speaking on behalf of u") - NOT just a question', whatsappAssistant.IDENTITY_CONFIRM_RE.test('This is your HR Assistant speaking on behalf of u.'));
+  check('IDENTITY_CONFIRM_RE matches "Is this a bot?"', whatsappAssistant.IDENTITY_CONFIRM_RE.test('Is this a bot?'));
+  check('IDENTITY_CONFIRM_RE matches "Are you Subhodeep?"', whatsappAssistant.IDENTITY_CONFIRM_RE.test('Are you Subhodeep?'));
+  check('IDENTITY_CONFIRM_RE matches "Who is replying?"', whatsappAssistant.IDENTITY_CONFIRM_RE.test('Who is replying?'));
+  await checkAsync('decideAutoReply never speaks AS Subhodeep in first person for an identity remark (the real live bug)', async () => {
+    const d = await whatsappAssistant.decideAutoReply({ phone: TEST_PHONE, name: 'Test', firstName: 'Test', text: 'This is your HR Assistant speaking on behalf of u.', isGroup: false, history: [] });
+    return d.case === 'acknowledged' && /^Yes, I'm SUBH/.test(d.replyText) && !/my behalf/i.test(d.replyText);
+  });
+
+  check('isEmojiOnlyMessage recognizes a bare emoji reaction', whatsappAssistant.isEmojiOnlyMessage('😨'));
+  check('isEmojiOnlyMessage recognizes multiple emoji with no real text', whatsappAssistant.isEmojiOnlyMessage('😳🙄'));
+  check('isEmojiOnlyMessage rejects real text even with an emoji in it', !whatsappAssistant.isEmojiOnlyMessage('thank you 🙂'));
+  await checkAsync('an emoji reaction within 30s of SUBH\'s own last message gets NO second reply (the real live bug - Radha sent two emoji in a row)', async () => {
+    const history = [{ direction: 'out', text: 'some earlier reply', ts: Date.now() - 3000 }];
+    const d = await whatsappAssistant.decideAutoReply({ phone: TEST_PHONE, name: 'Test', firstName: 'Test', text: '😨', isGroup: false, history });
+    return d.case === 'acknowledged' && !d.replyText;
+  });
+  await checkAsync('an emoji reaction more than 30s after SUBH\'s last message gets ONE short warm reply, not a full contextual one', async () => {
+    const history = [{ direction: 'out', text: 'some earlier reply', ts: Date.now() - 45000 }];
+    const d = await whatsappAssistant.decideAutoReply({ phone: TEST_PHONE, name: 'Test', firstName: 'Test', text: '👍', isGroup: false, history });
+    return d.case === 'acknowledged' && Object.values(whatsappAssistant.EMOJI_ACK_REPLY).includes(d.replyText);
+  });
+
+  check('SENIOR_DESIGNATION_RE matches a real Director/VP/Head title', whatsappAssistant.SENIOR_DESIGNATION_RE.test('DIRECTOR - OPERATIONS') && whatsappAssistant.SENIOR_DESIGNATION_RE.test('VP HR') && whatsappAssistant.SENIOR_DESIGNATION_RE.test('HR HEAD'));
+  check('SENIOR_DESIGNATION_RE does NOT match an ordinary designation (found live: Radha\'s real sheet designation is "MANAGER", not "Head" - never-auto-list membership is the primary senior signal, this keyword match is only the fallback)', !whatsappAssistant.SENIOR_DESIGNATION_RE.test('MANAGER'));
+  await checkAsync('isSeniorContact is false for a number not on the never-auto list and with no senior-keyword designation', async () => (await whatsappAssistant.isSeniorContact(TEST_PHONE, { designation: 'MANAGER' })) === false);
+  await checkAsync('isSeniorContact is true purely from a senior-keyword designation, even off the never-auto list', async () => (await whatsappAssistant.isSeniorContact(TEST_PHONE, { designation: 'DIRECTOR' })) === true);
+
+  await checkAsync('a genuinely unclear remark never produces a banned robotic phrase (found live: "I\'m not sure I follow... could you tell me a bit more about what you mean")', async () => {
+    const d = await whatsappAssistant.decideAutoReply({ phone: TEST_PHONE, name: 'Test', firstName: 'Test', text: 'eita thik na bhaiya ki bolo', isGroup: false, history: [] });
+    return Boolean(d.replyText) && !whatsappAssistant.FORBIDDEN_ROBOTIC_RE.test(d.replyText);
+  });
+
+  console.log('='.repeat(70));
   console.log(pass + '/' + (pass + fail) + ' passed' + (fail ? ', ' + fail + ' FAILED' : ''));
   if (failures.length) {
     console.log('Failed checks:');

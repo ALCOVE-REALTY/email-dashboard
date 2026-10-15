@@ -2473,6 +2473,14 @@ const SAFE_NO_PROMISE_FALLBACK = {
   hinglish: (topicLabel) => 'Samajh sakta hoon aap ' + topicLabel + ' ka wait kar rahe hain. Main Subhodeep se baat karke aapko exact update bata dunga.',
   english: (topicLabel) => "I understand you're waiting on " + topicLabel + ". I'll check with Subhodeep and confirm the exact update for you."
 };
+// Fallback when even the robotic-phrase retry doesn't clean up - one
+// short, natural question naming the real topic, never a formal
+// "I don't understand"/"could you clarify" line.
+const NATURAL_CLARIFY_FALLBACK = {
+  banglish: (topicLabel) => topicLabel + ' niye exactly ki jante chaichen, ektu bolben?',
+  hinglish: (topicLabel) => topicLabel + ' ke baare mein exactly kya jaanna chahte hain, zara bataiyega?',
+  english: (topicLabel) => 'What exactly do you need about ' + topicLabel + '?'
+};
 const CONTEXT_REPLY_SYSTEM_PROMPT =
   'You are a caring, professional HR person replying on WhatsApp, in the MIDDLE of an ongoing real ' +
   'conversation with one of your own contacts - you are given the recent conversation history (oldest ' +
@@ -2547,6 +2555,20 @@ async function generateConversationReply(text, history, firstName, topicLabel, n
     const safe = (SAFE_NO_PROMISE_FALLBACK[lang] || SAFE_NO_PROMISE_FALLBACK.english)(topicLabel);
     content = firstName ? firstName + ', ' + lowerFirstLetter(safe) : safe;
   }
+  // Structural ban on robotic/stiff phrasing (spec point 2) - found live
+  // ("I'm not sure I follow your message... Could you tell me a bit more
+  // about what you mean?") - one retry telling the model exactly what to
+  // avoid, then a short natural fallback question if it still doesn't
+  // clean up, same escalation pattern as the native-script retry above.
+  if (content && FORBIDDEN_ROBOTIC_RE.test(content)) {
+    const retryMessages = messages.concat([
+      { role: 'assistant', content },
+      { role: 'user', content: 'That reply sounds stiff and robotic ("I\'m not sure I follow"/"could you tell me more about what you mean"/similar). If something is unclear, just ask ONE short, natural question about the actual topic instead - the way a real person would text, not a formal clarification request.' }
+    ]);
+    const retried = stripForbiddenGreeting(await callClaudeChat(apiKey, DRAFT_MODEL, retryMessages));
+    content = (retried && !FORBIDDEN_ROBOTIC_RE.test(retried)) ? retried
+      : (NATURAL_CLARIFY_FALLBACK[lang] || NATURAL_CLARIFY_FALLBACK.english)(topicLabel);
+  }
   return content || null;
 }
 
@@ -2560,6 +2582,75 @@ const IDENTITY_REPLY = {
   hinglish: 'Main SUBH hoon, Subhodeep ka HR Assistant. Aapko kya chahiye bataiye.',
   english: "I'm SUBH, Subhodeep's HR Assistant. Please tell me what you need."
 };
+// A REMARK/assertion about the bot's identity ("this is your HR assistant
+// speaking on behalf of u", "is this a bot?", "are you Subhodeep?") -
+// distinct from IDENTITY_QUESTION_RE's open "who are you" question, and
+// NOT covered by it (a statement has no "who"/"kaun"/"ke"). Found live
+// (Radha Biswas Bhattacharjee, a senior HR contact): this fell through to
+// the normal conversational generator, which echoed the ambiguous
+// phrasing back in confused first person ("...HR Assistant speaking on MY
+// behalf") - SUBH must never speak AS Subhodeep. Answered the same
+// deterministic way as a direct question, just confirming the assertion
+// first ("Yes/Hyan/Haan") since that's what's being asked.
+const IDENTITY_CONFIRM_RE = /\bis\s+this\s+(a\s+)?bot\b|\bare\s+you\s+(a\s+)?(bot|subhodeep)\b|\bwho\s+is\s+replying\b|\bthis\s+is\s+(your\s+)?(the\s+)?hr\s+assistant\b|\bhr\s+assistant\s+speaking\b|\btumi\s+ki\s+(bot|subhodeep)\b|\bapni\s+ki\s+(bot|subhodeep)\b|\bkya\s+(aap|tum)\s+(bot|subhodeep)\s+ho\b|\bkya\s+ye\s+bot\s+hai\b/i;
+const IDENTITY_CONFIRM_REPLY = {
+  banglish: 'Hyan, ami SUBH, Subhodeep-er HR Assistant. Apnake ki bhabe sahajyo korte pari?',
+  hinglish: 'Haan, main SUBH hoon, Subhodeep ka HR Assistant. Main aapki kaise madad kar sakta hoon?',
+  english: "Yes, I'm SUBH, Subhodeep's HR Assistant. How can I help you?"
+};
+
+// Emoji-only / pure-reaction message (spec point 3) - a bare emoji needs
+// at most one short warm line, never a full contextual reply (there is
+// nothing to be "contextual" about), and never a SECOND message within
+// 30s of whatever SUBH just sent in this chat. Found live: the same
+// Radha Biswas Bhattacharjee conversation sent two emoji reactions in a
+// row and the normal conversational generator tried to compose a real
+// reply to each, producing a long, out-of-place response.
+const EMOJI_ONLY_RE = /^[\s\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{1F1E6}-\u{1F1FF}\u{200D}\u{FE0F}\u{2000}-\u{206F}]+$/u;
+function isEmojiOnlyMessage(text) {
+  const trimmed = String(text || '').trim();
+  return trimmed.length > 0 && EMOJI_ONLY_RE.test(trimmed);
+}
+const NO_REPLY_WITHIN_MS = 30 * 1000;
+const EMOJI_ACK_REPLY = {
+  banglish: '🙂 Kichu dorkar hole janaben.',
+  hinglish: '🙂 Kuch chahiye to bataiyega.',
+  english: '🙂 Let me know if you need anything.'
+};
+
+// Seniors (HR Head/directors/VPs) get an extra-brief, respectful,
+// never-argue-or-repeat tone (spec point 4). Checked TWO ways:
+// 1) the phone is on the owner's own never-auto list - found live that
+//    this is the more reliable signal: Radha Biswas Bhattacharjee (who
+//    the owner refers to as "HR Head" and saves in WhatsApp as such, the
+//    real person behind this whole fix) has the sheet designation
+//    "MANAGER", not "Head"/"Director"/"VP" - a title-keyword match alone
+//    would have missed her entirely. The never-auto list is exactly the
+//    owner's own curated "these people matter, handle with care" list
+//    (see addToNeverAuto/isNeverAuto), so it doubles as the senior-contact
+//    signal once populated.
+// 2) a fallback keyword match on the real directory designation, for
+//    anyone who genuinely holds one of these titles but isn't (yet) on
+//    that list.
+const SENIOR_DESIGNATION_RE = /\bhead\b|\bdirector\b|\bvice\s*president\b|\bvp\b|\bpresident\b|\bchief\b|\bceo\b|\bcoo\b|\bcfo\b/i;
+async function isSeniorContact(phone, emp) {
+  if (phone && await isNeverAuto(phone)) return true;
+  return Boolean(emp && emp.designation && SENIOR_DESIGNATION_RE.test(emp.designation));
+}
+const SENIOR_ESCALATE_REPLY = {
+  banglish: (topicLabel) => 'Bujhlam. ' + topicLabel + ' niye Subhodeep-ke janiye WhatsApp section-e escalate korchi, uni dekhe confirm korben.',
+  hinglish: (topicLabel) => 'Samajh gaya. ' + topicLabel + ' ke baare mein Subhodeep ko WhatsApp section mein escalate kar raha hoon, woh dekh kar confirm karenge.',
+  english: (topicLabel) => "Understood. I'll escalate " + topicLabel + " to Subhodeep in the WhatsApp section for his confirmation."
+};
+
+// Banned robotic phrases, checked structurally (not just prompted away) -
+// same principle as containsUnbackedTimeframePromise below. Found live in
+// the same conversation: "I'm not sure I follow your message... Could you
+// tell me a bit more about what you mean?" plus "nothing changes from my
+// side" - stiff, repetitive, and not how a real person replies to an
+// unclear remark (which should just be one short natural question about
+// the actual topic instead).
+const FORBIDDEN_ROBOTIC_RE = /i'?m not sure i follow|could you tell me (a bit )?more about what you mean|i don'?t understand your message|i do not understand your message|nothing changes from my side|bujhte parchi na apnar message|apnar message bujhte parchi na|samajh nahi aa raha (hai )?aapka message|mera kuch nahi badlega/i;
 
 // Spec point 6a - a WhatsApp data request NEVER gets the real answer
 // directly; this exact holding line goes out immediately while the real
@@ -2584,6 +2675,24 @@ async function decideAutoReply({ phone, name, firstName, text, isGroup, history 
   if (!isGroup && IDENTITY_QUESTION_RE.test(text)) {
     const lang = detectLang(text);
     return { case: 'acknowledged', replyText: IDENTITY_REPLY[lang] || IDENTITY_REPLY.english, summaryForOwner: null };
+  }
+  if (!isGroup && IDENTITY_CONFIRM_RE.test(text)) {
+    const lang = detectLang(text);
+    return { case: 'acknowledged', replyText: IDENTITY_CONFIRM_REPLY[lang] || IDENTITY_CONFIRM_REPLY.english, summaryForOwner: null };
+  }
+  if (!isGroup && isEmojiOnlyMessage(text)) {
+    const lastOut = (history || []).filter((h) => h.direction === 'out').slice(-1)[0];
+    if (lastOut && Date.now() - lastOut.ts < NO_REPLY_WITHIN_MS) {
+      // Already said something in this chat within the last 30s - a bare
+      // emoji reacting to it needs no second message (spec point 3).
+      return { case: 'acknowledged', replyText: null, summaryForOwner: null };
+    }
+    // Emoji carries no language signal of its own - fall back to the most
+    // recent real incoming message in this chat, same as a human would
+    // judge which language to react in.
+    const lastRealIncoming = (history || []).filter((h) => h.direction === 'in' && !isEmojiOnlyMessage(h.text)).slice(-1)[0];
+    const lang = lastRealIncoming ? detectLang(lastRealIncoming.text) : 'banglish';
+    return { case: 'acknowledged', replyText: EMOJI_ACK_REPLY[lang] || EMOJI_ACK_REPLY.banglish, summaryForOwner: null };
   }
 
   // What generateDraft gets told as "X wrote: ..." - a real first name
@@ -2698,6 +2807,18 @@ async function decideAutoReply({ phone, name, firstName, text, isGroup, history 
   // or count toward the repeated-follow-up tracker, since there's no
   // open question here to actually wait on.
   const isAcknowledgement = ['greeting', 'thanks', 'document_sent'].includes(classification.intent);
+  // Seniors (HR Head/director/VP) get a fixed, short escalate-only line
+  // instead of the full model-generated conversational reply (spec point
+  // 4) - structurally brief and never argues/repeats, rather than just
+  // prompting the model to "be brief" and hoping. The escalation itself
+  // (addOpenFollowup below) is identical either way - only the reply TEXT
+  // sent back to the senior changes.
+  if (!isAcknowledgement && await isSeniorContact(phone, emp && emp.emp)) {
+    const lang = detectLang(text);
+    const replyText = (SENIOR_ESCALATE_REPLY[lang] || SENIOR_ESCALATE_REPLY.english)(topicLabel);
+    const followupCount = await incrementFollowupCount(phone);
+    return { case: 'holding', replyText, summaryForOwner: text.slice(0, 160), topicLabel, topic: classification.topic, followupCount };
+  }
   const replyText = await generateConversationReply(text, history, firstName, topicLabel, !isAcknowledgement);
   if (isAcknowledgement) {
     return { case: 'acknowledged', replyText, summaryForOwner: null };
@@ -3045,5 +3166,14 @@ module.exports = {
   // these already existed and ran exactly this way before.
   FORBIDDEN_PII_LABELS,
   cardHasForbiddenField,
-  textHasForbiddenField
+  textHasForbiddenField,
+  // Exported for scripts/check-whatsapp-engine.js only - the identity/
+  // emoji/senior-contact/robotic-phrase fix (see decideAutoReply).
+  IDENTITY_CONFIRM_RE,
+  IDENTITY_CONFIRM_REPLY,
+  isEmojiOnlyMessage,
+  EMOJI_ACK_REPLY,
+  isSeniorContact,
+  SENIOR_DESIGNATION_RE,
+  FORBIDDEN_ROBOTIC_RE
 };
