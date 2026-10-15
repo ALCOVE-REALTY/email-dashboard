@@ -780,6 +780,39 @@ function cardToWhatsAppText(card) {
   return '';
 }
 
+// ---------------- Hard PII block (never left to the model) ----------------
+// A real incident (see conversation) showed the general aggregate-data
+// path can end up with a card/reply containing full personal-details
+// fields (Aadhar, PAN, addresses, ...) - e.g. a broad request that
+// happens to pull in a sensitive field, or any other path that reaches
+// get_personal_details/a sensitive `fields` selection on query_employees.
+// This is checked on every prepared answer BEFORE it is ever stored as a
+// pending approval, independent of which tool or model decision produced
+// it - a BLOCK, never a strip, since guessing which parts are "probably
+// fine" is exactly the kind of judgement call that must not live here.
+// Deliberately matches on LABEL/field text, not a fixed tool name list -
+// this only ever sees the already-rendered card/text, so it catches a
+// leak regardless of which tool path produced it.
+const FORBIDDEN_PII_LABELS = ['aadhar', 'pan', 'personal email', 'blood group', 'emergency contact', 'permanent address', 'present address', 'bank account', 'ifsc', 'uan', 'esic', 'date of birth', 'salary', 'ctc'];
+function cardHasForbiddenField(card) {
+  if (!card) return false;
+  const labelPool = [];
+  if (card.columns) labelPool.push(...card.columns);
+  (card.rows || card.fullRows || []).forEach((r) => { if (r && r.label) labelPool.push(r.label); });
+  if (card.title) labelPool.push(card.title);
+  const normalized = labelPool.map((l) => String(l).toLowerCase());
+  return FORBIDDEN_PII_LABELS.some((f) => normalized.some((l) => l.includes(f)));
+}
+function textHasForbiddenField(text) {
+  const t = String(text || '').toLowerCase();
+  return FORBIDDEN_PII_LABELS.some((f) => t.includes(f));
+}
+const PII_BLOCK_REPLY = {
+  banglish: 'Ei tottho WhatsApp-e share kora jay na - HR office-e jogajog korun.',
+  hinglish: 'Yeh jaankari WhatsApp par share nahi ki ja sakti - HR office se sampark karein.',
+  english: "This information can't be shared over WhatsApp - please contact the HR office."
+};
+
 // Lazy require (not a top-of-file import) - assistantShared.js, which
 // claudeProvider.js depends on, itself requires this file (for the
 // manage_whatsapp_official_list/whatsapp_inbox_summary/
@@ -792,6 +825,9 @@ async function prepareDataRequestAnswer(text) {
   const ownerEmail = process.env.SUBH_MEMORY_OWNER_EMAIL;
   try {
     const result = await claudeProvider.getResponse({ message: text, history: [], user: { email: ownerEmail } });
+    if (cardHasForbiddenField(result.card) || textHasForbiddenField(result.reply)) {
+      return { ok: false, blocked: true, error: 'answer would have included forbidden personal data (PII) - blocked before it was ever prepared for approval' };
+    }
     return { ok: true, replyText: result.reply, card: result.card || null };
   } catch (err) {
     return { ok: false, error: err.message };
@@ -806,6 +842,17 @@ function truncatePreview(text, max) {
 // the fixed holding reply that already went out to the requester.
 async function prepareAndQueueDataApproval({ phone, name, text, dataRequestSummary, lang }) {
   const prepared = await prepareDataRequestAnswer(text);
+  if (prepared.blocked) {
+    // Never even reaches the approval step - a request that needs
+    // forbidden personal data is refused outright (spec point 1), the
+    // owner is told, and the requester gets a direct follow-up rather
+    // than being left hanging on the earlier "checking" holding reply.
+    await postOwnerNotification('⚠️ ' + name + ' (' + phone + ') ' + dataRequestSummary + ' chaiche - ei request-e sensitive personal data (PII) laage, tai WhatsApp-e block kora holo, kichu pathano hoyni.');
+    if (isRealSendAllowedFor(phone)) {
+      await sendWhatsAppChunked(phone, PII_BLOCK_REPLY[lang] || PII_BLOCK_REPLY.english);
+    }
+    return;
+  }
   await savePendingApproval({
     phone, name, requestText: text, dataRequestSummary, lang,
     preparedReplyText: prepared.ok ? prepared.replyText : null,
@@ -823,6 +870,94 @@ async function prepareAndQueueDataApproval({ phone, name, text, dataRequestSumma
     name + ' (' + phone + ') ' + dataRequestSummary + ' chaiche' + countNote + '. Preview: ' + truncatePreview(prepared.replyText) +
     '. Pathabo? (ei chat-e "pathao"/"na" likhun)'
   );
+}
+
+// ---------------- Deterministic single-person field lookup (spec point 6 fix) ----------------
+// A request for ONE field about ONE named person NEVER goes through the
+// general AI tool-calling pipeline (get_personal_details, query_employees
+// with a sensitive `fields` selection, etc.) - built entirely
+// deterministically instead: whole-word name resolution against the real
+// directory (never a substring match - "Ayan" must never match "Sayan"),
+// and only ever the one approved field in the outgoing message.
+const PERSON_NOT_FOUND_REPLY = {
+  banglish: (name) => name + ' naam-e kono active employee khuje pelam na.',
+  hinglish: (name) => name + ' naam ka koi active employee nahi mila.',
+  english: (name) => "I couldn't find an active employee named " + name + "."
+};
+const CONTACT_NUMBER_LINE = {
+  banglish: (name, number) => name + '-er contact number: ' + number,
+  hinglish: (name, number) => name + ' ka contact number: ' + number,
+  english: (name, number) => name + "'s contact number: " + number
+};
+const CONTACT_NOT_ON_FILE_REPLY = {
+  banglish: (name) => name + '-er contact number record-e nei.',
+  hinglish: (name) => name + ' ka contact number record mein nahi hai.',
+  english: (name) => "There's no contact number on file for " + name + "."
+};
+
+// Matches whole words only, case-insensitive - "Ayan" matches "Ayan Das"
+// (first name alone, or any name containing that exact word) but never
+// "Sayan Das" (different word entirely). Multi-word queries ("Ayan Das")
+// require every given word to appear as a whole word in the real name.
+function matchesWholeWordName(fullName, query) {
+  const nameWords = String(fullName || '').toLowerCase().split(/\s+/).filter(Boolean);
+  const queryWords = String(query || '').toLowerCase().trim().split(/\s+/).filter(Boolean);
+  if (!queryWords.length) return false;
+  return queryWords.every((qw) => nameWords.includes(qw));
+}
+async function findActiveEmployeesByWholeNameMatch(query, departmentHint) {
+  const { employees, departmentNames } = await employeeService.getEmployeeData();
+  const active = employees.filter((e) => e.status === 'ACTIVE' && matchesWholeWordName(e.name, query));
+  const withDept = active.map((e) => ({
+    employeeId: e.employeeId, name: e.name, designation: e.designation,
+    department: departmentNames.get(e.departmentKey) || e.department, contactNumber: e.contactNumber
+  }));
+  if (!departmentHint) return withDept;
+  // A department hint narrows but never eliminates a real candidate - if
+  // narrowing would leave zero (e.g. the hint didn't exactly match the
+  // stored department name), fall back to the unnarrowed set rather than
+  // silently reporting "not found" over an imprecise hint.
+  const narrowed = withDept.filter((e) => String(e.department || '').toLowerCase().includes(departmentHint.toLowerCase()));
+  return narrowed.length ? narrowed : withDept;
+}
+
+async function queuePersonContactApproval({ phone, requesterLabel, candidate, lang }) {
+  if (!candidate.contactNumber) {
+    await postOwnerNotification(candidate.name + ' (' + candidate.department + ')-er contact number record-e nei, tai ' + requesterLabel + '-ke pathano jabe na.');
+    return;
+  }
+  const outgoingText = (CONTACT_NUMBER_LINE[lang] || CONTACT_NUMBER_LINE.english)(candidate.name, candidate.contactNumber);
+  const dataRequestSummary = candidate.name + ' (' + candidate.department + ") - contact number";
+  await savePendingApproval({
+    phone, name: requesterLabel, requestText: dataRequestSummary, dataRequestSummary, lang,
+    preparedReplyText: outgoingText, preparedCard: null, preparedError: null,
+    resolvedPersonName: candidate.name
+  });
+  await postOwnerNotification(
+    requesterLabel + ' (' + phone + ') ' + candidate.name + ' (' + candidate.department + ')-er contact number chaichhe. Je message jabe: \'' + outgoingText + '\'. Pathabo?'
+  );
+}
+
+async function handlePersonLookupRequest({ phone, name, lang, personName, personField, department }) {
+  if (personField !== 'contact_number') {
+    // Hard block - no approval loop at all, this can never be sent
+    // regardless of what the owner says (spec point 1).
+    await postOwnerNotification('⚠️ ' + name + ' (' + phone + ') ' + (personName || 'ekjon employee') + '-er sensitive personal data (Aadhar/PAN/address/etc type) chaiche - WhatsApp-e block kora holo, kichu pathano hoyni.');
+    return { case: 'acknowledged', replyText: PII_BLOCK_REPLY[lang] || PII_BLOCK_REPLY.english, summaryForOwner: null };
+  }
+  const candidates = await findActiveEmployeesByWholeNameMatch(personName, department);
+  if (!candidates.length) {
+    await postOwnerNotification(name + ' (' + phone + ') "' + personName + '"-er contact number cheyechhe, kintu oi naame kono active employee pelam na.');
+    return { case: 'acknowledged', replyText: (PERSON_NOT_FOUND_REPLY[lang] || PERSON_NOT_FOUND_REPLY.english)(personName), summaryForOwner: null };
+  }
+  if (candidates.length === 1) {
+    await queuePersonContactApproval({ phone, requesterLabel: name, candidate: candidates[0], lang });
+  } else {
+    for (const candidate of candidates) await queuePersonContactApproval({ phone, requesterLabel: name, candidate, lang });
+    const list = candidates.map((c, i) => (i + 1) + ') ' + c.name + ' (' + c.department + ')').join(', ');
+    await postOwnerNotification(candidates.length + ' jon "' + personName + '" ache: ' + list + '. Kar number pathabo?');
+  }
+  return { case: 'data_holding', replyText: DATA_REQUEST_HOLDING_REPLY[lang] || DATA_REQUEST_HOLDING_REPLY.english, summaryForOwner: null };
 }
 
 // Sends over multiple messages when the real answer is too long for one
@@ -936,7 +1071,7 @@ function approvalCommandTool() {
             items: {
               type: 'object',
               properties: {
-                target: { type: 'integer', description: '1-based index into the pending list given above that this decision applies to. Use 0 to mean EVERY pending request at once (only for an explicit "all" phrasing like "duto-i pathao"/"sob pathao"/"both"/"send all").' },
+                target: { type: 'integer', description: '1-based index into the pending list given above that this decision applies to. Use 0 to mean EVERY pending request at once (only for an explicit "all" phrasing like "duto-i pathao"/"sob pathao"/"both"/"send all"). If the owner\'s message names a specific person (e.g. "Priya-r ta pathao"), that name MUST match one of the pending items\' own name/description - if it names someone who is NOT in the pending list at all, do NOT guess which pending item was meant; instead leave `decisions` empty for that part of the message (triggering a clarifying question) rather than resolving it to the wrong target.' },
                 action: { type: 'string', enum: ['approve', 'reject', 'edit'] },
                 editInstruction: { type: 'string', description: 'Only when action is "edit" - the owner\'s own instruction for how to narrow/change the answer, e.g. "shudhu count pathao".' }
               },
@@ -2027,8 +2162,11 @@ function classifyTool() {
           topicLabel: { type: 'string', description: 'A short (2-5 word) human-readable description of what they are asking/talking about, in English, for an HR manager to read, e.g. "confirmation letter", "October salary", "attendance calculation". Resolve this from the conversation history when the current message alone is a context-dependent follow-up ("Tau kobe pabo?" after discussing a letter -> "confirmation letter", not "general conversation"). Use "general conversation" only when there genuinely is no identifiable subject at all.' },
           replyNeeded: { type: 'boolean', description: 'true for almost every message a real human sent to HR - questions, requests, complaints, follow-ups, greetings ("kemon acho", "good morning"), thanks/acknowledgements ("ok", "thanks"). false ONLY when this message is clearly NOT a human addressing HR: an OTP/verification code, a bank/payment/delivery/courier/system notification, a marketing/promotional message, spam, a message from another business\'s own automated bot, or a WhatsApp system message. When genuinely unsure, default to true - never silently ignore a real person.' },
           automaticReason: { type: 'string', description: 'Required only when replyNeeded is false - a short (2-6 word) reason, e.g. "bank OTP message", "delivery notification", "marketing message". Omit when replyNeeded is true.' },
-          wantsData: { type: 'boolean', description: 'true ONLY if they are asking for actual HR/employee data from the company database - counts, lists, names, headcounts, birthdays, who reports to whom, department lists, etc (e.g. "engineers-er list dao", "Yashaswi Shroff-er under-e koto staff?", "total engineers der list ta dao"). false for a question about their OWN situation (their own letter/salary/attendance), a policy question, or small talk - those go through the normal topic/memory path instead, never this one.' },
-          dataRequestSummary: { type: 'string', description: 'Required only when wantsData is true - restate exactly what data they are asking for, in plain English, e.g. "current list of engineers", "headcount under Yashaswi Shroff". Omit when wantsData is false.' }
+          wantsData: { type: 'boolean', description: 'true ONLY if they are asking for actual HR/employee data from the company database - counts, lists, names, headcounts, birthdays, who reports to whom, department lists, or any field (even just a phone number) about a named employee, etc. false for a question about their OWN situation (their own letter/salary/attendance), a policy question, or small talk - those go through the normal topic/memory path instead, never this one.' },
+          dataRequestSummary: { type: 'string', description: 'Required only when wantsData is true - restate exactly what data they are asking for, in plain English, e.g. "current list of engineers", "headcount under Yashaswi Shroff", "Ayan Das\'s contact number". Omit when wantsData is false.' },
+          personLookupName: { type: 'string', description: 'ONLY when wantsData is true AND the request is for ONE specific field about ONE named person (e.g. "Ayan Das er contact number ta dao", "R amake Ayan Das HR er contact no. ta debe?") - the person\'s name EXACTLY as given, first name alone is fine (e.g. "Ayan"). NEVER guess or complete a partial name yourself. Omit entirely for any aggregate/list/count/headcount request (e.g. "engineers list", "headcount under X", "who reports to X") - those are never about one person\'s own personal field and must NOT set this.' },
+          personLookupField: { type: 'string', enum: ['contact_number', 'forbidden_pii'], description: 'Required when personLookupName is given. "contact_number" ONLY for their phone/contact/mobile/WhatsApp number. "forbidden_pii" for ANYTHING else personal about them - Aadhar, PAN, bank account/IFSC, UAN, ESIC/ESI number, date of birth, home/permanent/present address, personal email, blood group, emergency contact, salary/CTC, or any other ID/personal number. When unsure which, choose "forbidden_pii" - never guess "contact_number".' },
+          personLookupDepartment: { type: 'string', description: 'Optional - a department mentioned to help find the right person when the name alone could match more than one employee, e.g. "HR" in "Ayan Das HR er contact number". Omit if none was mentioned.' }
         },
         required: ['intent', 'language', 'topic', 'topicLabel', 'replyNeeded', 'wantsData']
       }
@@ -2233,12 +2371,30 @@ async function decideAutoReply({ phone, name, firstName, text, isGroup, history 
 
   // Spec point 6 - a request for real HR/employee data NEVER gets
   // answered directly on WhatsApp, always a holding reply + the owner's
-  // explicit approval first. The real answer is prepared in the
-  // background (prepareAndQueueDataApproval), not awaited here, so this
-  // fixed holding line still goes out within the normal reply latency.
+  // explicit approval first.
   if (!isGroup && classification.wantsData) {
     const lang = classification.language || detectLang(text);
+    // A request for ONE field about ONE named person (e.g. "Ayan Das er
+    // contact number") NEVER goes through the general AI tool-calling
+    // pipeline - found live that it does, it can match the WRONG person
+    // (substring match let "Ayan" hit "Sayan") and return that person's
+    // ENTIRE personal-details card (Aadhar, PAN, addresses, everything),
+    // which then got rendered whole onto WhatsApp. Handled entirely
+    // deterministically instead: whole-word name resolution against the
+    // real directory, and only ever the one approved field, never a
+    // "personal details" tool result.
+    if (classification.personLookupName) {
+      return handlePersonLookupRequest({
+        phone, name: senderLabel, lang,
+        personName: classification.personLookupName,
+        personField: classification.personLookupField,
+        department: classification.personLookupDepartment
+      });
+    }
     const dataRequestSummary = classification.dataRequestSummary || text.slice(0, 160);
+    // The real answer is prepared in the background (prepareAndQueue
+    // DataApproval), not awaited here, so this fixed holding line still
+    // goes out within the normal reply latency.
     prepareAndQueueDataApproval({ phone, name: senderLabel, text, dataRequestSummary, lang })
       .catch((err) => console.error('[hr-assistant] data-request approval prep failed: ' + err.message));
     return { case: 'data_holding', replyText: DATA_REQUEST_HOLDING_REPLY[lang] || DATA_REQUEST_HOLDING_REPLY.english, summaryForOwner: null };
