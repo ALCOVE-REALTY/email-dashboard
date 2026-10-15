@@ -1,0 +1,493 @@
+// SUBH Reminders (Phase 2) - owner-only to-do list, hand-added, chat-added, or
+// auto-created from things SUBH already tracks (WhatsApp follow-ups, pending data
+// approvals, received documents, expiring memories). Redis-backed, same
+// get/set/SET-of-ids pattern as every other store in this app
+// (whatsappAssistant.js's pending approvals, memoryService.js's memories) - never a
+// rewrite of those stores, only a reader of them.
+//
+// Every date-sensitive function here takes `now` as an explicit parameter and never
+// calls `new Date()` internally - this is what lets scripts/check-reminders.js
+// simulate a clock instead of waiting on real time.
+const { Redis } = require('@upstash/redis');
+const whatsapp = require('../whatsappService');
+const whatsappAssistant = require('./whatsappAssistant');
+const documentRequests = require('./documentRequests');
+const memoryService = require('./memoryService');
+const employeeService = require('../employeeService');
+
+const REMINDER_PREFIX = 'subh-reminder:';
+const REMINDER_IDS_KEY = 'subh-reminder-ids';
+const SETTINGS_KEY = 'subh-reminder-settings'; // { waOptIn: boolean, waNumber: string|null }
+const EXPIRING_MEMORY_WINDOW_MS = 2 * 24 * 60 * 60 * 1000;
+
+let client;
+let clientChecked = false;
+function getClient() {
+  if (clientChecked) return client;
+  clientChecked = true;
+  const url = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL || null;
+  const token = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN || null;
+  client = url && token ? new Redis({ url, token }) : null;
+  return client;
+}
+function isAvailable() { return Boolean(getClient()); }
+
+function newId() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+
+async function saveReminder(record) {
+  const redis = getClient();
+  if (!redis) return null;
+  try {
+    await redis.set(REMINDER_PREFIX + record.id, JSON.stringify(record));
+    await redis.sadd(REMINDER_IDS_KEY, record.id);
+  } catch (err) { /* best effort */ }
+  return record.id;
+}
+async function getReminder(id) {
+  const redis = getClient();
+  if (!redis) return null;
+  try {
+    const raw = await redis.get(REMINDER_PREFIX + id);
+    return raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : null;
+  } catch (err) { return null; }
+}
+// Lazily prunes ids whose record is missing, same pattern
+// whatsappAssistant.listPendingApprovals already uses.
+async function listRawReminders() {
+  const redis = getClient();
+  if (!redis) return [];
+  try {
+    const ids = await redis.smembers(REMINDER_IDS_KEY);
+    const out = [];
+    for (const id of ids) {
+      const raw = await redis.get(REMINDER_PREFIX + id);
+      if (!raw) { await redis.srem(REMINDER_IDS_KEY, id); continue; }
+      out.push(typeof raw === 'string' ? JSON.parse(raw) : raw);
+    }
+    return out;
+  } catch (err) { return []; }
+}
+async function deleteReminder(id) {
+  const redis = getClient();
+  if (!redis) return;
+  try {
+    await redis.del(REMINDER_PREFIX + id);
+    await redis.srem(REMINDER_IDS_KEY, id);
+  } catch (err) { /* best effort */ }
+}
+
+function newReminder({ title, detail, dueAt, hasTime, priority, source, sourceType, sourceRef, linkedChatId, linkedEmployeeId, repeat, now }) {
+  return {
+    id: newId(),
+    title: title || 'Reminder',
+    detail: detail || '',
+    dueAt: dueAt || null,
+    hasTime: hasTime !== false,
+    priority: ['high', 'medium', 'low'].includes(priority) ? priority : 'medium',
+    source: ['manual', 'email', 'whatsapp', 'report'].includes(source) ? source : 'manual',
+    sourceType: sourceType || null,
+    sourceRef: sourceRef || null,
+    linkedChatId: linkedChatId ? whatsapp.normalizePhone(linkedChatId) : null,
+    linkedEmployeeId: linkedEmployeeId || null,
+    repeat: ['none', 'daily', 'weekly', 'monthly'].includes(repeat) ? repeat : 'none',
+    status: 'pending',
+    completedAt: null,
+    createdAt: now.toISOString(),
+    notifiedAt: null,
+    waNotifiedAt: null,
+    snoozedUntil: null
+  };
+}
+
+async function markDone(id, now) {
+  const r = await getReminder(id);
+  if (!r) return null;
+  r.status = 'completed';
+  r.completedAt = now.toISOString();
+  await saveReminder(r);
+  return r;
+}
+async function undoDone(id) {
+  const r = await getReminder(id);
+  if (!r || r.status !== 'completed') return null;
+  r.status = 'pending';
+  r.completedAt = null;
+  await saveReminder(r);
+  return r;
+}
+async function cancelReminder(id) {
+  const r = await getReminder(id);
+  if (!r) return null;
+  r.status = 'cancelled';
+  await saveReminder(r);
+  return r;
+}
+async function snoozeReminder(id, untilIso) {
+  const r = await getReminder(id);
+  if (!r) return null;
+  r.snoozedUntil = untilIso;
+  r.notifiedAt = null; // lets it notify again once the snooze passes
+  await saveReminder(r);
+  return r;
+}
+
+// ---------------- IST date/time resolution (mirrors whatsappAssistant.js's
+// istNow() technique - not the function itself, since it's private to that
+// file, but the identical Intl.DateTimeFormat-in-Asia/Kolkata approach, so
+// "today"/"tomorrow" always means the real IST calendar day, never a UTC one). ----------------
+function istParts(now) {
+  const parts = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: false, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(now);
+  const get = (t) => parts.find((p) => p.type === t).value;
+  return { year: Number(get('year')), month: Number(get('month')), day: Number(get('day')), hour: Number(get('hour')), minute: Number(get('minute')) };
+}
+const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+function istDateToUtc(year, month, day, hour, minute) {
+  return new Date(Date.UTC(year, month - 1, day, hour, minute, 0) - IST_OFFSET_MS);
+}
+function addIstDays(year, month, day, deltaDays) {
+  const d = new Date(Date.UTC(year, month - 1, day));
+  d.setUTCDate(d.getUTCDate() + deltaDays);
+  return { year: d.getUTCFullYear(), month: d.getUTCMonth() + 1, day: d.getUTCDate() };
+}
+
+// dateRaw: 'today' | 'tomorrow' | 'YYYY-MM-DD' | a bare day-of-month number
+// ('25' for "every 25th") | null/unclear. timeRaw: 'HH:MM' (24h) | null for
+// "no time". Returns { ok:true, dueAt, hasTime } or { ok:false } when the
+// date genuinely can't be resolved - the caller asks one clarifying
+// question rather than guessing, same philosophy as every other
+// date-sensitive tool in this app.
+function resolveReminderDateTime(dateRaw, timeRaw, now) {
+  const ist = istParts(now);
+  let y = ist.year, m = ist.month, d = ist.day;
+  const raw = String(dateRaw || '').trim().toLowerCase();
+  if (!raw || raw === 'today') {
+    // keep y/m/d as today
+  } else if (raw === 'tomorrow') {
+    ({ year: y, month: m, day: d } = addIstDays(y, m, d, 1));
+  } else {
+    const explicit = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (explicit) {
+      y = Number(explicit[1]); m = Number(explicit[2]); d = Number(explicit[3]);
+    } else {
+      const bareDay = raw.match(/^(\d{1,2})$/);
+      if (bareDay) {
+        d = Number(bareDay[1]);
+        if (d < 1 || d > 31) return { ok: false };
+        // "every 25th" style - if that day already passed this IST month, the
+        // next occurrence is next month (repeat:'monthly' callers rely on this
+        // for the FIRST occurrence; the repeat field itself just labels it).
+        if (d < ist.day) { m = m + 1; if (m > 12) { m = 1; y += 1; } }
+      } else {
+        return { ok: false };
+      }
+    }
+  }
+  let hour = 9, minute = 0, hasTime = false;
+  if (timeRaw) {
+    const t = String(timeRaw).trim().match(/^(\d{1,2}):(\d{2})$/);
+    if (!t) return { ok: false };
+    hour = Number(t[1]); minute = Number(t[2]);
+    if (hour > 23 || minute > 59) return { ok: false };
+    hasTime = true;
+  }
+  return { ok: true, dueAt: istDateToUtc(y, m, d, hour, minute).toISOString(), hasTime };
+}
+
+// ---------------- Counts (one function, every surface calls this so Home's
+// badge/the filter chips/the page header can never disagree) ----------------
+function istDayKeyOfIso(iso) { return istDayKey(istParts(new Date(iso))); }
+
+function computeCounts(reminders, now) {
+  const todayKey = istDayKey(istParts(now));
+  const pending = reminders.filter((r) => r.status === 'pending');
+  const completed = reminders.filter((r) => r.status === 'completed');
+  const today = pending.filter((r) => r.dueAt && istDayKeyOfIso(r.dueAt) === todayKey);
+  return { all: pending.length, today: today.length, upcoming: pending.length - today.length, completed: completed.length };
+}
+
+function filterReminders(reminders, filter, now) {
+  const todayKey = istDayKey(istParts(now));
+  if (filter === 'completed') return reminders.filter((r) => r.status === 'completed');
+  const pending = reminders.filter((r) => r.status === 'pending');
+  if (filter === 'today') return pending.filter((r) => r.dueAt && istDayKeyOfIso(r.dueAt) === todayKey);
+  if (filter === 'upcoming') return pending.filter((r) => !r.dueAt || istDayKeyOfIso(r.dueAt) !== todayKey);
+  return pending; // 'all'
+}
+
+// ---------------- Auto-created reminders from existing SUBH stores ----------------
+// Called lazily at the top of listReminders (same philosophy as Phase 1's
+// listActionableWhatsappItems) - never a separate scheduler of its own.
+// Dedup key is (sourceType, sourceRef); a resolved source auto-closes its
+// reminder instead of leaving it to go stale. Never touches/creates from
+// anything under the "test:" Redis prefix - scripts/check-reminders.js's
+// simulated sources use that prefix precisely so this function can never
+// see them and can never pollute the owner's real list either.
+async function syncAutoCreatedReminders(now) {
+  const existing = await listRawReminders();
+  // A LIVE map, updated the moment a new reminder is created below - not a
+  // point-in-time snapshot. Found live (while first testing this against
+  // real data): wa-open-followups can hold SEVERAL distinct entries for
+  // the SAME chatId (one person can have multiple separate outstanding
+  // complaints) - a snapshot-only check let every one of them pass
+  // "doesn't exist yet" independently and created N duplicate reminders
+  // for the same key instead of one.
+  const byKey = new Map();
+  existing.forEach((r) => { if (r.sourceType && r.sourceRef) byKey.set(r.sourceType + '|' + r.sourceRef, r); });
+
+  const [followups, approvals, docs, memories] = await Promise.all([
+    whatsappAssistant.listOpenFollowups(),
+    whatsappAssistant.listPendingApprovals(),
+    documentRequests.listPendingReceived(),
+    memoryService.listMemories()
+  ]);
+
+  const liveKeys = new Set();
+  async function ensureReminder(key, fields) {
+    liveKeys.add(key);
+    if (byKey.has(key)) return;
+    const r = newReminder(fields);
+    await saveReminder(r);
+    byKey.set(key, r);
+  }
+
+  for (const f of followups) {
+    await ensureReminder('whatsapp_followup|' + f.chatId, {
+      title: (f.name || f.chatId) + ' — follow-up needed', detail: f.summary, priority: 'high',
+      source: 'whatsapp', sourceType: 'whatsapp_followup', sourceRef: f.chatId, linkedChatId: f.chatId,
+      dueAt: now.toISOString(), hasTime: false, now
+    });
+  }
+  for (const a of approvals) {
+    await ensureReminder('whatsapp_approval|' + a.id, {
+      title: (a.name || a.phone) + ' — data request approval', detail: a.dataRequestSummary, priority: 'medium',
+      source: 'whatsapp', sourceType: 'whatsapp_approval', sourceRef: a.id, linkedChatId: a.phone,
+      dueAt: now.toISOString(), hasTime: false, now
+    });
+  }
+  for (const d of docs) {
+    await ensureReminder('document|' + d.phone, {
+      title: 'Document received — ' + (d.topic || 'review'), detail: 'From ' + d.phone, priority: 'medium',
+      source: 'whatsapp', sourceType: 'document', sourceRef: d.phone, linkedChatId: d.phone,
+      dueAt: now.toISOString(), hasTime: false, now
+    });
+  }
+  for (const mem of memories) {
+    if (!mem.expiresAt) continue;
+    const expiresMs = new Date(mem.expiresAt).getTime();
+    if (expiresMs - now.getTime() > EXPIRING_MEMORY_WINDOW_MS || expiresMs < now.getTime()) continue;
+    await ensureReminder('memory_expiry|' + mem.id, {
+      title: 'Memory expiring soon — ' + mem.topic, detail: mem.statusFact, priority: 'low',
+      source: 'report', sourceType: 'memory_expiry', sourceRef: mem.id,
+      dueAt: mem.expiresAt, hasTime: false, now
+    });
+  }
+
+  // Auto-close: any existing auto-created, still-pending reminder whose
+  // source is no longer live gets marked completed - never deleted, so it
+  // still shows correctly under "Completed".
+  for (const [key, r] of byKey.entries()) {
+    if (r.status === 'pending' && !liveKeys.has(key)) await markDone(r.id, now);
+  }
+}
+
+async function listReminders(filter, now) {
+  await syncAutoCreatedReminders(now);
+  const all = await listRawReminders();
+  const counts = computeCounts(all, now);
+  return { items: filterReminders(all, filter, now), counts };
+}
+
+// Pending, due, not snoozed, not already notified this cycle - claims them
+// (sets notifiedAt) so a 30s poll never re-fires the same reminder. Called
+// from the communications-summary endpoint; also drives the optional
+// WhatsApp-to-self send from whatsappPollScheduler.js's existing tick.
+async function dueReminders(now) {
+  const all = await listRawReminders();
+  const due = all.filter((r) =>
+    r.status === 'pending' && r.dueAt && new Date(r.dueAt).getTime() <= now.getTime() &&
+    (!r.snoozedUntil || new Date(r.snoozedUntil).getTime() <= now.getTime()) &&
+    !r.notifiedAt
+  );
+  for (const r of due) {
+    r.notifiedAt = now.toISOString();
+    await saveReminder(r);
+  }
+  return due;
+}
+
+// Independent from dueReminders' own `notifiedAt` claim (in-app banner) -
+// the optional WhatsApp-to-self channel is a second, separate notification
+// the owner can turn on/off without affecting whether the in-app banner
+// fires, so it gets its own `waNotifiedAt` claim rather than racing the
+// same flag.
+async function dueForWhatsapp(now) {
+  const all = await listRawReminders();
+  const due = all.filter((r) =>
+    r.status === 'pending' && r.dueAt && new Date(r.dueAt).getTime() <= now.getTime() &&
+    (!r.snoozedUntil || new Date(r.snoozedUntil).getTime() <= now.getTime()) &&
+    !r.waNotifiedAt
+  );
+  for (const r of due) {
+    r.waNotifiedAt = now.toISOString();
+    await saveReminder(r);
+  }
+  return due;
+}
+
+// Called from whatsappPollScheduler.js's existing (already-running) tick -
+// not a new scheduler. Off by default (waOptIn), and even when on, never
+// sends to anyone but the owner's own configured number, and respects the
+// exact same draft-mode gate (isRealSendAllowedFor) every other real send
+// in this app already goes through.
+async function sendDueWhatsappReminders(now) {
+  const settings = await getSettings();
+  if (!settings.waOptIn || !settings.waNumber) return { sent: 0 };
+  const due = await dueForWhatsapp(now);
+  if (!due.length) return { sent: 0 };
+  const target = whatsapp.normalizePhone(settings.waNumber);
+  let sent = 0;
+  for (const r of due) {
+    const timeLabel = r.hasTime ? new Date(r.dueAt).toLocaleTimeString('en-GB', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' }) : '';
+    const text = '⏰ Reminder: ' + r.title + (r.detail ? '\n' + r.detail : '') + (timeLabel ? '\n(' + timeLabel + ')' : '');
+    if (!whatsappAssistant.isRealSendAllowedFor(target)) continue; // draft mode - in-app banner already covers it
+    const result = await whatsapp.sendWhatsAppMessage(target, text).catch((err) => ({ ok: false, error: err.message }));
+    if (result.ok) sent++;
+  }
+  return { sent, total: due.length };
+}
+
+async function getSettings() {
+  const redis = getClient();
+  if (!redis) return { waOptIn: false, waNumber: null };
+  try {
+    const raw = await redis.get(SETTINGS_KEY);
+    const parsed = raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : null;
+    return parsed || { waOptIn: false, waNumber: null };
+  } catch (err) { return { waOptIn: false, waNumber: null }; }
+}
+async function saveSettings(settings) {
+  const redis = getClient();
+  if (!redis) return;
+  try { await redis.set(SETTINGS_KEY, JSON.stringify(settings)); } catch (err) { /* best effort */ }
+}
+
+// ---------------- Chat command (mirrors memoryService.js's
+// parseMemoryCommand/handleMemoryMessage exactly: tool_choice:'auto' with
+// one tool offered, since CLAUDE_MODEL_MAIN rejects a truly forced choice;
+// the model only extracts raw strings, every date/time is resolved in code
+// against the real clock, never left to the model). ----------------
+const CLAUDE_API_URL = 'https://api.anthropic.com/v1/messages';
+const CLAUDE_ANTHROPIC_VERSION = '2023-06-01';
+const MODEL = process.env.CLAUDE_MODEL_MAIN;
+
+const REMINDER_COMMAND_TOOL = {
+  type: 'function',
+  function: {
+    name: 'reminder_command',
+    description: 'Classify an HR manager\'s message about a SUBH reminder and extract its fields.',
+    parameters: {
+      type: 'object',
+      properties: {
+        kind: { type: 'string', enum: ['create', 'list_today', 'done', 'cancel'] },
+        titleRaw: { type: 'string', description: 'The task/title in the owner\'s own words, required for create/done/cancel.' },
+        dateRaw: { type: 'string', description: '"today", "tomorrow", "YYYY-MM-DD", or a bare day-of-month number for a monthly date (e.g. "25" for "every 25th"). Omit if genuinely not stated (defaults to today).' },
+        timeRaw: { type: 'string', description: 'HH:MM in 24-hour time (e.g. "11:00" for "11 tay"/"11 AM"), omit entirely for "no time".' },
+        priorityRaw: { type: 'string', enum: ['high', 'medium', 'low'], description: 'Defaults to medium if not stated.' },
+        repeatRaw: { type: 'string', enum: ['none', 'daily', 'weekly', 'monthly'], description: 'Defaults to none.' }
+      },
+      required: ['kind']
+    }
+  }
+};
+
+async function parseReminderCommand(text, now) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey || !MODEL) return { kind: 'create' };
+  const toolDef = REMINDER_COMMAND_TOOL.function;
+  const resp = await fetch(CLAUDE_API_URL, {
+    method: 'POST',
+    headers: { 'x-api-key': apiKey, 'anthropic-version': CLAUDE_ANTHROPIC_VERSION, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      model: MODEL,
+      max_tokens: 1024,
+      tools: [{ name: toolDef.name, description: toolDef.description, input_schema: toolDef.parameters }],
+      tool_choice: { type: 'auto' },
+      system: [{ type: 'text', text: 'Today\'s real date/time in India (IST) is ' + istParts(now).year + '-' + String(istParts(now).month).padStart(2, '0') + '-' + String(istParts(now).day).padStart(2, '0') + ' ' + String(istParts(now).hour).padStart(2, '0') + ':' + String(istParts(now).minute).padStart(2, '0') + '. Parse the owner\'s message about a SUBH reminder.' }],
+      messages: [{ role: 'user', content: text }]
+    })
+  });
+  if (!resp.ok) throw new Error('reminder_command parse API error ' + resp.status);
+  const data = await resp.json();
+  const block = (data.content || []).find((b) => b && b.type === 'tool_use');
+  return block ? block.input : { kind: 'create' };
+}
+
+function priorityLabel(p) { return p === 'high' ? 'High' : p === 'low' ? 'Low' : 'Medium'; }
+function istDayKey(p) { return p.year + '-' + String(p.month).padStart(2, '0') + '-' + String(p.day).padStart(2, '0'); }
+function formatConfirmation(r, now) {
+  const when = new Date(r.dueAt);
+  const dateLabel = istDayKey(istParts(when)) === istDayKey(istParts(now))
+    ? 'Today'
+    : when.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', timeZone: 'Asia/Kolkata' });
+  const timeLabel = r.hasTime ? when.toLocaleTimeString('en-GB', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' }) : '';
+  return '✓ Reminder set: ' + dateLabel + (timeLabel ? ' ' + timeLabel : '') + ' — ' + r.title + ' (' + priorityLabel(r.priority) + ')';
+}
+
+async function handleReminderCommand(text, ownerEmail, now) {
+  if (!memoryService.isOwner(ownerEmail)) return null;
+  if (!/remind|reminder|mone koriye|mone korie|yaad dila|yaad dilan/i.test(text)) return null;
+
+  const parsed = await parseReminderCommand(text, now).catch(() => ({ kind: 'create' }));
+
+  if (parsed.kind === 'list_today') {
+    const { items } = await listReminders('today', now);
+    if (!items.length) return { reply: 'Aajke kono reminder nei.' };
+    return { reply: 'Aajker reminders:\n' + items.map((r) => '- ' + r.title + (r.hasTime ? ' (' + new Date(r.dueAt).toLocaleTimeString('en-GB', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' }) + ')' : '')).join('\n') };
+  }
+  if (parsed.kind === 'done' || parsed.kind === 'cancel') {
+    const all = await listRawReminders();
+    const match = all.find((r) => r.status === 'pending' && parsed.titleRaw && employeeService.containsAllWords(r.title, parsed.titleRaw));
+    if (!match) return { reply: 'Oi naame kono pending reminder pelam na.' };
+    if (parsed.kind === 'done') await markDone(match.id, now);
+    else await cancelReminder(match.id);
+    return { reply: '✓ "' + match.title + '" ' + (parsed.kind === 'done' ? 'done hisabe mark kora holo.' : 'cancel kora holo.') };
+  }
+
+  // create
+  if (!parsed.titleRaw) return { reply: 'Reminder-ta exactly kiser jonno, ektu bolben?' };
+  const resolved = resolveReminderDateTime(parsed.dateRaw, parsed.timeRaw, now);
+  if (!resolved.ok) return { reply: 'Konow din/shomoy ta exactly bujhte parini - আবার bolben please? (e.g. "kal sokal 11 tay")' };
+  const record = newReminder({
+    title: parsed.titleRaw, dueAt: resolved.dueAt, hasTime: resolved.hasTime,
+    priority: parsed.priorityRaw, repeat: parsed.repeatRaw, source: 'manual', now
+  });
+  await saveReminder(record);
+  return { reply: formatConfirmation(record, now) };
+}
+
+module.exports = {
+  isAvailable,
+  saveReminder,
+  getReminder,
+  listRawReminders,
+  deleteReminder,
+  newReminder,
+  markDone,
+  undoDone,
+  cancelReminder,
+  snoozeReminder,
+  computeCounts,
+  filterReminders,
+  syncAutoCreatedReminders,
+  listReminders,
+  dueReminders,
+  dueForWhatsapp,
+  sendDueWhatsappReminders,
+  getSettings,
+  saveSettings,
+  resolveReminderDateTime,
+  handleReminderCommand,
+  istParts
+};

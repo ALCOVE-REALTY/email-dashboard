@@ -15,6 +15,7 @@ const chatHistoryService = require('./chatHistoryService');
 const whatsappAssistant = require('./aiAssistant/whatsappAssistant');
 const memoryService = require('./aiAssistant/memoryService');
 const documentRequests = require('./aiAssistant/documentRequests');
+const reminderService = require('./aiAssistant/reminderService');
 const fileStorage = require('./fileStorage');
 const whatsapp = require('./whatsappService');
 
@@ -1376,6 +1377,17 @@ router.post('/hr-assistant/chat', async (req, res) => {
         return res.json({ reply, card: null, actions: null, conversationId: savedConversationId });
       }
 
+      // SUBH Reminders (Phase 2) - owner-only, same null-to-fall-through
+      // convention as the approval/memory checks above. Pre-filtered
+      // inside handleReminderCommand itself (cheap keyword check before
+      // ever calling Claude), same pattern handleMemoryMessage uses.
+      const reminderResult = await reminderService.handleReminderCommand(message, req.hrUser.email, new Date())
+        .catch((err) => ({ reply: 'Reminder command process korte giye error holo: ' + err.message }));
+      if (reminderResult) {
+        const savedConversationId = await chatHistoryService.appendTurn(req.hrUser.email, conversationId, { userText: message, assistantText: reminderResult.reply, card: null, actions: null }).catch(() => null);
+        return res.json({ reply: reminderResult.reply, card: null, actions: null, conversationId: savedConversationId });
+      }
+
       // Never-auto-reply list (spec item 3) - add/remove by name or
       // number, resolved against the real directory for a name.
       const neverAutoAdd = message.match(/^\s*(.+?)\s*ke auto reply korbe na\s*$/i) || message.match(/^\s*never auto reply\s+(.+)$/i);
@@ -1665,18 +1677,129 @@ router.post('/hr-assistant/whatsapp-list', async (req, res) => {
 // surface here).
 router.get('/hr-assistant/communications-summary', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) {
-    return res.json({ importantMailsCount: 0, whatsappItems: [], importantWhatsappCount: 0, systemNotices: [] });
+    return res.json({ importantMailsCount: 0, whatsappItems: [], importantWhatsappCount: 0, systemNotices: [], remindersPendingCount: 0, remindersDueNow: [] });
   }
-  const [whatsappItems, systemNotices] = await Promise.all([
+  const now = new Date();
+  const [whatsappItems, systemNotices, remindersDueNow, { counts: reminderCounts }] = await Promise.all([
     whatsappAssistant.listActionableWhatsappItems(),
-    whatsappAssistant.listSystemNotices()
+    whatsappAssistant.listSystemNotices(),
+    reminderService.dueReminders(now),
+    reminderService.listReminders('all', now)
   ]);
   res.json({
     importantMailsCount: 0, // Phase 3
     whatsappItems,
     importantWhatsappCount: whatsappItems.length,
-    systemNotices
+    systemNotices,
+    // Home's badge = pending reminders + needs-you WhatsApp items (+ mails
+    // later) per spec - the TOTAL pending count, not just reminders due
+    // right now (that's remindersDueNow, for the fired-notification banner).
+    remindersPendingCount: reminderCounts.all,
+    remindersDueNow
   });
+});
+
+// ---------------- SUBH Reminders (Phase 2) ----------------
+// Same owner-only gate as every reminders-adjacent route above.
+router.get('/hr-assistant/reminders', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const filter = ['all', 'today', 'upcoming', 'completed'].includes(req.query.filter) ? req.query.filter : 'all';
+    const { items, counts } = await reminderService.listReminders(filter, new Date());
+    res.json({ items, counts });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/hr-assistant/reminders', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const now = new Date();
+    const { title, detail, date, time, priority, repeat, linkedChatId, linkedEmployeeId } = req.body || {};
+    if (!title || !String(title).trim()) return res.status(400).json({ error: 'title is required' });
+    let dueAt = null, hasTime = false;
+    if (date) {
+      const resolved = reminderService.resolveReminderDateTime(date, time || null, now);
+      if (!resolved.ok) return res.status(400).json({ error: 'Could not resolve that date/time.' });
+      dueAt = resolved.dueAt; hasTime = resolved.hasTime;
+    }
+    const record = reminderService.newReminder({
+      title, detail, dueAt, hasTime, priority, repeat, source: 'manual',
+      linkedChatId: linkedChatId || null, linkedEmployeeId: linkedEmployeeId || null, now
+    });
+    await reminderService.saveReminder(record);
+    res.json({ ok: true, item: record });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/hr-assistant/reminders/:id', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const existing = await reminderService.getReminder(req.params.id);
+    if (!existing) return res.status(404).json({ error: 'Reminder not found.' });
+    const now = new Date();
+    const { title, detail, date, time, priority, repeat, linkedChatId, linkedEmployeeId } = req.body || {};
+    if (title !== undefined) existing.title = title;
+    if (detail !== undefined) existing.detail = detail;
+    if (priority !== undefined) existing.priority = priority;
+    if (repeat !== undefined) existing.repeat = repeat;
+    if (linkedChatId !== undefined) existing.linkedChatId = linkedChatId;
+    if (linkedEmployeeId !== undefined) existing.linkedEmployeeId = linkedEmployeeId;
+    if (date !== undefined) {
+      if (date === null) { existing.dueAt = null; existing.hasTime = false; }
+      else {
+        const resolved = reminderService.resolveReminderDateTime(date, time || null, now);
+        if (!resolved.ok) return res.status(400).json({ error: 'Could not resolve that date/time.' });
+        existing.dueAt = resolved.dueAt; existing.hasTime = resolved.hasTime;
+      }
+      existing.notifiedAt = null; // a changed due date/time can fire again
+    }
+    await reminderService.saveReminder(existing);
+    res.json({ ok: true, item: existing });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/hr-assistant/reminders/:id/done', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  const r = await reminderService.markDone(req.params.id, new Date());
+  res.json({ ok: Boolean(r), item: r });
+});
+router.post('/hr-assistant/reminders/:id/undo', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  const r = await reminderService.undoDone(req.params.id);
+  res.json({ ok: Boolean(r), item: r });
+});
+router.post('/hr-assistant/reminders/:id/cancel', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  const r = await reminderService.cancelReminder(req.params.id);
+  res.json({ ok: Boolean(r), item: r });
+});
+router.post('/hr-assistant/reminders/:id/snooze', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  const { minutes, until } = req.body || {};
+  const now = new Date();
+  let untilIso;
+  if (until) untilIso = new Date(until).toISOString();
+  else if (minutes) untilIso = new Date(now.getTime() + Number(minutes) * 60000).toISOString();
+  else return res.status(400).json({ error: 'minutes or until is required' });
+  const r = await reminderService.snoozeReminder(req.params.id, untilIso);
+  res.json({ ok: Boolean(r), item: r });
+});
+
+router.get('/hr-assistant/reminder-settings', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  res.json(await reminderService.getSettings());
+});
+router.post('/hr-assistant/reminder-settings', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  const { waOptIn, waNumber } = req.body || {};
+  await reminderService.saveSettings({ waOptIn: Boolean(waOptIn), waNumber: waNumber || null });
+  res.json({ ok: true });
 });
 
 router.get('/hr-assistant/whatsapp-conversation/:chatId', async (req, res) => {

@@ -9,6 +9,7 @@
 const { execSync } = require('child_process');
 const whatsappAssistant = require('./aiAssistant/whatsappAssistant');
 const documentRequests = require('./aiAssistant/documentRequests');
+const reminderService = require('./aiAssistant/reminderService');
 
 // Lowered 60 -> 15 after a real live incident: a reply that should have
 // gone out within ~60s took minutes, partly because the base poll
@@ -159,6 +160,16 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
       await documentRequests.runRetentionSweep();
     } catch (err) {
       log.error('[whatsapp-assistant] document retention sweep failed: ' + err.message);
+    }
+    // SUBH Reminders (Phase 2) - optional WhatsApp-to-self channel, off by
+    // default. The in-app banner/badge does NOT depend on this tick at
+    // all (it's computed lazily on each communications-summary poll), so
+    // this is purely the extra "also ping me on WhatsApp" opt-in.
+    try {
+      const result = await reminderService.sendDueWhatsappReminders(new Date());
+      if (result.sent) log.log('[whatsapp-assistant] reminder WhatsApp send: ' + JSON.stringify(result));
+    } catch (err) {
+      log.error('[whatsapp-assistant] reminder WhatsApp send failed: ' + err.message);
     }
   }, AUTOSEND_FLUSH_MS);
 

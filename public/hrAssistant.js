@@ -71,6 +71,39 @@
   const convoThread = document.getElementById('hrConvoThread');
   const convoActions = document.getElementById('hrConvoActions');
   const inputArea = document.querySelector('.wf-ai-input-area');
+  // Phase 2 - Hub + Reminders
+  const hubPage = document.getElementById('hrHubPage');
+  const hubRemindersTile = document.getElementById('hrHubRemindersTile');
+  const hubRemindersBadge = document.getElementById('hrHubRemindersBadge');
+  const hubCommsTile = document.getElementById('hrHubCommsTile');
+  const hubCommsBadge = document.getElementById('hrHubCommsBadge');
+  const remPage = document.getElementById('hrRemPage');
+  const remBanner = document.getElementById('hrRemBanner');
+  const remChips = document.getElementById('hrRemChips');
+  const remSectionBadge = document.getElementById('hrRemSectionBadge');
+  const remList = document.getElementById('hrRemList');
+  const remAddBtn = document.getElementById('hrRemAddBtn');
+  const remCompletedRow = document.getElementById('hrRemCompletedRow');
+  const remCompletedBadge = document.getElementById('hrRemCompletedBadge');
+  const remLinkToComms = document.getElementById('hrRemLinkToComms');
+  const remDetailPage = document.getElementById('hrRemDetailPage');
+  const remDetailBody = document.getElementById('hrRemDetailBody');
+  const remSheetBackdrop = document.getElementById('hrRemSheetBackdrop');
+  const remSheet = document.getElementById('hrRemSheet');
+  const remSheetTitle = document.getElementById('hrRemSheetTitle');
+  const remSheetCloseBtn = document.getElementById('hrRemSheetCloseBtn');
+  const remSheetCancelBtn = document.getElementById('hrRemSheetCancelBtn');
+  const remSheetSaveBtn = document.getElementById('hrRemSheetSaveBtn');
+  const remFieldTitle = document.getElementById('hrRemFieldTitle');
+  const remFieldDetail = document.getElementById('hrRemFieldDetail');
+  const remFieldDate = document.getElementById('hrRemFieldDate');
+  const remFieldTime = document.getElementById('hrRemFieldTime');
+  const remFieldNoTime = document.getElementById('hrRemFieldNoTime');
+  const remFieldPriority = document.getElementById('hrRemFieldPriority');
+  const remFieldRepeat = document.getElementById('hrRemFieldRepeat');
+  const remToast = document.getElementById('hrRemToast');
+  const remToastText = document.getElementById('hrRemToastText');
+  const remToastUndoBtn = document.getElementById('hrRemToastUndoBtn');
   if (!btn || !panel) return; // this page doesn't have the assistant markup
 
   const history = [];
@@ -1146,11 +1179,12 @@
       if (!resp.ok) return;
       data = await resp.json();
     } catch (err) { return; }
-    const total = (data.importantMailsCount || 0) + (data.importantWhatsappCount || 0);
+    const total = (data.importantMailsCount || 0) + (data.importantWhatsappCount || 0) + (data.remindersPendingCount || 0);
     if (todayUpdatesBadge) {
       todayUpdatesBadge.textContent = String(total);
       todayUpdatesBadge.hidden = total === 0;
     }
+    maybeShowReminderBanner(data.remindersDueNow);
   }
   function startCommsPolling() {
     if (commsPollTimer) return;
@@ -1169,26 +1203,54 @@
   let panelView = 'home';
   let activeConvoChatId = null;
 
+  const REMINDERS_BELL_SVG = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>';
+  const MAIL_SVG = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M22 6l-10 7L2 6"/></svg>';
+  const WHATSAPP_SVG = '<svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M12.04 2C6.58 2 2.13 6.45 2.13 11.91c0 1.75.46 3.45 1.32 4.95L2 22l5.25-1.38c1.45.79 3.08 1.21 4.79 1.21h.01c5.46 0 9.91-4.45 9.91-9.91C21.96 6.45 17.5 2 12.04 2zm5.75 14.02c-.24.68-1.39 1.32-1.9 1.4-.5.08-1.05.15-3.34-.7-2.8-1.05-4.6-3.85-4.74-4.03-.14-.18-1.14-1.51-1.14-2.88 0-1.37.72-2.04.98-2.32.26-.28.56-.34.75-.34h.53c.17 0 .4-.02.62.47.24.55.8 1.9.87 2.04.07.14.11.31.02.5-.09.19-.14.31-.28.47-.14.16-.29.36-.42.48-.14.13-.28.28-.12.55.16.27.71 1.17 1.53 1.89 1.05.93 1.94 1.22 2.21 1.36.27.14.43.12.59-.07.16-.19.68-.79.86-1.06.18-.27.36-.22.6-.13.24.09 1.55.73 1.81.86.27.14.44.2.51.31.07.11.07.61-.17 1.29z"/></svg>';
+
   function setPanelView(view) {
     panelView = view;
     const isHome = view === 'home';
     const isImportant = view === 'important';
     const isConvo = view === 'conversation';
+    const isHub = view === 'hub';
+    const isReminders = view === 'reminders';
+    const isRemDetail = view === 'reminderDetail';
+    const usesCommsHead = !isHome;
     if (homeHead) homeHead.hidden = !isHome;
-    if (commsHead) commsHead.hidden = isHome;
+    if (commsHead) commsHead.hidden = !usesCommsHead;
     if (todayUpdatesCard) todayUpdatesCard.hidden = !isHome;
     messagesEl.hidden = !isHome;
     if (commsPage) commsPage.hidden = !isImportant;
     if (convoPage) convoPage.hidden = !isConvo;
-    if (inputArea) inputArea.hidden = isConvo;
+    if (hubPage) hubPage.hidden = !isHub;
+    if (remPage) remPage.hidden = !isReminders;
+    if (remDetailPage) remDetailPage.hidden = !isRemDetail;
+    if (inputArea) inputArea.hidden = isConvo || isRemDetail;
     if (isImportant) {
       if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon';
-      if (commsHeadIcon) commsHeadIcon.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M22 6l-10 7L2 6"/></svg>';
+      if (commsHeadIcon) commsHeadIcon.innerHTML = MAIL_SVG;
       if (commsHeadTitle) commsHeadTitle.textContent = 'Important Communications';
+      if (commsHeadSubtitle) commsHeadSubtitle.textContent = '';
     } else if (isConvo) {
       if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon whatsapp';
-      if (commsHeadIcon) commsHeadIcon.innerHTML = '<svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M12.04 2C6.58 2 2.13 6.45 2.13 11.91c0 1.75.46 3.45 1.32 4.95L2 22l5.25-1.38c1.45.79 3.08 1.21 4.79 1.21h.01c5.46 0 9.91-4.45 9.91-9.91C21.96 6.45 17.5 2 12.04 2zm5.75 14.02c-.24.68-1.39 1.32-1.9 1.4-.5.08-1.05.15-3.34-.7-2.8-1.05-4.6-3.85-4.74-4.03-.14-.18-1.14-1.51-1.14-2.88 0-1.37.72-2.04.98-2.32.26-.28.56-.34.75-.34h.53c.17 0 .4-.02.62.47.24.55.8 1.9.87 2.04.07.14.11.31.02.5-.09.19-.14.31-.28.47-.14.16-.29.36-.42.48-.14.13-.28.28-.12.55.16.27.71 1.17 1.53 1.89 1.05.93 1.94 1.22 2.21 1.36.27.14.43.12.59-.07.16-.19.68-.79.86-1.06.18-.27.36-.22.6-.13.24.09 1.55.73 1.81.86.27.14.44.2.51.31.07.11.07.61-.17 1.29z"/></svg>';
+      if (commsHeadIcon) commsHeadIcon.innerHTML = WHATSAPP_SVG;
       if (commsHeadSubtitle) commsHeadSubtitle.textContent = '';
+    } else if (isHub) {
+      if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon';
+      if (commsHeadIcon) commsHeadIcon.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>';
+      if (commsHeadTitle) commsHeadTitle.textContent = "Today's Updates";
+      if (commsHeadSubtitle) commsHeadSubtitle.textContent = '';
+      if (commsHeadBadge) commsHeadBadge.hidden = true;
+    } else if (isReminders) {
+      if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon reminders';
+      if (commsHeadIcon) commsHeadIcon.innerHTML = REMINDERS_BELL_SVG;
+      if (commsHeadTitle) commsHeadTitle.textContent = 'Reminders';
+      if (commsHeadSubtitle) commsHeadSubtitle.textContent = 'Your pending tasks & follow-ups';
+    } else if (isRemDetail) {
+      if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon reminders';
+      if (commsHeadIcon) commsHeadIcon.innerHTML = REMINDERS_BELL_SVG;
+      if (commsHeadSubtitle) commsHeadSubtitle.textContent = '';
+      if (commsHeadBadge) commsHeadBadge.hidden = true;
     }
   }
 
@@ -1477,11 +1539,291 @@
     }
   }
 
-  if (todayUpdatesCard) todayUpdatesCard.addEventListener('click', showImportant);
+  if (todayUpdatesCard) todayUpdatesCard.addEventListener('click', showHub);
   if (commsBackBtn) {
     commsBackBtn.addEventListener('click', () => {
       if (panelView === 'conversation') showImportant();
+      else if (panelView === 'reminderDetail') showReminders();
+      else if (panelView === 'important' || panelView === 'reminders') showHub();
       else showHome();
+    });
+  }
+
+  // ---------- Phase 2: Hub + Reminders ----------
+  // Fired reminders are detected on the SAME 30s poll Home's badge already
+  // uses - shown the next time the Reminders page is opened (satisfies
+  // "if the app is closed, it shows next time I open it" even when the
+  // person is on Home or another page when it actually fires).
+  let pendingBannerReminders = [];
+  function maybeShowReminderBanner(dueNow) {
+    if (Array.isArray(dueNow) && dueNow.length) pendingBannerReminders = pendingBannerReminders.concat(dueNow);
+    if (panelView === 'reminders') flushReminderBanner();
+  }
+  function flushReminderBanner() {
+    if (!remBanner || !pendingBannerReminders.length) return;
+    const names = pendingBannerReminders.map((r) => r.title);
+    remBanner.innerHTML = '⏰ Due now: ' + escapeHtml(names.join(', '));
+    remBanner.hidden = false;
+    pendingBannerReminders = [];
+  }
+
+  async function showHub() {
+    setPanelView('hub');
+    let comms = { importantWhatsappCount: 0, importantMailsCount: 0 };
+    let remCounts = { all: 0 };
+    try {
+      const [commsResp, remResp] = await Promise.all([
+        fetch('/api/workforce/hr-assistant/communications-summary').then((r) => r.json()),
+        fetch('/api/workforce/hr-assistant/reminders?filter=all').then((r) => r.json())
+      ]);
+      comms = commsResp;
+      remCounts = remResp.counts || remCounts;
+    } catch (err) { /* leave zeroed */ }
+    const commsTotal = (comms.importantMailsCount || 0) + (comms.importantWhatsappCount || 0);
+    if (hubCommsBadge) { hubCommsBadge.textContent = String(commsTotal); hubCommsBadge.hidden = commsTotal === 0; }
+    if (hubRemindersBadge) { hubRemindersBadge.textContent = String(remCounts.all || 0); hubRemindersBadge.hidden = !remCounts.all; }
+  }
+  if (hubRemindersTile) hubRemindersTile.addEventListener('click', showReminders);
+  if (hubCommsTile) hubCommsTile.addEventListener('click', showImportant);
+  if (remLinkToComms) remLinkToComms.addEventListener('click', showImportant);
+
+  function priorityLabel(p) { return p === 'high' ? 'High' : p === 'low' ? 'Low' : 'Medium'; }
+  function sourceLabel(s) { return s === 'email' ? 'Email' : s === 'whatsapp' ? 'WhatsApp' : s === 'report' ? 'Report' : 'Manual'; }
+  function reminderTimeLabel(r) {
+    if (!r.dueAt) return '';
+    const d = new Date(r.dueAt);
+    const today = new Date();
+    const isToday = d.toDateString() === today.toDateString();
+    const tomorrow = new Date(today); tomorrow.setDate(today.getDate() + 1);
+    const isTomorrow = d.toDateString() === tomorrow.toDateString();
+    const dayLabel = isToday ? 'Today' : isTomorrow ? 'Tomorrow' : d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', timeZone: 'Asia/Kolkata' });
+    if (!r.hasTime) return dayLabel;
+    return dayLabel + ', ' + d.toLocaleTimeString('en-GB', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' });
+  }
+
+  let remItemsById = new Map();
+  let activeRemFilter = 'all';
+
+  function renderReminderRow(r) {
+    const row = document.createElement('div');
+    row.className = 'wf-rem-row';
+    row.dataset.id = r.id;
+    const isDone = r.status === 'completed';
+    row.innerHTML =
+      '<span class="wf-rem-row-icon ' + r.source + '">' +
+        (r.source === 'whatsapp' ? WHATSAPP_SVG : r.source === 'email' ? MAIL_SVG : r.source === 'report'
+          ? '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>'
+          : '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>') +
+      '</span>' +
+      '<span class="wf-rem-row-main" data-open="' + escapeHtml(r.id) + '">' +
+        '<span class="wf-rem-row-top">' +
+          '<span class="wf-rem-row-title">' + escapeHtml(r.title) + '</span>' +
+          (isDone ? '' : '<span class="wf-rem-pill ' + r.priority + '">' + priorityLabel(r.priority) + '</span>') +
+        '</span>' +
+        '<span class="wf-rem-row-meta">' + sourceLabel(r.source) + (reminderTimeLabel(r) ? ' • ' + reminderTimeLabel(r) : '') + '</span>' +
+        (r.detail ? '<span class="wf-rem-row-detail">' + escapeHtml(r.detail) + '</span>' : '') +
+      '</span>' +
+      '<span class="wf-rem-row-actions">' +
+        (isDone ? '' : '<button type="button" class="wf-rem-checkbox" aria-label="Mark done"></button>') +
+        '<svg class="wf-rem-row-chevron" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>' +
+      '</span>';
+    row.querySelector('[data-open]').addEventListener('click', () => openReminderDetail(r.id));
+    const checkbox = row.querySelector('.wf-rem-checkbox');
+    if (checkbox) checkbox.addEventListener('click', (e) => { e.stopPropagation(); completeReminderRow(r.id, row); });
+    return row;
+  }
+
+  async function completeReminderRow(id, rowEl) {
+    await postJson('/api/workforce/hr-assistant/reminders/' + encodeURIComponent(id) + '/done', {});
+    if (rowEl) {
+      rowEl.classList.add('completing');
+      setTimeout(() => rowEl.remove(), 380);
+    }
+    showReminderToast('Done ✓', async () => {
+      await postJson('/api/workforce/hr-assistant/reminders/' + encodeURIComponent(id) + '/undo', {});
+      loadRemindersPage(activeRemFilter);
+    });
+    setTimeout(() => loadRemindersPage(activeRemFilter), 450);
+  }
+
+  let remToastTimer = null;
+  function showReminderToast(text, onUndo) {
+    if (!remToast) return;
+    clearTimeout(remToastTimer);
+    remToastText.textContent = text;
+    remToastUndoBtn.hidden = !onUndo;
+    remToast.hidden = false;
+    remToastUndoBtn.onclick = () => { remToast.hidden = true; if (onUndo) onUndo(); };
+    remToastTimer = setTimeout(() => { remToast.hidden = true; }, 5000);
+  }
+
+  async function loadRemindersPage(filter) {
+    activeRemFilter = filter || 'all';
+    if (remBanner) remBanner.hidden = true;
+    flushReminderBanner();
+    if (remList) remList.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+    let data = { items: [], counts: { all: 0, today: 0, upcoming: 0, completed: 0 } };
+    try {
+      const resp = await fetch('/api/workforce/hr-assistant/reminders?filter=' + encodeURIComponent(activeRemFilter));
+      data = await resp.json();
+    } catch (err) { /* leave empty */ }
+    remItemsById = new Map((data.items || []).map((r) => [r.id, r]));
+    if (commsHeadBadge) { commsHeadBadge.textContent = String(data.counts.all); commsHeadBadge.hidden = !data.counts.all; }
+    if (remSectionBadge) remSectionBadge.textContent = String(activeRemFilter === 'completed' ? data.items.length : data.counts.all);
+    if (remCompletedBadge) remCompletedBadge.textContent = String(data.counts.completed);
+    if (remChips) {
+      remChips.querySelectorAll('.wf-rem-chip').forEach((chip) => {
+        const f = chip.dataset.filter;
+        chip.setAttribute('aria-pressed', String(f === activeRemFilter));
+        const countEl = chip.querySelector('.wf-rem-chip-count');
+        if (countEl) countEl.textContent = String(data.counts[f] || 0);
+      });
+    }
+    if (remList) {
+      remList.innerHTML = '';
+      if (!data.items.length) {
+        remList.innerHTML = '<div class="wf-rem-empty">Kichu nei ekhane.</div>';
+      } else {
+        data.items.forEach((r) => remList.appendChild(renderReminderRow(r)));
+      }
+    }
+  }
+
+  function showReminders() {
+    setPanelView('reminders');
+    loadRemindersPage('all');
+  }
+  if (remChips) {
+    remChips.addEventListener('click', (e) => {
+      const chip = e.target.closest('.wf-rem-chip');
+      if (chip) loadRemindersPage(chip.dataset.filter);
+    });
+  }
+  if (remCompletedRow) remCompletedRow.addEventListener('click', () => loadRemindersPage('completed'));
+
+  // ---- Add/Edit Reminder sheet (simple slide-up, see CSS comment) ----
+  let editingReminderId = null;
+  function openReminderSheet(existing) {
+    editingReminderId = existing ? existing.id : null;
+    remSheetTitle.textContent = existing ? 'Edit Reminder' : 'Add Reminder';
+    remFieldTitle.value = existing ? existing.title : '';
+    remFieldDetail.value = existing ? (existing.detail || '') : '';
+    if (existing && existing.dueAt) {
+      const d = new Date(existing.dueAt);
+      remFieldDate.value = d.toISOString().slice(0, 10);
+      remFieldTime.value = existing.hasTime ? d.toLocaleTimeString('en-GB', { hour12: false, hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' }) : '';
+      remFieldNoTime.checked = !existing.hasTime;
+    } else {
+      remFieldDate.value = new Date().toISOString().slice(0, 10);
+      remFieldTime.value = '';
+      remFieldNoTime.checked = false;
+    }
+    remFieldPriority.value = existing ? existing.priority : 'medium';
+    remFieldRepeat.value = existing ? existing.repeat : 'none';
+    remSheetBackdrop.hidden = false;
+    remSheet.hidden = false;
+    void remSheet.offsetHeight;
+    remSheetBackdrop.classList.add('open');
+    remSheet.classList.add('open');
+  }
+  function closeReminderSheet() {
+    remSheetBackdrop.classList.remove('open');
+    remSheet.classList.remove('open');
+    setTimeout(() => { remSheetBackdrop.hidden = true; remSheet.hidden = true; }, 320);
+  }
+  if (remAddBtn) remAddBtn.addEventListener('click', () => openReminderSheet(null));
+  if (remSheetCloseBtn) remSheetCloseBtn.addEventListener('click', closeReminderSheet);
+  if (remSheetCancelBtn) remSheetCancelBtn.addEventListener('click', closeReminderSheet);
+  if (remSheetBackdrop) remSheetBackdrop.addEventListener('click', closeReminderSheet);
+  if (remSheetSaveBtn) {
+    remSheetSaveBtn.addEventListener('click', async () => {
+      const title = remFieldTitle.value.trim();
+      if (!title) { remFieldTitle.focus(); return; }
+      const payload = {
+        title,
+        detail: remFieldDetail.value.trim(),
+        date: remFieldDate.value || null,
+        time: remFieldNoTime.checked ? null : (remFieldTime.value || null),
+        priority: remFieldPriority.value,
+        repeat: remFieldRepeat.value
+      };
+      remSheetSaveBtn.disabled = true;
+      const url = editingReminderId ? '/api/workforce/hr-assistant/reminders/' + encodeURIComponent(editingReminderId) : '/api/workforce/hr-assistant/reminders';
+      await postJson(url, payload);
+      remSheetSaveBtn.disabled = false;
+      closeReminderSheet();
+      if (panelView === 'reminderDetail' && editingReminderId) openReminderDetail(editingReminderId);
+      else loadRemindersPage(activeRemFilter);
+    });
+  }
+
+  // ---- Reminder detail ----
+  function buildReminderDetail(r) {
+    const rows = [
+      ['Title', r.title],
+      ['Detail', r.detail || '—'],
+      ['Due', reminderTimeLabel(r) || 'No date set'],
+      ['Priority', priorityLabel(r.priority)],
+      ['Source', sourceLabel(r.source)],
+      ['Repeat', r.repeat === 'none' ? 'None' : r.repeat.charAt(0).toUpperCase() + r.repeat.slice(1)],
+      ['Status', r.status.charAt(0).toUpperCase() + r.status.slice(1)]
+    ];
+    let html = '<div class="wf-rem-detail-card">' + rows.map(([label, value]) =>
+      '<div><div class="wf-rem-detail-field-label">' + escapeHtml(label) + '</div><div class="wf-rem-detail-field-value">' + escapeHtml(value) + '</div></div>'
+    ).join('') + '</div>';
+    html += '<div class="wf-convo-action-group">';
+    if (r.status === 'pending') {
+      html += '<span class="wf-convo-action-row">' +
+        '<button type="button" class="wf-convo-action-btn primary" data-rd-action="done">Mark done</button>' +
+        '<button type="button" class="wf-convo-action-btn outline" data-rd-action="edit">Edit</button>' +
+        '<button type="button" class="wf-convo-action-btn danger" data-rd-action="cancel">Cancel</button>' +
+      '</span>';
+      html += '<span class="wf-convo-action-row">' +
+        '<button type="button" class="wf-convo-action-btn outline" data-rd-snooze="15">Snooze 15m</button>' +
+        '<button type="button" class="wf-convo-action-btn outline" data-rd-snooze="60">Snooze 1h</button>' +
+        '<button type="button" class="wf-convo-action-btn outline" data-rd-snooze="tomorrow10">Tomorrow 10AM</button>' +
+      '</span>';
+    } else {
+      html += '<span class="wf-convo-action-row"><button type="button" class="wf-convo-action-btn outline" data-rd-action="undo">Undo</button></span>';
+    }
+    if (r.linkedChatId) {
+      html += '<span class="wf-convo-action-row"><button type="button" class="wf-convo-action-btn outline" data-rd-action="open-chat">Open WhatsApp conversation</button></span>';
+    }
+    html += '</div>';
+    return html;
+  }
+
+  function openReminderDetail(id) {
+    const r = remItemsById.get(id);
+    if (!r) return;
+    setPanelView('reminderDetail');
+    if (commsHeadTitle) commsHeadTitle.textContent = r.title;
+    remDetailBody.innerHTML = buildReminderDetail(r);
+    remDetailBody.querySelectorAll('[data-rd-action]').forEach((b) => {
+      b.addEventListener('click', async () => {
+        const action = b.dataset.rdAction;
+        if (action === 'edit') { openReminderSheet(r); return; }
+        if (action === 'open-chat') { openConversationPage(r.linkedChatId); return; }
+        b.disabled = true;
+        const map = { done: 'done', cancel: 'cancel', undo: 'undo' };
+        await postJson('/api/workforce/hr-assistant/reminders/' + encodeURIComponent(id) + '/' + map[action], {});
+        showReminders();
+      });
+    });
+    remDetailBody.querySelectorAll('[data-rd-snooze]').forEach((b) => {
+      b.addEventListener('click', async () => {
+        b.disabled = true;
+        const which = b.dataset.rdSnooze;
+        let body;
+        if (which === 'tomorrow10') {
+          const d = new Date(); d.setDate(d.getDate() + 1); d.setHours(10, 0, 0, 0);
+          body = { until: d.toISOString() };
+        } else {
+          body = { minutes: Number(which) };
+        }
+        await postJson('/api/workforce/hr-assistant/reminders/' + encodeURIComponent(id) + '/snooze', body);
+        showReminders();
+      });
     });
   }
 

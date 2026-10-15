@@ -1529,6 +1529,7 @@ body { background: var(--wi-bg); }
   background: var(--wi-primary-50); color: var(--wi-primary-700);
 }
 .wf-comms-head-icon.whatsapp { background: var(--wi-whatsapp-bg); color: var(--wi-whatsapp); }
+.wf-comms-head-icon.reminders { background: var(--wi-purple-50); color: var(--wi-purple); }
 .wf-ai-panel-title small#hrCommsHeadSubtitle {
   text-transform: none; letter-spacing: normal; font-weight: 600; font-size: 0.74rem; color: var(--wi-muted);
 }
@@ -1678,4 +1679,143 @@ body { background: var(--wi-bg); }
 
 @media (prefers-reduced-motion: reduce) {
   .wf-today-updates-card, .wf-comms-wa-row, .wf-comms-system-strip, .wf-convo-action-group { animation: none !important; transition: none !important; }
+}
+
+/* ======================================================================
+   SUBH Phase 2 - Hub + Reminders, inside the same #hrAssistantPanel.
+   Reuses the exact tokens/pills/motion Phase 1 already established - see
+   that section's own header comment above. No new design system.
+   ====================================================================== */
+.wf-hub-page[hidden], .wf-rem-page[hidden], .wf-rem-detail-page[hidden] { display: none; }
+.wf-hub-page { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 12px; }
+.wf-hub-tile {
+  display: flex; align-items: center; gap: 12px; border: none; border-radius: var(--wi-r-card);
+  box-shadow: var(--wi-sh-card); background: var(--wi-surface); padding: 16px 14px; text-align: left;
+  font-family: inherit; cursor: pointer; transition: transform .18s ease; animation: mUp .4s cubic-bezier(.2,.7,.2,1) both;
+}
+.wf-hub-tile:active { transform: scale(.98); }
+.wf-hub-tile-icon { width: 42px; height: 42px; border-radius: var(--wi-r-tile); flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
+.wf-hub-tile-icon.reminders { background: var(--wi-purple-50); color: var(--wi-purple); }
+.wf-hub-tile-icon.comms { background: var(--wi-primary-50); color: var(--wi-primary); }
+.wf-hub-tile-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.wf-hub-tile-title { font-weight: 800; font-size: 0.92rem; color: var(--wi-ink); }
+.wf-hub-tile-sub { font-size: 0.74rem; font-weight: 600; color: var(--wi-muted); }
+.wf-hub-tile-badge {
+  min-width: 22px; height: 22px; border-radius: var(--wi-r-pill); padding: 0 7px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--wi-red); color: #FFFFFF; font-weight: 800; font-size: 0.72rem; flex-shrink: 0;
+}
+.wf-hub-tile-badge[hidden] { display: none; }
+.wf-hub-tile-chevron { color: var(--wi-faint); flex-shrink: 0; }
+
+/* -- Reminders page -- */
+.wf-rem-page { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 10px 14px 14px; display: flex; flex-direction: column; gap: 12px; }
+.wf-rem-banner[hidden] { display: none; }
+.wf-rem-banner {
+  display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-radius: var(--wi-r-card);
+  background: var(--wi-primary-50); color: var(--wi-primary-800); font-size: 0.78rem; font-weight: 700;
+  animation: mUp .35s cubic-bezier(.2,.7,.2,1) both;
+}
+.wf-rem-chips { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 2px; }
+.wf-rem-chip {
+  flex-shrink: 0; border: 1.5px solid var(--wi-border-2); background: var(--wi-surface); color: var(--wi-muted);
+  border-radius: var(--wi-r-pill); padding: 7px 13px; font-size: 0.78rem; font-weight: 700; font-family: inherit; cursor: pointer;
+}
+.wf-rem-chip[aria-pressed="true"] { background: var(--wi-primary-50); border-color: var(--wi-primary); color: var(--wi-primary-700); }
+.wf-rem-chip-count { opacity: .75; }
+.wf-rem-section-head { display: flex; align-items: center; justify-content: space-between; font-size: 0.8rem; font-weight: 800; color: var(--wi-ink); padding: 0 2px; }
+.wf-rem-section-badge {
+  min-width: 20px; height: 20px; border-radius: var(--wi-r-pill); padding: 0 6px; display: inline-flex; align-items: center; justify-content: center;
+  background: var(--wi-primary-50); color: var(--wi-primary-700); font-weight: 800; font-size: 0.7rem;
+}
+.wf-rem-list { display: flex; flex-direction: column; gap: 10px; }
+.wf-rem-row {
+  display: flex; align-items: flex-start; gap: 11px; border-radius: var(--wi-r-card); box-shadow: var(--wi-sh-card);
+  background: var(--wi-surface); padding: 12px; animation: mPop .3s cubic-bezier(.2,.7,.2,1) both;
+}
+.wf-rem-row.completing { animation: wiFade .4s ease forwards; opacity: 0; transform: scale(.96); }
+.wf-rem-row-icon {
+  width: 34px; height: 34px; border-radius: 50%; flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+  margin-top: 1px;
+}
+.wf-rem-row-icon.email { background: #FFEDF6; color: #D6248C; }
+.wf-rem-row-icon.whatsapp { background: var(--wi-whatsapp-bg); color: var(--wi-whatsapp); }
+.wf-rem-row-icon.manual { background: var(--wi-primary-50); color: var(--wi-primary); }
+.wf-rem-row-icon.report { background: var(--wi-purple-50); color: var(--wi-purple); }
+.wf-rem-row-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; cursor: pointer; }
+.wf-rem-row-top { display: flex; align-items: flex-start; gap: 8px; justify-content: space-between; }
+.wf-rem-row-title { font-size: 0.85rem; font-weight: 700; color: var(--wi-ink); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.wf-rem-pill { flex-shrink: 0; border-radius: var(--wi-r-pill); padding: 2px 8px; font-size: 0.62rem; font-weight: 800; letter-spacing: .02em; }
+.wf-rem-pill.high { background: var(--wi-red-50); color: var(--wi-red-700); }
+.wf-rem-pill.medium { background: var(--wi-yellow-50); color: var(--wi-yellow-700); }
+.wf-rem-pill.low { background: var(--wi-primary-50); color: var(--wi-primary-700); }
+.wf-rem-row-meta { font-size: 0.7rem; font-weight: 600; color: var(--wi-muted); }
+.wf-rem-row-detail { font-size: 0.74rem; color: var(--wi-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wf-rem-row-actions { display: flex; flex-direction: column; align-items: center; gap: 8px; flex-shrink: 0; }
+.wf-rem-checkbox {
+  width: 20px; height: 20px; border-radius: 6px; border: 1.5px solid var(--wi-border-2); background: var(--wi-surface);
+  cursor: pointer; flex-shrink: 0; display: flex; align-items: center; justify-content: center; color: transparent;
+}
+.wf-rem-checkbox.checked { background: var(--wi-primary); border-color: var(--wi-primary); color: #FFFFFF; }
+.wf-rem-row-chevron { color: var(--wi-faint); }
+.wf-rem-add-btn {
+  border: none; border-radius: var(--wi-r-btn); background: var(--wi-primary); color: #FFFFFF; font-weight: 800;
+  font-size: 0.85rem; padding: 12px; font-family: inherit; cursor: pointer; box-shadow: var(--wi-sh-primary);
+}
+.wf-rem-add-btn:active { transform: scale(.98); }
+.wf-rem-info-note { font-size: 0.72rem; color: var(--wi-muted); text-align: center; padding: 0 8px; }
+.wf-rem-completed-row {
+  display: flex; align-items: center; justify-content: space-between; border: none; border-radius: var(--wi-r-card);
+  box-shadow: var(--wi-sh-card); background: var(--wi-surface); padding: 12px 14px; font-size: 0.82rem; font-weight: 700;
+  color: var(--wi-ink); font-family: inherit; cursor: pointer;
+}
+.wf-rem-completed-badge {
+  min-width: 22px; height: 22px; border-radius: var(--wi-r-pill); padding: 0 7px; display: inline-flex; align-items: center; justify-content: center;
+  background: var(--wi-green-pill); color: var(--wi-green-700); font-weight: 800; font-size: 0.72rem;
+}
+.wf-rem-empty { text-align: center; padding: 18px 10px; font-size: 0.78rem; font-weight: 600; color: var(--wi-faint); }
+
+/* -- Reminder detail -- */
+.wf-rem-detail-page { flex: 1; overflow-y: auto; padding: 14px; }
+.wf-rem-detail-body { display: flex; flex-direction: column; gap: 14px; }
+.wf-rem-detail-card { border-radius: var(--wi-r-card); box-shadow: var(--wi-sh-card); background: var(--wi-surface); padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+.wf-rem-detail-field-label { font-size: 0.68rem; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; color: var(--wi-muted); }
+.wf-rem-detail-field-value { font-size: 0.86rem; color: var(--wi-ink); font-weight: 600; }
+
+/* -- Add/Edit Reminder sheet - a simpler slide-up (open/close via CSS
+   transition) rather than the chat-history sheet's full drag-to-resize
+   physics, since a fixed-height form doesn't need the snap-point/partial-
+   drag interaction that technique exists for; still the same bottom-sheet
+   visual language (backdrop, rounded top corners, handle). -- */
+.wf-rem-sheet[hidden] { display: none; }
+.wf-rem-sheet {
+  position: fixed; left: 0; right: 0; bottom: 0; max-width: 480px; margin: 0 auto; z-index: 72;
+  background: var(--wi-surface); border-radius: var(--wi-r-sheet) var(--wi-r-sheet) 0 0; box-shadow: var(--wi-sh-sheet);
+  max-height: 86vh; display: flex; flex-direction: column; transform: translateY(100%); transition: transform .32s cubic-bezier(.2,.7,.2,1);
+}
+.wf-rem-sheet.open { transform: translateY(0); }
+.wf-rem-sheet-body { padding: 4px 18px 14px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
+.wf-rem-field { display: flex; flex-direction: column; gap: 5px; font-size: 0.76rem; font-weight: 700; color: var(--wi-muted); flex: 1; }
+.wf-rem-field input, .wf-rem-field textarea, .wf-rem-field select {
+  border: 1.5px solid var(--wi-border-2); border-radius: var(--wi-r-input); padding: 9px 11px; font-size: 0.84rem;
+  font-family: inherit; color: var(--wi-ink); background: var(--wi-surface);
+}
+.wf-rem-field-row { display: flex; gap: 10px; }
+.wf-rem-checkbox-row { display: flex; align-items: center; gap: 8px; font-size: 0.78rem; font-weight: 600; color: var(--wi-ink); }
+.wf-rem-sheet-foot { display: flex; gap: 10px; padding: 12px 18px 18px; border-top: 1px solid var(--wi-divider); flex-shrink: 0; }
+.wf-rem-sheet-foot .wf-ai-action-btn { flex: 1; justify-content: center; }
+
+/* -- Toast (Done ✓ / Undo) -- */
+.wf-rem-toast[hidden] { display: none; }
+.wf-rem-toast {
+  position: fixed; left: 50%; bottom: 96px; transform: translateX(-50%); z-index: 90;
+  background: var(--wi-ink); color: #FFFFFF; border-radius: var(--wi-r-pill); padding: 10px 16px;
+  display: flex; align-items: center; gap: 14px; font-size: 0.8rem; font-weight: 700; box-shadow: var(--wi-sh-modal);
+  animation: mPop .25s cubic-bezier(.2,.7,.2,1) both;
+}
+.wf-rem-toast button { border: none; background: none; color: var(--wi-primary-ring); font-weight: 800; font-family: inherit; cursor: pointer; font-size: 0.8rem; }
+
+@media (prefers-reduced-motion: reduce) {
+  .wf-hub-tile, .wf-rem-row, .wf-rem-banner, .wf-rem-toast { animation: none !important; }
+  .wf-rem-sheet { transition: none !important; }
 }
