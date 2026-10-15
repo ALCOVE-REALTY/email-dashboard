@@ -776,7 +776,7 @@ function cardToWhatsAppNumberedList(card) {
     // column-order rule every list/report tool now follows).
     const keepIdx = card.columns
       .map((c, i) => ({ c: String(c || ''), i }))
-      .filter(({ c }) => !/^(emp\s*code|employee\s*id)$/i.test(c.trim()))
+      .filter(({ c }) => !/^(emp\s*code|employee\s*code|employee\s*id)$/i.test(c.trim()))
       .map(({ i }) => i);
     const idx = keepIdx.length ? keepIdx : card.columns.map((_, i) => i);
     return rows.map((r, i) => (i + 1) + '. ' + idx.map((j) => r[j]).join(' — ')).join('\n');

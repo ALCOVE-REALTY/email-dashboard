@@ -104,6 +104,11 @@ const SYSTEM_PROMPT =
   'default - do not set status to \'ACTIVE\' yourself, the tools already default to it. State the ' +
   'basis in a few words in your own reply too, e.g. "126 active employees have birthdays in ' +
   'October" rather than just "126" - even though the card itself also labels its own scope. ' +
+  'ONE exception: get_birthdays_this_month always includes Notice Period staff by default (only ' +
+  'Inactive/exited is excluded unless includeInactive:true) - this matches the app\'s own Birthday ' +
+  'List report exactly, so do not call it "active" in your reply, say "employees" instead (e.g. ' +
+  '"126 employees have birthdays in October"), and includeNoticePeriod has no effect on this one ' +
+  'tool specifically since Notice Period is never excluded to begin with. ' +
   'You must call a tool on every turn, including this one - there is no way to reply without ' +
   'calling one. If the message needs today\'s date, day of week, or the current time, call ' +
   'get_current_datetime - never guess it or say you don\'t know, that tool always has the real ' +
@@ -327,14 +332,14 @@ const TOOL_DEFS_NEUTRAL = [
   },
   {
     name: 'get_birthdays_this_month',
-    description: 'List employees with a birthday in a given calendar month, sorted by day. Active only by default. Works for ANY named month - pass month for "birthdays in October"/"December e kar birthday" etc. For "next month" (no month actually named), pass monthOffset:1 instead of computing a month number yourself - you cannot reliably compute "current+1" without seeing today\'s real date first.',
+    description: 'List employees with a birthday in a given calendar month, in the exact same columns/order/sort/date-format and PDF as the app\'s own Birthday List report (Employee Code, Name, Designation, Department, Collar, Location, Date; sorted by day of month then name). Includes Notice Period staff by default, same as that report - only Inactive/exited is excluded unless asked for. Works for ANY named month - pass month for "birthdays in October"/"December e kar birthday" etc. For "next month" (no month actually named), pass monthOffset:1 instead of computing a month number yourself - you cannot reliably compute "current+1" without seeing today\'s real date first.',
     parameters: {
       type: 'object',
       properties: {
         month: { type: 'integer', minimum: 1, maximum: 12, description: 'The calendar month asked about, 1-12 (e.g. 10 for October, 12 for December), ONLY when a specific month was actually named. Omit for "this month"/"next month".' },
         monthOffset: { type: 'integer', enum: [-1, 0, 1], description: 'Use instead of month for relative phrasing: -1 = "last month", 0 = "this month" (default, can be omitted), 1 = "next month". Never combine with month.' },
-        includeNoticePeriod: { type: 'boolean', description: 'Set true ONLY when explicitly asked to include Notice Period staff (e.g. "notice period soho October birthday"). Leave unset for the default (Active only).' },
-        includeInactive: { type: 'boolean', description: 'Set true ONLY when explicitly asked to include inactive/exited staff. Leave unset for the default (Active only).' }
+        includeNoticePeriod: { type: 'boolean', description: 'Has no effect - Notice Period staff are already included by default on this tool, matching the app\'s own Birthday List report. Do not set this.' },
+        includeInactive: { type: 'boolean', description: 'Set true ONLY when explicitly asked to include inactive/exited staff. Leave unset for the default (matches the app report: everyone except Inactive).' }
       }
     }
   },

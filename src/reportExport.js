@@ -6,6 +6,7 @@
 // browser - so the downloaded file is guaranteed to match what was shown
 // on screen, not a separately-computed report.
 const { buildTablePdfBuffer } = require('./pdfReport');
+const employeeService = require('./employeeService');
 const ExcelJS = require('exceljs');
 const { Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell, HeadingLevel, WidthType } = require('docx');
 
@@ -35,8 +36,29 @@ function totalRowCells(columns, totalLabel, total) {
   return columns.map((_, i) => (i === 0 ? totalLabel : i === 1 ? String(total) : ''));
 }
 
+// A birthday card's columns are always this exact shared array (see
+// employeeService.BIRTHDAY_REPORT_COLUMNS) - detecting it here, rather
+// than needing the client to pass a separate "this is a birthday report"
+// flag, is enough to route the download through the app's own Birthday
+// List PDF formatting (title/subtitle/portrait layout, no total row)
+// instead of the generic one below, via the SAME buildTablePdfBuffer the
+// app's Birthday List Send Mail route already uses.
+function isBirthdayColumns(columns) {
+  return Array.isArray(columns) && columns.length === employeeService.BIRTHDAY_REPORT_COLUMNS.length &&
+    columns.every((c, i) => c === employeeService.BIRTHDAY_REPORT_COLUMNS[i]);
+}
+
 async function buildReportPdf(payload) {
   const { title, scope, columns, rows, total, totalLabel } = normalizeReport(payload);
+  if (isBirthdayColumns(columns)) {
+    return buildTablePdfBuffer({
+      title: 'Birthday List',
+      subtitle: employeeService.birthdaySubtitle(rows.length, new Date()),
+      columns,
+      rows: rows.length ? rows : [columns.map(() => '—')],
+      landscape: false
+    });
+  }
   const tableRows = total === undefined || total === null
     ? rows
     : rows.concat([{ bold: true, cells: totalRowCells(columns, totalLabel, total) }]);

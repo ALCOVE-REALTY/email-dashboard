@@ -88,16 +88,6 @@ function formatAgeYearsMonths(dob) {
   return years + 'Y ' + months + 'M';
 }
 
-// DOB with the current year substituted in - exact server-side copy of the
-// client's own formatDobCurrentYear (public/workforce.js), used by the
-// Birthday Send Mail PDF for the same reason: a birthday list is for this
-// year's upcoming date, not the real birth year.
-function formatDobCurrentYear(dob, now) {
-  if (!dob) return '—';
-  const thisYear = new Date(Date.UTC(now.getUTCFullYear(), dob.getUTCMonth(), dob.getUTCDate()));
-  return thisYear.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
-}
-
 router.use((req, res, next) => {
   const status = employeeService.getConfigStatus();
   if (!status.ok) {
@@ -622,10 +612,8 @@ router.post('/birthdays/send-mail', async (req, res) => {
     const { employees, departmentNames } = await employeeService.getEmployeeData({ forceRefresh: true });
 
     const now = new Date();
-    const birthdayEmployees = employees.filter(
-      (e) => e.status !== 'INACTIVE' && e.dob && e.dob.getUTCMonth() === now.getUTCMonth()
-    );
-    if (!birthdayEmployees.length) {
+    const sorted = employeeService.getBirthdayEmployees(employees, now);
+    if (!sorted.length) {
       return res.status(400).json({ error: 'No employees have a birthday this month.' });
     }
 
@@ -639,37 +627,17 @@ router.post('/birthdays/send-mail', async (req, res) => {
       }
     }
 
-    // Sorted by day of the month, 1st through the last day - same as the
-    // on-screen Birthday List Export PDF (exportEmployeesPdf's
-    // isBirthdayReport branch, public/workforce.js). Every row here already
-    // shares the same birth month (that's how they were filtered above), so
-    // just the day decides order - no Collar grouping, since once sorted by
-    // day collars no longer sit in contiguous blocks.
-    const sorted = birthdayEmployees.slice().sort((a, b) => {
-      const dayDiff = a.dob.getUTCDate() - b.dob.getUTCDate();
-      if (dayDiff !== 0) return dayDiff;
-      return (a.name || '').localeCompare(b.name || '');
-    });
-
-    const rows = sorted.map((e) => [
-      e.employeeId,
-      e.name,
-      e.designation || '—',
-      departmentNames.get(e.departmentKey) || e.department || '—',
-      formatCollar(e.groupD) || '—',
-      e.location || '—',
-      formatDobCurrentYear(e.dob, now)
-    ]);
-
+    // Filter/sort/row-shaping (NOTICE PERIOD counts, INACTIVE doesn't; day
+    // of the month then name A-Z) now lives once in employeeService, shared
+    // with the HR Assistant's birthday card/PDF so neither can drift from
+    // the other - see employeeService.getBirthdayEmployees/birthdayRowFor.
+    const rows = sorted.map((e) => employeeService.birthdayRowFor(e, departmentNames, now));
     const monthName = now.toLocaleDateString('en-US', { month: 'long', timeZone: 'UTC' });
 
     const pdfBuffer = await buildTablePdfBuffer({
       title: 'Birthday List',
-      subtitle:
-        monthName + ' ' + now.getUTCFullYear() + ' · ' +
-        sorted.length + ' employee' + (sorted.length === 1 ? '' : 's') + ' · Generated ' +
-        now.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
-      columns: ['Employee Code', 'Name', 'Designation', 'Department', 'Collar', 'Location', 'Date'],
+      subtitle: employeeService.birthdaySubtitle(sorted.length, now),
+      columns: employeeService.BIRTHDAY_REPORT_COLUMNS,
       rows,
       landscape: false
     });

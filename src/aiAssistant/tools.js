@@ -196,27 +196,34 @@ async function retirementThisMonth(includeNoticePeriod, includeInactive, monthOf
 // and then compute "current + 1" itself; it guessed instead and got the
 // wrong month (November instead of October). Offset-from-now math done
 // here, in code, against the real server date, needs no guessing.
+// Columns/sort/date-format/row-values are the exact same ones the app's
+// own Birthday List report uses (its on-screen Export PDF and the Send
+// Mail PDF) - see employeeService.BIRTHDAY_REPORT_COLUMNS/
+// getBirthdayEmployees/birthdayRowFor, now the one shared source for all
+// three places (that report's own PDF, this card/View Report/WhatsApp
+// list, and this tool's own PDF download) so none of them can drift from
+// the others. That also means the default scope matches the app's report
+// exactly (NOTICE PERIOD counts, only INACTIVE doesn't) rather than this
+// tool's usual ACTIVE-only default - includeInactive still widens further
+// to include people who have since left, same as every other tool here.
 async function birthdaysThisMonth(month, includeNoticePeriod, includeInactive, monthOffset) {
   const { employees, departmentNames } = await employeeService.getEmployeeData();
   const now = new Date();
   const requestedMonth = Number(month);
   const targetMonthIndex =
     requestedMonth >= 1 && requestedMonth <= 12 ? requestedMonth - 1 : now.getUTCMonth() + (Number(monthOffset) || 0);
-  // Year is irrelevant here - analytics.birthdaysThisMonth only compares
-  // month, not year - so any year works as the reference date.
+  // Year is irrelevant here - getBirthdayEmployees only compares month,
+  // not year - so any year works as the reference date.
   const target = new Date(Date.UTC(now.getUTCFullYear(), targetMonthIndex, 1));
-  const list = analytics.birthdaysThisMonth(employees, target).filter((e) => statusAllowed(e, includeNoticePeriod, includeInactive));
+  const sorted = employeeService.getBirthdayEmployees(employees, target, { includeInactive: Boolean(includeInactive) });
   const monthLabel = target.toLocaleDateString('en-US', { month: 'long', timeZone: 'UTC' });
-  const mapRow = (e) => [e.name, departmentNames.get(e.departmentKey) || e.department || '—', e.dob.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })];
+  const mapRow = (e) => employeeService.birthdayRowFor(e, departmentNames, target);
   return {
-    title: 'Birthdays in ' + monthLabel + truncationSuffix(list.length),
-    // Identity (Name) first, role/place (Department) next, date (DOB)
-    // last - per the standard column-order rule applied to every
-    // list/report tool.
-    columns: ['Name', 'Department', 'DOB'],
-    tableRows: list.slice(0, CARD_ROW_LIMIT).map(mapRow),
-    fullTableRows: list.map(mapRow),
-    footer: { label: 'Total' + scopeSuffix(includeNoticePeriod, includeInactive), value: list.length }
+    title: 'Birthday List - ' + monthLabel + truncationSuffix(sorted.length),
+    columns: employeeService.BIRTHDAY_REPORT_COLUMNS,
+    tableRows: sorted.slice(0, CARD_ROW_LIMIT).map(mapRow),
+    fullTableRows: sorted.map(mapRow),
+    footer: { label: 'Total' + (includeInactive ? ' (incl. Inactive)' : ''), value: sorted.length }
   };
 }
 

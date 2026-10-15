@@ -278,6 +278,68 @@ function formatCollar(value) {
   return value === '0' ? 'White' : value;
 }
 
+// DOB with the current year substituted in - a birthday list is always
+// about this year's upcoming date, not the real birth year. Single
+// source for the app's Birthday List Export PDF (on-screen print and the
+// server-side Send Mail PDF) and the HR Assistant's birthdays_this_month
+// tool, so all three render the exact same date string for the same
+// person.
+function formatDobCurrentYear(dob, now = new Date()) {
+  if (!dob) return '—';
+  const thisYear = new Date(Date.UTC(now.getUTCFullYear(), dob.getUTCMonth(), dob.getUTCDate()));
+  return thisYear.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+}
+
+// Exact column set/order of the app's own Birthday List report (on-screen
+// Export PDF and the Send Mail PDF) - shared so the HR Assistant's card,
+// View Report popup, WhatsApp list and PDF download all use this same
+// array instead of a second, independently-typed copy that could drift.
+const BIRTHDAY_REPORT_COLUMNS = ['Employee Code', 'Name', 'Designation', 'Department', 'Collar', 'Location', 'Date'];
+
+// This month's birthdays, filtered and sorted exactly like the app's own
+// Birthday List report: NOTICE PERIOD counts (only INACTIVE is excluded by
+// default), ordered by day of the month then name A-Z. `now` is only ever
+// the real server date here - every caller (the Send Mail route, the HR
+// Assistant's tool) passes the target month via `now`'s month, not a
+// separate parameter, so this one predicate can't drift between callers.
+// { includeInactive } is an HR Assistant-only widening the app's own
+// report never offers (e.g. "including people who've left") - leaving it
+// off keeps this function's default behaviour identical to the report.
+function getBirthdayEmployees(employees, now = new Date(), { includeInactive = false } = {}) {
+  return employees
+    .filter((e) => (includeInactive || e.status !== 'INACTIVE') && e.dob && e.dob.getUTCMonth() === now.getUTCMonth())
+    .sort((a, b) => {
+      const dayDiff = a.dob.getUTCDate() - b.dob.getUTCDate();
+      if (dayDiff !== 0) return dayDiff;
+      return (a.name || '').localeCompare(b.name || '');
+    });
+}
+
+// One employee's row for BIRTHDAY_REPORT_COLUMNS, in that exact order -
+// shared by the Send Mail PDF and the HR Assistant's card/PDF so the same
+// person renders identically in both places.
+function birthdayRowFor(e, departmentNames, now = new Date()) {
+  return [
+    e.employeeId,
+    e.name,
+    e.designation || '—',
+    (departmentNames && departmentNames.get(e.departmentKey)) || e.department || '—',
+    formatCollar(e.groupD) || '—',
+    e.location || '—',
+    formatDobCurrentYear(e.dob, now)
+  ];
+}
+
+// The Birthday List PDF's subtitle line, exactly as the Send Mail route
+// has always built it ("October 2026 · 33 employees · Generated 15 Oct
+// 2026") - shared so the HR Assistant's PDF download reads identically to
+// the app's own export, not a differently-worded approximation.
+function birthdaySubtitle(count, now = new Date()) {
+  const monthName = now.toLocaleDateString('en-US', { month: 'long', timeZone: 'UTC' });
+  return monthName + ' ' + now.getUTCFullYear() + ' · ' + count + ' employee' + (count === 1 ? '' : 's') +
+    ' · Generated ' + now.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+}
+
 // The one shared filter predicate behind /api/workforce/employees, its PDF
 // export, and the HR Assistant's list_employees/group_employees tools -
 // every one of them filters the exact same way.
@@ -498,6 +560,11 @@ module.exports = {
   filterEmployees,
   findUnmatchedFilters,
   formatCollar,
+  formatDobCurrentYear,
+  BIRTHDAY_REPORT_COLUMNS,
+  getBirthdayEmployees,
+  birthdayRowFor,
+  birthdaySubtitle,
   parseYearsFromDuration,
   containsAllWords,
   matchesWholeWordName,
