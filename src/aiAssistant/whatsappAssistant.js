@@ -905,16 +905,9 @@ const INACTIVE_EMPLOYEE_REPLY = {
   english: (name) => name + ' is no longer with our company — they have left. Let me know if you need anything else.'
 };
 
-// Matches whole words only, case-insensitive - "Ayan" matches "Ayan Das"
-// (first name alone, or any name containing that exact word) but never
-// "Sayan Das" (different word entirely). Multi-word queries ("Ayan Das")
-// require every given word to appear as a whole word in the real name.
-function matchesWholeWordName(fullName, query) {
-  const nameWords = String(fullName || '').toLowerCase().split(/\s+/).filter(Boolean);
-  const queryWords = String(query || '').toLowerCase().trim().split(/\s+/).filter(Boolean);
-  if (!queryWords.length) return false;
-  return queryWords.every((qw) => nameWords.includes(qw));
-}
+// Shared with the in-app tools.js employee-lookup fix (same bug, same
+// fix) - see employeeService.matchesWholeWordName's own comment.
+const { matchesWholeWordName } = employeeService;
 // Department names in this data are punctuated ("CIVIL (PLOT-B)
 // STRUCTURE") but a sender/the model naming one in plain speech never
 // reproduces that exactly ("Civil Plot-B Structure department") - found

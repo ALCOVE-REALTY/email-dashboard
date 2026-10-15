@@ -256,6 +256,7 @@ async function insuranceStatus(name) {
   if (!matches.length) {
     return { title: null, rows: null, actions: [{ label: 'Open Health Insurance', view: 'healthInsurance' }], notFound: q };
   }
+  if (matches.length > 1) return { title: null, rows: null, actions: null, ambiguous: matches };
   const emp = matches[0];
   const insuranceData = await insuranceService.getInsuranceData();
   const profile = insuranceAnalytics.buildEmployeeInsuranceProfile(insuranceData.members, emp.employeeId, {
@@ -731,21 +732,56 @@ async function queryEmployees(params = {}) {
 }
 // ---------------------------------------------------------------------
 
-// Simple substring match on name/employeeId - the same convention every
-// existing employee-search list in workforce.js already uses.
+// Shared by every single-employee-lookup tool below (find_employee,
+// get_personal_details, get_employee_detail, get_reporting_manager,
+// get_direct_reports' name-resolution fallback, get_insurance_status,
+// prepare_letter) - a real incident showed the OLD per-function substring
+// match ("ayan das".includes is fine, but "sayan das".includes("ayan") is
+// also true) silently matched the WRONG employee and, for a personal-
+// details lookup, sent a stranger's own PII. Whole-word name matching
+// only now (employeeService.matchesWholeWordName - "Ayan" matches "Ayan
+// Das"/"Das Ayan" but never "Sayan Das"), active-only by default; if
+// nothing active matches at all, a second pass checks every status so a
+// real employee who left (or is between-active-and-left) is still found
+// and clearly labelled, never silently reported as if they never
+// existed. Employee ID matching stays a substring check - it's a
+// structured code, not a name, with none of the same "contained inside a
+// different real one" ambiguity.
+function resolveEmployeeByName(employees, departmentNames, query) {
+  const q = String(query || '').trim();
+  if (!q) return { matches: [] };
+  const qLower = q.toLowerCase();
+  const byId = employees.filter((e) => e.employeeId.toLowerCase().includes(qLower));
+  const pool = byId.length ? byId : employees.filter((e) => employeeService.matchesWholeWordName(e.name, q));
+  if (!pool.length) return { matches: [] };
+
+  const toCandidate = (e) => ({
+    employeeId: e.employeeId,
+    name: e.name,
+    designation: e.designation,
+    department: departmentNames.get(e.departmentKey) || e.department,
+    status: e.status,
+    emp: e
+  });
+
+  const active = pool.filter((e) => e.status === 'ACTIVE');
+  if (active.length) return { matches: active.map(toCandidate) };
+  return { matches: pool.map(toCandidate), fellBackFromActive: true };
+}
+// Turns 2+ resolveEmployeeByName matches into the one shared `ambiguous`
+// shape every tool below returns - never the candidates' own internal
+// `emp`/full record, only what's needed to ask a human which one.
+function ambiguousResult(matches) {
+  return {
+    title: null, rows: null, actions: null,
+    ambiguous: matches.map((m) => ({ employeeId: m.employeeId, name: m.name, designation: m.designation, department: m.department }))
+  };
+}
+
 async function findEmployee(query) {
   const { employees, departmentNames } = await employeeService.getEmployeeData();
-  const q = query.trim().toLowerCase();
-  if (!q) return [];
-  return employees
-    .filter((e) => e.name.toLowerCase().includes(q) || e.employeeId.toLowerCase().includes(q))
-    .slice(0, 5)
-    .map((e) => ({
-      employeeId: e.employeeId,
-      name: e.name,
-      designation: e.designation,
-      department: departmentNames.get(e.departmentKey) || e.department
-    }));
+  const { matches } = resolveEmployeeByName(employees, departmentNames, query);
+  return matches.slice(0, 5).map((m) => ({ employeeId: m.employeeId, name: m.name, designation: m.designation, department: m.department }));
 }
 
 // Address/phone/blood group/emergency contact/Aadhar/PAN for a named
@@ -757,14 +793,19 @@ async function getPersonalDetails(name) {
   const q = String(name || '').trim();
   if (!q) return { title: null, rows: null, actions: null };
   const { employees, departmentNames } = await employeeService.getEmployeeData();
-  const qLower = q.toLowerCase();
-  const matches = employees.filter((e) => e.name.toLowerCase().includes(qLower) || e.employeeId.toLowerCase().includes(qLower));
+  const { matches } = resolveEmployeeByName(employees, departmentNames, q);
   if (!matches.length) {
     return { title: null, rows: null, actions: [{ label: 'Open Employee Data', view: 'directory' }], notFound: q };
   }
-  const emp = matches[0];
+  if (matches.length > 1) return ambiguousResult(matches);
+  const emp = matches[0].emp;
   return {
     title: emp.name + ' - Personal Details',
+    // Surfaced only when this match came from the any-status fallback
+    // (no active match existed at all) - lets the model say so plainly
+    // before the details, in the user's own language, rather than this
+    // reading like a current employee's record with no caveat at all.
+    employeeStatus: emp.status,
     rows: [
       { label: 'Contact Number', value: emp.contactNumber || '—' },
       { label: 'Personal Email', value: emp.emailPersonal || '—' },
@@ -800,12 +841,12 @@ async function employeeDetail(name) {
   const q = String(name || '').trim();
   if (!q) return { title: null, rows: null, actions: null };
   const { employees, departmentNames } = await employeeService.getEmployeeData();
-  const qLower = q.toLowerCase();
-  const matches = employees.filter((e) => e.name.toLowerCase().includes(qLower) || e.employeeId.toLowerCase().includes(qLower));
+  const { matches } = resolveEmployeeByName(employees, departmentNames, q);
   if (!matches.length) {
     return { title: null, rows: null, actions: [{ label: 'Open Employee Data', view: 'directory' }], notFound: q };
   }
-  const emp = matches[0];
+  if (matches.length > 1) return ambiguousResult(matches);
+  const emp = matches[0].emp;
   return {
     title: emp.name,
     rows: [
@@ -848,18 +889,22 @@ async function directReports(name) {
   );
 
   // Found live: a plain substring fallback missed a real middle name
-  // ("Pawan Dhanuka" didn't match "Pawan Kumar Dhanuka") - same fix as
-  // employeeService.containsAllWords (every word present, any order).
+  // ("Pawan Dhanuka" didn't match "Pawan Kumar Dhanuka") - containsAllWords
+  // fixed that, but its own per-word .includes() is itself a substring
+  // check, which let "Ayan" match a reportingManager/reportingDoer value
+  // like "Sayan Mallick" (a real incident, see getPersonalDetails' own
+  // comment) - matchesWholeWordName requires a WHOLE word match instead,
+  // still tolerating a middle name or swapped word order.
   let resolvedName = q;
   if (!matches.length) {
     matches = employees.filter(
       (e) =>
         e.status === 'ACTIVE' &&
-        (employeeService.containsAllWords(e.reportingManager, q) || employeeService.containsAllWords(e.reportingDoer, q))
+        (employeeService.matchesWholeWordName(e.reportingManager, q) || employeeService.matchesWholeWordName(e.reportingDoer, q))
     );
     if (matches.length) {
       const m = matches[0];
-      resolvedName = employeeService.containsAllWords(m.reportingManager, q) ? m.reportingManager : m.reportingDoer;
+      resolvedName = employeeService.matchesWholeWordName(m.reportingManager, q) ? m.reportingManager : m.reportingDoer;
     }
   }
 
@@ -869,7 +914,7 @@ async function directReports(name) {
     // different situations - found live, this used to say "could not be
     // found" for the second one too, wrongly implying the person doesn't
     // exist at all (e.g. an individual contributor with no direct reports).
-    const realEmployee = employees.find((e) => e.status === 'ACTIVE' && employeeService.containsAllWords(e.name, q));
+    const realEmployee = employees.find((e) => e.status === 'ACTIVE' && employeeService.matchesWholeWordName(e.name, q));
     if (realEmployee) {
       return { title: null, rows: null, actions: null, employeeName: realEmployee.name, zeroDirectReports: true, cascadingTotal: 0 };
     }
@@ -939,16 +984,13 @@ function countAllUnderManager(rootName, employees) {
 async function getReportingManager(name) {
   const q = String(name || '').trim();
   if (!q) return { title: null, rows: null, actions: null };
-  const { employees } = await employeeService.getEmployeeData();
-  const qLower = q.toLowerCase();
-  let matches = employees.filter((e) => e.name.toLowerCase().includes(qLower) || e.employeeId.toLowerCase().includes(qLower));
-  if (!matches.length) {
-    matches = employees.filter((e) => employeeService.containsAllWords(e.name, q));
-  }
+  const { employees, departmentNames } = await employeeService.getEmployeeData();
+  const { matches } = resolveEmployeeByName(employees, departmentNames, q);
   if (!matches.length) {
     return { title: null, rows: null, actions: [{ label: 'Open Employee Data', view: 'directory' }], notFound: q };
   }
-  const emp = matches[0];
+  if (matches.length > 1) return ambiguousResult(matches);
+  const emp = matches[0].emp;
   return {
     title: null,
     rows: null,
@@ -974,6 +1016,7 @@ async function prepareLetter({ name, letterType }) {
   if (!matches.length) {
     return { title: null, rows: null, actions: [{ label: 'Open Letter Generator', view: 'letterGenerator' }], notFound: name };
   }
+  if (matches.length > 1) return { title: null, rows: null, actions: null, ambiguous: matches };
   const emp = matches[0];
   return {
     title: type,

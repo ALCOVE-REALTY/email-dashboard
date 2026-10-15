@@ -231,6 +231,23 @@ const SYSTEM_PROMPT =
   'bank-details-only question, there is nothing it could return for that. Answer directly ' +
   'instead, e.g. for "X er bank details" say something like "Bank details are not tracked in ' +
   'this company\'s employee records". ' +
+  'get_personal_details/get_employee_detail/get_reporting_manager/get_direct_reports/' +
+  'get_insurance_status/find_employee/prepare_letter all resolve a name to ONE real employee by ' +
+  'matching WHOLE WORDS only (never a partial/substring guess) - a real incident showed this ' +
+  'matter: "Ayan" must never resolve to "Sayan Das". If the result has `ambiguous` (2+ real ' +
+  'people match that name), NEVER pick one yourself - a [[PLAIN]] reply asking which one, listing ' +
+  'each as name (designation, department), e.g. "Dujon Ayan ache: 1) Ayan Das (HR) 2) Ayan Paul ' +
+  '(Accounts). Kar tottho dekhabo?" (translate into the question\'s own language) - when the next ' +
+  'message names one (the full name, or an index like "1"), call the SAME tool again with that ' +
+  'person\'s real full name. If the result has no match at all, say so plainly - never fall back ' +
+  'to a partial match yourself just because nothing exact came back. ' +
+  'These same tools default to ACTIVE employees, but if nobody active matches, they still return ' +
+  'the real person at whatever status actually matches (so a real former employee is never ' +
+  'reported as simply not existing) - the result\'s `employeeStatus` field (get_personal_details) ' +
+  'or its Status row (get_employee_detail) tells you which. If that status is INACTIVE (they left ' +
+  'the company), say so plainly FIRST, in the question\'s own language (e.g. "X ekhon ar company-' +
+  'te nei (inactive)"), before giving any of the requested details below it - never present an ' +
+  'inactive person\'s record as if they were a current employee with no caveat at all. ' +
   'Report titles, card labels, table rows and employee data always stay in English exactly ' +
   'as the tools return them.';
 

@@ -331,6 +331,23 @@ function containsAllWords(haystack, needle) {
   return words.length > 0 && words.every((w) => h.includes(w));
 }
 
+// containsAllWords' own per-word .includes() is itself a substring check,
+// which is exactly wrong for resolving ONE specific person by name - a
+// real incident showed "Ayan" matching "Sayan Das" this way. This instead
+// requires every query word to equal a WHOLE word in the target (never
+// merely be contained in one), so "Ayan" matches "Ayan Das"/"Das Ayan"
+// (first name alone, full name, any word order) but never "Sayan Das".
+// containsAllWords itself is left exactly as-is (used for deliberately
+// permissive list filtering elsewhere, e.g. query_employees' partial-name
+// search - a different, legitimate use case this function is not meant
+// to replace) - this is only for call sites resolving a name to a single
+// real employee.
+function matchesWholeWordName(fullName, query) {
+  const nameWords = String(fullName || '').toLowerCase().split(/\s+/).filter(Boolean);
+  const queryWords = String(query || '').toLowerCase().trim().split(/\s+/).filter(Boolean);
+  return queryWords.length > 0 && queryWords.every((qw) => nameWords.includes(qw));
+}
+
 function matchesFilters(emp, query) {
   if (query.status && emp.status !== String(query.status).toUpperCase()) return false;
   // "Anyone but Inactive" - distinct from an exact status match above, for
@@ -483,5 +500,6 @@ module.exports = {
   formatCollar,
   parseYearsFromDuration,
   containsAllWords,
+  matchesWholeWordName,
   CACHE_TTL_MS
 };
