@@ -749,35 +749,82 @@ async function removePendingApproval(id) {
   try { await redis.del(PENDING_APPROVAL_PREFIX + id); await redis.srem(PENDING_APPROVAL_IDS_KEY, id); } catch (err) { /* best effort */ }
 }
 
-// Renders a tool-result card as plain WhatsApp text - there is no card
-// UI on WhatsApp, so a list request's real content (not just a one-line
-// summary) has to be spelled out here. Handles both shapes tools.js
-// returns: a {columns, tableRows} table (list_employees/query_employees)
-// and a simpler {label, value} rows list (most other report tools).
-// Capped at 100 lines - a sane bound for a single WhatsApp message/chunk
-// set, not a data-completeness decision (the owner can always ask for a
-// narrower request if a real list is bigger than this).
-function cardToWhatsAppText(card) {
+// Renders a tool-result card as a plain numbered WhatsApp list - there is
+// no card UI on WhatsApp, so a list request's real content has to be
+// spelled out as text. No header/title line (WhatsApp has no "card" to
+// refer back to, and a repeated header is exactly what the owner asked
+// to stop seeing) - just "1. Primary — Secondary" per row, continuing
+// across however many messages sendWhatsAppChunked ends up splitting
+// this into. Picks Name (or the first column) as the primary field, and
+// whichever column reads most usefully next to it as the secondary one -
+// the column right after Name for a 3+ column table (Designation for an
+// employee list, DOB for a birthday list), or the only other column when
+// there are just two (count-by-X breakdowns). Handles both shapes
+// tools.js returns: a {columns, tableRows} table and a simpler
+// {label, value} rows list. Capped at 100 lines - a sane bound for a
+// single WhatsApp send, not a data-completeness decision (the owner can
+// always ask for a narrower request if a real list is bigger than this).
+function cardToWhatsAppNumberedList(card) {
   if (!card) return '';
   if (card.columns && (card.fullTableRows || card.tableRows)) {
     const rows = (card.fullTableRows || card.tableRows).slice(0, 100);
-    const nameIdx = card.columns.indexOf('Name');
-    const designationIdx = card.columns.indexOf('Designation');
-    const lines = rows.map((r, i) => nameIdx >= 0
-      ? (i + 1) + '. ' + r[nameIdx] + (designationIdx >= 0 && r[designationIdx] ? ' - ' + r[designationIdx] : '')
-      : (i + 1) + '. ' + r.join(' - '));
-    return '\n\n' + (card.title || 'List') + ':\n' + lines.join('\n');
+    if (!rows.length) return '';
+    const nameIdx = card.columns.findIndex((c) => /name/i.test(c));
+    const primaryIdx = nameIdx >= 0 ? nameIdx : 0;
+    let secondaryIdx;
+    if (card.columns.length <= 2) {
+      secondaryIdx = primaryIdx === 0 ? 1 : 0;
+    } else if (nameIdx >= 0 && nameIdx + 1 < card.columns.length) {
+      secondaryIdx = nameIdx + 1;
+    } else {
+      secondaryIdx = primaryIdx === 0 ? 1 : 0;
+    }
+    return rows.map((r, i) => (i + 1) + '. ' + r[primaryIdx] + ' — ' + r[secondaryIdx]).join('\n');
   }
   const rows = (card.fullRows || card.rows || []).slice(0, 100);
   if (rows.length) {
-    const lines = rows.map((r, i) => {
-      if (r && typeof r === 'object' && 'label' in r) return (i + 1) + '. ' + r.label + (r.value !== undefined && r.value !== null ? ': ' + r.value : '');
-      if (r && typeof r === 'object') return (i + 1) + '. ' + Object.values(r).join(' - ');
+    return rows.map((r, i) => {
+      if (r && typeof r === 'object' && 'label' in r) return (i + 1) + '. ' + r.label + ' — ' + r.value;
       return (i + 1) + '. ' + String(r);
-    });
-    return '\n\n' + (card.title || 'List') + ':\n' + lines.join('\n');
+    }).join('\n');
   }
   return '';
+}
+
+const WHATSAPP_LANGUAGE_LABEL = {
+  banglish: 'Banglish (Bengali written in Roman letters)',
+  hinglish: 'Hinglish (Hindi written in Roman letters)',
+  english: 'English'
+};
+// The model that answered the data request composed its reply for the
+// IN-APP chat (a "you're asking..." restatement line, references to a
+// card/report/View Report/Download that don't exist on WhatsApp, and -
+// found live - an occasional markdown table repeating the same rows a
+// numbered list below it already covers). None of that belongs on
+// WhatsApp, so this produces ONE clean summary sentence instead,
+// grounded only in the real count/facts already fetched (never a new
+// number) - the actual list, if any, is rendered separately and
+// deterministically by cardToWhatsAppNumberedList, never by the model.
+async function buildWhatsAppSummaryLine(dataRequestSummary, card, replyText, lang) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey || !DRAFT_MODEL) return replyText;
+  const hasList = Boolean(card && (card.fullTableRows || card.tableRows || card.fullRows || card.rows));
+  const factLine = card && card.footer && typeof card.footer.value === 'number'
+    ? 'Real count: ' + card.footer.value + '.'
+    : 'Real answer (use ONLY these exact facts/numbers, never add a new one): ' + replyText;
+  const instruction =
+    'Write ONE short, natural WhatsApp message sentence in ' + (WHATSAPP_LANGUAGE_LABEL[lang] || 'English') +
+    ', about: ' + dataRequestSummary + '. ' + factLine + ' ' +
+    (hasList
+      ? 'A numbered list of names will be sent immediately after this sentence, so end it with a colon (e.g. "Total 16 jon active engineer ache:") - do not list any names yourself.'
+      : 'This is the complete answer, no list follows - do not end with a colon.') +
+    ' Never mention "card", "report", "View Report", "Download" or any other app-only concept - this is a plain WhatsApp text message. Never use markdown (no tables, no bold, no bullet points). Output only that one sentence, nothing else, no quotes around it.';
+  const messages = [
+    { role: 'system', content: instruction },
+    { role: 'user', content: 'Compose the sentence now.' }
+  ];
+  const text = await callClaudeChat(apiKey, DRAFT_MODEL, messages).catch(() => null);
+  return text || replyText;
 }
 
 // ---------------- Hard PII block (never left to the model) ----------------
@@ -793,19 +840,24 @@ function cardToWhatsAppText(card) {
 // Deliberately matches on LABEL/field text, not a fixed tool name list -
 // this only ever sees the already-rendered card/text, so it catches a
 // leak regardless of which tool path produced it.
+// Real incident: a plain engineers-list answer ("...16 jon active
+// engineer ache company-te") got wrongly hard-blocked because a bare
+// substring check for "pan" matches inside "com-pan-y" - any short token
+// here is vulnerable to this the same way. Matched as a WHOLE WORD/PHRASE
+// only (word boundaries at both ends) instead, so "pan" still catches
+// "PAN card"/"his PAN" but never "company", "panel", "expand", etc.
 const FORBIDDEN_PII_LABELS = ['aadhar', 'pan', 'personal email', 'blood group', 'emergency contact', 'permanent address', 'present address', 'bank account', 'ifsc', 'uan', 'esic', 'date of birth', 'salary', 'ctc'];
+const FORBIDDEN_PII_RE = new RegExp('\\b(' + FORBIDDEN_PII_LABELS.map((f) => f.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')\\b', 'i');
 function cardHasForbiddenField(card) {
   if (!card) return false;
   const labelPool = [];
   if (card.columns) labelPool.push(...card.columns);
   (card.rows || card.fullRows || []).forEach((r) => { if (r && r.label) labelPool.push(r.label); });
   if (card.title) labelPool.push(card.title);
-  const normalized = labelPool.map((l) => String(l).toLowerCase());
-  return FORBIDDEN_PII_LABELS.some((f) => normalized.some((l) => l.includes(f)));
+  return labelPool.some((l) => FORBIDDEN_PII_RE.test(String(l)));
 }
 function textHasForbiddenField(text) {
-  const t = String(text || '').toLowerCase();
-  return FORBIDDEN_PII_LABELS.some((f) => t.includes(f));
+  return FORBIDDEN_PII_RE.test(String(text || ''));
 }
 const PII_BLOCK_REPLY = {
   banglish: 'Ei tottho WhatsApp-e share kora jay na - HR office-e jogajog korun.',
@@ -833,10 +885,6 @@ async function prepareDataRequestAnswer(text) {
     return { ok: false, error: err.message };
   }
 }
-function truncatePreview(text, max) {
-  const t = String(text || '').trim();
-  return t.length > (max || 200) ? t.slice(0, max || 200) + '…' : t;
-}
 // Fire-and-forget from decideAutoReply - runs the real (slower) tool
 // lookup and posts the approval request to SUBH chat, without holding up
 // the fixed holding reply that already went out to the requester.
@@ -853,22 +901,30 @@ async function prepareAndQueueDataApproval({ phone, name, text, dataRequestSumma
     }
     return;
   }
-  await savePendingApproval({
-    phone, name, requestText: text, dataRequestSummary, lang,
-    preparedReplyText: prepared.ok ? prepared.replyText : null,
-    preparedCard: prepared.ok ? prepared.card : null,
-    preparedError: prepared.ok ? null : prepared.error
-  });
   if (!prepared.ok) {
+    await savePendingApproval({
+      phone, name, requestText: text, dataRequestSummary, lang,
+      preparedReplyText: null, preparedCard: null, preparedError: prepared.error
+    });
     await postOwnerNotification(name + ' (' + phone + ') ' + dataRequestSummary + ' chaiche, kintu SUBH answer prepare korte parini: ' + prepared.error);
     return;
   }
-  const countNote = prepared.card && prepared.card.footer && typeof prepared.card.footer.value === 'number'
-    ? ' — ' + prepared.card.footer.value + ' ' + String(prepared.card.footer.label || '').toLowerCase()
-    : '';
+  // The FINAL WhatsApp text is built once, here, at approval-creation
+  // time - never re-derived at send time - so the approval preview the
+  // owner reviews is exactly, verbatim, what would actually go out. A
+  // clean one-line summary (never the in-app model's own reply text,
+  // which can reference "card"/"View Report" or repeat the rows as a
+  // markdown table - neither belongs on WhatsApp) followed by the real
+  // list rendered deterministically in code, never by the model.
+  const list = cardToWhatsAppNumberedList(prepared.card);
+  const summary = await buildWhatsAppSummaryLine(dataRequestSummary, prepared.card, prepared.replyText, lang);
+  const finalText = list ? summary + '\n\n' + list : summary;
+  await savePendingApproval({
+    phone, name, requestText: text, dataRequestSummary, lang,
+    preparedReplyText: finalText, preparedCard: prepared.card, preparedError: null
+  });
   await postOwnerNotification(
-    name + ' (' + phone + ') ' + dataRequestSummary + ' chaiche' + countNote + '. Preview: ' + truncatePreview(prepared.replyText) +
-    '. Pathabo? (ei chat-e "pathao"/"na" likhun)'
+    name + ' (' + phone + ') ' + dataRequestSummary + ' chaiche. Je message jabe:\n\'' + finalText + '\'\nPathabo? (ei chat-e "pathao"/"na" likhun)'
   );
 }
 
@@ -1029,6 +1085,11 @@ async function handlePersonLookupRequest({ phone, name, lang, personName, person
 // WhatsApp message - no confirmed document/PDF-send contract for this
 // gateway (only plain text sendMessage exists, see whatsappService.js),
 // so chunked text is the safe fallback the spec itself allows for.
+// Deliberately NO "(1/2)"/"(2/2)" label on each part (per direct
+// instruction) - splitting prefers a line break (see the cut-point logic
+// below), which for a numbered list means each chunk starts on its own
+// list item, so the numbering just continues naturally with no visible
+// seam and no repeated header.
 const WHATSAPP_CHUNK_SIZE = 1400;
 async function sendWhatsAppChunked(phone, text) {
   const t = String(text || '');
@@ -1044,8 +1105,7 @@ async function sendWhatsAppChunked(phone, text) {
     rest = rest.slice(cut).replace(/^\s+/, '');
   }
   for (let i = 0; i < chunks.length; i++) {
-    const prefix = chunks.length > 1 ? '(' + (i + 1) + '/' + chunks.length + ') ' : '';
-    const result = await whatsapp.sendWhatsAppMessage(phone, prefix + chunks[i]);
+    const result = await whatsapp.sendWhatsAppMessage(phone, chunks[i]);
     if (!result.ok) return result;
     if (i < chunks.length - 1) await new Promise((resolve) => setTimeout(resolve, 800));
   }
@@ -1067,7 +1127,7 @@ async function narrowDataAnswer(approval, editInstruction) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey || !DRAFT_MODEL) return approval.preparedReplyText;
   const messages = [
-    { role: 'system', content: 'Rewrite the HR answer below exactly as the owner instructs - use ONLY the facts already present in it (and the full data below, if given), never add a new fact. Output only the rewritten WhatsApp reply, nothing else, no quotes around it.' },
+    { role: 'system', content: 'Rewrite the HR answer below exactly as the owner instructs - use ONLY the facts already present in it (and the full data below, if given), never add a new fact. This is a plain WhatsApp text message - never use markdown (no tables, no bold, no bullet points), and never mention "card"/"report"/"View Report"/"Download". A numbered list, if the owner asks to keep one, should read "1. X — Y" with no header line above it. Output only the rewritten WhatsApp reply, nothing else, no quotes around it.' },
     { role: 'user', content: 'Original answer: ' + approval.preparedReplyText + (approval.preparedCard ? '\nFull data: ' + JSON.stringify(approval.preparedCard).slice(0, 3000) : '') + '\n\nOwner\'s instruction: ' + editInstruction }
   ];
   const rewritten = await callClaudeChat(apiKey, DRAFT_MODEL, messages).catch(() => null);
@@ -1084,7 +1144,10 @@ async function executeApprovalSend(approval, editInstruction) {
     await removePendingApproval(approval.id);
     return approval.name + ' er answer ready chilo na, pathano gelo na.';
   }
-  const textToSend = editInstruction ? await narrowDataAnswer(approval, editInstruction) : approval.preparedReplyText + cardToWhatsAppText(approval.preparedCard);
+  // approval.preparedReplyText is already the complete, final WhatsApp
+  // text (summary + list, built once at approval-creation time) - never
+  // re-render the card here, that would duplicate the list a second time.
+  const textToSend = editInstruction ? await narrowDataAnswer(approval, editInstruction) : approval.preparedReplyText;
   await removePendingApproval(approval.id);
   if (!isRealSendAllowedFor(approval.phone)) {
     await logInboxEvent({ chatId: approval.phone, name: approval.name, isGroup: false, messageSummary: '[data request: ' + approval.dataRequestSummary + ']', aCase: 'data_approved', sentText: textToSend, outcome: 'draft_mode', sentAt: Date.now() });
