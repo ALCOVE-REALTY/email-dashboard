@@ -172,9 +172,40 @@ function checkDataHoldingText(lang, text) {
   const expected = DATA_HOLDING_EXPECTATIONS[lang];
   return expected && !text.includes(expected) ? ['missing expected data-request holding phrase for ' + lang] : [];
 }
+// IMPORTANT: decideAutoReply's 'data_holding' case fires a REAL,
+// fire-and-forget background call (prepareAndQueueDataApproval, internal
+// to whatsappAssistant.js - not interceptable from outside the module)
+// that writes a REAL wa-pending-approval:* record to PRODUCTION Redis.
+// This is exactly how 919999999998's synthetic Rahul/Lucy/Simran
+// approvals kept reappearing throughout a real engagement even after
+// being deleted - every run of this suite recreated them again. Tracked
+// here (DATA_REQUEST_TEST_PHONE) and swept clean at the end of main()
+// after a grace delay for the background call to land - see
+// cleanupSyntheticApprovals below. Never rename this constant without
+// updating that cleanup to match.
+const DATA_REQUEST_TEST_PHONE = '919999999998';
 async function dataRequestReply(text, firstName) {
-  const d = await whatsappAssistant.decideAutoReply({ phone: '919999999998', name: firstName, firstName, text, isGroup: false, history: [] });
+  const d = await whatsappAssistant.decideAutoReply({ phone: DATA_REQUEST_TEST_PHONE, name: firstName, firstName, text, isGroup: false, history: [] });
   return d.case === 'data_holding' ? d.replyText : '(WRONG CASE: ' + d.case + ', expected data_holding)';
+}
+// Sweeps up whatever prepareAndQueueDataApproval's background call wrote
+// for DATA_REQUEST_TEST_PHONE - waits first since that call is
+// fire-and-forget (decideAutoReply returns before it finishes), so
+// cleaning up immediately would race it.
+async function cleanupSyntheticApprovals() {
+  await new Promise((resolve) => setTimeout(resolve, 5000));
+  const ids = await redis.smembers('wa-pending-approval-ids');
+  let removed = 0;
+  for (const id of ids) {
+    const raw = await redis.get('wa-pending-approval:' + id);
+    const approval = raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : null;
+    if (approval && approval.phone === DATA_REQUEST_TEST_PHONE) {
+      await redis.del('wa-pending-approval:' + id);
+      await redis.srem('wa-pending-approval-ids', id);
+      removed++;
+    }
+  }
+  if (removed) console.log('(cleaned up ' + removed + ' synthetic pending approval(s) this run created for ' + DATA_REQUEST_TEST_PHONE + ')');
 }
 
 async function main() {
@@ -254,6 +285,7 @@ async function main() {
   });
 
   await cleanupInboxEntries(seeded);
+  await cleanupSyntheticApprovals();
 
   console.log('='.repeat(70));
   let failCount = 0;
