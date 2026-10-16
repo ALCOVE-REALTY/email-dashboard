@@ -224,6 +224,64 @@ async function checkAsync(label, fn) {
   });
 
   console.log('='.repeat(70));
+  console.log('Typo-tolerant name matching (fuzzy fallback, general-details no-approval reply, sender disambiguation)');
+  console.log('='.repeat(70));
+  // READ-ONLY against the real directory (findPersonLookupMatches only
+  // reads employeeService.getEmployeeData() - no approval/notification/
+  // disambiguation record is ever written here, unlike a full
+  // handlePersonLookupRequest/decideAutoReply call, which always posts a
+  // real owner notification - see this file's header invariant). Real
+  // employee confirmed earlier in this project: "Kishor Kumar Daga",
+  // HEAD - FINANCE, ACTIVE.
+  await checkAsync('findPersonLookupMatches resolves a typo\'d name ("Kishire Daga") to the real employee via the fuzzy fallback, and flags hadTypo', async () => {
+    const { matches, hadTypo } = await whatsappAssistant.findPersonLookupMatches('Kishire Daga');
+    return hadTypo === true && matches.length > 0 && matches.every((m) => /kishor/i.test(m.name));
+  });
+  await checkAsync('findPersonLookupMatches on the EXACT correct spelling never sets hadTypo (whole-word match always wins first)', async () => {
+    const { matches, hadTypo } = await whatsappAssistant.findPersonLookupMatches('Kishor Kumar Daga');
+    return hadTypo === false && matches.length > 0;
+  });
+  await checkAsync('findPersonLookupMatches returns empty (never forces a guess) for a name with nothing close in the real directory', async () => {
+    const { matches, hadTypo } = await whatsappAssistant.findPersonLookupMatches('Zzzqqxxnonexistentname');
+    return matches.length === 0 && hadTypo === false;
+  });
+
+  const tenureCandidate = (overrides) => Object.assign({
+    name: 'Ayan Das', designation: 'HR Executive', department: 'HR',
+    doj: new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth() - 36, 1))
+  }, overrides);
+  const NOW_FOR_TENURE = new Date();
+  check('buildGeneralDetailsReply (Banglish, typo) prefixes the spelling note and reads naturally, matching the spec\'s example shape',
+    whatsappAssistant.buildGeneralDetailsReply(tenureCandidate(), 'banglish', true, NOW_FOR_TENURE) ===
+    'Apnar deya naam-er banan-e ektu bhul ache. Amader company-te Ayan Das achen — HR-e HR Executive hisebe prai 3 bochor dhore kaj korchen.');
+  check('buildGeneralDetailsReply (Hinglish, typo) prefixes the spelling note and reads naturally, matching the spec\'s example shape',
+    whatsappAssistant.buildGeneralDetailsReply(tenureCandidate(), 'hinglish', true, NOW_FOR_TENURE) ===
+    'Aapke diye naam ki spelling mein thodi galti hai. Hamari company mein Ayan Das hain — HR mein HR Executive ke roop mein lagbhag 3 saal se kaam kar rahe hain.');
+  check('buildGeneralDetailsReply (English, typo) prefixes the spelling note and matches the spec\'s exact example sentence',
+    whatsappAssistant.buildGeneralDetailsReply(tenureCandidate(), 'english', true, NOW_FOR_TENURE) ===
+    'The name seems slightly misspelled. We have Ayan Das in our company — working as HR Executive in the HR department for about 3 years.');
+  check('buildGeneralDetailsReply on an EXACT name (hadTypo=false) never adds the spelling note',
+    !whatsappAssistant.buildGeneralDetailsReply(tenureCandidate(), 'english', false, NOW_FOR_TENURE).startsWith('The name seems'));
+  check('tenureLabel returns null (never "about 0 months") for someone who joined less than a month ago', whatsappAssistant.tenureLabel(new Date(), new Date(), 'english') === null);
+
+  // Sender-side disambiguation - pure function, synthetic 2-candidate
+  // array (no real "Ayan Paul" exists in this company's real directory;
+  // the mechanism is tested with a mocked pair rather than relying on
+  // real data to happen to produce two matches).
+  const mockAyanPair = [
+    { name: 'Ayan Das', department: 'HR', designation: 'HR Executive', doj: null, status: 'ACTIVE' },
+    { name: 'Ayan Paul', department: 'Accounts', designation: 'Executive', doj: null, status: 'ACTIVE' }
+  ];
+  check('resolveDisambiguationReply resolves "1" to the first candidate', (whatsappAssistant.resolveDisambiguationReply(mockAyanPair, '1') || {}).name === 'Ayan Das');
+  check('resolveDisambiguationReply resolves "2)" to the second candidate', (whatsappAssistant.resolveDisambiguationReply(mockAyanPair, '2)') || {}).name === 'Ayan Paul');
+  check('resolveDisambiguationReply resolves a plain full-name reply to the correct single candidate', (whatsappAssistant.resolveDisambiguationReply(mockAyanPair, 'Ayan Paul') || {}).name === 'Ayan Paul');
+  check('resolveDisambiguationReply returns null (never forces a guess) for a reply that names neither candidate', whatsappAssistant.resolveDisambiguationReply(mockAyanPair, 'thank you so much') === null);
+  check('DISAMBIGUATION_QUESTION.banglish uses the corrected first candidate\'s name, not the sender\'s own typo, and numbers both options', (() => {
+    const q = whatsappAssistant.DISAMBIGUATION_QUESTION ? whatsappAssistant.DISAMBIGUATION_QUESTION.banglish('Ayan', mockAyanPair) : null;
+    return Boolean(q) && q.includes('1) Ayan Das') && q.includes('2) Ayan Paul');
+  })());
+
+  console.log('='.repeat(70));
   console.log('WhatsApp conversation header never shows the internal "The sender" placeholder');
   console.log('='.repeat(70));
   await checkAsync('getWhatsappConversation for a number with no real data falls back to the number, never the literal "The sender" placeholder', async () => {

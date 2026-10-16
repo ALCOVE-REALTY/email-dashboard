@@ -410,6 +410,67 @@ function matchesWholeWordName(fullName, query) {
   return queryWords.length > 0 && queryWords.every((qw) => nameWords.includes(qw));
 }
 
+// ---------------- Typo-tolerant ("fuzzy") name matching ----------------
+// ONLY ever used as a FALLBACK after matchesWholeWordName finds nothing -
+// never a replacement for it (a real exact match must always win). Built
+// for real Indian-name spelling variants seen live: Kishore/Kishor,
+// Ayon/Ayan, Shubho/Subho, Sourav/Saurav, Biswas/Bishwas - every one of
+// these is a 1-character edit (insertion/substitution), so a small
+// Levenshtein distance per WORD (not per whole name) catches them without
+// being so loose it matches unrelated names. Per-word (not whole-string)
+// matching is also what makes a missing/extra middle name ("Kishore
+// Daga" vs "Kishor Kumar Daga") and first-name/surname-in-any-order both
+// work: every query word only needs to fuzzy-match SOME word in the
+// candidate's full name, not a fixed position.
+function levenshteinDistance(a, b) {
+  const m = a.length, n = b.length;
+  if (m === 0) return n;
+  if (n === 0) return m;
+  let prevRow = Array.from({ length: n + 1 }, (_, j) => j);
+  for (let i = 1; i <= m; i++) {
+    const row = [i];
+    for (let j = 1; j <= n; j++) {
+      row[j] = a[i - 1] === b[j - 1]
+        ? prevRow[j - 1]
+        : 1 + Math.min(prevRow[j - 1], prevRow[j], row[j - 1]);
+    }
+    prevRow = row;
+  }
+  return prevRow[n];
+}
+// A tighter threshold for short words (a distance of 2 on a 4-letter word
+// is nearly a different word) - scales up slightly for longer ones, where
+// the same absolute distance is a smaller relative change.
+function fuzzyWordsMatch(a, b) {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  const maxDistance = Math.max(a.length, b.length) >= 6 ? 2 : 1;
+  return levenshteinDistance(a, b) <= maxDistance;
+}
+// Returns every employee where EVERY query word fuzzy-matches some word in
+// their full name (exact word matches count too - a query can mix an
+// exact first name with a misspelled surname), sorted best-first: more
+// exact-word matches first, then active/notice-period before inactive.
+// Never returns anything when matchesWholeWordName would already have -
+// callers must only reach this after that returns empty.
+function fuzzyMatchEmployeesByName(employees, query) {
+  const queryWords = String(query || '').toLowerCase().trim().split(/\s+/).filter(Boolean);
+  if (!queryWords.length) return [];
+  const scored = [];
+  for (const emp of employees) {
+    const nameWords = String(emp.name || '').toLowerCase().split(/\s+/).filter(Boolean);
+    let exactCount = 0;
+    let allMatched = true;
+    for (const qw of queryWords) {
+      if (nameWords.includes(qw)) { exactCount++; continue; }
+      if (!nameWords.some((nw) => fuzzyWordsMatch(qw, nw))) { allMatched = false; break; }
+    }
+    if (allMatched) scored.push({ emp, exactCount, isCurrent: emp.status !== 'INACTIVE' });
+  }
+  scored.sort((a, b) => (b.exactCount - a.exactCount) || (Number(b.isCurrent) - Number(a.isCurrent)));
+  return scored.map((s) => s.emp);
+}
+
 function matchesFilters(emp, query) {
   if (query.status && emp.status !== String(query.status).toUpperCase()) return false;
   // "Anyone but Inactive" - distinct from an exact status match above, for
@@ -568,5 +629,6 @@ module.exports = {
   parseYearsFromDuration,
   containsAllWords,
   matchesWholeWordName,
+  fuzzyMatchEmployeesByName,
   CACHE_TTL_MS
 };

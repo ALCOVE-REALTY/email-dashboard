@@ -880,6 +880,56 @@ async function removePendingApproval(id) {
   try { await redis.del(PENDING_APPROVAL_PREFIX + id); await redis.srem(PENDING_APPROVAL_IDS_KEY, id); } catch (err) { /* best effort */ }
 }
 
+// ---------------- Sender-side disambiguation (typo-tolerant name matching) ----------------
+// Distinct from the owner-side approval workflow above - this tracks "SUBH
+// asked the EXTERNAL WhatsApp sender to pick between candidates", for the
+// no-approval-needed "general details" fuzzy-match case only (an ambiguous
+// contact-number request is instead resolved by the OWNER picking between
+// one approval per candidate, reusing queuePersonContactApproval). Keyed by
+// the sender's own phone (one open question per sender at a time - a new
+// lookup naturally overwrites a stale one), short TTL so a reply days later
+// is treated as a fresh message rather than a stale answer.
+const PENDING_DISAMBIGUATION_PREFIX = 'wa-pending-disambiguation:';
+const PENDING_DISAMBIGUATION_TTL_SECONDS = 30 * 60;
+
+async function savePendingDisambiguation(phone, data) {
+  const redis = getClient();
+  if (!redis) return;
+  const key = PENDING_DISAMBIGUATION_PREFIX + whatsapp.normalizePhone(phone);
+  try { await redis.set(key, JSON.stringify(data), { ex: PENDING_DISAMBIGUATION_TTL_SECONDS }); } catch (err) { /* best effort */ }
+}
+async function getPendingDisambiguation(phone) {
+  const redis = getClient();
+  if (!redis) return null;
+  try {
+    const raw = await redis.get(PENDING_DISAMBIGUATION_PREFIX + whatsapp.normalizePhone(phone));
+    return raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : null;
+  } catch (err) { return null; }
+}
+async function clearPendingDisambiguation(phone) {
+  const redis = getClient();
+  if (!redis) return;
+  try { await redis.del(PENDING_DISAMBIGUATION_PREFIX + whatsapp.normalizePhone(phone)); } catch (err) { /* best effort */ }
+}
+// Resolves the sender's reply ("1", "2)", or a name) against the stored
+// candidate list - a leading number is tried first (most unambiguous),
+// then an exact whole-word name match, then a fuzzy one; returns null
+// (never guesses) when nothing resolves to exactly one candidate, so the
+// message falls through to the normal pipeline instead of forcing a match.
+function resolveDisambiguationReply(candidates, text) {
+  const t = String(text || '').trim();
+  const numMatch = t.match(/^(\d+)[.)]?\b/);
+  if (numMatch) {
+    const idx = parseInt(numMatch[1], 10) - 1;
+    if (idx >= 0 && idx < candidates.length) return candidates[idx];
+  }
+  const exact = candidates.filter((c) => matchesWholeWordName(c.name, t));
+  if (exact.length === 1) return exact[0];
+  const fuzzy = employeeService.fuzzyMatchEmployeesByName(candidates, t);
+  if (fuzzy.length === 1) return fuzzy[0];
+  return null;
+}
+
 // Renders a tool-result card as a plain numbered WhatsApp list - there is
 // no card UI on WhatsApp, so a list request's real content has to be
 // spelled out as text. No header/title line (WhatsApp has no "card" to
@@ -1095,6 +1145,61 @@ const PERSON_NOT_FOUND_REPLY = {
   hinglish: (name) => name + ' naam ka koi employee nahi mila.',
   english: (name) => "I couldn't find an employee named " + name + "."
 };
+// Typo-tolerant "general details" replies (spec point 2) - only ever used
+// for the 4 non-sensitive fields (name/designation/department/tenure), so
+// unlike contact_number these never need the owner's approval. A gentle
+// one-line spelling note is prefixed only when the match came from the
+// fuzzy fallback (hadTypo), never for an exact-name match.
+const TYPO_NOTE = {
+  banglish: 'Apnar deya naam-er banan-e ektu bhul ache. ',
+  hinglish: 'Aapke diye naam ki spelling mein thodi galti hai. ',
+  english: 'The name seems slightly misspelled. '
+};
+function buildGeneralDetailsSentence(candidate, lang, tenure) {
+  if (lang === 'hinglish') {
+    return 'Hamari company mein ' + candidate.name + ' hain — ' + candidate.department + ' mein ' +
+      candidate.designation + ' ke roop mein' + (tenure ? ' ' + tenure + ' kaam kar rahe hain.' : ' kaam kar rahe hain.');
+  }
+  if (lang === 'english') {
+    return 'We have ' + candidate.name + ' in our company — working as ' + candidate.designation +
+      ' in the ' + candidate.department + ' department' + (tenure ? ' for ' + tenure + '.' : '.');
+  }
+  return 'Amader company-te ' + candidate.name + ' achen — ' + candidate.department + '-e ' +
+    candidate.designation + ' hisebe' + (tenure ? ' ' + tenure + ' kaj korchen.' : ' kaj korchen.');
+}
+function buildGeneralDetailsReply(candidate, lang, hadTypo, now) {
+  const tenure = tenureLabel(candidate.doj, now || new Date(), lang);
+  const note = hadTypo ? (TYPO_NOTE[lang] || TYPO_NOTE.english) : '';
+  return note + buildGeneralDetailsSentence(candidate, lang, tenure);
+}
+// "2"/"3" people sharing a name - a small count-word map for the two
+// languages that use one (never guessed beyond 5; a 6th+ candidate falls
+// back to the plain digit, which still reads fine in context).
+const BANGLA_COUNT_WORDS = { 2: 'dujon', 3: 'tinjon', 4: 'charjon', 5: 'panchjon' };
+const HINDI_COUNT_WORDS = { 2: 'do', 3: 'teen', 4: 'chaar', 5: 'paanch' };
+function countLabel(n, lang) {
+  if (lang === 'banglish') return BANGLA_COUNT_WORDS[n] || (n + ' jon');
+  if (lang === 'hinglish') return (HINDI_COUNT_WORDS[n] || n) + ' log';
+  return String(n);
+}
+// Sender-facing disambiguation question (spec point 2, "several close
+// matches") - uses the FIRST candidate's first name (the corrected
+// spelling) rather than echoing the sender's own typo back at them,
+// matching the spec's own example ("Ayan naame dujon achen", not "Ayon").
+const DISAMBIGUATION_QUESTION = {
+  banglish: (queryName, candidates) =>
+    'Amader company-te ' + queryName + ' naame ' + countLabel(candidates.length, 'banglish') + ' achen: ' +
+    candidates.map((c, i) => (i + 1) + ') ' + c.name + ' — ' + c.department).join(' ') +
+    '. Apni kar sombondhe jante chan?',
+  hinglish: (queryName, candidates) =>
+    'Hamari company mein ' + queryName + ' naam ke ' + countLabel(candidates.length, 'hinglish') + ' hain: ' +
+    candidates.map((c, i) => (i + 1) + ') ' + c.name + ' — ' + c.department).join(' ') +
+    '. Aap kiske baare mein jaanna chahte hain?',
+  english: (queryName, candidates) =>
+    'There are ' + candidates.length + ' people named ' + queryName + ' at our company: ' +
+    candidates.map((c, i) => (i + 1) + ') ' + c.name + ' — ' + c.department).join(' ') +
+    '. Which one would you like to know about?'
+};
 const CONTACT_NUMBER_LINE = {
   banglish: (name, number) => name + '-er contact number: ' + number,
   hinglish: (name, number) => name + ' ka contact number: ' + number,
@@ -1149,13 +1254,11 @@ function departmentHintMatches(deptName, hint) {
 // do with each category (notice period is still "currently employed" for
 // this feature; inactive gets its own no-data reply, never the normal
 // approval flow at all).
-async function findEmployeesByWholeNameMatch(query, departmentHint) {
-  const { employees, departmentNames } = await employeeService.getEmployeeData();
-  const matched = employees.filter((e) => matchesWholeWordName(e.name, query));
+function mapAndNarrowByDepartment(matched, departmentNames, departmentHint) {
   const withDept = matched.map((e) => ({
     employeeId: e.employeeId, name: e.name, designation: e.designation,
     department: departmentNames.get(e.departmentKey) || e.department,
-    contactNumber: e.contactNumber, status: e.status
+    contactNumber: e.contactNumber, status: e.status, doj: e.doj, gender: e.gender
   }));
   if (!departmentHint) return withDept;
   // A department hint narrows but never eliminates a real candidate - if
@@ -1165,8 +1268,50 @@ async function findEmployeesByWholeNameMatch(query, departmentHint) {
   const narrowed = withDept.filter((e) => departmentHintMatches(e.department, departmentHint));
   return narrowed.length ? narrowed : withDept;
 }
+async function findEmployeesByWholeNameMatch(query, departmentHint) {
+  const { employees, departmentNames } = await employeeService.getEmployeeData();
+  const matched = employees.filter((e) => matchesWholeWordName(e.name, query));
+  return mapAndNarrowByDepartment(matched, departmentNames, departmentHint);
+}
+// Typo-tolerant fallback (spec: "typo-tolerant name matching") - ONLY ever
+// called after findEmployeesByWholeNameMatch returns empty, never instead
+// of it. Same output shape/department-narrowing as the exact version so
+// every existing caller of either function can treat them interchangeably.
+async function findEmployeesByFuzzyNameMatch(query, departmentHint) {
+  const { employees, departmentNames } = await employeeService.getEmployeeData();
+  const matched = employeeService.fuzzyMatchEmployeesByName(employees, query);
+  return mapAndNarrowByDepartment(matched, departmentNames, departmentHint);
+}
+// The one place callers resolve a person's name - tries the exact
+// whole-word match first (always wins when it finds anything), falls back
+// to fuzzy only when that finds nothing at all. `hadTypo` tells the reply-
+// building code whether to add the "the spelling seems slightly off" note.
+async function findPersonLookupMatches(query, departmentHint) {
+  const exact = await findEmployeesByWholeNameMatch(query, departmentHint);
+  if (exact.length) return { matches: exact, hadTypo: false };
+  const fuzzy = await findEmployeesByFuzzyNameMatch(query, departmentHint);
+  return { matches: fuzzy, hadTypo: fuzzy.length > 0 };
+}
+// "prai N bochor"/"lagbhag N saal"/"about N years" from DOJ - used only
+// for the no-approval "general details" reply (designation/department/
+// tenure are not sensitive); never a precise day count, matching the
+// spec's own example phrasing ("about 3 years" / "prai 3 bochor").
+const TENURE_UNIT = {
+  banglish: (n, isYear) => 'prai ' + n + ' ' + (isYear ? 'bochor' : 'mash') + ' dhore',
+  hinglish: (n, isYear) => 'lagbhag ' + n + ' ' + (isYear ? 'saal' : 'mahine') + ' se',
+  english: (n, isYear) => 'about ' + n + ' ' + (isYear ? 'year' : 'month') + (n === 1 ? '' : 's')
+};
+function tenureLabel(doj, now, lang) {
+  if (!doj) return null;
+  const totalMonths = (now.getUTCFullYear() - doj.getUTCFullYear()) * 12 + (now.getUTCMonth() - doj.getUTCMonth());
+  if (totalMonths < 1) return null;
+  const fn = TENURE_UNIT[lang] || TENURE_UNIT.english;
+  if (totalMonths < 12) return fn(totalMonths, false);
+  const years = Math.round(totalMonths / 12);
+  return fn(years, true);
+}
 
-async function queuePersonContactApproval({ phone, requesterLabel, candidate, lang }) {
+async function queuePersonContactApproval({ phone, requesterLabel, candidate, lang, hadTypo }) {
   if (!candidate.contactNumber) {
     await postOwnerNotification(candidate.name + ' (' + candidate.department + ')-er contact number record-e nei, tai ' + requesterLabel + '-ke pathano jabe na.');
     return;
@@ -1182,8 +1327,13 @@ async function queuePersonContactApproval({ phone, requesterLabel, candidate, la
   // inactive) - normal approval flow, just flagged so the owner knows
   // their status while deciding.
   const statusNote = candidate.status === 'NOTICE PERIOD' ? ', notice period-e achen' : '';
+  // Typo note (spec point 1) - the owner reviewing the approval card needs
+  // to know this candidate came from the fuzzy fallback (a "closest match"
+  // to what the sender actually typed), never presented as a confirmed
+  // exact name.
+  const typoNote = hadTypo ? ' [sender-er deya naam-er banan-e typo chhilo, eta closest match]' : '';
   await postOwnerNotification(
-    requesterLabel + ' (' + phone + ') ' + candidate.name + ' (' + candidate.department + statusNote + ')-er contact number chaichhe. Je message jabe: \'' + outgoingText + '\'. Pathabo?'
+    requesterLabel + ' (' + phone + ') ' + candidate.name + ' (' + candidate.department + statusNote + ')-er contact number chaichhe.' + typoNote + ' Je message jabe: \'' + outgoingText + '\'. Pathabo?'
   );
 }
 
@@ -1196,16 +1346,21 @@ async function replyInactiveEmployee({ phone, requesterLabel, candidate }) {
 }
 
 async function handlePersonLookupRequest({ phone, name, lang, personName, personField, department }) {
-  if (personField !== 'contact_number') {
+  if (personField === 'forbidden_pii') {
     // Hard block - no approval loop at all, this can never be sent
-    // regardless of what the owner says (spec point 1).
+    // regardless of what the owner says (spec point 1). Unaffected by
+    // fuzzy matching - this gate runs before any name resolution.
     await postOwnerNotification('⚠️ ' + name + ' (' + phone + ') ' + (personName || 'ekjon employee') + '-er sensitive personal data (Aadhar/PAN/address/etc type) chaiche - WhatsApp-e block kora holo, kichu pathano hoyni.');
     return { case: 'acknowledged', replyText: PII_BLOCK_REPLY[lang] || PII_BLOCK_REPLY.english, summaryForOwner: null };
   }
 
-  const allMatches = await findEmployeesByWholeNameMatch(personName, department);
+  // Exact whole-word match tried first, fuzzy only as a fallback (typo-
+  // tolerant name matching, spec point 0) - hadTypo tells every branch
+  // below whether to add the "spelling seems slightly off" note / flag the
+  // owner's approval card as a closest match rather than a confirmed name.
+  const { matches: allMatches, hadTypo } = await findPersonLookupMatches(personName, department);
   if (!allMatches.length) {
-    await postOwnerNotification(name + ' (' + phone + ') "' + personName + '"-er contact number cheyechhe, kintu oi naame kono employee pelam na.');
+    await postOwnerNotification(name + ' (' + phone + ') "' + personName + '"-er ' + (personField === 'general_details' ? 'details' : 'contact number') + ' cheyechhe, kintu oi naame (ba kachakachi kono banan-e) kono employee pelam na.');
     return { case: 'acknowledged', replyText: (PERSON_NOT_FOUND_REPLY[lang] || PERSON_NOT_FOUND_REPLY.english)(personName), summaryForOwner: null };
   }
   // Notice period counts as currently employed for this feature - only a
@@ -1232,17 +1387,41 @@ async function handlePersonLookupRequest({ phone, name, lang, personName, person
   if (!current.length && inactive.length) {
     // Only inactive match(es) - which one (if several) doesn't change the
     // outcome, since no data is ever shared either way; use the first for
-    // the owner's own notification.
+    // the owner's own notification. Applies identically whether the match
+    // was exact or fuzzy - an inactive employee's data is never shared.
     await replyInactiveEmployee({ phone, requesterLabel: name, candidate: inactive[0], lang });
     return { case: 'acknowledged', replyText: (INACTIVE_EMPLOYEE_REPLY[lang] || INACTIVE_EMPLOYEE_REPLY.english)(inactive[0].name, inactive[0].gender), summaryForOwner: null };
   }
 
+  // general_details (spec point 2) - no approval needed, since this is
+  // limited to the 4 non-sensitive fields the tool schema's description
+  // already restricts personField to.
+  if (personField === 'general_details') {
+    if (current.length === 1) {
+      const typoNote = hadTypo ? ' ("' + personName + '" banan-e - closest match hisebe dhora holo)' : '';
+      await postOwnerNotification(name + ' (' + phone + ') ' + current[0].name + ' (' + current[0].department + ')-er general details (designation/department/koto diner) jigges korechhe' + typoNote + ' - approval chara e direct reply gechhe.');
+      return { case: 'acknowledged', replyText: buildGeneralDetailsReply(current[0], lang, hadTypo, new Date()), summaryForOwner: null };
+    }
+    // Several current candidates - ask the SENDER to pick rather than
+    // guessing or escalating to the owner (spec: "ask the sender directly
+    // on WhatsApp which one"); stored so the sender's next message (a
+    // number or a name) can be resolved back to one candidate.
+    await savePendingDisambiguation(phone, { candidates: current, lang, hadTypo });
+    await postOwnerNotification(current.length + ' jon "' + personName + '" (general details) match korche - sender-ke jigges kora hocche kon jon: ' + current.map((c) => c.name + ' (' + c.department + ')').join(', ') + '.');
+    const queryName = current[0].name.split(' ')[0];
+    const note = hadTypo ? (TYPO_NOTE[lang] || TYPO_NOTE.english) : '';
+    const fn = DISAMBIGUATION_QUESTION[lang] || DISAMBIGUATION_QUESTION.english;
+    return { case: 'acknowledged', replyText: note + fn(queryName, current), summaryForOwner: null };
+  }
+
+  // contact_number (default/only remaining value) - unchanged approval-
+  // required flow, now fed by fuzzy-aware matches.
   if (current.length === 1) {
-    await queuePersonContactApproval({ phone, requesterLabel: name, candidate: current[0], lang });
+    await queuePersonContactApproval({ phone, requesterLabel: name, candidate: current[0], lang, hadTypo });
   } else {
-    for (const candidate of current) await queuePersonContactApproval({ phone, requesterLabel: name, candidate, lang });
+    for (const candidate of current) await queuePersonContactApproval({ phone, requesterLabel: name, candidate, lang, hadTypo });
     const list = current.map((c, i) => (i + 1) + ') ' + c.name + ' (' + c.department + ')').join(', ');
-    await postOwnerNotification(current.length + ' jon "' + personName + '" ache: ' + list + '. Kar number pathabo?');
+    await postOwnerNotification(current.length + ' jon "' + personName + '" ache' + (hadTypo ? ' (closest matches, exact banan mele ni)' : '') + ': ' + list + '. Kar number pathabo?');
   }
   return { case: 'data_holding', replyText: DATA_REQUEST_HOLDING_REPLY[lang] || DATA_REQUEST_HOLDING_REPLY.english, summaryForOwner: null };
 }
@@ -2153,7 +2332,10 @@ const DRAFT_SYSTEM_PROMPT =
   'grammar: correct tense/negation, natural phrasing, never a literal word-for-word translation (e.g. ' +
   '"the letter hasn\'t been issued yet", never "has not came"). Hinglish grammar: negate with "nahi" ' +
   '("aaya nahi", "nahi bheja", "hua nahi"), never a bare Bengali-style "na"; address the sender as ' +
-  '"aap" consistently; never mix a Bengali word (ache/hobe/korbo) into Hinglish, same as a Hindi word ' +
+  '"aap" consistently; ALWAYS use the masculine/neutral self-referring verb form regardless of context - ' +
+  '"karta hoon"/"batata hoon"/"deta hoon"/"karunga"/"bataunga", NEVER the feminine form ("karti hoon"/' +
+  '"batati hoon"/"dungi"/"bataungi"/"karungi") - found live, these two forms got mixed inconsistently; ' +
+  'never mix a Bengali word (ache/hobe/korbo) into Hinglish, same as a Hindi word ' +
   '(khud/nahi/hoon) must never appear in Banglish. ' +
   'Keep it to 1-2 short lines (3 only if genuinely needed) - like a real person quickly typing a reply ' +
   'on their phone, not a formal letter: no stock politeness filler ("happy to be working with you", ' +
@@ -2328,7 +2510,10 @@ const GROUP_DRAFT_SYSTEM_PROMPT =
   'grammar: correct tense/negation, natural phrasing, never a literal word-for-word translation (e.g. ' +
   '"the letter hasn\'t been issued yet", never "has not came"). Hinglish grammar: negate with "nahi" ' +
   '("aaya nahi", "nahi bheja", "hua nahi"), never a bare Bengali-style "na"; address the sender as ' +
-  '"aap" consistently; never mix a Bengali word (ache/hobe/korbo) into Hinglish, same as a Hindi word ' +
+  '"aap" consistently; ALWAYS use the masculine/neutral self-referring verb form regardless of context - ' +
+  '"karta hoon"/"batata hoon"/"deta hoon"/"karunga"/"bataunga", NEVER the feminine form ("karti hoon"/' +
+  '"batati hoon"/"dungi"/"bataungi"/"karungi") - found live, these two forms got mixed inconsistently; ' +
+  'never mix a Bengali word (ache/hobe/korbo) into Hinglish, same as a Hindi word ' +
   '(khud/nahi/hoon) must never appear in Banglish. ' +
   'Keep it to 1-2 short lines (3 only if genuinely needed) - like a real person quickly ' +
   'typing a reply, not a formal letter: no stock politeness filler ("happy to be working with you", ' +
@@ -2455,7 +2640,7 @@ function classifyTool() {
           wantsData: { type: 'boolean', description: 'true ONLY if they are asking for actual HR/employee data from the company database - counts, lists, names, headcounts, birthdays, who reports to whom, department lists, or any field (even just a phone number) about a named employee, etc. false for a question about their OWN situation (their own letter/salary/attendance), a policy question, or small talk - those go through the normal topic/memory path instead, never this one.' },
           dataRequestSummary: { type: 'string', description: 'Required only when wantsData is true - restate exactly what data they are asking for, in plain English, e.g. "current list of engineers", "headcount under Yashaswi Shroff", "Ayan Das\'s contact number". Omit when wantsData is false.' },
           personLookupName: { type: 'string', description: 'ONLY when wantsData is true AND the request is for ONE specific field about ONE named person (e.g. "Ayan Das er contact number ta dao", "R amake Ayan Das HR er contact no. ta debe?") - the person\'s name EXACTLY as given, first name alone is fine (e.g. "Ayan"). NEVER guess or complete a partial name yourself. Omit entirely for any aggregate/list/count/headcount request (e.g. "engineers list", "headcount under X", "who reports to X") - those are never about one person\'s own personal field and must NOT set this.' },
-          personLookupField: { type: 'string', enum: ['contact_number', 'forbidden_pii'], description: 'Required when personLookupName is given. "contact_number" ONLY for their phone/contact/mobile/WhatsApp number. "forbidden_pii" for ANYTHING else personal about them - Aadhar, PAN, bank account/IFSC, UAN, ESIC/ESI number, date of birth, home/permanent/present address, personal email, blood group, emergency contact, salary/CTC, or any other ID/personal number. When unsure which, choose "forbidden_pii" - never guess "contact_number".' },
+          personLookupField: { type: 'string', enum: ['contact_number', 'general_details', 'forbidden_pii'], description: 'Required when personLookupName is given. "contact_number" ONLY for their phone/contact/mobile/WhatsApp number. "general_details" ONLY for their full name, designation/role, department, or how long they\'ve been with the company (tenure) - these are not sensitive and never need approval. "forbidden_pii" for ANYTHING else personal about them - Aadhar, PAN, bank account/IFSC, UAN, ESIC/ESI number, date of birth, home/permanent/present address, personal email, blood group, emergency contact, salary/CTC, or any other ID/personal number. When unsure which, choose "forbidden_pii" - never guess "contact_number" or "general_details".' },
           personLookupDepartment: { type: 'string', description: 'Optional - a department mentioned to help find the right person when the name alone could match more than one employee, e.g. "HR" in "Ayan Das HR er contact number". Omit if none was mentioned.' }
         },
         required: ['intent', 'language', 'topic', 'topicLabel', 'replyNeeded', 'wantsData']
@@ -2542,7 +2727,9 @@ const CONTEXT_REPLY_SYSTEM_PROMPT =
   'You do NOT have the real answer right now - you only know what is in this conversation, nothing ' +
   'else. NEVER invent a date, approval, policy answer, or a promise of WHEN something will be ' +
   'resolved - not even a vague "today"/"tomorrow"/"kal"/"within 2 days"/a weekday name. The honest, ' +
-  'safe thing to say is that you will check with Subhodeep (the HR manager) and confirm. For a policy ' +
+  'safe thing to say is that you will check with Subhodeep and confirm - he is the HR manager, but refer ' +
+  'to him by name ONLY, never "Subhodeep (HR manager)" or any other parenthetical/title after his name. ' +
+  'For a policy ' +
   'question, an approval, salary/F&F, or anything genuinely needing a decision, say plainly (still ' +
   'briefly, never a long explanation) that you are escalating it to Subhodeep for his review - it will ' +
   'reach him. Never argue with the sender and never repeat the same point back at them if they push ' +
@@ -2571,7 +2758,9 @@ const CONTEXT_REPLY_SYSTEM_PROMPT =
   'typing on their phone, never textbook-formal, never robotic. ' +
   'Banglish negation: "-ni" (ashe ni, hoy ni), never "-eche na"; say "shighroi" or "taratari" for ' +
   '"soon", NEVER "shigghiri" (not a real word). English: correct tense, no literal translation. ' +
-  'Hinglish: "nahi", never a bare "na"; address as "aap". Never mix a Hindi word into Banglish or a ' +
+  'Hinglish: "nahi", never a bare "na"; address as "aap"; ALWAYS the masculine/neutral self-referring ' +
+  'verb form ("karta hoon"/"batata hoon"/"bataunga"), NEVER feminine ("karti hoon"/"dungi"/"bataungi"). ' +
+  'Never mix a Hindi word into Banglish or a ' +
   'Bengali word into Hinglish.';
 async function generateConversationReply(text, history, firstName, topicLabel, needsAnswer) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -2745,6 +2934,26 @@ async function decideAutoReply({ phone, name, firstName, text, isGroup, history 
   // "The sender" (never the phone-number display fallback in `name`,
   // and never the gateway's own contact label - see resolveSenderName).
   const senderLabel = firstName || 'The sender';
+
+  // Typo-tolerant name matching (spec point 2) - a sender who was just
+  // asked to pick between several "general details" candidates gets THIS
+  // message checked against that pending question BEFORE anything else
+  // (identity/classification), since their reply ("1" or a bare name)
+  // would otherwise be misread by the normal pipeline. A reply that
+  // doesn't resolve to exactly one candidate falls through unchanged -
+  // never forces a guess, so an unrelated new message still works normally.
+  if (!isGroup && phone) {
+    const pendingDisambig = await getPendingDisambiguation(phone).catch(() => null);
+    if (pendingDisambig && Array.isArray(pendingDisambig.candidates) && pendingDisambig.candidates.length) {
+      const resolved = resolveDisambiguationReply(pendingDisambig.candidates, text);
+      if (resolved) {
+        await clearPendingDisambiguation(phone);
+        await postOwnerNotification(senderLabel + ' (' + phone + ') "' + resolved.name + '" baeche niyeche - general details pathano holo, approval lage ni.');
+        return { case: 'acknowledged', replyText: buildGeneralDetailsReply(resolved, pendingDisambig.lang, pendingDisambig.hadTypo, new Date()), summaryForOwner: null };
+      }
+    }
+  }
+
   let emp = null;
   let empForScope = null;
   if (!isGroup && phone) {
@@ -3311,5 +3520,22 @@ module.exports = {
   listBurstBufferContactIds,
   sanitizeTopicLabel,
   genderedHasLeft,
-  INACTIVE_EMPLOYEE_REPLY
+  INACTIVE_EMPLOYEE_REPLY,
+  // Exported for scripts/check-whatsapp-engine.js only - typo-tolerant
+  // name matching (fuzzy fallback, general-details no-approval reply,
+  // sender-side disambiguation).
+  handlePersonLookupRequest,
+  findPersonLookupMatches,
+  findEmployeesByWholeNameMatch,
+  findEmployeesByFuzzyNameMatch,
+  tenureLabel,
+  buildGeneralDetailsReply,
+  resolveDisambiguationReply,
+  savePendingDisambiguation,
+  getPendingDisambiguation,
+  clearPendingDisambiguation,
+  PERSON_NOT_FOUND_REPLY,
+  CONTACT_NUMBER_LINE,
+  DISAMBIGUATION_QUESTION,
+  TYPO_NOTE
 };
