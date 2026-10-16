@@ -1861,6 +1861,25 @@ router.post('/hr-assistant/whatsapp-document-done', async (req, res) => {
   }
 });
 
+// Owner-only manual delete of one row from Important WhatsApp (per direct
+// instruction - SUBH never removes a row here on its own; this explicit
+// action is the only way besides resolving each item individually).
+// Clears pending approvals/draft/follow-up for the chat; also marks any
+// received document done, same as its own "Mark done" button, so the row
+// doesn't immediately reappear from that one leftover item.
+router.post('/hr-assistant/whatsapp-dismiss', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const { chatId } = req.body || {};
+    if (!chatId) return res.status(400).json({ error: 'chatId is required' });
+    await whatsappAssistant.dismissWhatsappItem(chatId);
+    await documentRequests.markDone(chatId).catch(() => false);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.post('/hr-assistant/whatsapp-never-auto', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
   try {

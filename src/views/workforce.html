@@ -188,6 +188,14 @@
         </div>
       </div>
 
+      <!-- Full-screen "View All" - just the Important WhatsApp rows, same
+           data/rendering as the section above (see hrAssistant.js's
+           buildWaRowHtml/wireWaRows), for when the list grows past what
+           fits in the mixed Important Communications page. -->
+      <div class="wf-comms-page" id="hrCommsWaAllPage" hidden>
+        <div class="wf-comms-wa-list" id="hrCommsWaAllList"></div>
+      </div>
+
       <!-- One WhatsApp conversation - thread (src/aiAssistant's own
            wa-convo-history, both directions) + whatever's outstanding for
            this contact right now, each action bound to its own id so more

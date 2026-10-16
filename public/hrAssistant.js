@@ -67,6 +67,9 @@
   const commsSystemStrip = document.getElementById('hrCommsSystemStrip');
   const commsMailCard = document.getElementById('hrCommsMailCard');
   const commsWaList = document.getElementById('hrCommsWaList');
+  const commsWaViewAll = document.getElementById('hrCommsWaViewAll');
+  const commsWaAllPage = document.getElementById('hrCommsWaAllPage');
+  const commsWaAllList = document.getElementById('hrCommsWaAllList');
   const convoPage = document.getElementById('hrConvoPage');
   const convoThread = document.getElementById('hrConvoThread');
   const convoActions = document.getElementById('hrConvoActions');
@@ -1248,6 +1251,7 @@
     const isHub = view === 'hub';
     const isReminders = view === 'reminders';
     const isRemDetail = view === 'reminderDetail';
+    const isWaAll = view === 'waAll';
     const usesCommsHead = !isHome;
     if (homeHead) homeHead.hidden = !isHome;
     if (commsHead) commsHead.hidden = !usesCommsHead;
@@ -1258,11 +1262,17 @@
     if (hubPage) hubPage.hidden = !isHub;
     if (remPage) remPage.hidden = !isReminders;
     if (remDetailPage) remDetailPage.hidden = !isRemDetail;
+    if (commsWaAllPage) commsWaAllPage.hidden = !isWaAll;
     if (inputArea) inputArea.hidden = isConvo || isRemDetail;
     if (isImportant) {
       if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon';
       if (commsHeadIcon) commsHeadIcon.innerHTML = MAIL_SVG;
       if (commsHeadTitle) commsHeadTitle.textContent = 'Important Communications';
+      if (commsHeadSubtitle) commsHeadSubtitle.textContent = '';
+    } else if (isWaAll) {
+      if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon whatsapp';
+      if (commsHeadIcon) commsHeadIcon.innerHTML = WHATSAPP_SVG;
+      if (commsHeadTitle) commsHeadTitle.textContent = 'Important WhatsApp';
       if (commsHeadSubtitle) commsHeadSubtitle.textContent = '';
     } else if (isConvo) {
       if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon whatsapp';
@@ -1304,6 +1314,84 @@
     } catch (err) { /* best effort - it'll just show again next load */ }
   }
 
+  // Shared by the Important Communications page's own WhatsApp section
+  // and the full-screen "View All" page (same data, same row markup) -
+  // includes the small manual-delete icon (per direct instruction: SUBH
+  // never removes a row here on its own; this explicit action, or
+  // resolving every one of its items individually, are the only ways).
+  function buildWaRowHtml(it, i) {
+    return (
+      '<div class="wf-comms-wa-row" data-chat-id="' + escapeHtml(it.chatId) + '" role="button" tabindex="0">' +
+        waAvatarHtml(it.name, i) +
+        '<span class="wf-comms-wa-row-main">' +
+          '<span class="wf-comms-wa-row-top">' +
+            '<span class="wf-comms-wa-row-name">' + escapeHtml(it.name || it.chatId) + '</span>' +
+            '<span class="wf-comms-wa-row-time">' + (it.lastMessageTime ? formatCommsTime(it.lastMessageTime) : '') + '</span>' +
+          '</span>' +
+          '<span class="wf-comms-wa-row-preview">' + escapeHtml(it.lastMessageText || '') + '</span>' +
+        '</span>' +
+        (it.itemCount > 1
+          ? '<span class="wf-comms-wa-row-badge count wi-count-badge danger wi-badge-pop">' + (it.itemCount > 99 ? '99+' : it.itemCount) + '</span>'
+          : '<span class="wf-comms-wa-row-badge"></span>') +
+        '<button type="button" class="wf-comms-wa-row-delete" data-chat-id="' + escapeHtml(it.chatId) + '" aria-label="Remove from Important WhatsApp" title="Remove from Important WhatsApp">' +
+          '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>' +
+        '</button>' +
+      '</div>'
+    );
+  }
+  async function handleWaRowDelete(btn) {
+    const chatId = btn.dataset.chatId;
+    if (!confirm('Remove this conversation from Important WhatsApp?\n\nThis only hides it here - nothing is deleted, and it reappears if they message again about something needing your attention.')) return;
+    const row = btn.closest('.wf-comms-wa-row');
+    if (row) { row.style.pointerEvents = 'none'; row.style.opacity = '0.5'; }
+    try {
+      const r = await postJson('/api/workforce/hr-assistant/whatsapp-dismiss', { chatId });
+      if (!r.ok) throw new Error((r.data && r.data.error) || 'Could not remove.');
+      if (row) dismissCard(row);
+      showActionToast('Removed from Important WhatsApp');
+      // Re-fetch AFTER the delete has actually completed and re-render
+      // whichever WhatsApp list is on screen, so a slightly-stale
+      // request already in flight when the delete happened (e.g. the
+      // View All page's own background refresh) can never win the race
+      // and silently re-add the row this just removed.
+      const fresh = await fetch('/api/workforce/hr-assistant/communications-summary').then((res) => res.json()).catch(() => null);
+      if (fresh) {
+        pageDataCache.comms = fresh;
+        if (panelView === 'important') renderWaList(commsWaList, fresh.whatsappItems || []);
+        else if (panelView === 'waAll') renderWaList(commsWaAllList, fresh.whatsappItems || []);
+        setCountBadge(todayUpdatesBadge, (fresh.importantMailsCount || 0) + (fresh.importantWhatsappCount || 0) + (fresh.remindersPendingCount || 0));
+        setCountBadge(commsHeadBadge, (fresh.importantMailsCount || 0) + (fresh.importantWhatsappCount || 0));
+        if (commsHeadSubtitle && panelView === 'important') {
+          commsHeadSubtitle.textContent = (fresh.importantMailsCount || 0) + ' important mails · ' + (fresh.importantWhatsappCount || 0) + ' important WhatsApp';
+        }
+      }
+    } catch (err) {
+      if (row) { row.style.pointerEvents = ''; row.style.opacity = ''; }
+      showActionToast(err.message || 'Could not remove - try again.');
+    }
+  }
+  // Binds both the row-tap (open conversation) and the delete icon for
+  // whichever list container just got new rows (the mixed Important
+  // Communications page, or the full-screen View All page).
+  function wireWaRows(container) {
+    if (!container) return;
+    container.querySelectorAll('.wf-comms-wa-row').forEach((row) => {
+      row.addEventListener('click', () => openConversationPage(row.dataset.chatId));
+    });
+    container.querySelectorAll('.wf-comms-wa-row-delete').forEach((btn) => {
+      btn.addEventListener('click', (e) => { e.stopPropagation(); handleWaRowDelete(btn); });
+    });
+  }
+  function renderWaList(container, items) {
+    if (!container) return;
+    if (!items.length) {
+      container.innerHTML = '<div class="wf-comms-empty">Nothing pending - all clear!</div>';
+      return;
+    }
+    container.innerHTML = items.map((it, i) => buildWaRowHtml(it, i)).join('');
+    wireWaRows(container);
+  }
+
   function renderCommsData(data) {
     const total = (data.importantMailsCount || 0) + (data.importantWhatsappCount || 0);
     setCountBadge(commsHeadBadge, total);
@@ -1332,32 +1420,24 @@
     // a plain, honest empty state rather than a fake/mocked list.
     if (commsMailCard) commsMailCard.textContent = 'Mail integration coming soon.';
 
-    const items = data.whatsappItems || [];
-    if (commsWaList) {
-      if (!items.length) {
-        commsWaList.innerHTML = '<div class="wf-comms-empty">Nothing pending - all clear!</div>';
-      } else {
-        commsWaList.innerHTML = items.map((it, i) =>
-          '<div class="wf-comms-wa-row" data-chat-id="' + escapeHtml(it.chatId) + '" role="button" tabindex="0">' +
-            waAvatarHtml(it.name, i) +
-            '<span class="wf-comms-wa-row-main">' +
-              '<span class="wf-comms-wa-row-top">' +
-                '<span class="wf-comms-wa-row-name">' + escapeHtml(it.name || it.chatId) + '</span>' +
-                '<span class="wf-comms-wa-row-time">' + (it.lastMessageTime ? formatCommsTime(it.lastMessageTime) : '') + '</span>' +
-              '</span>' +
-              '<span class="wf-comms-wa-row-preview">' + escapeHtml(it.lastMessageText || '') + '</span>' +
-            '</span>' +
-            (it.itemCount > 1
-              ? '<span class="wf-comms-wa-row-badge count wi-count-badge danger wi-badge-pop">' + (it.itemCount > 99 ? '99+' : it.itemCount) + '</span>'
-              : '<span class="wf-comms-wa-row-badge"></span>') +
-          '</div>'
-        ).join('');
-        commsWaList.querySelectorAll('.wf-comms-wa-row').forEach((row) => {
-          row.addEventListener('click', () => openConversationPage(row.dataset.chatId));
-        });
-      }
-    }
+    renderWaList(commsWaList, data.whatsappItems || []);
   }
+
+  // Full-screen "View All" (speed/UX fix: the button existed but had no
+  // click handler at all) - same data already in pageDataCache.comms
+  // (warm from the badge poll almost always), same row rendering as the
+  // mixed Important Communications page, just without the mails section.
+  function showWaAll() {
+    setPanelView('waAll');
+    const cached = pageDataCache.comms;
+    if (cached) renderWaList(commsWaAllList, cached.whatsappItems || []);
+    else if (commsWaAllList) commsWaAllList.innerHTML = '<div class="wf-skeleton-list"><div class="wf-skeleton-row"></div><div class="wf-skeleton-row"></div><div class="wf-skeleton-row"></div></div>';
+    fetch('/api/workforce/hr-assistant/communications-summary').then((r) => r.json()).then((data) => {
+      pageDataCache.comms = data;
+      if (panelView === 'waAll') renderWaList(commsWaAllList, data.whatsappItems || []);
+    }).catch(() => { /* keep showing whatever's already rendered */ });
+  }
+  if (commsWaViewAll) commsWaViewAll.addEventListener('click', showWaAll);
 
   // Stale-while-revalidate (speed fix): renders whatever's already cached
   // (usually warm from the 30s badge poll) instantly, with no spinner,
@@ -1699,6 +1779,7 @@
     commsBackBtn.addEventListener('click', () => {
       if (panelView === 'conversation') showImportant();
       else if (panelView === 'reminderDetail') showReminders();
+      else if (panelView === 'waAll') showImportant();
       else if (panelView === 'important' || panelView === 'reminders') showHub();
       else showHome();
     });

@@ -427,6 +427,28 @@ async function listActionableWhatsappItems() {
   return rows;
 }
 
+// Owner-only manual "delete" of one row from Important WhatsApp (per
+// direct instruction: the ONLY way a row leaves this list besides the
+// owner resolving its individual items one at a time - send/decline an
+// approval, mark a follow-up/document done, send/skip a draft - is this
+// explicit action; SUBH itself never removes anything here on its own).
+// Clears every one of this chat's outstanding items across all 4
+// underlying stores at once, which is exactly what naturally drops a row
+// out of listActionableWhatsappItems above - never a separate "hidden"
+// flag to keep in sync, and never touches the real message thread
+// (getWhatsappConversation's own history), only the actionable items.
+async function dismissWhatsappItem(chatIdRaw) {
+  const chatId = whatsapp.normalizePhone(chatIdRaw);
+  const [approvals, drafts] = await Promise.all([listPendingApprovals(), listPendingDrafts()]);
+  const myApprovals = approvals.filter((a) => whatsapp.normalizePhone(a.phone) === chatId);
+  await Promise.all(myApprovals.map((a) => removePendingApproval(a.id)));
+  if (drafts.some((d) => whatsapp.normalizePhone(d.contactId) === chatId)) {
+    await removePendingDraft(chatId);
+  }
+  await clearOpenFollowup(chatId);
+  return true;
+}
+
 // Full detail for one WhatsApp NUMBER - the real message-by-message
 // transcript (appendConvoHistory's own store, both directions) plus
 // EVERY outstanding item for it, as arrays, never a single picked-first
@@ -853,7 +875,14 @@ async function resolveFollowupsForMemory(memory) {
 // (workforceRoutes.js's chat route, see handleApprovalCommand).
 const PENDING_APPROVAL_PREFIX = 'wa-pending-approval:';
 const PENDING_APPROVAL_IDS_KEY = 'wa-pending-approval-ids';
-const PENDING_APPROVAL_TTL_SECONDS = 24 * 60 * 60;
+// Found live - a real HUGE bug (917278793115 and others): this used to
+// carry a 24h Redis TTL, so a pending approval the owner hadn't gotten to
+// yet would silently vanish from Important WhatsApp with NO action from
+// anyone and no trace - exactly the "SUBH deletes things on its own"
+// behavior that must never happen. A pending approval now lives until the
+// owner explicitly approves/declines it (executeApprovalSend/Reject) or
+// deletes the row from Important WhatsApp (dismissWhatsappItem below) -
+// never a silent timeout.
 
 async function savePendingApproval(approval) {
   const redis = getClient();
@@ -861,14 +890,15 @@ async function savePendingApproval(approval) {
   const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
   const record = Object.assign({}, approval, { id, createdAt: Date.now() });
   try {
-    await redis.set(PENDING_APPROVAL_PREFIX + id, JSON.stringify(record), { ex: PENDING_APPROVAL_TTL_SECONDS });
+    await redis.set(PENDING_APPROVAL_PREFIX + id, JSON.stringify(record));
     await redis.sadd(PENDING_APPROVAL_IDS_KEY, id);
   } catch (err) { /* best effort */ }
   return id;
 }
-// Lazily prunes ids whose record has already expired (native Redis TTL)
-// instead of a separate sweep job - the id set itself has no TTL, so a
-// stale id just gets dropped here the next time anyone lists.
+// Lazily prunes ids whose record is missing (e.g. a key deleted directly
+// in Redis outside the app) - the id set itself has no TTL, and neither
+// does any individual record anymore (see the comment above), so this is
+// just defensive cleanup, never the normal way an id disappears.
 // Batched (one MGET for every id, not one GET per id in a sequential
 // loop) - speed fix: this fed listActionableWhatsappItems/
 // communications-summary (the Important Communications page) and used to
@@ -3728,6 +3758,9 @@ module.exports = {
   listSystemNotices,
   dismissSystemNotices,
   listActionableWhatsappItems,
+  dismissWhatsappItem,
+  savePendingApproval,
+  removePendingApproval,
   getWhatsappConversation,
   // Exported for scripts/check-whatsapp-engine.js only (a regression
   // baseline, added alongside the Phase 1 UI work) - no behavior change,

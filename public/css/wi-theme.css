@@ -1603,6 +1603,7 @@ body { background: var(--wi-bg); }
   border-radius: var(--wi-r-card); box-shadow: var(--wi-sh-card); background: var(--wi-surface);
   padding: 11px 12px; cursor: pointer; transition: transform .18s ease;
   animation: mPop .3s cubic-bezier(.2,.7,.2,1) both;
+  overflow: hidden;
 }
 .wf-comms-wa-row:active { transform: scale(.98); }
 .wf-comms-wa-row-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
@@ -1617,6 +1618,17 @@ body { background: var(--wi-bg); }
    the shared .wi-count-badge component (see its own comment near
    .wf-convo-action-group) applied alongside this class in the markup. */
 .wf-comms-wa-row-badge.count { width: auto; margin-top: 0; align-self: center; }
+/* Small manual-delete icon (per direct instruction: the ONLY way a row
+   leaves Important WhatsApp besides resolving its items one at a time -
+   SUBH never removes a row here on its own). Deliberately tiny/quiet,
+   not a primary action - stopPropagation keeps it from also opening the
+   conversation (see hrAssistant.js). */
+.wf-comms-wa-row-delete {
+  border: none; background: transparent; color: var(--wi-faint); flex-shrink: 0; cursor: pointer;
+  width: 26px; height: 26px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+  transition: background-color .15s ease, color .15s ease;
+}
+.wf-comms-wa-row-delete:active { background: var(--wi-red-50); color: var(--wi-red-700); }
 .wf-comms-empty {
   text-align: center; padding: 18px 10px; font-size: 0.78rem; font-weight: 600; color: var(--wi-faint);
 }
@@ -1671,10 +1683,11 @@ body { background: var(--wi-bg); }
   display: flex; flex-direction: column; gap: 10px; animation: mUp .4s cubic-bezier(.2,.7,.2,1) both;
   overflow: hidden;
 }
-/* Fades + collapses ONE card out of the list on a successful action -
+/* Fades + collapses ONE card/row out of a list on a successful action -
    never a re-render of the whole list (speed/UX fix: see runButtonAction
-   in hrAssistant.js). */
-.wf-convo-action-group.wf-card-exit { animation: wiCardExit .3s ease forwards; }
+   and dismissCard in hrAssistant.js). Generic (not scoped to one card
+   class) so it also works for a plain list row like .wf-comms-wa-row. */
+.wf-card-exit { animation: wiCardExit .3s ease forwards; }
 @keyframes wiCardExit {
   from { opacity: 1; max-height: 420px; margin-bottom: 10px; }
   to { opacity: 0; max-height: 0; margin-bottom: 0; padding-top: 0; padding-bottom: 0; transform: scale(.97); }

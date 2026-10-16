@@ -433,12 +433,67 @@ async function checkAsync(label, fn) {
   });
 
   console.log('='.repeat(70));
+  console.log('LIVE BUG FIX: Important WhatsApp rows must never silently disappear on their own - only an explicit owner delete, never a timeout');
+  console.log('='.repeat(70));
+  await checkAsync('savePendingApproval no longer sets a Redis TTL (found live: a 24h TTL silently expired real pending approvals out of Important WhatsApp with zero owner action - exactly the "SUBH deletes things on its own" bug reported)', async () => {
+    const { Redis } = require('@upstash/redis');
+    const redis = new Redis({
+      url: process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL,
+      token: process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN
+    });
+    const id = await whatsappAssistant.savePendingApproval({
+      phone: TEST_PHONE, name: 'Test', requestText: 'test', dataRequestSummary: 'TEST - safe to ignore',
+      lang: 'english', preparedReplyText: 'test reply', preparedCard: null, preparedError: null
+    });
+    const ttl = await redis.ttl('wa-pending-approval:' + id);
+    await whatsappAssistant.removePendingApproval(id);
+    return ttl === -1; // Redis TTL command: -1 means the key exists with no expiry at all
+  });
+  await checkAsync('dismissWhatsappItem (the new manual delete icon) clears every pending approval for a chat at once - the ONLY way a row leaves Important WhatsApp besides resolving each item individually', async () => {
+    const id1 = await whatsappAssistant.savePendingApproval({
+      phone: TEST_PHONE, name: 'Test', requestText: 'a', dataRequestSummary: 'TEST - safe to ignore',
+      lang: 'english', preparedReplyText: 'a', preparedCard: null, preparedError: null
+    });
+    const id2 = await whatsappAssistant.savePendingApproval({
+      phone: TEST_PHONE, name: 'Test', requestText: 'b', dataRequestSummary: 'TEST - safe to ignore',
+      lang: 'english', preparedReplyText: 'b', preparedCard: null, preparedError: null
+    });
+    await whatsappAssistant.dismissWhatsappItem(TEST_PHONE);
+    const remaining = await whatsappAssistant.listPendingApprovals();
+    return !remaining.some((a) => a.id === id1 || a.id === id2);
+  });
+
+  console.log('='.repeat(70));
   console.log('WhatsApp conversation header never shows the internal "The sender" placeholder');
   console.log('='.repeat(70));
   await checkAsync('getWhatsappConversation for a number with no real data falls back to the number, never the literal "The sender" placeholder', async () => {
     const convo = await whatsappAssistant.getWhatsappConversation(TEST_PHONE);
     return convo.name !== 'The sender';
   });
+
+  // Cleanup - found live: executeApprovalSend's draft-mode branch always
+  // calls the real logInboxEvent (correct in production - every approval
+  // decision belongs in the real audit trail), which means the
+  // executeApprovalSend tests above (TEST_PHONE, draft mode since real
+  // sending is off locally) were quietly leaving real entries in the
+  // owner's actual WhatsApp inbox summary on every single suite run.
+  // Sweeps them back out by TEST_PHONE - the one identifiable marker -
+  // never touching any real sender's entries.
+  try {
+    const { Redis } = require('@upstash/redis');
+    const redis = new Redis({
+      url: process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL,
+      token: process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN
+    });
+    const raw = await redis.lrange('wa-inbox-log', 0, 999);
+    const parsed = raw.map((r) => (typeof r === 'string' ? JSON.parse(r) : r));
+    const clean = parsed.filter((e) => e.chatId !== TEST_PHONE);
+    if (clean.length !== parsed.length) {
+      await redis.del('wa-inbox-log');
+      for (let i = clean.length - 1; i >= 0; i--) await redis.lpush('wa-inbox-log', JSON.stringify(clean[i]));
+      console.log('Cleaned up ' + (parsed.length - clean.length) + ' test-created inbox-log entry(ies) for TEST_PHONE.');
+    }
+  } catch (err) { /* best effort - never fail the suite over cleanup */ }
 
   console.log('='.repeat(70));
   console.log(pass + '/' + (pass + fail) + ' passed' + (fail ? ', ' + fail + ' FAILED' : ''));
