@@ -371,6 +371,61 @@ async function checkAsync(label, fn) {
   });
 
   console.log('='.repeat(70));
+  console.log('LIVE BUG RECURRENCE (917278793115, 16/10 17:42-17:54): the fix above still went silent on live - replays against the REAL decision path with a REAL doj Date, not a mock');
+  console.log('='.repeat(70));
+  // The test above used doj: null for both mock candidates, so it never
+  // actually executed the line that broke live: tenureLabel(doj, ...)
+  // calling doj.getUTCFullYear(). A REAL candidate's doj is a Date when it
+  // comes straight off the directory, but savePendingDisambiguation
+  // JSON.stringify's the candidate list into Redis and getPendingDisambiguation
+  // JSON.parse's it back - JSON has no Date type, so it round-trips as a
+  // plain ISO string. "Ayan Biswas" then resolved correctly, the pending
+  // disambiguation was cleared, the owner was told "sent, no approval
+  // needed" - and then buildGeneralDetailsReply threw on the stringified
+  // doj, which decideAutoReply's caller (pollOnce's actOnOfficialTurn)
+  // swallowed with a bare `.catch(() => null)`, so NOTHING was ever sent
+  // to the real sender. This test uses the ACTUAL "Ayan Biswas"/"Ayan Das"
+  // records from the real company directory (both exist for real - see
+  // employeeService.getEmployeeData), saves them through the REAL
+  // savePendingDisambiguation round trip (so doj genuinely becomes a
+  // string, exactly like production), then calls the REAL decideAutoReply
+  // - the same function pollOnce calls - never resolveDisambiguationReply
+  // directly, and never pre-seeding a shortcut: this is the actual decision
+  // path, with the actual Redis round trip, exercising the actual crash.
+  await checkAsync('setup: real "Ayan Biswas"/"Ayan Das" directory records exist and have a real doj Date (not null) - otherwise this test cannot reproduce the live bug', async () => {
+    const data = await employeeService.getEmployeeData();
+    const list = data.employees || data;
+    const biswas = list.find((e) => e.name === 'Ayan Biswas' && e.status !== 'INACTIVE');
+    const das = list.find((e) => e.name === 'Ayan Das' && e.status !== 'INACTIVE');
+    return Boolean(biswas) && Boolean(das) && biswas.doj instanceof Date && das.doj instanceof Date;
+  });
+  await checkAsync('THE LIVE RECURRENCE: "Ayan Biswas" answering a pending disambiguation built from REAL directory records (real doj Dates, round-tripped through Redis) still gets a real reply, not silence', async () => {
+    const data = await employeeService.getEmployeeData();
+    const list = data.employees || data;
+    const realCandidates = ['Ayan Biswas', 'Ayan Das'].map((n) => {
+      const e = list.find((x) => x.name === n && x.status !== 'INACTIVE');
+      return { employeeId: e.employeeId, name: e.name, designation: e.designation, department: e.department, contactNumber: e.contactNumber, status: e.status, doj: e.doj, gender: e.gender };
+    });
+    // Real save/load round trip (not a hand-built object) - this is what
+    // actually turns doj from a Date into a string in production.
+    await whatsappAssistant.savePendingDisambiguation(TEST_PHONE, { candidates: realCandidates, lang: 'banglish', hadTypo: false, attempts: 1 });
+    const reloaded = await whatsappAssistant.getPendingDisambiguation(TEST_PHONE);
+    if (typeof reloaded.candidates[0].doj !== 'string') return false; // the round trip itself didn't reproduce the live shape - test is invalid
+    const d = await whatsappAssistant.decideAutoReply({ phone: TEST_PHONE, name: 'Test', firstName: 'Test', text: 'Ayan Biswas', isGroup: false, history: [{ direction: 'in', text: 'Ayan k?', ts: Date.now() - 60000 }, { direction: 'out', text: 'question', ts: Date.now() - 55000 }] });
+    return Boolean(d) && Boolean(d.replyText) && d.replyText.includes('Ayan Biswas') && d.replyText.includes('Civil (Plot-B) Finishing');
+  });
+  await checkAsync('cleanup: TEST_PHONE pending disambiguation cleared after the real-directory replay above', async () => {
+    await whatsappAssistant.clearPendingDisambiguation(TEST_PHONE);
+    const loaded = await whatsappAssistant.getPendingDisambiguation(TEST_PHONE);
+    return loaded === null;
+  });
+  await checkAsync('STRUCTURAL SAFETY NET: tenureLabel never throws on a string doj (the exact live crash) - returns a sensible label instead', async () => {
+    const past = new Date(Date.now() - 400 * 24 * 60 * 60 * 1000).toISOString();
+    const label = whatsappAssistant.buildGeneralDetailsReply({ name: 'Ayan Biswas', designation: 'JR. ENGINEER', department: 'CIVIL (PLOT-B) FINISHING', doj: past }, 'banglish', false, new Date());
+    return typeof label === 'string' && label.length > 0;
+  });
+
+  console.log('='.repeat(70));
   console.log('Natural casing of designation/department in reply sentences (report tables/cards keep the raw directory value - only reply templates are tidied)');
   console.log('='.repeat(70));
   check('naturalizeDirectoryValue expands "DEPT" to the natural lowercase word "department"', whatsappAssistant.naturalizeDirectoryValue('HR DEPT') === 'HR department');

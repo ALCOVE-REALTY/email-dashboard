@@ -1420,7 +1420,17 @@ const TENURE_UNIT = {
 };
 function tenureLabel(doj, now, lang) {
   if (!doj) return null;
-  const totalMonths = (now.getUTCFullYear() - doj.getUTCFullYear()) * 12 + (now.getUTCMonth() - doj.getUTCMonth());
+  // doj arrives as a real Date when called right off a fresh employee
+  // record, but as a plain ISO string when the candidate came back out of
+  // Redis (savePendingDisambiguation JSON.stringify's it, and JSON.parse
+  // never revives a Date) - found live: a disambiguation-resolved reply
+  // ("Ayan Biswas") threw here (doj.getUTCFullYear is not a function),
+  // which decideAutoReply's caller swallowed silently, so NOTHING was ever
+  // sent back. Normalized here so either shape works, at the one place
+  // that actually needs doj to be a Date.
+  const dojDate = doj instanceof Date ? doj : new Date(doj);
+  if (isNaN(dojDate.getTime())) return null;
+  const totalMonths = (now.getUTCFullYear() - dojDate.getUTCFullYear()) * 12 + (now.getUTCMonth() - dojDate.getUTCMonth());
   if (totalMonths < 1) return null;
   const fn = TENURE_UNIT[lang] || TENURE_UNIT.english;
   if (totalMonths < 12) return fn(totalMonths, false);
@@ -3117,6 +3127,20 @@ function hasRecentIncomingMessage(history) {
   return (history || []).some((h) => h.direction === 'in' && h.ts >= cutoff);
 }
 
+// Last-resort reply for when decideAutoReply itself throws (see
+// actOnOfficialTurn in pollOnce) - found live: a bug deep in one specific
+// branch (disambiguation-resolved tenure lookup) threw, and the caller's
+// bare `.catch(() => null)` turned that into total silence - sender got
+// no reply, nothing was logged, no trace anywhere. Never again: ANY
+// decideAutoReply failure, whatever the cause, now falls back to this
+// fixed, non-AI-drafted line (deliberately not calling the model again
+// from inside an error path) instead of nothing.
+const AUTOREPLY_ERROR_FALLBACK = {
+  banglish: 'Apnar message peyechi. Ekhon reply toiri korte ektu samossa hocche, Subhodeep-ke ekhoni janiye dicchi - shighroi personally update pabe.',
+  hinglish: 'Aapka message mil gaya. Abhi reply taiyar karne mein thodi dikkat ho rahi hai, Subhodeep ko turant bata raha hoon - jaldi personally update milega.',
+  english: "I've received your message. I'm having trouble preparing a reply right now, so I've let Subhodeep know directly - you'll get a personal update shortly."
+};
+
 // The single decision point for spec section 3.1 (a/b/c) - called for
 // EVERY official message (1:1 official, or a tagged group message).
 // phone is null for groups (sender unidentified there, case b never
@@ -3535,7 +3559,30 @@ async function pollOnce() {
     }
     await appendConvoHistory(contactId, 'in', text);
 
-    const decision = await decideAutoReply({ phone: contactId, name, firstName, text, isGroup: false, history: history.slice(-10) }).catch(() => null);
+    // Never silently drop a real message, whatever the cause - found live
+    // (917278793115, see tenureLabel's own comment): decideAutoReply threw
+    // deep in one branch, and the old `.catch(() => null)` here turned
+    // that into total silence (no reply, no log, no owner alert, no
+    // trace). Any future failure here - this bug or a new one - now still
+    // gets a safe generic reply out, sent through the exact same
+    // scheduling/logging path as every other reply below, plus an owner
+    // alert and a console error for debugging.
+    let decision;
+    try {
+      decision = await decideAutoReply({ phone: contactId, name, firstName, text, isGroup: false, history: history.slice(-10) });
+    } catch (err) {
+      console.error('[whatsapp] decideAutoReply threw for ' + contactId + ':', err);
+      const lang = detectLang(text);
+      decision = {
+        case: 'holding',
+        replyText: AUTOREPLY_ERROR_FALLBACK[lang] || AUTOREPLY_ERROR_FALLBACK.english,
+        summaryForOwner: '[auto-reply error, generic fallback sent] ' + text.slice(0, 160)
+      };
+      await postOwnerNotification(
+        '⚠️ ' + name + ' (' + contactId + ')-er message-e auto-reply toiri korte giye error hoyeche: ' +
+        String((err && err.message) || err).slice(0, 160) + ' - generic fallback reply pathano hoyeche, code check korun.'
+      ).catch(() => {});
+    }
     if (decision && decision.case === 'automatic') {
       // A real human message on this official number by default (see
       // classify()) - but THIS one reads like an automated/non-human
