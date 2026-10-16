@@ -1665,8 +1665,8 @@ body { background: var(--wi-bg); }
    place that ever writes the number itself (99+ cap, hide-at-zero). */
 .wi-count-badge {
   display: inline-flex; align-items: center; justify-content: center;
-  height: 20px; min-width: 20px; padding: 0 6px; border-radius: 999px;
-  font-size: 11px; font-weight: 800; line-height: 20px; flex-shrink: 0; white-space: nowrap;
+  height: 16px; min-width: 16px; padding: 0 5px; border-radius: 999px;
+  font-size: 9.5px; font-weight: 700; line-height: 16px; flex-shrink: 0; white-space: nowrap;
 }
 .wi-count-badge[hidden] { display: none; }
 .wi-count-badge.danger { background: #F04438; color: #FFFFFF; }
