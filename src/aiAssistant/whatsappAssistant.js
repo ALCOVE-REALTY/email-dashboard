@@ -860,17 +860,24 @@ async function savePendingApproval(approval) {
 // Lazily prunes ids whose record has already expired (native Redis TTL)
 // instead of a separate sweep job - the id set itself has no TTL, so a
 // stale id just gets dropped here the next time anyone lists.
+// Batched (one MGET for every id, not one GET per id in a sequential
+// loop) - speed fix: this fed listActionableWhatsappItems/
+// communications-summary (the Important Communications page) and used to
+// cost one network round trip per pending approval, sequentially.
 async function listPendingApprovals() {
   const redis = getClient();
   if (!redis) return [];
   try {
     const ids = await redis.smembers(PENDING_APPROVAL_IDS_KEY);
+    if (!ids.length) return [];
+    const raws = await redis.mget(...ids.map((id) => PENDING_APPROVAL_PREFIX + id));
     const out = [];
-    for (const id of ids) {
-      const raw = await redis.get(PENDING_APPROVAL_PREFIX + id);
-      if (!raw) { await redis.srem(PENDING_APPROVAL_IDS_KEY, id); continue; }
-      out.push(typeof raw === 'string' ? JSON.parse(raw) : raw);
-    }
+    const missingIds = [];
+    raws.forEach((raw, i) => {
+      if (!raw) { missingIds.push(ids[i]); return; }
+      try { out.push(typeof raw === 'string' ? JSON.parse(raw) : raw); } catch (err) { missingIds.push(ids[i]); }
+    });
+    if (missingIds.length) await redis.srem(PENDING_APPROVAL_IDS_KEY, ...missingIds);
     return out.sort((a, b) => a.createdAt - b.createdAt);
   } catch (err) { return []; }
 }
@@ -2896,6 +2903,32 @@ const DATA_REQUEST_HOLDING_REPLY = {
   english: "I'm SUBH, Subhodeep's HR Assistant. I'll check with Subhodeep and share the information you need shortly."
 };
 
+// ---------------- AI disclosure on the first reply of a conversation ----------------
+// A short, one-time identity line prepended to the first auto-reply of a
+// "new" conversation (no incoming message in the last 24h, in EITHER a
+// 1:1 chat or a tagged group - both now build the same
+// wa-convo-history:<chatId> record, see the group loop in pollOnce).
+// Deliberately a plain string prefix, not another AI-drafted sentence -
+// the wording must never vary. Skipped whenever the reply already
+// introduces SUBH by name (IDENTITY_REPLY/IDENTITY_CONFIRM_REPLY/
+// DATA_REQUEST_HOLDING_REPLY all already open with exactly this) -
+// checked structurally against the real text about to be sent, never by
+// hardcoding which `case` values are exempt, so it can't silently drift
+// out of sync if one of those templates' wording ever changes.
+const AI_DISCLOSURE_LINE = {
+  banglish: 'Ami SUBH, Subhodeep-er HR Assistant.',
+  hinglish: 'Main SUBH hoon, Subhodeep ka HR Assistant.',
+  english: "I'm SUBH, Subhodeep's HR Assistant."
+};
+const ALREADY_INTRODUCES_SUBH_RE = /\b(i'?m subh|main subh|ami subh)\b/i;
+// Only the last ~10 messages are ever passed to decideAutoReply (see
+// pollOnce) - enough to tell "nothing from them recently" from "mid-
+// conversation" without a second Redis round trip just for this check.
+function hasRecentIncomingMessage(history) {
+  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+  return (history || []).some((h) => h.direction === 'in' && h.ts >= cutoff);
+}
+
 // The single decision point for spec section 3.1 (a/b/c) - called for
 // EVERY official message (1:1 official, or a tagged group message).
 // phone is null for groups (sender unidentified there, case b never
@@ -2903,9 +2936,8 @@ const DATA_REQUEST_HOLDING_REPLY = {
 // a classification/lookup failure here falls through to case 'holding'
 // the same as "no match found" would, since a safe generic holding
 // reply is always the correct fallback.
-// history: recent messages in THIS chat (1:1 only, see pollOnce) -
-// omitted entirely for groups, which have no per-sender history.
-async function decideAutoReply({ phone, name, firstName, text, isGroup, history }) {
+// history: recent messages in THIS chat (1:1 AND groups, see pollOnce).
+async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, history }) {
   if (!isGroup && IDENTITY_QUESTION_RE.test(text)) {
     const lang = detectLang(text);
     return { case: 'acknowledged', replyText: IDENTITY_REPLY[lang] || IDENTITY_REPLY.english, summaryForOwner: null };
@@ -3074,6 +3106,21 @@ async function decideAutoReply({ phone, name, firstName, text, isGroup, history 
   }
   const followupCount = await incrementFollowupCount(phone);
   return { case: 'holding', replyText, summaryForOwner: text.slice(0, 160), topicLabel, topic: classification.topic, followupCount };
+}
+
+// Thin wrapper around decideAutoReplyCore - prepends the one-time AI
+// disclosure line (see AI_DISCLOSURE_LINE above) to whatever the core
+// decision logic produced, rather than threading it through every one of
+// that function's ~15 return points. Applies uniformly to every case,
+// 1:1 or group, since "the first auto-reply in a new conversation" isn't
+// specific to any one classification outcome.
+async function decideAutoReply(params) {
+  const decision = await decideAutoReplyCore(params);
+  if (decision && decision.replyText && !ALREADY_INTRODUCES_SUBH_RE.test(decision.replyText) && !hasRecentIncomingMessage(params.history)) {
+    const lang = detectLang(params.text);
+    decision.replyText = (AI_DISCLOSURE_LINE[lang] || AI_DISCLOSURE_LINE.english) + ' ' + decision.replyText;
+  }
+  return decision;
 }
 
 // ---------------- Incoming document handling (spec item 5b/5c) ----------------
@@ -3400,8 +3447,17 @@ async function pollOnce() {
         if (!text || !(await isMyMention(text))) continue; // discarded in memory, nothing stored beyond the id below
         results.groupMentionsFound++;
         if (!autoReplyOn) continue;
-        const decision = await decideAutoReply({ phone: null, name, text, isGroup: true }).catch(() => null);
+        // Same wa-convo-history:<chatId> record 1:1 chats use (groupId in
+        // place of a phone number) - purely so the AI-disclosure wrapper
+        // can tell "no message in this group in the last 24h" from an
+        // ongoing thread; nothing inside decideAutoReplyCore's group
+        // branch ever reads this history back as reply context (it still
+        // uses generateGroupDraft, unchanged).
+        const groupHistory = await getConvoHistory(groupId, CONVO_HISTORY_MAX);
+        await appendConvoHistory(groupId, 'in', text);
+        const decision = await decideAutoReply({ phone: null, name, text, isGroup: true, history: groupHistory.slice(-10) }).catch(() => null);
         if (decision && decision.replyText) {
+          await appendConvoHistory(groupId, 'out', decision.replyText);
           await scheduleAutoSend({
             chatId: groupId, isGroup: true, name,
             replyText: decision.replyText, case: decision.case, memoryId: decision.memoryId || null,
@@ -3537,5 +3593,10 @@ module.exports = {
   PERSON_NOT_FOUND_REPLY,
   CONTACT_NUMBER_LINE,
   DISAMBIGUATION_QUESTION,
-  TYPO_NOTE
+  TYPO_NOTE,
+  // Exported for scripts/check-whatsapp-engine.js only - the AI-disclosure
+  // first-reply fix.
+  AI_DISCLOSURE_LINE,
+  ALREADY_INTRODUCES_SUBH_RE,
+  hasRecentIncomingMessage
 };

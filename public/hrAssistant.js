@@ -1164,13 +1164,33 @@
     );
   }
 
+  // ---------- Shared stale-while-revalidate cache (speed fix) ----------
+  // communications-summary and reminders?filter=X are each fetched from
+  // several places (the 30s badge poll, the Today's Updates hub, the
+  // Important Communications/Reminders pages themselves) - previously
+  // every one of those re-fetched from scratch with a blocking spinner.
+  // This cache lets whichever call lands first (usually the badge poll,
+  // which already fires the instant the panel opens) seed instantly-
+  // renderable data for the others; every path still re-fetches fresh
+  // data in the background and re-renders when it lands, so nothing here
+  // is ever more than one poll cycle stale.
+  const pageDataCache = { comms: null, commsAt: 0, reminders: new Map() };
+  // Called after any reminder mutation (done/undo/cancel/snooze/create/
+  // edit) so the next load doesn't render a stale-but-cached pre-mutation
+  // list for a moment before the fresh fetch corrects it.
+  function invalidateReminderCache() {
+    pageDataCache.reminders.clear();
+    pageDataCache.comms = null;
+  }
+
   // ---------- Important Communications (SUBH Phase 1 redesign) ----------
   // Every WhatsApp notification (auto-replied/holding/approval/document)
   // used to land as a free chat bubble via a 30s poll - per direct
   // instruction the main chat is now ONLY the owner's own conversation
   // with SUBH, so this poll just keeps Home's badge count current; the
-  // real content lives in the Important Communications page below,
-  // fetched fresh each time it's opened (loadCommsPage), not from here.
+  // real content lives in the Important Communications page below. It
+  // also keeps pageDataCache.comms warm so that page (and the hub) can
+  // render instantly instead of re-fetching from a blank state.
   let commsPollTimer = null;
   async function pollCommsSummary() {
     let data;
@@ -1179,6 +1199,8 @@
       if (!resp.ok) return;
       data = await resp.json();
     } catch (err) { return; }
+    pageDataCache.comms = data;
+    pageDataCache.commsAt = Date.now();
     const total = (data.importantMailsCount || 0) + (data.importantWhatsappCount || 0) + (data.remindersPendingCount || 0);
     if (todayUpdatesBadge) {
       todayUpdatesBadge.textContent = String(total);
@@ -1186,9 +1208,23 @@
     }
     maybeShowReminderBanner(data.remindersDueNow);
   }
+  // Prefetches the reminders list alongside the comms poll (same cadence,
+  // same "fire immediately on panel open" moment) purely to warm
+  // pageDataCache.reminders - by the time the person actually taps into
+  // Reminders or the hub, the data is very likely already sitting in
+  // cache and renders instantly instead of waiting on a fresh request.
+  async function prefetchRemindersAll() {
+    try {
+      const resp = await fetch('/api/workforce/hr-assistant/reminders?filter=all');
+      if (!resp.ok) return;
+      const data = await resp.json();
+      pageDataCache.reminders.set('all', { data, at: Date.now() });
+    } catch (err) { /* best effort - a real page open will just fetch fresh */ }
+  }
   function startCommsPolling() {
     if (commsPollTimer) return;
     pollCommsSummary();
+    prefetchRemindersAll();
     commsPollTimer = setInterval(pollCommsSummary, 30000);
   }
   function stopCommsPolling() {
@@ -1271,16 +1307,7 @@
     } catch (err) { /* best effort - it'll just show again next load */ }
   }
 
-  async function loadCommsPage() {
-    if (commsWaList) commsWaList.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
-    let data;
-    try {
-      const resp = await fetch('/api/workforce/hr-assistant/communications-summary');
-      data = await resp.json();
-    } catch (err) {
-      data = { importantMailsCount: 0, whatsappItems: [], importantWhatsappCount: 0, systemNotices: [] };
-    }
-
+  function renderCommsData(data) {
     const total = (data.importantMailsCount || 0) + (data.importantWhatsappCount || 0);
     if (commsHeadBadge) {
       commsHeadBadge.textContent = String(total);
@@ -1336,6 +1363,32 @@
         });
       }
     }
+  }
+
+  // Stale-while-revalidate (speed fix): renders whatever's already cached
+  // (usually warm from the 30s badge poll) instantly, with no spinner,
+  // then always still fetches fresh data in the background and re-renders
+  // when it lands - so the page is never more than one poll cycle stale
+  // and a slow/failed fetch never leaves it blank. Only a true cold start
+  // (nothing cached yet) shows the skeleton placeholder.
+  async function loadCommsPage() {
+    if (pageDataCache.comms) {
+      renderCommsData(pageDataCache.comms);
+    } else if (commsWaList) {
+      commsWaList.innerHTML = '<div class="wf-skeleton-list"><div class="wf-skeleton-row"></div><div class="wf-skeleton-row"></div><div class="wf-skeleton-row"></div></div>';
+    }
+    let data;
+    try {
+      const resp = await fetch('/api/workforce/hr-assistant/communications-summary');
+      data = await resp.json();
+      pageDataCache.comms = data;
+      pageDataCache.commsAt = Date.now();
+    } catch (err) {
+      if (pageDataCache.comms) return; // keep showing the still-valid cached render
+      data = { importantMailsCount: 0, whatsappItems: [], importantWhatsappCount: 0, systemNotices: [] };
+    }
+    if (panelView !== 'important') return; // navigated away before the fetch resolved
+    renderCommsData(data);
   }
 
   function showHome() {
@@ -1567,21 +1620,39 @@
     pendingBannerReminders = [];
   }
 
+  function renderHubBadges(comms, remCounts) {
+    const commsTotal = (comms.importantMailsCount || 0) + (comms.importantWhatsappCount || 0);
+    if (hubCommsBadge) { hubCommsBadge.textContent = String(commsTotal); hubCommsBadge.hidden = commsTotal === 0; }
+    if (hubRemindersBadge) { hubRemindersBadge.textContent = String(remCounts.all || 0); hubRemindersBadge.hidden = !remCounts.all; }
+  }
+  // Stale-while-revalidate (speed fix): the comms poll and reminders
+  // prefetch (see startCommsPolling) usually already have both of these
+  // warm by the time someone taps "Today's Updates", so this renders
+  // instantly from cache and only hits the network again in the
+  // background to correct the badges if anything changed since.
   async function showHub() {
     setPanelView('hub');
-    let comms = { importantWhatsappCount: 0, importantMailsCount: 0 };
-    let remCounts = { all: 0 };
+    const cachedRem = pageDataCache.reminders.get('all');
+    if (pageDataCache.comms || cachedRem) {
+      renderHubBadges(pageDataCache.comms || {}, (cachedRem && cachedRem.data.counts) || { all: 0 });
+    }
+    let comms = pageDataCache.comms || { importantWhatsappCount: 0, importantMailsCount: 0 };
+    let remCounts = (cachedRem && cachedRem.data.counts) || { all: 0 };
     try {
       const [commsResp, remResp] = await Promise.all([
         fetch('/api/workforce/hr-assistant/communications-summary').then((r) => r.json()),
         fetch('/api/workforce/hr-assistant/reminders?filter=all').then((r) => r.json())
       ]);
       comms = commsResp;
+      pageDataCache.comms = commsResp;
+      pageDataCache.commsAt = Date.now();
+      pageDataCache.reminders.set('all', { data: remResp, at: Date.now() });
       remCounts = remResp.counts || remCounts;
-    } catch (err) { /* leave zeroed */ }
-    const commsTotal = (comms.importantMailsCount || 0) + (comms.importantWhatsappCount || 0);
-    if (hubCommsBadge) { hubCommsBadge.textContent = String(commsTotal); hubCommsBadge.hidden = commsTotal === 0; }
-    if (hubRemindersBadge) { hubRemindersBadge.textContent = String(remCounts.all || 0); hubRemindersBadge.hidden = !remCounts.all; }
+    } catch (err) {
+      if (pageDataCache.comms || cachedRem) return; // keep the still-valid cached render
+    }
+    if (panelView !== 'hub') return; // navigated away before the fetch resolved
+    renderHubBadges(comms, remCounts);
   }
   if (hubRemindersTile) hubRemindersTile.addEventListener('click', showReminders);
   if (hubCommsTile) hubCommsTile.addEventListener('click', showImportant);
@@ -1635,12 +1706,14 @@
 
   async function completeReminderRow(id, rowEl) {
     await postJson('/api/workforce/hr-assistant/reminders/' + encodeURIComponent(id) + '/done', {});
+    invalidateReminderCache();
     if (rowEl) {
       rowEl.classList.add('completing');
       setTimeout(() => rowEl.remove(), 380);
     }
     showReminderToast('Done ✓', async () => {
       await postJson('/api/workforce/hr-assistant/reminders/' + encodeURIComponent(id) + '/undo', {});
+      invalidateReminderCache();
       loadRemindersPage(activeRemFilter);
     });
     setTimeout(() => loadRemindersPage(activeRemFilter), 450);
@@ -1657,24 +1730,15 @@
     remToastTimer = setTimeout(() => { remToast.hidden = true; }, 5000);
   }
 
-  async function loadRemindersPage(filter) {
-    activeRemFilter = filter || 'all';
-    if (remBanner) remBanner.hidden = true;
-    flushReminderBanner();
-    if (remList) remList.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
-    let data = { items: [], counts: { all: 0, today: 0, upcoming: 0, completed: 0 } };
-    try {
-      const resp = await fetch('/api/workforce/hr-assistant/reminders?filter=' + encodeURIComponent(activeRemFilter));
-      data = await resp.json();
-    } catch (err) { /* leave empty */ }
+  function renderRemindersData(data, filter) {
     remItemsById = new Map((data.items || []).map((r) => [r.id, r]));
     if (commsHeadBadge) { commsHeadBadge.textContent = String(data.counts.all); commsHeadBadge.hidden = !data.counts.all; }
-    if (remSectionBadge) remSectionBadge.textContent = String(activeRemFilter === 'completed' ? data.items.length : data.counts.all);
+    if (remSectionBadge) remSectionBadge.textContent = String(filter === 'completed' ? data.items.length : data.counts.all);
     if (remCompletedBadge) remCompletedBadge.textContent = String(data.counts.completed);
     if (remChips) {
       remChips.querySelectorAll('.wf-rem-chip').forEach((chip) => {
         const f = chip.dataset.filter;
-        chip.setAttribute('aria-pressed', String(f === activeRemFilter));
+        chip.setAttribute('aria-pressed', String(f === filter));
         const countEl = chip.querySelector('.wf-rem-chip-count');
         if (countEl) countEl.textContent = String(data.counts[f] || 0);
       });
@@ -1687,6 +1751,42 @@
         data.items.forEach((r) => remList.appendChild(renderReminderRow(r)));
       }
     }
+  }
+
+  // Stale-while-revalidate (speed fix), same approach as loadCommsPage:
+  // render cached data (if any) instantly with no spinner, always refetch
+  // fresh in the background, and only show the skeleton placeholder on a
+  // true cold start. requestedFilter is captured at call time so a fast
+  // filter-chip switch never lets a slower, now-stale response clobber
+  // whatever filter is actually showing by the time it resolves.
+  async function loadRemindersPage(filter) {
+    activeRemFilter = filter || 'all';
+    if (remBanner) remBanner.hidden = true;
+    flushReminderBanner();
+    const requestedFilter = activeRemFilter;
+    const cached = pageDataCache.reminders.get(requestedFilter);
+    // No skeleton when the list already has real rows (e.g. right after
+    // completeReminderRow's optimistic removal, which invalidates the
+    // cache then reloads) - replacing them with a skeleton would make the
+    // just-completed row flash back into view and then disappear again
+    // once the fresh data arrives. Only a genuine cold load gets one.
+    const hasExistingRender = Boolean(remList && remList.children.length && !remList.querySelector('.wf-skeleton-row'));
+    if (cached) {
+      renderRemindersData(cached.data, requestedFilter);
+    } else if (remList && !hasExistingRender) {
+      remList.innerHTML = '<div class="wf-skeleton-list"><div class="wf-skeleton-row"></div><div class="wf-skeleton-row"></div><div class="wf-skeleton-row"></div></div>';
+    }
+    let data;
+    try {
+      const resp = await fetch('/api/workforce/hr-assistant/reminders?filter=' + encodeURIComponent(requestedFilter));
+      data = await resp.json();
+      pageDataCache.reminders.set(requestedFilter, { data, at: Date.now() });
+    } catch (err) {
+      if (cached) return; // keep showing the still-valid cached render
+      data = { items: [], counts: { all: 0, today: 0, upcoming: 0, completed: 0 } };
+    }
+    if (activeRemFilter !== requestedFilter) return; // filter/page changed before this resolved
+    renderRemindersData(data, requestedFilter);
   }
 
   function showReminders() {
@@ -1750,6 +1850,7 @@
       remSheetSaveBtn.disabled = true;
       const url = editingReminderId ? '/api/workforce/hr-assistant/reminders/' + encodeURIComponent(editingReminderId) : '/api/workforce/hr-assistant/reminders';
       await postJson(url, payload);
+      invalidateReminderCache();
       remSheetSaveBtn.disabled = false;
       closeReminderSheet();
       if (panelView === 'reminderDetail' && editingReminderId) openReminderDetail(editingReminderId);
@@ -1807,6 +1908,7 @@
         b.disabled = true;
         const map = { done: 'done', cancel: 'cancel', undo: 'undo' };
         await postJson('/api/workforce/hr-assistant/reminders/' + encodeURIComponent(id) + '/' + map[action], {});
+        invalidateReminderCache();
         showReminders();
       });
     });
@@ -1822,6 +1924,7 @@
           body = { minutes: Number(which) };
         }
         await postJson('/api/workforce/hr-assistant/reminders/' + encodeURIComponent(id) + '/snooze', body);
+        invalidateReminderCache();
         showReminders();
       });
     });

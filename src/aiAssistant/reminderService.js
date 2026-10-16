@@ -53,19 +53,25 @@ async function getReminder(id) {
     return raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : null;
   } catch (err) { return null; }
 }
-// Lazily prunes ids whose record is missing, same pattern
-// whatsappAssistant.listPendingApprovals already uses.
+// Batched (one MGET for every id, not one GET per id in a sequential
+// loop) - speed fix: this used to be N+1 sequential round trips, which
+// got slower every week since nothing ever deletes an id (see
+// deleteReminder's comment below). Lazily prunes ids whose record is
+// missing, same pattern whatsappAssistant.listPendingApprovals uses.
 async function listRawReminders() {
   const redis = getClient();
   if (!redis) return [];
   try {
     const ids = await redis.smembers(REMINDER_IDS_KEY);
+    if (!ids.length) return [];
+    const raws = await redis.mget(...ids.map((id) => REMINDER_PREFIX + id));
     const out = [];
-    for (const id of ids) {
-      const raw = await redis.get(REMINDER_PREFIX + id);
-      if (!raw) { await redis.srem(REMINDER_IDS_KEY, id); continue; }
-      out.push(typeof raw === 'string' ? JSON.parse(raw) : raw);
-    }
+    const missingIds = [];
+    raws.forEach((raw, i) => {
+      if (!raw) { missingIds.push(ids[i]); return; }
+      try { out.push(typeof raw === 'string' ? JSON.parse(raw) : raw); } catch (err) { missingIds.push(ids[i]); }
+    });
+    if (missingIds.length) await redis.srem(REMINDER_IDS_KEY, ...missingIds);
     return out;
   } catch (err) { return []; }
 }
@@ -224,8 +230,13 @@ function filterReminders(reminders, filter, now) {
 // anything under the "test:" Redis prefix - scripts/check-reminders.js's
 // simulated sources use that prefix precisely so this function can never
 // see them and can never pollute the owner's real list either.
+// Returns the full, now-current reminder list (existing + newly-created +
+// auto-closed) - callers that need "all reminders after syncing" (see
+// listReminders below) reuse this directly instead of paying for a
+// second listRawReminders() round trip for data already in hand.
 async function syncAutoCreatedReminders(now) {
   const existing = await listRawReminders();
+  const byId = new Map(existing.map((r) => [r.id, r]));
   // A LIVE map, updated the moment a new reminder is created below - not a
   // point-in-time snapshot. Found live (while first testing this against
   // real data): wa-open-followups can hold SEVERAL distinct entries for
@@ -250,6 +261,7 @@ async function syncAutoCreatedReminders(now) {
     const r = newReminder(fields);
     await saveReminder(r);
     byKey.set(key, r);
+    byId.set(r.id, r);
   }
 
   for (const f of followups) {
@@ -286,35 +298,59 @@ async function syncAutoCreatedReminders(now) {
 
   // Auto-close: any existing auto-created, still-pending reminder whose
   // source is no longer live gets marked completed - never deleted, so it
-  // still shows correctly under "Completed".
+  // still shows correctly under "Completed". Mutated+saved directly
+  // (rather than markDone, which would re-fetch each one by id) and in
+  // parallel, since `r` here is already the current, in-memory copy.
+  const toClose = [];
   for (const [key, r] of byKey.entries()) {
-    if (r.status === 'pending' && !liveKeys.has(key)) await markDone(r.id, now);
+    if (r.status === 'pending' && !liveKeys.has(key)) toClose.push(r);
   }
+  await Promise.all(toClose.map((r) => {
+    r.status = 'completed';
+    r.completedAt = now.toISOString();
+    return saveReminder(r);
+  }));
+
+  return Array.from(byId.values());
 }
 
+// Speed fix: no longer syncs on every page load (that fanned out to 4
+// other stores plus writes for any newly-discovered item, on every single
+// request) - the scheduler's existing 10s tick now owns syncing (see
+// whatsappPollScheduler.js), so this is a plain, fast read. Up to ~10s
+// staleness is an acceptable trade for an instant page load; a manual
+// create/done/cancel still takes effect immediately since those write
+// straight to Redis and this always reads the current data.
 async function listReminders(filter, now) {
-  await syncAutoCreatedReminders(now);
   const all = await listRawReminders();
   const counts = computeCounts(all, now);
   return { items: filterReminders(all, filter, now), counts };
 }
 
-// Pending, due, not snoozed, not already notified this cycle - claims them
-// (sets notifiedAt) so a 30s poll never re-fires the same reminder. Called
-// from the communications-summary endpoint; also drives the optional
-// WhatsApp-to-self send from whatsappPollScheduler.js's existing tick.
-async function dueReminders(now) {
-  const all = await listRawReminders();
-  const due = all.filter((r) =>
+// Pure - no Redis - used by dueReminders/dueForWhatsapp/getDashboardSnapshot
+// below so they can share a single already-fetched `all` list instead of
+// each re-fetching it.
+function filterDue(all, now, claimField) {
+  return all.filter((r) =>
     r.status === 'pending' && r.dueAt && new Date(r.dueAt).getTime() <= now.getTime() &&
     (!r.snoozedUntil || new Date(r.snoozedUntil).getTime() <= now.getTime()) &&
-    !r.notifiedAt
+    !r[claimField]
   );
-  for (const r of due) {
-    r.notifiedAt = now.toISOString();
-    await saveReminder(r);
-  }
+}
+async function claimDue(due, now, claimField) {
+  await Promise.all(due.map((r) => { r[claimField] = now.toISOString(); return saveReminder(r); }));
   return due;
+}
+
+// Pending, due, not snoozed, not already notified this cycle - claims them
+// (sets notifiedAt) so a 30s poll never re-fires the same reminder. Also
+// drives the optional WhatsApp-to-self send from whatsappPollScheduler.js's
+// existing tick. communications-summary uses getDashboardSnapshot instead
+// (one shared fetch for due+counts together) - this standalone version
+// stays for the scheduler and any other single-purpose caller.
+async function dueReminders(now) {
+  const all = await listRawReminders();
+  return claimDue(filterDue(all, now, 'notifiedAt'), now, 'notifiedAt');
 }
 
 // Independent from dueReminders' own `notifiedAt` claim (in-app banner) -
@@ -324,16 +360,20 @@ async function dueReminders(now) {
 // same flag.
 async function dueForWhatsapp(now) {
   const all = await listRawReminders();
-  const due = all.filter((r) =>
-    r.status === 'pending' && r.dueAt && new Date(r.dueAt).getTime() <= now.getTime() &&
-    (!r.snoozedUntil || new Date(r.snoozedUntil).getTime() <= now.getTime()) &&
-    !r.waNotifiedAt
-  );
-  for (const r of due) {
-    r.waNotifiedAt = now.toISOString();
-    await saveReminder(r);
-  }
-  return due;
+  return claimDue(filterDue(all, now, 'waNotifiedAt'), now, 'waNotifiedAt');
+}
+
+// Single shared fetch for the communications-summary route (speed fix) -
+// previously that route called dueReminders() and listReminders() as two
+// separate reminderService entry points, each independently re-fetching
+// and (via listReminders' old behavior) re-syncing the full reminder set.
+// This fetches the raw list exactly once and derives both the due-now
+// list and the counts from it in-process.
+async function getDashboardSnapshot(now) {
+  const all = await listRawReminders();
+  const counts = computeCounts(all, now);
+  const dueNow = await claimDue(filterDue(all, now, 'notifiedAt'), now, 'notifiedAt');
+  return { all, counts, dueNow };
 }
 
 // Called from whatsappPollScheduler.js's existing (already-running) tick -
@@ -484,6 +524,7 @@ module.exports = {
   listReminders,
   dueReminders,
   dueForWhatsapp,
+  getDashboardSnapshot,
   sendDueWhatsappReminders,
   getSettings,
   saveSettings,

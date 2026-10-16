@@ -154,7 +154,10 @@ async function checkAsync(label, fn) {
     return d.case === 'acknowledged' && !d.replyText;
   });
   await checkAsync('an emoji reaction more than 30s after SUBH\'s last message gets ONE short warm reply, not a full contextual one', async () => {
-    const history = [{ direction: 'out', text: 'some earlier reply', ts: Date.now() - 45000 }];
+    // An earlier recent incoming message too (same chat already active in
+    // the last 24h) - keeps this test about EMOJI_ACK_REPLY selection, not
+    // the separate AI-disclosure-on-first-reply behavior checked below.
+    const history = [{ direction: 'in', text: 'hi', ts: Date.now() - 50000 }, { direction: 'out', text: 'some earlier reply', ts: Date.now() - 45000 }];
     const d = await whatsappAssistant.decideAutoReply({ phone: TEST_PHONE, name: 'Test', firstName: 'Test', text: '👍', isGroup: false, history });
     return d.case === 'acknowledged' && Object.values(whatsappAssistant.EMOJI_ACK_REPLY).includes(d.replyText);
   });
@@ -184,6 +187,44 @@ async function checkAsync(label, fn) {
     const d = await whatsappAssistant.decideAutoReply({ phone: TEST_PHONE, name: 'Radha Test', firstName: 'Radha', text: 'amar confirmation letter ta kobe pabo?', isGroup: false, history: [] });
     return Boolean(d.replyText) && !/^radha\b/i.test(d.replyText.trim()) && !/\bsir\b|\bmadam\b|\bma'am\b|\bji\b/i.test(d.replyText);
   });
+
+  console.log('='.repeat(70));
+  console.log('AI disclosure on the first reply of a conversation (pure helpers + decideAutoReply integration)');
+  console.log('='.repeat(70));
+  check('ALREADY_INTRODUCES_SUBH_RE matches IDENTITY_CONFIRM_REPLY.english ("Yes, I\'m SUBH...") - never double-introduces', whatsappAssistant.ALREADY_INTRODUCES_SUBH_RE.test("Yes, I'm SUBH, Subhodeep's HR Assistant. How can I help you?"));
+  check('ALREADY_INTRODUCES_SUBH_RE matches the Banglish/Hinglish openings too ("Ami SUBH..."/"Main SUBH hoon...")', whatsappAssistant.ALREADY_INTRODUCES_SUBH_RE.test('Ami SUBH, Subhodeep-er HR Assistant. Apnar ki dorkar bolun.') && whatsappAssistant.ALREADY_INTRODUCES_SUBH_RE.test('Main SUBH hoon, Subhodeep ka HR Assistant. Aapko kya chahiye bataiye.'));
+  check('ALREADY_INTRODUCES_SUBH_RE does NOT match an ordinary reply with no self-introduction', !whatsappAssistant.ALREADY_INTRODUCES_SUBH_RE.test('Bonus kobe pabena, se bishoye ami ekhon kono date bolte parchi na.'));
+  check('hasRecentIncomingMessage is true with an "in" message from 2 minutes ago', whatsappAssistant.hasRecentIncomingMessage([{ direction: 'in', text: 'hi', ts: Date.now() - 2 * 60 * 1000 }]));
+  check('hasRecentIncomingMessage is false with only an "out" message, however recent (the sender hasn\'t actually written anything)', !whatsappAssistant.hasRecentIncomingMessage([{ direction: 'out', text: 'hi', ts: Date.now() - 1000 }]));
+  check('hasRecentIncomingMessage is false when the only "in" message is more than 24h old', !whatsappAssistant.hasRecentIncomingMessage([{ direction: 'in', text: 'hi', ts: Date.now() - 25 * 60 * 60 * 1000 }]));
+  check('hasRecentIncomingMessage is false for empty/no history (brand-new conversation)', !whatsappAssistant.hasRecentIncomingMessage([]) && !whatsappAssistant.hasRecentIncomingMessage(undefined));
+
+  // Reuses the exact same "F&F settlement approval" text already proven
+  // safe above (a policy/escalation question - never a data_holding/
+  // wantsData path that would fire a real background approval-prep call)
+  // so this is still read-only, just varying the `history` the disclosure
+  // wrapper itself looks at.
+  const FF_TEXT = 'amar F&F settlement approval ki hoyeche?';
+  await checkAsync('the FIRST reply in a brand-new conversation (empty history) is prefixed with the AI disclosure line', async () => {
+    const d = await whatsappAssistant.decideAutoReply({ phone: TEST_PHONE, name: 'Test', firstName: 'Test', text: FF_TEXT, isGroup: false, history: [] });
+    return Boolean(d.replyText) && d.replyText.startsWith(whatsappAssistant.AI_DISCLOSURE_LINE.banglish);
+  });
+  await checkAsync('a reply continuing an ALREADY-active conversation (recent incoming message in history) does NOT repeat the disclosure', async () => {
+    const history = [{ direction: 'in', text: 'amar ei bisoye age proshno chilo', ts: Date.now() - 5 * 60 * 1000 }, { direction: 'out', text: 'earlier reply', ts: Date.now() - 4 * 60 * 1000 }];
+    const d = await whatsappAssistant.decideAutoReply({ phone: TEST_PHONE, name: 'Test', firstName: 'Test', text: FF_TEXT, isGroup: false, history });
+    return Boolean(d.replyText) && !d.replyText.startsWith(whatsappAssistant.AI_DISCLOSURE_LINE.banglish);
+  });
+  await checkAsync('an identity remark as the very first message of a new conversation never gets the disclosure line DOUBLED (already introduces SUBH)', async () => {
+    const d = await whatsappAssistant.decideAutoReply({ phone: TEST_PHONE, name: 'Test', firstName: 'Test', text: 'Is this a bot?', isGroup: false, history: [] });
+    return d.replyText === whatsappAssistant.IDENTITY_CONFIRM_REPLY.english;
+  });
+  // Static check against the real DATA_REQUEST_HOLDING_REPLY wording
+  // (not re-exported) rather than driving decideAutoReply with a real
+  // data-request text - that branch fires an un-awaited background
+  // approval-prep call (a real Claude request + a real owner-notification
+  // write for whatever phone is passed), which this read-only suite must
+  // never trigger (see file header).
+  check('the data-request holding reply (spec: must never get the disclosure doubled) already introduces SUBH on its own', whatsappAssistant.ALREADY_INTRODUCES_SUBH_RE.test("I'm SUBH, Subhodeep's HR Assistant. I'll check with Subhodeep and share the information you need shortly."));
 
   console.log('='.repeat(70));
   console.log('Live-review fix: gender-aware inactive reply, awkward-grammar guard, language-detector gap, message bursts (found with Radha Biswas Bhattacharjee / Pravat Kumar Sahoo / the engineers "?" burst)');

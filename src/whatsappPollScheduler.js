@@ -161,10 +161,24 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
     } catch (err) {
       log.error('[whatsapp-assistant] document retention sweep failed: ' + err.message);
     }
-    // SUBH Reminders (Phase 2) - optional WhatsApp-to-self channel, off by
-    // default. The in-app banner/badge does NOT depend on this tick at
-    // all (it's computed lazily on each communications-summary poll), so
-    // this is purely the extra "also ping me on WhatsApp" opt-in.
+    // SUBH Reminders (Phase 2, speed fix) - auto-creating/closing reminders
+    // from the 4 tracked sources (WhatsApp follow-ups, pending approvals,
+    // received documents, expiring memories) used to run on every single
+    // Reminders/Important Communications page load, which meant fanning
+    // out to all 4 of those stores plus writing any newly-discovered item
+    // before the page could even render. It now runs here instead, on the
+    // same already-running 10s tick - the Reminders page and
+    // communications-summary just do a fast read of whatever this last
+    // produced (up to ~10s stale, same as every other check in this tick).
+    try {
+      await reminderService.syncAutoCreatedReminders(new Date());
+    } catch (err) {
+      log.error('[whatsapp-assistant] reminder sync failed: ' + err.message);
+    }
+    // Optional WhatsApp-to-self channel, off by default - purely the
+    // extra "also ping me on WhatsApp" channel on top of the in-app
+    // banner/badge (which is computed lazily on each communications-
+    // summary poll, from whatever the sync step above last produced).
     try {
       const result = await reminderService.sendDueWhatsappReminders(new Date());
       if (result.sent) log.log('[whatsapp-assistant] reminder WhatsApp send: ' + JSON.stringify(result));

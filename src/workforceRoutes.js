@@ -1680,12 +1680,16 @@ router.get('/hr-assistant/communications-summary', async (req, res) => {
     return res.json({ importantMailsCount: 0, whatsappItems: [], importantWhatsappCount: 0, systemNotices: [], remindersPendingCount: 0, remindersDueNow: [] });
   }
   const now = new Date();
-  const [whatsappItems, systemNotices, remindersDueNow, { counts: reminderCounts }] = await Promise.all([
+  // Speed fix: one shared reminder snapshot (getDashboardSnapshot) instead
+  // of two separate reminderService calls (dueReminders + listReminders)
+  // that each independently re-fetched the full reminder list.
+  const [whatsappItems, systemNotices, reminderSnapshot] = await Promise.all([
     whatsappAssistant.listActionableWhatsappItems(),
     whatsappAssistant.listSystemNotices(),
-    reminderService.dueReminders(now),
-    reminderService.listReminders('all', now)
+    reminderService.getDashboardSnapshot(now)
   ]);
+  const remindersDueNow = reminderSnapshot.dueNow;
+  const reminderCounts = reminderSnapshot.counts;
   res.json({
     importantMailsCount: 0, // Phase 3
     whatsappItems,

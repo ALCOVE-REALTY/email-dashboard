@@ -1598,6 +1598,17 @@ body { background: var(--wi-bg); }
   padding: 18px 14px; text-align: center; font-size: 0.78rem; font-weight: 600; color: var(--wi-muted);
 }
 .wf-comms-wa-list { display: flex; flex-direction: column; gap: 10px; }
+/* Shared cold-load placeholder for the Reminders/Important Communications
+   lists (speed fix) - shown only when there's no cached response yet to
+   render instantly instead; reduced-motion already strips the shimmer
+   animation globally (see the catch-all rule near the top of this file). */
+.wf-skeleton-list { display: flex; flex-direction: column; gap: 10px; }
+.wf-skeleton-row {
+  height: 58px; border-radius: var(--wi-r-card);
+  background: linear-gradient(90deg, var(--wi-primary-50) 25%, var(--wi-border) 37%, var(--wi-primary-50) 63%);
+  background-size: 400% 100%; animation: wiSkeletonShimmer 1.4s ease infinite;
+}
+@keyframes wiSkeletonShimmer { 0% { background-position: 100% 50%; } 100% { background-position: 0 50%; } }
 .wf-comms-wa-row {
   display: flex; align-items: center; gap: 11px;
   border-radius: var(--wi-r-card); box-shadow: var(--wi-sh-card); background: var(--wi-surface);
