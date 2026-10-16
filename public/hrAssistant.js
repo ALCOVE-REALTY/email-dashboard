@@ -1429,20 +1429,36 @@
   // the reminder row's own checkbox) goes through this: disables ONLY
   // that one button (everything else on the page, including other cards
   // mid-request, stays fully usable - no full-page loader, no re-render
-  // of the whole list), shows an inline spinner IN PLACE of the label
-  // (opacity only - the label's own layout box stays, so the button never
-  // changes size), then on success turns briefly green with a checkmark
-  // before `onSuccess` runs (card removal/navigation/toast), or on error
-  // turns red with "Retry" and a toast with the reason - the card/row is
-  // left exactly as it was, nothing lost, and tapping "Retry" (the same
-  // button, re-enabled, same click listener still attached) just runs it
-  // again. The instant press animation itself is a plain CSS :active rule
-  // (see wi-theme.css), so it fires even before this function is called.
+  // of the whole list), morphs from its full pill into a small circle
+  // showing a spinner, then on success flashes green with a checkmark
+  // (the morph+colors match the reference "Senden" animation) before
+  // `onSuccess` runs (card removal/navigation/toast); on error it springs
+  // back to the full pill, red, relabelled "Retry" via CSS (so the word
+  // is actually readable) - card/row untouched, nothing lost, and tapping
+  // "Retry" (same button, re-enabled, same click listener) just runs it
+  // again. Any sibling button in the same row (e.g. Decline next to Send)
+  // collapses away at the same time, since the choice is already made -
+  // restored if the action then errors.
   async function runButtonAction(btn, requestFn, onSuccess) {
     if (!btn || btn.classList.contains('is-loading')) return;
+    // FLIP technique - CSS can't reliably transition a flex item's width/
+    // height to/from "auto", only between two real pixel values, so the
+    // button's own CURRENT rendered size is locked in as an inline style
+    // before the circle-shrink class is applied. Removing is-loading
+    // later (on error) reveals this same inline size again, springing the
+    // pill back open.
+    if (!btn.style.width) {
+      const rect = btn.getBoundingClientRect();
+      btn.style.width = rect.width + 'px';
+      btn.style.height = rect.height + 'px';
+    }
+    const row = btn.closest('.wf-convo-action-row');
+    const siblings = row ? Array.from(row.children).filter((el) => el !== btn && (el.classList.contains('wf-convo-action-btn') || el.classList.contains('wf-ai-action-btn'))) : [];
+    void btn.offsetWidth; // commit the inline size above before shrinking, so the transition has a real starting point
     btn.disabled = true;
     btn.classList.remove('is-error', 'is-success');
     btn.classList.add('is-loading');
+    siblings.forEach((s) => s.classList.add('wi-btn-sibling-collapse'));
     try {
       const result = await requestFn();
       btn.classList.remove('is-loading');
@@ -1453,6 +1469,7 @@
       btn.classList.remove('is-loading');
       btn.classList.add('is-error');
       btn.disabled = false;
+      siblings.forEach((s) => s.classList.remove('wi-btn-sibling-collapse'));
       showActionToast((err && err.message) || 'Something went wrong - tap Retry.');
     }
   }
@@ -1931,7 +1948,14 @@
     // Reset the Save button back to idle - runButtonAction leaves it in
     // .is-success after a previous save (by design, since a dismissed
     // card never needs resetting), but this sheet is reused across opens.
-    if (remSheetSaveBtn) { remSheetSaveBtn.classList.remove('is-loading', 'is-success', 'is-error'); remSheetSaveBtn.disabled = false; }
+    // Also clears the inline width/height runButtonAction's FLIP measured
+    // last time, so the pill<->circle morph re-measures fresh.
+    if (remSheetSaveBtn) {
+      remSheetSaveBtn.classList.remove('is-loading', 'is-success', 'is-error');
+      remSheetSaveBtn.disabled = false;
+      remSheetSaveBtn.style.width = '';
+      remSheetSaveBtn.style.height = '';
+    }
     remSheetBackdrop.hidden = false;
     remSheet.hidden = false;
     void remSheet.offsetHeight;
