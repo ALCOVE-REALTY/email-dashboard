@@ -1183,6 +1183,39 @@
     pageDataCache.comms = null;
   }
 
+  // ---------- Shared count-badge component (UI consistency fix) ----------
+  // Every numeric badge across the SUBH panel (Today's Updates card, the
+  // hub tiles, page headers, Important WhatsApp row counts, the reminders
+  // filter chips) goes through this one function, so sizing/behavior can
+  // never drift apart between them - the actual pill shape/size/color
+  // live entirely in CSS (.wi-count-badge + a .danger/.neutral/.primary/
+  // .success variant already on the element), this only ever touches the
+  // number itself: caps at "99+", hides at zero (never shows a bare "0"),
+  // and replays the little pop animation ONLY when the number actually
+  // changed - not on every 30s poll that happens to redraw the same
+  // value. allowZero keeps the badge visible showing "0" (its own muted
+  // ".zero" look) instead of hiding - only the reminders filter chips use
+  // this, since they always show their count.
+  function setCountBadge(el, count, { allowZero = false } = {}) {
+    if (!el) return;
+    const n = Math.max(0, Number(count) || 0);
+    const text = n > 99 ? '99+' : String(n);
+    const changed = el.dataset.badgeCount !== String(n);
+    el.dataset.badgeCount = String(n);
+    if (!allowZero && n === 0) {
+      el.hidden = true;
+      return;
+    }
+    el.hidden = false;
+    el.classList.toggle('zero', n === 0);
+    el.textContent = text;
+    if (changed) {
+      el.classList.remove('wi-badge-pop');
+      void el.offsetWidth; // restart the animation even if it's still mid-play
+      el.classList.add('wi-badge-pop');
+    }
+  }
+
   // ---------- Important Communications (SUBH Phase 1 redesign) ----------
   // Every WhatsApp notification (auto-replied/holding/approval/document)
   // used to land as a free chat bubble via a 30s poll - per direct
@@ -1202,10 +1235,7 @@
     pageDataCache.comms = data;
     pageDataCache.commsAt = Date.now();
     const total = (data.importantMailsCount || 0) + (data.importantWhatsappCount || 0) + (data.remindersPendingCount || 0);
-    if (todayUpdatesBadge) {
-      todayUpdatesBadge.textContent = String(total);
-      todayUpdatesBadge.hidden = total === 0;
-    }
+    setCountBadge(todayUpdatesBadge, total);
     maybeShowReminderBanner(data.remindersDueNow);
   }
   // Prefetches the reminders list alongside the comms poll (same cadence,
@@ -1309,10 +1339,7 @@
 
   function renderCommsData(data) {
     const total = (data.importantMailsCount || 0) + (data.importantWhatsappCount || 0);
-    if (commsHeadBadge) {
-      commsHeadBadge.textContent = String(total);
-      commsHeadBadge.hidden = total === 0;
-    }
+    setCountBadge(commsHeadBadge, total);
     if (commsHeadSubtitle) {
       commsHeadSubtitle.textContent = (data.importantMailsCount || 0) + ' important mails · ' + (data.importantWhatsappCount || 0) + ' important WhatsApp';
     }
@@ -1354,7 +1381,7 @@
               '<span class="wf-comms-wa-row-preview">' + escapeHtml(it.lastMessageText || '') + '</span>' +
             '</span>' +
             (it.itemCount > 1
-              ? '<span class="wf-comms-wa-row-badge count">' + it.itemCount + '</span>'
+              ? '<span class="wf-comms-wa-row-badge count wi-count-badge danger wi-badge-pop">' + (it.itemCount > 99 ? '99+' : it.itemCount) + '</span>'
               : '<span class="wf-comms-wa-row-badge"></span>') +
           '</div>'
         ).join('');
@@ -1731,8 +1758,8 @@
 
   function renderHubBadges(comms, remCounts) {
     const commsTotal = (comms.importantMailsCount || 0) + (comms.importantWhatsappCount || 0);
-    if (hubCommsBadge) { hubCommsBadge.textContent = String(commsTotal); hubCommsBadge.hidden = commsTotal === 0; }
-    if (hubRemindersBadge) { hubRemindersBadge.textContent = String(remCounts.all || 0); hubRemindersBadge.hidden = !remCounts.all; }
+    setCountBadge(hubCommsBadge, commsTotal);
+    setCountBadge(hubRemindersBadge, remCounts.all || 0);
   }
   // Stale-while-revalidate (speed fix): the comms poll and reminders
   // prefetch (see startCommsPolling) usually already have both of these
@@ -1846,15 +1873,15 @@
 
   function renderRemindersData(data, filter) {
     remItemsById = new Map((data.items || []).map((r) => [r.id, r]));
-    if (commsHeadBadge) { commsHeadBadge.textContent = String(data.counts.all); commsHeadBadge.hidden = !data.counts.all; }
-    if (remSectionBadge) remSectionBadge.textContent = String(filter === 'completed' ? data.items.length : data.counts.all);
-    if (remCompletedBadge) remCompletedBadge.textContent = String(data.counts.completed);
+    setCountBadge(commsHeadBadge, data.counts.all);
+    setCountBadge(remSectionBadge, filter === 'completed' ? data.items.length : data.counts.all);
+    setCountBadge(remCompletedBadge, data.counts.completed);
     if (remChips) {
       remChips.querySelectorAll('.wf-rem-chip').forEach((chip) => {
         const f = chip.dataset.filter;
         chip.setAttribute('aria-pressed', String(f === filter));
         const countEl = chip.querySelector('.wf-rem-chip-count');
-        if (countEl) countEl.textContent = String(data.counts[f] || 0);
+        setCountBadge(countEl, data.counts[f] || 0, { allowZero: true });
       });
     }
     if (remList) {

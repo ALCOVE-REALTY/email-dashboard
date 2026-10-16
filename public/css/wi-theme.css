@@ -1533,12 +1533,6 @@ body { background: var(--wi-bg); }
 .wf-ai-panel-title small#hrCommsHeadSubtitle {
   text-transform: none; letter-spacing: normal; font-weight: 600; font-size: 0.74rem; color: var(--wi-muted);
 }
-.wf-comms-head-badge {
-  min-width: 22px; height: 22px; border-radius: var(--wi-r-pill); flex-shrink: 0;
-  display: inline-flex; align-items: center; justify-content: center; padding: 0 7px;
-  background: var(--wi-red); color: #FFFFFF; font-weight: 800; font-size: 0.72rem;
-}
-.wf-comms-head-badge[hidden] { display: none; }
 
 /* -- Home: Today's Updates card -- */
 .wf-today-updates-card[hidden] { display: none; }
@@ -1561,14 +1555,9 @@ body { background: var(--wi-bg); }
 .wf-today-updates-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .wf-today-updates-title-row { display: flex; align-items: center; gap: 8px; }
 .wf-today-updates-title { font-weight: 800; font-size: 0.92rem; color: var(--wi-ink); }
-.wf-today-updates-badge {
-  min-width: 20px; height: 20px; border-radius: var(--wi-r-pill); padding: 0 6px;
-  display: inline-flex; align-items: center; justify-content: center;
-  background: var(--wi-red); color: #FFFFFF; font-weight: 800; font-size: 0.68rem;
-}
-.wf-today-updates-badge[hidden] { display: none; }
 .wf-today-updates-sub { font-size: 0.74rem; font-weight: 600; color: var(--wi-muted); }
 .wf-today-updates-chevron { color: var(--wi-faint); flex-shrink: 0; }
+.wf-today-updates-end { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 
 /* -- Important Communications page -- */
 .wf-comms-page[hidden] { display: none; }
@@ -1624,11 +1613,10 @@ body { background: var(--wi-bg); }
 .wf-comms-wa-row-badge {
   width: 9px; height: 9px; border-radius: 50%; background: var(--wi-red); flex-shrink: 0; align-self: flex-start; margin-top: 6px;
 }
-.wf-comms-wa-row-badge.count {
-  width: auto; height: 18px; min-width: 18px; border-radius: var(--wi-r-pill); padding: 0 5px;
-  display: inline-flex; align-items: center; justify-content: center;
-  color: #FFFFFF; font-size: 0.64rem; font-weight: 800; margin-top: 0; align-self: center;
-}
+/* Overrides the plain unread-dot rule above - sizing/color now come from
+   the shared .wi-count-badge component (see its own comment near
+   .wf-convo-action-group) applied alongside this class in the markup. */
+.wf-comms-wa-row-badge.count { width: auto; margin-top: 0; align-self: center; }
 .wf-comms-empty {
   text-align: center; padding: 18px 10px; font-size: 0.78rem; font-weight: 600; color: var(--wi-faint);
 }
@@ -1654,6 +1642,28 @@ body { background: var(--wi-bg); }
 .wf-convo-status-line.escalated { background: var(--wi-red-50); color: var(--wi-red-700); }
 .wf-convo-status-line.waiting { background: var(--wi-yellow-50); color: var(--wi-yellow-700); }
 .wf-convo-status-line.resolved { background: var(--wi-green-pill); color: var(--wi-green-700); }
+
+/* ---------- Shared count-badge component (UI consistency fix) ----------
+   One pill used everywhere a numeric count badge appears in the SUBH
+   panel: Home's Today's Updates card, the hub tiles, page headers,
+   Important WhatsApp row counts, and the reminders filter chips/section
+   badges - sizing, shape and the pop animation live ONLY here, so they
+   can never drift apart between places; each caller just adds this class
+   plus one color variant. hrAssistant.js's setCountBadge() is the only
+   place that ever writes the number itself (99+ cap, hide-at-zero). */
+.wi-count-badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  height: 20px; min-width: 20px; padding: 0 6px; border-radius: 999px;
+  font-size: 11px; font-weight: 800; line-height: 20px; flex-shrink: 0; white-space: nowrap;
+}
+.wi-count-badge[hidden] { display: none; }
+.wi-count-badge.danger { background: #F04438; color: #FFFFFF; }
+.wi-count-badge.neutral { background: #EEF0FF; color: #3138B8; }
+.wi-count-badge.neutral.zero { background: var(--wi-surface-3); color: var(--wi-faint); }
+.wi-count-badge.primary { background: var(--wi-primary-50); color: var(--wi-primary-700); }
+.wi-count-badge.success { background: var(--wi-green-pill); color: var(--wi-green-700); }
+.wi-count-badge.wi-badge-pop { animation: wiBadgePop .2s ease; }
+@keyframes wiBadgePop { from { transform: scale(.8); } to { transform: scale(1); } }
 
 .wf-convo-actions { display: flex; flex-direction: column; gap: 10px; padding: 0 14px 14px; flex-shrink: 0; }
 .wf-convo-action-group {
@@ -1776,13 +1786,8 @@ body { background: var(--wi-bg); }
 .wf-hub-tile-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .wf-hub-tile-title { font-weight: 800; font-size: 0.92rem; color: var(--wi-ink); }
 .wf-hub-tile-sub { font-size: 0.74rem; font-weight: 600; color: var(--wi-muted); }
-.wf-hub-tile-badge {
-  min-width: 22px; height: 22px; border-radius: var(--wi-r-pill); padding: 0 7px;
-  display: inline-flex; align-items: center; justify-content: center;
-  background: var(--wi-red); color: #FFFFFF; font-weight: 800; font-size: 0.72rem; flex-shrink: 0;
-}
-.wf-hub-tile-badge[hidden] { display: none; }
 .wf-hub-tile-chevron { color: var(--wi-faint); flex-shrink: 0; }
+.wf-hub-tile-end { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 
 /* -- Reminders page -- */
 .wf-rem-page { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 10px 14px 14px; display: flex; flex-direction: column; gap: 12px; }
@@ -1798,12 +1803,8 @@ body { background: var(--wi-bg); }
   border-radius: var(--wi-r-pill); padding: 7px 13px; font-size: 0.78rem; font-weight: 700; font-family: inherit; cursor: pointer;
 }
 .wf-rem-chip[aria-pressed="true"] { background: var(--wi-primary-50); border-color: var(--wi-primary); color: var(--wi-primary-700); }
-.wf-rem-chip-count { opacity: .75; }
+.wf-rem-chip-count { margin-left: 4px; }
 .wf-rem-section-head { display: flex; align-items: center; justify-content: space-between; font-size: 0.8rem; font-weight: 800; color: var(--wi-ink); padding: 0 2px; }
-.wf-rem-section-badge {
-  min-width: 20px; height: 20px; border-radius: var(--wi-r-pill); padding: 0 6px; display: inline-flex; align-items: center; justify-content: center;
-  background: var(--wi-primary-50); color: var(--wi-primary-700); font-weight: 800; font-size: 0.7rem;
-}
 .wf-rem-list { display: flex; flex-direction: column; gap: 10px; }
 .wf-rem-row {
   display: flex; align-items: flex-start; gap: 11px; border-radius: var(--wi-r-card); box-shadow: var(--wi-sh-card);
@@ -1846,10 +1847,6 @@ body { background: var(--wi-bg); }
   display: flex; align-items: center; justify-content: space-between; border: none; border-radius: var(--wi-r-card);
   box-shadow: var(--wi-sh-card); background: var(--wi-surface); padding: 12px 14px; font-size: 0.82rem; font-weight: 700;
   color: var(--wi-ink); font-family: inherit; cursor: pointer;
-}
-.wf-rem-completed-badge {
-  min-width: 22px; height: 22px; border-radius: var(--wi-r-pill); padding: 0 7px; display: inline-flex; align-items: center; justify-content: center;
-  background: var(--wi-green-pill); color: var(--wi-green-700); font-weight: 800; font-size: 0.72rem;
 }
 .wf-rem-empty { text-align: center; padding: 18px 10px; font-size: 0.78rem; font-weight: 600; color: var(--wi-faint); }
 

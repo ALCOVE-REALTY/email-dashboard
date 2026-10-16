@@ -144,7 +144,7 @@
           <span id="hrCommsHeadTitle">Important Communications</span>
           <small id="hrCommsHeadSubtitle"></small>
         </span>
-        <span class="wf-comms-head-badge" id="hrCommsHeadBadge" hidden></span>
+        <span class="wf-comms-head-badge wi-count-badge danger" id="hrCommsHeadBadge" hidden></span>
       </div>
 
       <!-- Today's Updates - Home's own entry point into Important
@@ -159,11 +159,13 @@
         <span class="wf-today-updates-main">
           <span class="wf-today-updates-title-row">
             <span class="wf-today-updates-title">Today's Updates</span>
-            <span class="wf-today-updates-badge" id="hrTodayUpdatesBadge" hidden>0</span>
           </span>
           <span class="wf-today-updates-sub">Reminders, Important Mails &amp; WhatsApp</span>
         </span>
-        <svg class="wf-today-updates-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+        <span class="wf-today-updates-end">
+          <span class="wf-today-updates-badge wi-count-badge danger" id="hrTodayUpdatesBadge" hidden>0</span>
+          <svg class="wf-today-updates-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+        </span>
       </button>
 
       <div class="wf-ai-messages" id="hrAssistantMessages"></div>
@@ -207,8 +209,10 @@
             <span class="wf-hub-tile-title">Reminders</span>
             <span class="wf-hub-tile-sub">Your pending tasks &amp; follow-ups</span>
           </span>
-          <span class="wf-hub-tile-badge" id="hrHubRemindersBadge" hidden>0</span>
-          <svg class="wf-hub-tile-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+          <span class="wf-hub-tile-end">
+            <span class="wf-hub-tile-badge wi-count-badge danger" id="hrHubRemindersBadge" hidden>0</span>
+            <svg class="wf-hub-tile-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+          </span>
         </button>
         <button type="button" class="wf-hub-tile" id="hrHubCommsTile">
           <span class="wf-hub-tile-icon comms">
@@ -218,8 +222,10 @@
             <span class="wf-hub-tile-title">Important Communications</span>
             <span class="wf-hub-tile-sub">Mails &amp; WhatsApp needing you</span>
           </span>
-          <span class="wf-hub-tile-badge" id="hrHubCommsBadge" hidden>0</span>
-          <svg class="wf-hub-tile-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+          <span class="wf-hub-tile-end">
+            <span class="wf-hub-tile-badge wi-count-badge danger" id="hrHubCommsBadge" hidden>0</span>
+            <svg class="wf-hub-tile-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+          </span>
         </button>
       </div>
 
@@ -227,18 +233,18 @@
       <div class="wf-rem-page" id="hrRemPage" hidden>
         <div class="wf-rem-banner" id="hrRemBanner" hidden></div>
         <div class="wf-rem-chips" id="hrRemChips">
-          <button type="button" class="wf-rem-chip" data-filter="all" aria-pressed="true">All <span class="wf-rem-chip-count">0</span></button>
-          <button type="button" class="wf-rem-chip" data-filter="today" aria-pressed="false">Today <span class="wf-rem-chip-count">0</span></button>
-          <button type="button" class="wf-rem-chip" data-filter="upcoming" aria-pressed="false">Upcoming <span class="wf-rem-chip-count">0</span></button>
-          <button type="button" class="wf-rem-chip" data-filter="completed" aria-pressed="false">Completed <span class="wf-rem-chip-count">0</span></button>
+          <button type="button" class="wf-rem-chip" data-filter="all" aria-pressed="true">All <span class="wf-rem-chip-count wi-count-badge neutral">0</span></button>
+          <button type="button" class="wf-rem-chip" data-filter="today" aria-pressed="false">Today <span class="wf-rem-chip-count wi-count-badge neutral">0</span></button>
+          <button type="button" class="wf-rem-chip" data-filter="upcoming" aria-pressed="false">Upcoming <span class="wf-rem-chip-count wi-count-badge neutral">0</span></button>
+          <button type="button" class="wf-rem-chip" data-filter="completed" aria-pressed="false">Completed <span class="wf-rem-chip-count wi-count-badge neutral">0</span></button>
         </div>
-        <div class="wf-rem-section-head"><span>Pending Reminders</span><span class="wf-rem-section-badge" id="hrRemSectionBadge">0</span></div>
+        <div class="wf-rem-section-head"><span>Pending Reminders</span><span class="wf-rem-section-badge wi-count-badge primary" id="hrRemSectionBadge">0</span></div>
         <div class="wf-rem-list" id="hrRemList"></div>
         <button type="button" class="wf-rem-add-btn" id="hrRemAddBtn">+ Add Reminder</button>
         <div class="wf-rem-info-note">Reminders will remain pending and keep showing until you tap Done or Cancel.</div>
         <button type="button" class="wf-rem-completed-row" id="hrRemCompletedRow">
           <span>Today's Completed</span>
-          <span class="wf-rem-completed-badge" id="hrRemCompletedBadge">0</span>
+          <span class="wf-rem-completed-badge wi-count-badge success" id="hrRemCompletedBadge">0</span>
         </button>
         <div class="wf-comms-viewall" id="hrRemLinkToComms" style="text-align:center;margin-top:4px;">View Important Communications ›</div>
       </div>
