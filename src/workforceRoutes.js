@@ -1819,15 +1819,18 @@ router.get('/hr-assistant/whatsapp-conversation/:chatId', async (req, res) => {
 router.post('/hr-assistant/whatsapp-approval', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
   try {
-    const { id, action, editInstruction } = req.body || {};
+    const { id, action, editInstruction, selectedIndex } = req.body || {};
     if (!id || (action !== 'approve' && action !== 'reject')) {
       return res.status(400).json({ error: 'id and action ("approve" or "reject") are required' });
     }
     const approval = await whatsappAssistant.resolveApprovalById(id);
     if (!approval) return res.status(404).json({ error: 'That approval is no longer pending (already resolved?).' });
+    // selectedIndex only matters for a grouped multi-candidate approval
+    // (see queueMultiCandidateContactApproval) - which candidate's own
+    // field actually gets sent; ignored otherwise.
     const reply = action === 'reject'
       ? await whatsappAssistant.executeApprovalReject(approval)
-      : await whatsappAssistant.executeApprovalSend(approval, editInstruction || null);
+      : await whatsappAssistant.executeApprovalSend(approval, editInstruction || null, Number.isInteger(selectedIndex) ? selectedIndex : null);
     res.json({ ok: true, reply });
   } catch (err) {
     res.status(500).json({ error: err.message });

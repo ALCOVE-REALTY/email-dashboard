@@ -1666,6 +1666,17 @@ body { background: var(--wi-bg); }
   font-size: 0.8rem; color: var(--wi-ink); background: var(--wi-surface-3); border-radius: 12px; padding: 9px 11px;
   white-space: pre-wrap; overflow-wrap: anywhere;
 }
+/* Radio-selectable candidate list for a grouped multi-candidate approval
+   (several name matches for one contact-number request, all in ONE
+   approval card - see queueMultiCandidateContactApproval) - replaces the
+   plain preview text above when there's more than one candidate. */
+.wf-convo-approval-candidates { display: flex; flex-direction: column; gap: 6px; background: var(--wi-surface-3); border-radius: 12px; padding: 6px; }
+.wf-convo-approval-candidate {
+  display: flex; align-items: center; gap: 8px; font-size: 0.8rem; color: var(--wi-ink); font-weight: 600;
+  padding: 6px 7px; border-radius: 9px; cursor: pointer;
+}
+.wf-convo-approval-candidate:has(input:checked) { background: var(--wi-primary-50); color: var(--wi-primary); }
+.wf-convo-approval-candidate input[type="radio"] { accent-color: var(--wi-primary); width: 16px; height: 16px; flex-shrink: 0; }
 .wf-convo-action-row { display: flex; gap: 8px; }
 .wf-convo-action-btn {
   flex: 1; border: none; border-radius: var(--wi-r-btn); padding: 9px 10px; font-weight: 800; font-size: 0.8rem;

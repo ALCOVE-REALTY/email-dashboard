@@ -321,6 +321,75 @@ async function checkAsync(label, fn) {
     const q = whatsappAssistant.DISAMBIGUATION_QUESTION ? whatsappAssistant.DISAMBIGUATION_QUESTION.banglish('Ayan', mockAyanPair) : null;
     return Boolean(q) && q.includes('1) Ayan Das') && q.includes('2) Ayan Paul');
   })());
+  check('DISAMBIGUATION_QUESTION naturalizes an ALL-CAPS department into the list too', DISAMBIGUATION_QUESTION_naturalizes());
+  function DISAMBIGUATION_QUESTION_naturalizes() {
+    const q = whatsappAssistant.DISAMBIGUATION_QUESTION.english('Ayan', [
+      { name: 'Ayan Das', department: 'HR DEPT' }, { name: 'Ayan Paul', department: 'ACCOUNTS' }
+    ]);
+    return q.includes('— HR department') && q.includes('— Accounts') && !q.includes('ACCOUNTS');
+  }
+
+  console.log('='.repeat(70));
+  console.log('Natural casing of designation/department in reply sentences (report tables/cards keep the raw directory value - only reply templates are tidied)');
+  console.log('='.repeat(70));
+  check('naturalizeDirectoryValue expands "DEPT" to the natural lowercase word "department"', whatsappAssistant.naturalizeDirectoryValue('HR DEPT') === 'HR department');
+  check('naturalizeDirectoryValue keeps a recognised short abbreviation fully uppercase ("HR", not "Hr")', whatsappAssistant.naturalizeDirectoryValue('HR DEPT').startsWith('HR'));
+  check('naturalizeDirectoryValue title-cases a plain ALL-CAPS word', whatsappAssistant.naturalizeDirectoryValue('EXECUTIVE') === 'Executive');
+  check('naturalizeDirectoryValue title-cases a single ALL-CAPS department name', whatsappAssistant.naturalizeDirectoryValue('FINANCE') === 'Finance');
+  check('naturalizeDirectoryValue turns a space-padded hyphen between two title-cased words into an en dash', whatsappAssistant.naturalizeDirectoryValue('HEAD - FINANCE') === 'Head – Finance');
+  check('naturalizeDirectoryValue keeps a no-space hyphenated code as ONE joined token, never spaced out (a real plot/block code, not two words)', whatsappAssistant.naturalizeDirectoryValue('PLOT-B') === 'Plot-B');
+  check('naturalizeDirectoryValue handles a parenthesised compound department name', whatsappAssistant.naturalizeDirectoryValue('CIVIL (PLOT-B) STRUCTURE') === 'Civil (Plot-B) Structure');
+  check('naturalizeDirectoryValue on empty/missing input returns it unchanged (never throws)', whatsappAssistant.naturalizeDirectoryValue('') === '' && whatsappAssistant.naturalizeDirectoryValue(null) === '');
+
+  check('buildGeneralDetailsReply (Banglish) matches the spec\'s exact "HR department-e Executive hisebe" example from raw ALL-CAPS directory values', (() => {
+    const candidate = { name: 'Ayan Das', designation: 'EXECUTIVE', department: 'HR DEPT', doj: null };
+    const reply = whatsappAssistant.buildGeneralDetailsReply(candidate, 'banglish', false, new Date());
+    return reply.includes('HR department-e Executive hisebe') && !reply.includes('HR DEPT') && !reply.includes('EXECUTIVE');
+  })());
+  check('buildGeneralDetailsReply (English) matches the spec\'s exact "working as Head – Finance in the Finance department" example from raw ALL-CAPS directory values', (() => {
+    const candidate = { name: 'Test Person', designation: 'HEAD - FINANCE', department: 'FINANCE', doj: null };
+    const reply = whatsappAssistant.buildGeneralDetailsReply(candidate, 'english', false, new Date());
+    return reply.includes('working as Head – Finance in the Finance department') && !reply.includes('HEAD - FINANCE') && !reply.includes('FINANCE');
+  })());
+
+  console.log('='.repeat(70));
+  console.log('Grouped multi-candidate approval - ONE approval card with selectable candidates, not one card per candidate');
+  console.log('='.repeat(70));
+  const mockMultiCandApproval = {
+    id: 'test-multicand-approval', phone: TEST_PHONE, name: 'Tausif', lang: 'banglish',
+    dataRequestSummary: '"Ayon" (2 matches) - contact number',
+    candidates: [
+      { name: 'Ayan Das', department: 'HR', outgoingText: 'Ayan Das-er contact number: 9830000001' },
+      { name: 'Ayan Paul', department: 'Accounts', outgoingText: 'Ayan Paul-er contact number: 9830000002' }
+    ]
+  };
+  const mockSingleApproval = { id: 'test-single-approval', phone: TEST_PHONE, name: 'Priya', lang: 'banglish', dataRequestSummary: 'Priya Sharma - contact number' };
+  await checkAsync('buildApprovalItems expands a grouped multi-candidate approval into one addressable item PER CANDIDATE (so "Ayan Das pathao" still resolves to just one)', async () => {
+    const items = whatsappAssistant.buildApprovalItems([mockMultiCandApproval]);
+    return items.length === 2 && items[0].label.includes('Ayan Das') && items[0].candidateIndex === 0 && items[1].label.includes('Ayan Paul') && items[1].candidateIndex === 1;
+  });
+  await checkAsync('buildApprovalItems leaves an ordinary single-candidate approval as exactly ONE item with candidateIndex null', async () => {
+    const items = whatsappAssistant.buildApprovalItems([mockSingleApproval]);
+    return items.length === 1 && items[0].candidateIndex === null && items[0].label === 'Priya';
+  });
+  await checkAsync('buildPendingListQuestion numbers each candidate of a grouped approval as its own addressable option', async () => {
+    const items = whatsappAssistant.buildApprovalItems([mockMultiCandApproval]);
+    const q = whatsappAssistant.buildPendingListQuestion(items);
+    return q.includes('1) Ayan Das') && q.includes('2) Ayan Paul');
+  });
+  // executeApprovalSend itself is safe to call here with a FAKE approval
+  // object (never actually saved to Redis - the real id never existed, so
+  // its own removePendingApproval call is a harmless no-op delete) and
+  // TEST_PHONE (draft mode is on locally, so nothing is really sent) -
+  // the same safe pattern this file already uses TEST_PHONE for elsewhere.
+  await checkAsync('executeApprovalSend with an explicit selectedIndex sends ONLY that candidate\'s text, never the other one', async () => {
+    const reply = await whatsappAssistant.executeApprovalSend(Object.assign({}, mockMultiCandApproval, { id: 'test-multicand-' + Date.now() }), null, 1);
+    return reply.includes('9830000002') && !reply.includes('9830000001');
+  });
+  await checkAsync('executeApprovalSend with no selectedIndex defaults to the FIRST candidate (matching the radio list\'s own default-checked option)', async () => {
+    const reply = await whatsappAssistant.executeApprovalSend(Object.assign({}, mockMultiCandApproval, { id: 'test-multicand-' + Date.now() }), null, null);
+    return reply.includes('9830000001') && !reply.includes('9830000002');
+  });
 
   console.log('='.repeat(70));
   console.log('WhatsApp conversation header never shows the internal "The sender" placeholder');

@@ -470,7 +470,16 @@ async function getWhatsappConversation(chatIdRaw) {
     thread: history.map((h) => ({ direction: h.direction, text: h.text, ts: h.ts })),
     lastOutcome: latestLog ? { aCase: latestLog.aCase, outcome: latestLog.outcome } : null,
     neverAuto,
-    pendingApprovals: myApprovals.map((a) => ({ id: a.id, name: a.name, summary: a.dataRequestSummary, text: a.preparedReplyText, error: a.preparedError })),
+    pendingApprovals: myApprovals.map((a) => ({
+      id: a.id, name: a.name, summary: a.dataRequestSummary, text: a.preparedReplyText, error: a.preparedError,
+      // Grouped multi-candidate approval (several fuzzy/exact name
+      // matches for one contact-number request) - the UI renders these as
+      // a radio-selectable list instead of a.text; only name/department
+      // are needed for the label, never the raw contactNumber/
+      // outgoingText (nothing worth exposing to the browser before
+      // Send is actually pressed).
+      candidates: Array.isArray(a.candidates) ? a.candidates.map((c) => ({ name: c.name, department: naturalizeDirectoryValue(c.department) })) : null
+    })),
     pendingDrafts: myDrafts.map((d) => ({ contactId: d.contactId, name: d.name, type: d.type, draftReply: d.draftReply })),
     openFollowups: myFollowups.map((f) => ({ name: f.name, summary: f.summary })),
     pendingDocuments: myDocs.map((d) => ({ topic: d.topic, fileRef: d.fileRef }))
@@ -1162,17 +1171,54 @@ const TYPO_NOTE = {
   hinglish: 'Aapke diye naam ki spelling mein thodi galti hai. ',
   english: 'The name seems slightly misspelled. '
 };
+// Directory values (department/designation) are stored ALL CAPS and
+// sometimes abbreviated ("HR DEPT", "HEAD - FINANCE") - fine in a report
+// table/card, but read as shouting/awkward woven into a sentence a sender
+// actually reads. Tidies ONLY the copy that goes into a reply sentence
+// (never report tables/cards/owner-facing approval notifications, which
+// keep the real directory value as-is, unchanged, for exact review).
+// Recognised short abbreviations stay fully uppercase (HR, not Hr); a
+// bare "DEPT" is spelled out as the natural lowercase word "department"
+// rather than title-cased, since it already reads as one in context
+// ("HR department", not "HR Dept"). A space-padded hyphen between two
+// title-cased words becomes an en dash ("HEAD - FINANCE" -> "Head –
+// Finance") - a hyphen with no surrounding spaces (a code like "PLOT-B")
+// is left as a single hyphenated token instead, so a plot/block code
+// never gets spaced out into something that reads as two separate words.
+const DIRECTORY_KEEP_UPPERCASE = new Set(['HR', 'IT', 'PF', 'ESI', 'ESIC', 'UAN', 'HOD', 'MD', 'CEO', 'CFO', 'COO', 'VP', 'GM', 'PA', 'QA', 'QC', 'CTC', 'TDS', 'GST', 'PAN']);
+const DIRECTORY_WORD_EXPANSIONS = { DEPT: 'department', DEPARTMENT: 'department' };
+function capitalizeFirstLetter(s) {
+  return s.replace(/[a-zA-Z]/, (m) => m.toUpperCase());
+}
+function naturalizeWord(w) {
+  if (!w) return w;
+  const upper = w.toUpperCase();
+  if (DIRECTORY_WORD_EXPANSIONS[upper]) return DIRECTORY_WORD_EXPANSIONS[upper];
+  if (DIRECTORY_KEEP_UPPERCASE.has(upper)) return upper;
+  return w.split('-').map((part) => (part ? capitalizeFirstLetter(part.toLowerCase()) : part)).join('-');
+}
+function naturalizeDirectoryValue(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return s;
+  return s.split(/(\s-\s|\s+)/).map((tok) => {
+    if (/^\s-\s$/.test(tok)) return ' – ';
+    if (/^\s+$/.test(tok)) return tok;
+    return naturalizeWord(tok);
+  }).join('').replace(/\s+/g, ' ').trim();
+}
 function buildGeneralDetailsSentence(candidate, lang, tenure) {
+  const department = naturalizeDirectoryValue(candidate.department);
+  const designation = naturalizeDirectoryValue(candidate.designation);
   if (lang === 'hinglish') {
-    return 'Hamari company mein ' + candidate.name + ' hain — ' + candidate.department + ' mein ' +
-      candidate.designation + ' ke roop mein' + (tenure ? ' ' + tenure + ' kaam kar rahe hain.' : ' kaam kar rahe hain.');
+    return 'Hamari company mein ' + candidate.name + ' hain — ' + department + ' mein ' +
+      designation + ' ke roop mein' + (tenure ? ' ' + tenure + ' kaam kar rahe hain.' : ' kaam kar rahe hain.');
   }
   if (lang === 'english') {
-    return 'We have ' + candidate.name + ' in our company — working as ' + candidate.designation +
-      ' in the ' + candidate.department + ' department' + (tenure ? ' for ' + tenure + '.' : '.');
+    return 'We have ' + candidate.name + ' in our company — working as ' + designation +
+      ' in the ' + department + ' department' + (tenure ? ' for ' + tenure + '.' : '.');
   }
-  return 'Amader company-te ' + candidate.name + ' achen — ' + candidate.department + '-e ' +
-    candidate.designation + ' hisebe' + (tenure ? ' ' + tenure + ' kaj korchen.' : ' kaj korchen.');
+  return 'Amader company-te ' + candidate.name + ' achen — ' + department + '-e ' +
+    designation + ' hisebe' + (tenure ? ' ' + tenure + ' kaj korchen.' : ' kaj korchen.');
 }
 function buildGeneralDetailsReply(candidate, lang, hadTypo, now) {
   const tenure = tenureLabel(candidate.doj, now || new Date(), lang);
@@ -1196,15 +1242,15 @@ function countLabel(n, lang) {
 const DISAMBIGUATION_QUESTION = {
   banglish: (queryName, candidates) =>
     'Amader company-te ' + queryName + ' naame ' + countLabel(candidates.length, 'banglish') + ' achen: ' +
-    candidates.map((c, i) => (i + 1) + ') ' + c.name + ' — ' + c.department).join(' ') +
+    candidates.map((c, i) => (i + 1) + ') ' + c.name + ' — ' + naturalizeDirectoryValue(c.department)).join(' ') +
     '. Apni kar sombondhe jante chan?',
   hinglish: (queryName, candidates) =>
     'Hamari company mein ' + queryName + ' naam ke ' + countLabel(candidates.length, 'hinglish') + ' hain: ' +
-    candidates.map((c, i) => (i + 1) + ') ' + c.name + ' — ' + c.department).join(' ') +
+    candidates.map((c, i) => (i + 1) + ') ' + c.name + ' — ' + naturalizeDirectoryValue(c.department)).join(' ') +
     '. Aap kiske baare mein jaanna chahte hain?',
   english: (queryName, candidates) =>
     'There are ' + candidates.length + ' people named ' + queryName + ' at our company: ' +
-    candidates.map((c, i) => (i + 1) + ') ' + c.name + ' — ' + c.department).join(' ') +
+    candidates.map((c, i) => (i + 1) + ') ' + c.name + ' — ' + naturalizeDirectoryValue(c.department)).join(' ') +
     '. Which one would you like to know about?'
 };
 const CONTACT_NUMBER_LINE = {
@@ -1344,6 +1390,35 @@ async function queuePersonContactApproval({ phone, requesterLabel, candidate, la
   );
 }
 
+// Several current candidates for ONE contact-number request - ONE
+// approval record covering all of them (`candidates`, a radio-selectable
+// list in the owner's SUBH chat UI), not one separate approval per
+// candidate (the earlier design - found to spawn a confusing pile of
+// near-identical approval cards for what is really a single decision:
+// pick the right person, then send just their number). Only a candidate
+// with a contactNumber on file gets a real outgoingText - one missing a
+// number still appears in the list (so the owner can see who was
+// matched) but can't be selected to send nothing.
+async function queueMultiCandidateContactApproval({ phone, requesterLabel, candidates, lang, hadTypo, personName }) {
+  const candidateRecords = candidates.map((c) => ({
+    name: c.name, department: c.department, status: c.status,
+    contactNumber: c.contactNumber || null,
+    outgoingText: c.contactNumber ? (CONTACT_NUMBER_LINE[lang] || CONTACT_NUMBER_LINE.english)(c.name, c.contactNumber) : null
+  }));
+  const dataRequestSummary = '"' + personName + '" (' + candidates.length + ' matches) - contact number';
+  await savePendingApproval({
+    phone, name: requesterLabel, requestText: dataRequestSummary, dataRequestSummary, lang,
+    preparedReplyText: null, preparedCard: null, preparedError: null,
+    candidates: candidateRecords
+  });
+  const typoNote = hadTypo ? ' (closest matches, exact banan mele ni)' : '';
+  const list = candidates.map((c, i) => (i + 1) + ') ' + c.name + ' (' + c.department + ')').join(', ');
+  await postOwnerNotification(
+    requesterLabel + ' (' + phone + ') "' + personName + '"-er contact number chaichhe' + typoNote + ' - ' +
+    candidates.length + ' jon match korche: ' + list + '. SUBH chat-e approval card theke ekjon-ke select kore Send korun, ba direct naam likhe pathao bolte paren (e.g. "' + candidates[0].name + ' pathao").'
+  );
+}
+
 // No approval is ever created for an inactive (ex-)employee - there is
 // nothing for the owner to approve/reject, this is purely informational.
 async function replyInactiveEmployee({ phone, requesterLabel, candidate }) {
@@ -1426,9 +1501,7 @@ async function handlePersonLookupRequest({ phone, name, lang, personName, person
   if (current.length === 1) {
     await queuePersonContactApproval({ phone, requesterLabel: name, candidate: current[0], lang, hadTypo });
   } else {
-    for (const candidate of current) await queuePersonContactApproval({ phone, requesterLabel: name, candidate, lang, hadTypo });
-    const list = current.map((c, i) => (i + 1) + ') ' + c.name + ' (' + c.department + ')').join(', ');
-    await postOwnerNotification(current.length + ' jon "' + personName + '" ache' + (hadTypo ? ' (closest matches, exact banan mele ni)' : '') + ': ' + list + '. Kar number pathabo?');
+    await queueMultiCandidateContactApproval({ phone, requesterLabel: name, candidates: current, lang, hadTypo, personName });
   }
   return { case: 'data_holding', replyText: DATA_REQUEST_HOLDING_REPLY[lang] || DATA_REQUEST_HOLDING_REPLY.english, summaryForOwner: null };
 }
@@ -1491,28 +1564,50 @@ async function narrowDataAnswer(approval, editInstruction) {
 // approval is an ADDITIONAL gate on top of draft mode, not a replacement
 // for it; while the system is still in draft mode, even an approved
 // data request must not go out for real.
-async function executeApprovalSend(approval, editInstruction) {
-  if (approval.preparedError || !approval.preparedReplyText) {
-    await removePendingApproval(approval.id);
-    return approval.name + ' er answer ready chilo na, pathano gelo na.';
+// selectedIndex is only meaningful when approval.candidates exists (a
+// grouped multi-candidate contact-number approval, see
+// queueMultiCandidateContactApproval) - picks WHICH candidate's own
+// outgoingText actually gets sent; defaults to the first candidate when
+// omitted/invalid, same as the radio list's own default-checked option.
+// A single-candidate approval (the normal case) ignores it entirely and
+// behaves exactly as before.
+async function executeApprovalSend(approval, editInstruction, selectedIndex) {
+  let textToSend;
+  let logSummary = approval.dataRequestSummary;
+  if (Array.isArray(approval.candidates) && approval.candidates.length) {
+    const idx = (Number.isInteger(selectedIndex) && approval.candidates[selectedIndex]) ? selectedIndex : 0;
+    const candidate = approval.candidates[idx];
+    if (!candidate || !candidate.outgoingText) {
+      await removePendingApproval(approval.id);
+      return approval.name + ' er answer ready chilo na, pathano gelo na.';
+    }
+    textToSend = editInstruction
+      ? await narrowDataAnswer({ preparedReplyText: candidate.outgoingText, preparedCard: null }, editInstruction)
+      : candidate.outgoingText;
+    logSummary = candidate.name + ' (' + candidate.department + ') - contact number';
+  } else {
+    if (approval.preparedError || !approval.preparedReplyText) {
+      await removePendingApproval(approval.id);
+      return approval.name + ' er answer ready chilo na, pathano gelo na.';
+    }
+    // approval.preparedReplyText is already the complete, final WhatsApp
+    // text (summary + list, built once at approval-creation time) - never
+    // re-render the card here, that would duplicate the list a second time.
+    textToSend = editInstruction ? await narrowDataAnswer(approval, editInstruction) : approval.preparedReplyText;
   }
-  // approval.preparedReplyText is already the complete, final WhatsApp
-  // text (summary + list, built once at approval-creation time) - never
-  // re-render the card here, that would duplicate the list a second time.
-  const textToSend = editInstruction ? await narrowDataAnswer(approval, editInstruction) : approval.preparedReplyText;
   await removePendingApproval(approval.id);
   if (!isRealSendAllowedFor(approval.phone)) {
-    await logInboxEvent({ chatId: approval.phone, name: approval.name, isGroup: false, messageSummary: '[data request: ' + approval.dataRequestSummary + ']', aCase: 'data_approved', sentText: textToSend, outcome: 'draft_mode', sentAt: Date.now() });
-    return '[DRAFT MODE] ' + approval.name + '-ke "' + approval.dataRequestSummary + '" pathano hoto: "' + textToSend + '"';
+    await logInboxEvent({ chatId: approval.phone, name: approval.name, isGroup: false, messageSummary: '[data request: ' + logSummary + ']', aCase: 'data_approved', sentText: textToSend, outcome: 'draft_mode', sentAt: Date.now() });
+    return '[DRAFT MODE] ' + approval.name + '-ke "' + logSummary + '" pathano hoto: "' + textToSend + '"';
   }
   const sendResult = await sendWhatsAppChunked(approval.phone, textToSend);
   if (!sendResult.ok) {
-    await logInboxEvent({ chatId: approval.phone, name: approval.name, isGroup: false, messageSummary: '[data request: ' + approval.dataRequestSummary + ']', aCase: 'data_approved', sentText: textToSend, outcome: 'send_failed', sentAt: Date.now() });
+    await logInboxEvent({ chatId: approval.phone, name: approval.name, isGroup: false, messageSummary: '[data request: ' + logSummary + ']', aCase: 'data_approved', sentText: textToSend, outcome: 'send_failed', sentAt: Date.now() });
     return approval.name + '-ke pathate giye error holo: ' + sendResult.error;
   }
   await appendConvoHistory(approval.phone, 'out', textToSend);
-  await logInboxEvent({ chatId: approval.phone, name: approval.name, isGroup: false, messageSummary: '[data request: ' + approval.dataRequestSummary + ']', aCase: 'data_approved', sentText: textToSend, outcome: 'sent', sentAt: Date.now() });
-  return '✓ ' + approval.name + '-ke "' + approval.dataRequestSummary + '" pathano holo.';
+  await logInboxEvent({ chatId: approval.phone, name: approval.name, isGroup: false, messageSummary: '[data request: ' + logSummary + ']', aCase: 'data_approved', sentText: textToSend, outcome: 'sent', sentAt: Date.now() });
+  return '✓ ' + approval.name + '-ke "' + logSummary + '" pathano holo.';
 }
 async function executeApprovalReject(approval) {
   const replyText = DATA_REJECT_REPLY[approval.lang] || DATA_REJECT_REPLY.english;
@@ -1527,9 +1622,30 @@ async function executeApprovalReject(approval) {
   return '✓ ' + approval.name + '-ke bole deoa holo, data pathano hoyni.';
 }
 
-function buildPendingListQuestion(pending) {
-  const lines = pending.map((p, i) => (i + 1) + ') ' + p.name + ' — ' + p.dataRequestSummary);
-  return (pending.length > 1 ? pending.length + 'ti approval pending:\n' : '') + lines.join('\n') + '\nKon-ta pathabo?';
+// Expands the pending approval RECORDS into one addressable item per
+// actual decision an owner could make - a grouped multi-candidate
+// contact-number approval (ONE record, several candidates - see
+// queueMultiCandidateContactApproval) contributes one item PER
+// CANDIDATE, so typing a specific name ("Ayan Das pathao") still resolves
+// to exactly that candidate even though they all share one approval
+// record/card. An ordinary single-candidate approval contributes exactly
+// one item, same as before this feature existed.
+function buildApprovalItems(pending) {
+  const items = [];
+  pending.forEach((approval) => {
+    if (Array.isArray(approval.candidates) && approval.candidates.length) {
+      approval.candidates.forEach((c, candidateIndex) => {
+        items.push({ approval, candidateIndex, label: c.name + ' (' + naturalizeDirectoryValue(c.department) + ')', summary: c.name + ' (' + naturalizeDirectoryValue(c.department) + ') - contact number' });
+      });
+    } else {
+      items.push({ approval, candidateIndex: null, label: approval.name, summary: approval.dataRequestSummary });
+    }
+  });
+  return items;
+}
+function buildPendingListQuestion(items) {
+  const lines = items.map((it, i) => (i + 1) + ') ' + it.label + ' — ' + it.summary);
+  return (items.length > 1 ? items.length + 'ti approval pending:\n' : '') + lines.join('\n') + '\nKon-ta pathabo?';
 }
 
 // One `decision` entry per approval actually addressed in this message -
@@ -1565,10 +1681,10 @@ function approvalCommandTool() {
     }
   };
 }
-async function classifyApprovalCommand(text, pending) {
+async function classifyApprovalCommand(text, items) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey || !DRAFT_MODEL) return { unrelated: true, decisions: [] };
-  const listBlock = pending.map((p, i) => (i + 1) + '. ' + p.name + ' (' + p.phone + ') - ' + p.dataRequestSummary).join('\n');
+  const listBlock = items.map((it, i) => (i + 1) + '. ' + it.label + ' (' + it.approval.phone + ') - ' + it.summary).join('\n');
   const messages = [
     { role: 'system', content: 'Pending WhatsApp HR-data-request approvals waiting for a decision:\n' + listBlock },
     { role: 'user', content: text }
@@ -1588,28 +1704,36 @@ async function handleApprovalCommand(text, ownerEmail) {
   if (!memoryService.isOwner(ownerEmail)) return null;
   const pending = await listPendingApprovals();
   if (!pending.length) return null;
+  const items = buildApprovalItems(pending);
 
-  const decision = await classifyApprovalCommand(text, pending).catch(() => ({ unrelated: true, decisions: [] }));
+  const decision = await classifyApprovalCommand(text, items).catch(() => ({ unrelated: true, decisions: [] }));
   if (decision.unrelated) return null;
 
   const decisions = Array.isArray(decision.decisions) ? decision.decisions : [];
   if (!decisions.length) {
     // Spec 6d: related to the approvals, but no specific target (and not
     // an explicit "all") could be identified - never guess, always ask.
-    return { reply: buildPendingListQuestion(pending) };
+    return { reply: buildPendingListQuestion(items) };
   }
 
   const expanded = [];
   decisions.forEach((d) => {
-    if (d.target === 0) pending.forEach((approval) => expanded.push({ approval, action: d.action, editInstruction: d.editInstruction }));
-    else if (pending[d.target - 1]) expanded.push({ approval: pending[d.target - 1], action: d.action, editInstruction: d.editInstruction });
+    if (d.target === 0) {
+      // "Send all" only ever applies to an UNAMBIGUOUS item - a grouped
+      // multi-candidate approval still needs an explicit choice (by name
+      // or by picking a specific numbered item), never silently defaults
+      // to its first candidate just because "send all" was said.
+      items.forEach((it) => { if (it.candidateIndex === null) expanded.push({ item: it, action: d.action, editInstruction: d.editInstruction }); });
+    } else if (items[d.target - 1]) {
+      expanded.push({ item: items[d.target - 1], action: d.action, editInstruction: d.editInstruction });
+    }
   });
-  if (!expanded.length) return { reply: buildPendingListQuestion(pending) };
+  if (!expanded.length) return { reply: buildPendingListQuestion(items) };
 
   const results = [];
-  for (const { approval, action, editInstruction } of expanded) {
-    if (action === 'reject') results.push(await executeApprovalReject(approval));
-    else results.push(await executeApprovalSend(approval, action === 'edit' ? editInstruction : null));
+  for (const { item, action, editInstruction } of expanded) {
+    if (action === 'reject') results.push(await executeApprovalReject(item.approval));
+    else results.push(await executeApprovalSend(item.approval, action === 'edit' ? editInstruction : null, item.candidateIndex));
   }
   return { reply: results.join('\n') };
 }
@@ -3598,5 +3722,11 @@ module.exports = {
   // first-reply fix.
   AI_DISCLOSURE_LINE,
   ALREADY_INTRODUCES_SUBH_RE,
-  hasRecentIncomingMessage
+  hasRecentIncomingMessage,
+  // Exported for scripts/check-whatsapp-engine.js only - natural-casing
+  // fix and the grouped multi-candidate approval card fix.
+  naturalizeDirectoryValue,
+  queueMultiCandidateContactApproval,
+  buildApprovalItems,
+  buildPendingListQuestion
 };

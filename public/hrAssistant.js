@@ -1435,11 +1435,27 @@
   function buildConvoActions(convo) {
     const groups = [];
     (convo.pendingApprovals || []).forEach((a) => {
+      // A grouped multi-candidate approval (several name matches for one
+      // contact-number request, see queueMultiCandidateContactApproval)
+      // renders as ONE card with a radio list instead of the plain
+      // preview text - Send uses whichever candidate is selected (first
+      // one checked by default).
+      const hasCandidates = Array.isArray(a.candidates) && a.candidates.length > 1;
+      const bodyHtml = hasCandidates
+        ? '<div class="wf-convo-approval-candidates">' +
+            a.candidates.map((c, i) =>
+              '<label class="wf-convo-approval-candidate">' +
+                '<input type="radio" name="wf-approval-candidate-' + escapeHtml(a.id) + '" value="' + i + '"' + (i === 0 ? ' checked' : '') + '>' +
+                '<span>' + escapeHtml(c.name) + ' — ' + escapeHtml(c.department) + '</span>' +
+              '</label>'
+            ).join('') +
+          '</div>'
+        : '<span class="wf-convo-action-preview">' + escapeHtml(a.error ? ('Could not prepare an answer: ' + a.error) : (a.text || '')) + '</span>';
       groups.push(
         '<div class="wf-convo-action-group" data-action-type="approval">' +
           '<span class="wf-convo-action-label">Pending data request approval</span>' +
           forLabel(a.name, convo.name) +
-          '<span class="wf-convo-action-preview">' + escapeHtml(a.error ? ('Could not prepare an answer: ' + a.error) : (a.text || '')) + '</span>' +
+          bodyHtml +
           (a.error ? '' :
             '<span class="wf-convo-action-row">' +
               '<button type="button" class="wf-convo-action-btn primary" data-approval-action="approve" data-approval-id="' + escapeHtml(a.id) + '">Send</button>' +
@@ -1538,11 +1554,17 @@
           b.disabled = true;
           const action = b.dataset.approvalAction === 'reject' ? 'reject' : 'approve';
           let editInstruction = null;
+          let selectedIndex = null;
           if (action === 'approve') {
+            // Which candidate is checked, if this card has the
+            // multi-candidate radio list (see buildConvoActions) -
+            // defaults to the first one, same as its default-checked radio.
+            const checked = convoActions.querySelector('input[name="wf-approval-candidate-' + CSS.escape(b.dataset.approvalId) + '"]:checked');
+            if (checked) selectedIndex = Number(checked.value);
             const narrow = prompt('Change the message before sending? Leave blank to send as-is.', '');
             if (narrow && narrow.trim()) editInstruction = narrow.trim();
           }
-          await postJson('/api/workforce/hr-assistant/whatsapp-approval', { id: b.dataset.approvalId, action, editInstruction });
+          await postJson('/api/workforce/hr-assistant/whatsapp-approval', { id: b.dataset.approvalId, action, editInstruction, selectedIndex });
           await reloadConversation();
           pollCommsSummary();
         });
