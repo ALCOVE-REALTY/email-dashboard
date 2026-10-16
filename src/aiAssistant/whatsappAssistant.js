@@ -927,11 +927,32 @@ async function clearPendingDisambiguation(phone) {
   if (!redis) return;
   try { await redis.del(PENDING_DISAMBIGUATION_PREFIX + whatsapp.normalizePhone(phone)); } catch (err) { /* best effort */ }
 }
-// Resolves the sender's reply ("1", "2)", or a name) against the stored
-// candidate list - a leading number is tried first (most unambiguous),
-// then an exact whole-word name match, then a fuzzy one; returns null
-// (never guesses) when nothing resolves to exactly one candidate, so the
-// message falls through to the normal pipeline instead of forcing a match.
+// "prothom ta"/"first one", "dwitiyo ta"/"second one" etc - a sender
+// answering a numbered list as often says the position in words as a
+// digit. Covers the first 4 positions (never seen a real disambiguation
+// with more candidates than that); returns null, not a guess, for
+// anything else.
+const ORDINAL_WORDS = {
+  1: ['prothom', 'prothomta', 'pratham', 'pehla', 'pehli', 'first'],
+  2: ['dwitiyo', 'dwitiyota', 'dutiyo', 'dutiyota', 'doosra', 'doosri', 'second'],
+  3: ['tritiyo', 'tritiyota', 'teesra', 'teesri', 'third'],
+  4: ['chaturtho', 'chaturthota', 'chautha', 'chauthi', 'fourth']
+};
+function matchOrdinalIndex(text) {
+  const t = String(text || '').toLowerCase();
+  for (const num of Object.keys(ORDINAL_WORDS)) {
+    if (ORDINAL_WORDS[num].some((w) => new RegExp('\\b' + w + '\\b', 'i').test(t))) return Number(num) - 1;
+  }
+  return null;
+}
+// Resolves the sender's reply against the stored candidate list - a
+// leading number ("1", "2)") first, then an ordinal word ("prothom ta"/
+// "first one"), then an exact whole-word name match (full name, or first
+// name + surname in either order - matchesWholeWordName is already word-
+// order-independent), then a fuzzy one (spelling variants). Returns null
+// (never guesses) when nothing resolves to exactly one candidate - the
+// caller (decideAutoReplyCore) re-asks rather than silently dropping the
+// message, see MAX_DISAMBIGUATION_ATTEMPTS below.
 function resolveDisambiguationReply(candidates, text) {
   const t = String(text || '').trim();
   const numMatch = t.match(/^(\d+)[.)]?\b/);
@@ -939,12 +960,25 @@ function resolveDisambiguationReply(candidates, text) {
     const idx = parseInt(numMatch[1], 10) - 1;
     if (idx >= 0 && idx < candidates.length) return candidates[idx];
   }
+  const ordinalIdx = matchOrdinalIndex(t);
+  if (ordinalIdx !== null && ordinalIdx < candidates.length) return candidates[ordinalIdx];
   const exact = candidates.filter((c) => matchesWholeWordName(c.name, t));
   if (exact.length === 1) return exact[0];
   const fuzzy = employeeService.fuzzyMatchEmployeesByName(candidates, t);
   if (fuzzy.length === 1) return fuzzy[0];
   return null;
 }
+// A sender's reply that matches NEITHER a candidate nor a number/ordinal
+// gets re-asked, up to this many times total (the original question
+// counts as attempt 1) - after that, the disambiguation is abandoned
+// (cleared) and the message falls through to the normal pipeline, so a
+// genuinely stuck or off-topic exchange can't loop forever.
+const MAX_DISAMBIGUATION_ATTEMPTS = 3;
+const DISAMBIGUATION_RETRY_PREFIX = {
+  banglish: 'Dukkhito, bujhte parini. ',
+  hinglish: 'Maaf kijiye, samajh nahi aaya. ',
+  english: "Sorry, I didn't quite get that. "
+};
 
 // Renders a tool-result card as a plain numbered WhatsApp list - there is
 // no card UI on WhatsApp, so a list request's real content has to be
@@ -1488,7 +1522,7 @@ async function handlePersonLookupRequest({ phone, name, lang, personName, person
     // guessing or escalating to the owner (spec: "ask the sender directly
     // on WhatsApp which one"); stored so the sender's next message (a
     // number or a name) can be resolved back to one candidate.
-    await savePendingDisambiguation(phone, { candidates: current, lang, hadTypo });
+    await savePendingDisambiguation(phone, { candidates: current, lang, hadTypo, attempts: 1 });
     await postOwnerNotification(current.length + ' jon "' + personName + '" (general details) match korche - sender-ke jigges kora hocche kon jon: ' + current.map((c) => c.name + ' (' + c.department + ')').join(', ') + '.');
     const queryName = current[0].name.split(' ')[0];
     const note = hadTypo ? (TYPO_NOTE[lang] || TYPO_NOTE.english) : '';
@@ -3094,10 +3128,15 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
   // Typo-tolerant name matching (spec point 2) - a sender who was just
   // asked to pick between several "general details" candidates gets THIS
   // message checked against that pending question BEFORE anything else
-  // (identity/classification), since their reply ("1" or a bare name)
-  // would otherwise be misread by the normal pipeline. A reply that
-  // doesn't resolve to exactly one candidate falls through unchanged -
-  // never forces a guess, so an unrelated new message still works normally.
+  // (identity/classification). Found live (917278793115): a bare name
+  // that failed to resolve here used to fall through to the normal
+  // classifier, which judged "Ayan Biswas" alone - with no idea a
+  // question had just been asked - as not needing a reply at all, so
+  // NOTHING was ever sent back. A pending disambiguation now NEVER falls
+  // through silently: a match resolves it immediately, anything else gets
+  // a polite re-ask (capped at MAX_DISAMBIGUATION_ATTEMPTS so a genuinely
+  // stuck/off-topic exchange can't loop forever - only then does it clear
+  // and fall through to the normal pipeline).
   if (!isGroup && phone) {
     const pendingDisambig = await getPendingDisambiguation(phone).catch(() => null);
     if (pendingDisambig && Array.isArray(pendingDisambig.candidates) && pendingDisambig.candidates.length) {
@@ -3107,6 +3146,19 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
         await postOwnerNotification(senderLabel + ' (' + phone + ') "' + resolved.name + '" baeche niyeche - general details pathano holo, approval lage ni.');
         return { case: 'acknowledged', replyText: buildGeneralDetailsReply(resolved, pendingDisambig.lang, pendingDisambig.hadTypo, new Date()), summaryForOwner: null };
       }
+      const attempts = pendingDisambig.attempts || 1;
+      if (attempts < MAX_DISAMBIGUATION_ATTEMPTS) {
+        await savePendingDisambiguation(phone, Object.assign({}, pendingDisambig, { attempts: attempts + 1 }));
+        const lang = pendingDisambig.lang;
+        const retryPrefix = DISAMBIGUATION_RETRY_PREFIX[lang] || DISAMBIGUATION_RETRY_PREFIX.english;
+        const fn = DISAMBIGUATION_QUESTION[lang] || DISAMBIGUATION_QUESTION.english;
+        const queryName = pendingDisambig.candidates[0].name.split(' ')[0];
+        return { case: 'acknowledged', replyText: retryPrefix + fn(queryName, pendingDisambig.candidates), summaryForOwner: null };
+      }
+      // Gave up after repeated non-matching replies - abandon the
+      // disambiguation and let this message through to the normal
+      // pipeline as an ordinary new message, rather than re-ask forever.
+      await clearPendingDisambiguation(phone);
     }
   }
 
@@ -3728,5 +3780,9 @@ module.exports = {
   naturalizeDirectoryValue,
   queueMultiCandidateContactApproval,
   buildApprovalItems,
-  buildPendingListQuestion
+  buildPendingListQuestion,
+  // Exported for scripts/check-whatsapp-engine.js only - the pending-
+  // disambiguation "never silently drop a bare name" fix.
+  MAX_DISAMBIGUATION_ATTEMPTS,
+  DISAMBIGUATION_RETRY_PREFIX
 };

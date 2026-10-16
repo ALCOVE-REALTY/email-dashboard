@@ -328,6 +328,47 @@ async function checkAsync(label, fn) {
     ]);
     return q.includes('— HR department') && q.includes('— Accounts') && !q.includes('ACCOUNTS');
   }
+  check('resolveDisambiguationReply resolves "prothom ta" (Banglish ordinal) to the first candidate', (whatsappAssistant.resolveDisambiguationReply(mockAyanPair, 'prothom ta') || {}).name === 'Ayan Das');
+  check('resolveDisambiguationReply resolves "first one" (English ordinal) to the first candidate', (whatsappAssistant.resolveDisambiguationReply(mockAyanPair, 'first one') || {}).name === 'Ayan Das');
+  check('resolveDisambiguationReply resolves "dutiyo ta" (Banglish ordinal) to the second candidate', (whatsappAssistant.resolveDisambiguationReply(mockAyanPair, 'dutiyo ta') || {}).name === 'Ayan Paul');
+  check('resolveDisambiguationReply resolves "second one" (English ordinal) to the second candidate', (whatsappAssistant.resolveDisambiguationReply(mockAyanPair, 'second one') || {}).name === 'Ayan Paul');
+
+  console.log('='.repeat(70));
+  console.log('LIVE BUG FIX (917278793115, Banglish): a bare name answering "Ayan k?" got NO reply at all - replays the exact real conversation');
+  console.log('='.repeat(70));
+  // Mocked pair matching the exact real screenshot (Ayan Biswas - Civil
+  // (Plot-B) Finishing / Ayan Das - HR DEPT) - raw ALL-CAPS/abbreviated
+  // directory-style values so this also exercises the natural-casing fix
+  // together with the disambiguation fix, end to end.
+  const mockAyanBiswasDasPair = [
+    { name: 'Ayan Biswas', department: 'CIVIL (PLOT-B) FINISHING', designation: 'HELPER', status: 'ACTIVE', doj: null, gender: 'Male' },
+    { name: 'Ayan Das', department: 'HR DEPT', designation: 'EXECUTIVE', status: 'ACTIVE', doj: null, gender: 'Male' }
+  ];
+  await checkAsync('setup: pending disambiguation can be saved/read/cleared for TEST_PHONE (round trip)', async () => {
+    await whatsappAssistant.savePendingDisambiguation(TEST_PHONE, { candidates: mockAyanBiswasDasPair, lang: 'banglish', hadTypo: false, attempts: 1 });
+    const loaded = await whatsappAssistant.getPendingDisambiguation(TEST_PHONE);
+    return Boolean(loaded) && loaded.candidates.length === 2;
+  });
+  await checkAsync('THE LIVE BUG: "Ayan Biswas" answering a pending disambiguation now gets that candidate\'s general details (previously: no reply at all)', async () => {
+    const d = await whatsappAssistant.decideAutoReply({ phone: TEST_PHONE, name: 'Test', firstName: 'Test', text: 'Ayan Biswas', isGroup: false, history: [{ direction: 'in', text: 'Ayan k?', ts: Date.now() - 60000 }, { direction: 'out', text: 'question', ts: Date.now() - 55000 }] });
+    return Boolean(d.replyText) && d.replyText.includes('Ayan Biswas achen') && d.replyText.includes('Civil (Plot-B) Finishing') && !d.replyText.includes('CIVIL');
+  });
+  await checkAsync('the pending disambiguation is cleared once resolved (no stale state left behind)', async () => {
+    const loaded = await whatsappAssistant.getPendingDisambiguation(TEST_PHONE);
+    return loaded === null;
+  });
+  await checkAsync('a NON-matching reply to a pending disambiguation is NEVER silently dropped - it gets a polite re-ask listing the options again', async () => {
+    await whatsappAssistant.savePendingDisambiguation(TEST_PHONE, { candidates: mockAyanBiswasDasPair, lang: 'banglish', hadTypo: false, attempts: 1 });
+    const d = await whatsappAssistant.decideAutoReply({ phone: TEST_PHONE, name: 'Test', firstName: 'Test', text: 'thik ache dhonnobad', isGroup: false, history: [] });
+    const stillPending = await whatsappAssistant.getPendingDisambiguation(TEST_PHONE);
+    return Boolean(d.replyText) && d.replyText.includes('Ayan Biswas') && d.replyText.includes('Ayan Das') && Boolean(stillPending) && stillPending.attempts === 2;
+  });
+  await checkAsync('after MAX_DISAMBIGUATION_ATTEMPTS non-matching replies, the disambiguation is abandoned (never loops forever)', async () => {
+    await whatsappAssistant.savePendingDisambiguation(TEST_PHONE, { candidates: mockAyanBiswasDasPair, lang: 'banglish', hadTypo: false, attempts: whatsappAssistant.MAX_DISAMBIGUATION_ATTEMPTS });
+    await whatsappAssistant.decideAutoReply({ phone: TEST_PHONE, name: 'Test', firstName: 'Test', text: 'ar kichu bolte chai na', isGroup: false, history: [] }).catch(() => null);
+    const stillPending = await whatsappAssistant.getPendingDisambiguation(TEST_PHONE);
+    return stillPending === null;
+  });
 
   console.log('='.repeat(70));
   console.log('Natural casing of designation/department in reply sentences (report tables/cards keep the raw directory value - only reply templates are tidied)');
