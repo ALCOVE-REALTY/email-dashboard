@@ -1419,6 +1419,56 @@
     try { data = await resp.json(); } catch (err) { /* ignore */ }
     return { ok: resp.ok, data };
   }
+  // Wraps postJson so a failed response THROWS (for runButtonAction's own
+  // try/catch) instead of silently returning {ok:false}.
+  async function postJsonOrThrow(url, body) {
+    const r = await postJson(url, body);
+    if (!r.ok) throw new Error((r.data && r.data.error) || 'Request failed.');
+    return r.data;
+  }
+
+  // ---------- Generic button-action feedback (tap -> spinner -> success/
+  // error, never freezes the page) ----------
+  // Every action button across the SUBH panel (approval Send/Decline,
+  // draft Send/Edit/Skip, follow-up/document Mark done, reminder-detail
+  // Mark done/Edit/Cancel/Undo/Snooze, the Add/Edit Reminder sheet's Save,
+  // the reminder row's own checkbox) goes through this: disables ONLY
+  // that one button (everything else on the page, including other cards
+  // mid-request, stays fully usable - no full-page loader, no re-render
+  // of the whole list), shows an inline spinner IN PLACE of the label
+  // (opacity only - the label's own layout box stays, so the button never
+  // changes size), then on success turns briefly green with a checkmark
+  // before `onSuccess` runs (card removal/navigation/toast), or on error
+  // turns red with "Retry" and a toast with the reason - the card/row is
+  // left exactly as it was, nothing lost, and tapping "Retry" (the same
+  // button, re-enabled, same click listener still attached) just runs it
+  // again. The instant press animation itself is a plain CSS :active rule
+  // (see wi-theme.css), so it fires even before this function is called.
+  async function runButtonAction(btn, requestFn, onSuccess) {
+    if (!btn || btn.classList.contains('is-loading')) return;
+    btn.disabled = true;
+    btn.classList.remove('is-error', 'is-success');
+    btn.classList.add('is-loading');
+    try {
+      const result = await requestFn();
+      btn.classList.remove('is-loading');
+      btn.classList.add('is-success');
+      await new Promise((resolve) => setTimeout(resolve, 550));
+      if (onSuccess) await onSuccess(result);
+    } catch (err) {
+      btn.classList.remove('is-loading');
+      btn.classList.add('is-error');
+      btn.disabled = false;
+      showActionToast((err && err.message) || 'Something went wrong - tap Retry.');
+    }
+  }
+  // Fades + collapses a card out of the DOM in place - never touches any
+  // OTHER card and never re-fetches/re-renders the whole list.
+  function dismissCard(card) {
+    if (!card) return;
+    card.classList.add('wf-card-exit');
+    setTimeout(() => card.remove(), 320);
+  }
 
   // One action group PER OUTSTANDING ITEM, never collapsed to "the first
   // one" - found live (see getWhatsappConversation's own comment) that a
@@ -1521,18 +1571,12 @@
     await reloadConversation();
   }
 
-  async function reloadConversation() {
-    if (!activeConvoChatId) return;
-    let convo;
-    try {
-      const resp = await fetch('/api/workforce/hr-assistant/whatsapp-conversation/' + encodeURIComponent(activeConvoChatId));
-      convo = await resp.json();
-    } catch (err) {
-      if (convoThread) convoThread.innerHTML = '<div class="wf-comms-empty">Could not load this conversation.</div>';
-      return;
-    }
-    if (commsHeadTitle) commsHeadTitle.textContent = convo.name || activeConvoChatId;
-
+  async function fetchConvo(chatId) {
+    const resp = await fetch('/api/workforce/hr-assistant/whatsapp-conversation/' + encodeURIComponent(chatId));
+    return resp.json();
+  }
+  function renderConvoThread(convo) {
+    if (commsHeadTitle) commsHeadTitle.textContent = convo.name || convo.chatId;
     const status = convoStatusLine(convo.lastOutcome);
     const thread = (convo.thread || []).map((m) =>
       '<div class="wf-convo-msg ' + (m.direction === 'out' ? 'out' : 'in') + '">' +
@@ -1545,13 +1589,44 @@
         (status ? '<span class="wf-convo-status-line ' + status.tone + '">' + escapeHtml(status.text) + '</span>' : '');
       convoThread.scrollTop = convoThread.scrollHeight;
     }
+  }
+  // Fire-and-forget after an action button succeeds (speed/UX fix) -
+  // updates ONLY the message thread (so the just-sent reply shows up),
+  // never convoActions - the action cards already reflect the correct
+  // state locally (dismissCard already removed the one that was just
+  // resolved), so re-rendering them here would disturb any OTHER card
+  // still mid-request or discard its visual state.
+  async function refreshConvoThreadOnly() {
+    if (!activeConvoChatId) return;
+    const chatId = activeConvoChatId;
+    try {
+      const convo = await fetchConvo(chatId);
+      if (activeConvoChatId !== chatId || panelView !== 'conversation') return; // navigated away meanwhile
+      renderConvoThread(convo);
+    } catch (err) { /* best effort - thread just won't show the latest message until reopened */ }
+  }
+
+  async function reloadConversation() {
+    if (!activeConvoChatId) return;
+    let convo;
+    try {
+      convo = await fetchConvo(activeConvoChatId);
+    } catch (err) {
+      if (convoThread) convoThread.innerHTML = '<div class="wf-comms-empty">Could not load this conversation.</div>';
+      return;
+    }
+    renderConvoThread(convo);
 
     if (convoActions) {
       convoActions.innerHTML = buildConvoActions(convo);
-      const approveBtn = convoActions.querySelector('[data-approval-action]');
+      // Every handler below: runButtonAction manages ONLY the tapped
+      // button's own visual state (spinner -> success/error), and on
+      // success dismisses just that one card (dismissCard) plus a
+      // background thread refresh + badge poll - never a full
+      // reloadConversation(), so nothing else on the page is disturbed
+      // and several cards can be mid-request at the same time.
       convoActions.querySelectorAll('[data-approval-action]').forEach((b) => {
         b.addEventListener('click', async () => {
-          b.disabled = true;
           const action = b.dataset.approvalAction === 'reject' ? 'reject' : 'approve';
           let editInstruction = null;
           let selectedIndex = null;
@@ -1564,43 +1639,55 @@
             const narrow = prompt('Change the message before sending? Leave blank to send as-is.', '');
             if (narrow && narrow.trim()) editInstruction = narrow.trim();
           }
-          await postJson('/api/workforce/hr-assistant/whatsapp-approval', { id: b.dataset.approvalId, action, editInstruction, selectedIndex });
-          await reloadConversation();
-          pollCommsSummary();
+          const card = b.closest('.wf-convo-action-group');
+          await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/whatsapp-approval', { id: b.dataset.approvalId, action, editInstruction, selectedIndex }), () => {
+            dismissCard(card);
+            showActionToast(action === 'reject' ? 'Declined' : 'Sent ✓');
+            pollCommsSummary();
+            refreshConvoThreadOnly();
+          });
         });
       });
       convoActions.querySelectorAll('[data-draft-action]').forEach((b) => {
         b.addEventListener('click', async () => {
-          b.disabled = true;
           const action = b.dataset.draftAction;
+          let requestFn;
           if (action === 'skip') {
-            await postJson('/api/workforce/hr-assistant/whatsapp-reply', { contactId: activeConvoChatId, action: 'skip' });
+            requestFn = () => postJsonOrThrow('/api/workforce/hr-assistant/whatsapp-reply', { contactId: activeConvoChatId, action: 'skip' });
           } else if (action === 'edit') {
             const edited = prompt('What should the new reply say?', b.dataset.draftReply || '');
-            b.disabled = false;
             if (edited === null) return;
-            await postJson('/api/workforce/hr-assistant/whatsapp-reply', { contactId: activeConvoChatId, action: 'send', editedText: edited });
+            requestFn = () => postJsonOrThrow('/api/workforce/hr-assistant/whatsapp-reply', { contactId: activeConvoChatId, action: 'send', editedText: edited });
           } else {
-            await postJson('/api/workforce/hr-assistant/whatsapp-reply', { contactId: activeConvoChatId, action: 'send' });
+            requestFn = () => postJsonOrThrow('/api/workforce/hr-assistant/whatsapp-reply', { contactId: activeConvoChatId, action: 'send' });
           }
-          await reloadConversation();
-          pollCommsSummary();
+          const card = b.closest('.wf-convo-action-group');
+          await runButtonAction(b, requestFn, () => {
+            dismissCard(card);
+            showActionToast(action === 'skip' ? 'Skipped' : 'Sent ✓');
+            pollCommsSummary();
+            refreshConvoThreadOnly();
+          });
         });
       });
       convoActions.querySelectorAll('[data-followup-action]').forEach((b) => {
         b.addEventListener('click', async () => {
-          b.disabled = true;
-          await postJson('/api/workforce/hr-assistant/whatsapp-followup-done', { chatId: activeConvoChatId });
-          await reloadConversation();
-          pollCommsSummary();
+          const card = b.closest('.wf-convo-action-group');
+          await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/whatsapp-followup-done', { chatId: activeConvoChatId }), () => {
+            dismissCard(card);
+            showActionToast('Marked done ✓');
+            pollCommsSummary();
+          });
         });
       });
       convoActions.querySelectorAll('[data-document-action]').forEach((b) => {
         b.addEventListener('click', async () => {
-          b.disabled = true;
-          await postJson('/api/workforce/hr-assistant/whatsapp-document-done', { chatId: activeConvoChatId });
-          await reloadConversation();
-          pollCommsSummary();
+          const card = b.closest('.wf-convo-action-group');
+          await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/whatsapp-document-done', { chatId: activeConvoChatId }), () => {
+            dismissCard(card);
+            showActionToast('Marked done ✓');
+            pollCommsSummary();
+          });
         });
       });
       const neverAutoToggle = document.getElementById('hrConvoNeverAutoToggle');
@@ -1722,34 +1809,39 @@
       '</span>';
     row.querySelector('[data-open]').addEventListener('click', () => openReminderDetail(r.id));
     const checkbox = row.querySelector('.wf-rem-checkbox');
-    if (checkbox) checkbox.addEventListener('click', (e) => { e.stopPropagation(); completeReminderRow(r.id, row); });
+    if (checkbox) checkbox.addEventListener('click', (e) => { e.stopPropagation(); completeReminderRow(r.id, checkbox, row); });
     return row;
   }
 
-  async function completeReminderRow(id, rowEl) {
-    await postJson('/api/workforce/hr-assistant/reminders/' + encodeURIComponent(id) + '/done', {});
-    invalidateReminderCache();
-    if (rowEl) {
-      rowEl.classList.add('completing');
-      setTimeout(() => rowEl.remove(), 380);
-    }
-    showReminderToast('Done ✓', async () => {
-      await postJson('/api/workforce/hr-assistant/reminders/' + encodeURIComponent(id) + '/undo', {});
+  async function completeReminderRow(id, checkboxBtn, rowEl) {
+    await runButtonAction(checkboxBtn, () => postJsonOrThrow('/api/workforce/hr-assistant/reminders/' + encodeURIComponent(id) + '/done', {}), async () => {
       invalidateReminderCache();
-      loadRemindersPage(activeRemFilter);
+      if (rowEl) {
+        rowEl.classList.add('completing');
+        setTimeout(() => rowEl.remove(), 380);
+      }
+      showActionToast('Done ✓', async () => {
+        await postJson('/api/workforce/hr-assistant/reminders/' + encodeURIComponent(id) + '/undo', {});
+        invalidateReminderCache();
+        loadRemindersPage(activeRemFilter);
+      });
+      setTimeout(() => loadRemindersPage(activeRemFilter), 450);
     });
-    setTimeout(() => loadRemindersPage(activeRemFilter), 450);
   }
 
-  let remToastTimer = null;
-  function showReminderToast(text, onUndo) {
+  // Generic panel-wide toast (speed/UX fix) - every action button's
+  // success/error feedback shares this one element with the reminders
+  // "Done ✓ / Undo" toast that originally used it; the name/shape stayed
+  // the same, just no longer reminders-only.
+  let actionToastTimer = null;
+  function showActionToast(text, onUndo) {
     if (!remToast) return;
-    clearTimeout(remToastTimer);
+    clearTimeout(actionToastTimer);
     remToastText.textContent = text;
     remToastUndoBtn.hidden = !onUndo;
     remToast.hidden = false;
     remToastUndoBtn.onclick = () => { remToast.hidden = true; if (onUndo) onUndo(); };
-    remToastTimer = setTimeout(() => { remToast.hidden = true; }, 5000);
+    actionToastTimer = setTimeout(() => { remToast.hidden = true; }, 5000);
   }
 
   function renderRemindersData(data, filter) {
@@ -1842,6 +1934,10 @@
     }
     remFieldPriority.value = existing ? existing.priority : 'medium';
     remFieldRepeat.value = existing ? existing.repeat : 'none';
+    // Reset the Save button back to idle - runButtonAction leaves it in
+    // .is-success after a previous save (by design, since a dismissed
+    // card never needs resetting), but this sheet is reused across opens.
+    if (remSheetSaveBtn) { remSheetSaveBtn.classList.remove('is-loading', 'is-success', 'is-error'); remSheetSaveBtn.disabled = false; }
     remSheetBackdrop.hidden = false;
     remSheet.hidden = false;
     void remSheet.offsetHeight;
@@ -1869,14 +1965,13 @@
         priority: remFieldPriority.value,
         repeat: remFieldRepeat.value
       };
-      remSheetSaveBtn.disabled = true;
       const url = editingReminderId ? '/api/workforce/hr-assistant/reminders/' + encodeURIComponent(editingReminderId) : '/api/workforce/hr-assistant/reminders';
-      await postJson(url, payload);
-      invalidateReminderCache();
-      remSheetSaveBtn.disabled = false;
-      closeReminderSheet();
-      if (panelView === 'reminderDetail' && editingReminderId) openReminderDetail(editingReminderId);
-      else loadRemindersPage(activeRemFilter);
+      await runButtonAction(remSheetSaveBtn, () => postJsonOrThrow(url, payload), () => {
+        invalidateReminderCache();
+        closeReminderSheet();
+        if (panelView === 'reminderDetail' && editingReminderId) openReminderDetail(editingReminderId);
+        else loadRemindersPage(activeRemFilter);
+      });
     });
   }
 
@@ -1927,16 +2022,17 @@
         const action = b.dataset.rdAction;
         if (action === 'edit') { openReminderSheet(r); return; }
         if (action === 'open-chat') { openConversationPage(r.linkedChatId); return; }
-        b.disabled = true;
         const map = { done: 'done', cancel: 'cancel', undo: 'undo' };
-        await postJson('/api/workforce/hr-assistant/reminders/' + encodeURIComponent(id) + '/' + map[action], {});
-        invalidateReminderCache();
-        showReminders();
+        const toastText = action === 'done' ? 'Marked done ✓' : action === 'cancel' ? 'Cancelled' : 'Undone';
+        await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/reminders/' + encodeURIComponent(id) + '/' + map[action], {}), () => {
+          invalidateReminderCache();
+          showActionToast(toastText);
+          showReminders();
+        });
       });
     });
     remDetailBody.querySelectorAll('[data-rd-snooze]').forEach((b) => {
       b.addEventListener('click', async () => {
-        b.disabled = true;
         const which = b.dataset.rdSnooze;
         let body;
         if (which === 'tomorrow10') {
@@ -1945,9 +2041,11 @@
         } else {
           body = { minutes: Number(which) };
         }
-        await postJson('/api/workforce/hr-assistant/reminders/' + encodeURIComponent(id) + '/snooze', body);
-        invalidateReminderCache();
-        showReminders();
+        await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/reminders/' + encodeURIComponent(id) + '/snooze', body), () => {
+          invalidateReminderCache();
+          showActionToast('Snoozed');
+          showReminders();
+        });
       });
     });
   }

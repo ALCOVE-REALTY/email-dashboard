@@ -1659,6 +1659,15 @@ body { background: var(--wi-bg); }
 .wf-convo-action-group {
   border-radius: var(--wi-r-card); box-shadow: var(--wi-sh-card); background: var(--wi-surface); padding: 12px;
   display: flex; flex-direction: column; gap: 10px; animation: mUp .4s cubic-bezier(.2,.7,.2,1) both;
+  overflow: hidden;
+}
+/* Fades + collapses ONE card out of the list on a successful action -
+   never a re-render of the whole list (speed/UX fix: see runButtonAction
+   in hrAssistant.js). */
+.wf-convo-action-group.wf-card-exit { animation: wiCardExit .3s ease forwards; }
+@keyframes wiCardExit {
+  from { opacity: 1; max-height: 420px; margin-bottom: 10px; }
+  to { opacity: 0; max-height: 0; margin-bottom: 0; padding-top: 0; padding-bottom: 0; transform: scale(.97); }
 }
 .wf-convo-action-label { font-size: 0.72rem; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; color: var(--wi-muted); }
 .wf-convo-action-for { font-size: 0.74rem; font-weight: 700; color: var(--wi-primary); }
@@ -1680,12 +1689,57 @@ body { background: var(--wi-bg); }
 .wf-convo-action-row { display: flex; gap: 8px; }
 .wf-convo-action-btn {
   flex: 1; border: none; border-radius: var(--wi-r-btn); padding: 9px 10px; font-weight: 800; font-size: 0.8rem;
-  font-family: inherit; cursor: pointer; transition: transform .15s ease;
+  font-family: inherit; cursor: pointer; transition: transform .15s ease, background-color .2s ease, color .2s ease;
+  position: relative;
 }
 .wf-convo-action-btn:active { transform: scale(.96); }
 .wf-convo-action-btn.primary { background: var(--wi-primary); color: #FFFFFF; box-shadow: var(--wi-sh-primary); }
 .wf-convo-action-btn.danger { background: var(--wi-red-50); color: var(--wi-red-700); }
 .wf-convo-action-btn.outline { background: var(--wi-surface-3); color: var(--wi-ink); }
+
+/* ---------- Generic button-action feedback (speed/UX fix) ----------
+   Shared by every action button across the SUBH panel - approval Send/
+   Decline and draft/follow-up/document buttons (.wf-convo-action-btn),
+   the Add/Edit Reminder sheet's Cancel/Save (.wf-ai-action-btn) and the
+   reminder row's own checkbox (.wf-rem-checkbox). .is-loading hides the
+   label with opacity (never display:none/removed), so the button's own
+   size never changes while the spinner shows; .is-success flashes green
+   with a checkmark before the card is dismissed; .is-error turns red and
+   relabels to "Retry" (the same click listener is still attached, so
+   tapping it just runs the action again). prefers-reduced-motion already
+   strips every animation/transition globally (see this file's own
+   catch-all rule near the top). */
+.wf-ai-action-btn { position: relative; }
+.wf-convo-action-btn.is-loading > *, .wf-ai-action-btn.is-loading > * { opacity: 0; }
+.wf-convo-action-btn.is-loading::after, .wf-ai-action-btn.is-loading::after, .wf-rem-checkbox.is-loading::after {
+  content: ''; position: absolute; top: 50%; left: 50%; width: 15px; height: 15px; margin: -8px 0 0 -8px;
+  border: 2px solid rgba(255,255,255,.4); border-top-color: #FFFFFF; border-radius: 50%;
+  animation: wiBtnSpin .6s linear infinite;
+}
+.wf-convo-action-btn.outline.is-loading::after, .wf-convo-action-btn.danger.is-loading::after, .wf-ai-action-btn.outline.is-loading::after {
+  border-color: var(--wi-border-2); border-top-color: var(--wi-ink);
+}
+@keyframes wiBtnSpin { to { transform: rotate(360deg); } }
+
+.wf-convo-action-btn.is-success, .wf-ai-action-btn.is-success {
+  background: var(--wi-green) !important; color: #FFFFFF !important; box-shadow: none !important;
+}
+.wf-convo-action-btn.is-success > *, .wf-ai-action-btn.is-success > * { opacity: 0; }
+.wf-convo-action-btn.is-success::after, .wf-ai-action-btn.is-success::after {
+  content: '✓'; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  font-weight: 900; font-size: 1rem; color: #FFFFFF;
+}
+.wf-convo-action-btn.is-error, .wf-ai-action-btn.is-error { background: var(--wi-red-50) !important; color: var(--wi-red-700) !important; box-shadow: none !important; }
+.wf-convo-action-btn.is-error > *, .wf-ai-action-btn.is-error > * { opacity: 0; }
+.wf-convo-action-btn.is-error::after, .wf-ai-action-btn.is-error::after {
+  content: 'Retry'; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  font-weight: 800; font-size: 0.8rem; color: var(--wi-red-700);
+}
+
+.wf-rem-checkbox.is-loading::after { border-color: var(--wi-border-2); border-top-color: var(--wi-primary); width: 12px; height: 12px; margin: -6px 0 0 -6px; }
+.wf-rem-checkbox.is-success { background: var(--wi-green); border-color: transparent; }
+.wf-rem-checkbox.is-success::after { content: '✓'; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-weight: 900; font-size: .65rem; color: #FFFFFF; }
+.wf-rem-checkbox.is-error { background: var(--wi-red-50); border-color: var(--wi-red-700); }
 .wf-convo-toggle-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .wf-convo-toggle-label { font-size: 0.8rem; font-weight: 700; color: var(--wi-ink); }
 .wf-convo-toggle {
@@ -1777,7 +1831,9 @@ body { background: var(--wi-bg); }
 .wf-rem-checkbox {
   width: 20px; height: 20px; border-radius: 6px; border: 1.5px solid var(--wi-border-2); background: var(--wi-surface);
   cursor: pointer; flex-shrink: 0; display: flex; align-items: center; justify-content: center; color: transparent;
+  position: relative; transition: transform .12s ease, background-color .2s ease, border-color .2s ease;
 }
+.wf-rem-checkbox:active { transform: scale(.9); }
 .wf-rem-checkbox.checked { background: var(--wi-primary); border-color: var(--wi-primary); color: #FFFFFF; }
 .wf-rem-row-chevron { color: var(--wi-faint); }
 .wf-rem-add-btn {
