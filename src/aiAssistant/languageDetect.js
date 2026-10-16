@@ -28,7 +28,12 @@ const BENGALI_WORDS = [
   'janiye', 'janabo', 'janacchi', 'bolun', 'bolben', 'bolte', 'dekhano', 'holo', 'prothom',
   'theke', 'moddhe', 'kore', 'korte', 'korle', 'giye', 'niye', 'shigghiri', 'taratari',
   'ektu', 'por', 'ar', 'naki', 'gulo', 'ta', 'ti', 'jonno', 'bepare', 'jiggesh', 'kokhono',
-  'jokhon', 'tokhon', 'amake', 'tader', 'ora', 'sobar', 'shob'
+  'jokhon', 'tokhon', 'amake', 'tader', 'ora', 'sobar', 'shob',
+  // Found live: "thakchey naa" (a real Banglish message) matched none of
+  // the words above and fell through to 'english' - these are common
+  // phonetic-spelling variants of words already in this list (thakche/
+  // thakbe/jachhe/na) that the existing entries didn't cover.
+  'na', 'naa', 'thakche', 'thakchey', 'thakbe', 'jachhe', 'jachhey', 'hochhe', 'hoye', 'hoyeche'
 ];
 const HINDI_WORDS = [
   'ko', 'mein', 'hai', 'kya', 'kaise', 'batao', 'hoon', 'hain', 'raha', 'rahi', 'rahe', 'kar',

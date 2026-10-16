@@ -453,8 +453,17 @@ async function getWhatsappConversation(chatIdRaw) {
   const myDrafts = drafts.filter((d) => whatsapp.normalizePhone(d.contactId) === chatId);
   const myFollowups = followups.filter((f) => whatsapp.normalizePhone(f.chatId) === chatId);
   const myDocs = docs.filter((d) => whatsapp.normalizePhone(d.phone) === chatId);
-  const name = (latestLog && latestLog.name) || (myApprovals[0] && myApprovals[0].name) ||
-    (myDrafts[0] && myDrafts[0].name) || (myFollowups[0] && myFollowups[0].name) || chatId;
+  // "The sender" is a PROMPT-ONLY placeholder (see decideAutoReply's own
+  // senderLabel) baked into approval/draft/follow-up records when no name
+  // was resolved at the time - never a real name, so it must never leak
+  // into this UI-facing header. Prefer the real directory name first,
+  // then any already-resolved name from the other records (skipping the
+  // placeholder), then the bare number - never the placeholder string.
+  const directoryMatch = await findEmployeeByPhone(chatId).catch(() => null);
+  const isRealName = (n) => n && n !== 'The sender';
+  const name = (directoryMatch && directoryMatch.emp.name) ||
+    [latestLog, myApprovals[0], myDrafts[0], myFollowups[0]].map((r) => r && r.name).find(isRealName) ||
+    chatId;
   return {
     chatId,
     name,
@@ -1011,6 +1020,16 @@ async function prepareDataRequestAnswer(text) {
 // lookup and posts the approval request to SUBH chat, without holding up
 // the fixed holding reply that already went out to the requester.
 async function prepareAndQueueDataApproval({ phone, name, text, dataRequestSummary, lang }) {
+  // Dedupe (spec point 5/8) - never a second pending approval for the
+  // same sender while one is already open, e.g. a "?" nudge sent right
+  // after the original request must never spawn its own separate
+  // approval. The normalized phone is the identity key, not the request
+  // text, since the same person can only sensibly have one open request
+  // being reviewed at a time from this flow.
+  const existing = await listPendingApprovals();
+  if (existing.some((a) => whatsapp.normalizePhone(a.phone) === whatsapp.normalizePhone(phone))) {
+    return;
+  }
   const prepared = await prepareDataRequestAnswer(text);
   if (prepared.blocked) {
     // Never even reaches the approval step - a request that needs
@@ -1029,6 +1048,20 @@ async function prepareAndQueueDataApproval({ phone, name, text, dataRequestSumma
       preparedReplyText: null, preparedCard: null, preparedError: prepared.error
     });
     await postOwnerNotification(name + ' (' + phone + ') ' + dataRequestSummary + ' chaiche, kintu SUBH answer prepare korte parini: ' + prepared.error);
+    return;
+  }
+  // Content guard (spec point 8) - found live: a synthesized/odd request
+  // phrase (e.g. built from a follow-up nudge) reached the in-app pipeline
+  // and the model just chatted/greeted back (no_data_needed, card: null)
+  // instead of calling a real data tool - prepared.ok was true (no error,
+  // no PII) but there was nothing real to send. That garbage text got
+  // approved-and-sent on WhatsApp. An approval may only ever be created
+  // when there's an actual card to back it - no card means no real
+  // lookup happened, so this is treated the same as a prep failure:
+  // no approval, no "pathao/na" prompt, just a plain informational note
+  // for the owner to follow up on manually.
+  if (!prepared.card) {
+    await postOwnerNotification(name + ' (' + phone + ') ' + dataRequestSummary + ' chaiche, kintu SUBH kono real data khuje pay ni (reply ta generic hoye geche) - ei ta manually dekhte hobe.');
     return;
   }
   // The FINAL WhatsApp text is built once, here, at approval-creation
@@ -1077,10 +1110,21 @@ const CONTACT_NOT_ON_FILE_REPLY = {
 // so "never share their data even if I approve" is structurally true:
 // there is nothing to approve. The sender gets this directly, the owner
 // is told, and that's the end of it.
+// Banglish/Hinglish ("uni"/"unhone") are already gender-neutral - only the
+// English template needs a pronoun, and only when the directory actually
+// states one; an unknown/other gender value drops the pronoun clause
+// entirely rather than guessing "they" (a wrong he/she would be worse,
+// but "they" was itself flagged as the wrong default - omit, don't guess).
+function genderedHasLeft(gender) {
+  const g = String(gender || '').toLowerCase();
+  if (g === 'male') return ' — he has left.';
+  if (g === 'female') return ' — she has left.';
+  return '.';
+}
 const INACTIVE_EMPLOYEE_REPLY = {
   banglish: (name) => name + ' ekhon ar amader company-te kormorato nei — uni company chhere diyechhen. Aro kichu dorkar hole bolun.',
   hinglish: (name) => name + ' ab hamari company mein kaam nahi karte — unhone company chhod di hai. Aur kuch chahiye toh bataiye.',
-  english: (name) => name + ' is no longer with our company — they have left. Let me know if you need anything else.'
+  english: (name, gender) => name + ' is no longer with our company' + genderedHasLeft(gender) + ' Let me know if you need anything else.'
 };
 
 // Shared with the in-app tools.js employee-lookup fix (same bug, same
@@ -1181,7 +1225,7 @@ async function handlePersonLookupRequest({ phone, name, lang, personName, person
       !departmentHintMatches(current[0].department, department);
     if (hintMatchesInactiveOnly) {
       await replyInactiveEmployee({ phone, requesterLabel: name, candidate: inactive[0], lang });
-      return { case: 'acknowledged', replyText: (INACTIVE_EMPLOYEE_REPLY[lang] || INACTIVE_EMPLOYEE_REPLY.english)(inactive[0].name), summaryForOwner: null };
+      return { case: 'acknowledged', replyText: (INACTIVE_EMPLOYEE_REPLY[lang] || INACTIVE_EMPLOYEE_REPLY.english)(inactive[0].name, inactive[0].gender), summaryForOwner: null };
     }
   }
 
@@ -1190,7 +1234,7 @@ async function handlePersonLookupRequest({ phone, name, lang, personName, person
     // outcome, since no data is ever shared either way; use the first for
     // the owner's own notification.
     await replyInactiveEmployee({ phone, requesterLabel: name, candidate: inactive[0], lang });
-    return { case: 'acknowledged', replyText: (INACTIVE_EMPLOYEE_REPLY[lang] || INACTIVE_EMPLOYEE_REPLY.english)(inactive[0].name), summaryForOwner: null };
+    return { case: 'acknowledged', replyText: (INACTIVE_EMPLOYEE_REPLY[lang] || INACTIVE_EMPLOYEE_REPLY.english)(inactive[0].name, inactive[0].gender), summaryForOwner: null };
   }
 
   if (current.length === 1) {
@@ -2122,11 +2166,13 @@ const DRAFT_SYSTEM_PROMPT =
   'straight to the topic instead. ALWAYS address the sender formally/respectfully - "apni" (Bengali) / ' +
   '"aap" (Hindi) / polite English - no matter what, for everyone without exception, even if THEIR OWN ' +
   'message used informal "tumi"/"tui"/"tor" (Bengali) or "tum"/"tera"/"tu" (Hindi): NEVER reply with ' +
-  '"tumi"/"tum", never mixed. You are told the ' +
-  'sender\'s first name as part of "X wrote: ..." below - if it is a real name, you may personalize by ' +
-  'starting with it (e.g. "Rahul, ..."), but never in every single reply, vary it. If you are told "The ' +
-  'sender wrote: ...", that is NOT a name - no name is known for this person, do not invent one, do not ' +
-  'address them as "The sender" or by any placeholder, just do not use a name at all. ' +
+  '"tumi"/"tum", never mixed. NEVER address the sender by name, and NEVER use "Sir"/"Madam"/"Ma\'am"/ ' +
+  '"ji" - SUBH cannot know the sender\'s gender from a name, and a wrong guess is worse than a plain, ' +
+  'respectful "apni"/"aap"/"you" with no name or title at all. You are told the sender\'s first name as ' +
+  'part of "X wrote: ..." below purely so you know who the conversation is about if it comes up - never ' +
+  'use it to address them directly, and if you are told "The sender wrote: ...", that is NOT a name - ' +
+  'no name is known for this person, do not invent one, do not address them as "The sender" or by any ' +
+  'placeholder either, just do not use a name at all. ' +
   'If (ONLY if) a "Taught memory fact" system message is given below - never describe or reuse this ' +
   'mechanism when it is absent - the owner has specifically taught SUBH this exact fact for exactly ' +
   'this topic/period/audience. The memory\'s own fact/guidance TEXT was typed by the owner in WHATEVER ' +
@@ -2290,7 +2336,8 @@ const GROUP_DRAFT_SYSTEM_PROMPT =
   'casual spoken register, never textbook-formal or literary words - e.g. "Eta" not "Eti" - exactly ' +
   'how a person actually types on their phone. ' +
   'NEVER open with "Namaskar", "Namaste", "Ji" or "Dear" - reads as a bot/call-centre script, go ' +
-  'straight to the topic instead. There is no identified individual sender here, so never guess or ' +
+  'straight to the topic instead. NEVER use "Sir"/"Madam"/"Ma\'am"/"ji" either - SUBH cannot know ' +
+  'anyone\'s gender, a plain "apni"/"aap"/"you" is always correct instead. There is no identified individual sender here, so never guess or ' +
   'invent a name to address - speak to the group generally, same as the rest of this prompt already ' +
   'says. ' +
   'If a "Taught memory fact" system message is given below, the owner has specifically taught SUBH ' +
@@ -2355,14 +2402,6 @@ function isInformal(text, lang) {
   if (lang === 'hinglish') return INFORMAL_HINDI_RE.test(text);
   return false;
 }
-// English always capitalizes the pronoun "I" regardless of position in
-// the sentence - found live: naively lowercasing the first letter after
-// a name turned "I'm checking..." into "Lucy, i'm checking..." (wrong).
-function lowerFirstLetter(phrase) {
-  if (/^I(?:['’]|\s|$)/.test(phrase)) return phrase;
-  return phrase.charAt(0).toLowerCase() + phrase.slice(1);
-}
-
 // ---------------- Auto-reply decision (case a/b/c) ----------------
 // One classification call per official message - detects the TOPIC
 // (one of memoryService's topics, or "own_record" for the sender's own
@@ -2469,10 +2508,22 @@ const FORBIDDEN_TIMEFRAME_RE = /\b(ajke|ajkei|aj-i|aj|today|tomorrow|agamikal|ka
 function containsUnbackedTimeframePromise(text) {
   return FORBIDDEN_TIMEFRAME_RE.test(text || '');
 }
+// Structural safety net on topicLabel itself - classifyOfficialMessage's
+// own schema already asks for "2-5 words", but found live that the model
+// can still hand back a long run-on phrase ("Pamela unavailable 22-24
+// Oct, Sinuji F&F approval"), which reads as broken grammar once pasted
+// into a template sentence ("...you're waiting on Pamela unavailable
+// 22-24 Oct..."). Capped in code, not just prompted, same principle as
+// every other structural check in this file.
+const MAX_TOPIC_LABEL_WORDS = 6;
+function sanitizeTopicLabel(topicLabel) {
+  const words = String(topicLabel || 'their question').trim().replace(/[,;]+$/, '').split(/\s+/);
+  return words.slice(0, MAX_TOPIC_LABEL_WORDS).join(' ') || 'their question';
+}
 const SAFE_NO_PROMISE_FALLBACK = {
-  banglish: (topicLabel) => 'Bujhte parchi apni ' + topicLabel + ' niye opekkha korchen. Ami Subhodeep-er sathe kotha bole apnake exact update janabo.',
-  hinglish: (topicLabel) => 'Samajh sakta hoon aap ' + topicLabel + ' ka wait kar rahe hain. Main Subhodeep se baat karke aapko exact update bata dunga.',
-  english: (topicLabel) => "I understand you're waiting on " + topicLabel + ". I'll check with Subhodeep and confirm the exact update for you."
+  banglish: (topicLabel) => 'Bujhte parchi apni ' + sanitizeTopicLabel(topicLabel) + ' niye jiggesh korchen. Ami Subhodeep-er sathe kotha bole apnake exact update janabo.',
+  hinglish: (topicLabel) => 'Samajh sakta hoon aap ' + sanitizeTopicLabel(topicLabel) + ' ke baare mein pooch rahe hain. Main Subhodeep se baat karke aapko exact update bata dunga.',
+  english: (topicLabel) => "I understand you're asking about " + sanitizeTopicLabel(topicLabel) + ". I'll check with Subhodeep and confirm the exact update for you."
 };
 // Fallback when even the robotic-phrase retry doesn't clean up - one
 // short, natural question naming the real topic, never a formal
@@ -2505,13 +2556,19 @@ const CONTEXT_REPLY_SYSTEM_PROMPT =
   'they sound frustrated or have been waiting - never a template phrase, really respond to what they ' +
   'said. ALWAYS mention the actual topic by name (you are told it below) - never just say "this"/"it"/ ' +
   '"your issue"/"bishoy-ta" with no topic attached; a generic reply with no named topic is a failure. ' +
-  'NEVER open with "Namaskar"/"Namaste"/"Ji"/"Dear" - go straight to the point. Match the sender\'s own ' +
-  'language/script from their OWN messages in the history - but address them ALWAYS formally/' +
-  'respectfully ("apni" in Bengali, "aap" in Hindi, polite English) no matter what, for every sender ' +
-  'without exception, regardless of their role and regardless of whether THEIR OWN messages are ' +
-  'informal ("tumi"/"tui"/"tor"/"tum"/"tera"/"tu") - NEVER reply with "tumi"/"tum", never mixed. Warm ' +
-  'and courteous, never slangy. Keep it to 1-3 short lines, like a real person typing on their phone, ' +
-  'never textbook-formal, never robotic. ' +
+  'NEVER open with "Namaskar"/"Namaste"/"Ji"/"Dear" - go straight to the point. You are told the ' +
+  'sender\'s language below (detected deterministically from their own words) - ALWAYS reply in that ' +
+  'exact language/script, never a different one, regardless of which language earlier messages in the ' +
+  'history happened to use. Address them ALWAYS formally/respectfully ("apni" in Bengali, "aap" in ' +
+  'Hindi, polite English) no matter what, for every sender without exception, regardless of their role ' +
+  'and regardless of whether THEIR OWN messages are informal ("tumi"/"tui"/"tor"/"tum"/"tera"/"tu") - ' +
+  'NEVER reply with "tumi"/"tum", never mixed. NEVER address the sender by name, and NEVER use "Sir"/ ' +
+  '"Madam"/"Ma\'am"/"ji" - SUBH cannot know their gender, and a wrong guess is worse than a plain ' +
+  '"apni"/"aap"/"you" with no name or title. Mention the actual topic (you are told it below) as a ' +
+  'short, NATURAL phrase woven into a normal sentence, never a long or run-on label pasted in verbatim - ' +
+  'if the given topic reads awkwardly inside a sentence, paraphrase it shorter rather than forcing it in ' +
+  'word-for-word. Warm and courteous, never slangy. Keep it to 1-3 short lines, like a real person ' +
+  'typing on their phone, never textbook-formal, never robotic. ' +
   'Banglish negation: "-ni" (ashe ni, hoy ni), never "-eche na"; say "shighroi" or "taratari" for ' +
   '"soon", NEVER "shigghiri" (not a real word). English: correct tense, no literal translation. ' +
   'Hinglish: "nahi", never a bare "na"; address as "aap". Never mix a Hindi word into Banglish or a ' +
@@ -2521,9 +2578,11 @@ async function generateConversationReply(text, history, firstName, topicLabel, n
   if (!apiKey) throw new Error('whatsappAssistant.generateConversationReply called without ANTHROPIC_API_KEY set');
   if (!DRAFT_MODEL) throw new Error('whatsappAssistant.generateConversationReply called without CLAUDE_MODEL_MAIN set');
   const lang = detectLang(text);
+  const LANG_DIRECTIVE = { banglish: 'Banglish (Bengali in Roman letters)', hinglish: 'Hinglish (Hindi in Roman letters)', english: 'English' };
   const historyBlock = formatHistoryBlock(history) || '(no earlier messages in this conversation yet)';
   const userContent = historyBlock + '\n\nTheir latest message: "' + text + '"\n\n' +
-    'Topic: ' + topicLabel + '. ' +
+    'Their detected language (reply in exactly this, see the system rules): ' + (LANG_DIRECTIVE[lang] || LANG_DIRECTIVE.english) + '. ' +
+    'Topic: ' + sanitizeTopicLabel(topicLabel) + '. ' +
     (needsAnswer
       ? 'This needs a real reply naming the topic above - you do not have the answer, see the system rules.'
       : 'This is a greeting/acknowledgement with nothing open to resolve - reply briefly and warmly, never silence.');
@@ -2561,8 +2620,10 @@ async function generateConversationReply(text, history, firstName, topicLabel, n
     if (retried && !NATIVE_SCRIPT_RE.test(retried)) content = retried;
   }
   if (needsAnswer && containsUnbackedTimeframePromise(content)) {
-    const safe = (SAFE_NO_PROMISE_FALLBACK[lang] || SAFE_NO_PROMISE_FALLBACK.english)(topicLabel);
-    content = firstName ? firstName + ', ' + lowerFirstLetter(safe) : safe;
+    // Never prefixed with the sender's name (found live: "Radha, I
+    // understand you're waiting on..." - violates the no-name-addressing
+    // rule just as much as a model-generated name would).
+    content = (SAFE_NO_PROMISE_FALLBACK[lang] || SAFE_NO_PROMISE_FALLBACK.english)(topicLabel);
   }
   // Structural ban on robotic/stiff phrasing (spec point 2) - found live
   // ("I'm not sure I follow your message... Could you tell me a bit more
@@ -2899,6 +2960,70 @@ async function handleIncomingMedia(contactId, name, msg) {
 // recipient afterward.
 const POLL_FEED_LIMIT = 100;
 
+// ---------------- Message bursts = one turn (spec point 5) ----------------
+// Found live: "Amake engineers der list ta iktu dao" then a bare "?" a
+// few seconds later got decided SEPARATELY (each new message was its own
+// classify+decide+reply, even within the same contact) - the "?" was
+// treated as a brand-new data request and produced its own garbage
+// approval. Real messages from the same sender arriving close together
+// are now buffered and decided together as ONE turn, flushed once the
+// sender goes quiet for BURST_QUIET_MS or BURST_MAX_WAIT_MS has elapsed
+// since the first buffered message (whichever comes first - the max-wait
+// ceiling exists so a steady trickle of messages can never push the
+// reply past the ~60s latency target). The buffer is independent of
+// last-seen-id tracking (a buffered message is still marked "seen" via
+// setLastSeenId as normal - only WHEN it gets decided is deferred, never
+// whether the gateway considers it read), and independent of which
+// contacts happen to appear in a given poll tick's feed (a contact who
+// goes silent after their last message still needs their buffer flushed
+// on a LATER tick even though they have nothing new that tick - see
+// listBurstBufferContactIds, checked every tick regardless of the feed).
+const BURST_BUFFER_PREFIX = 'wa-burst-buffer:';
+const BURST_BUFFER_IDS_KEY = 'wa-burst-buffer-ids';
+const BURST_QUIET_MS = 9000;
+const BURST_MAX_WAIT_MS = 40000;
+// A bare "?"/"??"/"hello?" etc. right after a request is a NUDGE on that
+// request, never a new request of its own - dropped from the combined
+// text handed to classification (but every message still appears in the
+// owner-facing log/history, nothing is silently discarded).
+const NUDGE_RE = /^(\?+|hello\??|hi\??|hey\??|hola\??)$/i;
+function isNudgeMessage(text) {
+  return NUDGE_RE.test(String(text || '').trim());
+}
+function combineBurstText(messages) {
+  const real = messages.filter((m) => !isNudgeMessage(m.text));
+  return (real.length ? real : messages).map((m) => m.text).join('\n');
+}
+async function getBurstBuffer(contactId) {
+  const redis = getClient();
+  if (!redis) return null;
+  try {
+    const raw = await redis.get(BURST_BUFFER_PREFIX + contactId);
+    return raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : null;
+  } catch (err) { return null; }
+}
+async function saveBurstBuffer(contactId, buffer) {
+  const redis = getClient();
+  if (!redis) return;
+  try {
+    await redis.set(BURST_BUFFER_PREFIX + contactId, JSON.stringify(buffer), { ex: 120 });
+    await redis.sadd(BURST_BUFFER_IDS_KEY, contactId);
+  } catch (err) { /* best effort */ }
+}
+async function clearBurstBuffer(contactId) {
+  const redis = getClient();
+  if (!redis) return;
+  try {
+    await redis.del(BURST_BUFFER_PREFIX + contactId);
+    await redis.srem(BURST_BUFFER_IDS_KEY, contactId);
+  } catch (err) { /* best effort */ }
+}
+async function listBurstBufferContactIds() {
+  const redis = getClient();
+  if (!redis) return [];
+  try { return await redis.smembers(BURST_BUFFER_IDS_KEY); } catch (err) { return []; }
+}
+
 async function pollOnce() {
   const feed = await whatsapp.listMessages(null, POLL_FEED_LIMIT);
   const results = { checked: 0, official: 0, personal: 0, groupMessagesScanned: 0, groupMentionsFound: 0, skippedBlockedGroups: 0, scheduled: 0, errors: [] };
@@ -2933,6 +3058,56 @@ async function pollOnce() {
     return chatNames.get(id) || id;
   }
 
+  // Decides and acts on ONE combined turn's worth of text (one message, or
+  // several buffered together - see the burst-buffer comment above
+  // pollOnce). Identical to what used to run inline per-message; now the
+  // one and only place that logic lives, called from the flush pass below.
+  async function actOnOfficialTurn({ contactId, name, firstName, text, arrivedAt, seenAt, results }) {
+    const history = await getConvoHistory(contactId, CONVO_HISTORY_MAX);
+    const isDup = isDuplicateIncoming(history, text);
+    const isLoop = !isDup && isBotLoopPattern(history, text);
+    if (isDup || isLoop) {
+      await appendConvoHistory(contactId, 'in', text);
+      await logInboxEvent({ chatId: contactId, name, isGroup: false, messageSummary: text, aCase: null, sentText: null, outcome: isDup ? 'skipped_duplicate' : 'skipped_possible_loop', arrivedAt, seenAt });
+      return;
+    }
+    await appendConvoHistory(contactId, 'in', text);
+
+    const decision = await decideAutoReply({ phone: contactId, name, firstName, text, isGroup: false, history: history.slice(-10) }).catch(() => null);
+    if (decision && decision.case === 'automatic') {
+      // A real human message on this official number by default (see
+      // classify()) - but THIS one reads like an automated/non-human
+      // message (OTP, bank/delivery notification, marketing, another
+      // business's bot, a WhatsApp system message). Never replied to,
+      // never escalated to the owner, but still visible in the inbox so
+      // nothing silently vanishes without a trace.
+      results.automatic = (results.automatic || 0) + 1;
+      await logInboxEvent({ chatId: contactId, name, isGroup: false, messageSummary: text, aCase: 'automatic', sentText: null, outcome: 'automatic', arrivedAt, seenAt });
+    } else if (decision && decision.replyText) {
+      await appendConvoHistory(contactId, 'out', decision.replyText);
+      if (await isNeverAuto(contactId)) {
+        // Spec item 3: decided normally, but never auto-sent - back into
+        // the old manual pending-draft flow + a notification, same as
+        // every official message worked before auto-reply existed.
+        await savePendingDraft({ type: 'direct', contactId, name, messagePreview: text.slice(0, 200), draftReply: decision.replyText, createdAt: Date.now() });
+        await postOwnerNotification(name + ' (never-auto list) asked: ' + text.slice(0, 160) + ' — draft ready, your review needed');
+        await logAutoReplyEvent({ senderType: 'direct', aCase: decision.case, memoryId: decision.memoryId || null, action: 'never_auto_drafted' });
+        await logInboxEvent({ chatId: contactId, name, isGroup: false, messageSummary: text, aCase: decision.case, sentText: decision.replyText, outcome: 'never_auto_pending', arrivedAt, seenAt });
+      } else {
+        await scheduleAutoSend({
+          chatId: contactId, isGroup: false, name,
+          replyText: decision.replyText, case: decision.case, memoryId: decision.memoryId || null,
+          summaryForOwner: decision.summaryForOwner || null,
+          topicLabel: decision.topicLabel || null,
+          topic: decision.topic || null,
+          followupCount: decision.followupCount || null,
+          arrivedAt, seenAt
+        });
+        results.scheduled++;
+      }
+    }
+  }
+
   for (const [contactId, messages] of byContact) {
     try {
       const lastSeenId = await getLastSeenId(contactId);
@@ -2955,72 +3130,45 @@ async function pollOnce() {
         if (verdict === 'official') {
           results.official++;
           if (!autoReplyOn) continue; // global kill switch (spec point 5) - seen, not acted on
-          // Per-message timeline (spec: "fix latency, record per-message
-          // timestamps so this can be checked later") - arrivedAt is the
-          // gateway's own timestamp for THIS message, seenAt is when this
-          // poll tick actually decided it; the gap between them is poll-
-          // cadence/backoff latency, the gap to the eventual sentAt (added
-          // in sendOrReportAutoReply) is the delayed-send queue's own doing.
+          // Buffer this message instead of deciding on it right away
+          // (spec point 5 - message bursts = one turn). arrivedAt is the
+          // gateway's own per-message timestamp, preserved so the
+          // eventual combined turn's latency is measured from the FIRST
+          // message in the burst, not from whenever it happens to flush.
           const arrivedAt = msg.created_at ? new Date(msg.created_at).getTime() : Date.now();
-          const seenAt = Date.now();
-
-          // Loop protection (reworked - see isDuplicateIncoming/
-          // isBotLoopPattern's own comment for why) checked against the
-          // SENDER's own recent messages, fetched once and reused as
-          // conversation context below regardless of outcome. Still
-          // visible in the inbox summary (not a silent continue) - an
-          // owner checking "what came in" should see that a message
-          // arrived even when SUBH correctly chose not to reply to it.
-          const history = await getConvoHistory(contactId, CONVO_HISTORY_MAX);
-          const isDup = isDuplicateIncoming(history, text);
-          const isLoop = !isDup && isBotLoopPattern(history, text);
-          if (isDup || isLoop) {
-            await appendConvoHistory(contactId, 'in', text);
-            await logInboxEvent({ chatId: contactId, name, isGroup: false, messageSummary: text, aCase: null, sentText: null, outcome: isDup ? 'skipped_duplicate' : 'skipped_possible_loop', arrivedAt, seenAt });
-            continue;
-          }
-          await appendConvoHistory(contactId, 'in', text);
-
-          const decision = await decideAutoReply({ phone: contactId, name, firstName, text, isGroup: false, history: history.slice(-10) }).catch(() => null);
-          if (decision && decision.case === 'automatic') {
-            // A real human message on this official number by default
-            // (see classify()) - but THIS one reads like an automated/
-            // non-human message (OTP, bank/delivery notification,
-            // marketing, another business's bot, a WhatsApp system
-            // message). Never replied to, never escalated to the owner,
-            // but still visible in the inbox so nothing silently
-            // vanishes without a trace.
-            results.automatic = (results.automatic || 0) + 1;
-            await logInboxEvent({ chatId: contactId, name, isGroup: false, messageSummary: text, aCase: 'automatic', sentText: null, outcome: 'automatic', arrivedAt, seenAt });
-          } else if (decision && decision.replyText) {
-            await appendConvoHistory(contactId, 'out', decision.replyText);
-            if (await isNeverAuto(contactId)) {
-              // Spec item 3: decided normally, but never auto-sent - back
-              // into the old manual pending-draft flow + a notification,
-              // same as every official message worked before auto-reply
-              // existed.
-              await savePendingDraft({ type: 'direct', contactId, name, messagePreview: text.slice(0, 200), draftReply: decision.replyText, createdAt: Date.now() });
-              await postOwnerNotification(name + ' (never-auto list) asked: ' + text.slice(0, 160) + ' — draft ready, your review needed');
-              await logAutoReplyEvent({ senderType: 'direct', aCase: decision.case, memoryId: decision.memoryId || null, action: 'never_auto_drafted' });
-              await logInboxEvent({ chatId: contactId, name, isGroup: false, messageSummary: text, aCase: decision.case, sentText: decision.replyText, outcome: 'never_auto_pending', arrivedAt, seenAt });
-            } else {
-              await scheduleAutoSend({
-                chatId: contactId, isGroup: false, name,
-                replyText: decision.replyText, case: decision.case, memoryId: decision.memoryId || null,
-                summaryForOwner: decision.summaryForOwner || null,
-                topicLabel: decision.topicLabel || null,
-                topic: decision.topic || null,
-                followupCount: decision.followupCount || null,
-                arrivedAt, seenAt
-              });
-              results.scheduled++;
-            }
-          }
+          const existingBuffer = await getBurstBuffer(contactId);
+          const buffer = existingBuffer || { messages: [], firstSeenAt: arrivedAt, name, firstName };
+          buffer.messages.push({ text, arrivedAt });
+          await saveBurstBuffer(contactId, buffer);
         } else {
           results.personal++; // text was only ever held in this loop's local variable, never stored
         }
       }
       await setLastSeenId(contactId, highestId);
+    } catch (err) {
+      results.errors.push({ contact: contactId, message: err.message });
+    }
+  }
+
+  // Flush any burst buffer that's ready - checked for EVERY contact with a
+  // pending buffer, not just ones who appeared in this tick's feed (a
+  // sender who goes quiet still needs their buffered turn decided on a
+  // later tick even with nothing new from them that tick).
+  for (const contactId of await listBurstBufferContactIds()) {
+    try {
+      const buffer = await getBurstBuffer(contactId);
+      if (!buffer || !buffer.messages.length) { await clearBurstBuffer(contactId); continue; }
+      const now = Date.now();
+      const lastArrival = buffer.messages[buffer.messages.length - 1].arrivedAt;
+      const quiet = now - lastArrival >= BURST_QUIET_MS;
+      const maxedOut = now - buffer.firstSeenAt >= BURST_MAX_WAIT_MS;
+      if (!quiet && !maxedOut) continue; // still might get another message in this burst - wait
+      await clearBurstBuffer(contactId);
+      const combinedText = combineBurstText(buffer.messages);
+      await actOnOfficialTurn({
+        contactId, name: buffer.name, firstName: buffer.firstName, text: combinedText,
+        arrivedAt: buffer.firstSeenAt, seenAt: now, results
+      });
     } catch (err) {
       results.errors.push({ contact: contactId, message: err.message });
     }
@@ -3152,5 +3300,16 @@ module.exports = {
   IDENTITY_CONFIRM_REPLY,
   isEmojiOnlyMessage,
   EMOJI_ACK_REPLY,
-  FORBIDDEN_ROBOTIC_RE
+  FORBIDDEN_ROBOTIC_RE,
+  // Exported for scripts/check-whatsapp-engine.js only - the live-review
+  // fix (message bursts, topic-label safety, gender-aware inactive reply).
+  isNudgeMessage,
+  combineBurstText,
+  getBurstBuffer,
+  saveBurstBuffer,
+  clearBurstBuffer,
+  listBurstBufferContactIds,
+  sanitizeTopicLabel,
+  genderedHasLeft,
+  INACTIVE_EMPLOYEE_REPLY
 };

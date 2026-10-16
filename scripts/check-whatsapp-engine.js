@@ -180,6 +180,56 @@ async function checkAsync(label, fn) {
     const d = await whatsappAssistant.decideAutoReply({ phone: TEST_PHONE, name: 'Test', firstName: 'Test', text: 'amar F&F settlement approval ki hoyeche?', isGroup: false, history: [] });
     return Boolean(d.replyText) && /subhodeep/i.test(d.replyText) && !whatsappAssistant.FORBIDDEN_ROBOTIC_RE.test(d.replyText);
   });
+  await checkAsync('a reply NEVER opens with the sender\'s own name or uses Sir/Madam/ji, even with firstName supplied', async () => {
+    const d = await whatsappAssistant.decideAutoReply({ phone: TEST_PHONE, name: 'Radha Test', firstName: 'Radha', text: 'amar confirmation letter ta kobe pabo?', isGroup: false, history: [] });
+    return Boolean(d.replyText) && !/^radha\b/i.test(d.replyText.trim()) && !/\bsir\b|\bmadam\b|\bma'am\b|\bji\b/i.test(d.replyText);
+  });
+
+  console.log('='.repeat(70));
+  console.log('Live-review fix: gender-aware inactive reply, awkward-grammar guard, language-detector gap, message bursts (found with Radha Biswas Bhattacharjee / Pravat Kumar Sahoo / the engineers "?" burst)');
+  console.log('='.repeat(70));
+  check('INACTIVE_EMPLOYEE_REPLY.english uses "he" for a Male directory record', /he has left/i.test(whatsappAssistant.INACTIVE_EMPLOYEE_REPLY.english('Test Person', 'Male')));
+  check('INACTIVE_EMPLOYEE_REPLY.english uses "she" for a Female directory record', /she has left/i.test(whatsappAssistant.INACTIVE_EMPLOYEE_REPLY.english('Test Person', 'Female')));
+  check('INACTIVE_EMPLOYEE_REPLY.english never guesses "they"/a pronoun when gender is unknown', !/\bthey\b|\bhe\b|\bshe\b/i.test(whatsappAssistant.INACTIVE_EMPLOYEE_REPLY.english('Test Person', '')));
+
+  check('sanitizeTopicLabel caps a long run-on topic label (found live: "Pamela unavailable 22-24 Oct, Sinuji F&F approval")', whatsappAssistant.sanitizeTopicLabel('Pamela unavailable 22-24 Oct, Sinuji F&F approval').split(/\s+/).length <= 6);
+  check('sanitizeTopicLabel leaves a short, already-clean label untouched', whatsappAssistant.sanitizeTopicLabel('confirmation letter') === 'confirmation letter');
+
+  const { detectMessageLanguage } = require('../src/aiAssistant/languageDetect');
+  check('the language detector now recognizes "thakchey naa" as Banglish (found live: this exact message was mis-detected as English)', detectMessageLanguage('22/10-24/10 thakchey naa') === 'banglish');
+
+  check('isNudgeMessage recognizes a bare "?" as a nudge, not a new request', whatsappAssistant.isNudgeMessage('?'));
+  check('isNudgeMessage recognizes "??" and "hello?" as nudges', whatsappAssistant.isNudgeMessage('??') && whatsappAssistant.isNudgeMessage('hello?'));
+  check('isNudgeMessage rejects real content even if it ends in a question mark', !whatsappAssistant.isNudgeMessage('Amake engineers der list ta dao?'));
+  check('combineBurstText drops a trailing nudge from the combined text (found live: a "?" sent right after a real request spawned its own separate, garbage approval)', whatsappAssistant.combineBurstText([{ text: 'Amake engineers der list ta dao' }, { text: '?' }]) === 'Amake engineers der list ta dao');
+  check('combineBurstText falls back to showing everything if EVERY buffered message was a nudge (never silently empty)', whatsappAssistant.combineBurstText([{ text: '?' }, { text: '??' }]) === '?\n??');
+
+  // Burst-buffer Redis mechanics - a dedicated, TTL'd (120s), UI-invisible
+  // scratch namespace (wa-burst-buffer:*) with no real-feature overlap, so
+  // a synthetic contactId here can never surface in the owner's app the
+  // way a fake wa-pending-approval/wa-doc-request record would - still
+  // cleaned up explicitly below regardless.
+  const BURST_TEST_CONTACT = 'test-burst-buffer-contact';
+  await checkAsync('saveBurstBuffer/getBurstBuffer round-trip, and the contact appears in listBurstBufferContactIds', async () => {
+    await whatsappAssistant.saveBurstBuffer(BURST_TEST_CONTACT, { messages: [{ text: 'hi', arrivedAt: Date.now() }], firstSeenAt: Date.now(), name: 'Test', firstName: 'Test' });
+    const loaded = await whatsappAssistant.getBurstBuffer(BURST_TEST_CONTACT);
+    const ids = await whatsappAssistant.listBurstBufferContactIds();
+    return Boolean(loaded) && loaded.messages.length === 1 && ids.includes(BURST_TEST_CONTACT);
+  });
+  await checkAsync('clearBurstBuffer removes it and the contact drops out of listBurstBufferContactIds', async () => {
+    await whatsappAssistant.clearBurstBuffer(BURST_TEST_CONTACT);
+    const loaded = await whatsappAssistant.getBurstBuffer(BURST_TEST_CONTACT);
+    const ids = await whatsappAssistant.listBurstBufferContactIds();
+    return !loaded && !ids.includes(BURST_TEST_CONTACT);
+  });
+
+  console.log('='.repeat(70));
+  console.log('WhatsApp conversation header never shows the internal "The sender" placeholder');
+  console.log('='.repeat(70));
+  await checkAsync('getWhatsappConversation for a number with no real data falls back to the number, never the literal "The sender" placeholder', async () => {
+    const convo = await whatsappAssistant.getWhatsappConversation(TEST_PHONE);
+    return convo.name !== 'The sender';
+  });
 
   console.log('='.repeat(70));
   console.log(pass + '/' + (pass + fail) + ' passed' + (fail ? ', ' + fail + ' FAILED' : ''));

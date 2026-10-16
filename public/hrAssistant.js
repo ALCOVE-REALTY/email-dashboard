@@ -1309,12 +1309,12 @@
 
     // Phase 3 builds real Gmail-backed important mails - for now this is
     // a plain, honest empty state rather than a fake/mocked list.
-    if (commsMailCard) commsMailCard.textContent = 'Mail connect hobe porer dhape.';
+    if (commsMailCard) commsMailCard.textContent = 'Mail integration coming soon.';
 
     const items = data.whatsappItems || [];
     if (commsWaList) {
       if (!items.length) {
-        commsWaList.innerHTML = '<div class="wf-comms-empty">Kichu pending nei - shob clear!</div>';
+        commsWaList.innerHTML = '<div class="wf-comms-empty">Nothing pending - all clear!</div>';
       } else {
         commsWaList.innerHTML = items.map((it, i) =>
           '<div class="wf-comms-wa-row" data-chat-id="' + escapeHtml(it.chatId) + '" role="button" tabindex="0">' +
@@ -1389,8 +1389,8 @@
           '<span class="wf-convo-action-preview">' + escapeHtml(a.error ? ('Could not prepare an answer: ' + a.error) : (a.text || '')) + '</span>' +
           (a.error ? '' :
             '<span class="wf-convo-action-row">' +
-              '<button type="button" class="wf-convo-action-btn primary" data-approval-action="approve" data-approval-id="' + escapeHtml(a.id) + '">Pathao</button>' +
-              '<button type="button" class="wf-convo-action-btn danger" data-approval-action="reject" data-approval-id="' + escapeHtml(a.id) + '">Na</button>' +
+              '<button type="button" class="wf-convo-action-btn primary" data-approval-action="approve" data-approval-id="' + escapeHtml(a.id) + '">Send</button>' +
+              '<button type="button" class="wf-convo-action-btn danger" data-approval-action="reject" data-approval-id="' + escapeHtml(a.id) + '">Decline</button>' +
             '</span>'
           ) +
         '</div>'
@@ -1486,7 +1486,7 @@
           const action = b.dataset.approvalAction === 'reject' ? 'reject' : 'approve';
           let editInstruction = null;
           if (action === 'approve') {
-            const narrow = prompt('Pathanor age change korte chan? Blank rakhle ei text-i jabe.', '');
+            const narrow = prompt('Change the message before sending? Leave blank to send as-is.', '');
             if (narrow && narrow.trim()) editInstruction = narrow.trim();
           }
           await postJson('/api/workforce/hr-assistant/whatsapp-approval', { id: b.dataset.approvalId, action, editInstruction });
@@ -1501,7 +1501,7 @@
           if (action === 'skip') {
             await postJson('/api/workforce/hr-assistant/whatsapp-reply', { contactId: activeConvoChatId, action: 'skip' });
           } else if (action === 'edit') {
-            const edited = prompt('Notun reply ki hobe?', b.dataset.draftReply || '');
+            const edited = prompt('What should the new reply say?', b.dataset.draftReply || '');
             b.disabled = false;
             if (edited === null) return;
             await postJson('/api/workforce/hr-assistant/whatsapp-reply', { contactId: activeConvoChatId, action: 'send', editedText: edited });
@@ -1682,7 +1682,7 @@
     if (remList) {
       remList.innerHTML = '';
       if (!data.items.length) {
-        remList.innerHTML = '<div class="wf-rem-empty">Kichu nei ekhane.</div>';
+        remList.innerHTML = '<div class="wf-rem-empty">No pending reminders.</div>';
       } else {
         data.items.forEach((r) => remList.appendChild(renderReminderRow(r)));
       }
