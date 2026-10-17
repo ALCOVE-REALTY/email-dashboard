@@ -671,10 +671,17 @@ async function processDueAutoSends() {
   const redis = getClient();
   if (!redis) return { processed: 0 };
   const now = Date.now();
-  let due = [];
-  try {
-    due = await redis.zrange(PENDING_AUTOSEND_ZSET, 0, now, { byScore: true });
-  } catch (err) { return { processed: 0, error: err.message }; }
+  // Found live: a Redis-endpoint bug silently broke ZRANGE specifically
+  // (see redisHealth.js's own comment) - this function's own `catch`
+  // already captured the error message, but whatsappPollScheduler.js's
+  // caller only logs when `processed` is truthy, so a ZRANGE failure here
+  // meant EVERY already-decided, already-queued auto-reply silently never
+  // got flushed/sent - "no reply at all" with zero trace anywhere.
+  // guardedRead keeps the exact same fail-soft return shape (empty due
+  // list, nothing sent) but also reports the failure to redisHealth so it
+  // shows up as a System-strip notice instead of just looking like
+  // nothing was ever due.
+  const due = await redisHealth.guardedRead(() => redis.zrange(PENDING_AUTOSEND_ZSET, 0, now, { byScore: true }), []);
   let processed = 0;
   for (const id of due) {
     let entry;

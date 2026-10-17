@@ -56,9 +56,27 @@ set this app's env vars (Alcove Deploy's env var panel for the
 email-dashboard project):
 
 ```
-KV_REST_API_URL=https://employees.alcoverealty.in/p/<subh-store-slug>/
+KV_REST_API_URL=https://employees.alcoverealty.in/p/<subh-store-slug>//
 KV_REST_API_TOKEN=<the SUBH_STORE_TOKEN value set on the subh-store project>
 ```
+
+**That double trailing slash at the end is not a typo - it's required.**
+Found live after first connecting: with a single (or no) trailing slash,
+simple SET/GET-style traffic works fine (sign-up/login), but SMEMBERS/
+LRANGE/ZRANGE/SCAN silently fail - which broke Reminders (looked empty)
+and WhatsApp auto-replies (never got flushed/sent) specifically, with
+nothing in any log pointing at why. Root cause: Alcove's own Caddy 301-
+redirects the bare project path to its slash-suffixed form, and the
+`@upstash/redis` SDK strips exactly one trailing slash before sending the
+handful of commands it keeps OUT of its own auto-pipelining as a bare POST
+straight to that stripped (now redirect-triggering) URL - a POST hitting
+that redirect gets silently turned into a bodyless GET, landing on
+subh-store's own health check instead of running the command. The extra
+slash survives the SDK's one-slash strip, so the request lands directly on
+the already-correct path with no redirect involved. Full root-cause
+writeup and verification numbers in `subh-store/README.md`'s own
+"⚠️ Critical" section - nothing about subh-store's own code was wrong,
+this is purely a configuration value.
 
 That's `subh-store`'s own public URL through Caddy, the same way every
 Alcove Deploy project is reached - no Docker-network/bridge-IP guessing
@@ -155,7 +173,7 @@ the reset date - I can't see your account from here.
 # from section 1.1 above:
 SOURCE_REDIS_URL=https://<your-upstash-db>.upstash.io \
 SOURCE_REDIS_TOKEN=<old KV_REST_API_TOKEN> \
-TARGET_REDIS_URL=https://employees.alcoverealty.in/p/<subh-store-slug>/ \
+TARGET_REDIS_URL=https://employees.alcoverealty.in/p/<subh-store-slug>// \
 TARGET_REDIS_TOKEN=<SUBH_STORE_TOKEN> \
 node scripts/migrate-redis-to-self-hosted.js --dry-run
 

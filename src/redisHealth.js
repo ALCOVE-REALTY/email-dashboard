@@ -15,21 +15,38 @@
 // real HTTP error, the UI shows "Couldn't save - please retry", and this
 // module remembers the outage so ONE notice shows in the System strip
 // until a write succeeds again - checked here, never written to Redis.
-let lastFailure = null; // { message, at } | null
+let lastFailure = null; // { message, at, kind: 'read'|'write' } | null
 let consecutiveFailures = 0;
 
-function recordWriteFailure(err) {
+function recordFailure(err, kind) {
   consecutiveFailures++;
   const message = String((err && err.message) || err || 'unknown error');
-  lastFailure = { message, at: Date.now() };
-  console.error('[redis] write failed (' + consecutiveFailures + ' in a row): ' + message);
+  lastFailure = { message, at: Date.now(), kind: kind || 'write' };
+  console.error('[redis] ' + (kind || 'write') + ' failed (' + consecutiveFailures + ' in a row): ' + message);
 }
 
-function recordWriteSuccess() {
-  if (lastFailure) console.log('[redis] writes recovered after ' + consecutiveFailures + ' failure(s)');
+function recordSuccess() {
+  if (lastFailure) console.log('[redis] recovered after ' + consecutiveFailures + ' failure(s)');
   lastFailure = null;
   consecutiveFailures = 0;
 }
+
+function recordWriteFailure(err) { recordFailure(err, 'write'); }
+const recordWriteSuccess = recordSuccess;
+// Found live: a bare-path redirect bug in a Redis endpoint silently broke
+// SMEMBERS/LRANGE/ZRANGE/SCAN specifically - and every list function that
+// reads one of those (reminderService.listRawReminders, whatsappAssistant's
+// listOpenFollowups/listPendingApprovals/processDueAutoSends, etc.) has its
+// own `catch (err) { return [] }` fallback, by design, so a single transient
+// read hiccup never breaks an unrelated reply. That same design meant this
+// specific, PERSISTENT failure was invisible - Reminders looked merely
+// empty, WhatsApp auto-sends looked like they were never due, with nothing
+// in any log pointing at why. recordReadFailure/guardedRead below let a read
+// path report the SAME problem to the SAME System-strip notice as a write
+// failure, without changing its own fail-soft behavior (still returns the
+// fallback value, never throws out to its caller).
+function recordReadFailure(err) { recordFailure(err, 'read'); }
+const recordReadSuccess = recordSuccess;
 
 function isDown() {
   return Boolean(lastFailure);
@@ -40,11 +57,10 @@ function isDown() {
 // communications-summary route alongside the real (Redis-backed) ones.
 function currentNotice() {
   if (!lastFailure) return null;
-  return {
-    text: '⚠️ Data storage is not saving right now (' + lastFailure.message + ') - new reminders, approvals and replies may not be saved until this recovers.',
-    ts: lastFailure.at,
-    synthetic: true
-  };
+  const text = lastFailure.kind === 'read'
+    ? '⚠️ Data storage is having trouble reading some data right now (' + lastFailure.message + ') - Reminders/WhatsApp lists may look incomplete or empty until this recovers.'
+    : '⚠️ Data storage is not saving right now (' + lastFailure.message + ') - new reminders, approvals and replies may not be saved until this recovers.';
+  return { text, ts: lastFailure.at, synthetic: true };
 }
 
 // Wraps one Redis write call (set/sadd/srem/del/lpush/ltrim/incr/expire/
@@ -55,7 +71,7 @@ function currentNotice() {
 async function guardedWrite(fn) {
   try {
     const result = await fn();
-    recordWriteSuccess();
+    recordSuccess();
     return result;
   } catch (err) {
     recordWriteFailure(err);
@@ -63,4 +79,24 @@ async function guardedWrite(fn) {
   }
 }
 
-module.exports = { recordWriteFailure, recordWriteSuccess, isDown, currentNotice, guardedWrite };
+// Wraps one Redis READ call - unlike guardedWrite, this NEVER throws (a
+// read failure keeps its existing fail-soft contract: return `fallback`,
+// same as the try/catch it's replacing already did) - it only ADDS
+// reporting the failure here, so it surfaces in the System strip instead
+// of vanishing silently.
+async function guardedRead(fn, fallback) {
+  try {
+    const result = await fn();
+    recordSuccess();
+    return result;
+  } catch (err) {
+    recordReadFailure(err);
+    return fallback;
+  }
+}
+
+module.exports = {
+  recordWriteFailure, recordWriteSuccess,
+  recordReadFailure, recordReadSuccess,
+  isDown, currentNotice, guardedWrite, guardedRead
+};

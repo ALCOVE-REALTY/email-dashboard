@@ -68,10 +68,19 @@ async function getReminder(id) {
 // got slower every week since nothing ever deletes an id (see
 // deleteReminder's comment below). Lazily prunes ids whose record is
 // missing, same pattern whatsappAssistant.listPendingApprovals uses.
+// Found live: a bare-path redirect bug in a Redis endpoint silently broke
+// SMEMBERS specifically (see redisHealth.js's own comment on
+// recordReadFailure) - this function's own `catch (err) { return [] }`
+// (by design, so one bad read never breaks an unrelated page) meant real
+// saved reminders were completely invisible on the Reminders page, with
+// nothing anywhere pointing at why. guardedRead keeps the exact same
+// fail-soft behavior (still returns [] on failure, never throws) but also
+// reports the failure to redisHealth, so it now shows up as a System-strip
+// notice instead of looking like "no reminders" with no explanation.
 async function listRawReminders() {
   const redis = getClient();
   if (!redis) return [];
-  try {
+  return redisHealth.guardedRead(async () => {
     const ids = await redis.smembers(REMINDER_IDS_KEY);
     if (!ids.length) return [];
     const raws = await redis.mget(...ids.map((id) => REMINDER_PREFIX + id));
@@ -83,7 +92,7 @@ async function listRawReminders() {
     });
     if (missingIds.length) await redis.srem(REMINDER_IDS_KEY, ...missingIds);
     return out;
-  } catch (err) { return []; }
+  }, []);
 }
 async function deleteReminder(id) {
   const redis = getClient();
