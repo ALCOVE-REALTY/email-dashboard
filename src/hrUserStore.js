@@ -123,11 +123,31 @@ async function denyUser(email) {
   return setStatus(email, 'denied');
 }
 
+// One-time bootstrap for exactly one email, for when the approval EMAIL
+// itself can't be sent/received (found live: the access-request email
+// silently failed to send - see server.js's own swallowed-error comment
+// at the signup route). Deliberately narrow: only ever auto-approves an
+// ACCOUNT THAT ALREADY EXISTS (someone who already signed up and is
+// sitting in 'pending') for the ONE exact email in HR_BOOTSTRAP_ADMIN -
+// never creates an account, never approves anyone else, does nothing at
+// all unless the env var is explicitly set to that exact address. Remove
+// the env var once used; nothing about its removal needs any other
+// cleanup since this check simply stops firing.
+function isBootstrapAdmin(email) {
+  const raw = process.env.HR_BOOTSTRAP_ADMIN;
+  return Boolean(raw) && normalizeEmail(raw) === normalizeEmail(email);
+}
+
 // { ok: true } on a real password match against an approved account;
 // otherwise { ok: false, reason } so the route can tell "wrong password"
 // apart from "not approved yet" apart from "no such account".
 async function verifyLogin(email, password) {
-  const user = await getUser(email);
+  let user = await getUser(email);
+  if (user && user.status === 'pending' && isBootstrapAdmin(email)) {
+    console.log('[hr-user-store] HR_BOOTSTRAP_ADMIN auto-approving ' + normalizeEmail(email) + ' - remove this env var now that it has been used.');
+    await setStatus(email, 'approved');
+    user = await getUser(email);
+  }
   if (!user) return { ok: false, reason: 'no_account' };
   if (user.status !== 'approved') return { ok: false, reason: user.status === 'denied' ? 'denied' : 'pending' };
   if (!passwordMatches(password, user.passwordSalt, user.passwordHash)) return { ok: false, reason: 'wrong_password' };
