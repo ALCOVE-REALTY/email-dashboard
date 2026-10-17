@@ -1,235 +1,79 @@
 # Moving off Upstash to a self-hosted Redis
 
 Upstash's free quota is exhausted (500,000/500,000 requests for this billing
-period) and writes are being rejected. This document is what to run on the
-Alcove server to replace it with a free, unlimited, self-hosted Redis - no
-app code changes needed for the switch itself.
+period) and writes are being rejected. No app code change is needed for the
+switch itself - only `KV_REST_API_URL`/`KV_REST_API_TOKEN`.
 
-## 1. The decision: SRH proxy, not a native client rewrite
+**Superseded plan, kept for history only**: the first two drafts of this
+doc assumed SSH/Docker access to the Alcove server and walked through a
+hand-run `docker compose` stack (plain Redis + the `serverless-redis-http`
+proxy) on the bare host. **There is no SSH access at all** - the only way
+to run anything is the Alcove Deploy platform, which builds a GitHub repo
+into exactly one container per project, published at its own
+`https://employees.alcoverealty.in/p/<slug>/` URL, with no persistent
+volume. That whole plan is replaced by section 1 below.
 
-Two ways to point this app at a self-hosted Redis:
+## 1. The actual plan: `subh-store`, a separate Alcove Deploy project
 
-- **(a) Run a small REST proxy (`serverless-redis-http`, "SRH") in front of
-  plain Redis**, and just change `KV_REST_API_URL`/`KV_REST_API_TOKEN` to
-  point at it. Zero app code changes - SRH speaks the exact same REST
-  protocol the `@upstash/redis` client already uses everywhere in this
-  codebase (15+ files, dozens of call sites, years of this engagement's own
-  bug-fixing baked into exactly how those calls behave).
-- **(b) Switch to a native TCP client (`ioredis`)** behind an adapter that
-  mimics the subset of the Upstash client's API this app uses.
+A new, separate, minimal repo - **`subh-store`** - is a self-contained
+Redis 7 + Upstash-REST-compatible HTTP layer, deployed as its OWN Alcove
+Deploy project (its own build, its own URL, its own env vars), with
+Google Drive backup standing in for the persistent volume Alcove Deploy
+doesn't offer. Full detail - architecture, the exact REST protocol it
+implements, the Alcove Deploy "New project" form fields, verification
+steps, restoring a specific backup by hand, what to do if it goes down,
+and the honest data-safety bound given Alcove's blue/green model - lives
+in **that repo's own `README.md`**, not duplicated here. Deploy it first,
+following that README, before touching this app's env vars.
 
-**Chosen: (a), SRH.** Reasoning: every one of this app's Redis call sites has
-already been hardened through real incidents (TTLs removed, MGET batching
-added, write-failure handling just added - see below). Rewriting all of them
-onto a different client's calling conventions, with no way to test every
-path live before deploying, is a large, needless regression surface for a
-problem that SRH already solves at zero code risk. (b) stays a reasonable
-future optimization - once SRH is proven stable in production, swapping it
-for a native client purely for lower latency is a much smaller, better-
-isolated project than doing it as part of this migration.
+**Decision: a small custom Node REST shim, not SRH.** Earlier drafts of
+this doc picked SRH (`serverless-redis-http`) specifically to avoid
+touching any of this app's Redis call sites. That reasoning still holds -
+`subh-store`'s shim is a GENERIC passthrough (hands every command straight
+to `ioredis`'s own `.call()`, same as SRH would), not a per-command
+reimplementation, so it carries the same "zero regression risk to this
+app's own call sites" property. What changed is HOW it's built: bundling
+SRH's own Docker image into a custom multi-stage build can't be verified
+without Docker access (no confirmed way to know its binary's exact path
+inside that image without being able to build and inspect it), whereas a
+plain `node:20-alpine` image with Redis installed via Alpine's own package
+manager is a standard, predictable install - AND a custom shim could
+actually be built and verified end-to-end here, against the real
+`@upstash/redis` SDK and a real local Redis-protocol-compatible server
+(17/17 round-trip tests - get/set/mget/sadd/zadd-byScore/hset/pipelining/
+base64 encoding/Redis-level error propagation), before ever being handed
+over. Given no way to test either approach's Docker build directly, the
+one that could be verified at the protocol level won out. A native
+`ioredis` rewrite of this APP's own call sites remains explicitly rejected
+for the same reason as before - this app's Redis code has years of real
+incident-driven hardening baked into it; routing through `subh-store`'s
+shim touches none of that.
 
-## 2. What to run on the server
+### 1.1 Point this app at it
 
-Everything below assumes SSH/terminal access to the Alcove server with
-Docker already available (the app itself already runs there in Docker per
-Alcove Deploy).
-
-**Important correction from the first draft of this doc**: the app
-container is started by Alcove Deploy as a plain
-`docker run -p 127.0.0.1:<port>:8080 ...` - it is NOT part of any
-docker-compose network, and there's no guarantee Alcove Deploy lets you add
-one. So SRH can't be reached by container name (`http://subh-redis-http:80`)
-the way the first draft assumed. Instead: **publish SRH on the Docker
-bridge gateway IP** (the address every bridge-network container, including
-the app's, can already reach back to the host through) - bound to exactly
-that IP, never `0.0.0.0`, so it's reachable from containers on that bridge
-but not from outside the machine.
-
-### 2.1 Find the app container's actual gateway IP first
-
-Don't assume `172.17.0.1` (the default bridge's usual gateway) - Alcove
-Deploy may have created its own bridge network with a different one. Check
-directly:
-
-```bash
-docker ps                      # find the app container's name/id (the email-dashboard image)
-docker inspect <app-container> --format '{{range .NetworkSettings.Networks}}{{.Gateway}}{{end}}'
-# -> e.g. 172.17.0.1, or 172.18.0.1, or similar - THIS is the IP to use below,
-#    whatever it actually prints.
-```
-
-Call this value `<gateway-ip>` for the rest of this section.
-
-### 2.2 Create the Redis + SRH stack
-
-Create a directory for this (e.g. `/opt/subh-redis/`) with this
-`docker-compose.yml`:
-
-```yaml
-services:
-  redis:
-    image: redis:7-alpine
-    container_name: subh-redis
-    restart: unless-stopped
-    command: >
-      redis-server
-      --requirepass "${REDIS_PASSWORD}"
-      --appendonly yes
-      --appendfsync everysec
-      --save 900 1
-      --save 300 10
-      --save 60 10000
-      --maxmemory 512mb
-      --maxmemory-policy noeviction
-    volumes:
-      - redis-data:/data
-    networks:
-      - subh-internal
-    # No "ports:" section at all - Redis itself is never reachable from
-    # outside this compose stack, not even by the app container. Only SRH
-    # (below) is exposed, and only on the bridge gateway IP.
-
-  srh:
-    image: hiett/serverless-redis-http:latest
-    container_name: subh-redis-http
-    restart: unless-stopped
-    environment:
-      SRH_MODE: env
-      SRH_TOKEN: "${SRH_TOKEN}"
-      SRH_CONNECTION_STRING: "redis://default:${REDIS_PASSWORD}@redis:6379"
-    depends_on:
-      - redis
-    networks:
-      - subh-internal
-    ports:
-      # <gateway-ip> from step 2.1 - e.g. "172.17.0.1:8079:80". Binding to
-      # that specific IP (never "0.0.0.0:8079:80") means: reachable from
-      # any container on that bridge network (including the app's, via
-      # this same gateway address), reachable from the host itself, and
-      # NOT reachable from the public internet or any other machine.
-      - "<gateway-ip>:8079:80"
-
-volumes:
-  redis-data:
-
-networks:
-  subh-internal:
-```
-
-Create a `.env` file next to it (not committed anywhere, same convention as
-the app's own `.env`):
+Once `subh-store` is deployed and verified (its own README's steps 1-2),
+set this app's env vars (Alcove Deploy's env var panel for the
+email-dashboard project):
 
 ```
-REDIS_PASSWORD=<generate a long random string - e.g. `openssl rand -base64 32`>
-SRH_TOKEN=<a second, different long random string - this becomes KV_REST_API_TOKEN>
+KV_REST_API_URL=https://employees.alcoverealty.in/p/<subh-store-slug>/
+KV_REST_API_TOKEN=<the SUBH_STORE_TOKEN value set on the subh-store project>
 ```
 
-Then, in that directory:
+That's `subh-store`'s own public URL through Caddy, the same way every
+Alcove Deploy project is reached - no Docker-network/bridge-IP guessing
+needed (the bridge-gateway-IP approach from the superseded plan above is
+still documented in `subh-store`'s own README as a LATER optimization, only
+worth it if the public-URL round trip turns out to add noticeable latency
+in practice). Restart the app container to pick up the new env vars - no
+code change, no rebuild needed.
 
-```bash
-docker compose up -d
-docker compose ps        # both containers should show "Up"
-docker compose logs redis --tail 30   # should show "Ready to accept connections"
-docker compose logs srh --tail 30     # confirm it actually bound to <gateway-ip>:8079 - adjust the ports: line above if it logs a different internal port than 80
-```
+Verify from inside the app container if you have any exec/console access
+to it (exact command in `subh-store`'s README, step 3) - otherwise, the
+simplest real end-to-end proof is opening the SUBH assistant panel after
+restarting and creating + deleting a test reminder.
 
-**If Alcove Deploy's dashboard can add extra services from a compose file**,
-use that instead of running `docker compose` by hand - the file above
-doesn't change either way. **If it can also attach the app container to a
-custom Docker network** (check its docs/UI for this), that's a cleaner
-alternative to the gateway-IP approach (DNS by container name instead of a
-numeric IP) - but only use it if that attachment survives every redeploy;
-otherwise the gateway-IP approach below is more robust since it doesn't
-depend on the app container's own network membership at all, and keeps
-working through every future Alcove Deploy redeploy automatically.
-
-### 2.3 Point the app at it
-
-In the email-dashboard app's own environment (wherever `KV_REST_API_URL`/
-`KV_REST_API_TOKEN` are currently set for it - Alcove Deploy's env var
-panel, or its `.env` on the server):
-
-```
-KV_REST_API_URL=http://<gateway-ip>:8079
-KV_REST_API_TOKEN=<the SRH_TOKEN value from the .env above>
-```
-
-Restart the app container so it picks up the new env vars. No code change,
-no redeploy of the app's image is needed - just the env vars and a restart.
-
-### 2.4 Verify it's actually running and saving - including from INSIDE the app container
-
-```bash
-# Is Redis answering, with the right password?
-docker exec subh-redis redis-cli -a "$REDIS_PASSWORD" PING
-# -> PONG
-
-# Is AOF persistence actually on?
-docker exec subh-redis redis-cli -a "$REDIS_PASSWORD" CONFIG GET appendonly
-# -> "appendonly" "yes"
-
-# Does a write actually survive a container restart?
-docker exec subh-redis redis-cli -a "$REDIS_PASSWORD" SET diag:test hello
-docker compose restart redis
-docker exec subh-redis redis-cli -a "$REDIS_PASSWORD" GET diag:test
-# -> "hello"
-docker exec subh-redis redis-cli -a "$REDIS_PASSWORD" DEL diag:test
-
-# Is SRH proxying correctly, reachable from the HOST at <gateway-ip>?
-curl -H "Authorization: Bearer $SRH_TOKEN" http://<gateway-ip>:8079/ping
-# -> {"result":"PONG"}
-
-# THE REAL TEST - from INSIDE the app container itself, exactly how the
-# app will actually reach it. The app's image may not have curl, so this
-# uses Node's own built-in fetch instead (every Node 18+ image has it):
-docker exec <app-container> node -e "fetch('http://<gateway-ip>:8079/ping',{headers:{Authorization:'Bearer <SRH_TOKEN value>'}}).then(r=>r.text()).then(t=>console.log('SRH reachable from app container:',t)).catch(e=>console.error('FAILED:',e.message))"
-# -> SRH reachable from app container: {"result":"PONG"}
-```
-
-If that last command fails, the app container isn't actually on the bridge
-network `<gateway-ip>` belongs to - re-run step 2.1's `docker inspect`
-against the app container specifically (not assumed) and recheck.
-
-Once the app is pointed at it and restarted, open the SUBH assistant panel
-and check that Reminders/Important Communications load and that creating a
-test reminder and deleting it again both work - that exercises a real read
-and a real write end to end.
-
-### 2.5 Daily backups
-
-Add a small script `/opt/subh-redis/backup.sh`:
-
-```bash
-#!/bin/bash
-set -e
-BACKUP_DIR=/opt/subh-redis/backups
-mkdir -p "$BACKUP_DIR"
-TIMESTAMP=$(date +%Y-%m-%d)
-docker exec subh-redis redis-cli -a "$REDIS_PASSWORD" --no-auth-warning SAVE
-docker cp subh-redis:/data/dump.rdb "$BACKUP_DIR/dump-$TIMESTAMP.rdb"
-# Keep only the last 7 days
-find "$BACKUP_DIR" -name "dump-*.rdb" -mtime +7 -delete
-```
-
-Make it executable and schedule it:
-
-```bash
-chmod +x /opt/subh-redis/backup.sh
-crontab -e
-# add this line (runs daily at 2:30 AM server time):
-30 2 * * * REDIS_PASSWORD='<same password as above>' /opt/subh-redis/backup.sh >> /opt/subh-redis/backup.log 2>&1
-```
-
-### 2.6 Restoring from a backup
-
-```bash
-docker compose stop redis
-docker cp /opt/subh-redis/backups/dump-2026-10-20.rdb subh-redis:/data/dump.rdb
-docker compose start redis
-docker exec subh-redis redis-cli -a "$REDIS_PASSWORD" DBSIZE   # sanity check - should be roughly the expected key count
-```
-
-## 3. Starting fresh (no migration) - what you must manually re-create
+## 2. Starting fresh (no migration) - what you must manually re-create
 
 You've chosen to start fresh rather than wait for Upstash's quota to reset.
 Most of what's in Redis today is operational/transient state that will
@@ -293,7 +137,7 @@ every Redis-backed store in the codebase to produce this list, not a guess:
 - Real company data (the employee directory) lives in Google Sheets, not
   Redis - entirely unaffected either way.
 
-## 4. Migrating instead of starting fresh (for later reference)
+## 3. Migrating instead of starting fresh (for later reference)
 
 If you change your mind later and want the old data back instead of
 re-creating the list above by hand, `scripts/migrate-redis-to-self-hosted.js`
@@ -307,18 +151,23 @@ the reset date - I can't see your account from here.
 
 ```bash
 # From the project root, with these 4 env vars set (see the script's own
-# header comment) - TARGET_REDIS_URL is the SAME <gateway-ip>:8079 value
-# from section 2.3 above:
+# header comment) - TARGET_REDIS_URL is subh-store's own public URL + token
+# from section 1.1 above:
 SOURCE_REDIS_URL=https://<your-upstash-db>.upstash.io \
 SOURCE_REDIS_TOKEN=<old KV_REST_API_TOKEN> \
-TARGET_REDIS_URL=http://<gateway-ip>:8079 \
-TARGET_REDIS_TOKEN=<SRH_TOKEN> \
+TARGET_REDIS_URL=https://employees.alcoverealty.in/p/<subh-store-slug>/ \
+TARGET_REDIS_TOKEN=<SUBH_STORE_TOKEN> \
 node scripts/migrate-redis-to-self-hosted.js --dry-run
 
 # Review the list it prints, then run for real:
 SOURCE_REDIS_URL=... SOURCE_REDIS_TOKEN=... TARGET_REDIS_URL=... TARGET_REDIS_TOKEN=... \
 node scripts/migrate-redis-to-self-hosted.js
 ```
+
+Note: `subh-store`'s shim enforces the bearer-token auth + rate limiting
+from its own `src/auth.js` - repeated failed attempts (e.g. a wrong
+`TARGET_REDIS_TOKEN`) will get rate-limited the same way a real attacker
+would, so double-check the token value before running this for real.
 
 Run this from wherever the app's own code is checked out (a laptop with a
 tunnel to both Redis instances, or on the server itself) - it just needs
@@ -331,7 +180,7 @@ npm run check:whatsapp-engine
 npm run check:subh-language
 ```
 
-## 5. Never fail silently again (already committed, see below)
+## 4. Never fail silently again (already committed, see below)
 
 Every reminder create/done/undo/cancel/snooze now throws a real error if
 the underlying Redis write fails, instead of the old `catch (err) { /* best
@@ -355,7 +204,7 @@ it against a working Redis right now (the same quota problem) was judged
 too risky to do blind. Worth revisiting once the new Redis is live and
 testable.
 
-## 6. Usage reduction (already committed, see below)
+## 5. Usage reduction (already committed, see below)
 
 Independent of the self-host move (good hygiene either way):
 
@@ -386,14 +235,30 @@ WhatsApp traffic, which doesn't change):
   CPU/memory headroom rather than a hard quota, but it's the same fix
   either way.
 
-## 7. Commits
+## 6. Commits
 
+**email-dashboard** (this repo):
 - `463ffd8` - all 9 reported Reminders bugs + reminder writes now fail
   loudly instead of silently (`redisHealth.js`, the throw-on-failure
   change, the system-strip notice).
 - `45c4c71` - first draft of the migration doc + script + scheduler usage
-  reduction (the docker-compose network assumption in this commit's copy of
-  the doc was wrong - corrected in this revision, same file).
+  reduction (superseded for the docker-compose/bridge-IP parts - see `07afdf5`).
+- `07afdf5` - corrected the (then-assumed) docker-compose networking plan
+  to the actual bridge-gateway-IP approach, before learning there's no SSH
+  access at all.
+- (this commit) - replaced the whole server-side plan with `subh-store` as
+  its own Alcove Deploy project, once SSH access turned out not to exist.
 
-Nothing was changed on the server itself - the Docker Compose file, env
-vars, and commands above are for you to run.
+**subh-store** (new, separate repo):
+- `fc6f229` - the whole project: Redis + REST shim + Drive backup + auth/
+  rate-limiting, with its own README covering Alcove Deploy setup,
+  verification, restore-by-hand, and what to do if it goes down.
+
+**Push and deploy order**: push both repos (`git push origin main` in
+each), then deploy **`subh-store` FIRST** in Alcove Deploy and verify it
+via its own README's steps 1-2 BEFORE touching the main app's env vars -
+only once `subh-store` is confirmed healthy and saving should you point
+`KV_REST_API_URL`/`KV_REST_API_TOKEN` at it and restart the main app.
+
+Nothing was changed on any server - every file above is for you to push
+and deploy.
