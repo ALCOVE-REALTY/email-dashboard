@@ -206,12 +206,17 @@ async function getMemory(id) {
   } catch (err) { return null; }
 }
 
+// Usage-reduction pass: one MGET for every id instead of N individual
+// GETs - called every scheduler tick (via reminderService's auto-sync),
+// so this added up fast with any real number of memories.
 async function listMemories() {
   const redis = getClient();
   if (!redis) return [];
   try {
     const ids = await redis.smembers(MEMORY_INDEX_KEY);
-    const records = await Promise.all(ids.map((id) => getMemory(id)));
+    if (!ids.length) return [];
+    const raws = await redis.mget(...ids.map((id) => MEMORY_KEY_PREFIX + id));
+    const records = raws.map((raw) => { try { return raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : null; } catch (err) { return null; } });
     return records.filter(Boolean);
   } catch (err) { return []; }
 }

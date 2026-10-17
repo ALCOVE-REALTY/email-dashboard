@@ -153,17 +153,24 @@ async function deleteDocument(phoneOrNameResolved) {
 
 // For the daily summary (spec item 4) - "received" means sent in but not
 // yet marked done.
+// Usage-reduction pass: one MGET for every phone instead of N individual
+// GETs (same batching reminderService.listRawReminders/
+// whatsappAssistant.listPendingApprovals already use) - this ran every
+// 10-30s off the scheduler's own tick (runRetentionSweep), so N separate
+// round trips per tick added up fast with any real number of outstanding
+// document requests.
 async function listAll() {
   const redis = getClient();
   if (!redis) return [];
   try {
     const phones = await redis.smembers(DOC_REQUEST_INDEX_KEY);
-    const records = await Promise.all(phones.map((p) => getRequest(p)));
-    return records.filter(Boolean);
+    if (!phones.length) return [];
+    const raws = await redis.mget(...phones.map((p) => DOC_REQUEST_PREFIX + whatsapp.normalizePhone(p)));
+    return raws.map((raw) => { try { return raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : null; } catch (err) { return null; } }).filter(Boolean);
   } catch (err) { return []; }
 }
 async function listPendingReceived() {
-  return (await listAll()).filter((r) => r.status === 'received');
+  return (await listAll()).filter((r) => r.status === 'received' && !whatsapp.isSyntheticTestPhone(r.phone));
 }
 async function listOpen() {
   const now = Date.now();

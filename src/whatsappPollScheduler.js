@@ -46,13 +46,31 @@ function getCommitId() {
   }
 }
 const HEARTBEAT_LOG_EVERY_N_TICKS = 10;
+// Heartbeat/gateway-status SUCCESS writes - at most once a minute (usage-
+// reduction pass: these two redis.set calls EVERY 15s tick, forever, cost
+// 2 writes * 4/min * 1440 min/day = ~11,500 Redis commands/day on their
+// own, every day, with or without any real WhatsApp traffic - a real
+// contributor to the quota exhaustion this was found during). A FAILURE
+// is always recorded immediately regardless (never throttle surfacing a
+// real problem) - only the routine "still fine" writes are batched down
+// to roughly once a minute at the current 15s poll interval.
+const HEARTBEAT_WRITE_EVERY_N_TICKS = 4;
 
 // Auto-reply (spec point 3) needs a 20-30s random delay BEFORE sending,
 // much finer-grained than the poll cadence above - this second,
 // independent tick just flushes whatever's come due since the last
 // check, it never re-decides anything (decision happens once, in
-// pollOnce itself).
-const AUTOSEND_FLUSH_MS = 10 * 1000;
+// pollOnce itself). Widened 10s -> 30s (usage-reduction pass, same
+// finding as above) - this tick's OWN workload (reminder sync, document
+// retention sweep, daily-summary check, WhatsApp-reminder send) runs its
+// full logic every single time regardless of whether anything changed,
+// so 10s meant roughly 8,640 full passes/day; 30s cuts that to ~2,880
+// while still comfortably landing within the auto-send's own 20-30s
+// random delay window (worst case adds well under the ~90s round-trip
+// already established as acceptable after the earlier "reply took
+// minutes" incident - that fix was about the SEPARATE 15s poll tick
+// above, unaffected by this).
+const AUTOSEND_FLUSH_MS = 30 * 1000;
 
 function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval, log = console } = {}) {
   if (process.env.WHATSAPP_ASSISTANT_SCHEDULER !== '1') {
@@ -82,11 +100,18 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
     if (polling) { setTimer(tick, pollIntervalMs()); return; }
     polling = true;
     tickCount++;
+    // Routine "still fine" writes (heartbeat, poll/gateway-status cleared-
+    // to-null) are batched to roughly once a minute - see
+    // HEARTBEAT_WRITE_EVERY_N_TICKS's own comment. Tick 1 always writes
+    // immediately (so a fresh deploy's first proof-of-life isn't delayed
+    // up to a minute) - a real FAILURE below always writes immediately
+    // regardless of this flag, every tick.
+    const writeRoutineStatus = tickCount === 1 || tickCount % HEARTBEAT_WRITE_EVERY_N_TICKS === 0;
     try {
       const result = await whatsappAssistant.pollOnce();
       consecutiveErrors = 0;
       log.log('[whatsapp-assistant] poll (tick ' + tickCount + '): ' + JSON.stringify(result));
-      await whatsappAssistant.recordSchedulerError('poll', null).catch(() => {});
+      if (writeRoutineStatus) await whatsappAssistant.recordSchedulerError('poll', null).catch(() => {});
     } catch (err) {
       consecutiveErrors++;
       log.error('[whatsapp-assistant] poll failed (tick ' + tickCount + '): ' + err.message);
@@ -100,7 +125,7 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
       const gw = await whatsappAssistant.checkGatewayConnection();
       if (gw.checked) {
         log.log('[whatsapp-assistant] gateway status (tick ' + tickCount + '): ' + gw.status);
-        await whatsappAssistant.recordSchedulerError('gateway-status', null).catch(() => {});
+        if (writeRoutineStatus) await whatsappAssistant.recordSchedulerError('gateway-status', null).catch(() => {});
       } else {
         log.error('[whatsapp-assistant] gateway status check failed (tick ' + tickCount + '): ' + gw.error);
         await whatsappAssistant.recordSchedulerError('gateway-status', gw.error).catch(() => {});
@@ -109,14 +134,16 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
       log.error('[whatsapp-assistant] gateway status check failed (tick ' + tickCount + '): ' + err.message);
       await whatsappAssistant.recordSchedulerError('gateway-status', err.message).catch(() => {});
     }
-    // Heartbeat - written every tick regardless of whether the poll or
-    // gateway check above succeeded, so its mere presence/freshness in
-    // Redis alone proves the scheduler is alive, independent of whether
-    // there's any real WhatsApp traffic to react to.
-    try {
-      await whatsappAssistant.recordSchedulerHeartbeat(commitId);
-    } catch (err) {
-      log.error('[whatsapp-assistant] heartbeat write failed (tick ' + tickCount + '): ' + err.message);
+    // Heartbeat - proves the scheduler is alive independent of whether
+    // there's any real WhatsApp traffic to react to; its own freshness
+    // check (whoever reads it) already tolerates up to a minute of gap,
+    // so writing it on this same ~60s cadence is still plenty responsive.
+    if (writeRoutineStatus) {
+      try {
+        await whatsappAssistant.recordSchedulerHeartbeat(commitId);
+      } catch (err) {
+        log.error('[whatsapp-assistant] heartbeat write failed (tick ' + tickCount + '): ' + err.message);
+      }
     }
     if (tickCount % HEARTBEAT_LOG_EVERY_N_TICKS === 0) {
       log.log('[whatsapp-assistant] still running - tick ' + tickCount + ', commit ' + commitId);
