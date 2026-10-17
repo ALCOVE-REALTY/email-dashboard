@@ -32,11 +32,35 @@ isolated project than doing it as part of this migration.
 
 Everything below assumes SSH/terminal access to the Alcove server with
 Docker already available (the app itself already runs there in Docker per
-Alcove Deploy). If Alcove Deploy's own dashboard can add services from a
-compose file, use that instead of running `docker compose` by hand - the
-file itself doesn't change either way.
+Alcove Deploy).
 
-### 2.1 Create the Redis + SRH stack
+**Important correction from the first draft of this doc**: the app
+container is started by Alcove Deploy as a plain
+`docker run -p 127.0.0.1:<port>:8080 ...` - it is NOT part of any
+docker-compose network, and there's no guarantee Alcove Deploy lets you add
+one. So SRH can't be reached by container name (`http://subh-redis-http:80`)
+the way the first draft assumed. Instead: **publish SRH on the Docker
+bridge gateway IP** (the address every bridge-network container, including
+the app's, can already reach back to the host through) - bound to exactly
+that IP, never `0.0.0.0`, so it's reachable from containers on that bridge
+but not from outside the machine.
+
+### 2.1 Find the app container's actual gateway IP first
+
+Don't assume `172.17.0.1` (the default bridge's usual gateway) - Alcove
+Deploy may have created its own bridge network with a different one. Check
+directly:
+
+```bash
+docker ps                      # find the app container's name/id (the email-dashboard image)
+docker inspect <app-container> --format '{{range .NetworkSettings.Networks}}{{.Gateway}}{{end}}'
+# -> e.g. 172.17.0.1, or 172.18.0.1, or similar - THIS is the IP to use below,
+#    whatever it actually prints.
+```
+
+Call this value `<gateway-ip>` for the rest of this section.
+
+### 2.2 Create the Redis + SRH stack
 
 Create a directory for this (e.g. `/opt/subh-redis/`) with this
 `docker-compose.yml`:
@@ -61,9 +85,9 @@ services:
       - redis-data:/data
     networks:
       - subh-internal
-    # No "ports:" section at all - never exposed outside the Docker
-    # network. The app and SRH reach it by container name (redis:6379)
-    # on the internal network only.
+    # No "ports:" section at all - Redis itself is never reachable from
+    # outside this compose stack, not even by the app container. Only SRH
+    # (below) is exposed, and only on the bridge gateway IP.
 
   srh:
     image: hiett/serverless-redis-http:latest
@@ -77,19 +101,19 @@ services:
       - redis
     networks:
       - subh-internal
-      - app-network   # whatever network the email-dashboard app container is already on
-    # Only exposed to Caddy/the app's own Docker network, never the public
-    # internet - add a `ports:` entry here ONLY if the app runs on a
-    # different host/network than this stack and needs this over a private
-    # IP; even then, never publish to 0.0.0.0 on the public interface.
+    ports:
+      # <gateway-ip> from step 2.1 - e.g. "172.17.0.1:8079:80". Binding to
+      # that specific IP (never "0.0.0.0:8079:80") means: reachable from
+      # any container on that bridge network (including the app's, via
+      # this same gateway address), reachable from the host itself, and
+      # NOT reachable from the public internet or any other machine.
+      - "<gateway-ip>:8079:80"
 
 volumes:
   redis-data:
 
 networks:
   subh-internal:
-  app-network:
-    external: true   # set this to whatever the email-dashboard app's actual Docker network is named (`docker network ls` to check)
 ```
 
 Create a `.env` file next to it (not committed anywhere, same convention as
@@ -106,23 +130,34 @@ Then, in that directory:
 docker compose up -d
 docker compose ps        # both containers should show "Up"
 docker compose logs redis --tail 30   # should show "Ready to accept connections"
+docker compose logs srh --tail 30     # confirm it actually bound to <gateway-ip>:8079 - adjust the ports: line above if it logs a different internal port than 80
 ```
 
-### 2.2 Point the app at it
+**If Alcove Deploy's dashboard can add extra services from a compose file**,
+use that instead of running `docker compose` by hand - the file above
+doesn't change either way. **If it can also attach the app container to a
+custom Docker network** (check its docs/UI for this), that's a cleaner
+alternative to the gateway-IP approach (DNS by container name instead of a
+numeric IP) - but only use it if that attachment survives every redeploy;
+otherwise the gateway-IP approach below is more robust since it doesn't
+depend on the app container's own network membership at all, and keeps
+working through every future Alcove Deploy redeploy automatically.
+
+### 2.3 Point the app at it
 
 In the email-dashboard app's own environment (wherever `KV_REST_API_URL`/
 `KV_REST_API_TOKEN` are currently set for it - Alcove Deploy's env var
 panel, or its `.env` on the server):
 
 ```
-KV_REST_API_URL=http://subh-redis-http:80      # container name:port on the shared Docker network - adjust the port to whatever SRH actually listens on (check `docker compose logs srh` for its bound port, typically 80)
+KV_REST_API_URL=http://<gateway-ip>:8079
 KV_REST_API_TOKEN=<the SRH_TOKEN value from the .env above>
 ```
 
 Restart the app container so it picks up the new env vars. No code change,
 no redeploy of the app's image is needed - just the env vars and a restart.
 
-### 2.3 Verify it's actually running and saving
+### 2.4 Verify it's actually running and saving - including from INSIDE the app container
 
 ```bash
 # Is Redis answering, with the right password?
@@ -140,17 +175,27 @@ docker exec subh-redis redis-cli -a "$REDIS_PASSWORD" GET diag:test
 # -> "hello"
 docker exec subh-redis redis-cli -a "$REDIS_PASSWORD" DEL diag:test
 
-# Is SRH proxying correctly (same shape the app itself will call)?
-curl -H "Authorization: Bearer $SRH_TOKEN" http://localhost:<srh-port>/ping
-# -> {"result":"PONG"}  (run this ON the server, or via the container network - SRH is never reachable from outside)
+# Is SRH proxying correctly, reachable from the HOST at <gateway-ip>?
+curl -H "Authorization: Bearer $SRH_TOKEN" http://<gateway-ip>:8079/ping
+# -> {"result":"PONG"}
+
+# THE REAL TEST - from INSIDE the app container itself, exactly how the
+# app will actually reach it. The app's image may not have curl, so this
+# uses Node's own built-in fetch instead (every Node 18+ image has it):
+docker exec <app-container> node -e "fetch('http://<gateway-ip>:8079/ping',{headers:{Authorization:'Bearer <SRH_TOKEN value>'}}).then(r=>r.text()).then(t=>console.log('SRH reachable from app container:',t)).catch(e=>console.error('FAILED:',e.message))"
+# -> SRH reachable from app container: {"result":"PONG"}
 ```
 
-Once the app is pointed at it, open the SUBH assistant panel and check that
-Reminders/Important Communications load and that creating a test reminder
-and deleting it again both work - that exercises a real read and a real
-write end to end.
+If that last command fails, the app container isn't actually on the bridge
+network `<gateway-ip>` belongs to - re-run step 2.1's `docker inspect`
+against the app container specifically (not assumed) and recheck.
 
-### 2.4 Daily backups
+Once the app is pointed at it and restarted, open the SUBH assistant panel
+and check that Reminders/Important Communications load and that creating a
+test reminder and deleting it again both work - that exercises a real read
+and a real write end to end.
+
+### 2.5 Daily backups
 
 Add a small script `/opt/subh-redis/backup.sh`:
 
@@ -175,7 +220,7 @@ crontab -e
 30 2 * * * REDIS_PASSWORD='<same password as above>' /opt/subh-redis/backup.sh >> /opt/subh-redis/backup.log 2>&1
 ```
 
-### 2.5 Restoring from a backup
+### 2.6 Restoring from a backup
 
 ```bash
 docker compose stop redis
@@ -184,35 +229,89 @@ docker compose start redis
 docker exec subh-redis redis-cli -a "$REDIS_PASSWORD" DBSIZE   # sanity check - should be roughly the expected key count
 ```
 
-## 3. Migrating the existing data
+## 3. Starting fresh (no migration) - what you must manually re-create
 
-`scripts/migrate-redis-to-self-hosted.js` (new, in this repo) copies every
-key - value and remaining TTL - from Upstash to the new Redis.
+You've chosen to start fresh rather than wait for Upstash's quota to reset.
+Most of what's in Redis today is operational/transient state that will
+either regenerate itself or simply doesn't matter once lost. But a few
+things are genuinely hand-configured settings with NO other backup - audited
+every Redis-backed store in the codebase to produce this list, not a guess:
+
+**Must re-create - nothing else restores these:**
+
+1. **Dashboard login accounts** (`hr-user:*`) - this is the big one. Every
+   login (yours, manager.hr@alcoverealty.in's, anyone else's) is a Redis
+   record with a password hash - there is no separate account database.
+   **After the switch, everyone currently able to log in will see "No
+   account found for this email. Please sign up first."** The sign-up +
+   approval flow still works from an empty Redis though, since the approval
+   link itself is a signed, stateless token, not something read from Redis:
+   whoever is `HR_ADMIN_EMAIL` (defaults to subhodeep@alcoverealty.in) signs
+   up first, gets their OWN approval email, clicks it to self-approve, logs
+   in - then approves everyone else's sign-ups the same way. Budget for this
+   step; it's not a code problem, just an unavoidable one-time re-signup for
+   every current user.
+2. **SUBH memories** (`subh-memory:*`) - the hand-written facts/guidance SUBH
+   uses to auto-answer common WhatsApp questions (e.g. "this month's salary
+   is delayed because of a bank issue"). These took deliberate effort to set
+   up and drive real auto-replies - re-add whichever ones are still
+   relevant via the same chat commands you created them with originally.
+3. **WhatsApp allow/block lists** - `wa-official-allowlist` +
+   `wa-allowlist-names` (numbers recognised as official/employee senders and
+   their names), `wa-official-blocklist` (numbers explicitly blocked from
+   the auto-reply flow), `wa-group-blocklist` (groups SUBH should ignore
+   even if tagged), `wa-never-auto-list` (contacts whose replies always go
+   to manual draft review, never auto-send). If you've ever used any of
+   these, re-apply them after the switch - they'll otherwise just be empty
+   (meaning: nothing blocked, nothing forced to draft) which is a silent
+   behavior change, not an error.
+4. **Auto-reply master switch** (`wa-auto-reply-enabled`) - defaults to ON
+   when the key doesn't exist, which is the normal/expected state. Only
+   relevant if you had explicitly turned auto-reply OFF - it'll come back
+   ON after the switch and you'd need to turn it off again.
+5. **Reminder WhatsApp-to-self setting** (`subh-reminder-settings`) - the
+   opt-in toggle + phone number for also getting reminders pinged to you on
+   WhatsApp. Re-enable it in Reminder settings if you had it on.
+6. **Any manually-added reminders** (`subh-reminder:*` with `source:
+   'manual'`) - ones you typed in yourself (via chat or the Add Reminder
+   sheet), not auto-created from a WhatsApp follow-up/approval/document/
+   memory. Those manual ones are genuinely gone; re-add whichever are still
+   relevant. Auto-created reminders need no action - they regenerate
+   automatically from the real underlying data (open follow-ups, pending
+   approvals, etc.) the next time the scheduler syncs.
+
+**Will be lost but doesn't need re-creating (nothing to configure):**
+
+- SUBH chat history (`hr-chat:*`) - your past conversations with SUBH in the
+  in-app assistant. Just gone, nothing to re-enter.
+- WhatsApp conversation history, inbox log, owner notifications, pending
+  approvals/drafts/follow-ups/disambiguations, document requests, scheduler
+  heartbeat/error state, rate-limit counters, AI tool-call logs - all
+  transient/operational. Pending items the owner needs to act on will
+  simply need re-triggering (ask SUBH again); everything else just starts
+  clean.
+- Real company data (the employee directory) lives in Google Sheets, not
+  Redis - entirely unaffected either way.
+
+## 4. Migrating instead of starting fresh (for later reference)
+
+If you change your mind later and want the old data back instead of
+re-creating the list above by hand, `scripts/migrate-redis-to-self-hosted.js`
+(new, in this repo) copies every key - value and remaining TTL - from
+Upstash to the new Redis, with a `--dry-run` mode.
 
 **It needs Upstash reads to work, which they currently don't** (the quota
 block affects all commands, not just writes - confirmed live while building
-this). I can't see your Upstash account's billing page, so I can't tell you
-the exact reset date - check the Upstash console's usage/billing tab for
-this database; it's typically a monthly rolling window from when the plan
-started.
-
-**If you want to start fresh on the new Redis without waiting**: everything
-currently in Upstash is operational/transient state - pending WhatsApp
-approvals, open follow-ups, reminders, chat history, memories, inbox logs,
-scheduler heartbeats. Nothing is irreplaceable; the worst case is a handful
-of in-flight WhatsApp approvals/reminders the owner would need to re-trigger
-by asking SUBH again, and losing recent chat history. Real company data
-(the employee directory) lives in Google Sheets, not Redis, and is
-unaffected either way.
-
-**Once Upstash reads work again** (quota reset, or a temporary plan bump):
+this). Check the Upstash console's usage/billing tab for this database for
+the reset date - I can't see your account from here.
 
 ```bash
 # From the project root, with these 4 env vars set (see the script's own
-# header comment):
+# header comment) - TARGET_REDIS_URL is the SAME <gateway-ip>:8079 value
+# from section 2.3 above:
 SOURCE_REDIS_URL=https://<your-upstash-db>.upstash.io \
 SOURCE_REDIS_TOKEN=<old KV_REST_API_TOKEN> \
-TARGET_REDIS_URL=http://subh-redis-http:80 \
+TARGET_REDIS_URL=http://<gateway-ip>:8079 \
 TARGET_REDIS_TOKEN=<SRH_TOKEN> \
 node scripts/migrate-redis-to-self-hosted.js --dry-run
 
@@ -223,10 +322,8 @@ node scripts/migrate-redis-to-self-hosted.js
 
 Run this from wherever the app's own code is checked out (a laptop with a
 tunnel to both Redis instances, or on the server itself) - it just needs
-network access to both.
-
-After migrating, run all three test suites against the new Redis before
-retiring Upstash:
+network access to both. After migrating, run all three test suites against
+the new Redis before retiring Upstash:
 
 ```bash
 npm run check:reminders
@@ -234,7 +331,7 @@ npm run check:whatsapp-engine
 npm run check:subh-language
 ```
 
-## 4. Never fail silently again (already committed, see below)
+## 5. Never fail silently again (already committed, see below)
 
 Every reminder create/done/undo/cancel/snooze now throws a real error if
 the underlying Redis write fails, instead of the old `catch (err) { /* best
@@ -258,7 +355,7 @@ it against a working Redis right now (the same quota problem) was judged
 too risky to do blind. Worth revisiting once the new Redis is live and
 testable.
 
-## 5. Usage reduction (already committed, see below)
+## 6. Usage reduction (already committed, see below)
 
 Independent of the self-host move (good hygiene either way):
 
@@ -289,12 +386,14 @@ WhatsApp traffic, which doesn't change):
   CPU/memory headroom rather than a hard quota, but it's the same fix
   either way.
 
-## 6. Commits
+## 7. Commits
 
-- Reminders fixes (all 9 reported issues): see the chat response for the
-  commit id.
-- Redis resilience (never-fail-silently) + usage reduction + migration
-  script: see the chat response for the commit id(s).
+- `463ffd8` - all 9 reported Reminders bugs + reminder writes now fail
+  loudly instead of silently (`redisHealth.js`, the throw-on-failure
+  change, the system-strip notice).
+- `45c4c71` - first draft of the migration doc + script + scheduler usage
+  reduction (the docker-compose network assumption in this commit's copy of
+  the doc was wrong - corrected in this revision, same file).
 
 Nothing was changed on the server itself - the Docker Compose file, env
 vars, and commands above are for you to run.
