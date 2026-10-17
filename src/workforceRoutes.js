@@ -16,6 +16,8 @@ const whatsappAssistant = require('./aiAssistant/whatsappAssistant');
 const memoryService = require('./aiAssistant/memoryService');
 const documentRequests = require('./aiAssistant/documentRequests');
 const reminderService = require('./aiAssistant/reminderService');
+const hrAccountCommands = require('./hrAccountCommands');
+const hrAuthAlerts = require('./hrAuthAlerts');
 const fileStorage = require('./fileStorage');
 const whatsapp = require('./whatsappService');
 const redisHealth = require('./redisHealth');
@@ -1344,6 +1346,17 @@ router.post('/hr-assistant/chat', async (req, res) => {
         return res.json({ reply, card: null, actions: null, conversationId: savedConversationId });
       }
 
+      // HR-auth account commands (send test email / list+approve+deny
+      // pending sign-ups) - checked early, same reasoning as every other
+      // deterministic command here: whether someone gets dashboard access
+      // is never left to the normal AI pipeline's judgement.
+      const accountResult = await hrAccountCommands.handleAccountCommand(message, req.hrUser.email)
+        .catch((err) => ({ reply: 'Account command process korte giye error holo: ' + err.message }));
+      if (accountResult) {
+        const savedConversationId = await chatHistoryService.appendTurn(req.hrUser.email, conversationId, { userText: message, assistantText: accountResult.reply, card: null, actions: null }).catch(() => null);
+        return res.json({ reply: accountResult.reply, card: null, actions: null, conversationId: savedConversationId });
+      }
+
       // HR-data-request approval workflow (spec point 6c/6d) - checked
       // before the memory command and the normal AI pipeline, same
       // reasoning as both: whether to approve/reject/edit a pending
@@ -1684,10 +1697,11 @@ router.get('/hr-assistant/communications-summary', async (req, res) => {
   // Speed fix: one shared reminder snapshot (getDashboardSnapshot) instead
   // of two separate reminderService calls (dueReminders + listReminders)
   // that each independently re-fetched the full reminder list.
-  const [whatsappItems, systemNotices, reminderSnapshot] = await Promise.all([
+  const [whatsappItems, systemNotices, reminderSnapshot, authAlerts] = await Promise.all([
     whatsappAssistant.listActionableWhatsappItems(),
     whatsappAssistant.listSystemNotices(),
-    reminderService.getDashboardSnapshot(now)
+    reminderService.getDashboardSnapshot(now),
+    hrAuthAlerts.listAuthAlerts()
   ]);
   const remindersDueNow = reminderSnapshot.dueNow;
   const reminderCounts = reminderSnapshot.counts;
@@ -1696,11 +1710,12 @@ router.get('/hr-assistant/communications-summary', async (req, res) => {
   // than going through postOwnerNotification/listSystemNotices, since
   // those themselves depend on the very thing that might be down.
   const redisNotice = redisHealth.currentNotice();
+  const allNotices = [...(redisNotice ? [redisNotice] : []), ...authAlerts, ...systemNotices];
   res.json({
     importantMailsCount: 0, // Phase 3
     whatsappItems,
     importantWhatsappCount: whatsappItems.length,
-    systemNotices: redisNotice ? [redisNotice, ...systemNotices] : systemNotices,
+    systemNotices: allNotices,
     // Home's badge = pending reminders + needs-you WhatsApp items (+ mails
     // later) per spec - the TOTAL pending count, not just reminders due
     // right now (that's remindersDueNow, for the fired-notification banner).
@@ -1932,6 +1947,7 @@ router.post('/hr-assistant/whatsapp-never-auto', async (req, res) => {
 router.post('/hr-assistant/subh-notifications/dismiss', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
   await whatsappAssistant.dismissSystemNotices();
+  await hrAuthAlerts.clearAuthAlerts();
   res.json({ ok: true });
 });
 

@@ -99,6 +99,32 @@ async function createPendingUser(email, password) {
   }
 }
 
+// No separate index of all users was ever maintained (every existing
+// record is just hr-user:<email>, written before this need existed) - SCAN
+// over the key pattern instead of adding one retroactively, so this finds
+// every account regardless of when it was created. An admin-only, one-off
+// lookup (the "pending sign ups" SUBH command), never called on a hot
+// path, so the lack of an index costs nothing in practice.
+async function listUsersByStatus(status) {
+  const redis = getClient();
+  if (!redis) return [];
+  const users = [];
+  try {
+    let cursor = '0';
+    do {
+      const [next, keys] = await redis.scan(cursor, { match: 'hr-user:*', count: 100 });
+      cursor = next;
+      if (keys.length) {
+        const raws = await redis.mget(...keys);
+        raws.forEach((u) => { if (u && u.status === status) users.push(u); });
+      }
+    } while (cursor !== '0');
+  } catch (err) {
+    console.error('[hr-user-store] listUsersByStatus failed:', err.message);
+  }
+  return users;
+}
+
 async function setStatus(email, status) {
   const redis = getClient();
   if (!redis) return false;
@@ -159,6 +185,7 @@ module.exports = {
   isStrongPassword,
   createPendingUser,
   getUser,
+  listUsersByStatus,
   approveUser,
   denyUser,
   verifyLogin

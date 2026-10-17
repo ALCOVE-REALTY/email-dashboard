@@ -14,6 +14,7 @@ const insuranceRoutes = require('./src/insuranceRoutes');
 const hrAuth = require('./src/hrAuth');
 const hrUserStore = require('./src/hrUserStore');
 const emailService = require('./src/emailService');
+const hrAuthAlerts = require('./src/hrAuthAlerts');
 const movementTracker = require('./src/movementTracker');
 const cacheBus = require('./src/cacheBus');
 const snapshotScheduler = require('./src/dailySnapshotScheduler');
@@ -262,8 +263,16 @@ app.post('/api/hr-auth/signup', async (req, res) => {
   } catch (err) {
     console.error('[hr-auth] failed to send access-request email:', err.message);
     // The account is already saved as pending either way - an admin who
-    // knows to check can still approve it some other way, so this isn't
-    // surfaced as a failure to the person signing up.
+    // knows to check can still approve it some other way (the "pending
+    // sign ups"/"approve <email>" SUBH chat commands, or HR_BOOTSTRAP_ADMIN
+    // for the very first account), so this isn't surfaced as a failure to
+    // the person signing up. It IS surfaced to the owner though - found
+    // live: this used to be console.error only, with no server log access
+    // on Alcove Deploy to ever see it.
+    await hrAuthAlerts.postAuthAlert(
+      '⚠️ Access-request email to ' + HR_ADMIN_EMAIL + ' for ' + email + ' failed to send: ' + err.message +
+      ' - use "pending sign ups" / "approve ' + email + '" in SUBH chat instead.'
+    );
   }
   res.json({ ok: true, status: 'pending' });
 });

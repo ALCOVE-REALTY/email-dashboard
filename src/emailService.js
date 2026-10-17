@@ -55,4 +55,20 @@ async function sendAccessRequestEmail(adminEmail, requesterEmail, approveUrl, de
   return { delivered: true };
 }
 
-module.exports = { sendAccessRequestEmail };
+// Owner-triggered diagnostic (the "send test email" SUBH chat command) -
+// exercises the EXACT same gmailService.sendMailWithHtml call the real
+// access-request email uses, so a success/failure here means the same
+// thing a real signup's email would have done, without needing a second
+// real sign-up to find out.
+async function sendTestEmail(to) {
+  const now = new Date().toLocaleString('en-GB', { timeZone: 'Asia/Kolkata' });
+  await gmailService.sendMailWithHtml({
+    to,
+    subject: 'SUBH test email - ' + now,
+    text: 'This is a test email sent on request from the SUBH assistant (' + now + ' IST). If this arrived, Gmail sending is working correctly.',
+    html: '<p>This is a test email sent on request from the SUBH assistant (' + now + ' IST).</p><p>If this arrived, Gmail sending is working correctly.</p>'
+  });
+  return { delivered: true };
+}
+
+module.exports = { sendAccessRequestEmail, sendTestEmail };
