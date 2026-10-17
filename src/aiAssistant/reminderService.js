@@ -14,6 +14,8 @@ const whatsappAssistant = require('./whatsappAssistant');
 const documentRequests = require('./documentRequests');
 const memoryService = require('./memoryService');
 const employeeService = require('../employeeService');
+const redisHealth = require('../redisHealth');
+const { isSyntheticTestPhone } = whatsapp;
 
 const REMINDER_PREFIX = 'subh-reminder:';
 const REMINDER_IDS_KEY = 'subh-reminder-ids';
@@ -36,13 +38,21 @@ function newId() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 }
 
+// Throws on failure (never silently swallows) - found live: Upstash's
+// quota ran out mid-session, and this used to catch-and-ignore, so a
+// reminder create/done/undo/etc. kept returning a normal-looking success
+// while nothing was actually saved. The route's own try/catch turns this
+// throw into a real HTTP error, the UI shows "Couldn't save - please
+// retry" (postJsonOrThrow/runButtonAction already do this for ANY thrown
+// error, no new frontend code needed), and redisHealth remembers the
+// outage for the System strip notice until a write succeeds again.
 async function saveReminder(record) {
   const redis = getClient();
-  if (!redis) return null;
-  try {
+  if (!redis) return null; // not configured at all - a deliberate local-dev state, not an outage
+  await redisHealth.guardedWrite(async () => {
     await redis.set(REMINDER_PREFIX + record.id, JSON.stringify(record));
     await redis.sadd(REMINDER_IDS_KEY, record.id);
-  } catch (err) { /* best effort */ }
+  });
   return record.id;
 }
 async function getReminder(id) {
@@ -78,10 +88,10 @@ async function listRawReminders() {
 async function deleteReminder(id) {
   const redis = getClient();
   if (!redis) return;
-  try {
+  await redisHealth.guardedWrite(async () => {
     await redis.del(REMINDER_PREFIX + id);
     await redis.srem(REMINDER_IDS_KEY, id);
-  } catch (err) { /* best effort */ }
+  });
 }
 
 function newReminder({ title, detail, dueAt, hasTime, priority, source, sourceType, sourceRef, linkedChatId, linkedEmployeeId, repeat, now }) {
@@ -103,7 +113,17 @@ function newReminder({ title, detail, dueAt, hasTime, priority, source, sourceTy
     createdAt: now.toISOString(),
     notifiedAt: null,
     waNotifiedAt: null,
-    snoozedUntil: null
+    snoozedUntil: null,
+    // Set by undoDone - tells syncAutoCreatedReminders' auto-close sweep to
+    // never touch this reminder again on its own, even once its underlying
+    // source resolves. Found live: an owner Undo on an auto-created
+    // reminder got silently re-completed by the very next sync tick,
+    // because the source (e.g. the approval) really had resolved in the
+    // meantime - correct from the sync's point of view, but not what an
+    // explicit Undo means. Only markDone (a fresh, deliberate close) or a
+    // brand new source event (a new sourceRef - always its own separate
+    // reminder) can close this one again.
+    manualOverride: false
   };
 }
 
@@ -112,6 +132,7 @@ async function markDone(id, now) {
   if (!r) return null;
   r.status = 'completed';
   r.completedAt = now.toISOString();
+  r.manualOverride = false;
   await saveReminder(r);
   return r;
 }
@@ -120,6 +141,7 @@ async function undoDone(id) {
   if (!r || r.status !== 'completed') return null;
   r.status = 'pending';
   r.completedAt = null;
+  r.manualOverride = true;
   await saveReminder(r);
   return r;
 }
@@ -205,21 +227,36 @@ function resolveReminderDateTime(dateRaw, timeRaw, now) {
 // badge/the filter chips/the page header can never disagree) ----------------
 function istDayKeyOfIso(iso) { return istDayKey(istParts(new Date(iso))); }
 
+// "Today" means today, overdue, AND undated - so no pending reminder is
+// EVER hidden just because it has no due date or its date already passed
+// (a stale/overdue reminder is exactly the kind that most needs to stay
+// visible, not drop out of every tab). "Upcoming" is strictly a real
+// future date.
+function isTodayBucket(r, todayKey) { return !r.dueAt || istDayKeyOfIso(r.dueAt) <= todayKey; }
+function isUpcomingBucket(r, todayKey) { return Boolean(r.dueAt) && istDayKeyOfIso(r.dueAt) > todayKey; }
+
 function computeCounts(reminders, now) {
   const todayKey = istDayKey(istParts(now));
   const pending = reminders.filter((r) => r.status === 'pending');
   const completed = reminders.filter((r) => r.status === 'completed');
-  const today = pending.filter((r) => r.dueAt && istDayKeyOfIso(r.dueAt) === todayKey);
-  return { all: pending.length, today: today.length, upcoming: pending.length - today.length, completed: completed.length };
+  const todayCompleted = completed.filter((r) => r.completedAt && istDayKeyOfIso(r.completedAt) === todayKey);
+  const today = pending.filter((r) => isTodayBucket(r, todayKey));
+  const upcoming = pending.filter((r) => isUpcomingBucket(r, todayKey));
+  return { all: pending.length, today: today.length, upcoming: upcoming.length, completed: completed.length, todayCompleted: todayCompleted.length };
 }
 
 function filterReminders(reminders, filter, now) {
   const todayKey = istDayKey(istParts(now));
   if (filter === 'completed') return reminders.filter((r) => r.status === 'completed');
+  // Distinct from 'completed' (full history) - the "Today's Completed" row
+  // opens exactly this: only what was actually completed today (IST).
+  if (filter === 'completedToday') {
+    return reminders.filter((r) => r.status === 'completed' && r.completedAt && istDayKeyOfIso(r.completedAt) === todayKey);
+  }
   const pending = reminders.filter((r) => r.status === 'pending');
-  if (filter === 'today') return pending.filter((r) => r.dueAt && istDayKeyOfIso(r.dueAt) === todayKey);
-  if (filter === 'upcoming') return pending.filter((r) => !r.dueAt || istDayKeyOfIso(r.dueAt) !== todayKey);
-  return pending; // 'all'
+  if (filter === 'today') return pending.filter((r) => isTodayBucket(r, todayKey));
+  if (filter === 'upcoming') return pending.filter((r) => isUpcomingBucket(r, todayKey));
+  return pending; // legacy 'all' - API only, the "All" tab itself is gone from the UI
 }
 
 // ---------------- Auto-created reminders from existing SUBH stores ----------------
@@ -254,8 +291,22 @@ async function syncAutoCreatedReminders(now) {
     memoryService.listMemories()
   ]);
 
+  // Never shows the internal "The sender" placeholder (used when a
+  // sender's real first name couldn't be resolved) as if it were a real
+  // name - falls back to the phone number instead, same rule
+  // whatsappAssistant.getWhatsappConversation already follows for its own
+  // header.
+  function labelFor(name, phone) {
+    return (name && name !== 'The sender') ? name : phone;
+  }
+
   const liveKeys = new Set();
   async function ensureReminder(key, fields) {
+    // Defense in depth (see isSyntheticTestPhone's own comment) - the 4
+    // source listings above already filter synthetic test contacts out,
+    // but a synthetic number can never create a reminder here either way,
+    // even if a future source forgets to filter upstream.
+    if (fields.linkedChatId && isSyntheticTestPhone(fields.linkedChatId)) return;
     liveKeys.add(key);
     if (byKey.has(key)) return;
     const r = newReminder(fields);
@@ -266,14 +317,14 @@ async function syncAutoCreatedReminders(now) {
 
   for (const f of followups) {
     await ensureReminder('whatsapp_followup|' + f.chatId, {
-      title: (f.name || f.chatId) + ' — follow-up needed', detail: f.summary, priority: 'high',
+      title: labelFor(f.name, f.chatId) + ' — follow-up needed', detail: f.summary, priority: 'high',
       source: 'whatsapp', sourceType: 'whatsapp_followup', sourceRef: f.chatId, linkedChatId: f.chatId,
       dueAt: now.toISOString(), hasTime: false, now
     });
   }
   for (const a of approvals) {
     await ensureReminder('whatsapp_approval|' + a.id, {
-      title: (a.name || a.phone) + ' — data request approval', detail: a.dataRequestSummary, priority: 'medium',
+      title: labelFor(a.name, a.phone) + ' — data request approval', detail: a.dataRequestSummary, priority: 'medium',
       source: 'whatsapp', sourceType: 'whatsapp_approval', sourceRef: a.id, linkedChatId: a.phone,
       dueAt: now.toISOString(), hasTime: false, now
     });
@@ -301,9 +352,12 @@ async function syncAutoCreatedReminders(now) {
   // still shows correctly under "Completed". Mutated+saved directly
   // (rather than markDone, which would re-fetch each one by id) and in
   // parallel, since `r` here is already the current, in-memory copy.
+  // manualOverride (set by undoDone) permanently exempts a reminder from
+  // this sweep - an explicit Undo must stick even once the real source
+  // goes on to resolve; only the owner's own "Mark done" closes it again.
   const toClose = [];
   for (const [key, r] of byKey.entries()) {
-    if (r.status === 'pending' && !liveKeys.has(key)) toClose.push(r);
+    if (r.status === 'pending' && !r.manualOverride && !liveKeys.has(key)) toClose.push(r);
   }
   await Promise.all(toClose.map((r) => {
     r.status = 'completed';
@@ -410,7 +464,7 @@ async function getSettings() {
 async function saveSettings(settings) {
   const redis = getClient();
   if (!redis) return;
-  try { await redis.set(SETTINGS_KEY, JSON.stringify(settings)); } catch (err) { /* best effort */ }
+  await redisHealth.guardedWrite(() => redis.set(SETTINGS_KEY, JSON.stringify(settings)));
 }
 
 // ---------------- Chat command (mirrors memoryService.js's

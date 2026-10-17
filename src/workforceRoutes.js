@@ -18,6 +18,7 @@ const documentRequests = require('./aiAssistant/documentRequests');
 const reminderService = require('./aiAssistant/reminderService');
 const fileStorage = require('./fileStorage');
 const whatsapp = require('./whatsappService');
+const redisHealth = require('./redisHealth');
 
 const router = express.Router();
 
@@ -1690,11 +1691,16 @@ router.get('/hr-assistant/communications-summary', async (req, res) => {
   ]);
   const remindersDueNow = reminderSnapshot.dueNow;
   const reminderCounts = reminderSnapshot.counts;
+  // The Redis-outage notice (if any) is tracked in-process, never in
+  // Redis itself (see redisHealth's own comment) - prepended here rather
+  // than going through postOwnerNotification/listSystemNotices, since
+  // those themselves depend on the very thing that might be down.
+  const redisNotice = redisHealth.currentNotice();
   res.json({
     importantMailsCount: 0, // Phase 3
     whatsappItems,
     importantWhatsappCount: whatsappItems.length,
-    systemNotices,
+    systemNotices: redisNotice ? [redisNotice, ...systemNotices] : systemNotices,
     // Home's badge = pending reminders + needs-you WhatsApp items (+ mails
     // later) per spec - the TOTAL pending count, not just reminders due
     // right now (that's remindersDueNow, for the fired-notification banner).
@@ -1708,7 +1714,7 @@ router.get('/hr-assistant/communications-summary', async (req, res) => {
 router.get('/hr-assistant/reminders', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
   try {
-    const filter = ['all', 'today', 'upcoming', 'completed'].includes(req.query.filter) ? req.query.filter : 'all';
+    const filter = ['all', 'today', 'upcoming', 'completed', 'completedToday'].includes(req.query.filter) ? req.query.filter : 'today';
     const { items, counts } = await reminderService.listReminders(filter, new Date());
     res.json({ items, counts });
   } catch (err) {
@@ -1768,31 +1774,56 @@ router.post('/hr-assistant/reminders/:id', async (req, res) => {
   }
 });
 
+// done/undo/cancel/snooze now each wrapped in try/catch (they weren't
+// before) - saveReminder (called inside each of these) now THROWS on a
+// real write failure instead of silently swallowing it, so without this
+// wrapper the throw would reach Express' default handler instead of the
+// clean {error} JSON postJsonOrThrow/runButtonAction expect.
 router.post('/hr-assistant/reminders/:id/done', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
-  const r = await reminderService.markDone(req.params.id, new Date());
-  res.json({ ok: Boolean(r), item: r });
+  try {
+    const r = await reminderService.markDone(req.params.id, new Date());
+    if (!r) return res.status(404).json({ error: 'Reminder not found.' });
+    res.json({ ok: true, item: r });
+  } catch (err) {
+    res.status(500).json({ error: "Couldn't save - please retry." });
+  }
 });
 router.post('/hr-assistant/reminders/:id/undo', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
-  const r = await reminderService.undoDone(req.params.id);
-  res.json({ ok: Boolean(r), item: r });
+  try {
+    const r = await reminderService.undoDone(req.params.id);
+    if (!r) return res.status(404).json({ error: 'Reminder not found.' });
+    res.json({ ok: true, item: r });
+  } catch (err) {
+    res.status(500).json({ error: "Couldn't save - please retry." });
+  }
 });
 router.post('/hr-assistant/reminders/:id/cancel', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
-  const r = await reminderService.cancelReminder(req.params.id);
-  res.json({ ok: Boolean(r), item: r });
+  try {
+    const r = await reminderService.cancelReminder(req.params.id);
+    if (!r) return res.status(404).json({ error: 'Reminder not found.' });
+    res.json({ ok: true, item: r });
+  } catch (err) {
+    res.status(500).json({ error: "Couldn't save - please retry." });
+  }
 });
 router.post('/hr-assistant/reminders/:id/snooze', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
-  const { minutes, until } = req.body || {};
-  const now = new Date();
-  let untilIso;
-  if (until) untilIso = new Date(until).toISOString();
-  else if (minutes) untilIso = new Date(now.getTime() + Number(minutes) * 60000).toISOString();
-  else return res.status(400).json({ error: 'minutes or until is required' });
-  const r = await reminderService.snoozeReminder(req.params.id, untilIso);
-  res.json({ ok: Boolean(r), item: r });
+  try {
+    const { minutes, until } = req.body || {};
+    const now = new Date();
+    let untilIso;
+    if (until) untilIso = new Date(until).toISOString();
+    else if (minutes) untilIso = new Date(now.getTime() + Number(minutes) * 60000).toISOString();
+    else return res.status(400).json({ error: 'minutes or until is required' });
+    const r = await reminderService.snoozeReminder(req.params.id, untilIso);
+    if (!r) return res.status(404).json({ error: 'Reminder not found.' });
+    res.json({ ok: true, item: r });
+  } catch (err) {
+    res.status(500).json({ error: "Couldn't save - please retry." });
+  }
 });
 
 router.get('/hr-assistant/reminder-settings', async (req, res) => {
@@ -1801,9 +1832,13 @@ router.get('/hr-assistant/reminder-settings', async (req, res) => {
 });
 router.post('/hr-assistant/reminder-settings', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
-  const { waOptIn, waNumber } = req.body || {};
-  await reminderService.saveSettings({ waOptIn: Boolean(waOptIn), waNumber: waNumber || null });
-  res.json({ ok: true });
+  try {
+    const { waOptIn, waNumber } = req.body || {};
+    await reminderService.saveSettings({ waOptIn: Boolean(waOptIn), waNumber: waNumber || null });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: "Couldn't save - please retry." });
+  }
 });
 
 router.get('/hr-assistant/whatsapp-conversation/:chatId', async (req, res) => {

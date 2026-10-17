@@ -16,6 +16,7 @@
 // configured or unreachable.
 const { Redis } = require('@upstash/redis');
 const whatsapp = require('../whatsappService');
+const redisHealth = require('../redisHealth');
 const employeeService = require('../employeeService');
 const workforceAnalytics = require('../workforceAnalytics');
 const tools = require('./tools');
@@ -181,7 +182,9 @@ async function listPendingDrafts() {
   if (!redis) return [];
   try {
     const raw = await redis.lrange(DRAFT_KEY, 0, MAX_DRAFTS - 1);
-    return raw.map((item) => { try { return typeof item === 'string' ? JSON.parse(item) : item; } catch (err) { return null; } }).filter(Boolean);
+    return raw.map((item) => { try { return typeof item === 'string' ? JSON.parse(item) : item; } catch (err) { return null; } })
+      .filter(Boolean)
+      .filter((d) => !whatsapp.isSyntheticTestPhone(d.contactId));
   } catch (err) { return []; }
 }
 
@@ -802,7 +805,9 @@ async function listOpenFollowups() {
   if (!redis) return [];
   try {
     const raw = await redis.lrange(OPEN_FOLLOWUPS_KEY, 0, MAX_FOLLOWUPS - 1);
-    return raw.map((i) => { try { return typeof i === 'string' ? JSON.parse(i) : i; } catch (e) { return null; } }).filter(Boolean);
+    return raw.map((i) => { try { return typeof i === 'string' ? JSON.parse(i) : i; } catch (e) { return null; } })
+      .filter(Boolean)
+      .filter((f) => !whatsapp.isSyntheticTestPhone(f.chatId));
   } catch (err) { return []; }
 }
 async function clearOpenFollowup(nameOrChatId) {
@@ -884,6 +889,12 @@ const PENDING_APPROVAL_IDS_KEY = 'wa-pending-approval-ids';
 // deletes the row from Important WhatsApp (dismissWhatsappItem below) -
 // never a silent timeout.
 
+// Kept fire-and-forget on failure (never throws out to its many callers,
+// mostly background/notification code that must never break a reply over
+// a storage hiccup) - but now tells redisHealth either way, so a real
+// outage (see redisHealth's own comment - found live when Upstash's quota
+// ran out) still surfaces as the ONE System-strip notice even though this
+// specific approval silently wasn't saved, exactly like before.
 async function savePendingApproval(approval) {
   const redis = getClient();
   if (!redis) return null;
@@ -892,7 +903,8 @@ async function savePendingApproval(approval) {
   try {
     await redis.set(PENDING_APPROVAL_PREFIX + id, JSON.stringify(record));
     await redis.sadd(PENDING_APPROVAL_IDS_KEY, id);
-  } catch (err) { /* best effort */ }
+    redisHealth.recordWriteSuccess();
+  } catch (err) { redisHealth.recordWriteFailure(err); }
   return id;
 }
 // Lazily prunes ids whose record is missing (e.g. a key deleted directly
@@ -917,13 +929,17 @@ async function listPendingApprovals() {
       try { out.push(typeof raw === 'string' ? JSON.parse(raw) : raw); } catch (err) { missingIds.push(ids[i]); }
     });
     if (missingIds.length) await redis.srem(PENDING_APPROVAL_IDS_KEY, ...missingIds);
-    return out.sort((a, b) => a.createdAt - b.createdAt);
+    return out.filter((a) => !whatsapp.isSyntheticTestPhone(a.phone)).sort((a, b) => a.createdAt - b.createdAt);
   } catch (err) { return []; }
 }
 async function removePendingApproval(id) {
   const redis = getClient();
   if (!redis) return;
-  try { await redis.del(PENDING_APPROVAL_PREFIX + id); await redis.srem(PENDING_APPROVAL_IDS_KEY, id); } catch (err) { /* best effort */ }
+  try {
+    await redis.del(PENDING_APPROVAL_PREFIX + id);
+    await redis.srem(PENDING_APPROVAL_IDS_KEY, id);
+    redisHealth.recordWriteSuccess();
+  } catch (err) { redisHealth.recordWriteFailure(err); }
 }
 
 // ---------------- Sender-side disambiguation (typo-tolerant name matching) ----------------
@@ -942,7 +958,10 @@ async function savePendingDisambiguation(phone, data) {
   const redis = getClient();
   if (!redis) return;
   const key = PENDING_DISAMBIGUATION_PREFIX + whatsapp.normalizePhone(phone);
-  try { await redis.set(key, JSON.stringify(data), { ex: PENDING_DISAMBIGUATION_TTL_SECONDS }); } catch (err) { /* best effort */ }
+  try {
+    await redis.set(key, JSON.stringify(data), { ex: PENDING_DISAMBIGUATION_TTL_SECONDS });
+    redisHealth.recordWriteSuccess();
+  } catch (err) { redisHealth.recordWriteFailure(err); }
 }
 async function getPendingDisambiguation(phone) {
   const redis = getClient();

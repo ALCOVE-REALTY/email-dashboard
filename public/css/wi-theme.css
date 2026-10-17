@@ -1822,13 +1822,15 @@ body { background: var(--wi-bg); }
   background: var(--wi-primary-50); color: var(--wi-primary-800); font-size: 0.78rem; font-weight: 700;
   animation: mUp .35s cubic-bezier(.2,.7,.2,1) both;
 }
-.wf-rem-chips { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 2px; }
+.wf-rem-chips { display: flex; gap: 8px; }
 .wf-rem-chip {
-  flex-shrink: 0; border: 1.5px solid var(--wi-border-2); background: var(--wi-surface); color: var(--wi-muted);
-  border-radius: var(--wi-r-pill); padding: 7px 13px; font-size: 0.78rem; font-weight: 700; font-family: inherit; cursor: pointer;
+  flex: 1; height: 36px; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  border: 1.5px solid var(--wi-border-2); background: var(--wi-surface); color: var(--wi-muted);
+  border-radius: var(--wi-r-pill); padding: 0 12px; font-size: 13px; font-weight: 700; font-family: inherit; cursor: pointer;
+  transition: background-color .15s ease, border-color .15s ease, color .15s ease;
 }
-.wf-rem-chip[aria-pressed="true"] { background: var(--wi-primary-50); border-color: var(--wi-primary); color: var(--wi-primary-700); }
-.wf-rem-chip-count { margin-left: 4px; }
+.wf-rem-chip[aria-pressed="true"] { background: var(--wi-primary); border-color: var(--wi-primary); color: #FFFFFF; }
+.wf-rem-chip-count { margin-left: 0; }
 .wf-rem-section-head { display: flex; align-items: center; justify-content: space-between; font-size: 0.8rem; font-weight: 800; color: var(--wi-ink); padding: 0 2px; }
 .wf-rem-list { display: flex; flex-direction: column; gap: 10px; }
 .wf-rem-row {

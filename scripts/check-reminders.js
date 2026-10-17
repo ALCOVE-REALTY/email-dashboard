@@ -50,6 +50,9 @@ async function main() {
   check('markDone sets status to completed', done.status === 'completed' && Boolean(done.completedAt));
   const undone = await reminderService.undoDone(r1.id);
   check('undoDone reverts to pending', undone.status === 'pending' && undone.completedAt === null);
+  check('undoDone sets manualOverride (so auto-sync can never silently re-close it)', undone.manualOverride === true);
+  const redone = await reminderService.markDone(r1.id, now);
+  check('markDone clears manualOverride again (a fresh deliberate close resets the override)', redone.manualOverride === false);
   const cancelled = await reminderService.cancelReminder(r1.id);
   check('cancelReminder sets status to cancelled', cancelled.status === 'cancelled');
 
@@ -76,15 +79,29 @@ async function main() {
   const sample = [
     { status: 'pending', dueAt: now.toISOString() }, // today
     { status: 'pending', dueAt: new Date(now.getTime() + 5 * 86400000).toISOString() }, // upcoming
-    { status: 'pending', dueAt: null }, // upcoming (no date)
-    { status: 'completed', dueAt: now.toISOString() }
+    { status: 'pending', dueAt: new Date(now.getTime() - 5 * 86400000).toISOString() }, // overdue - counts as today, never hidden
+    { status: 'pending', dueAt: null }, // undated - counts as today, never hidden
+    { status: 'completed', dueAt: now.toISOString(), completedAt: now.toISOString() }, // completed today
+    { status: 'completed', dueAt: now.toISOString(), completedAt: new Date(now.getTime() - 2 * 86400000).toISOString() } // completed 2 days ago
   ];
   const counts = reminderService.computeCounts(sample, now);
-  check('computeCounts: all = pending count', counts.all === 3);
-  check('computeCounts: today = pending due today (IST)', counts.today === 1);
-  check('computeCounts: upcoming = pending not due today', counts.upcoming === 2);
-  check('computeCounts: completed = completed count', counts.completed === 1);
+  check('computeCounts: all = pending count', counts.all === 4);
+  check('computeCounts: today = pending due today, overdue, AND undated (never hidden)', counts.today === 3);
+  check('computeCounts: upcoming = pending with a real future date only', counts.upcoming === 1);
+  check('computeCounts: completed = completed count (full history)', counts.completed === 2);
+  check('computeCounts: todayCompleted = only what was completed TODAY, not the full completed history', counts.todayCompleted === 1);
   check('computeCounts: all === today + upcoming (never disagree)', counts.all === counts.today + counts.upcoming);
+
+  console.log('='.repeat(70));
+  console.log('filterReminders: "today" never hides an overdue or undated pending reminder; "completedToday" is a strict subset of "completed"');
+  console.log('='.repeat(70));
+  const todayItems = reminderService.filterReminders(sample, 'today', now);
+  check('filterReminders("today") includes the overdue one', todayItems.some((r) => r.dueAt && new Date(r.dueAt).getTime() < now.getTime() - 86400000));
+  check('filterReminders("today") includes the undated one', todayItems.some((r) => !r.dueAt));
+  check('filterReminders("today") count matches computeCounts.today', todayItems.length === counts.today);
+  const completedTodayItems = reminderService.filterReminders(sample, 'completedToday', now);
+  check('filterReminders("completedToday") excludes the one completed 2 days ago', completedTodayItems.length === 1);
+  check('filterReminders("completedToday") count matches computeCounts.todayCompleted', completedTodayItems.length === counts.todayCompleted);
 
   console.log('='.repeat(70));
   console.log('Due-firing against the simulated clock (dueReminders/dueForWhatsapp claim independently)');
@@ -185,6 +202,17 @@ async function main() {
     check('a resolved approval auto-closes its reminder', closedApproval && closedApproval.status === 'completed');
     check('a resolved document auto-closes its reminder', closedDoc && closedDoc.status === 'completed');
     check('an expired/removed memory auto-closes its reminder', closedMemory && closedMemory.status === 'completed');
+
+    // An owner Undo must stick even once the next sync tick runs - found
+    // live: Undo was silently re-completed by auto-sync the moment the
+    // underlying source (already resolved) was seen again.
+    const undoneFollowup = await reminderService.undoDone(closedFollowup.id);
+    check('Undo on an auto-closed reminder reverts it to pending', undoneFollowup.status === 'pending');
+    await reminderService.syncAutoCreatedReminders(now); // source is STILL resolved/not-live - old behavior would re-close this
+    const afterSync = await reminderService.getReminder(closedFollowup.id);
+    check('UNDO MUST STICK: auto-sync never re-closes a manualOverride reminder even though its source is still resolved', afterSync.status === 'pending');
+    const manuallyDone = await reminderService.markDone(closedFollowup.id, now);
+    check('the owner\'s own Mark done still closes it normally after an Undo', manuallyDone.status === 'completed');
   } finally {
     whatsappAssistant.listOpenFollowups = origFollowups;
     whatsappAssistant.listPendingApprovals = origApprovals;

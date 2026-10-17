@@ -24,6 +24,25 @@ function normalizePhone(raw) {
   return digits;
 }
 
+// The ONE reserved block every test script in scripts/ must use for a
+// synthetic WhatsApp contact (normalized to 12 digits: "910000000" + any
+// 3 digits - e.g. TEST_PHONE 910000000777 in check-whatsapp-engine.js).
+// Found live: a different, non-reserved synthetic number
+// (919999999998, check-subh-language.js's DATA_REQUEST_TEST_PHONE) looks
+// enough like a real contact that nothing filtered it out, and three
+// "Rahul"/"Lucy"/"Simran" fixture approvals it created ended up as real,
+// permanent rows on the owner's actual Reminders/Important WhatsApp
+// pages. Rather than trust every test script to clean up perfectly (the
+// exact thing that already failed here), every production-facing listing
+// function below (listPendingApprovals, listOpenFollowups,
+// listPendingDrafts, listActionableWhatsappItems, and reminderService's
+// own auto-sync) now calls this and drops a match - so a synthetic
+// number can never reach the owner's real UI even if a test forgets to
+// delete what it created.
+function isSyntheticTestPhone(raw) {
+  return /^910000000\d{3}$/.test(normalizePhone(raw));
+}
+
 // Found live: the deployed container (same company server as the
 // gateway itself, both behind Caddy) got a 404 calling the PUBLIC
 // domain's /status path, while the exact same call from outside works
@@ -114,4 +133,4 @@ async function getConnectionStatus() {
   return (data.data && data.data.status) || 'unknown';
 }
 
-module.exports = { sendWhatsAppMessage, normalizePhone, listChats, listMessages, isGroupChat, getConnectionStatus };
+module.exports = { sendWhatsAppMessage, normalizePhone, isSyntheticTestPhone, listChats, listMessages, isGroupChat, getConnectionStatus };

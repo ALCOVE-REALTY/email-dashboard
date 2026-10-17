@@ -241,12 +241,11 @@
       <div class="wf-rem-page" id="hrRemPage" hidden>
         <div class="wf-rem-banner" id="hrRemBanner" hidden></div>
         <div class="wf-rem-chips" id="hrRemChips">
-          <button type="button" class="wf-rem-chip" data-filter="all" aria-pressed="true">All <span class="wf-rem-chip-count wi-count-badge neutral">0</span></button>
-          <button type="button" class="wf-rem-chip" data-filter="today" aria-pressed="false">Today <span class="wf-rem-chip-count wi-count-badge neutral">0</span></button>
+          <button type="button" class="wf-rem-chip" data-filter="today" aria-pressed="true">Today <span class="wf-rem-chip-count wi-count-badge neutral">0</span></button>
           <button type="button" class="wf-rem-chip" data-filter="upcoming" aria-pressed="false">Upcoming <span class="wf-rem-chip-count wi-count-badge neutral">0</span></button>
           <button type="button" class="wf-rem-chip" data-filter="completed" aria-pressed="false">Completed <span class="wf-rem-chip-count wi-count-badge neutral">0</span></button>
         </div>
-        <div class="wf-rem-section-head"><span>Pending Reminders</span><span class="wf-rem-section-badge wi-count-badge primary" id="hrRemSectionBadge">0</span></div>
+        <div class="wf-rem-section-head"><span id="hrRemSectionHeadLabel">Pending Reminders</span><span class="wf-rem-section-badge wi-count-badge primary" id="hrRemSectionBadge">0</span></div>
         <div class="wf-rem-list" id="hrRemList"></div>
         <button type="button" class="wf-rem-add-btn" id="hrRemAddBtn">+ Add Reminder</button>
         <div class="wf-rem-info-note">Reminders will remain pending and keep showing until you tap Done or Cancel.</div>
@@ -254,7 +253,6 @@
           <span>Today's Completed</span>
           <span class="wf-rem-completed-badge wi-count-badge success" id="hrRemCompletedBadge">0</span>
         </button>
-        <div class="wf-comms-viewall" id="hrRemLinkToComms" style="text-align:center;margin-top:4px;">View Important Communications ›</div>
       </div>
 
       <!-- One reminder's detail -->

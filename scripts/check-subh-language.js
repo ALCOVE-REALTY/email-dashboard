@@ -13,6 +13,7 @@ require('dotenv').config();
 const provider = require('../src/aiAssistant/provider');
 const whatsappAssistant = require('../src/aiAssistant/whatsappAssistant');
 const { detectMessageLanguage } = require('../src/aiAssistant/languageDetect');
+const { assertSyntheticPhone } = require('./testRedisNamespace');
 const { Redis } = require('@upstash/redis');
 
 const redis = new Redis({
@@ -92,7 +93,7 @@ async function seedInboxEntries() {
   return jsons;
 }
 async function cleanupInboxEntries(jsons) {
-  for (const j of jsons) await redis.lrem(INBOX_LOG_KEY, 1, j);
+  for (const j of jsons || []) await redis.lrem(INBOX_LOG_KEY, 1, j);
 }
 // Inbox-summary-specific assertions - the per-item text is built
 // deterministically in code (whatsappAssistant.buildInboxReplyText), not
@@ -156,8 +157,10 @@ function checkIdentityText(lang, text) {
   const expected = IDENTITY_EXPECTATIONS[lang];
   return expected && !text.startsWith(expected) ? ['missing expected identity line: "' + expected + '"'] : [];
 }
+const IDENTITY_TEST_PHONE = '910000000999';
+assertSyntheticPhone(IDENTITY_TEST_PHONE);
 async function identityReply(text, firstName) {
-  const d = await whatsappAssistant.decideAutoReply({ phone: '919999999999', name: firstName, firstName, text, isGroup: false, history: [] });
+  const d = await whatsappAssistant.decideAutoReply({ phone: IDENTITY_TEST_PHONE, name: firstName, firstName, text, isGroup: false, history: [] });
   return d.replyText;
 }
 // The data-request holding reply (spec point 6a) is fixed, deterministic
@@ -176,14 +179,26 @@ function checkDataHoldingText(lang, text) {
 // fire-and-forget background call (prepareAndQueueDataApproval, internal
 // to whatsappAssistant.js - not interceptable from outside the module)
 // that writes a REAL wa-pending-approval:* record to PRODUCTION Redis.
-// This is exactly how 919999999998's synthetic Rahul/Lucy/Simran
-// approvals kept reappearing throughout a real engagement even after
-// being deleted - every run of this suite recreated them again. Tracked
-// here (DATA_REQUEST_TEST_PHONE) and swept clean at the end of main()
-// after a grace delay for the background call to land - see
-// cleanupSyntheticApprovals below. Never rename this constant without
-// updating that cleanup to match.
-const DATA_REQUEST_TEST_PHONE = '919999999998';
+// This number used to be 919999999998, which is exactly how its synthetic
+// Rahul/Lucy/Simran approvals kept reappearing - not just as approvals
+// (swept by cleanupSyntheticApprovals below) but as permanent COMPLETED
+// reminders: SUBH Reminders' own auto-sync (syncAutoCreatedReminders)
+// could create a reminder from the approval and later auto-close it (once
+// this cleanup deleted the approval) BEFORE the 5s grace delay here even
+// ran - the reminder itself is never deleted on auto-close, only marked
+// completed, so it sat there permanently regardless of how reliably this
+// cleanup ran. Fixed at the root two ways: (1) every production listing
+// function (listPendingApprovals, listOpenFollowups, listPendingReceived,
+// reminderService's own ensureReminder) now refuses a number in this
+// block via whatsappService.isSyntheticTestPhone, so nothing synthetic
+// can reach the owner's real UI even if this cleanup fails entirely; (2)
+// this constant itself now lives IN that reserved block
+// (testRedisNamespace.assertSyntheticPhone throws immediately if it
+// doesn't), so there's no longer a real-looking number for anything to
+// leak through as in the first place. The cleanup below is now pure
+// tidiness, not the last line of defense.
+const DATA_REQUEST_TEST_PHONE = '910000000998';
+assertSyntheticPhone(DATA_REQUEST_TEST_PHONE);
 async function dataRequestReply(text, firstName) {
   const d = await whatsappAssistant.decideAutoReply({ phone: DATA_REQUEST_TEST_PHONE, name: firstName, firstName, text, isGroup: false, history: [] });
   return d.case === 'data_holding' ? d.replyText : '(WRONG CASE: ' + d.case + ', expected data_holding)';
@@ -209,7 +224,24 @@ async function cleanupSyntheticApprovals() {
 }
 
 async function main() {
-  const seeded = await seedInboxEntries();
+  // Cleanup (both inbox entries AND any synthetic approval this run's
+  // data-request samples create) now runs in `finally`, not after the
+  // last line of the test body - found live: the anti-repeat block below
+  // wasn't wrapped in its own try/catch, so a failure there used to skip
+  // cleanup entirely, which is exactly how synthetic data accumulated
+  // across runs undetected.
+  let seeded = null;
+  let failCount;
+  try {
+    failCount = await runSamples();
+  } finally {
+    await cleanupInboxEntries(seeded);
+    await cleanupSyntheticApprovals();
+  }
+  return failCount;
+
+  async function runSamples() {
+  seeded = await seedInboxEntries();
   const samples = [];
 
   // ---- Banglish (12) ----
@@ -284,9 +316,6 @@ async function main() {
     issues: reply1 === reply2 ? ['two different topics in one conversation got the IDENTICAL reply'] : []
   });
 
-  await cleanupInboxEntries(seeded);
-  await cleanupSyntheticApprovals();
-
   console.log('='.repeat(70));
   let failCount = 0;
   results.forEach((r, i) => {
@@ -298,7 +327,10 @@ async function main() {
   });
   console.log('='.repeat(70));
   console.log(`${results.length - failCount}/${results.length} passed, ${failCount} flagged`);
-  process.exit(failCount ? 1 : 0);
+  return failCount;
+  }
 }
 
-main().catch((err) => { console.error('Script error:', err); process.exit(1); });
+main()
+  .then((failCount) => process.exit(failCount ? 1 : 0))
+  .catch((err) => { console.error('Script error:', err); process.exit(1); });

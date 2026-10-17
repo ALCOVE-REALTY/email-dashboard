@@ -83,12 +83,12 @@
   const remPage = document.getElementById('hrRemPage');
   const remBanner = document.getElementById('hrRemBanner');
   const remChips = document.getElementById('hrRemChips');
+  const remSectionHeadLabel = document.getElementById('hrRemSectionHeadLabel');
   const remSectionBadge = document.getElementById('hrRemSectionBadge');
   const remList = document.getElementById('hrRemList');
   const remAddBtn = document.getElementById('hrRemAddBtn');
   const remCompletedRow = document.getElementById('hrRemCompletedRow');
   const remCompletedBadge = document.getElementById('hrRemCompletedBadge');
-  const remLinkToComms = document.getElementById('hrRemLinkToComms');
   const remDetailPage = document.getElementById('hrRemDetailPage');
   const remDetailBody = document.getElementById('hrRemDetailBody');
   const remSheetBackdrop = document.getElementById('hrRemSheetBackdrop');
@@ -1145,10 +1145,23 @@
   // data in the background and re-renders when it lands, so nothing here
   // is ever more than one poll cycle stale.
   const pageDataCache = { comms: null, commsAt: 0, reminders: new Map() };
+  // Bumped by invalidateReminderCache (every reminder mutation - done/
+  // undo/cancel/snooze/create/edit). Any reminders fetch in flight when a
+  // mutation happens captures remMutationSeq at send time and checks it
+  // again on arrival - a mismatch means a mutation landed while it was in
+  // the air, so its (now-stale) response is discarded instead of being
+  // cached or rendered. Found live: a background prefetch/poll response
+  // issued just BEFORE an Undo could still resolve just AFTER it and
+  // silently overwrite the fresh post-undo cache with the old
+  // pre-undo (completed) snapshot - reopening Reminders would then show
+  // the undone reminder as completed again, with nothing actually wrong
+  // server-side. This closes that race everywhere, not just for Undo.
+  let remMutationSeq = 0;
   // Called after any reminder mutation (done/undo/cancel/snooze/create/
   // edit) so the next load doesn't render a stale-but-cached pre-mutation
   // list for a moment before the fresh fetch corrects it.
   function invalidateReminderCache() {
+    remMutationSeq++;
     pageDataCache.reminders.clear();
     pageDataCache.comms = null;
   }
@@ -1214,11 +1227,18 @@
   // Reminders or the hub, the data is very likely already sitting in
   // cache and renders instantly instead of waiting on a fresh request.
   async function prefetchRemindersAll() {
+    const seqAtStart = remMutationSeq;
     try {
-      const resp = await fetch('/api/workforce/hr-assistant/reminders?filter=all');
+      // 'today' - the default tab (see loadRemindersPage) - but every
+      // filter's response carries the SAME full counts object regardless
+      // of which items it returns (computeCounts always runs over the
+      // complete list), so this one fetch also warms the hub tile/header
+      // badge correctly no matter which tab is opened first.
+      const resp = await fetch('/api/workforce/hr-assistant/reminders?filter=today');
       if (!resp.ok) return;
       const data = await resp.json();
-      pageDataCache.reminders.set('all', { data, at: Date.now() });
+      if (remMutationSeq !== seqAtStart) return; // a mutation landed while this was in flight - stale, drop it
+      pageDataCache.reminders.set('today', { data, at: Date.now() });
     } catch (err) { /* best effort - a real page open will just fetch fresh */ }
   }
   function startCommsPolling() {
@@ -1289,6 +1309,11 @@
       if (commsHeadIcon) commsHeadIcon.innerHTML = REMINDERS_BELL_SVG;
       if (commsHeadTitle) commsHeadTitle.textContent = 'Reminders';
       if (commsHeadSubtitle) commsHeadSubtitle.textContent = 'Your pending tasks & follow-ups';
+      // Never carries over a stale count from whatever page was open
+      // before (e.g. mails+whatsapp total from Important Communications) -
+      // loadRemindersPage's own renderRemindersData call sets the correct
+      // counts.all value immediately after, from cache or a fresh fetch.
+      if (commsHeadBadge) commsHeadBadge.hidden = true;
     } else if (isRemDetail) {
       if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon reminders';
       if (commsHeadIcon) commsHeadIcon.innerHTML = REMINDERS_BELL_SVG;
@@ -1360,7 +1385,15 @@
         if (panelView === 'important') renderWaList(commsWaList, fresh.whatsappItems || []);
         else if (panelView === 'waAll') renderWaList(commsWaAllList, fresh.whatsappItems || []);
         setCountBadge(todayUpdatesBadge, (fresh.importantMailsCount || 0) + (fresh.importantWhatsappCount || 0) + (fresh.remindersPendingCount || 0));
-        setCountBadge(commsHeadBadge, (fresh.importantMailsCount || 0) + (fresh.importantWhatsappCount || 0));
+        // Only while a comms page is actually on screen - commsHeadBadge is
+        // shared with the Reminders page header, which means something
+        // completely different there (counts.all, set by its own
+        // renderRemindersData); writing the mails+whatsapp total here
+        // unconditionally could otherwise stomp that value if this delete
+        // somehow resolves after the person has already navigated away.
+        if (panelView === 'important' || panelView === 'waAll') {
+          setCountBadge(commsHeadBadge, (fresh.importantMailsCount || 0) + (fresh.importantWhatsappCount || 0));
+        }
         if (commsHeadSubtitle && panelView === 'important') {
           commsHeadSubtitle.textContent = (fresh.importantMailsCount || 0) + ' important mails · ' + (fresh.importantWhatsappCount || 0) + ' important WhatsApp';
         }
@@ -1815,7 +1848,8 @@
   // background to correct the badges if anything changed since.
   async function showHub() {
     setPanelView('hub');
-    const cachedRem = pageDataCache.reminders.get('all');
+    const seqAtStart = remMutationSeq;
+    const cachedRem = pageDataCache.reminders.get('today');
     if (pageDataCache.comms || cachedRem) {
       renderHubBadges(pageDataCache.comms || {}, (cachedRem && cachedRem.data.counts) || { all: 0 });
     }
@@ -1824,12 +1858,12 @@
     try {
       const [commsResp, remResp] = await Promise.all([
         fetch('/api/workforce/hr-assistant/communications-summary').then((r) => r.json()),
-        fetch('/api/workforce/hr-assistant/reminders?filter=all').then((r) => r.json())
+        fetch('/api/workforce/hr-assistant/reminders?filter=today').then((r) => r.json())
       ]);
       comms = commsResp;
       pageDataCache.comms = commsResp;
       pageDataCache.commsAt = Date.now();
-      pageDataCache.reminders.set('all', { data: remResp, at: Date.now() });
+      if (remMutationSeq === seqAtStart) pageDataCache.reminders.set('today', { data: remResp, at: Date.now() });
       remCounts = remResp.counts || remCounts;
     } catch (err) {
       if (pageDataCache.comms || cachedRem) return; // keep the still-valid cached render
@@ -1839,7 +1873,6 @@
   }
   if (hubRemindersTile) hubRemindersTile.addEventListener('click', showReminders);
   if (hubCommsTile) hubCommsTile.addEventListener('click', showImportant);
-  if (remLinkToComms) remLinkToComms.addEventListener('click', showImportant);
 
   function priorityLabel(p) { return p === 'high' ? 'High' : p === 'low' ? 'Low' : 'Medium'; }
   function sourceLabel(s) { return s === 'email' ? 'Email' : s === 'whatsapp' ? 'WhatsApp' : s === 'report' ? 'Report' : 'Manual'; }
@@ -1856,7 +1889,7 @@
   }
 
   let remItemsById = new Map();
-  let activeRemFilter = 'all';
+  let activeRemFilter = 'today';
 
   function renderReminderRow(r) {
     const row = document.createElement('div');
@@ -1918,11 +1951,42 @@
     actionToastTimer = setTimeout(() => { remToast.hidden = true; }, 5000);
   }
 
+  // Both 'completed' (full history, the Completed tab) and 'completedToday'
+  // (the "Today's Completed" row) are completed-oriented views - same
+  // heading, same "no X yet" copy, just a different underlying item set.
+  function isCompletedFilter(filter) { return filter === 'completed' || filter === 'completedToday'; }
+
+  // Fingerprints the exact fields renderReminderRow actually displays -
+  // NOT a reference/identity check, a content check. Speed/responsiveness
+  // fix: found live, a row needed 2-3 taps to open. Root cause - the
+  // stale-while-revalidate fetch below replaces the ENTIRE list's DOM
+  // (remList.innerHTML = '' + rebuild) the moment fresh data lands, often
+  // 200-500ms after the cached render; if that background response
+  // resolves while a tap is still mid-flight (finger down, not yet
+  // lifted), the row the finger is on gets torn out from under it and the
+  // tap is lost - exactly a "needs another try" symptom, worse on a
+  // slower phone/connection. When the fresh data is IDENTICAL to what's
+  // already on screen (the overwhelmingly common case for a 30s poll),
+  // skipping the rebuild entirely means the DOM nodes never move and a
+  // tap in progress always completes normally.
+  function remListFingerprint(items) {
+    return (items || []).map((r) => [r.id, r.status, r.title, r.priority, r.dueAt, r.detail].join('\u0001')).join('\u0002');
+  }
+  let lastRemListFingerprint = null;
+
   function renderRemindersData(data, filter) {
     remItemsById = new Map((data.items || []).map((r) => [r.id, r]));
+    // The header badge always means the same thing everywhere it appears
+    // (Home badge, hub tile, here) - total pending - never the filter
+    // currently on screen, so it can never visibly disagree with the hub
+    // tile/Home badge a moment later.
     setCountBadge(commsHeadBadge, data.counts.all);
-    setCountBadge(remSectionBadge, filter === 'completed' ? data.items.length : data.counts.all);
-    setCountBadge(remCompletedBadge, data.counts.completed);
+    if (remSectionHeadLabel) remSectionHeadLabel.textContent = isCompletedFilter(filter) ? 'Completed Reminders' : 'Pending Reminders';
+    setCountBadge(remSectionBadge, isCompletedFilter(filter) ? data.items.length : data.counts.all);
+    // "Today's Completed" row/badge is always TODAY's completed count,
+    // never the full history (that lives under the Completed tab) -
+    // regardless of which filter happens to be on screen right now.
+    setCountBadge(remCompletedBadge, data.counts.todayCompleted || 0);
     if (remChips) {
       remChips.querySelectorAll('.wf-rem-chip').forEach((chip) => {
         const f = chip.dataset.filter;
@@ -1932,11 +1996,15 @@
       });
     }
     if (remList) {
-      remList.innerHTML = '';
-      if (!data.items.length) {
-        remList.innerHTML = '<div class="wf-rem-empty">No pending reminders.</div>';
-      } else {
-        data.items.forEach((r) => remList.appendChild(renderReminderRow(r)));
+      const fp = filter + '::' + remListFingerprint(data.items);
+      if (fp !== lastRemListFingerprint) {
+        lastRemListFingerprint = fp;
+        remList.innerHTML = '';
+        if (!data.items.length) {
+          remList.innerHTML = '<div class="wf-rem-empty">' + (isCompletedFilter(filter) ? 'No completed reminders yet.' : 'No pending reminders.') + '</div>';
+        } else {
+          data.items.forEach((r) => remList.appendChild(renderReminderRow(r)));
+        }
       }
     }
   }
@@ -1946,12 +2014,14 @@
   // fresh in the background, and only show the skeleton placeholder on a
   // true cold start. requestedFilter is captured at call time so a fast
   // filter-chip switch never lets a slower, now-stale response clobber
-  // whatever filter is actually showing by the time it resolves.
+  // whatever filter is actually showing by the time it resolves; seqAtStart
+  // does the same for a mutation (done/undo/...) that lands mid-flight.
   async function loadRemindersPage(filter) {
-    activeRemFilter = filter || 'all';
+    activeRemFilter = filter || 'today';
     if (remBanner) remBanner.hidden = true;
     flushReminderBanner();
     const requestedFilter = activeRemFilter;
+    const seqAtStart = remMutationSeq;
     const cached = pageDataCache.reminders.get(requestedFilter);
     // No skeleton when the list already has real rows (e.g. right after
     // completeReminderRow's optimistic removal, which invalidates the
@@ -1962,24 +2032,26 @@
     if (cached) {
       renderRemindersData(cached.data, requestedFilter);
     } else if (remList && !hasExistingRender) {
+      lastRemListFingerprint = null; // force the next real render to actually paint, not skip as "unchanged"
       remList.innerHTML = '<div class="wf-skeleton-list"><div class="wf-skeleton-row"></div><div class="wf-skeleton-row"></div><div class="wf-skeleton-row"></div></div>';
     }
     let data;
     try {
       const resp = await fetch('/api/workforce/hr-assistant/reminders?filter=' + encodeURIComponent(requestedFilter));
       data = await resp.json();
-      pageDataCache.reminders.set(requestedFilter, { data, at: Date.now() });
+      if (remMutationSeq === seqAtStart) pageDataCache.reminders.set(requestedFilter, { data, at: Date.now() });
     } catch (err) {
       if (cached) return; // keep showing the still-valid cached render
-      data = { items: [], counts: { all: 0, today: 0, upcoming: 0, completed: 0 } };
+      data = { items: [], counts: { all: 0, today: 0, upcoming: 0, completed: 0, todayCompleted: 0 } };
     }
     if (activeRemFilter !== requestedFilter) return; // filter/page changed before this resolved
+    if (remMutationSeq !== seqAtStart) return; // a mutation landed mid-flight - a fresh load for it is already underway
     renderRemindersData(data, requestedFilter);
   }
 
   function showReminders() {
     setPanelView('reminders');
-    loadRemindersPage('all');
+    loadRemindersPage('today');
   }
   if (remChips) {
     remChips.addEventListener('click', (e) => {
@@ -1987,7 +2059,7 @@
       if (chip) loadRemindersPage(chip.dataset.filter);
     });
   }
-  if (remCompletedRow) remCompletedRow.addEventListener('click', () => loadRemindersPage('completed'));
+  if (remCompletedRow) remCompletedRow.addEventListener('click', () => loadRemindersPage('completedToday'));
 
   // ---- Add/Edit Reminder sheet (simple slide-up, see CSS comment) ----
   let editingReminderId = null;
