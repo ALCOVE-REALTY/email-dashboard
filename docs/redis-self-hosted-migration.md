@@ -246,8 +246,8 @@ WhatsApp traffic, which doesn't change):
 - `07afdf5` - corrected the (then-assumed) docker-compose networking plan
   to the actual bridge-gateway-IP approach, before learning there's no SSH
   access at all.
-- (this commit) - replaced the whole server-side plan with `subh-store` as
-  its own Alcove Deploy project, once SSH access turned out not to exist.
+- `702cf61` - replaced the whole server-side plan with `subh-store` as its
+  own Alcove Deploy project, once SSH access turned out not to exist.
 
 **subh-store** (new, separate repo):
 - `fc6f229` - the whole project: Redis + REST shim + Drive backup + auth/
