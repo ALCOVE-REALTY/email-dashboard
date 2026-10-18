@@ -662,7 +662,7 @@ async function listAutoReplyLog(limit = 200) {
 // vs a real send vs loop-protection skipping it). messageSummary/
 // sentText are real content, deliberately - see INBOX_LOG_KEY's own
 // comment on why this log differs from AUTO_REPLY_LOG_KEY.
-async function logInboxEvent({ chatId, name, isGroup, messageSummary, aCase, sentText, outcome, arrivedAt, seenAt, scheduledSendAt, sentAt }) {
+async function logInboxEvent({ chatId, name, isGroup, messageSummary, aCase, sentText, outcome, arrivedAt, seenAt, scheduledSendAt, typingStartedAt, sentAt }) {
   const redis = getClient();
   if (!redis) return;
   try {
@@ -675,8 +675,13 @@ async function logInboxEvent({ chatId, name, isGroup, messageSummary, aCase, sen
       // Per-message timeline (not shown in the rendered reply text, read
       // directly from Redis when tracing a specific incident) - any of
       // these can be undefined depending on the outcome path, which is
-      // fine, JSON.stringify just omits them.
-      arrivedAt, seenAt, scheduledSendAt, sentAt
+      // fine, JSON.stringify just omits them. typingStartedAt (reply-
+      // latency request: "log arrived -> typing -> sent") is when the
+      // first "composing" presence update was actually sent for this
+      // turn - undefined whenever the gateway doesn't support presence
+      // yet (see whatsappService.js's sendPresence) or no reply was ever
+      // going out (automatic/blocked/never-auto).
+      arrivedAt, seenAt, scheduledSendAt, typingStartedAt, sentAt
     };
     await redis.lpush(INBOX_LOG_KEY, JSON.stringify(entry));
     await redis.ltrim(INBOX_LOG_KEY, 0, MAX_INBOX_LOG - 1);
@@ -773,10 +778,12 @@ async function resetFollowupCount(chatId) {
 // main poll. Decision (which case, what reply) happens once,
 // immediately, in pollOnce - only the SENDING is delayed. Narrowed from
 // 20-30s to 5-10s after a real incident where total arrived->replied
-// latency ran to minutes - this delay is the one piece of that budget
-// safe to shrink without losing its only real purpose (not look
-// instant/robotic).
-function randomDelayMs() { return (5 + Math.random() * 5) * 1000; }
+// latency ran to minutes, then to 2-4s (reply-latency request: the 30s
+// total budget - poll 5s + burst 7-8s + human delay + generation - has no
+// room left for the old 5-10s once every other piece is accounted for) -
+// this delay is the one piece of that budget safe to shrink without
+// losing its only real purpose (not look instant/robotic).
+function randomDelayMs() { return (2 + Math.random() * 2) * 1000; }
 
 async function scheduleAutoSend(entry) {
   const redis = getClient();
@@ -790,9 +797,10 @@ async function scheduleAutoSend(entry) {
   return { id, sendAt };
 }
 
-// Called on the fast tick (every ~10s) - sends (or, in DRAFT mode,
-// reports) every entry whose delay has elapsed, re-checking loop
-// protection at send time since conditions can change during the delay.
+// Called on its own fast tick (every ~2s, see whatsappPollScheduler.js's
+// SEND_FLUSH_MS) - sends (or, in DRAFT mode, reports) every entry whose
+// delay has elapsed, re-checking loop protection at send time since
+// conditions can change during the delay.
 async function processDueAutoSends() {
   const redis = getClient();
   if (!redis) return { processed: 0 };
@@ -836,20 +844,29 @@ function isRealSendAllowedFor(chatId) {
   return whatsapp.normalizePhone(chatId) === whatsapp.normalizePhone(onlyPhone);
 }
 
-// Latency alert (spec: "alert me in SUBH chat if any reply takes > 60s") -
-// checked against the real gateway arrival timestamp, not just the
-// delayed-send queue's own timing, so this catches slow POLLING too
-// (backoff, a stuck scheduler), not only a long human-like delay.
-const LATENCY_ALERT_THRESHOLD_MS = 60 * 1000;
+// Latency alert (reply-latency request: "alert me in SUBH if any reply
+// takes > 30s", narrowed from the earlier 60s target) - checked against
+// the real gateway arrival timestamp, not just the delayed-send queue's
+// own timing, so this catches slow POLLING too (backoff, a stuck
+// scheduler), not only a long human-like delay.
+const LATENCY_ALERT_THRESHOLD_MS = 30 * 1000;
 async function sendOrReportAutoReply(entry) {
   const realSendEnabled = isRealSendAllowedFor(entry.chatId);
   const who = (entry.isGroup ? 'group ' : '') + entry.name;
   const timeLabel = new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' });
   // Per-message timeline, threaded through from pollOnce/scheduleAutoSend -
-  // every logInboxEvent call below gets the same three fields plus its
+  // every logInboxEvent call below gets the same four fields plus its
   // own outcome-specific sentAt (or none, for the two skip outcomes,
   // which never actually send anything).
-  const timeline = { arrivedAt: entry.arrivedAt, seenAt: entry.seenAt, scheduledSendAt: entry.sendAt };
+  const timeline = { arrivedAt: entry.arrivedAt, seenAt: entry.seenAt, scheduledSendAt: entry.sendAt, typingStartedAt: entry.typingStartedAt };
+  // One more presence refresh right as this tick picks the entry up -
+  // covers the human-delay gap between scheduleAutoSend and this actually
+  // running, so the indicator never has a chance to lapse right before
+  // the reply goes out. Groups aren't wired into the typing-presence flow
+  // at all (no burst buffer there, and real group sending isn't
+  // implemented yet either) - entry.typingStartedAt is only ever set for
+  // a 1:1 chat.
+  if (!entry.isGroup && entry.typingStartedAt) await whatsapp.sendPresence(entry.chatId, 'composing').catch(() => {});
 
   // The old loop-protection checks (duplicate-reply-text and a "new
   // message within 10s of our own last send" bot-echo heuristic) lived
@@ -863,7 +880,7 @@ async function sendOrReportAutoReply(entry) {
     if (!entry.arrivedAt) return;
     const latencyMs = sentAt - entry.arrivedAt;
     if (latencyMs > LATENCY_ALERT_THRESHOLD_MS) {
-      await postOwnerNotification('⚠️ Reply to ' + who + ' took ' + Math.round(latencyMs / 1000) + 's (target: under 60s).');
+      await postOwnerNotification('⚠️ Reply to ' + who + ' took ' + Math.round(latencyMs / 1000) + 's (target: under 30s).');
     }
   }
 
@@ -872,6 +889,10 @@ async function sendOrReportAutoReply(entry) {
       ? { ok: false, error: 'Real sending to a WhatsApp group is not implemented yet.' }
       : await whatsapp.sendWhatsAppMessage(entry.chatId, entry.replyText);
     const sentAt = Date.now();
+    // Item 2: "refreshed until the reply is sent. Then send the reply." -
+    // the indicator's job is done the instant the real message goes out
+    // (or fails to), success or not.
+    if (!entry.isGroup && entry.typingStartedAt) await whatsapp.sendPresence(entry.chatId, 'paused').catch(() => {});
     if (sendResult.ok) {
       await postOwnerNotification('✓ Auto-replied to ' + who + ' at ' + timeLabel + ': "' + entry.replyText + '"');
       await alertIfSlow(sentAt);
@@ -2602,6 +2623,20 @@ function styleReferenceBlock(samples) {
 // generateDraft/generateGroupDraft's own guards), never silently run
 // some other model picked in code.
 const DRAFT_MODEL = process.env.CLAUDE_MODEL_MAIN;
+// FAST tier (speed fix, reply-latency request) - for the two short/simple
+// reply shapes that just state an already-known fact in plain WhatsApp
+// text (a taught memory fact, or the sender's own whitelisted record -
+// see generateDraft's two FAST call sites below): no open-ended reasoning,
+// no retries, no multi-turn context to weigh, so a faster/cheaper model
+// answers just as well while shaving real seconds off the reply budget.
+// The free-form conversational generator (generateConversationReply) and
+// the group-chat path stay on MAIN - those genuinely need the stronger
+// model's judgment (tone, never-repeat, language-match retries, etc.).
+// Falls back to MAIN whenever CLAUDE_MODEL_FAST isn't configured, unlike
+// MAIN's own no-default policy - this tier is a pure speed optimization,
+// never a hard requirement, so an unset env var must silently keep
+// today's exact behavior rather than fail loudly.
+const FAST_MODEL = process.env.CLAUDE_MODEL_FAST || DRAFT_MODEL;
 // ---------------- Claude API helpers (WhatsApp draft/classification calls) ----------------
 // These one-shot calls (draft generation/revision, classification,
 // context-aware replies) used to hit OpenAI's chat-completions endpoint
@@ -3448,7 +3483,7 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
         const memoryFact = { fact: memory.statusFact, guidance: memory.guidance, documentRequested: Boolean(memory.requestsDocument) };
         const replyText = isGroup
           ? await generateGroupDraft(name, text, memoryFact)
-          : await generateDraft(senderLabel, text, undefined, null, memoryFact);
+          : await generateDraft(senderLabel, text, FAST_MODEL, null, memoryFact);
         if (memory.requestsDocument && !isGroup) {
           await documentRequests.openDocumentRequest({ phone, memoryId: memory.id, topic: memory.topic, askedFor: memory.guidance });
         }
@@ -3463,7 +3498,7 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
   if (!isGroup && classification.topic === 'own_record') {
     const selfFacts = await buildSelfFacts(phone).catch(() => null);
     if (selfFacts) {
-      const replyText = await generateDraft(senderLabel, text, undefined, selfFacts);
+      const replyText = await generateDraft(senderLabel, text, FAST_MODEL, selfFacts);
       await resetFollowupCount(phone);
       return { case: 'own_record', replyText, summaryForOwner: text.slice(0, 160) };
     }
@@ -3618,7 +3653,9 @@ const POLL_FEED_LIMIT = 100;
 // sender goes quiet for BURST_QUIET_MS or BURST_MAX_WAIT_MS has elapsed
 // since the first buffered message (whichever comes first - the max-wait
 // ceiling exists so a steady trickle of messages can never push the
-// reply past the ~60s latency target). The buffer is independent of
+// reply past its share of the 30s latency target - see BURST_QUIET_MS/
+// BURST_MAX_WAIT_MS's own comment below for the current values). The
+// buffer is independent of
 // last-seen-id tracking (a buffered message is still marked "seen" via
 // setLastSeenId as normal - only WHEN it gets decided is deferred, never
 // whether the gateway considers it read), and independent of which
@@ -3628,8 +3665,14 @@ const POLL_FEED_LIMIT = 100;
 // listBurstBufferContactIds, checked every tick regardless of the feed).
 const BURST_BUFFER_PREFIX = 'wa-burst-buffer:';
 const BURST_BUFFER_IDS_KEY = 'wa-burst-buffer-ids';
-const BURST_QUIET_MS = 9000;
-const BURST_MAX_WAIT_MS = 40000;
+// Narrowed 9s/40s -> 7.5s/15s (reply-latency request: total arrived->
+// replied must stay under 30s - poll 5s + burst 7-8s + human delay 2-4s +
+// generation). Still long enough to catch the common "?" or a second-line
+// follow-up a few seconds later; the 15s ceiling guarantees a steady
+// trickle of messages can never push a turn past its share of the 30s
+// budget, same purpose the old 40s ceiling served at the old 60s target.
+const BURST_QUIET_MS = 7500;
+const BURST_MAX_WAIT_MS = 15000;
 // A bare "?"/"??"/"hello?" etc. right after a request is a NUDGE on that
 // request, never a new request of its own - dropped from the combined
 // text handed to classification (but every message still appears in the
@@ -3672,6 +3715,47 @@ async function listBurstBufferContactIds() {
   try { return await redis.smembers(BURST_BUFFER_IDS_KEY); } catch (err) { return []; }
 }
 
+// ---------------- Speculative decide (reply-latency request: "start
+// preparing the reply while the burst window runs, redo it only if a new
+// message arrives") ----------------
+// In-memory only, this process's own lifetime - a decision computed for
+// one exact buffered text is only ever useful to THIS process's own later
+// flush of THAT exact burst, so there's no reason to persist it to Redis
+// (and every reason not to: it's throwaway the instant a new message
+// changes the buffered text, and would otherwise outlive a restart as
+// stale, unusable data). Keyed by contact, one entry at a time - a NEW
+// message arriving replaces whatever was running for the shorter text,
+// which is exactly "redo it only if a new message arrives": the older
+// promise is simply abandoned (its own side effects, if any, already
+// happen idempotently per phone number - see prepareAndQueueDataApproval's
+// own dedup - so an abandoned run can at worst cost one redundant owner
+// notification, never a wrong reply actually sent to the customer, since
+// decideAutoReply itself never sends anything - only returns a decision
+// that scheduleAutoSend/sendOrReportAutoReply later act on).
+const speculativeDecisions = new Map();
+function startSpeculativeDecision(contactId, { name, firstName, text, history }) {
+  const existing = speculativeDecisions.get(contactId);
+  if (existing && existing.text === text) return; // already running/done for this exact text
+  const promise = decideAutoReply({ phone: contactId, name, firstName, text, isGroup: false, history }).catch((err) => ({ __speculativeError: err }));
+  speculativeDecisions.set(contactId, { text, promise });
+}
+// Consumes (always removes) whatever's cached for this contact - a stale
+// entry must never leak into a LATER, unrelated burst. Returns the
+// decision only when it was computed for the EXACT final text (no
+// follow-up message arrived that this speculative run didn't already
+// account for) and didn't error; undefined otherwise, telling the caller
+// to fall back to a fresh synchronous decideAutoReply call exactly as
+// before this feature existed.
+async function consumeSpeculativeDecision(contactId, text) {
+  const entry = speculativeDecisions.get(contactId);
+  if (!entry) return undefined;
+  speculativeDecisions.delete(contactId);
+  if (entry.text !== text) return undefined;
+  const decision = await entry.promise;
+  if (decision && decision.__speculativeError) return undefined;
+  return decision;
+}
+
 async function pollOnce() {
   const feed = await whatsapp.listMessages(null, POLL_FEED_LIMIT);
   const results = { checked: 0, official: 0, personal: 0, groupMessagesScanned: 0, groupMentionsFound: 0, skippedBlockedGroups: 0, scheduled: 0, errors: [] };
@@ -3710,7 +3794,16 @@ async function pollOnce() {
   // several buffered together - see the burst-buffer comment above
   // pollOnce). Identical to what used to run inline per-message; now the
   // one and only place that logic lives, called from the flush pass below.
-  async function actOnOfficialTurn({ contactId, name, firstName, text, arrivedAt, seenAt, results }) {
+  async function actOnOfficialTurn({ contactId, name, firstName, text, arrivedAt, seenAt, typingStartedAt, results }) {
+    // Whatever speculative decide may have been started for this contact
+    // (see startSpeculativeDecision, kicked off at the first message of
+    // this exact burst) is being resolved right now, one way or another -
+    // consumed if it matches this turn's final text, discarded otherwise -
+    // so it can never leak into a LATER, unrelated turn for this contact.
+    // Called (not awaited) immediately so the cache entry is cleared
+    // synchronously before anything below can race it.
+    const speculativePromise = consumeSpeculativeDecision(contactId, text);
+
     const history = await getConvoHistory(contactId, CONVO_HISTORY_MAX);
     const isDup = isDuplicateIncoming(history, text);
     const isLoop = !isDup && isBotLoopPattern(history, text);
@@ -3731,7 +3824,16 @@ async function pollOnce() {
     // alert and a console error for debugging.
     let decision;
     try {
-      decision = await decideAutoReply({ phone: contactId, name, firstName, text, isGroup: false, history: history.slice(-10) });
+      // Reuses the speculative result when one was computed for this
+      // EXACT final text (reply-latency request: "start preparing the
+      // reply while the burst window runs") - shaves the whole generation
+      // time off this turn's latency in the common single-message case.
+      // Any mismatch (a follow-up message changed the text) falls back to
+      // a fresh decide below, exactly as if this feature didn't exist.
+      decision = await speculativePromise;
+      if (decision === undefined) {
+        decision = await decideAutoReply({ phone: contactId, name, firstName, text, isGroup: false, history: history.slice(-10) });
+      }
     } catch (err) {
       console.error('[whatsapp] decideAutoReply threw for ' + contactId + ':', err);
       const lang = detectLang(text);
@@ -3753,17 +3855,24 @@ async function pollOnce() {
       // never escalated to the owner, but still visible in the inbox so
       // nothing silently vanishes without a trace.
       results.automatic = (results.automatic || 0) + 1;
-      await logInboxEvent({ chatId: contactId, name, isGroup: false, messageSummary: text, aCase: 'automatic', sentText: null, outcome: 'automatic', arrivedAt, seenAt });
+      await logInboxEvent({ chatId: contactId, name, isGroup: false, messageSummary: text, aCase: 'automatic', sentText: null, outcome: 'automatic', arrivedAt, seenAt, typingStartedAt });
+      // No reply is going out after all - stop the typing indicator this
+      // same turn started (item 2: "stop it if no reply will be sent").
+      if (typingStartedAt) await whatsapp.sendPresence(contactId, 'paused').catch(() => {});
     } else if (decision && decision.replyText) {
       await appendConvoHistory(contactId, 'out', decision.replyText);
       if (await isNeverAuto(contactId)) {
         // Spec item 3: decided normally, but never auto-sent - back into
         // the old manual pending-draft flow + a notification, same as
-        // every official message worked before auto-reply existed.
+        // every official message worked before auto-reply existed. SUBH
+        // itself never actually replies here (the owner does, manually),
+        // so the typing indicator stops too - "only in chats SUBH
+        // actually replies to."
+        if (typingStartedAt) await whatsapp.sendPresence(contactId, 'paused').catch(() => {});
         await savePendingDraft({ type: 'direct', contactId, name, messagePreview: text.slice(0, 200), draftReply: decision.replyText, createdAt: Date.now() });
         await postOwnerNotification(name + ' (never-auto list) asked: ' + text.slice(0, 160) + ' — draft ready, your review needed');
         await logAutoReplyEvent({ senderType: 'direct', aCase: decision.case, memoryId: decision.memoryId || null, action: 'never_auto_drafted' });
-        await logInboxEvent({ chatId: contactId, name, isGroup: false, messageSummary: text, aCase: decision.case, sentText: decision.replyText, outcome: 'never_auto_pending', arrivedAt, seenAt });
+        await logInboxEvent({ chatId: contactId, name, isGroup: false, messageSummary: text, aCase: decision.case, sentText: decision.replyText, outcome: 'never_auto_pending', arrivedAt, seenAt, typingStartedAt });
       } else {
         await scheduleAutoSend({
           chatId: contactId, isGroup: false, name,
@@ -3772,11 +3881,14 @@ async function pollOnce() {
           topicLabel: decision.topicLabel || null,
           topic: decision.topic || null,
           followupCount: decision.followupCount || null,
-          arrivedAt, seenAt
+          arrivedAt, seenAt, typingStartedAt
         });
         results.scheduled++;
       }
     }
+    console.log('[whatsapp] turn timeline ' + contactId + ': arrived ' + new Date(arrivedAt).toISOString() +
+      (typingStartedAt ? ' -> typing ' + new Date(typingStartedAt).toISOString() : ' -> no typing shown') +
+      ' -> decided ' + new Date(seenAt).toISOString() + ' (' + Math.round((seenAt - arrivedAt) / 1000) + 's)');
   }
 
   for (const [contactId, messages] of byContact) {
@@ -3810,6 +3922,35 @@ async function pollOnce() {
           const existingBuffer = await getBurstBuffer(contactId);
           const buffer = existingBuffer || { messages: [], firstSeenAt: arrivedAt, name, firstName };
           buffer.messages.push({ text, arrivedAt });
+          // Typing presence (human-like request) - starts the moment this
+          // message is seriously being considered for a reply (official-
+          // classified), not only in the final seconds before send, so
+          // the sender sees "typing..." appear soon after their first
+          // message. Set once per burst (not re-sent for every later
+          // message in the same burst - the flush loop below refreshes it
+          // on every poll tick instead, see its own comment). Never for a
+          // never-auto contact - SUBH never actually replies there, it
+          // only drafts for the owner (item 2: "only in chats SUBH
+          // actually replies to"). Never while real sending is off either
+          // (draft mode / this contact not in the real-send allow-list) -
+          // a real "typing..." bubble with no real message ever following
+          // it would look broken to whoever's actually on WhatsApp.
+          if (!buffer.typingStartedAt && !(await isNeverAuto(contactId)) && isRealSendAllowedFor(contactId)) {
+            buffer.typingStartedAt = Date.now();
+            await whatsapp.sendPresence(contactId, 'composing').catch(() => {});
+          }
+          // Start preparing the reply NOW, concurrently with the burst
+          // quiet-window wait (reply-latency request) - only for the
+          // FIRST message of a fresh burst; a later message in the same
+          // burst changes the combined text, which naturally invalidates
+          // this (consumeSpeculativeDecision only reuses an EXACT text
+          // match), so there's no value in re-kicking it for every
+          // message, only in starting it as early as possible for the
+          // common single-message case.
+          if (buffer.messages.length === 1) {
+            const speculativeHistory = await getConvoHistory(contactId, CONVO_HISTORY_MAX).catch(() => []);
+            startSpeculativeDecision(contactId, { name, firstName, text: combineBurstText(buffer.messages), history: speculativeHistory.slice(-10) });
+          }
           await saveBurstBuffer(contactId, buffer);
         } else {
           results.personal++; // text was only ever held in this loop's local variable, never stored
@@ -3833,12 +3974,19 @@ async function pollOnce() {
       const lastArrival = buffer.messages[buffer.messages.length - 1].arrivedAt;
       const quiet = now - lastArrival >= BURST_QUIET_MS;
       const maxedOut = now - buffer.firstSeenAt >= BURST_MAX_WAIT_MS;
-      if (!quiet && !maxedOut) continue; // still might get another message in this burst - wait
+      if (!quiet && !maxedOut) {
+        // Still might get another message in this burst - wait, but
+        // refresh the typing presence on this tick (~every poll interval)
+        // so it stays visible the whole time SUBH is waiting/preparing,
+        // not just for however long one presence update happens to last.
+        if (buffer.typingStartedAt) await whatsapp.sendPresence(contactId, 'composing').catch(() => {});
+        continue;
+      }
       await clearBurstBuffer(contactId);
       const combinedText = combineBurstText(buffer.messages);
       await actOnOfficialTurn({
         contactId, name: buffer.name, firstName: buffer.firstName, text: combinedText,
-        arrivedAt: buffer.firstSeenAt, seenAt: now, results
+        arrivedAt: buffer.firstSeenAt, seenAt: now, typingStartedAt: buffer.typingStartedAt || null, results
       });
     } catch (err) {
       results.errors.push({ contact: contactId, message: err.message });
@@ -3893,6 +4041,15 @@ async function pollOnce() {
 module.exports = {
   isAvailable,
   pollOnce,
+  sendOrReportAutoReply,
+  randomDelayMs,
+  BURST_QUIET_MS,
+  BURST_MAX_WAIT_MS,
+  LATENCY_ALERT_THRESHOLD_MS,
+  FAST_MODEL,
+  DRAFT_MODEL,
+  startSpeculativeDecision,
+  consumeSpeculativeDecision,
   checkGatewayConnection,
   gatewayStatusSummary,
   buildAutoReplyStatusReply,

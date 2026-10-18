@@ -75,6 +75,51 @@ async function sendWhatsAppMessage(phone, message) {
   return { ok: true };
 }
 
+// ---------------- Typing presence (reply-latency/human-like request) ----------------
+// NOT confirmed to exist on the live gateway - probed directly against
+// the real deployed server (POST, harmless no-op either way, no WhatsApp
+// message or setting touched): /sendPresence, /presence, /typing,
+// /chatState, /sendChatState, /setPresence, /markRead all returned a
+// plain Express "Cannot POST ..." 404, meaning this Express server (not
+// the real maytapi.com cloud API, despite the naming) has no route for
+// any of them today. Calls this best-guess endpoint anyway, using the
+// exact same to_number/body shape as sendMessage above, so SUBH's typing
+// indicator (see whatsappAssistant.js) starts working the INSTANT a
+// matching route is added server-side, with zero further code change
+// needed here. Never throws, never retried, never on the critical reply
+// path - a missing/failed typing indicator is purely cosmetic, never
+// worth delaying or risking a real reply over.
+//
+// Needed server-side contract (tell whoever maintains the gateway):
+//   POST /api/<product_id>/<phone_id>/sendPresence
+//   body: { "to_number": "<digits, same format sendMessage takes>",
+//           "presence": "composing" | "paused" }
+// mapping straight onto the underlying WhatsApp library's own presence
+// call - sock.sendPresenceUpdate(presence, jid) in Baileys
+// (@whiskeysockets/baileys), or chat.sendStateTyping()/chat.clearState()
+// in whatsapp-web.js, whichever this gateway is actually built on.
+// Confirmed from the libraries' own documented behavior: in BOTH, a
+// presence/typing update is a completely separate call from marking a
+// message read (sock.readMessages()/chat.sendSeen()) - wiring this up can
+// never, by itself, cause the "blue tick" this feature deliberately
+// avoids, AS LONG AS the gateway handler doesn't also call a read/seen
+// method. Nothing in this codebase calls a read/seen endpoint anywhere
+// (there isn't one to call), so SUBH cannot mark a chat as read today
+// regardless of what sendPresence does once it exists.
+async function sendPresence(phone, state) {
+  const to_number = normalizePhone(phone);
+  try {
+    const res = await fetch(apiBase() + '/sendPresence', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-maytapi-key': requireToken() },
+      body: JSON.stringify({ to_number, presence: state })
+    });
+    return { ok: res.ok, status: res.status };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
 // ---------------- Read-only (SUBH's WhatsApp assistant, Phase F) ----------------
 // Confirmed against the live gateway directly (GET, read-only, no setting
 // changed): /chats lists conversations, /messages lists recent messages
@@ -133,4 +178,4 @@ async function getConnectionStatus() {
   return (data.data && data.data.status) || 'unknown';
 }
 
-module.exports = { sendWhatsAppMessage, normalizePhone, isSyntheticTestPhone, listChats, listMessages, isGroupChat, getConnectionStatus };
+module.exports = { sendWhatsAppMessage, sendPresence, normalizePhone, isSyntheticTestPhone, listChats, listMessages, isGroupChat, getConnectionStatus };

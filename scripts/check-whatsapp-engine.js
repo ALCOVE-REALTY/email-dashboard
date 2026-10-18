@@ -572,6 +572,54 @@ async function checkAsync(label, fn) {
     return summaries.length === 1 && summaries[0].text.includes('newer');
   });
 
+  console.log('='.repeat(70));
+  console.log('Reply-speed + human-like typing request: timing constants, FAST model tier, speculative decide');
+  console.log('='.repeat(70));
+  check('burst quiet window is 7-8s (narrowed from 9s for the 30s total reply budget)', whatsappAssistant.BURST_QUIET_MS >= 7000 && whatsappAssistant.BURST_QUIET_MS <= 8000);
+  check('burst max wait is capped at 15s (narrowed from 40s)', whatsappAssistant.BURST_MAX_WAIT_MS === 15000);
+  check('human delay (randomDelayMs) samples are always within 2-4s (narrowed from 5-10s)', (() => {
+    for (let i = 0; i < 50; i++) {
+      const ms = whatsappAssistant.randomDelayMs();
+      if (ms < 2000 || ms >= 4000) return false;
+    }
+    return true;
+  })());
+  check('slow-reply alert threshold is 30s (narrowed from 60s)', whatsappAssistant.LATENCY_ALERT_THRESHOLD_MS === 30000);
+  check('FAST_MODEL resolves to something real (CLAUDE_MODEL_FAST if set, else falls back to MAIN rather than being empty)', typeof whatsappAssistant.FAST_MODEL === 'string' && whatsappAssistant.FAST_MODEL.length > 0);
+
+  await checkAsync('startSpeculativeDecision + consumeSpeculativeDecision: an EXACT text match reuses the speculative result (no re-decide)', async () => {
+    const SPEC_PHONE = '910000000780';
+    // "Tumi ke?" is the fast, synchronous IDENTITY_QUESTION_RE branch in
+    // decideAutoReplyCore - no Claude call, no side effect, so this test
+    // is fast and has nothing of its own to clean up.
+    whatsappAssistant.startSpeculativeDecision(SPEC_PHONE, { name: 'Test', firstName: 'Test', text: 'Tumi ke?', history: [] });
+    const decision = await whatsappAssistant.consumeSpeculativeDecision(SPEC_PHONE, 'Tumi ke?');
+    return Boolean(decision) && decision.case === 'acknowledged' && typeof decision.replyText === 'string' && decision.replyText.length > 0;
+  });
+  await checkAsync('consumeSpeculativeDecision: a DIFFERENT final text (a burst follow-up changed it) is a cache MISS, not a stale reuse', async () => {
+    const SPEC_PHONE = '910000000781';
+    whatsappAssistant.startSpeculativeDecision(SPEC_PHONE, { name: 'Test', firstName: 'Test', text: 'Tumi ke?', history: [] });
+    const decision = await whatsappAssistant.consumeSpeculativeDecision(SPEC_PHONE, 'Tumi ke? Ar tumi ki korte paro?');
+    return decision === undefined;
+  });
+  await checkAsync('consumeSpeculativeDecision clears its own entry - a second consume for the same contact never reuses a stale result from an earlier, unrelated turn', async () => {
+    const SPEC_PHONE = '910000000782';
+    whatsappAssistant.startSpeculativeDecision(SPEC_PHONE, { name: 'Test', firstName: 'Test', text: 'Tumi ke?', history: [] });
+    const first = await whatsappAssistant.consumeSpeculativeDecision(SPEC_PHONE, 'Tumi ke?');
+    const second = await whatsappAssistant.consumeSpeculativeDecision(SPEC_PHONE, 'Tumi ke?');
+    return Boolean(first) && second === undefined;
+  });
+
+  console.log('='.repeat(70));
+  console.log('Typing presence (whatsappService.sendPresence) - no browser/gateway call ever marks a chat read');
+  console.log('='.repeat(70));
+  check('whatsappService exports sendPresence (so SUBH can start using it the instant the gateway adds the route)', typeof require('../src/whatsappService').sendPresence === 'function');
+  await checkAsync('sendPresence never throws even when the gateway route does not exist (404) - a missing typing indicator must never break or delay a reply', async () => {
+    const result = await require('../src/whatsappService').sendPresence('910000000783', 'composing');
+    return result && typeof result.ok === 'boolean'; // false today (route doesn't exist yet) - the point is it never throws
+  });
+  check('no markAsRead/read-receipt function exists anywhere in the gateway client - SUBH cannot mark a chat read even by accident', !('markAsRead' in require('../src/whatsappService')) && !('markRead' in require('../src/whatsappService')) && !('sendSeen' in require('../src/whatsappService')));
+
   // Cleanup: owner-notifications - same del+rebuild-by-marker sweep as the
   // inbox-log cleanup below, filtering ONLY entries this run's own tests
   // created (identified by the literal "TEST MARKER" text), never a real

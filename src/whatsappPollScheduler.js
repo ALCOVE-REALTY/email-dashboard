@@ -13,10 +13,11 @@ const reminderService = require('./aiAssistant/reminderService');
 
 // Lowered 60 -> 15 after a real live incident: a reply that should have
 // gone out within ~60s took minutes, partly because the base poll
-// interval itself was too slow for a target this tight. Still
-// configurable via the env var for anyone who needs to go gentler on
-// the gateway.
-const DEFAULT_POLL_INTERVAL_SECONDS = 15;
+// interval itself was too slow for a target this tight. Lowered again,
+// 15 -> 5, for the reply-latency request's own 30s total budget (poll 5s
+// + burst 7-8s + human delay 2-4s + generation) - still configurable via
+// the env var for anyone who needs to go gentler on the gateway.
+const DEFAULT_POLL_INTERVAL_SECONDS = 5;
 function pollIntervalMs() {
   const configured = Number(process.env.WHATSAPP_POLL_INTERVAL_SECONDS);
   const seconds = configured > 0 ? configured : DEFAULT_POLL_INTERVAL_SECONDS;
@@ -56,20 +57,25 @@ const HEARTBEAT_LOG_EVERY_N_TICKS = 10;
 // to roughly once a minute at the current 15s poll interval.
 const HEARTBEAT_WRITE_EVERY_N_TICKS = 4;
 
-// Auto-reply (spec point 3) needs a 20-30s random delay BEFORE sending,
-// much finer-grained than the poll cadence above - this second,
-// independent tick just flushes whatever's come due since the last
-// check, it never re-decides anything (decision happens once, in
-// pollOnce itself). Widened 10s -> 30s (usage-reduction pass, same
-// finding as above) - this tick's OWN workload (reminder sync, document
-// retention sweep, daily-summary check, WhatsApp-reminder send) runs its
-// full logic every single time regardless of whether anything changed,
-// so 10s meant roughly 8,640 full passes/day; 30s cuts that to ~2,880
-// while still comfortably landing within the auto-send's own 20-30s
-// random delay window (worst case adds well under the ~90s round-trip
-// already established as acceptable after the earlier "reply took
-// minutes" incident - that fix was about the SEPARATE 15s poll tick
-// above, unaffected by this).
+// Auto-reply now needs only a 2-4s random delay BEFORE sending (reply-
+// latency request), much finer-grained than the poll cadence above - a
+// THIRD, independent tick (SEND_FLUSH_MS, separate from both the poll
+// above and the heavier maintenance tick below) just flushes whatever's
+// come due since the last check; it never re-decides anything (decision
+// happens once, in pollOnce itself). This one has to be fast - a 2-4s
+// delay flushed on a slow tick would mean the tick's own granularity
+// dominates the whole budget - but it's also cheap (one Redis ZRANGE by
+// score, nothing else) so running it often costs nothing like the
+// heavier tick below would.
+const SEND_FLUSH_MS = 2 * 1000;
+// The heavier maintenance work (reminder sync, document retention sweep,
+// daily-summary check, WhatsApp-reminder send) stays on its own slower
+// tick - widened 10s -> 30s in an earlier usage-reduction pass since this
+// workload runs its full logic every single time regardless of whether
+// anything changed (10s meant ~8,640 full passes/day; 30s cuts that to
+// ~2,880) - none of it is reply-latency-sensitive, so splitting the fast
+// auto-send flush out above (instead of just lowering this whole tick)
+// keeps that same cost saving intact.
 const AUTOSEND_FLUSH_MS = 30 * 1000;
 
 function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval, log = console } = {}) {
@@ -167,13 +173,27 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
   setTimer(tick, pollIntervalMs());
   log.log('[whatsapp-assistant] scheduler STARTED, polling every ' + (pollIntervalMs() / 1000) + 's (commit ' + commitId + ')');
 
-  const autosendInterval = setIntervalFn(async () => {
+  // Fast, dedicated auto-send flush (reply-latency request) - separate
+  // from the heavier maintenance tick below so a 2-4s human delay is
+  // actually honored instead of being rounded up to whatever the slower
+  // tick's own cadence happens to be. Overlap-guarded the same way as the
+  // main poll tick above, belt-and-suspenders (setInterval, unlike the
+  // recursive setTimer pattern above, CAN overlap itself if a call ever
+  // ran long - a real send to the gateway occasionally might).
+  let sendingFlush = false;
+  const sendFlushInterval = setIntervalFn(async () => {
+    if (sendingFlush) return;
+    sendingFlush = true;
     try {
       const result = await whatsappAssistant.processDueAutoSends();
       if (result.processed) log.log('[whatsapp-assistant] auto-send flush: ' + JSON.stringify(result));
     } catch (err) {
       log.error('[whatsapp-assistant] auto-send flush failed: ' + err.message);
     }
+    sendingFlush = false;
+  }, SEND_FLUSH_MS);
+
+  const autosendInterval = setIntervalFn(async () => {
     // Same tick also carries the daily 9:30 IST summary check (spec item
     // 4, a one-a-day no-op the rest of the time) and the document
     // retention sweep (spec 5d) - both are cheap, idempotent checks, no
@@ -214,7 +234,7 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
     }
   }, AUTOSEND_FLUSH_MS);
 
-  return { stop: () => clearInterval(autosendInterval) };
+  return { stop: () => { clearInterval(autosendInterval); clearInterval(sendFlushInterval); } };
 }
 
 module.exports = { start };
