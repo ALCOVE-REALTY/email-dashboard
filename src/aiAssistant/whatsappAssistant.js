@@ -2623,20 +2623,6 @@ function styleReferenceBlock(samples) {
 // generateDraft/generateGroupDraft's own guards), never silently run
 // some other model picked in code.
 const DRAFT_MODEL = process.env.CLAUDE_MODEL_MAIN;
-// FAST tier (speed fix, reply-latency request) - for the two short/simple
-// reply shapes that just state an already-known fact in plain WhatsApp
-// text (a taught memory fact, or the sender's own whitelisted record -
-// see generateDraft's two FAST call sites below): no open-ended reasoning,
-// no retries, no multi-turn context to weigh, so a faster/cheaper model
-// answers just as well while shaving real seconds off the reply budget.
-// The free-form conversational generator (generateConversationReply) and
-// the group-chat path stay on MAIN - those genuinely need the stronger
-// model's judgment (tone, never-repeat, language-match retries, etc.).
-// Falls back to MAIN whenever CLAUDE_MODEL_FAST isn't configured, unlike
-// MAIN's own no-default policy - this tier is a pure speed optimization,
-// never a hard requirement, so an unset env var must silently keep
-// today's exact behavior rather than fail loudly.
-const FAST_MODEL = process.env.CLAUDE_MODEL_FAST || DRAFT_MODEL;
 // ---------------- Claude API helpers (WhatsApp draft/classification calls) ----------------
 // These one-shot calls (draft generation/revision, classification,
 // context-aware replies) used to hit OpenAI's chat-completions endpoint
@@ -3483,7 +3469,7 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
         const memoryFact = { fact: memory.statusFact, guidance: memory.guidance, documentRequested: Boolean(memory.requestsDocument) };
         const replyText = isGroup
           ? await generateGroupDraft(name, text, memoryFact)
-          : await generateDraft(senderLabel, text, FAST_MODEL, null, memoryFact);
+          : await generateDraft(senderLabel, text, undefined, null, memoryFact);
         if (memory.requestsDocument && !isGroup) {
           await documentRequests.openDocumentRequest({ phone, memoryId: memory.id, topic: memory.topic, askedFor: memory.guidance });
         }
@@ -3498,7 +3484,7 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
   if (!isGroup && classification.topic === 'own_record') {
     const selfFacts = await buildSelfFacts(phone).catch(() => null);
     if (selfFacts) {
-      const replyText = await generateDraft(senderLabel, text, FAST_MODEL, selfFacts);
+      const replyText = await generateDraft(senderLabel, text, undefined, selfFacts);
       await resetFollowupCount(phone);
       return { case: 'own_record', replyText, summaryForOwner: text.slice(0, 160) };
     }
@@ -3715,47 +3701,6 @@ async function listBurstBufferContactIds() {
   try { return await redis.smembers(BURST_BUFFER_IDS_KEY); } catch (err) { return []; }
 }
 
-// ---------------- Speculative decide (reply-latency request: "start
-// preparing the reply while the burst window runs, redo it only if a new
-// message arrives") ----------------
-// In-memory only, this process's own lifetime - a decision computed for
-// one exact buffered text is only ever useful to THIS process's own later
-// flush of THAT exact burst, so there's no reason to persist it to Redis
-// (and every reason not to: it's throwaway the instant a new message
-// changes the buffered text, and would otherwise outlive a restart as
-// stale, unusable data). Keyed by contact, one entry at a time - a NEW
-// message arriving replaces whatever was running for the shorter text,
-// which is exactly "redo it only if a new message arrives": the older
-// promise is simply abandoned (its own side effects, if any, already
-// happen idempotently per phone number - see prepareAndQueueDataApproval's
-// own dedup - so an abandoned run can at worst cost one redundant owner
-// notification, never a wrong reply actually sent to the customer, since
-// decideAutoReply itself never sends anything - only returns a decision
-// that scheduleAutoSend/sendOrReportAutoReply later act on).
-const speculativeDecisions = new Map();
-function startSpeculativeDecision(contactId, { name, firstName, text, history }) {
-  const existing = speculativeDecisions.get(contactId);
-  if (existing && existing.text === text) return; // already running/done for this exact text
-  const promise = decideAutoReply({ phone: contactId, name, firstName, text, isGroup: false, history }).catch((err) => ({ __speculativeError: err }));
-  speculativeDecisions.set(contactId, { text, promise });
-}
-// Consumes (always removes) whatever's cached for this contact - a stale
-// entry must never leak into a LATER, unrelated burst. Returns the
-// decision only when it was computed for the EXACT final text (no
-// follow-up message arrived that this speculative run didn't already
-// account for) and didn't error; undefined otherwise, telling the caller
-// to fall back to a fresh synchronous decideAutoReply call exactly as
-// before this feature existed.
-async function consumeSpeculativeDecision(contactId, text) {
-  const entry = speculativeDecisions.get(contactId);
-  if (!entry) return undefined;
-  speculativeDecisions.delete(contactId);
-  if (entry.text !== text) return undefined;
-  const decision = await entry.promise;
-  if (decision && decision.__speculativeError) return undefined;
-  return decision;
-}
-
 async function pollOnce() {
   const feed = await whatsapp.listMessages(null, POLL_FEED_LIMIT);
   const results = { checked: 0, official: 0, personal: 0, groupMessagesScanned: 0, groupMentionsFound: 0, skippedBlockedGroups: 0, scheduled: 0, errors: [] };
@@ -3795,15 +3740,6 @@ async function pollOnce() {
   // pollOnce). Identical to what used to run inline per-message; now the
   // one and only place that logic lives, called from the flush pass below.
   async function actOnOfficialTurn({ contactId, name, firstName, text, arrivedAt, seenAt, typingStartedAt, results }) {
-    // Whatever speculative decide may have been started for this contact
-    // (see startSpeculativeDecision, kicked off at the first message of
-    // this exact burst) is being resolved right now, one way or another -
-    // consumed if it matches this turn's final text, discarded otherwise -
-    // so it can never leak into a LATER, unrelated turn for this contact.
-    // Called (not awaited) immediately so the cache entry is cleared
-    // synchronously before anything below can race it.
-    const speculativePromise = consumeSpeculativeDecision(contactId, text);
-
     const history = await getConvoHistory(contactId, CONVO_HISTORY_MAX);
     const isDup = isDuplicateIncoming(history, text);
     const isLoop = !isDup && isBotLoopPattern(history, text);
@@ -3824,16 +3760,7 @@ async function pollOnce() {
     // alert and a console error for debugging.
     let decision;
     try {
-      // Reuses the speculative result when one was computed for this
-      // EXACT final text (reply-latency request: "start preparing the
-      // reply while the burst window runs") - shaves the whole generation
-      // time off this turn's latency in the common single-message case.
-      // Any mismatch (a follow-up message changed the text) falls back to
-      // a fresh decide below, exactly as if this feature didn't exist.
-      decision = await speculativePromise;
-      if (decision === undefined) {
-        decision = await decideAutoReply({ phone: contactId, name, firstName, text, isGroup: false, history: history.slice(-10) });
-      }
+      decision = await decideAutoReply({ phone: contactId, name, firstName, text, isGroup: false, history: history.slice(-10) });
     } catch (err) {
       console.error('[whatsapp] decideAutoReply threw for ' + contactId + ':', err);
       const lang = detectLang(text);
@@ -3939,18 +3866,6 @@ async function pollOnce() {
             buffer.typingStartedAt = Date.now();
             await whatsapp.sendPresence(contactId, 'composing').catch(() => {});
           }
-          // Start preparing the reply NOW, concurrently with the burst
-          // quiet-window wait (reply-latency request) - only for the
-          // FIRST message of a fresh burst; a later message in the same
-          // burst changes the combined text, which naturally invalidates
-          // this (consumeSpeculativeDecision only reuses an EXACT text
-          // match), so there's no value in re-kicking it for every
-          // message, only in starting it as early as possible for the
-          // common single-message case.
-          if (buffer.messages.length === 1) {
-            const speculativeHistory = await getConvoHistory(contactId, CONVO_HISTORY_MAX).catch(() => []);
-            startSpeculativeDecision(contactId, { name, firstName, text: combineBurstText(buffer.messages), history: speculativeHistory.slice(-10) });
-          }
           await saveBurstBuffer(contactId, buffer);
         } else {
           results.personal++; // text was only ever held in this loop's local variable, never stored
@@ -4046,10 +3961,7 @@ module.exports = {
   BURST_QUIET_MS,
   BURST_MAX_WAIT_MS,
   LATENCY_ALERT_THRESHOLD_MS,
-  FAST_MODEL,
   DRAFT_MODEL,
-  startSpeculativeDecision,
-  consumeSpeculativeDecision,
   checkGatewayConnection,
   gatewayStatusSummary,
   buildAutoReplyStatusReply,

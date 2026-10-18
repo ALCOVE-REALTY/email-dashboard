@@ -11,3 +11,4 @@ apps-script-department-webhook.gs
 .vercel
 .env*
 WI-Redesign-Kit/
+src/aiAssistant/__equivalence_baseline_whatsappAssistant.js

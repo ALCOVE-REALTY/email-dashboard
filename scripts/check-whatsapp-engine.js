@@ -573,7 +573,7 @@ async function checkAsync(label, fn) {
   });
 
   console.log('='.repeat(70));
-  console.log('Reply-speed + human-like typing request: timing constants, FAST model tier, speculative decide');
+  console.log('Reply-speed request: pure timing constants only - NEVER a FAST model tier or a speculative/pre-computed decide (see the REGRESSION this caused - commit 1e1d31c prepended "Dukkhito, bujhte parini" to a FRESH disambiguation question live, because a speculative decideAutoReplyCore call wrote a pending-disambiguation record for a discarded, never-used run)');
   console.log('='.repeat(70));
   check('burst quiet window is 7-8s (narrowed from 9s for the 30s total reply budget)', whatsappAssistant.BURST_QUIET_MS >= 7000 && whatsappAssistant.BURST_QUIET_MS <= 8000);
   check('burst max wait is capped at 15s (narrowed from 40s)', whatsappAssistant.BURST_MAX_WAIT_MS === 15000);
@@ -585,29 +585,23 @@ async function checkAsync(label, fn) {
     return true;
   })());
   check('slow-reply alert threshold is 30s (narrowed from 60s)', whatsappAssistant.LATENCY_ALERT_THRESHOLD_MS === 30000);
-  check('FAST_MODEL resolves to something real (CLAUDE_MODEL_FAST if set, else falls back to MAIN rather than being empty)', typeof whatsappAssistant.FAST_MODEL === 'string' && whatsappAssistant.FAST_MODEL.length > 0);
-
-  await checkAsync('startSpeculativeDecision + consumeSpeculativeDecision: an EXACT text match reuses the speculative result (no re-decide)', async () => {
-    const SPEC_PHONE = '910000000780';
-    // "Tumi ke?" is the fast, synchronous IDENTITY_QUESTION_RE branch in
-    // decideAutoReplyCore - no Claude call, no side effect, so this test
-    // is fast and has nothing of its own to clean up.
-    whatsappAssistant.startSpeculativeDecision(SPEC_PHONE, { name: 'Test', firstName: 'Test', text: 'Tumi ke?', history: [] });
-    const decision = await whatsappAssistant.consumeSpeculativeDecision(SPEC_PHONE, 'Tumi ke?');
-    return Boolean(decision) && decision.case === 'acknowledged' && typeof decision.replyText === 'string' && decision.replyText.length > 0;
-  });
-  await checkAsync('consumeSpeculativeDecision: a DIFFERENT final text (a burst follow-up changed it) is a cache MISS, not a stale reuse', async () => {
-    const SPEC_PHONE = '910000000781';
-    whatsappAssistant.startSpeculativeDecision(SPEC_PHONE, { name: 'Test', firstName: 'Test', text: 'Tumi ke?', history: [] });
-    const decision = await whatsappAssistant.consumeSpeculativeDecision(SPEC_PHONE, 'Tumi ke? Ar tumi ki korte paro?');
-    return decision === undefined;
-  });
-  await checkAsync('consumeSpeculativeDecision clears its own entry - a second consume for the same contact never reuses a stale result from an earlier, unrelated turn', async () => {
-    const SPEC_PHONE = '910000000782';
-    whatsappAssistant.startSpeculativeDecision(SPEC_PHONE, { name: 'Test', firstName: 'Test', text: 'Tumi ke?', history: [] });
-    const first = await whatsappAssistant.consumeSpeculativeDecision(SPEC_PHONE, 'Tumi ke?');
-    const second = await whatsappAssistant.consumeSpeculativeDecision(SPEC_PHONE, 'Tumi ke?');
-    return Boolean(first) && second === undefined;
+  // Structural regression guard (belt-and-suspenders alongside the
+  // equivalence test below) - a FAST model tier or a speculative/pre-
+  // computed decide path must never come back for WhatsApp replies. Every
+  // reply-type decision goes through decideAutoReplyCore exactly once,
+  // synchronously, at the moment it's actually needed - never sooner,
+  // never speculatively, never on a cheaper model picked by message
+  // "simplicity" (the REAL bug: a speculative call ran decideAutoReplyCore
+  // early on a shorter/different text, and its stateful side effects -
+  // savePendingDisambiguation in this case - leaked into the LATER, real
+  // turn even though the speculative run's own reply was discarded).
+  check('no FAST_MODEL export exists (WhatsApp replies use exactly one model tier, same as every other field in this file)', !('FAST_MODEL' in whatsappAssistant));
+  check('no speculative-decide functions exist (startSpeculativeDecision/consumeSpeculativeDecision)', !('startSpeculativeDecision' in whatsappAssistant) && !('consumeSpeculativeDecision' in whatsappAssistant));
+  await checkAsync('generateDraft\'s memory-topic/own-record call sites still pass no model override (undefined -> DRAFT_MODEL/MAIN), via a source-level check since the actual call is private to decideAutoReplyCore', async () => {
+    const fs = require('fs');
+    const src = fs.readFileSync(require.resolve('../src/aiAssistant/whatsappAssistant.js'), 'utf8');
+    const calls = src.match(/generateDraft\(senderLabel, text, [^,]+,/g) || [];
+    return calls.length === 2 && calls.every((c) => c.includes('undefined'));
   });
 
   console.log('='.repeat(70));
@@ -619,6 +613,245 @@ async function checkAsync(label, fn) {
     return result && typeof result.ok === 'boolean'; // false today (route doesn't exist yet) - the point is it never throws
   });
   check('no markAsRead/read-receipt function exists anywhere in the gateway client - SUBH cannot mark a chat read even by accident', !('markAsRead' in require('../src/whatsappService')) && !('markRead' in require('../src/whatsappService')) && !('sendSeen' in require('../src/whatsappService')));
+
+  // ======================================================================
+  // PERMANENT EQUIVALENCE TEST (added after the 1e1d31c regression - a
+  // speed-only change silently altered reply CONTENT, because a
+  // speculative/pre-computed decideAutoReplyCore call's stateful side
+  // effect - savePendingDisambiguation - leaked into a LATER, real turn
+  // even though that speculative run's own output was discarded). Runs
+  // the SAME 30 inputs through the last known-good reply logic (commit
+  // 4a8dd65, the "UI polish" commit right before the reply-speed work
+  // started) and through the current code, side by side, and requires
+  // deterministic replies to match EXACTLY and model-drafted replies to
+  // match in SHAPE (case/language/no-banned-prefix/comparable length).
+  // Any future speed/infra change that touches reply content - a model
+  // override, a speculative/cached decide, a classification shortcut,
+  // anything - fails this immediately, loudly, by name.
+  // ======================================================================
+  console.log('='.repeat(70));
+  console.log('PERMANENT EQUIVALENCE TEST: decideAutoReply output vs commit 4a8dd65 (last known-good reply logic) across 30 inputs - speed/infra changes must NEVER alter reply content');
+  console.log('='.repeat(70));
+  {
+    const path = require('path');
+    const fsEquiv = require('fs');
+    const { execSync: execSyncEquiv } = require('child_process');
+    const repoRoot = path.join(__dirname, '..');
+    const BASELINE_COMMIT = '4a8dd65';
+    const baselinePath = path.join(repoRoot, 'src', 'aiAssistant', '__equivalence_baseline_whatsappAssistant.js');
+    let oldWa = null;
+    try {
+      const oldSource = execSyncEquiv('git show ' + BASELINE_COMMIT + ':src/aiAssistant/whatsappAssistant.js', { cwd: repoRoot, maxBuffer: 10 * 1024 * 1024 }).toString();
+      fsEquiv.writeFileSync(baselinePath, oldSource);
+      oldWa = require(baselinePath);
+    } catch (err) {
+      console.log('[WARN] could not load baseline commit ' + BASELINE_COMMIT + ' (' + err.message + ') - skipping the equivalence test this run (not counted as pass or fail).');
+    }
+
+    if (oldWa) {
+      // Reserved synthetic range 900-959 (910000000900..910000000959) -
+      // distinct from every other fixture phone already used in this file
+      // (777-783, 998-999) so none of these 30 cases can ever collide with
+      // another test's state, and two isolated numbers per case (one for
+      // the OLD module's call, one for NEW) so neither side's side effects
+      // (pending-disambiguation, follow-up count, ...) can ever leak into
+      // the other's - exactly the isolation the 1e1d31c bug itself lacked.
+      let equivCounter = 900;
+      const equivPhonesUsed = [];
+      function phonePair() {
+        const oldPhone = '910000000' + String(equivCounter++).padStart(3, '0');
+        const newPhone = '910000000' + String(equivCounter++).padStart(3, '0');
+        equivPhonesUsed.push(oldPhone, newPhone);
+        return [oldPhone, newPhone];
+      }
+      const FORBIDDEN_GREETING_PREFIX_RE = /^\s*(namaskar|namaste|dear|ji)\b/i;
+      function looksLikeSameStyle(oldText, newText) {
+        if (typeof oldText !== 'string' || typeof newText !== 'string' || !oldText || !newText) return false;
+        if (FORBIDDEN_GREETING_PREFIX_RE.test(newText)) return false;
+        const ratio = newText.length / oldText.length;
+        return ratio > 0.3 && ratio < 3.5; // same ballpark length - a template swap/FAST-model shrink would fail this
+      }
+
+      // ---- A. Identity + identity-confirm (deterministic, no API, no state) ----
+      const IDENTITY_CASES = [
+        ['identity (banglish)', 'Tumi ke?'],
+        ['identity (english)', 'who are you'],
+        ['identity (hinglish)', 'tum kaun ho'],
+        ['identity-confirm (banglish)', 'tumi ki bot?'],
+        ['identity-confirm (english)', 'are you a bot?'],
+        ['identity-confirm (hinglish)', 'kya aap bot ho?']
+      ];
+      for (const [label, text] of IDENTITY_CASES) {
+        await checkAsync('equivalence: ' + label + ' - "' + text + '" (EXACT match required)', async () => {
+          const [oldPhone, newPhone] = phonePair();
+          const [oldD, newD] = await Promise.all([
+            oldWa.decideAutoReply({ phone: oldPhone, name: 'Test', firstName: 'Test', text, isGroup: false, history: [] }),
+            whatsappAssistant.decideAutoReply({ phone: newPhone, name: 'Test', firstName: 'Test', text, isGroup: false, history: [] })
+          ]);
+          return Boolean(oldD) && Boolean(newD) && oldD.case === newD.case && oldD.replyText === newD.replyText;
+        });
+      }
+
+      // ---- B. Disambiguation retry + resolve (deterministic, no API) ----
+      const DISAMBIG_CANDIDATES = [
+        { name: 'Ayan Biswas', department: 'CIVIL', designation: 'JR ENGINEER', doj: new Date('2022-01-01').toISOString() },
+        { name: 'Ayan Das', department: 'HR', designation: 'EXECUTIVE', doj: new Date('2021-06-01').toISOString() }
+      ];
+      const DISAMBIG_CASES = [
+        ['disambiguation retry (banglish)', 'banglish', 'Accha thik ache'],
+        ['disambiguation retry (english)', 'english', 'ok sure'],
+        ['disambiguation retry (hinglish)', 'hinglish', 'theek hai bhai'],
+        ['disambiguation resolve (banglish)', 'banglish', 'Ayan Biswas'],
+        ['disambiguation resolve (english)', 'english', 'Ayan Biswas'],
+        ['disambiguation resolve (hinglish)', 'hinglish', 'Ayan Biswas']
+      ];
+      for (const [label, lang, text] of DISAMBIG_CASES) {
+        await checkAsync('equivalence: ' + label + ' - "' + text + '" (EXACT match required)', async () => {
+          const [oldPhone, newPhone] = phonePair();
+          await Promise.all([
+            oldWa.savePendingDisambiguation(oldPhone, { candidates: DISAMBIG_CANDIDATES, lang, hadTypo: false, attempts: 1 }),
+            whatsappAssistant.savePendingDisambiguation(newPhone, { candidates: DISAMBIG_CANDIDATES, lang, hadTypo: false, attempts: 1 })
+          ]);
+          const [oldD, newD] = await Promise.all([
+            oldWa.decideAutoReply({ phone: oldPhone, name: 'Test', firstName: 'Test', text, isGroup: false, history: [] }),
+            whatsappAssistant.decideAutoReply({ phone: newPhone, name: 'Test', firstName: 'Test', text, isGroup: false, history: [] })
+          ]);
+          await Promise.all([whatsappAssistant.clearPendingDisambiguation(oldPhone), whatsappAssistant.clearPendingDisambiguation(newPhone)]);
+          return Boolean(oldD) && Boolean(newD) && oldD.case === newD.case && oldD.replyText === newD.replyText;
+        });
+      }
+
+      // ---- C. Emoji-only acknowledgement (deterministic, no API) ----
+      const now = Date.now();
+      const EMOJI_CASES = [
+        ['emoji-ack: already replied within 30s -> no second message', [{ direction: 'out', text: 'Thanks, noted.', ts: now - 5000 }], '👍'],
+        ['emoji-ack: falls back to last real incoming language (english)', [{ direction: 'in', text: 'Thank you so much for your help', ts: now - 60000 }], '🙏'],
+        ['emoji-ack: falls back to last real incoming language (banglish)', [{ direction: 'in', text: 'Dhonnobad onek shahajjo korlen', ts: now - 60000 }], '🙏']
+      ];
+      for (const [label, history, text] of EMOJI_CASES) {
+        await checkAsync('equivalence: ' + label + ' (EXACT match required)', async () => {
+          const [oldPhone, newPhone] = phonePair();
+          const [oldD, newD] = await Promise.all([
+            oldWa.decideAutoReply({ phone: oldPhone, name: 'Test', firstName: 'Test', text, isGroup: false, history }),
+            whatsappAssistant.decideAutoReply({ phone: newPhone, name: 'Test', firstName: 'Test', text, isGroup: false, history })
+          ]);
+          return Boolean(oldD) && Boolean(newD) && oldD.case === newD.case && oldD.replyText === newD.replyText;
+        });
+      }
+
+      // ---- D. Burst text combining (pure function, no API, no state) ----
+      const BURST_CASES = [
+        ['burst: a nudge-only follow-up ("?") is dropped from the combined text', [{ text: 'Amake engineers der list ta dao', arrivedAt: now }, { text: '?', arrivedAt: now + 3000 }]],
+        ['burst: two real lines are joined, not dropped', [{ text: 'Amar PF balance ta pathao', arrivedAt: now }, { text: 'please, urgent', arrivedAt: now + 2000 }]],
+        ['burst: an all-nudge buffer falls back to the raw messages (never empty)', [{ text: '?', arrivedAt: now }]]
+      ];
+      for (const [label, messages] of BURST_CASES) {
+        check('equivalence: ' + label + ' (EXACT match required)', oldWa.combineBurstText(messages) === whatsappAssistant.combineBurstText(messages));
+      }
+
+      // ---- E. Data-request holding (deterministic template, but reached via a real classify() API call - language choice can legitimately vary between the two independent classify calls, so only `case` + template-membership-shape is required, not exact text) ----
+      const DATA_REQUEST_CASES = [
+        ['data-request holding (banglish)', 'Amake total engineers der list ta dao'],
+        ['data-request holding (english)', 'Please give me the list of all engineers'],
+        ['data-request holding (hinglish)', 'Mujhe HR department ka headcount batao']
+      ];
+      for (const [label, text] of DATA_REQUEST_CASES) {
+        await checkAsync('equivalence: ' + label + ' - "' + text + '" (same case, non-empty fixed-template reply - not a drafted one)', async () => {
+          const [oldPhone, newPhone] = phonePair();
+          const [oldD, newD] = await Promise.all([
+            oldWa.decideAutoReply({ phone: oldPhone, name: 'Test', firstName: 'Test', text, isGroup: false, history: [] }),
+            whatsappAssistant.decideAutoReply({ phone: newPhone, name: 'Test', firstName: 'Test', text, isGroup: false, history: [] })
+          ]);
+          // Sweep whatever prepareAndQueueDataApproval's fire-and-forget
+          // call wrote for these two numbers - same race as
+          // check-subh-language.js's own DATA_REQUEST_TEST_PHONE cleanup.
+          await new Promise((resolve) => setTimeout(resolve, 1500));
+          return Boolean(oldD) && Boolean(newD) && oldD.case === 'data_holding' && newD.case === 'data_holding' &&
+            typeof newD.replyText === 'string' && newD.replyText.length > 0;
+        });
+      }
+
+      // ---- F. Holding/greeting - genuinely model-drafted free text (generateConversationReply) - same STYLE required, not the same exact words (Claude's own sampling legitimately varies run to run) ----
+      const HOLDING_CASES = [
+        ['holding (banglish)', 'Amar confirmation letter ta kobe pabo?'],
+        ['holding (english)', 'When will I get my confirmation letter?'],
+        ['holding (hinglish)', 'Mera confirmation letter kab milega?'],
+        ['greeting (banglish)', 'Hii'],
+        ['greeting (english)', 'Hello'],
+        ['greeting (hinglish)', 'Namaste ji']
+      ];
+      for (const [label, text] of HOLDING_CASES) {
+        await checkAsync('equivalence: ' + label + ' - "' + text + '" (same case + same style/length, not exact wording)', async () => {
+          const [oldPhone, newPhone] = phonePair();
+          const [oldD, newD] = await Promise.all([
+            oldWa.decideAutoReply({ phone: oldPhone, name: 'Test', firstName: 'Test', text, isGroup: false, history: [] }),
+            whatsappAssistant.decideAutoReply({ phone: newPhone, name: 'Test', firstName: 'Test', text, isGroup: false, history: [] })
+          ]);
+          await Promise.all([whatsappAssistant.resetFollowupCount(oldPhone), whatsappAssistant.resetFollowupCount(newPhone)]);
+          return Boolean(oldD) && Boolean(newD) && oldD.case === newD.case && looksLikeSameStyle(oldD.replyText, newD.replyText);
+        });
+      }
+
+      // ---- G. Memory-fact reply drafting (generateDraft - the EXACT call site the FAST_MODEL regression touched) - called directly with a fabricated memoryFact so this doesn't depend on a real memoryService fixture, and checked for the SAME model tier by style/length rather than exact wording ----
+      const MEMORY_CASES = [
+        ['memory-fact reply (banglish)', 'Ayan', 'Amar August mash-er salary ki disburse hoyeche?', { fact: 'Salary already disbursed for all active employees.', guidance: 'Thank them and confirm.', documentRequested: false }],
+        ['memory-fact reply (english)', 'Lucy', 'Has the August salary been disbursed?', { fact: 'Salary already disbursed for all active employees.', guidance: 'Thank them and confirm.', documentRequested: false }],
+        ['memory-fact reply (hinglish)', 'Simran', 'Kya August ki salary disburse ho gayi hai?', { fact: 'Salary already disbursed for all active employees.', guidance: 'Thank them and confirm.', documentRequested: false }]
+      ];
+      for (const [label, name, text, memoryFact] of MEMORY_CASES) {
+        await checkAsync('equivalence: ' + label + ' - generateDraft(..., undefined, null, memoryFact) (same model tier, same style/length)', async () => {
+          const [oldText, newText] = await Promise.all([
+            oldWa.generateDraft(name, text, undefined, null, memoryFact),
+            whatsappAssistant.generateDraft(name, text, undefined, null, memoryFact)
+          ]);
+          return looksLikeSameStyle(oldText, newText);
+        });
+      }
+
+      // Cleanup - belt-and-suspenders beyond the per-case cleanup above
+      // (disambiguation/followup-count already cleared inline): sweep any
+      // inbox-log/owner-notification noise this section's real sends
+      // (data-request holding replies etc.) may have logged, same pattern
+      // as the rest of this file's cleanup block below.
+      try {
+        const { Redis } = require('@upstash/redis');
+        const redis = new Redis({
+          url: process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL,
+          token: process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN
+        });
+        const equivPhoneSet = new Set(equivPhonesUsed);
+        for (const key of ['wa-inbox-log', 'wa-auto-reply-log']) {
+          const raw = await redis.lrange(key, 0, 999);
+          const parsed = raw.map((r) => (typeof r === 'string' ? JSON.parse(r) : r));
+          const clean = parsed.filter((e) => !equivPhoneSet.has(e.chatId));
+          if (clean.length !== parsed.length) {
+            await redis.del(key);
+            for (let i = clean.length - 1; i >= 0; i--) await redis.lpush(key, JSON.stringify(clean[i]));
+          }
+        }
+        const approvalIds = await redis.smembers('wa-pending-approval-ids');
+        for (const id of approvalIds) {
+          const raw = await redis.get('wa-pending-approval:' + id);
+          const approval = raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : null;
+          if (approval && equivPhoneSet.has(approval.phone)) {
+            await redis.del('wa-pending-approval:' + id);
+            await redis.srem('wa-pending-approval-ids', id);
+          }
+        }
+        console.log('(equivalence test: cleaned up any inbox-log/owner-notification/pending-approval noise for its ' + equivPhonesUsed.length + ' reserved test numbers)');
+      } catch (err) { /* best effort - never fail the suite over cleanup */ }
+    }
+
+    // Always remove the extracted baseline file, whether or not loading
+    // it succeeded - it's a throwaway snapshot regenerated fresh every
+    // run, never meant to be committed or left behind.
+    try {
+      delete require.cache[require.resolve(baselinePath)];
+    } catch (err) { /* not resolvable - fine, nothing to clear */ }
+    try {
+      if (fsEquiv.existsSync(baselinePath)) fsEquiv.unlinkSync(baselinePath);
+    } catch (err) { /* best effort */ }
+  }
 
   // Cleanup: owner-notifications - same del+rebuild-by-marker sweep as the
   // inbox-log cleanup below, filtering ONLY entries this run's own tests
