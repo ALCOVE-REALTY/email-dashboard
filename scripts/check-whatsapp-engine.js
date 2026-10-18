@@ -526,6 +526,72 @@ async function checkAsync(label, fn) {
     return convo.name !== 'The sender';
   });
 
+  console.log('='.repeat(70));
+  console.log('Live visibility: every recent WhatsApp conversation shows up (not just needs-you), and system notices keep only the latest of each kind');
+  console.log('='.repeat(70));
+  // A second, distinct reserved test number (never used for a pending
+  // approval anywhere else in this file) so a fully-resolved conversation
+  // can be tested in isolation, without TEST_PHONE's own needs-you state
+  // from elsewhere in this suite making it look like a needs-you chat too.
+  const RESOLVED_TEST_PHONE = '910000000778';
+  await checkAsync('listRecentWhatsappConversations shows a fully-resolved conversation (no owner action needed) with an "Auto-replied"/"Answered" status, not silently omitted', async () => {
+    await whatsappAssistant.logInboxEvent({ chatId: RESOLVED_TEST_PHONE, name: 'Test Resolved', isGroup: false, messageSummary: 'Hi', aCase: 'acknowledged', sentText: 'Hello! TEST - safe to ignore', outcome: 'sent' });
+    const rows = await whatsappAssistant.listRecentWhatsappConversations(new Date(), 24 * 60 * 60 * 1000);
+    const row = rows.find((r) => r.chatId === RESOLVED_TEST_PHONE);
+    return Boolean(row) && row.needsYou === false && typeof row.statusLabel === 'string' && row.statusLabel.length > 0;
+  });
+  // NOT tested end-to-end via savePendingApproval + listRecentWhatsappConversations
+  // here: any reserved test phone number (910000000xxx) is now correctly
+  // invisible to listPendingApprovals/listActionableWhatsappItems (the
+  // isSyntheticTestPhone filter, added earlier precisely so a test can
+  // never leak into a real owner-facing list) - so a synthetic approval
+  // can never legitimately reach needs-you status through the real API to
+  // test the "needs-you suppresses its own resolved-bucket duplicate" path
+  // this way. That single `if (needsYouKeys.has(key)) continue` line in
+  // mergeRecentWhatsappConversations is simple enough to trust from
+  // review; the needsYouCount-parity check below already confirms needs-
+  // you rows are identified correctly from real data.
+  await checkAsync('an "automatic" (OTP-style, no real reply) inbox entry never shows as a fake conversation row', async () => {
+    const AUTOMATIC_TEST_PHONE = '910000000779';
+    await whatsappAssistant.logInboxEvent({ chatId: AUTOMATIC_TEST_PHONE, name: 'Test Automatic', isGroup: false, messageSummary: 'OTP 123456', aCase: 'automatic', sentText: null, outcome: 'automatic' });
+    const rows = await whatsappAssistant.listRecentWhatsappConversations(new Date(), 24 * 60 * 60 * 1000);
+    return !rows.some((r) => r.chatId === AUTOMATIC_TEST_PHONE);
+  });
+  await checkAsync('getWhatsappVisibilitySnapshot\'s needsYouCount matches listActionableWhatsappItems exactly (badge must never disagree with the real needs-you set)', async () => {
+    const [snapshot, needsYou] = await Promise.all([
+      whatsappAssistant.getWhatsappVisibilitySnapshot(new Date()),
+      whatsappAssistant.listActionableWhatsappItems()
+    ]);
+    return snapshot.needsYouCount === needsYou.length;
+  });
+  await checkAsync('listSystemNotices keeps only the LATEST daily summary, not every one ever posted', async () => {
+    await whatsappAssistant.postOwnerNotification('SUBH daily summary (older - TEST MARKER safe to ignore): Auto-replies sent yesterday: 1');
+    await whatsappAssistant.postOwnerNotification('SUBH daily summary (newer - TEST MARKER safe to ignore): Auto-replies sent yesterday: 5');
+    const notices = await whatsappAssistant.listSystemNotices();
+    const summaries = notices.filter((n) => n.text.startsWith('SUBH daily summary'));
+    return summaries.length === 1 && summaries[0].text.includes('newer');
+  });
+
+  // Cleanup: owner-notifications - same del+rebuild-by-marker sweep as the
+  // inbox-log cleanup below, filtering ONLY entries this run's own tests
+  // created (identified by the literal "TEST MARKER" text), never a real
+  // notice.
+  try {
+    const { Redis } = require('@upstash/redis');
+    const redis = new Redis({
+      url: process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL,
+      token: process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN
+    });
+    const raw = await redis.lrange('subh-owner-notifications', 0, 999);
+    const parsed = raw.map((r) => (typeof r === 'string' ? JSON.parse(r) : r));
+    const clean = parsed.filter((e) => !String(e.text || '').includes('TEST MARKER'));
+    if (clean.length !== parsed.length) {
+      await redis.del('subh-owner-notifications');
+      for (let i = clean.length - 1; i >= 0; i--) await redis.lpush('subh-owner-notifications', JSON.stringify(clean[i]));
+      console.log('Cleaned up ' + (parsed.length - clean.length) + ' test-created owner-notification(s).');
+    }
+  } catch (err) { /* best effort - never fail the suite over cleanup */ }
+
   // Cleanup - found live: executeApprovalSend's draft-mode branch always
   // calls the real logInboxEvent (correct in production - every approval
   // decision belongs in the real audit trail), which means the
@@ -542,11 +608,12 @@ async function checkAsync(label, fn) {
     });
     const raw = await redis.lrange('wa-inbox-log', 0, 999);
     const parsed = raw.map((r) => (typeof r === 'string' ? JSON.parse(r) : r));
-    const clean = parsed.filter((e) => e.chatId !== TEST_PHONE);
+    const testChatIds = new Set([TEST_PHONE, RESOLVED_TEST_PHONE, '910000000779']);
+    const clean = parsed.filter((e) => !testChatIds.has(e.chatId));
     if (clean.length !== parsed.length) {
       await redis.del('wa-inbox-log');
       for (let i = clean.length - 1; i >= 0; i--) await redis.lpush('wa-inbox-log', JSON.stringify(clean[i]));
-      console.log('Cleaned up ' + (parsed.length - clean.length) + ' test-created inbox-log entry(ies) for TEST_PHONE.');
+      console.log('Cleaned up ' + (parsed.length - clean.length) + ' test-created inbox-log entry(ies) for TEST_PHONE and related test numbers.');
     }
   } catch (err) { /* best effort - never fail the suite over cleanup */ }
 

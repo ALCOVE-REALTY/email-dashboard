@@ -1629,6 +1629,26 @@ body { background: var(--wi-bg); }
   transition: background-color .15s ease, color .15s ease;
 }
 .wf-comms-wa-row-delete:active { background: var(--wi-red-50); color: var(--wi-red-700); }
+/* A resolved (non-needs-you) conversation row - live-visibility addition:
+   every 1:1/tagged-group conversation from the last 24h shows here now,
+   not just ones needing the owner's action. Same card, very slightly
+   quieter (no shadow) so needs-you rows still read as the primary thing
+   to look at. */
+.wf-comms-wa-row.resolved { box-shadow: none; border: 1px solid var(--wi-border); }
+.wf-comms-wa-row-status {
+  flex-shrink: 0; align-self: center; border-radius: var(--wi-r-pill); padding: 3px 9px;
+  font-size: 0.66rem; font-weight: 800; letter-spacing: .01em; white-space: nowrap;
+  background: var(--wi-green-pill); color: var(--wi-green-700);
+}
+.wf-comms-wa-row-status.failed { background: var(--wi-red-50); color: var(--wi-red-700); }
+/* New row appearing via the 10-15s live poll (item 3) - a brief slide-
+   down-and-settle from above so a just-arrived sender/message is visibly
+   obvious, not just silently present on the next glance. */
+.wf-card-enter { animation: wiCardEnter .4s cubic-bezier(.2,.7,.2,1) both; }
+@keyframes wiCardEnter {
+  from { opacity: 0; transform: translateY(-10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
 .wf-comms-empty {
   text-align: center; padding: 18px 10px; font-size: 0.78rem; font-weight: 600; color: var(--wi-faint);
 }

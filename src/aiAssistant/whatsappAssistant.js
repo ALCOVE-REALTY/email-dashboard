@@ -343,10 +343,10 @@ async function postOwnerNotification(text) {
 async function listOwnerNotifications() {
   const redis = getClient();
   if (!redis) return [];
-  try {
+  return redisHealth.guardedRead(async () => {
     const raw = await redis.lrange(OWNER_NOTIFICATIONS_KEY, 0, MAX_NOTIFICATIONS - 1);
     return raw.map((item) => { try { return typeof item === 'string' ? JSON.parse(item) : item; } catch (err) { return null; } }).filter(Boolean);
-  } catch (err) { return []; }
+  }, []);
 }
 async function clearOwnerNotifications() {
   const redis = getClient();
@@ -366,10 +366,30 @@ async function clearOwnerNotifications() {
 // call sites in checkGatewayConnection/checkAndPostDailySummary above).
 // Peek-only (unlike the old /subh-notifications route, which cleared on
 // every read) - dismissSystemNotices is the explicit action for that.
-const SYSTEM_NOTICE_RE = /^(⚠️ WhatsApp disconnected|✓ WhatsApp reconnected|SUBH daily summary)/;
+// Each of these is its own "latest only" slot, not an accumulating list -
+// found live: the daily summary piled up one entry per day it fired
+// without being dismissed, showing several days' worth of stale counts at
+// once in the System strip instead of just today's. listOwnerNotifications
+// returns newest-first, so keeping the FIRST match per pattern and
+// skipping every later (older) one of the same kind keeps exactly the
+// single most recent notice of each type.
+const SYSTEM_NOTICE_PATTERNS = [
+  /^⚠️ WhatsApp disconnected/,
+  /^✓ WhatsApp reconnected/,
+  /^SUBH daily summary/
+];
 async function listSystemNotices() {
   const items = await listOwnerNotifications();
-  return items.filter((n) => SYSTEM_NOTICE_RE.test(n.text || ''));
+  const seenPatterns = new Set();
+  const result = [];
+  for (const n of items) {
+    const text = n.text || '';
+    const patternIndex = SYSTEM_NOTICE_PATTERNS.findIndex((re) => re.test(text));
+    if (patternIndex === -1 || seenPatterns.has(patternIndex)) continue;
+    seenPatterns.add(patternIndex);
+    result.push(n);
+  }
+  return result;
 }
 async function dismissSystemNotices() {
   await clearOwnerNotifications();
@@ -428,6 +448,91 @@ async function listActionableWhatsappItems() {
   });
   rows.sort((a, b) => b.lastMessageTime - a.lastMessageTime);
   return rows;
+}
+
+// A resolved (non-needs-you) conversation's status pill, derived from its
+// most recent real inbox-log entry - null means "nothing conversational
+// worth surfacing" (automatic/OTP-style messages, loop-protection skips,
+// never-auto drafts which are needs-you already via a different path).
+function recentConvoStatusLabel(entry) {
+  if (entry.outcome === 'sent' || entry.outcome === 'draft_mode') {
+    if (['memory', 'own_record', 'data_approved', 'data_rejected'].includes(entry.case)) return 'Answered';
+    return 'Auto-replied';
+  }
+  if (entry.outcome === 'send_failed') return 'Reply failed';
+  return null;
+}
+
+const RECENT_CONVO_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+// Pure merge (no I/O) - needs-you items (unfiltered by age, so an old
+// unresolved approval never silently drops off the main page just
+// because this also shows recent resolved chats) plus RESOLVED
+// conversations that had real activity within `windowMs` (pass Infinity
+// for View All's own "full history, no cutoff" need). Split out from the
+// fetching wrapper below so a caller that needs BOTH a 24h view and a
+// full-history view in the same request (communications-summary) can
+// fetch needsYou/recentLog ONCE and call this twice, rather than paying
+// for listActionableWhatsappItems/listInboxLog's own I/O twice over.
+function mergeRecentWhatsappConversations(needsYou, recentLog, nowTs, windowMs) {
+  const window = windowMs || RECENT_CONVO_WINDOW_MS;
+  const needsYouKeys = new Set(needsYou.map((r) => r.chatId));
+
+  // Latest resolved entry per chat within the window - one row per
+  // conversation, always its most recent turn.
+  const latestByChat = new Map();
+  for (const e of recentLog) {
+    if (nowTs - e.ts > window) continue;
+    const key = whatsapp.normalizePhone(e.chatId);
+    if (needsYouKeys.has(key)) continue; // already covered by its own needs-you row
+    const existing = latestByChat.get(key);
+    if (existing && existing.ts >= e.ts) continue;
+    latestByChat.set(key, e);
+  }
+
+  const resolvedRows = [];
+  for (const [chatId, e] of latestByChat.entries()) {
+    const statusLabel = recentConvoStatusLabel(e);
+    if (!statusLabel) continue;
+    resolvedRows.push({
+      chatId, name: e.name || chatId, lastMessageText: e.sentText || e.messageSummary || '',
+      lastMessageTime: e.ts, itemCount: 0, states: [], needsYou: false, statusLabel
+    });
+  }
+
+  const needsYouRows = needsYou.map((r) => Object.assign({}, r, { needsYou: true, statusLabel: null }));
+  const rows = needsYouRows.concat(resolvedRows);
+  // Needs-you always first regardless of recency (see this function's own
+  // comment), newest-first within each group.
+  rows.sort((a, b) => (a.needsYou !== b.needsYou ? (a.needsYou ? -1 : 1) : b.lastMessageTime - a.lastMessageTime));
+  return rows;
+}
+
+// Convenience single-window version (fetches its own data) - used
+// wherever only one window is actually needed.
+//
+// Found live: a WhatsApp exchange SUBH handled completely correctly (no
+// owner action needed) was invisible anywhere in the WhatsApp section,
+// because the only list that existed was needs-you-only, by design. This
+// is the fix - "did SUBH actually talk to someone" is now visible
+// regardless of whether the owner needs to act on it.
+async function listRecentWhatsappConversations(now, windowMs) {
+  const nowTs = (now instanceof Date ? now.getTime() : now) || Date.now();
+  const [needsYou, recentLog] = await Promise.all([listActionableWhatsappItems(), listInboxLog(500)]);
+  return mergeRecentWhatsappConversations(needsYou, recentLog, nowTs, windowMs);
+}
+
+// communications-summary's own need: the 24h main-page view AND the
+// unbounded View-All view, from ONE shared fetch of needsYou/recentLog -
+// never pays for listActionableWhatsappItems/listInboxLog's own I/O twice.
+async function getWhatsappVisibilitySnapshot(now) {
+  const nowTs = (now instanceof Date ? now.getTime() : now) || Date.now();
+  const [needsYou, recentLog] = await Promise.all([listActionableWhatsappItems(), listInboxLog(500)]);
+  return {
+    recentItems: mergeRecentWhatsappConversations(needsYou, recentLog, nowTs, RECENT_CONVO_WINDOW_MS),
+    allItems: mergeRecentWhatsappConversations(needsYou, recentLog, nowTs, Infinity),
+    needsYouCount: needsYou.length
+  };
 }
 
 // Owner-only manual "delete" of one row from Important WhatsApp (per
@@ -531,10 +636,10 @@ async function logAutoReplyEvent({ senderType, aCase, memoryId, action }) {
 async function listAutoReplyLog(limit = 200) {
   const redis = getClient();
   if (!redis) return [];
-  try {
+  return redisHealth.guardedRead(async () => {
     const raw = await redis.lrange(AUTO_REPLY_LOG_KEY, 0, Math.max(1, Math.min(limit, MAX_AUTO_REPLY_LOG)) - 1);
     return raw.map((item) => { try { return typeof item === 'string' ? JSON.parse(item) : item; } catch (err) { return null; } }).filter(Boolean);
-  } catch (err) { return []; }
+  }, []);
 }
 
 // One entry per official message's FINAL outcome (written at send time,
@@ -565,10 +670,16 @@ async function logInboxEvent({ chatId, name, isGroup, messageSummary, aCase, sen
 async function listInboxLog(limit = 500) {
   const redis = getClient();
   if (!redis) return [];
-  try {
+  // guardedRead (see redisHealth.js's own comment): this is now THE
+  // source for "every recent WhatsApp conversation" (listActionableWhats
+  // appItems' own recentLog lookup, and the new
+  // listRecentWhatsappConversations below) - a silent LRANGE failure here
+  // would mean the whole live-visibility feature quietly shows nothing,
+  // exactly the class of bug already found once in this area.
+  return redisHealth.guardedRead(async () => {
     const raw = await redis.lrange(INBOX_LOG_KEY, 0, Math.max(1, Math.min(limit, MAX_INBOX_LOG)) - 1);
     return raw.map((item) => { try { return typeof item === 'string' ? JSON.parse(item) : item; } catch (err) { return null; } }).filter(Boolean);
-  } catch (err) { return []; }
+  }, []);
 }
 
 // ---------------- Conversation history + loop protection ----------------
@@ -598,10 +709,10 @@ async function appendConvoHistory(chatId, direction, text) {
 async function getConvoHistory(chatId, limit) {
   const redis = getClient();
   if (!redis) return [];
-  try {
+  return redisHealth.guardedRead(async () => {
     const raw = await redis.lrange(CONVO_HISTORY_PREFIX + chatId, 0, (limit || CONVO_HISTORY_MAX) - 1);
     return raw.map((r) => { try { return typeof r === 'string' ? JSON.parse(r) : r; } catch (err) { return null; } }).filter(Boolean).reverse();
-  } catch (err) { return []; }
+  }, []);
 }
 
 // Loop protection (spec point 4) - REWORKED after the live incident
@@ -3831,6 +3942,8 @@ module.exports = {
   listSystemNotices,
   dismissSystemNotices,
   listActionableWhatsappItems,
+  listRecentWhatsappConversations,
+  getWhatsappVisibilitySnapshot,
   dismissWhatsappItem,
   savePendingApproval,
   removePendingApproval,

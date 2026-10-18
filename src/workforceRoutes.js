@@ -1691,14 +1691,17 @@ router.post('/hr-assistant/whatsapp-list', async (req, res) => {
 // surface here).
 router.get('/hr-assistant/communications-summary', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) {
-    return res.json({ importantMailsCount: 0, whatsappItems: [], importantWhatsappCount: 0, systemNotices: [], remindersPendingCount: 0, remindersDueNow: [] });
+    return res.json({ importantMailsCount: 0, whatsappItems: [], whatsappAllItems: [], importantWhatsappCount: 0, systemNotices: [], remindersPendingCount: 0, remindersDueNow: [] });
   }
   const now = new Date();
   // Speed fix: one shared reminder snapshot (getDashboardSnapshot) instead
   // of two separate reminderService calls (dueReminders + listReminders)
-  // that each independently re-fetched the full reminder list.
-  const [whatsappItems, systemNotices, reminderSnapshot, authAlerts] = await Promise.all([
-    whatsappAssistant.listActionableWhatsappItems(),
+  // that each independently re-fetched the full reminder list. Same idea
+  // for WhatsApp: getWhatsappVisibilitySnapshot fetches needsYou/inbox-log
+  // ONCE and derives both the 24h main-page view and the unbounded
+  // View-All view from it, rather than paying for that I/O twice.
+  const [waSnapshot, systemNotices, reminderSnapshot, authAlerts] = await Promise.all([
+    whatsappAssistant.getWhatsappVisibilitySnapshot(now),
     whatsappAssistant.listSystemNotices(),
     reminderService.getDashboardSnapshot(now),
     hrAuthAlerts.listAuthAlerts()
@@ -1713,8 +1716,16 @@ router.get('/hr-assistant/communications-summary', async (req, res) => {
   const allNotices = [...(redisNotice ? [redisNotice] : []), ...authAlerts, ...systemNotices];
   res.json({
     importantMailsCount: 0, // Phase 3
-    whatsappItems,
-    importantWhatsappCount: whatsappItems.length,
+    // whatsappItems: the main Important Communications page - needs-you
+    // (any age) + resolved conversations with activity in the last 24h.
+    // whatsappAllItems: View All - same needs-you set, but resolved
+    // conversations are NOT cut off at 24h (full retained history).
+    whatsappItems: waSnapshot.recentItems,
+    whatsappAllItems: waSnapshot.allItems,
+    // Badge/header counts only ever reflect needs-you items, regardless of
+    // which of the two lists above is currently on screen - never the
+    // resolved-conversation rows mixed in for live visibility.
+    importantWhatsappCount: waSnapshot.needsYouCount,
     systemNotices: allNotices,
     // Home's badge = pending reminders + needs-you WhatsApp items (+ mails
     // later) per spec - the TOTAL pending count, not just reminders due

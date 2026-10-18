@@ -1220,6 +1220,22 @@
     const total = (data.importantMailsCount || 0) + (data.importantWhatsappCount || 0) + (data.remindersPendingCount || 0);
     setCountBadge(todayUpdatesBadge, total);
     maybeShowReminderBanner(data.remindersDueNow);
+    // Live visibility (item 3) - this poll now runs every ~12s (see
+    // startCommsPolling) specifically so a new sender/message/approval
+    // shows up on screen within ~15s of the poller seeing it, without the
+    // person needing to leave and re-enter the page. renderWaListLive
+    // only touches the DOM when the content actually changed, and only
+    // while the relevant page is actually open - no wasted renders
+    // elsewhere, no flicker when nothing's new.
+    if (panelView === 'important') {
+      renderWaListLive(commsWaList, data.whatsappItems || []);
+      setCountBadge(commsHeadBadge, (data.importantMailsCount || 0) + (data.importantWhatsappCount || 0));
+      if (commsHeadSubtitle) commsHeadSubtitle.textContent = (data.importantMailsCount || 0) + ' important mails · ' + (data.importantWhatsappCount || 0) + ' important WhatsApp';
+    } else if (panelView === 'waAll') {
+      renderWaListLive(commsWaAllList, data.whatsappAllItems || []);
+    } else if (panelView === 'hub') {
+      renderHubBadges(data, (pageDataCache.reminders.get('today') && pageDataCache.reminders.get('today').data.counts) || { all: 0 });
+    }
   }
   // Prefetches the reminders list alongside the comms poll (same cadence,
   // same "fire immediately on panel open" moment) purely to warm
@@ -1245,7 +1261,12 @@
     if (commsPollTimer) return;
     pollCommsSummary();
     prefetchRemindersAll();
-    commsPollTimer = setInterval(pollCommsSummary, 30000);
+    // 12s (was 30s) - item 3's "a new sender/message slides in within
+    // ~15s of the poller seeing it" - still lightweight (one small JSON
+    // fetch) and pollCommsSummary only touches the DOM when something
+    // actually changed, so this doesn't cost more than the occasional
+    // extra network request when the panel is just sitting open.
+    commsPollTimer = setInterval(pollCommsSummary, 12000);
   }
   function stopCommsPolling() {
     clearInterval(commsPollTimer);
@@ -1344,9 +1365,30 @@
   // includes the small manual-delete icon (per direct instruction: SUBH
   // never removes a row here on its own; this explicit action, or
   // resolving every one of its items individually, are the only ways).
+  // it.needsYou/it.statusLabel: new fields from getWhatsappVisibilitySnapshot
+  // - a resolved (non-needs-you) row gets a status pill instead of the
+  // count badge, and no delete icon (there's nothing pending to clear on
+  // a conversation SUBH already finished handling on its own - "Remove
+  // from Important WhatsApp" has no meaning for a row that was never
+  // "in" it to begin with, it's purely an activity-visibility entry).
+  // Needs-you rows are rendered IDENTICALLY to before this change.
   function buildWaRowHtml(it, i) {
+    const needsYou = it.needsYou !== false;
+    const statusPillHtml = (!needsYou && it.statusLabel)
+      ? '<span class="wf-comms-wa-row-status' + (it.statusLabel === 'Reply failed' ? ' failed' : '') + '">' + escapeHtml(it.statusLabel) + '</span>'
+      : '';
+    const badgeHtml = needsYou
+      ? (it.itemCount > 1
+          ? '<span class="wf-comms-wa-row-badge count wi-count-badge danger wi-badge-pop">' + (it.itemCount > 99 ? '99+' : it.itemCount) + '</span>'
+          : '<span class="wf-comms-wa-row-badge"></span>')
+      : '';
+    const deleteHtml = needsYou
+      ? '<button type="button" class="wf-comms-wa-row-delete" data-chat-id="' + escapeHtml(it.chatId) + '" aria-label="Remove from Important WhatsApp" title="Remove from Important WhatsApp">' +
+          '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>' +
+        '</button>'
+      : '';
     return (
-      '<div class="wf-comms-wa-row" data-chat-id="' + escapeHtml(it.chatId) + '" role="button" tabindex="0">' +
+      '<div class="wf-comms-wa-row' + (needsYou ? '' : ' resolved') + '" data-chat-id="' + escapeHtml(it.chatId) + '" role="button" tabindex="0">' +
         waAvatarHtml(it.name, i) +
         '<span class="wf-comms-wa-row-main">' +
           '<span class="wf-comms-wa-row-top">' +
@@ -1355,12 +1397,9 @@
           '</span>' +
           '<span class="wf-comms-wa-row-preview">' + escapeHtml(it.lastMessageText || '') + '</span>' +
         '</span>' +
-        (it.itemCount > 1
-          ? '<span class="wf-comms-wa-row-badge count wi-count-badge danger wi-badge-pop">' + (it.itemCount > 99 ? '99+' : it.itemCount) + '</span>'
-          : '<span class="wf-comms-wa-row-badge"></span>') +
-        '<button type="button" class="wf-comms-wa-row-delete" data-chat-id="' + escapeHtml(it.chatId) + '" aria-label="Remove from Important WhatsApp" title="Remove from Important WhatsApp">' +
-          '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>' +
-        '</button>' +
+        statusPillHtml +
+        badgeHtml +
+        deleteHtml +
       '</div>'
     );
   }
@@ -1382,8 +1421,8 @@
       const fresh = await fetch('/api/workforce/hr-assistant/communications-summary').then((res) => res.json()).catch(() => null);
       if (fresh) {
         pageDataCache.comms = fresh;
-        if (panelView === 'important') renderWaList(commsWaList, fresh.whatsappItems || []);
-        else if (panelView === 'waAll') renderWaList(commsWaAllList, fresh.whatsappItems || []);
+        if (panelView === 'important') renderWaListLive(commsWaList, fresh.whatsappItems || []);
+        else if (panelView === 'waAll') renderWaListLive(commsWaAllList, fresh.whatsappAllItems || []);
         setCountBadge(todayUpdatesBadge, (fresh.importantMailsCount || 0) + (fresh.importantWhatsappCount || 0) + (fresh.remindersPendingCount || 0));
         // Only while a comms page is actually on screen - commsHeadBadge is
         // shared with the Reminders page header, which means something
@@ -1425,6 +1464,35 @@
     wireWaRows(container);
   }
 
+  // Live-refresh variant (item 3, 10-15s auto-poll): skips the rebuild
+  // entirely when the list content hasn't actually changed (fingerprint
+  // compare, same technique the Reminders list already uses) - a poll
+  // landing every 10-15s must never flicker/reset scroll position when
+  // nothing is new. When it DOES rebuild, any chatId that wasn't in the
+  // previous render gets a one-time slide-in animation class, so a brand
+  // new sender/message is visibly obvious rather than just silently
+  // appearing at the top on the next poll.
+  const waListState = new WeakMap(); // container -> { fingerprint, chatIds: Set }
+  function waRowFingerprint(it) {
+    return [it.chatId, it.needsYou, it.statusLabel, it.lastMessageTime, it.lastMessageText, it.itemCount].join('\u0001');
+  }
+  function renderWaListLive(container, items) {
+    if (!container) return;
+    const fingerprint = items.map(waRowFingerprint).join('\u0002');
+    const prevState = waListState.get(container) || { fingerprint: null, chatIds: new Set() };
+    if (fingerprint === prevState.fingerprint) return; // nothing changed - skip the rebuild, no flicker
+    const newChatIds = new Set(items.map((it) => it.chatId));
+    renderWaList(container, items);
+    if (prevState.fingerprint !== null) { // not the very first render - a cold load never "slides in"
+      items.forEach((it) => {
+        if (prevState.chatIds.has(it.chatId)) return;
+        const rowEl = container.querySelector('.wf-comms-wa-row[data-chat-id="' + CSS.escape(it.chatId) + '"]');
+        if (rowEl) rowEl.classList.add('wf-card-enter');
+      });
+    }
+    waListState.set(container, { fingerprint, chatIds: newChatIds });
+  }
+
   function renderCommsData(data) {
     const total = (data.importantMailsCount || 0) + (data.importantWhatsappCount || 0);
     setCountBadge(commsHeadBadge, total);
@@ -1453,7 +1521,7 @@
     // a plain, honest empty state rather than a fake/mocked list.
     if (commsMailCard) commsMailCard.textContent = 'Mail integration coming soon.';
 
-    renderWaList(commsWaList, data.whatsappItems || []);
+    renderWaListLive(commsWaList, data.whatsappItems || []);
   }
 
   // Full-screen "View All" (speed/UX fix: the button existed but had no
@@ -1463,11 +1531,11 @@
   function showWaAll() {
     setPanelView('waAll');
     const cached = pageDataCache.comms;
-    if (cached) renderWaList(commsWaAllList, cached.whatsappItems || []);
+    if (cached) renderWaListLive(commsWaAllList, cached.whatsappAllItems || []);
     else if (commsWaAllList) commsWaAllList.innerHTML = '<div class="wf-skeleton-list"><div class="wf-skeleton-row"></div><div class="wf-skeleton-row"></div><div class="wf-skeleton-row"></div></div>';
     fetch('/api/workforce/hr-assistant/communications-summary').then((r) => r.json()).then((data) => {
       pageDataCache.comms = data;
-      if (panelView === 'waAll') renderWaList(commsWaAllList, data.whatsappItems || []);
+      if (panelView === 'waAll') renderWaListLive(commsWaAllList, data.whatsappAllItems || []);
     }).catch(() => { /* keep showing whatever's already rendered */ });
   }
   if (commsWaViewAll) commsWaViewAll.addEventListener('click', showWaAll);
@@ -1492,7 +1560,7 @@
       pageDataCache.commsAt = Date.now();
     } catch (err) {
       if (pageDataCache.comms) return; // keep showing the still-valid cached render
-      data = { importantMailsCount: 0, whatsappItems: [], importantWhatsappCount: 0, systemNotices: [] };
+      data = { importantMailsCount: 0, whatsappItems: [], whatsappAllItems: [], importantWhatsappCount: 0, systemNotices: [] };
     }
     if (panelView !== 'important') return; // navigated away before the fetch resolved
     renderCommsData(data);
