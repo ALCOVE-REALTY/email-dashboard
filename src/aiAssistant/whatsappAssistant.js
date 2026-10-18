@@ -429,9 +429,17 @@ async function listActionableWhatsappItems() {
   followups.forEach((f) => ensure(f.chatId).items.push({ type: 'followup', name: f.name, summary: f.summary, ts: f.ts }));
   docs.forEach((d) => ensure(d.phone).items.push({ type: 'document', name: null, summary: 'Sent a file for ' + d.topic, ts: d.receivedAt }));
 
+  // Same placeholder rule as getWhatsappConversation's own `name` (see its
+  // comment) - "The sender" can end up as an item's OR an inbox-log
+  // entry's `name` field when no real name was resolved at reply time,
+  // and must never leak into this row's list-preview label either
+  // (item 5 of the UI-polish request: "never the placeholder").
+  const isRealRowName = (n) => n && n !== 'The sender';
   const rows = Array.from(byChat.values()).map((row) => {
     const latest = row.items.reduce((a, b) => (!a || b.ts > a.ts ? b : a), null);
     const key = row.chatId;
+    const latestName = latest && latest.name;
+    const logName = nameByChat.get(key);
     return {
       chatId: row.chatId,
       // The row's own display name is whoever the latest item named (or,
@@ -439,7 +447,7 @@ async function listActionableWhatsappItems() {
       // number) - purely a list-preview label; every item's OWN name
       // (which may differ, see above) is preserved untouched for the
       // conversation-detail view.
-      name: (latest && latest.name) || nameByChat.get(key) || key,
+      name: (isRealRowName(latestName) && latestName) || (isRealRowName(logName) && logName) || key,
       lastMessageText: latest ? latest.summary : '',
       lastMessageTime: latest ? latest.ts : 0,
       itemCount: row.items.length,
@@ -594,6 +602,13 @@ async function getWhatsappConversation(chatIdRaw) {
   const name = (directoryMatch && directoryMatch.emp.name) ||
     [latestLog, myApprovals[0], myDrafts[0], myFollowups[0]].map((r) => r && r.name).find(isRealName) ||
     chatId;
+  // Same placeholder rule as the conversation-level `name` above, applied
+  // per-item: an individual approval/draft/follow-up record may carry the
+  // "The sender" placeholder even when the conversation as a whole
+  // resolved a real name from a different record - never let that leak
+  // into a card's "For: ..." label, which forLabel (hrAssistant.js) shows
+  // verbatim whenever it differs from the conversation header.
+  const itemLabel = (n) => (directoryMatch && directoryMatch.emp.name) || (isRealName(n) ? n : chatId);
   return {
     chatId,
     name,
@@ -601,7 +616,7 @@ async function getWhatsappConversation(chatIdRaw) {
     lastOutcome: latestLog ? { aCase: latestLog.aCase, outcome: latestLog.outcome } : null,
     neverAuto,
     pendingApprovals: myApprovals.map((a) => ({
-      id: a.id, name: a.name, summary: a.dataRequestSummary, text: a.preparedReplyText, error: a.preparedError,
+      id: a.id, name: itemLabel(a.name), summary: a.dataRequestSummary, text: a.preparedReplyText, error: a.preparedError,
       // Grouped multi-candidate approval (several fuzzy/exact name
       // matches for one contact-number request) - the UI renders these as
       // a radio-selectable list instead of a.text; only name/department
@@ -610,8 +625,8 @@ async function getWhatsappConversation(chatIdRaw) {
       // Send is actually pressed).
       candidates: Array.isArray(a.candidates) ? a.candidates.map((c) => ({ name: c.name, department: naturalizeDirectoryValue(c.department) })) : null
     })),
-    pendingDrafts: myDrafts.map((d) => ({ contactId: d.contactId, name: d.name, type: d.type, draftReply: d.draftReply })),
-    openFollowups: myFollowups.map((f) => ({ name: f.name, summary: f.summary })),
+    pendingDrafts: myDrafts.map((d) => ({ contactId: d.contactId, name: itemLabel(d.name), type: d.type, draftReply: d.draftReply })),
+    openFollowups: myFollowups.map((f) => ({ name: itemLabel(f.name), summary: f.summary })),
     pendingDocuments: myDocs.map((d) => ({ topic: d.topic, fileRef: d.fileRef }))
   };
 }
@@ -1782,7 +1797,17 @@ async function narrowDataAnswer(approval, editInstruction) {
 // omitted/invalid, same as the radio list's own default-checked option.
 // A single-candidate approval (the normal case) ignores it entirely and
 // behaves exactly as before.
-async function executeApprovalSend(approval, editInstruction, selectedIndex) {
+async function executeApprovalSend(approval, editInstruction, selectedIndex, editedText) {
+  // A literal owner-edited message (new inline-edit card UI, see
+  // forwarded `editedText`) is sent verbatim - never re-narrowed by
+  // Claude the way `editInstruction` is. It still goes through the same
+  // hard PII block as every other prepared answer, THROWN (not returned)
+  // so the HTTP route's catch surfaces it as a real error and the
+  // approval stays pending - never silently dropped, never sent.
+  const literalText = typeof editedText === 'string' ? editedText.trim() : '';
+  if (literalText && textHasForbiddenField(literalText)) {
+    throw new Error("This message still contains personal data (PII) that can't be sent over WhatsApp - please remove that first.");
+  }
   let textToSend;
   let logSummary = approval.dataRequestSummary;
   if (Array.isArray(approval.candidates) && approval.candidates.length) {
@@ -1792,9 +1817,9 @@ async function executeApprovalSend(approval, editInstruction, selectedIndex) {
       await removePendingApproval(approval.id);
       return approval.name + ' er answer ready chilo na, pathano gelo na.';
     }
-    textToSend = editInstruction
+    textToSend = literalText || (editInstruction
       ? await narrowDataAnswer({ preparedReplyText: candidate.outgoingText, preparedCard: null }, editInstruction)
-      : candidate.outgoingText;
+      : candidate.outgoingText);
     logSummary = candidate.name + ' (' + candidate.department + ') - contact number';
   } else {
     if (approval.preparedError || !approval.preparedReplyText) {
@@ -1804,7 +1829,7 @@ async function executeApprovalSend(approval, editInstruction, selectedIndex) {
     // approval.preparedReplyText is already the complete, final WhatsApp
     // text (summary + list, built once at approval-creation time) - never
     // re-render the card here, that would duplicate the list a second time.
-    textToSend = editInstruction ? await narrowDataAnswer(approval, editInstruction) : approval.preparedReplyText;
+    textToSend = literalText || (editInstruction ? await narrowDataAnswer(approval, editInstruction) : approval.preparedReplyText);
   }
   await removePendingApproval(approval.id);
   if (!isRealSendAllowedFor(approval.phone)) {

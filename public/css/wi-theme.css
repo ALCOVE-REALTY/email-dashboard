@@ -1739,6 +1739,38 @@ body { background: var(--wi-bg); }
 .wf-convo-action-btn.primary { background: var(--wi-primary); color: #FFFFFF; box-shadow: var(--wi-sh-primary); }
 .wf-convo-action-btn.danger { background: var(--wi-red-50); color: var(--wi-red-700); }
 .wf-convo-action-btn.outline { background: var(--wi-surface-3); color: var(--wi-ink); }
+/* Small secondary/text Edit button (no browser prompt() anywhere in SUBH -
+   see enterCardEditMode in hrAssistant.js) - never stretches to fill like
+   its primary/danger siblings, just sits between them at its own width. */
+.wf-convo-action-btn.text { flex: 0 0 auto; background: transparent; color: var(--wi-primary); box-shadow: none; padding: 9px 8px; }
+
+/* Inline edit mode for an approval/draft card (replaces the old prompt()-
+   based edit) - the textarea takes over the preview's spot, Save/Cancel
+   take over the main action row's spot directly below it. */
+.wf-convo-edit-textarea {
+  width: 100%; min-height: 64px; resize: vertical; font-family: inherit; font-size: 0.8rem; color: var(--wi-ink);
+  background: var(--wi-surface-3); border: 1.5px solid var(--wi-border-2); border-radius: 12px; padding: 9px 11px;
+  box-sizing: border-box;
+}
+.wf-convo-edit-row { margin-top: 2px; }
+
+/* In-app confirm overlay (no browser confirm() anywhere in SUBH - see
+   showConfirmDialog in hrAssistant.js). Hidden by default via opacity/
+   pointer-events, not display:none, so the single shared element can
+   fade in/out instead of popping. */
+.wf-confirm-overlay {
+  position: fixed; inset: 0; z-index: 10000; display: flex; align-items: center; justify-content: center;
+  padding: 24px; background: rgba(15, 18, 32, 0); pointer-events: none; opacity: 0; transition: opacity .15s ease, background-color .15s ease;
+}
+.wf-confirm-overlay.open { background: rgba(15, 18, 32, .45); pointer-events: auto; opacity: 1; }
+.wf-confirm-box {
+  width: 100%; max-width: 320px; background: var(--wi-surface); border-radius: var(--wi-r-card); box-shadow: var(--wi-sh-card);
+  padding: 18px 16px 16px; display: flex; flex-direction: column; gap: 14px; transform: scale(.96); transition: transform .15s ease;
+}
+.wf-confirm-overlay.open .wf-confirm-box { transform: scale(1); }
+.wf-confirm-text { margin: 0; font-size: 0.86rem; font-weight: 600; color: var(--wi-ink); line-height: 1.4; }
+.wf-confirm-row { display: flex; gap: 8px; }
+.wf-confirm-row .wf-convo-action-btn { padding: 10px; }
 
 /* ---------- Generic button-action feedback (speed/UX fix) ----------
    Shared by every action button across the SUBH panel - approval Send/
@@ -1844,9 +1876,9 @@ body { background: var(--wi-bg); }
 }
 .wf-rem-chips { display: flex; gap: 8px; }
 .wf-rem-chip {
-  flex: 1; height: 36px; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  flex: 1; height: 32px; display: inline-flex; align-items: center; justify-content: center; gap: 5px;
   border: 1.5px solid var(--wi-border-2); background: var(--wi-surface); color: var(--wi-muted);
-  border-radius: var(--wi-r-pill); padding: 0 12px; font-size: 13px; font-weight: 700; font-family: inherit; cursor: pointer;
+  border-radius: var(--wi-r-pill); padding: 0 9px; font-size: 12.5px; font-weight: 700; font-family: inherit; cursor: pointer;
   transition: background-color .15s ease, border-color .15s ease, color .15s ease;
 }
 .wf-rem-chip[aria-pressed="true"] { background: var(--wi-primary); border-color: var(--wi-primary); color: #FFFFFF; }

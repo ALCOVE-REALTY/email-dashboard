@@ -256,6 +256,11 @@ function computeCounts(reminders, now) {
 
 function filterReminders(reminders, filter, now) {
   const todayKey = istDayKey(istParts(now));
+  // Unfiltered raw set (both pending and completed) - lets the Reminders
+  // page fetch once and bucket Today/Upcoming/Completed itself client-side
+  // (see hrAssistant.js's bucketReminders, which mirrors the exact rules
+  // below) so switching tabs never needs a second network round trip.
+  if (filter === 'everything') return reminders;
   if (filter === 'completed') return reminders.filter((r) => r.status === 'completed');
   // Distinct from 'completed' (full history) - the "Today's Completed" row
   // opens exactly this: only what was actually completed today (IST).

@@ -970,7 +970,7 @@
       const delBtn = e.target.closest('.wf-ai-history-row-delete');
       if (delBtn) {
         e.stopPropagation();
-        if (!confirm('Delete this conversation?')) return;
+        if (!(await showConfirmDialog('Delete this conversation?'))) return;
         await deleteConversationById(delBtn.dataset.deleteId);
         const isSheet = container === historySheetList;
         loadHistoryInto(container, isSheet ? historySheetSearch.value : historyFullSearch.value);
@@ -1057,7 +1057,7 @@
   });
   historyFullCloseBtn.addEventListener('click', () => { historyFullPanel.hidden = true; });
   historyClearAllBtn.addEventListener('click', async () => {
-    if (!confirm('Clear all chat history? This cannot be undone.')) return;
+    if (!(await showConfirmDialog('Clear all chat history? This cannot be undone.'))) return;
     try {
       await fetch('/api/workforce/hr-assistant/conversations', { method: 'DELETE' });
     } catch (err) { /* best-effort */ }
@@ -1101,7 +1101,12 @@
     window.addEventListener('orientationchange', syncPanelToViewport);
     // Home is always the landing page on open, per the mockup - never
     // reopens straight into Important Communications or a conversation
-    // left over from an earlier session.
+    // left over from an earlier session. Resets the back-navigation stack
+    // too and plants one base history entry, so the very first phone-back
+    // press/gesture while the panel is open closes it (see the popstate
+    // listener above) instead of navigating the underlying dashboard away.
+    navStack = [{ type: 'home' }];
+    try { window.history.pushState({ hrNav: true, depth: 1 }, ''); } catch (err) { /* best effort */ }
     setPanelView('home');
     if (!opened) {
       opened = true;
@@ -1114,7 +1119,14 @@
     // the person actually taps the input, not the moment the panel opens.
   }
 
-  function closePanel() {
+  // fromPopstate is true when the browser itself already consumed the
+  // history entry (a hardware back press/gesture - see the popstate
+  // listener above) - the extra history.go unwind below must be skipped
+  // in that case, since the entry it would try to remove is already gone
+  // and going back further would walk out past wherever the panel was
+  // opened from. Only a direct close (the X button, or navBack() finding
+  // nothing left to pop) still owns an un-consumed history entry to unwind.
+  function closePanel(fromPopstate) {
     panel.hidden = true;
     unlockBodyScroll();
     if (window.visualViewport) {
@@ -1123,6 +1135,9 @@
     }
     window.removeEventListener('orientationchange', syncPanelToViewport);
     stopCommsPolling();
+    const depth = navStack.length;
+    navStack = [{ type: 'home' }];
+    if (!fromPopstate && depth > 0) { try { window.history.go(-depth); } catch (err) { /* best effort */ } }
   }
 
   btn.addEventListener('click', openPanel);
@@ -1245,17 +1260,54 @@
   async function prefetchRemindersAll() {
     const seqAtStart = remMutationSeq;
     try {
-      // 'today' - the default tab (see loadRemindersPage) - but every
+      // 'today' warms the hub tile/header badge preview (showHub/
+      // pollCommsSummary's hub branch read this key directly) - every
       // filter's response carries the SAME full counts object regardless
       // of which items it returns (computeCounts always runs over the
-      // complete list), so this one fetch also warms the hub tile/header
-      // badge correctly no matter which tab is opened first.
-      const resp = await fetch('/api/workforce/hr-assistant/reminders?filter=today');
-      if (!resp.ok) return;
-      const data = await resp.json();
+      // complete list). 'everything' (the full raw pending+completed set)
+      // separately warms the Reminders page itself, so the very first tab
+      // switch there (see bucketReminders/loadRemindersPage) is instant
+      // and client-side with no network round trip, same as every later one.
+      const [todayResp, everythingResp] = await Promise.all([
+        fetch('/api/workforce/hr-assistant/reminders?filter=today'),
+        fetch('/api/workforce/hr-assistant/reminders?filter=everything')
+      ]);
       if (remMutationSeq !== seqAtStart) return; // a mutation landed while this was in flight - stale, drop it
-      pageDataCache.reminders.set('today', { data, at: Date.now() });
+      if (todayResp.ok) pageDataCache.reminders.set('today', { data: await todayResp.json(), at: Date.now() });
+      if (everythingResp.ok) pageDataCache.reminders.set('everything', { data: await everythingResp.json(), at: Date.now() });
     } catch (err) { /* best effort - a real page open will just fetch fresh */ }
+  }
+
+  // Mirrors reminderService.js's istDayKey/istDayKeyOfIso exactly (the IST
+  // calendar day, YYYY-MM-DD, a UTC instant falls on) - lets the Reminders
+  // page bucket Today/Upcoming/Completed from one already-fetched full
+  // list instead of asking the server to re-filter on every tab tap.
+  function istDayKeyOf(date) {
+    const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(date);
+    const get = (t) => (parts.find((p) => p.type === t) || {}).value || '';
+    return get('year') + '-' + get('month') + '-' + get('day');
+  }
+  // Pure, no I/O - same bucketing rules as reminderService.js's own
+  // filterReminders/isTodayBucket/isUpcomingBucket (an undated or overdue
+  // reminder always counts as "Today", never silently drops out of every
+  // tab). Takes the full items array from a filter=everything fetch.
+  function bucketReminders(all, filter, now) {
+    const todayKey = istDayKeyOf(now);
+    if (filter === 'completed') return all.filter((r) => r.status === 'completed');
+    if (filter === 'completedToday') return all.filter((r) => r.status === 'completed' && r.completedAt && istDayKeyOf(new Date(r.completedAt)) === todayKey);
+    const pending = all.filter((r) => r.status === 'pending');
+    if (filter === 'upcoming') return pending.filter((r) => r.dueAt && istDayKeyOf(new Date(r.dueAt)) > todayKey);
+    return pending.filter((r) => !r.dueAt || istDayKeyOf(new Date(r.dueAt)) <= todayKey); // 'today' (and legacy 'all')
+  }
+  // Instant, client-side-only tab switch (<100ms, no network) - renders
+  // straight from the already-cached full list. Returns false (does
+  // nothing) on a genuine cold cache, so callers can fall back to a real
+  // network load exactly once.
+  function applyReminderFilterFromCache(filter) {
+    const cached = pageDataCache.reminders.get('everything');
+    if (!cached) return false;
+    renderRemindersData({ items: bucketReminders(cached.data.items, filter, new Date()), counts: cached.data.counts }, filter);
+    return true;
   }
   function startCommsPolling() {
     if (commsPollTimer) return;
@@ -1279,6 +1331,61 @@
   // again with the back arrow in commsHead, exactly like the mockup.
   let panelView = 'home';
   let activeConvoChatId = null;
+
+  // ---------- Back-navigation stack (item 3 of the UI-polish request) ----------
+  // One entry per logical screen the panel has drilled into (Home is
+  // always the base, index 0, never popped) - e.g. Home -> Today's
+  // Updates -> Reminders -> "Today's Completed" is 4 entries, so 3 taps of
+  // the back arrow (or 3 phone-back presses) return to Home, matching the
+  // mockup's own example exactly. Distinct from `panelView` (a pure DOM-
+  // visibility switch with no memory of how you got there) - this stack is
+  // what makes "Today's Completed" pop back to the Reminders tab you were
+  // actually on, not all the way out to the hub, and what lets the phone's
+  // own back gesture/button behave identically to the in-app arrow.
+  // Each push also advances real browser history (pushState) so the
+  // hardware back button/gesture fires a popstate we can react to exactly
+  // like an in-app back tap - openPanel()/closePanel() below keep the two
+  // in sync (one base history entry while the panel is open, unwound on
+  // close so leaving via the X button never leaves stale states behind).
+  let navStack = [{ type: 'home' }];
+  function pushNav(entry) {
+    navStack.push(entry);
+    try { window.history.pushState({ hrNav: true, depth: navStack.length }, ''); } catch (err) { /* best effort */ }
+  }
+  // A plain filter-chip tap (Today/Upcoming/Completed) is a LATERAL switch,
+  // not a drill-down - it never pushes its own stack entry (see item 2:
+  // instant, client-side, no navigation). But it must still keep the
+  // current 'reminders' stack entry's own filter in sync, so that popping
+  // back to it later (e.g. after drilling into "Today's Completed" or a
+  // reminder's detail) lands on whichever tab was actually showing, not
+  // whichever one was active the moment the page was first opened.
+  function syncTopRemindersFilter(filter) {
+    const top = navStack[navStack.length - 1];
+    if (top && top.type === 'reminders') top.filter = filter;
+  }
+  function renderNavEntry(entry) {
+    if (entry.type === 'home') showHome();
+    else if (entry.type === 'hub') showHub();
+    else if (entry.type === 'important') showImportant();
+    else if (entry.type === 'waAll') showWaAll();
+    else if (entry.type === 'conversation') openConversationPage(entry.chatId);
+    else if (entry.type === 'reminders') { activeRemFilter = entry.filter; setPanelView('reminders'); loadRemindersPage(entry.filter); }
+    else if (entry.type === 'reminderDetail') openReminderDetail(entry.id);
+  }
+  // Used by the in-app back arrow - defers to window.history.back() rather
+  // than popping navStack directly, so the SAME popstate handler (below)
+  // drives both the in-app arrow and the phone's own back gesture/button,
+  // and the two can never drift out of sync with each other.
+  function navBack() {
+    if (navStack.length <= 1) { closePanel(); return; }
+    try { window.history.back(); } catch (err) { navStack.pop(); renderNavEntry(navStack[navStack.length - 1]); }
+  }
+  window.addEventListener('popstate', (e) => {
+    if (panel.hidden) return; // not our history entry - the panel isn't even open
+    if (!e.state || !e.state.hrNav || navStack.length <= 1) { closePanel(true); return; }
+    navStack.pop();
+    renderNavEntry(navStack[navStack.length - 1]);
+  });
 
   const REMINDERS_BELL_SVG = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>';
   const MAIL_SVG = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M22 6l-10 7L2 6"/></svg>';
@@ -1405,7 +1512,7 @@
   }
   async function handleWaRowDelete(btn) {
     const chatId = btn.dataset.chatId;
-    if (!confirm('Remove this conversation from Important WhatsApp?\n\nThis only hides it here - nothing is deleted, and it reappears if they message again about something needing your attention.')) return;
+    if (!(await showConfirmDialog('Remove this conversation from Important WhatsApp? This only hides it here - nothing is deleted, and it reappears if they message again about something needing your attention.'))) return;
     const row = btn.closest('.wf-comms-wa-row');
     if (row) { row.style.pointerEvents = 'none'; row.style.opacity = '0.5'; }
     try {
@@ -1448,7 +1555,7 @@
   function wireWaRows(container) {
     if (!container) return;
     container.querySelectorAll('.wf-comms-wa-row').forEach((row) => {
-      row.addEventListener('click', () => openConversationPage(row.dataset.chatId));
+      row.addEventListener('click', () => { pushNav({ type: 'conversation', chatId: row.dataset.chatId }); openConversationPage(row.dataset.chatId); });
     });
     container.querySelectorAll('.wf-comms-wa-row-delete').forEach((btn) => {
       btn.addEventListener('click', (e) => { e.stopPropagation(); handleWaRowDelete(btn); });
@@ -1538,7 +1645,7 @@
       if (panelView === 'waAll') renderWaListLive(commsWaAllList, data.whatsappAllItems || []);
     }).catch(() => { /* keep showing whatever's already rendered */ });
   }
-  if (commsWaViewAll) commsWaViewAll.addEventListener('click', showWaAll);
+  if (commsWaViewAll) commsWaViewAll.addEventListener('click', () => { pushNav({ type: 'waAll' }); showWaAll(); });
 
   // Stale-while-revalidate (speed fix): renders whatever's already cached
   // (usually warm from the 30s badge poll) instantly, with no spinner,
@@ -1644,6 +1751,91 @@
     setTimeout(() => card.remove(), 320);
   }
 
+  // Inline edit mode for an approval/draft card's free-text preview (no
+  // browser prompt()/confirm()/alert() dialogs anywhere in SUBH). Swaps
+  // the preview span for a textarea + Save/Cancel row; Save stores the
+  // edited text on the card itself (dataset.editedText, read by the Send
+  // handler below instead of re-prompting) and restores the plain preview
+  // look; Cancel restores the original text untouched. Shared by both
+  // approval and draft cards since both share the same "preview span +
+  // actions row" shape (see buildConvoActions) - never wired for a
+  // multi-candidate approval card, which has no free-text preview to edit.
+  function enterCardEditMode(card) {
+    if (!card || card.dataset.editing === '1') return;
+    const preview = card.querySelector('[data-role="preview"]');
+    const actionsRow = card.querySelector('[data-role="actions"]');
+    if (!preview || !actionsRow) return;
+    card.dataset.editing = '1';
+    const originalText = card.dataset.editedText || preview.textContent;
+    actionsRow.style.display = 'none';
+    const textarea = document.createElement('textarea');
+    textarea.className = 'wf-convo-edit-textarea';
+    textarea.value = originalText;
+    preview.replaceWith(textarea);
+    const editRow = document.createElement('span');
+    editRow.className = 'wf-convo-action-row wf-convo-edit-row';
+    editRow.innerHTML =
+      '<button type="button" class="wf-convo-action-btn outline" data-edit-cancel>Cancel</button>' +
+      '<button type="button" class="wf-convo-action-btn primary" data-edit-save>Save</button>';
+    textarea.insertAdjacentElement('afterend', editRow);
+    textarea.focus();
+    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+    function exit(finalText, saved) {
+      const newPreview = document.createElement('span');
+      newPreview.className = 'wf-convo-action-preview';
+      newPreview.dataset.role = 'preview';
+      newPreview.textContent = finalText;
+      textarea.replaceWith(newPreview);
+      editRow.remove();
+      actionsRow.style.display = '';
+      card.dataset.editing = '';
+      if (saved) card.dataset.editedText = finalText;
+    }
+    editRow.querySelector('[data-edit-cancel]').addEventListener('click', () => exit(originalText, false));
+    editRow.querySelector('[data-edit-save]').addEventListener('click', () => exit(textarea.value.trim() || originalText, true));
+  }
+
+  // In-app confirm, no browser confirm() dialogs anywhere in SUBH (item 4
+  // of the UI-polish request explicitly covers "any other alert/confirm/
+  // prompt" beyond just the approval card). Built once, reused for every
+  // destructive confirmation; resolves true (Confirm tapped) or false
+  // (Cancel or backdrop tapped) - callers `await` it exactly like the
+  // browser dialog they replace.
+  let confirmOverlayEl = null;
+  function showConfirmDialog(message, opts) {
+    opts = opts || {};
+    if (!confirmOverlayEl) {
+      confirmOverlayEl = document.createElement('div');
+      confirmOverlayEl.className = 'wf-confirm-overlay';
+      confirmOverlayEl.innerHTML =
+        '<div class="wf-confirm-box">' +
+          '<p class="wf-confirm-text"></p>' +
+          '<div class="wf-confirm-row">' +
+            '<button type="button" class="wf-convo-action-btn outline" data-confirm-cancel>Cancel</button>' +
+            '<button type="button" class="wf-convo-action-btn danger" data-confirm-ok>Confirm</button>' +
+          '</div>' +
+        '</div>';
+      document.body.appendChild(confirmOverlayEl);
+    }
+    confirmOverlayEl.querySelector('.wf-confirm-text').textContent = message;
+    const okBtn = confirmOverlayEl.querySelector('[data-confirm-ok]');
+    okBtn.textContent = opts.confirmLabel || 'Confirm';
+    confirmOverlayEl.classList.add('open');
+    return new Promise((resolve) => {
+      const cancelBtn = confirmOverlayEl.querySelector('[data-confirm-cancel]');
+      function cleanup(result) {
+        confirmOverlayEl.classList.remove('open');
+        okBtn.onclick = null;
+        cancelBtn.onclick = null;
+        confirmOverlayEl.onclick = null;
+        resolve(result);
+      }
+      okBtn.onclick = () => cleanup(true);
+      cancelBtn.onclick = () => cleanup(false);
+      confirmOverlayEl.onclick = (e) => { if (e.target === confirmOverlayEl) cleanup(false); };
+    });
+  }
+
   // One action group PER OUTSTANDING ITEM, never collapsed to "the first
   // one" - found live (see getWhatsappConversation's own comment) that a
   // single WhatsApp number can carry several pending approvals for
@@ -1674,15 +1866,16 @@
               '</label>'
             ).join('') +
           '</div>'
-        : '<span class="wf-convo-action-preview">' + escapeHtml(a.error ? ('Could not prepare an answer: ' + a.error) : (a.text || '')) + '</span>';
+        : '<span class="wf-convo-action-preview" data-role="preview">' + escapeHtml(a.error ? ('Could not prepare an answer: ' + a.error) : (a.text || '')) + '</span>';
       groups.push(
         '<div class="wf-convo-action-group" data-action-type="approval">' +
           '<span class="wf-convo-action-label">Pending data request approval</span>' +
           forLabel(a.name, convo.name) +
           bodyHtml +
           (a.error ? '' :
-            '<span class="wf-convo-action-row">' +
+            '<span class="wf-convo-action-row" data-role="actions">' +
               '<button type="button" class="wf-convo-action-btn primary" data-approval-action="approve" data-approval-id="' + escapeHtml(a.id) + '">Send</button>' +
+              (hasCandidates ? '' : '<button type="button" class="wf-convo-action-btn text" data-approval-action="edit-toggle" data-approval-id="' + escapeHtml(a.id) + '">Edit</button>') +
               '<button type="button" class="wf-convo-action-btn danger" data-approval-action="reject" data-approval-id="' + escapeHtml(a.id) + '">Decline</button>' +
             '</span>'
           ) +
@@ -1691,13 +1884,13 @@
     });
     (convo.pendingDrafts || []).forEach((d) => {
       groups.push(
-        '<div class="wf-convo-action-group" data-action-type="draft">' +
+        '<div class="wf-convo-action-group" data-action-type="draft" data-contact-id="' + escapeHtml(d.contactId) + '">' +
           '<span class="wf-convo-action-label">Pending draft reply</span>' +
           forLabel(d.name, convo.name) +
-          '<span class="wf-convo-action-preview">' + escapeHtml(d.draftReply || '') + '</span>' +
-          '<span class="wf-convo-action-row">' +
-            '<button type="button" class="wf-convo-action-btn primary" data-draft-action="send" data-draft-reply="' + escapeHtml(d.draftReply || '') + '">Send</button>' +
-            '<button type="button" class="wf-convo-action-btn outline" data-draft-action="edit" data-draft-reply="' + escapeHtml(d.draftReply || '') + '">Edit</button>' +
+          '<span class="wf-convo-action-preview" data-role="preview">' + escapeHtml(d.draftReply || '') + '</span>' +
+          '<span class="wf-convo-action-row" data-role="actions">' +
+            '<button type="button" class="wf-convo-action-btn primary" data-draft-action="send">Send</button>' +
+            '<button type="button" class="wf-convo-action-btn text" data-draft-action="edit-toggle">Edit</button>' +
             '<button type="button" class="wf-convo-action-btn danger" data-draft-action="skip">Skip</button>' +
           '</span>' +
         '</div>'
@@ -1801,8 +1994,9 @@
       // and several cards can be mid-request at the same time.
       convoActions.querySelectorAll('[data-approval-action]').forEach((b) => {
         b.addEventListener('click', async () => {
-          const action = b.dataset.approvalAction === 'reject' ? 'reject' : 'approve';
-          let editInstruction = null;
+          const action = b.dataset.approvalAction;
+          const card = b.closest('.wf-convo-action-group');
+          if (action === 'edit-toggle') { enterCardEditMode(card); return; }
           let selectedIndex = null;
           if (action === 'approve') {
             // Which candidate is checked, if this card has the
@@ -1810,11 +2004,9 @@
             // defaults to the first one, same as its default-checked radio.
             const checked = convoActions.querySelector('input[name="wf-approval-candidate-' + CSS.escape(b.dataset.approvalId) + '"]:checked');
             if (checked) selectedIndex = Number(checked.value);
-            const narrow = prompt('Change the message before sending? Leave blank to send as-is.', '');
-            if (narrow && narrow.trim()) editInstruction = narrow.trim();
           }
-          const card = b.closest('.wf-convo-action-group');
-          await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/whatsapp-approval', { id: b.dataset.approvalId, action, editInstruction, selectedIndex }), () => {
+          const editedText = card.dataset.editedText || null;
+          await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/whatsapp-approval', { id: b.dataset.approvalId, action, selectedIndex, editedText }), () => {
             dismissCard(card);
             showActionToast(action === 'reject' ? 'Declined' : 'Sent ✓');
             pollCommsSummary();
@@ -1825,17 +2017,15 @@
       convoActions.querySelectorAll('[data-draft-action]').forEach((b) => {
         b.addEventListener('click', async () => {
           const action = b.dataset.draftAction;
+          const card = b.closest('.wf-convo-action-group');
+          if (action === 'edit-toggle') { enterCardEditMode(card); return; }
           let requestFn;
           if (action === 'skip') {
             requestFn = () => postJsonOrThrow('/api/workforce/hr-assistant/whatsapp-reply', { contactId: activeConvoChatId, action: 'skip' });
-          } else if (action === 'edit') {
-            const edited = prompt('What should the new reply say?', b.dataset.draftReply || '');
-            if (edited === null) return;
-            requestFn = () => postJsonOrThrow('/api/workforce/hr-assistant/whatsapp-reply', { contactId: activeConvoChatId, action: 'send', editedText: edited });
           } else {
-            requestFn = () => postJsonOrThrow('/api/workforce/hr-assistant/whatsapp-reply', { contactId: activeConvoChatId, action: 'send' });
+            const editedText = card.dataset.editedText || null;
+            requestFn = () => postJsonOrThrow('/api/workforce/hr-assistant/whatsapp-reply', { contactId: activeConvoChatId, action: 'send', editedText });
           }
-          const card = b.closest('.wf-convo-action-group');
           await runButtonAction(b, requestFn, () => {
             dismissCard(card);
             showActionToast(action === 'skip' ? 'Skipped' : 'Sent ✓');
@@ -1875,16 +2065,8 @@
     }
   }
 
-  if (todayUpdatesCard) todayUpdatesCard.addEventListener('click', showHub);
-  if (commsBackBtn) {
-    commsBackBtn.addEventListener('click', () => {
-      if (panelView === 'conversation') showImportant();
-      else if (panelView === 'reminderDetail') showReminders();
-      else if (panelView === 'waAll') showImportant();
-      else if (panelView === 'important' || panelView === 'reminders') showHub();
-      else showHome();
-    });
-  }
+  if (todayUpdatesCard) todayUpdatesCard.addEventListener('click', () => { pushNav({ type: 'hub' }); showHub(); });
+  if (commsBackBtn) commsBackBtn.addEventListener('click', navBack);
 
   // ---------- Phase 2: Hub + Reminders ----------
   // Fired reminders are detected on the SAME 30s poll Home's badge already
@@ -1939,8 +2121,8 @@
     if (panelView !== 'hub') return; // navigated away before the fetch resolved
     renderHubBadges(comms, remCounts);
   }
-  if (hubRemindersTile) hubRemindersTile.addEventListener('click', showReminders);
-  if (hubCommsTile) hubCommsTile.addEventListener('click', showImportant);
+  if (hubRemindersTile) hubRemindersTile.addEventListener('click', () => { pushNav({ type: 'reminders', filter: 'today' }); showReminders(); });
+  if (hubCommsTile) hubCommsTile.addEventListener('click', () => { pushNav({ type: 'important' }); showImportant(); });
 
   function priorityLabel(p) { return p === 'high' ? 'High' : p === 'low' ? 'Low' : 'Medium'; }
   function sourceLabel(s) { return s === 'email' ? 'Email' : s === 'whatsapp' ? 'WhatsApp' : s === 'report' ? 'Report' : 'Manual'; }
@@ -1982,7 +2164,7 @@
         (isDone ? '' : '<button type="button" class="wf-rem-checkbox" aria-label="Mark done"></button>') +
         '<svg class="wf-rem-row-chevron" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>' +
       '</span>';
-    row.querySelector('[data-open]').addEventListener('click', () => openReminderDetail(r.id));
+    row.querySelector('[data-open]').addEventListener('click', () => { pushNav({ type: 'reminderDetail', id: r.id }); openReminderDetail(r.id); });
     const checkbox = row.querySelector('.wf-rem-checkbox');
     if (checkbox) checkbox.addEventListener('click', (e) => { e.stopPropagation(); completeReminderRow(r.id, checkbox, row); });
     return row;
@@ -2084,13 +2266,20 @@
   // filter-chip switch never lets a slower, now-stale response clobber
   // whatever filter is actually showing by the time it resolves; seqAtStart
   // does the same for a mutation (done/undo/...) that lands mid-flight.
+  // Always fetches the FULL list (filter=everything) regardless of which
+  // tab is requested - items.length here covers every status/date, so a
+  // single response serves every tab via bucketReminders. Only the actual
+  // page-open (showReminders) and a cache-invalidating mutation ever reach
+  // the network; a plain tab tap (see the chip handler below) renders
+  // straight from this same cached payload and never calls this function
+  // at all when the cache is already warm.
   async function loadRemindersPage(filter) {
     activeRemFilter = filter || 'today';
     if (remBanner) remBanner.hidden = true;
     flushReminderBanner();
     const requestedFilter = activeRemFilter;
     const seqAtStart = remMutationSeq;
-    const cached = pageDataCache.reminders.get(requestedFilter);
+    const cached = pageDataCache.reminders.get('everything');
     // No skeleton when the list already has real rows (e.g. right after
     // completeReminderRow's optimistic removal, which invalidates the
     // cache then reloads) - replacing them with a skeleton would make the
@@ -2098,23 +2287,23 @@
     // once the fresh data arrives. Only a genuine cold load gets one.
     const hasExistingRender = Boolean(remList && remList.children.length && !remList.querySelector('.wf-skeleton-row'));
     if (cached) {
-      renderRemindersData(cached.data, requestedFilter);
+      applyReminderFilterFromCache(requestedFilter);
     } else if (remList && !hasExistingRender) {
       lastRemListFingerprint = null; // force the next real render to actually paint, not skip as "unchanged"
       remList.innerHTML = '<div class="wf-skeleton-list"><div class="wf-skeleton-row"></div><div class="wf-skeleton-row"></div><div class="wf-skeleton-row"></div></div>';
     }
     let data;
     try {
-      const resp = await fetch('/api/workforce/hr-assistant/reminders?filter=' + encodeURIComponent(requestedFilter));
+      const resp = await fetch('/api/workforce/hr-assistant/reminders?filter=everything');
       data = await resp.json();
-      if (remMutationSeq === seqAtStart) pageDataCache.reminders.set(requestedFilter, { data, at: Date.now() });
+      if (remMutationSeq === seqAtStart) pageDataCache.reminders.set('everything', { data, at: Date.now() });
     } catch (err) {
       if (cached) return; // keep showing the still-valid cached render
       data = { items: [], counts: { all: 0, today: 0, upcoming: 0, completed: 0, todayCompleted: 0 } };
     }
     if (activeRemFilter !== requestedFilter) return; // filter/page changed before this resolved
     if (remMutationSeq !== seqAtStart) return; // a mutation landed mid-flight - a fresh load for it is already underway
-    renderRemindersData(data, requestedFilter);
+    renderRemindersData({ items: bucketReminders(data.items, requestedFilter, new Date()), counts: data.counts }, requestedFilter);
   }
 
   function showReminders() {
@@ -2124,10 +2313,28 @@
   if (remChips) {
     remChips.addEventListener('click', (e) => {
       const chip = e.target.closest('.wf-rem-chip');
-      if (chip) loadRemindersPage(chip.dataset.filter);
+      if (!chip) return;
+      const filter = chip.dataset.filter;
+      activeRemFilter = filter;
+      syncTopRemindersFilter(filter);
+      if (remBanner) remBanner.hidden = true;
+      // Instant client-side-only switch when the full list is already
+      // cached (the overwhelmingly common case, since showReminders()
+      // always warms it first) - falls back to a real load only on a
+      // genuine cold cache (e.g. a mutation invalidated it a moment ago).
+      if (!applyReminderFilterFromCache(filter)) loadRemindersPage(filter);
     });
   }
-  if (remCompletedRow) remCompletedRow.addEventListener('click', () => loadRemindersPage('completedToday'));
+  if (remCompletedRow) {
+    remCompletedRow.addEventListener('click', () => {
+      // Its own back-stack level (item 3) - distinct from whichever filter
+      // chip is currently active, so Back returns to THAT tab exactly as
+      // left, not all the way out to the hub.
+      pushNav({ type: 'reminders', filter: 'completedToday' });
+      activeRemFilter = 'completedToday';
+      if (!applyReminderFilterFromCache('completedToday')) loadRemindersPage('completedToday');
+    });
+  }
 
   // ---- Add/Edit Reminder sheet (simple slide-up, see CSS comment) ----
   let editingReminderId = null;
@@ -2235,13 +2442,16 @@
       b.addEventListener('click', async () => {
         const action = b.dataset.rdAction;
         if (action === 'edit') { openReminderSheet(r); return; }
-        if (action === 'open-chat') { openConversationPage(r.linkedChatId); return; }
+        if (action === 'open-chat') { pushNav({ type: 'conversation', chatId: r.linkedChatId }); openConversationPage(r.linkedChatId); return; }
         const map = { done: 'done', cancel: 'cancel', undo: 'undo' };
         const toastText = action === 'done' ? 'Marked done ✓' : action === 'cancel' ? 'Cancelled' : 'Undone';
         await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/reminders/' + encodeURIComponent(id) + '/' + map[action], {}), () => {
           invalidateReminderCache();
           showActionToast(toastText);
-          showReminders();
+          // Back to whichever Reminders tab this detail was opened from
+          // (already below it on the stack) - not a forward navigation,
+          // so this pops rather than pushing a new 'reminders' entry.
+          navBack();
         });
       });
     });
@@ -2258,7 +2468,7 @@
         await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/reminders/' + encodeURIComponent(id) + '/snooze', body), () => {
           invalidateReminderCache();
           showActionToast('Snoozed');
-          showReminders();
+          navBack();
         });
       });
     });

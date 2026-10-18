@@ -1622,6 +1622,9 @@ router.post('/hr-assistant/whatsapp-reply', async (req, res) => {
     const draft = drafts.find((d) => d.contactId === contactId);
     if (!draft) return res.status(404).json({ error: 'No pending draft for that chat (already sent/skipped?).' });
     const textToSend = (typeof editedText === 'string' && editedText.trim()) || draft.draftReply || '';
+    if (typeof editedText === 'string' && editedText.trim() && whatsappAssistant.textHasForbiddenField(textToSend)) {
+      return res.status(400).json({ error: "This message still contains personal data (PII) that can't be sent over WhatsApp - please remove that first." });
+    }
 
     // Same per-chat scoping as the auto-send path (step 1 of the
     // two-step go-live can't be bypassed just by routing through a
@@ -1740,7 +1743,7 @@ router.get('/hr-assistant/communications-summary', async (req, res) => {
 router.get('/hr-assistant/reminders', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
   try {
-    const filter = ['all', 'today', 'upcoming', 'completed', 'completedToday'].includes(req.query.filter) ? req.query.filter : 'today';
+    const filter = ['all', 'everything', 'today', 'upcoming', 'completed', 'completedToday'].includes(req.query.filter) ? req.query.filter : 'today';
     const { items, counts } = await reminderService.listReminders(filter, new Date());
     res.json({ items, counts });
   } catch (err) {
@@ -1880,7 +1883,7 @@ router.get('/hr-assistant/whatsapp-conversation/:chatId', async (req, res) => {
 router.post('/hr-assistant/whatsapp-approval', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
   try {
-    const { id, action, editInstruction, selectedIndex } = req.body || {};
+    const { id, action, editInstruction, selectedIndex, editedText } = req.body || {};
     if (!id || (action !== 'approve' && action !== 'reject')) {
       return res.status(400).json({ error: 'id and action ("approve" or "reject") are required' });
     }
@@ -1891,7 +1894,7 @@ router.post('/hr-assistant/whatsapp-approval', async (req, res) => {
     // field actually gets sent; ignored otherwise.
     const reply = action === 'reject'
       ? await whatsappAssistant.executeApprovalReject(approval)
-      : await whatsappAssistant.executeApprovalSend(approval, editInstruction || null, Number.isInteger(selectedIndex) ? selectedIndex : null);
+      : await whatsappAssistant.executeApprovalSend(approval, editInstruction || null, Number.isInteger(selectedIndex) ? selectedIndex : null, editedText || null);
     res.json({ ok: true, reply });
   } catch (err) {
     res.status(500).json({ error: err.message });
