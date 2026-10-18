@@ -573,6 +573,85 @@ async function checkAsync(label, fn) {
   });
 
   console.log('='.repeat(70));
+  console.log('Conversation memory on the REAL store (subh-store, via the double-slash URL) - persists across messages, correct commands, no TTL surprise');
+  console.log('='.repeat(70));
+  const MEMORY_TEST_PHONE = '910000000797';
+  await checkAsync('appendConvoHistory (lpush+ltrim+expire) then getConvoHistory (lrange) round-trips correctly on the real store - 2 messages, right order, right content', async () => {
+    await whatsappAssistant.appendConvoHistory(MEMORY_TEST_PHONE, 'in', 'TEST message 1 - safe to ignore');
+    await whatsappAssistant.appendConvoHistory(MEMORY_TEST_PHONE, 'out', 'TEST reply 1 - safe to ignore');
+    await whatsappAssistant.appendConvoHistory(MEMORY_TEST_PHONE, 'in', 'TEST message 2 - safe to ignore');
+    const history = await whatsappAssistant.getConvoHistory(MEMORY_TEST_PHONE, 20);
+    return history.length === 3 &&
+      history[0].direction === 'in' && history[0].text === 'TEST message 1 - safe to ignore' &&
+      history[1].direction === 'out' && history[1].text === 'TEST reply 1 - safe to ignore' &&
+      history[2].direction === 'in' && history[2].text === 'TEST message 2 - safe to ignore';
+  });
+  await checkAsync('conversation history TTL is set to ~24h (expire), never 0/instant-expiring and never -1/forever', async () => {
+    const { Redis } = require('@upstash/redis');
+    const redis = new Redis({
+      url: process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL,
+      token: process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN
+    });
+    const ttl = await redis.ttl('wa-convo-history:' + MEMORY_TEST_PHONE);
+    return ttl > 23 * 60 * 60 && ttl <= 24 * 60 * 60;
+  });
+  await checkAsync('hasRecentIncomingMessage correctly sees the real history just written on the real store - this is what suppresses the wrapper\'s own AI-disclosure-line prepend on a mid-conversation reply', async () => {
+    // Tests the wrapper's OWN logic directly against real data, rather
+    // than inferring it from a model-drafted reply's wording - the model
+    // can independently choose to mention "Ami SUBH..." as part of its
+    // own natural phrasing regardless of this check (same as it always
+    // could, even on Upstash - that's the model's own style, not a sign
+    // this flag is broken), so asserting on drafted text here would be
+    // flaky for reasons that have nothing to do with conversation memory.
+    const history = await whatsappAssistant.getConvoHistory(MEMORY_TEST_PHONE, 20);
+    return history.length === 3 && whatsappAssistant.hasRecentIncomingMessage(history.slice(-10)) === true;
+  });
+  await checkAsync('pending-disambiguation round-trips correctly on the real store (set/get/clear, right TTL) - the exact key this app reads before classification', async () => {
+    const candidates = [{ name: 'Test Candidate One', department: 'TEST' }, { name: 'Test Candidate Two', department: 'TEST' }];
+    await whatsappAssistant.savePendingDisambiguation(MEMORY_TEST_PHONE, { candidates, lang: 'banglish', hadTypo: false, attempts: 1 });
+    const stored = await whatsappAssistant.getPendingDisambiguation(MEMORY_TEST_PHONE);
+    await whatsappAssistant.clearPendingDisambiguation(MEMORY_TEST_PHONE);
+    const afterClear = await whatsappAssistant.getPendingDisambiguation(MEMORY_TEST_PHONE);
+    return Boolean(stored) && stored.candidates.length === 2 && stored.candidates[0].name === 'Test Candidate One' && afterClear === null;
+  });
+  await checkAsync('follow-up counter (incrementFollowupCount) round-trips correctly on the real store', async () => {
+    await whatsappAssistant.resetFollowupCount(MEMORY_TEST_PHONE);
+    const n1 = await whatsappAssistant.incrementFollowupCount(MEMORY_TEST_PHONE);
+    const n2 = await whatsappAssistant.incrementFollowupCount(MEMORY_TEST_PHONE);
+    await whatsappAssistant.resetFollowupCount(MEMORY_TEST_PHONE);
+    return n1 === 1 && n2 === 2;
+  });
+  // Cleanup - this test number's convo history/disambiguation/follow-up
+  // state is purely synthetic (reserved 910000000xxx block) and has no
+  // real conversation behind it.
+  try {
+    const { Redis } = require('@upstash/redis');
+    const redis = new Redis({
+      url: process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL,
+      token: process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN
+    });
+    await redis.del('wa-convo-history:' + MEMORY_TEST_PHONE);
+    await redis.del('wa-pending-disambiguation:' + MEMORY_TEST_PHONE);
+    await redis.del('wa-followup-count:' + MEMORY_TEST_PHONE);
+  } catch (err) { /* best effort */ }
+
+  console.log('='.repeat(70));
+  console.log('Typing presence is OFF by default (reply-restoration request) - WHATSAPP_TYPING_PRESENCE must be explicitly set to "1" before any presence call happens');
+  console.log('='.repeat(70));
+  check('isTypingPresenceEnabled() is false when WHATSAPP_TYPING_PRESENCE is unset (the real default, same as this local/test environment)', process.env.WHATSAPP_TYPING_PRESENCE === '1' ? true : whatsappAssistant.isTypingPresenceEnabled() === false);
+  check('fireAndForgetPresence checks isTypingPresenceEnabled() before ever calling the gateway (source-level guard, since the function itself has no return value to assert on)', (() => {
+    const fs = require('fs');
+    const src = fs.readFileSync(require.resolve('../src/aiAssistant/whatsappAssistant.js'), 'utf8');
+    const fnMatch = src.match(/function fireAndForgetPresence\(phone, state\) \{([\s\S]*?)\n\}/);
+    return Boolean(fnMatch) && /if \(!isTypingPresenceEnabled\(\)\) return;/.test(fnMatch[1]);
+  })());
+  check('the buffer-level typing-presence trigger is also gated on isTypingPresenceEnabled() (belt-and-suspenders - typingStartedAt itself never gets set while the flag is off)', (() => {
+    const fs = require('fs');
+    const src = fs.readFileSync(require.resolve('../src/aiAssistant/whatsappAssistant.js'), 'utf8');
+    return /if \(isTypingPresenceEnabled\(\) && !buffer\.typingStartedAt/.test(src);
+  })());
+
+  console.log('='.repeat(70));
   console.log('Reply-speed request: pure timing constants only - NEVER a FAST model tier or a speculative/pre-computed decide (see the REGRESSION this caused - commit 1e1d31c prepended "Dukkhito, bujhte parini" to a FRESH disambiguation question live, because a speculative decideAutoReplyCore call wrote a pending-disambiguation record for a discarded, never-used run)');
   console.log('='.repeat(70));
   check('burst quiet window is 7-8s (narrowed from 9s for the 30s total reply budget)', whatsappAssistant.BURST_QUIET_MS >= 7000 && whatsappAssistant.BURST_QUIET_MS <= 8000);
@@ -774,16 +853,13 @@ async function checkAsync(label, fn) {
         return ratio > 0.3 && ratio < 3.5; // same ballpark length - a template swap/FAST-model shrink would fail this
       }
 
-      // ---- A. Identity + identity-confirm (deterministic, no API, no state) ----
-      const IDENTITY_CASES = [
-        ['identity (banglish)', 'Tumi ke?'],
-        ['identity (english)', 'who are you'],
-        ['identity (hinglish)', 'tum kaun ho'],
+      // ---- A1. Identity-confirm (unchanged since 4a8dd65 - deterministic, no API, no state) ----
+      const IDENTITY_CONFIRM_CASES = [
         ['identity-confirm (banglish)', 'tumi ki bot?'],
         ['identity-confirm (english)', 'are you a bot?'],
         ['identity-confirm (hinglish)', 'kya aap bot ho?']
       ];
-      for (const [label, text] of IDENTITY_CASES) {
+      for (const [label, text] of IDENTITY_CONFIRM_CASES) {
         await checkAsync('equivalence: ' + label + ' - "' + text + '" (EXACT match required)', async () => {
           const [oldPhone, newPhone] = phonePair();
           const [oldD, newD] = await Promise.all([
@@ -793,6 +869,91 @@ async function checkAsync(label, fn) {
           return Boolean(oldD) && Boolean(newD) && oldD.case === newD.case && oldD.replyText === newD.replyText;
         });
       }
+
+      // ---- A2. Identity QUESTION (reply-restoration request: deliberately
+      // changed from 4a8dd65's own wording AND broadened to cover every
+      // spelling variant seen live - "apni k?"/"ke?"/"ki" etc. never
+      // matched the old narrow regex at all and fell through to the AI
+      // pipeline, which is exactly what caused the "inconsistent identity
+      // replies" regression report. Compared against the CURRENT canonical
+      // template directly (not 4a8dd65, which intentionally no longer
+      // applies here) - every spelling variant must produce the exact
+      // SAME deterministic text, every time, no AI drafting involved. ----
+      const IDENTITY_QUESTION_REPLY_BY_LANG = {
+        banglish: 'Hyan, ami SUBH, Subhodeep-er HR Assistant. Apnake ki bhabe sahajyo korte pari?',
+        hinglish: 'Haan, main SUBH hoon, Subhodeep ka HR Assistant. Main aapki kaise madad kar sakta hoon?',
+        english: "Yes, I'm SUBH, Subhodeep's HR Assistant. How can I help you?"
+      };
+      const IDENTITY_QUESTION_VARIANTS = [
+        ['identity question (banglish) - "apni ke?"', 'apni ke?', 'banglish'],
+        ['identity question (banglish) - "apni k?" (the exact live regression input)', 'apni k?', 'banglish'],
+        ['identity question (banglish) - "apni ki"', 'apni ki', 'banglish'],
+        ['identity question (banglish) - "tumi kon?"', 'tumi kon?', 'banglish'],
+        ['identity question (banglish) - "apnar nam ki?"', 'apnar nam ki?', 'banglish'],
+        ['identity question (english) - "who are you?"', 'who are you?', 'english'],
+        ['identity question (english) - "who is this"', 'who is this', 'english'],
+        ['identity question (hinglish) - "aap kaun ho?"', 'aap kaun ho?', 'hinglish'],
+        ['identity question (hinglish) - "tum kon ho"', 'tum kon ho', 'hinglish'],
+        ['identity question (hinglish) - "aapka naam kya hai?"', 'aapka naam kya hai?', 'hinglish']
+      ];
+      for (const [label, text, lang] of IDENTITY_QUESTION_VARIANTS) {
+        await checkAsync('equivalence: ' + label + ' (deterministic template, EXACT match, every call)', async () => {
+          const [phoneA, phoneB] = phonePair();
+          const [d1, d2] = await Promise.all([
+            whatsappAssistant.decideAutoReply({ phone: phoneA, name: 'Test', firstName: 'Test', text, isGroup: false, history: [] }),
+            whatsappAssistant.decideAutoReply({ phone: phoneB, name: 'Test', firstName: 'Test', text, isGroup: false, history: [] })
+          ]);
+          const expected = IDENTITY_QUESTION_REPLY_BY_LANG[lang];
+          return d1.case === 'acknowledged' && d2.case === 'acknowledged' && d1.replyText === expected && d2.replyText === expected;
+        });
+      }
+      // A real question embedded in longer text must NEVER be hijacked by
+      // the identity-question match (it's anchored to the whole message
+      // on purpose) - a real, non-template reply must come back instead.
+      await checkAsync('equivalence: "apni ki eta korte parben?" (a real question, NOT identity small talk) is never hijacked by the anchored identity match', async () => {
+        const [phoneA] = phonePair();
+        const d = await whatsappAssistant.decideAutoReply({ phone: phoneA, name: 'Test', firstName: 'Test', text: 'apni ki eta korte parben?', isGroup: false, history: [] });
+        return d.replyText !== IDENTITY_QUESTION_REPLY_BY_LANG.banglish;
+      });
+
+      // ---- A3. Greeting-only (NEW deterministic template, reply-restoration
+      // request - previously greetings went through the AI classifier/
+      // drafter with no fixed line at all) - always the fixed line,
+      // regardless of the 24h first-reply rule; a greeting WITH a real
+      // question must fall through to the normal pipeline instead. ----
+      const GREETING_REPLY_BY_LANG = {
+        english: "Hello! I'm SUBH, Subhodeep's HR Assistant. How can I help you today?",
+        banglish: 'Hello! Ami SUBH, Subhodeep-er HR Assistant. Apnake ki bhabe sahajyo korte pari?',
+        hinglish: 'Hello! Main SUBH hoon, Subhodeep ka HR Assistant. Main aapki kaise madad kar sakta hoon?'
+      };
+      const GREETING_ONLY_CASES = [
+        ['greeting-only "Hii" (english)', 'Hii', 'english'],
+        ['greeting-only "hello" (english)', 'hello', 'english'],
+        ['greeting-only "hey" (english)', 'hey', 'english'],
+        ['greeting-only "namaste" (english - no Bangla/Hindi token of its own)', 'namaste', 'english'],
+        ['greeting-only "good morning" (english)', 'good morning', 'english']
+      ];
+      for (const [label, text, lang] of GREETING_ONLY_CASES) {
+        await checkAsync('equivalence: ' + label + ' (deterministic template, EXACT match, ALWAYS - even mid-conversation)', async () => {
+          const [phoneA] = phonePair();
+          // Mid-conversation history (recent incoming within 24h) on
+          // purpose - greeting-only must ALWAYS introduce SUBH, unlike
+          // every other reply type's "first message only" rule, and must
+          // never double up with the separate AI_DISCLOSURE_LINE prepend.
+          const recentHistory = [{ direction: 'in', text: 'Amar salary kobe ashbe?', ts: Date.now() - 60000 }, { direction: 'out', text: 'Ami SUBH, Subhodeep-er HR Assistant. Check kore janacchi.', ts: Date.now() - 50000 }];
+          const d = await whatsappAssistant.decideAutoReply({ phone: phoneA, name: 'Test', firstName: 'Test', text, isGroup: false, history: recentHistory });
+          const expected = GREETING_REPLY_BY_LANG[lang];
+          // Exactly ONE "I'm SUBH"-equivalent phrase - never doubled up by
+          // the separate AI-disclosure-line wrapper.
+          const introCount = (d.replyText.match(/i'?m subh|main subh|ami subh/gi) || []).length;
+          return d.case === 'acknowledged' && d.replyText === expected && introCount === 1;
+        });
+      }
+      await checkAsync('equivalence: "Hi, amar salary kobe?" (greeting + a real question) is NEVER hijacked by the anchored greeting-only match - answers the question instead', async () => {
+        const [phoneA] = phonePair();
+        const d = await whatsappAssistant.decideAutoReply({ phone: phoneA, name: 'Test', firstName: 'Test', text: 'Hi, amar salary kobe?', isGroup: false, history: [] });
+        return d.replyText !== GREETING_REPLY_BY_LANG.banglish && d.replyText !== GREETING_REPLY_BY_LANG.english && d.replyText.length > GREETING_REPLY_BY_LANG.english.length * 0.5;
+      });
 
       // ---- B. Disambiguation retry + resolve (deterministic, no API) ----
       const DISAMBIG_CANDIDATES = [
@@ -873,14 +1034,11 @@ async function checkAsync(label, fn) {
         });
       }
 
-      // ---- F. Holding/greeting - genuinely model-drafted free text (generateConversationReply) - same STYLE required, not the same exact words (Claude's own sampling legitimately varies run to run) ----
+      // ---- F. Holding - genuinely model-drafted free text (generateConversationReply, a real question with no known fact) - same STYLE required, not the same exact words (Claude's own sampling legitimately varies run to run). Bare greetings are covered separately above (A3) - they're a deterministic template now, not model-drafted. ----
       const HOLDING_CASES = [
         ['holding (banglish)', 'Amar confirmation letter ta kobe pabo?'],
         ['holding (english)', 'When will I get my confirmation letter?'],
-        ['holding (hinglish)', 'Mera confirmation letter kab milega?'],
-        ['greeting (banglish)', 'Hii'],
-        ['greeting (english)', 'Hello'],
-        ['greeting (hinglish)', 'Namaste ji']
+        ['holding (hinglish)', 'Mera confirmation letter kab milega?']
       ];
       for (const [label, text] of HOLDING_CASES) {
         await checkAsync('equivalence: ' + label + ' - "' + text + '" (same case + same style/length, not exact wording)', async () => {

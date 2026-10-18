@@ -16,6 +16,14 @@
 // configured or unreachable.
 const { Redis } = require('@upstash/redis');
 const whatsapp = require('../whatsappService');
+// Off by default (reply-restoration request) - the gateway confirmed has
+// no route for this yet (every plausible endpoint name 404s), so until
+// it's actually added server-side, this feature is pure extra network
+// traffic/risk with zero real user-visible benefit. Flip
+// WHATSAPP_TYPING_PRESENCE=1 once the gateway supports it.
+function isTypingPresenceEnabled() {
+  return process.env.WHATSAPP_TYPING_PRESENCE === '1';
+}
 // Found during the 0512bc1 outage investigation: every typing-presence
 // call site below used to AWAIT whatsapp.sendPresence(), on the same
 // hot reply path as the real sendMessage call that always followed it.
@@ -25,7 +33,12 @@ const whatsapp = require('../whatsappService');
 // ever wait on it at all. This fires it into the background and moves on
 // immediately - a slow, hung, or erroring gateway call can now NEVER add
 // latency to or block a real reply, regardless of what the gateway does.
+// Also gated on isTypingPresenceEnabled() here, belt-and-suspenders -
+// every call site already checks buffer.typingStartedAt/entry.typingStartedAt
+// first, which is never set at all while the flag is off, but a second
+// gate right at the actual network call costs nothing and can't drift.
 function fireAndForgetPresence(phone, state) {
+  if (!isTypingPresenceEnabled()) return;
   whatsapp.sendPresence(phone, state).catch(() => {});
 }
 const redisHealth = require('../redisHealth');
@@ -3255,11 +3268,62 @@ async function generateConversationReply(text, history, firstName, topicLabel, n
 // answer never varies, so this is caught up front (before even
 // classifyOfficialMessage runs) rather than trusted to the model: a
 // guaranteed-correct, instant answer beats a usually-correct one here.
-const IDENTITY_QUESTION_RE = /\b(apni|tumi)\s+ke\b|\b(apnar|tomar)\s+na?am\s+ki\b|\bwho\s+(are\s+you|r\s+u)\b|\b(aap|tum)\s+kaun\s+ho\b|\b(aapka|tera|tumhara)\s*naam\s+kya\s+hai\b/i;
+// Broadened (reply-restoration request) to cover every spelling variant
+// seen live: k/ke/ki/kon after a pronoun, kaun/kon, "who is X", with or
+// without a trailing "?", apni/tumi/aap/aapni - the earlier regex only
+// matched the single spelling "apni ke", missing "apni k?" entirely (it
+// fell through to the general AI pipeline, which answered reasonably but
+// inconsistently - never the fixed, instant line this question always
+// deserves). Anchored to the WHOLE message (trailing punctuation
+// stripped) rather than "appears anywhere" - "apni ki eta korte
+// parben?" is a real question, not identity small talk, and a bare
+// mid-sentence match would wrongly hijack it.
+function isIdentityQuestion(text) {
+  const t = String(text || '').trim().toLowerCase().replace(/[?!.,]+$/, '').trim();
+  if (!t) return false;
+  return (
+    /^(apni|aapni|tumi)\s+(ke|k|ki|kon)$/.test(t) ||
+    /^(apnar|tomar)\s*na?am\s+(ki|kya)$/.test(t) ||
+    /^who\s+(are\s+you|r\s+u|is\s+(this|that|speaking|replying))$/.test(t) ||
+    /^(aap|tum)\s+(kaun|kon)\s+ho$/.test(t) ||
+    /^(aapka|tera|tumhara)\s*naam\s+kya\s+hai$/.test(t)
+  );
+}
+// Same wording as IDENTITY_CONFIRM_REPLY below, on direct instruction -
+// every identity question (open "who are you" or a yes/no "are you a
+// bot") now gets the exact same reply, never two different phrasings for
+// what the sender experiences as the same question.
 const IDENTITY_REPLY = {
-  banglish: 'Ami SUBH, Subhodeep-er HR Assistant. Apnar ki dorkar bolun.',
-  hinglish: 'Main SUBH hoon, Subhodeep ka HR Assistant. Aapko kya chahiye bataiye.',
-  english: "I'm SUBH, Subhodeep's HR Assistant. Please tell me what you need."
+  banglish: 'Hyan, ami SUBH, Subhodeep-er HR Assistant. Apnake ki bhabe sahajyo korte pari?',
+  hinglish: 'Haan, main SUBH hoon, Subhodeep ka HR Assistant. Main aapki kaise madad kar sakta hoon?',
+  english: "Yes, I'm SUBH, Subhodeep's HR Assistant. How can I help you?"
+};
+// Greeting-only message (reply-restoration request) - "hi"/"hii"/"hello"/
+// "hey"/"hlw"/"namaskar"/"namaste"/"good morning" etc. with no other
+// content, optionally trailed by an emoji or punctuation. ALWAYS gets
+// this fixed line, regardless of the 24h first-reply rule (unlike every
+// other case, a bare greeting introduces SUBH every single time - there
+// is no "second message" distinction to make when there's nothing else
+// being asked). A greeting WITH a real question ("Hi, amar salary
+// kobe?") never matches this (anchored to the whole message), so it
+// falls through to the normal pipeline and the first-reply rule applies
+// there as usual.
+function isGreetingOnly(text) {
+  const t = String(text || '').trim().toLowerCase()
+    .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{1F1E6}-\u{1F1FF}\u{200D}\u{FE0F}]+/gu, '')
+    .replace(/[?!.,]+$/, '')
+    .trim();
+  if (!t) return false;
+  return (
+    /^(hi+|hii+|hello+|hey+|hlw|yo|hola)$/.test(t) ||
+    /^good\s*(morning|afternoon|evening|night)$/.test(t) ||
+    /^(namaskar|namaste|salam|assalamualaikum|asalamualaikum)$/.test(t)
+  );
+}
+const GREETING_REPLY = {
+  english: "Hello! I'm SUBH, Subhodeep's HR Assistant. How can I help you today?",
+  banglish: 'Hello! Ami SUBH, Subhodeep-er HR Assistant. Apnake ki bhabe sahajyo korte pari?',
+  hinglish: 'Hello! Main SUBH hoon, Subhodeep ka HR Assistant. Main aapki kaise madad kar sakta hoon?'
 };
 // A REMARK/assertion about the bot's identity ("this is your HR assistant
 // speaking on behalf of u", "is this a bot?", "are you Subhodeep?") -
@@ -3365,7 +3429,14 @@ const AUTOREPLY_ERROR_FALLBACK = {
 // reply is always the correct fallback.
 // history: recent messages in THIS chat (1:1 AND groups, see pollOnce).
 async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, history }) {
-  if (!isGroup && IDENTITY_QUESTION_RE.test(text)) {
+  // Checked before identity/disambiguation on purpose (reply-restoration
+  // request: "always, regardless of the 24h rule") - a bare greeting is
+  // the one case that ALWAYS introduces SUBH, even mid-conversation.
+  if (!isGroup && isGreetingOnly(text)) {
+    const lang = detectLang(text);
+    return { case: 'acknowledged', replyText: GREETING_REPLY[lang] || GREETING_REPLY.english, summaryForOwner: null };
+  }
+  if (!isGroup && isIdentityQuestion(text)) {
     const lang = detectLang(text);
     return { case: 'acknowledged', replyText: IDENTITY_REPLY[lang] || IDENTITY_REPLY.english, summaryForOwner: null };
   }
@@ -3894,7 +3965,7 @@ async function pollOnce() {
           // (draft mode / this contact not in the real-send allow-list) -
           // a real "typing..." bubble with no real message ever following
           // it would look broken to whoever's actually on WhatsApp.
-          if (!buffer.typingStartedAt && !(await isNeverAuto(contactId)) && isRealSendAllowedFor(contactId)) {
+          if (isTypingPresenceEnabled() && !buffer.typingStartedAt && !(await isNeverAuto(contactId)) && isRealSendAllowedFor(contactId)) {
             buffer.typingStartedAt = Date.now();
             fireAndForgetPresence(contactId, 'composing');
           }
@@ -3994,6 +4065,9 @@ module.exports = {
   BURST_MAX_WAIT_MS,
   LATENCY_ALERT_THRESHOLD_MS,
   DRAFT_MODEL,
+  isTypingPresenceEnabled,
+  isIdentityQuestion,
+  isGreetingOnly,
   checkGatewayConnection,
   gatewayStatusSummary,
   buildAutoReplyStatusReply,
