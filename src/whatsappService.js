@@ -58,21 +58,37 @@ function apiBase() {
   return base + '/api/' + WHATSAPP_PRODUCT_ID + '/' + WHATSAPP_PHONE_ID;
 }
 
+// Found during the 0512bc1 outage investigation: this never had a
+// try/catch around its own fetch - a network-level failure (DNS blip,
+// connection reset, timeout) threw straight out of this function, and
+// its ONE caller in the auto-send flush (processDueAutoSends) had no
+// try/catch of its own around that call either, so the exception
+// silently killed that flush tick AFTER the queue entry was already
+// deleted - the message vanished with zero trace anywhere (no inbox-log
+// entry, no owner notification, no Redis error key - only a console.error
+// on the server itself). Wrapped now so a transient network failure
+// always comes back as a normal {ok:false, error} the caller can log and
+// react to, exactly like every other failure mode this function already
+// returns instead of throwing.
 async function sendWhatsAppMessage(phone, message) {
   const to_number = normalizePhone(phone);
   if (!/^\d{11,15}$/.test(to_number)) {
     return { ok: false, error: "Enter a valid WhatsApp number (10 digits, or with country code)." };
   }
-  const res = await fetch(apiBase() + '/sendMessage', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-maytapi-key': requireToken() },
-    body: JSON.stringify({ to_number, type: 'text', message })
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok || data.success === false) {
-    return { ok: false, error: data.message || 'Could not send the WhatsApp message.' };
+  try {
+    const res = await fetch(apiBase() + '/sendMessage', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-maytapi-key': requireToken() },
+      body: JSON.stringify({ to_number, type: 'text', message })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.success === false) {
+      return { ok: false, error: data.message || 'Could not send the WhatsApp message.' };
+    }
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
   }
-  return { ok: true };
 }
 
 // ---------------- Typing presence (reply-latency/human-like request) ----------------
@@ -106,17 +122,36 @@ async function sendWhatsAppMessage(phone, message) {
 // method. Nothing in this codebase calls a read/seen endpoint anywhere
 // (there isn't one to call), so SUBH cannot mark a chat as read today
 // regardless of what sendPresence does once it exists.
+//
+// 3s hard timeout (AbortController) - found during the 0512bc1 outage
+// investigation: this had no timeout at all, and every caller in the hot
+// reply path (whatsappAssistant.js) AWAITED it directly. A route that
+// doesn't exist today 404s back almost instantly in normal testing, but
+// this call sits on the exact same shared connection/request queue as
+// the real sendMessage call right after it - any slowness on the
+// gateway's side (load, a hung handler, a flaky network hop) could stall
+// every awaited sendPresence call for however long fetch was willing to
+// wait (effectively forever, with no timeout), backing up the reply
+// pipeline behind it. Every caller now also fires this without awaiting
+// it (see fireAndForgetPresence in whatsappAssistant.js), so even a
+// timeout this generous can never again delay or block a real reply.
+const PRESENCE_TIMEOUT_MS = 3000;
 async function sendPresence(phone, state) {
   const to_number = normalizePhone(phone);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), PRESENCE_TIMEOUT_MS);
   try {
     const res = await fetch(apiBase() + '/sendPresence', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-maytapi-key': requireToken() },
-      body: JSON.stringify({ to_number, presence: state })
+      body: JSON.stringify({ to_number, presence: state }),
+      signal: controller.signal
     });
     return { ok: res.ok, status: res.status };
   } catch (err) {
     return { ok: false, error: err.message };
+  } finally {
+    clearTimeout(timer);
   }
 }
 

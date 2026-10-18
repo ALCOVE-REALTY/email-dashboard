@@ -615,6 +615,108 @@ async function checkAsync(label, fn) {
   check('no markAsRead/read-receipt function exists anywhere in the gateway client - SUBH cannot mark a chat read even by accident', !('markAsRead' in require('../src/whatsappService')) && !('markRead' in require('../src/whatsappService')) && !('sendSeen' in require('../src/whatsappService')));
 
   // ======================================================================
+  // REGRESSION TEST (0512bc1 outage - a live "Hii" from 917278793115 got
+  // NO reply at all, ever, after deploying the reply-speed work). Root
+  // cause: sendWhatsAppMessage had no try/catch around its own fetch, and
+  // processDueAutoSends's one call to sendOrReportAutoReply had no
+  // try/catch of its own either, by which point the due queue entry was
+  // ALREADY deleted (no retry) - so a network-level throw from EITHER
+  // function silently dropped an already-decided reply with zero trace
+  // anywhere (no inbox-log entry, no owner notification, no Redis error
+  // key - only a console.error on a server whose console nobody but the
+  // host can see). Made worse by every sendPresence call in the hot reply
+  // path being AWAITED with no timeout at all - a slow/hanging gateway
+  // response to a route that doesn't even exist yet could have stalled
+  // the whole pipeline behind it. Fixed: sendWhatsAppMessage now returns
+  // {ok:false,error} instead of throwing; sendPresence has a 3s timeout
+  // AND is fired-and-forgotten everywhere (never awaited on the reply
+  // path); processDueAutoSends now catches per-entry and records/alerts
+  // instead of losing the message silently.
+  // ======================================================================
+  console.log('='.repeat(70));
+  console.log('REGRESSION (0512bc1 outage): a network-level throw must never silently drop an already-decided reply');
+  console.log('='.repeat(70));
+  await checkAsync('sendWhatsAppMessage never throws even when the underlying fetch itself throws (network failure) - returns {ok:false} instead', async () => {
+    const whatsappService = require('../src/whatsappService');
+    const realFetch = global.fetch;
+    global.fetch = async () => { throw new Error('simulated network failure (ECONNRESET)'); };
+    try {
+      const result = await whatsappService.sendWhatsAppMessage('910000000790', 'test - safe to ignore');
+      return result && result.ok === false && typeof result.error === 'string';
+    } finally {
+      global.fetch = realFetch;
+    }
+  });
+  await checkAsync('sendPresence times out instead of hanging forever when the gateway never responds', async () => {
+    const whatsappService = require('../src/whatsappService');
+    const realFetch = global.fetch;
+    global.fetch = (url, opts) => new Promise((resolve, reject) => {
+      // Never resolves on its own - only reacts to the AbortController's
+      // own signal, exactly like a real hung connection would.
+      if (opts && opts.signal) opts.signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+    });
+    const startedAt = Date.now();
+    try {
+      const result = await whatsappService.sendPresence('910000000791', 'composing');
+      const elapsedMs = Date.now() - startedAt;
+      return result && result.ok === false && elapsedMs < 4500; // 3s timeout + generous margin, never "forever"
+    } finally {
+      global.fetch = realFetch;
+    }
+  });
+  await checkAsync('processDueAutoSends never propagates a crash from sendOrReportAutoReply - records it instead of losing the message silently with zero trace', async () => {
+    const CRASH_TEST_PHONE = '910000000792';
+    const { Redis } = require('@upstash/redis');
+    const redis = new Redis({
+      url: process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL,
+      token: process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN
+    });
+    const realFetch = global.fetch;
+    const realRealSend = process.env.WHATSAPP_ASSISTANT_REAL_SEND;
+    const realRealSendOnly = process.env.WHATSAPP_ASSISTANT_REAL_SEND_ONLY;
+    const id = CRASH_TEST_PHONE + ':crashtest:' + Date.now();
+    // Real fetch (unpatched) for the Redis setup itself - Upstash's own
+    // REST client uses fetch internally too, so patching it BEFORE this
+    // setup would make the setup calls throw instead of the gateway call
+    // this test actually means to simulate.
+    await redis.set('wa-pending-autosend:' + id, JSON.stringify({
+      chatId: CRASH_TEST_PHONE, isGroup: false, name: 'Test', replyText: 'TEST - safe to ignore', case: 'acknowledged',
+      arrivedAt: Date.now(), seenAt: Date.now(), sendAt: Date.now()
+    }));
+    await redis.zadd('wa-pending-autosend-zset', { score: Date.now() - 1000, member: id }); // already due
+    // Forces the real-send branch (sendWhatsAppMessage) for ONLY this one
+    // synthetic number, then makes ONLY the gateway's own call throw
+    // (never Redis/Claude, which also go through global fetch) -
+    // reproducing the exact live failure mode without ever touching a
+    // real contact or breaking the Redis calls processDueAutoSends itself
+    // needs to even find this entry.
+    process.env.WHATSAPP_ASSISTANT_REAL_SEND = '1';
+    process.env.WHATSAPP_ASSISTANT_REAL_SEND_ONLY = CRASH_TEST_PHONE;
+    global.fetch = (url, opts) => {
+      if (String(url).includes('/sendMessage')) throw new Error('simulated crash (0512bc1 outage repro)');
+      return realFetch(url, opts);
+    };
+    try {
+      const result = await whatsappAssistant.processDueAutoSends(); // must NOT throw
+      global.fetch = realFetch; // restore before the verification read below
+      const stillQueued = await redis.zscore('wa-pending-autosend-zset', id);
+      return Boolean(result) && stillQueued === null; // resolved normally, entry consumed (not stuck retrying forever)
+    } finally {
+      global.fetch = realFetch;
+      if (realRealSend === undefined) delete process.env.WHATSAPP_ASSISTANT_REAL_SEND; else process.env.WHATSAPP_ASSISTANT_REAL_SEND = realRealSend;
+      if (realRealSendOnly === undefined) delete process.env.WHATSAPP_ASSISTANT_REAL_SEND_ONLY; else process.env.WHATSAPP_ASSISTANT_REAL_SEND_ONLY = realRealSendOnly;
+      await redis.del('wa-pending-autosend:' + id).catch(() => {});
+      await redis.zrem('wa-pending-autosend-zset', id).catch(() => {});
+      await redis.del('wa-scheduler-error:auto-send').catch(() => {});
+    }
+  });
+  check('every typing-presence call site is fire-and-forget (fireAndForgetPresence), never awaited on the real reply path', (() => {
+    const fs = require('fs');
+    const src = fs.readFileSync(require.resolve('../src/aiAssistant/whatsappAssistant.js'), 'utf8');
+    return !/await whatsapp\.sendPresence/.test(src) && (src.match(/fireAndForgetPresence\(/g) || []).length >= 6;
+  })());
+
+  // ======================================================================
   // PERMANENT EQUIVALENCE TEST (added after the 1e1d31c regression - a
   // speed-only change silently altered reply CONTENT, because a
   // speculative/pre-computed decideAutoReplyCore call's stateful side

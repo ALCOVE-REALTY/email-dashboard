@@ -16,6 +16,18 @@
 // configured or unreachable.
 const { Redis } = require('@upstash/redis');
 const whatsapp = require('../whatsappService');
+// Found during the 0512bc1 outage investigation: every typing-presence
+// call site below used to AWAIT whatsapp.sendPresence(), on the same
+// hot reply path as the real sendMessage call that always followed it.
+// sendPresence now has its own 3s timeout (see whatsappService.js), but
+// since the gateway doesn't even have this route yet (confirmed - every
+// plausible endpoint name 404s), there is no reason for a real reply to
+// ever wait on it at all. This fires it into the background and moves on
+// immediately - a slow, hung, or erroring gateway call can now NEVER add
+// latency to or block a real reply, regardless of what the gateway does.
+function fireAndForgetPresence(phone, state) {
+  whatsapp.sendPresence(phone, state).catch(() => {});
+}
 const redisHealth = require('../redisHealth');
 const employeeService = require('../employeeService');
 const workforceAnalytics = require('../workforceAnalytics');
@@ -826,8 +838,28 @@ async function processDueAutoSends() {
     await redis.zrem(PENDING_AUTOSEND_ZSET, id).catch(() => {});
     await redis.del(PENDING_AUTOSEND_PREFIX + id).catch(() => {});
     if (!entry) continue;
-    await sendOrReportAutoReply(entry);
-    processed++;
+    // Found during the 0512bc1 outage: this call had no try/catch of its
+    // own, and by this point the queue entry above is ALREADY deleted (no
+    // retry possible either way) - so an exception here (a network-level
+    // throw from sendWhatsAppMessage, now fixed, or anything else) used
+    // to silently drop an already-decided reply with zero trace: no
+    // inbox-log entry (sendOrReportAutoReply logs that itself, AFTER the
+    // point it threw), no owner notification, no Redis error key - only
+    // a console.error on the server itself, invisible from here. Never
+    // silently drop a real message, same principle as pollOnce's own
+    // decideAutoReply guard: record it loudly instead.
+    try {
+      await sendOrReportAutoReply(entry);
+      processed++;
+    } catch (err) {
+      await recordSchedulerError('auto-send', err.message).catch(() => {});
+      await postOwnerNotification(
+        '⚠️ ' + (entry.name || entry.chatId) + '-ke reply pathate giye error hoyeche (auto-send flush crashed): ' +
+        String(err.message || err).slice(0, 160) + ' - message ta pathano hoyni, code check korun.'
+      ).catch(() => {});
+      continue;
+    }
+    await recordSchedulerError('auto-send', null).catch(() => {});
   }
   return { processed };
 }
@@ -866,7 +898,7 @@ async function sendOrReportAutoReply(entry) {
   // at all (no burst buffer there, and real group sending isn't
   // implemented yet either) - entry.typingStartedAt is only ever set for
   // a 1:1 chat.
-  if (!entry.isGroup && entry.typingStartedAt) await whatsapp.sendPresence(entry.chatId, 'composing').catch(() => {});
+  if (!entry.isGroup && entry.typingStartedAt) fireAndForgetPresence(entry.chatId, 'composing');
 
   // The old loop-protection checks (duplicate-reply-text and a "new
   // message within 10s of our own last send" bot-echo heuristic) lived
@@ -892,7 +924,7 @@ async function sendOrReportAutoReply(entry) {
     // Item 2: "refreshed until the reply is sent. Then send the reply." -
     // the indicator's job is done the instant the real message goes out
     // (or fails to), success or not.
-    if (!entry.isGroup && entry.typingStartedAt) await whatsapp.sendPresence(entry.chatId, 'paused').catch(() => {});
+    if (!entry.isGroup && entry.typingStartedAt) fireAndForgetPresence(entry.chatId, 'paused');
     if (sendResult.ok) {
       await postOwnerNotification('✓ Auto-replied to ' + who + ' at ' + timeLabel + ': "' + entry.replyText + '"');
       await alertIfSlow(sentAt);
@@ -3785,7 +3817,7 @@ async function pollOnce() {
       await logInboxEvent({ chatId: contactId, name, isGroup: false, messageSummary: text, aCase: 'automatic', sentText: null, outcome: 'automatic', arrivedAt, seenAt, typingStartedAt });
       // No reply is going out after all - stop the typing indicator this
       // same turn started (item 2: "stop it if no reply will be sent").
-      if (typingStartedAt) await whatsapp.sendPresence(contactId, 'paused').catch(() => {});
+      if (typingStartedAt) fireAndForgetPresence(contactId, 'paused');
     } else if (decision && decision.replyText) {
       await appendConvoHistory(contactId, 'out', decision.replyText);
       if (await isNeverAuto(contactId)) {
@@ -3795,7 +3827,7 @@ async function pollOnce() {
         // itself never actually replies here (the owner does, manually),
         // so the typing indicator stops too - "only in chats SUBH
         // actually replies to."
-        if (typingStartedAt) await whatsapp.sendPresence(contactId, 'paused').catch(() => {});
+        if (typingStartedAt) fireAndForgetPresence(contactId, 'paused');
         await savePendingDraft({ type: 'direct', contactId, name, messagePreview: text.slice(0, 200), draftReply: decision.replyText, createdAt: Date.now() });
         await postOwnerNotification(name + ' (never-auto list) asked: ' + text.slice(0, 160) + ' — draft ready, your review needed');
         await logAutoReplyEvent({ senderType: 'direct', aCase: decision.case, memoryId: decision.memoryId || null, action: 'never_auto_drafted' });
@@ -3864,7 +3896,7 @@ async function pollOnce() {
           // it would look broken to whoever's actually on WhatsApp.
           if (!buffer.typingStartedAt && !(await isNeverAuto(contactId)) && isRealSendAllowedFor(contactId)) {
             buffer.typingStartedAt = Date.now();
-            await whatsapp.sendPresence(contactId, 'composing').catch(() => {});
+            fireAndForgetPresence(contactId, 'composing');
           }
           await saveBurstBuffer(contactId, buffer);
         } else {
@@ -3894,7 +3926,7 @@ async function pollOnce() {
         // refresh the typing presence on this tick (~every poll interval)
         // so it stays visible the whole time SUBH is waiting/preparing,
         // not just for however long one presence update happens to last.
-        if (buffer.typingStartedAt) await whatsapp.sendPresence(contactId, 'composing').catch(() => {});
+        if (buffer.typingStartedAt) fireAndForgetPresence(contactId, 'composing');
         continue;
       }
       await clearBurstBuffer(contactId);
