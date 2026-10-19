@@ -63,6 +63,131 @@ async function checkAsync(label, fn) {
   check('card with Name/Department columns is NOT blocked', !whatsappAssistant.cardHasForbiddenField({ columns: ['Name', 'Department'] }));
 
   console.log('='.repeat(70));
+  console.log('Own Aadhaar/PAN exception - the ONE narrow hole in the PII hard block, approval-gated, phone-matched to an ACTIVE employee\'s own registered number, never anyone else\'s record, never any other PII field');
+  console.log('='.repeat(70));
+  check('detectOwnSensitiveIdRequest: "amar Aadhaar number ta dao" (banglish) -> aadhar', whatsappAssistant.detectOwnSensitiveIdRequest('amar Aadhaar number ta dao') === 'aadhar');
+  check('detectOwnSensitiveIdRequest: "what is my PAN number" (english) -> pan', whatsappAssistant.detectOwnSensitiveIdRequest('what is my PAN number') === 'pan');
+  check('detectOwnSensitiveIdRequest: "mera Aadhaar number batao" (hinglish) -> aadhar', whatsappAssistant.detectOwnSensitiveIdRequest('mera Aadhaar number batao') === 'aadhar');
+  check('detectOwnSensitiveIdRequest: "meri PAN details chahiye" (hinglish) -> pan', whatsappAssistant.detectOwnSensitiveIdRequest('meri PAN details chahiye') === 'pan');
+  check('detectOwnSensitiveIdRequest: someone ELSE\'s Aadhaar (no self-referential pronoun) -> null, never matches', whatsappAssistant.detectOwnSensitiveIdRequest('Ayan Das er Aadhaar number dao') === null);
+  check('detectOwnSensitiveIdRequest: no pronoun at all -> null', whatsappAssistant.detectOwnSensitiveIdRequest('Aadhaar number dao') === null);
+  check('detectOwnSensitiveIdRequest: own bank details (different field, never this exception) -> null', whatsappAssistant.detectOwnSensitiveIdRequest('amar bank account details dao') === null);
+
+  // Real directory record reused from the existing "Ayan Biswas"/"Ayan
+  // Das" fixtures already established elsewhere in this exact file - a
+  // REAL active employee with a REAL registered contactNumber/aadhar/pan
+  // is the only way to test the actual phone-match gate end to end. The
+  // real Aadhaar/PAN VALUE is never printed/logged by this test, and any
+  // approval/notification/inbox-log entry this creates is swept up in a
+  // finally block below, every time, pass or fail.
+  const OWN_ID_REAL_PHONE = '919831919967'; // Ayan Biswas's real registered number
+  const ownIdEmp = await (async () => {
+    const found = await whatsappAssistant.findEmployeeByPhone(OWN_ID_REAL_PHONE).catch(() => null);
+    return found ? found.emp : null;
+  })();
+  check('setup: the real "Ayan Biswas" directory record is found by phone, is ACTIVE, and has both an Aadhar and PAN on file - otherwise this section cannot test the real gate', Boolean(ownIdEmp) && ownIdEmp.status === 'ACTIVE' && Boolean(ownIdEmp.aadhar) && Boolean(ownIdEmp.pan));
+
+  async function cleanupOwnIdTestArtifacts() {
+    try {
+      const approvals = await whatsappAssistant.listPendingApprovals();
+      for (const a of approvals) { if (a.sensitiveIdRequest && a.phone === OWN_ID_REAL_PHONE) await whatsappAssistant.removePendingApproval(a.id); }
+    } catch (err) { /* best effort */ }
+    try {
+      const { Redis } = require('@upstash/redis');
+      const redis = new Redis({
+        url: process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL,
+        token: process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN
+      });
+      for (const key of ['subh-owner-notifications', 'wa-inbox-log']) {
+        const raw = await redis.lrange(key, 0, 200);
+        const parsed = raw.map((r) => (typeof r === 'string' ? JSON.parse(r) : r));
+        const clean = parsed.filter((e) => !String(e.text || e.messageSummary || '').includes('Own Aadhaar request') && !String(e.text || e.messageSummary || '').includes('Own PAN request'));
+        if (clean.length !== parsed.length) {
+          await redis.del(key);
+          for (let i = clean.length - 1; i >= 0; i--) await redis.lpush(key, JSON.stringify(clean[i]));
+        }
+      }
+    } catch (err) { /* best effort */ }
+  }
+
+  if (ownIdEmp) {
+    const OWN_ID_LANG_INPUTS = {
+      aadhar: [['banglish', 'amar Aadhaar number ta dao'], ['english', 'what is my Aadhaar number'], ['hinglish', 'mera Aadhaar number batao']],
+      pan: [['banglish', 'amar PAN number ta dao'], ['english', 'what is my PAN number'], ['hinglish', 'mera PAN number batao']]
+    };
+    for (const field of ['aadhar', 'pan']) {
+      const fieldLabel = field === 'aadhar' ? 'Aadhaar' : 'PAN';
+      const realValue = ownIdEmp[field];
+      for (const [lang, text] of OWN_ID_LANG_INPUTS[field]) {
+        await checkAsync('own ' + fieldLabel + ' (' + lang + ') from the registered number -> holding reply + a correctly-built approval card (never auto-sent)', async () => {
+          try {
+            const decision = await whatsappAssistant.decideAutoReply({ phone: OWN_ID_REAL_PHONE, name: ownIdEmp.name, firstName: ownIdEmp.name.split(' ')[0], text, isGroup: false, history: [] });
+            if (decision.case !== 'data_holding') return false;
+            const approvals = await whatsappAssistant.listPendingApprovals();
+            const created = approvals.find((a) => a.sensitiveIdRequest && a.sensitiveIdField === field && a.phone === OWN_ID_REAL_PHONE);
+            if (!created) return false;
+            const summaryIsSafe = !created.dataRequestSummary.includes(realValue) && !created.name.includes(realValue);
+            const previewHasRealValue = created.preparedReplyText.includes(realValue); // the owner MUST see the real value to approve it
+            const noEditOffered = created.sensitiveIdRequest === true; // frontend hides Edit for this flag - see hrAssistant.js
+            return summaryIsSafe && previewHasRealValue && noEditOffered;
+          } finally {
+            await cleanupOwnIdTestArtifacts();
+          }
+        });
+      }
+    }
+    await checkAsync('own Aadhaar approval: editing the surrounding text while keeping the real value intact is allowed', async () => {
+      try {
+        await whatsappAssistant.decideAutoReply({ phone: OWN_ID_REAL_PHONE, name: ownIdEmp.name, firstName: ownIdEmp.name.split(' ')[0], text: 'amar Aadhaar number ta dao', isGroup: false, history: [] });
+        const approvals = await whatsappAssistant.listPendingApprovals();
+        const created = approvals.find((a) => a.sensitiveIdRequest && a.sensitiveIdField === 'aadhar' && a.phone === OWN_ID_REAL_PHONE);
+        if (!created) return false;
+        const legitEdit = 'As requested: ' + created.preparedReplyText;
+        const result = await whatsappAssistant.executeApprovalSend(created, null, null, legitEdit);
+        return typeof result === 'string'; // never throws - the real value was preserved
+      } finally {
+        await cleanupOwnIdTestArtifacts();
+      }
+    });
+    await checkAsync('own Aadhaar approval: editing OUT the real value (tampering) is blocked, approval stays pending', async () => {
+      try {
+        await whatsappAssistant.decideAutoReply({ phone: OWN_ID_REAL_PHONE, name: ownIdEmp.name, firstName: ownIdEmp.name.split(' ')[0], text: 'amar Aadhaar number ta dao', isGroup: false, history: [] });
+        const approvals = await whatsappAssistant.listPendingApprovals();
+        const created = approvals.find((a) => a.sensitiveIdRequest && a.sensitiveIdField === 'aadhar' && a.phone === OWN_ID_REAL_PHONE);
+        if (!created) return false;
+        let blocked = false;
+        try {
+          await whatsappAssistant.executeApprovalSend(created, null, null, 'Apnar Aadhaar number: 000000000000');
+        } catch (err) { blocked = true; }
+        const stillPending = await whatsappAssistant.resolveApprovalById(created.id);
+        return blocked && Boolean(stillPending);
+      } finally {
+        await cleanupOwnIdTestArtifacts();
+      }
+    });
+    await checkAsync('someone ELSE\'s Aadhaar (same sender, different name) is refused - no approval, existing PII block unchanged', async () => {
+      const decision = await whatsappAssistant.decideAutoReply({ phone: OWN_ID_REAL_PHONE, name: ownIdEmp.name, firstName: ownIdEmp.name.split(' ')[0], text: 'Ayan Das er Aadhaar number ta dao', isGroup: false, history: [] });
+      const approvals = await whatsappAssistant.listPendingApprovals();
+      const anyCreated = approvals.some((a) => a.sensitiveIdRequest && a.phone === OWN_ID_REAL_PHONE);
+      return decision.case === 'acknowledged' && decision.replyText.includes('WhatsApp-e share kora jay na') && !anyCreated;
+    });
+    const OWN_ID_UNREGISTERED_PHONE = '910000000798';
+    await checkAsync('own Aadhaar from an UNREGISTERED number is refused - the phone-match gate is the real authorization, never the text alone', async () => {
+      const decision = await whatsappAssistant.decideAutoReply({ phone: OWN_ID_UNREGISTERED_PHONE, name: 'Test', firstName: 'Test', text: 'amar Aadhaar number ta dao', isGroup: false, history: [] });
+      const approvals = await whatsappAssistant.listPendingApprovals();
+      const anyCreated = approvals.some((a) => a.sensitiveIdRequest && a.phone === OWN_ID_UNREGISTERED_PHONE);
+      return decision.case === 'acknowledged' && decision.replyText.includes('WhatsApp-e share kora jay na') && !anyCreated;
+    });
+    await checkAsync('own bank details (a different forbidden field, self-referential) is unaffected by this exception - classified as a self-referential "none" topic (same as before), never reaches a data-approval flow at all, no approval ever created', async () => {
+      const decision = await whatsappAssistant.decideAutoReply({ phone: OWN_ID_UNREGISTERED_PHONE, name: 'Test', firstName: 'Test', text: 'amar bank account details ta dao', isGroup: false, history: [] });
+      const approvals = await whatsappAssistant.listPendingApprovals();
+      const anyCreated = approvals.some((a) => a.phone === OWN_ID_UNREGISTERED_PHONE);
+      return decision.case === 'holding' && !anyCreated;
+    });
+    await whatsappAssistant.resetFollowupCount(OWN_ID_UNREGISTERED_PHONE).catch(() => {});
+  }
+
+  console.log('='.repeat(70));
   console.log('Whole-word name matching (employeeService.matchesWholeWordName)');
   console.log('='.repeat(70));
   check('"Ayan" matches "Ayan Das"', employeeService.matchesWholeWordName('Ayan Das', 'Ayan'));

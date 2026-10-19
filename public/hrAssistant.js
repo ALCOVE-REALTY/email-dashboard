@@ -1867,15 +1867,23 @@
             ).join('') +
           '</div>'
         : '<span class="wf-convo-action-preview" data-role="preview">' + escapeHtml(a.error ? ('Could not prepare an answer: ' + a.error) : (a.text || '')) + '</span>';
+      // Own Aadhaar/PAN exception - a visibly distinct warning label, and
+      // Edit is never offered at all (spec: "Keep the Edit option off for
+      // the Aadhaar/PAN value") - the only two actions are Send (sends the
+      // exact prepared text, unedited) and Decline.
+      const isSensitiveId = Boolean(a.sensitiveIdRequest);
+      const actionLabel = isSensitiveId
+        ? '⚠️ Own ' + escapeHtml(a.sensitiveIdFieldLabel || 'ID') + ' request'
+        : 'Pending data request approval';
       groups.push(
-        '<div class="wf-convo-action-group" data-action-type="approval">' +
-          '<span class="wf-convo-action-label">Pending data request approval</span>' +
+        '<div class="wf-convo-action-group' + (isSensitiveId ? ' wf-convo-action-sensitive' : '') + '" data-action-type="approval">' +
+          '<span class="wf-convo-action-label">' + actionLabel + '</span>' +
           forLabel(a.name, convo.name) +
           bodyHtml +
           (a.error ? '' :
             '<span class="wf-convo-action-row" data-role="actions">' +
               '<button type="button" class="wf-convo-action-btn primary" data-approval-action="approve" data-approval-id="' + escapeHtml(a.id) + '">Send</button>' +
-              (hasCandidates ? '' : '<button type="button" class="wf-convo-action-btn text" data-approval-action="edit-toggle" data-approval-id="' + escapeHtml(a.id) + '">Edit</button>') +
+              (hasCandidates || isSensitiveId ? '' : '<button type="button" class="wf-convo-action-btn text" data-approval-action="edit-toggle" data-approval-id="' + escapeHtml(a.id) + '">Edit</button>') +
               '<button type="button" class="wf-convo-action-btn danger" data-approval-action="reject" data-approval-id="' + escapeHtml(a.id) + '">Decline</button>' +
             '</span>'
           ) +

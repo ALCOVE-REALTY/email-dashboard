@@ -648,7 +648,14 @@ async function getWhatsappConversation(chatIdRaw) {
       // are needed for the label, never the raw contactNumber/
       // outgoingText (nothing worth exposing to the browser before
       // Send is actually pressed).
-      candidates: Array.isArray(a.candidates) ? a.candidates.map((c) => ({ name: c.name, department: naturalizeDirectoryValue(c.department) })) : null
+      candidates: Array.isArray(a.candidates) ? a.candidates.map((c) => ({ name: c.name, department: naturalizeDirectoryValue(c.department) })) : null,
+      // Own Aadhaar/PAN exception - flagged so the card renders the
+      // "⚠️ Own <field> request" warning label and hides Edit entirely
+      // (spec: "Keep the Edit option off for the Aadhaar/PAN value") -
+      // sensitiveIdFieldLabel only ("Aadhaar"/"PAN"), never the value
+      // itself beyond what's already in `text` above for the owner to review.
+      sensitiveIdRequest: Boolean(a.sensitiveIdRequest),
+      sensitiveIdFieldLabel: a.sensitiveIdFieldLabel || null
     })),
     pendingDrafts: myDrafts.map((d) => ({ contactId: d.contactId, name: itemLabel(d.name), type: d.type, draftReply: d.draftReply })),
     openFollowups: myFollowups.map((f) => ({ name: itemLabel(f.name), summary: f.summary })),
@@ -1344,6 +1351,87 @@ const PII_BLOCK_REPLY = {
   english: "This information can't be shared over WhatsApp - please contact the HR office."
 };
 
+// ---------------- Own Aadhaar/PAN exception (narrow, approval-gated) ----------------
+// The ONE case where a normally-forbidden PII field can ever reach a
+// sender over WhatsApp - ONLY their own Aadhaar or PAN, ONLY when their
+// WhatsApp number exactly matches their OWN registered contact number on
+// an ACTIVE employee record, ONLY in a 1:1 chat (isGroup is checked by
+// the caller, same as every identity/greeting check above it), and ONLY
+// after the owner's explicit approval - never automatic, never for
+// anyone else's record (name-based lookups never reach this path at all -
+// see detectOwnSensitiveIdRequest's own comment), never for any other
+// PII field. Every one of these is a real, hard-coded check in this
+// function - never an AI judgment call - consistent with the "structural
+// safety over prompt wording" principle this whole file already follows
+// for every other hard block.
+const OWN_SENSITIVE_ID_FIELD_LABEL = { aadhar: 'Aadhaar', pan: 'PAN' };
+const OWN_SENSITIVE_ID_LINE = {
+  banglish: (fieldLabel, value) => 'Apnar ' + fieldLabel + ' number: ' + value,
+  hinglish: (fieldLabel, value) => 'Aapka ' + fieldLabel + ' number: ' + value,
+  english: (fieldLabel, value) => 'Your ' + fieldLabel + ' number: ' + value
+};
+// Deliberately narrow and self-referential ONLY - a self-referential
+// pronoun (amar/amader/mera/meri/my) AND the field keyword in the SAME
+// message. "Ayan Das er Aadhaar number dao" (someone else's, by name) has
+// no self-referential pronoun and never matches; it falls straight
+// through to the existing classifier -> personLookupField:'forbidden_pii'
+// hard block, completely unchanged. Checked BEFORE classification even
+// runs (same tier as isGreetingOnly/isIdentityQuestion above) so an AI
+// misclassification can never be what stands between a sender and
+// someone else's Aadhaar/PAN - the phone-match check inside the handler
+// is the real gate either way, this is only ever a fast-path trigger.
+function detectOwnSensitiveIdRequest(text) {
+  const t = String(text || '').toLowerCase();
+  if (!/\b(amar|amader|mera|meri|my)\b/.test(t)) return null;
+  if (/\baadha?ar\b/.test(t)) return 'aadhar';
+  if (/\bpan\b/.test(t)) return 'pan';
+  return null;
+}
+async function handleOwnSensitiveIdRequest({ phone, lang, field }) {
+  // The ONLY real authorization check - detectOwnSensitiveIdRequest above
+  // is just a text pattern, it proves nothing by itself. Must be a KNOWN,
+  // ACTIVE employee whose OWN registered contact number is this EXACT
+  // sending number - never resolved by a name the sender might type (a
+  // name is attacker-controlled; the phone this message physically
+  // arrived on is not).
+  const found = await findEmployeeByPhone(phone).catch(() => null);
+  if (!found || found.emp.status !== 'ACTIVE') {
+    return { case: 'acknowledged', replyText: PII_BLOCK_REPLY[lang] || PII_BLOCK_REPLY.english, summaryForOwner: null };
+  }
+  const emp = found.emp;
+  const value = field === 'aadhar' ? emp.aadhar : emp.pan;
+  if (!value) {
+    // Nothing on file for this field - never reveal that distinction to
+    // the sender (same refusal as every other blocked case, so "no data"
+    // and "blocked" are indistinguishable from outside).
+    return { case: 'acknowledged', replyText: PII_BLOCK_REPLY[lang] || PII_BLOCK_REPLY.english, summaryForOwner: null };
+  }
+  const fieldLabel = OWN_SENSITIVE_ID_FIELD_LABEL[field];
+  const outgoingText = (OWN_SENSITIVE_ID_LINE[lang] || OWN_SENSITIVE_ID_LINE.english)(fieldLabel, value);
+  // Never includes the value itself - logged everywhere a normal
+  // approval's summary already is (inbox log, owner notifications after
+  // approval/decline), and the audit trail must never contain the actual
+  // number (see executeApprovalSend's own redaction for this approval type).
+  const dataRequestSummary = 'Own ' + fieldLabel + ' request - ' + emp.name + ' (' + emp.employeeId + ')';
+  await savePendingApproval({
+    phone, name: emp.name, requestText: dataRequestSummary, dataRequestSummary, lang,
+    preparedReplyText: outgoingText, preparedCard: null, preparedError: null,
+    resolvedPersonName: emp.name,
+    sensitiveIdRequest: true, sensitiveIdField: field, sensitiveIdFieldLabel: fieldLabel, sensitiveIdValue: value
+  });
+  // The ONE approval that explicitly spells out the real value to the
+  // owner before they decide (spec: "clearly marked... Je message jabe:
+  // ...") - intentional, since the owner reviewing and approving against
+  // their own registered-number record IS the authorization step here.
+  // Never written to the permanent audit trail this same way - see
+  // executeApprovalSend.
+  await postOwnerNotification(
+    '⚠️ Own ' + fieldLabel + ' request — ' + emp.name + ' (' + emp.employeeId + ') from their registered number. ' +
+    "Je message jabe: '" + outgoingText + "'"
+  );
+  return { case: 'data_holding', replyText: DATA_REQUEST_HOLDING_REPLY[lang] || DATA_REQUEST_HOLDING_REPLY.english, summaryForOwner: null };
+}
+
 // Lazy require (not a top-of-file import) - assistantShared.js, which
 // claudeProvider.js depends on, itself requires this file (for the
 // manage_whatsapp_official_list/whatsapp_inbox_summary/
@@ -1871,7 +1959,21 @@ async function executeApprovalSend(approval, editInstruction, selectedIndex, edi
   // so the HTTP route's catch surfaces it as a real error and the
   // approval stays pending - never silently dropped, never sent.
   const literalText = typeof editedText === 'string' ? editedText.trim() : '';
-  if (literalText && textHasForbiddenField(literalText)) {
+  if (approval.sensitiveIdRequest) {
+    // Own Aadhaar/PAN approval (spec: "Keep the Edit option off for the
+    // Aadhaar/PAN value - Edit may change only the surrounding text") -
+    // the frontend already hides Edit for this approval type, but this is
+    // the real enforcement: even a direct API call with a tampered edit
+    // can never change the actual digits, only wrapping text around them.
+    if (literalText && !literalText.includes(approval.sensitiveIdValue)) {
+      throw new Error('The ' + approval.sensitiveIdFieldLabel + " number itself can't be edited - only the surrounding text.");
+    }
+    // Deliberately skips the generic PII-word block below for this one
+    // approval type - the word "Aadhaar"/"PAN" is UNAVOIDABLY present in
+    // the correct message too (that's the whole point of this approval),
+    // and the check just above already guarantees the real value is
+    // present unchanged whenever literalText was actually provided.
+  } else if (literalText && textHasForbiddenField(literalText)) {
     throw new Error("This message still contains personal data (PII) that can't be sent over WhatsApp - please remove that first.");
   }
   let textToSend;
@@ -1898,17 +2000,28 @@ async function executeApprovalSend(approval, editInstruction, selectedIndex, edi
     textToSend = literalText || (editInstruction ? await narrowDataAnswer(approval, editInstruction) : approval.preparedReplyText);
   }
   await removePendingApproval(approval.id);
+  // Audit trail (spec: "who asked, which field, approved/declined,
+  // timestamp - never the number itself") - everywhere the real text
+  // would otherwise be written (the permanent inbox log, the owner's own
+  // in-app chat confirmation, even this contact's own convo-history cache)
+  // gets this redacted line instead for a sensitive-ID approval.
+  // dataRequestSummary/logSummary already never contain the value itself
+  // (see handleOwnSensitiveIdRequest), so "who/field" is still fully
+  // auditable - only the digits themselves are ever withheld.
+  const auditText = approval.sensitiveIdRequest
+    ? '[REDACTED - ' + approval.sensitiveIdFieldLabel + ' sent to own registered number]'
+    : textToSend;
   if (!isRealSendAllowedFor(approval.phone)) {
-    await logInboxEvent({ chatId: approval.phone, name: approval.name, isGroup: false, messageSummary: '[data request: ' + logSummary + ']', aCase: 'data_approved', sentText: textToSend, outcome: 'draft_mode', sentAt: Date.now() });
-    return '[DRAFT MODE] ' + approval.name + '-ke "' + logSummary + '" pathano hoto: "' + textToSend + '"';
+    await logInboxEvent({ chatId: approval.phone, name: approval.name, isGroup: false, messageSummary: '[data request: ' + logSummary + ']', aCase: 'data_approved', sentText: auditText, outcome: 'draft_mode', sentAt: Date.now() });
+    return '[DRAFT MODE] ' + approval.name + '-ke "' + logSummary + '" pathano hoto: "' + auditText + '"';
   }
   const sendResult = await sendWhatsAppChunked(approval.phone, textToSend);
   if (!sendResult.ok) {
-    await logInboxEvent({ chatId: approval.phone, name: approval.name, isGroup: false, messageSummary: '[data request: ' + logSummary + ']', aCase: 'data_approved', sentText: textToSend, outcome: 'send_failed', sentAt: Date.now() });
+    await logInboxEvent({ chatId: approval.phone, name: approval.name, isGroup: false, messageSummary: '[data request: ' + logSummary + ']', aCase: 'data_approved', sentText: auditText, outcome: 'send_failed', sentAt: Date.now() });
     return approval.name + '-ke pathate giye error holo: ' + sendResult.error;
   }
-  await appendConvoHistory(approval.phone, 'out', textToSend);
-  await logInboxEvent({ chatId: approval.phone, name: approval.name, isGroup: false, messageSummary: '[data request: ' + logSummary + ']', aCase: 'data_approved', sentText: textToSend, outcome: 'sent', sentAt: Date.now() });
+  await appendConvoHistory(approval.phone, 'out', auditText);
+  await logInboxEvent({ chatId: approval.phone, name: approval.name, isGroup: false, messageSummary: '[data request: ' + logSummary + ']', aCase: 'data_approved', sentText: auditText, outcome: 'sent', sentAt: Date.now() });
   return '✓ ' + approval.name + '-ke "' + logSummary + '" pathano holo.';
 }
 async function executeApprovalReject(approval) {
@@ -3459,6 +3572,18 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
     return { case: 'acknowledged', replyText: EMOJI_ACK_REPLY[lang] || EMOJI_ACK_REPLY.banglish, summaryForOwner: null };
   }
 
+  // Own Aadhaar/PAN exception (the one narrow, approval-gated hole in the
+  // PII hard block - see handleOwnSensitiveIdRequest's own comment for
+  // every condition this actually enforces). Checked before classification
+  // on purpose, same tier as identity/greeting above - never left to the
+  // AI classifier's own judgment call.
+  if (!isGroup && phone) {
+    const ownIdField = detectOwnSensitiveIdRequest(text);
+    if (ownIdField) {
+      return handleOwnSensitiveIdRequest({ phone, lang: detectLang(text), field: ownIdField });
+    }
+  }
+
   // What generateDraft gets told as "X wrote: ..." - a real first name
   // when one was resolved (directory/allowlist), otherwise the generic
   // "The sender" (never the phone-number display fallback in `name`,
@@ -4066,6 +4191,8 @@ module.exports = {
   LATENCY_ALERT_THRESHOLD_MS,
   DRAFT_MODEL,
   isTypingPresenceEnabled,
+  detectOwnSensitiveIdRequest,
+  handleOwnSensitiveIdRequest,
   isIdentityQuestion,
   isGreetingOnly,
   checkGatewayConnection,

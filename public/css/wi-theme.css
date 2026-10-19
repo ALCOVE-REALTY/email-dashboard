@@ -1703,6 +1703,11 @@ body { background: var(--wi-bg); }
   display: flex; flex-direction: column; gap: 10px; animation: mUp .4s cubic-bezier(.2,.7,.2,1) both;
   overflow: hidden;
 }
+/* Own Aadhaar/PAN approval - visibly distinct from an ordinary data
+   request (spec: "clearly marked"), an amber border/label rather than a
+   plain card, so it's never mistaken for a routine contact-number ask. */
+.wf-convo-action-sensitive { border: 1.5px solid var(--wi-amber-600, #B45309); }
+.wf-convo-action-sensitive .wf-convo-action-label { color: var(--wi-amber-700, #92400E); }
 /* Fades + collapses ONE card/row out of a list on a successful action -
    never a re-render of the whole list (speed/UX fix: see runButtonAction
    and dismissCard in hrAssistant.js). Generic (not scoped to one card
