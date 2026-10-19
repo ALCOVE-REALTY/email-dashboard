@@ -1381,10 +1381,18 @@ function cardHasForbiddenField(card) {
 function textHasForbiddenField(text) {
   return FORBIDDEN_PII_RE.test(String(text || ''));
 }
+// Live review item 5 - polite, human wording for someone ELSE's
+// Aadhaar/PAN/bank account/salary specifically (the only fields still
+// hard-blocked - see HARD_BLOCKED_PERSON_FIELD_RE below). Also reused as
+// the fallback refusal for the "own ID, but one of the 3 authorization
+// conditions doesn't hold" case just below, and for an "other_field"
+// request whose exact field we didn't recognize (never guess a field,
+// same principle as the classifier's own "when unsure, choose
+// forbidden_pii" instruction).
 const PII_BLOCK_REPLY = {
-  banglish: 'Ei tottho WhatsApp-e share kora jay na - HR office-e jogajog korun.',
-  hinglish: 'Yeh jaankari WhatsApp par share nahi ki ja sakti - HR office se sampark karein.',
-  english: "This information can't be shared over WhatsApp - please contact the HR office."
+  banglish: 'Onno karo gopon tottho (jemon Aadhaar ba PAN) ami WhatsApp-e share korte pari na. Ei bishoye kono sahajyo lagle sorasori HR office-e jogajog korun.',
+  hinglish: 'Main kisi aur ka gopniya jaankari (jaise Aadhaar ya PAN) WhatsApp par share nahi kar sakta. Is baare mein koi madad chahiye to seedhe HR office se sampark karein.',
+  english: "I can't share someone else's confidential information (like Aadhaar or PAN) over WhatsApp. If you need any help with this, please contact the HR office directly."
 };
 
 // ---------------- Own Aadhaar/PAN exception (narrow, approval-gated) ----------------
@@ -1459,23 +1467,37 @@ async function handleOwnSensitiveIdRequest({ phone, lang, field, history }) {
   // approval/decline), and the audit trail must never contain the actual
   // number (see executeApprovalSend's own redaction for this approval type).
   const dataRequestSummary = 'Own ' + fieldLabel + ' request - ' + emp.name + ' (' + emp.employeeId + ')';
-  await savePendingApproval({
+  const approvalId = await savePendingApproval({
     phone, name: emp.name, requestText: dataRequestSummary, dataRequestSummary, lang,
     preparedReplyText: outgoingText, preparedCard: null, preparedError: null,
     resolvedPersonName: emp.name,
     sensitiveIdRequest: true, sensitiveIdField: field, sensitiveIdFieldLabel: fieldLabel, sensitiveIdValue: value
   });
-  // The ONE approval that explicitly spells out the real value to the
-  // owner before they decide (spec: "clearly marked... Je message jabe:
-  // ...") - intentional, since the owner reviewing and approving against
-  // their own registered-number record IS the authorization step here.
-  // Never written to the permanent audit trail this same way - see
-  // executeApprovalSend.
+  // Live review (confirmed by direct instruction - a deliberate reversal
+  // of the earlier "always keep the approval card" decision): once all 3
+  // conditions above hold (own name/pronoun used, sender's number IS this
+  // employee's own registered number, employee ACTIVE), that IS the
+  // authorization - sent immediately, no owner approval step - UNLESS
+  // this number is on the owner's own "never auto-reply" list, which
+  // still takes precedence (the owner explicitly asked SUBH never to act
+  // on its own for that number). Reuses executeApprovalSend end to end
+  // (draft-mode gate, chunking, real value audit-redaction, inbox
+  // logging) rather than duplicating any of that - this is simply that
+  // same approval, auto-executed instead of waiting on a manual "pathao".
+  if (await isNeverAuto(phone).catch(() => false)) {
+    await postOwnerNotification(
+      '⚠️ Own ' + fieldLabel + ' request — ' + emp.name + ' (' + emp.employeeId + ') from their registered number, but this number is on the never-auto list - your manual approval is needed. ' +
+      "Je message jabe: '" + outgoingText + "'"
+    );
+    return { case: 'data_holding', replyText: dataRequestHoldingReply(lang, history, new Date()), summaryForOwner: null };
+  }
+  const approval = approvalId ? await resolveApprovalById(approvalId) : null;
+  const resultMessage = approval ? await executeApprovalSend(approval, null, null, null) : null;
   await postOwnerNotification(
-    '⚠️ Own ' + fieldLabel + ' request — ' + emp.name + ' (' + emp.employeeId + ') from their registered number. ' +
-    "Je message jabe: '" + outgoingText + "'"
+    '✓ Own ' + fieldLabel + ' sent directly to ' + emp.name + ' (' + emp.employeeId + ') at their own registered number - no approval needed (own number + active + own request).' +
+    (resultMessage ? ' (' + resultMessage + ')' : '')
   );
-  return { case: 'data_holding', replyText: dataRequestHoldingReply(lang, history, new Date()), summaryForOwner: null };
+  return { case: 'handled_directly', replyText: null, summaryForOwner: null };
 }
 
 // Lazy require (not a top-of-file import) - assistantShared.js, which
@@ -1674,19 +1696,36 @@ const DISAMBIGUATION_LAST_QUESTION = {
     english: 'Whose contact number would you like?'
   }
 };
+// A dynamic field label (live review item 5's "other_field" requests -
+// mail id/address/DOB/emergency contact/UAN/ESIC/blood group, etc.) never
+// gets its own hand-written entry in DISAMBIGUATION_LAST_QUESTION above -
+// whenever fieldKind isn't one of those two fixed keys, it IS the
+// already-resolved display label text itself, and this builds the
+// question generically around it instead.
+const DISAMBIGUATION_LAST_QUESTION_GENERIC = {
+  banglish: (fieldLabel) => 'Apni kar ' + fieldLabel + ' chaichhen?',
+  hinglish: (fieldLabel) => 'Aap kiska ' + fieldLabel + ' chahte hain?',
+  english: (fieldLabel) => 'Whose ' + fieldLabel + ' would you like?'
+};
+function resolveDisambiguationLastQuestion(fieldKind, lang) {
+  const known = DISAMBIGUATION_LAST_QUESTION[fieldKind];
+  if (known) return known[lang] || known.english;
+  const fn = DISAMBIGUATION_LAST_QUESTION_GENERIC[lang] || DISAMBIGUATION_LAST_QUESTION_GENERIC.english;
+  return fn(fieldKind || (lang === 'english' ? 'this information' : 'ei tottho'));
+}
 const DISAMBIGUATION_QUESTION = {
   banglish: (queryName, candidates, fieldKind) =>
     'Amader company-te ' + queryName + ' naame ' + countLabel(candidates.length, 'banglish') + ' achen: ' +
     candidates.map((c, i) => (i + 1) + ') ' + c.name + ' — ' + naturalizeDirectoryValue(c.department)).join(' ') +
-    '. ' + DISAMBIGUATION_LAST_QUESTION[fieldKind || 'general_details'].banglish,
+    '. ' + resolveDisambiguationLastQuestion(fieldKind || 'general_details', 'banglish'),
   hinglish: (queryName, candidates, fieldKind) =>
     'Hamari company mein ' + queryName + ' naam ke ' + countLabel(candidates.length, 'hinglish') + ' hain: ' +
     candidates.map((c, i) => (i + 1) + ') ' + c.name + ' — ' + naturalizeDirectoryValue(c.department)).join(' ') +
-    '. ' + DISAMBIGUATION_LAST_QUESTION[fieldKind || 'general_details'].hinglish,
+    '. ' + resolveDisambiguationLastQuestion(fieldKind || 'general_details', 'hinglish'),
   english: (queryName, candidates, fieldKind) =>
     'There are ' + candidates.length + ' people named ' + queryName + ' at our company: ' +
     candidates.map((c, i) => (i + 1) + ') ' + c.name + ' — ' + naturalizeDirectoryValue(c.department)).join(' ') +
-    '. ' + DISAMBIGUATION_LAST_QUESTION[fieldKind || 'general_details'].english
+    '. ' + resolveDisambiguationLastQuestion(fieldKind || 'general_details', 'english')
 };
 // First-name-only confirmation (live review item 6) - "Ayon" alone, when
 // it matches exactly ONE employee (active OR inactive) whose full name
@@ -1708,8 +1747,16 @@ const NAME_CONFIRM_RETRY = {
   hinglish: 'Theek hai, aap kiske baare mein baat kar rahe hain? Pura naam bataiyega?',
   english: 'Okay, who did you mean? Could you give me the full name?'
 };
-const NAME_CONFIRM_YES_RE = /^(hyan|ha|haan|hae|yes|yeah|yep|ji|jee)\b/i;
-const NAME_CONFIRM_NO_RE = /^(na|nah|no|nope)\b/i;
+// Live review item 1 (found live: "Haa" - a very common spelling - fell
+// through unmatched, cleared the pending confirm, and reached the
+// free-form AI drafter, which answered in English about "general
+// conversation" - wrong language, wrong content, and the original request
+// was lost). Every common spelling/language variant of yes/no is listed
+// explicitly here rather than relying on the AI classifier to recognize
+// one - a yes/no answer to SUBH's own question must never fall through to
+// free-form drafting.
+const NAME_CONFIRM_YES_RE = /^(haa|hya|hyan|ha|haan|hae|ho|yes|yeah|yep|ji|jee|thik(\s*ache)?|correct)\b/i;
+const NAME_CONFIRM_NO_RE = /^(na|naa|nahi|noi|no|nope|nah)\b/i;
 const PENDING_NAME_CONFIRM_PREFIX = 'wa-pending-name-confirm:';
 const PENDING_NAME_CONFIRM_TTL_SECONDS = 30 * 60;
 async function savePendingNameConfirm(phone, data) {
@@ -1734,7 +1781,7 @@ async function clearPendingNameConfirm(phone) {
 // single match would have gotten - shared by handlePersonLookupRequest's
 // own direct path and the "yes" branch of a confirmed first-name-only
 // lookup, so the two can never silently diverge.
-async function resolveConfirmedPersonLookup({ phone, name, candidate, isInactive, personField, lang, hadTypo, history }) {
+async function resolveConfirmedPersonLookup({ phone, name, candidate, isInactive, personField, fieldAliasKey, lang, hadTypo, history }) {
   if (isInactive) {
     await replyInactiveEmployee({ phone, requesterLabel: name, candidate, lang });
     return { case: 'acknowledged', replyText: (INACTIVE_EMPLOYEE_REPLY[lang] || INACTIVE_EMPLOYEE_REPLY.english)(candidate.name, candidate.gender), summaryForOwner: null };
@@ -1742,6 +1789,11 @@ async function resolveConfirmedPersonLookup({ phone, name, candidate, isInactive
   if (personField === 'general_details') {
     await postOwnerNotification(name + ' (' + phone + ') ' + candidate.name + ' (' + candidate.department + ')-er general details jigges korechhe (naam confirm kore) - approval chara e direct reply gechhe.');
     return { case: 'acknowledged', replyText: buildGeneralDetailsReply(candidate, lang, hadTypo, new Date()), summaryForOwner: null };
+  }
+  if (personField === 'other_field') {
+    const fieldAlias = resolveApprovalFieldAliasByKey(fieldAliasKey);
+    if (fieldAlias) await queuePersonFieldApproval({ phone, requesterLabel: name, candidate, lang, hadTypo, fieldAlias });
+    return { case: 'data_holding', replyText: dataRequestHoldingReply(lang, history, new Date()), summaryForOwner: null };
   }
   // contact_number (default/only remaining value)
   await queuePersonContactApproval({ phone, requesterLabel: name, candidate, lang, hadTypo });
@@ -1805,7 +1857,15 @@ function mapAndNarrowByDepartment(matched, departmentNames, departmentHint) {
   const withDept = matched.map((e) => ({
     employeeId: e.employeeId, name: e.name, designation: e.designation,
     department: departmentNames.get(e.departmentKey) || e.department,
-    contactNumber: e.contactNumber, status: e.status, doj: e.doj, gender: e.gender
+    contactNumber: e.contactNumber, status: e.status, doj: e.doj, gender: e.gender,
+    // Live review item 5 - the "other_field" approval-gated fields
+    // (mail id, address, DOB, emergency contact, UAN, ESIC, blood group)
+    // need these carried through too; everything else in this file still
+    // only ever reads the fields above, so this is purely additive.
+    email: e.email, emailPersonal: e.emailPersonal, presentAddress: e.presentAddress,
+    permanentAddress: e.permanentAddress, dob: e.dob,
+    emergencyContactNumber: e.emergencyContactNumber, emergencyContactName: e.emergencyContactName,
+    uan: e.uan, esiNumber: e.esiNumber, bloodGroup: e.bloodGroup
   }));
   if (!departmentHint) return withDept;
   // A department hint narrows but never eliminates a real candidate - if
@@ -1835,9 +1895,50 @@ async function findEmployeesByFuzzyNameMatch(query, departmentHint) {
 // building code whether to add the "the spelling seems slightly off" note.
 async function findPersonLookupMatches(query, departmentHint) {
   const exact = await findEmployeesByWholeNameMatch(query, departmentHint);
+  // Live review item 4 (found live: "Ayon HR er contact no dao" exact-
+  // matched Ayon Mondal in Facade - the ONLY employee named exactly
+  // "Ayon" - and sent the inactive reply, even though the sender's own
+  // "HR" hint plainly doesn't fit that match). An exact name match still
+  // wins whenever there's no department hint, or the hint fits at least
+  // one exact match (unchanged from before) - but when a hint IS given
+  // and NONE of the exact matches fit it, a fuzzy match that DOES fit the
+  // hint (e.g. "Ayon" ~ "Ayan" -> Ayan Das, HR) is preferred over keeping
+  // a name match that contradicts the sender's own stated department.
+  const exactFitsHint = !departmentHint || exact.some((e) => departmentHintMatches(e.department, departmentHint));
+  if (exact.length && exactFitsHint) return { matches: exact, hadTypo: false };
+  if (departmentHint) {
+    const fuzzyForHint = await findEmployeesByFuzzyNameMatch(query, departmentHint);
+    const fuzzyFitsHint = fuzzyForHint.filter((e) => departmentHintMatches(e.department, departmentHint));
+    if (fuzzyFitsHint.length) return { matches: fuzzyFitsHint, hadTypo: true };
+  }
   if (exact.length) return { matches: exact, hadTypo: false };
   const fuzzy = await findEmployeesByFuzzyNameMatch(query, departmentHint);
   return { matches: fuzzy, hadTypo: fuzzy.length > 0 };
+}
+// Live review items 2 & 3 (found live: a NEW, unrelated request - "Amake
+// Ayan er mail id dao" - got answered about "Ayan Biswas" directly,
+// apparently because the classifier "completed" the bare name "Ayan"
+// using an EARLIER, different request in the same conversation, instead
+// of asking the sender which Ayan this new request means). A structural
+// safety net, not just a prompt instruction: every word of the name the
+// classifier returns must actually appear, literally, in THIS message -
+// otherwise it was pulled from conversation history, which is only valid
+// when the sender explicitly referred back to "the same person" (see
+// PERSON_REFERENCE_BACKREF_RE). When ungrounded, the name is trimmed back
+// to only the words that genuinely appear in this message, so "Ayan
+// Biswas" (invented) becomes "Ayan" (real) - naturally re-triggering the
+// ask-the-sender ambiguity flow instead of silently reusing a stale
+// resolution.
+const PERSON_REFERENCE_BACKREF_RE = /\b(tar|otar|tahar|ta-?r|oi\s*jon(?:er|-er)?|ei\s*jon(?:er|-er)?|shei\s*jon(?:er|-er)?|same\s*person|that\s*person|usi|wahi|wohi|usk[ae]|unk[ae])\b/i;
+function groundPersonLookupName(personName, text) {
+  if (!personName) return personName;
+  if (PERSON_REFERENCE_BACKREF_RE.test(String(text || ''))) return personName;
+  const nameWords = String(personName).trim().split(/\s+/).filter(Boolean);
+  if (nameWords.length <= 1) return personName; // nothing to over-trim - a single word is grounded or not as a whole
+  const textWordsLower = String(text || '').toLowerCase().split(/[^a-z0-9]+/i).filter(Boolean);
+  const grounded = nameWords.filter((w) => textWordsLower.includes(w.toLowerCase()));
+  if (grounded.length === nameWords.length) return personName;
+  return grounded.length ? grounded.join(' ') : personName;
 }
 // "prai N bochor"/"lagbhag N saal"/"about N years" from DOJ - used only
 // for the no-approval "general details" reply (designation/department/
@@ -1894,6 +1995,104 @@ async function queuePersonContactApproval({ phone, requesterLabel, candidate, la
   );
 }
 
+// ---------------- "Other field" approval-gated lookups (live review item 5) ----------------
+// Aadhaar/PAN/bank account/salary are the ONLY personal fields that are
+// ever hard-blocked now - every other single field about someone else
+// (mail id, address, DOB, emergency contact, UAN, ESIC, blood group, ...)
+// is allowed through the SAME approval-gated, ask-the-sender-first flow
+// contact_number already uses, just for a different field. A fixed
+// allowlist, keyed by matching the classifier's own free-text field label
+// against a regex - the model's wording is NEVER used to read an employee
+// record field directly, so a mislabeled or adversarial label can only
+// ever resolve to one of these specific, already-reviewed fields (or to
+// nothing at all, which falls back to the hard-block refusal - see
+// handlePersonLookupRequest).
+const HARD_BLOCKED_PERSON_FIELD_RE = /aadha?ar|\bpan\b|bank\s*(account|a\/?c)?|\bifsc\b|\bsalary\b|\bctc\b/i;
+function formatOtherFieldValue(key, value) {
+  if (!value) return null;
+  if (key === 'dob') {
+    const d = value instanceof Date ? value : new Date(value);
+    return isNaN(d.getTime()) ? null : d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+  }
+  return value;
+}
+const APPROVAL_FIELD_ALIASES = [
+  {
+    key: 'email',
+    match: /mail|e-?mail/i,
+    label: { banglish: 'mail id', hinglish: 'mail id', english: 'email address' },
+    getValue: (c) => c.emailPersonal || c.email || null
+  },
+  {
+    key: 'address',
+    match: /address|thikana|\bpata\b/i,
+    label: { banglish: 'address', hinglish: 'address', english: 'address' },
+    getValue: (c) => c.presentAddress || c.permanentAddress || null
+  },
+  {
+    key: 'dob',
+    match: /date\s*of\s*birth|\bdob\b|birthday|jonmo/i,
+    label: { banglish: 'date of birth', hinglish: 'date of birth', english: 'date of birth' },
+    getValue: (c) => formatOtherFieldValue('dob', c.dob)
+  },
+  {
+    key: 'emergencyContact',
+    match: /emergency/i,
+    label: { banglish: 'emergency contact', hinglish: 'emergency contact', english: 'emergency contact' },
+    getValue: (c) => c.emergencyContactNumber || c.emergencyContactName || null
+  },
+  {
+    key: 'uan',
+    match: /\buan\b/i,
+    label: { banglish: 'UAN number', hinglish: 'UAN number', english: 'UAN number' },
+    getValue: (c) => c.uan || null
+  },
+  {
+    key: 'esic',
+    match: /esic|\besi\b/i,
+    label: { banglish: 'ESIC number', hinglish: 'ESIC number', english: 'ESIC number' },
+    getValue: (c) => c.esiNumber || null
+  },
+  {
+    key: 'bloodGroup',
+    match: /blood/i,
+    label: { banglish: 'blood group', hinglish: 'blood group', english: 'blood group' },
+    getValue: (c) => c.bloodGroup || null
+  }
+];
+function resolveApprovalFieldAliasByLabel(label) {
+  const t = String(label || '');
+  return APPROVAL_FIELD_ALIASES.find((a) => a.match.test(t)) || null;
+}
+function resolveApprovalFieldAliasByKey(key) {
+  return APPROVAL_FIELD_ALIASES.find((a) => a.key === key) || null;
+}
+const OTHER_FIELD_LINE = {
+  banglish: (name, fieldLabel, value) => name + '-er ' + fieldLabel + ': ' + value,
+  hinglish: (name, fieldLabel, value) => name + ' ka ' + fieldLabel + ': ' + value,
+  english: (name, fieldLabel, value) => name + "'s " + fieldLabel + ': ' + value
+};
+async function queuePersonFieldApproval({ phone, requesterLabel, candidate, lang, hadTypo, fieldAlias }) {
+  const fieldLabel = fieldAlias.label[lang] || fieldAlias.label.english;
+  const value = fieldAlias.getValue(candidate);
+  if (!value) {
+    await postOwnerNotification(candidate.name + ' (' + candidate.department + ')-er ' + fieldLabel + ' record-e nei, tai ' + requesterLabel + '-ke pathano jabe na.');
+    return;
+  }
+  const outgoingText = (OTHER_FIELD_LINE[lang] || OTHER_FIELD_LINE.english)(candidate.name, fieldLabel, value);
+  const dataRequestSummary = candidate.name + ' (' + candidate.department + ') - ' + fieldLabel;
+  await savePendingApproval({
+    phone, name: requesterLabel, requestText: dataRequestSummary, dataRequestSummary, lang,
+    preparedReplyText: outgoingText, preparedCard: null, preparedError: null,
+    resolvedPersonName: candidate.name
+  });
+  const statusNote = candidate.status === 'NOTICE PERIOD' ? ', notice period-e achen' : '';
+  const typoNote = hadTypo ? ' [sender-er deya naam-er banan-e typo chhilo, eta closest match]' : '';
+  await postOwnerNotification(
+    requesterLabel + ' (' + phone + ') ' + candidate.name + ' (' + candidate.department + statusNote + ')-er ' + fieldLabel + ' chaichhe.' + typoNote + ' Je message jabe: \'' + outgoingText + '\'. Pathabo?'
+  );
+}
+
 // Several current candidates for ONE contact-number request - ONE
 // approval record covering all of them (`candidates`, a radio-selectable
 // list in the owner's SUBH chat UI), not one separate approval per
@@ -1931,8 +2130,20 @@ async function replyInactiveEmployee({ phone, requesterLabel, candidate }) {
   );
 }
 
-async function handlePersonLookupRequest({ phone, name, lang, personName, personField, department, text, history }) {
-  if (personField === 'forbidden_pii') {
+async function handlePersonLookupRequest({ phone, name, lang, personName, personField, personFieldLabel, department, text, history }) {
+  // Live review item 5: Aadhaar/PAN/bank account/salary are the ONLY
+  // fields that are ever hard-blocked now, regardless of which
+  // personField value the classifier actually picked - a structural
+  // safety net (same philosophy as textHasForbiddenField/
+  // cardHasForbiddenField elsewhere in this file), so a mislabeled
+  // "other_field" request can never leak one of these. An "other_field"
+  // whose label we don't recognize at all is refused the SAME way, rather
+  // than guessing at an unvalidated employee field.
+  const fieldAlias = personField === 'other_field' ? resolveApprovalFieldAliasByLabel(personFieldLabel) : null;
+  const isHardBlockedField = personField === 'forbidden_pii' ||
+    HARD_BLOCKED_PERSON_FIELD_RE.test(personFieldLabel || '') ||
+    (personField === 'other_field' && !fieldAlias);
+  if (isHardBlockedField) {
     // Own-name exception (direct example given: "Subhodeep er Aadhaar
     // chai" when the sender himself IS Subhodeep) - referring to yourself
     // in the THIRD PERSON, by your own registered name, is the same
@@ -1945,9 +2156,9 @@ async function handlePersonLookupRequest({ phone, name, lang, personName, person
     // other personLookupName case already uses, never a looser match just
     // because this is the sensitive path. Any other name (even a real,
     // exact-match employee who just isn't the sender) still falls straight
-    // through to the hard block below, completely unchanged - still
-    // requires the owner's explicit approval either way (never
-    // auto-sent), per direct instruction.
+    // through to the hard block below, completely unchanged - bank
+    // account/salary/an unrecognized field never gets this exception at
+    // all (detectSensitiveIdFieldKeyword only ever returns aadhar/pan).
     const ownField = detectSensitiveIdFieldKeyword(text);
     if (ownField && phone) {
       const { matches: ownNameMatches } = await findPersonLookupMatches(personName, department);
@@ -1962,9 +2173,10 @@ async function handlePersonLookupRequest({ phone, name, lang, personName, person
     // Hard block - no approval loop at all, this can never be sent
     // regardless of what the owner says (spec point 1). Unaffected by
     // fuzzy matching - this gate runs before any name resolution.
-    await postOwnerNotification('⚠️ ' + name + ' (' + phone + ') ' + (personName || 'ekjon employee') + '-er sensitive personal data (Aadhar/PAN/address/etc type) chaiche - WhatsApp-e block kora holo, kichu pathano hoyni.');
+    await postOwnerNotification('⚠️ ' + name + ' (' + phone + ') ' + (personName || 'ekjon employee') + '-er sensitive personal data (Aadhar/PAN/bank/salary type) chaiche - WhatsApp-e block kora holo, kichu pathano hoyni.');
     return { case: 'acknowledged', replyText: PII_BLOCK_REPLY[lang] || PII_BLOCK_REPLY.english, summaryForOwner: null };
   }
+  const otherFieldLabel = fieldAlias ? (fieldAlias.label[lang] || fieldAlias.label.english) : null;
 
   // Exact whole-word match tried first, fuzzy only as a fallback (typo-
   // tolerant name matching, spec point 0) - hadTypo tells every branch
@@ -1972,7 +2184,8 @@ async function handlePersonLookupRequest({ phone, name, lang, personName, person
   // owner's approval card as a closest match rather than a confirmed name.
   const { matches: allMatches, hadTypo } = await findPersonLookupMatches(personName, department);
   if (!allMatches.length) {
-    await postOwnerNotification(name + ' (' + phone + ') "' + personName + '"-er ' + (personField === 'general_details' ? 'details' : 'contact number') + ' cheyechhe, kintu oi naame (ba kachakachi kono banan-e) kono employee pelam na.');
+    const fieldDescription = personField === 'general_details' ? 'details' : (otherFieldLabel || 'contact number');
+    await postOwnerNotification(name + ' (' + phone + ') "' + personName + '"-er ' + fieldDescription + ' cheyechhe, kintu oi naame (ba kachakachi kono banan-e) kono employee pelam na.');
     return { case: 'acknowledged', replyText: (PERSON_NOT_FOUND_REPLY[lang] || PERSON_NOT_FOUND_REPLY.english)(personName), summaryForOwner: null };
   }
   // Notice period counts as currently employed for this feature - only a
@@ -2013,7 +2226,7 @@ async function handlePersonLookupRequest({ phone, name, lang, personName, person
     const soleMatch = current[0] || inactive[0];
     if (isFirstNameOnly(personName, soleMatch.name)) {
       const isInactiveCandidate = inactive.length === 1;
-      await savePendingNameConfirm(phone, { candidate: soleMatch, isInactive: isInactiveCandidate, personField, lang, hadTypo });
+      await savePendingNameConfirm(phone, { candidate: soleMatch, isInactive: isInactiveCandidate, personField, fieldAliasKey: fieldAlias ? fieldAlias.key : null, lang, hadTypo });
       await postOwnerNotification(
         name + ' (' + phone + ') "' + personName + '" bolechhe (shudhu first name) - ' + soleMatch.name + ' (' + soleMatch.department + ')' +
         (isInactiveCandidate ? ', inactive' : '') + ' kina, sender-ke jigges kora hocche.'
@@ -2053,20 +2266,30 @@ async function handlePersonLookupRequest({ phone, name, lang, personName, person
     return { case: 'acknowledged', replyText: note + fn(queryName, current, 'general_details'), summaryForOwner: null };
   }
 
-  // contact_number (default/only remaining value) - live review item 1:
-  // 2+ matches now ask the SENDER directly (same disambiguation mechanism
-  // general_details already used), never an owner-facing multi-candidate
-  // approval card - the owner only ever sees ONE normal approval, for
-  // whichever single person the sender confirms.
+  // contact_number / other_field (default/only remaining values) - live
+  // review items 1 & 5: 2+ matches now ask the SENDER directly (same
+  // disambiguation mechanism general_details already used), never an
+  // owner-facing multi-candidate approval card - the owner only ever sees
+  // ONE normal approval, for whichever single person the sender confirms.
+  // "other_field" is every non-hard-blocked field other than contact
+  // number (mail id, address, DOB, emergency contact, UAN, ESIC, blood
+  // group, ...) - same ask-first flow, just a different field.
+  const isOtherField = personField === 'other_field';
+  const pendingFieldTag = isOtherField ? 'other_field' : 'contact_number';
+  const fieldKindForQuestion = isOtherField ? otherFieldLabel : 'contact_number';
   if (current.length === 1) {
-    await queuePersonContactApproval({ phone, requesterLabel: name, candidate: current[0], lang, hadTypo });
+    if (isOtherField) {
+      await queuePersonFieldApproval({ phone, requesterLabel: name, candidate: current[0], lang, hadTypo, fieldAlias });
+    } else {
+      await queuePersonContactApproval({ phone, requesterLabel: name, candidate: current[0], lang, hadTypo });
+    }
   } else {
-    await savePendingDisambiguation(phone, { candidates: current, lang, hadTypo, attempts: 1, pendingField: 'contact_number' });
-    await postOwnerNotification(current.length + ' jon "' + personName + '" (contact number) match korche - sender-ke jigges kora hocche kon jon: ' + current.map((c) => c.name + ' (' + c.department + ')').join(', ') + '.');
+    await savePendingDisambiguation(phone, { candidates: current, lang, hadTypo, attempts: 1, pendingField: pendingFieldTag, fieldAliasKey: fieldAlias ? fieldAlias.key : null });
+    await postOwnerNotification(current.length + ' jon "' + personName + '" (' + (otherFieldLabel || 'contact number') + ') match korche - sender-ke jigges kora hocche kon jon: ' + current.map((c) => c.name + ' (' + c.department + ')').join(', ') + '.');
     const queryName = current[0].name.split(' ')[0];
     const note = hadTypo ? (TYPO_NOTE[lang] || TYPO_NOTE.english) : '';
     const fn = DISAMBIGUATION_QUESTION[lang] || DISAMBIGUATION_QUESTION.english;
-    return { case: 'acknowledged', replyText: note + fn(queryName, current, 'contact_number'), summaryForOwner: null };
+    return { case: 'acknowledged', replyText: note + fn(queryName, current, fieldKindForQuestion), summaryForOwner: null };
   }
   return { case: 'data_holding', replyText: dataRequestHoldingReply(lang, history, new Date()), summaryForOwner: null };
 }
@@ -2202,7 +2425,14 @@ async function executeApprovalSend(approval, editInstruction, selectedIndex, edi
   }
   const sendResult = await sendWhatsAppChunked(approval.phone, textToSend);
   if (!sendResult.ok) {
+    // Live review item 4 (found live: this failure was only ever logged,
+    // easy to miss in a long history view) - whatsapp.sendWhatsAppMessage
+    // already retried once internally before reporting failure here, so
+    // this is a genuine, already-retried failure and always gets an
+    // explicit owner notification (same feed as every other alert), never
+    // just a passive log entry.
     await logInboxEvent({ chatId: approval.phone, name: approval.name, isGroup: false, messageSummary: '[data request: ' + logSummary + ']', aCase: 'data_approved', sentText: auditText, outcome: 'send_failed', sentAt: Date.now() });
+    await postOwnerNotification('⚠️ ' + approval.name + ' (' + approval.phone + ')-ke "' + logSummary + '" pathate giye error holo (retry-o fail hoyeche): ' + sendResult.error + '. Abar try korun.');
     return approval.name + '-ke pathate giye error holo: ' + sendResult.error;
   }
   await appendConvoHistory(approval.phone, 'out', auditText);
@@ -2219,6 +2449,9 @@ async function executeApprovalReject(approval) {
   const sendResult = await whatsapp.sendWhatsAppMessage(approval.phone, replyText);
   if (sendResult.ok) await appendConvoHistory(approval.phone, 'out', replyText);
   await logInboxEvent({ chatId: approval.phone, name: approval.name, isGroup: false, messageSummary: '[data request: ' + approval.dataRequestSummary + ']', aCase: 'data_rejected', sentText: replyText, outcome: sendResult.ok ? 'sent' : 'send_failed', sentAt: Date.now() });
+  if (!sendResult.ok) {
+    await postOwnerNotification('⚠️ ' + approval.name + ' (' + approval.phone + ')-ke reject reply pathate giye error holo (retry-o fail hoyeche): ' + sendResult.error);
+  }
   return '✓ ' + approval.name + '-ke bole deoa holo, data pathano hoyni.';
 }
 
@@ -3370,8 +3603,9 @@ function classifyTool() {
           automaticReason: { type: 'string', description: 'Required only when replyNeeded is false - a short (2-6 word) reason, e.g. "bank OTP message", "delivery notification", "marketing message". Omit when replyNeeded is true.' },
           wantsData: { type: 'boolean', description: 'true ONLY if they are asking for actual HR/employee data from the company database - counts, lists, names, headcounts, birthdays, who reports to whom, department lists, or any field (even just a phone number) about a named employee, etc. false for a question about their OWN situation (their own letter/salary/attendance), a policy question, or small talk - those go through the normal topic/memory path instead, never this one.' },
           dataRequestSummary: { type: 'string', description: 'Required only when wantsData is true - restate exactly what data they are asking for, in plain English, e.g. "current list of engineers", "headcount under Yashaswi Shroff", "Ayan Das\'s contact number". Omit when wantsData is false.' },
-          personLookupName: { type: 'string', description: 'ONLY when wantsData is true AND the request is for ONE specific field about ONE named person (e.g. "Ayan Das er contact number ta dao", "R amake Ayan Das HR er contact no. ta debe?") - the person\'s name EXACTLY as given, first name alone is fine (e.g. "Ayan"). NEVER guess or complete a partial name yourself. Omit entirely for any aggregate/list/count/headcount request (e.g. "engineers list", "headcount under X", "who reports to X") - those are never about one person\'s own personal field and must NOT set this.' },
-          personLookupField: { type: 'string', enum: ['contact_number', 'general_details', 'forbidden_pii'], description: 'Required when personLookupName is given. "contact_number" ONLY for their phone/contact/mobile/WhatsApp number. "general_details" ONLY for their full name, designation/role, department, or how long they\'ve been with the company (tenure) - these are not sensitive and never need approval. "forbidden_pii" for ANYTHING else personal about them - Aadhar, PAN, bank account/IFSC, UAN, ESIC/ESI number, date of birth, home/permanent/present address, personal email, blood group, emergency contact, salary/CTC, or any other ID/personal number. When unsure which, choose "forbidden_pii" - never guess "contact_number" or "general_details".' },
+          personLookupName: { type: 'string', description: 'ONLY when wantsData is true AND the request is for ONE specific field about ONE named person (e.g. "Ayan Das er contact number ta dao", "R amake Ayan Das HR er contact no. ta debe?") - the person\'s name EXACTLY as given in THIS message, first name alone is fine (e.g. "Ayan"). NEVER guess, complete, or expand the name using an earlier message in the conversation history - if THIS message only says "Ayan", output "Ayan", even if an earlier message in this same chat was about a specific "Ayan Biswas" or "Ayan Das". Only carry a name forward from history when the sender explicitly refers back to the same person ("tar", "oi jon-er", "same person", "ওই person", "usi ka") - in that case output the name history already resolved. Omit entirely for any aggregate/list/count/headcount request (e.g. "engineers list", "headcount under X", "who reports to X") - those are never about one person\'s own personal field and must NOT set this.' },
+          personLookupField: { type: 'string', enum: ['contact_number', 'general_details', 'other_field', 'forbidden_pii'], description: 'Required when personLookupName is given. "contact_number" ONLY for their phone/contact/mobile/WhatsApp number. "general_details" ONLY for their full name, designation/role, department, or how long they\'ve been with the company (tenure) - these are not sensitive and never need approval. "other_field" for any other single personal field that is NOT Aadhaar/PAN/bank account/salary - e.g. mail id/personal email, home/permanent/present address, date of birth, emergency contact, UAN number, ESIC/ESI number, blood group; when you choose "other_field" you MUST also set personLookupFieldLabel. "forbidden_pii" ONLY for Aadhaar, PAN, bank account/IFSC, or salary/CTC - these are NEVER shared regardless of approval. When unsure whether something is Aadhaar/PAN/bank/salary vs. a different field, choose "forbidden_pii" - never guess "other_field" for something that might be one of those four.' },
+          personLookupFieldLabel: { type: 'string', description: 'Required when personLookupField is "other_field" - name the specific field asked about, in a few words (e.g. "mail id", "address", "date of birth", "emergency contact", "UAN number", "ESIC number", "blood group"). Omit otherwise.' },
           personLookupDepartment: { type: 'string', description: 'Optional - a department mentioned to help find the right person when the name alone could match more than one employee, e.g. "HR" in "Ayan Das HR er contact number". Omit if none was mentioned.' }
         },
         required: ['intent', 'language', 'topic', 'topicLabel', 'replyNeeded', 'wantsData']
@@ -3896,7 +4130,8 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
         await clearPendingNameConfirm(phone);
         return resolveConfirmedPersonLookup({
           phone, name: senderLabel, candidate: pendingConfirm.candidate, isInactive: Boolean(pendingConfirm.isInactive),
-          personField: pendingConfirm.personField, lang: pendingConfirm.lang, hadTypo: pendingConfirm.hadTypo, history
+          personField: pendingConfirm.personField, fieldAliasKey: pendingConfirm.fieldAliasKey,
+          lang: pendingConfirm.lang, hadTypo: pendingConfirm.hadTypo, history
         });
       }
       if (NAME_CONFIRM_NO_RE.test(t)) {
@@ -3934,6 +4169,11 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
           await queuePersonContactApproval({ phone, requesterLabel: senderLabel, candidate: resolved, lang: pendingDisambig.lang, hadTypo: pendingDisambig.hadTypo });
           return { case: 'data_holding', replyText: dataRequestHoldingReply(pendingDisambig.lang, history, new Date()), summaryForOwner: null };
         }
+        if (pendingDisambig.pendingField === 'other_field') {
+          const fieldAlias = resolveApprovalFieldAliasByKey(pendingDisambig.fieldAliasKey);
+          if (fieldAlias) await queuePersonFieldApproval({ phone, requesterLabel: senderLabel, candidate: resolved, lang: pendingDisambig.lang, hadTypo: pendingDisambig.hadTypo, fieldAlias });
+          return { case: 'data_holding', replyText: dataRequestHoldingReply(pendingDisambig.lang, history, new Date()), summaryForOwner: null };
+        }
         await postOwnerNotification(senderLabel + ' (' + phone + ') "' + resolved.name + '" baeche niyeche - general details pathano holo, approval lage ni.');
         return { case: 'acknowledged', replyText: buildGeneralDetailsReply(resolved, pendingDisambig.lang, pendingDisambig.hadTypo, new Date()), summaryForOwner: null };
       }
@@ -3944,7 +4184,10 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
         const retryPrefix = DISAMBIGUATION_RETRY_PREFIX[lang] || DISAMBIGUATION_RETRY_PREFIX.english;
         const fn = DISAMBIGUATION_QUESTION[lang] || DISAMBIGUATION_QUESTION.english;
         const queryName = pendingDisambig.candidates[0].name.split(' ')[0];
-        return { case: 'acknowledged', replyText: retryPrefix + fn(queryName, pendingDisambig.candidates, pendingDisambig.pendingField), summaryForOwner: null };
+        const retryFieldKind = pendingDisambig.pendingField === 'other_field'
+          ? (((resolveApprovalFieldAliasByKey(pendingDisambig.fieldAliasKey) || {}).label || {})[lang] || 'other_field')
+          : pendingDisambig.pendingField;
+        return { case: 'acknowledged', replyText: retryPrefix + fn(queryName, pendingDisambig.candidates, retryFieldKind), summaryForOwner: null };
       }
       // Gave up after repeated non-matching replies - abandon the
       // disambiguation and let this message through to the normal
@@ -3998,8 +4241,9 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
     if (classification.personLookupName) {
       return handlePersonLookupRequest({
         phone, name: senderLabel, lang,
-        personName: classification.personLookupName,
+        personName: groundPersonLookupName(classification.personLookupName, text),
         personField: classification.personLookupField,
+        personFieldLabel: classification.personLookupFieldLabel,
         department: classification.personLookupDepartment,
         text, history
       });
@@ -4653,6 +4897,15 @@ module.exports = {
   findPersonLookupMatches,
   findEmployeesByWholeNameMatch,
   findEmployeesByFuzzyNameMatch,
+  // Exported for scripts/check-whatsapp-engine.js only - live review
+  // items 2/3 (name-grounding safety net) and 5 (approval-gated "other
+  // field" allowlist + the narrower hard-block regex).
+  groundPersonLookupName,
+  PERSON_REFERENCE_BACKREF_RE,
+  HARD_BLOCKED_PERSON_FIELD_RE,
+  resolveApprovalFieldAliasByLabel,
+  resolveApprovalFieldAliasByKey,
+  queuePersonFieldApproval,
   tenureLabel,
   buildGeneralDetailsReply,
   resolveDisambiguationReply,

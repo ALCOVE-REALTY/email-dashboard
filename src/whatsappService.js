@@ -70,16 +70,23 @@ function apiBase() {
 // always comes back as a normal {ok:false, error} the caller can log and
 // react to, exactly like every other failure mode this function already
 // returns instead of throwing.
-async function sendWhatsAppMessage(phone, message) {
+// 20s - generous enough for a real message round trip (unlike the 3s
+// typing-presence probe above), but still bounded: a hung gateway call
+// must never leave an owner-approved send stuck forever with no result.
+const SEND_MESSAGE_TIMEOUT_MS = 20000;
+async function sendWhatsAppMessageOnce(phone, message) {
   const to_number = normalizePhone(phone);
   if (!/^\d{11,15}$/.test(to_number)) {
     return { ok: false, error: "Enter a valid WhatsApp number (10 digits, or with country code)." };
   }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), SEND_MESSAGE_TIMEOUT_MS);
   try {
     const res = await fetch(apiBase() + '/sendMessage', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-maytapi-key': requireToken() },
-      body: JSON.stringify({ to_number, type: 'text', message })
+      body: JSON.stringify({ to_number, type: 'text', message }),
+      signal: controller.signal
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok || data.success === false) {
@@ -88,7 +95,22 @@ async function sendWhatsAppMessage(phone, message) {
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err.message };
+  } finally {
+    clearTimeout(timer);
   }
+}
+// Live review item 4 (found live: an approved send failed once, was only
+// ever logged as "send failed - escalated" with no retry at all, and
+// never actually reached WhatsApp). Retries exactly once after a short
+// delay on any failure - a transient gateway hiccup or timeout must never
+// permanently lose an owner-approved message on the very first attempt.
+// A phone-format validation failure fails the same way both times (not a
+// transient condition), so the retry costs nothing extra in that case.
+async function sendWhatsAppMessage(phone, message) {
+  const first = await sendWhatsAppMessageOnce(phone, message);
+  if (first.ok) return first;
+  await new Promise((resolve) => setTimeout(resolve, 2000));
+  return sendWhatsAppMessageOnce(phone, message);
 }
 
 // ---------------- Typing presence (reply-latency/human-like request) ----------------
