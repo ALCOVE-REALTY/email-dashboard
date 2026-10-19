@@ -1380,12 +1380,22 @@ const OWN_SENSITIVE_ID_LINE = {
 // misclassification can never be what stands between a sender and
 // someone else's Aadhaar/PAN - the phone-match check inside the handler
 // is the real gate either way, this is only ever a fast-path trigger.
-function detectOwnSensitiveIdRequest(text) {
+// Pure field-keyword detection, no pronoun requirement - shared by the
+// pronoun-based check below AND the own-NAME check inside
+// handlePersonLookupRequest ("Subhodeep er Aadhaar chai" when the sender
+// himself is Subhodeep - a real example given directly: referring to
+// yourself in the third person, by your own registered name, is just as
+// much a self-request as "amar Aadhaar chai").
+function detectSensitiveIdFieldKeyword(text) {
   const t = String(text || '').toLowerCase();
-  if (!/\b(amar|amader|mera|meri|my)\b/.test(t)) return null;
   if (/\baadha?ar\b/.test(t)) return 'aadhar';
   if (/\bpan\b/.test(t)) return 'pan';
   return null;
+}
+function detectOwnSensitiveIdRequest(text) {
+  const t = String(text || '').toLowerCase();
+  if (!/\b(amar|amader|mera|meri|my)\b/.test(t)) return null;
+  return detectSensitiveIdFieldKeyword(text);
 }
 async function handleOwnSensitiveIdRequest({ phone, lang, field }) {
   // The ONLY real authorization check - detectOwnSensitiveIdRequest above
@@ -1807,8 +1817,34 @@ async function replyInactiveEmployee({ phone, requesterLabel, candidate }) {
   );
 }
 
-async function handlePersonLookupRequest({ phone, name, lang, personName, personField, department }) {
+async function handlePersonLookupRequest({ phone, name, lang, personName, personField, department, text }) {
   if (personField === 'forbidden_pii') {
+    // Own-name exception (direct example given: "Subhodeep er Aadhaar
+    // chai" when the sender himself IS Subhodeep) - referring to yourself
+    // in the THIRD PERSON, by your own registered name, is the same
+    // self-request as "amar Aadhaar chai" (see detectOwnSensitiveIdRequest
+    // above decideAutoReplyCore), just not caught by that pronoun-only
+    // check since no "amar/my" was said. Only ever applies to Aadhaar/PAN
+    // specifically (ownField below), and ONLY when the named person
+    // resolves to the EXACT SAME employee record the sender's own phone
+    // already matches - the identical whole-word+fuzzy resolution every
+    // other personLookupName case already uses, never a looser match just
+    // because this is the sensitive path. Any other name (even a real,
+    // exact-match employee who just isn't the sender) still falls straight
+    // through to the hard block below, completely unchanged - still
+    // requires the owner's explicit approval either way (never
+    // auto-sent), per direct instruction.
+    const ownField = detectSensitiveIdFieldKeyword(text);
+    if (ownField && phone) {
+      const { matches: ownNameMatches } = await findPersonLookupMatches(personName, department);
+      const activeOwnNameMatches = ownNameMatches.filter((e) => e.status === 'ACTIVE');
+      if (activeOwnNameMatches.length === 1) {
+        const senderMatch = await findEmployeeByPhone(phone).catch(() => null);
+        if (senderMatch && senderMatch.emp.status === 'ACTIVE' && senderMatch.emp.employeeId === activeOwnNameMatches[0].employeeId) {
+          return handleOwnSensitiveIdRequest({ phone, lang, field: ownField });
+        }
+      }
+    }
     // Hard block - no approval loop at all, this can never be sent
     // regardless of what the owner says (spec point 1). Unaffected by
     // fuzzy matching - this gate runs before any name resolution.
@@ -3674,7 +3710,8 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
         phone, name: senderLabel, lang,
         personName: classification.personLookupName,
         personField: classification.personLookupField,
-        department: classification.personLookupDepartment
+        department: classification.personLookupDepartment,
+        text
       });
     }
     const dataRequestSummary = classification.dataRequestSummary || text.slice(0, 160);

@@ -165,6 +165,23 @@ async function checkAsync(label, fn) {
         await cleanupOwnIdTestArtifacts();
       }
     });
+    await checkAsync('own name, THIRD PERSON ("Ayan Biswas er Aadhaar number ta dao" - sender IS Ayan Biswas) is treated the same as "amar" - approval created, still gated, never auto-sent', async () => {
+      try {
+        const decision = await whatsappAssistant.decideAutoReply({ phone: OWN_ID_REAL_PHONE, name: ownIdEmp.name, firstName: ownIdEmp.name.split(' ')[0], text: ownIdEmp.name + ' er Aadhaar number ta dao', isGroup: false, history: [] });
+        if (decision.case !== 'data_holding') return false;
+        const approvals = await whatsappAssistant.listPendingApprovals();
+        const created = approvals.find((a) => a.sensitiveIdRequest && a.sensitiveIdField === 'aadhar' && a.phone === OWN_ID_REAL_PHONE);
+        return Boolean(created) && created.preparedReplyText.includes(ownIdEmp.aadhar);
+      } finally {
+        await cleanupOwnIdTestArtifacts();
+      }
+    });
+    await checkAsync('a DIFFERENT real employee\'s name, from the same sender ("Ayan Das er Aadhaar..." while sending as Ayan Biswas) - never treated as self, still refused', async () => {
+      const decision = await whatsappAssistant.decideAutoReply({ phone: OWN_ID_REAL_PHONE, name: ownIdEmp.name, firstName: ownIdEmp.name.split(' ')[0], text: 'Ayan Das er Aadhaar number ta dao', isGroup: false, history: [] });
+      const approvals = await whatsappAssistant.listPendingApprovals();
+      const anyCreated = approvals.some((a) => a.sensitiveIdRequest && a.phone === OWN_ID_REAL_PHONE);
+      return decision.case === 'acknowledged' && decision.replyText.includes('WhatsApp-e share kora jay na') && !anyCreated;
+    });
     await checkAsync('someone ELSE\'s Aadhaar (same sender, different name) is refused - no approval, existing PII block unchanged', async () => {
       const decision = await whatsappAssistant.decideAutoReply({ phone: OWN_ID_REAL_PHONE, name: ownIdEmp.name, firstName: ownIdEmp.name.split(' ')[0], text: 'Ayan Das er Aadhaar number ta dao', isGroup: false, history: [] });
       const approvals = await whatsappAssistant.listPendingApprovals();
