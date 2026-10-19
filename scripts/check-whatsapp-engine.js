@@ -205,6 +205,178 @@ async function checkAsync(label, fn) {
   }
 
   console.log('='.repeat(70));
+  console.log('LIVE REVIEW item 1: same-name ambiguity asks the SENDER (never the owner, never a multi-candidate approval card) - for data requests too');
+  console.log('='.repeat(70));
+  // A fake, never-registered number (same convention as TEST_PHONE further
+  // down this file) - draft mode is on locally regardless, so nothing is
+  // ever really sent, and it is its own constant here because TEST_PHONE
+  // itself is declared later in this same top-level async function.
+  const LIVE_REVIEW_TEST_PHONE = '910000000796';
+  // whatsappAssistant.listPendingApprovals() deliberately filters out every
+  // "910000000***" synthetic test number (see whatsappService.isSyntheticTestPhone)
+  // so test runs never leak fake rows into the owner's real Important
+  // WhatsApp page - the same reason TEST_PHONE further down this file never
+  // round-trips through listPendingApprovals() either. Reading Redis
+  // directly here (and cleaning up the same way) still proves a real
+  // approval was or wasn't written, without ever touching a real key name.
+  async function listRawApprovalsForPhone(phone) {
+    const { Redis } = require('@upstash/redis');
+    const redis = new Redis({
+      url: process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL,
+      token: process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN
+    });
+    const ids = await redis.smembers('wa-pending-approval-ids');
+    if (!ids.length) return [];
+    const raws = await redis.mget(...ids.map((id) => 'wa-pending-approval:' + id));
+    return raws
+      .map((raw) => { try { return typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (err) { return null; } })
+      .filter((a) => a && a.phone === phone);
+  }
+  await whatsappAssistant.clearPendingDisambiguation(LIVE_REVIEW_TEST_PHONE).catch(() => {});
+  await checkAsync('setup: "Ayan" currently matches exactly 2 ACTIVE real employees (Ayan Biswas, Ayan Das) - required for the ambiguity tests below', async () => {
+    const { matches } = await whatsappAssistant.findPersonLookupMatches('Ayan', null);
+    const current = matches.filter((m) => m.status !== 'INACTIVE');
+    return current.length === 2 && current.some((m) => m.name === 'Ayan Biswas') && current.some((m) => m.name === 'Ayan Das');
+  });
+  await checkAsync('a contact_number request matching 2+ ACTIVE employees ("Ayan") asks the SENDER directly - no approval created yet, no multi-candidate approval card', async () => {
+    const d = await whatsappAssistant.handlePersonLookupRequest({ phone: LIVE_REVIEW_TEST_PHONE, name: 'Test', lang: 'banglish', personName: 'Ayan', personField: 'contact_number', department: null, text: 'Ayan er contact number ta dao', history: [] });
+    const anyCreated = (await listRawApprovalsForPhone(LIVE_REVIEW_TEST_PHONE)).length > 0;
+    const pending = await whatsappAssistant.getPendingDisambiguation(LIVE_REVIEW_TEST_PHONE);
+    return d.case === 'acknowledged' && d.replyText.includes('Ayan Biswas') && d.replyText.includes('Ayan Das') &&
+      d.replyText.includes('contact number chaichhen') && !anyCreated && Boolean(pending) && pending.pendingField === 'contact_number';
+  });
+  await checkAsync('the sender answering that disambiguation with a full name creates ONE normal single-candidate approval, clearly naming the field requested and the person it is for', async () => {
+    const d = await whatsappAssistant.decideAutoReply({ phone: LIVE_REVIEW_TEST_PHONE, name: 'Test', firstName: 'Test', text: 'Ayan Das', isGroup: false, history: [] });
+    const created = (await listRawApprovalsForPhone(LIVE_REVIEW_TEST_PHONE)).find((a) => a.resolvedPersonName === 'Ayan Das');
+    const stillPending = await whatsappAssistant.getPendingDisambiguation(LIVE_REVIEW_TEST_PHONE);
+    const ok = d.case === 'data_holding' && Boolean(created) && !created.candidates &&
+      created.dataRequestSummary.toLowerCase().includes('contact number') && created.dataRequestSummary.includes('Ayan Das') &&
+      created.preparedReplyText.includes('Ayan Das') && stillPending === null;
+    if (created) await whatsappAssistant.removePendingApproval(created.id);
+    return ok;
+  });
+  await checkAsync('a department hint already given in the ORIGINAL message ("Ayan HR-er contact no") resolves directly to that one person - no question asked, no decline', async () => {
+    const d = await whatsappAssistant.handlePersonLookupRequest({ phone: LIVE_REVIEW_TEST_PHONE, name: 'Test', lang: 'banglish', personName: 'Ayan', personField: 'contact_number', department: 'HR', text: 'Ayan HR-er contact no', history: [] });
+    const created = (await listRawApprovalsForPhone(LIVE_REVIEW_TEST_PHONE)).find((a) => a.resolvedPersonName === 'Ayan Das');
+    const pending = await whatsappAssistant.getPendingDisambiguation(LIVE_REVIEW_TEST_PHONE);
+    const ok = d.case === 'data_holding' && Boolean(created) && pending === null;
+    if (created) await whatsappAssistant.removePendingApproval(created.id);
+    return ok;
+  });
+  await checkAsync('a general_details request matching 2+ employees still asks the sender the same way (unaffected by the item-1 change to contact_number)', async () => {
+    const d = await whatsappAssistant.handlePersonLookupRequest({ phone: LIVE_REVIEW_TEST_PHONE, name: 'Test', lang: 'banglish', personName: 'Ayan', personField: 'general_details', department: null, text: 'Ayan kon department e', history: [] });
+    const pending = await whatsappAssistant.getPendingDisambiguation(LIVE_REVIEW_TEST_PHONE);
+    const ok = d.case === 'acknowledged' && Boolean(pending) && pending.pendingField === 'general_details' && d.replyText.includes('sombondhe jante chan');
+    await whatsappAssistant.clearPendingDisambiguation(LIVE_REVIEW_TEST_PHONE).catch(() => {});
+    return ok;
+  });
+
+  console.log('='.repeat(70));
+  console.log('LIVE REVIEW item 2: WhatsApp lists default to Name — Designation — Department only; other fields shown only when the sender asks for them');
+  console.log('='.repeat(70));
+  const mockListCard = {
+    columns: ['Employee Code', 'Name', 'Designation', 'Department', 'DOJ', 'Status', 'Location'],
+    fullTableRows: [
+      ['AR001', 'Ayan Das', 'Executive', 'HR Dept', '2022-01-01', 'Active', 'HO'],
+      ['AR002', 'Priya Sharma', 'Manager', 'Finance', '2021-06-01', 'Active', 'HO']
+    ]
+  };
+  check('cardToWhatsAppNumberedList defaults to Name — Designation — Department only (no code, no DOJ/status/location) when the sender did not ask for extra fields', (() => {
+    const lines = whatsappAssistant.cardToWhatsAppNumberedList(mockListCard, 'engineer der list dao').split('\n');
+    return lines[0] === '1. Ayan Das — Executive — HR Dept' && lines[1] === '2. Priya Sharma — Manager — Finance';
+  })());
+  check('cardToWhatsAppNumberedList adds DOJ only when the sender\'s request mentions joining date', (() => {
+    const lines = whatsappAssistant.cardToWhatsAppNumberedList(mockListCard, 'engineer der list with joining date dao').split('\n');
+    return lines[0] === '1. Ayan Das — Executive — HR Dept — 2022-01-01';
+  })());
+  check('cardToWhatsAppNumberedList adds Status only when the sender\'s request mentions status', (() => {
+    const lines = whatsappAssistant.cardToWhatsAppNumberedList(mockListCard, 'list with status dao').split('\n');
+    return lines[0] === '1. Ayan Das — Executive — HR Dept — Active';
+  })());
+  check('columnWasExplicitlyRequested("DOJ", ...) is true only when the request text actually mentions joining/date', whatsappAssistant.columnWasExplicitlyRequested('DOJ', 'joining date soho list dao'));
+  check('columnWasExplicitlyRequested("DOJ", ...) is false for a plain list request', !whatsappAssistant.columnWasExplicitlyRequested('DOJ', 'engineer der list dao'));
+  check('columnWasExplicitlyRequested("Status", ...) is true when the request mentions status', whatsappAssistant.columnWasExplicitlyRequested('Status', 'active status soho dao'));
+  check('columnWasExplicitlyRequested("Name", ...) is always false - Name is a default column, never an "extra"', !whatsappAssistant.columnWasExplicitlyRequested('Name', 'name soho dao'));
+  check('stripInformalListIntro strips a Banglish "Ei nao," opener and capitalizes what follows', whatsappAssistant.stripInformalListIntro('Ei nao, 16 jon-er list:') === '16 jon-er list:');
+  check('stripInformalListIntro strips a Banglish "Ei je" opener', whatsappAssistant.stripInformalListIntro('Ei je list ta:') === 'List ta:');
+  check('stripInformalListIntro strips an English "here you go" opener', whatsappAssistant.stripInformalListIntro('here you go, the list:') === 'The list:');
+  check('stripInformalListIntro leaves an already-respectful opener unchanged', whatsappAssistant.stripInformalListIntro('Niche 16 jon engineer-er list dilam:') === 'Niche 16 jon engineer-er list dilam:');
+
+  console.log('='.repeat(70));
+  console.log('LIVE REVIEW item 4: name questions ("what\'s your name?") get the SAME identity template as item 3, never "I handle HR queries..."');
+  console.log('='.repeat(70));
+  check('isIdentityQuestion matches "what\'s your name?" (English contraction)', whatsappAssistant.isIdentityQuestion("what's your name?"));
+  check('isIdentityQuestion matches "what is your name"', whatsappAssistant.isIdentityQuestion('what is your name'));
+  check('isIdentityQuestion matches "apnar nam ki?" (Banglish)', whatsappAssistant.isIdentityQuestion('apnar nam ki?'));
+  check('isIdentityQuestion matches "aapka naam kya hai?" (Hinglish)', whatsappAssistant.isIdentityQuestion('aapka naam kya hai?'));
+  await checkAsync('"what is your name" gets the SAME identity template as other identity questions - no "I handle HR queries" line', async () => {
+    const d = await whatsappAssistant.decideAutoReply({ phone: LIVE_REVIEW_TEST_PHONE, name: 'Test', firstName: 'Test', text: 'what is your name', isGroup: false, history: [] });
+    return d.case === 'acknowledged' && d.replyText.includes("I'm SUBH, Subhodeep's HR Assistant") && !/I handle HR queries/i.test(d.replyText);
+  });
+
+  console.log('='.repeat(70));
+  console.log('LIVE REVIEW item 5: the "Ami SUBH..." identity line appears only once per IST calendar day per sender, including inside holding replies');
+  console.log('='.repeat(70));
+  const IST_NOW = new Date('2026-10-19T10:00:00+05:30');
+  const IST_EARLIER_TODAY = new Date('2026-10-19T01:00:00+05:30').getTime();
+  const IST_YESTERDAY = new Date('2026-10-18T22:00:00+05:30').getTime();
+  check('hasIntroducedTodayIST is false with empty history', !whatsappAssistant.hasIntroducedTodayIST([], IST_NOW));
+  check('hasIntroducedTodayIST is true for a message earlier the SAME IST calendar day (even right after local midnight)', whatsappAssistant.hasIntroducedTodayIST([{ direction: 'out', text: 'x', ts: IST_EARLIER_TODAY }], IST_NOW));
+  check('hasIntroducedTodayIST is false for a message from the PREVIOUS IST calendar day, even though it is under 24h ago', !whatsappAssistant.hasIntroducedTodayIST([{ direction: 'out', text: 'x', ts: IST_YESTERDAY }], IST_NOW));
+  check('dataRequestHoldingReply (banglish) includes the "SUBH, Subhodeep-er HR Assistant" intro on the FIRST reply of the day', whatsappAssistant.dataRequestHoldingReply('banglish', [], IST_NOW).includes('SUBH, Subhodeep-er HR Assistant'));
+  check('dataRequestHoldingReply (banglish) drops the intro (short form) once SUBH already spoke to this sender earlier the same IST day', !whatsappAssistant.dataRequestHoldingReply('banglish', [{ direction: 'out', text: 'x', ts: IST_EARLIER_TODAY }], IST_NOW).includes('SUBH, Subhodeep-er HR Assistant'));
+  check('dataRequestHoldingReply (banglish) short form still names Subhodeep and the promise to follow up, even without the intro', whatsappAssistant.dataRequestHoldingReply('banglish', [{ direction: 'out', text: 'x', ts: IST_EARLIER_TODAY }], IST_NOW).includes('Subhodeep-er sathe kotha bole'));
+  check('dataRequestHoldingReply (english) short form also has no "I\'m SUBH" intro once already introduced earlier the same IST day', !whatsappAssistant.dataRequestHoldingReply('english', [{ direction: 'out', text: 'x', ts: IST_EARLIER_TODAY }], IST_NOW).includes("I'm SUBH"));
+  check('dataRequestHoldingReply (hinglish) short form also has no "Main SUBH" intro once already introduced earlier the same IST day', !whatsappAssistant.dataRequestHoldingReply('hinglish', [{ direction: 'out', text: 'x', ts: IST_EARLIER_TODAY }], IST_NOW).includes('Main SUBH'));
+
+  console.log('='.repeat(70));
+  console.log('LIVE REVIEW item 6: first-name-only with exactly one match (active OR inactive) - confirm with the sender before assuming who they mean');
+  console.log('='.repeat(70));
+  await whatsappAssistant.clearPendingNameConfirm(LIVE_REVIEW_TEST_PHONE).catch(() => {});
+  await checkAsync('setup: "Ayon" currently matches exactly ONE real employee, INACTIVE (Ayon Mondal) - required for the inactive-confirm test below', async () => {
+    const { matches } = await whatsappAssistant.findPersonLookupMatches('Ayon', null);
+    return matches.length === 1 && matches[0].name === 'Ayon Mondal' && matches[0].status === 'INACTIVE';
+  });
+  await checkAsync('setup: "Tausif" currently matches exactly ONE real employee, ACTIVE - required for the active-confirm test below', async () => {
+    const { matches } = await whatsappAssistant.findPersonLookupMatches('Tausif', null);
+    return matches.length === 1 && matches[0].status === 'ACTIVE' && matches[0].name.includes('Tausif');
+  });
+  check('isFirstNameOnly is true when the sender typed fewer words than the matched employee\'s full name', whatsappAssistant.isFirstNameOnly('Ayon', 'Ayon Mondal'));
+  check('isFirstNameOnly is false for a full name (even with different spelling) - same word count, unaffected by item 6', !whatsappAssistant.isFirstNameOnly('Ayan Biswas', 'Ayan Biswas'));
+  await checkAsync('first-name-only, single INACTIVE match ("Ayon" -> Ayon Mondal) asks the sender to confirm before replying, rather than silently guessing', async () => {
+    const d = await whatsappAssistant.handlePersonLookupRequest({ phone: LIVE_REVIEW_TEST_PHONE, name: 'Test', lang: 'banglish', personName: 'Ayon', personField: 'general_details', department: null, text: 'Ayon er department ki', history: [] });
+    const pending = await whatsappAssistant.getPendingNameConfirm(LIVE_REVIEW_TEST_PHONE);
+    return d.case === 'acknowledged' && d.replyText.includes('Ayon Mondal') && d.replyText.includes('Apni ki') && Boolean(pending) && pending.isInactive === true;
+  });
+  await checkAsync('answering "hyan" (yes) to that confirm question resolves to the INACTIVE reply - never a general-details leak for an inactive record', async () => {
+    const d = await whatsappAssistant.decideAutoReply({ phone: LIVE_REVIEW_TEST_PHONE, name: 'Test', firstName: 'Test', text: 'hyan', isGroup: false, history: [] });
+    const pending = await whatsappAssistant.getPendingNameConfirm(LIVE_REVIEW_TEST_PHONE);
+    return d.case === 'acknowledged' && d.replyText.includes('Ayon Mondal') && d.replyText.includes('company chhere diyechhen') && pending === null;
+  });
+  await checkAsync('re-asking then answering "na" (no) gives the polite retry prompt and clears the pending confirm, without guessing a person', async () => {
+    await whatsappAssistant.handlePersonLookupRequest({ phone: LIVE_REVIEW_TEST_PHONE, name: 'Test', lang: 'banglish', personName: 'Ayon', personField: 'general_details', department: null, text: 'Ayon er department ki', history: [] });
+    const d = await whatsappAssistant.decideAutoReply({ phone: LIVE_REVIEW_TEST_PHONE, name: 'Test', firstName: 'Test', text: 'na', isGroup: false, history: [] });
+    const pending = await whatsappAssistant.getPendingNameConfirm(LIVE_REVIEW_TEST_PHONE);
+    return d.case === 'acknowledged' && d.replyText.includes('Puro naam-ta bolben') && pending === null;
+  });
+  await checkAsync('first-name-only, single ACTIVE match ("Tausif") asks the sender to confirm, then "hyan" gives the real general-details reply (no approval needed)', async () => {
+    const ask = await whatsappAssistant.handlePersonLookupRequest({ phone: LIVE_REVIEW_TEST_PHONE, name: 'Test', lang: 'banglish', personName: 'Tausif', personField: 'general_details', department: null, text: 'Tausif kon department e', history: [] });
+    const pendingAfterAsk = await whatsappAssistant.getPendingNameConfirm(LIVE_REVIEW_TEST_PHONE);
+    const d = await whatsappAssistant.decideAutoReply({ phone: LIVE_REVIEW_TEST_PHONE, name: 'Test', firstName: 'Test', text: 'hyan', isGroup: false, history: [] });
+    const pendingAfterYes = await whatsappAssistant.getPendingNameConfirm(LIVE_REVIEW_TEST_PHONE);
+    return ask.case === 'acknowledged' && Boolean(pendingAfterAsk) && pendingAfterAsk.isInactive === false &&
+      d.case === 'acknowledged' && d.replyText.includes('Tausif') && pendingAfterYes === null;
+  });
+  await checkAsync('item 1 wins over item 6: a first-name-only request that ALSO carries a department hint ("Ayan HR-er contact no") resolves directly - never the item-6 confirm question', async () => {
+    const d = await whatsappAssistant.handlePersonLookupRequest({ phone: LIVE_REVIEW_TEST_PHONE, name: 'Test', lang: 'banglish', personName: 'Ayan', personField: 'contact_number', department: 'HR', text: 'Ayan HR-er contact no', history: [] });
+    const created = (await listRawApprovalsForPhone(LIVE_REVIEW_TEST_PHONE)).find((a) => a.resolvedPersonName === 'Ayan Das');
+    const pendingConfirm = await whatsappAssistant.getPendingNameConfirm(LIVE_REVIEW_TEST_PHONE);
+    const ok = d.case === 'data_holding' && Boolean(created) && pendingConfirm === null;
+    if (created) await whatsappAssistant.removePendingApproval(created.id);
+    return ok;
+  });
+
+  console.log('='.repeat(70));
   console.log('Whole-word name matching (employeeService.matchesWholeWordName)');
   console.log('='.repeat(70));
   check('"Ayan" matches "Ayan Das"', employeeService.matchesWholeWordName('Ayan Das', 'Ayan'));
@@ -1021,10 +1193,13 @@ async function checkAsync(label, fn) {
       // template directly (not 4a8dd65, which intentionally no longer
       // applies here) - every spelling variant must produce the exact
       // SAME deterministic text, every time, no AI drafting involved. ----
+      // No "Hyan,"/"Yes," prefix (live review item 3) - that prefix only
+      // makes sense answering an actual yes/no question (identity-confirm,
+      // tested separately above), not an open "who are you?"-style one.
       const IDENTITY_QUESTION_REPLY_BY_LANG = {
-        banglish: 'Hyan, ami SUBH, Subhodeep-er HR Assistant. Apnake ki bhabe sahajyo korte pari?',
-        hinglish: 'Haan, main SUBH hoon, Subhodeep ka HR Assistant. Main aapki kaise madad kar sakta hoon?',
-        english: "Yes, I'm SUBH, Subhodeep's HR Assistant. How can I help you?"
+        banglish: 'Ami SUBH, Subhodeep-er HR Assistant. Apnake ki bhabe sahajyo korte pari?',
+        hinglish: 'Main SUBH hoon, Subhodeep ka HR Assistant. Main aapki kaise madad kar sakta hoon?',
+        english: "I'm SUBH, Subhodeep's HR Assistant. How can I help you?"
       };
       const IDENTITY_QUESTION_VARIANTS = [
         ['identity question (banglish) - "apni ke?"', 'apni ke?', 'banglish'],
@@ -1176,23 +1351,38 @@ async function checkAsync(label, fn) {
         });
       }
 
-      // ---- F. Holding - genuinely model-drafted free text (generateConversationReply, a real question with no known fact) - same STYLE required, not the same exact words (Claude's own sampling legitimately varies run to run). Bare greetings are covered separately above (A3) - they're a deterministic template now, not model-drafted. ----
+      // ---- F. Holding - live review item 7 deliberately replaced the old
+      // model-drafted reply (generateConversationReply) with a fixed,
+      // grammatically-verified, rotating template pool for this one case
+      // (a genuine question with no known fact) - compared against the
+      // CURRENT canonical pool directly, not 4a8dd65, since this mechanism
+      // intentionally no longer matches the old AI-drafted behavior at
+      // all. Bare greetings are covered separately above (A3) - also a
+      // deterministic template now, not model-drafted. ----
       const HOLDING_CASES = [
-        ['holding (banglish)', 'Amar confirmation letter ta kobe pabo?'],
-        ['holding (english)', 'When will I get my confirmation letter?'],
-        ['holding (hinglish)', 'Mera confirmation letter kab milega?']
+        ['holding (banglish)', 'Amar confirmation letter ta kobe pabo?', 'banglish'],
+        ['holding (english)', 'When will I get my confirmation letter?', 'english'],
+        ['holding (hinglish)', 'Mera confirmation letter kab milega?', 'hinglish']
       ];
-      for (const [label, text] of HOLDING_CASES) {
-        await checkAsync('equivalence: ' + label + ' - "' + text + '" (same case + same style/length, not exact wording)', async () => {
-          const [oldPhone, newPhone] = phonePair();
-          const [oldD, newD] = await Promise.all([
-            oldWa.decideAutoReply({ phone: oldPhone, name: 'Test', firstName: 'Test', text, isGroup: false, history: [] }),
-            whatsappAssistant.decideAutoReply({ phone: newPhone, name: 'Test', firstName: 'Test', text, isGroup: false, history: [] })
-          ]);
-          await Promise.all([whatsappAssistant.resetFollowupCount(oldPhone), whatsappAssistant.resetFollowupCount(newPhone)]);
-          return Boolean(oldD) && Boolean(newD) && oldD.case === newD.case && looksLikeSameStyle(oldD.replyText, newD.replyText);
+      const INFORMAL_BENGALI_VERB_RE = /\b(pabe|korbe|bolbe|dibe|debe|jabe|ashbe)\b/i; // informal "tumi" conjugation - "paben" etc. is the correct "apni" form
+      for (const [label, text, lang] of HOLDING_CASES) {
+        await checkAsync('equivalence: ' + label + ' - "' + text + '" (deterministic rotating template, no informal "tumi" conjugation, names the topic, never invents a date)', async () => {
+          const [phoneA] = phonePair();
+          const d = await whatsappAssistant.decideAutoReply({ phone: phoneA, name: 'Test', firstName: 'Test', text, isGroup: false, history: [] });
+          await whatsappAssistant.resetFollowupCount(phoneA);
+          return d.case === 'holding' && typeof d.replyText === 'string' && d.replyText.length > 0 &&
+            !INFORMAL_BENGALI_VERB_RE.test(d.replyText) && !whatsappAssistant.containsUnbackedTimeframePromise(d.replyText) &&
+            /confirmation letter/i.test(d.replyText);
         });
       }
+      await checkAsync('buildNoInfoYetReply rotates through 4 distinct variants per language by follow-up count, never repeating consecutively', () => {
+        for (const lang of ['banglish', 'hinglish', 'english']) {
+          const seen = new Set();
+          for (let n = 1; n <= 4; n++) seen.add(whatsappAssistant.buildNoInfoYetReply('their appointment letter', lang, n));
+          if (seen.size !== 4) return false;
+        }
+        return true;
+      });
 
       // ---- G. Memory-fact reply drafting (generateDraft - the EXACT call site the FAST_MODEL regression touched) - called directly with a fabricated memoryFact so this doesn't depend on a real memoryService fixture, and checked for the SAME model tier by style/length rather than exact wording ----
       const MEMORY_CASES = [

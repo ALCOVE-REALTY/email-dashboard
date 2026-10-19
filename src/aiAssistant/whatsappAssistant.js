@@ -1250,21 +1250,44 @@ const DISAMBIGUATION_RETRY_PREFIX = {
 // {label, value} rows list. Capped at 100 lines - a sane bound for a
 // single WhatsApp send, not a data-completeness decision (the owner can
 // always ask for a narrower request if a real list is bigger than this).
-function cardToWhatsAppNumberedList(card) {
+// Live review item 2: default columns are Name/Designation/Department
+// ONLY - every other column (DOJ, status, location, tenure, gender,
+// contact number, ...) is shown ONLY when the sender's own request text
+// actually asked for it by name/keyword. Matched against a small known
+// list of real column names this app's own list/report tools produce;
+// an UNRECOGNIZED extra column (not Name/Designation/Department and not
+// in this list either) is conservatively never shown, same principle as
+// every other "when unsure, the safer default wins" rule in this file.
+const DEFAULT_LIST_COLUMN_RE = /^(name|designation|department|dept\.?)$/i;
+const EXTRA_LIST_COLUMNS = [
+  { column: /^(doj|date\s*of\s*joining|joining\s*date)$/i, keyword: /\b(doj|joining\s*date|join(ed|ing)?\s*date|date\s*of\s*joining)\b/i },
+  { column: /^status$/i, keyword: /\b(status|active|inactive)\b/i },
+  { column: /^location$/i, keyword: /\b(location|plot|site)\b/i },
+  { column: /^(tenure|total\s*(yrs?|years?)\.?\s*of\s*exp\.?|total\s*experience)$/i, keyword: /\b(tenure|experience|years?|yrs?)\b/i },
+  { column: /^gender$/i, keyword: /\bgender\b/i },
+  { column: /^(contact\s*number|phone|mobile)$/i, keyword: /\b(contact|phone|mobile|number)\b/i }
+];
+function columnWasExplicitlyRequested(columnName, requestText) {
+  const t = String(requestText || '').toLowerCase();
+  const trimmed = columnName.trim();
+  const rule = EXTRA_LIST_COLUMNS.find((r) => r.column.test(trimmed));
+  return Boolean(rule) && rule.keyword.test(t);
+}
+function cardToWhatsAppNumberedList(card, requestText) {
   if (!card) return '';
   if (card.columns && (card.fullTableRows || card.tableRows)) {
     const rows = (card.fullTableRows || card.tableRows).slice(0, 100);
     if (!rows.length) return '';
-    // Every column is shown except a pure identity CODE (Emp Code/
-    // Employee ID) - meaningless to an external WhatsApp requester -
-    // in the same order the card itself already uses (identity/Name
-    // first, role/place next, date/number last, per the standard
-    // column-order rule every list/report tool now follows).
+    const isCode = (c) => /^(emp\s*code|employee\s*code|employee\s*id)$/i.test(c.trim());
     const keepIdx = card.columns
       .map((c, i) => ({ c: String(c || ''), i }))
-      .filter(({ c }) => !/^(emp\s*code|employee\s*code|employee\s*id)$/i.test(c.trim()))
+      .filter(({ c }) => !isCode(c) && (DEFAULT_LIST_COLUMN_RE.test(c.trim()) || columnWasExplicitlyRequested(c, requestText)))
       .map(({ i }) => i);
-    const idx = keepIdx.length ? keepIdx : card.columns.map((_, i) => i);
+    // Narrowing to defaults should never leave an EMPTY list (e.g. a
+    // 2-column count-by-X breakdown with no Name/Designation/Department
+    // at all) - fall back to every non-code column rather than sending
+    // nothing.
+    const idx = keepIdx.length ? keepIdx : card.columns.map((c, i) => ({ c: String(c || ''), i })).filter(({ c }) => !isCode(c)).map(({ i }) => i);
     return rows.map((r, i) => (i + 1) + '. ' + idx.map((j) => r[j]).join(' — ')).join('\n');
   }
   const rows = (card.fullRows || card.rows || []).slice(0, 100);
@@ -1299,18 +1322,31 @@ async function buildWhatsAppSummaryLine(dataRequestSummary, card, replyText, lan
     ? 'Real count: ' + card.footer.value + '.'
     : 'Real answer (use ONLY these exact facts/numbers, never add a new one): ' + replyText;
   const instruction =
-    'Write ONE short, natural WhatsApp message sentence in ' + (WHATSAPP_LANGUAGE_LABEL[lang] || 'English') +
+    'Write ONE short, natural, RESPECTFUL WhatsApp message sentence in ' + (WHATSAPP_LANGUAGE_LABEL[lang] || 'English') +
     ', about: ' + dataRequestSummary + '. ' + factLine + ' ' +
     (hasList
-      ? 'A numbered list of names will be sent immediately after this sentence, so end it with a colon (e.g. "Total 16 jon active engineer ache:") - do not list any names yourself.'
+      ? 'A numbered list of names will be sent immediately after this sentence, so end it with a colon - e.g. "Niche 16 jon active engineer-er list dilam:" (Bengali) / "Here is the list of 16 active engineers:" (English) / "Neeche 16 active engineers ki list hai:" (Hindi) - do not list any names yourself.'
       : 'This is the complete answer, no list follows - do not end with a colon.') +
-    ' Never mention "card", "report", "View Report", "Download" or any other app-only concept - this is a plain WhatsApp text message. Never use markdown (no tables, no bold, no bullet points). Output only that one sentence, nothing else, no quotes around it.';
+    ' ALWAYS use the formal/respectful register (apni in Bengali, aap in Hindi) - this goes to an external contact, never a friend, so NEVER use "tumi"/"tui"/"tum" and NEVER open with a casual filler like "Ei nao"/"Ei je"/"Here you go" - start directly and politely instead. Never mention "card", "report", "View Report", "Download" or any other app-only concept - this is a plain WhatsApp text message. Never use markdown (no tables, no bold, no bullet points). Output only that one sentence, nothing else, no quotes around it.';
   const messages = [
     { role: 'system', content: instruction },
     { role: 'user', content: 'Compose the sentence now.' }
   ];
-  const text = await callClaudeChat(apiKey, DRAFT_MODEL, messages).catch(() => null);
-  return text || replyText;
+  const drafted = await callClaudeChat(apiKey, DRAFT_MODEL, messages).catch(() => null);
+  return stripInformalListIntro(drafted) || replyText;
+}
+// Structural safety net (same principle as stripForbiddenGreeting) - the
+// prompt above already asks for the formal register and bans "Ei nao",
+// but a prompt instruction alone isn't reliable enough to trust
+// completely (found live: the model opened a list summary with "Ei nao,"
+// - an informal "here you go" - despite no such instruction existing at
+// the time; this strips it even if a future drift reintroduces it).
+const INFORMAL_LIST_OPENER_RE = /^\s*(ei\s+nao|ei\s+je|here\s+you\s+go)\s*,?\s*/i;
+function stripInformalListIntro(text) {
+  if (!text) return text;
+  const stripped = text.replace(INFORMAL_LIST_OPENER_RE, '');
+  if (stripped === text || !stripped) return text;
+  return stripped.charAt(0).toUpperCase() + stripped.slice(1);
 }
 
 // ---------------- Hard PII block (never left to the model) ----------------
@@ -1397,7 +1433,7 @@ function detectOwnSensitiveIdRequest(text) {
   if (!/\b(amar|amader|mera|meri|my)\b/.test(t)) return null;
   return detectSensitiveIdFieldKeyword(text);
 }
-async function handleOwnSensitiveIdRequest({ phone, lang, field }) {
+async function handleOwnSensitiveIdRequest({ phone, lang, field, history }) {
   // The ONLY real authorization check - detectOwnSensitiveIdRequest above
   // is just a text pattern, it proves nothing by itself. Must be a KNOWN,
   // ACTIVE employee whose OWN registered contact number is this EXACT
@@ -1439,7 +1475,7 @@ async function handleOwnSensitiveIdRequest({ phone, lang, field }) {
     '⚠️ Own ' + fieldLabel + ' request — ' + emp.name + ' (' + emp.employeeId + ') from their registered number. ' +
     "Je message jabe: '" + outgoingText + "'"
   );
-  return { case: 'data_holding', replyText: DATA_REQUEST_HOLDING_REPLY[lang] || DATA_REQUEST_HOLDING_REPLY.english, summaryForOwner: null };
+  return { case: 'data_holding', replyText: dataRequestHoldingReply(lang, history, new Date()), summaryForOwner: null };
 }
 
 // Lazy require (not a top-of-file import) - assistantShared.js, which
@@ -1517,7 +1553,7 @@ async function prepareAndQueueDataApproval({ phone, name, text, dataRequestSumma
   // which can reference "card"/"View Report" or repeat the rows as a
   // markdown table - neither belongs on WhatsApp) followed by the real
   // list rendered deterministically in code, never by the model.
-  const list = cardToWhatsAppNumberedList(prepared.card);
+  const list = cardToWhatsAppNumberedList(prepared.card, text);
   const summary = await buildWhatsAppSummaryLine(dataRequestSummary, prepared.card, prepared.replyText, lang);
   const finalText = list ? summary + '\n\n' + list : summary;
   await savePendingApproval({
@@ -1619,20 +1655,98 @@ function countLabel(n, lang) {
 // matches") - uses the FIRST candidate's first name (the corrected
 // spelling) rather than echoing the sender's own typo back at them,
 // matching the spec's own example ("Ayan naame dujon achen", not "Ayon").
+// Field-aware ending (live review item 1: ambiguous CONTACT-NUMBER
+// requests now ask the sender too, same as general_details already did -
+// "Apni kar sombondhe jante chan?" only ever made sense for the general
+// "which one do you mean" case, not "whose CONTACT NUMBER do you want").
+// Keyed by the same `personField` values handlePersonLookupRequest
+// already uses; defaults to 'general_details' so every EXISTING caller
+// (passing only queryName/candidates) keeps its exact current wording.
+const DISAMBIGUATION_LAST_QUESTION = {
+  general_details: {
+    banglish: 'Apni kar sombondhe jante chan?',
+    hinglish: 'Aap kiske baare mein jaanna chahte hain?',
+    english: 'Which one would you like to know about?'
+  },
+  contact_number: {
+    banglish: 'Apni kar contact number chaichhen?',
+    hinglish: 'Aap kiska contact number chahte hain?',
+    english: 'Whose contact number would you like?'
+  }
+};
 const DISAMBIGUATION_QUESTION = {
-  banglish: (queryName, candidates) =>
+  banglish: (queryName, candidates, fieldKind) =>
     'Amader company-te ' + queryName + ' naame ' + countLabel(candidates.length, 'banglish') + ' achen: ' +
     candidates.map((c, i) => (i + 1) + ') ' + c.name + ' — ' + naturalizeDirectoryValue(c.department)).join(' ') +
-    '. Apni kar sombondhe jante chan?',
-  hinglish: (queryName, candidates) =>
+    '. ' + DISAMBIGUATION_LAST_QUESTION[fieldKind || 'general_details'].banglish,
+  hinglish: (queryName, candidates, fieldKind) =>
     'Hamari company mein ' + queryName + ' naam ke ' + countLabel(candidates.length, 'hinglish') + ' hain: ' +
     candidates.map((c, i) => (i + 1) + ') ' + c.name + ' — ' + naturalizeDirectoryValue(c.department)).join(' ') +
-    '. Aap kiske baare mein jaanna chahte hain?',
-  english: (queryName, candidates) =>
+    '. ' + DISAMBIGUATION_LAST_QUESTION[fieldKind || 'general_details'].hinglish,
+  english: (queryName, candidates, fieldKind) =>
     'There are ' + candidates.length + ' people named ' + queryName + ' at our company: ' +
     candidates.map((c, i) => (i + 1) + ') ' + c.name + ' — ' + naturalizeDirectoryValue(c.department)).join(' ') +
-    '. Which one would you like to know about?'
+    '. ' + DISAMBIGUATION_LAST_QUESTION[fieldKind || 'general_details'].english
 };
+// First-name-only confirmation (live review item 6) - "Ayon" alone, when
+// it matches exactly ONE employee (active OR inactive) whose full name
+// has MORE words than what the sender actually typed, is confirmed with
+// the sender before SUBH assumes who they mean; a full name (even
+// misspelled) skips this entirely and keeps the existing typo-note flow.
+function isFirstNameOnly(typedName, fullName) {
+  const typedWords = String(typedName || '').trim().split(/\s+/).filter(Boolean);
+  const fullWords = String(fullName || '').trim().split(/\s+/).filter(Boolean);
+  return typedWords.length > 0 && typedWords.length < fullWords.length;
+}
+const NAME_CONFIRM_QUESTION = {
+  banglish: (name, department) => 'Apni ki ' + name + ' (' + naturalizeDirectoryValue(department) + ')-er kotha bolchhen?',
+  hinglish: (name, department) => 'Kya aap ' + name + ' (' + naturalizeDirectoryValue(department) + ') ki baat kar rahe hain?',
+  english: (name, department) => 'Do you mean ' + name + ' (' + naturalizeDirectoryValue(department) + ')?'
+};
+const NAME_CONFIRM_RETRY = {
+  banglish: 'Thik ache, kar kotha bolchhen? Puro naam-ta bolben?',
+  hinglish: 'Theek hai, aap kiske baare mein baat kar rahe hain? Pura naam bataiyega?',
+  english: 'Okay, who did you mean? Could you give me the full name?'
+};
+const NAME_CONFIRM_YES_RE = /^(hyan|ha|haan|hae|yes|yeah|yep|ji|jee)\b/i;
+const NAME_CONFIRM_NO_RE = /^(na|nah|no|nope)\b/i;
+const PENDING_NAME_CONFIRM_PREFIX = 'wa-pending-name-confirm:';
+const PENDING_NAME_CONFIRM_TTL_SECONDS = 30 * 60;
+async function savePendingNameConfirm(phone, data) {
+  const redis = getClient();
+  if (!redis) return;
+  try { await redis.set(PENDING_NAME_CONFIRM_PREFIX + phone, JSON.stringify(data), { ex: PENDING_NAME_CONFIRM_TTL_SECONDS }); } catch (err) { /* best effort */ }
+}
+async function getPendingNameConfirm(phone) {
+  const redis = getClient();
+  if (!redis) return null;
+  try {
+    const raw = await redis.get(PENDING_NAME_CONFIRM_PREFIX + phone);
+    return raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : null;
+  } catch (err) { return null; }
+}
+async function clearPendingNameConfirm(phone) {
+  const redis = getClient();
+  if (!redis) return;
+  try { await redis.del(PENDING_NAME_CONFIRM_PREFIX + phone); } catch (err) { /* best effort */ }
+}
+// Runs the SAME field-specific outcome a normal (non-first-name-only)
+// single match would have gotten - shared by handlePersonLookupRequest's
+// own direct path and the "yes" branch of a confirmed first-name-only
+// lookup, so the two can never silently diverge.
+async function resolveConfirmedPersonLookup({ phone, name, candidate, isInactive, personField, lang, hadTypo, history }) {
+  if (isInactive) {
+    await replyInactiveEmployee({ phone, requesterLabel: name, candidate, lang });
+    return { case: 'acknowledged', replyText: (INACTIVE_EMPLOYEE_REPLY[lang] || INACTIVE_EMPLOYEE_REPLY.english)(candidate.name, candidate.gender), summaryForOwner: null };
+  }
+  if (personField === 'general_details') {
+    await postOwnerNotification(name + ' (' + phone + ') ' + candidate.name + ' (' + candidate.department + ')-er general details jigges korechhe (naam confirm kore) - approval chara e direct reply gechhe.');
+    return { case: 'acknowledged', replyText: buildGeneralDetailsReply(candidate, lang, hadTypo, new Date()), summaryForOwner: null };
+  }
+  // contact_number (default/only remaining value)
+  await queuePersonContactApproval({ phone, requesterLabel: name, candidate, lang, hadTypo });
+  return { case: 'data_holding', replyText: dataRequestHoldingReply(lang, history, new Date()), summaryForOwner: null };
+}
 const CONTACT_NUMBER_LINE = {
   banglish: (name, number) => name + '-er contact number: ' + number,
   hinglish: (name, number) => name + ' ka contact number: ' + number,
@@ -1817,7 +1931,7 @@ async function replyInactiveEmployee({ phone, requesterLabel, candidate }) {
   );
 }
 
-async function handlePersonLookupRequest({ phone, name, lang, personName, personField, department, text }) {
+async function handlePersonLookupRequest({ phone, name, lang, personName, personField, department, text, history }) {
   if (personField === 'forbidden_pii') {
     // Own-name exception (direct example given: "Subhodeep er Aadhaar
     // chai" when the sender himself IS Subhodeep) - referring to yourself
@@ -1841,7 +1955,7 @@ async function handlePersonLookupRequest({ phone, name, lang, personName, person
       if (activeOwnNameMatches.length === 1) {
         const senderMatch = await findEmployeeByPhone(phone).catch(() => null);
         if (senderMatch && senderMatch.emp.status === 'ACTIVE' && senderMatch.emp.employeeId === activeOwnNameMatches[0].employeeId) {
-          return handleOwnSensitiveIdRequest({ phone, lang, field: ownField });
+          return handleOwnSensitiveIdRequest({ phone, lang, field: ownField, history });
         }
       }
     }
@@ -1882,6 +1996,33 @@ async function handlePersonLookupRequest({ phone, name, lang, personName, person
     }
   }
 
+  // Live review item 6: exactly ONE overall match (active OR inactive)
+  // AND the sender typed only a first name (fewer words than the match's
+  // real full name) - confirm with the sender before assuming who they
+  // mean, rather than silently guessing. A FULL name (even misspelled)
+  // never reaches this - isFirstNameOnly is false whenever the typed name
+  // already has as many words as the match, so that case keeps the
+  // existing typo-note flow unchanged. Several matches still go straight
+  // to the "dujon achen..." question below, unaffected. Skipped entirely
+  // when the sender's ORIGINAL message already gave a department/
+  // designation hint (item 1: "Ayan HR-er contact no" -> resolve directly,
+  // no question) - supplying that hint is itself the sender identifying
+  // who they mean, so asking again here would contradict item 1's
+  // explicit "no question, no decline" requirement.
+  if (current.length + inactive.length === 1 && !department) {
+    const soleMatch = current[0] || inactive[0];
+    if (isFirstNameOnly(personName, soleMatch.name)) {
+      const isInactiveCandidate = inactive.length === 1;
+      await savePendingNameConfirm(phone, { candidate: soleMatch, isInactive: isInactiveCandidate, personField, lang, hadTypo });
+      await postOwnerNotification(
+        name + ' (' + phone + ') "' + personName + '" bolechhe (shudhu first name) - ' + soleMatch.name + ' (' + soleMatch.department + ')' +
+        (isInactiveCandidate ? ', inactive' : '') + ' kina, sender-ke jigges kora hocche.'
+      );
+      const fn = NAME_CONFIRM_QUESTION[lang] || NAME_CONFIRM_QUESTION.english;
+      return { case: 'acknowledged', replyText: fn(soleMatch.name, soleMatch.department), summaryForOwner: null };
+    }
+  }
+
   if (!current.length && inactive.length) {
     // Only inactive match(es) - which one (if several) doesn't change the
     // outcome, since no data is ever shared either way; use the first for
@@ -1904,22 +2045,30 @@ async function handlePersonLookupRequest({ phone, name, lang, personName, person
     // guessing or escalating to the owner (spec: "ask the sender directly
     // on WhatsApp which one"); stored so the sender's next message (a
     // number or a name) can be resolved back to one candidate.
-    await savePendingDisambiguation(phone, { candidates: current, lang, hadTypo, attempts: 1 });
+    await savePendingDisambiguation(phone, { candidates: current, lang, hadTypo, attempts: 1, pendingField: 'general_details' });
     await postOwnerNotification(current.length + ' jon "' + personName + '" (general details) match korche - sender-ke jigges kora hocche kon jon: ' + current.map((c) => c.name + ' (' + c.department + ')').join(', ') + '.');
     const queryName = current[0].name.split(' ')[0];
     const note = hadTypo ? (TYPO_NOTE[lang] || TYPO_NOTE.english) : '';
     const fn = DISAMBIGUATION_QUESTION[lang] || DISAMBIGUATION_QUESTION.english;
-    return { case: 'acknowledged', replyText: note + fn(queryName, current), summaryForOwner: null };
+    return { case: 'acknowledged', replyText: note + fn(queryName, current, 'general_details'), summaryForOwner: null };
   }
 
-  // contact_number (default/only remaining value) - unchanged approval-
-  // required flow, now fed by fuzzy-aware matches.
+  // contact_number (default/only remaining value) - live review item 1:
+  // 2+ matches now ask the SENDER directly (same disambiguation mechanism
+  // general_details already used), never an owner-facing multi-candidate
+  // approval card - the owner only ever sees ONE normal approval, for
+  // whichever single person the sender confirms.
   if (current.length === 1) {
     await queuePersonContactApproval({ phone, requesterLabel: name, candidate: current[0], lang, hadTypo });
   } else {
-    await queueMultiCandidateContactApproval({ phone, requesterLabel: name, candidates: current, lang, hadTypo, personName });
+    await savePendingDisambiguation(phone, { candidates: current, lang, hadTypo, attempts: 1, pendingField: 'contact_number' });
+    await postOwnerNotification(current.length + ' jon "' + personName + '" (contact number) match korche - sender-ke jigges kora hocche kon jon: ' + current.map((c) => c.name + ' (' + c.department + ')').join(', ') + '.');
+    const queryName = current[0].name.split(' ')[0];
+    const note = hadTypo ? (TYPO_NOTE[lang] || TYPO_NOTE.english) : '';
+    const fn = DISAMBIGUATION_QUESTION[lang] || DISAMBIGUATION_QUESTION.english;
+    return { case: 'acknowledged', replyText: note + fn(queryName, current, 'contact_number'), summaryForOwner: null };
   }
-  return { case: 'data_holding', replyText: DATA_REQUEST_HOLDING_REPLY[lang] || DATA_REQUEST_HOLDING_REPLY.english, summaryForOwner: null };
+  return { case: 'data_holding', replyText: dataRequestHoldingReply(lang, history, new Date()), summaryForOwner: null };
 }
 
 // Sends over multiple messages when the real answer is too long for one
@@ -3287,6 +3436,50 @@ function sanitizeTopicLabel(topicLabel) {
   const words = String(topicLabel || 'their question').trim().replace(/[,;]+$/, '').split(/\s+/);
   return words.slice(0, MAX_TOPIC_LABEL_WORDS).join(' ') || 'their question';
 }
+// Live review item 7: "I don't know yet" replies must be polite,
+// complete and grammatically correct (formal apni/aap forms - never
+// "pabe" where "paben" is correct), always name the topic, never invent
+// a date, and rotate rather than repeat. Previously this was entirely
+// AI-drafted (generateConversationReply, prompted to follow these exact
+// rules) - reliable most of the time, but found live to occasionally
+// slip into informal conjugation despite the prompt. A small, pre-
+// written, rotating pool removes that failure mode entirely for this one
+// specific, extremely common reply shape, the same way every other
+// "answer never varies" case in this file (identity, PII block, data-
+// request holding) is a fixed template rather than a model guess.
+// Topic-agnostic phrasing on purpose (no "kobe paben" style baked in) -
+// fits a "when will I get X" question just as naturally as a "what's the
+// status of Y" one, since every variant just names the topic and defers
+// to Subhodeep rather than attempting to characterize the question itself.
+const NO_INFO_YET_REPLIES = {
+  banglish: (topicLabel) => [
+    'Apni ' + topicLabel + ' niye jiggesh korechhen, kintu ei muhurte amar kache er kono nishchit update nei. Ami Subhodeep-er sathe kotha bole apnake taratari janiye debo.',
+    topicLabel + ' niye ekhon kono sushposhto uttor amar kache nei. Subhodeep-er sathe check kore ami apnake sheeghroi janabo.',
+    'Ei muhurte ' + topicLabel + '-er bishoye kono nishchit update amar kache nei. Ami Subhodeep-ke jiggesh kore apnake update debo.',
+    topicLabel + ' niye apnar proshno-ta bujhte parchi, tobe ekhon er sothik uttor amar kache nei. Subhodeep-er sathe alochona kore apnake jotodruto shombhob janabo.'
+  ],
+  hinglish: (topicLabel) => [
+    'Aap ' + topicLabel + ' ke baare mein pooch rahe hain, lekin abhi mere paas iska koi pakka update nahi hai. Main Subhodeep se baat karke aapko jaldi bata dunga.',
+    topicLabel + ' ke baare mein abhi mere paas koi exact jawab nahi hai. Subhodeep se check karke main aapko jald hi bata dunga.',
+    'Is waqt ' + topicLabel + ' ke baare mein koi pakki jaankari mere paas nahi hai. Main Subhodeep se poochh kar aapko update dunga.',
+    topicLabel + ' ke baare mein aapka sawaal samajh sakta hoon, lekin abhi iska sahi jawab mere paas nahi hai. Subhodeep se baat karke jald se jald aapko bataunga.'
+  ],
+  english: (topicLabel) => [
+    "You asked about " + topicLabel + ", but I don't have a confirmed update on this right now. I'll check with Subhodeep and get back to you soon.",
+    "I don't have an exact answer on " + topicLabel + " at the moment. I'll check with Subhodeep and let you know shortly.",
+    "I don't have confirmed information on " + topicLabel + " right now. I'll ask Subhodeep and update you.",
+    "I understand you're asking about " + topicLabel + ", but I don't have the right answer at the moment. I'll discuss it with Subhodeep and get back to you as soon as possible."
+  ]
+};
+// Rotates by follow-up count (1st ask -> variant 0, 2nd -> variant 1,
+// ...), so a repeated question about the SAME topic never gets the exact
+// same line twice in a row for at least 4 asks - cheap, deterministic
+// "never repeat" instead of relying on the model to notice its own history.
+function buildNoInfoYetReply(topicLabel, lang, followupCount) {
+  const pool = (NO_INFO_YET_REPLIES[lang] || NO_INFO_YET_REPLIES.english)(sanitizeTopicLabel(topicLabel));
+  const idx = (Math.max(1, followupCount || 1) - 1) % pool.length;
+  return pool[idx];
+}
 const SAFE_NO_PROMISE_FALLBACK = {
   banglish: (topicLabel) => 'Bujhte parchi apni ' + sanitizeTopicLabel(topicLabel) + ' niye jiggesh korchen. Ami Subhodeep-er sathe kotha bole apnake exact update janabo.',
   hinglish: (topicLabel) => 'Samajh sakta hoon aap ' + sanitizeTopicLabel(topicLabel) + ' ke baare mein pooch rahe hain. Main Subhodeep se baat karke aapko exact update bata dunga.',
@@ -3434,18 +3627,23 @@ function isIdentityQuestion(text) {
     /^(apni|aapni|tumi)\s+(ke|k|ki|kon)$/.test(t) ||
     /^(apnar|tomar)\s*na?am\s+(ki|kya)$/.test(t) ||
     /^who\s+(are\s+you|r\s+u|is\s+(this|that|speaking|replying))$/.test(t) ||
+    // "what's your name"/"what is your name" (item 4, live review) -
+    // previously unmatched in English, falling through to a free-form AI
+    // answer ("My name is SUBH. I'm the HR Assistant on Subhodeep's
+    // team...") instead of the one fixed identity line.
+    /^what('?s|\s+is)\s+your\s+name$/.test(t) ||
     /^(aap|tum)\s+(kaun|kon)\s+ho$/.test(t) ||
     /^(aapka|tera|tumhara)\s*naam\s+kya\s+hai$/.test(t)
   );
 }
-// Same wording as IDENTITY_CONFIRM_REPLY below, on direct instruction -
-// every identity question (open "who are you" or a yes/no "are you a
-// bot") now gets the exact same reply, never two different phrasings for
-// what the sender experiences as the same question.
+// Live review: no "Hyan,"/"Yes," prefix for an OPEN question ("apni ke?"/
+// "who are you?"/"what's your name?") - that prefix only makes sense as
+// an answer to an actual yes/no question (IDENTITY_CONFIRM_REPLY below,
+// unchanged, keeps it for "is this a bot?"/"are you an assistant?").
 const IDENTITY_REPLY = {
-  banglish: 'Hyan, ami SUBH, Subhodeep-er HR Assistant. Apnake ki bhabe sahajyo korte pari?',
-  hinglish: 'Haan, main SUBH hoon, Subhodeep ka HR Assistant. Main aapki kaise madad kar sakta hoon?',
-  english: "Yes, I'm SUBH, Subhodeep's HR Assistant. How can I help you?"
+  banglish: 'Ami SUBH, Subhodeep-er HR Assistant. Apnake ki bhabe sahajyo korte pari?',
+  hinglish: 'Main SUBH hoon, Subhodeep ka HR Assistant. Main aapki kaise madad kar sakta hoon?',
+  english: "I'm SUBH, Subhodeep's HR Assistant. How can I help you?"
 };
 // Greeting-only message (reply-restoration request) - "hi"/"hii"/"hello"/
 // "hey"/"hlw"/"namaskar"/"namaste"/"good morning" etc. with no other
@@ -3528,6 +3726,26 @@ const DATA_REQUEST_HOLDING_REPLY = {
   hinglish: 'Main SUBH hoon, Subhodeep ka HR Assistant. Main Subhodeep se baat karke jaldi hi aapki zaroorat ke hisaab se jaankari bhejta hoon.',
   english: "I'm SUBH, Subhodeep's HR Assistant. I'll check with Subhodeep and share the information you need shortly."
 };
+// Same holding line, minus the self-introduction - used once SUBH has
+// already introduced itself to this sender earlier TODAY (live review
+// item 5: "the identity line appears only in the FIRST reply... incl.
+// inside holding replies"). Picked by dataRequestHoldingReply below,
+// never by comparing strings against DATA_REQUEST_HOLDING_REPLY directly.
+const DATA_REQUEST_HOLDING_REPLY_SHORT = {
+  banglish: 'Ami Subhodeep-er sathe kotha bole khub shighroi apnar dorkar moto tottho pathacchi.',
+  hinglish: 'Main Subhodeep se baat karke jaldi hi aapki zaroorat ke hisaab se jaankari bhejta hoon.',
+  english: "I'll check with Subhodeep and share the information you need shortly."
+};
+// The one place every data-request holding reply is built - callers never
+// read DATA_REQUEST_HOLDING_REPLY/_SHORT directly, so this calendar-day
+// rule can never silently drift between the several call sites that need
+// it (handleOwnSensitiveIdRequest, handlePersonLookupRequest's
+// contact_number path, and decideAutoReplyCore's own general wantsData
+// branch).
+function dataRequestHoldingReply(lang, history, now) {
+  const dict = hasIntroducedTodayIST(history, now) ? DATA_REQUEST_HOLDING_REPLY_SHORT : DATA_REQUEST_HOLDING_REPLY;
+  return dict[lang] || dict.english;
+}
 
 // ---------------- AI disclosure on the first reply of a conversation ----------------
 // A short, one-time identity line prepended to the first auto-reply of a
@@ -3553,6 +3771,34 @@ const ALREADY_INTRODUCES_SUBH_RE = /\b(i'?m subh|main subh|ami subh)\b/i;
 function hasRecentIncomingMessage(history) {
   const cutoff = Date.now() - 24 * 60 * 60 * 1000;
   return (history || []).some((h) => h.direction === 'in' && h.ts >= cutoff);
+}
+// IST calendar day (YYYY-MM-DD) a UTC instant falls on - used ONLY to
+// answer "has SUBH already introduced itself to this sender TODAY" (live
+// review item 5), a distinct question from hasRecentIncomingMessage's own
+// ROLLING 24h window (which answers "is this an ongoing conversation" and
+// still gates a few other things unrelated to the identity line).
+function istDayKeyOf(date) {
+  const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(date);
+  const get = (t) => (parts.find((p) => p.type === t) || {}).value || '';
+  return get('year') + '-' + get('month') + '-' + get('day');
+}
+// Any message at all (either direction) already exchanged TODAY (IST) -
+// not a rolling time window, and deliberately not narrowed to "an
+// outgoing message that already contains the intro" (an earlier version
+// of this check required that specifically, which wrongly re-introduced
+// SUBH on something as small as a same-day emoji reaction, since neither
+// an emoji-ack nor a plain "out" reply necessarily contains the intro
+// text itself). Same spirit as the OLDER hasRecentIncomingMessage (an
+// incoming message implies an ongoing exchange worth not re-introducing
+// into) generalized from "the sender wrote something in the last 24
+// rolling hours" to "there was ANY exchange earlier this same calendar
+// day" - this is what decideAutoReply's own AI-disclosure prepend gates
+// on, and what dataRequestHoldingReply below picks its (with-intro vs
+// without) variant from - "appears only in the FIRST reply to that
+// sender on that calendar day, incl. inside holding replies."
+function hasIntroducedTodayIST(history, now) {
+  const todayKey = istDayKeyOf(now || new Date());
+  return (history || []).some((h) => istDayKeyOf(new Date(h.ts)) === todayKey);
 }
 
 // Last-resort reply for when decideAutoReply itself throws (see
@@ -3616,7 +3862,7 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
   if (!isGroup && phone) {
     const ownIdField = detectOwnSensitiveIdRequest(text);
     if (ownIdField) {
-      return handleOwnSensitiveIdRequest({ phone, lang: detectLang(text), field: ownIdField });
+      return handleOwnSensitiveIdRequest({ phone, lang: detectLang(text), field: ownIdField, history });
     }
   }
 
@@ -3638,12 +3884,56 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
   // a polite re-ask (capped at MAX_DISAMBIGUATION_ATTEMPTS so a genuinely
   // stuck/off-topic exchange can't loop forever - only then does it clear
   // and fall through to the normal pipeline).
+  // First-name-only confirmation (live review item 6) - checked before
+  // the general disambiguation state below, since the two are mutually
+  // exclusive pending states for the same phone (one asks "which of
+  // these 2+ people", the other asks "is it this ONE person").
+  if (!isGroup && phone) {
+    const pendingConfirm = await getPendingNameConfirm(phone).catch(() => null);
+    if (pendingConfirm && pendingConfirm.candidate) {
+      const t = text.trim();
+      if (NAME_CONFIRM_YES_RE.test(t)) {
+        await clearPendingNameConfirm(phone);
+        return resolveConfirmedPersonLookup({
+          phone, name: senderLabel, candidate: pendingConfirm.candidate, isInactive: Boolean(pendingConfirm.isInactive),
+          personField: pendingConfirm.personField, lang: pendingConfirm.lang, hadTypo: pendingConfirm.hadTypo, history
+        });
+      }
+      if (NAME_CONFIRM_NO_RE.test(t)) {
+        await clearPendingNameConfirm(phone);
+        return { case: 'acknowledged', replyText: NAME_CONFIRM_RETRY[pendingConfirm.lang] || NAME_CONFIRM_RETRY.english, summaryForOwner: null };
+      }
+      // Anything else isn't a yes/no answer to THIS question - clear it
+      // and let the message through as an ordinary new one, rather than
+      // re-ask forever or silently swallow what might be an unrelated
+      // follow-up.
+      await clearPendingNameConfirm(phone);
+    }
+  }
+
+  // Typo-tolerant name matching (spec point 2) - a sender who was just
+  // asked to pick between several candidates (general_details OR, live
+  // review item 1, contact_number too) gets THIS message checked against
+  // that pending question BEFORE anything else (identity/classification).
+  // Found live (917278793115): a bare name that failed to resolve here
+  // used to fall through to the normal classifier, which judged "Ayan
+  // Biswas" alone - with no idea a question had just been asked - as not
+  // needing a reply at all, so NOTHING was ever sent back. A pending
+  // disambiguation now NEVER falls through silently: a match resolves it
+  // immediately, anything else gets a polite re-ask (capped at
+  // MAX_DISAMBIGUATION_ATTEMPTS so a genuinely stuck/off-topic exchange
+  // can't loop forever - only then does it clear and fall through to the
+  // normal pipeline).
   if (!isGroup && phone) {
     const pendingDisambig = await getPendingDisambiguation(phone).catch(() => null);
     if (pendingDisambig && Array.isArray(pendingDisambig.candidates) && pendingDisambig.candidates.length) {
       const resolved = resolveDisambiguationReply(pendingDisambig.candidates, text);
       if (resolved) {
         await clearPendingDisambiguation(phone);
+        if (pendingDisambig.pendingField === 'contact_number') {
+          await queuePersonContactApproval({ phone, requesterLabel: senderLabel, candidate: resolved, lang: pendingDisambig.lang, hadTypo: pendingDisambig.hadTypo });
+          return { case: 'data_holding', replyText: dataRequestHoldingReply(pendingDisambig.lang, history, new Date()), summaryForOwner: null };
+        }
         await postOwnerNotification(senderLabel + ' (' + phone + ') "' + resolved.name + '" baeche niyeche - general details pathano holo, approval lage ni.');
         return { case: 'acknowledged', replyText: buildGeneralDetailsReply(resolved, pendingDisambig.lang, pendingDisambig.hadTypo, new Date()), summaryForOwner: null };
       }
@@ -3654,7 +3944,7 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
         const retryPrefix = DISAMBIGUATION_RETRY_PREFIX[lang] || DISAMBIGUATION_RETRY_PREFIX.english;
         const fn = DISAMBIGUATION_QUESTION[lang] || DISAMBIGUATION_QUESTION.english;
         const queryName = pendingDisambig.candidates[0].name.split(' ')[0];
-        return { case: 'acknowledged', replyText: retryPrefix + fn(queryName, pendingDisambig.candidates), summaryForOwner: null };
+        return { case: 'acknowledged', replyText: retryPrefix + fn(queryName, pendingDisambig.candidates, pendingDisambig.pendingField), summaryForOwner: null };
       }
       // Gave up after repeated non-matching replies - abandon the
       // disambiguation and let this message through to the normal
@@ -3711,7 +4001,7 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
         personName: classification.personLookupName,
         personField: classification.personLookupField,
         department: classification.personLookupDepartment,
-        text
+        text, history
       });
     }
     const dataRequestSummary = classification.dataRequestSummary || text.slice(0, 160);
@@ -3720,7 +4010,7 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
     // goes out within the normal reply latency.
     prepareAndQueueDataApproval({ phone, name: senderLabel, text, dataRequestSummary, lang })
       .catch((err) => console.error('[hr-assistant] data-request approval prep failed: ' + err.message));
-    return { case: 'data_holding', replyText: DATA_REQUEST_HOLDING_REPLY[lang] || DATA_REQUEST_HOLDING_REPLY.english, summaryForOwner: null };
+    return { case: 'data_holding', replyText: dataRequestHoldingReply(lang, history, new Date()), summaryForOwner: null };
   }
 
   if (classification.topic && memoryService.MEMORY_TOPICS.includes(classification.topic)) {
@@ -3771,18 +4061,24 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
   // or count toward the repeated-follow-up tracker, since there's no
   // open question here to actually wait on.
   const isAcknowledgement = ['greeting', 'thanks', 'document_sent'].includes(classification.intent);
-  // No per-sender tiering (an earlier version of this fix special-cased
-  // "senior" contacts) - every sender gets the exact same brief,
-  // respectful, always-formal, never-argue-or-repeat treatment, enforced
-  // in CONTEXT_REPLY_SYSTEM_PROMPT itself rather than a separate code
-  // path, per direct instruction: "Make EVERY reply respectful... for
-  // everyone, not only seniors." The never-auto list stays empty - every
-  // sender gets a real auto-reply.
-  const replyText = await generateConversationReply(text, history, firstName, topicLabel, !isAcknowledgement);
   if (isAcknowledgement) {
+    // No per-sender tiering (an earlier version of this fix special-cased
+    // "senior" contacts) - every sender gets the exact same brief,
+    // respectful, always-formal, never-argue-or-repeat treatment, enforced
+    // in CONTEXT_REPLY_SYSTEM_PROMPT itself rather than a separate code
+    // path, per direct instruction: "Make EVERY reply respectful... for
+    // everyone, not only seniors." The never-auto list stays empty - every
+    // sender gets a real auto-reply. Genuine warmth/context (a thank-you,
+    // small talk) still needs the free-form generator - unlike the
+    // genuine holding case below, there's no fixed "right answer" here.
+    const replyText = await generateConversationReply(text, history, firstName, topicLabel, false);
     return { case: 'acknowledged', replyText, summaryForOwner: null };
   }
+  // A genuine open question with no real fact available (live review item
+  // 7) - a fixed, grammatically-verified, rotating template instead of
+  // free-form AI drafting (see buildNoInfoYetReply's own comment).
   const followupCount = await incrementFollowupCount(phone);
+  const replyText = buildNoInfoYetReply(topicLabel, classification.language || detectLang(text), followupCount);
   return { case: 'holding', replyText, summaryForOwner: text.slice(0, 160), topicLabel, topic: classification.topic, followupCount };
 }
 
@@ -3794,7 +4090,10 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
 // specific to any one classification outcome.
 async function decideAutoReply(params) {
   const decision = await decideAutoReplyCore(params);
-  if (decision && decision.replyText && !ALREADY_INTRODUCES_SUBH_RE.test(decision.replyText) && !hasRecentIncomingMessage(params.history)) {
+  // Live review item 5: calendar-day (IST), not a rolling 24h window -
+  // the identity line appears once per CALENDAR DAY per sender, not once
+  // per 24 real hours since their last message.
+  if (decision && decision.replyText && !ALREADY_INTRODUCES_SUBH_RE.test(decision.replyText) && !hasIntroducedTodayIST(params.history, new Date())) {
     const lang = detectLang(params.text);
     decision.replyText = (AI_DISCLOSURE_LINE[lang] || AI_DISCLOSURE_LINE.english) + ' ' + decision.replyText;
   }
@@ -4229,6 +4528,17 @@ module.exports = {
   DRAFT_MODEL,
   isTypingPresenceEnabled,
   detectOwnSensitiveIdRequest,
+  isFirstNameOnly,
+  hasIntroducedTodayIST,
+  dataRequestHoldingReply,
+  buildNoInfoYetReply,
+  cardToWhatsAppNumberedList,
+  columnWasExplicitlyRequested,
+  stripInformalListIntro,
+  savePendingNameConfirm,
+  getPendingNameConfirm,
+  clearPendingNameConfirm,
+  resolveConfirmedPersonLookup,
   handleOwnSensitiveIdRequest,
   isIdentityQuestion,
   isGreetingOnly,
