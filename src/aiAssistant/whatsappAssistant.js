@@ -694,7 +694,7 @@ async function listAutoReplyLog(limit = 200) {
 // vs a real send vs loop-protection skipping it). messageSummary/
 // sentText are real content, deliberately - see INBOX_LOG_KEY's own
 // comment on why this log differs from AUTO_REPLY_LOG_KEY.
-async function logInboxEvent({ chatId, name, isGroup, messageSummary, aCase, sentText, outcome, arrivedAt, seenAt, scheduledSendAt, typingStartedAt, sentAt }) {
+async function logInboxEvent({ chatId, name, isGroup, messageSummary, aCase, sentText, outcome, arrivedAt, seenAt, scheduledSendAt, typingStartedAt, sentAt, intent, hrTopicArea }) {
   const redis = getClient();
   if (!redis) return;
   try {
@@ -704,6 +704,11 @@ async function logInboxEvent({ chatId, name, isGroup, messageSummary, aCase, sen
       case: aCase || null,
       sentText: sentText ? sentText.slice(0, 300) : null,
       outcome,
+      // Live review item 5 - the detected intent/HR topic area, for the
+      // owner's own visibility in the WhatsApp section. Undefined (and so
+      // omitted by JSON.stringify) for call sites that never classified a
+      // message at all (approval sends, automatic/skipped messages).
+      intent: intent || undefined, hrTopicArea: hrTopicArea || undefined,
       // Per-message timeline (not shown in the rendered reply text, read
       // directly from Redis when tracing a specific incident) - any of
       // these can be undefined depending on the outcome path, which is
@@ -949,11 +954,11 @@ async function sendOrReportAutoReply(entry) {
       await postOwnerNotification('✓ Auto-replied to ' + who + ' at ' + timeLabel + ': "' + entry.replyText + '"');
       await alertIfSlow(sentAt);
       await logAutoReplyEvent({ senderType: entry.isGroup ? 'group' : 'direct', aCase: entry.case, memoryId: entry.memoryId, action: 'sent' });
-      await logInboxEvent({ chatId: entry.chatId, name: entry.name, isGroup: entry.isGroup, messageSummary: entry.summaryForOwner, aCase: entry.case, sentText: entry.replyText, outcome: 'sent', ...timeline, sentAt });
+      await logInboxEvent({ chatId: entry.chatId, name: entry.name, isGroup: entry.isGroup, messageSummary: entry.summaryForOwner, aCase: entry.case, sentText: entry.replyText, outcome: 'sent', intent: entry.intent, hrTopicArea: entry.hrTopicArea, ...timeline, sentAt });
     } else {
       await postOwnerNotification('Could not auto-reply to ' + who + ': ' + (sendResult.error || 'unknown error'));
       await logAutoReplyEvent({ senderType: entry.isGroup ? 'group' : 'direct', aCase: entry.case, memoryId: entry.memoryId, action: 'send_failed' });
-      await logInboxEvent({ chatId: entry.chatId, name: entry.name, isGroup: entry.isGroup, messageSummary: entry.summaryForOwner, aCase: entry.case, sentText: entry.replyText, outcome: 'send_failed', ...timeline, sentAt });
+      await logInboxEvent({ chatId: entry.chatId, name: entry.name, isGroup: entry.isGroup, messageSummary: entry.summaryForOwner, aCase: entry.case, sentText: entry.replyText, outcome: 'send_failed', intent: entry.intent, hrTopicArea: entry.hrTopicArea, ...timeline, sentAt });
     }
   } else {
     // DRAFT mode (spec point 8) - the full pipeline (decide, delay,
@@ -964,7 +969,7 @@ async function sendOrReportAutoReply(entry) {
     await postOwnerNotification('[DRAFT MODE - not actually sent] Would auto-reply to ' + who + ' at ' + timeLabel + ': "' + entry.replyText + '"');
     await alertIfSlow(sentAt);
     await logAutoReplyEvent({ senderType: entry.isGroup ? 'group' : 'direct', aCase: entry.case, memoryId: entry.memoryId, action: 'draft_mode' });
-    await logInboxEvent({ chatId: entry.chatId, name: entry.name, isGroup: entry.isGroup, messageSummary: entry.summaryForOwner, aCase: entry.case, sentText: entry.replyText, outcome: 'draft_mode', ...timeline, sentAt });
+    await logInboxEvent({ chatId: entry.chatId, name: entry.name, isGroup: entry.isGroup, messageSummary: entry.summaryForOwner, aCase: entry.case, sentText: entry.replyText, outcome: 'draft_mode', intent: entry.intent, hrTopicArea: entry.hrTopicArea, ...timeline, sentAt });
   }
 
   // 'holding' = a real, unanswered question with no fact available yet
@@ -1450,7 +1455,7 @@ async function handleOwnSensitiveIdRequest({ phone, lang, field, history }) {
   // arrived on is not).
   const found = await findEmployeeByPhone(phone).catch(() => null);
   if (!found || found.emp.status !== 'ACTIVE') {
-    return { case: 'acknowledged', replyText: PII_BLOCK_REPLY[lang] || PII_BLOCK_REPLY.english, summaryForOwner: null };
+    return { case: 'acknowledged', replyText: PII_BLOCK_REPLY[lang] || PII_BLOCK_REPLY.english, summaryForOwner: null, lang };
   }
   const emp = found.emp;
   const value = field === 'aadhar' ? emp.aadhar : emp.pan;
@@ -1458,7 +1463,7 @@ async function handleOwnSensitiveIdRequest({ phone, lang, field, history }) {
     // Nothing on file for this field - never reveal that distinction to
     // the sender (same refusal as every other blocked case, so "no data"
     // and "blocked" are indistinguishable from outside).
-    return { case: 'acknowledged', replyText: PII_BLOCK_REPLY[lang] || PII_BLOCK_REPLY.english, summaryForOwner: null };
+    return { case: 'acknowledged', replyText: PII_BLOCK_REPLY[lang] || PII_BLOCK_REPLY.english, summaryForOwner: null, lang };
   }
   const fieldLabel = OWN_SENSITIVE_ID_FIELD_LABEL[field];
   const outgoingText = (OWN_SENSITIVE_ID_LINE[lang] || OWN_SENSITIVE_ID_LINE.english)(fieldLabel, value);
@@ -1489,7 +1494,7 @@ async function handleOwnSensitiveIdRequest({ phone, lang, field, history }) {
       '⚠️ Own ' + fieldLabel + ' request — ' + emp.name + ' (' + emp.employeeId + ') from their registered number, but this number is on the never-auto list - your manual approval is needed. ' +
       "Je message jabe: '" + outgoingText + "'"
     );
-    return { case: 'data_holding', replyText: dataRequestHoldingReply(lang, history, new Date()), summaryForOwner: null };
+    return { case: 'data_holding', replyText: dataRequestHoldingReply(lang, history, new Date()), summaryForOwner: null, lang };
   }
   const approval = approvalId ? await resolveApprovalById(approvalId) : null;
   const resultMessage = approval ? await executeApprovalSend(approval, null, null, null) : null;
@@ -1497,7 +1502,7 @@ async function handleOwnSensitiveIdRequest({ phone, lang, field, history }) {
     '✓ Own ' + fieldLabel + ' sent directly to ' + emp.name + ' (' + emp.employeeId + ') at their own registered number - no approval needed (own number + active + own request).' +
     (resultMessage ? ' (' + resultMessage + ')' : '')
   );
-  return { case: 'handled_directly', replyText: null, summaryForOwner: null };
+  return { case: 'handled_directly', replyText: null, summaryForOwner: null, lang };
 }
 
 // Lazy require (not a top-of-file import) - assistantShared.js, which
@@ -1694,6 +1699,14 @@ const DISAMBIGUATION_LAST_QUESTION = {
     banglish: 'Apni kar contact number chaichhen?',
     hinglish: 'Aap kiska contact number chahte hain?',
     english: 'Whose contact number would you like?'
+  },
+  // Live review item 4 (HR noting + confirmation flow, STEP 2) - resolving
+  // a person the sender REFERRED TO (e.g. "the manager who told me to..."),
+  // never a field being requested about them.
+  hr_note_third_party: {
+    banglish: 'Apni kar kotha bolchhen?',
+    hinglish: 'Aap kiski baat kar rahe hain?',
+    english: 'Who are you referring to?'
   }
 };
 // A dynamic field label (live review item 5's "other_field" requests -
@@ -1784,20 +1797,20 @@ async function clearPendingNameConfirm(phone) {
 async function resolveConfirmedPersonLookup({ phone, name, candidate, isInactive, personField, fieldAliasKey, lang, hadTypo, history }) {
   if (isInactive) {
     await replyInactiveEmployee({ phone, requesterLabel: name, candidate, lang });
-    return { case: 'acknowledged', replyText: (INACTIVE_EMPLOYEE_REPLY[lang] || INACTIVE_EMPLOYEE_REPLY.english)(candidate.name, candidate.gender), summaryForOwner: null };
+    return { case: 'acknowledged', replyText: (INACTIVE_EMPLOYEE_REPLY[lang] || INACTIVE_EMPLOYEE_REPLY.english)(candidate.name, candidate.gender), summaryForOwner: null, lang };
   }
   if (personField === 'general_details') {
     await postOwnerNotification(name + ' (' + phone + ') ' + candidate.name + ' (' + candidate.department + ')-er general details jigges korechhe (naam confirm kore) - approval chara e direct reply gechhe.');
-    return { case: 'acknowledged', replyText: buildGeneralDetailsReply(candidate, lang, hadTypo, new Date()), summaryForOwner: null };
+    return { case: 'acknowledged', replyText: buildGeneralDetailsReply(candidate, lang, hadTypo, new Date()), summaryForOwner: null, lang };
   }
   if (personField === 'other_field') {
     const fieldAlias = resolveApprovalFieldAliasByKey(fieldAliasKey);
     if (fieldAlias) await queuePersonFieldApproval({ phone, requesterLabel: name, candidate, lang, hadTypo, fieldAlias });
-    return { case: 'data_holding', replyText: dataRequestHoldingReply(lang, history, new Date()), summaryForOwner: null };
+    return { case: 'data_holding', replyText: dataRequestHoldingReply(lang, history, new Date()), summaryForOwner: null, lang };
   }
   // contact_number (default/only remaining value)
   await queuePersonContactApproval({ phone, requesterLabel: name, candidate, lang, hadTypo });
-  return { case: 'data_holding', replyText: dataRequestHoldingReply(lang, history, new Date()), summaryForOwner: null };
+  return { case: 'data_holding', replyText: dataRequestHoldingReply(lang, history, new Date()), summaryForOwner: null, lang };
 }
 const CONTACT_NUMBER_LINE = {
   banglish: (name, number) => name + '-er contact number: ' + number,
@@ -2174,7 +2187,7 @@ async function handlePersonLookupRequest({ phone, name, lang, personName, person
     // regardless of what the owner says (spec point 1). Unaffected by
     // fuzzy matching - this gate runs before any name resolution.
     await postOwnerNotification('⚠️ ' + name + ' (' + phone + ') ' + (personName || 'ekjon employee') + '-er sensitive personal data (Aadhar/PAN/bank/salary type) chaiche - WhatsApp-e block kora holo, kichu pathano hoyni.');
-    return { case: 'acknowledged', replyText: PII_BLOCK_REPLY[lang] || PII_BLOCK_REPLY.english, summaryForOwner: null };
+    return { case: 'acknowledged', replyText: PII_BLOCK_REPLY[lang] || PII_BLOCK_REPLY.english, summaryForOwner: null, lang };
   }
   const otherFieldLabel = fieldAlias ? (fieldAlias.label[lang] || fieldAlias.label.english) : null;
 
@@ -2186,7 +2199,7 @@ async function handlePersonLookupRequest({ phone, name, lang, personName, person
   if (!allMatches.length) {
     const fieldDescription = personField === 'general_details' ? 'details' : (otherFieldLabel || 'contact number');
     await postOwnerNotification(name + ' (' + phone + ') "' + personName + '"-er ' + fieldDescription + ' cheyechhe, kintu oi naame (ba kachakachi kono banan-e) kono employee pelam na.');
-    return { case: 'acknowledged', replyText: (PERSON_NOT_FOUND_REPLY[lang] || PERSON_NOT_FOUND_REPLY.english)(personName), summaryForOwner: null };
+    return { case: 'acknowledged', replyText: (PERSON_NOT_FOUND_REPLY[lang] || PERSON_NOT_FOUND_REPLY.english)(personName), summaryForOwner: null, lang };
   }
   // Notice period counts as currently employed for this feature - only a
   // real INACTIVE record ever gets the "left the company" treatment.
@@ -2205,7 +2218,7 @@ async function handlePersonLookupRequest({ phone, name, lang, personName, person
       !departmentHintMatches(current[0].department, department);
     if (hintMatchesInactiveOnly) {
       await replyInactiveEmployee({ phone, requesterLabel: name, candidate: inactive[0], lang });
-      return { case: 'acknowledged', replyText: (INACTIVE_EMPLOYEE_REPLY[lang] || INACTIVE_EMPLOYEE_REPLY.english)(inactive[0].name, inactive[0].gender), summaryForOwner: null };
+      return { case: 'acknowledged', replyText: (INACTIVE_EMPLOYEE_REPLY[lang] || INACTIVE_EMPLOYEE_REPLY.english)(inactive[0].name, inactive[0].gender), summaryForOwner: null, lang };
     }
   }
 
@@ -2232,7 +2245,7 @@ async function handlePersonLookupRequest({ phone, name, lang, personName, person
         (isInactiveCandidate ? ', inactive' : '') + ' kina, sender-ke jigges kora hocche.'
       );
       const fn = NAME_CONFIRM_QUESTION[lang] || NAME_CONFIRM_QUESTION.english;
-      return { case: 'acknowledged', replyText: fn(soleMatch.name, soleMatch.department), summaryForOwner: null };
+      return { case: 'acknowledged', replyText: fn(soleMatch.name, soleMatch.department), summaryForOwner: null, lang };
     }
   }
 
@@ -2242,7 +2255,7 @@ async function handlePersonLookupRequest({ phone, name, lang, personName, person
     // the owner's own notification. Applies identically whether the match
     // was exact or fuzzy - an inactive employee's data is never shared.
     await replyInactiveEmployee({ phone, requesterLabel: name, candidate: inactive[0], lang });
-    return { case: 'acknowledged', replyText: (INACTIVE_EMPLOYEE_REPLY[lang] || INACTIVE_EMPLOYEE_REPLY.english)(inactive[0].name, inactive[0].gender), summaryForOwner: null };
+    return { case: 'acknowledged', replyText: (INACTIVE_EMPLOYEE_REPLY[lang] || INACTIVE_EMPLOYEE_REPLY.english)(inactive[0].name, inactive[0].gender), summaryForOwner: null, lang };
   }
 
   // general_details (spec point 2) - no approval needed, since this is
@@ -2252,7 +2265,7 @@ async function handlePersonLookupRequest({ phone, name, lang, personName, person
     if (current.length === 1) {
       const typoNote = hadTypo ? ' ("' + personName + '" banan-e - closest match hisebe dhora holo)' : '';
       await postOwnerNotification(name + ' (' + phone + ') ' + current[0].name + ' (' + current[0].department + ')-er general details (designation/department/koto diner) jigges korechhe' + typoNote + ' - approval chara e direct reply gechhe.');
-      return { case: 'acknowledged', replyText: buildGeneralDetailsReply(current[0], lang, hadTypo, new Date()), summaryForOwner: null };
+      return { case: 'acknowledged', replyText: buildGeneralDetailsReply(current[0], lang, hadTypo, new Date()), summaryForOwner: null, lang };
     }
     // Several current candidates - ask the SENDER to pick rather than
     // guessing or escalating to the owner (spec: "ask the sender directly
@@ -2263,7 +2276,7 @@ async function handlePersonLookupRequest({ phone, name, lang, personName, person
     const queryName = current[0].name.split(' ')[0];
     const note = hadTypo ? (TYPO_NOTE[lang] || TYPO_NOTE.english) : '';
     const fn = DISAMBIGUATION_QUESTION[lang] || DISAMBIGUATION_QUESTION.english;
-    return { case: 'acknowledged', replyText: note + fn(queryName, current, 'general_details'), summaryForOwner: null };
+    return { case: 'acknowledged', replyText: note + fn(queryName, current, 'general_details'), summaryForOwner: null, lang };
   }
 
   // contact_number / other_field (default/only remaining values) - live
@@ -2289,9 +2302,488 @@ async function handlePersonLookupRequest({ phone, name, lang, personName, person
     const queryName = current[0].name.split(' ')[0];
     const note = hadTypo ? (TYPO_NOTE[lang] || TYPO_NOTE.english) : '';
     const fn = DISAMBIGUATION_QUESTION[lang] || DISAMBIGUATION_QUESTION.english;
-    return { case: 'acknowledged', replyText: note + fn(queryName, current, fieldKindForQuestion), summaryForOwner: null };
+    return { case: 'acknowledged', replyText: note + fn(queryName, current, fieldKindForQuestion), summaryForOwner: null, lang };
   }
-  return { case: 'data_holding', replyText: dataRequestHoldingReply(lang, history, new Date()), summaryForOwner: null };
+  return { case: 'data_holding', replyText: dataRequestHoldingReply(lang, history, new Date()), summaryForOwner: null, lang };
+}
+
+// ---------------- HR Noting + Confirmation flow (live review item 4) ----------------
+// Triggered when a sender INFORMS HR about their own leave, late coming,
+// attendance, off-day-in-lieu/comp-off, duty change, salary/bank account
+// change, or work location update (never a question - see the
+// isHrNotification classifier field). Always noted (an HR note + a
+// reminder, per the spec). When the message implies someone ELSE (a
+// manager) decided/instructed this, that person is resolved in the HR
+// directory - reusing the EXACT same whole-word+fuzzy matching and
+// ask-the-sender-first disambiguation/confirm flow already built for
+// person-lookup data requests (findPersonLookupMatches, isFirstNameOnly,
+// savePendingDisambiguation/savePendingNameConfirm) - and messaged
+// directly for a one-word confirmation, with the outcome relayed back to
+// the original sender. This is the first flow in this file that
+// autonomously starts a conversation with someone who never wrote in
+// first (the manager) - every safety check below exists specifically
+// because of that.
+
+const HR_CONFIRMATIONS_SETTING_KEY = 'subh-hr-confirmations-enabled';
+async function isHrConfirmationsEnabled() {
+  const redis = getClient();
+  if (!redis) return true; // default ON
+  try {
+    const raw = await redis.get(HR_CONFIRMATIONS_SETTING_KEY);
+    // Found live: the Upstash client auto-coerces a plain numeric-looking
+    // stored string ("1") back into the NUMBER 1 on read - a strict
+    // `raw === '1'` check silently failed forever as a result. String()
+    // normalizes either shape.
+    return raw === null || raw === undefined || String(raw) === '1';
+  } catch (err) { return true; }
+}
+async function setHrConfirmationsEnabled(enabled) {
+  const redis = getClient();
+  if (!redis) return;
+  try { await redis.set(HR_CONFIRMATIONS_SETTING_KEY, enabled ? '1' : '0'); } catch (err) { /* best effort */ }
+}
+
+// Safety (spec): never auto-message anyone at this level - escalate to
+// the owner instead, same treatment as the never-auto list below.
+const SENIOR_DESIGNATION_RE = /\b(director|managing\s*director|\bmd\b|president|vice[\s-]*president|\bvp\b|\bceo\b)\b/i;
+
+const PENDING_HR_NOTE_AWAITING_NAME_PREFIX = 'wa-pending-hr-note-name:';
+const PENDING_HR_NOTE_TTL_SECONDS = 30 * 60;
+async function savePendingHrNoteAwaitingName(phone, data) {
+  const redis = getClient();
+  if (!redis) return;
+  try { await redis.set(PENDING_HR_NOTE_AWAITING_NAME_PREFIX + phone, JSON.stringify(data), { ex: PENDING_HR_NOTE_TTL_SECONDS }); } catch (err) { /* best effort */ }
+}
+async function getPendingHrNoteAwaitingName(phone) {
+  const redis = getClient();
+  if (!redis) return null;
+  try {
+    const raw = await redis.get(PENDING_HR_NOTE_AWAITING_NAME_PREFIX + phone);
+    return raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : null;
+  } catch (err) { return null; }
+}
+async function clearPendingHrNoteAwaitingName(phone) {
+  const redis = getClient();
+  if (!redis) return;
+  try { await redis.del(PENDING_HR_NOTE_AWAITING_NAME_PREFIX + phone); } catch (err) { /* best effort */ }
+}
+
+// Pending manager-confirmation records - keyed by id (the permanent
+// record) and additionally indexed by the manager's own phone (SET of
+// ids currently awaiting THAT manager's answer), so an incoming message
+// from a manager who was messaged this way can be recognised and, if
+// several are pending for the same manager, disambiguated (spec safety
+// note: "link the manager's reply to the right pending request").
+const HR_CONFIRMATION_PREFIX = 'wa-hr-confirmation:';
+const HR_CONFIRMATION_IDS_KEY = 'wa-hr-confirmation-ids';
+function hrConfirmationByPhoneKey(phone) { return 'wa-hr-confirmation-by-phone:' + whatsapp.normalizePhone(phone); }
+async function saveHrConfirmation(record) {
+  const redis = getClient();
+  if (!redis) return null;
+  const id = record.id || (Date.now().toString(36) + Math.random().toString(36).slice(2, 8));
+  const full = Object.assign({}, record, { id });
+  try {
+    await redis.set(HR_CONFIRMATION_PREFIX + id, JSON.stringify(full));
+    await redis.sadd(HR_CONFIRMATION_IDS_KEY, id);
+    if (full.status === 'awaiting_manager') await redis.sadd(hrConfirmationByPhoneKey(full.thirdPartyPhone), id);
+  } catch (err) { /* best effort */ }
+  return id;
+}
+async function getHrConfirmation(id) {
+  const redis = getClient();
+  if (!redis) return null;
+  try {
+    const raw = await redis.get(HR_CONFIRMATION_PREFIX + id);
+    return raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : null;
+  } catch (err) { return null; }
+}
+async function updateHrConfirmation(id, patch) {
+  const existing = await getHrConfirmation(id);
+  if (!existing) return null;
+  const updated = Object.assign({}, existing, patch);
+  const redis = getClient();
+  if (redis) {
+    try {
+      await redis.set(HR_CONFIRMATION_PREFIX + id, JSON.stringify(updated));
+      if (existing.status === 'awaiting_manager' && updated.status !== 'awaiting_manager') {
+        await redis.srem(hrConfirmationByPhoneKey(existing.thirdPartyPhone), id);
+      }
+    } catch (err) { /* best effort */ }
+  }
+  return updated;
+}
+async function removeHrConfirmation(id) {
+  const existing = await getHrConfirmation(id);
+  const redis = getClient();
+  if (!redis) return;
+  try {
+    await redis.del(HR_CONFIRMATION_PREFIX + id);
+    await redis.srem(HR_CONFIRMATION_IDS_KEY, id);
+    if (existing && existing.thirdPartyPhone) await redis.srem(hrConfirmationByPhoneKey(existing.thirdPartyPhone), id);
+  } catch (err) { /* best effort */ }
+}
+async function listPendingHrConfirmationsForPhone(phone) {
+  const redis = getClient();
+  if (!redis) return [];
+  try {
+    const ids = await redis.smembers(hrConfirmationByPhoneKey(phone));
+    if (!ids.length) return [];
+    const raws = await redis.mget(...ids.map((id) => HR_CONFIRMATION_PREFIX + id));
+    return raws.map((raw) => { try { return typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (err) { return null; } }).filter((r) => r && r.status === 'awaiting_manager');
+  } catch (err) { return []; }
+}
+async function listAllHrConfirmations() {
+  const redis = getClient();
+  if (!redis) return [];
+  try {
+    const ids = await redis.smembers(HR_CONFIRMATION_IDS_KEY);
+    if (!ids.length) return [];
+    const raws = await redis.mget(...ids.map((id) => HR_CONFIRMATION_PREFIX + id));
+    return raws.map((raw) => { try { return typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (err) { return null; } }).filter(Boolean);
+  } catch (err) { return []; }
+}
+// One confirmation request per sender-topic (spec safety note) - a sender
+// with one already in flight doesn't get a second started until the first
+// resolves.
+async function senderHasPendingHrConfirmation(senderPhone) {
+  const all = await listAllHrConfirmations();
+  const normalized = whatsapp.normalizePhone(senderPhone);
+  return all.some((r) => r.status === 'awaiting_manager' && whatsapp.normalizePhone(r.senderPhone) === normalized);
+}
+
+// ---- Templates (Banglish shown first in the spec; English/Hinglish are
+// equivalent in meaning/tone, never a literal word-for-word translation) ----
+const HR_NOTE_ASK_WHO_INSTRUCTED = {
+  banglish: 'Ami apnar bishoy-ta note kore nilam. Apnake ei instruction-ta ke diyechhen, tar naam-ta bolle ami confirm kore nite parbo.',
+  hinglish: 'Maine aapki baat note kar li hai. Aapko yeh instruction kisne diya hai, unka naam bata denge to main confirm kar lunga.',
+  english: "I've noted what you shared. If you let me know who gave you this instruction, I can confirm it with them."
+};
+const HR_NOTE_NO_THIRD_PARTY = {
+  banglish: 'Ami apnar bishoy-ta note kore nilam ar Subhodeep-ke janiye dicchi.',
+  hinglish: 'Maine aapki baat note kar li hai aur Subhodeep ko bata raha hoon.',
+  english: "I've noted this and I'm letting Subhodeep know."
+};
+const HR_NOTE_NAME_NOT_FOUND = {
+  banglish: 'Ei naame kauke khuje pelam na. Onar puro naam-ta bolben?',
+  hinglish: 'Is naam se koi nahi mila. Unka pura naam bata denge?',
+  english: "I couldn't find anyone by that name. Could you give me their full name?"
+};
+const HR_NOTE_THANK_SENDER = {
+  banglish: (thirdPartyName) => 'Amake sothik naam diye sahajyo korar jonno dhonnobad. Ami ' + thirdPartyName + '-er sathe kotha bole joto taratari somvob apnake janacchi.',
+  hinglish: (thirdPartyName) => 'Sahi naam batane ke liye dhanyavaad. Main ' + thirdPartyName + ' se baat karke jald se jald aapko bata dunga.',
+  english: (thirdPartyName) => "Thank you for giving me the correct name. I'll speak with " + thirdPartyName + " and get back to you as soon as possible."
+};
+const HR_CONFIRMATION_TO_MANAGER = {
+  banglish: (requesterRef, summary) => 'Apnar theke ekta bishoye confirmation proyojon, tai apnake message korlam. Kichukkhon age ' + requesterRef + ' theke amar kache message esechhe je ' + summary + '. Eta ki apnar theke confirm?',
+  hinglish: (requesterRef, summary) => 'Aapse ek baat confirm karni thi, isliye message kiya. Thodi der pehle ' + requesterRef + ' se mujhe message mila hai ki ' + summary + '. Kya yeh aapki taraf se confirm hai?',
+  english: (requesterRef, summary) => "I need a quick confirmation from you, so I'm reaching out. A little while ago I received a message from " + requesterRef + " saying that " + summary + ". Can you confirm this?"
+};
+const HR_CONFIRMATION_MANAGER_THANKS_YES = {
+  banglish: 'Apnar confirmation-er jonno onek dhonnobad.',
+  hinglish: 'Aapke confirmation ke liye bahut dhanyavaad.',
+  english: 'Thank you for your confirmation.'
+};
+const HR_CONFIRMATION_MANAGER_THANKS_NO = {
+  banglish: 'Janano-r jonno onek dhonnobad.',
+  hinglish: 'Batane ke liye bahut dhanyavaad.',
+  english: 'Thank you for letting me know.'
+};
+const HR_CONFIRMATION_SENDER_RESULT_YES = {
+  banglish: (thirdPartyName) => thirdPartyName + '-er sathe kotha hoye geche, uni apnar ei bishoy-ta confirm korechhen. Ebar ami puro bishoy-ta Subhodeep-ke janiye dicchi.',
+  hinglish: (thirdPartyName) => thirdPartyName + ' se baat ho gayi hai, unhone aapki yeh baat confirm kar di hai. Ab main poori baat Subhodeep ko bata raha hoon.',
+  english: (thirdPartyName) => "I've spoken with " + thirdPartyName + " and they've confirmed this. I'm now letting Subhodeep know the full details."
+};
+const HR_CONFIRMATION_SENDER_RESULT_NO = {
+  banglish: (thirdPartyName) => thirdPartyName + '-er sathe kotha hoye geche, uni ei bishoy-ta confirm korenni. Ami puro bishoy-ta Subhodeep-ke janiye dicchi, uni apnar sathe jogajog korben.',
+  hinglish: (thirdPartyName) => thirdPartyName + ' se baat ho gayi hai, unhone yeh baat confirm nahi ki. Main poori baat Subhodeep ko bata raha hoon, woh aapse sampark karenge.',
+  english: (thirdPartyName) => "I've spoken with " + thirdPartyName + " and they did not confirm this. I'm letting Subhodeep know the full details, and he will get in touch with you."
+};
+const HR_CONFIRMATION_MANAGER_UNCLEAR_RETRY = {
+  banglish: (summary) => 'Ektu nishchit kore bolben - ' + summary + ', eta ki thik?',
+  hinglish: (summary) => 'Thoda spasht kar denge - ' + summary + ', kya yeh sahi hai?',
+  english: (summary) => 'Could you confirm clearly - ' + summary + ' - is that right?'
+};
+const HR_CONFIRMATION_WHICH_PENDING = {
+  banglish: (list) => 'Apnar kache ekadhik confirmation request pathiyechi, kon ta niye bolchhen? ' + list,
+  hinglish: (list) => 'Aapko maine ek se zyada confirmation request bheji hai, kis baare mein bata rahe hain? ' + list,
+  english: (list) => "I've sent you more than one confirmation request - which one are you answering? " + list
+};
+
+// A sender-facing reference to the third party, for the manager-facing
+// STEP 4 message ("...message esechhe je...") - the sender's real name
+// when known, otherwise just their phone number, never anything more
+// (spec: "nothing else about the sender").
+function requesterRefFor(senderName, senderPhone) {
+  return (senderName && senderName !== 'The sender') ? senderName : ('+' + whatsapp.normalizePhone(senderPhone));
+}
+// The summary is always mid-sentence ("...message that <summary>. Can you
+// confirm?") - strips a trailing full stop the classifier's own sentence
+// may already have, so it never doubles up ("...day off day.. Can you").
+function summaryForSentence(summary) {
+  return String(summary || '').trim().replace(/[.!?]+$/, '');
+}
+
+async function sendHrConfirmationMessageToManager(confirmationId) {
+  const confirmation = await getHrConfirmation(confirmationId);
+  if (!confirmation) return { ok: false, error: 'confirmation record not found' };
+  const lang = confirmation.lang;
+  const requesterRef = requesterRefFor(confirmation.senderName, confirmation.senderPhone);
+  const text = (HR_CONFIRMATION_TO_MANAGER[lang] || HR_CONFIRMATION_TO_MANAGER.english)(requesterRef, summaryForSentence(confirmation.summaryLocalized || confirmation.summary));
+  if (!isRealSendAllowedFor(confirmation.thirdPartyPhone)) {
+    await logInboxEvent({ chatId: confirmation.thirdPartyPhone, name: confirmation.thirdPartyName, isGroup: false, messageSummary: '[HR confirmation request: ' + confirmation.summary + ']', aCase: 'hr_confirmation_sent', sentText: text, outcome: 'draft_mode', sentAt: Date.now() });
+    return { ok: true, draft: true };
+  }
+  const sendResult = await sendWhatsAppChunked(confirmation.thirdPartyPhone, text);
+  if (!sendResult.ok) {
+    await logInboxEvent({ chatId: confirmation.thirdPartyPhone, name: confirmation.thirdPartyName, isGroup: false, messageSummary: '[HR confirmation request: ' + confirmation.summary + ']', aCase: 'hr_confirmation_sent', sentText: text, outcome: 'send_failed', sentAt: Date.now() });
+    await postOwnerNotification('⚠️ ' + confirmation.thirdPartyName + ' (' + confirmation.thirdPartyPhone + ')-ke HR confirmation message pathate giye error holo: ' + sendResult.error);
+    return sendResult;
+  }
+  await appendConvoHistory(confirmation.thirdPartyPhone, 'out', text);
+  await logInboxEvent({ chatId: confirmation.thirdPartyPhone, name: confirmation.thirdPartyName, isGroup: false, messageSummary: '[HR confirmation request: ' + confirmation.summary + ']', aCase: 'hr_confirmation_sent', sentText: text, outcome: 'sent', sentAt: Date.now() });
+  return { ok: true };
+}
+
+// Side-effect send to the ORIGINAL sender (a different chat than whoever
+// is "currently" being replied to when this fires from the manager's
+// answer) - same pattern as the manager-facing send above.
+async function sendHrConfirmationResultToSender(confirmation, outcomeText) {
+  if (!isRealSendAllowedFor(confirmation.senderPhone)) {
+    await logInboxEvent({ chatId: confirmation.senderPhone, name: confirmation.senderName, isGroup: false, messageSummary: '[HR confirmation result: ' + confirmation.summary + ']', aCase: 'hr_confirmation_result', sentText: outcomeText, outcome: 'draft_mode', sentAt: Date.now() });
+    return;
+  }
+  const sendResult = await sendWhatsAppChunked(confirmation.senderPhone, outcomeText);
+  if (!sendResult.ok) {
+    await logInboxEvent({ chatId: confirmation.senderPhone, name: confirmation.senderName, isGroup: false, messageSummary: '[HR confirmation result: ' + confirmation.summary + ']', aCase: 'hr_confirmation_result', sentText: outcomeText, outcome: 'send_failed', sentAt: Date.now() });
+    await postOwnerNotification('⚠️ ' + confirmation.senderName + ' (' + confirmation.senderPhone + ')-ke HR confirmation result pathate giye error holo: ' + sendResult.error);
+    return;
+  }
+  await appendConvoHistory(confirmation.senderPhone, 'out', outcomeText);
+  await logInboxEvent({ chatId: confirmation.senderPhone, name: confirmation.senderName, isGroup: false, messageSummary: '[HR confirmation result: ' + confirmation.summary + ']', aCase: 'hr_confirmation_result', sentText: outcomeText, outcome: 'sent', sentAt: Date.now() });
+}
+
+// STEP 6 - a reminder exists for the whole open loop (created alongside
+// the manager message, closed the moment it resolves) and a full record
+// is posted to the owner either way. Lazy require - reminderService.js
+// itself requires this file (to auto-sync reminders from open WhatsApp
+// follow-ups/approvals), so a top-level require here would be circular;
+// requiring it inside each function that needs it resolves cleanly once
+// both modules have finished loading, same precedent as the lazy
+// assistantShared.js require elsewhere in this file.
+async function createHrConfirmationReminder(confirmation) {
+  try {
+    const reminderService = require('./reminderService');
+    const id = await reminderService.saveReminder(reminderService.newReminder({
+      title: 'HR confirmation needed: ' + confirmation.thirdPartyName,
+      detail: confirmation.summary, dueAt: null, priority: 'medium', source: 'whatsapp',
+      sourceType: 'hr_confirmation', sourceRef: confirmation.id, linkedChatId: confirmation.senderPhone, now: new Date()
+    }));
+    return id;
+  } catch (err) { return null; }
+}
+async function closeHrConfirmationReminder(reminderId) {
+  if (!reminderId) return;
+  try {
+    const reminderService = require('./reminderService');
+    await reminderService.markDone(reminderId, new Date());
+  } catch (err) { /* best effort */ }
+}
+
+async function postHrConfirmationOwnerRecord(confirmation, outcome) {
+  const timeLabel = new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' });
+  await postOwnerNotification(
+    'HR confirmation record — ' + confirmation.senderName + ' (' + confirmation.senderPhone + '): "' + confirmation.summary + '". ' +
+    'Manager: ' + confirmation.thirdPartyName + ' (' + confirmation.thirdPartyDepartment + '). ' +
+    'Question sent at ' + new Date(confirmation.createdAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' }) + '. ' +
+    'Answer: ' + outcome + ' (at ' + timeLabel + ').'
+  );
+}
+
+// Resolves a third party already named (STEP 2's answer, or named upfront
+// in the same message as STEP 1) into exactly one ACTIVE candidate,
+// following the identical ask-the-sender-first ambiguity flow
+// handlePersonLookupRequest already uses - several matches ask the
+// sender which one, a first-name-only single match confirms once, no
+// match asks for the full name again.
+async function handleHrNoteThirdPartyResolution({ phone, name, lang, personName, department, summary, summaryLocalized, history }) {
+  const { matches: allMatches, hadTypo } = await findPersonLookupMatches(personName, department);
+  const current = allMatches.filter((e) => e.status !== 'INACTIVE');
+  if (!current.length) {
+    await clearPendingHrNoteAwaitingName(phone);
+    return { case: 'acknowledged', replyText: HR_NOTE_NAME_NOT_FOUND[lang] || HR_NOTE_NAME_NOT_FOUND.english, summaryForOwner: null, lang };
+  }
+  if (current.length > 1) {
+    await savePendingDisambiguation(phone, { candidates: current, lang, hadTypo, attempts: 1, pendingField: 'hr_note_third_party', hrNoteSummary: summary, hrNoteSummaryLocalized: summaryLocalized });
+    const queryName = current[0].name.split(' ')[0];
+    const note = hadTypo ? (TYPO_NOTE[lang] || TYPO_NOTE.english) : '';
+    const fn = DISAMBIGUATION_QUESTION[lang] || DISAMBIGUATION_QUESTION.english;
+    return { case: 'acknowledged', replyText: note + fn(queryName, current, 'hr_note_third_party'), summaryForOwner: null, lang };
+  }
+  const soleMatch = current[0];
+  if (isFirstNameOnly(personName, soleMatch.name)) {
+    await savePendingNameConfirm(phone, { candidate: soleMatch, isInactive: false, personField: 'hr_note_third_party', lang, hadTypo, hrNoteSummary: summary, hrNoteSummaryLocalized: summaryLocalized });
+    const fn = NAME_CONFIRM_QUESTION[lang] || NAME_CONFIRM_QUESTION.english;
+    return { case: 'acknowledged', replyText: fn(soleMatch.name, soleMatch.department), summaryForOwner: null, lang };
+  }
+  return finalizeHrNoteThirdParty({ phone, senderName: name, lang, candidate: soleMatch, summary, summaryLocalized, history });
+}
+
+// The third party is now resolved to exactly one ACTIVE employee - run
+// the safety gate, then either message them (STEP 4) or escalate to the
+// owner, and reply to the ORIGINAL sender with STEP 3's thank-you.
+async function finalizeHrNoteThirdParty({ phone, senderName, lang, candidate, summary, summaryLocalized, history }) {
+  await clearPendingHrNoteAwaitingName(phone);
+  const isSenior = SENIOR_DESIGNATION_RE.test(candidate.designation || '');
+  const onNeverAuto = candidate.contactNumber ? await isNeverAuto(candidate.contactNumber) : false;
+  const confirmationsEnabled = await isHrConfirmationsEnabled();
+  const alreadyPending = await senderHasPendingHrConfirmation(phone);
+  if (!candidate.contactNumber || isSenior || onNeverAuto || !confirmationsEnabled || alreadyPending) {
+    const reason = !candidate.contactNumber ? 'onar phone number record-e nei'
+      : isSenior ? 'uni senior designation-e achen (Director/MD/President/VP/CEO)'
+      : onNeverAuto ? 'uni never-auto list-e achen'
+      : !confirmationsEnabled ? 'HR confirmations setting off ache'
+      : 'ei sender-er jonno ageo ekta confirmation request pending ache';
+    await postOwnerNotification(
+      '⚠️ ' + senderName + ' (' + phone + ') HR-bishoy janiyechhen ("' + summary + '"). ' + candidate.name + ' (' + candidate.department + ')-ke confirm korte hobe, kintu ' + reason +
+      ' - tai automatically message kora hocche na. Apni direct handle korun.'
+    );
+    return { case: 'acknowledged', replyText: HR_NOTE_NO_THIRD_PARTY[lang] || HR_NOTE_NO_THIRD_PARTY.english, summaryForOwner: null, lang };
+  }
+  const confirmationId = await saveHrConfirmation({
+    senderPhone: whatsapp.normalizePhone(phone), senderName, summary, summaryLocalized, lang,
+    thirdPartyPhone: whatsapp.normalizePhone(candidate.contactNumber), thirdPartyName: candidate.name, thirdPartyDepartment: candidate.department,
+    status: 'awaiting_manager', createdAt: Date.now(), remindedAt: null, escalatedAt: null, reminderId: null
+  });
+  await sendHrConfirmationMessageToManager(confirmationId);
+  const reminderId = await createHrConfirmationReminder(await getHrConfirmation(confirmationId));
+  if (reminderId) await updateHrConfirmation(confirmationId, { reminderId });
+  const fn = HR_NOTE_THANK_SENDER[lang] || HR_NOTE_THANK_SENDER.english;
+  return { case: 'acknowledged', replyText: fn(candidate.name), summaryForOwner: null, lang };
+}
+
+// STEP 1 - the entry point when a message is classified isHrNotification.
+// `summary` (English) is used for the HR note/owner notifications only;
+// `summaryLocalized` (the sender's own detected language) is the ONLY
+// version ever inserted into an outgoing WhatsApp message (STEP 4/the
+// 3-hour nudge) - keeps that message from mixing languages the way item
+// 2's identity-line bug did.
+async function handleHrNotificationStart({ phone, name, lang, text, history, classification }) {
+  const summary = classification.hrNotificationSummary || sanitizeTopicLabel(classification.topicLabel);
+  const summaryLocalized = classification.hrNotificationSummaryLocalized || summary;
+  await postOwnerNotification(name + ' (' + phone + ') HR-bishoy janiyechhen: "' + summary + '". Note kora holo.');
+  if (classification.hrNotificationThirdPartyName) {
+    const resolution = await handleHrNoteThirdPartyResolution({
+      phone, name, lang, personName: classification.hrNotificationThirdPartyName,
+      department: classification.hrNotificationThirdPartyHint, summary, summaryLocalized, history
+    });
+    return resolution;
+  }
+  if (classification.hrNotificationInvolvesThirdParty) {
+    await savePendingHrNoteAwaitingName(phone, { summary, summaryLocalized, lang, createdAt: Date.now() });
+    return { case: 'acknowledged', replyText: HR_NOTE_ASK_WHO_INSTRUCTED[lang] || HR_NOTE_ASK_WHO_INSTRUCTED.english, summaryForOwner: null, lang };
+  }
+  return { case: 'acknowledged', replyText: HR_NOTE_NO_THIRD_PARTY[lang] || HR_NOTE_NO_THIRD_PARTY.english, summaryForOwner: null, lang };
+}
+
+// A manager's reply to STEP 4's confirmation message - checked early
+// (same tier as pendingNameConfirm/pendingDisambig), since a bare
+// "Haa"/"Na" only makes sense in light of this specific pending question.
+async function handleHrConfirmationManagerReply({ phone, text, lang, pendingConfirmations, history }) {
+  if (pendingConfirmations.length > 1) {
+    const list = pendingConfirmations.map((c, i) => (i + 1) + ') ' + c.senderName + ' - ' + c.summary).join(' ');
+    return { case: 'acknowledged', replyText: (HR_CONFIRMATION_WHICH_PENDING[lang] || HR_CONFIRMATION_WHICH_PENDING.english)(list), summaryForOwner: null, lang };
+  }
+  const confirmation = pendingConfirmations[0];
+  // The reply TO THE MANAGER uses the confirmation's own recorded
+  // language (the original conversation's language SUBH already
+  // established, via STEP 4's own message) - never re-detected from the
+  // manager's own bare "Haa"/"Na" reply, which a word-list detector can
+  // easily get wrong for a short answer with no other signal words (the
+  // exact class of bug behind item 2's mixed-language fix).
+  const replyLang = confirmation.lang || lang;
+  const t = text.trim();
+  if (NAME_CONFIRM_YES_RE.test(t)) {
+    await updateHrConfirmation(confirmation.id, { status: 'confirmed', resolvedAt: Date.now() });
+    await closeHrConfirmationReminder(confirmation.reminderId);
+    await sendHrConfirmationResultToSender(confirmation, (HR_CONFIRMATION_SENDER_RESULT_YES[confirmation.lang] || HR_CONFIRMATION_SENDER_RESULT_YES.english)(confirmation.thirdPartyName));
+    await postHrConfirmationOwnerRecord(confirmation, 'Yes (confirmed)');
+    return { case: 'acknowledged', replyText: HR_CONFIRMATION_MANAGER_THANKS_YES[replyLang] || HR_CONFIRMATION_MANAGER_THANKS_YES.english, summaryForOwner: null, lang: replyLang };
+  }
+  if (NAME_CONFIRM_NO_RE.test(t)) {
+    await updateHrConfirmation(confirmation.id, { status: 'declined', resolvedAt: Date.now() });
+    await closeHrConfirmationReminder(confirmation.reminderId);
+    await sendHrConfirmationResultToSender(confirmation, (HR_CONFIRMATION_SENDER_RESULT_NO[confirmation.lang] || HR_CONFIRMATION_SENDER_RESULT_NO.english)(confirmation.thirdPartyName));
+    await postHrConfirmationOwnerRecord(confirmation, 'No (not confirmed)');
+    return { case: 'acknowledged', replyText: HR_CONFIRMATION_MANAGER_THANKS_NO[replyLang] || HR_CONFIRMATION_MANAGER_THANKS_NO.english, summaryForOwner: null, lang: replyLang };
+  }
+  return { case: 'acknowledged', replyText: (HR_CONFIRMATION_MANAGER_UNCLEAR_RETRY[replyLang] || HR_CONFIRMATION_MANAGER_UNCLEAR_RETRY.english)(summaryForSentence(confirmation.summaryLocalized || confirmation.summary)), summaryForOwner: null, lang: replyLang };
+}
+
+// STEP 6 (second half) - no answer in 3 working hours -> one reminder;
+// still nothing by end of day -> escalate. Working hours: 09:30-18:30 IST,
+// every day (no holiday calendar) - a simple, documented default; wired
+// into whatsappPollScheduler.js's existing 30s tick, same as every other
+// periodic SUBH check.
+// Reuses reminderService's own istParts (exported) rather than
+// reinventing IST-calendar-day arithmetic - istDateToUtc itself is tiny
+// and not worth exporting just for this, so it's duplicated here exactly.
+const HR_NUDGE_IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+function istWallClockToUtc(year, month, day, hour, minute) {
+  return new Date(Date.UTC(year, month - 1, day, hour, minute, 0) - HR_NUDGE_IST_OFFSET_MS);
+}
+function workingHoursWindowForIstDay(year, month, day) {
+  return { start: istWallClockToUtc(year, month, day, 9, 30), end: istWallClockToUtc(year, month, day, 18, 30) };
+}
+// Minutes of actual WORKING-HOURS time between fromDate and now - time
+// outside 09:30-18:30 IST on any day doesn't count, so "3 working hours"
+// after a 17:00 message doesn't fire in the middle of the night.
+function workingHoursElapsedSince(fromDate, now) {
+  if (now <= fromDate) return 0;
+  const reminderService = require('./reminderService');
+  let { year, month, day } = reminderService.istParts(fromDate);
+  let elapsedMs = 0;
+  for (let guard = 0; guard < 30; guard++) {
+    const { start, end } = workingHoursWindowForIstDay(year, month, day);
+    const overlapStart = start > fromDate ? start : fromDate;
+    const overlapEnd = end < now ? end : now;
+    if (overlapEnd > overlapStart) elapsedMs += overlapEnd.getTime() - overlapStart.getTime();
+    if (end >= now) break;
+    const nextParts = reminderService.istParts(new Date(istWallClockToUtc(year, month, day, 12, 0).getTime() + 24 * 60 * 60 * 1000));
+    year = nextParts.year; month = nextParts.month; day = nextParts.day;
+  }
+  return Math.round(elapsedMs / 60000);
+}
+// "End of day" means the SAME IST calendar day fromDate fell on, at its
+// 18:30 cutoff - matches the spec's "still nothing by end of day ->
+// escalate" (the day the notification happened, not an arbitrary 24h cap).
+function isPastEndOfDayIst(fromDate, now) {
+  const reminderService = require('./reminderService');
+  const { year, month, day } = reminderService.istParts(fromDate);
+  const { end } = workingHoursWindowForIstDay(year, month, day);
+  return now >= end;
+}
+async function checkHrConfirmationNudges(now) {
+  const all = await listAllHrConfirmations();
+  for (const confirmation of all) {
+    if (confirmation.status !== 'awaiting_manager') continue;
+    const createdAt = new Date(confirmation.createdAt);
+    if (isPastEndOfDayIst(createdAt, now) && !confirmation.escalatedAt) {
+      await postOwnerNotification(
+        '⚠️ HR confirmation still pending end of day — ' + confirmation.senderName + ' (' + confirmation.senderPhone + '): "' + confirmation.summary + '". ' +
+        'Manager ' + confirmation.thirdPartyName + ' (' + confirmation.thirdPartyDepartment + ') has not answered. Please follow up directly.'
+      );
+      await updateHrConfirmation(confirmation.id, { escalatedAt: Date.now() });
+      continue;
+    }
+    if (!confirmation.remindedAt && workingHoursElapsedSince(createdAt, now) >= 180) {
+      const text = (HR_CONFIRMATION_MANAGER_UNCLEAR_RETRY[confirmation.lang] || HR_CONFIRMATION_MANAGER_UNCLEAR_RETRY.english)(summaryForSentence(confirmation.summaryLocalized || confirmation.summary));
+      if (isRealSendAllowedFor(confirmation.thirdPartyPhone)) {
+        const sendResult = await sendWhatsAppChunked(confirmation.thirdPartyPhone, text);
+        if (sendResult.ok) await appendConvoHistory(confirmation.thirdPartyPhone, 'out', text);
+      }
+      await updateHrConfirmation(confirmation.id, { remindedAt: Date.now() });
+    }
+  }
 }
 
 // Sends over multiple messages when the real answer is too long for one
@@ -3573,6 +4065,37 @@ function isInformal(text, lang) {
 // answered directly from WhatsApp - see decideAutoReply's data-request
 // branch, point 6 of the spec: always a holding reply + the owner's
 // explicit approval before anything is sent.
+// Live review item 4, STEP 2 - a dedicated, single-purpose tool for
+// extracting a bare person-reference from the sender's free-form answer
+// to "who gave you this instruction?" (e.g. "Sir, apni Srirampur site-er
+// Tonmay Sir-ke jiggasa korte paren...") - a separate small tool call
+// rather than cramming this into classifyTool, since this is only ever
+// relevant while a pendingHrNoteAwaitingName state is open, not on every
+// message.
+function extractPersonReferenceTool() {
+  return {
+    type: 'function',
+    function: {
+      name: 'extract_person_reference',
+      description: 'The sender was just asked who gave them an instruction. Extract the person\'s name from their reply, and any department/site/designation hint about them.',
+      parameters: {
+        type: 'object',
+        properties: {
+          personName: { type: 'string', description: 'The person\'s name exactly as given - first name alone is fine. Omit entirely if the message genuinely names no one (e.g. they declined to say, or asked something else instead).' },
+          hint: { type: 'string', description: 'A department/site/designation hint about that person, if one was given (e.g. "Srirampur site", "HR department"). Omit if none was mentioned.' }
+        }
+      }
+    }
+  };
+}
+async function extractPersonReference(text) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey || !DRAFT_MODEL) return { personName: null, hint: null };
+  const toolDef = extractPersonReferenceTool().function;
+  const input = await callClaudeForcedTool(apiKey, DRAFT_MODEL, [{ role: 'user', content: text }], toolDef.name, toolDef).catch(() => null);
+  return { personName: (input && input.personName) || null, hint: (input && input.hint) || null };
+}
+
 function classifyTool() {
   return {
     type: 'function',
@@ -3584,13 +4107,19 @@ function classifyTool() {
         properties: {
           intent: {
             type: 'string',
-            enum: ['question', 'request', 'complaint', 'follow_up', 'greeting', 'thanks', 'document_sent', 'other'],
-            description: 'What kind of message this is. "follow_up" for a short message chasing an earlier question still open in the history (resolve the real topic from there, e.g. "Tau kobe pabo?"/"Ki holo kichu bolun"). "document_sent" only when they SAY they are sending/attaching something, not an actual image/document message (those are handled separately). "greeting"/"thanks" for small talk or a closing remark with nothing open to resolve.'
+            enum: ['question', 'request', 'complaint', 'follow_up', 'informing', 'greeting', 'thanks', 'document_sent', 'other'],
+            description: 'What kind of message this is. "informing" when the sender is TELLING HR something for the record, not asking anything - e.g. their own leave/late-coming/attendance, an off-day-in-lieu/comp-off, a duty change, a salary/bank account change, a work-location update, or any other information meant for HR to note (see isHrNotification below). "follow_up" for a short message chasing an earlier question still open in the history (resolve the real topic from there, e.g. "Tau kobe pabo?"/"Ki holo kichu bolun"). "document_sent" only when they SAY they are sending/attaching something, not an actual image/document message (those are handled separately). "greeting"/"thanks" for small talk, a festival/holiday wish, or a closing remark with nothing open to resolve. Never classify a pure informing/greeting/thanks message as "question" just because it ends without one.'
           },
           language: {
             type: 'string',
             enum: ['banglish', 'hinglish', 'english', 'other'],
-            description: 'The language/script this message is actually written in. Banglish/Hinglish are Bengali/Hindi written in Roman letters, not native script.'
+            description: 'The language/script this message is actually written in - judge this the way a fluent human bilingual speaker would, not by matching a fixed word list, since short messages, festival greetings, or names can use vocabulary a word list would miss (e.g. "Subho Dashami preeti o subhecha tomakey" is Banglish, not English, even though every individual word might look unfamiliar in isolation). Banglish/Hinglish are Bengali/Hindi written in Roman letters, not native script.'
+          },
+          isTimingQuestion: { type: 'boolean', description: 'true ONLY when they are asking WHEN they will receive/get something specific - a letter, a payment, a document, an approval, etc. (e.g. "kobe pabo", "when will I get my salary", "kab milega"). false for every other kind of message, even one with no immediate answer available - a request, an instruction, an informing message, a different kind of question, or a complaint all get a natural, context-aware reply instead of the fixed "I don\'t have an update yet" template, which exists ONLY for this one specific timing-question shape.' },
+          hrTopicArea: {
+            type: 'string',
+            enum: ['attendance', 'duty_schedule', 'weekly_off', 'comp_off', 'leave', 'salary', 'payroll', 'pf', 'esi', 'mediclaim', 'employee_records', 'confirmation', 'notice_period', 'resignation', 'policies', 'approvals', 'other_hr_operations', 'none'],
+            description: 'Which HR operational area this message is actually about, for the owner\'s own visibility in the inbox log - "none" for small talk/greetings/wishes/thanks with no HR subject at all.'
           },
           topic: {
             type: 'string',
@@ -3599,9 +4128,15 @@ function classifyTool() {
           },
           periodRaw: { type: 'string', description: 'ONLY if topic is a memory topic AND a specific month/date was actually named. If the sender named a month WITHOUT a year (e.g. "September", "September-er salary"), output ONLY the bare month name in English (e.g. "september") - NEVER add, guess, or infer a year yourself, even though this parameter also accepts "YYYY-MM"; that form is ONLY for when the sender EXPLICITLY said a 4-digit year themselves. Omit this field entirely if no month was named at all.' },
           topicLabel: { type: 'string', description: 'A short (2-5 word) human-readable description of what they are asking/talking about, in English, for an HR manager to read, e.g. "confirmation letter", "October salary", "attendance calculation". Resolve this from the conversation history when the current message alone is a context-dependent follow-up ("Tau kobe pabo?" after discussing a letter -> "confirmation letter", not "general conversation"). Use "general conversation" only when there genuinely is no identifiable subject at all.' },
-          replyNeeded: { type: 'boolean', description: 'true for almost every message a real human sent to HR - questions, requests, complaints, follow-ups, greetings ("kemon acho", "good morning"), thanks/acknowledgements ("ok", "thanks"). false ONLY when this message is clearly NOT a human addressing HR: an OTP/verification code, a bank/payment/delivery/courier/system notification, a marketing/promotional message, spam, a message from another business\'s own automated bot, or a WhatsApp system message. When genuinely unsure, default to true - never silently ignore a real person.' },
+          replyNeeded: { type: 'boolean', description: 'true for almost every message a real human sent to HR - questions, requests, complaints, follow-ups, informing messages, greetings ("kemon acho", "good morning", a festival wish), thanks/acknowledgements ("ok", "thanks"). false ONLY when this message is clearly NOT a human addressing HR: an OTP/verification code, a bank/payment/delivery/courier/system notification, a marketing/promotional message, spam, a message from another business\'s own automated bot, or a WhatsApp system message. When genuinely unsure, default to true - never silently ignore a real person.' },
           automaticReason: { type: 'string', description: 'Required only when replyNeeded is false - a short (2-6 word) reason, e.g. "bank OTP message", "delivery notification", "marketing message". Omit when replyNeeded is true.' },
-          wantsData: { type: 'boolean', description: 'true ONLY if they are asking for actual HR/employee data from the company database - counts, lists, names, headcounts, birthdays, who reports to whom, department lists, or any field (even just a phone number) about a named employee, etc. false for a question about their OWN situation (their own letter/salary/attendance), a policy question, or small talk - those go through the normal topic/memory path instead, never this one.' },
+          isHrNotification: { type: 'boolean', description: 'true ONLY when intent is "informing" AND the subject is specifically: their own leave, late coming, attendance, an off-day-in-lieu/comp-off, a duty/schedule change, a salary/bank account change, or a work-location update - information meant for HR to note and possibly confirm with someone else, not a general FYI/thanks/wish. false otherwise, including for every other kind of "informing" message (e.g. sharing news, a document_sent message).' },
+          hrNotificationSummary: { type: 'string', description: 'Required when isHrNotification is true - a short, accurate, neutral summary in ENGLISH of exactly what they informed, e.g. "told to do duty today instead of his scheduled off, was asked to take a different day off in lieu". For the HR note and the owner\'s own notifications only (English, like every other owner-facing label) - never sent to the sender or a third party as-is. State only what the sender actually said, nothing invented.' },
+          hrNotificationSummaryLocalized: { type: 'string', description: 'Required when isHrNotification is true - the EXACT SAME summary as hrNotificationSummary above, but written naturally in the message\'s own detected language (the `language` field) - this version is what actually gets sent to the sender/a third party, so it must never mix in English words/phrasing (e.g. for a Banglish message: "ajke duty korte bola hoyechhe, ar er poriborte onno din chhutti nite bola hoyechhe" - a natural Banglish sentence fragment, grammatically ready to be inserted into a larger sentence, not a translated label).' },
+          hrNotificationThirdPartyName: { type: 'string', description: 'Optional, only with isHrNotification true - if the sender named a specific OTHER person (e.g. a manager/supervisor) who gave them this instruction or is otherwise involved and should confirm it, that person\'s name exactly as given. Omit if no one else was named.' },
+          hrNotificationThirdPartyHint: { type: 'string', description: 'Optional - a department/site/designation hint for the third party named above, if one was given (e.g. "Srirampur site"). Omit if none was mentioned.' },
+          hrNotificationInvolvesThirdParty: { type: 'boolean', description: 'Required when isHrNotification is true - true when the message implies someone ELSE (a manager/supervisor) decided or instructed this (e.g. "Ajke amake duty korte bola hoyechhe" - "I was TOLD to work today"), even if that person is not yet named - SUBH will ask who, to confirm with them. false for a purely self-reported notice with no one else involved (e.g. a simple "I\'ll be a bit late today"/"I\'m taking leave tomorrow").' },
+          wantsData: { type: 'boolean', description: 'true ONLY if they are asking for actual HR/employee data from the company database - counts, lists, names, headcounts, birthdays, who reports to whom, department lists, or any field (even just a phone number) about a named employee, etc. false for a question about their OWN situation (their own letter/salary/attendance), a policy question, an informing message, or small talk - those go through the normal topic/memory/noting path instead, never this one.' },
           dataRequestSummary: { type: 'string', description: 'Required only when wantsData is true - restate exactly what data they are asking for, in plain English, e.g. "current list of engineers", "headcount under Yashaswi Shroff", "Ayan Das\'s contact number". Omit when wantsData is false.' },
           personLookupName: { type: 'string', description: 'ONLY when wantsData is true AND the request is for ONE specific field about ONE named person (e.g. "Ayan Das er contact number ta dao", "R amake Ayan Das HR er contact no. ta debe?") - the person\'s name EXACTLY as given in THIS message, first name alone is fine (e.g. "Ayan"). NEVER guess, complete, or expand the name using an earlier message in the conversation history - if THIS message only says "Ayan", output "Ayan", even if an earlier message in this same chat was about a specific "Ayan Biswas" or "Ayan Das". Only carry a name forward from history when the sender explicitly refers back to the same person ("tar", "oi jon-er", "same person", "ওই person", "usi ka") - in that case output the name history already resolved. Omit entirely for any aggregate/list/count/headcount request (e.g. "engineers list", "headcount under X", "who reports to X") - those are never about one person\'s own personal field and must NOT set this.' },
           personLookupField: { type: 'string', enum: ['contact_number', 'general_details', 'other_field', 'forbidden_pii'], description: 'Required when personLookupName is given. "contact_number" ONLY for their phone/contact/mobile/WhatsApp number. "general_details" ONLY for their full name, designation/role, department, or how long they\'ve been with the company (tenure) - these are not sensitive and never need approval. "other_field" for any other single personal field that is NOT Aadhaar/PAN/bank account/salary - e.g. mail id/personal email, home/permanent/present address, date of birth, emergency contact, UAN number, ESIC/ESI number, blood group; when you choose "other_field" you MUST also set personLookupFieldLabel. "forbidden_pii" ONLY for Aadhaar, PAN, bank account/IFSC, or salary/CTC - these are NEVER shared regardless of approval. When unsure whether something is Aadhaar/PAN/bank/salary vs. a different field, choose "forbidden_pii" - never guess "other_field" for something that might be one of those four.' },
@@ -3630,7 +4165,7 @@ function formatHistoryBlock(history) {
 // silently drop a real human message; the worst case is a generic
 // holding reply going out when a sharper one would have been nicer, not
 // silence.
-const CLASSIFY_FALLBACK = { intent: 'other', language: 'english', topic: 'none', topicLabel: 'general conversation', replyNeeded: true, wantsData: false };
+const CLASSIFY_FALLBACK = { intent: 'other', language: 'english', topic: 'none', topicLabel: 'general conversation', replyNeeded: true, wantsData: false, isTimingQuestion: false, hrTopicArea: 'none', isHrNotification: false };
 async function classifyOfficialMessage(text, history) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error('whatsappAssistant.classifyOfficialMessage called without ANTHROPIC_API_KEY set');
@@ -3669,6 +4204,24 @@ const MAX_TOPIC_LABEL_WORDS = 6;
 function sanitizeTopicLabel(topicLabel) {
   const words = String(topicLabel || 'their question').trim().replace(/[,;]+$/, '').split(/\s+/);
   return words.slice(0, MAX_TOPIC_LABEL_WORDS).join(' ') || 'their question';
+}
+// Live review item 2 - topicLabel is always English (the classifier's own
+// schema says so), but a non-English reply must paraphrase it, never copy
+// it in. Flags 2+ consecutive topic-label words appearing verbatim (whole
+// words) in the reply - a real paraphrase virtually never reproduces a
+// multi-word run from the source label by chance, so this is a reliable
+// "the model pasted the label in" signal without being so loose it
+// flags legitimate shared English loanwords (a single word in common use,
+// e.g. "duty"/"site", appearing alone is NOT flagged).
+function containsLiteralTopicLabelLeak(replyText, topicLabel) {
+  const topicWords = sanitizeTopicLabel(topicLabel).toLowerCase().split(/\s+/).filter((w) => /[a-z]/i.test(w));
+  if (topicWords.length < 2) return false;
+  const replyLower = String(replyText || '').toLowerCase();
+  for (let i = 0; i < topicWords.length - 1; i++) {
+    const pair = topicWords[i].replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s+' + topicWords[i + 1].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    if (new RegExp('\\b' + pair + '\\b', 'i').test(replyLower)) return true;
+  }
+  return false;
 }
 // Live review item 7: "I don't know yet" replies must be polite,
 // complete and grammatically correct (formal apni/aap forms - never
@@ -3771,11 +4324,21 @@ const CONTEXT_REPLY_SYSTEM_PROMPT =
   'verb form ("karta hoon"/"batata hoon"/"bataunga"), NEVER feminine ("karti hoon"/"dungi"/"bataungi"). ' +
   'Never mix a Hindi word into Banglish or a ' +
   'Bengali word into Hinglish.';
-async function generateConversationReply(text, history, firstName, topicLabel, needsAnswer) {
+async function generateConversationReply(text, history, firstName, topicLabel, needsAnswer, classifiedLang) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error('whatsappAssistant.generateConversationReply called without ANTHROPIC_API_KEY set');
   if (!DRAFT_MODEL) throw new Error('whatsappAssistant.generateConversationReply called without CLAUDE_MODEL_MAIN set');
-  const lang = detectLang(text);
+  // Live review item 1 (found live: "Subho Dashami preeti o subhecha
+  // tomakey" - a genuine Banglish festival greeting - got an ENGLISH
+  // reply, because the deterministic word-list detector (detectLang)
+  // recognizes none of these specific words and falls back to "english").
+  // The AI classifier's own `language` judgment (already computed before
+  // this function is ever called, from the SAME message, with full
+  // semantic understanding rather than a fixed vocabulary list) is far
+  // more robust for exactly this kind of gap - preferred whenever it's
+  // available, with the deterministic detector only as a fallback for
+  // callers that never classified at all.
+  const lang = classifiedLang || detectLang(text);
   const LANG_DIRECTIVE = { banglish: 'Banglish (Bengali in Roman letters)', hinglish: 'Hinglish (Hindi in Roman letters)', english: 'English' };
   const historyBlock = formatHistoryBlock(history) || '(no earlier messages in this conversation yet)';
   const userContent = historyBlock + '\n\nTheir latest message: "' + text + '"\n\n' +
@@ -3816,6 +4379,21 @@ async function generateConversationReply(text, history, firstName, topicLabel, n
     ]);
     const retried = stripForbiddenGreeting(await callClaudeChat(apiKey, DRAFT_MODEL, retryMessages));
     if (retried && !NATIVE_SCRIPT_RE.test(retried)) content = retried;
+  }
+  // Live review item 2 (found live: "Apni duty today, off day in lieu
+  // niye...", "Ei muhurte acknowledgement, going to site-er bishoye..." -
+  // the model copied the internal English topicLabel almost word-for-word
+  // into an otherwise Banglish/Hinglish reply instead of paraphrasing it
+  // naturally, despite the prompt already asking for that). A structural
+  // backstop, same retry pattern as the native-script check above - never
+  // relies on the prompt instruction alone for something this visible.
+  if (content && lang !== 'english' && containsLiteralTopicLabelLeak(content, topicLabel)) {
+    const retryMessages = messages.concat([
+      { role: 'assistant', content },
+      { role: 'user', content: 'Your reply copied the internal English topic label ("' + sanitizeTopicLabel(topicLabel) + '") word-for-word instead of naturally describing it in ' + (LANG_DIRECTIVE[lang] || LANG_DIRECTIVE.english) + '. Rewrite it, paraphrasing the topic naturally in the sender\'s own language - never insert the English label text itself.' }
+    ]);
+    const retried = stripForbiddenGreeting(await callClaudeChat(apiKey, DRAFT_MODEL, retryMessages));
+    if (retried && !containsLiteralTopicLabelLeak(retried, topicLabel)) content = retried;
   }
   if (needsAnswer && containsUnbackedTimeframePromise(content)) {
     // Never prefixed with the sender's name (found live: "Radha, I
@@ -4063,15 +4641,15 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
   // the one case that ALWAYS introduces SUBH, even mid-conversation.
   if (!isGroup && isGreetingOnly(text)) {
     const lang = detectLang(text);
-    return { case: 'acknowledged', replyText: GREETING_REPLY[lang] || GREETING_REPLY.english, summaryForOwner: null };
+    return { case: 'acknowledged', replyText: GREETING_REPLY[lang] || GREETING_REPLY.english, summaryForOwner: null, lang };
   }
   if (!isGroup && isIdentityQuestion(text)) {
     const lang = detectLang(text);
-    return { case: 'acknowledged', replyText: IDENTITY_REPLY[lang] || IDENTITY_REPLY.english, summaryForOwner: null };
+    return { case: 'acknowledged', replyText: IDENTITY_REPLY[lang] || IDENTITY_REPLY.english, summaryForOwner: null, lang };
   }
   if (!isGroup && IDENTITY_CONFIRM_RE.test(text)) {
     const lang = detectLang(text);
-    return { case: 'acknowledged', replyText: IDENTITY_CONFIRM_REPLY[lang] || IDENTITY_CONFIRM_REPLY.english, summaryForOwner: null };
+    return { case: 'acknowledged', replyText: IDENTITY_CONFIRM_REPLY[lang] || IDENTITY_CONFIRM_REPLY.english, summaryForOwner: null, lang };
   }
   if (!isGroup && isEmojiOnlyMessage(text)) {
     const lastOut = (history || []).filter((h) => h.direction === 'out').slice(-1)[0];
@@ -4106,6 +4684,36 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
   // and never the gateway's own contact label - see resolveSenderName).
   const senderLabel = firstName || 'The sender';
 
+  // Live review item 4, STEP 5 - a manager answering SUBH's own
+  // confirmation question (STEP 4), checked before anything else for the
+  // same reason every other pending-state check in this function is:
+  // a bare "Haa"/"Na" only makes sense in light of the specific question
+  // just asked, never the general classifier.
+  if (!isGroup && phone) {
+    const pendingHrConfirmations = await listPendingHrConfirmationsForPhone(phone).catch(() => []);
+    if (pendingHrConfirmations.length) {
+      return handleHrConfirmationManagerReply({ phone, text, lang: detectLang(text), pendingConfirmations: pendingHrConfirmations, history });
+    }
+  }
+
+  // Live review item 4, STEP 1 -> STEP 2 - the sender was just asked who
+  // gave them an instruction; this message should name that person.
+  if (!isGroup && phone) {
+    const pendingHrNote = await getPendingHrNoteAwaitingName(phone).catch(() => null);
+    if (pendingHrNote) {
+      const { personName, hint } = await extractPersonReference(text);
+      if (personName) {
+        await clearPendingHrNoteAwaitingName(phone);
+        return handleHrNoteThirdPartyResolution({ phone, name: senderLabel, lang: pendingHrNote.lang, personName, department: hint, summary: pendingHrNote.summary, summaryLocalized: pendingHrNote.summaryLocalized, history });
+      }
+      // No name found in this reply - don't loop forever guessing; let it
+      // fall through to the normal pipeline as an ordinary new message,
+      // same "give up gracefully" philosophy as every other pending-state
+      // check in this function.
+      await clearPendingHrNoteAwaitingName(phone);
+    }
+  }
+
   // Typo-tolerant name matching (spec point 2) - a sender who was just
   // asked to pick between several "general details" candidates gets THIS
   // message checked against that pending question BEFORE anything else
@@ -4128,6 +4736,9 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
       const t = text.trim();
       if (NAME_CONFIRM_YES_RE.test(t)) {
         await clearPendingNameConfirm(phone);
+        if (pendingConfirm.personField === 'hr_note_third_party') {
+          return finalizeHrNoteThirdParty({ phone, senderName: senderLabel, lang: pendingConfirm.lang, candidate: pendingConfirm.candidate, summary: pendingConfirm.hrNoteSummary, summaryLocalized: pendingConfirm.hrNoteSummaryLocalized, history });
+        }
         return resolveConfirmedPersonLookup({
           phone, name: senderLabel, candidate: pendingConfirm.candidate, isInactive: Boolean(pendingConfirm.isInactive),
           personField: pendingConfirm.personField, fieldAliasKey: pendingConfirm.fieldAliasKey,
@@ -4136,7 +4747,10 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
       }
       if (NAME_CONFIRM_NO_RE.test(t)) {
         await clearPendingNameConfirm(phone);
-        return { case: 'acknowledged', replyText: NAME_CONFIRM_RETRY[pendingConfirm.lang] || NAME_CONFIRM_RETRY.english, summaryForOwner: null };
+        if (pendingConfirm.personField === 'hr_note_third_party') {
+          await savePendingHrNoteAwaitingName(phone, { summary: pendingConfirm.hrNoteSummary, summaryLocalized: pendingConfirm.hrNoteSummaryLocalized, lang: pendingConfirm.lang, createdAt: Date.now() });
+        }
+        return { case: 'acknowledged', replyText: NAME_CONFIRM_RETRY[pendingConfirm.lang] || NAME_CONFIRM_RETRY.english, summaryForOwner: null, lang: pendingConfirm.lang };
       }
       // Anything else isn't a yes/no answer to THIS question - clear it
       // and let the message through as an ordinary new one, rather than
@@ -4174,8 +4788,11 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
           if (fieldAlias) await queuePersonFieldApproval({ phone, requesterLabel: senderLabel, candidate: resolved, lang: pendingDisambig.lang, hadTypo: pendingDisambig.hadTypo, fieldAlias });
           return { case: 'data_holding', replyText: dataRequestHoldingReply(pendingDisambig.lang, history, new Date()), summaryForOwner: null };
         }
+        if (pendingDisambig.pendingField === 'hr_note_third_party') {
+          return finalizeHrNoteThirdParty({ phone, senderName: senderLabel, lang: pendingDisambig.lang, candidate: resolved, summary: pendingDisambig.hrNoteSummary, summaryLocalized: pendingDisambig.hrNoteSummaryLocalized, history });
+        }
         await postOwnerNotification(senderLabel + ' (' + phone + ') "' + resolved.name + '" baeche niyeche - general details pathano holo, approval lage ni.');
-        return { case: 'acknowledged', replyText: buildGeneralDetailsReply(resolved, pendingDisambig.lang, pendingDisambig.hadTypo, new Date()), summaryForOwner: null };
+        return { case: 'acknowledged', replyText: buildGeneralDetailsReply(resolved, pendingDisambig.lang, pendingDisambig.hadTypo, new Date()), summaryForOwner: null, lang: pendingDisambig.lang };
       }
       const attempts = pendingDisambig.attempts || 1;
       if (attempts < MAX_DISAMBIGUATION_ATTEMPTS) {
@@ -4187,7 +4804,7 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
         const retryFieldKind = pendingDisambig.pendingField === 'other_field'
           ? (((resolveApprovalFieldAliasByKey(pendingDisambig.fieldAliasKey) || {}).label || {})[lang] || 'other_field')
           : pendingDisambig.pendingField;
-        return { case: 'acknowledged', replyText: retryPrefix + fn(queryName, pendingDisambig.candidates, retryFieldKind), summaryForOwner: null };
+        return { case: 'acknowledged', replyText: retryPrefix + fn(queryName, pendingDisambig.candidates, retryFieldKind), summaryForOwner: null, lang: pendingDisambig.lang };
       }
       // Gave up after repeated non-matching replies - abandon the
       // disambiguation and let this message through to the normal
@@ -4222,6 +4839,16 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
   // as 'automatic' instead of sending/drafting anything.
   if (!isGroup && classification.replyNeeded === false) {
     return { case: 'automatic', replyText: null, summaryForOwner: null, automaticReason: classification.automaticReason || 'automated message' };
+  }
+
+  // Live review item 4 - a sender informing HR about their own leave,
+  // late coming, attendance, off-day-in-lieu/comp-off, duty change,
+  // salary/bank account change, or work location update is noted (and,
+  // when a third party gave the instruction, confirmed with them) rather
+  // than just acknowledged or escalated generically.
+  if (!isGroup && classification.isHrNotification) {
+    const lang = classification.language || detectLang(text);
+    return handleHrNotificationStart({ phone, name: senderLabel, lang, text, history, classification });
   }
 
   // Spec point 6 - a request for real HR/employee data NEVER gets
@@ -4304,7 +4931,14 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
   // CONTEXT_REPLY_SYSTEM_PROMPT), but these never escalate to the owner
   // or count toward the repeated-follow-up tracker, since there's no
   // open question here to actually wait on.
-  const isAcknowledgement = ['greeting', 'thanks', 'document_sent'].includes(classification.intent);
+  // "informing" messages that AREN'T one of item 4's specific HR-
+  // notification categories (already intercepted above, before this
+  // point) are still simple information with nothing to act on or wait
+  // on (e.g. "Ami site jacchi") - treated the same as a greeting/thanks:
+  // a short warm acknowledgement, never the escalation-tracked "holding"
+  // path below (item 6: respond to what they actually said, don't turn a
+  // plain FYI into an open question the owner has to follow up on).
+  const isAcknowledgement = ['greeting', 'thanks', 'document_sent', 'informing'].includes(classification.intent);
   if (isAcknowledgement) {
     // No per-sender tiering (an earlier version of this fix special-cased
     // "senior" contacts) - every sender gets the exact same brief,
@@ -4315,15 +4949,25 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
     // sender gets a real auto-reply. Genuine warmth/context (a thank-you,
     // small talk) still needs the free-form generator - unlike the
     // genuine holding case below, there's no fixed "right answer" here.
-    const replyText = await generateConversationReply(text, history, firstName, topicLabel, false);
-    return { case: 'acknowledged', replyText, summaryForOwner: null };
+    const replyText = await generateConversationReply(text, history, firstName, topicLabel, false, classification.language);
+    return { case: 'acknowledged', replyText, summaryForOwner: null, intent: classification.intent, hrTopicArea: classification.hrTopicArea, lang: classification.language };
   }
-  // A genuine open question with no real fact available (live review item
-  // 7) - a fixed, grammatically-verified, rotating template instead of
-  // free-form AI drafting (see buildNoInfoYetReply's own comment).
+  // Live review item 3: the fixed rotating "I don't know yet" pool is
+  // reserved for a genuine "when will I get X" TIMING question only
+  // (found live: it was being used for every open question/request/
+  // instruction with no immediate answer, producing the same generic "no
+  // update" line for things that aren't actually timing questions at
+  // all - e.g. Radha asking SUBH to prepare and send an F&F breakup got
+  // "amar kache nishchit update nei" instead of a reply that actually
+  // acknowledged the request). Everything else gets a human,
+  // context-aware reply drafted from the real message and conversation -
+  // acknowledge what they said, say what happens next, never the fixed
+  // template for a shape of message it was never meant to answer.
   const followupCount = await incrementFollowupCount(phone);
-  const replyText = buildNoInfoYetReply(topicLabel, classification.language || detectLang(text), followupCount);
-  return { case: 'holding', replyText, summaryForOwner: text.slice(0, 160), topicLabel, topic: classification.topic, followupCount };
+  const replyText = classification.isTimingQuestion
+    ? buildNoInfoYetReply(topicLabel, classification.language || detectLang(text), followupCount)
+    : await generateConversationReply(text, history, firstName, topicLabel, true, classification.language);
+  return { case: 'holding', replyText, summaryForOwner: text.slice(0, 160), topicLabel, topic: classification.topic, followupCount, intent: classification.intent, hrTopicArea: classification.hrTopicArea, lang: classification.language };
 }
 
 // Thin wrapper around decideAutoReplyCore - prepends the one-time AI
@@ -4338,7 +4982,24 @@ async function decideAutoReply(params) {
   // the identity line appears once per CALENDAR DAY per sender, not once
   // per 24 real hours since their last message.
   if (decision && decision.replyText && !ALREADY_INTRODUCES_SUBH_RE.test(decision.replyText) && !hasIntroducedTodayIST(params.history, new Date())) {
-    const lang = detectLang(params.text);
+    // Live review item 2 (found live: "Ayon k?" - detected english, no
+    // Bengali/Hindi signal words - got an ENGLISH disclosure line
+    // prepended to the BANGLISH NAME_CONFIRM_QUESTION reply, mixing
+    // languages in one message). The disclosure line must match the
+    // language of the REPLY it's being prepended to, not the incoming
+    // message's own (independently re-detected) language - those two can
+    // legitimately differ, since a deterministic reply's language is
+    // chosen by whichever branch built it (pendingDisambig.lang,
+    // pendingConfirm.lang, classification.language, ...), never by
+    // re-running the word-list detector on the original message. Prefers
+    // decision.lang (the exact language the branch that built this reply
+    // already used to pick its own template) when a branch sets it -
+    // re-detecting from the finished text is still the fallback for
+    // branches that don't, but found live to be unreliable even then
+    // (e.g. "Sahi naam batane ke liye dhanyavaad..." - genuine Hinglish -
+    // detected as "banglish" by the word-list heuristic, since none of
+    // its words are an exclusively-Hinglish signal the list recognizes).
+    const lang = decision.lang || detectLang(decision.replyText);
     decision.replyText = (AI_DISCLOSURE_LINE[lang] || AI_DISCLOSURE_LINE.english) + ' ' + decision.replyText;
   }
   return decision;
@@ -4607,7 +5268,7 @@ async function pollOnce() {
         await savePendingDraft({ type: 'direct', contactId, name, messagePreview: text.slice(0, 200), draftReply: decision.replyText, createdAt: Date.now() });
         await postOwnerNotification(name + ' (never-auto list) asked: ' + text.slice(0, 160) + ' — draft ready, your review needed');
         await logAutoReplyEvent({ senderType: 'direct', aCase: decision.case, memoryId: decision.memoryId || null, action: 'never_auto_drafted' });
-        await logInboxEvent({ chatId: contactId, name, isGroup: false, messageSummary: text, aCase: decision.case, sentText: decision.replyText, outcome: 'never_auto_pending', arrivedAt, seenAt, typingStartedAt });
+        await logInboxEvent({ chatId: contactId, name, isGroup: false, messageSummary: text, aCase: decision.case, sentText: decision.replyText, outcome: 'never_auto_pending', arrivedAt, seenAt, typingStartedAt, intent: decision.intent, hrTopicArea: decision.hrTopicArea });
       } else {
         await scheduleAutoSend({
           chatId: contactId, isGroup: false, name,
@@ -4616,6 +5277,7 @@ async function pollOnce() {
           topicLabel: decision.topicLabel || null,
           topic: decision.topic || null,
           followupCount: decision.followupCount || null,
+          intent: decision.intent || null, hrTopicArea: decision.hrTopicArea || null,
           arrivedAt, seenAt, typingStartedAt
         });
         results.scheduled++;
@@ -4901,10 +5563,34 @@ module.exports = {
   // items 2/3 (name-grounding safety net) and 5 (approval-gated "other
   // field" allowlist + the narrower hard-block regex).
   groundPersonLookupName,
+  containsLiteralTopicLabelLeak,
   PERSON_REFERENCE_BACKREF_RE,
   HARD_BLOCKED_PERSON_FIELD_RE,
   resolveApprovalFieldAliasByLabel,
   resolveApprovalFieldAliasByKey,
+  // Exported for scripts/check-whatsapp-engine.js only - live review item
+  // 4, the HR noting + confirmation flow.
+  isHrConfirmationsEnabled,
+  setHrConfirmationsEnabled,
+  savePendingHrNoteAwaitingName,
+  getPendingHrNoteAwaitingName,
+  clearPendingHrNoteAwaitingName,
+  saveHrConfirmation,
+  getHrConfirmation,
+  updateHrConfirmation,
+  removeHrConfirmation,
+  listPendingHrConfirmationsForPhone,
+  listAllHrConfirmations,
+  senderHasPendingHrConfirmation,
+  handleHrNoteThirdPartyResolution,
+  finalizeHrNoteThirdParty,
+  handleHrNotificationStart,
+  handleHrConfirmationManagerReply,
+  checkHrConfirmationNudges,
+  workingHoursElapsedSince,
+  isPastEndOfDayIst,
+  extractPersonReference,
+  SENIOR_DESIGNATION_RE,
   queuePersonFieldApproval,
   tenureLabel,
   buildGeneralDetailsReply,

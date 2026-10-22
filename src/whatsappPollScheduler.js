@@ -232,6 +232,15 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
     } catch (err) {
       log.error('[whatsapp-assistant] reminder WhatsApp send failed: ' + err.message);
     }
+    // Live review item 4 (HR noting + confirmation flow) - a manager with
+    // no answer after 3 working hours gets one reminder; still nothing by
+    // end of day escalates to the owner. Same cheap, idempotent-check
+    // philosophy as every other job on this tick.
+    try {
+      await whatsappAssistant.checkHrConfirmationNudges(new Date());
+    } catch (err) {
+      log.error('[whatsapp-assistant] HR confirmation nudge check failed: ' + err.message);
+    }
   }, AUTOSEND_FLUSH_MS);
 
   return { stop: () => { clearInterval(autosendInterval); clearInterval(sendFlushInterval); } };
