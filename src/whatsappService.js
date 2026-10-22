@@ -228,11 +228,22 @@ function isGroupChat(contactId) {
 // - found necessary after a real 4-day outage went unnoticed because the
 // feed/chat endpoints above keep answering normally (with stale data)
 // even while the session itself is disconnected.
+// 10s - found live (connection-drop false-alarm investigation): this had
+// NO timeout at all, so a server-side network blip reaching the gateway
+// could leave the check hanging well past the next poll tick instead of
+// failing fast into the caller's own retry/backoff.
+const STATUS_CHECK_TIMEOUT_MS = 10000;
 async function getConnectionStatus() {
-  const res = await fetch(apiBase() + '/status', { headers: { 'x-maytapi-key': requireToken() } });
-  if (!res.ok) throw new Error('WhatsApp /status failed: ' + res.status);
-  const data = await res.json();
-  return (data.data && data.data.status) || 'unknown';
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), STATUS_CHECK_TIMEOUT_MS);
+  try {
+    const res = await fetch(apiBase() + '/status', { headers: { 'x-maytapi-key': requireToken() }, signal: controller.signal });
+    if (!res.ok) throw new Error('WhatsApp /status failed: ' + res.status);
+    const data = await res.json();
+    return (data.data && data.data.status) || 'unknown';
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 module.exports = { sendWhatsAppMessage, sendPresence, normalizePhone, isSyntheticTestPhone, listChats, listMessages, isGroupChat, getConnectionStatus };

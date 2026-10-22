@@ -20,6 +20,7 @@ require('dotenv').config({ path: '.env.local' });
 require('dotenv').config();
 
 const whatsappAssistant = require('../src/aiAssistant/whatsappAssistant');
+const whatsapp = require('../src/whatsappService');
 const employeeService = require('../src/employeeService');
 const memoryService = require('../src/aiAssistant/memoryService');
 const tools = require('../src/aiAssistant/tools');
@@ -859,6 +860,255 @@ async function checkAsync(label, fn) {
     const neverEscalatedTwice = after2.escalatedAt === after1.escalatedAt;
     await whatsappAssistant.removeHrConfirmation(id);
     return escalatedOnce && neverEscalatedTwice;
+  });
+
+  console.log('='.repeat(70));
+  console.log('LIVE REVIEW round 4, item 1: connection-drop false alarms - only a real disconnect (3 consecutive confirmed checks) ever alarms; a status-check network/HTTP error never does, and backs off instead');
+  console.log('='.repeat(70));
+  async function resetGatewayTestState() {
+    await whatsappAssistant.setGatewayCounters({ consecutiveNotConnected: 0, consecutiveCheckErrors: 0, backoffUntil: 0 });
+    try {
+      const { Redis } = require('@upstash/redis');
+      const redis = new Redis({ url: process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL, token: process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN });
+      await redis.del('wa-gateway-disconnected-since');
+      await redis.set('wa-gateway-status', 'connected');
+    } catch (err) { /* best effort */ }
+  }
+  check('classifyCheckError recognizes an HTTP error (the gateway\'s own "/status failed: <code>" shape)', whatsappAssistant.classifyCheckError(new Error('WhatsApp /status failed: 503')).kind === 'http_error');
+  check('classifyCheckError treats anything else (a thrown fetch/AbortController error) as a network error', whatsappAssistant.classifyCheckError(new Error('fetch failed')).kind === 'network_error');
+  await checkAsync('1 or 2 consecutive real "not connected" checks never declare a disconnect (found live: a SINGLE check used to alarm immediately, producing 36 disconnect/reconnect pairs in one day)', async () => {
+    await resetGatewayTestState();
+    const original = whatsapp.getConnectionStatus;
+    whatsapp.getConnectionStatus = async () => 'disconnected';
+    try {
+      await whatsappAssistant.checkGatewayConnection();
+      await whatsappAssistant.checkGatewayConnection();
+      const state = await whatsappAssistant.getGatewayState();
+      return state.status === 'connected' && state.disconnectedSince === null;
+    } finally {
+      whatsapp.getConnectionStatus = original;
+    }
+  });
+  await checkAsync('the ' + whatsappAssistant.GATEWAY_CONFIRM_THRESHOLD + 'rd consecutive real "not connected" check DOES declare a disconnect and alert once', async () => {
+    await resetGatewayTestState();
+    const original = whatsapp.getConnectionStatus;
+    whatsapp.getConnectionStatus = async () => 'disconnected';
+    try {
+      for (let i = 0; i < whatsappAssistant.GATEWAY_CONFIRM_THRESHOLD; i++) await whatsappAssistant.checkGatewayConnection();
+      const state = await whatsappAssistant.getGatewayState();
+      return state.status === 'disconnected' && Boolean(state.disconnectedSince);
+    } finally {
+      whatsapp.getConnectionStatus = original;
+      await resetGatewayTestState();
+    }
+  });
+  await checkAsync('a status-check NETWORK error never raises an alarm or touches connected/disconnected state, even repeated - it only backs off (spec test: "a status-check network error that must NOT raise an alarm")', async () => {
+    await resetGatewayTestState();
+    const original = whatsapp.getConnectionStatus;
+    whatsapp.getConnectionStatus = async () => { throw new Error('fetch failed'); };
+    try {
+      const before = await whatsappAssistant.getGatewayState();
+      const r = await whatsappAssistant.checkGatewayConnection();
+      const after = await whatsappAssistant.getGatewayState();
+      const counters = await whatsappAssistant.getGatewayCounters();
+      return r.checked === false && r.classification === 'network_error'
+        && after.status === before.status && after.disconnectedSince === before.disconnectedSince
+        && counters.consecutiveNotConnected === 0 && counters.backoffUntil > Date.now();
+    } finally {
+      whatsapp.getConnectionStatus = original;
+      await resetGatewayTestState();
+    }
+  });
+  await checkAsync('an HTTP error from the status check also never raises an alarm', async () => {
+    await resetGatewayTestState();
+    const original = whatsapp.getConnectionStatus;
+    whatsapp.getConnectionStatus = async () => { throw new Error('WhatsApp /status failed: 502'); };
+    try {
+      const r = await whatsappAssistant.checkGatewayConnection();
+      const state = await whatsappAssistant.getGatewayState();
+      return r.checked === false && r.classification === 'http_error' && state.status === 'connected';
+    } finally {
+      whatsapp.getConnectionStatus = original;
+      await resetGatewayTestState();
+    }
+  });
+  await checkAsync('after a check error, the NEXT check is skipped (backing off) until the backoff window elapses - never hammering a struggling server', async () => {
+    await resetGatewayTestState();
+    const original = whatsapp.getConnectionStatus;
+    let calls = 0;
+    whatsapp.getConnectionStatus = async () => { calls++; throw new Error('fetch failed'); };
+    try {
+      await whatsappAssistant.checkGatewayConnection(); // sets backoff
+      const r2 = await whatsappAssistant.checkGatewayConnection(); // should skip, not call the gateway again
+      return r2.checked === false && r2.skipped === true && calls === 1;
+    } finally {
+      whatsapp.getConnectionStatus = original;
+      await resetGatewayTestState();
+    }
+  });
+  await checkAsync('a confirmed disconnect that then reconnects: posts ONE reconnect alert, records a real_disconnect + reconnected history pair with a duration, and clears state', async () => {
+    await resetGatewayTestState();
+    const original = whatsapp.getConnectionStatus;
+    whatsapp.getConnectionStatus = async () => 'disconnected';
+    try {
+      for (let i = 0; i < whatsappAssistant.GATEWAY_CONFIRM_THRESHOLD; i++) await whatsappAssistant.checkGatewayConnection();
+      const sinceTs = Date.now();
+      whatsapp.getConnectionStatus = async () => 'connected';
+      await whatsappAssistant.checkGatewayConnection();
+      const state = await whatsappAssistant.getGatewayState();
+      const history = await whatsappAssistant.listGatewayHistory(sinceTs - 5000);
+      const hasReconnected = history.some((e) => e.kind === 'reconnected');
+      const hasRealDisconnect = history.some((e) => e.kind === 'real_disconnect');
+      return state.status === 'connected' && state.disconnectedSince === null && hasReconnected && hasRealDisconnect;
+    } finally {
+      whatsapp.getConnectionStatus = original;
+      await resetGatewayTestState();
+    }
+  });
+  await checkAsync('the System strip shows the WhatsApp connection as exactly ONE current-state line while disconnected, and none at all once reconnected - never a stacked "disconnected since X" + "reconnected at Y" pair (found live, see screenshot)', async () => {
+    await resetGatewayTestState();
+    const original = whatsapp.getConnectionStatus;
+    whatsapp.getConnectionStatus = async () => 'disconnected';
+    try {
+      for (let i = 0; i < whatsappAssistant.GATEWAY_CONFIRM_THRESHOLD; i++) await whatsappAssistant.checkGatewayConnection();
+      const noticesWhileDown = await whatsappAssistant.listSystemNotices();
+      const waNoticesDown = noticesWhileDown.filter((n) => /WhatsApp (disconnected|reconnected)/.test(n.text));
+      whatsapp.getConnectionStatus = async () => 'connected';
+      await whatsappAssistant.checkGatewayConnection();
+      const noticesAfter = await whatsappAssistant.listSystemNotices();
+      const waNoticesAfter = noticesAfter.filter((n) => /WhatsApp (disconnected|reconnected)/.test(n.text));
+      return waNoticesDown.length === 1 && waNoticesAfter.length === 0;
+    } finally {
+      whatsapp.getConnectionStatus = original;
+      await resetGatewayTestState();
+    }
+  });
+  await checkAsync('buildGatewayHistoryReport pairs a real_disconnect with its following reconnected event into one line with a duration', async () => {
+    const now = Date.now();
+    const events = [
+      { ts: now, kind: 'real_disconnect', detail: 'status: disconnected' },
+      { ts: now + 5000, kind: 'reconnected', detail: 'after 5s' }
+    ];
+    const report = whatsappAssistant.buildGatewayHistoryReport(events);
+    return report.length === 1 && report[0].type === 'real disconnect' && report[0].durationLabel === 'after 5s';
+  });
+
+  console.log('='.repeat(70));
+  console.log('LIVE REVIEW round 4, item 2: catch-up after a connection/process gap - combines a sender\'s backlog into one reply, skips a manually-answered sender, flags >12h-old messages as needs-you, apologises for a >30min-old reply, and never double-processes');
+  console.log('='.repeat(70));
+  const CATCHUP_MANUAL = '910000000890';
+  const CATCHUP_BURST = '910000000891';
+  const CATCHUP_STALE = '910000000892';
+  const CATCHUP_APOLOGY = '910000000893';
+  async function cleanupCatchupFixtures(...phones) {
+    try {
+      const { Redis } = require('@upstash/redis');
+      const redis = new Redis({ url: process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL, token: process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN });
+      await redis.srem('wa-known-contacts', ...phones);
+      for (const p of phones) await redis.del('wa-last-seen:' + p);
+    } catch (err) { /* best effort */ }
+  }
+  await checkAsync('THE EXACT SPEC TEST: a simulated 5-minute gap with 3 senders (one already answered manually, one with 2 missed messages, one >12h old) - the manual one is skipped, the 2-message one is combined into ONE reply, the stale one is flagged needs-you with a reminder, and every last-seen id advances so nothing is re-processed later', async () => {
+    const now = Date.now();
+    await whatsappAssistant.setLastSeenId(CATCHUP_MANUAL, 100);
+    await whatsappAssistant.setLastSeenId(CATCHUP_BURST, 200);
+    await whatsappAssistant.setLastSeenId(CATCHUP_STALE, 300);
+    const originalListMessages = whatsapp.listMessages;
+    whatsapp.listMessages = async (contactId) => {
+      if (contactId === CATCHUP_MANUAL) {
+        return [
+          { id: 101, direction: 'incoming', type: 'text', content: { text: 'Amar salary kobe ashbe?' }, created_at: new Date(now - 4 * 60000).toISOString() },
+          { id: 102, direction: 'outgoing', type: 'text', content: { text: 'Already answered manually from the phone.' }, created_at: new Date(now - 2 * 60000).toISOString() }
+        ];
+      }
+      if (contactId === CATCHUP_BURST) {
+        return [
+          { id: 201, direction: 'incoming', type: 'text', content: { text: 'Sir ektu dorkar' }, created_at: new Date(now - 3 * 60000).toISOString() },
+          { id: 202, direction: 'incoming', type: 'text', content: { text: 'amar PF balance ta janaben?' }, created_at: new Date(now - 2 * 60000).toISOString() }
+        ];
+      }
+      if (contactId === CATCHUP_STALE) {
+        return [{ id: 301, direction: 'incoming', type: 'text', content: { text: 'Ajke ami aste parbo na, sorry.' }, created_at: new Date(now - 13 * 60 * 60000).toISOString() }];
+      }
+      return [];
+    };
+    try {
+      const result = await whatsappAssistant.catchUpAfterGap('test');
+      const manualAdvanced = (await whatsappAssistant.getLastSeenId(CATCHUP_MANUAL)) === 101;
+      const burstAdvanced = (await whatsappAssistant.getLastSeenId(CATCHUP_BURST)) === 202;
+      const staleAdvanced = (await whatsappAssistant.getLastSeenId(CATCHUP_STALE)) === 301;
+      const log = await whatsappAssistant.listInboxLog(20);
+      const staleEntry = log.find((e) => e.chatId === CATCHUP_STALE && e.outcome === 'missed_while_disconnected');
+      return result.sendersAnswered === 1 && result.messagesAnswered === 2 && result.needsYouSenders === 1
+        && manualAdvanced && burstAdvanced && staleAdvanced && Boolean(staleEntry);
+    } finally {
+      whatsapp.listMessages = originalListMessages;
+      await cleanupCatchupFixtures(CATCHUP_MANUAL, CATCHUP_BURST, CATCHUP_STALE);
+    }
+  });
+  await checkAsync('a reply to a backlog whose oldest message is over 30 minutes old opens with a short apology in the sender\'s own language, never mixed into the classified text itself', async () => {
+    const now = Date.now();
+    await whatsappAssistant.setLastSeenId(CATCHUP_APOLOGY, 400);
+    const originalListMessages = whatsapp.listMessages;
+    whatsapp.listMessages = async (contactId) => {
+      if (contactId === CATCHUP_APOLOGY) {
+        return [{ id: 401, direction: 'incoming', type: 'text', content: { text: 'Amar attendance thik ache kina bolben?' }, created_at: new Date(now - 45 * 60000).toISOString() }];
+      }
+      return [];
+    };
+    try {
+      await whatsappAssistant.catchUpAfterGap('test');
+      // The actual reply is only QUEUED by catchUpAfterGap (scheduleAutoSend,
+      // a 2-4s random human-like delay) - processDueAutoSends flushes it
+      // immediately rather than waiting on the real delay, same pattern
+      // this file already uses elsewhere for anything going through that
+      // same queue.
+      await whatsappAssistant.processDueAutoSends();
+      const log = await whatsappAssistant.listInboxLog(20);
+      const entry = log.find((e) => e.chatId === CATCHUP_APOLOGY);
+      return Boolean(entry) && Boolean(entry.sentText) && /dukkhito|sorry|maaf/i.test(entry.sentText);
+    } finally {
+      whatsapp.listMessages = originalListMessages;
+      await cleanupCatchupFixtures(CATCHUP_APOLOGY);
+    }
+  });
+  await checkAsync('hasManualReplyAfter correctly detects an outgoing message after the sender\'s last missed message, and correctly finds none when there is no manual reply', async () => {
+    const now = Date.now();
+    const withReply = [
+      { direction: 'incoming', created_at: new Date(now - 10000).toISOString() },
+      { direction: 'outgoing', created_at: new Date(now - 5000).toISOString() }
+    ];
+    const withoutReply = [{ direction: 'incoming', created_at: new Date(now - 10000).toISOString() }];
+    return whatsappAssistant.hasManualReplyAfter(withReply, now - 10000) === true
+      && whatsappAssistant.hasManualReplyAfter(withoutReply, now - 10000) === false;
+  });
+  await checkAsync('fetchAllMessagesForCatchup pages to a larger limit when the oldest fetched message is still newer than lastSeenId, stopping once it reaches far enough back', async () => {
+    const originalListMessages = whatsapp.listMessages;
+    const calls = [];
+    whatsapp.listMessages = async (contactId, limit) => {
+      calls.push(limit);
+      if (limit < 100) return [{ id: 50, direction: 'incoming' }]; // still newer than lastSeenId=10 - needs to page further
+      return [{ id: 50, direction: 'incoming' }, { id: 5, direction: 'incoming' }]; // now reaches back far enough
+    };
+    try {
+      const result = await whatsappAssistant.fetchAllMessagesForCatchup('910000000894', 10);
+      return calls.length > 1 && calls[calls.length - 1] >= 100 && result.some((m) => m.id === 5);
+    } finally {
+      whatsapp.listMessages = originalListMessages;
+    }
+  });
+  await checkAsync('a sender with nothing missed is a complete no-op (no log entry, last-seen untouched)', async () => {
+    const CATCHUP_NOTHING = '910000000895';
+    await whatsappAssistant.setLastSeenId(CATCHUP_NOTHING, 999);
+    const originalListMessages = whatsapp.listMessages;
+    whatsapp.listMessages = async (contactId) => (contactId === CATCHUP_NOTHING ? [{ id: 999, direction: 'incoming', type: 'text', content: { text: 'old' }, created_at: new Date().toISOString() }] : []);
+    try {
+      await whatsappAssistant.catchUpAfterGap('test');
+      return (await whatsappAssistant.getLastSeenId(CATCHUP_NOTHING)) === 999; // unchanged - id 999 is not > lastSeenId 999
+    } finally {
+      whatsapp.listMessages = originalListMessages;
+      await cleanupCatchupFixtures(CATCHUP_NOTHING);
+    }
   });
 
   console.log('='.repeat(70));

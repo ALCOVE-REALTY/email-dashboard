@@ -173,6 +173,16 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
   setTimer(tick, pollIntervalMs());
   log.log('[whatsapp-assistant] scheduler STARTED, polling every ' + (pollIntervalMs() / 1000) + 's (commit ' + commitId + ')');
 
+  // Catch-up after a gap (live review item 2) - a fresh process start is
+  // exactly as much of a gap as a reconnect (a deploy, a crash restart,
+  // or simply the first time this ever ran): whatever arrived since each
+  // contact's own wa-last-seen needs answering before normal polling
+  // takes over. Fire-and-forget - never delays the scheduler's own first
+  // regular tick above, and a failure here is logged, never fatal.
+  whatsappAssistant.catchUpAfterGap('startup')
+    .then((result) => log.log('[whatsapp-assistant] startup catch-up: ' + JSON.stringify(result)))
+    .catch((err) => log.error('[whatsapp-assistant] startup catch-up failed: ' + err.message));
+
   // Fast, dedicated auto-send flush (reply-latency request) - separate
   // from the heavier maintenance tick below so a 2-4s human delay is
   // actually honored instead of being rounded up to whatever the slower

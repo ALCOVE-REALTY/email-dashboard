@@ -79,6 +79,22 @@ const GATEWAY_STATUS_KEY = 'wa-gateway-status';
 const GATEWAY_DISCONNECTED_SINCE_KEY = 'wa-gateway-disconnected-since';
 const GATEWAY_LAST_ALERT_AT_KEY = 'wa-gateway-last-alert-at';
 const GATEWAY_ALERT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+// Connection-drop false-alarm fix (live review) - found live: 36 separate
+// disconnect/reconnect pairs in one day, nearly all lasting under 2
+// minutes, because a SINGLE observed non-"connected" status immediately
+// declared a disconnect and alerted - no debounce at all. A real session
+// drop and a one-tick blip (the gateway briefly erroring, or the
+// server's own outbound network hiccupping - a deploy failed the same day
+// with "Failed to connect to github.com port 443") look identical from a
+// single check.
+const GATEWAY_CONSECUTIVE_NOT_CONNECTED_KEY = 'wa-gateway-consecutive-not-connected';
+const GATEWAY_CONSECUTIVE_CHECK_ERRORS_KEY = 'wa-gateway-consecutive-check-errors';
+const GATEWAY_BACKOFF_UNTIL_KEY = 'wa-gateway-backoff-until';
+const GATEWAY_HISTORY_KEY = 'wa-gateway-history';
+const GATEWAY_CONFIRM_THRESHOLD = 3; // consecutive REAL "not connected" checks required before declaring a disconnect
+const GATEWAY_CHECK_ERROR_BACKOFF_BASE_MS = 10 * 1000;
+const GATEWAY_CHECK_ERROR_BACKOFF_MAX_MS = 5 * 60 * 1000;
+const GATEWAY_HISTORY_MAX = 500;
 const SCHEDULER_HEARTBEAT_KEY = 'wa-scheduler-heartbeat';
 const SCHEDULER_LAST_ERROR_KEY = 'wa-scheduler-last-error';
 
@@ -108,10 +124,30 @@ async function getLastSeenId(contactId) {
   } catch (err) { return 0; }
 }
 
+// Registry of every contact this file has ever tracked a last-seen id
+// for (live review, catch-up after a gap) - there was previously no way
+// to enumerate "every 1:1 chat with a last-seen marker" without scanning
+// Redis keys directly, which listKnownContacts below needs to do its
+// per-contact catch-up pass after a reconnect/on startup.
+const KNOWN_CONTACTS_KEY = 'wa-known-contacts';
 async function setLastSeenId(contactId, id) {
   const redis = getClient();
   if (!redis) return;
-  try { await redis.set(LAST_SEEN_PREFIX + contactId, String(id)); } catch (err) { /* best effort */ }
+  try { await redis.set(LAST_SEEN_PREFIX + contactId, String(id)); await redis.sadd(KNOWN_CONTACTS_KEY, contactId); } catch (err) { /* best effort */ }
+}
+async function listKnownContacts() {
+  const redis = getClient();
+  if (!redis) return [];
+  try {
+    // Found live (same class of bug as the HR-confirmations-enabled
+    // setting): the Upstash client auto-coerces a numeric-looking SET
+    // member (a bare phone number string) back into a JS NUMBER on read -
+    // every caller here compares contactId against a real string
+    // elsewhere (dictionary keys, mock/test equality, etc.), so this
+    // normalizes to String() once, at the source, rather than requiring
+    // every caller to defend against it.
+    return (await redis.smembers(KNOWN_CONTACTS_KEY)).map(String);
+  } catch (err) { return []; }
 }
 
 // ---------------- Official allow/block list (chat-managed) ----------------
@@ -398,9 +434,18 @@ async function clearOwnerNotifications() {
 // returns newest-first, so keeping the FIRST match per pattern and
 // skipping every later (older) one of the same kind keeps exactly the
 // single most recent notice of each type.
+// Live review (connection-drop false alarms) - the WhatsApp connection
+// line used to be two independent "latest only" slots, one for
+// "disconnected" text and one for "reconnected" text, each sourced from
+// scanning historical notification TEXT. During a flapping connection
+// both a recent disconnect and a recent reconnect legitimately exist in
+// that history at once, so both showed stacked together (found live:
+// "disconnected since 15:15" and "reconnected at 15:17" shown
+// simultaneously). The connection line is now derived from LIVE state
+// (gatewayStatusSummary) instead - one line, and only while actually
+// disconnected; once reconnected it simply stops appearing, no separate
+// lingering "reconnected" notice needed.
 const SYSTEM_NOTICE_PATTERNS = [
-  /^⚠️ WhatsApp disconnected/,
-  /^✓ WhatsApp reconnected/,
   /^SUBH daily summary/
 ];
 async function listSystemNotices() {
@@ -413,6 +458,13 @@ async function listSystemNotices() {
     if (patternIndex === -1 || seenPatterns.has(patternIndex)) continue;
     seenPatterns.add(patternIndex);
     result.push(n);
+  }
+  const gw = await gatewayStatusSummary();
+  if (!gw.isConnected) {
+    result.unshift({
+      text: '⚠️ WhatsApp disconnected since ' + gw.disconnectedSinceLabel + ' — open tools.alcoverealty.in → WhatsApp Dashboard and scan the QR again.',
+      ts: Date.now()
+    });
   }
   return result;
 }
@@ -3142,37 +3194,141 @@ async function getGatewayState() {
     return { status: status || null, disconnectedSince: Number(disconnectedSince) || null, lastAlertAt: Number(lastAlertAt) || null };
   } catch (err) { return { status: null, disconnectedSince: null, lastAlertAt: null }; }
 }
+// Distinguishes "the status CHECK itself failed" (network error reaching
+// the gateway at all, or an HTTP error status) from "the gateway answered
+// normally and said something other than connected" - only the latter
+// ever counts toward a real disconnect. A thrown Error from
+// whatsapp.getConnectionStatus is either its own explicit
+// "WhatsApp /status failed: <code>" (an HTTP error) or whatever the
+// underlying fetch/AbortController threw (a network error/timeout).
+function classifyCheckError(err) {
+  const message = String((err && err.message) || err || '');
+  const httpMatch = message.match(/WhatsApp \/status failed: (\d+)/);
+  if (httpMatch) return { kind: 'http_error', detail: 'HTTP ' + httpMatch[1] };
+  return { kind: 'network_error', detail: message.slice(0, 200) };
+}
+async function recordGatewayHistoryEvent(kind, detail) {
+  const redis = getClient();
+  if (!redis) return;
+  try {
+    await redis.lpush(GATEWAY_HISTORY_KEY, JSON.stringify({ ts: Date.now(), kind, detail }));
+    await redis.ltrim(GATEWAY_HISTORY_KEY, 0, GATEWAY_HISTORY_MAX - 1);
+  } catch (err) { /* best effort */ }
+}
+async function listGatewayHistory(sinceMs) {
+  const redis = getClient();
+  if (!redis) return [];
+  try {
+    const raw = await redis.lrange(GATEWAY_HISTORY_KEY, 0, GATEWAY_HISTORY_MAX - 1);
+    const parsed = raw.map((r) => { try { return typeof r === 'string' ? JSON.parse(r) : r; } catch (err) { return null; } }).filter(Boolean);
+    return sinceMs ? parsed.filter((e) => e.ts >= sinceMs) : parsed;
+  } catch (err) { return []; }
+}
+async function getGatewayCounters() {
+  const redis = getClient();
+  if (!redis) return { consecutiveNotConnected: 0, consecutiveCheckErrors: 0, backoffUntil: 0 };
+  try {
+    const [notConnected, checkErrors, backoffUntil] = await Promise.all([
+      redis.get(GATEWAY_CONSECUTIVE_NOT_CONNECTED_KEY), redis.get(GATEWAY_CONSECUTIVE_CHECK_ERRORS_KEY), redis.get(GATEWAY_BACKOFF_UNTIL_KEY)
+    ]);
+    return { consecutiveNotConnected: Number(notConnected) || 0, consecutiveCheckErrors: Number(checkErrors) || 0, backoffUntil: Number(backoffUntil) || 0 };
+  } catch (err) { return { consecutiveNotConnected: 0, consecutiveCheckErrors: 0, backoffUntil: 0 }; }
+}
+async function setGatewayCounters(patch) {
+  const redis = getClient();
+  if (!redis) return;
+  const ops = [];
+  if ('consecutiveNotConnected' in patch) ops.push(redis.set(GATEWAY_CONSECUTIVE_NOT_CONNECTED_KEY, String(patch.consecutiveNotConnected)));
+  if ('consecutiveCheckErrors' in patch) ops.push(redis.set(GATEWAY_CONSECUTIVE_CHECK_ERRORS_KEY, String(patch.consecutiveCheckErrors)));
+  if ('backoffUntil' in patch) {
+    ops.push(patch.backoffUntil ? redis.set(GATEWAY_BACKOFF_UNTIL_KEY, String(patch.backoffUntil)) : redis.del(GATEWAY_BACKOFF_UNTIL_KEY));
+  }
+  try { await Promise.all(ops); } catch (err) { /* best effort */ }
+}
+// Rewritten (live review - connection-drop false alarms): only declares a
+// real disconnect after GATEWAY_CONFIRM_THRESHOLD consecutive checks that
+// each got a real answer from the gateway saying something other than
+// "connected" - never from a single blip, and never from a check that
+// failed to even complete (network error/timeout/HTTP error), which is
+// tracked completely separately and never alarms at all, only backs off.
 async function checkGatewayConnection() {
+  const counters = await getGatewayCounters();
+  if (counters.backoffUntil && Date.now() < counters.backoffUntil) {
+    return { checked: false, skipped: true, error: 'backing off until ' + new Date(counters.backoffUntil).toISOString() };
+  }
   let liveStatus;
   try {
     liveStatus = await whatsapp.getConnectionStatus();
   } catch (err) {
-    return { checked: false, error: err.message }; // transient check failure - leaves stored alert state untouched
+    const { kind, detail } = classifyCheckError(err);
+    const nextErrorCount = counters.consecutiveCheckErrors + 1;
+    // Edge-triggered (only the FIRST error in a new streak) - a flaky
+    // network producing 50 of the same timeout in a row should leave one
+    // history line, not 50.
+    if (counters.consecutiveCheckErrors === 0) await recordGatewayHistoryEvent(kind, detail);
+    const backoffMs = Math.min(GATEWAY_CHECK_ERROR_BACKOFF_MAX_MS, GATEWAY_CHECK_ERROR_BACKOFF_BASE_MS * Math.pow(2, Math.min(nextErrorCount - 1, 5)));
+    await setGatewayCounters({ consecutiveCheckErrors: nextErrorCount, backoffUntil: Date.now() + backoffMs });
+    // A check failure never touches connected/disconnected state at all -
+    // "network errors/timeouts alone -> retry with backoff, no alarm."
+    return { checked: false, error: err.message, classification: kind };
   }
+  // The call itself succeeded - clear any check-error backoff regardless
+  // of what the status turned out to be.
+  if (counters.consecutiveCheckErrors > 0) await setGatewayCounters({ consecutiveCheckErrors: 0, backoffUntil: 0 });
+
   const isConnected = liveStatus === 'connected';
   const redis = getClient();
   const state = await getGatewayState();
 
   if (!isConnected) {
-    const since = state.disconnectedSince || Date.now();
-    const dueForAlert = !state.lastAlertAt || (Date.now() - state.lastAlertAt) >= GATEWAY_ALERT_COOLDOWN_MS;
-    if (dueForAlert) {
+    const nextCount = counters.consecutiveNotConnected + 1;
+    await setGatewayCounters({ consecutiveNotConnected: nextCount });
+    if (nextCount === 1) await recordGatewayHistoryEvent('status_not_connected', 'status: ' + liveStatus);
+    const alreadyConfirmedDisconnected = Boolean(state.disconnectedSince);
+    if (nextCount >= GATEWAY_CONFIRM_THRESHOLD && !alreadyConfirmedDisconnected) {
+      const since = Date.now();
       await postOwnerNotification('⚠️ WhatsApp disconnected since ' + formatIstDateTime(since) +
         ' — open tools.alcoverealty.in → WhatsApp Dashboard and scan the QR again.');
-      if (redis) { try { await redis.set(GATEWAY_LAST_ALERT_AT_KEY, String(Date.now())); } catch (err) { /* best effort */ } }
-    }
-    if (redis) {
-      try { await redis.set(GATEWAY_STATUS_KEY, liveStatus); await redis.set(GATEWAY_DISCONNECTED_SINCE_KEY, String(since)); } catch (err) { /* best effort */ }
+      await recordGatewayHistoryEvent('real_disconnect', 'status: ' + liveStatus);
+      if (redis) { try { await redis.set(GATEWAY_STATUS_KEY, liveStatus); await redis.set(GATEWAY_DISCONNECTED_SINCE_KEY, String(since)); } catch (err) { /* best effort */ } }
     }
   } else {
-    if (state.status && state.status !== 'connected') {
+    await setGatewayCounters({ consecutiveNotConnected: 0 });
+    if (state.disconnectedSince) {
+      const durationMs = Date.now() - state.disconnectedSince;
       await postOwnerNotification('✓ WhatsApp reconnected at ' + formatIstDateTime(Date.now()) + '.');
+      await recordGatewayHistoryEvent('reconnected', 'after ' + Math.round(durationMs / 1000) + 's');
+      // Catch-up (live review) - a CONFIRMED real disconnect is exactly
+      // the gap this needs to run for; a connection that never crossed
+      // the 3-consecutive confirm threshold never interrupted real
+      // message processing in the first place, so no catch-up is needed.
+      catchUpAfterGap('reconnect').catch((err) => postOwnerNotification('⚠️ Catch-up after reconnect failed: ' + err.message).catch(() => {}));
     }
     if (redis) {
       try { await redis.set(GATEWAY_STATUS_KEY, liveStatus); await redis.del(GATEWAY_DISCONNECTED_SINCE_KEY); await redis.del(GATEWAY_LAST_ALERT_AT_KEY); } catch (err) { /* best effort */ }
     }
   }
   return { checked: true, status: liveStatus, isConnected };
+}
+// Diagnostic report (live review item 1) - "list every disconnect in the
+// last N days: time, duration, what /status actually returned." Pairs
+// each real_disconnect with its following reconnected event; a
+// real_disconnect with no reconnected event yet is still ongoing.
+function buildGatewayHistoryReport(events) {
+  const lines = [];
+  let openSince = null;
+  for (const e of events.slice().sort((a, b) => a.ts - b.ts)) {
+    if (e.kind === 'real_disconnect') {
+      openSince = e;
+    } else if (e.kind === 'reconnected' && openSince) {
+      lines.push({ since: formatIstDateTime(openSince.ts), until: formatIstDateTime(e.ts), durationLabel: e.detail, type: 'real disconnect', detail: openSince.detail });
+      openSince = null;
+    } else if (e.kind === 'network_error' || e.kind === 'http_error') {
+      lines.push({ since: formatIstDateTime(e.ts), until: null, durationLabel: null, type: 'status check failed (' + e.kind.replace('_', ' ') + ')', detail: e.detail });
+    }
+  }
+  if (openSince) lines.push({ since: formatIstDateTime(openSince.ts), until: null, durationLabel: 'ongoing', type: 'real disconnect', detail: openSince.detail });
+  return lines;
 }
 // Read-only, no gateway call of its own - the daily summary, "auto reply
 // status" and whatsapp_inbox_summary all describe whatever
@@ -5170,6 +5326,181 @@ async function listBurstBufferContactIds() {
   try { return await redis.smembers(BURST_BUFFER_IDS_KEY); } catch (err) { return []; }
 }
 
+// ---------------- Catch-up after a connection gap (live review item 2) ----------------
+// Runs on a confirmed reconnect (see checkGatewayConnection above) and
+// once on scheduler startup (whatsappPollScheduler.js) - the two moments
+// a real backlog can exist: the gateway/session was down, or the whole
+// process just (re)started (a deploy, a crash restart). Normal operation
+// never needs this at all - pollOnce's own per-tick processing already
+// keeps every contact's wa-last-seen current second to second.
+const CATCHUP_APOLOGY_THRESHOLD_MS = 30 * 60 * 1000;
+const CATCHUP_STALE_THRESHOLD_MS = 12 * 60 * 60 * 1000;
+const CATCHUP_FETCH_MAX_LIMIT = 200;
+const CATCHUP_APOLOGY_LINE = {
+  banglish: 'Deri-r jonno dukkhito. ',
+  hinglish: 'Der ke liye maaf kijiye. ',
+  english: 'Sorry for the delay. '
+};
+// Pages back through the gateway for ONE contact until either the oldest
+// returned incoming message is already <= lastSeenId (everything missing
+// has been found) or CATCHUP_FETCH_MAX_LIMIT is reached. There is no
+// cursor/?since= param on this gateway (confirmed elsewhere in this
+// file - it was tried and silently ignored), so "paging through" means
+// asking for a larger window at once, the only lever actually available.
+async function fetchAllMessagesForCatchup(contactId, lastSeenId) {
+  let limit = 50;
+  let messages = [];
+  for (;;) {
+    messages = await whatsapp.listMessages(contactId, limit);
+    const incoming = messages.filter((m) => m.direction === 'incoming');
+    const oldestId = incoming.length ? Math.min(...incoming.map((m) => m.id)) : null;
+    if (oldestId === null || oldestId <= lastSeenId || limit >= CATCHUP_FETCH_MAX_LIMIT) break;
+    limit = Math.min(limit * 2, CATCHUP_FETCH_MAX_LIMIT);
+  }
+  return messages;
+}
+function catchupMessageTimestamp(m) {
+  return m.created_at ? new Date(m.created_at).getTime() : Date.now();
+}
+// Spec: "Skip a sender if I already replied manually from the phone
+// after their message (check outgoing messages in that chat) - never
+// double-reply."
+function hasManualReplyAfter(allMessages, afterTs) {
+  return allMessages.some((m) => m.direction === 'outgoing' && catchupMessageTimestamp(m) > afterTs);
+}
+// Mirrors pollOnce's own actOnOfficialTurn (send/draft/log handling)
+// closely, on purpose kept as its own separate copy rather than
+// extracting actOnOfficialTurn out of pollOnce's closure into a shared
+// function - that closure is working, already-tested code processing
+// real-time messages every few seconds, and this file's own convention
+// elsewhere (e.g. the Reminders sheet's copied drag-mechanics) is to
+// duplicate a small amount of logic rather than risk touching it.
+async function actOnCatchupTurn({ contactId, name, firstName, text, arrivedAt, seenAt, needsApology }) {
+  const history = await getConvoHistory(contactId, CONVO_HISTORY_MAX);
+  await appendConvoHistory(contactId, 'in', text);
+  let decision;
+  try {
+    decision = await decideAutoReply({ phone: contactId, name, firstName, text, isGroup: false, history: history.slice(-10) });
+  } catch (err) {
+    console.error('[whatsapp] catch-up decideAutoReply threw for ' + contactId + ':', err);
+    const lang = detectLang(text);
+    decision = {
+      case: 'holding',
+      replyText: AUTOREPLY_ERROR_FALLBACK[lang] || AUTOREPLY_ERROR_FALLBACK.english,
+      summaryForOwner: '[auto-reply error, generic fallback sent] ' + text.slice(0, 160)
+    };
+    await postOwnerNotification(
+      '⚠️ ' + name + ' (' + contactId + ')-er catch-up message-e auto-reply toiri korte giye error hoyeche: ' +
+      String((err && err.message) || err).slice(0, 160) + ' - generic fallback reply pathano hoyeche, code check korun.'
+    ).catch(() => {});
+  }
+  // The "sorry for the delay" opener (spec: oldest missed message > 30
+  // min old) goes on the FINAL reply, never mixed into the text the
+  // classifier/disambiguation logic sees - prepending it to the incoming
+  // text instead would read oddly glued onto a deterministic template
+  // ("Sorry for the delay. Apni ki Ayon Mondal...?") and could confuse
+  // classification. Uses decision.lang when the branch that built the
+  // reply set it (same robust-language fix as the AI disclosure line),
+  // falling back to detecting the reply's own language.
+  if (decision && decision.replyText && needsApology) {
+    const lang = decision.lang || detectLang(decision.replyText);
+    decision.replyText = (CATCHUP_APOLOGY_LINE[lang] || CATCHUP_APOLOGY_LINE.english) + decision.replyText;
+  }
+  if (decision && decision.case === 'automatic') {
+    await logInboxEvent({ chatId: contactId, name, isGroup: false, messageSummary: text, aCase: 'automatic', sentText: null, outcome: 'automatic', arrivedAt, seenAt });
+    return { answered: false };
+  }
+  if (decision && decision.replyText) {
+    await appendConvoHistory(contactId, 'out', decision.replyText);
+    if (await isNeverAuto(contactId)) {
+      await savePendingDraft({ type: 'direct', contactId, name, messagePreview: text.slice(0, 200), draftReply: decision.replyText, createdAt: Date.now() });
+      await postOwnerNotification(name + ' (never-auto list) asked (catch-up): ' + text.slice(0, 160) + ' — draft ready, your review needed');
+      await logAutoReplyEvent({ senderType: 'direct', aCase: decision.case, memoryId: decision.memoryId || null, action: 'never_auto_drafted' });
+      await logInboxEvent({ chatId: contactId, name, isGroup: false, messageSummary: text, aCase: decision.case, sentText: decision.replyText, outcome: 'never_auto_pending', arrivedAt, seenAt, intent: decision.intent, hrTopicArea: decision.hrTopicArea });
+      return { answered: false };
+    }
+    await scheduleAutoSend({
+      chatId: contactId, isGroup: false, name,
+      replyText: decision.replyText, case: decision.case, memoryId: decision.memoryId || null,
+      summaryForOwner: decision.summaryForOwner || null, topicLabel: decision.topicLabel || null, topic: decision.topic || null,
+      followupCount: decision.followupCount || null, intent: decision.intent || null, hrTopicArea: decision.hrTopicArea || null,
+      arrivedAt, seenAt, typingStartedAt: null
+    });
+    return { answered: true };
+  }
+  return { answered: false };
+}
+// The one entry point - called on a confirmed reconnect and once at
+// scheduler startup. `trigger` is purely descriptive (shows up in logs),
+// never changes behavior.
+async function catchUpAfterGap(trigger) {
+  const contacts = await listKnownContacts();
+  let sendersAnswered = 0, messagesAnswered = 0, needsYouSenders = 0;
+  const now = Date.now();
+  for (const contactId of contacts) {
+    // Tagged groups are left to the existing group message pipeline
+    // entirely unaffected by this pass - this is a 1:1-only catch-up,
+    // matching every other rule in this file that treats groups as a
+    // completely separate path.
+    if (whatsapp.isGroupChat(contactId)) continue;
+    try {
+      const lastSeenId = await getLastSeenId(contactId);
+      const allMessages = await fetchAllMessagesForCatchup(contactId, lastSeenId);
+      const missed = allMessages
+        .filter((m) => m.direction === 'incoming' && m.id > lastSeenId && (!m.type || ['text', 'image', 'document'].includes(m.type)))
+        .sort((a, b) => a.id - b.id);
+      if (!missed.length) continue;
+      const highestId = missed[missed.length - 1].id;
+      // Advance last-seen regardless of what happens below - a catch-up
+      // pass must never re-process the same backlog on a later tick/run.
+      await setLastSeenId(contactId, highestId);
+
+      const lastMissedTs = catchupMessageTimestamp(missed[missed.length - 1]);
+      if (hasManualReplyAfter(allMessages, lastMissedTs)) continue; // already handled manually - never double-reply
+
+      const resolvedName = await resolveSenderName(contactId).catch(() => null);
+      const name = resolvedName || contactId;
+      const firstName = firstNameOf(resolvedName);
+      const oldestTs = catchupMessageTimestamp(missed[0]);
+      const missedTextOnly = missed.filter((m) => m.type !== 'image' && m.type !== 'document');
+      const combinedText = combineBurstText(missedTextOnly.map((m) => ({ text: (m.content && (m.content.text || m.content.caption)) || '' })));
+
+      if (now - oldestTs > CATCHUP_STALE_THRESHOLD_MS) {
+        // Too old to answer live (spec: > 12h) - surfaced as needs-you +
+        // a reminder instead of guessing at a reply to something that old.
+        await postOwnerNotification('⚠️ Missed while disconnected — ' + name + ' (' + contactId + ') sent ' + missed.length + ' message(s) starting ' + formatIstDateTime(oldestTs) + ', too old to auto-reply.');
+        await logInboxEvent({
+          chatId: contactId, name, isGroup: false,
+          messageSummary: '[Missed while disconnected] ' + (combinedText || '(media)').slice(0, 150),
+          aCase: null, sentText: null, outcome: 'missed_while_disconnected', arrivedAt: oldestTs, seenAt: now
+        });
+        try {
+          const reminderService = require('./reminderService');
+          await reminderService.saveReminder(reminderService.newReminder({
+            title: 'Missed while disconnected: ' + name,
+            detail: missed.length + ' message(s) since ' + formatIstDateTime(oldestTs),
+            dueAt: null, priority: 'high', source: 'whatsapp', sourceType: 'missed_while_disconnected',
+            sourceRef: contactId, linkedChatId: contactId, now: new Date()
+          }));
+        } catch (err) { /* best effort */ }
+        needsYouSenders++;
+        continue;
+      }
+
+      if (!combinedText) continue; // media-only backlog with no text to classify - nothing to reply to
+      const needsApology = now - oldestTs > CATCHUP_APOLOGY_THRESHOLD_MS;
+      const result = await actOnCatchupTurn({ contactId, name, firstName, text: combinedText, arrivedAt: oldestTs, seenAt: now, needsApology });
+      if (result.answered) { sendersAnswered++; messagesAnswered += missedTextOnly.length; }
+    } catch (err) {
+      console.error('[whatsapp] catch-up failed for ' + contactId + ' (trigger: ' + trigger + '): ' + err.message);
+    }
+  }
+  if (sendersAnswered || needsYouSenders) {
+    await postOwnerNotification('Caught up: ' + messagesAnswered + ' missed messages from ' + sendersAnswered + ' senders answered, ' + needsYouSenders + ' need you.');
+  }
+  return { sendersAnswered, messagesAnswered, needsYouSenders, trigger };
+}
+
 async function pollOnce() {
   const feed = await whatsapp.listMessages(null, POLL_FEED_LIMIT);
   const results = { checked: 0, official: 0, personal: 0, groupMessagesScanned: 0, groupMentionsFound: 0, skippedBlockedGroups: 0, scheduled: 0, errors: [] };
@@ -5587,6 +5918,24 @@ module.exports = {
   handleHrNotificationStart,
   handleHrConfirmationManagerReply,
   checkHrConfirmationNudges,
+  // Exported for scripts/check-whatsapp-engine.js only - live review:
+  // connection-drop false alarms + catch-up after a gap.
+  getGatewayState,
+  getGatewayCounters,
+  setGatewayCounters,
+  classifyCheckError,
+  recordGatewayHistoryEvent,
+  listGatewayHistory,
+  buildGatewayHistoryReport,
+  GATEWAY_CONFIRM_THRESHOLD,
+  listKnownContacts,
+  getLastSeenId,
+  setLastSeenId,
+  fetchAllMessagesForCatchup,
+  hasManualReplyAfter,
+  catchUpAfterGap,
+  CATCHUP_APOLOGY_THRESHOLD_MS,
+  CATCHUP_STALE_THRESHOLD_MS,
   workingHoursElapsedSince,
   isPastEndOfDayIst,
   extractPersonReference,
