@@ -707,6 +707,8 @@ async function checkAsync(label, fn) {
     const confirmations = (await whatsappAssistant.listAllHrConfirmations()).filter((c) => c.senderPhone === HR_SENDER_BN);
     const ok = d5.case === 'acknowledged' && d5.replyText === 'Ami SUBH, Subhodeep-er HR Assistant. Apnar confirmation-er jonno onek dhonnobad.'
       && Boolean(resultEntry) && resultEntry.sentText.includes('confirm korechhen')
+      // Link-back rule: same-day (this whole flow runs within seconds) gets NO prefix at all.
+      && !resultEntry.sentText.includes('bishoy-e') && !resultEntry.sentText.includes('Gotokal')
       && confirmations.length === 1 && confirmations[0].status === 'confirmed';
     await cleanupHrFlowArtifacts(HR_SENDER_BN, TANMOY_MONDAL_PHONE);
     return ok;
@@ -721,6 +723,8 @@ async function checkAsync(label, fn) {
     const confirmations = (await whatsappAssistant.listAllHrConfirmations()).filter((c) => c.senderPhone === HR_SENDER_BN2);
     const ok = dNo.replyText === 'Ami SUBH, Subhodeep-er HR Assistant. Janano-r jonno onek dhonnobad.'
       && Boolean(resultEntry) && resultEntry.sentText.includes('confirm korenni')
+      // Link-back rule: same-day (this whole flow runs within seconds) gets NO prefix at all.
+      && !resultEntry.sentText.includes('bishoy-e') && !resultEntry.sentText.includes('Gotokal')
       && confirmations.length === 1 && confirmations[0].status === 'declined';
     await cleanupHrFlowArtifacts(HR_SENDER_BN2, TANMOY_MONDAL_PHONE);
     return ok;
@@ -1022,12 +1026,10 @@ async function checkAsync(label, fn) {
   });
 
   console.log('='.repeat(70));
-  console.log('LIVE TEST FIXES item 4 CORRECTION: the HR-note flow survives up to 7 days of inactivity (not just end of day) - a continuation after a day-or-more gap gets a brief bridge line back to the topic first, a clearly different topic in between closes the flow quietly with no "unfinished" alert, and the already-saved note itself is untouched either way');
+  console.log('LIVE TEST FIXES item 4 CORRECTION: the HR-note flow survives up to 7 days of inactivity (not just end of day) - a clearly different topic in between closes the flow quietly with no "unfinished" alert, and the already-saved note itself is untouched either way');
   console.log('='.repeat(70));
   check('calendarDaysBetweenIst treats the same IST calendar day as 0, and the next calendar day as 1, regardless of exact hour', whatsappAssistant.calendarDaysBetweenIst(new Date('2026-10-22T20:00:00+05:30'), new Date('2026-10-22T23:00:00+05:30')) === 0 && whatsappAssistant.calendarDaysBetweenIst(new Date('2026-10-22T23:50:00+05:30'), new Date('2026-10-23T00:10:00+05:30')) === 1);
-  check('buildHrFlowGapBridge (Banglish, 1 day) matches the exact spec wording', whatsappAssistant.buildHrFlowGapBridge('banglish', 'duty ar chhutti', 1) === 'Gotokal-er duty ar chhutti-r bishoy-ta niye bolchhi — ');
-  check('buildHrFlowGapBridge (Banglish, several days) uses the "a few days ago" wording instead of "yesterday"', whatsappAssistant.buildHrFlowGapBridge('banglish', 'duty ar chhutti', 4).startsWith('Kodin age-r'));
-  await checkAsync('name answer arriving the NEXT DAY: the flow is still alive (no end-of-day expiry any more), resolves normally, and the reply opens with a brief bridge back to the topic', async () => {
+  await checkAsync('name answer arriving the NEXT DAY: the flow is still alive (7-day TTL, not end-of-day expiry), resolves normally, and the sender\'s OWN continuation reply gets NO link-back line at all - their own message already shows the context (link-back rule REPLACEMENT: the old cross-day bridge on this reply is gone; the day-aware topic mention now lives only on STEP 5\'s result-to-sender message)', async () => {
     const phone = '910000000930';
     await cleanupHrFlowArtifacts(phone, SUBHODEEP_KC_PHONE);
     await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Ajke amake duty korte bola hoyechhe, ar er bodole onno din chhutti nite bola hoyechhe', isGroup: false, history: [] });
@@ -1043,18 +1045,18 @@ async function checkAsync(label, fn) {
     await redis.set('wa-pending-hr-note-flow:' + phone, JSON.stringify(flow), { ex: 7 * 24 * 60 * 60 });
     const d = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Subhadip HR', isGroup: false, history: [] });
     const pending = await whatsappAssistant.getPendingHrNoteFlow(phone);
-    const ok = d.replyText.includes('Gotokal-er') && d.replyText.includes('bishoy-ta niye bolchhi')
+    const ok = !d.replyText.includes('Gotokal') && !d.replyText.includes('Kodin age') && !d.replyText.includes('bishoy-e')
       && d.replyText.includes('Apni ki Subhodeep Kundu Chowdhury (HR department)-er kotha bolchhen?')
       && Boolean(pending) && pending.step === 'awaiting_confirm_yes_no';
     await cleanupHrFlowArtifacts(phone, SUBHODEEP_KC_PHONE);
     return ok;
   });
-  await checkAsync('SAME-DAY continuation (the overwhelmingly common case) never gets the gap-bridge line - only a cross-day gap does', async () => {
+  await checkAsync('SAME-DAY continuation (the overwhelmingly common case) also never gets any link-back line - consistent with the next-day case above, since the rule never applies to the sender\'s own continuation reply at all any more', async () => {
     const phone = '910000000931';
     await cleanupHrFlowArtifacts(phone, SUBHODEEP_KC_PHONE);
     await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Ajke amake duty korte bola hoyechhe, ar er bodole onno din chhutti nite bola hoyechhe', isGroup: false, history: [] });
     const d = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Subhadip HR', isGroup: false, history: [] });
-    const ok = !d.replyText.includes('Gotokal') && !d.replyText.includes('Kodin age') && d.replyText.includes('Apni ki Subhodeep Kundu Chowdhury');
+    const ok = !d.replyText.includes('Gotokal') && !d.replyText.includes('Kodin age') && !d.replyText.includes('bishoy-e') && d.replyText.includes('Apni ki Subhodeep Kundu Chowdhury');
     await cleanupHrFlowArtifacts(phone, SUBHODEEP_KC_PHONE);
     return ok;
   });
@@ -1084,7 +1086,7 @@ async function checkAsync(label, fn) {
   });
 
   console.log('='.repeat(70));
-  console.log('LIVE TEST FIXES item 4 CORRECTION - explicit interaction checks (direct instruction): a next-day flow reply is a NEW inbound message that the staleness/catch-up/one-reply-per-message safeguards must never block or duplicate; the full line order (greeting -> identity -> bridge -> step text) is exact with no repeats; a bare name/number/yes-no answer after any gap is never mistaken for a new topic');
+  console.log('LIVE TEST FIXES item 4 CORRECTION - explicit interaction checks (direct instruction): a next-day flow reply is a NEW inbound message that the staleness/catch-up/one-reply-per-message safeguards must never block or duplicate; a bare name/number/yes-no answer after any gap is never mistaken for a new topic; the sender\'s own continuation reply never gets a link-back line (link-back rule REPLACEMENT, superseding the earlier "greeting -> identity -> bridge -> step text" order check below - there is no bridge any more)');
   console.log('='.repeat(70));
   async function backdateHrFlowLastTouch(phone, ms) {
     const { Redis } = require('@upstash/redis');
@@ -1093,6 +1095,16 @@ async function checkAsync(label, fn) {
     const flow = typeof raw === 'string' ? JSON.parse(raw) : raw;
     flow.lastTouchedAt = Date.now() - ms;
     await redis.set('wa-pending-hr-note-flow:' + phone, JSON.stringify(flow), { ex: 7 * 24 * 60 * 60 });
+  }
+  // Link-back rule (new) - STEP 5's result-to-sender message compares the
+  // day it's sent against the sender's OWN ORIGINAL message, recorded on
+  // the saved HR confirmation record as originalMessageAt. Backdates that
+  // field directly (same convention as backdateHrFlowLastTouch above) to
+  // simulate the manager answering several days after the original note,
+  // without actually waiting that long.
+  async function backdateHrConfirmationOriginal(senderPhone, ms) {
+    const confirmation = (await whatsappAssistant.listAllHrConfirmations()).find((c) => c.senderPhone === senderPhone && c.status === 'awaiting_manager');
+    return whatsappAssistant.updateHrConfirmation(confirmation.id, { originalMessageAt: Date.now() - ms });
   }
   await checkAsync('INTERACTION CHECK 1: a next-day flow continuation that arrives right after a (recent, prompt) scheduler restart is caught up on through catchUpAfterGap exactly once - never blocked by the 30-minute stale-queue cutoff (the message itself just arrived, its own age is what that cutoff measures, never the flow\'s age), and never re-answered if catch-up runs again', async () => {
     const phone = '910000000940';
@@ -1127,35 +1139,35 @@ async function checkAsync(label, fn) {
       await cleanupHrFlowArtifacts(phone, SUBHODEEP_KC_PHONE);
     }
   });
-  await checkAsync('INTERACTION CHECK 2: when a time greeting, the once-a-day identity line, AND the cross-day topic bridge ALL apply to the same reply, the order is EXACTLY greeting -> identity -> bridge -> step text, with no line repeated', async () => {
+  await checkAsync('INTERACTION CHECK 2: when a time greeting AND the once-a-day identity line both apply to a CROSS-DAY continuation reply, the order is EXACTLY greeting -> identity -> step text, with no line repeated and no link-back line (link-back rule REPLACEMENT - the old bridge segment that used to sit between identity and step text is gone)', async () => {
     const phone = '910000000941';
     await cleanupHrFlowArtifacts(phone, SUBHODEEP_KC_PHONE);
     await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Ajke amake duty korte bola hoyechhe, ar er bodole onno din chhutti nite bola hoyechhe', isGroup: false, history: [] });
     await backdateHrFlowLastTouch(phone, 24 * 60 * 60 * 1000);
     // Empty history - simulates this being the sender's first message of
     // the brand new day, so the identity line is also due, same turn as
-    // the greeting and the bridge.
+    // the greeting.
     const d = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Good morning, Subhadip HR', isGroup: false, history: [] });
-    const expected = 'Good morning! Ami SUBH, Subhodeep-er HR Assistant. Gotokal-er duty ar chhutti-r bishoy-ta niye bolchhi — Apni ki Subhodeep Kundu Chowdhury (HR department)-er kotha bolchhen?';
+    const expected = 'Good morning! Ami SUBH, Subhodeep-er HR Assistant. Apni ki Subhodeep Kundu Chowdhury (HR department)-er kotha bolchhen?';
     const ok = d.replyText === expected
       && (d.replyText.match(/Ami SUBH/g) || []).length === 1
       && (d.replyText.match(/Good morning!/g) || []).length === 1;
     await cleanupHrFlowArtifacts(phone, SUBHODEEP_KC_PHONE);
     return ok;
   });
-  await checkAsync('INTERACTION CHECK 3a: a bare name continuing the flow after a gap is never mistaken for a new topic - the flow is still alive afterwards (now awaiting the yes/no confirm), not quietly closed', async () => {
+  await checkAsync('INTERACTION CHECK 3a: a bare name continuing the flow after a gap is never mistaken for a new topic - the flow is still alive afterwards (now awaiting the yes/no confirm), not quietly closed, and the reply carries no link-back line', async () => {
     const phone = '910000000942';
     await cleanupHrFlowArtifacts(phone, SUBHODEEP_KC_PHONE);
     await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Ajke amake duty korte bola hoyechhe, ar er bodole onno din chhutti nite bola hoyechhe', isGroup: false, history: [] });
     await backdateHrFlowLastTouch(phone, 24 * 60 * 60 * 1000);
     const d = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Subhodeep chowdhury', isGroup: false, history: [] });
     const pending = await whatsappAssistant.getPendingHrNoteFlow(phone);
-    const ok = d.replyText.includes('Gotokal-er') && d.replyText.includes('Apni ki Subhodeep Kundu Chowdhury')
+    const ok = !d.replyText.includes('Gotokal') && !d.replyText.includes('bishoy-e') && d.replyText.includes('Apni ki Subhodeep Kundu Chowdhury')
       && Boolean(pending) && pending.step === 'awaiting_confirm_yes_no';
     await cleanupHrFlowArtifacts(phone, SUBHODEEP_KC_PHONE);
     return ok;
   });
-  await checkAsync('INTERACTION CHECK 3b: a bare "1" picking between 2+ disambiguation candidates after a gap is never mistaken for a new topic - it resolves the SAME WAY a gap-free "1" would, with the bridge line added', async () => {
+  await checkAsync('INTERACTION CHECK 3b: a bare "1" picking between 2+ disambiguation candidates after a gap is never mistaken for a new topic - it resolves the SAME WAY a gap-free "1" would, and the finalize (thank-you) reply to the sender carries no link-back line', async () => {
     const phone = '910000000943';
     await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
     await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Ajke amake duty korte bola hoyechhe, ar er bodole onno din chhutti nite bola hoyechhe', isGroup: false, history: [] });
@@ -1164,12 +1176,12 @@ async function checkAsync(label, fn) {
     const d = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: '1', isGroup: false, history: [] });
     const pending = await whatsappAssistant.getPendingHrNoteFlow(phone);
     const confirmations = (await whatsappAssistant.listAllHrConfirmations()).filter((c) => c.senderPhone === phone);
-    const ok = d.replyText.includes('Gotokal-er') && d.replyText.includes('Tanmoy Mondal-er sathe kotha bole')
+    const ok = !d.replyText.includes('Gotokal') && !d.replyText.includes('bishoy-e') && d.replyText.includes('Tanmoy Mondal-er sathe kotha bole')
       && pending === null && confirmations.length === 1 && confirmations[0].thirdPartyName === 'Tanmoy Mondal';
     await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
     return ok;
   });
-  await checkAsync('INTERACTION CHECK 3c: a bare "Haa" (yes) confirming after a gap of SEVERAL days is never mistaken for a new topic - it finalizes exactly like a gap-free "Haa" would, with the "a few days ago" bridge wording (not "yesterday")', async () => {
+  await checkAsync('INTERACTION CHECK 3c: a bare "Haa" (yes) confirming after a gap of SEVERAL days is never mistaken for a new topic - it finalizes exactly like a gap-free "Haa" would, and the finalize (thank-you) reply to the sender carries no link-back line either (the gap-aware wording moved to STEP 5, tested separately below)', async () => {
     const phone = '910000000944';
     await cleanupHrFlowArtifacts(phone, SUBHODEEP_KC_PHONE);
     await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Ajke amake duty korte bola hoyechhe, ar er bodole onno din chhutti nite bola hoyechhe', isGroup: false, history: [] });
@@ -1178,9 +1190,63 @@ async function checkAsync(label, fn) {
     const d = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Haa', isGroup: false, history: [] });
     const pending = await whatsappAssistant.getPendingHrNoteFlow(phone);
     const confirmations = (await whatsappAssistant.listAllHrConfirmations()).filter((c) => c.senderPhone === phone);
-    const ok = d.replyText.includes('Kodin age-r') && d.replyText.includes('Subhodeep Kundu Chowdhury-er sathe kotha bole')
+    const ok = !d.replyText.includes('Gotokal') && !d.replyText.includes('Kodin age') && !d.replyText.includes('bishoy-e') && d.replyText.includes('Subhodeep Kundu Chowdhury-er sathe kotha bole')
       && pending === null && confirmations.length === 1 && confirmations[0].thirdPartyName === 'Subhodeep Kundu Chowdhury';
     await cleanupHrFlowArtifacts(phone, SUBHODEEP_KC_PHONE);
+    return ok;
+  });
+
+  console.log('='.repeat(70));
+  console.log('LINK-BACK RULE (replaces the old cross-day bridge entirely): the sender\'s own continuation reply never gets a link-back line, any day; instead STEP 5\'s result-to-sender message gets a topic prefix MERGED INTO the start of the existing, unmodified sentence, comparing the day it\'s sent against the day of the sender\'s OWN ORIGINAL message (never "last touched")');
+  console.log('='.repeat(70));
+  check('buildHrConfirmationResultDayPrefix returns an empty string for a same-day send - the STEP 5 sentence stays completely unmodified', whatsappAssistant.buildHrConfirmationResultDayPrefix('banglish', 'duty ar chhutti', 0, new Date()) === '');
+  check('buildHrConfirmationResultDayPrefix (Banglish, next day) matches the new link-back spec wording exactly, merged into the sentence (no separate line, no "niye bolchhi")', whatsappAssistant.buildHrConfirmationResultDayPrefix('banglish', 'duty ar chhutti', 1, new Date('2026-10-22T10:00:00+05:30')) === 'Gotokal-er duty ar chhutti-r bishoy-e ');
+  check('buildHrConfirmationResultDayPrefix (Banglish, 2+ days) uses the actual original-message date instead of "Gotokal", per spec example', whatsappAssistant.buildHrConfirmationResultDayPrefix('banglish', 'duty ar chhutti', 3, new Date('2026-10-20T10:00:00+05:30')) === '20 October-er duty ar chhutti-r bishoy-e ');
+  check('buildHrConfirmationResultDayPrefix has natural English/Hinglish equivalents (next day)', whatsappAssistant.buildHrConfirmationResultDayPrefix('english', 'duty and leave', 1, new Date()).toLowerCase().includes('yesterday') && whatsappAssistant.buildHrConfirmationResultDayPrefix('hinglish', 'duty aur chhutti', 1, new Date()).toLowerCase().includes('kal'));
+  await checkAsync('STEP 5 link-back (next day): when the manager answers the DAY AFTER the sender\'s original message, the result message to the sender is prefixed with "Gotokal-er ... -bishoy-e", merged into the START of the unmodified STEP 5 sentence (not a separate line)', async () => {
+    const phone = '910000000951';
+    await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
+    await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Ajke amake duty korte bola hoyechhe, ar er bodole onno din chhutti nite bola hoyechhe', isGroup: false, history: [] });
+    await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Tanmoy Mondal bolechhen amake.', isGroup: false, history: [] });
+    await backdateHrConfirmationOriginal(phone, 24 * 60 * 60 * 1000);
+    await whatsappAssistant.decideAutoReply({ phone: TANMOY_MONDAL_PHONE, name: 'Tanmoy Mondal', firstName: 'Tanmoy', text: 'Haa', isGroup: false, history: [] });
+    const log = await whatsappAssistant.listInboxLog(10);
+    const resultEntry = log.find((e) => e.chatId === phone && e.case === 'hr_confirmation_result');
+    const ok = Boolean(resultEntry)
+      && resultEntry.sentText.includes('Gotokal-er duty ar chhutti-r bishoy-e Tanmoy Mondal-er sathe kotha hoye geche')
+      && resultEntry.sentText.includes('confirm korechhen');
+    await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
+    return ok;
+  });
+  await checkAsync('STEP 5 link-back (2+ days): when the manager answers 2+ CALENDAR DAYS after the sender\'s original message, the result message uses the actual date instead of "Gotokal", still merged into the same unmodified sentence (declined-outcome variant)', async () => {
+    const phone = '910000000952';
+    await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
+    await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Ajke amake duty korte bola hoyechhe, ar er bodole onno din chhutti nite bola hoyechhe', isGroup: false, history: [] });
+    await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Tanmoy Mondal bolechhen amake.', isGroup: false, history: [] });
+    const gapMs = 3 * 24 * 60 * 60 * 1000;
+    const confirmation = await backdateHrConfirmationOriginal(phone, gapMs);
+    const dateLabel = whatsappAssistant.formatIstDateLabel(new Date(confirmation.originalMessageAt));
+    await whatsappAssistant.decideAutoReply({ phone: TANMOY_MONDAL_PHONE, name: 'Tanmoy Mondal', firstName: 'Tanmoy', text: 'Na', isGroup: false, history: [] });
+    const log = await whatsappAssistant.listInboxLog(10);
+    const resultEntry = log.find((e) => e.chatId === phone && e.case === 'hr_confirmation_result');
+    const ok = Boolean(resultEntry)
+      && resultEntry.sentText.includes(dateLabel + '-er duty ar chhutti-r bishoy-e Tanmoy Mondal-er sathe kotha hoye geche')
+      && resultEntry.sentText.includes('confirm korenni');
+    await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
+    return ok;
+  });
+  await checkAsync('STEP 5 link-back (same day): the overwhelmingly common case - manager answers the same day as the original message - gets NO prefix at all, the STEP 5 sentence is sent exactly as the template defines it', async () => {
+    const phone = '910000000953';
+    await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
+    await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Ajke amake duty korte bola hoyechhe, ar er bodole onno din chhutti nite bola hoyechhe', isGroup: false, history: [] });
+    await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Tanmoy Mondal bolechhen amake.', isGroup: false, history: [] });
+    await whatsappAssistant.decideAutoReply({ phone: TANMOY_MONDAL_PHONE, name: 'Tanmoy Mondal', firstName: 'Tanmoy', text: 'Haa', isGroup: false, history: [] });
+    const log = await whatsappAssistant.listInboxLog(10);
+    const resultEntry = log.find((e) => e.chatId === phone && e.case === 'hr_confirmation_result');
+    const ok = Boolean(resultEntry)
+      && resultEntry.sentText.includes('Tanmoy Mondal-er sathe kotha hoye geche')
+      && !resultEntry.sentText.includes('bishoy-e') && !resultEntry.sentText.includes('Gotokal');
+    await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
     return ok;
   });
 
