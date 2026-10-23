@@ -2782,10 +2782,17 @@ function buildHrConfirmationResultDayPrefix(lang, topicLabel, daysSinceOriginal,
 
 // ---- Templates (Banglish shown first in the spec; English/Hinglish are
 // equivalent in meaning/tone, never a literal word-for-word translation) ----
+// `actionPhrase` is the classifier's own hrNotificationActionKind-aware
+// noun phrase (hrNotificationActionPhrase) - "instruction-ta" for an
+// instruction, a topic-specific "<topic>-er/ki approval(-ta)" phrase for
+// an approval (WFH, leave, half-day, etc.), or a neutral fallback when
+// genuinely unclear. Falls back to the literal word "instruction" (this
+// function's own pre-WFH default) if the classifier omitted it, so an
+// older/fallback classification result still reads naturally.
 const HR_NOTE_ASK_WHO_INSTRUCTED = {
-  banglish: 'Ami apnar bishoy-ta note kore nilam. Apnake ei instruction-ta ke diyechhen, tar naam-ta bolle ami confirm kore nite parbo.',
-  hinglish: 'Maine aapki baat note kar li hai. Aapko yeh instruction kisne diya hai, unka naam bata denge to main confirm kar lunga.',
-  english: "I've noted what you shared. If you let me know who gave you this instruction, I can confirm it with them."
+  banglish: (actionPhrase) => 'Ami apnar bishoy-ta note kore nilam. Apnake ei ' + (actionPhrase || 'instruction-ta') + ' ke diyechhen, tar naam-ta bolle ami confirm kore nite parbo.',
+  hinglish: (actionPhrase) => 'Maine aapki baat note kar li hai. Aapko yeh ' + (actionPhrase || 'instruction') + ' kisne diya hai, unka naam bata denge to main confirm kar lunga.',
+  english: (actionPhrase) => "I've noted what you shared. If you let me know who gave you this " + (actionPhrase || 'instruction') + ", I can confirm it with them."
 };
 const HR_NOTE_NO_THIRD_PARTY = {
   banglish: 'Ami apnar bishoy-ta note kore nilam ar Subhodeep-ke janiye dicchi.',
@@ -2957,7 +2964,7 @@ async function postHrConfirmationOwnerRecord(confirmation, outcome) {
 // handlePersonLookupRequest already uses - several matches ask the
 // sender which one, a first-name-only single match confirms once, no
 // match asks for the full name again.
-async function resolveHrNoteThirdParty({ phone, name, lang, personName, department, summary, summaryLocalized, topicLabel, createdAt, history }) {
+async function resolveHrNoteThirdParty({ phone, name, lang, personName, department, summary, summaryLocalized, topicLabel, actionPhrase, createdAt, history }) {
   // `createdAt` is the SENDER'S ORIGINAL message timestamp for this flow,
   // set once in handleHrNotificationStart and threaded through every
   // re-save from here on - never reset to Date.now() on a re-save, since
@@ -2974,11 +2981,11 @@ async function resolveHrNoteThirdParty({ phone, name, lang, personName, departme
     // message, a corrected name, had nothing left to continue and the
     // whole thing silently fell back to "no third party"). Re-saves the
     // SAME flow, still awaiting a name, instead of dropping it.
-    await savePendingHrNoteFlow(phone, { summary, summaryLocalized, topicLabel, lang, createdAt: originalCreatedAt, step: 'awaiting_name' });
+    await savePendingHrNoteFlow(phone, { summary, summaryLocalized, topicLabel, actionPhrase, lang, createdAt: originalCreatedAt, step: 'awaiting_name' });
     return { case: 'acknowledged', replyText: HR_NOTE_NAME_NOT_FOUND[lang] || HR_NOTE_NAME_NOT_FOUND.english, summaryForOwner: null, lang };
   }
   if (current.length > 1) {
-    await savePendingHrNoteFlow(phone, { summary, summaryLocalized, topicLabel, lang, createdAt: originalCreatedAt, step: 'awaiting_disambiguation_choice', candidates: current, hadTypo, attempts: 1 });
+    await savePendingHrNoteFlow(phone, { summary, summaryLocalized, topicLabel, actionPhrase, lang, createdAt: originalCreatedAt, step: 'awaiting_disambiguation_choice', candidates: current, hadTypo, attempts: 1 });
     const queryName = current[0].name.split(' ')[0];
     const note = hadTypo ? (TYPO_NOTE[lang] || TYPO_NOTE.english) : '';
     const fn = DISAMBIGUATION_QUESTION[lang] || DISAMBIGUATION_QUESTION.english;
@@ -2986,7 +2993,7 @@ async function resolveHrNoteThirdParty({ phone, name, lang, personName, departme
   }
   const soleMatch = current[0];
   if (isFirstNameOnly(personName, soleMatch.name)) {
-    await savePendingHrNoteFlow(phone, { summary, summaryLocalized, topicLabel, lang, createdAt: originalCreatedAt, step: 'awaiting_confirm_yes_no', candidate: soleMatch, isInactive: false });
+    await savePendingHrNoteFlow(phone, { summary, summaryLocalized, topicLabel, actionPhrase, lang, createdAt: originalCreatedAt, step: 'awaiting_confirm_yes_no', candidate: soleMatch, isInactive: false });
     const fn = NAME_CONFIRM_QUESTION[lang] || NAME_CONFIRM_QUESTION.english;
     return { case: 'acknowledged', replyText: fn(soleMatch.name, soleMatch.department), summaryForOwner: null, lang };
   }
@@ -3038,6 +3045,16 @@ async function handleHrNotificationStart({ phone, name, lang, text, history, cla
   const summary = classification.hrNotificationSummary || sanitizeTopicLabel(classification.topicLabel);
   const summaryLocalized = classification.hrNotificationSummaryLocalized || summary;
   const topicLabel = classification.hrNotificationTopicLabel || null;
+  // WFH/half-day/etc. support - the classifier's own meaning-based
+  // judgment (never a keyword list) of whether this was an INSTRUCTION
+  // (a manager told/asked the sender to do something) or an APPROVAL (the
+  // sender asked and was allowed something - WFH, leave, half-day, late
+  // coming, comp-off taken) - drives the noun phrase slotted into STEP 1's
+  // "Apnake ei ___ ke diyechhen" question. actionPhrase is threaded
+  // unchanged through every re-save, same as topicLabel/createdAt below,
+  // so a later continuation turn can still reconstruct the exact pending
+  // question's own context for extractPersonReference.
+  const actionPhrase = classification.hrNotificationActionPhrase || null;
   // The sender's ORIGINAL message instant for this flow - set here, once,
   // and threaded unchanged through every subsequent resolveHrNoteThirdParty/
   // continueHrNoteFlow re-save, all the way into the saved HR confirmation
@@ -3047,12 +3064,12 @@ async function handleHrNotificationStart({ phone, name, lang, text, history, cla
   if (classification.hrNotificationThirdPartyName) {
     return resolveHrNoteThirdParty({
       phone, name, lang, personName: classification.hrNotificationThirdPartyName,
-      department: classification.hrNotificationThirdPartyHint, summary, summaryLocalized, topicLabel, createdAt, history
+      department: classification.hrNotificationThirdPartyHint, summary, summaryLocalized, topicLabel, actionPhrase, createdAt, history
     });
   }
   if (classification.hrNotificationInvolvesThirdParty) {
-    await savePendingHrNoteFlow(phone, { summary, summaryLocalized, topicLabel, lang, createdAt, step: 'awaiting_name' });
-    return { case: 'acknowledged', replyText: HR_NOTE_ASK_WHO_INSTRUCTED[lang] || HR_NOTE_ASK_WHO_INSTRUCTED.english, summaryForOwner: null, lang };
+    await savePendingHrNoteFlow(phone, { summary, summaryLocalized, topicLabel, actionPhrase, lang, createdAt, step: 'awaiting_name' });
+    return { case: 'acknowledged', replyText: (HR_NOTE_ASK_WHO_INSTRUCTED[lang] || HR_NOTE_ASK_WHO_INSTRUCTED.english)(actionPhrase), summaryForOwner: null, lang };
   }
   return { case: 'acknowledged', replyText: HR_NOTE_NO_THIRD_PARTY[lang] || HR_NOTE_NO_THIRD_PARTY.english, summaryForOwner: null, lang };
 }
@@ -3101,7 +3118,7 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
         return { case: 'acknowledged', replyText: HR_FLOW_CONTEXT_CLARIFY[lang] || HR_FLOW_CONTEXT_CLARIFY.english, summaryForOwner: null, lang };
       }
       if (extracted.personName) {
-        return resolveHrNoteThirdParty({ phone, name, lang, personName: extracted.personName, department: extracted.hint, summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, createdAt: hrFlow.createdAt, history });
+        return resolveHrNoteThirdParty({ phone, name, lang, personName: extracted.personName, department: extracted.hint, summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, actionPhrase: hrFlow.actionPhrase, createdAt: hrFlow.createdAt, history });
       }
       if (remainder) {
         // The "No" cancelled the old candidate, but the remainder is a
@@ -3111,7 +3128,7 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
         await clearPendingHrNoteFlow(phone);
         return null;
       }
-      await savePendingHrNoteFlow(phone, { summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, lang, createdAt: hrFlow.createdAt, step: 'awaiting_name' });
+      await savePendingHrNoteFlow(phone, { summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, actionPhrase: hrFlow.actionPhrase, lang, createdAt: hrFlow.createdAt, step: 'awaiting_name' });
       return { case: 'acknowledged', replyText: NAME_CONFIRM_RETRY[lang] || NAME_CONFIRM_RETRY.english, summaryForOwner: null, lang };
     }
     // Neither a yes nor a no word - the sender may simply have answered
@@ -3127,18 +3144,19 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
       return { case: 'acknowledged', replyText: HR_FLOW_CONTEXT_CLARIFY[lang] || HR_FLOW_CONTEXT_CLARIFY.english, summaryForOwner: null, lang };
     }
     if (extracted.personName) {
-      return resolveHrNoteThirdParty({ phone, name, lang, personName: extracted.personName, department: extracted.hint, summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, createdAt: hrFlow.createdAt, history });
+      return resolveHrNoteThirdParty({ phone, name, lang, personName: extracted.personName, department: extracted.hint, summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, actionPhrase: hrFlow.actionPhrase, createdAt: hrFlow.createdAt, history });
     }
     await clearPendingHrNoteFlow(phone);
     return null;
   }
   // awaiting_name
-  const { personName, hint, isAmbiguous } = await extractPersonReference(text, { pendingQuestionLabel: HR_NOTE_ASK_WHO_INSTRUCTED[lang] || HR_NOTE_ASK_WHO_INSTRUCTED.english, history });
+  const askWhoQuestion = (HR_NOTE_ASK_WHO_INSTRUCTED[lang] || HR_NOTE_ASK_WHO_INSTRUCTED.english)(hrFlow.actionPhrase);
+  const { personName, hint, isAmbiguous } = await extractPersonReference(text, { pendingQuestionLabel: askWhoQuestion, history });
   if (isAmbiguous) {
     return { case: 'acknowledged', replyText: HR_FLOW_CONTEXT_CLARIFY[lang] || HR_FLOW_CONTEXT_CLARIFY.english, summaryForOwner: null, lang };
   }
   if (personName) {
-    return resolveHrNoteThirdParty({ phone, name, lang, personName, department: hint, summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, createdAt: hrFlow.createdAt, history });
+    return resolveHrNoteThirdParty({ phone, name, lang, personName, department: hint, summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, actionPhrase: hrFlow.actionPhrase, createdAt: hrFlow.createdAt, history });
   }
   await clearPendingHrNoteFlow(phone);
   return null;
@@ -4742,10 +4760,12 @@ function classifyTool() {
           topicLabel: { type: 'string', description: 'A short (2-5 word) human-readable description of what they are asking/talking about, in English, for an HR manager to read, e.g. "confirmation letter", "October salary", "attendance calculation". Resolve this from the conversation history when the current message alone is a context-dependent follow-up ("Tau kobe pabo?" after discussing a letter -> "confirmation letter", not "general conversation"). Use "general conversation" only when there genuinely is no identifiable subject at all.' },
           replyNeeded: { type: 'boolean', description: 'true for almost every message a real human sent to HR - questions, requests, complaints, follow-ups, informing messages, greetings ("kemon acho", "good morning", a festival wish), thanks/acknowledgements ("ok", "thanks"). false ONLY when this message is clearly NOT a human addressing HR: an OTP/verification code, a bank/payment/delivery/courier/system notification, a marketing/promotional message, spam, a message from another business\'s own automated bot, or a WhatsApp system message. When genuinely unsure, default to true - never silently ignore a real person.' },
           automaticReason: { type: 'string', description: 'Required only when replyNeeded is false - a short (2-6 word) reason, e.g. "bank OTP message", "delivery notification", "marketing message". Omit when replyNeeded is true.' },
-          isHrNotification: { type: 'boolean', description: 'true ONLY when intent is "informing" AND the subject is specifically: their own leave, late coming, attendance, an off-day-in-lieu/comp-off, a duty/schedule change, a salary/bank account change, or a work-location update - information meant for HR to note and possibly confirm with someone else, not a general FYI/thanks/wish. false otherwise, including for every other kind of "informing" message (e.g. sharing news, a document_sent message).' },
-          hrNotificationSummary: { type: 'string', description: 'Required when isHrNotification is true - a short, accurate, neutral summary in ENGLISH of exactly what they informed, e.g. "told to do duty today instead of his scheduled off, was asked to take a different day off in lieu". For the HR note and the owner\'s own notifications only (English, like every other owner-facing label) - never sent to the sender or a third party as-is. State only what the sender actually said, nothing invented.' },
-          hrNotificationSummaryLocalized: { type: 'string', description: 'Required when isHrNotification is true - the SAME fact as hrNotificationSummary above, but written naturally in the message\'s own detected language (the `language` field) AND, when hrNotificationInvolvesThirdParty is true, phrased as a SECOND-PERSON, ACTIVE-VOICE statement addressed directly TO that third party, describing what THEY told the sender to do - never a passive, sender-centric phrasing. The sender is "onake"/"use"/"them" (never named here), the third party is addressed as "apni"/"aap"/"you" with a formal, active verb conjugation ("bolechhen"/"kaha hai"/"told"), never passive ("bola hoyechhe"/"kaha gaya hai"/"was told"). E.g. for a Banglish message where the sender said "ajke amake duty korte boleche r er bodole onno din chuti nite boleche": output "apni onake ajke duty korte bolechhen, ar er bodole onno din chhutti nite bolechhen" - NOT "ajke duty korte bola hoyechhe...". This version is inserted verbatim mid-sentence into the message sent TO that third party ("...message esechhe je <this>. Eta ki apnar theke confirm?"), so it must read grammatically as a direct, natural continuation of that sentence and never mix in English words/phrasing. When hrNotificationInvolvesThirdParty is false (no third party to address), phrase it naturally in first person instead, the same as before.' },
-          hrNotificationTopicLabel: { type: 'string', description: 'Required when isHrNotification is true - a SHORT (2-4 word) natural noun phrase naming the topic, written in the message\'s own detected language (the `language` field), e.g. for a Banglish duty/off-day-in-lieu message: "duty ar chhutti", for a late-coming message: "deri kore asha", for a salary/bank change: "bank account", for a work-location update: "kormosthol poriborton". Used ONLY to briefly remind the sender what an old, resumed conversation was about after a multi-day gap (e.g. "Gotokal-er ' + "'" + 'duty ar chhutti' + "'" + '-bishoy-ta niye bolchi") - never sent as a sentence by itself, so it must read naturally as a short phrase slotted into "...-bishoy-ta niye bolchi" (Banglish) or equivalent, not a full sentence or a translated English label.' },
+          isHrNotification: { type: 'boolean', description: 'true ONLY when intent is "informing" AND the subject is specifically: their own leave, late coming, early leaving, a half-day, attendance, an off-day-in-lieu/comp-off, a duty/schedule change, work from home (WFH, any spelling/phrasing - "ghar/bari theke kaj", "remote kaj", "ghar se kaam", etc.), a salary/bank account change, or any other work-location update - information meant for HR to note and possibly confirm with someone else, not a general FYI/thanks/wish. false otherwise, including for every other kind of "informing" message (e.g. sharing news, a document_sent message).' },
+          hrNotificationSummary: { type: 'string', description: 'Required when isHrNotification is true - a short, accurate, neutral summary in ENGLISH of exactly what they informed, e.g. "told to do duty today instead of his scheduled off, was asked to take a different day off in lieu" or "worked from home today with manager\'s approval". For the HR note and the owner\'s own notifications only (English, like every other owner-facing label) - never sent to the sender or a third party as-is. State only what the sender actually said, nothing invented, including whatever date(s) they gave (today/yesterday/a specific date or range).' },
+          hrNotificationActionKind: { type: 'string', enum: ['instruction', 'approval', 'neutral'], description: 'Judge this from what actually happened, never from a fixed keyword list. "instruction" - a manager/supervisor TOLD or ASKED the sender to do something (duty on an off day, a duty/shift/site change, overtime, travel). "approval" - the sender ASKED and was ALLOWED/GRANTED something (work from home, leave, a half-day, late coming, early leaving, a comp-off/off-day-in-lieu taken). If a single message has both an instruction AND a related off-day granted as part of it (e.g. "duty korte bolechhe, bodole onno din chhutti debe" - told to do duty, will get a day off in lieu), use "instruction" - the off day is part of what was instructed. Use "neutral" only if genuinely unclear which it is.' },
+          hrNotificationActionPhrase: { type: 'string', description: 'Required when isHrNotification is true - a short noun phrase, correctly inflected in the message\'s own detected language (the `language` field), that completes the sentence "Apnake ei ___ ke diyechhen" (Banglish) / "Aapko yeh ___ kisne diya hai" (Hinglish) / "who gave you this ___" (English). For hrNotificationActionKind "instruction": "instruction-ta" (banglish) / "instruction" (hinglish/english) - always this literal word, never the topic. For "approval": the topic + a correctly-inflected "approval" suffix in that language, e.g. Banglish "work from home-er approval-ta", "chhutti-r approval-ta", "half day-r approval-ta" (apply normal Bengali possessive inflection - "-er" after a consonant-ending word, "-r" after a vowel-ending one); Hinglish "work from home ki approval", "chhutti ki approval"; English "work from home approval", "leave approval". For "neutral": "bishoy-ta" (banglish) / "baat" (hinglish) / "this" (english).' },
+          hrNotificationSummaryLocalized: { type: 'string', description: 'Required when isHrNotification is true - the SAME fact as hrNotificationSummary above, but written naturally in the message\'s own detected language (the `language` field) AND, when hrNotificationInvolvesThirdParty is true, phrased as a SECOND-PERSON, ACTIVE-VOICE statement addressed directly TO that third party, describing what THEY did for the sender - never a passive, sender-centric phrasing. The sender is "onake"/"use"/"them" (never named here), the third party is addressed as "apni"/"aap"/"you" with a formal, active verb conjugation, never passive ("bola hoyechhe"/"kaha gaya hai"/"was told"). The verb depends on hrNotificationActionKind: "instruction" uses a telling verb ("bolechhen"/"kaha hai"/"told") - e.g. for "ajke amake duty korte boleche r er bodole onno din chuti nite boleche": "apni onake ajke duty korte bolechhen, ar er bodole onno din chhutti nite bolechhen" (NOT "...bola hoyechhe..."). "approval" uses a granting verb ("diyechhen"/"di hai"/"gave") - e.g. for a Banglish WFH message "ajke bari theke kaj korechi, Tanmoy Sir approve korechhen": "apni onake ajke bari theke kaj (work from home) korar approval diyechhen". This version is inserted verbatim mid-sentence into the message sent TO that third party ("...message esechhe je <this>. Eta ki apnar theke confirm?"), so it must read grammatically as a direct, natural continuation of that sentence and never mix in English words/phrasing (except a short English term like "work from home" that has no natural Banglish/Hinglish equivalent). When hrNotificationInvolvesThirdParty is false (no third party to address), phrase it naturally in first person instead, the same as before.' },
+          hrNotificationTopicLabel: { type: 'string', description: 'Required when isHrNotification is true - a SHORT (2-4 word) natural noun phrase naming the topic, written in the message\'s own detected language (the `language` field), e.g. for a Banglish duty/off-day-in-lieu message: "duty ar chhutti", for a late-coming message: "deri kore asha", for a work-from-home message: "work from home", for a half-day message: "half day", for a salary/bank change: "bank account", for a work-location update: "kormosthol poriborton". Used ONLY to briefly remind the sender what an old, resumed conversation was about after a multi-day gap (e.g. "Gotokal-er ' + "'" + 'duty ar chhutti' + "'" + '-bishoy-ta niye bolchi") - never sent as a sentence by itself, so it must read naturally as a short phrase slotted into "...-bishoy-ta niye bolchi" (Banglish) or equivalent, not a full sentence or a translated English label.' },
           hrNotificationThirdPartyName: { type: 'string', description: 'Optional, only with isHrNotification true - if the sender named a specific OTHER person (e.g. a manager/supervisor) who gave them this instruction or is otherwise involved and should confirm it, that person\'s name exactly as given. Omit if no one else was named.' },
           hrNotificationThirdPartyHint: { type: 'string', description: 'Optional - a department/site/designation hint for the third party named above, if one was given (e.g. "Srirampur site"). Omit if none was mentioned.' },
           hrNotificationInvolvesThirdParty: { type: 'boolean', description: 'Required when isHrNotification is true - true when the message implies someone ELSE (a manager/supervisor) decided or instructed this (e.g. "Ajke amake duty korte bola hoyechhe" - "I was TOLD to work today"), even if that person is not yet named - SUBH will ask who, to confirm with them. false for a purely self-reported notice with no one else involved (e.g. a simple "I\'ll be a bit late today"/"I\'m taking leave tomorrow").' },

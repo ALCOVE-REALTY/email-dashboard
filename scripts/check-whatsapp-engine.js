@@ -805,6 +805,152 @@ async function checkAsync(label, fn) {
   });
 
   console.log('='.repeat(70));
+  console.log('WORK FROM HOME + context-aware action wording: the HR-noting flow now also recognises WFH/half-day/early-leaving/late-coming APPROVALS (not just manager INSTRUCTIONS), and picks "instruction" vs "approval" wording by MEANING, never a keyword list - same flow/steps/texts otherwise (STEP 2/3/5 unchanged)');
+  console.log('='.repeat(70));
+  await checkAsync('WFH reported WITHOUT naming the approver yet (Banglish): STEP1 asks using "work from home-er approval-ta" (never the generic "instruction"), and the topic is saved as "work from home"', async () => {
+    const phone = '919100000510';
+    await cleanupHrFlowArtifacts(phone);
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Ajke bari theke kaj korechi, manager approve korechhen.', isGroup: false, history: [] });
+    const pending = await whatsappAssistant.getPendingHrNoteFlow(phone);
+    const ok = d.replyText === 'Ami SUBH, Subhodeep-er HR Assistant. Ami apnar bishoy-ta note kore nilam. Apnake ei work from home-er approval-ta ke diyechhen, tar naam-ta bolle ami confirm kore nite parbo.'
+      && Boolean(pending) && pending.step === 'awaiting_name' && pending.topicLabel === 'work from home' && pending.actionPhrase === 'work from home-er approval-ta';
+    await cleanupHrFlowArtifacts(phone);
+    return ok;
+  });
+  await checkAsync('WFH reported for YESTERDAY, without naming the approver (Banglish): same approval phrasing and topic regardless of tense', async () => {
+    const phone = '919100000511';
+    await cleanupHrFlowArtifacts(phone);
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Gotokal bari theke kaj korechilam, approval chilo.', isGroup: false, history: [] });
+    const pending = await whatsappAssistant.getPendingHrNoteFlow(phone);
+    const ok = d.replyText.includes('work from home-er approval-ta ke diyechhen') && Boolean(pending) && pending.topicLabel === 'work from home';
+    await cleanupHrFlowArtifacts(phone);
+    return ok;
+  });
+  await checkAsync('WFH reported as a DATE RANGE, without naming the approver (Banglish): same approval phrasing, and the manager-facing STEP 4 message (once the approver is named) keeps the actual dates, never inventing or dropping them', async () => {
+    const phone = '919100000512';
+    await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
+    const d1 = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: '24-26 October bari theke kaj korbo, approval peyechi.', isGroup: false, history: [] });
+    const step1Ok = d1.replyText.includes('work from home-er approval-ta ke diyechhen');
+    const beforeTs = Date.now();
+    await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Tanmoy Mondal', isGroup: false, history: [] });
+    const log = await whatsappAssistant.listInboxLog(50);
+    const mgrEntry = log.filter((e) => e.chatId === TANMOY_MONDAL_PHONE && e.case === 'hr_confirmation_sent' && (e.sentAt || 0) >= beforeTs).sort((a, b) => (b.sentAt || 0) - (a.sentAt || 0))[0];
+    const step4Ok = Boolean(mgrEntry) && mgrEntry.sentText.includes('24-26 October') && mgrEntry.sentText.includes('work from home') && mgrEntry.sentText.includes('approval diyechhen');
+    await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
+    return step1Ok && step4Ok;
+  });
+  await checkAsync('half-day reported without naming the approver (Banglish): STEP1 asks using "half day-r approval-ta", topic saved as "half day"', async () => {
+    const phone = '919100000513';
+    await cleanupHrFlowArtifacts(phone);
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Aj half day nichhi, approval peyechi.', isGroup: false, history: [] });
+    const pending = await whatsappAssistant.getPendingHrNoteFlow(phone);
+    const ok = d.replyText === 'Ami SUBH, Subhodeep-er HR Assistant. Ami apnar bishoy-ta note kore nilam. Apnake ei half day-r approval-ta ke diyechhen, tar naam-ta bolle ami confirm kore nite parbo.'
+      && Boolean(pending) && pending.topicLabel === 'half day' && pending.actionPhrase === 'half day-r approval-ta';
+    await cleanupHrFlowArtifacts(phone);
+    return ok;
+  });
+  await checkAsync('late-coming reported without naming the approver (Banglish): STEP1 asks using a "deri kore asa(h)r approval-ta" phrase, topic saved as "deri kore asha" (the model\'s own free-form Banglish transliteration varies between "ashar"/"asar" for the same word - both are valid, so this checks the shape, not one exact spelling)', async () => {
+    const phone = '919100000514';
+    await cleanupHrFlowArtifacts(phone);
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Aj office-e deri kore aschi, allow kora hoyechhe.', isGroup: false, history: [] });
+    const pending = await whatsappAssistant.getPendingHrNoteFlow(phone);
+    const ok = /^Ami SUBH, Subhodeep-er HR Assistant\. Ami apnar bishoy-ta note kore nilam\. Apnake ei deri kore ash?ar approval-ta ke diyechhen, tar naam-ta bolle ami confirm kore nite parbo\.$/.test(d.replyText)
+      && Boolean(pending) && pending.topicLabel === 'deri kore asha' && /^deri kore ash?ar approval-ta$/.test(pending.actionPhrase);
+    await cleanupHrFlowArtifacts(phone);
+    return ok;
+  });
+  await checkAsync('duty change naming the manager upfront (INSTRUCTION, Banglish): STEP 4 uses the telling verb "bolechhen", never "approval" - nothing changed from before for a pure instruction', async () => {
+    const phone = '919100000515';
+    await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
+    const beforeTs = Date.now();
+    await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Ajke amake Srirampur site-e duty korte bolechhe Tanmoy Mondal.', isGroup: false, history: [] });
+    const log = await whatsappAssistant.listInboxLog(50);
+    const mgrEntry = log.filter((e) => e.chatId === TANMOY_MONDAL_PHONE && e.case === 'hr_confirmation_sent' && (e.sentAt || 0) >= beforeTs).sort((a, b) => (b.sentAt || 0) - (a.sentAt || 0))[0];
+    const ok = Boolean(mgrEntry) && mgrEntry.sentText.includes('bolechhen') && !mgrEntry.sentText.includes('approval');
+    await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
+    return ok;
+  });
+  await checkAsync('WFH naming the approver upfront (APPROVAL, Banglish): STEP 4 uses the granting verb "diyechhen" with "approval", manager "Haa" gives the usual unchanged STEP 5 confirmed-outcome message (same-day, no link-back prefix)', async () => {
+    const phone = '919100000516';
+    await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
+    const beforeTs = Date.now();
+    await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Ajke bari theke kaj korechi, Tanmoy Mondal approve korechhen.', isGroup: false, history: [] });
+    const log1 = await whatsappAssistant.listInboxLog(50);
+    const mgrEntry = log1.filter((e) => e.chatId === TANMOY_MONDAL_PHONE && e.case === 'hr_confirmation_sent' && (e.sentAt || 0) >= beforeTs).sort((a, b) => (b.sentAt || 0) - (a.sentAt || 0))[0];
+    const step4Ok = Boolean(mgrEntry) && mgrEntry.sentText.includes('approval diyechhen') && mgrEntry.sentText.includes('work from home') && !mgrEntry.sentText.includes('korte bolechhen');
+    const dYes = await whatsappAssistant.decideAutoReply({ phone: TANMOY_MONDAL_PHONE, name: 'Tanmoy Mondal', firstName: 'Tanmoy', text: 'Haa', isGroup: false, history: [] });
+    const log2 = await whatsappAssistant.listInboxLog(50);
+    const resultEntry = log2.filter((e) => e.chatId === phone && e.case === 'hr_confirmation_result' && (e.sentAt || 0) >= beforeTs).sort((a, b) => (b.sentAt || 0) - (a.sentAt || 0))[0];
+    const step5Ok = dYes.replyText === 'Ami SUBH, Subhodeep-er HR Assistant. Apnar confirmation-er jonno onek dhonnobad.'
+      && Boolean(resultEntry) && resultEntry.sentText === 'Ami SUBH, Subhodeep-er HR Assistant. Tanmoy Mondal-er sathe kotha hoye geche, uni apnar ei bishoy-ta confirm korechhen. Ebar ami puro bishoy-ta Subhodeep-ke janiye dicchi.';
+    await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
+    return step4Ok && step5Ok;
+  });
+  await checkAsync('half-day naming the approver upfront (APPROVAL, Banglish), manager "Na": STEP 4 uses "approval diyechhen", STEP 5 gives the usual unchanged declined-outcome message', async () => {
+    const phone = '919100000517';
+    await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
+    const beforeTs = Date.now();
+    await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Aj half day nichhi, Tanmoy Mondal approve korechhen.', isGroup: false, history: [] });
+    const log1 = await whatsappAssistant.listInboxLog(50);
+    const mgrEntry = log1.filter((e) => e.chatId === TANMOY_MONDAL_PHONE && e.case === 'hr_confirmation_sent' && (e.sentAt || 0) >= beforeTs).sort((a, b) => (b.sentAt || 0) - (a.sentAt || 0))[0];
+    const step4Ok = Boolean(mgrEntry) && mgrEntry.sentText.includes('approval diyechhen') && mgrEntry.sentText.includes('half day');
+    const dNo = await whatsappAssistant.decideAutoReply({ phone: TANMOY_MONDAL_PHONE, name: 'Tanmoy Mondal', firstName: 'Tanmoy', text: 'Na', isGroup: false, history: [] });
+    const log2 = await whatsappAssistant.listInboxLog(50);
+    const resultEntry = log2.filter((e) => e.chatId === phone && e.case === 'hr_confirmation_result' && (e.sentAt || 0) >= beforeTs).sort((a, b) => (b.sentAt || 0) - (a.sentAt || 0))[0];
+    const step5Ok = dNo.replyText === 'Ami SUBH, Subhodeep-er HR Assistant. Janano-r jonno onek dhonnobad.'
+      && Boolean(resultEntry) && resultEntry.sentText === 'Ami SUBH, Subhodeep-er HR Assistant. Tanmoy Mondal-er sathe kotha hoye geche, uni ei bishoy-ta confirm korenni. Ami puro bishoy-ta Subhodeep-ke janiye dicchi, uni apnar sathe jogajog korben.';
+    await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
+    return step4Ok && step5Ok;
+  });
+  await checkAsync('mixed duty + off-day-in-lieu message (INSTRUCTION, Banglish, per spec\'s own example): "duty korte bolechhe, bodole onno din chhutti debe" still uses "instruction-ta", never an approval word - unchanged from before this feature', async () => {
+    const phone = '919100000518';
+    await cleanupHrFlowArtifacts(phone);
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Ajke amake duty korte bolechhe, bodole onno din chhutti debe bolechhe.', isGroup: false, history: [] });
+    const ok = d.replyText === 'Ami SUBH, Subhodeep-er HR Assistant. Ami apnar bishoy-ta note kore nilam. Apnake ei instruction-ta ke diyechhen, tar naam-ta bolle ami confirm kore nite parbo.';
+    await cleanupHrFlowArtifacts(phone);
+    return ok;
+  });
+  await checkAsync('a genuinely unclear case (Banglish) falls back to the neutral "bishoy-ta" phrase, never guessing instruction vs approval', async () => {
+    const phone = '919100000519';
+    await cleanupHrFlowArtifacts(phone);
+    await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Ajke amar duty-r bishoy-e kichu poriborton hoyeche, Tanmoy Sir ke janiyechi.', isGroup: false, history: [] });
+    const pending = await whatsappAssistant.getPendingHrNoteFlow(phone);
+    const ok = Boolean(pending) && pending.actionPhrase === 'bishoy-ta';
+    await cleanupHrFlowArtifacts(phone);
+    return ok;
+  });
+  await checkAsync('WFH naming the approver upfront, in ENGLISH: STEP 4 uses natural approval phrasing ("approved their request to work from home"), never instruction-style wording', async () => {
+    const phone = '919100000520';
+    await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
+    const beforeTs = Date.now();
+    await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'I worked from home today, Tanmoy Mondal approved it.', isGroup: false, history: [] });
+    const log = await whatsappAssistant.listInboxLog(50);
+    const mgrEntry = log.filter((e) => e.chatId === TANMOY_MONDAL_PHONE && e.case === 'hr_confirmation_sent' && (e.sentAt || 0) >= beforeTs).sort((a, b) => (b.sentAt || 0) - (a.sentAt || 0))[0];
+    const ok = Boolean(mgrEntry) && /approv/i.test(mgrEntry.sentText) && /work from home/i.test(mgrEntry.sentText) && !/told|instructed/i.test(mgrEntry.sentText);
+    await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
+    return ok;
+  });
+  await checkAsync('WFH naming the approver upfront, in HINGLISH: STEP 4 uses the granting verb ("di hai"/"diya"), never a telling verb', async () => {
+    const phone = '919100000521';
+    await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
+    const beforeTs = Date.now();
+    await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Aaj ghar se kaam kiya, Tanmoy Mondal ne approve kiya hai.', isGroup: false, history: [] });
+    const log = await whatsappAssistant.listInboxLog(50);
+    const mgrEntry = log.filter((e) => e.chatId === TANMOY_MONDAL_PHONE && e.case === 'hr_confirmation_sent' && (e.sentAt || 0) >= beforeTs).sort((a, b) => (b.sentAt || 0) - (a.sentAt || 0))[0];
+    const ok = Boolean(mgrEntry) && /approval/i.test(mgrEntry.sentText) && /(di hai|diya|de di)/i.test(mgrEntry.sentText) && !/kaha hai/i.test(mgrEntry.sentText);
+    await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
+    return ok;
+  });
+  await checkAsync('duty change naming the manager upfront, in ENGLISH (INSTRUCTION): STEP 1\'s ask-who wording is UNCHANGED from before this feature - exact existing spec text', async () => {
+    const phone = '919100000522';
+    await cleanupHrFlowArtifacts(phone);
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'I was told to do duty at the Srirampur site today.', isGroup: false, history: [] });
+    const ok = d.replyText === "I'm SUBH, Subhodeep's HR Assistant. I've noted what you shared. If you let me know who gave you this instruction, I can confirm it with them.";
+    await cleanupHrFlowArtifacts(phone);
+    return ok;
+  });
+
+  console.log('='.repeat(70));
   console.log('LIVE REVIEW round 3, item 4 SAFETY: never a senior designation, never the never-auto list, setting toggle off, one pending per sender, mislabeled field never hard-coded elsewhere');
   console.log('='.repeat(70));
   check('SENIOR_DESIGNATION_RE matches Director/MD/President/VP/CEO', ['DIRECTOR', 'MANAGING DIRECTOR', 'MD', 'PRESIDENT', 'VICE PRESIDENT', 'VP - SALES', 'CEO'].every((d) => whatsappAssistant.SENIOR_DESIGNATION_RE.test(d)));
