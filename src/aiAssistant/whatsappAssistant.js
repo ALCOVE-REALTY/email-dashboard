@@ -24,6 +24,17 @@ const whatsapp = require('../whatsappService');
 function isTypingPresenceEnabled() {
   return process.env.WHATSAPP_TYPING_PRESENCE === '1';
 }
+// KILL SWITCH (urgent live incident) - catch-up was found live sending
+// spontaneous replies to OLD, ALREADY-ANSWERED messages this morning
+// (treating yesterday's resolved conversations as a missed gap). Off by
+// DEFAULT until the root cause is fixed and verified - flip
+// WHATSAPP_CATCHUP=1 to re-enable once that's done. Checked once, at the
+// single entry point (catchUpAfterGap itself), so it covers both call
+// sites (scheduler startup AND a confirmed reconnect) with no risk of one
+// being missed.
+function isCatchupEnabled() {
+  return process.env.WHATSAPP_CATCHUP === '1';
+}
 // Found during the 0512bc1 outage investigation: every typing-presence
 // call site below used to AWAIT whatsapp.sendPresence(), on the same
 // hot reply path as the real sendMessage call that always followed it.
@@ -5837,6 +5848,10 @@ async function actOnCatchupTurn({ contactId, name, firstName, text, arrivedAt, s
 // scheduler startup. `trigger` is purely descriptive (shows up in logs),
 // never changes behavior.
 async function catchUpAfterGap(trigger) {
+  if (!isCatchupEnabled()) {
+    console.log('[whatsapp] catch-up skipped (trigger: ' + trigger + ') - WHATSAPP_CATCHUP is not set to "1"');
+    return { sendersAnswered: 0, messagesAnswered: 0, needsYouSenders: 0, trigger, disabled: true };
+  }
   const contacts = await listKnownContacts();
   let sendersAnswered = 0, messagesAnswered = 0, needsYouSenders = 0;
   const now = Date.now();
@@ -6167,6 +6182,7 @@ module.exports = {
   LATENCY_ALERT_THRESHOLD_MS,
   DRAFT_MODEL,
   isTypingPresenceEnabled,
+  isCatchupEnabled,
   detectOwnSensitiveIdRequest,
   isFirstNameOnly,
   hasIntroducedTodayIST,
