@@ -951,6 +951,21 @@ async function checkAsync(label, fn) {
   const SCREENSHOT_SENDER = '910000000915';
   const SUBHODEEP_KC_PHONE = '918335804028'; // real directory record - ACTIVE, HR DEPT, Subhodeep Kundu Chowdhury
   await cleanupHrFlowArtifacts(SCREENSHOT_SENDER, SUBHODEEP_KC_PHONE);
+  // This reuses a REAL employee's REAL phone number as the manager (the
+  // exact record the live bug resolved to) - found necessary live: an
+  // earlier real/manual test exchange with this same number left a
+  // message in its wa-convo-history dated TODAY, which made the once-
+  // per-day identity-line check (correctly!) suppress the line on this
+  // test's own STEP 4 send, since as far as that check could tell, this
+  // real contact had already been messaged today. Cleared here so this
+  // test is isolated from whatever real/earlier traffic this real number
+  // happens to have - never deletes anything for a synthetic test phone,
+  // only this one real, deliberately-reused record.
+  try {
+    const { Redis } = require('@upstash/redis');
+    const redis = new Redis({ url: process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL, token: process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN });
+    await redis.del('wa-convo-history:' + SUBHODEEP_KC_PHONE);
+  } catch (err) { /* best effort */ }
   await checkAsync('replay turn 1: "Good morning Sir, ajke amake duty korte boleche r er bodole onno din chuti nite boleche" asks who (with the morning greeting echoed first, per item 5) and saves the flow', async () => {
     const d = await whatsappAssistant.decideAutoReply({ phone: SCREENSHOT_SENDER, name: 'Sender', firstName: 'Sender', text: 'Good morning Sir, ajke amake duty korte boleche r er bodole onno din chuti nite boleche', isGroup: false, history: [] });
     const pending = await whatsappAssistant.getPendingHrNoteFlow(SCREENSHOT_SENDER);
@@ -1164,21 +1179,52 @@ async function checkAsync(label, fn) {
   });
 
   console.log('='.repeat(70));
-  console.log('LIVE REVIEW round 4, item 2: catch-up after a connection/process gap - combines a sender\'s backlog into one reply, skips a manually-answered sender, flags >12h-old messages as needs-you, apologises for a >30min-old reply, and never double-processes');
+  console.log('URGENT LIVE INCIDENT FIX: catch-up after a connection/process gap - combines a sender\'s backlog into one reply, skips a manually-answered sender, flags >30min-old messages as needs-you, apologises for a short (5-30min) delay, never double-processes, and - the live bug - NEVER reaches back further than a REAL recorded gap window, regardless of what wa-last-seen says');
   console.log('='.repeat(70));
   const CATCHUP_MANUAL = '910000000890';
   const CATCHUP_BURST = '910000000891';
   const CATCHUP_STALE = '910000000892';
   const CATCHUP_APOLOGY = '910000000893';
+  async function getRawRedisClient() {
+    const { Redis } = require('@upstash/redis');
+    return new Redis({ url: process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL, token: process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN });
+  }
   async function cleanupCatchupFixtures(...phones) {
     try {
-      const { Redis } = require('@upstash/redis');
-      const redis = new Redis({ url: process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL, token: process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN });
+      const redis = await getRawRedisClient();
       await redis.srem('wa-known-contacts', ...phones);
-      for (const p of phones) await redis.del('wa-last-seen:' + p);
+      for (const p of phones) {
+        await redis.del('wa-last-seen:' + p);
+        await redis.del('wa-handled-ids:' + p);
+      }
     } catch (err) { /* best effort */ }
   }
-  await checkAsync('THE EXACT SPEC TEST: a simulated 5-minute gap with 3 senders (one already answered manually, one with 2 missed messages, one >12h old) - the manual one is skipped, the 2-message one is combined into ONE reply, the stale one is flagged needs-you with a reminder, and every last-seen id advances so nothing is re-processed later', async () => {
+  // catchUpAfterGap is OFF by default now (the kill switch) - every test
+  // below needs it on, and needs a real scheduler heartbeat to compute a
+  // gap window from (computeCatchupGapWindow returns null, and the whole
+  // pass is a no-op, with no heartbeat at all - exactly the new, correct
+  // "first run ever" behavior, tested on its own further below). Both
+  // are real shared production keys - saved and restored around every
+  // test, never left mutated.
+  async function withCatchupHarness(heartbeatAgeMs, fn) {
+    const originalEnv = process.env.WHATSAPP_CATCHUP;
+    process.env.WHATSAPP_CATCHUP = '1';
+    const redis = await getRawRedisClient();
+    const originalHeartbeat = await redis.get('wa-scheduler-heartbeat').catch(() => null);
+    try {
+      if (heartbeatAgeMs !== null) {
+        await redis.set('wa-scheduler-heartbeat', JSON.stringify({ ts: Date.now() - heartbeatAgeMs, commitId: 'test' }));
+      } else {
+        await redis.del('wa-scheduler-heartbeat');
+      }
+      return await fn();
+    } finally {
+      if (originalEnv === undefined) delete process.env.WHATSAPP_CATCHUP; else process.env.WHATSAPP_CATCHUP = originalEnv;
+      if (originalHeartbeat) await redis.set('wa-scheduler-heartbeat', typeof originalHeartbeat === 'string' ? originalHeartbeat : JSON.stringify(originalHeartbeat));
+      else await redis.del('wa-scheduler-heartbeat').catch(() => {});
+    }
+  }
+  await checkAsync('THE EXACT SPEC TEST: a simulated gap (heartbeat 10 min ago) with 3 senders (one already answered manually, one with 2 missed messages, one far outside the gap/stale) - the manual one is skipped, the 2-message one is combined into ONE reply, the stale one is flagged needs-you with a reminder, and every last-seen id advances so nothing is re-processed later', async () => {
     const now = Date.now();
     await whatsappAssistant.setLastSeenId(CATCHUP_MANUAL, 100);
     await whatsappAssistant.setLastSeenId(CATCHUP_BURST, 200);
@@ -1198,12 +1244,18 @@ async function checkAsync(label, fn) {
         ];
       }
       if (contactId === CATCHUP_STALE) {
-        return [{ id: 301, direction: 'incoming', type: 'text', content: { text: 'Ajke ami aste parbo na, sorry.' }, created_at: new Date(now - 13 * 60 * 60000).toISOString() }];
+        return [{ id: 301, direction: 'incoming', type: 'text', content: { text: 'Ajke ami aste parbo na, sorry.' }, created_at: new Date(now - 60 * 60000).toISOString() }]; // 1h old - still inside the (90-min) gap window, but past the 30-min auto-reply cutoff
       }
       return [];
     };
     try {
-      const result = await whatsappAssistant.catchUpAfterGap('test');
+      // Heartbeat older than every simulated message (incl. the 1h-old
+      // stale one) - a message's own age relative to the 30-min cutoff
+      // below is a SEPARATE question from whether it falls inside the
+      // real recorded gap at all (see computeCatchupGapWindow); this test
+      // is about the former, not the latter (that one has its own
+      // dedicated test just below).
+      const result = await withCatchupHarness(90 * 60000, () => whatsappAssistant.catchUpAfterGap('test'));
       const manualAdvanced = (await whatsappAssistant.getLastSeenId(CATCHUP_MANUAL)) === 101;
       const burstAdvanced = (await whatsappAssistant.getLastSeenId(CATCHUP_BURST)) === 202;
       const staleAdvanced = (await whatsappAssistant.getLastSeenId(CATCHUP_STALE)) === 301;
@@ -1216,18 +1268,18 @@ async function checkAsync(label, fn) {
       await cleanupCatchupFixtures(CATCHUP_MANUAL, CATCHUP_BURST, CATCHUP_STALE);
     }
   });
-  await checkAsync('a reply to a backlog whose oldest message is over 30 minutes old opens with a short apology in the sender\'s own language, never mixed into the classified text itself', async () => {
+  await checkAsync('a reply to a backlog whose oldest message is a short (5-30 min) delay opens with a short apology in the sender\'s own language, never mixed into the classified text itself', async () => {
     const now = Date.now();
     await whatsappAssistant.setLastSeenId(CATCHUP_APOLOGY, 400);
     const originalListMessages = whatsapp.listMessages;
     whatsapp.listMessages = async (contactId) => {
       if (contactId === CATCHUP_APOLOGY) {
-        return [{ id: 401, direction: 'incoming', type: 'text', content: { text: 'Amar attendance thik ache kina bolben?' }, created_at: new Date(now - 45 * 60000).toISOString() }];
+        return [{ id: 401, direction: 'incoming', type: 'text', content: { text: 'Amar attendance thik ache kina bolben?' }, created_at: new Date(now - 10 * 60000).toISOString() }];
       }
       return [];
     };
     try {
-      await whatsappAssistant.catchUpAfterGap('test');
+      await withCatchupHarness(20 * 60000, () => whatsappAssistant.catchUpAfterGap('test'));
       // The actual reply is only QUEUED by catchUpAfterGap (scheduleAutoSend,
       // a 2-4s random human-like delay) - processDueAutoSends flushes it
       // immediately rather than waiting on the real delay, same pattern
@@ -1240,6 +1292,147 @@ async function checkAsync(label, fn) {
     } finally {
       whatsapp.listMessages = originalListMessages;
       await cleanupCatchupFixtures(CATCHUP_APOLOGY);
+    }
+  });
+  await checkAsync('LIVE INCIDENT FIX: the auto-reply cutoff is now 30 minutes (lowered from 12h) - a 45-minute-old backlog NEVER auto-replies any more, only ever goes to the "missed while disconnected" review queue', async () => {
+    const now = Date.now();
+    const CATCHUP_NOW_STALE = '910000000896';
+    await whatsappAssistant.setLastSeenId(CATCHUP_NOW_STALE, 500);
+    const originalListMessages = whatsapp.listMessages;
+    whatsapp.listMessages = async (contactId) => (contactId === CATCHUP_NOW_STALE
+      ? [{ id: 501, direction: 'incoming', type: 'text', content: { text: 'Ami ki aj asbo?' }, created_at: new Date(now - 45 * 60000).toISOString() }]
+      : []);
+    try {
+      await withCatchupHarness(60 * 60000, () => whatsappAssistant.catchUpAfterGap('test'));
+      const log = await whatsappAssistant.listInboxLog(20);
+      const entry = log.find((e) => e.chatId === CATCHUP_NOW_STALE);
+      return Boolean(entry) && entry.outcome === 'missed_while_disconnected';
+    } finally {
+      whatsapp.listMessages = originalListMessages;
+      await cleanupCatchupFixtures(CATCHUP_NOW_STALE);
+    }
+  });
+  await checkAsync('LIVE INCIDENT FIX: with NO prior scheduler heartbeat at all (the very first run ever), catch-up does NOTHING - never guesses a gap start, never touches any contact, even one with id > lastSeenId', async () => {
+    const now = Date.now();
+    const CATCHUP_NO_HEARTBEAT = '910000000897';
+    await whatsappAssistant.setLastSeenId(CATCHUP_NO_HEARTBEAT, 600);
+    const originalListMessages = whatsapp.listMessages;
+    whatsapp.listMessages = async (contactId) => (contactId === CATCHUP_NO_HEARTBEAT
+      ? [{ id: 601, direction: 'incoming', type: 'text', content: { text: 'Hello' }, created_at: new Date(now - 60000).toISOString() }]
+      : []);
+    try {
+      const result = await withCatchupHarness(null, () => whatsappAssistant.catchUpAfterGap('test'));
+      const untouched = (await whatsappAssistant.getLastSeenId(CATCHUP_NO_HEARTBEAT)) === 600;
+      return result.noGap === true && result.sendersAnswered === 0 && untouched;
+    } finally {
+      whatsapp.listMessages = originalListMessages;
+      await cleanupCatchupFixtures(CATCHUP_NO_HEARTBEAT);
+    }
+  });
+  await checkAsync('THE EXACT LIVE BUG ("Tapas Das"), now fixed: a message that arrived BEFORE the gap even started (simulating the id-space mismatch that let a day-old, already-resolved message look "new") is NEVER caught up on, even though its id is > lastSeenId', async () => {
+    const now = Date.now();
+    const TAPAS_REPLAY = '910000000898';
+    await whatsappAssistant.setLastSeenId(TAPAS_REPLAY, 700);
+    const originalListMessages = whatsapp.listMessages;
+    // The message's id looks new (701 > lastSeenId 700), exactly like the
+    // live incident, but its REAL timestamp is from before the gap window
+    // even starts (heartbeat 10 min ago, message 1 day old) - the
+    // timestamp-bounded gap window must reject it regardless of what its
+    // id says.
+    whatsapp.listMessages = async (contactId) => (contactId === TAPAS_REPLAY
+      ? [{ id: 701, direction: 'incoming', type: 'text', content: { text: 'Ki holo ekhono dao nai' }, created_at: new Date(now - 24 * 60 * 60000).toISOString() }]
+      : []);
+    try {
+      const result = await withCatchupHarness(10 * 60000, () => whatsappAssistant.catchUpAfterGap('test'));
+      const log = await whatsappAssistant.listInboxLog(50);
+      const gotAnyReply = log.some((e) => e.chatId === TAPAS_REPLAY);
+      return result.sendersAnswered === 0 && !gotAnyReply;
+    } finally {
+      whatsapp.listMessages = originalListMessages;
+      await cleanupCatchupFixtures(TAPAS_REPLAY);
+    }
+  });
+  await checkAsync('hasOwnReplyAfter finds SUBH\'s own prior reply in the real conversation history (second, independent cross-check alongside hasManualReplyAfter, since the gateway may not surface a manually-sent message at all - see the "SUBH Test" live incident)', async () => {
+    const phone = '910000000899';
+    const now = Date.now();
+    await whatsappAssistant.appendConvoHistory(phone, 'in', 'Ki holo ekhono dao nai');
+    await whatsappAssistant.appendConvoHistory(phone, 'out', 'Ami SUBH...');
+    try {
+      const foundAfterEarlier = await whatsappAssistant.hasOwnReplyAfter(phone, now - 60000);
+      const foundAfterLater = await whatsappAssistant.hasOwnReplyAfter(phone, now + 60000);
+      return foundAfterEarlier === true && foundAfterLater === false;
+    } finally {
+      const redis = await getRawRedisClient();
+      await redis.del('wa-convo-history:' + phone).catch(() => {});
+    }
+  });
+  await checkAsync('LIVE INCIDENT FIX: a durable handled-id marker prevents catch-up from re-processing the exact same message id EVEN inside a fresh, otherwise-valid gap window', async () => {
+    const now = Date.now();
+    const CATCHUP_HANDLED = '910000000900';
+    await whatsappAssistant.setLastSeenId(CATCHUP_HANDLED, 800);
+    await whatsappAssistant.markMessageHandled(CATCHUP_HANDLED, 801);
+    const originalListMessages = whatsapp.listMessages;
+    whatsapp.listMessages = async (contactId) => (contactId === CATCHUP_HANDLED
+      ? [{ id: 801, direction: 'incoming', type: 'text', content: { text: 'Hello again' }, created_at: new Date(now - 60000).toISOString() }]
+      : []);
+    try {
+      const result = await withCatchupHarness(10 * 60000, () => whatsappAssistant.catchUpAfterGap('test'));
+      return result.sendersAnswered === 0;
+    } finally {
+      whatsapp.listMessages = originalListMessages;
+      await cleanupCatchupFixtures(CATCHUP_HANDLED);
+    }
+  });
+  await checkAsync('LIVE INCIDENT FIX ("Sri AKS Sir" case): the delayed-send flush re-checks the GATEWAY right before actually sending - a manual reply from the phone landing in the decision-to-send window means the queued send is skipped, never double-sent (deliberately NOT checked against our own wa-convo-history, since every decision already optimistically records its own pending reply there before this point - that would always look like a false "already answered")', async () => {
+    const phone = '910000000901';
+    const now = Date.now();
+    const arrivedAt = now - 5000;
+    const originalListMessages = whatsapp.listMessages;
+    // Simulates the gateway now showing a manual reply (sent from the
+    // phone) after this message arrived - exactly what hasManualReplyAfter
+    // looks for, the same mechanism catchUpAfterGap already relies on.
+    whatsapp.listMessages = async (contactId) => (contactId === phone
+      ? [{ direction: 'outgoing', created_at: new Date(now - 1000).toISOString() }]
+      : []);
+    const scheduled = await whatsappAssistant.scheduleAutoSend({ chatId: phone, isGroup: false, name: 'Test', replyText: 'This should never be sent.', case: 'holding', arrivedAt, seenAt: now });
+    try {
+      // scheduleAutoSend's own 2-4s random human-like delay means this
+      // entry isn't actually DUE yet the instant it's queued - force its
+      // score into the past (same effect as just waiting) so
+      // processDueAutoSends picks it up immediately, without a real sleep.
+      const redis = await getRawRedisClient();
+      await redis.zadd('wa-pending-autosend-zset', { score: Date.now() - 1000, member: scheduled.id });
+      await whatsappAssistant.processDueAutoSends();
+      const log = await whatsappAssistant.listInboxLog(20);
+      const entry = log.find((e) => e.chatId === phone);
+      // outcome being 'skipped_already_answered' (never 'sent') is what
+      // actually proves nothing went out to the real gateway - sentText
+      // on a skip outcome just records what WOULD have been sent, same
+      // as every other skip/draft outcome already logged elsewhere.
+      return Boolean(entry) && entry.outcome === 'skipped_already_answered';
+    } finally {
+      whatsapp.listMessages = originalListMessages;
+      const redis = await getRawRedisClient();
+      await redis.del('wa-pending-autosend:' + scheduled.id).catch(() => {});
+      await redis.zrem('wa-pending-autosend-zset', scheduled.id).catch(() => {});
+    }
+  });
+  await checkAsync('CONFIRMED LIVE ROOT CAUSE, now fixed: a queued reply that sat in wa-pending-autosend for over 30 minutes (the real cause behind both live incidents, confirmed against the live gateway\'s own per-contact history - a decision queued the day before that only got flushed the next morning with no new inbound message anywhere near it) is NEVER sent this late - diverted to the "missed while disconnected" review queue instead', async () => {
+    const phone = '910000000902';
+    const now = Date.now();
+    const arrivedAt = now - 60 * 60000; // decided an hour ago - the entry should never have sat this long, but did
+    const scheduled = await whatsappAssistant.scheduleAutoSend({ chatId: phone, isGroup: false, name: 'Test', replyText: 'This should never be sent this late.', case: 'holding', arrivedAt, seenAt: arrivedAt });
+    try {
+      const redis = await getRawRedisClient();
+      await redis.zadd('wa-pending-autosend-zset', { score: Date.now() - 1000, member: scheduled.id });
+      await whatsappAssistant.processDueAutoSends();
+      const log = await whatsappAssistant.listInboxLog(20);
+      const entry = log.find((e) => e.chatId === phone);
+      return Boolean(entry) && entry.outcome === 'missed_while_disconnected';
+    } finally {
+      const redis = await getRawRedisClient();
+      await redis.del('wa-pending-autosend:' + scheduled.id).catch(() => {});
+      await redis.zrem('wa-pending-autosend-zset', scheduled.id).catch(() => {});
     }
   });
   await checkAsync('hasManualReplyAfter correctly detects an outgoing message after the sender\'s last missed message, and correctly finds none when there is no manual reply', async () => {
@@ -1273,7 +1466,7 @@ async function checkAsync(label, fn) {
     const originalListMessages = whatsapp.listMessages;
     whatsapp.listMessages = async (contactId) => (contactId === CATCHUP_NOTHING ? [{ id: 999, direction: 'incoming', type: 'text', content: { text: 'old' }, created_at: new Date().toISOString() }] : []);
     try {
-      await whatsappAssistant.catchUpAfterGap('test');
+      await withCatchupHarness(10 * 60000, () => whatsappAssistant.catchUpAfterGap('test'));
       return (await whatsappAssistant.getLastSeenId(CATCHUP_NOTHING)) === 999; // unchanged - id 999 is not > lastSeenId 999
     } finally {
       whatsapp.listMessages = originalListMessages;

@@ -994,7 +994,77 @@ async function sendOrReportAutoReply(entry) {
   // an active conversation got NO reply at all. Loop protection is now
   // based on the SENDER's own incoming message pattern instead (see
   // isDuplicateIncoming/isBotLoopPattern, checked in pollOnce before a
-  // reply is even decided) - nothing left to check at send time.
+  // reply is even decided).
+  //
+  // Live incident fix ("Sri AKS Sir" case: SUBH auto-replied, the owner
+  // then replied manually from the phone, and 8 hours later SUBH sent
+  // ANOTHER reply to the same original message) - this delayed-send
+  // flush now re-checks right before actually sending, since the human-
+  // like delay between decision and send is exactly the window a manual
+  // reply could land in. Deliberately checks ONLY the gateway's own
+  // reported outgoing messages (hasManualReplyAfter), NOT our own
+  // hasOwnReplyAfter/wa-convo-history - every decision already
+  // optimistically appends ITS OWN reply to that same history before
+  // ever reaching this point (so THIS entry's own pending reply would
+  // always show up as "already answered" there, a false positive, not a
+  // real second reply). The single-decision-per-turn architecture already
+  // makes a genuine SUBH-replied-twice duplicate impossible for one
+  // turn; a manual reply from the phone is the one real risk left in
+  // this window, and only the gateway can ever see that.
+  //
+  // CONFIRMED LIVE ROOT CAUSE (both incidents, verified directly against
+  // the real gateway's per-contact message history): this queue has NO
+  // staleness check at all. A decision is normally flushed within
+  // ~2-4s (randomDelayMs + the 2s SEND_FLUSH_MS tick), but if the
+  // scheduler's own background ticks don't keep running continuously
+  // (a serverless/short-lived process, a crash, a long gap before the
+  // next invocation) an entry can sit in the wa-pending-autosend sorted
+  // set for HOURS - then get flushed, however stale, the instant
+  // anything calls processDueAutoSends again, with zero regard for
+  // whether the conversation has moved on since. This is EXACTLY what
+  // the real gateway data shows for both live incidents: a decision
+  // queued the PREVIOUS DAY (id 608073-ish for "SUBH Test", a duplicate
+  // decision around the "Ki holo ekhono dao nai" turn for "Tapas Das")
+  // sent itself the next morning with no new inbound message anywhere
+  // near it. Same 30-minute cutoff as catch-up's own stale handling
+  // (CATCHUP_STALE_THRESHOLD_MS) - anything queued longer ago than that
+  // is now diverted to the same "missed while disconnected" review
+  // treatment instead of ever being sent this late.
+  if (entry.arrivedAt && Date.now() - entry.arrivedAt > CATCHUP_STALE_THRESHOLD_MS) {
+    await postOwnerNotification('⚠️ A queued reply to ' + who + ' sat unsent for too long (arrived ' + formatIstDateTime(entry.arrivedAt) + ') and was NOT sent this late - please review and reply directly if still needed.');
+    await logInboxEvent({
+      chatId: entry.chatId, name: entry.name, isGroup: entry.isGroup, messageSummary: entry.summaryForOwner,
+      aCase: entry.case, sentText: entry.replyText, outcome: 'missed_while_disconnected',
+      intent: entry.intent, hrTopicArea: entry.hrTopicArea, ...timeline
+    });
+    try {
+      const reminderService = require('./reminderService');
+      await reminderService.saveReminder(reminderService.newReminder({
+        title: 'Queued reply went stale: ' + who,
+        detail: 'A reply decided at ' + formatIstDateTime(entry.arrivedAt) + ' was never sent in time and needs a manual look.',
+        dueAt: null, priority: 'high', source: 'whatsapp', sourceType: 'missed_while_disconnected',
+        sourceRef: entry.chatId, linkedChatId: entry.chatId, now: new Date()
+      }));
+    } catch (err) { /* best effort */ }
+    if (entry.typingStartedAt) fireAndForgetPresence(entry.chatId, 'paused');
+    return;
+  }
+  if (!entry.isGroup && entry.arrivedAt) {
+    let manuallyAnswered = false;
+    try {
+      const recent = await whatsapp.listMessages(entry.chatId, 20);
+      manuallyAnswered = hasManualReplyAfter(recent, entry.arrivedAt);
+    } catch (err) { /* best effort - a failed check must never block a real reply from going out */ }
+    if (manuallyAnswered) {
+      await logInboxEvent({
+        chatId: entry.chatId, name: entry.name, isGroup: entry.isGroup, messageSummary: entry.summaryForOwner,
+        aCase: entry.case, sentText: entry.replyText, outcome: 'skipped_already_answered',
+        intent: entry.intent, hrTopicArea: entry.hrTopicArea, ...timeline
+      });
+      if (entry.typingStartedAt) fireAndForgetPresence(entry.chatId, 'paused');
+      return;
+    }
+  }
 
   async function alertIfSlow(sentAt) {
     if (!entry.arrivedAt) return;
@@ -5747,14 +5817,105 @@ async function listBurstBufferContactIds() {
 // process just (re)started (a deploy, a crash restart). Normal operation
 // never needs this at all - pollOnce's own per-tick processing already
 // keeps every contact's wa-last-seen current second to second.
-const CATCHUP_APOLOGY_THRESHOLD_MS = 30 * 60 * 1000;
-const CATCHUP_STALE_THRESHOLD_MS = 12 * 60 * 60 * 1000;
+// URGENT LIVE INCIDENT FIX: found live that this ran against "anything
+// with id > lastSeenId as of right now", with no check that any of it
+// actually arrived during a real, bounded gap. CONFIRMED ROOT CAUSE (via
+// direct inspection of the live gateway's own per-contact message
+// history, NOT this theory) was actually a DIFFERENT bug in
+// sendOrReportAutoReply's queue (see its own comment) - a decision
+// queued the PREVIOUS DAY sat unflushed for ~18 hours and was sent the
+// next morning with zero staleness check. This catch-up path's own
+// id > lastSeenId check was separately confirmed CORRECT (message ids
+// are consistent between the gateway's global and per-contact feeds,
+// ruling out the id-space-mismatch theory once suspected here) - but the
+// timestamp-bounded gap window, durable handled-id set, and own-history
+// cross-check below are kept anyway as genuine, independently useful
+// hardening: they directly satisfy "first run after a deploy must not
+// reply to anything older than the last processed message," and they
+// close this entire bug CLASS even if wa-last-seen is ever wrong for
+// some other reason in the future. Lowered from 12h to 30 minutes per
+// direct instruction either way - anything older never auto-replies any
+// more, only ever goes to the "missed while disconnected" review queue.
+const CATCHUP_APOLOGY_THRESHOLD_MS = 5 * 60 * 1000;
+const CATCHUP_STALE_THRESHOLD_MS = 30 * 60 * 1000;
 const CATCHUP_FETCH_MAX_LIMIT = 200;
 const CATCHUP_APOLOGY_LINE = {
   banglish: 'Deri-r jonno dukkhito. ',
   hinglish: 'Der ke liye maaf kijiye. ',
   english: 'Sorry for the delay. '
 };
+// The gap this pass is allowed to look at - computed FRESH on every call,
+// never trusted as "whatever wa-last-seen says relative to right now"
+// (see the incident comment above). Returns null when there is nothing
+// to compute a real gap FROM (the very first run ever, no prior
+// heartbeat recorded) - catch-up then does nothing at all rather than
+// guess a start time, directly satisfying "first run after a deploy must
+// not reply to anything older than the last processed message."
+// (An earlier theory suspected the gateway's GLOBAL /messages feed -
+// which pollOnce uses to track wa-last-seen - might number ids
+// differently than the PER-CONTACT feed this file's own
+// fetchAllMessagesForCatchup calls. Checked directly against the live
+// gateway: the same message carries the IDENTICAL numeric id on both
+// endpoints - that theory is ruled out. The three safeguards below stay
+// anyway, as independently useful hardening, not a fix for a confirmed
+// mechanism.)
+async function computeCatchupGapWindow(trigger, now) {
+  const redis = getClient();
+  if (!redis) return null;
+  if (trigger === 'reconnect') {
+    const since = await redis.get(GATEWAY_DISCONNECTED_SINCE_KEY).catch(() => null);
+    const start = Number(since);
+    return start > 0 ? { start, end: now } : null;
+  }
+  // 'startup' (and any other trigger, e.g. a manual/test run) - the gap
+  // is "since the scheduler was last confirmed alive", i.e. the PREVIOUS
+  // heartbeat's own timestamp (written once per tick regardless of real
+  // WhatsApp traffic - see recordSchedulerHeartbeat's own comment). A
+  // missing heartbeat means this has truly never run before - nothing to
+  // catch up on yet.
+  try {
+    const raw = await redis.get(SCHEDULER_HEARTBEAT_KEY);
+    const heartbeat = raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : null;
+    return heartbeat && heartbeat.ts ? { start: heartbeat.ts, end: now } : null;
+  } catch (err) { return null; }
+}
+// Durable, EVER mechanism - once this file has acted on a given message
+// id for a given contact (sent/drafted/skipped/automatic, via EITHER the
+// live poll or catch-up), it is never acted on again, independent of
+// wa-last-seen - a second, structurally different line of defense in
+// case the single last-seen watermark is ever wrong for any reason (see
+// catchUpAfterGap's own comment above). 30-day TTL, refreshed on every
+// write, so this can never grow unbounded for a long-lived contact.
+const HANDLED_IDS_PREFIX = 'wa-handled-ids:';
+const HANDLED_IDS_TTL_SECONDS = 30 * 24 * 60 * 60;
+async function isMessageHandled(contactId, id) {
+  const redis = getClient();
+  if (!redis) return false;
+  try { return Boolean(await redis.sismember(HANDLED_IDS_PREFIX + contactId, id)); } catch (err) { return false; }
+}
+async function markMessageHandled(contactId, id) {
+  const redis = getClient();
+  if (!redis) return;
+  try {
+    await redis.sadd(HANDLED_IDS_PREFIX + contactId, id);
+    await redis.expire(HANDLED_IDS_PREFIX + contactId, HANDLED_IDS_TTL_SECONDS);
+  } catch (err) { /* best effort */ }
+}
+// A second, independent check alongside hasManualReplyAfter below (which
+// trusts the GATEWAY's own reported outgoing messages for this contact -
+// confirmed live that this gateway DOES surface a manually-sent message,
+// e.g. an image sent from the linked phone, as a normal 'outgoing' entry,
+// so that check is reliable; the live incident's real cause was that
+// nothing ever called it at the right moment, not that the gateway hid
+// anything - see sendOrReportAutoReply's own comment). This one checks
+// OUR OWN durable conversation record instead - if SUBH itself already
+// sent something in this chat after the message being considered, it has
+// unquestionably already been handled, regardless of what the gateway
+// does or doesn't report back.
+async function hasOwnReplyAfter(contactId, afterTs) {
+  const history = await getConvoHistory(contactId, CONVO_HISTORY_MAX);
+  return history.some((h) => h.direction === 'out' && h.ts > afterTs);
+}
 // Pages back through the gateway for ONE contact until either the oldest
 // returned incoming message is already <= lastSeenId (everything missing
 // has been found) or CATCHUP_FETCH_MAX_LIMIT is reached. There is no
@@ -5852,9 +6013,14 @@ async function catchUpAfterGap(trigger) {
     console.log('[whatsapp] catch-up skipped (trigger: ' + trigger + ') - WHATSAPP_CATCHUP is not set to "1"');
     return { sendersAnswered: 0, messagesAnswered: 0, needsYouSenders: 0, trigger, disabled: true };
   }
+  const now = Date.now();
+  const gapWindow = await computeCatchupGapWindow(trigger, now);
+  if (!gapWindow) {
+    console.log('[whatsapp] catch-up skipped (trigger: ' + trigger + ') - no prior heartbeat/disconnect recorded, nothing to compute a real gap from (this is the very first run)');
+    return { sendersAnswered: 0, messagesAnswered: 0, needsYouSenders: 0, trigger, noGap: true };
+  }
   const contacts = await listKnownContacts();
   let sendersAnswered = 0, messagesAnswered = 0, needsYouSenders = 0;
-  const now = Date.now();
   for (const contactId of contacts) {
     // Tagged groups are left to the existing group message pipeline
     // entirely unaffected by this pass - this is a 1:1-only catch-up,
@@ -5864,17 +6030,32 @@ async function catchUpAfterGap(trigger) {
     try {
       const lastSeenId = await getLastSeenId(contactId);
       const allMessages = await fetchAllMessagesForCatchup(contactId, lastSeenId);
-      const missed = allMessages
+      // THREE independent filters, all required - id-based (the original
+      // check), a real recorded TIME window (never "anything newer than
+      // last-seen as of right now" - see the incident comment above), and
+      // the durable handled-id set (never re-act on an id this file has
+      // already acted on, by any path, ever).
+      const candidates = allMessages
         .filter((m) => m.direction === 'incoming' && m.id > lastSeenId && (!m.type || ['text', 'image', 'document'].includes(m.type)))
+        .filter((m) => { const ts = catchupMessageTimestamp(m); return ts > gapWindow.start && ts <= gapWindow.end; })
         .sort((a, b) => a.id - b.id);
+      const missed = [];
+      for (const m of candidates) {
+        if (await isMessageHandled(contactId, m.id)) continue;
+        missed.push(m);
+      }
       if (!missed.length) continue;
       const highestId = missed[missed.length - 1].id;
-      // Advance last-seen regardless of what happens below - a catch-up
-      // pass must never re-process the same backlog on a later tick/run.
+      // Advance last-seen AND mark every one of these ids handled right
+      // away, regardless of what happens below - a catch-up pass must
+      // never re-process the same backlog on a later tick/run, whatever
+      // outcome it reaches for it this time.
       await setLastSeenId(contactId, highestId);
+      for (const m of missed) await markMessageHandled(contactId, m.id);
 
       const lastMissedTs = catchupMessageTimestamp(missed[missed.length - 1]);
-      if (hasManualReplyAfter(allMessages, lastMissedTs)) continue; // already handled manually - never double-reply
+      if (hasManualReplyAfter(allMessages, lastMissedTs)) continue; // gateway shows a manual reply after it - never double-reply
+      if (await hasOwnReplyAfter(contactId, lastMissedTs)) continue; // OUR OWN record shows SUBH already replied after it - never double-reply
 
       const resolvedName = await resolveSenderName(contactId).catch(() => null);
       const name = resolvedName || contactId;
@@ -5884,8 +6065,10 @@ async function catchUpAfterGap(trigger) {
       const combinedText = combineBurstText(missedTextOnly.map((m) => ({ text: (m.content && (m.content.text || m.content.caption)) || '' })));
 
       if (now - oldestTs > CATCHUP_STALE_THRESHOLD_MS) {
-        // Too old to answer live (spec: > 12h) - surfaced as needs-you +
-        // a reminder instead of guessing at a reply to something that old.
+        // Too old to auto-reply to (lowered to > 30 min per direct
+        // instruction, from the old > 12h) - surfaced as needs-you + a
+        // reminder for the owner to review and reply themselves, instead
+        // of SUBH ever guessing at a reply to something this old.
         await postOwnerNotification('⚠️ Missed while disconnected — ' + name + ' (' + contactId + ') sent ' + missed.length + ' message(s) starting ' + formatIstDateTime(oldestTs) + ', too old to auto-reply.');
         await logInboxEvent({
           chatId: contactId, name, isGroup: false,
@@ -6040,13 +6223,27 @@ async function pollOnce() {
   for (const [contactId, messages] of byContact) {
     try {
       const lastSeenId = await getLastSeenId(contactId);
-      const newIncoming = messages.filter((m) => m.id > lastSeenId).sort((a, b) => a.id - b.id);
+      // Defense in depth against the live incident class (same durable
+      // handled-id set catchUpAfterGap uses) - id > lastSeenId alone was
+      // once enough on its own to reprocess an already-answered message
+      // 8 hours later (the "Sri AKS Sir" case). Belt-and-suspenders here:
+      // normal continuous polling is not where that incident was traced
+      // to, but this costs one cheap Redis SISMEMBER per message and
+      // closes the same bug class regardless of which exact mechanism
+      // resurfaced the id.
+      const candidateIncoming = messages.filter((m) => m.id > lastSeenId).sort((a, b) => a.id - b.id);
+      const newIncoming = [];
+      for (const m of candidateIncoming) {
+        if (await isMessageHandled(contactId, m.id)) continue;
+        newIncoming.push(m);
+      }
       if (!newIncoming.length) continue;
 
       const resolvedName = await resolveSenderName(contactId).catch(() => null);
       const name = resolvedName || contactId; // display fallback - the raw phone number, never the gateway's contact label
       const firstName = firstNameOf(resolvedName);
       const highestId = newIncoming[newIncoming.length - 1].id;
+      for (const msg of newIncoming) await markMessageHandled(contactId, msg.id);
       for (const msg of newIncoming) {
         results.checked++;
         if (msg.type === 'image' || msg.type === 'document') {
@@ -6364,6 +6561,10 @@ module.exports = {
   catchUpAfterGap,
   CATCHUP_APOLOGY_THRESHOLD_MS,
   CATCHUP_STALE_THRESHOLD_MS,
+  computeCatchupGapWindow,
+  isMessageHandled,
+  markMessageHandled,
+  hasOwnReplyAfter,
   workingHoursElapsedSince,
   isPastEndOfDayIst,
   extractPersonReference,
