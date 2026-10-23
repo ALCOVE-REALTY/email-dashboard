@@ -1,21 +1,26 @@
 // Persisted regression baseline for the WhatsApp engine/approval flow/
 // chat-pipeline behaviors the Phase 1 SUBH UI redesign must never change
 // (see the "NON-NEGOTIABLE" instruction: move WHERE things are shown,
-// never HOW they work). Every check here is READ-ONLY against the real
-// production Redis this app shares with the live deployment - nothing
-// here saves a pending approval/draft/follow-up, sends a WhatsApp
-// message, or clears/resolves any real record. Run before and after a
-// change with `npm run check:whatsapp-engine` and diff the pass counts.
+// never HOW they work). Run before and after a change with
+// `npm run check:whatsapp-engine` and diff the pass counts.
 //
-// If a future check needs to WRITE simulated data (not just assert on
-// real data), it MUST use scripts/testRedisNamespace.js's "test:" prefix
-// and clean up every key it created - never write under the app's real
-// key names (wa-pending-approval:*, wa-doc-request:*, etc.) with a
-// synthetic phone number. That's exactly what went wrong before this
-// rule existed: synthetic approvals for 919999999998 and document
-// requests for 919812345670-72/919000000002 sat in production Redis for
-// days and surfaced in the owner's live Important Communications page
-// before being found and deleted.
+// By DEFAULT this runs entirely against a local, in-memory, throwaway
+// fake of the Upstash REST API (see testBootstrap.js/fakeUpstashServer.js) -
+// nothing here reads, writes, or sends anything real, and every check's
+// own synthetic phone numbers are just ordinary isolation within that
+// fake store now, not the only thing standing between a test and the
+// owner's real production data. Pass ALLOW_LIVE=1 to deliberately run
+// against whatever's actually configured in .env/.env.local instead (a
+// real diagnostic against production, not the default) - if you ever do,
+// the same old rule still applies: any check that WRITES simulated data
+// there must use scripts/testRedisNamespace.js's "test:" prefix and clean
+// up every key it created, never the app's real key names (wa-pending-
+// approval:*, wa-doc-request:*, etc.) with just a synthetic phone number
+// for cover. That rule exists because of a real incident: synthetic
+// approvals for 919999999998 and document requests for
+// 919812345670-72/919000000002 once sat in production Redis for days and
+// surfaced in the owner's live Important Communications page before being
+// found and deleted.
 require('dotenv').config({ path: '.env.local' });
 require('dotenv').config();
 
@@ -52,6 +57,15 @@ async function checkAsync(label, fn) {
 }
 
 (async () => {
+  // Starts a local, throwaway fake of the Upstash REST API and points
+  // every Redis-client-constructing module at it for this process only -
+  // see testBootstrap.js's own comment. Pass ALLOW_LIVE=1 to use the
+  // real configured store instead (never the default). Must run before
+  // ANY check below touches Redis - whatsappAssistant.js's own client is
+  // a lazy singleton, cached forever after its first real call, so this
+  // being first guarantees every check in this file gets the fake store.
+  await require('./testBootstrap').setupTestEnvironment();
+
   console.log('='.repeat(70));
   console.log('PII hard-block (whatsappAssistant.textHasForbiddenField/cardHasForbiddenField)');
   console.log('='.repeat(70));
@@ -1054,6 +1068,107 @@ async function checkAsync(label, fn) {
   });
 
   console.log('='.repeat(70));
+  console.log('LIVE TEST FIXES item 4 CORRECTION - explicit interaction checks (direct instruction): a next-day flow reply is a NEW inbound message that the staleness/catch-up/one-reply-per-message safeguards must never block or duplicate; the full line order (greeting -> identity -> bridge -> step text) is exact with no repeats; a bare name/number/yes-no answer after any gap is never mistaken for a new topic');
+  console.log('='.repeat(70));
+  async function backdateHrFlowLastTouch(phone, ms) {
+    const { Redis } = require('@upstash/redis');
+    const redis = new Redis({ url: process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL, token: process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN });
+    const raw = await redis.get('wa-pending-hr-note-flow:' + phone);
+    const flow = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    flow.lastTouchedAt = Date.now() - ms;
+    await redis.set('wa-pending-hr-note-flow:' + phone, JSON.stringify(flow), { ex: 7 * 24 * 60 * 60 });
+  }
+  await checkAsync('INTERACTION CHECK 1: a next-day flow continuation that arrives right after a (recent, prompt) scheduler restart is caught up on through catchUpAfterGap exactly once - never blocked by the 30-minute stale-queue cutoff (the message itself just arrived, its own age is what that cutoff measures, never the flow\'s age), and never re-answered if catch-up runs again', async () => {
+    const phone = '910000000940';
+    const now = Date.now();
+    await cleanupHrFlowArtifacts(phone, SUBHODEEP_KC_PHONE);
+    await whatsappAssistant.setLastSeenId(phone, 2000);
+    await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Ajke amake duty korte bola hoyechhe, ar er bodole onno din chhutti nite bola hoyechhe', isGroup: false, history: [] });
+    await backdateHrFlowLastTouch(phone, 24 * 60 * 60 * 1000);
+    const originalListMessages = whatsapp.listMessages;
+    // The continuation message itself is fresh (2 min old) - only the
+    // FLOW is a day old. The scheduler heartbeat (10 min ago) simulates a
+    // prompt, routine restart, not a real outage.
+    whatsapp.listMessages = async (contactId) => (contactId === phone
+      ? [{ id: 2001, direction: 'incoming', type: 'text', content: { text: 'Subhadip HR' }, created_at: new Date(now - 2 * 60000).toISOString() }]
+      : []);
+    const { Redis } = require('@upstash/redis');
+    const redis = new Redis({ url: process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL, token: process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN });
+    process.env.WHATSAPP_CATCHUP = '1';
+    const originalHb = await redis.get('wa-scheduler-heartbeat');
+    await redis.set('wa-scheduler-heartbeat', JSON.stringify({ ts: now - 10 * 60000, commitId: 'test' }));
+    try {
+      const result1 = await whatsappAssistant.catchUpAfterGap('test');
+      const pending = await whatsappAssistant.getPendingHrNoteFlow(phone);
+      const result2 = await whatsappAssistant.catchUpAfterGap('test'); // must find nothing new the second time
+      const ok = result1.sendersAnswered === 1 && Boolean(pending) && pending.step === 'awaiting_confirm_yes_no'
+        && result2.sendersAnswered === 0;
+      return ok;
+    } finally {
+      whatsapp.listMessages = originalListMessages;
+      delete process.env.WHATSAPP_CATCHUP;
+      if (originalHb) await redis.set('wa-scheduler-heartbeat', originalHb); else await redis.del('wa-scheduler-heartbeat');
+      await cleanupHrFlowArtifacts(phone, SUBHODEEP_KC_PHONE);
+    }
+  });
+  await checkAsync('INTERACTION CHECK 2: when a time greeting, the once-a-day identity line, AND the cross-day topic bridge ALL apply to the same reply, the order is EXACTLY greeting -> identity -> bridge -> step text, with no line repeated', async () => {
+    const phone = '910000000941';
+    await cleanupHrFlowArtifacts(phone, SUBHODEEP_KC_PHONE);
+    await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Ajke amake duty korte bola hoyechhe, ar er bodole onno din chhutti nite bola hoyechhe', isGroup: false, history: [] });
+    await backdateHrFlowLastTouch(phone, 24 * 60 * 60 * 1000);
+    // Empty history - simulates this being the sender's first message of
+    // the brand new day, so the identity line is also due, same turn as
+    // the greeting and the bridge.
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Good morning, Subhadip HR', isGroup: false, history: [] });
+    const expected = 'Good morning! Ami SUBH, Subhodeep-er HR Assistant. Gotokal-er duty ar chhutti-r bishoy-ta niye bolchhi — Apni ki Subhodeep Kundu Chowdhury (HR department)-er kotha bolchhen?';
+    const ok = d.replyText === expected
+      && (d.replyText.match(/Ami SUBH/g) || []).length === 1
+      && (d.replyText.match(/Good morning!/g) || []).length === 1;
+    await cleanupHrFlowArtifacts(phone, SUBHODEEP_KC_PHONE);
+    return ok;
+  });
+  await checkAsync('INTERACTION CHECK 3a: a bare name continuing the flow after a gap is never mistaken for a new topic - the flow is still alive afterwards (now awaiting the yes/no confirm), not quietly closed', async () => {
+    const phone = '910000000942';
+    await cleanupHrFlowArtifacts(phone, SUBHODEEP_KC_PHONE);
+    await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Ajke amake duty korte bola hoyechhe, ar er bodole onno din chhutti nite bola hoyechhe', isGroup: false, history: [] });
+    await backdateHrFlowLastTouch(phone, 24 * 60 * 60 * 1000);
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Subhodeep chowdhury', isGroup: false, history: [] });
+    const pending = await whatsappAssistant.getPendingHrNoteFlow(phone);
+    const ok = d.replyText.includes('Gotokal-er') && d.replyText.includes('Apni ki Subhodeep Kundu Chowdhury')
+      && Boolean(pending) && pending.step === 'awaiting_confirm_yes_no';
+    await cleanupHrFlowArtifacts(phone, SUBHODEEP_KC_PHONE);
+    return ok;
+  });
+  await checkAsync('INTERACTION CHECK 3b: a bare "1" picking between 2+ disambiguation candidates after a gap is never mistaken for a new topic - it resolves the SAME WAY a gap-free "1" would, with the bridge line added', async () => {
+    const phone = '910000000943';
+    await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
+    await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Ajke amake duty korte bola hoyechhe, ar er bodole onno din chhutti nite bola hoyechhe', isGroup: false, history: [] });
+    await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Tanmoy bolechhen amake', isGroup: false, history: [] });
+    await backdateHrFlowLastTouch(phone, 24 * 60 * 60 * 1000);
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: '1', isGroup: false, history: [] });
+    const pending = await whatsappAssistant.getPendingHrNoteFlow(phone);
+    const confirmations = (await whatsappAssistant.listAllHrConfirmations()).filter((c) => c.senderPhone === phone);
+    const ok = d.replyText.includes('Gotokal-er') && d.replyText.includes('Tanmoy Mondal-er sathe kotha bole')
+      && pending === null && confirmations.length === 1 && confirmations[0].thirdPartyName === 'Tanmoy Mondal';
+    await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
+    return ok;
+  });
+  await checkAsync('INTERACTION CHECK 3c: a bare "Haa" (yes) confirming after a gap of SEVERAL days is never mistaken for a new topic - it finalizes exactly like a gap-free "Haa" would, with the "a few days ago" bridge wording (not "yesterday")', async () => {
+    const phone = '910000000944';
+    await cleanupHrFlowArtifacts(phone, SUBHODEEP_KC_PHONE);
+    await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Ajke amake duty korte bola hoyechhe, ar er bodole onno din chhutti nite bola hoyechhe', isGroup: false, history: [] });
+    await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Subhadip HR', isGroup: false, history: [] });
+    await backdateHrFlowLastTouch(phone, 3 * 24 * 60 * 60 * 1000);
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Haa', isGroup: false, history: [] });
+    const pending = await whatsappAssistant.getPendingHrNoteFlow(phone);
+    const confirmations = (await whatsappAssistant.listAllHrConfirmations()).filter((c) => c.senderPhone === phone);
+    const ok = d.replyText.includes('Kodin age-r') && d.replyText.includes('Subhodeep Kundu Chowdhury-er sathe kotha bole')
+      && pending === null && confirmations.length === 1 && confirmations[0].thirdPartyName === 'Subhodeep Kundu Chowdhury';
+    await cleanupHrFlowArtifacts(phone, SUBHODEEP_KC_PHONE);
+    return ok;
+  });
+
+  console.log('='.repeat(70));
   console.log('LIVE TEST FIXES item 5: a time-of-day greeting in the sender\'s message (Good morning/afternoon/evening/night, Shubho sokal/Suprabhat/Shubho sondhya/Shubho ratri, any spelling/case) is echoed back FIRST (identity line, then the normal reply) - once per greeting type per sender per calendar day, "Good night" at the END instead, and a bare greeting-only message is left unchanged (never double-greeted)');
   console.log('='.repeat(70));
   check('detectTimeGreeting recognizes "Good morning" anywhere in a longer message (not anchored to the whole message, unlike isGreetingOnly)', whatsappAssistant.detectTimeGreeting('Good morning Sir, ajke amake duty korte boleche').type === 'morning');
@@ -1251,6 +1366,26 @@ async function checkAsync(label, fn) {
     const { Redis } = require('@upstash/redis');
     return new Redis({ url: process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL, token: process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN });
   }
+  // catchUpAfterGap's own scheduleAutoSend call generates its queue
+  // entry's id internally (never returned to the caller), and its own
+  // 2-4s random human-like delay means the entry isn't actually DUE the
+  // instant it's queued - real API latency from the classification call
+  // usually (but not reliably) covers that gap by the time a test calls
+  // processDueAutoSends next, found live to occasionally NOT be enough
+  // and silently skip the flush. Finds whichever queued entry belongs to
+  // this chatId and forces its score into the past, the same fix already
+  // used for the directly-scheduled (non-catch-up) delayed-send tests.
+  async function forceAutosendDue(chatId) {
+    const redis = await getRawRedisClient();
+    const ids = await redis.zrange('wa-pending-autosend-zset', 0, -1);
+    for (const id of ids) {
+      const raw = await redis.get('wa-pending-autosend:' + id);
+      const entry = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      if (entry && entry.chatId === chatId) {
+        await redis.zadd('wa-pending-autosend-zset', { score: Date.now() - 1000, member: id });
+      }
+    }
+  }
   async function cleanupCatchupFixtures(...phones) {
     try {
       const redis = await getRawRedisClient();
@@ -1330,30 +1465,71 @@ async function checkAsync(label, fn) {
       await cleanupCatchupFixtures(CATCHUP_MANUAL, CATCHUP_BURST, CATCHUP_STALE);
     }
   });
-  await checkAsync('a reply to a backlog whose oldest message is a short (5-30 min) delay opens with a short apology in the sender\'s own language, never mixed into the classified text itself', async () => {
+  await checkAsync('a reply to a backlog whose oldest message is a 10-30 min delay (correction: exact wording, never under 10 min) opens with a short apology in the sender\'s own language, never mixed into the classified text itself', async () => {
     const now = Date.now();
     await whatsappAssistant.setLastSeenId(CATCHUP_APOLOGY, 400);
     const originalListMessages = whatsapp.listMessages;
     whatsapp.listMessages = async (contactId) => {
       if (contactId === CATCHUP_APOLOGY) {
-        return [{ id: 401, direction: 'incoming', type: 'text', content: { text: 'Amar attendance thik ache kina bolben?' }, created_at: new Date(now - 10 * 60000).toISOString() }];
+        return [{ id: 401, direction: 'incoming', type: 'text', content: { text: 'Amar attendance thik ache kina bolben?' }, created_at: new Date(now - 15 * 60000).toISOString() }];
       }
       return [];
     };
     try {
       await withCatchupHarness(20 * 60000, () => whatsappAssistant.catchUpAfterGap('test'));
       // The actual reply is only QUEUED by catchUpAfterGap (scheduleAutoSend,
-      // a 2-4s random human-like delay) - processDueAutoSends flushes it
-      // immediately rather than waiting on the real delay, same pattern
-      // this file already uses elsewhere for anything going through that
-      // same queue.
+      // a 2-4s random human-like delay) - force it due rather than relying
+      // on incidental classification-call latency to have covered that
+      // gap by now (found flaky when it didn't).
+      await forceAutosendDue(CATCHUP_APOLOGY);
       await whatsappAssistant.processDueAutoSends();
       const log = await whatsappAssistant.listInboxLog(20);
       const entry = log.find((e) => e.chatId === CATCHUP_APOLOGY);
-      return Boolean(entry) && Boolean(entry.sentText) && /dukkhito|sorry|maaf/i.test(entry.sentText);
+      // Exact deterministic prefix - the rest of the reply is AI-drafted
+      // (not predictable word-for-word), so only the apology opener
+      // itself is checked exactly, same as every other such check here.
+      return Boolean(entry) && Boolean(entry.sentText) && entry.sentText.startsWith('Derite reply korar jonno dukkhito. ');
     } finally {
       whatsapp.listMessages = originalListMessages;
       await cleanupCatchupFixtures(CATCHUP_APOLOGY);
+    }
+  });
+  await checkAsync('CORRECTION: a backlog delayed under 10 minutes gets NO apology at all - the 10-minute floor is a hard boundary, not "the sooner the better"', async () => {
+    const now = Date.now();
+    const CATCHUP_NO_APOLOGY = '910000000902';
+    await whatsappAssistant.setLastSeenId(CATCHUP_NO_APOLOGY, 450);
+    const originalListMessages = whatsapp.listMessages;
+    whatsapp.listMessages = async (contactId) => (contactId === CATCHUP_NO_APOLOGY
+      ? [{ id: 451, direction: 'incoming', type: 'text', content: { text: 'Amar attendance thik ache kina bolben?' }, created_at: new Date(now - 6 * 60000).toISOString() }]
+      : []);
+    try {
+      await withCatchupHarness(15 * 60000, () => whatsappAssistant.catchUpAfterGap('test'));
+      await forceAutosendDue(CATCHUP_NO_APOLOGY);
+      await whatsappAssistant.processDueAutoSends();
+      const log = await whatsappAssistant.listInboxLog(20);
+      const entry = log.find((e) => e.chatId === CATCHUP_NO_APOLOGY);
+      return Boolean(entry) && Boolean(entry.sentText) && !/dukkhito|sorry for the late|maafi chahta/i.test(entry.sentText);
+    } finally {
+      whatsapp.listMessages = originalListMessages;
+      await cleanupCatchupFixtures(CATCHUP_NO_APOLOGY);
+    }
+  });
+  await checkAsync('CORRECTION: the SAME 10-30 min apology also applies to the normal delayed-send queue (not just a combined catch-up backlog) - a decision that sits queued 15 minutes before finally being flushed opens with the exact apology line', async () => {
+    const phone = '910000000903';
+    const now = Date.now();
+    const arrivedAt = now - 15 * 60000;
+    const scheduled = await whatsappAssistant.scheduleAutoSend({ chatId: phone, isGroup: false, name: 'Test', replyText: "I'm SUBH, Subhodeep's HR Assistant. This is the normal reply text.", case: 'holding', arrivedAt, seenAt: arrivedAt });
+    try {
+      const redis = await getRawRedisClient();
+      await redis.zadd('wa-pending-autosend-zset', { score: Date.now() - 1000, member: scheduled.id });
+      await whatsappAssistant.processDueAutoSends();
+      const log = await whatsappAssistant.listInboxLog(20);
+      const entry = log.find((e) => e.chatId === phone);
+      return Boolean(entry) && entry.sentText === 'Sorry for the late reply. ' + "I'm SUBH, Subhodeep's HR Assistant. This is the normal reply text.";
+    } finally {
+      const redis = await getRawRedisClient();
+      await redis.del('wa-pending-autosend:' + scheduled.id).catch(() => {});
+      await redis.zrem('wa-pending-autosend-zset', scheduled.id).catch(() => {});
     }
   });
   await checkAsync('LIVE INCIDENT FIX: the auto-reply cutoff is now 30 minutes (lowered from 12h) - a 45-minute-old backlog NEVER auto-replies any more, only ever goes to the "missed while disconnected" review queue', async () => {

@@ -37,6 +37,11 @@ async function create(fields) {
 }
 
 async function main() {
+  // Starts a local, throwaway fake of the Upstash REST API and points
+  // every Redis-client-constructing module at it for this process only -
+  // see testBootstrap.js's own comment. Pass ALLOW_LIVE=1 to use the
+  // real configured store instead (never the default).
+  await require('./testBootstrap').setupTestEnvironment();
   const now = new Date('2026-10-15T06:00:00.000Z'); // a fixed instant - simulated clock throughout
 
   console.log('='.repeat(70));

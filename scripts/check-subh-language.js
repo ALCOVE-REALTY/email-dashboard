@@ -16,10 +16,11 @@ const { detectMessageLanguage } = require('../src/aiAssistant/languageDetect');
 const { assertSyntheticPhone } = require('./testRedisNamespace');
 const { Redis } = require('@upstash/redis');
 
-const redis = new Redis({
-  url: process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL,
-  token: process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN
-});
+// Constructed inside main(), AFTER the test-environment bootstrap has had
+// a chance to point KV_REST_API_URL/TOKEN at the local fake store - a
+// client built here, at require time, would permanently bake in whatever
+// (real) values happened to be in process.env before that bootstrap runs.
+let redis;
 const INBOX_LOG_KEY = 'wa-inbox-log';
 const OWNER_EMAIL = process.env.SUBH_MEMORY_OWNER_EMAIL;
 
@@ -224,6 +225,15 @@ async function cleanupSyntheticApprovals() {
 }
 
 async function main() {
+  // Starts a local, throwaway fake of the Upstash REST API and points
+  // every Redis-client-constructing module at it for this process only -
+  // see testBootstrap.js's own comment. Pass ALLOW_LIVE=1 to use the
+  // real configured store instead (never the default).
+  await require('./testBootstrap').setupTestEnvironment();
+  redis = new Redis({
+    url: process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL,
+    token: process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN
+  });
   // Cleanup (both inbox entries AND any synthetic approval this run's
   // data-request samples create) now runs in `finally`, not after the
   // last line of the test body - found live: the anti-repeat block below

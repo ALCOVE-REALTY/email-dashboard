@@ -1066,6 +1066,20 @@ async function sendOrReportAutoReply(entry) {
     }
   }
 
+  // Correction (direct instruction) - a queued reply that ends up going
+  // out 10-30 minutes late (short of the 30-min stale cutoff above, which
+  // never sends at all) opens with a short apology in the sender's own
+  // language, exact wording given - never under 10 minutes, matching
+  // catchUpAfterGap's own identical apology window for a combined
+  // backlog reply (CATCHUP_APOLOGY_THRESHOLD_MS/CATCHUP_APOLOGY_LINE).
+  if (entry.arrivedAt && entry.replyText) {
+    const lateMs = Date.now() - entry.arrivedAt;
+    if (lateMs > CATCHUP_APOLOGY_THRESHOLD_MS) {
+      const lang = entry.lang || detectLang(entry.replyText);
+      entry.replyText = (CATCHUP_APOLOGY_LINE[lang] || CATCHUP_APOLOGY_LINE.english) + entry.replyText;
+    }
+  }
+
   async function alertIfSlow(sentAt) {
     if (!entry.arrivedAt) return;
     const latencyMs = sentAt - entry.arrivedAt;
@@ -5901,13 +5915,17 @@ async function listBurstBufferContactIds() {
 // some other reason in the future. Lowered from 12h to 30 minutes per
 // direct instruction either way - anything older never auto-replies any
 // more, only ever goes to the "missed while disconnected" review queue.
-const CATCHUP_APOLOGY_THRESHOLD_MS = 5 * 60 * 1000;
+// Correction (direct instruction): the apology window is 10-30 minutes
+// late specifically (never under 10, never at/past the 30-min stale
+// cutoff below, where it's never sent at all any more) - exact wording
+// given, not a paraphrase.
+const CATCHUP_APOLOGY_THRESHOLD_MS = 10 * 60 * 1000;
 const CATCHUP_STALE_THRESHOLD_MS = 30 * 60 * 1000;
 const CATCHUP_FETCH_MAX_LIMIT = 200;
 const CATCHUP_APOLOGY_LINE = {
-  banglish: 'Deri-r jonno dukkhito. ',
-  hinglish: 'Der ke liye maaf kijiye. ',
-  english: 'Sorry for the delay. '
+  banglish: 'Derite reply korar jonno dukkhito. ',
+  hinglish: 'Der se reply karne ke liye maafi chahta hoon. ',
+  english: 'Sorry for the late reply. '
 };
 // The gap this pass is allowed to look at - computed FRESH on every call,
 // never trusted as "whatever wa-last-seen says relative to right now"
