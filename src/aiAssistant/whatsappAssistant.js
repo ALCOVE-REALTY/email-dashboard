@@ -1907,6 +1907,17 @@ const NAME_CONFIRM_RETRY = {
   hinglish: 'Theek hai, aap kiske baare mein baat kar rahe hain? Pura naam bataiyega?',
   english: 'Okay, who did you mean? Could you give me the full name?'
 };
+// Live review (917278793115) point 3 - when extractPersonReference
+// genuinely can't tell whether a message is answering SUBH's pending
+// HR-flow question or raising something new, SUBH asks once rather than
+// guessing either way (guessing "yes, continue" risks messaging a third
+// party about the wrong thing; guessing "no" risks silently dropping a
+// real continuation).
+const HR_FLOW_CONTEXT_CLARIFY = {
+  banglish: 'Ektu bujhte parlam na - eta ki amar age-r proshno-r uttor, naki alada kichu bolchhen?',
+  hinglish: 'Thoda samajh nahi paya - yeh mere pichhle sawaal ka jawab hai, ya kuch alag bata rahe hain?',
+  english: "I'm not sure if that's answering my last question or something else - could you clarify?"
+};
 // Live review item 1 (found live: "Haa" - a very common spelling - fell
 // through unmatched, cleared the pending confirm, and reached the
 // free-form AI drafter, which answered in English about "general
@@ -3077,6 +3088,7 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
     if (NAME_CONFIRM_YES_RE.test(t)) {
       return finalizeHrNoteThirdParty({ phone, senderName: name, lang, candidate: hrFlow.candidate, summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, createdAt: hrFlow.createdAt, history });
     }
+    const pendingQuestionLabel = (NAME_CONFIRM_QUESTION[lang] || NAME_CONFIRM_QUESTION.english)(hrFlow.candidate.name, hrFlow.candidate.department);
     if (NAME_CONFIRM_NO_RE.test(t)) {
       // Live review item 2 (found live: "Naa..Suvodip HR er kotha
       // bolchi" already named someone new in the SAME "no" message, but
@@ -3084,17 +3096,36 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
       // try extracting a name from whatever follows the no-marker before
       // falling back to a plain re-ask.
       const remainder = t.replace(NAME_CONFIRM_NO_RE, '').replace(/^[\s.,!-]+/, '');
-      const extracted = remainder ? await extractPersonReference(remainder) : { personName: null, hint: null };
+      const extracted = remainder ? await extractPersonReference(remainder, { pendingQuestionLabel, history }) : { personName: null, hint: null, isAmbiguous: false };
+      if (extracted.isAmbiguous) {
+        return { case: 'acknowledged', replyText: HR_FLOW_CONTEXT_CLARIFY[lang] || HR_FLOW_CONTEXT_CLARIFY.english, summaryForOwner: null, lang };
+      }
       if (extracted.personName) {
         return resolveHrNoteThirdParty({ phone, name, lang, personName: extracted.personName, department: extracted.hint, summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, createdAt: hrFlow.createdAt, history });
+      }
+      if (remainder) {
+        // The "No" cancelled the old candidate, but the remainder is a
+        // new, unrelated topic of its own, not a corrected name (live
+        // review, 917278793115) - close this flow quietly rather than
+        // re-asking for a name nobody is trying to give.
+        await clearPendingHrNoteFlow(phone);
+        return null;
       }
       await savePendingHrNoteFlow(phone, { summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, lang, createdAt: hrFlow.createdAt, step: 'awaiting_name' });
       return { case: 'acknowledged', replyText: NAME_CONFIRM_RETRY[lang] || NAME_CONFIRM_RETRY.english, summaryForOwner: null, lang };
     }
     // Neither a yes nor a no word - the sender may simply have answered
-    // with a different/corrected name instead. Try extracting one from
-    // the whole message before giving up on this flow entirely.
-    const extracted = await extractPersonReference(t);
+    // with a different/corrected name instead, OR this may be a brand
+    // new, unrelated message that merely happens to mention a name (live
+    // review, 917278793115: "Ayon HR k?" asked while this exact step was
+    // pending got its name extracted and wrongly treated as a correction
+    // to THIS flow, which went on to message a real employee about the
+    // wrong thing). extractPersonReference now decides context-binding
+    // itself, given SUBH's own pending question here.
+    const extracted = await extractPersonReference(t, { pendingQuestionLabel, history });
+    if (extracted.isAmbiguous) {
+      return { case: 'acknowledged', replyText: HR_FLOW_CONTEXT_CLARIFY[lang] || HR_FLOW_CONTEXT_CLARIFY.english, summaryForOwner: null, lang };
+    }
     if (extracted.personName) {
       return resolveHrNoteThirdParty({ phone, name, lang, personName: extracted.personName, department: extracted.hint, summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, createdAt: hrFlow.createdAt, history });
     }
@@ -3102,7 +3133,10 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
     return null;
   }
   // awaiting_name
-  const { personName, hint } = await extractPersonReference(text);
+  const { personName, hint, isAmbiguous } = await extractPersonReference(text, { pendingQuestionLabel: HR_NOTE_ASK_WHO_INSTRUCTED[lang] || HR_NOTE_ASK_WHO_INSTRUCTED.english, history });
+  if (isAmbiguous) {
+    return { case: 'acknowledged', replyText: HR_FLOW_CONTEXT_CLARIFY[lang] || HR_FLOW_CONTEXT_CLARIFY.english, summaryForOwner: null, lang };
+  }
   if (personName) {
     return resolveHrNoteThirdParty({ phone, name, lang, personName, department: hint, summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, createdAt: hrFlow.createdAt, history });
   }
@@ -4615,28 +4649,63 @@ function isInformal(text, lang) {
 // rather than cramming this into classifyTool, since this is only ever
 // relevant while a pendingHrNoteAwaitingName state is open, not on every
 // message.
+// Live review (917278793115, real incident) - this used to just extract a
+// name from whatever the sender said next with NO notion of whether that
+// message was actually ANSWERING SUBH's own pending question at all. A
+// brand new, unrelated question that happened to mention a name ("Ayon HR
+// k?", asked while an OLDER duty/off-day flow was still awaiting a yes/no
+// confirm) got its name extracted and silently treated as a CORRECTION to
+// the old flow - which then finalized and messaged a real employee about
+// the wrong thing entirely. The tool must now decide context-binding
+// itself (spec: "answers bind to SUBH's latest question... a new question
+// is a new topic, even if it contains a name"), given SUBH's own pending
+// question and the recent conversation - not just extract whatever name
+// happens to appear.
 function extractPersonReferenceTool() {
   return {
     type: 'function',
     function: {
       name: 'extract_person_reference',
-      description: 'The sender was just asked who gave them an instruction. Extract the person\'s name from their reply, and any department/site/designation hint about them.',
+      description: 'SUBH has a PENDING question open in this chat (given in the system prompt). Decide whether the sender\'s new message is actually ANSWERING that pending question (naming/correcting who they mean, confirming, or declining to say), or whether it is a different, new question/request/topic of its own - even if it happens to mention a name. A message that itself asks something or raises an unrelated subject is a NEW topic, never an answer, regardless of whether a name appears in it. A greeting, "sir"/"please", or other pure filler/politeness word attached to an otherwise clear answer does NOT change this - judge by the message\'s actual content, e.g. "Good morning, Subhadip HR" is still just answering with the name "Subhadip HR", exactly like "Subhadip HR" alone would.',
       parameters: {
         type: 'object',
         properties: {
-          personName: { type: 'string', description: 'The person\'s name exactly as given - first name alone is fine. Omit entirely if the message genuinely names no one (e.g. they declined to say, or asked something else instead).' },
-          hint: { type: 'string', description: 'A department/site/designation hint about that person, if one was given (e.g. "Srirampur site", "HR department"). Omit if none was mentioned.' }
-        }
+          isAnswerToPendingQuestion: { type: 'boolean', description: 'true ONLY if this message is actually answering SUBH\'s pending question above. false for a message that itself asks a question, makes a different request, or raises an unrelated subject - even one that happens to mention a name (e.g. "Ayon HR k?" asking who Ayon in HR is, is NOT an answer to an unrelated pending question, even though it names "Ayon"). A greeting or politeness word mixed in with a clear answer (e.g. "Good morning, Subhadip HR") does NOT make this false - that is still an answer.' },
+          personName: { type: 'string', description: 'The person\'s name exactly as given - first name alone is fine. Only set when isAnswerToPendingQuestion is true. Omit entirely otherwise, or if they genuinely named no one (e.g. they declined to say).' },
+          hint: { type: 'string', description: 'A department/site/designation hint about that person, if one was given (e.g. "Srirampur site", "HR department"). Omit if none was mentioned.' },
+          isAmbiguous: { type: 'boolean', description: 'true ONLY if, after setting aside any greeting/filler, you genuinely cannot tell whether the message\'s actual content answers the pending question or raises something new - this should be RARE. A message that clearly contains a name/confirmation/decline, even alongside a greeting, is NOT ambiguous - set isAnswerToPendingQuestion instead. When true, SUBH will ask a short clarifying question instead of guessing either way.' }
+        },
+        required: ['isAnswerToPendingQuestion']
       }
     }
   };
 }
-async function extractPersonReference(text) {
+// `context.pendingQuestionLabel` is the exact question SUBH is currently
+// waiting on an answer to (verbatim, in the sender's own language) -
+// `context.history` is the recent conversation, for the same "resolve a
+// context-dependent follow-up from history" reason classifyOfficialMessage
+// takes it. Fails CLOSED (isAnswerToPendingQuestion: false, no name) on
+// any API error - a safety-critical context-binding decision must never
+// silently default to "yes, continue the flow" (and risk messaging a
+// third party about the wrong thing) just because a call failed; every
+// existing caller already treats "no personName" as "not a continuation"
+// and quietly closes the flow, which is the safe side to fail toward.
+async function extractPersonReference(text, context) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey || !DRAFT_MODEL) return { personName: null, hint: null };
+  const fallback = { personName: null, hint: null, isAnswerToPendingQuestion: false, isAmbiguous: false };
+  if (!apiKey || !DRAFT_MODEL) return fallback;
   const toolDef = extractPersonReferenceTool().function;
-  const input = await callClaudeForcedTool(apiKey, DRAFT_MODEL, [{ role: 'user', content: text }], toolDef.name, toolDef).catch(() => null);
-  return { personName: (input && input.personName) || null, hint: (input && input.hint) || null };
+  const pendingQuestionLabel = (context && context.pendingQuestionLabel) || 'who gave them this instruction';
+  const historyBlock = formatHistoryBlock((context && context.history) || []);
+  const systemPrompt = 'SUBH (an HR WhatsApp assistant) is waiting on an answer to its own question in this chat: "' + pendingQuestionLabel + '"' + (historyBlock ? '\n\n' + historyBlock : '');
+  const input = await callClaudeForcedTool(apiKey, DRAFT_MODEL, [{ role: 'system', content: systemPrompt }, { role: 'user', content: text }], toolDef.name, toolDef).catch(() => null);
+  if (!input) return fallback;
+  return {
+    personName: (input.isAnswerToPendingQuestion && input.personName) || null,
+    hint: (input.isAnswerToPendingQuestion && input.hint) || null,
+    isAnswerToPendingQuestion: Boolean(input.isAnswerToPendingQuestion),
+    isAmbiguous: Boolean(input.isAmbiguous)
+  };
 }
 
 function classifyTool() {
@@ -6675,6 +6744,7 @@ module.exports = {
   workingHoursElapsedSince,
   isPastEndOfDayIst,
   extractPersonReference,
+  HR_FLOW_CONTEXT_CLARIFY,
   SENIOR_DESIGNATION_RE,
   queuePersonFieldApproval,
   tenureLabel,

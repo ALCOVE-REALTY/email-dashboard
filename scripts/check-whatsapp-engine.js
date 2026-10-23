@@ -1251,6 +1251,78 @@ async function checkAsync(label, fn) {
   });
 
   console.log('='.repeat(70));
+  console.log('LIVE REVIEW (917278793115, real incident): a brand new question/request that merely MENTIONS a name is never treated as an answer to an OLDER pending HR-flow question, even though the reply wording can be identical ("Apni ki <Name> (<Dept>)-er kotha bolchhen?" for both a genuine HR-flow name-confirm and a harmless general-details lookup) - context-binding, never keyword-matching alone, decides which pending question an answer belongs to; third-party safety follows automatically from this, with no change to any reply wording');
+  console.log('='.repeat(70));
+  const AYAN_DAS_PHONE = whatsapp.normalizePhone('6291969575'); // real directory record - ACTIVE, HR DEPT, Ayan Das
+  await checkAsync('replay the exact incident: a pending duty/off-day flow awaiting "Haa"/"Na" for Subhodeep Kundu Chowdhury is NOT hijacked by an unrelated new question ("Ayon HR k?") that happens to name someone else - the old flow closes quietly, the new question gets answered on its own safe merits (general-details lookup, directly or via its own confirm step - never the old flow), and NO third-party message is ever sent as a result of this exchange, not for Subhodeep Kundu Chowdhury and not for Ayan Das', async () => {
+    const phone = '910000000960';
+    // SUBHODEEP_KC_PHONE/AYAN_DAS_PHONE are real, shared employee fixtures
+    // messaged as a "manager" by several OTHER tests earlier in this same
+    // suite run - the inbox log itself is never cleared by
+    // cleanupHrFlowArtifacts (only pending state/confirmations are), so an
+    // unscoped log search would also match an unrelated EARLIER test's own
+    // legitimate send. Only an hr_confirmation_sent entry created AFTER
+    // this test starts could possibly be caused by it.
+    const testStartedAt = Date.now();
+    await cleanupHrFlowArtifacts(phone, SUBHODEEP_KC_PHONE, AYAN_DAS_PHONE);
+    // Morning: reaches the exact pending state from the incident report -
+    // awaiting_confirm_yes_no for Subhodeep Kundu Chowdhury, no answer yet.
+    await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Ajke amake duty korte bola hoyechhe, ar er bodole onno din chhutti nite bola hoyechhe', isGroup: false, history: [] });
+    await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Subhadip HR', isGroup: false, history: [] });
+    const pendingBefore = await whatsappAssistant.getPendingHrNoteFlow(phone);
+    const stepOk = Boolean(pendingBefore) && pendingBefore.step === 'awaiting_confirm_yes_no' && pendingBefore.candidate.name === 'Subhodeep Kundu Chowdhury';
+    // Afternoon: an unrelated new question that happens to name someone else.
+    // The exact shape of the reply here (a direct general-details answer, or
+    // its own "is it this person?" confirm step first) depends on the
+    // classifier's own typo/fuzzy-match confidence for "Ayon" - either way
+    // is safe, so only the invariant that matters is asserted: the stale
+    // duty/off-day flow for Subhodeep Kundu Chowdhury is gone, and this
+    // reply is about Ayan Das, never the old flow's own thank-you wording.
+    const d3 = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Ayon HR k?', isGroup: false, history: [] });
+    const pendingAfterQuestion = await whatsappAssistant.getPendingHrNoteFlow(phone);
+    const questionOk = pendingAfterQuestion === null
+      && d3.replyText.includes('Ayan Das')
+      && !d3.replyText.includes('kotha bole joto taratari somvob'); // never the HR-flow's own "I'll speak with them" thank-you wording
+    // Whatever d3 was (direct answer or its own confirm question), "Haa"
+    // must never resolve to messaging anyone about the ORIGINAL duty/off-day
+    // note - that would mean the old flow got silently resurrected.
+    const d4 = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Haa', isGroup: false, history: [] });
+    const log = await whatsappAssistant.listInboxLog(20);
+    const wrongfulThirdPartyMessage = log.find((e) => e.case === 'hr_confirmation_sent' && (e.chatId === AYAN_DAS_PHONE || e.chatId === SUBHODEEP_KC_PHONE) && (e.sentAt || e.ts || 0) >= testStartedAt);
+    const confirmations = (await whatsappAssistant.listAllHrConfirmations()).filter((c) => c.senderPhone === phone);
+    const answerOk = !wrongfulThirdPartyMessage && confirmations.length === 0
+      && !d4.replyText.includes('Subhodeep Kundu Chowdhury') && !d4.replyText.includes('kotha bole joto taratari somvob');
+    await cleanupHrFlowArtifacts(phone, SUBHODEEP_KC_PHONE, AYAN_DAS_PHONE);
+    return stepOk && questionOk && answerOk;
+  });
+  await checkAsync('a PROPER flow naming Ayan Das still works end to end exactly as before (no reply wording changed by the fix): STEP1 asks who, a bare "Ayan HR" (no question form) resolves to the yes/no confirm, "Haa" finalizes and messages Ayan Das', async () => {
+    const phone = '910000000961';
+    await cleanupHrFlowArtifacts(phone, AYAN_DAS_PHONE);
+    await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Ajke amake duty korte bola hoyechhe. Tar poriborte onno din chhutti nite bola hoyechhe.', isGroup: false, history: [] });
+    const pendingAfter1 = await whatsappAssistant.getPendingHrNoteFlow(phone);
+    const d2 = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Ayan HR', isGroup: false, history: [] });
+    const pendingAfter2 = await whatsappAssistant.getPendingHrNoteFlow(phone);
+    await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Haa', isGroup: false, history: [] });
+    const log = await whatsappAssistant.listInboxLog(20);
+    const mgrEntry = log.find((e) => e.chatId === AYAN_DAS_PHONE && e.case === 'hr_confirmation_sent');
+    const confirmations = (await whatsappAssistant.listAllHrConfirmations()).filter((c) => c.senderPhone === phone);
+    const ok = Boolean(pendingAfter1) && pendingAfter1.step === 'awaiting_name'
+      && d2.replyText.includes('Apni ki Ayan Das (HR department)-er kotha bolchhen?')
+      && Boolean(pendingAfter2) && pendingAfter2.step === 'awaiting_confirm_yes_no' && pendingAfter2.candidate.name === 'Ayan Das'
+      && Boolean(mgrEntry) && confirmations.length === 1 && confirmations[0].thirdPartyName === 'Ayan Das' && confirmations[0].status === 'awaiting_manager';
+    await cleanupHrFlowArtifacts(phone, AYAN_DAS_PHONE);
+    return ok;
+  });
+  await checkAsync('extractPersonReference (unit): a brand new question mentioning a name is never treated as an answer, even to an "awaiting_name" pending question', async () => {
+    const r = await whatsappAssistant.extractPersonReference('Ayon HR k?', { pendingQuestionLabel: 'Apnake ei instruction-ta ke diyechhen?', history: [] });
+    return r.isAnswerToPendingQuestion === false && !r.personName;
+  });
+  await checkAsync('extractPersonReference (unit): a bare name+hint with no question form still counts as an answer (spec: "bare names... without a question form still count as answers")', async () => {
+    const r = await whatsappAssistant.extractPersonReference('Ayan HR', { pendingQuestionLabel: 'Apnake ei instruction-ta ke diyechhen?', history: [] });
+    return r.isAnswerToPendingQuestion === true && r.personName === 'Ayan';
+  });
+
+  console.log('='.repeat(70));
   console.log('LIVE TEST FIXES item 5: a time-of-day greeting in the sender\'s message (Good morning/afternoon/evening/night, Shubho sokal/Suprabhat/Shubho sondhya/Shubho ratri, any spelling/case) is echoed back FIRST (identity line, then the normal reply) - once per greeting type per sender per calendar day, "Good night" at the END instead, and a bare greeting-only message is left unchanged (never double-greeted)');
   console.log('='.repeat(70));
   check('detectTimeGreeting recognizes "Good morning" anywhere in a longer message (not anchored to the whole message, unlike isGreetingOnly)', whatsappAssistant.detectTimeGreeting('Good morning Sir, ajke amake duty korte boleche').type === 'morning');
