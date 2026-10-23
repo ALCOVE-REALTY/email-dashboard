@@ -992,6 +992,68 @@ async function checkAsync(label, fn) {
   });
 
   console.log('='.repeat(70));
+  console.log('LIVE TEST FIXES item 4 CORRECTION: the HR-note flow survives up to 7 days of inactivity (not just end of day) - a continuation after a day-or-more gap gets a brief bridge line back to the topic first, a clearly different topic in between closes the flow quietly with no "unfinished" alert, and the already-saved note itself is untouched either way');
+  console.log('='.repeat(70));
+  check('calendarDaysBetweenIst treats the same IST calendar day as 0, and the next calendar day as 1, regardless of exact hour', whatsappAssistant.calendarDaysBetweenIst(new Date('2026-10-22T20:00:00+05:30'), new Date('2026-10-22T23:00:00+05:30')) === 0 && whatsappAssistant.calendarDaysBetweenIst(new Date('2026-10-22T23:50:00+05:30'), new Date('2026-10-23T00:10:00+05:30')) === 1);
+  check('buildHrFlowGapBridge (Banglish, 1 day) matches the exact spec wording', whatsappAssistant.buildHrFlowGapBridge('banglish', 'duty ar chhutti', 1) === 'Gotokal-er duty ar chhutti-r bishoy-ta niye bolchhi — ');
+  check('buildHrFlowGapBridge (Banglish, several days) uses the "a few days ago" wording instead of "yesterday"', whatsappAssistant.buildHrFlowGapBridge('banglish', 'duty ar chhutti', 4).startsWith('Kodin age-r'));
+  await checkAsync('name answer arriving the NEXT DAY: the flow is still alive (no end-of-day expiry any more), resolves normally, and the reply opens with a brief bridge back to the topic', async () => {
+    const phone = '910000000930';
+    await cleanupHrFlowArtifacts(phone, SUBHODEEP_KC_PHONE);
+    await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Ajke amake duty korte bola hoyechhe, ar er bodole onno din chhutti nite bola hoyechhe', isGroup: false, history: [] });
+    // Simulate "the next day" by backdating the flow's own lastTouchedAt -
+    // savePendingHrNoteFlow always stamps the real current time, so the
+    // test adjusts the stored record directly afterwards, the only way to
+    // simulate a multi-day gap without actually waiting one.
+    const { Redis } = require('@upstash/redis');
+    const redis = new Redis({ url: process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL, token: process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN });
+    const raw = await redis.get('wa-pending-hr-note-flow:' + phone);
+    const flow = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    flow.lastTouchedAt = Date.now() - 24 * 60 * 60 * 1000;
+    await redis.set('wa-pending-hr-note-flow:' + phone, JSON.stringify(flow), { ex: 7 * 24 * 60 * 60 });
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Subhadip HR', isGroup: false, history: [] });
+    const pending = await whatsappAssistant.getPendingHrNoteFlow(phone);
+    const ok = d.replyText.includes('Gotokal-er') && d.replyText.includes('bishoy-ta niye bolchhi')
+      && d.replyText.includes('Apni ki Subhodeep Kundu Chowdhury (HR department)-er kotha bolchhen?')
+      && Boolean(pending) && pending.step === 'awaiting_confirm_yes_no';
+    await cleanupHrFlowArtifacts(phone, SUBHODEEP_KC_PHONE);
+    return ok;
+  });
+  await checkAsync('SAME-DAY continuation (the overwhelmingly common case) never gets the gap-bridge line - only a cross-day gap does', async () => {
+    const phone = '910000000931';
+    await cleanupHrFlowArtifacts(phone, SUBHODEEP_KC_PHONE);
+    await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Ajke amake duty korte bola hoyechhe, ar er bodole onno din chhutti nite bola hoyechhe', isGroup: false, history: [] });
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Subhadip HR', isGroup: false, history: [] });
+    const ok = !d.replyText.includes('Gotokal') && !d.replyText.includes('Kodin age') && d.replyText.includes('Apni ki Subhodeep Kundu Chowdhury');
+    await cleanupHrFlowArtifacts(phone, SUBHODEEP_KC_PHONE);
+    return ok;
+  });
+  await checkAsync('a CLEARLY DIFFERENT topic arriving in between (never a name) closes the pending flow QUIETLY - no follow-up question, no "unfinished" alert - and the new topic is answered normally, as if no flow existed', async () => {
+    const phone = '910000000932';
+    await cleanupHrFlowArtifacts(phone);
+    await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Ajke amake duty korte bola hoyechhe, ar er bodole onno din chhutti nite bola hoyechhe', isGroup: false, history: [] });
+    const pendingBefore = await whatsappAssistant.getPendingHrNoteFlow(phone);
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Amar PF balance ta koto ache?', isGroup: false, history: [] });
+    const pendingAfter = await whatsappAssistant.getPendingHrNoteFlow(phone);
+    const ok = Boolean(pendingBefore) && pendingAfter === null
+      && !d.replyText.includes('duty') && !d.replyText.includes('chhutti') && !/unfinished|baki royeche|ashomapto/i.test(d.replyText)
+      && d.replyText.includes('PF');
+    await cleanupHrFlowArtifacts(phone);
+    return ok;
+  });
+  await checkAsync('the pending flow TTL is 7 days (not end of day) - confirmed against the real stored key', async () => {
+    const phone = '910000000933';
+    await cleanupHrFlowArtifacts(phone);
+    await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Ajke amake duty korte bola hoyechhe, ar er bodole onno din chhutti nite bola hoyechhe', isGroup: false, history: [] });
+    const { Redis } = require('@upstash/redis');
+    const redis = new Redis({ url: process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL, token: process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN });
+    const ttl = await redis.ttl('wa-pending-hr-note-flow:' + phone);
+    const ok = ttl > 6 * 24 * 60 * 60 && ttl <= 7 * 24 * 60 * 60;
+    await cleanupHrFlowArtifacts(phone);
+    return ok;
+  });
+
+  console.log('='.repeat(70));
   console.log('LIVE TEST FIXES item 5: a time-of-day greeting in the sender\'s message (Good morning/afternoon/evening/night, Shubho sokal/Suprabhat/Shubho sondhya/Shubho ratri, any spelling/case) is echoed back FIRST (identity line, then the normal reply) - once per greeting type per sender per calendar day, "Good night" at the END instead, and a bare greeting-only message is left unchanged (never double-greeted)');
   console.log('='.repeat(70));
   check('detectTimeGreeting recognizes "Good morning" anywhere in a longer message (not anchored to the whole message, unlike isGreetingOnly)', whatsappAssistant.detectTimeGreeting('Good morning Sir, ajke amake duty korte boleche').type === 'morning');

@@ -2548,11 +2548,21 @@ const SENIOR_DESIGNATION_RE = /\b(director|managing\s*director|\bmd\b|president|
 // object per sender now carries the whole in-progress HR note (summary,
 // language, current step, and whatever that step needs) until the flow
 // actually finishes, the sender is clearly asking about something else,
-// or it expires - TTL set to the remaining seconds until the END OF THE
-// CURRENT IST DAY (spec: "until it expires (end of day)"), recomputed
-// fresh on every save so a flow started at 23:50 doesn't effectively get
-// a multi-day TTL by being touched again just after midnight.
+// or it expires.
+//
+// CORRECTION (live test fixes): the flow no longer expires at end of
+// day - it now survives up to 7 days of INACTIVITY (a sliding window,
+// not a fixed deadline from when it started - every touch resets the
+// full 7 days), so a sender who answers "who told you" the next day, or
+// a few days later, still has their flow waiting. A message that
+// clearly starts a different topic still closes it quietly (the
+// existing extractPersonReference-fails-so-clear-and-fall-through
+// branches below already do this - no change needed there), and after 7
+// days with no reply at all, the Redis TTL itself closes it just as
+// quietly (the sender's next message, whenever it comes, is then simply
+// a fresh one with no flow to continue).
 const PENDING_HR_NOTE_FLOW_PREFIX = 'wa-pending-hr-note-flow:';
+const HR_NOTE_FLOW_TTL_SECONDS = 7 * 24 * 60 * 60;
 function secondsUntilEndOfIstDay(now) {
   const reminderService = require('./reminderService');
   const { year, month, day } = reminderService.istParts(now);
@@ -2560,10 +2570,25 @@ function secondsUntilEndOfIstDay(now) {
   const seconds = Math.ceil((endOfDay.getTime() - now.getTime()) / 1000);
   return Math.max(60, seconds); // never less than a minute, even right at the boundary
 }
+// Whole IST CALENDAR DAYS between two instants (0 = same day, 1 =
+// yesterday/tomorrow, etc.) - used to decide whether a continuation is
+// happening "after a gap" (a different calendar day from the flow's own
+// last touch), never a rolling-hours measure, same precedent as
+// hasIntroducedTodayIST's own calendar-day comparison elsewhere in this
+// file.
+function calendarDaysBetweenIst(d1, d2) {
+  const reminderService = require('./reminderService');
+  const toIstMidnightUtcMs = (d) => {
+    const { year, month, day } = reminderService.istParts(d);
+    return istWallClockToUtc(year, month, day, 0, 0).getTime();
+  };
+  return Math.round((toIstMidnightUtcMs(d2) - toIstMidnightUtcMs(d1)) / (24 * 60 * 60 * 1000));
+}
 async function savePendingHrNoteFlow(phone, data) {
   const redis = getClient();
   if (!redis) return;
-  try { await redis.set(PENDING_HR_NOTE_FLOW_PREFIX + phone, JSON.stringify(data), { ex: secondsUntilEndOfIstDay(new Date()) }); } catch (err) { /* best effort */ }
+  const toSave = Object.assign({}, data, { lastTouchedAt: Date.now() });
+  try { await redis.set(PENDING_HR_NOTE_FLOW_PREFIX + phone, JSON.stringify(toSave), { ex: HR_NOTE_FLOW_TTL_SECONDS }); } catch (err) { /* best effort */ }
 }
 async function getPendingHrNoteFlow(phone) {
   const redis = getClient();
@@ -2698,6 +2723,29 @@ async function senderHasPendingHrConfirmation(senderPhone) {
   const all = await listAllHrConfirmations();
   const normalized = whatsapp.normalizePhone(senderPhone);
   return all.some((r) => r.status === 'awaiting_manager' && whatsapp.normalizePhone(r.senderPhone) === normalized);
+}
+
+// Live test fixes correction (point 4) - when a sender continues an
+// HR-note flow on a DIFFERENT CALENDAR DAY from when it was last
+// touched, the normal next-step reply (STEP1's ask-who, a disambiguation
+// retry, etc.) gets a short bridge line in front of it reminding them
+// what's being continued, e.g. "Gotokal-er 'duty ar chhutti'-bishoy-ta
+// niye bolchi — ". Never shown for a same-day continuation (the
+// conversation is already fresh in context there). `topicLabel` is the
+// classifier's own short, already-localized phrase (hrNotificationTopicLabel,
+// stored on the flow) - falls back to a generic phrase if a flow somehow
+// has none (e.g. one saved before this field existed).
+function buildHrFlowGapBridge(lang, topicLabel, daysSinceLastTouch) {
+  const label = topicLabel || ({ banglish: 'ei bishoy', hinglish: 'is baat', english: 'this' })[lang] || 'this';
+  const isYesterday = daysSinceLastTouch <= 1;
+  if (lang === 'hinglish') {
+    return (isYesterday ? 'Kal wale ' : 'Kuch din pehle wale ') + label + ' ke baare mein baat kar raha hoon — ';
+  }
+  if (lang === 'english') {
+    return (isYesterday ? "Following up on yesterday's " : 'Following up on what you mentioned a few days ago about ') + label + ' — ';
+  }
+  // banglish (and any other/unknown lang falls back here)
+  return (isYesterday ? 'Gotokal-er ' : 'Kodin age-r ') + label + '-r bishoy-ta niye bolchhi — ';
 }
 
 // ---- Templates (Banglish shown first in the spec; English/Hinglish are
@@ -2877,7 +2925,7 @@ async function postHrConfirmationOwnerRecord(confirmation, outcome) {
 // handlePersonLookupRequest already uses - several matches ask the
 // sender which one, a first-name-only single match confirms once, no
 // match asks for the full name again.
-async function resolveHrNoteThirdParty({ phone, name, lang, personName, department, summary, summaryLocalized, history }) {
+async function resolveHrNoteThirdParty({ phone, name, lang, personName, department, summary, summaryLocalized, topicLabel, history }) {
   const { matches: allMatches, hadTypo } = await findPersonLookupMatches(personName, department);
   const current = allMatches.filter((e) => e.status !== 'INACTIVE');
   if (!current.length) {
@@ -2887,11 +2935,11 @@ async function resolveHrNoteThirdParty({ phone, name, lang, personName, departme
     // message, a corrected name, had nothing left to continue and the
     // whole thing silently fell back to "no third party"). Re-saves the
     // SAME flow, still awaiting a name, instead of dropping it.
-    await savePendingHrNoteFlow(phone, { summary, summaryLocalized, lang, createdAt: Date.now(), step: 'awaiting_name' });
+    await savePendingHrNoteFlow(phone, { summary, summaryLocalized, topicLabel, lang, createdAt: Date.now(), step: 'awaiting_name' });
     return { case: 'acknowledged', replyText: HR_NOTE_NAME_NOT_FOUND[lang] || HR_NOTE_NAME_NOT_FOUND.english, summaryForOwner: null, lang };
   }
   if (current.length > 1) {
-    await savePendingHrNoteFlow(phone, { summary, summaryLocalized, lang, createdAt: Date.now(), step: 'awaiting_disambiguation_choice', candidates: current, hadTypo, attempts: 1 });
+    await savePendingHrNoteFlow(phone, { summary, summaryLocalized, topicLabel, lang, createdAt: Date.now(), step: 'awaiting_disambiguation_choice', candidates: current, hadTypo, attempts: 1 });
     const queryName = current[0].name.split(' ')[0];
     const note = hadTypo ? (TYPO_NOTE[lang] || TYPO_NOTE.english) : '';
     const fn = DISAMBIGUATION_QUESTION[lang] || DISAMBIGUATION_QUESTION.english;
@@ -2899,7 +2947,7 @@ async function resolveHrNoteThirdParty({ phone, name, lang, personName, departme
   }
   const soleMatch = current[0];
   if (isFirstNameOnly(personName, soleMatch.name)) {
-    await savePendingHrNoteFlow(phone, { summary, summaryLocalized, lang, createdAt: Date.now(), step: 'awaiting_confirm_yes_no', candidate: soleMatch, isInactive: false });
+    await savePendingHrNoteFlow(phone, { summary, summaryLocalized, topicLabel, lang, createdAt: Date.now(), step: 'awaiting_confirm_yes_no', candidate: soleMatch, isInactive: false });
     const fn = NAME_CONFIRM_QUESTION[lang] || NAME_CONFIRM_QUESTION.english;
     return { case: 'acknowledged', replyText: fn(soleMatch.name, soleMatch.department), summaryForOwner: null, lang };
   }
@@ -2949,15 +2997,16 @@ async function finalizeHrNoteThirdParty({ phone, senderName, lang, candidate, su
 async function handleHrNotificationStart({ phone, name, lang, text, history, classification }) {
   const summary = classification.hrNotificationSummary || sanitizeTopicLabel(classification.topicLabel);
   const summaryLocalized = classification.hrNotificationSummaryLocalized || summary;
+  const topicLabel = classification.hrNotificationTopicLabel || null;
   await postOwnerNotification(name + ' (' + phone + ') HR-bishoy janiyechhen: "' + summary + '". Note kora holo.');
   if (classification.hrNotificationThirdPartyName) {
     return resolveHrNoteThirdParty({
       phone, name, lang, personName: classification.hrNotificationThirdPartyName,
-      department: classification.hrNotificationThirdPartyHint, summary, summaryLocalized, history
+      department: classification.hrNotificationThirdPartyHint, summary, summaryLocalized, topicLabel, history
     });
   }
   if (classification.hrNotificationInvolvesThirdParty) {
-    await savePendingHrNoteFlow(phone, { summary, summaryLocalized, lang, createdAt: Date.now(), step: 'awaiting_name' });
+    await savePendingHrNoteFlow(phone, { summary, summaryLocalized, topicLabel, lang, createdAt: Date.now(), step: 'awaiting_name' });
     return { case: 'acknowledged', replyText: HR_NOTE_ASK_WHO_INSTRUCTED[lang] || HR_NOTE_ASK_WHO_INSTRUCTED.english, summaryForOwner: null, lang };
   }
   return { case: 'acknowledged', replyText: HR_NOTE_NO_THIRD_PARTY[lang] || HR_NOTE_NO_THIRD_PARTY.english, summaryForOwner: null, lang };
@@ -2979,6 +3028,7 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
     }
     const attempts = hrFlow.attempts || 1;
     if (attempts < MAX_DISAMBIGUATION_ATTEMPTS) {
+      // Object.assign already preserves hrFlow.topicLabel/summary/etc as-is.
       await savePendingHrNoteFlow(phone, Object.assign({}, hrFlow, { attempts: attempts + 1 }));
       const retryPrefix = DISAMBIGUATION_RETRY_PREFIX[lang] || DISAMBIGUATION_RETRY_PREFIX.english;
       const fn = DISAMBIGUATION_QUESTION[lang] || DISAMBIGUATION_QUESTION.english;
@@ -3002,9 +3052,9 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
       const remainder = t.replace(NAME_CONFIRM_NO_RE, '').replace(/^[\s.,!-]+/, '');
       const extracted = remainder ? await extractPersonReference(remainder) : { personName: null, hint: null };
       if (extracted.personName) {
-        return resolveHrNoteThirdParty({ phone, name, lang, personName: extracted.personName, department: extracted.hint, summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, history });
+        return resolveHrNoteThirdParty({ phone, name, lang, personName: extracted.personName, department: extracted.hint, summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, history });
       }
-      await savePendingHrNoteFlow(phone, { summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, lang, createdAt: Date.now(), step: 'awaiting_name' });
+      await savePendingHrNoteFlow(phone, { summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, lang, createdAt: Date.now(), step: 'awaiting_name' });
       return { case: 'acknowledged', replyText: NAME_CONFIRM_RETRY[lang] || NAME_CONFIRM_RETRY.english, summaryForOwner: null, lang };
     }
     // Neither a yes nor a no word - the sender may simply have answered
@@ -3012,7 +3062,7 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
     // the whole message before giving up on this flow entirely.
     const extracted = await extractPersonReference(t);
     if (extracted.personName) {
-      return resolveHrNoteThirdParty({ phone, name, lang, personName: extracted.personName, department: extracted.hint, summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, history });
+      return resolveHrNoteThirdParty({ phone, name, lang, personName: extracted.personName, department: extracted.hint, summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, history });
     }
     await clearPendingHrNoteFlow(phone);
     return null;
@@ -3020,7 +3070,7 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
   // awaiting_name
   const { personName, hint } = await extractPersonReference(text);
   if (personName) {
-    return resolveHrNoteThirdParty({ phone, name, lang, personName, department: hint, summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, history });
+    return resolveHrNoteThirdParty({ phone, name, lang, personName, department: hint, summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, history });
   }
   await clearPendingHrNoteFlow(phone);
   return null;
@@ -4584,6 +4634,7 @@ function classifyTool() {
           isHrNotification: { type: 'boolean', description: 'true ONLY when intent is "informing" AND the subject is specifically: their own leave, late coming, attendance, an off-day-in-lieu/comp-off, a duty/schedule change, a salary/bank account change, or a work-location update - information meant for HR to note and possibly confirm with someone else, not a general FYI/thanks/wish. false otherwise, including for every other kind of "informing" message (e.g. sharing news, a document_sent message).' },
           hrNotificationSummary: { type: 'string', description: 'Required when isHrNotification is true - a short, accurate, neutral summary in ENGLISH of exactly what they informed, e.g. "told to do duty today instead of his scheduled off, was asked to take a different day off in lieu". For the HR note and the owner\'s own notifications only (English, like every other owner-facing label) - never sent to the sender or a third party as-is. State only what the sender actually said, nothing invented.' },
           hrNotificationSummaryLocalized: { type: 'string', description: 'Required when isHrNotification is true - the SAME fact as hrNotificationSummary above, but written naturally in the message\'s own detected language (the `language` field) AND, when hrNotificationInvolvesThirdParty is true, phrased as a SECOND-PERSON, ACTIVE-VOICE statement addressed directly TO that third party, describing what THEY told the sender to do - never a passive, sender-centric phrasing. The sender is "onake"/"use"/"them" (never named here), the third party is addressed as "apni"/"aap"/"you" with a formal, active verb conjugation ("bolechhen"/"kaha hai"/"told"), never passive ("bola hoyechhe"/"kaha gaya hai"/"was told"). E.g. for a Banglish message where the sender said "ajke amake duty korte boleche r er bodole onno din chuti nite boleche": output "apni onake ajke duty korte bolechhen, ar er bodole onno din chhutti nite bolechhen" - NOT "ajke duty korte bola hoyechhe...". This version is inserted verbatim mid-sentence into the message sent TO that third party ("...message esechhe je <this>. Eta ki apnar theke confirm?"), so it must read grammatically as a direct, natural continuation of that sentence and never mix in English words/phrasing. When hrNotificationInvolvesThirdParty is false (no third party to address), phrase it naturally in first person instead, the same as before.' },
+          hrNotificationTopicLabel: { type: 'string', description: 'Required when isHrNotification is true - a SHORT (2-4 word) natural noun phrase naming the topic, written in the message\'s own detected language (the `language` field), e.g. for a Banglish duty/off-day-in-lieu message: "duty ar chhutti", for a late-coming message: "deri kore asha", for a salary/bank change: "bank account", for a work-location update: "kormosthol poriborton". Used ONLY to briefly remind the sender what an old, resumed conversation was about after a multi-day gap (e.g. "Gotokal-er ' + "'" + 'duty ar chhutti' + "'" + '-bishoy-ta niye bolchi") - never sent as a sentence by itself, so it must read naturally as a short phrase slotted into "...-bishoy-ta niye bolchi" (Banglish) or equivalent, not a full sentence or a translated English label.' },
           hrNotificationThirdPartyName: { type: 'string', description: 'Optional, only with isHrNotification true - if the sender named a specific OTHER person (e.g. a manager/supervisor) who gave them this instruction or is otherwise involved and should confirm it, that person\'s name exactly as given. Omit if no one else was named.' },
           hrNotificationThirdPartyHint: { type: 'string', description: 'Optional - a department/site/designation hint for the third party named above, if one was given (e.g. "Srirampur site"). Omit if none was mentioned.' },
           hrNotificationInvolvesThirdParty: { type: 'boolean', description: 'Required when isHrNotification is true - true when the message implies someone ELSE (a manager/supervisor) decided or instructed this (e.g. "Ajke amake duty korte bola hoyechhe" - "I was TOLD to work today"), even if that person is not yet named - SUBH will ask who, to confirm with them. false for a purely self-reported notice with no one else involved (e.g. a simple "I\'ll be a bit late today"/"I\'m taking leave tomorrow").' },
@@ -5325,15 +5376,29 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
   // "who instructed you", STEP 2's name confirm/disambiguation) lives in
   // ONE state object per sender now, kept across any number of
   // clarification turns until it finishes, the sender clearly moves on to
-  // something else, or it expires at end of day - never lost mid-flow the
-  // way the earlier generic-primitive-based version could be (found live:
-  // a real conversation needed 4 back-and-forth turns to resolve a name,
-  // and the note itself got dropped partway through).
+  // something else, or it expires after 7 days of inactivity - never
+  // lost mid-flow the way the earlier generic-primitive-based version
+  // could be (found live: a real conversation needed 4 back-and-forth
+  // turns to resolve a name, and the note itself got dropped partway
+  // through).
   if (!isGroup && phone) {
     const hrFlow = await getPendingHrNoteFlow(phone).catch(() => null);
     if (hrFlow) {
+      const lastTouchedAt = hrFlow.lastTouchedAt || hrFlow.createdAt || Date.now();
       const continued = await continueHrNoteFlow({ phone, name: senderLabel, text, history, hrFlow });
-      if (continued) return continued;
+      if (continued) {
+        // Correction (point 4) - a continuation landing on a DIFFERENT
+        // calendar day than the flow's own last touch gets a brief
+        // bridge line reminding the sender what's being continued,
+        // before the normal next-step reply. Same-day back-and-forth
+        // (the overwhelmingly common case) is untouched.
+        const daysSinceLastTouch = calendarDaysBetweenIst(new Date(lastTouchedAt), new Date());
+        if (daysSinceLastTouch >= 1 && continued.replyText) {
+          const bridgeLang = continued.lang || hrFlow.lang;
+          continued.replyText = buildHrFlowGapBridge(bridgeLang, hrFlow.topicLabel, daysSinceLastTouch) + continued.replyText;
+        }
+        return continued;
+      }
       // continueHrNoteFlow returned null - genuinely not a continuation
       // of this flow (already cleared it) - fall through below as an
       // ordinary new message.
@@ -6528,6 +6593,8 @@ module.exports = {
   savePendingHrNoteFlow,
   getPendingHrNoteFlow,
   clearPendingHrNoteFlow,
+  calendarDaysBetweenIst,
+  buildHrFlowGapBridge,
   saveHrConfirmation,
   getHrConfirmation,
   updateHrConfirmation,
