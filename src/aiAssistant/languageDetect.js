@@ -33,7 +33,15 @@ const BENGALI_WORDS = [
   // the words above and fell through to 'english' - these are common
   // phonetic-spelling variants of words already in this list (thakche/
   // thakbe/jachhe/na) that the existing entries didn't cover.
-  'na', 'naa', 'thakche', 'thakchey', 'thakbe', 'jachhe', 'jachhey', 'hochhe', 'hoye', 'hoyeche'
+  'na', 'naa', 'thakche', 'thakchey', 'thakbe', 'jachhe', 'jachhey', 'hochhe', 'hoye', 'hoyeche',
+  // Festival/occasion wishes (live review: "Subho Dashami preeti o
+  // subhecha tomakey" matched none of the words above and fell through
+  // to 'english') - common Bengali wish vocabulary across the major
+  // festivals (Durga Puja/Dashami/Bijoya, Diwali/Dipaboli, Kali Puja,
+  // Poila Boishakh/Noboborsho, Saraswati Puja), not tied to any one of them.
+  'subho', 'shubho', 'shuvo', 'suvo', 'subheccha', 'shubheccha', 'subhechha', 'shubhechha',
+  'preeti', 'pronam', 'dashami', 'bijoya', 'puja', 'pujor', 'pujo', 'dipaboli', 'deepaboli',
+  'noboborsho', 'nababarsho', 'poila', 'boishakh', 'boishakhi'
 ];
 const HINDI_WORDS = [
   'ko', 'mein', 'hai', 'kya', 'kaise', 'batao', 'hoon', 'hain', 'raha', 'rahi', 'rahe', 'kar',
@@ -43,7 +51,10 @@ const HINDI_WORDS = [
   'liya', 'gaya', 'gayi', 'gaye', 'wala', 'wali', 'sab', 'kuch', 'lagta', 'lagti', 'lagega',
   'chahiye', 'bhejo', 'bhej', 'bheja', 'bataiye', 'batayein', 'dekho', 'dekha', 'pata',
   'chalega', 'chal', 'thoda', 'bahut', 'kitna', 'kitni', 'kyunki', 'agar', 'toh', 'yeh',
-  'woh', 'inka', 'uski', 'mere', 'tere', 'sahab', 'ji'
+  'woh', 'inka', 'uski', 'mere', 'tere', 'sahab', 'ji',
+  // Festival/occasion wishes in Hinglish (same reasoning as the Bengali
+  // addition above) - "Shubhkamnayein"/"Naya Saal Mubarak"/"Badhai".
+  'shubhkamna', 'shubhkamnaye', 'shubhkamnayein', 'naya', 'saal', 'badhai', 'badhaiyan'
 ];
 const BENGALI_RE = new RegExp('\\b(' + BENGALI_WORDS.join('|') + ')\\b', 'i');
 const HINDI_RE = new RegExp('\\b(' + HINDI_WORDS.join('|') + ')\\b', 'i');

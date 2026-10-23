@@ -1954,10 +1954,62 @@ async function findEmployeesByFuzzyNameMatch(query, departmentHint) {
   const matched = employeeService.fuzzyMatchEmployeesByName(employees, query);
   return mapAndNarrowByDepartment(matched, departmentNames, departmentHint);
 }
+// Live review (found live: "Suvodip kundu" could not find "Subhodeep
+// Kundu Chowdhury" at all - the generic small-edit-distance fuzzy
+// matcher's threshold is too tight for real Bengali transliteration
+// variance, e.g. "Subhadip"/"Suvodip"/"Subhodeep" differ by more letters
+// than a 1-character-edit fuzzy match allows). A SEPARATE, explicit
+// normalization tier - never loosening the generic fuzzy matcher itself
+// (which stays exactly as tight as it needs to be to keep rejecting real
+// near-misses like "Sayan" vs "Ayan") - canonicalizes known Bengali name
+// spelling variants to one form and requires an EXACT match on the
+// normalized form, so recall only improves for genuinely-equivalent
+// spellings, never loosens into new false positives.
+const SURNAME_EQUIVALENCE_GROUPS = [
+  ['chowdhury', 'choudhury', 'chaudhuri', 'chowdhuri', 'choudhary'],
+  ['kundu', 'kundoo'],
+  ['das', 'dass'],
+  ['ghosh', 'ghose'],
+  ['banerjee', 'banerji', 'bandyopadhyay', 'bandopadhyay'],
+  ['chatterjee', 'chatterji', 'chattopadhyay'],
+  ['mukherjee', 'mukherji', 'mukhopadhyay']
+];
+function normalizeBengaliNamePhonetics(word) {
+  let w = String(word || '').toLowerCase().trim();
+  if (!w) return w;
+  for (const group of SURNAME_EQUIVALENCE_GROUPS) {
+    if (group.includes(w)) return group[0];
+  }
+  // v <-> b (Suvodip/Subhodip, Debashish/Devashish, ...).
+  w = w.replace(/v/g, 'b');
+  // subho/suvo/subha/shuvo/shubho (etc.) -> one canonical opening.
+  w = w.replace(/^(shu|su)(bh|b)(o|a)/, 'subho');
+  // dip/deep/deb suffix variants -> one canonical ending.
+  w = w.replace(/(dip|deep|deb)$/, 'deep');
+  // ee <-> i (Subhodeep/Subhodip once the suffix above is normalized the
+  // other way for some input, Rohit/Rohiit-style doubling, etc.).
+  w = w.replace(/ee/g, 'i');
+  return w;
+}
+function normalizeNameWordForMatch(word) {
+  return normalizeBengaliNamePhonetics(word);
+}
+async function findEmployeesByPhoneticNameMatch(query, departmentHint) {
+  const { employees, departmentNames } = await employeeService.getEmployeeData();
+  const queryWords = String(query || '').trim().split(/\s+/).filter(Boolean).map(normalizeNameWordForMatch);
+  if (!queryWords.length) return [];
+  const matched = employees.filter((e) => {
+    const nameWords = String(e.name || '').trim().split(/\s+/).filter(Boolean).map(normalizeNameWordForMatch);
+    return queryWords.every((qw) => nameWords.includes(qw));
+  });
+  return mapAndNarrowByDepartment(matched, departmentNames, departmentHint);
+}
 // The one place callers resolve a person's name - tries the exact
 // whole-word match first (always wins when it finds anything), falls back
-// to fuzzy only when that finds nothing at all. `hadTypo` tells the reply-
-// building code whether to add the "the spelling seems slightly off" note.
+// to fuzzy, then to phonetic normalization, only when the earlier tier
+// finds nothing (or nothing fitting a given department hint). `hadTypo`
+// tells the reply-building code whether to add the "the spelling seems
+// slightly off" note.
 async function findPersonLookupMatches(query, departmentHint) {
   const exact = await findEmployeesByWholeNameMatch(query, departmentHint);
   // Live review item 4 (found live: "Ayon HR er contact no dao" exact-
@@ -1966,19 +2018,26 @@ async function findPersonLookupMatches(query, departmentHint) {
   // "HR" hint plainly doesn't fit that match). An exact name match still
   // wins whenever there's no department hint, or the hint fits at least
   // one exact match (unchanged from before) - but when a hint IS given
-  // and NONE of the exact matches fit it, a fuzzy match that DOES fit the
-  // hint (e.g. "Ayon" ~ "Ayan" -> Ayan Das, HR) is preferred over keeping
-  // a name match that contradicts the sender's own stated department.
+  // and NONE of the exact matches fit it, a fuzzy or phonetic match that
+  // DOES fit the hint (e.g. "Ayon" ~ "Ayan" -> Ayan Das, HR; "Subhadip" ~
+  // "Subhodeep" -> Subhodeep Kundu Chowdhury, HR) is preferred over
+  // keeping a name match that contradicts the sender's own stated
+  // department.
   const exactFitsHint = !departmentHint || exact.some((e) => departmentHintMatches(e.department, departmentHint));
   if (exact.length && exactFitsHint) return { matches: exact, hadTypo: false };
   if (departmentHint) {
     const fuzzyForHint = await findEmployeesByFuzzyNameMatch(query, departmentHint);
     const fuzzyFitsHint = fuzzyForHint.filter((e) => departmentHintMatches(e.department, departmentHint));
     if (fuzzyFitsHint.length) return { matches: fuzzyFitsHint, hadTypo: true };
+    const phoneticForHint = await findEmployeesByPhoneticNameMatch(query, departmentHint);
+    const phoneticFitsHint = phoneticForHint.filter((e) => departmentHintMatches(e.department, departmentHint));
+    if (phoneticFitsHint.length) return { matches: phoneticFitsHint, hadTypo: true };
   }
   if (exact.length) return { matches: exact, hadTypo: false };
   const fuzzy = await findEmployeesByFuzzyNameMatch(query, departmentHint);
-  return { matches: fuzzy, hadTypo: fuzzy.length > 0 };
+  if (fuzzy.length) return { matches: fuzzy, hadTypo: true };
+  const phonetic = await findEmployeesByPhoneticNameMatch(query, departmentHint);
+  return { matches: phonetic, hadTypo: phonetic.length > 0 };
 }
 // Live review items 2 & 3 (found live: a NEW, unrelated request - "Amake
 // Ayan er mail id dao" - got answered about "Ayan Biswas" directly,
@@ -2399,25 +2458,82 @@ async function setHrConfirmationsEnabled(enabled) {
 // the owner instead, same treatment as the never-auto list below.
 const SENIOR_DESIGNATION_RE = /\b(director|managing\s*director|\bmd\b|president|vice[\s-]*president|\bvp\b|\bceo\b)\b/i;
 
-const PENDING_HR_NOTE_AWAITING_NAME_PREFIX = 'wa-pending-hr-note-name:';
-const PENDING_HR_NOTE_TTL_SECONDS = 30 * 60;
-async function savePendingHrNoteAwaitingName(phone, data) {
+// Live review item 4 (found live: the flow lost its own note/summary
+// partway through a real multi-turn conversation - "not found"/retry
+// branches cleared state instead of keeping it, and the generic
+// pendingNameConfirm/pendingDisambiguation primitives, shared with the
+// unrelated data-request person-lookup flow, needed extra fields bolted
+// on at every call site to carry the HR context through). ONE state
+// object per sender now carries the whole in-progress HR note (summary,
+// language, current step, and whatever that step needs) until the flow
+// actually finishes, the sender is clearly asking about something else,
+// or it expires - TTL set to the remaining seconds until the END OF THE
+// CURRENT IST DAY (spec: "until it expires (end of day)"), recomputed
+// fresh on every save so a flow started at 23:50 doesn't effectively get
+// a multi-day TTL by being touched again just after midnight.
+const PENDING_HR_NOTE_FLOW_PREFIX = 'wa-pending-hr-note-flow:';
+function secondsUntilEndOfIstDay(now) {
+  const reminderService = require('./reminderService');
+  const { year, month, day } = reminderService.istParts(now);
+  const endOfDay = istWallClockToUtc(year, month, day, 23, 59);
+  const seconds = Math.ceil((endOfDay.getTime() - now.getTime()) / 1000);
+  return Math.max(60, seconds); // never less than a minute, even right at the boundary
+}
+async function savePendingHrNoteFlow(phone, data) {
   const redis = getClient();
   if (!redis) return;
-  try { await redis.set(PENDING_HR_NOTE_AWAITING_NAME_PREFIX + phone, JSON.stringify(data), { ex: PENDING_HR_NOTE_TTL_SECONDS }); } catch (err) { /* best effort */ }
+  try { await redis.set(PENDING_HR_NOTE_FLOW_PREFIX + phone, JSON.stringify(data), { ex: secondsUntilEndOfIstDay(new Date()) }); } catch (err) { /* best effort */ }
 }
-async function getPendingHrNoteAwaitingName(phone) {
+async function getPendingHrNoteFlow(phone) {
   const redis = getClient();
   if (!redis) return null;
   try {
-    const raw = await redis.get(PENDING_HR_NOTE_AWAITING_NAME_PREFIX + phone);
+    const raw = await redis.get(PENDING_HR_NOTE_FLOW_PREFIX + phone);
     return raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : null;
   } catch (err) { return null; }
 }
-async function clearPendingHrNoteAwaitingName(phone) {
+async function clearPendingHrNoteFlow(phone) {
   const redis = getClient();
   if (!redis) return;
-  try { await redis.del(PENDING_HR_NOTE_AWAITING_NAME_PREFIX + phone); } catch (err) { /* best effort */ }
+  try { await redis.del(PENDING_HR_NOTE_FLOW_PREFIX + phone); } catch (err) { /* best effort */ }
+}
+
+// Live test fixes item 5 - which time-of-day greeting TYPES (morning/
+// afternoon/evening/night) SUBH has already echoed back to this sender
+// TODAY (IST calendar day, same boundary as the AI-disclosure line's own
+// hasIntroducedTodayIST) - "only the FIRST time per greeting type per
+// sender per day". One key per sender per day (a small array of types
+// already used, not one key per type) so it naturally expires at the same
+// end-of-day TTL as the HR-note flow above, via the same helper.
+const GREETING_ECHO_PREFIX = 'wa-greeting-echo:';
+async function getEchoedGreetingTypesToday(phone, now) {
+  const redis = getClient();
+  if (!redis) return [];
+  try {
+    const raw = await redis.get(GREETING_ECHO_PREFIX + phone + ':' + istDayKeyOf(now));
+    const parsed = raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (err) { return []; }
+}
+async function markGreetingEchoedToday(phone, type, now) {
+  const redis = getClient();
+  if (!redis) return;
+  try {
+    const existing = await getEchoedGreetingTypesToday(phone, now);
+    if (existing.includes(type)) return;
+    const key = GREETING_ECHO_PREFIX + phone + ':' + istDayKeyOf(now);
+    await redis.set(key, JSON.stringify(existing.concat([type])), { ex: secondsUntilEndOfIstDay(now) });
+  } catch (err) { /* best effort */ }
+}
+// Test-hygiene only (same role as clearPendingHrNoteFlow etc. for the
+// other per-sender state in this file) - lets the regression suite reset
+// a test phone's greeting-echo state so a rerun on the SAME real IST day
+// stays deterministic, instead of silently skipping the echo because an
+// earlier run already marked it.
+async function clearGreetingEchoToday(phone, now) {
+  const redis = getClient();
+  if (!redis) return;
+  try { await redis.del(GREETING_ECHO_PREFIX + phone + ':' + istDayKeyOf(now || new Date())); } catch (err) { /* best effort */ }
 }
 
 // Pending manager-confirmation records - keyed by id (the permanent
@@ -2575,12 +2691,34 @@ function summaryForSentence(summary) {
   return String(summary || '').trim().replace(/[.!?]+$/, '');
 }
 
+// Live test fixes item 3 - the same once-per-calendar-day AI-disclosure
+// line decideAutoReply's own wrapper prepends to every classifier-driven
+// reply (see hasIntroducedTodayIST/AI_DISCLOSURE_LINE above) is needed
+// here too: sendHrConfirmationMessageToManager and
+// sendHrConfirmationResultToSender are both side-effect sends that build
+// their own raw text and call sendWhatsAppChunked DIRECTLY, bypassing
+// decideAutoReply's wrapper entirely. Found live: a manager's first-ever
+// message from SUBH ("Apnar theke ekta bishoye confirmation proyojon...")
+// had no "Ami SUBH, Subhodeep-er HR Assistant." line at all. One shared
+// function (not duplicated per call site) so the rule can never drift out
+// of sync between the two sends the same way AI_DISCLOSURE_LINE's own
+// comment warns about for the main reply path.
+async function prependDisclosureIfNeeded(text, phone, lang) {
+  if (ALREADY_INTRODUCES_SUBH_RE.test(text)) return text;
+  const history = await getConvoHistory(phone).catch(() => []);
+  if (hasIntroducedTodayIST(history, new Date())) return text;
+  return (AI_DISCLOSURE_LINE[lang] || AI_DISCLOSURE_LINE.english) + ' ' + text;
+}
+
 async function sendHrConfirmationMessageToManager(confirmationId) {
   const confirmation = await getHrConfirmation(confirmationId);
   if (!confirmation) return { ok: false, error: 'confirmation record not found' };
   const lang = confirmation.lang;
   const requesterRef = requesterRefFor(confirmation.senderName, confirmation.senderPhone);
-  const text = (HR_CONFIRMATION_TO_MANAGER[lang] || HR_CONFIRMATION_TO_MANAGER.english)(requesterRef, summaryForSentence(confirmation.summaryLocalized || confirmation.summary));
+  const text = await prependDisclosureIfNeeded(
+    (HR_CONFIRMATION_TO_MANAGER[lang] || HR_CONFIRMATION_TO_MANAGER.english)(requesterRef, summaryForSentence(confirmation.summaryLocalized || confirmation.summary)),
+    confirmation.thirdPartyPhone, lang
+  );
   if (!isRealSendAllowedFor(confirmation.thirdPartyPhone)) {
     await logInboxEvent({ chatId: confirmation.thirdPartyPhone, name: confirmation.thirdPartyName, isGroup: false, messageSummary: '[HR confirmation request: ' + confirmation.summary + ']', aCase: 'hr_confirmation_sent', sentText: text, outcome: 'draft_mode', sentAt: Date.now() });
     return { ok: true, draft: true };
@@ -2600,6 +2738,7 @@ async function sendHrConfirmationMessageToManager(confirmationId) {
 // is "currently" being replied to when this fires from the manager's
 // answer) - same pattern as the manager-facing send above.
 async function sendHrConfirmationResultToSender(confirmation, outcomeText) {
+  outcomeText = await prependDisclosureIfNeeded(outcomeText, confirmation.senderPhone, confirmation.lang);
   if (!isRealSendAllowedFor(confirmation.senderPhone)) {
     await logInboxEvent({ chatId: confirmation.senderPhone, name: confirmation.senderName, isGroup: false, messageSummary: '[HR confirmation result: ' + confirmation.summary + ']', aCase: 'hr_confirmation_result', sentText: outcomeText, outcome: 'draft_mode', sentAt: Date.now() });
     return;
@@ -2657,15 +2796,21 @@ async function postHrConfirmationOwnerRecord(confirmation, outcome) {
 // handlePersonLookupRequest already uses - several matches ask the
 // sender which one, a first-name-only single match confirms once, no
 // match asks for the full name again.
-async function handleHrNoteThirdPartyResolution({ phone, name, lang, personName, department, summary, summaryLocalized, history }) {
+async function resolveHrNoteThirdParty({ phone, name, lang, personName, department, summary, summaryLocalized, history }) {
   const { matches: allMatches, hadTypo } = await findPersonLookupMatches(personName, department);
   const current = allMatches.filter((e) => e.status !== 'INACTIVE');
   if (!current.length) {
-    await clearPendingHrNoteAwaitingName(phone);
+    // Live review item 4 (found live: this used to CLEAR the flow here,
+    // losing the original note - "duty today instead of off day" - the
+    // moment one attempted name wasn't found, so the sender's NEXT
+    // message, a corrected name, had nothing left to continue and the
+    // whole thing silently fell back to "no third party"). Re-saves the
+    // SAME flow, still awaiting a name, instead of dropping it.
+    await savePendingHrNoteFlow(phone, { summary, summaryLocalized, lang, createdAt: Date.now(), step: 'awaiting_name' });
     return { case: 'acknowledged', replyText: HR_NOTE_NAME_NOT_FOUND[lang] || HR_NOTE_NAME_NOT_FOUND.english, summaryForOwner: null, lang };
   }
   if (current.length > 1) {
-    await savePendingDisambiguation(phone, { candidates: current, lang, hadTypo, attempts: 1, pendingField: 'hr_note_third_party', hrNoteSummary: summary, hrNoteSummaryLocalized: summaryLocalized });
+    await savePendingHrNoteFlow(phone, { summary, summaryLocalized, lang, createdAt: Date.now(), step: 'awaiting_disambiguation_choice', candidates: current, hadTypo, attempts: 1 });
     const queryName = current[0].name.split(' ')[0];
     const note = hadTypo ? (TYPO_NOTE[lang] || TYPO_NOTE.english) : '';
     const fn = DISAMBIGUATION_QUESTION[lang] || DISAMBIGUATION_QUESTION.english;
@@ -2673,7 +2818,7 @@ async function handleHrNoteThirdPartyResolution({ phone, name, lang, personName,
   }
   const soleMatch = current[0];
   if (isFirstNameOnly(personName, soleMatch.name)) {
-    await savePendingNameConfirm(phone, { candidate: soleMatch, isInactive: false, personField: 'hr_note_third_party', lang, hadTypo, hrNoteSummary: summary, hrNoteSummaryLocalized: summaryLocalized });
+    await savePendingHrNoteFlow(phone, { summary, summaryLocalized, lang, createdAt: Date.now(), step: 'awaiting_confirm_yes_no', candidate: soleMatch, isInactive: false });
     const fn = NAME_CONFIRM_QUESTION[lang] || NAME_CONFIRM_QUESTION.english;
     return { case: 'acknowledged', replyText: fn(soleMatch.name, soleMatch.department), summaryForOwner: null, lang };
   }
@@ -2682,9 +2827,10 @@ async function handleHrNoteThirdPartyResolution({ phone, name, lang, personName,
 
 // The third party is now resolved to exactly one ACTIVE employee - run
 // the safety gate, then either message them (STEP 4) or escalate to the
-// owner, and reply to the ORIGINAL sender with STEP 3's thank-you.
+// owner, and reply to the ORIGINAL sender with STEP 3's thank-you. Always
+// the FINAL step of a flow - the only place that ever clears it for good.
 async function finalizeHrNoteThirdParty({ phone, senderName, lang, candidate, summary, summaryLocalized, history }) {
-  await clearPendingHrNoteAwaitingName(phone);
+  await clearPendingHrNoteFlow(phone);
   const isSenior = SENIOR_DESIGNATION_RE.test(candidate.designation || '');
   const onNeverAuto = candidate.contactNumber ? await isNeverAuto(candidate.contactNumber) : false;
   const confirmationsEnabled = await isHrConfirmationsEnabled();
@@ -2724,17 +2870,79 @@ async function handleHrNotificationStart({ phone, name, lang, text, history, cla
   const summaryLocalized = classification.hrNotificationSummaryLocalized || summary;
   await postOwnerNotification(name + ' (' + phone + ') HR-bishoy janiyechhen: "' + summary + '". Note kora holo.');
   if (classification.hrNotificationThirdPartyName) {
-    const resolution = await handleHrNoteThirdPartyResolution({
+    return resolveHrNoteThirdParty({
       phone, name, lang, personName: classification.hrNotificationThirdPartyName,
       department: classification.hrNotificationThirdPartyHint, summary, summaryLocalized, history
     });
-    return resolution;
   }
   if (classification.hrNotificationInvolvesThirdParty) {
-    await savePendingHrNoteAwaitingName(phone, { summary, summaryLocalized, lang, createdAt: Date.now() });
+    await savePendingHrNoteFlow(phone, { summary, summaryLocalized, lang, createdAt: Date.now(), step: 'awaiting_name' });
     return { case: 'acknowledged', replyText: HR_NOTE_ASK_WHO_INSTRUCTED[lang] || HR_NOTE_ASK_WHO_INSTRUCTED.english, summaryForOwner: null, lang };
   }
   return { case: 'acknowledged', replyText: HR_NOTE_NO_THIRD_PARTY[lang] || HR_NOTE_NO_THIRD_PARTY.english, summaryForOwner: null, lang };
+}
+
+// Continuation - called whenever a pendingHrNoteFlow exists for this
+// sender (checked early, same tier as every other pending-state check in
+// this file, before classification ever runs). Handles all 3 possible
+// steps. Returns null ONLY when the message genuinely isn't continuing
+// this flow at all (spec: "until... the sender changes topic") - the
+// caller falls through to normal classification in that case; every
+// other outcome returns a real decision.
+async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
+  const lang = hrFlow.lang;
+  if (hrFlow.step === 'awaiting_disambiguation_choice') {
+    const resolved = resolveDisambiguationReply(hrFlow.candidates, text);
+    if (resolved) {
+      return finalizeHrNoteThirdParty({ phone, senderName: name, lang, candidate: resolved, summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, history });
+    }
+    const attempts = hrFlow.attempts || 1;
+    if (attempts < MAX_DISAMBIGUATION_ATTEMPTS) {
+      await savePendingHrNoteFlow(phone, Object.assign({}, hrFlow, { attempts: attempts + 1 }));
+      const retryPrefix = DISAMBIGUATION_RETRY_PREFIX[lang] || DISAMBIGUATION_RETRY_PREFIX.english;
+      const fn = DISAMBIGUATION_QUESTION[lang] || DISAMBIGUATION_QUESTION.english;
+      const queryName = hrFlow.candidates[0].name.split(' ')[0];
+      return { case: 'acknowledged', replyText: retryPrefix + fn(queryName, hrFlow.candidates, 'hr_note_third_party'), summaryForOwner: null, lang };
+    }
+    await clearPendingHrNoteFlow(phone);
+    return { case: 'acknowledged', replyText: HR_NOTE_NO_THIRD_PARTY[lang] || HR_NOTE_NO_THIRD_PARTY.english, summaryForOwner: null, lang };
+  }
+  if (hrFlow.step === 'awaiting_confirm_yes_no') {
+    const t = text.trim();
+    if (NAME_CONFIRM_YES_RE.test(t)) {
+      return finalizeHrNoteThirdParty({ phone, senderName: name, lang, candidate: hrFlow.candidate, summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, history });
+    }
+    if (NAME_CONFIRM_NO_RE.test(t)) {
+      // Live review item 2 (found live: "Naa..Suvodip HR er kotha
+      // bolchi" already named someone new in the SAME "no" message, but
+      // this used to just re-ask "who, then?" and throw that name away) -
+      // try extracting a name from whatever follows the no-marker before
+      // falling back to a plain re-ask.
+      const remainder = t.replace(NAME_CONFIRM_NO_RE, '').replace(/^[\s.,!-]+/, '');
+      const extracted = remainder ? await extractPersonReference(remainder) : { personName: null, hint: null };
+      if (extracted.personName) {
+        return resolveHrNoteThirdParty({ phone, name, lang, personName: extracted.personName, department: extracted.hint, summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, history });
+      }
+      await savePendingHrNoteFlow(phone, { summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, lang, createdAt: Date.now(), step: 'awaiting_name' });
+      return { case: 'acknowledged', replyText: NAME_CONFIRM_RETRY[lang] || NAME_CONFIRM_RETRY.english, summaryForOwner: null, lang };
+    }
+    // Neither a yes nor a no word - the sender may simply have answered
+    // with a different/corrected name instead. Try extracting one from
+    // the whole message before giving up on this flow entirely.
+    const extracted = await extractPersonReference(t);
+    if (extracted.personName) {
+      return resolveHrNoteThirdParty({ phone, name, lang, personName: extracted.personName, department: extracted.hint, summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, history });
+    }
+    await clearPendingHrNoteFlow(phone);
+    return null;
+  }
+  // awaiting_name
+  const { personName, hint } = await extractPersonReference(text);
+  if (personName) {
+    return resolveHrNoteThirdParty({ phone, name, lang, personName, department: hint, summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, history });
+  }
+  await clearPendingHrNoteFlow(phone);
+  return null;
 }
 
 // A manager's reply to STEP 4's confirmation message - checked early
@@ -2828,7 +3036,10 @@ async function checkHrConfirmationNudges(now) {
       continue;
     }
     if (!confirmation.remindedAt && workingHoursElapsedSince(createdAt, now) >= 180) {
-      const text = (HR_CONFIRMATION_MANAGER_UNCLEAR_RETRY[confirmation.lang] || HR_CONFIRMATION_MANAGER_UNCLEAR_RETRY.english)(summaryForSentence(confirmation.summaryLocalized || confirmation.summary));
+      const text = await prependDisclosureIfNeeded(
+        (HR_CONFIRMATION_MANAGER_UNCLEAR_RETRY[confirmation.lang] || HR_CONFIRMATION_MANAGER_UNCLEAR_RETRY.english)(summaryForSentence(confirmation.summaryLocalized || confirmation.summary)),
+        confirmation.thirdPartyPhone, confirmation.lang
+      );
       if (isRealSendAllowedFor(confirmation.thirdPartyPhone)) {
         const sendResult = await sendWhatsAppChunked(confirmation.thirdPartyPhone, text);
         if (sendResult.ok) await appendConvoHistory(confirmation.thirdPartyPhone, 'out', text);
@@ -3957,7 +4168,10 @@ const DRAFT_SYSTEM_PROMPT =
   'write it. ' +
   'NEVER open with "Namaskar", "Namaste", "Ji" or "Dear" (or any formal greeting word like them) - ' +
   'found live, these read as a bot/call-centre script, not a real person\'s own WhatsApp message - go ' +
-  'straight to the topic instead. ALWAYS address the sender formally/respectfully - "apni" (Bengali) / ' +
+  'straight to the topic instead. NEVER open with "Good morning"/"Good afternoon"/"Good evening"/' +
+  '"Good night" or an equivalent ("Shubho sokal", "Suprabhat", "Shubho sondhya", "Shubho ratri") even ' +
+  'if the sender used one themselves - that is handled separately, outside this reply, so echoing it ' +
+  'here would duplicate it. ALWAYS address the sender formally/respectfully - "apni" (Bengali) / ' +
   '"aap" (Hindi) / polite English - no matter what, for everyone without exception, even if THEIR OWN ' +
   'message used informal "tumi"/"tui"/"tor" (Bengali) or "tum"/"tera"/"tu" (Hindi): NEVER reply with ' +
   '"tumi"/"tum", never mixed. NEVER address the sender by name, and NEVER use "Sir"/"Madam"/"Ma\'am"/ ' +
@@ -4288,7 +4502,7 @@ function classifyTool() {
           automaticReason: { type: 'string', description: 'Required only when replyNeeded is false - a short (2-6 word) reason, e.g. "bank OTP message", "delivery notification", "marketing message". Omit when replyNeeded is true.' },
           isHrNotification: { type: 'boolean', description: 'true ONLY when intent is "informing" AND the subject is specifically: their own leave, late coming, attendance, an off-day-in-lieu/comp-off, a duty/schedule change, a salary/bank account change, or a work-location update - information meant for HR to note and possibly confirm with someone else, not a general FYI/thanks/wish. false otherwise, including for every other kind of "informing" message (e.g. sharing news, a document_sent message).' },
           hrNotificationSummary: { type: 'string', description: 'Required when isHrNotification is true - a short, accurate, neutral summary in ENGLISH of exactly what they informed, e.g. "told to do duty today instead of his scheduled off, was asked to take a different day off in lieu". For the HR note and the owner\'s own notifications only (English, like every other owner-facing label) - never sent to the sender or a third party as-is. State only what the sender actually said, nothing invented.' },
-          hrNotificationSummaryLocalized: { type: 'string', description: 'Required when isHrNotification is true - the EXACT SAME summary as hrNotificationSummary above, but written naturally in the message\'s own detected language (the `language` field) - this version is what actually gets sent to the sender/a third party, so it must never mix in English words/phrasing (e.g. for a Banglish message: "ajke duty korte bola hoyechhe, ar er poriborte onno din chhutti nite bola hoyechhe" - a natural Banglish sentence fragment, grammatically ready to be inserted into a larger sentence, not a translated label).' },
+          hrNotificationSummaryLocalized: { type: 'string', description: 'Required when isHrNotification is true - the SAME fact as hrNotificationSummary above, but written naturally in the message\'s own detected language (the `language` field) AND, when hrNotificationInvolvesThirdParty is true, phrased as a SECOND-PERSON, ACTIVE-VOICE statement addressed directly TO that third party, describing what THEY told the sender to do - never a passive, sender-centric phrasing. The sender is "onake"/"use"/"them" (never named here), the third party is addressed as "apni"/"aap"/"you" with a formal, active verb conjugation ("bolechhen"/"kaha hai"/"told"), never passive ("bola hoyechhe"/"kaha gaya hai"/"was told"). E.g. for a Banglish message where the sender said "ajke amake duty korte boleche r er bodole onno din chuti nite boleche": output "apni onake ajke duty korte bolechhen, ar er bodole onno din chhutti nite bolechhen" - NOT "ajke duty korte bola hoyechhe...". This version is inserted verbatim mid-sentence into the message sent TO that third party ("...message esechhe je <this>. Eta ki apnar theke confirm?"), so it must read grammatically as a direct, natural continuation of that sentence and never mix in English words/phrasing. When hrNotificationInvolvesThirdParty is false (no third party to address), phrase it naturally in first person instead, the same as before.' },
           hrNotificationThirdPartyName: { type: 'string', description: 'Optional, only with isHrNotification true - if the sender named a specific OTHER person (e.g. a manager/supervisor) who gave them this instruction or is otherwise involved and should confirm it, that person\'s name exactly as given. Omit if no one else was named.' },
           hrNotificationThirdPartyHint: { type: 'string', description: 'Optional - a department/site/designation hint for the third party named above, if one was given (e.g. "Srirampur site"). Omit if none was mentioned.' },
           hrNotificationInvolvesThirdParty: { type: 'boolean', description: 'Required when isHrNotification is true - true when the message implies someone ELSE (a manager/supervisor) decided or instructed this (e.g. "Ajke amake duty korte bola hoyechhe" - "I was TOLD to work today"), even if that person is not yet named - SUBH will ask who, to confirm with them. false for a purely self-reported notice with no one else involved (e.g. a simple "I\'ll be a bit late today"/"I\'m taking leave tomorrow").' },
@@ -4461,7 +4675,10 @@ const CONTEXT_REPLY_SYSTEM_PROMPT =
   'they sound frustrated or have been waiting - never a template phrase, really respond to what they ' +
   'said. ALWAYS mention the actual topic by name (you are told it below) - never just say "this"/"it"/ ' +
   '"your issue"/"bishoy-ta" with no topic attached; a generic reply with no named topic is a failure. ' +
-  'NEVER open with "Namaskar"/"Namaste"/"Ji"/"Dear" - go straight to the point. You are told the ' +
+  'NEVER open with "Namaskar"/"Namaste"/"Ji"/"Dear" - go straight to the point. NEVER open with ' +
+  '"Good morning"/"Good afternoon"/"Good evening"/"Good night" or an equivalent ("Shubho sokal", ' +
+  '"Suprabhat", "Shubho sondhya", "Shubho ratri") even if the sender used one themselves - that is ' +
+  'handled separately, outside this reply, so echoing it here would duplicate it. You are told the ' +
   'sender\'s language below (detected deterministically from their own words) - ALWAYS reply in that ' +
   'exact language/script, never a different one, regardless of which language earlier messages in the ' +
   'history happened to use. Address them ALWAYS formally/respectfully ("apni" in Bengali, "aap" in ' +
@@ -4640,6 +4857,165 @@ const GREETING_REPLY = {
   banglish: 'Hello! Ami SUBH, Subhodeep-er HR Assistant. Apnake ki bhabe sahajyo korte pari?',
   hinglish: 'Hello! Main SUBH hoon, Subhodeep ka HR Assistant. Main aapki kaise madad kar sakta hoon?'
 };
+
+// Live test fixes (item 1) - a festival/occasion wish ("Subho dashami")
+// found live to get a long AI-drafted reply padded with an extra generic
+// line ("Utsober ei dingulo...") instead of a short reciprocal wish, since
+// it fell through to the plain 'greeting' intent -> generateConversationReply
+// path with no constraint on length. Checked at the same early,
+// pre-classification tier as isGreetingOnly above (deterministic, never
+// AI-drafted) - this guarantees a wish is NEVER classified as a question
+// or an HR note, since classification never runs for it at all. Each
+// entry's `detect` regex is anchored to the actual festival-specific
+// spelling variants (never a bare "subho"/"happy" alone, which would
+// false-positive on an unrelated HR sentence), and `reply` is a short,
+// FIXED reciprocal line only - nothing else is ever appended.
+const FESTIVAL_WISHES = [
+  {
+    key: 'dashami',
+    detect: /\b(subho|shubho|shuvo|suvo)\s*(maha\s*)?bijoya(\s*dashami)?\b|\b(subho|shubho|shuvo|suvo)\s*dashami\b|\bhappy\s*(bijoya\s*)?dashami\b|\bbijoya\s*dashami\b/i,
+    reply: {
+      banglish: 'Apnake o apnar poribarkeo Shubho Bijoya!',
+      english: 'Wishing you and your family a very Happy Dashami!',
+      hinglish: 'Aapko aur aapke parivaar ko Shubho Bijoya!'
+    }
+  },
+  {
+    key: 'durga_puja',
+    detect: /\b(subho|shubho|shuvo|suvo)\s*(maha)?\s*(shosthi|soptomi|saptami|ashtami|nabami|navami)\b|\bdurga\s*puj[ao]\b|\bhappy\s*durga\s*puj[ao]\b/i,
+    reply: {
+      banglish: 'Apnake o apnar poribarkeo Shubho Durga Puja!',
+      english: 'Wishing you and your family a very Happy Durga Puja!',
+      hinglish: 'Aapko aur aapke parivaar ko Shubho Durga Puja!'
+    }
+  },
+  {
+    key: 'kali_puja',
+    detect: /\b(subho|shubho|shuvo|suvo)\s*kali\s*puj[ao]\b|\bhappy\s*kali\s*puj[ao]\b/i,
+    reply: {
+      banglish: 'Apnake o apnar poribarkeo Shubho Kali Puja!',
+      english: 'Wishing you and your family a very Happy Kali Puja!',
+      hinglish: 'Aapko aur aapke parivaar ko Shubho Kali Puja!'
+    }
+  },
+  {
+    key: 'diwali',
+    detect: /\b(subho|shubho|shuvo|suvo|shubh)\s*d[ei]+pabol?i\b|\bhappy\s*diwali\b|\bshubh\s*diwali\b/i,
+    reply: {
+      banglish: 'Apnake o apnar poribarkeo Shubho Dipaboli!',
+      english: 'Happy Diwali to you and your family!',
+      hinglish: 'Aapko aur aapke parivaar ko Shubh Diwali!'
+    }
+  },
+  {
+    key: 'bengali_new_year',
+    detect: /\b(subho|shubho|shuvo|suvo)\s*no?boborsho\b|\bpoila\s*boish?akh\b|\bpohela\s*boish?akh\b/i,
+    reply: {
+      banglish: 'Apnakeo Shubho Noboborsho!',
+      english: 'Wishing you a very Happy Bengali New Year!',
+      hinglish: 'Aapko Shubho Noboborsho!'
+    }
+  },
+  {
+    key: 'new_year',
+    detect: /\bhappy\s*new\s*year\b|\bnaya\s*saal\s*(ki\s*)?mubarak\b|\bnaye\s*saal\s*ki\s*shubhkamnaye?i?n?\b/i,
+    reply: {
+      banglish: 'Apnakeo Happy New Year!',
+      english: 'Happy New Year to you too!',
+      hinglish: 'Aapko bhi Happy New Year!'
+    }
+  },
+  {
+    key: 'eid',
+    detect: /\beid\s*mubarak\b|\beid\s*ul[\s-]?(fitr|azha|adha)\b/i,
+    reply: {
+      banglish: 'Apnakeo Eid Mubarak!',
+      english: 'Eid Mubarak to you too!',
+      hinglish: 'Aapko bhi Eid Mubarak!'
+    }
+  },
+  {
+    key: 'holi',
+    detect: /\bhappy\s*holi\b|\bholi\s*ki\s*shubhkamnaye?i?n?\b|\b(subho|shubho|shuvo|suvo)\s*dol\b/i,
+    reply: {
+      banglish: 'Apnakeo Shubho Dol!',
+      english: 'Happy Holi to you too!',
+      hinglish: 'Aapko bhi Happy Holi!'
+    }
+  },
+  {
+    key: 'christmas',
+    detect: /\bmerry\s*christmas\b|\b(subho|shubho|shuvo|suvo)\s*bo?ro?[\s-]?din\b/i,
+    reply: {
+      banglish: 'Apnakeo Shubho Bôrodin!',
+      english: 'Merry Christmas to you too!',
+      hinglish: 'Aapko bhi Merry Christmas!'
+    }
+  },
+  {
+    key: 'saraswati_puja',
+    detect: /\b(subho|shubho|shuvo|suvo)\s*saraswati\s*puj[ao]\b|\bhappy\s*saraswati\s*puj[ao]\b/i,
+    reply: {
+      banglish: 'Apnakeo Shubho Saraswati Puja!',
+      english: 'Wishing you a very Happy Saraswati Puja!',
+      hinglish: 'Aapko Shubho Saraswati Puja!'
+    }
+  }
+];
+// A wish with no SPECIFIC festival named ("Subho Utsob", "Warm wishes",
+// "Shubho preeti o subhechha") - still a short reciprocal line, never the
+// AI-drafted generic reply, just with no festival name to echo back.
+const GENERIC_WISH_RE = /\b(subho|shubho|shuvo|suvo)\s*utso?bo?\b|\bwarm\s*wishes\b|\bfestive\s*greetings?\b|\b(subho|shubho|shuvo|suvo)\s*(preeti|subheccha|subhechha)\b/i;
+const GENERIC_WISH_REPLY = {
+  banglish: 'Apnakeo onek subhechha!',
+  english: 'Wishing you the same!',
+  hinglish: 'Aapko bhi bahut shubhkamnayein!'
+};
+// The one place a message is checked against every known festival - a
+// match returns the fixed reply dictionary to send (caller picks the
+// language), null means this isn't a recognized wish at all.
+function detectFestivalWishReply(text) {
+  const t = String(text || '');
+  for (const festival of FESTIVAL_WISHES) {
+    if (festival.detect.test(t)) return festival.reply;
+  }
+  if (GENERIC_WISH_RE.test(t)) return GENERIC_WISH_REPLY;
+  return null;
+}
+
+// Live test fixes item 5 - a TIME-OF-DAY greeting ("Good morning"/
+// "Shubho sokal"/"Suprabhat"/etc, any spelling/case) found ANYWHERE in
+// the message, not anchored to the whole message like isGreetingOnly
+// above (a real HR message is often "Good morning Sir, ajke amake duty
+// korte boleche..." - greeting PLUS content). The echoed text is the
+// SAME specific phrase the sender used (canonicalized spelling/case),
+// never translated to a different language than what they actually
+// wrote - "Good morning" gets "Good morning!" back even inside an
+// otherwise Banglish message, "Shubho sokal" gets "Shubho sokal!" back.
+// `type` groups the equivalent phrasings together (morning/afternoon/
+// evening/night) purely for the once-per-type-per-day dedup below - it
+// is never itself used to pick the echoed wording.
+const TIME_GREETING_WISH_WORD = '(?:subho|shubho|shuvo|suvo|shubh)';
+const TIME_GREETING_PATTERNS = [
+  { type: 'morning', re: /\bgood\s*morning\b/i, echo: 'Good morning!' },
+  { type: 'morning', re: new RegExp('\\b' + TIME_GREETING_WISH_WORD + '\\s*sokal\\b', 'i'), echo: 'Shubho sokal!' },
+  { type: 'morning', re: /\bsuprabhat\b/i, echo: 'Suprabhat!' },
+  { type: 'morning', re: new RegExp('\\b' + TIME_GREETING_WISH_WORD + '\\s*prabhat\\b', 'i'), echo: 'Shubh prabhat!' },
+  { type: 'afternoon', re: /\bgood\s*afternoon\b/i, echo: 'Good afternoon!' },
+  { type: 'evening', re: /\bgood\s*evening\b/i, echo: 'Good evening!' },
+  { type: 'evening', re: new RegExp('\\b' + TIME_GREETING_WISH_WORD + '\\s*sondhya\\b', 'i'), echo: 'Shubho sondhya!' },
+  { type: 'evening', re: new RegExp('\\b' + TIME_GREETING_WISH_WORD + '\\s*sandhya\\b', 'i'), echo: 'Shubh sandhya!' },
+  { type: 'night', re: /\bgood\s*night\b/i, echo: 'Good night!' },
+  { type: 'night', re: new RegExp('\\b' + TIME_GREETING_WISH_WORD + '\\s*ratri\\b', 'i'), echo: 'Shubho ratri!' }
+];
+function detectTimeGreeting(text) {
+  const t = String(text || '');
+  for (const g of TIME_GREETING_PATTERNS) {
+    if (g.re.test(t)) return { type: g.type, echo: g.echo };
+  }
+  return null;
+}
+
 // A REMARK/assertion about the bot's identity ("this is your HR assistant
 // speaking on behalf of u", "is this a bot?", "are you Subhodeep?") -
 // distinct from IDENTITY_QUESTION_RE's open "who are you" question, and
@@ -4799,6 +5175,18 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
     const lang = detectLang(text);
     return { case: 'acknowledged', replyText: GREETING_REPLY[lang] || GREETING_REPLY.english, summaryForOwner: null, lang };
   }
+  // Live test fixes item 1 - checked at this same early, pre-classification
+  // tier so a festival/occasion wish is NEVER routed to the classifier at
+  // all (structurally guarantees it can't be misread as a question or an
+  // HR note), and gets only the short fixed reciprocal line, never the
+  // free-form AI drafter.
+  if (!isGroup) {
+    const wishReply = detectFestivalWishReply(text);
+    if (wishReply) {
+      const lang = detectLang(text);
+      return { case: 'acknowledged', replyText: wishReply[lang] || wishReply.english, summaryForOwner: null, lang };
+    }
+  }
   if (!isGroup && isIdentityQuestion(text)) {
     const lang = detectLang(text);
     return { case: 'acknowledged', replyText: IDENTITY_REPLY[lang] || IDENTITY_REPLY.english, summaryForOwner: null, lang };
@@ -4852,21 +5240,22 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
     }
   }
 
-  // Live review item 4, STEP 1 -> STEP 2 - the sender was just asked who
-  // gave them an instruction; this message should name that person.
+  // Live review item 4 - a whole in-progress HR-noting flow (STEP 1's
+  // "who instructed you", STEP 2's name confirm/disambiguation) lives in
+  // ONE state object per sender now, kept across any number of
+  // clarification turns until it finishes, the sender clearly moves on to
+  // something else, or it expires at end of day - never lost mid-flow the
+  // way the earlier generic-primitive-based version could be (found live:
+  // a real conversation needed 4 back-and-forth turns to resolve a name,
+  // and the note itself got dropped partway through).
   if (!isGroup && phone) {
-    const pendingHrNote = await getPendingHrNoteAwaitingName(phone).catch(() => null);
-    if (pendingHrNote) {
-      const { personName, hint } = await extractPersonReference(text);
-      if (personName) {
-        await clearPendingHrNoteAwaitingName(phone);
-        return handleHrNoteThirdPartyResolution({ phone, name: senderLabel, lang: pendingHrNote.lang, personName, department: hint, summary: pendingHrNote.summary, summaryLocalized: pendingHrNote.summaryLocalized, history });
-      }
-      // No name found in this reply - don't loop forever guessing; let it
-      // fall through to the normal pipeline as an ordinary new message,
-      // same "give up gracefully" philosophy as every other pending-state
-      // check in this function.
-      await clearPendingHrNoteAwaitingName(phone);
+    const hrFlow = await getPendingHrNoteFlow(phone).catch(() => null);
+    if (hrFlow) {
+      const continued = await continueHrNoteFlow({ phone, name: senderLabel, text, history, hrFlow });
+      if (continued) return continued;
+      // continueHrNoteFlow returned null - genuinely not a continuation
+      // of this flow (already cleared it) - fall through below as an
+      // ordinary new message.
     }
   }
 
@@ -4892,9 +5281,6 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
       const t = text.trim();
       if (NAME_CONFIRM_YES_RE.test(t)) {
         await clearPendingNameConfirm(phone);
-        if (pendingConfirm.personField === 'hr_note_third_party') {
-          return finalizeHrNoteThirdParty({ phone, senderName: senderLabel, lang: pendingConfirm.lang, candidate: pendingConfirm.candidate, summary: pendingConfirm.hrNoteSummary, summaryLocalized: pendingConfirm.hrNoteSummaryLocalized, history });
-        }
         return resolveConfirmedPersonLookup({
           phone, name: senderLabel, candidate: pendingConfirm.candidate, isInactive: Boolean(pendingConfirm.isInactive),
           personField: pendingConfirm.personField, fieldAliasKey: pendingConfirm.fieldAliasKey,
@@ -4903,9 +5289,6 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
       }
       if (NAME_CONFIRM_NO_RE.test(t)) {
         await clearPendingNameConfirm(phone);
-        if (pendingConfirm.personField === 'hr_note_third_party') {
-          await savePendingHrNoteAwaitingName(phone, { summary: pendingConfirm.hrNoteSummary, summaryLocalized: pendingConfirm.hrNoteSummaryLocalized, lang: pendingConfirm.lang, createdAt: Date.now() });
-        }
         return { case: 'acknowledged', replyText: NAME_CONFIRM_RETRY[pendingConfirm.lang] || NAME_CONFIRM_RETRY.english, summaryForOwner: null, lang: pendingConfirm.lang };
       }
       // Anything else isn't a yes/no answer to THIS question - clear it
@@ -4943,9 +5326,6 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
           const fieldAlias = resolveApprovalFieldAliasByKey(pendingDisambig.fieldAliasKey);
           if (fieldAlias) await queuePersonFieldApproval({ phone, requesterLabel: senderLabel, candidate: resolved, lang: pendingDisambig.lang, hadTypo: pendingDisambig.hadTypo, fieldAlias });
           return { case: 'data_holding', replyText: dataRequestHoldingReply(pendingDisambig.lang, history, new Date()), summaryForOwner: null };
-        }
-        if (pendingDisambig.pendingField === 'hr_note_third_party') {
-          return finalizeHrNoteThirdParty({ phone, senderName: senderLabel, lang: pendingDisambig.lang, candidate: resolved, summary: pendingDisambig.hrNoteSummary, summaryLocalized: pendingDisambig.hrNoteSummaryLocalized, history });
         }
         await postOwnerNotification(senderLabel + ' (' + phone + ') "' + resolved.name + '" baeche niyeche - general details pathano holo, approval lage ni.');
         return { case: 'acknowledged', replyText: buildGeneralDetailsReply(resolved, pendingDisambig.lang, pendingDisambig.hadTypo, new Date()), summaryForOwner: null, lang: pendingDisambig.lang };
@@ -5134,10 +5514,11 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
 // specific to any one classification outcome.
 async function decideAutoReply(params) {
   const decision = await decideAutoReplyCore(params);
-  // Live review item 5: calendar-day (IST), not a rolling 24h window -
-  // the identity line appears once per CALENDAR DAY per sender, not once
-  // per 24 real hours since their last message.
-  if (decision && decision.replyText && !ALREADY_INTRODUCES_SUBH_RE.test(decision.replyText) && !hasIntroducedTodayIST(params.history, new Date())) {
+  if (decision && decision.replyText) {
+    const lang = decision.lang || detectLang(decision.replyText);
+    // Live review item 5: calendar-day (IST), not a rolling 24h window -
+    // the identity line appears once per CALENDAR DAY per sender, not once
+    // per 24 real hours since their last message.
     // Live review item 2 (found live: "Ayon k?" - detected english, no
     // Bengali/Hindi signal words - got an ENGLISH disclosure line
     // prepended to the BANGLISH NAME_CONFIRM_QUESTION reply, mixing
@@ -5155,8 +5536,30 @@ async function decideAutoReply(params) {
     // (e.g. "Sahi naam batane ke liye dhanyavaad..." - genuine Hinglish -
     // detected as "banglish" by the word-list heuristic, since none of
     // its words are an exclusively-Hinglish signal the list recognizes).
-    const lang = decision.lang || detectLang(decision.replyText);
-    decision.replyText = (AI_DISCLOSURE_LINE[lang] || AI_DISCLOSURE_LINE.english) + ' ' + decision.replyText;
+    const identityPrefix = (!ALREADY_INTRODUCES_SUBH_RE.test(decision.replyText) && !hasIntroducedTodayIST(params.history, new Date()))
+      ? (AI_DISCLOSURE_LINE[lang] || AI_DISCLOSURE_LINE.english) + ' '
+      : '';
+    // Live test fixes item 5 - time-of-day greeting echo. Computed from
+    // the ORIGINAL incoming message (params.text), never from the
+    // finished reply. Skipped entirely when the reply already opens with
+    // its own greeting (GREETING_REPLY's fixed "Hello! I'm SUBH..." -
+    // isGreetingOnly's own tier above) - never stacked, per spec. Order
+    // is greeting -> identity line -> reply (built below), except "Good
+    // night" which goes at the very end instead of the start.
+    let greetingPrefix = '';
+    let greetingSuffix = '';
+    if (!params.isGroup && params.phone && !/^hello!/i.test(decision.replyText)) {
+      const greeting = detectTimeGreeting(params.text);
+      if (greeting) {
+        const echoedToday = await getEchoedGreetingTypesToday(params.phone, new Date()).catch(() => []);
+        if (!echoedToday.includes(greeting.type)) {
+          if (greeting.type === 'night') greetingSuffix = ' ' + greeting.echo;
+          else greetingPrefix = greeting.echo + ' ';
+          await markGreetingEchoedToday(params.phone, greeting.type, new Date()).catch(() => {});
+        }
+      }
+    }
+    decision.replyText = greetingPrefix + identityPrefix + decision.replyText + greetingSuffix;
   }
   return decision;
 }
@@ -5779,6 +6182,12 @@ module.exports = {
   handleOwnSensitiveIdRequest,
   isIdentityQuestion,
   isGreetingOnly,
+  detectFestivalWishReply,
+  detectTimeGreeting,
+  getEchoedGreetingTypesToday,
+  markGreetingEchoedToday,
+  clearGreetingEchoToday,
+  sendHrConfirmationMessageToManager,
   checkGatewayConnection,
   gatewayStatusSummary,
   buildAutoReplyStatusReply,
@@ -5903,9 +6312,9 @@ module.exports = {
   // 4, the HR noting + confirmation flow.
   isHrConfirmationsEnabled,
   setHrConfirmationsEnabled,
-  savePendingHrNoteAwaitingName,
-  getPendingHrNoteAwaitingName,
-  clearPendingHrNoteAwaitingName,
+  savePendingHrNoteFlow,
+  getPendingHrNoteFlow,
+  clearPendingHrNoteFlow,
   saveHrConfirmation,
   getHrConfirmation,
   updateHrConfirmation,
@@ -5913,10 +6322,13 @@ module.exports = {
   listPendingHrConfirmationsForPhone,
   listAllHrConfirmations,
   senderHasPendingHrConfirmation,
-  handleHrNoteThirdPartyResolution,
+  resolveHrNoteThirdParty,
   finalizeHrNoteThirdParty,
   handleHrNotificationStart,
+  continueHrNoteFlow,
   handleHrConfirmationManagerReply,
+  normalizeBengaliNamePhonetics,
+  findEmployeesByPhoneticNameMatch,
   checkHrConfirmationNudges,
   // Exported for scripts/check-whatsapp-engine.js only - live review:
   // connection-drop false alarms + catch-up after a gap.
