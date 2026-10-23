@@ -95,7 +95,23 @@ async function checkAsync(label, fn) {
   // real Aadhaar/PAN VALUE is never printed/logged by this test, and any
   // approval/notification/inbox-log entry this creates is swept up in a
   // finally block below, every time, pass or fail.
-  const OWN_ID_REAL_PHONE = '919831919967'; // Ayan Biswas's real registered number
+  //
+  // FOUND LIVE (not a flake): this used to hardcode Ayan Biswas's phone
+  // number as a literal ('919831919967') - the real directory's own data
+  // for this employee changed at some point (their registered
+  // contactNumber is now a different number), so the hardcoded literal
+  // silently went stale and findEmployeeByPhone legitimately found
+  // nothing, failing this whole section's setup check every time,
+  // deterministically, not intermittently - "flaky" was the wrong read
+  // on a real, reproducible bug. Looks the phone number up fresh, by
+  // name, every run instead - resilient to the real directory's own data
+  // changing again in the future, the same way a hardcoded phone number
+  // never can be.
+  const OWN_ID_REAL_PHONE = await (async () => {
+    const { employees } = await employeeService.getEmployeeData();
+    const emp = employees.find((e) => e.name === 'Ayan Biswas' && e.status === 'ACTIVE' && e.contactNumber);
+    return emp ? whatsapp.normalizePhone(emp.contactNumber) : '919831919967'; // last-resort fallback if the record is ever missing entirely
+  })();
   const ownIdEmp = await (async () => {
     const found = await whatsappAssistant.findEmployeeByPhone(OWN_ID_REAL_PHONE).catch(() => null);
     return found ? found.emp : null;
@@ -2800,9 +2816,18 @@ async function checkAsync(label, fn) {
   }
 
   // Cleanup: owner-notifications - same del+rebuild-by-marker sweep as the
-  // inbox-log cleanup below, filtering ONLY entries this run's own tests
-  // created (identified by the literal "TEST MARKER" text), never a real
-  // notice.
+  // inbox-log cleanup below, filtering out this run's own tests' notices.
+  // FOUND LIVE (a real audit, not a test failure): this used to only
+  // catch the one literal "TEST MARKER" string (one single test), while
+  // catch-up/disambiguation/gateway-reconnect/HR-flow tests throughout
+  // this whole file ALSO post real owner notifications with no cleanup
+  // at all - confirmed live: 179 of 200 real entries in the owner's
+  // actual notification feed were test-created, built up from past runs
+  // against the real store. Broadened to the actual synthetic-number
+  // ranges and scenario markers this file's own tests use, so a future
+  // ALLOW_LIVE=1 run cleans up fully instead of silently accumulating
+  // again - still never touches a real sender's genuine notification,
+  // since none of these patterns occur in natural real-world text.
   try {
     const { Redis } = require('@upstash/redis');
     const redis = new Redis({
@@ -2811,7 +2836,8 @@ async function checkAsync(label, fn) {
     });
     const raw = await redis.lrange('subh-owner-notifications', 0, 999);
     const parsed = raw.map((r) => (typeof r === 'string' ? JSON.parse(r) : r));
-    const clean = parsed.filter((e) => !String(e.text || '').includes('TEST MARKER'));
+    const testNotificationPattern = /TEST MARKER|\b910000000\d{3}\b|\b910000099\d{3}\b|Caught up:|TEST-SEND-FAIL-MARKER|\bTest \(|WhatsApp disconnected since|WhatsApp reconnected at|\bAyan Biswas\b.*match korche|\bAyan\b.*match korche|Tanmoy.*match korche|baeche niyeche|auto-reply to Test:|A queued reply to .* sat unsent for too long/;
+    const clean = parsed.filter((e) => !testNotificationPattern.test(String(e.text || '')));
     if (clean.length !== parsed.length) {
       await redis.del('subh-owner-notifications');
       for (let i = clean.length - 1; i >= 0; i--) await redis.lpush('subh-owner-notifications', JSON.stringify(clean[i]));
@@ -2825,8 +2851,14 @@ async function checkAsync(label, fn) {
   // executeApprovalSend tests above (TEST_PHONE, draft mode since real
   // sending is off locally) were quietly leaving real entries in the
   // owner's actual WhatsApp inbox summary on every single suite run.
-  // Sweeps them back out by TEST_PHONE - the one identifiable marker -
-  // never touching any real sender's entries.
+  // Sweeps them back out by TEST_PHONE and every synthetic 910000000xxx/
+  // 910000099xxx number this file uses, PLUS the two REAL employee
+  // numbers (Tanmoy Mondal, Subhodeep Kundu Chowdhury) deliberately
+  // reused as manager-confirmation test fixtures elsewhere in this file -
+  // confirmed live, these two alone had over 60 draft_mode entries
+  // accumulated in the owner's real inbox log from past live-store runs.
+  // Still keyed by chatId/number, never by content, so a genuine real
+  // conversation these two people might separately have is never touched.
   try {
     const { Redis } = require('@upstash/redis');
     const redis = new Redis({
@@ -2835,13 +2867,45 @@ async function checkAsync(label, fn) {
     });
     const raw = await redis.lrange('wa-inbox-log', 0, 999);
     const parsed = raw.map((r) => (typeof r === 'string' ? JSON.parse(r) : r));
-    const testChatIds = new Set([TEST_PHONE, RESOLVED_TEST_PHONE, '910000000779']);
-    const clean = parsed.filter((e) => !testChatIds.has(e.chatId));
+    const syntheticChatId = (id) => /^910000000\d{3}$/.test(String(id || '')) || /^910000099\d{3}$/.test(String(id || ''));
+    const testChatIds = new Set([TEST_PHONE, RESOLVED_TEST_PHONE, '910000000779', TANMOY_MONDAL_PHONE, SUBHODEEP_KC_PHONE]);
+    const clean = parsed.filter((e) => !testChatIds.has(e.chatId) && !syntheticChatId(e.chatId));
     if (clean.length !== parsed.length) {
       await redis.del('wa-inbox-log');
       for (let i = clean.length - 1; i >= 0; i--) await redis.lpush('wa-inbox-log', JSON.stringify(clean[i]));
       console.log('Cleaned up ' + (parsed.length - clean.length) + ' test-created inbox-log entry(ies) for TEST_PHONE and related test numbers.');
     }
+  } catch (err) { /* best effort - never fail the suite over cleanup */ }
+
+  // Cleanup - FOUND LIVE (a real audit, not a test failure): TEST_PHONE's
+  // own data-request-approval tests create real wa-pending-approval:*
+  // records (marked "TEST - safe to ignore" in their own content), but
+  // nothing ever removed them - only the inbox-log sweep above existed.
+  // Confirmed live: 98 of these had accumulated from past runs against
+  // the real store, sitting in the owner's real pending-approvals list
+  // indefinitely. Swept out by TEST_PHONE specifically, same as the
+  // inbox-log cleanup above - a genuine pending approval for a real
+  // sender is never touched (keyed by id, not by content, so there's no
+  // ambiguity).
+  try {
+    const { Redis } = require('@upstash/redis');
+    const redis = new Redis({
+      url: process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL,
+      token: process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN
+    });
+    const ids = await redis.smembers('wa-pending-approval-ids');
+    const testChatIds = new Set([TEST_PHONE, RESOLVED_TEST_PHONE, '910000000779']);
+    let removed = 0;
+    for (const id of ids) {
+      const raw = await redis.get('wa-pending-approval:' + id);
+      const rec = raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : null;
+      if (rec && testChatIds.has(String(rec.phone))) {
+        await redis.del('wa-pending-approval:' + id);
+        await redis.srem('wa-pending-approval-ids', id);
+        removed++;
+      }
+    }
+    if (removed) console.log('Cleaned up ' + removed + ' test-created pending-approval(s) for TEST_PHONE and related test numbers.');
   } catch (err) { /* best effort - never fail the suite over cleanup */ }
 
   console.log('='.repeat(70));

@@ -16,12 +16,35 @@ require('dotenv').config();
 
 const REDIS_ENV_VARS = ['KV_REST_API_URL', 'KV_REST_API_TOKEN', 'UPSTASH_REDIS_REST_URL', 'UPSTASH_REDIS_REST_TOKEN'];
 
+// Recognizes the real production store specifically (not just "any URL is
+// configured") - this repo's own .env/.env.local, so a hardcoded pattern
+// is fine here (this file is never meant to recognize anyone else's
+// store). A bare hostname/path check, not an exact match, so it still
+// catches the real store however its query string or trailing slashes
+// happen to be written.
+function looksLikeLiveStore(url) {
+  return /employees\.alcoverealty\.in/i.test(String(url || '')) || /subh-store/i.test(String(url || ''));
+}
+
 async function setupTestEnvironment() {
+  const configuredUrl = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
   if (process.env.ALLOW_LIVE === '1') {
     console.log('='.repeat(70));
     console.log('WARNING: ALLOW_LIVE=1 - running against the REAL store configured in .env/.env.local, not a local fake. Any write here is a real write.');
     console.log('='.repeat(70));
     return { usingLive: true, stop: async () => {} };
+  }
+  // Hard refuse (not a silent fallback) when the configured store is
+  // recognizably the real one - direct instruction: a test run must
+  // never proceed against it by accident, and an outright stop forces
+  // a conscious choice (fix .env, or pass ALLOW_LIVE=1) rather than
+  // quietly doing something different from what was configured.
+  if (looksLikeLiveStore(configuredUrl)) {
+    console.error('='.repeat(70));
+    console.error('REFUSING TO RUN: KV_REST_API_URL/UPSTASH_REDIS_REST_URL is configured as the REAL production store (' + configuredUrl + ').');
+    console.error('Set ALLOW_LIVE=1 to deliberately run against it, or point .env/.env.local at something else to use the local fake store.');
+    console.error('='.repeat(70));
+    process.exit(1);
   }
 
   const { startFakeUpstashServer } = require('./fakeUpstashServer');
