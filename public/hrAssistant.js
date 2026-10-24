@@ -3083,15 +3083,20 @@
       const data = await resp.json();
       autoLastPreview = data;
       const srcLabel = plan.source === 'sheet' ? 'Custom Google Sheet' : (AUTO_SOURCE_LABELS[plan.source] || 'Data');
-      const recTxt = f.rec === 'column' ? 'the person in "' + (autoRecCol && autoRecCol.selectedOptions[0] ? autoRecCol.selectedOptions[0].textContent : '') + '"' : autoSelected.size + ' selected';
+      // Short labels only in THIS compact box - the fuller dropdown option
+      // text ("Reporting DOER") is what made this line wrap on a phone;
+      // "Send to the person in" (step 3) keeps its own full wording as-is.
+      const RECCOL_SHORT = { reportingDoer: 'HOD', reportingManager: 'Manager', self: 'the employee' };
+      const recTxt = f.rec === 'column' ? 'the person in "' + (RECCOL_SHORT[f.recCol] || f.recCol || '') + '"' : autoSelected.size + ' selected';
       if (data.blocked) {
-        autoSummary.innerHTML = '<b>Summary</b><br><span style="color:var(--wi-red-700);font-weight:800">⚠ Can\'t run right now: ' + escapeHtml(data.blocked.reason) + '</span>';
+        autoSummary.innerHTML = '<div class="wf-auto-summary-title">Summary</div><div class="wf-auto-summary-line" style="color:var(--wi-red-700);font-weight:800;white-space:normal">⚠ Can\'t run right now: ' + escapeHtml(data.blocked.reason) + '</div>';
       } else {
-        autoSummary.innerHTML = '<b>Summary</b><br>' + (autoConfirmed ? '✓ Plan confirmed' : '⚠ Ask SUBH and confirm the plan first') + '<br>' +
-          escapeHtml(srcLabel) + (autoExcluded.size ? ' · ' + autoExcluded.size + ' removed by you' : '') + '<br>' +
-          (f.mediator === 'mail' ? '✉️ Mail' : '💬 WhatsApp') + ' → ' + escapeHtml(recTxt) + (f.cc ? ' (CC ' + escapeHtml(f.cc) + ')' : '') + '<br>' +
-          (f.repeat === 'custom' ? 'Every ' + f.every + ' months' : f.repeat.charAt(0).toUpperCase() + f.repeat.slice(1)) + ' · next run <b>' + escapeHtml(data.nextRunAt ? new Date(data.nextRunAt).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' }) : '—') + '</b><br>' +
-          'Next run would send <b>' + ((data.sent || []).length) + '</b> message(s).';
+        autoSummary.innerHTML = '<div class="wf-auto-summary-title">Summary</div>' +
+          '<div class="wf-auto-summary-line">' + (autoConfirmed ? '✓ Plan confirmed' : '⚠ Ask SUBH and confirm the plan first') + '</div>' +
+          '<div class="wf-auto-summary-line">' + escapeHtml(srcLabel) + (autoExcluded.size ? ' · ' + autoExcluded.size + ' removed' : '') + '</div>' +
+          '<div class="wf-auto-summary-line">' + (f.mediator === 'mail' ? '✉️ Mail' : '💬 WhatsApp') + ' → ' + escapeHtml(recTxt) + (f.cc ? ' (+ CC)' : '') + '</div>' +
+          '<div class="wf-auto-summary-line">' + (f.repeat === 'custom' ? 'Every ' + f.every + ' mo' : f.repeat.charAt(0).toUpperCase() + f.repeat.slice(1)) + ' · next run <b>' + escapeHtml(data.nextRunAt ? new Date(data.nextRunAt).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' }) : '—') + '</b></div>' +
+          '<div class="wf-auto-summary-line">Next run would send <b>' + ((data.sent || []).length) + '</b> message(s).</div>';
       }
       // The understanding card's own per-row table reads autoLastPreview too
       // - without this it would stay stuck on whatever was available at the

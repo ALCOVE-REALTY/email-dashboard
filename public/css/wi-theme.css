@@ -1993,6 +1993,15 @@ body { background: var(--wi-bg); }
 
 .wf-auto-page[hidden] { display: none; }
 .wf-auto-page { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 10px 14px 14px; display: flex; flex-direction: column; gap: 12px; }
+/* Several Create/Edit fields toggle a plain ".hidden" class (Mail
+   subject, "Send to the person in", the table-column picker, "Every N
+   months", the "How to send?" card) with no matching rule anywhere to
+   actually hide a generic element - .wf-auto-err.hidden and
+   .wf-auto-seg button.hidden only cover those two specific cases, so
+   every one of these fields stayed visible regardless of state. Scoped to
+   this one page only - never touches [hidden]-attribute visibility
+   elsewhere in the app. */
+.wf-auto-page .hidden { display: none; }
 .wf-auto-card { border-radius: var(--wi-r-card); box-shadow: var(--wi-sh-card); background: var(--wi-surface); padding: 16px; display: flex; flex-direction: column; gap: 4px; }
 .wf-auto-req { color: var(--wi-red-700); }
 /* Groups "label text + *" into a single flex item inside .wf-rem-field
@@ -2035,7 +2044,9 @@ body { background: var(--wi-bg); }
 .wf-auto-emp { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-top: 1px solid var(--wi-divider); font-size: 0.78rem; }
 .wf-auto-emp:first-child { border-top: 0; }
 .wf-auto-emp small { color: var(--wi-muted); display: block; margin-top: 2px; }
-.wf-auto-summary { background: var(--wi-primary-50); border-radius: var(--wi-r-card); padding: 12px; font-size: 0.78rem; line-height: 1.6; color: var(--wi-ink); }
+.wf-auto-summary { background: var(--wi-primary-50); border-radius: var(--wi-r-card); padding: 10px 12px; font-size: 0.74rem; line-height: 1.4; color: var(--wi-ink); display: block; }
+.wf-auto-summary-title { font-weight: 800; margin: 0 0 4px; }
+.wf-auto-summary-line { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .wf-auto-match { display: flex; align-items: center; gap: 8px; background: var(--wi-green-pill); color: var(--wi-green-700); border-radius: var(--wi-r-input); padding: 8px 12px; font-weight: 800; font-size: 0.78rem; margin-top: 10px; }
 .wf-auto-match.zero { background: var(--wi-yellow-50); color: var(--wi-yellow-700); }
 .wf-auto-cond { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 10px 12px; border: 1px solid var(--wi-border-2); border-radius: var(--wi-r-input); margin-top: 8px; font-size: 0.78rem; font-weight: 700; background: var(--wi-surface); }
