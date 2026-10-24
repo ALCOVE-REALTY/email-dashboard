@@ -10,6 +10,7 @@ const { execSync } = require('child_process');
 const whatsappAssistant = require('./aiAssistant/whatsappAssistant');
 const documentRequests = require('./aiAssistant/documentRequests');
 const reminderService = require('./aiAssistant/reminderService');
+const automationService = require('./aiAssistant/automationService');
 
 // Lowered 60 -> 15 after a real live incident: a reply that should have
 // gone out within ~60s took minutes, partly because the base poll
@@ -250,6 +251,18 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
       await whatsappAssistant.checkHrConfirmationNudges(new Date());
     } catch (err) {
       log.error('[whatsapp-assistant] HR confirmation nudge check failed: ' + err.message);
+    }
+    // SUBH Automated Tasks - runs any active task whose schedule is due,
+    // deterministically against current data (no AI at run time). Same
+    // cheap, idempotent-check philosophy as every other job on this tick -
+    // a run that's actually due still only fires once (automationService's
+    // own Redis lock), and one that's stuck waiting on a missed-run
+    // Send/Skip decision is never auto-sent.
+    try {
+      const result = await automationService.runDueAutomations(new Date());
+      if (result.ran || result.missed) log.log('[whatsapp-assistant] automation check: ' + JSON.stringify(result));
+    } catch (err) {
+      log.error('[whatsapp-assistant] automation run failed: ' + err.message);
     }
   }, AUTOSEND_FLUSH_MS);
 

@@ -247,17 +247,143 @@
         </div>
         <div class="wf-rem-section-head"><span id="hrRemSectionHeadLabel">Pending Reminders</span><span class="wf-rem-section-badge wi-count-badge primary" id="hrRemSectionBadge">0</span></div>
         <div class="wf-rem-list" id="hrRemList"></div>
-        <button type="button" class="wf-rem-add-btn" id="hrRemAddBtn">+ Add Reminder</button>
+        <div class="wf-rem-btn-row">
+          <button type="button" class="wf-rem-add-btn" id="hrRemAddBtn">+ Add Reminder</button>
+          <button type="button" class="wf-rem-add-btn outline" id="hrAutoTaskBtn">⚡ Automate Task</button>
+        </div>
         <div class="wf-rem-info-note">Reminders will remain pending and keep showing until you tap Done or Cancel.</div>
         <button type="button" class="wf-rem-completed-row" id="hrRemCompletedRow">
           <span>Today's Completed</span>
           <span class="wf-rem-completed-badge wi-count-badge success" id="hrRemCompletedBadge">0</span>
+        </button>
+        <!-- Automated Tasks bar (additive, per direct instruction: never
+             inline, never on Home, always below Today's Completed). Badge =
+             active + pending_approval count, kept live the same way
+             hrRemCompletedBadge already is. -->
+        <button type="button" class="wf-rem-completed-row" id="hrAutoTasksBar">
+          <span>⚡ Automated Tasks</span>
+          <span class="wf-rem-completed-badge wi-count-badge primary" id="hrAutoTasksBadge">0</span>
         </button>
       </div>
 
       <!-- One reminder's detail -->
       <div class="wf-rem-detail-page" id="hrRemDetailPage" hidden>
         <div class="wf-rem-detail-body" id="hrRemDetailBody"></div>
+      </div>
+
+      <!-- SUBH Automated Tasks - list page. Cards rendered by hrAssistant.js
+           (renderAutomationList), same "one container, JS fills it" split
+           as every other list in this panel. -->
+      <div class="wf-rem-page" id="hrAutoListPage" hidden>
+        <div id="hrAutoList"></div>
+        <button type="button" class="wf-rem-add-btn" id="hrAutoNewBtn">⚡ New Automated Task</button>
+      </div>
+
+      <!-- SUBH Automated Tasks - Create/Edit. Matches
+           WI-Redesign-Kit/reference/subh-automation-sample.html's own
+           sections/order/copy exactly; every dynamic bit (example chips,
+           the "SUBH understood" card, the employee list, the condition
+           builder, the column picker) is rendered into its own container
+           below by hrAssistant.js, same division of labor as the rest of
+           this panel. -->
+      <div class="wf-auto-page" id="hrAutoPage" hidden>
+        <div class="wf-auto-card">
+          <label class="wf-rem-field">Task Subject <span class="wf-auto-req">*</span>
+            <input type="text" id="autoSubject" maxlength="100" placeholder="e.g. Confirmation mail to HODs" />
+          </label>
+          <div class="wf-auto-hint"><span id="autoSubjCount">0</span>/100</div>
+          <div class="wf-auto-err hidden" id="autoSubjErr">Task Subject is required.</div>
+        </div>
+
+        <div class="wf-auto-card">
+          <div class="wf-auto-sechead"><span class="wf-auto-num">1</span> Tell SUBH what to automate</div>
+          <textarea id="autoAsk" class="wf-auto-ask" placeholder="e.g. Proti maser 1 tarikh 10 tay, jader confirmation ei mashe pending, tader HOD ke alada mail korbe"></textarea>
+          <div class="wf-auto-chips" id="autoAskExamples"></div>
+          <button type="button" class="wf-ai-action-btn download" id="autoAskBtn" style="margin-top:8px">✨ Ask SUBH</button>
+          <div class="wf-auto-hint">Write in Banglish, English or Hinglish. SUBH shows what it understood — nothing is saved until you say it's right.</div>
+          <div id="autoUnderstand"></div>
+          <div id="autoSheetWrap" class="hidden">
+            <label class="wf-rem-field">Google Sheet link</label>
+            <div class="wf-auto-row-gap">
+              <input type="text" id="autoSheetUrl" placeholder="https://docs.google.com/spreadsheets/d/…" />
+              <button type="button" class="wf-ai-action-btn outline" id="autoSheetLoadBtn">Load</button>
+            </div>
+            <div class="wf-auto-hint" id="autoSheetMsg"></div>
+          </div>
+        </div>
+
+        <div class="wf-auto-card" id="autoGroupCard">
+          <div class="wf-auto-sechead"><span class="wf-auto-num">2</span> How to send?</div>
+          <div class="wf-auto-seg" id="autoGroupSeg" style="margin-top:10px">
+            <button type="button" data-v="each" class="on">One message per employee</button>
+            <button type="button" data-v="list">One combined list</button>
+          </div>
+        </div>
+
+        <div class="wf-auto-card">
+          <div class="wf-auto-sechead"><span class="wf-auto-num">3</span> Who receives?</div>
+          <div class="wf-auto-seg" id="autoRecSeg" style="margin-top:10px">
+            <button type="button" data-v="selected" class="on">Selected people</button>
+            <button type="button" data-v="column">Person from the data</button>
+          </div>
+          <div id="autoRecColWrap" class="hidden">
+            <label class="wf-rem-field">Send to the person in</label>
+            <select id="autoRecCol"></select>
+          </div>
+          <div id="autoSelWrap">
+            <input type="text" id="autoEmpSearch" placeholder="Search employees…" style="margin-top:10px" />
+            <div class="wf-auto-row-gap" style="margin-top:8px">
+              <button type="button" class="wf-ai-action-btn outline" id="autoSelAllBtn">Select all</button>
+              <button type="button" class="wf-ai-action-btn outline" id="autoSelClearBtn">Clear all</button>
+              <span class="wf-auto-hint" id="autoSelCount" style="margin-left:auto">0 selected</span>
+            </div>
+            <div class="wf-auto-emplist" id="autoEmpList"></div>
+          </div>
+          <div class="wf-auto-hint" id="autoRecHint"></div>
+          <label class="wf-rem-field">CC (optional)<input type="text" id="autoCc" placeholder="e.g. ayan.das@alcoverealty.in" /></label>
+        </div>
+
+        <div class="wf-auto-card">
+          <div class="wf-auto-sechead"><span class="wf-auto-num">4</span> What message?</div>
+          <label class="wf-rem-field">Mediator <span class="wf-auto-req">*</span></label>
+          <div class="wf-auto-seg" id="autoMedSeg"><button type="button" data-v="mail" class="on">✉️ Mail</button><button type="button" data-v="wa">💬 WhatsApp</button></div>
+          <div id="autoMailSubjWrap">
+            <label class="wf-rem-field">Mail subject<input type="text" id="autoMailSubj" /></label>
+          </div>
+          <label class="wf-rem-field">Body<textarea id="autoBody" class="wf-auto-body"></textarea></label>
+          <div class="wf-auto-hint">Tap to insert:</div>
+          <div class="wf-auto-chips" id="autoPlaceholders"></div>
+          <label class="wf-auto-check"><input type="checkbox" id="autoTableToggle" /> Add record table</label>
+          <div id="autoTableWrap" class="hidden">
+            <div class="wf-auto-hint" style="margin-top:8px">Columns — choose from the HR database heads (tap to add/remove, order follows your taps):</div>
+            <div class="wf-auto-cols" id="autoCols"></div>
+            <div class="wf-auto-hint" id="autoColOrder"></div>
+            <label class="wf-rem-field">Put the table</label>
+            <div class="wf-auto-seg" id="autoPlaceSeg"><button type="button" data-v="body" class="on">In the message body</button><button type="button" data-v="pdf">📎 As PDF attachment</button></div>
+            <div class="wf-auto-hint" id="autoPdfWaNote"></div>
+          </div>
+        </div>
+
+        <div class="wf-auto-card">
+          <div class="wf-auto-sechead">⏰ Schedule</div>
+          <div class="wf-rem-field-row">
+            <label class="wf-rem-field">Date <span class="wf-auto-req">*</span><input type="date" id="autoDate" /></label>
+            <label class="wf-rem-field">Time <span class="wf-auto-req">*</span><input type="time" id="autoTime" value="10:00" /></label>
+          </div>
+          <label class="wf-rem-field">Repeat <span class="wf-auto-req">*</span></label>
+          <div class="wf-auto-seg" id="autoRepSeg"><button type="button" data-v="none">None</button><button type="button" data-v="monthly" class="on">Monthly</button><button type="button" data-v="yearly">Yearly</button><button type="button" data-v="custom">Custom</button></div>
+          <div id="autoCustomWrap" class="hidden wf-auto-row-gap" style="margin-top:10px">Every <input type="number" id="autoEvery" min="1" max="12" value="2" style="width:70px" /> months</div>
+          <div class="wf-auto-hint" id="autoRepRule"></div>
+        </div>
+
+        <div class="wf-auto-card wf-auto-summary" id="autoSummary"></div>
+
+        <div class="wf-rem-btn-row">
+          <button type="button" class="wf-rem-add-btn outline" id="autoPreviewBtn">👁 Preview</button>
+          <button type="button" class="wf-rem-add-btn outline" id="autoTestBtn">Send test to me</button>
+        </div>
+        <button type="button" class="wf-rem-add-btn" id="autoSaveBtn" style="width:100%">Save Automation</button>
+        <button type="button" class="wf-ai-action-btn outline" id="autoCancelBtn" style="width:100%;margin-top:10px">Cancel</button>
       </div>
 
       <div class="wf-ai-sheet-backdrop" id="hrRemSheetBackdrop" hidden></div>
@@ -295,6 +421,21 @@
       <div class="wf-rem-toast" id="hrRemToast" hidden>
         <span id="hrRemToastText"></span>
         <button type="button" id="hrRemToastUndoBtn" hidden>Undo</button>
+      </div>
+
+      <!-- Automated Task preview - every message a run would send right
+           now (To/Subject/body/table-or-PDF-name, red skip lines), same
+           bottom-sheet pattern as hrRemSheet above. -->
+      <div class="wf-ai-sheet-backdrop" id="hrAutoPreviewBackdrop" hidden></div>
+      <div class="wf-rem-sheet wf-auto-preview-sheet" id="hrAutoPreviewSheet" hidden role="dialog" aria-label="Preview">
+        <div class="wf-ai-sheet-handle"></div>
+        <div class="wf-ai-sheet-head">
+          <button type="button" class="wf-ai-sheet-close" id="hrAutoPreviewCloseBtn" aria-label="Close">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+          <span class="wf-ai-sheet-title" id="hrAutoPreviewTitle">Preview</span>
+        </div>
+        <div class="wf-rem-sheet-body" id="hrAutoPreviewBody"></div>
       </div>
 
       <div class="wf-ai-input-area">

@@ -107,6 +107,65 @@
   const remToast = document.getElementById('hrRemToast');
   const remToastText = document.getElementById('hrRemToastText');
   const remToastUndoBtn = document.getElementById('hrRemToastUndoBtn');
+  // SUBH Automated Tasks
+  const autoTaskBtn = document.getElementById('hrAutoTaskBtn');
+  const autoTasksBar = document.getElementById('hrAutoTasksBar');
+  const autoTasksBadge = document.getElementById('hrAutoTasksBadge');
+  const autoListPage = document.getElementById('hrAutoListPage');
+  const autoList = document.getElementById('hrAutoList');
+  const autoNewBtn = document.getElementById('hrAutoNewBtn');
+  const autoPage = document.getElementById('hrAutoPage');
+  const autoSubject = document.getElementById('autoSubject');
+  const autoSubjCount = document.getElementById('autoSubjCount');
+  const autoSubjErr = document.getElementById('autoSubjErr');
+  const autoAsk = document.getElementById('autoAsk');
+  const autoAskExamples = document.getElementById('autoAskExamples');
+  const autoAskBtn = document.getElementById('autoAskBtn');
+  const autoUnderstand = document.getElementById('autoUnderstand');
+  const autoSheetWrap = document.getElementById('autoSheetWrap');
+  const autoSheetUrl = document.getElementById('autoSheetUrl');
+  const autoSheetLoadBtn = document.getElementById('autoSheetLoadBtn');
+  const autoSheetMsg = document.getElementById('autoSheetMsg');
+  const autoGroupCard = document.getElementById('autoGroupCard');
+  const autoGroupSeg = document.getElementById('autoGroupSeg');
+  const autoRecSeg = document.getElementById('autoRecSeg');
+  const autoRecColWrap = document.getElementById('autoRecColWrap');
+  const autoRecCol = document.getElementById('autoRecCol');
+  const autoSelWrap = document.getElementById('autoSelWrap');
+  const autoEmpSearch = document.getElementById('autoEmpSearch');
+  const autoSelAllBtn = document.getElementById('autoSelAllBtn');
+  const autoSelClearBtn = document.getElementById('autoSelClearBtn');
+  const autoSelCount = document.getElementById('autoSelCount');
+  const autoEmpList = document.getElementById('autoEmpList');
+  const autoRecHint = document.getElementById('autoRecHint');
+  const autoCc = document.getElementById('autoCc');
+  const autoMedSeg = document.getElementById('autoMedSeg');
+  const autoMailSubjWrap = document.getElementById('autoMailSubjWrap');
+  const autoMailSubj = document.getElementById('autoMailSubj');
+  const autoBody = document.getElementById('autoBody');
+  const autoPlaceholders = document.getElementById('autoPlaceholders');
+  const autoTableToggle = document.getElementById('autoTableToggle');
+  const autoTableWrap = document.getElementById('autoTableWrap');
+  const autoCols = document.getElementById('autoCols');
+  const autoColOrder = document.getElementById('autoColOrder');
+  const autoPlaceSeg = document.getElementById('autoPlaceSeg');
+  const autoPdfWaNote = document.getElementById('autoPdfWaNote');
+  const autoDate = document.getElementById('autoDate');
+  const autoTime = document.getElementById('autoTime');
+  const autoRepSeg = document.getElementById('autoRepSeg');
+  const autoCustomWrap = document.getElementById('autoCustomWrap');
+  const autoEvery = document.getElementById('autoEvery');
+  const autoRepRule = document.getElementById('autoRepRule');
+  const autoSummary = document.getElementById('autoSummary');
+  const autoPreviewBtn = document.getElementById('autoPreviewBtn');
+  const autoTestBtn = document.getElementById('autoTestBtn');
+  const autoSaveBtn = document.getElementById('autoSaveBtn');
+  const autoCancelBtn = document.getElementById('autoCancelBtn');
+  const autoPreviewBackdrop = document.getElementById('hrAutoPreviewBackdrop');
+  const autoPreviewSheet = document.getElementById('hrAutoPreviewSheet');
+  const autoPreviewCloseBtn = document.getElementById('hrAutoPreviewCloseBtn');
+  const autoPreviewTitle = document.getElementById('hrAutoPreviewTitle');
+  const autoPreviewBody = document.getElementById('hrAutoPreviewBody');
   if (!btn || !panel) return; // this page doesn't have the assistant markup
 
   const history = [];
@@ -1371,6 +1430,8 @@
     else if (entry.type === 'conversation') openConversationPage(entry.chatId);
     else if (entry.type === 'reminders') { activeRemFilter = entry.filter; setPanelView('reminders'); loadRemindersPage(entry.filter); }
     else if (entry.type === 'reminderDetail') openReminderDetail(entry.id);
+    else if (entry.type === 'automationList') openAutomationList();
+    else if (entry.type === 'automation') openAutomationCreate(entry.task || null);
   }
   // Used by the in-app back arrow - defers to window.history.back() rather
   // than popping navStack directly, so the SAME popstate handler (below)
@@ -1400,6 +1461,8 @@
     const isReminders = view === 'reminders';
     const isRemDetail = view === 'reminderDetail';
     const isWaAll = view === 'waAll';
+    const isAutoList = view === 'automationList';
+    const isAutomation = view === 'automation';
     const usesCommsHead = !isHome;
     if (homeHead) homeHead.hidden = !isHome;
     if (commsHead) commsHead.hidden = !usesCommsHead;
@@ -1411,7 +1474,9 @@
     if (remPage) remPage.hidden = !isReminders;
     if (remDetailPage) remDetailPage.hidden = !isRemDetail;
     if (commsWaAllPage) commsWaAllPage.hidden = !isWaAll;
-    if (inputArea) inputArea.hidden = isConvo || isRemDetail;
+    if (autoListPage) autoListPage.hidden = !isAutoList;
+    if (autoPage) autoPage.hidden = !isAutomation;
+    if (inputArea) inputArea.hidden = isConvo || isRemDetail || isAutomation || isAutoList;
     if (isImportant) {
       if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon';
       if (commsHeadIcon) commsHeadIcon.innerHTML = MAIL_SVG;
@@ -1446,6 +1511,18 @@
       if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon reminders';
       if (commsHeadIcon) commsHeadIcon.innerHTML = REMINDERS_BELL_SVG;
       if (commsHeadSubtitle) commsHeadSubtitle.textContent = '';
+      if (commsHeadBadge) commsHeadBadge.hidden = true;
+    } else if (isAutoList) {
+      if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon reminders';
+      if (commsHeadIcon) commsHeadIcon.innerHTML = '⚡';
+      if (commsHeadTitle) commsHeadTitle.textContent = 'Automated Tasks';
+      if (commsHeadSubtitle) commsHeadSubtitle.textContent = 'Your saved automations';
+      if (commsHeadBadge) commsHeadBadge.hidden = true;
+    } else if (isAutomation) {
+      if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon reminders';
+      if (commsHeadIcon) commsHeadIcon.innerHTML = '⚡';
+      if (commsHeadTitle) commsHeadTitle.textContent = autoEditingId ? 'Edit Automated Task' : 'Create Automated Task';
+      if (commsHeadSubtitle) commsHeadSubtitle.textContent = 'Set up a task to run automatically';
       if (commsHeadBadge) commsHeadBadge.hidden = true;
     }
   }
@@ -2330,6 +2407,7 @@
   function showReminders() {
     setPanelView('reminders');
     loadRemindersPage('today');
+    loadAutomationsBadgeAndList(false);
   }
   if (remChips) {
     remChips.addEventListener('click', (e) => {
@@ -2577,4 +2655,507 @@
       input.focus();
     }
   });
+
+  // ---------- SUBH Automated Tasks ----------
+  // Built from the approved sample (WI-Redesign-Kit/reference/
+  // subh-automation-sample.html) - same sections/order/copy/flow, real
+  // data and a real Claude call in place of the sample's own demo data and
+  // toy keyword parser. Reuses every existing helper already defined above
+  // (postJson/postJsonOrThrow/runButtonAction/showActionToast/
+  // showConfirmDialog/escapeHtml/setCountBadge/pushNav/setPanelView) rather
+  // than introducing a second copy of any of them.
+  const AUTO_EXAMPLES = [
+    'Proti maser 1 tarikh 10 tay, jader confirmation ei mashe pending, tader HOD ke alada mail korbe',
+    'Every month on the 1st send the birthday list of that month as PDF to Subhodeep and Ayan Das',
+    'Jader birthday ajke tader ke WhatsApp e wish korbe',
+    'Proti mash er 15 tarikh Priyanka ke PF challan reminder mail korbe'
+  ];
+  const AUTO_PLACEHOLDERS = ['{Employee_No}', '{Employee_Name}', '{Designation}'];
+  const AUTO_SOURCE_LABELS = { master: 'Employee Master', confirmations: 'Probation Confirmations', birthdays: 'Birthdays', exits: 'Exits (currently inactive)', sheet: 'Custom Google Sheet', none: 'No data — just a message' };
+  const AUTO_EMP_COLUMNS = ['Employee_No', 'Employee_Name', 'Designation', 'Department', 'Location', 'Company', 'DOJ', 'Confirmation Date', 'DOB', 'Tenure', 'Total Experience', 'Employment Type', 'Status', 'Reporting DOER', 'Reporting Manager', 'Official Email', 'Personal Email', 'Contact No'];
+  const AUTO_EMP_PERSON_COLS = [['reportingDoer', 'Reporting DOER'], ['reportingManager', 'Reporting Manager'], ['self', 'The employee (own email/phone)']];
+
+  let autoEditingId = null;
+  let autoPlan = null;        // the full plan object being edited - null until Ask SUBH / an edit populates it
+  let autoSchedule = { date: '', time: '10:00', repeat: 'monthly', every: 2 };
+  let autoSelected = new Set();   // selectedEmployeeIds, when rec === 'selected'
+  let autoExcluded = new Set();   // row keys left out by the owner in the understanding table
+  let autoTableCols = [];
+  let autoConfirmed = false;
+  let autoOriginalAsk = '';
+  let autoEmployeesCache = null;  // [{employeeId,name,department,email,contactNumber}], fetched once per session
+  let autoLastPreview = null;     // last /automations/preview response, reused by the summary box + Preview sheet
+
+  function autoSegVal(container) { const b = container && container.querySelector('button.on'); return b ? b.dataset.v : null; }
+  function autoSetSeg(container, v) { if (!container) return; container.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.v === v)); }
+
+  async function fetchAutoEmployees() {
+    if (autoEmployeesCache) return autoEmployeesCache;
+    try {
+      const resp = await fetch('/api/workforce/hr-assistant/automations/employees');
+      const data = await resp.json();
+      autoEmployeesCache = data.items || [];
+    } catch (err) { autoEmployeesCache = []; }
+    return autoEmployeesCache;
+  }
+
+  // ---------- List page ----------
+  function autoStatusPill(t) {
+    if (t.status === 'active') return '<span class="wf-auto-task-status active">Active</span>';
+    if (t.status === 'paused') return '<span class="wf-auto-task-status paused">Paused</span>';
+    if (t.status === 'failed') return '<span class="wf-auto-task-status failed">Failed</span>';
+    return '<span class="wf-auto-task-status pending">Waiting for first-run approval</span>';
+  }
+  function autoRecLabel(t) {
+    if (t.plan.rec === 'column') return 'Person in "' + (t.plan.recCol === 'self' ? 'own contact' : (AUTO_EMP_PERSON_COLS.find((p) => p[0] === t.plan.recCol) || [, t.plan.recCol])[1]) + '"';
+    return (t.plan.selectedEmployeeIds || []).length + ' recipient(s)';
+  }
+  function autoRepeatLabel(t) {
+    if (t.schedule.repeat === 'none') return 'One time';
+    if (t.schedule.repeat === 'monthly') return 'Monthly';
+    if (t.schedule.repeat === 'yearly') return 'Yearly';
+    return 'Every ' + t.schedule.every + ' months';
+  }
+  function autoWhen(iso) { return iso ? new Date(iso).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' }) : '—'; }
+  function renderAutomationList(items) {
+    if (!autoList) return;
+    if (!items.length) { autoList.innerHTML = '<div class="wf-rem-empty">No automated tasks yet.<br>Tap "New Automated Task" to create one.</div>'; return; }
+    autoList.innerHTML = items.map((t) => {
+      const srcLabel = t.plan.source === 'sheet' ? 'Custom Google Sheet' : (AUTO_SOURCE_LABELS[t.plan.source] || 'Data');
+      const missed = t.pendingMissedRun ? '<div class="wf-auto-missed">⚠ Missed run (' + escapeHtml(autoWhen(t.pendingMissedRun.scheduledFor)) + ') — send now?<div class="wf-auto-actions"><button type="button" class="primary" data-a="missed-send" data-id="' + escapeHtml(t.id) + '">Send</button><button type="button" class="plain" data-a="missed-skip" data-id="' + escapeHtml(t.id) + '">Skip</button></div></div>' : '';
+      return '<div class="wf-auto-task-card">' +
+        '<div class="wf-auto-task-head"><div style="flex:1;min-width:0">' +
+          '<div class="wf-auto-task-subject">' + escapeHtml(t.subject) + '</div>' +
+          '<div class="wf-auto-hint">' + escapeHtml(srcLabel) + '</div>' +
+          '<div class="wf-auto-hint">' + (t.plan.mediator === 'mail' ? '✉️ Mail' : '💬 WhatsApp') + ' · ' + escapeHtml(autoRepeatLabel(t)) + ' · ' + escapeHtml(autoRecLabel(t)) + '</div>' +
+          '<div class="wf-auto-hint">Next: <b>' + (t.status === 'paused' ? '— (paused)' : escapeHtml(autoWhen(t.nextRunAt))) + '</b>' + (t.lastRun ? ' · Last run: ' + escapeHtml(autoWhen(t.lastRun.at)) + ' · ' + t.lastRun.sentCount + ' sent, ' + t.lastRun.skippedCount + ' skipped' : '') + '</div>' +
+        '</div>' + autoStatusPill(t) + '</div>' +
+        missed +
+        '<div class="wf-auto-actions">' +
+          (t.status === 'pending_approval' ? '<button type="button" class="primary" data-a="approve" data-id="' + escapeHtml(t.id) + '">Approve first run</button>' : '') +
+          '<button type="button" class="plain" data-a="preview" data-id="' + escapeHtml(t.id) + '">Preview</button>' +
+          '<button type="button" class="plain" data-a="run" data-id="' + escapeHtml(t.id) + '">Run now</button>' +
+          '<button type="button" class="plain" data-a="edit" data-id="' + escapeHtml(t.id) + '">Edit</button>' +
+          (t.status === 'paused' ? '<button type="button" class="plain" data-a="resume" data-id="' + escapeHtml(t.id) + '">Resume</button>' : (t.status === 'active' ? '<button type="button" class="plain" data-a="pause" data-id="' + escapeHtml(t.id) + '">Pause</button>' : '')) +
+          '<button type="button" class="danger" data-a="delete" data-id="' + escapeHtml(t.id) + '">Delete</button>' +
+        '</div></div>';
+    }).join('');
+  }
+  async function loadAutomationsBadgeAndList(renderList) {
+    try {
+      const resp = await fetch('/api/workforce/hr-assistant/automations');
+      const data = await resp.json();
+      const items = data.items || [];
+      setCountBadge(autoTasksBadge, items.filter((t) => t.status === 'active' || t.status === 'pending_approval').length, { allowZero: true });
+      if (renderList) renderAutomationList(items);
+      return items;
+    } catch (err) {
+      if (renderList && autoList) autoList.innerHTML = '<div class="wf-rem-empty">Could not load automated tasks.</div>';
+      return [];
+    }
+  }
+  async function openAutomationList() {
+    setPanelView('automationList');
+    await loadAutomationsBadgeAndList(true);
+  }
+  if (autoTasksBar) autoTasksBar.addEventListener('click', () => { pushNav({ type: 'automationList' }); openAutomationList(); });
+  if (autoNewBtn) autoNewBtn.addEventListener('click', () => { pushNav({ type: 'automation', task: null }); openAutomationCreate(null); });
+  if (autoTaskBtn) autoTaskBtn.addEventListener('click', () => { pushNav({ type: 'automation', task: null }); openAutomationCreate(null); });
+  if (autoList) {
+    autoList.addEventListener('click', async (e) => {
+      const b = e.target.closest('[data-a]');
+      if (!b) return;
+      const id = b.dataset.id, action = b.dataset.a;
+      if (action === 'preview') { await autoPreviewSaved(id); return; }
+      if (action === 'edit') {
+        try {
+          const resp = await fetch('/api/workforce/hr-assistant/automations');
+          const data = await resp.json();
+          const t = (data.items || []).find((x) => x.id === id);
+          if (t) { pushNav({ type: 'automation', task: t }); openAutomationCreate(t); }
+        } catch (err) { showActionToast('Could not load that task.'); }
+        return;
+      }
+      if (action === 'approve') { await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/automations/' + encodeURIComponent(id) + '/approve', {}), () => { showActionToast('First run approved — it will send automatically at its scheduled time.'); loadAutomationsBadgeAndList(true); }); return; }
+      if (action === 'pause') { await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/automations/' + encodeURIComponent(id) + '/pause', {}), () => { showActionToast('Paused — no future sends.'); loadAutomationsBadgeAndList(true); }); return; }
+      if (action === 'resume') { await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/automations/' + encodeURIComponent(id) + '/resume', {}), () => { showActionToast('Resumed.'); loadAutomationsBadgeAndList(true); }); return; }
+      if (action === 'run') {
+        if (!(await showConfirmDialog('Run this task now? It will really send to everyone who matches, right now.', { confirmLabel: 'Run now' }))) return;
+        await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/automations/' + encodeURIComponent(id) + '/run-now', {}), (r) => { showActionToast('Run complete: ' + (r.sentCount || 0) + ' sent, ' + (r.skippedCount || 0) + ' skipped.'); loadAutomationsBadgeAndList(true); });
+        return;
+      }
+      if (action === 'delete') {
+        if (!(await showConfirmDialog('Delete this automated task? This can\'t be undone.', { confirmLabel: 'Delete' }))) return;
+        await runButtonAction(b, () => fetchDeleteAutomation(id), () => { showActionToast('Deleted.'); loadAutomationsBadgeAndList(true); });
+        return;
+      }
+      if (action === 'missed-send') { await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/automations/' + encodeURIComponent(id) + '/missed-run/send', {}), (r) => { showActionToast('Sent: ' + (r.sentCount || 0) + ' sent, ' + (r.skippedCount || 0) + ' skipped.'); loadAutomationsBadgeAndList(true); }); return; }
+      if (action === 'missed-skip') { await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/automations/' + encodeURIComponent(id) + '/missed-run/skip', {}), () => { showActionToast('Skipped.'); loadAutomationsBadgeAndList(true); }); return; }
+    });
+  }
+  // DELETE has no body to send via postJsonOrThrow's POST-only helper -
+  // a tiny dedicated fetch instead of adding a method param to every other
+  // postJson caller in this file.
+  async function fetchDeleteAutomation(id) {
+    const resp = await fetch('/api/workforce/hr-assistant/automations/' + encodeURIComponent(id), { method: 'DELETE' });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.error || 'Request failed.');
+    return data;
+  }
+
+  // ---------- Create/Edit page ----------
+  function autoResetForm() {
+    autoEditingId = null; autoPlan = null; autoConfirmed = false; autoExcluded = new Set(); autoSelected = new Set();
+    autoTableCols = ['Employee_No', 'Employee_Name', 'Designation', 'Department'];
+    autoOriginalAsk = '';
+    autoSchedule = { date: '', time: '10:00', repeat: 'monthly', every: 2 };
+    if (autoSubject) autoSubject.value = '';
+    if (autoAsk) autoAsk.value = '';
+    if (autoUnderstand) autoUnderstand.innerHTML = '';
+    if (autoSheetWrap) autoSheetWrap.classList.add('hidden');
+    if (autoSheetUrl) autoSheetUrl.value = '';
+    if (autoSheetMsg) autoSheetMsg.textContent = '';
+    autoSetSeg(autoGroupSeg, 'each');
+    autoSetSeg(autoRecSeg, 'selected');
+    autoSetSeg(autoMedSeg, 'mail');
+    autoSetSeg(autoPlaceSeg, 'body');
+    autoSetSeg(autoRepSeg, 'monthly');
+    if (autoMailSubj) autoMailSubj.value = '';
+    if (autoBody) autoBody.value = '';
+    if (autoTableToggle) autoTableToggle.checked = false;
+    if (autoDate) autoDate.value = '';
+    if (autoTime) autoTime.value = '10:00';
+    if (autoEvery) autoEvery.value = 2;
+    if (autoCc) autoCc.value = '';
+    if (autoEmpSearch) autoEmpSearch.value = '';
+    renderAutoRecCols();
+  }
+  function autoPopulateForm(t) {
+    autoEditingId = t.id;
+    autoPlan = JSON.parse(JSON.stringify(t.plan));
+    autoConfirmed = true;
+    autoExcluded = new Set(t.excludedKeys || []);
+    autoSelected = new Set(t.plan.selectedEmployeeIds || []);
+    autoTableCols = [...(t.plan.tableColumns || [])];
+    autoOriginalAsk = t.originalAsk || '';
+    autoSchedule = Object.assign({ date: '', time: '10:00', repeat: 'monthly', every: 2 }, t.schedule);
+    if (autoSubject) autoSubject.value = t.subject;
+    if (autoAsk) autoAsk.value = t.originalAsk || '';
+    autoSetSeg(autoGroupSeg, t.plan.group);
+    autoSetSeg(autoRecSeg, t.plan.rec);
+    autoSetSeg(autoMedSeg, t.plan.mediator);
+    autoSetSeg(autoPlaceSeg, t.plan.tablePlacement || 'body');
+    autoSetSeg(autoRepSeg, t.schedule.repeat);
+    if (autoMailSubj) autoMailSubj.value = t.plan.mailSubject || '';
+    if (autoBody) autoBody.value = t.plan.body || '';
+    if (autoTableToggle) autoTableToggle.checked = Boolean(t.plan.table);
+    if (autoDate) autoDate.value = t.schedule.date || '';
+    if (autoTime) autoTime.value = t.schedule.time || '10:00';
+    if (autoEvery) autoEvery.value = t.schedule.every || 2;
+    if (autoCc) autoCc.value = t.plan.cc || '';
+    if (t.plan.source === 'sheet' && autoSheetWrap) { autoSheetWrap.classList.remove('hidden'); if (autoSheetUrl) autoSheetUrl.value = t.plan.sheetUrl || ''; if (autoSheetMsg) autoSheetMsg.textContent = t.plan.sheetColumns ? '✓ Loaded — columns: ' + t.plan.sheetColumns.join(', ') : ''; }
+    renderAutoRecCols();
+    if (autoRecCol) autoRecCol.value = t.plan.recCol || 'reportingDoer';
+    renderAutoCols();
+    renderAutoEmpList();
+    renderAutoUnderstanding();
+  }
+  async function openAutomationCreate(t) {
+    await fetchAutoEmployees();
+    if (t) autoPopulateForm(t); else autoResetForm();
+    if (!autoAskExamples.dataset.wired) {
+      autoAskExamples.innerHTML = AUTO_EXAMPLES.map((x, i) => '<button type="button" data-ex="' + i + '">' + escapeHtml(x) + '</button>').join('');
+      autoAskExamples.dataset.wired = '1';
+    }
+    if (!autoPlaceholders.dataset.wired) {
+      autoPlaceholders.innerHTML = AUTO_PLACEHOLDERS.map((p) => '<button type="button" data-p="' + escapeHtml(p) + '">' + escapeHtml(p) + '</button>').join('');
+      autoPlaceholders.dataset.wired = '1';
+    }
+    renderAutoEmpList();
+    autoSync();
+    setPanelView('automation');
+  }
+
+  function renderAutoRecCols() {
+    if (!autoRecCol) return;
+    const opts = (autoPlan && autoPlan.source === 'sheet')
+      ? [['self', 'This row (Email / Phone column)']].concat((autoPlan.sheetColumns || []).filter((c) => !/^(email|phone|e-?mail|contact|mobile)/i.test(c) && !/date/i.test(c)).map((c) => [c, c]))
+      : AUTO_EMP_PERSON_COLS;
+    autoRecCol.innerHTML = opts.map(([v, l]) => '<option value="' + escapeHtml(v) + '">' + escapeHtml(l) + '</option>').join('');
+  }
+  function renderAutoEmpList() {
+    if (!autoEmpList || !autoEmployeesCache) return;
+    const q = (autoEmpSearch && autoEmpSearch.value || '').toLowerCase();
+    const filtered = autoEmployeesCache.filter((e) => (e.name + ' ' + e.employeeId + ' ' + e.department).toLowerCase().includes(q));
+    autoEmpList.innerHTML = filtered.map((e) =>
+      '<label class="wf-auto-emp"><input type="checkbox" data-no="' + escapeHtml(e.employeeId) + '" ' + (autoSelected.has(e.employeeId) ? 'checked' : '') + ' />' +
+      '<div style="flex:1"><div style="font-weight:700">' + escapeHtml(e.name) + '</div><small>' + escapeHtml(e.department || '') + ' · ' + escapeHtml(e.email || 'no email') + ' · ' + escapeHtml(e.contactNumber || 'no phone') + '</small></div></label>'
+    ).join('');
+    if (autoSelCount) autoSelCount.textContent = autoSelected.size + ' selected';
+  }
+  if (autoEmpList) autoEmpList.addEventListener('change', (e) => { const no = e.target.dataset.no; if (!no) return; e.target.checked ? autoSelected.add(no) : autoSelected.delete(no); renderAutoEmpList(); autoSync(); });
+  if (autoEmpSearch) autoEmpSearch.addEventListener('input', renderAutoEmpList);
+  if (autoSelAllBtn) autoSelAllBtn.addEventListener('click', () => { (autoEmployeesCache || []).forEach((e) => autoSelected.add(e.employeeId)); renderAutoEmpList(); autoSync(); });
+  if (autoSelClearBtn) autoSelClearBtn.addEventListener('click', () => { autoSelected.clear(); renderAutoEmpList(); autoSync(); });
+
+  function renderAutoCols() {
+    if (!autoCols) return;
+    const avail = (autoPlan && autoPlan.source === 'sheet') ? (autoPlan.sheetColumns || []) : AUTO_EMP_COLUMNS;
+    autoCols.innerHTML = avail.map((h) => '<button type="button" class="' + (autoTableCols.includes(h) ? 'on' : '') + '" data-c="' + escapeHtml(h) + '">' + (autoTableCols.includes(h) ? '✓ ' : '+ ') + escapeHtml(h) + '</button>').join('');
+    if (autoColOrder) autoColOrder.textContent = autoTableCols.length ? 'Order: ' + autoTableCols.join(' | ') : 'Pick at least one column.';
+  }
+  if (autoCols) autoCols.addEventListener('click', (e) => { const b = e.target.closest('[data-c]'); if (!b) return; const c = b.dataset.c; autoTableCols = autoTableCols.includes(c) ? autoTableCols.filter((x) => x !== c) : [...autoTableCols, c]; renderAutoCols(); autoSync(); });
+  if (autoPlaceholders) autoPlaceholders.addEventListener('click', (e) => { const b = e.target.closest('[data-p]'); if (!b || !autoBody) return; const st = autoBody.selectionStart ?? autoBody.value.length; autoBody.value = autoBody.value.slice(0, st) + b.dataset.p + autoBody.value.slice(autoBody.selectionEnd ?? st); autoBody.focus(); autoSync(); });
+
+  [autoGroupSeg, autoRecSeg, autoMedSeg, autoPlaceSeg, autoRepSeg].forEach((seg) => {
+    if (!seg) return;
+    seg.addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b) return; autoSetSeg(seg, b.dataset.v); autoSync(); if (autoPlan) renderAutoUnderstanding(); });
+  });
+  if (autoRecCol) autoRecCol.addEventListener('change', () => { autoSync(); if (autoPlan) renderAutoUnderstanding(); });
+  if (autoTableToggle) autoTableToggle.addEventListener('change', autoSync);
+  [autoSubject, autoMailSubj, autoBody, autoDate, autoTime, autoEvery, autoCc].forEach((el) => { if (el) el.addEventListener('input', autoSync); });
+
+  function autoReadForm() {
+    return {
+      subject: (autoSubject && autoSubject.value || '').trim(),
+      source: autoPlan ? autoPlan.source : 'master',
+      group: autoSegVal(autoGroupSeg) || 'each',
+      rec: autoSegVal(autoRecSeg) || 'selected',
+      recCol: autoRecCol ? autoRecCol.value : null,
+      mediator: autoSegVal(autoMedSeg) || 'mail',
+      mailSubject: autoMailSubj ? autoMailSubj.value : '',
+      body: autoBody ? autoBody.value : '',
+      table: autoTableToggle ? autoTableToggle.checked : false,
+      tablePlacement: autoSegVal(autoPlaceSeg) || 'body',
+      date: autoDate ? autoDate.value : '',
+      time: autoTime ? autoTime.value : '10:00',
+      repeat: autoSegVal(autoRepSeg) || 'monthly',
+      every: autoEvery ? autoEvery.value : 2,
+      cc: autoCc ? autoCc.value.trim() : ''
+    };
+  }
+  function autoBuildPlanFromForm(f) {
+    const base = autoPlan || { source: 'master', conds: [], match: 'all', sheetUrl: null, sheetId: null, sheetColumns: null };
+    return Object.assign({}, base, {
+      group: f.group, rec: f.rec, recCol: f.recCol, selectedEmployeeIds: Array.from(autoSelected),
+      mediator: f.mediator, mailSubject: f.mailSubject, body: f.body, cc: f.cc || null,
+      table: f.table, tableColumns: [...autoTableCols], tablePlacement: f.mediator === 'wa' ? 'body' : f.tablePlacement
+    });
+  }
+  let autoSyncTimer = null;
+  function autoSync() {
+    const f = autoReadForm();
+    if (autoSubjCount) autoSubjCount.textContent = f.subject.length;
+    const isSheet = autoPlan && autoPlan.source === 'sheet';
+    const isNone = autoPlan && autoPlan.source === 'none';
+    if (autoSheetWrap) autoSheetWrap.classList.toggle('hidden', !isSheet);
+    if (autoGroupCard) autoGroupCard.classList.toggle('hidden', Boolean(isNone));
+    const colBtn = autoRecSeg && autoRecSeg.querySelector('[data-v="column"]');
+    if (colBtn) colBtn.classList.toggle('hidden', Boolean(isNone));
+    if (autoRecColWrap) autoRecColWrap.classList.toggle('hidden', f.rec !== 'column');
+    if (autoSelWrap) autoSelWrap.classList.toggle('hidden', f.rec !== 'column' ? false : true);
+    if (autoRecHint) autoRecHint.textContent = f.rec === 'column' ? 'Each matching row goes only to the person in that column. Every message holds only that one row.' : '';
+    if (autoMailSubjWrap) autoMailSubjWrap.classList.toggle('hidden', f.mediator !== 'mail');
+    if (autoTableWrap) autoTableWrap.classList.toggle('hidden', !f.table);
+    // WhatsApp + PDF attachment is blocked (direct instruction) - the
+    // gateway has no send-media capability today.
+    const pdfBtn = autoPlaceSeg && autoPlaceSeg.querySelector('[data-v="pdf"]');
+    if (pdfBtn) pdfBtn.disabled = f.mediator === 'wa';
+    if (autoPdfWaNote) autoPdfWaNote.textContent = f.mediator === 'wa' ? "The WhatsApp gateway doesn't support file attachments yet - the table will go in the message body instead." : '';
+    if (f.mediator === 'wa' && autoSegVal(autoPlaceSeg) === 'pdf') autoSetSeg(autoPlaceSeg, 'body');
+    if (autoCustomWrap) autoCustomWrap.classList.toggle('hidden', f.repeat !== 'custom');
+    const day = f.date ? new Date(f.date + 'T00:00:00Z').getUTCDate() : null;
+    if (autoRepRule) autoRepRule.textContent = (f.repeat === 'monthly' && day > 28) ? ('Months without day ' + day + ' run on their last day.') : (f.repeat === 'yearly' && f.date && f.date.slice(5) === '02-29' ? '29 Feb → runs on 28 Feb in non-leap years.' : '');
+    clearTimeout(autoSyncTimer);
+    autoSyncTimer = setTimeout(autoRefreshSummary, 250);
+  }
+  async function autoRefreshSummary() {
+    if (!autoSummary || !autoPlan) return;
+    const f = autoReadForm();
+    const plan = autoBuildPlanFromForm(f);
+    const schedule = { date: f.date, time: f.time, repeat: f.repeat, every: f.every };
+    try {
+      const resp = await fetch('/api/workforce/hr-assistant/automations/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ plan, excludedKeys: Array.from(autoExcluded), schedule }) });
+      const data = await resp.json();
+      autoLastPreview = data;
+      const srcLabel = plan.source === 'sheet' ? 'Custom Google Sheet' : (AUTO_SOURCE_LABELS[plan.source] || 'Data');
+      const recTxt = f.rec === 'column' ? 'the person in "' + (autoRecCol && autoRecCol.selectedOptions[0] ? autoRecCol.selectedOptions[0].textContent : '') + '"' : autoSelected.size + ' selected';
+      autoSummary.innerHTML = '<b>Summary</b><br>' + (autoConfirmed ? '✓ Plan confirmed' : '⚠ Ask SUBH and confirm the plan first') + '<br>' +
+        escapeHtml(srcLabel) + (autoExcluded.size ? ' · ' + autoExcluded.size + ' removed by you' : '') + '<br>' +
+        (f.mediator === 'mail' ? '✉️ Mail' : '💬 WhatsApp') + ' → ' + escapeHtml(recTxt) + (f.cc ? ' (CC ' + escapeHtml(f.cc) + ')' : '') + '<br>' +
+        (f.repeat === 'custom' ? 'Every ' + f.every + ' months' : f.repeat.charAt(0).toUpperCase() + f.repeat.slice(1)) + ' · next run <b>' + escapeHtml(data.nextRunAt ? new Date(data.nextRunAt).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' }) : '—') + '</b><br>' +
+        'Next run would send <b>' + ((data.sent || []).length) + '</b> message(s).';
+      // The understanding card's own per-row table reads autoLastPreview too
+      // - without this it would stay stuck on whatever was available at the
+      // moment it last rendered (e.g. empty, right after Ask SUBH) and never
+      // catch up once this debounced fetch actually resolves.
+      renderAutoUnderstanding();
+    } catch (err) { /* summary is best-effort - never blocks the form */ }
+  }
+
+  // ---------- Ask SUBH ----------
+  if (autoAskExamples) autoAskExamples.addEventListener('click', (e) => { const b = e.target.closest('[data-ex]'); if (!b) return; autoAsk.value = AUTO_EXAMPLES[+b.dataset.ex]; autoDoAsk(); });
+  if (autoAskBtn) autoAskBtn.addEventListener('click', autoDoAsk);
+  async function autoDoAsk() {
+    const text = (autoAsk && autoAsk.value || '').trim();
+    if (!text) { showActionToast('Write what you want to automate.'); return; }
+    autoOriginalAsk = text;
+    await runButtonAction(autoAskBtn, () => postJsonOrThrow('/api/workforce/hr-assistant/automations/ask', { text }), (draft) => {
+      if (!draft.ok) {
+        autoPlan = null; autoConfirmed = false;
+        if (autoUnderstand) autoUnderstand.innerHTML = '<div class="wf-auto-unclear"><h3>🤔 SUBH needs one more detail</h3><ul>' + draft.unclear.map((u) => '<li>Please tell me ' + escapeHtml(u) + '.</li>').join('') + '</ul><div class="wf-auto-hint">Add it to your sentence above and tap Ask SUBH again.</div></div>';
+        autoSync();
+        return;
+      }
+      autoPlan = draft.plan; autoConfirmed = false; autoExcluded = new Set();
+      autoSelected = new Set(draft.plan.selectedEmployeeIds || []);
+      autoTableCols = [...(draft.plan.tableColumns || [])];
+      autoSchedule = draft.schedule;
+      if (!autoSubject.value) autoSubject.value = draft.subject || '';
+      autoSetSeg(autoGroupSeg, draft.plan.group);
+      autoSetSeg(autoRecSeg, draft.plan.rec);
+      autoSetSeg(autoMedSeg, draft.plan.mediator);
+      autoSetSeg(autoPlaceSeg, draft.plan.tablePlacement || 'body');
+      autoSetSeg(autoRepSeg, draft.schedule.repeat);
+      autoMailSubj.value = draft.plan.mailSubject || '';
+      autoBody.value = draft.plan.body || '';
+      autoTableToggle.checked = Boolean(draft.plan.table);
+      autoDate.value = draft.schedule.date || '';
+      autoTime.value = draft.schedule.time || '10:00';
+      autoEvery.value = draft.schedule.every || 2;
+      renderAutoRecCols();
+      if (autoRecCol) autoRecCol.value = draft.plan.recCol || 'reportingDoer';
+      renderAutoCols();
+      renderAutoEmpList();
+      autoSync();
+      renderAutoUnderstanding();
+    });
+  }
+  if (autoSheetLoadBtn) autoSheetLoadBtn.addEventListener('click', async () => {
+    const url = (autoSheetUrl && autoSheetUrl.value || '').trim();
+    if (!/docs\.google\.com\/spreadsheets/.test(url)) { if (autoSheetMsg) autoSheetMsg.textContent = 'Paste a Google Sheet link first.'; return; }
+    await runButtonAction(autoSheetLoadBtn, () => postJsonOrThrow('/api/workforce/hr-assistant/automations/load-sheet', { sheetUrl: url }), (r) => {
+      if (!autoPlan) autoPlan = { source: 'sheet', conds: [], match: 'all' };
+      autoPlan.source = 'sheet'; autoPlan.sheetUrl = url; autoPlan.sheetId = r.sheetId; autoPlan.sheetColumns = r.columns;
+      if (autoSheetMsg) autoSheetMsg.textContent = '✓ Loaded — ' + r.columns.length + ' columns: ' + r.columns.join(', ');
+      renderAutoRecCols(); renderAutoCols(); autoSync();
+      if (autoPlan) renderAutoUnderstanding();
+    });
+  });
+
+  function renderAutoUnderstanding() {
+    if (!autoUnderstand) return;
+    if (!autoPlan) { autoUnderstand.innerHTML = ''; return; }
+    const f = autoReadForm();
+    const srcLabel = autoPlan.source === 'sheet' ? 'Custom Google Sheet' : (AUTO_SOURCE_LABELS[autoPlan.source] || 'Data');
+    const recTxt = f.rec === 'column' ? (f.recCol === 'self' ? 'each person themself' : 'each row\'s own ' + (autoRecCol && autoRecCol.selectedOptions[0] ? autoRecCol.selectedOptions[0].textContent : f.recCol)) : ((autoEmployeesCache || []).filter((e) => autoSelected.has(e.employeeId)).map((e) => e.name).join(', ') || '—');
+    const how = autoPlan.source === 'none' ? '' : (f.group === 'each' ? ' — one separate message per row' : ' — one combined list');
+    const sched = f.repeat === 'custom' && Number(f.every) === 1 ? 'every day' : (f.repeat === 'custom' ? 'every ' + f.every + ' months' : f.repeat);
+    const lines = [
+      '<b>Who:</b> ' + escapeHtml(srcLabel),
+      '<b>Sends to:</b> ' + escapeHtml(recTxt) + escapeHtml(how),
+      '<b>By:</b> ' + (f.mediator === 'mail' ? 'Mail' : 'WhatsApp') + (f.table ? ' · table ' + (f.tablePlacement === 'pdf' ? 'as PDF attachment' : 'in the message') : ''),
+      '<b>When:</b> ' + escapeHtml(sched) + ', first run ' + escapeHtml(autoLastPreview && autoLastPreview.nextRunAt ? new Date(autoLastPreview.nextRunAt).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' }) : '—')
+    ];
+    if (autoPlan.source === 'sheet' && !autoPlan.sheetColumns) {
+      autoUnderstand.innerHTML = '<div class="wf-auto-und"><h3>SUBH understood</h3><ul>' + lines.map((l) => '<li>' + l + '</li>').join('') + '</ul><div class="wf-auto-hint" style="margin-top:8px">Load your Google Sheet below to see the people.</div></div>';
+      return;
+    }
+    const rows = (autoLastPreview && autoLastPreview.rows) || [];
+    const rowsHtml = autoPlan.source === 'none' ? '' : ('<table><tr><th>Person</th><th>Message goes to</th><th></th></tr>' + (rows.length ? rows.map((r) => {
+      const key = r._key, out = autoExcluded.has(key);
+      const sentEntry = (autoLastPreview.sent || []).find((s) => s.key === key);
+      const skipEntry = (autoLastPreview.skipped || []).find((s) => s.key === key);
+      let to = '';
+      if (f.rec === 'column') to = sentEntry ? '<span class="ok">' + escapeHtml(sentEntry.to) + '</span>' : '<span class="bad">' + escapeHtml((skipEntry && skipEntry.reason) || 'will skip') + '</span>';
+      else to = escapeHtml(recTxt);
+      return '<tr style="' + (out ? 'opacity:.4;text-decoration:line-through' : '') + '"><td>' + escapeHtml(r['Employee_Name'] || r['Name'] || '—') + '</td><td>' + to + '</td><td><button type="button" class="wf-auto-row-x" data-ex-row="' + escapeHtml(key) + '">' + (out ? '↺' : '×') + '</button></td></tr>';
+    }).join('') : '<tr><td colspan="3">Nobody matches for the next run.</td></tr>') + '</table>');
+    autoUnderstand.innerHTML = '<div class="wf-auto-und"><h3>SUBH understood' + (autoConfirmed ? ' <span class="ok">✓ confirmed</span>' : '') + '</h3><ul>' + lines.map((l) => '<li>' + l + '</li>').join('') + '</ul>' +
+      (autoPlan.source === 'none' ? '' : '<div class="wf-auto-hint" style="margin-top:8px">For the next run: ' + rows.length + ' people. Tap × to leave someone out.</div>') +
+      rowsHtml +
+      (autoConfirmed ? '<div class="wf-auto-confirmed">✓ Plan confirmed — you can still change anything below.</div>' : '<div class="wf-auto-ask-row"><button type="button" class="wf-ai-action-btn download" id="autoYesBtn">✓ Yes, that\'s right</button><button type="button" class="wf-ai-action-btn outline" id="autoNoBtn">Change it</button></div>') +
+      '</div>';
+    const yesBtn = document.getElementById('autoYesBtn'), noBtn = document.getElementById('autoNoBtn');
+    if (yesBtn) yesBtn.onclick = () => { autoConfirmed = true; renderAutoUnderstanding(); autoSync(); showActionToast('Plan confirmed ✓ — check the message & schedule below.'); };
+    if (noBtn) noBtn.onclick = () => { if (autoAsk) autoAsk.focus(); showActionToast('Edit your sentence (e.g. "only HR department") and tap Ask SUBH again.'); };
+  }
+  if (autoUnderstand) autoUnderstand.addEventListener('click', (e) => { const b = e.target.closest('[data-ex-row]'); if (!b) return; const k = b.dataset.exRow; autoExcluded.has(k) ? autoExcluded.delete(k) : autoExcluded.add(k); renderAutoUnderstanding(); autoSync(); });
+
+  // ---------- Preview / Test / Save ----------
+  function autoRenderPreviewBody(data, title) {
+    if (autoPreviewTitle) autoPreviewTitle.textContent = title;
+    const sent = data.sent || [], skipped = data.skipped || [];
+    let html = '<div class="wf-auto-hint">' + sent.length + ' message(s)' + (data.nextRunAt ? ' · run on ' + escapeHtml(new Date(data.nextRunAt).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' })) : '') + '</div>';
+    html += skipped.map((s) => '<div class="wf-auto-skip">⚠ ' + escapeHtml(s.who) + ': ' + escapeHtml(s.reason) + '</div>').join('');
+    if (!sent.length) html += '<div class="wf-rem-empty">Nothing to send on this run.</div>';
+    else html += sent.map((m, i) => {
+      let body = '<div class="wf-auto-msg"><div class="to">' + (i + 1) + '. To: ' + escapeHtml(m.to) + ' &lt;' + escapeHtml(m.addr) + '&gt;</div>';
+      if (m.subject) body += '<div class="subj">Subject: ' + escapeHtml(m.subject) + '</div>';
+      body += '<pre>' + escapeHtml(m.body) + '</pre>';
+      if (m.table && m.table.length && m.tablePlacement === 'body') body += '<div class="wf-auto-tbl"><table><tr>' + m.tableColumns.map((c) => '<th>' + escapeHtml(c) + '</th>').join('') + '</tr>' + m.table.map((r) => '<tr>' + m.tableColumns.map((c) => '<td>' + escapeHtml(r[c] instanceof Object ? '' : (r[c] == null ? '—' : String(r[c]))) + '</td>').join('') + '</tr>').join('') + '</table></div>';
+      if (m.table && m.table.length && m.tablePlacement === 'pdf') body += '<div class="wf-auto-pdf"><div class="wf-auto-pdf-name">📎 ' + escapeHtml((autoSubject.value || 'Report') + (m.who ? '-' + m.who : '') + '.pdf') + '</div></div>';
+      return body + '</div>';
+    }).join('');
+    if (autoPreviewBody) autoPreviewBody.innerHTML = html;
+    if (autoPreviewBackdrop) autoPreviewBackdrop.hidden = false;
+    if (autoPreviewSheet) { autoPreviewSheet.hidden = false; requestAnimationFrame(() => autoPreviewSheet.classList.add('open')); }
+  }
+  function autoClosePreview() {
+    if (autoPreviewSheet) autoPreviewSheet.classList.remove('open');
+    setTimeout(() => { if (autoPreviewSheet) autoPreviewSheet.hidden = true; if (autoPreviewBackdrop) autoPreviewBackdrop.hidden = true; }, 280);
+  }
+  if (autoPreviewCloseBtn) autoPreviewCloseBtn.addEventListener('click', autoClosePreview);
+  if (autoPreviewBackdrop) autoPreviewBackdrop.addEventListener('click', autoClosePreview);
+  if (autoPreviewBtn) autoPreviewBtn.addEventListener('click', async () => {
+    autoSync();
+    await autoRefreshSummary();
+    if (autoLastPreview) autoRenderPreviewBody(autoLastPreview, 'Preview — next run');
+  });
+  async function autoPreviewSaved(id) {
+    try {
+      const resp = await fetch('/api/workforce/hr-assistant/automations');
+      const data = await resp.json();
+      const t = (data.items || []).find((x) => x.id === id);
+      if (!t) return;
+      const previewResp = await fetch('/api/workforce/hr-assistant/automations/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ plan: t.plan, excludedKeys: t.excludedKeys, schedule: t.schedule }) });
+      const previewData = await previewResp.json();
+      autoRenderPreviewBody(previewData, 'Preview — ' + t.subject);
+    } catch (err) { showActionToast('Could not load preview.'); }
+  }
+  if (autoTestBtn) autoTestBtn.addEventListener('click', async () => {
+    if (!autoEditingId) { showActionToast('Save the automation first, then you can send a test.'); return; }
+    await runButtonAction(autoTestBtn, () => postJsonOrThrow('/api/workforce/hr-assistant/automations/' + encodeURIComponent(autoEditingId) + '/send-test', {}), (r) => {
+      showActionToast(r.results && r.results[0] && r.results[0].status === 'sent' ? 'Test sent to you ✓' : 'Nothing to test on this run.');
+    });
+  });
+
+  function autoValidate(f) {
+    let ok = true;
+    if (autoSubjErr) autoSubjErr.classList.toggle('hidden', Boolean(f.subject));
+    if (!f.subject) ok = false;
+    if (!autoConfirmed) { showActionToast("Ask SUBH and confirm the plan first."); ok = false; }
+    if (!f.date || !f.time) { showActionToast('Date and time are required.'); ok = false; }
+    if (f.rec === 'selected' && !autoSelected.size) { showActionToast('Select at least one recipient.'); ok = false; }
+    if (!f.body.trim()) { showActionToast('Message body is required.'); ok = false; }
+    if (f.table && !autoTableCols.length) { showActionToast('Pick at least one table column.'); ok = false; }
+    if (autoPlan && autoPlan.source === 'sheet' && !autoPlan.sheetColumns) { showActionToast('Load the Google Sheet first.'); ok = false; }
+    return ok;
+  }
+  if (autoSaveBtn) autoSaveBtn.addEventListener('click', async () => {
+    autoSync();
+    const f = autoReadForm();
+    if (!autoValidate(f)) return;
+    const plan = autoBuildPlanFromForm(f);
+    const schedule = { date: f.date, time: f.time, repeat: f.repeat, every: f.every };
+    const payload = { subject: f.subject, originalAsk: autoOriginalAsk, plan, excludedKeys: Array.from(autoExcluded), schedule };
+    const url = autoEditingId ? '/api/workforce/hr-assistant/automations/' + encodeURIComponent(autoEditingId) : '/api/workforce/hr-assistant/automations';
+    await runButtonAction(autoSaveBtn, () => postJsonOrThrow(url, payload), () => {
+      showActionToast(autoEditingId ? 'Automation updated ✓' : 'Saved ✓ — first run waits for your approval.');
+      navStack = navStack.filter((n) => n.type !== 'automation');
+      pushNav({ type: 'automationList' });
+      openAutomationList();
+    });
+  });
+  if (autoCancelBtn) autoCancelBtn.addEventListener('click', navBack);
 })();

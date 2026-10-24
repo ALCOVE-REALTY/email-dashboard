@@ -16,6 +16,7 @@ const whatsappAssistant = require('./aiAssistant/whatsappAssistant');
 const memoryService = require('./aiAssistant/memoryService');
 const documentRequests = require('./aiAssistant/documentRequests');
 const reminderService = require('./aiAssistant/reminderService');
+const automationService = require('./aiAssistant/automationService');
 const hrAccountCommands = require('./hrAccountCommands');
 const hrAuthAlerts = require('./hrAuthAlerts');
 const fileStorage = require('./fileStorage');
@@ -1867,6 +1868,205 @@ router.post('/hr-assistant/reminder-settings', async (req, res) => {
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: "Couldn't save - please retry." });
+  }
+});
+
+// ---------------- SUBH Automated Tasks ----------------
+// Lightweight employee list for the "Selected people" picker - name/dept/
+// email/phone only (never aadhar/pan/bank/salary), same employeeService
+// data every other HR feature already reads.
+router.get('/hr-assistant/automations/employees', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const { employees } = await employeeService.getEmployeeData();
+    res.json({ items: employees.filter((e) => e.status !== 'INACTIVE').map((e) => ({ employeeId: e.employeeId, name: e.name, department: e.department, email: e.email, contactNumber: e.contactNumber })) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/hr-assistant/automations', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const items = await automationService.listRawAutomations();
+    res.json({ items });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/hr-assistant/automations/ask', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const { text } = req.body || {};
+    if (!text || !String(text).trim()) return res.status(400).json({ error: 'text is required' });
+    const parsed = await automationService.parseAutomationAsk(String(text).trim());
+    const draft = await automationService.draftPlanFromParsed(parsed, new Date());
+    res.json(draft);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/hr-assistant/automations/load-sheet', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const { sheetUrl } = req.body || {};
+    const result = await automationService.loadSheetColumns(sheetUrl);
+    if (!result.ok) return res.status(400).json({ error: result.error });
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Shared by the in-app Preview sheet AND the create/edit page's own live
+// "N people match for the next run" line - same automationService.buildMessages
+// call either way, so neither can ever show a different answer than what a
+// real run would actually do.
+router.post('/hr-assistant/automations/preview', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const { plan, excludedKeys, schedule } = req.body || {};
+    if (!plan) return res.status(400).json({ error: 'plan is required' });
+    const now = new Date();
+    const runAt = automationService.computeNextRun(schedule, now);
+    const result = await automationService.buildMessages({ plan, excludedKeys: excludedKeys || [] }, runAt ? new Date(runAt) : now);
+    res.json({ ...result, nextRunAt: runAt });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/hr-assistant/automations', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const now = new Date();
+    const { subject, originalAsk, plan, excludedKeys, schedule } = req.body || {};
+    if (!subject || !String(subject).trim()) return res.status(400).json({ error: 'Task Subject is required.' });
+    if (!plan || !schedule || !schedule.date || !schedule.time) return res.status(400).json({ error: 'A confirmed plan and schedule are required.' });
+    const record = automationService.newAutomation({ subject: String(subject).trim(), originalAsk, plan, excludedKeys: excludedKeys || [], schedule, now, createdBy: req.hrUser.email });
+    await automationService.saveAutomation(record);
+    res.json({ ok: true, item: record });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/hr-assistant/automations/:id', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const existing = await automationService.getAutomation(req.params.id);
+    if (!existing) return res.status(404).json({ error: 'Automated task not found.' });
+    const now = new Date();
+    const { subject, originalAsk, plan, excludedKeys, schedule } = req.body || {};
+    if (subject !== undefined) existing.subject = subject;
+    if (originalAsk !== undefined) existing.originalAsk = originalAsk;
+    if (plan !== undefined) existing.plan = plan;
+    if (excludedKeys !== undefined) existing.excludedKeys = excludedKeys;
+    if (schedule !== undefined) { existing.schedule = schedule; existing.nextRunAt = automationService.computeNextRun(schedule, now); existing.pendingMissedRun = null; }
+    existing.updatedAt = now.toISOString();
+    await automationService.saveAutomation(existing);
+    res.json({ ok: true, item: existing });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.delete('/hr-assistant/automations/:id', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    await automationService.deleteAutomation(req.params.id);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// "Approve first run" only activates the task (direct instruction) - it
+// never sends anything itself. The first real send happens exactly like
+// every later one, naturally, when the scheduler finds nextRunAt due.
+router.post('/hr-assistant/automations/:id/approve', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const a = await automationService.getAutomation(req.params.id);
+    if (!a) return res.status(404).json({ error: 'Automated task not found.' });
+    a.status = 'active';
+    a.updatedAt = new Date().toISOString();
+    await automationService.saveAutomation(a);
+    res.json({ ok: true, item: a });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+router.post('/hr-assistant/automations/:id/pause', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const a = await automationService.getAutomation(req.params.id);
+    if (!a) return res.status(404).json({ error: 'Automated task not found.' });
+    a.status = 'paused';
+    a.updatedAt = new Date().toISOString();
+    await automationService.saveAutomation(a);
+    res.json({ ok: true, item: a });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+router.post('/hr-assistant/automations/:id/resume', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const a = await automationService.getAutomation(req.params.id);
+    if (!a) return res.status(404).json({ error: 'Automated task not found.' });
+    const now = new Date();
+    a.status = 'active';
+    if (!a.nextRunAt || new Date(a.nextRunAt).getTime() < now.getTime()) a.nextRunAt = automationService.computeNextRun(a.schedule, now);
+    a.updatedAt = now.toISOString();
+    await automationService.saveAutomation(a);
+    res.json({ ok: true, item: a });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+router.post('/hr-assistant/automations/:id/run-now', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const result = await automationService.runAutomation(req.params.id, {}, new Date());
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+router.post('/hr-assistant/automations/:id/send-test', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const a = await automationService.getAutomation(req.params.id);
+    if (!a) return res.status(404).json({ error: 'Automated task not found.' });
+    const testTo = a.plan.mediator === 'mail' ? req.hrUser.email : (req.body && req.body.phone);
+    if (!testTo) return res.status(400).json({ error: a.plan.mediator === 'mail' ? 'No owner email on file.' : 'Your own WhatsApp number is required for a WhatsApp test.' });
+    const result = await automationService.runAutomation(req.params.id, { isTest: true, testTo }, new Date());
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+router.post('/hr-assistant/automations/:id/missed-run/send', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const result = await automationService.resolveMissedRun(req.params.id, 'send', new Date());
+    if (!result.ok) return res.status(400).json(result);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+router.post('/hr-assistant/automations/:id/missed-run/skip', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const result = await automationService.resolveMissedRun(req.params.id, 'skip', new Date());
+    if (!result.ok) return res.status(400).json(result);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
