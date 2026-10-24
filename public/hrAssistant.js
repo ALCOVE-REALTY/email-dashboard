@@ -1689,7 +1689,12 @@
     const { aCase, outcome } = lastOutcome;
     if (outcome === 'sent') return { text: 'SUBH: auto-replied', tone: 'resolved' };
     if (outcome === 'draft_mode') return { text: 'SUBH: draft ready - needs your review', tone: 'waiting' };
-    if (outcome === 'send_failed') return { text: 'SUBH: send failed - escalated', tone: 'escalated' };
+    // 'send_failed' is now the INTERIM state (a retry is already queued
+    // ~60s out, see sendOrReportAutoReply) - 'not_delivered' is the final
+    // state after that retry also failed, matching the per-bubble "Not
+    // delivered" flag's own wording above.
+    if (outcome === 'send_failed') return { text: 'SUBH: send failed - retrying', tone: 'waiting' };
+    if (outcome === 'not_delivered') return { text: 'SUBH: Not delivered - escalated', tone: 'escalated' };
     if (outcome === 'never_auto_pending') return { text: 'SUBH: waiting for your review', tone: 'waiting' };
     if (aCase === 'holding') return { text: 'SUBH: waiting for your answer', tone: 'waiting' };
     return null;
@@ -1953,9 +1958,17 @@
   function renderConvoThread(convo) {
     if (commsHeadTitle) commsHeadTitle.textContent = convo.name || convo.chatId;
     const status = convoStatusLine(convo.lastOutcome);
+    // Per-bubble "Not delivered" flag (live incident fix) - the
+    // conversation-level status pill below only ever shows the chat's
+    // MOST RECENT outcome, which can hide an earlier real delivery
+    // failure the moment anything else gets logged for this same chat
+    // afterward. A failed/undelivered OUTGOING bubble is flagged right on
+    // itself instead, regardless of what happened later in the chat.
+    const NOT_DELIVERED_OUTCOMES = ['send_failed', 'not_delivered'];
     const thread = (convo.thread || []).map((m) =>
       '<div class="wf-convo-msg ' + (m.direction === 'out' ? 'out' : 'in') + '">' +
         '<span class="wf-convo-msg-bubble">' + escapeHtml(m.text) + '</span>' +
+        (m.direction === 'out' && NOT_DELIVERED_OUTCOMES.includes(m.outcome) ? '<span class="wf-convo-msg-failed">Not delivered</span>' : '') +
         '<span class="wf-convo-msg-time">' + formatCommsTime(m.ts) + '</span>' +
       '</div>'
     ).join('');

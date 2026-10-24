@@ -90,14 +90,49 @@ async function sendWhatsAppMessageOnce(phone, message) {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok || data.success === false) {
-      return { ok: false, error: data.message || 'Could not send the WhatsApp message.' };
+      // Delivery tracking (direct instruction, live incident) - the full
+      // gateway response is kept on a failure too, not just the message
+      // string, so a real investigation can see exactly what the gateway
+      // itself said rather than our own one-line summary of it.
+      return { ok: false, error: data.message || 'Could not send the WhatsApp message.', gatewayResponse: data };
     }
-    return { ok: true };
+    // Delivery tracking - this gateway's response shape for a successful
+    // send has never been confirmed in writing (no API docs exist for
+    // it), so every plausible id field name is tried rather than assuming
+    // one; callers store whatever comes back (gatewayMessageId may be
+    // null) for later correlation if the gateway is ever found to expose
+    // a real delivery-status lookup by this id.
+    const gatewayMessageId = data.messageId || data.message_id || data.id || (data.data && (data.data.id || data.data.messageId)) || null;
+    return { ok: true, gatewayMessageId, gatewayResponse: data };
   } catch (err) {
     return { ok: false, error: err.message };
   } finally {
     clearTimeout(timer);
   }
+}
+// Live incident (917278793115, two real sends silently dropped while a
+// different sender's send succeeded around the same time) - serializes
+// EVERY outbound send through one global FIFO queue with a small gap
+// between them (direct instruction: "one send per recipient at a time...
+// a small gap between sends"), so this process can never have two
+// sendMessage calls in flight on the gateway's single underlying WhatsApp
+// session at once, whatever called sendWhatsAppMessage and for whichever
+// recipient. Queued globally, not merely per-recipient, since the one
+// session is shared across every recipient anyway - a second send still
+// waits its turn even for a different number. A failure in one queued
+// send is swallowed in the CHAIN itself (the task's own try/catch already
+// turned it into {ok:false}) so it can never jam the queue for every send
+// behind it.
+const SEND_QUEUE_GAP_MS = 400;
+let sendQueueTail = Promise.resolve();
+function enqueueSend(task) {
+  const run = sendQueueTail.then(async () => {
+    const result = await task();
+    await new Promise((resolve) => setTimeout(resolve, SEND_QUEUE_GAP_MS));
+    return result;
+  });
+  sendQueueTail = run.catch(() => {});
+  return run;
 }
 // Live review item 4 (found live: an approved send failed once, was only
 // ever logged as "send failed - escalated" with no retry at all, and
@@ -106,11 +141,17 @@ async function sendWhatsAppMessageOnce(phone, message) {
 // permanently lose an owner-approved message on the very first attempt.
 // A phone-format validation failure fails the same way both times (not a
 // transient condition), so the retry costs nothing extra in that case.
+// The recipient/message come from this call's own arguments only, never
+// from any module-level or closed-over mutable state, so two concurrent
+// callers (now serialized by enqueueSend above too) can never have their
+// recipients mixed up with each other.
 async function sendWhatsAppMessage(phone, message) {
-  const first = await sendWhatsAppMessageOnce(phone, message);
-  if (first.ok) return first;
-  await new Promise((resolve) => setTimeout(resolve, 2000));
-  return sendWhatsAppMessageOnce(phone, message);
+  return enqueueSend(async () => {
+    const first = await sendWhatsAppMessageOnce(phone, message);
+    if (first.ok) return first;
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    return sendWhatsAppMessageOnce(phone, message);
+  });
 }
 
 // ---------------- Typing presence (reply-latency/human-like request) ----------------

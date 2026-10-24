@@ -697,10 +697,44 @@ async function getWhatsappConversation(chatIdRaw) {
   // into a card's "For: ..." label, which forLabel (hrAssistant.js) shows
   // verbatim whenever it differs from the conversation header.
   const itemLabel = (n) => (directoryMatch && directoryMatch.emp.name) || (isRealName(n) ? n : chatId);
+  // Per-bubble delivery status (live incident, 917278793115) - found live:
+  // `lastOutcome` below only ever reflects the MOST RECENT inbox-log entry
+  // for this whole chat, so two real send_failed sends were completely
+  // invisible the moment a later, unrelated entry (a duplicate message
+  // correctly caught as skipped_possible_loop) was logged for the same
+  // chat right after them - "SUBH's reply shows in the app" with no sign
+  // anything had failed. Matches each OUTGOING bubble to its own
+  // inbox-log entry by exact text, within the time window between this
+  // bubble and the NEXT bubble with that same text (if any) - the LAST
+  // matching entry in that window is this bubble's final outcome, so a
+  // delayed retry's eventual result (see sendOrReportAutoReply) replaces
+  // an earlier failure instead of two bubbles of identical text getting
+  // mixed up with each other.
+  const outTextOccurrences = new Map();
+  history.forEach((h, i) => {
+    if (h.direction !== 'out') return;
+    if (!outTextOccurrences.has(h.text)) outTextOccurrences.set(h.text, []);
+    outTextOccurrences.get(h.text).push({ ts: h.ts, index: i });
+  });
+  const logsByText = new Map();
+  for (const e of myLog) {
+    if (!logsByText.has(e.sentText)) logsByText.set(e.sentText, []);
+    logsByText.get(e.sentText).push(e);
+  }
+  for (const arr of logsByText.values()) arr.sort((a, b) => (a.sentAt || a.ts || 0) - (b.sentAt || b.ts || 0));
   return {
     chatId,
     name,
-    thread: history.map((h) => ({ direction: h.direction, text: h.text, ts: h.ts })),
+    thread: history.map((h, i) => {
+      if (h.direction !== 'out') return { direction: h.direction, text: h.text, ts: h.ts };
+      const occurrences = outTextOccurrences.get(h.text) || [];
+      const myOrder = occurrences.findIndex((o) => o.index === i);
+      const nextOccurrence = occurrences[myOrder + 1];
+      const windowEnd = nextOccurrence ? nextOccurrence.ts : Infinity;
+      const candidates = (logsByText.get(h.text) || []).filter((e) => (e.sentAt || e.ts || 0) >= h.ts && (e.sentAt || e.ts || 0) < windowEnd);
+      const finalEntry = candidates.length ? candidates[candidates.length - 1] : null;
+      return { direction: h.direction, text: h.text, ts: h.ts, outcome: finalEntry ? finalEntry.outcome : null };
+    }),
     lastOutcome: latestLog ? { aCase: latestLog.aCase, outcome: latestLog.outcome } : null,
     neverAuto,
     pendingApprovals: myApprovals.map((a) => ({
@@ -885,11 +919,16 @@ async function resetFollowupCount(chatId) {
 // losing its only real purpose (not look instant/robotic).
 function randomDelayMs() { return (2 + Math.random() * 2) * 1000; }
 
-async function scheduleAutoSend(entry) {
+// `sendAtOverride` (live incident, 917278793115) - used by
+// sendOrReportAutoReply's own one-time delayed retry below to schedule a
+// SPECIFIC future instant (~60s out) instead of the normal random 2-4s
+// human-like delay, reusing this exact same queue/flush mechanism rather
+// than a new one.
+async function scheduleAutoSend(entry, sendAtOverride) {
   const redis = getClient();
   if (!redis) return;
   const id = entry.chatId + ':' + Date.now() + ':' + Math.random().toString(36).slice(2, 8);
-  const sendAt = Date.now() + randomDelayMs();
+  const sendAt = sendAtOverride || (Date.now() + randomDelayMs());
   try {
     await redis.set(PENDING_AUTOSEND_PREFIX + id, JSON.stringify({ ...entry, id, sendAt }));
     await redis.zadd(PENDING_AUTOSEND_ZSET, { score: sendAt, member: id });
@@ -970,6 +1009,12 @@ function isRealSendAllowedFor(chatId) {
 // own timing, so this catches slow POLLING too (backoff, a stuck
 // scheduler), not only a long human-like delay.
 const LATENCY_ALERT_THRESHOLD_MS = 30 * 1000;
+// Live incident (917278793115) point (d) - one further delayed attempt
+// before giving up for good on a failed real send, on top of
+// sendWhatsAppMessage's own immediate 2-attempt retry (2s apart) - a
+// gateway hiccup that doesn't clear in 2s sometimes still clears within
+// under a minute.
+const RESEND_RETRY_DELAY_MS = 60 * 1000;
 async function sendOrReportAutoReply(entry) {
   const realSendEnabled = isRealSendAllowedFor(entry.chatId);
   const who = (entry.isGroup ? 'group ' : '') + entry.name;
@@ -1072,7 +1117,12 @@ async function sendOrReportAutoReply(entry) {
   // language, exact wording given - never under 10 minutes, matching
   // catchUpAfterGap's own identical apology window for a combined
   // backlog reply (CATCHUP_APOLOGY_THRESHOLD_MS/CATCHUP_APOLOGY_LINE).
-  if (entry.arrivedAt && entry.replyText) {
+  // Never on a retry (live incident, 917278793115's delivery-tracking fix)
+  // - entry.replyText here is the SAME string the first, failed attempt
+  // already (maybe) prefixed before this retry was ever scheduled;
+  // re-running this check against the same entry.arrivedAt a minute later
+  // would double the apology line on top of itself.
+  if (!entry.isRetry && entry.arrivedAt && entry.replyText) {
     const lateMs = Date.now() - entry.arrivedAt;
     if (lateMs > CATCHUP_APOLOGY_THRESHOLD_MS) {
       const lang = entry.lang || detectLang(entry.replyText);
@@ -1101,11 +1151,30 @@ async function sendOrReportAutoReply(entry) {
       await postOwnerNotification('✓ Auto-replied to ' + who + ' at ' + timeLabel + ': "' + entry.replyText + '"');
       await alertIfSlow(sentAt);
       await logAutoReplyEvent({ senderType: entry.isGroup ? 'group' : 'direct', aCase: entry.case, memoryId: entry.memoryId, action: 'sent' });
-      await logInboxEvent({ chatId: entry.chatId, name: entry.name, isGroup: entry.isGroup, messageSummary: entry.summaryForOwner, aCase: entry.case, sentText: entry.replyText, outcome: 'sent', intent: entry.intent, hrTopicArea: entry.hrTopicArea, ...timeline, sentAt });
+      await logInboxEvent({ chatId: entry.chatId, name: entry.name, isGroup: entry.isGroup, messageSummary: entry.summaryForOwner, aCase: entry.case, sentText: entry.replyText, outcome: 'sent', intent: entry.intent, hrTopicArea: entry.hrTopicArea, ...timeline, sentAt, gatewayMessageId: sendResult.gatewayMessageId || null });
+    } else if (!entry.isRetry && !entry.isGroup) {
+      // Delivery tracking (live incident, 917278793115: two sends were
+      // logged as a failure with no further attempt and no clearly visible
+      // "not delivered" status anywhere in the WhatsApp section itself,
+      // only a one-time owner notification that scrolled away) - one more
+      // attempt ~60s later, reusing the exact same delayed-send queue a
+      // fresh decision uses, before giving up for good. A brief gateway
+      // hiccup often clears within a minute; a genuinely broken send
+      // (bad number, gateway down) fails the same way both times and
+      // still ends up alerted below, just one retry later. Never for a
+      // group - that send always fails identically (not implemented yet),
+      // so a retry would only waste 60s before the same inevitable result.
+      await scheduleAutoSend(Object.assign({}, entry, { isRetry: true }), Date.now() + RESEND_RETRY_DELAY_MS);
+      await logAutoReplyEvent({ senderType: entry.isGroup ? 'group' : 'direct', aCase: entry.case, memoryId: entry.memoryId, action: 'send_failed_retrying' });
+      await logInboxEvent({ chatId: entry.chatId, name: entry.name, isGroup: entry.isGroup, messageSummary: entry.summaryForOwner, aCase: entry.case, sentText: entry.replyText, outcome: 'send_failed', intent: entry.intent, hrTopicArea: entry.hrTopicArea, ...timeline, sentAt, gatewayError: sendResult.error || null });
     } else {
-      await postOwnerNotification('Could not auto-reply to ' + who + ': ' + (sendResult.error || 'unknown error'));
-      await logAutoReplyEvent({ senderType: entry.isGroup ? 'group' : 'direct', aCase: entry.case, memoryId: entry.memoryId, action: 'send_failed' });
-      await logInboxEvent({ chatId: entry.chatId, name: entry.name, isGroup: entry.isGroup, messageSummary: entry.summaryForOwner, aCase: entry.case, sentText: entry.replyText, outcome: 'send_failed', intent: entry.intent, hrTopicArea: entry.hrTopicArea, ...timeline, sentAt });
+      // Either the retry above ALSO failed, or this was a group send
+      // (never retried, see above) - final either way, alerted, never
+      // retried again.
+      const retryNote = entry.isRetry ? ' even after a retry' : '';
+      await postOwnerNotification('⚠️ Could not deliver to ' + who + retryNote + ': ' + (sendResult.error || 'unknown error') + ' - shown as "Not delivered", please check/resend manually.');
+      await logAutoReplyEvent({ senderType: entry.isGroup ? 'group' : 'direct', aCase: entry.case, memoryId: entry.memoryId, action: 'not_delivered' });
+      await logInboxEvent({ chatId: entry.chatId, name: entry.name, isGroup: entry.isGroup, messageSummary: entry.summaryForOwner, aCase: entry.case, sentText: entry.replyText, outcome: 'not_delivered', intent: entry.intent, hrTopicArea: entry.hrTopicArea, ...timeline, sentAt, gatewayError: sendResult.error || null });
     }
   } else {
     // DRAFT mode (spec point 8) - the full pipeline (decide, delay,
@@ -2964,7 +3033,7 @@ async function postHrConfirmationOwnerRecord(confirmation, outcome) {
 // handlePersonLookupRequest already uses - several matches ask the
 // sender which one, a first-name-only single match confirms once, no
 // match asks for the full name again.
-async function resolveHrNoteThirdParty({ phone, name, lang, personName, department, summary, summaryLocalized, topicLabel, actionPhrase, createdAt, history }) {
+async function resolveHrNoteThirdParty({ phone, name, lang, personName, department, summary, summaryLocalized, topicLabel, actionPhrase, createdAt, previousCandidateId, history }) {
   // `createdAt` is the SENDER'S ORIGINAL message timestamp for this flow,
   // set once in handleHrNotificationStart and threaded through every
   // re-save from here on - never reset to Date.now() on a re-save, since
@@ -2993,6 +3062,20 @@ async function resolveHrNoteThirdParty({ phone, name, lang, personName, departme
   }
   const soleMatch = current[0];
   if (isFirstNameOnly(personName, soleMatch.name)) {
+    // Live review (917278793115, real incident) - found live: "Subhodeep"
+    // -> confirm question -> "Subhadip HR" (a corrected spelling that
+    // resolves to the SAME person) -> the IDENTICAL confirm question
+    // again -> "Suvodip kundu" (still the same person) -> the IDENTICAL
+    // question a third time. isFirstNameOnly only ever compares WORD
+    // COUNT against the full name, so any answer with fewer words than
+    // the full name re-triggers this branch forever, even when it keeps
+    // resolving to the one person already pending confirmation. If this
+    // resolution is to the SAME candidate the sender was already asked
+    // about, their answer IS the confirmation - finalize directly instead
+    // of asking the identical question again.
+    if (previousCandidateId && soleMatch.employeeId && soleMatch.employeeId === previousCandidateId) {
+      return finalizeHrNoteThirdParty({ phone, senderName: name, lang, candidate: soleMatch, summary, summaryLocalized, topicLabel, createdAt: originalCreatedAt, history });
+    }
     await savePendingHrNoteFlow(phone, { summary, summaryLocalized, topicLabel, actionPhrase, lang, createdAt: originalCreatedAt, step: 'awaiting_confirm_yes_no', candidate: soleMatch, isInactive: false });
     const fn = NAME_CONFIRM_QUESTION[lang] || NAME_CONFIRM_QUESTION.english;
     return { case: 'acknowledged', replyText: fn(soleMatch.name, soleMatch.department), summaryForOwner: null, lang };
@@ -3118,7 +3201,7 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
         return { case: 'acknowledged', replyText: HR_FLOW_CONTEXT_CLARIFY[lang] || HR_FLOW_CONTEXT_CLARIFY.english, summaryForOwner: null, lang };
       }
       if (extracted.personName) {
-        return resolveHrNoteThirdParty({ phone, name, lang, personName: extracted.personName, department: extracted.hint, summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, actionPhrase: hrFlow.actionPhrase, createdAt: hrFlow.createdAt, history });
+        return resolveHrNoteThirdParty({ phone, name, lang, personName: extracted.personName, department: extracted.hint, summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, actionPhrase: hrFlow.actionPhrase, createdAt: hrFlow.createdAt, previousCandidateId: hrFlow.candidate.employeeId, history });
       }
       if (remainder) {
         // The "No" cancelled the old candidate, but the remainder is a
@@ -3144,7 +3227,7 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
       return { case: 'acknowledged', replyText: HR_FLOW_CONTEXT_CLARIFY[lang] || HR_FLOW_CONTEXT_CLARIFY.english, summaryForOwner: null, lang };
     }
     if (extracted.personName) {
-      return resolveHrNoteThirdParty({ phone, name, lang, personName: extracted.personName, department: extracted.hint, summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, actionPhrase: hrFlow.actionPhrase, createdAt: hrFlow.createdAt, history });
+      return resolveHrNoteThirdParty({ phone, name, lang, personName: extracted.personName, department: extracted.hint, summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, actionPhrase: hrFlow.actionPhrase, createdAt: hrFlow.createdAt, previousCandidateId: hrFlow.candidate.employeeId, history });
     }
     await clearPendingHrNoteFlow(phone);
     return null;

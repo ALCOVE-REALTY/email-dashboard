@@ -1666,6 +1666,10 @@ body { background: var(--wi-bg); }
 .wf-convo-msg.in .wf-convo-msg-bubble { background: var(--wi-surface-3); color: var(--wi-ink); border-bottom-left-radius: 4px; }
 .wf-convo-msg.out .wf-convo-msg-bubble { background: var(--wi-primary-50); color: var(--wi-primary-800); border-bottom-right-radius: 4px; }
 .wf-convo-msg-time { font-size: 0.64rem; font-weight: 600; color: var(--wi-faint); padding: 0 4px; }
+.wf-convo-msg-failed {
+  font-size: 0.64rem; font-weight: 700; color: var(--wi-red-700); background: var(--wi-red-50);
+  padding: 2px 7px; border-radius: 8px; margin-top: 2px;
+}
 .wf-convo-status-line {
   margin: 4px 14px 0; padding: 7px 11px; border-radius: 12px; font-size: 0.72rem; font-weight: 700;
   display: inline-flex; align-self: center; align-items: center; gap: 6px;
