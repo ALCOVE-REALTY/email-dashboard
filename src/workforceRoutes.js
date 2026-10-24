@@ -17,6 +17,7 @@ const memoryService = require('./aiAssistant/memoryService');
 const documentRequests = require('./aiAssistant/documentRequests');
 const reminderService = require('./aiAssistant/reminderService');
 const automationService = require('./aiAssistant/automationService');
+const sheetsAuth = require('./sheetsAuth');
 const hrAccountCommands = require('./hrAccountCommands');
 const hrAuthAlerts = require('./hrAuthAlerts');
 const fileStorage = require('./fileStorage');
@@ -1898,26 +1899,38 @@ router.get('/hr-assistant/automations', async (req, res) => {
 router.post('/hr-assistant/automations/ask', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
   try {
-    const { text } = req.body || {};
+    const { text, sheetContext } = req.body || {};
     if (!text || !String(text).trim()) return res.status(400).json({ error: 'text is required' });
-    const parsed = await automationService.parseAutomationAsk(String(text).trim());
-    const draft = await automationService.draftPlanFromParsed(parsed, new Date());
+    const parsed = await automationService.parseAutomationAsk(String(text).trim(), sheetContext || null);
+    const draft = await automationService.draftPlanFromParsed(parsed, new Date(), sheetContext || null);
     res.json(draft);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
+// Real file name + EVERY tab's own headers and row count (direct
+// instruction) - the owner picks a tab from this, and it's also what's
+// handed to parseAutomationAsk as context so "the Addition sheet" means
+// something real.
 router.post('/hr-assistant/automations/load-sheet', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
   try {
     const { sheetUrl } = req.body || {};
-    const result = await automationService.loadSheetColumns(sheetUrl);
+    const result = await automationService.loadSheetInfo(sheetUrl);
     if (!result.ok) return res.status(400).json({ error: result.error });
-    res.json(result);
+    res.json(Object.assign({}, result, { sheetUrl }));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// The REAL service account address to share a sheet with - shown as a
+// hint next to the Google Sheet link field (direct instruction: never a
+// placeholder).
+router.get('/hr-assistant/automations/sheet-service-account', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  res.json({ email: sheetsAuth.getServiceAccountEmail() });
 });
 
 // Shared by the in-app Preview sheet AND the create/edit page's own live

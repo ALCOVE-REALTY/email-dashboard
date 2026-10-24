@@ -48,6 +48,33 @@ function fakeEmployeeData() {
   return { employees: FAKE_EMPLOYEES, departmentNames: FAKE_DEPARTMENT_NAMES, locationNames: new Map(), doerNames: new Map(), reportingManagerNames: new Map() };
 }
 
+// ---- Fake Google Sheets client (automationService only ever calls
+// sheets.spreadsheets.get and sheets.spreadsheets.values.get through
+// sheetsAuth.getSheetsReadOnlyClient - mocked below, never a real network
+// call). `scenario.tabs` = [{ title, values: [[header,...], [row1,...],
+// ...], accessError? }]; `scenario.metaError` simulates spreadsheets.get
+// itself failing (bad link / no access at the file level). ----
+function makeFakeSheetsClient(scenario) {
+  return {
+    spreadsheets: {
+      get: async () => {
+        if (scenario.metaError) throw new Error(scenario.metaError);
+        return { data: { properties: { title: scenario.fileName || 'Test Sheet' }, sheets: (scenario.tabs || []).map((t) => ({ properties: { title: t.title } })) } };
+      },
+      values: {
+        get: async ({ range }) => {
+          const m = String(range).match(/^'(.*)'!/);
+          const tabName = m ? m[1].replace(/''/g, "'") : null;
+          const tab = (scenario.tabs || []).find((t) => t.title === tabName);
+          if (!tab) throw new Error('Unable to parse range: ' + range);
+          if (tab.accessError) throw new Error(tab.accessError);
+          return { data: { values: tab.values } };
+        }
+      }
+    }
+  };
+}
+
 async function main() {
   await require('./testBootstrap').setupTestEnvironment();
   const automationService = require('../src/aiAssistant/automationService');
@@ -55,6 +82,7 @@ async function main() {
   const gmailService = require('../src/gmailService');
   const whatsapp = require('../src/whatsappService');
   const whatsappAssistant = require('../src/aiAssistant/whatsappAssistant');
+  const sheetsAuth = require('../src/sheetsAuth');
 
   const now = new Date('2026-10-15T06:00:00.000Z'); // simulated clock throughout - October, IST ~11:30am
   const createdIds = [];
@@ -113,6 +141,145 @@ async function main() {
     const sheetRow = { 'Name': 'X', 'Training Date': new Date('2026-10-18T00:00:00Z'), 'Trainer': 'Y' };
     check('sheet column matching "date" (case-insensitive) is treated as a date column', automationService.testCond(sheetPlan, sheetRow, { col: 'Training Date', op: 'nextN', val: 5 }, now));
     check('a non-date sheet column uses plain text matching', automationService.testCond(sheetPlan, sheetRow, { col: 'Trainer', op: 'is', val: 'y' }, now));
+
+    console.log('='.repeat(70));
+    console.log('GOOGLE SHEET AS A FIRST-CLASS INPUT');
+    console.log('='.repeat(70));
+    const origGetSheetsReadOnlyClient = sheetsAuth.getSheetsReadOnlyClient;
+    const origHasServiceAccount = sheetsAuth.hasServiceAccount;
+    const origGetServiceAccountEmail = sheetsAuth.getServiceAccountEmail;
+    sheetsAuth.hasServiceAccount = () => true;
+    sheetsAuth.getServiceAccountEmail = () => 'subh-sheets@test-project.iam.gserviceaccount.com';
+    let sheetsScenario = { fileName: 'Test Sheet', tabs: [] };
+    sheetsAuth.getSheetsReadOnlyClient = () => makeFakeSheetsClient(sheetsScenario);
+    const SHEET_HEADERS = ['Name', 'Department', 'DOJ Date', 'Policy No', 'Amount', 'Status', 'Remarks'];
+    function sheetValues(n) {
+      const rows = [SHEET_HEADERS];
+      const names = ['Alice', 'Bob', 'Carol', 'Dave', 'Eve', 'Frank', 'Grace', 'Heidi', 'Ivan', 'Judy', 'Karl', 'Liam', 'Mona', 'Nina', 'Oscar'];
+      const statuses = ['Pending', 'Approved'];
+      for (let i = 0; i < n; i++) rows.push([names[i % names.length] + (i >= names.length ? i : ''), i % 2 ? 'HR' : 'IT', '0' + ((i % 9) + 1) + '-Apr-26', 'P00' + (i + 1), String(1000 + i * 10), statuses[i % 2], '']);
+      return rows;
+    }
+    try {
+      await checkAsync('Load: returns the real file name and every tab with its headers + row count', async () => {
+        sheetsScenario = { fileName: 'HR Workbook', tabs: [{ title: 'Addition', values: sheetValues(3) }, { title: 'Other', values: [['Col1', 'Col2'], ['x', 'y']] }] };
+        const info = await automationService.loadSheetInfo('https://docs.google.com/spreadsheets/d/TESTID123/edit');
+        const addition = info.tabs.find((t) => t.title === 'Addition');
+        const other = info.tabs.find((t) => t.title === 'Other');
+        return info.ok && info.fileName === 'HR Workbook' && Boolean(addition) && addition.rowCount === 3 && JSON.stringify(addition.headers) === JSON.stringify(SHEET_HEADERS) && Boolean(other) && other.rowCount === 1;
+      });
+      await checkAsync('Load: no access shows a clear error naming the REAL service account email (never a placeholder)', async () => {
+        sheetsScenario = { metaError: 'The caller does not have permission' };
+        const info = await automationService.loadSheetInfo('https://docs.google.com/spreadsheets/d/TESTID123/edit');
+        return info.ok === false && /No access/.test(info.error) && info.error.includes('subh-sheets@test-project.iam.gserviceaccount.com');
+      });
+      await checkAsync('Load: an invalid link is rejected before ever touching the Sheets API', async () => (await automationService.loadSheetInfo('https://example.com/not-a-sheet')).error === 'Link not valid - paste a real Google Sheets link.');
+      await checkAsync('Load: a tab with no header row is reported as empty, without failing the whole load', async () => {
+        sheetsScenario = { fileName: 'HR Workbook', tabs: [{ title: 'Addition', values: sheetValues(3) }, { title: 'Blank', values: [] }] };
+        const info = await automationService.loadSheetInfo('https://docs.google.com/spreadsheets/d/TESTID123/edit');
+        const blank = info.tabs.find((t) => t.title === 'Blank');
+        return info.ok && Boolean(blank) && blank.rowCount === 0 && blank.headers.length === 0;
+      });
+
+      check('Tab matching: "addition" resolves to the real tab "Additions" (singular/plural, case-insensitive)', automationService.resolveFuzzyOneOf('addition', ['Additions', 'Other']) === 'Additions');
+      check('Tab matching: a genuine one-letter typo still resolves ("Additons" -> "Additions")', automationService.resolveFuzzyOneOf('Additons', ['Additions', 'Other']) === 'Additions');
+      check('Header matching: case-only difference resolves ("policy no" -> "Policy No")', automationService.resolveFuzzyOneOf('policy no', SHEET_HEADERS) === 'Policy No');
+      check('Header matching: a genuine typo resolves ("depatment" -> "Department")', automationService.resolveFuzzyOneOf('depatment', SHEET_HEADERS) === 'Department');
+
+      function sheetAutomation(overrides) {
+        return Object.assign({
+          plan: Object.assign({
+            source: 'sheet', sheetId: 'TESTID123', sheetTab: 'Addition', sheetColumns: SHEET_HEADERS, sheetUseAllColumns: true,
+            conds: [], match: 'all', rec: 'selected', selectedEmployeeIds: [], selectedRawEmails: ['owner@test.com'], group: 'list',
+            mediator: 'mail', mailSubject: 'Addition data', body: 'See below.', table: true, tableColumns: [], tablePlacement: 'body'
+          }, overrides && overrides.plan),
+          excludedKeys: []
+        }, overrides && overrides.top);
+      }
+
+      await checkAsync('Full-tab table: ALL headers in the SHEET\'S OWN ORDER, values exactly as the sheet shows them (not a reformatted date)', async () => {
+        sheetsScenario = { fileName: 'HR Workbook', tabs: [{ title: 'Addition', values: sheetValues(3) }] };
+        const built = await automationService.buildMessages(sheetAutomation(), now);
+        const table = built.sent[0] && built.sent[0].table;
+        return Boolean(table) && table.length === 3 &&
+          JSON.stringify(Object.keys(table[0])) === JSON.stringify(SHEET_HEADERS) &&
+          table[0]['Name'] === 'Alice' && table[0]['DOJ Date'] === '01-Apr-26';
+      });
+      await checkAsync('Chosen columns: ONLY the 5 named columns, in the order named (not the sheet\'s own order), spelling-tolerant', async () => {
+        const auto = sheetAutomation({ plan: { sheetUseAllColumns: false, tableColumns: ['policy no', 'Name', 'Amount', 'depatment', 'DOJ Date'].map((h) => automationService.resolveFuzzyOneOf(h, SHEET_HEADERS)) } });
+        const built = await automationService.buildMessages(auto, now);
+        const table = built.sent[0] && built.sent[0].table;
+        return Boolean(table) && JSON.stringify(Object.keys(table[0])) === JSON.stringify(['Policy No', 'Name', 'Amount', 'Department', 'DOJ Date']) && !('Status' in table[0]) && !('Remarks' in table[0]);
+      });
+      await checkAsync('Fresh read every time: 10 rows this run, 15 the next, with NO caching in between', async () => {
+        sheetsScenario = { fileName: 'HR Workbook', tabs: [{ title: 'Addition', values: sheetValues(10) }] };
+        const built10 = await automationService.buildMessages(sheetAutomation(), now);
+        const count10 = built10.sent[0].table.length;
+        sheetsScenario = { fileName: 'HR Workbook', tabs: [{ title: 'Addition', values: sheetValues(15) }] };
+        const built15 = await automationService.buildMessages(sheetAutomation(), now);
+        const count15 = built15.sent[0].table.length;
+        return count10 === 10 && count15 === 15;
+      });
+
+      console.log('='.repeat(70));
+      console.log('GOOGLE SHEET: column drift between runs (new/removed columns, missing dependency)');
+      console.log('='.repeat(70));
+      await checkAsync('"Same as the sheet" task: a column added live joins the table + posts an owner info note, once', async () => {
+        sheetsScenario = { fileName: 'HR Workbook', tabs: [{ title: 'Addition', values: sheetValues(3) }] };
+        const rec = await create({ subject: 'Whole-sheet task', plan: sheetAutomation().plan, excludedKeys: [], schedule: { date: '2026-12-20', time: '10:00', repeat: 'none' } });
+        const notifBefore = ownerNotifications.length;
+        const WITH_EXTRA = SHEET_HEADERS.concat(['Approved By']);
+        sheetsScenario = { fileName: 'HR Workbook', tabs: [{ title: 'Addition', values: [WITH_EXTRA].concat(sheetValues(3).slice(1).map((r) => r.concat(['Manager X']))) } ] };
+        const result = await automationService.runAutomation(rec.id, {}, now);
+        const afterRun = await automationService.getAutomation(rec.id);
+        return result.ok && result.sentCount > 0 &&
+          ownerNotifications.length === notifBefore + 1 && /new column.*Approved By/i.test(ownerNotifications[ownerNotifications.length - 1]) &&
+          JSON.stringify(afterRun.plan.sheetColumns) === JSON.stringify(WITH_EXTRA);
+      });
+      await checkAsync('"Same as the sheet" task: re-running with NO further change does not re-alert', async () => {
+        const rec2 = await create({ subject: 'Whole-sheet task 2', plan: Object.assign({}, sheetAutomation().plan, { sheetColumns: SHEET_HEADERS.concat(['Approved By']) }), excludedKeys: [], schedule: { date: '2026-12-20', time: '10:00', repeat: 'none' } });
+        const notifBefore = ownerNotifications.length;
+        await automationService.runAutomation(rec2.id, {}, now);
+        return ownerNotifications.length === notifBefore;
+      });
+      await checkAsync('Chosen-columns task: a column added live is IGNORED (table unchanged, no info note)', async () => {
+        const chosenPlan = Object.assign({}, sheetAutomation().plan, { sheetUseAllColumns: false, tableColumns: ['Name', 'Department', 'Amount'] });
+        const rec = await create({ subject: 'Chosen-columns task', plan: chosenPlan, excludedKeys: [], schedule: { date: '2026-12-20', time: '10:00', repeat: 'none' } });
+        const notifBefore = ownerNotifications.length;
+        const result = await automationService.runAutomation(rec.id, {}, now); // sheetsScenario already has the extra "Approved By" column from the test above
+        return result.ok && result.sentCount > 0 && ownerNotifications.length === notifBefore; // no new notification - this task never looks at "all columns"
+      });
+      await checkAsync('A depended-on column removed: the run is BLOCKED (no send), the owner is alerted with the exact reason, the task stays Active', async () => {
+        const filterPlan = Object.assign({}, sheetAutomation().plan, { conds: [{ col: 'Status', op: 'is', val: 'Pending' }] });
+        const rec = await create({ subject: 'Filtered sheet task', plan: filterPlan, excludedKeys: [], schedule: { date: '2026-12-20', time: '10:00', repeat: 'none' } });
+        rec.status = 'active';
+        await automationService.saveAutomation(rec);
+        const NO_STATUS = SHEET_HEADERS.filter((h) => h !== 'Status');
+        sheetsScenario = { fileName: 'HR Workbook', tabs: [{ title: 'Addition', values: [NO_STATUS].concat(sheetValues(3).slice(1).map((r) => r.filter((_, i) => SHEET_HEADERS[i] !== 'Status'))) }] };
+        const mailBefore = sentMail.length;
+        const notifBefore = ownerNotifications.length;
+        const result = await automationService.runAutomation(rec.id, {}, now);
+        const after = await automationService.getAutomation(rec.id);
+        return result.ok === false && /Status/.test(result.error) &&
+          sentMail.length === mailBefore &&
+          ownerNotifications.length === notifBefore + 1 && /Status/.test(ownerNotifications[ownerNotifications.length - 1]) &&
+          after.status === 'active' && new Date(after.nextRunAt).getTime() > now.getTime();
+      });
+      await checkAsync('Tab renamed/removed, or access lost: BLOCKED, alerted, task stays Active (never a send)', async () => {
+        const rec = await create({ subject: 'Lost-access sheet task', plan: sheetAutomation().plan, excludedKeys: [], schedule: { date: '2026-12-20', time: '10:00', repeat: 'none' } });
+        rec.status = 'active';
+        await automationService.saveAutomation(rec);
+        sheetsScenario = { fileName: 'HR Workbook', tabs: [{ title: 'Addition', values: sheetValues(3), accessError: 'The caller does not have permission' }] };
+        const mailBefore = sentMail.length;
+        const result = await automationService.runAutomation(rec.id, {}, now);
+        const after = await automationService.getAutomation(rec.id);
+        return result.ok === false && /Lost access/.test(result.error) && sentMail.length === mailBefore && after.status === 'active';
+      });
+    } finally {
+      sheetsAuth.getSheetsReadOnlyClient = origGetSheetsReadOnlyClient;
+      sheetsAuth.hasServiceAccount = origHasServiceAccount;
+      sheetsAuth.getServiceAccountEmail = origGetServiceAccountEmail;
+    }
 
     console.log('='.repeat(70));
     console.log('matchedRows against the 4 built-in sources (simulated employee directory)');
@@ -433,6 +600,7 @@ async function main() {
     console.log('='.repeat(70));
     console.log('Missed-run rule: >30 min late holds ONE run for approval, task stays active, next run is scheduled regardless');
     console.log('='.repeat(70));
+    ownerNotifications.length = 0; // this section's own checks assert an absolute count - start from a clean slate regardless of what ran earlier
     const missedTask = await create({ subject: 'Missed run test', plan: basicPlan, excludedKeys: [], schedule: { date: '2026-10-15', time: '05:00', repeat: 'monthly' } });
     missedTask.nextRunAt = new Date(now.getTime() - 40 * 60000).toISOString();
     missedTask.status = 'active';

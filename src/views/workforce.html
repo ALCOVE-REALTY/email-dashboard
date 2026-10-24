@@ -299,18 +299,21 @@
           <div class="wf-auto-sechead"><span class="wf-auto-num">1</span> <span class="wf-auto-label">Tell SUBH what to automate <span class="wf-auto-req">*</span></span></div>
           <textarea id="autoAsk" class="wf-auto-ask" placeholder="e.g. Proti maser 1 tarikh 10 tay, jader confirmation ei mashe pending, tader HOD ke alada mail korbe"></textarea>
           <div class="wf-auto-err hidden" id="autoAskErr">Please tell SUBH what to automate.</div>
+          <div id="autoSheetWrap" style="margin-top:12px">
+            <label class="wf-rem-field">Google Sheet link (optional)
+              <div class="wf-auto-row-gap">
+                <input type="text" id="autoSheetUrl" placeholder="https://docs.google.com/spreadsheets/d/…" style="flex:1" />
+                <button type="button" class="wf-ai-action-btn outline" id="autoSheetLoadBtn">Load</button>
+              </div>
+            </label>
+            <div class="wf-auto-hint" id="autoSheetShareHint">Share the sheet as Viewer with <span id="autoSheetShareEmail">—</span> <button type="button" id="autoSheetShareCopyBtn" class="wf-auto-copy-btn">Copy</button></div>
+            <div class="wf-auto-err hidden" id="autoSheetMsg"></div>
+            <div id="autoSheetInfo"></div>
+          </div>
           <div class="wf-auto-chips" id="autoAskExamples"></div>
           <button type="button" class="wf-ai-action-btn download" id="autoAskBtn" style="margin-top:8px">✨ Ask SUBH</button>
           <div class="wf-auto-hint">Write in Banglish, English or Hinglish. SUBH shows what it understood — nothing is saved until you say it's right.</div>
           <div id="autoUnderstand"></div>
-          <div id="autoSheetWrap" class="hidden">
-            <label class="wf-rem-field">Google Sheet link</label>
-            <div class="wf-auto-row-gap">
-              <input type="text" id="autoSheetUrl" placeholder="https://docs.google.com/spreadsheets/d/…" />
-              <button type="button" class="wf-ai-action-btn outline" id="autoSheetLoadBtn">Load</button>
-            </div>
-            <div class="wf-auto-hint" id="autoSheetMsg"></div>
-          </div>
         </div>
 
         <div class="wf-auto-card" id="autoGroupCard">

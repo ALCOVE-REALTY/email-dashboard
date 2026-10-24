@@ -43,6 +43,12 @@ function hasServiceAccount() {
   return Boolean(credentials);
 }
 
+// The real address to share a sheet with (shown in the Automated Tasks UI)
+// - never a placeholder, always this exact service account's own email.
+function getServiceAccountEmail() {
+  return credentials ? credentials.client_email || null : null;
+}
+
 // One long-lived auth client + Sheets client per scope, reused across every
 // call. GoogleAuth caches its access token internally and only re-mints it
 // near expiry — creating a fresh instance per request (the previous
@@ -94,4 +100,4 @@ function getDriveClient() {
   return driveClient;
 }
 
-module.exports = { getSheetsReadOnlyClient, getSheetsWriteClient, hasServiceAccount, getDriveClient };
+module.exports = { getSheetsReadOnlyClient, getSheetsWriteClient, hasServiceAccount, getDriveClient, getServiceAccountEmail };

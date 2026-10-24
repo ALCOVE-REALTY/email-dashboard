@@ -161,10 +161,18 @@ function sourceDef(plan) {
 }
 
 // ---------------- Google Sheet loading ----------------
+// Read-only scope only (sheetsAuth.getSheetsReadOnlyClient - physically
+// cannot write), never a copy of the data at rest (only sheetId/tab/header
+// list are ever persisted in the automation record - see newAutomation's
+// own plan shape), and no caching anywhere in this file: every Preview,
+// Send test and real run reads the sheet fresh, so rows/columns added or
+// removed between runs are always reflected (direct instruction).
 function parseSheetId(url) {
   const m = String(url || '').match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
   return m ? m[1] : null;
 }
+function quoteSheetRange(tab, a1) { return "'" + String(tab).replace(/'/g, "''") + "'!" + a1; }
+function isPermissionError(err) { return /permission|forbidden|403|does not have access/i.test(String((err && err.message) || '')); }
 // Tries the same "D-Mon-YY(YY)" shape employeeService.js's own sheets use,
 // then a plain ISO/locale fallback - a sheet is free-form, so this is
 // deliberately more permissive than employeeService's own strict parser.
@@ -187,45 +195,136 @@ function parseFlexibleDate(raw) {
   const parsed = new Date(s);
   return isNaN(parsed.getTime()) ? null : parsed;
 }
-async function loadSheetColumns(sheetUrl) {
+// Reads the WHOLE file's tabs at once (file name + every tab's headers and
+// row count) - what the Create/Edit page's "Load" button shows, and what
+// parseAutomationAsk is given as context so it can understand "the
+// Addition sheet" / column names that are real for THIS file.
+async function loadSheetInfo(sheetUrl) {
   const sheetId = parseSheetId(sheetUrl);
-  if (!sheetId) return { ok: false, error: 'That doesn\'t look like a Google Sheet link.' };
+  if (!sheetId) return { ok: false, error: 'Link not valid - paste a real Google Sheets link.' };
   if (!sheetsAuth.hasServiceAccount()) return { ok: false, error: 'Google Sheets access is not configured on this server.' };
+  const sheets = sheetsAuth.getSheetsReadOnlyClient();
+  let meta;
+  try {
+    meta = await sheets.spreadsheets.get({ spreadsheetId: sheetId, fields: 'properties.title,sheets.properties' });
+  } catch (err) {
+    if (isPermissionError(err)) return { ok: false, error: 'No access - share the sheet as Viewer with ' + (sheetsAuth.getServiceAccountEmail() || 'the service account shown above') + '.' };
+    return { ok: false, error: 'Could not open that sheet - check the link and try again. (' + err.message + ')' };
+  }
+  const fileName = (meta.data.properties && meta.data.properties.title) || 'Untitled spreadsheet';
+  const tabProps = (meta.data.sheets || []).map((s) => s.properties).filter(Boolean);
+  const tabs = [];
+  for (const t of tabProps) {
+    let headers = [], rowCount = 0;
+    try {
+      const res = await sheets.spreadsheets.values.get({ spreadsheetId: sheetId, range: quoteSheetRange(t.title, 'A1:ZZ5000'), valueRenderOption: 'FORMATTED_VALUE' });
+      const values = res.data.values || [];
+      headers = (values[0] || []).map((h) => String(h || '').trim()).filter(Boolean);
+      rowCount = values.slice(1).filter((r) => r.some((c) => String(c || '').trim())).length;
+    } catch (err) { /* this one tab couldn't be read (e.g. a chart-only tab) - list it empty rather than failing the whole load */ }
+    tabs.push({ title: t.title, headers, rowCount });
+  }
+  if (!tabs.length) return { ok: false, error: 'Could not read any tabs from that sheet.' };
+  return { ok: true, sheetId, fileName, tabs };
+}
+// Live header read for ONE tab only - used at run time (Preview/test/real
+// run) both to validate the plan still has everything it depends on, and
+// to pick up new/removed columns for a "whole sheet" table. Cheap (one
+// header-row read), and deliberately separate from loadSheetRows so a
+// dependency check never needs the full row fetch to already have run.
+async function getSheetLiveHeaders(plan) {
+  if (!plan.sheetId || !plan.sheetTab) return { ok: false, error: 'No sheet/tab is selected for this task.' };
   try {
     const sheets = sheetsAuth.getSheetsReadOnlyClient();
-    const res = await sheets.spreadsheets.values.get({ spreadsheetId: sheetId, range: 'A1:ZZ1' });
+    const res = await sheets.spreadsheets.values.get({ spreadsheetId: plan.sheetId, range: quoteSheetRange(plan.sheetTab, 'A1:ZZ1'), valueRenderOption: 'FORMATTED_VALUE' });
     const headers = (res.data.values && res.data.values[0] || []).map((h) => String(h || '').trim()).filter(Boolean);
-    if (!headers.length) return { ok: false, error: 'Could not read a header row from that sheet.' };
-    return { ok: true, sheetId, columns: headers };
+    if (!headers.length) return { ok: false, error: 'Tab "' + plan.sheetTab + '" is empty or has no header row.' };
+    return { ok: true, headers };
   } catch (err) {
-    return { ok: false, error: 'Could not open that sheet - make sure it\'s shared with this app\'s Google service account (ask the owner for its email) and try again. (' + err.message + ')' };
+    if (isPermissionError(err)) return { ok: false, error: 'Lost access to the sheet - share it as Viewer with ' + (sheetsAuth.getServiceAccountEmail() || 'the service account') + ' again.' };
+    if (/unable to parse range|not found/i.test(String(err.message || ''))) return { ok: false, error: 'Tab "' + plan.sheetTab + '" was renamed or removed from the sheet.' };
+    return { ok: false, error: 'Could not read the sheet right now (' + err.message + ').' };
   }
 }
-const sheetRowCache = new Map(); // sheetId -> { rows, fetchedAt } - short-lived, avoids re-fetching the same sheet 3x in one preview/save cycle
-const SHEET_CACHE_MS = 15000;
+// Every column this plan actually depends on to run correctly - a filter,
+// a sort, a per-row recipient column, or (only when specific columns were
+// chosen, never for a "whole sheet" table) the table columns themselves.
+// Checked against the LIVE header list before every run; see
+// buildMessages's `blocked` path.
+function sheetPlanDependencies(plan) {
+  const needed = new Set();
+  (plan.conds || []).forEach((c) => needed.add(c.col));
+  if (plan.sort && plan.sort.col) needed.add(plan.sort.col);
+  if (plan.rec === 'column' && plan.recCol && plan.recCol !== 'self') needed.add(plan.recCol);
+  if (!plan.sheetUseAllColumns) (plan.tableColumns || []).forEach((c) => needed.add(c));
+  return Array.from(needed);
+}
+function checkSheetDependencies(plan, liveHeaders) {
+  const liveSet = new Set(liveHeaders);
+  for (const col of sheetPlanDependencies(plan)) {
+    if (!liveSet.has(col)) return { ok: false, reason: 'column "' + col + '" is missing from the sheet (renamed or removed)' };
+  }
+  return { ok: true };
+}
 async function loadSheetRows(plan) {
-  if (!plan.sheetId) return [];
-  const cached = sheetRowCache.get(plan.sheetId);
-  if (cached && Date.now() - cached.fetchedAt < SHEET_CACHE_MS) return cached.rows;
+  if (!plan.sheetId || !plan.sheetTab) return [];
   const sheets = sheetsAuth.getSheetsReadOnlyClient();
-  const res = await sheets.spreadsheets.values.get({ spreadsheetId: plan.sheetId, range: 'A1:ZZ10000' });
+  const res = await sheets.spreadsheets.values.get({ spreadsheetId: plan.sheetId, range: quoteSheetRange(plan.sheetTab, 'A1:ZZ10000'), valueRenderOption: 'FORMATTED_VALUE' });
   const values = res.data.values || [];
   if (values.length < 2) return [];
-  const headers = values[0].map((h) => String(h || '').trim());
+  const headers = values[0].map((h) => String(h || '').trim()).filter(Boolean);
   const dateCols = new Set(headers.filter((h) => /date/i.test(h)));
-  const rows = values.slice(1).filter((r) => r.some((c) => String(c || '').trim())).map((r) => {
+  return values.slice(1).filter((r) => r.some((c) => String(c || '').trim())).map((r) => {
     const row = {};
-    headers.forEach((h, i) => { if (!h) return; row[h] = dateCols.has(h) ? parseFlexibleDate(r[i]) : (r[i] == null ? '' : String(r[i]).trim()); });
+    headers.forEach((h, i) => {
+      const raw = r[i] == null ? '' : String(r[i]).trim();
+      // The sheet's own FORMATTED_VALUE text is kept alongside the parsed
+      // Date (needed for filtering/sorting) so display defaults back to
+      // "exactly as shown in the sheet" rather than a reformatted date -
+      // see cellText's sheet-source branch.
+      if (dateCols.has(h)) { row[h] = parseFlexibleDate(raw); row['__raw__' + h] = raw; }
+      else row[h] = raw;
+    });
     return row;
   });
-  sheetRowCache.set(plan.sheetId, { rows, fetchedAt: Date.now() });
-  return rows;
 }
 function sheetDateColumns(columns) { return new Set((columns || []).filter((h) => /date/i.test(h))); }
 function sheetPersonCols(columns) {
   const opts = [['self', 'This row (Email / Phone column)']];
   (columns || []).forEach((c) => { if (!/^(email|phone|e-?mail|contact|mobile)/i.test(c) && !/date/i.test(c)) opts.push([c, c]); });
   return opts;
+}
+// Generic fuzzy text match (tab names, header names) - exact, then
+// substring either direction (catches "addition" <-> "Additions"), then a
+// short Levenshtein fallback for a genuine typo. Never used for people's
+// names (employeeService's own matchers own that, with their own
+// active/ambiguous rules) - this is for a plain single label only.
+function levenshteinDistance(a, b) {
+  const dp = Array.from({ length: a.length + 1 }, () => new Array(b.length + 1).fill(0));
+  for (let i = 0; i <= a.length; i++) dp[i][0] = i;
+  for (let j = 0; j <= b.length; j++) dp[0][j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      dp[i][j] = a[i - 1] === b[j - 1] ? dp[i - 1][j - 1] : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+    }
+  }
+  return dp[a.length][b.length];
+}
+function resolveFuzzyOneOf(hint, candidates) {
+  const h = String(hint || '').trim().toLowerCase();
+  if (!h || !candidates.length) return null;
+  const direct = candidates.find((c) => c.toLowerCase() === h);
+  if (direct) return direct;
+  const substr = candidates.find((c) => { const cl = c.toLowerCase(); return cl.includes(h) || h.includes(cl); });
+  if (substr) return substr;
+  let best = null, bestDist = Infinity;
+  for (const c of candidates) {
+    const cl = c.toLowerCase();
+    const maxDist = Math.max(cl.length, h.length) >= 6 ? 2 : 1;
+    const dist = levenshteinDistance(h, cl);
+    if (dist <= maxDist && dist < bestDist) { best = c; bestDist = dist; }
+  }
+  return best;
 }
 
 // ---------------- Conditions / matching (deterministic - ported 1:1 from
@@ -428,6 +527,11 @@ function cellText(row, col, plan, runAt) {
   if (v instanceof Date) {
     const fmt = plan && plan.columnFormats && DATE_FORMATS[plan.columnFormats[col]];
     if (fmt) return fmt(v, runAt ? reportedPeriodYear(plan, runAt) : v.getUTCFullYear());
+    // A sheet's own date column defaults to EXACTLY what the sheet itself
+    // displays (direct instruction) - only an explicit columnFormats entry
+    // above overrides that. Built-in employee date columns (DOJ/DOB/...)
+    // keep their own long-standing default below.
+    if (plan && plan.source === 'sheet' && row['__raw__' + col] !== undefined) return row['__raw__' + col] || '—';
     return v.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC' });
   }
   return v == null || v === '' ? '—' : String(v);
@@ -464,7 +568,22 @@ function pdfFileName(subject, who, runAt) {
 // always names WHO was skipped and WHY (no valid contact / no HOD linked),
 // never silent.
 async function buildMessages(automation, runAt) {
-  const plan = automation.plan;
+  let plan = automation.plan;
+  let liveSheetHeaders = null;
+  if (plan.source === 'sheet') {
+    const live = await getSheetLiveHeaders(plan);
+    if (!live.ok) return { sent: [], skipped: [], rows: [], blocked: { reason: live.error } };
+    liveSheetHeaders = live.headers;
+    const dep = checkSheetDependencies(plan, liveSheetHeaders);
+    if (!dep.ok) return { sent: [], skipped: [], rows: [], blocked: { reason: dep.reason } };
+    // "Same as the sheet" (no columns specifically chosen) follows the
+    // sheet AS IT IS RIGHT NOW - a new column joins the table in the
+    // sheet's own order, a removed one disappears - never the stale list
+    // captured back when the sheet was first loaded. A task with chosen
+    // columns/filters/sort/a recipient column ignores new columns (its own
+    // explicit tableColumns are untouched - checked above instead).
+    if (plan.sheetUseAllColumns) plan = Object.assign({}, plan, { tableColumns: liveSheetHeaders });
+  }
   const rows = await matchedRows(plan, automation.excludedKeys, runAt);
   const sent = [];
   const skipped = [];
@@ -508,7 +627,7 @@ async function buildMessages(automation, runAt) {
   // one" toggle always refers to a real, reusable identity (employeeId, or
   // the sheet's own row key) rather than a possibly-ambiguous display name.
   const taggedRows = rows.map((r) => Object.assign({ _key: rowKey(r) }, r));
-  return { sent, skipped, rows: taggedRows };
+  return { sent, skipped, rows: taggedRows, liveSheetHeaders };
 }
 
 // ---------------- Schedule math (ported 1:1 from the sample's own
@@ -587,7 +706,22 @@ async function runAutomation(id, { isTest = false, testTo = null } = {}, now = n
   if (!(await acquireRunLock(id, now))) return { ok: false, error: 'Already running.' };
   try {
     const runAt = now;
-    const { sent, skipped } = await buildMessages(automation, runAt);
+    const { sent, skipped, blocked, liveSheetHeaders } = await buildMessages(automation, runAt);
+    // A sheet this task depends on is unreachable, missing a tab, or
+    // missing a column the plan actually uses - never send, never mark the
+    // task failed/paused. A real run alerts the owner with the exact
+    // reason and keeps the schedule moving (same philosophy as the
+    // missed-run rule below); a test/preview-style call just reports it.
+    if (blocked) {
+      if (!isTest) {
+        await whatsappAssistant.postOwnerNotification('⚠️ Automated task "' + automation.subject + '" could not run: ' + blocked.reason + '.').catch(() => {});
+        automation.history = [{ runAt: runAt.toISOString(), sentCount: 0, skippedCount: 0, results: [], note: 'Blocked: ' + blocked.reason }, ...(automation.history || [])].slice(0, 20);
+        automation.nextRunAt = computeNextRun(automation.schedule, new Date(runAt.getTime() + 1000));
+        automation.updatedAt = runAt.toISOString();
+        await saveAutomation(automation);
+      }
+      return { ok: false, error: blocked.reason };
+    }
     if (isTest) {
       const target = testTo;
       const results = [];
@@ -610,6 +744,22 @@ async function runAutomation(id, { isTest = false, testTo = null } = {}, now = n
     automation.pendingMissedRun = null;
     automation.nextRunAt = computeNextRun(automation.schedule, new Date(runAt.getTime() + 1000));
     automation.updatedAt = runAt.toISOString();
+    // "Same as the sheet" tasks: once per REAL change, tell the owner the
+    // table's own columns shifted, then adopt the new baseline so the same
+    // change never gets reported twice.
+    if (automation.plan.source === 'sheet' && automation.plan.sheetUseAllColumns && liveSheetHeaders) {
+      const known = new Set(automation.plan.sheetColumns || []);
+      const liveSet = new Set(liveSheetHeaders);
+      const added = liveSheetHeaders.filter((h) => !known.has(h));
+      const removed = (automation.plan.sheetColumns || []).filter((h) => !liveSet.has(h));
+      if (added.length || removed.length) {
+        const parts = [];
+        if (added.length) parts.push('new column' + (added.length > 1 ? 's' : '') + ' ' + added.map((h) => '"' + h + '"').join(', ') + ' added');
+        if (removed.length) parts.push('column' + (removed.length > 1 ? 's' : '') + ' ' + removed.map((h) => '"' + h + '"').join(', ') + ' removed');
+        await whatsappAssistant.postOwnerNotification('ℹ️ Tab "' + automation.plan.sheetTab + '" (task "' + automation.subject + '"): ' + parts.join('; ') + ' - the table now follows the sheet.').catch(() => {});
+        automation.plan.sheetColumns = liveSheetHeaders;
+      }
+    }
     await saveAutomation(automation);
     return { ok: true, sentCount, skippedCount, results };
   } finally {
@@ -677,16 +827,26 @@ const CLAUDE_API_URL = 'https://api.anthropic.com/v1/messages';
 const CLAUDE_ANTHROPIC_VERSION = '2023-06-01';
 const MODEL = process.env.CLAUDE_MODEL_MAIN;
 
-function automationPlanTool(departmentNames) {
+function automationPlanTool(departmentNames, sheetContext) {
+  const sheetHint = sheetContext && sheetContext.tabs && sheetContext.tabs.length
+    ? ' A Google Sheet is currently loaded ("' + (sheetContext.fileName || 'the sheet') + '") with these tabs and their real columns: ' +
+      sheetContext.tabs.map((t) => '"' + t.title + '" (' + (t.headers || []).join(', ') + ')').join('; ') + '. When the ask clearly refers to this sheet or one of its tabs, use source="sheet".'
+    : '';
   return {
     type: 'function',
     function: {
       name: 'automation_plan',
-      description: 'Read an HR manager\'s description of a recurring automated task and extract its structured intent. Never invent a department, person, column name or data field that isn\'t given in context - if genuinely unclear or unsupported, list it in `unclear` instead of guessing.',
+      description: 'Read an HR manager\'s description of a recurring automated task and extract its structured intent. Never invent a department, person, column name, tab name or data field that isn\'t given in context - if genuinely unclear or unsupported, list it in `unclear` instead of guessing.' + sheetHint,
       parameters: {
         type: 'object',
         properties: {
-          source: { type: 'string', enum: ['master', 'confirmations', 'birthdays', 'exits', 'sheet', 'none'], description: '"confirmations" for probation/confirmation-due mentions, "birthdays" for birthday/jonmodin mentions, "exits" for exit/resignation mentions, "master" for "all employees", "sheet" if they mention a Google Sheet/spreadsheet/training list, "none" for a fixed reminder with no employee data involved (e.g. a recurring notice to specific named people only).' },
+          source: { type: 'string', enum: ['master', 'confirmations', 'birthdays', 'exits', 'sheet', 'none'], description: '"confirmations" for probation/confirmation-due mentions, "birthdays" for birthday/jonmodin mentions, "exits" for exit/resignation mentions, "master" for "all employees", "sheet" if they mention a Google Sheet/spreadsheet/tab/loaded list (see the loaded sheet above, if any), "none" for a fixed reminder with no employee data involved (e.g. a recurring notice to specific named people only).' },
+          sheetTabHint: { type: 'string', description: 'Only when source=sheet and more than one tab is loaded - which tab they mean, as named or clearly implied (e.g. "Addition sheet" -> "Addition"). Matched spelling-tolerantly against the real tab names afterward - never invented.' },
+          sheetFilterHints: {
+            type: 'array',
+            items: { type: 'object', properties: { columnHint: { type: 'string' }, op: { type: 'string', enum: ['is', 'isnot', 'contains', 'empty', 'notempty'] }, val: { type: 'string' } }, required: ['columnHint', 'op'] },
+            description: 'Only for source=sheet, only if a filter on the sheet\'s own data was explicitly asked for (e.g. "only Status Pending ones" -> {columnHint:"Status", op:"is", val:"Pending"}). Omit entirely when nothing was said - the sheet\'s whole list is used by default, never a guessed filter.'
+          },
           when: { type: 'string', enum: ['inMonth', 'inNextMonth', 'inPrevMonth', 'nextN', 'today', 'specificMonth'], description: 'Period relative to the run date. Defaults to inMonth (this month). "next month"/"shamne mash" -> inNextMonth. "previous/last month" -> inPrevMonth. "next N days" -> nextN. "today"/"ajke" -> today. A named month regardless of year (e.g. "every March") -> specificMonth.' },
           nextNDays: { type: 'number', description: 'Only when when=nextN - how many days ahead.' },
           specificMonth: { type: 'string', description: 'Only when when=specificMonth - the month name or number (1-12) mentioned.' },
@@ -717,12 +877,12 @@ function automationPlanTool(departmentNames) {
     }
   };
 }
-async function parseAutomationAsk(text) {
+async function parseAutomationAsk(text, sheetContext) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey || !MODEL) return { unclear: ['SUBH\'s language model is not configured on this server'] };
   const { departmentNames } = await employeeService.getEmployeeData();
   const deptList = Array.from(departmentNames.values());
-  const toolDef = automationPlanTool(deptList).function;
+  const toolDef = automationPlanTool(deptList, sheetContext).function;
   const resp = await fetch(CLAUDE_API_URL, {
     method: 'POST',
     headers: { 'x-api-key': apiKey, 'anthropic-version': CLAUDE_ANTHROPIC_VERSION, 'content-type': 'application/json' },
@@ -730,7 +890,7 @@ async function parseAutomationAsk(text) {
       model: MODEL, max_tokens: 1024,
       tools: [{ name: toolDef.name, description: toolDef.description, input_schema: toolDef.parameters }],
       tool_choice: { type: 'auto' },
-      system: [{ type: 'text', text: 'Parse an HR manager\'s description of a recurring automated HR task (mail/WhatsApp to HODs, confirmations, birthdays, etc). The real data sources available are: Employee Master (all employees), Probation Confirmations, Birthdays, Exits (currently inactive employees), a custom Google Sheet, or no data at all (a fixed message). Banglish/Hinglish/English are all expected. Pay close attention to: the period meant relative to the run date (this/next/previous month, next N days, the exact run day, or a fixed month regardless of year); whether a list/table of records with specific columns is wanted; any requested sort order; and any requested display format for a date column (e.g. no year shown). Never guess a column or person that isn\'t given - list it in unclear instead.' }],
+      system: [{ type: 'text', text: 'Parse an HR manager\'s description of a recurring automated HR task (mail/WhatsApp to HODs, confirmations, birthdays, a custom Google Sheet, etc). The built-in data sources are: Employee Master (all employees), Probation Confirmations, Birthdays, Exits (currently inactive employees), or no data at all (a fixed message) - plus any Google Sheet named in the tool description above, if one is loaded. Banglish/Hinglish/English are all expected. Pay close attention to: the period meant relative to the run date (this/next/previous month, next N days, the exact run day, or a fixed month regardless of year); whether a list/table of records with specific columns is wanted (for a sheet, "the same list"/no mention at all means ALL of its columns, in the sheet\'s own order); any requested filter or sort order; and any requested display format for a date column (e.g. no year shown). Never guess a column, tab or person that isn\'t given - list it in unclear instead.' }],
       messages: [{ role: 'user', content: text }]
     })
   });
@@ -766,14 +926,38 @@ function resolveColumnName(hint, availableCols) {
 // data (never trusting the model's own spelling), same "code does the real
 // lookup, the model only points at it" split reminderService.js's own
 // resolveReminderDateTime follows. Mirrors the sample's own applyPlan().
-async function draftPlanFromParsed(parsed, now) {
+async function draftPlanFromParsed(parsed, now, sheetContext) {
   if (parsed.unclear && parsed.unclear.length) return { ok: false, unclear: parsed.unclear };
   const { employees, departmentNames } = await employeeService.getEmployeeData();
   const source = parsed.source || 'master';
-  const availableCols = source === 'sheet' ? [] : EMP_COLUMNS; // a sheet's real columns aren't known until it's loaded (separate step)
+  const isSheet = source === 'sheet';
+  const unclear = [];
+
+  // Which tab (sheet source only) - everything else about sheet columns
+  // depends on knowing this first. Never guesses: no sheet loaded, or an
+  // unresolved/ambiguous tab name, always goes to `unclear` naming the
+  // real tabs to choose from.
+  let sheetTab = null, sheetHeaders = [];
+  if (isSheet) {
+    const tabs = (sheetContext && sheetContext.tabs) || [];
+    if (!tabs.length) {
+      unclear.push('which Google Sheet to use - load one with the Load button above first');
+    } else if (tabs.length === 1) {
+      sheetTab = tabs[0].title; sheetHeaders = tabs[0].headers || [];
+    } else if (parsed.sheetTabHint) {
+      const match = resolveFuzzyOneOf(parsed.sheetTabHint, tabs.map((t) => t.title));
+      if (match) { sheetTab = match; sheetHeaders = (tabs.find((t) => t.title === match) || {}).headers || []; }
+      else unclear.push('which tab you mean ("' + parsed.sheetTabHint + '" doesn\'t match any tab - choose from: ' + tabs.map((t) => t.title).join(', ') + ')');
+    } else {
+      unclear.push('which tab you mean (choose from: ' + tabs.map((t) => t.title).join(', ') + ')');
+    }
+    if (sheetTab && !sheetHeaders.length) unclear.push('tab "' + sheetTab + '" has no columns to work with (empty header row)');
+  }
+  const availableCols = isSheet ? sheetHeaders : EMP_COLUMNS;
+  function resolveAnyColumn(hint) { return isSheet ? resolveFuzzyOneOf(hint, availableCols) : resolveColumnName(hint, availableCols); }
+
   const conds = [];
   const dateCol = { confirmations: 'Confirmation Date', birthdays: 'DOB' }[source];
-  const unclear = [];
   if (dateCol) {
     if (parsed.when === 'nextN') conds.push({ col: dateCol, op: 'nextN', val: parsed.nextNDays || 7 });
     else if (parsed.when === 'today') conds.push({ col: dateCol, op: 'today' });
@@ -791,6 +975,16 @@ async function draftPlanFromParsed(parsed, now) {
   if (parsed.department) {
     const match = Array.from(departmentNames.values()).find((d) => d.toLowerCase() === String(parsed.department).toLowerCase());
     if (match) conds.push({ col: 'Department', op: 'is', val: match });
+  }
+  // Sheet filters - generic column/operator/value conditions on the
+  // sheet's own data (e.g. "only Status Pending ones"). Never a default
+  // filter when nothing was asked - the whole list is used instead.
+  if (isSheet && sheetTab && parsed.sheetFilterHints && parsed.sheetFilterHints.length) {
+    for (const f of parsed.sheetFilterHints) {
+      const col = resolveAnyColumn(f.columnHint);
+      if (col) conds.push({ col, op: f.op, val: f.val });
+      else unclear.push('a column named "' + f.columnHint + '" to filter by (not found in tab "' + sheetTab + '")');
+    }
   }
   let rec = parsed.rec || null, recCol = parsed.recCol || null, selectedEmployeeIds = [], selectedRawEmails = [];
   const unresolvedPeople = [];
@@ -826,16 +1020,32 @@ async function draftPlanFromParsed(parsed, now) {
   );
   if (!rec) unclear.push('who should receive it (their HOD/Reporting Manager/themself, or named people)');
 
-  // Table columns - an explicit ask (wantsTable + named columns) overrides
-  // the old fixed per-source default; never invents a column that doesn't
-  // exist in the real data.
+  // Table columns. A sheet automation shares its data by definition, so it
+  // defaults to a table of ALL of the chosen tab's own columns, in the
+  // sheet's own order ("same heads r format a") - naming specific columns
+  // narrows it to only those, in the order named. Employee sources keep
+  // their own existing "wantsTable + named columns" behavior unchanged.
   let table = ['confirmations', 'master'].includes(source);
   let tableColumns = ['Employee_No', 'Employee_Name', 'Designation', 'Department'];
-  if (parsed.wantsTable && source !== 'sheet') {
+  let sheetUseAllColumns = false;
+  if (isSheet && sheetTab) {
+    table = true;
     if (parsed.tableColumnHints && parsed.tableColumnHints.length) {
       const resolved = [];
       for (const hint of parsed.tableColumnHints) {
-        const col = resolveColumnName(hint, availableCols);
+        const col = resolveAnyColumn(hint);
+        if (col) resolved.push(col); else unclear.push('a column named "' + hint + '" (not found in tab "' + sheetTab + '")');
+      }
+      if (resolved.length) { tableColumns = resolved; sheetUseAllColumns = false; }
+    } else {
+      tableColumns = sheetHeaders.slice();
+      sheetUseAllColumns = true;
+    }
+  } else if (parsed.wantsTable) {
+    if (parsed.tableColumnHints && parsed.tableColumnHints.length) {
+      const resolved = [];
+      for (const hint of parsed.tableColumnHints) {
+        const col = resolveAnyColumn(hint);
         if (col) resolved.push(col); else unclear.push('a column named "' + hint + '" (not found in the data)');
       }
       if (resolved.length) { table = true; tableColumns = resolved; }
@@ -851,8 +1061,8 @@ async function draftPlanFromParsed(parsed, now) {
   // model, which is right about WHAT to sort by far more reliably than
   // this particular nuance of HOW.
   let sort = null;
-  if (parsed.sortColumnHint && source !== 'sheet') {
-    const col = resolveColumnName(parsed.sortColumnHint, EMP_COLUMNS);
+  if (parsed.sortColumnHint && (!isSheet || sheetTab)) {
+    const col = resolveAnyColumn(parsed.sortColumnHint);
     if (col) sort = { col, dir: parsed.sortDirection === 'desc' ? 'desc' : 'asc', mode: col === 'DOB' ? 'dayOfMonth' : 'full' };
     else unclear.push('a column named "' + parsed.sortColumnHint + '" to sort by (not found in the data)');
   }
@@ -861,10 +1071,11 @@ async function draftPlanFromParsed(parsed, now) {
   // resolves AND is actually a date column; otherwise silently ignored
   // (a cosmetic nicety, not worth failing the whole plan over).
   let columnFormats = null;
-  if (parsed.columnDateFormats && parsed.columnDateFormats.length && source !== 'sheet') {
+  if (parsed.columnDateFormats && parsed.columnDateFormats.length && (!isSheet || sheetTab)) {
+    const dateColsForSource = isSheet ? sheetDateColumns(availableCols) : EMP_DATE_COLUMNS;
     for (const { columnHint, format } of parsed.columnDateFormats) {
-      const col = resolveColumnName(columnHint, EMP_COLUMNS);
-      if (col && EMP_DATE_COLUMNS.has(col) && DATE_FORMATS[format]) { columnFormats = columnFormats || {}; columnFormats[col] = format; }
+      const col = resolveAnyColumn(columnHint);
+      if (col && dateColsForSource.has(col) && DATE_FORMATS[format]) { columnFormats = columnFormats || {}; columnFormats[col] = format; }
     }
   }
 
@@ -887,7 +1098,12 @@ async function draftPlanFromParsed(parsed, now) {
   return {
     ok: true,
     plan: {
-      source, sheetUrl: null, sheetId: null, sheetColumns: null,
+      source,
+      sheetUrl: isSheet ? ((sheetContext && sheetContext.sheetUrl) || null) : null,
+      sheetId: isSheet ? ((sheetContext && sheetContext.sheetId) || null) : null,
+      sheetTab: isSheet ? sheetTab : null,
+      sheetColumns: isSheet ? sheetHeaders : null,
+      sheetUseAllColumns,
       conds, match: 'all', sort, columnFormats,
       group, rec, recCol: recCol || (source === 'none' ? null : 'reportingDoer'),
       selectedEmployeeIds, selectedRawEmails, cc: null, mediator,
@@ -896,14 +1112,14 @@ async function draftPlanFromParsed(parsed, now) {
       table, tableColumns, tablePlacement: parsed.wantsPdf ? 'pdf' : 'body'
     },
     schedule: { date: scheduleDate.toISOString().slice(0, 10), time, repeat, every },
-    subject: parsed.subjectHint || { confirmations: 'Confirmation mail to HODs', birthdays: 'Birthday wishes', master: 'Notice to employees', exits: 'Exits update', sheet: 'Reminder', none: 'Reminder' }[source]
+    subject: parsed.subjectHint || { confirmations: 'Confirmation mail to HODs', birthdays: 'Birthday wishes', master: 'Notice to employees', exits: 'Exits update', sheet: (isSheet && sheetTab ? 'Data from ' + sheetTab : 'Reminder'), none: 'Reminder' }[source]
   };
 }
 
 module.exports = {
   isAvailable, newAutomation, saveAutomation, getAutomation, listRawAutomations, deleteAutomation,
   SOURCES, EMP_COLUMNS, EMP_PERSON_COLS, sourceDef, sourceKind,
-  loadSheetColumns, sheetPersonCols, sheetDateColumns,
+  loadSheetInfo, getSheetLiveHeaders, sheetPlanDependencies, checkSheetDependencies, resolveFuzzyOneOf, sheetPersonCols, sheetDateColumns,
   testCond, matchedRows, personContact, contactOk,
   buildMessages, fillPlaceholders, computeNextRun,
   runAutomation, runDueAutomations, resolveMissedRun,

@@ -21,7 +21,8 @@ function check(label, condition) {
 const FAKE_EMPLOYEES = [
   { employeeId: 'H1', name: 'Hema HOD', designation: 'Manager', department: 'HR', location: 'HO', company: 'Alcove', reportingDoer: null, reportingManager: null, doj: new Date('2015-01-01'), dob: new Date('1980-06-15'), tenure: '10y', totalExperience: '15y', email: 'hema@co.test', emailPersonal: '', contactNumber: '9000000001', employmentType: 'Confirmed', status: 'ACTIVE' },
   { employeeId: 'E1', name: 'Alice Emp', designation: 'Executive', department: 'HR', location: 'HO', company: 'Alcove', reportingDoer: 'Hema HOD', reportingManager: 'Hema HOD', doj: new Date('2026-04-01'), dob: new Date('1990-10-20'), tenure: '0y', totalExperience: '2y', email: 'alice@co.test', emailPersonal: '', contactNumber: '9876543210', employmentType: 'Probation', status: 'ACTIVE' },
-  { employeeId: 'E6', name: 'Khushboo Dhanuka', designation: 'Executive', department: 'HR', location: 'HO', company: 'Alcove', reportingDoer: 'Hema HOD', reportingManager: 'Hema HOD', doj: new Date('2022-01-01'), dob: new Date('1992-11-07'), tenure: '4y', totalExperience: '6y', email: 'khushboo@co.test', emailPersonal: '', contactNumber: '9876500006', employmentType: 'Confirmed', status: 'ACTIVE' }
+  { employeeId: 'E6', name: 'Khushboo Dhanuka', designation: 'Executive', department: 'HR', location: 'HO', company: 'Alcove', reportingDoer: 'Hema HOD', reportingManager: 'Hema HOD', doj: new Date('2022-01-01'), dob: new Date('1992-11-07'), tenure: '4y', totalExperience: '6y', email: 'khushboo@co.test', emailPersonal: '', contactNumber: '9876500006', employmentType: 'Confirmed', status: 'ACTIVE' },
+  { employeeId: 'E9', name: 'Subhodeep', designation: 'Owner', department: 'HR', location: 'HO', company: 'Alcove', reportingDoer: null, reportingManager: null, doj: new Date('2010-01-01'), dob: new Date('1990-01-01'), tenure: '16y', totalExperience: '16y', email: 'subhodeep@co.test', emailPersonal: '', contactNumber: '9876500009', employmentType: 'Confirmed', status: 'ACTIVE' }
 ];
 const FAKE_DEPARTMENT_NAMES = new Map([['HR', 'HR'], ['IT', 'IT']]);
 
@@ -103,6 +104,36 @@ async function main() {
     check('next-month: resolves Khushboo Dhanuka as the recipient', reportedYearDraftNext.ok && reportedYearDraftNext.plan.selectedEmployeeIds.includes('E6'));
     check('next-month: DOB column still uses DD-MM-ReportedYear', reportedYearDraftNext.ok && reportedYearDraftNext.plan.columnFormats && reportedYearDraftNext.plan.columnFormats.DOB === 'DD-MM-ReportedYear');
     check('next-month: sorted by DOB ascending, day-of-month', reportedYearDraftNext.ok && reportedYearDraftNext.plan.sort && reportedYearDraftNext.plan.sort.col === 'DOB' && reportedYearDraftNext.plan.sort.dir === 'asc' && reportedYearDraftNext.plan.sort.mode === 'dayOfMonth');
+
+    console.log('='.repeat(70));
+    console.log('GOOGLE SHEET AS A FIRST-CLASS INPUT: "the Addition sheet, same heads/format, whole list, to Subhodeep"');
+    console.log('='.repeat(70));
+    const sheetContext = {
+      sheetUrl: 'https://docs.google.com/spreadsheets/d/TESTID123/edit', sheetId: 'TESTID123', fileName: 'HR Workbook',
+      tabs: [
+        { title: 'Addition', headers: ['Name', 'Department', 'Policy No', 'Amount', 'Status'], rowCount: 14 },
+        { title: 'Deduction', headers: ['Name', 'Reason', 'Amount'], rowCount: 5 }
+      ]
+    };
+    const sheetAsk = 'ei spreadsheet er Addition sheet a j list ta ache oi list ta oi same heads r format a proti maser 10 tarikhe 9tar somoy subhodeep k share korbe';
+    const sheetParsed = await automationService.parseAutomationAsk(sheetAsk, sheetContext);
+    const sheetDraft = await automationService.draftPlanFromParsed(sheetParsed, now, sheetContext);
+    check('resolves to source=sheet', sheetDraft.ok && sheetDraft.plan.source === 'sheet');
+    check('resolves the tab to "Addition" (the only sheet-like tab named)', sheetDraft.ok && sheetDraft.plan.sheetTab === 'Addition');
+    check('whole list, no filter - sheetUseAllColumns true, ALL 5 of the Addition tab\'s own headers, in its own order', sheetDraft.ok && sheetDraft.plan.sheetUseAllColumns === true && JSON.stringify(sheetDraft.plan.tableColumns) === JSON.stringify(sheetContext.tabs[0].headers));
+    check('no filter conditions were invented ("same heads r format", not "only some rows")', sheetDraft.ok && sheetDraft.plan.conds.length === 0);
+    check('recipient resolves to the real employee Subhodeep, never invented', sheetDraft.ok && sheetDraft.plan.selectedEmployeeIds.includes('E9'));
+    check('schedule: day 10, time 09:00, monthly (default)', sheetDraft.ok && new Date(sheetDraft.schedule.date + 'T00:00:00Z').getUTCDate() === 10 && sheetDraft.schedule.time === '09:00' && sheetDraft.schedule.repeat === 'monthly');
+    check('mediator defaults to Mail (never stated as WhatsApp)', sheetDraft.ok && sheetDraft.plan.mediator === 'mail');
+
+    console.log('='.repeat(70));
+    console.log('GOOGLE SHEET: a filter + chosen columns on the same sheet ("only Status Pending, just 3 columns")');
+    console.log('='.repeat(70));
+    const sheetFilterAsk = 'Addition sheet theke shudhu Status Pending gulo, Name Department Amount ei 3ta column diye proti mash 5 tarikhe subhodeep k pathiye dao';
+    const sheetFilterParsed = await automationService.parseAutomationAsk(sheetFilterAsk, sheetContext);
+    const sheetFilterDraft = await automationService.draftPlanFromParsed(sheetFilterParsed, now, sheetContext);
+    check('filter: Status is Pending', sheetFilterDraft.ok && sheetFilterDraft.plan.conds.some((c) => c.col === 'Status' && c.op === 'is' && String(c.val).toLowerCase() === 'pending'));
+    check('chosen columns: exactly Name, Department, Amount (not all 5)', sheetFilterDraft.ok && sheetFilterDraft.plan.sheetUseAllColumns === false && JSON.stringify(sheetFilterDraft.plan.tableColumns) === JSON.stringify(['Name', 'Department', 'Amount']));
 
     console.log('='.repeat(70));
     console.log(pass + '/' + (pass + fail) + ' passed' + (fail ? ', ' + fail + ' FAILED' : ''));

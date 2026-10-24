@@ -2105,3 +2105,14 @@ body { background: var(--wi-bg); }
 .wf-auto-toast.warning { border-left-color: var(--wi-yellow-700); }
 .wf-auto-toast-icon { font-size: 1rem; line-height: 1.35; flex-shrink: 0; }
 .wf-auto-toast-text { font-size: 0.82rem; font-weight: 700; color: var(--wi-ink); line-height: 1.4; }
+
+/* Google Sheet as a first-class input - the Load button's own info card
+   (file name + every tab's headers/row count) and the "share with this
+   email" hint + Copy button. */
+.wf-auto-copy-btn { border: 1px solid var(--wi-primary); background: transparent; color: var(--wi-primary); border-radius: 999px; padding: 2px 9px; font-size: 0.68rem; font-weight: 800; cursor: pointer; font-family: inherit; margin-left: 4px; }
+.wf-auto-copy-btn.copied { background: var(--wi-green-pill); border-color: var(--wi-green-700); color: var(--wi-green-700); }
+.wf-auto-sheet-file { font-weight: 800; font-size: 0.82rem; color: var(--wi-ink); margin-top: 10px; }
+.wf-auto-sheet-tab { border: 1.5px solid var(--wi-border-2); border-radius: var(--wi-r-input); padding: 9px 10px; margin-top: 8px; cursor: pointer; }
+.wf-auto-sheet-tab.on { border-color: var(--wi-primary); background: var(--wi-primary-50); }
+.wf-auto-sheet-tab .title { font-weight: 800; font-size: 0.8rem; color: var(--wi-ink); }
+.wf-auto-sheet-tab .meta { font-size: 0.72rem; color: var(--wi-muted); margin-top: 2px; }

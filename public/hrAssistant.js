@@ -127,6 +127,9 @@
   const autoSheetUrl = document.getElementById('autoSheetUrl');
   const autoSheetLoadBtn = document.getElementById('autoSheetLoadBtn');
   const autoSheetMsg = document.getElementById('autoSheetMsg');
+  const autoSheetShareEmail = document.getElementById('autoSheetShareEmail');
+  const autoSheetShareCopyBtn = document.getElementById('autoSheetShareCopyBtn');
+  const autoSheetInfo = document.getElementById('autoSheetInfo');
   const autoGroupCard = document.getElementById('autoGroupCard');
   const autoGroupSeg = document.getElementById('autoGroupSeg');
   const autoRecSeg = document.getElementById('autoRecSeg');
@@ -2693,6 +2696,8 @@
   let autoConfirmed = false;
   let autoEmployeesCache = null;  // [{employeeId,name,department,email,contactNumber}], fetched once per session
   let autoLastPreview = null;     // last /automations/preview response, reused by the summary box + Preview sheet
+  let autoSheetContext = null;    // { sheetUrl, sheetId, fileName, tabs:[{title,headers,rowCount}] } - the currently loaded sheet, sent along with every Ask SUBH call so it can understand "the Addition sheet"
+  let autoServiceAccountEmail = null;
   // Same chip-picker component as the app's existing "Send Mail" popup
   // (createMailChipField, defined in workforce.js - loaded before this
   // script, so it's a plain global here) - type a name, pick a real HR-
@@ -2849,9 +2854,10 @@
     if (autoSubject) autoSubject.value = '';
     if (autoAsk) autoAsk.value = '';
     if (autoUnderstand) autoUnderstand.innerHTML = '';
-    if (autoSheetWrap) autoSheetWrap.classList.add('hidden');
+    autoSheetContext = null;
     if (autoSheetUrl) autoSheetUrl.value = '';
-    if (autoSheetMsg) autoSheetMsg.textContent = '';
+    if (autoSheetMsg) { autoSheetMsg.textContent = ''; autoSheetMsg.classList.add('hidden'); }
+    if (autoSheetInfo) autoSheetInfo.innerHTML = '';
     autoSetSeg(autoGroupSeg, 'each');
     autoSetSeg(autoRecSeg, 'selected');
     autoSetSeg(autoMedSeg, 'mail');
@@ -2889,7 +2895,15 @@
     if (autoTime) autoTime.value = t.schedule.time || '10:00';
     if (autoEvery) autoEvery.value = t.schedule.every || 2;
     autoCcField.setChips((t.plan.cc || '').split(',').map((s) => s.trim()).filter(Boolean));
-    if (t.plan.source === 'sheet' && autoSheetWrap) { autoSheetWrap.classList.remove('hidden'); if (autoSheetUrl) autoSheetUrl.value = t.plan.sheetUrl || ''; if (autoSheetMsg) autoSheetMsg.textContent = t.plan.sheetColumns ? '✓ Loaded — columns: ' + t.plan.sheetColumns.join(', ') : ''; }
+    autoSheetContext = null; // this editing session doesn't have a fresh multi-tab listing yet - tap Load again to refresh/change tab
+    if (t.plan.source === 'sheet') {
+      if (autoSheetUrl) autoSheetUrl.value = t.plan.sheetUrl || '';
+      if (autoSheetInfo) {
+        autoSheetInfo.innerHTML = t.plan.sheetTab
+          ? '<div class="wf-auto-sheet-tab on"><div class="title">' + escapeHtml(t.plan.sheetTab) + ' ✓</div><div class="meta">' + ((t.plan.sheetColumns || []).length) + ' column(s): ' + escapeHtml((t.plan.sheetColumns || []).join(', ')) + ' — tap Load above to refresh</div></div>'
+          : '';
+      }
+    } else if (autoSheetInfo) autoSheetInfo.innerHTML = '';
     renderAutoRecCols();
     if (autoRecCol) autoRecCol.value = t.plan.recCol || 'reportingDoer';
     renderAutoCols();
@@ -2915,6 +2929,7 @@
     autoResetButtonState(autoAskBtn);
     autoResetButtonState(autoSheetLoadBtn);
     await fetchAutoEmployees();
+    loadServiceAccountEmailOnce();
     if (t) autoPopulateForm(t); else autoResetForm();
     if (!autoAskExamples.dataset.wired) {
       autoAskExamples.innerHTML = AUTO_EXAMPLES.map((x, i) => '<button type="button" data-ex="' + i + '">' + escapeHtml(x) + '</button>').join('');
@@ -2957,7 +2972,17 @@
     autoCols.innerHTML = avail.map((h) => '<button type="button" class="' + (autoTableCols.includes(h) ? 'on' : '') + '" data-c="' + escapeHtml(h) + '">' + (autoTableCols.includes(h) ? '✓ ' : '+ ') + escapeHtml(h) + '</button>').join('');
     if (autoColOrder) autoColOrder.textContent = autoTableCols.length ? 'Order: ' + autoTableCols.join(' | ') : 'Pick at least one column.';
   }
-  if (autoCols) autoCols.addEventListener('click', (e) => { const b = e.target.closest('[data-c]'); if (!b) return; const c = b.dataset.c; autoTableCols = autoTableCols.includes(c) ? autoTableCols.filter((x) => x !== c) : [...autoTableCols, c]; renderAutoCols(); autoSync(); });
+  if (autoCols) autoCols.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-c]'); if (!b) return;
+    const c = b.dataset.c;
+    autoTableCols = autoTableCols.includes(c) ? autoTableCols.filter((x) => x !== c) : [...autoTableCols, c];
+    // A manual column edit means "no longer the whole sheet" - without
+    // this, buildMessages would keep following the sheet's own live
+    // headers and silently ignore this very choice (see sheetUseAllColumns
+    // in automationService.js).
+    if (autoPlan && autoPlan.source === 'sheet') autoPlan.sheetUseAllColumns = false;
+    renderAutoCols(); autoSync();
+  });
   // "Tap to insert" has to land wherever the owner was actually typing
   // (Mail subject OR Body), not always Body - tapping the chip button
   // itself steals focus away from whichever field they were in, so the
@@ -3025,9 +3050,9 @@
   function autoSync() {
     const f = autoReadForm();
     if (autoSubjCount) autoSubjCount.textContent = f.subject.length;
-    const isSheet = autoPlan && autoPlan.source === 'sheet';
     const isNone = autoPlan && autoPlan.source === 'none';
-    if (autoSheetWrap) autoSheetWrap.classList.toggle('hidden', !isSheet);
+    // #autoSheetWrap (the Google Sheet link) is ALWAYS visible here, not
+    // only for a sheet source (direct instruction) - no toggle needed.
     if (autoGroupCard) autoGroupCard.classList.toggle('hidden', Boolean(isNone));
     const colBtn = autoRecSeg && autoRecSeg.querySelector('[data-v="column"]');
     if (colBtn) colBtn.classList.toggle('hidden', Boolean(isNone));
@@ -3059,11 +3084,15 @@
       autoLastPreview = data;
       const srcLabel = plan.source === 'sheet' ? 'Custom Google Sheet' : (AUTO_SOURCE_LABELS[plan.source] || 'Data');
       const recTxt = f.rec === 'column' ? 'the person in "' + (autoRecCol && autoRecCol.selectedOptions[0] ? autoRecCol.selectedOptions[0].textContent : '') + '"' : autoSelected.size + ' selected';
-      autoSummary.innerHTML = '<b>Summary</b><br>' + (autoConfirmed ? '✓ Plan confirmed' : '⚠ Ask SUBH and confirm the plan first') + '<br>' +
-        escapeHtml(srcLabel) + (autoExcluded.size ? ' · ' + autoExcluded.size + ' removed by you' : '') + '<br>' +
-        (f.mediator === 'mail' ? '✉️ Mail' : '💬 WhatsApp') + ' → ' + escapeHtml(recTxt) + (f.cc ? ' (CC ' + escapeHtml(f.cc) + ')' : '') + '<br>' +
-        (f.repeat === 'custom' ? 'Every ' + f.every + ' months' : f.repeat.charAt(0).toUpperCase() + f.repeat.slice(1)) + ' · next run <b>' + escapeHtml(data.nextRunAt ? new Date(data.nextRunAt).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' }) : '—') + '</b><br>' +
-        'Next run would send <b>' + ((data.sent || []).length) + '</b> message(s).';
+      if (data.blocked) {
+        autoSummary.innerHTML = '<b>Summary</b><br><span style="color:var(--wi-red-700);font-weight:800">⚠ Can\'t run right now: ' + escapeHtml(data.blocked.reason) + '</span>';
+      } else {
+        autoSummary.innerHTML = '<b>Summary</b><br>' + (autoConfirmed ? '✓ Plan confirmed' : '⚠ Ask SUBH and confirm the plan first') + '<br>' +
+          escapeHtml(srcLabel) + (autoExcluded.size ? ' · ' + autoExcluded.size + ' removed by you' : '') + '<br>' +
+          (f.mediator === 'mail' ? '✉️ Mail' : '💬 WhatsApp') + ' → ' + escapeHtml(recTxt) + (f.cc ? ' (CC ' + escapeHtml(f.cc) + ')' : '') + '<br>' +
+          (f.repeat === 'custom' ? 'Every ' + f.every + ' months' : f.repeat.charAt(0).toUpperCase() + f.repeat.slice(1)) + ' · next run <b>' + escapeHtml(data.nextRunAt ? new Date(data.nextRunAt).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' }) : '—') + '</b><br>' +
+          'Next run would send <b>' + ((data.sent || []).length) + '</b> message(s).';
+      }
       // The understanding card's own per-row table reads autoLastPreview too
       // - without this it would stay stuck on whatever was available at the
       // moment it last rendered (e.g. empty, right after Ask SUBH) and never
@@ -3079,7 +3108,7 @@
     const text = (autoAsk && autoAsk.value || '').trim();
     if (autoAskErr) autoAskErr.classList.toggle('hidden', Boolean(text));
     if (!text) { showAutoToast('Write what you want to automate.', 'warning'); return; }
-    await runButtonAction(autoAskBtn, () => postJsonOrThrow('/api/workforce/hr-assistant/automations/ask', { text }), (draft) => {
+    await runButtonAction(autoAskBtn, () => postJsonOrThrow('/api/workforce/hr-assistant/automations/ask', { text, sheetContext: autoSheetContext }), (draft) => {
       if (!draft.ok) {
         autoPlan = null; autoConfirmed = false;
         if (autoUnderstand) autoUnderstand.innerHTML = '<div class="wf-auto-unclear"><h3>🤔 SUBH needs one more detail</h3><ul>' + draft.unclear.map((u) => '<li>Please tell me ' + escapeHtml(u) + '.</li>').join('') + '</ul><div class="wf-auto-hint">Add it to your sentence above and tap Ask SUBH again.</div></div>';
@@ -3106,20 +3135,71 @@
       if (autoRecCol) autoRecCol.value = draft.plan.recCol || 'reportingDoer';
       renderAutoCols();
       renderAutoEmpList();
+      renderAutoSheetInfo();
       autoSync();
       renderAutoUnderstanding();
     }, { resetAfterSuccess: true, toastFn: AUTO_TOAST_ERR.toastFn });
   }
+  async function loadServiceAccountEmailOnce() {
+    if (autoServiceAccountEmail) return autoServiceAccountEmail;
+    try {
+      const resp = await fetch('/api/workforce/hr-assistant/automations/sheet-service-account');
+      const data = await resp.json();
+      autoServiceAccountEmail = data.email || 'the service account';
+    } catch (err) { autoServiceAccountEmail = 'the service account'; }
+    if (autoSheetShareEmail) autoSheetShareEmail.textContent = autoServiceAccountEmail;
+    return autoServiceAccountEmail;
+  }
+  if (autoSheetShareCopyBtn) autoSheetShareCopyBtn.addEventListener('click', async () => {
+    const email = await loadServiceAccountEmailOnce();
+    try { await navigator.clipboard.writeText(email); } catch (err) { /* clipboard API unavailable - the email is still shown plainly in the hint */ }
+    autoSheetShareCopyBtn.textContent = 'Copied ✓';
+    autoSheetShareCopyBtn.classList.add('copied');
+    setTimeout(() => { autoSheetShareCopyBtn.textContent = 'Copy'; autoSheetShareCopyBtn.classList.remove('copied'); }, 1800);
+  });
+
+  function renderAutoSheetInfo() {
+    if (!autoSheetInfo) return;
+    if (!autoSheetContext) { autoSheetInfo.innerHTML = ''; return; }
+    const chosenTab = autoPlan && autoPlan.source === 'sheet' ? autoPlan.sheetTab : null;
+    autoSheetInfo.innerHTML = '<div class="wf-auto-sheet-file">✓ ' + escapeHtml(autoSheetContext.fileName) + '</div>' +
+      autoSheetContext.tabs.map((t) => (
+        '<div class="wf-auto-sheet-tab' + (t.title === chosenTab ? ' on' : '') + '" data-tab="' + escapeHtml(t.title) + '">' +
+          '<div class="title">' + escapeHtml(t.title) + (t.title === chosenTab ? ' ✓' : '') + '</div>' +
+          '<div class="meta">' + t.rowCount + ' row(s) · ' + (t.headers.length ? escapeHtml(t.headers.join(', ')) : 'no columns found') + '</div>' +
+        '</div>'
+      )).join('');
+  }
+  if (autoSheetInfo) autoSheetInfo.addEventListener('click', (e) => {
+    const card = e.target.closest('[data-tab]'); if (!card || !autoSheetContext) return;
+    const tab = autoSheetContext.tabs.find((t) => t.title === card.dataset.tab);
+    if (!tab) return;
+    if (!autoPlan) autoPlan = { source: 'sheet', conds: [], match: 'all' };
+    autoPlan.source = 'sheet'; autoPlan.sheetUrl = autoSheetContext.sheetUrl; autoPlan.sheetId = autoSheetContext.sheetId;
+    autoPlan.sheetTab = tab.title; autoPlan.sheetColumns = tab.headers;
+    renderAutoSheetInfo(); renderAutoRecCols(); renderAutoCols(); autoSync();
+    if (autoPlan) renderAutoUnderstanding();
+  });
+
   if (autoSheetLoadBtn) autoSheetLoadBtn.addEventListener('click', async () => {
+    loadServiceAccountEmailOnce();
     const url = (autoSheetUrl && autoSheetUrl.value || '').trim();
-    if (!/docs\.google\.com\/spreadsheets/.test(url)) { if (autoSheetMsg) autoSheetMsg.textContent = 'Paste a Google Sheet link first.'; return; }
+    if (autoSheetMsg) autoSheetMsg.classList.add('hidden');
+    if (!/docs\.google\.com\/spreadsheets/.test(url)) { if (autoSheetMsg) { autoSheetMsg.textContent = 'Paste a Google Sheet link first.'; autoSheetMsg.classList.remove('hidden'); } return; }
     await runButtonAction(autoSheetLoadBtn, () => postJsonOrThrow('/api/workforce/hr-assistant/automations/load-sheet', { sheetUrl: url }), (r) => {
-      if (!autoPlan) autoPlan = { source: 'sheet', conds: [], match: 'all' };
-      autoPlan.source = 'sheet'; autoPlan.sheetUrl = url; autoPlan.sheetId = r.sheetId; autoPlan.sheetColumns = r.columns;
-      if (autoSheetMsg) autoSheetMsg.textContent = '✓ Loaded — ' + r.columns.length + ' columns: ' + r.columns.join(', ');
-      renderAutoRecCols(); renderAutoCols(); autoSync();
+      autoSheetContext = { sheetUrl: url, sheetId: r.sheetId, fileName: r.fileName, tabs: r.tabs };
+      // A single tab auto-selects itself - no reason to make the owner
+      // pick when there's only one real choice.
+      if (r.tabs.length === 1) {
+        if (!autoPlan) autoPlan = { source: 'sheet', conds: [], match: 'all' };
+        autoPlan.source = 'sheet'; autoPlan.sheetUrl = url; autoPlan.sheetId = r.sheetId;
+        autoPlan.sheetTab = r.tabs[0].title; autoPlan.sheetColumns = r.tabs[0].headers;
+        renderAutoRecCols(); renderAutoCols();
+      }
+      renderAutoSheetInfo();
+      autoSync();
       if (autoPlan) renderAutoUnderstanding();
-    }, AUTO_TOAST_ERR);
+    }, { toastFn: (msg) => { if (autoSheetMsg) { autoSheetMsg.textContent = msg; autoSheetMsg.classList.remove('hidden'); } else showAutoToast(msg, 'error'); } });
   });
 
   // Plain-words description of the plan's date condition, e.g. "next
@@ -3152,6 +3232,12 @@
       const fmt = plan.columnFormats && plan.columnFormats[c];
       return fmt ? c + ' (' + (fmtLabel[fmt] || fmt) + ')' : c;
     }).join(', ');
+    // "5 of 7 columns" - only meaningful for a sheet where specific columns
+    // were chosen out of the tab's own full set (never for "same as the
+    // sheet", which always means every column that exists right now).
+    if (plan.source === 'sheet' && plan.sheetUseAllColumns === false && plan.sheetColumns && plan.sheetColumns.length > cols.length) {
+      txt += ' (' + cols.length + ' of ' + plan.sheetColumns.length + ' columns)';
+    }
     if (plan.sort && plan.sort.col) {
       const dir = plan.sort.dir === 'desc' ? 'descending' : 'ascending';
       txt += ', sorted by ' + plan.sort.col + (plan.sort.mode === 'dayOfMonth' ? ' (day of month)' : '') + ' ' + dir;
@@ -3162,20 +3248,26 @@
     if (!autoUnderstand) return;
     if (!autoPlan) { autoUnderstand.innerHTML = ''; return; }
     const f = autoReadForm();
-    const srcLabel = autoPlan.source === 'sheet' ? 'Custom Google Sheet' : (AUTO_SOURCE_LABELS[autoPlan.source] || 'Data');
+    const isSheetSrc = autoPlan.source === 'sheet';
+    const rowCountKnown = autoLastPreview && Array.isArray(autoLastPreview.rows) ? autoLastPreview.rows.length : null;
+    const srcLabel = isSheetSrc
+      ? (autoSheetContext ? autoSheetContext.fileName : 'Custom Google Sheet') +
+        (autoPlan.sheetTab ? ' → tab "' + autoPlan.sheetTab + '"' : '') +
+        (rowCountKnown != null ? ' — all ' + rowCountKnown + ' row' + (rowCountKnown === 1 ? '' : 's') + (autoPlan.sheetUseAllColumns ? ', same columns as the sheet' : '') : '')
+      : (AUTO_SOURCE_LABELS[autoPlan.source] || 'Data');
     const namedRecipients = [...(autoEmployeesCache || []).filter((e) => autoSelected.has(e.employeeId)).map((e) => e.name), ...(autoPlan.selectedRawEmails || [])];
     const recTxt = f.rec === 'column' ? (f.recCol === 'self' ? 'each person themself' : 'each row\'s own ' + (autoRecCol && autoRecCol.selectedOptions[0] ? autoRecCol.selectedOptions[0].textContent : f.recCol)) : (namedRecipients.join(', ') || '—');
     const how = autoPlan.source === 'none' ? '' : (f.group === 'each' ? ' — one separate message per row' : ' — one combined list');
     const sched = f.repeat === 'custom' && Number(f.every) === 1 ? 'every day' : (f.repeat === 'custom' ? 'every ' + f.every + ' months' : f.repeat);
     const lines = [
-      '<b>Who:</b> ' + escapeHtml(srcLabel) + escapeHtml(describePeriod(autoPlan, f.date)),
+      '<b>' + (isSheetSrc ? 'Data' : 'Who') + ':</b> ' + escapeHtml(srcLabel) + escapeHtml(describePeriod(autoPlan, f.date)),
       '<b>Sends to:</b> ' + escapeHtml(recTxt) + escapeHtml(how),
       '<b>By:</b> ' + (f.mediator === 'mail' ? 'Mail' : 'WhatsApp') + (f.table ? ' · table ' + (f.tablePlacement === 'pdf' ? 'as PDF attachment' : 'in the message') : ''),
       '<b>When:</b> ' + escapeHtml(sched) + ', first run ' + escapeHtml(autoLastPreview && autoLastPreview.nextRunAt ? new Date(autoLastPreview.nextRunAt).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' }) : '—')
     ];
     if (f.table && autoTableCols.length) lines.push('<b>Table:</b> ' + escapeHtml(describeTable(autoPlan, autoTableCols)));
     if (autoPlan.source === 'sheet' && !autoPlan.sheetColumns) {
-      autoUnderstand.innerHTML = '<div class="wf-auto-und"><h3>SUBH understood</h3><ul>' + lines.map((l) => '<li>' + l + '</li>').join('') + '</ul><div class="wf-auto-hint" style="margin-top:8px">Load your Google Sheet below to see the people.</div></div>';
+      autoUnderstand.innerHTML = '<div class="wf-auto-und"><h3>SUBH understood</h3><ul>' + lines.map((l) => '<li>' + l + '</li>').join('') + '</ul><div class="wf-auto-hint" style="margin-top:8px">Load your Google Sheet link above to see the data.</div></div>';
       return;
     }
     const rows = (autoLastPreview && autoLastPreview.rows) || [];
@@ -3202,6 +3294,12 @@
   // ---------- Preview / Test / Save ----------
   function autoRenderPreviewBody(data, title) {
     if (autoPreviewTitle) autoPreviewTitle.textContent = title;
+    if (data.blocked) {
+      if (autoPreviewBody) autoPreviewBody.innerHTML = '<div class="wf-auto-skip">⚠ Can\'t run right now: ' + escapeHtml(data.blocked.reason) + '</div>';
+      if (autoPreviewBackdrop) autoPreviewBackdrop.hidden = false;
+      if (autoPreviewSheet) { autoPreviewSheet.hidden = false; requestAnimationFrame(() => autoPreviewSheet.classList.add('open')); }
+      return;
+    }
     const sent = data.sent || [], skipped = data.skipped || [];
     let html = '<div class="wf-auto-hint">' + sent.length + ' message(s)' + (data.nextRunAt ? ' · run on ' + escapeHtml(new Date(data.nextRunAt).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' })) : '') + '</div>';
     html += skipped.map((s) => '<div class="wf-auto-skip">⚠ ' + escapeHtml(s.who) + ': ' + escapeHtml(s.reason) + '</div>').join('');
