@@ -35,6 +35,14 @@ const FAKE_EMPLOYEES = [
   { employeeId: 'E4', name: 'Dave Emp', designation: 'Executive', department: 'IT', location: 'HO', company: 'Alcove', reportingDoer: 'Rohit HOD', reportingManager: 'Rohit HOD', doj: d('2025-01-01'), dob: d('1995-01-01'), tenure: '1y', totalExperience: '2y', email: '', emailPersonal: '', contactNumber: '', employmentType: 'Confirmed', status: 'INACTIVE' },
   { employeeId: 'E5', name: 'Eve Emp', designation: 'Executive', department: 'HR', location: 'HO', company: 'Alcove', reportingDoer: 'Ghost Manager', reportingManager: 'Ghost Manager', doj: d('2025-06-01'), dob: d('1999-03-03'), tenure: '1y', totalExperience: '3y', email: 'eve@co.test', emailPersonal: '', contactNumber: '9876543215', employmentType: 'Confirmed', status: 'ACTIVE' }
 ];
+// Extra employees for the DD-MM-ReportedYear tests only (specific DOBs in
+// November/January) - kept OUT of FAKE_EMPLOYEES itself so they never
+// shift the exact row/message counts every other test above hardcodes
+// against the original 7-employee fixture.
+const REPORTED_YEAR_EMPLOYEES = FAKE_EMPLOYEES.concat([
+  { employeeId: 'E7', name: 'Nov Emp', designation: 'Executive', department: 'HR', location: 'HO', company: 'Alcove', reportingDoer: 'Hema HOD', reportingManager: 'Hema HOD', doj: d('2020-01-01'), dob: d('1998-11-07'), tenure: '6y', totalExperience: '6y', email: 'nov@co.test', emailPersonal: '', contactNumber: '9876543217', employmentType: 'Confirmed', status: 'ACTIVE' },
+  { employeeId: 'E8', name: 'Jan Emp', designation: 'Executive', department: 'HR', location: 'HO', company: 'Alcove', reportingDoer: 'Hema HOD', reportingManager: 'Hema HOD', doj: d('2020-01-01'), dob: d('1998-01-24'), tenure: '6y', totalExperience: '6y', email: 'jan@co.test', emailPersonal: '', contactNumber: '9876543218', employmentType: 'Confirmed', status: 'ACTIVE' }
+]);
 const FAKE_DEPARTMENT_NAMES = new Map([['HR', 'HR'], ['IT', 'IT']]);
 function fakeEmployeeData() {
   return { employees: FAKE_EMPLOYEES, departmentNames: FAKE_DEPARTMENT_NAMES, locationNames: new Map(), doerNames: new Map(), reportingManagerNames: new Map() };
@@ -256,6 +264,69 @@ async function main() {
     const builtDefault = await automationService.buildMessages(defaultFormatAutomation, now);
     const carolRowDefault = builtDefault.sent[0].table.find((r) => r['Employee_Name'] === 'Carol Emp');
     check('an automation with NO columnFormats keeps the original default (DD Mon YYYY) - unchanged for existing automations', /^\d{2} \w{3} \d{4}$/.test(carolRowDefault['DOB']));
+
+    console.log('='.repeat(70));
+    console.log('SMARTER UNDERSTANDING: "DD-MM-ReportedYear" - an annual date shown with the YEAR OF THE REPORTED PERIOD, never the real birth year, never hard-coded');
+    console.log('='.repeat(70));
+    function reportedYearAutomation(conds) {
+      return {
+        plan: {
+          source: 'birthdays', conds, match: 'all',
+          rec: 'selected', selectedEmployeeIds: ['H1'], group: 'list', mediator: 'mail',
+          mailSubject: 'Birthday List', body: 'List:', table: true, tableColumns: ['Employee_Name', 'DOB'],
+          columnFormats: { DOB: 'DD-MM-ReportedYear' }
+        },
+        excludedKeys: []
+      };
+    }
+    // Scoped to its own, slightly larger employee list (adds Nov/Jan-
+    // birthday test fixtures) - swapped back immediately after, so every
+    // OTHER test's hardcoded row/message counts against the original
+    // 7-employee fixture stay exactly as they were.
+    const origGetEmployeeDataForReportedYear = employeeService.getEmployeeData;
+    employeeService.getEmployeeData = async () => ({ employees: REPORTED_YEAR_EMPLOYEES, departmentNames: FAKE_DEPARTMENT_NAMES, locationNames: new Map(), doerNames: new Map(), reportingManagerNames: new Map() });
+    try {
+      await checkAsync('current-month run on 1 Nov 2026: DOB 07-11-1998 (any birth year) shows 07-11-2026', async () => {
+        const run = new Date('2026-11-01T06:00:00.000Z');
+        const built = await automationService.buildMessages(reportedYearAutomation([{ col: 'DOB', op: 'inMonth' }, { col: 'Status', op: 'isnot', val: 'INACTIVE' }], run), run);
+        const row = built.sent[0].table.find((r) => r['Employee_Name'] === 'Nov Emp');
+        return Boolean(row) && row['DOB'] === '07-11-2026';
+      });
+      await checkAsync('next-month run on 30 Oct 2026 (covers November): DOB 07-11-1998 shows 07-11-2026', async () => {
+        const run = new Date('2026-10-30T06:00:00.000Z');
+        const built = await automationService.buildMessages(reportedYearAutomation([{ col: 'DOB', op: 'inNextMonth' }, { col: 'Status', op: 'isnot', val: 'INACTIVE' }], run), run);
+        const row = built.sent[0].table.find((r) => r['Employee_Name'] === 'Nov Emp');
+        return Boolean(row) && row['DOB'] === '07-11-2026';
+      });
+      await checkAsync('next-month run on 30 Dec 2026 (covers January 2027 - year change): DOB 24-01-1998 shows 24-01-2027', async () => {
+        const run = new Date('2026-12-30T06:00:00.000Z');
+        const built = await automationService.buildMessages(reportedYearAutomation([{ col: 'DOB', op: 'inNextMonth' }, { col: 'Status', op: 'isnot', val: 'INACTIVE' }], run), run);
+        const row = built.sent[0].table.find((r) => r['Employee_Name'] === 'Jan Emp');
+        return Boolean(row) && row['DOB'] === '24-01-2027';
+      });
+      await checkAsync('previous-month run: a run on 15 Dec 2026 covering November shows the reported year 2026', async () => {
+        const run = new Date('2026-12-15T06:00:00.000Z');
+        const built = await automationService.buildMessages(reportedYearAutomation([{ col: 'DOB', op: 'inPrevMonth' }, { col: 'Status', op: 'isnot', val: 'INACTIVE' }], run), run);
+        const row = built.sent[0].table.find((r) => r['Employee_Name'] === 'Nov Emp');
+        return Boolean(row) && row['DOB'] === '07-11-2026';
+      });
+      await checkAsync('a specific-month filter ("every November") on a run in October: shows the upcoming November\'s year', async () => {
+        const run = new Date('2026-10-15T06:00:00.000Z');
+        const built = await automationService.buildMessages(reportedYearAutomation([{ col: 'DOB', op: 'inSpecificMonth', val: 11 }, { col: 'Status', op: 'isnot', val: 'INACTIVE' }], run), run);
+        const row = built.sent[0].table.find((r) => r['Employee_Name'] === 'Nov Emp');
+        return Boolean(row) && row['DOB'] === '07-11-2026';
+      });
+      await checkAsync('sorting by this column still sorts by the real day-of-month, unaffected by the cosmetic year shown', async () => {
+        const run = new Date('2026-11-01T06:00:00.000Z');
+        const auto = reportedYearAutomation([{ col: 'DOB', op: 'inMonth' }, { col: 'Status', op: 'isnot', val: 'INACTIVE' }], run);
+        auto.plan.sort = { col: 'DOB', dir: 'asc', mode: 'dayOfMonth' };
+        const built = await automationService.buildMessages(auto, run);
+        const rows = built.sent[0].table;
+        return rows.length === 1 && rows[0]['Employee_Name'] === 'Nov Emp' && rows[0]['DOB'] === '07-11-2026';
+      });
+    } finally {
+      employeeService.getEmployeeData = origGetEmployeeDataForReportedYear;
+    }
 
     console.log('='.repeat(70));
     console.log('SMARTER UNDERSTANDING: named recipients can be raw email addresses, alongside real employees');

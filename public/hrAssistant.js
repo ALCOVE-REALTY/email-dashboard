@@ -3147,7 +3147,7 @@
   // 1 -> 31".
   function describeTable(plan, cols) {
     if (!cols.length) return '';
-    const fmtLabel = { 'DD Mon': 'day + month, no year', 'DD-MM-YYYY': 'DD-MM-YYYY', 'DD Month YYYY': 'full date' };
+    const fmtLabel = { 'DD Mon': 'day + month, no year', 'DD-MM-YYYY': 'DD-MM-YYYY', 'DD Month YYYY': 'full date', 'DD-MM-ReportedYear': 'day + month, shown with this run\'s own year' };
     let txt = cols.map((c) => {
       const fmt = plan.columnFormats && plan.columnFormats[c];
       return fmt ? c + ' (' + (fmtLabel[fmt] || fmt) + ')' : c;

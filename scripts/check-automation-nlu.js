@@ -81,6 +81,30 @@ async function main() {
     check('rows are sorted by DOB ascending, day-of-month mode (A-Z / 1->31)', smartDraft.ok && smartDraft.plan.sort && smartDraft.plan.sort.col === 'DOB' && smartDraft.plan.sort.dir === 'asc' && smartDraft.plan.sort.mode === 'dayOfMonth');
 
     console.log('='.repeat(70));
+    console.log('SMARTER UNDERSTANDING: "DD-MM-ReportedYear" format, from a worked example in the sentence itself (current month)');
+    console.log('='.repeat(70));
+    const reportedYearAskCurrent = 'Current Birthday list maser 1 tarikhe share korte hobe khusboo dhanuka k r birthday list er DOB colom a year mention thakbe 2026 er hisabe mane karor birthday jodi 24-07-1998 thake tahol table a ota 24-07-2026 dekhabe r date gulo A-Z short thakbe';
+    const reportedYearParsedCurrent = await automationService.parseAutomationAsk(reportedYearAskCurrent);
+    const reportedYearDraftCurrent = await automationService.draftPlanFromParsed(reportedYearParsedCurrent, now);
+    check('current-month: resolves to birthdays, THIS month (not next/previous)', reportedYearDraftCurrent.ok && reportedYearDraftCurrent.plan.conds.some((c) => c.col === 'DOB' && c.op === 'inMonth'));
+    check('current-month: schedule day-of-month is the 1st', reportedYearDraftCurrent.ok && new Date(reportedYearDraftCurrent.schedule.date + 'T00:00:00Z').getUTCDate() === 1);
+    check('current-month: resolves Khushboo Dhanuka as the recipient', reportedYearDraftCurrent.ok && reportedYearDraftCurrent.plan.selectedEmployeeIds.includes('E6'));
+    check('current-month: DOB column uses the DD-MM-ReportedYear format (from the 24-07-1998 -> 24-07-2026 worked example)', reportedYearDraftCurrent.ok && reportedYearDraftCurrent.plan.columnFormats && reportedYearDraftCurrent.plan.columnFormats.DOB === 'DD-MM-ReportedYear');
+    check('current-month: sorted by DOB ascending, day-of-month', reportedYearDraftCurrent.ok && reportedYearDraftCurrent.plan.sort && reportedYearDraftCurrent.plan.sort.col === 'DOB' && reportedYearDraftCurrent.plan.sort.dir === 'asc' && reportedYearDraftCurrent.plan.sort.mode === 'dayOfMonth');
+
+    console.log('='.repeat(70));
+    console.log('SMARTER UNDERSTANDING: "DD-MM-ReportedYear" format, same ask but "next month ... 30 tarikhe"');
+    console.log('='.repeat(70));
+    const reportedYearAskNext = 'Next month Birthday list maser 30 tarikhe share korte hobe khusboo dhanuka k r birthday list er DOB colom a year mention thakbe 2026 er hisabe mane karor birthday jodi 24-07-1998 thake tahol table a ota 24-07-2026 dekhabe r date gulo A-Z short thakbe';
+    const reportedYearParsedNext = await automationService.parseAutomationAsk(reportedYearAskNext);
+    const reportedYearDraftNext = await automationService.draftPlanFromParsed(reportedYearParsedNext, now);
+    check('next-month: resolves to birthdays, NEXT month', reportedYearDraftNext.ok && reportedYearDraftNext.plan.conds.some((c) => c.col === 'DOB' && c.op === 'inNextMonth'));
+    check('next-month: schedule day-of-month is the 30th (clamped to the last day on a shorter month)', reportedYearDraftNext.ok && new Date(reportedYearDraftNext.schedule.date + 'T00:00:00Z').getUTCDate() <= 31);
+    check('next-month: resolves Khushboo Dhanuka as the recipient', reportedYearDraftNext.ok && reportedYearDraftNext.plan.selectedEmployeeIds.includes('E6'));
+    check('next-month: DOB column still uses DD-MM-ReportedYear', reportedYearDraftNext.ok && reportedYearDraftNext.plan.columnFormats && reportedYearDraftNext.plan.columnFormats.DOB === 'DD-MM-ReportedYear');
+    check('next-month: sorted by DOB ascending, day-of-month', reportedYearDraftNext.ok && reportedYearDraftNext.plan.sort && reportedYearDraftNext.plan.sort.col === 'DOB' && reportedYearDraftNext.plan.sort.dir === 'asc' && reportedYearDraftNext.plan.sort.mode === 'dayOfMonth');
+
+    console.log('='.repeat(70));
     console.log(pass + '/' + (pass + fail) + ' passed' + (fail ? ', ' + fail + ' FAILED' : ''));
     if (failures.length) { console.log('Failed checks:'); failures.forEach((f) => console.log(' -', f)); }
     console.log('='.repeat(70));

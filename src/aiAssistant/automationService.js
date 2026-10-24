@@ -392,16 +392,43 @@ function fillPlaceholders(str, row, runAt) {
 // birthday table), 'DD-MM-YYYY' or 'DD Month YYYY'. No entry for a column
 // keeps the original default (DD Mon YYYY) so an existing automation's
 // output never changes just because this feature exists.
+// 'DD-MM-ReportedYear' is for an annual column (DOB) shown as if it fell in
+// the YEAR OF THE PERIOD BEING REPORTED, not the real birth year - a
+// current-month run shows the run's own year, a next-month run shows next
+// month's year (which is next calendar year every December), a previous-
+// month run shows last month's year, and a specific-month filter shows
+// that month's next real occurrence's year. Never hard-codes a year -
+// reportedPeriodYear() below derives it fresh from the plan + run date
+// every single time.
 const DATE_FORMATS = {
   'DD Mon': (d) => String(d.getUTCDate()).padStart(2, '0') + ' ' + d.toLocaleDateString('en-GB', { month: 'short', timeZone: 'UTC' }),
   'DD-MM-YYYY': (d) => String(d.getUTCDate()).padStart(2, '0') + '-' + String(d.getUTCMonth() + 1).padStart(2, '0') + '-' + d.getUTCFullYear(),
-  'DD Month YYYY': (d) => String(d.getUTCDate()).padStart(2, '0') + ' ' + d.toLocaleDateString('en-GB', { month: 'long', timeZone: 'UTC' }) + ' ' + d.getUTCFullYear()
+  'DD Month YYYY': (d) => String(d.getUTCDate()).padStart(2, '0') + ' ' + d.toLocaleDateString('en-GB', { month: 'long', timeZone: 'UTC' }) + ' ' + d.getUTCFullYear(),
+  'DD-MM-ReportedYear': (d, reportedYear) => String(d.getUTCDate()).padStart(2, '0') + '-' + String(d.getUTCMonth() + 1).padStart(2, '0') + '-' + reportedYear
 };
-function cellText(row, col, plan) {
+// The year to show for 'DD-MM-ReportedYear' - derived from the plan's own
+// period condition (inMonth/inNextMonth/inPrevMonth/inSpecificMonth), the
+// exact same period the matcher itself used to decide which rows qualify
+// for this run, so the displayed year can never disagree with "which
+// month's data this actually is".
+function reportedPeriodYear(plan, runAt) {
+  const cond = (plan.conds || []).find((c) => ['inMonth', 'inNextMonth', 'inPrevMonth', 'inSpecificMonth'].includes(c.op));
+  if (!cond) return runAt.getUTCFullYear();
+  if (cond.op === 'inSpecificMonth') {
+    const mn = monthNumberFromVal(cond.val);
+    if (!mn) return runAt.getUTCFullYear();
+    const y = runAt.getUTCFullYear();
+    return (mn - 1) >= runAt.getUTCMonth() ? y : y + 1; // the next real occurrence of that month at/after the run
+  }
+  const period = cond.op === 'inNextMonth' ? 'next' : cond.op === 'inPrevMonth' ? 'prev' : 'this';
+  return periodTargetMonth(period, runAt).year;
+}
+function cellText(row, col, plan, runAt) {
   const v = row[col];
   if (v instanceof Date) {
     const fmt = plan && plan.columnFormats && DATE_FORMATS[plan.columnFormats[col]];
-    return fmt ? fmt(v) : v.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC' });
+    if (fmt) return fmt(v, runAt ? reportedPeriodYear(plan, runAt) : v.getUTCFullYear());
+    return v.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC' });
   }
   return v == null || v === '' ? '—' : String(v);
 }
@@ -410,9 +437,9 @@ function cellText(row, col, plan) {
 // all read this SAME pre-formatted object afterward (never re-deriving
 // the format independently), which is what actually guarantees the three
 // can never show different text for the same run.
-function formatTableRow(row, columns, plan) {
+function formatTableRow(row, columns, plan, runAt) {
   const out = {};
-  columns.forEach((c) => { out[c] = cellText(row, c, plan); });
+  columns.forEach((c) => { out[c] = cellText(row, c, plan, runAt); });
   return out;
 }
 function tableRowsText(list, cols) { return list.map((r) => cols.map((c) => c + ': ' + (r[c] == null || r[c] === '' ? '—' : r[c])).join('\n')).join('\n\n'); }
@@ -452,7 +479,7 @@ async function buildMessages(automation, runAt) {
       to: name, addr: plan.mediator === 'mail' ? contact.email : contact.phone,
       subject: fillPlaceholders(plan.mailSubject, row, runAt),
       body: fillPlaceholders(plan.body, row, runAt),
-      table: rawTable ? rawTable.map((r) => formatTableRow(r, plan.tableColumns, plan)) : null,
+      table: rawTable ? rawTable.map((r) => formatTableRow(r, plan.tableColumns, plan, runAt)) : null,
       tableColumns: plan.tableColumns || [], tablePlacement: plan.tablePlacement || 'body',
       who: who || null, key: key || null
     });
@@ -679,8 +706,8 @@ function automationPlanTool(departmentNames) {
           sortDirection: { type: 'string', enum: ['asc', 'desc'], description: 'Only if sortColumnHint is set. "A-Z"/"ascending"/"1 to 31" -> asc (default). "Z-A"/"descending" -> desc.' },
           columnDateFormats: {
             type: 'array',
-            items: { type: 'object', properties: { columnHint: { type: 'string' }, format: { type: 'string', enum: ['DD Mon', 'DD-MM-YYYY', 'DD Month YYYY'] } }, required: ['columnHint', 'format'] },
-            description: 'Only if a specific display was requested for a date column - "no year mentioned"/"only day and month" -> DD Mon; a literal day-month-year numeric format -> DD-MM-YYYY; the full month name with year -> DD Month YYYY.'
+            items: { type: 'object', properties: { columnHint: { type: 'string' }, format: { type: 'string', enum: ['DD Mon', 'DD-MM-YYYY', 'DD Month YYYY', 'DD-MM-ReportedYear'] } }, required: ['columnHint', 'format'] },
+            description: 'Only if a specific display was requested for a date column - "no year mentioned"/"only day and month" -> DD Mon; a literal day-month-year numeric format -> DD-MM-YYYY; the full month name with year -> DD Month YYYY; for an annual date (like DOB) shown as if it fell in THIS RUN\'S own reported period (e.g. "year shown as 2026"/"as if this year"/a worked example like "24-07-1998 ke 24-07-2026 dekhabe") -> DD-MM-ReportedYear, never a literal year the model picks itself.'
           },
           subjectHint: { type: 'string', description: 'A short mail-subject-style phrase for what this task is about, in English.' },
           unclear: { type: 'array', items: { type: 'string' }, description: 'Short, specific descriptions of anything genuinely required but not stated or not resolvable from real data (e.g. "which people or data this is about", "who should receive it", "a department name that doesn\'t match any real department", "a column named X that doesn\'t exist in the data"). Empty array if everything needed is resolved.' }
