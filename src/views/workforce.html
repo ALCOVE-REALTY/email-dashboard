@@ -7,7 +7,7 @@
   <link rel="stylesheet" href="styles.css?v=10" />
   <link rel="stylesheet" href="workforce.css?v=132" />
   <link rel="stylesheet" href="workforce-ui-enhance.css?v=1" />
-  <link rel="stylesheet" href="css/wi-theme.css?v=8" />
+  <link rel="stylesheet" href="css/wi-theme.css?v=9" />
 </head>
 <body>
   <div class="wf-shell">
@@ -288,7 +288,7 @@
            this panel. -->
       <div class="wf-auto-page" id="hrAutoPage" hidden>
         <div class="wf-auto-card">
-          <label class="wf-rem-field">Task Subject <span class="wf-auto-req">*</span>
+          <label class="wf-rem-field"><span class="wf-auto-subject-label">Task Subject <span class="wf-auto-req">*</span></span>
             <input type="text" id="autoSubject" maxlength="100" placeholder="e.g. Confirmation mail to HODs" />
           </label>
           <div class="wf-auto-hint"><span id="autoSubjCount">0</span>/100</div>
@@ -296,8 +296,9 @@
         </div>
 
         <div class="wf-auto-card">
-          <div class="wf-auto-sechead"><span class="wf-auto-num">1</span> Tell SUBH what to automate</div>
+          <div class="wf-auto-sechead"><span class="wf-auto-num">1</span> <span class="wf-auto-label">Tell SUBH what to automate <span class="wf-auto-req">*</span></span></div>
           <textarea id="autoAsk" class="wf-auto-ask" placeholder="e.g. Proti maser 1 tarikh 10 tay, jader confirmation ei mashe pending, tader HOD ke alada mail korbe"></textarea>
+          <div class="wf-auto-err hidden" id="autoAskErr">Please tell SUBH what to automate.</div>
           <div class="wf-auto-chips" id="autoAskExamples"></div>
           <button type="button" class="wf-ai-action-btn download" id="autoAskBtn" style="margin-top:8px">✨ Ask SUBH</button>
           <div class="wf-auto-hint">Write in Banglish, English or Hinglish. SUBH shows what it understood — nothing is saved until you say it's right.</div>
@@ -326,26 +327,36 @@
             <button type="button" data-v="selected" class="on">Selected people</button>
             <button type="button" data-v="column">Person from the data</button>
           </div>
-          <div id="autoRecColWrap" class="hidden">
-            <label class="wf-rem-field">Send to the person in</label>
-            <select id="autoRecCol"></select>
+          <div id="autoRecColWrap" class="hidden" style="margin-top:12px">
+            <label class="wf-rem-field">Send to the person in
+              <select id="autoRecCol"></select>
+            </label>
           </div>
           <div id="autoSelWrap">
-            <input type="text" id="autoEmpSearch" placeholder="Search employees…" style="margin-top:10px" />
+            <div style="position:relative;margin-top:10px">
+              <input type="search" id="autoEmpSearch" placeholder="Search employees…" autocomplete="off" style="width:100%;background:var(--wi-surface);border:1px solid var(--wi-border-2);border-radius:var(--wi-r-input);padding:10px 12px 10px 34px;font:inherit;font-size:.85rem;color:var(--wi-ink);" />
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="var(--wi-muted)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="position:absolute;left:11px;top:50%;transform:translateY(-50%);"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            </div>
             <div class="wf-auto-row-gap" style="margin-top:8px">
-              <button type="button" class="wf-ai-action-btn outline" id="autoSelAllBtn">Select all</button>
-              <button type="button" class="wf-ai-action-btn outline" id="autoSelClearBtn">Clear all</button>
+              <button type="button" class="wf-ai-action-btn outline small" id="autoSelAllBtn">Select all</button>
+              <button type="button" class="wf-ai-action-btn outline small" id="autoSelClearBtn">Clear all</button>
               <span class="wf-auto-hint" id="autoSelCount" style="margin-left:auto">0 selected</span>
             </div>
             <div class="wf-auto-emplist" id="autoEmpList"></div>
           </div>
-          <div class="wf-auto-hint" id="autoRecHint"></div>
-          <label class="wf-rem-field">CC (optional)<input type="text" id="autoCc" placeholder="e.g. ayan.das@alcoverealty.in" /></label>
+          <div class="wf-auto-hint" id="autoRecHint" style="margin-top:10px"></div>
+          <div class="wf-mail-field" style="margin-top:12px;margin-bottom:0">
+            <span class="wf-mail-field-label">CC (optional)</span>
+            <div class="wf-mail-chip-input" id="autoCcChipInput">
+              <input type="text" id="autoCcInput" autocomplete="off" placeholder="Add recipient…" />
+            </div>
+            <ul class="wf-mail-suggest" id="autoCcSuggest" hidden></ul>
+          </div>
         </div>
 
         <div class="wf-auto-card">
           <div class="wf-auto-sechead"><span class="wf-auto-num">4</span> What message?</div>
-          <label class="wf-rem-field">Mediator <span class="wf-auto-req">*</span></label>
+          <label class="wf-rem-field"><span class="wf-auto-label">Mediator <span class="wf-auto-req">*</span></span></label>
           <div class="wf-auto-seg" id="autoMedSeg"><button type="button" data-v="mail" class="on">✉️ Mail</button><button type="button" data-v="wa">💬 WhatsApp</button></div>
           <div id="autoMailSubjWrap">
             <label class="wf-rem-field">Mail subject<input type="text" id="autoMailSubj" /></label>
@@ -358,8 +369,8 @@
             <div class="wf-auto-hint" style="margin-top:8px">Columns — choose from the HR database heads (tap to add/remove, order follows your taps):</div>
             <div class="wf-auto-cols" id="autoCols"></div>
             <div class="wf-auto-hint" id="autoColOrder"></div>
-            <label class="wf-rem-field">Put the table</label>
-            <div class="wf-auto-seg" id="autoPlaceSeg"><button type="button" data-v="body" class="on">In the message body</button><button type="button" data-v="pdf">📎 As PDF attachment</button></div>
+            <label class="wf-rem-field" style="margin-top:14px"><span class="wf-auto-label">Put the table</span></label>
+            <div class="wf-auto-seg" id="autoPlaceSeg" style="margin-top:8px"><button type="button" data-v="body" class="on">In the message body</button><button type="button" data-v="pdf">📎 As PDF attachment</button></div>
             <div class="wf-auto-hint" id="autoPdfWaNote"></div>
           </div>
         </div>
@@ -367,11 +378,11 @@
         <div class="wf-auto-card">
           <div class="wf-auto-sechead">⏰ Schedule</div>
           <div class="wf-rem-field-row">
-            <label class="wf-rem-field">Date <span class="wf-auto-req">*</span><input type="date" id="autoDate" /></label>
-            <label class="wf-rem-field">Time <span class="wf-auto-req">*</span><input type="time" id="autoTime" value="10:00" /></label>
+            <label class="wf-rem-field"><span class="wf-auto-label">Date <span class="wf-auto-req">*</span></span><input type="date" id="autoDate" /></label>
+            <label class="wf-rem-field"><span class="wf-auto-label">Time <span class="wf-auto-req">*</span></span><input type="time" id="autoTime" value="10:00" /></label>
           </div>
-          <label class="wf-rem-field">Repeat <span class="wf-auto-req">*</span></label>
-          <div class="wf-auto-seg" id="autoRepSeg"><button type="button" data-v="none">None</button><button type="button" data-v="monthly" class="on">Monthly</button><button type="button" data-v="yearly">Yearly</button><button type="button" data-v="custom">Custom</button></div>
+          <label class="wf-rem-field" style="margin-top:10px"><span class="wf-auto-label">Repeat <span class="wf-auto-req">*</span></span></label>
+          <div class="wf-auto-seg" id="autoRepSeg" style="margin-top:8px"><button type="button" data-v="none">None</button><button type="button" data-v="monthly" class="on">Monthly</button><button type="button" data-v="yearly">Yearly</button><button type="button" data-v="custom">Custom</button></div>
           <div id="autoCustomWrap" class="hidden wf-auto-row-gap" style="margin-top:10px">Every <input type="number" id="autoEvery" min="1" max="12" value="2" style="width:70px" /> months</div>
           <div class="wf-auto-hint" id="autoRepRule"></div>
         </div>
@@ -379,11 +390,11 @@
         <div class="wf-auto-card wf-auto-summary" id="autoSummary"></div>
 
         <div class="wf-rem-btn-row">
-          <button type="button" class="wf-rem-add-btn outline" id="autoPreviewBtn">👁 Preview</button>
-          <button type="button" class="wf-rem-add-btn outline" id="autoTestBtn">Send test to me</button>
+          <button type="button" class="wf-rem-add-btn outline small" id="autoPreviewBtn">👁 Preview</button>
+          <button type="button" class="wf-rem-add-btn outline small" id="autoTestBtn">Send test to me</button>
         </div>
         <button type="button" class="wf-rem-add-btn" id="autoSaveBtn" style="width:100%">Save Automation</button>
-        <button type="button" class="wf-ai-action-btn outline" id="autoCancelBtn" style="width:100%;margin-top:10px">Cancel</button>
+        <button type="button" class="wf-rem-add-btn outline" id="autoCancelBtn" style="width:100%;margin-top:10px">Cancel</button>
       </div>
 
       <div class="wf-ai-sheet-backdrop" id="hrRemSheetBackdrop" hidden></div>
@@ -2126,7 +2137,7 @@
 
   <script src="vendor/chart.js/chart.umd.js"></script>
   <script src="workforce.js?v=254"></script>
-  <script src="hrAssistant.js?v=5"></script>
+  <script src="hrAssistant.js?v=6"></script>
   <script src="workforce-ui-enhance.js?v=1"></script>
   <script src="js/wi-motion.js?v=3"></script>
 </body>

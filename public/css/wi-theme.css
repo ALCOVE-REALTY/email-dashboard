@@ -1995,6 +1995,15 @@ body { background: var(--wi-bg); }
 .wf-auto-page { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 10px 14px 14px; display: flex; flex-direction: column; gap: 12px; }
 .wf-auto-card { border-radius: var(--wi-r-card); box-shadow: var(--wi-sh-card); background: var(--wi-surface); padding: 16px; display: flex; flex-direction: column; gap: 4px; }
 .wf-auto-req { color: var(--wi-red-700); }
+/* Groups "label text + *" into a single flex item inside .wf-rem-field
+   (display:flex;flex-direction:column) - without this wrapper, the bare
+   text and the <span class="wf-auto-req"> become TWO separate flex items
+   and stack onto their own lines instead of sitting on the same line. */
+.wf-auto-label { display: inline; }
+.wf-auto-subject-label { display: inline; font-size: 0.92rem; font-weight: 800; color: var(--wi-ink); }
+.wf-ai-action-btn.small { padding: 5px 10px; font-size: 0.72rem; }
+.wf-rem-add-btn.small { padding: 9px; font-size: 0.8rem; }
+#autoAskBtn { align-self: flex-start; }
 .wf-auto-hint { font-size: 0.72rem; color: var(--wi-muted); margin-top: 4px; }
 .wf-auto-err { font-size: 0.72rem; color: var(--wi-red-700); font-weight: 700; margin-top: 4px; }
 .wf-auto-err.hidden { display: none; }

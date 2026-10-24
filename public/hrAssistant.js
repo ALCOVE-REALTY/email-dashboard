@@ -119,6 +119,7 @@
   const autoSubjCount = document.getElementById('autoSubjCount');
   const autoSubjErr = document.getElementById('autoSubjErr');
   const autoAsk = document.getElementById('autoAsk');
+  const autoAskErr = document.getElementById('autoAskErr');
   const autoAskExamples = document.getElementById('autoAskExamples');
   const autoAskBtn = document.getElementById('autoAskBtn');
   const autoUnderstand = document.getElementById('autoUnderstand');
@@ -138,7 +139,6 @@
   const autoSelCount = document.getElementById('autoSelCount');
   const autoEmpList = document.getElementById('autoEmpList');
   const autoRecHint = document.getElementById('autoRecHint');
-  const autoCc = document.getElementById('autoCc');
   const autoMedSeg = document.getElementById('autoMedSeg');
   const autoMailSubjWrap = document.getElementById('autoMailSubjWrap');
   const autoMailSubj = document.getElementById('autoMailSubj');
@@ -1807,7 +1807,8 @@
   // red with "Retry" on error - card/row untouched, nothing lost, and
   // tapping "Retry" (same button, re-enabled, same click listener) just
   // runs it again.
-  async function runButtonAction(btn, requestFn, onSuccess) {
+  async function runButtonAction(btn, requestFn, onSuccess, opts) {
+    opts = opts || {};
     if (!btn || btn.classList.contains('is-loading')) return;
     btn.disabled = true;
     btn.classList.remove('is-error', 'is-success');
@@ -1818,6 +1819,12 @@
       btn.classList.add('is-success');
       await new Promise((resolve) => setTimeout(resolve, 550));
       if (onSuccess) await onSuccess(result);
+      // Opt-in only (reminderService's own Mark done/Send/etc. all keep the
+      // default "stays disabled + green" behavior, since their row/card
+      // normally disappears right after) - a button the owner taps
+      // repeatedly on the SAME page (Ask SUBH) needs to return to its
+      // idle, re-clickable state instead.
+      if (opts.resetAfterSuccess) { btn.classList.remove('is-success'); btn.disabled = false; }
     } catch (err) {
       btn.classList.remove('is-loading');
       btn.classList.add('is-error');
@@ -2665,10 +2672,7 @@
   // showConfirmDialog/escapeHtml/setCountBadge/pushNav/setPanelView) rather
   // than introducing a second copy of any of them.
   const AUTO_EXAMPLES = [
-    'Proti maser 1 tarikh 10 tay, jader confirmation ei mashe pending, tader HOD ke alada mail korbe',
-    'Every month on the 1st send the birthday list of that month as PDF to Subhodeep and Ayan Das',
-    'Jader birthday ajke tader ke WhatsApp e wish korbe',
-    'Proti mash er 15 tarikh Priyanka ke PF challan reminder mail korbe'
+    'Proti maser 1 tarikh 10 tay, jader confirmation ei mashe pending, tader HOD ke alada mail korbe'
   ];
   const AUTO_PLACEHOLDERS = ['{Employee_No}', '{Employee_Name}', '{Designation}'];
   const AUTO_SOURCE_LABELS = { master: 'Employee Master', confirmations: 'Probation Confirmations', birthdays: 'Birthdays', exits: 'Exits (currently inactive)', sheet: 'Custom Google Sheet', none: 'No data — just a message' };
@@ -2685,6 +2689,12 @@
   let autoOriginalAsk = '';
   let autoEmployeesCache = null;  // [{employeeId,name,department,email,contactNumber}], fetched once per session
   let autoLastPreview = null;     // last /automations/preview response, reused by the summary box + Preview sheet
+  // Same chip-picker component as the app's existing "Send Mail" popup
+  // (createMailChipField, defined in workforce.js - loaded before this
+  // script, so it's a plain global here) - type a name, pick a real HR-
+  // master address, or type+Enter a raw email. A dedicated instance, never
+  // the Send Mail popup's own mailCcField/mailToField.
+  const autoCcField = createMailChipField('autoCcChipInput', 'autoCcInput', 'autoCcSuggest');
 
   function autoSegVal(container) { const b = container && container.querySelector('button.on'); return b ? b.dataset.v : null; }
   function autoSetSeg(container, v) { if (!container) return; container.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.v === v)); }
@@ -2826,7 +2836,7 @@
     if (autoDate) autoDate.value = '';
     if (autoTime) autoTime.value = '10:00';
     if (autoEvery) autoEvery.value = 2;
-    if (autoCc) autoCc.value = '';
+    autoCcField.reset();
     if (autoEmpSearch) autoEmpSearch.value = '';
     renderAutoRecCols();
   }
@@ -2852,7 +2862,7 @@
     if (autoDate) autoDate.value = t.schedule.date || '';
     if (autoTime) autoTime.value = t.schedule.time || '10:00';
     if (autoEvery) autoEvery.value = t.schedule.every || 2;
-    if (autoCc) autoCc.value = t.plan.cc || '';
+    autoCcField.setChips((t.plan.cc || '').split(',').map((s) => s.trim()).filter(Boolean));
     if (t.plan.source === 'sheet' && autoSheetWrap) { autoSheetWrap.classList.remove('hidden'); if (autoSheetUrl) autoSheetUrl.value = t.plan.sheetUrl || ''; if (autoSheetMsg) autoSheetMsg.textContent = t.plan.sheetColumns ? '✓ Loaded — columns: ' + t.plan.sheetColumns.join(', ') : ''; }
     renderAutoRecCols();
     if (autoRecCol) autoRecCol.value = t.plan.recCol || 'reportingDoer';
@@ -2913,7 +2923,9 @@
   });
   if (autoRecCol) autoRecCol.addEventListener('change', () => { autoSync(); if (autoPlan) renderAutoUnderstanding(); });
   if (autoTableToggle) autoTableToggle.addEventListener('change', autoSync);
-  [autoSubject, autoMailSubj, autoBody, autoDate, autoTime, autoEvery, autoCc].forEach((el) => { if (el) el.addEventListener('input', autoSync); });
+  [autoSubject, autoMailSubj, autoBody, autoDate, autoTime, autoEvery].forEach((el) => { if (el) el.addEventListener('input', autoSync); });
+  document.getElementById('autoCcInput').addEventListener('input', autoSync);
+  document.getElementById('autoCcChipInput').addEventListener('click', () => setTimeout(autoSync, 0)); // chip add/remove happens on click (Enter/comma go through the same input events too, but a suggestion click does not)
 
   function autoReadForm() {
     return {
@@ -2931,7 +2943,7 @@
       time: autoTime ? autoTime.value : '10:00',
       repeat: autoSegVal(autoRepSeg) || 'monthly',
       every: autoEvery ? autoEvery.value : 2,
-      cc: autoCc ? autoCc.value.trim() : ''
+      cc: autoCcField.getChips().join(', ')
     };
   }
   function autoBuildPlanFromForm(f) {
@@ -2998,6 +3010,7 @@
   if (autoAskBtn) autoAskBtn.addEventListener('click', autoDoAsk);
   async function autoDoAsk() {
     const text = (autoAsk && autoAsk.value || '').trim();
+    if (autoAskErr) autoAskErr.classList.toggle('hidden', Boolean(text));
     if (!text) { showActionToast('Write what you want to automate.'); return; }
     autoOriginalAsk = text;
     await runButtonAction(autoAskBtn, () => postJsonOrThrow('/api/workforce/hr-assistant/automations/ask', { text }), (draft) => {
@@ -3029,7 +3042,7 @@
       renderAutoEmpList();
       autoSync();
       renderAutoUnderstanding();
-    });
+    }, { resetAfterSuccess: true });
   }
   if (autoSheetLoadBtn) autoSheetLoadBtn.addEventListener('click', async () => {
     const url = (autoSheetUrl && autoSheetUrl.value || '').trim();
@@ -3134,12 +3147,16 @@
     let ok = true;
     if (autoSubjErr) autoSubjErr.classList.toggle('hidden', Boolean(f.subject));
     if (!f.subject) ok = false;
+    const askText = (autoAsk && autoAsk.value || '').trim();
+    if (autoAskErr) autoAskErr.classList.toggle('hidden', Boolean(askText));
+    if (!askText) { showActionToast('Tell SUBH what to automate first.'); ok = false; }
     if (!autoConfirmed) { showActionToast("Ask SUBH and confirm the plan first."); ok = false; }
     if (!f.date || !f.time) { showActionToast('Date and time are required.'); ok = false; }
     if (f.rec === 'selected' && !autoSelected.size) { showActionToast('Select at least one recipient.'); ok = false; }
     if (!f.body.trim()) { showActionToast('Message body is required.'); ok = false; }
     if (f.table && !autoTableCols.length) { showActionToast('Pick at least one table column.'); ok = false; }
     if (autoPlan && autoPlan.source === 'sheet' && !autoPlan.sheetColumns) { showActionToast('Load the Google Sheet first.'); ok = false; }
+    if (autoCcField.getChips().some((e) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e))) { showActionToast('One of the CC addresses doesn\'t look like a valid email.'); ok = false; }
     return ok;
   }
   if (autoSaveBtn) autoSaveBtn.addEventListener('click', async () => {
