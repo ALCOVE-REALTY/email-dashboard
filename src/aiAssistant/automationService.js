@@ -244,14 +244,48 @@ function rowDateForRun(plan, row, col, runAt) {
   if (!(v instanceof Date)) return null;
   return colIsAnnual(plan, col) ? new Date(Date.UTC(runAt.getUTCFullYear(), v.getUTCMonth(), v.getUTCDate())) : v;
 }
+// Period relative to the run date - 'this'/'next'/'prev' month, used by
+// inMonth/inNextMonth/inPrevMonth. An annual column (DOB) has to be
+// wrapped to the TARGET month's own year, not always the run's own year
+// (rowDateForRun's wrap), or "next month" could land in the past relative
+// to the run date whenever the run falls in December.
+function periodTargetMonth(period, runAt) {
+  const y = runAt.getUTCFullYear(), m = runAt.getUTCMonth();
+  if (period === 'next') { const nm = m + 1; return { year: y + Math.floor(nm / 12), month: ((nm % 12) + 12) % 12 }; }
+  if (period === 'prev') { const pm = m - 1; return { year: y + Math.floor(pm / 12), month: ((pm % 12) + 12) % 12 }; }
+  return { year: y, month: m };
+}
+function rowDateForTargetYear(plan, row, col, targetYear) {
+  const v = row[col];
+  if (!(v instanceof Date)) return null;
+  return colIsAnnual(plan, col) ? new Date(Date.UTC(targetYear, v.getUTCMonth(), v.getUTCDate())) : v;
+}
+const MONTH_NAMES = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
+function monthNumberFromVal(val) {
+  if (typeof val === 'number') return val >= 1 && val <= 12 ? val : null;
+  const s = String(val || '').trim().toLowerCase();
+  if (/^\d+$/.test(s)) { const n = Number(s); return n >= 1 && n <= 12 ? n : null; }
+  const idx = MONTH_NAMES.findIndex((m) => m === s || (s.length >= 3 && m.startsWith(s)));
+  return idx >= 0 ? idx + 1 : null;
+}
 function testCond(plan, row, cond, runAt) {
   const v = row[cond.col];
   if (cond.op === 'empty') return v == null || v === '';
   if (cond.op === 'notempty') return !(v == null || v === '');
   if (colIsDate(plan, cond.col)) {
+    if (cond.op === 'inMonth' || cond.op === 'inNextMonth' || cond.op === 'inPrevMonth') {
+      const period = cond.op === 'inNextMonth' ? 'next' : cond.op === 'inPrevMonth' ? 'prev' : 'this';
+      const target = periodTargetMonth(period, runAt);
+      const dt = rowDateForTargetYear(plan, row, cond.col, target.year);
+      return Boolean(dt) && dt.getUTCMonth() === target.month && dt.getUTCFullYear() === target.year;
+    }
+    if (cond.op === 'inSpecificMonth') {
+      const mn = monthNumberFromVal(cond.val);
+      const dt = rowDateForRun(plan, row, cond.col, runAt); // year is irrelevant here - only the month component is compared
+      return Boolean(mn) && Boolean(dt) && dt.getUTCMonth() === mn - 1;
+    }
     const dt = rowDateForRun(plan, row, cond.col, runAt);
     if (!dt) return false;
-    if (cond.op === 'inMonth') return dt.getUTCMonth() === runAt.getUTCMonth() && dt.getUTCFullYear() === runAt.getUTCFullYear();
     if (cond.op === 'today') return +dayOnly(dt) === +dayOnly(runAt);
     if (cond.op === 'nextN') { const diff = (dayOnly(dt) - dayOnly(runAt)) / 86400000; return diff >= 0 && diff <= (Number(cond.val) || 0); }
     if (cond.op === 'before') return cond.val ? dt < new Date(cond.val + 'T00:00:00Z') : false;
@@ -265,6 +299,24 @@ function testCond(plan, row, cond, runAt) {
   if (cond.op === 'contains') return b ? a.includes(b) : true;
   return false;
 }
+// Sorting - any column, ascending/descending; a date column can sort by
+// its full value or just day-of-month (e.g. a birthday list sorted
+// 1 -> 31 regardless of birth year). Never mutates the array it's given.
+function compareForSort(a, b, sort) {
+  const va = a[sort.col], vb = b[sort.col];
+  let ka, kb;
+  if (va instanceof Date || vb instanceof Date) {
+    const da = va instanceof Date ? va : null, db = vb instanceof Date ? vb : null;
+    if (sort.mode === 'dayOfMonth') { ka = da ? da.getUTCDate() : -1; kb = db ? db.getUTCDate() : -1; }
+    else { ka = da ? da.getTime() : -Infinity; kb = db ? db.getTime() : -Infinity; }
+  } else {
+    ka = va == null ? '' : String(va).toLowerCase();
+    kb = vb == null ? '' : String(vb).toLowerCase();
+  }
+  if (ka < kb) return sort.dir === 'desc' ? 1 : -1;
+  if (ka > kb) return sort.dir === 'desc' ? -1 : 1;
+  return 0;
+}
 async function matchedRows(plan, excludedKeys, runAt) {
   if (plan.source === 'none') return [];
   const src = sourceDef(plan);
@@ -272,8 +324,9 @@ async function matchedRows(plan, excludedKeys, runAt) {
   const ex = new Set(excludedKeys || []);
   const kept = rows.filter((r) => !ex.has(rowKey(r)));
   const conds = plan.conds || [];
-  if (!conds.length) return kept;
-  return kept.filter((r) => (plan.match === 'any' ? conds.some((c) => testCond(plan, r, c, runAt)) : conds.every((c) => testCond(plan, r, c, runAt))));
+  let result = !conds.length ? kept : kept.filter((r) => (plan.match === 'any' ? conds.some((c) => testCond(plan, r, c, runAt)) : conds.every((c) => testCond(plan, r, c, runAt))));
+  if (plan.sort && plan.sort.col) result = result.slice().sort((a, b) => compareForSort(a, b, plan.sort));
+  return result;
 }
 
 // ---------------- Recipient resolution ----------------
@@ -316,27 +369,57 @@ function contactOk(contact, mediator) {
 }
 
 // ---------------- Message building (deterministic - shared by preview,
-// test-send, and the real scheduled run). Placeholders are intentionally
-// limited to exactly {Employee_No}/{Employee_Name}/{Designation} per spec -
-// a field a given row doesn't have is left as the literal placeholder
-// text, never blanked or guessed. ----------------
-function fillPlaceholders(str, row) {
+// test-send, and the real scheduled run). Row placeholders are
+// intentionally limited to exactly {Employee_No}/{Employee_Name}/
+// {Designation} per spec - a field a given row doesn't have is left as the
+// literal placeholder text, never blanked or guessed. {Current_Month}/
+// {Current_Year} are run-date based (not row based), so they fill even in
+// combined-list mode where `row` is null. `runAt` is optional so every
+// existing direct call (e.g. scripts/check-automation.js) keeps working
+// unchanged - the two new placeholders just stay literal without it.
+function fillPlaceholders(str, row, runAt) {
   return String(str || '').replace(/\{(\w+)\}/g, (m, k) => {
+    if (k === 'Current_Month') return runAt ? runAt.toLocaleDateString('en-GB', { month: 'long', timeZone: 'UTC' }) : m;
+    if (k === 'Current_Year') return runAt ? String(runAt.getUTCFullYear()) : m;
+    if (!row) return m;
     const map = { Employee_No: row['Employee_No'] || row['Employee No'], Employee_Name: rowName(row), Designation: row['Designation'] };
     const v = map[k];
     return v == null || v === '' ? m : String(v);
   });
 }
-function cellText(row, col) {
+// Per-column date display format (optional, set via the plan's own
+// columnFormats map) - 'DD Mon' for day+month only (no year, e.g. a
+// birthday table), 'DD-MM-YYYY' or 'DD Month YYYY'. No entry for a column
+// keeps the original default (DD Mon YYYY) so an existing automation's
+// output never changes just because this feature exists.
+const DATE_FORMATS = {
+  'DD Mon': (d) => String(d.getUTCDate()).padStart(2, '0') + ' ' + d.toLocaleDateString('en-GB', { month: 'short', timeZone: 'UTC' }),
+  'DD-MM-YYYY': (d) => String(d.getUTCDate()).padStart(2, '0') + '-' + String(d.getUTCMonth() + 1).padStart(2, '0') + '-' + d.getUTCFullYear(),
+  'DD Month YYYY': (d) => String(d.getUTCDate()).padStart(2, '0') + ' ' + d.toLocaleDateString('en-GB', { month: 'long', timeZone: 'UTC' }) + ' ' + d.getUTCFullYear()
+};
+function cellText(row, col, plan) {
   const v = row[col];
-  if (v instanceof Date) return v.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC' });
+  if (v instanceof Date) {
+    const fmt = plan && plan.columnFormats && DATE_FORMATS[plan.columnFormats[col]];
+    return fmt ? fmt(v) : v.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC' });
+  }
   return v == null || v === '' ? '—' : String(v);
 }
-function tableRowsText(list, cols) { return list.map((r) => cols.map((c) => c + ': ' + cellText(r, c)).join('\n')).join('\n\n'); }
+// Bakes every requested column into its own final DISPLAY STRING once,
+// right when a message's table is built - Preview/send-test/the real run
+// all read this SAME pre-formatted object afterward (never re-deriving
+// the format independently), which is what actually guarantees the three
+// can never show different text for the same run.
+function formatTableRow(row, columns, plan) {
+  const out = {};
+  columns.forEach((c) => { out[c] = cellText(row, c, plan); });
+  return out;
+}
+function tableRowsText(list, cols) { return list.map((r) => cols.map((c) => c + ': ' + (r[c] == null || r[c] === '' ? '—' : r[c])).join('\n')).join('\n\n'); }
 function tableRowsHtml(list, cols) {
   return '<table border="1" cellpadding="4" style="border-collapse:collapse">' +
     '<tr>' + cols.map((c) => '<th>' + escapeHtml(c) + '</th>').join('') + '</tr>' +
-    list.map((r) => '<tr>' + cols.map((c) => '<td>' + escapeHtml(cellText(r, c)) + '</td>').join('') + '</tr>').join('') + '</table>';
+    list.map((r) => '<tr>' + cols.map((c) => '<td>' + escapeHtml(r[c] == null || r[c] === '' ? '—' : r[c]) + '</td>').join('') + '</tr>').join('') + '</table>';
 }
 function escapeHtml(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
 function pdfFileName(subject, who, runAt) {
@@ -364,11 +447,12 @@ async function buildMessages(automation, runAt) {
       skipped.push({ who: name, reason: 'no valid ' + (plan.mediator === 'mail' ? 'email' : 'phone') + (row ? ' (for ' + rowName(row) + ')' : ''), key: key || null });
       return;
     }
+    const rawTable = plan.table && plan.tableColumns && plan.tableColumns.length ? (tableRows || (row ? [row] : [])) : null;
     sent.push({
       to: name, addr: plan.mediator === 'mail' ? contact.email : contact.phone,
-      subject: row ? fillPlaceholders(plan.mailSubject, row) : (plan.mailSubject || ''),
-      body: row ? fillPlaceholders(plan.body, row) : (plan.body || ''),
-      table: plan.table && plan.tableColumns && plan.tableColumns.length ? (tableRows || (row ? [row] : [])) : null,
+      subject: fillPlaceholders(plan.mailSubject, row, runAt),
+      body: fillPlaceholders(plan.body, row, runAt),
+      table: rawTable ? rawTable.map((r) => formatTableRow(r, plan.tableColumns, plan)) : null,
       tableColumns: plan.tableColumns || [], tablePlacement: plan.tablePlacement || 'body',
       who: who || null, key: key || null
     });
@@ -383,6 +467,10 @@ async function buildMessages(automation, runAt) {
   } else {
     const { employees } = await employeeService.getEmployeeData();
     const people = employees.filter((e) => (plan.selectedEmployeeIds || []).includes(e.employeeId)).map((e) => ({ name: e.name, email: e.email, phone: e.contactNumber }));
+    // Named recipients can also be raw email addresses not in the HR
+    // master (e.g. an external stakeholder) - added alongside, never
+    // instead of, the resolved employee list.
+    (plan.selectedRawEmails || []).forEach((email) => people.push({ name: email, email, phone: '' }));
     if (plan.group === 'each' && plan.source !== 'none') {
       for (const r of rows) for (const p of people) push(p, r, null, rowName(r), rowKey(r));
     } else {
@@ -425,7 +513,7 @@ async function sendOneMessage(automation, msg, runAt) {
   try {
     if (plan.mediator === 'mail') {
       if (plan.table && msg.table && msg.table.length && msg.tablePlacement === 'pdf') {
-        const buffer = await pdfReport.buildTablePdfBuffer({ title: automation.subject, subtitle: runAt.toDateString(), columns: msg.tableColumns, rows: msg.table.map((r) => msg.tableColumns.map((c) => cellText(r, c))), landscape: true });
+        const buffer = await pdfReport.buildTablePdfBuffer({ title: automation.subject, subtitle: runAt.toDateString(), columns: msg.tableColumns, rows: msg.table.map((r) => msg.tableColumns.map((c) => r[c])), landscape: true });
         await gmailService.sendMailWithAttachment({ to: msg.addr, cc: plan.cc || undefined, subject: msg.subject, text: msg.body, attachment: { filename: pdfFileName(automation.subject, msg.who, runAt), contentType: 'application/pdf', content: buffer } });
       } else {
         const html = msg.table && msg.table.length ? '<p>' + escapeHtml(msg.body).replace(/\n/g, '<br>') + '</p>' + tableRowsHtml(msg.table, msg.tableColumns) : null;
@@ -567,25 +655,35 @@ function automationPlanTool(departmentNames) {
     type: 'function',
     function: {
       name: 'automation_plan',
-      description: 'Read an HR manager\'s description of a recurring automated task and extract its structured intent. Never invent a department, person or data field that isn\'t given in context - if genuinely unclear or unsupported, list it in `unclear` instead of guessing.',
+      description: 'Read an HR manager\'s description of a recurring automated task and extract its structured intent. Never invent a department, person, column name or data field that isn\'t given in context - if genuinely unclear or unsupported, list it in `unclear` instead of guessing.',
       parameters: {
         type: 'object',
         properties: {
           source: { type: 'string', enum: ['master', 'confirmations', 'birthdays', 'exits', 'sheet', 'none'], description: '"confirmations" for probation/confirmation-due mentions, "birthdays" for birthday/jonmodin mentions, "exits" for exit/resignation mentions, "master" for "all employees", "sheet" if they mention a Google Sheet/spreadsheet/training list, "none" for a fixed reminder with no employee data involved (e.g. a recurring notice to specific named people only).' },
-          when: { type: 'string', enum: ['inMonth', 'nextN', 'today'], description: 'Defaults to inMonth (the run\'s own month) unless they say "next N days" (-> nextN) or "today"/"ajke" (-> today).' },
+          when: { type: 'string', enum: ['inMonth', 'inNextMonth', 'inPrevMonth', 'nextN', 'today', 'specificMonth'], description: 'Period relative to the run date. Defaults to inMonth (this month). "next month"/"shamne mash" -> inNextMonth. "previous/last month" -> inPrevMonth. "next N days" -> nextN. "today"/"ajke" -> today. A named month regardless of year (e.g. "every March") -> specificMonth.' },
           nextNDays: { type: 'number', description: 'Only when when=nextN - how many days ahead.' },
+          specificMonth: { type: 'string', description: 'Only when when=specificMonth - the month name or number (1-12) mentioned.' },
           department: { type: 'string', description: 'Only if a SPECIFIC department was named AND it matches one of these real department names exactly: ' + departmentNames.join(', ') + '. Omit otherwise - never invent or guess-match a close department name.' },
           rec: { type: 'string', enum: ['column', 'selected'], description: '"column" when each matching row should go to a ROLE (their HOD/Reporting Manager/themself), "selected" when specific named people should receive it.' },
           recCol: { type: 'string', enum: ['reportingDoer', 'reportingManager', 'self'], description: 'Only when rec=column. "reportingDoer" for "HOD"/"Reporting DOER" mentions, "reportingManager" for "Reporting Manager" mentions, "self" for "the employee themself"/"wish them"/"tader ke".' },
-          peopleNames: { type: 'array', items: { type: 'string' }, description: 'Only when rec=selected - the exact name(s) mentioned, as given (not expanded/guessed). Validated against the real directory afterward.' },
+          peopleNames: { type: 'array', items: { type: 'string' }, description: 'Only when rec=selected - the exact name(s) or raw email address(es) mentioned, as given (not expanded/guessed). A name is validated against the real directory afterward; anything that already looks like an email address is used as-is.' },
           group: { type: 'string', enum: ['each', 'list'], description: '"each" for one separate message per row (default when rec=column), "list" for one combined message (default when rec=selected).' },
           mediator: { type: 'string', enum: ['mail', 'wa'], description: 'Defaults to mail unless WhatsApp is explicitly mentioned.' },
           dayOfMonth: { type: 'number', description: 'The day-of-month mentioned (e.g. "1 tarikh" -> 1), 1-31. Omit if not stated (defaults to the 1st).' },
           timeRaw: { type: 'string', description: 'HH:MM in 24-hour time (e.g. "10 tay"/"10 AM" -> "10:00"). Omit entirely if not stated (defaults to 10:00).' },
           repeat: { type: 'string', enum: ['none', 'monthly', 'yearly', 'daily'], description: 'Defaults to monthly unless "every year"/"once"/"every day" is stated.' },
           wantsPdf: { type: 'boolean', description: 'true only if a PDF/attachment was explicitly mentioned.' },
+          wantsTable: { type: 'boolean', description: 'true if a list/table of records should be included in the message (e.g. "birthday list", "DOB column", "share a table") - look for a named column or the word list/table.' },
+          tableColumnHints: { type: 'array', items: { type: 'string' }, description: 'Only when wantsTable - the column name(s) mentioned or clearly implied (e.g. "DOB", "department", "name"), exactly as given. Validated against the real column set afterward - never invented.' },
+          sortColumnHint: { type: 'string', description: 'Only if sorting/ordering was explicitly mentioned (e.g. "sorted", "A-Z", "ascending") - the column to sort by, as given.' },
+          sortDirection: { type: 'string', enum: ['asc', 'desc'], description: 'Only if sortColumnHint is set. "A-Z"/"ascending"/"1 to 31" -> asc (default). "Z-A"/"descending" -> desc.' },
+          columnDateFormats: {
+            type: 'array',
+            items: { type: 'object', properties: { columnHint: { type: 'string' }, format: { type: 'string', enum: ['DD Mon', 'DD-MM-YYYY', 'DD Month YYYY'] } }, required: ['columnHint', 'format'] },
+            description: 'Only if a specific display was requested for a date column - "no year mentioned"/"only day and month" -> DD Mon; a literal day-month-year numeric format -> DD-MM-YYYY; the full month name with year -> DD Month YYYY.'
+          },
           subjectHint: { type: 'string', description: 'A short mail-subject-style phrase for what this task is about, in English.' },
-          unclear: { type: 'array', items: { type: 'string' }, description: 'Short, specific descriptions of anything genuinely required but not stated or not resolvable from real data (e.g. "which people or data this is about", "who should receive it", "a department name that doesn\'t match any real department"). Empty array if everything needed is resolved.' }
+          unclear: { type: 'array', items: { type: 'string' }, description: 'Short, specific descriptions of anything genuinely required but not stated or not resolvable from real data (e.g. "which people or data this is about", "who should receive it", "a department name that doesn\'t match any real department", "a column named X that doesn\'t exist in the data"). Empty array if everything needed is resolved.' }
         },
         required: ['unclear']
       }
@@ -605,7 +703,7 @@ async function parseAutomationAsk(text) {
       model: MODEL, max_tokens: 1024,
       tools: [{ name: toolDef.name, description: toolDef.description, input_schema: toolDef.parameters }],
       tool_choice: { type: 'auto' },
-      system: [{ type: 'text', text: 'Parse an HR manager\'s description of a recurring automated HR task (mail/WhatsApp to HODs, confirmations, birthdays, etc). The real data sources available are: Employee Master (all employees), Probation Confirmations, Birthdays, Exits (currently inactive employees), a custom Google Sheet, or no data at all (a fixed message). Banglish/Hinglish/English are all expected.' }],
+      system: [{ type: 'text', text: 'Parse an HR manager\'s description of a recurring automated HR task (mail/WhatsApp to HODs, confirmations, birthdays, etc). The real data sources available are: Employee Master (all employees), Probation Confirmations, Birthdays, Exits (currently inactive employees), a custom Google Sheet, or no data at all (a fixed message). Banglish/Hinglish/English are all expected. Pay close attention to: the period meant relative to the run date (this/next/previous month, next N days, the exact run day, or a fixed month regardless of year); whether a list/table of records with specific columns is wanted; any requested sort order; and any requested display format for a date column (e.g. no year shown). Never guess a column or person that isn\'t given - list it in unclear instead.' }],
       messages: [{ role: 'user', content: text }]
     })
   });
@@ -615,21 +713,50 @@ async function parseAutomationAsk(text) {
   return block ? block.input : { unclear: ['Could not understand that - please try rephrasing'] };
 }
 
+// Resolves a free-text column hint (as extracted by the model) against the
+// real, available column list for this source - whole-word/substring match
+// only, NEVER a guess at a close-but-different column. Returns the real
+// column name or null.
+function resolveColumnName(hint, availableCols) {
+  const h = String(hint || '').trim().toLowerCase();
+  if (!h) return null;
+  const direct = availableCols.find((c) => c.toLowerCase() === h);
+  if (direct) return direct;
+  const synonyms = {
+    name: 'Employee_Name', employeename: 'Employee_Name', dob: 'DOB', birthday: 'DOB', birthdate: 'DOB',
+    department: 'Department', dept: 'Department', designation: 'Designation', doj: 'DOJ', joiningdate: 'DOJ',
+    email: 'Official Email', officialemail: 'Official Email', phone: 'Contact No', contact: 'Contact No',
+    confirmationdate: 'Confirmation Date', tenure: 'Tenure', status: 'Status', location: 'Location', company: 'Company'
+  };
+  const syn = synonyms[h.replace(/[^a-z]/g, '')];
+  if (syn && availableCols.includes(syn)) return syn;
+  const partial = availableCols.find((c) => c.toLowerCase().includes(h) || h.includes(c.toLowerCase()));
+  return partial || null;
+}
+
 // Turns a raw parsed intent (above) into a full, concrete draft plan -
-// resolving peopleNames/department against the REAL directory (never
-// trusting the model's own spelling), same "code does the real lookup,
-// the model only points at it" split reminderService.js's own
+// resolving peopleNames/department/columns against the REAL directory and
+// data (never trusting the model's own spelling), same "code does the real
+// lookup, the model only points at it" split reminderService.js's own
 // resolveReminderDateTime follows. Mirrors the sample's own applyPlan().
 async function draftPlanFromParsed(parsed, now) {
   if (parsed.unclear && parsed.unclear.length) return { ok: false, unclear: parsed.unclear };
   const { employees, departmentNames } = await employeeService.getEmployeeData();
   const source = parsed.source || 'master';
+  const availableCols = source === 'sheet' ? [] : EMP_COLUMNS; // a sheet's real columns aren't known until it's loaded (separate step)
   const conds = [];
   const dateCol = { confirmations: 'Confirmation Date', birthdays: 'DOB' }[source];
+  const unclear = [];
   if (dateCol) {
     if (parsed.when === 'nextN') conds.push({ col: dateCol, op: 'nextN', val: parsed.nextNDays || 7 });
     else if (parsed.when === 'today') conds.push({ col: dateCol, op: 'today' });
-    else conds.push({ col: dateCol, op: 'inMonth' });
+    else if (parsed.when === 'inNextMonth') conds.push({ col: dateCol, op: 'inNextMonth' });
+    else if (parsed.when === 'inPrevMonth') conds.push({ col: dateCol, op: 'inPrevMonth' });
+    else if (parsed.when === 'specificMonth') {
+      const mn = monthNumberFromVal(parsed.specificMonth);
+      if (mn) conds.push({ col: dateCol, op: 'inSpecificMonth', val: mn });
+      else unclear.push('which month you mean ("' + parsed.specificMonth + '" isn\'t a month I recognise)');
+    } else conds.push({ col: dateCol, op: 'inMonth' });
   }
   if (source === 'confirmations') conds.push({ col: 'Employment Type', op: 'is', val: 'Probation' });
   if (source === 'birthdays' || source === 'master') conds.push({ col: 'Status', op: 'isnot', val: 'INACTIVE' });
@@ -638,31 +765,82 @@ async function draftPlanFromParsed(parsed, now) {
     const match = Array.from(departmentNames.values()).find((d) => d.toLowerCase() === String(parsed.department).toLowerCase());
     if (match) conds.push({ col: 'Department', op: 'is', val: match });
   }
-  let rec = parsed.rec || null, recCol = parsed.recCol || null, selectedEmployeeIds = [];
+  let rec = parsed.rec || null, recCol = parsed.recCol || null, selectedEmployeeIds = [], selectedRawEmails = [];
   const unresolvedPeople = [];
   const ambiguousPeople = [];
+  const EMAIL_RE = /^\S+@\S+\.\S+$/;
   if (parsed.peopleNames && parsed.peopleNames.length) {
     for (const nm of parsed.peopleNames) {
+      if (EMAIL_RE.test(String(nm || '').trim())) { selectedRawEmails.push(String(nm).trim()); continue; }
       // Same whole-word name resolution tools.js's own resolveEmployeeByName
       // uses for every other Claude-facing name lookup in this app - the
       // model often extracts a shortened form ("Hema" for "Hema HOD"), so
       // an exact full-name match is too strict and would wrongly call a
       // real, unambiguous person "not found". Still never guesses: 0
       // matches or 2+ matches both go to `unclear` instead of picking one.
-      const pool = employees.filter((e) => employeeService.matchesWholeWordName(e.name, nm));
+      // Falls back to the SAME typo-tolerant fuzzy match employeeService's
+      // own fuzzyMatchEmployeesByName is documented for - ONLY once the
+      // whole-word match finds nothing - so a genuine spelling variant
+      // ("khusboo" for "Khushboo") still resolves without ever loosening
+      // the exact-match case above.
+      let pool = employees.filter((e) => employeeService.matchesWholeWordName(e.name, nm));
+      if (!pool.length) pool = employeeService.fuzzyMatchEmployeesByName(employees, nm);
       const active = pool.filter((e) => e.status === 'ACTIVE');
       const matches = active.length ? active : pool;
       if (matches.length === 1) selectedEmployeeIds.push(matches[0].employeeId);
       else if (matches.length === 0) unresolvedPeople.push(nm);
       else ambiguousPeople.push({ name: nm, candidates: matches.map((e) => e.name).join(', ') });
     }
-    if (selectedEmployeeIds.length && !rec) rec = 'selected';
+    if ((selectedEmployeeIds.length || selectedRawEmails.length) && !rec) rec = 'selected';
   }
-  const unclear = [
+  unclear.push(
     ...unresolvedPeople.map((n) => 'a person named "' + n + '" (not found in the directory)'),
     ...ambiguousPeople.map((a) => 'which "' + a.name + '" you mean (' + a.candidates + ')')
-  ];
+  );
   if (!rec) unclear.push('who should receive it (their HOD/Reporting Manager/themself, or named people)');
+
+  // Table columns - an explicit ask (wantsTable + named columns) overrides
+  // the old fixed per-source default; never invents a column that doesn't
+  // exist in the real data.
+  let table = ['confirmations', 'master'].includes(source);
+  let tableColumns = ['Employee_No', 'Employee_Name', 'Designation', 'Department'];
+  if (parsed.wantsTable && source !== 'sheet') {
+    if (parsed.tableColumnHints && parsed.tableColumnHints.length) {
+      const resolved = [];
+      for (const hint of parsed.tableColumnHints) {
+        const col = resolveColumnName(hint, availableCols);
+        if (col) resolved.push(col); else unclear.push('a column named "' + hint + '" (not found in the data)');
+      }
+      if (resolved.length) { table = true; tableColumns = resolved; }
+    } else {
+      table = true;
+    }
+  }
+
+  // Sorting - resolved against the full real column set (a sort column
+  // doesn't have to be one of the displayed table columns). dayOfMonth
+  // mode is derived automatically for the DOB column (a birthday list
+  // sorts 1->31 regardless of birth year) rather than trusted to the
+  // model, which is right about WHAT to sort by far more reliably than
+  // this particular nuance of HOW.
+  let sort = null;
+  if (parsed.sortColumnHint && source !== 'sheet') {
+    const col = resolveColumnName(parsed.sortColumnHint, EMP_COLUMNS);
+    if (col) sort = { col, dir: parsed.sortDirection === 'desc' ? 'desc' : 'asc', mode: col === 'DOB' ? 'dayOfMonth' : 'full' };
+    else unclear.push('a column named "' + parsed.sortColumnHint + '" to sort by (not found in the data)');
+  }
+
+  // Per-column date display format - only applied to a column that both
+  // resolves AND is actually a date column; otherwise silently ignored
+  // (a cosmetic nicety, not worth failing the whole plan over).
+  let columnFormats = null;
+  if (parsed.columnDateFormats && parsed.columnDateFormats.length && source !== 'sheet') {
+    for (const { columnHint, format } of parsed.columnDateFormats) {
+      const col = resolveColumnName(columnHint, EMP_COLUMNS);
+      if (col && EMP_DATE_COLUMNS.has(col) && DATE_FORMATS[format]) { columnFormats = columnFormats || {}; columnFormats[col] = format; }
+    }
+  }
+
   if (unclear.length) return { ok: false, unclear };
   const group = parsed.group || (rec === 'selected' ? 'list' : 'each');
   const mediator = parsed.mediator === 'wa' ? 'wa' : 'mail';
@@ -683,11 +861,12 @@ async function draftPlanFromParsed(parsed, now) {
     ok: true,
     plan: {
       source, sheetUrl: null, sheetId: null, sheetColumns: null,
-      conds, match: 'all', group, rec, recCol: recCol || (source === 'none' ? null : 'reportingDoer'),
-      selectedEmployeeIds, cc: null, mediator,
+      conds, match: 'all', sort, columnFormats,
+      group, rec, recCol: recCol || (source === 'none' ? null : 'reportingDoer'),
+      selectedEmployeeIds, selectedRawEmails, cc: null, mediator,
       mailSubject: subjectTemplates[source] || parsed.subjectHint || 'Notice',
       body: bodyTemplates[source] || 'Dear {Employee_Name},\n\n',
-      table: ['confirmations', 'master'].includes(source), tableColumns: ['Employee_No', 'Employee_Name', 'Designation', 'Department'], tablePlacement: parsed.wantsPdf ? 'pdf' : 'body'
+      table, tableColumns, tablePlacement: parsed.wantsPdf ? 'pdf' : 'body'
     },
     schedule: { date: scheduleDate.toISOString().slice(0, 10), time, repeat, every },
     subject: parsed.subjectHint || { confirmations: 'Confirmation mail to HODs', birthdays: 'Birthday wishes', master: 'Notice to employees', exits: 'Exits update', sheet: 'Reminder', none: 'Reminder' }[source]

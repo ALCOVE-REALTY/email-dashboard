@@ -20,7 +20,8 @@ function check(label, condition) {
 
 const FAKE_EMPLOYEES = [
   { employeeId: 'H1', name: 'Hema HOD', designation: 'Manager', department: 'HR', location: 'HO', company: 'Alcove', reportingDoer: null, reportingManager: null, doj: new Date('2015-01-01'), dob: new Date('1980-06-15'), tenure: '10y', totalExperience: '15y', email: 'hema@co.test', emailPersonal: '', contactNumber: '9000000001', employmentType: 'Confirmed', status: 'ACTIVE' },
-  { employeeId: 'E1', name: 'Alice Emp', designation: 'Executive', department: 'HR', location: 'HO', company: 'Alcove', reportingDoer: 'Hema HOD', reportingManager: 'Hema HOD', doj: new Date('2026-04-01'), dob: new Date('1990-10-20'), tenure: '0y', totalExperience: '2y', email: 'alice@co.test', emailPersonal: '', contactNumber: '9876543210', employmentType: 'Probation', status: 'ACTIVE' }
+  { employeeId: 'E1', name: 'Alice Emp', designation: 'Executive', department: 'HR', location: 'HO', company: 'Alcove', reportingDoer: 'Hema HOD', reportingManager: 'Hema HOD', doj: new Date('2026-04-01'), dob: new Date('1990-10-20'), tenure: '0y', totalExperience: '2y', email: 'alice@co.test', emailPersonal: '', contactNumber: '9876543210', employmentType: 'Probation', status: 'ACTIVE' },
+  { employeeId: 'E6', name: 'Khushboo Dhanuka', designation: 'Executive', department: 'HR', location: 'HO', company: 'Alcove', reportingDoer: 'Hema HOD', reportingManager: 'Hema HOD', doj: new Date('2022-01-01'), dob: new Date('1992-11-07'), tenure: '4y', totalExperience: '6y', email: 'khushboo@co.test', emailPersonal: '', contactNumber: '9876500006', employmentType: 'Confirmed', status: 'ACTIVE' }
 ];
 const FAKE_DEPARTMENT_NAMES = new Map([['HR', 'HR'], ['IT', 'IT']]);
 
@@ -64,6 +65,20 @@ async function main() {
 
     const inventedDept = await automationService.parseAutomationAsk('every month mail the HODs of the "Spacecraft Engineering" department');
     check('a department name that does not exist in the real directory is never invented into the plan', !inventedDept.department);
+
+    console.log('='.repeat(70));
+    console.log('SMARTER UNDERSTANDING: the exact user-reported sentence (period/table/column-format/sort/named recipient, all in one ask)');
+    console.log('='.repeat(70));
+    const smartAsk = 'Next month Birthday list current maser 30 tarikhe share korte hobe khusboo dhanuka k r birthday list er DOB colom a kono year mention thakbe na r date gulo A-Z short thakbe';
+    const smartParsed = await automationService.parseAutomationAsk(smartAsk);
+    const smartDraft = await automationService.draftPlanFromParsed(smartParsed, now);
+    check('resolves to the birthdays source', smartDraft.ok && smartDraft.plan.source === 'birthdays');
+    check('period is NEXT month relative to the run date (October run -> November)', smartDraft.ok && smartDraft.plan.conds.some((c) => c.col === 'DOB' && c.op === 'inNextMonth'));
+    check('schedule day-of-month is the 30th', smartDraft.ok && new Date(smartDraft.schedule.date + 'T00:00:00Z').getUTCDate() === 30);
+    check('resolves "khusboo dhanuka" (misspelled) to the real Khushboo Dhanuka, never invented', smartDraft.ok && smartDraft.plan.selectedEmployeeIds.includes('E6'));
+    check('a table/list is included with the DOB column', smartDraft.ok && smartDraft.plan.table && smartDraft.plan.tableColumns.includes('DOB'));
+    check('the DOB column is formatted with no year (DD Mon)', smartDraft.ok && smartDraft.plan.columnFormats && smartDraft.plan.columnFormats.DOB === 'DD Mon');
+    check('rows are sorted by DOB ascending, day-of-month mode (A-Z / 1->31)', smartDraft.ok && smartDraft.plan.sort && smartDraft.plan.sort.col === 'DOB' && smartDraft.plan.sort.dir === 'asc' && smartDraft.plan.sort.mode === 'dayOfMonth');
 
     console.log('='.repeat(70));
     console.log(pass + '/' + (pass + fail) + ' passed' + (fail ? ', ' + fail + ' FAILED' : ''));

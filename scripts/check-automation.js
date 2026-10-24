@@ -198,6 +198,87 @@ async function main() {
     check('the combined message\'s table carries every matching row', builtList.sent[0].table.length === 2);
 
     console.log('='.repeat(70));
+    console.log('SMARTER UNDERSTANDING: period relative to the run date (this/next/previous/specific month)');
+    console.log('='.repeat(70));
+    const empPlan2 = { source: 'master' };
+    check('inNextMonth: a November DOB matches when the run is in October', automationService.testCond(empPlan2, { DOB: new Date('1990-11-07T00:00:00Z') }, { col: 'DOB', op: 'inNextMonth' }, now));
+    check('inNextMonth: an October DOB does NOT match when the run is in October', automationService.testCond(empPlan2, { DOB: new Date('1990-10-07T00:00:00Z') }, { col: 'DOB', op: 'inNextMonth' }, now) === false);
+    check('inPrevMonth: a September DOB matches when the run is in October', automationService.testCond(empPlan2, { DOB: new Date('1990-09-20T00:00:00Z') }, { col: 'DOB', op: 'inPrevMonth' }, now));
+    check('inSpecificMonth: a December DOB matches "December" regardless of the run month (October)', automationService.testCond(empPlan2, { DOB: new Date('1975-12-25T00:00:00Z') }, { col: 'DOB', op: 'inSpecificMonth', val: 'December' }, now));
+    check('inSpecificMonth: a December DOB also matches month number 12', automationService.testCond(empPlan2, { DOB: new Date('1975-12-25T00:00:00Z') }, { col: 'DOB', op: 'inSpecificMonth', val: 12 }, now));
+    check('inSpecificMonth: a June DOB does not match "December"', automationService.testCond(empPlan2, { DOB: new Date('1975-06-25T00:00:00Z') }, { col: 'DOB', op: 'inSpecificMonth', val: 'December' }, now) === false);
+    // The December/January year-wrap edge case - this is exactly why an
+    // annual column has to be wrapped to the TARGET month's own year
+    // (periodTargetMonth), not always the run's own year: a January DOB
+    // must match "next month" for a December run, landing in the
+    // FOLLOWING calendar year, not the past.
+    const decRunNow = new Date('2026-12-15T06:00:00.000Z');
+    check('inNextMonth across a year boundary: a January DOB matches a December run (wraps into the next calendar year)', automationService.testCond(empPlan2, { DOB: new Date('1990-01-10T00:00:00Z') }, { col: 'DOB', op: 'inNextMonth' }, decRunNow));
+
+    console.log('='.repeat(70));
+    console.log('SMARTER UNDERSTANDING: sorting (any column, asc/desc; dates by day-of-month or full date)');
+    console.log('='.repeat(70));
+    await checkAsync('sort by DOB ascending, day-of-month mode: Carol (05) before Alice (20)', async () => {
+      const rows = await automationService.matchedRows({ source: 'birthdays', conds: automationService.SOURCES.birthdays.defaultConds, match: 'all', sort: { col: 'DOB', dir: 'asc', mode: 'dayOfMonth' } }, [], now);
+      const names = rows.map((r) => r['Employee_No']);
+      return names.indexOf('E3') < names.indexOf('E1'); // Carol (05 Oct) before Alice (20 Oct)
+    });
+    await checkAsync('sort by DOB descending, day-of-month mode: Alice (20) before Carol (05)', async () => {
+      const rows = await automationService.matchedRows({ source: 'birthdays', conds: automationService.SOURCES.birthdays.defaultConds, match: 'all', sort: { col: 'DOB', dir: 'desc', mode: 'dayOfMonth' } }, [], now);
+      const names = rows.map((r) => r['Employee_No']);
+      return names.indexOf('E1') < names.indexOf('E3');
+    });
+    await checkAsync('sort by a plain text column (Employee_Name) ascending', async () => {
+      const rows = await automationService.matchedRows({ source: 'master', conds: automationService.SOURCES.master.defaultConds, match: 'all', sort: { col: 'Employee_Name', dir: 'asc' } }, [], now);
+      const names = rows.map((r) => r['Employee_Name']);
+      const sorted = [...names].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+      return JSON.stringify(names) === JSON.stringify(sorted);
+    });
+
+    console.log('='.repeat(70));
+    console.log('SMARTER UNDERSTANDING: per-column date display format, baked identically into Preview/test-send/the real run');
+    console.log('='.repeat(70));
+    const formatAutomation = {
+      plan: {
+        source: 'birthdays', conds: automationService.SOURCES.birthdays.defaultConds, match: 'all',
+        rec: 'selected', selectedEmployeeIds: ['H1'], group: 'list', mediator: 'mail',
+        mailSubject: 'Birthday List', body: 'List:', table: true, tableColumns: ['Employee_Name', 'DOB'],
+        columnFormats: { DOB: 'DD Mon' }
+      },
+      excludedKeys: []
+    };
+    const builtFormatted = await automationService.buildMessages(formatAutomation, now);
+    const carolRow = builtFormatted.sent[0].table.find((r) => r['Employee_Name'] === 'Carol Emp');
+    check('DOB column formatted as "DD Mon" carries no year at all', Boolean(carolRow) && /^\d{2} \w{3}$/.test(carolRow['DOB']));
+    check('DOB "DD Mon" format shows the correct day and month (05 Oct)', carolRow && carolRow['DOB'] === '05 Oct');
+    const defaultFormatAutomation = JSON.parse(JSON.stringify(formatAutomation));
+    delete defaultFormatAutomation.plan.columnFormats;
+    const builtDefault = await automationService.buildMessages(defaultFormatAutomation, now);
+    const carolRowDefault = builtDefault.sent[0].table.find((r) => r['Employee_Name'] === 'Carol Emp');
+    check('an automation with NO columnFormats keeps the original default (DD Mon YYYY) - unchanged for existing automations', /^\d{2} \w{3} \d{4}$/.test(carolRowDefault['DOB']));
+
+    console.log('='.repeat(70));
+    console.log('SMARTER UNDERSTANDING: named recipients can be raw email addresses, alongside real employees');
+    console.log('='.repeat(70));
+    await checkAsync('a raw email recipient (not in the HR master) receives its own message', async () => {
+      const rawEmailAutomation = {
+        plan: { source: 'none', rec: 'selected', selectedEmployeeIds: [], selectedRawEmails: ['external.partner@vendor.test'], group: 'list', mediator: 'mail', mailSubject: 'Notice', body: 'Hello', table: false, tableColumns: [] },
+        excludedKeys: []
+      };
+      const built = await automationService.buildMessages(rawEmailAutomation, now);
+      return built.sent.length === 1 && built.sent[0].addr === 'external.partner@vendor.test';
+    });
+    await checkAsync('a raw email and a real employee can both be named recipients in the same automation', async () => {
+      const mixedAutomation = {
+        plan: { source: 'none', rec: 'selected', selectedEmployeeIds: ['H1'], selectedRawEmails: ['external.partner@vendor.test'], group: 'list', mediator: 'mail', mailSubject: 'Notice', body: 'Hello', table: false, tableColumns: [] },
+        excludedKeys: []
+      };
+      const built = await automationService.buildMessages(mixedAutomation, now);
+      const addrs = built.sent.map((m) => m.addr);
+      return built.sent.length === 2 && addrs.includes('hema@co.test') && addrs.includes('external.partner@vendor.test');
+    });
+
+    console.log('='.repeat(70));
     console.log('computeNextRun: month-length clamp + leap-year rule (ported 1:1 from the approved sample)');
     console.log('='.repeat(70));
     const r31 = automationService.computeNextRun({ date: '2026-01-31', time: '10:00', repeat: 'monthly' }, new Date('2026-11-01T00:00:00Z'));
@@ -237,6 +318,29 @@ async function main() {
     const mailCountBeforeDue = sentMail.length;
     check('flipping status to active alone sends nothing', sentMail.length === mailCountBeforeDue);
     check('its nextRunAt is untouched by approval (still the originally scheduled time)', pending.nextRunAt === automationService.computeNextRun({ date: '2026-10-20', time: '10:00', repeat: 'none' }, now));
+
+    console.log('='.repeat(70));
+    console.log('REGRESSION: approve -> edit -> send test (sent) -> change subject -> save (saved) - direct backend trace of a live-reported bug ("Edit/Send test do nothing after Approve") that turned out to be purely frontend (static Save/Test buttons never re-enabled after a prior success) - these service-layer functions themselves are proven unaffected by status, at every step');
+    console.log('='.repeat(70));
+    const editFlowTask = await create({ subject: 'Edit flow test', plan: basicPlan, excludedKeys: [], schedule: { date: '2026-12-20', time: '10:00', repeat: 'none' } });
+    check('starts pending_approval', editFlowTask.status === 'pending_approval');
+    editFlowTask.status = 'active'; // exactly what POST /automations/:id/approve does
+    await automationService.saveAutomation(editFlowTask);
+    const afterApprove = await automationService.getAutomation(editFlowTask.id);
+    check('readable and active right after approval', afterApprove && afterApprove.status === 'active');
+    const mailCountBeforeTest = sentMail.length;
+    const testResult = await automationService.runAutomation(editFlowTask.id, { isTest: true, testTo: 'owner@test.com' }, now); // exactly what POST /automations/:id/send-test does
+    check('send-test actually sends right after approval', testResult.ok && testResult.sentCount > 0 && sentMail.length === mailCountBeforeTest + 1);
+    const toEdit = await automationService.getAutomation(editFlowTask.id);
+    toEdit.subject = 'Edited After Approve';
+    toEdit.updatedAt = now.toISOString();
+    await automationService.saveAutomation(toEdit); // exactly what POST /automations/:id (edit) does
+    const afterEdit = await automationService.getAutomation(editFlowTask.id);
+    check('the subject change after approval is actually persisted', afterEdit.subject === 'Edited After Approve');
+    check('editing after approval never changes its status (the re-approval rule is untouched)', afterEdit.status === 'active');
+    const mailCountBeforeTest2 = sentMail.length;
+    const testResult2 = await automationService.runAutomation(editFlowTask.id, { isTest: true, testTo: 'owner@test.com' }, now);
+    check('send-test still sends a SECOND time, after the edit (not a one-shot)', testResult2.ok && testResult2.sentCount > 0 && sentMail.length === mailCountBeforeTest2 + 1);
 
     console.log('='.repeat(70));
     console.log('runAutomation: lock/idempotency - two overlapping runs of the SAME automation must only ever send once');

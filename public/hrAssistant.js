@@ -166,6 +166,9 @@
   const autoPreviewCloseBtn = document.getElementById('hrAutoPreviewCloseBtn');
   const autoPreviewTitle = document.getElementById('hrAutoPreviewTitle');
   const autoPreviewBody = document.getElementById('hrAutoPreviewBody');
+  const autoToast = document.getElementById('hrAutoToast');
+  const autoToastIcon = document.getElementById('hrAutoToastIcon');
+  const autoToastText = document.getElementById('hrAutoToastText');
   if (!btn || !panel) return; // this page doesn't have the assistant markup
 
   const history = [];
@@ -1809,6 +1812,7 @@
   // runs it again.
   async function runButtonAction(btn, requestFn, onSuccess, opts) {
     opts = opts || {};
+    const toast = opts.toastFn || showActionToast;
     if (!btn || btn.classList.contains('is-loading')) return;
     btn.disabled = true;
     btn.classList.remove('is-error', 'is-success');
@@ -1822,14 +1826,15 @@
       // Opt-in only (reminderService's own Mark done/Send/etc. all keep the
       // default "stays disabled + green" behavior, since their row/card
       // normally disappears right after) - a button the owner taps
-      // repeatedly on the SAME page (Ask SUBH) needs to return to its
-      // idle, re-clickable state instead.
+      // repeatedly on the SAME page (Ask SUBH, Send test, Save - once it's
+      // been reopened later) needs to return to its idle, re-clickable
+      // state instead, or it silently eats every click after the first.
       if (opts.resetAfterSuccess) { btn.classList.remove('is-success'); btn.disabled = false; }
     } catch (err) {
       btn.classList.remove('is-loading');
       btn.classList.add('is-error');
       btn.disabled = false;
-      showActionToast((err && err.message) || 'Something went wrong - tap Retry.');
+      toast((err && err.message) || 'Something went wrong - tap Retry.');
     }
   }
   // Fades + collapses a card out of the DOM in place - never touches any
@@ -2674,7 +2679,7 @@
   const AUTO_EXAMPLES = [
     'Proti maser 1 tarikh 10 tay, jader confirmation ei mashe pending, tader HOD ke alada mail korbe'
   ];
-  const AUTO_PLACEHOLDERS = ['{Employee_No}', '{Employee_Name}', '{Designation}'];
+  const AUTO_PLACEHOLDERS = ['{Employee_No}', '{Employee_Name}', '{Designation}', '{Current_Month}', '{Current_Year}'];
   const AUTO_SOURCE_LABELS = { master: 'Employee Master', confirmations: 'Probation Confirmations', birthdays: 'Birthdays', exits: 'Exits (currently inactive)', sheet: 'Custom Google Sheet', none: 'No data — just a message' };
   const AUTO_EMP_COLUMNS = ['Employee_No', 'Employee_Name', 'Designation', 'Department', 'Location', 'Company', 'DOJ', 'Confirmation Date', 'DOB', 'Tenure', 'Total Experience', 'Employment Type', 'Status', 'Reporting DOER', 'Reporting Manager', 'Official Email', 'Personal Email', 'Contact No'];
   const AUTO_EMP_PERSON_COLS = [['reportingDoer', 'Reporting DOER'], ['reportingManager', 'Reporting Manager'], ['self', 'The employee (own email/phone)']];
@@ -2686,7 +2691,6 @@
   let autoExcluded = new Set();   // row keys left out by the owner in the understanding table
   let autoTableCols = [];
   let autoConfirmed = false;
-  let autoOriginalAsk = '';
   let autoEmployeesCache = null;  // [{employeeId,name,department,email,contactNumber}], fetched once per session
   let autoLastPreview = null;     // last /automations/preview response, reused by the summary box + Preview sheet
   // Same chip-picker component as the app's existing "Send Mail" popup
@@ -2695,6 +2699,30 @@
   // master address, or type+Enter a raw email. A dedicated instance, never
   // the Send Mail popup's own mailCcField/mailToField.
   const autoCcField = createMailChipField('autoCcChipInput', 'autoCcInput', 'autoCcSuggest');
+
+  // Automated Tasks' own toast - white card/soft shadow/coloured accent,
+  // never the Reminders page's black pill (showActionToast/#hrRemToast,
+  // left completely untouched for every other caller in this file).
+  let autoToastTimer = null;
+  function showAutoToast(text, type) {
+    if (!autoToast) return;
+    clearTimeout(autoToastTimer);
+    autoToast.classList.remove('error', 'warning');
+    if (type === 'error') autoToast.classList.add('error');
+    else if (type === 'warning') autoToast.classList.add('warning');
+    if (autoToastIcon) autoToastIcon.textContent = type === 'error' ? '✕' : type === 'warning' ? '⚠' : '✓';
+    if (autoToastText) autoToastText.textContent = text;
+    autoToast.hidden = false;
+    requestAnimationFrame(() => autoToast.classList.add('show'));
+    autoToastTimer = setTimeout(() => {
+      autoToast.classList.remove('show');
+      setTimeout(() => { autoToast.hidden = true; }, 220);
+    }, 3000);
+  }
+  // Every automation action routed through runButtonAction uses this
+  // toast for its error path too (opts.toastFn), instead of the global
+  // black-pill one every other button in this file still uses by default.
+  const AUTO_TOAST_ERR = { toastFn: (msg) => showAutoToast(msg, 'error') };
 
   function autoSegVal(container) { const b = container && container.querySelector('button.on'); return b ? b.dataset.v : null; }
   function autoSetSeg(container, v) { if (!container) return; container.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.v === v)); }
@@ -2783,24 +2811,24 @@
           const data = await resp.json();
           const t = (data.items || []).find((x) => x.id === id);
           if (t) { pushNav({ type: 'automation', task: t }); openAutomationCreate(t); }
-        } catch (err) { showActionToast('Could not load that task.'); }
+        } catch (err) { showAutoToast('Could not load that task.', 'error'); }
         return;
       }
-      if (action === 'approve') { await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/automations/' + encodeURIComponent(id) + '/approve', {}), () => { showActionToast('First run approved — it will send automatically at its scheduled time.'); loadAutomationsBadgeAndList(true); }); return; }
-      if (action === 'pause') { await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/automations/' + encodeURIComponent(id) + '/pause', {}), () => { showActionToast('Paused — no future sends.'); loadAutomationsBadgeAndList(true); }); return; }
-      if (action === 'resume') { await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/automations/' + encodeURIComponent(id) + '/resume', {}), () => { showActionToast('Resumed.'); loadAutomationsBadgeAndList(true); }); return; }
+      if (action === 'approve') { await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/automations/' + encodeURIComponent(id) + '/approve', {}), () => { showAutoToast('First run approved — it will send automatically at its scheduled time.'); loadAutomationsBadgeAndList(true); }, AUTO_TOAST_ERR); return; }
+      if (action === 'pause') { await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/automations/' + encodeURIComponent(id) + '/pause', {}), () => { showAutoToast('Paused — no future sends.'); loadAutomationsBadgeAndList(true); }, AUTO_TOAST_ERR); return; }
+      if (action === 'resume') { await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/automations/' + encodeURIComponent(id) + '/resume', {}), () => { showAutoToast('Resumed.'); loadAutomationsBadgeAndList(true); }, AUTO_TOAST_ERR); return; }
       if (action === 'run') {
         if (!(await showConfirmDialog('Run this task now? It will really send to everyone who matches, right now.', { confirmLabel: 'Run now' }))) return;
-        await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/automations/' + encodeURIComponent(id) + '/run-now', {}), (r) => { showActionToast('Run complete: ' + (r.sentCount || 0) + ' sent, ' + (r.skippedCount || 0) + ' skipped.'); loadAutomationsBadgeAndList(true); });
+        await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/automations/' + encodeURIComponent(id) + '/run-now', {}), (r) => { showAutoToast('Run complete: ' + (r.sentCount || 0) + ' sent, ' + (r.skippedCount || 0) + ' skipped.'); loadAutomationsBadgeAndList(true); }, AUTO_TOAST_ERR);
         return;
       }
       if (action === 'delete') {
         if (!(await showConfirmDialog('Delete this automated task? This can\'t be undone.', { confirmLabel: 'Delete' }))) return;
-        await runButtonAction(b, () => fetchDeleteAutomation(id), () => { showActionToast('Deleted.'); loadAutomationsBadgeAndList(true); });
+        await runButtonAction(b, () => fetchDeleteAutomation(id), () => { showAutoToast('Deleted.'); loadAutomationsBadgeAndList(true); }, AUTO_TOAST_ERR);
         return;
       }
-      if (action === 'missed-send') { await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/automations/' + encodeURIComponent(id) + '/missed-run/send', {}), (r) => { showActionToast('Sent: ' + (r.sentCount || 0) + ' sent, ' + (r.skippedCount || 0) + ' skipped.'); loadAutomationsBadgeAndList(true); }); return; }
-      if (action === 'missed-skip') { await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/automations/' + encodeURIComponent(id) + '/missed-run/skip', {}), () => { showActionToast('Skipped.'); loadAutomationsBadgeAndList(true); }); return; }
+      if (action === 'missed-send') { await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/automations/' + encodeURIComponent(id) + '/missed-run/send', {}), (r) => { showAutoToast('Sent: ' + (r.sentCount || 0) + ' sent, ' + (r.skippedCount || 0) + ' skipped.'); loadAutomationsBadgeAndList(true); }, AUTO_TOAST_ERR); return; }
+      if (action === 'missed-skip') { await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/automations/' + encodeURIComponent(id) + '/missed-run/skip', {}), () => { showAutoToast('Skipped.'); loadAutomationsBadgeAndList(true); }, AUTO_TOAST_ERR); return; }
     });
   }
   // DELETE has no body to send via postJsonOrThrow's POST-only helper -
@@ -2817,7 +2845,6 @@
   function autoResetForm() {
     autoEditingId = null; autoPlan = null; autoConfirmed = false; autoExcluded = new Set(); autoSelected = new Set();
     autoTableCols = ['Employee_No', 'Employee_Name', 'Designation', 'Department'];
-    autoOriginalAsk = '';
     autoSchedule = { date: '', time: '10:00', repeat: 'monthly', every: 2 };
     if (autoSubject) autoSubject.value = '';
     if (autoAsk) autoAsk.value = '';
@@ -2847,7 +2874,6 @@
     autoExcluded = new Set(t.excludedKeys || []);
     autoSelected = new Set(t.plan.selectedEmployeeIds || []);
     autoTableCols = [...(t.plan.tableColumns || [])];
-    autoOriginalAsk = t.originalAsk || '';
     autoSchedule = Object.assign({ date: '', time: '10:00', repeat: 'monthly', every: 2 }, t.schedule);
     if (autoSubject) autoSubject.value = t.subject;
     if (autoAsk) autoAsk.value = t.originalAsk || '';
@@ -2870,7 +2896,24 @@
     renderAutoEmpList();
     renderAutoUnderstanding();
   }
+  // Defensive reset for every (re)open of this page - #autoSaveBtn/
+  // #autoTestBtn/#autoAskBtn are static, never-recreated DOM nodes (just
+  // hidden/shown across visits), so any class/disabled state a previous
+  // visit left behind (the root cause of "Save/Send test does nothing"
+  // the second time - runButtonAction leaves a button disabled+green
+  // after a success that isn't marked resetAfterSuccess, or mid-flight if
+  // the page was left while a request was still in progress) would
+  // otherwise persist forever and silently eat every future click.
+  function autoResetButtonState(btn) {
+    if (!btn) return;
+    btn.disabled = false;
+    btn.classList.remove('is-loading', 'is-success', 'is-error');
+  }
   async function openAutomationCreate(t) {
+    autoResetButtonState(autoSaveBtn);
+    autoResetButtonState(autoTestBtn);
+    autoResetButtonState(autoAskBtn);
+    autoResetButtonState(autoSheetLoadBtn);
     await fetchAutoEmployees();
     if (t) autoPopulateForm(t); else autoResetForm();
     if (!autoAskExamples.dataset.wired) {
@@ -3011,8 +3054,7 @@
   async function autoDoAsk() {
     const text = (autoAsk && autoAsk.value || '').trim();
     if (autoAskErr) autoAskErr.classList.toggle('hidden', Boolean(text));
-    if (!text) { showActionToast('Write what you want to automate.'); return; }
-    autoOriginalAsk = text;
+    if (!text) { showAutoToast('Write what you want to automate.', 'warning'); return; }
     await runButtonAction(autoAskBtn, () => postJsonOrThrow('/api/workforce/hr-assistant/automations/ask', { text }), (draft) => {
       if (!draft.ok) {
         autoPlan = null; autoConfirmed = false;
@@ -3042,7 +3084,7 @@
       renderAutoEmpList();
       autoSync();
       renderAutoUnderstanding();
-    }, { resetAfterSuccess: true });
+    }, { resetAfterSuccess: true, toastFn: AUTO_TOAST_ERR.toastFn });
   }
   if (autoSheetLoadBtn) autoSheetLoadBtn.addEventListener('click', async () => {
     const url = (autoSheetUrl && autoSheetUrl.value || '').trim();
@@ -3053,23 +3095,61 @@
       if (autoSheetMsg) autoSheetMsg.textContent = '✓ Loaded — ' + r.columns.length + ' columns: ' + r.columns.join(', ');
       renderAutoRecCols(); renderAutoCols(); autoSync();
       if (autoPlan) renderAutoUnderstanding();
-    });
+    }, AUTO_TOAST_ERR);
   });
 
+  // Plain-words description of the plan's date condition, e.g. "next
+  // month — November for the 30 Oct run" - the exact phrasing the owner
+  // sees must match what the deterministic engine actually does (inMonth/
+  // inNextMonth/inPrevMonth/inSpecificMonth/nextN/today), never a vaguer
+  // approximation of it.
+  function autoMonthName(monthIdx) { return new Date(Date.UTC(2001, monthIdx, 1)).toLocaleDateString('en-GB', { month: 'long', timeZone: 'UTC' }); }
+  function describePeriod(plan, dateStr) {
+    const cond = (plan.conds || []).find((c) => ['inMonth', 'inNextMonth', 'inPrevMonth', 'inSpecificMonth', 'nextN', 'today'].includes(c.op));
+    if (!cond) return '';
+    if (cond.op === 'today') return ' on the run day itself';
+    if (cond.op === 'nextN') return ' in the next ' + (cond.val || 7) + ' days';
+    if (cond.op === 'inSpecificMonth') { const mn = Number(cond.val); return mn >= 1 && mn <= 12 ? ' in ' + autoMonthName(mn - 1) + ' (every year)' : ''; }
+    const ref = dateStr ? new Date(dateStr + 'T00:00:00Z') : null;
+    const label = cond.op === 'inNextMonth' ? 'next month' : cond.op === 'inPrevMonth' ? 'the previous month' : 'this month';
+    if (!ref) return ' ' + label;
+    let targetMonth = ref.getUTCMonth();
+    if (cond.op === 'inNextMonth') targetMonth = (targetMonth + 1) % 12;
+    else if (cond.op === 'inPrevMonth') targetMonth = (targetMonth + 11) % 12;
+    return ' ' + label + ' — ' + autoMonthName(targetMonth) + ' for the ' + ref.getUTCDate() + ' ' + autoMonthName(ref.getUTCMonth()).slice(0, 3) + ' run';
+  }
+  // Table columns + any non-default date format + sort, in plain words -
+  // "Employee_Name, Department, DOB (day + month, no year), sorted by DOB
+  // 1 -> 31".
+  function describeTable(plan, cols) {
+    if (!cols.length) return '';
+    const fmtLabel = { 'DD Mon': 'day + month, no year', 'DD-MM-YYYY': 'DD-MM-YYYY', 'DD Month YYYY': 'full date' };
+    let txt = cols.map((c) => {
+      const fmt = plan.columnFormats && plan.columnFormats[c];
+      return fmt ? c + ' (' + (fmtLabel[fmt] || fmt) + ')' : c;
+    }).join(', ');
+    if (plan.sort && plan.sort.col) {
+      const dir = plan.sort.dir === 'desc' ? 'descending' : 'ascending';
+      txt += ', sorted by ' + plan.sort.col + (plan.sort.mode === 'dayOfMonth' ? ' (day of month)' : '') + ' ' + dir;
+    }
+    return txt;
+  }
   function renderAutoUnderstanding() {
     if (!autoUnderstand) return;
     if (!autoPlan) { autoUnderstand.innerHTML = ''; return; }
     const f = autoReadForm();
     const srcLabel = autoPlan.source === 'sheet' ? 'Custom Google Sheet' : (AUTO_SOURCE_LABELS[autoPlan.source] || 'Data');
-    const recTxt = f.rec === 'column' ? (f.recCol === 'self' ? 'each person themself' : 'each row\'s own ' + (autoRecCol && autoRecCol.selectedOptions[0] ? autoRecCol.selectedOptions[0].textContent : f.recCol)) : ((autoEmployeesCache || []).filter((e) => autoSelected.has(e.employeeId)).map((e) => e.name).join(', ') || '—');
+    const namedRecipients = [...(autoEmployeesCache || []).filter((e) => autoSelected.has(e.employeeId)).map((e) => e.name), ...(autoPlan.selectedRawEmails || [])];
+    const recTxt = f.rec === 'column' ? (f.recCol === 'self' ? 'each person themself' : 'each row\'s own ' + (autoRecCol && autoRecCol.selectedOptions[0] ? autoRecCol.selectedOptions[0].textContent : f.recCol)) : (namedRecipients.join(', ') || '—');
     const how = autoPlan.source === 'none' ? '' : (f.group === 'each' ? ' — one separate message per row' : ' — one combined list');
     const sched = f.repeat === 'custom' && Number(f.every) === 1 ? 'every day' : (f.repeat === 'custom' ? 'every ' + f.every + ' months' : f.repeat);
     const lines = [
-      '<b>Who:</b> ' + escapeHtml(srcLabel),
+      '<b>Who:</b> ' + escapeHtml(srcLabel) + escapeHtml(describePeriod(autoPlan, f.date)),
       '<b>Sends to:</b> ' + escapeHtml(recTxt) + escapeHtml(how),
       '<b>By:</b> ' + (f.mediator === 'mail' ? 'Mail' : 'WhatsApp') + (f.table ? ' · table ' + (f.tablePlacement === 'pdf' ? 'as PDF attachment' : 'in the message') : ''),
       '<b>When:</b> ' + escapeHtml(sched) + ', first run ' + escapeHtml(autoLastPreview && autoLastPreview.nextRunAt ? new Date(autoLastPreview.nextRunAt).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' }) : '—')
     ];
+    if (f.table && autoTableCols.length) lines.push('<b>Table:</b> ' + escapeHtml(describeTable(autoPlan, autoTableCols)));
     if (autoPlan.source === 'sheet' && !autoPlan.sheetColumns) {
       autoUnderstand.innerHTML = '<div class="wf-auto-und"><h3>SUBH understood</h3><ul>' + lines.map((l) => '<li>' + l + '</li>').join('') + '</ul><div class="wf-auto-hint" style="margin-top:8px">Load your Google Sheet below to see the people.</div></div>';
       return;
@@ -3090,8 +3170,8 @@
       (autoConfirmed ? '<div class="wf-auto-confirmed">✓ Plan confirmed — you can still change anything below.</div>' : '<div class="wf-auto-ask-row"><button type="button" class="wf-ai-action-btn download" id="autoYesBtn">✓ Yes, that\'s right</button><button type="button" class="wf-ai-action-btn outline" id="autoNoBtn">Change it</button></div>') +
       '</div>';
     const yesBtn = document.getElementById('autoYesBtn'), noBtn = document.getElementById('autoNoBtn');
-    if (yesBtn) yesBtn.onclick = () => { autoConfirmed = true; renderAutoUnderstanding(); autoSync(); showActionToast('Plan confirmed ✓ — check the message & schedule below.'); };
-    if (noBtn) noBtn.onclick = () => { if (autoAsk) autoAsk.focus(); showActionToast('Edit your sentence (e.g. "only HR department") and tap Ask SUBH again.'); };
+    if (yesBtn) yesBtn.onclick = () => { autoConfirmed = true; renderAutoUnderstanding(); autoSync(); showAutoToast('Plan confirmed ✓ — check the message & schedule below.'); };
+    if (noBtn) noBtn.onclick = () => { if (autoAsk) autoAsk.focus(); showAutoToast('Edit your sentence (e.g. "only HR department") and tap Ask SUBH again.', 'warning'); };
   }
   if (autoUnderstand) autoUnderstand.addEventListener('click', (e) => { const b = e.target.closest('[data-ex-row]'); if (!b) return; const k = b.dataset.exRow; autoExcluded.has(k) ? autoExcluded.delete(k) : autoExcluded.add(k); renderAutoUnderstanding(); autoSync(); });
 
@@ -3134,13 +3214,23 @@
       const previewResp = await fetch('/api/workforce/hr-assistant/automations/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ plan: t.plan, excludedKeys: t.excludedKeys, schedule: t.schedule }) });
       const previewData = await previewResp.json();
       autoRenderPreviewBody(previewData, 'Preview — ' + t.subject);
-    } catch (err) { showActionToast('Could not load preview.'); }
+    } catch (err) { showAutoToast('Could not load preview.', 'error'); }
   }
   if (autoTestBtn) autoTestBtn.addEventListener('click', async () => {
-    if (!autoEditingId) { showActionToast('Save the automation first, then you can send a test.'); return; }
-    await runButtonAction(autoTestBtn, () => postJsonOrThrow('/api/workforce/hr-assistant/automations/' + encodeURIComponent(autoEditingId) + '/send-test', {}), (r) => {
-      showActionToast(r.results && r.results[0] && r.results[0].status === 'sent' ? 'Test sent to you ✓' : 'Nothing to test on this run.');
-    });
+    if (!autoEditingId) { showAutoToast('Save the automation first, then you can send a test.', 'warning'); return; }
+    await runButtonAction(autoTestBtn, async () => {
+      const r = await postJsonOrThrow('/api/workforce/hr-assistant/automations/' + encodeURIComponent(autoEditingId) + '/send-test', {});
+      // The route always answers 200 even when the send itself failed
+      // (e.g. the run lock was busy) - postJsonOrThrow only throws on a
+      // transport/HTTP error, so a business failure has to be promoted to
+      // a thrown error here, or it would silently fall through as if
+      // nothing happened (the exact bug this fixes).
+      if (!r.ok) throw new Error(r.error || 'Could not send the test.');
+      return r;
+    }, (r) => {
+      const sent = r.results && r.results[0] && r.results[0].status === 'sent';
+      showAutoToast(sent ? 'Test sent to you ✓' : 'Nothing to test on this run — no message would be sent right now.', sent ? 'success' : 'warning');
+    }, { resetAfterSuccess: true, toastFn: AUTO_TOAST_ERR.toastFn });
   });
 
   function autoValidate(f) {
@@ -3149,14 +3239,14 @@
     if (!f.subject) ok = false;
     const askText = (autoAsk && autoAsk.value || '').trim();
     if (autoAskErr) autoAskErr.classList.toggle('hidden', Boolean(askText));
-    if (!askText) { showActionToast('Tell SUBH what to automate first.'); ok = false; }
-    if (!autoConfirmed) { showActionToast("Ask SUBH and confirm the plan first."); ok = false; }
-    if (!f.date || !f.time) { showActionToast('Date and time are required.'); ok = false; }
-    if (f.rec === 'selected' && !autoSelected.size) { showActionToast('Select at least one recipient.'); ok = false; }
-    if (!f.body.trim()) { showActionToast('Message body is required.'); ok = false; }
-    if (f.table && !autoTableCols.length) { showActionToast('Pick at least one table column.'); ok = false; }
-    if (autoPlan && autoPlan.source === 'sheet' && !autoPlan.sheetColumns) { showActionToast('Load the Google Sheet first.'); ok = false; }
-    if (autoCcField.getChips().some((e) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e))) { showActionToast('One of the CC addresses doesn\'t look like a valid email.'); ok = false; }
+    if (!askText) { showAutoToast('Tell SUBH what to automate first.', 'warning'); ok = false; }
+    if (!autoConfirmed) { showAutoToast('Ask SUBH and confirm the plan first.', 'warning'); ok = false; }
+    if (!f.date || !f.time) { showAutoToast('Date and time are required.', 'warning'); ok = false; }
+    if (f.rec === 'selected' && !autoSelected.size) { showAutoToast('Select at least one recipient.', 'warning'); ok = false; }
+    if (!f.body.trim()) { showAutoToast('Message body is required.', 'warning'); ok = false; }
+    if (f.table && !autoTableCols.length) { showAutoToast('Pick at least one table column.', 'warning'); ok = false; }
+    if (autoPlan && autoPlan.source === 'sheet' && !autoPlan.sheetColumns) { showAutoToast('Load the Google Sheet first.', 'warning'); ok = false; }
+    if (autoCcField.getChips().some((e) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e))) { showAutoToast('One of the CC addresses doesn\'t look like a valid email.', 'warning'); ok = false; }
     return ok;
   }
   if (autoSaveBtn) autoSaveBtn.addEventListener('click', async () => {
@@ -3165,14 +3255,14 @@
     if (!autoValidate(f)) return;
     const plan = autoBuildPlanFromForm(f);
     const schedule = { date: f.date, time: f.time, repeat: f.repeat, every: f.every };
-    const payload = { subject: f.subject, originalAsk: autoOriginalAsk, plan, excludedKeys: Array.from(autoExcluded), schedule };
+    const payload = { subject: f.subject, originalAsk: (autoAsk && autoAsk.value || '').trim(), plan, excludedKeys: Array.from(autoExcluded), schedule };
     const url = autoEditingId ? '/api/workforce/hr-assistant/automations/' + encodeURIComponent(autoEditingId) : '/api/workforce/hr-assistant/automations';
     await runButtonAction(autoSaveBtn, () => postJsonOrThrow(url, payload), () => {
-      showActionToast(autoEditingId ? 'Automation updated ✓' : 'Saved ✓ — first run waits for your approval.');
+      showAutoToast(autoEditingId ? 'Automation updated ✓' : 'Saved ✓ — first run waits for your approval.');
       navStack = navStack.filter((n) => n.type !== 'automation');
       pushNav({ type: 'automationList' });
       openAutomationList();
-    });
+    }, { resetAfterSuccess: true, toastFn: AUTO_TOAST_ERR.toastFn });
   });
   if (autoCancelBtn) autoCancelBtn.addEventListener('click', navBack);
 })();

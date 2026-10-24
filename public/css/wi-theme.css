@@ -2086,3 +2086,22 @@ body { background: var(--wi-bg); }
 .wf-auto-preview-sheet .wf-auto-pdf { border: 1.5px solid var(--wi-border-2); border-radius: var(--wi-r-input); padding: 10px; margin-top: 8px; background: var(--wi-primary-50); }
 .wf-auto-preview-sheet .wf-auto-pdf-name { font-weight: 800; font-size: 0.72rem; margin-bottom: 6px; color: var(--wi-ink); }
 .wf-auto-skip { background: var(--wi-red-50); color: var(--wi-red-700); border-radius: var(--wi-r-input); padding: 8px 10px; font-size: 0.72rem; font-weight: 700; margin-top: 8px; }
+
+/* Automated Tasks' own toast (Create/Edit + list page only - never the
+   Reminders page's own #hrRemToast black pill). Anchored under the header
+   so it can never sit over the footer's Save/Cancel/Preview buttons. */
+.wf-auto-toast[hidden] { display: none; }
+.wf-auto-toast {
+  position: fixed; top: 66px; left: 50%; z-index: 96;
+  width: calc(100% - 32px); max-width: 420px;
+  background: #FFFFFF; border-radius: 14px; border-left: 4px solid var(--wi-green-700);
+  box-shadow: 0 10px 28px rgba(0,0,0,.18);
+  padding: 12px 14px; display: flex; align-items: flex-start; gap: 9px;
+  opacity: 0; transform: translateX(-50%) translateY(-10px); pointer-events: none;
+  transition: opacity .2s ease, transform .2s ease;
+}
+.wf-auto-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); pointer-events: auto; }
+.wf-auto-toast.error { border-left-color: var(--wi-red-700); }
+.wf-auto-toast.warning { border-left-color: var(--wi-yellow-700); }
+.wf-auto-toast-icon { font-size: 1rem; line-height: 1.35; flex-shrink: 0; }
+.wf-auto-toast-text { font-size: 0.82rem; font-weight: 700; color: var(--wi-ink); line-height: 1.4; }

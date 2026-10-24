@@ -346,7 +346,7 @@
           </div>
           <div class="wf-auto-hint" id="autoRecHint" style="margin-top:10px"></div>
           <div class="wf-mail-field" style="margin-top:12px;margin-bottom:0">
-            <span class="wf-mail-field-label">CC (optional)</span>
+            <span class="wf-mail-field-label" style="text-transform:none">Cc (Optional)</span>
             <div class="wf-mail-chip-input" id="autoCcChipInput">
               <input type="text" id="autoCcInput" autocomplete="off" placeholder="Add recipient…" />
             </div>
@@ -432,6 +432,16 @@
       <div class="wf-rem-toast" id="hrRemToast" hidden>
         <span id="hrRemToastText"></span>
         <button type="button" id="hrRemToastUndoBtn" hidden>Undo</button>
+      </div>
+
+      <!-- SUBH Automated Tasks' own toast (Create/Edit page + the Automated
+           Tasks list) - white card, soft shadow, coloured left accent, never
+           the Reminders page's own black pill (#hrRemToast, left untouched
+           everywhere else). Anchored under the header, not the footer, so
+           it can never cover Save/Cancel/Preview/Send test. -->
+      <div class="wf-auto-toast" id="hrAutoToast" hidden role="status">
+        <span class="wf-auto-toast-icon" id="hrAutoToastIcon"></span>
+        <span class="wf-auto-toast-text" id="hrAutoToastText"></span>
       </div>
 
       <!-- Automated Task preview - every message a run would send right
