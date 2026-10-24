@@ -2958,7 +2958,31 @@
     if (autoColOrder) autoColOrder.textContent = autoTableCols.length ? 'Order: ' + autoTableCols.join(' | ') : 'Pick at least one column.';
   }
   if (autoCols) autoCols.addEventListener('click', (e) => { const b = e.target.closest('[data-c]'); if (!b) return; const c = b.dataset.c; autoTableCols = autoTableCols.includes(c) ? autoTableCols.filter((x) => x !== c) : [...autoTableCols, c]; renderAutoCols(); autoSync(); });
-  if (autoPlaceholders) autoPlaceholders.addEventListener('click', (e) => { const b = e.target.closest('[data-p]'); if (!b || !autoBody) return; const st = autoBody.selectionStart ?? autoBody.value.length; autoBody.value = autoBody.value.slice(0, st) + b.dataset.p + autoBody.value.slice(autoBody.selectionEnd ?? st); autoBody.focus(); autoSync(); });
+  // "Tap to insert" has to land wherever the owner was actually typing
+  // (Mail subject OR Body), not always Body - tapping the chip button
+  // itself steals focus away from whichever field they were in, so the
+  // LAST focused field is tracked here rather than read at click time.
+  // selectionStart/selectionEnd on an input/textarea persist their last
+  // value even after it loses focus, so the cursor position is still
+  // exactly where they left it.
+  let autoLastActiveField = autoBody;
+  if (autoMailSubj) autoMailSubj.addEventListener('focus', () => { autoLastActiveField = autoMailSubj; });
+  if (autoBody) autoBody.addEventListener('focus', () => { autoLastActiveField = autoBody; });
+  if (autoPlaceholders) autoPlaceholders.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-p]');
+    if (!b) return;
+    const subjectVisible = autoMailSubjWrap && !autoMailSubjWrap.classList.contains('hidden');
+    const field = (autoLastActiveField === autoMailSubj && subjectVisible) ? autoMailSubj : autoBody;
+    if (!field) return;
+    const st = field.selectionStart ?? field.value.length;
+    const en = field.selectionEnd ?? st;
+    field.value = field.value.slice(0, st) + b.dataset.p + field.value.slice(en);
+    field.focus();
+    const caret = st + b.dataset.p.length;
+    field.setSelectionRange(caret, caret);
+    autoLastActiveField = field;
+    autoSync();
+  });
 
   [autoGroupSeg, autoRecSeg, autoMedSeg, autoPlaceSeg, autoRepSeg].forEach((seg) => {
     if (!seg) return;
