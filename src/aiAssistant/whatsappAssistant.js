@@ -497,10 +497,11 @@ async function dismissSystemNotices() {
 // down to a single name/summary the way an earlier version of this
 // function did.
 async function listActionableWhatsappItems() {
-  const [approvals, drafts, followups, docs, recentLog] = await Promise.all([
+  const [approvals, drafts, followups, docs, recentLog, hrConfirmations] = await Promise.all([
     listPendingApprovals(), listPendingDrafts(), listOpenFollowups(),
-    documentRequests.listPendingReceived(), listInboxLog(300)
+    documentRequests.listPendingReceived(), listInboxLog(300), listAllHrConfirmations()
   ]);
+  const ambiguousConfirmations = hrConfirmations.filter((c) => c.status === 'ambiguous_owner_review');
   const nameByChat = new Map();
   recentLog.forEach((e) => {
     const key = whatsapp.normalizePhone(e.chatId);
@@ -516,6 +517,7 @@ async function listActionableWhatsappItems() {
   drafts.forEach((d) => ensure(d.contactId).items.push({ type: 'draft', name: d.name, summary: d.messagePreview, ts: d.createdAt }));
   followups.forEach((f) => ensure(f.chatId).items.push({ type: 'followup', name: f.name, summary: f.summary, ts: f.ts }));
   docs.forEach((d) => ensure(d.phone).items.push({ type: 'document', name: null, summary: 'Sent a file for ' + d.topic, ts: d.receivedAt }));
+  ambiguousConfirmations.forEach((c) => ensure(c.thirdPartyPhone).items.push({ type: 'hr_confirmation_ambiguous', name: c.thirdPartyName, summary: 'Reply unclear: "' + (c.unclearTexts || []).join('" / "') + '"', ts: c.ambiguousAt || c.createdAt, hrConfirmationId: c.id }));
 
   // Same placeholder rule as getWhatsappConversation's own `name` (see its
   // comment) - "The sender" can end up as an item's OR an inbox-log
@@ -667,12 +669,13 @@ async function dismissWhatsappItem(chatIdRaw) {
 // group per item, each clearly labelled with who it's for.
 async function getWhatsappConversation(chatIdRaw) {
   const chatId = whatsapp.normalizePhone(chatIdRaw);
-  const [history, recentLog, approvals, drafts, followups, docs, neverAuto] = await Promise.all([
+  const [history, recentLog, approvals, drafts, followups, docs, neverAuto, hrConfirmations] = await Promise.all([
     getConvoHistory(chatId, CONVO_HISTORY_MAX),
     listInboxLog(300),
     listPendingApprovals(), listPendingDrafts(), listOpenFollowups(),
-    documentRequests.listPendingReceived(), isNeverAuto(chatId)
+    documentRequests.listPendingReceived(), isNeverAuto(chatId), listAllHrConfirmations()
   ]);
+  const myAmbiguousConfirmations = hrConfirmations.filter((c) => c.status === 'ambiguous_owner_review' && whatsapp.normalizePhone(c.thirdPartyPhone) === chatId);
   const myLog = recentLog.filter((e) => whatsapp.normalizePhone(e.chatId) === chatId);
   const latestLog = myLog[0] || null;
   const myApprovals = approvals.filter((a) => whatsapp.normalizePhone(a.phone) === chatId);
@@ -756,7 +759,8 @@ async function getWhatsappConversation(chatIdRaw) {
     })),
     pendingDrafts: myDrafts.map((d) => ({ contactId: d.contactId, name: itemLabel(d.name), type: d.type, draftReply: d.draftReply })),
     openFollowups: myFollowups.map((f) => ({ name: itemLabel(f.name), summary: f.summary })),
-    pendingDocuments: myDocs.map((d) => ({ topic: d.topic, fileRef: d.fileRef }))
+    pendingDocuments: myDocs.map((d) => ({ topic: d.topic, fileRef: d.fileRef })),
+    ambiguousHrConfirmations: myAmbiguousConfirmations.map((c) => ({ id: c.id, name: itemLabel(c.thirdPartyName), summary: c.summary, unclearTexts: c.unclearTexts || [] }))
   };
 }
 
@@ -1429,21 +1433,69 @@ function matchOrdinalIndex(text) {
 // (never guesses) when nothing resolves to exactly one candidate - the
 // caller (decideAutoReplyCore) re-asks rather than silently dropping the
 // message, see MAX_DISAMBIGUATION_ATTEMPTS below.
+// Live review item 3 - matchesWholeWordName checks the OPPOSITE direction
+// (every word of a SHORT query must belong to the candidate's name), so it
+// never matches a name embedded in a longer reply with extra words
+// ("1.Tanmoy Mondal - Civil (Plot -B), Structure, Srirampur" fails it
+// outright, since "1." isn't one of Tanmoy Mondal's own name words). This
+// is the reverse check this function actually needs: every word of the
+// CANDIDATE's name must appear somewhere among the reply's own words -
+// extra words around it never break the match. Scoped to this function
+// only - matchesWholeWordName itself and its other callers are unchanged.
+function textMentionsCandidateName(text, candidateName) {
+  const textWords = String(text || '').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/).filter(Boolean);
+  const nameWords = String(candidateName || '').toLowerCase().split(/\s+/).filter(Boolean);
+  return nameWords.length > 0 && nameWords.every((nw) => textWords.includes(nw));
+}
 function resolveDisambiguationReply(candidates, text) {
   const t = String(text || '').trim();
+  let numCandidate = null;
   const numMatch = t.match(/^(\d+)[.)]?\b/);
   if (numMatch) {
     const idx = parseInt(numMatch[1], 10) - 1;
-    if (idx >= 0 && idx < candidates.length) return candidates[idx];
+    if (idx >= 0 && idx < candidates.length) numCandidate = candidates[idx];
   }
-  const ordinalIdx = matchOrdinalIndex(t);
-  if (ordinalIdx !== null && ordinalIdx < candidates.length) return candidates[ordinalIdx];
-  const exact = candidates.filter((c) => matchesWholeWordName(c.name, t));
+  if (!numCandidate) {
+    const ordinalIdx = matchOrdinalIndex(t);
+    if (ordinalIdx !== null && ordinalIdx < candidates.length) numCandidate = candidates[ordinalIdx];
+  }
+  const exact = candidates.filter((c) => textMentionsCandidateName(t, c.name));
+  // Live review item 3: a reply can name a number AND a name together
+  // ("1.Tanmoy Mondal - Civil..."), and the two usually agree - but if a
+  // SINGLE exact name match points at a DIFFERENT candidate than the
+  // number does, that's a genuine conflict (e.g. a typo'd number), so
+  // this is surfaced to the caller instead of silently trusting the
+  // number - see DISAMBIGUATION_CONFLICT_QUESTION.
+  if (numCandidate && exact.length === 1 && exact[0] !== numCandidate) {
+    return { conflict: true, numCandidate, nameCandidate: exact[0] };
+  }
+  if (numCandidate) return numCandidate;
   if (exact.length === 1) return exact[0];
   const fuzzy = employeeService.fuzzyMatchEmployeesByName(candidates, t);
   if (fuzzy.length === 1) return fuzzy[0];
   return null;
 }
+const DISAMBIGUATION_CONFLICT_QUESTION = {
+  banglish: (numCandidate, nameCandidate) => numCandidate.name + ' naki ' + nameCandidate.name + ' — ektu spash kore bolben, kon ' + (numCandidate.name.split(' ')[0]) + '-er kotha bolchhen?',
+  hinglish: (numCandidate, nameCandidate) => numCandidate.name + ' ya ' + nameCandidate.name + ' — zara clear kar denge, kaunse ' + (numCandidate.name.split(' ')[0]) + ' ki baat kar rahe hain?',
+  english: (numCandidate, nameCandidate) => numCandidate.name + ' or ' + nameCandidate.name + ' — could you clarify which one you mean?'
+};
+// Live review item 6: the full numbered candidate list is only worth
+// repeating ONCE (the original question). Every retry after that is
+// short - "Kon Tanmoy-er kotha bolchhen — 1, 2, 3 na 4?" - never the
+// same long text twice in a row.
+function joinNumbersNaturally(n, lang) {
+  const nums = [];
+  for (let i = 1; i <= n; i++) nums.push(i);
+  const last = nums.pop();
+  const sep = lang === 'english' ? ' or ' : lang === 'hinglish' ? ' ya ' : ' na ';
+  return (nums.length ? nums.join(', ') + sep : '') + last;
+}
+const DISAMBIGUATION_SHORT_RETRY = {
+  banglish: (queryName, n) => 'Kon ' + queryName + '-er kotha bolchhen — ' + joinNumbersNaturally(n, 'banglish') + '?',
+  hinglish: (queryName, n) => 'Kaunse ' + queryName + ' ki baat kar rahe hain — ' + joinNumbersNaturally(n, 'hinglish') + '?',
+  english: (queryName, n) => 'Which ' + queryName + ' do you mean — ' + joinNumbersNaturally(n, 'english') + '?'
+};
 // A sender's reply that matches NEITHER a candidate nor a number/ordinal
 // gets re-asked, up to this many times total (the original question
 // counts as attempt 1) - after that, the disambiguation is abandoned
@@ -1995,8 +2047,24 @@ const HR_FLOW_CONTEXT_CLARIFY = {
 // explicitly here rather than relying on the AI classifier to recognize
 // one - a yes/no answer to SUBH's own question must never fall through to
 // free-form drafting.
-const NAME_CONFIRM_YES_RE = /^(haa|hya|hyan|ha|haan|hae|ho|yes|yeah|yep|ji|jee|thik(\s*ache)?|correct)\b/i;
-const NAME_CONFIRM_NO_RE = /^(na|naa|nahi|noi|no|nope|nah)\b/i;
+// Live review item 9: "Haaa" (3 a's) failed to match "haa" (2 a's) because
+// the trailing \b boundary check fails against the leftover letter - a
+// sender can type any number of repeats. collapseRepeatedLetters folds any
+// run of 3+ identical letters down to 2 before testing, so "Haaa"/"Haaaa"
+// all normalize to "Haa" and match exactly as "Haa" already did - the
+// explicit-token-list safety discipline itself (never an AI guess for a
+// yes/no answer to SUBH's own question) is unchanged, only tolerance to
+// repetition is added. "ami bolechi(lam)"/"ami bolini" (a manager
+// reaffirming/denying the premise in their own words, with no literal
+// yes/no word at all) are added as additional explicit tokens for the
+// same reason every other variant here is explicit, not model-guessed.
+function collapseRepeatedLetters(s) {
+  return String(s || '').replace(/([a-zA-Z])\1{2,}/g, '$1$1');
+}
+const NAME_CONFIRM_YES_RE = /^(haa|hya|hyan|ha|haan|hae|ho|yes|yeah|yep|ji|jee|thik(\s*ache)?|correct|approved|confirmed|ami\s+bol(echi|echilam|sechi|sechilam))\b/i;
+const NAME_CONFIRM_NO_RE = /^(na|naa|nahi|noi|no|nope|nah|not(\s*approved)?|ami\s+bol(ini|i\s*na(hi)?))\b/i;
+function isYesAnswer(text) { return NAME_CONFIRM_YES_RE.test(collapseRepeatedLetters(String(text || '').trim())); }
+function isNoAnswer(text) { return NAME_CONFIRM_NO_RE.test(collapseRepeatedLetters(String(text || '').trim())); }
 const PENDING_NAME_CONFIRM_PREFIX = 'wa-pending-name-confirm:';
 const PENDING_NAME_CONFIRM_TTL_SECONDS = 30 * 60;
 async function savePendingNameConfirm(phone, data) {
@@ -2089,6 +2157,18 @@ function departmentHintMatches(deptName, hint) {
   if (!normHint) return false;
   return normDept.includes(normHint) || normHint.split(' ').every((w) => normDept.includes(w));
 }
+// Live review item 7 - a hint like "Tanmoy Sir ... Clubhouse ...
+// Srirampur" names a location/site, not a department, and used to be
+// silently dropped (departmentHintMatches only ever compared against
+// e.department). employeeService already keeps location as a first-
+// class field (location/locationKey) - this just checks the SAME hint
+// string against it too, so a department-worded OR location-worded hint
+// both narrow correctly, without needing a separate classifier field
+// (hrNotificationThirdPartyHint/personLookupDepartment's own
+// descriptions already invite site/location words into this one string).
+function personHintMatches(emp, hint) {
+  return departmentHintMatches(emp.department, hint) || departmentHintMatches(emp.location, hint) || departmentHintMatches(emp.designation, hint);
+}
 // Any status (ACTIVE/NOTICE PERIOD/INACTIVE) - the caller decides what to
 // do with each category (notice period is still "currently employed" for
 // this feature; inactive gets its own no-data reply, never the normal
@@ -2097,6 +2177,7 @@ function mapAndNarrowByDepartment(matched, departmentNames, departmentHint) {
   const withDept = matched.map((e) => ({
     employeeId: e.employeeId, name: e.name, designation: e.designation,
     department: departmentNames.get(e.departmentKey) || e.department,
+    location: e.location,
     contactNumber: e.contactNumber, status: e.status, doj: e.doj, gender: e.gender,
     // Live review item 5 - the "other_field" approval-gated fields
     // (mail id, address, DOB, emergency contact, UAN, ESIC, blood group)
@@ -2112,7 +2193,7 @@ function mapAndNarrowByDepartment(matched, departmentNames, departmentHint) {
   // narrowing would leave zero (e.g. the hint didn't exactly match the
   // stored department name), fall back to the unnarrowed set rather than
   // silently reporting "not found" over an imprecise hint.
-  const narrowed = withDept.filter((e) => departmentHintMatches(e.department, departmentHint));
+  const narrowed = withDept.filter((e) => personHintMatches(e, departmentHint));
   return narrowed.length ? narrowed : withDept;
 }
 async function findEmployeesByWholeNameMatch(query, departmentHint) {
@@ -2198,14 +2279,14 @@ async function findPersonLookupMatches(query, departmentHint) {
   // "Subhodeep" -> Subhodeep Kundu Chowdhury, HR) is preferred over
   // keeping a name match that contradicts the sender's own stated
   // department.
-  const exactFitsHint = !departmentHint || exact.some((e) => departmentHintMatches(e.department, departmentHint));
+  const exactFitsHint = !departmentHint || exact.some((e) => personHintMatches(e, departmentHint));
   if (exact.length && exactFitsHint) return { matches: exact, hadTypo: false };
   if (departmentHint) {
     const fuzzyForHint = await findEmployeesByFuzzyNameMatch(query, departmentHint);
-    const fuzzyFitsHint = fuzzyForHint.filter((e) => departmentHintMatches(e.department, departmentHint));
+    const fuzzyFitsHint = fuzzyForHint.filter((e) => personHintMatches(e, departmentHint));
     if (fuzzyFitsHint.length) return { matches: fuzzyFitsHint, hadTypo: true };
     const phoneticForHint = await findEmployeesByPhoneticNameMatch(query, departmentHint);
-    const phoneticFitsHint = phoneticForHint.filter((e) => departmentHintMatches(e.department, departmentHint));
+    const phoneticFitsHint = phoneticForHint.filter((e) => personHintMatches(e, departmentHint));
     if (phoneticFitsHint.length) return { matches: phoneticFitsHint, hadTypo: true };
   }
   if (exact.length) return { matches: exact, hadTypo: false };
@@ -2776,6 +2857,12 @@ async function updateHrConfirmation(id, patch) {
       if (existing.status === 'awaiting_manager' && updated.status !== 'awaiting_manager') {
         await redis.srem(hrConfirmationByPhoneKey(existing.thirdPartyPhone), id);
       }
+      // "Ask again" moves status BACK to awaiting_manager (from
+      // ambiguous_owner_review) - re-add to the by-phone index so the
+      // manager's next reply is recognised again, same as a fresh STEP 4.
+      if (existing.status !== 'awaiting_manager' && updated.status === 'awaiting_manager') {
+        await redis.sadd(hrConfirmationByPhoneKey(updated.thirdPartyPhone), id);
+      }
     } catch (err) { /* best effort */ }
   }
   return updated;
@@ -2908,6 +2995,24 @@ const HR_CONFIRMATION_MANAGER_UNCLEAR_RETRY = {
   hinglish: (summary) => 'Thoda spasht kar denge - ' + summary + ', kya yeh sahi hai?',
   english: (summary) => 'Could you confirm clearly - ' + summary + ' - is that right?'
 };
+// After ONE clarifying question still doesn't resolve to a clear yes/no,
+// SUBH stops asking (never a third identical/near-identical retry) and
+// hands the decision to the owner instead - see
+// MAX_HR_CONFIRMATION_UNCLEAR_ATTEMPTS/the 'ambiguous_owner_review' status.
+const HR_CONFIRMATION_MANAGER_THANKS_UNCLEAR = {
+  banglish: 'Dhonnobad, ami Subhodeep-ke janiye dicchi.',
+  hinglish: 'Dhanyavaad, main Subhodeep ko bata raha hoon.',
+  english: 'Thank you - I\'ll let Subhodeep know.'
+};
+// One more clarifying question after the owner picks "Ask again" -
+// intentionally NOT the exact same text as the first retry (never an
+// identical repeat), and resets the unclear-attempt counter.
+const HR_CONFIRMATION_MANAGER_ASK_AGAIN = {
+  banglish: (summary) => 'Subhodeep abar ekbar jante cheyechen - ' + summary + ' - ektu "Haa" ba "Na" bole janaben?',
+  hinglish: (summary) => 'Subhodeep ne ek baar aur poochha hai - ' + summary + ' - kripya "Haa" ya "Na" bata denge?',
+  english: (summary) => 'Subhodeep asked me to check once more - ' + summary + ' - could you reply with a simple Yes or No?'
+};
+const MAX_HR_CONFIRMATION_UNCLEAR_ATTEMPTS = 1;
 const HR_CONFIRMATION_WHICH_PENDING = {
   banglish: (list) => 'Apnar kache ekadhik confirmation request pathiyechi, kon ta niye bolchhen? ' + list,
   hinglish: (list) => 'Aapko maine ek se zyada confirmation request bheji hai, kis baare mein bata rahe hain? ' + list,
@@ -3168,28 +3273,54 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
   const lang = hrFlow.lang;
   if (hrFlow.step === 'awaiting_disambiguation_choice') {
     const resolved = resolveDisambiguationReply(hrFlow.candidates, text);
+    if (resolved && resolved.conflict) {
+      await savePendingHrNoteFlow(phone, Object.assign({}, hrFlow, { attempts: (hrFlow.attempts || 1) + 1 }));
+      const conflictFn = DISAMBIGUATION_CONFLICT_QUESTION[lang] || DISAMBIGUATION_CONFLICT_QUESTION.english;
+      return { case: 'acknowledged', replyText: conflictFn(resolved.numCandidate, resolved.nameCandidate), summaryForOwner: null, lang };
+    }
     if (resolved) {
       return finalizeHrNoteThirdParty({ phone, senderName: name, lang, candidate: resolved, summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, createdAt: hrFlow.createdAt, history });
+    }
+    // Live review item 2 - a non-matching reply isn't automatically a
+    // failed guess; it might just be extra information. Ask before
+    // burning an attempt / re-asking.
+    const queryNameForClassify = hrFlow.candidates[0].name.split(' ')[0];
+    const disambigVerdict = await classifyDisambiguationReply(text, {
+      candidates: hrFlow.candidates,
+      pendingQuestionLabel: 'which ' + queryNameForClassify + ' do you mean'
+    }).catch(() => ({ isAnswerAttempt: true }));
+    if (!disambigVerdict.isAnswerAttempt) {
+      await postOwnerNotification(name + ' (' + phone + ') added info while SUBH waited to know which ' + queryNameForClassify + ' they meant: "' + text.slice(0, 200) + '"');
+      return { case: 'acknowledged', replyText: null, summaryForOwner: null, lang };
     }
     const attempts = hrFlow.attempts || 1;
     if (attempts < MAX_DISAMBIGUATION_ATTEMPTS) {
       // Object.assign already preserves hrFlow.topicLabel/createdAt/summary/etc as-is.
       await savePendingHrNoteFlow(phone, Object.assign({}, hrFlow, { attempts: attempts + 1 }));
-      const retryPrefix = DISAMBIGUATION_RETRY_PREFIX[lang] || DISAMBIGUATION_RETRY_PREFIX.english;
-      const fn = DISAMBIGUATION_QUESTION[lang] || DISAMBIGUATION_QUESTION.english;
       const queryName = hrFlow.candidates[0].name.split(' ')[0];
-      return { case: 'acknowledged', replyText: retryPrefix + fn(queryName, hrFlow.candidates, 'hr_note_third_party'), summaryForOwner: null, lang };
+      // Live review item 6: the full list goes out once (the original
+      // question); every retry after that is the short form.
+      let replyText;
+      if (attempts === 1) {
+        const retryPrefix = DISAMBIGUATION_RETRY_PREFIX[lang] || DISAMBIGUATION_RETRY_PREFIX.english;
+        const fn = DISAMBIGUATION_QUESTION[lang] || DISAMBIGUATION_QUESTION.english;
+        replyText = retryPrefix + fn(queryName, hrFlow.candidates, 'hr_note_third_party');
+      } else {
+        const shortFn = DISAMBIGUATION_SHORT_RETRY[lang] || DISAMBIGUATION_SHORT_RETRY.english;
+        replyText = shortFn(queryName, hrFlow.candidates.length);
+      }
+      return { case: 'acknowledged', replyText, summaryForOwner: null, lang };
     }
     await clearPendingHrNoteFlow(phone);
     return { case: 'acknowledged', replyText: HR_NOTE_NO_THIRD_PARTY[lang] || HR_NOTE_NO_THIRD_PARTY.english, summaryForOwner: null, lang };
   }
   if (hrFlow.step === 'awaiting_confirm_yes_no') {
     const t = text.trim();
-    if (NAME_CONFIRM_YES_RE.test(t)) {
+    if (isYesAnswer(t)) {
       return finalizeHrNoteThirdParty({ phone, senderName: name, lang, candidate: hrFlow.candidate, summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, createdAt: hrFlow.createdAt, history });
     }
     const pendingQuestionLabel = (NAME_CONFIRM_QUESTION[lang] || NAME_CONFIRM_QUESTION.english)(hrFlow.candidate.name, hrFlow.candidate.department);
-    if (NAME_CONFIRM_NO_RE.test(t)) {
+    if (isNoAnswer(t)) {
       // Live review item 2 (found live: "Naa..Suvodip HR er kotha
       // bolchi" already named someone new in the SAME "no" message, but
       // this used to just re-ask "who, then?" and throw that name away) -
@@ -3270,21 +3401,80 @@ async function handleHrConfirmationManagerReply({ phone, text, lang, pendingConf
   const originalMessageDate = new Date(confirmation.originalMessageAt || confirmation.createdAt || Date.now());
   const daysSinceOriginal = calendarDaysBetweenIst(originalMessageDate, new Date());
   const resultPrefix = buildHrConfirmationResultDayPrefix(confirmation.lang, confirmation.topicLabel, daysSinceOriginal, originalMessageDate);
-  if (NAME_CONFIRM_YES_RE.test(t)) {
+  if (isYesAnswer(t)) {
     await updateHrConfirmation(confirmation.id, { status: 'confirmed', resolvedAt: Date.now() });
     await closeHrConfirmationReminder(confirmation.reminderId);
     await sendHrConfirmationResultToSender(confirmation, resultPrefix + (HR_CONFIRMATION_SENDER_RESULT_YES[confirmation.lang] || HR_CONFIRMATION_SENDER_RESULT_YES.english)(confirmation.thirdPartyName));
     await postHrConfirmationOwnerRecord(confirmation, 'Yes (confirmed)');
     return { case: 'acknowledged', replyText: HR_CONFIRMATION_MANAGER_THANKS_YES[replyLang] || HR_CONFIRMATION_MANAGER_THANKS_YES.english, summaryForOwner: null, lang: replyLang };
   }
-  if (NAME_CONFIRM_NO_RE.test(t)) {
+  if (isNoAnswer(t)) {
     await updateHrConfirmation(confirmation.id, { status: 'declined', resolvedAt: Date.now() });
     await closeHrConfirmationReminder(confirmation.reminderId);
     await sendHrConfirmationResultToSender(confirmation, resultPrefix + (HR_CONFIRMATION_SENDER_RESULT_NO[confirmation.lang] || HR_CONFIRMATION_SENDER_RESULT_NO.english)(confirmation.thirdPartyName));
     await postHrConfirmationOwnerRecord(confirmation, 'No (not confirmed)');
     return { case: 'acknowledged', replyText: HR_CONFIRMATION_MANAGER_THANKS_NO[replyLang] || HR_CONFIRMATION_MANAGER_THANKS_NO.english, summaryForOwner: null, lang: replyLang };
   }
+  // Neither yes nor no - one clarifying question max (never a loop); after
+  // that, stop asking and hand it to the owner as a card (Confirmed / Not
+  // confirmed / Ask again) instead of re-asking indefinitely.
+  const unclearAttempts = confirmation.unclearAttempts || 0;
+  const unclearTexts = (confirmation.unclearTexts || []).concat([t]);
+  if (unclearAttempts >= MAX_HR_CONFIRMATION_UNCLEAR_ATTEMPTS) {
+    await updateHrConfirmation(confirmation.id, { status: 'ambiguous_owner_review', unclearAttempts: unclearAttempts + 1, unclearTexts, ambiguousAt: Date.now() });
+    await postOwnerNotification(
+      '🤔 ' + confirmation.thirdPartyName + '-er reply bujhte parchi na: "' + unclearTexts.join('" / "') + '" (bishoy: ' + confirmation.summary + '). ' +
+      'WhatsApp section-e giye Confirmed / Not confirmed / Ask again theke bechhe nin.'
+    );
+    return { case: 'acknowledged', replyText: HR_CONFIRMATION_MANAGER_THANKS_UNCLEAR[replyLang] || HR_CONFIRMATION_MANAGER_THANKS_UNCLEAR.english, summaryForOwner: null, lang: replyLang };
+  }
+  await updateHrConfirmation(confirmation.id, { unclearAttempts: unclearAttempts + 1, unclearTexts });
   return { case: 'acknowledged', replyText: (HR_CONFIRMATION_MANAGER_UNCLEAR_RETRY[replyLang] || HR_CONFIRMATION_MANAGER_UNCLEAR_RETRY.english)(summaryForSentence(confirmation.summaryLocalized || confirmation.summary)), summaryForOwner: null, lang: replyLang };
+}
+
+// Owner's own decision on an 'ambiguous_owner_review' confirmation - the
+// three actions the WhatsApp-section card offers. 'confirmed'/'declined'
+// complete the flow exactly like a clear manager Yes/No would (the sender
+// gets the matching STEP 5 result); 'ask_again' sends ONE more clarifying
+// question to the manager and re-opens the flow (reinstated into
+// 'awaiting_manager' so the manager's next reply is recognised again, and
+// the unclear-attempt counter is reset so this can only escalate once
+// more after another full clarifying exchange, never an immediate
+// re-escalation loop).
+async function resolveAmbiguousHrConfirmation(id, decision) {
+  const confirmation = await getHrConfirmation(id);
+  if (!confirmation) return { ok: false, error: 'That confirmation is no longer pending.' };
+  if (confirmation.status !== 'ambiguous_owner_review') return { ok: false, error: 'That confirmation is not waiting on your review.' };
+  const originalMessageDate = new Date(confirmation.originalMessageAt || confirmation.createdAt || Date.now());
+  const daysSinceOriginal = calendarDaysBetweenIst(originalMessageDate, new Date());
+  const resultPrefix = buildHrConfirmationResultDayPrefix(confirmation.lang, confirmation.topicLabel, daysSinceOriginal, originalMessageDate);
+  if (decision === 'confirmed') {
+    await updateHrConfirmation(id, { status: 'confirmed', resolvedAt: Date.now() });
+    await closeHrConfirmationReminder(confirmation.reminderId);
+    await sendHrConfirmationResultToSender(confirmation, resultPrefix + (HR_CONFIRMATION_SENDER_RESULT_YES[confirmation.lang] || HR_CONFIRMATION_SENDER_RESULT_YES.english)(confirmation.thirdPartyName));
+    await postHrConfirmationOwnerRecord(confirmation, 'Yes (confirmed by owner - manager\'s reply was unclear)');
+    return { ok: true };
+  }
+  if (decision === 'declined') {
+    await updateHrConfirmation(id, { status: 'declined', resolvedAt: Date.now() });
+    await closeHrConfirmationReminder(confirmation.reminderId);
+    await sendHrConfirmationResultToSender(confirmation, resultPrefix + (HR_CONFIRMATION_SENDER_RESULT_NO[confirmation.lang] || HR_CONFIRMATION_SENDER_RESULT_NO.english)(confirmation.thirdPartyName));
+    await postHrConfirmationOwnerRecord(confirmation, 'No (declined by owner - manager\'s reply was unclear)');
+    return { ok: true };
+  }
+  if (decision === 'ask_again') {
+    const lang = confirmation.lang;
+    const text = (HR_CONFIRMATION_MANAGER_ASK_AGAIN[lang] || HR_CONFIRMATION_MANAGER_ASK_AGAIN.english)(summaryForSentence(confirmation.summaryLocalized || confirmation.summary));
+    const disclosed = await prependDisclosureIfNeeded(text, confirmation.thirdPartyPhone, lang);
+    if (isRealSendAllowedFor(confirmation.thirdPartyPhone)) {
+      const sendResult = await sendWhatsAppChunked(confirmation.thirdPartyPhone, disclosed);
+      if (!sendResult.ok) return { ok: false, error: sendResult.error };
+      await appendConvoHistory(confirmation.thirdPartyPhone, 'out', disclosed);
+    }
+    await updateHrConfirmation(id, { status: 'awaiting_manager', unclearAttempts: 0, unclearTexts: [] });
+    return { ok: true };
+  }
+  return { ok: false, error: 'Unknown decision - expected confirmed, declined or ask_again.' };
 }
 
 // STEP 6 (second half) - no answer in 3 working hours -> one reminder;
@@ -4809,6 +4999,46 @@ async function extractPersonReference(text, context) {
   };
 }
 
+// Live review item 2 (real incident, Saurav/Tanmoy) - while a disambiguation
+// question ("Apni kar kotha bolchhen?") is open, a message that doesn't
+// match any candidate used to be treated as a FAILED GUESS every time,
+// even when it was obviously just extra information ("Sir, ei month e
+// amar kono chhutti nei") rather than an attempt to answer at all. That
+// burned an attempt and re-sent the full candidate list for no reason.
+// This tool asks the model the same question extractPersonReferenceTool
+// asks for the HR-note "who told you" flow, generalized to any pending
+// disambiguation: is this new message actually trying to pick one of the
+// listed candidates, or is it unrelated information/a new topic? Fails
+// CLOSED (isAnswerAttempt: true) on any API error, so a real error never
+// silently swallows what might genuinely be a (mismatched) answer - the
+// existing retry-or-give-up logic is the safe fallback for that case.
+function classifyDisambiguationReplyTool() {
+  return {
+    type: 'function',
+    function: {
+      name: 'classify_disambiguation_reply',
+      description: 'SUBH asked the sender to pick which of several candidates (named in the system prompt) they mean. Decide whether this new message is an ATTEMPT to answer that question (naming/numbering one of the candidates, even if it doesn\'t clearly match any of them), or whether it is unrelated information/a new topic the sender is adding instead - e.g. extra context about their own situation that doesn\'t try to pick anyone. A message that itself raises a new subject or gives extra detail about something else entirely, without trying to identify which candidate, is NOT an answer attempt.',
+      parameters: {
+        type: 'object',
+        properties: {
+          isAnswerAttempt: { type: 'boolean', description: 'true if the sender is trying to pick/name one of the listed candidates (even if unclear which one). false if the message is unrelated information or a new topic that doesn\'t try to answer at all.' }
+        },
+        required: ['isAnswerAttempt']
+      }
+    }
+  };
+}
+async function classifyDisambiguationReply(text, context) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey || !DRAFT_MODEL) return { isAnswerAttempt: true };
+  const toolDef = classifyDisambiguationReplyTool().function;
+  const candidateLabel = ((context && context.candidates) || []).map((c, i) => (i + 1) + ') ' + c.name).join(', ');
+  const systemPrompt = 'SUBH asked: "' + ((context && context.pendingQuestionLabel) || 'which one do you mean') + '" - the candidates are: ' + candidateLabel + '.';
+  const input = await callClaudeForcedTool(apiKey, DRAFT_MODEL, [{ role: 'system', content: systemPrompt }, { role: 'user', content: text }], toolDef.name, toolDef).catch(() => null);
+  if (!input) return { isAnswerAttempt: true };
+  return { isAnswerAttempt: input.isAnswerAttempt !== false };
+}
+
 function classifyTool() {
   return {
     type: 'function',
@@ -5398,6 +5628,27 @@ const EMOJI_ACK_REPLY = {
   english: '🙂 Let me know if you need anything.'
 };
 
+// Live review item 4 - a plain-text closing remark ("Thank you"/"Ok"/
+// "Thik ache"/"No Sir thank you") with nothing left open. Structural
+// (regex), not left to the model, same principle as isEmojiOnlyMessage -
+// a closing is recognized by its own fixed shape, never guessed by a
+// classifier that might treat it as a real "thanks" needing a fresh
+// AI-drafted reply every time.
+const CLOSING_MESSAGE_RE = /^(no[,.\s]*)?(sir[,.\s]*)?(thank\s*you|thanks|thankyou|dhonnobad|dhannobad|dhonyobad|dhanyavaad|dhanyawad|ok(ay)?|thik\s*(ache|ase|hai)?)(\s*(sir|so\s*much))?[\s.,!🙏👍🙂👌]*$/i;
+function isClosingMessage(text) {
+  const t = String(text || '').trim();
+  return t.length > 0 && CLOSING_MESSAGE_RE.test(t);
+}
+const CLOSING_ACK_REPLY = {
+  banglish: 'Kono chinta nei! Dorkar hole janaben.',
+  hinglish: 'Koi baat nahi! Zaroorat ho to bataiyega.',
+  english: "You're most welcome! Let me know if you need anything."
+};
+function isClosingAckReplyText(t) {
+  const trimmed = String(t || '').trim();
+  return Object.values(CLOSING_ACK_REPLY).some((v) => trimmed === v);
+}
+
 // Banned robotic phrases, checked structurally (not just prompted away) -
 // same principle as containsUnbackedTimeframePromise below. Found live in
 // the same conversation: "I'm not sure I follow your message... Could you
@@ -5533,6 +5784,17 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
       return { case: 'acknowledged', replyText: wishReply[lang] || wishReply.english, summaryForOwner: null, lang };
     }
   }
+  // Live review item 1 - a CV/job-application TEXT message (e.g. "Good
+  // morning, Sir. I have shared my CV for a suitable position... Thank
+  // you, Sir.") is checked structurally here, before the general spam/
+  // automated classifier ever sees it - that classifier's own
+  // replyNeeded:false guidance explicitly treats a templated-reading
+  // message as a reason to not reply, which a genuine CV message often
+  // reads exactly like.
+  if (!isGroup && looksLikeCvMessage(text)) {
+    const lang = detectLang(text);
+    return { case: 'cv_received', replyText: CV_RECEIVED_REPLY[lang] || CV_RECEIVED_REPLY.english, summaryForOwner: '[CV received] ' + text.slice(0, 160), lang };
+  }
   if (!isGroup && isIdentityQuestion(text)) {
     const lang = detectLang(text);
     return { case: 'acknowledged', replyText: IDENTITY_REPLY[lang] || IDENTITY_REPLY.english, summaryForOwner: null, lang };
@@ -5632,7 +5894,7 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
     const pendingConfirm = await getPendingNameConfirm(phone).catch(() => null);
     if (pendingConfirm && pendingConfirm.candidate) {
       const t = text.trim();
-      if (NAME_CONFIRM_YES_RE.test(t)) {
+      if (isYesAnswer(t)) {
         await clearPendingNameConfirm(phone);
         return resolveConfirmedPersonLookup({
           phone, name: senderLabel, candidate: pendingConfirm.candidate, isInactive: Boolean(pendingConfirm.isInactive),
@@ -5640,7 +5902,7 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
           lang: pendingConfirm.lang, hadTypo: pendingConfirm.hadTypo, history
         });
       }
-      if (NAME_CONFIRM_NO_RE.test(t)) {
+      if (isNoAnswer(t)) {
         await clearPendingNameConfirm(phone);
         return { case: 'acknowledged', replyText: NAME_CONFIRM_RETRY[pendingConfirm.lang] || NAME_CONFIRM_RETRY.english, summaryForOwner: null, lang: pendingConfirm.lang };
       }
@@ -5669,6 +5931,11 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
     const pendingDisambig = await getPendingDisambiguation(phone).catch(() => null);
     if (pendingDisambig && Array.isArray(pendingDisambig.candidates) && pendingDisambig.candidates.length) {
       const resolved = resolveDisambiguationReply(pendingDisambig.candidates, text);
+      if (resolved && resolved.conflict) {
+        await savePendingDisambiguation(phone, Object.assign({}, pendingDisambig, { attempts: (pendingDisambig.attempts || 1) + 1 }));
+        const conflictFn = DISAMBIGUATION_CONFLICT_QUESTION[pendingDisambig.lang] || DISAMBIGUATION_CONFLICT_QUESTION.english;
+        return { case: 'acknowledged', replyText: conflictFn(resolved.numCandidate, resolved.nameCandidate), summaryForOwner: null, lang: pendingDisambig.lang };
+      }
       if (resolved) {
         await clearPendingDisambiguation(phone);
         if (pendingDisambig.pendingField === 'contact_number') {
@@ -5683,23 +5950,58 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
         await postOwnerNotification(senderLabel + ' (' + phone + ') "' + resolved.name + '" baeche niyeche - general details pathano holo, approval lage ni.');
         return { case: 'acknowledged', replyText: buildGeneralDetailsReply(resolved, pendingDisambig.lang, pendingDisambig.hadTypo, new Date()), summaryForOwner: null, lang: pendingDisambig.lang };
       }
+      // Live review item 2 - a non-matching reply isn't automatically a
+      // failed guess; it might just be extra information. Ask before
+      // burning an attempt / re-asking.
+      const queryNameForClassify = pendingDisambig.candidates[0].name.split(' ')[0];
+      const disambigVerdict = await classifyDisambiguationReply(text, {
+        candidates: pendingDisambig.candidates,
+        pendingQuestionLabel: 'which ' + queryNameForClassify + ' do you mean'
+      }).catch(() => ({ isAnswerAttempt: true }));
+      if (!disambigVerdict.isAnswerAttempt) {
+        await postOwnerNotification(senderLabel + ' (' + phone + ') added info while SUBH waited to know which ' + queryNameForClassify + ' they meant: "' + text.slice(0, 200) + '"');
+        return { case: 'acknowledged', replyText: null, summaryForOwner: null, lang: pendingDisambig.lang };
+      }
       const attempts = pendingDisambig.attempts || 1;
       if (attempts < MAX_DISAMBIGUATION_ATTEMPTS) {
         await savePendingDisambiguation(phone, Object.assign({}, pendingDisambig, { attempts: attempts + 1 }));
         const lang = pendingDisambig.lang;
-        const retryPrefix = DISAMBIGUATION_RETRY_PREFIX[lang] || DISAMBIGUATION_RETRY_PREFIX.english;
-        const fn = DISAMBIGUATION_QUESTION[lang] || DISAMBIGUATION_QUESTION.english;
         const queryName = pendingDisambig.candidates[0].name.split(' ')[0];
-        const retryFieldKind = pendingDisambig.pendingField === 'other_field'
-          ? (((resolveApprovalFieldAliasByKey(pendingDisambig.fieldAliasKey) || {}).label || {})[lang] || 'other_field')
-          : pendingDisambig.pendingField;
-        return { case: 'acknowledged', replyText: retryPrefix + fn(queryName, pendingDisambig.candidates, retryFieldKind), summaryForOwner: null, lang: pendingDisambig.lang };
+        // Live review item 6: short retry from the 2nd attempt onward.
+        let replyText;
+        if (attempts === 1) {
+          const retryPrefix = DISAMBIGUATION_RETRY_PREFIX[lang] || DISAMBIGUATION_RETRY_PREFIX.english;
+          const fn = DISAMBIGUATION_QUESTION[lang] || DISAMBIGUATION_QUESTION.english;
+          const retryFieldKind = pendingDisambig.pendingField === 'other_field'
+            ? (((resolveApprovalFieldAliasByKey(pendingDisambig.fieldAliasKey) || {}).label || {})[lang] || 'other_field')
+            : pendingDisambig.pendingField;
+          replyText = retryPrefix + fn(queryName, pendingDisambig.candidates, retryFieldKind);
+        } else {
+          const shortFn = DISAMBIGUATION_SHORT_RETRY[lang] || DISAMBIGUATION_SHORT_RETRY.english;
+          replyText = shortFn(queryName, pendingDisambig.candidates.length);
+        }
+        return { case: 'acknowledged', replyText, summaryForOwner: null, lang: pendingDisambig.lang };
       }
       // Gave up after repeated non-matching replies - abandon the
       // disambiguation and let this message through to the normal
       // pipeline as an ordinary new message, rather than re-ask forever.
       await clearPendingDisambiguation(phone);
     }
+  }
+
+  // Live review item 4 - a plain closing message ("Thank you"/"Ok"/"Thik
+  // ache"/"No Sir thank you") gets at most ONE short reply per
+  // conversation, never a back-and-forth of pleasantries. By this point
+  // every pending-question state above has already had first refusal, so
+  // reaching here means nothing is actually open - reaching this line
+  // itself already answers the "is anything pending" question.
+  if (!isGroup && isClosingMessage(text)) {
+    const lastOut = (history || []).filter((h) => h.direction === 'out').slice(-1)[0];
+    if (lastOut && isClosingAckReplyText(lastOut.text)) {
+      return { case: 'acknowledged', replyText: null, summaryForOwner: null };
+    }
+    const lang = detectLang(text);
+    return { case: 'acknowledged', replyText: CLOSING_ACK_REPLY[lang] || CLOSING_ACK_REPLY.english, summaryForOwner: null, lang };
   }
 
   let emp = null;
@@ -5948,11 +6250,105 @@ function extractMediaUrl(msg) {
   return c.url || c.media_url || c.link || c.download_url || null;
 }
 
+// Live review item 5 - PENDING LIVE CONFIRMATION, same status as
+// extractMediaUrl above: this gateway's /messages list endpoint has not
+// been confirmed to surface a quoted/replied-to message's text under any
+// particular field name. This defensively tries every plausible shape
+// (maytapi's own documented "quotedMsg", and the generic WhatsApp-
+// protocol-level "contextInfo.quotedMessage"/"stanzaId" names other
+// gateways use) so it starts working the moment a real one shows up
+// without a code change - until confirmed with a real quoted reply sent
+// live, treat this as unconfirmed, same as extractMediaUrl.
+function extractQuotedText(msg) {
+  const c = msg.content || {};
+  const q = c.quotedMsg || c.quoted_msg || c.quotedMessage || c.quoted || (c.contextInfo && c.contextInfo.quotedMessage) || msg.quotedMsg || msg.quoted || null;
+  if (!q) return null;
+  if (typeof q === 'string') return q;
+  return q.text || q.body || q.caption || q.conversation || null;
+}
+// Appends the quoted message as a short bracketed note, never changes
+// the sender's own text at the front - every ^-anchored matcher in this
+// file (yes/no, disambiguation numbers, greeting/identity) still sees
+// the sender's real words first and keeps working unchanged.
+function buildIncomingText(msg) {
+  const raw = (msg.content && (msg.content.text || msg.content.caption)) || '';
+  const quoted = extractQuotedText(msg);
+  if (!raw || !quoted) return raw;
+  return raw + '\n\n(Replying to: "' + quoted + '")';
+}
+
+// Live review item 1 - a CV/job-application message, structurally
+// recognized (never left to the general spam/automated classifier, which
+// explicitly lists templated-reading messages as a reason to mark
+// replyNeeded:false - a genuine CV message often reads exactly like a
+// template). Matched against EITHER a media caption or a follow-up text
+// message ("Good morning, Sir. I have shared my CV...") - the real live
+// case sent the PDF with no caption at all, then this text 14 minutes
+// later, so both call sites need the same check.
+const CV_KEYWORDS_RE = /\b(cv|resum[ae]|job\s*(application|opening|opportunit\w*)|vacanc(y|ies)|suitable\s*(position|job|vacanc\w*)|apply(ing)?\s*for\s*(a\s*|any\s*)?(job|position|post|vacanc\w*)|interested\s*in\s*(joining|working)|looking\s*for\s*(a\s*)?job)\b/i;
+function looksLikeCvMessage(text) {
+  return CV_KEYWORDS_RE.test(String(text || ''));
+}
+const CV_RECEIVED_REPLY = {
+  banglish: 'Ami SUBH, Subhodeep-er HR Assistant. Apnar CV peyechi, dhonnobad. Apnar profile er suitable kono job opening thakle HR team apnar sathe jogajog korbe.',
+  hinglish: 'Main SUBH hoon, Subhodeep ka HR Assistant. Aapka CV mil gaya, dhanyavaad. Aapki profile ke liye koi suitable opening hogi to HR team aapse contact karegi.',
+  english: "I'm SUBH, Subhodeep's HR Assistant. I've received your CV, thank you. If a suitable opening comes up for your profile, the HR team will get in touch with you."
+};
+// Live review item 1 - a file/image/voice message with no open document
+// request and no CV signal still gets a short human acknowledgement,
+// never silence (found live: a bare PDF with no caption got nothing at
+// all). Deliberately generic/fixed, not AI-drafted - there's nothing to
+// reason about for a plain "I received your file" line.
+const MEDIA_ACK_REPLY = {
+  banglish: 'Apnar message peyechi, dhonnobad. Subhodeep-ke janiye dicchi.',
+  hinglish: 'Aapka message mil gaya, dhanyavaad. Subhodeep ko bata raha hoon.',
+  english: "I've received your message, thank you. I'll let Subhodeep know."
+};
+async function mediaFallbackLang(contactId, caption) {
+  if (caption) return detectLang(caption);
+  const history = await getConvoHistory(contactId, CONVO_HISTORY_MAX).catch(() => []);
+  const lastIncoming = (history || []).filter((h) => h.direction === 'in' && h.text).slice(-1)[0];
+  return lastIncoming ? detectLang(lastIncoming.text) : 'banglish';
+}
 async function handleIncomingMedia(contactId, name, msg) {
   const caption = (msg.content && msg.content.caption) || '';
+  if (looksLikeCvMessage(caption)) {
+    const lang = await mediaFallbackLang(contactId, caption);
+    await scheduleAutoSend({
+      chatId: contactId, isGroup: false, name,
+      replyText: CV_RECEIVED_REPLY[lang] || CV_RECEIVED_REPLY.english, case: 'cv_received',
+      summaryForOwner: '[CV received]' + (caption ? ' ' + caption.slice(0, 160) : '')
+    });
+    const mediaUrl = extractMediaUrl(msg);
+    await postOwnerNotification(
+      '📄 CV received from ' + name + (mediaUrl
+        ? ' - saving to Drive "SUBH Documents/CVs/<month>" is not wired up yet, even though a download link was found this time; the file itself is only in the WhatsApp chat for now.'
+        : ' - could not save a copy (the gateway has not given SUBH a download link for this message), so the CV itself is only visible in the WhatsApp chat, not saved anywhere.')
+    );
+    return;
+  }
+  if (['ptt', 'voice', 'audio'].includes(msg.type)) {
+    // A voice note is never a document submission - SUBH can't transcribe
+    // it, so this is always just an acknowledgement, never a document-
+    // request fulfilment, regardless of whether one happens to be open.
+    const lang = await mediaFallbackLang(contactId, caption);
+    await scheduleAutoSend({
+      chatId: contactId, isGroup: false, name,
+      replyText: MEDIA_ACK_REPLY[lang] || MEDIA_ACK_REPLY.english, case: 'media_ack',
+      summaryForOwner: '[sent a voice message]'
+    });
+    await postOwnerNotification(name + ' sent a voice message - SUBH cannot transcribe audio, acknowledged only.');
+    return;
+  }
   const openReq = await documentRequests.getOpenRequest(contactId);
   if (!openReq) {
-    await postOwnerNotification(name + ' sent a file (no open request) - not stored.');
+    const lang = await mediaFallbackLang(contactId, caption);
+    await scheduleAutoSend({
+      chatId: contactId, isGroup: false, name,
+      replyText: MEDIA_ACK_REPLY[lang] || MEDIA_ACK_REPLY.english, case: 'media_ack',
+      summaryForOwner: '[sent a ' + (msg.type || 'file') + ', no open request]'
+    });
+    await postOwnerNotification(name + ' sent a file (no open request) - not stored, but acknowledged.');
     return;
   }
   const mediaUrl = extractMediaUrl(msg);
@@ -6040,6 +6436,24 @@ const BURST_BUFFER_IDS_KEY = 'wa-burst-buffer-ids';
 // budget, same purpose the old 40s ceiling served at the old 60s target.
 const BURST_QUIET_MS = 7500;
 const BURST_MAX_WAIT_MS = 15000;
+// Live review item 2 - while SUBH has a pending question open for a
+// contact (which candidate, is this confirmed, etc.), a follow-up
+// message sent moments later is far more likely to be the SAME turn
+// (extra context for, or a correction of, the answer) than unrelated
+// chit-chat - widen the quiet window to ~60s specifically in that case,
+// rather than the general 7.5s tuned for the normal ≤30s reply-latency
+// target. A sender idly going quiet for under a minute while SUBH is
+// already waiting on them is the common case this is meant to catch.
+const BURST_QUIET_MS_PENDING = 60000;
+async function hasOpenPendingQuestionState(contactId) {
+  const [nameConfirm, disambig, hrFlow, hrConfirmations] = await Promise.all([
+    getPendingNameConfirm(contactId).catch(() => null),
+    getPendingDisambiguation(contactId).catch(() => null),
+    getPendingHrNoteFlow(contactId).catch(() => null),
+    listPendingHrConfirmationsForPhone(contactId).catch(() => [])
+  ]);
+  return Boolean(nameConfirm || disambig || hrFlow || (hrConfirmations && hrConfirmations.length));
+}
 // A bare "?"/"??"/"hello?" etc. right after a request is a NUDGE on that
 // request, never a new request of its own - dropped from the combined
 // text handed to classification (but every message still appears in the
@@ -6169,13 +6583,35 @@ async function isMessageHandled(contactId, id) {
   if (!redis) return false;
   try { return Boolean(await redis.sismember(HANDLED_IDS_PREFIX + contactId, id)); } catch (err) { return false; }
 }
-async function markMessageHandled(contactId, id) {
+// Live review item 8 - the text seen for this id at handling time, kept
+// alongside the handled-ids SET (same TTL). A WhatsApp edit keeps the
+// SAME id, so the id-based dedup above never reprocesses it on its own -
+// this lets resumeStuckPendingQuestionsOnStartup notice "this id's text
+// is no longer what we last saw" specifically for a contact still
+// waiting on a pending question, without changing the id-based dedup's
+// own guarantees for anyone else.
+const MESSAGE_TEXT_PREFIX = 'wa-msg-text:';
+async function getStoredMessageText(contactId, id) {
+  const redis = getClient();
+  if (!redis) return null;
+  try { return await redis.hget(MESSAGE_TEXT_PREFIX + contactId, String(id)); } catch (err) { return null; }
+}
+async function storeMessageText(contactId, id, text) {
+  const redis = getClient();
+  if (!redis || !text) return;
+  try {
+    await redis.hset(MESSAGE_TEXT_PREFIX + contactId, { [String(id)]: text });
+    await redis.expire(MESSAGE_TEXT_PREFIX + contactId, HANDLED_IDS_TTL_SECONDS);
+  } catch (err) { /* best effort */ }
+}
+async function markMessageHandled(contactId, id, text) {
   const redis = getClient();
   if (!redis) return;
   try {
     await redis.sadd(HANDLED_IDS_PREFIX + contactId, id);
     await redis.expire(HANDLED_IDS_PREFIX + contactId, HANDLED_IDS_TTL_SECONDS);
   } catch (err) { /* best effort */ }
+  if (text) await storeMessageText(contactId, id, text);
 }
 // A second, independent check alongside hasManualReplyAfter below (which
 // trusts the GATEWAY's own reported outgoing messages for this contact -
@@ -6284,11 +6720,79 @@ async function actOnCatchupTurn({ contactId, name, firstName, text, arrivedAt, s
 // The one entry point - called on a confirmed reconnect and once at
 // scheduler startup. `trigger` is purely descriptive (shows up in logs),
 // never changes behavior.
+// Live review item 8 - see MESSAGE_TEXT_PREFIX's own comment for why an
+// edit is otherwise invisible. Scoped ONLY to contacts with an OPEN
+// pending question (disambiguation/HR-note flow/name-confirm) - a
+// resolved flow has nothing to resume, so this never touches an ordinary
+// conversation. Resolution reuses the exact live decideAutoReply path
+// (same pending-state-first priority order, same finalize/send
+// functions), so it can only ever send the ONE correct next message for
+// whatever step is actually open - never re-sends an earlier step.
+async function resumeStuckPendingQuestionsOnStartup() {
+  const contacts = await listKnownContacts();
+  let resumed = 0;
+  for (const contactId of contacts) {
+    if (whatsapp.isGroupChat(contactId)) continue;
+    try {
+      const pendingOpen = await hasOpenPendingQuestionState(contactId);
+      if (!pendingOpen) continue;
+      const recent = await whatsapp.listMessages(contactId, 5);
+      const lastIncoming = (recent || []).filter((m) => m.direction === 'incoming').sort((a, b) => b.id - a.id)[0];
+      if (!lastIncoming) continue;
+      // Critical guard: a message this file has never actually handled
+      // yet is NOT an edit - it's just a normal new message, and belongs
+      // entirely to the ordinary poll/catch-up path below, which already
+      // has its own careful last-seen/handled-id/stale-window logic.
+      // Without this check, a brand-new message for a contact that
+      // happens to have a pending question (e.g. the very message that
+      // will itself resolve it) would get answered HERE and then answered
+      // AGAIN by catchUpAfterGap's own normal pass right after - a real
+      // double-reply, exactly the incident class this file's handled-ids
+      // set exists to prevent. Only a message id ALREADY marked handled
+      // can be "edited" by definition.
+      if (!(await isMessageHandled(contactId, lastIncoming.id))) continue;
+      const currentText = buildIncomingText(lastIncoming);
+      if (!currentText) continue;
+      const storedText = await getStoredMessageText(contactId, lastIncoming.id);
+      if (storedText === currentText) continue; // unchanged - nothing to resume, leave it to the normal flow
+      const resolvedName = await resolveSenderName(contactId).catch(() => null);
+      const name = resolvedName || contactId;
+      const history = await getConvoHistory(contactId, CONVO_HISTORY_MAX);
+      const decision = await decideAutoReply({ phone: contactId, name, firstName: firstNameOf(resolvedName), text: currentText, isGroup: false, history: history.slice(-10) }).catch((err) => {
+        console.error('[whatsapp] resumeStuckPendingQuestionsOnStartup decideAutoReply failed for ' + contactId + ': ' + err.message);
+        return null;
+      });
+      await storeMessageText(contactId, lastIncoming.id, currentText);
+      if (decision && decision.replyText) {
+        await appendConvoHistory(contactId, 'out', decision.replyText);
+        await scheduleAutoSend({
+          chatId: contactId, isGroup: false, name,
+          replyText: decision.replyText, case: decision.case, memoryId: decision.memoryId || null,
+          summaryForOwner: decision.summaryForOwner || null, topicLabel: decision.topicLabel || null, topic: decision.topic || null,
+          followupCount: decision.followupCount || null, intent: decision.intent || null, hrTopicArea: decision.hrTopicArea || null
+        });
+        resumed++;
+      }
+    } catch (err) {
+      console.error('[whatsapp] resumeStuckPendingQuestionsOnStartup failed for ' + contactId + ': ' + err.message);
+    }
+  }
+  if (resumed) await postOwnerNotification('🔁 Resumed ' + resumed + ' pending WhatsApp question(s) on restart after finding an edited/updated reply.');
+  return resumed;
+}
 async function catchUpAfterGap(trigger) {
   if (!isCatchupEnabled()) {
     console.log('[whatsapp] catch-up skipped (trigger: ' + trigger + ') - WHATSAPP_CATCHUP is not set to "1"');
     return { sendersAnswered: 0, messagesAnswered: 0, needsYouSenders: 0, trigger, disabled: true };
   }
+  // Live review item 8 - independent of the missed-message gap window
+  // below (which only concerns messages that never got a reply at all):
+  // a contact who DID get a reply, but whose flow is still sitting on an
+  // open pending question, gets re-checked against their current message
+  // text right here, on every reconnect/restart - this is what makes "a
+  // flow resumed after a restart continues from its saved step
+  // immediately" true even on the very first run (no gap to compute yet).
+  await resumeStuckPendingQuestionsOnStartup().catch((err) => console.error('[whatsapp] resumeStuckPendingQuestionsOnStartup failed: ' + err.message));
   const now = Date.now();
   const gapWindow = await computeCatchupGapWindow(trigger, now);
   if (!gapWindow) {
@@ -6312,7 +6816,7 @@ async function catchUpAfterGap(trigger) {
       // the durable handled-id set (never re-act on an id this file has
       // already acted on, by any path, ever).
       const candidates = allMessages
-        .filter((m) => m.direction === 'incoming' && m.id > lastSeenId && (!m.type || ['text', 'image', 'document'].includes(m.type)))
+        .filter((m) => m.direction === 'incoming' && m.id > lastSeenId && (!m.type || ['text', 'image', 'document', 'ptt', 'voice', 'audio'].includes(m.type)))
         .filter((m) => { const ts = catchupMessageTimestamp(m); return ts > gapWindow.start && ts <= gapWindow.end; })
         .sort((a, b) => a.id - b.id);
       const missed = [];
@@ -6327,7 +6831,7 @@ async function catchUpAfterGap(trigger) {
       // never re-process the same backlog on a later tick/run, whatever
       // outcome it reaches for it this time.
       await setLastSeenId(contactId, highestId);
-      for (const m of missed) await markMessageHandled(contactId, m.id);
+      for (const m of missed) await markMessageHandled(contactId, m.id, buildIncomingText(m));
 
       const lastMissedTs = catchupMessageTimestamp(missed[missed.length - 1]);
       if (hasManualReplyAfter(allMessages, lastMissedTs)) continue; // gateway shows a manual reply after it - never double-reply
@@ -6337,8 +6841,8 @@ async function catchUpAfterGap(trigger) {
       const name = resolvedName || contactId;
       const firstName = firstNameOf(resolvedName);
       const oldestTs = catchupMessageTimestamp(missed[0]);
-      const missedTextOnly = missed.filter((m) => m.type !== 'image' && m.type !== 'document');
-      const combinedText = combineBurstText(missedTextOnly.map((m) => ({ text: (m.content && (m.content.text || m.content.caption)) || '' })));
+      const missedTextOnly = missed.filter((m) => !['image', 'document', 'ptt', 'voice', 'audio'].includes(m.type));
+      const combinedText = combineBurstText(missedTextOnly.map((m) => ({ text: buildIncomingText(m) })));
 
       if (now - oldestTs > CATCHUP_STALE_THRESHOLD_MS) {
         // Too old to auto-reply to (lowered to > 30 min per direct
@@ -6391,7 +6895,14 @@ async function pollOnce() {
     // image/document ARE meaningful here (spec item 5b, document
     // receiving), so only the truly non-actionable types are dropped
     // this early; text vs image/document is decided per-message below.
-    if (msg.type && !['text', 'image', 'document'].includes(msg.type)) continue;
+    // Live review item 1 - a voice note/audio message is a real human
+    // message too (found live: these were dropped here with ZERO
+    // acknowledgement, exactly like the bare-PDF case) - type names are
+    // unconfirmed for this gateway, so every plausible one is let through
+    // and handled the same as image/document (MEDIA_ACK_REPLY, no
+    // document-request-specific handling since there's nothing to OCR/
+    // read from audio).
+    if (msg.type && !['text', 'image', 'document', 'ptt', 'voice', 'audio'].includes(msg.type)) continue;
     const bucket = whatsapp.isGroupChat(msg.recipient) ? byGroup : byContact;
     if (!bucket.has(msg.recipient)) bucket.set(msg.recipient, []);
     bucket.get(msg.recipient).push(msg);
@@ -6519,14 +7030,14 @@ async function pollOnce() {
       const name = resolvedName || contactId; // display fallback - the raw phone number, never the gateway's contact label
       const firstName = firstNameOf(resolvedName);
       const highestId = newIncoming[newIncoming.length - 1].id;
-      for (const msg of newIncoming) await markMessageHandled(contactId, msg.id);
+      for (const msg of newIncoming) await markMessageHandled(contactId, msg.id, buildIncomingText(msg));
       for (const msg of newIncoming) {
         results.checked++;
-        if (msg.type === 'image' || msg.type === 'document') {
+        if (['image', 'document', 'ptt', 'voice', 'audio'].includes(msg.type)) {
           if (autoReplyOn) await handleIncomingMedia(contactId, name, msg).catch(() => {});
           continue;
         }
-        const text = msg.content && (msg.content.text || msg.content.caption) || '';
+        const text = buildIncomingText(msg);
         if (!text) continue; // no classification signal without text (e.g. a bare image)
         const verdict = await classify(contactId, text);
         if (verdict === 'official') {
@@ -6579,7 +7090,8 @@ async function pollOnce() {
       if (!buffer || !buffer.messages.length) { await clearBurstBuffer(contactId); continue; }
       const now = Date.now();
       const lastArrival = buffer.messages[buffer.messages.length - 1].arrivedAt;
-      const quiet = now - lastArrival >= BURST_QUIET_MS;
+      const pendingOpen = await hasOpenPendingQuestionState(contactId).catch(() => false);
+      const quiet = now - lastArrival >= (pendingOpen ? BURST_QUIET_MS_PENDING : BURST_QUIET_MS);
       const maxedOut = now - buffer.firstSeenAt >= BURST_MAX_WAIT_MS;
       if (!quiet && !maxedOut) {
         // Still might get another message in this burst - wait, but
@@ -6613,7 +7125,7 @@ async function pollOnce() {
       const name = await groupNameFor(groupId);
       for (const msg of newIncoming) {
         results.groupMessagesScanned++;
-        const text = msg.content && (msg.content.text || msg.content.caption) || '';
+        const text = buildIncomingText(msg);
         if (!text || !(await isMyMention(text))) continue; // discarded in memory, nothing stored beyond the id below
         results.groupMentionsFound++;
         if (!autoReplyOn) continue;
@@ -6819,6 +7331,7 @@ module.exports = {
   handleHrNotificationStart,
   continueHrNoteFlow,
   handleHrConfirmationManagerReply,
+  resolveAmbiguousHrConfirmation,
   normalizeBengaliNamePhonetics,
   findEmployeesByPhoneticNameMatch,
   checkHrConfirmationNudges,
@@ -6874,5 +7387,41 @@ module.exports = {
   // Exported for scripts/check-whatsapp-engine.js only - the pending-
   // disambiguation "never silently drop a bare name" fix.
   MAX_DISAMBIGUATION_ATTEMPTS,
-  DISAMBIGUATION_RETRY_PREFIX
+  DISAMBIGUATION_RETRY_PREFIX,
+  // Exported for scripts/check-whatsapp-engine.js only - live review
+  // items 3 (number/name conflict) and 6 (short, non-repeating retry).
+  DISAMBIGUATION_CONFLICT_QUESTION,
+  DISAMBIGUATION_SHORT_RETRY,
+  // Exported for scripts/check-whatsapp-engine.js only - live review
+  // item 2 (answer vs extra-info during disambiguation, ~60s pending window).
+  classifyDisambiguationReply,
+  hasOpenPendingQuestionState,
+  BURST_QUIET_MS_PENDING,
+  // Exported for scripts/check-whatsapp-engine.js only - live review
+  // item 4 (no back-and-forth on closing messages).
+  isClosingMessage,
+  CLOSING_ACK_REPLY,
+  isClosingAckReplyText,
+  // Exported for scripts/check-whatsapp-engine.js only - live review
+  // item 5 (quoted/replied message context, unconfirmed gateway field).
+  extractQuotedText,
+  buildIncomingText,
+  // Exported for scripts/check-whatsapp-engine.js only - live review
+  // item 7 (location/site hint narrowing).
+  personHintMatches,
+  // Exported for scripts/check-whatsapp-engine.js only - live review
+  // item 1 (CV/media acknowledgement, never-silent media handling).
+  looksLikeCvMessage,
+  CV_RECEIVED_REPLY,
+  MEDIA_ACK_REPLY,
+  handleIncomingMedia,
+  // Exported for scripts/check-whatsapp-engine.js only - live review
+  // item 8 (edited-message detection, resume a stuck pending question).
+  getStoredMessageText,
+  storeMessageText,
+  resumeStuckPendingQuestionsOnStartup,
+  // Exported for scripts/check-whatsapp-engine.js only - live review
+  // item 9 (tolerant Yes/No matching).
+  isYesAnswer,
+  isNoAnswer
 };

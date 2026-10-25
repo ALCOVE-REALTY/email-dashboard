@@ -2023,6 +2023,19 @@
         '</div>'
       );
     });
+    (convo.ambiguousHrConfirmations || []).forEach((c) => {
+      groups.push(
+        '<div class="wf-convo-action-group" data-action-type="hr-confirm-ambiguous" data-hrconfirm-id="' + escapeHtml(c.id) + '">' +
+          '<span class="wf-convo-action-label">🤔 ' + escapeHtml(c.name) + '\'s reply is unclear</span>' +
+          '<span class="wf-convo-action-preview">"' + escapeHtml((c.unclearTexts || []).join('" / "')) + '" (' + escapeHtml(c.summary || '') + ')</span>' +
+          '<span class="wf-convo-action-row">' +
+            '<button type="button" class="wf-convo-action-btn primary" data-hrconfirm-action="confirmed">Confirmed</button>' +
+            '<button type="button" class="wf-convo-action-btn danger" data-hrconfirm-action="declined">Not confirmed</button>' +
+            '<button type="button" class="wf-convo-action-btn text" data-hrconfirm-action="ask_again">Ask again</button>' +
+          '</span>' +
+        '</div>'
+      );
+    });
     groups.push(
       '<div class="wf-convo-action-group">' +
         '<span class="wf-convo-toggle-row">' +
@@ -2163,6 +2176,18 @@
           await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/whatsapp-document-done', { chatId: activeConvoChatId }), () => {
             dismissCard(card);
             showActionToast('Marked done ✓');
+            pollCommsSummary();
+          });
+        });
+      });
+      convoActions.querySelectorAll('[data-hrconfirm-action]').forEach((b) => {
+        b.addEventListener('click', async () => {
+          const card = b.closest('.wf-convo-action-group');
+          const id = card && card.dataset.hrconfirmId;
+          const decision = b.dataset.hrconfirmAction;
+          await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/whatsapp-hr-confirmation-resolve', { id, decision }), () => {
+            dismissCard(card);
+            showActionToast(decision === 'ask_again' ? 'Asked again ✓' : 'Resolved ✓');
             pollCommsSummary();
           });
         });

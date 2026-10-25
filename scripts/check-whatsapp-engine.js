@@ -2495,15 +2495,15 @@ async function checkAsync(label, fn) {
     const loaded = await whatsappAssistant.getPendingDisambiguation(TEST_PHONE);
     return loaded === null;
   });
-  await checkAsync('a NON-matching reply to a pending disambiguation is NEVER silently dropped - it gets a polite re-ask listing the options again', async () => {
+  await checkAsync('a NON-matching but genuinely ATTEMPTED reply to a pending disambiguation is NEVER silently dropped - it gets a polite re-ask listing the options again (live review item 2: a reply naming someone who still isn\'t a listed candidate IS an attempt, unlike pure filler/extra-info - see the dedicated item 2 tests below for that distinction)', async () => {
     await whatsappAssistant.savePendingDisambiguation(TEST_PHONE, { candidates: mockAyanBiswasDasPair, lang: 'banglish', hadTypo: false, attempts: 1 });
-    const d = await whatsappAssistant.decideAutoReply({ phone: TEST_PHONE, name: 'Test', firstName: 'Test', text: 'thik ache dhonnobad', isGroup: false, history: [] });
+    const d = await whatsappAssistant.decideAutoReply({ phone: TEST_PHONE, name: 'Test', firstName: 'Test', text: 'Ayan Kumar-er kotha bolchi', isGroup: false, history: [] });
     const stillPending = await whatsappAssistant.getPendingDisambiguation(TEST_PHONE);
     return Boolean(d.replyText) && d.replyText.includes('Ayan Biswas') && d.replyText.includes('Ayan Das') && Boolean(stillPending) && stillPending.attempts === 2;
   });
-  await checkAsync('after MAX_DISAMBIGUATION_ATTEMPTS non-matching replies, the disambiguation is abandoned (never loops forever)', async () => {
+  await checkAsync('after MAX_DISAMBIGUATION_ATTEMPTS non-matching ATTEMPTED replies, the disambiguation is abandoned (never loops forever)', async () => {
     await whatsappAssistant.savePendingDisambiguation(TEST_PHONE, { candidates: mockAyanBiswasDasPair, lang: 'banglish', hadTypo: false, attempts: whatsappAssistant.MAX_DISAMBIGUATION_ATTEMPTS });
-    await whatsappAssistant.decideAutoReply({ phone: TEST_PHONE, name: 'Test', firstName: 'Test', text: 'ar kichu bolte chai na', isGroup: false, history: [] }).catch(() => null);
+    await whatsappAssistant.decideAutoReply({ phone: TEST_PHONE, name: 'Test', firstName: 'Test', text: 'Ayan Ghosh', isGroup: false, history: [] }).catch(() => null);
     const stillPending = await whatsappAssistant.getPendingDisambiguation(TEST_PHONE);
     return stillPending === null;
   });
@@ -3096,29 +3096,35 @@ async function checkAsync(label, fn) {
         return d.replyText !== GREETING_REPLY_BY_LANG.banglish && d.replyText !== GREETING_REPLY_BY_LANG.english && d.replyText.length > GREETING_REPLY_BY_LANG.english.length * 0.5;
       });
 
-      // ---- B. Disambiguation retry + resolve (deterministic, no API) ----
+      // ---- B. Disambiguation retry + resolve ----
       const DISAMBIG_CANDIDATES = [
         { name: 'Ayan Biswas', department: 'CIVIL', designation: 'JR ENGINEER', doj: new Date('2022-01-01').toISOString() },
         { name: 'Ayan Das', department: 'HR', designation: 'EXECUTIVE', doj: new Date('2021-06-01').toISOString() }
       ];
-      const DISAMBIG_CASES = [
-        ['disambiguation retry (banglish)', 'banglish', 'Accha thik ache'],
-        ['disambiguation retry (english)', 'english', 'ok sure'],
-        ['disambiguation retry (hinglish)', 'hinglish', 'theek hai bhai']
+      // Live review item 2 - INTENTIONALLY no longer byte-identical to the
+      // 4a8dd65 baseline: "Accha thik ache"/"ok sure"/"theek hai bhai" are
+      // pure acknowledgement filler, not an attempt to name either
+      // candidate - the baseline always burned a retry and re-sent the
+      // full list for these; the fix now recognizes them as NOT an answer
+      // attempt at all (extra info has nothing to do with picking a
+      // candidate) and stays silent without burning an attempt, exactly
+      // per the user's own live review item 2 spec. Tested against the NEW
+      // canonical behavior directly, not diffed against the old module -
+      // this now makes a real (cheap, single-tool-call) API call rather
+      // than being purely deterministic.
+      const DISAMBIG_FILLER_CASES = [
+        ['disambiguation filler, not an attempt (banglish)', 'banglish', 'Accha thik ache'],
+        ['disambiguation filler, not an attempt (english)', 'english', 'ok sure'],
+        ['disambiguation filler, not an attempt (hinglish)', 'hinglish', 'theek hai bhai']
       ];
-      for (const [label, lang, text] of DISAMBIG_CASES) {
-        await checkAsync('equivalence: ' + label + ' - "' + text + '" (EXACT match required)', async () => {
-          const [oldPhone, newPhone] = phonePair();
-          await Promise.all([
-            oldWa.savePendingDisambiguation(oldPhone, { candidates: DISAMBIG_CANDIDATES, lang, hadTypo: false, attempts: 1 }),
-            whatsappAssistant.savePendingDisambiguation(newPhone, { candidates: DISAMBIG_CANDIDATES, lang, hadTypo: false, attempts: 1 })
-          ]);
-          const [oldD, newD] = await Promise.all([
-            oldWa.decideAutoReply({ phone: oldPhone, name: 'Test', firstName: 'Test', text, isGroup: false, history: [] }),
-            whatsappAssistant.decideAutoReply({ phone: newPhone, name: 'Test', firstName: 'Test', text, isGroup: false, history: [] })
-          ]);
-          await Promise.all([whatsappAssistant.clearPendingDisambiguation(oldPhone), whatsappAssistant.clearPendingDisambiguation(newPhone)]);
-          return Boolean(oldD) && Boolean(newD) && oldD.case === newD.case && oldD.replyText === newD.replyText;
+      for (const [label, lang, text] of DISAMBIG_FILLER_CASES) {
+        await checkAsync('equivalence: ' + label + ' - "' + text + '" gets no reply and does not burn a disambiguation attempt', async () => {
+          const [newPhone] = phonePair();
+          await whatsappAssistant.savePendingDisambiguation(newPhone, { candidates: DISAMBIG_CANDIDATES, lang, hadTypo: false, attempts: 1 });
+          const d = await whatsappAssistant.decideAutoReply({ phone: newPhone, name: 'Test', firstName: 'Test', text, isGroup: false, history: [] });
+          const stillPending = await whatsappAssistant.getPendingDisambiguation(newPhone);
+          await whatsappAssistant.clearPendingDisambiguation(newPhone);
+          return d.replyText === null && Boolean(stillPending) && stillPending.attempts === 1;
         });
       }
       // Live review round 3, item 2 - "disambiguation resolve" is
@@ -3286,6 +3292,171 @@ async function checkAsync(label, fn) {
       if (fsEquiv.existsSync(baselinePath)) fsEquiv.unlinkSync(baselinePath);
     } catch (err) { /* best effort */ }
   }
+
+  console.log('='.repeat(70));
+  console.log('LIVE REVIEW 2026-10-25 (Saurav +918777899838 / manager Tanmoy Mondal / CV sender +918637030300): replays the 9 reported cases against the real decision path');
+  console.log('='.repeat(70));
+  const SAURAV_PHONE = '910000000970';
+  const CV_SENDER_PHONE = '910000000971';
+  async function rawRedis9() { return getRawRedisClient(); }
+
+  // --- Item 9: tolerant Yes/No + escalation card (Haaa/Ami bolechi/etc.) ---
+  check('isYesAnswer tolerates a repeated-letter "Haaa" (3 a\'s) that the old exact-count regex missed', whatsappAssistant.isYesAnswer('Haaa'));
+  check('isYesAnswer accepts "Haa ami bolechi" (yes word + own-words confirmation)', whatsappAssistant.isYesAnswer('Haa ami bolechi'));
+  check('isYesAnswer accepts "Ami bolechilam" (own-words confirmation with no literal yes token)', whatsappAssistant.isYesAnswer('Ami bolechilam'));
+  check('isYesAnswer accepts "Hya bolechi"', whatsappAssistant.isYesAnswer('Hya bolechi'));
+  check('isYesAnswer accepts "Ji bolechi"', whatsappAssistant.isYesAnswer('Ji bolechi'));
+  check('isYesAnswer accepts "Thik ache"', whatsappAssistant.isYesAnswer('Thik ache'));
+  check('isYesAnswer accepts "Approved"', whatsappAssistant.isYesAnswer('Approved'));
+  check('isYesAnswer accepts plain "Yes"', whatsappAssistant.isYesAnswer('Yes'));
+  check('isNoAnswer accepts "Na"', whatsappAssistant.isNoAnswer('Na'));
+  check('isNoAnswer accepts "Naa"', whatsappAssistant.isNoAnswer('Naa'));
+  check('isNoAnswer accepts "Ami bolini"', whatsappAssistant.isNoAnswer('Ami bolini'));
+  check('isNoAnswer accepts "Not approved"', whatsappAssistant.isNoAnswer('Not approved'));
+  check('isNoAnswer accepts plain "No"', whatsappAssistant.isNoAnswer('No'));
+
+  await cleanupHrFlowArtifacts(SAURAV_PHONE, TANMOY_MONDAL_PHONE);
+  await checkAsync('item 9 setup: HR-note flow through to STEP 4 (manager messaged) for the replayed Saurav/Tanmoy case', async () => {
+    await whatsappAssistant.decideAutoReply({ phone: SAURAV_PHONE, name: 'Saurav', firstName: 'Saurav', text: 'Good morning Sir. Ajke amake duty korte bola hoyechhe. Tar poriborte onno din chhutti nite bola hoyechhe.', isGroup: false, history: [] });
+    await whatsappAssistant.decideAutoReply({ phone: SAURAV_PHONE, name: 'Saurav', firstName: 'Saurav', text: 'Sir, apni Srirampur site-er Tanmoy Sir-ke jiggasa korte paren. Uni ajke duty korte bolechhen ar onno din chhutti nite bolechhen.', isGroup: false, history: [] });
+    const d3 = await whatsappAssistant.decideAutoReply({ phone: SAURAV_PHONE, name: 'Saurav', firstName: 'Saurav', text: 'Tanmoy Mondal', isGroup: false, history: [] });
+    const confirmations = (await whatsappAssistant.listAllHrConfirmations()).filter((c) => c.senderPhone === SAURAV_PHONE);
+    return d3.case === 'acknowledged' && confirmations.length === 1 && confirmations[0].status === 'awaiting_manager';
+  });
+  await checkAsync('item 9, OLD vs NEW: manager replying "Haaa" (3 a\'s) is now recognized as YES directly - previously this exact text failed the old exact-count regex and re-asked the identical question', async () => {
+    const d = await whatsappAssistant.decideAutoReply({ phone: TANMOY_MONDAL_PHONE, name: 'Tanmoy Mondal', firstName: 'Tanmoy', text: 'Haaa', isGroup: false, history: [] });
+    const confirmations = (await whatsappAssistant.listAllHrConfirmations()).filter((c) => c.senderPhone === SAURAV_PHONE);
+    const ok = d.case === 'acknowledged' && !d.replyText.includes('Ektu nishchit kore') && confirmations.length === 1 && confirmations[0].status === 'confirmed';
+    await cleanupHrFlowArtifacts(SAURAV_PHONE, TANMOY_MONDAL_PHONE);
+    return ok;
+  });
+  await checkAsync('item 9 escalation: after ONE unclear manager reply, SUBH thanks the manager (never asks a third time) and raises an owner card; the owner\'s "Confirmed" resolves the sender\'s outcome', async () => {
+    await whatsappAssistant.decideAutoReply({ phone: SAURAV_PHONE, name: 'Saurav', firstName: 'Saurav', text: 'Good morning Sir. Ajke amake duty korte bola hoyechhe. Tar poriborte onno din chhutti nite bola hoyechhe.', isGroup: false, history: [] });
+    await whatsappAssistant.decideAutoReply({ phone: SAURAV_PHONE, name: 'Saurav', firstName: 'Saurav', text: 'Sir, apni Srirampur site-er Tanmoy Sir-ke jiggasa korte paren. Uni ajke duty korte bolechhen ar onno din chhutti nite bolechhen.', isGroup: false, history: [] });
+    await whatsappAssistant.decideAutoReply({ phone: SAURAV_PHONE, name: 'Saurav', firstName: 'Saurav', text: 'Tanmoy Mondal', isGroup: false, history: [] });
+    const firstUnclear = await whatsappAssistant.decideAutoReply({ phone: TANMOY_MONDAL_PHONE, name: 'Tanmoy Mondal', firstName: 'Tanmoy', text: 'accha dekhchi', isGroup: false, history: [] });
+    const secondUnclear = await whatsappAssistant.decideAutoReply({ phone: TANMOY_MONDAL_PHONE, name: 'Tanmoy Mondal', firstName: 'Tanmoy', text: 'accha dekhchi abar', isGroup: false, history: [] });
+    const ambiguous = (await whatsappAssistant.listAllHrConfirmations()).find((c) => c.senderPhone === SAURAV_PHONE && c.status === 'ambiguous_owner_review');
+    const resolve = ambiguous ? await whatsappAssistant.resolveAmbiguousHrConfirmation(ambiguous.id, 'confirmed') : { ok: false };
+    // Every decideAutoReply call here passes history: [] (same convention
+    // as the STEP 4/5 tests above), so each one looks like a fresh
+    // conversation and the disclosure line prefixes every reply - the
+    // thanks line is checked with endsWith for exactly that reason.
+    const ok = Boolean(firstUnclear.replyText) && secondUnclear.replyText.endsWith('Dhonnobad, ami Subhodeep-ke janiye dicchi.') && Boolean(ambiguous) && resolve.ok;
+    await cleanupHrFlowArtifacts(SAURAV_PHONE, TANMOY_MONDAL_PHONE);
+    return ok;
+  });
+
+  // --- Items 3 & 6: number/name conflict + short non-repeating retry ---
+  const mockTanmoyFour = [
+    { name: 'Tanmoy Mondal', department: 'CIVIL (PLOT-B) STRUCTURE', designation: 'Assistant Manager', status: 'ACTIVE', doj: null },
+    { name: 'Tanmoy Majhi', department: 'POST SALES -SALES (SRM)', designation: 'Executive', status: 'ACTIVE', doj: null },
+    { name: 'Tanmoy Hazari', department: 'SECURITY DEPT.', designation: 'Guard', status: 'ACTIVE', doj: null },
+    { name: 'Tanmoy Sarkhel', department: 'CONTRACTS', designation: 'Manager', status: 'ACTIVE', doj: null }
+  ];
+  check('OLD vs NEW, item 3: "1.Tanmoy Mondal - Civil (Plot -B), Structure, Srirampur" (number + agreeing name + extra words) still resolves cleanly to candidate 1 - extra words never break the match', (whatsappAssistant.resolveDisambiguationReply(mockTanmoyFour, '1.Tanmoy Mondal - Civil (Plot -B), Structure, Srirampur') || {}).name === 'Tanmoy Mondal');
+  check('NEW, item 3: "2. Tanmoy Mondal" (number points at #2, name points at #1) is a genuine conflict - previously the number alone silently won', whatsappAssistant.resolveDisambiguationReply(mockTanmoyFour, '2. Tanmoy Mondal').conflict === true);
+  check('NEW, item 3: the conflict object names both the number\'s and the name\'s candidate so the clarifying question can name both', (() => {
+    const r = whatsappAssistant.resolveDisambiguationReply(mockTanmoyFour, '2. Tanmoy Mondal');
+    return r.numCandidate.name === 'Tanmoy Majhi' && r.nameCandidate.name === 'Tanmoy Mondal';
+  })());
+  check('NEW, item 3: "prothom ta" (ordinal, no name) still resolves cleanly - ordinals never trigger a false conflict', (whatsappAssistant.resolveDisambiguationReply(mockTanmoyFour, 'prothom ta') || {}).name === 'Tanmoy Mondal');
+  check('NEW, item 6: DISAMBIGUATION_SHORT_RETRY matches the user\'s own example wording exactly for 4 candidates', whatsappAssistant.DISAMBIGUATION_SHORT_RETRY.banglish('Tanmoy', 4) === 'Kon Tanmoy-er kotha bolchhen — 1, 2, 3 na 4?');
+  await cleanupHrFlowArtifacts(SAURAV_PHONE);
+  await checkAsync('OLD vs NEW end-to-end, items 2 & 6: Saurav\'s 2nd message in the Tanmoy chat ("Sir, ei month e amar kono chhutti nei", pure extra info) gets NO "bujhte parini" reply and does NOT burn a disambiguation attempt - previously this re-sent the full candidate list and counted as a failed guess', async () => {
+    await whatsappAssistant.decideAutoReply({ phone: SAURAV_PHONE, name: 'Saurav', firstName: 'Saurav', text: 'Good morning Sir. Ajke amake duty korte bola hoyechhe. Tar poriborte onno din chhutti nite bola hoyechhe.', isGroup: false, history: [] });
+    await whatsappAssistant.decideAutoReply({ phone: SAURAV_PHONE, name: 'Saurav', firstName: 'Saurav', text: 'Sir, apni Srirampur site-er Tanmoy Sir-ke jiggasa korte paren. Uni ajke duty korte bolechhen ar onno din chhutti nite bolechhen.', isGroup: false, history: [] });
+    const beforeAttempts = (await whatsappAssistant.getPendingHrNoteFlow(SAURAV_PHONE) || {}).attempts || 1;
+    const extraInfoReply = await whatsappAssistant.decideAutoReply({ phone: SAURAV_PHONE, name: 'Saurav', firstName: 'Saurav', text: 'Sir, ei month e amar kono chhutti nei', isGroup: false, history: [] });
+    const afterExtraInfo = await whatsappAssistant.getPendingHrNoteFlow(SAURAV_PHONE);
+    const firstRetry = await whatsappAssistant.decideAutoReply({ phone: SAURAV_PHONE, name: 'Saurav', firstName: 'Saurav', text: 'Tanmoy Ghosh-er kotha bolchhi', isGroup: false, history: [] });
+    const secondRetry = await whatsappAssistant.decideAutoReply({ phone: SAURAV_PHONE, name: 'Saurav', firstName: 'Saurav', text: 'Tanmoy Dutta', isGroup: false, history: [] });
+    const ok = extraInfoReply.replyText === null && Boolean(afterExtraInfo) && afterExtraInfo.attempts === beforeAttempts &&
+      firstRetry.replyText && firstRetry.replyText.includes('achen:') && // 1st retry: still the full list
+      secondRetry.replyText && !secondRetry.replyText.includes('achen:') && /— \d+(, \d+)* na \d+\?$/.test(secondRetry.replyText.trim()); // 2nd retry: short form
+    await cleanupHrFlowArtifacts(SAURAV_PHONE);
+    return ok;
+  });
+  check('NEW, item 2: hasOpenPendingQuestionState widens the burst-combine window to 60s specifically while a question is open', whatsappAssistant.BURST_QUIET_MS_PENDING === 60000);
+
+  // --- Item 4: closing messages get at most ONE short reply, never a back-and-forth ---
+  check('isClosingMessage recognizes "Thank you"', whatsappAssistant.isClosingMessage('Thank you'));
+  check('isClosingMessage recognizes "Thank you Sir 🙏"', whatsappAssistant.isClosingMessage('Thank you Sir 🙏'));
+  check('isClosingMessage recognizes "Ok"', whatsappAssistant.isClosingMessage('Ok'));
+  check('isClosingMessage recognizes "Ok Sir"', whatsappAssistant.isClosingMessage('Ok Sir'));
+  check('isClosingMessage recognizes "Thik ache"', whatsappAssistant.isClosingMessage('Thik ache'));
+  check('isClosingMessage recognizes "No Sir thank you"', whatsappAssistant.isClosingMessage('No Sir thank you'));
+  check('isClosingMessage does NOT misfire on a real question', !whatsappAssistant.isClosingMessage('Amar PF kobe pabo?'));
+  const CLOSING_TEST_PHONE = '910000000972';
+  await checkAsync('OLD vs NEW, item 4: after SUBH has already acknowledged a topic, "Thank you Sir" gets ONE short reply, then "🙏" and "No Sir Thank you 🙏" get NO further reply - previously each one got its own fresh AI-drafted reply, a back-and-forth of pleasantries', async () => {
+    await whatsappAssistant.appendConvoHistory(CLOSING_TEST_PHONE, 'out', 'Ami apnar bishoy-ta note kore nilam ar Subhodeep-ke janiye dicchi.');
+    const d1 = await whatsappAssistant.decideAutoReply({ phone: CLOSING_TEST_PHONE, name: 'Test', firstName: 'Test', text: 'Thank you Sir 🙏', isGroup: false, history: await whatsappAssistant.getConvoHistory(CLOSING_TEST_PHONE, 10) });
+    await whatsappAssistant.appendConvoHistory(CLOSING_TEST_PHONE, 'out', d1.replyText);
+    const d2 = await whatsappAssistant.decideAutoReply({ phone: CLOSING_TEST_PHONE, name: 'Test', firstName: 'Test', text: 'No Sir Thank you 🙏', isGroup: false, history: await whatsappAssistant.getConvoHistory(CLOSING_TEST_PHONE, 10) });
+    return Boolean(d1.replyText) && whatsappAssistant.isClosingAckReplyText(d1.replyText) && d2.replyText === null;
+  });
+
+  // --- Item 5: quoted/replied message context (gateway field UNCONFIRMED - defensive multi-shape extraction) ---
+  check('extractQuotedText reads a plain string quotedMsg field', whatsappAssistant.extractQuotedText({ content: { text: 'reply', quotedMsg: 'Sir, 7:40 a.m. ferry dhorte asubidha hochhe, 8 a.m. er ferry dhorle subidha hoy' } }) === 'Sir, 7:40 a.m. ferry dhorte asubidha hochhe, 8 a.m. er ferry dhorle subidha hoy');
+  check('extractQuotedText reads a {text} object quotedMsg field', whatsappAssistant.extractQuotedText({ content: { text: 'reply', quotedMsg: { text: 'the earlier message' } } }) === 'the earlier message');
+  check('extractQuotedText reads the generic contextInfo.quotedMessage shape', whatsappAssistant.extractQuotedText({ content: { text: 'reply', contextInfo: { quotedMessage: { conversation: 'the earlier message' } } } }) === 'the earlier message');
+  check('extractQuotedText returns null when nothing is quoted (most messages)', whatsappAssistant.extractQuotedText({ content: { text: 'plain message' } }) === null);
+  check('buildIncomingText appends the quoted text as a note after the sender\'s own words (never in front, so every ^-anchored matcher still works)', whatsappAssistant.buildIncomingText({ content: { text: 'Sir, apnake eta request korechhilam, apni approve korechhilen', quotedMsg: '8 a.m. er ferry dhorle subidha hoy' } }) === 'Sir, apnake eta request korechhilam, apni approve korechhilen\n\n(Replying to: "8 a.m. er ferry dhorle subidha hoy")');
+  check('buildIncomingText returns the plain text unchanged when there is nothing quoted', whatsappAssistant.buildIncomingText({ content: { text: 'plain message' } }) === 'plain message');
+
+  // --- Item 7: location/site hints narrow candidates, same as department ---
+  check('OLD vs NEW, item 7: a location-only hint ("Srirampur") now matches a candidate whose stored location is "Srirampur Site" - previously only department was ever checked, so this hint was silently ignored', whatsappAssistant.personHintMatches({ department: 'CIVIL (PLOT-B) STRUCTURE', location: 'Srirampur Site', designation: 'Assistant Manager' }, 'Srirampur'));
+  check('NEW, item 7: the same hint correctly does NOT match an unrelated candidate\'s department/location/designation', !whatsappAssistant.personHintMatches({ department: 'POST SALES -SALES (SRM)', location: 'Marketing-SRM', designation: 'Executive' }, 'Srirampur'));
+  check('NEW, item 7: a designation hint ("Clubhouse" as a site word embedded in a longer phrase) still falls back to false when it genuinely matches nothing on the candidate', !whatsappAssistant.personHintMatches({ department: 'CONTRACTS', location: 'HO-Sales Office', designation: 'Manager' }, 'Clubhouse Srirampur'));
+  check('NEW, item 7: department hints keep working exactly as before (no regression from adding location/designation)', whatsappAssistant.personHintMatches({ department: 'SECURITY DEPT.', location: 'Some Other Site', designation: 'Guard' }, 'Security'));
+
+  // --- Item 1: CV/job-application messages and media-only messages always get acknowledged ---
+  check('looksLikeCvMessage recognizes the exact replayed CV text', whatsappAssistant.looksLikeCvMessage('Good morning, Sir. I have shared my CV for a suitable position in your company. Kindly review my CV and let me know if there is any suitable vacancy. Thank you, Sir.'));
+  check('looksLikeCvMessage does NOT misfire on an ordinary greeting', !whatsappAssistant.looksLikeCvMessage('Good morning Sir, kemon achen?'));
+  await checkAsync('OLD vs NEW, item 1: the exact replayed CV text now gets a polite, non-committal CV-received reply and is tagged cv_received (previously: classified as a template/no-reply-needed message and got NOTHING back)', async () => {
+    const d = await whatsappAssistant.decideAutoReply({ phone: CV_SENDER_PHONE, name: 'CV Sender', firstName: 'CV', text: 'Good morning, Sir. I have shared my CV for a suitable position in your company. Kindly review my CV and let me know if there is any suitable vacancy. Thank you, Sir.', isGroup: false, history: [] });
+    // The replayed text is English, so the reply is CV_RECEIVED_REPLY.english ("I've received your CV") - the Banglish wording in the user's own spec example is for a Banglish sender, not this one.
+    return d.case === 'cv_received' && Boolean(d.replyText) && d.replyText.includes("I've received your CV") && !/\b(job|position|vacancy)\b.*\b(within|by|soon|shortly)\b/i.test(d.replyText);
+  });
+  check('CV_RECEIVED_REPLY never promises a job or a timeline, in any language', Object.values(whatsappAssistant.CV_RECEIVED_REPLY).every((t) => !/\b(promise|guaranteed?|definitely|will\s+hire|will\s+get\s+(a\s+)?job)\b/i.test(t)));
+  check('MEDIA_ACK_REPLY exists for every language, for the never-silent-on-a-bare-file fix', ['banglish', 'hinglish', 'english'].every((l) => Boolean(whatsappAssistant.MEDIA_ACK_REPLY[l])));
+
+  // --- Item 8: WhatsApp edits are invisible to id-based dedup - resumed on restart ---
+  const EDIT_TEST_PHONE = '910000000973';
+  await checkAsync('setup: getStoredMessageText/storeMessageText round-trip for a message id', async () => {
+    await whatsappAssistant.storeMessageText(EDIT_TEST_PHONE, 555, 'original text');
+    const read = await whatsappAssistant.getStoredMessageText(EDIT_TEST_PHONE, 555);
+    return read === 'original text';
+  });
+  await checkAsync('NEW, item 8: resumeStuckPendingQuestionsOnStartup re-resolves a contact\'s pending disambiguation using the CURRENT text of their latest message when it has changed since last seen (simulating a WhatsApp edit the id-based poll could never notice on its own)', async () => {
+    const redis = await rawRedis9();
+    await redis.sadd('wa-known-contacts', EDIT_TEST_PHONE);
+    await whatsappAssistant.savePendingDisambiguation(EDIT_TEST_PHONE, { candidates: mockTanmoyFour, lang: 'banglish', hadTypo: false, attempts: 1 });
+    // The message must already be marked HANDLED (its pre-edit text was
+    // genuinely seen and processed once) - otherwise this would just be
+    // an ordinary new message, which belongs to the normal poll/catch-up
+    // path, never to the edit-resume path (see that function's own guard).
+    await whatsappAssistant.markMessageHandled(EDIT_TEST_PHONE, 9001, 'Sir, ektu confusion ache');
+    const originalListMessages = whatsapp.listMessages;
+    // Every OTHER known contact answers empty - never falls through to the
+    // real gateway (same pattern as INTERACTION CHECK 1 above), since
+    // resumeStuckPendingQuestionsOnStartup scans every known contact, not
+    // just this test's own fixture.
+    whatsapp.listMessages = async (contactId) => (contactId === EDIT_TEST_PHONE
+      ? [{ id: 9001, direction: 'incoming', type: 'text', content: { text: '1.Tanmoy Mondal - Civil (Plot -B), Structure' }, created_at: new Date().toISOString() }]
+      : []);
+    try {
+      const resumed = await whatsappAssistant.resumeStuckPendingQuestionsOnStartup();
+      const stillPending = await whatsappAssistant.getPendingDisambiguation(EDIT_TEST_PHONE);
+      return resumed >= 1 && stillPending === null;
+    } finally {
+      whatsapp.listMessages = originalListMessages;
+      await redis.srem('wa-known-contacts', EDIT_TEST_PHONE);
+      await redis.del('wa-handled-ids:' + EDIT_TEST_PHONE).catch(() => {});
+      await redis.del('wa-msg-text:' + EDIT_TEST_PHONE).catch(() => {});
+      await whatsappAssistant.clearPendingDisambiguation(EDIT_TEST_PHONE).catch(() => {});
+    }
+  });
 
   // Cleanup: owner-notifications - same del+rebuild-by-marker sweep as the
   // inbox-log cleanup below, filtering out this run's own tests' notices.

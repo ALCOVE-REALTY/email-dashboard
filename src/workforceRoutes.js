@@ -2114,6 +2114,24 @@ router.post('/hr-assistant/whatsapp-approval', async (req, res) => {
   }
 });
 
+// Owner's decision on a manager's unclear reply to an HR confirmation
+// (item 9's "Confirmed / Not confirmed / Ask again" card) - mirrors the
+// whatsapp-approval route's own shape exactly.
+router.post('/hr-assistant/whatsapp-hr-confirmation-resolve', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const { id, decision } = req.body || {};
+    if (!id || !['confirmed', 'declined', 'ask_again'].includes(decision)) {
+      return res.status(400).json({ error: 'id and decision ("confirmed", "declined" or "ask_again") are required' });
+    }
+    const result = await whatsappAssistant.resolveAmbiguousHrConfirmation(id, decision);
+    if (!result.ok) return res.status(400).json({ error: result.error });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.post('/hr-assistant/whatsapp-followup-done', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
   try {
