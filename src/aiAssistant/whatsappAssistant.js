@@ -1450,7 +1450,11 @@ function textMentionsCandidateName(text, candidateName) {
 function resolveDisambiguationReply(candidates, text) {
   const t = String(text || '').trim();
   let numCandidate = null;
-  const numMatch = t.match(/^(\d+)[.)]?\b/);
+  // 'm' flag - a burst-combined reply (extra info on one line, the real
+  // answer on the next, see combineBurstText) still has its leading
+  // number recognized even though it isn't at the very start of the
+  // whole blob.
+  const numMatch = t.match(/^(\d+)[.)]?\b/m);
   if (numMatch) {
     const idx = parseInt(numMatch[1], 10) - 1;
     if (idx >= 0 && idx < candidates.length) numCandidate = candidates[idx];
@@ -1496,6 +1500,109 @@ const DISAMBIGUATION_SHORT_RETRY = {
   hinglish: (queryName, n) => 'Kaunse ' + queryName + ' ki baat kar rahe hain — ' + joinNumbersNaturally(n, 'hinglish') + '?',
   english: (queryName, n) => 'Which ' + queryName + ' do you mean — ' + joinNumbersNaturally(n, 'english') + '?'
 };
+
+// ---------------- Extra info while a flow question is pending ----------------
+// Direct instruction (generalizes item 2): a message that adds real
+// information while a flow question is open is NEVER just silently noted
+// with no reply, and never treated as a failed guess either - it always
+// gets ONE reply, in the sender's language, built from a fixed noting
+// prefix plus exactly one of three tails depending on where the flow
+// stands right now:
+//   A) the pending question is STILL open -> prefix + a short reminder of
+//      that exact question (never the identical reminder twice in a row).
+//   B) this same message (or the burst it was combined into) ALSO answers
+//      the question -> prefix + "Ar " + the step's own normal next-text,
+//      lowercased at the join so it reads as one sentence.
+//   C) the sender's own part of the flow is already done and something
+//      else (e.g. a manager) is being waited on -> prefix + a short
+//      waiting-status line.
+// Deliberately the SAME prefix/mechanism for every step and every pending
+// kind (HR-note "who told you", disambiguation, awaiting-manager) - only
+// each step's own short reminder/next-text differs, so this is proven
+// general rather than hand-built per case.
+const EXTRA_INFO_NOTE_PREFIX = {
+  banglish: 'Ami apnar ei bishoy-ta-o note kore nilam, Subhodeep-ke janiye dicchi. ',
+  hinglish: 'Maine aapki yeh baat bhi note kar li hai, Subhodeep ko bata raha hoon. ',
+  english: "I've noted this as well, and I'll let Subhodeep know. "
+};
+// Case A - two rotating variants (never the identical reminder twice in a
+// row); indexed by how many pure-extra-info reminders this SAME pending
+// state has already sent.
+const EXTRA_INFO_PENDING_REMINDER_VARIANTS = {
+  banglish: [
+    (stepQuestion) => 'Ar apni ager proshno-r uttor ekhono denni — ' + stepQuestion + ' Uttor-ta dile ami apnake sahajyo korte parbo.',
+    (stepQuestion) => 'Ar ekhono uttor-ta pelam na — ' + stepQuestion
+  ],
+  hinglish: [
+    (stepQuestion) => 'Aur aapne pichhle sawaal ka jawaab abhi tak nahi diya — ' + stepQuestion + ' Jawaab dene par main aapki madad kar paunga.',
+    (stepQuestion) => 'Aur abhi tak jawaab nahi mila — ' + stepQuestion
+  ],
+  english: [
+    (stepQuestion) => "And you haven't answered my earlier question yet — " + stepQuestion + ' Once you do, I can help you further.',
+    (stepQuestion) => "And I still don't have an answer — " + stepQuestion
+  ]
+};
+function buildExtraInfoPendingReminder(lang, stepQuestion, reminderIndex) {
+  const variants = EXTRA_INFO_PENDING_REMINDER_VARIANTS[lang] || EXTRA_INFO_PENDING_REMINDER_VARIANTS.english;
+  const fn = variants[reminderIndex % variants.length];
+  return fn(stepQuestion);
+}
+// STEP 1's own question, short-form - the full HR_NOTE_ASK_WHO_INSTRUCTED
+// already opens with its own "I've noted this" line, which would double
+// up with EXTRA_INFO_NOTE_PREFIX, so this is a bare question only.
+const HR_NOTE_WHO_INSTRUCTED_SHORT = {
+  banglish: (actionPhrase) => 'ei ' + (actionPhrase || 'instruction-ta') + ' apnake ke diyechhen, tar naam-ta bolben?',
+  hinglish: (actionPhrase) => 'yeh ' + (actionPhrase || 'instruction') + ' aapko kisne diya, unka naam bata denge?',
+  english: (actionPhrase) => 'who gave you this ' + (actionPhrase || 'instruction') + '?'
+};
+// Case C - the sender's own part is done; something else is being waited
+// on (most commonly a manager's confirmation).
+const EXTRA_INFO_WAITING_STATUS = {
+  banglish: (waitingOnName) => 'Ar ' + waitingOnName + '-er confirmation-er opekkha korchhi, uttor pelei apnake janacchi.',
+  hinglish: (waitingOnName) => 'Aur ' + waitingOnName + ' ke confirmation ka wait kar raha hoon, jawaab milte hi aapko bata dunga.',
+  english: (waitingOnName) => "And I'm waiting for " + waitingOnName + "'s confirmation - I'll let you know as soon as I hear back."
+};
+const IDENTITY_LINE_LEADING_RE = /^(Ami SUBH, Subhodeep-er HR Assistant\.|Main SUBH hoon, Subhodeep ka HR Assistant\.|I'm SUBH, Subhodeep's HR Assistant\.)\s*/;
+function stripLeadingIdentityLine(text) {
+  return String(text || '').replace(IDENTITY_LINE_LEADING_RE, '');
+}
+function lowerFirst(s) {
+  return s ? s.charAt(0).toLowerCase() + s.slice(1) : s;
+}
+// Case B - wraps an already-built "next step" reply with the noting
+// prefix, joined naturally as one sentence ("...Ar amake sothik naam
+// diye...").
+const EXTRA_INFO_AND_CONNECTOR = { banglish: 'Ar ', hinglish: 'Aur ', english: 'And ' };
+function wrapWithExtraInfoNote(lang, replyText) {
+  if (!replyText) return replyText;
+  const prefix = EXTRA_INFO_NOTE_PREFIX[lang] || EXTRA_INFO_NOTE_PREFIX.english;
+  const connector = EXTRA_INFO_AND_CONNECTOR[lang] || EXTRA_INFO_AND_CONNECTOR.english;
+  return prefix + connector + lowerFirst(stripLeadingIdentityLine(replyText));
+}
+// Skips the extra-info model check for an already-minimal reply (just
+// the answer, nothing else to possibly note) - keeps the overwhelmingly
+// common clean-answer case ("1", "Tanmoy Mondal") free of an extra API
+// call, while anything longer still gets checked.
+function looksLikeMinimalAnswer(text) {
+  return String(text || '').trim().split(/\s+/).filter(Boolean).length <= 5;
+}
+// Case B, made deterministic for its own most common real cause: a
+// burst-combined turn (combineBurstText joins same-turn messages with
+// \n) that still resolves cleanly necessarily means some OTHER line in
+// the blob carried something besides the answer - this is detected
+// structurally instead of asking the model, so the "extra info and the
+// answer arrive in the same turn" case can never flip on model
+// non-determinism alone. A single-line compound message (e.g. one
+// sentence that both names someone AND adds detail) still goes through
+// the model check below, since there's no structural signal to go on.
+function extraInfoVerdictForBurstCombinedMatch(text) {
+  const lines = String(text || '').split('\n').map((l) => l.trim()).filter(Boolean);
+  if (lines.length < 2) return null;
+  return { isAnswerAttempt: true, hasExtraInfo: true, extraInfoNote: lines.slice(0, -1).join(' ').slice(0, 200) };
+}
+async function recordExtraInfoNote(phone, senderLabel, note, flowTag) {
+  await postOwnerNotification('📝 ' + senderLabel + ' (' + phone + ') added extra info while ' + flowTag + ' was open: "' + String(note || '').slice(0, 200) + '"').catch(() => {});
+}
 // A sender's reply that matches NEITHER a candidate nor a number/ordinal
 // gets re-asked, up to this many times total (the original question
 // counts as attempt 1) - after that, the disambiguation is abandoned
@@ -2148,8 +2255,16 @@ const { matchesWholeWordName } = employeeService;
 // live that a plain substring check on the raw strings missed an exact,
 // correct match purely over parentheses/punctuation. Strips everything
 // but letters/digits/spaces before comparing either direction.
+// "department"/"dept" is dropped as a bare word on both sides - a hint
+// phrased as "HR department" must still match a stored value of "HR
+// DEPT" (or bare "HR"), the same semantic hint said three different
+// ways. Found live (item 2's extractPersonReferenceTool schema growing
+// to include hasExtraInfo made the model phrase this hint more verbosely
+// - "HR" became "HR department" - which then failed to match "HR DEPT"
+// under the OLD word-for-word check; this makes the match robust to any
+// such phrasing, not just this one case).
 function normalizeForMatch(s) {
-  return String(s || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+  return String(s || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\bdept\b|\bdepartment\b/g, ' ').replace(/\s+/g, ' ').trim();
 }
 function departmentHintMatches(deptName, hint) {
   const normDept = normalizeForMatch(deptName);
@@ -2897,6 +3012,17 @@ async function listAllHrConfirmations() {
     return raws.map((raw) => { try { return typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (err) { return null; } }).filter(Boolean);
   } catch (err) { return []; }
 }
+// Direct instruction, case C - is this phone the ORIGINAL SENDER of an
+// HR-note matter that's still waiting on someone else (a manager's
+// confirmation, or the owner's own review of an unclear reply)? Used only
+// to decide whether a further message from them should get a "still
+// waiting" status line instead of falling through to the general
+// classifier with no memory that anything is open.
+async function findSenderAwaitingManagerConfirmation(phone) {
+  const all = await listAllHrConfirmations();
+  const normalized = whatsapp.normalizePhone(phone);
+  return all.find((c) => whatsapp.normalizePhone(c.senderPhone) === normalized && (c.status === 'awaiting_manager' || c.status === 'ambiguous_owner_review')) || null;
+}
 // One confirmation request per sender-topic (spec safety note) - a sender
 // with one already in flight doesn't get a second started until the first
 // resolves.
@@ -3278,20 +3404,40 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
       const conflictFn = DISAMBIGUATION_CONFLICT_QUESTION[lang] || DISAMBIGUATION_CONFLICT_QUESTION.english;
       return { case: 'acknowledged', replyText: conflictFn(resolved.numCandidate, resolved.nameCandidate), summaryForOwner: null, lang };
     }
-    if (resolved) {
-      return finalizeHrNoteThirdParty({ phone, senderName: name, lang, candidate: resolved, summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, createdAt: hrFlow.createdAt, history });
-    }
-    // Live review item 2 - a non-matching reply isn't automatically a
-    // failed guess; it might just be extra information. Ask before
-    // burning an attempt / re-asking.
+    // Direct instruction - extra info arriving alongside (case B) or
+    // instead of (case A) an answer is NEVER silently noted with no
+    // reply and never automatically a failed guess. Skipped only for an
+    // already-minimal reply (just the answer, nothing else) to avoid an
+    // API call on the overwhelmingly common clean-answer case.
     const queryNameForClassify = hrFlow.candidates[0].name.split(' ')[0];
-    const disambigVerdict = await classifyDisambiguationReply(text, {
-      candidates: hrFlow.candidates,
-      pendingQuestionLabel: 'which ' + queryNameForClassify + ' do you mean'
-    }).catch(() => ({ isAnswerAttempt: true }));
-    if (!disambigVerdict.isAnswerAttempt) {
-      await postOwnerNotification(name + ' (' + phone + ') added info while SUBH waited to know which ' + queryNameForClassify + ' they meant: "' + text.slice(0, 200) + '"');
-      return { case: 'acknowledged', replyText: null, summaryForOwner: null, lang };
+    const skipExtraInfoCheck = resolved && looksLikeMinimalAnswer(text);
+    const burstVerdict = resolved && !skipExtraInfoCheck && extraInfoVerdictForBurstCombinedMatch(text);
+    const disambigVerdict = burstVerdict
+      ? burstVerdict
+      : skipExtraInfoCheck
+        ? { isAnswerAttempt: true, hasExtraInfo: false, extraInfoNote: null }
+        : await classifyDisambiguationReply(text, {
+            candidates: hrFlow.candidates,
+            pendingQuestionLabel: 'which ' + queryNameForClassify + ' do you mean'
+          }).catch(() => ({ isAnswerAttempt: true, hasExtraInfo: false, extraInfoNote: null }));
+    if (disambigVerdict.hasExtraInfo) {
+      await recordExtraInfoNote(phone, name, disambigVerdict.extraInfoNote || text, 'the "which ' + queryNameForClassify + '" question');
+    }
+    if (resolved) {
+      const finalized = await finalizeHrNoteThirdParty({ phone, senderName: name, lang, candidate: resolved, summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, createdAt: hrFlow.createdAt, history });
+      // Case B.
+      if (disambigVerdict.hasExtraInfo && finalized && finalized.replyText) {
+        return Object.assign({}, finalized, { replyText: wrapWithExtraInfoNote(lang, finalized.replyText) });
+      }
+      return finalized;
+    }
+    if (disambigVerdict.hasExtraInfo && !disambigVerdict.isAnswerAttempt) {
+      // Case A - pure extra info, the pending question is still open.
+      const reminderCount = hrFlow.extraInfoReminderCount || 0;
+      await savePendingHrNoteFlow(phone, Object.assign({}, hrFlow, { extraInfoReminderCount: reminderCount + 1 }));
+      const stepQuestion = (DISAMBIGUATION_SHORT_RETRY[lang] || DISAMBIGUATION_SHORT_RETRY.english)(queryNameForClassify, hrFlow.candidates.length);
+      const prefix = EXTRA_INFO_NOTE_PREFIX[lang] || EXTRA_INFO_NOTE_PREFIX.english;
+      return { case: 'acknowledged', replyText: prefix + buildExtraInfoPendingReminder(lang, stepQuestion, reminderCount), summaryForOwner: null, lang };
     }
     const attempts = hrFlow.attempts || 1;
     if (attempts < MAX_DISAMBIGUATION_ATTEMPTS) {
@@ -3309,6 +3455,7 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
         const shortFn = DISAMBIGUATION_SHORT_RETRY[lang] || DISAMBIGUATION_SHORT_RETRY.english;
         replyText = shortFn(queryName, hrFlow.candidates.length);
       }
+      if (disambigVerdict.hasExtraInfo) replyText = wrapWithExtraInfoNote(lang, replyText);
       return { case: 'acknowledged', replyText, summaryForOwner: null, lang };
     }
     await clearPendingHrNoteFlow(phone);
@@ -3365,12 +3512,29 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
   }
   // awaiting_name
   const askWhoQuestion = (HR_NOTE_ASK_WHO_INSTRUCTED[lang] || HR_NOTE_ASK_WHO_INSTRUCTED.english)(hrFlow.actionPhrase);
-  const { personName, hint, isAmbiguous } = await extractPersonReference(text, { pendingQuestionLabel: askWhoQuestion, history });
+  const { personName, hint, isAmbiguous, hasExtraInfo, extraInfoNote } = await extractPersonReference(text, { pendingQuestionLabel: askWhoQuestion, history });
   if (isAmbiguous) {
     return { case: 'acknowledged', replyText: HR_FLOW_CONTEXT_CLARIFY[lang] || HR_FLOW_CONTEXT_CLARIFY.english, summaryForOwner: null, lang };
   }
+  if (hasExtraInfo) {
+    await recordExtraInfoNote(phone, name, extraInfoNote || text, 'the "who told you" question');
+  }
   if (personName) {
-    return resolveHrNoteThirdParty({ phone, name, lang, personName, department: hint, summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, actionPhrase: hrFlow.actionPhrase, createdAt: hrFlow.createdAt, history });
+    const resolved = await resolveHrNoteThirdParty({ phone, name, lang, personName, department: hint, summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, actionPhrase: hrFlow.actionPhrase, createdAt: hrFlow.createdAt, history });
+    // Case B.
+    if (hasExtraInfo && resolved && resolved.replyText) {
+      return Object.assign({}, resolved, { replyText: wrapWithExtraInfoNote(lang, resolved.replyText) });
+    }
+    return resolved;
+  }
+  if (hasExtraInfo) {
+    // Case A - pure extra info, STEP 1's own question is still open; the
+    // flow is kept alive (never cleared) instead of being abandoned.
+    const reminderCount = hrFlow.extraInfoReminderCount || 0;
+    await savePendingHrNoteFlow(phone, Object.assign({}, hrFlow, { extraInfoReminderCount: reminderCount + 1 }));
+    const stepQuestion = (HR_NOTE_WHO_INSTRUCTED_SHORT[lang] || HR_NOTE_WHO_INSTRUCTED_SHORT.english)(hrFlow.actionPhrase);
+    const prefix = EXTRA_INFO_NOTE_PREFIX[lang] || EXTRA_INFO_NOTE_PREFIX.english;
+    return { case: 'acknowledged', replyText: prefix + buildExtraInfoPendingReminder(lang, stepQuestion, reminderCount), summaryForOwner: null, lang };
   }
   await clearPendingHrNoteFlow(phone);
   return null;
@@ -4964,7 +5128,9 @@ function extractPersonReferenceTool() {
           isAnswerToPendingQuestion: { type: 'boolean', description: 'true ONLY if this message is actually answering SUBH\'s pending question above. false for a message that itself asks a question, makes a different request, or raises an unrelated subject - even one that happens to mention a name (e.g. "Ayon HR k?" asking who Ayon in HR is, is NOT an answer to an unrelated pending question, even though it names "Ayon"). A greeting or politeness word mixed in with a clear answer (e.g. "Good morning, Subhadip HR") does NOT make this false - that is still an answer.' },
           personName: { type: 'string', description: 'The person\'s name exactly as given - first name alone is fine. Only set when isAnswerToPendingQuestion is true. Omit entirely otherwise, or if they genuinely named no one (e.g. they declined to say).' },
           hint: { type: 'string', description: 'A department/site/designation hint about that person, if one was given (e.g. "Srirampur site", "HR department"). Omit if none was mentioned.' },
-          isAmbiguous: { type: 'boolean', description: 'true ONLY if, after setting aside any greeting/filler, you genuinely cannot tell whether the message\'s actual content answers the pending question or raises something new - this should be RARE. A message that clearly contains a name/confirmation/decline, even alongside a greeting, is NOT ambiguous - set isAnswerToPendingQuestion instead. When true, SUBH will ask a short clarifying question instead of guessing either way.' }
+          isAmbiguous: { type: 'boolean', description: 'true ONLY if, after setting aside any greeting/filler, you genuinely cannot tell whether the message\'s actual content answers the pending question or raises something new - this should be RARE. A message that clearly contains a name/confirmation/decline, even alongside a greeting, is NOT ambiguous - set isAnswerToPendingQuestion instead. When true, SUBH will ask a short clarifying question instead of guessing either way.' },
+          hasExtraInfo: { type: 'boolean', description: 'true ONLY if the message adds a genuinely NEW fact for HR about the SAME ongoing matter (e.g. a new detail about the leave/duty/approval not already stated earlier) even though it does not answer the pending question. false if the message is a clean answer, a genuinely different/unrelated new topic, OR if it merely restates/elaborates on something already said (e.g. repeating or rephrasing the same instruction, or adding a location/department hint about the person being named) - routine detail that naturally belongs with naming the person is NOT "extra info" on its own.' },
+          extraInfoNote: { type: 'string', description: 'A short, neutral one-sentence summary (in English) of that extra information, for an internal HR note. Omit entirely if hasExtraInfo is false.' }
         },
         required: ['isAnswerToPendingQuestion']
       }
@@ -4983,7 +5149,7 @@ function extractPersonReferenceTool() {
 // and quietly closes the flow, which is the safe side to fail toward.
 async function extractPersonReference(text, context) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
-  const fallback = { personName: null, hint: null, isAnswerToPendingQuestion: false, isAmbiguous: false };
+  const fallback = { personName: null, hint: null, isAnswerToPendingQuestion: false, isAmbiguous: false, hasExtraInfo: false, extraInfoNote: null };
   if (!apiKey || !DRAFT_MODEL) return fallback;
   const toolDef = extractPersonReferenceTool().function;
   const pendingQuestionLabel = (context && context.pendingQuestionLabel) || 'who gave them this instruction';
@@ -4995,7 +5161,9 @@ async function extractPersonReference(text, context) {
     personName: (input.isAnswerToPendingQuestion && input.personName) || null,
     hint: (input.isAnswerToPendingQuestion && input.hint) || null,
     isAnswerToPendingQuestion: Boolean(input.isAnswerToPendingQuestion),
-    isAmbiguous: Boolean(input.isAmbiguous)
+    isAmbiguous: Boolean(input.isAmbiguous),
+    hasExtraInfo: Boolean(input.hasExtraInfo),
+    extraInfoNote: (input.hasExtraInfo && input.extraInfoNote) || null
   };
 }
 
@@ -5017,26 +5185,65 @@ function classifyDisambiguationReplyTool() {
     type: 'function',
     function: {
       name: 'classify_disambiguation_reply',
-      description: 'SUBH asked the sender to pick which of several candidates (named in the system prompt) they mean. Decide whether this new message is an ATTEMPT to answer that question (naming/numbering one of the candidates, even if it doesn\'t clearly match any of them), or whether it is unrelated information/a new topic the sender is adding instead - e.g. extra context about their own situation that doesn\'t try to pick anyone. A message that itself raises a new subject or gives extra detail about something else entirely, without trying to identify which candidate, is NOT an answer attempt.',
+      description: 'SUBH asked the sender to pick which of several candidates (named in the system prompt) they mean. Decide whether this new message is an ATTEMPT to answer that question (naming/numbering one of the candidates, even if it doesn\'t clearly match any of them), AND separately whether it ALSO contains real information worth noting for HR (e.g. details about the sender\'s own leave/duty/approval situation) beyond just trying to pick a candidate - these are independent: a message can be an answer attempt with no extra info, pure extra info with no attempt, both at once, or neither.',
       parameters: {
         type: 'object',
         properties: {
-          isAnswerAttempt: { type: 'boolean', description: 'true if the sender is trying to pick/name one of the listed candidates (even if unclear which one). false if the message is unrelated information or a new topic that doesn\'t try to answer at all.' }
+          isAnswerAttempt: { type: 'boolean', description: 'true if the sender is trying to pick/name one of the listed candidates (even if unclear which one). false if the message is unrelated information or a new topic that doesn\'t try to answer at all.' },
+          hasExtraInfo: { type: 'boolean', description: 'true ONLY if the message ALSO adds a genuinely NEW fact relevant to the SAME matter being discussed, beyond just trying to answer which candidate (e.g. a new detail about the sender\'s own leave/duty/approval situation not already stated earlier). false if the message is ONLY an attempt to answer (just a number/name/ordinal) with nothing else worth noting, if it merely restates/elaborates on something already said, or if it raises a different, unrelated HR matter of its own - that should be free to start its own new flow, not be folded into this one.' },
+          extraInfoNote: { type: 'string', description: 'A short, neutral one-sentence summary (in English) of the extra information, for an internal HR note. Omit entirely if hasExtraInfo is false.' }
         },
-        required: ['isAnswerAttempt']
+        required: ['isAnswerAttempt', 'hasExtraInfo']
       }
     }
   };
 }
 async function classifyDisambiguationReply(text, context) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey || !DRAFT_MODEL) return { isAnswerAttempt: true };
+  if (!apiKey || !DRAFT_MODEL) return { isAnswerAttempt: true, hasExtraInfo: false, extraInfoNote: null };
   const toolDef = classifyDisambiguationReplyTool().function;
   const candidateLabel = ((context && context.candidates) || []).map((c, i) => (i + 1) + ') ' + c.name).join(', ');
   const systemPrompt = 'SUBH asked: "' + ((context && context.pendingQuestionLabel) || 'which one do you mean') + '" - the candidates are: ' + candidateLabel + '.';
   const input = await callClaudeForcedTool(apiKey, DRAFT_MODEL, [{ role: 'system', content: systemPrompt }, { role: 'user', content: text }], toolDef.name, toolDef).catch(() => null);
-  if (!input) return { isAnswerAttempt: true };
-  return { isAnswerAttempt: input.isAnswerAttempt !== false };
+  if (!input) return { isAnswerAttempt: true, hasExtraInfo: false, extraInfoNote: null };
+  return {
+    isAnswerAttempt: input.isAnswerAttempt !== false,
+    hasExtraInfo: Boolean(input.hasExtraInfo),
+    extraInfoNote: (input.hasExtraInfo && input.extraInfoNote) || null
+  };
+}
+
+// Direct instruction, case C - generic version of the same extra-info
+// judgment above, for when there's no "pending question" to weigh an
+// answer attempt against at all (the sender's own part of the flow is
+// done; something else is being waited on). Fails CLOSED (hasExtraInfo:
+// false) on any API error - the safe side here is to say nothing new
+// rather than fabricate an HR note from a failed classification.
+function classifyExtraInfoOnlyTool() {
+  return {
+    type: 'function',
+    function: {
+      name: 'classify_extra_info_only',
+      description: 'Decide whether this message adds real information worth noting about the SAME ongoing matter described in the system prompt (e.g. more detail about the same leave/duty/approval, a correction, a related fact) - as opposed to a closing remark, small talk, or a message raising a genuinely NEW, separate HR matter of its own (which should be handled as its own new request, not folded into this one).',
+      parameters: {
+        type: 'object',
+        properties: {
+          hasExtraInfo: { type: 'boolean', description: 'true ONLY if the message adds real information about the SAME matter already being waited on. false for closing remarks, small talk, AND for a message that raises a different, unrelated HR matter of its own - that should be free to start its own new flow, not be swallowed as a note on this one.' },
+          extraInfoNote: { type: 'string', description: 'A short, neutral one-sentence summary (in English) of that information. Omit entirely if hasExtraInfo is false.' }
+        },
+        required: ['hasExtraInfo']
+      }
+    }
+  };
+}
+async function classifyExtraInfoOnly(text, context) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey || !DRAFT_MODEL) return { hasExtraInfo: false, extraInfoNote: null };
+  const toolDef = classifyExtraInfoOnlyTool().function;
+  const systemPrompt = 'SUBH (an HR WhatsApp assistant) already has an open HR matter for this sender: "' + ((context && context.topicLabel) || 'an ongoing matter') + '".';
+  const input = await callClaudeForcedTool(apiKey, DRAFT_MODEL, [{ role: 'system', content: systemPrompt }, { role: 'user', content: text }], toolDef.name, toolDef).catch(() => null);
+  if (!input) return { hasExtraInfo: false, extraInfoNote: null };
+  return { hasExtraInfo: Boolean(input.hasExtraInfo), extraInfoNote: (input.hasExtraInfo && input.extraInfoNote) || null };
 }
 
 function classifyTool() {
@@ -5936,31 +6143,49 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
         const conflictFn = DISAMBIGUATION_CONFLICT_QUESTION[pendingDisambig.lang] || DISAMBIGUATION_CONFLICT_QUESTION.english;
         return { case: 'acknowledged', replyText: conflictFn(resolved.numCandidate, resolved.nameCandidate), summaryForOwner: null, lang: pendingDisambig.lang };
       }
+      // Direct instruction - see the HR-note flow's own identical comment
+      // above (continueHrNoteFlow) for the full case A/B/C rationale.
+      const queryNameForClassify = pendingDisambig.candidates[0].name.split(' ')[0];
+      const skipExtraInfoCheck = resolved && looksLikeMinimalAnswer(text);
+      const burstVerdict = resolved && !skipExtraInfoCheck && extraInfoVerdictForBurstCombinedMatch(text);
+      const disambigVerdict = burstVerdict
+        ? burstVerdict
+        : skipExtraInfoCheck
+          ? { isAnswerAttempt: true, hasExtraInfo: false, extraInfoNote: null }
+          : await classifyDisambiguationReply(text, {
+              candidates: pendingDisambig.candidates,
+              pendingQuestionLabel: 'which ' + queryNameForClassify + ' do you mean'
+            }).catch(() => ({ isAnswerAttempt: true, hasExtraInfo: false, extraInfoNote: null }));
+      if (disambigVerdict.hasExtraInfo) {
+        await recordExtraInfoNote(phone, senderLabel, disambigVerdict.extraInfoNote || text, 'the "which ' + queryNameForClassify + '" question');
+      }
       if (resolved) {
         await clearPendingDisambiguation(phone);
+        let finalized;
         if (pendingDisambig.pendingField === 'contact_number') {
           await queuePersonContactApproval({ phone, requesterLabel: senderLabel, candidate: resolved, lang: pendingDisambig.lang, hadTypo: pendingDisambig.hadTypo });
-          return { case: 'data_holding', replyText: dataRequestHoldingReply(pendingDisambig.lang, history, new Date()), summaryForOwner: null };
-        }
-        if (pendingDisambig.pendingField === 'other_field') {
+          finalized = { case: 'data_holding', replyText: dataRequestHoldingReply(pendingDisambig.lang, history, new Date()), summaryForOwner: null };
+        } else if (pendingDisambig.pendingField === 'other_field') {
           const fieldAlias = resolveApprovalFieldAliasByKey(pendingDisambig.fieldAliasKey);
           if (fieldAlias) await queuePersonFieldApproval({ phone, requesterLabel: senderLabel, candidate: resolved, lang: pendingDisambig.lang, hadTypo: pendingDisambig.hadTypo, fieldAlias });
-          return { case: 'data_holding', replyText: dataRequestHoldingReply(pendingDisambig.lang, history, new Date()), summaryForOwner: null };
+          finalized = { case: 'data_holding', replyText: dataRequestHoldingReply(pendingDisambig.lang, history, new Date()), summaryForOwner: null };
+        } else {
+          await postOwnerNotification(senderLabel + ' (' + phone + ') "' + resolved.name + '" baeche niyeche - general details pathano holo, approval lage ni.');
+          finalized = { case: 'acknowledged', replyText: buildGeneralDetailsReply(resolved, pendingDisambig.lang, pendingDisambig.hadTypo, new Date()), summaryForOwner: null, lang: pendingDisambig.lang };
         }
-        await postOwnerNotification(senderLabel + ' (' + phone + ') "' + resolved.name + '" baeche niyeche - general details pathano holo, approval lage ni.');
-        return { case: 'acknowledged', replyText: buildGeneralDetailsReply(resolved, pendingDisambig.lang, pendingDisambig.hadTypo, new Date()), summaryForOwner: null, lang: pendingDisambig.lang };
+        // Case B.
+        if (disambigVerdict.hasExtraInfo && finalized.replyText) {
+          return Object.assign({}, finalized, { replyText: wrapWithExtraInfoNote(pendingDisambig.lang, finalized.replyText) });
+        }
+        return finalized;
       }
-      // Live review item 2 - a non-matching reply isn't automatically a
-      // failed guess; it might just be extra information. Ask before
-      // burning an attempt / re-asking.
-      const queryNameForClassify = pendingDisambig.candidates[0].name.split(' ')[0];
-      const disambigVerdict = await classifyDisambiguationReply(text, {
-        candidates: pendingDisambig.candidates,
-        pendingQuestionLabel: 'which ' + queryNameForClassify + ' do you mean'
-      }).catch(() => ({ isAnswerAttempt: true }));
-      if (!disambigVerdict.isAnswerAttempt) {
-        await postOwnerNotification(senderLabel + ' (' + phone + ') added info while SUBH waited to know which ' + queryNameForClassify + ' they meant: "' + text.slice(0, 200) + '"');
-        return { case: 'acknowledged', replyText: null, summaryForOwner: null, lang: pendingDisambig.lang };
+      if (disambigVerdict.hasExtraInfo && !disambigVerdict.isAnswerAttempt) {
+        // Case A - pure extra info, the pending question is still open.
+        const reminderCount = pendingDisambig.extraInfoReminderCount || 0;
+        await savePendingDisambiguation(phone, Object.assign({}, pendingDisambig, { extraInfoReminderCount: reminderCount + 1 }));
+        const stepQuestion = (DISAMBIGUATION_SHORT_RETRY[pendingDisambig.lang] || DISAMBIGUATION_SHORT_RETRY.english)(queryNameForClassify, pendingDisambig.candidates.length);
+        const prefix = EXTRA_INFO_NOTE_PREFIX[pendingDisambig.lang] || EXTRA_INFO_NOTE_PREFIX.english;
+        return { case: 'acknowledged', replyText: prefix + buildExtraInfoPendingReminder(pendingDisambig.lang, stepQuestion, reminderCount), summaryForOwner: null, lang: pendingDisambig.lang };
       }
       const attempts = pendingDisambig.attempts || 1;
       if (attempts < MAX_DISAMBIGUATION_ATTEMPTS) {
@@ -5980,12 +6205,42 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
           const shortFn = DISAMBIGUATION_SHORT_RETRY[lang] || DISAMBIGUATION_SHORT_RETRY.english;
           replyText = shortFn(queryName, pendingDisambig.candidates.length);
         }
+        if (disambigVerdict.hasExtraInfo) replyText = wrapWithExtraInfoNote(lang, replyText);
         return { case: 'acknowledged', replyText, summaryForOwner: null, lang: pendingDisambig.lang };
       }
       // Gave up after repeated non-matching replies - abandon the
       // disambiguation and let this message through to the normal
       // pipeline as an ordinary new message, rather than re-ask forever.
       await clearPendingDisambiguation(phone);
+    }
+  }
+
+  // Direct instruction, case C - the sender's OWN part of an HR-note flow
+  // is already done (nothing above is pending for them any more) but
+  // something else - most commonly a manager's confirmation - is still
+  // being waited on. A further message from the SAME sender gets noted
+  // and answered with a short waiting-status line instead of falling
+  // through to the general classifier (which has no idea anything is
+  // still open) - but ONLY when it actually contains something worth
+  // noting; a plain "thank you"/"ok" still falls through normally (the
+  // closing-message handling right below this already covers that).
+  if (!isGroup && phone) {
+    const awaiting = await findSenderAwaitingManagerConfirmation(phone).catch(() => null);
+    // Bounded to a day - a genuinely stale confirmation (nudges exhausted,
+    // somehow never resolved) is far more likely to be unrelated to
+    // whatever the sender is saying now than a fresh one is; this keeps a
+    // brand-new, separate HR matter free to start its own flow instead of
+    // ever being folded into a long-forgotten one.
+    const awaitingIsRecent = awaiting && (Date.now() - (awaiting.createdAt || awaiting.originalMessageAt || 0)) < 24 * 60 * 60 * 1000;
+    if (awaiting && awaitingIsRecent && !isClosingMessage(text)) {
+      const verdict = await classifyExtraInfoOnly(text, { topicLabel: awaiting.topicLabel || awaiting.summary }).catch(() => ({ hasExtraInfo: false, extraInfoNote: null }));
+      if (verdict.hasExtraInfo) {
+        await recordExtraInfoNote(phone, senderLabel, verdict.extraInfoNote || text, 'waiting on ' + awaiting.thirdPartyName + '\'s confirmation');
+        const waitingLang = awaiting.lang || detectLang(text);
+        const prefix = EXTRA_INFO_NOTE_PREFIX[waitingLang] || EXTRA_INFO_NOTE_PREFIX.english;
+        const statusFn = EXTRA_INFO_WAITING_STATUS[waitingLang] || EXTRA_INFO_WAITING_STATUS.english;
+        return { case: 'acknowledged', replyText: prefix + statusFn(awaiting.thirdPartyName), summaryForOwner: null, lang: waitingLang };
+      }
     }
   }
 
@@ -6446,13 +6701,14 @@ const BURST_MAX_WAIT_MS = 15000;
 // already waiting on them is the common case this is meant to catch.
 const BURST_QUIET_MS_PENDING = 60000;
 async function hasOpenPendingQuestionState(contactId) {
-  const [nameConfirm, disambig, hrFlow, hrConfirmations] = await Promise.all([
+  const [nameConfirm, disambig, hrFlow, hrConfirmations, senderAwaiting] = await Promise.all([
     getPendingNameConfirm(contactId).catch(() => null),
     getPendingDisambiguation(contactId).catch(() => null),
     getPendingHrNoteFlow(contactId).catch(() => null),
-    listPendingHrConfirmationsForPhone(contactId).catch(() => [])
+    listPendingHrConfirmationsForPhone(contactId).catch(() => []),
+    findSenderAwaitingManagerConfirmation(contactId).catch(() => null)
   ]);
-  return Boolean(nameConfirm || disambig || hrFlow || (hrConfirmations && hrConfirmations.length));
+  return Boolean(nameConfirm || disambig || hrFlow || (hrConfirmations && hrConfirmations.length) || senderAwaiting);
 }
 // A bare "?"/"??"/"hello?" etc. right after a request is a NUDGE on that
 // request, never a new request of its own - dropped from the combined

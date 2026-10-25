@@ -3101,30 +3101,28 @@ async function checkAsync(label, fn) {
         { name: 'Ayan Biswas', department: 'CIVIL', designation: 'JR ENGINEER', doj: new Date('2022-01-01').toISOString() },
         { name: 'Ayan Das', department: 'HR', designation: 'EXECUTIVE', doj: new Date('2021-06-01').toISOString() }
       ];
-      // Live review item 2 - INTENTIONALLY no longer byte-identical to the
-      // 4a8dd65 baseline: "Accha thik ache"/"ok sure"/"theek hai bhai" are
-      // pure acknowledgement filler, not an attempt to name either
-      // candidate - the baseline always burned a retry and re-sent the
-      // full list for these; the fix now recognizes them as NOT an answer
-      // attempt at all (extra info has nothing to do with picking a
-      // candidate) and stays silent without burning an attempt, exactly
-      // per the user's own live review item 2 spec. Tested against the NEW
-      // canonical behavior directly, not diffed against the old module -
-      // this now makes a real (cheap, single-tool-call) API call rather
-      // than being purely deterministic.
+      // Live review item 2 (latest revision) - "Accha thik ache"/"ok
+      // sure"/"theek hai bhai" are pure acknowledgement filler with
+      // NOTHING worth noting for HR and no attempt to name either
+      // candidate - this is neither case A/B/C (which all require real
+      // extra info) nor a genuine guess, so it falls through to the
+      // ORIGINAL, UNCHANGED retry behavior (full candidate list, attempt
+      // burned) - exactly the 4a8dd65 baseline. Verified live against the
+      // real model (not asserted blind) that these 3 inputs classify as
+      // hasExtraInfo:false, isAnswerAttempt:false.
       const DISAMBIG_FILLER_CASES = [
-        ['disambiguation filler, not an attempt (banglish)', 'banglish', 'Accha thik ache'],
-        ['disambiguation filler, not an attempt (english)', 'english', 'ok sure'],
-        ['disambiguation filler, not an attempt (hinglish)', 'hinglish', 'theek hai bhai']
+        ['disambiguation filler, nothing to note (banglish)', 'banglish', 'Accha thik ache'],
+        ['disambiguation filler, nothing to note (english)', 'english', 'ok sure'],
+        ['disambiguation filler, nothing to note (hinglish)', 'hinglish', 'theek hai bhai']
       ];
       for (const [label, lang, text] of DISAMBIG_FILLER_CASES) {
-        await checkAsync('equivalence: ' + label + ' - "' + text + '" gets no reply and does not burn a disambiguation attempt', async () => {
+        await checkAsync('equivalence: ' + label + ' - "' + text + '" gets the normal full-list retry (unchanged from baseline) since there is nothing to note', async () => {
           const [newPhone] = phonePair();
           await whatsappAssistant.savePendingDisambiguation(newPhone, { candidates: DISAMBIG_CANDIDATES, lang, hadTypo: false, attempts: 1 });
           const d = await whatsappAssistant.decideAutoReply({ phone: newPhone, name: 'Test', firstName: 'Test', text, isGroup: false, history: [] });
           const stillPending = await whatsappAssistant.getPendingDisambiguation(newPhone);
           await whatsappAssistant.clearPendingDisambiguation(newPhone);
-          return d.replyText === null && Boolean(stillPending) && stillPending.attempts === 1;
+          return Boolean(d.replyText) && d.replyText.includes('Ayan Biswas') && d.replyText.includes('Ayan Das') && Boolean(stillPending) && stillPending.attempts === 2;
         });
       }
       // Live review round 3, item 2 - "disambiguation resolve" is
@@ -3363,21 +3361,96 @@ async function checkAsync(label, fn) {
   check('NEW, item 3: "prothom ta" (ordinal, no name) still resolves cleanly - ordinals never trigger a false conflict', (whatsappAssistant.resolveDisambiguationReply(mockTanmoyFour, 'prothom ta') || {}).name === 'Tanmoy Mondal');
   check('NEW, item 6: DISAMBIGUATION_SHORT_RETRY matches the user\'s own example wording exactly for 4 candidates', whatsappAssistant.DISAMBIGUATION_SHORT_RETRY.banglish('Tanmoy', 4) === 'Kon Tanmoy-er kotha bolchhen — 1, 2, 3 na 4?');
   await cleanupHrFlowArtifacts(SAURAV_PHONE);
-  await checkAsync('OLD vs NEW end-to-end, items 2 & 6: Saurav\'s 2nd message in the Tanmoy chat ("Sir, ei month e amar kono chhutti nei", pure extra info) gets NO "bujhte parini" reply and does NOT burn a disambiguation attempt - previously this re-sent the full candidate list and counted as a failed guess', async () => {
+  await checkAsync('item 2 (unchanged slice): a reply that is neither an attempt nor extra info (names someone who isn\'t a candidate) still gets the normal full-list-then-short-list retry, exactly as before', async () => {
     await whatsappAssistant.decideAutoReply({ phone: SAURAV_PHONE, name: 'Saurav', firstName: 'Saurav', text: 'Good morning Sir. Ajke amake duty korte bola hoyechhe. Tar poriborte onno din chhutti nite bola hoyechhe.', isGroup: false, history: [] });
     await whatsappAssistant.decideAutoReply({ phone: SAURAV_PHONE, name: 'Saurav', firstName: 'Saurav', text: 'Sir, apni Srirampur site-er Tanmoy Sir-ke jiggasa korte paren. Uni ajke duty korte bolechhen ar onno din chhutti nite bolechhen.', isGroup: false, history: [] });
-    const beforeAttempts = (await whatsappAssistant.getPendingHrNoteFlow(SAURAV_PHONE) || {}).attempts || 1;
-    const extraInfoReply = await whatsappAssistant.decideAutoReply({ phone: SAURAV_PHONE, name: 'Saurav', firstName: 'Saurav', text: 'Sir, ei month e amar kono chhutti nei', isGroup: false, history: [] });
-    const afterExtraInfo = await whatsappAssistant.getPendingHrNoteFlow(SAURAV_PHONE);
     const firstRetry = await whatsappAssistant.decideAutoReply({ phone: SAURAV_PHONE, name: 'Saurav', firstName: 'Saurav', text: 'Tanmoy Ghosh-er kotha bolchhi', isGroup: false, history: [] });
     const secondRetry = await whatsappAssistant.decideAutoReply({ phone: SAURAV_PHONE, name: 'Saurav', firstName: 'Saurav', text: 'Tanmoy Dutta', isGroup: false, history: [] });
-    const ok = extraInfoReply.replyText === null && Boolean(afterExtraInfo) && afterExtraInfo.attempts === beforeAttempts &&
-      firstRetry.replyText && firstRetry.replyText.includes('achen:') && // 1st retry: still the full list
+    const ok = firstRetry.replyText && firstRetry.replyText.includes('achen:') && // 1st retry: still the full list
       secondRetry.replyText && !secondRetry.replyText.includes('achen:') && /— \d+(, \d+)* na \d+\?$/.test(secondRetry.replyText.trim()); // 2nd retry: short form
     await cleanupHrFlowArtifacts(SAURAV_PHONE);
     return ok;
   });
   check('NEW, item 2: hasOpenPendingQuestionState widens the burst-combine window to 60s specifically while a question is open', whatsappAssistant.BURST_QUIET_MS_PENDING === 60000);
+
+  console.log('='.repeat(70));
+  console.log('DIRECT INSTRUCTION (replaces "no reply" for extra info during an open flow): noting + case A (still unanswered) / B (answer in the same turn) / C (flow moved on, waiting on someone else) - replayed with Saurav/Tanmoy, plus a different sender/manager/step to prove it generalizes');
+  console.log('='.repeat(70));
+  await cleanupHrFlowArtifacts(SAURAV_PHONE, TANMOY_MONDAL_PHONE);
+  await checkAsync('CASE A, OLD vs NEW: Saurav\'s "Sir, ei month e amar kono chhutti nei" while the disambiguation question is still open now gets a noting reply + a short reminder of that exact question - previously silence (and before that, a wrong "bujhte parini" full-list resend)', async () => {
+    await whatsappAssistant.decideAutoReply({ phone: SAURAV_PHONE, name: 'Saurav', firstName: 'Saurav', text: 'Good morning Sir. Ajke amake duty korte bola hoyechhe. Tar poriborte onno din chhutti nite bola hoyechhe.', isGroup: false, history: [] });
+    await whatsappAssistant.decideAutoReply({ phone: SAURAV_PHONE, name: 'Saurav', firstName: 'Saurav', text: 'Sir, apni Srirampur site-er Tanmoy Sir-ke jiggasa korte paren. Uni ajke duty korte bolechhen ar onno din chhutti nite bolechhen.', isGroup: false, history: [] });
+    const beforeAttempts = (await whatsappAssistant.getPendingHrNoteFlow(SAURAV_PHONE) || {}).attempts;
+    const caseA = await whatsappAssistant.decideAutoReply({ phone: SAURAV_PHONE, name: 'Saurav', firstName: 'Saurav', text: 'Sir, ei month e amar kono chhutti nei', isGroup: false, history: [] });
+    const afterA = await whatsappAssistant.getPendingHrNoteFlow(SAURAV_PHONE);
+    return Boolean(caseA.replyText) && caseA.replyText.includes('note kore nilam') && caseA.replyText.includes('ager proshno-r uttor ekhono denni')
+      && Boolean(afterA) && afterA.step === 'awaiting_disambiguation_choice' && afterA.attempts === beforeAttempts && afterA.extraInfoReminderCount === 1;
+  });
+  await checkAsync('CASE A, several in a row never repeats the identical reminder: a SECOND pure-extra-info message gets a differently-worded short reminder, not the same sentence twice', async () => {
+    const caseA2 = await whatsappAssistant.decideAutoReply({ phone: SAURAV_PHONE, name: 'Saurav', firstName: 'Saurav', text: 'Ebong amar attendance-o thik ache ajke', isGroup: false, history: [] });
+    const afterA2 = await whatsappAssistant.getPendingHrNoteFlow(SAURAV_PHONE);
+    return Boolean(caseA2.replyText) && caseA2.replyText.includes('note kore nilam') && !caseA2.replyText.includes('ager proshno-r uttor ekhono denni')
+      && Boolean(afterA2) && afterA2.extraInfoReminderCount === 2;
+  });
+  await checkAsync('TIMING (after SUBH\'s reminder went out): the real answer then arriving ALONE as its own message gets only the normal STEP 3 text, never a second "note kore nilam" - the flow resolves and clears normally', async () => {
+    const d = await whatsappAssistant.decideAutoReply({ phone: SAURAV_PHONE, name: 'Saurav', firstName: 'Saurav', text: 'Tanmoy Mondal', isGroup: false, history: [] });
+    const pending = await whatsappAssistant.getPendingHrNoteFlow(SAURAV_PHONE);
+    const confirmations = (await whatsappAssistant.listAllHrConfirmations()).filter((c) => c.senderPhone === SAURAV_PHONE);
+    return Boolean(d.replyText) && !d.replyText.includes('note kore nilam') && d.replyText.includes('Tanmoy Mondal-er sathe kotha bole')
+      && pending === null && confirmations.length === 1 && confirmations[0].status === 'awaiting_manager';
+  });
+  await checkAsync('CASE C, OLD vs NEW: once Saurav\'s own part is done and Tanmoy\'s confirmation is pending, a further on-topic message from Saurav gets noted + a short waiting-status line, matching the user\'s own example sentence exactly - previously this fell through to the general classifier with no memory anything was open', async () => {
+    const caseC = await whatsappAssistant.decideAutoReply({ phone: SAURAV_PHONE, name: 'Saurav', firstName: 'Saurav', text: 'Sir, ei chutti-tar karon chhilo amar barite ekta poribarik onustan', isGroup: false, history: [] });
+    // Every call in this test passes history: [] on purpose (isolates the
+    // mechanism under test), which makes decideAutoReply treat it as a
+    // brand-new conversation and prepend the one-time identity line - a
+    // real, separate, unrelated feature, not part of case A/B/C itself.
+    return caseC.replyText === 'Ami SUBH, Subhodeep-er HR Assistant. Ami apnar ei bishoy-ta-o note kore nilam, Subhodeep-ke janiye dicchi. Ar Tanmoy Mondal-er confirmation-er opekkha korchhi, uttor pelei apnake janacchi.';
+  });
+  await checkAsync('CASE C never misfires on a closing message: "Thank you Sir" while still waiting on Tanmoy falls through to the normal closing-message handling instead', async () => {
+    const d = await whatsappAssistant.decideAutoReply({ phone: SAURAV_PHONE, name: 'Saurav', firstName: 'Saurav', text: 'Thank you Sir', isGroup: false, history: [] });
+    return !d.replyText || !d.replyText.includes('note kore nilam');
+  });
+  await checkAsync('cleanup: resolve the still-open confirmation so it does not linger as a real pending item', async () => {
+    await whatsappAssistant.decideAutoReply({ phone: TANMOY_MONDAL_PHONE, name: 'Tanmoy Mondal', firstName: 'Tanmoy', text: 'Haa', isGroup: false, history: [] });
+    await cleanupHrFlowArtifacts(SAURAV_PHONE, TANMOY_MONDAL_PHONE);
+    return true;
+  });
+
+  // CASE B (both timings) + generality: a different sender, a different
+  // step (STEP 1 "who told you", not disambiguation), proving the SAME
+  // shared mechanism applies everywhere, not a hand-built special case.
+  const PRIYA_PHONE = '910000000984';
+  await cleanupHrFlowArtifacts(PRIYA_PHONE, SUBHODEEP_KC_PHONE);
+  await checkAsync('CASE B, BEFORE-reply timing (burst-combined): extra info and the real answer arriving together in one turn get ONE reply - noting + the step\'s own normal next text, joined naturally - matching the user\'s own example sentence exactly', async () => {
+    await whatsappAssistant.decideAutoReply({ phone: SAURAV_PHONE, name: 'Saurav', firstName: 'Saurav', text: 'Good morning Sir. Ajke amake duty korte bola hoyechhe. Tar poriborte onno din chhutti nite bola hoyechhe.', isGroup: false, history: [] });
+    await whatsappAssistant.decideAutoReply({ phone: SAURAV_PHONE, name: 'Saurav', firstName: 'Saurav', text: 'Sir, apni Srirampur site-er Tanmoy Sir-ke jiggasa korte paren. Uni ajke duty korte bolechhen ar onno din chhutti nite bolechhen.', isGroup: false, history: [] });
+    // combineBurstText joins same-turn messages with \n - replicated here directly.
+    const combined = 'Sir, ei month e amar kono chhutti nei\n1.Tanmoy Mondal - Civil (Plot -B), Structure, Srirampur';
+    const caseB = await whatsappAssistant.decideAutoReply({ phone: SAURAV_PHONE, name: 'Saurav', firstName: 'Saurav', text: combined, isGroup: false, history: [] });
+    const pending = await whatsappAssistant.getPendingHrNoteFlow(SAURAV_PHONE);
+    // Same history: [] note as CASE C above - the identity line prefix is
+    // expected here too, not part of case A/B/C's own mechanism.
+    const ok = caseB.replyText === 'Ami SUBH, Subhodeep-er HR Assistant. Ami apnar ei bishoy-ta-o note kore nilam, Subhodeep-ke janiye dicchi. Ar amake sothik naam diye sahajyo korar jonno dhonnobad. Ami Tanmoy Mondal-er sathe kotha bole joto taratari somvob apnake janacchi.'
+      && pending === null;
+    await cleanupHrFlowArtifacts(SAURAV_PHONE, TANMOY_MONDAL_PHONE);
+    return ok;
+  });
+  await checkAsync('GENERALITY (different sender, different step - STEP 1 "who told you", not disambiguation): CASE A keeps the flow alive and reminds of STEP 1\'s own question, never the disambiguation wording - proves the mechanism is shared, not hand-built per step', async () => {
+    await whatsappAssistant.decideAutoReply({ phone: PRIYA_PHONE, name: 'Priya', firstName: 'Priya', text: 'Ajke amake half day nite bola hoyeche.', isGroup: false, history: [] });
+    const caseA = await whatsappAssistant.decideAutoReply({ phone: PRIYA_PHONE, name: 'Priya', firstName: 'Priya', text: 'Ei half day-ta amar bacha-r hospital appointment-er jonne proyojon chhilo', isGroup: false, history: [] });
+    const afterA = await whatsappAssistant.getPendingHrNoteFlow(PRIYA_PHONE);
+    const ok = Boolean(caseA.replyText) && caseA.replyText.includes('note kore nilam') && caseA.replyText.includes('ke diyechhen, tar naam-ta bolben')
+      && Boolean(afterA) && afterA.step === 'awaiting_name' && afterA.extraInfoReminderCount === 1;
+    return ok;
+  });
+  await checkAsync('GENERALITY, answer arriving after a reminder (same different-step case): the next message resolves STEP 1 normally, with no duplicate "note kore nilam" and no flow corruption', async () => {
+    const d = await whatsappAssistant.decideAutoReply({ phone: PRIYA_PHONE, name: 'Priya', firstName: 'Priya', text: 'Subhadip HR bolechen amake', isGroup: false, history: [] });
+    const pending = await whatsappAssistant.getPendingHrNoteFlow(PRIYA_PHONE);
+    const ok = Boolean(d.replyText) && !d.replyText.includes('note kore nilam') && d.replyText.includes('Subhodeep Kundu Chowdhury') && Boolean(pending) && pending.step === 'awaiting_confirm_yes_no';
+    await cleanupHrFlowArtifacts(PRIYA_PHONE, SUBHODEEP_KC_PHONE);
+    return ok;
+  });
 
   // --- Item 4: closing messages get at most ONE short reply, never a back-and-forth ---
   check('isClosingMessage recognizes "Thank you"', whatsappAssistant.isClosingMessage('Thank you'));
