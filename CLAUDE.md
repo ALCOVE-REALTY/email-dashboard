@@ -18,10 +18,13 @@ telling Subhodeep something is live.
 
 ## Locked scenarios (real-model scenario runner)
 
-Maintained in `scripts/check-whatsapp-scenarios.js` (or wherever the runner lives -
-keep this list in sync with the file). Each scenario replays a full conversation
-through the real decision path with the real Claude model (not mocked), 3 times,
-checking exact replies and side effects (STEP 4 send captured, not actually sent).
+Maintained in `scripts/check-whatsapp-scenarios.js` (run with
+`npm run check:whatsapp-scenarios`) - keep this list in sync with the file. Each
+scenario replays a full conversation through the real decision path with the real
+Claude model (not mocked), 3 times, checking exact replies and side effects (STEP 4
+send captured, not actually sent). A scenario marked `knownFailing` in the file (an
+explicitly deferred, already-reported issue) is tracked for visibility only and never
+blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
 
 - A: name-confirm yes ("Haa") → full STEP 3 + STEP 4, never the generic "noted, no
   third party" fallback.

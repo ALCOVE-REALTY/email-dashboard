@@ -8,6 +8,7 @@
     "start": "node server.js",
     "check:subh-language": "node scripts/check-subh-language.js",
     "check:whatsapp-engine": "node scripts/check-whatsapp-engine.js",
+    "check:whatsapp-scenarios": "node scripts/check-whatsapp-scenarios.js",
     "check:reminders": "node scripts/check-reminders.js",
     "check:automation": "node scripts/check-automation.js",
     "check:automation-nlu": "node scripts/check-automation-nlu.js"
