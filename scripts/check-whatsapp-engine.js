@@ -915,12 +915,18 @@ async function checkAsync(label, fn) {
     await cleanupHrFlowArtifacts(phone);
     return ok;
   });
-  await checkAsync('a genuinely unclear case (Banglish) falls back to the neutral "bishoy-ta" phrase, never guessing instruction vs approval', async () => {
+  await checkAsync('a genuinely unclear case (Banglish, no name at all) falls back to the neutral, TOPIC-SPECIFIC "duty-r bishoy-ta" phrase (live fix: was the bare placeholder "bishoy-ta" until the off-day-duty dual-verb question needed a topic-specific noun to slot in), never guessing instruction vs approval', async () => {
     const phone = '919100000519';
     await cleanupHrFlowArtifacts(phone);
-    await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Ajke amar duty-r bishoy-e kichu poriborton hoyeche, Tanmoy Sir ke janiyechi.', isGroup: false, history: [] });
+    // The original text here also named "Tanmoy Sir" - once the classifier
+    // was taught to pay closer attention to who-said-what (for the
+    // instruction-vs-approval fix), it started correctly picking that name
+    // up too, which is progress, not a regression - this test is about
+    // the UNCLEAR-KIND fallback specifically, so the name mention is
+    // dropped so the input is unambiguous about BOTH axes it's testing.
+    await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Ajke amar duty-r bishoy-e kichu poriborton hoyeche.', isGroup: false, history: [] });
     const pending = await whatsappAssistant.getPendingHrNoteFlow(phone);
-    const ok = Boolean(pending) && pending.actionPhrase === 'bishoy-ta';
+    const ok = Boolean(pending) && pending.actionKind === 'neutral' && pending.actionPhrase === 'duty-r bishoy-ta';
     await cleanupHrFlowArtifacts(phone);
     return ok;
   });
@@ -952,6 +958,169 @@ async function checkAsync(label, fn) {
     const d = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'I was told to do duty at the Srirampur site today.', isGroup: false, history: [] });
     const ok = d.replyText === "I'm SUBH, Subhodeep's HR Assistant. I've noted what you shared. If you let me know who gave you this instruction, I can confirm it with them.";
     await cleanupHrFlowArtifacts(phone);
+    return ok;
+  });
+
+  console.log('='.repeat(70));
+  console.log('LIVE FIX: WFH/leave/half-day/late-coming/off-day-duty self-initiated reports were getting ONLY the generic "noted, no third party" reply ("Ajke ami bari theke kaj korchi"/"Kalke chuti nebo" both reproduced live) - root cause was hrNotificationInvolvesThirdParty\'s own description explicitly telling the model to say false for a self-reported approval case. Also adds: instruction-vs-approval judged by MEANING even for a WFH/leave topic (not defaulted to approval), a future/not-yet-granted approval sub-flow, a sudden/emergency sub-flow, and a genuinely-unclear-initiator sub-flow that resolves the real wording from the answer.');
+  console.log('='.repeat(70));
+  const WFH_LEAVE_TANMOY_PHONE = TANMOY_MONDAL_PHONE;
+  let wfhLeaveCounter = 0;
+  function nextWfhLeavePhone() { wfhLeaveCounter++; return '9191000006' + String(wfhLeaveCounter).padStart(2, '0'); }
+  async function cleanupWfhLeave(phone) { await cleanupHrFlowArtifacts(phone, WFH_LEAVE_TANMOY_PHONE); }
+
+  await checkAsync('OLD vs NEW: "Ajke ami bari theke kaj korchi" (approval, already happening, no name) - OLD got only "Ami apnar bishoy-ta note kore nilam ar Subhodeep-ke janiye dicchi."; NEW asks who approved it, with the WFH-specific approval wording', async () => {
+    const phone = nextWfhLeavePhone();
+    await cleanupWfhLeave(phone);
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Ajke ami bari theke kaj korchi', isGroup: false, history: [] });
+    const pending = await whatsappAssistant.getPendingHrNoteFlow(phone);
+    const ok = d.replyText === 'Ami SUBH, Subhodeep-er HR Assistant. Ami apnar bishoy-ta note kore nilam. Apnake ei work from home-er approval-ta ke diyechhen, tar naam-ta bolle ami confirm kore nite parbo.'
+      && Boolean(pending) && pending.step === 'awaiting_name' && pending.actionKind === 'approval';
+    await cleanupWfhLeave(phone);
+    return ok;
+  });
+  await checkAsync('"Tanmoy Sir bolechhen ajke bari theke kaj korte" (instruction, not approval, despite the WFH topic) resolves and messages the manager with a TELLING verb ("korte bolechhen"), never "approval diyechhen" - the topic alone never decides the kind', async () => {
+    const phone = nextWfhLeavePhone();
+    await cleanupWfhLeave(phone);
+    await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Tanmoy Sir bolechhen ajke bari theke kaj korte', isGroup: false, history: [] });
+    await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: '1', isGroup: false, history: [] });
+    const log = await whatsappAssistant.listInboxLog(20);
+    const mgrEntry = log.filter((e) => e.chatId === WFH_LEAVE_TANMOY_PHONE && e.case === 'hr_confirmation_sent').sort((a, b) => (b.sentAt || 0) - (a.sentAt || 0))[0];
+    const ok = Boolean(mgrEntry) && mgrEntry.sentText.includes('korte bolechhen') && !mgrEntry.sentText.includes('approval diyechhen');
+    await whatsappAssistant.decideAutoReply({ phone: WFH_LEAVE_TANMOY_PHONE, name: 'Tanmoy Mondal', firstName: 'Tanmoy', text: 'Haa', isGroup: false, history: [] });
+    await cleanupWfhLeave(phone);
+    return ok;
+  });
+  await checkAsync('OLD vs NEW: "Kalke chuti nebo" (future approval, not yet confirmed, no name) - OLD got the generic noted-only reply; NEW asks whether the approval has actually been taken yet, with the leave-specific wording', async () => {
+    const phone = nextWfhLeavePhone();
+    await cleanupWfhLeave(phone);
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Kalke chuti nebo', isGroup: false, history: [] });
+    const pending = await whatsappAssistant.getPendingHrNoteFlow(phone);
+    const ok = d.replyText === 'Ami SUBH, Subhodeep-er HR Assistant. Ami apnar bishoy-ta note kore nilam. Apni ki chhutti-r approval-ta niyechhen? Ke approve korechhen, tar naam-ta bolle ami confirm kore nite parbo.'
+      && Boolean(pending) && pending.step === 'awaiting_approval_obtained';
+    await cleanupWfhLeave(phone);
+    return ok;
+  });
+  await checkAsync('"Kalke chuti nebo" -> "Haa, Tanmoy Sir approve korechhen" (yes + name in one answer) resolves straight through to the manager confirmation, approval wording intact', async () => {
+    const phone = nextWfhLeavePhone();
+    await cleanupWfhLeave(phone);
+    await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Kalke chuti nebo', isGroup: false, history: [] });
+    const d2 = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Haa, Tanmoy Sir approve korechhen', isGroup: false, history: [] });
+    const ok = d2.replyText.includes('Apni kar kotha bolchhen?'); // disambiguates among the 4 real Tanmoys, exactly like any other name resolution
+    await cleanupWfhLeave(phone);
+    return ok;
+  });
+  await checkAsync('"Kalke chuti nebo" -> "Na, ekhono neini" closes the note and tells the sender to get approval first, never messaging a manager for an approval that doesn\'t exist yet', async () => {
+    const phone = nextWfhLeavePhone();
+    await cleanupWfhLeave(phone);
+    await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Kalke chuti nebo', isGroup: false, history: [] });
+    const d2 = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Na, ekhono neini', isGroup: false, history: [] });
+    const pending = await whatsappAssistant.getPendingHrNoteFlow(phone);
+    const ok = d2.replyText === 'Ami SUBH, Subhodeep-er HR Assistant. Thik ache. Apnar reporting manager-er theke approval niye nin — ami bishoy-ta note kore Subhodeep-ke janiye dicchi.' && pending === null;
+    await cleanupWfhLeave(phone);
+    return ok;
+  });
+  await checkAsync('"Sir duty-r bodole kal chhutti nite bolechhen" is classified as "instruction" (someone told the sender to do this), not "approval" - STEP 1 uses the plain "instruction-ta" wording', async () => {
+    const phone = nextWfhLeavePhone();
+    await cleanupWfhLeave(phone);
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Sir duty-r bodole kal chhutti nite bolechhen', isGroup: false, history: [] });
+    const pending = await whatsappAssistant.getPendingHrNoteFlow(phone);
+    const ok = d.replyText.includes('instruction-ta ke diyechhen') && Boolean(pending) && pending.actionKind === 'instruction';
+    await cleanupWfhLeave(phone);
+    return ok;
+  });
+  await checkAsync('"ajke half day nebo" (future tense - "nebo") is also treated as not-yet-granted, same as "Kalke chuti nebo" - judged by tense/certainty, not by whether the date is today', async () => {
+    const phone = nextWfhLeavePhone();
+    await cleanupWfhLeave(phone);
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'ajke half day nebo', isGroup: false, history: [] });
+    const pending = await whatsappAssistant.getPendingHrNoteFlow(phone);
+    const ok = d.replyText.includes('half day-r approval-ta niyechhen') && Boolean(pending) && pending.step === 'awaiting_approval_obtained';
+    await cleanupWfhLeave(phone);
+    return ok;
+  });
+  await checkAsync('"sorir kharap, ajke ashte parbo na" (sudden/emergency, no name) asks whether the sender also informed their reporting manager - never assumes a manager needs to be looped in', async () => {
+    const phone = nextWfhLeavePhone();
+    await cleanupWfhLeave(phone);
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'sorir kharap, ajke ashte parbo na', isGroup: false, history: [] });
+    const pending = await whatsappAssistant.getPendingHrNoteFlow(phone);
+    const ok = d.replyText === 'Ami SUBH, Subhodeep-er HR Assistant. Ami apnar bishoy-ta note kore nilam ar Subhodeep-ke janiye dicchi. Apnar reporting manager-ke-o ki janiyechhen?'
+      && Boolean(pending) && pending.step === 'awaiting_manager_informed' && pending.actionKind === 'sudden';
+    await cleanupWfhLeave(phone);
+    return ok;
+  });
+  await checkAsync('sudden case, "Haa, Tanmoy Sir ke janiyechi" (yes + name) continues to the confirmation flow, and STEP 4 reads as a natural INFORMING statement (never a telling or granting verb, since Tanmoy neither told nor approved anything here)', async () => {
+    const phone = nextWfhLeavePhone();
+    await cleanupWfhLeave(phone);
+    await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'sorir kharap, ajke ashte parbo na', isGroup: false, history: [] });
+    await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Haa, Tanmoy Sir ke janiyechi', isGroup: false, history: [] });
+    await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: '1', isGroup: false, history: [] });
+    const log = await whatsappAssistant.listInboxLog(20);
+    const mgrEntry = log.filter((e) => e.chatId === WFH_LEAVE_TANMOY_PHONE && e.case === 'hr_confirmation_sent').sort((a, b) => (b.sentAt || 0) - (a.sentAt || 0))[0];
+    const ok = Boolean(mgrEntry) && mgrEntry.sentText.includes('janiyechhen') && !mgrEntry.sentText.includes('bolechhen') && !mgrEntry.sentText.includes('diyechhen');
+    await whatsappAssistant.decideAutoReply({ phone: WFH_LEAVE_TANMOY_PHONE, name: 'Tanmoy Mondal', firstName: 'Tanmoy', text: 'Haa', isGroup: false, history: [] });
+    await cleanupWfhLeave(phone);
+    return ok;
+  });
+  await checkAsync('"Ami ajke chhutir din duty korchi, ekta important kaj ache" (initiator genuinely unclear) asks with BOTH verbs ("bolechhen ba approve korechhen"), never committing to instruction or approval before the answer is known', async () => {
+    const phone = nextWfhLeavePhone();
+    await cleanupWfhLeave(phone);
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Ami ajke chhutir din duty korchi, ekta important kaj ache', isGroup: false, history: [] });
+    const pending = await whatsappAssistant.getPendingHrNoteFlow(phone);
+    const ok = d.replyText.includes('bolechhen ba approve korechhen') && Boolean(pending) && pending.step === 'awaiting_name' && pending.actionKind === 'neutral' && pending.actionPhrase.includes('duty');
+    await cleanupWfhLeave(phone);
+    return ok;
+  });
+  await checkAsync('unclear-initiator, answer "Tanmoy Sir bolechhen" resolves as INSTRUCTION - STEP 4 uses a telling verb ("bolechhen"), never a granting one', async () => {
+    const phone = nextWfhLeavePhone();
+    await cleanupWfhLeave(phone);
+    await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Ami ajke chhutir din duty korchi, ekta important kaj ache', isGroup: false, history: [] });
+    await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Tanmoy Sir bolechhen', isGroup: false, history: [] });
+    await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: '1', isGroup: false, history: [] });
+    const log = await whatsappAssistant.listInboxLog(20);
+    const mgrEntry = log.filter((e) => e.chatId === WFH_LEAVE_TANMOY_PHONE && e.case === 'hr_confirmation_sent').sort((a, b) => (b.sentAt || 0) - (a.sentAt || 0))[0];
+    const ok = Boolean(mgrEntry) && mgrEntry.sentText.includes('bolechhen') && !/anumoti diyechhen|approval diyechhen/.test(mgrEntry.sentText);
+    await whatsappAssistant.decideAutoReply({ phone: WFH_LEAVE_TANMOY_PHONE, name: 'Tanmoy Mondal', firstName: 'Tanmoy', text: 'Haa', isGroup: false, history: [] });
+    await cleanupWfhLeave(phone);
+    return ok;
+  });
+  await checkAsync('unclear-initiator, answer "ami nijei korchi, Tanmoy Sir-ke bole niyechhi" resolves as APPROVAL - STEP 4 uses a granting verb, never a telling one - same question, opposite answer, opposite wording', async () => {
+    const phone = nextWfhLeavePhone();
+    await cleanupWfhLeave(phone);
+    await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Ami ajke chhutir din duty korchi, ekta important kaj ache', isGroup: false, history: [] });
+    await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'ami nijei korchi, Tanmoy Sir-ke bole niyechhi', isGroup: false, history: [] });
+    await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: '1', isGroup: false, history: [] });
+    const log = await whatsappAssistant.listInboxLog(20);
+    const mgrEntry = log.filter((e) => e.chatId === WFH_LEAVE_TANMOY_PHONE && e.case === 'hr_confirmation_sent').sort((a, b) => (b.sentAt || 0) - (a.sentAt || 0))[0];
+    const ok = Boolean(mgrEntry) && /anumoti diyechhen|approval diyechhen|permission diyechhen/.test(mgrEntry.sentText) && !mgrEntry.sentText.includes('korte bolechhen');
+    await whatsappAssistant.decideAutoReply({ phone: WFH_LEAVE_TANMOY_PHONE, name: 'Tanmoy Mondal', firstName: 'Tanmoy', text: 'Haa', isGroup: false, history: [] });
+    await cleanupWfhLeave(phone);
+    return ok;
+  });
+  await checkAsync('unclear-initiator, answer "kauke boli ni" (declined to name anyone) closes the note with the same "please tell your manager" line as the sudden-case decline, instead of silently abandoning the flow', async () => {
+    const phone = nextWfhLeavePhone();
+    await cleanupWfhLeave(phone);
+    await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Ami ajke chhutir din duty korchi, ekta important kaj ache', isGroup: false, history: [] });
+    const d2 = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'kauke boli ni', isGroup: false, history: [] });
+    const pending = await whatsappAssistant.getPendingHrNoteFlow(phone);
+    const ok = d2.replyText === 'Ami SUBH, Subhodeep-er HR Assistant. Thik ache. Apnar reporting manager-ke-o janiye rakhun — ami bishoy-ta note kore Subhodeep-ke janiye dicchi.' && pending === null;
+    await cleanupWfhLeave(phone);
+    return ok;
+  });
+  await checkAsync('REGRESSION: the plain duty-change instruction flow still says "instruction-ta", byte-for-byte unchanged', async () => {
+    const phone = nextWfhLeavePhone();
+    await cleanupWfhLeave(phone);
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Ajke amake duty korte bola hoyechhe. Tar poriborte onno din chhutti nite bola hoyechhe.', isGroup: false, history: [] });
+    const ok = d.replyText === 'Ami SUBH, Subhodeep-er HR Assistant. Ami apnar bishoy-ta note kore nilam. Apnake ei instruction-ta ke diyechhen, tar naam-ta bolle ami confirm kore nite parbo.';
+    await cleanupWfhLeave(phone);
+    return ok;
+  });
+  await checkAsync('REGRESSION: extra info during an already-granted WFH approval flow (case A) still works exactly as the earlier commit left it', async () => {
+    const phone = nextWfhLeavePhone();
+    await cleanupWfhLeave(phone);
+    await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Ajke bari theke kaj korechi, manager approve korechhen.', isGroup: false, history: [] });
+    const caseA = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Ei WFH-tar karon chilo barir net-e office-er VPN access thik moto kaj korchilo', isGroup: false, history: [] });
+    const ok = caseA.replyText.includes('note kore nilam') && caseA.replyText.includes('work from home-er approval-ta apnake ke diyechhen');
+    await cleanupWfhLeave(phone);
     return ok;
   });
 
