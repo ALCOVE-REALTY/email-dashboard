@@ -3452,6 +3452,68 @@ async function checkAsync(label, fn) {
     return ok;
   });
 
+  console.log('='.repeat(70));
+  console.log('Extra-info cases A/B/C replayed against the WFH-approval and leave/half-day-approval flows (commit 89837e5) - proves the shared mechanism works with the APPROVAL wording path too, not just the default INSTRUCTION wording');
+  console.log('='.repeat(70));
+  const WFH_PHONE = '910000000993';
+  const LEAVE_PHONE = '910000000994';
+  await cleanupHrFlowArtifacts(WFH_PHONE, TANMOY_MONDAL_PHONE);
+  await checkAsync('WFH flow, setup: STEP 1 uses the APPROVAL wording ("work from home-er approval-ta"), never the generic "instruction-ta"', async () => {
+    const d1 = await whatsappAssistant.decideAutoReply({ phone: WFH_PHONE, name: 'Sender', firstName: 'Sender', text: 'Ajke bari theke kaj korechi, manager approve korechhen.', isGroup: false, history: [] });
+    const pending1 = await whatsappAssistant.getPendingHrNoteFlow(WFH_PHONE);
+    return d1.replyText.includes('work from home-er approval-ta ke diyechhen') && Boolean(pending1) && pending1.step === 'awaiting_name' && pending1.actionPhrase === 'work from home-er approval-ta';
+  });
+  await checkAsync('WFH flow, CASE A: extra info before the approver is named gets noted + a reminder phrased with the WFH-specific "approval-ta" wording, never the generic "instruction-ta" - proves case A carries the context-aware wording through, not a hand-built default', async () => {
+    const caseA = await whatsappAssistant.decideAutoReply({ phone: WFH_PHONE, name: 'Sender', firstName: 'Sender', text: 'Ei WFH-tar karon chilo barir net-e office-er VPN access thik moto kaj korchilo', isGroup: false, history: [] });
+    const pendingA = await whatsappAssistant.getPendingHrNoteFlow(WFH_PHONE);
+    return caseA.replyText.includes('note kore nilam') && caseA.replyText.includes('work from home-er approval-ta apnake ke diyechhen') && !caseA.replyText.includes('instruction-ta apnake ke diyechhen')
+      && Boolean(pendingA) && pendingA.step === 'awaiting_name' && pendingA.extraInfoReminderCount === 1;
+  });
+  await checkAsync('WFH flow, CASE B: a burst-combined turn (extra info + naming the approver) gets ONE reply - noted + STEP 3\'s normal thank-you - and STEP 4 messages the approver with the APPROVAL verb ("diyechhen"), unaffected by the extra-info wrapping', async () => {
+    const combined = 'Ei WFH-tar karon chilo barir net-e office-er VPN access thik moto kaj korchilo\nTanmoy Mondal';
+    const caseB = await whatsappAssistant.decideAutoReply({ phone: WFH_PHONE, name: 'Sender', firstName: 'Sender', text: combined, isGroup: false, history: [] });
+    const pending = await whatsappAssistant.getPendingHrNoteFlow(WFH_PHONE);
+    const confirmations = (await whatsappAssistant.listAllHrConfirmations()).filter((c) => c.senderPhone === WFH_PHONE);
+    return caseB.replyText === 'Ami SUBH, Subhodeep-er HR Assistant. Ami apnar ei bishoy-ta-o note kore nilam, Subhodeep-ke janiye dicchi. Ar amake sothik naam diye sahajyo korar jonno dhonnobad. Ami Tanmoy Mondal-er sathe kotha bole joto taratari somvob apnake janacchi.'
+      && pending === null && confirmations.length === 1 && confirmations[0].status === 'awaiting_manager' && confirmations[0].thirdPartyName === 'Tanmoy Mondal';
+  });
+  await checkAsync('WFH flow, CASE C: once the approver\'s confirmation is pending, further on-topic info from the sender gets noted + the waiting-status line', async () => {
+    const caseC = await whatsappAssistant.decideAutoReply({ phone: WFH_PHONE, name: 'Sender', firstName: 'Sender', text: 'Ei WFH-tar din-e ami video call-eo available chilam, jodi dorkar hoy janaben', isGroup: false, history: [] });
+    return caseC.replyText === 'Ami SUBH, Subhodeep-er HR Assistant. Ami apnar ei bishoy-ta-o note kore nilam, Subhodeep-ke janiye dicchi. Ar Tanmoy Mondal-er confirmation-er opekkha korchhi, uttor pelei apnake janacchi.';
+  });
+  await checkAsync('WFH flow cleanup: resolve the confirmation', async () => {
+    await whatsappAssistant.decideAutoReply({ phone: TANMOY_MONDAL_PHONE, name: 'Tanmoy Mondal', firstName: 'Tanmoy', text: 'Haa', isGroup: false, history: [] });
+    await cleanupHrFlowArtifacts(WFH_PHONE, TANMOY_MONDAL_PHONE);
+    return true;
+  });
+
+  await cleanupHrFlowArtifacts(LEAVE_PHONE, TANMOY_MONDAL_PHONE);
+  await checkAsync('Half-day-approval flow, setup: STEP 1 uses the APPROVAL wording ("half day-r approval-ta")', async () => {
+    const d1 = await whatsappAssistant.decideAutoReply({ phone: LEAVE_PHONE, name: 'Sender', firstName: 'Sender', text: 'Aj half day nichhi, approval peyechi.', isGroup: false, history: [] });
+    const pending1 = await whatsappAssistant.getPendingHrNoteFlow(LEAVE_PHONE);
+    return d1.replyText.includes('half day-r approval-ta ke diyechhen') && Boolean(pending1) && pending1.topicLabel === 'half day';
+  });
+  await checkAsync('Half-day-approval flow, CASE A: extra info before the approver is named gets noted + a reminder phrased with the half-day-specific "approval-ta" wording', async () => {
+    const caseA = await whatsappAssistant.decideAutoReply({ phone: LEAVE_PHONE, name: 'Sender', firstName: 'Sender', text: 'Ei half day-tar karon chilo amar doctor-er appointment chilo dupure', isGroup: false, history: [] });
+    const pendingA = await whatsappAssistant.getPendingHrNoteFlow(LEAVE_PHONE);
+    return caseA.replyText.includes('note kore nilam') && caseA.replyText.includes('half day-r approval-ta apnake ke diyechhen')
+      && Boolean(pendingA) && pendingA.extraInfoReminderCount === 1;
+  });
+  await checkAsync('Half-day-approval flow, CASE B: burst-combined extra info + naming the approver resolves to STEP 3+4 with the noting wrap, approval wording intact', async () => {
+    const combined = 'Ei half day-tar karon chilo amar doctor-er appointment chilo dupure\nTanmoy Mondal';
+    const caseB = await whatsappAssistant.decideAutoReply({ phone: LEAVE_PHONE, name: 'Sender', firstName: 'Sender', text: combined, isGroup: false, history: [] });
+    const confirmations = (await whatsappAssistant.listAllHrConfirmations()).filter((c) => c.senderPhone === LEAVE_PHONE);
+    return caseB.replyText === 'Ami SUBH, Subhodeep-er HR Assistant. Ami apnar ei bishoy-ta-o note kore nilam, Subhodeep-ke janiye dicchi. Ar amake sothik naam diye sahajyo korar jonno dhonnobad. Ami Tanmoy Mondal-er sathe kotha bole joto taratari somvob apnake janacchi.'
+      && confirmations.length === 1 && confirmations[0].status === 'awaiting_manager';
+  });
+  await checkAsync('Half-day-approval flow, CASE C: once the approver\'s confirmation is pending, further on-topic info gets noted + the waiting-status line', async () => {
+    const caseC = await whatsappAssistant.decideAutoReply({ phone: LEAVE_PHONE, name: 'Sender', firstName: 'Sender', text: 'Doctor dekhanor pore ami bikel-e office-o eshe giyechilam ektu kajer jonne', isGroup: false, history: [] });
+    const ok = caseC.replyText === 'Ami SUBH, Subhodeep-er HR Assistant. Ami apnar ei bishoy-ta-o note kore nilam, Subhodeep-ke janiye dicchi. Ar Tanmoy Mondal-er confirmation-er opekkha korchhi, uttor pelei apnake janacchi.';
+    await whatsappAssistant.decideAutoReply({ phone: TANMOY_MONDAL_PHONE, name: 'Tanmoy Mondal', firstName: 'Tanmoy', text: 'Haa', isGroup: false, history: [] });
+    await cleanupHrFlowArtifacts(LEAVE_PHONE, TANMOY_MONDAL_PHONE);
+    return ok;
+  });
+
   // --- Item 4: closing messages get at most ONE short reply, never a back-and-forth ---
   check('isClosingMessage recognizes "Thank you"', whatsappAssistant.isClosingMessage('Thank you'));
   check('isClosingMessage recognizes "Thank you Sir 🙏"', whatsappAssistant.isClosingMessage('Thank you Sir 🙏'));
