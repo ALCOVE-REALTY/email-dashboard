@@ -2132,6 +2132,41 @@ router.post('/hr-assistant/whatsapp-hr-confirmation-resolve', async (req, res) =
   }
 });
 
+// Owner visibility fix (live incident: a week-old stuck test confirmation
+// silently blocked all new HR flows from that sender) - every open STEP1/2
+// flow and every open STEP3+ confirmation in one list, with a way to close
+// stuck/test ones directly instead of them sitting invisible.
+router.get('/hr-assistant/open-flows', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const items = await whatsappAssistant.listOpenHrFlowsForOwner();
+    res.json({ items });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/hr-assistant/open-flows/close', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const { kind, phone, id } = req.body || {};
+    if (kind === 'hr_note_flow') {
+      if (!phone) return res.status(400).json({ error: 'phone is required' });
+      await whatsappAssistant.closeOpenHrNoteFlow(phone);
+      return res.json({ ok: true });
+    }
+    if (kind === 'hr_confirmation') {
+      if (!id) return res.status(400).json({ error: 'id is required' });
+      const result = await whatsappAssistant.closeOpenHrConfirmation(id);
+      if (!result.ok) return res.status(400).json({ error: result.error });
+      return res.json({ ok: true });
+    }
+    return res.status(400).json({ error: 'kind must be "hr_note_flow" or "hr_confirmation"' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.post('/hr-assistant/whatsapp-followup-done', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
   try {

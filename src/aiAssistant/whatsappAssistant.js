@@ -2882,11 +2882,22 @@ function calendarDaysBetweenIst(d1, d2) {
   };
   return Math.round((toIstMidnightUtcMs(d2) - toIstMidnightUtcMs(d1)) / (24 * 60 * 60 * 1000));
 }
+// Direct instruction - an "Open flows" list the owner can actually see
+// and close, so a stuck/forgotten test flow is never again an invisible
+// cause of live replies silently going wrong (live incident:
+// 917278793115's week-old pending confirmation). A plain SET of phones
+// with a currently-saved flow - self-healing (a phone found here with no
+// actual flow left, e.g. after natural TTL expiry, is just removed from
+// the set the next time it's listed, never treated as an error).
+const HR_NOTE_FLOW_PHONES_KEY = 'wa-hr-note-flow-phones';
 async function savePendingHrNoteFlow(phone, data) {
   const redis = getClient();
   if (!redis) return;
   const toSave = Object.assign({}, data, { lastTouchedAt: Date.now() });
-  try { await redis.set(PENDING_HR_NOTE_FLOW_PREFIX + phone, JSON.stringify(toSave), { ex: HR_NOTE_FLOW_TTL_SECONDS }); } catch (err) { /* best effort */ }
+  try {
+    await redis.set(PENDING_HR_NOTE_FLOW_PREFIX + phone, JSON.stringify(toSave), { ex: HR_NOTE_FLOW_TTL_SECONDS });
+    await redis.sadd(HR_NOTE_FLOW_PHONES_KEY, phone);
+  } catch (err) { /* best effort */ }
 }
 async function getPendingHrNoteFlow(phone) {
   const redis = getClient();
@@ -2899,7 +2910,35 @@ async function getPendingHrNoteFlow(phone) {
 async function clearPendingHrNoteFlow(phone) {
   const redis = getClient();
   if (!redis) return;
-  try { await redis.del(PENDING_HR_NOTE_FLOW_PREFIX + phone); } catch (err) { /* best effort */ }
+  try {
+    await redis.del(PENDING_HR_NOTE_FLOW_PREFIX + phone);
+    await redis.srem(HR_NOTE_FLOW_PHONES_KEY, phone);
+  } catch (err) { /* best effort */ }
+}
+// Every currently-open HR-note flow (STEP 1/2 - awaiting a name,
+// disambiguation choice, confirm yes/no, approval-obtained, or manager-
+// informed), for the "Open flows" list. Self-heals the index (a phone
+// with no flow left, e.g. after TTL expiry, is quietly dropped from the
+// set rather than surfaced as a phantom entry).
+async function listOpenHrNoteFlows() {
+  const redis = getClient();
+  if (!redis) return [];
+  try {
+    const phones = await redis.smembers(HR_NOTE_FLOW_PHONES_KEY);
+    const flows = [];
+    for (const rawPhone of phones) {
+      // The Upstash client auto-casts a purely-numeric SET member (every
+      // phone number here) back into a JS number on read - coerced back to
+      // a string immediately so every downstream consumer (strict ===
+      // comparisons, whatsapp.normalizePhone's own string methods) sees
+      // the same type it would from any other phone field in this file.
+      const phone = String(rawPhone);
+      const flow = await getPendingHrNoteFlow(phone);
+      if (flow) flows.push(Object.assign({ phone }, flow));
+      else await redis.srem(HR_NOTE_FLOW_PHONES_KEY, phone).catch(() => {});
+    }
+    return flows;
+  } catch (err) { return []; }
 }
 
 // Live test fixes item 5 - which time-of-day greeting TYPES (morning/
@@ -3039,6 +3078,109 @@ async function senderHasPendingHrConfirmation(senderPhone) {
   const normalized = whatsapp.normalizePhone(senderPhone);
   return all.some((r) => r.status === 'awaiting_manager' && whatsapp.normalizePhone(r.senderPhone) === normalized);
 }
+// Direct instruction - the full "Open flows" list for the owner: every
+// STEP 1/2 flow still awaiting the sender (name/disambiguation/confirm/
+// approval-obtained/manager-informed) PLUS every STEP 3+ confirmation
+// still awaiting the manager (or the owner's own ambiguous-reply review),
+// in one combined, sorted-by-age view, with a direct way to close each
+// one - so a stuck/forgotten flow (live incident: 917278793115's week-old
+// pending confirmation) is never again invisible.
+async function listOpenHrFlowsForOwner() {
+  const [noteFlows, allConfirmations] = await Promise.all([
+    listOpenHrNoteFlows(),
+    listAllHrConfirmations()
+  ]);
+  const now = Date.now();
+  const fromNoteFlows = noteFlows.map((f) => ({
+    kind: 'hr_note_flow',
+    phone: f.phone,
+    senderName: null,
+    topic: f.topicLabel || f.summary || 'HR matter',
+    step: f.step,
+    manager: (f.candidate && f.candidate.name) || (Array.isArray(f.candidates) ? f.candidates.map((c) => c.name).join(' / ') : null),
+    managerPhone: null,
+    ageMs: now - (f.createdAt || f.lastTouchedAt || now)
+  }));
+  const fromConfirmations = allConfirmations
+    .filter((c) => c.status === 'awaiting_manager' || c.status === 'ambiguous_owner_review')
+    .map((c) => ({
+      kind: 'hr_confirmation',
+      id: c.id,
+      phone: c.senderPhone,
+      senderName: c.senderName,
+      topic: c.topicLabel || c.summary || 'HR matter',
+      step: c.status,
+      manager: c.thirdPartyName,
+      managerPhone: c.thirdPartyPhone,
+      ageMs: now - (c.createdAt || now)
+    }));
+  return fromNoteFlows.concat(fromConfirmations).sort((a, b) => b.ageMs - a.ageMs);
+}
+async function closeOpenHrNoteFlow(phone) {
+  await clearPendingHrNoteFlow(phone);
+  return { ok: true };
+}
+async function closeOpenHrConfirmation(id) {
+  const confirmation = await getHrConfirmation(id);
+  if (!confirmation) return { ok: false, error: 'That confirmation no longer exists.' };
+  await updateHrConfirmation(id, { status: 'cancelled', cancelledAt: Date.now() });
+  await closeHrConfirmationReminder(confirmation.reminderId);
+  return { ok: true };
+}
+// LIVE FIX (917278793115, real incident) - the check above blocks a
+// sender's SECOND HR matter entirely, even when it's a genuinely
+// different topic/date with a DIFFERENT manager (or even the same
+// manager) - a sender who reported a duty change on Monday could never
+// report an unrelated WFH day on Friday until the first confirmation
+// resolved. The real duplicate worth blocking is specifically: the SAME
+// manager already being asked about the SAME matter (same topic, same
+// date(s)) - judged by meaning, not an exact string match, since the
+// two messages describing it are rarely worded identically.
+function isSameHrMatterTool() {
+  return {
+    type: 'function',
+    function: {
+      name: 'is_same_hr_matter',
+      description: 'Decide whether "Matter B" (a new HR report) describes the SAME underlying event as "Matter A" (already pending with the same manager) - same topic AND same date(s) - or a genuinely DIFFERENT event.',
+      parameters: {
+        type: 'object',
+        properties: {
+          isSameMatter: { type: 'boolean', description: 'true ONLY if both clearly describe the same topic and the same date(s). false if the topic or the date(s) differ, or if genuinely unclear - never assume two separate reports are the same matter just because they involve the same manager.' }
+        },
+        required: ['isSameMatter']
+      }
+    }
+  };
+}
+async function isSameHrMatter(summaryA, summaryB) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  // Fails OPEN (not the same matter) on any API error - this check exists
+  // to STOP a wrongful block, never to add a new one; a failed judgment
+  // call must never silently re-introduce the exact bug being fixed here.
+  if (!apiKey || !DRAFT_MODEL) return false;
+  const toolDef = isSameHrMatterTool().function;
+  const systemPrompt = 'Matter A (already pending): "' + summaryA + '". Matter B (new report): "' + summaryB + '".';
+  const input = await callClaudeForcedTool(apiKey, DRAFT_MODEL, [{ role: 'system', content: systemPrompt }, { role: 'user', content: 'Compare Matter A and Matter B.' }], toolDef.name, toolDef).catch(() => null);
+  return Boolean(input && input.isSameMatter);
+}
+// Returns the specific pending confirmation this new report duplicates
+// (same manager, same matter) or null - never blocks on an unrelated
+// pending confirmation to a different manager or about a different topic.
+async function findDuplicateHrConfirmation(senderPhone, managerContactNumber, newSummary) {
+  if (!managerContactNumber) return null;
+  const all = await listAllHrConfirmations();
+  const normalizedSender = whatsapp.normalizePhone(senderPhone);
+  const normalizedManager = whatsapp.normalizePhone(managerContactNumber);
+  const sameManagerPending = all.filter((r) =>
+    r.status === 'awaiting_manager' &&
+    whatsapp.normalizePhone(r.senderPhone) === normalizedSender &&
+    whatsapp.normalizePhone(r.thirdPartyPhone) === normalizedManager
+  );
+  for (const existing of sameManagerPending) {
+    if (await isSameHrMatter(existing.summary, newSummary)) return existing;
+  }
+  return null;
+}
 
 // Link-back rule - REPLACES the earlier cross-day bridge on the sender's
 // own continuation reply entirely (that line is gone - when the sender
@@ -3088,6 +3230,26 @@ const HR_NOTE_NO_THIRD_PARTY = {
   banglish: 'Ami apnar bishoy-ta note kore nilam ar Subhodeep-ke janiye dicchi.',
   hinglish: 'Maine aapki baat note kar li hai aur Subhodeep ko bata raha hoon.',
   english: "I've noted this and I'm letting Subhodeep know."
+};
+// LIVE FIX (917278793115) - finalizeHrNoteThirdParty's safety escalation
+// used to return this SAME generic line for every blocking reason, which
+// reads to the sender exactly like a normal "noted" close - they have no
+// idea anything is actually blocked, and a genuine duplicate ("you're
+// already waiting on the same thing") got silently treated the same way
+// as a real error (senior designation, no phone number, etc). Each
+// reason now gets its own honest, reason-appropriate line.
+const HR_NOTE_BLOCKED_GENERIC = {
+  banglish: (name) => 'Ami apnar bishoy-ta note kore nilam. ' + name + '-ke ekhon automatically message kora jacche na, tai Subhodeep nijei dekhben ar apnake update debe.',
+  hinglish: (name) => 'Maine aapki baat note kar li hai. ' + name + ' ko abhi automatically message nahi bheja ja sakta, isliye Subhodeep khud dekhenge aur aapko update denge.',
+  english: (name) => "I've noted this. I can't automatically message " + name + ' right now, so Subhodeep will look into it directly and get back to you.'
+};
+// A genuine duplicate - the sender's own prior message to the SAME
+// manager about the SAME matter is still awaiting a reply. Never starts
+// a second confirmation request for it.
+const HR_NOTE_SAME_MATTER_ALREADY_PENDING = {
+  banglish: (name) => 'Ami apnar bishoy-ta note kore nilam. Ei bishoy-e ' + name + '-er confirmation-er opekkha korchhi, uttor pelei apnake janacchi.',
+  hinglish: (name) => 'Maine aapki baat note kar li hai. Is bishoy mein ' + name + ' ke confirmation ka wait kar raha hoon, jawaab milte hi aapko bata dunga.',
+  english: (name) => "I've noted this. I'm already waiting on " + name + "'s confirmation for this - I'll let you know as soon as I hear back."
 };
 // WFH/leave/half-day/off-day-duty FIX - hrNotificationActionKind "neutral"
 // (the initiator genuinely isn't stated, e.g. "Ami ajke chhutir din duty
@@ -3378,22 +3540,32 @@ async function resolveHrNoteThirdParty({ phone, name, lang, personName, departme
 // owner, and reply to the ORIGINAL sender with STEP 3's thank-you. Always
 // the FINAL step of a flow - the only place that ever clears it for good.
 async function finalizeHrNoteThirdParty({ phone, senderName, lang, candidate, summary, summaryLocalized, topicLabel, createdAt, history }) {
+  // LIVE FIX (917278793115) - checked FIRST, and separately from the
+  // other safety conditions below: a genuine duplicate (same manager,
+  // same matter already pending) is normal, expected behavior, not an
+  // error needing owner escalation - it gets its own honest reply and
+  // never creates a second confirmation request, but the flow is not
+  // otherwise blocked from running (a different topic/date, even with
+  // the SAME manager, is never held up by this).
+  const duplicate = await findDuplicateHrConfirmation(phone, candidate.contactNumber, summary);
+  if (duplicate) {
+    await clearPendingHrNoteFlow(phone);
+    return { case: 'acknowledged', replyText: (HR_NOTE_SAME_MATTER_ALREADY_PENDING[lang] || HR_NOTE_SAME_MATTER_ALREADY_PENDING.english)(candidate.name), summaryForOwner: null, lang };
+  }
   await clearPendingHrNoteFlow(phone);
   const isSenior = SENIOR_DESIGNATION_RE.test(candidate.designation || '');
   const onNeverAuto = candidate.contactNumber ? await isNeverAuto(candidate.contactNumber) : false;
   const confirmationsEnabled = await isHrConfirmationsEnabled();
-  const alreadyPending = await senderHasPendingHrConfirmation(phone);
-  if (!candidate.contactNumber || isSenior || onNeverAuto || !confirmationsEnabled || alreadyPending) {
+  if (!candidate.contactNumber || isSenior || onNeverAuto || !confirmationsEnabled) {
     const reason = !candidate.contactNumber ? 'onar phone number record-e nei'
       : isSenior ? 'uni senior designation-e achen (Director/MD/President/VP/CEO)'
       : onNeverAuto ? 'uni never-auto list-e achen'
-      : !confirmationsEnabled ? 'HR confirmations setting off ache'
-      : 'ei sender-er jonno ageo ekta confirmation request pending ache';
+      : 'HR confirmations setting off ache';
     await postOwnerNotification(
       '⚠️ ' + senderName + ' (' + phone + ') HR-bishoy janiyechhen ("' + summary + '"). ' + candidate.name + ' (' + candidate.department + ')-ke confirm korte hobe, kintu ' + reason +
       ' - tai automatically message kora hocche na. Apni direct handle korun.'
     );
-    return { case: 'acknowledged', replyText: HR_NOTE_NO_THIRD_PARTY[lang] || HR_NOTE_NO_THIRD_PARTY.english, summaryForOwner: null, lang };
+    return { case: 'acknowledged', replyText: (HR_NOTE_BLOCKED_GENERIC[lang] || HR_NOTE_BLOCKED_GENERIC.english)(candidate.name), summaryForOwner: null, lang };
   }
   const confirmationId = await saveHrConfirmation({
     senderPhone: whatsapp.normalizePhone(phone), senderName, summary, summaryLocalized, lang,
@@ -5455,11 +5627,11 @@ function classifyExtraInfoOnlyTool() {
     type: 'function',
     function: {
       name: 'classify_extra_info_only',
-      description: 'Decide whether this message adds real information worth noting about the SAME ongoing matter described in the system prompt (e.g. more detail about the same leave/duty/approval, a correction, a related fact) - as opposed to a closing remark, small talk, or a message raising a genuinely NEW, separate HR matter of its own (which should be handled as its own new request, not folded into this one).',
+      description: 'Decide whether this message adds real information worth noting about the SAME ongoing matter described in the system prompt (e.g. more detail about the same leave/duty/approval, a correction, a related fact) - as opposed to a closing remark, small talk, or a message raising a genuinely NEW, separate HR matter of its own (which should be handled as its own new request, not folded into this one). Judge by the ACTION/EVENT being described, never by names alone - a message naming the SAME manager already being waited on, but describing a DIFFERENT action/date (a new leave/WFH/half-day/duty request, not more detail about the one already pending), is a NEW matter, even though it mentions that same person.',
       parameters: {
         type: 'object',
         properties: {
-          hasExtraInfo: { type: 'boolean', description: 'true ONLY if the message adds real information about the SAME matter already being waited on. false for closing remarks, small talk, AND for a message that raises a different, unrelated HR matter of its own - that should be free to start its own new flow, not be swallowed as a note on this one.' },
+          hasExtraInfo: { type: 'boolean', description: 'true ONLY if the message adds real information about the SAME matter already being waited on (the same leave/duty/approval event - more detail, a reason, a correction, a related fact about THAT event). false for closing remarks, small talk, AND for a message that raises a different, unrelated HR matter of its own, EVEN ONE naming the same manager/person already being waited on for the current matter - a different action or a different date is always a new matter, free to start its own new flow, never swallowed as a note on this one.' },
           extraInfoNote: { type: 'string', description: 'A short, neutral one-sentence summary (in English) of that information. Omit entirely if hasExtraInfo is false.' }
         },
         required: ['hasExtraInfo']
@@ -5471,7 +5643,8 @@ async function classifyExtraInfoOnly(text, context) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey || !DRAFT_MODEL) return { hasExtraInfo: false, extraInfoNote: null };
   const toolDef = classifyExtraInfoOnlyTool().function;
-  const systemPrompt = 'SUBH (an HR WhatsApp assistant) already has an open HR matter for this sender: "' + ((context && context.topicLabel) || 'an ongoing matter') + '".';
+  const managerNote = (context && context.thirdPartyName) ? (' SUBH is waiting on ' + context.thirdPartyName + ' to confirm this specific matter - a message naming ' + context.thirdPartyName + ' about a DIFFERENT action or date is still a new, separate matter.') : '';
+  const systemPrompt = 'SUBH (an HR WhatsApp assistant) already has an open HR matter for this sender: "' + ((context && context.topicLabel) || 'an ongoing matter') + '".' + managerNote;
   const input = await callClaudeForcedTool(apiKey, DRAFT_MODEL, [{ role: 'system', content: systemPrompt }, { role: 'user', content: text }], toolDef.name, toolDef).catch(() => null);
   if (!input) return { hasExtraInfo: false, extraInfoNote: null };
   return { hasExtraInfo: Boolean(input.hasExtraInfo), extraInfoNote: (input.hasExtraInfo && input.extraInfoNote) || null };
@@ -6465,7 +6638,7 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
     // ever being folded into a long-forgotten one.
     const awaitingIsRecent = awaiting && (Date.now() - (awaiting.createdAt || awaiting.originalMessageAt || 0)) < 24 * 60 * 60 * 1000;
     if (awaiting && awaitingIsRecent && !isClosingMessage(text)) {
-      const verdict = await classifyExtraInfoOnly(text, { topicLabel: awaiting.topicLabel || awaiting.summary }).catch(() => ({ hasExtraInfo: false, extraInfoNote: null }));
+      const verdict = await classifyExtraInfoOnly(text, { topicLabel: awaiting.topicLabel || awaiting.summary, thirdPartyName: awaiting.thirdPartyName }).catch(() => ({ hasExtraInfo: false, extraInfoNote: null }));
       if (verdict.hasExtraInfo) {
         await recordExtraInfoNote(phone, senderLabel, verdict.extraInfoNote || text, 'waiting on ' + awaiting.thirdPartyName + '\'s confirmation');
         const waitingLang = awaiting.lang || detectLang(text);
@@ -7814,6 +7987,11 @@ module.exports = {
   listPendingHrConfirmationsForPhone,
   listAllHrConfirmations,
   senderHasPendingHrConfirmation,
+  isSameHrMatter,
+  findDuplicateHrConfirmation,
+  listOpenHrFlowsForOwner,
+  closeOpenHrNoteFlow,
+  closeOpenHrConfirmation,
   resolveHrNoteThirdParty,
   finalizeHrNoteThirdParty,
   handleHrNotificationStart,

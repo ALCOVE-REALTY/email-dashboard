@@ -1137,7 +1137,10 @@ async function checkAsync(label, fn) {
     // Called directly (not through decideAutoReply), so no disclosure-line
     // prefix is expected here - that prepending only happens in the
     // decideAutoReply wrapper, exercised by the full-flow tests above.
-    return result.replyText === 'Ami apnar bishoy-ta note kore nilam ar Subhodeep-ke janiye dicchi.' && confirmations.length === 0;
+    // OPEN FLOWS FIX: a blocked path now gets the tailored
+    // HR_NOTE_BLOCKED_GENERIC reply (never the old silent generic note),
+    // and always posts an owner notification - see the dedicated test below.
+    return result.replyText === 'Ami apnar bishoy-ta note kore nilam. Big Boss-ke ekhon automatically message kora jacche na, tai Subhodeep nijei dekhben ar apnake update debe.' && confirmations.length === 0;
   });
   await checkAsync('a resolved third party on the owner\'s own never-auto list is NEVER auto-messaged', async () => {
     const HR_SENDER_NA = '910000000871';
@@ -1166,14 +1169,67 @@ async function checkAsync(label, fn) {
     }
   });
   check('isHrConfirmationsEnabled handles the Upstash client coercing a stored "1" into the NUMBER 1 on read (found live: a strict `raw === \'1\'` check silently stayed off forever)', true); // covered by the toggle test above actually exercising set(true)->get()->enabled
-  await checkAsync('a sender with one confirmation already pending does not get a second one started for a new HR notification', async () => {
+
+  console.log('='.repeat(70));
+  console.log('OPEN FLOWS FIX (live incident, 917278793115): duplicate detection is now SAME-MANAGER + SAME-MATTER only (never a blanket "any pending confirmation"), blocked paths get a tailored reply + owner notification (never the old silent generic fallback), and the owner has a durable Open Flows list + Close action');
+  console.log('='.repeat(70));
+  await checkAsync('REGRESSION: a GENUINE duplicate (same manager, same matter repeated) is still blocked - sender gets the new friendly "already waiting on them" reply, no second confirmation is created, and the existing one is untouched', async () => {
     const HR_SENDER_DUP = '910000000873';
+    await cleanupHrFlowArtifacts(HR_SENDER_DUP, TANMOY_MONDAL_PHONE);
     await whatsappAssistant.decideAutoReply({ phone: HR_SENDER_DUP, name: 'SenderDup', firstName: 'SenderDup', text: 'Ajke amake duty korte bola hoyechhe. Tar poriborte onno din chhutti nite bola hoyechhe.', isGroup: false, history: [] });
     await whatsappAssistant.decideAutoReply({ phone: HR_SENDER_DUP, name: 'SenderDup', firstName: 'SenderDup', text: 'Tanmoy Mondal bolechhen.', isGroup: false, history: [] });
-    await whatsappAssistant.decideAutoReply({ phone: HR_SENDER_DUP, name: 'SenderDup', firstName: 'SenderDup', text: 'Ajke abar amake onno kichu korte bola hoyechhe, Tanmoy Mondal bolechhen.', isGroup: false, history: [] });
-    const confirmations = (await whatsappAssistant.listAllHrConfirmations()).filter((c) => c.senderPhone === HR_SENDER_DUP);
-    const ok = confirmations.length === 1;
+    const before = (await whatsappAssistant.listAllHrConfirmations()).filter((c) => c.senderPhone === HR_SENDER_DUP);
+    const d = await whatsappAssistant.decideAutoReply({ phone: HR_SENDER_DUP, name: 'SenderDup', firstName: 'SenderDup', text: 'Ajke abar amake duty korte bola hoyechhe, tar poriborte onno din chhutti nite bola hoyechhe, Tanmoy Mondal bolechhen.', isGroup: false, history: [] });
+    const after = (await whatsappAssistant.listAllHrConfirmations()).filter((c) => c.senderPhone === HR_SENDER_DUP);
+    const ok = before.length === 1 && after.length === 1 && after[0].id === before[0].id && d.replyText.includes('confirmation-er opekkha korchhi');
     await cleanupHrFlowArtifacts(HR_SENDER_DUP, TANMOY_MONDAL_PHONE);
+    return ok;
+  });
+  await checkAsync('a DIFFERENT matter with the SAME manager is NOT blocked - proves the old blanket "any pending confirmation blocks everything" check is gone', async () => {
+    const HR_SENDER_DIFF = '910000000880';
+    await cleanupHrFlowArtifacts(HR_SENDER_DIFF, TANMOY_MONDAL_PHONE);
+    await whatsappAssistant.decideAutoReply({ phone: HR_SENDER_DIFF, name: 'SenderDiff', firstName: 'SenderDiff', text: 'Ajke amake duty korte bola hoyechhe. Tar poriborte onno din chhutti nite bola hoyechhe.', isGroup: false, history: [] });
+    await whatsappAssistant.decideAutoReply({ phone: HR_SENDER_DIFF, name: 'SenderDiff', firstName: 'SenderDiff', text: 'Tanmoy Mondal bolechhen.', isGroup: false, history: [] });
+    const before = (await whatsappAssistant.listAllHrConfirmations()).filter((c) => c.senderPhone === HR_SENDER_DIFF);
+    const d = await whatsappAssistant.decideAutoReply({ phone: HR_SENDER_DIFF, name: 'SenderDiff', firstName: 'SenderDiff', text: 'Ami kalke half day nebo, Tanmoy Mondal bolechhen approve korechhen.', isGroup: false, history: [] });
+    const after = (await whatsappAssistant.listAllHrConfirmations()).filter((c) => c.senderPhone === HR_SENDER_DIFF);
+    const ok = before.length === 1 && after.length === 2 && !d.replyText.includes('confirmation-er opekkha korchhi');
+    await cleanupHrFlowArtifacts(HR_SENDER_DIFF, TANMOY_MONDAL_PHONE);
+    return ok;
+  });
+  await checkAsync('a blocked path (senior designation) gets the new tailored HR_NOTE_BLOCKED_GENERIC reply (never the old silent generic note) and still posts an owner notification', async () => {
+    const HR_SENDER_SENIOR2 = '910000000881';
+    const mockSenior = { name: 'Big Boss Two', department: 'MANAGEMENT', designation: 'DIRECTOR', status: 'ACTIVE', contactNumber: '9999999998', employeeId: 'TESTDIR2' };
+    const before = await whatsappAssistant.listOwnerNotifications();
+    const result = await whatsappAssistant.finalizeHrNoteThirdParty({ phone: HR_SENDER_SENIOR2, senderName: 'SenderDir2', lang: 'banglish', candidate: mockSenior, summary: 'test blocked path', summaryLocalized: 'test blocked path', history: [] });
+    const confirmations = (await whatsappAssistant.listAllHrConfirmations()).filter((c) => c.senderPhone === HR_SENDER_SENIOR2);
+    const after = await whatsappAssistant.listOwnerNotifications();
+    const ok = result.replyText === 'Ami apnar bishoy-ta note kore nilam. Big Boss Two-ke ekhon automatically message kora jacche na, tai Subhodeep nijei dekhben ar apnake update debe.' && confirmations.length === 0 && after.length > before.length;
+    await whatsappAssistant.clearOwnerNotifications();
+    return ok;
+  });
+  await checkAsync('listOpenHrFlowsForOwner returns both an open STEP1/2 flow and an open STEP3+ confirmation in one list, and closeOpenHrNoteFlow/closeOpenHrConfirmation each actually remove their target', async () => {
+    const OF_NOTE_PHONE = '910000000882';
+    const OF_CONF_SENDER = '910000000883';
+    await cleanupWfhLeave(OF_NOTE_PHONE);
+    await whatsappAssistant.decideAutoReply({ phone: OF_NOTE_PHONE, name: 'OpenFlowSender', firstName: 'OpenFlowSender', text: 'Ajke ami bari theke kaj korchi', isGroup: false, history: [] });
+    const confId = await whatsappAssistant.saveHrConfirmation({
+      senderPhone: OF_CONF_SENDER, senderName: 'OpenFlowConfSender', summary: 'open flows list test', summaryLocalized: 'open flows list test',
+      lang: 'english', thirdPartyPhone: TANMOY_MONDAL_PHONE, thirdPartyName: 'Tanmoy Mondal', thirdPartyDepartment: 'Civil',
+      status: 'awaiting_manager', createdAt: Date.now(), remindedAt: null, escalatedAt: null, reminderId: null
+    });
+    const before = await whatsappAssistant.listOpenHrFlowsForOwner();
+    const hasNoteFlow = before.some((it) => it.kind === 'hr_note_flow' && it.phone === OF_NOTE_PHONE);
+    const hasConfirmation = before.some((it) => it.kind === 'hr_confirmation' && it.id === confId);
+    await whatsappAssistant.closeOpenHrNoteFlow(OF_NOTE_PHONE);
+    await whatsappAssistant.closeOpenHrConfirmation(confId);
+    const after = await whatsappAssistant.listOpenHrFlowsForOwner();
+    const noteFlowGone = !after.some((it) => it.kind === 'hr_note_flow' && it.phone === OF_NOTE_PHONE);
+    const confirmationGone = !after.some((it) => it.kind === 'hr_confirmation' && it.id === confId);
+    const closedConfirmation = await whatsappAssistant.getHrConfirmation(confId);
+    const ok = hasNoteFlow && hasConfirmation && noteFlowGone && confirmationGone && closedConfirmation.status === 'cancelled';
+    await cleanupWfhLeave(OF_NOTE_PHONE);
+    await whatsappAssistant.removeHrConfirmation(confId);
     return ok;
   });
 

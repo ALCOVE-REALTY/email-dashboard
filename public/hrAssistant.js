@@ -70,6 +70,9 @@
   const commsWaViewAll = document.getElementById('hrCommsWaViewAll');
   const commsWaAllPage = document.getElementById('hrCommsWaAllPage');
   const commsWaAllList = document.getElementById('hrCommsWaAllList');
+  const openFlowsLink = document.getElementById('hrOpenFlowsLink');
+  const openFlowsPage = document.getElementById('hrOpenFlowsPage');
+  const openFlowsList = document.getElementById('hrOpenFlowsList');
   const convoPage = document.getElementById('hrConvoPage');
   const convoThread = document.getElementById('hrConvoThread');
   const convoActions = document.getElementById('hrConvoActions');
@@ -1433,6 +1436,7 @@
     else if (entry.type === 'hub') showHub();
     else if (entry.type === 'important') showImportant();
     else if (entry.type === 'waAll') showWaAll();
+    else if (entry.type === 'openFlows') showOpenFlows();
     else if (entry.type === 'conversation') openConversationPage(entry.chatId);
     else if (entry.type === 'reminders') { activeRemFilter = entry.filter; setPanelView('reminders'); loadRemindersPage(entry.filter); }
     else if (entry.type === 'reminderDetail') openReminderDetail(entry.id);
@@ -1467,6 +1471,7 @@
     const isReminders = view === 'reminders';
     const isRemDetail = view === 'reminderDetail';
     const isWaAll = view === 'waAll';
+    const isOpenFlows = view === 'openFlows';
     const isAutoList = view === 'automationList';
     const isAutomation = view === 'automation';
     const usesCommsHead = !isHome;
@@ -1480,6 +1485,7 @@
     if (remPage) remPage.hidden = !isReminders;
     if (remDetailPage) remDetailPage.hidden = !isRemDetail;
     if (commsWaAllPage) commsWaAllPage.hidden = !isWaAll;
+    if (openFlowsPage) openFlowsPage.hidden = !isOpenFlows;
     if (autoListPage) autoListPage.hidden = !isAutoList;
     if (autoPage) autoPage.hidden = !isAutomation;
     if (inputArea) inputArea.hidden = isConvo || isRemDetail || isAutomation || isAutoList;
@@ -1497,6 +1503,12 @@
       if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon whatsapp';
       if (commsHeadIcon) commsHeadIcon.innerHTML = WHATSAPP_SVG;
       if (commsHeadSubtitle) commsHeadSubtitle.textContent = '';
+    } else if (isOpenFlows) {
+      if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon whatsapp';
+      if (commsHeadIcon) commsHeadIcon.innerHTML = WHATSAPP_SVG;
+      if (commsHeadTitle) commsHeadTitle.textContent = 'Open Flows';
+      if (commsHeadSubtitle) commsHeadSubtitle.textContent = 'HR confirmations still waiting on someone';
+      if (commsHeadBadge) commsHeadBadge.hidden = true;
     } else if (isHub) {
       if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon';
       if (commsHeadIcon) commsHeadIcon.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>';
@@ -1729,6 +1741,72 @@
     }).catch(() => { /* keep showing whatever's already rendered */ });
   }
   if (commsWaViewAll) commsWaViewAll.addEventListener('click', () => { pushNav({ type: 'waAll' }); showWaAll(); });
+
+  // "Open flows" - owner visibility fix for the stuck-test-confirmation
+  // incident (a week-old pending confirmation silently blocked every new
+  // HR flow from that sender, and the owner had no way to see or clear
+  // it). Lists every open STEP1/2 HR-note flow and open STEP3+
+  // confirmation so Subhodeep can close stuck/test ones himself.
+  function openFlowsAgeLabel(ageMs) {
+    const mins = Math.max(0, Math.round(ageMs / 60000));
+    if (mins < 60) return mins + 'm ago';
+    const hours = Math.round(mins / 60);
+    if (hours < 24) return hours + 'h ago';
+    return Math.round(hours / 24) + 'd ago';
+  }
+  function openFlowsStepLabel(step) {
+    const labels = {
+      awaiting_name: 'Waiting for a name',
+      awaiting_disambiguation_choice: 'Waiting on sender to pick who',
+      awaiting_manager_informed: 'Waiting on sender (manager informed?)',
+      awaiting_approval_obtained: 'Waiting on sender (approval obtained?)',
+      awaiting_manager: 'Waiting on manager reply',
+      ambiguous_owner_review: 'Manager reply unclear - needs your review'
+    };
+    return labels[step] || step || '—';
+  }
+  function renderOpenFlowsList(items) {
+    if (!openFlowsList) return;
+    if (!items.length) { openFlowsList.innerHTML = '<div class="wf-rem-empty">No open HR flows right now.</div>'; return; }
+    openFlowsList.innerHTML = items.map((it) => {
+      const who = it.senderName || it.phone || 'Unknown sender';
+      return '<div class="wf-auto-task-card">' +
+        '<div class="wf-auto-task-head"><div style="flex:1;min-width:0">' +
+          '<div class="wf-auto-task-subject">' + escapeHtml(who) + '</div>' +
+          '<div class="wf-auto-hint">' + escapeHtml(it.topic || 'HR matter') + '</div>' +
+          '<div class="wf-auto-hint">' + escapeHtml(openFlowsStepLabel(it.step)) + (it.manager ? ' · Manager: ' + escapeHtml(it.manager) : '') + '</div>' +
+          '<div class="wf-auto-hint">Open ' + escapeHtml(openFlowsAgeLabel(it.ageMs)) + '</div>' +
+        '</div></div>' +
+        '<div class="wf-auto-actions">' +
+          '<button type="button" class="danger" data-kind="' + escapeHtml(it.kind) + '" data-phone="' + escapeHtml(it.phone || '') + '" data-id="' + escapeHtml(it.id || '') + '">Close</button>' +
+        '</div></div>';
+    }).join('');
+  }
+  async function loadOpenFlows() {
+    if (!openFlowsList) return;
+    openFlowsList.innerHTML = '<div class="wf-skeleton-list"><div class="wf-skeleton-row"></div><div class="wf-skeleton-row"></div></div>';
+    try {
+      const resp = await fetch('/api/workforce/hr-assistant/open-flows');
+      const data = await resp.json();
+      renderOpenFlowsList(data.items || []);
+    } catch (err) {
+      openFlowsList.innerHTML = '<div class="wf-rem-empty">Could not load open flows.</div>';
+    }
+  }
+  function showOpenFlows() {
+    setPanelView('openFlows');
+    loadOpenFlows();
+  }
+  if (openFlowsLink) openFlowsLink.addEventListener('click', () => { pushNav({ type: 'openFlows' }); showOpenFlows(); });
+  if (openFlowsList) {
+    openFlowsList.addEventListener('click', async (e) => {
+      const btn = e.target.closest('button[data-kind]');
+      if (!btn) return;
+      const kind = btn.dataset.kind, phone = btn.dataset.phone, id = btn.dataset.id;
+      if (!(await showConfirmDialog('Close this HR flow? This stops waiting on it and removes it from this list - use it for stuck or test flows only.', { confirmLabel: 'Close flow' }))) return;
+      await runButtonAction(btn, () => postJsonOrThrow('/api/workforce/hr-assistant/open-flows/close', { kind, phone: phone || undefined, id: id || undefined }), () => { showActionToast('Flow closed'); loadOpenFlows(); });
+    });
+  }
 
   // Stale-while-revalidate (speed fix): renders whatever's already cached
   // (usually warm from the 30s badge poll) instantly, with no spinner,
