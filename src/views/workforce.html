@@ -182,8 +182,18 @@
         <div class="wf-comms-section">
           <div class="wf-comms-section-head">
             <span>Important WhatsApp</span>
-            <span style="display:flex;align-items:center;gap:12px">
-              <span class="wf-comms-viewall" id="hrOpenFlowsLink" title="Open HR confirmation flows still waiting on someone">Open flows ›</span>
+            <span style="display:flex;align-items:center;gap:4px">
+              <button type="button" class="wf-open-flows-btn" id="hrOpenFlowsBtn" aria-label="Open flows">
+                <span class="wf-open-flows-btn-circle">
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M6 4h12"/>
+                    <path d="M6 20h12"/>
+                    <path d="M7 4c0 4.5 3.2 6.5 5 8-1.8 1.5-5 3.5-5 8"/>
+                    <path d="M17 4c0 4.5-3.2 6.5-5 8 1.8 1.5 5 3.5 5 8"/>
+                  </svg>
+                </span>
+                <span class="wf-open-flows-badge wi-count-badge danger" id="hrOpenFlowsBadge" hidden></span>
+              </button>
               <span class="wf-comms-viewall" id="hrCommsWaViewAll">View All ›</span>
             </span>
           </div>

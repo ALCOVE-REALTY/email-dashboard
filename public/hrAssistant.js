@@ -70,7 +70,8 @@
   const commsWaViewAll = document.getElementById('hrCommsWaViewAll');
   const commsWaAllPage = document.getElementById('hrCommsWaAllPage');
   const commsWaAllList = document.getElementById('hrCommsWaAllList');
-  const openFlowsLink = document.getElementById('hrOpenFlowsLink');
+  const openFlowsBtn = document.getElementById('hrOpenFlowsBtn');
+  const openFlowsBadge = document.getElementById('hrOpenFlowsBadge');
   const openFlowsPage = document.getElementById('hrOpenFlowsPage');
   const openFlowsList = document.getElementById('hrOpenFlowsList');
   const convoPage = document.getElementById('hrConvoPage');
@@ -1506,8 +1507,8 @@
     } else if (isOpenFlows) {
       if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon whatsapp';
       if (commsHeadIcon) commsHeadIcon.innerHTML = WHATSAPP_SVG;
-      if (commsHeadTitle) commsHeadTitle.textContent = 'Open Flows';
-      if (commsHeadSubtitle) commsHeadSubtitle.textContent = 'HR confirmations still waiting on someone';
+      if (commsHeadTitle) commsHeadTitle.textContent = 'Open flows';
+      if (commsHeadSubtitle) commsHeadSubtitle.textContent = 'Confirmations still in progress';
       if (commsHeadBadge) commsHeadBadge.hidden = true;
     } else if (isHub) {
       if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon';
@@ -1747,66 +1748,79 @@
   // HR flow from that sender, and the owner had no way to see or clear
   // it). Lists every open STEP1/2 HR-note flow and open STEP3+
   // confirmation so Subhodeep can close stuck/test ones himself.
+  const OPEN_FLOWS_WAITING_ON_ICON = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>';
   function openFlowsAgeLabel(ageMs) {
     const mins = Math.max(0, Math.round(ageMs / 60000));
-    if (mins < 60) return mins + 'm ago';
+    if (mins < 60) return mins + 'm';
     const hours = Math.round(mins / 60);
-    if (hours < 24) return hours + 'h ago';
-    return Math.round(hours / 24) + 'd ago';
+    if (hours < 24) return hours + 'h';
+    return Math.round(hours / 24) + 'd';
   }
-  function openFlowsStepLabel(step) {
-    const labels = {
-      awaiting_name: 'Waiting for a name',
-      awaiting_disambiguation_choice: 'Waiting on sender to pick who',
-      awaiting_manager_informed: 'Waiting on sender (manager informed?)',
-      awaiting_approval_obtained: 'Waiting on sender (approval obtained?)',
-      awaiting_manager: 'Waiting on manager reply',
-      ambiguous_owner_review: 'Manager reply unclear - needs your review'
-    };
-    return labels[step] || step || '—';
+  function openFlowsWaitingOnLabel(it) {
+    if (it.waitingOn === 'manager') return "Waiting for " + (it.manager || 'the manager') + "'s confirmation";
+    if (it.waitingOn === 'owner') return 'Waiting for your review';
+    return "Waiting for the sender's reply";
   }
   function renderOpenFlowsList(items) {
     if (!openFlowsList) return;
-    if (!items.length) { openFlowsList.innerHTML = '<div class="wf-rem-empty">No open HR flows right now.</div>'; return; }
+    if (!items.length) { openFlowsList.innerHTML = '<div class="wf-rem-empty">No open flows.</div>'; return; }
     openFlowsList.innerHTML = items.map((it) => {
-      const who = it.senderName || it.phone || 'Unknown sender';
-      return '<div class="wf-auto-task-card">' +
+      const sender = it.senderName ? (it.senderName + ' · ' + it.phone) : it.phone;
+      const managerLine = it.manager ? (it.manager + (it.managerPhone ? ' · ' + it.managerPhone : '')) : 'Not chosen yet';
+      return '<div class="wf-auto-task-card wf-open-flow-row" data-chat-id="' + escapeHtml(it.phone || '') + '" role="button" tabindex="0">' +
         '<div class="wf-auto-task-head"><div style="flex:1;min-width:0">' +
-          '<div class="wf-auto-task-subject">' + escapeHtml(who) + '</div>' +
-          '<div class="wf-auto-hint">' + escapeHtml(it.topic || 'HR matter') + '</div>' +
-          '<div class="wf-auto-hint">' + escapeHtml(openFlowsStepLabel(it.step)) + (it.manager ? ' · Manager: ' + escapeHtml(it.manager) : '') + '</div>' +
-          '<div class="wf-auto-hint">Open ' + escapeHtml(openFlowsAgeLabel(it.ageMs)) + '</div>' +
+          '<div class="wf-auto-task-subject">' + escapeHtml(sender) + '</div>' +
+          '<div class="wf-auto-hint">' + escapeHtml(it.topic || 'HR matter') + (it.detail ? ' · ' + escapeHtml(it.detail) : '') + '</div>' +
+          '<div class="wf-auto-hint">Manager: ' + escapeHtml(managerLine) + '</div>' +
+          '<div class="wf-auto-hint" style="display:flex;align-items:center;gap:4px">' + OPEN_FLOWS_WAITING_ON_ICON + escapeHtml(openFlowsWaitingOnLabel(it)) + '</div>' +
+          '<div class="wf-auto-hint">' + escapeHtml(openFlowsAgeLabel(it.ageMs)) + ' ago</div>' +
         '</div></div>' +
         '<div class="wf-auto-actions">' +
           '<button type="button" class="danger" data-kind="' + escapeHtml(it.kind) + '" data-phone="' + escapeHtml(it.phone || '') + '" data-id="' + escapeHtml(it.id || '') + '">Close</button>' +
         '</div></div>';
     }).join('');
+    openFlowsList.querySelectorAll('.wf-open-flow-row').forEach((row) => {
+      row.addEventListener('click', () => { pushNav({ type: 'conversation', chatId: row.dataset.chatId }); openConversationPage(row.dataset.chatId); });
+    });
+    // Attached directly to each Close button (not delegated on the list
+    // container) so stopPropagation runs BEFORE the row's own click
+    // listener above - a delegated listener on an ancestor fires only
+    // after the row's own listener already would have, too late to stop it.
+    openFlowsList.querySelectorAll('button[data-kind]').forEach((btn) => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const kind = btn.dataset.kind, phone = btn.dataset.phone, id = btn.dataset.id;
+        if (!(await showConfirmDialog('Close this flow? This stops any further messages for it and removes it from this list - use it for stuck or test flows only.', { confirmLabel: 'Close flow' }))) return;
+        await runButtonAction(btn, () => postJsonOrThrow('/api/workforce/hr-assistant/open-flows/close', { kind, phone: phone || undefined, id: id || undefined }), () => { showActionToast('Flow closed'); loadOpenFlows(); refreshOpenFlowsBadge(); });
+      });
+    });
+  }
+  async function loadOpenFlowsItems() {
+    const resp = await fetch('/api/workforce/hr-assistant/open-flows');
+    const data = await resp.json();
+    return data.items || [];
   }
   async function loadOpenFlows() {
     if (!openFlowsList) return;
     openFlowsList.innerHTML = '<div class="wf-skeleton-list"><div class="wf-skeleton-row"></div><div class="wf-skeleton-row"></div></div>';
     try {
-      const resp = await fetch('/api/workforce/hr-assistant/open-flows');
-      const data = await resp.json();
-      renderOpenFlowsList(data.items || []);
+      renderOpenFlowsList(await loadOpenFlowsItems());
     } catch (err) {
       openFlowsList.innerHTML = '<div class="wf-rem-empty">Could not load open flows.</div>';
     }
+  }
+  // The entry icon's own badge (hidden at 0) - refreshed whenever
+  // Important Communications loads, since that's the only place the icon
+  // itself is visible (see loadCommsPage below).
+  async function refreshOpenFlowsBadge() {
+    if (!openFlowsBadge) return;
+    try { setCountBadge(openFlowsBadge, (await loadOpenFlowsItems()).length); } catch (err) { /* keep showing whatever was last known */ }
   }
   function showOpenFlows() {
     setPanelView('openFlows');
     loadOpenFlows();
   }
-  if (openFlowsLink) openFlowsLink.addEventListener('click', () => { pushNav({ type: 'openFlows' }); showOpenFlows(); });
-  if (openFlowsList) {
-    openFlowsList.addEventListener('click', async (e) => {
-      const btn = e.target.closest('button[data-kind]');
-      if (!btn) return;
-      const kind = btn.dataset.kind, phone = btn.dataset.phone, id = btn.dataset.id;
-      if (!(await showConfirmDialog('Close this HR flow? This stops waiting on it and removes it from this list - use it for stuck or test flows only.', { confirmLabel: 'Close flow' }))) return;
-      await runButtonAction(btn, () => postJsonOrThrow('/api/workforce/hr-assistant/open-flows/close', { kind, phone: phone || undefined, id: id || undefined }), () => { showActionToast('Flow closed'); loadOpenFlows(); });
-    });
-  }
+  if (openFlowsBtn) openFlowsBtn.addEventListener('click', () => { pushNav({ type: 'openFlows' }); showOpenFlows(); });
 
   // Stale-while-revalidate (speed fix): renders whatever's already cached
   // (usually warm from the 30s badge poll) instantly, with no spinner,
@@ -1815,6 +1829,7 @@
   // and a slow/failed fetch never leaves it blank. Only a true cold start
   // (nothing cached yet) shows the skeleton placeholder.
   async function loadCommsPage() {
+    refreshOpenFlowsBadge(); // fire-and-forget, independent of the mails/WhatsApp render below
     if (pageDataCache.comms) {
       renderCommsData(pageDataCache.comms);
     } else if (commsWaList) {

@@ -3078,28 +3078,61 @@ async function senderHasPendingHrConfirmation(senderPhone) {
   const normalized = whatsapp.normalizePhone(senderPhone);
   return all.some((r) => r.status === 'awaiting_manager' && whatsapp.normalizePhone(r.senderPhone) === normalized);
 }
+// Fixed topic categories for the Open Flows UI (per direct instruction) -
+// matched by meaning against whatever free-text topicLabel/summary the
+// flow was saved with, never a new separate structured field (that would
+// mean re-classifying every existing flow). Order matters: the more
+// specific categories are checked before the generic "duty"/"leave"
+// catch-alls, since an off-day-duty or half-day message's own text often
+// also contains those broader words.
+const OPEN_FLOW_TOPIC_CATEGORIES = [
+  { re: /half.?[- ]?day/i, label: 'Half-day' },
+  { re: /work[- ]from[- ]home|\bwfh\b|bari.*(theke|thaka).*kaj/i, label: 'WFH' },
+  { re: /off.?[- ]?day|holiday|chhutir din/i, label: 'Off-day duty' },
+  { re: /\blate\b|deri/i, label: 'Late' },
+  { re: /early[- ]?leav|early[- ]?out/i, label: 'Early leave' },
+  { re: /leave|chhutti|chuti/i, label: 'Leave' },
+  { re: /duty/i, label: 'Duty change' }
+];
+function normalizeOpenFlowTopicCategory(topicLabel, summary) {
+  const text = String(topicLabel || '') + ' ' + String(summary || '');
+  for (const c of OPEN_FLOW_TOPIC_CATEGORIES) { if (c.re.test(text)) return c.label; }
+  return topicLabel || 'HR matter';
+}
 // Direct instruction - the full "Open flows" list for the owner: every
 // STEP 1/2 flow still awaiting the sender (name/disambiguation/confirm/
 // approval-obtained/manager-informed) PLUS every STEP 3+ confirmation
 // still awaiting the manager (or the owner's own ambiguous-reply review),
 // in one combined, sorted-by-age view, with a direct way to close each
 // one - so a stuck/forgotten flow (live incident: 917278793115's week-old
-// pending confirmation) is never again invisible.
+// pending confirmation) is never again invisible. `waitingOn` names who
+// the flow is actually stuck with ('sender'/'manager'/'owner') so the UI
+// never has to re-derive that from the raw step name.
 async function listOpenHrFlowsForOwner() {
   const [noteFlows, allConfirmations] = await Promise.all([
     listOpenHrNoteFlows(),
     listAllHrConfirmations()
   ]);
   const now = Date.now();
-  const fromNoteFlows = noteFlows.map((f) => ({
-    kind: 'hr_note_flow',
-    phone: f.phone,
-    senderName: null,
-    topic: f.topicLabel || f.summary || 'HR matter',
-    step: f.step,
-    manager: (f.candidate && f.candidate.name) || (Array.isArray(f.candidates) ? f.candidates.map((c) => c.name).join(' / ') : null),
-    managerPhone: null,
-    ageMs: now - (f.createdAt || f.lastTouchedAt || now)
+  const fromNoteFlows = await Promise.all(noteFlows.map(async (f) => {
+    const resolvedSender = await findEmployeeByPhone(f.phone).catch(() => null);
+    // A single resolved candidate (pending the sender's own yes/no, or
+    // already picked out of a disambiguation list) counts as "chosen" -
+    // only a genuinely still-open disambiguation (2+ candidates, none
+    // picked yet) or no candidate at all shows "Not chosen yet".
+    const manager = (f.candidate && f.candidate.name) || null;
+    return {
+      kind: 'hr_note_flow',
+      phone: f.phone,
+      senderName: (resolvedSender && resolvedSender.emp.name) || null,
+      topic: normalizeOpenFlowTopicCategory(f.topicLabel, f.summary),
+      detail: f.summary || f.topicLabel || null,
+      step: f.step,
+      manager,
+      managerPhone: (f.candidate && f.candidate.contactNumber) ? whatsapp.normalizePhone(f.candidate.contactNumber) : null,
+      waitingOn: 'sender',
+      ageMs: now - (f.createdAt || f.lastTouchedAt || now)
+    };
   }));
   const fromConfirmations = allConfirmations
     .filter((c) => c.status === 'awaiting_manager' || c.status === 'ambiguous_owner_review')
@@ -3108,10 +3141,12 @@ async function listOpenHrFlowsForOwner() {
       id: c.id,
       phone: c.senderPhone,
       senderName: c.senderName,
-      topic: c.topicLabel || c.summary || 'HR matter',
+      topic: normalizeOpenFlowTopicCategory(c.topicLabel, c.summary),
+      detail: c.summary || c.topicLabel || null,
       step: c.status,
       manager: c.thirdPartyName,
       managerPhone: c.thirdPartyPhone,
+      waitingOn: c.status === 'ambiguous_owner_review' ? 'owner' : 'manager',
       ageMs: now - (c.createdAt || now)
     }));
   return fromNoteFlows.concat(fromConfirmations).sort((a, b) => b.ageMs - a.ageMs);

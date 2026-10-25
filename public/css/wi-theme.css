@@ -1582,6 +1582,23 @@ body { background: var(--wi-bg); }
   font-size: 0.8rem; font-weight: 800; color: var(--wi-ink); padding: 0 2px;
 }
 .wf-comms-viewall { font-size: 0.72rem; font-weight: 700; color: var(--wi-primary); cursor: pointer; }
+/* Open flows entry point - an hourglass icon button (30px visible circle,
+   44px tap area per direct instruction) sitting between the "Important
+   WhatsApp" title and "View All", with a small count badge overlaid at
+   its top-right corner (hidden at 0 via the shared .wi-count-badge
+   component/setCountBadge - see hrAssistant.js). */
+.wf-open-flows-btn {
+  position: relative; display: inline-flex; align-items: center; justify-content: center;
+  width: 44px; height: 44px; border: none; background: transparent; padding: 0; cursor: pointer; flex-shrink: 0;
+}
+.wf-open-flows-btn-circle {
+  width: 30px; height: 30px; border-radius: 50%;
+  background: var(--wi-primary-50); color: var(--wi-primary);
+  display: flex; align-items: center; justify-content: center;
+  transition: background-color .15s ease;
+}
+.wf-open-flows-btn:active .wf-open-flows-btn-circle { background: var(--wi-primary-ring); }
+.wf-open-flows-badge { position: absolute; top: 2px; right: 2px; }
 .wf-comms-mail-card {
   border-radius: var(--wi-r-card); box-shadow: var(--wi-sh-card); background: var(--wi-surface);
   padding: 18px 14px; text-align: center; font-size: 0.78rem; font-weight: 600; color: var(--wi-muted);
