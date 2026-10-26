@@ -834,6 +834,41 @@ async function checkAsync(label, fn) {
     return ok;
   });
 
+  console.log('='.repeat(70));
+  console.log('TASK 3 (2026-10-26): a manager reply meaning "I\'ll check and answer later" is never treated as unclear - it gets a plain acknowledgement, the confirmation stays untouched (no unclearAttempts, no clarifying retry), and the existing 3-hour reminder/end-of-day escalation keeps working unchanged');
+  console.log('='.repeat(70));
+  for (const [label, replyText] of [
+    ['Dekhchi', 'Dekhchi'],
+    ['Pore bolchi', 'Pore bolchi'],
+    ['Dekhe janacchi', 'Dekhe janacchi'],
+    ['Check kore bolchi', 'Check kore bolchi'],
+    ['Later', 'Later']
+  ]) {
+    await checkAsync('manager "' + label + '" reply is recognized as a defer, not unclear - gets "Thik ache, apni dekhe janaben.", confirmation stays awaiting_manager with unclearAttempts still 0', async () => {
+      const phone = '910000000870';
+      await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
+      await whatsappAssistant.decideAutoReply({ phone, name: 'SenderDefer', firstName: 'SenderDefer', text: 'Ajke amake duty korte bola hoyechhe. Tar poriborte onno din chhutti nite bola hoyechhe.', isGroup: false, history: [] });
+      await whatsappAssistant.decideAutoReply({ phone, name: 'SenderDefer', firstName: 'SenderDefer', text: 'Tanmoy Mondal bolechhen.', isGroup: false, history: [] });
+      const d = await whatsappAssistant.decideAutoReply({ phone: TANMOY_MONDAL_PHONE, name: 'Tanmoy Mondal', firstName: 'Tanmoy', text: replyText, isGroup: false, history: [] });
+      const confirmations = (await whatsappAssistant.listAllHrConfirmations()).filter((c) => c.senderPhone === phone);
+      const ok = d.replyText.includes('Thik ache, apni dekhe janaben.')
+        && confirmations.length === 1 && confirmations[0].status === 'awaiting_manager' && (confirmations[0].unclearAttempts || 0) === 0;
+      await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
+      return ok;
+    });
+  }
+  await checkAsync('TASK 3 REGRESSION: a genuinely unclear manager reply still works exactly as before (unaffected by the defer-detection)', async () => {
+    const phone = '910000000871';
+    await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
+    await whatsappAssistant.decideAutoReply({ phone, name: 'SenderUnclear2', firstName: 'SenderUnclear2', text: 'Ajke amake duty korte bola hoyechhe. Tar poriborte onno din chhutti nite bola hoyechhe.', isGroup: false, history: [] });
+    await whatsappAssistant.decideAutoReply({ phone, name: 'SenderUnclear2', firstName: 'SenderUnclear2', text: 'Tanmoy Mondal bolechhen.', isGroup: false, history: [] });
+    const d = await whatsappAssistant.decideAutoReply({ phone: TANMOY_MONDAL_PHONE, name: 'Tanmoy Mondal', firstName: 'Tanmoy', text: 'eta ki byapar bujhlam na', isGroup: false, history: [] });
+    const confirmations = (await whatsappAssistant.listAllHrConfirmations()).filter((c) => c.senderPhone === phone);
+    const ok = d.replyText.includes('Ektu nishchit kore bolben') && confirmations.length === 1 && confirmations[0].status === 'awaiting_manager' && (confirmations[0].unclearAttempts || 0) === 1;
+    await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
+    return ok;
+  });
+
   await checkAsync('several pending confirmations for the SAME manager - a bare "Haa" asks which one instead of guessing', async () => {
     const SA = '910000000868', SB = '910000000869';
     const c1 = await whatsappAssistant.saveHrConfirmation({ senderPhone: SA, senderName: 'SenderA', summary: 'summary A', summaryLocalized: 'summary A', lang: 'english', thirdPartyPhone: TANMOY_MONDAL_PHONE, thirdPartyName: 'Tanmoy Mondal', thirdPartyDepartment: 'Civil', status: 'awaiting_manager', createdAt: Date.now(), remindedAt: null, escalatedAt: null, reminderId: null });
@@ -3633,8 +3668,12 @@ async function checkAsync(label, fn) {
     await whatsappAssistant.decideAutoReply({ phone: SAURAV_PHONE, name: 'Saurav', firstName: 'Saurav', text: 'Good morning Sir. Ajke amake duty korte bola hoyechhe. Tar poriborte onno din chhutti nite bola hoyechhe.', isGroup: false, history: [] });
     await whatsappAssistant.decideAutoReply({ phone: SAURAV_PHONE, name: 'Saurav', firstName: 'Saurav', text: 'Sir, apni Srirampur site-er Tanmoy Sir-ke jiggasa korte paren. Uni ajke duty korte bolechhen ar onno din chhutti nite bolechhen.', isGroup: false, history: [] });
     await whatsappAssistant.decideAutoReply({ phone: SAURAV_PHONE, name: 'Saurav', firstName: 'Saurav', text: 'Tanmoy Mondal', isGroup: false, history: [] });
-    const firstUnclear = await whatsappAssistant.decideAutoReply({ phone: TANMOY_MONDAL_PHONE, name: 'Tanmoy Mondal', firstName: 'Tanmoy', text: 'accha dekhchi', isGroup: false, history: [] });
-    const secondUnclear = await whatsappAssistant.decideAutoReply({ phone: TANMOY_MONDAL_PHONE, name: 'Tanmoy Mondal', firstName: 'Tanmoy', text: 'accha dekhchi abar', isGroup: false, history: [] });
+    // Updated for Task 3 (2026-10-26) - "dekhchi" is now correctly
+    // recognized as a deferred-answer reply, not unclear, so this test's
+    // own "unclear" examples needed to change to something that genuinely
+    // isn't a yes/no/defer answer.
+    const firstUnclear = await whatsappAssistant.decideAutoReply({ phone: TANMOY_MONDAL_PHONE, name: 'Tanmoy Mondal', firstName: 'Tanmoy', text: 'accha hmm', isGroup: false, history: [] });
+    const secondUnclear = await whatsappAssistant.decideAutoReply({ phone: TANMOY_MONDAL_PHONE, name: 'Tanmoy Mondal', firstName: 'Tanmoy', text: 'accha hmm abar', isGroup: false, history: [] });
     const ambiguous = (await whatsappAssistant.listAllHrConfirmations()).find((c) => c.senderPhone === SAURAV_PHONE && c.status === 'ambiguous_owner_review');
     const resolve = ambiguous ? await whatsappAssistant.resolveAmbiguousHrConfirmation(ambiguous.id, 'confirmed') : { ok: false };
     // Every decideAutoReply call here passes history: [] (same convention

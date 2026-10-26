@@ -3471,6 +3471,25 @@ const HR_CONFIRMATION_SENDER_RESULT_NO = {
   hinglish: (thirdPartyName) => thirdPartyName + ' se baat ho gayi hai, unhone yeh baat confirm nahi ki. Main poori baat Subhodeep ko bata raha hoon, woh aapse sampark karenge.',
   english: (thirdPartyName) => "I've spoken with " + thirdPartyName + " and they did not confirm this. I'm letting Subhodeep know the full details, and he will get in touch with you."
 };
+// Task 3 (2026-10-26) - a manager reply that plainly means "I'll check
+// and answer later" ("Dekhchi", "Pore bolchi", "Dekhe janacchi", "Check
+// kore bolchi", "Later") is NOT genuinely unclear - it must never count
+// against MAX_HR_CONFIRMATION_UNCLEAR_ATTEMPTS or trigger the
+// clarifying-question retry. It gets its own short acknowledgement and
+// the confirmation is left exactly as-is (status/unclearAttempts
+// untouched), so the EXISTING 3-hour reminder and end-of-day escalation
+// in checkHrConfirmationNudges keep working unchanged - this is purely
+// an earlier, correctly-recognized exit from the "neither yes nor no"
+// branch, never a new waiting mechanism of its own.
+const HR_CONFIRMATION_DEFER_RE = /\b(dekhchi|dekhe\s*(bolchi|boli|janacchi|janabo)|pore\s*(bol(chi|bo)|janabo|janacchi)|check\s*kore\s*(bol(chi|bo)|janabo))\b|\blater\b|\bwill\s*(check|see|let\s*you\s*know)\b|\bi'?ll\s*(check|see|get\s*back)\b/i;
+function isDeferredAnswerReply(text) {
+  return HR_CONFIRMATION_DEFER_RE.test(collapseRepeatedLetters(String(text || '').trim()));
+}
+const HR_CONFIRMATION_MANAGER_DEFER_ACK = {
+  banglish: 'Thik ache, apni dekhe janaben.',
+  hinglish: 'Theek hai, aap dekh kar bata dijiyega.',
+  english: 'Okay, please let me know once you have checked.'
+};
 const HR_CONFIRMATION_MANAGER_UNCLEAR_RETRY = {
   banglish: (summary) => 'Ektu nishchit kore bolben - ' + summary + ', eta ki thik?',
   hinglish: (summary) => 'Thoda spasht kar denge - ' + summary + ', kya yeh sahi hai?',
@@ -4161,6 +4180,12 @@ async function handleHrConfirmationManagerReply({ phone, text, lang, pendingConf
     await sendHrConfirmationResultToSender(confirmation, resultPrefix + (HR_CONFIRMATION_SENDER_RESULT_NO[confirmation.lang] || HR_CONFIRMATION_SENDER_RESULT_NO.english)(confirmation.thirdPartyName));
     await postHrConfirmationOwnerRecord(confirmation, 'No (not confirmed)');
     return { case: 'acknowledged', replyText: HR_CONFIRMATION_MANAGER_THANKS_NO[replyLang] || HR_CONFIRMATION_MANAGER_THANKS_NO.english, summaryForOwner: null, lang: replyLang };
+  }
+  // Task 3 - "I'll check and answer later" is not unclear; acknowledge
+  // and wait, never counting toward the clarifying-question/escalation
+  // attempts below (see HR_CONFIRMATION_DEFER_RE's own comment).
+  if (isDeferredAnswerReply(t)) {
+    return { case: 'acknowledged', replyText: HR_CONFIRMATION_MANAGER_DEFER_ACK[replyLang] || HR_CONFIRMATION_MANAGER_DEFER_ACK.english, summaryForOwner: null, lang: replyLang };
   }
   // Neither yes nor no - one clarifying question max (never a loop); after
   // that, stop asking and hand it to the owner as a card (Confirmed / Not

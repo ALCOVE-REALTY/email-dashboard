@@ -302,8 +302,10 @@ scenario('Manager unclear reply raises an owner card after exactly one retry; th
   try {
     await whatsappAssistant.decideAutoReply({ phone, name: 'ScenUnc', firstName: 'ScenUnc', text: 'Ajke amake duty korte bola hoyechhe. Tar poriborte onno din chhutti nite bola hoyechhe.', isGroup: false, history: [] });
     await whatsappAssistant.decideAutoReply({ phone, name: 'ScenUnc', firstName: 'ScenUnc', text: 'Tanmoy Mondal bolechhen.', isGroup: false, history: [] });
-    await whatsappAssistant.decideAutoReply({ phone: TANMOY_MONDAL_PHONE, name: 'Tanmoy Mondal', firstName: 'Tanmoy', text: 'accha dekhchi', isGroup: false, history: [] });
-    await whatsappAssistant.decideAutoReply({ phone: TANMOY_MONDAL_PHONE, name: 'Tanmoy Mondal', firstName: 'Tanmoy', text: 'accha dekhchi abar', isGroup: false, history: [] });
+    // Updated for Task 3 (2026-10-26) - "dekhchi" is now correctly
+    // recognized as a deferred-answer reply, not unclear.
+    await whatsappAssistant.decideAutoReply({ phone: TANMOY_MONDAL_PHONE, name: 'Tanmoy Mondal', firstName: 'Tanmoy', text: 'accha hmm', isGroup: false, history: [] });
+    await whatsappAssistant.decideAutoReply({ phone: TANMOY_MONDAL_PHONE, name: 'Tanmoy Mondal', firstName: 'Tanmoy', text: 'accha hmm abar', isGroup: false, history: [] });
     const ambiguous = (await whatsappAssistant.listAllHrConfirmations()).find((c) => c.senderPhone === phone && c.status === 'ambiguous_owner_review');
     if (!ambiguous) return { pass: false, detail: 'expected an ambiguous_owner_review record after 2 unclear replies' };
     const resolve = await whatsappAssistant.resolveAmbiguousHrConfirmation(ambiguous.id, 'confirmed');
