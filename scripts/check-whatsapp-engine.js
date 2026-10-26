@@ -717,7 +717,13 @@ async function checkAsync(label, fn) {
   await checkAsync('STEP 2 (Banglish, 2+ matches): naming an ambiguous person asks the sender which one, with the spec\'s exact "hr_note_third_party" question ending', async () => {
     const d2 = await whatsappAssistant.decideAutoReply({ phone: HR_SENDER_BN, name: 'Sender1', firstName: 'Sender1', text: 'Sir, apni Srirampur site-er Tanmoy Sir-ke jiggasa korte paren. Uni ajke duty korte bolechhen ar onno din chhutti nite bolechhen.', isGroup: false, history: [] });
     const pending = await whatsappAssistant.getPendingHrNoteFlow(HR_SENDER_BN);
-    return d2.case === 'acknowledged' && d2.replyText.includes('Apni kar kotha bolchhen?') && Boolean(pending) && pending.step === 'awaiting_disambiguation_choice';
+    // Updated for Task 2 Wave 1's new disambiguation wording ("...-er
+    // bishoye kar kotha bolchhen?" with an instruction/approval word
+    // slotted in, plus a one-candidate-per-line list) - "kar kotha
+    // bolchhen?" is still the question's ending, just no longer the
+    // whole thing; see check-whatsapp-scenarios.js's T2-2 for the exact
+    // full-text assertion of the new wording.
+    return d2.case === 'acknowledged' && d2.replyText.includes('kar kotha bolchhen?') && Boolean(pending) && pending.step === 'awaiting_disambiguation_choice';
   });
   await checkAsync('STEP 3 (Banglish): answering with the full name resolves, thanks the sender with the exact spec wording, and clears the whole flow', async () => {
     const d3 = await whatsappAssistant.decideAutoReply({ phone: HR_SENDER_BN, name: 'Sender1', firstName: 'Sender1', text: 'Tanmoy Mondal', isGroup: false, history: [] });
@@ -1045,7 +1051,7 @@ async function checkAsync(label, fn) {
     await cleanupWfhLeave(phone);
     await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Kalke chuti nebo', isGroup: false, history: [] });
     const d2 = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Haa, Tanmoy Sir approve korechhen', isGroup: false, history: [] });
-    const ok = d2.replyText.includes('Apni kar kotha bolchhen?'); // disambiguates among the 4 real Tanmoys, exactly like any other name resolution
+    const ok = d2.replyText.includes('kar kotha bolchhen?'); // disambiguates among the 4 real Tanmoys, exactly like any other name resolution (Task 2 Wave 1 wording update)
     await cleanupWfhLeave(phone);
     return ok;
   });
@@ -1423,7 +1429,9 @@ async function checkAsync(label, fn) {
   await checkAsync('replay turn 2: "Subhadip HR" - thanks to the item 2 phonetic+hint fix, this now resolves DIRECTLY to Subhodeep Kundu Chowdhury (HR department) and asks to confirm - the flow is never lost', async () => {
     const d = await whatsappAssistant.decideAutoReply({ phone: SCREENSHOT_SENDER, name: 'Sender', firstName: 'Sender', text: 'Subhadip HR', isGroup: false, history: [] });
     const pending = await whatsappAssistant.getPendingHrNoteFlow(SCREENSHOT_SENDER);
-    return d.replyText === 'Ami SUBH, Subhodeep-er HR Assistant. Apni ki Subhodeep Kundu Chowdhury (HR department)-er kotha bolchhen?'
+    // Updated for Task 2 Wave 1's new confirm-question wording (the
+    // instruction/approval word is now named in the question itself).
+    return d.replyText === 'Ami SUBH, Subhodeep-er HR Assistant. Apni ki ei instruction-er bishoye Subhodeep Kundu Chowdhury (HR department)-er kotha bolchhen?'
       && Boolean(pending) && pending.step === 'awaiting_confirm_yes_no' && pending.candidate.name === 'Subhodeep Kundu Chowdhury';
   });
   await checkAsync('replay turn 3 ("Haa"): reaches STEP 3 (exact spec wording) and STEP 4 (manager messaged, active voice, identity line) - NEVER the old wrong "Ami apnar bishoy-ta note kore nilam ar Subhodeep-ke janiye dicchi" (no-third-party) fallback', async () => {
@@ -1461,7 +1469,7 @@ async function checkAsync(label, fn) {
     const d = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Subhadip HR', isGroup: false, history: [] });
     const pending = await whatsappAssistant.getPendingHrNoteFlow(phone);
     const ok = !d.replyText.includes('Gotokal') && !d.replyText.includes('Kodin age') && !d.replyText.includes('bishoy-e')
-      && d.replyText.includes('Apni ki Subhodeep Kundu Chowdhury (HR department)-er kotha bolchhen?')
+      && d.replyText.includes('Subhodeep Kundu Chowdhury (HR department)-er kotha bolchhen?')
       && Boolean(pending) && pending.step === 'awaiting_confirm_yes_no';
     await cleanupHrFlowArtifacts(phone, SUBHODEEP_KC_PHONE);
     return ok;
@@ -1471,7 +1479,7 @@ async function checkAsync(label, fn) {
     await cleanupHrFlowArtifacts(phone, SUBHODEEP_KC_PHONE);
     await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Ajke amake duty korte bola hoyechhe, ar er bodole onno din chhutti nite bola hoyechhe', isGroup: false, history: [] });
     const d = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Subhadip HR', isGroup: false, history: [] });
-    const ok = !d.replyText.includes('Gotokal') && !d.replyText.includes('Kodin age') && !d.replyText.includes('bishoy-e') && d.replyText.includes('Apni ki Subhodeep Kundu Chowdhury');
+    const ok = !d.replyText.includes('Gotokal') && !d.replyText.includes('Kodin age') && !d.replyText.includes('bishoy-e') && d.replyText.includes('Subhodeep Kundu Chowdhury');
     await cleanupHrFlowArtifacts(phone, SUBHODEEP_KC_PHONE);
     return ok;
   });
@@ -1592,7 +1600,7 @@ async function checkAsync(label, fn) {
     // the brand new day, so the identity line is also due, same turn as
     // the greeting.
     const d = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Good morning, Subhadip HR', isGroup: false, history: [] });
-    const expected = 'Good morning! Ami SUBH, Subhodeep-er HR Assistant. Apni ki Subhodeep Kundu Chowdhury (HR department)-er kotha bolchhen?';
+    const expected = 'Good morning! Ami SUBH, Subhodeep-er HR Assistant. Apni ki ei instruction-er bishoye Subhodeep Kundu Chowdhury (HR department)-er kotha bolchhen?';
     const ok = d.replyText === expected
       && (d.replyText.match(/Ami SUBH/g) || []).length === 1
       && (d.replyText.match(/Good morning!/g) || []).length === 1;
@@ -1751,7 +1759,7 @@ async function checkAsync(label, fn) {
     const mgrEntry = log.find((e) => e.chatId === AYAN_DAS_PHONE && e.case === 'hr_confirmation_sent');
     const confirmations = (await whatsappAssistant.listAllHrConfirmations()).filter((c) => c.senderPhone === phone);
     const ok = Boolean(pendingAfter1) && pendingAfter1.step === 'awaiting_name'
-      && d2.replyText.includes('Apni ki Ayan Das (HR department)-er kotha bolchhen?')
+      && d2.replyText.includes('Ayan Das (HR department)-er kotha bolchhen?')
       && Boolean(pendingAfter2) && pendingAfter2.step === 'awaiting_confirm_yes_no' && pendingAfter2.candidate.name === 'Ayan Das'
       && Boolean(mgrEntry) && confirmations.length === 1 && confirmations[0].thirdPartyName === 'Ayan Das' && confirmations[0].status === 'awaiting_manager';
     await cleanupHrFlowArtifacts(phone, AYAN_DAS_PHONE);

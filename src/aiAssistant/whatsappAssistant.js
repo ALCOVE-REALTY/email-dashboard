@@ -1447,6 +1447,25 @@ function textMentionsCandidateName(text, candidateName) {
   const nameWords = String(candidateName || '').toLowerCase().split(/\s+/).filter(Boolean);
   return nameWords.length > 0 && nameWords.every((nw) => textWords.includes(nw));
 }
+// Live review (2026-10-26) - resolveDisambiguationReply only ever checked
+// a number, an ordinal, an exact/fuzzy NAME match - a reply that narrows
+// via a department/designation/site HINT instead ("Ayan HR" picking
+// between "Ayan Biswas (Civil)" and "Ayan Das (HR)") was never recognized
+// at all, falling through to "Dukkhito, bujhte parini" + the full list
+// again even though the hint alone already picks exactly one candidate.
+// Reuses the SAME normalizeForMatch word-overlap logic as personHintMatches,
+// but checks "does every word of the candidate's OWN field appear
+// somewhere in the sender's text" rather than the other way around (the
+// text usually also contains the person's first name and filler words,
+// not just the hint) - never the whole text as a single opaque hint string.
+function candidateMatchesHintWords(candidate, text) {
+  const textWords = normalizeForMatch(text).split(' ').filter(Boolean);
+  if (!textWords.length) return false;
+  return [candidate.department, candidate.location, candidate.designation].filter(Boolean).some((field) => {
+    const fieldWords = normalizeForMatch(field).split(' ').filter((w) => w.length > 1);
+    return fieldWords.length > 0 && fieldWords.every((w) => textWords.includes(w));
+  });
+}
 function resolveDisambiguationReply(candidates, text) {
   const t = String(text || '').trim();
   let numCandidate = null;
@@ -1477,6 +1496,11 @@ function resolveDisambiguationReply(candidates, text) {
   if (exact.length === 1) return exact[0];
   const fuzzy = employeeService.fuzzyMatchEmployeesByName(candidates, t);
   if (fuzzy.length === 1) return fuzzy[0];
+  // A department/designation/site hint ("Ayan HR" picking the HR-dept
+  // Ayan out of 2 same-first-name candidates) - checked last, after a
+  // number/exact-name/fuzzy-name all failed to narrow to exactly one.
+  const hintMatches = candidates.filter((c) => candidateMatchesHintWords(c, t));
+  if (hintMatches.length === 1) return hintMatches[0];
   return null;
 }
 const DISAMBIGUATION_CONFLICT_QUESTION = {
@@ -2138,6 +2162,54 @@ const NAME_CONFIRM_QUESTION = {
   hinglish: (name, department) => 'Kya aap ' + name + ' (' + naturalizeDirectoryValue(department) + ') ki baat kar rahe hain?',
   english: (name, department) => 'Do you mean ' + name + ' (' + naturalizeDirectoryValue(department) + ')?'
 };
+// Direct instruction (2026-10-26 live review) - the HR-note flow's OWN
+// confirm/disambiguation questions (never the general person-lookup ones
+// above, which stay exactly as they were) now name WHICH instruction/
+// approval is being confirmed, since a sender can have more than one
+// matter open and "do you mean X?" alone was ambiguous about what for.
+// `actionWord` is null for "sudden"/"neutral" (no clean single word yet
+// for those) - the functions fall back to the plain, un-prefixed wording.
+function hrFlowConfirmActionWord(actionKind) {
+  if (actionKind === 'approval') return 'approval';
+  if (actionKind === 'instruction') return 'instruction';
+  return null;
+}
+const HR_NOTE_CONFIRM_QUESTION = {
+  banglish: (name, department, actionWord) => actionWord
+    ? 'Apni ki ei ' + actionWord + '-er bishoye ' + name + ' (' + naturalizeDirectoryValue(department) + ')-er kotha bolchhen?'
+    : 'Apni ki ' + name + ' (' + naturalizeDirectoryValue(department) + ')-er kotha bolchhen?',
+  hinglish: (name, department, actionWord) => actionWord
+    ? 'Kya is ' + actionWord + ' ke baare mein aap ' + name + ' (' + naturalizeDirectoryValue(department) + ') ki baat kar rahe hain?'
+    : 'Kya aap ' + name + ' (' + naturalizeDirectoryValue(department) + ') ki baat kar rahe hain?',
+  english: (name, department, actionWord) => actionWord
+    ? 'Regarding this ' + actionWord + ', do you mean ' + name + ' (' + naturalizeDirectoryValue(department) + ')?'
+    : 'Do you mean ' + name + ' (' + naturalizeDirectoryValue(department) + ')?'
+};
+// One name per line (was space-joined) - the intro sentence ends in the
+// question itself, the numbered list follows on its own lines.
+const HR_NOTE_DISAMBIGUATION_QUESTION = {
+  banglish: (queryName, candidates, actionWord) =>
+    'Amader company-te ' + queryName + ' naame ' + countLabel(candidates.length, 'banglish') + ' achen, apni ei ' + (actionWord || 'bishoy') + '-er bishoye kar kotha bolchhen?\n' +
+    candidates.map((c, i) => (i + 1) + ') ' + c.name + ' — ' + naturalizeDirectoryValue(c.department)).join('\n'),
+  hinglish: (queryName, candidates, actionWord) =>
+    'Hamari company mein ' + queryName + ' naam ke ' + countLabel(candidates.length, 'hinglish') + ' hain, is ' + (actionWord || 'baat') + ' ke baare mein aap kiski baat kar rahe hain?\n' +
+    candidates.map((c, i) => (i + 1) + ') ' + c.name + ' — ' + naturalizeDirectoryValue(c.department)).join('\n'),
+  english: (queryName, candidates, actionWord) =>
+    'There are ' + candidates.length + ' people named ' + queryName + ' at our company - who are you referring to regarding this ' + (actionWord || 'matter') + '?\n' +
+    candidates.map((c, i) => (i + 1) + ') ' + c.name + ' — ' + naturalizeDirectoryValue(c.department)).join('\n')
+};
+// Live review (2026-10-26) - a stated hint ("IT", "HR") that fits NONE of
+// the real name-matches (active or inactive) must never be silently
+// dropped just because exactly one ACTIVE candidate happens to survive
+// the status filter - that candidate's own department may have nothing
+// to do with the hint at all (e.g. "avijit IT" resolving unchallenged to
+// the one active "Avijit", who works in Electrical). This surfaces the
+// mismatch instead of guessing.
+const HR_NOTE_HINT_MISMATCH_CONFIRM = {
+  banglish: (hint, name, department) => 'Amar directory-te "' + hint + '"-e ei naame keu nei. Sobcheye kachhakachhi ' + name + ' (' + naturalizeDirectoryValue(department) + ') achen - Apni ki erai kotha bolchhen, naki onno keu?',
+  hinglish: (hint, name, department) => 'Hamari directory mein "' + hint + '" mein is naam ka koi nahi hai. Sabse kareeb ' + name + ' (' + naturalizeDirectoryValue(department) + ') hain - kya aap inhi ki baat kar rahe hain, ya koi aur?',
+  english: (hint, name, department) => 'No one by that name is in "' + hint + '" in our records. The closest match is ' + name + ' (' + naturalizeDirectoryValue(department) + ') - do you mean them, or someone else?'
+};
 const NAME_CONFIRM_RETRY = {
   banglish: 'Thik ache, kar kotha bolchhen? Puro naam-ta bolben?',
   hinglish: 'Theek hai, aap kiske baare mein baat kar rahe hain? Pura naam bataiyega?',
@@ -2292,7 +2364,20 @@ function departmentHintMatches(deptName, hint) {
   const normDept = normalizeForMatch(deptName);
   const normHint = normalizeForMatch(hint);
   if (!normHint) return false;
-  return normDept.includes(normHint) || normHint.split(' ').every((w) => normDept.includes(w));
+  // Live review (2026-10-26) - found live: hint "IT department" (-> "it")
+  // was matching Avijit Banduri's location "SRM-Site" (-> "srm site")
+  // because "site" contains the letters "it" as a mid-word substring.
+  // Raw .includes() on the full strings treats any short hint as a
+  // wildcard for whatever word happens to contain those letters. Matching
+  // against the WORD LIST instead (each hint word must be a COMPLETE word
+  // in deptName, not just a substring of one) keeps every genuine match -
+  // multi-word hints like "Civil Plot B" still match "CIVIL (PLOT-B)
+  // FINISHING" since each hint word is still its own word there - while
+  // dropping accidental letter-sequence collisions like "it" in "site".
+  const deptWords = normDept.split(' ').filter(Boolean);
+  if (!deptWords.length) return false;
+  if (normDept === normHint) return true;
+  return normHint.split(' ').filter(Boolean).every((w) => deptWords.includes(w));
 }
 // Live review item 7 - a hint like "Tanmoy Sir ... Clubhouse ...
 // Srirampur" names a location/site, not a department, and used to be
@@ -3534,7 +3619,7 @@ async function postHrConfirmationOwnerRecord(confirmation, outcome) {
 // handlePersonLookupRequest already uses - several matches ask the
 // sender which one, a first-name-only single match confirms once, no
 // match asks for the full name again.
-async function resolveHrNoteThirdParty({ phone, name, lang, personName, department, summary, summaryLocalized, topicLabel, actionPhrase, createdAt, previousCandidateId, history }) {
+async function resolveHrNoteThirdParty({ phone, name, lang, personName, department, summary, summaryLocalized, topicLabel, actionPhrase, actionKind, createdAt, previousCandidateId, history }) {
   // `createdAt` is the SENDER'S ORIGINAL message timestamp for this flow,
   // set once in handleHrNotificationStart and threaded through every
   // re-save from here on - never reset to Date.now() on a re-save, since
@@ -3542,6 +3627,7 @@ async function resolveHrNoteThirdParty({ phone, name, lang, personName, departme
   // (distinct from savePendingHrNoteFlow's own lastTouchedAt stamp, which
   // DOES update on every save and is used only for the 7-day TTL).
   const originalCreatedAt = createdAt || Date.now();
+  const actionWord = hrFlowConfirmActionWord(actionKind);
   const { matches: allMatches, hadTypo } = await findPersonLookupMatches(personName, department);
   const current = allMatches.filter((e) => e.status !== 'INACTIVE');
   if (!current.length) {
@@ -3551,15 +3637,15 @@ async function resolveHrNoteThirdParty({ phone, name, lang, personName, departme
     // message, a corrected name, had nothing left to continue and the
     // whole thing silently fell back to "no third party"). Re-saves the
     // SAME flow, still awaiting a name, instead of dropping it.
-    await savePendingHrNoteFlow(phone, { summary, summaryLocalized, topicLabel, actionPhrase, lang, createdAt: originalCreatedAt, step: 'awaiting_name' });
+    await savePendingHrNoteFlow(phone, { summary, summaryLocalized, topicLabel, actionPhrase, actionKind, lang, createdAt: originalCreatedAt, step: 'awaiting_name' });
     return { case: 'acknowledged', replyText: HR_NOTE_NAME_NOT_FOUND[lang] || HR_NOTE_NAME_NOT_FOUND.english, summaryForOwner: null, lang };
   }
   if (current.length > 1) {
-    await savePendingHrNoteFlow(phone, { summary, summaryLocalized, topicLabel, actionPhrase, lang, createdAt: originalCreatedAt, step: 'awaiting_disambiguation_choice', candidates: current, hadTypo, attempts: 1 });
+    await savePendingHrNoteFlow(phone, { summary, summaryLocalized, topicLabel, actionPhrase, actionKind, lang, createdAt: originalCreatedAt, step: 'awaiting_disambiguation_choice', candidates: current, hadTypo, attempts: 1 });
     const queryName = current[0].name.split(' ')[0];
     const note = hadTypo ? (TYPO_NOTE[lang] || TYPO_NOTE.english) : '';
-    const fn = DISAMBIGUATION_QUESTION[lang] || DISAMBIGUATION_QUESTION.english;
-    return { case: 'acknowledged', replyText: note + fn(queryName, current, 'hr_note_third_party'), summaryForOwner: null, lang };
+    const fn = HR_NOTE_DISAMBIGUATION_QUESTION[lang] || HR_NOTE_DISAMBIGUATION_QUESTION.english;
+    return { case: 'acknowledged', replyText: note + fn(queryName, current, actionWord), summaryForOwner: null, lang };
   }
   const soleMatch = current[0];
   if (isFirstNameOnly(personName, soleMatch.name)) {
@@ -3577,9 +3663,23 @@ async function resolveHrNoteThirdParty({ phone, name, lang, personName, departme
     if (previousCandidateId && soleMatch.employeeId && soleMatch.employeeId === previousCandidateId) {
       return finalizeHrNoteThirdParty({ phone, senderName: name, lang, candidate: soleMatch, summary, summaryLocalized, topicLabel, createdAt: originalCreatedAt, history });
     }
-    await savePendingHrNoteFlow(phone, { summary, summaryLocalized, topicLabel, actionPhrase, lang, createdAt: originalCreatedAt, step: 'awaiting_confirm_yes_no', candidate: soleMatch, isInactive: false });
-    const fn = NAME_CONFIRM_QUESTION[lang] || NAME_CONFIRM_QUESTION.english;
-    return { case: 'acknowledged', replyText: fn(soleMatch.name, soleMatch.department), summaryForOwner: null, lang };
+    // Live review (2026-10-26) - a stated hint fitting NONE of the real
+    // name-matches (active or inactive) must never be silently dropped just
+    // because exactly one ACTIVE candidate happens to survive the status
+    // filter above - surfaces the mismatch instead of guessing (see
+    // HR_NOTE_HINT_MISMATCH_CONFIRM's own comment). Scoped to ONLY the
+    // first-name-only (uncertain) path - a FULL name given upfront that
+    // exactly resolves is trusted outright, even if some unrelated detail
+    // elsewhere in the message (e.g. a duty LOCATION, not the named
+    // person's own department) got picked up as a stray hint.
+    if (department && !personHintMatches(soleMatch, department)) {
+      await savePendingHrNoteFlow(phone, { summary, summaryLocalized, topicLabel, actionPhrase, actionKind, lang, createdAt: originalCreatedAt, step: 'awaiting_confirm_yes_no', candidate: soleMatch, isInactive: false });
+      const fn = HR_NOTE_HINT_MISMATCH_CONFIRM[lang] || HR_NOTE_HINT_MISMATCH_CONFIRM.english;
+      return { case: 'acknowledged', replyText: fn(department, soleMatch.name, soleMatch.department), summaryForOwner: null, lang };
+    }
+    await savePendingHrNoteFlow(phone, { summary, summaryLocalized, topicLabel, actionPhrase, actionKind, lang, createdAt: originalCreatedAt, step: 'awaiting_confirm_yes_no', candidate: soleMatch, isInactive: false });
+    const fn = HR_NOTE_CONFIRM_QUESTION[lang] || HR_NOTE_CONFIRM_QUESTION.english;
+    return { case: 'acknowledged', replyText: fn(soleMatch.name, soleMatch.department, actionWord), summaryForOwner: null, lang };
   }
   return finalizeHrNoteThirdParty({ phone, senderName: name, lang, candidate: soleMatch, summary, summaryLocalized, topicLabel, createdAt: originalCreatedAt, history });
 }
@@ -3668,7 +3768,7 @@ async function handleHrNotificationStart({ phone, name, lang, text, history, cla
       const rephrased = await rephraseForThirdParty(summary, 'sudden', lang);
       return resolveHrNoteThirdParty({
         phone, name, lang, personName: classification.hrNotificationThirdPartyName,
-        department: classification.hrNotificationThirdPartyHint, summary, summaryLocalized: rephrased, topicLabel, actionPhrase, createdAt, history
+        department: classification.hrNotificationThirdPartyHint, summary, summaryLocalized: rephrased, topicLabel, actionPhrase, actionKind: 'sudden', createdAt, history
       });
     }
     await savePendingHrNoteFlow(phone, { summary, summaryLocalized, topicLabel, actionPhrase, lang, createdAt, actionKind, step: 'awaiting_manager_informed' });
@@ -3691,7 +3791,7 @@ async function handleHrNotificationStart({ phone, name, lang, text, history, cla
   if (classification.hrNotificationThirdPartyName) {
     return resolveHrNoteThirdParty({
       phone, name, lang, personName: classification.hrNotificationThirdPartyName,
-      department: classification.hrNotificationThirdPartyHint, summary, summaryLocalized, topicLabel, actionPhrase, createdAt, history
+      department: classification.hrNotificationThirdPartyHint, summary, summaryLocalized, topicLabel, actionPhrase, actionKind, createdAt, history
     });
   }
   if (classification.hrNotificationInvolvesThirdParty) {
@@ -3736,7 +3836,7 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
     }
     if (extracted.personName) {
       const rephrased = await rephraseForThirdParty(hrFlow.summary, 'sudden', lang);
-      return resolveHrNoteThirdParty({ phone, name, lang, personName: extracted.personName, department: extracted.hint, summary: hrFlow.summary, summaryLocalized: rephrased, topicLabel: hrFlow.topicLabel, actionPhrase: hrFlow.actionPhrase, createdAt: hrFlow.createdAt, history });
+      return resolveHrNoteThirdParty({ phone, name, lang, personName: extracted.personName, department: extracted.hint, summary: hrFlow.summary, summaryLocalized: rephrased, topicLabel: hrFlow.topicLabel, actionPhrase: hrFlow.actionPhrase, actionKind: 'sudden', createdAt: hrFlow.createdAt, history });
     }
     if (isNoAnswer(t)) {
       await clearPendingHrNoteFlow(phone);
@@ -3763,7 +3863,7 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
       return { case: 'acknowledged', replyText: HR_FLOW_CONTEXT_CLARIFY[lang] || HR_FLOW_CONTEXT_CLARIFY.english, summaryForOwner: null, lang };
     }
     if (extracted.personName) {
-      return resolveHrNoteThirdParty({ phone, name, lang, personName: extracted.personName, department: extracted.hint, summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, actionPhrase: hrFlow.actionPhrase, createdAt: hrFlow.createdAt, history });
+      return resolveHrNoteThirdParty({ phone, name, lang, personName: extracted.personName, department: extracted.hint, summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, actionPhrase: hrFlow.actionPhrase, actionKind: 'approval', createdAt: hrFlow.createdAt, history });
     }
     if (isNoAnswer(t)) {
       await clearPendingHrNoteFlow(phone);
@@ -3827,8 +3927,8 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
       let replyText;
       if (attempts === 1) {
         const retryPrefix = DISAMBIGUATION_RETRY_PREFIX[lang] || DISAMBIGUATION_RETRY_PREFIX.english;
-        const fn = DISAMBIGUATION_QUESTION[lang] || DISAMBIGUATION_QUESTION.english;
-        replyText = retryPrefix + fn(queryName, hrFlow.candidates, 'hr_note_third_party');
+        const fn = HR_NOTE_DISAMBIGUATION_QUESTION[lang] || HR_NOTE_DISAMBIGUATION_QUESTION.english;
+        replyText = retryPrefix + fn(queryName, hrFlow.candidates, hrFlowConfirmActionWord(hrFlow.actionKind));
       } else {
         const shortFn = DISAMBIGUATION_SHORT_RETRY[lang] || DISAMBIGUATION_SHORT_RETRY.english;
         replyText = shortFn(queryName, hrFlow.candidates.length);
@@ -3841,10 +3941,28 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
   }
   if (hrFlow.step === 'awaiting_confirm_yes_no') {
     const t = text.trim();
-    if (isYesAnswer(t)) {
-      return finalizeHrNoteThirdParty({ phone, senderName: name, lang, candidate: hrFlow.candidate, summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, createdAt: hrFlow.createdAt, history });
+    // Direct instruction (2026-10-26, "burst priority") - a burst-combined
+    // turn (extra info on one line, the actual yes/no on another, see
+    // combineBurstText) still has its yes/no recognized even when it
+    // isn't at the very start of the whole blob - isYesAnswer/isNoAnswer
+    // themselves stay anchored-at-start everywhere else they're used
+    // (unrelated behavior, never touched); this only checks each line of
+    // THIS step's own burst-combined text in addition to the whole string.
+    const burstLines = t.split('\n').map((l) => l.trim()).filter(Boolean);
+    const burstHasExtraLines = burstLines.length > 1;
+    if (isYesAnswer(t) || burstLines.some((l) => isYesAnswer(l))) {
+      const finalized = await finalizeHrNoteThirdParty({ phone, senderName: name, lang, candidate: hrFlow.candidate, summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, createdAt: hrFlow.createdAt, history });
+      // Case B - the other line(s) in the burst are extra info alongside the yes.
+      if (burstHasExtraLines && finalized && finalized.replyText) {
+        return Object.assign({}, finalized, { replyText: wrapWithExtraInfoNote(lang, finalized.replyText) });
+      }
+      return finalized;
     }
     const pendingQuestionLabel = (NAME_CONFIRM_QUESTION[lang] || NAME_CONFIRM_QUESTION.english)(hrFlow.candidate.name, hrFlow.candidate.department);
+    // "No" burst-combined with a separate topic (same-line handling as
+    // "Yes" above) is Wave 2 scope (2026-10-26 live review, conversation
+    // 5) - left exactly as it was here for now, scoped narrowly to what
+    // Wave 1 actually needs.
     if (isNoAnswer(t)) {
       // Live review item 2 (found live: "Naa..Suvodip HR er kotha
       // bolchi" already named someone new in the SAME "no" message, but
@@ -3857,7 +3975,7 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
         return { case: 'acknowledged', replyText: HR_FLOW_CONTEXT_CLARIFY[lang] || HR_FLOW_CONTEXT_CLARIFY.english, summaryForOwner: null, lang };
       }
       if (extracted.personName) {
-        return resolveHrNoteThirdParty({ phone, name, lang, personName: extracted.personName, department: extracted.hint, summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, actionPhrase: hrFlow.actionPhrase, createdAt: hrFlow.createdAt, previousCandidateId: hrFlow.candidate.employeeId, history });
+        return resolveHrNoteThirdParty({ phone, name, lang, personName: extracted.personName, department: extracted.hint, summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, actionPhrase: hrFlow.actionPhrase, actionKind: hrFlow.actionKind, createdAt: hrFlow.createdAt, previousCandidateId: hrFlow.candidate.employeeId, history });
       }
       if (remainder) {
         // The "No" cancelled the old candidate, but the remainder is a
@@ -3889,7 +4007,7 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
       return { case: 'acknowledged', replyText: HR_FLOW_CONTEXT_CLARIFY[lang] || HR_FLOW_CONTEXT_CLARIFY.english, summaryForOwner: null, lang };
     }
     if (extracted.personName) {
-      return resolveHrNoteThirdParty({ phone, name, lang, personName: extracted.personName, department: extracted.hint, summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, actionPhrase: hrFlow.actionPhrase, createdAt: hrFlow.createdAt, previousCandidateId: hrFlow.candidate.employeeId, history });
+      return resolveHrNoteThirdParty({ phone, name, lang, personName: extracted.personName, department: extracted.hint, summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, actionPhrase: hrFlow.actionPhrase, actionKind: hrFlow.actionKind, createdAt: hrFlow.createdAt, previousCandidateId: hrFlow.candidate.employeeId, history });
     }
     // Direct instruction (2026-10-25) - a genuinely unrelated topic is
     // answered on its own; the original confirm question is still exactly
@@ -3930,13 +4048,15 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
     // resolved earlier in this function) keeps the existing
     // summaryLocalized untouched - no behavior change for them.
     let summaryLocalized = hrFlow.summaryLocalized;
+    let resolvedKindForConfirm = hrFlow.actionKind;
     if (hrFlow.actionKind === 'neutral') {
       const finalKind = resolvedActionKind || 'instruction';
       summaryLocalized = await rephraseForThirdParty(hrFlow.summary, finalKind, lang);
+      resolvedKindForConfirm = finalKind;
     } else if (hrFlow.actionKind === 'sudden') {
       summaryLocalized = await rephraseForThirdParty(hrFlow.summary, 'sudden', lang);
     }
-    const resolved = await resolveHrNoteThirdParty({ phone, name, lang, personName, department: hint, summary: hrFlow.summary, summaryLocalized, topicLabel: hrFlow.topicLabel, actionPhrase: hrFlow.actionPhrase, createdAt: hrFlow.createdAt, history });
+    const resolved = await resolveHrNoteThirdParty({ phone, name, lang, personName, department: hint, summary: hrFlow.summary, summaryLocalized, topicLabel: hrFlow.topicLabel, actionPhrase: hrFlow.actionPhrase, actionKind: resolvedKindForConfirm, createdAt: hrFlow.createdAt, history });
     // Case B.
     if (hasExtraInfo && resolved && resolved.replyText) {
       return Object.assign({}, resolved, { replyText: wrapWithExtraInfoNote(lang, resolved.replyText) });

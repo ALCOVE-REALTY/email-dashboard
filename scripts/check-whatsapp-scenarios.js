@@ -25,7 +25,10 @@ require('dotenv').config();
 
 const whatsappAssistant = require('../src/aiAssistant/whatsappAssistant');
 
-const RUNS_PER_SCENARIO = 3;
+// Override with SCENARIO_RUNS=1 for a quick single-pass check (e.g. to
+// prove a new scenario reproduces a bug before fixing it) - the default
+// stays 3 for every normal reliability-gated run.
+const RUNS_PER_SCENARIO = Number(process.env.SCENARIO_RUNS) || 3;
 
 // Real directory records reused from check-whatsapp-engine.js's own
 // convention (never invented synthetic "employees" - the model's real
@@ -206,7 +209,7 @@ scenario('Future approval: "Kalke chuti nebo" -> "Haa, Tanmoy Sir approve korech
   try {
     await whatsappAssistant.decideAutoReply({ phone, name: 'ScenFA', firstName: 'ScenFA', text: 'Kalke chuti nebo', isGroup: false, history: [] });
     const d2 = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenFA', firstName: 'ScenFA', text: 'Haa, Tanmoy Sir approve korechhen', isGroup: false, history: [] });
-    if (!d2.replyText.includes('Apni kar kotha bolchhen?')) return { pass: false, detail: 'expected the 4-Tanmoy disambiguation, got: ' + d2.replyText };
+    if (!d2.replyText.includes('kar kotha bolchhen?')) return { pass: false, detail: 'expected the 4-Tanmoy disambiguation, got: ' + d2.replyText };
     return { pass: true, detail: 'resolved to manager disambiguation as expected' };
   } finally {
     await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
@@ -250,7 +253,7 @@ scenario('Disambiguation: a 2+ match name ("Tanmoy") asks which one, resolves, a
   try {
     await whatsappAssistant.decideAutoReply({ phone, name: 'ScenDis', firstName: 'ScenDis', text: 'Good morning Sir. Ajke amake duty korte bola hoyechhe. Tar poriborte onno din chhutti nite bola hoyechhe.', isGroup: false, history: [] });
     const dAsk = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenDis', firstName: 'ScenDis', text: 'Tanmoy bolechhen.', isGroup: false, history: [] });
-    if (!dAsk.replyText.includes('Apni kar kotha bolchhen?')) return { pass: false, detail: 'expected the disambiguation question, got: ' + dAsk.replyText };
+    if (!dAsk.replyText.includes('kar kotha bolchhen?')) return { pass: false, detail: 'expected the disambiguation question, got: ' + dAsk.replyText };
     const dResolve = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenDis', firstName: 'ScenDis', text: 'Tanmoy Mondal', isGroup: false, history: [] });
     const confirmations = (await whatsappAssistant.listAllHrConfirmations()).filter((c) => c.senderPhone === phone);
     if (confirmations.length !== 1 || confirmations[0].thirdPartyName !== 'Tanmoy Mondal') return { pass: false, detail: 'expected one confirmation to Tanmoy Mondal, got: ' + JSON.stringify(confirmations.map((c) => c.thirdPartyName)) };
@@ -421,13 +424,168 @@ scenario('Open Flows fix: listOpenHrFlowsForOwner lists both an open STEP1/2 flo
   }
 });
 
+// ============================================================
+// TASK 2 (2026-10-26 live review after 3b030de) - 6 reported conversations,
+// each asserting the user's own EXACT expected reply text (not just "the
+// flow advanced"). `coreText` strips the once-a-day identity line and any
+// echoed time-of-day greeting (both already-established, unrelated
+// mechanisms) so each assertion focuses on the actual templated content
+// being fixed here, without over-fitting to housekeeping prefixes the
+// user's own shorthand examples don't always spell out - EXCEPT scenario
+// T2-1, which explicitly reported the greeting echo itself as missing, so
+// that one checks the full string including it.
+// ============================================================
+const SUBHODEEP_PHONE_T2 = '918335804028';
+const AYAN_DAS_PHONE = '916291969575';
+const AYAN_BISWAS_PHONE = '916291428952';
+function coreText(text) {
+  return String(text || '')
+    .replace(/^(Ami SUBH, Subhodeep-er HR Assistant\.|Main SUBH hoon, Subhodeep ka HR Assistant\.|I'm SUBH, Subhodeep's HR Assistant\.)\s*/, '')
+    .replace(/^(Good morning!|Good afternoon!|Good evening!|Shubho sokal!|Shubho bikel!|Shubho sondhya!)\s*/i, '')
+    .trim();
+}
+
+scenario('T2-1: NAME GIVEN - a detailed message naming Subhodeep as instructor gets the new wording WITH the greeting echo, confirms, and messages him', async () => {
+  const phone = '910000001100';
+  await cleanupHrFlowArtifacts(phone, SUBHODEEP_PHONE_T2);
+  try {
+    const text1 = 'Good morning Sir. Sir, Subhodeep Sir 20 th October duty korte bolechhilen. Office e emergency duty chhilo. Tai korte hoyechhe. Uni bolechhilen onno din chhutti nite. Sir, Amar ajke ektu personal dorkar o chhilo, tai ajke chhutti ta niyechhi. Ektu dekhe neben please';
+    const d1 = await whatsappAssistant.decideAutoReply({ phone, name: 'T2S1', firstName: 'T2S1', text: text1, isGroup: false, history: [] });
+    const expected1 = "Good morning! Ami SUBH, Subhodeep-er HR Assistant. Apni ki ei instruction-er bishoye Subhodeep Kundu Chowdhury (HR department)-er kotha bolchhen?";
+    if (d1.replyText !== expected1) return { pass: false, detail: 'turn1 expected exact: "' + expected1 + '", got: "' + d1.replyText + '"' };
+    const d2 = await whatsappAssistant.decideAutoReply({ phone, name: 'T2S1', firstName: 'T2S1', text: 'Haa', isGroup: false, history: [] });
+    const expected2 = 'Amake sothik naam diye sahajyo korar jonno dhonnobad. Ami Subhodeep Kundu Chowdhury-er sathe kotha bole joto taratari somvob apnake janacchi.';
+    if (coreText(d2.replyText) !== expected2) return { pass: false, detail: 'turn2 expected: "' + expected2 + '", got: "' + coreText(d2.replyText) + '"' };
+    const log = await whatsappAssistant.listInboxLog(20);
+    const mgrEntry = log.filter((e) => e.chatId === SUBHODEEP_PHONE_T2 && e.case === 'hr_confirmation_sent').sort((a, b) => (b.sentAt || 0) - (a.sentAt || 0))[0];
+    if (!mgrEntry) return { pass: false, detail: 'STEP4 manager message was never sent' };
+    if (!/20/.test(mgrEntry.sentText) || !/duty/i.test(mgrEntry.sentText) || !/chhutti|leave/i.test(mgrEntry.sentText)) return { pass: false, detail: 'STEP4 message missing key facts: ' + mgrEntry.sentText };
+    return { pass: true, detail: 'all checks passed' };
+  } finally {
+    await whatsappAssistant.decideAutoReply({ phone: SUBHODEEP_PHONE_T2, name: 'Subhodeep', firstName: 'Subhodeep', text: 'Haa', isGroup: false, history: [] }).catch(() => {});
+    await cleanupHrFlowArtifacts(phone, SUBHODEEP_PHONE_T2);
+  }
+});
+
+scenario('T2-2: NO NAME -> AMBIGUOUS -> HINT - the one-name-per-line list with the new wording, then the department hint resolves directly (never a re-ask)', async () => {
+  const phone = '910000001101';
+  await cleanupHrFlowArtifacts(phone, AYAN_DAS_PHONE, AYAN_BISWAS_PHONE);
+  try {
+    const text1 = 'Good morning Sir. Sir, 20 th October duty korte bolechhilen. Office e emergency duty chhilo. Tai korte hoyechhe. Uni bolechhilen onno din chhutti nite. Ektu dekhe neben please';
+    await whatsappAssistant.decideAutoReply({ phone, name: 'T2S2', firstName: 'T2S2', text: text1, isGroup: false, history: [] });
+    const d2 = await whatsappAssistant.decideAutoReply({ phone, name: 'T2S2', firstName: 'T2S2', text: 'Naa..Ayan er kotha bolchi', isGroup: false, history: [] });
+    const expected2 = 'Amader company-te Ayan naame dujon achen, apni ei instruction-er bishoye kar kotha bolchhen?\n1) Ayan Biswas — Civil (Plot-B) Finishing\n2) Ayan Das — HR department';
+    if (coreText(d2.replyText) !== expected2) return { pass: false, detail: 'turn2 expected:\n"' + expected2 + '"\ngot:\n"' + coreText(d2.replyText) + '"' };
+    const d3 = await whatsappAssistant.decideAutoReply({ phone, name: 'T2S2', firstName: 'T2S2', text: 'Ayan HR', isGroup: false, history: [] });
+    const expected3 = 'Amake sothik naam diye sahajyo korar jonno dhonnobad. Ami Ayan Das-er sathe kotha bole joto taratari somvob apnake janacchi.';
+    if (coreText(d3.replyText) !== expected3) return { pass: false, detail: 'turn3 expected: "' + expected3 + '", got: "' + coreText(d3.replyText) + '" (live bug: re-asks "Dukkhito, bujhte parini" instead)' };
+    return { pass: true, detail: 'all checks passed' };
+  } finally {
+    await whatsappAssistant.decideAutoReply({ phone: AYAN_DAS_PHONE, name: 'Ayan Das', firstName: 'Ayan', text: 'Haa', isGroup: false, history: [] }).catch(() => {});
+    await cleanupHrFlowArtifacts(phone, AYAN_DAS_PHONE, AYAN_BISWAS_PHONE);
+  }
+});
+
+// NOTE: the real company directory has NO "Avijit/Abhijit" in the IT
+// department at all - 5 real Avijits exist (Biswas/Civil, Banerjee/Sales,
+// Banduri/Electrical, Bhaumik/Fire, Ghosh/PostSales), and only ONE of
+// them (Banduri, Electrical) is ACTIVE - so there is no multi-candidate
+// LIST to show once the active/inactive filter runs; the correct
+// real-data outcome (per the user's own "never guess" rule) is the hint
+// MISMATCH being surfaced explicitly, never a silent, unquestioned
+// confirm of the one active candidate despite the hint not fitting him
+// at all (the live bug guessed "Avijit Banduri (Electrical Dept.)"
+// with no acknowledgment the stated "IT" hint didn't match anyone).
+scenario('T2-3: LATE COMING (APPROVAL) + a hint that matches NO real candidate - surfaces the mismatch instead of silently guessing the one active candidate', async () => {
+  const phone = '910000001102';
+  await cleanupHrFlowArtifacts(phone);
+  try {
+    await whatsappAssistant.decideAutoReply({ phone, name: 'T2S3', firstName: 'T2S3', text: 'Ami ajke iktu derite office jabo', isGroup: false, history: [] });
+    const d2 = await whatsappAssistant.decideAutoReply({ phone, name: 'T2S3', firstName: 'T2S3', text: 'Haa amake avijit IT boleche', isGroup: false, history: [] });
+    const flagsMismatch = /IT/i.test(d2.replyText) && d2.replyText.includes('Avijit') && /keu nei|no one|koi nahi/i.test(d2.replyText);
+    if (!flagsMismatch) return { pass: false, detail: 'expected the hint mismatch to be surfaced explicitly (never a silent guess), got: ' + d2.replyText };
+    return { pass: true, detail: 'listed candidates instead of guessing' };
+  } finally {
+    await cleanupHrFlowArtifacts(phone);
+  }
+});
+
+scenario('T2-4: HALF-DAY + EXTRA INFO IN THE SAME BURST - name+extra-info, then extra-info+yes in the SAME burst, resolves to STEP3+4 (never re-asking the same question)', async () => {
+  const phone = '910000001103';
+  await cleanupHrFlowArtifacts(phone, SUBHODEEP_PHONE_T2);
+  try {
+    await whatsappAssistant.decideAutoReply({ phone, name: 'T2S4', firstName: 'T2S4', text: 'Ami kalke half day chuti nebo', isGroup: false, history: [] });
+    const d2 = await whatsappAssistant.decideAutoReply({ phone, name: 'T2S4', firstName: 'T2S4', text: 'Subhodeep HR\nAmi kalke 2nd half a office jabo', isGroup: false, history: [] });
+    const expected2 = 'Apni ki ei approval-er bishoye Subhodeep Kundu Chowdhury (HR department)-er kotha bolchhen?';
+    if (!coreText(d2.replyText).includes(expected2)) return { pass: false, detail: 'turn2 expected to include: "' + expected2 + '", got: "' + coreText(d2.replyText) + '"' };
+    const d3 = await whatsappAssistant.decideAutoReply({ phone, name: 'T2S4', firstName: 'T2S4', text: 'Ami kalke 2nd half a office jabo\nHaa', isGroup: false, history: [] });
+    if (d3.replyText.includes(expected2)) return { pass: false, detail: 'live bug reproduced: asked the SAME question again instead of advancing: ' + d3.replyText };
+    if (!coreText(d3.replyText).includes('Subhodeep Kundu Chowdhury-er sathe kotha bole')) return { pass: false, detail: 'expected STEP3 thank-you to have run, got: ' + d3.replyText };
+    const confirmations = (await whatsappAssistant.listAllHrConfirmations()).filter((c) => c.senderPhone === phone);
+    if (confirmations.length !== 1 || confirmations[0].status !== 'awaiting_manager') return { pass: false, detail: 'expected exactly one awaiting_manager confirmation, got: ' + JSON.stringify(confirmations.map((c) => c.status)) };
+    return { pass: true, detail: 'burst with name+info then info+yes correctly advanced to STEP3+4' };
+  } finally {
+    await whatsappAssistant.decideAutoReply({ phone: SUBHODEEP_PHONE_T2, name: 'Subhodeep', firstName: 'Subhodeep', text: 'Haa', isGroup: false, history: [] }).catch(() => {});
+    await cleanupHrFlowArtifacts(phone, SUBHODEEP_PHONE_T2);
+  }
+});
+
+scenario('T2-5: "NA" + A SEPARATE TOPIC IN THE SAME BURST - rejects the name, asks for the correct one, AND answers the separate topic - flow stays open', async () => {
+  const phone = '910000001104';
+  await cleanupHrFlowArtifacts(phone, SUBHODEEP_PHONE_T2);
+  try {
+    await whatsappAssistant.decideAutoReply({ phone, name: 'T2S5', firstName: 'T2S5', text: 'Ami kalke half day chuti nebo', isGroup: false, history: [] });
+    await whatsappAssistant.decideAutoReply({ phone, name: 'T2S5', firstName: 'T2S5', text: 'Subhodeep HR', isGroup: false, history: [] });
+    const d3 = await whatsappAssistant.decideAutoReply({ phone, name: 'T2S5', firstName: 'T2S5', text: 'Naaa\nKalke apnake letter ta pathabo', isGroup: false, history: [] });
+    if (d3.replyText.includes('Bhul bujhe thakle dukkhito') || d3.replyText.includes('Half day approval-er jonno ke approve korechhen')) {
+      return { pass: false, detail: 'live bug reproduced: free-form reply ignoring the letter topic: ' + d3.replyText };
+    }
+    if (!/puro naam/i.test(d3.replyText)) return { pass: false, detail: 'expected a plain "tell me the correct full name" retry, got: ' + d3.replyText };
+    if (!/letter/i.test(d3.replyText)) return { pass: false, detail: 'expected the separate letter topic to also get its own short reply, got: ' + d3.replyText };
+    const pending = await whatsappAssistant.getPendingHrNoteFlow(phone);
+    if (!pending) return { pass: false, detail: 'the half-day flow should stay open after a name rejection, got: ' + JSON.stringify(pending) };
+    return { pass: true, detail: 'name rejected, separate topic answered, flow stayed open' };
+  } finally {
+    await cleanupHrFlowArtifacts(phone, SUBHODEEP_PHONE_T2);
+  }
+});
+
+scenario('T2-6: "HAA" + A SEPARATE TOPIC, ANOTHER FLOW ALREADY OPEN FOR A DIFFERENT MATTER - advances to STEP3+4 for THIS (half-day) flow, never treated as a duplicate of the other (duty) flow', async () => {
+  const phone = '910000001105';
+  await cleanupHrFlowArtifacts(phone, SUBHODEEP_PHONE_T2);
+  try {
+    // An unrelated, earlier duty-change flow already confirmed with Subhodeep as manager.
+    await whatsappAssistant.decideAutoReply({ phone, name: 'T2S6', firstName: 'T2S6', text: 'Ajke amake duty korte bola hoyechhe. Tar poriborte onno din chhutti nite bola hoyechhe.', isGroup: false, history: [] });
+    await whatsappAssistant.decideAutoReply({ phone, name: 'T2S6', firstName: 'T2S6', text: 'Subhodeep Kundu Chowdhury bolechhen.', isGroup: false, history: [] });
+    await whatsappAssistant.decideAutoReply({ phone: SUBHODEEP_PHONE_T2, name: 'Subhodeep', firstName: 'Subhodeep', text: 'Haa', isGroup: false, history: [] });
+    // Now a genuinely separate half-day matter, same manager.
+    await whatsappAssistant.decideAutoReply({ phone, name: 'T2S6', firstName: 'T2S6', text: 'Ami kalke half day chuti nebo', isGroup: false, history: [] });
+    await whatsappAssistant.decideAutoReply({ phone, name: 'T2S6', firstName: 'T2S6', text: 'Subhodeep bollm to', isGroup: false, history: [] });
+    const before = (await whatsappAssistant.listAllHrConfirmations()).filter((c) => c.senderPhone === phone);
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'T2S6', firstName: 'T2S6', text: 'Haa\nKalke apnar jinis ta pathiye debo', isGroup: false, history: [] });
+    if (d.replyText.includes('confirmation-er opekkha korchhi')) return { pass: false, detail: 'live bug reproduced: wrongly treated as a duplicate of the earlier duty flow: ' + d.replyText };
+    if (!coreText(d.replyText).includes('Subhodeep Kundu Chowdhury-er sathe kotha bole')) return { pass: false, detail: 'expected STEP3 thank-you for the half-day flow, got: ' + d.replyText };
+    if (!/jinis/i.test(d.replyText)) return { pass: false, detail: 'expected the separate "jinis pathano" topic to also get its own short reply, got: ' + d.replyText };
+    const after = (await whatsappAssistant.listAllHrConfirmations()).filter((c) => c.senderPhone === phone);
+    if (after.length !== before.length + 1) return { pass: false, detail: 'expected a NEW, second confirmation (different matter, same manager), before=' + before.length + ' after=' + after.length };
+    return { pass: true, detail: 'different matter correctly NOT treated as a duplicate, separate topic answered' };
+  } finally {
+    await cleanupHrFlowArtifacts(phone, SUBHODEEP_PHONE_T2);
+  }
+});
+
 async function runAll() {
   await require('./testBootstrap').setupTestEnvironment();
   let reliableCount = 0;
   let flakyCount = 0;
   let brokenCount = 0;
   const report = [];
-  for (const s of scenarios) {
+  // SCENARIO_FILTER=<substring> runs only matching-named scenarios (e.g.
+  // to check just the scenarios a single task/fix affects) - omit for the
+  // full set.
+  const filter = process.env.SCENARIO_FILTER;
+  const scenariosToRun = filter ? scenarios.filter((s) => s.name.includes(filter)) : scenarios;
+  for (const s of scenariosToRun) {
     const runResults = [];
     for (let i = 0; i < RUNS_PER_SCENARIO; i++) {
       try {
@@ -450,7 +608,7 @@ async function runAll() {
     report.push({ name: s.name, passes, total: RUNS_PER_SCENARIO, knownFailing: Boolean(s.knownFailing) });
   }
   console.log('='.repeat(70));
-  console.log(reliableCount + ' reliable, ' + flakyCount + ' flaky, ' + brokenCount + ' broken (out of ' + (scenarios.length - scenarios.filter((s) => s.knownFailing).length) + ' gating scenarios; ' + scenarios.filter((s) => s.knownFailing).length + ' known-failing scenario(s) tracked separately, never gating)');
+  console.log(reliableCount + ' reliable, ' + flakyCount + ' flaky, ' + brokenCount + ' broken (out of ' + (scenariosToRun.length - scenariosToRun.filter((s) => s.knownFailing).length) + ' gating scenarios' + (filter ? (' matching "' + filter + '"') : '') + '; ' + scenariosToRun.filter((s) => s.knownFailing).length + ' known-failing scenario(s) tracked separately, never gating)');
   console.log('='.repeat(70));
   process.exit(flakyCount + brokenCount > 0 ? 1 : 0);
 }
