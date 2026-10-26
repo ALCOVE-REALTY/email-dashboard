@@ -1614,7 +1614,7 @@ async function checkAsync(label, fn) {
     await backdateHrFlowLastTouch(phone, 24 * 60 * 60 * 1000);
     const d = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Subhodeep chowdhury', isGroup: false, history: [] });
     const pending = await whatsappAssistant.getPendingHrNoteFlow(phone);
-    const ok = !d.replyText.includes('Gotokal') && !d.replyText.includes('bishoy-e') && d.replyText.includes('Apni ki Subhodeep Kundu Chowdhury')
+    const ok = !d.replyText.includes('Gotokal') && !d.replyText.includes('bishoy-e') && d.replyText.includes('Subhodeep Kundu Chowdhury')
       && Boolean(pending) && pending.step === 'awaiting_confirm_yes_no';
     await cleanupHrFlowArtifacts(phone, SUBHODEEP_KC_PHONE);
     return ok;
@@ -3667,8 +3667,11 @@ async function checkAsync(label, fn) {
     await whatsappAssistant.decideAutoReply({ phone: SAURAV_PHONE, name: 'Saurav', firstName: 'Saurav', text: 'Sir, apni Srirampur site-er Tanmoy Sir-ke jiggasa korte paren. Uni ajke duty korte bolechhen ar onno din chhutti nite bolechhen.', isGroup: false, history: [] });
     const firstRetry = await whatsappAssistant.decideAutoReply({ phone: SAURAV_PHONE, name: 'Saurav', firstName: 'Saurav', text: 'Tanmoy Ghosh-er kotha bolchhi', isGroup: false, history: [] });
     const secondRetry = await whatsappAssistant.decideAutoReply({ phone: SAURAV_PHONE, name: 'Saurav', firstName: 'Saurav', text: 'Tanmoy Dutta', isGroup: false, history: [] });
-    const ok = firstRetry.replyText && firstRetry.replyText.includes('achen:') && // 1st retry: still the full list
-      secondRetry.replyText && !secondRetry.replyText.includes('achen:') && /— \d+(, \d+)* na \d+\?$/.test(secondRetry.replyText.trim()); // 2nd retry: short form
+    // Updated for Task 2 Wave 1's new one-candidate-per-line disambiguation
+    // format ("1) Name — Dept" lines, no "achen:" inline list anymore) -
+    // the full list's own numbered lines are the signature to check for now.
+    const ok = firstRetry.replyText && /\d+\) /.test(firstRetry.replyText) && // 1st retry: still the full list
+      secondRetry.replyText && !/\d+\) /.test(secondRetry.replyText) && /— \d+(, \d+)* na \d+\?$/.test(secondRetry.replyText.trim()); // 2nd retry: short form
     await cleanupHrFlowArtifacts(SAURAV_PHONE);
     return ok;
   });

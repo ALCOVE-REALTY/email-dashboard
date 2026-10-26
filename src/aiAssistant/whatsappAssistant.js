@@ -3950,26 +3950,47 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
     // THIS step's own burst-combined text in addition to the whole string.
     const burstLines = t.split('\n').map((l) => l.trim()).filter(Boolean);
     const burstHasExtraLines = burstLines.length > 1;
+    const pendingQuestionLabel = (NAME_CONFIRM_QUESTION[lang] || NAME_CONFIRM_QUESTION.english)(hrFlow.candidate.name, hrFlow.candidate.department);
     if (isYesAnswer(t) || burstLines.some((l) => isYesAnswer(l))) {
       const finalized = await finalizeHrNoteThirdParty({ phone, senderName: name, lang, candidate: hrFlow.candidate, summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, createdAt: hrFlow.createdAt, history });
-      // Case B - the other line(s) in the burst are extra info alongside the yes.
+      // Case B - the other line(s) in the burst are extra info alongside
+      // the yes. Direct instruction (2026-10-26, Wave 2, conversation 6) -
+      // that other content is not always about the SAME matter (e.g. "Haa"
+      // + "I'll send you your item tomorrow", a genuinely separate thing);
+      // only a stray detail about the matter just confirmed gets the
+      // generic "noted too" wrap - a real separate topic gets its own
+      // short, content-aware reply, same as any standalone unrelated
+      // message while a flow is open.
       if (burstHasExtraLines && finalized && finalized.replyText) {
+        const yesLine = burstLines.find((l) => isYesAnswer(l)) || t;
+        const otherText = burstLines.filter((l) => l !== yesLine).join('\n').trim();
+        const extractedOther = otherText ? await extractPersonReference(otherText, { pendingQuestionLabel, history, lang }) : { isUnrelatedTopic: false, unrelatedTopicPhrase: null };
+        if (extractedOther.isUnrelatedTopic && extractedOther.unrelatedTopicPhrase) {
+          const topicAck = (HR_FLOW_UNRELATED_TOPIC_ACK[lang] || HR_FLOW_UNRELATED_TOPIC_ACK.english)(extractedOther.unrelatedTopicPhrase);
+          return Object.assign({}, finalized, { replyText: finalized.replyText + ' ' + topicAck });
+        }
         return Object.assign({}, finalized, { replyText: wrapWithExtraInfoNote(lang, finalized.replyText) });
       }
       return finalized;
     }
-    const pendingQuestionLabel = (NAME_CONFIRM_QUESTION[lang] || NAME_CONFIRM_QUESTION.english)(hrFlow.candidate.name, hrFlow.candidate.department);
-    // "No" burst-combined with a separate topic (same-line handling as
-    // "Yes" above) is Wave 2 scope (2026-10-26 live review, conversation
-    // 5) - left exactly as it was here for now, scoped narrowly to what
-    // Wave 1 actually needs.
-    if (isNoAnswer(t)) {
+    if (isNoAnswer(t) || burstLines.some((l) => isNoAnswer(l))) {
       // Live review item 2 (found live: "Naa..Suvodip HR er kotha
       // bolchi" already named someone new in the SAME "no" message, but
       // this used to just re-ask "who, then?" and throw that name away) -
       // try extracting a name from whatever follows the no-marker before
-      // falling back to a plain re-ask.
-      const remainder = t.replace(NAME_CONFIRM_NO_RE, '').replace(/^[\s.,!-]+/, '');
+      // falling back to a plain re-ask. Direct instruction (2026-10-26,
+      // Wave 2, conversation 5) - a burst-combined "No" (e.g. "Naaa\n<new
+      // topic>") used to leave the no-marker's repeated letters un-
+      // stripped (isNoAnswer itself collapses them before testing, but the
+      // old plain t.replace(...) here never did), so the remainder still
+      // had "Naaa" stuck to the front, extraction got confused, and the
+      // flow fell through to a free-form AI reply. Now strips the marker
+      // from whichever burst line actually carries it (collapsed first,
+      // same as isNoAnswer), and keeps the other line(s) intact as context.
+      const noLine = burstLines.find((l) => isNoAnswer(l)) || t;
+      const strippedNoLine = collapseRepeatedLetters(noLine).replace(NAME_CONFIRM_NO_RE, '').replace(/^[\s.,!-]+/, '').trim();
+      const otherLines = burstLines.filter((l) => l !== noLine);
+      const remainder = [strippedNoLine, ...otherLines].filter(Boolean).join('\n').trim();
       const extracted = remainder ? await extractPersonReference(remainder, { pendingQuestionLabel, history, lang }) : { personName: null, hint: null, isAmbiguous: false, isUnrelatedTopic: false, unrelatedTopicPhrase: null };
       if (extracted.isAmbiguous) {
         return { case: 'acknowledged', replyText: HR_FLOW_CONTEXT_CLARIFY[lang] || HR_FLOW_CONTEXT_CLARIFY.english, summaryForOwner: null, lang };
@@ -3983,10 +4004,15 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
         // review, 917278793115). Direct instruction (2026-10-25) - a
         // genuinely unrelated topic is answered on its own and the flow
         // is kept alive (now back at STEP1's own question, since the old
-        // candidate was just rejected), never silently abandoned.
+        // candidate was just rejected), never silently abandoned. Wave 2
+        // (conversation 5) - the rejection itself still needs its own
+        // plain "give me the correct full name" retry alongside the
+        // separate topic's own reply, never just one or the other.
         if (extracted.isUnrelatedTopic && extracted.unrelatedTopicPhrase) {
           await savePendingHrNoteFlow(phone, { summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, actionPhrase: hrFlow.actionPhrase, lang, createdAt: hrFlow.createdAt, step: 'awaiting_name' });
-          return { case: 'acknowledged', replyText: (HR_FLOW_UNRELATED_TOPIC_ACK[lang] || HR_FLOW_UNRELATED_TOPIC_ACK.english)(extracted.unrelatedTopicPhrase), summaryForOwner: null, lang };
+          const retryText = NAME_CONFIRM_RETRY[lang] || NAME_CONFIRM_RETRY.english;
+          const topicAck = (HR_FLOW_UNRELATED_TOPIC_ACK[lang] || HR_FLOW_UNRELATED_TOPIC_ACK.english)(extracted.unrelatedTopicPhrase);
+          return { case: 'acknowledged', replyText: retryText + ' ' + topicAck, summaryForOwner: null, lang };
         }
         await clearPendingHrNoteFlow(phone);
         return null;
