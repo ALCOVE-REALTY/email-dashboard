@@ -2054,8 +2054,15 @@ router.post('/hr-assistant/automations/:id/send-test', async (req, res) => {
   try {
     const a = await automationService.getAutomation(req.params.id);
     if (!a) return res.status(404).json({ error: 'Automated task not found.' });
-    const testTo = a.plan.mediator === 'mail' ? req.hrUser.email : (req.body && req.body.phone);
-    if (!testTo) return res.status(400).json({ error: a.plan.mediator === 'mail' ? 'No owner email on file.' : 'Your own WhatsApp number is required for a WhatsApp test.' });
+    // Live bug fix - the frontend never actually sent a `phone` field (no
+    // UI for it exists), so every WhatsApp-mediator test send failed
+    // every time with this check. The owner's own login email does NOT
+    // reliably identify their own employee record (it can be a shared
+    // role mailbox another employee's directory record also lists), so
+    // this is never inferred from req.hrUser.email - it's a single,
+    // explicit piece of config the owner sets once.
+    const testTo = a.plan.mediator === 'mail' ? req.hrUser.email : process.env.SUBH_OWNER_WHATSAPP_NUMBER;
+    if (!testTo) return res.status(400).json({ error: a.plan.mediator === 'mail' ? 'No owner email on file.' : 'Owner WhatsApp number not configured - set SUBH_OWNER_WHATSAPP_NUMBER in the environment to enable WhatsApp test sends.' });
     const result = await automationService.runAutomation(req.params.id, { isTest: true, testTo }, new Date());
     res.json(result);
   } catch (err) {

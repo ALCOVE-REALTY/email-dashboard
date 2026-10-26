@@ -2137,8 +2137,17 @@ body { background: var(--wi-bg); }
 /* Google Sheet as a first-class input - the Load button's own info card
    (file name + every tab's headers/row count) and the "share with this
    email" hint + Copy button. */
-.wf-auto-copy-btn { border: 1px solid var(--wi-primary); background: transparent; color: var(--wi-primary); border-radius: 999px; padding: 2px 9px; font-size: 0.68rem; font-weight: 800; cursor: pointer; font-family: inherit; margin-left: 4px; }
+.wf-auto-copy-btn { border: 1px solid var(--wi-primary); background: transparent; color: var(--wi-primary); border-radius: 999px; padding: 2px 9px; font-size: 0.68rem; font-weight: 800; cursor: pointer; font-family: inherit; margin-left: 4px; flex-shrink: 0; }
 .wf-auto-copy-btn.copied { background: var(--wi-green-pill); border-color: var(--wi-green-700); color: var(--wi-green-700); }
+/* Service-account share email - a single-line box (never wraps, ellipsis
+   if too long) so a long address never pushes the Copy button onto its
+   own line or breaks across two lines on a phone-width screen. */
+.wf-auto-share-row { display: flex; align-items: center; gap: 4px; margin-top: 4px; }
+.wf-auto-share-email {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  background: var(--wi-surface-3); border-radius: var(--wi-r-chip, 8px); padding: 5px 9px;
+  font-family: ui-monospace, 'SF Mono', 'Cascadia Code', Consolas, monospace; font-size: 0.74rem; color: var(--wi-ink);
+}
 .wf-auto-sheet-file { font-weight: 800; font-size: 0.82rem; color: var(--wi-ink); margin-top: 10px; }
 .wf-auto-sheet-tab { border: 1.5px solid var(--wi-border-2); border-radius: var(--wi-r-input); padding: 9px 10px; margin-top: 8px; cursor: pointer; }
 .wf-auto-sheet-tab.on { border-color: var(--wi-primary); background: var(--wi-primary-50); }

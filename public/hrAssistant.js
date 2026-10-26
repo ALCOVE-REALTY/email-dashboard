@@ -1228,7 +1228,7 @@
   // renderable data for the others; every path still re-fetches fresh
   // data in the background and re-renders when it lands, so nothing here
   // is ever more than one poll cycle stale.
-  const pageDataCache = { comms: null, commsAt: 0, reminders: new Map() };
+  const pageDataCache = { comms: null, commsAt: 0, reminders: new Map(), automations: null, openFlows: null, convos: new Map() };
   // Bumped by invalidateReminderCache (every reminder mutation - done/
   // undo/cancel/snooze/create/edit). Any reminders fetch in flight when a
   // mutation happens captures remMutationSeq at send time and checks it
@@ -1378,6 +1378,28 @@
     renderRemindersData({ items: bucketReminders(cached.data.items, filter, new Date()), counts: cached.data.counts }, filter);
     return true;
   }
+  // Speed/UX fix - the poll used to fire every 12s unconditionally, even
+  // while the app was backgrounded/hidden (wasted requests, and a
+  // re-render could land mid-scroll/mid-tap on return) and even while the
+  // person was actively tapping/scrolling that exact instant. Tracks the
+  // last touch/scroll so a tick due during active interaction is deferred
+  // briefly and retried, instead of either firing mid-gesture or being
+  // dropped outright.
+  let lastCommsInteractionAt = 0;
+  let commsPollRetryTimer = null;
+  document.addEventListener('pointerdown', () => { lastCommsInteractionAt = Date.now(); }, { passive: true, capture: true });
+  document.addEventListener('scroll', () => { lastCommsInteractionAt = Date.now(); }, { passive: true, capture: true });
+  function pollCommsSummaryIfIdle() {
+    if (document.hidden) return; // paused while backgrounded - see the visibilitychange handler below
+    if (Date.now() - lastCommsInteractionAt < 2000) {
+      if (!commsPollRetryTimer) commsPollRetryTimer = setTimeout(() => { commsPollRetryTimer = null; pollCommsSummaryIfIdle(); }, 500);
+      return;
+    }
+    pollCommsSummary();
+  }
+  function handleCommsVisibilityChange() {
+    if (!document.hidden) pollCommsSummary(); // refresh once immediately on return to foreground, don't wait for the next tick
+  }
   function startCommsPolling() {
     if (commsPollTimer) return;
     pollCommsSummary();
@@ -1387,11 +1409,14 @@
     // fetch) and pollCommsSummary only touches the DOM when something
     // actually changed, so this doesn't cost more than the occasional
     // extra network request when the panel is just sitting open.
-    commsPollTimer = setInterval(pollCommsSummary, 12000);
+    commsPollTimer = setInterval(pollCommsSummaryIfIdle, 12000);
+    document.addEventListener('visibilitychange', handleCommsVisibilityChange);
   }
   function stopCommsPolling() {
     clearInterval(commsPollTimer);
     commsPollTimer = null;
+    document.removeEventListener('visibilitychange', handleCommsVisibilityChange);
+    if (commsPollRetryTimer) { clearTimeout(commsPollRetryTimer); commsPollRetryTimer = null; }
   }
 
   // Sub-page state machine scoped to this panel - no visible tab bar.
@@ -1800,13 +1825,18 @@
     const data = await resp.json();
     return data.items || [];
   }
+  // Stale-while-revalidate (speed fix) - same convention as the other
+  // list pages: render the cached list instantly, refresh in the background.
   async function loadOpenFlows() {
     if (!openFlowsList) return;
-    openFlowsList.innerHTML = '<div class="wf-skeleton-list"><div class="wf-skeleton-row"></div><div class="wf-skeleton-row"></div></div>';
+    if (pageDataCache.openFlows) renderOpenFlowsList(pageDataCache.openFlows);
+    else openFlowsList.innerHTML = '<div class="wf-skeleton-list"><div class="wf-skeleton-row"></div><div class="wf-skeleton-row"></div></div>';
     try {
-      renderOpenFlowsList(await loadOpenFlowsItems());
+      const items = await loadOpenFlowsItems();
+      pageDataCache.openFlows = items;
+      if (panelView === 'openFlows') renderOpenFlowsList(items);
     } catch (err) {
-      openFlowsList.innerHTML = '<div class="wf-rem-empty">Could not load open flows.</div>';
+      if (!pageDataCache.openFlows) openFlowsList.innerHTML = '<div class="wf-rem-empty">Could not load open flows.</div>';
     }
   }
   // The entry icon's own badge (hidden at 0) - refreshed whenever
@@ -1814,7 +1844,12 @@
   // itself is visible (see loadCommsPage below).
   async function refreshOpenFlowsBadge() {
     if (!openFlowsBadge) return;
-    try { setCountBadge(openFlowsBadge, (await loadOpenFlowsItems()).length); } catch (err) { /* keep showing whatever was last known */ }
+    try {
+      const items = await loadOpenFlowsItems();
+      pageDataCache.openFlows = items;
+      setCountBadge(openFlowsBadge, items.length);
+      if (panelView === 'openFlows') renderOpenFlowsList(items);
+    } catch (err) { /* keep showing whatever was last known */ }
   }
   function showOpenFlows() {
     setPanelView('openFlows');
@@ -2140,12 +2175,24 @@
     return groups.join('');
   }
 
+  // Stale-while-revalidate (speed fix) - a conversation used to always
+  // show a blank spinner and leave every action button missing from the
+  // DOM until the fetch resolved, so the first tap on Send/Edit/Decline
+  // etc. always landed on nothing. Opening an already-visited chat now
+  // renders its last-known thread+actions instantly from cache (correct
+  // title included), with a background refresh right behind it.
   async function openConversationPage(chatId) {
     activeConvoChatId = chatId;
     setPanelView('conversation');
-    if (commsHeadTitle) commsHeadTitle.textContent = 'Loading…';
-    if (convoThread) convoThread.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
-    if (convoActions) convoActions.innerHTML = '';
+    const cached = pageDataCache.convos.get(chatId);
+    if (cached) {
+      renderConvoThread(cached);
+      renderConvoActionsAndWire(cached);
+    } else {
+      if (commsHeadTitle) commsHeadTitle.textContent = 'Loading…';
+      if (convoThread) convoThread.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+      if (convoActions) convoActions.innerHTML = '';
+    }
     await reloadConversation();
   }
 
@@ -2187,6 +2234,7 @@
     const chatId = activeConvoChatId;
     try {
       const convo = await fetchConvo(chatId);
+      pageDataCache.convos.set(chatId, convo);
       if (activeConvoChatId !== chatId || panelView !== 'conversation') return; // navigated away meanwhile
       renderConvoThread(convo);
     } catch (err) { /* best effort - thread just won't show the latest message until reopened */ }
@@ -2194,15 +2242,23 @@
 
   async function reloadConversation() {
     if (!activeConvoChatId) return;
+    const chatId = activeConvoChatId;
     let convo;
     try {
-      convo = await fetchConvo(activeConvoChatId);
+      convo = await fetchConvo(chatId);
     } catch (err) {
-      if (convoThread) convoThread.innerHTML = '<div class="wf-comms-empty">Could not load this conversation.</div>';
+      // Speed fix - a transient fetch error must never wipe out a
+      // perfectly good cached render that's already on screen; only shown
+      // when there was nothing cached to fall back on.
+      if (!pageDataCache.convos.get(chatId) && convoThread) convoThread.innerHTML = '<div class="wf-comms-empty">Could not load this conversation.</div>';
       return;
     }
+    if (activeConvoChatId !== chatId) return; // navigated to a different chat while this was in flight
+    pageDataCache.convos.set(chatId, convo);
     renderConvoThread(convo);
-
+    renderConvoActionsAndWire(convo);
+  }
+  function renderConvoActionsAndWire(convo) {
     if (convoActions) {
       convoActions.innerHTML = buildConvoActions(convo);
       // Every handler below: runButtonAction manages ONLY the tapped
@@ -2902,22 +2958,31 @@
         '</div></div>';
     }).join('');
   }
+  // Stale-while-revalidate (speed fix, same convention as loadCommsPage) -
+  // the list used to only ever fetch fresh, so re-opening it always left
+  // the page blank/stale until a round-trip finished and any tap in that
+  // window landed on dead content. Cached items also back the Edit
+  // action below, so it never needs a redundant second fetch.
   async function loadAutomationsBadgeAndList(renderList) {
+    if (renderList && pageDataCache.automations) renderAutomationList(pageDataCache.automations);
+    else if (renderList && autoList) autoList.innerHTML = '<div class="wf-skeleton-list"><div class="wf-skeleton-row"></div><div class="wf-skeleton-row"></div></div>';
     try {
       const resp = await fetch('/api/workforce/hr-assistant/automations');
       const data = await resp.json();
       const items = data.items || [];
+      pageDataCache.automations = items;
       setCountBadge(autoTasksBadge, items.filter((t) => t.status === 'active' || t.status === 'pending_approval').length, { allowZero: true });
-      if (renderList) renderAutomationList(items);
+      if (renderList && panelView === 'automationList') renderAutomationList(items);
       return items;
     } catch (err) {
+      if (pageDataCache.automations) return pageDataCache.automations; // keep showing the still-valid cached render
       if (renderList && autoList) autoList.innerHTML = '<div class="wf-rem-empty">Could not load automated tasks.</div>';
       return [];
     }
   }
-  async function openAutomationList() {
+  function openAutomationList() {
     setPanelView('automationList');
-    await loadAutomationsBadgeAndList(true);
+    loadAutomationsBadgeAndList(true);
   }
   if (autoTasksBar) autoTasksBar.addEventListener('click', () => { pushNav({ type: 'automationList' }); openAutomationList(); });
   if (autoNewBtn) autoNewBtn.addEventListener('click', () => { pushNav({ type: 'automation', task: null }); openAutomationCreate(null); });
@@ -2927,14 +2992,14 @@
       const b = e.target.closest('[data-a]');
       if (!b) return;
       const id = b.dataset.id, action = b.dataset.a;
-      if (action === 'preview') { await autoPreviewSaved(id); return; }
+      if (action === 'preview') { await runButtonAction(b, () => autoPreviewSaved(id), null, { resetAfterSuccess: true, toastFn: AUTO_TOAST_ERR.toastFn }); return; }
       if (action === 'edit') {
-        try {
-          const resp = await fetch('/api/workforce/hr-assistant/automations');
-          const data = await resp.json();
-          const t = (data.items || []).find((x) => x.id === id);
-          if (t) { pushNav({ type: 'automation', task: t }); openAutomationCreate(t); }
-        } catch (err) { showAutoToast('Could not load that task.', 'error'); }
+        await runButtonAction(b, async () => {
+          const items = pageDataCache.automations || await loadAutomationsBadgeAndList(false);
+          const t = items.find((x) => x.id === id);
+          if (!t) throw new Error('Could not load that task.');
+          return t;
+        }, (t) => { pushNav({ type: 'automation', task: t }); openAutomationCreate(t); }, { resetAfterSuccess: true, toastFn: AUTO_TOAST_ERR.toastFn });
         return;
       }
       if (action === 'approve') { await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/automations/' + encodeURIComponent(id) + '/approve', {}), () => { showAutoToast('First run approved — it will send automatically at its scheduled time.'); loadAutomationsBadgeAndList(true); }, AUTO_TOAST_ERR); return; }
@@ -3275,9 +3340,10 @@
   }
   if (autoSheetShareCopyBtn) autoSheetShareCopyBtn.addEventListener('click', async () => {
     const email = await loadServiceAccountEmailOnce();
-    try { await navigator.clipboard.writeText(email); } catch (err) { /* clipboard API unavailable - the email is still shown plainly in the hint */ }
+    try { await navigator.clipboard.writeText(email); } catch (err) { /* clipboard API unavailable - the email is still shown plainly in the box */ }
     autoSheetShareCopyBtn.textContent = 'Copied ✓';
     autoSheetShareCopyBtn.classList.add('copied');
+    showActionToast('Copied ✓');
     setTimeout(() => { autoSheetShareCopyBtn.textContent = 'Copy'; autoSheetShareCopyBtn.classList.remove('copied'); }, 1800);
   });
 
@@ -3450,16 +3516,16 @@
     await autoRefreshSummary();
     if (autoLastPreview) autoRenderPreviewBody(autoLastPreview, 'Preview — next run');
   });
+  // Throws on failure (never swallows its own error) so the caller's own
+  // runButtonAction shows the real red/error state instead of a false
+  // success - reuses the cached list instead of a redundant fetch.
   async function autoPreviewSaved(id) {
-    try {
-      const resp = await fetch('/api/workforce/hr-assistant/automations');
-      const data = await resp.json();
-      const t = (data.items || []).find((x) => x.id === id);
-      if (!t) return;
-      const previewResp = await fetch('/api/workforce/hr-assistant/automations/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ plan: t.plan, excludedKeys: t.excludedKeys, schedule: t.schedule }) });
-      const previewData = await previewResp.json();
-      autoRenderPreviewBody(previewData, 'Preview — ' + t.subject);
-    } catch (err) { showAutoToast('Could not load preview.', 'error'); }
+    const items = pageDataCache.automations || await loadAutomationsBadgeAndList(false);
+    const t = items.find((x) => x.id === id);
+    if (!t) throw new Error('Could not find that task.');
+    const previewResp = await fetch('/api/workforce/hr-assistant/automations/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ plan: t.plan, excludedKeys: t.excludedKeys, schedule: t.schedule }) });
+    const previewData = await previewResp.json();
+    autoRenderPreviewBody(previewData, 'Preview — ' + t.subject);
   }
   if (autoTestBtn) autoTestBtn.addEventListener('click', async () => {
     if (!autoEditingId) { showAutoToast('Save the automation first, then you can send a test.', 'warning'); return; }
@@ -3471,10 +3537,22 @@
       // a thrown error here, or it would silently fall through as if
       // nothing happened (the exact bug this fixes).
       if (!r.ok) throw new Error(r.error || 'Could not send the test.');
+      // Direct instruction fix - a genuine send failure (expired Gmail
+      // token, WhatsApp gateway down, etc.) used to reach here as an
+      // ordinary resolved result, so the button showed its SUCCESS state
+      // and the toast said the same vague "nothing to test" as a real
+      // no-data case. Promoting the real per-recipient failure reason to
+      // a thrown error here makes runButtonAction show its red/error
+      // state with that exact reason, never a generic "failed".
+      const testResult = r.results && r.results[0];
+      if (testResult && testResult.status === 'failed') throw new Error(testResult.error || 'Could not send the test.');
       return r;
     }, (r) => {
-      const sent = r.results && r.results[0] && r.results[0].status === 'sent';
-      showAutoToast(sent ? 'Test sent to you ✓' : 'Nothing to test on this run — no message would be sent right now.', sent ? 'success' : 'warning');
+      const status = r.results && r.results[0] && r.results[0].status;
+      const msg = status === 'sent' ? 'Test sent to you ✓'
+        : status === 'draft_mode' ? 'Draft mode is on (real sends are off) - nothing was actually sent.'
+        : 'Nothing to test on this run — no message would be sent right now.';
+      showAutoToast(msg, status === 'sent' ? 'success' : 'warning');
     }, { resetAfterSuccess: true, toastFn: AUTO_TOAST_ERR.toastFn });
   });
 

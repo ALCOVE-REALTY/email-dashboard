@@ -22,7 +22,8 @@ const FAKE_EMPLOYEES = [
   { employeeId: 'H1', name: 'Hema HOD', designation: 'Manager', department: 'HR', location: 'HO', company: 'Alcove', reportingDoer: null, reportingManager: null, doj: new Date('2015-01-01'), dob: new Date('1980-06-15'), tenure: '10y', totalExperience: '15y', email: 'hema@co.test', emailPersonal: '', contactNumber: '9000000001', employmentType: 'Confirmed', status: 'ACTIVE' },
   { employeeId: 'E1', name: 'Alice Emp', designation: 'Executive', department: 'HR', location: 'HO', company: 'Alcove', reportingDoer: 'Hema HOD', reportingManager: 'Hema HOD', doj: new Date('2026-04-01'), dob: new Date('1990-10-20'), tenure: '0y', totalExperience: '2y', email: 'alice@co.test', emailPersonal: '', contactNumber: '9876543210', employmentType: 'Probation', status: 'ACTIVE' },
   { employeeId: 'E6', name: 'Khushboo Dhanuka', designation: 'Executive', department: 'HR', location: 'HO', company: 'Alcove', reportingDoer: 'Hema HOD', reportingManager: 'Hema HOD', doj: new Date('2022-01-01'), dob: new Date('1992-11-07'), tenure: '4y', totalExperience: '6y', email: 'khushboo@co.test', emailPersonal: '', contactNumber: '9876500006', employmentType: 'Confirmed', status: 'ACTIVE' },
-  { employeeId: 'E9', name: 'Subhodeep', designation: 'Owner', department: 'HR', location: 'HO', company: 'Alcove', reportingDoer: null, reportingManager: null, doj: new Date('2010-01-01'), dob: new Date('1990-01-01'), tenure: '16y', totalExperience: '16y', email: 'subhodeep@co.test', emailPersonal: '', contactNumber: '9876500009', employmentType: 'Confirmed', status: 'ACTIVE' }
+  { employeeId: 'E9', name: 'Subhodeep', designation: 'Owner', department: 'HR', location: 'HO', company: 'Alcove', reportingDoer: null, reportingManager: null, doj: new Date('2010-01-01'), dob: new Date('1990-01-01'), tenure: '16y', totalExperience: '16y', email: 'subhodeep@co.test', emailPersonal: '', contactNumber: '9876500009', employmentType: 'Confirmed', status: 'ACTIVE' },
+  { employeeId: 'E10', name: 'Priyanka', designation: 'Executive', department: 'Accounts', location: 'HO', company: 'Alcove', reportingDoer: null, reportingManager: null, doj: new Date('2021-03-01'), dob: new Date('1994-02-14'), tenure: '5y', totalExperience: '7y', email: 'priyanka@co.test', emailPersonal: '', contactNumber: '9876500010', employmentType: 'Confirmed', status: 'ACTIVE' }
 ];
 const FAKE_DEPARTMENT_NAMES = new Map([['HR', 'HR'], ['IT', 'IT']]);
 
@@ -134,6 +135,18 @@ async function main() {
     const sheetFilterDraft = await automationService.draftPlanFromParsed(sheetFilterParsed, now, sheetContext);
     check('filter: Status is Pending', sheetFilterDraft.ok && sheetFilterDraft.plan.conds.some((c) => c.col === 'Status' && c.op === 'is' && String(c.val).toLowerCase() === 'pending'));
     check('chosen columns: exactly Name, Department, Amount (not all 5)', sheetFilterDraft.ok && sheetFilterDraft.plan.sheetUseAllColumns === false && JSON.stringify(sheetFilterDraft.plan.tableColumns) === JSON.stringify(['Name', 'Department', 'Amount']));
+
+    console.log('='.repeat(70));
+    console.log('"NO DATA" AUTOMATION: a fixed message to one named person, no employee data involved (live check item 4)');
+    console.log('='.repeat(70));
+    const noDataAsk = 'Proti mash er 15 tarikh Priyanka ke PF challan reminder mail korbe';
+    const noDataParsed = await automationService.parseAutomationAsk(noDataAsk);
+    const noDataDraft = await automationService.draftPlanFromParsed(noDataParsed, now);
+    check('resolves to source=none (a fixed message, no data rows)', noDataDraft.ok && noDataDraft.plan.source === 'none');
+    check('recipient resolves to the real employee Priyanka, never invented', noDataDraft.ok && noDataDraft.plan.selectedEmployeeIds.includes('E10'));
+    check('mediator is Mail (explicitly asked "mail korbe")', noDataDraft.ok && noDataDraft.plan.mediator === 'mail');
+    check('schedule: day 15, monthly', noDataDraft.ok && new Date(noDataDraft.schedule.date + 'T00:00:00Z').getUTCDate() === 15 && noDataDraft.schedule.repeat === 'monthly');
+    check('no data-source conditions were invented for a fixed message', noDataDraft.ok && noDataDraft.plan.conds.length === 0);
 
     console.log('='.repeat(70));
     console.log(pass + '/' + (pass + fail) + ' passed' + (fail ? ', ' + fail + ' FAILED' : ''));

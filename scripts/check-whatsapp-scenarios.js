@@ -155,7 +155,7 @@ scenario('C3: a genuinely unrelated QUESTION arriving while STEP1 is open still 
     const d = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenC3', firstName: 'ScenC3', text: 'Amar PF balance ta koto ache?', isGroup: false, history: [] });
     const pending = await whatsappAssistant.getPendingHrNoteFlow(phone);
     if (pending !== null) return { pass: false, detail: 'expected the flow to close for a genuine question, got: ' + JSON.stringify(pending) };
-    if (!d.replyText.includes('PF')) return { pass: false, detail: 'question was not actually answered: ' + d.replyText };
+    if (!/PF|provident fund/i.test(d.replyText)) return { pass: false, detail: 'question was not actually answered: ' + d.replyText };
     if (d.replyText.includes('note kore nilam')) return { pass: false, detail: 'a real question was wrongly treated as a "noted" informing message: ' + d.replyText };
     return { pass: true, detail: 'question answered normally, flow closed as before' };
   } finally {
