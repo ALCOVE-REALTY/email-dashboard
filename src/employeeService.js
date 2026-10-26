@@ -613,8 +613,28 @@ function findUnmatchedFilters(employees, query, names) {
   return unmatched;
 }
 
+// Direct instruction (2026-10-26, live incident) - the owner's LOGIN
+// email (req.hrUser.email, a shared/role address like
+// "manager.hr@alcoverealty.in") is never safe to exact-match against the
+// directory's own `email` column to find the owner's OWN employee record:
+// that shared address can legitimately be a DIFFERENT real employee's own
+// listed email (confirmed live - it is literally Radha Biswas
+// Bhattacharjee's own "Email ID- Official" value, not Subhodeep's). The
+// owner's own, personally-distinguishing email is a separate, already-
+// established source of truth (hrAccountCommands.js's resolveAdminEmail,
+// used for an unrelated "send test email" command) - reused here as the
+// ONE place that gets to say which directory row is "the owner", so it
+// can never silently drift to someone else's record.
+async function findOwnerEmployeeRecord() {
+  const { resolveAdminEmail } = require('./hrAccountCommands');
+  const ownerEmail = resolveAdminEmail();
+  const { employees } = await getEmployeeData();
+  return employees.find((e) => e.email && e.email.toLowerCase() === ownerEmail) || null;
+}
+
 module.exports = {
   getEmployeeData,
+  findOwnerEmployeeRecord,
   getConfigStatus,
   normalizeKey,
   getCompanyList,

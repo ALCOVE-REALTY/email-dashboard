@@ -60,4 +60,4 @@ async function handleAccountCommand(text, ownerEmail) {
   return null;
 }
 
-module.exports = { handleAccountCommand };
+module.exports = { handleAccountCommand, resolveAdminEmail };

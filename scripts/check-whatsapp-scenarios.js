@@ -163,6 +163,27 @@ scenario('C3: a genuinely unrelated QUESTION arriving while STEP1 is open still 
   }
 });
 
+// Fixed 2026-10-26 (live) - the GENERAL reply drafter's own version of
+// the cross-topic history-leak (scenarios C/C2 fixed this inside HR
+// flows; this is the same failure mode outside any open flow at all, for
+// an ordinary person-lookup question).
+scenario('AyanHistoryLeak: a standalone "who is X" question long after an unrelated, unresolved name-confirm exchange in history still gets the normal disambiguation list, never a reply dragging in the old name', async () => {
+  const phone = '910000000996b';
+  const history = [
+    { direction: 'in', text: 'Ayon HR amake bolechhen ajke late asbo', ts: Date.now() - 86400000 },
+    { direction: 'out', text: 'Apni ki Ayon HR (Facade)-er kotha bolchhen, naki onno Ayon?', ts: Date.now() - 86390000 }
+  ];
+  const d = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenAyan', firstName: 'ScenAyan', text: 'Ayan k??', isGroup: false, history });
+  // Accepts either the full named list or a short "which one, 1 or 2?"
+  // disambiguation retry phrasing - both are valid, correct outcomes; the
+  // one thing that must never happen is the old "Ayon HR" exchange
+  // leaking into this new, standalone question.
+  const isDisambiguation = (d.replyText.includes('Ayan Biswas') && d.replyText.includes('Ayan Das')) || /\bAyan\b.*\b1\b.*\b2\b/.test(d.replyText);
+  if (!isDisambiguation) return { pass: false, detail: 'expected a disambiguation question about the 2 real Ayans, got: ' + d.replyText };
+  if (d.replyText.includes('Ayon HR')) return { pass: false, detail: 'the old, unrelated "Ayon HR" exchange leaked into this new, standalone question: ' + d.replyText };
+  return { pass: true, detail: 'standalone question answered on its own, old history correctly ignored' };
+});
+
 // --- D: self-initiated WFH/leave starts the approval flow ---
 scenario('D: "Ajke ami bari theke kaj korchi" (self-initiated WFH, no name) asks who approved it, never the generic noted-only reply', async () => {
   const phone = '910000000993';

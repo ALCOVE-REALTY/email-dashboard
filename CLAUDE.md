@@ -14,7 +14,34 @@ Before every commit, all deterministic suites AND the real-model scenario runner
 **After committing, the commit must actually be pushed and deployed before being
 reported as fixed.** A local-only commit is not a fix — verify `git status` shows
 the branch is not ahead of `origin/main` (or confirm the deploy happened) before
-telling Subhodeep something is live.
+telling Subhodeep something is live. See "Deployment" below - pushing to
+`origin/main` does NOT by itself deploy anything; a separate manual deploy step is
+required, and Claude has no way to confirm that step happened on its own.
+
+## Deployment
+
+**Not Vercel. Never run the `vercel` CLI or check Vercel deployments for this
+project** - there's a stale, long-abandoned Vercel project linked in this repo's
+`.vercel/` folder from an earlier setup; it is NOT where production runs and its
+deployment history is meaningless here.
+
+Production runs on Alcove's own company server via **"Alcove Deploy"** (Docker +
+Caddy + Express) - a different, internal system with no public API and no CLI
+access from this environment.
+
+- **Live URL**: https://employees.alcoverealty.in/p/workforce-intelligence/workforce.html
+- **Deploy flow**: Subhodeep runs `git push origin main`, then clicks "Deploy now"
+  for the Workforce-Intelligence project in the Alcove Deploy dashboard. The deploy
+  log there shows `HEAD is now at <commit>` once it completes. Env vars are set in
+  that same dashboard, not in any file Claude can read.
+- **A push to `origin/main` is NOT a deploy** - `git push` alone changes nothing in
+  production until that "Deploy now" click happens afterward. Never assume a pushed
+  commit is live.
+- **Claude has no direct access to the server, its logs, or the Alcove Deploy
+  dashboard.** When live logs or the live commit are needed, ask Subhodeep exactly
+  what to look for (e.g. "check the deploy log for the most recent `HEAD is now at`
+  line" or "search the server logs for `Claude API error` in the last hour") and he
+  copies it back - never guess or assume this some other way (e.g. via Vercel).
 
 ## Locked scenarios (real-model scenario runner)
 
@@ -58,3 +85,10 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
 - listOpenHrFlowsForOwner lists both open STEP1/2 flows and open STEP3+
   confirmations; closeOpenHrNoteFlow/closeOpenHrConfirmation each remove their
   target from that list.
+- AyanHistoryLeak: the GENERAL reply drafter's own cross-topic history-leak (same
+  failure mode as C/C2, outside any open flow) - a standalone "who is X" question
+  arriving long after an unrelated, unresolved name-confirm exchange in history
+  still gets the normal disambiguation list, never a reply dragging in the old
+  name. Fixed 2026-10-26 by strengthening the main classifier's `wantsData` field
+  to judge a self-contained question on its own, never as a continuation of an
+  unrelated old exchange just because a similar name/topic appeared in history.

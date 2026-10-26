@@ -2056,13 +2056,22 @@ router.post('/hr-assistant/automations/:id/send-test', async (req, res) => {
     if (!a) return res.status(404).json({ error: 'Automated task not found.' });
     // Live bug fix - the frontend never actually sent a `phone` field (no
     // UI for it exists), so every WhatsApp-mediator test send failed
-    // every time with this check. The owner's own login email does NOT
-    // reliably identify their own employee record (it can be a shared
-    // role mailbox another employee's directory record also lists), so
-    // this is never inferred from req.hrUser.email - it's a single,
-    // explicit piece of config the owner sets once.
-    const testTo = a.plan.mediator === 'mail' ? req.hrUser.email : process.env.SUBH_OWNER_WHATSAPP_NUMBER;
-    if (!testTo) return res.status(400).json({ error: a.plan.mediator === 'mail' ? 'No owner email on file.' : 'Owner WhatsApp number not configured - set SUBH_OWNER_WHATSAPP_NUMBER in the environment to enable WhatsApp test sends.' });
+    // every time with this check. The owner's own LOGIN email (shared/
+    // role address) is never used to look this up - confirmed live that
+    // it can legitimately be a DIFFERENT employee's own directory email,
+    // not the owner's. The owner's own employee record is instead found
+    // via employeeService.findOwnerEmployeeRecord(), which resolves the
+    // owner's real, personally-distinguishing email first (the same
+    // source of truth hrAccountCommands.js already uses) and only then
+    // exact-matches it against the directory's own email column.
+    // SUBH_OWNER_WHATSAPP_NUMBER remains available as an explicit
+    // override for whenever that record has no contact number on file.
+    let testTo = a.plan.mediator === 'mail' ? req.hrUser.email : process.env.SUBH_OWNER_WHATSAPP_NUMBER;
+    if (!testTo && a.plan.mediator !== 'mail') {
+      const ownerRecord = await employeeService.findOwnerEmployeeRecord().catch(() => null);
+      testTo = ownerRecord && ownerRecord.contactNumber;
+    }
+    if (!testTo) return res.status(400).json({ error: a.plan.mediator === 'mail' ? 'No owner email on file.' : 'Could not find your own WhatsApp number - check your HR record has a contact number on file, or set SUBH_OWNER_WHATSAPP_NUMBER.' });
     const result = await automationService.runAutomation(req.params.id, { isTest: true, testTo }, new Date());
     res.json(result);
   } catch (err) {

@@ -67,6 +67,19 @@ async function checkAsync(label, fn) {
   await require('./testBootstrap').setupTestEnvironment();
 
   console.log('='.repeat(70));
+  console.log('OWNER IDENTITY (live incident, 2026-10-26): the owner\'s own employee record must never resolve to a different real person, even one whose own directory row happens to list the owner\'s shared/login email');
+  console.log('='.repeat(70));
+  await checkAsync('findOwnerEmployeeRecord resolves to the owner\'s OWN record (Subhodeep Kundu Chowdhury), never a different employee - even though a plain exact-match on the LOGIN email (manager.hr@alcoverealty.in) would hit Radha Biswas Bhattacharjee\'s own "Email ID- Official" column instead', async () => {
+    const owner = await employeeService.findOwnerEmployeeRecord();
+    return Boolean(owner) && owner.name === 'Subhodeep Kundu Chowdhury' && owner.email === 'subhodeep@alcoverealty.in' && owner.name !== 'Radha Biswas Bhattacharjee';
+  });
+  await checkAsync('REGRESSION GUARD: confirms the live incident\'s own root cause is still real data, not a stale assumption - a plain exact-match on the shared login email still resolves to the OTHER employee, proving findOwnerEmployeeRecord\'s own resolveAdminEmail-based approach is doing real, necessary work here', async () => {
+    const { employees } = await employeeService.getEmployeeData();
+    const byLoginEmail = employees.find((e) => e.email && e.email.toLowerCase() === 'manager.hr@alcoverealty.in');
+    return Boolean(byLoginEmail) && byLoginEmail.name !== 'Subhodeep Kundu Chowdhury';
+  });
+
+  console.log('='.repeat(70));
   console.log('PII hard-block (whatsappAssistant.textHasForbiddenField/cardHasForbiddenField)');
   console.log('='.repeat(70));
   check('"Aadhar number den" is blocked', whatsappAssistant.textHasForbiddenField('Aadhar number den'));
@@ -463,6 +476,28 @@ async function checkAsync(label, fn) {
     await whatsappAssistant.clearPendingDisambiguation(LIVE_REVIEW_TEST_PHONE).catch(() => {});
     return ok;
   });
+  // Direct instruction (2026-10-26, live) - the GENERAL reply drafter's
+  // own version of the cross-topic history-leak already fixed inside HR
+  // flows: a genuinely standalone "who is X" question reached via real
+  // conversation HISTORY containing an unrelated, never-resolved earlier
+  // name ("Ayon HR", from an old duty/late-coming confirm question) used
+  // to be answered as if it were continuing THAT old exchange (a
+  // malformed, history-dependent sentence), instead of the normal
+  // 2+-match disambiguation list every other bare-name lookup gets.
+  await checkAsync('LIVE BUG FIX: "Ayan k??" arriving long after an unrelated, unresolved "Ayon HR" name-confirm exchange in history still gets the normal 2-match disambiguation list, never a reply that drags the old "Ayon HR" context into this new, standalone question', async () => {
+    const phone = '910000000995b';
+    const history = [
+      { direction: 'in', text: 'Ayon HR amake bolechhen ajke late asbo', ts: Date.now() - 86400000 },
+      { direction: 'out', text: 'Apni ki Ayon HR (Facade)-er kotha bolchhen, naki onno Ayon?', ts: Date.now() - 86390000 }
+    ];
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Ayan k??', isGroup: false, history });
+    // Accepts either the full named list or a short "which one, 1 or 2?"
+    // retry phrasing - both are a valid disambiguation; never a reply
+    // that drags the old "Ayon HR" exchange into this new question.
+    const isDisambiguation = (d.replyText.includes('Ayan Biswas') && d.replyText.includes('Ayan Das')) || /\bAyan\b.*\b1\b.*\b2\b/.test(d.replyText);
+    const ok = isDisambiguation && !d.replyText.includes('Ayon HR');
+    return ok;
+  });
 
   console.log('='.repeat(70));
   console.log('LIVE TEST FIXES item 4: a department/designation hint that does NOT fit an exact name match prefers a fuzzy match that DOES fit it, and a failed WhatsApp send is retried once and alerted');
@@ -854,13 +889,17 @@ async function checkAsync(label, fn) {
     await cleanupHrFlowArtifacts(phone);
     return ok;
   });
-  await checkAsync('late-coming reported without naming the approver (Banglish): STEP1 asks using a "deri kore asa(h)r approval-ta" phrase, topic saved as "deri kore asha" (the model\'s own free-form Banglish transliteration varies between "ashar"/"asar" for the same word - both are valid, so this checks the shape, not one exact spelling)', async () => {
+  await checkAsync('late-coming reported without naming the approver (Banglish): STEP1 asks using a "deri kore asa(h)r approval-ta" (or "late coming-er approval-ta") phrase, topic saved as "deri kore asha" (the model\'s own free-form transliteration varies between "ashar"/"asar"/the English "late coming" for the same concept - all are valid, so this checks the shape, not one exact spelling)', async () => {
     const phone = '919100000514';
     await cleanupHrFlowArtifacts(phone);
     const d = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Aj office-e deri kore aschi, allow kora hoyechhe.', isGroup: false, history: [] });
     const pending = await whatsappAssistant.getPendingHrNoteFlow(phone);
-    const ok = /^Ami SUBH, Subhodeep-er HR Assistant\. Ami apnar bishoy-ta note kore nilam\. Apnake ei deri kore ash?ar approval-ta ke diyechhen, tar naam-ta bolle ami confirm kore nite parbo\.$/.test(d.replyText)
-      && Boolean(pending) && pending.topicLabel === 'deri kore asha' && /^deri kore ash?ar approval-ta$/.test(pending.actionPhrase);
+    // Observed model-generated variants: "asar", "ashar", "asha-r" (a
+    // hyphen before the possessive "r"), and the English "late coming-er" -
+    // ash?a-?r covers the first three, the alternation adds the fourth.
+    const PHRASE_RE = /^(deri kore ash?a-?r|late coming-er) approval-ta$/;
+    const ok = new RegExp('^Ami SUBH, Subhodeep-er HR Assistant\\. Ami apnar bishoy-ta note kore nilam\\. Apnake ei (?:deri kore ash?a-?r|late coming-er) approval-ta ke diyechhen, tar naam-ta bolle ami confirm kore nite parbo\\.$').test(d.replyText)
+      && Boolean(pending) && pending.topicLabel === 'deri kore asha' && PHRASE_RE.test(pending.actionPhrase);
     await cleanupHrFlowArtifacts(phone);
     return ok;
   });
