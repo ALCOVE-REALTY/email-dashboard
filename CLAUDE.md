@@ -31,7 +31,12 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
 - B: no name given → "Naa" → full name retry → resolves → "Ha" → STEP 3 + STEP 4.
 - C: duty-change flow open, a genuinely separate-topic message arrives mid-flow
   (e.g. sending a product) → answered on its own, never linked to the open flow;
-  the open flow continues normally afterward.
+  the open flow continues normally afterward. Covers both STEP3+ (manager
+  confirmation pending, scenario C) and STEP1/2 (still awaiting the sender,
+  scenario C2) - fixed 2026-10-25 for STEP1/2 via HR_FLOW_UNRELATED_TOPIC_ACK,
+  which keeps the flow alive instead of abandoning it. Scoped to INFORMING
+  messages only - a genuine unrelated QUESTION still closes the flow and gets a
+  real answer (scenario C3), never just a "noted" acknowledgment.
 - D: self-initiated WFH/leave ("Ajke ami bari theke kaj korchi", "Kalke chuti
   nebo") starts the approval flow, never the generic noted-only reply.
 - STEP 1 (a)/(b)/(c) for duty change, off-day duty, WFH, leave, half-day, late,

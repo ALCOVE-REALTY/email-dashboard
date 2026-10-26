@@ -15,10 +15,11 @@
 // commit that touches the WhatsApp HR-assistant decision path, per
 // CLAUDE.md's own rule.
 //
-// One scenario (C: cross-topic contamination) is a KNOWN, already-reported
-// gap that Subhodeep explicitly asked to defer fixing - it is included
-// here for VISIBILITY only (marked knownFailing) and never blocks the
-// overall pass/fail gate.
+// A scenario can be marked knownFailing: true (with a knownFailingReason)
+// for an already-reported, explicitly deferred gap - it still runs and is
+// reported, but never blocks the overall pass/fail gate. None are marked
+// this way currently (the cross-topic contamination gap, scenarios C/C2,
+// was fixed 2026-10-25).
 require('dotenv').config({ path: '.env.local' });
 require('dotenv').config();
 
@@ -99,7 +100,7 @@ scenario('B: a non-matching name is rejected and re-asked, then the correct name
 }, {});
 
 // --- C: cross-topic contamination (KNOWN, deferred by explicit decision) ---
-scenario('C: a genuinely separate-topic message arriving mid-flow is answered on its own, never linked to the open flow', async () => {
+scenario('C: a genuinely separate-topic message arriving while a manager confirmation (STEP3+) is pending is answered on its own, never linked to the open flow', async () => {
   const phone = '910000000992';
   await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
   try {
@@ -111,7 +112,56 @@ scenario('C: a genuinely separate-topic message arriving mid-flow is answered on
   } finally {
     await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
   }
-}, { knownFailing: true, knownFailingReason: 'Deferred by explicit decision (2026-10-25) - "Hold off on this one for now". The general AI reply drafter can still link an unrelated message to an open flow; tracked here for visibility, never blocks the gate.' });
+});
+// Fixed 2026-10-25 (cross-topic contamination, STEP1/2) - uses REAL
+// accumulated conversation history (matching production's actual calling
+// convention, unlike most of this file's own `history: []` checks) since
+// that's specifically what the bug depended on: the general drafter can
+// pull stale context out of real history when it takes over after a flow
+// is abandoned. Fixed by never abandoning the flow for a genuinely
+// unrelated INFORMING message in the first place (see HR_FLOW_UNRELATED_TOPIC_ACK).
+scenario('C2: a genuinely separate-topic INFORMING message arriving while STEP1 (awaiting_name) is open is answered on its own topic only - the flow stays open, never bled into the off-topic reply', async () => {
+  const phone = '910000000993';
+  await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
+  try {
+    const history = [];
+    const text1 = 'Ajke amake duty korte bola hoyechhe. Tar poriborte onno din chhutti nite bola hoyechhe.';
+    history.push({ direction: 'in', text: text1, ts: Date.now() });
+    const d1 = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenC2', firstName: 'ScenC2', text: text1, isGroup: false, history: history.slice(0, -1) });
+    history.push({ direction: 'out', text: d1.replyText, ts: Date.now() });
+    const text2 = 'Sir, apnar kache ajke oi product ta pathiye debo';
+    const d2 = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenC2', firstName: 'ScenC2', text: text2, isGroup: false, history });
+    const pending = await whatsappAssistant.getPendingHrNoteFlow(phone);
+    if (!pending || pending.step !== 'awaiting_name') return { pass: false, detail: 'flow was abandoned instead of staying open: ' + JSON.stringify(pending) };
+    if (!d2.replyText.includes('note kore nilam')) return { pass: false, detail: 'off-topic message was not acknowledged: ' + d2.replyText };
+    if (d2.replyText.includes('duty') || d2.replyText.includes('chhutti') || d2.replyText.includes('instruction-ta')) return { pass: false, detail: 'the abandoned flow\'s own topic leaked into the off-topic reply: ' + d2.replyText };
+    // The flow must still be fully answerable afterward.
+    const d3 = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenC2', firstName: 'ScenC2', text: 'Tanmoy Mondal bolechhen.', isGroup: false, history: [] });
+    const confirmations = (await whatsappAssistant.listAllHrConfirmations()).filter((c) => c.senderPhone === phone);
+    if (confirmations.length !== 1 || confirmations[0].status !== 'awaiting_manager') return { pass: false, detail: 'flow was not answerable afterward: ' + d3.replyText };
+    return { pass: true, detail: 'off-topic message noted on its own, flow survived and resolved normally' };
+  } finally {
+    await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
+  }
+});
+// A genuine QUESTION (as opposed to an informing statement) must still
+// get its own real answer, never just a "noted" acknowledgment - the
+// narrow scope of the fix above.
+scenario('C3: a genuinely unrelated QUESTION arriving while STEP1 is open still closes the flow and is answered normally (never just "noted")', async () => {
+  const phone = '910000000994b';
+  await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
+  try {
+    await whatsappAssistant.decideAutoReply({ phone, name: 'ScenC3', firstName: 'ScenC3', text: 'Ajke amake duty korte bola hoyechhe, ar er bodole onno din chhutti nite bola hoyechhe', isGroup: false, history: [] });
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenC3', firstName: 'ScenC3', text: 'Amar PF balance ta koto ache?', isGroup: false, history: [] });
+    const pending = await whatsappAssistant.getPendingHrNoteFlow(phone);
+    if (pending !== null) return { pass: false, detail: 'expected the flow to close for a genuine question, got: ' + JSON.stringify(pending) };
+    if (!d.replyText.includes('PF')) return { pass: false, detail: 'question was not actually answered: ' + d.replyText };
+    if (d.replyText.includes('note kore nilam')) return { pass: false, detail: 'a real question was wrongly treated as a "noted" informing message: ' + d.replyText };
+    return { pass: true, detail: 'question answered normally, flow closed as before' };
+  } finally {
+    await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
+  }
+});
 
 // --- D: self-initiated WFH/leave starts the approval flow ---
 scenario('D: "Ajke ami bari theke kaj korchi" (self-initiated WFH, no name) asks who approved it, never the generic noted-only reply', async () => {
@@ -212,7 +262,7 @@ scenario('Extra-info case C: once the manager confirmation is pending, further o
   try {
     await whatsappAssistant.decideAutoReply({ phone, name: 'ScenEC', firstName: 'ScenEC', text: 'Ajke amake duty korte bola hoyechhe. Tar poriborte onno din chhutti nite bola hoyechhe.', isGroup: false, history: [] });
     await whatsappAssistant.decideAutoReply({ phone, name: 'ScenEC', firstName: 'ScenEC', text: 'Tanmoy Mondal bolechhen.', isGroup: false, history: [] });
-    const dExtra = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenEC', firstName: 'ScenEC', text: 'ei bishoy-ta tatkhonik dorkar chilo', isGroup: false, history: [] });
+    const dExtra = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenEC', firstName: 'ScenEC', text: 'Sir, ei duty-tar jonno amar ekta jaruri meeting miss hoye gelo', isGroup: false, history: [] });
     if (!dExtra.replyText.includes('confirmation-er opekkha korchhi')) return { pass: false, detail: 'expected the case-C waiting-status reply, got: ' + dExtra.replyText };
     return { pass: true, detail: 'noted + waiting-status reply given' };
   } finally {

@@ -1436,7 +1436,7 @@ async function checkAsync(label, fn) {
     await cleanupHrFlowArtifacts(phone, SUBHODEEP_KC_PHONE);
     return ok;
   });
-  await checkAsync('a CLEARLY DIFFERENT topic arriving in between (never a name) closes the pending flow QUIETLY - no follow-up question, no "unfinished" alert - and the new topic is answered normally, as if no flow existed', async () => {
+  await checkAsync('REGRESSION: a genuinely unrelated QUESTION arriving in between (never a name) still closes the pending flow QUIETLY and is answered normally, as if no flow existed - a real question always needs its own real answer, never just a "noted" acknowledgment', async () => {
     const phone = '910000000932';
     await cleanupHrFlowArtifacts(phone);
     await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Ajke amake duty korte bola hoyechhe, ar er bodole onno din chhutti nite bola hoyechhe', isGroup: false, history: [] });
@@ -1447,6 +1447,35 @@ async function checkAsync(label, fn) {
       && !d.replyText.includes('duty') && !d.replyText.includes('chhutti') && !/unfinished|baki royeche|ashomapto/i.test(d.replyText)
       && d.replyText.includes('PF');
     await cleanupHrFlowArtifacts(phone);
+    return ok;
+  });
+  // Direct instruction (2026-10-25) - the "cross-topic contamination"
+  // fix: a genuinely unrelated INFORMING message (as opposed to a
+  // question, covered above) is answered on its own topic only, via a
+  // fixed template, and the pending flow is kept alive - never cleared,
+  // never bled into the off-topic reply - so the sender can still answer
+  // STEP1's own question afterward.
+  await checkAsync('CROSS-TOPIC FIX: an unrelated INFORMING message ("I\'ll send you that product") while STEP1 (awaiting_name) is open gets a standalone, topic-specific "noted" reply - the pending flow stays open, never closed, and is NOT bled into the off-topic reply', async () => {
+    const phone = '910000000933';
+    await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
+    await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Ajke amake duty korte bola hoyechhe, ar er bodole onno din chhutti nite bola hoyechhe', isGroup: false, history: [] });
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Sir, apnar kache ajke oi product ta pathiye debo', isGroup: false, history: [] });
+    const pendingAfter = await whatsappAssistant.getPendingHrNoteFlow(phone);
+    const noLeak = !d.replyText.includes('duty') && !d.replyText.includes('chhutti') && !d.replyText.includes('instruction-ta');
+    const ok = Boolean(pendingAfter) && pendingAfter.step === 'awaiting_name'
+      && d.replyText.includes('note kore nilam') && d.replyText.toLowerCase().includes('product') && noLeak;
+    await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
+    return ok;
+  });
+  await checkAsync('CROSS-TOPIC FIX: after the unrelated informing message above, the flow is still fully answerable - naming the instructor reaches STEP 3 + STEP 4 normally', async () => {
+    const phone = '910000000934';
+    await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
+    await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Ajke amake duty korte bola hoyechhe, ar er bodole onno din chhutti nite bola hoyechhe', isGroup: false, history: [] });
+    await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Sir, apnar kache ajke oi product ta pathiye debo', isGroup: false, history: [] });
+    await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Tanmoy Mondal bolechhen.', isGroup: false, history: [] });
+    const confirmations = (await whatsappAssistant.listAllHrConfirmations()).filter((c) => c.senderPhone === phone);
+    const ok = confirmations.length === 1 && confirmations[0].status === 'awaiting_manager' && confirmations[0].thirdPartyName === 'Tanmoy Mondal';
+    await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
     return ok;
   });
   await checkAsync('the pending flow TTL is 7 days (not end of day) - confirmed against the real stored key', async () => {

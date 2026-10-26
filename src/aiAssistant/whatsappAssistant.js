@@ -2154,6 +2154,20 @@ const HR_FLOW_CONTEXT_CLARIFY = {
   hinglish: 'Thoda samajh nahi paya - yeh mere pichhle sawaal ka jawab hai, ya kuch alag bata rahe hain?',
   english: "I'm not sure if that's answering my last question or something else - could you clarify?"
 };
+// Direct instruction (2026-10-25) - a genuinely NEW, unrelated topic
+// arriving while a STEP1/2 HR-note flow is still open on the SENDER's
+// side (awaiting a name/confirmation) is answered on its OWN topic only,
+// via this fixed template (never the general AI drafter, which can
+// inconsistently pull stale context from conversation history into its
+// reply) - and the open flow is kept alive exactly as it was, never
+// quietly abandoned. Mirrors STEP3+'s own EXTRA_INFO_WAITING_STATUS
+// behavior (which already keeps an awaiting_manager confirmation open),
+// extended to the earlier, awaiting-the-sender steps.
+const HR_FLOW_UNRELATED_TOPIC_ACK = {
+  banglish: (phrase) => 'Thik ache, ' + phrase + ' ami note kore nilam ar Subhodeep-ke janiye dicchi.',
+  hinglish: (phrase) => 'Thik hai, ' + phrase + ' maine note kar liya hai aur Subhodeep ko bata raha hoon.',
+  english: (phrase) => "Okay, I've noted " + phrase + " and I'm letting Subhodeep know."
+};
 // Live review item 1 (found live: "Haa" - a very common spelling - fell
 // through unmatched, cleared the pending confirm, and reached the
 // free-form AI drafter, which answered in English about "general
@@ -3838,7 +3852,7 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
       // try extracting a name from whatever follows the no-marker before
       // falling back to a plain re-ask.
       const remainder = t.replace(NAME_CONFIRM_NO_RE, '').replace(/^[\s.,!-]+/, '');
-      const extracted = remainder ? await extractPersonReference(remainder, { pendingQuestionLabel, history }) : { personName: null, hint: null, isAmbiguous: false };
+      const extracted = remainder ? await extractPersonReference(remainder, { pendingQuestionLabel, history, lang }) : { personName: null, hint: null, isAmbiguous: false, isUnrelatedTopic: false, unrelatedTopicPhrase: null };
       if (extracted.isAmbiguous) {
         return { case: 'acknowledged', replyText: HR_FLOW_CONTEXT_CLARIFY[lang] || HR_FLOW_CONTEXT_CLARIFY.english, summaryForOwner: null, lang };
       }
@@ -3848,8 +3862,14 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
       if (remainder) {
         // The "No" cancelled the old candidate, but the remainder is a
         // new, unrelated topic of its own, not a corrected name (live
-        // review, 917278793115) - close this flow quietly rather than
-        // re-asking for a name nobody is trying to give.
+        // review, 917278793115). Direct instruction (2026-10-25) - a
+        // genuinely unrelated topic is answered on its own and the flow
+        // is kept alive (now back at STEP1's own question, since the old
+        // candidate was just rejected), never silently abandoned.
+        if (extracted.isUnrelatedTopic && extracted.unrelatedTopicPhrase) {
+          await savePendingHrNoteFlow(phone, { summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, actionPhrase: hrFlow.actionPhrase, lang, createdAt: hrFlow.createdAt, step: 'awaiting_name' });
+          return { case: 'acknowledged', replyText: (HR_FLOW_UNRELATED_TOPIC_ACK[lang] || HR_FLOW_UNRELATED_TOPIC_ACK.english)(extracted.unrelatedTopicPhrase), summaryForOwner: null, lang };
+        }
         await clearPendingHrNoteFlow(phone);
         return null;
       }
@@ -3864,12 +3884,19 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
     // to THIS flow, which went on to message a real employee about the
     // wrong thing). extractPersonReference now decides context-binding
     // itself, given SUBH's own pending question here.
-    const extracted = await extractPersonReference(t, { pendingQuestionLabel, history });
+    const extracted = await extractPersonReference(t, { pendingQuestionLabel, history, lang });
     if (extracted.isAmbiguous) {
       return { case: 'acknowledged', replyText: HR_FLOW_CONTEXT_CLARIFY[lang] || HR_FLOW_CONTEXT_CLARIFY.english, summaryForOwner: null, lang };
     }
     if (extracted.personName) {
       return resolveHrNoteThirdParty({ phone, name, lang, personName: extracted.personName, department: extracted.hint, summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, actionPhrase: hrFlow.actionPhrase, createdAt: hrFlow.createdAt, previousCandidateId: hrFlow.candidate.employeeId, history });
+    }
+    // Direct instruction (2026-10-25) - a genuinely unrelated topic is
+    // answered on its own; the original confirm question is still exactly
+    // what's pending, so the flow is re-saved unchanged rather than lost.
+    if (extracted.isUnrelatedTopic && extracted.unrelatedTopicPhrase) {
+      await savePendingHrNoteFlow(phone, hrFlow);
+      return { case: 'acknowledged', replyText: (HR_FLOW_UNRELATED_TOPIC_ACK[lang] || HR_FLOW_UNRELATED_TOPIC_ACK.english)(extracted.unrelatedTopicPhrase), summaryForOwner: null, lang };
     }
     await clearPendingHrNoteFlow(phone);
     return null;
@@ -3886,7 +3913,7 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
   const askWhoQuestion = hrFlow.actionKind === 'neutral'
     ? (HR_NOTE_ASK_WHO_NEUTRAL[lang] || HR_NOTE_ASK_WHO_NEUTRAL.english)(hrFlow.actionPhrase)
     : (HR_NOTE_ASK_WHO_INSTRUCTED[lang] || HR_NOTE_ASK_WHO_INSTRUCTED.english)(hrFlow.actionPhrase);
-  const { personName, hint, isAmbiguous, hasExtraInfo, extraInfoNote, resolvedActionKind, isAnswerToPendingQuestion } = await extractPersonReference(text, { pendingQuestionLabel: askWhoQuestion, history });
+  const { personName, hint, isAmbiguous, hasExtraInfo, extraInfoNote, resolvedActionKind, isAnswerToPendingQuestion, isUnrelatedTopic, unrelatedTopicPhrase } = await extractPersonReference(text, { pendingQuestionLabel: askWhoQuestion, history, lang });
   if (isAmbiguous) {
     return { case: 'acknowledged', replyText: HR_FLOW_CONTEXT_CLARIFY[lang] || HR_FLOW_CONTEXT_CLARIFY.english, summaryForOwner: null, lang };
   }
@@ -3936,6 +3963,15 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
   if (hrFlow.actionKind === 'neutral' && isAnswerToPendingQuestion) {
     await clearPendingHrNoteFlow(phone);
     return { case: 'acknowledged', replyText: HR_NOTE_SUDDEN_CLOSE_NO_MANAGER[lang] || HR_NOTE_SUDDEN_CLOSE_NO_MANAGER.english, summaryForOwner: null, lang };
+  }
+  // Direct instruction (2026-10-25) - a genuinely unrelated topic is
+  // answered on its own, via a fixed template (never the general AI
+  // drafter, which can inconsistently pull stale context from
+  // conversation history into its reply); STEP1's own question is kept
+  // alive exactly as it was, never silently abandoned.
+  if (isUnrelatedTopic && unrelatedTopicPhrase) {
+    await savePendingHrNoteFlow(phone, hrFlow);
+    return { case: 'acknowledged', replyText: (HR_FLOW_UNRELATED_TOPIC_ACK[lang] || HR_FLOW_UNRELATED_TOPIC_ACK.english)(unrelatedTopicPhrase), summaryForOwner: null, lang };
   }
   await clearPendingHrNoteFlow(phone);
   return null;
@@ -5532,7 +5568,9 @@ function extractPersonReferenceTool() {
           isAmbiguous: { type: 'boolean', description: 'true ONLY if, after setting aside any greeting/filler, you genuinely cannot tell whether the message\'s actual content answers the pending question or raises something new - this should be RARE. A message that clearly contains a name/confirmation/decline, even alongside a greeting, is NOT ambiguous - set isAnswerToPendingQuestion instead. When true, SUBH will ask a short clarifying question instead of guessing either way.' },
           hasExtraInfo: { type: 'boolean', description: 'true ONLY if the message adds a genuinely NEW fact for HR about the SAME ongoing matter (e.g. a new detail about the leave/duty/approval not already stated earlier) even though it does not answer the pending question. false if the message is a clean answer, a genuinely different/unrelated new topic, OR if it merely restates/elaborates on something already said (e.g. repeating or rephrasing the same instruction, or adding a location/department hint about the person being named) - routine detail that naturally belongs with naming the person is NOT "extra info" on its own.' },
           extraInfoNote: { type: 'string', description: 'A short, neutral one-sentence summary (in English) of that extra information, for an internal HR note. Omit entirely if hasExtraInfo is false.' },
-          resolvedActionKind: { type: 'string', enum: ['instruction', 'approval'], description: 'ONLY set this if SUBH\'s pending question above explicitly asked whether someone TOLD the sender to do something OR APPROVED something the sender asked for (it will literally offer both, e.g. "...ke bolechhen ba approve korechhen"). Judge from the answer\'s own phrasing: a telling framing ("Tanmoy Sir bolechhen", "X told me to") = "instruction"; a granting/self-initiated framing ("ami nijei korechi, Sir-ke bole niyechhi", "X approved my request") = "approval". Omit entirely for every other pending question - this field is irrelevant unless that specific either/or question was asked.' }
+          resolvedActionKind: { type: 'string', enum: ['instruction', 'approval'], description: 'ONLY set this if SUBH\'s pending question above explicitly asked whether someone TOLD the sender to do something OR APPROVED something the sender asked for (it will literally offer both, e.g. "...ke bolechhen ba approve korechhen"). Judge from the answer\'s own phrasing: a telling framing ("Tanmoy Sir bolechhen", "X told me to") = "instruction"; a granting/self-initiated framing ("ami nijei korechi, Sir-ke bole niyechhi", "X approved my request") = "approval". Omit entirely for every other pending question - this field is irrelevant unless that specific either/or question was asked.' },
+          isUnrelatedTopic: { type: 'boolean', description: 'true ONLY when isAnswerToPendingQuestion is false AND hasExtraInfo is false, AND this message is INFORMING/TELLING SUBH something unrelated for the record (e.g. "I\'ll send you that product today", a different piece of news) - something a short "I\'ve noted this" acknowledgment genuinely fits. false for a non-answer that is still ABOUT the pending matter (e.g. "I don\'t know", a plain refusal to say who, silence/filler); false for anything related to the pending matter, however indirectly; and - IMPORTANT - false for a genuine QUESTION or REQUEST needing its own real answer (e.g. "What\'s my PF balance?", "Can you send me the leave policy?") - those must reach SUBH\'s normal pipeline and get answered, never just acknowledged as "noted".' },
+          unrelatedTopicPhrase: { type: 'string', description: 'ONLY set when isUnrelatedTopic is true: a short (3-6 word) noun phrase naming just this new topic, in the exact language/script given as "Reply language" in the system prompt (never the sender\'s own message\'s language if that differs) - natural enough to slot directly into a sentence like "... - ta ami note kore nilam" (Banglish), "...maine note kar liya" (Hinglish), or "I\'ve noted ..." (English). Omit entirely if isUnrelatedTopic is false.' }
         },
         required: ['isAnswerToPendingQuestion']
       }
@@ -5551,12 +5589,13 @@ function extractPersonReferenceTool() {
 // and quietly closes the flow, which is the safe side to fail toward.
 async function extractPersonReference(text, context) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
-  const fallback = { personName: null, hint: null, isAnswerToPendingQuestion: false, isAmbiguous: false, hasExtraInfo: false, extraInfoNote: null, resolvedActionKind: null };
+  const fallback = { personName: null, hint: null, isAnswerToPendingQuestion: false, isAmbiguous: false, hasExtraInfo: false, extraInfoNote: null, resolvedActionKind: null, isUnrelatedTopic: false, unrelatedTopicPhrase: null };
   if (!apiKey || !DRAFT_MODEL) return fallback;
   const toolDef = extractPersonReferenceTool().function;
   const pendingQuestionLabel = (context && context.pendingQuestionLabel) || 'who gave them this instruction';
   const historyBlock = formatHistoryBlock((context && context.history) || []);
-  const systemPrompt = 'SUBH (an HR WhatsApp assistant) is waiting on an answer to its own question in this chat: "' + pendingQuestionLabel + '"' + (historyBlock ? '\n\n' + historyBlock : '');
+  const replyLang = (context && context.lang) || 'english';
+  const systemPrompt = 'SUBH (an HR WhatsApp assistant) is waiting on an answer to its own question in this chat: "' + pendingQuestionLabel + '". Reply language: ' + replyLang + '.' + (historyBlock ? '\n\n' + historyBlock : '');
   const input = await callClaudeForcedTool(apiKey, DRAFT_MODEL, [{ role: 'system', content: systemPrompt }, { role: 'user', content: text }], toolDef.name, toolDef).catch(() => null);
   if (!input) return fallback;
   return {
@@ -5564,6 +5603,8 @@ async function extractPersonReference(text, context) {
     hint: (input.isAnswerToPendingQuestion && input.hint) || null,
     isAnswerToPendingQuestion: Boolean(input.isAnswerToPendingQuestion),
     isAmbiguous: Boolean(input.isAmbiguous),
+    isUnrelatedTopic: Boolean(input.isUnrelatedTopic),
+    unrelatedTopicPhrase: (input.isUnrelatedTopic && input.unrelatedTopicPhrase) || null,
     hasExtraInfo: Boolean(input.hasExtraInfo),
     extraInfoNote: (input.hasExtraInfo && input.extraInfoNote) || null,
     resolvedActionKind: (input.isAnswerToPendingQuestion && input.resolvedActionKind) || null
