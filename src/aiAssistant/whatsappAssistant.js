@@ -15,6 +15,9 @@
 // a harmless no-op/empty-result rather than throwing when Redis isn't
 // configured or unreachable.
 const { Redis } = require('@upstash/redis');
+const path = require('path');
+const fs = require('fs');
+const crypto = require('crypto');
 const whatsapp = require('../whatsappService');
 // Off by default (reply-restoration request) - the gateway confirmed has
 // no route for this yet (every plausible endpoint name 404s), so until
@@ -3880,18 +3883,22 @@ async function handleHrNotificationStart({ phone, name, lang, text, history, cla
   const actionPhrase = classification.hrNotificationActionPhrase || null;
   const modelActionKind = classification.hrNotificationActionKind || 'neutral';
   let actionKind = modelActionKind;
-  // Deterministic-first (2026-10-27) - scoped to ONLY correcting between
-  // instruction and approval (never "sudden"/"neutral", whose whole
-  // narrative shape, including every other field the SAME classify call
-  // already built, depends on which one the model picked - overriding
-  // just the kind there without rebuilding everything else around it
-  // would create a worse inconsistency than the one being fixed). When
-  // the rule disagrees with the model, summaryLocalized is rebuilt fresh
-  // for the corrected kind (one extra call, only on the rare occasions
-  // an override actually fires) so the manager-facing wording always
-  // matches the final actionKind - never a stale verb left over from
-  // the model's original, now-overridden choice.
-  if (modelActionKind === 'instruction' || modelActionKind === 'approval') {
+  // Deterministic-first (2026-10-27) - scoped to correcting TO
+  // instruction/approval FROM instruction, approval, OR neutral (found
+  // live: a WFH-topic message with an unambiguous 3rd-person telling
+  // verb, e.g. "Tanmoy Sir bolechhen ajke bari theke kaj korte", was
+  // sometimes classified "neutral" - genuinely-unclear-initiator -
+  // purely because the WFH topic confused the model, even though the
+  // rule has a fully confident answer). Never "sudden" - that's a
+  // completely different narrative (an emergency/illness being reported,
+  // not a planned WFH/leave with an instruction or approval behind it)
+  // decided by its own, separate early-return branch above this one,
+  // untouched. When the rule disagrees with the model, summaryLocalized
+  // is rebuilt fresh for the corrected kind (one extra call, only on the
+  // rare occasions an override actually fires) so the manager-facing
+  // wording always matches the final actionKind - never a stale verb
+  // left over from the model's original, now-overridden choice.
+  if (modelActionKind === 'instruction' || modelActionKind === 'approval' || modelActionKind === 'neutral') {
     const ruleKind = deterministicHrActionKind(text);
     if (ruleKind && ruleKind !== modelActionKind) {
       await recordActionKindOverride(phone, text, ruleKind, modelActionKind);
@@ -5491,7 +5498,53 @@ function splitSystemAndMessages(openAiStyleMessages) {
   });
   return { system, messages };
 }
+// Task 4 (2026-10-27, per Subhodeep's explicit approval) - record/replay
+// cache + lightweight usage tracking, both test-only and a complete
+// no-op in production: the live app never sets SCENARIO_REPLAY_CACHE, so
+// this entire block is skipped on every real request exactly as before.
+// Cache files are local-only (see .gitignore), keyed by a hash of
+// (model, system prompt, messages, tools) - the same scenario step run
+// again (e.g. re-running a suite after an unrelated change) replays the
+// exact same model response instead of paying for a fresh call.
+// SCENARIO_REPLAY_FORCE=1 bypasses reading the cache for one run
+// (still writes it) when a genuinely fresh model answer is needed.
+const REPLAY_CACHE_DIR = path.join(__dirname, '..', '..', 'scripts', '.claude-replay-cache');
+function replayCacheKey(body) {
+  const keyInput = JSON.stringify({ model: body.model, system: body.system, messages: body.messages, tools: body.tools });
+  return crypto.createHash('sha256').update(keyInput).digest('hex');
+}
+function readReplayCache(key) {
+  try {
+    const file = path.join(REPLAY_CACHE_DIR, key + '.json');
+    if (!fs.existsSync(file)) return null;
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch (err) { return null; }
+}
+function writeReplayCache(key, data) {
+  try {
+    if (!fs.existsSync(REPLAY_CACHE_DIR)) fs.mkdirSync(REPLAY_CACHE_DIR, { recursive: true });
+    fs.writeFileSync(path.join(REPLAY_CACHE_DIR, key + '.json'), JSON.stringify(data));
+  } catch (err) { /* best effort - a cache-write failure must never break the real call that already succeeded */ }
+}
+// Always-on, zero-cost bookkeeping (a few integer increments per call) -
+// never affects behavior, only ever read by test scripts via
+// getApiCallStats for the end-of-run cost report.
+const apiCallStats = { realCalls: 0, cachedReplays: 0, inputTokens: 0, outputTokens: 0 };
+function getApiCallStats() { return Object.assign({}, apiCallStats); }
+function resetApiCallStats() { apiCallStats.realCalls = 0; apiCallStats.cachedReplays = 0; apiCallStats.inputTokens = 0; apiCallStats.outputTokens = 0; }
 async function postClaudeMessages(apiKey, body) {
+  const replayEnabled = process.env.SCENARIO_REPLAY_CACHE === '1';
+  let cacheKey = null;
+  if (replayEnabled) {
+    cacheKey = replayCacheKey(body);
+    if (process.env.SCENARIO_REPLAY_FORCE !== '1') {
+      const cached = readReplayCache(cacheKey);
+      if (cached) {
+        apiCallStats.cachedReplays++;
+        return cached;
+      }
+    }
+  }
   const resp = await fetch(CLAUDE_API_URL, {
     method: 'POST',
     headers: { 'x-api-key': apiKey, 'anthropic-version': CLAUDE_ANTHROPIC_VERSION, 'content-type': 'application/json' },
@@ -5501,7 +5554,14 @@ async function postClaudeMessages(apiKey, body) {
     const bodyText = await resp.text().catch(() => '');
     throw new Error('Claude API error ' + resp.status + (bodyText ? ': ' + bodyText.slice(0, 300) : ''));
   }
-  return resp.json();
+  const data = await resp.json();
+  apiCallStats.realCalls++;
+  if (data.usage) {
+    apiCallStats.inputTokens += data.usage.input_tokens || 0;
+    apiCallStats.outputTokens += data.usage.output_tokens || 0;
+  }
+  if (replayEnabled && cacheKey) writeReplayCache(cacheKey, data);
+  return data;
 }
 // Found live: claude-sonnet-5-5 (CLAUDE_MODEL_MAIN, used by every
 // caller of this function) occasionally puts its own chain-of-thought
@@ -8575,5 +8635,9 @@ module.exports = {
   enforceSuddenInformingVerb,
   isSelfReferentialForbiddenFieldRequest,
   recordActionKindOverride,
-  listActionKindOverrides
+  listActionKindOverrides,
+  // Exported for scripts/check-whatsapp-scenarios.js only - record/
+  // replay cache + cost-report bookkeeping (2026-10-27, Task 4).
+  getApiCallStats,
+  resetApiCallStats
 };

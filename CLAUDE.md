@@ -43,6 +43,43 @@ access from this environment.
   line" or "search the server logs for `Claude API error` in the last hour") and he
   copies it back - never guess or assume this some other way (e.g. via Vercel).
 
+## Test tiers (reduce API cost)
+
+Per direct instruction (2026-10-27) - match the test tier to the size of the change,
+never run the full, expensive suite by default:
+
+1. **Per-change (the default, every edit)**: `node scripts/check-whatsapp-engine.js`
+   only - fully deterministic, zero real API calls for the vast majority of its
+   checks, free to run as often as needed.
+2. **A change that touches the HR-note/confirmation flow, classification, or
+   wording shown to a real sender/manager**: also run the scenarios that flow
+   actually affects, ONCE - `SCENARIO_RUNS=1 SCENARIO_FILTER="<name or keyword>"
+   node scripts/check-whatsapp-scenarios.js`. Never the full scenario set, never 3x,
+   for an ordinary change.
+3. **"Release check" - only right before pushing/deploying**: the full scenario
+   suite at its normal 3x reliability gate - `node scripts/check-whatsapp-scenarios.js`
+   (no `SCENARIO_RUNS`/`SCENARIO_FILTER` overrides). This is the only tier that
+   should ever cost the full 3x-per-scenario API spend.
+
+**Record & replay cache** (`src/aiAssistant/whatsappAssistant.js`'s `postClaudeMessages`,
+test-only, a complete no-op in production): set `SCENARIO_REPLAY_CACHE=1` to cache
+every real model response locally (`scripts/.claude-replay-cache/`, gitignored, keyed
+by a hash of model+system+messages+tools) and replay it on a later run with the exact
+same inputs instead of paying for another real call - e.g. re-running the same
+scenario filter twice while iterating on an unrelated fix. Add `SCENARIO_REPLAY_FORCE=1`
+to force a genuinely fresh model answer for that one run (still updates the cache).
+
+**Cost report**: every `check-whatsapp-scenarios.js` run (any tier) prints a line at
+the end - real API calls, cached replays avoided, input/output tokens, and a rough
+USD estimate (approximate Sonnet pricing, not billing-accurate).
+
+**Separate test API key**: set `ANTHROPIC_API_KEY_TEST` in `.env.local` to use a
+distinct key for test runs (never the production key's quota/billing) - picked up
+automatically by `scripts/testBootstrap.js`. Not yet enforced as a hard requirement
+(falls back to whatever `ANTHROPIC_API_KEY` is already configured, same as before,
+with a warning) - ask Subhodeep before making that fallback a hard stop, since it
+would change the zero-config "just run the tests" experience.
+
 ## Locked scenarios (real-model scenario runner)
 
 Maintained in `scripts/check-whatsapp-scenarios.js` (run with

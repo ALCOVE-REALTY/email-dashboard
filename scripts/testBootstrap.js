@@ -26,7 +26,29 @@ function looksLikeLiveStore(url) {
   return /employees\.alcoverealty\.in/i.test(String(url || '')) || /subh-store/i.test(String(url || ''));
 }
 
+// Task 4 (2026-10-27) - prefer a dedicated test-only Anthropic key over
+// the live one, same spirit as the Redis store guard above but NOT a
+// hard stop: unlike the Redis case (where silently touching a different
+// store would be actively dangerous), a test run falling back to the
+// live ANTHROPIC_API_KEY is just real quota/billing on a key Subhodeep
+// already has configured - exactly what every test run before this
+// point already did. Only warns; ask him first before making this a
+// hard refusal, since that would change the zero-config "just run the
+// tests" experience documented in CLAUDE.md.
+function setupApiKey() {
+  const testKey = process.env.ANTHROPIC_API_KEY_TEST;
+  if (testKey) {
+    process.env.ANTHROPIC_API_KEY = testKey;
+    console.log('Using ANTHROPIC_API_KEY_TEST for this test run (not the live key).');
+    return;
+  }
+  if (process.env.ANTHROPIC_API_KEY) {
+    console.log('ANTHROPIC_API_KEY_TEST is not set - this test run will use the LIVE ANTHROPIC_API_KEY (real quota/billing) for any model-dependent check. Set ANTHROPIC_API_KEY_TEST in .env.local to use a separate test key instead.');
+  }
+}
+
 async function setupTestEnvironment() {
+  setupApiKey();
   const configuredUrl = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
   if (process.env.ALLOW_LIVE === '1') {
     console.log('='.repeat(70));

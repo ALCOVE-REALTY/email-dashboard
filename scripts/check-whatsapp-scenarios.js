@@ -603,8 +603,16 @@ scenario('Language stickiness (reverse): a short reply (a bare name) inside an e
   }
 });
 
+// Task 4 (2026-10-27) - approximate Claude Sonnet per-token pricing
+// (USD), used only to turn the tracked token counts into a rough cost
+// estimate for the report below - update here if pricing changes, this
+// is never read anywhere else.
+const APPROX_USD_PER_MTOK_INPUT = 3;
+const APPROX_USD_PER_MTOK_OUTPUT = 15;
+
 async function runAll() {
   await require('./testBootstrap').setupTestEnvironment();
+  whatsappAssistant.resetApiCallStats();
   let reliableCount = 0;
   let flakyCount = 0;
   let brokenCount = 0;
@@ -638,6 +646,18 @@ async function runAll() {
   }
   console.log('='.repeat(70));
   console.log(reliableCount + ' reliable, ' + flakyCount + ' flaky, ' + brokenCount + ' broken (out of ' + (scenariosToRun.length - scenariosToRun.filter((s) => s.knownFailing).length) + ' gating scenarios' + (filter ? (' matching "' + filter + '"') : '') + '; ' + scenariosToRun.filter((s) => s.knownFailing).length + ' known-failing scenario(s) tracked separately, never gating)');
+  console.log('='.repeat(70));
+  // Task 4 (2026-10-27) - cost report. Real/cached call counts come
+  // straight from postClaudeMessages's own bookkeeping, so this is
+  // accurate regardless of which higher-level function made each call.
+  // The USD figure is a rough estimate (see APPROX_USD_PER_MTOK_* above),
+  // not a billing-accurate number - tokens and call counts are the real
+  // signal.
+  const stats = whatsappAssistant.getApiCallStats();
+  const estimatedUsd = (stats.inputTokens / 1e6) * APPROX_USD_PER_MTOK_INPUT + (stats.outputTokens / 1e6) * APPROX_USD_PER_MTOK_OUTPUT;
+  console.log('COST REPORT: ' + stats.realCalls + ' real API call(s), ' + stats.cachedReplays + ' cached replay(s) avoided'
+    + (process.env.SCENARIO_REPLAY_CACHE === '1' ? '' : ' (SCENARIO_REPLAY_CACHE not enabled this run)')
+    + ' - ' + stats.inputTokens + ' input + ' + stats.outputTokens + ' output tokens, ~$' + estimatedUsd.toFixed(4) + ' estimated (approximate Sonnet pricing, not billing-accurate)');
   console.log('='.repeat(70));
   process.exit(flakyCount + brokenCount > 0 ? 1 : 0);
 }

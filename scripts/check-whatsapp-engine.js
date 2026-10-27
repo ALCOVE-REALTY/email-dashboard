@@ -1076,6 +1076,7 @@ async function checkAsync(label, fn) {
     // already use this exact guard).
     const mgrEntry = log.filter((e) => e.chatId === WFH_LEAVE_TANMOY_PHONE && e.case === 'hr_confirmation_sent' && (e.sentAt || 0) >= beforeTs).sort((a, b) => (b.sentAt || 0) - (a.sentAt || 0))[0];
     const ok = Boolean(mgrEntry) && mgrEntry.sentText.includes('korte bolechhen') && !mgrEntry.sentText.includes('approval diyechhen');
+    if (!ok) console.log('    DIAGNOSTIC: mgrEntry=' + JSON.stringify(mgrEntry));
     await whatsappAssistant.decideAutoReply({ phone: WFH_LEAVE_TANMOY_PHONE, name: 'Tanmoy Mondal', firstName: 'Tanmoy', text: 'Haa', isGroup: false, history: [] });
     await cleanupWfhLeave(phone);
     return ok;
@@ -1169,7 +1170,7 @@ async function checkAsync(label, fn) {
     await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: '1', isGroup: false, history: [] });
     const log = await whatsappAssistant.listInboxLog(20);
     const mgrEntry = log.filter((e) => e.chatId === WFH_LEAVE_TANMOY_PHONE && e.case === 'hr_confirmation_sent' && (e.sentAt || 0) >= beforeTs).sort((a, b) => (b.sentAt || 0) - (a.sentAt || 0))[0];
-    const ok = Boolean(mgrEntry) && mgrEntry.sentText.includes('bolechhen') && !/anumoti diyechhen|approval diyechhen/.test(mgrEntry.sentText);
+    const ok = Boolean(mgrEntry) && mgrEntry.sentText.includes('bolechhen') && !/anumoti diyechhen|onumoti diyechhen|approval diyechhen/.test(mgrEntry.sentText);
     await whatsappAssistant.decideAutoReply({ phone: WFH_LEAVE_TANMOY_PHONE, name: 'Tanmoy Mondal', firstName: 'Tanmoy', text: 'Haa', isGroup: false, history: [] });
     await cleanupWfhLeave(phone);
     return ok;
@@ -1183,7 +1184,13 @@ async function checkAsync(label, fn) {
     await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: '1', isGroup: false, history: [] });
     const log = await whatsappAssistant.listInboxLog(20);
     const mgrEntry = log.filter((e) => e.chatId === WFH_LEAVE_TANMOY_PHONE && e.case === 'hr_confirmation_sent' && (e.sentAt || 0) >= beforeTs).sort((a, b) => (b.sentAt || 0) - (a.sentAt || 0))[0];
-    const ok = Boolean(mgrEntry) && /anumoti diyechhen|approval diyechhen|permission diyechhen/.test(mgrEntry.sentText) && !mgrEntry.sentText.includes('korte bolechhen');
+    // "onumoti" is a valid, equally-common alternate transliteration of
+    // "anumoti" (অনুমতি/"permission") - the model's own free-form
+    // phrasing varies between the two for the SAME word, never a
+    // classification difference (found live: actionKind was correctly
+    // "approval", with a granting verb, in every single run - only the
+    // transliteration of that one word varied).
+    const ok = Boolean(mgrEntry) && /anumoti diyechhen|onumoti diyechhen|approval diyechhen|permission diyechhen/.test(mgrEntry.sentText) && !mgrEntry.sentText.includes('korte bolechhen');
     await whatsappAssistant.decideAutoReply({ phone: WFH_LEAVE_TANMOY_PHONE, name: 'Tanmoy Mondal', firstName: 'Tanmoy', text: 'Haa', isGroup: false, history: [] });
     await cleanupWfhLeave(phone);
     return ok;
@@ -1245,9 +1252,10 @@ async function checkAsync(label, fn) {
   await checkAsync('LIVE BUG, end to end: the exact failing phrasing ("Tanmoy Sir bolechhen ajke bari theke kaj korte") now reliably resolves to INSTRUCTION (telling verb), never "approval" - deterministic, no longer dependent on model variance', async () => {
     const phone = nextWfhLeavePhone();
     await cleanupWfhLeave(phone);
-    await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Tanmoy Sir bolechhen ajke bari theke kaj korte', isGroup: false, history: [] });
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Tanmoy Sir bolechhen ajke bari theke kaj korte', isGroup: false, history: [] });
     const pending = await whatsappAssistant.getPendingHrNoteFlow(phone);
     const ok = Boolean(pending) && pending.step === 'awaiting_disambiguation_choice' && pending.actionKind === 'instruction';
+    if (!ok) console.log('    DIAGNOSTIC: pending=' + JSON.stringify(pending && { step: pending.step, actionKind: pending.actionKind }) + ' replyText=' + d.replyText);
     await cleanupWfhLeave(phone);
     return ok;
   });
@@ -4069,6 +4077,21 @@ async function checkAsync(label, fn) {
       await whatsappAssistant.clearPendingDisambiguation(EDIT_TEST_PHONE).catch(() => {});
     }
   });
+
+  console.log('='.repeat(70));
+  console.log('TASK 4 (2026-10-27): record/replay cache + cost-report bookkeeping (test-only, a complete no-op in production since the live app never sets SCENARIO_REPLAY_CACHE)');
+  console.log('='.repeat(70));
+  check('resetApiCallStats/getApiCallStats round-trip to all zeros (pure counter bookkeeping, no API call involved)', (() => {
+    whatsappAssistant.resetApiCallStats();
+    const stats = whatsappAssistant.getApiCallStats();
+    return stats.realCalls === 0 && stats.cachedReplays === 0 && stats.inputTokens === 0 && stats.outputTokens === 0;
+  })());
+  check('getApiCallStats returns a COPY, not a live reference - mutating the returned object never corrupts the real counters', (() => {
+    whatsappAssistant.resetApiCallStats();
+    const stats = whatsappAssistant.getApiCallStats();
+    stats.realCalls = 999;
+    return whatsappAssistant.getApiCallStats().realCalls === 0;
+  })());
 
   // Cleanup: owner-notifications - same del+rebuild-by-marker sweep as the
   // inbox-log cleanup below, filtering out this run's own tests' notices.
