@@ -2380,6 +2380,33 @@ const NAME_CONFIRM_YES_RE = /^(haa|hya|hyan|ha|haan|hae|ho|yes|yeah|yep|ji|jee|t
 const NAME_CONFIRM_NO_RE = /^(na|naa|nahi|noi|no|nope|nah|not(\s*approved)?|ami\s+bol(ini|i\s*na(hi)?))\b/i;
 function isYesAnswer(text) { return NAME_CONFIRM_YES_RE.test(collapseRepeatedLetters(String(text || '').trim())); }
 function isNoAnswer(text) { return NAME_CONFIRM_NO_RE.test(collapseRepeatedLetters(String(text || '').trim())); }
+// Task 3 (2026-10-27), "NOT A NAME" - live bug: inside an open HR-note
+// flow, after STEP 1 asked who gave an instruction, "Yss sir" was
+// extracted by the model as a person's NAME ("Yss"), which then reached
+// the free-form AI drafter once the lookup found no such employee. A
+// bare yes/no/honorific word is never a name - a real name must match
+// the HR directory - so a message that is ENTIRELY one of these (nothing
+// else said) is recognized deterministically, without even asking the
+// model, exactly like isYesAnswer/isNoAnswer above never defer a yes/no
+// judgment to the model either. Anchored start-to-end (unlike
+// NAME_CONFIRM_YES_RE/NO_RE, which only anchor at the start) - a message
+// that ALSO contains real content after the ack/honorific (e.g. "Yes,
+// Tanmoy Sir bolechhen") must still reach the model/extraction as before.
+const BARE_ACK_OR_HONORIFIC_RE = /^(y+e*s+|yeah+|yep+|ok(ay)?|haa*n?|ha|hya*n?|ji+|jee+|thik\s*(ache|ase|hai)?|achh?a)[\s.,!]*(sir|madam|ma'?am|boss|ji)?[\s.,!]*$|^(sir|madam|ma'?am|boss)[\s.,!]*$/i;
+function isBareAckOrHonorificOnly(text) {
+  const t = collapseRepeatedLetters(String(text || '').trim());
+  return t.length > 0 && BARE_ACK_OR_HONORIFIC_RE.test(t);
+}
+// Task 3 - the fixed re-ask when nothing about the sender's reply to
+// "who gave you this instruction" could be understood at all (not a
+// name, not extra info, not a new topic) - keeps the flow open instead
+// of silently clearing it and falling through to the free-form AI
+// drafter (see continueHrNoteFlow's 'awaiting_name' step).
+const HR_NOTE_DIDNT_UNDERSTAND_WHO = {
+  banglish: 'Dukkhito, bujhte parini. Kar kotha bolchhen? Puro naam-ta bolben?',
+  hinglish: 'Maaf kijiye, samajh nahi paya. Aap kiske baare mein baat kar rahe hain? Pura naam bataiyega?',
+  english: "Sorry, I didn't understand that. Who did you mean? Could you give me the full name?"
+};
 const PENDING_NAME_CONFIRM_PREFIX = 'wa-pending-name-confirm:';
 const PENDING_NAME_CONFIRM_TTL_SECONDS = 30 * 60;
 async function savePendingNameConfirm(phone, data) {
@@ -4173,6 +4200,19 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
           const topicAck = (HR_FLOW_UNRELATED_TOPIC_ACK[lang] || HR_FLOW_UNRELATED_TOPIC_ACK.english)(extracted.unrelatedTopicPhrase);
           return { case: 'acknowledged', replyText: retryText + ' ' + topicAck, summaryForOwner: null, lang };
         }
+        // Task 3 - "TEMPLATES ONLY INSIDE FLOWS", but ONLY for genuine
+        // filler: a bare ack/honorific remainder (isBareAckOrHonorific)
+        // never resolves to a name OR an unrelated topic either, so it
+        // gets the same plain "who did you mean, then?" re-ask the
+        // unrelated-topic branch above already uses. A remainder that is
+        // actually a genuine QUESTION/REQUEST (isBareAckOrHonorific false)
+        // must still close the flow quietly and reach the real pipeline
+        // for its own real answer - exactly as before Task 3 (see the
+        // "Ayon HR k?" locked scenario this must never break).
+        if (extracted.isBareAckOrHonorific) {
+          await savePendingHrNoteFlow(phone, { summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, actionPhrase: hrFlow.actionPhrase, lang, createdAt: hrFlow.createdAt, step: 'awaiting_name' });
+          return { case: 'acknowledged', replyText: NAME_CONFIRM_RETRY[lang] || NAME_CONFIRM_RETRY.english, summaryForOwner: null, lang };
+        }
         await clearPendingHrNoteFlow(phone);
         return null;
       }
@@ -4201,6 +4241,18 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
       await savePendingHrNoteFlow(phone, hrFlow);
       return { case: 'acknowledged', replyText: (HR_FLOW_UNRELATED_TOPIC_ACK[lang] || HR_FLOW_UNRELATED_TOPIC_ACK.english)(extracted.unrelatedTopicPhrase), summaryForOwner: null, lang };
     }
+    // Task 3 - "TEMPLATES ONLY INSIDE FLOWS", but ONLY for genuine filler
+    // (isBareAckOrHonorific): the confirm question is still exactly what's
+    // pending, so it's kept alive with the same generic "didn't quite
+    // follow that" re-ask already used for the model's own isAmbiguous
+    // verdict above. A genuine QUESTION/REQUEST (isBareAckOrHonorific
+    // false, e.g. "Ayon HR k?") must still close the flow quietly and
+    // reach the real pipeline for its own real answer - exactly as before
+    // Task 3; never silently swallowed into a "didn't understand" reply.
+    if (extracted.isBareAckOrHonorific) {
+      await savePendingHrNoteFlow(phone, hrFlow);
+      return { case: 'acknowledged', replyText: HR_FLOW_CONTEXT_CLARIFY[lang] || HR_FLOW_CONTEXT_CLARIFY.english, summaryForOwner: null, lang };
+    }
     await clearPendingHrNoteFlow(phone);
     return null;
   }
@@ -4216,7 +4268,7 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
   const askWhoQuestion = hrFlow.actionKind === 'neutral'
     ? (HR_NOTE_ASK_WHO_NEUTRAL[lang] || HR_NOTE_ASK_WHO_NEUTRAL.english)(hrFlow.actionPhrase)
     : (HR_NOTE_ASK_WHO_INSTRUCTED[lang] || HR_NOTE_ASK_WHO_INSTRUCTED.english)(hrFlow.actionPhrase);
-  const { personName, hint, isAmbiguous, hasExtraInfo, extraInfoNote, resolvedActionKind, isAnswerToPendingQuestion, isUnrelatedTopic, unrelatedTopicPhrase } = await extractPersonReference(text, { pendingQuestionLabel: askWhoQuestion, history, lang });
+  const { personName, hint, isAmbiguous, hasExtraInfo, extraInfoNote, resolvedActionKind, isAnswerToPendingQuestion, isUnrelatedTopic, unrelatedTopicPhrase, isBareAckOrHonorific } = await extractPersonReference(text, { pendingQuestionLabel: askWhoQuestion, history, lang });
   if (isAmbiguous) {
     return { case: 'acknowledged', replyText: HR_FLOW_CONTEXT_CLARIFY[lang] || HR_FLOW_CONTEXT_CLARIFY.english, summaryForOwner: null, lang };
   }
@@ -4285,6 +4337,21 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
   if (isUnrelatedTopic && unrelatedTopicPhrase) {
     await savePendingHrNoteFlow(phone, hrFlow);
     return { case: 'acknowledged', replyText: (HR_FLOW_UNRELATED_TOPIC_ACK[lang] || HR_FLOW_UNRELATED_TOPIC_ACK.english)(unrelatedTopicPhrase), summaryForOwner: null, lang };
+  }
+  // Task 3 (2026-10-27), live bug fix - "TEMPLATES ONLY INSIDE FLOWS", but
+  // ONLY for genuine filler (isBareAckOrHonorific): previously fell
+  // through here to clearPendingHrNoteFlow + return null for EVERY
+  // unresolved reply, including a bare "Yss sir" to "who gave you this
+  // instruction?" - which silently abandoned the flow and let the message
+  // reach the free-form AI drafter, which then treated "Yss" as if it
+  // were a real person's name. STEP 1's own question is now kept open
+  // with this fixed re-ask instead, but ONLY when the reply was nothing
+  // but filler - a genuine QUESTION/REQUEST (isBareAckOrHonorific false)
+  // must still close the flow quietly and reach the real pipeline for its
+  // own real answer, exactly as before Task 3.
+  if (isBareAckOrHonorific) {
+    await savePendingHrNoteFlow(phone, hrFlow);
+    return { case: 'acknowledged', replyText: HR_NOTE_DIDNT_UNDERSTAND_WHO[lang] || HR_NOTE_DIDNT_UNDERSTAND_WHO.english, summaryForOwner: null, lang };
   }
   await clearPendingHrNoteFlow(phone);
   return null;
@@ -5993,7 +6060,22 @@ function extractPersonReferenceTool() {
 // and quietly closes the flow, which is the safe side to fail toward.
 async function extractPersonReference(text, context) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
-  const fallback = { personName: null, hint: null, isAnswerToPendingQuestion: false, isAmbiguous: false, hasExtraInfo: false, extraInfoNote: null, resolvedActionKind: null, isUnrelatedTopic: false, unrelatedTopicPhrase: null };
+  const fallback = { personName: null, hint: null, isAnswerToPendingQuestion: false, isAmbiguous: false, hasExtraInfo: false, extraInfoNote: null, resolvedActionKind: null, isUnrelatedTopic: false, unrelatedTopicPhrase: null, isBareAckOrHonorific: false };
+  // Task 3 - "NOT A NAME": a message that is ENTIRELY a bare yes/no/
+  // honorific word ("Yss sir", "Yes", "Haa", "Ji", "Ok sir", "Sir",
+  // "Madam") never carries a name, however the model might judge it -
+  // decided deterministically, without even calling the model, so this
+  // can never depend on the model's own (unreliable, for a message this
+  // thin) isAmbiguous/isAnswerToPendingQuestion judgment. isBareAckOrHonorific
+  // is a DISCRIMINATOR, not just another falsy field: it is the only
+  // signal that tells a caller "nothing resolved because this message was
+  // pure filler" as opposed to "nothing resolved because this is a
+  // genuine question/request that needs its own real answer" (the
+  // model's own ordinary null-everything result, e.g. "Ayon HR k?" while
+  // a flow is open - that case must still fall through to the real
+  // pipeline, exactly as before Task 3; see continueHrNoteFlow's own use
+  // of this field).
+  if (isBareAckOrHonorificOnly(text)) return Object.assign({}, fallback, { isBareAckOrHonorific: true });
   if (!apiKey || !DRAFT_MODEL) return fallback;
   const toolDef = extractPersonReferenceTool().function;
   const pendingQuestionLabel = (context && context.pendingQuestionLabel) || 'who gave them this instruction';
@@ -6002,16 +6084,27 @@ async function extractPersonReference(text, context) {
   const systemPrompt = 'SUBH (an HR WhatsApp assistant) is waiting on an answer to its own question in this chat: "' + pendingQuestionLabel + '". Reply language: ' + replyLang + '.' + (historyBlock ? '\n\n' + historyBlock : '');
   const input = await callClaudeForcedTool(apiKey, DRAFT_MODEL, [{ role: 'system', content: systemPrompt }, { role: 'user', content: text }], toolDef.name, toolDef).catch(() => null);
   if (!input) return fallback;
+  // Task 3 - defense in depth: even if the model itself extracted a bare
+  // ack/honorific word AS the personName (e.g. it read "Yes, sir" as the
+  // name "Sir"), that is never trusted as a name either - same rule as
+  // the short-circuit above, just also applied to the model's own output.
+  const modelPersonNameIsBareAck = input.personName && isBareAckOrHonorificOnly(input.personName);
   return {
-    personName: (input.isAnswerToPendingQuestion && input.personName) || null,
-    hint: (input.isAnswerToPendingQuestion && input.hint) || null,
-    isAnswerToPendingQuestion: Boolean(input.isAnswerToPendingQuestion),
+    personName: (!modelPersonNameIsBareAck && input.isAnswerToPendingQuestion && input.personName) || null,
+    hint: (!modelPersonNameIsBareAck && input.isAnswerToPendingQuestion && input.hint) || null,
+    isAnswerToPendingQuestion: modelPersonNameIsBareAck ? false : Boolean(input.isAnswerToPendingQuestion),
     isAmbiguous: Boolean(input.isAmbiguous),
     isUnrelatedTopic: Boolean(input.isUnrelatedTopic),
     unrelatedTopicPhrase: (input.isUnrelatedTopic && input.unrelatedTopicPhrase) || null,
     hasExtraInfo: Boolean(input.hasExtraInfo),
     extraInfoNote: (input.hasExtraInfo && input.extraInfoNote) || null,
-    resolvedActionKind: (input.isAnswerToPendingQuestion && input.resolvedActionKind) || null
+    resolvedActionKind: (!modelPersonNameIsBareAck && input.isAnswerToPendingQuestion && input.resolvedActionKind) || null,
+    // Task 3 discriminator (see the short-circuit above for the full
+    // explanation) - true only when the model itself read the whole
+    // reply as nothing but a bare ack/honorific; false for every other
+    // "nothing resolved" case (a genuine question is NOT a bare ack and
+    // must still reach the real pipeline, exactly as before Task 3).
+    isBareAckOrHonorific: Boolean(modelPersonNameIsBareAck)
   };
 }
 
@@ -8821,6 +8914,8 @@ module.exports = {
   // item 9 (tolerant Yes/No matching).
   isYesAnswer,
   isNoAnswer,
+  isBareAckOrHonorificOnly,
+  HR_NOTE_DIDNT_UNDERSTAND_WHO,
   // Exported for scripts/check-whatsapp-engine.js only - language
   // stickiness for short/ambiguous messages (2026-10-26).
   isShortOrAmbiguousForLanguage,

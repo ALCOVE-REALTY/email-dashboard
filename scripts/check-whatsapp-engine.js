@@ -4184,6 +4184,83 @@ async function checkAsync(label, fn) {
   });
 
   console.log('='.repeat(70));
+  console.log('TASK 3 (2026-10-27): templates only inside flows (never free-form while a flow is open) + "NOT A NAME" (bare yes/no/honorific words are never trusted as a person\'s name) + language stickiness for short replies inside flows');
+  console.log('='.repeat(70));
+  check('isBareAckOrHonorificOnly recognizes every example from the live bug and spec: "Yss sir"/"Yes"/"Haa"/"Ji"/"Ok sir"/"Sir"/"Madam"',
+    ['Yss sir', 'Yes', 'Haa', 'Ji', 'Ok sir', 'Sir', 'Madam', 'Haaa', 'Jiii', 'Ok', 'thik ache'].every((t) => whatsappAssistant.isBareAckOrHonorificOnly(t)));
+  check('isBareAckOrHonorificOnly does NOT misfire on a real name, even one with an honorific attached, or a bare ack combined with real content',
+    !whatsappAssistant.isBareAckOrHonorificOnly('Tanmoy Sir') && !whatsappAssistant.isBareAckOrHonorificOnly('Subhadip HR') && !whatsappAssistant.isBareAckOrHonorificOnly('Yes, Tanmoy Sir bolechhen'));
+  await checkAsync('extractPersonReference: a message that is ENTIRELY a bare ack/honorific never extracts a name, deterministically (no model call reaches isAnswerToPendingQuestion/isAmbiguous at all)', async () => {
+    const extracted = await whatsappAssistant.extractPersonReference('Yss sir', { pendingQuestionLabel: 'who gave them this instruction', history: [], lang: 'banglish' });
+    return extracted.personName === null && extracted.isAnswerToPendingQuestion === false && extracted.isAmbiguous === false;
+  });
+  const NAME_FLOW_PHONE_1 = '910000001401';
+  const NAME_FLOW_SETUP_TEXT = 'Ajke amake duty korte bola hoyechhe, ar er bodole onno din chhutti nite bola hoyechhe';
+  await checkAsync('LIVE BUG, end to end: inside an open HR-note flow, after STEP 1 asks who gave the instruction, "Yss sir" gets the fixed "didn\'t understand, who did you mean?" re-ask - never a free-form AI reply treating "Yss" as a name, and the flow stays open', async () => {
+    await whatsappAssistant.clearPendingHrNoteFlow(NAME_FLOW_PHONE_1).catch(() => {});
+    const d1 = await whatsappAssistant.decideAutoReply({ phone: NAME_FLOW_PHONE_1, name: 'Sender', firstName: 'Sender', text: NAME_FLOW_SETUP_TEXT, isGroup: false, history: [] });
+    const pendingBefore = await whatsappAssistant.getPendingHrNoteFlow(NAME_FLOW_PHONE_1);
+    // History is threaded between turns (as a real conversation would be)
+    // so the once-per-day identity-prefix wrapper (hasIntroducedTodayIST)
+    // correctly sees SUBH already introduced itself in d1 and doesn't
+    // prefix it again here - otherwise this exact-text assertion would
+    // fail for a reason that's purely a test artifact, not a real bug.
+    const h1 = [{ direction: 'in', text: NAME_FLOW_SETUP_TEXT, ts: Date.now() - 2000 }, { direction: 'out', text: d1.replyText, ts: Date.now() - 1000 }];
+    const d = await whatsappAssistant.decideAutoReply({ phone: NAME_FLOW_PHONE_1, name: 'Sender', firstName: 'Sender', text: 'Yss sir', isGroup: false, history: h1 });
+    const pendingAfter = await whatsappAssistant.getPendingHrNoteFlow(NAME_FLOW_PHONE_1);
+    const ok = pendingBefore && pendingBefore.step === 'awaiting_name' && pendingAfter && pendingAfter.step === 'awaiting_name'
+      && d.replyText === whatsappAssistant.HR_NOTE_DIDNT_UNDERSTAND_WHO.banglish;
+    await whatsappAssistant.clearPendingHrNoteFlow(NAME_FLOW_PHONE_1).catch(() => {});
+    return ok;
+  });
+  await checkAsync('REGRESSION GUARD: a genuinely unrelated QUESTION arriving during STEP 1\'s "awaiting_name" question (never a bare ack) still closes the flow QUIETLY and is answered on its own - the Task 3 "didn\'t understand" re-ask must only ever fire for genuine filler, never swallow a real question', async () => {
+    const phone = '910000001404';
+    await whatsappAssistant.clearPendingHrNoteFlow(phone).catch(() => {});
+    const d1 = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: NAME_FLOW_SETUP_TEXT, isGroup: false, history: [] });
+    const h1 = [{ direction: 'in', text: NAME_FLOW_SETUP_TEXT, ts: Date.now() - 2000 }, { direction: 'out', text: d1.replyText, ts: Date.now() - 1000 }];
+    const d2 = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Ayon HR k?', isGroup: false, history: h1 });
+    const pendingAfter = await whatsappAssistant.getPendingHrNoteFlow(phone);
+    const ok = !(pendingAfter && pendingAfter.step === 'awaiting_name')
+      && d2.replyText !== whatsappAssistant.HR_NOTE_DIDNT_UNDERSTAND_WHO.banglish
+      && d2.replyText !== whatsappAssistant.HR_NOTE_DIDNT_UNDERSTAND_WHO.english;
+    await whatsappAssistant.clearPendingHrNoteFlow(phone).catch(() => {});
+    return ok;
+  });
+  await checkAsync('after the re-ask, a real name resolves normally - the flow was never actually lost by the "Yss sir" turn', async () => {
+    await whatsappAssistant.clearPendingHrNoteFlow(NAME_FLOW_PHONE_1).catch(() => {});
+    const d1 = await whatsappAssistant.decideAutoReply({ phone: NAME_FLOW_PHONE_1, name: 'Sender', firstName: 'Sender', text: NAME_FLOW_SETUP_TEXT, isGroup: false, history: [] });
+    const h1 = [{ direction: 'in', text: NAME_FLOW_SETUP_TEXT, ts: Date.now() - 3000 }, { direction: 'out', text: d1.replyText, ts: Date.now() - 2000 }];
+    const d2 = await whatsappAssistant.decideAutoReply({ phone: NAME_FLOW_PHONE_1, name: 'Sender', firstName: 'Sender', text: 'Yss sir', isGroup: false, history: h1 });
+    const h2 = h1.concat([{ direction: 'in', text: 'Yss sir', ts: Date.now() - 1500 }, { direction: 'out', text: d2.replyText, ts: Date.now() - 1000 }]);
+    const d = await whatsappAssistant.decideAutoReply({ phone: NAME_FLOW_PHONE_1, name: 'Sender', firstName: 'Sender', text: 'Tanmoy Mondal', isGroup: false, history: h2 });
+    const pending = await whatsappAssistant.getPendingHrNoteFlow(NAME_FLOW_PHONE_1);
+    const ok = d.case === 'acknowledged' && !(pending && pending.step === 'awaiting_name');
+    await whatsappAssistant.clearPendingHrNoteFlow(NAME_FLOW_PHONE_1).catch(() => {});
+    return ok;
+  });
+  await checkAsync('language stickiness inside a flow: a short English-looking reply ("Ok") inside an established Banglish HR-note flow stays Banglish, never switches', async () => {
+    const phone = '910000001402';
+    await whatsappAssistant.clearPendingHrNoteFlow(phone).catch(() => {});
+    const d1 = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: NAME_FLOW_SETUP_TEXT, isGroup: false, history: [] });
+    const history = [{ direction: 'in', text: NAME_FLOW_SETUP_TEXT, ts: Date.now() - 2000 }, { direction: 'out', text: d1.replyText, ts: Date.now() - 1000 }];
+    const d2 = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Ok', isGroup: false, history });
+    const ok = d2.lang === 'banglish';
+    await whatsappAssistant.clearPendingHrNoteFlow(phone).catch(() => {});
+    return ok;
+  });
+  await checkAsync('language stickiness inside a flow, the reverse: a short Bengali-looking reply ("Thik ache") inside an established ENGLISH HR-note flow stays English, never switches', async () => {
+    const phone = '910000001403';
+    const setupTextEnglish = 'I was told to work from home today instead of taking a day off';
+    await whatsappAssistant.clearPendingHrNoteFlow(phone).catch(() => {});
+    const d1 = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: setupTextEnglish, isGroup: false, history: [] });
+    const history = [{ direction: 'in', text: setupTextEnglish, ts: Date.now() - 2000 }, { direction: 'out', text: d1.replyText, ts: Date.now() - 1000 }];
+    const d2 = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Thik ache', isGroup: false, history });
+    const ok = d2.lang === 'english';
+    await whatsappAssistant.clearPendingHrNoteFlow(phone).catch(() => {});
+    return ok;
+  });
+
+  console.log('='.repeat(70));
   console.log('TASK 4 (2026-10-27): record/replay cache + cost-report bookkeeping (test-only, a complete no-op in production since the live app never sets SCENARIO_REPLAY_CACHE)');
   console.log('='.repeat(70));
   check('resetApiCallStats/getApiCallStats round-trip to all zeros (pure counter bookkeeping, no API call involved)', (() => {

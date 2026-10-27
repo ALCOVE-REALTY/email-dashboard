@@ -141,3 +141,24 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
   tracked independently per day). A CV-only PDF with no caption/text and no
   open document request defaults to a job application via
   handleIncomingMedia's own send path.
+- Task 3 (2026-10-27): templates only inside flows, never free-form, while a
+  flow is open - live bug: inside an open HR-note flow, after STEP 1 asked who
+  gave an instruction, a bare "Yss sir" was extracted by the model as a
+  person's NAME, which then reached the free-form AI drafter once the lookup
+  found no such employee. "NOT A NAME" - a message that is ENTIRELY a bare
+  yes/no/honorific word ("Yss sir"/"Yes"/"Haa"/"Ji"/"Ok sir"/"Sir"/"Madam")
+  is now recognized deterministically (isBareAckOrHonorificOnly), without
+  even calling the model, and gets the fixed "Dukkhito, bujhte parini. Kar
+  kotha bolchhen? Puro naam-ta bolben?" re-ask, keeping the flow open - never
+  a free-form reply treating it as a name. This uses a discriminator field
+  (isBareAckOrHonorific) on extractPersonReference's result, not a blanket
+  "nothing resolved -> re-ask": a genuine QUESTION/REQUEST arriving instead
+  (e.g. "Ayon HR k?") must still close the flow quietly and reach the real
+  pipeline for its own real answer, exactly as before this task - the first
+  version of this fix broke that established behavior and was caught by the
+  existing "replay the exact incident... Ayon HR k?" regression test, fixed
+  by adding the discriminator. Language stickiness for short replies inside
+  an open flow was already correct by construction (continueHrNoteFlow uses
+  the flow's own saved language, never re-detecting it per message) - locked
+  in with tests for a short English-looking reply inside a Banglish flow and
+  the reverse.
