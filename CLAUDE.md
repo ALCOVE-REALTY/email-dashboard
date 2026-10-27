@@ -26,6 +26,30 @@ it never writes the reply. Code turns that decision into the fixed template
 text. Deterministic rules handle clear-cut cases; anything they can't resolve
 confidently goes to the model's understanding, never to a repeated fixed reply.
 
+### SUBH reply routing table
+
+The model only CLASSIFIES a message; code always picks the reply.
+
+| Message type | Reply |
+| --- | --- |
+| Open HR flow (duty, WFH, leave, late, half-day, early leave, off-day duty...) | Flow templates only |
+| Informative (telling something, no question/request) | Fixed noting template (`MODEL_REPLY_SAFE_FALLBACK`/`MEDIA_ACK_REPLY` - same wording, every language) |
+| Job application / vacancy enquiry | Fixed templates |
+| Closing ("thank you", "ok", 🙏) | No reply / one closing line |
+| Question/request matching a saved template | That template |
+| Question/request with no template | Model-written reply with the style guide + pre-send check |
+
+A matching template always wins; inside an open flow only templates ever reply.
+"Informative" is a STRUCTURAL test (no question, no request attached), never a
+topical one - a plan, update, fact, or file mention counts just as much whether
+or not it's HR-related; `classifyTool`'s own `intent: 'informing'` description
+was broadened for this (2026-10-27) after a live bug where a personal,
+non-HR-sounding statement ("I'll send you the umbrella tomorrow") was
+misclassified as `'other'` and reached the free-form drafter, which invented a
+detail ("letter") pulled from an older, unrelated message in the conversation
+history - never reinterpret an odd-sounding informing message as a wrong-
+number/misdirected one.
+
 ## Deployment
 
 **Not Vercel. Never run the `vercel` CLI or check Vercel deployments for this

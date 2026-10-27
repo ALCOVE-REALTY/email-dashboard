@@ -4380,6 +4380,41 @@ async function checkAsync(label, fn) {
   check('listActionNeededItems is exported', typeof whatsappAssistant.listActionNeededItems === 'function');
 
   console.log('='.repeat(70));
+  console.log('SUBH REPLY ROUTING, section 1 (2026-10-27): an INFORMATIVE message (telling something, no question/request) always gets the fixed noting template, never a model-written reply - never risks inventing a detail from an older, unrelated message');
+  console.log('='.repeat(70));
+  const INFORMING_PHONE = '910000002301';
+  await checkAsync('LOCKED SCENARIO A: "Kalke tomake call korbo" (a plain informative message) gets the fixed noting template, never a model-drafted reply', async () => {
+    const d = await whatsappAssistant.decideAutoReply({ phone: INFORMING_PHONE, name: 'Sender', firstName: 'Sender', text: 'Kalke tomake call korbo', isGroup: false, history: [] });
+    return d.replyText.endsWith(whatsappAssistant.MODEL_REPLY_SAFE_FALLBACK.banglish);
+  });
+  await checkAsync('LOCKED SCENARIO B: "Kalke chata ta pathiye debo tomake" (umbrella) gets the fixed noting template, even with an OLDER, unrelated message mentioning "letter" in history - never invents "letter" into the reply', async () => {
+    const pollutedHistory = [{ direction: 'in', text: 'Amar ekta letter lagbe office theke', ts: Date.now() - 3600000 }, { direction: 'out', text: 'Thik ache, janiye dicchi.', ts: Date.now() - 3500000 }];
+    const d = await whatsappAssistant.decideAutoReply({ phone: INFORMING_PHONE, name: 'Sender', firstName: 'Sender', text: 'Kalke chata ta pathiye debo tomake', isGroup: false, history: pollutedHistory });
+    return d.replyText.endsWith(whatsappAssistant.MODEL_REPLY_SAFE_FALLBACK.banglish) && !/letter/i.test(d.replyText);
+  });
+  await checkAsync('LOCKED SCENARIO C: "Kalke tomar chata ta pathiye debo tomake" gets the fixed noting template, never invents "letter"', async () => {
+    const pollutedHistory = [{ direction: 'in', text: 'Amar ekta letter lagbe office theke', ts: Date.now() - 3600000 }, { direction: 'out', text: 'Thik ache, janiye dicchi.', ts: Date.now() - 3500000 }];
+    const d = await whatsappAssistant.decideAutoReply({ phone: INFORMING_PHONE, name: 'Sender', firstName: 'Sender', text: 'Kalke tomar chata ta pathiye debo tomake', isGroup: false, history: pollutedHistory });
+    return d.replyText.endsWith(whatsappAssistant.MODEL_REPLY_SAFE_FALLBACK.banglish) && !/letter/i.test(d.replyText);
+  });
+  await checkAsync('LOCKED SCENARIO D: an image + short informative text ("6 ta chilo") still uses the SAME noting template as the text-only case, not a separate "I\'ve received your message" wording', async () => {
+    const phone = '910000002302';
+    const beforeIds = new Set((await whatsappAssistant.listPendingAutoSends()).map((e) => e.id));
+    await whatsappAssistant.handleIncomingMedia(phone, 'MediaSender', { type: 'image', content: { caption: '6 ta chilo' } });
+    const after = await whatsappAssistant.listPendingAutoSends();
+    const scheduled = after.find((e) => !beforeIds.has(e.id) && e.chatId === phone);
+    // MEDIA_ACK_REPLY and MODEL_REPLY_SAFE_FALLBACK are now identical in
+    // every language (checked separately below) - robust to whichever
+    // language mediaFallbackLang/detectLang picks for this short caption.
+    return Boolean(scheduled) && Object.values(whatsappAssistant.MEDIA_ACK_REPLY).includes(scheduled.replyText);
+  });
+  check('MEDIA_ACK_REPLY now uses the exact same wording as MODEL_REPLY_SAFE_FALLBACK, in every language - one noting line, not two', ['banglish', 'hinglish', 'english'].every((l) => whatsappAssistant.MEDIA_ACK_REPLY[l] === whatsappAssistant.MODEL_REPLY_SAFE_FALLBACK[l]));
+  await checkAsync('REGRESSION: a genuine greeting/thanks still gets a real, warm model-drafted reply, unaffected by the informative-message redirect', async () => {
+    const d = await whatsappAssistant.decideAutoReply({ phone: '910000002303', name: 'Sender', firstName: 'Sender', text: 'Dhonnobad, apnar sahajjo-r jonno', isGroup: false, history: [] });
+    return d.case === 'acknowledged' && Boolean(d.replyText) && !d.replyText.endsWith(whatsappAssistant.MODEL_REPLY_SAFE_FALLBACK.banglish);
+  });
+
+  console.log('='.repeat(70));
   console.log('TASK 4 (2026-10-27): record/replay cache + cost-report bookkeeping (test-only, a complete no-op in production since the live app never sets SCENARIO_REPLAY_CACHE)');
   console.log('='.repeat(70));
   check('resetApiCallStats/getApiCallStats round-trip to all zeros (pure counter bookkeeping, no API call involved)', (() => {

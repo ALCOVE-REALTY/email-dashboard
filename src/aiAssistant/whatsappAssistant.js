@@ -6372,7 +6372,7 @@ function classifyTool() {
           intent: {
             type: 'string',
             enum: ['question', 'request', 'complaint', 'follow_up', 'informing', 'greeting', 'thanks', 'document_sent', 'other'],
-            description: 'What kind of message this is. "informing" when the sender is TELLING HR something for the record, not asking anything - e.g. their own leave/late-coming/attendance, an off-day-in-lieu/comp-off, a duty change, a salary/bank account change, a work-location update, or any other information meant for HR to note (see isHrNotification below). "follow_up" for a short message chasing an earlier question still open in the history (resolve the real topic from there, e.g. "Tau kobe pabo?"/"Ki holo kichu bolun"). "document_sent" only when they SAY they are sending/attaching something, not an actual image/document message (those are handled separately). "greeting"/"thanks" for small talk, a festival/holiday wish, or a closing remark with nothing open to resolve. Never classify a pure informing/greeting/thanks message as "question" just because it ends without one.'
+            description: 'What kind of message this is. "informing" when the sender is TELLING SUBH something, with no question and no request attached - this is a STRUCTURAL test (no question mark/question word, nothing being asked for), not a topical one: it covers their own leave/late-coming/attendance, an off-day-in-lieu/comp-off, a duty change, a salary/bank account change, a work-location update (see isHrNotification below) JUST AS MUCH AS a plain personal statement with nothing to do with HR at all - a plan ("Kalke tomake call korbo" - I\'ll call you tomorrow), an update, a fact, mentioning a file/object they\'ll send ("Kalke chata ta pathiye debo tomake" - I\'ll send you the umbrella tomorrow). Classify ANY such statement as "informing" regardless of how personal, unusual, or unrelated to HR it sounds, or whether it reads like it was meant for someone else - never reinterpret it as a wrong-number/misdirected message and never guess at what it was "really" about. "follow_up" for a short message chasing an earlier question still open in the history (resolve the real topic from there, e.g. "Tau kobe pabo?"/"Ki holo kichu bolun"). "document_sent" only when they SAY they are sending/attaching something, not an actual image/document message (those are handled separately). "greeting"/"thanks" for small talk, a festival/holiday wish, or a closing remark with nothing open to resolve. Never classify a pure informing/greeting/thanks message as "question" just because it ends without one. "other" is reserved for a message that genuinely fits none of these categories at all - never used just because an informing message\'s topic has nothing to do with HR.'
           },
           language: {
             type: 'string',
@@ -7641,14 +7641,30 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
   // CONTEXT_REPLY_SYSTEM_PROMPT), but these never escalate to the owner
   // or count toward the repeated-follow-up tracker, since there's no
   // open question here to actually wait on.
-  // "informing" messages that AREN'T one of item 4's specific HR-
-  // notification categories (already intercepted above, before this
-  // point) are still simple information with nothing to act on or wait
-  // on (e.g. "Ami site jacchi") - treated the same as a greeting/thanks:
-  // a short warm acknowledgement, never the escalation-tracked "holding"
-  // path below (item 6: respond to what they actually said, don't turn a
-  // plain FYI into an open question the owner has to follow up on).
-  const isAcknowledgement = ['greeting', 'thanks', 'document_sent', 'informing'].includes(classification.intent);
+  // Task 1 (2026-10-27), section 1, live bug - "informing" messages
+  // (telling SUBH something - a plan, an update, a fact, a file - with no
+  // question/request) used to be model-drafted the same as a greeting/
+  // thanks, and the model would sometimes INVENT a detail pulled from an
+  // older, unrelated message in the conversation history (e.g. "Kalke
+  // chata ta pathiye debo tomake" - "I'll send you the umbrella tomorrow"
+  // - got a reply about a "letter" that was never mentioned at all, lifted
+  // from a stale test message earlier in the thread). AI UNDERSTANDS, CODE
+  // SPEAKS: the model only classifies the intent as "informing" - the
+  // reply itself is now always this one fixed, deterministic noting
+  // template, in every language, never drafted, never risking inventing
+  // anything. Checked BEFORE the acknowledgement bucket below (which
+  // still model-drafts greeting/thanks/document_sent - genuine warmth with
+  // no fixed "right answer" needed there, unaffected by this).
+  if (classification.intent === 'informing') {
+    const lang = classification.language || detectLang(text);
+    return { case: 'acknowledged', replyText: MODEL_REPLY_SAFE_FALLBACK[lang] || MODEL_REPLY_SAFE_FALLBACK.english, summaryForOwner: null, intent: classification.intent, hrTopicArea: classification.hrTopicArea, lang };
+  }
+  // greeting/thanks/document_sent are acknowledgement-only intents - a
+  // real human reply always goes out (never silence, see
+  // CONTEXT_REPLY_SYSTEM_PROMPT), but these never escalate to the owner
+  // or count toward the repeated-follow-up tracker, since there's no
+  // open question here to actually wait on.
+  const isAcknowledgement = ['greeting', 'thanks', 'document_sent'].includes(classification.intent);
   if (isAcknowledgement) {
     // No per-sender tiering (an earlier version of this fix special-cased
     // "senior" contacts) - every sender gets the exact same brief,
@@ -7928,10 +7944,17 @@ async function handleVacancyEnquiryDecision(phone, lang, position) {
 // never silence (found live: a bare PDF with no caption got nothing at
 // all). Deliberately generic/fixed, not AI-drafted - there's nothing to
 // reason about for a plain "I received your file" line.
+// Task 1 (2026-10-27), section 1, locked scenario D - this must be the
+// EXACT SAME wording as the informative-message noting template
+// (MODEL_REPLY_SAFE_FALLBACK, defined later in this file - duplicated
+// here rather than referenced, since a top-level const can't forward-
+// reference another const before its own declaration runs), never its
+// own separate line, so there's only ever one "I've noted this" reply
+// across the whole app. Keep these two constants' text in sync.
 const MEDIA_ACK_REPLY = {
-  banglish: 'Apnar message peyechi, dhonnobad. Subhodeep-ke janiye dicchi.',
-  hinglish: 'Aapka message mil gaya, dhanyavaad. Subhodeep ko bata raha hoon.',
-  english: "I've received your message, thank you. I'll let Subhodeep know."
+  banglish: 'Ami apnar bishoy-ta note kore nilam ar Subhodeep-ke janiye dicchi.',
+  hinglish: 'Maine aapki baat note kar li hai aur Subhodeep ko bata raha hoon.',
+  english: "I've noted this and I'm letting Subhodeep know."
 };
 async function mediaFallbackLang(contactId, caption) {
   if (caption) return detectLang(caption);
