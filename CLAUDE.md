@@ -18,6 +18,14 @@ telling Subhodeep something is live. See "Deployment" below - pushing to
 `origin/main` does NOT by itself deploy anything; a separate manual deploy step is
 required, and Claude has no way to confirm that step happened on its own.
 
+## Design principle: AI UNDERSTANDS, CODE SPEAKS
+
+AI UNDERSTANDS, CODE SPEAKS. The model decides meaning (who is meant, yes/no, a
+new name given, answer vs extra info vs new topic) as structured output only -
+it never writes the reply. Code turns that decision into the fixed template
+text. Deterministic rules handle clear-cut cases; anything they can't resolve
+confidently goes to the model's understanding, never to a repeated fixed reply.
+
 ## Deployment
 
 **Not Vercel. Never run the `vercel` CLI or check Vercel deployments for this
@@ -162,3 +170,35 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
   the flow's own saved language, never re-detecting it per message) - locked
   in with tests for a short English-looking reply inside a Banglish flow and
   the reverse.
+- Task 4 (2026-10-27): phonetic+hint disambiguation resolves directly, and a
+  pending disambiguation is always RE-RESOLVED against the whole directory,
+  never repeated verbatim - live bug: "Svodip HR k?" (a casual, vowel-dropped
+  transliteration with no "u" at all) wrongly phonetic-matched a wrong/
+  ambiguous name instead of Subhodeep Kundu Chowdhury, then "Naa..Ami suvodip
+  HR er kotha bolchi" got the IDENTICAL disambiguation list repeated verbatim,
+  then naming Subhodeep by his full name got "1 na 2?" again. Root cause 1:
+  normalizeBengaliNamePhonetics's regex required a literal "su"/"shu" at the
+  start, so a dropped vowel ("Svodip") never canonicalized to the same form
+  as "Suvodip"/"Subhadip"/"Subhodeep" - fixed by also accepting a bare "s"
+  immediately followed by "b"/"bh" then "o"/"a" (still narrow enough to never
+  false-match an unrelated real name; "Sayan" still never collides with
+  "Ayan"). With this fix, "Svodip" + "HR" hint now resolves directly to ONE
+  person via findPersonLookupMatches's existing hint-outranks-spelling
+  ordering (unchanged). Root cause 2: once a disambiguation list IS shown
+  (HR-note flow's awaiting_disambiguation_choice, or the general person-
+  lookup's pendingDisambiguation - both had this bug, fixed identically),
+  resolveDisambiguationReply only ever checked the STALE candidate list, so
+  "Na" + a brand-new name not on that list just re-sent the identical list
+  instead of looking the new name up. Now, whenever the stale list fails to
+  match, the new text is re-extracted (extractPersonReference) and re-
+  resolved against the WHOLE directory via the same path a fresh name-answer
+  uses (resolveHrNoteThirdParty / handlePersonLookupRequest) - tried
+  unconditionally, never gated on classifyDisambiguationReply's own
+  isAnswerAttempt field, since that field means "picking one of the LISTED
+  candidates" and is false by definition for a name that isn't one of them
+  (a message with no name at all simply extracts nothing and falls through
+  to the existing extra-info/retry logic unchanged). If this second
+  resolution is ALSO ambiguous, it saves its own fresh candidate set, never
+  reusing the stale one - so even a coincidental repeat is never the
+  identical reply. Added the "AI UNDERSTANDS, CODE SPEAKS" design principle
+  (see its own section above) alongside this task.

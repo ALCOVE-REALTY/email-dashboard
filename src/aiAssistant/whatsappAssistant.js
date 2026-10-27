@@ -2601,8 +2601,18 @@ function normalizeBengaliNamePhonetics(word) {
   }
   // v <-> b (Suvodip/Subhodip, Debashish/Devashish, ...).
   w = w.replace(/v/g, 'b');
-  // subho/suvo/subha/shuvo/shubho (etc.) -> one canonical opening.
-  w = w.replace(/^(shu|su)(bh|b)(o|a)/, 'subho');
+  // subho/suvo/subha/shuvo/shubho (etc.) -> one canonical opening. Task 4
+  // (2026-10-27), live bug - the bare "s" alternative handles a casually
+  // DROPPED vowel between s and b/bh ("Svodip" -> "sbodip" after the v->b
+  // replace above, with no "u" at all) - previously only "shu"/"su" (an
+  // explicit vowel) matched, so "Svodip" never canonicalized to the same
+  // form as "Suvodip"/"Subhodeep" do and fell through to a worse fuzzy
+  // edit-distance match (e.g. a real but wrong "Sandip") instead. Still
+  // requires b/bh immediately next then o/a - too narrow to false-match
+  // an unrelated real name (no realistic Bengali first name has "s"
+  // immediately followed by "b"/"bh" then "o"/"a" with nothing between,
+  // other than this specific dropped-vowel transliteration).
+  w = w.replace(/^(shu|su|s)(bh|b)(o|a)/, 'subho');
   // dip/deep/deb suffix variants -> one canonical ending.
   w = w.replace(/(dip|deep|deb)$/, 'deep');
   // ee <-> i (Subhodeep/Subhodip once the suffix above is normalized the
@@ -2657,6 +2667,31 @@ async function findPersonLookupMatches(query, departmentHint) {
   if (fuzzy.length) return { matches: fuzzy, hadTypo: true };
   const phonetic = await findEmployeesByPhoneticNameMatch(query, departmentHint);
   return { matches: phonetic, hadTypo: phonetic.length > 0 };
+}
+// Task 4 (2026-10-27) - a stricter, CONFIDENT check used only when
+// deciding whether to override a pending disambiguation's stale-list
+// retry with a freshly re-resolved name (continueHrNoteFlow and the
+// general lookup's own identical use). Deliberately narrower than
+// findPersonLookupMatches's own full result: a bare generic fuzzy edit-
+// distance match with NO corroborating hint is exactly the kind of false
+// positive this codebase already distrusts (the established "Sayan"/
+// "Ayan" collision risk) - found live while verifying this task: "Ayan
+// Kumar" and "Tanmoy Ghosh" (neither a real employee) spuriously fuzzy-
+// matched "Sayan Kumar Paul"/"Sanjoy Kumar Ghosh", which would have
+// wrongly overridden the safe stale-list retry. Trusted here only as an
+// exact whole-word match, a phonetic match, or a fuzzy match a stated
+// department/designation hint actually confirms - never a bare fuzzy
+// guess on its own.
+async function hasConfidentPersonMatch(query, departmentHint) {
+  const exact = await findEmployeesByWholeNameMatch(query, departmentHint);
+  if (exact.length) return true;
+  const phonetic = await findEmployeesByPhoneticNameMatch(query, departmentHint);
+  if (phonetic.length) return true;
+  if (departmentHint) {
+    const fuzzyForHint = await findEmployeesByFuzzyNameMatch(query, departmentHint);
+    if (fuzzyForHint.some((e) => personHintMatches(e, departmentHint))) return true;
+  }
+  return false;
 }
 // Live review items 2 & 3 (found live: a NEW, unrelated request - "Amake
 // Ayan er mail id dao" - got answered about "Ayan Biswas" directly,
@@ -4094,6 +4129,43 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
         return Object.assign({}, finalized, { replyText: wrapWithExtraInfoNote(lang, finalized.replyText) });
       }
       return finalized;
+    }
+    // Task 4 (2026-10-27), live bug - resolveDisambiguationReply above
+    // only ever checks the STALE candidate list, so a genuine attempt to
+    // answer with a NAME THAT ISN'T ON THAT LIST (e.g. "Na, I mean
+    // Suvodip HR") used to just re-send the identical list verbatim,
+    // never actually looking the new name up. Tried UNCONDITIONALLY here
+    // (never gated on disambigVerdict.isAnswerAttempt - that field means
+    // "picking one of the LISTED candidates", which is false by its own
+    // definition for a name that isn't one of them, exactly the case this
+    // exists for) - a message with no name at all simply won't extract
+    // one and falls through to the existing extra-info/retry logic
+    // unchanged. Re-resolves against the WHOLE directory (same path a
+    // fresh STEP 1 name-answer uses) - a department/designation hint
+    // still outranks spelling similarity there, and if THIS also turns
+    // out ambiguous, resolveHrNoteThirdParty saves its own fresh
+    // candidate set, never reusing hrFlow.candidates.
+    const pendingQuestionLabelForReresolve = (HR_NOTE_DISAMBIGUATION_QUESTION[lang] || HR_NOTE_DISAMBIGUATION_QUESTION.english)(queryNameForClassify, hrFlow.candidates, hrFlowConfirmActionWord(hrFlow.actionKind));
+    const extractedForReresolve = await extractPersonReference(text, { pendingQuestionLabel: pendingQuestionLabelForReresolve, history, lang });
+    // Checked BEFORE committing to the re-resolved reply (rather than just
+    // trusting whatever resolveHrNoteThirdParty gives back) - a name that
+    // doesn't CONFIDENTLY resolve to someone real (a typo, a made-up name,
+    // or one that only spuriously fuzzy-matches an unrelated employee -
+    // see hasConfidentPersonMatch's own comment) must still fall through
+    // to the ordinary "didn't match, here are the options again" retry
+    // below, exactly as before Task 4 - only a name that actually,
+    // confidently resolves replaces the stale-list repeat. Prevents
+    // turning every non-matching disambiguation attempt into a jarring (or
+    // outright wrong) reply when the sender simply misnamed one of the
+    // people already on the list.
+    const hasConfidentReresolve = extractedForReresolve.personName
+      && await hasConfidentPersonMatch(extractedForReresolve.personName, extractedForReresolve.hint);
+    if (hasConfidentReresolve) {
+      const reresolved = await resolveHrNoteThirdParty({ phone, name, lang, personName: extractedForReresolve.personName, department: extractedForReresolve.hint, summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, actionPhrase: hrFlow.actionPhrase, actionKind: hrFlow.actionKind, createdAt: hrFlow.createdAt, history });
+      if (disambigVerdict.hasExtraInfo && reresolved && reresolved.replyText) {
+        return Object.assign({}, reresolved, { replyText: wrapWithExtraInfoNote(lang, reresolved.replyText) });
+      }
+      return reresolved;
     }
     if (disambigVerdict.hasExtraInfo && !disambigVerdict.isAnswerAttempt) {
       // Case A - pure extra info, the pending question is still open.
@@ -7237,6 +7309,43 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
         }
         return finalized;
       }
+      // Task 4 (2026-10-27), live bug - same fix as the HR-note flow's own
+      // identical comment above (continueHrNoteFlow): resolveDisambiguationReply
+      // only ever checks the STALE candidate list, so a genuine attempt to
+      // answer with a NAME NOT ON THAT LIST (e.g. "Naa, Suvodip HR er
+      // kotha bolchi") used to just re-send the identical list verbatim.
+      // Tried UNCONDITIONALLY (never gated on disambigVerdict.isAnswerAttempt
+      // - that field means "picking one of the LISTED candidates", false
+      // by definition for a name that isn't one of them). Re-resolves
+      // against the WHOLE directory via the same handlePersonLookupRequest
+      // a fresh question would use - a fresh ambiguity saves its own
+      // fresh candidate set, never reusing pendingDisambig.candidates.
+      const pendingQuestionLabelForReresolve = 'which ' + queryNameForClassify + ' do you mean';
+      const extractedForReresolve = await extractPersonReference(text, { pendingQuestionLabel: pendingQuestionLabelForReresolve, history, lang: pendingDisambig.lang });
+      // Checked BEFORE committing to the re-resolved reply - see
+      // hasConfidentPersonMatch's own comment and continueHrNoteFlow's
+      // identical copy of this fix. A name that doesn't CONFIDENTLY
+      // resolve (including one that only spuriously fuzzy-matches an
+      // unrelated employee) must still fall through to the ordinary
+      // stale-list retry below, not a jarring or outright wrong reply.
+      const hasConfidentReresolve = extractedForReresolve.personName
+        && await hasConfidentPersonMatch(extractedForReresolve.personName, extractedForReresolve.hint);
+      if (hasConfidentReresolve) {
+        await clearPendingDisambiguation(phone);
+        const fieldAlias = pendingDisambig.pendingField === 'other_field' ? resolveApprovalFieldAliasByKey(pendingDisambig.fieldAliasKey) : null;
+        const reresolved = await handlePersonLookupRequest({
+          phone, name: senderLabel, lang: pendingDisambig.lang,
+          personName: extractedForReresolve.personName,
+          personField: pendingDisambig.pendingField,
+          personFieldLabel: fieldAlias ? fieldAlias.label.english : undefined,
+          department: extractedForReresolve.hint,
+          text, history
+        });
+        if (disambigVerdict.hasExtraInfo && reresolved && reresolved.replyText) {
+          return Object.assign({}, reresolved, { replyText: wrapWithExtraInfoNote(pendingDisambig.lang, reresolved.replyText) });
+        }
+        return reresolved;
+      }
       if (disambigVerdict.hasExtraInfo && !disambigVerdict.isAnswerAttempt) {
         // Case A - pure extra info, the pending question is still open.
         const reminderCount = pendingDisambig.extraInfoReminderCount || 0;
@@ -8783,6 +8892,7 @@ module.exports = {
   // sender-side disambiguation).
   handlePersonLookupRequest,
   findPersonLookupMatches,
+  hasConfidentPersonMatch,
   findEmployeesByWholeNameMatch,
   findEmployeesByFuzzyNameMatch,
   // Exported for scripts/check-whatsapp-engine.js only - live review

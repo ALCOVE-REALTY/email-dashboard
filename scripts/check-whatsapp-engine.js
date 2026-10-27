@@ -4261,6 +4261,49 @@ async function checkAsync(label, fn) {
   });
 
   console.log('='.repeat(70));
+  console.log('TASK 4 (2026-10-27): AI UNDERSTANDS, CODE SPEAKS - phonetic+hint disambiguation resolves directly, and a disambiguation list is always RE-RESOLVED against the whole directory, never repeated verbatim');
+  console.log('='.repeat(70));
+  check('normalizeBengaliNamePhonetics FIX: a vowel-dropped transliteration ("Svodip", no "u" at all) now canonicalizes to the SAME form as "Subhodeep"/"Suvodip"/"Subhadip" (live bug: the old regex required a literal "su"/"shu")',
+    whatsappAssistant.normalizeBengaliNamePhonetics('Svodip') === whatsappAssistant.normalizeBengaliNamePhonetics('Subhodeep')
+    && whatsappAssistant.normalizeBengaliNamePhonetics('Svodip') === whatsappAssistant.normalizeBengaliNamePhonetics('Suvodip')
+    && whatsappAssistant.normalizeBengaliNamePhonetics('Svodip') === whatsappAssistant.normalizeBengaliNamePhonetics('Subhadip'));
+  check('REGRESSION GUARD: "Sayan" still never phonetically collides with "Ayan" after the Task 4 fix - the new "s" alternative still requires b/bh immediately next, never loosening into unrelated names',
+    whatsappAssistant.normalizeBengaliNamePhonetics('Sayan') !== whatsappAssistant.normalizeBengaliNamePhonetics('Ayan'));
+  await checkAsync('LOCKED SCENARIO: "Svodip HR k?" (phonetic + "HR" hint) resolves directly to ONE person (Subhodeep Kundu Chowdhury), never a disambiguation list and never the wrong "Sandip"', async () => {
+    const phone = '910000002101';
+    await whatsappAssistant.clearPendingDisambiguation(phone).catch(() => {});
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'Enquirer', firstName: 'Enquirer', text: 'Svodip HR k?', isGroup: false, history: [] });
+    const ok = d.replyText.includes('Subhodeep Kundu Chowdhury') && !/\bSandip\b/.test(d.replyText);
+    await whatsappAssistant.clearPendingDisambiguation(phone).catch(() => {});
+    return ok;
+  });
+  await checkAsync('LOCKED SCENARIO: a pending GENERAL-LOOKUP disambiguation list (ambiguous "Tanmoy", 4 matches) is RE-RESOLVED against the whole directory when "Na" names someone else entirely (Subhodeep Kundu Chowdhury, not on the list) - never repeats the identical Tanmoy list', async () => {
+    const phone = '910000002102';
+    await whatsappAssistant.clearPendingDisambiguation(phone).catch(() => {});
+    const d1 = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Tanmoy-er department ki?', isGroup: false, history: [] });
+    const h1 = [{ direction: 'in', text: 'Tanmoy-er department ki?', ts: Date.now() - 2000 }, { direction: 'out', text: d1.replyText, ts: Date.now() - 1000 }];
+    const d2 = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Naa, Subhodeep Kundu Chowdhury er kotha bolchi', isGroup: false, history: h1 });
+    const ok = d2.replyText.includes('Subhodeep Kundu Chowdhury') && !/charjon|4\) Tanmoy/.test(d2.replyText);
+    await whatsappAssistant.clearPendingDisambiguation(phone).catch(() => {});
+    return ok;
+  });
+  await checkAsync('LOCKED SCENARIO: a pending HR-NOTE FLOW disambiguation list (ambiguous "Tanmoy", 4 matches, via the Srirampur-site hint that still leaves 2+) is RE-RESOLVED against the whole directory when "Na" names someone else entirely - reaches STEP 3+4 for Subhodeep Kundu Chowdhury, never repeats the identical Tanmoy list', async () => {
+    const phone = '910000002103';
+    await whatsappAssistant.clearPendingHrNoteFlow(phone).catch(() => {});
+    const d1 = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Ajke amake duty korte bola hoyechhe. Tar poriborte onno din chhutti nite bola hoyechhe.', isGroup: false, history: [] });
+    const h1 = [{ direction: 'in', text: 'setup', ts: Date.now() - 4000 }, { direction: 'out', text: d1.replyText, ts: Date.now() - 3000 }];
+    const d2 = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Sir, apni Srirampur site-er Tanmoy Sir-ke jiggasa korte paren.', isGroup: false, history: h1 });
+    const pendingMid = await whatsappAssistant.getPendingHrNoteFlow(phone);
+    const h2 = h1.concat([{ direction: 'in', text: 'Tanmoy', ts: Date.now() - 2000 }, { direction: 'out', text: d2.replyText, ts: Date.now() - 1000 }]);
+    const d3 = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Na, Subhodeep Kundu Chowdhury-r kotha bolchi', isGroup: false, history: h2 });
+    const pendingAfter = await whatsappAssistant.getPendingHrNoteFlow(phone);
+    const ok = pendingMid && pendingMid.step === 'awaiting_disambiguation_choice'
+      && d3.replyText.includes('Subhodeep Kundu Chowdhury') && !pendingAfter;
+    await whatsappAssistant.clearPendingHrNoteFlow(phone).catch(() => {});
+    return ok;
+  });
+
+  console.log('='.repeat(70));
   console.log('TASK 4 (2026-10-27): record/replay cache + cost-report bookkeeping (test-only, a complete no-op in production since the live app never sets SCENARIO_REPLAY_CACHE)');
   console.log('='.repeat(70));
   check('resetApiCallStats/getApiCallStats round-trip to all zeros (pure counter bookkeeping, no API call involved)', (() => {

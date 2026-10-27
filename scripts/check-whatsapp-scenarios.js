@@ -678,6 +678,35 @@ scenario('Task 1: a CV-only PDF with no caption/text and no open document reques
   }
 });
 
+scenario('Task 4, LIVE BUG: "Svodip HR k?" (phonetic + "HR" hint) resolves directly to ONE person (Subhodeep Kundu Chowdhury), never a disambiguation list and never the wrong "Sandip"', async () => {
+  const phone = '910000002101';
+  await whatsappAssistant.clearPendingDisambiguation(phone).catch(() => {});
+  try {
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'Enquirer', firstName: 'Enquirer', text: 'Svodip HR k?', isGroup: false, history: [] });
+    if (!d.replyText.includes('Subhodeep Kundu Chowdhury') || /\bSandip\b/.test(d.replyText)) {
+      return { pass: false, detail: 'expected a direct resolution to Subhodeep Kundu Chowdhury, got: ' + d.replyText };
+    }
+    return { pass: true, detail: 'resolved directly, no disambiguation list' };
+  } finally {
+    await whatsappAssistant.clearPendingDisambiguation(phone).catch(() => {});
+  }
+});
+scenario('Task 4: a pending disambiguation list (ambiguous "Tanmoy") is RE-RESOLVED against the whole directory when "Na" names someone else entirely, never repeats the identical list', async () => {
+  const phone = '910000002102';
+  await whatsappAssistant.clearPendingDisambiguation(phone).catch(() => {});
+  try {
+    const d1 = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Tanmoy-er department ki?', isGroup: false, history: [] });
+    const h1 = [{ direction: 'in', text: 'Tanmoy-er department ki?', ts: Date.now() - 2000 }, { direction: 'out', text: d1.replyText, ts: Date.now() - 1000 }];
+    const d2 = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Naa, Subhodeep Kundu Chowdhury er kotha bolchi', isGroup: false, history: h1 });
+    if (!d2.replyText.includes('Subhodeep Kundu Chowdhury') || /charjon/.test(d2.replyText)) {
+      return { pass: false, detail: 'expected re-resolution to Subhodeep Kundu Chowdhury, got: ' + d2.replyText };
+    }
+    return { pass: true, detail: 'correctly re-resolved against the whole directory' };
+  } finally {
+    await whatsappAssistant.clearPendingDisambiguation(phone).catch(() => {});
+  }
+});
+
 // Task 4 (2026-10-27) - approximate Claude Sonnet per-token pricing
 // (USD), used only to turn the tracked token counts into a rough cost
 // estimate for the report below - update here if pricing changes, this
