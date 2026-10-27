@@ -654,10 +654,19 @@ async function runAll() {
   // not a billing-accurate number - tokens and call counts are the real
   // signal.
   const stats = whatsappAssistant.getApiCallStats();
-  const estimatedUsd = (stats.inputTokens / 1e6) * APPROX_USD_PER_MTOK_INPUT + (stats.outputTokens / 1e6) * APPROX_USD_PER_MTOK_OUTPUT;
+  // Prompt-caching pricing (2026-10-27) - a cache WRITE costs MORE than a
+  // normal input token (~1.25x, ephemeral/5-min TTL), a cache READ costs
+  // much LESS (~0.1x) - both approximate, same "not billing-accurate"
+  // caveat as the base rates above.
+  const estimatedUsd = (stats.inputTokens / 1e6) * APPROX_USD_PER_MTOK_INPUT
+    + (stats.outputTokens / 1e6) * APPROX_USD_PER_MTOK_OUTPUT
+    + (stats.cacheWriteTokens / 1e6) * APPROX_USD_PER_MTOK_INPUT * 1.25
+    + (stats.cacheReadTokens / 1e6) * APPROX_USD_PER_MTOK_INPUT * 0.1;
   console.log('COST REPORT: ' + stats.realCalls + ' real API call(s), ' + stats.cachedReplays + ' cached replay(s) avoided'
     + (process.env.SCENARIO_REPLAY_CACHE === '1' ? '' : ' (SCENARIO_REPLAY_CACHE not enabled this run)')
-    + ' - ' + stats.inputTokens + ' input + ' + stats.outputTokens + ' output tokens, ~$' + estimatedUsd.toFixed(4) + ' estimated (approximate Sonnet pricing, not billing-accurate)');
+    + ' - ' + stats.inputTokens + ' input + ' + stats.outputTokens + ' output tokens'
+    + (stats.cacheWriteTokens || stats.cacheReadTokens ? ' (' + stats.cacheWriteTokens + ' prompt-cache write + ' + stats.cacheReadTokens + ' prompt-cache read)' : '')
+    + ', ~$' + estimatedUsd.toFixed(4) + ' estimated (approximate Sonnet pricing, not billing-accurate)');
   console.log('='.repeat(70));
   process.exit(flakyCount + brokenCount > 0 ? 1 : 0);
 }

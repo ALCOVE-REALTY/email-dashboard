@@ -5489,12 +5489,29 @@ const DRAFT_MODEL = process.env.CLAUDE_MODEL_MAIN;
 // the transport differs.
 const CLAUDE_API_URL = 'https://api.anthropic.com/v1/messages';
 const CLAUDE_ANTHROPIC_VERSION = '2023-06-01';
+// Direct instruction (2026-10-27, per Subhodeep's explicit approval) -
+// Anthropic prompt caching. A message object may set `cache: true` to
+// mark its block with cache_control - this is a pure billing/latency
+// hint to the API (per Anthropic's own spec it never changes what the
+// model is given or what it produces), so it is added ONLY to the
+// handful of system-prompt blocks that are genuinely identical on every
+// call (DRAFT_SYSTEM_PROMPT, GROUP_DRAFT_SYSTEM_PROMPT,
+// CONTEXT_REPLY_SYSTEM_PROMPT - each always its own standalone, static
+// block, never interpolated) - every other call site is left exactly as
+// it was, still uncached, since marking a block whose own text changes
+// per call would never hit cache anyway and risks nothing but is also
+// pointless there.
 function splitSystemAndMessages(openAiStyleMessages) {
   const system = [];
   const messages = [];
   (openAiStyleMessages || []).forEach((m) => {
-    if (m.role === 'system') system.push({ type: 'text', text: m.content });
-    else messages.push({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content });
+    if (m.role === 'system') {
+      const block = { type: 'text', text: m.content };
+      if (m.cache) block.cache_control = { type: 'ephemeral' };
+      system.push(block);
+    } else {
+      messages.push({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content });
+    }
   });
   return { system, messages };
 }
@@ -5529,9 +5546,13 @@ function writeReplayCache(key, data) {
 // Always-on, zero-cost bookkeeping (a few integer increments per call) -
 // never affects behavior, only ever read by test scripts via
 // getApiCallStats for the end-of-run cost report.
-const apiCallStats = { realCalls: 0, cachedReplays: 0, inputTokens: 0, outputTokens: 0 };
+// cacheWriteTokens/cacheReadTokens (2026-10-27, prompt caching) - straight
+// from Anthropic's own usage fields (cache_creation_input_tokens/
+// cache_read_input_tokens), present only once prompt caching is actually
+// in use; both stay 0 everywhere caching isn't applied, exactly as before.
+const apiCallStats = { realCalls: 0, cachedReplays: 0, inputTokens: 0, outputTokens: 0, cacheWriteTokens: 0, cacheReadTokens: 0 };
 function getApiCallStats() { return Object.assign({}, apiCallStats); }
-function resetApiCallStats() { apiCallStats.realCalls = 0; apiCallStats.cachedReplays = 0; apiCallStats.inputTokens = 0; apiCallStats.outputTokens = 0; }
+function resetApiCallStats() { apiCallStats.realCalls = 0; apiCallStats.cachedReplays = 0; apiCallStats.inputTokens = 0; apiCallStats.outputTokens = 0; apiCallStats.cacheWriteTokens = 0; apiCallStats.cacheReadTokens = 0; }
 async function postClaudeMessages(apiKey, body) {
   const replayEnabled = process.env.SCENARIO_REPLAY_CACHE === '1';
   let cacheKey = null;
@@ -5559,6 +5580,8 @@ async function postClaudeMessages(apiKey, body) {
   if (data.usage) {
     apiCallStats.inputTokens += data.usage.input_tokens || 0;
     apiCallStats.outputTokens += data.usage.output_tokens || 0;
+    apiCallStats.cacheWriteTokens += data.usage.cache_creation_input_tokens || 0;
+    apiCallStats.cacheReadTokens += data.usage.cache_read_input_tokens || 0;
   }
   if (replayEnabled && cacheKey) writeReplayCache(cacheKey, data);
   return data;
@@ -5585,7 +5608,16 @@ async function callClaudeForcedTool(apiKey, model, openAiStyleMessages, toolName
   const { system, messages } = splitSystemAndMessages(openAiStyleMessages);
   const data = await postClaudeMessages(apiKey, {
     model, max_tokens: maxTokens || 1024, system, messages,
-    tools: [{ name: toolName, description: toolSchema.description, input_schema: toolSchema.parameters }],
+    // Direct instruction (2026-10-27) - the tool SCHEMA itself (description
+    // + input_schema) is a fixed function's return value at every call
+    // site in this file, never built per-message, so marking it for
+    // caching is always safe to do unconditionally here. It only
+    // actually saves anything on a call whose preceding system content is
+    // ALSO stable across calls (e.g. classifyDisambiguationReplyTool's own
+    // system prompt interpolates per-call content, so this marker simply
+    // never gets a cache hit there - harmless, not a behavior change,
+    // exactly as a billing/latency-only hint should be).
+    tools: [{ name: toolName, description: toolSchema.description, input_schema: toolSchema.parameters, cache_control: { type: 'ephemeral' } }],
     // 'auto', not a forced {type:'tool'/'any'} - verified live that
     // CLAUDE_MODEL_MAIN (claude-sonnet-5-5, used here via DRAFT_MODEL)
     // rejects both outright with a 400 ("not supported for this
@@ -5726,7 +5758,7 @@ async function generateDraft(employeeName, messageText, modelOverride, selfFacts
   if (!apiKey) throw new Error('whatsappAssistant.generateDraft called without ANTHROPIC_API_KEY set');
   const model = modelOverride || DRAFT_MODEL;
   if (!model) throw new Error('whatsappAssistant.generateDraft called without CLAUDE_MODEL_MAIN set');
-  const messages = [{ role: 'system', content: DRAFT_SYSTEM_PROMPT }];
+  const messages = [{ role: 'system', content: DRAFT_SYSTEM_PROMPT, cache: true }];
   const styleBlock = styleReferenceBlock(await getRecentOutgoingStyleSamples());
   if (styleBlock) messages.push({ role: 'system', content: styleBlock });
   if (memoryFact) {
@@ -5859,7 +5891,7 @@ async function generateGroupDraft(groupName, messageText, memoryFact) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error('whatsappAssistant.generateGroupDraft called without ANTHROPIC_API_KEY set');
   if (!DRAFT_MODEL) throw new Error('whatsappAssistant.generateGroupDraft called without CLAUDE_MODEL_MAIN set');
-  const messages = [{ role: 'system', content: GROUP_DRAFT_SYSTEM_PROMPT }];
+  const messages = [{ role: 'system', content: GROUP_DRAFT_SYSTEM_PROMPT, cache: true }];
   const styleBlock = styleReferenceBlock(await getRecentOutgoingStyleSamples());
   if (styleBlock) messages.push({ role: 'system', content: styleBlock });
   if (memoryFact) {
@@ -6379,7 +6411,7 @@ async function generateConversationReply(text, history, firstName, topicLabel, n
       ? 'This needs a real reply naming the topic above - you do not have the answer, see the system rules.'
       : 'This is a greeting/acknowledgement with nothing open to resolve - reply briefly and warmly, never silence.');
   const messages = [
-    { role: 'system', content: CONTEXT_REPLY_SYSTEM_PROMPT },
+    { role: 'system', content: CONTEXT_REPLY_SYSTEM_PROMPT, cache: true },
     { role: 'user', content: userContent }
   ];
   let content = stripForbiddenGreeting(await callClaudeChat(apiKey, DRAFT_MODEL, messages));
