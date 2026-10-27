@@ -4304,6 +4304,82 @@ async function checkAsync(label, fn) {
   });
 
   console.log('='.repeat(70));
+  console.log('TASK 5 (2026-10-27): templated-style replies for topics without a template + growing the templates');
+  console.log('='.repeat(70));
+  check('validateModelReply accepts a normal short Banglish reply', whatsappAssistant.validateModelReply('Thik ache, ami Subhodeep-ke janiye dicchi.', 'banglish'));
+  check('validateModelReply rejects a reply over the length ceiling', !whatsappAssistant.validateModelReply('A'.repeat(500), 'english'));
+  check('validateModelReply rejects an Aadhaar-shaped number in the reply', !whatsappAssistant.validateModelReply('Apnar Aadhaar number 1234 5678 9012 ache amader record-e.', 'banglish'));
+  check('validateModelReply rejects a PAN-shaped number in the reply', !whatsappAssistant.validateModelReply('Apnar PAN ABCDE1234F ache amader record-e.', 'banglish'));
+  check('validateModelReply rejects a long, confidently-English reply inside a non-English conversation', !whatsappAssistant.validateModelReply('I will check with Subhodeep about this and get back to you with a proper update very soon.', 'banglish'));
+  check('validateModelReply does NOT false-positive on a short reply with no language-specific words either way', whatsappAssistant.validateModelReply('Ok, noted.', 'banglish'));
+  await checkAsync('matchReplyTemplate returns null immediately (no API call) when there are no enabled templates', async () => {
+    const r = await whatsappAssistant.matchReplyTemplate('any message', []);
+    return r === null;
+  });
+  await checkAsync('reply-template CRUD round-trips: save, get, list, toggle, delete', async () => {
+    const saved = await whatsappAssistant.saveReplyTemplate({ topic: 'Test topic', whenToUse: 'when testing', replyText: 'Test reply text.' });
+    if (!saved || !saved.id) return false;
+    const fetched = await whatsappAssistant.getReplyTemplate(saved.id);
+    if (!fetched || fetched.topic !== 'Test topic' || fetched.enabled !== true) return false;
+    const list = await whatsappAssistant.listReplyTemplates();
+    if (!list.some((t) => t.id === saved.id)) return false;
+    const toggled = await whatsappAssistant.setReplyTemplateEnabled(saved.id, false);
+    if (!toggled || toggled.enabled !== false) return false;
+    const incremented = await whatsappAssistant.incrementReplyTemplateUsage(saved.id);
+    if (!incremented || incremented.usageCount !== 1) return false;
+    await whatsappAssistant.deleteReplyTemplate(saved.id);
+    const afterDelete = await whatsappAssistant.getReplyTemplate(saved.id);
+    return afterDelete === null;
+  });
+  const CUSTOM_TEMPLATE_PHONE = '910000002201';
+  await checkAsync('LOCKED SCENARIO: a saved custom template matches its topic by MEANING (not keyword) and always wins over the free-form drafter', async () => {
+    const saved = await whatsappAssistant.saveReplyTemplate({ topic: 'PF withdrawal process', whenToUse: 'the sender is asking how to withdraw or apply for their PF (Provident Fund)', replyText: 'Fixed PF withdrawal reply for testing.' });
+    try {
+      const d = await whatsappAssistant.decideAutoReply({ phone: CUSTOM_TEMPLATE_PHONE, name: 'Sender', firstName: 'Sender', text: 'Amar PF kivabe withdraw korbo?', isGroup: false, history: [] });
+      const template = await whatsappAssistant.getReplyTemplate(saved.id);
+      // endsWith, not exact equality - a fresh conversation (empty history,
+      // as here) correctly gets the once-per-day identity line prefixed in
+      // front of ANY reply type, including a custom template's - the same
+      // cross-cutting wrapper every other case already goes through.
+      return d.replyText.endsWith('Fixed PF withdrawal reply for testing.') && template.usageCount === 1;
+    } finally {
+      await whatsappAssistant.deleteReplyTemplate(saved.id);
+    }
+  });
+  await checkAsync('LOCKED SCENARIO: a disabled template is never matched, even for its own exact topic', async () => {
+    const saved = await whatsappAssistant.saveReplyTemplate({ topic: 'PF withdrawal process', whenToUse: 'the sender is asking how to withdraw or apply for their PF (Provident Fund)', replyText: 'Fixed PF withdrawal reply for testing.', enabled: false });
+    try {
+      const d = await whatsappAssistant.decideAutoReply({ phone: CUSTOM_TEMPLATE_PHONE, name: 'Sender', firstName: 'Sender', text: 'Amar PF kivabe withdraw korbo?', isGroup: false, history: [] });
+      return d.replyText !== 'Fixed PF withdrawal reply for testing.';
+    } finally {
+      await whatsappAssistant.deleteReplyTemplate(saved.id);
+    }
+  });
+  await checkAsync('LOCKED SCENARIO: an unrelated, genuinely unknown question still reaches the free-form drafter normally when no saved template fits', async () => {
+    const saved = await whatsappAssistant.saveReplyTemplate({ topic: 'PF withdrawal process', whenToUse: 'the sender is asking how to withdraw or apply for their PF (Provident Fund)', replyText: 'Fixed PF withdrawal reply for testing.' });
+    try {
+      const d = await whatsappAssistant.decideAutoReply({ phone: CUSTOM_TEMPLATE_PHONE, name: 'Sender', firstName: 'Sender', text: 'Amader office-e ki canteen ache?', isGroup: false, history: [] });
+      return Boolean(d.replyText) && d.replyText !== 'Fixed PF withdrawal reply for testing.';
+    } finally {
+      await whatsappAssistant.deleteReplyTemplate(saved.id);
+    }
+  });
+  await checkAsync('LOCKED SCENARIO: a short Banglish message with nothing to match still gets a normal, validated, non-fallback reply', async () => {
+    const d = await whatsappAssistant.decideAutoReply({ phone: CUSTOM_TEMPLATE_PHONE, name: 'Sender', firstName: 'Sender', text: 'Ajke ektu dorkar chilo, office asa hobe na', isGroup: false, history: [] });
+    return Boolean(d.replyText) && d.replyText !== whatsappAssistant.MODEL_REPLY_SAFE_FALLBACK.banglish;
+  });
+
+  console.log('='.repeat(70));
+  console.log('TASK 6 (2026-10-27): "Action needed" unified inbox (UI + wiring only - the one deterministic, backend-testable piece is the aggregation itself)');
+  console.log('='.repeat(70));
+  await checkAsync('listActionNeededItems() returns an array without throwing, with every item shaped for the UI (kind/category/chatId/name/ts/ageMs/data)', async () => {
+    const items = await whatsappAssistant.listActionNeededItems();
+    if (!Array.isArray(items)) return false;
+    return items.every((it) => typeof it.kind === 'string' && typeof it.category === 'string' && typeof it.chatId === 'string' && typeof it.ageMs === 'number' && it.data);
+  });
+  check('listActionNeededItems is exported', typeof whatsappAssistant.listActionNeededItems === 'function');
+
+  console.log('='.repeat(70));
   console.log('TASK 4 (2026-10-27): record/replay cache + cost-report bookkeeping (test-only, a complete no-op in production since the live app never sets SCENARIO_REPLAY_CACHE)');
   console.log('='.repeat(70));
   check('resetApiCallStats/getApiCallStats round-trip to all zeros (pure counter bookkeeping, no API call involved)', (() => {

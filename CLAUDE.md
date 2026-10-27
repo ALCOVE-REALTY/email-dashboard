@@ -202,3 +202,47 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
   reusing the stale one - so even a coincidental repeat is never the
   identical reply. Added the "AI UNDERSTANDS, CODE SPEAKS" design principle
   (see its own section above) alongside this task.
+- Task 5 (2026-10-27): templated-style replies for topics without a template,
+  and growing the templates. Order: a matching template (built-in or saved
+  custom) always wins; inside an open flow only templates ever reply
+  (unchanged, structural - a flow returns before the custom-template check is
+  ever reached); only when nothing matches does the free-form drafter run.
+  generateConversationReply's own system prompt already enforced most of the
+  style guide (apni/aap, 1-3 short lines, sender's own language, no invented
+  dates/promises, escalate-to-Subhodeep framing) from many earlier live-bug
+  fixes - added an explicit no-PII rule and a couple of real fixed templates
+  as tone/voice examples. A new generic safety-net check (validateModelReply)
+  runs after every existing targeted retry (promise-phrase/robotic-phrase/
+  script-leak, each already with its own tailored fallback): length, a
+  sensitive-field/Aadhaar/PAN-shaped pattern, or a confidently-wrong language
+  all fall back to the fixed "Ami apnar bishoy-ta note kore nilam ar
+  Subhodeep-ke janiye dicchi." line. Growing templates: "Save as template" on
+  any of SUBH's own outgoing replies in a WhatsApp conversation opens a sheet
+  (topic name, a plain-language "when to use" description matched by MEANING
+  via a dedicated structured-choice tool call - never a keyword match -,
+  editable reply text); from then on a message matching that topic always
+  gets this fixed reply, in whatever language it was saved in. A "📄
+  Templates" icon next to the ⏳ Open Flows icon lists every saved template
+  (topic, times used, On/Off, Edit, Delete) - built-in flow/job-application/
+  vacancy-enquiry templates are fixed in code and never appear here. Matching
+  is skipped entirely (no API call, zero behaviour change) while the owner
+  has no enabled custom templates.
+- Task 6 (2026-10-27): "Action needed" unified inbox - UI + wiring only,
+  existing cards' own logic/texts/buttons untouched. An inbox icon next to
+  the ⏳ Open Flows icon in Important WhatsApp's header (order: title · inbox
+  · hourglass · View All ›) opens a full-screen page listing one card per
+  pending item from EVERY sender (data/contact approvals, pending drafts,
+  open follow-ups, received documents, unclear-manager-reply HR
+  confirmations), oldest first, with filter chips (All/Data requests/
+  Confirmations/Automations/Others) and an amber "Waiting Xh" tag past 2
+  hours. Each card's action buttons are built by the exact same
+  buildConvoActions a conversation's own action cards already use (just fed
+  one item at a time instead of a whole conversation's worth) and call the
+  identical endpoints acting in chat would - one source of truth, no second
+  copy of any action's logic. Refreshes every 12s via the same poll that
+  already drives the rest of the panel. Automation missed/first-run
+  approvals and ad-hoc "ask before sending" workflow items (a separate
+  system, automationService.js) are NOT wired into this inbox in this pass -
+  the Automations chip exists and always shows its real count (0 for now),
+  never silently hidden; wiring that system in is a natural follow-up, not
+  done here given scope/time.

@@ -2183,6 +2183,90 @@ router.post('/hr-assistant/open-flows/close', async (req, res) => {
   }
 });
 
+// Task 5 (2026-10-27) - growing templates: "Save as template" on a model-
+// written reply, and the Templates list (topic/times used/On-off/edit/
+// delete) next to Open Flows. Built-in flow templates (STEP1-5, job
+// application, vacancy enquiry) are fixed in code, never editable here.
+router.get('/hr-assistant/reply-templates', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const items = await whatsappAssistant.listReplyTemplates();
+    res.json({ items });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/hr-assistant/reply-templates', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const { topic, whenToUse, replyText } = req.body || {};
+    if (!topic || !whenToUse || !replyText) return res.status(400).json({ error: 'topic, whenToUse and replyText are required' });
+    const saved = await whatsappAssistant.saveReplyTemplate({ topic, whenToUse, replyText });
+    if (!saved) return res.status(500).json({ error: 'Could not save the template.' });
+    res.json({ ok: true, item: saved });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/hr-assistant/reply-templates/:id', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const existing = await whatsappAssistant.getReplyTemplate(req.params.id);
+    if (!existing) return res.status(404).json({ error: 'Template not found.' });
+    const { topic, whenToUse, replyText } = req.body || {};
+    const saved = await whatsappAssistant.saveReplyTemplate(Object.assign({}, existing, {
+      topic: topic || existing.topic,
+      whenToUse: whenToUse || existing.whenToUse,
+      replyText: replyText || existing.replyText
+    }));
+    res.json({ ok: true, item: saved });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/hr-assistant/reply-templates/:id/toggle', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const { enabled } = req.body || {};
+    if (typeof enabled !== 'boolean') return res.status(400).json({ error: 'enabled (boolean) is required' });
+    const saved = await whatsappAssistant.setReplyTemplateEnabled(req.params.id, enabled);
+    if (!saved) return res.status(404).json({ error: 'Template not found.' });
+    res.json({ ok: true, item: saved });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.delete('/hr-assistant/reply-templates/:id', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    await whatsappAssistant.deleteReplyTemplate(req.params.id);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Task 6 (2026-10-27) - "Action needed" unified inbox, one card per
+// pending item across every sender. UI + wiring only - reads the exact
+// same stores every existing per-conversation action card already reads
+// (see listActionNeededItems's own comment); acting on an item here uses
+// the SAME endpoints as acting in chat (whatsapp-approval, whatsapp-
+// reply, whatsapp-followup-done, whatsapp-document-done, whatsapp-hr-
+// confirmation-resolve), so there is only ever one source of truth.
+router.get('/hr-assistant/action-needed', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const items = await whatsappAssistant.listActionNeededItems();
+    res.json({ items });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.post('/hr-assistant/whatsapp-followup-done', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
   try {

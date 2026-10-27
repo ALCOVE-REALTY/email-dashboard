@@ -1687,6 +1687,29 @@ body { background: var(--wi-bg); }
   font-size: 0.64rem; font-weight: 700; color: var(--wi-red-700); background: var(--wi-red-50);
   padding: 2px 7px; border-radius: 8px; margin-top: 2px;
 }
+/* Task 5 - "Save as template" on an outgoing bubble. Quiet/secondary by
+   default, never competing visually with the message itself. */
+.wf-convo-msg-save-template {
+  align-self: flex-end; border: none; background: none; color: var(--wi-primary); font-family: inherit;
+  font-size: 0.66rem; font-weight: 700; cursor: pointer; padding: 1px 2px; opacity: .75;
+}
+.wf-convo-msg-save-template:active { opacity: 1; }
+
+/* Task 6 - "Action needed" unified inbox */
+.wf-action-needed-chips { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 14px; }
+.wf-action-needed-chip {
+  height: 32px; padding: 0 12px; border-radius: 999px; border: 1.5px solid var(--wi-border-2); background: var(--wi-surface);
+  color: var(--wi-ink); font-weight: 700; font-size: 0.74rem; cursor: pointer; font-family: inherit;
+}
+.wf-action-needed-chip.on { background: var(--wi-primary); border-color: var(--wi-primary); color: #FFFFFF; }
+.wf-action-needed-waiting-tag {
+  display: inline-flex; align-items: center; font-size: 0.68rem; font-weight: 800; color: var(--wi-amber-700, #92400E);
+  background: var(--wi-yellow-pill, #FEF3C7); border-radius: 999px; padding: 2px 8px; margin-left: 6px;
+}
+.wf-action-needed-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.wf-action-needed-openchat {
+  font-size: 0.72rem; font-weight: 800; color: var(--wi-primary); background: none; border: none; cursor: pointer; font-family: inherit; padding: 0;
+}
 .wf-convo-status-line {
   margin: 4px 14px 0; padding: 7px 11px; border-radius: 12px; font-size: 0.72rem; font-weight: 700;
   display: inline-flex; align-self: center; align-items: center; gap: 6px;

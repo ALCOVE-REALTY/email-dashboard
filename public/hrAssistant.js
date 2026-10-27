@@ -74,6 +74,25 @@
   const openFlowsBadge = document.getElementById('hrOpenFlowsBadge');
   const openFlowsPage = document.getElementById('hrOpenFlowsPage');
   const openFlowsList = document.getElementById('hrOpenFlowsList');
+  // Task 6 - "Action needed" unified inbox
+  const actionNeededBtn = document.getElementById('hrActionNeededBtn');
+  const actionNeededBadge = document.getElementById('hrActionNeededBadge');
+  const actionNeededPage = document.getElementById('hrActionNeededPage');
+  const actionNeededChips = document.getElementById('hrActionNeededChips');
+  const actionNeededList = document.getElementById('hrActionNeededList');
+  // Task 5 - growing templates
+  const templatesBtn = document.getElementById('hrTemplatesBtn');
+  const templatesPage = document.getElementById('hrTemplatesPage');
+  const templatesList = document.getElementById('hrTemplatesList');
+  const templateSheetBackdrop = document.getElementById('hrTemplateSheetBackdrop');
+  const templateSheet = document.getElementById('hrTemplateSheet');
+  const templateSheetCloseBtn = document.getElementById('hrTemplateSheetCloseBtn');
+  const templateSheetCancelBtn = document.getElementById('hrTemplateSheetCancelBtn');
+  const templateSheetSaveBtn = document.getElementById('hrTemplateSheetSaveBtn');
+  const templateSheetTitle = document.getElementById('hrTemplateSheetTitle');
+  const templateTopicInput = document.getElementById('hrTemplateTopic');
+  const templateWhenToUseInput = document.getElementById('hrTemplateWhenToUse');
+  const templateReplyTextInput = document.getElementById('hrTemplateReplyText');
   const convoPage = document.getElementById('hrConvoPage');
   const convoThread = document.getElementById('hrConvoThread');
   const convoActions = document.getElementById('hrConvoActions');
@@ -1319,6 +1338,9 @@
     } else if (panelView === 'hub') {
       renderHubBadges(data, (pageDataCache.reminders.get('today') && pageDataCache.reminders.get('today').data.counts) || { all: 0 });
     }
+    // Task 6 - "live 12s refresh": the badge count stays current everywhere,
+    // and the page itself re-renders when it's the one actually on screen.
+    loadActionNeeded();
   }
   // Prefetches the reminders list alongside the comms poll (same cadence,
   // same "fire immediately on panel open" moment) purely to warm
@@ -1462,6 +1484,8 @@
     else if (entry.type === 'important') showImportant();
     else if (entry.type === 'waAll') showWaAll();
     else if (entry.type === 'openFlows') showOpenFlows();
+    else if (entry.type === 'templates') showTemplates();
+    else if (entry.type === 'actionNeeded') showActionNeeded();
     else if (entry.type === 'conversation') openConversationPage(entry.chatId);
     else if (entry.type === 'reminders') { activeRemFilter = entry.filter; setPanelView('reminders'); loadRemindersPage(entry.filter); }
     else if (entry.type === 'reminderDetail') openReminderDetail(entry.id);
@@ -1497,6 +1521,8 @@
     const isRemDetail = view === 'reminderDetail';
     const isWaAll = view === 'waAll';
     const isOpenFlows = view === 'openFlows';
+    const isTemplates = view === 'templates';
+    const isActionNeeded = view === 'actionNeeded';
     const isAutoList = view === 'automationList';
     const isAutomation = view === 'automation';
     const usesCommsHead = !isHome;
@@ -1511,6 +1537,8 @@
     if (remDetailPage) remDetailPage.hidden = !isRemDetail;
     if (commsWaAllPage) commsWaAllPage.hidden = !isWaAll;
     if (openFlowsPage) openFlowsPage.hidden = !isOpenFlows;
+    if (templatesPage) templatesPage.hidden = !isTemplates;
+    if (actionNeededPage) actionNeededPage.hidden = !isActionNeeded;
     if (autoListPage) autoListPage.hidden = !isAutoList;
     if (autoPage) autoPage.hidden = !isAutomation;
     if (inputArea) inputArea.hidden = isConvo || isRemDetail || isAutomation || isAutoList;
@@ -1533,6 +1561,18 @@
       if (commsHeadIcon) commsHeadIcon.innerHTML = WHATSAPP_SVG;
       if (commsHeadTitle) commsHeadTitle.textContent = 'Open flows';
       if (commsHeadSubtitle) commsHeadSubtitle.textContent = 'Confirmations still in progress';
+      if (commsHeadBadge) commsHeadBadge.hidden = true;
+    } else if (isTemplates) {
+      if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon whatsapp';
+      if (commsHeadIcon) commsHeadIcon.innerHTML = WHATSAPP_SVG;
+      if (commsHeadTitle) commsHeadTitle.textContent = 'Templates';
+      if (commsHeadSubtitle) commsHeadSubtitle.textContent = 'Saved fixed replies for recurring topics';
+      if (commsHeadBadge) commsHeadBadge.hidden = true;
+    } else if (isActionNeeded) {
+      if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon whatsapp';
+      if (commsHeadIcon) commsHeadIcon.innerHTML = WHATSAPP_SVG;
+      if (commsHeadTitle) commsHeadTitle.textContent = 'Action needed';
+      if (commsHeadSubtitle) commsHeadSubtitle.textContent = 'Waiting for your input';
       if (commsHeadBadge) commsHeadBadge.hidden = true;
     } else if (isHub) {
       if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon';
@@ -1877,6 +1917,266 @@
     loadOpenFlows();
   }
   if (openFlowsBtn) openFlowsBtn.addEventListener('click', () => { pushNav({ type: 'openFlows' }); showOpenFlows(); });
+
+  // Task 5 - growing templates: list (topic/times used/On-off/edit/
+  // delete) + the shared Save/Edit sheet, opened either from here or from
+  // "Save as template" on a model-written reply bubble in a conversation.
+  let editingTemplateId = null;
+  function openTemplateSheet(existing) {
+    editingTemplateId = existing ? existing.id : null;
+    if (templateSheetTitle) templateSheetTitle.textContent = existing ? 'Edit template' : 'Save as template';
+    if (templateTopicInput) templateTopicInput.value = existing ? existing.topic : '';
+    if (templateWhenToUseInput) templateWhenToUseInput.value = existing ? existing.whenToUse : '';
+    if (templateReplyTextInput) templateReplyTextInput.value = existing ? existing.replyText : (existing === null ? '' : existing);
+    if (templateSheetSaveBtn) { templateSheetSaveBtn.classList.remove('is-loading', 'is-success', 'is-error'); templateSheetSaveBtn.disabled = false; }
+    templateSheetBackdrop.hidden = false;
+    templateSheet.hidden = false;
+    void templateSheet.offsetHeight;
+    templateSheetBackdrop.classList.add('open');
+    templateSheet.classList.add('open');
+  }
+  // "Save as template" on a model-written reply passes just the reply
+  // text (a string), not a full template record - pre-fills the reply
+  // field only, leaving topic/when-to-use for the owner to name.
+  function openTemplateSheetFromReply(replyText) {
+    editingTemplateId = null;
+    if (templateSheetTitle) templateSheetTitle.textContent = 'Save as template';
+    if (templateTopicInput) templateTopicInput.value = '';
+    if (templateWhenToUseInput) templateWhenToUseInput.value = '';
+    if (templateReplyTextInput) templateReplyTextInput.value = replyText || '';
+    if (templateSheetSaveBtn) { templateSheetSaveBtn.classList.remove('is-loading', 'is-success', 'is-error'); templateSheetSaveBtn.disabled = false; }
+    templateSheetBackdrop.hidden = false;
+    templateSheet.hidden = false;
+    void templateSheet.offsetHeight;
+    templateSheetBackdrop.classList.add('open');
+    templateSheet.classList.add('open');
+  }
+  function closeTemplateSheet() {
+    templateSheetBackdrop.classList.remove('open');
+    templateSheet.classList.remove('open');
+    setTimeout(() => { templateSheetBackdrop.hidden = true; templateSheet.hidden = true; }, 320);
+  }
+  if (templateSheetCloseBtn) templateSheetCloseBtn.addEventListener('click', closeTemplateSheet);
+  if (templateSheetCancelBtn) templateSheetCancelBtn.addEventListener('click', closeTemplateSheet);
+  if (templateSheetBackdrop) templateSheetBackdrop.addEventListener('click', closeTemplateSheet);
+  if (templateSheetSaveBtn) {
+    templateSheetSaveBtn.addEventListener('click', async () => {
+      const topic = (templateTopicInput.value || '').trim();
+      const whenToUse = (templateWhenToUseInput.value || '').trim();
+      const replyText = (templateReplyTextInput.value || '').trim();
+      if (!topic || !whenToUse || !replyText) { showActionToast('Topic, when to use, and reply text are all required.'); return; }
+      await runButtonAction(templateSheetSaveBtn, () => {
+        return editingTemplateId
+          ? postJsonOrThrow('/api/workforce/hr-assistant/reply-templates/' + encodeURIComponent(editingTemplateId), { topic, whenToUse, replyText })
+          : postJsonOrThrow('/api/workforce/hr-assistant/reply-templates', { topic, whenToUse, replyText });
+      }, () => {
+        closeTemplateSheet();
+        showProToast({ title: 'Template saved', type: 'success' });
+        if (panelView === 'templates') loadTemplatesPage();
+      });
+    });
+  }
+  function templateRowHtml(t) {
+    return '<div class="wf-auto-task-card" data-id="' + escapeHtml(t.id) + '">' +
+      '<div class="wf-auto-task-head"><div style="flex:1;min-width:0">' +
+        '<div class="wf-auto-task-subject">' + escapeHtml(t.topic) + '</div>' +
+        '<div class="wf-auto-hint">' + escapeHtml(t.whenToUse) + '</div>' +
+        '<div class="wf-auto-hint">Used ' + (t.usageCount || 0) + ' time' + (t.usageCount === 1 ? '' : 's') + '</div>' +
+      '</div>' +
+      '<label class="wf-rem-checkbox-row" style="flex-shrink:0"><input type="checkbox" data-action="toggle" ' + (t.enabled !== false ? 'checked' : '') + ' /> On</label>' +
+      '</div>' +
+      '<div class="wf-auto-actions">' +
+        '<button type="button" class="plain" data-action="edit">Edit</button>' +
+        '<button type="button" class="danger" data-action="delete">Delete</button>' +
+      '</div></div>';
+  }
+  async function loadTemplatesPage() {
+    if (!templatesList) return;
+    templatesList.innerHTML = '<div class="wf-skeleton-list"><div class="wf-skeleton-row"></div><div class="wf-skeleton-row"></div></div>';
+    try {
+      const r = await fetch('/api/workforce/hr-assistant/reply-templates').then((res) => res.json());
+      const items = r.items || [];
+      if (!items.length) { templatesList.innerHTML = '<div class="wf-rem-empty">No saved templates yet. Use "Save as template" on any SUBH reply in a WhatsApp conversation.</div>'; return; }
+      templatesList.innerHTML = items.map(templateRowHtml).join('');
+      templatesList.querySelectorAll('[data-action="toggle"]').forEach((cb) => {
+        cb.addEventListener('change', async () => {
+          const id = cb.closest('[data-id]').dataset.id;
+          try {
+            await postJsonOrThrow('/api/workforce/hr-assistant/reply-templates/' + encodeURIComponent(id) + '/toggle', { enabled: cb.checked });
+          } catch (err) { cb.checked = !cb.checked; showActionToast(err.message || 'Could not update - try again.'); }
+        });
+      });
+      templatesList.querySelectorAll('[data-action="edit"]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const id = btn.closest('[data-id]').dataset.id;
+          const existing = items.find((t) => t.id === id);
+          if (existing) openTemplateSheet(existing);
+        });
+      });
+      templatesList.querySelectorAll('[data-action="delete"]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          const id = btn.closest('[data-id]').dataset.id;
+          if (!(await showConfirmDialog('Delete this template? Future messages on this topic will go back to getting a model-written reply.', { confirmLabel: 'Delete' }))) return;
+          await runButtonAction(btn, () => fetch('/api/workforce/hr-assistant/reply-templates/' + encodeURIComponent(id), { method: 'DELETE' }).then((res) => res.json()), () => {
+            closeRowWithToast(btn.closest('.wf-auto-task-card'), { title: 'Template deleted', type: 'success' });
+          });
+        });
+      });
+    } catch (err) {
+      templatesList.innerHTML = '<div class="wf-rem-empty">Could not load templates.</div>';
+    }
+  }
+  function showTemplates() {
+    setPanelView('templates');
+    loadTemplatesPage();
+  }
+  if (templatesBtn) templatesBtn.addEventListener('click', () => { pushNav({ type: 'templates' }); showTemplates(); });
+
+  // Task 6 - "Action needed" unified inbox. Each card's inner action-group
+  // HTML is built by the EXACT SAME buildConvoActions a conversation's own
+  // action cards use (see above) - only ever given ONE item in ONE of its
+  // arrays, so it renders exactly one action-group per card. The wiring
+  // below is a parallel copy of renderConvoActionsAndWire's own handlers,
+  // necessarily separate because those thread the single globally "active"
+  // conversation's chatId (activeConvoChatId) - here every card belongs to
+  // a DIFFERENT sender, so each handler reads its OWN chatId off the card's
+  // own data attribute instead. Same endpoints, same payloads, same
+  // success/error handling - acting here and acting in chat are the same
+  // action on the same underlying item (one source of truth).
+  let actionNeededFilter = 'all';
+  function miniConvoForActionItem(item) {
+    const base = { chatId: item.chatId, name: item.name, pendingApprovals: [], pendingDrafts: [], openFollowups: [], pendingDocuments: [], ambiguousHrConfirmations: [] };
+    if (item.kind === 'approval') base.pendingApprovals = [item.data];
+    else if (item.kind === 'draft') base.pendingDrafts = [item.data];
+    else if (item.kind === 'followup') base.openFollowups = [item.data];
+    else if (item.kind === 'document') base.pendingDocuments = [item.data];
+    else if (item.kind === 'hr_confirmation_ambiguous') base.ambiguousHrConfirmations = [item.data];
+    return base;
+  }
+  function actionNeededAgeLabel(ageMs) {
+    const mins = Math.max(0, Math.round(ageMs / 60000));
+    if (mins < 60) return mins + 'm';
+    const hours = Math.round(mins / 60);
+    if (hours < 24) return hours + 'h';
+    return Math.round(hours / 24) + 'd';
+  }
+  function actionNeededCardHtml(item) {
+    const waitingTag = item.ageMs > 2 * 60 * 60 * 1000 ? '<span class="wf-action-needed-waiting-tag">Waiting ' + actionNeededAgeLabel(item.ageMs) + '</span>' : '';
+    return '<div class="wf-auto-task-card" data-chat-id="' + escapeHtml(item.chatId) + '">' +
+      '<div class="wf-action-needed-card-head">' +
+        '<span class="wf-auto-task-subject">' + escapeHtml(item.name) + ' · ' + escapeHtml(item.chatId) + waitingTag + '</span>' +
+        '<button type="button" class="wf-action-needed-openchat" data-open-chat="' + escapeHtml(item.chatId) + '">Open chat ›</button>' +
+      '</div>' +
+      '<div class="wf-auto-hint">' + actionNeededAgeLabel(item.ageMs) + ' ago</div>' +
+      buildConvoActions(miniConvoForActionItem(item)) +
+    '</div>';
+  }
+  function wireActionNeededCard(card, chatId) {
+    const openChatBtn = card.querySelector('[data-open-chat]');
+    if (openChatBtn) openChatBtn.addEventListener('click', () => { pushNav({ type: 'conversation', chatId }); openConversationPage(chatId); });
+    card.querySelectorAll('[data-approval-action]').forEach((b) => {
+      b.addEventListener('click', async () => {
+        const action = b.dataset.approvalAction;
+        const group = b.closest('.wf-convo-action-group');
+        if (action === 'edit-toggle') { enterCardEditMode(group); return; }
+        let selectedIndex = null;
+        if (action === 'approve') {
+          const checked = card.querySelector('input[name="wf-approval-candidate-' + CSS.escape(b.dataset.approvalId) + '"]:checked');
+          if (checked) selectedIndex = Number(checked.value);
+        }
+        const editedText = group.dataset.editedText || null;
+        await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/whatsapp-approval', { id: b.dataset.approvalId, action, selectedIndex, editedText }), () => {
+          closeRowWithToast(card, { title: action === 'reject' ? 'Declined' : 'Sent ✓', type: 'success' });
+          pollCommsSummary();
+          refreshActionNeeded();
+        });
+      });
+    });
+    card.querySelectorAll('[data-draft-action]').forEach((b) => {
+      b.addEventListener('click', async () => {
+        const action = b.dataset.draftAction;
+        const group = b.closest('.wf-convo-action-group');
+        if (action === 'edit-toggle') { enterCardEditMode(group); return; }
+        const editedText = group.dataset.editedText || null;
+        const requestFn = action === 'skip'
+          ? () => postJsonOrThrow('/api/workforce/hr-assistant/whatsapp-reply', { contactId: chatId, action: 'skip' })
+          : () => postJsonOrThrow('/api/workforce/hr-assistant/whatsapp-reply', { contactId: chatId, action: 'send', editedText });
+        await runButtonAction(b, requestFn, () => {
+          closeRowWithToast(card, { title: action === 'skip' ? 'Skipped' : 'Sent ✓', type: 'success' });
+          pollCommsSummary();
+          refreshActionNeeded();
+        });
+      });
+    });
+    card.querySelectorAll('[data-followup-action]').forEach((b) => {
+      b.addEventListener('click', async () => {
+        await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/whatsapp-followup-done', { chatId }), () => {
+          closeRowWithToast(card, { title: 'Marked done ✓', type: 'success' });
+          pollCommsSummary();
+          refreshActionNeeded();
+        });
+      });
+    });
+    card.querySelectorAll('[data-document-action]').forEach((b) => {
+      b.addEventListener('click', async () => {
+        await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/whatsapp-document-done', { chatId }), () => {
+          closeRowWithToast(card, { title: 'Marked done ✓', type: 'success' });
+          pollCommsSummary();
+          refreshActionNeeded();
+        });
+      });
+    });
+    card.querySelectorAll('[data-hrconfirm-action]').forEach((b) => {
+      b.addEventListener('click', async () => {
+        const group = b.closest('.wf-convo-action-group');
+        const id = group && group.dataset.hrconfirmId;
+        const decision = b.dataset.hrconfirmAction;
+        await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/whatsapp-hr-confirmation-resolve', { id, decision }), () => {
+          closeRowWithToast(card, { title: decision === 'ask_again' ? 'Asked again ✓' : 'Resolved ✓', type: 'success' });
+          pollCommsSummary();
+          refreshActionNeeded();
+        });
+      });
+    });
+  }
+  let actionNeededItemsCache = [];
+  function renderActionNeeded() {
+    if (!actionNeededList) return;
+    const counts = { all: actionNeededItemsCache.length, data_requests: 0, confirmations: 0, automations: 0, others: 0 };
+    actionNeededItemsCache.forEach((it) => { counts[it.category] = (counts[it.category] || 0) + 1; });
+    if (actionNeededChips) {
+      actionNeededChips.querySelectorAll('[data-filter]').forEach((chip) => {
+        const countEl = chip.querySelector('[data-count]');
+        if (countEl) countEl.textContent = counts[chip.dataset.filter] || 0;
+        chip.classList.toggle('on', chip.dataset.filter === actionNeededFilter);
+      });
+    }
+    const filtered = actionNeededFilter === 'all' ? actionNeededItemsCache : actionNeededItemsCache.filter((it) => it.category === actionNeededFilter);
+    if (!filtered.length) { actionNeededList.innerHTML = '<div class="wf-rem-empty">Nothing waiting on you right now.</div>'; return; }
+    actionNeededList.innerHTML = filtered.map(actionNeededCardHtml).join('');
+    actionNeededList.querySelectorAll('.wf-auto-task-card').forEach((card) => wireActionNeededCard(card, card.dataset.chatId));
+  }
+  async function loadActionNeeded() {
+    try {
+      const r = await fetch('/api/workforce/hr-assistant/action-needed').then((res) => res.json());
+      actionNeededItemsCache = r.items || [];
+      setCountBadge(actionNeededBadge, actionNeededItemsCache.length);
+      if (panelView === 'actionNeeded') renderActionNeeded();
+    } catch (err) { /* keep showing whatever was last known */ }
+  }
+  // Called from the 12s comms poll (live refresh, Task 6 requirement) and
+  // right after any action-needed card's own action succeeds.
+  function refreshActionNeeded() { loadActionNeeded(); }
+  function showActionNeeded() {
+    setPanelView('actionNeeded');
+    loadActionNeeded();
+  }
+  if (actionNeededBtn) actionNeededBtn.addEventListener('click', () => { pushNav({ type: 'actionNeeded' }); showActionNeeded(); });
+  if (actionNeededChips) {
+    actionNeededChips.querySelectorAll('[data-filter]').forEach((chip) => {
+      chip.addEventListener('click', () => { actionNeededFilter = chip.dataset.filter; renderActionNeeded(); });
+    });
+  }
 
   // Stale-while-revalidate (speed fix): renders whatever's already cached
   // (usually warm from the 30s badge poll) instantly, with no spinner,
@@ -2235,6 +2535,10 @@
       '<div class="wf-convo-msg ' + (m.direction === 'out' ? 'out' : 'in') + '">' +
         '<span class="wf-convo-msg-bubble">' + escapeHtml(m.text) + '</span>' +
         (m.direction === 'out' && NOT_DELIVERED_OUTCOMES.includes(m.outcome) ? '<span class="wf-convo-msg-failed">Not delivered</span>' : '') +
+        // Task 5 - "Save as template" on any of SUBH's own outgoing
+        // replies, so a recurring model-written reply can be turned into
+        // a permanent fixed one without touching code.
+        (m.direction === 'out' ? '<button type="button" class="wf-convo-msg-save-template" data-text="' + escapeHtml(m.text) + '" title="Save as template">📄 Save as template</button>' : '') +
         '<span class="wf-convo-msg-time">' + formatCommsTime(m.ts) + '</span>' +
       '</div>'
     ).join('');
@@ -2242,6 +2546,9 @@
       convoThread.innerHTML = (thread || '<div class="wf-comms-empty">No recent messages stored for this chat.</div>') +
         (status ? '<span class="wf-convo-status-line ' + status.tone + '">' + escapeHtml(status.text) + '</span>' : '');
       convoThread.scrollTop = convoThread.scrollHeight;
+      convoThread.querySelectorAll('.wf-convo-msg-save-template').forEach((btn) => {
+        btn.addEventListener('click', () => openTemplateSheetFromReply(btn.dataset.text));
+      });
     }
   }
   // Fire-and-forget after an action button succeeds (speed/UX fix) -

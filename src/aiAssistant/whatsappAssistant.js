@@ -552,6 +552,48 @@ async function listActionableWhatsappItems() {
   return rows;
 }
 
+// Task 6 (2026-10-27) - "Action needed" unified inbox: the SAME
+// underlying pending-item sources listActionableWhatsappItems already
+// aggregates (per-chat, for Important WhatsApp), but flattened to ONE
+// ROW PER ITEM rather than grouped by chat, since the inbox shows one
+// card per pending thing regardless of how many share a sender. UI +
+// wiring only - this reads the existing stores, never writes to them,
+// and every item's own data/shape is untouched (the frontend builds each
+// card via the EXACT SAME buildConvoActions the conversation view
+// already uses, see hrAssistant.js, so acting here calls the identical
+// endpoints as acting in chat - one source of truth, never a second copy
+// of the action logic). "Automations" (automation missed/first-run
+// approvals) and ad-hoc "ask before sending" workflow items are NOT
+// included here - a separate system (automationService.js) not wired
+// into this inbox in this pass; the category still appears in the
+// filter chips at a count of 0, never silently hidden.
+async function listActionNeededItems() {
+  const [approvals, drafts, followups, docs, hrConfirmations, recentLog] = await Promise.all([
+    listPendingApprovals(), listPendingDrafts(), listOpenFollowups(),
+    documentRequests.listPendingReceived(), listAllHrConfirmations(), listInboxLog(300)
+  ]);
+  const ambiguousConfirmations = hrConfirmations.filter((c) => c.status === 'ambiguous_owner_review');
+  const nameByChat = new Map();
+  recentLog.forEach((e) => {
+    const key = whatsapp.normalizePhone(e.chatId);
+    if (e.name && e.name !== 'The sender' && !nameByChat.has(key)) nameByChat.set(key, e.name);
+  });
+  const raw = [];
+  approvals.forEach((a) => raw.push({ kind: 'approval', category: 'data_requests', chatId: whatsapp.normalizePhone(a.phone), name: a.name, ts: a.createdAt || 0, data: a }));
+  drafts.forEach((d) => raw.push({ kind: 'draft', category: 'others', chatId: whatsapp.normalizePhone(d.contactId), name: d.name, ts: d.createdAt || 0, data: d }));
+  followups.forEach((f) => raw.push({ kind: 'followup', category: 'others', chatId: whatsapp.normalizePhone(f.chatId), name: f.name, ts: f.ts || 0, data: f }));
+  docs.forEach((d) => raw.push({ kind: 'document', category: 'others', chatId: whatsapp.normalizePhone(d.phone), name: null, ts: d.receivedAt || 0, data: d }));
+  ambiguousConfirmations.forEach((c) => raw.push({ kind: 'hr_confirmation_ambiguous', category: 'confirmations', chatId: whatsapp.normalizePhone(c.thirdPartyPhone), name: c.thirdPartyName, ts: c.ambiguousAt || c.createdAt || 0, data: c }));
+  const isRealName = (n) => n && n !== 'The sender';
+  const items = await Promise.all(raw.map(async (item) => {
+    const directoryMatch = await findEmployeeByPhone(item.chatId).catch(() => null);
+    const displayName = (directoryMatch && directoryMatch.emp.name) || (isRealName(item.name) && item.name) || nameByChat.get(item.chatId) || item.chatId;
+    return { kind: item.kind, category: item.category, chatId: item.chatId, name: displayName, ts: item.ts, ageMs: Math.max(0, Date.now() - item.ts), data: item.data };
+  }));
+  items.sort((a, b) => a.ts - b.ts); // oldest first
+  return items;
+}
+
 // A resolved (non-needs-you) conversation's status pill, derived from its
 // most recent real inbox-log entry - null means "nothing conversational
 // worth surfacing" (automatic/OTP-style messages, loop-protection skips,
@@ -6555,7 +6597,16 @@ const CONTEXT_REPLY_SYSTEM_PROMPT =
   'Hinglish: "nahi", never a bare "na"; address as "aap"; ALWAYS the masculine/neutral self-referring ' +
   'verb form ("karta hoon"/"batata hoon"/"bataunga"), NEVER feminine ("karti hoon"/"dungi"/"bataungi"). ' +
   'Never mix a Hindi word into Banglish or a ' +
-  'Bengali word into Hinglish.';
+  'Bengali word into Hinglish. NEVER include or guess at Aadhaar, PAN, bank account, IFSC, salary, or ' +
+  'any other personal/sensitive data in your reply, even if it appears somewhere in the conversation ' +
+  'history - that is handled by a completely separate, approval-gated path, never this free-form one. ' +
+  'For reference, here is the exact tone/length/style of SUBH\'s own existing fixed templates (never ' +
+  'copy their wording verbatim for an unrelated topic - these are only examples of the VOICE to match): ' +
+  '"Ami SUBH, Subhodeep-er HR Assistant. Ami apnar bishoy-ta note kore nilam. Apnake ei instruction-ta ' +
+  'ke diyechhen, tar naam-ta bolle ami confirm kore nite parbo." (Banglish) / "Hello, I\'m SUBH, ' +
+  'Subhodeep\'s HR Assistant. Thank you for sharing your job application with us. I have received your ' +
+  'application and appreciate your interest in joining our organisation." (English) - short, warm, ' +
+  'plain sentences, never a list, never jargon.';
 async function generateConversationReply(text, history, firstName, topicLabel, needsAnswer, classifiedLang) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error('whatsappAssistant.generateConversationReply called without ANTHROPIC_API_KEY set');
@@ -6646,6 +6697,13 @@ async function generateConversationReply(text, history, firstName, topicLabel, n
     const retried = stripForbiddenGreeting(await callClaudeChat(apiKey, DRAFT_MODEL, retryMessages));
     content = (retried && !FORBIDDEN_ROBOTIC_RE.test(retried)) ? retried
       : (NATURAL_CLARIFY_FALLBACK[lang] || NATURAL_CLARIFY_FALLBACK.english)(topicLabel);
+  }
+  // Task 5 - final generic safety-net check, after every targeted
+  // retry/fallback above has already had its chance to clean the reply
+  // up. See validateModelReply's own comment for what this does and
+  // doesn't catch.
+  if (content && !validateModelReply(content, lang)) {
+    content = MODEL_REPLY_SAFE_FALLBACK[lang] || MODEL_REPLY_SAFE_FALLBACK.english;
   }
   return content || null;
 }
@@ -7560,6 +7618,24 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
     return { case: 'holding', replyText, summaryForOwner: text.slice(0, 160) };
   }
   const topicLabel = classification.topicLabel || 'their question';
+  // Task 5 - growing templates: a matching SAVED template always wins
+  // over a free-form model-written reply, checked here (the one place
+  // every 1:1 message that reached this far - no fixed built-in
+  // template/flow/data-request matched it - falls through to either a
+  // short acknowledgement or the general drafter below). Skipped
+  // entirely (no API call) when the owner has no enabled custom
+  // templates at all - zero cost/behaviour change for everyone until
+  // this feature is actually used.
+  if (!isGroup && phone) {
+    const savedTemplates = await listReplyTemplates().catch(() => []);
+    if (savedTemplates.some((t) => t.enabled !== false)) {
+      const matched = await matchReplyTemplate(text, savedTemplates);
+      if (matched) {
+        await incrementReplyTemplateUsage(matched.id).catch(() => {});
+        return { case: 'custom_template', replyText: matched.replyText, summaryForOwner: 'Custom template: ' + matched.topic, lang: classification.language };
+      }
+    }
+  }
   // greeting/thanks/document_sent are acknowledgement-only intents - a
   // real human reply always goes out (never silence, see
   // CONTEXT_REPLY_SYSTEM_PROMPT), but these never escalate to the owner
@@ -8751,9 +8827,167 @@ async function pollOnce() {
   return results;
 }
 
+// ======================================================================
+// Task 5 (2026-10-27) - growing templates. A matching template ALWAYS
+// wins over a model-written reply (see the ordering rule added to
+// CLAUDE.md); these custom ones are checked in decideAutoReplyCore right
+// before the free-form drafter, exactly like a built-in fixed template -
+// the owner can turn any recurring model-written reply into a permanent
+// one via "Save as template" in the WhatsApp section, without touching
+// code. Same Redis get/set/SET-of-ids pattern as every other store in
+// this file (job-template-sent tracker, pending approvals, ...).
+// ======================================================================
+const REPLY_TEMPLATE_PREFIX = 'subh-reply-template:';
+const REPLY_TEMPLATE_IDS_KEY = 'subh-reply-template-ids';
+function newReplyTemplateId() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+async function saveReplyTemplate(data) {
+  const redis = getClient();
+  if (!redis) return null;
+  const id = data.id || newReplyTemplateId();
+  const record = {
+    id,
+    topic: data.topic,
+    whenToUse: data.whenToUse,
+    replyText: data.replyText,
+    enabled: data.enabled !== false,
+    usageCount: data.usageCount || 0,
+    createdAt: data.createdAt || Date.now(),
+    updatedAt: Date.now()
+  };
+  try {
+    await redis.set(REPLY_TEMPLATE_PREFIX + id, JSON.stringify(record));
+    await redis.sadd(REPLY_TEMPLATE_IDS_KEY, id);
+  } catch (err) { return null; }
+  return record;
+}
+async function getReplyTemplate(id) {
+  const redis = getClient();
+  if (!redis) return null;
+  try {
+    const raw = await redis.get(REPLY_TEMPLATE_PREFIX + id);
+    return raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : null;
+  } catch (err) { return null; }
+}
+async function listReplyTemplates() {
+  const redis = getClient();
+  if (!redis) return [];
+  try {
+    const ids = await redis.smembers(REPLY_TEMPLATE_IDS_KEY);
+    if (!ids || !ids.length) return [];
+    const records = await Promise.all(ids.map((id) => getReplyTemplate(id)));
+    return records.filter(Boolean).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  } catch (err) { return []; }
+}
+async function deleteReplyTemplate(id) {
+  const redis = getClient();
+  if (!redis) return false;
+  try {
+    await redis.del(REPLY_TEMPLATE_PREFIX + id);
+    await redis.srem(REPLY_TEMPLATE_IDS_KEY, id);
+  } catch (err) { return false; }
+  return true;
+}
+async function setReplyTemplateEnabled(id, enabled) {
+  const existing = await getReplyTemplate(id);
+  if (!existing) return null;
+  return saveReplyTemplate(Object.assign({}, existing, { enabled: Boolean(enabled) }));
+}
+async function incrementReplyTemplateUsage(id) {
+  const existing = await getReplyTemplate(id);
+  if (!existing) return null;
+  return saveReplyTemplate(Object.assign({}, existing, { usageCount: (existing.usageCount || 0) + 1 }));
+}
+// AI UNDERSTANDS, CODE SPEAKS - a dedicated tool for "does this message's
+// MEANING match any of the owner's saved custom templates' own 'when to
+// use' description", never a keyword/substring match (the owner's own
+// description is written in plain language, meant to be matched by
+// intent). Fails CLOSED (matchedId: null) on any API error - never
+// guesses a match, which would risk sending the wrong fixed reply to an
+// unrelated message.
+function matchReplyTemplateTool() {
+  return {
+    type: 'function',
+    function: {
+      name: 'match_reply_template',
+      description: 'The owner has saved these fixed-reply templates for recurring WhatsApp topics, each with its own "when to use" description (given in the system prompt, by id). Decide whether the sender\'s message genuinely matches the MEANING of any one of them - never a loose or partial match. If more than one could plausibly apply, pick the single best one; if you are not confident any of them truly fits, return null.',
+      parameters: {
+        type: 'object',
+        properties: {
+          matchedId: { type: ['string', 'null'], description: 'The id of the one matching template, or null if none confidently matches.' }
+        },
+        required: ['matchedId']
+      }
+    }
+  };
+}
+async function matchReplyTemplate(text, templates) {
+  const enabled = (templates || []).filter((t) => t.enabled !== false);
+  if (!enabled.length) return null;
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey || !DRAFT_MODEL) return null;
+  const toolDef = matchReplyTemplateTool().function;
+  const listBlock = enabled.map((t) => t.id + ': topic "' + t.topic + '" - use when: ' + t.whenToUse).join('\n');
+  const systemPrompt = 'Saved reply templates:\n' + listBlock;
+  const input = await callClaudeForcedTool(apiKey, DRAFT_MODEL, [{ role: 'system', content: systemPrompt }, { role: 'user', content: text }], toolDef.name, toolDef).catch(() => null);
+  if (!input || !input.matchedId) return null;
+  return enabled.find((t) => t.id === input.matchedId) || null;
+}
+// Task 5 - final generic safety-net validation for ANY model-written
+// reply (generateConversationReply's own targeted checks - promise-
+// phrase/robotic-phrase/script-leak, each with their own tailored
+// fallback - already run first; this is the catch-all for anything else:
+// a reply that's too long for a WhatsApp message, a sensitive field
+// leaking into conversational text, or the reply landing in a
+// different language than the sender's own). Deliberately conservative -
+// only fails closed on a clear structural signal, never a stylistic
+// guess, so a real, good reply is never second-guessed into the fallback.
+const MODEL_REPLY_SAFE_FALLBACK = {
+  banglish: 'Ami apnar bishoy-ta note kore nilam ar Subhodeep-ke janiye dicchi.',
+  hinglish: 'Maine aapki baat note kar li hai aur Subhodeep ko bata raha hoon.',
+  english: "I've noted this and I'm letting Subhodeep know."
+};
+function validateModelReply(replyText, lang) {
+  const t = String(replyText || '').trim();
+  if (!t) return false;
+  // Length - a real person's WhatsApp message, never an essay (spec:
+  // "1-3 short sentences" is already prompted for; this is the hard
+  // structural ceiling behind it).
+  if (t.length > 480) return false;
+  // Sensitive fields/identifiers never belong in a free-form
+  // conversational reply - same patterns already trusted elsewhere in
+  // this file for the INCOMING side, applied here to the OUTGOING text.
+  if (HARD_BLOCKED_PERSON_FIELD_RE.test(t)) return false;
+  if (/\b\d{4}\s?\d{4}\s?\d{4}\b/.test(t)) return false; // Aadhaar-shaped
+  if (/\b[A-Z]{5}\d{4}[A-Z]\b/.test(t)) return false; // PAN-shaped
+  // Language match - a confidently-detected wrong language is a strong
+  // structural signal (an occasional borrowed English word in a
+  // Banglish/Hinglish reply is normal and never flagged; detectLang only
+  // calls a message "english" when it finds no Banglish/Hinglish signal
+  // words at all, so this only catches a reply that drifted into a
+  // different language entirely).
+  if (lang !== 'english' && detectLang(t) === 'english' && NATIVE_SCRIPT_RE.test(t) === false && t.split(/\s+/).length >= 6) {
+    // A short reply with no language-specific words at all is ambiguous
+    // either way (e.g. "Ok, noted.") - only a LONGER all-English reply
+    // in a non-English conversation is treated as a genuine mismatch.
+    return false;
+  }
+  return true;
+}
+
 module.exports = {
   isAvailable,
   pollOnce,
+  saveReplyTemplate,
+  getReplyTemplate,
+  listReplyTemplates,
+  deleteReplyTemplate,
+  setReplyTemplateEnabled,
+  incrementReplyTemplateUsage,
+  matchReplyTemplate,
+  validateModelReply,
+  MODEL_REPLY_SAFE_FALLBACK,
   sendOrReportAutoReply,
   randomDelayMs,
   BURST_QUIET_MS,
@@ -8857,6 +9091,7 @@ module.exports = {
   listSystemNotices,
   dismissSystemNotices,
   listActionableWhatsappItems,
+  listActionNeededItems,
   listRecentWhatsappConversations,
   getWhatsappVisibilitySnapshot,
   dismissWhatsappItem,

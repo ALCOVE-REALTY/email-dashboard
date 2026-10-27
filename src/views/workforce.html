@@ -183,6 +183,15 @@
           <div class="wf-comms-section-head">
             <span>Important WhatsApp</span>
             <span style="display:flex;align-items:center;gap:4px">
+              <button type="button" class="wf-open-flows-btn" id="hrActionNeededBtn" aria-label="Action needed" title="Action needed">
+                <span class="wf-open-flows-btn-circle">
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M22 12h-6l-2 3h-4l-2-3H2"/>
+                    <path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>
+                  </svg>
+                </span>
+                <span class="wf-open-flows-badge wi-count-badge danger" id="hrActionNeededBadge" hidden></span>
+              </button>
               <button type="button" class="wf-open-flows-btn" id="hrOpenFlowsBtn" aria-label="Open flows">
                 <span class="wf-open-flows-btn-circle">
                   <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -193,6 +202,16 @@
                   </svg>
                 </span>
                 <span class="wf-open-flows-badge wi-count-badge danger" id="hrOpenFlowsBadge" hidden></span>
+              </button>
+              <button type="button" class="wf-open-flows-btn" id="hrTemplatesBtn" aria-label="Templates" title="Templates">
+                <span class="wf-open-flows-btn-circle">
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                    <path d="M14 2v6h6"/>
+                    <line x1="9" y1="13" x2="15" y2="13"/>
+                    <line x1="9" y1="17" x2="15" y2="17"/>
+                  </svg>
+                </span>
               </button>
               <span class="wf-comms-viewall" id="hrCommsWaViewAll">View All ›</span>
             </span>
@@ -215,6 +234,58 @@
            clear stuck/test ones himself instead of them sitting invisible. -->
       <div class="wf-comms-page" id="hrOpenFlowsPage" hidden>
         <div class="wf-rem-list" id="hrOpenFlowsList"></div>
+      </div>
+
+      <!-- Task 6 - "Action needed" unified inbox: one card per pending
+           item from every sender (data/contact approvals, pending drafts,
+           open follow-ups, received documents, unclear manager replies),
+           oldest first. Each card is built from the exact same
+           buildConvoActions a conversation's own action cards use (see
+           hrAssistant.js), so acting here and acting in chat are the same
+           action on the same underlying item. -->
+      <div class="wf-comms-page" id="hrActionNeededPage" hidden>
+        <div class="wf-action-needed-chips" id="hrActionNeededChips">
+          <button type="button" class="wf-action-needed-chip on" data-filter="all">All <span data-count>0</span></button>
+          <button type="button" class="wf-action-needed-chip" data-filter="data_requests">Data requests <span data-count>0</span></button>
+          <button type="button" class="wf-action-needed-chip" data-filter="confirmations">Confirmations <span data-count>0</span></button>
+          <button type="button" class="wf-action-needed-chip" data-filter="automations">Automations <span data-count>0</span></button>
+          <button type="button" class="wf-action-needed-chip" data-filter="others">Others <span data-count>0</span></button>
+        </div>
+        <div class="wf-rem-list" id="hrActionNeededList"></div>
+      </div>
+
+      <!-- Task 5 - growing templates: saved topic/whenToUse/replyText rows,
+           each with usage count, an On/Off switch, Edit (opens the same
+           sheet as Save-as-template) and Delete (confirm first). Built-in
+           flow templates are never listed here - only ones the owner saved
+           from a model-written reply. -->
+      <div class="wf-comms-page" id="hrTemplatesPage" hidden>
+        <div class="wf-rem-list" id="hrTemplatesList"></div>
+      </div>
+
+      <!-- Save/Edit template sheet - same bottom-sheet pattern as the
+           Reminders Add/Edit sheet. Opened either from "Save as template"
+           on a model-written reply bubble (topic/whenToUse blank,
+           replyText pre-filled with that message) or from Edit on the
+           Templates list (all three fields pre-filled). -->
+      <div class="wf-ai-sheet-backdrop" id="hrTemplateSheetBackdrop" hidden></div>
+      <div class="wf-rem-sheet" id="hrTemplateSheet" hidden role="dialog" aria-label="Save as template">
+        <div class="wf-ai-sheet-handle"></div>
+        <div class="wf-ai-sheet-head">
+          <button type="button" class="wf-ai-sheet-close" id="hrTemplateSheetCloseBtn" aria-label="Close">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+          <span class="wf-ai-sheet-title" id="hrTemplateSheetTitle">Save as template</span>
+        </div>
+        <div class="wf-rem-sheet-body">
+          <label class="wf-rem-field"><span>Topic name</span><input type="text" id="hrTemplateTopic" placeholder="e.g. Asking about PF withdrawal" maxlength="80" /></label>
+          <label class="wf-rem-field"><span>When to use</span><textarea id="hrTemplateWhenToUse" rows="2" placeholder="Describe, in plain language, what kind of message this should match"></textarea></label>
+          <label class="wf-rem-field"><span>Reply text</span><textarea id="hrTemplateReplyText" rows="4"></textarea></label>
+        </div>
+        <div class="wf-rem-sheet-foot">
+          <button type="button" class="wf-ai-action-btn outline" id="hrTemplateSheetCancelBtn">Cancel</button>
+          <button type="button" class="wf-ai-action-btn download" id="hrTemplateSheetSaveBtn"><span>Save</span></button>
+        </div>
       </div>
 
       <!-- One WhatsApp conversation - thread (src/aiAssistant's own
