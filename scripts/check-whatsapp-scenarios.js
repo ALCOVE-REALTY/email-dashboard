@@ -603,6 +603,81 @@ scenario('Language stickiness (reverse): a short reply (a bare name) inside an e
   }
 });
 
+// --- Task 1 (2026-10-27): job applications and vacancy enquiries always get fixed templates ---
+scenario('Task 1, LIVE BUG: the exact failing live application (naming a position, experience, a cut-off email - none of the old fixed keywords) gets the fixed job-application template, never a free-form reply', async () => {
+  const phone = '910000001401';
+  await whatsappAssistant.clearJobTemplateSentToday(phone).catch(() => {});
+  try {
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenApp1', firstName: 'ScenApp1', text: 'Good morning Sir, I am applying for the Site Supervisor position at your company. I have 6 years of experience in residential construction sites. My email is john.doe@gmail', isGroup: false, history: [] });
+    if (d.case !== 'job_application_received' || d.replyText !== whatsappAssistant.JOB_APPLICATION_RECEIVED_REPLY.english) {
+      return { pass: false, detail: 'expected the fixed job-application template, got case=' + d.case + ' text=' + d.replyText };
+    }
+    const d2 = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenApp1', firstName: 'ScenApp1', text: 'I have shared my CV, please check', isGroup: false, history: [] });
+    if (d2.replyText !== null) return { pass: false, detail: 'expected the second same-day message to be suppressed (template already sent today), got: ' + d2.replyText };
+    return { pass: true, detail: 'both live messages correctly handled' };
+  } finally {
+    await whatsappAssistant.clearJobTemplateSentToday(phone).catch(() => {});
+  }
+});
+scenario('Task 1: a vacancy enquiry only ("Is there any vacancy for an accountant?") gets the enquiry template naming the position, never the application template', async () => {
+  const phone = '910000001402';
+  await whatsappAssistant.clearJobTemplateSentToday(phone).catch(() => {});
+  try {
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenEnq1', firstName: 'ScenEnq1', text: 'Is there any vacancy for an accountant?', isGroup: false, history: [] });
+    if (d.case !== 'vacancy_enquiry') return { pass: false, detail: 'expected case=vacancy_enquiry, got: ' + d.case + ' text=' + d.replyText };
+    if (!/accountant/i.test(d.replyText)) return { pass: false, detail: 'expected the position named in the reply, got: ' + d.replyText };
+    if (!d.replyText.startsWith("Hello, I'm SUBH")) return { pass: false, detail: 'expected the fixed enquiry template opening, got: ' + d.replyText };
+    return { pass: true, detail: 'enquiry correctly answered with the fixed template' };
+  } finally {
+    await whatsappAssistant.clearJobTemplateSentToday(phone).catch(() => {});
+  }
+});
+scenario('Task 1 (Banglish): "Alcove-e Site Supervisor post-e kono opening ache?" gets the Banglish enquiry template, never English, never the application template', async () => {
+  const phone = '910000001403';
+  await whatsappAssistant.clearJobTemplateSentToday(phone).catch(() => {});
+  try {
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenEnqBn', firstName: 'ScenEnqBn', text: 'Alcove-e Site Supervisor post-e kono opening ache?', isGroup: false, history: [] });
+    if (d.case !== 'vacancy_enquiry') return { pass: false, detail: 'expected case=vacancy_enquiry, got: ' + d.case + ' text=' + d.replyText };
+    if (!d.replyText.startsWith('Hello, ami SUBH')) return { pass: false, detail: 'expected the Banglish enquiry template, got: ' + d.replyText };
+    if (!/Site Supervisor/.test(d.replyText)) return { pass: false, detail: 'expected "Site Supervisor" named in the reply, got: ' + d.replyText };
+    return { pass: true, detail: 'Banglish enquiry correctly answered' };
+  } finally {
+    await whatsappAssistant.clearJobTemplateSentToday(phone).catch(() => {});
+  }
+});
+scenario('Task 1: an enquiry followed by a CV the same day - the enquiry gets its own template, then the CV STILL gets the application template once (tracked independently, never suppressed)', async () => {
+  const phone = '910000001404';
+  await whatsappAssistant.clearJobTemplateSentToday(phone).catch(() => {});
+  try {
+    const d1 = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenBoth', firstName: 'ScenBoth', text: 'Is there any vacancy for an accountant?', isGroup: false, history: [] });
+    if (d1.case !== 'vacancy_enquiry') return { pass: false, detail: 'expected the first message to get the enquiry template, got case=' + d1.case };
+    const d2 = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenBoth', firstName: 'ScenBoth', text: 'I am applying for the accountant role, I have attached my resume, 3 years experience', isGroup: false, history: [] });
+    if (d2.case !== 'job_application_received' || d2.replyText !== whatsappAssistant.JOB_APPLICATION_RECEIVED_REPLY.english) {
+      return { pass: false, detail: 'expected the application template after the enquiry (never suppressed), got case=' + d2.case + ' text=' + d2.replyText };
+    }
+    return { pass: true, detail: 'enquiry then application both correctly answered' };
+  } finally {
+    await whatsappAssistant.clearJobTemplateSentToday(phone).catch(() => {});
+  }
+});
+scenario('Task 1: a CV-only PDF with no caption/text and no open document request defaults to a job application and gets the fixed template', async () => {
+  const phone = '910000001405';
+  await whatsappAssistant.clearJobTemplateSentToday(phone).catch(() => {});
+  try {
+    const beforeIds = new Set((await whatsappAssistant.listPendingAutoSends()).map((e) => e.id));
+    await whatsappAssistant.handleIncomingMedia(phone, 'ScenPdf', { type: 'document', content: {} });
+    const after = await whatsappAssistant.listPendingAutoSends();
+    const scheduled = after.find((e) => !beforeIds.has(e.id) && e.chatId === phone);
+    // mediaFallbackLang defaults to banglish with no caption/history.
+    if (!scheduled || scheduled.case !== 'job_application_received' || scheduled.replyText !== whatsappAssistant.JOB_APPLICATION_RECEIVED_REPLY.banglish) {
+      return { pass: false, detail: 'expected a scheduled job_application_received send, got: ' + JSON.stringify(scheduled) };
+    }
+    return { pass: true, detail: 'bare PDF correctly defaulted to a job application' };
+  } finally {
+    await whatsappAssistant.clearJobTemplateSentToday(phone).catch(() => {});
+  }
+});
+
 // Task 4 (2026-10-27) - approximate Claude Sonnet per-token pricing
 // (USD), used only to turn the tracked token counts into a rough cost
 // estimate for the report below - update here if pricing changes, this

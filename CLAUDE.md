@@ -129,3 +129,15 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
   name. Fixed 2026-10-26 by strengthening the main classifier's `wantsData` field
   to judge a self-contained question on its own, never as a continuation of an
   unrelated old exchange just because a similar name/topic appeared in history.
+- Task 1 (2026-10-27): job applications and vacancy enquiries ALWAYS get fixed
+  templates, never a free-form model-written reply. The exact failing live
+  application ("I am applying for the Site Supervisor position...") and a
+  same-day follow-up ("I have shared my CV...") both get the single
+  JOB_APPLICATION_RECEIVED_REPLY template, the second suppressed as a
+  once-per-day repeat. A vacancy enquiry alone ("Is there any vacancy for an
+  accountant?"), in English and Banglish, gets VACANCY_ENQUIRY_REPLY naming the
+  position, never the application template. An enquiry followed by a CV the
+  same day still gets the application template once (application/enquiry are
+  tracked independently per day). A CV-only PDF with no caption/text and no
+  open document request defaults to a job application via
+  handleIncomingMedia's own send path.

@@ -57,6 +57,7 @@ function fireAndForgetPresence(phone, state) {
 }
 const redisHealth = require('../redisHealth');
 const employeeService = require('../employeeService');
+const cvUploadService = require('../cvUploadService');
 const workforceAnalytics = require('../workforceAnalytics');
 const tools = require('./tools');
 const memoryService = require('./memoryService');
@@ -6186,6 +6187,9 @@ function classifyTool() {
           topicLabel: { type: 'string', description: 'A short (2-5 word) human-readable description of what they are asking/talking about, in English, for an HR manager to read, e.g. "confirmation letter", "October salary", "attendance calculation". Resolve this from the conversation history when the current message alone is a context-dependent follow-up ("Tau kobe pabo?" after discussing a letter -> "confirmation letter", not "general conversation"). Use "general conversation" only when there genuinely is no identifiable subject at all.' },
           replyNeeded: { type: 'boolean', description: 'true for almost every message a real human sent to HR - questions, requests, complaints, follow-ups, informing messages, greetings ("kemon acho", "good morning", a festival wish), thanks/acknowledgements ("ok", "thanks"). false ONLY when this message is clearly NOT a human addressing HR: an OTP/verification code, a bank/payment/delivery/courier/system notification, a marketing/promotional message, spam, a message from another business\'s own automated bot, or a WhatsApp system message. When genuinely unsure, default to true - never silently ignore a real person.' },
           automaticReason: { type: 'string', description: 'Required only when replyNeeded is false - a short (2-6 word) reason, e.g. "bank OTP message", "delivery notification", "marketing message". Omit when replyNeeded is true.' },
+          isJobApplication: { type: 'boolean', description: 'true when the sender is applying for a job/vacancy at this company, or is submitting/mentioning their own CV/resume as a candidate for employment - in ANY phrasing or language, never a fixed keyword list (e.g. "I am applying for the Site Supervisor position, I have 5 years of experience, my email is...", a message naming a role + experience + contact details with no explicit "CV" word at all, a bare follow-up like "I have shared my CV"/"I have sent my application", or an attached CV/resume file with little or no caption text). Judge by MEANING (a candidate representing themselves for a role), never by requiring an exact phrase - the live bug this fixes is a real application that used none of the old fixed keywords. NEVER true for a vacancy enquiry (see isVacancyEnquiry) - submitting/mentioning a CV or application is this field; merely asking whether a role exists is not.' },
+          isVacancyEnquiry: { type: 'boolean', description: 'true ONLY when the sender is asking WHETHER there is an opening/vacancy/requirement for a role - they are NOT submitting an application or CV. E.g. "Is there any vacancy for an accountant?", "Alcove-e Site Supervisor post-e kono opening ache?". Mutually exclusive with isJobApplication - if they are also applying/sharing a CV in the same message, use isJobApplication instead, never both.' },
+          vacancyEnquiryPosition: { type: 'string', description: 'Required only when isVacancyEnquiry is true AND a specific position/role was actually named - the position name as a short noun phrase, in English (e.g. "accountant", "Site Supervisor"). Omit entirely if they asked about openings in general without naming one.' },
           isHrNotification: { type: 'boolean', description: 'true ONLY when intent is "informing" AND the subject is specifically: their own leave, late coming, early leaving, a half-day, attendance, an off-day-in-lieu/comp-off, a duty/schedule change, work from home (WFH, any spelling/phrasing - "ghar/bari theke kaj", "remote kaj", "ghar se kaam", etc.), a salary/bank account change, or any other work-location update - information meant for HR to note and possibly confirm with someone else, not a general FYI/thanks/wish. false otherwise, including for every other kind of "informing" message (e.g. sharing news, a document_sent message).' },
           hrNotificationSummary: { type: 'string', description: 'Required when isHrNotification is true - a short, accurate, neutral summary in ENGLISH of exactly what they informed, e.g. "told to do duty today instead of his scheduled off, was asked to take a different day off in lieu" or "worked from home today with manager\'s approval". For the HR note and the owner\'s own notifications only (English, like every other owner-facing label) - never sent to the sender or a third party as-is. State only what the sender actually said, nothing invented, including whatever date(s) they gave (today/yesterday/a specific date or range).' },
           hrNotificationActionKind: { type: 'string', enum: ['instruction', 'approval', 'sudden', 'neutral'], description: 'Judge this from what actually happened, never from the TOPIC and never from a fixed keyword list - WFH/leave/half-day/late-coming can be EITHER "instruction" or "approval" depending on who initiated it, exactly like a duty change can. "instruction" - a manager/supervisor TOLD or ASKED the sender to do something, in ANY words that mean telling/asking, regardless of topic (duty on an off day, a duty/shift/site change, overtime, travel, OR a manager telling the sender to work from home / take a day off / come in late - e.g. "Tanmoy Sir bolechhen ajke bari theke kaj korte" IS "instruction", not "approval", even though the topic is work-from-home, because the sender is reporting being TOLD to do it, not asking for it). "approval" - the sender ASKED and was ALLOWED/GRANTED something (work from home, leave, a half-day, late coming, early leaving, a comp-off/off-day-in-lieu taken) - this is the sender\'s OWN initiative, confirmed/allowed by someone else, never something that person told them to do. If a single message has both an instruction AND a related off-day granted as part of it (e.g. "duty korte bolechhe, bodole onno din chhutti debe" - told to do duty, will get a day off in lieu), use "instruction" - the off day is part of what was instructed. "sudden" - a sudden/unplanned event they are simply informing HR about (sudden illness, an accident, "I can\'t come in today") - not a planned WFH/leave/half-day/late-coming with an instruction or approval behind it. Use "neutral" only if genuinely unclear whether it was an instruction or an approval (the initiator isn\'t stated and can\'t be inferred) - e.g. "Ami ajke chhutir din duty korchi" with no mention of who told or allowed it.' },
@@ -6225,7 +6229,7 @@ function formatHistoryBlock(history) {
 // silently drop a real human message; the worst case is a generic
 // holding reply going out when a sharper one would have been nicer, not
 // silence.
-const CLASSIFY_FALLBACK = { intent: 'other', language: 'english', topic: 'none', topicLabel: 'general conversation', replyNeeded: true, wantsData: false, isTimingQuestion: false, hrTopicArea: 'none', isHrNotification: false };
+const CLASSIFY_FALLBACK = { intent: 'other', language: 'english', topic: 'none', topicLabel: 'general conversation', replyNeeded: true, wantsData: false, isTimingQuestion: false, hrTopicArea: 'none', isHrNotification: false, isJobApplication: false, isVacancyEnquiry: false, vacancyEnquiryPosition: null };
 async function classifyOfficialMessage(text, history) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error('whatsappAssistant.classifyOfficialMessage called without ANTHROPIC_API_KEY set');
@@ -6945,9 +6949,8 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
   // replyNeeded:false guidance explicitly treats a templated-reading
   // message as a reason to not reply, which a genuine CV message often
   // reads exactly like.
-  if (!isGroup && looksLikeCvMessage(text)) {
-    const lang = detectLang(text);
-    return { case: 'cv_received', replyText: CV_RECEIVED_REPLY[lang] || CV_RECEIVED_REPLY.english, summaryForOwner: '[CV received] ' + text.slice(0, 160), lang };
+  if (!isGroup && phone && looksLikeCvMessage(text)) {
+    return handleJobApplicationDecision(phone, detectLang(text), text);
   }
   if (!isGroup && isIdentityQuestion(text)) {
     const lang = detectLang(text);
@@ -7248,6 +7251,20 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
     classification = Object.assign({}, classification, { language: resolveStickyLang(text, history, classification.language) });
   }
 
+  // Task 1 - checked BEFORE the automated/spam check below on purpose: a
+  // genuine job application often "reads like a template" to the general
+  // classifier, which would otherwise mark it replyNeeded:false and drop
+  // it silently. Catches whatever the early deterministic looksLikeCvMessage
+  // pre-check (above, before classification) missed - classification's own
+  // isJobApplication is judged by MEANING, never a fixed phrase, which is
+  // exactly the live bug this fixes.
+  if (!isGroup && phone && (classification.isJobApplication || looksLikeCvMessage(text))) {
+    return handleJobApplicationDecision(phone, classification.language, text);
+  }
+  if (!isGroup && phone && classification.isVacancyEnquiry) {
+    return handleVacancyEnquiryDecision(phone, classification.language, classification.vacancyEnquiryPosition || null);
+  }
+
   // Automated/non-human message (OTP, bank/delivery notification,
   // marketing, spam, another business's bot, WhatsApp system message) -
   // never replied to, never escalated - pollOnce logs this to the inbox
@@ -7427,7 +7444,11 @@ async function decideAutoReply(params) {
     // night" which goes at the very end instead of the start.
     let greetingPrefix = '';
     let greetingSuffix = '';
-    if (!params.isGroup && params.phone && !/^hello!/i.test(decision.replyText)) {
+    // Task 1's fixed templates (job application/vacancy enquiry) also
+    // open with their own self-contained "Hello, ..." (comma, not the
+    // existing GREETING_REPLY's "Hello!") - never stack a greeting echo
+    // onto those either.
+    if (!params.isGroup && params.phone && !/^hello[!,]/i.test(decision.replyText)) {
       const greeting = detectTimeGreeting(params.text);
       if (greeting) {
         const echoedToday = await getEchoedGreetingTypesToday(params.phone, new Date()).catch(() => []);
@@ -7501,23 +7522,129 @@ function buildIncomingText(msg) {
   return raw + '\n\n(Replying to: "' + quoted + '")';
 }
 
-// Live review item 1 - a CV/job-application message, structurally
-// recognized (never left to the general spam/automated classifier, which
-// explicitly lists templated-reading messages as a reason to mark
-// replyNeeded:false - a genuine CV message often reads exactly like a
-// template). Matched against EITHER a media caption or a follow-up text
-// message ("Good morning, Sir. I have shared my CV...") - the real live
-// case sent the PDF with no caption at all, then this text 14 minutes
-// later, so both call sites need the same check.
-const CV_KEYWORDS_RE = /\b(cv|resum[ae]|job\s*(application|opening|opportunit\w*)|vacanc(y|ies)|suitable\s*(position|job|vacanc\w*)|apply(ing)?\s*for\s*(a\s*|any\s*)?(job|position|post|vacanc\w*)|interested\s*in\s*(joining|working)|looking\s*for\s*(a\s*)?job)\b/i;
+// Task 1 (2026-10-27, per Subhodeep's explicit approval) - a CV/job-
+// application message, structurally recognized (never left to the
+// general spam/automated classifier, which explicitly lists templated-
+// reading messages as a reason to mark replyNeeded:false - a genuine CV
+// message often reads exactly like a template). This regex is now ONLY
+// the fast deterministic pre-check for the OBVIOUS, UNAMBIGUOUS
+// application signals (an actual CV/resume mention, or applying FOR a
+// role) - the live bug it could never catch ("I am applying for the
+// Site Supervisor position, I have 5 years of experience...", a real
+// position name sitting between "for" and "position") is instead caught
+// by classifyOfficialMessage's own isJobApplication field (judged by
+// MEANING, never a fixed phrase), checked right alongside this.
+// Deliberately does NOT match bare "vacancy"/"opening"/"opportunity"/
+// "suitable position" wording on its own (found while verifying this
+// task: "Is there any vacancy for an accountant?" - a pure enquiry,
+// never an application - matched the OLD version of this regex and was
+// wrongly routed here instead of to isVacancyEnquiry) - those are
+// classification's job (meaning-based, can tell an enquiry from an
+// application), never this fast-path's. Matched against EITHER a media
+// caption or a follow-up text message ("Good morning, Sir. I have
+// shared my CV...") - the real live case sent the PDF with no caption at
+// all, then this text 14 minutes later, so both call sites need the
+// same check.
+const CV_KEYWORDS_RE = /\b(cv|resum[ae]|my\s*(job\s*)?application|apply(ing)?\s*for\s*(a\s*|any\s*)?(job|position|post)|interested\s*in\s*(joining|working)|looking\s*for\s*(a\s*)?job)\b/i;
 function looksLikeCvMessage(text) {
   return CV_KEYWORDS_RE.test(String(text || ''));
 }
-const CV_RECEIVED_REPLY = {
-  banglish: 'Ami SUBH, Subhodeep-er HR Assistant. Apnar CV peyechi, dhonnobad. Apnar profile er suitable kono job opening thakle HR team apnar sathe jogajog korbe.',
-  hinglish: 'Main SUBH hoon, Subhodeep ka HR Assistant. Aapka CV mil gaya, dhanyavaad. Aapki profile ke liye koi suitable opening hogi to HR team aapse contact karegi.',
-  english: "I'm SUBH, Subhodeep's HR Assistant. I've received your CV, thank you. If a suitable opening comes up for your profile, the HR team will get in touch with you."
+// Task 1 - the SINGLE fixed template for every job application/CV/resume,
+// never a model-written reply (replaces the old CV_RECEIVED_REPLY, which
+// is now this). Exported as CV_RECEIVED_REPLY still, for every existing
+// caller/test that already refers to it by that name - same object, new
+// content.
+const JOB_APPLICATION_RECEIVED_REPLY = {
+  banglish: 'Hello, ami SUBH, Subhodeep-er HR Assistant.\n\nApnar job application amader sathe share korar jonno dhonnobad. Ami apnar application peyechi ebong amader organisation-e join korar jonno apnar interest-ke sraddha kori.\n\nApnar profile-er sathe match kora kono suitable opportunity thakle, HR team apnar sathe jogajog korbe.\n\nApnar interest ebong dhoirjer jonno dhonnobad.',
+  hinglish: 'Hello, main SUBH hoon, Subhodeep ka HR Assistant.\n\nHamare saath apni job application share karne ke liye dhanyavaad. Maine aapki application prapt kar li hai aur hamare organisation mein shamil hone ki aapki interest ki sarahana karta hoon.\n\nAgar aapki profile se match karne wala koi suitable opportunity aata hai, to HR team aapse sampark karegi.\n\nAapki interest aur dhairya ke liye dhanyavaad.',
+  english: "Hello, I'm SUBH, Subhodeep's HR Assistant.\n\nThank you for sharing your job application with us. I have received your application and appreciate your interest in joining our organisation.\n\nIf a suitable opportunity arises that matches your profile, the HR team will get in touch with you.\n\nThank you for your interest and patience."
 };
+const CV_RECEIVED_REPLY = JOB_APPLICATION_RECEIVED_REPLY;
+// Task 1 - the fixed template for a vacancy enquiry (asking WHETHER a
+// role exists, never submitting a CV/application - see isVacancyEnquiry).
+// Never mentions salary or a timeline, never says whether an opening
+// does or doesn't exist (SUBH has no data on that). `position` is the
+// exact noun phrase classification extracted, or null/empty for a
+// general "any openings?" enquiry.
+const VACANCY_ENQUIRY_REPLY = {
+  banglish: (position) => 'Hello, ami SUBH, Subhodeep-er HR Assistant.\n\nAlcove Realty-r proti apnar interest-er jonno dhonnobad. Ami ' +
+    (position ? position + ' position-er opening niye apnar enquiry' : 'current openings niye apnar enquiry') +
+    ' note kore niyechi ebong HR team-ke janiye diyechi.\n\nApnar profile-er sathe match kora kono suitable opportunity thakle, HR team apnar sathe jogajog korbe.\n\nApnar interest-er jonno dhonnobad.',
+  hinglish: (position) => 'Hello, main SUBH hoon, Subhodeep ka HR Assistant.\n\nAlcove Realty mein aapki interest ke liye dhanyavaad. Maine ' +
+    (position ? position + ' position ke liye openings' : 'current openings') +
+    ' ke baare mein aapki enquiry note kar li hai aur HR team ko bata diya hai.\n\nAgar aapki profile se match karne wala koi suitable opportunity aata hai, to HR team aapse sampark karegi.\n\nAapki interest ke liye dhanyavaad.',
+  english: (position) => "Hello, I'm SUBH, Subhodeep's HR Assistant.\n\nThank you for your interest in Alcove Realty. I have noted your enquiry about " +
+    (position ? 'openings for the ' + position + ' position' : 'current openings') +
+    " and shared it with the HR team.\n\nIf a suitable opportunity arises that matches your profile, the HR team will get in touch with you.\n\nThank you for your interest."
+};
+// Task 1, condition 4 ("ONCE PER DAY") - each template (application/
+// enquiry) is sent at most once per person per IST calendar day; further
+// messages that would match the SAME template that day get no reply
+// (just logged for the owner as more info on the same item) - except an
+// enquiry followed by an application, which still gets its own
+// application template, since the two types are tracked independently
+// (see getJobTemplatesSentToday's own callers). Same pattern/TTL as
+// getEchoedGreetingTypesToday above.
+const JOB_TEMPLATE_SENT_PREFIX = 'wa-job-template-sent:';
+async function getJobTemplatesSentToday(phone, now) {
+  const redis = getClient();
+  if (!redis) return [];
+  try {
+    const raw = await redis.get(JOB_TEMPLATE_SENT_PREFIX + phone + ':' + istDayKeyOf(now));
+    const parsed = raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (err) { return []; }
+}
+async function markJobTemplateSentToday(phone, type, now) {
+  const redis = getClient();
+  if (!redis) return;
+  try {
+    const existing = await getJobTemplatesSentToday(phone, now);
+    if (existing.includes(type)) return;
+    const key = JOB_TEMPLATE_SENT_PREFIX + phone + ':' + istDayKeyOf(now);
+    await redis.set(key, JSON.stringify(existing.concat([type])), { ex: secondsUntilEndOfIstDay(now) });
+  } catch (err) { /* best effort */ }
+}
+// Test-hygiene only (same role as clearGreetingEchoToday etc.) - lets the
+// regression suite reset a test phone's job-template state so a rerun on
+// the SAME real IST day stays deterministic.
+async function clearJobTemplateSentToday(phone, now) {
+  const redis = getClient();
+  if (!redis) return;
+  try { await redis.del(JOB_TEMPLATE_SENT_PREFIX + phone + ':' + istDayKeyOf(now || new Date())); } catch (err) { /* best effort */ }
+}
+// Task 1 - the ONE place that decides whether a job-application-shaped
+// message gets the fixed template or is silently folded into today's
+// already-sent one (condition 3: never asks for anything else, never
+// promises a review, never comments on their details - this function and
+// its template are the ONLY reply this kind of message ever gets).
+async function handleJobApplicationDecision(phone, lang, text) {
+  const now = new Date();
+  const sentToday = await getJobTemplatesSentToday(phone, now);
+  if (sentToday.includes('application')) {
+    await postOwnerNotification('📎 Further message from this applicant (job application already acknowledged today): "' + String(text || '').slice(0, 200) + '"').catch(() => {});
+    return { case: 'acknowledged', replyText: null, summaryForOwner: null };
+  }
+  await markJobTemplateSentToday(phone, 'application', now);
+  const replyText = JOB_APPLICATION_RECEIVED_REPLY[lang] || JOB_APPLICATION_RECEIVED_REPLY.english;
+  return { case: 'job_application_received', replyText, summaryForOwner: 'Job application received' + (text ? ' - ' + String(text).slice(0, 160) : ''), lang };
+}
+// Task 1 - same shape as handleJobApplicationDecision, for a vacancy
+// enquiry (asking WHETHER a role exists, never submitting a CV). Tracked
+// independently of 'application' in the same per-day set, so an enquiry
+// today followed by an application today still gets the application
+// template once (condition 4's own explicit example).
+async function handleVacancyEnquiryDecision(phone, lang, position) {
+  const now = new Date();
+  const sentToday = await getJobTemplatesSentToday(phone, now);
+  if (sentToday.includes('enquiry')) {
+    await postOwnerNotification('📎 Further message from this enquirer (vacancy enquiry already acknowledged today' + (position ? ', ' + position : '') + ').').catch(() => {});
+    return { case: 'acknowledged', replyText: null, summaryForOwner: null };
+  }
+  await markJobTemplateSentToday(phone, 'enquiry', now);
+  const fn = VACANCY_ENQUIRY_REPLY[lang] || VACANCY_ENQUIRY_REPLY.english;
+  return { case: 'vacancy_enquiry', replyText: fn(position), summaryForOwner: 'Vacancy enquiry' + (position ? ' — ' + position : ''), lang };
+}
 // Live review item 1 - a file/image/voice message with no open document
 // request and no CV signal still gets a short human acknowledgement,
 // never silence (found live: a bare PDF with no caption got nothing at
@@ -7534,21 +7661,49 @@ async function mediaFallbackLang(contactId, caption) {
   const lastIncoming = (history || []).filter((h) => h.direction === 'in' && h.text).slice(-1)[0];
   return lastIncoming ? detectLang(lastIncoming.text) : 'banglish';
 }
+// Task 1 - uploads the actual file to Drive via the already-working
+// cvUploadService (admin's own OAuth identity, same as Gmail - the
+// service account has zero Drive storage quota and can never own a
+// fresh upload, see that file's own comment) whenever a download link is
+// available, regardless of whether today's application template was
+// already sent (the FILE is still worth saving even on a second CV from
+// the same person the same day - only the REPLY is once-per-day).
+async function handleJobApplicationMediaDecision(contactId, name, lang, caption, msg) {
+  const mediaUrl = extractMediaUrl(msg);
+  let driveNote = ' - could not save a copy (the gateway has not given SUBH a download link for this message), so the CV itself is only visible in the WhatsApp chat, not saved anywhere.';
+  if (mediaUrl) {
+    try {
+      const resp = await fetch(mediaUrl);
+      if (!resp.ok) throw new Error('download failed: ' + resp.status);
+      const buffer = Buffer.from(await resp.arrayBuffer());
+      const mimeType = resp.headers.get('content-type') || (msg.type === 'document' ? 'application/pdf' : 'image/jpeg');
+      const ext = mimeType.includes('pdf') ? 'pdf' : (mimeType.includes('png') ? 'png' : 'jpg');
+      const filename = String(name || 'Applicant').replace(/[^\w.-]+/g, '_') + '_CV_' + Date.now() + '.' + ext;
+      const uploaded = await cvUploadService.uploadCv({ buffer, filename, mimeType });
+      driveNote = ' - saved to Drive: ' + uploaded.link;
+    } catch (err) {
+      driveNote = ' - could not save a copy to Drive (' + err.message + ').';
+    }
+  }
+  const now = new Date();
+  const sentToday = await getJobTemplatesSentToday(contactId, now);
+  if (sentToday.includes('application')) {
+    await postOwnerNotification('📎 Further CV/file from this applicant (job application already acknowledged today)' + driveNote).catch(() => {});
+    return;
+  }
+  await markJobTemplateSentToday(contactId, 'application', now);
+  await scheduleAutoSend({
+    chatId: contactId, isGroup: false, name,
+    replyText: JOB_APPLICATION_RECEIVED_REPLY[lang] || JOB_APPLICATION_RECEIVED_REPLY.english, case: 'job_application_received',
+    summaryForOwner: 'Job application received' + (caption ? ' - ' + caption.slice(0, 160) : '')
+  });
+  await postOwnerNotification('📄 Job application (CV) received from ' + name + driveNote);
+}
 async function handleIncomingMedia(contactId, name, msg) {
   const caption = (msg.content && msg.content.caption) || '';
   if (looksLikeCvMessage(caption)) {
     const lang = await mediaFallbackLang(contactId, caption);
-    await scheduleAutoSend({
-      chatId: contactId, isGroup: false, name,
-      replyText: CV_RECEIVED_REPLY[lang] || CV_RECEIVED_REPLY.english, case: 'cv_received',
-      summaryForOwner: '[CV received]' + (caption ? ' ' + caption.slice(0, 160) : '')
-    });
-    const mediaUrl = extractMediaUrl(msg);
-    await postOwnerNotification(
-      '📄 CV received from ' + name + (mediaUrl
-        ? ' - saving to Drive "SUBH Documents/CVs/<month>" is not wired up yet, even though a download link was found this time; the file itself is only in the WhatsApp chat for now.'
-        : ' - could not save a copy (the gateway has not given SUBH a download link for this message), so the CV itself is only visible in the WhatsApp chat, not saved anywhere.')
-    );
+    await handleJobApplicationMediaDecision(contactId, name, lang, caption, msg);
     return;
   }
   if (['ptt', 'voice', 'audio'].includes(msg.type)) {
@@ -7566,6 +7721,18 @@ async function handleIncomingMedia(contactId, name, msg) {
   }
   const openReq = await documentRequests.getOpenRequest(contactId);
   if (!openReq) {
+    // Task 1 - a bare PDF (no caption, no open document request to
+    // fulfil) defaults to a CV/job application on this HR WhatsApp
+    // number - the single locked scenario this exists for ("a CV-only
+    // PDF with no text"). Scoped to 'document' only, never a bare image
+    // (far more ambiguous without any caption text - could be anything),
+    // and only once there is genuinely no open request this could
+    // instead be fulfilling (checked above, unchanged).
+    if (msg.type === 'document') {
+      const lang = await mediaFallbackLang(contactId, caption);
+      await handleJobApplicationMediaDecision(contactId, name, lang, caption, msg);
+      return;
+    }
     const lang = await mediaFallbackLang(contactId, caption);
     await scheduleAutoSend({
       chatId: contactId, isGroup: false, name,
@@ -8671,5 +8838,14 @@ module.exports = {
   // Exported for scripts/check-whatsapp-scenarios.js only - record/
   // replay cache + cost-report bookkeeping (2026-10-27, Task 4).
   getApiCallStats,
-  resetApiCallStats
+  resetApiCallStats,
+  // Exported for scripts/check-whatsapp-engine.js only - job
+  // application / vacancy enquiry fixed templates (2026-10-27, Task 1).
+  JOB_APPLICATION_RECEIVED_REPLY,
+  VACANCY_ENQUIRY_REPLY,
+  handleJobApplicationDecision,
+  handleVacancyEnquiryDecision,
+  getJobTemplatesSentToday,
+  clearJobTemplateSentToday,
+  listPendingAutoSends
 };
