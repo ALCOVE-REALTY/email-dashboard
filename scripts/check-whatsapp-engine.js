@@ -1063,9 +1063,18 @@ async function checkAsync(label, fn) {
     const phone = nextWfhLeavePhone();
     await cleanupWfhLeave(phone);
     await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Tanmoy Sir bolechhen ajke bari theke kaj korte', isGroup: false, history: [] });
+    const beforeTs = Date.now();
     await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: '1', isGroup: false, history: [] });
     const log = await whatsappAssistant.listInboxLog(20);
-    const mgrEntry = log.filter((e) => e.chatId === WFH_LEAVE_TANMOY_PHONE && e.case === 'hr_confirmation_sent').sort((a, b) => (b.sentAt || 0) - (a.sentAt || 0))[0];
+    // beforeTs guard (2026-10-27 fix) - WFH_LEAVE_TANMOY_PHONE is the
+    // SAME real manager number every test in this section messages, back
+    // to back; without this, an unsorted/same-millisecond-stamped
+    // leftover entry from the PREVIOUS test in this section could be
+    // picked up instead of this test's own send - the actual root cause
+    // behind this test's own historical flakiness, not a classification
+    // bug (see this file's sibling TANMOY_MONDAL_PHONE tests, which
+    // already use this exact guard).
+    const mgrEntry = log.filter((e) => e.chatId === WFH_LEAVE_TANMOY_PHONE && e.case === 'hr_confirmation_sent' && (e.sentAt || 0) >= beforeTs).sort((a, b) => (b.sentAt || 0) - (a.sentAt || 0))[0];
     const ok = Boolean(mgrEntry) && mgrEntry.sentText.includes('korte bolechhen') && !mgrEntry.sentText.includes('approval diyechhen');
     await whatsappAssistant.decideAutoReply({ phone: WFH_LEAVE_TANMOY_PHONE, name: 'Tanmoy Mondal', firstName: 'Tanmoy', text: 'Haa', isGroup: false, history: [] });
     await cleanupWfhLeave(phone);
@@ -1133,9 +1142,10 @@ async function checkAsync(label, fn) {
     await cleanupWfhLeave(phone);
     await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'sorir kharap, ajke ashte parbo na', isGroup: false, history: [] });
     await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Haa, Tanmoy Sir ke janiyechi', isGroup: false, history: [] });
+    const beforeTs = Date.now();
     await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: '1', isGroup: false, history: [] });
     const log = await whatsappAssistant.listInboxLog(20);
-    const mgrEntry = log.filter((e) => e.chatId === WFH_LEAVE_TANMOY_PHONE && e.case === 'hr_confirmation_sent').sort((a, b) => (b.sentAt || 0) - (a.sentAt || 0))[0];
+    const mgrEntry = log.filter((e) => e.chatId === WFH_LEAVE_TANMOY_PHONE && e.case === 'hr_confirmation_sent' && (e.sentAt || 0) >= beforeTs).sort((a, b) => (b.sentAt || 0) - (a.sentAt || 0))[0];
     const ok = Boolean(mgrEntry) && mgrEntry.sentText.includes('janiyechhen') && !mgrEntry.sentText.includes('bolechhen') && !mgrEntry.sentText.includes('diyechhen');
     await whatsappAssistant.decideAutoReply({ phone: WFH_LEAVE_TANMOY_PHONE, name: 'Tanmoy Mondal', firstName: 'Tanmoy', text: 'Haa', isGroup: false, history: [] });
     await cleanupWfhLeave(phone);
@@ -1155,9 +1165,10 @@ async function checkAsync(label, fn) {
     await cleanupWfhLeave(phone);
     await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Ami ajke chhutir din duty korchi, ekta important kaj ache', isGroup: false, history: [] });
     await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Tanmoy Sir bolechhen', isGroup: false, history: [] });
+    const beforeTs = Date.now();
     await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: '1', isGroup: false, history: [] });
     const log = await whatsappAssistant.listInboxLog(20);
-    const mgrEntry = log.filter((e) => e.chatId === WFH_LEAVE_TANMOY_PHONE && e.case === 'hr_confirmation_sent').sort((a, b) => (b.sentAt || 0) - (a.sentAt || 0))[0];
+    const mgrEntry = log.filter((e) => e.chatId === WFH_LEAVE_TANMOY_PHONE && e.case === 'hr_confirmation_sent' && (e.sentAt || 0) >= beforeTs).sort((a, b) => (b.sentAt || 0) - (a.sentAt || 0))[0];
     const ok = Boolean(mgrEntry) && mgrEntry.sentText.includes('bolechhen') && !/anumoti diyechhen|approval diyechhen/.test(mgrEntry.sentText);
     await whatsappAssistant.decideAutoReply({ phone: WFH_LEAVE_TANMOY_PHONE, name: 'Tanmoy Mondal', firstName: 'Tanmoy', text: 'Haa', isGroup: false, history: [] });
     await cleanupWfhLeave(phone);
@@ -1168,9 +1179,10 @@ async function checkAsync(label, fn) {
     await cleanupWfhLeave(phone);
     await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Ami ajke chhutir din duty korchi, ekta important kaj ache', isGroup: false, history: [] });
     await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'ami nijei korchi, Tanmoy Sir-ke bole niyechhi', isGroup: false, history: [] });
+    const beforeTs = Date.now();
     await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: '1', isGroup: false, history: [] });
     const log = await whatsappAssistant.listInboxLog(20);
-    const mgrEntry = log.filter((e) => e.chatId === WFH_LEAVE_TANMOY_PHONE && e.case === 'hr_confirmation_sent').sort((a, b) => (b.sentAt || 0) - (a.sentAt || 0))[0];
+    const mgrEntry = log.filter((e) => e.chatId === WFH_LEAVE_TANMOY_PHONE && e.case === 'hr_confirmation_sent' && (e.sentAt || 0) >= beforeTs).sort((a, b) => (b.sentAt || 0) - (a.sentAt || 0))[0];
     const ok = Boolean(mgrEntry) && /anumoti diyechhen|approval diyechhen|permission diyechhen/.test(mgrEntry.sentText) && !mgrEntry.sentText.includes('korte bolechhen');
     await whatsappAssistant.decideAutoReply({ phone: WFH_LEAVE_TANMOY_PHONE, name: 'Tanmoy Mondal', firstName: 'Tanmoy', text: 'Haa', isGroup: false, history: [] });
     await cleanupWfhLeave(phone);
@@ -1186,6 +1198,92 @@ async function checkAsync(label, fn) {
     await cleanupWfhLeave(phone);
     return ok;
   });
+  console.log('='.repeat(70));
+  console.log('DETERMINISTIC-FIRST ACTION-KIND CLASSIFICATION (2026-10-27, per Subhodeep\'s explicit approval): clear-cut instruction/approval phrasing is now decided by rule, never left to model variance - genuinely ambiguous phrasing still defers to the model exactly as before');
+  console.log('='.repeat(70));
+  check('deterministicHrActionKind: a 3rd-person honorific telling verb ("Tanmoy Sir bolechhen") is INSTRUCTION', whatsappAssistant.deterministicHrActionKind('Tanmoy Sir bolechhen ajke bari theke kaj korte') === 'instruction');
+  check('deterministicHrActionKind: a 3rd-person honorific granting verb ("Tanmoy Sir approve korechhen") is APPROVAL', whatsappAssistant.deterministicHrActionKind('Haa, Tanmoy Sir approve korechhen') === 'approval');
+  check('deterministicHrActionKind: "approval diyechhen" (3rd-person granting) is APPROVAL', whatsappAssistant.deterministicHrActionKind('Tanmoy Sir approval diyechhen') === 'approval');
+  check('deterministicHrActionKind: condition 1 - a FIRST-PERSON telling form ("ami bolechi") is NEVER instruction - returns null (defers to the model/flow)', whatsappAssistant.deterministicHrActionKind('Tanmoy Sir-ke ami bolechi') === null);
+  check('deterministicHrActionKind: condition 1 - a first-person informing form ("ami janiyechi") is NEVER instruction - returns null', whatsappAssistant.deterministicHrActionKind('Tanmoy Sir ke ami janiyechi') === null);
+  check('deterministicHrActionKind: a first-person RECEIVED-approval form ("ami approval niyechi") IS approval (an approval genuinely happened, regardless of grammatical voice)', whatsappAssistant.deterministicHrActionKind('ami approval niyechi Tanmoy Sir-er theke') === 'approval');
+  check('deterministicHrActionKind: condition 2 - a negated granting form ("approve korenni") returns null, never "approval"', whatsappAssistant.deterministicHrActionKind('Tanmoy Sir approve korenni') === null);
+  check('deterministicHrActionKind: condition 2 - a negated telling form ("bolenni") returns null, never "instruction"', whatsappAssistant.deterministicHrActionKind('Tanmoy Sir bolenni amake') === null);
+  check('deterministicHrActionKind: condition 2 - "approval paini" (didn\'t get approval) returns null', whatsappAssistant.deterministicHrActionKind('Ami approval paini ekhono') === null);
+  check('deterministicHrActionKind: condition 2 - English "not approved" returns null', whatsappAssistant.deterministicHrActionKind('Tanmoy Sir has not approved this yet') === null);
+  check('deterministicHrActionKind: condition 3 - BOTH a telling and a granting pattern present is ambiguous - returns null, never guesses one', whatsappAssistant.deterministicHrActionKind('Tanmoy Sir bolechhen ar approval-o diyechhen') === null);
+  check('deterministicHrActionKind: no recognizable pattern at all returns null (defers to the model, exactly as before)', whatsappAssistant.deterministicHrActionKind('Ajke half day nebo bhabchi') === null);
+  check('deterministicHrActionKind: Hinglish 3rd-person telling ("kaha hai", no "maine") is INSTRUCTION', whatsappAssistant.deterministicHrActionKind('Unhone kaha hai ajke ghar se kaam karne ko') === 'instruction');
+  check('deterministicHrActionKind: Hinglish explicit first-person ("maine kaha") is never read as the 3rd-person form, even though "kaha" alone would match - returns null', whatsappAssistant.deterministicHrActionKind('Maine kaha hai ki main ghar se kaam karunga') === null);
+  check('deterministicHrActionKind: Hinglish 3rd-person granting ("di hai", no "maine") is APPROVAL', whatsappAssistant.deterministicHrActionKind('Unhone approval di hai') === 'approval');
+
+  check('deterministicApprovalFromSelfInitiatedInforming: condition\'s exact example ("ami nijei korchi, Tanmoy Sir-ke bole niyechhi") resolves as APPROVAL by elimination (the unclear-initiator question only offers instruction/approval)', whatsappAssistant.deterministicApprovalFromSelfInitiatedInforming('ami nijei korchi, Tanmoy Sir-ke bole niyechhi') === 'approval');
+  check('deterministicApprovalFromSelfInitiatedInforming: the self-initiated marker ALONE (no informing verb) is not enough - returns null', whatsappAssistant.deterministicApprovalFromSelfInitiatedInforming('ami nijei eta korchi') === null);
+  check('deterministicApprovalFromSelfInitiatedInforming: the informing verb ALONE (no self-initiated marker) is not enough - returns null, since that\'s the plain "sudden" informing case, a different context entirely', whatsappAssistant.deterministicApprovalFromSelfInitiatedInforming('Tanmoy Sir-ke bole niyechhi') === null);
+  check('deterministicApprovalFromSelfInitiatedInforming: condition 2 - negation still guards this function too - both markers are present (self-initiated + informed) but "approval paini" is also present, so this must stay null, never "approval"', whatsappAssistant.deterministicApprovalFromSelfInitiatedInforming('ami nijei korchi, Tanmoy Sir-ke janiyechi, kintu approval paini') === null);
+
+  check('enforceSuddenInformingVerb: strips a stray "bolechhen" (telling verb) from a "sudden"-kind sentence, replacing it with the informing verb', (() => {
+    const fixed = whatsappAssistant.enforceSuddenInformingVerb('Apnake Sender-er sorir kharap thakar bishoy-ta Tanmoy Sir-ke bolechhen', 'banglish');
+    return fixed.includes('janiyechhen') && !fixed.includes('bolechhen');
+  })());
+  check('enforceSuddenInformingVerb: strips a stray "diyechhen"/"approval diyechhen" (granting verb), replacing it with the informing verb', (() => {
+    const fixed = whatsappAssistant.enforceSuddenInformingVerb('Tanmoy Sir-ke ei bishoye approval diyechhen', 'banglish');
+    return fixed.includes('janiyechhen') && !fixed.includes('diyechhen');
+  })());
+  check('enforceSuddenInformingVerb: leaves an already-correct sentence (genuine "janiyechhen", no telling/granting verb) completely unchanged', whatsappAssistant.enforceSuddenInformingVerb('Tanmoy Sir-ke janiyechhen je sorir kharap', 'banglish') === 'Tanmoy Sir-ke janiyechhen je sorir kharap');
+  check('enforceSuddenInformingVerb: English "told"/"approved"/"granted" are each replaced with "informed"', (() => {
+    const fixed = whatsappAssistant.enforceSuddenInformingVerb('Tanmoy was told about this and approved it', 'english');
+    return fixed.includes('informed') && !fixed.includes('told') && !fixed.includes('approved');
+  })());
+
+  check('isSelfReferentialForbiddenFieldRequest: the exact live-flaky phrasing ("amar bank account details ta dao") is recognized', Boolean(whatsappAssistant.isSelfReferentialForbiddenFieldRequest('amar bank account details ta dao')));
+  check('isSelfReferentialForbiddenFieldRequest: requires BOTH a self-reference ("amar") AND a request shape - a bare mention with neither is null', whatsappAssistant.isSelfReferentialForbiddenFieldRequest('bank account niye ekta kotha') === null);
+  check('isSelfReferentialForbiddenFieldRequest: a THIRD PARTY\'s bank details ("Tanmoy-er bank account dao", no self-reference) is null - this short-circuit is self-referential ONLY, the existing third-party PII block handles that case unchanged', whatsappAssistant.isSelfReferentialForbiddenFieldRequest('Tanmoy-er bank account details ta dao') === null);
+  check('isSelfReferentialForbiddenFieldRequest: Aadhaar/PAN are explicitly excluded - the existing, separate detectOwnSensitiveIdRequest exception handles those, never this one', whatsappAssistant.isSelfReferentialForbiddenFieldRequest('amar aadhaar number ta dao') === null);
+  check('isSelfReferentialForbiddenFieldRequest: "amar salary koto" (a plain question, no "dao"/"details"/"number") is null - request-shape required, never guessed from the field word alone', whatsappAssistant.isSelfReferentialForbiddenFieldRequest('amar salary') === null);
+
+  await checkAsync('LIVE BUG, end to end: the exact failing phrasing ("Tanmoy Sir bolechhen ajke bari theke kaj korte") now reliably resolves to INSTRUCTION (telling verb), never "approval" - deterministic, no longer dependent on model variance', async () => {
+    const phone = nextWfhLeavePhone();
+    await cleanupWfhLeave(phone);
+    await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Tanmoy Sir bolechhen ajke bari theke kaj korte', isGroup: false, history: [] });
+    const pending = await whatsappAssistant.getPendingHrNoteFlow(phone);
+    const ok = Boolean(pending) && pending.step === 'awaiting_disambiguation_choice' && pending.actionKind === 'instruction';
+    await cleanupWfhLeave(phone);
+    return ok;
+  });
+  await checkAsync('LIVE BUG, end to end: the exact failing phrasing ("amar bank account details ta dao") now reliably gets the plain holding reply, never swept into the HR-notification path - deterministic, no longer dependent on model variance', async () => {
+    const phone = '910000000875';
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'Test', firstName: 'Test', text: 'amar bank account details ta dao', isGroup: false, history: [] });
+    const pending = await whatsappAssistant.getPendingHrNoteFlow(phone);
+    const ok = d.case === 'holding' && pending === null;
+    await whatsappAssistant.resetFollowupCount(phone).catch(() => {});
+    return ok;
+  });
+  await checkAsync('LIVE BUG, end to end: "unclear-initiator, answer \'ami nijei korchi, Tanmoy Sir-ke bole niyechhi\'" now reliably resolves as APPROVAL, never "instruction" - deterministic', async () => {
+    const phone = nextWfhLeavePhone();
+    await cleanupWfhLeave(phone);
+    await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Ami ajke chhutir din duty korchi, ekta important kaj ache', isGroup: false, history: [] });
+    const d2 = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'ami nijei korchi, Tanmoy Sir-ke bole niyechhi', isGroup: false, history: [] });
+    const pending = await whatsappAssistant.getPendingHrNoteFlow(phone);
+    const ok = Boolean(pending) && pending.step === 'awaiting_disambiguation_choice' && pending.actionKind === 'approval';
+    await cleanupWfhLeave(phone);
+    return ok;
+  });
+  await checkAsync('LIVE BUG, end to end: "sudden case, \'Haa, Tanmoy Sir ke janiyechi\'" STEP 4 never includes a telling/granting verb, even if the model drafts one - deterministic safety net', async () => {
+    const phone = nextWfhLeavePhone();
+    await cleanupWfhLeave(phone);
+    await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'sorir kharap, ajke ashte parbo na', isGroup: false, history: [] });
+    await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Haa, Tanmoy Sir ke janiyechi', isGroup: false, history: [] });
+    const beforeTs = Date.now();
+    await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: '1', isGroup: false, history: [] });
+    const log = await whatsappAssistant.listInboxLog(20);
+    const mgrEntry = log.filter((e) => e.chatId === WFH_LEAVE_TANMOY_PHONE && e.case === 'hr_confirmation_sent' && (e.sentAt || 0) >= beforeTs).sort((a, b) => (b.sentAt || 0) - (a.sentAt || 0))[0];
+    const ok = Boolean(mgrEntry) && mgrEntry.sentText.includes('janiyechhen') && !mgrEntry.sentText.includes('bolechhen') && !mgrEntry.sentText.includes('diyechhen');
+    await whatsappAssistant.decideAutoReply({ phone: WFH_LEAVE_TANMOY_PHONE, name: 'Tanmoy Mondal', firstName: 'Tanmoy', text: 'Haa', isGroup: false, history: [] });
+    await cleanupWfhLeave(phone);
+    return ok;
+  });
+
   await checkAsync('REGRESSION: the plain duty-change instruction flow still says "instruction-ta", byte-for-byte unchanged', async () => {
     const phone = nextWfhLeavePhone();
     await cleanupWfhLeave(phone);

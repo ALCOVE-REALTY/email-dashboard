@@ -1853,6 +1853,31 @@ function detectOwnSensitiveIdRequest(text) {
   if (!/\b(amar|amader|mera|meri|my)\b/.test(t)) return null;
   return detectSensitiveIdFieldKeyword(text);
 }
+// Direct instruction (2026-10-27, per Subhodeep's explicit approval) - a
+// plain, self-referential REQUEST for a forbidden-but-not-auto-sendable
+// field ("amar bank account details ta dao") was occasionally getting
+// swept into the HR-notification classification path instead of the
+// normal data-request holding reply - "bank account change" is
+// explicitly listed as one of isHrNotification's own triggering
+// subjects, and a REQUEST for one's own bank details shares enough
+// vocabulary with an INFORMING message about a bank account CHANGE that
+// the model's own judgment was inconsistent between the two. Checked
+// BEFORE classification, same tier as detectOwnSensitiveIdRequest above
+// - but this is NEVER the aadhar/PAN auto-send exception (that function
+// stays untouched and is checked first); it only forces the plain,
+// deterministic holding-reply path for a narrower field set, and only
+// when the message actually looks like a request (not just a mention).
+const SELF_REFERENTIAL_FORBIDDEN_FIELD_RE = /\bbank\s*(account|a\/?c)?\b|\bifsc\b|\bsalary\b|\bctc\b/i;
+const SELF_REFERENTIAL_REQUEST_SHAPE_RE = /\b(dao|den|dite|dile|chai|chahiye|bolo|bolen|batao|bataiye|details?|info(rmation)?|number)\b/i;
+function isSelfReferentialForbiddenFieldRequest(text) {
+  const t = String(text || '').toLowerCase();
+  if (!/\b(amar|amader|mera|meri|my)\b/.test(t)) return null;
+  if (detectSensitiveIdFieldKeyword(t)) return null;
+  const fieldMatch = SELF_REFERENTIAL_FORBIDDEN_FIELD_RE.exec(t);
+  if (!fieldMatch) return null;
+  if (!SELF_REFERENTIAL_REQUEST_SHAPE_RE.test(t)) return null;
+  return fieldMatch[0].replace(/\s+/g, ' ').trim();
+}
 async function handleOwnSensitiveIdRequest({ phone, lang, field, history }) {
   // The ONLY real authorization check - detectOwnSensitiveIdRequest above
   // is just a text pattern, it proves nothing by itself. Must be a KNOWN,
@@ -2162,6 +2187,91 @@ const NAME_CONFIRM_QUESTION = {
   hinglish: (name, department) => 'Kya aap ' + name + ' (' + naturalizeDirectoryValue(department) + ') ki baat kar rahe hain?',
   english: (name, department) => 'Do you mean ' + name + ' (' + naturalizeDirectoryValue(department) + ')?'
 };
+// Direct instruction (2026-10-27, per Subhodeep's explicit approval) -
+// instruction-vs-approval is judged inside one giant multi-field model
+// call (classify_official_message's hrNotificationActionKind) and
+// re-judged again by a second call (extractPersonReference's
+// resolvedActionKind) when a flow continues - both deliberately "judged
+// by meaning, never a keyword list" (see each schema's own
+// description), which is exactly why borderline phrasing was
+// inconsistent across runs. This override corrects ONLY the clear-cut
+// cases a human reader would never disagree on - WHO is the grammatical
+// subject (a 3rd-person honorific verb form like "bolechhen"/
+// "korechhen" IS the subject marker in Bengali, no separate pronoun
+// needed) and WHICH verb (telling vs granting) - and returns null
+// (defer to the model, exactly as before) for:
+//  - any negated phrasing ("approve korenni", "bolenni", "approval
+//    paini", "not approved") - negation inverts meaning and is never
+//    safe to pattern-match;
+//  - more than one pattern matching (both a telling AND a granting
+//    signal present) - genuinely ambiguous, not this function's call;
+//  - a first-person telling/informing phrasing on its own ("ami
+//    bolechi", "Tanmoy Sir-ke bolechi") - the sender informed/asked
+//    someone else, which is NEVER "instruction" (condition 1), but
+//    whether it then means "approval" or "sudden" genuinely depends on
+//    WHICH pending question was asked (see
+//    deterministicApprovalFromSelfInitiatedInforming below for the one
+//    context where that specific ambiguity IS resolvable).
+const ACTION_KIND_NEGATION_RE = /\b(korenni|koreni|bolenni|boleni|pai\s*ni|paini|approval\s*paini|peyechi\s*na|na\s*peyechi|not\s*approved|didn'?t\s*approve|never\s*approved|nahi\s*di(ya)?|nahi\s*mila|mana\s*kore(chen)?|refused|reject(ed)?|denied)\b/i;
+const HAS_EXPLICIT_HINDI_FIRST_PERSON_RE = /\bmain(e)?\s*ne\b|\bmaine\b/i;
+const TELLING_3RD_PERSON_RE = /\bbol(e)?ch(h)?en\b|\bboll?en\b|\bbolechilen\b|\b\w+\s+told\s+me\b/i;
+const TELLING_3RD_PERSON_HINGLISH_RE = /\b(kahe\s*hain|kaha\s*hai|bola\s*hai)\b/i;
+const GRANTING_3RD_PERSON_RE = /\bapprove\s*kor(e)?ch(h)?en\b|\bapproval[\w-]*\s*diy(e)?ch(h)?en\b|\bpermission[\w-]*\s*diy(e)?ch(h)?en\b|\banumoti[\w-]*\s*diy(e)?ch(h)?en\b|\b\w+\s+approved\b|\b\w+\s+granted\b/i;
+const GRANTING_3RD_PERSON_HINGLISH_RE = /\b(di(ya)?\s*hai|approve\s*kiya)\b/i;
+const GRANTING_1ST_PERSON_RECEIVED_RE = /\bapproval\s*(niyechi|peyechi|niyechilam|peyechilam)\b|\bapprove\s*koriyechi\b|\bi\s+(got|received|took)\s+approval\b|\bapproval\s*mil\s*gaya\b|\bmaine\s*approval\s*liya\b/i;
+function deterministicHrActionKind(text) {
+  const t = String(text || '');
+  if (ACTION_KIND_NEGATION_RE.test(t)) return null;
+  const hasExplicitFirstPersonHindi = HAS_EXPLICIT_HINDI_FIRST_PERSON_RE.test(t);
+  const tellingMatch = TELLING_3RD_PERSON_RE.test(t) || (!hasExplicitFirstPersonHindi && TELLING_3RD_PERSON_HINGLISH_RE.test(t));
+  const grantingMatch = GRANTING_3RD_PERSON_RE.test(t) || (!hasExplicitFirstPersonHindi && GRANTING_3RD_PERSON_HINGLISH_RE.test(t)) || GRANTING_1ST_PERSON_RECEIVED_RE.test(t);
+  if (tellingMatch && grantingMatch) return null;
+  if (tellingMatch) return 'instruction';
+  if (grantingMatch) return 'approval';
+  return null;
+}
+// Scoped to ONLY the "unclear-initiator" (neutral) context, where the
+// pending question offered EXACTLY two choices (instruction or
+// approval) - a first-person "I did this myself AND informed/told them"
+// pattern is, BY ELIMINATION in this one context, an approval-style
+// framing (the sender's own initiative, the manager merely informed -
+// see the scheme's own original definition of "approval"). Never safe
+// outside this specific two-choice context - the SAME words mean
+// something different (plain "sudden" informing) when a different
+// question was asked, which this deliberately does NOT touch.
+const SELF_INITIATED_MARKER_RE = /\b(nijei|nijer\s*uddyoge|nije\s*theke|amar\s*nijer|on\s*my\s*own|by\s*myself)\b/i;
+const FIRST_PERSON_INFORMED_MARKER_RE = /\bbole\s*niyechhi\b|\bjaniye\s*diyechi\b|\bjaniyechi\b|\bbolechi\b|\bi\s+(told|informed)\b/i;
+function deterministicApprovalFromSelfInitiatedInforming(text) {
+  const t = String(text || '');
+  if (ACTION_KIND_NEGATION_RE.test(t)) return null;
+  if (SELF_INITIATED_MARKER_RE.test(t) && FIRST_PERSON_INFORMED_MARKER_RE.test(t)) return 'approval';
+  return null;
+}
+// Condition 4 (Subhodeep's own instruction) - every case where the rule
+// overrides a DIFFERENT model answer is logged (message text + both
+// values) for later review in the WhatsApp section's flow trace. A
+// dedicated, capped Redis list (same pattern as logInboxEvent/
+// listInboxLog) - never logged when the rule agrees with the model, or
+// when the rule has no opinion (returns null).
+const ACTION_KIND_OVERRIDE_LOG_KEY = 'wa-action-kind-overrides';
+const MAX_ACTION_KIND_OVERRIDE_LOG = 300;
+async function recordActionKindOverride(phone, text, ruleValue, modelValue) {
+  const redis = getClient();
+  if (!redis) return;
+  try {
+    const entry = { ts: Date.now(), phone, text: String(text || '').slice(0, 300), ruleValue, modelValue };
+    await redis.lpush(ACTION_KIND_OVERRIDE_LOG_KEY, JSON.stringify(entry));
+    await redis.ltrim(ACTION_KIND_OVERRIDE_LOG_KEY, 0, MAX_ACTION_KIND_OVERRIDE_LOG - 1);
+  } catch (err) { /* best effort */ }
+}
+async function listActionKindOverrides(limit = 100) {
+  const redis = getClient();
+  if (!redis) return [];
+  return redisHealth.guardedRead(async () => {
+    const raw = await redis.lrange(ACTION_KIND_OVERRIDE_LOG_KEY, 0, Math.max(1, Math.min(limit, MAX_ACTION_KIND_OVERRIDE_LOG)) - 1);
+    return raw.map((item) => { try { return typeof item === 'string' ? JSON.parse(item) : item; } catch (err) { return null; } }).filter(Boolean);
+  }, []);
+}
 // Direct instruction (2026-10-26 live review) - the HR-note flow's OWN
 // confirm/disambiguation questions (never the general person-lookup ones
 // above, which stay exactly as they were) now name WHICH instruction/
@@ -3756,7 +3866,7 @@ async function finalizeHrNoteThirdParty({ phone, senderName, lang, candidate, su
 // 2's identity-line bug did.
 async function handleHrNotificationStart({ phone, name, lang, text, history, classification }) {
   const summary = classification.hrNotificationSummary || sanitizeTopicLabel(classification.topicLabel);
-  const summaryLocalized = classification.hrNotificationSummaryLocalized || summary;
+  let summaryLocalized = classification.hrNotificationSummaryLocalized || summary;
   const topicLabel = classification.hrNotificationTopicLabel || null;
   // WFH/half-day/etc. support - the classifier's own meaning-based
   // judgment (never a keyword list) of whether this was an INSTRUCTION
@@ -3768,7 +3878,29 @@ async function handleHrNotificationStart({ phone, name, lang, text, history, cla
   // so a later continuation turn can still reconstruct the exact pending
   // question's own context for extractPersonReference.
   const actionPhrase = classification.hrNotificationActionPhrase || null;
-  const actionKind = classification.hrNotificationActionKind || 'neutral';
+  const modelActionKind = classification.hrNotificationActionKind || 'neutral';
+  let actionKind = modelActionKind;
+  // Deterministic-first (2026-10-27) - scoped to ONLY correcting between
+  // instruction and approval (never "sudden"/"neutral", whose whole
+  // narrative shape, including every other field the SAME classify call
+  // already built, depends on which one the model picked - overriding
+  // just the kind there without rebuilding everything else around it
+  // would create a worse inconsistency than the one being fixed). When
+  // the rule disagrees with the model, summaryLocalized is rebuilt fresh
+  // for the corrected kind (one extra call, only on the rare occasions
+  // an override actually fires) so the manager-facing wording always
+  // matches the final actionKind - never a stale verb left over from
+  // the model's original, now-overridden choice.
+  if (modelActionKind === 'instruction' || modelActionKind === 'approval') {
+    const ruleKind = deterministicHrActionKind(text);
+    if (ruleKind && ruleKind !== modelActionKind) {
+      await recordActionKindOverride(phone, text, ruleKind, modelActionKind);
+      actionKind = ruleKind;
+      if (classification.hrNotificationThirdPartyName) {
+        summaryLocalized = await rephraseForThirdParty(summary, ruleKind, lang);
+      }
+    }
+  }
   // The sender's ORIGINAL message instant for this flow - set here, once,
   // and threaded unchanged through every subsequent resolveHrNoteThirdParty/
   // continueHrNoteFlow re-save, all the way into the saved HR confirmation
@@ -3784,7 +3916,7 @@ async function handleHrNotificationStart({ phone, name, lang, text, history, cla
   // only ever phrases a "sudden" fact in first person.
   if (actionKind === 'sudden') {
     if (classification.hrNotificationThirdPartyName) {
-      const rephrased = await rephraseForThirdParty(summary, 'sudden', lang);
+      const rephrased = enforceSuddenInformingVerb(await rephraseForThirdParty(summary, 'sudden', lang), lang);
       return resolveHrNoteThirdParty({
         phone, name, lang, personName: classification.hrNotificationThirdPartyName,
         department: classification.hrNotificationThirdPartyHint, summary, summaryLocalized: rephrased, topicLabel, actionPhrase, actionKind: 'sudden', createdAt, history
@@ -3854,7 +3986,7 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
       return { case: 'acknowledged', replyText: HR_FLOW_CONTEXT_CLARIFY[lang] || HR_FLOW_CONTEXT_CLARIFY.english, summaryForOwner: null, lang };
     }
     if (extracted.personName) {
-      const rephrased = await rephraseForThirdParty(hrFlow.summary, 'sudden', lang);
+      const rephrased = enforceSuddenInformingVerb(await rephraseForThirdParty(hrFlow.summary, 'sudden', lang), lang);
       return resolveHrNoteThirdParty({ phone, name, lang, personName: extracted.personName, department: extracted.hint, summary: hrFlow.summary, summaryLocalized: rephrased, topicLabel: hrFlow.topicLabel, actionPhrase: hrFlow.actionPhrase, actionKind: 'sudden', createdAt: hrFlow.createdAt, history });
     }
     if (isNoAnswer(t)) {
@@ -4095,11 +4227,19 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
     let summaryLocalized = hrFlow.summaryLocalized;
     let resolvedKindForConfirm = hrFlow.actionKind;
     if (hrFlow.actionKind === 'neutral') {
-      const finalKind = resolvedActionKind || 'instruction';
+      const modelKind = resolvedActionKind || 'instruction';
+      // Deterministic-first (2026-10-27) - correct the model's answer
+      // only when a clear, unambiguous pattern fits (see
+      // deterministicHrActionKind/deterministicApprovalFromSelfInitiated
+      // Informing's own comments); otherwise the model's own judgment
+      // stands, exactly as before.
+      const ruleKind = deterministicHrActionKind(text) || deterministicApprovalFromSelfInitiatedInforming(text);
+      const finalKind = ruleKind || modelKind;
+      if (ruleKind && ruleKind !== modelKind) await recordActionKindOverride(phone, text, ruleKind, modelKind);
       summaryLocalized = await rephraseForThirdParty(hrFlow.summary, finalKind, lang);
       resolvedKindForConfirm = finalKind;
     } else if (hrFlow.actionKind === 'sudden') {
-      summaryLocalized = await rephraseForThirdParty(hrFlow.summary, 'sudden', lang);
+      summaryLocalized = enforceSuddenInformingVerb(await rephraseForThirdParty(hrFlow.summary, 'sudden', lang), lang);
     }
     const resolved = await resolveHrNoteThirdParty({ phone, name, lang, personName, department: hint, summary: hrFlow.summary, summaryLocalized, topicLabel: hrFlow.topicLabel, actionPhrase: hrFlow.actionPhrase, actionKind: resolvedKindForConfirm, createdAt: hrFlow.createdAt, history });
     // Case B.
@@ -5816,6 +5956,29 @@ async function rephraseForThirdParty(summaryEnglish, actionKind, lang) {
   const input = await callClaudeForcedTool(apiKey, DRAFT_MODEL, [{ role: 'system', content: systemPrompt }, { role: 'user', content: summaryEnglish }], toolDef.name, toolDef).catch(() => null);
   return (input && input.summaryLocalized) || summaryEnglish;
 }
+// Direct instruction (2026-10-27) - rephraseForThirdParty's own schema
+// tells the model "sudden"/"neutral" have "no fixed verb yet... phrase
+// naturally", which occasionally drafted a telling/granting verb
+// ("bolechhen"/"diyechhen") anyway even though the actionKind is already
+// fixed as "sudden" (the manager neither told nor approved anything - a
+// sudden/emergency report is just being passed along). Deterministic
+// safety net, applied only to "sudden"-kind output: strips out any
+// telling/granting verb the model drafted and replaces it with a plain
+// informing one, in the same language - never touches output that
+// already avoided one.
+function enforceSuddenInformingVerb(text, lang) {
+  if (!text) return text;
+  const informingVerb = { banglish: 'janiyechhen', hinglish: 'bataya hai', english: 'informed' }[lang] || 'informed';
+  let fixed = String(text)
+    .replace(/\s*(ke\s+)?bolechhen\b/gi, ' ke ' + informingVerb)
+    .replace(/\s*(approval|permission|anumoti)?\s*diyechhen\b/gi, ' ' + informingVerb)
+    .replace(/\s*kaha\s*hai\b/gi, ' ' + informingVerb)
+    .replace(/\s*di\s*hai\b/gi, ' ' + informingVerb)
+    .replace(/\btold\b/gi, informingVerb)
+    .replace(/\bapproved\b/gi, informingVerb)
+    .replace(/\bgranted\b/gi, informingVerb);
+  return fixed.replace(/\s+/g, ' ').trim();
+}
 
 // Live review item 2 (real incident, Saurav/Tanmoy) - while a disambiguation
 // question ("Apni kar kotha bolchhen?") is open, a message that doesn't
@@ -6726,6 +6889,21 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
     const ownIdField = detectOwnSensitiveIdRequest(text);
     if (ownIdField) {
       return handleOwnSensitiveIdRequest({ phone, lang: detectLang(text), field: ownIdField, history });
+    }
+  }
+
+  // Own bank/salary/IFSC/CTC request short-circuit (see
+  // isSelfReferentialForbiddenFieldRequest's own comment) - NEVER the
+  // Aadhaar/PAN auto-send exception above, just forces the plain
+  // holding-reply path deterministically.
+  if (!isGroup && phone) {
+    const selfReferentialField = isSelfReferentialForbiddenFieldRequest(text);
+    if (selfReferentialField) {
+      const sLang = resolveStickyLang(text, history, detectLang(text));
+      const followupCount = await incrementFollowupCount(phone);
+      const topicLabel = 'their ' + selfReferentialField;
+      const replyText = await generateConversationReply(text, history, firstName, topicLabel, true, sLang);
+      return { case: 'holding', replyText, summaryForOwner: text.slice(0, 160), topicLabel, topic: 'none', followupCount, intent: 'request', hrTopicArea: 'none', lang: sLang };
     }
   }
 
@@ -8388,5 +8566,14 @@ module.exports = {
   // stickiness for short/ambiguous messages (2026-10-26).
   isShortOrAmbiguousForLanguage,
   detectEstablishedConversationLanguage,
-  resolveStickyLang
+  resolveStickyLang,
+  // Exported for scripts/check-whatsapp-engine.js only - deterministic-
+  // first instruction/approval classification and the own-bank-details
+  // short-circuit (2026-10-27).
+  deterministicHrActionKind,
+  deterministicApprovalFromSelfInitiatedInforming,
+  enforceSuddenInformingVerb,
+  isSelfReferentialForbiddenFieldRequest,
+  recordActionKindOverride,
+  listActionKindOverrides
 };
