@@ -173,9 +173,8 @@
   const autoPreviewCloseBtn = document.getElementById('hrAutoPreviewCloseBtn');
   const autoPreviewTitle = document.getElementById('hrAutoPreviewTitle');
   const autoPreviewBody = document.getElementById('hrAutoPreviewBody');
-  const autoToast = document.getElementById('hrAutoToast');
-  const autoToastIcon = document.getElementById('hrAutoToastIcon');
-  const autoToastText = document.getElementById('hrAutoToastText');
+  // Task 2: the one shared "professional" toast stack (see showProToast)
+  const proToastStack = document.getElementById('wfProToastStack');
   if (!btn || !panel) return; // this page doesn't have the assistant markup
 
   const history = [];
@@ -1635,39 +1634,53 @@
     const chatId = btn.dataset.chatId;
     if (!(await showConfirmDialog('Remove this conversation from Important WhatsApp? This only hides it here - nothing is deleted, and it reappears if they message again about something needing your attention.'))) return;
     const row = btn.closest('.wf-comms-wa-row');
-    if (row) { row.style.pointerEvents = 'none'; row.style.opacity = '0.5'; }
+    // Task 2: same row-close animation as Open Flows' Close, plus an
+    // actual working Undo (not just a label) - the real whatsapp-dismiss
+    // call is optimistically delayed until the toast's own undo window
+    // (3s) passes with no Undo click, so Undo genuinely never happens
+    // server-side rather than un-doing something already committed. No
+    // backend change: dismissWhatsappItem is still called exactly once,
+    // just later, and only if not undone.
+    let undone = false;
+    beginRowCloseExit(row);
+    showProToast({
+      title: 'Removed from Important WhatsApp',
+      type: 'success',
+      undo: () => { undone = true; cancelRowCloseExit(row); }
+    });
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+    if (undone) return;
+    finishRowClose(row);
     try {
       const r = await postJson('/api/workforce/hr-assistant/whatsapp-dismiss', { chatId });
       if (!r.ok) throw new Error((r.data && r.data.error) || 'Could not remove.');
-      if (row) dismissCard(row);
-      showActionToast('Removed from Important WhatsApp');
-      // Re-fetch AFTER the delete has actually completed and re-render
-      // whichever WhatsApp list is on screen, so a slightly-stale
-      // request already in flight when the delete happened (e.g. the
-      // View All page's own background refresh) can never win the race
-      // and silently re-add the row this just removed.
-      const fresh = await fetch('/api/workforce/hr-assistant/communications-summary').then((res) => res.json()).catch(() => null);
-      if (fresh) {
-        pageDataCache.comms = fresh;
-        if (panelView === 'important') renderWaListLive(commsWaList, fresh.whatsappItems || []);
-        else if (panelView === 'waAll') renderWaListLive(commsWaAllList, fresh.whatsappAllItems || []);
-        setCountBadge(todayUpdatesBadge, (fresh.importantMailsCount || 0) + (fresh.importantWhatsappCount || 0) + (fresh.remindersPendingCount || 0));
-        // Only while a comms page is actually on screen - commsHeadBadge is
-        // shared with the Reminders page header, which means something
-        // completely different there (counts.all, set by its own
-        // renderRemindersData); writing the mails+whatsapp total here
-        // unconditionally could otherwise stomp that value if this delete
-        // somehow resolves after the person has already navigated away.
-        if (panelView === 'important' || panelView === 'waAll') {
-          setCountBadge(commsHeadBadge, (fresh.importantMailsCount || 0) + (fresh.importantWhatsappCount || 0));
-        }
-        if (commsHeadSubtitle && panelView === 'important') {
-          commsHeadSubtitle.textContent = (fresh.importantMailsCount || 0) + ' important mails · ' + (fresh.importantWhatsappCount || 0) + ' important WhatsApp';
-        }
-      }
     } catch (err) {
-      if (row) { row.style.pointerEvents = ''; row.style.opacity = ''; }
       showActionToast(err.message || 'Could not remove - try again.');
+    }
+    // Re-fetch AFTER the delete attempt (success or failure) and re-render
+    // whichever WhatsApp list is on screen - this also self-corrects the
+    // row if the dismiss call above failed (it was removed optimistically
+    // but never actually committed server-side), and guards against a
+    // slightly-stale request already in flight (e.g. the View All page's
+    // own background refresh) winning the race and silently re-adding it.
+    const fresh = await fetch('/api/workforce/hr-assistant/communications-summary').then((res) => res.json()).catch(() => null);
+    if (fresh) {
+      pageDataCache.comms = fresh;
+      if (panelView === 'important') renderWaListLive(commsWaList, fresh.whatsappItems || []);
+      else if (panelView === 'waAll') renderWaListLive(commsWaAllList, fresh.whatsappAllItems || []);
+      setCountBadge(todayUpdatesBadge, (fresh.importantMailsCount || 0) + (fresh.importantWhatsappCount || 0) + (fresh.remindersPendingCount || 0));
+      // Only while a comms page is actually on screen - commsHeadBadge is
+      // shared with the Reminders page header, which means something
+      // completely different there (counts.all, set by its own
+      // renderRemindersData); writing the mails+whatsapp total here
+      // unconditionally could otherwise stomp that value if this delete
+      // somehow resolves after the person has already navigated away.
+      if (panelView === 'important' || panelView === 'waAll') {
+        setCountBadge(commsHeadBadge, (fresh.importantMailsCount || 0) + (fresh.importantWhatsappCount || 0));
+      }
+      if (commsHeadSubtitle && panelView === 'important') {
+        commsHeadSubtitle.textContent = (fresh.importantMailsCount || 0) + ' important mails · ' + (fresh.importantWhatsappCount || 0) + ' important WhatsApp';
+      }
     }
   }
   // Binds both the row-tap (open conversation) and the delete icon for
@@ -1816,7 +1829,15 @@
         e.stopPropagation();
         const kind = btn.dataset.kind, phone = btn.dataset.phone, id = btn.dataset.id;
         if (!(await showConfirmDialog('Close this flow? This stops any further messages for it and removes it from this list - use it for stuck or test flows only.', { confirmLabel: 'Close flow' }))) return;
-        await runButtonAction(btn, () => postJsonOrThrow('/api/workforce/hr-assistant/open-flows/close', { kind, phone: phone || undefined, id: id || undefined }), () => { showActionToast('Flow closed'); loadOpenFlows(); refreshOpenFlowsBadge(); });
+        await runButtonAction(btn, () => postJsonOrThrow('/api/workforce/hr-assistant/open-flows/close', { kind, phone: phone || undefined, id: id || undefined }), () => {
+          // Task 2: row slides+fades, the list closes its own gap, the
+          // shared toast rises in with a self-drawing check - reused as-is
+          // by Important WhatsApp's remove (x) below. refreshOpenFlowsBadge
+          // (not loadOpenFlows) re-syncs the cache/badge without a stale-
+          // cache re-render racing this row's own exit animation.
+          closeRowWithToast(btn.closest('.wf-open-flow-row'), { title: 'Flow closed', type: 'success' });
+          refreshOpenFlowsBadge();
+        });
       });
     });
   }
@@ -2488,6 +2509,87 @@
     actionToastTimer = setTimeout(() => { remToast.hidden = true; }, 5000);
   }
 
+  // Task 2: ONE shared "professional" toast component (white card, soft
+  // shadow, rounded corners, coloured left accent + icon, ~3s auto-dismiss
+  // with a shrinking progress line) - used ONLY by Open Flows' Close,
+  // Important WhatsApp's remove (x), and the Automated Tasks create/list
+  // pages (via showAutoToast below, now a thin wrapper around this).
+  // Every other button in this file keeps using the plain black-pill
+  // showActionToast above, untouched. Stacks (several toasts can be on
+  // screen at once, newest closest to the input bar) and respects
+  // prefers-reduced-motion (checkmark-draw/progress-shrink become no-ops
+  // in CSS; this function's own JS logic needs no branching for it).
+  function showProToast(opts) {
+    opts = opts || {};
+    if (!proToastStack) return null;
+    const type = opts.type || 'success';
+    const duration = opts.duration || 3000;
+    proToastStack.classList.toggle('anchor-top', opts.anchor === 'top');
+    const el = document.createElement('div');
+    el.className = 'wf-pro-toast' + (type !== 'success' ? ' ' + type : '');
+    el.setAttribute('role', 'status');
+    const iconHtml = type === 'success'
+      ? '<svg viewBox="0 0 36 36" width="20" height="20" aria-hidden="true"><circle class="wf-pro-toast-check-circle" cx="18" cy="18" r="15" fill="none" stroke-width="2"/><path class="wf-pro-toast-check-path" d="M10 19l5 5 11-11"/></svg>'
+      : '<span class="wf-pro-toast-icon-text">' + (type === 'error' ? '✕' : '⚠') + '</span>';
+    el.innerHTML =
+      '<span class="wf-pro-toast-icon">' + iconHtml + '</span>' +
+      '<span class="wf-pro-toast-body">' +
+        '<span class="wf-pro-toast-title"></span>' +
+        (opts.subtext ? '<span class="wf-pro-toast-subtext"></span>' : '') +
+      '</span>' +
+      (opts.undo ? '<button type="button" class="wf-pro-toast-undo">Undo</button>' : '') +
+      '<span class="wf-pro-toast-progress"></span>';
+    el.querySelector('.wf-pro-toast-title').textContent = opts.title || '';
+    if (opts.subtext) el.querySelector('.wf-pro-toast-subtext').textContent = opts.subtext;
+    proToastStack.appendChild(el);
+    let dismissed = false;
+    let timer = null;
+    function dismiss() {
+      if (dismissed) return;
+      dismissed = true;
+      clearTimeout(timer);
+      el.classList.add('leaving');
+      setTimeout(() => el.remove(), 220);
+    }
+    if (opts.undo) {
+      const undoBtn = el.querySelector('.wf-pro-toast-undo');
+      undoBtn.addEventListener('click', () => { dismiss(); opts.undo(); });
+    }
+    const progress = el.querySelector('.wf-pro-toast-progress');
+    progress.style.transitionDuration = duration + 'ms';
+    requestAnimationFrame(() => progress.classList.add('shrink'));
+    timer = setTimeout(dismiss, duration);
+    return { dismiss };
+  }
+  // The row-close animation (slide+fade, list closes its own gap in place)
+  // shared by Open Flows' Close button and Important WhatsApp's remove
+  // (x) - a dedicated class/helper so it never touches the generic
+  // .wf-card-exit/dismissCard pattern used by every other card in this
+  // file. Split into begin/cancel/finish so a reversible (Undo-able) use
+  // (Important WhatsApp) and a one-way use (Open Flows, no Undo) can share
+  // the same visual animation.
+  function beginRowCloseExit(row) {
+    if (!row) return;
+    row.style.maxHeight = row.scrollHeight + 'px';
+    row.classList.add('wf-row-close-exit');
+    void row.offsetHeight; // force reflow so the next class actually transitions
+    requestAnimationFrame(() => row.classList.add('wf-row-close-exit-active'));
+  }
+  function cancelRowCloseExit(row) {
+    if (!row) return;
+    row.classList.remove('wf-row-close-exit-active');
+    setTimeout(() => { row.classList.remove('wf-row-close-exit'); row.style.maxHeight = ''; }, 340);
+  }
+  function finishRowClose(row) {
+    if (row && row.parentNode) row.remove();
+  }
+  // One-way close (no Undo) - Open Flows' own Close button.
+  function closeRowWithToast(row, toastOpts) {
+    beginRowCloseExit(row);
+    showProToast(toastOpts);
+    setTimeout(() => finishRowClose(row), 320);
+  }
+
   // Both 'completed' (full history, the Completed tab) and 'completedToday'
   // (the "Today's Completed" row) are completed-oriented views - same
   // heading, same "no X yet" copy, just a different underlying item set.
@@ -2879,24 +2981,14 @@
   // the Send Mail popup's own mailCcField/mailToField.
   const autoCcField = createMailChipField('autoCcChipInput', 'autoCcInput', 'autoCcSuggest');
 
-  // Automated Tasks' own toast - white card/soft shadow/coloured accent,
-  // never the Reminders page's black pill (showActionToast/#hrRemToast,
-  // left completely untouched for every other caller in this file).
-  let autoToastTimer = null;
+  // Task 2: Automated Tasks' own toast is now a thin wrapper around the
+  // one shared showProToast component (top-anchored, since these two
+  // pages hide the assistant input bar and keep Save/Preview/Send test
+  // inline at the bottom of the page instead) - never the Reminders
+  // page's black pill (showActionToast/#hrRemToast, left completely
+  // untouched for every other caller in this file).
   function showAutoToast(text, type) {
-    if (!autoToast) return;
-    clearTimeout(autoToastTimer);
-    autoToast.classList.remove('error', 'warning');
-    if (type === 'error') autoToast.classList.add('error');
-    else if (type === 'warning') autoToast.classList.add('warning');
-    if (autoToastIcon) autoToastIcon.textContent = type === 'error' ? '✕' : type === 'warning' ? '⚠' : '✓';
-    if (autoToastText) autoToastText.textContent = text;
-    autoToast.hidden = false;
-    requestAnimationFrame(() => autoToast.classList.add('show'));
-    autoToastTimer = setTimeout(() => {
-      autoToast.classList.remove('show');
-      setTimeout(() => { autoToast.hidden = true; }, 220);
-    }, 3000);
+    showProToast({ title: text, type: type || 'success', anchor: 'top' });
   }
   // Every automation action routed through runButtonAction uses this
   // toast for its error path too (opts.toastFn), instead of the global

@@ -462,15 +462,18 @@
         <button type="button" id="hrRemToastUndoBtn" hidden>Undo</button>
       </div>
 
-      <!-- SUBH Automated Tasks' own toast (Create/Edit page + the Automated
-           Tasks list) - white card, soft shadow, coloured left accent, never
-           the Reminders page's own black pill (#hrRemToast, left untouched
-           everywhere else). Anchored under the header, not the footer, so
-           it can never cover Save/Cancel/Preview/Send test. -->
-      <div class="wf-auto-toast" id="hrAutoToast" hidden role="status">
-        <span class="wf-auto-toast-icon" id="hrAutoToastIcon"></span>
-        <span class="wf-auto-toast-text" id="hrAutoToastText"></span>
-      </div>
+      <!-- Task 2: ONE shared "professional" toast component (white card,
+           shadow, rounded corners, coloured accent+icon, ~3s auto-dismiss,
+           stacked) - used by Open Flows' Close, Important WhatsApp's
+           remove (x), and the Automated Tasks create/list pages (migrated
+           off their own separate toast). Positioned bottom-center above
+           the assistant input bar by default; the Automated Tasks pages
+           (where the input bar is hidden and Save/Preview/Send test sit at
+           the bottom of the page instead) ask for the top-anchored variant
+           via showProToast's anchor:'top' - same markup/styling/behaviour
+           either way, just repositioned (see .anchor-top in wi-theme.css).
+           The Reminders page's own black pill (#hrRemToast) is untouched. -->
+      <div class="wf-pro-toast-stack" id="wfProToastStack" aria-live="polite"></div>
 
       <!-- Automated Task preview - every message a run would send right
            now (To/Subject/body/table-or-PDF-name, red skip lines), same

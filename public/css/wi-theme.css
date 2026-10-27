@@ -2115,24 +2115,82 @@ body { background: var(--wi-bg); }
 .wf-auto-preview-sheet .wf-auto-pdf-name { font-weight: 800; font-size: 0.72rem; margin-bottom: 6px; color: var(--wi-ink); }
 .wf-auto-skip { background: var(--wi-red-50); color: var(--wi-red-700); border-radius: var(--wi-r-input); padding: 8px 10px; font-size: 0.72rem; font-weight: 700; margin-top: 8px; }
 
-/* Automated Tasks' own toast (Create/Edit + list page only - never the
-   Reminders page's own #hrRemToast black pill). Anchored under the header
-   so it can never sit over the footer's Save/Cancel/Preview buttons. */
-.wf-auto-toast[hidden] { display: none; }
-.wf-auto-toast {
-  position: fixed; top: 66px; left: 50%; z-index: 96;
-  width: calc(100% - 32px); max-width: 420px;
+/* Task 2 (2026-10-27): ONE shared "professional" toast component - white
+   card, soft shadow, rounded corners, coloured left accent + icon, ~3s
+   auto-dismiss via a shrinking progress line - used ONLY by Open Flows'
+   Close, Important WhatsApp's remove (x), and the Automated Tasks
+   create/list pages (replaces the old separate .wf-auto-toast above;
+   never the Reminders page's own #hrRemToast black pill, left untouched
+   everywhere else). Default position is bottom-center, stacked, just
+   above the assistant input bar (same 96px offset .wf-rem-toast already
+   uses). The two Automated Tasks pages hide that input bar and keep
+   Save/Preview/Send test inline at the bottom of the page instead, so
+   they ask for the .anchor-top variant (same card/animation, just
+   repositioned near the header) via showProToast's anchor:'top'. */
+.wf-pro-toast-stack {
+  position: fixed; left: 50%; bottom: 96px; transform: translateX(-50%);
+  z-index: 97; display: flex; flex-direction: column-reverse; gap: 8px;
+  width: calc(100% - 32px); max-width: 420px; pointer-events: none;
+}
+.wf-pro-toast-stack.anchor-top { top: 66px; bottom: auto; flex-direction: column; }
+.wf-pro-toast {
+  pointer-events: auto; position: relative; overflow: hidden;
   background: #FFFFFF; border-radius: 14px; border-left: 4px solid var(--wi-green-700);
   box-shadow: 0 10px 28px rgba(0,0,0,.18);
-  padding: 12px 14px; display: flex; align-items: flex-start; gap: 9px;
-  opacity: 0; transform: translateX(-50%) translateY(-10px); pointer-events: none;
-  transition: opacity .2s ease, transform .2s ease;
+  padding: 12px 14px 14px; display: flex; align-items: flex-start; gap: 9px;
+  opacity: 0; transform: translateY(14px) scale(.98);
+  animation: wfProToastIn .28s cubic-bezier(.2,.7,.2,1) forwards;
 }
-.wf-auto-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); pointer-events: auto; }
-.wf-auto-toast.error { border-left-color: var(--wi-red-700); }
-.wf-auto-toast.warning { border-left-color: var(--wi-yellow-700); }
-.wf-auto-toast-icon { font-size: 1rem; line-height: 1.35; flex-shrink: 0; }
-.wf-auto-toast-text { font-size: 0.82rem; font-weight: 700; color: var(--wi-ink); line-height: 1.4; }
+.wf-pro-toast-stack.anchor-top .wf-pro-toast { transform: translateY(-10px) scale(.98); }
+.wf-pro-toast.leaving { animation: wfProToastOut .2s ease forwards; }
+@keyframes wfProToastIn { to { opacity: 1; transform: translateY(0) scale(1); } }
+@keyframes wfProToastOut { to { opacity: 0; transform: scale(.98); } }
+.wf-pro-toast.error { border-left-color: var(--wi-red-700); }
+.wf-pro-toast.warning { border-left-color: var(--wi-yellow-700); }
+.wf-pro-toast-icon { width: 20px; height: 20px; flex-shrink: 0; margin-top: 1px; display: flex; }
+.wf-pro-toast-icon-text { font-size: 1rem; line-height: 1.25; }
+.wf-pro-toast-check-circle { stroke: var(--wi-green-700); }
+.wf-pro-toast-check-path {
+  stroke: var(--wi-green-700); stroke-width: 2.5; fill: none;
+  stroke-linecap: round; stroke-linejoin: round;
+  stroke-dasharray: 24; stroke-dashoffset: 24;
+  animation: wfProToastCheckDraw .35s ease .08s forwards;
+}
+@keyframes wfProToastCheckDraw { to { stroke-dashoffset: 0; } }
+.wf-pro-toast-body { flex: 1; min-width: 0; }
+.wf-pro-toast-title { display: block; font-size: 0.82rem; font-weight: 700; color: var(--wi-ink); line-height: 1.35; }
+.wf-pro-toast-subtext { display: block; font-size: 0.74rem; color: var(--wi-muted); margin-top: 2px; line-height: 1.3; }
+.wf-pro-toast-undo {
+  border: none; background: none; color: var(--wi-primary); font-weight: 800; font-family: inherit;
+  cursor: pointer; font-size: 0.78rem; flex-shrink: 0; padding: 0; margin-top: 1px;
+}
+.wf-pro-toast-progress { position: absolute; left: 0; bottom: 0; height: 3px; width: 100%; background: var(--wi-green-700); transform-origin: left; }
+.wf-pro-toast.error .wf-pro-toast-progress { background: var(--wi-red-700); }
+.wf-pro-toast.warning .wf-pro-toast-progress { background: var(--wi-yellow-700); }
+.wf-pro-toast-progress.shrink { transition-property: transform; transition-timing-function: linear; transform: scaleX(0); }
+
+/* Row close animation (slide+fade, the list closes its own gap in place)
+   shared by Open Flows' Close button and Important WhatsApp's remove (x)
+   - a dedicated class/transition (not the generic .wf-card-exit keyframe
+   used by every other card in this file) specifically so Important
+   WhatsApp's Undo can smoothly reverse it by just removing the ".active"
+   class, which a one-shot @keyframes animation can't do cleanly. */
+.wf-row-close-exit {
+  overflow: hidden;
+  transition: opacity .32s cubic-bezier(.2,.7,.2,1), max-height .32s cubic-bezier(.2,.7,.2,1),
+    transform .32s cubic-bezier(.2,.7,.2,1), margin-bottom .32s ease, padding-top .32s ease, padding-bottom .32s ease;
+}
+.wf-row-close-exit.wf-row-close-exit-active {
+  opacity: 0; transform: translateX(24px); max-height: 0 !important; margin-bottom: 0; padding-top: 0; padding-bottom: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wf-pro-toast { animation: none !important; opacity: 1; transform: none; }
+  .wf-pro-toast.leaving { animation: none !important; opacity: 0; }
+  .wf-pro-toast-check-path { animation: none !important; stroke-dashoffset: 0; }
+  .wf-pro-toast-progress.shrink { transition: none !important; }
+  .wf-row-close-exit { transition: none !important; }
+}
 
 /* Google Sheet as a first-class input - the Load button's own info card
    (file name + every tab's headers/row count) and the "share with this
