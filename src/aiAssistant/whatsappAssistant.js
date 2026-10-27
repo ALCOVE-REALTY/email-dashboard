@@ -6487,6 +6487,46 @@ const EMOJI_ACK_REPLY = {
   english: '🙂 Let me know if you need anything.'
 };
 
+// Direct instruction (2026-10-26) - a live incident: a short/ambiguous
+// reply ("Yss sir", "Ok sir", "Haa", a bare name) inside an established
+// Banglish/Hinglish conversation got answered in English, because a
+// message this short carries no real language signal of its own - both
+// the word-list detector (detectLang) and the classifier's own per-
+// message judgment have nothing to go on and default to "english"
+// rather than staying consistent with what the sender has actually been
+// writing. A message this short never overrides the conversation's own
+// established language on its own - only a genuinely full message
+// clearly written in a DIFFERENT language does.
+function isShortOrAmbiguousForLanguage(text) {
+  const words = String(text || '').trim().split(/\s+/).filter(Boolean);
+  return words.length > 0 && words.length <= 2;
+}
+// Looks at the sender's own PRIOR incoming messages only (never SUBH's
+// own replies) for the most recent one that is itself substantial enough
+// to carry a real language signal - skips past any short/ambiguous ones
+// first, so a chain of short replies never lets uncertainty compound.
+// Returns null (never guessed) when no such message exists yet (a brand
+// new conversation), in which case the caller's own existing fallback
+// (the classifier's judgment, or detectLang(text)) is used unchanged.
+function detectEstablishedConversationLanguage(history) {
+  const incoming = (history || []).filter((h) => h.direction === 'in' && h.text);
+  for (let i = incoming.length - 1; i >= 0; i--) {
+    if (!isShortOrAmbiguousForLanguage(incoming[i].text)) {
+      return detectLang(incoming[i].text);
+    }
+  }
+  return null;
+}
+// The one place this stickiness is applied - callers pass whatever
+// language they would otherwise have used (the classifier's own
+// judgment, or a plain detectLang(text) fallback) as fallbackLang, and
+// only get overridden when BOTH this message is short/ambiguous AND the
+// conversation already has an established language to stick to.
+function resolveStickyLang(text, history, fallbackLang) {
+  if (!isShortOrAmbiguousForLanguage(text)) return fallbackLang;
+  return detectEstablishedConversationLanguage(history) || fallbackLang;
+}
+
 // Live review item 4 - a plain-text closing remark ("Thank you"/"Ok"/
 // "Thik ache"/"No Sir thank you") with nothing left open. Structural
 // (regex), not left to the model, same principle as isEmojiOnlyMessage -
@@ -6907,7 +6947,7 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
     if (lastOut && isClosingAckReplyText(lastOut.text)) {
       return { case: 'acknowledged', replyText: null, summaryForOwner: null };
     }
-    const lang = detectLang(text);
+    const lang = resolveStickyLang(text, history, detectLang(text));
     return { case: 'acknowledged', replyText: CLOSING_ACK_REPLY[lang] || CLOSING_ACK_REPLY.english, summaryForOwner: null, lang };
   }
 
@@ -6929,6 +6969,13 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
     classification = await classifyOfficialMessage(text, isGroup ? null : history);
   } catch (err) {
     classification = CLASSIFY_FALLBACK;
+  }
+  // Language stickiness (see resolveStickyLang's own comment) - a new
+  // object, never a mutation of `classification` in place, since the
+  // catch branch above can make `classification` the SAME shared
+  // CLASSIFY_FALLBACK constant object reused across every call.
+  if (!isGroup) {
+    classification = Object.assign({}, classification, { language: resolveStickyLang(text, history, classification.language) });
   }
 
   // Automated/non-human message (OTP, bank/delivery notification,
@@ -8336,5 +8383,10 @@ module.exports = {
   // Exported for scripts/check-whatsapp-engine.js only - live review
   // item 9 (tolerant Yes/No matching).
   isYesAnswer,
-  isNoAnswer
+  isNoAnswer,
+  // Exported for scripts/check-whatsapp-engine.js only - language
+  // stickiness for short/ambiguous messages (2026-10-26).
+  isShortOrAmbiguousForLanguage,
+  detectEstablishedConversationLanguage,
+  resolveStickyLang
 };

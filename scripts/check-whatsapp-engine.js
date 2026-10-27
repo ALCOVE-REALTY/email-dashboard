@@ -3874,6 +3874,42 @@ async function checkAsync(label, fn) {
     return Boolean(d1.replyText) && whatsappAssistant.isClosingAckReplyText(d1.replyText) && d2.replyText === null;
   });
 
+  console.log('='.repeat(70));
+  console.log('LANGUAGE STICKINESS (2026-10-26 live incident): a short/ambiguous reply ("Yss sir", "Ok sir", "Haa", a bare name) inside an established conversation never switches language on its own - only a genuinely full message clearly written in a DIFFERENT language does');
+  console.log('='.repeat(70));
+  check('isShortOrAmbiguousForLanguage: "Yss sir" (2 words) is short', whatsappAssistant.isShortOrAmbiguousForLanguage('Yss sir'));
+  check('isShortOrAmbiguousForLanguage: "Ok sir" (2 words) is short', whatsappAssistant.isShortOrAmbiguousForLanguage('Ok sir'));
+  check('isShortOrAmbiguousForLanguage: "Haa" (1 word) is short', whatsappAssistant.isShortOrAmbiguousForLanguage('Haa'));
+  check('isShortOrAmbiguousForLanguage: a bare name ("Tanmoy") is short', whatsappAssistant.isShortOrAmbiguousForLanguage('Tanmoy'));
+  check('isShortOrAmbiguousForLanguage: a genuine full sentence is NOT short', !whatsappAssistant.isShortOrAmbiguousForLanguage('Ajke ami office ashte parbo na, sorir ta thik nei'));
+  check('isShortOrAmbiguousForLanguage: empty text is not "short" (nothing to stick to)', !whatsappAssistant.isShortOrAmbiguousForLanguage(''));
+  check('detectEstablishedConversationLanguage: picks up the most recent substantial INCOMING message, skipping past a short one', whatsappAssistant.detectEstablishedConversationLanguage([
+    { direction: 'in', text: 'Ajke ami office ashte parbo na, sorir ta thik nei', ts: 1 },
+    { direction: 'out', text: 'Thik ache, apnar reporting manager-ke-o janiye rakhun.', ts: 2 },
+    { direction: 'in', text: 'Haa', ts: 3 }
+  ]) === 'banglish');
+  check('detectEstablishedConversationLanguage: never reads SUBH\'s OWN outgoing messages as the sender\'s language', whatsappAssistant.detectEstablishedConversationLanguage([
+    { direction: 'out', text: 'I am SUBH, Subhodeep\'s HR Assistant. How can I help?', ts: 1 },
+    { direction: 'in', text: 'Ajke ami office ashte parbo na, sorir ta thik nei', ts: 2 }
+  ]) === 'banglish');
+  check('detectEstablishedConversationLanguage: returns null (never guessed) when there is no substantial incoming message yet - a brand new conversation', whatsappAssistant.detectEstablishedConversationLanguage([]) === null);
+  check('resolveStickyLang: a short message in an established Banglish conversation stays Banglish, overriding whatever fallback the caller passed', whatsappAssistant.resolveStickyLang('Yss sir', [{ direction: 'in', text: 'Ajke ami office ashte parbo na, sorir ta thik nei', ts: 1 }], 'english') === 'banglish');
+  check('resolveStickyLang: a short message in an established English conversation stays English, overriding a Banglish fallback', whatsappAssistant.resolveStickyLang('Thik ache', [{ direction: 'in', text: 'I was not feeling well today so I could not come to office', ts: 1 }], 'banglish') === 'english');
+  check('resolveStickyLang: a FULL message clearly in a different language is never overridden, even with an established conversation language', whatsappAssistant.resolveStickyLang('Please let me know when I will get my salary slip', [{ direction: 'in', text: 'Ajke ami office ashte parbo na, sorir ta thik nei', ts: 1 }], 'english') === 'english');
+  check('resolveStickyLang: with no established language yet (brand new conversation), the caller\'s own fallback is used unchanged', whatsappAssistant.resolveStickyLang('Haa', [], 'english') === 'english');
+  await checkAsync('LIVE BUG, end to end (deterministic path): "Ok sir" (a closing message, no model call) inside a Banglish conversation gets the BANGLISH closing acknowledgement, never the English one', async () => {
+    const phone = '910000000973';
+    const history = [{ direction: 'in', text: 'Ajke ami office ashte parbo na, sorir ta thik nei', ts: Date.now() - 60000 }];
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'StickyTest', firstName: 'StickyTest', text: 'Ok sir', isGroup: false, history });
+    return d.lang === 'banglish' && d.replyText.includes('Kono chinta nei');
+  });
+  await checkAsync('LIVE BUG, end to end (deterministic path): a short Bengali-looking "Thik ache" inside an ENGLISH conversation stays English, never switches to Banglish', async () => {
+    const phone = '910000000974';
+    const history = [{ direction: 'in', text: 'I was not feeling well today so I could not come to office', ts: Date.now() - 60000 }];
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'StickyTest2', firstName: 'StickyTest2', text: 'Thik ache', isGroup: false, history });
+    return d.lang === 'english' && d.replyText.includes('most welcome');
+  });
+
   // --- Item 5: quoted/replied message context (gateway field UNCONFIRMED - defensive multi-shape extraction) ---
   check('extractQuotedText reads a plain string quotedMsg field', whatsappAssistant.extractQuotedText({ content: { text: 'reply', quotedMsg: 'Sir, 7:40 a.m. ferry dhorte asubidha hochhe, 8 a.m. er ferry dhorle subidha hoy' } }) === 'Sir, 7:40 a.m. ferry dhorte asubidha hochhe, 8 a.m. er ferry dhorle subidha hoy');
   check('extractQuotedText reads a {text} object quotedMsg field', whatsappAssistant.extractQuotedText({ content: { text: 'reply', quotedMsg: { text: 'the earlier message' } } }) === 'the earlier message');

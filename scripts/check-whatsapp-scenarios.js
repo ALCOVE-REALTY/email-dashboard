@@ -576,6 +576,33 @@ scenario('T2-6: "HAA" + A SEPARATE TOPIC, ANOTHER FLOW ALREADY OPEN FOR A DIFFER
   }
 });
 
+// --- Language stickiness (2026-10-26 live incident) ---
+scenario('Language stickiness: a short "Yss sir" reply inside an established Banglish conversation stays Banglish, never switches to English', async () => {
+  const phone = '910000001210';
+  try {
+    const history = [{ direction: 'in', text: 'Ajke ami office ashte parbo na, sorir ta thik nei.', ts: Date.now() - 60000 }];
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenSticky1', firstName: 'ScenSticky1', text: 'Yss sir', isGroup: false, history });
+    // d.lang is the decision's own authoritative language choice - more
+    // reliable than inspecting replyText's literal prefix, since not
+    // every reply shape leads with a separate identity line.
+    if (!d.replyText || d.lang !== 'banglish') return { pass: false, detail: 'live bug reproduced: switched away from Banglish for a short reply in a Banglish conversation (lang=' + d.lang + '): ' + d.replyText };
+    return { pass: true, detail: 'stayed Banglish for the short reply' };
+  } finally {
+    await cleanupHrFlowArtifacts(phone);
+  }
+});
+scenario('Language stickiness (reverse): a short reply (a bare name) inside an established English conversation stays English, never switches to Banglish', async () => {
+  const phone = '910000001211';
+  try {
+    const history = [{ direction: 'in', text: 'I was not feeling well today so I could not come to office.', ts: Date.now() - 60000 }];
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenSticky2', firstName: 'ScenSticky2', text: 'Tanmoy', isGroup: false, history });
+    if (!d.replyText || d.lang !== 'english') return { pass: false, detail: 'live bug reproduced: switched away from English for a short reply in an English conversation (lang=' + d.lang + '): ' + d.replyText };
+    return { pass: true, detail: 'stayed English for the short reply' };
+  } finally {
+    await cleanupHrFlowArtifacts(phone);
+  }
+});
+
 async function runAll() {
   await require('./testBootstrap').setupTestEnvironment();
   let reliableCount = 0;
