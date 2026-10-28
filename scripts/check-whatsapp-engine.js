@@ -4306,12 +4306,15 @@ async function checkAsync(label, fn) {
   console.log('='.repeat(70));
   console.log('TASK 5 (2026-10-27): templated-style replies for topics without a template + growing the templates');
   console.log('='.repeat(70));
-  check('validateModelReply accepts a normal short Banglish reply', whatsappAssistant.validateModelReply('Thik ache, ami Subhodeep-ke janiye dicchi.', 'banglish'));
-  check('validateModelReply rejects a reply over the length ceiling', !whatsappAssistant.validateModelReply('A'.repeat(500), 'english'));
-  check('validateModelReply rejects an Aadhaar-shaped number in the reply', !whatsappAssistant.validateModelReply('Apnar Aadhaar number 1234 5678 9012 ache amader record-e.', 'banglish'));
-  check('validateModelReply rejects a PAN-shaped number in the reply', !whatsappAssistant.validateModelReply('Apnar PAN ABCDE1234F ache amader record-e.', 'banglish'));
-  check('validateModelReply rejects a long, confidently-English reply inside a non-English conversation', !whatsappAssistant.validateModelReply('I will check with Subhodeep about this and get back to you with a proper update very soon.', 'banglish'));
-  check('validateModelReply does NOT false-positive on a short reply with no language-specific words either way', whatsappAssistant.validateModelReply('Ok, noted.', 'banglish'));
+  await checkAsync('validateModelReply accepts a normal short Banglish reply', async () => whatsappAssistant.validateModelReply('Thik ache, ami Subhodeep-ke janiye dicchi.', 'banglish', ''));
+  await checkAsync('validateModelReply rejects a reply over the length ceiling', async () => !(await whatsappAssistant.validateModelReply('A'.repeat(500), 'english', '')));
+  await checkAsync('validateModelReply rejects an Aadhaar-shaped number in the reply', async () => !(await whatsappAssistant.validateModelReply('Apnar Aadhaar number 1234 5678 9012 ache amader record-e.', 'banglish', '')));
+  await checkAsync('validateModelReply rejects a PAN-shaped number in the reply', async () => !(await whatsappAssistant.validateModelReply('Apnar PAN ABCDE1234F ache amader record-e.', 'banglish', '')));
+  await checkAsync('validateModelReply rejects a long, confidently-English reply inside a non-English conversation', async () => !(await whatsappAssistant.validateModelReply('I will check with Subhodeep about this and get back to you with a proper update very soon.', 'banglish', '')));
+  await checkAsync('validateModelReply does NOT false-positive on a short reply with no language-specific words either way', async () => whatsappAssistant.validateModelReply('Ok, noted.', 'banglish', ''));
+  await checkAsync('validateModelReply (section 2) rejects a reply containing a NUMBER not grounded in the current message/topic', async () => !(await whatsappAssistant.validateModelReply('Apnar leave 15 din-er jonno approve hoyeche.', 'banglish', 'Amar leave ki approve hoyeche?')));
+  await checkAsync('validateModelReply (section 2) accepts a reply whose number IS grounded in the current message', async () => whatsappAssistant.validateModelReply('Ji, apnar 15 tarikh-er leave-ta note korlam.', 'banglish', '15 tarikh-e amar leave chai'));
+  await checkAsync('validateModelReply (section 2) rejects a reply inventing a real employee\'s full name not mentioned anywhere in the current exchange', async () => !(await whatsappAssistant.validateModelReply('Ami Tanmoy Mondal-ke bishoy-ta janiye diyechi.', 'banglish', 'Amar chuti ta kobe shuru hobe?')));
   await checkAsync('matchReplyTemplate returns null immediately (no API call) when there are no enabled templates', async () => {
     const r = await whatsappAssistant.matchReplyTemplate('any message', []);
     return r === null;

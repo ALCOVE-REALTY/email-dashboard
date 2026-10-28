@@ -50,6 +50,17 @@ detail ("letter") pulled from an older, unrelated message in the conversation
 history - never reinterpret an odd-sounding informing message as a wrong-
 number/misdirected one.
 
+Section 2's pre-send check (`validateModelReply`) also rejects a model-written
+reply containing a NUMBER or a real employee's FULL NAME that isn't grounded in
+the current message or its already-resolved topic label - never the older
+history. A general "no invented common noun" check (e.g. an invented "letter")
+is not reliably code-checkable without false-flagging normal good replies;
+that case is instead handled by CONTEXT_REPLY_SYSTEM_PROMPT's own grounding
+rule (a standalone message is answered strictly on its own content, never an
+older unrelated message's details) and, for "informing" messages specifically,
+is structurally impossible after section 1 (the model never drafts that reply
+at all).
+
 ## Deployment
 
 **Not Vercel. Never run the `vercel` CLI or check Vercel deployments for this

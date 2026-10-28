@@ -6574,7 +6574,11 @@ const CONTEXT_REPLY_SYSTEM_PROMPT =
   'If this is a genuine follow-up/repeated question (visible in the history - they already asked ' +
   'this or something close to it), acknowledge that directly and empathise briefly and genuinely if ' +
   'they sound frustrated or have been waiting - never a template phrase, really respond to what they ' +
-  'said. ALWAYS mention the actual topic by name (you are told it below) - never just say "this"/"it"/ ' +
+  'said. HISTORY GROUNDING (Task 1, section 2): answer the LATEST message strictly on its own content - ' +
+  'never bring in an object, fact, or noun from an OLDER, different message earlier in the history, even ' +
+  'in the same conversation, unless their latest message itself is clearly continuing that exact same ' +
+  'topic (a bare follow-up like "Tau kobe pabo?"). A standalone new message is a NEW message - answered ' +
+  'on its own, never mixed with something unrelated said earlier. ALWAYS mention the actual topic by name (you are told it below) - never just say "this"/"it"/ ' +
   '"your issue"/"bishoy-ta" with no topic attached; a generic reply with no named topic is a failure. ' +
   'NEVER open with "Namaskar"/"Namaste"/"Ji"/"Dear" - go straight to the point. NEVER open with ' +
   '"Good morning"/"Good afternoon"/"Good evening"/"Good night" or an equivalent ("Shubho sokal", ' +
@@ -6698,11 +6702,13 @@ async function generateConversationReply(text, history, firstName, topicLabel, n
     content = (retried && !FORBIDDEN_ROBOTIC_RE.test(retried)) ? retried
       : (NATURAL_CLARIFY_FALLBACK[lang] || NATURAL_CLARIFY_FALLBACK.english)(topicLabel);
   }
-  // Task 5 - final generic safety-net check, after every targeted
-  // retry/fallback above has already had its chance to clean the reply
-  // up. See validateModelReply's own comment for what this does and
-  // doesn't catch.
-  if (content && !validateModelReply(content, lang)) {
+  // Task 5 / Task 1 section 2 - final generic safety-net check, after
+  // every targeted retry/fallback above has already had its chance to
+  // clean the reply up. Grounded against the CURRENT message plus the
+  // already-resolved topic label (never the older conversation history -
+  // a standalone message is checked strictly on its own content). See
+  // validateModelReply's own comment for what this does and doesn't catch.
+  if (content && !(await validateModelReply(content, lang, text + ' ' + topicLabel))) {
     content = MODEL_REPLY_SAFE_FALLBACK[lang] || MODEL_REPLY_SAFE_FALLBACK.english;
   }
   return content || null;
@@ -8971,7 +8977,31 @@ const MODEL_REPLY_SAFE_FALLBACK = {
   hinglish: 'Maine aapki baat note kar li hai aur Subhodeep ko bata raha hoon.',
   english: "I've noted this and I'm letting Subhodeep know."
 };
-function validateModelReply(replyText, lang) {
+// Task 1 (2026-10-27), section 2 - checks ONLY what can be checked
+// reliably without false-flagging a normal good reply: a NUMBER in the
+// reply must actually appear somewhere grounding it (the current message
+// or the already-resolved topic label - never invented), and a REAL
+// employee's full name mentioned in the reply must likewise be grounded
+// (never a name pulled from nowhere). A general "no invented common noun"
+// check (e.g. catching an invented "letter") is NOT attempted here - that
+// is not reliably code-checkable without constant false positives on
+// ordinary good replies; it is instead handled by the grounding rule
+// added to CONTEXT_REPLY_SYSTEM_PROMPT (a standalone message is answered
+// strictly on its own content, never an older unrelated message's
+// details) and, for "informing" messages specifically, by section 1's own
+// fix (the model never drafts that reply at all anymore).
+async function replyMentionsUngroundedRealName(replyText, groundingText) {
+  const { employees } = await employeeService.getEmployeeData().catch(() => ({ employees: [] }));
+  const ground = String(groundingText || '').toLowerCase();
+  for (const emp of employees) {
+    const name = String(emp.name || '').trim();
+    if (!name || name.split(/\s+/).length < 2) continue; // first-name-only is too common a word to check reliably
+    if (name.toLowerCase() === 'subhodeep kundu chowdhury') continue; // SUBH's own HR manager - always a legitimate mention
+    if (replyText.includes(name) && !ground.includes(name.toLowerCase())) return true;
+  }
+  return false;
+}
+async function validateModelReply(replyText, lang, groundingText) {
   const t = String(replyText || '').trim();
   if (!t) return false;
   // Length - a real person's WhatsApp message, never an essay (spec:
@@ -8996,6 +9026,14 @@ function validateModelReply(replyText, lang) {
     // in a non-English conversation is treated as a genuine mismatch.
     return false;
   }
+  // No invented NUMBER - every digit-run in the reply must be grounded in
+  // the current message or the already-resolved topic (never a date,
+  // amount, or figure pulled from nowhere).
+  const replyNumbers = t.match(/\d+/g) || [];
+  const ground = String(groundingText || '');
+  if (replyNumbers.some((n) => !ground.includes(n))) return false;
+  // No invented real NAME not actually grounded in this exchange.
+  if (await replyMentionsUngroundedRealName(t, ground)) return false;
   return true;
 }
 
