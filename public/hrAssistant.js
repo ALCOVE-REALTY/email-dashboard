@@ -53,7 +53,7 @@
   const reportViewDownloadBtn = document.getElementById('hrReportViewDownloadBtn');
   // SUBH Phase 1 redesign - Home / Important Communications / conversation
   // detail, all living inside this same panel (see workforce.html's own
-  // comment on hrCommsHead/hrTodayUpdatesCard/hrCommsPage/hrConvoPage).
+  // comment on hrCommsHead/hrTodayUpdatesCard/hrCommsHubPage/hrConvoPage).
   const homeHead = document.querySelector('.wf-ai-panel-head:not(.wf-comms-head)');
   const commsHead = document.getElementById('hrCommsHead');
   const commsBackBtn = document.getElementById('hrCommsBackBtn');
@@ -63,11 +63,18 @@
   const commsHeadBadge = document.getElementById('hrCommsHeadBadge');
   const todayUpdatesCard = document.getElementById('hrTodayUpdatesCard');
   const todayUpdatesBadge = document.getElementById('hrTodayUpdatesBadge');
-  const commsPage = document.getElementById('hrCommsPage');
+  // Task 4 (2026-10-28) - Important Communications hub: a hub page (two
+  // tappable rows, mirroring hrHubPage below) plus two dedicated
+  // sub-pages, replacing the old single page that stacked a mail card and
+  // a capped WhatsApp list together.
+  const commsHubPage = document.getElementById('hrCommsHubPage');
+  const commsHubMailTile = document.getElementById('hrCommsHubMailTile');
+  const commsHubMailBadge = document.getElementById('hrCommsHubMailBadge');
+  const commsHubWaTile = document.getElementById('hrCommsHubWaTile');
+  const commsHubWaBadge = document.getElementById('hrCommsHubWaBadge');
   const commsSystemStrip = document.getElementById('hrCommsSystemStrip');
+  const commsMailPage = document.getElementById('hrCommsMailPage');
   const commsMailCard = document.getElementById('hrCommsMailCard');
-  const commsWaList = document.getElementById('hrCommsWaList');
-  const commsWaViewAll = document.getElementById('hrCommsWaViewAll');
   const commsWaAllPage = document.getElementById('hrCommsWaAllPage');
   const commsWaAllList = document.getElementById('hrCommsWaAllList');
   const openFlowsBtn = document.getElementById('hrOpenFlowsBtn');
@@ -1343,10 +1350,8 @@
     // only touches the DOM when the content actually changed, and only
     // while the relevant page is actually open - no wasted renders
     // elsewhere, no flicker when nothing's new.
-    if (panelView === 'important') {
-      renderWaListLive(commsWaList, data.whatsappItems || []);
-      setCountBadge(commsHeadBadge, (data.importantMailsCount || 0) + (data.importantWhatsappCount || 0));
-      if (commsHeadSubtitle) commsHeadSubtitle.textContent = (data.importantMailsCount || 0) + ' important mails · ' + (data.importantWhatsappCount || 0) + ' important WhatsApp';
+    if (panelView === 'commsHub') {
+      renderCommsHubBadges(data);
     } else if (panelView === 'waAll') {
       renderWaListLive(commsWaAllList, data.whatsappAllItems || []);
     } else if (panelView === 'hub') {
@@ -1495,7 +1500,8 @@
   function renderNavEntry(entry) {
     if (entry.type === 'home') showHome();
     else if (entry.type === 'hub') showHub();
-    else if (entry.type === 'important') showImportant();
+    else if (entry.type === 'commsHub') showCommsHub();
+    else if (entry.type === 'commsMail') showCommsMail();
     else if (entry.type === 'waAll') showWaAll();
     else if (entry.type === 'openFlows') showOpenFlows();
     else if (entry.type === 'templates') showTemplates();
@@ -1529,7 +1535,8 @@
   function setPanelView(view) {
     panelView = view;
     const isHome = view === 'home';
-    const isImportant = view === 'important';
+    const isCommsHub = view === 'commsHub';
+    const isCommsMail = view === 'commsMail';
     const isConvo = view === 'conversation';
     const isHub = view === 'hub';
     const isReminders = view === 'reminders';
@@ -1546,7 +1553,8 @@
     if (commsHead) commsHead.hidden = !usesCommsHead;
     if (todayUpdatesCard) todayUpdatesCard.hidden = !isHome;
     messagesEl.hidden = !isHome;
-    if (commsPage) commsPage.hidden = !isImportant;
+    if (commsHubPage) commsHubPage.hidden = !isCommsHub;
+    if (commsMailPage) commsMailPage.hidden = !isCommsMail;
     if (convoPage) convoPage.hidden = !isConvo;
     if (hubPage) hubPage.hidden = !isHub;
     if (remPage) remPage.hidden = !isReminders;
@@ -1559,11 +1567,17 @@
     if (autoListPage) autoListPage.hidden = !isAutoList;
     if (autoPage) autoPage.hidden = !isAutomation;
     if (inputArea) inputArea.hidden = isConvo || isRemDetail || isAutomation || isAutoList;
-    if (isImportant) {
+    if (isCommsHub) {
       if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon';
       if (commsHeadIcon) commsHeadIcon.innerHTML = MAIL_SVG;
       if (commsHeadTitle) commsHeadTitle.textContent = 'Important Communications';
       if (commsHeadSubtitle) commsHeadSubtitle.textContent = '';
+    } else if (isCommsMail) {
+      if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon';
+      if (commsHeadIcon) commsHeadIcon.innerHTML = MAIL_SVG;
+      if (commsHeadTitle) commsHeadTitle.textContent = 'Mails';
+      if (commsHeadSubtitle) commsHeadSubtitle.textContent = '';
+      if (commsHeadBadge) commsHeadBadge.hidden = true;
     } else if (isWaAll) {
       if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon whatsapp';
       if (commsHeadIcon) commsHeadIcon.innerHTML = WHATSAPP_SVG;
@@ -1729,20 +1743,17 @@
     const fresh = await fetch('/api/workforce/hr-assistant/communications-summary').then((res) => res.json()).catch(() => null);
     if (fresh) {
       pageDataCache.comms = fresh;
-      if (panelView === 'important') renderWaListLive(commsWaList, fresh.whatsappItems || []);
-      else if (panelView === 'waAll') renderWaListLive(commsWaAllList, fresh.whatsappAllItems || []);
+      if (panelView === 'waAll') renderWaListLive(commsWaAllList, fresh.whatsappAllItems || []);
+      else if (panelView === 'commsHub') renderCommsHubBadges(fresh);
       setCountBadge(todayUpdatesBadge, (fresh.importantMailsCount || 0) + (fresh.importantWhatsappCount || 0) + (fresh.remindersPendingCount || 0));
-      // Only while a comms page is actually on screen - commsHeadBadge is
-      // shared with the Reminders page header, which means something
+      // Only while the WhatsApp page is actually on screen - commsHeadBadge
+      // is shared with the Reminders page header, which means something
       // completely different there (counts.all, set by its own
       // renderRemindersData); writing the mails+whatsapp total here
       // unconditionally could otherwise stomp that value if this delete
       // somehow resolves after the person has already navigated away.
-      if (panelView === 'important' || panelView === 'waAll') {
+      if (panelView === 'waAll') {
         setCountBadge(commsHeadBadge, (fresh.importantMailsCount || 0) + (fresh.importantWhatsappCount || 0));
-      }
-      if (commsHeadSubtitle && panelView === 'important') {
-        commsHeadSubtitle.textContent = (fresh.importantMailsCount || 0) + ' important mails · ' + (fresh.importantWhatsappCount || 0) + ' important WhatsApp';
       }
     }
   }
@@ -1797,12 +1808,17 @@
     waListState.set(container, { fingerprint, chatIds: newChatIds });
   }
 
-  function renderCommsData(data) {
+  // Task 4 (2026-10-28) - the two hub-tile badges (Mails / WhatsApp),
+  // shared between the initial render and every live poll tick while the
+  // hub itself is on screen.
+  function renderCommsHubBadges(data) {
+    setCountBadge(commsHubMailBadge, data.importantMailsCount || 0);
+    setCountBadge(commsHubWaBadge, data.importantWhatsappCount || 0);
     const total = (data.importantMailsCount || 0) + (data.importantWhatsappCount || 0);
     setCountBadge(commsHeadBadge, total);
-    if (commsHeadSubtitle) {
-      commsHeadSubtitle.textContent = (data.importantMailsCount || 0) + ' important mails · ' + (data.importantWhatsappCount || 0) + ' important WhatsApp';
-    }
+  }
+  function renderCommsData(data) {
+    renderCommsHubBadges(data);
 
     const notices = data.systemNotices || [];
     if (commsSystemStrip) {
@@ -1824,14 +1840,11 @@
     // Phase 3 builds real Gmail-backed important mails - for now this is
     // a plain, honest empty state rather than a fake/mocked list.
     if (commsMailCard) commsMailCard.textContent = 'Mail integration coming soon.';
-
-    renderWaListLive(commsWaList, data.whatsappItems || []);
   }
 
-  // Full-screen "View All" (speed/UX fix: the button existed but had no
-  // click handler at all) - same data already in pageDataCache.comms
-  // (warm from the badge poll almost always), same row rendering as the
-  // mixed Important Communications page, just without the mails section.
+  // The WhatsApp sub-page (Task 4) - same data already in
+  // pageDataCache.comms (warm from the badge poll almost always), stale-
+  // while-revalidate same as every other comms view.
   function showWaAll() {
     setPanelView('waAll');
     const cached = pageDataCache.comms;
@@ -1842,7 +1855,15 @@
       if (panelView === 'waAll') renderWaListLive(commsWaAllList, data.whatsappAllItems || []);
     }).catch(() => { /* keep showing whatever's already rendered */ });
   }
-  if (commsWaViewAll) commsWaViewAll.addEventListener('click', () => { pushNav({ type: 'waAll' }); showWaAll(); });
+  if (commsHubWaTile) commsHubWaTile.addEventListener('click', () => { pushNav({ type: 'waAll' }); showWaAll(); });
+  // The Mails sub-page (Task 4) - static placeholder today (Phase 3 builds
+  // real Gmail-backed mail), but still a real page/nav entry so the
+  // pattern mirrors WhatsApp's own and is ready to hold real content.
+  function showCommsMail() {
+    setPanelView('commsMail');
+    if (commsMailCard) commsMailCard.textContent = 'Mail integration coming soon.';
+  }
+  if (commsHubMailTile) commsHubMailTile.addEventListener('click', () => { pushNav({ type: 'commsMail' }); showCommsMail(); });
 
   // "Open flows" - owner visibility fix for the stuck-test-confirmation
   // incident (a week-old pending confirmation silently blocked every new
@@ -2372,11 +2393,7 @@
   async function loadCommsPage() {
     refreshOpenFlowsBadge(); // fire-and-forget, independent of the mails/WhatsApp render below
     loadSiteAliasesBadge(); // fire-and-forget, same reasoning
-    if (pageDataCache.comms) {
-      renderCommsData(pageDataCache.comms);
-    } else if (commsWaList) {
-      commsWaList.innerHTML = '<div class="wf-skeleton-list"><div class="wf-skeleton-row"></div><div class="wf-skeleton-row"></div><div class="wf-skeleton-row"></div></div>';
-    }
+    if (pageDataCache.comms) renderCommsData(pageDataCache.comms);
     let data;
     try {
       const resp = await fetch('/api/workforce/hr-assistant/communications-summary');
@@ -2387,7 +2404,7 @@
       if (pageDataCache.comms) return; // keep showing the still-valid cached render
       data = { importantMailsCount: 0, whatsappItems: [], whatsappAllItems: [], importantWhatsappCount: 0, systemNotices: [] };
     }
-    if (panelView !== 'important') return; // navigated away before the fetch resolved
+    if (panelView !== 'commsHub') return; // navigated away before the fetch resolved
     renderCommsData(data);
   }
 
@@ -2395,8 +2412,8 @@
     setPanelView('home');
   }
 
-  function showImportant() {
-    setPanelView('important');
+  function showCommsHub() {
+    setPanelView('commsHub');
     loadCommsPage();
   }
 
@@ -2923,7 +2940,7 @@
     renderHubBadges(comms, remCounts);
   }
   if (hubRemindersTile) hubRemindersTile.addEventListener('click', () => { pushNav({ type: 'reminders', filter: 'today' }); showReminders(); });
-  if (hubCommsTile) hubCommsTile.addEventListener('click', () => { pushNav({ type: 'important' }); showImportant(); });
+  if (hubCommsTile) hubCommsTile.addEventListener('click', () => { pushNav({ type: 'commsHub' }); showCommsHub(); });
 
   function priorityLabel(p) { return p === 'high' ? 'High' : p === 'low' ? 'Low' : 'Medium'; }
   function sourceLabel(s) { return s === 'email' ? 'Email' : s === 'whatsapp' ? 'WhatsApp' : s === 'report' ? 'Report' : 'Manual'; }
@@ -3923,12 +3940,20 @@
     if (autoSheetShareEmail) autoSheetShareEmail.textContent = autoServiceAccountEmail;
     return autoServiceAccountEmail;
   }
+  // Task 4 (2026-10-28), direct instruction - no more app-level "Copied"
+  // toast: Android's own native "Copied" bubble (fired by the browser
+  // itself on navigator.clipboard.writeText()) plus this button's own
+  // label change is enough; a second, redundant toast on top of it was
+  // the actual complaint. Root cause of an earlier fix "not taking effect
+  // live": this file is served with a manual cache-busting version query
+  // (hrAssistant.js?v=N in workforce.html) that has to be bumped by hand
+  // on every change, or a browser that already cached the old file keeps
+  // using it indefinitely - bumped as part of this same commit.
   if (autoSheetShareCopyBtn) autoSheetShareCopyBtn.addEventListener('click', async () => {
     const email = await loadServiceAccountEmailOnce();
     try { await navigator.clipboard.writeText(email); } catch (err) { /* clipboard API unavailable - the email is still shown plainly in the box */ }
     autoSheetShareCopyBtn.textContent = 'Copied ✓';
     autoSheetShareCopyBtn.classList.add('copied');
-    showActionToast('Copied ✓');
     setTimeout(() => { autoSheetShareCopyBtn.textContent = 'Copy'; autoSheetShareCopyBtn.classList.remove('copied'); }, 1800);
   });
 

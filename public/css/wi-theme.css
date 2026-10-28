@@ -1927,6 +1927,7 @@ body { background: var(--wi-bg); }
 .wf-hub-tile-icon { width: 42px; height: 42px; border-radius: var(--wi-r-tile); flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
 .wf-hub-tile-icon.reminders { background: var(--wi-purple-50); color: var(--wi-purple); }
 .wf-hub-tile-icon.comms { background: var(--wi-primary-50); color: var(--wi-primary); }
+.wf-hub-tile-icon.whatsapp { background: var(--wi-whatsapp-bg); color: var(--wi-whatsapp); }
 .wf-hub-tile-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .wf-hub-tile-title { font-weight: 800; font-size: 0.92rem; color: var(--wi-ink); }
 .wf-hub-tile-sub { font-size: 0.74rem; font-weight: 600; color: var(--wi-muted); }

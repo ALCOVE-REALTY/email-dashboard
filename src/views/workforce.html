@@ -7,7 +7,7 @@
   <link rel="stylesheet" href="styles.css?v=10" />
   <link rel="stylesheet" href="workforce.css?v=132" />
   <link rel="stylesheet" href="workforce-ui-enhance.css?v=1" />
-  <link rel="stylesheet" href="css/wi-theme.css?v=9" />
+  <link rel="stylesheet" href="css/wi-theme.css?v=10" />
 </head>
 <body>
   <div class="wf-shell">
@@ -170,70 +170,96 @@
 
       <div class="wf-ai-messages" id="hrAssistantMessages"></div>
 
-      <!-- Important Communications - built fresh from
+      <!-- Important Communications hub (Task 4, 2026-10-28) - mirrors the
+           Today's Updates hub pattern (hrHubPage below) one level deeper:
+           two tappable rows (Mails / WhatsApp), each its own dedicated
+           full-screen page. Replaces the old single page that stacked a
+           mail card and a capped WhatsApp list together. Built fresh from
            GET /hr-assistant/communications-summary each time it's opened
            (see loadCommsPage in hrAssistant.js), not cached chat state. -->
-      <div class="wf-comms-page" id="hrCommsPage" hidden>
+      <div class="wf-comms-page" id="hrCommsHubPage" hidden>
         <div class="wf-comms-system-strip" id="hrCommsSystemStrip" hidden></div>
-        <div class="wf-comms-section">
-          <div class="wf-comms-section-head"><span>Important Mails</span></div>
-          <div class="wf-comms-mail-card" id="hrCommsMailCard"></div>
-        </div>
-        <div class="wf-comms-section">
-          <div class="wf-comms-section-head">
-            <span class="wf-comms-section-title">Important WhatsApp</span>
-            <span class="wf-comms-section-actions">
-              <button type="button" class="wf-open-flows-btn" id="hrActionNeededBtn" aria-label="Action needed" title="Action needed">
-                <span class="wf-open-flows-btn-circle">
-                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M22 12h-6l-2 3h-4l-2-3H2"/>
-                    <path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>
-                  </svg>
-                </span>
-                <span class="wf-open-flows-badge wi-count-badge danger" id="hrActionNeededBadge" hidden></span>
-              </button>
-              <button type="button" class="wf-open-flows-btn" id="hrOpenFlowsBtn" aria-label="Open flows">
-                <span class="wf-open-flows-btn-circle">
-                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M6 4h12"/>
-                    <path d="M6 20h12"/>
-                    <path d="M7 4c0 4.5 3.2 6.5 5 8-1.8 1.5-5 3.5-5 8"/>
-                    <path d="M17 4c0 4.5-3.2 6.5-5 8 1.8 1.5 5 3.5 5 8"/>
-                  </svg>
-                </span>
-                <span class="wf-open-flows-badge wi-count-badge danger" id="hrOpenFlowsBadge" hidden></span>
-              </button>
-              <button type="button" class="wf-open-flows-btn" id="hrTemplatesBtn" aria-label="Templates" title="Templates">
-                <span class="wf-open-flows-btn-circle">
-                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                    <path d="M14 2v6h6"/>
-                    <line x1="9" y1="13" x2="15" y2="13"/>
-                    <line x1="9" y1="17" x2="15" y2="17"/>
-                  </svg>
-                </span>
-              </button>
-              <button type="button" class="wf-open-flows-btn" id="hrSiteAliasesBtn" aria-label="Site aliases" title="Site aliases">
-                <span class="wf-open-flows-btn-circle">
-                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M21 10c0 7-9 12-9 12s-9-5-9-12a9 9 0 0 1 18 0z"/>
-                    <circle cx="12" cy="10" r="3"/>
-                  </svg>
-                </span>
-                <span class="wf-open-flows-badge wi-count-badge danger" id="hrSiteAliasesBadge" hidden></span>
-              </button>
-              <span class="wf-comms-viewall" id="hrCommsWaViewAll">View All ›</span>
-            </span>
-          </div>
-          <div class="wf-comms-wa-list" id="hrCommsWaList"></div>
-        </div>
+        <button type="button" class="wf-hub-tile" id="hrCommsHubMailTile">
+          <span class="wf-hub-tile-icon comms">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M22 6l-10 7L2 6"/></svg>
+          </span>
+          <span class="wf-hub-tile-main">
+            <span class="wf-hub-tile-title">Mails</span>
+            <span class="wf-hub-tile-sub">Important mail needing you</span>
+          </span>
+          <span class="wf-hub-tile-end">
+            <span class="wf-hub-tile-badge wi-count-badge danger" id="hrCommsHubMailBadge" hidden>0</span>
+            <svg class="wf-hub-tile-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+          </span>
+        </button>
+        <button type="button" class="wf-hub-tile" id="hrCommsHubWaTile">
+          <span class="wf-hub-tile-icon whatsapp">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M12.04 2C6.58 2 2.13 6.45 2.13 11.91c0 1.75.46 3.45 1.32 4.95L2 22l5.25-1.38c1.45.79 3.08 1.21 4.79 1.21h.01c5.46 0 9.91-4.45 9.91-9.91C21.96 6.45 17.5 2 12.04 2zm5.75 14.02c-.24.68-1.39 1.32-1.9 1.4-.5.08-1.05.15-3.34-.7-2.8-1.05-4.6-3.85-4.74-4.03-.14-.18-1.14-1.51-1.14-2.88 0-1.37.72-2.04.98-2.32.26-.28.56-.34.75-.34h.53c.17 0 .4-.02.62.47.24.55.8 1.9.87 2.04.07.14.11.31.02.5-.09.19-.14.31-.28.47-.14.16-.29.36-.42.48-.14.13-.28.28-.12.55.16.27.71 1.17 1.53 1.89 1.05.93 1.94 1.22 2.21 1.36.27.14.43.12.59-.07.16-.19.68-.79.86-1.06.18-.27.36-.22.6-.13.24.09 1.55.73 1.81.86.27.14.44.2.51.31.07.11.07.61-.17 1.29z"/></svg>
+          </span>
+          <span class="wf-hub-tile-main">
+            <span class="wf-hub-tile-title">WhatsApp</span>
+            <span class="wf-hub-tile-sub">Important WhatsApp needing you</span>
+          </span>
+          <span class="wf-hub-tile-end">
+            <span class="wf-hub-tile-badge wi-count-badge danger" id="hrCommsHubWaBadge" hidden>0</span>
+            <svg class="wf-hub-tile-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+          </span>
+        </button>
       </div>
 
-      <!-- Full-screen "View All" - just the Important WhatsApp rows, same
-           data/rendering as the section above (see hrAssistant.js's
-           buildWaRowHtml/wireWaRows), for when the list grows past what
-           fits in the mixed Important Communications page. -->
+      <!-- Mails sub-page (Task 4). -->
+      <div class="wf-comms-page" id="hrCommsMailPage" hidden>
+        <div class="wf-comms-mail-card" id="hrCommsMailCard"></div>
+      </div>
+
+      <!-- WhatsApp sub-page (Task 4) - the full, unbounded WhatsApp list
+           (what the old "View All" page already showed), plus the owner
+           toolbar (Action needed / Open flows / Templates / Site aliases). -->
       <div class="wf-comms-page" id="hrCommsWaAllPage" hidden>
+        <div class="wf-comms-section-head" style="padding:0 2px 8px">
+          <span class="wf-comms-section-title">Important WhatsApp</span>
+          <span class="wf-comms-section-actions">
+            <button type="button" class="wf-open-flows-btn" id="hrActionNeededBtn" aria-label="Action needed" title="Action needed">
+              <span class="wf-open-flows-btn-circle">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M22 12h-6l-2 3h-4l-2-3H2"/>
+                  <path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>
+                </svg>
+              </span>
+              <span class="wf-open-flows-badge wi-count-badge danger" id="hrActionNeededBadge" hidden></span>
+            </button>
+            <button type="button" class="wf-open-flows-btn" id="hrOpenFlowsBtn" aria-label="Open flows">
+              <span class="wf-open-flows-btn-circle">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M6 4h12"/>
+                  <path d="M6 20h12"/>
+                  <path d="M7 4c0 4.5 3.2 6.5 5 8-1.8 1.5-5 3.5-5 8"/>
+                  <path d="M17 4c0 4.5-3.2 6.5-5 8 1.8 1.5 5 3.5 5 8"/>
+                </svg>
+              </span>
+              <span class="wf-open-flows-badge wi-count-badge danger" id="hrOpenFlowsBadge" hidden></span>
+            </button>
+            <button type="button" class="wf-open-flows-btn" id="hrTemplatesBtn" aria-label="Templates" title="Templates">
+              <span class="wf-open-flows-btn-circle">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                  <path d="M14 2v6h6"/>
+                  <line x1="9" y1="13" x2="15" y2="13"/>
+                  <line x1="9" y1="17" x2="15" y2="17"/>
+                </svg>
+              </span>
+            </button>
+            <button type="button" class="wf-open-flows-btn" id="hrSiteAliasesBtn" aria-label="Site aliases" title="Site aliases">
+              <span class="wf-open-flows-btn-circle">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M21 10c0 7-9 12-9 12s-9-5-9-12a9 9 0 0 1 18 0z"/>
+                  <circle cx="12" cy="10" r="3"/>
+                </svg>
+              </span>
+              <span class="wf-open-flows-badge wi-count-badge danger" id="hrSiteAliasesBadge" hidden></span>
+            </button>
+          </span>
+        </div>
         <div class="wf-comms-wa-list" id="hrCommsWaAllList"></div>
       </div>
 
@@ -2291,7 +2317,7 @@
 
   <script src="vendor/chart.js/chart.umd.js"></script>
   <script src="workforce.js?v=254"></script>
-  <script src="hrAssistant.js?v=6"></script>
+  <script src="hrAssistant.js?v=7"></script>
   <script src="workforce-ui-enhance.js?v=1"></script>
   <script src="js/wi-motion.js?v=3"></script>
 </body>
