@@ -20,6 +20,7 @@ const { isSyntheticTestPhone } = whatsapp;
 const REMINDER_PREFIX = 'subh-reminder:';
 const REMINDER_IDS_KEY = 'subh-reminder-ids';
 const SETTINGS_KEY = 'subh-reminder-settings'; // { waOptIn: boolean, waNumber: string|null }
+const FOLLOWUP_CLEANUP_V1_DONE_KEY = 'subh-followup-cleanup-v1-done';
 const EXPIRING_MEMORY_WINDOW_MS = 2 * 24 * 60 * 60 * 1000;
 
 let client;
@@ -273,6 +274,29 @@ function filterReminders(reminders, filter, now) {
   return pending; // legacy 'all' - API only, the "All" tab itself is gone from the UI
 }
 
+// Task 3 (2026-10-28), direct instruction (change of plan from the
+// original "show me the list first" checkpoint) - a ONE-TIME, permanent
+// delete of every EXISTING auto-created follow-up reminder
+// (sourceType === 'whatsapp_followup' is the exact, unambiguous marker -
+// manual reminders have sourceType: null, every other auto-created kind
+// has its own distinct sourceType, so neither can ever be touched here).
+// Guarded by a Redis marker so it only ever runs once, no matter how many
+// times the scheduler/listReminders call this afterward. Runs at the top
+// of syncAutoCreatedReminders, so it fires on whichever happens first
+// after this deploy - the scheduler's own tick or the owner opening the
+// Reminders page - without needing a separate startup hook.
+async function cleanupLegacyFollowupRemindersOnce() {
+  const redis = getClient();
+  if (!redis) return;
+  const already = await redis.get(FOLLOWUP_CLEANUP_V1_DONE_KEY).catch(() => null);
+  if (already) return;
+  const all = await listRawReminders();
+  const toDelete = all.filter((r) => r.sourceType === 'whatsapp_followup');
+  for (const r of toDelete) await deleteReminder(r.id);
+  await redis.set(FOLLOWUP_CLEANUP_V1_DONE_KEY, '1').catch(() => {});
+  await whatsappAssistant.postOwnerNotification('SUBH cleanup: Deleted ' + toDelete.length + ' old follow-up' + (toDelete.length === 1 ? '' : 's') + ' - only the new rule now creates follow-ups.');
+}
+
 // ---------------- Auto-created reminders from existing SUBH stores ----------------
 // Called lazily at the top of listReminders (same philosophy as Phase 1's
 // listActionableWhatsappItems) - never a separate scheduler of its own.
@@ -286,6 +310,7 @@ function filterReminders(reminders, filter, now) {
 // listReminders below) reuse this directly instead of paying for a
 // second listRawReminders() round trip for data already in hand.
 async function syncAutoCreatedReminders(now) {
+  await cleanupLegacyFollowupRemindersOnce();
   const existing = await listRawReminders();
   const byId = new Map(existing.map((r) => [r.id, r]));
   // A LIVE map, updated the moment a new reminder is created below - not a
@@ -599,6 +624,7 @@ module.exports = {
   computeCounts,
   filterReminders,
   syncAutoCreatedReminders,
+  cleanupLegacyFollowupRemindersOnce,
   listReminders,
   dueReminders,
   dueForWhatsapp,

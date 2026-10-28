@@ -461,7 +461,8 @@ async function clearOwnerNotifications() {
 // disconnected; once reconnected it simply stops appearing, no separate
 // lingering "reconnected" notice needed.
 const SYSTEM_NOTICE_PATTERNS = [
-  /^SUBH daily summary/
+  /^SUBH daily summary/,
+  /^SUBH cleanup:/
 ];
 async function listSystemNotices() {
   const items = await listOwnerNotifications();

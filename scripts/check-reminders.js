@@ -67,6 +67,35 @@ async function main() {
   check('snoozeReminder sets snoozedUntil and clears notifiedAt', snoozed.snoozedUntil === untilIso && snoozed.notifiedAt === null);
 
   console.log('='.repeat(70));
+  console.log('Task 3 (2026-10-28): one-time permanent cleanup of legacy auto-created follow-up reminders');
+  console.log('='.repeat(70));
+  {
+    const legacy1 = await create({ title: 'Legacy Contact A — follow-up needed', source: 'whatsapp', sourceType: 'whatsapp_followup', sourceRef: 'legacy-chat-a', dueAt: now.toISOString(), hasTime: false, now });
+    const legacy2 = await create({ title: 'Legacy Contact B — follow-up needed', source: 'whatsapp', sourceType: 'whatsapp_followup', sourceRef: 'legacy-chat-b', dueAt: now.toISOString(), hasTime: false, now });
+    const manualOne = await create({ title: 'My own manual reminder', source: 'manual', dueAt: now.toISOString(), hasTime: true, now });
+    const approvalOne = await create({ title: 'Some other auto reminder', source: 'whatsapp', sourceType: 'whatsapp_approval', sourceRef: 'legacy-approval-x', dueAt: now.toISOString(), hasTime: false, now });
+    await whatsappAssistant.dismissSystemNotices(); // clean slate before checking what THIS cleanup posts
+
+    await reminderService.cleanupLegacyFollowupRemindersOnce();
+    const afterFirst = await reminderService.listRawReminders();
+    check('deletes BOTH legacy auto-created follow-up reminders permanently (gone from the store entirely, not just completed)', !afterFirst.some((r) => r.id === legacy1.id) && !afterFirst.some((r) => r.id === legacy2.id));
+    check('leaves a manual reminder completely untouched', afterFirst.some((r) => r.id === manualOne.id && r.status === 'pending'));
+    check('leaves a DIFFERENT auto-created reminder kind (whatsapp_approval) completely untouched', afterFirst.some((r) => r.id === approvalOne.id && r.status === 'pending'));
+    const notices = await whatsappAssistant.listSystemNotices();
+    check('posts a one-line System-strip notice naming exactly how many were deleted', notices.some((n) => n.text === 'SUBH cleanup: Deleted 2 old follow-ups - only the new rule now creates follow-ups.'));
+
+    // Prove it truly runs only ONCE: a follow-up reminder created AFTER the
+    // marker is set must survive a second call untouched - this is never
+    // expected to happen in production (nothing creates sourceType
+    // whatsapp_followup reminders in the old shape any more), but proves
+    // the guard is the Redis marker, not "any whatsapp_followup present".
+    const postMarkerFollowup = await create({ title: 'Should survive - cleanup already ran once', source: 'whatsapp', sourceType: 'whatsapp_followup', sourceRef: 'post-marker-chat', dueAt: now.toISOString(), hasTime: false, now });
+    await reminderService.cleanupLegacyFollowupRemindersOnce();
+    const afterSecond = await reminderService.listRawReminders();
+    check('a second call is a true no-op - never re-deletes/re-notifies, even if a whatsapp_followup reminder exists (the marker alone gates it)', afterSecond.some((r) => r.id === postMarkerFollowup.id));
+  }
+
+  console.log('='.repeat(70));
   console.log('Date/time resolution (simulated clock - IST)');
   console.log('='.repeat(70));
   const todayResolved = reminderService.resolveReminderDateTime('today', '11:00', now);
