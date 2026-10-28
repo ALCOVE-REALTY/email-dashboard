@@ -4406,15 +4406,53 @@ async function checkAsync(label, fn) {
     await whatsappAssistant.handleIncomingMedia(phone, 'MediaSender', { type: 'image', content: { caption: '6 ta chilo' } });
     const after = await whatsappAssistant.listPendingAutoSends();
     const scheduled = after.find((e) => !beforeIds.has(e.id) && e.chatId === phone);
-    // MEDIA_ACK_REPLY and MODEL_REPLY_SAFE_FALLBACK are now identical in
-    // every language (checked separately below) - robust to whichever
-    // language mediaFallbackLang/detectLang picks for this short caption.
-    return Boolean(scheduled) && Object.values(whatsappAssistant.MEDIA_ACK_REPLY).includes(scheduled.replyText);
+    // endsWith, not exact equality - Task 2 (2026-10-28) now has
+    // scheduleAutoSend itself prepend the once-per-day identity line to
+    // EVERY path including this one (previously missing here entirely),
+    // so a fresh contact's first reply of the day correctly comes back as
+    // "Ami SUBH, ..." + the noting line, not the bare noting line alone.
+    // MEDIA_ACK_REPLY and MODEL_REPLY_SAFE_FALLBACK are identical in every
+    // language (checked separately below) - robust to whichever language
+    // mediaFallbackLang/detectLang picks for this short caption.
+    return Boolean(scheduled) && Object.values(whatsappAssistant.MEDIA_ACK_REPLY).some((v) => scheduled.replyText.endsWith(v));
   });
   check('MEDIA_ACK_REPLY now uses the exact same wording as MODEL_REPLY_SAFE_FALLBACK, in every language - one noting line, not two', ['banglish', 'hinglish', 'english'].every((l) => whatsappAssistant.MEDIA_ACK_REPLY[l] === whatsappAssistant.MODEL_REPLY_SAFE_FALLBACK[l]));
   await checkAsync('REGRESSION: a genuine greeting/thanks still gets a real, warm model-drafted reply, unaffected by the informative-message redirect', async () => {
     const d = await whatsappAssistant.decideAutoReply({ phone: '910000002303', name: 'Sender', firstName: 'Sender', text: 'Dhonnobad, apnar sahajjo-r jonno', isGroup: false, history: [] });
     return d.case === 'acknowledged' && Boolean(d.replyText) && !d.replyText.endsWith(whatsappAssistant.MODEL_REPLY_SAFE_FALLBACK.banglish);
+  });
+
+  console.log('='.repeat(70));
+  console.log('TASK 2 (2026-10-28): the identity line is applied in ONE place - scheduleAutoSend itself - so no reply path can ever miss it again');
+  console.log('='.repeat(70));
+  function countIdentityLineOccurrences(text) {
+    return (String(text || '').match(/\b(i'?m subh|main subh|ami subh)\b/gi) || []).length;
+  }
+  await checkAsync('LIVE BUG, end to end: a media acknowledgement (image, no caption, no open request) now gets the identity line exactly once on the first reply of the day - previously missing entirely, since handleIncomingMedia calls scheduleAutoSend directly, bypassing decideAutoReply\'s own wrapper', async () => {
+    const phone = '910000002401';
+    const before = new Set((await whatsappAssistant.listPendingAutoSends()).map((e) => e.id));
+    await whatsappAssistant.handleIncomingMedia(phone, 'MediaSender', { type: 'image', content: {} });
+    const after = await whatsappAssistant.listPendingAutoSends();
+    const scheduled = after.find((e) => !before.has(e.id) && e.chatId === phone);
+    return Boolean(scheduled) && countIdentityLineOccurrences(scheduled.replyText) === 1;
+  });
+  await checkAsync('REGRESSION: a classified text message (goes through decideAutoReply\'s own wrapper first, THEN scheduleAutoSend) still gets the identity line exactly once, never doubled', async () => {
+    const phone = '910000002402';
+    const decision = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Kalke tomake call korbo', isGroup: false, history: [] });
+    await whatsappAssistant.scheduleAutoSend({ chatId: phone, isGroup: false, name: 'Sender', replyText: decision.replyText, case: decision.case, lang: decision.lang });
+    const scheduled = (await whatsappAssistant.listPendingAutoSends()).find((e) => e.chatId === phone);
+    return Boolean(scheduled) && countIdentityLineOccurrences(scheduled.replyText) === 1;
+  });
+  await checkAsync('REGRESSION: a job-application CV submitted as a bare PDF (self-identifying "Hello, I\'m SUBH..." template, scheduled directly via scheduleAutoSend) still gets the identity line exactly once, never doubled', async () => {
+    const phone = '910000002403';
+    await whatsappAssistant.clearJobTemplateSentToday(phone).catch(() => {});
+    const before = new Set((await whatsappAssistant.listPendingAutoSends()).map((e) => e.id));
+    await whatsappAssistant.handleIncomingMedia(phone, 'Applicant', { type: 'document', content: {} });
+    const after = await whatsappAssistant.listPendingAutoSends();
+    const scheduled = after.find((e) => !before.has(e.id) && e.chatId === phone);
+    const ok = Boolean(scheduled) && scheduled.case === 'job_application_received' && countIdentityLineOccurrences(scheduled.replyText) === 1;
+    await whatsappAssistant.clearJobTemplateSentToday(phone).catch(() => {});
+    return ok;
   });
 
   console.log('='.repeat(70));

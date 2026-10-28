@@ -974,9 +974,31 @@ function randomDelayMs() { return (2 + Math.random() * 2) * 1000; }
 // SPECIFIC future instant (~60s out) instead of the normal random 2-4s
 // human-like delay, reusing this exact same queue/flush mechanism rather
 // than a new one.
+// Task 2 (2026-10-28), live bug - the identity line was only ever applied
+// by decideAutoReply's own wrapper, so any path that calls this function
+// directly instead (media acknowledgements, job application/vacancy
+// enquiry templates, ...) never got it at all, even on a sender's genuine
+// first reply of the day (found live: a screenshot + text got "I've
+// received your message..." with no "Ami SUBH..." line). Applied HERE
+// instead - the one function every queued auto-reply, from every path,
+// always passes through before being sent, so a brand new template or
+// handler added later can never again forget this. Reuses
+// prependDisclosureIfNeeded (already proven correct for the two side-
+// effect sends - sendHrConfirmationMessageToManager/
+// sendHrConfirmationResultToSender - that bypass this queue entirely and
+// call it themselves) rather than a second implementation: its own
+// ALREADY_INTRODUCES_SUBH_RE guard means a reply that already got the
+// line from decideAutoReply's own wrapper is left untouched, never
+// doubled - decideAutoReply's wrapper itself is deliberately NOT changed,
+// so a never-auto draft's PREVIEW (which never reaches this function)
+// still shows the identity line exactly as it does today.
 async function scheduleAutoSend(entry, sendAtOverride) {
   const redis = getClient();
   if (!redis) return;
+  if (entry.replyText) {
+    const lang = entry.lang || detectLang(entry.replyText);
+    entry = Object.assign({}, entry, { replyText: await prependDisclosureIfNeeded(entry.replyText, entry.chatId, lang) });
+  }
   const id = entry.chatId + ':' + Date.now() + ':' + Math.random().toString(36).slice(2, 8);
   const sendAt = sendAtOverride || (Date.now() + randomDelayMs());
   try {
