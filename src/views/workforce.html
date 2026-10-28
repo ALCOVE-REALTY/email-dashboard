@@ -213,6 +213,15 @@
                   </svg>
                 </span>
               </button>
+              <button type="button" class="wf-open-flows-btn" id="hrSiteAliasesBtn" aria-label="Site aliases" title="Site aliases">
+                <span class="wf-open-flows-btn-circle">
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M21 10c0 7-9 12-9 12s-9-5-9-12a9 9 0 0 1 18 0z"/>
+                    <circle cx="12" cy="10" r="3"/>
+                  </svg>
+                </span>
+                <span class="wf-open-flows-badge wi-count-badge danger" id="hrSiteAliasesBadge" hidden></span>
+              </button>
               <span class="wf-comms-viewall" id="hrCommsWaViewAll">View All ›</span>
             </span>
           </div>
@@ -261,6 +270,40 @@
            from a model-written reply. -->
       <div class="wf-comms-page" id="hrTemplatesPage" hidden>
         <div class="wf-rem-list" id="hrTemplatesList"></div>
+      </div>
+
+      <!-- Task 2 (2026-10-28) - site aliases: an owner-editable map so a
+           colloquial site name ("Serampore", "Curve") matches the HR
+           Master's own data code for that site. "New sites found" surfaces
+           a location value never seen before (never today's already-known-
+           but-unaliased sites - those just match by their own name,
+           silently, forever) with auto-suggested aliases to Confirm/Edit. -->
+      <div class="wf-comms-page" id="hrSiteAliasesPage" hidden>
+        <div class="wf-rem-list" id="hrNewSitesList"></div>
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 4px 6px">
+          <span class="wf-ai-sheet-title" style="font-size:14px">Site aliases</span>
+          <button type="button" class="plain" id="hrSiteAliasAddBtn">+ Add alias</button>
+        </div>
+        <div class="wf-rem-list" id="hrSiteAliasesList"></div>
+      </div>
+
+      <div class="wf-ai-sheet-backdrop" id="hrSiteAliasSheetBackdrop" hidden></div>
+      <div class="wf-rem-sheet" id="hrSiteAliasSheet" hidden role="dialog" aria-label="Add site alias">
+        <div class="wf-ai-sheet-handle"></div>
+        <div class="wf-ai-sheet-head">
+          <button type="button" class="wf-ai-sheet-close" id="hrSiteAliasSheetCloseBtn" aria-label="Close">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+          <span class="wf-ai-sheet-title">Add site alias</span>
+        </div>
+        <div class="wf-rem-sheet-body">
+          <label class="wf-rem-field"><span>Colloquial name (what people type)</span><input type="text" id="hrSiteAliasInput" placeholder="e.g. Serampore" /></label>
+          <label class="wf-rem-field"><span>Matches this site value (as it appears in the HR Master)</span><input type="text" id="hrSiteAliasSiteValueInput" placeholder="e.g. SRM-Site" /></label>
+        </div>
+        <div class="wf-rem-sheet-foot">
+          <button type="button" class="wf-ai-action-btn outline" id="hrSiteAliasSheetCancelBtn">Cancel</button>
+          <button type="button" class="wf-ai-action-btn download" id="hrSiteAliasSheetSaveBtn"><span>Save</span></button>
+        </div>
       </div>
 
       <!-- Save/Edit template sheet - same bottom-sheet pattern as the

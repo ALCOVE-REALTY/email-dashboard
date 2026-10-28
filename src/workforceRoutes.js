@@ -2250,6 +2250,72 @@ router.delete('/hr-assistant/reply-templates/:id', async (req, res) => {
   }
 });
 
+// Task 2 (2026-10-28) - site aliases: an owner-editable map so a
+// colloquial site name ("Serampore", "Curve") matches the HR Master's own
+// data code for that site ("SRM-Site"/"54,Chowringee-Site"). The GET here
+// also seeds the 5 confirmed default groups on first load (idempotent -
+// see ensureDefaultSiteAliasesSeeded's own comment).
+router.get('/hr-assistant/site-aliases', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    await whatsappAssistant.ensureDefaultSiteAliasesSeeded();
+    const items = await whatsappAssistant.listSiteAliases();
+    res.json({ items });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/hr-assistant/site-aliases', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const { alias, siteValue } = req.body || {};
+    if (!alias || !siteValue) return res.status(400).json({ error: 'alias and siteValue are required' });
+    const saved = await whatsappAssistant.saveSiteAlias({ alias, siteValue, confirmed: true });
+    if (!saved) return res.status(500).json({ error: 'Could not save the alias.' });
+    await whatsappAssistant.refreshSiteAliasCacheNow();
+    res.json({ ok: true, item: saved });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.delete('/hr-assistant/site-aliases/:id', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    await whatsappAssistant.deleteSiteAlias(req.params.id);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// "New sites" - a plain scan (never a reactive per-message heuristic) of
+// the real HR Master's distinct location values against a known-values
+// baseline, run fresh every time the owner opens this page.
+router.get('/hr-assistant/new-sites', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const items = await whatsappAssistant.scanForNewSites();
+    res.json({ items });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/hr-assistant/new-sites/confirm', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const { siteValue, aliasWords } = req.body || {};
+    if (!siteValue) return res.status(400).json({ error: 'siteValue is required' });
+    const ok = await whatsappAssistant.confirmNewSite(siteValue, Array.isArray(aliasWords) ? aliasWords : []);
+    if (!ok) return res.status(500).json({ error: 'Could not confirm this site.' });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Task 6 (2026-10-27) - "Action needed" unified inbox, one card per
 // pending item across every sender. UI + wiring only - reads the exact
 // same stores every existing per-conversation action card already reads

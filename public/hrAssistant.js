@@ -93,6 +93,20 @@
   const templateTopicInput = document.getElementById('hrTemplateTopic');
   const templateWhenToUseInput = document.getElementById('hrTemplateWhenToUse');
   const templateReplyTextInput = document.getElementById('hrTemplateReplyText');
+  // Task 2 (2026-10-28) - site aliases + new site detection
+  const siteAliasesBtn = document.getElementById('hrSiteAliasesBtn');
+  const siteAliasesBadge = document.getElementById('hrSiteAliasesBadge');
+  const siteAliasesPage = document.getElementById('hrSiteAliasesPage');
+  const siteAliasesList = document.getElementById('hrSiteAliasesList');
+  const newSitesList = document.getElementById('hrNewSitesList');
+  const siteAliasAddBtn = document.getElementById('hrSiteAliasAddBtn');
+  const siteAliasSheetBackdrop = document.getElementById('hrSiteAliasSheetBackdrop');
+  const siteAliasSheet = document.getElementById('hrSiteAliasSheet');
+  const siteAliasSheetCloseBtn = document.getElementById('hrSiteAliasSheetCloseBtn');
+  const siteAliasSheetCancelBtn = document.getElementById('hrSiteAliasSheetCancelBtn');
+  const siteAliasSheetSaveBtn = document.getElementById('hrSiteAliasSheetSaveBtn');
+  const siteAliasInput = document.getElementById('hrSiteAliasInput');
+  const siteAliasSiteValueInput = document.getElementById('hrSiteAliasSiteValueInput');
   const convoPage = document.getElementById('hrConvoPage');
   const convoThread = document.getElementById('hrConvoThread');
   const convoActions = document.getElementById('hrConvoActions');
@@ -1485,6 +1499,7 @@
     else if (entry.type === 'waAll') showWaAll();
     else if (entry.type === 'openFlows') showOpenFlows();
     else if (entry.type === 'templates') showTemplates();
+    else if (entry.type === 'siteAliases') showSiteAliases();
     else if (entry.type === 'actionNeeded') showActionNeeded();
     else if (entry.type === 'conversation') openConversationPage(entry.chatId);
     else if (entry.type === 'reminders') { activeRemFilter = entry.filter; setPanelView('reminders'); loadRemindersPage(entry.filter); }
@@ -1522,6 +1537,7 @@
     const isWaAll = view === 'waAll';
     const isOpenFlows = view === 'openFlows';
     const isTemplates = view === 'templates';
+    const isSiteAliases = view === 'siteAliases';
     const isActionNeeded = view === 'actionNeeded';
     const isAutoList = view === 'automationList';
     const isAutomation = view === 'automation';
@@ -1538,6 +1554,7 @@
     if (commsWaAllPage) commsWaAllPage.hidden = !isWaAll;
     if (openFlowsPage) openFlowsPage.hidden = !isOpenFlows;
     if (templatesPage) templatesPage.hidden = !isTemplates;
+    if (siteAliasesPage) siteAliasesPage.hidden = !isSiteAliases;
     if (actionNeededPage) actionNeededPage.hidden = !isActionNeeded;
     if (autoListPage) autoListPage.hidden = !isAutoList;
     if (autoPage) autoPage.hidden = !isAutomation;
@@ -1567,6 +1584,12 @@
       if (commsHeadIcon) commsHeadIcon.innerHTML = WHATSAPP_SVG;
       if (commsHeadTitle) commsHeadTitle.textContent = 'Templates';
       if (commsHeadSubtitle) commsHeadSubtitle.textContent = 'Saved fixed replies for recurring topics';
+      if (commsHeadBadge) commsHeadBadge.hidden = true;
+    } else if (isSiteAliases) {
+      if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon whatsapp';
+      if (commsHeadIcon) commsHeadIcon.innerHTML = WHATSAPP_SVG;
+      if (commsHeadTitle) commsHeadTitle.textContent = 'Site aliases';
+      if (commsHeadSubtitle) commsHeadSubtitle.textContent = 'Colloquial site names matched to the HR Master';
       if (commsHeadBadge) commsHeadBadge.hidden = true;
     } else if (isActionNeeded) {
       if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon whatsapp';
@@ -2032,6 +2055,110 @@
   }
   if (templatesBtn) templatesBtn.addEventListener('click', () => { pushNav({ type: 'templates' }); showTemplates(); });
 
+  // Task 2 (2026-10-28) - site aliases + new site detection
+  function siteAliasRowHtml(a) {
+    return '<div class="wf-auto-task-card" data-id="' + escapeHtml(a.id) + '">' +
+      '<div class="wf-auto-task-head"><div style="flex:1;min-width:0">' +
+        '<div class="wf-auto-task-subject">' + escapeHtml(a.alias) + '</div>' +
+        '<div class="wf-auto-hint">matches "' + escapeHtml(a.siteValue) + '"</div>' +
+      '</div></div>' +
+      '<div class="wf-auto-actions"><button type="button" class="danger" data-action="delete">Delete</button></div></div>';
+  }
+  function newSiteCardHtml(item) {
+    const suggested = (item.suggestedAliases || []).join(', ');
+    return '<div class="wf-auto-task-card" data-site="' + escapeHtml(item.siteValue) + '">' +
+      '<div class="wf-auto-task-subject">New site found: ' + escapeHtml(item.siteValue) + '</div>' +
+      '<label class="wf-rem-field"><span>Aliases (edit if needed, comma-separated - leave blank if none needed)</span>' +
+      '<input type="text" data-role="new-site-aliases" value="' + escapeHtml(suggested) + '" /></label>' +
+      '<div class="wf-auto-actions"><button type="button" class="plain" data-action="confirm">Confirm</button></div></div>';
+  }
+  async function loadSiteAliasesPage() {
+    if (!siteAliasesList) return;
+    siteAliasesList.innerHTML = '<div class="wf-skeleton-list"><div class="wf-skeleton-row"></div><div class="wf-skeleton-row"></div></div>';
+    if (newSitesList) newSitesList.innerHTML = '';
+    try {
+      const [aliasResp, newSitesResp] = await Promise.all([
+        fetch('/api/workforce/hr-assistant/site-aliases').then((res) => res.json()),
+        fetch('/api/workforce/hr-assistant/new-sites').then((res) => res.json())
+      ]);
+      const aliases = aliasResp.items || [];
+      const newSites = newSitesResp.items || [];
+      if (newSitesList) {
+        newSitesList.innerHTML = newSites.length ? newSites.map(newSiteCardHtml).join('') : '';
+        newSitesList.querySelectorAll('[data-action="confirm"]').forEach((btn) => {
+          btn.addEventListener('click', async () => {
+            const card = btn.closest('[data-site]');
+            const siteValue = card.dataset.site;
+            const input = card.querySelector('[data-role="new-site-aliases"]');
+            const aliasWords = (input.value || '').split(',').map((s) => s.trim()).filter(Boolean);
+            await runButtonAction(btn, () => postJsonOrThrow('/api/workforce/hr-assistant/new-sites/confirm', { siteValue, aliasWords }), () => {
+              closeRowWithToast(card, { title: 'Site confirmed', type: 'success' });
+              loadSiteAliasesBadge();
+            });
+          });
+        });
+      }
+      if (!aliases.length) { siteAliasesList.innerHTML = '<div class="wf-rem-empty">No aliases saved yet.</div>'; }
+      else {
+        siteAliasesList.innerHTML = aliases.map(siteAliasRowHtml).join('');
+        siteAliasesList.querySelectorAll('[data-action="delete"]').forEach((btn) => {
+          btn.addEventListener('click', async () => {
+            const id = btn.closest('[data-id]').dataset.id;
+            if (!(await showConfirmDialog('Delete this alias?', { confirmLabel: 'Delete' }))) return;
+            await runButtonAction(btn, () => fetch('/api/workforce/hr-assistant/site-aliases/' + encodeURIComponent(id), { method: 'DELETE' }).then((res) => res.json()), () => {
+              closeRowWithToast(btn.closest('.wf-auto-task-card'), { title: 'Alias deleted', type: 'success' });
+            });
+          });
+        });
+      }
+    } catch (err) {
+      siteAliasesList.innerHTML = '<div class="wf-rem-empty">Could not load site aliases.</div>';
+    }
+  }
+  async function loadSiteAliasesBadge() {
+    if (!siteAliasesBadge) return;
+    try {
+      const r = await fetch('/api/workforce/hr-assistant/new-sites').then((res) => res.json());
+      setCountBadge(siteAliasesBadge, (r.items || []).length);
+    } catch (err) { /* best effort */ }
+  }
+  function showSiteAliases() {
+    setPanelView('siteAliases');
+    loadSiteAliasesPage();
+  }
+  if (siteAliasesBtn) siteAliasesBtn.addEventListener('click', () => { pushNav({ type: 'siteAliases' }); showSiteAliases(); });
+  function closeSiteAliasSheet() {
+    siteAliasSheetBackdrop.classList.remove('open');
+    siteAliasSheet.classList.remove('open');
+    setTimeout(() => { siteAliasSheetBackdrop.hidden = true; siteAliasSheet.hidden = true; }, 320);
+  }
+  if (siteAliasAddBtn) {
+    siteAliasAddBtn.addEventListener('click', () => {
+      if (siteAliasInput) siteAliasInput.value = '';
+      if (siteAliasSiteValueInput) siteAliasSiteValueInput.value = '';
+      siteAliasSheetBackdrop.hidden = false;
+      siteAliasSheet.hidden = false;
+      void siteAliasSheet.offsetHeight;
+      siteAliasSheetBackdrop.classList.add('open');
+      siteAliasSheet.classList.add('open');
+    });
+  }
+  if (siteAliasSheetCloseBtn) siteAliasSheetCloseBtn.addEventListener('click', closeSiteAliasSheet);
+  if (siteAliasSheetCancelBtn) siteAliasSheetCancelBtn.addEventListener('click', closeSiteAliasSheet);
+  if (siteAliasSheetBackdrop) siteAliasSheetBackdrop.addEventListener('click', closeSiteAliasSheet);
+  if (siteAliasSheetSaveBtn) {
+    siteAliasSheetSaveBtn.addEventListener('click', async () => {
+      const alias = (siteAliasInput.value || '').trim();
+      const siteValue = (siteAliasSiteValueInput.value || '').trim();
+      if (!alias || !siteValue) { showActionToast('Both fields are required.'); return; }
+      await runButtonAction(siteAliasSheetSaveBtn, () => postJsonOrThrow('/api/workforce/hr-assistant/site-aliases', { alias, siteValue }), () => {
+        closeSiteAliasSheet();
+        showProToast({ title: 'Alias saved', type: 'success' });
+        if (panelView === 'siteAliases') loadSiteAliasesPage();
+      });
+    });
+  }
+
   // Task 6 - "Action needed" unified inbox. Each card's inner action-group
   // HTML is built by the EXACT SAME buildConvoActions a conversation's own
   // action cards use (see above) - only ever given ONE item in ONE of its
@@ -2244,6 +2371,7 @@
   // (nothing cached yet) shows the skeleton placeholder.
   async function loadCommsPage() {
     refreshOpenFlowsBadge(); // fire-and-forget, independent of the mails/WhatsApp render below
+    loadSiteAliasesBadge(); // fire-and-forget, same reasoning
     if (pageDataCache.comms) {
       renderCommsData(pageDataCache.comms);
     } else if (commsWaList) {

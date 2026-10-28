@@ -2584,6 +2584,249 @@ function departmentHintMatches(deptName, hint) {
   if (normDept === normHint) return true;
   return normHint.split(' ').filter(Boolean).every((w) => deptWords.includes(w));
 }
+// Task 2 (2026-10-28) - site aliases: a small, owner-editable map so a
+// colloquial name ("Srirampur", "Srirampore", "SRM", "Clubhouse") matches
+// the HR Master's own data code for that site ("SRM-Site"), which
+// departmentHintMatches' plain word-overlap check can never do on its
+// own (none of those words appear in "SRM-Site" at all). Same Redis get/
+// set/SET-of-ids pattern as every other owner-editable store in this file
+// (reply templates, ...). Each entry: { id, alias, siteValue, confirmed }
+// - confirmed:false entries (freshly auto-suggested, not yet reviewed by
+// the owner) are stored but never actually applied in resolution, so
+// nothing about live matching changes until the owner confirms one.
+const SITE_ALIAS_PREFIX = 'subh-site-alias:';
+const SITE_ALIAS_IDS_KEY = 'subh-site-alias-ids';
+function newSiteAliasId() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+async function saveSiteAlias(data) {
+  const redis = getClient();
+  if (!redis) return null;
+  const id = data.id || newSiteAliasId();
+  const record = { id, alias: data.alias, siteValue: data.siteValue, confirmed: data.confirmed !== false, createdAt: data.createdAt || Date.now() };
+  try {
+    await redis.set(SITE_ALIAS_PREFIX + id, JSON.stringify(record));
+    await redis.sadd(SITE_ALIAS_IDS_KEY, id);
+  } catch (err) { return null; }
+  return record;
+}
+async function getSiteAlias(id) {
+  const redis = getClient();
+  if (!redis) return null;
+  try {
+    const raw = await redis.get(SITE_ALIAS_PREFIX + id);
+    return raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : null;
+  } catch (err) { return null; }
+}
+async function listSiteAliases() {
+  const redis = getClient();
+  if (!redis) return [];
+  try {
+    const ids = await redis.smembers(SITE_ALIAS_IDS_KEY);
+    if (!ids || !ids.length) return [];
+    const records = await Promise.all(ids.map((id) => getSiteAlias(id)));
+    return records.filter(Boolean).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  } catch (err) { return []; }
+}
+async function deleteSiteAlias(id) {
+  const redis = getClient();
+  if (!redis) return false;
+  try {
+    await redis.del(SITE_ALIAS_PREFIX + id);
+    await redis.srem(SITE_ALIAS_IDS_KEY, id);
+  } catch (err) { return false; }
+  return true;
+}
+// Place-name transliteration varies more than a typo ("Srirampur" and
+// "Serampore" are two different English spellings of the same town, not
+// a 1-character slip) - direct instruction (2026-10-28) that alias word
+// matching must be spelling-tolerant enough to catch that pair. A plain
+// Levenshtein distance, scaled to word length so short codes (SRM, AN,
+// ANI - 2-3 letters, where a loose distance would match almost anything)
+// stay EXACT while long words get real tolerance. Scoped to compare a
+// hint's words only against this small, owner-curated alias list (never
+// against arbitrary text), which keeps the wider tolerance safe.
+function levenshteinDistance(a, b) {
+  const m = a.length, n = b.length;
+  if (m === 0) return n;
+  if (n === 0) return m;
+  let prevRow = Array.from({ length: n + 1 }, (_, j) => j);
+  for (let i = 1; i <= m; i++) {
+    const row = [i];
+    for (let j = 1; j <= n; j++) {
+      row[j] = a[i - 1] === b[j - 1] ? prevRow[j - 1] : 1 + Math.min(prevRow[j - 1], prevRow[j], row[j - 1]);
+    }
+    prevRow = row;
+  }
+  return prevRow[n];
+}
+function siteWordsFuzzyMatch(a, b) {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  const len = Math.max(a.length, b.length);
+  if (len <= 3) return false; // short codes (SRM/AN/ANI) match only exactly
+  const maxDistance = len >= 8 ? 4 : (len >= 6 ? 2 : 1);
+  return levenshteinDistance(a, b) <= maxDistance;
+}
+// In-memory cache of CONFIRMED aliases, refreshed in the background on a
+// short TTL - personHintMatches is called synchronously, many times per
+// incoming message (once per candidate employee), so it can never itself
+// await a Redis read; this keeps a small list warm instead. A cold start
+// (empty cache before the first background refresh completes) just falls
+// back to the existing plain word-overlap matching below, same as if no
+// aliases existed yet - never an error, never a blocked reply.
+let siteAliasCache = [];
+let siteAliasCacheAt = 0;
+let siteAliasCacheRefreshing = false;
+const SITE_ALIAS_CACHE_TTL_MS = 30 * 1000;
+function refreshSiteAliasCacheIfStale() {
+  if (siteAliasCacheRefreshing || Date.now() - siteAliasCacheAt < SITE_ALIAS_CACHE_TTL_MS) return;
+  siteAliasCacheRefreshing = true;
+  listSiteAliases().then((all) => {
+    siteAliasCache = all.filter((a) => a.confirmed);
+    siteAliasCacheAt = Date.now();
+  }).catch(() => {}).finally(() => { siteAliasCacheRefreshing = false; });
+}
+// Awaited version - used right after the owner adds/confirms an alias (so
+// it applies immediately, not after up to 30s) and by tests that need a
+// deterministic read rather than racing the fire-and-forget refresh above.
+async function refreshSiteAliasCacheNow() {
+  const all = await listSiteAliases().catch(() => []);
+  siteAliasCache = all.filter((a) => a.confirmed);
+  siteAliasCacheAt = Date.now();
+}
+// The one place a hint is checked against a CONFIRMED alias - every word
+// of the hint (not just the whole string) is tried against every alias
+// word, exact first then spelling-tolerant, since a hint is often
+// embedded in a longer phrase ("...Srirampur site-e kaj koren...").
+function hintMatchesSiteAliasSync(location, hint) {
+  const normHint = normalizeForMatch(hint);
+  const normLocation = normalizeForMatch(location);
+  if (!normHint || !normLocation) return false;
+  const hintWords = normHint.split(' ').filter(Boolean);
+  for (const a of siteAliasCache) {
+    const normAlias = normalizeForMatch(a.alias);
+    if (!normAlias) continue;
+    const aliasWords = normAlias.split(' ').filter(Boolean);
+    const aliasIsHint = aliasWords.length > 0 && aliasWords.every((aw) => hintWords.some((hw) => siteWordsFuzzyMatch(hw, aw)));
+    if (!aliasIsHint) continue;
+    if (departmentHintMatches(location, a.siteValue) || normalizeForMatch(a.siteValue) === normLocation) return true;
+  }
+  return false;
+}
+// "New sites" (direct instruction, 2026-10-28): only a location value
+// NEVER SEEN BEFORE should ever be flagged - not every one of today's
+// existing, already-known-but-unaliased sites (those just match by their
+// own plain name via departmentHintMatches, silently, forever - exactly
+// what "all other sites match only by their own name" means). A known-
+// values baseline (seeded once with the current HR Master snapshot, then
+// grown every time the owner Confirms a flagged card) is what "never seen
+// before" is measured against - NOT "has an alias or not".
+const SITE_KNOWN_VALUES_KEY = 'subh-site-known-values';
+async function seedKnownSiteValuesIfEmpty() {
+  const redis = getClient();
+  if (!redis) return;
+  try {
+    const existing = await redis.smembers(SITE_KNOWN_VALUES_KEY);
+    if (existing && existing.length) return;
+    const { employees } = await employeeService.getEmployeeData();
+    const locations = Array.from(new Set(employees.map((e) => e.location).filter(Boolean)));
+    if (locations.length) await redis.sadd(SITE_KNOWN_VALUES_KEY, ...locations);
+  } catch (err) { /* best effort - worst effect is one extra "new site" card */ }
+}
+function suggestedAliasesForSite(siteValue) {
+  const bare = String(siteValue || '').replace(/-?\s*(site|project)\b/gi, '').trim();
+  const suggestions = new Set();
+  if (bare) suggestions.add(bare);
+  if (bare.includes(' ')) suggestions.add(bare.replace(/\s+/g, ''));
+  return Array.from(suggestions).filter(Boolean);
+}
+const NEW_SITE_FOUND_PREFIX = 'subh-new-site-found:';
+const NEW_SITE_FOUND_IDS_KEY = 'subh-new-site-found-ids';
+// Called from the site-aliases review page's own GET route each time the
+// owner opens it - a plain, explicit SCAN (never a reactive per-hint-miss
+// heuristic, which would run once per candidate employee per message with
+// no sense of whether some OTHER candidate already matched). No code
+// change is ever needed for a brand new site: this is the mechanism that
+// notices one on its own.
+async function scanForNewSites() {
+  const redis = getClient();
+  if (!redis) return [];
+  await seedKnownSiteValuesIfEmpty();
+  const { employees } = await employeeService.getEmployeeData();
+  const locations = Array.from(new Set(employees.map((e) => e.location).filter(Boolean)));
+  const known = new Set((await redis.smembers(SITE_KNOWN_VALUES_KEY).catch(() => [])) || []);
+  const unknown = locations.filter((loc) => !known.has(loc));
+  for (const loc of unknown) {
+    const key = NEW_SITE_FOUND_PREFIX + normalizeForMatch(loc);
+    const already = await redis.get(key).catch(() => null);
+    if (already) continue;
+    const record = { siteValue: loc, suggestedAliases: suggestedAliasesForSite(loc), flaggedAt: Date.now() };
+    try {
+      await redis.set(key, JSON.stringify(record));
+      await redis.sadd(NEW_SITE_FOUND_IDS_KEY, normalizeForMatch(loc));
+    } catch (err) { /* best effort - picked up again on the next scan */ }
+  }
+  return listNewSitesFound();
+}
+async function listNewSitesFound() {
+  const redis = getClient();
+  if (!redis) return [];
+  try {
+    const keys = await redis.smembers(NEW_SITE_FOUND_IDS_KEY);
+    if (!keys || !keys.length) return [];
+    const records = await Promise.all(keys.map((k) => redis.get(NEW_SITE_FOUND_PREFIX + k).then((raw) => raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : null)));
+    return records.filter(Boolean).sort((a, b) => (b.flaggedAt || 0) - (a.flaggedAt || 0));
+  } catch (err) { return []; }
+}
+// Confirm (optionally with edited alias words) - the site becomes
+// "known" forever (never flagged again) and each given alias word is
+// saved as a CONFIRMED site alias. An empty aliasWords list is a valid,
+// correct confirm too - "no alias needed, matches by its own name".
+async function confirmNewSite(siteValue, aliasWords) {
+  const redis = getClient();
+  if (!redis) return false;
+  try {
+    await redis.sadd(SITE_KNOWN_VALUES_KEY, siteValue);
+    await redis.del(NEW_SITE_FOUND_PREFIX + normalizeForMatch(siteValue));
+    await redis.srem(NEW_SITE_FOUND_IDS_KEY, normalizeForMatch(siteValue));
+  } catch (err) { return false; }
+  for (const alias of (aliasWords || [])) {
+    if (alias && alias.trim()) await saveSiteAlias({ alias: alias.trim(), siteValue, confirmed: true });
+  }
+  await refreshSiteAliasCacheNow();
+  return true;
+}
+// Direct instruction (2026-10-28) - these exact 5 groups, confirmed by
+// Subhodeep after reviewing the real distinct-location list. Seeded as
+// CODE (not a one-off script writing straight to the production store,
+// which local dev only has read-only access to) so deploying this file
+// is what makes them live - idempotent (checked per-alias, keyed by
+// alias+siteValue) so re-running it, or the owner later editing/deleting
+// one of these via the review UI, is never clobbered by a redeploy.
+const DEFAULT_SITE_ALIAS_GROUPS = [
+  { siteValue: 'New Kolkata - Triveni Mall', aliases: ['Triveni Mall', 'Triveni', 'Plot A'] },
+  { siteValue: 'SRM-Site', aliases: ['SRM', 'Serampore', 'Serampore Site'] },
+  { siteValue: '54,Chowringee-Site', aliases: ['54 Chowringhee', 'Curve', 'Curve Site', 'The Curve'] },
+  { siteValue: 'AN-Site', aliases: ['ANI', 'AN Industries'] },
+  { siteValue: 'Origyn-Site', aliases: ['ARPL Site', 'ARPL', 'Origyn'] }
+];
+async function ensureDefaultSiteAliasesSeeded() {
+  const redis = getClient();
+  if (!redis) return;
+  const existing = await listSiteAliases().catch(() => []);
+  const existingKeys = new Set(existing.map((a) => normalizeForMatch(a.alias) + '|' + normalizeForMatch(a.siteValue)));
+  let seededAny = false;
+  for (const g of DEFAULT_SITE_ALIAS_GROUPS) {
+    for (const alias of g.aliases) {
+      const k = normalizeForMatch(alias) + '|' + normalizeForMatch(g.siteValue);
+      if (existingKeys.has(k)) continue;
+      await saveSiteAlias({ alias, siteValue: g.siteValue, confirmed: true });
+      seededAny = true;
+    }
+  }
+  if (seededAny) await refreshSiteAliasCacheNow();
+}
 // Live review item 7 - a hint like "Tanmoy Sir ... Clubhouse ...
 // Srirampur" names a location/site, not a department, and used to be
 // silently dropped (departmentHintMatches only ever compared against
@@ -2593,8 +2836,12 @@ function departmentHintMatches(deptName, hint) {
 // both narrow correctly, without needing a separate classifier field
 // (hrNotificationThirdPartyHint/personLookupDepartment's own
 // descriptions already invite site/location words into this one string).
+// Task 2 - ALSO tries the confirmed site-alias map for the location field
+// specifically (a department/designation hint never needs aliasing - only
+// site names get colloquial nicknames).
 function personHintMatches(emp, hint) {
-  return departmentHintMatches(emp.department, hint) || departmentHintMatches(emp.location, hint) || departmentHintMatches(emp.designation, hint);
+  refreshSiteAliasCacheIfStale();
+  return departmentHintMatches(emp.department, hint) || departmentHintMatches(emp.location, hint) || departmentHintMatches(emp.designation, hint) || hintMatchesSiteAliasSync(emp.location, hint);
 }
 // Any status (ACTIVE/NOTICE PERIOD/INACTIVE) - the caller decides what to
 // do with each category (notice period is still "currently employed" for
@@ -9248,6 +9495,15 @@ module.exports = {
   findDuplicateHrConfirmation,
   listOpenHrFlowsForOwner,
   closeOpenHrNoteFlow,
+  saveSiteAlias,
+  getSiteAlias,
+  listSiteAliases,
+  deleteSiteAlias,
+  scanForNewSites,
+  listNewSitesFound,
+  confirmNewSite,
+  ensureDefaultSiteAliasesSeeded,
+  refreshSiteAliasCacheNow,
   closeOpenHrConfirmation,
   resolveHrNoteThirdParty,
   finalizeHrNoteThirdParty,

@@ -4031,6 +4031,61 @@ async function checkAsync(label, fn) {
   check('NEW, item 7: a designation hint ("Clubhouse" as a site word embedded in a longer phrase) still falls back to false when it genuinely matches nothing on the candidate', !whatsappAssistant.personHintMatches({ department: 'CONTRACTS', location: 'HO-Sales Office', designation: 'Manager' }, 'Clubhouse Srirampur'));
   check('NEW, item 7: department hints keep working exactly as before (no regression from adding location/designation)', whatsappAssistant.personHintMatches({ department: 'SECURITY DEPT.', location: 'Some Other Site', designation: 'Guard' }, 'Security'));
 
+  // ======================================================================
+  console.log('='.repeat(70));
+  console.log('TASK 2 (2026-10-28): site aliases + new-site detection');
+  console.log('='.repeat(70));
+  await checkAsync('setup: confirmed site aliases save and are immediately reflected (refreshSiteAliasCacheNow, not a 30s-stale cache)', async () => {
+    await whatsappAssistant.saveSiteAlias({ alias: 'Serampore', siteValue: 'SRM-Site', confirmed: true });
+    await whatsappAssistant.saveSiteAlias({ alias: 'Curve', siteValue: '54,Chowringee-Site', confirmed: true });
+    await whatsappAssistant.saveSiteAlias({ alias: 'ANI', siteValue: 'AN-Site', confirmed: true });
+    await whatsappAssistant.refreshSiteAliasCacheNow();
+    return true;
+  });
+  check('LOCKED SCENARIO: "Curve" hint matches a candidate whose real location is "54,Chowringee-Site" via the confirmed alias', whatsappAssistant.personHintMatches({ department: 'SALES', location: '54,Chowringee-Site', designation: 'Executive' }, 'Curve'));
+  check('LOCKED SCENARIO: "ANI" hint matches a candidate at "AN-Site" via the confirmed alias', whatsappAssistant.personHintMatches({ department: 'OPERATIONS', location: 'AN-Site', designation: 'Supervisor' }, 'ANI'));
+  check('LOCKED SCENARIO, direct instruction: "Srirampur" still matches "SRM-Site" (via the confirmed "Serampore" alias) even though "Srirampur" itself is not a saved alias word - spelling-tolerant matching, not an exact word list', whatsappAssistant.personHintMatches({ department: 'CIVIL', location: 'SRM-Site', designation: 'Engineer' }, 'Srirampur'));
+  check('REGRESSION: a confirmed alias never bleeds onto an unrelated site - "Curve" does NOT match a candidate at "AN-Site"', !whatsappAssistant.personHintMatches({ department: 'OPERATIONS', location: 'AN-Site', designation: 'Supervisor' }, 'Curve'));
+  check('REGRESSION: a short site code (<=3 letters) matches only EXACTLY, never fuzzily - "AN" does NOT match "ANI"\'s own site by accident through some unrelated 2-letter word', !whatsappAssistant.personHintMatches({ department: 'SALES', location: 'SRM-Site', designation: 'Executive' }, 'AN'));
+  await checkAsync('cleanup: remove the test-created aliases so they never leak into another test run', async () => {
+    const all = await whatsappAssistant.listSiteAliases();
+    for (const a of all) {
+      if (['Serampore', 'Curve', 'ANI'].includes(a.alias)) await whatsappAssistant.deleteSiteAlias(a.id);
+    }
+    await whatsappAssistant.refreshSiteAliasCacheNow();
+    return true;
+  });
+
+  await checkAsync('LOCKED SCENARIO: scanForNewSites() flags a location value never seen before, with auto-suggested aliases, but does NOT flag an already-known value a second time', async () => {
+    const unknownValue = 'Brand-New-Test-Site-' + Date.now();
+    const origGetData = employeeService.getEmployeeData;
+    // Seed the "known sites" baseline from the REAL data FIRST (as a live
+    // deploy would on its very first scan) - only THEN introduce the
+    // never-before-seen value, so it's genuinely absent from the baseline
+    // rather than seeding itself into "known" on the same call.
+    await whatsappAssistant.scanForNewSites();
+    const empMock = { employees: [{ location: unknownValue }, { location: 'SRM-Site' }] };
+    employeeService.getEmployeeData = async () => empMock;
+    try {
+      const flagged = await whatsappAssistant.scanForNewSites();
+      const found = flagged.find((f) => f.siteValue === unknownValue);
+      if (!found) return false;
+      if (!found.suggestedAliases || !found.suggestedAliases.length) return false;
+      const stillOnlyOne = (await whatsappAssistant.scanForNewSites()).filter((f) => f.siteValue === unknownValue).length === 1;
+      if (!stillOnlyOne) return false;
+      await whatsappAssistant.confirmNewSite(unknownValue, ['Test Alias For New Site']);
+      const afterConfirm = await whatsappAssistant.scanForNewSites();
+      const stillFlagged = afterConfirm.some((f) => f.siteValue === unknownValue);
+      const aliasSaved = (await whatsappAssistant.listSiteAliases()).some((a) => a.alias === 'Test Alias For New Site' && a.siteValue === unknownValue);
+      const cleanupAlias = (await whatsappAssistant.listSiteAliases()).find((a) => a.alias === 'Test Alias For New Site');
+      if (cleanupAlias) await whatsappAssistant.deleteSiteAlias(cleanupAlias.id);
+      await whatsappAssistant.refreshSiteAliasCacheNow();
+      return !stillFlagged && aliasSaved;
+    } finally {
+      employeeService.getEmployeeData = origGetData;
+    }
+  });
+
   // --- Item 1: CV/job-application messages and media-only messages always get acknowledged ---
   check('looksLikeCvMessage recognizes the exact replayed CV text', whatsappAssistant.looksLikeCvMessage('Good morning, Sir. I have shared my CV for a suitable position in your company. Kindly review my CV and let me know if there is any suitable vacancy. Thank you, Sir.'));
   check('looksLikeCvMessage does NOT misfire on an ordinary greeting', !whatsappAssistant.looksLikeCvMessage('Good morning Sir, kemon achen?'));
