@@ -1578,10 +1578,28 @@ body { background: var(--wi-bg); }
 .wf-comms-system-strip-dismiss:active { opacity: 1; transform: scale(.92); }
 .wf-comms-section { display: flex; flex-direction: column; gap: 8px; }
 .wf-comms-section-head {
-  display: flex; align-items: center; justify-content: space-between;
+  display: flex; align-items: center; justify-content: space-between; flex-wrap: nowrap;
   font-size: 0.8rem; font-weight: 800; color: var(--wi-ink); padding: 0 2px;
 }
-.wf-comms-viewall { font-size: 0.72rem; font-weight: 700; color: var(--wi-primary); cursor: pointer; }
+/* Task 3 (2026-10-28) CSS fix: on a narrow phone, the title + up to 4
+   header icons + "View All" no longer fit on one line at their original
+   sizes, which pushed "View All" to wrap/misalign. The title now shrinks
+   and truncates FIRST (min-width:0 lets flex actually shrink it, which it
+   can't do at its default auto basis) - the icon row never shrinks or
+   wraps, so "View All" always stays on the same line, vertically centered
+   with the icons, on phone and desktop alike. */
+.wf-comms-section-title {
+  flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.wf-comms-section-actions {
+  display: flex; align-items: center; gap: 2px; flex-shrink: 0; white-space: nowrap;
+}
+.wf-comms-viewall { font-size: 0.72rem; font-weight: 700; color: var(--wi-primary); cursor: pointer; flex-shrink: 0; }
+@media (max-width: 420px) {
+  .wf-open-flows-btn { width: 36px; height: 36px; }
+  .wf-open-flows-btn-circle { width: 26px; height: 26px; }
+  .wf-open-flows-btn-circle svg { width: 14px; height: 14px; }
+}
 /* Open flows entry point - an hourglass icon button (30px visible circle,
    44px tap area per direct instruction) sitting between the "Important
    WhatsApp" title and "View All", with a small count badge overlaid at

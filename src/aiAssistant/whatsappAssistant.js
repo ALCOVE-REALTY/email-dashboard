@@ -489,20 +489,29 @@ async function dismissSystemNotices() {
 
 // One row per WhatsApp NUMBER with something outstanding right now -
 // "needs you" only (per the user's own choice): a pending data-request
-// approval, a pending draft reply, an open follow-up, or a document
-// that's arrived but isn't marked done yet. A number can carry more than
-// one outstanding item at once, and - found live, see
-// getWhatsappConversation's own comment - those items can even be for
-// DIFFERENT named requesters sharing the same number (e.g. a shared/group
-// phone). `itemCount` (not just `states`) lets the row say "3 pending"
-// instead of silently implying there's only one, and the conversation
-// detail view (getWhatsappConversation) renders a separate action group
-// per item, each labelled with its own requester name - never collapsed
-// down to a single name/summary the way an earlier version of this
-// function did.
+// approval, a pending draft reply, or a document that's arrived but isn't
+// marked done yet. A number can carry more than one outstanding item at
+// once, and - found live, see getWhatsappConversation's own comment -
+// those items can even be for DIFFERENT named requesters sharing the same
+// number (e.g. a shared/group phone). `itemCount` (not just `states`)
+// lets the row say "3 pending" instead of silently implying there's only
+// one, and the conversation detail view (getWhatsappConversation) renders
+// a separate action group per item, each labelled with its own requester
+// name - never collapsed down to a single name/summary the way an earlier
+// version of this function did.
+// Task 3 (2026-10-28) - an open follow-up is no longer counted as "needs
+// you" here (direct instruction: follow-ups live only in Reminders ->
+// Pending, never in the Action-needed inbox/badge/Home-count, and this
+// function's own count feeds the Home badge via needsYouCount). A
+// conversation whose ONLY outstanding thing is a follow-up is no longer
+// flagged "needs you" - it still shows up normally as a recent
+// conversation (mergeRecentWhatsappConversations' own resolved-chat path)
+// and the follow-up itself is still fully visible in-chat via
+// getWhatsappConversation's own, separate, unrelated listOpenFollowups()
+// fetch - only the AGGREGATE "needs you" signal changes.
 async function listActionableWhatsappItems() {
-  const [approvals, drafts, followups, docs, recentLog, hrConfirmations] = await Promise.all([
-    listPendingApprovals(), listPendingDrafts(), listOpenFollowups(),
+  const [approvals, drafts, docs, recentLog, hrConfirmations] = await Promise.all([
+    listPendingApprovals(), listPendingDrafts(),
     documentRequests.listPendingReceived(), listInboxLog(300), listAllHrConfirmations()
   ]);
   const ambiguousConfirmations = hrConfirmations.filter((c) => c.status === 'ambiguous_owner_review');
@@ -519,7 +528,6 @@ async function listActionableWhatsappItems() {
   }
   approvals.forEach((a) => ensure(a.phone).items.push({ type: 'approval', name: a.name, summary: a.dataRequestSummary, ts: a.createdAt }));
   drafts.forEach((d) => ensure(d.contactId).items.push({ type: 'draft', name: d.name, summary: d.messagePreview, ts: d.createdAt }));
-  followups.forEach((f) => ensure(f.chatId).items.push({ type: 'followup', name: f.name, summary: f.summary, ts: f.ts }));
   docs.forEach((d) => ensure(d.phone).items.push({ type: 'document', name: null, summary: 'Sent a file for ' + d.topic, ts: d.receivedAt }));
   ambiguousConfirmations.forEach((c) => ensure(c.thirdPartyPhone).items.push({ type: 'hr_confirmation_ambiguous', name: c.thirdPartyName, summary: 'Reply unclear: "' + (c.unclearTexts || []).join('" / "') + '"', ts: c.ambiguousAt || c.createdAt, hrConfirmationId: c.id }));
 
@@ -567,9 +575,14 @@ async function listActionableWhatsappItems() {
 // included here - a separate system (automationService.js) not wired
 // into this inbox in this pass; the category still appears in the
 // filter chips at a count of 0, never silently hidden.
+// Task 3 (2026-10-28) - follow-ups are no longer surfaced here at all
+// (direct instruction: they live ONLY in Reminders -> Pending, this inbox
+// shows only decision/button items). "Others" is gone too - a draft
+// (approve & send / edit / reject) is a decision, so it joins "approvals";
+// a received document needing review is closest to "data_requests".
 async function listActionNeededItems() {
-  const [approvals, drafts, followups, docs, hrConfirmations, recentLog] = await Promise.all([
-    listPendingApprovals(), listPendingDrafts(), listOpenFollowups(),
+  const [approvals, drafts, docs, hrConfirmations, recentLog] = await Promise.all([
+    listPendingApprovals(), listPendingDrafts(),
     documentRequests.listPendingReceived(), listAllHrConfirmations(), listInboxLog(300)
   ]);
   const ambiguousConfirmations = hrConfirmations.filter((c) => c.status === 'ambiguous_owner_review');
@@ -580,10 +593,9 @@ async function listActionNeededItems() {
   });
   const raw = [];
   approvals.forEach((a) => raw.push({ kind: 'approval', category: 'data_requests', chatId: whatsapp.normalizePhone(a.phone), name: a.name, ts: a.createdAt || 0, data: a }));
-  drafts.forEach((d) => raw.push({ kind: 'draft', category: 'others', chatId: whatsapp.normalizePhone(d.contactId), name: d.name, ts: d.createdAt || 0, data: d }));
-  followups.forEach((f) => raw.push({ kind: 'followup', category: 'others', chatId: whatsapp.normalizePhone(f.chatId), name: f.name, ts: f.ts || 0, data: f }));
-  docs.forEach((d) => raw.push({ kind: 'document', category: 'others', chatId: whatsapp.normalizePhone(d.phone), name: null, ts: d.receivedAt || 0, data: d }));
-  ambiguousConfirmations.forEach((c) => raw.push({ kind: 'hr_confirmation_ambiguous', category: 'confirmations', chatId: whatsapp.normalizePhone(c.thirdPartyPhone), name: c.thirdPartyName, ts: c.ambiguousAt || c.createdAt || 0, data: c }));
+  drafts.forEach((d) => raw.push({ kind: 'draft', category: 'approvals', chatId: whatsapp.normalizePhone(d.contactId), name: d.name, ts: d.createdAt || 0, data: d }));
+  docs.forEach((d) => raw.push({ kind: 'document', category: 'data_requests', chatId: whatsapp.normalizePhone(d.phone), name: null, ts: d.receivedAt || 0, data: d }));
+  ambiguousConfirmations.forEach((c) => raw.push({ kind: 'hr_confirmation_ambiguous', category: 'approvals', chatId: whatsapp.normalizePhone(c.thirdPartyPhone), name: c.thirdPartyName, ts: c.ambiguousAt || c.createdAt || 0, data: c }));
   const isRealName = (n) => n && n !== 'The sender';
   const items = await Promise.all(raw.map(async (item) => {
     const directoryMatch = await findEmployeeByPhone(item.chatId).catch(() => null);

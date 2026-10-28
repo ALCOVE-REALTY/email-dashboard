@@ -329,10 +329,20 @@ async function syncAutoCreatedReminders(now) {
     byId.set(r.id, r);
   }
 
+  // Task 3 (2026-10-28) - "one follow-up per sender PER TOPIC" (direct
+  // instruction): keying by chatId alone collapsed every distinct open
+  // topic for the same sender down to just the first one processed,
+  // silently dropping the rest. Keying by chatId+topic (falling back to
+  // the summary text when no topic was captured) keeps genuinely separate
+  // asks as separate reminders while still merging repeats of the SAME
+  // topic into one (addOpenFollowup's own merge-by-chatId+topic handles
+  // that upstream - see its comment). The title now names the actual
+  // thing still needed, not just "follow-up needed".
   for (const f of followups) {
-    await ensureReminder('whatsapp_followup|' + f.chatId, {
-      title: labelFor(f.name, f.chatId) + ' — follow-up needed', detail: f.summary, priority: 'high',
-      source: 'whatsapp', sourceType: 'whatsapp_followup', sourceRef: f.chatId, linkedChatId: f.chatId,
+    const topicKey = f.topic || f.summary || 'general';
+    await ensureReminder('whatsapp_followup|' + f.chatId + '|' + topicKey, {
+      title: labelFor(f.name, f.chatId) + ' — reply needed: ' + (f.summary || f.topic || 'their question'), detail: f.summary, priority: 'high',
+      source: 'whatsapp', sourceType: 'whatsapp_followup', sourceRef: f.chatId + '|' + topicKey, linkedChatId: f.chatId,
       dueAt: now.toISOString(), hasTime: false, now
     });
   }

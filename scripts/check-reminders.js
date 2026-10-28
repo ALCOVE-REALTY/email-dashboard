@@ -156,6 +156,7 @@ async function main() {
   const FAKE_APPROVAL_ID = 'test-approval-reminders-check';
   const FAKE_DOC_PHONE = 'test-doc-reminders-check';
   const FAKE_MEMORY_ID = 'test-memory-reminders-check';
+  const FAKE_FOLLOWUP_REF = FAKE_CHAT + '|test follow-up'; // Task 3 (2026-10-28): sourceRef is now chatId+topic, not bare chatId
   let followupsLive = [{ chatId: FAKE_CHAT, name: 'Test Contact', summary: 'test follow-up', ts: now.getTime() }];
   let approvalsLive = [{ id: FAKE_APPROVAL_ID, phone: FAKE_CHAT, name: 'Test Contact', dataRequestSummary: 'test approval', createdAt: now.getTime() }];
   let docsLive = [{ phone: FAKE_DOC_PHONE, topic: 'test doc', receivedAt: now.getTime() }];
@@ -173,12 +174,12 @@ async function main() {
   // are a derived view that regenerates itself from the real underlying
   // follow-up/approval/document/memory data, never a primary store, but
   // sloppy regardless and worth never repeating).
-  const FAKE_REFS = new Set([FAKE_CHAT, FAKE_APPROVAL_ID, FAKE_DOC_PHONE, FAKE_MEMORY_ID]);
+  const FAKE_REFS = new Set([FAKE_FOLLOWUP_REF, FAKE_APPROVAL_ID, FAKE_DOC_PHONE, FAKE_MEMORY_ID]);
   try {
     await reminderService.syncAutoCreatedReminders(now);
     const all1 = await reminderService.listRawReminders();
     all1.filter((r) => r.sourceType && FAKE_REFS.has(r.sourceRef)).forEach((r) => createdIds.push(r.id));
-    const followupReminder = all1.find((r) => r.sourceType === 'whatsapp_followup' && r.sourceRef === FAKE_CHAT);
+    const followupReminder = all1.find((r) => r.sourceType === 'whatsapp_followup' && r.sourceRef === FAKE_FOLLOWUP_REF);
     const approvalReminder = all1.find((r) => r.sourceType === 'whatsapp_approval' && r.sourceRef === FAKE_APPROVAL_ID);
     const docReminder = all1.find((r) => r.sourceType === 'document' && r.sourceRef === FAKE_DOC_PHONE);
     const memoryReminder = all1.find((r) => r.sourceType === 'memory_expiry' && r.sourceRef === FAKE_MEMORY_ID);
@@ -190,7 +191,7 @@ async function main() {
     // Running sync again with the SAME live sources must not duplicate.
     await reminderService.syncAutoCreatedReminders(now);
     const all2 = await reminderService.listRawReminders();
-    check('re-running sync with unchanged sources does not create duplicates', all2.filter((r) => r.sourceType === 'whatsapp_followup' && r.sourceRef === FAKE_CHAT).length === 1);
+    check('re-running sync with unchanged sources does not create duplicates', all2.filter((r) => r.sourceType === 'whatsapp_followup' && r.sourceRef === FAKE_FOLLOWUP_REF).length === 1);
 
     // Now resolve the sources and confirm auto-close.
     followupsLive = [];
@@ -218,6 +219,27 @@ async function main() {
     check('UNDO MUST STICK: auto-sync never re-closes a manualOverride reminder even though its source is still resolved', afterSync.status === 'pending');
     const manuallyDone = await reminderService.markDone(closedFollowup.id, now);
     check('the owner\'s own Mark done still closes it normally after an Undo', manuallyDone.status === 'completed');
+
+    // Task 3 (2026-10-28), direct instruction: "one follow-up per sender
+    // PER TOPIC" - two DIFFERENT topics from the same sender must both
+    // get their own reminder (previously, keying by chatId alone silently
+    // dropped every topic after the first).
+    followupsLive = [
+      { chatId: FAKE_CHAT, name: 'Test Contact', summary: 'topic A', topic: 'topic A', ts: now.getTime() },
+      { chatId: FAKE_CHAT, name: 'Test Contact', summary: 'topic B', topic: 'topic B', ts: now.getTime() }
+    ];
+    await reminderService.syncAutoCreatedReminders(now);
+    const allMulti = await reminderService.listRawReminders();
+    const topicARef = FAKE_CHAT + '|topic A';
+    const topicBRef = FAKE_CHAT + '|topic B';
+    FAKE_REFS.add(topicARef);
+    FAKE_REFS.add(topicBRef);
+    allMulti.filter((r) => r.sourceType && FAKE_REFS.has(r.sourceRef)).forEach((r) => { if (!createdIds.includes(r.id)) createdIds.push(r.id); });
+    const topicAReminder = allMulti.find((r) => r.sourceType === 'whatsapp_followup' && r.sourceRef === topicARef);
+    const topicBReminder = allMulti.find((r) => r.sourceType === 'whatsapp_followup' && r.sourceRef === topicBRef);
+    check('two distinct open topics from the SAME sender get two SEPARATE reminders, not one merged/dropped', Boolean(topicAReminder) && Boolean(topicBReminder) && topicAReminder.id !== topicBReminder.id);
+    check('each reminder\'s title names the actual topic still needed, not a generic "follow-up needed"', topicAReminder.title.includes('topic A') && topicBReminder.title.includes('topic B'));
+    followupsLive = [];
   } finally {
     whatsappAssistant.listOpenFollowups = origFollowups;
     whatsappAssistant.listPendingApprovals = origApprovals;

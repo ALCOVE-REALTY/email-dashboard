@@ -2327,7 +2327,7 @@
   let actionNeededItemsCache = [];
   function renderActionNeeded() {
     if (!actionNeededList) return;
-    const counts = { all: actionNeededItemsCache.length, data_requests: 0, confirmations: 0, automations: 0, others: 0 };
+    const counts = { all: actionNeededItemsCache.length, data_requests: 0, approvals: 0, automations: 0 };
     actionNeededItemsCache.forEach((it) => { counts[it.category] = (counts[it.category] || 0) + 1; });
     if (actionNeededChips) {
       actionNeededChips.querySelectorAll('[data-filter]').forEach((chip) => {
