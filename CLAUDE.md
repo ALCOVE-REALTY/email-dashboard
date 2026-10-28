@@ -85,6 +85,11 @@ access from this environment.
   what to look for (e.g. "check the deploy log for the most recent `HEAD is now at`
   line" or "search the server logs for `Claude API error` in the last hour") and he
   copies it back - never guess or assume this some other way (e.g. via Vercel).
+- **Static JS/CSS cache-busting is fully automatic** (`src/assetVersions.js`,
+  2026-10-28) - every HTML page's own `<script src>`/`<link href>` to a local
+  `public/` file gets rewritten with that file's real content hash at server
+  start, every time. Never hand-edit a `?v=N` in any HTML source file - it's
+  always overwritten, and a stale hand-written number is a no-op, not a bug.
 
 ## Test tiers (reduce API cost)
 

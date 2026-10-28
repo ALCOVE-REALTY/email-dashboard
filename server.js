@@ -6,6 +6,7 @@ const fs = require('fs');
 // Root-absolute URLs in HTML/JS break under a path prefix (/p/<slug>/ on the
 // Employee Deploy Platform) - see src/basePath.js.
 const basePath = require('./src/basePath');
+const assetVersions = require('./src/assetVersions');
 const { getAuthUrl, handleCallback, isAuthenticated, getConfigStatus } = require('./src/auth');
 const subhDriveAuth = require('./src/subhDriveAuth');
 const gmailService = require('./src/gmailService');
@@ -113,40 +114,19 @@ app.get('/oauth2callback', async (req, res) => {
   }
 });
 
-// These two HTML documents are the entry point that decides which
-// versioned CSS/JS URLs the browser even requests — if the *document*
-// itself gets cached (res.sendFile's own defaults, or any CDN in between),
-// bumping ?v=N on the assets never even reaches the client. no-store is
-// deliberately more aggressive than the static middleware's max-age:0.
+// These HTML documents are the entry point that decides which versioned
+// CSS/JS URLs the browser even requests — if the *document* itself gets
+// cached (res.sendFile's own defaults, or any CDN in between), a fresh
+// asset version on the files themselves never even reaches the client.
+// no-store is deliberately more aggressive than the static middleware's
+// max-age:0. Every HTML document's own <link>/<script> tags get rewritten
+// with each file's real, current content-hash version (assetVersions.js,
+// computed once at server start) - no hand-maintained "?v=N" to forget to
+// bump, for any JS/CSS file this app serves, on any page.
 function sendNoStore(res, filePath) {
   res.set('Cache-Control', 'no-store, must-revalidate');
-  if (filePath.endsWith('.html')) return basePath.sendHtml(res.req, res, filePath);
+  if (filePath.endsWith('.html')) return basePath.sendHtml(res.req, res, filePath, assetVersions.rewriteAssetVersions);
   res.sendFile(filePath);
-}
-
-// VERCEL_GIT_COMMIT_SHA is set automatically by Vercel for every single
-// deployment (no config needed) - using it as the cache-busting version
-// means every deploy gets a genuinely new asset URL with zero chance of
-// a human forgetting to bump a hand-maintained ?v=N number (exactly what
-// happened here: workforce.css/js went through five straight commits
-// with the number never touched, so any cache layer that had EVER seen
-// that exact URL before - this app's own server has max-age:0 and
-// revalidates correctly, but a browser, a mobile carrier's transparent
-// proxy, or a CDN edge that doesn't revalidate as reliably - had no
-// reason to treat the content as new). Local dev has no such env var,
-// so it falls back to this process's own start time - every server
-// restart still gets a fresh version, without needing a real commit.
-const ASSET_VERSION = process.env.VERCEL_GIT_COMMIT_SHA || String(Date.now());
-
-// Same no-store guarantee as sendNoStore, but for an HTML document whose
-// OWN <link>/<script> tags need to carry ASSET_VERSION - reads the file
-// instead of streaming it, so the ?v=N placeholders baked into the
-// source (any number; it's always overwritten) can be replaced with the
-// real, current one before the response goes out.
-function sendNoStoreWithAssetVersion(res, filePath) {
-  res.set('Cache-Control', 'no-store, must-revalidate');
-  basePath.sendHtml(res.req, res, filePath, (html) =>
-    html.replace(/(workforce\.(?:css|js))\?v=\d+/g, '$1?v=' + ASSET_VERSION));
 }
 
 // The bare domain is now the link shared with directors, so it goes straight
@@ -190,7 +170,7 @@ app.get('/workforce.html', hrAuth.requireInterviewPanelAccess, (req, res) => {
   const isScopedInterviewPanel = req.hrUser && req.hrUser.scope === 'interviewPanel';
   const isMobileDevice = MOBILE_USER_AGENT.test(req.headers['user-agent'] || '');
   if (req.query.embedded === '1' || isScopedInterviewPanel || isMobileDevice) {
-    return sendNoStoreWithAssetVersion(res, path.join(__dirname, 'src', 'views', 'workforce.html'));
+    return sendNoStore(res, path.join(__dirname, 'src', 'views', 'workforce.html'));
   }
   sendNoStore(res, path.join(__dirname, 'src', 'views', 'workforce-shell.html'));
 });
