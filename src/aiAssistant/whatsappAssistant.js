@@ -4276,21 +4276,24 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
     if (isYesAnswer(t) || burstLines.some((l) => isYesAnswer(l))) {
       const finalized = await finalizeHrNoteThirdParty({ phone, senderName: name, lang, candidate: hrFlow.candidate, summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, createdAt: hrFlow.createdAt, history });
       // Case B - the other line(s) in the burst are extra info alongside
-      // the yes. Direct instruction (2026-10-26, Wave 2, conversation 6) -
-      // that other content is not always about the SAME matter (e.g. "Haa"
-      // + "I'll send you your item tomorrow", a genuinely separate thing);
-      // only a stray detail about the matter just confirmed gets the
-      // generic "noted too" wrap - a real separate topic gets its own
-      // short, content-aware reply, same as any standalone unrelated
-      // message while a flow is open.
+      // the yes. Task 5 (2026-10-28), live flakiness fix - this used to
+      // ALSO ask the model whether that other line was a genuinely
+      // unrelated topic (vs. a stray detail about the SAME matter just
+      // confirmed), which was the actual source of the intermittent
+      // failures here: the model's isUnrelatedTopic judgment on a short,
+      // ambiguous line ("Ei half day-tar karon chilo...", "Ami kalke 2nd
+      // half a office jabo") varied run to run, sometimes wrongly called
+      // unrelated, picking a different reply branch than the deterministic
+      // "noted too" wrap the test (and the live case) expects. Simplified
+      // to be deterministic-first per direct instruction: once a clear yes
+      // token has already resolved WHO this is, anything else in the same
+      // burst is simply extra info about that same matter - always the
+      // "noted too" wrap, never a model call here at all. A genuinely
+      // separate, unrelated topic sent on its OWN (not burst-combined with
+      // a yes answer) is unaffected - that's a different code path
+      // entirely (the plain "isUnrelatedTopic" handling further down this
+      // function, for a message with no yes/no token in it at all).
       if (burstHasExtraLines && finalized && finalized.replyText) {
-        const yesLine = burstLines.find((l) => isYesAnswer(l)) || t;
-        const otherText = burstLines.filter((l) => l !== yesLine).join('\n').trim();
-        const extractedOther = otherText ? await extractPersonReference(otherText, { pendingQuestionLabel, history, lang }) : { isUnrelatedTopic: false, unrelatedTopicPhrase: null };
-        if (extractedOther.isUnrelatedTopic && extractedOther.unrelatedTopicPhrase) {
-          const topicAck = (HR_FLOW_UNRELATED_TOPIC_ACK[lang] || HR_FLOW_UNRELATED_TOPIC_ACK.english)(extractedOther.unrelatedTopicPhrase);
-          return Object.assign({}, finalized, { replyText: finalized.replyText + ' ' + topicAck });
-        }
         return Object.assign({}, finalized, { replyText: wrapWithExtraInfoNote(lang, finalized.replyText) });
       }
       return finalized;

@@ -4456,6 +4456,26 @@ async function checkAsync(label, fn) {
   });
 
   console.log('='.repeat(70));
+  console.log('TASK 5 (2026-10-28): deterministic-first burst resolution for a pending yes/no confirmation - fixes the intermittently-flaky "Half-day-approval/WFH flow, CASE B" tests');
+  console.log('='.repeat(70));
+  await checkAsync('LOCKED SCENARIO, live case: at the "Apni ki ei approval-er bishoye <candidate>-er kotha bolchhen?" confirm question, a burst of extra info ("Ami kalke 2nd half a office jabo") + a clear yes token ("Haa") always resolves to STEP 3+4 with the noting wrap - never a model call to judge the extra info as a separate topic, which was the actual source of the intermittent failures here', async () => {
+    const { employees } = await employeeService.getEmployeeData();
+    const subhodeep = employees.find((e) => e.name === 'Subhodeep Kundu Chowdhury');
+    const candidate = { employeeId: subhodeep.employeeId, name: subhodeep.name, department: 'HR DEPT', contactNumber: subhodeep.contactNumber, status: subhodeep.status, designation: subhodeep.designation };
+    const phone = '910000003101';
+    await whatsappAssistant.clearPendingHrNoteFlow(phone).catch(() => {});
+    await whatsappAssistant.savePendingHrNoteFlow(phone, {
+      summary: 'half day leave approval', summaryLocalized: 'apni onake half day-r approval ta diyechhen',
+      topicLabel: 'half day', actionPhrase: 'half day-r approval-ta', actionKind: 'approval', lang: 'banglish',
+      createdAt: Date.now(), step: 'awaiting_confirm_yes_no', candidate, isInactive: false
+    });
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Ami kalke 2nd half a office jabo\nHaa', isGroup: false, history: [] });
+    const ok = d.replyText === 'Ami SUBH, Subhodeep-er HR Assistant. Ami apnar ei bishoy-ta-o note kore nilam, Subhodeep-ke janiye dicchi. Ar amake sothik naam diye sahajyo korar jonno dhonnobad. Ami Subhodeep Kundu Chowdhury-er sathe kotha bole joto taratari somvob apnake janacchi.';
+    await whatsappAssistant.clearPendingHrNoteFlow(phone).catch(() => {});
+    return ok;
+  });
+
+  console.log('='.repeat(70));
   console.log('TASK 4 (2026-10-27): record/replay cache + cost-report bookkeeping (test-only, a complete no-op in production since the live app never sets SCENARIO_REPLAY_CACHE)');
   console.log('='.repeat(70));
   check('resetApiCallStats/getApiCallStats round-trip to all zeros (pure counter bookkeeping, no API call involved)', (() => {
