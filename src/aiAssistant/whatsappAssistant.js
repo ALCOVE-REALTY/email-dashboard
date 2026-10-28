@@ -57,7 +57,7 @@ function fireAndForgetPresence(phone, state) {
 }
 const redisHealth = require('../redisHealth');
 const employeeService = require('../employeeService');
-const cvUploadService = require('../cvUploadService');
+const fileStorage = require('../fileStorage');
 const workforceAnalytics = require('../workforceAnalytics');
 const tools = require('./tools');
 const memoryService = require('./memoryService');
@@ -7990,13 +7990,16 @@ async function mediaFallbackLang(contactId, caption) {
   const lastIncoming = (history || []).filter((h) => h.direction === 'in' && h.text).slice(-1)[0];
   return lastIncoming ? detectLang(lastIncoming.text) : 'banglish';
 }
-// Task 1 - uploads the actual file to Drive via the already-working
-// cvUploadService (admin's own OAuth identity, same as Gmail - the
-// service account has zero Drive storage quota and can never own a
-// fresh upload, see that file's own comment) whenever a download link is
-// available, regardless of whether today's application template was
-// already sent (the FILE is still worth saving even on a second CV from
-// the same person the same day - only the REPLY is once-per-day).
+// Task 1 (2026-10-28) - uploads the actual file to SUBH's own Drive
+// storage (fileStorage.js, the owner's own drive.file-scoped OAuth
+// identity - the SAME "SUBH Documents" root this app already uses for
+// document-request uploads) into "SUBH Documents/CVs/<YYYY-MM>/", rather
+// than the older cvUploadService (an admin-identity upload into one flat
+// folder) - whenever a download link is available, regardless of whether
+// today's application template was already sent (the FILE is still
+// worth saving even on a second CV from the same person the same day -
+// only the REPLY is once-per-day). If the gateway gives no media URL at
+// all, the owner notification says so instead, exactly as before.
 async function handleJobApplicationMediaDecision(contactId, name, lang, caption, msg) {
   const mediaUrl = extractMediaUrl(msg);
   let driveNote = ' - could not save a copy (the gateway has not given SUBH a download link for this message), so the CV itself is only visible in the WhatsApp chat, not saved anywhere.';
@@ -8007,9 +8010,8 @@ async function handleJobApplicationMediaDecision(contactId, name, lang, caption,
       const buffer = Buffer.from(await resp.arrayBuffer());
       const mimeType = resp.headers.get('content-type') || (msg.type === 'document' ? 'application/pdf' : 'image/jpeg');
       const ext = mimeType.includes('pdf') ? 'pdf' : (mimeType.includes('png') ? 'png' : 'jpg');
-      const filename = String(name || 'Applicant').replace(/[^\w.-]+/g, '_') + '_CV_' + Date.now() + '.' + ext;
-      const uploaded = await cvUploadService.uploadCv({ buffer, filename, mimeType });
-      driveNote = ' - saved to Drive: ' + uploaded.link;
+      const fileId = await fileStorage.saveFile(buffer, { channel: 'CVs', senderLabel: name, topic: 'CV', mimeType, extension: ext });
+      driveNote = ' - saved to Drive: https://drive.google.com/file/d/' + fileId + '/view';
     } catch (err) {
       driveNote = ' - could not save a copy to Drive (' + err.message + ').';
     }
