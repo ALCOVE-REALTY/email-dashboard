@@ -2257,11 +2257,45 @@ router.delete('/hr-assistant/reply-templates/:id', async (req, res) => {
 // the SAME endpoints as acting in chat (whatsapp-approval, whatsapp-
 // reply, whatsapp-followup-done, whatsapp-document-done, whatsapp-hr-
 // confirmation-resolve), so there is only ever one source of truth.
+// Task 3 (2026-10-28) - automation items (missed runs, first-run
+// approvals) merged in HERE rather than inside whatsappAssistant.js's own
+// listActionNeededItems, since automationService.js already requires
+// whatsappAssistant (for postOwnerNotification) - requiring it back would
+// be a circular import. This route already requires both, so it's the
+// natural place to combine them. One source of truth: these items carry
+// no snapshot of their own state beyond id/subject/schedule - acting on
+// them (via the existing /automations/:id/approve and /missed-run/
+// send|skip routes, called identically from here and from the Automated
+// Tasks list) always re-reads/re-writes the real automation record, never
+// a separate copy.
 router.get('/hr-assistant/action-needed', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
   try {
-    const items = await whatsappAssistant.listActionNeededItems();
-    res.json({ items });
+    const [items, automations] = await Promise.all([
+      whatsappAssistant.listActionNeededItems(),
+      automationService.listRawAutomations().catch(() => [])
+    ]);
+    const automationItems = [];
+    for (const a of automations) {
+      if (a.pendingMissedRun) {
+        const ts = new Date(a.pendingMissedRun.scheduledFor).getTime() || Date.now();
+        automationItems.push({
+          kind: 'automation_missed_run', category: 'automations', chatId: null,
+          name: 'Missed run — ' + a.subject, ts, ageMs: Math.max(0, Date.now() - ts),
+          data: { id: a.id, subject: a.subject, scheduledFor: a.pendingMissedRun.scheduledFor, discoveredAt: a.pendingMissedRun.discoveredAt }
+        });
+      }
+      if (a.status === 'pending_approval') {
+        const ts = new Date(a.createdAt || Date.now()).getTime() || Date.now();
+        automationItems.push({
+          kind: 'automation_first_run', category: 'automations', chatId: null,
+          name: 'Waiting for first-run approval — ' + a.subject, ts, ageMs: Math.max(0, Date.now() - ts),
+          data: { id: a.id, subject: a.subject, nextRunAt: a.nextRunAt }
+        });
+      }
+    }
+    const merged = items.concat(automationItems).sort((x, y) => x.ts - y.ts);
+    res.json({ items: merged });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

@@ -2060,7 +2060,64 @@
     if (hours < 24) return hours + 'h';
     return Math.round(hours / 24) + 'd';
   }
+  // Task 3 (2026-10-28) - automation cards have no WhatsApp sender at all
+  // (no "Open chat", a different action set), so they're built/wired as a
+  // separate branch rather than forcing them through miniConvoForActionItem/
+  // buildConvoActions, which only know about WhatsApp-sender item kinds.
+  function actionNeededAutomationCardHtml(item) {
+    const waitingTag = item.ageMs > 2 * 60 * 60 * 1000 ? '<span class="wf-action-needed-waiting-tag">Waiting ' + actionNeededAgeLabel(item.ageMs) + '</span>' : '';
+    const isMissedRun = item.kind === 'automation_missed_run';
+    const actionsHtml = isMissedRun
+      ? '<div class="wf-auto-actions">' +
+          '<button type="button" class="primary" data-auto-action="missed-send" data-auto-id="' + escapeHtml(item.data.id) + '">Send now</button>' +
+          '<button type="button" class="plain" data-auto-action="missed-skip" data-auto-id="' + escapeHtml(item.data.id) + '">Skip</button>' +
+        '</div>'
+      : '<div class="wf-auto-actions">' +
+          '<button type="button" class="primary" data-auto-action="approve" data-auto-id="' + escapeHtml(item.data.id) + '">Approve</button>' +
+          '<button type="button" class="plain" data-auto-action="preview" data-auto-id="' + escapeHtml(item.data.id) + '">Preview</button>' +
+        '</div>';
+    return '<div class="wf-auto-task-card" data-automation-id="' + escapeHtml(item.data.id) + '">' +
+      '<div class="wf-action-needed-card-head">' +
+        '<span class="wf-auto-task-subject">' + escapeHtml(item.name) + waitingTag + '</span>' +
+        '<button type="button" class="wf-action-needed-openchat" data-open-automations="1">Automated Tasks ›</button>' +
+      '</div>' +
+      '<div class="wf-auto-hint">' + actionNeededAgeLabel(item.ageMs) + ' ago' + (isMissedRun ? ' · scheduled for ' + autoWhen(item.data.scheduledFor) : '') + '</div>' +
+      actionsHtml +
+    '</div>';
+  }
+  function wireActionNeededAutomationCard(card) {
+    const openAutoBtn = card.querySelector('[data-open-automations]');
+    if (openAutoBtn) openAutoBtn.addEventListener('click', () => { pushNav({ type: 'automationList' }); setPanelView('automationList'); loadAutomationsBadgeAndList(true); });
+    card.querySelectorAll('[data-auto-action]').forEach((b) => {
+      const id = b.dataset.autoId, action = b.dataset.autoAction;
+      b.addEventListener('click', async () => {
+        if (action === 'preview') { await runButtonAction(b, () => autoPreviewSaved(id), null, { resetAfterSuccess: true, toastFn: AUTO_TOAST_ERR.toastFn }); return; }
+        if (action === 'approve') {
+          await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/automations/' + encodeURIComponent(id) + '/approve', {}), () => {
+            closeRowWithToast(card, { title: 'First run approved', type: 'success' });
+            refreshActionNeeded();
+          }, AUTO_TOAST_ERR);
+          return;
+        }
+        if (action === 'missed-send') {
+          await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/automations/' + encodeURIComponent(id) + '/missed-run/send', {}), (r) => {
+            closeRowWithToast(card, { title: 'Sent: ' + (r.sentCount || 0) + ' sent, ' + (r.skippedCount || 0) + ' skipped', type: 'success' });
+            refreshActionNeeded();
+          }, AUTO_TOAST_ERR);
+          return;
+        }
+        if (action === 'missed-skip') {
+          await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/automations/' + encodeURIComponent(id) + '/missed-run/skip', {}), () => {
+            closeRowWithToast(card, { title: 'Skipped', type: 'success' });
+            refreshActionNeeded();
+          }, AUTO_TOAST_ERR);
+          return;
+        }
+      });
+    });
+  }
   function actionNeededCardHtml(item) {
+    if (item.kind === 'automation_missed_run' || item.kind === 'automation_first_run') return actionNeededAutomationCardHtml(item);
     const waitingTag = item.ageMs > 2 * 60 * 60 * 1000 ? '<span class="wf-action-needed-waiting-tag">Waiting ' + actionNeededAgeLabel(item.ageMs) + '</span>' : '';
     return '<div class="wf-auto-task-card" data-chat-id="' + escapeHtml(item.chatId) + '">' +
       '<div class="wf-action-needed-card-head">' +
@@ -2072,6 +2129,7 @@
     '</div>';
   }
   function wireActionNeededCard(card, chatId) {
+    if (card.dataset.automationId) { wireActionNeededAutomationCard(card); return; }
     const openChatBtn = card.querySelector('[data-open-chat]');
     if (openChatBtn) openChatBtn.addEventListener('click', () => { pushNav({ type: 'conversation', chatId }); openConversationPage(chatId); });
     card.querySelectorAll('[data-approval-action]').forEach((b) => {
