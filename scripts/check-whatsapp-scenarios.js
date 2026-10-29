@@ -707,6 +707,95 @@ scenario('Task 4: a pending disambiguation list (ambiguous "Tanmoy") is RE-RESOL
   }
 });
 
+// ISSUE 2 live bug fix (2026-10-29): isHrNotification used to be gated on
+// intent==='informing' only, so an attendance/time-off matter PHRASED AS
+// A REQUEST ("...nite chai" - I WANT to...) never entered the
+// approval/instruction flow at all and fell through to a model-written
+// "I'll get back to you" promise instead (the real Pallabi Majumdar live
+// bug). Fixed by broadening isHrNotification's gate, for the
+// attendance/time-off topic list ONLY, to fire regardless of phrasing
+// (informing/request/question) - salary/bank-account-change and
+// work-location-update stay strictly intent==='informing'-gated, and a
+// policy question / salary-slip request / other data-or-document request
+// must still never enter this flow at all (scenarios 4 and 5 below).
+scenario('ISSUE2: Pallabi live bug - a half-day+Saturday comp-off REQUEST (mixed attendance topics, phrased "...nite chai", not a plain informing statement) starts the approval flow with the "ei bishoye approval-ta" wording, never a model-written promise reply', async () => {
+  const phone = '910000002201';
+  await cleanupHrFlowArtifacts(phone);
+  try {
+    const text1 = 'Bolchi ekta request korar chilo.. aaj ker jonno sudhu.. amar aaj ke late hoyeche.. ami 11 tay in korechi.. to aaj ke ami half day kore Saturday full day kore nite chai.. jeta amar half day dhora hoche ekhon Okay';
+    const d1 = await whatsappAssistant.decideAutoReply({ phone, name: 'Pallabi', firstName: 'Pallabi', text: text1, isGroup: false, history: [] });
+    const expected1 = 'Ami apnar bishoy-ta note kore nilam. Apni ki ei bishoye approval-ta niyechhen? Ke approve korechhen, tar naam-ta bolle ami confirm kore nite parbo.';
+    if (d1.case !== 'acknowledged') return { pass: false, detail: 'turn1 fell to the generic model-drafted path (case=' + d1.case + '), expected the approval flow. Reply: ' + d1.replyText };
+    if (coreText(d1.replyText) !== expected1) return { pass: false, detail: 'turn1 expected exact wording:\n"' + expected1 + '"\ngot:\n"' + coreText(d1.replyText) + '"' };
+    const h1 = [{ direction: 'in', text: text1, ts: Date.now() - 2000 }, { direction: 'out', text: d1.replyText, ts: Date.now() - 1000 }];
+    const d2 = await whatsappAssistant.decideAutoReply({ phone, name: 'Pallabi', firstName: 'Pallabi', text: 'Ektu janiyo ami tahole Mahuya di ke bole debo', isGroup: false, history: h1 });
+    if (d2.case === 'holding') return { pass: false, detail: 'turn2 fell to the generic model-drafted "holding" path (the exact live bug) - reply: ' + d2.replyText };
+    if (/kichu\s*jana\s*gele|update\s*janabo|kotha\s*bole\s*apnake\s*janabo/i.test(d2.replyText)) return { pass: false, detail: 'turn2 looks like a model-written promise-to-follow-up reply (the exact live bug): ' + d2.replyText };
+    return { pass: true, detail: 'both turns handled by the approval flow, never a model-written promise' };
+  } finally {
+    await cleanupHrFlowArtifacts(phone);
+  }
+});
+scenario('ISSUE2: a CLEAR single-topic late-coming REQUEST ("ajke deri kore asbo, approval ta nite chai") still names the single topic (late coming), never the generic "ei bishoye" mixed-topic fallback', async () => {
+  const phone = '910000002202';
+  await cleanupHrFlowArtifacts(phone);
+  try {
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenLate', firstName: 'ScenLate', text: 'Sir, ajke ami office e ektu deri kore asbo. Eta approval kore nite chai.', isGroup: false, history: [] });
+    if (d.case !== 'acknowledged') return { pass: false, detail: 'fell to the generic model-drafted path (case=' + d.case + '), expected the approval flow. Reply: ' + d.replyText };
+    // Accepts either an English "late coming" phrase or the natural Banglish
+    // equivalent ("deri kore asha"/"deri korar") - both are a single, clearly
+    // named topic; only the ABSENCE of any topic name (the generic "ei
+    // bishoye" fallback) would mean the single-topic wording was lost.
+    if (!/late\s*coming|deri\s*kor/i.test(d.replyText)) return { pass: false, detail: 'expected a single named topic (late coming/deri kora) in the reply, got: ' + d.replyText };
+    if (/ei\s*bishoye/i.test(d.replyText)) return { pass: false, detail: 'a clear single-topic request should never fall back to the generic "ei bishoye" wording, got: ' + d.replyText };
+    return { pass: true, detail: 'clear single-topic wording preserved' };
+  } finally {
+    await cleanupHrFlowArtifacts(phone);
+  }
+});
+scenario('ISSUE2: a half-day + Saturday comp-off REQUEST (mixed attendance topics, different wording than the Pallabi case) also falls back to the generic "ei bishoye" wording, never a single forced topic name', async () => {
+  const phone = '910000002203';
+  await cleanupHrFlowArtifacts(phone);
+  try {
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenMix', firstName: 'ScenMix', text: 'Ami aajke half day niye Saturday ta full day office korte chai, eta ki thik ache?', isGroup: false, history: [] });
+    if (d.case !== 'acknowledged') return { pass: false, detail: 'fell to the generic model-drafted path (case=' + d.case + '), expected the approval flow. Reply: ' + d.replyText };
+    if (!/ei\s*bishoye/i.test(d.replyText)) return { pass: false, detail: 'expected the generic "ei bishoye" wording for this mixed-topic request, got: ' + d.replyText };
+    return { pass: true, detail: 'mixed-topic request correctly used the generic wording' };
+  } finally {
+    await cleanupHrFlowArtifacts(phone);
+  }
+});
+scenario('ISSUE2 REGRESSION: a general leave POLICY question ("koto din casual leave paoa jay") never enters the attendance-approval flow - still gets its normal reply, unaffected by the broadened isHrNotification gate', async () => {
+  const phone = '910000002204';
+  await cleanupHrFlowArtifacts(phone);
+  try {
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenPolicy', firstName: 'ScenPolicy', text: 'Amader company te ek bochore koto din casual leave paoa jay?', isGroup: false, history: [] });
+    const pending = await whatsappAssistant.getPendingHrNoteFlow(phone);
+    // The HR-note/approval flow ALWAYS returns case:'acknowledged' and
+    // saves a pendingHrNoteFlow record - checking those two directly is a
+    // robust oracle. A plain text-match on "note kore nilam" is NOT
+    // reliable here: that is also a common, natural Bengali phrase the
+    // free-form model-drafted ("holding") reply can independently use for
+    // an ordinary request, unrelated to this flow.
+    if (d.case === 'acknowledged' || pending) return { pass: false, detail: 'a general policy question was wrongly routed into the attendance-approval flow (case=' + d.case + ', pending=' + JSON.stringify(pending) + '): ' + d.replyText };
+    return { pass: true, detail: 'policy question unaffected' };
+  } finally {
+    await cleanupHrFlowArtifacts(phone);
+  }
+});
+scenario('ISSUE2 REGRESSION (direct instruction): a salary-slip REQUEST never enters the attendance-approval flow - keeps its current path, unaffected by the broadened isHrNotification gate', async () => {
+  const phone = '910000002205';
+  await cleanupHrFlowArtifacts(phone);
+  try {
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenSlip', firstName: 'ScenSlip', text: 'Amar last month er salary slip ta pathaben please?', isGroup: false, history: [] });
+    const pending = await whatsappAssistant.getPendingHrNoteFlow(phone);
+    if (d.case === 'acknowledged' || pending) return { pass: false, detail: 'a salary-slip request was wrongly routed into the attendance-approval flow (case=' + d.case + ', pending=' + JSON.stringify(pending) + '): ' + d.replyText };
+    return { pass: true, detail: 'salary-slip request unaffected' };
+  } finally {
+    await cleanupHrFlowArtifacts(phone);
+  }
+});
+
 // Task 4 (2026-10-27) - approximate Claude Sonnet per-token pricing
 // (USD), used only to turn the tracked token counts into a rough cost
 // estimate for the report below - update here if pricing changes, this

@@ -5354,6 +5354,44 @@ async function checkAsync(label, fn) {
   })());
 
   console.log('='.repeat(70));
+  console.log('Live bug fix (2026-10-29): isHrNotification broadened for attendance/time-off REQUESTS (not just informing statements, e.g. "...nite chai") - handleHrNotificationStart wiring for the "approval, not yet granted" path, covering both the mixed/unclear-topic "ei bishoye" wording and the clear-single-topic wording it must never override');
+  console.log('='.repeat(70));
+  await checkAsync('handleHrNotificationStart: a mixed-topic attendance REQUEST (actionKind=approval, not yet granted, actionPhrase="ei bishoye approval-ta") produces the EXACT locked wording for the live Pallabi bug', async () => {
+    const phone = '910000002301';
+    await whatsappAssistant.clearPendingHrNoteFlow(phone).catch(() => {});
+    const classification = {
+      intent: 'request', language: 'banglish', isHrNotification: true,
+      hrNotificationSummary: 'wants today counted as half day and Saturday as a full day in lieu',
+      hrNotificationSummaryLocalized: 'ajke half day kore Saturday full day kore nite chan',
+      hrNotificationTopicLabel: 'half day o comp-off', hrNotificationActionKind: 'approval',
+      hrNotificationApprovalGranted: false, hrNotificationActionPhrase: 'ei bishoye approval-ta',
+      hrNotificationInvolvesThirdParty: true
+    };
+    const d = await whatsappAssistant.handleHrNotificationStart({ phone, name: 'Pallabi', lang: 'banglish', text: 'to aaj ke ami half day kore Saturday full day kore nite chai', history: [], classification });
+    const expected = 'Ami apnar bishoy-ta note kore nilam. Apni ki ei bishoye approval-ta niyechhen? Ke approve korechhen, tar naam-ta bolle ami confirm kore nite parbo.';
+    const ok = d.replyText === expected;
+    await whatsappAssistant.clearPendingHrNoteFlow(phone).catch(() => {});
+    return ok;
+  });
+  await checkAsync('handleHrNotificationStart: a CLEAR single-topic late-coming REQUEST (actionPhrase="late coming-er approval-ta") keeps the existing single-topic wording, never the generic "ei bishoye" placeholder', async () => {
+    const phone = '910000002302';
+    await whatsappAssistant.clearPendingHrNoteFlow(phone).catch(() => {});
+    const classification = {
+      intent: 'request', language: 'banglish', isHrNotification: true,
+      hrNotificationSummary: 'wants approval for coming in late today',
+      hrNotificationSummaryLocalized: 'ajke deri kore eshechen, approval chan',
+      hrNotificationTopicLabel: 'late coming', hrNotificationActionKind: 'approval',
+      hrNotificationApprovalGranted: false, hrNotificationActionPhrase: 'late coming-er approval-ta',
+      hrNotificationInvolvesThirdParty: true
+    };
+    const d = await whatsappAssistant.handleHrNotificationStart({ phone, name: 'ScenLate', lang: 'banglish', text: 'ajke deri kore asbo, approval ta nite chai', history: [], classification });
+    const expected = 'Ami apnar bishoy-ta note kore nilam. Apni ki late coming-er approval-ta niyechhen? Ke approve korechhen, tar naam-ta bolle ami confirm kore nite parbo.';
+    const ok = d.replyText === expected;
+    await whatsappAssistant.clearPendingHrNoteFlow(phone).catch(() => {});
+    return ok;
+  });
+
+  console.log('='.repeat(70));
   console.log(pass + '/' + (pass + fail) + ' passed' + (fail ? ', ' + fail + ' FAILED' : ''));
   if (failures.length) {
     console.log('Failed checks:');

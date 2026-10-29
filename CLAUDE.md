@@ -294,3 +294,22 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
   the Automations chip exists and always shows its real count (0 for now),
   never silently hidden; wiring that system in is a natural follow-up, not
   done here given scope/time.
+- ISSUE2 (2026-10-29, live bug - Pallabi Majumdar): `isHrNotification` used to
+  require `intent === 'informing'`, so an attendance/time-off matter phrased as
+  a REQUEST ("...nite chai" - I WANT to...) never entered the approval flow
+  and got a model-written "I'll get back to you" promise instead. Fixed by
+  broadening `isHrNotification`'s gate, for the attendance/time-off topic list
+  ONLY (leave, late coming, early leaving, half-day, attendance regularisation,
+  comp-off, duty/shift change, WFH), to fire regardless of phrasing
+  (informing/request/question) - salary/bank-account-change and
+  work-location-update stay strictly `intent === 'informing'`-gated, unchanged.
+  The exact live Pallabi conversation (half-day + Saturday comp-off, a mixed
+  attendance matter) now starts the approval flow with the generic "ei
+  bishoye approval-ta" wording ("Ami apnar bishoy-ta note kore nilam. Apni ki
+  ei bishoye approval-ta niyechhen? Ke approve korechhen, tar naam-ta bolle
+  ami confirm kore nite parbo.") instead of a model-drafted reply, and her
+  follow-up never falls to the generic "holding" model-drafted path either. A
+  clear single-topic request (late coming) still gets its exact existing
+  wording ("late coming-er approval-ta"), never the generic placeholder. A
+  general leave policy question and a salary-slip request are explicitly
+  proven unaffected - neither enters this flow.
