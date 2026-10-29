@@ -567,7 +567,18 @@ scenario('T2-6: "HAA" + A SEPARATE TOPIC, ANOTHER FLOW ALREADY OPEN FOR A DIFFER
     const d = await whatsappAssistant.decideAutoReply({ phone, name: 'T2S6', firstName: 'T2S6', text: 'Haa\nKalke apnar jinis ta pathiye debo', isGroup: false, history: [] });
     if (d.replyText.includes('confirmation-er opekkha korchhi')) return { pass: false, detail: 'live bug reproduced: wrongly treated as a duplicate of the earlier duty flow: ' + d.replyText };
     if (!coreText(d.replyText).includes('Subhodeep Kundu Chowdhury-er sathe kotha bole')) return { pass: false, detail: 'expected STEP3 thank-you for the half-day flow, got: ' + d.replyText };
-    if (!/jinis/i.test(d.replyText)) return { pass: false, detail: 'expected the separate "jinis pathano" topic to also get its own short reply, got: ' + d.replyText };
+    // Stale assertion fix (2026-10-29) - Task 5 (2026-10-28) deliberately
+    // replaced a model-judged, content-specific extra-info reply here with
+    // a FIXED, deterministic "noted this too" wrap (wrapWithExtraInfoNote),
+    // specifically to kill the intermittent flakiness that same model
+    // judgment used to cause. This test was never updated after that
+    // change, so it still expected the extra line's own content ("jinis")
+    // to be echoed back - something the code was intentionally changed to
+    // never do. The burst's yes/no line is already found correctly
+    // regardless of position (burstLines.some(isYesAnswer) in
+    // continueHrNoteFlow's 'awaiting_confirm_yes_no' step) - this was never
+    // actually broken. Checking for the real, current generic wrap instead.
+    if (!coreText(d.replyText).startsWith('Ami apnar ei bishoy-ta-o note kore nilam, Subhodeep-ke janiye dicchi.')) return { pass: false, detail: 'expected the generic extra-info "noted this too" wrap ahead of the STEP3 thank-you, got: ' + d.replyText };
     const after = (await whatsappAssistant.listAllHrConfirmations()).filter((c) => c.senderPhone === phone);
     if (after.length !== before.length + 1) return { pass: false, detail: 'expected a NEW, second confirmation (different matter, same manager), before=' + before.length + ' after=' + after.length };
     return { pass: true, detail: 'different matter correctly NOT treated as a duplicate, separate topic answered' };
