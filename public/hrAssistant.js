@@ -107,8 +107,6 @@
   const templateGenerateBtn = document.getElementById('hrTemplateGenerateBtn');
   const templateVersionsNote = document.getElementById('hrTemplateVersionsNote');
   // Task 2 (2026-10-28) - site aliases + new site detection
-  const subhSettingsPage = document.getElementById('hrSubhSettingsPage');
-  const subhSettingsSiteNamesBtn = document.getElementById('hrSubhSettingsSiteNamesBtn');
   const siteAliasesBadge = document.getElementById('hrSiteAliasesBadge');
   const siteAliasesPage = document.getElementById('hrSiteAliasesPage');
   const siteAliasesList = document.getElementById('hrSiteAliasesList');
@@ -1518,7 +1516,6 @@
     else if (entry.type === 'waAll') showWaAll();
     else if (entry.type === 'openFlows') showOpenFlows();
     else if (entry.type === 'templates') showTemplates();
-    else if (entry.type === 'subhSettings') showSubhSettings();
     else if (entry.type === 'siteAliases') showSiteAliases();
     else if (entry.type === 'actionNeeded') showActionNeeded();
     else if (entry.type === 'conversation') openConversationPage(entry.chatId);
@@ -1558,7 +1555,6 @@
     const isWaAll = view === 'waAll';
     const isOpenFlows = view === 'openFlows';
     const isTemplates = view === 'templates';
-    const isSubhSettings = view === 'subhSettings';
     const isSiteAliases = view === 'siteAliases';
     const isActionNeeded = view === 'actionNeeded';
     const isAutoList = view === 'automationList';
@@ -1577,7 +1573,6 @@
     if (commsWaAllPage) commsWaAllPage.hidden = !isWaAll;
     if (openFlowsPage) openFlowsPage.hidden = !isOpenFlows;
     if (templatesPage) templatesPage.hidden = !isTemplates;
-    if (subhSettingsPage) subhSettingsPage.hidden = !isSubhSettings;
     if (siteAliasesPage) siteAliasesPage.hidden = !isSiteAliases;
     if (actionNeededPage) actionNeededPage.hidden = !isActionNeeded;
     if (autoListPage) autoListPage.hidden = !isAutoList;
@@ -1614,12 +1609,6 @@
       if (commsHeadIcon) commsHeadIcon.innerHTML = WHATSAPP_SVG;
       if (commsHeadTitle) commsHeadTitle.textContent = 'Templates';
       if (commsHeadSubtitle) commsHeadSubtitle.textContent = 'Saved fixed replies for recurring topics';
-      if (commsHeadBadge) commsHeadBadge.hidden = true;
-    } else if (isSubhSettings) {
-      if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon';
-      if (commsHeadIcon) commsHeadIcon.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>';
-      if (commsHeadTitle) commsHeadTitle.textContent = 'SUBH Settings';
-      if (commsHeadSubtitle) commsHeadSubtitle.textContent = '';
       if (commsHeadBadge) commsHeadBadge.hidden = true;
     } else if (isSiteAliases) {
       if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon whatsapp';
@@ -2292,22 +2281,22 @@
     setPanelView('siteAliases');
     loadSiteAliasesPage();
   }
-  // Task 8 (2026-10-29) - "SUBH Settings", a plain menu page reached from
-  // the main ☰ side menu (workforce.js's drawer click handler calls
-  // window.__hrAssistantOpenSettings) instead of an icon on the Important
-  // WhatsApp header. Also refreshes the "new sites pending" badge on open,
-  // same data loadSiteAliasesPage's own new-sites fetch already uses.
-  function showSubhSettings() {
-    setPanelView('subhSettings');
-    loadSiteAliasesBadge();
-  }
-  window.__hrAssistantOpenSettings = function () {
+  // UI fix (2026-10-29) - "SUBH Settings" moved OUT of the SUBH panel's own
+  // page system into a normal ☰-menu dashboard view (see workforce.js) -
+  // same layout/header/back-behaviour as every other drawer item, no chat
+  // input bar. That view's own "Site names" card opens the panel straight
+  // to Site names - the panel's former intermediate "SUBH Settings" page
+  // is gone, so this is now the one way in from outside the panel.
+  window.__hrAssistantOpenSiteAliases = function () {
     const wasOpen = typeof panel !== 'undefined' && !panel.hidden;
     if (!wasOpen && typeof openPanel === 'function') openPanel();
-    pushNav({ type: 'subhSettings' });
-    showSubhSettings();
+    pushNav({ type: 'siteAliases' });
+    showSiteAliases();
   };
-  if (subhSettingsSiteNamesBtn) subhSettingsSiteNamesBtn.addEventListener('click', () => { pushNav({ type: 'siteAliases' }); showSiteAliases(); });
+  // Lets the new top-level "SUBH Settings" dashboard view (workforce.js)
+  // refresh the "new sites pending" badge on its OWN "Site names" card -
+  // same element (#hrSiteAliasesBadge), just moved out of the panel.
+  window.__hrAssistantRefreshSiteAliasesBadge = loadSiteAliasesBadge;
   function closeSiteAliasSheet() {
     siteAliasSheetBackdrop.classList.remove('open');
     siteAliasSheet.classList.remove('open');

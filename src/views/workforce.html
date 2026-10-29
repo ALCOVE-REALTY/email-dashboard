@@ -85,9 +85,9 @@
       <button class="wf-drawer-item" data-view="quality" aria-pressed="false">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>Data Quality
       </button>
-      <!-- Task 8 (2026-10-29) - opens the SUBH panel's own "SUBH Settings"
-           page (see workforce.js's drawer click handler), never a main
-           dashboard view. -->
+      <!-- UI fix (2026-10-29) - a normal dashboard view (#subhSettingsView),
+           same as every other drawer item here - no longer a page nested
+           inside the SUBH panel's own system. -->
       <button class="wf-drawer-item" data-view="subhSettings" aria-pressed="false">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>SUBH Settings
       </button>
@@ -294,29 +294,6 @@
         <div class="wf-rem-list" id="hrTemplatesList"></div>
       </div>
 
-      <!-- Task 8 (2026-10-29) - "SUBH Settings": reached from the main ☰
-           side menu (between Data Quality and Profile) instead of an icon
-           on the Important WhatsApp header. A plain settings menu, same
-           page design/back-arrow/toast as every other SUBH page - "Site
-           names" is its only entry today. -->
-      <div class="wf-comms-page" id="hrSubhSettingsPage" hidden>
-        <div class="wf-rem-list">
-          <button type="button" class="wf-hub-tile" id="hrSubhSettingsSiteNamesBtn">
-            <span class="wf-hub-tile-icon comms">
-              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 12-9 12s-9-5-9-12a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
-            </span>
-            <span class="wf-hub-tile-main">
-              <span class="wf-hub-tile-title">Site names</span>
-              <span class="wf-hub-tile-sub">Colloquial site names matched to the HR Master</span>
-            </span>
-            <span class="wf-hub-tile-end">
-              <span class="wf-hub-tile-badge wi-count-badge danger" id="hrSiteAliasesBadge" hidden></span>
-              <svg class="wf-hub-tile-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
-            </span>
-          </button>
-        </div>
-      </div>
-
       <!-- Task 2 (2026-10-28) - site aliases: an owner-editable map so a
            colloquial site name ("Serampore", "Curve") matches the HR
            Master's own data code for that site. "New sites found" surfaces
@@ -330,7 +307,11 @@
            per direct instruction. -->
       <div class="wf-comms-page" id="hrSiteAliasesPage" hidden>
         <div class="wf-rem-list" id="hrNewSitesList"></div>
-        <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 4px 6px">
+        <!-- UI fix (2026-10-29): a little more breathing room below the
+             panel's own "Site names" title bar, matching the comfortable
+             spacing the new top-level SUBH Settings view's "Site names"
+             card now has below its title. -->
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 4px 6px">
           <span class="wf-ai-sheet-title" style="font-size:14px">Site names</span>
           <button type="button" class="plain" id="hrSiteAliasAddBtn">+ Add</button>
         </div>
@@ -2155,6 +2136,43 @@
             <span>Total</span>
           </div>
         </div>
+      </div>
+    </section>
+
+    <!-- UI fix (2026-10-29) - "SUBH Settings" is a normal ☰-menu dashboard
+         view now (same layout/header/back-behaviour as every other item
+         here, e.g. Data Quality/Profile), not a page nested inside the
+         SUBH panel's own system (which showed the panel's chat input bar
+         at the bottom - wrong for a settings page reached from outside the
+         panel entirely). "Site names" is its only entry today; tapping it
+         opens the SUBH panel directly to the Site names page via
+         window.__hrAssistantOpenSiteAliases (see hrAssistant.js) - the
+         panel's own former intermediate "SUBH Settings" page is gone. -->
+    <section id="subhSettingsView" class="wf-view" hidden>
+      <div class="wf-page-head" data-wi-enter="block">
+        <button class="wf-icon-btn" data-back aria-label="Back to Dashboard">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        </button>
+        <h2>SUBH Settings</h2>
+      </div>
+      <!-- Comfortable spacing below the title (margin-top, on top of
+           .wf-page-head's own margin-bottom), and a compact tile (less
+           vertical padding than the standard .wf-hub-tile, sized to fit
+           its own text) per direct instruction. -->
+      <div style="margin-top:10px" data-wi-enter="block">
+        <button type="button" class="wf-hub-tile wf-hub-tile--compact" id="subhSettingsSiteNamesBtn">
+          <span class="wf-hub-tile-icon comms">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 12-9 12s-9-5-9-12a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+          </span>
+          <span class="wf-hub-tile-main">
+            <span class="wf-hub-tile-title">Site names</span>
+            <span class="wf-hub-tile-sub">Colloquial site names matched to the HR Master</span>
+          </span>
+          <span class="wf-hub-tile-end">
+            <span class="wf-hub-tile-badge wi-count-badge danger" id="hrSiteAliasesBadge" hidden></span>
+            <svg class="wf-hub-tile-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+          </span>
+        </button>
       </div>
     </section>
 

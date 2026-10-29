@@ -1941,6 +1941,9 @@ body { background: var(--wi-bg); }
   font-family: inherit; cursor: pointer; transition: transform .18s ease; animation: mUp .4s cubic-bezier(.2,.7,.2,1) both;
 }
 .wf-hub-tile:active { transform: scale(.98); }
+/* UI fix (2026-10-29) - the SUBH Settings page's "Site names" card: less
+   vertical padding than the standard tile, height fitting its own text. */
+.wf-hub-tile--compact { padding: 10px 14px; }
 .wf-hub-tile-icon { width: 42px; height: 42px; border-radius: var(--wi-r-tile); flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
 .wf-hub-tile-icon.reminders { background: var(--wi-purple-50); color: var(--wi-purple); }
 .wf-hub-tile-icon.comms { background: var(--wi-primary-50); color: var(--wi-primary); }

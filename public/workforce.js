@@ -30,7 +30,7 @@ const wfDrawerBackdrop = document.getElementById('wfDrawerBackdrop');
 const menuBtn = document.getElementById('menuBtn');
 const VIEWS = [
   'overview', 'directory', 'joining', 'exit', 'attrition', 'tenure', 'movement', 'insights', 'quality',
-  'departmentFull', 'locationFull', 'movementDetail', 'doerManagement', 'orgChart', 'healthInsurance', 'coveredEmployees', 'hiAdditions', 'hiExits', 'hiTotalExits', 'hiFamilyMembers', 'hiTotalLives', 'hiPolicyInfo', 'hiFamilyPremium', 'hiAnnualPremium', 'ageDistribution', 'genderDistribution', 'collarDistribution', 'profile', 'letterForm', 'letterSuccess', 'letterGenerator', 'interviewPanel'
+  'departmentFull', 'locationFull', 'movementDetail', 'doerManagement', 'orgChart', 'healthInsurance', 'coveredEmployees', 'hiAdditions', 'hiExits', 'hiTotalExits', 'hiFamilyMembers', 'hiTotalLives', 'hiPolicyInfo', 'hiFamilyPremium', 'hiAnnualPremium', 'ageDistribution', 'genderDistribution', 'collarDistribution', 'subhSettings', 'profile', 'letterForm', 'letterSuccess', 'letterGenerator', 'interviewPanel'
 ];
 const viewEls = Object.fromEntries(VIEWS.map((v) => [v, document.getElementById(v + 'View')]));
 
@@ -470,16 +470,6 @@ refreshBtn.addEventListener('click', async () => {
 wfDrawer.addEventListener('click', (e) => {
   const btn = e.target.closest('[data-view]');
   if (!btn) return;
-  // Task 8 (2026-10-29) - "SUBH Settings" lives INSIDE the SUBH panel's own
-  // page system (same design/back-arrow/toast as every other SUBH page),
-  // never the main dashboard's own view system - opens/keeps the panel
-  // open and navigates it there instead of calling setView, which has no
-  // such view at all.
-  if (btn.dataset.view === 'subhSettings') {
-    if (window.__hrAssistantOpenSettings) window.__hrAssistantOpenSettings();
-    closeDrawer();
-    return;
-  }
   // Task 3 (2026-10-28) - a menu pick while the SUBH panel is open closes
   // that panel first (it's a full-screen overlay above everything else -
   // switching the view underneath it would otherwise be invisible).
@@ -527,6 +517,18 @@ function closeDrawer() {
 }
 menuBtn.addEventListener('click', () => (wfDrawer.hidden ? openDrawer() : closeDrawer()));
 wfDrawerBackdrop.addEventListener('click', closeDrawer);
+
+// UI fix (2026-10-29) - the SUBH Settings view's "Site names" card opens
+// the SUBH panel directly to its Site names page (see
+// window.__hrAssistantOpenSiteAliases in hrAssistant.js) - that page still
+// lives inside the panel's own system, only the Settings menu itself moved
+// out to a normal dashboard view.
+const subhSettingsSiteNamesBtn = document.getElementById('subhSettingsSiteNamesBtn');
+if (subhSettingsSiteNamesBtn) {
+  subhSettingsSiteNamesBtn.addEventListener('click', () => {
+    if (window.__hrAssistantOpenSiteAliases) window.__hrAssistantOpenSiteAliases();
+  });
+}
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && !wfDrawer.hidden) closeDrawer();
 });
@@ -602,6 +604,13 @@ function setView(view, opts = {}) {
     document.getElementById('interviewPanelListPanel').hidden = false;
     document.getElementById('ipNewLinksPanel').hidden = true;
     document.getElementById('ipNamePromptPanel').hidden = true;
+  }
+  if (view === 'subhSettings') {
+    // UI fix (2026-10-29) - refreshes the "new sites pending" badge on the
+    // "Site names" card every time this view is entered (loadView's own
+    // cache would otherwise only run this once) - same data the panel's
+    // own Site names page fetch already uses.
+    if (window.__hrAssistantRefreshSiteAliasesBadge) window.__hrAssistantRefreshSiteAliasesBadge();
   }
   // All views live in the same scrolling document (sections are toggled via
   // [hidden], not real navigation), so the old scroll position otherwise
