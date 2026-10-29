@@ -1757,7 +1757,6 @@ router.get('/hr-assistant/communications-summary', async (req, res) => {
     reminderService.getDashboardSnapshot(now),
     hrAuthAlerts.listAuthAlerts()
   ]);
-  const remindersDueNow = reminderSnapshot.dueNow;
   const reminderCounts = reminderSnapshot.counts;
   // The Redis-outage notice (if any) is tracked in-process, never in
   // Redis itself (see redisHealth's own comment) - prepended here rather
@@ -1779,10 +1778,11 @@ router.get('/hr-assistant/communications-summary', async (req, res) => {
     importantWhatsappCount: waSnapshot.needsYouCount,
     systemNotices: allNotices,
     // Home's badge = pending reminders + needs-you WhatsApp items (+ mails
-    // later) per spec - the TOTAL pending count, not just reminders due
-    // right now (that's remindersDueNow, for the fired-notification banner).
-    remindersPendingCount: reminderCounts.all,
-    remindersDueNow
+    // later) per spec - the TOTAL pending count.
+    // Task 5 (2026-10-29) - remindersDueNow (the "Due now" summary banner's
+    // own data) is removed per direct instruction; the Reminders list
+    // below already shows everything due.
+    remindersPendingCount: reminderCounts.all
   });
 });
 

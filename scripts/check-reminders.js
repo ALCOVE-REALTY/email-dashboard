@@ -15,6 +15,7 @@ const reminderService = require('../src/aiAssistant/reminderService');
 const whatsappAssistant = require('../src/aiAssistant/whatsappAssistant');
 const documentRequests = require('../src/aiAssistant/documentRequests');
 const memoryService = require('../src/aiAssistant/memoryService');
+const whatsapp = require('../src/whatsappService');
 
 const OWNER = process.env.SUBH_MEMORY_OWNER_EMAIL;
 const createdIds = [];
@@ -43,6 +44,41 @@ async function main() {
   // real configured store instead (never the default).
   await require('./testBootstrap').setupTestEnvironment();
   const now = new Date('2026-10-15T06:00:00.000Z'); // a fixed instant - simulated clock throughout
+
+  console.log('='.repeat(70));
+  console.log('Task 5 (2026-10-29), direct instruction: one-time permanent wipe of EVERY reminder (auto-created AND manual), no notice banner, Automated Tasks untouched');
+  console.log('='.repeat(70));
+  // Run FIRST, before anything else in this file creates a reminder or
+  // calls syncAutoCreatedReminders (which fires this automatically at its
+  // own top, same as cleanupLegacyFollowupRemindersOnce) - on testBootstrap's
+  // fresh, throwaway store the marker is unset, exactly like a real fresh
+  // deploy, so this test's own fixtures are the ONLY things it can
+  // possibly wipe; running it later would let an earlier test's own
+  // syncAutoCreatedReminders call consume the one-time trigger first,
+  // leaving nothing left for this test to actually prove.
+  {
+    const manualA = await create({ title: 'My own manual reminder A', source: 'manual', dueAt: now.toISOString(), hasTime: true, now });
+    const manualB = await create({ title: 'My own manual reminder B (completed)', source: 'manual', dueAt: now.toISOString(), hasTime: true, now });
+    await reminderService.markDone(manualB.id, now);
+    const autoOne = await create({ title: 'Some auto reminder', source: 'whatsapp', sourceType: 'whatsapp_approval', sourceRef: 'full-wipe-test-approval', dueAt: now.toISOString(), hasTime: false, now });
+    await whatsappAssistant.dismissSystemNotices(); // clean slate before checking this posts NO notice
+
+    await reminderService.cleanupAllRemindersOnce();
+    const afterWipe = await reminderService.listRawReminders();
+    check('deletes a PENDING manual reminder permanently (not just marks it completed)', !afterWipe.some((r) => r.id === manualA.id));
+    check('deletes an already-COMPLETED manual reminder too - "every count shows 0" means Completed is wiped as well, not just Today/Upcoming', !afterWipe.some((r) => r.id === manualB.id));
+    check('deletes an auto-created reminder too (it regenerates itself from live data under the new rules if still genuinely open)', !afterWipe.some((r) => r.id === autoOne.id));
+    const notices = await whatsappAssistant.listSystemNotices();
+    check('posts NO owner notification/System-strip notice at all - explicit "no notice banner", unlike the older legacy-follow-up cleanup', !notices.some((n) => /wipe|deleted/i.test(n.text || '')));
+
+    // Prove it truly runs only once, same guard pattern as the existing
+    // legacy-follow-up cleanup's own locked test further below.
+    const postWipeManual = await create({ title: 'Created AFTER the wipe already ran once', source: 'manual', dueAt: now.toISOString(), hasTime: true, now });
+    await reminderService.cleanupAllRemindersOnce();
+    const afterSecondCall = await reminderService.listRawReminders();
+    check('a second call is a true no-op - never re-wipes once the marker is set', afterSecondCall.some((r) => r.id === postWipeManual.id));
+    createdIds.push(postWipeManual.id);
+  }
 
   console.log('='.repeat(70));
   console.log('CRUD + done/undo/cancel/snooze');
@@ -274,6 +310,46 @@ async function main() {
     whatsappAssistant.listPendingApprovals = origApprovals;
     documentRequests.listPendingReceived = origDocs;
     memoryService.listMemories = origMemories;
+  }
+
+  console.log('='.repeat(70));
+  console.log('Task 5 (2026-10-29): a "reply needed" reminder auto-closes when the owner replies manually, not just via the "done" chat command');
+  console.log('='.repeat(70));
+  {
+    const MANUAL_REPLY_CHAT = 'test-manual-reply-reminders-check';
+    const followupTs = now.getTime();
+    const origListOpenFollowups = whatsappAssistant.listOpenFollowups;
+    const origListMessages = whatsapp.listMessages;
+    const origClearOpenFollowup = whatsappAssistant.clearOpenFollowup;
+    let clearedFor = null;
+    whatsappAssistant.clearOpenFollowup = async (chatId) => { clearedFor = chatId; return origClearOpenFollowup(chatId); };
+    whatsappAssistant.listOpenFollowups = async () => [{ chatId: MANUAL_REPLY_CHAT, name: 'Manual Reply Contact', summary: 'test manual reply', ts: followupTs }];
+    try {
+      // The owner replied from their own phone AFTER the follow-up arrived -
+      // the gateway surfaces that as a normal 'outgoing' message, same
+      // shape hasManualReplyAfter/catchUpAfterGap already trust elsewhere.
+      whatsapp.listMessages = async () => [{ direction: 'outgoing', created_at: new Date(followupTs + 60000).toISOString() }];
+      await reminderService.syncAutoCreatedReminders(now);
+      const all1 = await reminderService.listRawReminders();
+      const ref = MANUAL_REPLY_CHAT + '|test manual reply';
+      all1.filter((r) => r.sourceRef === ref).forEach((r) => createdIds.push(r.id));
+      check('a manual reply from the owner (surfaced by the gateway as an outgoing message) means NO "reply needed" reminder gets created at all', !all1.some((r) => r.sourceRef === ref));
+      check('the matching open follow-up is cleared too, not just skipped this one sync', clearedFor === MANUAL_REPLY_CHAT);
+
+      // Sanity/regression: with NO manual reply, the reminder is still
+      // created exactly as every other test in this file already expects.
+      clearedFor = null;
+      whatsapp.listMessages = async () => [];
+      await reminderService.syncAutoCreatedReminders(now);
+      const all2 = await reminderService.listRawReminders();
+      const created = all2.find((r) => r.sourceRef === ref);
+      if (created) createdIds.push(created.id);
+      check('REGRESSION: with no manual reply, the reminder is created normally, exactly as before this fix', Boolean(created) && clearedFor === null);
+    } finally {
+      whatsappAssistant.listOpenFollowups = origListOpenFollowups;
+      whatsapp.listMessages = origListMessages;
+      whatsappAssistant.clearOpenFollowup = origClearOpenFollowup;
+    }
   }
 
   console.log('='.repeat(70));

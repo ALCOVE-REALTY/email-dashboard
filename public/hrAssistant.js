@@ -131,7 +131,6 @@
   const hubCommsTile = document.getElementById('hrHubCommsTile');
   const hubCommsBadge = document.getElementById('hrHubCommsBadge');
   const remPage = document.getElementById('hrRemPage');
-  const remBanner = document.getElementById('hrRemBanner');
   const remChips = document.getElementById('hrRemChips');
   const remSectionHeadLabel = document.getElementById('hrRemSectionHeadLabel');
   const remSectionBadge = document.getElementById('hrRemSectionBadge');
@@ -1355,7 +1354,9 @@
     pageDataCache.commsAt = Date.now();
     const total = (data.importantMailsCount || 0) + (data.importantWhatsappCount || 0) + (data.remindersPendingCount || 0);
     setCountBadge(todayUpdatesBadge, total);
-    maybeShowReminderBanner(data.remindersDueNow);
+    // Task 5 (2026-10-29) - the "Due now" summary banner is removed per
+    // direct instruction (the list below is enough); data.remindersDueNow
+    // is otherwise unused now.
     // Live visibility (item 3) - this poll now runs every ~12s (see
     // startCommsPolling) specifically so a new sender/message/approval
     // shows up on screen within ~15s of the poller seeing it, without the
@@ -1671,7 +1672,16 @@
   }
 
   async function dismissSystemStrip() {
-    if (commsSystemStrip) commsSystemStrip.hidden = true;
+    if (commsSystemStrip) { commsSystemStrip.hidden = true; commsSystemStrip.innerHTML = ''; }
+    // Task 5 (2026-10-29) - LIVE BUG: the dismissed notice kept reappearing
+    // because this never touched pageDataCache.comms - loadCommsPage's own
+    // stale-while-revalidate render (renders the CACHED data first, THEN
+    // fetches fresh) was showing the just-dismissed notice again for a
+    // moment on every return to the hub page, straight from the stale
+    // cache, before the fresh fetch a moment later corrected it. Cleared
+    // here too so the cache agrees with the server from this instant on,
+    // not just after the next poll/fetch happens to land.
+    if (pageDataCache.comms) pageDataCache.comms.systemNotices = [];
     try {
       await fetch('/api/workforce/hr-assistant/subh-notifications/dismiss', { method: 'POST' });
     } catch (err) { /* best effort - it'll just show again next load */ }
@@ -3057,23 +3067,6 @@
   if (commsBackBtn) commsBackBtn.addEventListener('click', navBack);
 
   // ---------- Phase 2: Hub + Reminders ----------
-  // Fired reminders are detected on the SAME 30s poll Home's badge already
-  // uses - shown the next time the Reminders page is opened (satisfies
-  // "if the app is closed, it shows next time I open it" even when the
-  // person is on Home or another page when it actually fires).
-  let pendingBannerReminders = [];
-  function maybeShowReminderBanner(dueNow) {
-    if (Array.isArray(dueNow) && dueNow.length) pendingBannerReminders = pendingBannerReminders.concat(dueNow);
-    if (panelView === 'reminders') flushReminderBanner();
-  }
-  function flushReminderBanner() {
-    if (!remBanner || !pendingBannerReminders.length) return;
-    const names = pendingBannerReminders.map((r) => r.title);
-    remBanner.innerHTML = '⏰ Due now: ' + escapeHtml(names.join(', '));
-    remBanner.hidden = false;
-    pendingBannerReminders = [];
-  }
-
   function renderHubBadges(comms, remCounts) {
     const commsTotal = (comms.importantMailsCount || 0) + (comms.importantWhatsappCount || 0);
     setCountBadge(hubCommsBadge, commsTotal);
@@ -3344,8 +3337,6 @@
   // at all when the cache is already warm.
   async function loadRemindersPage(filter) {
     activeRemFilter = filter || 'today';
-    if (remBanner) remBanner.hidden = true;
-    flushReminderBanner();
     const requestedFilter = activeRemFilter;
     const seqAtStart = remMutationSeq;
     const cached = pageDataCache.reminders.get('everything');
@@ -3387,7 +3378,6 @@
       const filter = chip.dataset.filter;
       activeRemFilter = filter;
       syncTopRemindersFilter(filter);
-      if (remBanner) remBanner.hidden = true;
       // Instant client-side-only switch when the full list is already
       // cached (the overwhelmingly common case, since showReminders()
       // always warms it first) - falls back to a real load only on a

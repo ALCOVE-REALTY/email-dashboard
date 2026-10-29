@@ -297,6 +297,30 @@ async function cleanupLegacyFollowupRemindersOnce() {
   await whatsappAssistant.postOwnerNotification('SUBH cleanup: Deleted ' + toDelete.length + ' old follow-up' + (toDelete.length === 1 ? '' : 's') + ' - only the new rule now creates follow-ups.');
 }
 
+// Task 5 (2026-10-29), direct instruction - a SEPARATE, broader one-time
+// wipe: every reminder (Today/Upcoming/Completed/Today's Completed, auto-
+// created AND manual alike) deleted so every count reads 0, with the new,
+// stricter creation rules the only thing populating the list from here
+// on. Deliberately NO owner notification this time (explicit "no notice
+// banner", unlike cleanupLegacyFollowupRemindersOnce's own banner above) -
+// the empty list speaks for itself. Guarded by its own separate Redis
+// marker (never reuses FOLLOWUP_CLEANUP_V1_DONE_KEY, which only ever
+// meant "the old follow-up-only sweep already ran") so it fires exactly
+// once, ever, regardless of how many times this function is called
+// afterward. Deletes ONLY from the Reminders store (listRawReminders/
+// deleteReminder) - Automated Tasks live in a completely separate Redis
+// namespace (subh-automation:*, automationService.js) this never touches.
+const FULL_REMINDER_WIPE_V1_DONE_KEY = 'subh-reminder-full-wipe-v1-done';
+async function cleanupAllRemindersOnce() {
+  const redis = getClient();
+  if (!redis) return;
+  const already = await redis.get(FULL_REMINDER_WIPE_V1_DONE_KEY).catch(() => null);
+  if (already) return;
+  const all = await listRawReminders();
+  for (const r of all) await deleteReminder(r.id);
+  await redis.set(FULL_REMINDER_WIPE_V1_DONE_KEY, '1').catch(() => {});
+}
+
 // ---------------- Auto-created reminders from existing SUBH stores ----------------
 // Called lazily at the top of listReminders (same philosophy as Phase 1's
 // listActionableWhatsappItems) - never a separate scheduler of its own.
@@ -310,6 +334,7 @@ async function cleanupLegacyFollowupRemindersOnce() {
 // listReminders below) reuse this directly instead of paying for a
 // second listRawReminders() round trip for data already in hand.
 async function syncAutoCreatedReminders(now) {
+  await cleanupAllRemindersOnce();
   await cleanupLegacyFollowupRemindersOnce();
   const existing = await listRawReminders();
   const byId = new Map(existing.map((r) => [r.id, r]));
@@ -364,6 +389,26 @@ async function syncAutoCreatedReminders(now) {
   // that upstream - see its comment). The title now names the actual
   // thing still needed, not just "follow-up needed".
   for (const f of followups) {
+    // Task 5 (2026-10-29) - "auto-close when I reply manually" (direct
+    // instruction): a "reply needed" reminder used to only ever close via
+    // the explicit "<name> follow up done" chat command or a matching
+    // memory - if the owner just replied to the sender directly from
+    // their own phone, outside SUBH entirely, nothing ever cleared it.
+    // Same gateway-message check catchUpAfterGap already trusts for
+    // "skip a sender I already replied to manually" - clears every open
+    // follow-up for this sender (not just this one topic; a manual reply
+    // from the owner reasonably settles the whole open conversation, same
+    // granularity clearOpenFollowup itself already works at) and skips
+    // creating/keeping its reminder this round, so the very next sync
+    // (auto-close sweep below) marks it completed rather than leaving a
+    // stale reminder for an exchange the owner already handled themselves.
+    const manuallyReplied = await whatsapp.listMessages(f.chatId, 20)
+      .then((msgs) => whatsappAssistant.hasManualReplyAfter(msgs, f.ts))
+      .catch(() => false);
+    if (manuallyReplied) {
+      await whatsappAssistant.clearOpenFollowup(f.chatId).catch(() => {});
+      continue;
+    }
     const topicKey = f.topic || f.summary || 'general';
     await ensureReminder('whatsapp_followup|' + f.chatId + '|' + topicKey, {
       title: labelFor(f.name, f.chatId) + ' — reply needed: ' + (f.summary || f.topic || 'their question'), detail: f.summary, priority: 'high',
@@ -625,6 +670,7 @@ module.exports = {
   filterReminders,
   syncAutoCreatedReminders,
   cleanupLegacyFollowupRemindersOnce,
+  cleanupAllRemindersOnce,
   listReminders,
   dueReminders,
   dueForWhatsapp,
