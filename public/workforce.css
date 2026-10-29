@@ -2772,6 +2772,18 @@ body:not(.printing-org-chart) .org-chart-cards-row + .org-chart-branch-connector
 .wf-mail-field:last-child { margin-bottom: 0; }
 .wf-mail-field-label { display: block; font-size: 0.76rem; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 6px; }
 
+/* UI fix (2026-10-29) - the "Attachment as" custom dropdown button
+   (replaces a native <select>, whose option list opened wherever the
+   browser/OS chose rather than reliably below the field). Its own option
+   list reuses .wf-mail-suggest's positioning/visuals directly. */
+.wf-mail-dropdown-btn {
+  width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  background: var(--paper); border: 1px solid var(--line); border-radius: 10px;
+  padding: 10px 12px; font: inherit; font-size: 0.88rem; color: var(--ink); cursor: pointer; text-align: left;
+}
+.wf-mail-dropdown-btn svg { flex-shrink: 0; color: var(--muted); transition: transform .15s ease; }
+.wf-mail-dropdown-btn[aria-expanded="true"] svg { transform: rotate(180deg); }
+
 .wf-ip-whatsapp-phone-input {
   width: 100%;
   background: var(--paper);

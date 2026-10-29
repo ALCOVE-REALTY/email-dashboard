@@ -5886,6 +5886,48 @@ function createMailChipField(containerId, inputId, suggestId) {
 
 const mailToField = createMailChipField('mailToChipInput', 'mailToInput', 'mailToSuggest');
 const mailCcField = createMailChipField('mailCcChipInput', 'mailCcInput', 'mailCcSuggest');
+// UI fix (2026-10-29) - "Attachment as" custom dropdown (see its own HTML
+// comment for why a native <select> couldn't be used here: its option
+// list opened wherever the browser/OS decided, not reliably below the
+// field). Tracks its own selected value - getValue/setValue is this
+// field's whole read/write interface now, used by openMailCompose
+// (loading a section's default format) and the Send button (the final
+// payload), never a <select>.value read/write anymore.
+const mailAttachmentFormat = (() => {
+  const btn = document.getElementById('mailAttachmentFormatBtn');
+  const btnLabel = document.getElementById('mailAttachmentFormatBtnLabel');
+  const list = document.getElementById('mailAttachmentFormatList');
+  const LABELS = { pdf: 'PDF', excel: 'Excel (.xlsx)' };
+  let value = 'pdf';
+  function close() {
+    list.hidden = true;
+    btn.setAttribute('aria-expanded', 'false');
+  }
+  function open() {
+    list.hidden = false;
+    btn.setAttribute('aria-expanded', 'true');
+  }
+  function setValue(v) {
+    value = v === 'excel' ? 'excel' : 'pdf';
+    btnLabel.textContent = LABELS[value];
+    list.querySelectorAll('li[role="option"]').forEach((li) => {
+      const active = li.dataset.value === value;
+      li.classList.toggle('active', active);
+      li.setAttribute('aria-selected', String(active));
+    });
+  }
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (list.hidden) open(); else close();
+  });
+  list.querySelectorAll('li[role="option"]').forEach((li) => {
+    li.addEventListener('click', () => { setValue(li.dataset.value); close(); });
+  });
+  document.addEventListener('click', (e) => {
+    if (!btn.contains(e.target) && !list.contains(e.target)) close();
+  });
+  return { getValue: () => value, setValue, close };
+})();
 let mailComposeContext = null; // { sendUrl, sendBody, defaultSubject, defaultText, subjectOverride, textOverride } for whichever Send Mail button opened this
 
 function showMailComposeError(message) {
@@ -5897,6 +5939,7 @@ function showMailComposeError(message) {
 function closeMailCompose() {
   document.getElementById('mailComposeOverlay').hidden = true;
   mailComposeContext = null;
+  mailAttachmentFormat.close();
 }
 
 // Opens the shared popup pre-filled with this button's own default
@@ -5918,9 +5961,8 @@ async function openMailCompose({ defaultsUrl, sendUrl, sendBody }) {
   sendBtn.disabled = false;
   sendBtn.querySelector('span').textContent = 'Send Mail';
   const formatField = document.getElementById('mailAttachmentFormatField');
-  const formatSelect = document.getElementById('mailAttachmentFormatSelect');
   formatField.hidden = true;
-  formatSelect.value = 'pdf';
+  mailAttachmentFormat.setValue('pdf');
   document.getElementById('mailComposeOverlay').hidden = false;
 
   try {
@@ -5931,7 +5973,7 @@ async function openMailCompose({ defaultsUrl, sendUrl, sendBody }) {
     mailComposeContext.defaultText = defaults.text || '';
     if (defaults.hasAttachment) {
       formatField.hidden = false;
-      formatSelect.value = defaults.defaultFormat === 'excel' ? 'excel' : 'pdf';
+      mailAttachmentFormat.setValue(defaults.defaultFormat === 'excel' ? 'excel' : 'pdf');
     }
   } catch (err) {
     showMailComposeError('Could not load default recipients: ' + err.message);
@@ -5960,7 +6002,7 @@ document.getElementById('mailComposeSendBtn').addEventListener('click', async ()
   try {
     const formatField = document.getElementById('mailAttachmentFormatField');
     const extra = { to: to.join(', '), cc: cc.join(', ') };
-    if (!formatField.hidden) extra.format = document.getElementById('mailAttachmentFormatSelect').value;
+    if (!formatField.hidden) extra.format = mailAttachmentFormat.getValue();
     if (mailComposeContext.subjectOverride !== null) extra.subject = mailComposeContext.subjectOverride;
     if (mailComposeContext.textOverride !== null) extra.text = mailComposeContext.textOverride;
     const res = await fetch(mailComposeContext.sendUrl, {

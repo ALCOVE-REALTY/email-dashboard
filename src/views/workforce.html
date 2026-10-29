@@ -2314,12 +2314,25 @@
           </div>
           <ul class="wf-mail-suggest" id="mailCcSuggest" hidden></ul>
         </div>
+        <!-- UI fix (2026-10-29): a native <select> here used to open the
+             option list wherever the browser/OS decided (sometimes outside
+             the popup, sometimes over the "To" field) - there's no reliable
+             cross-browser way to control that for a native select. Replaced
+             with a plain button + an absolutely-positioned list (same
+             visual language as .wf-mail-suggest above), anchored directly
+             below this field every time - it's fine if it extends past the
+             popup's own edge or over Cancel/Send, as long as it's always
+             right under the field. Closes on selection or an outside tap. -->
         <div class="wf-mail-field" id="mailAttachmentFormatField" hidden>
           <span class="wf-mail-field-label">Attachment as</span>
-          <select id="mailAttachmentFormatSelect" style="width:100%; background:var(--paper); border:1px solid var(--line); border-radius:10px; padding:10px 12px; font:inherit; font-size:.88rem; color:var(--ink);">
-            <option value="pdf">PDF</option>
-            <option value="excel">Excel (.xlsx)</option>
-          </select>
+          <button type="button" class="wf-mail-dropdown-btn" id="mailAttachmentFormatBtn" aria-haspopup="listbox" aria-expanded="false">
+            <span id="mailAttachmentFormatBtnLabel">PDF</span>
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+          </button>
+          <ul class="wf-mail-suggest" id="mailAttachmentFormatList" role="listbox" hidden>
+            <li role="option" data-value="pdf" aria-selected="true">PDF</li>
+            <li role="option" data-value="excel" aria-selected="false">Excel (.xlsx)</li>
+          </ul>
         </div>
         <p class="wf-mail-compose-error" id="mailComposeError" hidden></p>
       </div>
