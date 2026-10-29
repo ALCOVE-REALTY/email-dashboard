@@ -313,3 +313,10 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
   wording ("late coming-er approval-ta"), never the generic placeholder. A
   general leave policy question and a salary-slip request are explicitly
   proven unaffected - neither enters this flow.
+- T2-6 fix (2026-10-29, test-only): the assertion was stale, not the product.
+  Task 5 (2026-10-28) deliberately replaced a model-judged, content-specific
+  extra-info reply with a fixed "noted this too" wrap, to kill real
+  intermittent flakiness - T2-6 was never updated to match and still expected
+  the old content-specific echo. The actual yes/no-in-a-burst detection
+  (`continueHrNoteFlow`'s `awaiting_confirm_yes_no` step) was never broken -
+  confirmed against the pre-fix baseline, which failed identically. T2-6 is

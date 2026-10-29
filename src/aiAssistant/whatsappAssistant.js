@@ -674,9 +674,25 @@ const RECENT_CONVO_WINDOW_MS = 24 * 60 * 60 * 1000;
 // full-history view in the same request (communications-summary) can
 // fetch needsYou/recentLog ONCE and call this twice, rather than paying
 // for listActionableWhatsappItems/listInboxLog's own I/O twice over.
-function mergeRecentWhatsappConversations(needsYou, recentLog, nowTs, windowMs) {
+function mergeRecentWhatsappConversations(needsYou, recentLog, nowTs, windowMs, dismissedByChat) {
   const window = windowMs || RECENT_CONVO_WINDOW_MS;
   const needsYouKeys = new Set(needsYou.map((r) => r.chatId));
+  const dismissed = dismissedByChat || new Map();
+
+  // Task 1 (2026-10-29), live request: "sort like WhatsApp" - a row's own
+  // lastMessageTime must be the real time of the LAST message in that
+  // conversation (incoming or outgoing), not a needs-you row's pending-
+  // ITEM creation time (which can lag behind a later message in the same
+  // chat that never produced a new item, e.g. a plain follow-up). recentLog
+  // is the one log written for every actual message exchange, across every
+  // chat - the max ts per chat here is that true "last activity" instant,
+  // used below for every row regardless of needsYou status.
+  const latestTsByChat = new Map();
+  for (const e of recentLog) {
+    const key = whatsapp.normalizePhone(e.chatId);
+    const existing = latestTsByChat.get(key);
+    if (existing === undefined || e.ts > existing) latestTsByChat.set(key, e.ts);
+  }
 
   // Latest resolved entry per chat within the window - one row per
   // conversation, always its most recent turn.
@@ -700,11 +716,27 @@ function mergeRecentWhatsappConversations(needsYou, recentLog, nowTs, windowMs) 
     });
   }
 
-  const needsYouRows = needsYou.map((r) => Object.assign({}, r, { needsYou: true, statusLabel: null }));
-  const rows = needsYouRows.concat(resolvedRows);
-  // Needs-you always first regardless of recency (see this function's own
-  // comment), newest-first within each group.
-  rows.sort((a, b) => (a.needsYou !== b.needsYou ? (a.needsYou ? -1 : 1) : b.lastMessageTime - a.lastMessageTime));
+  const needsYouRows = needsYou.map((r) => Object.assign({}, r, {
+    needsYou: true, statusLabel: null,
+    lastMessageTime: latestTsByChat.has(r.chatId) ? latestTsByChat.get(r.chatId) : r.lastMessageTime
+  }));
+  // Live request (2026-10-29) - a row the owner explicitly removed (the
+  // row's own "x" button) stays gone until a STRICTLY NEWER message
+  // arrives for that chat; a dismiss timestamp equal to or after the
+  // row's own lastMessageTime means nothing has happened since the
+  // dismiss, so it's filtered out here rather than deleted from any
+  // underlying store (the real conversation/history is never touched).
+  const notDismissed = (r) => {
+    const dismissedAt = dismissed.get(r.chatId);
+    return !dismissedAt || r.lastMessageTime > dismissedAt;
+  };
+  const rows = needsYouRows.filter(notDismissed).concat(resolvedRows.filter(notDismissed));
+  // Pure chronological order, newest first - exactly like a real WhatsApp
+  // conversation list. The old "needs-you always first" grouping is
+  // removed per direct instruction: those rows are visible in the Action
+  // Needed inbox now, so forcing them to the top here just scrambled the
+  // natural time order this list is supposed to read like.
+  rows.sort((a, b) => b.lastMessageTime - a.lastMessageTime);
   return rows;
 }
 
@@ -718,8 +750,8 @@ function mergeRecentWhatsappConversations(needsYou, recentLog, nowTs, windowMs) 
 // regardless of whether the owner needs to act on it.
 async function listRecentWhatsappConversations(now, windowMs) {
   const nowTs = (now instanceof Date ? now.getTime() : now) || Date.now();
-  const [needsYou, recentLog] = await Promise.all([listActionableWhatsappItems(), listInboxLog(500)]);
-  return mergeRecentWhatsappConversations(needsYou, recentLog, nowTs, windowMs);
+  const [needsYou, recentLog, dismissedByChat] = await Promise.all([listActionableWhatsappItems(), listInboxLog(500), listCommsDismissed()]);
+  return mergeRecentWhatsappConversations(needsYou, recentLog, nowTs, windowMs, dismissedByChat);
 }
 
 // communications-summary's own need: the 24h main-page view AND the
@@ -727,12 +759,37 @@ async function listRecentWhatsappConversations(now, windowMs) {
 // never pays for listActionableWhatsappItems/listInboxLog's own I/O twice.
 async function getWhatsappVisibilitySnapshot(now) {
   const nowTs = (now instanceof Date ? now.getTime() : now) || Date.now();
-  const [needsYou, recentLog] = await Promise.all([listActionableWhatsappItems(), listInboxLog(500)]);
+  const [needsYou, recentLog, dismissedByChat] = await Promise.all([listActionableWhatsappItems(), listInboxLog(500), listCommsDismissed()]);
   return {
-    recentItems: mergeRecentWhatsappConversations(needsYou, recentLog, nowTs, RECENT_CONVO_WINDOW_MS),
-    allItems: mergeRecentWhatsappConversations(needsYou, recentLog, nowTs, Infinity),
+    recentItems: mergeRecentWhatsappConversations(needsYou, recentLog, nowTs, RECENT_CONVO_WINDOW_MS, dismissedByChat),
+    allItems: mergeRecentWhatsappConversations(needsYou, recentLog, nowTs, Infinity, dismissedByChat),
     needsYouCount: needsYou.length
   };
+}
+
+// Task 1 (2026-10-29) - per-chat "removed from Important WhatsApp" marker,
+// one Redis HASH (field = normalized phone, value = dismissedAt ms) so the
+// frequently-polled communications-summary endpoint pays for ONE hgetall
+// regardless of how many chats have ever been dismissed, never an N+1 read
+// per row. mergeRecentWhatsappConversations hides any row whose own
+// lastMessageTime is at or before this timestamp - a strictly NEWER
+// message for that chat naturally un-hides it, exactly like a real
+// WhatsApp "delete chat" (hides history, a new message brings it back).
+const COMMS_DISMISSED_KEY = 'wa-comms-dismissed';
+async function markCommsRowDismissed(phone, atTs) {
+  const redis = getClient();
+  if (!redis) return;
+  try { await redis.hset(COMMS_DISMISSED_KEY, { [whatsapp.normalizePhone(phone)]: String(atTs) }); } catch (err) { /* best effort */ }
+}
+async function listCommsDismissed() {
+  const redis = getClient();
+  if (!redis) return new Map();
+  return redisHealth.guardedRead(async () => {
+    const raw = await redis.hgetall(COMMS_DISMISSED_KEY);
+    const map = new Map();
+    if (raw) Object.keys(raw).forEach((k) => map.set(k, Number(raw[k]) || 0));
+    return map;
+  }, new Map());
 }
 
 // Owner-only manual "delete" of one row from Important WhatsApp (per
@@ -742,9 +799,10 @@ async function getWhatsappVisibilitySnapshot(now) {
 // explicit action; SUBH itself never removes anything here on its own).
 // Clears every one of this chat's outstanding items across all 4
 // underlying stores at once, which is exactly what naturally drops a row
-// out of listActionableWhatsappItems above - never a separate "hidden"
-// flag to keep in sync, and never touches the real message thread
-// (getWhatsappConversation's own history), only the actionable items.
+// out of listActionableWhatsappItems above, PLUS marks the chat dismissed
+// (Task 1, 2026-10-29) so a RESOLVED row (no outstanding items to clear
+// at all) also leaves the merged list - never touches the real message
+// thread (getWhatsappConversation's own history), only visibility here.
 async function dismissWhatsappItem(chatIdRaw) {
   const chatId = whatsapp.normalizePhone(chatIdRaw);
   const [approvals, drafts] = await Promise.all([listPendingApprovals(), listPendingDrafts()]);
@@ -754,6 +812,7 @@ async function dismissWhatsappItem(chatIdRaw) {
     await removePendingDraft(chatId);
   }
   await clearOpenFollowup(chatId);
+  await markCommsRowDismissed(chatId, Date.now());
   return true;
 }
 
@@ -10158,6 +10217,8 @@ module.exports = {
   listRecentWhatsappConversations,
   getWhatsappVisibilitySnapshot,
   dismissWhatsappItem,
+  markCommsRowDismissed,
+  listCommsDismissed,
   savePendingApproval,
   removePendingApproval,
   getWhatsappConversation,

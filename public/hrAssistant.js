@@ -1712,19 +1712,27 @@
   // Needs-you rows are rendered IDENTICALLY to before this change.
   function buildWaRowHtml(it, i) {
     const needsYou = it.needsYou !== false;
-    const statusPillHtml = (!needsYou && it.statusLabel)
-      ? '<span class="wf-comms-wa-row-status' + (it.statusLabel === 'Reply failed' ? ' failed' : '') + '">' + escapeHtml(it.statusLabel) + '</span>'
+    // Task 1 (2026-10-29), "sort like WhatsApp" - the green "Auto-
+    // replied"/"Answered" status pill is gone (replaced by the x button
+    // below, on every row). "Reply failed" is kept - it's not the green
+    // "all done" label this task is about, it's an active warning the
+    // owner still needs to notice.
+    const statusPillHtml = (!needsYou && it.statusLabel === 'Reply failed')
+      ? '<span class="wf-comms-wa-row-status failed">' + escapeHtml(it.statusLabel) + '</span>'
       : '';
     const badgeHtml = needsYou
       ? (it.itemCount > 1
           ? '<span class="wf-comms-wa-row-badge count wi-count-badge danger wi-badge-pop">' + (it.itemCount > 99 ? '99+' : it.itemCount) + '</span>'
           : '<span class="wf-comms-wa-row-badge"></span>')
       : '';
-    const deleteHtml = needsYou
-      ? '<button type="button" class="wf-comms-wa-row-delete" data-chat-id="' + escapeHtml(it.chatId) + '" aria-label="Remove from Important WhatsApp" title="Remove from Important WhatsApp">' +
-          '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>' +
-        '</button>'
-      : '';
+    // Every row gets the x now, not just needs-you ones - tapping it
+    // removes that sender's row (handleWaRowDelete's existing slide-out +
+    // toast + Undo), and it reappears at the top in time order the next
+    // time that sender messages.
+    const deleteHtml =
+      '<button type="button" class="wf-comms-wa-row-delete" data-chat-id="' + escapeHtml(it.chatId) + '" aria-label="Remove from Important WhatsApp" title="Remove from Important WhatsApp">' +
+        '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>' +
+      '</button>';
     return (
       '<div class="wf-comms-wa-row' + (needsYou ? '' : ' resolved') + '" data-chat-id="' + escapeHtml(it.chatId) + '" role="button" tabindex="0">' +
         waAvatarHtml(it.name, i) +
@@ -1743,7 +1751,7 @@
   }
   async function handleWaRowDelete(btn) {
     const chatId = btn.dataset.chatId;
-    if (!(await showConfirmDialog('Remove this conversation from Important WhatsApp? This only hides it here - nothing is deleted, and it reappears if they message again about something needing your attention.'))) return;
+    if (!(await showConfirmDialog('Remove this conversation from Important WhatsApp? This only hides it here - nothing is deleted, and it reappears if they message again.'))) return;
     const row = btn.closest('.wf-comms-wa-row');
     // Task 2: same row-close animation as Open Flows' Close, plus an
     // actual working Undo (not just a label) - the real whatsapp-dismiss

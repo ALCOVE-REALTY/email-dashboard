@@ -3258,6 +3258,59 @@ async function checkAsync(label, fn) {
   });
 
   console.log('='.repeat(70));
+  console.log('Task 1 (2026-10-29), "sort like WhatsApp" - Important WhatsApp sorts purely by last-message time, needs-you items no longer forced to the top, and a dismissed row stays hidden until a newer message arrives');
+  console.log('='.repeat(70));
+  await checkAsync('the OLD "needs-you always first" grouping is gone - a NEWER resolved conversation now sorts ABOVE an OLDER needs-you item, pure chronological order like a real WhatsApp list', async () => {
+    const needsYouPhone = '919999000092';
+    const resolvedPhone = '919999000093';
+    await whatsappAssistant.dismissWhatsappItem(needsYouPhone).catch(() => {});
+    await whatsappAssistant.dismissWhatsappItem(resolvedPhone).catch(() => {});
+    await whatsappAssistant.savePendingApproval({ phone: needsYouPhone, name: 'OlderNeedsYou', requestText: 'x', dataRequestSummary: 'TEST - safe to ignore', lang: 'english', preparedReplyText: 'x', preparedCard: null, preparedError: null });
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    await whatsappAssistant.logInboxEvent({ chatId: resolvedPhone, name: 'NewerResolved', isGroup: false, messageSummary: 'hi', aCase: 'acknowledged', sentText: 'TEST - safe to ignore', outcome: 'sent' });
+    const rows = await whatsappAssistant.listRecentWhatsappConversations(new Date(), Infinity);
+    const idxNeedsYou = rows.findIndex((r) => r.chatId === whatsapp.normalizePhone(needsYouPhone));
+    const idxResolved = rows.findIndex((r) => r.chatId === whatsapp.normalizePhone(resolvedPhone));
+    const ok = idxNeedsYou !== -1 && idxResolved !== -1 && idxResolved < idxNeedsYou;
+    await whatsappAssistant.dismissWhatsappItem(needsYouPhone).catch(() => {});
+    return ok;
+  });
+  await checkAsync('a needs-you row\'s lastMessageTime reflects the chat\'s real latest activity (a later follow-up that created no new item), never the stale creation time of its own pending item', async () => {
+    const phone = '919999000090';
+    await whatsappAssistant.dismissWhatsappItem(phone).catch(() => {});
+    const approvalId = await whatsappAssistant.savePendingApproval({ phone, name: 'Test', requestText: 'x', dataRequestSummary: 'TEST - safe to ignore', lang: 'english', preparedReplyText: 'x', preparedCard: null, preparedError: null });
+    const approval = (await whatsappAssistant.listPendingApprovals()).find((a) => a.id === approvalId);
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    await whatsappAssistant.logInboxEvent({ chatId: phone, name: 'Test', isGroup: false, messageSummary: 'a later follow-up that creates no new item', aCase: 'informing', sentText: null, outcome: 'automatic' });
+    const rows = await whatsappAssistant.listRecentWhatsappConversations(new Date(), Infinity);
+    const row = rows.find((r) => r.chatId === whatsapp.normalizePhone(phone));
+    const ok = Boolean(row) && Boolean(approval) && row.lastMessageTime > approval.createdAt;
+    await whatsappAssistant.dismissWhatsappItem(phone).catch(() => {});
+    return ok;
+  });
+  await checkAsync('dismissing a RESOLVED row (no pending items at all) hides it from the list, and a strictly newer message for that same chat brings it back', async () => {
+    const phone = '919999000091';
+    await whatsappAssistant.logInboxEvent({ chatId: phone, name: 'Test', isGroup: false, messageSummary: 'hi', aCase: 'acknowledged', sentText: 'TEST - safe to ignore', outcome: 'sent' });
+    const before = await whatsappAssistant.listRecentWhatsappConversations(new Date(), Infinity);
+    const beforeHas = before.some((r) => r.chatId === whatsapp.normalizePhone(phone));
+    await whatsappAssistant.dismissWhatsappItem(phone);
+    const afterDismiss = await whatsappAssistant.listRecentWhatsappConversations(new Date(), Infinity);
+    const afterDismissHas = afterDismiss.some((r) => r.chatId === whatsapp.normalizePhone(phone));
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    await whatsappAssistant.logInboxEvent({ chatId: phone, name: 'Test', isGroup: false, messageSummary: 'hi again', aCase: 'acknowledged', sentText: 'TEST - safe to ignore', outcome: 'sent' });
+    const afterNewMsg = await whatsappAssistant.listRecentWhatsappConversations(new Date(), Infinity);
+    const afterNewMsgHas = afterNewMsg.some((r) => r.chatId === whatsapp.normalizePhone(phone));
+    return beforeHas && !afterDismissHas && afterNewMsgHas;
+  });
+  await checkAsync('listCommsDismissed returns a Map of every dismissed chat, and markCommsRowDismissed overwrites (never duplicates) a chat\'s own entry on a second dismiss', async () => {
+    const phone = '919999000094';
+    await whatsappAssistant.markCommsRowDismissed(phone, 1000);
+    await whatsappAssistant.markCommsRowDismissed(phone, 2000);
+    const map = await whatsappAssistant.listCommsDismissed();
+    return map.get(whatsapp.normalizePhone(phone)) === 2000;
+  });
+
+  console.log('='.repeat(70));
   console.log('Conversation memory on the REAL store (subh-store, via the double-slash URL) - persists across messages, correct commands, no TTL surprise');
   console.log('='.repeat(70));
   const MEMORY_TEST_PHONE = '910000000797';

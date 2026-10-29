@@ -227,6 +227,26 @@ function createStore() {
       if (!entry) return null;
       return entry.value.has(String(args[1])) ? entry.value.get(String(args[1])) : null;
     },
+    // Real Redis/Upstash HGETALL wire format is a FLAT array
+    // [field1, value1, field2, value2, ...] - the @upstash/redis client
+    // itself converts that into an object client-side (see its own
+    // deserialize3 in hgetall.ts), so this must return the flat form too,
+    // never a nested object, or the client chokes trying .length on it.
+    hgetall(args, now) {
+      const entry = get(args[0], now);
+      if (!entry) return [];
+      const flat = [];
+      for (const [field, value] of entry.value.entries()) { flat.push(field, value); }
+      return flat;
+    },
+    hdel(args, now) {
+      const [key, ...fields] = args;
+      const entry = get(key, now);
+      if (!entry) return 0;
+      let removed = 0;
+      for (const f of fields) { if (entry.value.delete(String(f))) removed++; }
+      return removed;
+    },
     scan(args, now) {
       const [, ...opts] = args;
       const lower = opts.map((o) => String(o).toLowerCase());
