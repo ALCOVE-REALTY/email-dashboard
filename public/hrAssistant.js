@@ -2486,6 +2486,23 @@
     wireNeverAutoToggles(card);
   }
   let actionNeededItemsCache = [];
+  // Task 6 (2026-10-29) - LIVE BUG: this rebuilt the ENTIRE list's innerHTML
+  // (tearing down and recreating every card + re-attaching every listener)
+  // on every single 12s poll tick while this page was open, REGARDLESS of
+  // whether anything actually changed - loadActionNeeded/pollCommsSummary
+  // calls this unconditionally. On a real device with a real list this is
+  // exactly what reads as "hangs"/"needs two taps"/"the screen jumps like
+  // it's reloading": a tap mid-gesture can land on a DOM node a poll tick
+  // destroys and rebuilds out from under it, and typing into an edit
+  // textarea gets silently wiped by the next tick. Same fingerprint-skip
+  // technique already used by Reminders' own list (lastRemListFingerprint)
+  // and the WhatsApp list (renderWaListLive) - ageMs is excluded from the
+  // fingerprint on purpose (it drifts every second on its own and would
+  // never let two ticks compare equal even with nothing really changed).
+  let lastActionNeededFingerprint = null;
+  function actionNeededFingerprint(filter, items) {
+    return filter + '::' + items.map((it) => { const { ageMs, ...stable } = it; return JSON.stringify(stable); }).join('\u0002');
+  }
   function renderActionNeeded() {
     if (!actionNeededList) return;
     const counts = { all: actionNeededItemsCache.length, data_requests: 0, approvals: 0, automations: 0 };
@@ -2498,6 +2515,9 @@
       });
     }
     const filtered = actionNeededFilter === 'all' ? actionNeededItemsCache : actionNeededItemsCache.filter((it) => it.category === actionNeededFilter);
+    const fp = actionNeededFingerprint(actionNeededFilter, filtered);
+    if (fp === lastActionNeededFingerprint) return;
+    lastActionNeededFingerprint = fp;
     if (!filtered.length) { actionNeededList.innerHTML = '<div class="wf-rem-empty">Nothing waiting on you right now.</div>'; return; }
     actionNeededList.innerHTML = filtered.map(actionNeededCardHtml).join('');
     actionNeededList.querySelectorAll('.wf-auto-task-card').forEach((card) => wireActionNeededCard(card, card.dataset.chatId));
