@@ -46,62 +46,6 @@ async function main() {
   const now = new Date('2026-10-15T06:00:00.000Z'); // a fixed instant - simulated clock throughout
 
   console.log('='.repeat(70));
-  console.log('Task 5 (2026-10-29), direct instruction: one-time permanent wipe of EVERY reminder (auto-created AND manual), no notice banner, Automated Tasks untouched');
-  console.log('='.repeat(70));
-  // Run FIRST, before anything else in this file creates a reminder or
-  // calls syncAutoCreatedReminders (which fires this automatically at its
-  // own top, same as cleanupLegacyFollowupRemindersOnce) - on testBootstrap's
-  // fresh, throwaway store the marker is unset, exactly like a real fresh
-  // deploy, so this test's own fixtures are the ONLY things it can
-  // possibly wipe; running it later would let an earlier test's own
-  // syncAutoCreatedReminders call consume the one-time trigger first,
-  // leaving nothing left for this test to actually prove.
-  //
-  // LIVE BUG FIX (reported after the first release): the old GET-then-SET
-  // marker wasn't durable - a failed read defaulted to "never ran" (fail
-  // OPEN, backwards for a destructive one-time operation) and a failed
-  // write was silently swallowed, so "the old cleanup ran again" ("Deleted
-  // 0 old follow-ups" reappearing). Fixed with an atomic SET...NX claim
-  // (claimOneTimeMarker) instead of two separate, racy calls. "Simulates
-  // two restarts" (direct instruction) - clears Node's own require cache
-  // and re-requires reminderService FRESH before each call below, so
-  // nothing about this test's result can be explained by the same in-
-  // process module instance simply remembering it already ran in its own
-  // JS memory. The underlying store (testBootstrap's fake Upstash server)
-  // is a real, separate, already-running HTTP server, not tied to the
-  // Node module cache at all - exactly like the real production store
-  // persists across an actual process restart - so this only proves
-  // something if the marker is genuinely durable in THAT store, which is
-  // the entire point of the fix.
-  {
-    const manualA = await create({ title: 'My own manual reminder A', source: 'manual', dueAt: now.toISOString(), hasTime: true, now });
-    const manualB = await create({ title: 'My own manual reminder B (completed)', source: 'manual', dueAt: now.toISOString(), hasTime: true, now });
-    await reminderService.markDone(manualB.id, now);
-    const autoOne = await create({ title: 'Some auto reminder', source: 'whatsapp', sourceType: 'whatsapp_approval', sourceRef: 'full-wipe-test-approval', dueAt: now.toISOString(), hasTime: false, now });
-    await whatsappAssistant.dismissSystemNotices(); // clean slate before checking this posts NO notice
-
-    const reminderServicePath = require.resolve('../src/aiAssistant/reminderService');
-    delete require.cache[reminderServicePath];
-    const restart1 = require(reminderServicePath);
-    await restart1.cleanupAllRemindersOnce();
-    const afterWipe = await reminderService.listRawReminders(); // same underlying store regardless of which module instance reads it
-    check('RESTART 1 (fresh module instance): deletes a PENDING manual reminder permanently (not just marks it completed)', !afterWipe.some((r) => r.id === manualA.id));
-    check('RESTART 1: deletes an already-COMPLETED manual reminder too - "every count shows 0" means Completed is wiped as well, not just Today/Upcoming', !afterWipe.some((r) => r.id === manualB.id));
-    check('RESTART 1: deletes an auto-created reminder too (it regenerates itself from live data under the new rules if still genuinely open)', !afterWipe.some((r) => r.id === autoOne.id));
-    const notices = await whatsappAssistant.listSystemNotices();
-    check('RESTART 1: posts NO owner notification/System-strip notice at all - explicit "no notice banner", unlike the older legacy-follow-up cleanup', !notices.some((n) => /wipe|deleted/i.test(n.text || '')));
-
-    const postWipeManual = await create({ title: 'Created AFTER restart 1 already ran the wipe', source: 'manual', dueAt: now.toISOString(), hasTime: true, now });
-    delete require.cache[reminderServicePath];
-    const restart2 = require(reminderServicePath);
-    await restart2.cleanupAllRemindersOnce();
-    const afterRestart2 = await reminderService.listRawReminders();
-    check('RESTART 2 (a SECOND, completely fresh module instance - simulates a second server restart): the marker claimed during restart 1 is durably read back from the live store, so the wipe does NOT run again', afterRestart2.some((r) => r.id === postWipeManual.id));
-    createdIds.push(postWipeManual.id);
-    delete require.cache[reminderServicePath]; // leave Node's module cache exactly as this test found it
-  }
-
-  console.log('='.repeat(70));
   console.log('CRUD + done/undo/cancel/snooze');
   console.log('='.repeat(70));
   const r1 = await create({ title: 'Test CRUD reminder', priority: 'high', source: 'manual', dueAt: now.toISOString(), hasTime: true, now });

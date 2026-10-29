@@ -348,33 +348,6 @@ async function cleanupLegacyFollowupRemindersOnce() {
   await whatsappAssistant.postOwnerNotification('SUBH cleanup: Deleted ' + toDelete.length + ' old follow-up' + (toDelete.length === 1 ? '' : 's') + ' - only the new rule now creates follow-ups.');
 }
 
-// Task 5 (2026-10-29), direct instruction - a SEPARATE, broader one-time
-// wipe: every reminder (Today/Upcoming/Completed/Today's Completed, auto-
-// created AND manual alike) deleted so every count reads 0, with the new,
-// stricter creation rules the only thing populating the list from here
-// on. Deliberately NO owner notification this time (explicit "no notice
-// banner", unlike cleanupLegacyFollowupRemindersOnce's own banner above) -
-// the empty list speaks for itself. Guarded by its own separate Redis
-// marker (never reuses FOLLOWUP_CLEANUP_V1_DONE_KEY, which only ever
-// meant "the old follow-up-only sweep already ran") so it fires exactly
-// once, ever, regardless of how many times this function is called
-// afterward. Deletes ONLY from the Reminders store (listRawReminders/
-// deleteReminder) - Automated Tasks live in a completely separate Redis
-// namespace (subh-automation:*, automationService.js) this never touches.
-// MUST BE REMOVED ENTIRELY in the release after this one, once the live
-// wipe is confirmed to have run - per direct instruction, so it can never
-// run again (a reminder deleted by the owner on purpose, then re-created
-// fresh later by the owner, must never be silently wiped a second time by
-// code that's still sitting here from a one-off migration).
-const FULL_REMINDER_WIPE_V1_DONE_KEY = 'subh-reminder-full-wipe-v1-done';
-async function cleanupAllRemindersOnce() {
-  const redis = getClient();
-  if (!redis) return;
-  if (!(await claimOneTimeMarker(redis, FULL_REMINDER_WIPE_V1_DONE_KEY))) return;
-  const all = await listRawReminders();
-  for (const r of all) await deleteReminder(r.id);
-}
-
 // ---------------- Auto-created reminders from existing SUBH stores ----------------
 // Called lazily at the top of listReminders (same philosophy as Phase 1's
 // listActionableWhatsappItems) - never a separate scheduler of its own.
@@ -388,7 +361,6 @@ async function cleanupAllRemindersOnce() {
 // listReminders below) reuse this directly instead of paying for a
 // second listRawReminders() round trip for data already in hand.
 async function syncAutoCreatedReminders(now) {
-  await cleanupAllRemindersOnce();
   await cleanupLegacyFollowupRemindersOnce();
   const existing = await listRawReminders();
   const byId = new Map(existing.map((r) => [r.id, r]));
@@ -724,7 +696,6 @@ module.exports = {
   filterReminders,
   syncAutoCreatedReminders,
   cleanupLegacyFollowupRemindersOnce,
-  cleanupAllRemindersOnce,
   listReminders,
   dueReminders,
   dueForWhatsapp,
