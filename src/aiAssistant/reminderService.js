@@ -20,7 +20,6 @@ const { isSyntheticTestPhone } = whatsapp;
 const REMINDER_PREFIX = 'subh-reminder:';
 const REMINDER_IDS_KEY = 'subh-reminder-ids';
 const SETTINGS_KEY = 'subh-reminder-settings'; // { waOptIn: boolean, waNumber: string|null }
-const FOLLOWUP_CLEANUP_V1_DONE_KEY = 'subh-followup-cleanup-v1-done';
 const EXPIRING_MEMORY_WINDOW_MS = 2 * 24 * 60 * 60 * 1000;
 
 let client;
@@ -274,79 +273,22 @@ function filterReminders(reminders, filter, now) {
   return pending; // legacy 'all' - API only, the "All" tab itself is gone from the UI
 }
 
-// Task 3 (2026-10-28), direct instruction (change of plan from the
-// Follow-up fix (2026-10-29, direct instruction after a live report): the
-// old "GET the marker, .catch(() => null), then SET it after the work" had
-// two separate real bugs, either one enough to explain "the old cleanup
-// ran again" (the "Deleted 0 old follow-ups" notice reappearing):
-//   1. The GET's own `.catch(() => null)` treated ANY read failure (a
-//      transient Redis hiccup) as "never ran yet" - exactly backwards for
-//      a destructive, one-time-only operation, which must fail CLOSED
-//      (skip, retry later) under uncertainty, never fail OPEN and re-run.
-//   2. The SET after the work used `.catch(() => {})` - a silent swallow,
-//      so a write that failed (or returned success without actually
-//      persisting) left NO trace anywhere; the next call's GET would
-//      (correctly, per its own now-fixed logic) see no marker and run the
-//      whole destructive sweep again.
-// Fixed by collapsing the check-and-set into ONE atomic `SET key val NX`
-// (the same lock pattern this codebase already uses for singleton work -
-// see automationService.js's own runLock/dailySnapshotScheduler.js's
-// claimDay) instead of two separate, racy, independently-swallowed calls:
-//  - `redis.set(key, '1', { nx: true })` either claims the marker (returns
-//    'OK', meaning this call - and only this call - proceeds) or finds it
-//    already claimed (returns null, meaning skip) - one atomic round trip,
-//    no window where two near-simultaneous callers (the web server's own
-//    request and the separate scheduler process, both calling
-//    syncAutoCreatedReminders around the same moment) could both read
-//    "not done yet" and both destructively proceed.
-//  - Wrapped in redisHealth.guardedWrite, which RE-THROWS on a genuine
-//    write failure instead of silently swallowing it (same principle as
-//    every other real write in this app) - caught locally here so one
-//    Redis hiccup never crashes the broader reminders sync, but it stops
-//    this function from treating a failed claim as "safe to proceed"
-//    AND records the failure to the same System-strip notice
-//    redisHealth.currentNotice() already surfaces for every other Redis
-//    outage, so a persistent problem is visible instead of invisible.
-//  - The marker is claimed BEFORE any destructive work runs, not after -
-//    if the claim itself fails, NOTHING has been deleted yet, so skipping
-//    and retrying on the next call is always safe, never a partial wipe.
-//  - A verification read right after a successful claim confirms the
-//    live store actually durably has it (belt-and-suspenders against any
-//    write-acknowledged-but-not-yet-durable edge case) - logged loudly if
-//    it ever disagrees, never silently trusted.
-async function claimOneTimeMarker(redis, key) {
-  let claimed;
-  try {
-    const res = await redisHealth.guardedWrite(() => redis.set(key, '1', { nx: true }));
-    claimed = res === 'OK';
-  } catch (err) {
-    return false; // a genuine write failure - never read as "go ahead"; retried on the next call
-  }
-  if (!claimed) return false; // already claimed (by an earlier run, or a concurrent caller this instant)
-  const verify = await redisHealth.guardedRead(() => redis.get(key), null);
-  if (!verify) console.error('[reminders] one-time marker "' + key + '" claimed but not readable back from the live store - the destructive work below still runs this once, but this is worth investigating.');
-  return true;
-}
-
-// original "show me the list first" checkpoint) - a ONE-TIME, permanent
-// delete of every EXISTING auto-created follow-up reminder
-// (sourceType === 'whatsapp_followup' is the exact, unambiguous marker -
-// manual reminders have sourceType: null, every other auto-created kind
-// has its own distinct sourceType, so neither can ever be touched here).
-// Guarded by a Redis marker so it only ever runs once, no matter how many
-// times the scheduler/listReminders call this afterward. Runs at the top
-// of syncAutoCreatedReminders, so it fires on whichever happens first
-// after this deploy - the scheduler's own tick or the owner opening the
-// Reminders page - without needing a separate startup hook.
-async function cleanupLegacyFollowupRemindersOnce() {
-  const redis = getClient();
-  if (!redis) return;
-  if (!(await claimOneTimeMarker(redis, FOLLOWUP_CLEANUP_V1_DONE_KEY))) return;
-  const all = await listRawReminders();
-  const toDelete = all.filter((r) => r.sourceType === 'whatsapp_followup');
-  for (const r of toDelete) await deleteReminder(r.id);
-  await whatsappAssistant.postOwnerNotification('SUBH cleanup: Deleted ' + toDelete.length + ' old follow-up' + (toDelete.length === 1 ? '' : 's') + ' - only the new rule now creates follow-ups.');
-}
+// Live bug (2026-10-29), direct instruction: the one-time legacy-follow-up
+// cleanup (and before it, a broader one-time full-reminder wipe, already
+// removed) kept re-running live - "SUBH cleanup: Deleted 0 old follow-ups"
+// reappeared on the Important Communications page even after a marker-
+// durability fix. Rather than keep hardening a one-time migration's own
+// "has this already run" check against every possible failure mode,
+// removed the migration entirely, per direct instruction: it already did
+// its job on the real store, and SUBH must never automatically delete a
+// follow-up or reminder again - one created by the current rule stays
+// until the owner marks it done, closes it, or it auto-closes via a
+// genuine resolution (a manual reply, the underlying request being
+// answered) - never a startup/deploy-time sweep. The matching
+// "SUBH cleanup:" System-strip notice pattern is removed too (see
+// whatsappAssistant.js's SYSTEM_NOTICE_PATTERNS) so any instance of it
+// already sitting in a real owner's notification feed stops being
+// surfaced - listSystemNotices is the only thing that ever renders it.
 
 // ---------------- Auto-created reminders from existing SUBH stores ----------------
 // Called lazily at the top of listReminders (same philosophy as Phase 1's
@@ -361,7 +303,6 @@ async function cleanupLegacyFollowupRemindersOnce() {
 // listReminders below) reuse this directly instead of paying for a
 // second listRawReminders() round trip for data already in hand.
 async function syncAutoCreatedReminders(now) {
-  await cleanupLegacyFollowupRemindersOnce();
   const existing = await listRawReminders();
   const byId = new Map(existing.map((r) => [r.id, r]));
   // A LIVE map, updated the moment a new reminder is created below - not a
@@ -695,7 +636,6 @@ module.exports = {
   computeCounts,
   filterReminders,
   syncAutoCreatedReminders,
-  cleanupLegacyFollowupRemindersOnce,
   listReminders,
   dueReminders,
   dueForWhatsapp,

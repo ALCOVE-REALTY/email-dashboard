@@ -473,11 +473,18 @@ async function clearOwnerNotifications() {
 // lingering "reconnected" notice needed.
 const SYSTEM_NOTICE_PATTERNS = [
   /^SUBH daily summary/,
-  /^SUBH cleanup:/,
   // Task 1 NEW EVIDENCE (2026-10-29) - "latest only" like every other
   // System-strip line: several re-delivered messages in a row show one
   // current notice, not a pile of identical alerts.
   /^⚠️ WhatsApp gateway re-delivered an old message/
+  // Live bug (2026-10-29), direct instruction: the one-time legacy-follow-
+  // up cleanup that used to post "SUBH cleanup: Deleted N old follow-
+  // ups..." is removed entirely (see reminderService.js) - this pattern
+  // is removed WITH it, not just left unused, so any instance of that
+  // notice already sitting in a real owner's notification feed stops
+  // being surfaced here (this is the only place anything ever reads that
+  // feed for System-strip display - see listOwnerNotifications' own
+  // callers) instead of needing a live-store purge.
 ];
 async function listSystemNotices() {
   const items = await listOwnerNotifications();

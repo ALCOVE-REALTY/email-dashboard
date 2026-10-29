@@ -68,46 +68,15 @@ async function main() {
   check('snoozeReminder sets snoozedUntil and clears notifiedAt', snoozed.snoozedUntil === untilIso && snoozed.notifiedAt === null);
 
   console.log('='.repeat(70));
-  console.log('Task 3 (2026-10-28): one-time permanent cleanup of legacy auto-created follow-up reminders');
+  console.log('Live bug fix (2026-10-29): the one-time legacy-follow-up cleanup is removed entirely - SUBH never automatically deletes a follow-up/reminder again');
   console.log('='.repeat(70));
-  {
-    const legacy1 = await create({ title: 'Legacy Contact A — follow-up needed', source: 'whatsapp', sourceType: 'whatsapp_followup', sourceRef: 'legacy-chat-a', dueAt: now.toISOString(), hasTime: false, now });
-    const legacy2 = await create({ title: 'Legacy Contact B — follow-up needed', source: 'whatsapp', sourceType: 'whatsapp_followup', sourceRef: 'legacy-chat-b', dueAt: now.toISOString(), hasTime: false, now });
-    const manualOne = await create({ title: 'My own manual reminder', source: 'manual', dueAt: now.toISOString(), hasTime: true, now });
-    const approvalOne = await create({ title: 'Some other auto reminder', source: 'whatsapp', sourceType: 'whatsapp_approval', sourceRef: 'legacy-approval-x', dueAt: now.toISOString(), hasTime: false, now });
-    await whatsappAssistant.dismissSystemNotices(); // clean slate before checking what THIS cleanup posts
-
-    // "Simulates two restarts" (same reasoning/mechanism as the full-wipe
-    // test above, which shares this function's underlying claimOneTimeMarker
-    // fix) - a fresh require.cache entry before each call, same real
-    // underlying fake-Redis HTTP server throughout.
-    const reminderServicePath = require.resolve('../src/aiAssistant/reminderService');
-    delete require.cache[reminderServicePath];
-    const legacyRestart1 = require(reminderServicePath);
-    await legacyRestart1.cleanupLegacyFollowupRemindersOnce();
-    const afterFirst = await reminderService.listRawReminders();
-    check('RESTART 1 (fresh module instance): deletes BOTH legacy auto-created follow-up reminders permanently (gone from the store entirely, not just completed)', !afterFirst.some((r) => r.id === legacy1.id) && !afterFirst.some((r) => r.id === legacy2.id));
-    check('RESTART 1: leaves a manual reminder completely untouched', afterFirst.some((r) => r.id === manualOne.id && r.status === 'pending'));
-    check('RESTART 1: leaves a DIFFERENT auto-created reminder kind (whatsapp_approval) completely untouched', afterFirst.some((r) => r.id === approvalOne.id && r.status === 'pending'));
-    const notices = await whatsappAssistant.listSystemNotices();
-    check('RESTART 1: posts a one-line System-strip notice naming exactly how many were deleted', notices.some((n) => n.text === 'SUBH cleanup: Deleted 2 old follow-ups - only the new rule now creates follow-ups.'));
-
-    // Prove it truly runs only ONCE, even across a SECOND fresh module
-    // instance (simulating a second real server restart) - a follow-up
-    // reminder created AFTER the marker is claimed must survive untouched.
-    // This is never expected to happen in production (nothing creates
-    // sourceType whatsapp_followup reminders in the old shape any more),
-    // but proves the guard is the durable Redis marker, not "any
-    // whatsapp_followup present" and not merely "the same JS module
-    // instance remembers it already ran".
-    const postMarkerFollowup = await create({ title: 'Should survive - restart 1 already ran the cleanup', source: 'whatsapp', sourceType: 'whatsapp_followup', sourceRef: 'post-marker-chat', dueAt: now.toISOString(), hasTime: false, now });
-    delete require.cache[reminderServicePath];
-    const legacyRestart2 = require(reminderServicePath);
-    await legacyRestart2.cleanupLegacyFollowupRemindersOnce();
-    const afterSecond = await reminderService.listRawReminders();
-    check('RESTART 2 (a SECOND, completely fresh module instance): a true no-op - never re-deletes/re-notifies, even though this follow-up reminder exists and this is a BRAND NEW module instance with no memory of restart 1 ever happening', afterSecond.some((r) => r.id === postMarkerFollowup.id));
-    delete require.cache[reminderServicePath]; // leave Node's module cache exactly as this test found it
-  }
+  check('cleanupLegacyFollowupRemindersOnce no longer exists on reminderService at all', typeof reminderService.cleanupLegacyFollowupRemindersOnce === 'undefined');
+  await checkAsync('syncAutoCreatedReminders never DELETES a follow-up-sourced reminder outright on its own - the record always survives (the existing, separate auto-close sweep may still legitimately mark it completed once its real source is resolved/gone - that is normal lifecycle, not the removed migration)', async () => {
+    const legacy = await create({ title: 'An old-shaped follow-up reminder, never deleted by anything automatic now', source: 'whatsapp', sourceType: 'whatsapp_followup', sourceRef: 'live-bug-fix-chat', dueAt: now.toISOString(), hasTime: false, now });
+    await reminderService.syncAutoCreatedReminders(now);
+    const after = await reminderService.listRawReminders();
+    return Boolean(after.find((r) => r.id === legacy.id));
+  });
 
   console.log('='.repeat(70));
   console.log('Date/time resolution (simulated clock - IST)');
