@@ -5272,6 +5272,88 @@ async function checkAsync(label, fn) {
   });
 
   console.log('='.repeat(70));
+  console.log('TASK 3 (2026-10-29): a reply never contains the identity sentence more than once, whatever phrasing/combination produced the duplicate');
+  console.log('='.repeat(70));
+  check('LIVE BUG FIX: the exact live double-intro text ("I\'m SUBH...I\'m doing well...This is SUBH...I don\'t have an update") collapses to exactly ONE self-introduction, the rest of the text untouched', (() => {
+    const bug = "I'm SUBH, Subhodeep's HR Assistant. I'm doing well, thanks for asking! This is SUBH, Subhodeep's HR Assistant. I don't have an update right now.";
+    const fixed = whatsappAssistant.collapseDuplicateSelfIntros(bug);
+    const introCount = (fixed.match(/\bsubh\b[^.!?\n]*\bhr assistant\b/gi) || []).length;
+    return introCount === 1 && fixed.includes("I'm doing well, thanks for asking!") && fixed.includes("I don't have an update right now.") && !fixed.includes('This is SUBH');
+  })());
+  check('collapseDuplicateSelfIntros leaves an ordinary single-intro reply completely unchanged (never over-strips the normal, correct case)', (() => {
+    const normal = "I'm SUBH, Subhodeep's HR Assistant. How can I help you today?";
+    return whatsappAssistant.collapseDuplicateSelfIntros(normal) === normal;
+  })());
+  check('REGRESSION (found verifying this very fix): a multi-paragraph fixed template with exactly ONE self-introduction and its own "\\n\\n" paragraph breaks (JOB_APPLICATION_RECEIVED_REPLY\'s real shape) comes back completely byte-for-byte unchanged, newlines included - the whitespace cleanup used to run unconditionally and silently reflowed every such reply into one line', (() => {
+    const template = whatsappAssistant.JOB_APPLICATION_RECEIVED_REPLY.english;
+    return whatsappAssistant.collapseDuplicateSelfIntros(template) === template && template.includes('\n\n');
+  })());
+  check('collapseDuplicateSelfIntros leaves a reply with NO self-introduction at all completely unchanged', (() => {
+    const plain = 'Bonus kobe pabena, se bishoye ami ekhon kono date bolte parchi na.';
+    return whatsappAssistant.collapseDuplicateSelfIntros(plain) === plain;
+  })());
+  check('collapseDuplicateSelfIntros works in Banglish/Hinglish too, not just the English phrasing the live bug happened to use', (() => {
+    const bugBn = 'Ami SUBH, Subhodeep-er HR Assistant. Bonus niye kono update nei. Ami SUBH, Subhodeep-er HR Assistant. Aro kichu jante chan?';
+    const fixedBn = whatsappAssistant.collapseDuplicateSelfIntros(bugBn);
+    const countBn = (fixedBn.match(/\bsubh\b[^.!?\n]*\bhr assistant\b/gi) || []).length;
+    const bugHi = 'Main SUBH hoon, Subhodeep ka HR Assistant. Mujhe iski jaankari nahi hai. Main SUBH hoon, Subhodeep ka HR Assistant. Kuch aur chahiye?';
+    const fixedHi = whatsappAssistant.collapseDuplicateSelfIntros(bugHi);
+    const countHi = (fixedHi.match(/\bsubh\b[^.!?\n]*\bhr assistant\b/gi) || []).length;
+    return countBn === 1 && countHi === 1;
+  })());
+  check('collapseDuplicateSelfIntros handles THREE or more repeats too, not just a single duplicate', (() => {
+    const triple = "I'm SUBH, Subhodeep's HR Assistant. Part one. I'm SUBH, Subhodeep's HR Assistant. Part two. I'm SUBH, Subhodeep's HR Assistant. Part three.";
+    const fixed = whatsappAssistant.collapseDuplicateSelfIntros(triple);
+    const count = (fixed.match(/\bsubh\b[^.!?\n]*\bhr assistant\b/gi) || []).length;
+    return count === 1 && fixed.includes('Part one.') && fixed.includes('Part two.') && fixed.includes('Part three.');
+  })());
+  check('ALREADY_INTRODUCES_SUBH_RE now also recognizes "This is SUBH..." (the live bug\'s own phrasing), not just "I\'m/main/ami subh"', whatsappAssistant.ALREADY_INTRODUCES_SUBH_RE.test("This is SUBH, Subhodeep's HR Assistant. I don't have an update."));
+  check('collapseDuplicateSelfIntros is applied to the final assembled text (greeting + identity prefix + reply) - source-level, since decideAutoReply\'s own internal composition isn\'t independently unit-testable without a live model call', (() => {
+    const fs = require('fs');
+    const src = fs.readFileSync(require.resolve('../src/aiAssistant/whatsappAssistant.js'), 'utf8');
+    return /decision\.replyText = collapseDuplicateSelfIntros\(greetingPrefix \+ identityPrefix \+ decision\.replyText \+ greetingSuffix\);/.test(src);
+  })());
+
+  console.log('='.repeat(70));
+  console.log('TASK 4 (2026-10-29): a message with no language signal of its own falls back to the sender\'s established conversation language, never the model\'s own guess - and to English when there is no history either');
+  console.log('='.repeat(70));
+  check('LIVE BUG FIX: a bare name as the FIRST message ever ("Paramita", no history) resolves to English, never whatever the model happened to guess for it', whatsappAssistant.resolveStickyLang('Paramita', [], 'banglish') === 'english');
+  check('resolveStickyLang: a bare number/emoji as the first message also falls back to English', whatsappAssistant.resolveStickyLang('9830025114', [], 'hinglish') === 'english' && whatsappAssistant.resolveStickyLang('👍', [], 'banglish') === 'english');
+  check('resolveStickyLang: a short/ambiguous message (<=2 words) WITH an established Banglish conversation sticks to Banglish, ignoring a different model guess entirely', (() => {
+    const history = [{ direction: 'in', text: 'Amar PF balance ta koto ache, jodi ektu janaten khub upokar hoto', ts: Date.now() - 60000 }];
+    return whatsappAssistant.resolveStickyLang('Haa', history, 'english') === 'banglish';
+  })());
+  check('resolveStickyLang: the SAME sticky check for an established Hinglish conversation', (() => {
+    const history = [{ direction: 'in', text: 'Mujhe apna PF balance janna hai, kripya bataiye kitna hai abhi tak', ts: Date.now() - 60000 }];
+    return whatsappAssistant.resolveStickyLang('Haan', history, 'english') === 'hinglish';
+  })());
+  check('resolveStickyLang: a chain of SEVERAL short/ambiguous messages with no substantial one anywhere in history still falls back to English, never compounding a guess', (() => {
+    const history = [
+      { direction: 'in', text: 'Hi', ts: Date.now() - 180000 },
+      { direction: 'in', text: 'Ok', ts: Date.now() - 120000 },
+      { direction: 'in', text: '👍', ts: Date.now() - 60000 }
+    ];
+    return whatsappAssistant.resolveStickyLang('Haa', history, 'banglish') === 'english';
+  })());
+  check('resolveStickyLang: a normal, substantial message (not short/ambiguous) is UNCHANGED - uses fallbackLang as-is, never overridden (regression - this function only ever touches the short/ambiguous case)', whatsappAssistant.resolveStickyLang('Amar salary ta ekhono ashe ni, ektu dekhben please', [], 'english') === 'english');
+  check('detectEstablishedConversationLanguage skips past short/ambiguous PRIOR messages to find the most recent genuinely substantial one, never just the immediately-previous message', (() => {
+    const history = [
+      { direction: 'in', text: 'Amar PF balance ta koto ache, jodi ektu janaten khub upokar hoto', ts: Date.now() - 180000 },
+      { direction: 'in', text: 'Ok', ts: Date.now() - 120000 },
+      { direction: 'out', text: 'Reply text', ts: Date.now() - 60000 }
+    ];
+    return whatsappAssistant.detectEstablishedConversationLanguage(history) === 'banglish';
+  })());
+  check('REGRESSION (found verifying this very fix): "Ayon k?" - a real, if terse, Banglish question the model/detector CAN read on its own ("k" = Bengali "ki?") - is NOT "only a name/number/emoji" and keeps using the model\'s own classification unchanged, exactly as the existing locked "Ayon k?" scenario already requires; only a GENUINELY signal-free single bare token falls back to English', (() => {
+    return whatsappAssistant.resolveStickyLang('Ayon k?', [], 'banglish') === 'banglish'
+      && whatsappAssistant.looksLikeBareNameNumberOrEmoji('Ayon k?') === false
+      && whatsappAssistant.looksLikeBareNameNumberOrEmoji('Paramita') === true
+      && whatsappAssistant.looksLikeBareNameNumberOrEmoji('9830025114') === true
+      && whatsappAssistant.looksLikeBareNameNumberOrEmoji('👍') === true
+      && whatsappAssistant.looksLikeBareNameNumberOrEmoji('Hi there') === false;
+  })());
+
+  console.log('='.repeat(70));
   console.log(pass + '/' + (pass + fail) + ' passed' + (fail ? ', ' + fail + ' FAILED' : ''));
   if (failures.length) {
     console.log('Failed checks:');

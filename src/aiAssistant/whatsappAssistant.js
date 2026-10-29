@@ -7713,9 +7713,34 @@ function detectEstablishedConversationLanguage(history) {
 // judgment, or a plain detectLang(text) fallback) as fallbackLang, and
 // only get overridden when BOTH this message is short/ambiguous AND the
 // conversation already has an established language to stick to.
+// Task 4 (2026-10-29) - a single bare token with no actual word in it at
+// all: a name, a phone number, a lone emoji - genuinely nothing for a
+// language detector OR the model to read. Deliberately narrower than
+// isShortOrAmbiguousForLanguage's own "<=2 words" stickiness check below,
+// which must stay broad enough to still cover a real (if terse) word the
+// model/detector CAN read correctly on its own - e.g. "Ayon k?" (two
+// words, "k" being real Bengali shorthand for "ki?") or "Haa"/"Ok" - none
+// of which are "only a name/number/emoji/file" the way the live bug
+// ("Paramita") specifically was.
+function looksLikeBareNameNumberOrEmoji(text) {
+  const t = String(text || '').trim();
+  if (!t) return false;
+  if (t.split(/\s+/).filter(Boolean).length !== 1) return false;
+  return /^[a-zA-Z'-]+$/.test(t) || /^\d{7,}$/.test(t) || isEmojiOnlyMessage(t);
+}
 function resolveStickyLang(text, history, fallbackLang) {
   if (!isShortOrAmbiguousForLanguage(text)) return fallbackLang;
-  return detectEstablishedConversationLanguage(history) || fallbackLang;
+  const established = detectEstablishedConversationLanguage(history);
+  if (established) return established;
+  // LIVE BUG: a first message that's only a name/number/emoji/file
+  // ("Paramita") got a Banglish reply - fallbackLang here is
+  // classification.language, the MODEL's own guess, which CAN and did
+  // guess wrong for text with nothing real to go on. Only a genuinely
+  // signal-free message with no established history to stick to either
+  // falls back to English instead of trusting that guess; anything the
+  // model/detector could actually read (even a short, real word) keeps
+  // using fallbackLang exactly as before.
+  return looksLikeBareNameNumberOrEmoji(text) ? 'english' : fallbackLang;
 }
 
 // Live review item 4 - a plain-text closing remark ("Thank you"/"Ok"/
@@ -7795,7 +7820,43 @@ const AI_DISCLOSURE_LINE = {
   hinglish: 'Main SUBH hoon, Subhodeep ka HR Assistant.',
   english: "I'm SUBH, Subhodeep's HR Assistant."
 };
-const ALREADY_INTRODUCES_SUBH_RE = /\b(i'?m subh|main subh|ami subh)\b/i;
+const ALREADY_INTRODUCES_SUBH_RE = /\b(i'?m subh|main subh|ami subh|this is subh)\b/i;
+// Task 3 (2026-10-29) - LIVE BUG: the model wrote its own self-
+// introduction TWICE in one reply ("I'm SUBH, Subhodeep's HR Assistant.
+// I'm doing well, thanks for asking! This is SUBH, Subhodeep's HR
+// Assistant. I don't have an update..." - each half of what reads like a
+// combined, two-part answer apparently re-introducing itself on its own).
+// ALREADY_INTRODUCES_SUBH_RE only ever decides whether the WRAPPER adds
+// its OWN prefix - it was never a guarantee the model's own free-form
+// text contains at most one. A structural pre-send check instead,
+// applied to the fully-assembled final text regardless of whether the
+// first intro came from identityPrefix or the model's own words: collapse
+// every self-introduction sentence after the FIRST one down to nothing,
+// whatever phrasing was used (matches on "subh" + "hr assistant" co-
+// occurring in one sentence - the one fact every phrasing/language this
+// app uses always states together, never a narrower hand-picked phrase
+// list a new model wording could sidestep again).
+const SELF_INTRO_SENTENCE_RE = /(^|[.!?]\s+)[^.!?\n]*\bsubh\b[^.!?\n]*\bhr assistant\b[^.!?\n]*[.!?]/gi;
+function collapseDuplicateSelfIntros(text) {
+  if (!text) return text;
+  let seenOne = false;
+  let stripped = false;
+  const result = text.replace(SELF_INTRO_SENTENCE_RE, (match, lead) => {
+    if (!seenOne) { seenOne = true; return match; }
+    stripped = true;
+    return lead; // keep the leading punctuation/space, drop the duplicate sentence itself
+  });
+  // LIVE BUG (found verifying this very fix): the whitespace cleanup used
+  // to run unconditionally and collapsed EVERY run of whitespace to one
+  // space, including the fixed templates' own "\n\n" paragraph breaks
+  // (JOB_APPLICATION_RECEIVED_REPLY etc.) - silently reflowing every
+  // reply that never had a duplicate to begin with (the vast majority).
+  // Now a complete no-op, original text untouched, unless something was
+  // actually stripped - and even then only horizontal whitespace is
+  // normalized, newlines are never touched.
+  if (!stripped) return text;
+  return result.replace(/[ \t]{2,}/g, ' ').trim();
+}
 // Only the last ~10 messages are ever passed to decideAutoReply (see
 // pollOnce) - enough to tell "nothing from them recently" from "mid-
 // conversation" without a second Redis round trip just for this check.
@@ -8501,7 +8562,7 @@ async function decideAutoReply(params) {
         }
       }
     }
-    decision.replyText = greetingPrefix + identityPrefix + decision.replyText + greetingSuffix;
+    decision.replyText = collapseDuplicateSelfIntros(greetingPrefix + identityPrefix + decision.replyText + greetingSuffix);
   }
   return decision;
 }
@@ -10217,6 +10278,7 @@ module.exports = {
   // first-reply fix.
   AI_DISCLOSURE_LINE,
   ALREADY_INTRODUCES_SUBH_RE,
+  collapseDuplicateSelfIntros,
   hasRecentIncomingMessage,
   // Exported for scripts/check-whatsapp-engine.js only - natural-casing
   // fix and the grouped multi-candidate approval card fix.
@@ -10272,6 +10334,7 @@ module.exports = {
   isShortOrAmbiguousForLanguage,
   detectEstablishedConversationLanguage,
   resolveStickyLang,
+  looksLikeBareNameNumberOrEmoji,
   // Exported for scripts/check-whatsapp-engine.js only - deterministic-
   // first instruction/approval classification and the own-bank-details
   // short-circuit (2026-10-27).
