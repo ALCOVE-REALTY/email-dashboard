@@ -3087,6 +3087,379 @@ function hintMatchesSiteAliasSync(location, hint) {
   }
   return false;
 }
+// Resolves a free-text site mention (e.g. "Duets") to its real location
+// value(s) - the SAME confirmed-alias cache/word-matching as
+// hintMatchesSiteAliasSync above, but returning the matching siteValue(s)
+// themselves (for filtering real rows) rather than a yes/no. Used by the
+// HR-data query engine below; a site with no confirmed alias at all
+// (not yet reviewed, or just matches by its own plain name) falls through
+// to a plain departmentHintMatches check against the raw location field
+// instead - see filterEmployeesForHrQuery.
+function resolveSiteAliasValues(hint) {
+  const normHint = normalizeForMatch(hint);
+  if (!normHint) return [];
+  const hintWords = normHint.split(' ').filter(Boolean);
+  const values = new Set();
+  for (const a of siteAliasCache) {
+    const normAlias = normalizeForMatch(a.alias);
+    if (!normAlias) continue;
+    const aliasWords = normAlias.split(' ').filter(Boolean);
+    const aliasIsHint = aliasWords.length > 0 && aliasWords.every((aw) => hintWords.some((hw) => siteWordsFuzzyMatch(hw, aw)));
+    if (aliasIsHint) values.add(a.siteValue);
+  }
+  return Array.from(values);
+}
+
+// ============================================================
+// Task 2 (2026-10-29), "AI understands, code computes" - general HR-data
+// query engine. The model (extractHrDataQuery below) only ever turns the
+// sender's message into a STRUCTURED query - what to return, which
+// filters apply, what fields were named. Every name/count/sentence in
+// the actual answer is computed here, from the real employee directory,
+// never written by the model. Covers what the old blind
+// claudeProvider.getResponse delegation (prepareDataRequestAnswer) could
+// not: a general role/department/site/HOD filter combination, a
+// department's own HOD(s), and department-name ambiguity - using the
+// WhatsApp-specific exact wording Subhodeep asked for, not the in-app
+// chat assistant's own free-form reply style. personLookupName-based
+// single-person-field lookups (handlePersonLookupRequest, including the
+// new "reporting manager" field below) are completely separate and
+// untouched.
+// ============================================================
+
+// Bengali "ti" object-classifier (people use "jon" - see countLabel -
+// departments/HODs/etc. use "ti"). Only ever reaches more than a
+// handful of options for a genuinely rare name collision, so a short
+// table + a plain "-ti" fallback (grammatically fine, if slightly less
+// idiomatic for larger numbers) covers every real case.
+const BANGLA_OBJECT_COUNT_WORDS = { 1: 'ekti', 2: 'duti', 3: 'tinti', 4: 'charti', 5: 'panchti' };
+function countLabelObjects(n, lang) {
+  if (lang === 'banglish') return BANGLA_OBJECT_COUNT_WORDS[n] || (n + '-ti');
+  return String(n);
+}
+// "HR DEPT" naturalizes to "HR department" already (DEPT is expanded by
+// naturalizeDirectoryValue itself) - this only appends the word when the
+// real value doesn't already carry it (e.g. "Administration (HO)"),
+// never doubling it.
+function departmentLabelWithSuffix(deptValue) {
+  const naturalized = naturalizeDirectoryValue(deptValue);
+  return /\bdepartment\b/i.test(naturalized) ? naturalized : naturalized + ' department';
+}
+const DEPARTMENT_DISAMBIGUATION_QUESTION = {
+  banglish: (name, options) =>
+    'Amader company-te ' + name + ' naame ' + countLabelObjects(options.length, 'banglish') + ' department ache:\n' +
+    options.map((o, i) => (i + 1) + ') ' + naturalizeDirectoryValue(o)).join('\n') +
+    '\nApni kontar kotha bolchhen?',
+  hinglish: (name, options) =>
+    'Hamari company mein ' + name + ' naam ke ' + options.length + ' department hain:\n' +
+    options.map((o, i) => (i + 1) + ') ' + naturalizeDirectoryValue(o)).join('\n') +
+    '\nAap kaunse ki baat kar rahe hain?',
+  english: (name, options) =>
+    'There are ' + options.length + ' departments named ' + name + ' at our company:\n' +
+    options.map((o, i) => (i + 1) + ') ' + naturalizeDirectoryValue(o)).join('\n') +
+    '\nWhich one do you mean?'
+};
+const HR_QUERY_NO_MATCH = {
+  banglish: (scope, role) => (scope ? scope + '-e kono ' : 'Kono ') + role + ' pawa jayni.',
+  hinglish: (scope, role) => (scope ? scope + ' mein koi ' : 'Koi ') + role + ' nahi mila.',
+  english: (scope, role) => 'No ' + role + (scope ? ' found in ' + scope : ' found') + '.'
+};
+const HR_QUERY_COUNT = {
+  banglish: (scope, n, role) => (scope ? scope + '-e total ' : 'Total ') + n + ' jon ' + role + ' achen.',
+  hinglish: (scope, n, role) => (scope ? scope + ' mein total ' : 'Total ') + n + ' ' + role + ' hain.',
+  english: (scope, n, role) => 'There ' + (n === 1 ? 'is' : 'are') + ' a total of ' + n + ' ' + role + (scope ? ' in ' + scope : '') + '.'
+};
+// Same shape as HR_QUERY_COUNT but ends with ':' - the count line doubles
+// as the intro sentence right above the numbered list in list mode.
+const HR_QUERY_LIST_INTRO = {
+  banglish: (scope, n, role) => (scope ? scope + '-e total ' : 'Total ') + n + ' jon ' + role + ' achen:',
+  hinglish: (scope, n, role) => (scope ? scope + ' mein total ' : 'Total ') + n + ' ' + role + ' hain:',
+  english: (scope, n, role) => 'There ' + (n === 1 ? 'is' : 'are') + ' a total of ' + n + ' ' + role + (scope ? ' in ' + scope : '') + ':'
+};
+const HR_QUERY_HOD_SINGLE = {
+  banglish: (deptLabel, hodName) => deptLabel + '-er HOD holen ' + hodName + '.',
+  hinglish: (deptLabel, hodName) => deptLabel + ' ke HOD ' + hodName + ' hain.',
+  english: (deptLabel, hodName) => 'The HOD of ' + deptLabel + ' is ' + hodName + '.'
+};
+const HR_QUERY_HOD_MULTI = {
+  banglish: (deptLabel, breakdown) =>
+    deptLabel + '-e total ' + countLabelObjects(breakdown.length, 'banglish') + ' HOD achen:\n' +
+    breakdown.map((b, i) => (i + 1) + ') ' + b.name + ' (' + b.count + ' jon)').join('\n'),
+  hinglish: (deptLabel, breakdown) =>
+    deptLabel + ' mein total ' + breakdown.length + ' HOD hain:\n' +
+    breakdown.map((b, i) => (i + 1) + ') ' + b.name + ' (' + b.count + ' log)').join('\n'),
+  english: (deptLabel, breakdown) =>
+    deptLabel + ' has ' + breakdown.length + ' HODs:\n' +
+    breakdown.map((b, i) => (i + 1) + ') ' + b.name + ' (' + b.count + ')').join('\n')
+};
+
+// Live bug fix (2026-10-29) - departmentHintMatches alone requires every
+// hint word to be a COMPLETE word in the field (its whole reason for
+// existing: "IT" must never match "SRM-Site" off a mid-word letter
+// sequence). That's too strict for an abbreviated department name like
+// "Admin" for "ADMINISTRATION (HO)" - neither is a substring of the
+// other as whole words, so the ambiguity check silently found nothing at
+// all and the query ran unfiltered. Department matching specifically
+// allows a hint word to be a PREFIX of a real field word too (never the
+// other way around, and never raw mid-word substring) - "admin" is a
+// genuine prefix of "administration", while "it" is still not a prefix
+// of "site", so the original false-positive this matcher was built to
+// fix never reopens.
+function departmentHintMatchesWithPrefix(deptName, hint) {
+  if (departmentHintMatches(deptName, hint)) return true;
+  const deptWords = normalizeForMatch(deptName).split(' ').filter(Boolean);
+  const hintWords = normalizeForMatch(hint).split(' ').filter(Boolean);
+  if (!deptWords.length || !hintWords.length) return false;
+  return hintWords.every((hw) => deptWords.some((dw) => dw.startsWith(hw)));
+}
+// Pure, model-free query functions - every one takes the already-fetched
+// employee array as a plain argument (never fetches it itself), so tests
+// can feed a small fake roster directly without touching the real sheet.
+// Designation/location/company/reportingManager filters reuse
+// departmentHintMatches (whole-word, not raw substring - the same
+// matcher already proven against the real "IT"/"SRM-Site" false-positive
+// live bug); department matching uses the prefix-tolerant variant above.
+function resolveDepartmentOptions(employees, departmentHint) {
+  if (!departmentHint) return { resolved: null, options: [] };
+  const distinct = new Map();
+  for (const e of employees) {
+    if (!e.department) continue;
+    if (!departmentHintMatchesWithPrefix(e.department, departmentHint)) continue;
+    const key = normalizeForMatch(e.department);
+    if (!distinct.has(key)) distinct.set(key, e.department);
+  }
+  const options = Array.from(distinct.values());
+  if (options.length <= 1) return { resolved: options[0] || null, options: [] };
+  return { resolved: null, options };
+}
+function filterEmployeesForHrQuery(employees, query) {
+  const status = query.status || 'ACTIVE';
+  let rows = employees.filter((e) => e.status === status);
+  if (query.designation) rows = rows.filter((e) => e.designation && departmentHintMatches(e.designation, query.designation));
+  if (query.resolvedDepartment) rows = rows.filter((e) => e.department === query.resolvedDepartment);
+  else if (query.department) rows = rows.filter((e) => e.department && departmentHintMatchesWithPrefix(e.department, query.department));
+  if (query.resolvedLocations && query.resolvedLocations.length) rows = rows.filter((e) => query.resolvedLocations.includes(e.location));
+  else if (query.location) rows = rows.filter((e) => e.location && departmentHintMatches(e.location, query.location));
+  if (query.company) rows = rows.filter((e) => e.company && departmentHintMatches(e.company, query.company));
+  if (query.reportingManagerName) rows = rows.filter((e) => e.reportingManager && departmentHintMatches(e.reportingManager, query.reportingManagerName));
+  return rows;
+}
+function computeHodBreakdown(employees) {
+  const counts = new Map();
+  for (const e of employees) {
+    const mgr = (e.reportingManager || '').trim();
+    if (!mgr) continue;
+    counts.set(mgr, (counts.get(mgr) || 0) + 1);
+  }
+  return Array.from(counts.entries()).map(([hodName, count]) => ({ name: hodName, count })).sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+}
+// The sender's OWN term is used for the scope label where one exists
+// (e.g. "Duets", not whatever internal site value it resolved to) - both
+// the owner and the sender recognize their own wording; the resolved
+// VALUE is only ever used for actually filtering rows, never for display.
+function buildScopeLabel(query) {
+  if (query.location) return naturalizeDirectoryValue(query.location) + ' site';
+  if (query.resolvedDepartment) return naturalizeDirectoryValue(query.resolvedDepartment);
+  if (query.department) return naturalizeDirectoryValue(query.department);
+  if (query.company) return naturalizeDirectoryValue(query.company);
+  if (query.reportingManagerName) return query.reportingManagerName + '-er under';
+  return '';
+}
+// Builds the final outgoing text (never sent directly - always queued
+// through the same owner-approval card every other data request uses,
+// see queueHrDataQueryApproval) and a short English summary for the
+// owner's own notification.
+function buildHrDataQueryAnswer(employees, query, lang) {
+  const rows = filterEmployeesForHrQuery(employees, query);
+  const roleLabel = query.designation ? naturalizeDirectoryValue(query.designation) : (lang === 'english' ? 'employees' : 'kormi');
+  if (query.returnType === 'hod') {
+    const deptLabel = departmentLabelWithSuffix(query.resolvedDepartment || query.department || '');
+    let outgoingText;
+    if (!rows.length) {
+      outgoingText = (HR_QUERY_NO_MATCH[lang] || HR_QUERY_NO_MATCH.english)(deptLabel, 'HOD');
+    } else {
+      const breakdown = computeHodBreakdown(rows);
+      outgoingText = !breakdown.length
+        ? (HR_QUERY_NO_MATCH[lang] || HR_QUERY_NO_MATCH.english)(deptLabel, 'HOD')
+        : breakdown.length === 1
+          ? (HR_QUERY_HOD_SINGLE[lang] || HR_QUERY_HOD_SINGLE.english)(deptLabel, breakdown[0].name)
+          : (HR_QUERY_HOD_MULTI[lang] || HR_QUERY_HOD_MULTI.english)(deptLabel, breakdown);
+    }
+    return { outgoingText, dataRequestSummary: deptLabel + ' - HOD' };
+  }
+  const scopeLabel = buildScopeLabel(query);
+  if (!rows.length) {
+    return { outgoingText: (HR_QUERY_NO_MATCH[lang] || HR_QUERY_NO_MATCH.english)(scopeLabel, roleLabel), dataRequestSummary: roleLabel + (scopeLabel ? ' in ' + scopeLabel : '') + ' - no match' };
+  }
+  if (query.returnType === 'count') {
+    return { outgoingText: (HR_QUERY_COUNT[lang] || HR_QUERY_COUNT.english)(scopeLabel, rows.length, roleLabel), dataRequestSummary: 'headcount - ' + roleLabel + (scopeLabel ? ' (' + scopeLabel + ')' : '') };
+  }
+  // 'list' (default return type)
+  const includeLocation = Boolean(query.location);
+  const introLine = (HR_QUERY_LIST_INTRO[lang] || HR_QUERY_LIST_INTRO.english)(scopeLabel, rows.length, roleLabel);
+  const listLines = rows.slice(0, 100).map((e, i) => {
+    const parts = [e.name, naturalizeDirectoryValue(e.designation), naturalizeDirectoryValue(e.department)];
+    if (includeLocation) parts.push(naturalizeDirectoryValue(e.location));
+    return (i + 1) + '. ' + parts.join(' — ');
+  }).join('\n');
+  return { outgoingText: introLine + '\n' + listLines, dataRequestSummary: roleLabel + ' list' + (scopeLabel ? ' (' + scopeLabel + ')' : '') };
+}
+
+// Owner-approval queueing - same shape/wording as prepareAndQueueDataApproval's
+// own final notification (spec rule g: every answer here goes through the
+// SAME approval card, PII rules and never-auto/toggle rules, nothing sent
+// without the owner's own "pathao"/"na").
+async function queueHrDataQueryApproval({ phone, requesterLabel, lang, dataRequestSummary, outgoingText }) {
+  await savePendingApproval({
+    phone, name: requesterLabel, requestText: dataRequestSummary, dataRequestSummary, lang,
+    preparedReplyText: outgoingText, preparedCard: null, preparedError: null
+  });
+  await postOwnerNotification(
+    requesterLabel + ' (' + phone + ') ' + dataRequestSummary + ' chaiche. Je message jabe:\n\'' + outgoingText + '\'\nPathabo? (ei chat-e "pathao"/"na" likhun)'
+  );
+}
+
+// Classifier extraction - a SEPARATE, focused tool call (not an addition
+// to the already-very-large classifyOfficialMessage tool), made only for
+// a wantsData message that is NOT a single-person-field lookup
+// (personLookupName) - a bounded, occasional extra call replacing the old
+// blind claudeProvider.getResponse delegation, never a new per-message
+// cost on every WhatsApp message.
+function hrDataQueryTool() {
+  return {
+    type: 'function',
+    function: {
+      name: 'extract_hr_data_query',
+      description: 'Turn this HR-data question into a structured query over the real employee directory. Never invent any name, number, or department - only extract WHAT to look up and HOW to filter it; the real answer is computed from the actual data afterward.',
+      parameters: {
+        type: 'object',
+        properties: {
+          returnType: {
+            type: 'string', enum: ['list', 'count', 'hod'],
+            description: '"list" for a roster of matching employees (e.g. "welder list dao", "Tanmoy Mondal-er under-e kara achen?"). "count" for just a headcount ("koto jon"/"how many"). "hod" for a DEPARTMENT\'s own HOD(s) ("HR dept er HOD ke?", "Admin dept er HOD ke?") - never for one named individual\'s own manager (that is a different, existing flow - see personLookupName/personLookupField elsewhere).'
+          },
+          designation: { type: 'string', description: 'The role/title keyword as a single canonical English word (e.g. "welder" for "welder"/"welding"/a misspelling of either, "engineer" for "engineers"/"engg") - omit if no role was named.' },
+          department: { type: 'string', description: 'The department name or a distinctive substring of it, exactly as the sender said it (e.g. "Administration", "HR", "Admin") - omit if none was named. Required when returnType is "hod".' },
+          location: { type: 'string', description: 'The site/location name or a distinctive substring, EXACTLY as the sender said it, never translated or normalized - e.g. "Duets", "Triveni Mall". Site aliases/nicknames are resolved separately from these exact words. Omit if none was named.' },
+          company: { type: 'string', description: 'The company name or a distinctive substring, if one was named - omit otherwise.' },
+          reportingManagerName: { type: 'string', description: 'A manager/HOD\'s name, ONLY when the question filters BY who people report to (e.g. "Tanmoy Mondal-er under-e kara achen?" = people reporting to Tanmoy Mondal) - omit otherwise.' },
+          status: { type: 'string', enum: ['ACTIVE', 'INACTIVE', 'NOTICE PERIOD'], description: 'Omit for the default (Active only) - set only when a specific status was explicitly named.' }
+        },
+        required: ['returnType']
+      }
+    }
+  };
+}
+async function extractHrDataQuery(text, history) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey || !DRAFT_MODEL) return null;
+  const historyBlock = formatHistoryBlock(history);
+  const messages = [];
+  if (historyBlock) messages.push({ role: 'system', content: historyBlock });
+  messages.push({ role: 'user', content: text });
+  const toolDef = hrDataQueryTool().function;
+  try {
+    return await callClaudeForcedTool(apiKey, DRAFT_MODEL, messages, toolDef.name, toolDef);
+  } catch (err) {
+    return null;
+  }
+}
+
+// Pending state for a department-name ambiguity question ("Administration
+// naame duti department ache... kontar kotha bolchhen?") - short-lived
+// (the sender is expected to answer promptly), resumed by
+// continueHrDataQueryFlow below once they pick one.
+const HR_QUERY_PENDING_PREFIX = 'wa-hr-query-pending:';
+const HR_QUERY_PENDING_TTL_SECONDS = 15 * 60;
+async function savePendingHrDataQuery(phone, data) {
+  const redis = getClient();
+  if (!redis) return;
+  const key = HR_QUERY_PENDING_PREFIX + whatsapp.normalizePhone(phone);
+  try {
+    await redis.set(key, JSON.stringify(data));
+    await redis.expire(key, HR_QUERY_PENDING_TTL_SECONDS);
+  } catch (err) { /* best effort */ }
+}
+async function getPendingHrDataQuery(phone) {
+  const redis = getClient();
+  if (!redis) return null;
+  return redisHealth.guardedRead(async () => {
+    const raw = await redis.get(HR_QUERY_PENDING_PREFIX + whatsapp.normalizePhone(phone));
+    if (!raw) return null;
+    try { return typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (err) { return null; }
+  }, null);
+}
+async function clearPendingHrDataQuery(phone) {
+  const redis = getClient();
+  if (!redis) return;
+  try { await redis.del(HR_QUERY_PENDING_PREFIX + whatsapp.normalizePhone(phone)); } catch (err) { /* best effort */ }
+}
+
+// Entry point - called from decideAutoReplyCore's wantsData branch
+// whenever the request is NOT a single-person-field lookup.
+async function handleHrDataQueryRequest({ phone, name, lang, text, history }) {
+  const query = await extractHrDataQuery(text, history);
+  if (!query) {
+    await postOwnerNotification(name + ' (' + phone + ') ekta data request korechhe ("' + text.slice(0, 160) + '"), kintu SUBH bujhte parini - eta manually dekhte hobe.');
+    return { case: 'data_holding', replyText: dataRequestHoldingReply(lang, history, new Date()), summaryForOwner: null };
+  }
+  const { employees } = await employeeService.getEmployeeData();
+  if (query.department) {
+    const deptResult = resolveDepartmentOptions(employees, query.department);
+    if (deptResult.options.length > 1) {
+      await savePendingHrDataQuery(phone, { query: Object.assign({}, query, { department: null }), lang, departmentOptions: deptResult.options, departmentHint: query.department });
+      const fn = DEPARTMENT_DISAMBIGUATION_QUESTION[lang] || DEPARTMENT_DISAMBIGUATION_QUESTION.english;
+      return { case: 'acknowledged', replyText: fn(query.department, deptResult.options), summaryForOwner: null, lang };
+    }
+    query.resolvedDepartment = deptResult.resolved;
+  }
+  if (query.location) {
+    const aliasValues = resolveSiteAliasValues(query.location);
+    if (aliasValues.length) query.resolvedLocations = aliasValues;
+  }
+  await runHrDataQueryAndQueue({ phone, requesterLabel: name, lang, employees, query });
+  return { case: 'data_holding', replyText: dataRequestHoldingReply(lang, history, new Date()), summaryForOwner: null };
+}
+// Dedupe (same rule as every other data-request path) + the actual
+// compute-and-queue, split out so both the fresh-question path above and
+// the department-choice continuation below share it.
+async function runHrDataQueryAndQueue({ phone, requesterLabel, lang, employees, query }) {
+  const existing = await listPendingApprovals();
+  if (existing.some((a) => whatsapp.normalizePhone(a.phone) === whatsapp.normalizePhone(phone))) return;
+  const { outgoingText, dataRequestSummary } = buildHrDataQueryAnswer(employees, query, lang);
+  await queueHrDataQueryApproval({ phone, requesterLabel, lang, dataRequestSummary, outgoingText });
+}
+// Continuation - called (checked early, same tier as every other pending-
+// state check in this file, before classification ever runs) whenever a
+// pendingHrDataQuery exists for this sender. A number or a distinctive
+// substring of one of the offered department names resolves it; anything
+// else just re-asks the same question rather than guessing.
+async function continueHrDataQueryFlow({ phone, name, text, pending }) {
+  const lang = pending.lang;
+  const options = pending.departmentOptions;
+  const t = String(text || '').trim();
+  let picked = null;
+  const numMatch = t.match(/^(\d+)[.)]?\b/);
+  if (numMatch) {
+    const idx = parseInt(numMatch[1], 10) - 1;
+    if (idx >= 0 && idx < options.length) picked = options[idx];
+  }
+  if (!picked) picked = options.find((o) => departmentHintMatchesWithPrefix(o, t)) || null;
+  if (!picked) {
+    const fn = DEPARTMENT_DISAMBIGUATION_QUESTION[lang] || DEPARTMENT_DISAMBIGUATION_QUESTION.english;
+    return { case: 'acknowledged', replyText: fn(pending.departmentHint, options), summaryForOwner: null, lang };
+  }
+  await clearPendingHrDataQuery(phone);
+  const query = Object.assign({}, pending.query, { resolvedDepartment: picked });
+  if (query.location) {
+    const aliasValues = resolveSiteAliasValues(query.location);
+    if (aliasValues.length) query.resolvedLocations = aliasValues;
+  }
+  const { employees } = await employeeService.getEmployeeData();
+  await runHrDataQueryAndQueue({ phone, requesterLabel: name, lang, employees, query });
+  return { case: 'data_holding', replyText: dataRequestHoldingReply(lang, [], new Date()), summaryForOwner: null };
+}
+
 // "New sites" (direct instruction, 2026-10-28): only a location value
 // NEVER SEEN BEFORE should ever be flagged - not every one of today's
 // existing, already-known-but-unaliased sites (those just match by their
@@ -3233,7 +3606,13 @@ function mapAndNarrowByDepartment(matched, departmentNames, departmentHint) {
     email: e.email, emailPersonal: e.emailPersonal, presentAddress: e.presentAddress,
     permanentAddress: e.permanentAddress, dob: e.dob,
     emergencyContactNumber: e.emergencyContactNumber, emergencyContactName: e.emergencyContactName,
-    uan: e.uan, esiNumber: e.esiNumber, bloodGroup: e.bloodGroup
+    uan: e.uan, esiNumber: e.esiNumber, bloodGroup: e.bloodGroup,
+    // Task 2 (2026-10-29) - the new "reporting manager" other_field alias
+    // needs this carried through too (live bug found while testing: the
+    // field was silently missing from every candidate here, so
+    // queuePersonFieldApproval always read it as "not on file" and never
+    // created an approval at all).
+    reportingManager: e.reportingManager
   }));
   if (!departmentHint) return withDept;
   // A department hint narrows but never eliminates a real candidate - if
@@ -3539,6 +3918,27 @@ const APPROVAL_FIELD_ALIASES = [
     match: /blood/i,
     label: { banglish: 'blood group', hinglish: 'blood group', english: 'blood group' },
     getValue: (c) => c.bloodGroup || null
+  },
+  // Task 2 (2026-10-29) - one named person's OWN reporting manager/HOD
+  // ("Subhodeep HR kake report kore?"). alwaysConfirm (see
+  // handlePersonLookupRequest's own first-name-only branch) overrides the
+  // normal "a department/designation hint given -> skip the confirm
+  // question" optimization every OTHER field still uses - per direct
+  // instruction this one ALWAYS confirms who's meant first, even with a
+  // hint, since a manager/HOD fact reads as more consequential than a
+  // private field like an email or DOB. outgoingLine overrides the
+  // generic "name-er field: value" colon format with a real sentence.
+  {
+    key: 'reportingManager',
+    match: /report(s|ing)?\s*(to|manager)|\bmanager\b|\bhod\b/i,
+    label: { banglish: 'reporting manager', hinglish: 'reporting manager', english: 'reporting manager' },
+    getValue: (c) => c.reportingManager || null,
+    alwaysConfirm: true,
+    outgoingLine: {
+      banglish: (name, value) => name + '-er reporting manager holen ' + value + '.',
+      hinglish: (name, value) => name + ' ke reporting manager ' + value + ' hain.',
+      english: (name, value) => name + "'s reporting manager is " + value + '.'
+    }
   }
 ];
 function resolveApprovalFieldAliasByLabel(label) {
@@ -3560,7 +3960,13 @@ async function queuePersonFieldApproval({ phone, requesterLabel, candidate, lang
     await postOwnerNotification(candidate.name + ' (' + candidate.department + ')-er ' + fieldLabel + ' record-e nei, tai ' + requesterLabel + '-ke pathano jabe na.');
     return;
   }
-  const outgoingText = (OTHER_FIELD_LINE[lang] || OTHER_FIELD_LINE.english)(candidate.name, fieldLabel, value);
+  // Task 2 (2026-10-29) - a field alias may define its own outgoingLine
+  // (a real sentence, e.g. reporting manager's "X-er reporting manager
+  // holen Y.") instead of the generic "name-er field: value" colon format
+  // every other other_field uses.
+  const outgoingText = fieldAlias.outgoingLine
+    ? (fieldAlias.outgoingLine[lang] || fieldAlias.outgoingLine.english)(candidate.name, value)
+    : (OTHER_FIELD_LINE[lang] || OTHER_FIELD_LINE.english)(candidate.name, fieldLabel, value);
   const dataRequestSummary = candidate.name + ' (' + candidate.department + ') - ' + fieldLabel;
   await savePendingApproval({
     phone, name: requesterLabel, requestText: dataRequestSummary, dataRequestSummary, lang,
@@ -3702,8 +4108,12 @@ async function handlePersonLookupRequest({ phone, name, lang, personName, person
   // designation hint (item 1: "Ayan HR-er contact no" -> resolve directly,
   // no question) - supplying that hint is itself the sender identifying
   // who they mean, so asking again here would contradict item 1's
-  // explicit "no question, no decline" requirement.
-  if (current.length + inactive.length === 1 && !department) {
+  // explicit "no question, no decline" requirement. Task 2 (2026-10-29)
+  // exception: a field alias with alwaysConfirm (reporting manager/HOD)
+  // ALWAYS confirms a first-name-only reference, hint or not, per direct
+  // instruction - that answer reads as more consequential than a private
+  // field like an email/DOB.
+  if (current.length + inactive.length === 1 && (!department || (fieldAlias && fieldAlias.alwaysConfirm))) {
     const soleMatch = current[0] || inactive[0];
     if (isFirstNameOnly(personName, soleMatch.name)) {
       const isInactiveCandidate = inactive.length === 1;
@@ -7166,7 +7576,7 @@ function classifyTool() {
           wantsData: { type: 'boolean', description: 'true ONLY if they are asking for actual HR/employee data from the company database - counts, lists, names, headcounts, birthdays, who reports to whom, department lists, or any field (even just a phone number) about a named employee, etc. false for a question about their OWN situation (their own letter/salary/attendance), a policy question, an informing message, or small talk - those go through the normal topic/memory/noting path instead, never this one. Judge this from THIS message alone, read as a complete, self-contained question - true for a plain "who is <name>?"/"<name> ke?" even if the conversation history separately discussed a different name or an unresolved earlier question (e.g. a name mentioned while confirming who gave an instruction). Never classify a self-contained new "who is X" question as a continuation of an unrelated, unresolved exchange from history just because a similar-sounding name or topic appeared earlier - that history-leak is a known failure mode. Only let history change this when THIS message is a genuine elliptical fragment that cannot stand alone without it (e.g. a bare "?", "tar ki holo", a pronoun with no antecedent in the message itself).' },
           dataRequestSummary: { type: 'string', description: 'Required only when wantsData is true - restate exactly what data they are asking for, in plain English, e.g. "current list of engineers", "headcount under Yashaswi Shroff", "Ayan Das\'s contact number". Omit when wantsData is false.' },
           personLookupName: { type: 'string', description: 'ONLY when wantsData is true AND the request is for ONE specific field about ONE named person (e.g. "Ayan Das er contact number ta dao", "R amake Ayan Das HR er contact no. ta debe?") - the person\'s name EXACTLY as given in THIS message, first name alone is fine (e.g. "Ayan"). NEVER guess, complete, or expand the name using an earlier message in the conversation history - if THIS message only says "Ayan", output "Ayan", even if an earlier message in this same chat was about a specific "Ayan Biswas" or "Ayan Das". Only carry a name forward from history when the sender explicitly refers back to the same person ("tar", "oi jon-er", "same person", "ওই person", "usi ka") - in that case output the name history already resolved. Omit entirely for any aggregate/list/count/headcount request (e.g. "engineers list", "headcount under X", "who reports to X") - those are never about one person\'s own personal field and must NOT set this.' },
-          personLookupField: { type: 'string', enum: ['contact_number', 'general_details', 'other_field', 'forbidden_pii'], description: 'Required when personLookupName is given. "contact_number" ONLY for their phone/contact/mobile/WhatsApp number. "general_details" ONLY for their full name, designation/role, department, or how long they\'ve been with the company (tenure) - these are not sensitive and never need approval. "other_field" for any other single personal field that is NOT Aadhaar/PAN/bank account/salary - e.g. mail id/personal email, home/permanent/present address, date of birth, emergency contact, UAN number, ESIC/ESI number, blood group; when you choose "other_field" you MUST also set personLookupFieldLabel. "forbidden_pii" ONLY for Aadhaar, PAN, bank account/IFSC, or salary/CTC - these are NEVER shared regardless of approval. When unsure whether something is Aadhaar/PAN/bank/salary vs. a different field, choose "forbidden_pii" - never guess "other_field" for something that might be one of those four.' },
+          personLookupField: { type: 'string', enum: ['contact_number', 'general_details', 'other_field', 'forbidden_pii'], description: 'Required when personLookupName is given. "contact_number" ONLY for their phone/contact/mobile/WhatsApp number. "general_details" ONLY for their full name, designation/role, department, or how long they\'ve been with the company (tenure) - these are not sensitive and never need approval. "other_field" for any other single personal field that is NOT Aadhaar/PAN/bank account/salary - e.g. mail id/personal email, home/permanent/present address, date of birth, emergency contact, UAN number, ESIC/ESI number, blood group, OR that named person\'s OWN reporting manager/HOD (e.g. "Subhodeep HR kake report kore?", "Subhodeep HR-er manager ke?", "X-er HOD ke?" - set personLookupFieldLabel to "reporting manager" for this one); when you choose "other_field" you MUST also set personLookupFieldLabel. Never use "other_field" for a DEPARTMENT\'s own HOD question with no specific person named (e.g. "HR dept er HOD ke?") - that has no personLookupName at all, see wantsData\'s own description. "forbidden_pii" ONLY for Aadhaar, PAN, bank account/IFSC, or salary/CTC - these are NEVER shared regardless of approval. When unsure whether something is Aadhaar/PAN/bank/salary vs. a different field, choose "forbidden_pii" - never guess "other_field" for something that might be one of those four.' },
           personLookupFieldLabel: { type: 'string', description: 'Required when personLookupField is "other_field" - name the specific field asked about, in a few words (e.g. "mail id", "address", "date of birth", "emergency contact", "UAN number", "ESIC number", "blood group"). Omit otherwise.' },
           personLookupDepartment: { type: 'string', description: 'Optional - a department mentioned to help find the right person when the name alone could match more than one employee, e.g. "HR" in "Ayan Das HR er contact number". Omit if none was mentioned.' }
         },
@@ -8109,6 +8519,17 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
   // could be (found live: a real conversation needed 4 back-and-forth
   // turns to resolve a name, and the note itself got dropped partway
   // through).
+  // Task 2 (2026-10-29) - a pending department-name ambiguity question
+  // from the HR-data query engine ("Administration naame duti department
+  // ache... kontar kotha bolchhen?") is checked before classification
+  // ever runs, same tier as every other pending-state check in this file.
+  if (!isGroup && phone) {
+    const pendingHrQuery = await getPendingHrDataQuery(phone).catch(() => null);
+    if (pendingHrQuery) {
+      return continueHrDataQueryFlow({ phone, name: senderLabel, text, pending: pendingHrQuery });
+    }
+  }
+
   if (!isGroup && phone) {
     const hrFlow = await getPendingHrNoteFlow(phone).catch(() => null);
     if (hrFlow) {
@@ -8424,13 +8845,18 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
         text, history
       });
     }
-    const dataRequestSummary = classification.dataRequestSummary || text.slice(0, 160);
-    // The real answer is prepared in the background (prepareAndQueue
-    // DataApproval), not awaited here, so this fixed holding line still
-    // goes out within the normal reply latency.
-    prepareAndQueueDataApproval({ phone, name: senderLabel, text, dataRequestSummary, lang })
-      .catch((err) => console.error('[hr-assistant] data-request approval prep failed: ' + err.message));
-    return { case: 'data_holding', replyText: dataRequestHoldingReply(lang, history, new Date()), summaryForOwner: null };
+    // Task 2 (2026-10-29), "AI understands, code computes" - a general
+    // list/count/HOD query over the real directory (e.g. "welder list
+    // dao", "HR dept er HOD ke?"), not one person's own field. Replaces
+    // the old blind claudeProvider.getResponse delegation
+    // (prepareAndQueueDataApproval) with the structured query engine
+    // above - same approval-card/PII/never-auto rules, exact WhatsApp
+    // wording instead of the in-app chat assistant's own free-form reply
+    // style. Awaited (not fire-and-forget) because an ambiguous
+    // department name needs a real, synchronous reply to the SENDER
+    // (the disambiguation question) - the same shape personLookupName's
+    // own confirm/disambiguation questions already need above.
+    return handleHrDataQueryRequest({ phone, name: senderLabel, lang, text, history });
   }
 
   if (classification.topic && memoryService.MEMORY_TOPICS.includes(classification.topic)) {
@@ -10219,6 +10645,20 @@ module.exports = {
   dismissWhatsappItem,
   markCommsRowDismissed,
   listCommsDismissed,
+  // Task 2 (2026-10-29) - HR data query engine, exported for direct
+  // deterministic testing (pure functions take an already-fetched
+  // employee array, never fetch it themselves).
+  resolveSiteAliasValues,
+  resolveDepartmentOptions,
+  filterEmployeesForHrQuery,
+  computeHodBreakdown,
+  buildHrDataQueryAnswer,
+  extractHrDataQuery,
+  handleHrDataQueryRequest,
+  continueHrDataQueryFlow,
+  getPendingHrDataQuery,
+  savePendingHrDataQuery,
+  clearPendingHrDataQuery,
   savePendingApproval,
   removePendingApproval,
   getWhatsappConversation,

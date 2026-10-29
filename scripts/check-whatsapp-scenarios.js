@@ -24,6 +24,7 @@ require('dotenv').config({ path: '.env.local' });
 require('dotenv').config();
 
 const whatsappAssistant = require('../src/aiAssistant/whatsappAssistant');
+const whatsapp = require('../src/whatsappService');
 
 // Override with SCENARIO_RUNS=1 for a quick single-pass check (e.g. to
 // prove a new scenario reproduces a bug before fixing it) - the default
@@ -811,6 +812,151 @@ scenario('ISSUE2 REGRESSION (direct instruction): a salary-slip REQUEST never en
 // (USD), used only to turn the tracked token counts into a rough cost
 // estimate for the report below - update here if pricing changes, this
 // is never read anywhere else.
+// Task 2 (2026-10-29), "AI understands, code computes" - general HR-data
+// query engine. The model only ever extracts a structured query
+// (extractHrDataQuery); every name/count/sentence in the answer is
+// computed deterministically (already covered exhaustively, with exact-
+// text assertions, in check-whatsapp-engine.js against a small fake
+// roster). These scenarios instead verify the REAL end-to-end path
+// (extraction -> real directory lookup -> approval card) against the
+// REAL company directory, using facts confirmed directly against the
+// live employeeService data before writing these (Duets-Site has exactly
+// 4 real ACTIVE engineers; HR DEPT's own 4 active employees all share
+// one real HOD, Radha Biswas Bhattacharjee; "Administration" matches 3
+// real departments; Triveni Mall site has zero welders) - never invented
+// synthetic facts.
+async function cleanupHrDataQueryArtifacts(...phones) {
+  const approvals = await whatsappAssistant.listPendingApprovals();
+  for (const a of approvals) {
+    if (phones.includes(whatsapp.normalizePhone(a.phone))) await whatsappAssistant.removePendingApproval(a.id);
+  }
+  for (const p of phones) {
+    await whatsappAssistant.clearPendingHrDataQuery(p).catch(() => {});
+    await whatsappAssistant.clearPendingNameConfirm(p).catch(() => {});
+    await whatsappAssistant.clearPendingDisambiguation(p).catch(() => {});
+  }
+}
+function pendingApprovalFor(approvals, phone) {
+  return approvals.find((a) => whatsapp.normalizePhone(a.phone) === whatsapp.normalizePhone(phone));
+}
+scenario('HRQUERY: "Duets er engineers list dao" (site + designation, no alias needed - "Duets" already matches "Duets-Site" by its own name) lists exactly the 4 real ACTIVE Duets-Site engineers', async () => {
+  const phone = '910000002301';
+  await cleanupHrDataQueryArtifacts(phone);
+  try {
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenHrQ1', firstName: 'ScenHrQ1', text: 'Amake Duets er engineers list ta dao', isGroup: false, history: [] });
+    if (d.case !== 'data_holding') return { pass: false, detail: 'expected case=data_holding, got: ' + d.case + ' text=' + d.replyText };
+    const approval = pendingApprovalFor(await whatsappAssistant.listPendingApprovals(), phone);
+    if (!approval || !approval.preparedReplyText) return { pass: false, detail: 'expected a queued approval with a prepared reply, got: ' + JSON.stringify(approval) };
+    const text = approval.preparedReplyText;
+    const realNames = ['Abhishek Saha', 'Raghunath Halder', 'Anirban Bera', 'Subhadip Das'];
+    const missing = realNames.filter((n) => !text.includes(n));
+    if (missing.length) return { pass: false, detail: 'expected all 4 real Duets-Site engineers listed, missing: ' + missing.join(', ') + ' - got: ' + text };
+    if (!/duets/i.test(text)) return { pass: false, detail: 'expected "Duets" named in the reply, got: ' + text };
+    return { pass: true, detail: 'all 4 real Duets engineers listed: ' + text };
+  } finally {
+    await cleanupHrDataQueryArtifacts(phone);
+  }
+});
+scenario('HRQUERY: "welder list dao" (no site/department filter - the live bug this fixes, used to fail entirely) lists real welders company-wide', async () => {
+  const phone = '910000002302';
+  await cleanupHrDataQueryArtifacts(phone);
+  try {
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenHrQ2', firstName: 'ScenHrQ2', text: 'welder list dao', isGroup: false, history: [] });
+    if (d.case !== 'data_holding') return { pass: false, detail: 'expected case=data_holding, got: ' + d.case + ' text=' + d.replyText };
+    const approval = pendingApprovalFor(await whatsappAssistant.listPendingApprovals(), phone);
+    if (!approval || !approval.preparedReplyText) return { pass: false, detail: 'expected a queued approval with a prepared reply, got: ' + JSON.stringify(approval) };
+    const text = approval.preparedReplyText;
+    if (!/welder/i.test(text)) return { pass: false, detail: 'expected "Welder" named in the reply, got: ' + text };
+    if (!/ashutosh paul/i.test(text)) return { pass: false, detail: 'expected a known real welder (Ashutosh Paul) listed, got: ' + text };
+    return { pass: true, detail: 'real welders listed: ' + text.slice(0, 200) };
+  } finally {
+    await cleanupHrDataQueryArtifacts(phone);
+  }
+});
+scenario('HRQUERY: "HR dept er HOD ke?" - a single, unambiguous real department resolves directly to its one real HOD, exact locked wording', async () => {
+  const phone = '910000002303';
+  await cleanupHrDataQueryArtifacts(phone);
+  try {
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenHrQ3', firstName: 'ScenHrQ3', text: 'HR dept er HOD ke?', isGroup: false, history: [] });
+    if (d.case !== 'data_holding') return { pass: false, detail: 'expected case=data_holding, got: ' + d.case + ' text=' + d.replyText };
+    const approval = pendingApprovalFor(await whatsappAssistant.listPendingApprovals(), phone);
+    const expected = 'HR department-er HOD holen Radha Biswas Bhattacharjee.';
+    if (!approval || approval.preparedReplyText !== expected) return { pass: false, detail: 'expected exact wording "' + expected + '", got: ' + JSON.stringify(approval && approval.preparedReplyText) };
+    return { pass: true, detail: 'exact single-HOD wording matched' };
+  } finally {
+    await cleanupHrDataQueryArtifacts(phone);
+  }
+});
+scenario('HRQUERY: "Admin dept er HOD ke?" -> ambiguous (3 real departments) -> "HO" -> the real multi-HOD breakdown for that one department', async () => {
+  const phone = '910000002304';
+  await cleanupHrDataQueryArtifacts(phone);
+  try {
+    const d1 = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenHrQ4', firstName: 'ScenHrQ4', text: 'Admin dept er HOD ke?', isGroup: false, history: [] });
+    if (d1.case !== 'acknowledged') return { pass: false, detail: 'expected the department-ambiguity question (case=acknowledged), got: ' + d1.case + ' text=' + d1.replyText };
+    if (!/administration/i.test(d1.replyText) || !/kontar kotha bolchhen/i.test(d1.replyText)) return { pass: false, detail: 'expected the department-disambiguation template, got: ' + d1.replyText };
+    const d2 = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenHrQ4', firstName: 'ScenHrQ4', text: 'HO', isGroup: false, history: [] });
+    if (d2.case !== 'data_holding') return { pass: false, detail: 'expected case=data_holding after picking HO, got: ' + d2.case + ' text=' + d2.replyText };
+    const approval = pendingApprovalFor(await whatsappAssistant.listPendingApprovals(), phone);
+    if (!approval || !approval.preparedReplyText) return { pass: false, detail: 'expected a queued approval, got: ' + JSON.stringify(approval) };
+    const text = approval.preparedReplyText;
+    if (!/HOD achen/i.test(text) || !/1\)/.test(text)) return { pass: false, detail: 'expected a numbered multi-HOD breakdown, got: ' + text };
+    if (!/samir roy chowdhury/i.test(text)) return { pass: false, detail: 'expected the real top HOD (Samir Roy Chowdhury) listed, got: ' + text };
+    return { pass: true, detail: 'ambiguity resolved to HO, real multi-HOD breakdown returned: ' + text.slice(0, 200) };
+  } finally {
+    await cleanupHrDataQueryArtifacts(phone);
+  }
+});
+scenario('HRQUERY: "Subhodeep HR kake report kore?" - ALWAYS confirms the person first (even with a department hint, unlike every other field), then the real reporting-manager answer', async () => {
+  const phone = '910000002305';
+  await cleanupHrDataQueryArtifacts(phone);
+  try {
+    const d1 = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenHrQ5', firstName: 'ScenHrQ5', text: 'Subhodeep HR kake report kore?', isGroup: false, history: [] });
+    const expectedConfirm = 'Apni ki Subhodeep Kundu Chowdhury (HR department)-er kotha bolchhen?';
+    if (d1.case !== 'acknowledged' || coreText(d1.replyText) !== expectedConfirm) return { pass: false, detail: 'expected the exact confirm question "' + expectedConfirm + '" (after stripping the identity line), got (case=' + d1.case + '): ' + d1.replyText };
+    const d2 = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenHrQ5', firstName: 'ScenHrQ5', text: 'Haa', isGroup: false, history: [] });
+    if (d2.case !== 'data_holding') return { pass: false, detail: 'expected case=data_holding after confirming, got: ' + d2.case + ' text=' + d2.replyText };
+    const approval = pendingApprovalFor(await whatsappAssistant.listPendingApprovals(), phone);
+    const expected = "Subhodeep Kundu Chowdhury's reporting manager is Radha Biswas Bhattacharjee.";
+    // Language may legitimately vary turn to turn (independent classify
+    // calls) - accept any of the 3 exact templates for this one field.
+    const expectedAny = [
+      'Subhodeep Kundu Chowdhury-er reporting manager holen Radha Biswas Bhattacharjee.',
+      'Subhodeep Kundu Chowdhury ke reporting manager Radha Biswas Bhattacharjee hain.',
+      expected
+    ];
+    if (!approval || !expectedAny.includes(approval.preparedReplyText)) return { pass: false, detail: 'expected one of ' + JSON.stringify(expectedAny) + ', got: ' + JSON.stringify(approval && approval.preparedReplyText) };
+    return { pass: true, detail: 'confirmed then answered correctly: ' + approval.preparedReplyText };
+  } finally {
+    await cleanupHrDataQueryArtifacts(phone);
+  }
+});
+scenario('HRQUERY: a query matching NO ONE ("Triveni te welder ke ache?" - a real site with zero real welders) gets the "no one found" answer, never a silent empty list', async () => {
+  const phone = '910000002306';
+  await cleanupHrDataQueryArtifacts(phone);
+  try {
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenHrQ6', firstName: 'ScenHrQ6', text: 'Triveni te welder ke ache?', isGroup: false, history: [] });
+    if (d.case !== 'data_holding') return { pass: false, detail: 'expected case=data_holding, got: ' + d.case + ' text=' + d.replyText };
+    const approval = pendingApprovalFor(await whatsappAssistant.listPendingApprovals(), phone);
+    if (!approval || !approval.preparedReplyText) return { pass: false, detail: 'expected a queued approval, got: ' + JSON.stringify(approval) };
+    const text = approval.preparedReplyText;
+    if (!/welder/i.test(text) || !(/pawa jayni/i.test(text) || /no.*found/i.test(text) || /nahi mila/i.test(text))) return { pass: false, detail: 'expected a "no one found" answer naming Welder, got: ' + text };
+    return { pass: true, detail: 'correct no-match answer: ' + text };
+  } finally {
+    await cleanupHrDataQueryArtifacts(phone);
+  }
+});
+scenario('HRQUERY REGRESSION: a plain "list of all engineers" request (no site/department filter) still works exactly as before', async () => {
+  const phone = '910000002307';
+  await cleanupHrDataQueryArtifacts(phone);
+  try {
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenHrQ7', firstName: 'ScenHrQ7', text: 'Please give me the list of all engineers', isGroup: false, history: [] });
+    if (d.case !== 'data_holding') return { pass: false, detail: 'expected case=data_holding, got: ' + d.case + ' text=' + d.replyText };
+    return { pass: true, detail: 'existing plain engineer-list request unaffected' };
+  } finally {
+    await cleanupHrDataQueryArtifacts(phone);
+  }
+});
+
 const APPROX_USD_PER_MTOK_INPUT = 3;
 const APPROX_USD_PER_MTOK_OUTPUT = 15;
 

@@ -320,3 +320,39 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
   the old content-specific echo. The actual yes/no-in-a-burst detection
   (`continueHrNoteFlow`'s `awaiting_confirm_yes_no` step) was never broken -
   confirmed against the pre-fix baseline, which failed identically. T2-6 is
+  RELIABLE again with the assertion corrected.
+- HRQUERY (2026-10-29), "AI understands, code computes" - general HR-data
+  query engine, replacing the old blind `claudeProvider.getResponse`
+  delegation (`prepareAndQueueDataApproval`, now unused/removed from the
+  WhatsApp path) for any `wantsData` request that isn't a single-person-field
+  lookup. The model (`extractHrDataQuery`) only extracts a structured query
+  (returnType list/count/hod, designation, department, location, company,
+  reportingManagerName, status) - every name/count/sentence in the answer is
+  computed in code from the real directory (`buildHrDataQueryAnswer` and its
+  helpers in whatsappAssistant.js), exhaustively unit-tested with exact-text
+  assertions against a small fake roster in check-whatsapp-engine.js. A
+  department-name substring matching 2+ real departments asks the sender
+  directly (`DEPARTMENT_DISAMBIGUATION_QUESTION`, a new short-lived pending
+  state - `wa-hr-query-pending:<phone>`) before running anything, same tier
+  as every other pending-state check. A site/location term resolves through
+  the EXISTING confirmed site-alias system first, falling back to a plain
+  word-match against the real location value. Every answer (list, count, HOD
+  breakdown, or "no one found") goes through the SAME owner-approval card as
+  every other data request - nothing sent without Subhodeep's own "pathao".
+  One named person's OWN reporting manager/HOD ("Subhodeep HR kake report
+  kore?") is a SEPARATE, existing flow (`personLookupName`/`other_field`,
+  a new `reportingManager` field alias) - it ALWAYS confirms the person first
+  (a new `alwaysConfirm` flag overriding the normal "a hint given -> skip the
+  question" optimization every other field still uses), since a manager/HOD
+  fact reads as more consequential than a private field like an email/DOB.
+  Locked scenarios (all against the REAL directory): "Duets er engineers
+  list dao" (site term matches "Duets-Site" by its own name, no alias
+  needed, lists the 4 real ACTIVE engineers there); "welder list dao" (no
+  filter at all - the exact live bug, lists real welders company-wide);
+  "HR dept er HOD ke?" (one real HOD, exact wording); "Admin dept er HOD
+  ke?" (3 real ADMINISTRATION departments -> ambiguity question -> "HO" ->
+  the real 10-HOD breakdown for that one); "Subhodeep HR kake report kore?"
+  (always confirms first, then the real answer); a real site with zero
+  matching role ("Triveni te welder ke ache?" -> "no one found", never a
+  silent empty list); the existing plain "list of all engineers" request
+  (no filter) still works unchanged.

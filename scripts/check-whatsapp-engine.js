@@ -5445,6 +5445,129 @@ async function checkAsync(label, fn) {
   });
 
   console.log('='.repeat(70));
+  console.log('='.repeat(70));
+  console.log('Task 2 (2026-10-29), "AI understands, code computes" - general HR-data query engine: pure, model-free query functions over a small fake roster (never the real sheet - deterministic, exact-text assertions)');
+  console.log('='.repeat(70));
+  const FAKE_HR_QUERY_EMPLOYEES = [
+    { name: 'Alice Welder', designation: 'Welder', department: 'Civil', location: 'Ballygunge', company: 'Alcove', reportingManager: 'Tanmoy Mondal', status: 'ACTIVE' },
+    { name: 'Bob Welder', designation: 'Sr Welder', department: 'Civil', location: 'Ballygunge', company: 'Alcove', reportingManager: 'Tanmoy Mondal', status: 'ACTIVE' },
+    { name: 'Carol Engineer', designation: 'Engineer', department: 'Civil', location: 'Srirampur', company: 'Alcove', reportingManager: 'Radha Biswas', status: 'ACTIVE' },
+    { name: 'Dave Welder', designation: 'Welder', department: 'Civil', location: 'Ballygunge', company: 'Alcove', reportingManager: 'Tanmoy Mondal', status: 'INACTIVE' },
+    { name: 'Eve Hr', designation: 'Executive', department: 'HR Dept', location: 'HO', company: 'Alcove', reportingManager: 'Radha Biswas', status: 'ACTIVE' },
+    { name: 'Frank Hr', designation: 'Manager', department: 'HR Dept', location: 'HO', company: 'Alcove', reportingManager: 'Radha Biswas', status: 'ACTIVE' },
+    { name: 'Grace Admin', designation: 'Executive', department: 'Administration Srm', location: 'Srirampur', company: 'Alcove', reportingManager: 'X Manager', status: 'ACTIVE' },
+    { name: 'Hank Admin', designation: 'Executive', department: 'Administration HO', location: 'HO', company: 'Alcove', reportingManager: 'Y Manager', status: 'ACTIVE' },
+    { name: 'Ivy Admin', designation: 'Executive', department: 'Administration HO', location: 'HO', company: 'Alcove', reportingManager: 'Y Manager', status: 'ACTIVE' },
+    { name: 'Jack Admin', designation: 'Executive', department: 'Administration HO', location: 'HO', company: 'Alcove', reportingManager: 'Z Manager', status: 'ACTIVE' }
+  ];
+  check('resolveDepartmentOptions: a substring matching 2+ DISTINCT real department names returns them as ambiguity options, never a guessed single resolution', (() => {
+    const r = whatsappAssistant.resolveDepartmentOptions(FAKE_HR_QUERY_EMPLOYEES, 'Administration');
+    return r.resolved === null && r.options.length === 2 && r.options.includes('Administration Srm') && r.options.includes('Administration HO');
+  })());
+  check('resolveDepartmentOptions: a substring matching exactly ONE distinct real department resolves directly, no ambiguity ("HR" -> "HR Dept", word-boundary matched, "dept" stripped before comparing)', (() => {
+    const r = whatsappAssistant.resolveDepartmentOptions(FAKE_HR_QUERY_EMPLOYEES, 'HR');
+    return r.resolved === 'HR Dept' && r.options.length === 0;
+  })());
+  check('resolveDepartmentOptions: no department filter at all -> no resolution attempted, never a spurious ambiguity', (() => {
+    const r = whatsappAssistant.resolveDepartmentOptions(FAKE_HR_QUERY_EMPLOYEES, null);
+    return r.resolved === null && r.options.length === 0;
+  })());
+  check('LIVE BUG FIX: an ABBREVIATED department hint ("Admin") still matches "Administration ..." via prefix tolerance - a plain whole-word match alone ("Admin" is not literally "Administration") used to find nothing, silently skipping the ambiguity check entirely and running the query unfiltered', (() => {
+    const r = whatsappAssistant.resolveDepartmentOptions(FAKE_HR_QUERY_EMPLOYEES, 'Admin');
+    return r.resolved === null && r.options.length === 2 && r.options.includes('Administration Srm') && r.options.includes('Administration HO');
+  })());
+  check('REGRESSION: prefix tolerance only matches a REAL prefix (startsWith), never a raw mid-word letter sequence - "IT" matches none of these fake departments, same shape as the original "IT matched SRM-Site" false positive this guards against', (() => {
+    const rows = whatsappAssistant.filterEmployeesForHrQuery(FAKE_HR_QUERY_EMPLOYEES, { department: 'IT' });
+    return rows.length === 0;
+  })());
+  await checkAsync('LIVE BUG FIX: findPersonLookupMatches carries reportingManager through its candidate projection (mapAndNarrowByDepartment) - the new "reporting manager" other_field alias used to always read it as "not on file" and silently never create an approval at all, since this field was missing from every candidate here', async () => {
+    const { matches } = await whatsappAssistant.findPersonLookupMatches('Subhodeep Kundu Chowdhury', null);
+    const subhodeep = matches.find((m) => m.employeeId === 'AR000356');
+    return Boolean(subhodeep) && subhodeep.reportingManager === 'Radha Biswas Bhattacharjee';
+  });
+  check('filterEmployeesForHrQuery: a designation filter ("welder") matches both "Welder" and "Sr Welder" (word-boundary, not just exact), defaults to ACTIVE only (excludes the INACTIVE welder)', (() => {
+    const rows = whatsappAssistant.filterEmployeesForHrQuery(FAKE_HR_QUERY_EMPLOYEES, { designation: 'welder' });
+    return rows.length === 2 && rows.every((r) => r.status === 'ACTIVE') && rows.some((r) => r.name === 'Alice Welder') && rows.some((r) => r.name === 'Bob Welder');
+  })());
+  check('filterEmployeesForHrQuery: an explicit status overrides the ACTIVE default (finds the INACTIVE welder when asked)', (() => {
+    const rows = whatsappAssistant.filterEmployeesForHrQuery(FAKE_HR_QUERY_EMPLOYEES, { designation: 'welder', status: 'INACTIVE' });
+    return rows.length === 1 && rows[0].name === 'Dave Welder';
+  })());
+  check('filterEmployeesForHrQuery: resolvedLocations (from a confirmed site alias) filters by the REAL value(s), independent of the sender\'s own term stored separately in `location`', (() => {
+    const rows = whatsappAssistant.filterEmployeesForHrQuery(FAKE_HR_QUERY_EMPLOYEES, { designation: 'welder', location: 'Duets', resolvedLocations: ['Ballygunge'] });
+    return rows.length === 2;
+  })());
+  check('filterEmployeesForHrQuery: a reportingManagerName filter ("under X") matches every employee reporting to that manager', (() => {
+    const rows = whatsappAssistant.filterEmployeesForHrQuery(FAKE_HR_QUERY_EMPLOYEES, { reportingManagerName: 'Tanmoy Mondal' });
+    return rows.length === 2 && rows.every((r) => r.reportingManager === 'Tanmoy Mondal');
+  })());
+  check('computeHodBreakdown: groups by reportingManager, counts, and sorts by count DESC', (() => {
+    const civilActive = whatsappAssistant.filterEmployeesForHrQuery(FAKE_HR_QUERY_EMPLOYEES, { department: 'Civil' });
+    const breakdown = whatsappAssistant.computeHodBreakdown(civilActive);
+    return breakdown.length === 2 && breakdown[0].name === 'Tanmoy Mondal' && breakdown[0].count === 2 && breakdown[1].name === 'Radha Biswas' && breakdown[1].count === 1;
+  })());
+  check('buildHrDataQueryAnswer: returnType "hod" with exactly ONE distinct HOD produces the exact locked single-HOD sentence', (() => {
+    const { outgoingText } = whatsappAssistant.buildHrDataQueryAnswer(FAKE_HR_QUERY_EMPLOYEES, { returnType: 'hod', resolvedDepartment: 'HR Dept' }, 'banglish');
+    return outgoingText === 'HR department-er HOD holen Radha Biswas.';
+  })());
+  check('buildHrDataQueryAnswer: returnType "hod" with MULTIPLE distinct HODs produces the exact locked numbered multi-HOD sentence, with counts, sorted by count DESC', (() => {
+    const { outgoingText } = whatsappAssistant.buildHrDataQueryAnswer(FAKE_HR_QUERY_EMPLOYEES, { returnType: 'hod', resolvedDepartment: 'Administration HO' }, 'banglish');
+    return outgoingText === 'Administration Ho department-e total duti HOD achen:\n1) Y Manager (2 jon)\n2) Z Manager (1 jon)';
+  })());
+  check('buildHrDataQueryAnswer: returnType "list" filtered by site includes the Location column and the exact "scope-e total N jon role achen:" intro line', (() => {
+    const { outgoingText } = whatsappAssistant.buildHrDataQueryAnswer(FAKE_HR_QUERY_EMPLOYEES, { returnType: 'list', designation: 'welder', location: 'Duets', resolvedLocations: ['Ballygunge'] }, 'banglish');
+    return outgoingText === 'Duets site-e total 2 jon Welder achen:\n1. Alice Welder — Welder — Civil — Ballygunge\n2. Bob Welder — Sr Welder — Civil — Ballygunge';
+  })());
+  check('buildHrDataQueryAnswer: returnType "list" with NO location filter never adds the Location column, and opens with "Total" (capitalized) when there is no scope at all', (() => {
+    const { outgoingText } = whatsappAssistant.buildHrDataQueryAnswer(FAKE_HR_QUERY_EMPLOYEES, { returnType: 'list', designation: 'welder' }, 'banglish');
+    return outgoingText === 'Total 2 jon Welder achen:\n1. Alice Welder — Welder — Civil\n2. Bob Welder — Sr Welder — Civil';
+  })());
+  check('buildHrDataQueryAnswer: returnType "count" produces a plain count sentence, no list', (() => {
+    const { outgoingText } = whatsappAssistant.buildHrDataQueryAnswer(FAKE_HR_QUERY_EMPLOYEES, { returnType: 'count', designation: 'welder' }, 'banglish');
+    return outgoingText === 'Total 2 jon Welder achen.';
+  })());
+  check('buildHrDataQueryAnswer: a query matching NO ONE gets the exact locked "no one found" sentence, with the scope named, never a silent empty list', (() => {
+    const { outgoingText } = whatsappAssistant.buildHrDataQueryAnswer(FAKE_HR_QUERY_EMPLOYEES, { returnType: 'list', designation: 'plumber', location: 'Triveni', resolvedLocations: ['NowhereSite'] }, 'banglish');
+    return outgoingText === 'Triveni site-e kono Plumber pawa jayni.';
+  })());
+  check('buildHrDataQueryAnswer: a "hod" query matching no one at all (empty department) also gets the "no one found" sentence, never a crash on an empty breakdown', (() => {
+    const { outgoingText } = whatsappAssistant.buildHrDataQueryAnswer([], { returnType: 'hod', department: 'Nonexistent' }, 'banglish');
+    return outgoingText === 'Nonexistent department-e kono HOD pawa jayni.';
+  })());
+  await checkAsync('resolveSiteAliasValues: a CONFIRMED site alias resolves a colloquial term to its real site value(s); an unconfirmed (not-yet-reviewed) alias is never applied', async () => {
+    const alias1 = await whatsappAssistant.saveSiteAlias({ alias: 'TestColloquialSiteName', siteValue: 'Real-Test-Site-Value', confirmed: true });
+    const alias2 = await whatsappAssistant.saveSiteAlias({ alias: 'TestUnconfirmedAlias', siteValue: 'Should-Never-Match', confirmed: false });
+    await whatsappAssistant.refreshSiteAliasCacheNow();
+    const resolved = whatsappAssistant.resolveSiteAliasValues('TestColloquialSiteName');
+    const unresolved = whatsappAssistant.resolveSiteAliasValues('TestUnconfirmedAlias');
+    await whatsappAssistant.deleteSiteAlias(alias1.id);
+    await whatsappAssistant.deleteSiteAlias(alias2.id);
+    await whatsappAssistant.refreshSiteAliasCacheNow();
+    return resolved.includes('Real-Test-Site-Value') && !unresolved.includes('Should-Never-Match');
+  });
+  await checkAsync('continueHrDataQueryFlow: picking an option BY NUMBER resolves the real department, clears the pending state, and queues an approval (no real Claude call needed - this continuation is pure code, number/substring matching against the stored options)', async () => {
+    const phone = '919999000095';
+    await whatsappAssistant.clearPendingHrDataQuery(phone).catch(() => {});
+    const { employees } = await employeeService.getEmployeeData();
+    const deptResult = whatsappAssistant.resolveDepartmentOptions(employees, 'Administration');
+    if (deptResult.options.length < 2) return { pass: false, detail: 'expected 2+ real departments matching "Administration" for this test, got: ' + JSON.stringify(deptResult.options) };
+    await whatsappAssistant.savePendingHrDataQuery(phone, { query: { returnType: 'hod' }, lang: 'banglish', departmentOptions: deptResult.options, departmentHint: 'Administration' });
+    const pending = await whatsappAssistant.getPendingHrDataQuery(phone);
+    const d = await whatsappAssistant.continueHrDataQueryFlow({ phone, name: 'Tester', text: '1', pending });
+    const stillPending = await whatsappAssistant.getPendingHrDataQuery(phone);
+    return d.case === 'data_holding' && !stillPending;
+  });
+  await checkAsync('continueHrDataQueryFlow: an UNCLEAR reply (matches none of the offered options) re-asks the SAME question rather than guessing or dropping the flow', async () => {
+    const phone = '919999000096';
+    await whatsappAssistant.clearPendingHrDataQuery(phone).catch(() => {});
+    await whatsappAssistant.savePendingHrDataQuery(phone, { query: { returnType: 'hod' }, lang: 'banglish', departmentOptions: ['Administration Srm', 'Administration HO'], departmentHint: 'Administration' });
+    const pending = await whatsappAssistant.getPendingHrDataQuery(phone);
+    const d = await whatsappAssistant.continueHrDataQueryFlow({ phone, name: 'Tester', text: 'blah blah unrelated', pending });
+    const stillPending = await whatsappAssistant.getPendingHrDataQuery(phone);
+    const ok = d.case === 'acknowledged' && d.replyText.includes('Administration') && Boolean(stillPending);
+    await whatsappAssistant.clearPendingHrDataQuery(phone).catch(() => {});
+    return ok;
+  });
   console.log(pass + '/' + (pass + fail) + ' passed' + (fail ? ', ' + fail + ' FAILED' : ''));
   if (failures.length) {
     console.log('Failed checks:');
