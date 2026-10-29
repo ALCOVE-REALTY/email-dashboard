@@ -1291,14 +1291,37 @@ async function checkAsync(label, fn) {
   check('isSelfReferentialForbiddenFieldRequest: "amar salary koto" (a plain question, no "dao"/"details"/"number") is null - request-shape required, never guessed from the field word alone', whatsappAssistant.isSelfReferentialForbiddenFieldRequest('amar salary') === null);
 
   await checkAsync('LIVE BUG, end to end: the exact failing phrasing ("Tanmoy Sir bolechhen ajke bari theke kaj korte") now reliably resolves to INSTRUCTION (telling verb), never "approval" - deterministic, no longer dependent on model variance', async () => {
+    // This test needs "Tanmoy" to whole-word-match 2+ ACTIVE employees (so
+    // the flow lands on awaiting_disambiguation_choice) - it used to read
+    // that off the REAL live directory (whichever employees happen to be
+    // named "Tanmoy ..." and ACTIVE today), which made the test flake
+    // whenever the real sheet's Tanmoy-count or status changed (found
+    // live: 0 real matches on one run, a timing collision with another
+    // test sharing WFH_LEAVE_TANMOY_PHONE on another). A small FIXED
+    // fixture (2 ACTIVE "Tanmoy ..." employees, same pattern as the
+    // existing employeeService.getEmployeeData monkey-patch used for
+    // scanForNewSites above) makes the precondition always true,
+    // independent of the real sheet's current contents.
+    const origGetData = employeeService.getEmployeeData;
+    employeeService.getEmployeeData = async () => ({
+      employees: [
+        { employeeId: 'FIXTURE-TANMOY-1', name: 'Tanmoy Mondal', designation: 'Assistant Manager', departmentKey: 'civil', department: 'Civil (Plot-B) Structure', location: 'Plot-B', contactNumber: WFH_LEAVE_TANMOY_PHONE, status: 'ACTIVE' },
+        { employeeId: 'FIXTURE-TANMOY-2', name: 'Tanmoy Ghosh', designation: 'Supervisor', departmentKey: 'electrical', department: 'Electrical', location: 'HO', contactNumber: '919000000199', status: 'ACTIVE' }
+      ],
+      departmentNames: new Map(), locationNames: new Map(), doerNames: new Map(), reportingManagerNames: new Map()
+    });
     const phone = nextWfhLeavePhone();
-    await cleanupWfhLeave(phone);
-    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Tanmoy Sir bolechhen ajke bari theke kaj korte', isGroup: false, history: [] });
-    const pending = await whatsappAssistant.getPendingHrNoteFlow(phone);
-    const ok = Boolean(pending) && pending.step === 'awaiting_disambiguation_choice' && pending.actionKind === 'instruction';
-    if (!ok) console.log('    DIAGNOSTIC: pending=' + JSON.stringify(pending && { step: pending.step, actionKind: pending.actionKind }) + ' replyText=' + d.replyText);
-    await cleanupWfhLeave(phone);
-    return ok;
+    try {
+      await cleanupWfhLeave(phone);
+      const d = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Tanmoy Sir bolechhen ajke bari theke kaj korte', isGroup: false, history: [] });
+      const pending = await whatsappAssistant.getPendingHrNoteFlow(phone);
+      const ok = Boolean(pending) && pending.step === 'awaiting_disambiguation_choice' && pending.actionKind === 'instruction';
+      if (!ok) console.log('    DIAGNOSTIC: pending=' + JSON.stringify(pending && { step: pending.step, actionKind: pending.actionKind }) + ' replyText=' + d.replyText);
+      return ok;
+    } finally {
+      employeeService.getEmployeeData = origGetData;
+      await cleanupWfhLeave(phone);
+    }
   });
   await checkAsync('LIVE BUG, end to end: the exact failing phrasing ("amar bank account details ta dao") now reliably gets the plain holding reply, never swept into the HR-notification path - deterministic, no longer dependent on model variance', async () => {
     const phone = '910000000875';
@@ -2374,6 +2397,7 @@ async function checkAsync(label, fn) {
       for (const p of phones) {
         await redis.del('wa-last-seen:' + p);
         await redis.del('wa-handled-ids:' + p);
+        await redis.del('wa-handled-content:' + p);
       }
     } catch (err) { /* best effort */ }
   }
@@ -2699,6 +2723,29 @@ async function checkAsync(label, fn) {
   check('"Ayan" matches "Ayan Das"', employeeService.matchesWholeWordName('Ayan Das', 'Ayan'));
   check('"Ayan" matches "Das Ayan" (word order independent)', employeeService.matchesWholeWordName('Das Ayan', 'Ayan'));
   check('"Ayan" does NOT match "Sayan Das" (the real wrong-person-leak regression)', !employeeService.matchesWholeWordName('Sayan Das', 'Ayan'));
+
+  console.log('='.repeat(70));
+  console.log('REAL BUG FOUND while making the "Tanmoy Sir" name-resolution test deterministic: stripNameHonorifics (findPersonLookupMatches/hasConfidentPersonMatch choke point)');
+  console.log('='.repeat(70));
+  check('stripNameHonorifics removes a trailing "Sir" so the name alone can whole-word-match ("Tanmoy Sir" -> "Tanmoy")', whatsappAssistant.stripNameHonorifics('Tanmoy Sir') === 'Tanmoy');
+  check('stripNameHonorifics removes "Madam"/"Ji"/"Sahib" too, case-insensitively', whatsappAssistant.stripNameHonorifics('Priya MADAM') === 'Priya' && whatsappAssistant.stripNameHonorifics('Sharma Ji') === 'Sharma' && whatsappAssistant.stripNameHonorifics('Rakesh Sahib') === 'Rakesh');
+  check('stripNameHonorifics leaves an ordinary name with no honorific completely unchanged', whatsappAssistant.stripNameHonorifics('Tanmoy Mondal') === 'Tanmoy Mondal');
+  check('stripNameHonorifics never returns empty - an honorific-only input falls back to itself unchanged', whatsappAssistant.stripNameHonorifics('Sir') === 'Sir');
+  check('matchesWholeWordName("Tanmoy Mondal", "Tanmoy Sir") fails BEFORE stripping - proves the bug was real, not hypothetical', !employeeService.matchesWholeWordName('Tanmoy Mondal', 'Tanmoy Sir'));
+  check('matchesWholeWordName("Tanmoy Mondal", stripNameHonorifics("Tanmoy Sir")) succeeds AFTER stripping', employeeService.matchesWholeWordName('Tanmoy Mondal', whatsappAssistant.stripNameHonorifics('Tanmoy Sir')));
+  await checkAsync('findPersonLookupMatches("Tanmoy Sir", null) resolves the real employee despite the honorific, against a fixed fixture (never the live directory - see note below)', async () => {
+    const origGetData = employeeService.getEmployeeData;
+    employeeService.getEmployeeData = async () => ({
+      employees: [{ employeeId: 'FIXTURE-X', name: 'Tanmoy Mondal', designation: 'Assistant Manager', departmentKey: 'civil', department: 'Civil', location: 'Plot-B', contactNumber: '919999999999', status: 'ACTIVE' }],
+      departmentNames: new Map(), locationNames: new Map(), doerNames: new Map(), reportingManagerNames: new Map()
+    });
+    try {
+      const { matches } = await whatsappAssistant.findPersonLookupMatches('Tanmoy Sir', null);
+      return matches.length === 1 && matches[0].name === 'Tanmoy Mondal';
+    } finally {
+      employeeService.getEmployeeData = origGetData;
+    }
+  });
 
   console.log('='.repeat(70));
   console.log('Memory (memoryService)');
@@ -4843,6 +4890,322 @@ async function checkAsync(label, fn) {
     }
     if (removed) console.log('Cleaned up ' + removed + ' test-created pending-approval(s) for TEST_PHONE and related test numbers.');
   } catch (err) { /* best effort - never fail the suite over cleanup */ }
+
+  console.log('='.repeat(70));
+  console.log('TASK 1 (2026-10-29): "Never auto-reply to this contact" is absolute - final-send-step enforcement, fail-closed on error');
+  console.log('='.repeat(70));
+  check('isNeverAuto fails CLOSED (returns true) on a Redis error/no-client, not false - a transient failure must never silently allow a send; source-level, since forcing a real Redis failure on demand isn\'t reproducible', (() => {
+    const fs = require('fs');
+    const src = fs.readFileSync(require.resolve('../src/aiAssistant/whatsappAssistant.js'), 'utf8');
+    const fnMatch = src.match(/async function isNeverAuto\(phone\) \{([\s\S]*?)\n\}/);
+    return Boolean(fnMatch) && /if \(!redis\) return true;/.test(fnMatch[1]) && /catch \(err\) \{ return true; \}/.test(fnMatch[1]);
+  })());
+  check('the own-sensitive-ID auto-send path no longer wraps isNeverAuto in .catch(() => false) - that used to silently override the fail-closed default back to fail-open for exactly this one safety-critical caller', (() => {
+    const fs = require('fs');
+    const src = fs.readFileSync(require.resolve('../src/aiAssistant/whatsappAssistant.js'), 'utf8');
+    return !/isNeverAuto\(phone\)\.catch\(\(\) => false\)/.test(src);
+  })());
+  check('sendWhatsAppChunked (the one function every SUBH send path funnels through) checks isNeverAuto BEFORE ever calling whatsapp.sendWhatsAppMessage - source-level', (() => {
+    const fs = require('fs');
+    const src = fs.readFileSync(require.resolve('../src/aiAssistant/whatsappAssistant.js'), 'utf8');
+    const fnMatch = src.match(/async function sendWhatsAppChunked\(phone, text\) \{([\s\S]*?)\n\}/);
+    return Boolean(fnMatch) && /^\s*if \(await isNeverAuto\(phone\)\) return \{ ok: false, blockedByNeverAuto: true/m.test(fnMatch[1]);
+  })());
+  await checkAsync('isNeverAuto/addToNeverAuto/removeFromNeverAuto round-trip correctly for the ordinary (non-error) case', async () => {
+    const phone = '910000000951';
+    await whatsappAssistant.removeFromNeverAuto(phone);
+    const before = await whatsappAssistant.isNeverAuto(phone);
+    await whatsappAssistant.addToNeverAuto(phone);
+    const after = await whatsappAssistant.isNeverAuto(phone);
+    await whatsappAssistant.removeFromNeverAuto(phone);
+    const restored = await whatsappAssistant.isNeverAuto(phone);
+    return before === false && after === true && restored === false;
+  });
+  await checkAsync('sendWhatsAppChunked blocks a never-auto number BEFORE ever reaching the real gateway call', async () => {
+    const phone = '910000000952';
+    await whatsappAssistant.addToNeverAuto(phone);
+    const origSend = whatsapp.sendWhatsAppMessage;
+    let gatewayCalled = false;
+    whatsapp.sendWhatsAppMessage = async () => { gatewayCalled = true; return { ok: true }; };
+    try {
+      const result = await whatsappAssistant.sendWhatsAppChunked(phone, 'test message');
+      return result.ok === false && result.blockedByNeverAuto === true && !gatewayCalled;
+    } finally {
+      whatsapp.sendWhatsAppMessage = origSend;
+      await whatsappAssistant.removeFromNeverAuto(phone);
+    }
+  });
+  await checkAsync('sendWhatsAppChunked sends normally for a number NOT on the never-auto list (sanity - the guard never over-blocks an ordinary send)', async () => {
+    const phone = '910000000953';
+    await whatsappAssistant.removeFromNeverAuto(phone);
+    const origSend = whatsapp.sendWhatsAppMessage;
+    whatsapp.sendWhatsAppMessage = async () => ({ ok: true, gatewayMessageId: 'test' });
+    try {
+      const result = await whatsappAssistant.sendWhatsAppChunked(phone, 'test message');
+      return result.ok === true;
+    } finally {
+      whatsapp.sendWhatsAppMessage = origSend;
+    }
+  });
+  await checkAsync('LIVE INCIDENT FIX (919830025114): a queued auto-reply RE-CHECKS the never-auto toggle at ACTUAL send time, not just decision time - flipped ON during the delayed-send window, the reply never reaches the real gateway, a draft is created instead', async () => {
+    // 962-969 - a block confirmed free of every OTHER fixture phone in
+    // this file, deliberately OUTSIDE the equivalence test's own reserved
+    // 900-959 range (see that section's own comment) - these 5 new tests
+    // originally picked 951-960 without checking that range and several
+    // silently collided with the equivalence test's live state, which is
+    // exactly the kind of cross-test pollution this file's own established
+    // convention (reserved/disjoint fixture ranges) exists to prevent.
+    const phone = '910000000962';
+    await whatsappAssistant.removeFromNeverAuto(phone);
+    const origSend = whatsapp.sendWhatsAppMessage;
+    let gatewayCalled = false;
+    // processDueAutoSends() flushes EVERY due entry in the shared queue,
+    // not only this test's own - a leftover entry from an unrelated
+    // earlier test (anything forced due around the same real time) could
+    // also be flushed in the same call, and a blanket mock would
+    // misattribute THAT send to this test. Scoped to this phone only.
+    whatsapp.sendWhatsAppMessage = async (p) => {
+      if (whatsapp.normalizePhone(p) === whatsapp.normalizePhone(phone)) gatewayCalled = true;
+      return { ok: true }; // never a real gateway call for ANY phone while this mock is active
+    };
+    const originalEnv = process.env.WHATSAPP_ASSISTANT_REAL_SEND;
+    process.env.WHATSAPP_ASSISTANT_REAL_SEND = '1';
+    try {
+      const scheduled = await whatsappAssistant.scheduleAutoSend({ chatId: phone, isGroup: false, name: 'Test', replyText: 'This should never actually be sent.', case: 'holding', arrivedAt: Date.now(), seenAt: Date.now() });
+      // The toggle flips ON AFTER the decision was made but BEFORE the
+      // delayed send fires - exactly the TOCTOU window the live incident
+      // traced to.
+      await whatsappAssistant.addToNeverAuto(phone);
+      const redis = await getRawRedisClient();
+      await redis.zadd('wa-pending-autosend-zset', { score: Date.now() - 1000, member: scheduled.id });
+      await whatsappAssistant.processDueAutoSends();
+      // listPendingDrafts() filters out synthetic test numbers (by design,
+      // so fixture data never leaks into the real Important WhatsApp UI) -
+      // read the raw list directly to see this test's own draft.
+      const rawDrafts = await redis.lrange('wa-pending-drafts', 0, -1);
+      const draftFound = rawDrafts.map((d) => { try { return typeof d === 'string' ? JSON.parse(d) : d; } catch (e) { return null; } }).some((d) => d && d.contactId === phone);
+      const log = await whatsappAssistant.listInboxLog(20);
+      const entry = log.find((e) => e.chatId === phone);
+      return !gatewayCalled && draftFound && Boolean(entry) && entry.outcome === 'never_auto_pending';
+    } finally {
+      whatsapp.sendWhatsAppMessage = origSend;
+      await whatsappAssistant.removeFromNeverAuto(phone);
+      if (originalEnv === undefined) delete process.env.WHATSAPP_ASSISTANT_REAL_SEND; else process.env.WHATSAPP_ASSISTANT_REAL_SEND = originalEnv;
+      const redis = await getRawRedisClient();
+      const rawDrafts = await redis.lrange('wa-pending-drafts', 0, -1);
+      const remaining = rawDrafts.filter((d) => { try { return (typeof d === 'string' ? JSON.parse(d) : d).contactId !== phone; } catch (e) { return true; } });
+      await redis.del('wa-pending-drafts');
+      for (const d of remaining.reverse()) await redis.lpush('wa-pending-drafts', typeof d === 'string' ? d : JSON.stringify(d));
+    }
+  });
+  await checkAsync('executeApprovalSend throws when the phone is on the never-auto list, even for the owner\'s OWN tap on a pending card\'s Send button - the approval is NEVER removed/consumed, the card stays visible', async () => {
+    const phone = '910000000963';
+    await whatsappAssistant.addToNeverAuto(phone);
+    const id = await whatsappAssistant.savePendingApproval({
+      phone, name: 'Test', requestText: 'test', dataRequestSummary: 'TEST - safe to ignore',
+      lang: 'english', preparedReplyText: 'test reply', preparedCard: null, preparedError: null
+    });
+    try {
+      // listPendingApprovals()/resolveApprovalById() both filter out
+      // synthetic test phones (whatsapp.isSyntheticTestPhone - by design,
+      // so test fixtures never leak into the owner's real Important
+      // WhatsApp UI), which EVERY phone in this file's reserved
+      // 910000000xxx range matches - read the raw record directly instead,
+      // same as this file's other raw-redis-verification tests.
+      const redis = await getRawRedisClient();
+      const raw = await redis.get('wa-pending-approval:' + id);
+      const approval = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      let threw = false, message = null;
+      try { await whatsappAssistant.executeApprovalSend(approval, null, null, null); }
+      catch (err) { threw = true; message = err.message; }
+      const stillExists = Boolean(await redis.get('wa-pending-approval:' + id));
+      return threw && message === 'Auto-reply is off for this contact — turn it on to send.' && stillExists;
+    } finally {
+      await whatsappAssistant.removePendingApproval(id);
+      await whatsappAssistant.removeFromNeverAuto(phone);
+    }
+  });
+  await checkAsync('executeApprovalReject is blocked the same way - a Decline tap never sends the reject reply to a never-auto contact either, and the approval stays pending', async () => {
+    const phone = '910000000964';
+    await whatsappAssistant.addToNeverAuto(phone);
+    const id = await whatsappAssistant.savePendingApproval({
+      phone, name: 'Test', requestText: 'test', dataRequestSummary: 'TEST - safe to ignore',
+      lang: 'english', preparedReplyText: 'test reply', preparedCard: null, preparedError: null
+    });
+    try {
+      const redis = await getRawRedisClient();
+      const raw = await redis.get('wa-pending-approval:' + id);
+      const approval = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      let threw = false;
+      try { await whatsappAssistant.executeApprovalReject(approval); }
+      catch (err) { threw = true; }
+      const stillExists = Boolean(await redis.get('wa-pending-approval:' + id));
+      return threw && stillExists;
+    } finally {
+      await whatsappAssistant.removePendingApproval(id);
+      await whatsappAssistant.removeFromNeverAuto(phone);
+    }
+  });
+  await checkAsync('listActionNeededItems carries each item\'s own current never-auto state (the Action-needed card reuses the same toggle markup as the conversation page, which needs this to render correctly instead of always showing "off")', async () => {
+    // listPendingApprovals() (one of listActionNeededItems' own sources)
+    // filters out every synthetic 910000000xxx test phone, so a
+    // meaningful end-to-end check here needs a phone OUTSIDE that
+    // reserved pattern - a one-off, deliberate exception, cleaned up
+    // exactly like every other fixture in this file.
+    const phone = '919999000088';
+    await whatsappAssistant.addToNeverAuto(phone);
+    const id = await whatsappAssistant.savePendingApproval({
+      phone, name: 'Test', requestText: 'test', dataRequestSummary: 'TEST - safe to ignore',
+      lang: 'english', preparedReplyText: 'test reply', preparedCard: null, preparedError: null
+    });
+    try {
+      const items = await whatsappAssistant.listActionNeededItems();
+      const item = items.find((it) => it.chatId === whatsapp.normalizePhone(phone) && it.kind === 'approval');
+      return Boolean(item) && item.neverAuto === true;
+    } finally {
+      await whatsappAssistant.removePendingApproval(id);
+      await whatsappAssistant.removeFromNeverAuto(phone);
+    }
+  });
+
+  console.log('='.repeat(70));
+  console.log('TASK 1 NEW EVIDENCE (2026-10-29): gateway re-delivery under a brand new id (content-based dedup) + the wider "stale repeat" safety net');
+  console.log('='.repeat(70));
+  await checkAsync('messageContentKey/isMessageHandledByContent/markMessageHandledByContent round-trip (sender + exact text + the gateway\'s OWN original timestamp, independent of any id)', async () => {
+    const phone = '910000000965';
+    const createdAt = new Date().toISOString();
+    const before = await whatsappAssistant.isMessageHandledByContent(phone, 'hello test', createdAt);
+    await whatsappAssistant.markMessageHandledByContent(phone, 'hello test', createdAt);
+    const after = await whatsappAssistant.isMessageHandledByContent(phone, 'hello test', createdAt);
+    const differentText = await whatsappAssistant.isMessageHandledByContent(phone, 'different text', createdAt);
+    const differentTime = await whatsappAssistant.isMessageHandledByContent(phone, 'hello test', new Date(Date.now() - 999999).toISOString());
+    const redis = await getRawRedisClient();
+    await redis.del('wa-handled-content:' + phone);
+    return before === false && after === true && differentText === false && differentTime === false;
+  });
+  await checkAsync('content-dedup never keys on text alone without a real original timestamp - two different real messages sharing short text (e.g. two separate "Ok"s hours apart) must never collide', async () => {
+    const phone = '910000000966';
+    await whatsappAssistant.markMessageHandledByContent(phone, 'ok', null);
+    const check1 = await whatsappAssistant.isMessageHandledByContent(phone, 'ok', null);
+    const check2 = await whatsappAssistant.isMessageHandledByContent(phone, 'ok', undefined);
+    return check1 === false && check2 === false;
+  });
+  await checkAsync('LIVE INCIDENT FIX (919830025114, "Paramita" seen 3x under 3 different ids): the main poll/catch-up path recognizes a message re-delivered under a brand NEW id (same sender+text+original timestamp as one already handled) and skips it - never a second reply - and posts a System-strip warning', async () => {
+    const now = Date.now();
+    const REDELIVERY_PHONE = '910000000967';
+    const originalCreatedAt = new Date(now - 5 * 60 * 1000).toISOString(); // inside the 10-min gap window used below
+    await whatsappAssistant.setLastSeenId(REDELIVERY_PHONE, 900);
+    await whatsappAssistant.markMessageHandled(REDELIVERY_PHONE, 900, 'Paramita');
+    await whatsappAssistant.markMessageHandledByContent(REDELIVERY_PHONE, 'Paramita', originalCreatedAt);
+    const originalListMessages = whatsapp.listMessages;
+    whatsapp.listMessages = async (contactId) => (contactId === REDELIVERY_PHONE
+      ? [{ id: 901, direction: 'incoming', type: 'text', content: { text: 'Paramita' }, created_at: originalCreatedAt }]
+      : []);
+    try {
+      const result = await withCatchupHarness(10 * 60000, () => whatsappAssistant.catchUpAfterGap('test'));
+      const log = await whatsappAssistant.listInboxLog(50);
+      const gotAnyReply = log.some((e) => e.chatId === REDELIVERY_PHONE);
+      const notices = await whatsappAssistant.listOwnerNotifications();
+      const warned = notices.some((n) => /gateway re-delivered an old message/.test(n.text || '') && n.text.includes(REDELIVERY_PHONE));
+      return result.sendersAnswered === 0 && !gotAnyReply && warned;
+    } finally {
+      whatsapp.listMessages = originalListMessages;
+      await cleanupCatchupFixtures(REDELIVERY_PHONE);
+    }
+  });
+  await checkAsync('LOCKED SCENARIO: the same message re-delivered with new ids at +14 min and +2 h -> stored once, replied once', async () => {
+    const REDELIVERY_PHONE2 = '910000000968';
+    const text = 'Is this a bot?'; // deterministic, fixed-template classification - zero model variance
+    const originalCreatedAt = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    const originalListMessages = whatsapp.listMessages;
+    // catchUpAfterGap only ever checks KNOWN contacts (listKnownContacts) -
+    // setLastSeenId is what registers one (see its own implementation),
+    // same as the other redelivery test above already does.
+    await whatsappAssistant.setLastSeenId(REDELIVERY_PHONE2, 0);
+    try {
+      whatsapp.listMessages = async (contactId) => (contactId === REDELIVERY_PHONE2
+        ? [{ id: 970, direction: 'incoming', type: 'text', content: { text }, created_at: originalCreatedAt }]
+        : []);
+      const wave1 = await withCatchupHarness(10 * 60000, () => whatsappAssistant.catchUpAfterGap('test'));
+      whatsapp.listMessages = async (contactId) => (contactId === REDELIVERY_PHONE2
+        ? [{ id: 971, direction: 'incoming', type: 'text', content: { text }, created_at: originalCreatedAt }] // "+14 min" redelivery, new id
+        : []);
+      const wave2 = await withCatchupHarness(10 * 60000, () => whatsappAssistant.catchUpAfterGap('test'));
+      whatsapp.listMessages = async (contactId) => (contactId === REDELIVERY_PHONE2
+        ? [{ id: 972, direction: 'incoming', type: 'text', content: { text }, created_at: originalCreatedAt }] // "+2h" redelivery, yet another new id
+        : []);
+      const wave3 = await withCatchupHarness(10 * 60000, () => whatsappAssistant.catchUpAfterGap('test'));
+      // catchUpAfterGap's real reply is only QUEUED here (scheduleAutoSend/
+      // the human-delay auto-send queue - not yet actually sent/logged
+      // until a later processDueAutoSends flush), so "stored once, replied
+      // once" is asserted at the decision level: wave 1 genuinely answers
+      // (sendersAnswered: 1), waves 2 and 3 - the +14min/+2h redeliveries
+      // under new ids - are recognized as the SAME message and never
+      // answered again (sendersAnswered: 0 each).
+      return wave1.sendersAnswered === 1 && wave2.sendersAnswered === 0 && wave3.sendersAnswered === 0;
+    } finally {
+      whatsapp.listMessages = originalListMessages;
+      await cleanupCatchupFixtures(REDELIVERY_PHONE2);
+    }
+  });
+  check('isStaleRepeatedMessage is wired into actOnOfficialTurn (the real-time auto-reply path), checked AFTER isDuplicateIncoming/isBotLoopPattern and BEFORE the message is ever handed to decideAutoReply - source-level, and explicitly scoped OUT of catch-up/actOnCatchupTurn per direct instruction ("catch-up... unaffected")', (() => {
+    const fs = require('fs');
+    const src = fs.readFileSync(require.resolve('../src/aiAssistant/whatsappAssistant.js'), 'utf8');
+    const turnMatch = src.match(/async function actOnOfficialTurn\(\{[\s\S]*?\n  \}/);
+    const inOfficialTurn = Boolean(turnMatch) && /isStaleRepeatedMessage\(history, text, Date\.now\(\)\)/.test(turnMatch[0]);
+    const catchupMatch = src.match(/async function actOnCatchupTurn\([\s\S]*?\n\}/);
+    const notInCatchup = Boolean(catchupMatch) && !/isStaleRepeatedMessage/.test(catchupMatch[0]);
+    return inOfficialTurn && notInCatchup;
+  })());
+  check('isStaleRepeatedMessage: identical text, already replied to, nothing newer sent since, within 6h -> true (the safety-net case)', (() => {
+    const now = Date.now();
+    const history = [
+      { direction: 'in', text: 'Pujo-y office koto din bondho?', ts: now - 3 * 60 * 60 * 1000 },
+      { direction: 'out', text: 'Pujo-y 3 din bondho thakbe.', ts: now - 3 * 60 * 60 * 1000 + 5000 }
+    ];
+    return whatsappAssistant.isStaleRepeatedMessage(history, 'Pujo-y office koto din bondho?', now) === true;
+  })());
+  check('isStaleRepeatedMessage: trim/case-insensitive match still counts (spec: "identical after trimming spaces/case")', (() => {
+    const now = Date.now();
+    const history = [
+      { direction: 'in', text: 'Pujo-y office koto din bondho?', ts: now - 60 * 60 * 1000 },
+      { direction: 'out', text: 'Pujo-y 3 din bondho thakbe.', ts: now - 60 * 60 * 1000 + 5000 }
+    ];
+    return whatsappAssistant.isStaleRepeatedMessage(history, '  PUJO-Y OFFICE KOTO DIN BONDHO?  ', now) === true;
+  })());
+  check('isStaleRepeatedMessage: a later "Haa" answering a NEW SUBH question since the earlier reply -> false, processed normally (spec\'s own example)', (() => {
+    const now = Date.now();
+    const history = [
+      { direction: 'in', text: 'Haa', ts: now - 2 * 60 * 60 * 1000 },
+      { direction: 'out', text: 'Thik ache, note kore nilam.', ts: now - 2 * 60 * 60 * 1000 + 5000 },
+      { direction: 'out', text: 'Apni ki ei approval-er bishoye Tanmoy-er kotha bolchhen?', ts: now - 10 * 60 * 1000 } // a NEW question sent since
+    ];
+    return whatsappAssistant.isStaleRepeatedMessage(history, 'Haa', now) === false;
+  })());
+  check('isStaleRepeatedMessage: wording differs even slightly -> never matches at all (no fuzzy matching)', (() => {
+    const now = Date.now();
+    const history = [
+      { direction: 'in', text: 'Pujo-y office koto din bondho?', ts: now - 60 * 60 * 1000 },
+      { direction: 'out', text: 'Pujo-y 3 din bondho thakbe.', ts: now - 60 * 60 * 1000 + 5000 }
+    ];
+    return whatsappAssistant.isStaleRepeatedMessage(history, 'Pujo-y office koto din bondho ache?', now) === false;
+  })());
+  check('isStaleRepeatedMessage: outside the 6h window -> false, processed normally', (() => {
+    const now = Date.now();
+    const history = [
+      { direction: 'in', text: 'Pujo-y office koto din bondho?', ts: now - 7 * 60 * 60 * 1000 },
+      { direction: 'out', text: 'Pujo-y 3 din bondho thakbe.', ts: now - 7 * 60 * 60 * 1000 + 5000 }
+    ];
+    return whatsappAssistant.isStaleRepeatedMessage(history, 'Pujo-y office koto din bondho?', now) === false;
+  })());
+  check('isStaleRepeatedMessage: SUBH never actually replied to the earlier occurrence (e.g. it was skipped/escalated) -> false, never treated as a stale repeat of an unanswered message', (() => {
+    const now = Date.now();
+    const history = [
+      { direction: 'in', text: 'Pujo-y office koto din bondho?', ts: now - 3 * 60 * 60 * 1000 },
+      { direction: 'in', text: 'Pujo-y office koto din bondho??', ts: now - 2 * 60 * 60 * 1000 } // a second, different incoming message arrived before any reply
+    ];
+    return whatsappAssistant.isStaleRepeatedMessage(history, 'Pujo-y office koto din bondho?', now) === false;
+  })());
 
   console.log('='.repeat(70));
   console.log(pass + '/' + (pass + fail) + ' passed' + (fail ? ', ' + fail + ' FAILED' : ''));

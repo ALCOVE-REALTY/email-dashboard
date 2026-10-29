@@ -368,10 +368,21 @@ async function removeFromNeverAuto(phone) {
   if (!redis) return false;
   try { await redis.srem(NEVER_AUTO_KEY, whatsapp.normalizePhone(phone)); return true; } catch (err) { return false; }
 }
+// Task 1 (2026-10-29) - FAILS CLOSED, unlike every other best-effort Redis
+// helper in this file. This toggle's whole purpose is "never send to this
+// number" - on a transient Redis error, the safe default is "treat it as
+// ON" (skip the send, fall back to a draft the owner reviews) never "treat
+// it as OFF" (silently auto-send). Found live: this used to return false
+// on ANY error, including a real Redis hiccup - the exact opposite of
+// what a safety toggle should do under uncertainty - which is one of two
+// confirmed structural gaps behind a live incident (919830025114, never-
+// auto ON, SUBH still sent twice; the other gap is the scheduled-send
+// delay never re-checking this toggle at actual send time - see
+// sendOrReportAutoReply and the sendWhatsAppChunked guard below).
 async function isNeverAuto(phone) {
   const redis = getClient();
-  if (!redis) return false;
-  try { return Boolean(await redis.sismember(NEVER_AUTO_KEY, whatsapp.normalizePhone(phone))); } catch (err) { return false; }
+  if (!redis) return true;
+  try { return Boolean(await redis.sismember(NEVER_AUTO_KEY, whatsapp.normalizePhone(phone))); } catch (err) { return true; }
 }
 async function listNeverAuto() {
   const redis = getClient();
@@ -462,7 +473,11 @@ async function clearOwnerNotifications() {
 // lingering "reconnected" notice needed.
 const SYSTEM_NOTICE_PATTERNS = [
   /^SUBH daily summary/,
-  /^SUBH cleanup:/
+  /^SUBH cleanup:/,
+  // Task 1 NEW EVIDENCE (2026-10-29) - "latest only" like every other
+  // System-strip line: several re-delivered messages in a row show one
+  // current notice, not a pile of identical alerts.
+  /^⚠️ WhatsApp gateway re-delivered an old message/
 ];
 async function listSystemNotices() {
   const items = await listOwnerNotifications();
@@ -606,7 +621,12 @@ async function listActionNeededItems() {
   const items = await Promise.all(raw.map(async (item) => {
     const directoryMatch = await findEmployeeByPhone(item.chatId).catch(() => null);
     const displayName = (directoryMatch && directoryMatch.emp.name) || (isRealName(item.name) && item.name) || nameByChat.get(item.chatId) || item.chatId;
-    return { kind: item.kind, category: item.category, chatId: item.chatId, name: displayName, ts: item.ts, ageMs: Math.max(0, Date.now() - item.ts), data: item.data };
+    // Task 1 (2026-10-29) - the Action-needed card reuses buildConvoActions
+    // (same "Never auto-reply" toggle as the conversation page), which
+    // needs each item's own current state to render correctly instead of
+    // always showing "off".
+    const neverAuto = await isNeverAuto(item.chatId);
+    return { kind: item.kind, category: item.category, chatId: item.chatId, name: displayName, ts: item.ts, ageMs: Math.max(0, Date.now() - item.ts), data: item.data, neverAuto };
   }));
   items.sort((a, b) => a.ts - b.ts); // oldest first
   return items;
@@ -789,11 +809,35 @@ async function getWhatsappConversation(chatIdRaw) {
     logsByText.get(e.sentText).push(e);
   }
   for (const arr of logsByText.values()) arr.sort((a, b) => (a.sentAt || a.ts || 0) - (b.sentAt || b.ts || 0));
+  // Task 1 NEW EVIDENCE (2026-10-29) - same bubble<->log matching as the
+  // outgoing one above, mirrored for INCOMING bubbles so the "Repeated
+  // message" safety-net skip (see actOnOfficialTurn's isStaleRepeatedMessage
+  // check) is visible on the actual message it applied to, not just in a
+  // notification that scrolls away.
+  const inTextOccurrences = new Map();
+  history.forEach((h, i) => {
+    if (h.direction !== 'in') return;
+    if (!inTextOccurrences.has(h.text)) inTextOccurrences.set(h.text, []);
+    inTextOccurrences.get(h.text).push({ ts: h.ts, index: i });
+  });
+  const inboxLogsByText = new Map();
+  for (const e of myLog) {
+    if (!inboxLogsByText.has(e.messageSummary)) inboxLogsByText.set(e.messageSummary, []);
+    inboxLogsByText.get(e.messageSummary).push(e);
+  }
+  for (const arr of inboxLogsByText.values()) arr.sort((a, b) => (a.sentAt || a.ts || 0) - (b.sentAt || b.ts || 0));
   return {
     chatId,
     name,
     thread: history.map((h, i) => {
-      if (h.direction !== 'out') return { direction: h.direction, text: h.text, ts: h.ts };
+      if (h.direction !== 'out') {
+        const occurrences = inTextOccurrences.get(h.text) || [];
+        const myOrder = occurrences.findIndex((o) => o.index === i);
+        const nextOccurrence = occurrences[myOrder + 1];
+        const windowEnd = nextOccurrence ? nextOccurrence.ts : Infinity;
+        const candidates = (inboxLogsByText.get(h.text) || []).filter((e) => (e.sentAt || e.ts || 0) >= h.ts && (e.sentAt || e.ts || 0) < windowEnd && e.outcome === 'skipped_repeated_message');
+        return { direction: h.direction, text: h.text, ts: h.ts, repeated: candidates.length > 0 };
+      }
       const occurrences = outTextOccurrences.get(h.text) || [];
       const myOrder = occurrences.findIndex((o) => o.index === i);
       const nextOccurrence = occurrences[myOrder + 1];
@@ -951,6 +995,41 @@ function isDuplicateIncoming(history, text) {
 function isBotLoopPattern(history, text) {
   const lastTwoIncoming = history.filter((h) => h.direction === 'in').slice(-2);
   return lastTwoIncoming.length === 2 && lastTwoIncoming.every((h) => h.text === text);
+}
+
+// Task 1 NEW EVIDENCE (2026-10-29) - a SEPARATE, wider safety net on top
+// of isDuplicateIncoming's own narrow 2-minute/exact-text check: this is
+// SUBH's OWN side's defense in case the gateway's re-delivery isn't
+// fixed, or gives no usable original timestamp (see messageContentKey).
+// Deliberately conservative - only trips when ALL of: (1) the sender's
+// own text, trimmed/case-insensitive, matches an EARLIER message of
+// theirs; (2) SUBH already replied to that earlier one; (3) SUBH has not
+// sent anything ELSE to this sender since that reply (a later, DIFFERENT
+// outgoing message means a new question/flow step genuinely happened,
+// e.g. a later "Haa" answering something new); (4) within 6 hours of
+// that earlier message. Any wording difference, however slight, never
+// matches at all (normalization is trim+lowercase only, nothing fuzzy).
+const STALE_REPEAT_WINDOW_MS = 6 * 60 * 60 * 1000;
+function isStaleRepeatedMessage(history, text, nowTs) {
+  const norm = (s) => String(s || '').trim().toLowerCase();
+  const normText = norm(text);
+  if (!normText) return false;
+  for (let i = history.length - 1; i >= 0; i--) {
+    const h = history[i];
+    if (h.direction !== 'in' || norm(h.text) !== normText) continue;
+    if (nowTs - h.ts > STALE_REPEAT_WINDOW_MS) return false; // oldest-matching-within-window not found at all - never match something older
+    let repliedAt = null;
+    for (let j = i + 1; j < history.length; j++) {
+      if (history[j].direction === 'in') break; // a different incoming message arrived before any reply - this occurrence was never actually answered on its own
+      repliedAt = j;
+      break;
+    }
+    if (repliedAt === null) continue; // SUBH never replied to THIS occurrence - check further back in case an older one qualifies
+    const sentSomethingNewSince = history.slice(repliedAt + 1).some((h2) => h2.direction === 'out');
+    if (sentSomethingNewSince) return false; // a new question/flow step already happened - this is a fresh answer, not a stale repeat
+    return true;
+  }
+  return false;
 }
 
 // Tracks how many times a real question has gone unanswered (no memory/
@@ -1228,10 +1307,31 @@ async function sendOrReportAutoReply(entry) {
     }
   }
 
+  // Task 1 (2026-10-29) - RE-CHECKED here, not just at decision time
+  // (pollOnce/catchUpAfterGap already check it before ever calling
+  // scheduleAutoSend). A queued entry can sit minutes in the delayed-send
+  // queue (see scheduleAutoSend's randomDelayMs/sendAt) before this
+  // function actually runs, and the owner may have flipped the toggle ON
+  // during that window - the exact same "re-check conditions at send
+  // time" principle processDueAutoSends already applies to loop
+  // protection, now applied to this toggle too (confirmed structural gap
+  // behind a live incident: 919830025114, never-auto ON, SUBH still sent
+  // twice). Same draft-and-notify fallback as the earlier checks, so this
+  // is invisible to the owner except that the message correctly never
+  // went out for real.
+  if (!entry.isGroup && await isNeverAuto(entry.chatId)) {
+    if (entry.typingStartedAt) fireAndForgetPresence(entry.chatId, 'paused');
+    await savePendingDraft({ type: 'direct', contactId: entry.chatId, name: entry.name, messagePreview: entry.summaryForOwner || entry.replyText.slice(0, 200), draftReply: entry.replyText, createdAt: Date.now() });
+    await postOwnerNotification(who + ' (never-auto list) - a reply was about to be auto-sent but the toggle is on: draft ready, your review needed');
+    await logAutoReplyEvent({ senderType: entry.isGroup ? 'group' : 'direct', aCase: entry.case, memoryId: entry.memoryId || null, action: 'never_auto_drafted' });
+    await logInboxEvent({ chatId: entry.chatId, name: entry.name, isGroup: entry.isGroup, messageSummary: entry.summaryForOwner, aCase: entry.case, sentText: entry.replyText, outcome: 'never_auto_pending', intent: entry.intent, hrTopicArea: entry.hrTopicArea, ...timeline });
+    return;
+  }
+
   if (realSendEnabled) {
     const sendResult = entry.isGroup
       ? { ok: false, error: 'Real sending to a WhatsApp group is not implemented yet.' }
-      : await whatsapp.sendWhatsAppMessage(entry.chatId, entry.replyText);
+      : await sendWhatsAppChunked(entry.chatId, entry.replyText);
     const sentAt = Date.now();
     // Item 2: "refreshed until the reply is sent. Then send the reply." -
     // the indicator's job is done the instant the real message goes out
@@ -1375,8 +1475,17 @@ async function resolveFollowupsForMemory(memory) {
       await postOwnerNotification('[DRAFT MODE - not actually sent] Would proactively message ' + (f.name || f.chatId) + ': "' + replyText + '"');
       continue;
     }
-    const sendResult = await whatsapp.sendWhatsAppMessage(f.chatId, replyText);
-    if (!sendResult.ok) continue;
+    const sendResult = await sendWhatsAppChunked(f.chatId, replyText);
+    if (!sendResult.ok) {
+      // Task 1 (2026-10-29) - sendWhatsAppChunked's own never-auto guard
+      // already stopped this from going out; the owner still needs to
+      // know the follow-up wasn't resolved automatically, same as every
+      // other blocked path here.
+      if (sendResult.blockedByNeverAuto) {
+        await postOwnerNotification((f.name || f.chatId) + ' (never-auto list) - a proactive follow-up was NOT sent automatically: "' + replyText + '"');
+      }
+      continue;
+    }
     await appendConvoHistory(f.chatId, 'out', replyText);
     await clearOpenFollowup(f.chatId);
     await resetFollowupCount(f.chatId);
@@ -2007,7 +2116,7 @@ async function handleOwnSensitiveIdRequest({ phone, lang, field, history }) {
   // (draft-mode gate, chunking, real value audit-redaction, inbox
   // logging) rather than duplicating any of that - this is simply that
   // same approval, auto-executed instead of waiting on a manual "pathao".
-  if (await isNeverAuto(phone).catch(() => false)) {
+  if (await isNeverAuto(phone)) {
     await postOwnerNotification(
       '⚠️ Own ' + fieldLabel + ' request — ' + emp.name + ' (' + emp.employeeId + ') from their registered number, but this number is on the never-auto list - your manual approval is needed. ' +
       "Je message jabe: '" + outgoingText + "'"
@@ -2015,7 +2124,12 @@ async function handleOwnSensitiveIdRequest({ phone, lang, field, history }) {
     return { case: 'data_holding', replyText: dataRequestHoldingReply(lang, history, new Date()), summaryForOwner: null, lang };
   }
   const approval = approvalId ? await resolveApprovalById(approvalId) : null;
-  const resultMessage = approval ? await executeApprovalSend(approval, null, null, null) : null;
+  // isNeverAuto was already checked just above - this can only throw in a
+  // genuine race (the owner flipped the toggle ON in the instant between
+  // that check and this line), never the normal path. Caught defensively
+  // so that rare race reports itself plainly instead of crashing this
+  // whole reply decision.
+  const resultMessage = approval ? await executeApprovalSend(approval, null, null, null).catch((err) => err.message) : null;
   await postOwnerNotification(
     '✓ Own ' + fieldLabel + ' sent directly to ' + emp.name + ' (' + emp.employeeId + ') at their own registered number - no approval needed (own number + active + own request).' +
     (resultMessage ? ' (' + resultMessage + ')' : '')
@@ -3099,13 +3213,31 @@ async function findEmployeesByPhoneticNameMatch(query, departmentHint) {
   });
   return mapAndNarrowByDepartment(matched, departmentNames, departmentHint);
 }
+// A bare honorific attached to a name in the SENDER'S OWN WORDS ("Tanmoy
+// Sir", "Priya Madam", "Sharma Ji") is how they referred to that person,
+// never part of the stored employee record - but it genuinely appears in
+// the message, so a classifier extracting "the name exactly as given" is
+// RIGHT to keep it, and groundPersonLookupName's own "every word must
+// appear in this message" check never catches it either. Left unstripped,
+// matchesWholeWordName requires EVERY query word to be a word in the
+// candidate's name, so "sir" alone fails the match against a real
+// "Tanmoy Mondal" with no error at all. Found live: "Tanmoy Sir
+// bolechhen ajke bari theke kaj korte" resolved to "no one by that name"
+// even though "Tanmoy Mondal" is a real, ACTIVE employee. Stripped once
+// here, the single choke point both name-lookup entry points share.
+const PERSON_NAME_HONORIFIC_RE = /\b(sir|madam|ma'?am|sahib|saheb|ji)\b/gi;
+function stripNameHonorifics(query) {
+  const stripped = String(query || '').replace(PERSON_NAME_HONORIFIC_RE, ' ').replace(/\s+/g, ' ').trim();
+  return stripped || query; // never return empty - an honorific-only "query" (unlikely) falls back to itself unchanged
+}
 // The one place callers resolve a person's name - tries the exact
 // whole-word match first (always wins when it finds anything), falls back
 // to fuzzy, then to phonetic normalization, only when the earlier tier
 // finds nothing (or nothing fitting a given department hint). `hadTypo`
 // tells the reply-building code whether to add the "the spelling seems
 // slightly off" note.
-async function findPersonLookupMatches(query, departmentHint) {
+async function findPersonLookupMatches(rawQuery, departmentHint) {
+  const query = stripNameHonorifics(rawQuery);
   const exact = await findEmployeesByWholeNameMatch(query, departmentHint);
   // Live review item 4 (found live: "Ayon HR er contact no dao" exact-
   // matched Ayon Mondal in Facade - the ONLY employee named exactly
@@ -3148,7 +3280,8 @@ async function findPersonLookupMatches(query, departmentHint) {
 // exact whole-word match, a phonetic match, or a fuzzy match a stated
 // department/designation hint actually confirms - never a bare fuzzy
 // guess on its own.
-async function hasConfidentPersonMatch(query, departmentHint) {
+async function hasConfidentPersonMatch(rawQuery, departmentHint) {
+  const query = stripNameHonorifics(rawQuery);
   const exact = await findEmployeesByWholeNameMatch(query, departmentHint);
   if (exact.length) return true;
   const phonetic = await findEmployeesByPhoneticNameMatch(query, departmentHint);
@@ -5148,7 +5281,18 @@ async function checkHrConfirmationNudges(now) {
 // list item, so the numbering just continues naturally with no visible
 // seam and no repeated header.
 const WHATSAPP_CHUNK_SIZE = 1400;
+// Task 1 (2026-10-29) - the single final choke point every SUBH send path
+// (auto-reply, HR-note/confirmation flow messages, approval sends, catch-
+// up, automations) goes through on its way to the real gateway call, so
+// "Never auto-reply to this contact" can be absolute: no path can reach
+// whatsapp.sendWhatsAppMessage for this phone without passing through
+// this check first, however it got here or how long ago the caller's own
+// decision was made. Callers with a richer "turn this into a draft/notify
+// the owner" flow (sendOrReportAutoReply, executeApprovalSend/Reject) also
+// check isNeverAuto earlier themselves for the correct UX - this is the
+// unconditional safety net underneath all of them, never the only check.
 async function sendWhatsAppChunked(phone, text) {
+  if (await isNeverAuto(phone)) return { ok: false, blockedByNeverAuto: true, error: 'Auto-reply is off for this contact.' };
   const t = String(text || '');
   if (t.length <= WHATSAPP_CHUNK_SIZE) return whatsapp.sendWhatsAppMessage(phone, t);
   const chunks = [];
@@ -5203,7 +5347,15 @@ async function narrowDataAnswer(approval, editInstruction) {
 // omitted/invalid, same as the radio list's own default-checked option.
 // A single-candidate approval (the normal case) ignores it entirely and
 // behaves exactly as before.
+const NEVER_AUTO_BLOCKED_MESSAGE = 'Auto-reply is off for this contact — turn it on to send.';
 async function executeApprovalSend(approval, editInstruction, selectedIndex, editedText) {
+  // Task 1 (2026-10-29) - the toggle is absolute: it blocks even the
+  // owner's own tap on a pending card's Send button, not just automatic
+  // sends. THROWN, same established pattern as the PII checks right below
+  // (never returned), before removePendingApproval is ever reached - the
+  // card stays visible and untouched so the owner can turn the toggle off
+  // and try again, instead of the approval being silently consumed.
+  if (await isNeverAuto(approval.phone)) throw new Error(NEVER_AUTO_BLOCKED_MESSAGE);
   // A literal owner-edited message (new inline-edit card UI, see
   // forwarded `editedText`) is sent verbatim - never re-narrowed by
   // Claude the way `editInstruction` is. It still goes through the same
@@ -5284,13 +5436,16 @@ async function executeApprovalSend(approval, editInstruction, selectedIndex, edi
   return '✓ ' + approval.name + '-ke "' + logSummary + '" pathano holo.';
 }
 async function executeApprovalReject(approval) {
+  // Task 1 (2026-10-29) - same absolute block as executeApprovalSend,
+  // before removePendingApproval so the card stays visible.
+  if (await isNeverAuto(approval.phone)) throw new Error(NEVER_AUTO_BLOCKED_MESSAGE);
   const replyText = DATA_REJECT_REPLY[approval.lang] || DATA_REJECT_REPLY.english;
   await removePendingApproval(approval.id);
   if (!isRealSendAllowedFor(approval.phone)) {
     await logInboxEvent({ chatId: approval.phone, name: approval.name, isGroup: false, messageSummary: '[data request: ' + approval.dataRequestSummary + ']', aCase: 'data_rejected', sentText: replyText, outcome: 'draft_mode', sentAt: Date.now() });
     return '[DRAFT MODE] ' + approval.name + '-ke reject reply pathano hoto: "' + replyText + '"';
   }
-  const sendResult = await whatsapp.sendWhatsAppMessage(approval.phone, replyText);
+  const sendResult = await sendWhatsAppChunked(approval.phone, replyText);
   if (sendResult.ok) await appendConvoHistory(approval.phone, 'out', replyText);
   await logInboxEvent({ chatId: approval.phone, name: approval.name, isGroup: false, messageSummary: '[data request: ' + approval.dataRequestSummary + ']', aCase: 'data_rejected', sentText: replyText, outcome: sendResult.ok ? 'sent' : 'send_failed', sentAt: Date.now() });
   if (!sendResult.ok) {
@@ -5409,8 +5564,15 @@ async function handleApprovalCommand(text, ownerEmail) {
 
   const results = [];
   for (const { item, action, editInstruction } of expanded) {
-    if (action === 'reject') results.push(await executeApprovalReject(item.approval));
-    else results.push(await executeApprovalSend(item.approval, action === 'edit' ? editInstruction : null, item.candidateIndex));
+    try {
+      if (action === 'reject') results.push(await executeApprovalReject(item.approval));
+      else results.push(await executeApprovalSend(item.approval, action === 'edit' ? editInstruction : null, item.candidateIndex));
+    } catch (err) {
+      // Task 1 (2026-10-29) - a never-auto block on one item (or any other
+      // hard-stop throw this function already used, e.g. the PII checks)
+      // must not abort the rest of a multi-item "send all" batch.
+      results.push((item.label || item.approval.phone) + ': ' + err.message);
+    }
   }
   return { reply: results.join('\n') };
 }
@@ -8856,6 +9018,50 @@ async function markMessageHandled(contactId, id, text) {
   } catch (err) { /* best effort */ }
   if (text) await storeMessageText(contactId, id, text);
 }
+// Task 1 NEW EVIDENCE (2026-10-29) - the id-based dedup above only ever
+// catches a message the gateway re-delivers under the SAME id; the live
+// incident (919830025114, "Paramita" seen 3 times - once at 19:13 the
+// sender actually sent it, then re-delivered at 19:26 and 21:15 with
+// BRAND NEW ids each time) proved the gateway itself can re-deliver an
+// old message under a fresh id, which sails straight past isMessageHandled.
+// A second, content-based key - sender + exact text + the gateway's OWN
+// original per-message timestamp (msg.created_at, already used elsewhere
+// in this file for arrivedAt - never this process's own receive time,
+// which obviously differs between redeliveries) - catches that case too,
+// independent of whatever id the gateway happens to attach this time.
+// Same 30-day TTL/store shape as the id-based set; kept entirely separate
+// from it rather than merged, since the two catch structurally different
+// failure modes and a caller may want to tell them apart (see
+// isMessageHandledByContent's own caller, which distinguishes "already
+// seen under this id" from "re-delivered under a NEW id" for the System
+// notice).
+const HANDLED_CONTENT_PREFIX = 'wa-handled-content:';
+function messageContentKey(text, createdAt) {
+  const originalTs = createdAt ? new Date(createdAt).getTime() : null;
+  // No reliable original timestamp at all - never key on text alone (two
+  // genuinely different real messages with identical short text, e.g. "Ok",
+  // sent hours apart, must never collide) - this content check simply
+  // can't help for this message, id-based dedup is still the ONLY guard.
+  if (!originalTs || Number.isNaN(originalTs)) return null;
+  return originalTs + '|' + String(text || '').slice(0, 300);
+}
+async function isMessageHandledByContent(contactId, text, createdAt) {
+  const key = messageContentKey(text, createdAt);
+  if (!key) return false;
+  const redis = getClient();
+  if (!redis) return false;
+  try { return Boolean(await redis.sismember(HANDLED_CONTENT_PREFIX + contactId, key)); } catch (err) { return false; }
+}
+async function markMessageHandledByContent(contactId, text, createdAt) {
+  const key = messageContentKey(text, createdAt);
+  if (!key) return;
+  const redis = getClient();
+  if (!redis) return;
+  try {
+    await redis.sadd(HANDLED_CONTENT_PREFIX + contactId, key);
+    await redis.expire(HANDLED_CONTENT_PREFIX + contactId, HANDLED_IDS_TTL_SECONDS);
+  } catch (err) { /* best effort */ }
+}
 // A second, independent check alongside hasManualReplyAfter below (which
 // trusts the GATEWAY's own reported outgoing messages for this contact -
 // confirmed live that this gateway DOES surface a manually-sent message,
@@ -9065,6 +9271,16 @@ async function catchUpAfterGap(trigger) {
       const missed = [];
       for (const m of candidates) {
         if (await isMessageHandled(contactId, m.id)) continue;
+        // Task 1 NEW EVIDENCE (2026-10-29) - same re-delivered-under-a-new-id
+        // guard as the main poll loop, needed here too since catch-up is
+        // the OTHER path that lists and acts on raw gateway messages.
+        const mText = buildIncomingText(m);
+        if (await isMessageHandledByContent(contactId, mText, m.created_at)) {
+          await markMessageHandled(contactId, m.id, mText);
+          console.warn('[whatsapp] gateway re-delivered an old message under a new id (catch-up) - contact ' + contactId + ', id ' + m.id + ', original ts ' + m.created_at);
+          await postOwnerNotification('⚠️ WhatsApp gateway re-delivered an old message (contact ' + contactId + ') under a new id - no reply sent, already handled. If this keeps happening, tell IT.').catch(() => {});
+          continue;
+        }
         missed.push(m);
       }
       if (!missed.length) continue;
@@ -9074,7 +9290,11 @@ async function catchUpAfterGap(trigger) {
       // never re-process the same backlog on a later tick/run, whatever
       // outcome it reaches for it this time.
       await setLastSeenId(contactId, highestId);
-      for (const m of missed) await markMessageHandled(contactId, m.id, buildIncomingText(m));
+      for (const m of missed) {
+        const mText = buildIncomingText(m);
+        await markMessageHandled(contactId, m.id, mText);
+        await markMessageHandledByContent(contactId, mText, m.created_at);
+      }
 
       const lastMissedTs = catchupMessageTimestamp(missed[missed.length - 1]);
       if (hasManualReplyAfter(allMessages, lastMissedTs)) continue; // gateway shows a manual reply after it - never double-reply
@@ -9179,6 +9399,17 @@ async function pollOnce() {
       await logInboxEvent({ chatId: contactId, name, isGroup: false, messageSummary: text, aCase: null, sentText: null, outcome: isDup ? 'skipped_duplicate' : 'skipped_possible_loop', arrivedAt, seenAt });
       return;
     }
+    // Task 1 NEW EVIDENCE (2026-10-29) - the wider "stale repeat" safety
+    // net (see isStaleRepeatedMessage's own comment): stored and shown to
+    // the owner (the "Repeated message" tag, see getWhatsappConversation's
+    // per-bubble matching) but never auto-replied to and never turned into
+    // a follow-up reminder - the owner answers it manually if it genuinely
+    // needs one.
+    if (isStaleRepeatedMessage(history, text, Date.now())) {
+      await appendConvoHistory(contactId, 'in', text);
+      await logInboxEvent({ chatId: contactId, name, isGroup: false, messageSummary: text, aCase: null, sentText: null, outcome: 'skipped_repeated_message', arrivedAt, seenAt });
+      return;
+    }
     await appendConvoHistory(contactId, 'in', text);
 
     // Never silently drop a real message, whatever the cause - found live
@@ -9265,6 +9496,20 @@ async function pollOnce() {
       const newIncoming = [];
       for (const m of candidateIncoming) {
         if (await isMessageHandled(contactId, m.id)) continue;
+        // Task 1 NEW EVIDENCE (2026-10-29) - a NEW id alone doesn't mean a
+        // genuinely new message; the gateway can re-deliver an old one
+        // under a fresh id (see messageContentKey's own comment). Caught
+        // here, before this id is ever marked handled or replied to -
+        // logged loudly (warning + System-strip notice) since this points
+        // at a real gateway problem worth flagging, then skipped exactly
+        // like the existing id-based dedup (recorded, never replied to).
+        const mText = buildIncomingText(m);
+        if (await isMessageHandledByContent(contactId, mText, m.created_at)) {
+          await markMessageHandled(contactId, m.id, mText);
+          console.warn('[whatsapp] gateway re-delivered an old message under a new id - contact ' + contactId + ', id ' + m.id + ', original ts ' + m.created_at);
+          await postOwnerNotification('⚠️ WhatsApp gateway re-delivered an old message (contact ' + contactId + ') under a new id - no reply sent, already handled. If this keeps happening, tell IT.').catch(() => {});
+          continue;
+        }
         newIncoming.push(m);
       }
       if (!newIncoming.length) continue;
@@ -9273,7 +9518,11 @@ async function pollOnce() {
       const name = resolvedName || contactId; // display fallback - the raw phone number, never the gateway's contact label
       const firstName = firstNameOf(resolvedName);
       const highestId = newIncoming[newIncoming.length - 1].id;
-      for (const msg of newIncoming) await markMessageHandled(contactId, msg.id, buildIncomingText(msg));
+      for (const msg of newIncoming) {
+        const msgText = buildIncomingText(msg);
+        await markMessageHandled(contactId, msg.id, msgText);
+        await markMessageHandledByContent(contactId, msgText, msg.created_at);
+      }
       for (const msg of newIncoming) {
         results.checked++;
         if (['image', 'document', 'ptt', 'voice', 'audio'].includes(msg.type)) {
@@ -9775,6 +10024,10 @@ module.exports = {
   removeFromNeverAuto,
   isNeverAuto,
   listNeverAuto,
+  sendWhatsAppChunked,
+  isMessageHandledByContent,
+  markMessageHandledByContent,
+  isStaleRepeatedMessage,
   resolvePersonToPhone,
   buildDailySummary,
   checkAndPostDailySummary,
@@ -9832,6 +10085,7 @@ module.exports = {
   handlePersonLookupRequest,
   findPersonLookupMatches,
   hasConfidentPersonMatch,
+  stripNameHonorifics,
   findEmployeesByWholeNameMatch,
   findEmployeesByFuzzyNameMatch,
   // Exported for scripts/check-whatsapp-engine.js only - live review

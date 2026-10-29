@@ -2275,7 +2275,7 @@
   // action on the same underlying item (one source of truth).
   let actionNeededFilter = 'all';
   function miniConvoForActionItem(item) {
-    const base = { chatId: item.chatId, name: item.name, pendingApprovals: [], pendingDrafts: [], openFollowups: [], pendingDocuments: [], ambiguousHrConfirmations: [] };
+    const base = { chatId: item.chatId, name: item.name, neverAuto: Boolean(item.neverAuto), pendingApprovals: [], pendingDrafts: [], openFollowups: [], pendingDocuments: [], ambiguousHrConfirmations: [] };
     if (item.kind === 'approval') base.pendingApprovals = [item.data];
     else if (item.kind === 'draft') base.pendingDrafts = [item.data];
     else if (item.kind === 'followup') base.openFollowups = [item.data];
@@ -2473,6 +2473,7 @@
         });
       });
     });
+    wireNeverAutoToggles(card);
   }
   let actionNeededItemsCache = [];
   function renderActionNeeded() {
@@ -2817,15 +2818,57 @@
         '</div>'
       );
     });
+    // Task 1 (2026-10-29) - data-never-auto-toggle (scoped by data-chat-id
+    // on the SAME element) instead of a hardcoded global id: this markup
+    // is reused both on the conversation page (one at a time, id was fine)
+    // and on the Action-needed list (several cards on screen at once,
+    // where a duplicate id meant only the FIRST card's toggle could ever
+    // be found/wired at all - every other one was silently dead/"stuck").
     groups.push(
       '<div class="wf-convo-action-group">' +
         '<span class="wf-convo-toggle-row">' +
           '<span class="wf-convo-toggle-label">Never auto-reply to this contact</span>' +
-          '<button type="button" class="wf-convo-toggle" id="hrConvoNeverAutoToggle" aria-pressed="' + (convo.neverAuto ? 'true' : 'false') + '"></button>' +
+          '<button type="button" class="wf-convo-toggle" data-never-auto-toggle data-chat-id="' + escapeHtml(convo.chatId) + '" data-name="' + escapeHtml(convo.name || convo.chatId) + '" aria-pressed="' + (convo.neverAuto ? 'true' : 'false') + '"></button>' +
         '</span>' +
       '</div>'
     );
     return groups.join('');
+  }
+  // Task 1 (2026-10-29) - shared wiring for every "Never auto-reply"
+  // toggle wherever buildConvoActions renders one (conversation page,
+  // Action-needed cards) - one real POST per tap (button disabled while
+  // in flight, guarding the double-tap/double-POST class of bug), and a
+  // failed save REVERTS the optimistic flip + shows an error toast
+  // instead of silently leaving the UI out of sync with the server (found
+  // while fixing this: the old handler never checked the POST's result at
+  // all, so a failed save looked IDENTICAL to a successful one until the
+  // page was reopened later and the toggle had silently reverted itself -
+  // this is what "gets stuck" looked like from the owner's side).
+  function wireNeverAutoToggles(root) {
+    root.querySelectorAll('[data-never-auto-toggle]').forEach((toggle) => {
+      toggle.addEventListener('click', async () => {
+        if (toggle.disabled) return;
+        const chatId = toggle.dataset.chatId;
+        const next = toggle.getAttribute('aria-pressed') !== 'true';
+        toggle.disabled = true;
+        toggle.setAttribute('aria-pressed', String(next));
+        const r = await postJson('/api/workforce/hr-assistant/whatsapp-never-auto', { chatId, enabled: next });
+        toggle.disabled = false;
+        if (!r.ok || !(r.data && r.data.ok)) {
+          toggle.setAttribute('aria-pressed', String(!next)); // revert the optimistic flip
+          showActionToast((r.data && r.data.error) || 'Could not save - try again.');
+          return;
+        }
+        const label = toggle.dataset.name || chatId;
+        showActionToast(next ? 'Auto-reply off for ' + label : 'Auto-reply on for ' + label);
+        // Keep every OTHER on-screen toggle for the SAME contact (e.g. the
+        // conversation page open behind an Action-needed card, or several
+        // Action-needed cards for the same sender) in sync immediately,
+        // without waiting for the next 12s poll.
+        document.querySelectorAll('[data-never-auto-toggle][data-chat-id="' + CSS.escape(chatId) + '"]').forEach((t) => { if (t !== toggle) t.setAttribute('aria-pressed', String(next)); });
+        if (pageDataCache.convos.has(chatId)) pageDataCache.convos.get(chatId).neverAuto = next;
+      });
+    });
   }
 
   // Stale-while-revalidate (speed fix) - a conversation used to always
@@ -2867,6 +2910,11 @@
       '<div class="wf-convo-msg ' + (m.direction === 'out' ? 'out' : 'in') + '">' +
         '<span class="wf-convo-msg-bubble">' + escapeHtml(m.text) + '</span>' +
         (m.direction === 'out' && NOT_DELIVERED_OUTCOMES.includes(m.outcome) ? '<span class="wf-convo-msg-failed">Not delivered</span>' : '') +
+        // Task 1 NEW EVIDENCE (2026-10-29) - the safety-net skip
+        // (isStaleRepeatedMessage) never auto-replies, so this is the only
+        // visible sign the message arrived at all - shown right on it,
+        // same spirit as the outgoing "Not delivered" flag above.
+        (m.direction === 'in' && m.repeated ? '<span class="wf-convo-msg-repeated">Repeated message</span>' : '') +
         // Task 5 - "Save as template" on any of SUBH's own outgoing
         // replies, so a recurring model-written reply can be turned into
         // a permanent fixed one without touching code.
@@ -3001,14 +3049,7 @@
           });
         });
       });
-      const neverAutoToggle = document.getElementById('hrConvoNeverAutoToggle');
-      if (neverAutoToggle) {
-        neverAutoToggle.addEventListener('click', async () => {
-          const next = neverAutoToggle.getAttribute('aria-pressed') !== 'true';
-          neverAutoToggle.setAttribute('aria-pressed', String(next));
-          await postJson('/api/workforce/hr-assistant/whatsapp-never-auto', { chatId: activeConvoChatId, enabled: next });
-        });
-      }
+      wireNeverAutoToggles(convoActions);
     }
   }
 

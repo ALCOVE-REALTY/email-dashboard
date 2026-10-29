@@ -1709,6 +1709,13 @@ body { background: var(--wi-bg); }
   font-size: 0.64rem; font-weight: 700; color: var(--wi-red-700); background: var(--wi-red-50);
   padding: 2px 7px; border-radius: 8px; margin-top: 2px;
 }
+/* Task 1 NEW EVIDENCE (2026-10-29) - the safety-net "stale repeat" skip
+   flag on an incoming bubble - neutral/informational (yellow), never red
+   like the outgoing failure tag above, since nothing went wrong here. */
+.wf-convo-msg-repeated {
+  font-size: 0.64rem; font-weight: 700; color: var(--wi-yellow-700); background: var(--wi-yellow-50);
+  padding: 2px 7px; border-radius: 8px; margin-top: 2px;
+}
 /* Task 5 - "Save as template" on an outgoing bubble. Quiet/secondary by
    default, never competing visually with the message itself. */
 .wf-convo-msg-save-template {
