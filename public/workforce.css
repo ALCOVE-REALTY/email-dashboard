@@ -121,7 +121,14 @@ body {
   position: fixed;
   inset: 0;
   background: rgba(15, 25, 27, 0.5);
-  z-index: 40;
+  /* Task 3 (2026-10-28) - above EVERY SUBH-panel overlay (the panel
+     itself at 51, and every sheet/toast opened inside it, up to the
+     pro-toast-stack at 97), since the drawer is this app's own top-level
+     navigation and must always be reachable and on top while open,
+     regardless of what else is showing - but still below
+     .wf-confirm-overlay (10000), which must stay the absolute topmost for
+     a destructive-action confirmation already in progress. */
+  z-index: 98;
 }
 
 .wf-drawer[hidden] { display: none; }
@@ -133,7 +140,7 @@ body {
   width: min(300px, 82vw);
   background: var(--surface);
   box-shadow: 8px 0 30px rgba(0, 0, 0, 0.2);
-  z-index: 41;
+  z-index: 99;
   overflow-y: auto;
   padding: 24px 14px 14px;
   display: flex;

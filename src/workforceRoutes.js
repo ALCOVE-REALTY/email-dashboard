@@ -2148,6 +2148,33 @@ router.post('/hr-assistant/whatsapp-hr-confirmation-resolve', async (req, res) =
   }
 });
 
+// Task 2 (2026-10-28) - the sender said something was approved/instructed
+// but, even after 2 re-asks, couldn't say by whom (see
+// handleUnclearFlowReply's own comment) - the owner types the real name in
+// here, which reuses the exact resolution path a sender's own answer
+// would have gone through.
+router.post('/hr-assistant/hr-note-escalations/:id/resolve', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const { personName, hint } = req.body || {};
+    if (!personName) return res.status(400).json({ error: 'personName is required' });
+    const result = await whatsappAssistant.resolveHrNoteEscalation(req.params.id, personName, hint);
+    if (!result.ok) return res.status(400).json({ error: result.error });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+router.post('/hr-assistant/hr-note-escalations/:id/dismiss', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    await whatsappAssistant.dismissHrNoteEscalation(req.params.id);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Owner visibility fix (live incident: a week-old stuck test confirmation
 // silently blocked all new HR flows from that sender) - every open STEP1/2
 // flow and every open STEP3+ confirmation in one list, with a way to close
@@ -2192,6 +2219,25 @@ router.get('/hr-assistant/reply-templates', async (req, res) => {
   try {
     const items = await whatsappAssistant.listReplyTemplates();
     res.json({ items });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Task 1 (2026-10-28) - "AI understands, code speaks" for templates in
+// every language: given ONE reference version (whatever the owner first
+// typed/is saving), drafts natural versions in the other two languages
+// for the owner to review/edit in the sheet BEFORE anything is saved -
+// never auto-saved by this route itself. Reused both for a brand new
+// template and for migrating an older, single-language one.
+router.post('/hr-assistant/reply-templates/generate-versions', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const { text, topic, whenToUse } = req.body || {};
+    if (!text) return res.status(400).json({ error: 'text is required' });
+    const versions = await whatsappAssistant.generateTemplateVersions(text, topic, whenToUse);
+    if (!versions) return res.status(500).json({ error: 'Could not generate the other language versions - try again.' });
+    res.json({ ok: true, versions });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

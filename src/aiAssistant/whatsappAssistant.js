@@ -582,9 +582,9 @@ async function listActionableWhatsappItems() {
 // (approve & send / edit / reject) is a decision, so it joins "approvals";
 // a received document needing review is closest to "data_requests".
 async function listActionNeededItems() {
-  const [approvals, drafts, docs, hrConfirmations, recentLog] = await Promise.all([
+  const [approvals, drafts, docs, hrConfirmations, recentLog, hrNoteEscalations] = await Promise.all([
     listPendingApprovals(), listPendingDrafts(),
-    documentRequests.listPendingReceived(), listAllHrConfirmations(), listInboxLog(300)
+    documentRequests.listPendingReceived(), listAllHrConfirmations(), listInboxLog(300), listHrNoteEscalations()
   ]);
   const ambiguousConfirmations = hrConfirmations.filter((c) => c.status === 'ambiguous_owner_review');
   const nameByChat = new Map();
@@ -597,6 +597,11 @@ async function listActionNeededItems() {
   drafts.forEach((d) => raw.push({ kind: 'draft', category: 'approvals', chatId: whatsapp.normalizePhone(d.contactId), name: d.name, ts: d.createdAt || 0, data: d }));
   docs.forEach((d) => raw.push({ kind: 'document', category: 'data_requests', chatId: whatsapp.normalizePhone(d.phone), name: null, ts: d.receivedAt || 0, data: d }));
   ambiguousConfirmations.forEach((c) => raw.push({ kind: 'hr_confirmation_ambiguous', category: 'approvals', chatId: whatsapp.normalizePhone(c.thirdPartyPhone), name: c.thirdPartyName, ts: c.ambiguousAt || c.createdAt || 0, data: c }));
+  // Task 2 (2026-10-28) - the sender said something was approved/
+  // instructed but, even after 2 re-asks, never managed to say by whom;
+  // the owner resolves it by typing the real name in, same as the sender
+  // would have.
+  hrNoteEscalations.forEach((e) => raw.push({ kind: 'hr_note_escalated', category: 'approvals', chatId: whatsapp.normalizePhone(e.phone), name: e.name, ts: e.createdAt || 0, data: e }));
   const isRealName = (n) => n && n !== 'The sender';
   const items = await Promise.all(raw.map(async (item) => {
     const directoryMatch = await findEmployeeByPhone(item.chatId).catch(() => null);
@@ -2417,6 +2422,143 @@ const HR_FLOW_CONTEXT_CLARIFY = {
   hinglish: 'Thoda samajh nahi paya - yeh mere pichhle sawaal ka jawab hai, ya kuch alag bata rahe hain?',
   english: "I'm not sure if that's answering my last question or something else - could you clarify?"
 };
+// Task 2 (2026-10-28), live bug (917278793115, 12:47-13:15) - "Yss sir" to
+// a pending who-approved-this question got this free-form
+// HR_FLOW_CONTEXT_CLARIFY line, then the IDENTICAL text again for "Ager
+// prosner uttor" AND for a genuinely different real question ("Pujo-y
+// office koto din bondho?") - a true infinite loop, never a spec template.
+// Second re-ask, deliberately DIFFERENT wording from
+// HR_NOTE_DIDNT_UNDERSTAND_WHO (never send identical text twice in a row).
+const HR_NOTE_DIDNT_UNDERSTAND_WHO_RETRY2 = {
+  banglish: 'Thik ache. Onar puro naam-ta bolben?',
+  hinglish: 'Theek hai. Unka pura naam bata sakte hain?',
+  english: 'Okay. Could you give me their full name?'
+};
+// After 2 unanswered re-asks, stop asking - sent to the SENDER once,
+// right when SUBH gives up and escalates to the owner instead (every
+// human message still gets a real reply, never silence).
+const HR_NOTE_ESCALATED_TO_OWNER = {
+  banglish: 'Thik ache, eta ami Subhodeep-ke directly jiggesh kore janiye dicchi - uni dekhe apnake janabe.',
+  hinglish: 'Theek hai, iske baare mein main Subhodeep se seedhe pooch kar bata raha hoon - woh dekh kar aapko bata denge.',
+  english: "No problem - I'll check this directly with Subhodeep myself and he'll get back to you."
+};
+const MAX_HR_FLOW_UNCLEAR_ATTEMPTS = 2;
+// ---------------- Escalated "couldn't identify who" HR-note cards ----------------
+// A plain CRUD store (same pattern as every other owner-editable store in
+// this file) for the one new kind of owner-facing card this live fix
+// needs: the sender said they got something approved/instructed but, even
+// after 2 re-asks, never managed to name who - surfaced as an "Approvals"
+// Action-needed card (category 'approvals') so the owner can type in the
+// real name himself and have SUBH's own existing resolution/notification
+// flow take it from there, rather than this looping on the sender forever.
+const HR_NOTE_ESCALATED_PREFIX = 'subh-hr-note-escalated:';
+const HR_NOTE_ESCALATED_IDS_KEY = 'subh-hr-note-escalated-ids';
+function newHrNoteEscalatedId() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+async function flagHrNoteApprovalEscalation(data) {
+  const redis = getClient();
+  if (!redis) return null;
+  const id = newHrNoteEscalatedId();
+  const record = Object.assign({ id, createdAt: Date.now() }, data);
+  try {
+    await redis.set(HR_NOTE_ESCALATED_PREFIX + id, JSON.stringify(record));
+    await redis.sadd(HR_NOTE_ESCALATED_IDS_KEY, id);
+  } catch (err) { return null; }
+  return record;
+}
+async function getHrNoteEscalation(id) {
+  const redis = getClient();
+  if (!redis) return null;
+  try {
+    const raw = await redis.get(HR_NOTE_ESCALATED_PREFIX + id);
+    return raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : null;
+  } catch (err) { return null; }
+}
+async function listHrNoteEscalations() {
+  const redis = getClient();
+  if (!redis) return [];
+  try {
+    const ids = await redis.smembers(HR_NOTE_ESCALATED_IDS_KEY);
+    if (!ids || !ids.length) return [];
+    const records = await Promise.all(ids.map((id) => getHrNoteEscalation(id)));
+    return records.filter(Boolean).sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+  } catch (err) { return []; }
+}
+async function dismissHrNoteEscalation(id) {
+  const redis = getClient();
+  if (!redis) return false;
+  try {
+    await redis.del(HR_NOTE_ESCALATED_PREFIX + id);
+    await redis.srem(HR_NOTE_ESCALATED_IDS_KEY, id);
+  } catch (err) { return false; }
+  return true;
+}
+// Owner types in the real name himself - reuses the SAME resolution path
+// (resolveHrNoteThirdParty, including its own disambiguation-list
+// behaviour if the name matches more than one employee) a sender's own
+// answer would have gone through, then sends the result to the ORIGINAL
+// SENDER via the same scheduleAutoSend every other queued reply goes
+// through (identity-line/draft-mode rules all apply unchanged).
+async function resolveHrNoteEscalation(id, personName, hint) {
+  const escalation = await getHrNoteEscalation(id);
+  if (!escalation) return { ok: false, error: 'This card is no longer there - it may already be resolved.' };
+  const resolved = await resolveHrNoteThirdParty({
+    phone: escalation.phone, name: escalation.name, lang: escalation.lang, personName, department: hint || null,
+    summary: escalation.summary, summaryLocalized: escalation.summaryLocalized, topicLabel: escalation.topicLabel,
+    actionPhrase: escalation.actionPhrase, actionKind: escalation.actionKind, createdAt: escalation.createdAt, history: []
+  });
+  if (resolved && resolved.replyText) {
+    await scheduleAutoSend({ chatId: escalation.phone, isGroup: false, name: escalation.name, replyText: resolved.replyText, case: resolved.case, lang: resolved.lang });
+  }
+  await dismissHrNoteEscalation(id);
+  return { ok: true };
+}
+// Shared by every flow-continuation branch that calls extractPersonReference
+// to resolve who a pending question is about (see its own "NOT A NAME"/
+// isUnrelatedTopic comments) - replaces each branch independently falling
+// back to the same free-form HR_FLOW_CONTEXT_CLARIFY line for a bare ack
+// ("Yss sir"), a genuinely unrelated informing message, AND a genuine new
+// question, which is the live bug this fixes (the identical clarify text
+// sent 3 times in a row for 3 different kinds of reply). A real answer
+// (personName/yes/no) is still checked by the CALLER first - this is only
+// reached once the caller itself found nothing usable.
+async function handleUnclearFlowReply({ phone, name, hrFlow, lang }) {
+  const attempts = (hrFlow.unclearAttempts || 0) + 1;
+  if (attempts > MAX_HR_FLOW_UNCLEAR_ATTEMPTS) {
+    await flagHrNoteApprovalEscalation({ phone, name, summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, actionPhrase: hrFlow.actionPhrase, actionKind: hrFlow.actionKind, lang });
+    await clearPendingHrNoteFlow(phone);
+    return { case: 'acknowledged', replyText: HR_NOTE_ESCALATED_TO_OWNER[lang] || HR_NOTE_ESCALATED_TO_OWNER.english, summaryForOwner: null, lang };
+  }
+  await savePendingHrNoteFlow(phone, Object.assign({}, hrFlow, { unclearAttempts: attempts }));
+  // Never the identical text twice in a row - attempt 1 and attempt 2 are
+  // two different, independently-worded spec templates, never the same
+  // string repeated.
+  const replyText = attempts === 1
+    ? (HR_NOTE_DIDNT_UNDERSTAND_WHO[lang] || HR_NOTE_DIDNT_UNDERSTAND_WHO.english)
+    : (HR_NOTE_DIDNT_UNDERSTAND_WHO_RETRY2[lang] || HR_NOTE_DIDNT_UNDERSTAND_WHO_RETRY2.english);
+  return { case: 'acknowledged', replyText, summaryForOwner: null, lang };
+}
+// The genuinely-last-resort handler once the caller's own personName/yes-
+// no checks found nothing: a bare ack/honorific or true ambiguity re-asks
+// (via handleUnclearFlowReply above); a genuinely unrelated INFORMING
+// message is noted while the flow stays open (unchanged from the existing
+// isUnrelatedTopic behaviour); anything else - a genuine question/request
+// needing its own real answer, e.g. "Pujo-y office koto din bondho?" - is
+// handled by returning null: the flow is kept open (never cleared) and
+// the caller falls through to SUBH's normal pipeline for a real answer,
+// exactly like a flow that was never open would.
+async function handleUnresolvedPersonReference({ phone, name, hrFlow, lang, extracted }) {
+  if (extracted.isBareAckOrHonorific || extracted.isAmbiguous) {
+    return handleUnclearFlowReply({ phone, name, hrFlow, lang });
+  }
+  if (extracted.isUnrelatedTopic && extracted.unrelatedTopicPhrase) {
+    await savePendingHrNoteFlow(phone, hrFlow);
+    return { case: 'acknowledged', replyText: (HR_FLOW_UNRELATED_TOPIC_ACK[lang] || HR_FLOW_UNRELATED_TOPIC_ACK.english)(extracted.unrelatedTopicPhrase), summaryForOwner: null, lang };
+  }
+  await savePendingHrNoteFlow(phone, hrFlow);
+  return null;
+}
 // Direct instruction (2026-10-25) - a genuinely NEW, unrelated topic
 // arriving while a STEP1/2 HR-note flow is still open on the SENDER's
 // side (awaiting a name/confirmation) is answered on its OWN topic only,
@@ -3578,6 +3720,44 @@ async function clearGreetingEchoToday(phone, now) {
   try { await redis.del(GREETING_ECHO_PREFIX + phone + ':' + istDayKeyOf(now || new Date())); } catch (err) { /* best effort */ }
 }
 
+// Task 2 (2026-10-28), live bug (917278793115, 12:46-13:03) - the identity
+// line went out TWICE in the same calendar day ("Hii" at 13:01, "Hello" at
+// 13:03, both after an intro already sent at 12:46). Root cause:
+// hasIntroducedTodayIST's old "is there ANY message from today in the
+// stored conversation history" check scans a SIZE-CAPPED list
+// (CONVO_HISTORY_MAX = 20 entries, both directions) - a flurry of
+// back-and-forth messages in a short window (this exact incident had a
+// stuck confirmation loop running at the same time) evicts the original
+// 12:46 exchange before 13:01 ever arrives, so the scan finds nothing and
+// wrongly concludes SUBH never introduced itself today. A dedicated
+// per-sender-per-day marker, same pattern as the greeting-echo tracker
+// above, is immune to this - it is set once, directly, the moment the
+// identity line actually goes out, independent of how much conversation
+// happens afterward. The old history scan stays too, OR'd in as a second
+// signal (defense in depth - if this dedicated key's own write ever fails,
+// the flow degrades to the previous, still-mostly-correct behaviour,
+// never to "ask twice" being silently impossible to prevent).
+const SUBH_INTRO_PREFIX = 'wa-subh-intro:';
+async function hasIntroducedTodayDedicated(phone, now) {
+  const redis = getClient();
+  if (!redis || !phone) return false;
+  try {
+    return Boolean(await redis.get(SUBH_INTRO_PREFIX + phone + ':' + istDayKeyOf(now)));
+  } catch (err) { return false; }
+}
+async function markIntroducedToday(phone, now) {
+  const redis = getClient();
+  if (!redis || !phone) return;
+  try {
+    await redis.set(SUBH_INTRO_PREFIX + phone + ':' + istDayKeyOf(now), '1', { ex: secondsUntilEndOfIstDay(now) });
+  } catch (err) { /* best effort */ }
+}
+async function clearIntroducedToday(phone, now) {
+  const redis = getClient();
+  if (!redis) return;
+  try { await redis.del(SUBH_INTRO_PREFIX + phone + ':' + istDayKeyOf(now || new Date())); } catch (err) { /* best effort */ }
+}
+
 // Pending manager-confirmation records - keyed by id (the permanent
 // record) and additionally indexed by the manager's own phone (SET of
 // ids currently awaiting THAT manager's answer), so an incoming message
@@ -4046,9 +4226,18 @@ function summaryForSentence(summary) {
 // of sync between the two sends the same way AI_DISCLOSURE_LINE's own
 // comment warns about for the main reply path.
 async function prependDisclosureIfNeeded(text, phone, lang) {
-  if (ALREADY_INTRODUCES_SUBH_RE.test(text)) return text;
+  // Task 2 (2026-10-28) - marks the dedicated marker even on THIS early
+  // return (the text already self-introduces) - see decideAutoReply's own
+  // wrapper for why this matters (the live bug: a reply that already
+  // carries its own intro never went through the "add the prefix" path at
+  // all, so the marker was never set there either).
+  if (ALREADY_INTRODUCES_SUBH_RE.test(text)) {
+    await markIntroducedToday(phone, new Date());
+    return text;
+  }
   const history = await getConvoHistory(phone).catch(() => []);
-  if (hasIntroducedTodayIST(history, new Date())) return text;
+  if (await hasIntroducedTodayIST(history, new Date(), phone)) return text;
+  await markIntroducedToday(phone, new Date());
   return (AI_DISCLOSURE_LINE[lang] || AI_DISCLOSURE_LINE.english) + ' ' + text;
 }
 
@@ -4403,9 +4592,16 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
   if (hrFlow.step === 'awaiting_approval_obtained') {
     const t = text.trim();
     const pendingQuestionLabel = (HR_NOTE_APPROVAL_FUTURE_ASK[lang] || HR_NOTE_APPROVAL_FUTURE_ASK.english)(hrFlow.actionPhrase);
-    const extracted = await extractPersonReference(t, { pendingQuestionLabel, history });
+    const extracted = await extractPersonReference(t, { pendingQuestionLabel, history, lang });
+    // Live bug fix (917278793115) - isAmbiguous alone used to go straight
+    // to the free-form HR_FLOW_CONTEXT_CLARIFY line; now shares the same
+    // never-repeat-twice/2-strikes-then-escalate handling as every other
+    // "couldn't resolve this" case in this branch (see
+    // handleUnclearFlowReply's own comment) - true isAmbiguous is rare in
+    // practice since isBareAckOrHonorific catches "Yss sir"-style replies
+    // deterministically before the model is even asked.
     if (extracted.isAmbiguous) {
-      return { case: 'acknowledged', replyText: HR_FLOW_CONTEXT_CLARIFY[lang] || HR_FLOW_CONTEXT_CLARIFY.english, summaryForOwner: null, lang };
+      return handleUnclearFlowReply({ phone, name, hrFlow, lang });
     }
     if (extracted.personName) {
       return resolveHrNoteThirdParty({ phone, name, lang, personName: extracted.personName, department: extracted.hint, summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, actionPhrase: hrFlow.actionPhrase, actionKind: 'approval', createdAt: hrFlow.createdAt, history });
@@ -4418,7 +4614,13 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
       await savePendingHrNoteFlow(phone, { summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, actionPhrase: hrFlow.actionPhrase, lang, createdAt: hrFlow.createdAt, actionKind: 'approval', step: 'awaiting_name' });
       return { case: 'acknowledged', replyText: HR_NOTE_ASK_NAME_ONLY[lang] || HR_NOTE_ASK_NAME_ONLY.english, summaryForOwner: null, lang };
     }
-    return { case: 'acknowledged', replyText: HR_FLOW_CONTEXT_CLARIFY[lang] || HR_FLOW_CONTEXT_CLARIFY.english, summaryForOwner: null, lang };
+    // Live bug fix (917278793115) - this used to be the SAME blind
+    // HR_FLOW_CONTEXT_CLARIFY line for EVERY unresolved reply: a bare
+    // "Yss sir", a repeat of it, AND a genuinely different real question
+    // ("Pujo-y office koto din bondho?") all got the identical text,
+    // forever. handleUnresolvedPersonReference now tells these apart - see
+    // its own comment.
+    return handleUnresolvedPersonReference({ phone, name, hrFlow, lang, extracted });
   }
   if (hrFlow.step === 'awaiting_disambiguation_choice') {
     const resolved = resolveDisambiguationReply(hrFlow.candidates, text);
@@ -4748,9 +4950,12 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
   // but filler - a genuine QUESTION/REQUEST (isBareAckOrHonorific false)
   // must still close the flow quietly and reach the real pipeline for its
   // own real answer, exactly as before Task 3.
+  // Task 2 (2026-10-28) - now shares handleUnclearFlowReply with every
+  // other branch (never the identical re-ask twice in a row, 2 strikes
+  // then escalate to an owner "Approvals" card) instead of this own
+  // simpler always-the-same-text version.
   if (isBareAckOrHonorific) {
-    await savePendingHrNoteFlow(phone, hrFlow);
-    return { case: 'acknowledged', replyText: HR_NOTE_DIDNT_UNDERSTAND_WHO[lang] || HR_NOTE_DIDNT_UNDERSTAND_WHO.english, summaryForOwner: null, lang };
+    return handleUnclearFlowReply({ phone, name, hrFlow, lang });
   }
   await clearPendingHrNoteFlow(phone);
   return null;
@@ -7065,6 +7270,19 @@ const GREETING_REPLY = {
   banglish: 'Hello! Ami SUBH, Subhodeep-er HR Assistant. Apnake ki bhabe sahajyo korte pari?',
   hinglish: 'Hello! Main SUBH hoon, Subhodeep ka HR Assistant. Main aapki kaise madad kar sakta hoon?'
 };
+// Task 2 (2026-10-28), live bug (917278793115) - "Hii" (13:01) and "Hello"
+// (13:03) both got the FULL intro above, even though it was already given
+// at 12:46 the same day - direct instruction that the identity line
+// appears only once per day, including inside a greeting reply (a
+// correction to the earlier "a bare greeting always introduces SUBH,
+// regardless of the 24h rule" request - greetings now follow the SAME
+// once-per-day rule as everything else). Used once hasIntroducedTodayIST
+// is already true for this sender today.
+const GREETING_REPLY_SHORT = {
+  english: 'Hello! How can I help you today?',
+  banglish: 'Hello! Bolun, ki sahajyo korte pari?',
+  hinglish: 'Hello! Boliye, main kya madad kar sakta hoon?'
+};
 
 // Live test fixes (item 1) - a festival/occasion wish ("Subho dashami")
 // found live to get a long AI-drafted reply padded with an extra generic
@@ -7356,7 +7574,7 @@ const DATA_REQUEST_HOLDING_REPLY_SHORT = {
 // contact_number path, and decideAutoReplyCore's own general wantsData
 // branch).
 function dataRequestHoldingReply(lang, history, now) {
-  const dict = hasIntroducedTodayIST(history, now) ? DATA_REQUEST_HOLDING_REPLY_SHORT : DATA_REQUEST_HOLDING_REPLY;
+  const dict = hasIntroducedTodayInHistory(history, now) ? DATA_REQUEST_HOLDING_REPLY_SHORT : DATA_REQUEST_HOLDING_REPLY;
   return dict[lang] || dict.english;
 }
 
@@ -7409,9 +7627,25 @@ function istDayKeyOf(date) {
 // on, and what dataRequestHoldingReply below picks its (with-intro vs
 // without) variant from - "appears only in the FIRST reply to that
 // sender on that calendar day, incl. inside holding replies."
-function hasIntroducedTodayIST(history, now) {
+function hasIntroducedTodayInHistory(history, now) {
   const todayKey = istDayKeyOf(now || new Date());
   return (history || []).some((h) => istDayKeyOf(new Date(h.ts)) === todayKey);
+}
+// Task 2 (2026-10-28) - now also checks the dedicated per-day marker
+// (hasIntroducedTodayDedicated, see its own comment) FIRST, since that one
+// is immune to the conversation-history size cap that caused the live
+// double-introduction bug; the history scan stays as a second, independent
+// signal. `phone` is optional (omitted for a group, which has no 1:1
+// dedicated marker) - the history scan alone still applies there, exactly
+// as before. dataRequestHoldingReply below deliberately keeps using the
+// plain synchronous hasIntroducedTodayInHistory instead of this one - it
+// has no phone to key the dedicated marker on and is called from several
+// synchronous call sites; its own choice is cosmetic (which wording
+// variant to use), not the actual identity-line gate, which is this
+// function and is what the live bug was actually about.
+async function hasIntroducedTodayIST(history, now, phone) {
+  if (phone && await hasIntroducedTodayDedicated(phone, now)) return true;
+  return hasIntroducedTodayInHistory(history, now);
 }
 
 // Last-resort reply for when decideAutoReply itself throws (see
@@ -7437,12 +7671,17 @@ const AUTOREPLY_ERROR_FALLBACK = {
 // reply is always the correct fallback.
 // history: recent messages in THIS chat (1:1 AND groups, see pollOnce).
 async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, history }) {
-  // Checked before identity/disambiguation on purpose (reply-restoration
-  // request: "always, regardless of the 24h rule") - a bare greeting is
-  // the one case that ALWAYS introduces SUBH, even mid-conversation.
+  // Checked before identity/disambiguation on purpose. Direct instruction
+  // (2026-10-28) - REVERSES the earlier "reply-restoration" request ("a
+  // bare greeting always introduces SUBH, even mid-conversation,
+  // regardless of the 24h rule"): a greeting now follows the SAME
+  // once-per-day rule as everything else (live bug: "Hii"/"Hello" both
+  // got the full intro the same day it was already given at 12:46).
   if (!isGroup && isGreetingOnly(text)) {
     const lang = detectLang(text);
-    return { case: 'acknowledged', replyText: GREETING_REPLY[lang] || GREETING_REPLY.english, summaryForOwner: null, lang };
+    const alreadyIntroducedToday = phone && await hasIntroducedTodayIST(history, new Date(), phone);
+    const greetingDict = alreadyIntroducedToday ? GREETING_REPLY_SHORT : GREETING_REPLY;
+    return { case: 'acknowledged', replyText: greetingDict[lang] || greetingDict.english, summaryForOwner: null, lang };
   }
   // Live test fixes item 1 - checked at this same early, pre-classification
   // tier so a festival/occasion wish is NEVER routed to the classifier at
@@ -7923,7 +8162,15 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
       const matched = await matchReplyTemplate(text, savedTemplates);
       if (matched) {
         await incrementReplyTemplateUsage(matched.id).catch(() => {});
-        return { case: 'custom_template', replyText: matched.replyText, summaryForOwner: 'Custom template: ' + matched.topic, lang: classification.language };
+        // Task 1 (2026-10-28) - sent EXACTLY as stored for THIS message's
+        // own detected language (classification.language, already
+        // resolved for short-message stickiness above) - never a live
+        // re-translation, never the model rewriting it. 'other' (a
+        // language the classifier couldn't place) and a template missing
+        // that one slot both fall back to English, never a blank reply.
+        const versions = normalizeTemplateReplyText(matched.replyText);
+        const lang = versions[classification.language] ? classification.language : 'english';
+        return { case: 'custom_template', replyText: versions[lang] || versions.english || versions.banglish || versions.hinglish, summaryForOwner: 'Custom template: ' + matched.topic, lang };
       }
     }
   }
@@ -8017,9 +8264,19 @@ async function decideAutoReply(params) {
     // (e.g. "Sahi naam batane ke liye dhanyavaad..." - genuine Hinglish -
     // detected as "banglish" by the word-list heuristic, since none of
     // its words are an exclusively-Hinglish signal the list recognizes).
-    const identityPrefix = (!ALREADY_INTRODUCES_SUBH_RE.test(decision.replyText) && !hasIntroducedTodayIST(params.history, new Date()))
+    const alreadyIntroducesItself = ALREADY_INTRODUCES_SUBH_RE.test(decision.replyText);
+    const identityPrefix = (!alreadyIntroducesItself && !(await hasIntroducedTodayIST(params.history, new Date(), params.phone)))
       ? (AI_DISCLOSURE_LINE[lang] || AI_DISCLOSURE_LINE.english) + ' '
       : '';
+    // Task 2 (2026-10-28) - marks the dedicated per-day intro marker
+    // whenever the OUTGOING reply introduces SUBH, whether this line just
+    // added that itself (identityPrefix) OR the reply already came with
+    // its own built-in intro (e.g. GREETING_REPLY's fixed "Hello! I'm
+    // SUBH..." - the live bug: that path never went through
+    // identityPrefix at all, so the dedicated marker was never set, and a
+    // SECOND greeting later the same day with the conversation history
+    // since evicted wrongly re-introduced SUBH all over again).
+    if ((identityPrefix || alreadyIntroducesItself) && !params.isGroup && params.phone) await markIntroducedToday(params.phone, new Date());
     // Live test fixes item 5 - time-of-day greeting echo. Computed from
     // the ORIGINAL incoming message (params.text), never from the
     // finished reply. Skipped entirely when the reply already opens with
@@ -9089,10 +9346,36 @@ async function pollOnce() {
       }
       await clearBurstBuffer(contactId);
       const combinedText = combineBurstText(buffer.messages);
-      await actOnOfficialTurn({
+      const turnParams = {
         contactId, name: buffer.name, firstName: buffer.firstName, text: combinedText,
         arrivedAt: buffer.firstSeenAt, seenAt: now, typingStartedAt: buffer.typingStartedAt || null, results
-      });
+      };
+      // Task 2 (2026-10-28), live bug (917278793115) - several real
+      // messages in this exact incident got NO reply at all and no owner
+      // alert. The burst buffer is already cleared by the time
+      // actOnOfficialTurn runs, so ANY throw inside it beyond
+      // decideAutoReply's own internal try/catch previously meant total
+      // silence for that message - caught only by the outer catch below,
+      // which just logs to results.errors, an internal return value never
+      // surfaced to the owner. Direct instruction: never silence, retry
+      // once, then a safe generic reply out plus an owner alert.
+      try {
+        await actOnOfficialTurn(turnParams);
+      } catch (err) {
+        console.error('[whatsapp] actOnOfficialTurn threw for ' + contactId + ', retrying once:', err);
+        try {
+          await actOnOfficialTurn(turnParams);
+        } catch (err2) {
+          console.error('[whatsapp] actOnOfficialTurn threw again for ' + contactId + ' after a retry - sending a generic fallback reply:', err2);
+          const lang = detectLang(combinedText);
+          await scheduleAutoSend({
+            chatId: contactId, isGroup: false, name: buffer.name,
+            replyText: AUTOREPLY_ERROR_FALLBACK[lang] || AUTOREPLY_ERROR_FALLBACK.english,
+            case: 'holding', summaryForOwner: '[auto-reply error after retry, generic fallback sent] ' + combinedText.slice(0, 160)
+          }).catch(() => {});
+          await postOwnerNotification('⚠️ Could not process a message from ' + (buffer.name || contactId) + ' even after a retry: ' + err2.message + ' - a generic reply was sent, please check this conversation.').catch(() => {});
+        }
+      }
     } catch (err) {
       results.errors.push({ contact: contactId, message: err.message });
     }
@@ -9166,7 +9449,7 @@ async function saveReplyTemplate(data) {
     id,
     topic: data.topic,
     whenToUse: data.whenToUse,
-    replyText: data.replyText,
+    replyText: normalizeTemplateReplyText(data.replyText),
     enabled: data.enabled !== false,
     usageCount: data.usageCount || 0,
     createdAt: data.createdAt || Date.now(),
@@ -9231,13 +9514,21 @@ function matchReplyTemplateTool() {
       parameters: {
         type: 'object',
         properties: {
-          matchedId: { type: ['string', 'null'], description: 'The id of the one matching template, or null if none confidently matches.' }
+          matchedId: { type: ['string', 'null'], description: 'The id of the one matching template, or null if none confidently matches.' },
+          confidence: { type: 'number', description: 'How confident you are that matchedId genuinely matches this message\'s MEANING, from 0 (not at all) to 1 (certain). 0 when matchedId is null.' }
         },
-        required: ['matchedId']
+        required: ['matchedId', 'confidence']
       }
     }
   };
 }
+// Task 1 (2026-10-28), direct instruction - "never force a template on an
+// uncertain match": the model's own confidence score decides, not just
+// whether it picked an id at all. 0.8 is deliberately high - a saved
+// template is sent VERBATIM (never re-drafted), so a wrong guess here
+// sends the sender a confidently wrong fixed answer, unlike a normal
+// model-drafted reply that can be more loosely right.
+const TEMPLATE_MATCH_CONFIDENCE_THRESHOLD = 0.8;
 async function matchReplyTemplate(text, templates) {
   const enabled = (templates || []).filter((t) => t.enabled !== false);
   if (!enabled.length) return null;
@@ -9248,7 +9539,63 @@ async function matchReplyTemplate(text, templates) {
   const systemPrompt = 'Saved reply templates:\n' + listBlock;
   const input = await callClaudeForcedTool(apiKey, DRAFT_MODEL, [{ role: 'system', content: systemPrompt }, { role: 'user', content: text }], toolDef.name, toolDef).catch(() => null);
   if (!input || !input.matchedId) return null;
+  if ((input.confidence || 0) < TEMPLATE_MATCH_CONFIDENCE_THRESHOLD) return null;
   return enabled.find((t) => t.id === input.matchedId) || null;
+}
+// Task 1 (2026-10-28) - "AI understands, code speaks" for templates too:
+// given ONE reference version of a reply (in whatever language the owner
+// first wrote/saved it), the model writes natural, equivalent-meaning
+// versions in the other two languages - never changes facts/promises,
+// only phrasing. The reference language's own slot is always overwritten
+// with the EXACT original text afterward (never trusted to the model to
+// "copy through unchanged" - a model can still subtly reword even when
+// asked not to), so the owner's own exact chosen wording for that
+// language is never altered by this step.
+function generateTemplateVersionsTool() {
+  return {
+    type: 'function',
+    function: {
+      name: 'generate_template_versions',
+      description: 'Given one saved WhatsApp reply template (its topic, optional "when to use" description, and ONE reference version of the reply text), write a natural, idiomatic version of the SAME reply - same meaning, same facts, same promises, same tone - in EACH of the three languages. Never add or drop information.',
+      parameters: {
+        type: 'object',
+        properties: {
+          english: { type: 'string', description: 'The reply in plain English.' },
+          banglish: { type: 'string', description: 'The reply in Banglish (Bengali written in Roman letters, not native script).' },
+          hinglish: { type: 'string', description: 'The reply in Hinglish (Hindi written in Roman letters, not native script).' }
+        },
+        required: ['english', 'banglish', 'hinglish']
+      }
+    }
+  };
+}
+async function generateTemplateVersions(referenceText, topic, whenToUse) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey || !DRAFT_MODEL || !referenceText) return null;
+  const toolDef = generateTemplateVersionsTool().function;
+  const systemPrompt = 'Topic: ' + (topic || '(not given)') +
+    '\nWhen to use: ' + (whenToUse || '(not given)') +
+    '\nReference reply (one language version, already correct in content, tone and facts):\n' + referenceText;
+  const input = await callClaudeForcedTool(apiKey, DRAFT_MODEL, [{ role: 'system', content: systemPrompt }, { role: 'user', content: 'Write the natural version in all three languages.' }], toolDef.name, toolDef).catch(() => null);
+  if (!input) return null;
+  const sourceLang = detectLang(referenceText);
+  const result = { english: input.english || '', banglish: input.banglish || '', hinglish: input.hinglish || '' };
+  if (result[sourceLang] !== undefined) result[sourceLang] = referenceText;
+  return result;
+}
+// Normalizes every shape saveReplyTemplate might be given into the real
+// {english, banglish, hinglish} record shape - a plain string (every
+// template saved before this feature, or a caller that hasn't generated
+// versions yet) becomes that SAME text in all three slots, which is
+// exactly the old (pre-multi-language) behaviour: identical reply
+// regardless of detected language, until the owner reviews/confirms real
+// per-language versions via generateTemplateVersions.
+function normalizeTemplateReplyText(replyText) {
+  if (replyText && typeof replyText === 'object') {
+    return { english: replyText.english || '', banglish: replyText.banglish || '', hinglish: replyText.hinglish || '' };
+  }
+  const text = replyText || '';
+  return { english: text, banglish: text, hinglish: text };
 }
 // Task 5 - final generic safety-net validation for ANY model-written
 // reply (generateConversationReply's own targeted checks - promise-
@@ -9334,6 +9681,8 @@ module.exports = {
   setReplyTemplateEnabled,
   incrementReplyTemplateUsage,
   matchReplyTemplate,
+  generateTemplateVersions,
+  normalizeTemplateReplyText,
   validateModelReply,
   MODEL_REPLY_SAFE_FALLBACK,
   sendOrReportAutoReply,
@@ -9364,6 +9713,9 @@ module.exports = {
   getEchoedGreetingTypesToday,
   markGreetingEchoedToday,
   clearGreetingEchoToday,
+  clearIntroducedToday,
+  markIntroducedToday,
+  hasIntroducedTodayDedicated,
   sendHrConfirmationMessageToManager,
   checkGatewayConnection,
   gatewayStatusSummary,
@@ -9438,6 +9790,10 @@ module.exports = {
   resolveApprovalById,
   listSystemNotices,
   dismissSystemNotices,
+  listHrNoteEscalations,
+  resolveHrNoteEscalation,
+  dismissHrNoteEscalation,
+  flagHrNoteApprovalEscalation,
   listActionableWhatsappItems,
   listActionNeededItems,
   listRecentWhatsappConversations,
@@ -9618,6 +9974,7 @@ module.exports = {
   isNoAnswer,
   isBareAckOrHonorificOnly,
   HR_NOTE_DIDNT_UNDERSTAND_WHO,
+  HR_NOTE_DIDNT_UNDERSTAND_WHO_RETRY2,
   // Exported for scripts/check-whatsapp-engine.js only - language
   // stickiness for short/ambiguous messages (2026-10-26).
   isShortOrAmbiguousForLanguage,

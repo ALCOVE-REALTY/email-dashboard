@@ -470,6 +470,12 @@ refreshBtn.addEventListener('click', async () => {
 wfDrawer.addEventListener('click', (e) => {
   const btn = e.target.closest('[data-view]');
   if (!btn) return;
+  // Task 3 (2026-10-28) - a menu pick while the SUBH panel is open closes
+  // that panel first (it's a full-screen overlay above everything else -
+  // switching the view underneath it would otherwise be invisible).
+  if (window.__hrAssistantPanelIsOpen && window.__hrAssistantPanelIsOpen() && window.__hrAssistantClosePanel) {
+    window.__hrAssistantClosePanel();
+  }
   // A drawer pick is always a fresh top-level entry point - its own back
   // button should go straight to the Dashboard, not resume some unrelated
   // drill-down chain left over from before the drawer was opened.

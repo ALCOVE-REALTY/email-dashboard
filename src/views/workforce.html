@@ -348,7 +348,17 @@
         <div class="wf-rem-sheet-body">
           <label class="wf-rem-field"><span>Topic name</span><input type="text" id="hrTemplateTopic" placeholder="e.g. Asking about PF withdrawal" maxlength="80" /></label>
           <label class="wf-rem-field"><span>When to use</span><textarea id="hrTemplateWhenToUse" rows="2" placeholder="Describe, in plain language, what kind of message this should match"></textarea></label>
-          <label class="wf-rem-field"><span>Reply text</span><textarea id="hrTemplateReplyText" rows="4"></textarea></label>
+          <!-- Task 1 (2026-10-28) - "AI understands, code speaks": each
+               saved template stores all three language versions, and the
+               sender's OWN message language picks which one goes out
+               verbatim (never a live re-translation). hrTemplateGenerateBtn
+               drafts the other two from whichever one the owner already
+               typed, for review/edit here before Save - never auto-saved. -->
+          <div id="hrTemplateVersionsNote" class="wf-auto-hint" hidden>Generating the other two language versions…</div>
+          <label class="wf-rem-field"><span>Reply text - English</span><textarea id="hrTemplateReplyEnglish" rows="3"></textarea></label>
+          <label class="wf-rem-field"><span>Reply text - Banglish</span><textarea id="hrTemplateReplyBanglish" rows="3"></textarea></label>
+          <label class="wf-rem-field"><span>Reply text - Hinglish</span><textarea id="hrTemplateReplyHinglish" rows="3"></textarea></label>
+          <button type="button" class="plain" id="hrTemplateGenerateBtn">Generate other two versions from one of these</button>
         </div>
         <div class="wf-rem-sheet-foot">
           <button type="button" class="wf-ai-action-btn outline" id="hrTemplateSheetCancelBtn">Cancel</button>

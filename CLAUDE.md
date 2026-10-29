@@ -260,13 +260,21 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
   any of SUBH's own outgoing replies in a WhatsApp conversation opens a sheet
   (topic name, a plain-language "when to use" description matched by MEANING
   via a dedicated structured-choice tool call - never a keyword match -,
-  editable reply text); from then on a message matching that topic always
-  gets this fixed reply, in whatever language it was saved in. A "📄
-  Templates" icon next to the ⏳ Open Flows icon lists every saved template
-  (topic, times used, On/Off, Edit, Delete) - built-in flow/job-application/
-  vacancy-enquiry templates are fixed in code and never appear here. Matching
-  is skipped entirely (no API call, zero behaviour change) while the owner
-  has no enabled custom templates.
+  editable reply text); from then on a message matching that topic with high
+  confidence (>= 0.8 - "never force a template on an uncertain match") always
+  gets this fixed reply, sent EXACTLY as stored, never re-drafted. Task 1
+  (2026-10-28) - every template stores all three language versions (English/
+  Banglish/Hinglish), generated once when saved/edited (the owner reviews/
+  edits all three before Save) and auto-migrated the same way the first time
+  an older single-language template is opened for Edit; which version goes
+  out is picked by THIS message's own detected language (the main
+  classifier's per-message `language` field, with its existing short-message
+  stickiness to the sender's last real message - never re-translated live).
+  A "📄 Templates" icon next to the ⏳ Open Flows icon lists every saved
+  template (topic, times used, On/Off, Edit, Delete) - built-in flow/job-
+  application/vacancy-enquiry templates are fixed in code and never appear
+  here. Matching is skipped entirely (no API call, zero behaviour change)
+  while the owner has no enabled custom templates.
 - Task 6 (2026-10-27): "Action needed" unified inbox - UI + wiring only,
   existing cards' own logic/texts/buttons untouched. An inbox icon next to
   the ⏳ Open Flows icon in Important WhatsApp's header (order: title · inbox

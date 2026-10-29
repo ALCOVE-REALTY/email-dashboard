@@ -99,7 +99,13 @@
   const templateSheetTitle = document.getElementById('hrTemplateSheetTitle');
   const templateTopicInput = document.getElementById('hrTemplateTopic');
   const templateWhenToUseInput = document.getElementById('hrTemplateWhenToUse');
-  const templateReplyTextInput = document.getElementById('hrTemplateReplyText');
+  // Task 1 (2026-10-28) - one textarea per language, generated from
+  // whichever one the owner actually typed.
+  const templateReplyEnglishInput = document.getElementById('hrTemplateReplyEnglish');
+  const templateReplyBanglishInput = document.getElementById('hrTemplateReplyBanglish');
+  const templateReplyHinglishInput = document.getElementById('hrTemplateReplyHinglish');
+  const templateGenerateBtn = document.getElementById('hrTemplateGenerateBtn');
+  const templateVersionsNote = document.getElementById('hrTemplateVersionsNote');
   // Task 2 (2026-10-28) - site aliases + new site detection
   const siteAliasesBtn = document.getElementById('hrSiteAliasesBtn');
   const siteAliasesBadge = document.getElementById('hrSiteAliasesBadge');
@@ -1250,6 +1256,13 @@
 
   btn.addEventListener('click', openPanel);
   closeBtn.addEventListener('click', closePanel);
+  // Task 3 (2026-10-28) - the side drawer (workforce.js, a separate
+  // script) needs to close this panel when the owner picks a menu item
+  // while the panel is open ("choosing a menu item closes the SUBH panel
+  // and opens that item's page") - exposed on window since the two
+  // scripts share no other call path to each other.
+  window.__hrAssistantClosePanel = closePanel;
+  window.__hrAssistantPanelIsOpen = () => !panel.hidden;
   // Re-sync right on focus/blur too, in addition to the visualViewport
   // listeners above - covers the moment the keyboard is animating in/out
   // before the viewport has finished settling, so the input bar doesn't
@@ -1966,34 +1979,96 @@
   // delete) + the shared Save/Edit sheet, opened either from here or from
   // "Save as template" on a model-written reply bubble in a conversation.
   let editingTemplateId = null;
+  function setTemplateVersionFields(versions) {
+    const v = versions || {};
+    if (templateReplyEnglishInput) templateReplyEnglishInput.value = v.english || '';
+    if (templateReplyBanglishInput) templateReplyBanglishInput.value = v.banglish || '';
+    if (templateReplyHinglishInput) templateReplyHinglishInput.value = v.hinglish || '';
+  }
+  // Task 1 (2026-10-28) - drafts the two missing versions from whichever
+  // one already has text, using the real topic/whenToUse already typed (if
+  // any) for context. Never overwrites a field the owner already filled in
+  // themselves UNLESS forceAll is true (the explicit "Generate" button, or
+  // a true migration where it's the only field with content anyway).
+  async function generateMissingTemplateVersions(forceAll) {
+    const current = {
+      english: (templateReplyEnglishInput && templateReplyEnglishInput.value || '').trim(),
+      banglish: (templateReplyBanglishInput && templateReplyBanglishInput.value || '').trim(),
+      hinglish: (templateReplyHinglishInput && templateReplyHinglishInput.value || '').trim()
+    };
+    const source = current.english || current.banglish || current.hinglish;
+    if (!source) return;
+    if (templateVersionsNote) templateVersionsNote.hidden = false;
+    try {
+      const r = await postJsonOrThrow('/api/workforce/hr-assistant/reply-templates/generate-versions', {
+        text: source,
+        topic: (templateTopicInput && templateTopicInput.value || '').trim(),
+        whenToUse: (templateWhenToUseInput && templateWhenToUseInput.value || '').trim()
+      });
+      const versions = r.versions || {};
+      if (forceAll) {
+        setTemplateVersionFields(versions);
+      } else {
+        if (!current.english && versions.english && templateReplyEnglishInput) templateReplyEnglishInput.value = versions.english;
+        if (!current.banglish && versions.banglish && templateReplyBanglishInput) templateReplyBanglishInput.value = versions.banglish;
+        if (!current.hinglish && versions.hinglish && templateReplyHinglishInput) templateReplyHinglishInput.value = versions.hinglish;
+      }
+    } catch (err) {
+      showActionToast(err.message || 'Could not generate the other versions - try again.');
+    } finally {
+      if (templateVersionsNote) templateVersionsNote.hidden = true;
+    }
+  }
+  if (templateGenerateBtn) templateGenerateBtn.addEventListener('click', () => generateMissingTemplateVersions(true));
   function openTemplateSheet(existing) {
     editingTemplateId = existing ? existing.id : null;
     if (templateSheetTitle) templateSheetTitle.textContent = existing ? 'Edit template' : 'Save as template';
     if (templateTopicInput) templateTopicInput.value = existing ? existing.topic : '';
     if (templateWhenToUseInput) templateWhenToUseInput.value = existing ? existing.whenToUse : '';
-    if (templateReplyTextInput) templateReplyTextInput.value = existing ? existing.replyText : (existing === null ? '' : existing);
+    // existing.replyText is always {english,banglish,hinglish} from the
+    // server - a plain-string fallback is only for a stale cached record
+    // from before this feature existed.
+    const versions = existing && existing.replyText && typeof existing.replyText === 'object'
+      ? existing.replyText
+      : { english: (existing && existing.replyText) || '', banglish: '', hinglish: '' };
+    setTemplateVersionFields(existing ? versions : null);
     if (templateSheetSaveBtn) { templateSheetSaveBtn.classList.remove('is-loading', 'is-success', 'is-error'); templateSheetSaveBtn.disabled = false; }
     templateSheetBackdrop.hidden = false;
     templateSheet.hidden = false;
     void templateSheet.offsetHeight;
     templateSheetBackdrop.classList.add('open');
     templateSheet.classList.add('open');
+    // Existing templates saved before this feature (or one missing a
+    // version for any other reason) - draft the missing ones right away,
+    // for the owner to review/edit before Save, per direct instruction.
+    if (existing && (!versions.english || !versions.banglish || !versions.hinglish)) {
+      generateMissingTemplateVersions(false);
+    }
   }
   // "Save as template" on a model-written reply passes just the reply
-  // text (a string), not a full template record - pre-fills the reply
-  // field only, leaving topic/when-to-use for the owner to name.
+  // text (a string, in whichever language it happened to be drafted in),
+  // not a full template record - immediately drafts the other two
+  // versions for review, leaving topic/when-to-use for the owner to name.
   function openTemplateSheetFromReply(replyText) {
     editingTemplateId = null;
     if (templateSheetTitle) templateSheetTitle.textContent = 'Save as template';
     if (templateTopicInput) templateTopicInput.value = '';
     if (templateWhenToUseInput) templateWhenToUseInput.value = '';
-    if (templateReplyTextInput) templateReplyTextInput.value = replyText || '';
+    setTemplateVersionFields(null);
     if (templateSheetSaveBtn) { templateSheetSaveBtn.classList.remove('is-loading', 'is-success', 'is-error'); templateSheetSaveBtn.disabled = false; }
     templateSheetBackdrop.hidden = false;
     templateSheet.hidden = false;
     void templateSheet.offsetHeight;
     templateSheetBackdrop.classList.add('open');
     templateSheet.classList.add('open');
+    if (replyText) {
+      // Put it straight into whichever field actually matches - simplest
+      // and always correct: let the generate call's own language
+      // detection decide where the original text belongs, same as a
+      // migration, rather than guessing the language client-side first.
+      if (templateReplyEnglishInput) templateReplyEnglishInput.value = replyText;
+      generateMissingTemplateVersions(true);
+    }
   }
   function closeTemplateSheet() {
     templateSheetBackdrop.classList.remove('open');
@@ -2007,8 +2082,15 @@
     templateSheetSaveBtn.addEventListener('click', async () => {
       const topic = (templateTopicInput.value || '').trim();
       const whenToUse = (templateWhenToUseInput.value || '').trim();
-      const replyText = (templateReplyTextInput.value || '').trim();
-      if (!topic || !whenToUse || !replyText) { showActionToast('Topic, when to use, and reply text are all required.'); return; }
+      const replyText = {
+        english: (templateReplyEnglishInput && templateReplyEnglishInput.value || '').trim(),
+        banglish: (templateReplyBanglishInput && templateReplyBanglishInput.value || '').trim(),
+        hinglish: (templateReplyHinglishInput && templateReplyHinglishInput.value || '').trim()
+      };
+      if (!topic || !whenToUse || !replyText.english || !replyText.banglish || !replyText.hinglish) {
+        showActionToast('Topic, when to use, and all three reply versions are required.');
+        return;
+      }
       await runButtonAction(templateSheetSaveBtn, () => {
         return editingTemplateId
           ? postJsonOrThrow('/api/workforce/hr-assistant/reply-templates/' + encodeURIComponent(editingTemplateId), { topic, whenToUse, replyText })
@@ -2264,8 +2346,54 @@
       });
     });
   }
+  // Task 2 (2026-10-28) - the sender said something was approved/
+  // instructed but, even after 2 re-asks, never managed to say by whom -
+  // the owner types the real name in here (same resolution path a
+  // sender's own answer would have gone through).
+  function actionNeededHrNoteEscalatedCardHtml(item) {
+    const waitingTag = item.ageMs > 2 * 60 * 60 * 1000 ? '<span class="wf-action-needed-waiting-tag">Waiting ' + actionNeededAgeLabel(item.ageMs) + '</span>' : '';
+    return '<div class="wf-auto-task-card" data-chat-id="' + escapeHtml(item.chatId) + '" data-escalation-id="' + escapeHtml(item.data.id) + '">' +
+      '<div class="wf-action-needed-card-head">' +
+        '<span class="wf-auto-task-subject">' + escapeHtml(item.name) + ' · ' + escapeHtml(item.chatId) + waitingTag + '</span>' +
+        '<button type="button" class="wf-action-needed-openchat" data-open-chat="' + escapeHtml(item.chatId) + '">Open chat ›</button>' +
+      '</div>' +
+      '<div class="wf-auto-hint">Says ' + escapeHtml(item.data.summaryLocalized || item.data.summary || item.data.topicLabel || 'something') + ' was ' + (item.data.actionKind === 'instruction' ? 'told to them' : 'approved') + ', but couldn\'t say by whom even after 2 re-asks</div>' +
+      '<div class="wf-auto-hint">' + actionNeededAgeLabel(item.ageMs) + ' ago</div>' +
+      '<label class="wf-rem-field"><span>Who approved/instructed this?</span><input type="text" data-escalation-name placeholder="Full name" /></label>' +
+      '<div class="wf-auto-actions">' +
+        '<button type="button" class="primary" data-escalation-action="resolve">Confirm</button>' +
+        '<button type="button" class="plain" data-escalation-action="dismiss">Dismiss</button>' +
+      '</div>' +
+    '</div>';
+  }
+  function wireActionNeededHrNoteEscalatedCard(card) {
+    const openChatBtn = card.querySelector('[data-open-chat]');
+    if (openChatBtn) openChatBtn.addEventListener('click', () => { pushNav({ type: 'conversation', chatId: card.dataset.chatId }); openConversationPage(card.dataset.chatId); });
+    const id = card.dataset.escalationId;
+    card.querySelectorAll('[data-escalation-action]').forEach((b) => {
+      b.addEventListener('click', async () => {
+        const action = b.dataset.escalationAction;
+        if (action === 'dismiss') {
+          await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/hr-note-escalations/' + encodeURIComponent(id) + '/dismiss', {}), () => {
+            closeRowWithToast(card, { title: 'Dismissed', type: 'success' });
+            refreshActionNeeded();
+          });
+          return;
+        }
+        const nameInput = card.querySelector('[data-escalation-name]');
+        const personName = (nameInput && nameInput.value || '').trim();
+        if (!personName) { showActionToast('Enter the name first.'); return; }
+        await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/hr-note-escalations/' + encodeURIComponent(id) + '/resolve', { personName }), () => {
+          closeRowWithToast(card, { title: 'Sent ✓', type: 'success' });
+          pollCommsSummary();
+          refreshActionNeeded();
+        });
+      });
+    });
+  }
   function actionNeededCardHtml(item) {
     if (item.kind === 'automation_missed_run' || item.kind === 'automation_first_run') return actionNeededAutomationCardHtml(item);
+    if (item.kind === 'hr_note_escalated') return actionNeededHrNoteEscalatedCardHtml(item);
     const waitingTag = item.ageMs > 2 * 60 * 60 * 1000 ? '<span class="wf-action-needed-waiting-tag">Waiting ' + actionNeededAgeLabel(item.ageMs) + '</span>' : '';
     return '<div class="wf-auto-task-card" data-chat-id="' + escapeHtml(item.chatId) + '">' +
       '<div class="wf-action-needed-card-head">' +
@@ -2278,6 +2406,7 @@
   }
   function wireActionNeededCard(card, chatId) {
     if (card.dataset.automationId) { wireActionNeededAutomationCard(card); return; }
+    if (card.dataset.escalationId) { wireActionNeededHrNoteEscalatedCard(card); return; }
     const openChatBtn = card.querySelector('[data-open-chat]');
     if (openChatBtn) openChatBtn.addEventListener('click', () => { pushNav({ type: 'conversation', chatId }); openConversationPage(chatId); });
     card.querySelectorAll('[data-approval-action]').forEach((b) => {

@@ -383,9 +383,13 @@ async function checkAsync(label, fn) {
   const IST_NOW = new Date('2026-10-19T10:00:00+05:30');
   const IST_EARLIER_TODAY = new Date('2026-10-19T01:00:00+05:30').getTime();
   const IST_YESTERDAY = new Date('2026-10-18T22:00:00+05:30').getTime();
-  check('hasIntroducedTodayIST is false with empty history', !whatsappAssistant.hasIntroducedTodayIST([], IST_NOW));
-  check('hasIntroducedTodayIST is true for a message earlier the SAME IST calendar day (even right after local midnight)', whatsappAssistant.hasIntroducedTodayIST([{ direction: 'out', text: 'x', ts: IST_EARLIER_TODAY }], IST_NOW));
-  check('hasIntroducedTodayIST is false for a message from the PREVIOUS IST calendar day, even though it is under 24h ago', !whatsappAssistant.hasIntroducedTodayIST([{ direction: 'out', text: 'x', ts: IST_YESTERDAY }], IST_NOW));
+  // Task 2 (2026-10-28) - now async (it also checks a dedicated per-day
+  // Redis marker when given a phone - see its own comment), so every call
+  // needs awaiting now, even with no phone given (these 3 calls only
+  // exercise the plain history-scan fallback).
+  await checkAsync('hasIntroducedTodayIST is false with empty history', async () => !(await whatsappAssistant.hasIntroducedTodayIST([], IST_NOW)));
+  await checkAsync('hasIntroducedTodayIST is true for a message earlier the SAME IST calendar day (even right after local midnight)', async () => Boolean(await whatsappAssistant.hasIntroducedTodayIST([{ direction: 'out', text: 'x', ts: IST_EARLIER_TODAY }], IST_NOW)));
+  await checkAsync('hasIntroducedTodayIST is false for a message from the PREVIOUS IST calendar day, even though it is under 24h ago', async () => !(await whatsappAssistant.hasIntroducedTodayIST([{ direction: 'out', text: 'x', ts: IST_YESTERDAY }], IST_NOW)));
   check('dataRequestHoldingReply (banglish) includes the "SUBH, Subhodeep-er HR Assistant" intro on the FIRST reply of the day', whatsappAssistant.dataRequestHoldingReply('banglish', [], IST_NOW).includes('SUBH, Subhodeep-er HR Assistant'));
   check('dataRequestHoldingReply (banglish) drops the intro (short form) once SUBH already spoke to this sender earlier the same IST day', !whatsappAssistant.dataRequestHoldingReply('banglish', [{ direction: 'out', text: 'x', ts: IST_EARLIER_TODAY }], IST_NOW).includes('SUBH, Subhodeep-er HR Assistant'));
   check('dataRequestHoldingReply (banglish) short form still names Subhodeep and the promise to follow up, even without the intro', whatsappAssistant.dataRequestHoldingReply('banglish', [{ direction: 'out', text: 'x', ts: IST_EARLIER_TODAY }], IST_NOW).includes('Subhodeep-er sathe kotha bole'));
@@ -692,6 +696,14 @@ async function checkAsync(label, fn) {
       await whatsappAssistant.clearPendingDisambiguation(p).catch(() => {});
       await whatsappAssistant.clearPendingNameConfirm(p).catch(() => {});
       await whatsappAssistant.clearGreetingEchoToday(p, new Date()).catch(() => {});
+      // Task 2 (2026-10-28) - the new dedicated per-day "already
+      // introduced" marker (hasIntroducedTodayDedicated) is real state
+      // that persists across calls for the same phone+day, unlike the old
+      // purely history-based check - a test phone reused across several
+      // test sections in the SAME run must have this cleared too, or a
+      // later section wrongly inherits "already introduced" from an
+      // earlier, unrelated one.
+      await whatsappAssistant.clearIntroducedToday(p, new Date()).catch(() => {});
     }
   }
   // Reset BEFORE the STEP 1 test too (not just after STEP 5) - a rerun of
@@ -729,7 +741,12 @@ async function checkAsync(label, fn) {
   await checkAsync('STEP 3 (Banglish): answering with the full name resolves, thanks the sender with the exact spec wording, and clears the whole flow', async () => {
     const d3 = await whatsappAssistant.decideAutoReply({ phone: HR_SENDER_BN, name: 'Sender1', firstName: 'Sender1', text: 'Tanmoy Mondal', isGroup: false, history: [] });
     const stillPending = await whatsappAssistant.getPendingHrNoteFlow(HR_SENDER_BN);
-    return d3.case === 'acknowledged' && d3.replyText === 'Ami SUBH, Subhodeep-er HR Assistant. Amake sothik naam diye sahajyo korar jonno dhonnobad. Ami Tanmoy Mondal-er sathe kotha bole joto taratari somvob apnake janacchi.' && stillPending === null;
+    // Task 2 (2026-10-28) - endsWith, not exact equality: STEP 1 earlier in
+    // this SAME simulated day already introduced SUBH to this sender, so
+    // the once-per-day rule (now correctly enforced even across separate
+    // decideAutoReply calls, not just within one call's own history) omits
+    // it here - the template's own wording is still checked in full.
+    return d3.case === 'acknowledged' && d3.replyText.endsWith('Amake sothik naam diye sahajyo korar jonno dhonnobad. Ami Tanmoy Mondal-er sathe kotha bole joto taratari somvob apnake janacchi.') && stillPending === null;
   });
   await checkAsync('STEP 4 (Banglish): the manager is messaged a short, accurate, ALL-BANGLISH summary (never a mixed-language sentence) asking for confirmation, phrased ACTIVELY as what the manager told the sender (live test fixes item 3: "apni onake ... bolechhen", never passive "bola hoyechhe"), opens with the identity line (item 3\'s other bug: this send used to skip it entirely), and a reminder is created', async () => {
     const log = await whatsappAssistant.listInboxLog(10);
@@ -747,7 +764,10 @@ async function checkAsync(label, fn) {
     const log = await whatsappAssistant.listInboxLog(10);
     const resultEntry = log.find((e) => e.chatId === HR_SENDER_BN && e.case === 'hr_confirmation_result');
     const confirmations = (await whatsappAssistant.listAllHrConfirmations()).filter((c) => c.senderPhone === HR_SENDER_BN);
-    const ok = d5.case === 'acknowledged' && d5.replyText === 'Ami SUBH, Subhodeep-er HR Assistant. Apnar confirmation-er jonno onek dhonnobad.'
+    // Task 2 (2026-10-28) - endsWith: STEP 4 just before this already
+    // introduced SUBH to Tanmoy's own phone (the manager message), so the
+    // once-per-day rule correctly omits it here too.
+    const ok = d5.case === 'acknowledged' && d5.replyText.endsWith('Apnar confirmation-er jonno onek dhonnobad.')
       && Boolean(resultEntry) && resultEntry.sentText.includes('confirm korechhen')
       // Link-back rule: same-day (this whole flow runs within seconds) gets NO prefix at all.
       && !resultEntry.sentText.includes('bishoy-e') && !resultEntry.sentText.includes('Gotokal')
@@ -763,7 +783,10 @@ async function checkAsync(label, fn) {
     const log = await whatsappAssistant.listInboxLog(10);
     const resultEntry = log.find((e) => e.chatId === HR_SENDER_BN2 && e.case === 'hr_confirmation_result');
     const confirmations = (await whatsappAssistant.listAllHrConfirmations()).filter((c) => c.senderPhone === HR_SENDER_BN2);
-    const ok = dNo.replyText === 'Ami SUBH, Subhodeep-er HR Assistant. Janano-r jonno onek dhonnobad.'
+    // Task 2 (2026-10-28) - endsWith: by this point in the suite,
+    // TANMOY_MONDAL_PHONE was already introduced by an earlier test's
+    // manager message today - the once-per-day rule correctly omits it.
+    const ok = dNo.replyText.endsWith('Janano-r jonno onek dhonnobad.')
       && Boolean(resultEntry) && resultEntry.sentText.includes('confirm korenni')
       // Link-back rule: same-day (this whole flow runs within seconds) gets NO prefix at all.
       && !resultEntry.sentText.includes('bishoy-e') && !resultEntry.sentText.includes('Gotokal')
@@ -775,7 +798,9 @@ async function checkAsync(label, fn) {
   await checkAsync('no-match case (Banglish): a clearly non-existent name asks for the full name again, never silently drops the note', async () => {
     await whatsappAssistant.decideAutoReply({ phone: HR_SENDER_NOMATCH, name: 'Sender3', firstName: 'Sender3', text: 'Ajke amake duty korte bola hoyechhe. Tar poriborte onno din chhutti nite bola hoyechhe.', isGroup: false, history: [] });
     const d = await whatsappAssistant.decideAutoReply({ phone: HR_SENDER_NOMATCH, name: 'Sender3', firstName: 'Sender3', text: 'Zzxynonexistentname bolechhen amake', isGroup: false, history: [] });
-    const ok = d.replyText === 'Ami SUBH, Subhodeep-er HR Assistant. Ei naame kauke khuje pelam na. Onar puro naam-ta bolben?';
+    // Task 2 (2026-10-28) - endsWith: this is the SECOND message from
+    // HR_SENDER_NOMATCH today (the first already introduced SUBH).
+    const ok = d.replyText.endsWith('Ei naame kauke khuje pelam na. Onar puro naam-ta bolben?');
     await cleanupHrFlowArtifacts(HR_SENDER_NOMATCH);
     return ok;
   });
@@ -786,9 +811,14 @@ async function checkAsync(label, fn) {
     const log = await whatsappAssistant.listInboxLog(10);
     const mgrEntry = log.find((e) => e.chatId === TANMOY_MONDAL_PHONE && e.case === 'hr_confirmation_sent');
     const dYes = await whatsappAssistant.decideAutoReply({ phone: TANMOY_MONDAL_PHONE, name: 'Tanmoy Mondal', firstName: 'Tanmoy', text: 'Yes', isGroup: false, history: [] });
-    const ok = d3.replyText.startsWith("I'm SUBH") && d3.replyText.includes('Thank you for giving me the correct name')
+    // Task 2 (2026-10-28) - d3 is the SECOND message from HR_SENDER_EN
+    // today (the first already introduced SUBH), so it no longer starts
+    // with the intro - .includes(), not .startsWith(), for the
+    // substantive part; dYes still endsWith (never assumes the intro's
+    // own presence/absence either way, just the template wording).
+    const ok = d3.replyText.includes('Thank you for giving me the correct name') && !d3.replyText.includes('Ami SUBH')
       && Boolean(mgrEntry) && mgrEntry.sentText.includes('Can you confirm this?') && !mgrEntry.sentText.includes('ami')
-      && dYes.replyText === "I'm SUBH, Subhodeep's HR Assistant. Thank you for your confirmation.";
+      && dYes.replyText.endsWith("Thank you for your confirmation.");
     await cleanupHrFlowArtifacts(HR_SENDER_EN, TANMOY_MONDAL_PHONE);
     return ok;
   });
@@ -797,8 +827,12 @@ async function checkAsync(label, fn) {
     await whatsappAssistant.decideAutoReply({ phone: HR_SENDER_HI, name: 'SenderHi', firstName: 'SenderHi', text: 'Mujhe aaj duty karne ko kaha gaya hai, iske badle mujhe doosre din chutti lene ko kaha gaya hai.', isGroup: false, history: [] });
     const d3 = await whatsappAssistant.decideAutoReply({ phone: HR_SENDER_HI, name: 'SenderHi', firstName: 'SenderHi', text: 'Aap Tanmoy Mondal se pooch sakte hain, unhone mujhe bola.', isGroup: false, history: [] });
     const dYes = await whatsappAssistant.decideAutoReply({ phone: TANMOY_MONDAL_PHONE, name: 'Tanmoy Mondal', firstName: 'Tanmoy', text: 'Haan', isGroup: false, history: [] });
-    const ok = d3.replyText.startsWith('Main SUBH hoon') && !d3.replyText.includes('Ami SUBH')
-      && dYes.replyText === 'Main SUBH hoon, Subhodeep ka HR Assistant. Aapke confirmation ke liye bahut dhanyavaad.';
+    // Task 2 (2026-10-28) - d3 is the SECOND message from HR_SENDER_HI
+    // today (the first already introduced SUBH), so it no longer starts
+    // with the intro - just checks no Banglish ever bled in; dYes still
+    // endsWith the template wording regardless of the intro.
+    const ok = !d3.replyText.includes('Ami SUBH')
+      && dYes.replyText.endsWith('Aapke confirmation ke liye bahut dhanyavaad.');
     await cleanupHrFlowArtifacts(HR_SENDER_HI, TANMOY_MONDAL_PHONE);
     return ok;
   });
@@ -967,8 +1001,11 @@ async function checkAsync(label, fn) {
     const dYes = await whatsappAssistant.decideAutoReply({ phone: TANMOY_MONDAL_PHONE, name: 'Tanmoy Mondal', firstName: 'Tanmoy', text: 'Haa', isGroup: false, history: [] });
     const log2 = await whatsappAssistant.listInboxLog(50);
     const resultEntry = log2.filter((e) => e.chatId === phone && e.case === 'hr_confirmation_result' && (e.sentAt || 0) >= beforeTs).sort((a, b) => (b.sentAt || 0) - (a.sentAt || 0))[0];
-    const step5Ok = dYes.replyText === 'Ami SUBH, Subhodeep-er HR Assistant. Apnar confirmation-er jonno onek dhonnobad.'
-      && Boolean(resultEntry) && resultEntry.sentText === 'Ami SUBH, Subhodeep-er HR Assistant. Tanmoy Mondal-er sathe kotha hoye geche, uni apnar ei bishoy-ta confirm korechhen. Ebar ami puro bishoy-ta Subhodeep-ke janiye dicchi.';
+    // Task 2 (2026-10-28) - endsWith: both phones were already introduced
+    // earlier in this same test (the sender's own STEP1 reply, Tanmoy's
+    // own manager message) - once-per-day correctly omits it here.
+    const step5Ok = dYes.replyText.endsWith('Apnar confirmation-er jonno onek dhonnobad.')
+      && Boolean(resultEntry) && resultEntry.sentText.endsWith('Tanmoy Mondal-er sathe kotha hoye geche, uni apnar ei bishoy-ta confirm korechhen. Ebar ami puro bishoy-ta Subhodeep-ke janiye dicchi.');
     await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
     return step4Ok && step5Ok;
   });
@@ -983,8 +1020,8 @@ async function checkAsync(label, fn) {
     const dNo = await whatsappAssistant.decideAutoReply({ phone: TANMOY_MONDAL_PHONE, name: 'Tanmoy Mondal', firstName: 'Tanmoy', text: 'Na', isGroup: false, history: [] });
     const log2 = await whatsappAssistant.listInboxLog(50);
     const resultEntry = log2.filter((e) => e.chatId === phone && e.case === 'hr_confirmation_result' && (e.sentAt || 0) >= beforeTs).sort((a, b) => (b.sentAt || 0) - (a.sentAt || 0))[0];
-    const step5Ok = dNo.replyText === 'Ami SUBH, Subhodeep-er HR Assistant. Janano-r jonno onek dhonnobad.'
-      && Boolean(resultEntry) && resultEntry.sentText === 'Ami SUBH, Subhodeep-er HR Assistant. Tanmoy Mondal-er sathe kotha hoye geche, uni ei bishoy-ta confirm korenni. Ami puro bishoy-ta Subhodeep-ke janiye dicchi, uni apnar sathe jogajog korben.';
+    const step5Ok = dNo.replyText.endsWith('Janano-r jonno onek dhonnobad.')
+      && Boolean(resultEntry) && resultEntry.sentText.endsWith('Tanmoy Mondal-er sathe kotha hoye geche, uni ei bishoy-ta confirm korenni. Ami puro bishoy-ta Subhodeep-ke janiye dicchi, uni apnar sathe jogajog korben.');
     await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
     return step4Ok && step5Ok;
   });
@@ -1107,7 +1144,9 @@ async function checkAsync(label, fn) {
     await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Kalke chuti nebo', isGroup: false, history: [] });
     const d2 = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Na, ekhono neini', isGroup: false, history: [] });
     const pending = await whatsappAssistant.getPendingHrNoteFlow(phone);
-    const ok = d2.replyText === 'Ami SUBH, Subhodeep-er HR Assistant. Thik ache. Apnar reporting manager-er theke approval niye nin — ami bishoy-ta note kore Subhodeep-ke janiye dicchi.' && pending === null;
+    // Task 2 (2026-10-28) - endsWith: this is the SECOND message on this
+    // phone today (the first already introduced SUBH).
+    const ok = d2.replyText.endsWith('Thik ache. Apnar reporting manager-er theke approval niye nin — ami bishoy-ta note kore Subhodeep-ke janiye dicchi.') && pending === null;
     await cleanupWfhLeave(phone);
     return ok;
   });
@@ -1202,7 +1241,8 @@ async function checkAsync(label, fn) {
     await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Ami ajke chhutir din duty korchi, ekta important kaj ache', isGroup: false, history: [] });
     const d2 = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'kauke boli ni', isGroup: false, history: [] });
     const pending = await whatsappAssistant.getPendingHrNoteFlow(phone);
-    const ok = d2.replyText === 'Ami SUBH, Subhodeep-er HR Assistant. Thik ache. Apnar reporting manager-ke-o janiye rakhun — ami bishoy-ta note kore Subhodeep-ke janiye dicchi.' && pending === null;
+    // Task 2 (2026-10-28) - endsWith: SECOND message on this phone today.
+    const ok = d2.replyText.endsWith('Thik ache. Apnar reporting manager-ke-o janiye rakhun — ami bishoy-ta note kore Subhodeep-ke janiye dicchi.') && pending === null;
     await cleanupWfhLeave(phone);
     return ok;
   });
@@ -1573,7 +1613,9 @@ async function checkAsync(label, fn) {
     const pending = await whatsappAssistant.getPendingHrNoteFlow(SCREENSHOT_SENDER);
     // Updated for Task 2 Wave 1's new confirm-question wording (the
     // instruction/approval word is now named in the question itself).
-    return d.replyText === 'Ami SUBH, Subhodeep-er HR Assistant. Apni ki ei instruction-er bishoye Subhodeep Kundu Chowdhury (HR department)-er kotha bolchhen?'
+    // Task 2 (2026-10-28) - endsWith: SECOND message from SCREENSHOT_SENDER
+    // today (turn 1 already introduced SUBH).
+    return d.replyText.endsWith('Apni ki ei instruction-er bishoye Subhodeep Kundu Chowdhury (HR department)-er kotha bolchhen?')
       && Boolean(pending) && pending.step === 'awaiting_confirm_yes_no' && pending.candidate.name === 'Subhodeep Kundu Chowdhury';
   });
   await checkAsync('replay turn 3 ("Haa"): reaches STEP 3 (exact spec wording) and STEP 4 (manager messaged, active voice, identity line) - NEVER the old wrong "Ami apnar bishoy-ta note kore nilam ar Subhodeep-ke janiye dicchi" (no-third-party) fallback', async () => {
@@ -1582,7 +1624,9 @@ async function checkAsync(label, fn) {
     const log = await whatsappAssistant.listInboxLog(10);
     const mgrEntry = log.find((e) => e.chatId === SUBHODEEP_KC_PHONE && e.case === 'hr_confirmation_sent');
     const confirmations = (await whatsappAssistant.listAllHrConfirmations()).filter((c) => c.senderPhone === SCREENSHOT_SENDER);
-    const ok = d.replyText === 'Ami SUBH, Subhodeep-er HR Assistant. Amake sothik naam diye sahajyo korar jonno dhonnobad. Ami Subhodeep Kundu Chowdhury-er sathe kotha bole joto taratari somvob apnake janacchi.'
+    // Task 2 (2026-10-28) - endsWith: THIRD message from SCREENSHOT_SENDER
+    // today (turn 1 already introduced SUBH).
+    const ok = d.replyText.endsWith('Amake sothik naam diye sahajyo korar jonno dhonnobad. Ami Subhodeep Kundu Chowdhury-er sathe kotha bole joto taratari somvob apnake janacchi.')
       && pending === null
       && Boolean(mgrEntry) && mgrEntry.sentText.startsWith('Ami SUBH, Subhodeep-er HR Assistant.') && mgrEntry.sentText.includes('apni onake') && mgrEntry.sentText.includes('bolechhen')
       && confirmations.length === 1 && confirmations[0].thirdPartyName === 'Subhodeep Kundu Chowdhury' && confirmations[0].status === 'awaiting_manager';
@@ -1689,6 +1733,12 @@ async function checkAsync(label, fn) {
     const flow = typeof raw === 'string' ? JSON.parse(raw) : raw;
     flow.lastTouchedAt = Date.now() - ms;
     await redis.set('wa-pending-hr-note-flow:' + phone, JSON.stringify(flow), { ex: 7 * 24 * 60 * 60 });
+    // Task 2 (2026-10-28) - the dedicated per-day intro marker
+    // (hasIntroducedTodayDedicated) is keyed by REAL wall-clock calendar
+    // day, not by this flow's own (fakeable) lastTouchedAt - a test
+    // simulating "a day has passed" has to clear it explicitly too, or it
+    // still (correctly, for REAL time) says "already introduced today".
+    if (ms >= 24 * 60 * 60 * 1000) await whatsappAssistant.clearIntroducedToday(phone).catch(() => {});
   }
   // Link-back rule (new) - STEP 5's result-to-sender message compares the
   // day it's sent against the sender's OWN ORIGINAL message, recorded on
@@ -2786,6 +2836,13 @@ async function checkAsync(label, fn) {
   // so this is still read-only, just varying the `history` the disclosure
   // wrapper itself looks at.
   const FF_TEXT = 'amar F&F settlement approval ki hoyeche?';
+  // Task 2 (2026-10-28)'s dedicated per-day intro marker tracks TEST_PHONE
+  // across the WHOLE suite run (real wall-clock day, not fake history) -
+  // TEST_PHONE is shared by many earlier tests in this file, any of which
+  // may have already marked it "introduced today". Clear it here so this
+  // test's own `history: []` genuinely means "brand-new conversation",
+  // same fix already applied via cleanupHrFlowArtifacts elsewhere in this file.
+  await whatsappAssistant.clearIntroducedToday(TEST_PHONE, new Date());
   await checkAsync('the FIRST reply in a brand-new conversation (empty history) is prefixed with the AI disclosure line', async () => {
     const d = await whatsappAssistant.decideAutoReply({ phone: TEST_PHONE, name: 'Test', firstName: 'Test', text: FF_TEXT, isGroup: false, history: [] });
     return Boolean(d.replyText) && d.replyText.startsWith(whatsappAssistant.AI_DISCLOSURE_LINE.banglish);
@@ -3510,6 +3567,18 @@ async function checkAsync(label, fn) {
         banglish: 'Hello! Ami SUBH, Subhodeep-er HR Assistant. Apnake ki bhabe sahajyo korte pari?',
         hinglish: 'Hello! Main SUBH hoon, Subhodeep ka HR Assistant. Main aapki kaise madad kar sakta hoon?'
       };
+      // Task 2 (2026-10-28), direct instruction - REVERSES the earlier
+      // "always introduce, even mid-conversation" rule: a greeting now
+      // follows the SAME once-per-day rule as everything else. The FIRST
+      // greeting of the day still gets the full intro (GREETING_REPLY_BY_LANG,
+      // tested below with a genuinely fresh phone/history); a SECOND
+      // greeting later the same day gets this short line instead, with no
+      // identity line at all.
+      const GREETING_REPLY_SHORT_BY_LANG = {
+        english: 'Hello! How can I help you today?',
+        banglish: 'Hello! Bolun, ki sahajyo korte pari?',
+        hinglish: 'Hello! Boliye, main kya madad kar sakta hoon?'
+      };
       const GREETING_ONLY_CASES = [
         ['greeting-only "Hii" (english)', 'Hii', 'english'],
         ['greeting-only "hello" (english)', 'hello', 'english'],
@@ -3518,19 +3587,23 @@ async function checkAsync(label, fn) {
         ['greeting-only "good morning" (english)', 'good morning', 'english']
       ];
       for (const [label, text, lang] of GREETING_ONLY_CASES) {
-        await checkAsync('equivalence: ' + label + ' (deterministic template, EXACT match, ALWAYS - even mid-conversation)', async () => {
+        await checkAsync('equivalence: ' + label + ' (deterministic template, EXACT match - the FIRST greeting of the day, genuinely fresh phone/history)', async () => {
           const [phoneA] = phonePair();
-          // Mid-conversation history (recent incoming within 24h) on
-          // purpose - greeting-only must ALWAYS introduce SUBH, unlike
-          // every other reply type's "first message only" rule, and must
-          // never double up with the separate AI_DISCLOSURE_LINE prepend.
-          const recentHistory = [{ direction: 'in', text: 'Amar salary kobe ashbe?', ts: Date.now() - 60000 }, { direction: 'out', text: 'Ami SUBH, Subhodeep-er HR Assistant. Check kore janacchi.', ts: Date.now() - 50000 }];
-          const d = await whatsappAssistant.decideAutoReply({ phone: phoneA, name: 'Test', firstName: 'Test', text, isGroup: false, history: recentHistory });
+          const d = await whatsappAssistant.decideAutoReply({ phone: phoneA, name: 'Test', firstName: 'Test', text, isGroup: false, history: [] });
           const expected = GREETING_REPLY_BY_LANG[lang];
-          // Exactly ONE "I'm SUBH"-equivalent phrase - never doubled up by
-          // the separate AI-disclosure-line wrapper.
           const introCount = (d.replyText.match(/i'?m subh|main subh|ami subh/gi) || []).length;
           return d.case === 'acknowledged' && d.replyText === expected && introCount === 1;
+        });
+        await checkAsync('equivalence: ' + label + ' (deterministic template, EXACT match - a SECOND greeting later the SAME day gets the short line, no identity line, never doubled)', async () => {
+          const [phoneA] = phonePair();
+          // First greeting of the day - real call, really marks the
+          // dedicated per-day intro marker (never faked via a manually
+          // constructed history array).
+          await whatsappAssistant.decideAutoReply({ phone: phoneA, name: 'Test', firstName: 'Test', text, isGroup: false, history: [] });
+          const d = await whatsappAssistant.decideAutoReply({ phone: phoneA, name: 'Test', firstName: 'Test', text, isGroup: false, history: [] });
+          const expected = GREETING_REPLY_SHORT_BY_LANG[lang];
+          const introCount = (d.replyText.match(/i'?m subh|main subh|ami subh/gi) || []).length;
+          return d.case === 'acknowledged' && d.replyText === expected && introCount === 0;
         });
       }
       await checkAsync('equivalence: "Hi, amar salary kobe?" (greeting + a real question) is NEVER hijacked by the anchored greeting-only match - answers the question instead', async () => {
@@ -3851,11 +3924,12 @@ async function checkAsync(label, fn) {
   });
   await checkAsync('CASE C, OLD vs NEW: once Saurav\'s own part is done and Tanmoy\'s confirmation is pending, a further on-topic message from Saurav gets noted + a short waiting-status line, matching the user\'s own example sentence exactly - previously this fell through to the general classifier with no memory anything was open', async () => {
     const caseC = await whatsappAssistant.decideAutoReply({ phone: SAURAV_PHONE, name: 'Saurav', firstName: 'Saurav', text: 'Sir, ei chutti-tar karon chhilo amar barite ekta poribarik onustan', isGroup: false, history: [] });
-    // Every call in this test passes history: [] on purpose (isolates the
-    // mechanism under test), which makes decideAutoReply treat it as a
-    // brand-new conversation and prepend the one-time identity line - a
-    // real, separate, unrelated feature, not part of case A/B/C itself.
-    return caseC.replyText === 'Ami SUBH, Subhodeep-er HR Assistant. Ami apnar ei bishoy-ta-o note kore nilam, Subhodeep-ke janiye dicchi. Ar Tanmoy Mondal-er confirmation-er opekkha korchhi, uttor pelei apnake janacchi.';
+    // Task 2 (2026-10-28) - endsWith, not exact equality: this is the
+    // THIRD+ message on SAURAV_PHONE within this test (earlier calls above
+    // already introduced SUBH) - the dedicated per-day marker (not just
+    // this call's own history: []) now correctly tracks that across calls,
+    // so the intro no longer repeats here.
+    return caseC.replyText.endsWith('Ami apnar ei bishoy-ta-o note kore nilam, Subhodeep-ke janiye dicchi. Ar Tanmoy Mondal-er confirmation-er opekkha korchhi, uttor pelei apnake janacchi.');
   });
   await checkAsync('CASE C never misfires on a closing message: "Thank you Sir" while still waiting on Tanmoy falls through to the normal closing-message handling instead', async () => {
     const d = await whatsappAssistant.decideAutoReply({ phone: SAURAV_PHONE, name: 'Saurav', firstName: 'Saurav', text: 'Thank you Sir', isGroup: false, history: [] });
@@ -3879,9 +3953,9 @@ async function checkAsync(label, fn) {
     const combined = 'Sir, ei month e amar kono chhutti nei\n1.Tanmoy Mondal - Civil (Plot -B), Structure, Srirampur';
     const caseB = await whatsappAssistant.decideAutoReply({ phone: SAURAV_PHONE, name: 'Saurav', firstName: 'Saurav', text: combined, isGroup: false, history: [] });
     const pending = await whatsappAssistant.getPendingHrNoteFlow(SAURAV_PHONE);
-    // Same history: [] note as CASE C above - the identity line prefix is
-    // expected here too, not part of case A/B/C's own mechanism.
-    const ok = caseB.replyText === 'Ami SUBH, Subhodeep-er HR Assistant. Ami apnar ei bishoy-ta-o note kore nilam, Subhodeep-ke janiye dicchi. Ar amake sothik naam diye sahajyo korar jonno dhonnobad. Ami Tanmoy Mondal-er sathe kotha bole joto taratari somvob apnake janacchi.'
+    // Task 2 (2026-10-28) - endsWith: THIRD message on SAURAV_PHONE within
+    // this test (the earlier two calls above already introduced SUBH).
+    const ok = caseB.replyText.endsWith('Ami apnar ei bishoy-ta-o note kore nilam, Subhodeep-ke janiye dicchi. Ar amake sothik naam diye sahajyo korar jonno dhonnobad. Ami Tanmoy Mondal-er sathe kotha bole joto taratari somvob apnake janacchi.')
       && pending === null;
     await cleanupHrFlowArtifacts(SAURAV_PHONE, TANMOY_MONDAL_PHONE);
     return ok;
@@ -3924,12 +3998,14 @@ async function checkAsync(label, fn) {
     const caseB = await whatsappAssistant.decideAutoReply({ phone: WFH_PHONE, name: 'Sender', firstName: 'Sender', text: combined, isGroup: false, history: [] });
     const pending = await whatsappAssistant.getPendingHrNoteFlow(WFH_PHONE);
     const confirmations = (await whatsappAssistant.listAllHrConfirmations()).filter((c) => c.senderPhone === WFH_PHONE);
-    return caseB.replyText === 'Ami SUBH, Subhodeep-er HR Assistant. Ami apnar ei bishoy-ta-o note kore nilam, Subhodeep-ke janiye dicchi. Ar amake sothik naam diye sahajyo korar jonno dhonnobad. Ami Tanmoy Mondal-er sathe kotha bole joto taratari somvob apnake janacchi.'
+    // Task 2 (2026-10-28) - endsWith: both already introduced earlier in
+    // this same WFH flow sequence.
+    return caseB.replyText.endsWith('Ami apnar ei bishoy-ta-o note kore nilam, Subhodeep-ke janiye dicchi. Ar amake sothik naam diye sahajyo korar jonno dhonnobad. Ami Tanmoy Mondal-er sathe kotha bole joto taratari somvob apnake janacchi.')
       && pending === null && confirmations.length === 1 && confirmations[0].status === 'awaiting_manager' && confirmations[0].thirdPartyName === 'Tanmoy Mondal';
   });
   await checkAsync('WFH flow, CASE C: once the approver\'s confirmation is pending, further on-topic info from the sender gets noted + the waiting-status line', async () => {
     const caseC = await whatsappAssistant.decideAutoReply({ phone: WFH_PHONE, name: 'Sender', firstName: 'Sender', text: 'Ei WFH-tar din-e ami video call-eo available chilam, jodi dorkar hoy janaben', isGroup: false, history: [] });
-    return caseC.replyText === 'Ami SUBH, Subhodeep-er HR Assistant. Ami apnar ei bishoy-ta-o note kore nilam, Subhodeep-ke janiye dicchi. Ar Tanmoy Mondal-er confirmation-er opekkha korchhi, uttor pelei apnake janacchi.';
+    return caseC.replyText.endsWith('Ami apnar ei bishoy-ta-o note kore nilam, Subhodeep-ke janiye dicchi. Ar Tanmoy Mondal-er confirmation-er opekkha korchhi, uttor pelei apnake janacchi.');
   });
   await checkAsync('WFH flow cleanup: resolve the confirmation', async () => {
     await whatsappAssistant.decideAutoReply({ phone: TANMOY_MONDAL_PHONE, name: 'Tanmoy Mondal', firstName: 'Tanmoy', text: 'Haa', isGroup: false, history: [] });
@@ -3953,12 +4029,14 @@ async function checkAsync(label, fn) {
     const combined = 'Ei half day-tar karon chilo amar doctor-er appointment chilo dupure\nTanmoy Mondal';
     const caseB = await whatsappAssistant.decideAutoReply({ phone: LEAVE_PHONE, name: 'Sender', firstName: 'Sender', text: combined, isGroup: false, history: [] });
     const confirmations = (await whatsappAssistant.listAllHrConfirmations()).filter((c) => c.senderPhone === LEAVE_PHONE);
-    return caseB.replyText === 'Ami SUBH, Subhodeep-er HR Assistant. Ami apnar ei bishoy-ta-o note kore nilam, Subhodeep-ke janiye dicchi. Ar amake sothik naam diye sahajyo korar jonno dhonnobad. Ami Tanmoy Mondal-er sathe kotha bole joto taratari somvob apnake janacchi.'
+    // Task 2 (2026-10-28) - endsWith: both already introduced earlier in
+    // this same half-day flow sequence.
+    return caseB.replyText.endsWith('Ami apnar ei bishoy-ta-o note kore nilam, Subhodeep-ke janiye dicchi. Ar amake sothik naam diye sahajyo korar jonno dhonnobad. Ami Tanmoy Mondal-er sathe kotha bole joto taratari somvob apnake janacchi.')
       && confirmations.length === 1 && confirmations[0].status === 'awaiting_manager';
   });
   await checkAsync('Half-day-approval flow, CASE C: once the approver\'s confirmation is pending, further on-topic info gets noted + the waiting-status line', async () => {
     const caseC = await whatsappAssistant.decideAutoReply({ phone: LEAVE_PHONE, name: 'Sender', firstName: 'Sender', text: 'Doctor dekhanor pore ami bikel-e office-o eshe giyechilam ektu kajer jonne', isGroup: false, history: [] });
-    const ok = caseC.replyText === 'Ami SUBH, Subhodeep-er HR Assistant. Ami apnar ei bishoy-ta-o note kore nilam, Subhodeep-ke janiye dicchi. Ar Tanmoy Mondal-er confirmation-er opekkha korchhi, uttor pelei apnake janacchi.';
+    const ok = caseC.replyText.endsWith('Ami apnar ei bishoy-ta-o note kore nilam, Subhodeep-ke janiye dicchi. Ar Tanmoy Mondal-er confirmation-er opekkha korchhi, uttor pelei apnake janacchi.');
     await whatsappAssistant.decideAutoReply({ phone: TANMOY_MONDAL_PHONE, name: 'Tanmoy Mondal', firstName: 'Tanmoy', text: 'Haa', isGroup: false, history: [] });
     await cleanupHrFlowArtifacts(LEAVE_PHONE, TANMOY_MONDAL_PHONE);
     return ok;
@@ -4426,6 +4504,134 @@ async function checkAsync(label, fn) {
     const d = await whatsappAssistant.decideAutoReply({ phone: CUSTOM_TEMPLATE_PHONE, name: 'Sender', firstName: 'Sender', text: 'Ajke ektu dorkar chilo, office asa hobe na', isGroup: false, history: [] });
     return Boolean(d.replyText) && d.replyText !== whatsappAssistant.MODEL_REPLY_SAFE_FALLBACK.banglish;
   });
+
+  console.log('='.repeat(70));
+  console.log('TASK 1 (2026-10-28): saved templates reply in the sender\'s OWN detected language - "AI understands, code speaks"');
+  console.log('='.repeat(70));
+  {
+    const LANG_TEMPLATE_PHONE = '910000002202';
+    const LANG_VERSIONS = {
+      english: 'TASK1-ENG: Here is the leave policy in English, exactly as saved.',
+      banglish: 'TASK1-BAN: Chhutir policy ei rokom, thik jemon save kora ache.',
+      hinglish: 'TASK1-HIN: Chutti ki policy yeh hai, bilkul save ki hui tarah.'
+    };
+    let langTemplate = null;
+    await checkAsync('setup: save a multi-language template (all three real, distinct versions)', async () => {
+      langTemplate = await whatsappAssistant.saveReplyTemplate({ topic: 'Leave policy question', whenToUse: "the sender is asking what the company's leave/holiday policy is", replyText: LANG_VERSIONS });
+      return Boolean(langTemplate && langTemplate.replyText && langTemplate.replyText.english === LANG_VERSIONS.english && langTemplate.replyText.banglish === LANG_VERSIONS.banglish && langTemplate.replyText.hinglish === LANG_VERSIONS.hinglish);
+    });
+    await checkAsync('an ENGLISH message matching the topic gets the ENGLISH version, sent exactly as stored (never re-translated)', async () => {
+      const d = await whatsappAssistant.decideAutoReply({ phone: LANG_TEMPLATE_PHONE, name: 'Sender', firstName: 'Sender', text: 'What is the leave policy here?', isGroup: false, history: [] });
+      return d.replyText.endsWith(LANG_VERSIONS.english);
+    });
+    await checkAsync('the SAME sender, SAME topic, now in BANGLISH gets the BANGLISH version - the stored language pick follows THIS message, not a fixed per-template language', async () => {
+      const d = await whatsappAssistant.decideAutoReply({ phone: LANG_TEMPLATE_PHONE, name: 'Sender', firstName: 'Sender', text: 'Amader company-r chhutir policy ta ki?', isGroup: false, history: [] });
+      return d.replyText.endsWith(LANG_VERSIONS.banglish);
+    });
+    await checkAsync('the same topic in HINGLISH gets the HINGLISH version', async () => {
+      const d = await whatsappAssistant.decideAutoReply({ phone: LANG_TEMPLATE_PHONE, name: 'Sender', firstName: 'Sender', text: 'Hamari company ki chutti policy kya hai?', isGroup: false, history: [] });
+      return d.replyText.endsWith(LANG_VERSIONS.hinglish);
+    });
+    await checkAsync('an unrelated question never triggers this template, in any language', async () => {
+      const d = await whatsappAssistant.decideAutoReply({ phone: LANG_TEMPLATE_PHONE, name: 'Sender', firstName: 'Sender', text: 'Amader office-e ki canteen ache?', isGroup: false, history: [] });
+      return !d.replyText.includes('TASK1-');
+    });
+    await checkAsync('REGRESSION: a short "ok sir" after a Banglish message stays Banglish - the existing language-stickiness feeding classification.language is unaffected by the new per-template language pick', async () => {
+      const history = [{ direction: 'in', text: 'Ajke ektu sharirik asubidha, office asa hobe na', ts: Date.now() - 10000 }];
+      const d = await whatsappAssistant.decideAutoReply({ phone: LANG_TEMPLATE_PHONE, name: 'Sender', firstName: 'Sender', text: 'ok sir', isGroup: false, history });
+      return d.lang === 'banglish';
+    });
+    await checkAsync('cleanup', async () => {
+      if (langTemplate) await whatsappAssistant.deleteReplyTemplate(langTemplate.id);
+      return true;
+    });
+  }
+
+  console.log('='.repeat(70));
+  console.log('TASK 2 (2026-10-28), LIVE BUG (917278793115, 12:47-13:15): flow stuck in a loop on "Yss sir" - exact replay');
+  console.log('='.repeat(70));
+  {
+    const LOOP_PHONE = '910000002301';
+    await checkAsync('setup: "Kalke chuti nebo" starts the approval flow, asking who approved it', async () => {
+      await whatsappAssistant.clearPendingHrNoteFlow(LOOP_PHONE).catch(() => {});
+      const d = await whatsappAssistant.decideAutoReply({ phone: LOOP_PHONE, name: 'Sender', firstName: 'Sender', text: 'Kalke chuti nebo', isGroup: false, history: [] });
+      const flow = await whatsappAssistant.getPendingHrNoteFlow(LOOP_PHONE);
+      return Boolean(flow) && flow.step === 'awaiting_approval_obtained' && d.replyText.includes('chhutti-r approval-ta niyechhen');
+    });
+    let firstRetryText = null;
+    await checkAsync('LOCKED SCENARIO: "Yss sir" (a bare honorific, not a name) gets the SPEC re-ask template, never the free-form "eta ki amar age-r proshno-r uttor" line', async () => {
+      const d = await whatsappAssistant.decideAutoReply({ phone: LOOP_PHONE, name: 'Sender', firstName: 'Sender', text: 'Yss sir', isGroup: false, history: [] });
+      firstRetryText = d.replyText;
+      const flow = await whatsappAssistant.getPendingHrNoteFlow(LOOP_PHONE);
+      return d.replyText === (whatsappAssistant.HR_NOTE_DIDNT_UNDERSTAND_WHO.banglish) && flow.step === 'awaiting_approval_obtained' && flow.unclearAttempts === 1;
+    });
+    await checkAsync('LOCKED SCENARIO: "Ager prosner uttor" (the exact live-replayed repeat) gets a DIFFERENT re-ask - never the identical text twice in a row', async () => {
+      const d = await whatsappAssistant.decideAutoReply({ phone: LOOP_PHONE, name: 'Sender', firstName: 'Sender', text: 'Yss sir', isGroup: false, history: [] });
+      const flow = await whatsappAssistant.getPendingHrNoteFlow(LOOP_PHONE);
+      return d.replyText !== firstRetryText && d.replyText === whatsappAssistant.HR_NOTE_DIDNT_UNDERSTAND_WHO_RETRY2.banglish && flow.step === 'awaiting_approval_obtained' && flow.unclearAttempts === 2;
+    });
+    await checkAsync('LOCKED SCENARIO: a THIRD unclear reply stops asking - closes the sender-side loop, flags an owner "Approvals" card instead, and never leaves the sender with no reply at all', async () => {
+      const d = await whatsappAssistant.decideAutoReply({ phone: LOOP_PHONE, name: 'Sender', firstName: 'Sender', text: 'Yss sir', isGroup: false, history: [] });
+      const flow = await whatsappAssistant.getPendingHrNoteFlow(LOOP_PHONE);
+      const escalations = await whatsappAssistant.listHrNoteEscalations();
+      const mine = escalations.find((e) => e.phone === LOOP_PHONE);
+      const ok = Boolean(d.replyText) && flow === null && Boolean(mine);
+      if (mine) await whatsappAssistant.dismissHrNoteEscalation(mine.id);
+      return ok;
+    });
+  }
+  {
+    const SEPARATE_TOPIC_PHONE = '910000002302';
+    await checkAsync('setup: "Kalke chuti nebo" + "Hmm sir" (one unclear reply, flow still open)', async () => {
+      await whatsappAssistant.clearPendingHrNoteFlow(SEPARATE_TOPIC_PHONE).catch(() => {});
+      await whatsappAssistant.decideAutoReply({ phone: SEPARATE_TOPIC_PHONE, name: 'Sender', firstName: 'Sender', text: 'Kalke chuti nebo', isGroup: false, history: [] });
+      const flow = await whatsappAssistant.getPendingHrNoteFlow(SEPARATE_TOPIC_PHONE);
+      return Boolean(flow) && flow.step === 'awaiting_approval_obtained';
+    });
+    await checkAsync('LOCKED SCENARIO: a genuinely different real question ("Pujo-y office koto din bondho?") is answered on its OWN, never the clarify loop text, and the approval flow stays open for later', async () => {
+      const d = await whatsappAssistant.decideAutoReply({ phone: SEPARATE_TOPIC_PHONE, name: 'Sender', firstName: 'Sender', text: 'Pujo-y office koto din bondho?', isGroup: false, history: [] });
+      const flow = await whatsappAssistant.getPendingHrNoteFlow(SEPARATE_TOPIC_PHONE);
+      const isLoopText = d.replyText.includes('age-r proshno-r uttor') || d.replyText.includes('bujhte parini');
+      return Boolean(d.replyText) && !isLoopText && Boolean(flow) && flow.step === 'awaiting_approval_obtained';
+    });
+    await checkAsync('cleanup', async () => {
+      await whatsappAssistant.clearPendingHrNoteFlow(SEPARATE_TOPIC_PHONE).catch(() => {});
+      return true;
+    });
+  }
+
+  console.log('='.repeat(70));
+  console.log('TASK 2 (2026-10-28), LIVE BUG (917278793115): the identity line must appear only once per calendar day, even across a long, busy conversation');
+  console.log('='.repeat(70));
+  {
+    const INTRO_PHONE = '910000002303';
+    await checkAsync('setup: clean slate for the dedicated per-day intro marker', async () => {
+      await whatsappAssistant.clearIntroducedToday(INTRO_PHONE).catch(() => {});
+      return (await whatsappAssistant.hasIntroducedTodayDedicated(INTRO_PHONE, new Date())) === false;
+    });
+    await checkAsync('the FIRST reply of the day gets the identity line, and marks the dedicated per-day marker', async () => {
+      const d = await whatsappAssistant.decideAutoReply({ phone: INTRO_PHONE, name: 'Sender', firstName: 'Sender', text: 'Hii', isGroup: false, history: [] });
+      const marked = await whatsappAssistant.hasIntroducedTodayDedicated(INTRO_PHONE, new Date());
+      return d.replyText.includes('SUBH') && marked === true;
+    });
+    // NOTE: a bare GREETING is deliberately excluded from this check - an
+    // explicit, separately locked design ("a bare greeting always
+    // introduces SUBH, even mid-conversation" - see the PERMANENT
+    // EQUIVALENCE TEST's own greeting-only cases) intentionally always
+    // re-introduces on a greeting specifically, regardless of this marker.
+    // This proves the dedicated marker for every OTHER reply type instead
+    // (the actual live bug: "Pujo-y office koto din bondho?", a genuine
+    // question, re-introducing after conversation history had evicted the
+    // earlier exchange).
+    await checkAsync('LOCKED SCENARIO: a SECOND message the same day that is NOT a bare greeting, with conversation history EVICTED/EMPTY (exactly the live bug - a size-capped history window that no longer contains the earlier exchange), still does NOT re-introduce - the dedicated per-day marker catches it even when the history scan alone would not', async () => {
+      const d = await whatsappAssistant.decideAutoReply({ phone: INTRO_PHONE, name: 'Sender', firstName: 'Sender', text: 'Amar salary kobe ashbe?', isGroup: false, history: [] });
+      return !d.replyText.includes('SUBH');
+    });
+    await checkAsync('cleanup', async () => {
+      await whatsappAssistant.clearIntroducedToday(INTRO_PHONE).catch(() => {});
+      return true;
+    });
+  }
 
   console.log('='.repeat(70));
   console.log('TASK 6 (2026-10-27): "Action needed" unified inbox (UI + wiring only - the one deterministic, backend-testable piece is the aggregation itself)');

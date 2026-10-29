@@ -1538,7 +1538,11 @@ body { background: var(--wi-bg); }
 .wf-today-updates-card[hidden] { display: none; }
 .wf-today-updates-card {
   display: flex; align-items: center; gap: 12px;
-  margin: 0 14px 14px; padding: 14px 14px;
+  /* Task 3 (2026-10-28) - vertical padding only, reduced so the card
+     height tracks its own content (title + one/two-line subtitle) instead
+     of carrying extra air above/below it; width/margin/design/badge all
+     unchanged. */
+  margin: 0 14px 14px; padding: 10px 14px;
   border: none; border-radius: var(--wi-r-card); box-shadow: var(--wi-sh-card);
   background: var(--wi-surface); font-family: inherit; text-align: left; cursor: pointer;
   transition: transform .18s ease, box-shadow .18s ease;
