@@ -470,6 +470,16 @@ refreshBtn.addEventListener('click', async () => {
 wfDrawer.addEventListener('click', (e) => {
   const btn = e.target.closest('[data-view]');
   if (!btn) return;
+  // Task 8 (2026-10-29) - "SUBH Settings" lives INSIDE the SUBH panel's own
+  // page system (same design/back-arrow/toast as every other SUBH page),
+  // never the main dashboard's own view system - opens/keeps the panel
+  // open and navigates it there instead of calling setView, which has no
+  // such view at all.
+  if (btn.dataset.view === 'subhSettings') {
+    if (window.__hrAssistantOpenSettings) window.__hrAssistantOpenSettings();
+    closeDrawer();
+    return;
+  }
   // Task 3 (2026-10-28) - a menu pick while the SUBH panel is open closes
   // that panel first (it's a full-screen overlay above everything else -
   // switching the view underneath it would otherwise be invisible).

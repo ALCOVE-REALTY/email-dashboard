@@ -107,7 +107,8 @@
   const templateGenerateBtn = document.getElementById('hrTemplateGenerateBtn');
   const templateVersionsNote = document.getElementById('hrTemplateVersionsNote');
   // Task 2 (2026-10-28) - site aliases + new site detection
-  const siteAliasesBtn = document.getElementById('hrSiteAliasesBtn');
+  const subhSettingsPage = document.getElementById('hrSubhSettingsPage');
+  const subhSettingsSiteNamesBtn = document.getElementById('hrSubhSettingsSiteNamesBtn');
   const siteAliasesBadge = document.getElementById('hrSiteAliasesBadge');
   const siteAliasesPage = document.getElementById('hrSiteAliasesPage');
   const siteAliasesList = document.getElementById('hrSiteAliasesList');
@@ -120,6 +121,7 @@
   const siteAliasSheetSaveBtn = document.getElementById('hrSiteAliasSheetSaveBtn');
   const siteAliasInput = document.getElementById('hrSiteAliasInput');
   const siteAliasSiteValueInput = document.getElementById('hrSiteAliasSiteValueInput');
+  const siteAliasSheetTitle = document.getElementById('hrSiteAliasSheetTitle');
   const convoPage = document.getElementById('hrConvoPage');
   const convoThread = document.getElementById('hrConvoThread');
   const convoActions = document.getElementById('hrConvoActions');
@@ -1519,6 +1521,7 @@
     else if (entry.type === 'waAll') showWaAll();
     else if (entry.type === 'openFlows') showOpenFlows();
     else if (entry.type === 'templates') showTemplates();
+    else if (entry.type === 'subhSettings') showSubhSettings();
     else if (entry.type === 'siteAliases') showSiteAliases();
     else if (entry.type === 'actionNeeded') showActionNeeded();
     else if (entry.type === 'conversation') openConversationPage(entry.chatId);
@@ -1558,6 +1561,7 @@
     const isWaAll = view === 'waAll';
     const isOpenFlows = view === 'openFlows';
     const isTemplates = view === 'templates';
+    const isSubhSettings = view === 'subhSettings';
     const isSiteAliases = view === 'siteAliases';
     const isActionNeeded = view === 'actionNeeded';
     const isAutoList = view === 'automationList';
@@ -1576,6 +1580,7 @@
     if (commsWaAllPage) commsWaAllPage.hidden = !isWaAll;
     if (openFlowsPage) openFlowsPage.hidden = !isOpenFlows;
     if (templatesPage) templatesPage.hidden = !isTemplates;
+    if (subhSettingsPage) subhSettingsPage.hidden = !isSubhSettings;
     if (siteAliasesPage) siteAliasesPage.hidden = !isSiteAliases;
     if (actionNeededPage) actionNeededPage.hidden = !isActionNeeded;
     if (autoListPage) autoListPage.hidden = !isAutoList;
@@ -1613,10 +1618,16 @@
       if (commsHeadTitle) commsHeadTitle.textContent = 'Templates';
       if (commsHeadSubtitle) commsHeadSubtitle.textContent = 'Saved fixed replies for recurring topics';
       if (commsHeadBadge) commsHeadBadge.hidden = true;
+    } else if (isSubhSettings) {
+      if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon';
+      if (commsHeadIcon) commsHeadIcon.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>';
+      if (commsHeadTitle) commsHeadTitle.textContent = 'SUBH Settings';
+      if (commsHeadSubtitle) commsHeadSubtitle.textContent = '';
+      if (commsHeadBadge) commsHeadBadge.hidden = true;
     } else if (isSiteAliases) {
       if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon whatsapp';
       if (commsHeadIcon) commsHeadIcon.innerHTML = WHATSAPP_SVG;
-      if (commsHeadTitle) commsHeadTitle.textContent = 'Site aliases';
+      if (commsHeadTitle) commsHeadTitle.textContent = 'Site names';
       if (commsHeadSubtitle) commsHeadSubtitle.textContent = 'Colloquial site names matched to the HR Master';
       if (commsHeadBadge) commsHeadBadge.hidden = true;
     } else if (isActionNeeded) {
@@ -2168,14 +2179,28 @@
   }
   if (templatesBtn) templatesBtn.addEventListener('click', () => { pushNav({ type: 'templates' }); showTemplates(); });
 
-  // Task 2 (2026-10-28) - site aliases + new site detection
-  function siteAliasRowHtml(a) {
-    return '<div class="wf-auto-task-card" data-id="' + escapeHtml(a.id) + '">' +
+  // Task 2 (2026-10-28) - site aliases + new site detection.
+  // Task 8 (2026-10-29) - ONE card per GROUP (site value), per direct
+  // instruction: "list of groups with their names, Edit per group
+  // aliases, Delete per aliases". Each alias within the group keeps its
+  // own inline Delete; "Edit" bulk-replaces the WHOLE group's alias list
+  // in one go (the site value itself is fixed, real HR Master data - never
+  // editable here, only which colloquial names map to it).
+  function siteAliasGroupHtml(group) {
+    const aliasRows = group.aliases.map((a) =>
+      '<div class="wf-site-alias-chip" data-id="' + escapeHtml(a.id) + '">' +
+        '<span>' + escapeHtml(a.alias) + '</span>' +
+        '<button type="button" class="wf-site-alias-chip-delete" data-action="delete" aria-label="Delete this alias">' +
+          '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>' +
+        '</button>' +
+      '</div>'
+    ).join('');
+    return '<div class="wf-auto-task-card" data-site-value="' + escapeHtml(group.siteValue) + '">' +
       '<div class="wf-auto-task-head"><div style="flex:1;min-width:0">' +
-        '<div class="wf-auto-task-subject">' + escapeHtml(a.alias) + '</div>' +
-        '<div class="wf-auto-hint">matches "' + escapeHtml(a.siteValue) + '"</div>' +
+        '<div class="wf-auto-task-subject">' + escapeHtml(group.siteValue) + '</div>' +
       '</div></div>' +
-      '<div class="wf-auto-actions"><button type="button" class="danger" data-action="delete">Delete</button></div></div>';
+      '<div class="wf-site-alias-chips">' + (aliasRows || '<span class="wf-auto-hint">No aliases yet.</span>') + '</div>' +
+      '<div class="wf-auto-actions"><button type="button" class="plain" data-action="edit-group">Edit</button></div></div>';
   }
   function newSiteCardHtml(item) {
     const suggested = (item.suggestedAliases || []).join(', ');
@@ -2211,21 +2236,44 @@
           });
         });
       }
-      if (!aliases.length) { siteAliasesList.innerHTML = '<div class="wf-rem-empty">No aliases saved yet.</div>'; }
+      if (!aliases.length) { siteAliasesList.innerHTML = '<div class="wf-rem-empty">No site names saved yet.</div>'; }
       else {
-        siteAliasesList.innerHTML = aliases.map(siteAliasRowHtml).join('');
+        // Grouped by siteValue, in first-seen order (stable across loads
+        // since the backend already returns them in a consistent order).
+        const groups = [];
+        const groupBySiteValue = new Map();
+        aliases.forEach((a) => {
+          let group = groupBySiteValue.get(a.siteValue);
+          if (!group) { group = { siteValue: a.siteValue, aliases: [] }; groupBySiteValue.set(a.siteValue, group); groups.push(group); }
+          group.aliases.push(a);
+        });
+        siteAliasesList.innerHTML = groups.map(siteAliasGroupHtml).join('');
         siteAliasesList.querySelectorAll('[data-action="delete"]').forEach((btn) => {
           btn.addEventListener('click', async () => {
-            const id = btn.closest('[data-id]').dataset.id;
+            const chip = btn.closest('[data-id]');
+            const id = chip.dataset.id;
             if (!(await showConfirmDialog('Delete this alias?', { confirmLabel: 'Delete' }))) return;
             await runButtonAction(btn, () => fetch('/api/workforce/hr-assistant/site-aliases/' + encodeURIComponent(id), { method: 'DELETE' }).then((res) => res.json()), () => {
-              closeRowWithToast(btn.closest('.wf-auto-task-card'), { title: 'Alias deleted', type: 'success' });
+              chip.remove();
+              showActionToast('Alias deleted');
+              // The group card itself (and its own count) only needs a
+              // full reload if that was its LAST alias - cheaper to just
+              // re-fetch than track per-group counts client-side for a
+              // list this small.
+              if (!siteAliasesList.querySelector('[data-site-value="' + CSS.escape(chip.closest('[data-site-value]').dataset.siteValue) + '"] [data-id]')) loadSiteAliasesPage();
             });
+          });
+        });
+        siteAliasesList.querySelectorAll('[data-action="edit-group"]').forEach((btn) => {
+          btn.addEventListener('click', () => {
+            const card = btn.closest('[data-site-value]');
+            const group = groups.find((g) => g.siteValue === card.dataset.siteValue);
+            openSiteAliasSheet({ mode: 'edit', siteValue: group.siteValue, aliases: group.aliases });
           });
         });
       }
     } catch (err) {
-      siteAliasesList.innerHTML = '<div class="wf-rem-empty">Could not load site aliases.</div>';
+      siteAliasesList.innerHTML = '<div class="wf-rem-empty">Could not load site names.</div>';
     }
   }
   async function loadSiteAliasesBadge() {
@@ -2239,34 +2287,73 @@
     setPanelView('siteAliases');
     loadSiteAliasesPage();
   }
-  if (siteAliasesBtn) siteAliasesBtn.addEventListener('click', () => { pushNav({ type: 'siteAliases' }); showSiteAliases(); });
+  // Task 8 (2026-10-29) - "SUBH Settings", a plain menu page reached from
+  // the main ☰ side menu (workforce.js's drawer click handler calls
+  // window.__hrAssistantOpenSettings) instead of an icon on the Important
+  // WhatsApp header. Also refreshes the "new sites pending" badge on open,
+  // same data loadSiteAliasesPage's own new-sites fetch already uses.
+  function showSubhSettings() {
+    setPanelView('subhSettings');
+    loadSiteAliasesBadge();
+  }
+  window.__hrAssistantOpenSettings = function () {
+    const wasOpen = typeof panel !== 'undefined' && !panel.hidden;
+    if (!wasOpen && typeof openPanel === 'function') openPanel();
+    pushNav({ type: 'subhSettings' });
+    showSubhSettings();
+  };
+  if (subhSettingsSiteNamesBtn) subhSettingsSiteNamesBtn.addEventListener('click', () => { pushNav({ type: 'siteAliases' }); showSiteAliases(); });
   function closeSiteAliasSheet() {
     siteAliasSheetBackdrop.classList.remove('open');
     siteAliasSheet.classList.remove('open');
     setTimeout(() => { siteAliasSheetBackdrop.hidden = true; siteAliasSheet.hidden = true; }, 320);
   }
-  if (siteAliasAddBtn) {
-    siteAliasAddBtn.addEventListener('click', () => {
-      if (siteAliasInput) siteAliasInput.value = '';
-      if (siteAliasSiteValueInput) siteAliasSiteValueInput.value = '';
-      siteAliasSheetBackdrop.hidden = false;
-      siteAliasSheet.hidden = false;
-      void siteAliasSheet.offsetHeight;
-      siteAliasSheetBackdrop.classList.add('open');
-      siteAliasSheet.classList.add('open');
-    });
+  // Task 8 (2026-10-29) - one sheet, two modes: "add" creates a brand new
+  // group (a site value + its initial aliases); "edit" bulk-replaces an
+  // EXISTING group's alias list (the site value itself is fixed real HR
+  // Master data, never editable here - the field is disabled and the
+  // group's current aliases are tracked for a diff on Save, since the
+  // backend only ever offers add-one/delete-one, never a bulk replace).
+  let siteAliasSheetState = { mode: 'add', siteValue: '', existingAliases: [] };
+  function openSiteAliasSheet({ mode, siteValue, aliases }) {
+    siteAliasSheetState = { mode, siteValue: siteValue || '', existingAliases: aliases || [] };
+    if (siteAliasSheetTitle) siteAliasSheetTitle.textContent = mode === 'edit' ? 'Edit "' + siteValue + '"' : 'Add a new group';
+    if (siteAliasSiteValueInput) { siteAliasSiteValueInput.value = siteValue || ''; siteAliasSiteValueInput.disabled = mode === 'edit'; }
+    if (siteAliasInput) siteAliasInput.value = mode === 'edit' ? (aliases || []).map((a) => a.alias).join(', ') : '';
+    siteAliasSheetBackdrop.hidden = false;
+    siteAliasSheet.hidden = false;
+    void siteAliasSheet.offsetHeight;
+    siteAliasSheetBackdrop.classList.add('open');
+    siteAliasSheet.classList.add('open');
   }
+  if (siteAliasAddBtn) siteAliasAddBtn.addEventListener('click', () => openSiteAliasSheet({ mode: 'add' }));
   if (siteAliasSheetCloseBtn) siteAliasSheetCloseBtn.addEventListener('click', closeSiteAliasSheet);
   if (siteAliasSheetCancelBtn) siteAliasSheetCancelBtn.addEventListener('click', closeSiteAliasSheet);
   if (siteAliasSheetBackdrop) siteAliasSheetBackdrop.addEventListener('click', closeSiteAliasSheet);
   if (siteAliasSheetSaveBtn) {
     siteAliasSheetSaveBtn.addEventListener('click', async () => {
-      const alias = (siteAliasInput.value || '').trim();
-      const siteValue = (siteAliasSiteValueInput.value || '').trim();
-      if (!alias || !siteValue) { showActionToast('Both fields are required.'); return; }
-      await runButtonAction(siteAliasSheetSaveBtn, () => postJsonOrThrow('/api/workforce/hr-assistant/site-aliases', { alias, siteValue }), () => {
+      const siteValue = (siteAliasSheetState.mode === 'edit' ? siteAliasSheetState.siteValue : (siteAliasSiteValueInput.value || '')).trim();
+      const newAliasWords = (siteAliasInput.value || '').split(',').map((s) => s.trim()).filter(Boolean);
+      if (!siteValue || !newAliasWords.length) { showActionToast('Both fields are required.'); return; }
+      await runButtonAction(siteAliasSheetSaveBtn, async () => {
+        if (siteAliasSheetState.mode === 'edit') {
+          // Diff against what this group already had: delete aliases the
+          // owner removed from the text field, add ones that are new -
+          // case-insensitive so re-typing the same word with different
+          // casing is never treated as a change.
+          const existingByLower = new Map(siteAliasSheetState.existingAliases.map((a) => [a.alias.toLowerCase(), a]));
+          const newByLower = new Map(newAliasWords.map((w) => [w.toLowerCase(), w]));
+          const toDelete = siteAliasSheetState.existingAliases.filter((a) => !newByLower.has(a.alias.toLowerCase()));
+          const toAdd = newAliasWords.filter((w) => !existingByLower.has(w.toLowerCase()));
+          for (const a of toDelete) await fetch('/api/workforce/hr-assistant/site-aliases/' + encodeURIComponent(a.id), { method: 'DELETE' });
+          for (const w of toAdd) await postJsonOrThrow('/api/workforce/hr-assistant/site-aliases', { alias: w, siteValue });
+        } else {
+          for (const w of newAliasWords) await postJsonOrThrow('/api/workforce/hr-assistant/site-aliases', { alias: w, siteValue });
+        }
+        return { ok: true };
+      }, () => {
         closeSiteAliasSheet();
-        showProToast({ title: 'Alias saved', type: 'success' });
+        showProToast({ title: siteAliasSheetState.mode === 'edit' ? 'Group updated' : 'Group added', type: 'success' });
         if (panelView === 'siteAliases') loadSiteAliasesPage();
       });
     });

@@ -2144,6 +2144,20 @@ body { background: var(--wi-bg); }
 .wf-auto-unclear h3 { margin: 0 0 8px; font-size: 0.86rem; color: var(--wi-yellow-700); }
 .wf-auto-unclear ul { margin: 0; padding-left: 18px; line-height: 1.6; font-size: 0.78rem; color: var(--wi-ink); }
 
+/* Task 8 (2026-10-29) - Site names: one chip per alias inside its own
+   site-value group card. */
+.wf-site-alias-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.wf-site-alias-chip {
+  display: flex; align-items: center; gap: 6px; background: var(--wi-surface-2);
+  border: 1px solid var(--wi-border-2); border-radius: 999px; padding: 4px 6px 4px 10px;
+  font-size: 0.76rem; font-weight: 700; color: var(--wi-ink);
+}
+.wf-site-alias-chip-delete {
+  display: flex; align-items: center; justify-content: center; width: 18px; height: 18px;
+  border-radius: 50%; border: none; background: var(--wi-surface-3); color: var(--wi-muted); cursor: pointer; padding: 0;
+}
+.wf-site-alias-chip-delete:active { background: var(--wi-red-50); color: var(--wi-red-700); }
+
 /* List page card */
 .wf-auto-task-card { border-radius: var(--wi-r-card); box-shadow: var(--wi-sh-card); background: var(--wi-surface); padding: 14px; margin-bottom: 10px; }
 .wf-auto-task-head { display: flex; gap: 8px; align-items: flex-start; }
