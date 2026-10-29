@@ -626,7 +626,18 @@ async function listActionNeededItems() {
     // needs each item's own current state to render correctly instead of
     // always showing "off".
     const neverAuto = await isNeverAuto(item.chatId);
-    return { kind: item.kind, category: item.category, chatId: item.chatId, name: displayName, ts: item.ts, ageMs: Math.max(0, Date.now() - item.ts), data: item.data, neverAuto };
+    // Task 2 (2026-10-29) - shaped through the SAME functions
+    // getWhatsappConversation uses for the chat page's own cards (see
+    // their shared comment above) - automation/hr_note_escalated kinds
+    // have their own dedicated card renderer (hrAssistant.js) and never
+    // go through buildConvoActions at all, so their raw record is passed
+    // through unchanged.
+    const shapedData = item.kind === 'approval' ? shapeApprovalForCard(item.data, displayName)
+      : item.kind === 'draft' ? shapeDraftForCard(item.data, displayName)
+      : item.kind === 'document' ? shapeDocumentForCard(item.data)
+      : item.kind === 'hr_confirmation_ambiguous' ? shapeHrConfirmationForCard(item.data, displayName)
+      : item.data;
+    return { kind: item.kind, category: item.category, chatId: item.chatId, name: displayName, ts: item.ts, ageMs: Math.max(0, Date.now() - item.ts), data: shapedData, neverAuto };
   }));
   items.sort((a, b) => a.ts - b.ts); // oldest first
   return items;
@@ -739,6 +750,49 @@ async function dismissWhatsappItem(chatIdRaw) {
   return true;
 }
 
+// Task 2 (2026-10-29) - the ONE place each item kind's raw Redis record
+// is turned into what a card actually renders, shared by BOTH
+// getWhatsappConversation (the chat page) and listActionNeededItems (the
+// Action-needed page's own cards, via buildConvoActions reused on both
+// pages - see miniConvoForActionItem in hrAssistant.js). Found live: the
+// Action-needed page used to hand buildConvoActions the RAW record
+// directly, which has different field names than what it reads - an
+// approval's message is `preparedReplyText`, but buildConvoActions reads
+// `.text`; an ambiguous HR confirmation's name is `thirdPartyName`, but
+// it reads `.name` - both rendered correctly on the chat page (which
+// already re-shaped them) and silently blank/undefined on Action-needed.
+// Same shaping function, same two callers, can never drift apart again.
+function shapeApprovalForCard(a, name) {
+  return {
+    id: a.id, name, summary: a.dataRequestSummary, text: a.preparedReplyText, error: a.preparedError,
+    // Grouped multi-candidate approval (several fuzzy/exact name matches
+    // for one contact-number request) - the UI renders these as a radio-
+    // selectable list instead of a.text; only name/department are needed
+    // for the label, never the raw contactNumber/outgoingText (nothing
+    // worth exposing to the browser before Send is actually pressed).
+    candidates: Array.isArray(a.candidates) ? a.candidates.map((c) => ({ name: c.name, department: naturalizeDirectoryValue(c.department) })) : null,
+    // Own Aadhaar/PAN exception - flagged so the card renders the
+    // "⚠️ Own <field> request" warning label and hides Edit entirely
+    // (spec: "Keep the Edit option off for the Aadhaar/PAN value") -
+    // sensitiveIdFieldLabel only ("Aadhaar"/"PAN"), never the value
+    // itself beyond what's already in `text` above for the owner to review.
+    sensitiveIdRequest: Boolean(a.sensitiveIdRequest),
+    sensitiveIdFieldLabel: a.sensitiveIdFieldLabel || null
+  };
+}
+function shapeDraftForCard(d, name) {
+  return { contactId: d.contactId, name, type: d.type, draftReply: d.draftReply };
+}
+function shapeFollowupForCard(f, name) {
+  return { name, summary: f.summary };
+}
+function shapeDocumentForCard(d) {
+  return { topic: d.topic, fileRef: d.fileRef };
+}
+function shapeHrConfirmationForCard(c, name) {
+  return { id: c.id, name, summary: c.summary, unclearTexts: c.unclearTexts || [] };
+}
+
 // Full detail for one WhatsApp NUMBER - the real message-by-message
 // transcript (appendConvoHistory's own store, both directions) plus
 // EVERY outstanding item for it, as arrays, never a single picked-first
@@ -848,27 +902,11 @@ async function getWhatsappConversation(chatIdRaw) {
     }),
     lastOutcome: latestLog ? { aCase: latestLog.aCase, outcome: latestLog.outcome } : null,
     neverAuto,
-    pendingApprovals: myApprovals.map((a) => ({
-      id: a.id, name: itemLabel(a.name), summary: a.dataRequestSummary, text: a.preparedReplyText, error: a.preparedError,
-      // Grouped multi-candidate approval (several fuzzy/exact name
-      // matches for one contact-number request) - the UI renders these as
-      // a radio-selectable list instead of a.text; only name/department
-      // are needed for the label, never the raw contactNumber/
-      // outgoingText (nothing worth exposing to the browser before
-      // Send is actually pressed).
-      candidates: Array.isArray(a.candidates) ? a.candidates.map((c) => ({ name: c.name, department: naturalizeDirectoryValue(c.department) })) : null,
-      // Own Aadhaar/PAN exception - flagged so the card renders the
-      // "⚠️ Own <field> request" warning label and hides Edit entirely
-      // (spec: "Keep the Edit option off for the Aadhaar/PAN value") -
-      // sensitiveIdFieldLabel only ("Aadhaar"/"PAN"), never the value
-      // itself beyond what's already in `text` above for the owner to review.
-      sensitiveIdRequest: Boolean(a.sensitiveIdRequest),
-      sensitiveIdFieldLabel: a.sensitiveIdFieldLabel || null
-    })),
-    pendingDrafts: myDrafts.map((d) => ({ contactId: d.contactId, name: itemLabel(d.name), type: d.type, draftReply: d.draftReply })),
-    openFollowups: myFollowups.map((f) => ({ name: itemLabel(f.name), summary: f.summary })),
-    pendingDocuments: myDocs.map((d) => ({ topic: d.topic, fileRef: d.fileRef })),
-    ambiguousHrConfirmations: myAmbiguousConfirmations.map((c) => ({ id: c.id, name: itemLabel(c.thirdPartyName), summary: c.summary, unclearTexts: c.unclearTexts || [] }))
+    pendingApprovals: myApprovals.map((a) => shapeApprovalForCard(a, itemLabel(a.name))),
+    pendingDrafts: myDrafts.map((d) => shapeDraftForCard(d, itemLabel(d.name))),
+    openFollowups: myFollowups.map((f) => shapeFollowupForCard(f, itemLabel(f.name))),
+    pendingDocuments: myDocs.map((d) => shapeDocumentForCard(d)),
+    ambiguousHrConfirmations: myAmbiguousConfirmations.map((c) => shapeHrConfirmationForCard(c, itemLabel(c.thirdPartyName)))
   };
 }
 

@@ -5208,6 +5208,70 @@ async function checkAsync(label, fn) {
   })());
 
   console.log('='.repeat(70));
+  console.log('TASK 2 (2026-10-29): Action-needed cards render from the SAME shaped data as the chat page - found blank for approval cards (and a missing name for ambiguous HR-confirmation cards)');
+  console.log('='.repeat(70));
+  await checkAsync('LIVE BUG FIX: an approval item from listActionNeededItems() carries .text (what buildConvoActions actually reads) - the raw record only has preparedReplyText, which rendered as a blank box on the Action-needed page', async () => {
+    const phone = '919999000077';
+    const id = await whatsappAssistant.savePendingApproval({
+      phone, name: 'Test Person', requestText: 'test', dataRequestSummary: 'Test Person\'s contact number',
+      lang: 'english', preparedReplyText: 'Test Person\'s contact number: 9999999999', preparedCard: null, preparedError: null
+    });
+    try {
+      const items = await whatsappAssistant.listActionNeededItems();
+      const item = items.find((it) => it.kind === 'approval' && it.chatId === whatsapp.normalizePhone(phone));
+      return Boolean(item) && item.data.text === 'Test Person\'s contact number: 9999999999' && item.data.summary === 'Test Person\'s contact number' && item.data.id === id;
+    } finally {
+      await whatsappAssistant.removePendingApproval(id);
+    }
+  });
+  await checkAsync('getWhatsappConversation (the chat page) and listActionNeededItems (the Action-needed page) shape the SAME approval record identically - same source, same card, per direct instruction', async () => {
+    const phone = '919999000078';
+    const id = await whatsappAssistant.savePendingApproval({
+      phone, name: 'Another Person', requestText: 'test', dataRequestSummary: 'Another Person\'s contact number',
+      lang: 'english', preparedReplyText: 'Another Person\'s contact number: 8888888888', preparedCard: null, preparedError: null
+    });
+    try {
+      const convo = await whatsappAssistant.getWhatsappConversation(phone);
+      const items = await whatsappAssistant.listActionNeededItems();
+      const item = items.find((it) => it.kind === 'approval' && it.chatId === whatsapp.normalizePhone(phone));
+      const fromChat = convo.pendingApprovals[0];
+      return Boolean(fromChat) && Boolean(item) &&
+        fromChat.text === item.data.text && fromChat.summary === item.data.summary && fromChat.id === item.data.id;
+    } finally {
+      await whatsappAssistant.removePendingApproval(id);
+    }
+  });
+  await checkAsync('LIVE BUG FIX: an ambiguous HR-confirmation card from listActionNeededItems() carries .name (the manager\'s name) - the raw record only has thirdPartyName, which rendered as "undefined\'s reply is unclear" on the Action-needed page', async () => {
+    const id = await whatsappAssistant.saveHrConfirmation({
+      status: 'ambiguous_owner_review', thirdPartyPhone: '919999000079', thirdPartyName: 'Tanmoy Manager',
+      senderPhone: '919999000080', senderName: 'Test Sender', summary: 'WFH approval', unclearTexts: ['hmm', 'accha'],
+      createdAt: Date.now(), ambiguousAt: Date.now()
+    });
+    try {
+      const items = await whatsappAssistant.listActionNeededItems();
+      const item = items.find((it) => it.kind === 'hr_confirmation_ambiguous' && it.chatId === whatsapp.normalizePhone('919999000079'));
+      return Boolean(item) && item.data.name === 'Tanmoy Manager' && item.data.summary === 'WFH approval' && item.data.unclearTexts.length === 2;
+    } finally {
+      await whatsappAssistant.removeHrConfirmation(id);
+    }
+  });
+  await checkAsync('REGRESSION: a pending draft item from listActionNeededItems() still carries draftReply/contactId/type correctly after the shared-shaping refactor', async () => {
+    const phone = '919999000081';
+    await whatsappAssistant.savePendingDraft({ type: 'direct', contactId: phone, name: 'Draft Person', messagePreview: 'hi', draftReply: 'This is the draft reply text.', createdAt: Date.now() });
+    try {
+      const items = await whatsappAssistant.listActionNeededItems();
+      const item = items.find((it) => it.kind === 'draft' && it.chatId === whatsapp.normalizePhone(phone));
+      return Boolean(item) && item.data.draftReply === 'This is the draft reply text.' && item.data.contactId === phone && item.data.type === 'direct';
+    } finally {
+      const redis = await getRawRedisClient();
+      const rawDrafts = await redis.lrange('wa-pending-drafts', 0, -1);
+      const remaining = rawDrafts.filter((d) => { try { return (typeof d === 'string' ? JSON.parse(d) : d).contactId !== phone; } catch (e) { return true; } });
+      await redis.del('wa-pending-drafts');
+      for (const d of remaining.reverse()) await redis.lpush('wa-pending-drafts', typeof d === 'string' ? d : JSON.stringify(d));
+    }
+  });
+
+  console.log('='.repeat(70));
   console.log(pass + '/' + (pass + fail) + ' passed' + (fail ? ', ' + fail + ' FAILED' : ''));
   if (failures.length) {
     console.log('Failed checks:');
