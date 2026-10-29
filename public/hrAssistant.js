@@ -155,9 +155,6 @@
   const remFieldNoTime = document.getElementById('hrRemFieldNoTime');
   const remFieldPriority = document.getElementById('hrRemFieldPriority');
   const remFieldRepeat = document.getElementById('hrRemFieldRepeat');
-  const remToast = document.getElementById('hrRemToast');
-  const remToastText = document.getElementById('hrRemToastText');
-  const remToastUndoBtn = document.getElementById('hrRemToastUndoBtn');
   // SUBH Automated Tasks
   const autoTaskBtn = document.getElementById('hrAutoTaskBtn');
   const autoTasksBar = document.getElementById('hrAutoTasksBar');
@@ -1774,7 +1771,7 @@
       const r = await postJson('/api/workforce/hr-assistant/whatsapp-dismiss', { chatId });
       if (!r.ok) throw new Error((r.data && r.data.error) || 'Could not remove.');
     } catch (err) {
-      showActionToast(err.message || 'Could not remove - try again.');
+      showActionToast(err.message || 'Could not remove - try again.', null, 'error');
     }
     // Re-fetch AFTER the delete attempt (success or failure) and re-render
     // whichever WhatsApp list is on screen - this also self-corrects the
@@ -2043,7 +2040,7 @@
         if (!current.hinglish && versions.hinglish && templateReplyHinglishInput) templateReplyHinglishInput.value = versions.hinglish;
       }
     } catch (err) {
-      showActionToast(err.message || 'Could not generate the other versions - try again.');
+      showActionToast(err.message || 'Could not generate the other versions - try again.', null, 'error');
     } finally {
       if (templateVersionsNote) templateVersionsNote.hidden = true;
     }
@@ -2117,7 +2114,7 @@
         hinglish: (templateReplyHinglishInput && templateReplyHinglishInput.value || '').trim()
       };
       if (!topic || !whenToUse || !replyText.english || !replyText.banglish || !replyText.hinglish) {
-        showActionToast('Topic, when to use, and all three reply versions are required.');
+        showActionToast('Topic, when to use, and all three reply versions are required.', null, 'warning');
         return;
       }
       await runButtonAction(templateSheetSaveBtn, () => {
@@ -2158,7 +2155,7 @@
           const id = cb.closest('[data-id]').dataset.id;
           try {
             await postJsonOrThrow('/api/workforce/hr-assistant/reply-templates/' + encodeURIComponent(id) + '/toggle', { enabled: cb.checked });
-          } catch (err) { cb.checked = !cb.checked; showActionToast(err.message || 'Could not update - try again.'); }
+          } catch (err) { cb.checked = !cb.checked; showActionToast(err.message || 'Could not update - try again.', null, 'error'); }
         });
       });
       templatesList.querySelectorAll('[data-action="edit"]').forEach((btn) => {
@@ -2342,7 +2339,7 @@
     siteAliasSheetSaveBtn.addEventListener('click', async () => {
       const siteValue = (siteAliasSheetState.mode === 'edit' ? siteAliasSheetState.siteValue : (siteAliasSiteValueInput.value || '')).trim();
       const newAliasWords = (siteAliasInput.value || '').split(',').map((s) => s.trim()).filter(Boolean);
-      if (!siteValue || !newAliasWords.length) { showActionToast('Both fields are required.'); return; }
+      if (!siteValue || !newAliasWords.length) { showActionToast('Both fields are required.', null, 'warning'); return; }
       await runButtonAction(siteAliasSheetSaveBtn, async () => {
         if (siteAliasSheetState.mode === 'edit') {
           // Diff against what this group already had: delete aliases the
@@ -2487,7 +2484,7 @@
         }
         const nameInput = card.querySelector('[data-escalation-name]');
         const personName = (nameInput && nameInput.value || '').trim();
-        if (!personName) { showActionToast('Enter the name first.'); return; }
+        if (!personName) { showActionToast('Enter the name first.', null, 'warning'); return; }
         await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/hr-note-escalations/' + encodeURIComponent(id) + '/resolve', { personName }), () => {
           closeRowWithToast(card, { title: 'Sent ✓', type: 'success' });
           pollCommsSummary();
@@ -2722,7 +2719,7 @@
   // runs it again.
   async function runButtonAction(btn, requestFn, onSuccess, opts) {
     opts = opts || {};
-    const toast = opts.toastFn || showActionToast;
+    const toast = opts.toastFn || ((msg) => showActionToast(msg, null, 'error'));
     if (!btn || btn.classList.contains('is-loading')) return;
     btn.disabled = true;
     btn.classList.remove('is-error', 'is-success');
@@ -2981,7 +2978,7 @@
         toggle.disabled = false;
         if (!r.ok || !(r.data && r.data.ok)) {
           toggle.setAttribute('aria-pressed', String(!next)); // revert the optimistic flip
-          showActionToast((r.data && r.data.error) || 'Could not save - try again.');
+          showActionToast((r.data && r.data.error) || 'Could not save - try again.', null, 'error');
           return;
         }
         const label = toggle.dataset.name || chatId;
@@ -3282,19 +3279,14 @@
     });
   }
 
-  // Generic panel-wide toast (speed/UX fix) - every action button's
-  // success/error feedback shares this one element with the reminders
-  // "Done ✓ / Undo" toast that originally used it; the name/shape stayed
-  // the same, just no longer reminders-only.
-  let actionToastTimer = null;
-  function showActionToast(text, onUndo) {
-    if (!remToast) return;
-    clearTimeout(actionToastTimer);
-    remToastText.textContent = text;
-    remToastUndoBtn.hidden = !onUndo;
-    remToast.hidden = false;
-    remToastUndoBtn.onclick = () => { remToast.hidden = true; if (onUndo) onUndo(); };
-    actionToastTimer = setTimeout(() => { remToast.hidden = true; }, 5000);
+  // UI fix (2026-10-29) - the old black-pill #hrRemToast element is gone;
+  // every call site in this file keeps the same showActionToast(text,
+  // onUndo, type) signature, now a thin wrapper around the one shared
+  // "professional" toast (showProToast) every other SUBH page already
+  // uses. type defaults to 'success' - callers in a catch block or a
+  // pre-flight validation check pass 'error'/'warning' explicitly.
+  function showActionToast(text, onUndo, type) {
+    showProToast({ title: text, type: type || 'success', undo: onUndo });
   }
 
   // Task 2: ONE shared "professional" toast component (white card, soft

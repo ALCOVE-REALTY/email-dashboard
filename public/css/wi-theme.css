@@ -2044,18 +2044,8 @@ body { background: var(--wi-bg); }
 .wf-rem-sheet-foot { display: flex; gap: 10px; padding: 12px 18px 18px; border-top: 1px solid var(--wi-divider); flex-shrink: 0; }
 .wf-rem-sheet-foot .wf-ai-action-btn { flex: 1; justify-content: center; }
 
-/* -- Toast (Done ✓ / Undo) -- */
-.wf-rem-toast[hidden] { display: none; }
-.wf-rem-toast {
-  position: fixed; left: 50%; bottom: 96px; transform: translateX(-50%); z-index: 90;
-  background: var(--wi-ink); color: #FFFFFF; border-radius: var(--wi-r-pill); padding: 10px 16px;
-  display: flex; align-items: center; gap: 14px; font-size: 0.8rem; font-weight: 700; box-shadow: var(--wi-sh-modal);
-  animation: mPop .25s cubic-bezier(.2,.7,.2,1) both;
-}
-.wf-rem-toast button { border: none; background: none; color: var(--wi-primary-ring); font-weight: 800; font-family: inherit; cursor: pointer; font-size: 0.8rem; }
-
 @media (prefers-reduced-motion: reduce) {
-  .wf-hub-tile, .wf-rem-row, .wf-rem-banner, .wf-rem-toast { animation: none !important; }
+  .wf-hub-tile, .wf-rem-row, .wf-rem-banner { animation: none !important; }
   .wf-rem-sheet { transition: none !important; }
 }
 
@@ -2188,18 +2178,16 @@ body { background: var(--wi-bg); }
 .wf-auto-preview-sheet .wf-auto-pdf-name { font-weight: 800; font-size: 0.72rem; margin-bottom: 6px; color: var(--wi-ink); }
 .wf-auto-skip { background: var(--wi-red-50); color: var(--wi-red-700); border-radius: var(--wi-r-input); padding: 8px 10px; font-size: 0.72rem; font-weight: 700; margin-top: 8px; }
 
-/* Task 2 (2026-10-27): ONE shared "professional" toast component - white
+/* UI fix (2026-10-29): ONE shared "professional" toast component - white
    card, soft shadow, rounded corners, coloured left accent + icon, ~3s
-   auto-dismiss via a shrinking progress line - used ONLY by Open Flows'
-   Close, Important WhatsApp's remove (x), and the Automated Tasks
-   create/list pages (replaces the old separate .wf-auto-toast above;
-   never the Reminders page's own #hrRemToast black pill, left untouched
-   everywhere else). Default position is bottom-center, stacked, just
-   above the assistant input bar (same 96px offset .wf-rem-toast already
-   uses). The two Automated Tasks pages hide that input bar and keep
-   Save/Preview/Send test inline at the bottom of the page instead, so
-   they ask for the .anchor-top variant (same card/animation, just
-   repositioned near the header) via showProToast's anchor:'top'. */
+   auto-dismiss via a shrinking progress line - now used by EVERY toast
+   across SUBH (replaces the old separate .wf-auto-toast above, and the
+   Reminders page's own #hrRemToast black pill, which is removed
+   entirely). Default position is bottom-center, stacked, just above the
+   assistant input bar. The two Automated Tasks pages hide that input bar
+   and keep Save/Preview/Send test inline at the bottom of the page
+   instead, so they ask for the .anchor-top variant (same card/animation,
+   just repositioned near the header) via showProToast's anchor:'top'. */
 .wf-pro-toast-stack {
   position: fixed; left: 50%; bottom: 96px; transform: translateX(-50%);
   z-index: 97; display: flex; flex-direction: column-reverse; gap: 8px;

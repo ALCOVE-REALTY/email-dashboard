@@ -630,22 +630,19 @@
         </div>
       </div>
 
-      <div class="wf-rem-toast" id="hrRemToast" hidden>
-        <span id="hrRemToastText"></span>
-        <button type="button" id="hrRemToastUndoBtn" hidden>Undo</button>
-      </div>
-
-      <!-- Task 2: ONE shared "professional" toast component (white card,
-           shadow, rounded corners, coloured accent+icon, ~3s auto-dismiss,
-           stacked) - used by Open Flows' Close, Important WhatsApp's
-           remove (x), and the Automated Tasks create/list pages (migrated
-           off their own separate toast). Positioned bottom-center above
-           the assistant input bar by default; the Automated Tasks pages
-           (where the input bar is hidden and Save/Preview/Send test sit at
-           the bottom of the page instead) ask for the top-anchored variant
-           via showProToast's anchor:'top' - same markup/styling/behaviour
-           either way, just repositioned (see .anchor-top in wi-theme.css).
-           The Reminders page's own black pill (#hrRemToast) is untouched. -->
+      <!-- UI fix (2026-10-29): the old black-pill toast (#hrRemToast) is
+           removed entirely - EVERY toast across SUBH (Action needed,
+           Important WhatsApp, conversation, Open flows, Templates,
+           Reminders, Automated Tasks, SUBH Settings, Site names, hub pages)
+           now routes through this ONE shared "professional" toast
+           component (white card, shadow, rounded corners, coloured
+           accent+icon, ~3s auto-dismiss, stacked). Positioned bottom-center
+           above the assistant input bar by default; the Automated Tasks
+           pages (where the input bar is hidden and Save/Preview/Send test
+           sit at the bottom of the page instead) ask for the top-anchored
+           variant via showProToast's anchor:'top' - same markup/styling/
+           behaviour either way, just repositioned (see .anchor-top in
+           wi-theme.css). -->
       <div class="wf-pro-toast-stack" id="wfProToastStack" aria-live="polite"></div>
 
       <!-- Automated Task preview - every message a run would send right
