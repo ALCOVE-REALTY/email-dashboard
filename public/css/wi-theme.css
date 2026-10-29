@@ -1569,6 +1569,12 @@ body { background: var(--wi-bg); }
   flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch;
   padding: 4px 14px 14px; display: flex; flex-direction: column; gap: 16px;
 }
+/* Task 7 (2026-10-29) - the hub page specifically (Mails/WhatsApp tiles)
+   needs a little more breathing room below the header (back button, icon,
+   title) than the shared 4px every OTHER comms sub-page also uses - scoped
+   here rather than raising .wf-comms-page's own padding-top, which would
+   shift every sub-page's layout, not just this one. */
+#hrCommsHubPage { padding-top: 18px; }
 .wf-comms-system-strip[hidden] { display: none; }
 .wf-comms-system-strip {
   display: flex; align-items: flex-start; gap: 10px; padding: 11px 12px;
