@@ -5876,7 +5876,7 @@ function createMailChipField(containerId, inputId, suggestId) {
 
 const mailToField = createMailChipField('mailToChipInput', 'mailToInput', 'mailToSuggest');
 const mailCcField = createMailChipField('mailCcChipInput', 'mailCcInput', 'mailCcSuggest');
-let mailComposeContext = null; // { sendUrl, sendBody } for whichever Send Mail button opened this
+let mailComposeContext = null; // { sendUrl, sendBody, defaultSubject, defaultText, subjectOverride, textOverride } for whichever Send Mail button opened this
 
 function showMailComposeError(message) {
   const errEl = document.getElementById('mailComposeError');
@@ -5892,9 +5892,13 @@ function closeMailCompose() {
 // Opens the shared popup pre-filled with this button's own default
 // recipients (from defaultsUrl), and remembers sendUrl/sendBody so the
 // popup's own Send button knows where the actual send goes once the user
-// is done editing To/Cc - see the two callers below.
+// is done editing To/Cc - see the callers below. Task 4 (2026-10-29): also
+// reads hasAttachment/defaultFormat/subject/text from the same defaults
+// response - the format dropdown and the subject/body override both reset
+// to this section's own defaults on every fresh open, never carrying over
+// from whatever mail was composed last.
 async function openMailCompose({ defaultsUrl, sendUrl, sendBody }) {
-  mailComposeContext = { sendUrl, sendBody };
+  mailComposeContext = { sendUrl, sendBody, defaultSubject: '', defaultText: '', subjectOverride: null, textOverride: null };
   const errEl = document.getElementById('mailComposeError');
   errEl.hidden = true;
   errEl.textContent = '';
@@ -5903,12 +5907,22 @@ async function openMailCompose({ defaultsUrl, sendUrl, sendBody }) {
   const sendBtn = document.getElementById('mailComposeSendBtn');
   sendBtn.disabled = false;
   sendBtn.querySelector('span').textContent = 'Send Mail';
+  const formatField = document.getElementById('mailAttachmentFormatField');
+  const formatSelect = document.getElementById('mailAttachmentFormatSelect');
+  formatField.hidden = true;
+  formatSelect.value = 'pdf';
   document.getElementById('mailComposeOverlay').hidden = false;
 
   try {
     const defaults = await fetchJson(defaultsUrl);
     mailToField.setChips((defaults.to || '').split(',').map((s) => s.trim()).filter(Boolean));
     mailCcField.setChips((defaults.cc || '').split(',').map((s) => s.trim()).filter(Boolean));
+    mailComposeContext.defaultSubject = defaults.subject || '';
+    mailComposeContext.defaultText = defaults.text || '';
+    if (defaults.hasAttachment) {
+      formatField.hidden = false;
+      formatSelect.value = defaults.defaultFormat === 'excel' ? 'excel' : 'pdf';
+    }
   } catch (err) {
     showMailComposeError('Could not load default recipients: ' + err.message);
   }
@@ -5934,10 +5948,15 @@ document.getElementById('mailComposeSendBtn').addEventListener('click', async ()
   label.textContent = 'Sending…';
   document.getElementById('mailComposeError').hidden = true;
   try {
+    const formatField = document.getElementById('mailAttachmentFormatField');
+    const extra = { to: to.join(', '), cc: cc.join(', ') };
+    if (!formatField.hidden) extra.format = document.getElementById('mailAttachmentFormatSelect').value;
+    if (mailComposeContext.subjectOverride !== null) extra.subject = mailComposeContext.subjectOverride;
+    if (mailComposeContext.textOverride !== null) extra.text = mailComposeContext.textOverride;
     const res = await fetch(mailComposeContext.sendUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(Object.assign({}, mailComposeContext.sendBody, { to: to.join(', '), cc: cc.join(', ') }))
+      body: JSON.stringify(Object.assign({}, mailComposeContext.sendBody, extra))
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Failed to send mail');
@@ -5948,6 +5967,45 @@ document.getElementById('mailComposeSendBtn').addEventListener('click', async ()
     label.textContent = 'Send Mail';
     btn.disabled = false;
   }
+});
+
+// Task 4 (2026-10-29): the Send Mail popup's mail-icon tile opens this
+// small sheet to edit THIS one mail's subject/body - Save keeps it only
+// for the mail about to be sent (mailComposeContext.subject/textOverride),
+// Cancel discards, and the next openMailCompose() call always resets back
+// to the section's own default (see openMailCompose above).
+document.getElementById('mailComposeEditBtn').addEventListener('click', () => {
+  if (!mailComposeContext) return;
+  document.getElementById('mailEditSubjectBodyError').hidden = true;
+  document.getElementById('mailEditSubjectInput').value =
+    mailComposeContext.subjectOverride !== null ? mailComposeContext.subjectOverride : mailComposeContext.defaultSubject;
+  document.getElementById('mailEditBodyInput').value =
+    mailComposeContext.textOverride !== null ? mailComposeContext.textOverride : mailComposeContext.defaultText;
+  document.getElementById('mailEditSubjectBodyOverlay').hidden = false;
+});
+
+function closeMailEditSubjectBody() {
+  document.getElementById('mailEditSubjectBodyOverlay').hidden = true;
+}
+document.getElementById('mailEditSubjectBodyCloseBtn').addEventListener('click', closeMailEditSubjectBody);
+document.getElementById('mailEditSubjectBodyCancelBtn').addEventListener('click', closeMailEditSubjectBody);
+document.getElementById('mailEditSubjectBodyOverlay').addEventListener('click', (e) => {
+  if (e.target.id === 'mailEditSubjectBodyOverlay') closeMailEditSubjectBody();
+});
+document.getElementById('mailEditSubjectBodySaveBtn').addEventListener('click', () => {
+  const subject = document.getElementById('mailEditSubjectInput').value.trim();
+  const body = document.getElementById('mailEditBodyInput').value.trim();
+  const errEl = document.getElementById('mailEditSubjectBodyError');
+  if (!subject || !body) {
+    errEl.textContent = 'Subject and body can\'t be empty.';
+    errEl.hidden = false;
+    return;
+  }
+  if (mailComposeContext) {
+    mailComposeContext.subjectOverride = subject;
+    mailComposeContext.textOverride = body;
+  }
+  closeMailEditSubjectBody();
 });
 
 // Only available when Employee Data was reached via a Doer Management row

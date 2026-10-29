@@ -4,6 +4,7 @@ const employeeService = require('./employeeService');
 const analytics = require('./insuranceAnalytics');
 const gmailService = require('./gmailService');
 const { buildTablePdfBuffer } = require('./pdfReport');
+const { buildTableExcelBuffer } = require('./tableExcelReport');
 const policyInfoService = require('./policyInfoService');
 const policyDocumentsService = require('./policyDocumentsService');
 
@@ -11,6 +12,26 @@ const router = express.Router();
 
 const EXITS_PDF_COLUMNS = ['Sr No', 'Corporate_name', 'Employee ID/UHID', 'Name of Insured', 'Gender', 'Relationship', 'Date of Leaving', 'Reason'];
 const ADDITIONS_PDF_COLUMNS = ['Sl. No.', 'Corporate_name', 'Emp ID', 'Full Name', 'DOJ/DOM', 'DOB', 'Gender', 'Relationship', 'Sum Insured'];
+
+// Task 4 (2026-10-29) - "Send Mail" popup: attachment format (PDF/Excel)
+// and an optional one-off subject/body edit, shared by every Send Mail
+// button via the mail-defaults GET (pre-fills the popup) + the send POST
+// (accepts the owner's chosen format/edited text, falling back to these
+// same defaults when not given - the section's own default never
+// changes). Dates of Leaving/DOJ/DOM/DOB and Sum Insured here come
+// straight from the Mediclaim sheet as free-text strings (never validated
+// against a real date/number format), so - to never risk silently
+// misreading or corrupting a real HR/insurance record - they stay as text
+// in Excel too, exactly like the PDF; "dates as dates, numbers as
+// numbers" applies to the OTHER two Send Mail sections (Doer list,
+// Birthday list) below, whose DOJ/DOB are already real typed values in
+// code, never sheet free-text.
+const EXITS_MAIL_SUBJECT = 'Request for Deletion of Member(s) under Group Mediclaim Policy';
+const EXITS_MAIL_TEXT = 'Dear Sir/Madam,\n\n' +
+  'We would like to request the deletion of the following member(s) under our Group Mediclaim Policy. Kindly confirm the deletion at the earliest.';
+const ADDITIONS_MAIL_SUBJECT = 'Request for Addition of Member(s) under Group Mediclaim Policy';
+const ADDITIONS_MAIL_TEXT = 'Dear Sir/Madam,\n\n' +
+  'We would like to request the addition of the following member(s) under our Group Mediclaim Policy. Kindly confirm the addition and share the e-card(s) at the earliest.';
 // To/Cc recipients for both Send Mail buttons come from the "Mediclaim
 // Addition & Deletion Automation" sheet's own "Mail Id" tab (see
 // insuranceService.getMailRecipients) rather than being hardcoded here -
@@ -352,7 +373,7 @@ router.get('/exits', async (req, res) => {
 router.get('/exits/mail-defaults', async (req, res) => {
   try {
     const recipients = await insuranceService.getMailRecipients();
-    res.json(recipients);
+    res.json(Object.assign({}, recipients, { subject: EXITS_MAIL_SUBJECT, text: EXITS_MAIL_TEXT, hasAttachment: true, defaultFormat: 'pdf' }));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -369,6 +390,9 @@ router.post('/exits/send-mail', async (req, res) => {
     // only falls back to looking those up itself when called without an
     // override, e.g. a future direct API caller.
     const overrideTo = req.body && typeof req.body.to === 'string' ? req.body.to.trim() : '';
+    const format = req.body && req.body.format === 'excel' ? 'excel' : 'pdf';
+    const subjectOverride = req.body && typeof req.body.subject === 'string' ? req.body.subject.trim() : '';
+    const textOverride = req.body && typeof req.body.text === 'string' ? req.body.text.trim() : '';
 
     const [insuranceData, recipients] = await Promise.all([
       insuranceService.getInsuranceData({}),
@@ -377,30 +401,26 @@ router.post('/exits/send-mail', async (req, res) => {
         : insuranceService.getMailRecipients()
     ]);
     const rawRows = analytics.sortDeletionsSelfFirst(insuranceData.deletions);
-
-    const pdfBuffer = await buildTablePdfBuffer({
-      title: 'Health Insurance Exits Report',
-      subtitle:
-        rawRows.length + ' record' + (rawRows.length === 1 ? '' : 's') + ' · Generated ' +
-        new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
-      columns: EXITS_PDF_COLUMNS,
-      // Sr No is a fresh running serial over the displayed (Self-first) order,
-      // not the sheet's original Sr No column - that would otherwise show
-      // out-of-sequence numbers like 4, 7, 13, 3... after the reorder.
-      rows: rawRows.map((r, i) => [i + 1, r.corporateName, r.employeeId, r.name, r.gender, r.relationship, r.dateOfLeaving, r.reason])
-    });
+    // Sr No is a fresh running serial over the displayed (Self-first) order,
+    // not the sheet's original Sr No column - that would otherwise show
+    // out-of-sequence numbers like 4, 7, 13, 3... after the reorder. Same
+    // rows, same columns, same order for either attachment format.
+    const tableRows = rawRows.map((r, i) => [i + 1, r.corporateName, r.employeeId, r.name, r.gender, r.relationship, r.dateOfLeaving, r.reason]);
+    const subtitle = rawRows.length + ' record' + (rawRows.length === 1 ? '' : 's') + ' · Generated ' +
+      new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+    const attachmentBuffer = format === 'excel'
+      ? await buildTableExcelBuffer({ title: 'Health Insurance Exits Report', subtitle, columns: EXITS_PDF_COLUMNS, rows: tableRows })
+      : await buildTablePdfBuffer({ title: 'Health Insurance Exits Report', subtitle, columns: EXITS_PDF_COLUMNS, rows: tableRows });
 
     await gmailService.sendMailWithAttachment({
       to: recipients.to,
       cc: recipients.cc,
-      subject: 'Request for Deletion of Member(s) under Group Mediclaim Policy',
-      text:
-        'Dear Sir/Madam,\n\n' +
-        'We would like to request the deletion of the following member(s) under our Group Mediclaim Policy. Kindly confirm the deletion at the earliest.',
+      subject: subjectOverride || EXITS_MAIL_SUBJECT,
+      text: textOverride || EXITS_MAIL_TEXT,
       attachment: {
-        filename: 'Health_Insurance_Exits_' + new Date().toISOString().slice(0, 10) + '.pdf',
-        content: pdfBuffer,
-        contentType: 'application/pdf'
+        filename: 'Health_Insurance_Exits_' + new Date().toISOString().slice(0, 10) + (format === 'excel' ? '.xlsx' : '.pdf'),
+        content: attachmentBuffer,
+        contentType: format === 'excel' ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' : 'application/pdf'
       }
     });
 
@@ -430,7 +450,7 @@ router.get('/additions', async (req, res) => {
 router.get('/additions/mail-defaults', async (req, res) => {
   try {
     const recipients = await insuranceService.getMailRecipients();
-    res.json(recipients);
+    res.json(Object.assign({}, recipients, { subject: ADDITIONS_MAIL_SUBJECT, text: ADDITIONS_MAIL_TEXT, hasAttachment: true, defaultFormat: 'pdf' }));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -444,6 +464,9 @@ router.get('/additions/mail-defaults', async (req, res) => {
 router.post('/additions/send-mail', async (req, res) => {
   try {
     const overrideTo = req.body && typeof req.body.to === 'string' ? req.body.to.trim() : '';
+    const format = req.body && req.body.format === 'excel' ? 'excel' : 'pdf';
+    const subjectOverride = req.body && typeof req.body.subject === 'string' ? req.body.subject.trim() : '';
+    const textOverride = req.body && typeof req.body.text === 'string' ? req.body.text.trim() : '';
 
     const [insuranceData, recipients] = await Promise.all([
       insuranceService.getInsuranceData({}),
@@ -452,30 +475,25 @@ router.post('/additions/send-mail', async (req, res) => {
         : insuranceService.getMailRecipients()
     ]);
     const rawRows = analytics.sortAdditionsSelfFirst(insuranceData.additions);
-
-    const pdfBuffer = await buildTablePdfBuffer({
-      title: 'Health Insurance New Addition Requests',
-      subtitle:
-        rawRows.length + ' record' + (rawRows.length === 1 ? '' : 's') + ' · Generated ' +
-        new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
-      columns: ADDITIONS_PDF_COLUMNS,
-      // Sl. No. is a fresh running serial over the displayed (Self-first)
-      // order, not the sheet's original Sl. No. column - same reasoning
-      // as the Exits PDF's Sr No.
-      rows: rawRows.map((r, i) => [i + 1, r.corporateName, r.employeeId, r.name, r.doj, r.dob, r.gender, r.relationship, r.sumInsured])
-    });
+    // Sl. No. is a fresh running serial over the displayed (Self-first)
+    // order, not the sheet's original Sl. No. column - same reasoning as
+    // the Exits PDF's Sr No. Same rows/columns/order for either format.
+    const tableRows = rawRows.map((r, i) => [i + 1, r.corporateName, r.employeeId, r.name, r.doj, r.dob, r.gender, r.relationship, r.sumInsured]);
+    const subtitle = rawRows.length + ' record' + (rawRows.length === 1 ? '' : 's') + ' · Generated ' +
+      new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+    const attachmentBuffer = format === 'excel'
+      ? await buildTableExcelBuffer({ title: 'Health Insurance New Addition Requests', subtitle, columns: ADDITIONS_PDF_COLUMNS, rows: tableRows })
+      : await buildTablePdfBuffer({ title: 'Health Insurance New Addition Requests', subtitle, columns: ADDITIONS_PDF_COLUMNS, rows: tableRows });
 
     await gmailService.sendMailWithAttachment({
       to: recipients.to,
       cc: recipients.cc,
-      subject: 'Request for Addition of Member(s) under Group Mediclaim Policy',
-      text:
-        'Dear Sir/Madam,\n\n' +
-        'We would like to request the addition of the following member(s) under our Group Mediclaim Policy. Kindly confirm the addition and share the e-card(s) at the earliest.',
+      subject: subjectOverride || ADDITIONS_MAIL_SUBJECT,
+      text: textOverride || ADDITIONS_MAIL_TEXT,
       attachment: {
-        filename: 'Health_Insurance_Additions_' + new Date().toISOString().slice(0, 10) + '.pdf',
-        content: pdfBuffer,
-        contentType: 'application/pdf'
+        filename: 'Health_Insurance_Additions_' + new Date().toISOString().slice(0, 10) + (format === 'excel' ? '.xlsx' : '.pdf'),
+        content: attachmentBuffer,
+        contentType: format === 'excel' ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' : 'application/pdf'
       }
     });
 

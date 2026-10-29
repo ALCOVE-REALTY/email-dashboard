@@ -6,6 +6,7 @@ const { buildIncrementLetterPdf, buildPromotionIncrementLetterPdf, buildConfirma
 const insuranceService = require('./insuranceService');
 const gmailService = require('./gmailService');
 const { buildTablePdfBuffer } = require('./pdfReport');
+const { buildTableExcelBuffer } = require('./tableExcelReport');
 const orgChartServerPdf = require('./orgChartServerPdf');
 const { buildReportPdf, buildReportExcel, buildReportWord } = require('./reportExport');
 const aiAssistant = require('./aiAssistant/provider');
@@ -466,6 +467,14 @@ router.get('/org-chart-pdf-server', async (req, res) => {
 // Live default To/Cc for the doer/send-mail compose popup below to
 // pre-fill (public/workforce.js's openMailCompose) - same lookup the send
 // route itself falls back to when no override is given.
+// Task 4 (2026-10-29) - "Send Mail" popup: attachment format + a one-off
+// subject/body edit. DOJ/DOB here are already real Date objects from
+// employeeService (never sheet free-text), so "dates as dates" applies in
+// full for this section's Excel attachment.
+function doerMailSubject(reportingDoer) { return 'Updated Doer List – ' + reportingDoer; }
+function doerMailText(reportingDoer) {
+  return 'Hi,\n\n' + 'Please find the attached Doer list currently working under ' + reportingDoer + ', shared for your reference and records.';
+}
 router.get('/doer/mail-defaults', async (req, res) => {
   try {
     const reportingDoer = String(req.query.reportingDoer || '').trim();
@@ -477,7 +486,7 @@ router.get('/doer/mail-defaults', async (req, res) => {
     if (!recipients || !recipients.to) {
       return res.status(400).json({ error: 'No mail recipients configured for "' + reportingDoer + '" in the Mail Id sheet.' });
     }
-    res.json(recipients);
+    res.json(Object.assign({}, recipients, { subject: doerMailSubject(reportingDoer), text: doerMailText(reportingDoer), hasAttachment: true, defaultFormat: 'pdf' }));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -494,6 +503,9 @@ router.post('/doer/send-mail', async (req, res) => {
     // only falls back to looking those up itself when called without an
     // override, e.g. a future direct API caller.
     const overrideTo = req.body && typeof req.body.to === 'string' ? req.body.to.trim() : '';
+    const format = req.body && req.body.format === 'excel' ? 'excel' : 'pdf';
+    const subjectOverride = req.body && typeof req.body.subject === 'string' ? req.body.subject.trim() : '';
+    const textOverride = req.body && typeof req.body.text === 'string' ? req.body.text.trim() : '';
 
     const { employees, departmentNames } = await employeeService.getEmployeeData({ forceRefresh: true });
 
@@ -536,15 +548,22 @@ router.post('/doer/send-mail', async (req, res) => {
     // (print-section-row) each time the collar changes, exactly like
     // exportEmployeesPdf's own lastGroupHeading tracking.
     const now = new Date();
+    const columns = ['Employee Code', 'Name', 'Designation', 'Department', 'Collar', 'Age', 'Gender', 'Location', 'DOJ'];
     const rows = [];
+    // Excel-only sibling of `rows` above - identical data/order, but DOJ
+    // is a real Date object (Task 4: "dates as dates") instead of the
+    // PDF's pre-formatted display string; every other column is already
+    // plain text either way.
+    const excelRows = [];
     let lastCollarHeading = null;
     sorted.forEach((e) => {
       const collarHeading = formatCollar(e.groupD) || 'Unspecified Collar';
       if (collarHeading !== lastCollarHeading) {
         rows.push({ section: collarHeading });
+        excelRows.push({ section: collarHeading });
         lastCollarHeading = collarHeading;
       }
-      rows.push([
+      const commonCells = [
         e.employeeId,
         e.name,
         e.designation || '—',
@@ -552,35 +571,30 @@ router.post('/doer/send-mail', async (req, res) => {
         formatCollar(e.groupD) || '—',
         formatAgeYearsMonths(e.dob),
         e.gender || '—',
-        e.location || '—',
-        e.doj ? e.doj.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '—'
-      ]);
+        e.location || '—'
+      ];
+      rows.push(commonCells.concat([e.doj ? e.doj.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '—']));
+      excelRows.push(commonCells.concat([e.doj instanceof Date ? e.doj : '—']));
     });
 
-    const pdfBuffer = await buildTablePdfBuffer({
-      title: 'Employee Data Report',
-      subtitle:
-        'Reporting DOER: ' + reportingDoer + ' · ' +
-        sorted.length + ' employee' + (sorted.length === 1 ? '' : 's') + ' · Generated ' +
-        now.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
-      columns: ['Employee Code', 'Name', 'Designation', 'Department', 'Collar', 'Age', 'Gender', 'Location', 'DOJ'],
-      rows,
+    const subtitle = 'Reporting DOER: ' + reportingDoer + ' · ' +
+      sorted.length + ' employee' + (sorted.length === 1 ? '' : 's') + ' · Generated ' +
+      now.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+    const attachmentBuffer = format === 'excel'
+      ? await buildTableExcelBuffer({ title: 'Employee Data Report', subtitle, columns, rows: excelRows })
       // exportEmployeesPdf ("Export PDF") prints portrait - only the
       // separate Pending Confirmations report forces landscape.
-      landscape: false
-    });
+      : await buildTablePdfBuffer({ title: 'Employee Data Report', subtitle, columns, rows, landscape: false });
 
     await gmailService.sendMailWithAttachment({
       to: recipients.to,
       cc: recipients.cc,
-      subject: 'Updated Doer List – ' + reportingDoer,
-      text:
-        'Hi,\n\n' +
-        'Please find the attached Doer list currently working under ' + reportingDoer + ', shared for your reference and records.',
+      subject: subjectOverride || doerMailSubject(reportingDoer),
+      text: textOverride || doerMailText(reportingDoer),
       attachment: {
-        filename: 'Doer_List_' + reportingDoer.replace(/\s+/g, '_') + '_' + now.toISOString().slice(0, 10) + '.pdf',
-        content: pdfBuffer,
-        contentType: 'application/pdf'
+        filename: 'Doer_List_' + reportingDoer.replace(/\s+/g, '_') + '_' + now.toISOString().slice(0, 10) + (format === 'excel' ? '.xlsx' : '.pdf'),
+        content: attachmentBuffer,
+        contentType: format === 'excel' ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' : 'application/pdf'
       }
     });
 
@@ -590,6 +604,18 @@ router.post('/doer/send-mail', async (req, res) => {
   }
 });
 
+// Task 4 (2026-10-29): default subject/body text, factored out so both the
+// mail-defaults GET (for the compose popup's pre-fill/reset and its
+// subject/body edit sheet) and the send-mail POST (its no-override
+// fallback) share one source of truth. The month name is only known once
+// the month's own birthday list is computed, so it's a parameter here
+// rather than a zero-arg constant like doerMailSubject/doerMailText.
+function birthdayMailSubject(monthName) { return monthName + ' Birthday Greeting Cards – Design Request'; }
+function birthdayMailText() {
+  return 'Hi,\n\n' +
+    'Please find the list of the below employees having birthdays this month & kindly design individual birthday greeting cards, so we can share these in the group on their respective dates.';
+}
+
 // Live default To/Cc for the birthdays/send-mail compose popup below to
 // pre-fill (public/workforce.js's openMailCompose).
 router.get('/birthdays/mail-defaults', async (req, res) => {
@@ -598,7 +624,8 @@ router.get('/birthdays/mail-defaults', async (req, res) => {
     if (!recipients || !recipients.to) {
       return res.status(400).json({ error: 'No mail recipients configured for the Birthday List in the Mail Id sheet.' });
     }
-    res.json(recipients);
+    const monthName = new Date().toLocaleDateString('en-US', { month: 'long', timeZone: 'UTC' });
+    res.json(Object.assign({}, recipients, { subject: birthdayMailSubject(monthName), text: birthdayMailText(), hasAttachment: true, defaultFormat: 'pdf' }));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -614,6 +641,9 @@ router.get('/birthdays/mail-defaults', async (req, res) => {
 router.post('/birthdays/send-mail', async (req, res) => {
   try {
     const overrideTo = req.body && typeof req.body.to === 'string' ? req.body.to.trim() : '';
+    const format = req.body && req.body.format === 'excel' ? 'excel' : 'pdf';
+    const subjectOverride = req.body && typeof req.body.subject === 'string' ? req.body.subject.trim() : '';
+    const textOverride = req.body && typeof req.body.text === 'string' ? req.body.text.trim() : '';
 
     const { employees, departmentNames } = await employeeService.getEmployeeData({ forceRefresh: true });
 
@@ -638,27 +668,43 @@ router.post('/birthdays/send-mail', async (req, res) => {
     // with the HR Assistant's birthday card/PDF so neither can drift from
     // the other - see employeeService.getBirthdayEmployees/birthdayRowFor.
     const rows = sorted.map((e) => employeeService.birthdayRowFor(e, departmentNames, now));
+    // Excel-only sibling of `rows` - identical data/order, but the Date
+    // column is a real Date object for this year's birthday (same "this
+    // year" projection birthdayRowFor's own formatDobCurrentYear does)
+    // instead of the PDF's pre-formatted display string. e.dob is already
+    // a real Date from employeeService (never sheet free-text), so "dates
+    // as dates" applies in full here, same as the Doer route's DOJ.
+    const excelRows = sorted.map((e) => {
+      const cells = employeeService.birthdayRowFor(e, departmentNames, now);
+      const dobThisYear = e.dob instanceof Date ? new Date(Date.UTC(now.getUTCFullYear(), e.dob.getUTCMonth(), e.dob.getUTCDate())) : '—';
+      return cells.slice(0, -1).concat([dobThisYear]);
+    });
     const monthName = now.toLocaleDateString('en-US', { month: 'long', timeZone: 'UTC' });
 
-    const pdfBuffer = await buildTablePdfBuffer({
-      title: 'Birthday List',
-      subtitle: employeeService.birthdaySubtitle(sorted.length, now),
-      columns: employeeService.BIRTHDAY_REPORT_COLUMNS,
-      rows,
-      landscape: false
-    });
+    const attachmentBuffer = format === 'excel'
+      ? await buildTableExcelBuffer({
+        title: 'Birthday List',
+        subtitle: employeeService.birthdaySubtitle(sorted.length, now),
+        columns: employeeService.BIRTHDAY_REPORT_COLUMNS,
+        rows: excelRows
+      })
+      : await buildTablePdfBuffer({
+        title: 'Birthday List',
+        subtitle: employeeService.birthdaySubtitle(sorted.length, now),
+        columns: employeeService.BIRTHDAY_REPORT_COLUMNS,
+        rows,
+        landscape: false
+      });
 
     await gmailService.sendMailWithAttachment({
       to: recipients.to,
       cc: recipients.cc,
-      subject: monthName + ' Birthday Greeting Cards – Design Request',
-      text:
-        'Hi,\n\n' +
-        'Please find the list of the below employees having birthdays this month & kindly design individual birthday greeting cards, so we can share these in the group on their respective dates.',
+      subject: subjectOverride || birthdayMailSubject(monthName),
+      text: textOverride || birthdayMailText(),
       attachment: {
-        filename: 'Birthday_List_' + monthName + '_' + now.getUTCFullYear() + '.pdf',
-        content: pdfBuffer,
-        contentType: 'application/pdf'
+        filename: 'Birthday_List_' + monthName + '_' + now.getUTCFullYear() + (format === 'excel' ? '.xlsx' : '.pdf'),
+        content: attachmentBuffer,
+        contentType: format === 'excel' ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' : 'application/pdf'
       }
     });
 
