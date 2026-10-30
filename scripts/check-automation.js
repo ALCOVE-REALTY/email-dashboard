@@ -186,6 +186,18 @@ async function main() {
       check('Header matching: case-only difference resolves ("policy no" -> "Policy No")', automationService.resolveFuzzyOneOf('policy no', SHEET_HEADERS) === 'Policy No');
       check('Header matching: a genuine typo resolves ("depatment" -> "Department")', automationService.resolveFuzzyOneOf('depatment', SHEET_HEADERS) === 'Department');
 
+      // Live bug fix (2026-10-30), direct instruction: "Emp ID"/"Employee
+      // Code"/"Employee Id"/"Employee Number" are all the SAME field under
+      // a different abbreviation, not spelling variants - a plain
+      // substring/edit-distance check could never bridge these (confirmed:
+      // "employee_no" vs "emp id" shares no real substring and differs by
+      // far more than any sane typo tolerance).
+      const SHEET_HEADERS_WITH_EMP_ID = ['Emp ID', 'Full Name', 'Department', 'Corporate_name'];
+      check('Synonym matching: "Employee_No" resolves to a real sheet header named "Emp ID" (the exact live bug)', automationService.resolveFuzzyOneOf('Employee_No', SHEET_HEADERS_WITH_EMP_ID) === 'Emp ID');
+      check('Synonym matching: "Employee Code"/"Emp Code"/"Employee Id"/"Employee Number" all resolve to the same real "Emp ID" header', ['Employee Code', 'Emp Code', 'Employee Id', 'Employee Number'].every((h) => automationService.resolveFuzzyOneOf(h, SHEET_HEADERS_WITH_EMP_ID) === 'Emp ID'));
+      check('Synonym matching: never fires when the sheet has no employee-ID-shaped column at all (no false positive)', automationService.resolveFuzzyOneOf('Employee_No', ['Name', 'Department', 'Amount']) === null);
+      check('Synonym matching (built-in source): resolveColumnName also maps "Emp ID"/"Employee Code"/"Employee Id" to the real built-in "Employee_No" column', ['Emp ID', 'Employee Code', 'Employee Id', 'Emp Code', 'Employee Number'].every((h) => automationService.resolveColumnName(h, automationService.EMP_COLUMNS) === 'Employee_No'));
+
       function sheetAutomation(overrides) {
         return Object.assign({
           plan: Object.assign({

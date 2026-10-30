@@ -4232,6 +4232,15 @@
     if (!autoPlan) autoPlan = { source: 'sheet', conds: [], match: 'all' };
     autoPlan.source = 'sheet'; autoPlan.sheetUrl = autoSheetContext.sheetUrl; autoPlan.sheetId = autoSheetContext.sheetId;
     autoPlan.sheetTab = tab.title; autoPlan.sheetColumns = tab.headers;
+    // Live bug fix (2026-10-30) - autoTableCols otherwise keeps whatever it
+    // held before (autoResetForm's own built-in-source default, e.g.
+    // "Employee_No", or a DIFFERENT sheet/tab's own columns) - those stale
+    // names never match this tab's real headers, so the picker correctly
+    // shows nothing checked, but they silently rode along in the submitted
+    // plan.tableColumns anyway (Preview then failed: "column 'Employee_No'
+    // is missing"). Defaults to every column in this tab, same as the
+    // server's own "Ask SUBH" default for a fresh sheet plan.
+    autoTableCols = [...tab.headers];
     renderAutoSheetInfo(); renderAutoRecCols(); renderAutoCols(); autoSync();
     if (autoPlan) renderAutoUnderstanding();
   });
@@ -4249,6 +4258,9 @@
         if (!autoPlan) autoPlan = { source: 'sheet', conds: [], match: 'all' };
         autoPlan.source = 'sheet'; autoPlan.sheetUrl = url; autoPlan.sheetId = r.sheetId;
         autoPlan.sheetTab = r.tabs[0].title; autoPlan.sheetColumns = r.tabs[0].headers;
+        // Live bug fix (2026-10-30) - see the identical reset in the
+        // multi-tab picker's own click handler above for why.
+        autoTableCols = [...r.tabs[0].headers];
         renderAutoRecCols(); renderAutoCols();
       }
       renderAutoSheetInfo();

@@ -310,11 +310,32 @@ function levenshteinDistance(a, b) {
   }
   return dp[a.length][b.length];
 }
+// Known synonym groups for common HR column concepts that are genuinely
+// different abbreviations of the SAME field, not spelling variants an
+// edit-distance/substring check could ever bridge - "Employee_No" and
+// "Emp ID" share no real substring and differ by more letters than any
+// sane typo-tolerance allows (live bug fix, 2026-10-30, direct
+// instruction). Each inner array is one concept, checked with its own
+// normalization (underscores/dots -> spaces, collapsed, lowercase)
+// BETWEEN the exact and substring checks below - adds a case neither of
+// them can catch, never changes what either already matches.
+const COLUMN_SYNONYM_GROUPS = [
+  ['employee no', 'employee number', 'employee id', 'employee code', 'emp no', 'emp id', 'emp code']
+];
+function normalizeColumnHintForSynonyms(s) {
+  return String(s || '').trim().toLowerCase().replace(/[_.]/g, ' ').replace(/\s+/g, ' ');
+}
 function resolveFuzzyOneOf(hint, candidates) {
   const h = String(hint || '').trim().toLowerCase();
   if (!h || !candidates.length) return null;
   const direct = candidates.find((c) => c.toLowerCase() === h);
   if (direct) return direct;
+  const hNorm = normalizeColumnHintForSynonyms(hint);
+  const hintGroup = COLUMN_SYNONYM_GROUPS.find((g) => g.includes(hNorm));
+  if (hintGroup) {
+    const synonymMatch = candidates.find((c) => hintGroup.includes(normalizeColumnHintForSynonyms(c)));
+    if (synonymMatch) return synonymMatch;
+  }
   const substr = candidates.find((c) => { const cl = c.toLowerCase(); return cl.includes(h) || h.includes(cl); });
   if (substr) return substr;
   let best = null, bestDist = Infinity;
@@ -913,7 +934,13 @@ function resolveColumnName(hint, availableCols) {
     name: 'Employee_Name', employeename: 'Employee_Name', dob: 'DOB', birthday: 'DOB', birthdate: 'DOB',
     department: 'Department', dept: 'Department', designation: 'Designation', doj: 'DOJ', joiningdate: 'DOJ',
     email: 'Official Email', officialemail: 'Official Email', phone: 'Contact No', contact: 'Contact No',
-    confirmationdate: 'Confirmation Date', tenure: 'Tenure', status: 'Status', location: 'Location', company: 'Company'
+    confirmationdate: 'Confirmation Date', tenure: 'Tenure', status: 'Status', location: 'Location', company: 'Company',
+    // Live bug fix (2026-10-30), direct instruction: "Emp ID"/"Employee
+    // Code"/"Emp Code"/"Employee Id"/"Employee Number" are all the SAME
+    // field under a different name, not spelling variants - never
+    // reliably bridged by the partial/substring check below alone.
+    empid: 'Employee_No', employeeid: 'Employee_No', empno: 'Employee_No', employeeno: 'Employee_No',
+    empcode: 'Employee_No', employeecode: 'Employee_No', employeenumber: 'Employee_No'
   };
   const syn = synonyms[h.replace(/[^a-z]/g, '')];
   if (syn && availableCols.includes(syn)) return syn;
@@ -1119,7 +1146,7 @@ async function draftPlanFromParsed(parsed, now, sheetContext) {
 module.exports = {
   isAvailable, newAutomation, saveAutomation, getAutomation, listRawAutomations, deleteAutomation,
   SOURCES, EMP_COLUMNS, EMP_PERSON_COLS, sourceDef, sourceKind,
-  loadSheetInfo, getSheetLiveHeaders, sheetPlanDependencies, checkSheetDependencies, resolveFuzzyOneOf, sheetPersonCols, sheetDateColumns,
+  loadSheetInfo, getSheetLiveHeaders, sheetPlanDependencies, checkSheetDependencies, resolveFuzzyOneOf, resolveColumnName, sheetPersonCols, sheetDateColumns,
   testCond, matchedRows, personContact, contactOk,
   buildMessages, fillPlaceholders, computeNextRun,
   runAutomation, runDueAutomations, resolveMissedRun,
