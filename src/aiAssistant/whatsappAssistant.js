@@ -808,7 +808,24 @@ async function listCommsDismissed() {
   const redis = getClient();
   if (!redis) return new Map();
   return redisHealth.guardedRead(async () => {
-    const raw = await redis.hgetall(COMMS_DISMISSED_KEY);
+    // LIVE BUG FIX (2026-10-30), confirmed by a direct read-only
+    // diagnostic against the real store: the Redis client's own HGETALL
+    // deserializer throws "Cannot read properties of null (reading
+    // 'length')" when the hash has never been written to (a null result
+    // from the REST API for a genuinely empty hash, which the client
+    // assumes is an array to walk) - this exact text is what was
+    // surfacing as the "Data storage is having trouble reading" banner on
+    // every communications-summary load, even though nothing was actually
+    // wrong. Only this specific, recognizable signature is treated as
+    // "empty hash" - any other error still reports as a real failure,
+    // unchanged, via the normal guardedRead catch below.
+    let raw;
+    try {
+      raw = await redis.hgetall(COMMS_DISMISSED_KEY);
+    } catch (err) {
+      if (err && /reading 'length'/.test(err.message)) raw = null;
+      else throw err;
+    }
     const map = new Map();
     if (raw) Object.keys(raw).forEach((k) => map.set(k, Number(raw[k]) || 0));
     return map;
