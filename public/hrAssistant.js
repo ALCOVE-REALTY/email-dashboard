@@ -1394,21 +1394,22 @@
   async function prefetchRemindersAll() {
     const seqAtStart = remMutationSeq;
     try {
-      // 'today' warms the hub tile/header badge preview (showHub/
-      // pollCommsSummary's hub branch read this key directly) - every
-      // filter's response carries the SAME full counts object regardless
-      // of which items it returns (computeCounts always runs over the
-      // complete list). 'everything' (the full raw pending+completed set)
-      // separately warms the Reminders page itself, so the very first tab
-      // switch there (see bucketReminders/loadRemindersPage) is instant
-      // and client-side with no network round trip, same as every later one.
-      const [todayResp, everythingResp] = await Promise.all([
-        fetch('/api/workforce/hr-assistant/reminders?filter=today'),
-        fetch('/api/workforce/hr-assistant/reminders?filter=everything')
-      ]);
+      // Performance fix (2026-10-30): used to fetch BOTH filter=today AND
+      // filter=everything in parallel on every single panel open - but
+      // every filter's response carries the SAME full counts object
+      // regardless of which items it returns (computeCounts always runs
+      // over the complete list), and bucketReminders (below) already knows
+      // how to derive the 'today' item list from 'everything' client-side.
+      // One fetch now warms BOTH cache entries - half the reminders I/O on
+      // every open, for the exact same data.
+      const everythingResp = await fetch('/api/workforce/hr-assistant/reminders?filter=everything');
       if (remMutationSeq !== seqAtStart) return; // a mutation landed while this was in flight - stale, drop it
-      if (todayResp.ok) pageDataCache.reminders.set('today', { data: await todayResp.json(), at: Date.now() });
-      if (everythingResp.ok) pageDataCache.reminders.set('everything', { data: await everythingResp.json(), at: Date.now() });
+      if (everythingResp.ok) {
+        const data = await everythingResp.json();
+        const at = Date.now();
+        pageDataCache.reminders.set('everything', { data, at });
+        pageDataCache.reminders.set('today', { data: { items: bucketReminders(data.items, 'today', new Date()), counts: data.counts }, at });
+      }
     } catch (err) { /* best effort - a real page open will just fetch fresh */ }
   }
 

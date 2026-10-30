@@ -510,7 +510,9 @@ const SYSTEM_NOTICE_PATTERNS = [
   // callers) instead of needing a live-store purge.
 ];
 async function listSystemNotices() {
-  const items = await listOwnerNotifications();
+  // Performance fix (2026-10-30): these two reads are independent of each
+  // other - was a needless sequential wait.
+  const [items, gw] = await Promise.all([listOwnerNotifications(), gatewayStatusSummary()]);
   const seenPatterns = new Set();
   const result = [];
   for (const n of items) {
@@ -520,7 +522,6 @@ async function listSystemNotices() {
     seenPatterns.add(patternIndex);
     result.push(n);
   }
-  const gw = await gatewayStatusSummary();
   if (!gw.isConnected) {
     result.unshift({
       text: '⚠️ WhatsApp disconnected since ' + gw.disconnectedSinceLabel + ' — open tools.alcoverealty.in → WhatsApp Dashboard and scan the QR again.',
@@ -555,11 +556,14 @@ async function dismissSystemNotices() {
 // and the follow-up itself is still fully visible in-chat via
 // getWhatsappConversation's own, separate, unrelated listOpenFollowups()
 // fetch - only the AGGREGATE "needs you" signal changes.
-async function listActionableWhatsappItems() {
-  const [approvals, drafts, docs, recentLog, hrConfirmations] = await Promise.all([
-    listPendingApprovals(), listPendingDrafts(),
-    documentRequests.listPendingReceived(), listInboxLog(300), listAllHrConfirmations()
-  ]);
+// Performance fix (2026-10-30): split out of listActionableWhatsappItems
+// so a caller that already has its own recentLog fetch in flight (both
+// getWhatsappVisibilitySnapshot and listRecentWhatsappConversations fetch
+// listInboxLog(500) themselves) can hand it in here directly instead of
+// this function paying for its OWN separate listInboxLog(300) call on top
+// - was a genuine duplicate LRANGE+parse of the same underlying log, on
+// every communications-summary request (and its 12s poll).
+function buildActionableWhatsappItems(approvals, drafts, docs, recentLog, hrConfirmations) {
   const ambiguousConfirmations = hrConfirmations.filter((c) => c.status === 'ambiguous_owner_review');
   const nameByChat = new Map();
   recentLog.forEach((e) => {
@@ -605,6 +609,15 @@ async function listActionableWhatsappItems() {
   rows.sort((a, b) => b.lastMessageTime - a.lastMessageTime);
   return rows;
 }
+// Fetches its own data and delegates to the pure function above - for a
+// caller that doesn't already have a recentLog fetch of its own in flight.
+async function listActionableWhatsappItems() {
+  const [approvals, drafts, docs, recentLog, hrConfirmations] = await Promise.all([
+    listPendingApprovals(), listPendingDrafts(),
+    documentRequests.listPendingReceived(), listInboxLog(300), listAllHrConfirmations()
+  ]);
+  return buildActionableWhatsappItems(approvals, drafts, docs, recentLog, hrConfirmations);
+}
 
 // Task 6 (2026-10-27) - "Action needed" unified inbox: the SAME
 // underlying pending-item sources listActionableWhatsappItems already
@@ -648,6 +661,14 @@ async function listActionNeededItems() {
   // would have.
   hrNoteEscalations.forEach((e) => raw.push({ kind: 'hr_note_escalated', category: 'approvals', chatId: whatsapp.normalizePhone(e.phone), name: e.name, ts: e.createdAt || 0, data: e }));
   const isRealName = (n) => n && n !== 'The sender';
+  // Performance fix (2026-10-30): isNeverAuto(item.chatId) used to run as
+  // its own SISMEMBER round trip PER item inside this map - this function
+  // backs the Action-needed poll that fires every ~12s regardless of which
+  // page is open, so N items meant N extra round trips on every single
+  // poll. listNeverAuto() (one SMEMBERS) plus an in-memory Set gives the
+  // exact same per-item answer for one round trip total, no matter how
+  // many items there are.
+  const neverAutoSet = new Set((await listNeverAuto()).map((p) => whatsapp.normalizePhone(p)));
   const items = await Promise.all(raw.map(async (item) => {
     const directoryMatch = await findEmployeeByPhone(item.chatId).catch(() => null);
     const displayName = (directoryMatch && directoryMatch.emp.name) || (isRealName(item.name) && item.name) || nameByChat.get(item.chatId) || item.chatId;
@@ -655,7 +676,7 @@ async function listActionNeededItems() {
     // (same "Never auto-reply" toggle as the conversation page), which
     // needs each item's own current state to render correctly instead of
     // always showing "off".
-    const neverAuto = await isNeverAuto(item.chatId);
+    const neverAuto = neverAutoSet.has(whatsapp.normalizePhone(item.chatId));
     // Task 2 (2026-10-29) - shaped through the SAME functions
     // getWhatsappConversation uses for the chat page's own cards (see
     // their shared comment above) - automation/hr_note_escalated kinds
@@ -780,9 +801,20 @@ async function listRecentWhatsappConversations(now, windowMs) {
 // communications-summary's own need: the 24h main-page view AND the
 // unbounded View-All view, from ONE shared fetch of needsYou/recentLog -
 // never pays for listActionableWhatsappItems/listInboxLog's own I/O twice.
+// Performance fix (2026-10-30): this is the REAL hot path (every
+// communications-summary page load, and its 12s poll) - everything
+// listActionableWhatsappItems needs is now fetched in the SAME Promise.all
+// as recentLog/dismissedByChat, and built via the pure
+// buildActionableWhatsappItems, so listInboxLog is fetched exactly ONCE
+// per call instead of twice (300-limit inside the old call, 500-limit
+// here) - same final data, half the LRANGE+parse work on every poll.
 async function getWhatsappVisibilitySnapshot(now) {
   const nowTs = (now instanceof Date ? now.getTime() : now) || Date.now();
-  const [needsYou, recentLog, dismissedByChat] = await Promise.all([listActionableWhatsappItems(), listInboxLog(500), listCommsDismissed()]);
+  const [approvals, drafts, docs, recentLog, hrConfirmations, dismissedByChat] = await Promise.all([
+    listPendingApprovals(), listPendingDrafts(), documentRequests.listPendingReceived(),
+    listInboxLog(500), listAllHrConfirmations(), listCommsDismissed()
+  ]);
+  const needsYou = buildActionableWhatsappItems(approvals, drafts, docs, recentLog, hrConfirmations);
   return {
     recentItems: mergeRecentWhatsappConversations(needsYou, recentLog, nowTs, RECENT_CONVO_WINDOW_MS, dismissedByChat),
     allItems: mergeRecentWhatsappConversations(needsYou, recentLog, nowTs, Infinity, dismissedByChat),
