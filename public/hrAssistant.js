@@ -2114,7 +2114,7 @@
         closeTemplateSheet();
         showProToast({ title: 'Template saved', type: 'success' });
         if (panelView === 'templates') loadTemplatesPage();
-      });
+      }, { resetAfterSuccess: true });
     });
   }
   function templateRowHtml(t) {
@@ -2349,7 +2349,7 @@
         closeSiteAliasSheet();
         showProToast({ title: siteAliasSheetState.mode === 'edit' ? 'Group updated' : 'Group added', type: 'success' });
         if (panelView === 'siteAliases') loadSiteAliasesPage();
-      });
+      }, { resetAfterSuccess: true });
     });
   }
 
@@ -3548,7 +3548,7 @@
         closeReminderSheet();
         if (panelView === 'reminderDetail' && editingReminderId) openReminderDetail(editingReminderId);
         else loadRemindersPage(activeRemFilter);
-      });
+      }, { resetAfterSuccess: true });
     });
   }
 
