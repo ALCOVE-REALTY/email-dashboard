@@ -2312,8 +2312,19 @@
   // is gone, so this is now the one way in from outside the panel.
   window.__hrAssistantOpenSiteAliases = function () {
     const wasOpen = typeof panel !== 'undefined' && !panel.hidden;
-    if (!wasOpen && typeof openPanel === 'function') openPanel();
-    pushNav({ type: 'siteAliases' });
+    if (!wasOpen && typeof openPanel === 'function') {
+      // UI fix (2026-10-30), live bug: openPanel() already resets navStack
+      // to [home] and plants one history entry for it - pushNav-ing
+      // siteAliases ON TOP of that left a single back tap landing on the
+      // panel's own Home view (never actually visited) instead of closing
+      // the panel straight back to wherever it was opened from (SUBH
+      // Settings). Replacing that base entry in place (no extra push)
+      // makes one back tap do exactly that.
+      openPanel();
+      navStack = [{ type: 'siteAliases' }];
+    } else {
+      pushNav({ type: 'siteAliases' });
+    }
     showSiteAliases();
   };
   // Lets the new top-level "SUBH Settings" dashboard view (workforce.js)
@@ -2479,8 +2490,13 @@
   // __hrAssistantOpenSiteAliases.
   window.__hrAssistantOpenDeptAliases = function () {
     const wasOpen = typeof panel !== 'undefined' && !panel.hidden;
-    if (!wasOpen && typeof openPanel === 'function') openPanel();
-    pushNav({ type: 'deptAliases' });
+    if (!wasOpen && typeof openPanel === 'function') {
+      // Same back-navigation fix as __hrAssistantOpenSiteAliases above.
+      openPanel();
+      navStack = [{ type: 'deptAliases' }];
+    } else {
+      pushNav({ type: 'deptAliases' });
+    }
     showDeptAliases();
   };
   window.__hrAssistantRefreshDeptAliasesBadge = loadDeptAliasesBadge;
