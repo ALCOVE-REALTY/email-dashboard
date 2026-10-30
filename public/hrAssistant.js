@@ -120,6 +120,20 @@
   const siteAliasInput = document.getElementById('hrSiteAliasInput');
   const siteAliasSiteValueInput = document.getElementById('hrSiteAliasSiteValueInput');
   const siteAliasSheetTitle = document.getElementById('hrSiteAliasSheetTitle');
+  // Department names - full parity with site aliases above (2026-10-30)
+  const deptAliasesBadge = document.getElementById('hrDeptAliasesBadge');
+  const deptAliasesPage = document.getElementById('hrDeptAliasesPage');
+  const deptAliasesList = document.getElementById('hrDeptAliasesList');
+  const newDeptsList = document.getElementById('hrNewDeptsList');
+  const deptAliasAddBtn = document.getElementById('hrDeptAliasAddBtn');
+  const deptAliasSheetBackdrop = document.getElementById('hrDeptAliasSheetBackdrop');
+  const deptAliasSheet = document.getElementById('hrDeptAliasSheet');
+  const deptAliasSheetCloseBtn = document.getElementById('hrDeptAliasSheetCloseBtn');
+  const deptAliasSheetCancelBtn = document.getElementById('hrDeptAliasSheetCancelBtn');
+  const deptAliasSheetSaveBtn = document.getElementById('hrDeptAliasSheetSaveBtn');
+  const deptAliasInput = document.getElementById('hrDeptAliasInput');
+  const deptAliasDeptValueInput = document.getElementById('hrDeptAliasDeptValueInput');
+  const deptAliasSheetTitle = document.getElementById('hrDeptAliasSheetTitle');
   const convoPage = document.getElementById('hrConvoPage');
   const convoThread = document.getElementById('hrConvoThread');
   const convoActions = document.getElementById('hrConvoActions');
@@ -1517,6 +1531,7 @@
     else if (entry.type === 'openFlows') showOpenFlows();
     else if (entry.type === 'templates') showTemplates();
     else if (entry.type === 'siteAliases') showSiteAliases();
+    else if (entry.type === 'deptAliases') showDeptAliases();
     else if (entry.type === 'actionNeeded') showActionNeeded();
     else if (entry.type === 'conversation') openConversationPage(entry.chatId);
     else if (entry.type === 'reminders') { activeRemFilter = entry.filter; setPanelView('reminders'); loadRemindersPage(entry.filter); }
@@ -1556,6 +1571,7 @@
     const isOpenFlows = view === 'openFlows';
     const isTemplates = view === 'templates';
     const isSiteAliases = view === 'siteAliases';
+    const isDeptAliases = view === 'deptAliases';
     const isActionNeeded = view === 'actionNeeded';
     const isAutoList = view === 'automationList';
     const isAutomation = view === 'automation';
@@ -1574,6 +1590,7 @@
     if (openFlowsPage) openFlowsPage.hidden = !isOpenFlows;
     if (templatesPage) templatesPage.hidden = !isTemplates;
     if (siteAliasesPage) siteAliasesPage.hidden = !isSiteAliases;
+    if (deptAliasesPage) deptAliasesPage.hidden = !isDeptAliases;
     if (actionNeededPage) actionNeededPage.hidden = !isActionNeeded;
     if (autoListPage) autoListPage.hidden = !isAutoList;
     if (autoPage) autoPage.hidden = !isAutomation;
@@ -1615,6 +1632,12 @@
       if (commsHeadIcon) commsHeadIcon.innerHTML = WHATSAPP_SVG;
       if (commsHeadTitle) commsHeadTitle.textContent = 'Site names';
       if (commsHeadSubtitle) commsHeadSubtitle.textContent = 'Colloquial site names matched to the HR Master';
+      if (commsHeadBadge) commsHeadBadge.hidden = true;
+    } else if (isDeptAliases) {
+      if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon whatsapp';
+      if (commsHeadIcon) commsHeadIcon.innerHTML = WHATSAPP_SVG;
+      if (commsHeadTitle) commsHeadTitle.textContent = 'Department names';
+      if (commsHeadSubtitle) commsHeadSubtitle.textContent = 'Colloquial department names matched to the HR Master';
       if (commsHeadBadge) commsHeadBadge.hidden = true;
     } else if (isActionNeeded) {
       if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon whatsapp';
@@ -2353,6 +2376,160 @@
     });
   }
 
+  // Department names - full parity with site aliases above, per direct
+  // instruction (2026-10-30). Every function below is the exact same
+  // shape as its site-alias counterpart, just department-scoped.
+  function deptAliasGroupHtml(group) {
+    const aliasRows = group.aliases.map((a) =>
+      '<div class="wf-site-alias-chip" data-id="' + escapeHtml(a.id) + '">' +
+        '<span>' + escapeHtml(a.alias) + '</span>' +
+        '<button type="button" class="wf-site-alias-chip-delete" data-action="delete" aria-label="Delete this alias">' +
+          '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>' +
+        '</button>' +
+      '</div>'
+    ).join('');
+    return '<div class="wf-auto-task-card" data-dept-value="' + escapeHtml(group.deptValue) + '">' +
+      '<div class="wf-auto-task-head"><div style="flex:1;min-width:0">' +
+        '<div class="wf-auto-task-subject">' + escapeHtml(group.deptValue) + '</div>' +
+      '</div></div>' +
+      '<div class="wf-site-alias-chips">' + (aliasRows || '<span class="wf-auto-hint">No aliases yet.</span>') + '</div>' +
+      '<div class="wf-auto-actions"><button type="button" class="plain" data-action="edit-group">Edit</button></div></div>';
+  }
+  function newDeptCardHtml(item) {
+    const suggested = (item.suggestedAliases || []).join(', ');
+    return '<div class="wf-auto-task-card" data-dept="' + escapeHtml(item.deptValue) + '">' +
+      '<div class="wf-auto-task-subject">New department found: ' + escapeHtml(item.deptValue) + '</div>' +
+      '<label class="wf-rem-field"><span>Aliases (edit if needed, comma-separated - leave blank if none needed)</span>' +
+      '<input type="text" data-role="new-dept-aliases" value="' + escapeHtml(suggested) + '" /></label>' +
+      '<div class="wf-auto-actions"><button type="button" class="plain" data-action="confirm">Confirm</button></div></div>';
+  }
+  async function loadDeptAliasesPage() {
+    if (!deptAliasesList) return;
+    deptAliasesList.innerHTML = '<div class="wf-skeleton-list"><div class="wf-skeleton-row"></div><div class="wf-skeleton-row"></div></div>';
+    if (newDeptsList) newDeptsList.innerHTML = '';
+    try {
+      const [aliasResp, newDeptsResp] = await Promise.all([
+        fetch('/api/workforce/hr-assistant/dept-aliases').then((res) => res.json()),
+        fetch('/api/workforce/hr-assistant/new-depts').then((res) => res.json())
+      ]);
+      const aliases = aliasResp.items || [];
+      const newDepts = newDeptsResp.items || [];
+      if (newDeptsList) {
+        newDeptsList.innerHTML = newDepts.length ? newDepts.map(newDeptCardHtml).join('') : '';
+        newDeptsList.querySelectorAll('[data-action="confirm"]').forEach((btn) => {
+          btn.addEventListener('click', async () => {
+            const card = btn.closest('[data-dept]');
+            const deptValue = card.dataset.dept;
+            const input = card.querySelector('[data-role="new-dept-aliases"]');
+            const aliasWords = (input.value || '').split(',').map((s) => s.trim()).filter(Boolean);
+            await runButtonAction(btn, () => postJsonOrThrow('/api/workforce/hr-assistant/new-depts/confirm', { deptValue, aliasWords }), () => {
+              closeRowWithToast(card, { title: 'Department confirmed', type: 'success' });
+              loadDeptAliasesBadge();
+            });
+          });
+        });
+      }
+      if (!aliases.length) { deptAliasesList.innerHTML = '<div class="wf-rem-empty">No department names saved yet.</div>'; }
+      else {
+        const groups = [];
+        const groupByDeptValue = new Map();
+        aliases.forEach((a) => {
+          let group = groupByDeptValue.get(a.deptValue);
+          if (!group) { group = { deptValue: a.deptValue, aliases: [] }; groupByDeptValue.set(a.deptValue, group); groups.push(group); }
+          group.aliases.push(a);
+        });
+        deptAliasesList.innerHTML = groups.map(deptAliasGroupHtml).join('');
+        deptAliasesList.querySelectorAll('[data-action="delete"]').forEach((btn) => {
+          btn.addEventListener('click', async () => {
+            const chip = btn.closest('[data-id]');
+            const id = chip.dataset.id;
+            if (!(await showConfirmDialog('Delete this alias?', { confirmLabel: 'Delete' }))) return;
+            await runButtonAction(btn, () => fetch('/api/workforce/hr-assistant/dept-aliases/' + encodeURIComponent(id), { method: 'DELETE' }).then((res) => res.json()), () => {
+              chip.remove();
+              showActionToast('Alias deleted');
+              if (!deptAliasesList.querySelector('[data-dept-value="' + CSS.escape(chip.closest('[data-dept-value]').dataset.deptValue) + '"] [data-id]')) loadDeptAliasesPage();
+            });
+          });
+        });
+        deptAliasesList.querySelectorAll('[data-action="edit-group"]').forEach((btn) => {
+          btn.addEventListener('click', () => {
+            const card = btn.closest('[data-dept-value]');
+            const group = groups.find((g) => g.deptValue === card.dataset.deptValue);
+            openDeptAliasSheet({ mode: 'edit', deptValue: group.deptValue, aliases: group.aliases });
+          });
+        });
+      }
+    } catch (err) {
+      deptAliasesList.innerHTML = '<div class="wf-rem-empty">Could not load department names.</div>';
+    }
+  }
+  async function loadDeptAliasesBadge() {
+    if (!deptAliasesBadge) return;
+    try {
+      const r = await fetch('/api/workforce/hr-assistant/new-depts').then((res) => res.json());
+      setCountBadge(deptAliasesBadge, (r.items || []).length);
+    } catch (err) { /* best effort */ }
+  }
+  function showDeptAliases() {
+    setPanelView('deptAliases');
+    loadDeptAliasesPage();
+  }
+  // Opened from the top-level "SUBH Settings" dashboard view's own
+  // "Department names" card (see workforce.js) - same pattern as
+  // __hrAssistantOpenSiteAliases.
+  window.__hrAssistantOpenDeptAliases = function () {
+    const wasOpen = typeof panel !== 'undefined' && !panel.hidden;
+    if (!wasOpen && typeof openPanel === 'function') openPanel();
+    pushNav({ type: 'deptAliases' });
+    showDeptAliases();
+  };
+  window.__hrAssistantRefreshDeptAliasesBadge = loadDeptAliasesBadge;
+  function closeDeptAliasSheet() {
+    deptAliasSheetBackdrop.classList.remove('open');
+    deptAliasSheet.classList.remove('open');
+    setTimeout(() => { deptAliasSheetBackdrop.hidden = true; deptAliasSheet.hidden = true; }, 320);
+  }
+  let deptAliasSheetState = { mode: 'add', deptValue: '', existingAliases: [] };
+  function openDeptAliasSheet({ mode, deptValue, aliases }) {
+    deptAliasSheetState = { mode, deptValue: deptValue || '', existingAliases: aliases || [] };
+    if (deptAliasSheetTitle) deptAliasSheetTitle.textContent = mode === 'edit' ? 'Edit "' + deptValue + '"' : 'Add a new group';
+    if (deptAliasDeptValueInput) { deptAliasDeptValueInput.value = deptValue || ''; deptAliasDeptValueInput.disabled = mode === 'edit'; }
+    if (deptAliasInput) deptAliasInput.value = mode === 'edit' ? (aliases || []).map((a) => a.alias).join(', ') : '';
+    deptAliasSheetBackdrop.hidden = false;
+    deptAliasSheet.hidden = false;
+    void deptAliasSheet.offsetHeight;
+    deptAliasSheetBackdrop.classList.add('open');
+    deptAliasSheet.classList.add('open');
+  }
+  if (deptAliasAddBtn) deptAliasAddBtn.addEventListener('click', () => openDeptAliasSheet({ mode: 'add' }));
+  if (deptAliasSheetCloseBtn) deptAliasSheetCloseBtn.addEventListener('click', closeDeptAliasSheet);
+  if (deptAliasSheetCancelBtn) deptAliasSheetCancelBtn.addEventListener('click', closeDeptAliasSheet);
+  if (deptAliasSheetBackdrop) deptAliasSheetBackdrop.addEventListener('click', closeDeptAliasSheet);
+  if (deptAliasSheetSaveBtn) {
+    deptAliasSheetSaveBtn.addEventListener('click', async () => {
+      const deptValue = (deptAliasSheetState.mode === 'edit' ? deptAliasSheetState.deptValue : (deptAliasDeptValueInput.value || '')).trim();
+      const newAliasWords = (deptAliasInput.value || '').split(',').map((s) => s.trim()).filter(Boolean);
+      if (!deptValue || !newAliasWords.length) { showActionToast('Both fields are required.', null, 'warning'); return; }
+      await runButtonAction(deptAliasSheetSaveBtn, async () => {
+        if (deptAliasSheetState.mode === 'edit') {
+          const existingByLower = new Map(deptAliasSheetState.existingAliases.map((a) => [a.alias.toLowerCase(), a]));
+          const newByLower = new Map(newAliasWords.map((w) => [w.toLowerCase(), w]));
+          const toDelete = deptAliasSheetState.existingAliases.filter((a) => !newByLower.has(a.alias.toLowerCase()));
+          const toAdd = newAliasWords.filter((w) => !existingByLower.has(w.toLowerCase()));
+          for (const a of toDelete) await fetch('/api/workforce/hr-assistant/dept-aliases/' + encodeURIComponent(a.id), { method: 'DELETE' });
+          for (const w of toAdd) await postJsonOrThrow('/api/workforce/hr-assistant/dept-aliases', { alias: w, deptValue });
+        } else {
+          for (const w of newAliasWords) await postJsonOrThrow('/api/workforce/hr-assistant/dept-aliases', { alias: w, deptValue });
+        }
+        return { ok: true };
+      }, () => {
+        closeDeptAliasSheet();
+        showProToast({ title: deptAliasSheetState.mode === 'edit' ? 'Group updated' : 'Group added', type: 'success' });
+        if (panelView === 'deptAliases') loadDeptAliasesPage();
+      }, { resetAfterSuccess: true });
+    });
+  }
+
   // Task 6 - "Action needed" unified inbox. Each card's inner action-group
   // HTML is built by the EXACT SAME buildConvoActions a conversation's own
   // action cards use (see above) - only ever given ONE item in ONE of its
@@ -2634,6 +2811,7 @@
   async function loadCommsPage() {
     refreshOpenFlowsBadge(); // fire-and-forget, independent of the mails/WhatsApp render below
     loadSiteAliasesBadge(); // fire-and-forget, same reasoning
+    loadDeptAliasesBadge(); // fire-and-forget, same reasoning
     if (pageDataCache.comms) renderCommsData(pageDataCache.comms);
     let data;
     try {

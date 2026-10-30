@@ -5545,6 +5545,49 @@ async function checkAsync(label, fn) {
     await whatsappAssistant.refreshSiteAliasCacheNow();
     return resolved.includes('Real-Test-Site-Value') && !unresolved.includes('Should-Never-Match');
   });
+  await checkAsync('resolveDeptAliasValues: a CONFIRMED department alias resolves a colloquial term to its real department value(s); an unconfirmed (not-yet-reviewed) alias is never applied - exact mirror of resolveSiteAliasValues above', async () => {
+    const alias1 = await whatsappAssistant.saveDeptAlias({ alias: 'TestColloquialDeptName', deptValue: 'Real-Test-Dept-Value', confirmed: true });
+    const alias2 = await whatsappAssistant.saveDeptAlias({ alias: 'TestUnconfirmedDeptAlias', deptValue: 'Should-Never-Match-Dept', confirmed: false });
+    await whatsappAssistant.refreshDeptAliasCacheNow();
+    const resolved = whatsappAssistant.resolveDeptAliasValues('TestColloquialDeptName');
+    const unresolved = whatsappAssistant.resolveDeptAliasValues('TestUnconfirmedDeptAlias');
+    await whatsappAssistant.deleteDeptAlias(alias1.id);
+    await whatsappAssistant.deleteDeptAlias(alias2.id);
+    await whatsappAssistant.refreshDeptAliasCacheNow();
+    return resolved.includes('Real-Test-Dept-Value') && !unresolved.includes('Should-Never-Match-Dept');
+  });
+  await checkAsync('LIVE ISSUE FIX: department alias resolution wins over (and makes possible at all) the plain substring matcher - "QC" has no substring relationship to the real "QUALITY" department, so resolveDepartmentOptions alone finds nothing for it, but the default-seeded alias ("QC" -> "QUALITY") resolves it directly, exactly reproducing the fix for "QC HOD emp code ar nam dao" finding no department', async () => {
+    const { employees } = await employeeService.getEmployeeData();
+    await whatsappAssistant.ensureDefaultDeptAliasesSeeded();
+    await whatsappAssistant.refreshDeptAliasCacheNow();
+    const plainMatch = whatsappAssistant.resolveDepartmentOptions(employees, 'QC');
+    const aliasMatch = whatsappAssistant.resolveDeptAliasValues('QC');
+    return plainMatch.resolved === null && plainMatch.options.length === 0 && aliasMatch.length === 1 && aliasMatch[0] === 'QUALITY';
+  });
+  const FAKE_HOD_EMP_CODE_EMPLOYEES = [
+    { name: 'Worker One', employeeId: 'AR001111', designation: 'QC Executive', department: 'QUALITY', location: 'HO', company: 'Alcove', reportingManager: 'Priya HOD', status: 'ACTIVE' },
+    { name: 'Worker Two', employeeId: 'AR001112', designation: 'QC Executive', department: 'QUALITY', location: 'HO', company: 'Alcove', reportingManager: 'Priya HOD', status: 'ACTIVE' },
+    { name: 'Priya HOD', employeeId: 'AR009999', designation: 'Manager', department: 'Admin', location: 'HO', company: 'Alcove', reportingManager: 'Big Boss', status: 'ACTIVE' }
+  ];
+  check('findEmployeeIdByExactName: finds the ACTIVE record matching an exact name', (() => {
+    return whatsappAssistant.findEmployeeIdByExactName(FAKE_HOD_EMP_CODE_EMPLOYEES, 'Priya HOD') === 'AR009999';
+  })());
+  check('findEmployeeIdByExactName: no match at all returns null, never a crash or a guessed code', (() => {
+    return whatsappAssistant.findEmployeeIdByExactName(FAKE_HOD_EMP_CODE_EMPLOYEES, 'Nobody Here') === null;
+  })());
+  check('LIVE ISSUE FIX: buildHrDataQueryAnswer with hodIncludeEmpCode=true and a single resolved HOD includes BOTH the name AND employee code in one professional sentence ("QC HOD emp code ar nam dao" asks for both)', (() => {
+    const { outgoingText } = whatsappAssistant.buildHrDataQueryAnswer(FAKE_HOD_EMP_CODE_EMPLOYEES, { returnType: 'hod', resolvedDepartment: 'QUALITY', hodIncludeEmpCode: true }, 'english');
+    return outgoingText === 'The HOD of Quality department is Priya HOD, Employee Code AR009999.';
+  })());
+  check('buildHrDataQueryAnswer: hodIncludeEmpCode=false (or omitted) keeps the plain name-only sentence unchanged - no regression to the existing HOD-name-only flow', (() => {
+    const { outgoingText } = whatsappAssistant.buildHrDataQueryAnswer(FAKE_HOD_EMP_CODE_EMPLOYEES, { returnType: 'hod', resolvedDepartment: 'QUALITY' }, 'english');
+    return outgoingText === 'The HOD of Quality department is Priya HOD.';
+  })());
+  check('buildHrDataQueryAnswer: hodIncludeEmpCode=true but no employee record matches the HOD\'s name falls back to the plain name-only sentence, never a crash or an invented code', (() => {
+    const employeesWithoutHodRecord = FAKE_HOD_EMP_CODE_EMPLOYEES.filter((e) => e.name !== 'Priya HOD');
+    const { outgoingText } = whatsappAssistant.buildHrDataQueryAnswer(employeesWithoutHodRecord, { returnType: 'hod', resolvedDepartment: 'QUALITY', hodIncludeEmpCode: true }, 'english');
+    return outgoingText === 'The HOD of Quality department is Priya HOD.';
+  })());
   await checkAsync('continueHrDataQueryFlow: picking an option BY NUMBER resolves the real department, clears the pending state, and queues an approval (no real Claude call needed - this continuation is pure code, number/substring matching against the stored options)', async () => {
     const phone = '919999000095';
     await whatsappAssistant.clearPendingHrDataQuery(phone).catch(() => {});

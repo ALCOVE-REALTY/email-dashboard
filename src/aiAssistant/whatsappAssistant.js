@@ -3192,6 +3192,25 @@ const HR_QUERY_HOD_MULTI = {
     deptLabel + ' has ' + breakdown.length + ' HODs:\n' +
     breakdown.map((b, i) => (i + 1) + ') ' + b.name + ' (' + b.count + ')').join('\n')
 };
+// Live bug fix (2026-10-30), direct instruction: a sender can ask for the
+// HOD's employee code/number ALONGSIDE their name in the same message
+// ("QC HOD emp code ar nam dao") - handled via hodIncludeEmpCode on the
+// classifier tool; this is the "both answers in one professional line"
+// variant of HR_QUERY_HOD_SINGLE, used only when a matching emp code is
+// actually found (findEmployeeIdByExactName below).
+const HR_QUERY_HOD_SINGLE_WITH_CODE = {
+  banglish: (deptLabel, hodName, empCode) => deptLabel + '-er HOD er nam ' + hodName + ', Employee Code ' + empCode + '.',
+  hinglish: (deptLabel, hodName, empCode) => deptLabel + ' ke HOD ka naam ' + hodName + ' hai, Employee Code ' + empCode + '.',
+  english: (deptLabel, hodName, empCode) => 'The HOD of ' + deptLabel + ' is ' + hodName + ', Employee Code ' + empCode + '.'
+};
+// Looks up the HOD's own employee code by their exact name, preferring an
+// ACTIVE record (the same precedence computeHodBreakdown's own candidate
+// pool already favors) but falling back to any match so an inactive HOD
+// still resolves - never invents a code when no match exists.
+function findEmployeeIdByExactName(employees, name) {
+  const match = employees.find((e) => e.name === name && e.status === 'ACTIVE') || employees.find((e) => e.name === name);
+  return match ? match.employeeId : null;
+}
 
 // Live bug fix (2026-10-29) - departmentHintMatches alone requires every
 // hint word to be a COMPLETE word in the field (its whole reason for
@@ -3279,11 +3298,16 @@ function buildHrDataQueryAnswer(employees, query, lang) {
       outgoingText = (HR_QUERY_NO_MATCH[lang] || HR_QUERY_NO_MATCH.english)(deptLabel, 'HOD');
     } else {
       const breakdown = computeHodBreakdown(rows);
-      outgoingText = !breakdown.length
-        ? (HR_QUERY_NO_MATCH[lang] || HR_QUERY_NO_MATCH.english)(deptLabel, 'HOD')
-        : breakdown.length === 1
-          ? (HR_QUERY_HOD_SINGLE[lang] || HR_QUERY_HOD_SINGLE.english)(deptLabel, breakdown[0].name)
-          : (HR_QUERY_HOD_MULTI[lang] || HR_QUERY_HOD_MULTI.english)(deptLabel, breakdown);
+      if (!breakdown.length) {
+        outgoingText = (HR_QUERY_NO_MATCH[lang] || HR_QUERY_NO_MATCH.english)(deptLabel, 'HOD');
+      } else if (breakdown.length === 1) {
+        const empCode = query.hodIncludeEmpCode ? findEmployeeIdByExactName(employees, breakdown[0].name) : null;
+        outgoingText = empCode
+          ? (HR_QUERY_HOD_SINGLE_WITH_CODE[lang] || HR_QUERY_HOD_SINGLE_WITH_CODE.english)(deptLabel, breakdown[0].name, empCode)
+          : (HR_QUERY_HOD_SINGLE[lang] || HR_QUERY_HOD_SINGLE.english)(deptLabel, breakdown[0].name);
+      } else {
+        outgoingText = (HR_QUERY_HOD_MULTI[lang] || HR_QUERY_HOD_MULTI.english)(deptLabel, breakdown);
+      }
     }
     return { outgoingText, dataRequestSummary: deptLabel + ' - HOD' };
   }
@@ -3343,7 +3367,8 @@ function hrDataQueryTool() {
           location: { type: 'string', description: 'The site/location name or a distinctive substring, EXACTLY as the sender said it, never translated or normalized - e.g. "Duets", "Triveni Mall". Site aliases/nicknames are resolved separately from these exact words. Omit if none was named.' },
           company: { type: 'string', description: 'The company name or a distinctive substring, if one was named - omit otherwise.' },
           reportingManagerName: { type: 'string', description: 'A manager/HOD\'s name, ONLY when the question filters BY who people report to (e.g. "Tanmoy Mondal-er under-e kara achen?" = people reporting to Tanmoy Mondal) - omit otherwise.' },
-          status: { type: 'string', enum: ['ACTIVE', 'INACTIVE', 'NOTICE PERIOD'], description: 'Omit for the default (Active only) - set only when a specific status was explicitly named.' }
+          status: { type: 'string', enum: ['ACTIVE', 'INACTIVE', 'NOTICE PERIOD'], description: 'Omit for the default (Active only) - set only when a specific status was explicitly named.' },
+          hodIncludeEmpCode: { type: 'boolean', description: 'Only relevant when returnType is "hod" - true when the sender ALSO asked for the HOD\'s employee code/number alongside their name (e.g. "QC HOD emp code ar nam dao" asks for BOTH the HOD\'s emp code AND name) - any phrasing meaning employee code/number/ID counts ("emp code", "employee code", "emp id", "employee number"). Omit/false when only the name was asked for.' }
         },
         required: ['returnType']
       }
@@ -3405,7 +3430,11 @@ async function handleHrDataQueryRequest({ phone, name, lang, text, history }) {
   }
   const { employees } = await employeeService.getEmployeeData();
   if (query.department) {
-    const deptResult = resolveDepartmentOptions(employees, query.department);
+    // A confirmed department alias ("QC" -> "QUALITY") always wins over a
+    // coincidental word-fragment match - checked first, same precedence as
+    // resolveSiteAliasValues gets for location below.
+    const deptAliasValues = resolveDeptAliasValues(query.department);
+    const deptResult = deptAliasValues.length ? { resolved: deptAliasValues.length === 1 ? deptAliasValues[0] : null, options: deptAliasValues.length > 1 ? deptAliasValues : [] } : resolveDepartmentOptions(employees, query.department);
     if (deptResult.options.length > 1) {
       await savePendingHrDataQuery(phone, { query: Object.assign({}, query, { department: null }), lang, departmentOptions: deptResult.options, departmentHint: query.department });
       const fn = DEPARTMENT_DISAMBIGUATION_QUESTION[lang] || DEPARTMENT_DISAMBIGUATION_QUESTION.english;
@@ -3572,6 +3601,183 @@ async function ensureDefaultSiteAliasesSeeded() {
     }
   }
   if (seededAny) await refreshSiteAliasCacheNow();
+}
+
+// UI fix / live request (2026-10-30) - department aliases: full parity with
+// site aliases above, same owner-editable map + auto-detection of never-
+// seen department values, now for department NAMES instead of site names
+// ("QC" matching the HR Master's own "QUALITY" the same way "Serampore"
+// matches "SRM-Site"). Every function below is the exact same shape as its
+// site-alias counterpart, just department-scoped - see each one's own
+// comment above for the full rationale (not repeated here).
+const DEPT_ALIAS_PREFIX = 'subh-dept-alias:';
+const DEPT_ALIAS_IDS_KEY = 'subh-dept-alias-ids';
+function newDeptAliasId() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+async function saveDeptAlias(data) {
+  const redis = getClient();
+  if (!redis) return null;
+  const id = data.id || newDeptAliasId();
+  const record = { id, alias: data.alias, deptValue: data.deptValue, confirmed: data.confirmed !== false, createdAt: data.createdAt || Date.now() };
+  try {
+    await redis.set(DEPT_ALIAS_PREFIX + id, JSON.stringify(record));
+    await redis.sadd(DEPT_ALIAS_IDS_KEY, id);
+  } catch (err) { return null; }
+  return record;
+}
+async function getDeptAlias(id) {
+  const redis = getClient();
+  if (!redis) return null;
+  try {
+    const raw = await redis.get(DEPT_ALIAS_PREFIX + id);
+    return raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : null;
+  } catch (err) { return null; }
+}
+async function listDeptAliases() {
+  const redis = getClient();
+  if (!redis) return [];
+  try {
+    const ids = await redis.smembers(DEPT_ALIAS_IDS_KEY);
+    if (!ids || !ids.length) return [];
+    const records = await Promise.all(ids.map((id) => getDeptAlias(id)));
+    return records.filter(Boolean).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  } catch (err) { return []; }
+}
+async function deleteDeptAlias(id) {
+  const redis = getClient();
+  if (!redis) return false;
+  try {
+    await redis.del(DEPT_ALIAS_PREFIX + id);
+    await redis.srem(DEPT_ALIAS_IDS_KEY, id);
+  } catch (err) { return false; }
+  return true;
+}
+let deptAliasCache = [];
+let deptAliasCacheAt = 0;
+let deptAliasCacheRefreshing = false;
+const DEPT_ALIAS_CACHE_TTL_MS = 30 * 1000;
+function refreshDeptAliasCacheIfStale() {
+  if (deptAliasCacheRefreshing || Date.now() - deptAliasCacheAt < DEPT_ALIAS_CACHE_TTL_MS) return;
+  deptAliasCacheRefreshing = true;
+  listDeptAliases().then((all) => {
+    deptAliasCache = all.filter((a) => a.confirmed);
+    deptAliasCacheAt = Date.now();
+  }).catch(() => {}).finally(() => { deptAliasCacheRefreshing = false; });
+}
+async function refreshDeptAliasCacheNow() {
+  const all = await listDeptAliases().catch(() => []);
+  deptAliasCache = all.filter((a) => a.confirmed);
+  deptAliasCacheAt = Date.now();
+}
+// Resolves a free-text department mention (e.g. "QC") to its real
+// department value(s) - same confirmed-alias cache/word-matching as
+// resolveSiteAliasValues, but for department. Used by the HR-data query
+// engine's own department resolution, checked BEFORE the plain substring/
+// prefix match (see resolveDepartmentOptions) so a known alias always wins
+// over a coincidental word-fragment match.
+function resolveDeptAliasValues(hint) {
+  refreshDeptAliasCacheIfStale();
+  const normHint = normalizeForMatch(hint);
+  if (!normHint) return [];
+  const hintWords = normHint.split(' ').filter(Boolean);
+  const values = new Set();
+  for (const a of deptAliasCache) {
+    const normAlias = normalizeForMatch(a.alias);
+    if (!normAlias) continue;
+    const aliasWords = normAlias.split(' ').filter(Boolean);
+    const aliasIsHint = aliasWords.length > 0 && aliasWords.every((aw) => hintWords.some((hw) => siteWordsFuzzyMatch(hw, aw)));
+    if (aliasIsHint) values.add(a.deptValue);
+  }
+  return Array.from(values);
+}
+const DEPT_KNOWN_VALUES_KEY = 'subh-dept-known-values';
+async function seedKnownDeptValuesIfEmpty() {
+  const redis = getClient();
+  if (!redis) return;
+  try {
+    const existing = await redis.smembers(DEPT_KNOWN_VALUES_KEY);
+    if (existing && existing.length) return;
+    const { employees } = await employeeService.getEmployeeData();
+    const depts = Array.from(new Set(employees.map((e) => e.department).filter(Boolean)));
+    if (depts.length) await redis.sadd(DEPT_KNOWN_VALUES_KEY, ...depts);
+  } catch (err) { /* best effort - worst effect is one extra "new department" card */ }
+}
+function suggestedAliasesForDept(deptValue) {
+  const bare = String(deptValue || '').replace(/-?\s*dept\.?\b/gi, '').replace(/\([^)]*\)/g, '').trim();
+  const suggestions = new Set();
+  if (bare && bare.toLowerCase() !== String(deptValue || '').toLowerCase()) suggestions.add(bare);
+  return Array.from(suggestions).filter(Boolean);
+}
+const NEW_DEPT_FOUND_PREFIX = 'subh-new-dept-found:';
+const NEW_DEPT_FOUND_IDS_KEY = 'subh-new-dept-found-ids';
+async function scanForNewDepts() {
+  const redis = getClient();
+  if (!redis) return [];
+  await seedKnownDeptValuesIfEmpty();
+  const { employees } = await employeeService.getEmployeeData();
+  const depts = Array.from(new Set(employees.map((e) => e.department).filter(Boolean)));
+  const known = new Set((await redis.smembers(DEPT_KNOWN_VALUES_KEY).catch(() => [])) || []);
+  const unknown = depts.filter((d) => !known.has(d));
+  for (const d of unknown) {
+    const key = NEW_DEPT_FOUND_PREFIX + normalizeForMatch(d);
+    const already = await redis.get(key).catch(() => null);
+    if (already) continue;
+    const record = { deptValue: d, suggestedAliases: suggestedAliasesForDept(d), flaggedAt: Date.now() };
+    try {
+      await redis.set(key, JSON.stringify(record));
+      await redis.sadd(NEW_DEPT_FOUND_IDS_KEY, normalizeForMatch(d));
+    } catch (err) { /* best effort - picked up again on the next scan */ }
+  }
+  return listNewDeptsFound();
+}
+async function listNewDeptsFound() {
+  const redis = getClient();
+  if (!redis) return [];
+  try {
+    const keys = await redis.smembers(NEW_DEPT_FOUND_IDS_KEY);
+    if (!keys || !keys.length) return [];
+    const records = await Promise.all(keys.map((k) => redis.get(NEW_DEPT_FOUND_PREFIX + k).then((raw) => raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : null)));
+    return records.filter(Boolean).sort((a, b) => (b.flaggedAt || 0) - (a.flaggedAt || 0));
+  } catch (err) { return []; }
+}
+async function confirmNewDept(deptValue, aliasWords) {
+  const redis = getClient();
+  if (!redis) return false;
+  try {
+    await redis.sadd(DEPT_KNOWN_VALUES_KEY, deptValue);
+    await redis.del(NEW_DEPT_FOUND_PREFIX + normalizeForMatch(deptValue));
+    await redis.srem(NEW_DEPT_FOUND_IDS_KEY, normalizeForMatch(deptValue));
+  } catch (err) { return false; }
+  for (const alias of (aliasWords || [])) {
+    if (alias && alias.trim()) await saveDeptAlias({ alias: alias.trim(), deptValue, confirmed: true });
+  }
+  await refreshDeptAliasCacheNow();
+  return true;
+}
+// Direct instruction (2026-10-30), confirmed against the real distinct
+// department list - "QC" is the exact live example (the real value is
+// "QUALITY", nothing like "QC" as a substring or a close-edit-distance
+// spelling of it). Seeded as code, same idempotent pattern as the site
+// alias defaults above.
+const DEFAULT_DEPT_ALIAS_GROUPS = [
+  { deptValue: 'QUALITY', aliases: ['QC', 'Quality Control'] }
+];
+async function ensureDefaultDeptAliasesSeeded() {
+  const redis = getClient();
+  if (!redis) return;
+  const existing = await listDeptAliases().catch(() => []);
+  const existingKeys = new Set(existing.map((a) => normalizeForMatch(a.alias) + '|' + normalizeForMatch(a.deptValue)));
+  let seededAny = false;
+  for (const g of DEFAULT_DEPT_ALIAS_GROUPS) {
+    for (const alias of g.aliases) {
+      const k = normalizeForMatch(alias) + '|' + normalizeForMatch(g.deptValue);
+      if (existingKeys.has(k)) continue;
+      await saveDeptAlias({ alias, deptValue: g.deptValue, confirmed: true });
+      seededAny = true;
+    }
+  }
+  if (seededAny) await refreshDeptAliasCacheNow();
 }
 // Live review item 7 - a hint like "Tanmoy Sir ... Clubhouse ...
 // Srirampur" names a location/site, not a department, and used to be
@@ -10653,6 +10859,7 @@ module.exports = {
   filterEmployeesForHrQuery,
   computeHodBreakdown,
   buildHrDataQueryAnswer,
+  findEmployeeIdByExactName,
   extractHrDataQuery,
   handleHrDataQueryRequest,
   continueHrDataQueryFlow,
@@ -10734,6 +10941,16 @@ module.exports = {
   confirmNewSite,
   ensureDefaultSiteAliasesSeeded,
   refreshSiteAliasCacheNow,
+  saveDeptAlias,
+  getDeptAlias,
+  listDeptAliases,
+  deleteDeptAlias,
+  scanForNewDepts,
+  listNewDeptsFound,
+  confirmNewDept,
+  ensureDefaultDeptAliasesSeeded,
+  refreshDeptAliasCacheNow,
+  resolveDeptAliasValues,
   closeOpenHrConfirmation,
   resolveHrNoteThirdParty,
   finalizeHrNoteThirdParty,

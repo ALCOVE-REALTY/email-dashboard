@@ -2408,6 +2408,67 @@ router.post('/hr-assistant/new-sites/confirm', async (req, res) => {
   }
 });
 
+// Department names - full parity with the site-names routes above, per
+// direct instruction (2026-10-30): "QC" etc. need the same owner-editable
+// alias + auto-detection treatment department values already lacked.
+router.get('/hr-assistant/dept-aliases', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    await whatsappAssistant.ensureDefaultDeptAliasesSeeded();
+    const items = await whatsappAssistant.listDeptAliases();
+    res.json({ items });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/hr-assistant/dept-aliases', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const { alias, deptValue } = req.body || {};
+    if (!alias || !deptValue) return res.status(400).json({ error: 'alias and deptValue are required' });
+    const saved = await whatsappAssistant.saveDeptAlias({ alias, deptValue, confirmed: true });
+    if (!saved) return res.status(500).json({ error: 'Could not save the alias.' });
+    await whatsappAssistant.refreshDeptAliasCacheNow();
+    res.json({ ok: true, item: saved });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.delete('/hr-assistant/dept-aliases/:id', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    await whatsappAssistant.deleteDeptAlias(req.params.id);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/hr-assistant/new-depts', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const items = await whatsappAssistant.scanForNewDepts();
+    res.json({ items });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/hr-assistant/new-depts/confirm', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const { deptValue, aliasWords } = req.body || {};
+    if (!deptValue) return res.status(400).json({ error: 'deptValue is required' });
+    const ok = await whatsappAssistant.confirmNewDept(deptValue, Array.isArray(aliasWords) ? aliasWords : []);
+    if (!ok) return res.status(500).json({ error: 'Could not confirm this department.' });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Task 6 (2026-10-27) - "Action needed" unified inbox, one card per
 // pending item across every sender. UI + wiring only - reads the exact
 // same stores every existing per-conversation action card already reads

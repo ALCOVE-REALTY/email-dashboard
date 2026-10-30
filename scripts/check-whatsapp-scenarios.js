@@ -956,6 +956,28 @@ scenario('HRQUERY REGRESSION: a plain "list of all engineers" request (no site/d
     await cleanupHrDataQueryArtifacts(phone);
   }
 });
+scenario('HRQUERY: "QC HOD emp code ar nam dao" (live incident, 2026-10-30) - "QC" has no real department of that name (resolved via the default-seeded department alias to the real "QUALITY" dept), and the sender asked for BOTH the HOD\'s name AND employee code in one message; real facts confirmed directly against employeeService before writing this (QUALITY dept has exactly 7 real ACTIVE employees, all reporting to one real HOD, Subrata Kumar Panda, whose own real Employee_No is AR002154) - never invented synthetic facts', async () => {
+  const phone = '910000002308';
+  await cleanupHrDataQueryArtifacts(phone);
+  try {
+    // Mirrors what the owner's own one-time visit to SUBH Settings ->
+    // Department names would already have done in a real deployment - the
+    // default alias group is seeded lazily (same precedent as
+    // ensureDefaultSiteAliasesSeeded, only ever called from its own GET
+    // route), never automatically at server startup or message-handling
+    // time.
+    await whatsappAssistant.ensureDefaultDeptAliasesSeeded();
+    await whatsappAssistant.refreshDeptAliasCacheNow();
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenHrQ8', firstName: 'ScenHrQ8', text: 'QC HOD emp code ar nam dao', isGroup: false, history: [] });
+    if (d.case !== 'data_holding') return { pass: false, detail: 'expected case=data_holding, got: ' + d.case + ' text=' + d.replyText };
+    const approval = pendingApprovalFor(await whatsappAssistant.listPendingApprovals(), phone);
+    const expected = 'Quality department-er HOD er nam Subrata Kumar Panda, Employee Code AR002154.';
+    if (!approval || approval.preparedReplyText !== expected) return { pass: false, detail: 'expected exact wording "' + expected + '", got: ' + JSON.stringify(approval && approval.preparedReplyText) };
+    return { pass: true, detail: 'exact HOD-name-plus-emp-code wording matched, "QC" correctly resolved to the real QUALITY department via alias' };
+  } finally {
+    await cleanupHrDataQueryArtifacts(phone);
+  }
+});
 
 const APPROX_USD_PER_MTOK_INPUT = 3;
 const APPROX_USD_PER_MTOK_OUTPUT = 15;

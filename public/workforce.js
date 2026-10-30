@@ -529,6 +529,13 @@ if (subhSettingsSiteNamesBtn) {
     if (window.__hrAssistantOpenSiteAliases) window.__hrAssistantOpenSiteAliases();
   });
 }
+// Department names - full parity with Site names above (2026-10-30).
+const subhSettingsDeptNamesBtn = document.getElementById('subhSettingsDeptNamesBtn');
+if (subhSettingsDeptNamesBtn) {
+  subhSettingsDeptNamesBtn.addEventListener('click', () => {
+    if (window.__hrAssistantOpenDeptAliases) window.__hrAssistantOpenDeptAliases();
+  });
+}
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && !wfDrawer.hidden) closeDrawer();
 });
@@ -611,6 +618,7 @@ function setView(view, opts = {}) {
     // cache would otherwise only run this once) - same data the panel's
     // own Site names page fetch already uses.
     if (window.__hrAssistantRefreshSiteAliasesBadge) window.__hrAssistantRefreshSiteAliasesBadge();
+    if (window.__hrAssistantRefreshDeptAliasesBadge) window.__hrAssistantRefreshDeptAliasesBadge();
   }
   // All views live in the same scrolling document (sections are toggled via
   // [hidden], not real navigation), so the old scroll position otherwise

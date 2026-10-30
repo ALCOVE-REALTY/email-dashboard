@@ -337,6 +337,38 @@
         </div>
       </div>
 
+      <!-- Department names - full parity with Site names above, per direct
+           instruction (2026-10-30): "QC" etc. need the same owner-editable
+           alias + auto-detection of never-seen department values. Every
+           id below mirrors its Site names counterpart one-for-one. -->
+      <div class="wf-comms-page" id="hrDeptAliasesPage" hidden>
+        <div class="wf-rem-list" id="hrNewDeptsList"></div>
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 4px 6px">
+          <span class="wf-ai-sheet-title" style="font-size:14px">Department names</span>
+          <button type="button" class="plain" id="hrDeptAliasAddBtn">+ Add</button>
+        </div>
+        <div class="wf-rem-list" id="hrDeptAliasesList"></div>
+      </div>
+
+      <div class="wf-ai-sheet-backdrop" id="hrDeptAliasSheetBackdrop" hidden></div>
+      <div class="wf-rem-sheet" id="hrDeptAliasSheet" hidden role="dialog" aria-label="Add or edit a department name group">
+        <div class="wf-ai-sheet-handle"></div>
+        <div class="wf-ai-sheet-head">
+          <button type="button" class="wf-ai-sheet-close" id="hrDeptAliasSheetCloseBtn" aria-label="Close">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+          <span class="wf-ai-sheet-title" id="hrDeptAliasSheetTitle">Add a new group</span>
+        </div>
+        <div class="wf-rem-sheet-body">
+          <label class="wf-rem-field"><span>Department value (as it appears in the HR Master)</span><input type="text" id="hrDeptAliasDeptValueInput" placeholder="e.g. QUALITY" /></label>
+          <label class="wf-rem-field"><span>Colloquial names (comma-separated)</span><input type="text" id="hrDeptAliasInput" placeholder="e.g. QC, Quality Control" /></label>
+        </div>
+        <div class="wf-rem-sheet-foot">
+          <button type="button" class="wf-ai-action-btn outline" id="hrDeptAliasSheetCancelBtn">Cancel</button>
+          <button type="button" class="wf-ai-action-btn download" id="hrDeptAliasSheetSaveBtn"><span>Save</span></button>
+        </div>
+      </div>
+
       <!-- Save/Edit template sheet - same bottom-sheet pattern as the
            Reminders Add/Edit sheet. Opened either from "Save as template"
            on a model-written reply bubble (topic/whenToUse blank,
@@ -2170,6 +2202,19 @@
           </span>
           <span class="wf-hub-tile-end">
             <span class="wf-hub-tile-badge wi-count-badge danger" id="hrSiteAliasesBadge" hidden></span>
+            <svg class="wf-hub-tile-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+          </span>
+        </button>
+        <button type="button" class="wf-hub-tile wf-hub-tile--compact" id="subhSettingsDeptNamesBtn" style="margin-top:10px">
+          <span class="wf-hub-tile-icon comms">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+          </span>
+          <span class="wf-hub-tile-main">
+            <span class="wf-hub-tile-title">Department names</span>
+            <span class="wf-hub-tile-sub">Colloquial department names matched to the HR Master</span>
+          </span>
+          <span class="wf-hub-tile-end">
+            <span class="wf-hub-tile-badge wi-count-badge danger" id="hrDeptAliasesBadge" hidden></span>
             <svg class="wf-hub-tile-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
           </span>
         </button>

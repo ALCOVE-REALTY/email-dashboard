@@ -356,3 +356,25 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
   matching role ("Triveni te welder ke ache?" -> "no one found", never a
   silent empty list); the existing plain "list of all engineers" request
   (no filter) still works unchanged.
+- HRQUERY department aliases + HOD employee code (2026-10-30, live issue) -
+  department names get the exact same owner-editable colloquial-alias +
+  never-seen-value auto-detection treatment site names already had
+  (`resolveDeptAliasValues`/`saveDeptAlias`/`scanForNewDepts`/etc. in
+  whatsappAssistant.js, a structural mirror of the site-alias system; a new
+  "Department names" page in SUBH Settings, full parity with Site names
+  including auto-detection, per direct instruction). A confirmed department
+  alias ("QC" -> "QUALITY", default-seeded) always wins over the plain
+  substring matcher in `handleHrDataQueryRequest`'s department-resolution
+  step - the live bug was "QC" matching no real department at all since no
+  substring/prefix relationship exists between "QC" and "QUALITY". Separately,
+  `hrDataQueryTool()`'s new `hodIncludeEmpCode` field lets a single message
+  ask for BOTH the HOD's name AND employee code ("QC HOD emp code ar nam
+  dao"); `findEmployeeIdByExactName` looks up that employee code from the
+  real directory, and `HR_QUERY_HOD_SINGLE_WITH_CODE` produces the combined,
+  professional one-line answer (falling back to the plain name-only sentence
+  if no matching employee record exists). Locked scenario (against the REAL
+  directory): "QC HOD emp code ar nam dao" - "QC" resolves via the default-
+  seeded alias to the real QUALITY department (7 real ACTIVE employees, one
+  real HOD, Subrata Kumar Panda, real Employee_No AR002154), producing the
+  exact wording "Quality department-er HOD er nam Subrata Kumar Panda,
+  Employee Code AR002154."
