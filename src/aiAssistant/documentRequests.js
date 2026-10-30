@@ -48,7 +48,7 @@ async function listDocLog(limit = 200) {
   const redis = getClient();
   if (!redis) return [];
   try {
-    const raw = await redis.lrange(DOC_LOG_KEY, 0, Math.max(1, Math.min(limit, MAX_DOC_LOG)) - 1);
+    const raw = (await redis.lrange(DOC_LOG_KEY, 0, Math.max(1, Math.min(limit, MAX_DOC_LOG)) - 1)) || [];
     return raw.map((i) => { try { return typeof i === 'string' ? JSON.parse(i) : i; } catch (e) { return null; } }).filter(Boolean);
   } catch (err) { return []; }
 }
@@ -163,7 +163,9 @@ async function listAll() {
   const redis = getClient();
   if (!redis) return [];
   try {
-    const phones = await redis.smembers(DOC_REQUEST_INDEX_KEY);
+    // LIVE BUG FIX (2026-10-30): SMEMBERS can resolve to null instead of []
+    // for a never-populated/empty set - `.length` on that used to throw.
+    const phones = (await redis.smembers(DOC_REQUEST_INDEX_KEY)) || [];
     if (!phones.length) return [];
     const raws = await redis.mget(...phones.map((p) => DOC_REQUEST_PREFIX + whatsapp.normalizePhone(p)));
     return raws.map((raw) => { try { return raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : null; } catch (err) { return null; } }).filter(Boolean);

@@ -67,7 +67,12 @@ async function listRawAutomations() {
   const redis = getClient();
   if (!redis) return [];
   return redisHealth.guardedRead(async () => {
-    const ids = await redis.smembers(AUTOMATION_IDS_KEY);
+    // LIVE BUG FIX (2026-10-30): SMEMBERS can resolve to null instead of []
+    // (confirmed once already for this same Redis client - see
+    // reminderService.js's own listRawReminders comment) - `ids.length`
+    // on that crashed the whole read, surfacing as a generic "Data storage
+    // is having trouble reading" banner instead of just an empty list.
+    const ids = (await redis.smembers(AUTOMATION_IDS_KEY)) || [];
     if (!ids.length) return [];
     const raws = await redis.mget(...ids.map((id) => AUTOMATION_PREFIX + id));
     const out = [];

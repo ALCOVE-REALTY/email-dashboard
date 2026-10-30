@@ -40,7 +40,9 @@ async function listAuthAlerts() {
   const redis = getClient();
   if (!redis) return [];
   try {
-    const raw = await redis.lrange(ALERTS_KEY, 0, MAX_ALERTS - 1);
+    // LIVE BUG FIX (2026-10-30): LRANGE can resolve to null instead of []
+    // for a never-populated/empty list - `.map` on that used to throw.
+    const raw = (await redis.lrange(ALERTS_KEY, 0, MAX_ALERTS - 1)) || [];
     return raw.map((item) => { try { return typeof item === 'string' ? JSON.parse(item) : item; } catch (err) { return null; } }).filter(Boolean);
   } catch (err) { return []; }
 }

@@ -72,7 +72,9 @@ async function listRecent(limit = 100) {
   if (!redis) return [];
   try {
     const capped = Math.max(1, Math.min(limit, MAX_ENTRIES));
-    const raw = await redis.lrange(LOG_KEY, 0, capped - 1);
+    // LIVE BUG FIX (2026-10-30): LRANGE can resolve to null instead of []
+    // for a never-populated/empty list - `.map` on that used to throw.
+    const raw = (await redis.lrange(LOG_KEY, 0, capped - 1)) || [];
     return raw
       .map((item) => {
         try {

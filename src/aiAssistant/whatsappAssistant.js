@@ -161,7 +161,9 @@ async function listKnownContacts() {
     // elsewhere (dictionary keys, mock/test equality, etc.), so this
     // normalizes to String() once, at the source, rather than requiring
     // every caller to defend against it.
-    return (await redis.smembers(KNOWN_CONTACTS_KEY)).map(String);
+    // LIVE BUG FIX (2026-10-30): SMEMBERS can resolve to null instead of []
+    // for a never-populated/empty set - `.map` on that used to throw.
+    return ((await redis.smembers(KNOWN_CONTACTS_KEY)) || []).map(String);
   } catch (err) { return []; }
 }
 
@@ -257,7 +259,9 @@ async function listPendingDrafts() {
   const redis = getClient();
   if (!redis) return [];
   try {
-    const raw = await redis.lrange(DRAFT_KEY, 0, MAX_DRAFTS - 1);
+    // LIVE BUG FIX (2026-10-30): LRANGE can resolve to null instead of []
+    // for a never-populated/empty list - `.map` on that used to throw.
+    const raw = (await redis.lrange(DRAFT_KEY, 0, MAX_DRAFTS - 1)) || [];
     return raw.map((item) => { try { return typeof item === 'string' ? JSON.parse(item) : item; } catch (err) { return null; } })
       .filter(Boolean)
       .filter((d) => !whatsapp.isSyntheticTestPhone(d.contactId));
@@ -306,7 +310,7 @@ async function addMentionId(id) {
 async function getMentionIds() {
   const redis = getClient();
   if (!redis) return [];
-  try { return await redis.smembers(MENTION_ID_KEY); } catch (err) { return []; }
+  try { return (await redis.smembers(MENTION_ID_KEY)) || []; } catch (err) { return []; }
 }
 async function isMyMention(text) {
   const ids = await getMentionIds();
@@ -387,7 +391,7 @@ async function isNeverAuto(phone) {
 async function listNeverAuto() {
   const redis = getClient();
   if (!redis) return [];
-  try { return await redis.smembers(NEVER_AUTO_KEY); } catch (err) { return []; }
+  try { return (await redis.smembers(NEVER_AUTO_KEY)) || []; } catch (err) { return []; }
 }
 
 // ---------------- Global auto-reply switch ----------------
@@ -431,7 +435,7 @@ async function listOwnerNotifications() {
   const redis = getClient();
   if (!redis) return [];
   return redisHealth.guardedRead(async () => {
-    const raw = await redis.lrange(OWNER_NOTIFICATIONS_KEY, 0, MAX_NOTIFICATIONS - 1);
+    const raw = (await redis.lrange(OWNER_NOTIFICATIONS_KEY, 0, MAX_NOTIFICATIONS - 1)) || [];
     return raw.map((item) => { try { return typeof item === 'string' ? JSON.parse(item) : item; } catch (err) { return null; } }).filter(Boolean);
   }, []);
 }
@@ -997,7 +1001,7 @@ async function listAutoReplyLog(limit = 200) {
   const redis = getClient();
   if (!redis) return [];
   return redisHealth.guardedRead(async () => {
-    const raw = await redis.lrange(AUTO_REPLY_LOG_KEY, 0, Math.max(1, Math.min(limit, MAX_AUTO_REPLY_LOG)) - 1);
+    const raw = (await redis.lrange(AUTO_REPLY_LOG_KEY, 0, Math.max(1, Math.min(limit, MAX_AUTO_REPLY_LOG)) - 1)) || [];
     return raw.map((item) => { try { return typeof item === 'string' ? JSON.parse(item) : item; } catch (err) { return null; } }).filter(Boolean);
   }, []);
 }
@@ -1047,7 +1051,7 @@ async function listInboxLog(limit = 500) {
   // would mean the whole live-visibility feature quietly shows nothing,
   // exactly the class of bug already found once in this area.
   return redisHealth.guardedRead(async () => {
-    const raw = await redis.lrange(INBOX_LOG_KEY, 0, Math.max(1, Math.min(limit, MAX_INBOX_LOG)) - 1);
+    const raw = (await redis.lrange(INBOX_LOG_KEY, 0, Math.max(1, Math.min(limit, MAX_INBOX_LOG)) - 1)) || [];
     return raw.map((item) => { try { return typeof item === 'string' ? JSON.parse(item) : item; } catch (err) { return null; } }).filter(Boolean);
   }, []);
 }
@@ -1080,7 +1084,7 @@ async function getConvoHistory(chatId, limit) {
   const redis = getClient();
   if (!redis) return [];
   return redisHealth.guardedRead(async () => {
-    const raw = await redis.lrange(CONVO_HISTORY_PREFIX + chatId, 0, (limit || CONVO_HISTORY_MAX) - 1);
+    const raw = (await redis.lrange(CONVO_HISTORY_PREFIX + chatId, 0, (limit || CONVO_HISTORY_MAX) - 1)) || [];
     return raw.map((r) => { try { return typeof r === 'string' ? JSON.parse(r) : r; } catch (err) { return null; } }).filter(Boolean).reverse();
   }, []);
 }
@@ -1227,7 +1231,11 @@ async function processDueAutoSends() {
   // list, nothing sent) but also reports the failure to redisHealth so it
   // shows up as a System-strip notice instead of just looking like
   // nothing was ever due.
-  const due = await redisHealth.guardedRead(() => redis.zrange(PENDING_AUTOSEND_ZSET, 0, now, { byScore: true }), []);
+  // LIVE BUG FIX (2026-10-30): ZRANGE can resolve to null instead of [] -
+  // guardedRead's own try/catch never sees that (nothing throws inside the
+  // wrapped call itself), so `due` could reach the `for...of` below as null
+  // and crash OUTSIDE guardedRead's protection. Defaulted here instead.
+  const due = (await redisHealth.guardedRead(() => redis.zrange(PENDING_AUTOSEND_ZSET, 0, now, { byScore: true }), [])) || [];
   let processed = 0;
   for (const id of due) {
     let entry;
@@ -1525,7 +1533,7 @@ async function listOpenFollowups() {
   const redis = getClient();
   if (!redis) return [];
   try {
-    const raw = await redis.lrange(OPEN_FOLLOWUPS_KEY, 0, MAX_FOLLOWUPS - 1);
+    const raw = (await redis.lrange(OPEN_FOLLOWUPS_KEY, 0, MAX_FOLLOWUPS - 1)) || [];
     return raw.map((i) => { try { return typeof i === 'string' ? JSON.parse(i) : i; } catch (e) { return null; } })
       .filter(Boolean)
       .filter((f) => !whatsapp.isSyntheticTestPhone(f.chatId));
@@ -1649,7 +1657,7 @@ async function listPendingApprovals() {
   const redis = getClient();
   if (!redis) return [];
   try {
-    const ids = await redis.smembers(PENDING_APPROVAL_IDS_KEY);
+    const ids = (await redis.smembers(PENDING_APPROVAL_IDS_KEY)) || [];
     if (!ids.length) return [];
     const raws = await redis.mget(...ids.map((id) => PENDING_APPROVAL_PREFIX + id));
     const out = [];
@@ -2572,7 +2580,7 @@ async function listActionKindOverrides(limit = 100) {
   const redis = getClient();
   if (!redis) return [];
   return redisHealth.guardedRead(async () => {
-    const raw = await redis.lrange(ACTION_KIND_OVERRIDE_LOG_KEY, 0, Math.max(1, Math.min(limit, MAX_ACTION_KIND_OVERRIDE_LOG)) - 1);
+    const raw = (await redis.lrange(ACTION_KIND_OVERRIDE_LOG_KEY, 0, Math.max(1, Math.min(limit, MAX_ACTION_KIND_OVERRIDE_LOG)) - 1)) || [];
     return raw.map((item) => { try { return typeof item === 'string' ? JSON.parse(item) : item; } catch (err) { return null; } }).filter(Boolean);
   }, []);
 }
@@ -4518,7 +4526,7 @@ async function listOpenHrNoteFlows() {
   const redis = getClient();
   if (!redis) return [];
   try {
-    const phones = await redis.smembers(HR_NOTE_FLOW_PHONES_KEY);
+    const phones = (await redis.smembers(HR_NOTE_FLOW_PHONES_KEY)) || [];
     const flows = [];
     for (const rawPhone of phones) {
       // The Upstash client auto-casts a purely-numeric SET member (every
@@ -4675,7 +4683,7 @@ async function listPendingHrConfirmationsForPhone(phone) {
   const redis = getClient();
   if (!redis) return [];
   try {
-    const ids = await redis.smembers(hrConfirmationByPhoneKey(phone));
+    const ids = (await redis.smembers(hrConfirmationByPhoneKey(phone))) || [];
     if (!ids.length) return [];
     const raws = await redis.mget(...ids.map((id) => HR_CONFIRMATION_PREFIX + id));
     return raws.map((raw) => { try { return typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (err) { return null; } }).filter((r) => r && r.status === 'awaiting_manager');
@@ -4685,7 +4693,7 @@ async function listAllHrConfirmations() {
   const redis = getClient();
   if (!redis) return [];
   try {
-    const ids = await redis.smembers(HR_CONFIRMATION_IDS_KEY);
+    const ids = (await redis.smembers(HR_CONFIRMATION_IDS_KEY)) || [];
     if (!ids.length) return [];
     const raws = await redis.mget(...ids.map((id) => HR_CONFIRMATION_PREFIX + id));
     return raws.map((raw) => { try { return typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (err) { return null; } }).filter(Boolean);
@@ -6401,7 +6409,7 @@ async function listGatewayHistory(sinceMs) {
   const redis = getClient();
   if (!redis) return [];
   try {
-    const raw = await redis.lrange(GATEWAY_HISTORY_KEY, 0, GATEWAY_HISTORY_MAX - 1);
+    const raw = (await redis.lrange(GATEWAY_HISTORY_KEY, 0, GATEWAY_HISTORY_MAX - 1)) || [];
     const parsed = raw.map((r) => { try { return typeof r === 'string' ? JSON.parse(r) : r; } catch (err) { return null; } }).filter(Boolean);
     return sinceMs ? parsed.filter((e) => e.ts >= sinceMs) : parsed;
   } catch (err) { return []; }
@@ -6803,7 +6811,7 @@ async function listPendingAutoSends() {
   const redis = getClient();
   if (!redis) return [];
   try {
-    const ids = await redis.zrange(PENDING_AUTOSEND_ZSET, 0, -1);
+    const ids = (await redis.zrange(PENDING_AUTOSEND_ZSET, 0, -1)) || [];
     const entries = [];
     for (const id of ids) {
       const raw = await redis.get(PENDING_AUTOSEND_PREFIX + id);
@@ -9695,7 +9703,7 @@ async function clearBurstBuffer(contactId) {
 async function listBurstBufferContactIds() {
   const redis = getClient();
   if (!redis) return [];
-  try { return await redis.smembers(BURST_BUFFER_IDS_KEY); } catch (err) { return []; }
+  try { return (await redis.smembers(BURST_BUFFER_IDS_KEY)) || []; } catch (err) { return []; }
 }
 
 // ---------------- Catch-up after a connection gap (live review item 2) ----------------

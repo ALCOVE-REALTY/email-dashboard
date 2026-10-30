@@ -213,7 +213,9 @@ async function listMemories() {
   const redis = getClient();
   if (!redis) return [];
   try {
-    const ids = await redis.smembers(MEMORY_INDEX_KEY);
+    // LIVE BUG FIX (2026-10-30): SMEMBERS can resolve to null instead of []
+    // for a never-populated/empty set - `.length` on that used to throw.
+    const ids = (await redis.smembers(MEMORY_INDEX_KEY)) || [];
     if (!ids.length) return [];
     const raws = await redis.mget(...ids.map((id) => MEMORY_KEY_PREFIX + id));
     const records = raws.map((raw) => { try { return raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : null; } catch (err) { return null; } });

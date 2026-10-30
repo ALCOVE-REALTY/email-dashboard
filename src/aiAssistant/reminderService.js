@@ -81,7 +81,14 @@ async function listRawReminders() {
   const redis = getClient();
   if (!redis) return [];
   return redisHealth.guardedRead(async () => {
-    const ids = await redis.smembers(REMINDER_IDS_KEY);
+    // LIVE BUG FIX (2026-10-30): SMEMBERS can resolve to null instead of []
+    // (the exact "bare-path redirect bug" class mentioned above can recur,
+    // and a never-created key isn't guaranteed to come back as []) -
+    // `ids.length` on that crashed the whole read with "Cannot read
+    // properties of null (reading 'length')", surfacing as the generic
+    // "Data storage is having trouble reading" banner instead of just an
+    // empty list.
+    const ids = (await redis.smembers(REMINDER_IDS_KEY)) || [];
     if (!ids.length) return [];
     const raws = await redis.mget(...ids.map((id) => REMINDER_PREFIX + id));
     const out = [];
