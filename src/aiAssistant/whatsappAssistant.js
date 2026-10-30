@@ -130,13 +130,24 @@ function isAvailable() { return Boolean(getClient()); }
 // was silently ignored), so "what's new" is tracked here instead, keyed
 // by the gateway's own monotonically increasing numeric message id.
 
+// LIVE BUG FIX (2026-10-30): a genuine Redis read error must never look
+// the same as "this contact has no last-seen marker yet" - that second
+// case is a normal, error-free GET resolving to null (correctly 0 here).
+// The old `catch (err) { return 0; }` collapsed a real storage hiccup into
+// that SAME 0, which then told the poll loop "nothing has ever been seen
+// for this contact" - letting it treat that contact's entire current
+// message batch (which can include an old, already-answered message still
+// sitting in the gateway's recent window) as brand new again. Every caller
+// of getLastSeenId already wraps its own call in a per-contact/group
+// try/catch that just skips that one contact for this tick and retries
+// next time on error - so letting a genuine error propagate here (instead
+// of swallowing it into a falsely-safe-looking 0) is what makes that
+// existing protection actually work.
 async function getLastSeenId(contactId) {
   const redis = getClient();
   if (!redis) return 0;
-  try {
-    const v = await redis.get(LAST_SEEN_PREFIX + contactId);
-    return Number(v) || 0;
-  } catch (err) { return 0; }
+  const v = await redis.get(LAST_SEEN_PREFIX + contactId);
+  return Number(v) || 0;
 }
 
 // Registry of every contact this file has ever tracked a last-seen id
@@ -145,10 +156,18 @@ async function getLastSeenId(contactId) {
 // Redis keys directly, which listKnownContacts below needs to do its
 // per-contact catch-up pass after a reconnect/on startup.
 const KNOWN_CONTACTS_KEY = 'wa-known-contacts';
+// LIVE BUG FIX (2026-10-30): was a silent best-effort swallow - if this
+// write failed, the next poll's getLastSeenId would read the OLD id again,
+// no different from the read-failure case above. guardedWrite reports the
+// failure (System-strip notice) and re-throws, which every caller's own
+// try/catch already handles safely (same reasoning as getLastSeenId).
 async function setLastSeenId(contactId, id) {
   const redis = getClient();
   if (!redis) return;
-  try { await redis.set(LAST_SEEN_PREFIX + contactId, String(id)); await redis.sadd(KNOWN_CONTACTS_KEY, contactId); } catch (err) { /* best effort */ }
+  await redisHealth.guardedWrite(async () => {
+    await redis.set(LAST_SEEN_PREFIX + contactId, String(id));
+    await redis.sadd(KNOWN_CONTACTS_KEY, contactId);
+  });
 }
 async function listKnownContacts() {
   const redis = getClient();
