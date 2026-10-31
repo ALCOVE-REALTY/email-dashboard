@@ -3474,14 +3474,14 @@ async function checkAsync(label, fn) {
       history[1].direction === 'out' && history[1].text === 'TEST reply 1 - safe to ignore' &&
       history[2].direction === 'in' && history[2].text === 'TEST message 2 - safe to ignore';
   });
-  await checkAsync('conversation history TTL is set to ~24h (expire), never 0/instant-expiring and never -1/forever', async () => {
+  await checkAsync('conversation history TTL is set to ~180 days (expire) - Task 4 (2026-11) raised this from 24h, which used to wipe an entire chat\'s history the moment it went 24h without a new message; never 0/instant-expiring and never -1/forever', async () => {
     const { Redis } = require('@upstash/redis');
     const redis = new Redis({
       url: process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL,
       token: process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN
     });
     const ttl = await redis.ttl('wa-convo-history:' + MEMORY_TEST_PHONE);
-    return ttl > 23 * 60 * 60 && ttl <= 24 * 60 * 60;
+    return ttl > 179 * 24 * 60 * 60 && ttl <= 180 * 24 * 60 * 60;
   });
   await checkAsync('hasRecentIncomingMessage correctly sees the real history just written on the real store - this is what suppresses the wrapper\'s own AI-disclosure-line prepend on a mid-conversation reply', async () => {
     // Tests the wrapper's OWN logic directly against real data, rather
@@ -6136,6 +6136,44 @@ async function checkAsync(label, fn) {
     const rows = whatsappAssistant.mergeRecentWhatsappConversations([], recentLog, Date.now(), Infinity, new Map(), employees);
     return rows.length === 1 && rows[0].name === 'Stored Logged Name';
   })());
+
+  console.log('='.repeat(70));
+  console.log('Task 4 (2026-11): the conversation page shows FULL history (not capped at 20 messages/wiped after 24h of silence) - latest page instantly, older pages loading on scroll-up via getOlderConversationMessages');
+  console.log('='.repeat(70));
+  await checkAsync('appendConvoHistory/getConvoHistory now retain well beyond the old 20-message cap (CONVO_HISTORY_STORAGE_MAX)', async () => {
+    const phone = '910000008001';
+    await whatsappAssistant.clearPendingDisambiguation(phone).catch(() => {});
+    for (let i = 0; i < 35; i++) {
+      await whatsappAssistant.appendConvoHistory(phone, i % 2 === 0 ? 'in' : 'out', 'msg' + i);
+    }
+    const page = await whatsappAssistant.getConvoHistory(phone, 30);
+    // Oldest-first within the fetched window; the latest 30 of 35 total
+    // means this page's first (oldest-of-page) message is msg5.
+    return page.length === 30 && page[0].text === 'msg5' && page[29].text === 'msg34';
+  });
+  await checkAsync('getOlderConversationMessages returns the next-older page, in chronological order, with the correct hasMore flag', async () => {
+    const phone = '910000008001'; // same seeded history as the test above (35 messages)
+    const older = await whatsappAssistant.getOlderConversationMessages({ chatId: phone, offset: 30, limit: 30 });
+    const ok = older.items.length === 5 && older.hasMore === false &&
+      older.items[0].text === 'msg0' && older.items[4].text === 'msg4'; // chronological (oldest first)
+    return ok;
+  });
+  await checkAsync('getOlderConversationMessages past the very end of history returns an empty page, never an error', async () => {
+    const phone = '910000008001';
+    const result = await whatsappAssistant.getOlderConversationMessages({ chatId: phone, offset: 35, limit: 30 });
+    return result.items.length === 0 && result.hasMore === false;
+  });
+  await checkAsync('getWhatsappConversation\'s own initial thread uses CONVO_PAGE_SIZE (30), not the old 20-message AI-context cap (CONVO_HISTORY_MAX, still 20 and unaffected - used elsewhere for loop-detection/AI context, never for this page\'s own display)', async () => {
+    const phone = '910000008002';
+    await whatsappAssistant.clearPendingDisambiguation(phone).catch(() => {});
+    for (let i = 0; i < 25; i++) {
+      await whatsappAssistant.appendConvoHistory(phone, i % 2 === 0 ? 'in' : 'out', 'm' + i);
+    }
+    const convo = await whatsappAssistant.getWhatsappConversation(phone);
+    // 25 stored, page size 30 - the WHOLE history fits on one page, so
+    // this must show all 25, not cap at the old 20.
+    return convo.thread.length === 25;
+  });
 
   console.log(pass + '/' + (pass + fail) + ' passed' + (fail ? ', ' + fail + ' FAILED' : ''));
   if (failures.length) {

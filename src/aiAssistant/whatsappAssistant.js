@@ -1039,7 +1039,11 @@ function shapeHrConfirmationForCard(c, name) {
 async function getWhatsappConversation(chatIdRaw) {
   const chatId = whatsapp.normalizePhone(chatIdRaw);
   const [history, recentLog, approvals, drafts, followups, docs, neverAuto, hrConfirmations] = await Promise.all([
-    getConvoHistory(chatId, CONVO_HISTORY_MAX),
+    // Task 4 (2026-11) - CONVO_PAGE_SIZE (30), not CONVO_HISTORY_MAX (20,
+    // still used by every OTHER caller for loop-detection/AI-context) -
+    // this is the conversation PAGE's own initial "latest messages"
+    // fetch; getOlderConversationMessages picks up from here on scroll-up.
+    getConvoHistory(chatId, CONVO_PAGE_SIZE),
     listInboxLog(300),
     listPendingApprovals(), listPendingDrafts(), listOpenFollowups(),
     documentRequests.listPendingReceived(), isNeverAuto(chatId), listAllHrConfirmations()
@@ -1259,8 +1263,29 @@ async function archiveOldInboxLogEntriesIfNeeded() {
 // follow-ups ("Tau kobe pabo?", "Bolun" resolve to whatever topic was
 // already being discussed), not to decide official/personal any more.
 const CONVO_HISTORY_PREFIX = 'wa-convo-history:';
-const CONVO_TTL_SECONDS = 24 * 60 * 60;
+// Task 4 (2026-11) - raised from 24h: this TTL used to wipe a chat's
+// ENTIRE stored history (not just trim it) the moment it had gone 24h
+// without a new message - a real contributor to "older messages are
+// missing" for anyone who messages less than daily. Still resets on
+// every new message (appendConvoHistory below), so an active
+// conversation's key never actually expires; this only ever matters for
+// a truly abandoned number, and 180 days is long enough that it never
+// looks like data loss in practice.
+const CONVO_TTL_SECONDS = 180 * 24 * 60 * 60;
 const CONVO_HISTORY_MAX = 20; // kept for loop-detection lookback; only the last ~10 are ever fed to the model as context
+// Task 4 (2026-11) - the actual STORAGE retention (what ltrim keeps),
+// separate from CONVO_HISTORY_MAX above (which stays 20 - every OTHER
+// caller of getConvoHistory, e.g. loop-detection/AI-context, asks for
+// that small a slice on purpose and is unaffected by raising this).
+// 3000 messages (both directions) per chat is a realistic "the owner can
+// scroll back through basically the whole relationship with this
+// number" cap, never literally unlimited.
+const CONVO_HISTORY_STORAGE_MAX = 3000;
+// The conversation PAGE's own size (Task 4, 2026-11) - the Important
+// WhatsApp list already settled on 30 as "renders instantly, loads more
+// on scroll" (see listAllWhatsappConversationsPage); reused here so the
+// two infinite-scroll surfaces in this app behave consistently.
+const CONVO_PAGE_SIZE = 30;
 const FOLLOWUP_COUNT_PREFIX = 'wa-followup-count:';
 
 // Never called for a blocklisted number (classify() returns 'personal'
@@ -1271,7 +1296,7 @@ async function appendConvoHistory(chatId, direction, text) {
   if (!redis) return;
   try {
     await redis.lpush(CONVO_HISTORY_PREFIX + chatId, JSON.stringify({ ts: Date.now(), direction, text }));
-    await redis.ltrim(CONVO_HISTORY_PREFIX + chatId, 0, CONVO_HISTORY_MAX - 1);
+    await redis.ltrim(CONVO_HISTORY_PREFIX + chatId, 0, CONVO_HISTORY_STORAGE_MAX - 1);
     await redis.expire(CONVO_HISTORY_PREFIX + chatId, CONVO_TTL_SECONDS);
   } catch (err) { /* best effort */ }
 }
@@ -1283,6 +1308,41 @@ async function getConvoHistory(chatId, limit) {
     const raw = (await redis.lrange(CONVO_HISTORY_PREFIX + chatId, 0, (limit || CONVO_HISTORY_MAX) - 1)) || [];
     return raw.map((r) => { try { return typeof r === 'string' ? JSON.parse(r) : r; } catch (err) { return null; } }).filter(Boolean).reverse();
   }, []);
+}
+// Task 4 (2026-11) - infinite-scroll-UP pagination for the conversation
+// page: offset 0 is the latest CONVO_PAGE_SIZE messages (what
+// getWhatsappConversation's own initial thread already shows), offset N
+// is the next N-older messages, and so on - a classic "fetch one extra
+// to know if there's more" (no LLEN needed, same technique
+// listAllWhatsappConversationsPage uses). Returned HEAD(newest)->TAIL
+// (oldest) within the page, same raw order the list is stored in -
+// getOlderConversationMessages below reverses it to chronological order
+// before handing it to the frontend to prepend.
+async function getConvoHistoryPage(chatId, offset, limit) {
+  const redis = getClient();
+  if (!redis) return { items: [], hasMore: false };
+  const safeOffset = Math.max(0, Number(offset) || 0);
+  const safeLimit = Math.min(100, Math.max(1, Number(limit) || CONVO_PAGE_SIZE));
+  return redisHealth.guardedRead(async () => {
+    const raw = (await redis.lrange(CONVO_HISTORY_PREFIX + chatId, safeOffset, safeOffset + safeLimit)) || []; // +1 to detect hasMore
+    const hasMore = raw.length > safeLimit;
+    const items = raw.slice(0, safeLimit).map((r) => { try { return typeof r === 'string' ? JSON.parse(r) : r; } catch (err) { return null; } }).filter(Boolean);
+    return { items, hasMore };
+  }, { items: [], hasMore: false });
+}
+// Thin wrapper for the HTTP route - chronological order within the page
+// (oldest-of-this-page first), ready to prepend above whatever's already
+// rendered. Deliberately simpler than getWhatsappConversation's own
+// initial thread: no "Not delivered"/"Repeated message" reconciliation
+// against wa-inbox-log for these older, paginated-in messages (that
+// cross-referencing is comparatively expensive per page and those flags
+// matter most for the LATEST messages, which the initial load already
+// covers) - just the real text, direction, and timestamp.
+async function getOlderConversationMessages({ chatId: chatIdRaw, offset, limit }) {
+  const chatId = whatsapp.normalizePhone(chatIdRaw);
+  const { items, hasMore } = await getConvoHistoryPage(chatId, offset, limit);
+  const thread = items.slice().reverse().map((h) => ({ direction: h.direction, text: h.text, ts: h.ts }));
+  return { items: thread, hasMore };
 }
 
 // Loop protection (spec point 4) - REWORKED after the live incident
@@ -11538,6 +11598,7 @@ module.exports = {
   savePendingApproval,
   removePendingApproval,
   getWhatsappConversation,
+  getOlderConversationMessages,
   // Exported for scripts/check-whatsapp-engine.js only (a regression
   // baseline, added alongside the Phase 1 UI work) - no behavior change,
   // these already existed and ran exactly this way before.

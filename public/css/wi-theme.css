@@ -1721,6 +1721,9 @@ body { background: var(--wi-bg); }
 .wf-convo-page[hidden] { display: none; }
 .wf-convo-page { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; display: flex; flex-direction: column; }
 .wf-convo-thread { flex: 1; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+/* Task 4 (2026-11) - infinite-scroll-UP loading indicator, shown at the
+   TOP of the thread while an older page of messages is loading. */
+.wf-convo-older-loading { display: flex; justify-content: center; padding: 4px 0 10px; }
 .wf-convo-msg { max-width: 82%; display: flex; flex-direction: column; gap: 3px; }
 .wf-convo-msg.in { align-self: flex-start; }
 .wf-convo-msg.out { align-self: flex-end; align-items: flex-end; }

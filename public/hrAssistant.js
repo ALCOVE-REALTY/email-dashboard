@@ -3412,6 +3412,14 @@
     if (cached) {
       renderConvoThread(cached);
       renderConvoActionsAndWire(cached);
+      // Task 4 (2026-11) - records what was just rendered so the fresh
+      // fetch reloadConversation() fires right below never re-renders
+      // (and so never re-triggers the action cards' own entrance
+      // animation, incl. the "Never auto-reply" toggle's card) when it
+      // turns out to be the exact same data - see reloadConversation's
+      // own comment. Without this, a cached open always repainted the
+      // actions area TWICE in a row even when nothing had changed.
+      convoPollFingerprints.set(chatId, JSON.stringify(cached));
     } else {
       if (commsHeadTitle) commsHeadTitle.textContent = 'Loading…';
       if (convoThread) convoThread.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
@@ -3424,40 +3432,123 @@
     const resp = await fetch('/api/workforce/hr-assistant/whatsapp-conversation/' + encodeURIComponent(chatId));
     return resp.json();
   }
+  // Per-bubble "Not delivered" flag (live incident fix) - the
+  // conversation-level status pill below only ever shows the chat's MOST
+  // RECENT outcome, which can hide an earlier real delivery failure the
+  // moment anything else gets logged for this same chat afterward. A
+  // failed/undelivered OUTGOING bubble is flagged right on itself
+  // instead, regardless of what happened later in the chat. Shared by
+  // the initial render and loadOlderConvoMessages below (Task 4,
+  // 2026-11) so both build identical bubble markup.
+  const CONVO_NOT_DELIVERED_OUTCOMES = ['send_failed', 'not_delivered'];
+  function buildConvoMsgBubbleHtml(m) {
+    return '<div class="wf-convo-msg ' + (m.direction === 'out' ? 'out' : 'in') + '">' +
+      '<span class="wf-convo-msg-bubble">' + escapeHtml(m.text) + '</span>' +
+      (m.direction === 'out' && CONVO_NOT_DELIVERED_OUTCOMES.includes(m.outcome) ? '<span class="wf-convo-msg-failed">Not delivered</span>' : '') +
+      // Task 1 NEW EVIDENCE (2026-10-29) - the safety-net skip
+      // (isStaleRepeatedMessage) never auto-replies, so this is the only
+      // visible sign the message arrived at all - shown right on it,
+      // same spirit as the outgoing "Not delivered" flag above.
+      (m.direction === 'in' && m.repeated ? '<span class="wf-convo-msg-repeated">Repeated message</span>' : '') +
+      // Task 5 - "Save as template" on any of SUBH's own outgoing
+      // replies, so a recurring model-written reply can be turned into
+      // a permanent fixed one without touching code.
+      (m.direction === 'out' ? '<button type="button" class="wf-convo-msg-save-template" data-text="' + escapeHtml(m.text) + '" title="Save as template">📄 Save as template</button>' : '') +
+      '<span class="wf-convo-msg-time">' + formatCommsTime(m.ts) + '</span>' +
+    '</div>';
+  }
+  // Task 4 (2026-11) - infinite-scroll-UP pagination state for the
+  // conversation currently open. Reset every time a FRESH thread is
+  // rendered (a new chat opened, or this same chat's initial page
+  // re-fetched) - convoOlderOffset starts at however many messages the
+  // initial load already showed, so the first "older" request picks up
+  // exactly where that left off.
+  let convoOlderOffset = 0;
+  let convoHasMoreOlder = true;
+  let convoLoadingOlder = false;
   function renderConvoThread(convo) {
     if (commsHeadTitle) commsHeadTitle.textContent = convo.name || convo.chatId;
     const status = convoStatusLine(convo.lastOutcome);
-    // Per-bubble "Not delivered" flag (live incident fix) - the
-    // conversation-level status pill below only ever shows the chat's
-    // MOST RECENT outcome, which can hide an earlier real delivery
-    // failure the moment anything else gets logged for this same chat
-    // afterward. A failed/undelivered OUTGOING bubble is flagged right on
-    // itself instead, regardless of what happened later in the chat.
-    const NOT_DELIVERED_OUTCOMES = ['send_failed', 'not_delivered'];
-    const thread = (convo.thread || []).map((m) =>
-      '<div class="wf-convo-msg ' + (m.direction === 'out' ? 'out' : 'in') + '">' +
-        '<span class="wf-convo-msg-bubble">' + escapeHtml(m.text) + '</span>' +
-        (m.direction === 'out' && NOT_DELIVERED_OUTCOMES.includes(m.outcome) ? '<span class="wf-convo-msg-failed">Not delivered</span>' : '') +
-        // Task 1 NEW EVIDENCE (2026-10-29) - the safety-net skip
-        // (isStaleRepeatedMessage) never auto-replies, so this is the only
-        // visible sign the message arrived at all - shown right on it,
-        // same spirit as the outgoing "Not delivered" flag above.
-        (m.direction === 'in' && m.repeated ? '<span class="wf-convo-msg-repeated">Repeated message</span>' : '') +
-        // Task 5 - "Save as template" on any of SUBH's own outgoing
-        // replies, so a recurring model-written reply can be turned into
-        // a permanent fixed one without touching code.
-        (m.direction === 'out' ? '<button type="button" class="wf-convo-msg-save-template" data-text="' + escapeHtml(m.text) + '" title="Save as template">📄 Save as template</button>' : '') +
-        '<span class="wf-convo-msg-time">' + formatCommsTime(m.ts) + '</span>' +
-      '</div>'
-    ).join('');
+    const items = convo.thread || [];
+    const thread = items.map(buildConvoMsgBubbleHtml).join('');
     if (convoThread) {
       convoThread.innerHTML = (thread || '<div class="wf-comms-empty">No recent messages stored for this chat.</div>') +
         (status ? '<span class="wf-convo-status-line ' + status.tone + '">' + escapeHtml(status.text) + '</span>' : '');
-      convoThread.scrollTop = convoThread.scrollHeight;
+      // The actual scrollable element is the PAGE (.wf-convo-page,
+      // overflow-y:auto), never the thread div itself (that's just a
+      // plain flex child, has no scrollbar of its own) - scrolling THAT
+      // was a pre-existing no-op.
+      if (convoPage) convoPage.scrollTop = convoPage.scrollHeight;
       convoThread.querySelectorAll('.wf-convo-msg-save-template').forEach((btn) => {
         btn.addEventListener('click', () => openTemplateSheetFromReply(btn.dataset.text));
       });
     }
+    // A fresh page's worth of messages (not an in-place no-op re-render)
+    // - reset older-message pagination for whatever chat this is. Only
+    // assumed to possibly have more if the initial page came back full;
+    // a short conversation (fewer messages than one page) never needs to
+    // try loading more at all.
+    convoOlderOffset = items.length;
+    convoHasMoreOlder = items.length >= CONVO_PAGE_SIZE_CLIENT;
+    convoLoadingOlder = false;
+    const existingTop = convoThread && convoThread.querySelector('.wf-convo-older-loading');
+    if (existingTop) existingTop.remove();
+  }
+  // Mirrors the backend's own CONVO_PAGE_SIZE (whatsappAssistant.js) -
+  // only used here to decide whether the INITIAL page might have more
+  // (exactly `limit` back = maybe more; fewer = definitely not). Getting
+  // this slightly wrong costs at most one harmless extra "load older"
+  // request near the top of a short conversation, never a correctness
+  // issue, since the real stop condition is always the server's own
+  // hasMore/empty-page response.
+  const CONVO_PAGE_SIZE_CLIENT = 30;
+  function convoOlderLoadingHtml() {
+    return '<div class="wf-convo-older-loading"><div class="spinner spinner-sm"></div></div>';
+  }
+  async function loadOlderConvoMessages() {
+    if (convoLoadingOlder || !convoHasMoreOlder || !activeConvoChatId || !convoThread || !convoPage) return;
+    const chatId = activeConvoChatId;
+    convoLoadingOlder = true;
+    if (!convoThread.querySelector('.wf-convo-older-loading')) convoThread.insertAdjacentHTML('afterbegin', convoOlderLoadingHtml());
+    try {
+      const resp = await fetch('/api/workforce/hr-assistant/whatsapp-conversation/' + encodeURIComponent(chatId) + '/older?offset=' + convoOlderOffset + '&limit=' + CONVO_PAGE_SIZE_CLIENT);
+      const data = await resp.json();
+      if (activeConvoChatId !== chatId || panelView !== 'conversation') return; // navigated away meanwhile
+      const loadingEl = convoThread.querySelector('.wf-convo-older-loading');
+      if (loadingEl) loadingEl.remove();
+      const items = (data && data.items) || [];
+      convoHasMoreOlder = Boolean(data && data.hasMore);
+      if (!items.length) return;
+      convoOlderOffset += items.length;
+      // Prepend without disturbing scroll position: capture the page's
+      // scrollHeight BEFORE inserting, then shift scrollTop by exactly how
+      // much taller the page just got - the owner's eyes stay on the same
+      // message they were already looking at, nothing visibly jumps.
+      const prevScrollHeight = convoPage.scrollHeight;
+      const prevScrollTop = convoPage.scrollTop;
+      convoThread.insertAdjacentHTML('afterbegin', items.map(buildConvoMsgBubbleHtml).join(''));
+      convoThread.querySelectorAll('.wf-convo-msg-save-template').forEach((btn) => {
+        if (!btn.dataset.wired) { btn.dataset.wired = '1'; btn.addEventListener('click', () => openTemplateSheetFromReply(btn.dataset.text)); }
+      });
+      convoPage.scrollTop = prevScrollTop + (convoPage.scrollHeight - prevScrollHeight);
+      // Keep the cached thread in sync so navigating away and back shows
+      // the already-expanded history instead of collapsing back to just
+      // the initial page.
+      const cached = pageDataCache.convos.get(chatId);
+      if (cached) cached.thread = items.concat(cached.thread || []);
+    } catch (err) {
+      const loadingEl = convoThread.querySelector('.wf-convo-older-loading');
+      if (loadingEl) loadingEl.remove();
+      // best effort - the next scroll near the top just retries
+    } finally {
+      convoLoadingOlder = false;
+    }
+  }
+  if (convoPage) {
+    convoPage.addEventListener('scroll', () => {
+      if (panelView !== 'conversation') return;
+      if (convoPage.scrollTop < 200) loadOlderConvoMessages();
+    });
   }
   // Fire-and-forget after an action button succeeds (speed/UX fix) -
   // updates ONLY the message thread (so the just-sent reply shows up),
@@ -3469,13 +3560,35 @@
     if (!activeConvoChatId) return;
     const chatId = activeConvoChatId;
     try {
-      const convo = await fetchConvo(chatId);
-      pageDataCache.convos.set(chatId, convo);
+      let convo = await fetchConvo(chatId);
       if (activeConvoChatId !== chatId || panelView !== 'conversation') return; // navigated away meanwhile
+      // Task 4 (2026-11) - see reloadConversation's identical comment:
+      // never let this collapse history the owner has already scrolled up
+      // and loaded.
+      convo = mergeWithLoadedOlderHistory(chatId, convo);
+      pageDataCache.convos.set(chatId, convo);
       renderConvoThread(convo);
     } catch (err) { /* best effort - thread just won't show the latest message until reopened */ }
   }
 
+  // Task 4 (2026-11) - fetchConvo always returns just the INITIAL page of
+  // messages (the latest CONVO_PAGE_SIZE_CLIENT) - without this, a live
+  // update landing while the owner has scrolled up and loaded extra older
+  // history (loadOlderConvoMessages above) would silently collapse their
+  // expanded view back down to just that one page the instant anything
+  // changed. Merges back in whatever was cached that's OLDER than the
+  // fresh page's own earliest message, by timestamp (robust regardless of
+  // exactly how many older pages were loaded) - a no-op when nothing
+  // extra had been loaded.
+  function mergeWithLoadedOlderHistory(chatId, freshConvo) {
+    const cached = pageDataCache.convos.get(chatId);
+    const freshThread = freshConvo.thread || [];
+    if (!cached || !cached.thread || !cached.thread.length || !freshThread.length) return freshConvo;
+    const earliestFreshTs = freshThread[0].ts;
+    const olderPortion = cached.thread.filter((m) => m.ts < earliestFreshTs);
+    if (!olderPortion.length) return freshConvo;
+    return Object.assign({}, freshConvo, { thread: olderPortion.concat(freshThread) });
+  }
   async function reloadConversation() {
     if (!activeConvoChatId) return;
     const chatId = activeConvoChatId;
@@ -3490,6 +3603,23 @@
       return;
     }
     if (activeConvoChatId !== chatId) return; // navigated to a different chat while this was in flight
+    // Task 4 (2026-11) - the "Never auto-reply" section (and the rest of
+    // the action cards) used to visibly jump TWICE on every open: once
+    // from openConversationPage's own synchronous cache-render, then
+    // again right here the instant this fetch resolved - rebuilding the
+    // SAME action-group markup from scratch re-triggers its own entrance
+    // animation a second time even when nothing actually changed (the
+    // overwhelmingly common case - this fetch usually just confirms the
+    // cache was already right). Skipping an identical re-render fixes
+    // that at the source, same fingerprint technique
+    // pollRefreshConversationIfOpen already uses for its own 12s-poll
+    // re-renders. Fingerprinted on the RAW fetch (before merging back any
+    // loaded-older history) so this still correctly detects "did the
+    // latest page itself change".
+    const fingerprint = JSON.stringify(convo);
+    if (fingerprint === convoPollFingerprints.get(chatId)) return;
+    convoPollFingerprints.set(chatId, fingerprint);
+    convo = mergeWithLoadedOlderHistory(chatId, convo);
     pageDataCache.convos.set(chatId, convo);
     renderConvoThread(convo);
     renderConvoActionsAndWire(convo);
@@ -3514,6 +3644,10 @@
     const fingerprint = JSON.stringify(convo);
     if (fingerprint === convoPollFingerprints.get(chatId)) return; // nothing changed - skip the rebuild
     convoPollFingerprints.set(chatId, fingerprint);
+    // Task 4 (2026-11) - see reloadConversation's identical comment: never
+    // let a live update collapse history the owner has already scrolled
+    // up and loaded.
+    convo = mergeWithLoadedOlderHistory(chatId, convo);
     pageDataCache.convos.set(chatId, convo);
     renderConvoThread(convo);
     if (!convoActions || !convoActions.querySelector('.is-loading')) renderConvoActionsAndWire(convo);

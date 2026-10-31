@@ -2171,6 +2171,25 @@ router.get('/hr-assistant/whatsapp-conversation/:chatId', async (req, res) => {
   }
 });
 
+// Task 4 (2026-11) - infinite-scroll-UP pagination: the conversation page's
+// own initial load (above) already shows the latest messages; this is
+// "load the next batch of OLDER ones", fired as the owner scrolls toward
+// the top of the thread. offset 0 here is the SAME latest page the
+// initial load already rendered - callers pass offset=CONVO_PAGE_SIZE for
+// the first "older" batch, then keep adding however many they've already
+// loaded.
+router.get('/hr-assistant/whatsapp-conversation/:chatId/older', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const offset = parseInt(req.query.offset, 10) || 0;
+    const limit = parseInt(req.query.limit, 10) || 30;
+    const result = await whatsappAssistant.getOlderConversationMessages({ chatId: req.params.chatId, offset, limit });
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.post('/hr-assistant/whatsapp-approval', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
   try {
