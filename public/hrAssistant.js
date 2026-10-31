@@ -77,6 +77,8 @@
   const commsMailCard = document.getElementById('hrCommsMailCard');
   const commsWaAllPage = document.getElementById('hrCommsWaAllPage');
   const commsWaAllList = document.getElementById('hrCommsWaAllList');
+  const commsWaAllSearch = document.getElementById('hrCommsWaAllSearch');
+  const commsWaAllSearchClear = document.getElementById('hrCommsWaAllSearchClear');
   const openFlowsBtn = document.getElementById('hrOpenFlowsBtn');
   const openFlowsBadge = document.getElementById('hrOpenFlowsBadge');
   const openFlowsPage = document.getElementById('hrOpenFlowsPage');
@@ -1378,7 +1380,7 @@
     if (panelView === 'commsHub') {
       renderCommsHubBadges(data);
     } else if (panelView === 'waAll') {
-      renderWaListLive(commsWaAllList, data.whatsappAllItems || []);
+      renderWaAllFiltered(data.whatsappAllItems || []);
     } else if (panelView === 'hub') {
       renderHubBadges(data, (pageDataCache.reminders.get('today') && pageDataCache.reminders.get('today').data.counts) || { all: 0 });
     }
@@ -1795,7 +1797,7 @@
     const fresh = await fetch('/api/workforce/hr-assistant/communications-summary').then((res) => res.json()).catch(() => null);
     if (fresh) {
       pageDataCache.comms = fresh;
-      if (panelView === 'waAll') renderWaListLive(commsWaAllList, fresh.whatsappAllItems || []);
+      if (panelView === 'waAll') renderWaAllFiltered(fresh.whatsappAllItems || []);
       else if (panelView === 'commsHub') renderCommsHubBadges(fresh);
       setCountBadge(todayUpdatesBadge, (fresh.importantMailsCount || 0) + (fresh.importantWhatsappCount || 0) + (fresh.remindersPendingCount || 0));
       // Only while the WhatsApp page is actually on screen - commsHeadBadge
@@ -1860,6 +1862,46 @@
     waListState.set(container, { fingerprint, chatIds: newChatIds });
   }
 
+  // Task 1 (2026-10-31) - Important WhatsApp search: client-side only
+  // (filters the already-loaded list, no network round trip), matches
+  // sender name, number or message text. Always re-filters from the FULL,
+  // unfiltered dataset (waAllFullItems) - never filters an already-
+  // filtered result - so typing then backspacing never loses rows. Items
+  // arrive already sorted newest-first (mergeRecentWhatsappConversations);
+  // .filter() preserves that order, so results stay in time order with no
+  // extra sort needed.
+  let waAllFullItems = [];
+  let waAllSearchQuery = '';
+  function waItemMatchesQuery(item, q) {
+    const needle = q.toLowerCase();
+    const digits = q.replace(/\D/g, '');
+    if ((item.name || '').toLowerCase().includes(needle)) return true;
+    if ((item.lastMessageText || '').toLowerCase().includes(needle)) return true;
+    if (digits && (item.chatId || '').includes(digits)) return true;
+    return false;
+  }
+  function renderWaAllFiltered(items) {
+    waAllFullItems = items;
+    const q = waAllSearchQuery.trim();
+    renderWaListLive(commsWaAllList, q ? items.filter((it) => waItemMatchesQuery(it, q)) : items);
+  }
+  if (commsWaAllSearch) {
+    commsWaAllSearch.addEventListener('input', () => {
+      waAllSearchQuery = commsWaAllSearch.value;
+      if (commsWaAllSearchClear) commsWaAllSearchClear.hidden = !waAllSearchQuery;
+      renderWaAllFiltered(waAllFullItems);
+    });
+  }
+  if (commsWaAllSearchClear) {
+    commsWaAllSearchClear.addEventListener('click', () => {
+      commsWaAllSearch.value = '';
+      waAllSearchQuery = '';
+      commsWaAllSearchClear.hidden = true;
+      renderWaAllFiltered(waAllFullItems);
+      commsWaAllSearch.focus();
+    });
+  }
+
   // Task 4 (2026-10-28) - the two hub-tile badges (Mails / WhatsApp),
   // shared between the initial render and every live poll tick while the
   // hub itself is on screen.
@@ -1899,12 +1941,17 @@
   // while-revalidate same as every other comms view.
   function showWaAll() {
     setPanelView('waAll');
+    // A fresh open of the page always starts with the search cleared -
+    // never carries a stale query over from a previous visit.
+    if (commsWaAllSearch) commsWaAllSearch.value = '';
+    waAllSearchQuery = '';
+    if (commsWaAllSearchClear) commsWaAllSearchClear.hidden = true;
     const cached = pageDataCache.comms;
-    if (cached) renderWaListLive(commsWaAllList, cached.whatsappAllItems || []);
+    if (cached) renderWaAllFiltered(cached.whatsappAllItems || []);
     else if (commsWaAllList) commsWaAllList.innerHTML = '<div class="wf-skeleton-list"><div class="wf-skeleton-row"></div><div class="wf-skeleton-row"></div><div class="wf-skeleton-row"></div></div>';
     fetch('/api/workforce/hr-assistant/communications-summary').then((r) => r.json()).then((data) => {
       pageDataCache.comms = data;
-      if (panelView === 'waAll') renderWaListLive(commsWaAllList, data.whatsappAllItems || []);
+      if (panelView === 'waAll') renderWaAllFiltered(data.whatsappAllItems || []);
     }).catch(() => { /* keep showing whatever's already rendered */ });
   }
   if (commsHubWaTile) commsHubWaTile.addEventListener('click', () => { pushNav({ type: 'waAll' }); showWaAll(); });

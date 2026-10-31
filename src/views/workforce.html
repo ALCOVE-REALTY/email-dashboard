@@ -257,6 +257,17 @@
             </button>
           </span>
         </div>
+        <!-- Task 1 (2026-10-31) - search bar, same reusable design as the
+             chat-history search (wf-ai-history-search) elsewhere in this
+             panel. Client-side only - filters the already-loaded list
+             (sender name, number, message text), no network round trip. -->
+        <div class="wf-ai-history-search">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input type="text" id="hrCommsWaAllSearch" placeholder="Search name, number or message…" autocomplete="off" autocorrect="off" spellcheck="false" />
+          <button type="button" class="wf-ai-history-search-clear" id="hrCommsWaAllSearchClear" hidden aria-label="Clear search">
+            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
         <div class="wf-comms-wa-list" id="hrCommsWaAllList"></div>
       </div>
 
