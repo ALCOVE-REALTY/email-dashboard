@@ -1636,6 +1636,18 @@ body { background: var(--wi-bg); }
   padding: 18px 14px; text-align: center; font-size: 0.78rem; font-weight: 600; color: var(--wi-muted);
 }
 .wf-comms-wa-list { display: flex; flex-direction: column; gap: 10px; }
+/* Task 2 (2026-11) - Important WhatsApp's own spacing only (never the
+   shared .wf-ai-history-search component's base margin, used elsewhere
+   for chat history): that component's own 14px vertical margin, stacked
+   on top of this page's 16px flex gap AND the header's own 8px bottom
+   padding (now removed at the source in workforce.html), made the
+   header-to-search gap ~38px and the search-to-list gap ~30px - clearly
+   too large/uneven. With the header's own padding gone, just the page's
+   16px flex gap remains above the search bar (normal spacing); killing
+   its own top margin here avoids stacking a second gap on top of that,
+   and a small bottom margin brings the gap down to the list to 24px (a
+   little less than before, per direct instruction). */
+#hrCommsWaAllPage > .wf-ai-history-search { margin-top: 0; margin-bottom: 8px; }
 /* Task 3 (2026-10-31) - infinite-scroll loading indicator at the bottom
    of the Important WhatsApp list, shown while an older page is loading. */
 .wf-comms-wa-loadmore { display: flex; justify-content: center; padding: 10px 0 4px; }
