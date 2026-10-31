@@ -4262,7 +4262,8 @@
     if (!text) {
       input.disabled = false;
       if (sendBtn) sendBtn.disabled = false;
-      input.focus();
+      // Task 7 (2026-11) - never re-focus here: the keyboard should only
+      // open when the person actually taps the input themselves.
       return;
     }
 
@@ -4315,7 +4316,10 @@
     } finally {
       input.disabled = false;
       if (sendBtn) sendBtn.disabled = false;
-      input.focus();
+      // Task 7 (2026-11) LIVE BUG FIX: re-focusing here opened the keyboard
+      // by itself the instant SUBH's reply arrived, even though the person
+      // never tapped the input again - the keyboard should only open on an
+      // actual tap.
     }
   }
   const sendAssistantBtn = document.getElementById('hrAssistantSendBtn');
