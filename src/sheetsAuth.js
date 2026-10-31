@@ -66,13 +66,28 @@ function requireCredentials() {
   }
 }
 
+let readOnlyAuth = null;
 function getSheetsReadOnlyClient() {
   requireCredentials();
   if (!readOnlySheetsClient) {
-    const auth = new google.auth.GoogleAuth({ credentials, scopes: READONLY_SCOPES });
-    readOnlySheetsClient = google.sheets({ version: 'v4', auth });
+    readOnlyAuth = new google.auth.GoogleAuth({ credentials, scopes: READONLY_SCOPES });
+    readOnlySheetsClient = google.sheets({ version: 'v4', auth: readOnlyAuth });
   }
   return readOnlySheetsClient;
+}
+// Task 9 (2026-10-31), button-speed fix: GoogleAuth otherwise mints its
+// first real access token lazily, on whichever request happens to be
+// first - meaning the very first "Load sheet"/Preview/run after a server
+// (re)start pays for an extra token-exchange round trip on top of the
+// real Sheets API call. Called once at server start (fire-and-forget,
+// never blocks startup, never throws) so that token is already cached by
+// the time any real request arrives.
+async function warmSheetsClient() {
+  if (!hasServiceAccount()) return;
+  try {
+    getSheetsReadOnlyClient();
+    await readOnlyAuth.getAccessToken();
+  } catch (err) { /* best effort - a real request will simply mint it then instead */ }
 }
 
 function getSheetsWriteClient() {
@@ -100,4 +115,4 @@ function getDriveClient() {
   return driveClient;
 }
 
-module.exports = { getSheetsReadOnlyClient, getSheetsWriteClient, hasServiceAccount, getDriveClient, getServiceAccountEmail };
+module.exports = { getSheetsReadOnlyClient, getSheetsWriteClient, hasServiceAccount, getDriveClient, getServiceAccountEmail, warmSheetsClient };

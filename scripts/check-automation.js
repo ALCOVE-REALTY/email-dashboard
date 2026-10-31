@@ -52,9 +52,17 @@ function fakeEmployeeData() {
 // sheets.spreadsheets.get and sheets.spreadsheets.values.get through
 // sheetsAuth.getSheetsReadOnlyClient - mocked below, never a real network
 // call). `scenario.tabs` = [{ title, values: [[header,...], [row1,...],
-// ...], accessError? }]; `scenario.metaError` simulates spreadsheets.get
-// itself failing (bad link / no access at the file level). ----
+// ...], accessError?, failOnce?, delayMs? }]; `scenario.metaError`
+// simulates spreadsheets.get itself failing (bad link / no access at the
+// file level). Task 9 (2026-10-31) additions: `tab.failOnce` throws a
+// transient (non-permission) error on the FIRST call for that tab only,
+// succeeding on the automatic retry - proves callSheetsWithRetry's single
+// retry actually recovers a real request, not just a count in isolation.
+// `tab.delayMs` adds an artificial delay, used to prove tabs are fetched
+// in PARALLEL (total time ~= the slowest tab, never the sum of all of
+// them) rather than timing a real network call. ----
 function makeFakeSheetsClient(scenario) {
+  const failOnceUsed = new Set();
   return {
     spreadsheets: {
       get: async () => {
@@ -67,6 +75,8 @@ function makeFakeSheetsClient(scenario) {
           const tabName = m ? m[1].replace(/''/g, "'") : null;
           const tab = (scenario.tabs || []).find((t) => t.title === tabName);
           if (!tab) throw new Error('Unable to parse range: ' + range);
+          if (tab.delayMs) await new Promise((resolve) => setTimeout(resolve, tab.delayMs));
+          if (tab.failOnce && !failOnceUsed.has(tabName)) { failOnceUsed.add(tabName); throw new Error('ECONNRESET - transient network blip'); }
           if (tab.accessError) throw new Error(tab.accessError);
           return { data: { values: tab.values } };
         }
@@ -179,6 +189,25 @@ async function main() {
         const info = await automationService.loadSheetInfo('https://docs.google.com/spreadsheets/d/TESTID123/edit');
         const blank = info.tabs.find((t) => t.title === 'Blank');
         return info.ok && Boolean(blank) && blank.rowCount === 0 && blank.headers.length === 0;
+      });
+      await checkAsync('Task 9 (2026-10-31), button-speed fix: tabs are fetched in PARALLEL, not one at a time - 5 tabs each simulating a 200ms read finish in well under their sum (1000ms), proving this is not a sequential loop', async () => {
+        sheetsScenario = { fileName: 'Many Tabs', tabs: ['A', 'B', 'C', 'D', 'E'].map((t) => ({ title: t, values: sheetValues(1), delayMs: 200 })) };
+        const t0 = Date.now();
+        const info = await automationService.loadSheetInfo('https://docs.google.com/spreadsheets/d/TESTID123/edit');
+        const elapsed = Date.now() - t0;
+        return info.ok && info.tabs.length === 5 && elapsed < 700;
+      });
+      await checkAsync('Task 9 (2026-10-31), button-speed fix: a tab whose FIRST read fails with a transient (non-permission) error is automatically retried once and recovers - never shown to the owner as empty/unreadable for a one-off network blip', async () => {
+        sheetsScenario = { fileName: 'Flaky Sheet', tabs: [{ title: 'Addition', values: sheetValues(3), failOnce: true }] };
+        const info = await automationService.loadSheetInfo('https://docs.google.com/spreadsheets/d/TESTID123/edit');
+        const addition = info.tabs.find((t) => t.title === 'Addition');
+        return info.ok && Boolean(addition) && addition.rowCount === 3;
+      });
+      await checkAsync('Task 9 (2026-10-31), button-speed fix: a tab whose EVERY read fails (not just the first) still falls back to "unreadable" gracefully, same as before - the single retry never masks a genuinely broken tab forever', async () => {
+        sheetsScenario = { fileName: 'Broken Sheet', tabs: [{ title: 'Addition', values: sheetValues(3), accessError: 'some genuine, persistent error' }] };
+        const info = await automationService.loadSheetInfo('https://docs.google.com/spreadsheets/d/TESTID123/edit');
+        const addition = info.tabs.find((t) => t.title === 'Addition');
+        return info.ok && Boolean(addition) && addition.rowCount === 0 && addition.headers.length === 0;
       });
 
       check('Tab matching: "addition" resolves to the real tab "Additions" (singular/plural, case-insensitive)', automationService.resolveFuzzyOneOf('addition', ['Additions', 'Other']) === 'Additions');

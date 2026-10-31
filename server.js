@@ -20,6 +20,8 @@ const movementTracker = require('./src/movementTracker');
 const cacheBus = require('./src/cacheBus');
 const snapshotScheduler = require('./src/dailySnapshotScheduler');
 const whatsappPollScheduler = require('./src/whatsappPollScheduler');
+const sheetsAuth = require('./src/sheetsAuth');
+const employeeService = require('./src/employeeService');
 // One client for the daily-snapshot lock, shared by the endpoint and the
 // in-process scheduler so both claim the same per-day key.
 const snapshotRedis = snapshotScheduler.makeRedis();
@@ -660,6 +662,18 @@ if (!process.env.VERCEL) {
   snapshotScheduler.start({ tracker: movementTracker, redis: snapshotRedis });
   // SUBH's WhatsApp assistant poll loop (Phase F, opt-in: WHATSAPP_ASSISTANT_SCHEDULER=1).
   whatsappPollScheduler.start();
+  // Task 9 (2026-10-31), button-speed fix: mint the Google Sheets service-
+  // account token now, in the background, so the FIRST real "Load sheet"/
+  // Preview/run after this server starts doesn't pay for that extra round
+  // trip itself. Never blocks startup, never throws.
+  sheetsAuth.warmSheetsClient();
+  // Same fix, same reasoning, for the employee directory's own 2-minute
+  // cache (src/employeeService.js) - this single sheet read backs almost
+  // every HR Assistant button (Create Automated Task's employee list, the
+  // WhatsApp data-query engine, every HR report) and otherwise pays for
+  // itself on whichever click happens to be first after a (re)start or a
+  // cache expiry.
+  employeeService.getEmployeeData().catch(() => {});
 }
 
 module.exports = app;
