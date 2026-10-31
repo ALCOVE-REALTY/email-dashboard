@@ -3525,12 +3525,22 @@ async function handleHrDataQueryRequest({ phone, name, lang, text, history }) {
   await runHrDataQueryAndQueue({ phone, requesterLabel: name, lang, employees, query });
   return { case: 'data_holding', replyText: dataRequestHoldingReply(lang, history, new Date()), summaryForOwner: null };
 }
-// Dedupe (same rule as every other data-request path) + the actual
-// compute-and-queue, split out so both the fresh-question path above and
-// the department-choice continuation below share it.
+// The actual compute-and-queue, split out so both the fresh-question path
+// above and the department-choice continuation below share it.
+// Task 3b (2026-10-31), live bug fix: this used to refuse to queue a
+// second approval while one was already pending for this phone - meant a
+// sender asking a second, genuinely different question (e.g. "Contracts
+// HOD name + emp code" already pending, then "HR dept HOD name & emp
+// code") got auto-replied to with nothing ever actually queued for the
+// owner to review. Every data request now gets its own approval, stacked
+// independently - getWhatsappConversation/listActionNeededItems already
+// render one card per pending approval (built for the shared-phone/
+// different-requester case), so this was the only place still assuming
+// "one pending approval per phone". Accidental literal duplicates (e.g. a
+// retried/re-delivered message) are still caught upstream by the poll
+// loop's own isMessageHandled/isMessageHandledByContent guards, never by
+// blocking a second DIFFERENT request here.
 async function runHrDataQueryAndQueue({ phone, requesterLabel, lang, employees, query }) {
-  const existing = await listPendingApprovals();
-  if (existing.some((a) => whatsapp.normalizePhone(a.phone) === whatsapp.normalizePhone(phone))) return;
   const { outgoingText, dataRequestSummary } = buildHrDataQueryAnswer(employees, query, lang);
   await queueHrDataQueryApproval({ phone, requesterLabel, lang, dataRequestSummary, outgoingText });
 }
@@ -10938,6 +10948,7 @@ module.exports = {
   findEmployeeIdByExactName,
   extractHrDataQuery,
   handleHrDataQueryRequest,
+  runHrDataQueryAndQueue,
   continueHrDataQueryFlow,
   getPendingHrDataQuery,
   savePendingHrDataQuery,

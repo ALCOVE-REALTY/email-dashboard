@@ -1383,6 +1383,11 @@
       renderWaAllFiltered(data.whatsappAllItems || []);
     } else if (panelView === 'hub') {
       renderHubBadges(data, (pageDataCache.reminders.get('today') && pageDataCache.reminders.get('today').data.counts) || { all: 0 });
+    } else if (panelView === 'conversation') {
+      // Task 3a (2026-10-31) - a conversation actually open on screen stays
+      // live, same cadence as every other page: new incoming messages and
+      // SUBH's own replies appear without needing to leave and re-open.
+      pollRefreshConversationIfOpen();
     }
     // Task 6 - "live 12s refresh": the badge count stays current everywhere,
     // and the page itself re-renders when it's the one actually on screen.
@@ -3383,6 +3388,30 @@
     pageDataCache.convos.set(chatId, convo);
     renderConvoThread(convo);
     renderConvoActionsAndWire(convo);
+  }
+  // Task 3a (2026-10-31) - the 12s comms-poll tick's own live refresh for
+  // an open conversation page (see pollCommsSummary above). Fingerprinted
+  // per chat (same technique as renderWaListLive) so a tick with nothing
+  // new never re-renders at all - no flicker. The thread always catches
+  // up live; the action CARDS only rebuild when nothing in them is
+  // currently mid-request (Send/Edit/Decline already in flight would lose
+  // its spinner/edit state if rebuilt out from under it) - they simply
+  // catch up on the next tick once free, same as the thread does.
+  const convoPollFingerprints = new Map(); // chatId -> JSON fingerprint of the last poll-rendered convo
+  async function pollRefreshConversationIfOpen() {
+    if (!activeConvoChatId || panelView !== 'conversation') return;
+    const chatId = activeConvoChatId;
+    let convo;
+    try {
+      convo = await fetchConvo(chatId);
+    } catch (err) { return; } // best effort - keeps showing whatever's already rendered
+    if (activeConvoChatId !== chatId || panelView !== 'conversation') return; // navigated away meanwhile
+    const fingerprint = JSON.stringify(convo);
+    if (fingerprint === convoPollFingerprints.get(chatId)) return; // nothing changed - skip the rebuild
+    convoPollFingerprints.set(chatId, fingerprint);
+    pageDataCache.convos.set(chatId, convo);
+    renderConvoThread(convo);
+    if (!convoActions || !convoActions.querySelector('.is-loading')) renderConvoActionsAndWire(convo);
   }
   function renderConvoActionsAndWire(convo) {
     if (convoActions) {

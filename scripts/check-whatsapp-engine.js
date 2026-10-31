@@ -5611,6 +5611,18 @@ async function checkAsync(label, fn) {
     await whatsappAssistant.clearPendingHrDataQuery(phone).catch(() => {});
     return ok;
   });
+  await checkAsync('LIVE ISSUE FIX (Task 3b, 2026-10-31): a SECOND, genuinely different data request from the same sender while an earlier one is still pending gets its OWN separate approval, never silently dropped - runHrDataQueryAndQueue no longer refuses to queue a second approval for a phone that already has one pending', async () => {
+    const phone = '919999000097';
+    const approvalsBefore = await whatsappAssistant.listPendingApprovals();
+    for (const a of approvalsBefore) if (whatsapp.normalizePhone(a.phone) === whatsapp.normalizePhone(phone)) await whatsappAssistant.removePendingApproval(a.id);
+    const { employees } = await employeeService.getEmployeeData();
+    await whatsappAssistant.runHrDataQueryAndQueue({ phone, requesterLabel: 'StackTest', lang: 'banglish', employees, query: { returnType: 'hod', department: 'HR Dept' } });
+    await whatsappAssistant.runHrDataQueryAndQueue({ phone, requesterLabel: 'StackTest', lang: 'banglish', employees, query: { returnType: 'count', designation: 'welder' } });
+    const mine = (await whatsappAssistant.listPendingApprovals()).filter((a) => whatsapp.normalizePhone(a.phone) === whatsapp.normalizePhone(phone));
+    const ok = mine.length === 2 && mine[0].preparedReplyText !== mine[1].preparedReplyText;
+    for (const a of mine) await whatsappAssistant.removePendingApproval(a.id);
+    return ok;
+  });
   console.log(pass + '/' + (pass + fail) + ' passed' + (fail ? ', ' + fail + ' FAILED' : ''));
   if (failures.length) {
     console.log('Failed checks:');
