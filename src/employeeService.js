@@ -17,7 +17,17 @@ const COLS = {
   groupD: 5,             // Group - D
   gender: 6,
   location: 7,
-  company: 8,            // Company - used to detect Company Transfers (see movementTracker.js)
+  // Task 2 (2026-10-31) LIVE BUG FIX: `company` used to point at column 8,
+  // which the real header row (confirmed directly against the sheet) is
+  // "Company Location", not "Company" - column 9 is the actual "Company"
+  // column, never read before this fix. Every other column index here was
+  // already correct against the real headers (only this one was off),
+  // and movementTracker.js's own Company Transfers report never reads
+  // this field anyway - it logs whatever value the sheet's own onEdit
+  // webhook posts to /api/internal/company-check, entirely independent of
+  // this mapping, so that report's behavior is unaffected either way.
+  companyLocation: 8,
+  company: 9,
   reportingDoer: 11,     // Reporting DOER (there are 4 other manager-ish columns in the
                          // sheet - Reporting Manager x2, HOD-1, DEPT HOD - this is the
                          // one actually requested for the dashboard)
@@ -89,6 +99,7 @@ function parseRow(row, index) {
     gender: cleanValue(row[COLS.gender]),
     location,
     locationKey: normalizeKey(location),
+    companyLocation: cleanValue(row[COLS.companyLocation]),
     company: cleanValue(row[COLS.company]),
     reportingDoer: cleanValue(row[COLS.reportingDoer]),
     reportingDoerKey: normalizeKey(cleanValue(row[COLS.reportingDoer])),

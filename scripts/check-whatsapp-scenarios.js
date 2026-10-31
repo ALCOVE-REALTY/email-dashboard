@@ -1012,6 +1012,73 @@ scenario('Task 8: a natural follow-up asking to ALSO include the contact number 
   }
 });
 
+// Task 2 (2026-10-31) - the three-tier data-sharing rule's OFFICIAL tier:
+// a current ACTIVE employee asking about one of the 15 official fields
+// gets a DIRECT reply (no approval), everyone else (or a >20-person
+// list) still goes through the normal approval card. Radha Biswas
+// Bhattacharjee (real, ACTIVE, contact 9230964121, HR DEPT's own real
+// HOD - confirmed above and in the HRQUERY scenarios) is used as the
+// REAL employee sender for the direct-reply scenarios below.
+const RADHA_PHONE = '919230964121';
+scenario('Task 2: a real ACTIVE employee (Radha) asking another real employee\'s designation + department gets a DIRECT reply - no approval card at all', async () => {
+  await cleanupHrDataQueryArtifacts(RADHA_PHONE);
+  try {
+    const d = await whatsappAssistant.decideAutoReply({ phone: RADHA_PHONE, name: 'Radha', firstName: 'Radha', text: 'Ayan Das er designation ar department ki?', isGroup: false, history: [] });
+    if (d.case !== 'acknowledged') return { pass: false, detail: 'expected a direct reply (case=acknowledged), got: ' + d.case + ' text=' + d.replyText };
+    if (!/ayan das/i.test(d.replyText) || !/executive/i.test(d.replyText) || !/hr/i.test(d.replyText)) {
+      return { pass: false, detail: 'expected Ayan Das\'s real designation (Executive) and department (HR) in the direct reply, got: ' + d.replyText };
+    }
+    const approval = pendingApprovalFor(await whatsappAssistant.listPendingApprovals(), RADHA_PHONE);
+    if (approval) return { pass: false, detail: 'expected NO approval card for an official-field request from a real active employee, but one was queued: ' + JSON.stringify(approval) };
+    return { pass: true, detail: 'sent directly, no approval: ' + d.replyText };
+  } finally {
+    await cleanupHrDataQueryArtifacts(RADHA_PHONE);
+  }
+});
+scenario('Task 2: a real ACTIVE employee (Radha) asking her own department\'s HOD name + employee code gets a DIRECT reply (resolves to herself - Radha IS HR DEPT\'s real HOD) - no approval card', async () => {
+  await cleanupHrDataQueryArtifacts(RADHA_PHONE);
+  try {
+    const d = await whatsappAssistant.decideAutoReply({ phone: RADHA_PHONE, name: 'Radha', firstName: 'Radha', text: 'HR dept er HOD ke, ar emp code ta o dao', isGroup: false, history: [] });
+    if (d.case !== 'acknowledged') return { pass: false, detail: 'expected a direct reply (case=acknowledged), got: ' + d.case + ' text=' + d.replyText };
+    if (!/radha biswas bhattacharjee/i.test(d.replyText) || !/AR002221/.test(d.replyText)) {
+      return { pass: false, detail: 'expected the real HOD name and her real employee code (AR002221) in the direct reply, got: ' + d.replyText };
+    }
+    const approval = pendingApprovalFor(await whatsappAssistant.listPendingApprovals(), RADHA_PHONE);
+    if (approval) return { pass: false, detail: 'expected NO approval card, but one was queued: ' + JSON.stringify(approval) };
+    return { pass: true, detail: 'sent directly, no approval: ' + d.replyText };
+  } finally {
+    await cleanupHrDataQueryArtifacts(RADHA_PHONE);
+  }
+});
+scenario('Task 2: an UNKNOWN number (not a registered employee) asking someone\'s OFFICIAL email still goes to a normal approval card, with the real official address (never the personal one) prepared for the owner', async () => {
+  const phone = '910000002311';
+  await cleanupHrDataQueryArtifacts(phone);
+  try {
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenOfficialMail', firstName: 'ScenOfficialMail', text: 'Ayan Das er official mail ID ta dao', isGroup: false, history: [] });
+    if (d.case !== 'data_holding') return { pass: false, detail: 'expected case=data_holding (approval card), got: ' + d.case + ' text=' + d.replyText };
+    const approval = pendingApprovalFor(await whatsappAssistant.listPendingApprovals(), phone);
+    if (!approval || !approval.preparedReplyText) return { pass: false, detail: 'expected a queued approval with a prepared reply, got: ' + JSON.stringify(approval) };
+    const text = approval.preparedReplyText;
+    if (!text.includes('hr@alcoverealty.in')) return { pass: false, detail: 'expected Ayan Das\'s real OFFICIAL email (hr@alcoverealty.in), got: ' + text };
+    if (text.includes('ayandas743@gmail.com')) return { pass: false, detail: 'wrongly used the PERSONAL email instead of the official one asked for: ' + text };
+    return { pass: true, detail: 'approval-gated with the correct official address: ' + text };
+  } finally {
+    await cleanupHrDataQueryArtifacts(phone);
+  }
+});
+scenario('Task 2: a real ACTIVE employee (Radha) asking for a whole department\'s list (Electrical, 57 real ACTIVE employees - more than 20) still goes to a normal approval card, even though every field in a plain roster is official', async () => {
+  await cleanupHrDataQueryArtifacts(RADHA_PHONE);
+  try {
+    const d = await whatsappAssistant.decideAutoReply({ phone: RADHA_PHONE, name: 'Radha', firstName: 'Radha', text: 'Electrical department-e sobai-r ekta full list dao', isGroup: false, history: [] });
+    if (d.case !== 'data_holding') return { pass: false, detail: 'expected case=data_holding (approval card) for a >20-person list, got: ' + d.case + ' text=' + d.replyText };
+    const approval = pendingApprovalFor(await whatsappAssistant.listPendingApprovals(), RADHA_PHONE);
+    if (!approval || !approval.preparedReplyText) return { pass: false, detail: 'expected a queued approval with a prepared reply, got: ' + JSON.stringify(approval) };
+    return { pass: true, detail: 'a >20-person list stayed approval-gated even for a real active employee: ' + approval.preparedReplyText.slice(0, 200) };
+  } finally {
+    await cleanupHrDataQueryArtifacts(RADHA_PHONE);
+  }
+});
+
 const APPROX_USD_PER_MTOK_INPUT = 3;
 const APPROX_USD_PER_MTOK_OUTPUT = 15;
 

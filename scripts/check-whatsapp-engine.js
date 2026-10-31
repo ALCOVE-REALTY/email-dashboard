@@ -31,6 +31,44 @@ const memoryService = require('../src/aiAssistant/memoryService');
 const tools = require('../src/aiAssistant/tools');
 const documentRequests = require('../src/aiAssistant/documentRequests');
 
+// Task 2 (2026-10-31) - many pre-existing tests in this file use a
+// throwaway synthetic SENDER phone that was never meant to represent a
+// real employee; they only care about NAME-RESOLUTION/disambiguation/
+// language correctness, not the new official-tier sender-identity gate
+// (see isSenderActiveEmployee in whatsappAssistant.js), which now routes
+// a general_details/official other_field answer to an approval card
+// instead of sending it directly whenever the sender isn't a real ACTIVE
+// employee. Rather than rewrite every one of those tests' assertions,
+// this lets a test mark its own synthetic sender phone as belonging to a
+// synthetic ACTIVE employee for THIS lookup only - laid on top of the
+// real directory (every one of these tests still needs the REAL data for
+// its own NAME lookups: "Ayan Biswas", "Subhodeep Kundu Chowdhury", ...),
+// with a department/name that can never collide with anything real.
+const TEST_SENDER_ACTIVE_PHONES = new Set();
+let origGetEmployeeDataForSenderGate = null;
+function markPhoneAsActiveEmployeeForTests(phone) {
+  const normalized = whatsapp.normalizePhone(phone);
+  TEST_SENDER_ACTIVE_PHONES.add(normalized);
+  if (!origGetEmployeeDataForSenderGate) {
+    origGetEmployeeDataForSenderGate = employeeService.getEmployeeData;
+    employeeService.getEmployeeData = async (...args) => {
+      const real = await origGetEmployeeDataForSenderGate(...args);
+      if (!TEST_SENDER_ACTIVE_PHONES.size) return real;
+      const extra = Array.from(TEST_SENDER_ACTIVE_PHONES).map((p) => ({
+        employeeId: 'TESTSENDER-' + p, name: 'Test Sender Employee ' + p,
+        designation: 'Test Sender', department: 'TEST SENDER DEPT', departmentKey: 'test sender dept',
+        location: 'HO', company: 'Alcove', reportingDoer: '', reportingManager: '',
+        doj: null, tenure: '', totalExperience: '', dob: null, gender: 'Male',
+        email: '', emailPersonal: '', contactNumber: p, status: 'ACTIVE', employmentType: 'Confirmed'
+      }));
+      return Object.assign({}, real, { employees: (real.employees || []).concat(extra) });
+    };
+  }
+}
+function unmarkPhoneAsActiveEmployeeForTests(phone) {
+  TEST_SENDER_ACTIVE_PHONES.delete(whatsapp.normalizePhone(phone));
+}
+
 let pass = 0;
 let fail = 0;
 const failures = [];
@@ -478,13 +516,16 @@ async function checkAsync(label, fn) {
     const pending = await whatsappAssistant.getPendingNameConfirm(LIVE_REVIEW_TEST_PHONE);
     return d.case === 'acknowledged' && d.replyText.includes('Puro naam-ta bolben') && pending === null;
   });
-  await checkAsync('first-name-only, single ACTIVE match ("Tausif") asks the sender to confirm, then "hyan" gives the real general-details reply (no approval needed)', async () => {
+  await checkAsync('first-name-only, single ACTIVE match ("Tausif") asks the sender to confirm, then "hyan" gives the real general-details text (Task 2, 2026-10-31: LIVE_REVIEW_TEST_PHONE is not a registered employee, so this now queues an approval card for it rather than sending directly - same text, different channel)', async () => {
     const ask = await whatsappAssistant.handlePersonLookupRequest({ phone: LIVE_REVIEW_TEST_PHONE, name: 'Test', lang: 'banglish', personName: 'Tausif', personField: 'general_details', department: null, text: 'Tausif kon department e', history: [] });
     const pendingAfterAsk = await whatsappAssistant.getPendingNameConfirm(LIVE_REVIEW_TEST_PHONE);
     const d = await whatsappAssistant.decideAutoReply({ phone: LIVE_REVIEW_TEST_PHONE, name: 'Test', firstName: 'Test', text: 'hyan', isGroup: false, history: [] });
     const pendingAfterYes = await whatsappAssistant.getPendingNameConfirm(LIVE_REVIEW_TEST_PHONE);
-    return ask.case === 'acknowledged' && Boolean(pendingAfterAsk) && pendingAfterAsk.isInactive === false &&
-      d.case === 'acknowledged' && d.replyText.includes('Tausif') && pendingAfterYes === null;
+    const created = (await listRawApprovalsForPhone(LIVE_REVIEW_TEST_PHONE)).find((a) => a.dataRequestSummary && a.dataRequestSummary.includes('general details'));
+    const ok = ask.case === 'acknowledged' && Boolean(pendingAfterAsk) && pendingAfterAsk.isInactive === false &&
+      d.case === 'data_holding' && Boolean(created) && created.preparedReplyText.includes('Tausif') && pendingAfterYes === null;
+    if (created) await whatsappAssistant.removePendingApproval(created.id);
+    return ok;
   });
   await checkAsync('item 1 wins over item 6: a first-name-only request that ALSO carries a department hint ("Ayan HR-er contact no") resolves directly - never the item-6 confirm question', async () => {
     const d = await whatsappAssistant.handlePersonLookupRequest({ phone: LIVE_REVIEW_TEST_PHONE, name: 'Test', lang: 'banglish', personName: 'Ayan', personField: 'contact_number', department: 'HR', text: 'Ayan HR-er contact no', history: [] });
@@ -2039,9 +2080,17 @@ async function checkAsync(label, fn) {
     // reply is about Ayan Das, never the old flow's own thank-you wording.
     const d3 = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Ayon HR k?', isGroup: false, history: [] });
     const pendingAfterQuestion = await whatsappAssistant.getPendingHrNoteFlow(phone);
+    // Task 2 (2026-10-31) - a general-details answer about Ayan Das is now
+    // ALSO a valid shape here: this test's sender phone is not a
+    // registered employee, so the official-tier gate queues it as a
+    // normal approval card (same "Ayan Das" text) instead of sending it
+    // directly - same tolerant-of-shape philosophy the comment above
+    // already applies to the direct-answer-vs-confirm-step question.
+    const questionApproval = d3.case === 'data_holding' ? (await listRawApprovalsForPhone(phone)).find((a) => (a.preparedReplyText || '').includes('Ayan Das')) : null;
     const questionOk = pendingAfterQuestion === null
-      && d3.replyText.includes('Ayan Das')
+      && (d3.replyText.includes('Ayan Das') || Boolean(questionApproval))
       && !d3.replyText.includes('kotha bole joto taratari somvob'); // never the HR-flow's own "I'll speak with them" thank-you wording
+    if (questionApproval) await whatsappAssistant.removePendingApproval(questionApproval.id);
     // Whatever d3 was (direct answer or its own confirm question), "Haa"
     // must never resolve to messaging anyone about the ORIGINAL duty/off-day
     // note - that would mean the old flow got silently resurrected.
@@ -3126,9 +3175,13 @@ async function checkAsync(label, fn) {
     const loaded = await whatsappAssistant.getPendingDisambiguation(TEST_PHONE);
     return Boolean(loaded) && loaded.candidates.length === 2;
   });
-  await checkAsync('THE LIVE BUG: "Ayan Biswas" answering a pending disambiguation now gets that candidate\'s general details (previously: no reply at all)', async () => {
+  await checkAsync('THE LIVE BUG: "Ayan Biswas" answering a pending disambiguation now gets that candidate\'s general details (previously: no reply at all) - Task 2 (2026-10-31): TEST_PHONE is not a registered employee, so this is now an approval card with that same text rather than a direct send', async () => {
     const d = await whatsappAssistant.decideAutoReply({ phone: TEST_PHONE, name: 'Test', firstName: 'Test', text: 'Ayan Biswas', isGroup: false, history: [{ direction: 'in', text: 'Ayan k?', ts: Date.now() - 60000 }, { direction: 'out', text: 'question', ts: Date.now() - 55000 }] });
-    return Boolean(d.replyText) && d.replyText.includes('Ayan Biswas achen') && d.replyText.includes('Civil (Plot-B) Finishing') && !d.replyText.includes('CIVIL');
+    const created = (await listRawApprovalsForPhone(TEST_PHONE)).find((a) => a.dataRequestSummary && a.dataRequestSummary.includes('general details'));
+    const ok = d.case === 'data_holding' && Boolean(d.replyText) && Boolean(created) &&
+      created.preparedReplyText.includes('Ayan Biswas achen') && created.preparedReplyText.includes('Civil (Plot-B) Finishing') && !created.preparedReplyText.includes('CIVIL');
+    if (created) await whatsappAssistant.removePendingApproval(created.id);
+    return ok;
   });
   await checkAsync('the pending disambiguation is cleared once resolved (no stale state left behind)', async () => {
     const loaded = await whatsappAssistant.getPendingDisambiguation(TEST_PHONE);
@@ -3176,7 +3229,7 @@ async function checkAsync(label, fn) {
     const das = list.find((e) => e.name === 'Ayan Das' && e.status !== 'INACTIVE');
     return Boolean(biswas) && Boolean(das) && biswas.doj instanceof Date && das.doj instanceof Date;
   });
-  await checkAsync('THE LIVE RECURRENCE: "Ayan Biswas" answering a pending disambiguation built from REAL directory records (real doj Dates, round-tripped through Redis) still gets a real reply, not silence', async () => {
+  await checkAsync('THE LIVE RECURRENCE: "Ayan Biswas" answering a pending disambiguation built from REAL directory records (real doj Dates, round-tripped through Redis) still gets a real reply, not silence - Task 2 (2026-10-31): TEST_PHONE is not a registered employee, so this is now an approval card rather than a direct send (still proves buildGeneralDetailsReply never throws on the round-tripped doj string)', async () => {
     const data = await employeeService.getEmployeeData();
     const list = data.employees || data;
     const realCandidates = ['Ayan Biswas', 'Ayan Das'].map((n) => {
@@ -3189,7 +3242,11 @@ async function checkAsync(label, fn) {
     const reloaded = await whatsappAssistant.getPendingDisambiguation(TEST_PHONE);
     if (typeof reloaded.candidates[0].doj !== 'string') return false; // the round trip itself didn't reproduce the live shape - test is invalid
     const d = await whatsappAssistant.decideAutoReply({ phone: TEST_PHONE, name: 'Test', firstName: 'Test', text: 'Ayan Biswas', isGroup: false, history: [{ direction: 'in', text: 'Ayan k?', ts: Date.now() - 60000 }, { direction: 'out', text: 'question', ts: Date.now() - 55000 }] });
-    return Boolean(d) && Boolean(d.replyText) && d.replyText.includes('Ayan Biswas') && d.replyText.includes('Civil (Plot-B) Finishing');
+    const created = (await listRawApprovalsForPhone(TEST_PHONE)).find((a) => a.dataRequestSummary && a.dataRequestSummary.includes('general details'));
+    const ok = Boolean(d) && d.case === 'data_holding' && Boolean(d.replyText) && Boolean(created) &&
+      created.preparedReplyText.includes('Ayan Biswas') && created.preparedReplyText.includes('Civil (Plot-B) Finishing');
+    if (created) await whatsappAssistant.removePendingApproval(created.id);
+    return ok;
   });
   await checkAsync('cleanup: TEST_PHONE pending disambiguation cleared after the real-directory replay above', async () => {
     await whatsappAssistant.clearPendingDisambiguation(TEST_PHONE);
@@ -3846,9 +3903,16 @@ async function checkAsync(label, fn) {
       for (const lang of ['banglish', 'english', 'hinglish']) {
         await checkAsync('disambiguation resolve (' + lang + ') - "Ayan Biswas" never mixes an English disclosure line onto a non-English reply (found live as item 2\'s "Ayon k?" bug)', async () => {
           const [newPhone] = phonePair();
+          // Task 2 (2026-10-31) - this test is about the disclosure-line
+          // language, not the official-tier sender gate; marking the
+          // sender as a real active employee keeps it a direct send
+          // exactly as before, so the language assertion still applies to
+          // d.replyText itself.
+          markPhoneAsActiveEmployeeForTests(newPhone);
           await whatsappAssistant.savePendingDisambiguation(newPhone, { candidates: DISAMBIG_CANDIDATES, lang, hadTypo: false, attempts: 1 });
           const d = await whatsappAssistant.decideAutoReply({ phone: newPhone, name: 'Test', firstName: 'Test', text: 'Ayan Biswas', isGroup: false, history: [] });
           await whatsappAssistant.clearPendingDisambiguation(newPhone);
+          unmarkPhoneAsActiveEmployeeForTests(newPhone);
           const introMarker = { banglish: 'Ami SUBH', english: "I'm SUBH", hinglish: 'Main SUBH' }[lang];
           const otherMarkers = Object.values({ banglish: 'Ami SUBH', english: "I'm SUBH", hinglish: 'Main SUBH' }).filter((m) => m !== introMarker);
           return d.case === 'acknowledged' && d.replyText.startsWith(introMarker) && otherMarkers.every((m) => !d.replyText.includes(m));
@@ -4596,20 +4660,29 @@ async function checkAsync(label, fn) {
     whatsappAssistant.normalizeBengaliNamePhonetics('Sayan') !== whatsappAssistant.normalizeBengaliNamePhonetics('Ayan'));
   await checkAsync('LOCKED SCENARIO: "Svodip HR k?" (phonetic + "HR" hint) resolves directly to ONE person (Subhodeep Kundu Chowdhury), never a disambiguation list and never the wrong "Sandip"', async () => {
     const phone = '910000002101';
+    // Task 2 (2026-10-31) - this scenario is about phonetic/hint name
+    // resolution, not the official-tier sender gate; marking the sender
+    // as a real active employee keeps the answer a direct reply exactly
+    // as before.
+    markPhoneAsActiveEmployeeForTests(phone);
     await whatsappAssistant.clearPendingDisambiguation(phone).catch(() => {});
     const d = await whatsappAssistant.decideAutoReply({ phone, name: 'Enquirer', firstName: 'Enquirer', text: 'Svodip HR k?', isGroup: false, history: [] });
     const ok = d.replyText.includes('Subhodeep Kundu Chowdhury') && !/\bSandip\b/.test(d.replyText);
     await whatsappAssistant.clearPendingDisambiguation(phone).catch(() => {});
+    unmarkPhoneAsActiveEmployeeForTests(phone);
     return ok;
   });
   await checkAsync('LOCKED SCENARIO: a pending GENERAL-LOOKUP disambiguation list (ambiguous "Tanmoy", 4 matches) is RE-RESOLVED against the whole directory when "Na" names someone else entirely (Subhodeep Kundu Chowdhury, not on the list) - never repeats the identical Tanmoy list', async () => {
     const phone = '910000002102';
+    // Task 2 (2026-10-31) - see the comment on the scenario above.
+    markPhoneAsActiveEmployeeForTests(phone);
     await whatsappAssistant.clearPendingDisambiguation(phone).catch(() => {});
     const d1 = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Tanmoy-er department ki?', isGroup: false, history: [] });
     const h1 = [{ direction: 'in', text: 'Tanmoy-er department ki?', ts: Date.now() - 2000 }, { direction: 'out', text: d1.replyText, ts: Date.now() - 1000 }];
     const d2 = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Naa, Subhodeep Kundu Chowdhury er kotha bolchi', isGroup: false, history: h1 });
     const ok = d2.replyText.includes('Subhodeep Kundu Chowdhury') && !/charjon|4\) Tanmoy/.test(d2.replyText);
     await whatsappAssistant.clearPendingDisambiguation(phone).catch(() => {});
+    unmarkPhoneAsActiveEmployeeForTests(phone);
     return ok;
   });
   await checkAsync('LOCKED SCENARIO: a pending HR-NOTE FLOW disambiguation list (ambiguous "Tanmoy", 4 matches, via the Srirampur-site hint that still leaves 2+) is RE-RESOLVED against the whole directory when "Na" names someone else entirely - reaches STEP 3+4 for Subhodeep Kundu Chowdhury, never repeats the identical Tanmoy list', async () => {
@@ -5810,6 +5883,66 @@ async function checkAsync(label, fn) {
     const rows = whatsappAssistant.filterEmployeesForHrQuery(FAKE_JOIN_PROBATION_EMPLOYEES, { dojMonth: 10, dojYear: 2026 });
     return rows.length === 1 && rows[0].name === 'Nina New';
   })());
+
+  console.log('='.repeat(70));
+  console.log('Task 2 (2026-10-31): the three-tier data-sharing rule - OFFICIAL fields (15 named fields) resolve directly for a current ACTIVE employee sender, otherwise (or for a >20-person list) they stay approval-gated, exactly like every other field already does');
+  console.log('='.repeat(70));
+  check('every new official field alias resolves by label, and is flagged official:true', (() => {
+    const keys = { 'company location': 'companyLocation', company: 'company', collar: 'collarType', gender: 'gender', location: 'location', 'date of joining': 'doj', 'total years of experience': 'totalExperience' };
+    return Object.entries(keys).every(([label, key]) => {
+      const a = whatsappAssistant.resolveApprovalFieldAliasByLabel(label);
+      return a && a.key === key && a.official === true;
+    });
+  })());
+  check('"company location" resolves to companyLocation, never swallowed by the plain "company" alias (ordering fix)', (whatsappAssistant.resolveApprovalFieldAliasByLabel('company location') || {}).key === 'companyLocation');
+  check('"official email" resolves to the dedicated emailOfficial alias, not the generic email one', (whatsappAssistant.resolveApprovalFieldAliasByLabel('official email') || {}).key === 'emailOfficial');
+  check('a generic "mail id" (no official/personal qualifier) still resolves to the generic email alias, also official:true', (() => {
+    const a = whatsappAssistant.resolveApprovalFieldAliasByLabel('mail id');
+    return a && a.key === 'email' && a.official === true;
+  })());
+  check('emergencyContact and employeeId stay as before: emergencyContact is NOT official, employeeId IS (Task 7\'s own fix, now also official)', (() => {
+    const emergency = whatsappAssistant.resolveApprovalFieldAliasByLabel('emergency contact');
+    const empId = whatsappAssistant.resolveApprovalFieldAliasByLabel('employee code');
+    return emergency && !emergency.official && empId && empId.official === true;
+  })());
+  await checkAsync('an official field (employee code) about someone else, from a sender who IS a real ACTIVE employee, is sent DIRECTLY - no approval card', async () => {
+    const phone = '919230964121'; // Radha Biswas Bhattacharjee - real, ACTIVE (see check-whatsapp-scenarios.js)
+    await whatsappAssistant.clearPendingDisambiguation(phone);
+    const d = await whatsappAssistant.handlePersonLookupRequest({ phone, name: 'Radha', lang: 'banglish', personName: 'Ayan Das', personField: 'other_field', personFieldLabel: 'employee code', department: null, text: 'Ayan Das er employee code ta dao', history: [] });
+    const anyCreated = (await listRawApprovalsForPhone(phone)).some((a) => a.resolvedPersonName === 'Ayan Das');
+    return d.case === 'acknowledged' && d.replyText.includes('Ayan Das') && d.replyText.includes('AR001866') && !anyCreated;
+  });
+  await checkAsync('the SAME official-field request from a sender who is NOT a registered employee still queues a normal approval card (unaffected, same as every existing Task 7 test)', async () => {
+    const d = await whatsappAssistant.handlePersonLookupRequest({ phone: LIVE_REVIEW_TEST_PHONE, name: 'Test', lang: 'banglish', personName: 'Ayan Das', personField: 'other_field', personFieldLabel: 'employee code', department: null, text: 'Ayan Das er employee code ta dao', history: [] });
+    const created = (await listRawApprovalsForPhone(LIVE_REVIEW_TEST_PHONE)).find((a) => a.resolvedPersonName === 'Ayan Das');
+    const ok = d.case === 'data_holding' && Boolean(created);
+    if (created) await whatsappAssistant.removePendingApproval(created.id);
+    return ok;
+  });
+  await checkAsync('an OTHER NON-SENSITIVE field (emergency contact - not one of the 15 official fields) about someone else still queues an approval EVEN from a real ACTIVE employee sender - the official tier never applies to a non-official field', async () => {
+    const phone = '919230964121';
+    await whatsappAssistant.clearPendingDisambiguation(phone);
+    const d = await whatsappAssistant.handlePersonLookupRequest({ phone, name: 'Radha', lang: 'banglish', personName: 'Ayan Das', personField: 'other_field', personFieldLabel: 'emergency contact', department: null, text: 'Ayan Das er emergency contact ta dao', history: [] });
+    const created = (await listRawApprovalsForPhone(phone)).find((a) => a.resolvedPersonName === 'Ayan Das');
+    const ok = d.case === 'data_holding' && Boolean(created);
+    if (created) await whatsappAssistant.removePendingApproval(created.id);
+    return ok;
+  });
+  check('buildHrDataQueryAnswer marks officialEligible=false the moment a non-official field (contact number) is mixed into an otherwise-official "hod" or "list" answer (the spec\'s own mixing rule)', (() => {
+    const hodWithContact = whatsappAssistant.buildHrDataQueryAnswer(FAKE_HOD_EMP_CODE_EMPLOYEES, { returnType: 'hod', resolvedDepartment: 'QUALITY', hodIncludeEmpCode: true, hodIncludeContactNo: true }, 'english');
+    const hodWithoutContact = whatsappAssistant.buildHrDataQueryAnswer(FAKE_HOD_EMP_CODE_EMPLOYEES, { returnType: 'hod', resolvedDepartment: 'QUALITY', hodIncludeEmpCode: true }, 'english');
+    const listWithContact = whatsappAssistant.buildHrDataQueryAnswer(FAKE_HR_QUERY_EMPLOYEES, { returnType: 'list', designation: 'welder', listIncludeContactNo: true }, 'banglish');
+    const listWithoutContact = whatsappAssistant.buildHrDataQueryAnswer(FAKE_HR_QUERY_EMPLOYEES, { returnType: 'list', designation: 'welder' }, 'banglish');
+    return hodWithContact.officialEligible === false && hodWithoutContact.officialEligible === true &&
+      listWithContact.officialEligible === false && listWithoutContact.officialEligible === true;
+  })());
+  check('buildHrDataQueryAnswer matchCount reflects how many PEOPLE/lines the answer actually names - "hod" counts distinct HODs, never the whole filtered pool', (() => {
+    const single = whatsappAssistant.buildHrDataQueryAnswer(FAKE_HR_QUERY_EMPLOYEES, { returnType: 'hod', resolvedDepartment: 'HR Dept' }, 'banglish');
+    const multi = whatsappAssistant.buildHrDataQueryAnswer(FAKE_HR_QUERY_EMPLOYEES, { returnType: 'hod', resolvedDepartment: 'Administration HO' }, 'banglish');
+    return single.matchCount === 1 && multi.matchCount === 2;
+  })());
+  check('a "list" returnType stays within the official tier (officialEligible=true) by default - name/designation/department/location are all official fields', whatsappAssistant.buildHrDataQueryAnswer(FAKE_HR_QUERY_EMPLOYEES, { returnType: 'list', designation: 'welder' }, 'banglish').officialEligible === true);
+  check('a "count" returnType stays conservative (officialEligible=false) - never auto-sent, even though a count alone reveals no individual field', whatsappAssistant.buildHrDataQueryAnswer(FAKE_HR_QUERY_EMPLOYEES, { returnType: 'count', designation: 'welder' }, 'banglish').officialEligible === false);
   console.log(pass + '/' + (pass + fail) + ' passed' + (fail ? ', ' + fail + ' FAILED' : ''));
   if (failures.length) {
     console.log('Failed checks:');

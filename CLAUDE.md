@@ -378,3 +378,32 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
   real HOD, Subrata Kumar Panda, real Employee_No AR002154), producing the
   exact wording "Quality department-er HOD er nam Subrata Kumar Panda,
   Employee Code AR002154."
+- Three-tier data-sharing rule (2026-10-31), replacing the old blanket
+  "someone else's data -> always an approval card" rule (own-data exception
+  unchanged): **OFFICIAL** - exactly 15 fields (Employee Code, Name,
+  Designation, Department, Collar Type, Gender, Location, Company Location,
+  Company, Reporting Manager/HOD, DOJ, Tenure, Total Years of Experience,
+  Email ID personal/official) - answered DIRECTLY, no approval, when the
+  SENDER is themselves a current ACTIVE employee (`isSenderActiveEmployee`,
+  `findEmployeeByPhone`) and the answer names at most 20 people
+  (`buildHrDataQueryAnswer`'s own `matchCount`); **OTHER NON-SENSITIVE**
+  (contact number, emergency contact, ...) - unchanged, always an approval
+  card; **SENSITIVE** (the 9 forbidden heads) - unchanged, always refused
+  for a third party, sent directly for the sender's own data. A request
+  mixing an official field with a non-official one (e.g. a HOD's name +
+  contact number) loses official-tier eligibility entirely
+  (`officialEligible` on `buildHrDataQueryAnswer`'s return) - the whole
+  answer goes to approval, never a partial direct send. `employeeService.js`
+  live bug fix alongside this: `company` was reading the "Company Location"
+  column (confirmed against the real header row), a new `companyLocation`
+  field now reads that column correctly and `company` reads the real
+  "Company" column - `movementTracker.js`'s own Company Transfers report is
+  unaffected (it reads whatever the sheet's own onEdit webhook posts,
+  never `employeeService`'s `company` field). Locked scenarios (against the
+  REAL directory, sender = Radha Biswas Bhattacharjee, real/ACTIVE, HR
+  DEPT's own real HOD): designation + department about someone else ->
+  direct reply; her own department's HOD name + employee code (resolves to
+  herself) -> direct reply; an unknown number asking someone's OFFICIAL
+  email (never the personal one) -> still an approval card; a >20-person
+  department roster -> still an approval card even for a real active
+  employee.

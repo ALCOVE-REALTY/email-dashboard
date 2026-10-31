@@ -2961,12 +2961,25 @@ async function resolveConfirmedPersonLookup({ phone, name, candidate, isInactive
     return { case: 'acknowledged', replyText: (INACTIVE_EMPLOYEE_REPLY[lang] || INACTIVE_EMPLOYEE_REPLY.english)(candidate.name, candidate.gender), summaryForOwner: null, lang };
   }
   if (personField === 'general_details') {
-    await postOwnerNotification(name + ' (' + phone + ') ' + candidate.name + ' (' + candidate.department + ')-er general details jigges korechhe (naam confirm kore) - approval chara e direct reply gechhe.');
-    return { case: 'acknowledged', replyText: buildGeneralDetailsReply(candidate, lang, hadTypo, new Date()), summaryForOwner: null, lang };
+    // Task 2 (2026-10-31) - same OFFICIAL-tier sender gate as every other
+    // general_details path (see handlePersonLookupRequest) - this is the
+    // SAME request, just confirmed one turn later ("hyan" to "Apni ki
+    // <name>-er kotha bolchhen?"), so it must behave identically.
+    if (await isSenderActiveEmployee(phone)) {
+      await postOwnerNotification(name + ' (' + phone + ') ' + candidate.name + ' (' + candidate.department + ')-er general details jigges korechhe (naam confirm kore) - approval chara e direct reply gechhe.');
+      return { case: 'acknowledged', replyText: buildGeneralDetailsReply(candidate, lang, hadTypo, new Date()), summaryForOwner: null, lang };
+    }
+    await queuePersonGeneralDetailsApproval({ phone, requesterLabel: name, candidate, lang, hadTypo });
+    return { case: 'data_holding', replyText: dataRequestHoldingReply(lang, history, new Date()), summaryForOwner: null, lang };
   }
   if (personField === 'other_field') {
     const fieldAlias = resolveApprovalFieldAliasByKey(fieldAliasKey);
-    if (fieldAlias) await queuePersonFieldApproval({ phone, requesterLabel: name, candidate, lang, hadTypo, fieldAlias });
+    if (fieldAlias && fieldAlias.official && await isSenderActiveEmployee(phone)) {
+      const sent = await sendOfficialFieldDirect({ phone, requesterLabel: name, candidate, lang, hadTypo, fieldAlias });
+      if (sent) return { case: 'acknowledged', replyText: sent, summaryForOwner: null, lang };
+    } else if (fieldAlias) {
+      await queuePersonFieldApproval({ phone, requesterLabel: name, candidate, lang, hadTypo, fieldAlias });
+    }
     return { case: 'data_holding', replyText: dataRequestHoldingReply(lang, history, new Date()), summaryForOwner: null, lang };
   }
   // contact_number (default/only remaining value)
@@ -3421,9 +3434,18 @@ function buildHrDataQueryAnswer(employees, query, lang) {
   // no HOD on file is skipped entirely (never an "NA"/"HOD not set" row)
   // unless the sender's own wording specifically asked to see that too -
   // not attempted here, kept to the explicitly spec'd behavior only.
+  // Task 2 (2026-10-31) - `officialEligible`/`matchCount` on every branch's
+  // return feed runHrDataQueryAndQueue's own OFFICIAL-tier direct-send
+  // gate (see isSenderActiveEmployee there): officialEligible is false
+  // whenever a NON-official field (contact number) was also asked for -
+  // the spec's own mixing rule ("otherwise the whole answer goes to
+  // approval") - and matchCount is however many PEOPLE this answer
+  // actually names (never the underlying filtered pool size for
+  // hod/hodByDepartment, which only ever names one line per HOD/
+  // department, not every person in rows).
   if (query.returnType === 'hodByDepartment') {
     if (!rows.length) {
-      return { outgoingText: (HR_QUERY_NO_MATCH[lang] || HR_QUERY_NO_MATCH.english)('', 'HOD'), dataRequestSummary: 'department-wise HOD list' };
+      return { outgoingText: (HR_QUERY_NO_MATCH[lang] || HR_QUERY_NO_MATCH.english)('', 'HOD'), dataRequestSummary: 'department-wise HOD list', officialEligible: false, matchCount: 0 };
     }
     const byDept = new Map();
     rows.forEach((e) => {
@@ -3436,18 +3458,24 @@ function buildHrDataQueryAnswer(employees, query, lang) {
       return breakdown.length ? { dept, hodNames: breakdown.map((b) => b.name).join(', ') } : null;
     }).filter(Boolean);
     if (!deptLines.length) {
-      return { outgoingText: (HR_QUERY_NO_MATCH[lang] || HR_QUERY_NO_MATCH.english)('', 'HOD'), dataRequestSummary: 'department-wise HOD list' };
+      return { outgoingText: (HR_QUERY_NO_MATCH[lang] || HR_QUERY_NO_MATCH.english)('', 'HOD'), dataRequestSummary: 'department-wise HOD list', officialEligible: false, matchCount: 0 };
     }
     const outgoingText = deptLines.map((d, i) => (i + 1) + '. ' + naturalizeDirectoryValue(d.dept) + ' — ' + d.hodNames).join('\n');
-    return { outgoingText, dataRequestSummary: 'department-wise HOD list' };
+    return { outgoingText, dataRequestSummary: 'department-wise HOD list', officialEligible: true, matchCount: deptLines.length };
   }
   if (query.returnType === 'hod') {
     const deptLabel = departmentLabelWithSuffix(query.resolvedDepartment || query.department || '');
+    // Name + employee code are both official fields; a contact number is
+    // not (tier b, "other non-sensitive data") - asking for it mixes in a
+    // non-official field, so the WHOLE hod answer stays approval-gated.
+    const officialEligible = !query.hodIncludeContactNo;
     let outgoingText;
+    let matchCount = 0;
     if (!rows.length) {
       outgoingText = (HR_QUERY_NO_MATCH[lang] || HR_QUERY_NO_MATCH.english)(deptLabel, 'HOD');
     } else {
       const breakdown = computeHodBreakdown(rows);
+      matchCount = breakdown.length;
       if (!breakdown.length) {
         outgoingText = (HR_QUERY_NO_MATCH[lang] || HR_QUERY_NO_MATCH.english)(deptLabel, 'HOD');
       } else if (breakdown.length === 1) {
@@ -3466,24 +3494,38 @@ function buildHrDataQueryAnswer(employees, query, lang) {
         outgoingText = (HR_QUERY_HOD_MULTI[lang] || HR_QUERY_HOD_MULTI.english)(deptLabel, breakdown);
       }
     }
-    return { outgoingText, dataRequestSummary: deptLabel + ' - HOD' };
+    return { outgoingText, dataRequestSummary: deptLabel + ' - HOD', officialEligible: officialEligible && Boolean(rows.length), matchCount };
   }
   const scopeLabel = buildScopeLabel(query);
   if (!rows.length) {
-    return { outgoingText: (HR_QUERY_NO_MATCH[lang] || HR_QUERY_NO_MATCH.english)(scopeLabel, roleLabel), dataRequestSummary: roleLabel + (scopeLabel ? ' in ' + scopeLabel : '') + ' - no match' };
+    return { outgoingText: (HR_QUERY_NO_MATCH[lang] || HR_QUERY_NO_MATCH.english)(scopeLabel, roleLabel), dataRequestSummary: roleLabel + (scopeLabel ? ' in ' + scopeLabel : '') + ' - no match', officialEligible: false, matchCount: 0 };
   }
   if (query.returnType === 'count') {
-    return { outgoingText: (HR_QUERY_COUNT[lang] || HR_QUERY_COUNT.english)(scopeLabel, rows.length, roleLabel), dataRequestSummary: 'headcount - ' + roleLabel + (scopeLabel ? ' (' + scopeLabel + ')' : '') };
+    return { outgoingText: (HR_QUERY_COUNT[lang] || HR_QUERY_COUNT.english)(scopeLabel, rows.length, roleLabel), dataRequestSummary: 'headcount - ' + roleLabel + (scopeLabel ? ' (' + scopeLabel + ')' : ''), officialEligible: false, matchCount: rows.length };
   }
-  // 'list' (default return type)
+  // 'list' (default return type) - name/designation/department/location
+  // are all official fields; listIncludeEmpCode/listIncludeEmail add two
+  // more official fields (same hodInclude* pattern as 'hod' above).
+  // listIncludeContactNo adds the one NON-official field this shape can
+  // carry - exactly like hodIncludeContactNo, it alone takes the whole
+  // answer out of the official tier (the mixing rule), regardless of how
+  // many other official columns were also asked for.
   const includeLocation = Boolean(query.location);
   const introLine = (HR_QUERY_LIST_INTRO[lang] || HR_QUERY_LIST_INTRO.english)(scopeLabel, rows.length, roleLabel);
   const listLines = rows.slice(0, 100).map((e, i) => {
     const parts = [e.name, naturalizeDirectoryValue(e.designation), naturalizeDirectoryValue(e.department)];
     if (includeLocation) parts.push(naturalizeDirectoryValue(e.location));
+    if (query.listIncludeEmpCode && e.employeeId) parts.push(e.employeeId);
+    if (query.listIncludeEmail && e.email) parts.push(e.email);
+    if (query.listIncludeContactNo && e.contactNumber) parts.push(e.contactNumber);
     return (i + 1) + '. ' + parts.join(' — ');
   }).join('\n');
-  return { outgoingText: introLine + '\n' + listLines, dataRequestSummary: roleLabel + ' list' + (scopeLabel ? ' (' + scopeLabel + ')' : '') };
+  return {
+    outgoingText: introLine + '\n' + listLines,
+    dataRequestSummary: roleLabel + ' list' + (scopeLabel ? ' (' + scopeLabel + ')' : ''),
+    officialEligible: !query.listIncludeContactNo,
+    matchCount: rows.length
+  };
 }
 
 // Owner-approval queueing - same shape/wording as prepareAndQueueDataApproval's
@@ -3564,6 +3606,9 @@ function hrDataQueryTool() {
           dojYear: { type: 'integer', description: 'Exact joining year, e.g. 2024 for "joined in 2024". Omit if no year was named.' },
           hodIncludeEmpCode: { type: 'boolean', description: 'Only relevant when returnType is "hod" - true when the sender ALSO asked for the HOD\'s employee code/number alongside their name (e.g. "QC HOD emp code ar nam dao" asks for BOTH the HOD\'s emp code AND name) - any phrasing meaning employee code/number/ID counts ("emp code", "employee code", "emp id", "employee number"). Omit/false when only the name was asked for.' },
           hodIncludeContactNo: { type: 'boolean', description: 'Only relevant when returnType is "hod" - true when the sender ALSO asked for the HOD\'s contact/phone number alongside their name (e.g. "<dept> er HOD-er nam ar contact no." asks for BOTH the HOD\'s name AND contact number). Can be combined with hodIncludeEmpCode if both were asked for. Omit/false when only the name was asked for.' },
+          listIncludeEmpCode: { type: 'boolean', description: 'Only relevant when returnType is "list" - true when the sender asked for everyone\'s employee code alongside the roster (e.g. "sob welder-er naam ar emp code dao"). Omit/false otherwise.' },
+          listIncludeEmail: { type: 'boolean', description: 'Only relevant when returnType is "list" - true when the sender asked for everyone\'s (official) email/mail id alongside the roster, or asked specifically for a list of emails (e.g. "shob engineer der mail ID daw"). Omit/false otherwise.' },
+          listIncludeContactNo: { type: 'boolean', description: 'Only relevant when returnType is "list" - true when the sender asked for everyone\'s contact/phone number alongside the roster. Omit/false otherwise.' },
           isFormatRevision: { type: 'boolean', description: 'true ONLY when this message is a follow-up correcting the FORMAT, fields, or scope of the sender\'s own IMMEDIATELY PRECEDING data request in this same conversation - never a brand new, different question. E.g. after asking for a dept-wise HOD list, "na shudhu naam dao, onno kichu likho na"/"just names please, nothing else"/"chhoto kore dao"/"total koyjon ache seta o bolo" is a revision of the SAME request; a message about a different department, role, or topic right after is NOT a revision - it is a new question. When true, set ONLY the field(s) that are ACTUALLY changing (e.g. just returnType, or just hodIncludeEmpCode) - omit every field that should stay exactly as it was in the prior request (department/location/designation/etc. are reused automatically from that prior request and must NOT be repeated here unless the sender is also explicitly changing them). Omit (false) for every other message, including the very first data request in a conversation.' }
         },
         required: ['returnType']
@@ -3670,7 +3715,8 @@ async function resolveAndQueueHrDataQuery({ phone, name, lang, query, history })
     if (aliasValues.length) effectiveQuery.resolvedLocations = aliasValues;
   }
   if (priorApprovalToReplace) await removePendingApproval(priorApprovalToReplace.id);
-  await runHrDataQueryAndQueue({ phone, requesterLabel: name, lang, employees, query: effectiveQuery, isRevision: Boolean(priorApprovalToReplace) });
+  const sentDirect = await runHrDataQueryAndQueue({ phone, requesterLabel: name, lang, employees, query: effectiveQuery, isRevision: Boolean(priorApprovalToReplace) });
+  if (sentDirect) return { case: 'acknowledged', replyText: sentDirect, summaryForOwner: null, lang };
   return { case: 'data_holding', replyText: dataRequestHoldingReply(lang, history, new Date()), summaryForOwner: null };
 }
 // The actual compute-and-queue, split out so both the fresh-question path
@@ -3688,9 +3734,26 @@ async function resolveAndQueueHrDataQuery({ phone, name, lang, query, history })
 // retried/re-delivered message) are still caught upstream by the poll
 // loop's own isMessageHandled/isMessageHandledByContent guards, never by
 // blocking a second DIFFERENT request here.
+// Task 2 (2026-10-31) - OFFICIAL-tier direct-send, mirroring
+// handlePersonLookupRequest's own gate exactly: officialEligible (no
+// non-official field mixed in, per buildHrDataQueryAnswer), the answer
+// names at most 20 people/lines, and the sender is a current ACTIVE
+// employee. Returns the sent text when it sent directly (so the two
+// callers below can reply with it immediately, never queuing anything),
+// or null when it queued an ordinary approval instead (existing
+// behavior, completely unchanged for every ineligible case).
 async function runHrDataQueryAndQueue({ phone, requesterLabel, lang, employees, query, isRevision }) {
-  const { outgoingText, dataRequestSummary } = buildHrDataQueryAnswer(employees, query, lang);
+  const { outgoingText, dataRequestSummary, officialEligible, matchCount } = buildHrDataQueryAnswer(employees, query, lang);
+  const withinSizeCap = typeof matchCount !== 'number' || matchCount <= 20;
+  if (officialEligible && withinSizeCap && await isSenderActiveEmployee(phone)) {
+    const revisionNote = isRevision ? '(format thik kore abar) ' : '';
+    await postOwnerNotification(
+      requesterLabel + ' (' + phone + ') ' + revisionNote + dataRequestSummary + ' (official fields) jigges korechhe - approval chara e direct reply gechhe: \'' + outgoingText + '\''
+    );
+    return outgoingText;
+  }
   await queueHrDataQueryApproval({ phone, requesterLabel, lang, dataRequestSummary, outgoingText, query, isRevision });
+  return null;
 }
 // Continuation - called (checked early, same tier as every other pending-
 // state check in this file, before classification ever runs) whenever a
@@ -3719,7 +3782,8 @@ async function continueHrDataQueryFlow({ phone, name, text, pending }) {
     if (aliasValues.length) query.resolvedLocations = aliasValues;
   }
   const { employees } = await employeeService.getEmployeeData();
-  await runHrDataQueryAndQueue({ phone, requesterLabel: name, lang, employees, query });
+  const sentDirect = await runHrDataQueryAndQueue({ phone, requesterLabel: name, lang, employees, query });
+  if (sentDirect) return { case: 'acknowledged', replyText: sentDirect, summaryForOwner: null, lang };
   return { case: 'data_holding', replyText: dataRequestHoldingReply(lang, [], new Date()), summaryForOwner: null };
 }
 
@@ -4346,18 +4410,97 @@ const HARD_BLOCKED_PERSON_FIELD_RE = /aadha?ar|\bpan\b|bank\s*(account|a\/?c)?|\
 const EMPLOYEE_CODE_FIELD_RE = /emp(loyee)?\.?\s*(code|id\b|no\.?\b|number)/i;
 function formatOtherFieldValue(key, value) {
   if (!value) return null;
-  if (key === 'dob') {
+  if (key === 'dob' || key === 'doj') {
     const d = value instanceof Date ? value : new Date(value);
     return isNaN(d.getTime()) ? null : d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
   }
   return value;
 }
+// Task 2 (2026-10-31) - `official: true` marks a field as one of the 15
+// OFFICIAL fields (exact list: Employee Code, Name, Designation,
+// Department, Collar Type, Gender, Location, Company Location, Company,
+// Reporting Manager/HOD, DOJ, Tenure, Total Years of Experience, Email ID
+// (personal), Email ID (official)). An official field resolves DIRECTLY
+// (no approval) when the sender is themselves a current ACTIVE employee -
+// see handlePersonLookupRequest's isSenderActiveEmployee check - exactly
+// like general_details (designation/department/tenure) already did;
+// every other field here (emergency contact, ...) stays approval-gated
+// for every sender, same as before. Name/Designation/Department/Tenure
+// aren't separate aliases - they're answered together as a bundle by the
+// pre-existing general_details branch, which gets its own identical
+// active-sender gate.
 const APPROVAL_FIELD_ALIASES = [
+  // Checked BEFORE the generic "company" alias below, so "company
+  // location" is never swallowed by the plain /\bcompany\b/i match.
+  {
+    key: 'companyLocation',
+    match: /company\s*location/i,
+    label: { banglish: 'company location', hinglish: 'company location', english: 'company location' },
+    getValue: (c) => c.companyLocation || null,
+    official: true
+  },
+  {
+    key: 'company',
+    match: /\bcompany\b/i,
+    label: { banglish: 'company', hinglish: 'company', english: 'company' },
+    getValue: (c) => c.company || null,
+    official: true
+  },
+  {
+    key: 'collarType',
+    match: /collar/i,
+    label: { banglish: 'collar type', hinglish: 'collar type', english: 'collar type' },
+    getValue: (c) => employeeService.formatCollar(c.groupD) || null,
+    official: true
+  },
+  {
+    key: 'gender',
+    match: /\bgender\b/i,
+    label: { banglish: 'gender', hinglish: 'gender', english: 'gender' },
+    getValue: (c) => c.gender || null,
+    official: true
+  },
+  // Checked BEFORE "company location" would be a mismatch here since that
+  // alias is already earlier in this list and claims the match first.
+  {
+    key: 'location',
+    match: /\blocation\b|\bsite\b|\bposted\b/i,
+    label: { banglish: 'location', hinglish: 'location', english: 'location' },
+    getValue: (c) => c.location || null,
+    official: true
+  },
+  {
+    key: 'doj',
+    match: /\bdoj\b|date\s*of\s*join|joining\s*date/i,
+    label: { banglish: 'date of joining', hinglish: 'date of joining', english: 'date of joining' },
+    getValue: (c) => formatOtherFieldValue('doj', c.doj),
+    official: true
+  },
+  {
+    key: 'totalExperience',
+    match: /total.*(experience|exp)\b|years?\s*of\s*experience/i,
+    label: { banglish: 'total years of experience', hinglish: 'total years of experience', english: 'total years of experience' },
+    getValue: (c) => c.totalExperience || null,
+    official: true
+  },
+  // Checked BEFORE the generic "mail" alias below, so "official email" is
+  // never swallowed by the generic fallback.
+  {
+    key: 'emailOfficial',
+    match: /official.*mail|mail.*official|company.*mail/i,
+    label: { banglish: 'official mail id', hinglish: 'official mail id', english: 'official email' },
+    getValue: (c) => c.email || null,
+    official: true
+  },
+  // Generic/unqualified "mail id" - both underlying fields (personal and
+  // official email) are official, so either one resolving here is still
+  // within the official tier.
   {
     key: 'email',
     match: /mail|e-?mail/i,
     label: { banglish: 'mail id', hinglish: 'mail id', english: 'email address' },
-    getValue: (c) => c.emailPersonal || c.email || null
+    getValue: (c) => c.emailPersonal || c.email || null,
+    official: true
   },
   {
     key: 'emergencyContact',
@@ -4377,7 +4520,8 @@ const APPROVAL_FIELD_ALIASES = [
     key: 'employeeId',
     match: EMPLOYEE_CODE_FIELD_RE,
     label: { banglish: 'employee code', hinglish: 'employee code', english: 'employee code' },
-    getValue: (c) => c.employeeId || null
+    getValue: (c) => c.employeeId || null,
+    official: true
   },
   // Task 2 (2026-10-29) - one named person's OWN reporting manager/HOD
   // ("Subhodeep HR kake report kore?"). alwaysConfirm (see
@@ -4394,6 +4538,7 @@ const APPROVAL_FIELD_ALIASES = [
     label: { banglish: 'reporting manager', hinglish: 'reporting manager', english: 'reporting manager' },
     getValue: (c) => c.reportingManager || null,
     alwaysConfirm: true,
+    official: true,
     outgoingLine: {
       banglish: (name, value) => name + '-er reporting manager holen ' + value + '.',
       hinglish: (name, value) => name + ' ke reporting manager ' + value + ' hain.',
@@ -4407,6 +4552,16 @@ function resolveApprovalFieldAliasByLabel(label) {
 }
 function resolveApprovalFieldAliasByKey(key) {
   return APPROVAL_FIELD_ALIASES.find((a) => a.key === key) || null;
+}
+// Task 2 (2026-10-31) - the OFFICIAL tier's sender gate: a direct (no
+// approval) reply for one of the 15 official fields is only ever allowed
+// when the sender's OWN WhatsApp number matches a current ACTIVE employee
+// record - an unrecognized number, or a record that's gone INACTIVE/on
+// notice period's own stricter treatment elsewhere, never qualifies.
+async function isSenderActiveEmployee(phone) {
+  if (!phone) return false;
+  const match = await findEmployeeByPhone(phone).catch(() => null);
+  return Boolean(match && match.emp.status === 'ACTIVE');
 }
 const OTHER_FIELD_LINE = {
   banglish: (name, fieldLabel, value) => name + '-er ' + fieldLabel + ': ' + value,
@@ -4437,6 +4592,53 @@ async function queuePersonFieldApproval({ phone, requesterLabel, candidate, lang
   const typoNote = hadTypo ? ' [sender-er deya naam-er banan-e typo chhilo, eta closest match]' : '';
   await postOwnerNotification(
     requesterLabel + ' (' + phone + ') ' + candidate.name + ' (' + candidate.department + statusNote + ')-er ' + fieldLabel + ' chaichhe.' + typoNote + ' Je message jabe: \'' + outgoingText + '\'. Pathabo?'
+  );
+}
+
+// Task 2 (2026-10-31) - the OFFICIAL tier's direct-send: the exact same
+// text queuePersonFieldApproval would have queued for approval, sent
+// right away instead, because the sender is a current ACTIVE employee
+// asking about one of the 15 official fields (see APPROVAL_FIELD_ALIASES'
+// own `official` flag and isSenderActiveEmployee). Returns the sent text
+// on success, or null when the field has no value on record (same "no
+// approval queued, no message sent" outcome the approval path's own
+// missing-value branch already has - the caller falls through to the
+// normal holding reply either way, nothing new to invent here).
+async function sendOfficialFieldDirect({ phone, requesterLabel, candidate, lang, hadTypo, fieldAlias }) {
+  const fieldLabel = fieldAlias.label[lang] || fieldAlias.label.english;
+  const value = fieldAlias.getValue(candidate);
+  if (!value) {
+    await postOwnerNotification(candidate.name + ' (' + candidate.department + ')-er ' + fieldLabel + ' record-e nei.');
+    return null;
+  }
+  const outgoingText = fieldAlias.outgoingLine
+    ? (fieldAlias.outgoingLine[lang] || fieldAlias.outgoingLine.english)(candidate.name, value)
+    : (OTHER_FIELD_LINE[lang] || OTHER_FIELD_LINE.english)(candidate.name, fieldLabel, value);
+  const typoNote = hadTypo ? ' [sender-er deya naam-er banan-e typo chhilo, eta closest match]' : '';
+  await postOwnerNotification(
+    requesterLabel + ' (' + phone + ') ' + candidate.name + '-er ' + fieldLabel + ' (official field) jigges korechhe.' + typoNote + ' Approval chara e direct reply gechhe: \'' + outgoingText + '\''
+  );
+  return outgoingText;
+}
+
+// Task 2 (2026-10-31) - general_details (designation/department/tenure,
+// all official fields) now ALSO requires the sender to be a current
+// ACTIVE employee before it's ever sent directly (see
+// handlePersonLookupRequest) - a non-employee/unrecognized number asking
+// the same question gets this ordinary approval card instead, same
+// shape as queuePersonFieldApproval's.
+async function queuePersonGeneralDetailsApproval({ phone, requesterLabel, candidate, lang, hadTypo }) {
+  const outgoingText = buildGeneralDetailsReply(candidate, lang, hadTypo, new Date());
+  const dataRequestSummary = candidate.name + ' (' + candidate.department + ') - general details';
+  await savePendingApproval({
+    phone, name: requesterLabel, requestText: dataRequestSummary, dataRequestSummary, lang,
+    preparedReplyText: outgoingText, preparedCard: null, preparedError: null,
+    resolvedPersonName: candidate.name
+  });
+  const statusNote = candidate.status === 'NOTICE PERIOD' ? ', notice period-e achen' : '';
+  const typoNote = hadTypo ? ' [sender-er deya naam-er banan-e typo chhilo, eta closest match]' : '';
+  await postOwnerNotification(
+    requesterLabel + ' (' + phone + ') ' + candidate.name + ' (' + candidate.department + statusNote + ')-er general details chaichhe.' + typoNote + ' Je message jabe: \'' + outgoingText + '\'. Pathabo?'
   );
 }
 
@@ -4611,14 +4813,20 @@ async function handlePersonLookupRequest({ phone, name, lang, personName, person
     return { case: 'acknowledged', replyText: (INACTIVE_EMPLOYEE_REPLY[lang] || INACTIVE_EMPLOYEE_REPLY.english)(inactive[0].name, inactive[0].gender), summaryForOwner: null, lang };
   }
 
-  // general_details (spec point 2) - no approval needed, since this is
-  // limited to the 4 non-sensitive fields the tool schema's description
-  // already restricts personField to.
+  // general_details (spec point 2; Task 2 2026-10-31: these are official
+  // fields - designation/department/tenure - so, like every other
+  // official field below, they're only ever sent directly when the
+  // SENDER is themselves a current ACTIVE employee; anyone else gets the
+  // identical text via a normal approval card instead).
   if (personField === 'general_details') {
     if (current.length === 1) {
-      const typoNote = hadTypo ? ' ("' + personName + '" banan-e - closest match hisebe dhora holo)' : '';
-      await postOwnerNotification(name + ' (' + phone + ') ' + current[0].name + ' (' + current[0].department + ')-er general details (designation/department/koto diner) jigges korechhe' + typoNote + ' - approval chara e direct reply gechhe.');
-      return { case: 'acknowledged', replyText: buildGeneralDetailsReply(current[0], lang, hadTypo, new Date()), summaryForOwner: null, lang };
+      if (await isSenderActiveEmployee(phone)) {
+        const typoNote = hadTypo ? ' ("' + personName + '" banan-e - closest match hisebe dhora holo)' : '';
+        await postOwnerNotification(name + ' (' + phone + ') ' + current[0].name + ' (' + current[0].department + ')-er general details (designation/department/koto diner) jigges korechhe' + typoNote + ' - approval chara e direct reply gechhe.');
+        return { case: 'acknowledged', replyText: buildGeneralDetailsReply(current[0], lang, hadTypo, new Date()), summaryForOwner: null, lang };
+      }
+      await queuePersonGeneralDetailsApproval({ phone, requesterLabel: name, candidate: current[0], lang, hadTypo });
+      return { case: 'data_holding', replyText: dataRequestHoldingReply(lang, history, new Date()), summaryForOwner: null, lang };
     }
     // Several current candidates - ask the SENDER to pick rather than
     // guessing or escalating to the owner (spec: "ask the sender directly
@@ -4645,7 +4853,21 @@ async function handlePersonLookupRequest({ phone, name, lang, personName, person
   const fieldKindForQuestion = isOtherField ? otherFieldLabel : 'contact_number';
   if (current.length === 1) {
     if (isOtherField) {
-      await queuePersonFieldApproval({ phone, requesterLabel: name, candidate: current[0], lang, hadTypo, fieldAlias });
+      // Task 2 (2026-10-31) - OFFICIAL tier: direct, no approval, when the
+      // fieldAlias is one of the 15 official fields AND the sender is a
+      // current ACTIVE employee. Falls through to the ordinary approval
+      // card for everyone else, or when the official field simply has no
+      // value on record (sendOfficialFieldDirect returns null for that -
+      // same "nothing to send" outcome queuePersonFieldApproval's own
+      // missing-value branch already has).
+      const isOfficialDirectEligible = Boolean(fieldAlias && fieldAlias.official) && await isSenderActiveEmployee(phone);
+      const sentDirect = isOfficialDirectEligible
+        ? await sendOfficialFieldDirect({ phone, requesterLabel: name, candidate: current[0], lang, hadTypo, fieldAlias })
+        : null;
+      if (sentDirect) return { case: 'acknowledged', replyText: sentDirect, summaryForOwner: null, lang };
+      if (!isOfficialDirectEligible) {
+        await queuePersonFieldApproval({ phone, requesterLabel: name, candidate: current[0], lang, hadTypo, fieldAlias });
+      }
     } else {
       await queuePersonContactApproval({ phone, requesterLabel: name, candidate: current[0], lang, hadTypo });
     }
@@ -9130,11 +9352,26 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
           finalized = { case: 'data_holding', replyText: dataRequestHoldingReply(pendingDisambig.lang, history, new Date()), summaryForOwner: null };
         } else if (pendingDisambig.pendingField === 'other_field') {
           const fieldAlias = resolveApprovalFieldAliasByKey(pendingDisambig.fieldAliasKey);
-          if (fieldAlias) await queuePersonFieldApproval({ phone, requesterLabel: senderLabel, candidate: resolved, lang: pendingDisambig.lang, hadTypo: pendingDisambig.hadTypo, fieldAlias });
-          finalized = { case: 'data_holding', replyText: dataRequestHoldingReply(pendingDisambig.lang, history, new Date()), summaryForOwner: null };
-        } else {
+          // Task 2 (2026-10-31) - same OFFICIAL-tier direct-send gate as
+          // handlePersonLookupRequest's own current.length===1 branch;
+          // this is the SAME request, just resolved one turn later once
+          // the sender picked who they meant, so it must behave
+          // identically rather than always falling back to an approval.
+          if (fieldAlias && fieldAlias.official && await isSenderActiveEmployee(phone)) {
+            const sent = await sendOfficialFieldDirect({ phone, requesterLabel: senderLabel, candidate: resolved, lang: pendingDisambig.lang, hadTypo: pendingDisambig.hadTypo, fieldAlias });
+            finalized = sent
+              ? { case: 'acknowledged', replyText: sent, summaryForOwner: null, lang: pendingDisambig.lang }
+              : { case: 'data_holding', replyText: dataRequestHoldingReply(pendingDisambig.lang, history, new Date()), summaryForOwner: null };
+          } else {
+            if (fieldAlias) await queuePersonFieldApproval({ phone, requesterLabel: senderLabel, candidate: resolved, lang: pendingDisambig.lang, hadTypo: pendingDisambig.hadTypo, fieldAlias });
+            finalized = { case: 'data_holding', replyText: dataRequestHoldingReply(pendingDisambig.lang, history, new Date()), summaryForOwner: null };
+          }
+        } else if (await isSenderActiveEmployee(phone)) {
           await postOwnerNotification(senderLabel + ' (' + phone + ') "' + resolved.name + '" baeche niyeche - general details pathano holo, approval lage ni.');
           finalized = { case: 'acknowledged', replyText: buildGeneralDetailsReply(resolved, pendingDisambig.lang, pendingDisambig.hadTypo, new Date()), summaryForOwner: null, lang: pendingDisambig.lang };
+        } else {
+          await queuePersonGeneralDetailsApproval({ phone, requesterLabel: senderLabel, candidate: resolved, lang: pendingDisambig.lang, hadTypo: pendingDisambig.hadTypo });
+          finalized = { case: 'data_holding', replyText: dataRequestHoldingReply(pendingDisambig.lang, history, new Date()), summaryForOwner: null };
         }
         // Case B.
         if (disambigVerdict.hasExtraInfo && finalized.replyText) {
