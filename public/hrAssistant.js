@@ -1602,7 +1602,11 @@
     if (actionNeededPage) actionNeededPage.hidden = !isActionNeeded;
     if (autoListPage) autoListPage.hidden = !isAutoList;
     if (autoPage) autoPage.hidden = !isAutomation;
-    if (inputArea) inputArea.hidden = isConvo || isRemDetail || isAutomation || isAutoList;
+    // Task 4 (2026-10-31) - the "Ask your assistant" input bar now lives
+    // ONLY in the SUBH chat box itself (Home) - every other page under
+    // Today's Updates and SUBH Settings hides it, not just the handful
+    // that used to be listed by name here.
+    if (inputArea) inputArea.hidden = !isHome;
     if (isCommsHub) {
       if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon';
       if (commsHeadIcon) commsHeadIcon.innerHTML = MAIL_SVG;
