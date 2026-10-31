@@ -3490,14 +3490,48 @@ function buildHrDataQueryAnswer(employees, query, lang) {
 // own final notification (spec rule g: every answer here goes through the
 // SAME approval card, PII rules and never-auto/toggle rules, nothing sent
 // without the owner's own "pathao"/"na").
-async function queueHrDataQueryApproval({ phone, requesterLabel, lang, dataRequestSummary, outgoingText }) {
+async function queueHrDataQueryApproval({ phone, requesterLabel, lang, dataRequestSummary, outgoingText, query, isRevision }) {
   await savePendingApproval({
     phone, name: requesterLabel, requestText: dataRequestSummary, dataRequestSummary, lang,
-    preparedReplyText: outgoingText, preparedCard: null, preparedError: null
+    preparedReplyText: outgoingText, preparedCard: null, preparedError: null,
+    // Task 8 (2026-10-31) - the raw structured query is kept on the
+    // approval itself (never just dataRequestSummary/outgoingText) so a
+    // LATER follow-up correcting the format can find and reuse its exact
+    // filters (department/location/designation/etc.) without the sender
+    // ever having to repeat them - see findPendingHrDataQueryApproval.
+    isHrDataQuery: true, hrDataQuery: query
   });
+  const revisionNote = isRevision ? '(format thik kore abar) ' : '';
   await postOwnerNotification(
-    requesterLabel + ' (' + phone + ') ' + dataRequestSummary + ' chaiche. Je message jabe:\n\'' + outgoingText + '\'\nPathabo? (ei chat-e "pathao"/"na" likhun)'
+    requesterLabel + ' (' + phone + ') ' + revisionNote + dataRequestSummary + ' chaiche. Je message jabe:\n\'' + outgoingText + '\'\nPathabo? (ei chat-e "pathao"/"na" likhun)'
   );
+}
+// Task 8 (2026-10-31) - deliberately bypasses listPendingApprovals()'s own
+// synthetic-test-phone filter (that filter exists only to keep fake test
+// numbers off the owner's real Important WhatsApp page, an unrelated
+// concern here) so a format-revision follow-up can find its own prior
+// pending request regardless of phone shape, in both production and the
+// test suite.
+async function listAllPendingApprovalsRaw() {
+  const redis = getClient();
+  if (!redis) return [];
+  try {
+    const ids = (await redis.smembers(PENDING_APPROVAL_IDS_KEY)) || [];
+    if (!ids.length) return [];
+    const raws = await redis.mget(...ids.map((id) => PENDING_APPROVAL_PREFIX + id));
+    return raws.map((raw) => { try { return typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (err) { return null; } }).filter(Boolean);
+  } catch (err) { return []; }
+}
+// Most recent still-PENDING hr-data-query approval for this phone, if
+// any - the thing a "no, just names" style follow-up revises. Several
+// can exist at once now (Task 3b removed the old one-pending-per-phone
+// block), so this picks the latest one, never an older, unrelated one.
+async function findPendingHrDataQueryApproval(phone) {
+  const all = await listAllPendingApprovalsRaw();
+  const matches = all.filter((a) => a.phone === phone && a.isHrDataQuery && a.hrDataQuery);
+  if (!matches.length) return null;
+  matches.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  return matches[0];
 }
 
 // Classifier extraction - a SEPARATE, focused tool call (not an addition
@@ -3529,7 +3563,8 @@ function hrDataQueryTool() {
           dojMonth: { type: 'integer', description: 'Joining month 1-12, ANY year - e.g. 10 for "who joined in October" (any October). Omit if no month was named.' },
           dojYear: { type: 'integer', description: 'Exact joining year, e.g. 2024 for "joined in 2024". Omit if no year was named.' },
           hodIncludeEmpCode: { type: 'boolean', description: 'Only relevant when returnType is "hod" - true when the sender ALSO asked for the HOD\'s employee code/number alongside their name (e.g. "QC HOD emp code ar nam dao" asks for BOTH the HOD\'s emp code AND name) - any phrasing meaning employee code/number/ID counts ("emp code", "employee code", "emp id", "employee number"). Omit/false when only the name was asked for.' },
-          hodIncludeContactNo: { type: 'boolean', description: 'Only relevant when returnType is "hod" - true when the sender ALSO asked for the HOD\'s contact/phone number alongside their name (e.g. "<dept> er HOD-er nam ar contact no." asks for BOTH the HOD\'s name AND contact number). Can be combined with hodIncludeEmpCode if both were asked for. Omit/false when only the name was asked for.' }
+          hodIncludeContactNo: { type: 'boolean', description: 'Only relevant when returnType is "hod" - true when the sender ALSO asked for the HOD\'s contact/phone number alongside their name (e.g. "<dept> er HOD-er nam ar contact no." asks for BOTH the HOD\'s name AND contact number). Can be combined with hodIncludeEmpCode if both were asked for. Omit/false when only the name was asked for.' },
+          isFormatRevision: { type: 'boolean', description: 'true ONLY when this message is a follow-up correcting the FORMAT, fields, or scope of the sender\'s own IMMEDIATELY PRECEDING data request in this same conversation - never a brand new, different question. E.g. after asking for a dept-wise HOD list, "na shudhu naam dao, onno kichu likho na"/"just names please, nothing else"/"chhoto kore dao"/"total koyjon ache seta o bolo" is a revision of the SAME request; a message about a different department, role, or topic right after is NOT a revision - it is a new question. When true, set ONLY the field(s) that are ACTUALLY changing (e.g. just returnType, or just hodIncludeEmpCode) - omit every field that should stay exactly as it was in the prior request (department/location/designation/etc. are reused automatically from that prior request and must NOT be repeated here unless the sender is also explicitly changing them). Omit (false) for every other message, including the very first data request in a conversation.' }
         },
         required: ['returnType']
       }
@@ -3582,32 +3617,60 @@ async function clearPendingHrDataQuery(phone) {
 }
 
 // Entry point - called from decideAutoReplyCore's wantsData branch
-// whenever the request is NOT a single-person-field lookup.
+// whenever the request is NOT a single-person-field lookup. The AI-only
+// step (extraction) lives here; everything after it is pure/deterministic
+// and split into resolveAndQueueHrDataQuery below so it can be tested
+// directly against a hand-built query, the same AI-extracts/code-computes
+// separation buildHrDataQueryAnswer already uses.
 async function handleHrDataQueryRequest({ phone, name, lang, text, history }) {
   const query = await extractHrDataQuery(text, history);
   if (!query) {
     await postOwnerNotification(name + ' (' + phone + ') ekta data request korechhe ("' + text.slice(0, 160) + '"), kintu SUBH bujhte parini - eta manually dekhte hobe.');
     return { case: 'data_holding', replyText: dataRequestHoldingReply(lang, history, new Date()), summaryForOwner: null };
   }
+  return resolveAndQueueHrDataQuery({ phone, name, lang, query, history });
+}
+// Task 8 (2026-10-31): a follow-up correcting the FORMAT of the sender's
+// own immediately preceding data request (e.g. "na shudhu naam dao,
+// department likho na") is a REVISION of that same request, never a new
+// one - its filters (department/location/designation/etc.) are inherited
+// from the prior request; only the field(s) this new message actually
+// set (usually just returnType) override. The prior request's own
+// approval card, if still pending, is replaced - never left stacked
+// alongside the corrected one (if it was already resolved by the time
+// this arrives, there is nothing to replace and this is simply treated
+// as a fresh, standalone request instead).
+async function resolveAndQueueHrDataQuery({ phone, name, lang, query, history }) {
+  let effectiveQuery = query;
+  let priorApprovalToReplace = null;
+  if (query.isFormatRevision) {
+    const prior = await findPendingHrDataQueryApproval(phone);
+    if (prior) {
+      effectiveQuery = Object.assign({}, prior.hrDataQuery, query);
+      priorApprovalToReplace = prior;
+    }
+  }
+  delete effectiveQuery.isFormatRevision;
   const { employees } = await employeeService.getEmployeeData();
-  if (query.department) {
+  if (effectiveQuery.department) {
     // A confirmed department alias ("QC" -> "QUALITY") always wins over a
     // coincidental word-fragment match - checked first, same precedence as
     // resolveSiteAliasValues gets for location below.
-    const deptAliasValues = resolveDeptAliasValues(query.department);
-    const deptResult = deptAliasValues.length ? { resolved: deptAliasValues.length === 1 ? deptAliasValues[0] : null, options: deptAliasValues.length > 1 ? deptAliasValues : [] } : resolveDepartmentOptions(employees, query.department);
+    const deptAliasValues = resolveDeptAliasValues(effectiveQuery.department);
+    const deptResult = deptAliasValues.length ? { resolved: deptAliasValues.length === 1 ? deptAliasValues[0] : null, options: deptAliasValues.length > 1 ? deptAliasValues : [] } : resolveDepartmentOptions(employees, effectiveQuery.department);
     if (deptResult.options.length > 1) {
-      await savePendingHrDataQuery(phone, { query: Object.assign({}, query, { department: null }), lang, departmentOptions: deptResult.options, departmentHint: query.department });
+      await savePendingHrDataQuery(phone, { query: Object.assign({}, effectiveQuery, { department: null }), lang, departmentOptions: deptResult.options, departmentHint: effectiveQuery.department });
       const fn = DEPARTMENT_DISAMBIGUATION_QUESTION[lang] || DEPARTMENT_DISAMBIGUATION_QUESTION.english;
-      return { case: 'acknowledged', replyText: fn(query.department, deptResult.options), summaryForOwner: null, lang };
+      return { case: 'acknowledged', replyText: fn(effectiveQuery.department, deptResult.options), summaryForOwner: null, lang };
     }
-    query.resolvedDepartment = deptResult.resolved;
+    effectiveQuery.resolvedDepartment = deptResult.resolved;
   }
-  if (query.location) {
-    const aliasValues = resolveSiteAliasValues(query.location);
-    if (aliasValues.length) query.resolvedLocations = aliasValues;
+  if (effectiveQuery.location) {
+    const aliasValues = resolveSiteAliasValues(effectiveQuery.location);
+    if (aliasValues.length) effectiveQuery.resolvedLocations = aliasValues;
   }
-  await runHrDataQueryAndQueue({ phone, requesterLabel: name, lang, employees, query });
+  if (priorApprovalToReplace) await removePendingApproval(priorApprovalToReplace.id);
+  await runHrDataQueryAndQueue({ phone, requesterLabel: name, lang, employees, query: effectiveQuery, isRevision: Boolean(priorApprovalToReplace) });
   return { case: 'data_holding', replyText: dataRequestHoldingReply(lang, history, new Date()), summaryForOwner: null };
 }
 // The actual compute-and-queue, split out so both the fresh-question path
@@ -3625,9 +3688,9 @@ async function handleHrDataQueryRequest({ phone, name, lang, text, history }) {
 // retried/re-delivered message) are still caught upstream by the poll
 // loop's own isMessageHandled/isMessageHandledByContent guards, never by
 // blocking a second DIFFERENT request here.
-async function runHrDataQueryAndQueue({ phone, requesterLabel, lang, employees, query }) {
+async function runHrDataQueryAndQueue({ phone, requesterLabel, lang, employees, query, isRevision }) {
   const { outgoingText, dataRequestSummary } = buildHrDataQueryAnswer(employees, query, lang);
-  await queueHrDataQueryApproval({ phone, requesterLabel, lang, dataRequestSummary, outgoingText });
+  await queueHrDataQueryApproval({ phone, requesterLabel, lang, dataRequestSummary, outgoingText, query, isRevision });
 }
 // Continuation - called (checked early, same tier as every other pending-
 // state check in this file, before classification ever runs) whenever a
@@ -11061,7 +11124,9 @@ module.exports = {
   hrDataQueryTool,
   extractHrDataQuery,
   handleHrDataQueryRequest,
+  resolveAndQueueHrDataQuery,
   runHrDataQueryAndQueue,
+  findPendingHrDataQueryApproval,
   continueHrDataQueryFlow,
   getPendingHrDataQuery,
   savePendingHrDataQuery,

@@ -5732,6 +5732,50 @@ async function checkAsync(label, fn) {
     for (const a of mine) await whatsappAssistant.removePendingApproval(a.id);
     return ok;
   });
+
+  console.log('='.repeat(70));
+  console.log('Task 8 (2026-10-31): a follow-up correcting the FORMAT of the sender\'s own immediately-preceding data request is a REVISION of that same request, not a new one - its filters are inherited, and the old pending approval is replaced, never stacked alongside the corrected one');
+  console.log('='.repeat(70));
+  await checkAsync('LOCKED: isFormatRevision + a changed field (e.g. hodIncludeContactNo) REPLACES the prior still-pending approval - exactly ONE approval remains, with the inherited filters plus the new field merged in', async () => {
+    const phone = '919999000196';
+    for (const a of await whatsappAssistant.listPendingApprovals()) if (whatsapp.normalizePhone(a.phone) === whatsapp.normalizePhone(phone)) await whatsappAssistant.removePendingApproval(a.id);
+    await whatsappAssistant.resolveAndQueueHrDataQuery({ phone, name: 'RevisionTest', lang: 'banglish', query: { returnType: 'hodByDepartment' }, history: [] });
+    await whatsappAssistant.resolveAndQueueHrDataQuery({ phone, name: 'RevisionTest', lang: 'banglish', query: { returnType: 'hodByDepartment', isFormatRevision: true, hodIncludeContactNo: true }, history: [] });
+    const mine = (await whatsappAssistant.listPendingApprovals()).filter((a) => whatsapp.normalizePhone(a.phone) === whatsapp.normalizePhone(phone));
+    const ok = mine.length === 1 && mine[0].hrDataQuery && mine[0].hrDataQuery.returnType === 'hodByDepartment' && mine[0].hrDataQuery.hodIncludeContactNo === true;
+    for (const a of mine) await whatsappAssistant.removePendingApproval(a.id);
+    return ok;
+  });
+  await checkAsync('LOCKED: a revision that omits department/designation entirely still INHERITS them from the prior request - only the field(s) the revision actually set (returnType here) change', async () => {
+    const phone = '919999000195';
+    for (const a of await whatsappAssistant.listPendingApprovals()) if (whatsapp.normalizePhone(a.phone) === whatsapp.normalizePhone(phone)) await whatsappAssistant.removePendingApproval(a.id);
+    await whatsappAssistant.resolveAndQueueHrDataQuery({ phone, name: 'RevisionTest', lang: 'banglish', query: { returnType: 'count', department: 'HR Dept', designation: 'welder' }, history: [] });
+    await whatsappAssistant.resolveAndQueueHrDataQuery({ phone, name: 'RevisionTest', lang: 'banglish', query: { returnType: 'list', isFormatRevision: true }, history: [] });
+    const mine = (await whatsappAssistant.listPendingApprovals()).filter((a) => whatsapp.normalizePhone(a.phone) === whatsapp.normalizePhone(phone));
+    const ok = mine.length === 1 && mine[0].hrDataQuery.returnType === 'list' && mine[0].hrDataQuery.department === 'HR Dept' && mine[0].hrDataQuery.designation === 'welder';
+    for (const a of mine) await whatsappAssistant.removePendingApproval(a.id);
+    return ok;
+  });
+  await checkAsync('LOCKED: isFormatRevision with NO still-pending prior request (already resolved/none existed) is treated as a plain fresh request instead - never crashes, never silently drops it', async () => {
+    const phone = '919999000194';
+    for (const a of await whatsappAssistant.listPendingApprovals()) if (whatsapp.normalizePhone(a.phone) === whatsapp.normalizePhone(phone)) await whatsappAssistant.removePendingApproval(a.id);
+    await whatsappAssistant.resolveAndQueueHrDataQuery({ phone, name: 'RevisionTest', lang: 'banglish', query: { returnType: 'count', isFormatRevision: true }, history: [] });
+    const mine = (await whatsappAssistant.listPendingApprovals()).filter((a) => whatsapp.normalizePhone(a.phone) === whatsapp.normalizePhone(phone));
+    const ok = mine.length === 1 && mine[0].hrDataQuery.returnType === 'count' && mine[0].hrDataQuery.isFormatRevision === undefined;
+    for (const a of mine) await whatsappAssistant.removePendingApproval(a.id);
+    return ok;
+  });
+  await checkAsync('findPendingHrDataQueryApproval returns the MOST RECENT hr-data-query approval for a phone, ignoring a different, non-hr-data-query approval for the same phone', async () => {
+    const phone = '919999000193';
+    for (const a of await whatsappAssistant.listPendingApprovals()) if (whatsapp.normalizePhone(a.phone) === whatsapp.normalizePhone(phone)) await whatsappAssistant.removePendingApproval(a.id);
+    await whatsappAssistant.savePendingApproval({ phone, name: 'Other', requestText: 'contact number', dataRequestSummary: 'Someone - contact number', lang: 'banglish', preparedReplyText: 'x', preparedCard: null, preparedError: null });
+    await whatsappAssistant.resolveAndQueueHrDataQuery({ phone, name: 'RevisionTest', lang: 'banglish', query: { returnType: 'hodByDepartment' }, history: [] });
+    const found = await whatsappAssistant.findPendingHrDataQueryApproval(phone);
+    const ok = Boolean(found) && found.isHrDataQuery === true && found.hrDataQuery.returnType === 'hodByDepartment';
+    const mine = (await whatsappAssistant.listPendingApprovals()).filter((a) => whatsapp.normalizePhone(a.phone) === whatsapp.normalizePhone(phone));
+    for (const a of mine) await whatsappAssistant.removePendingApproval(a.id);
+    return ok;
+  });
   check('LIVE ISSUE FIX (Task 5/8, 2026-10-31): buildHrDataQueryAnswer "hodByDepartment" lists ONE LINE PER DEPARTMENT (names only, comma-separated when a department has more than one HOD) - never the old per-person company-wide headcount breakdown ("hod" with no department used to produce)', (() => {
     const { outgoingText } = whatsappAssistant.buildHrDataQueryAnswer(FAKE_HR_QUERY_EMPLOYEES, { returnType: 'hodByDepartment' }, 'english');
     const expected = '1. Administration Ho — Y Manager, Z Manager\n2. Administration Srm — X Manager\n3. Civil — Tanmoy Mondal, Radha Biswas\n4. HR department — Radha Biswas';
