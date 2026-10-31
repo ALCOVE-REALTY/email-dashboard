@@ -34,7 +34,6 @@
   const newChatBtn = document.getElementById('hrAssistantNewChatBtn');
   const historySheetBackdrop = document.getElementById('hrHistorySheetBackdrop');
   const historySheet = document.getElementById('hrHistorySheet');
-  const historySheetHandle = document.getElementById('hrHistorySheetHandle');
   const historySheetCloseBtn = document.getElementById('hrHistorySheetCloseBtn');
   const historySheetSearch = document.getElementById('hrHistorySheetSearch');
   const historySheetSearchClear = document.getElementById('hrHistorySheetSearchClear');
@@ -912,165 +911,73 @@
   }
 
   // ---------- Chat History ----------
-  // Server model: src/chatHistoryService.js. The sheet below is a
-  // hand-rolled draggable bottom sheet (no new dependency) with three
-  // snap points - collapsed, expanded, closed - reachable by dragging the
-  // handle, or by dragging the list itself once it's scrolled to the top
-  // (see the touch handlers on historySheetList). Both this sheet and the
-  // full-screen panel it hands off to only exist while the main panel is
-  // already open, so they deliberately don't touch lockBodyScroll/
-  // unlockBodyScroll themselves - the main panel's own lock already
-  // covers their entire lifetime.
-  let sheetHeight = 0;
-  let sheetDragState = null;
-
-  // Snap points are expressed as HEIGHTS (not a translateY offset) - the
-  // sheet is anchored with bottom:0 and a fixed left/right, so animating
-  // its height keeps the bottom edge (and the "View All History" footer
-  // pinned to it) flush with the real viewport bottom at every point,
-  // collapsed included; a translateY approach would drag that footer
-  // off-screen along with the rest of the box while collapsed.
-  function historySnapPoints() {
-    const vh = window.visualViewport ? window.visualViewport.height : window.innerHeight;
-    return {
-      // "almost full height of the column, top gap 40px" - was a flat 86%
-      // of viewport height (capped 720), which didn't track a 40px gap at
-      // every screen size the way a straight subtraction does.
-      expandedHeight: Math.min(vh - 40, 720),
-      collapsedHeight: Math.min(vh * 0.5, 480),
-      closedHeight: 0
-    };
-  }
-
-  function applySheetHeight(h) {
-    sheetHeight = h;
-    historySheet.style.height = h + 'px';
-    const { expandedHeight } = historySnapPoints();
-    const openness = Math.max(0, Math.min(1, h / expandedHeight));
-    historySheetBackdrop.style.opacity = String(openness);
-  }
-
-  function animateSheetTo(h) {
-    historySheet.classList.remove('dragging');
-    historySheetBackdrop.classList.add('animating');
-    applySheetHeight(h);
-    if (h <= 0) {
-      setTimeout(() => {
-        historySheet.hidden = true;
-        historySheetBackdrop.hidden = true;
-        historySheetBackdrop.classList.remove('animating');
-      }, 320);
-    }
-  }
+  // Server model: src/chatHistoryService.js. Task 8 (2026-11) LIVE BUG
+  // FIX: this sheet used to be a hand-rolled draggable bottom sheet with
+  // three snap points (collapsed/expanded/closed), reachable by dragging
+  // its handle or by dragging the list itself - "can be dragged up/down
+  // by its top." Now a fixed, non-draggable sheet: it opens straight to
+  // ~80% of the visible viewport and stays there, closed only via its own
+  // Close button, an outside tap on the backdrop, or the phone's back
+  // button/gesture (see the popstate handler below, which closes this
+  // sheet first if it's open rather than falling through to the panel's
+  // own back-navigation). This sheet and the full-screen panel it hands
+  // off to only exist while the main panel is already open, so they
+  // deliberately don't touch lockBodyScroll/unlockBodyScroll themselves -
+  // the main panel's own lock already covers their entire lifetime.
+  let sheetOpen = false;
+  let historySheetPushedNav = false;
+  // Closing the sheet other than via back (its Close button, an outside
+  // tap) unwinds its own pushed entry with a history.back() call of our
+  // own - that ALSO fires a popstate a moment later, which the global
+  // handler below would otherwise misread as a real hardware back-press
+  // on the panel's own nav stack (and could even close the whole panel).
+  // Set right before that call, and consumed/cleared by the very next
+  // popstate the handler sees, so exactly that one is ignored.
+  let ignoreNextPopstate = false;
 
   function openHistorySheet() {
+    sheetOpen = true;
     historySheetBackdrop.hidden = false;
     historySheet.hidden = false;
-    historySheetBackdrop.classList.remove('animating');
-    applySheetHeight(0);
-    void historySheet.offsetHeight; // force reflow so the animation below actually runs
+    historySheetBackdrop.classList.add('animating');
+    historySheet.style.height = '0';
+    historySheetBackdrop.style.opacity = '0';
+    void historySheet.offsetHeight; // force reflow so the open transition below actually runs
+    const vh = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+    historySheet.style.height = Math.round(vh * 0.8) + 'px';
+    historySheetBackdrop.style.opacity = '1';
     historySheetSearch.value = '';
     historySheetSearchClear.hidden = true;
     loadHistoryInto(historySheetList, '');
-    requestAnimationFrame(() => animateSheetTo(historySnapPoints().collapsedHeight));
+    // A dedicated history entry so the phone's own back button/gesture
+    // closes just this sheet first (see the popstate handler below),
+    // rather than acting on whatever panel view is underneath it.
+    try { window.history.pushState({ hrNav: true, hrHistorySheetOpen: true }, ''); historySheetPushedNav = true; } catch (err) { /* best effort */ }
   }
 
-  function closeHistorySheet() {
-    if (historySheet.hidden) return;
-    animateSheetTo(0);
-  }
-
-  // Flick thresholds (px of drag, px/ms of velocity at release) - a fast
-  // flick closes/expands the sheet even if the finger/mouse didn't travel
-  // past the plain distance threshold, matching a native-feeling sheet.
-  const SHEET_CLOSE_PX = 90, SHEET_EXPAND_PX = 60, SHEET_FLICK_VELOCITY = 0.5;
-  function sheetPointerDown(e) {
-    // The header row (an added drag surface) contains the real Close
-    // button - starting a drag gesture there too is harmless (a plain tap
-    // still fires its own click normally), but skip it anyway so a press
-    // on Close is never mistaken for the start of a drag.
-    if (e.target.closest && e.target.closest('#hrHistorySheetCloseBtn')) return;
-    sheetDragState = { startY: e.clientY, startHeight: sheetHeight, lastY: e.clientY, lastT: performance.now(), velocity: 0 };
-    historySheet.classList.add('dragging');
-    historySheetBackdrop.classList.remove('animating');
-    try { e.currentTarget.setPointerCapture(e.pointerId); } catch (err) { /* not supported - drag still works */ }
-  }
-  function sheetPointerMove(e) {
-    if (!sheetDragState) return;
-    const now = performance.now();
-    sheetDragState.velocity = (e.clientY - sheetDragState.lastY) / Math.max(1, now - sheetDragState.lastT);
-    sheetDragState.lastY = e.clientY;
-    sheetDragState.lastT = now;
-    const { expandedHeight } = historySnapPoints();
-    const next = Math.max(0, Math.min(expandedHeight, sheetDragState.startHeight - (e.clientY - sheetDragState.startY)));
-    applySheetHeight(next);
-  }
-  function sheetPointerUp() {
-    if (!sheetDragState) return;
-    const wasExpanded = sheetDragState.startHeight >= historySnapPoints().expandedHeight - 1;
-    const draggedDownPx = sheetDragState.startHeight - sheetHeight;
-    const velocity = sheetDragState.velocity;
-    sheetDragState = null;
-    const { expandedHeight, collapsedHeight, closedHeight } = historySnapPoints();
-    // Fast flick overrides plain nearest-point snapping; a slow/small drag
-    // still falls back to whichever of the 3 heights is closest.
-    if (draggedDownPx > SHEET_CLOSE_PX || velocity > SHEET_FLICK_VELOCITY) {
-      animateSheetTo(wasExpanded ? collapsedHeight : closedHeight);
-    } else if (-draggedDownPx > SHEET_EXPAND_PX || velocity < -SHEET_FLICK_VELOCITY) {
-      animateSheetTo(expandedHeight);
-    } else {
-      const points = [expandedHeight, collapsedHeight, closedHeight];
-      animateSheetTo(points.reduce((a, b) => (Math.abs(sheetHeight - a) < Math.abs(sheetHeight - b) ? a : b)));
+  // fromPopstate is true when the browser itself already consumed the
+  // sheet's own pushed history entry (back press/gesture) - the extra
+  // history.back() below must be skipped in that case, same reasoning as
+  // closePanel's own fromPopstate parameter.
+  function closeHistorySheet(fromPopstate) {
+    if (!sheetOpen) return;
+    sheetOpen = false;
+    historySheetBackdrop.style.opacity = '0';
+    historySheet.style.height = '0';
+    const finish = () => {
+      historySheet.hidden = true;
+      historySheetBackdrop.hidden = true;
+      historySheetBackdrop.classList.remove('animating');
+      historySheet.removeEventListener('transitionend', finish);
+    };
+    historySheet.addEventListener('transitionend', finish);
+    setTimeout(finish, 320); // fallback if transitionend doesn't fire (reduced motion, etc.)
+    if (!fromPopstate && historySheetPushedNav) {
+      ignoreNextPopstate = true;
+      try { window.history.back(); } catch (err) { ignoreNextPopstate = false; }
     }
+    historySheetPushedNav = false;
   }
-  [historySheetHandle, document.getElementById('hrHistorySheetHead')].forEach((el) => {
-    if (!el) return;
-    el.addEventListener('pointerdown', sheetPointerDown);
-    el.addEventListener('pointermove', sheetPointerMove);
-    el.addEventListener('pointerup', sheetPointerUp);
-    el.addEventListener('pointercancel', sheetPointerUp);
-  });
-
-  // Scroll-vs-drag: only engages a sheet-drag once the list is already
-  // scrolled to the top AND the person keeps pulling down past that -
-  // otherwise this never touches the list's own native scroll.
-  let listDragState = null;
-  function listTouchStart(e) {
-    if (e.touches.length !== 1) return;
-    listDragState = { startY: e.touches[0].clientY, engaged: false };
-  }
-  function listTouchMove(e) {
-    if (!listDragState) return;
-    const y = e.touches[0].clientY;
-    if (!listDragState.engaged) {
-      if (historySheetList.scrollTop <= 0 && y - listDragState.startY > 0) {
-        listDragState.engaged = true;
-        listDragState.dragStartY = y;
-        listDragState.dragStartHeight = sheetHeight;
-        historySheet.classList.add('dragging');
-        historySheetBackdrop.classList.remove('animating');
-      } else {
-        return;
-      }
-    }
-    e.preventDefault();
-    const { expandedHeight } = historySnapPoints();
-    const next = Math.max(0, Math.min(expandedHeight, listDragState.dragStartHeight - (y - listDragState.dragStartY)));
-    applySheetHeight(next);
-  }
-  function listTouchEnd() {
-    if (!listDragState) return;
-    const wasEngaged = listDragState.engaged;
-    listDragState = null;
-    if (!wasEngaged) return;
-    const { expandedHeight, collapsedHeight, closedHeight } = historySnapPoints();
-    const points = [expandedHeight, collapsedHeight, closedHeight];
-    animateSheetTo(points.reduce((a, b) => (Math.abs(sheetHeight - a) < Math.abs(sheetHeight - b) ? a : b)));
-  }
-  historySheetList.addEventListener('touchstart', listTouchStart, { passive: true });
-  historySheetList.addEventListener('touchmove', listTouchMove, { passive: false });
-  historySheetList.addEventListener('touchend', listTouchEnd);
-  historySheetList.addEventListener('touchcancel', listTouchEnd);
 
   function historyGroupFor(ts) {
     const d = new Date(ts);
@@ -1639,7 +1546,16 @@
     try { window.history.back(); } catch (err) { navStack.pop(); renderNavEntry(navStack[navStack.length - 1]); }
   }
   window.addEventListener('popstate', (e) => {
+    // Task 8 (2026-11) - a popstate our OWN closeHistorySheet() triggered
+    // (unwinding its pushed entry after a non-back close) - not a real
+    // back-press, ignore it entirely rather than acting on the panel's
+    // nav stack underneath.
+    if (ignoreNextPopstate) { ignoreNextPopstate = false; return; }
     if (panel.hidden) return; // not our history entry - the panel isn't even open
+    // The recent-chats sheet owns the topmost history entry whenever it's
+    // open (see openHistorySheet's own pushState) - back closes just the
+    // sheet first, never the panel view underneath.
+    if (sheetOpen) { closeHistorySheet(true); return; }
     if (!e.state || !e.state.hrNav || navStack.length <= 1) { closePanel(true); return; }
     navStack.pop();
     renderNavEntry(navStack[navStack.length - 1]);

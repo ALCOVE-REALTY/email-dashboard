@@ -3745,7 +3745,7 @@ body:not(.printing-org-chart) .org-chart-cards-row + .org-chart-branch-connector
 }
 .wf-ai-sheet-tile:active .wf-ai-sheet-tile-icon { filter: brightness(0.95); }
 
-/* ---------- Chat History: draggable bottom sheet + full-screen panel ---------- */
+/* ---------- Chat History: fixed bottom sheet + full-screen panel ---------- */
 
 .wf-ai-history-sheet-backdrop[hidden] { display: none; }
 .wf-ai-history-sheet-backdrop {
@@ -3755,10 +3755,8 @@ body:not(.printing-org-chart) .org-chart-cards-row + .org-chart-branch-connector
   z-index: 70;
   opacity: 0;
 }
-/* Opacity is driven continuously from JS as the sheet's own position (see
-   applySheetY in hrAssistant.js) - this only adds the easing for the
-   release-triggered snap, so raw finger-tracking during an active drag
-   stays instant instead of lagging behind a transition. */
+/* Task 8 (2026-11) - opacity is a plain 0/1 toggle from JS now (open/
+   close, no in-between drag positions); this just adds the easing. */
 .wf-ai-history-sheet-backdrop.animating { transition: opacity 0.32s cubic-bezier(0.32, 0.72, 0, 1); }
 
 .wf-ai-history-sheet[hidden] { display: none; }
@@ -3777,20 +3775,17 @@ body:not(.printing-org-chart) .org-chart-cards-row + .org-chart-branch-connector
   flex-direction: column;
   overflow: hidden;
   height: 0;
-  /* Animating height (not a translateY transform) so the sheet's bottom
-     edge - and the "View All History" footer pinned to it - always stays
-     flush with the real viewport bottom at every snap point, collapsed
-     included; only how much shows above it changes. A spring-ish ease so
-     drag-release snaps feel like a "smooth slide" - disabled (see
-     .dragging) while a finger is actively moving it, so it tracks 1:1. */
+  /* Task 8 (2026-11) LIVE BUG FIX: no longer a draggable sheet with
+     snap points ("can be dragged up/down by its top") - a fixed, non-
+     draggable sheet now, opened straight to ~80% of the viewport
+     (hrAssistant.js's openHistorySheet) and closed straight back to 0
+     (its own Close button, an outside tap, or the phone's back button/
+     gesture) - this transition is just the open/close slide. */
   transition: height 0.32s cubic-bezier(0.32, 0.72, 0, 1);
 }
-.wf-ai-history-sheet.dragging { transition: none; }
 .wf-ai-history-sheet-handle {
   flex-shrink: 0;
   padding: 10px 0 6px;
-  cursor: grab;
-  touch-action: none;
 }
 .wf-ai-history-sheet-handle::before {
   content: '';
