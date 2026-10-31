@@ -275,9 +275,30 @@ async function manageList(phone, list, action, name) {
 // itself.
 async function resolveSenderName(phone) {
   const found = await findEmployeeByPhone(phone).catch(() => null);
-  if (found && found.emp.name) return String(found.emp.name).trim();
+  // Task 3 (2026-11) LIVE BUG FIX: findEmployeeByPhone matches a number
+  // against ANY status - a real incident traced "Pinky Sil"/"Debapriya
+  // Sen" (neither the owner's own phone contact nor the sender's real
+  // WhatsApp profile name) back to exactly this: an INACTIVE former
+  // employee's old record still had that number on file, and the SIM/
+  // number had since been reassigned to someone else entirely. An
+  // INACTIVE (or any non-ACTIVE, e.g. "NOTICE PERIOD") record must never
+  // name a number - only a CURRENT, ACTIVE employee's own registered
+  // number does.
+  if (found && found.emp.status === 'ACTIVE' && found.emp.name) return String(found.emp.name).trim();
   const allowName = await getAllowlistName(phone);
   return allowName || null;
+}
+// Pure, no I/O variant of the same ACTIVE-only rule above, for callers
+// that already have the employee array in hand (list-rendering call
+// sites - see buildActionableWhatsappItems/mergeRecentWhatsappConversations)
+// so they aren't paying for a separate async HR lookup per row. Never
+// consults the allowlist-name tier (that's a rare, owner-set override,
+// not worth an extra Redis read per row in a bulk list) - a caller
+// wanting that too should use resolveSenderName instead.
+function activeEmployeeNameFor(phone, employees) {
+  const normalized = whatsapp.normalizePhone(phone);
+  const emp = (employees || []).find((e) => e.contactNumber && e.status === 'ACTIVE' && whatsapp.normalizePhone(e.contactNumber) === normalized);
+  return emp && emp.name ? emp.name : null;
 }
 function firstNameOf(fullName) {
   return fullName ? String(fullName).trim().split(/\s+/)[0] : null;
@@ -586,7 +607,7 @@ async function dismissSystemNotices() {
 // this function paying for its OWN separate listInboxLog(300) call on top
 // - was a genuine duplicate LRANGE+parse of the same underlying log, on
 // every communications-summary request (and its 12s poll).
-function buildActionableWhatsappItems(approvals, drafts, docs, recentLog, hrConfirmations) {
+function buildActionableWhatsappItems(approvals, drafts, docs, recentLog, hrConfirmations, employees) {
   const ambiguousConfirmations = hrConfirmations.filter((c) => c.status === 'ambiguous_owner_review');
   const nameByChat = new Map();
   recentLog.forEach((e) => {
@@ -617,12 +638,16 @@ function buildActionableWhatsappItems(approvals, drafts, docs, recentLog, hrConf
     const logName = nameByChat.get(key);
     return {
       chatId: row.chatId,
-      // The row's own display name is whoever the latest item named (or,
-      // failing that, the most recent real inbox-log entry for this
-      // number) - purely a list-preview label; every item's OWN name
+      // Task 3 (2026-11) - a CURRENT ACTIVE employee match always wins,
+      // evaluated fresh here (never trusting a historically-stored name,
+      // which may have been captured before the employee went inactive,
+      // or - the actual live bug - from a stale INACTIVE-record match).
+      // Otherwise the row's own display name is whoever the latest item
+      // named (or, failing that, the most recent real inbox-log entry for
+      // this number) - purely a list-preview label; every item's OWN name
       // (which may differ, see above) is preserved untouched for the
       // conversation-detail view.
-      name: (isRealRowName(latestName) && latestName) || (isRealRowName(logName) && logName) || key,
+      name: activeEmployeeNameFor(key, employees) || (isRealRowName(latestName) && latestName) || (isRealRowName(logName) && logName) || key,
       lastMessageText: latest ? latest.summary : '',
       lastMessageTime: latest ? latest.ts : 0,
       itemCount: row.items.length,
@@ -635,11 +660,11 @@ function buildActionableWhatsappItems(approvals, drafts, docs, recentLog, hrConf
 // Fetches its own data and delegates to the pure function above - for a
 // caller that doesn't already have a recentLog fetch of its own in flight.
 async function listActionableWhatsappItems() {
-  const [approvals, drafts, docs, recentLog, hrConfirmations] = await Promise.all([
+  const [approvals, drafts, docs, recentLog, hrConfirmations, { employees }] = await Promise.all([
     listPendingApprovals(), listPendingDrafts(),
-    documentRequests.listPendingReceived(), listInboxLog(300), listAllHrConfirmations()
+    documentRequests.listPendingReceived(), listInboxLog(300), listAllHrConfirmations(), employeeService.getEmployeeData()
   ]);
-  return buildActionableWhatsappItems(approvals, drafts, docs, recentLog, hrConfirmations);
+  return buildActionableWhatsappItems(approvals, drafts, docs, recentLog, hrConfirmations, employees);
 }
 
 // Task 6 (2026-10-27) - "Action needed" unified inbox: the SAME
@@ -694,7 +719,10 @@ async function listActionNeededItems() {
   const neverAutoSet = new Set((await listNeverAuto()).map((p) => whatsapp.normalizePhone(p)));
   const items = await Promise.all(raw.map(async (item) => {
     const directoryMatch = await findEmployeeByPhone(item.chatId).catch(() => null);
-    const displayName = (directoryMatch && directoryMatch.emp.name) || (isRealName(item.name) && item.name) || nameByChat.get(item.chatId) || item.chatId;
+    // Task 3 (2026-11) LIVE BUG FIX: an INACTIVE record must never name a
+    // number (see resolveSenderName's own comment) - only a CURRENT
+    // ACTIVE employee's match does.
+    const displayName = (directoryMatch && directoryMatch.emp.status === 'ACTIVE' && directoryMatch.emp.name) || (isRealName(item.name) && item.name) || nameByChat.get(item.chatId) || item.chatId;
     // Task 1 (2026-10-29) - the Action-needed card reuses buildConvoActions
     // (same "Never auto-reply" toggle as the conversation page), which
     // needs each item's own current state to render correctly instead of
@@ -741,7 +769,7 @@ const RECENT_CONVO_WINDOW_MS = 24 * 60 * 60 * 1000;
 // full-history view in the same request (communications-summary) can
 // fetch needsYou/recentLog ONCE and call this twice, rather than paying
 // for listActionableWhatsappItems/listInboxLog's own I/O twice over.
-function mergeRecentWhatsappConversations(needsYou, recentLog, nowTs, windowMs, dismissedByChat) {
+function mergeRecentWhatsappConversations(needsYou, recentLog, nowTs, windowMs, dismissedByChat, employees) {
   const window = windowMs || RECENT_CONVO_WINDOW_MS;
   const needsYouKeys = new Set(needsYou.map((r) => r.chatId));
   const dismissed = dismissedByChat || new Map();
@@ -778,7 +806,14 @@ function mergeRecentWhatsappConversations(needsYou, recentLog, nowTs, windowMs, 
     const statusLabel = recentConvoStatusLabel(e);
     if (!statusLabel) continue;
     resolvedRows.push({
-      chatId, name: e.name || chatId, lastMessageText: e.sentText || e.messageSummary || '',
+      chatId,
+      // Task 3 (2026-11) - same ACTIVE-employee-first rule as the needs-you
+      // rows above (see buildActionableWhatsappItems), evaluated fresh
+      // rather than trusting whatever name this inbox-log entry happened
+      // to store (the exact surface the live "Pinky Sil"/"Pamela Nath"
+      // bug was found on).
+      name: activeEmployeeNameFor(chatId, employees) || (e.name && e.name !== 'The sender' ? e.name : chatId),
+      lastMessageText: e.sentText || e.messageSummary || '',
       lastMessageTime: e.ts, itemCount: 0, states: [], needsYou: false, statusLabel
     });
   }
@@ -817,8 +852,8 @@ function mergeRecentWhatsappConversations(needsYou, recentLog, nowTs, windowMs, 
 // regardless of whether the owner needs to act on it.
 async function listRecentWhatsappConversations(now, windowMs) {
   const nowTs = (now instanceof Date ? now.getTime() : now) || Date.now();
-  const [needsYou, recentLog, dismissedByChat] = await Promise.all([listActionableWhatsappItems(), listInboxLog(500), listCommsDismissed()]);
-  return mergeRecentWhatsappConversations(needsYou, recentLog, nowTs, windowMs, dismissedByChat);
+  const [needsYou, recentLog, dismissedByChat, { employees }] = await Promise.all([listActionableWhatsappItems(), listInboxLog(500), listCommsDismissed(), employeeService.getEmployeeData()]);
+  return mergeRecentWhatsappConversations(needsYou, recentLog, nowTs, windowMs, dismissedByChat, employees);
 }
 
 // communications-summary's own need: the 24h main-page view AND the
@@ -833,13 +868,13 @@ async function listRecentWhatsappConversations(now, windowMs) {
 // here) - same final data, half the LRANGE+parse work on every poll.
 async function getWhatsappVisibilitySnapshot(now) {
   const nowTs = (now instanceof Date ? now.getTime() : now) || Date.now();
-  const [approvals, drafts, docs, recentLog, hrConfirmations, dismissedByChat] = await Promise.all([
+  const [approvals, drafts, docs, recentLog, hrConfirmations, dismissedByChat, { employees }] = await Promise.all([
     listPendingApprovals(), listPendingDrafts(), documentRequests.listPendingReceived(),
-    listInboxLog(500), listAllHrConfirmations(), listCommsDismissed()
+    listInboxLog(500), listAllHrConfirmations(), listCommsDismissed(), employeeService.getEmployeeData()
   ]);
-  const needsYou = buildActionableWhatsappItems(approvals, drafts, docs, recentLog, hrConfirmations);
+  const needsYou = buildActionableWhatsappItems(approvals, drafts, docs, recentLog, hrConfirmations, employees);
   return {
-    recentItems: mergeRecentWhatsappConversations(needsYou, recentLog, nowTs, RECENT_CONVO_WINDOW_MS, dismissedByChat),
+    recentItems: mergeRecentWhatsappConversations(needsYou, recentLog, nowTs, RECENT_CONVO_WINDOW_MS, dismissedByChat, employees),
     // Task 3 (2026-10-31) - the Important WhatsApp page's own full list is
     // no longer computed here on every ~12s communications-summary poll
     // (it used to be, under the name `allItems`, even while that page
@@ -868,12 +903,12 @@ function waItemMatchesQuery(item, q) {
 async function listAllWhatsappConversationsPage({ offset, limit, query } = {}) {
   const safeOffset = Math.max(0, Number(offset) || 0);
   const safeLimit = Math.min(200, Math.max(1, Number(limit) || 30));
-  const [approvals, drafts, docs, recentLog, hrConfirmations, dismissedByChat] = await Promise.all([
+  const [approvals, drafts, docs, recentLog, hrConfirmations, dismissedByChat, { employees }] = await Promise.all([
     listPendingApprovals(), listPendingDrafts(), documentRequests.listPendingReceived(),
-    listInboxLog(MAX_INBOX_LOG), listAllHrConfirmations(), listCommsDismissed()
+    listInboxLog(MAX_INBOX_LOG), listAllHrConfirmations(), listCommsDismissed(), employeeService.getEmployeeData()
   ]);
-  const needsYou = buildActionableWhatsappItems(approvals, drafts, docs, recentLog, hrConfirmations);
-  let rows = mergeRecentWhatsappConversations(needsYou, recentLog, Date.now(), Infinity, dismissedByChat);
+  const needsYou = buildActionableWhatsappItems(approvals, drafts, docs, recentLog, hrConfirmations, employees);
+  let rows = mergeRecentWhatsappConversations(needsYou, recentLog, Date.now(), Infinity, dismissedByChat, employees);
   const q = String(query || '').trim();
   if (q) rows = rows.filter((it) => waItemMatchesQuery(it, q));
   const page = rows.slice(safeOffset, safeOffset + safeLimit);
@@ -1023,8 +1058,13 @@ async function getWhatsappConversation(chatIdRaw) {
   // then any already-resolved name from the other records (skipping the
   // placeholder), then the bare number - never the placeholder string.
   const directoryMatch = await findEmployeeByPhone(chatId).catch(() => null);
+  // Task 3 (2026-11) LIVE BUG FIX: an INACTIVE record must never name a
+  // number (see resolveSenderName's own comment, and the "Pinky Sil"/
+  // "Debapriya Sen" live incident it documents) - only a CURRENT ACTIVE
+  // employee's match does.
+  const isActiveDirectoryMatch = Boolean(directoryMatch && directoryMatch.emp.status === 'ACTIVE' && directoryMatch.emp.name);
   const isRealName = (n) => n && n !== 'The sender';
-  const name = (directoryMatch && directoryMatch.emp.name) ||
+  const name = (isActiveDirectoryMatch && directoryMatch.emp.name) ||
     [latestLog, myApprovals[0], myDrafts[0], myFollowups[0]].map((r) => r && r.name).find(isRealName) ||
     chatId;
   // Same placeholder rule as the conversation-level `name` above, applied
@@ -1033,7 +1073,7 @@ async function getWhatsappConversation(chatIdRaw) {
   // resolved a real name from a different record - never let that leak
   // into a card's "For: ..." label, which forLabel (hrAssistant.js) shows
   // verbatim whenever it differs from the conversation header.
-  const itemLabel = (n) => (directoryMatch && directoryMatch.emp.name) || (isRealName(n) ? n : chatId);
+  const itemLabel = (n) => (isActiveDirectoryMatch && directoryMatch.emp.name) || (isRealName(n) ? n : chatId);
   // Per-bubble delivery status (live incident, 917278793115) - found live:
   // `lastOutcome` below only ever reflects the MOST RECENT inbox-log entry
   // for this whole chat, so two real send_failed sends were completely
@@ -5335,7 +5375,9 @@ async function listOpenHrFlowsForOwner() {
     return {
       kind: 'hr_note_flow',
       phone: f.phone,
-      senderName: (resolvedSender && resolvedSender.emp.name) || null,
+      // Task 3 (2026-11) LIVE BUG FIX: an INACTIVE record must never name
+      // a number - only a CURRENT ACTIVE employee's match does.
+      senderName: (resolvedSender && resolvedSender.emp.status === 'ACTIVE' && resolvedSender.emp.name) || null,
       topic: normalizeOpenFlowTopicCategory(f.topicLabel, f.summary),
       detail: f.summary || f.topicLabel || null,
       step: f.step,
@@ -11405,6 +11447,9 @@ module.exports = {
   setAllowlistName,
   getAllowlistName,
   resolveSenderName,
+  activeEmployeeNameFor,
+  buildActionableWhatsappItems,
+  mergeRecentWhatsappConversations,
   firstNameOf,
   classify,
   detectLang,

@@ -6060,6 +6060,83 @@ async function checkAsync(label, fn) {
     }
   });
 
+  console.log('='.repeat(70));
+  console.log('Task 3 (2026-11): sender names - a CURRENT ACTIVE employee match always wins; an INACTIVE/old employee record never names a number (LIVE BUG: "Pinky Sil"/"Debapriya Sen" were old inactive records whose numbers had since been reassigned - findEmployeeByPhone matched them regardless of status)');
+  console.log('='.repeat(70));
+  check('activeEmployeeNameFor (pure) resolves a CURRENT ACTIVE employee by phone', (() => {
+    const employees = [
+      { name: 'Active Amit', contactNumber: '919111111111', status: 'ACTIVE' },
+      { name: 'Inactive Ira', contactNumber: '919222222222', status: 'INACTIVE' }
+    ];
+    return whatsappAssistant.activeEmployeeNameFor('919111111111', employees) === 'Active Amit';
+  })());
+  check('activeEmployeeNameFor (pure) NEVER names a number from an INACTIVE record, even an exact phone match', whatsappAssistant.activeEmployeeNameFor('919222222222', [{ name: 'Inactive Ira', contactNumber: '919222222222', status: 'INACTIVE' }]) === null);
+  check('activeEmployeeNameFor (pure) returns null for a number matching no one', whatsappAssistant.activeEmployeeNameFor('919333333333', [{ name: 'Active Amit', contactNumber: '919111111111', status: 'ACTIVE' }]) === null);
+  await checkAsync('resolveSenderName LIVE BUG FIX: an INACTIVE employee record never names a number (previously matched ANY status) - the caller falls back to the bare number itself, never the old employee\'s name', async () => {
+    const phone = '910000007001';
+    const origGetData = employeeService.getEmployeeData;
+    employeeService.getEmployeeData = async () => ({
+      employees: [{ name: 'Old Inactive Employee', contactNumber: phone, status: 'INACTIVE', departmentKey: 'x', department: 'X' }],
+      departmentNames: new Map(), doerNames: new Map()
+    });
+    try {
+      return (await whatsappAssistant.resolveSenderName(phone)) === null;
+    } finally {
+      employeeService.getEmployeeData = origGetData;
+    }
+  });
+  await checkAsync('resolveSenderName still resolves a CURRENT ACTIVE employee normally (unaffected regression check)', async () => {
+    const phone = '910000007002';
+    const origGetData = employeeService.getEmployeeData;
+    employeeService.getEmployeeData = async () => ({
+      employees: [{ name: 'Current Active Employee', contactNumber: phone, status: 'ACTIVE', departmentKey: 'x', department: 'X' }],
+      departmentNames: new Map(), doerNames: new Map()
+    });
+    try {
+      return (await whatsappAssistant.resolveSenderName(phone)) === 'Current Active Employee';
+    } finally {
+      employeeService.getEmployeeData = origGetData;
+    }
+  });
+  await checkAsync('getWhatsappConversation header LIVE BUG FIX: an INACTIVE employee record never names the conversation header - falls back to the bare number', async () => {
+    const phone = '910000007003';
+    const origGetData = employeeService.getEmployeeData;
+    employeeService.getEmployeeData = async () => ({
+      employees: [{ name: 'Old Inactive Employee', contactNumber: phone, status: 'INACTIVE', departmentKey: 'x', department: 'X' }],
+      departmentNames: new Map(), doerNames: new Map()
+    });
+    try {
+      const convo = await whatsappAssistant.getWhatsappConversation(phone);
+      return convo.name === whatsapp.normalizePhone(phone);
+    } finally {
+      employeeService.getEmployeeData = origGetData;
+    }
+  });
+  check('buildActionableWhatsappItems: a CURRENT ACTIVE employee match for a chat wins over whatever name the pending item itself stored', (() => {
+    const employees = [{ name: 'Real Current Name', contactNumber: '919444444444', status: 'ACTIVE' }];
+    const approvals = [{ phone: '919444444444', name: 'Stale Old Name', dataRequestSummary: 'x', createdAt: 1 }];
+    const rows = whatsappAssistant.buildActionableWhatsappItems(approvals, [], [], [], [], employees);
+    return rows.length === 1 && rows[0].name === 'Real Current Name';
+  })());
+  check('buildActionableWhatsappItems: an INACTIVE record never names a number - falls back to whatever the item itself stored instead', (() => {
+    const employees = [{ name: 'Old Inactive', contactNumber: '919555555555', status: 'INACTIVE' }];
+    const approvals = [{ phone: '919555555555', name: 'Stored Name', dataRequestSummary: 'x', createdAt: 1 }];
+    const rows = whatsappAssistant.buildActionableWhatsappItems(approvals, [], [], [], [], employees);
+    return rows.length === 1 && rows[0].name === 'Stored Name';
+  })());
+  check('mergeRecentWhatsappConversations: a CURRENT ACTIVE employee match wins for a RESOLVED (non-needs-you) row too, never the inbox-log\'s own stored name', (() => {
+    const employees = [{ name: 'Real Current Name', contactNumber: '919666666666', status: 'ACTIVE' }];
+    const recentLog = [{ chatId: '919666666666', name: 'Stale Logged Name', outcome: 'sent', case: 'acknowledged', ts: Date.now() }];
+    const rows = whatsappAssistant.mergeRecentWhatsappConversations([], recentLog, Date.now(), Infinity, new Map(), employees);
+    return rows.length === 1 && rows[0].name === 'Real Current Name';
+  })());
+  check('mergeRecentWhatsappConversations: an INACTIVE record never names a resolved row - falls back to the inbox-log\'s own stored name', (() => {
+    const employees = [{ name: 'Old Inactive', contactNumber: '919777777777', status: 'INACTIVE' }];
+    const recentLog = [{ chatId: '919777777777', name: 'Stored Logged Name', outcome: 'sent', case: 'acknowledged', ts: Date.now() }];
+    const rows = whatsappAssistant.mergeRecentWhatsappConversations([], recentLog, Date.now(), Infinity, new Map(), employees);
+    return rows.length === 1 && rows[0].name === 'Stored Logged Name';
+  })());
+
   console.log(pass + '/' + (pass + fail) + ' passed' + (fail ? ', ' + fail + ' FAILED' : ''));
   if (failures.length) {
     console.log('Failed checks:');
