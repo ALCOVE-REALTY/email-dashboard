@@ -9,6 +9,9 @@
   const panel = document.getElementById('hrAssistantPanel');
   const closeBtn = document.getElementById('hrAssistantCloseBtn');
   const messagesEl = document.getElementById('hrAssistantMessages');
+  // Task 6 (2026-11) - a plain <div> now, not a <form> (see workforce.html)
+  // - kept the name `form` to avoid touching every line below that already
+  // refers to it.
   const form = document.getElementById('hrAssistantForm');
   const input = document.getElementById('assistantQuestion');
   const topbar = document.querySelector('.wf-topbar');
@@ -4228,7 +4231,12 @@
     });
   }
 
-  form.addEventListener('submit', async (e) => {
+  // Task 6 (2026-11) - `form` is a plain <div> now (no native form-submit
+  // event to listen for), so Enter-to-send and the send button are wired
+  // directly: Enter in the input (without Shift, which stays a newline)
+  // and a click on the send button both call the same handler a submit
+  // event used to.
+  async function sendAssistantMessage(e) {
     e.preventDefault();
     const text = input.value.trim();
     const attachment = pendingAttachment;
@@ -4309,6 +4317,11 @@
       if (sendBtn) sendBtn.disabled = false;
       input.focus();
     }
+  }
+  const sendAssistantBtn = document.getElementById('hrAssistantSendBtn');
+  if (sendAssistantBtn) sendAssistantBtn.addEventListener('click', sendAssistantMessage);
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) sendAssistantMessage(e);
   });
 
   // ---------- SUBH Automated Tasks ----------
