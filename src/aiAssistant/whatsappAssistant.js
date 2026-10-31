@@ -3279,6 +3279,23 @@ const HR_QUERY_HOD_SINGLE_WITH_CODE = {
   hinglish: (deptLabel, hodName, empCode) => deptLabel + ' ke HOD ka naam ' + hodName + ' hai, Employee Code ' + empCode + '.',
   english: (deptLabel, hodName, empCode) => 'The HOD of ' + deptLabel + ' is ' + hodName + ', Employee Code ' + empCode + '.'
 };
+// Task 6 (2026-10-31), direct instruction: "<dept> er HOD-er nam ar
+// contact no." asks for the HOD's name AND contact number together - same
+// "both answers in one professional line" spirit as the emp-code variant
+// above, matching the user's own exact example wording ("<Dept>
+// department-er HOD <Name>, contact no. <number>" - no "er nam" here,
+// deliberately kept distinct from the emp-code phrasing above).
+const HR_QUERY_HOD_SINGLE_WITH_CONTACT = {
+  banglish: (deptLabel, hodName, contactNo) => deptLabel + '-er HOD ' + hodName + ', contact no. ' + contactNo + '.',
+  hinglish: (deptLabel, hodName, contactNo) => deptLabel + ' ke HOD ' + hodName + ' hain, contact no. ' + contactNo + '.',
+  english: (deptLabel, hodName, contactNo) => 'The HOD of ' + deptLabel + ' is ' + hodName + ', contact no. ' + contactNo + '.'
+};
+// Both emp code AND contact number asked for together in one message.
+const HR_QUERY_HOD_SINGLE_WITH_CODE_AND_CONTACT = {
+  banglish: (deptLabel, hodName, empCode, contactNo) => deptLabel + '-er HOD er nam ' + hodName + ', Employee Code ' + empCode + ', contact no. ' + contactNo + '.',
+  hinglish: (deptLabel, hodName, empCode, contactNo) => deptLabel + ' ke HOD ka naam ' + hodName + ' hai, Employee Code ' + empCode + ', contact no. ' + contactNo + '.',
+  english: (deptLabel, hodName, empCode, contactNo) => 'The HOD of ' + deptLabel + ' is ' + hodName + ', Employee Code ' + empCode + ', contact no. ' + contactNo + '.'
+};
 // Looks up the HOD's own employee code by their exact name, preferring an
 // ACTIVE record (the same precedence computeHodBreakdown's own candidate
 // pool already favors) but falling back to any match so an inactive HOD
@@ -3286,6 +3303,11 @@ const HR_QUERY_HOD_SINGLE_WITH_CODE = {
 function findEmployeeIdByExactName(employees, name) {
   const match = employees.find((e) => e.name === name && e.status === 'ACTIVE') || employees.find((e) => e.name === name);
   return match ? match.employeeId : null;
+}
+// Same lookup, for the HOD's own contact number (Task 6).
+function findEmployeeContactByExactName(employees, name) {
+  const match = employees.find((e) => e.name === name && e.status === 'ACTIVE') || employees.find((e) => e.name === name);
+  return match ? match.contactNumber : null;
 }
 
 // Live bug fix (2026-10-29) - departmentHintMatches alone requires every
@@ -3419,9 +3441,16 @@ function buildHrDataQueryAnswer(employees, query, lang) {
         outgoingText = (HR_QUERY_NO_MATCH[lang] || HR_QUERY_NO_MATCH.english)(deptLabel, 'HOD');
       } else if (breakdown.length === 1) {
         const empCode = query.hodIncludeEmpCode ? findEmployeeIdByExactName(employees, breakdown[0].name) : null;
-        outgoingText = empCode
-          ? (HR_QUERY_HOD_SINGLE_WITH_CODE[lang] || HR_QUERY_HOD_SINGLE_WITH_CODE.english)(deptLabel, breakdown[0].name, empCode)
-          : (HR_QUERY_HOD_SINGLE[lang] || HR_QUERY_HOD_SINGLE.english)(deptLabel, breakdown[0].name);
+        const contactNo = query.hodIncludeContactNo ? findEmployeeContactByExactName(employees, breakdown[0].name) : null;
+        if (empCode && contactNo) {
+          outgoingText = (HR_QUERY_HOD_SINGLE_WITH_CODE_AND_CONTACT[lang] || HR_QUERY_HOD_SINGLE_WITH_CODE_AND_CONTACT.english)(deptLabel, breakdown[0].name, empCode, contactNo);
+        } else if (empCode) {
+          outgoingText = (HR_QUERY_HOD_SINGLE_WITH_CODE[lang] || HR_QUERY_HOD_SINGLE_WITH_CODE.english)(deptLabel, breakdown[0].name, empCode);
+        } else if (contactNo) {
+          outgoingText = (HR_QUERY_HOD_SINGLE_WITH_CONTACT[lang] || HR_QUERY_HOD_SINGLE_WITH_CONTACT.english)(deptLabel, breakdown[0].name, contactNo);
+        } else {
+          outgoingText = (HR_QUERY_HOD_SINGLE[lang] || HR_QUERY_HOD_SINGLE.english)(deptLabel, breakdown[0].name);
+        }
       } else {
         outgoingText = (HR_QUERY_HOD_MULTI[lang] || HR_QUERY_HOD_MULTI.english)(deptLabel, breakdown);
       }
@@ -3488,7 +3517,8 @@ function hrDataQueryTool() {
           employmentType: { type: 'string', enum: ['Confirmed', 'Probation'], description: 'Set to "Probation" for a probation-related question (e.g. "probation-e ke ke achen?") - omit otherwise.' },
           dojMonth: { type: 'integer', description: 'Joining month 1-12, ANY year - e.g. 10 for "who joined in October" (any October). Omit if no month was named.' },
           dojYear: { type: 'integer', description: 'Exact joining year, e.g. 2024 for "joined in 2024". Omit if no year was named.' },
-          hodIncludeEmpCode: { type: 'boolean', description: 'Only relevant when returnType is "hod" - true when the sender ALSO asked for the HOD\'s employee code/number alongside their name (e.g. "QC HOD emp code ar nam dao" asks for BOTH the HOD\'s emp code AND name) - any phrasing meaning employee code/number/ID counts ("emp code", "employee code", "emp id", "employee number"). Omit/false when only the name was asked for.' }
+          hodIncludeEmpCode: { type: 'boolean', description: 'Only relevant when returnType is "hod" - true when the sender ALSO asked for the HOD\'s employee code/number alongside their name (e.g. "QC HOD emp code ar nam dao" asks for BOTH the HOD\'s emp code AND name) - any phrasing meaning employee code/number/ID counts ("emp code", "employee code", "emp id", "employee number"). Omit/false when only the name was asked for.' },
+          hodIncludeContactNo: { type: 'boolean', description: 'Only relevant when returnType is "hod" - true when the sender ALSO asked for the HOD\'s contact/phone number alongside their name (e.g. "<dept> er HOD-er nam ar contact no." asks for BOTH the HOD\'s name AND contact number). Can be combined with hodIncludeEmpCode if both were asked for. Omit/false when only the name was asked for.' }
         },
         required: ['returnType']
       }
@@ -3918,12 +3948,37 @@ async function ensureDefaultDeptAliasesSeeded() {
 // both narrow correctly, without needing a separate classifier field
 // (hrNotificationThirdPartyHint/personLookupDepartment's own
 // descriptions already invite site/location words into this one string).
-// Task 2 - ALSO tries the confirmed site-alias map for the location field
-// specifically (a department/designation hint never needs aliasing - only
-// site names get colloquial nicknames).
+// Task 6 (2026-10-31), live bug fix: mirrors hintMatchesSiteAliasSync
+// above, exact same confirmed-alias cache + spelling-tolerant word match
+// (siteWordsFuzzyMatch), just department-scoped - "a department hint
+// never needs aliasing" (the comment this replaced) stopped being true
+// the moment department aliases shipped (Task 2, 2026-10-30): a person-
+// lookup hint of "QC" never matched the real "QUALITY" department without
+// this, the exact same gap the HR-data query engine already closed for
+// itself via resolveDeptAliasValues.
+function hintMatchesDeptAliasSync(department, hint) {
+  const normHint = normalizeForMatch(hint);
+  const normDept = normalizeForMatch(department);
+  if (!normHint || !normDept) return false;
+  const hintWords = normHint.split(' ').filter(Boolean);
+  for (const a of deptAliasCache) {
+    const normAlias = normalizeForMatch(a.alias);
+    if (!normAlias) continue;
+    const aliasWords = normAlias.split(' ').filter(Boolean);
+    const aliasIsHint = aliasWords.length > 0 && aliasWords.every((aw) => hintWords.some((hw) => siteWordsFuzzyMatch(hw, aw)));
+    if (!aliasIsHint) continue;
+    if (departmentHintMatches(department, a.deptValue) || normalizeForMatch(a.deptValue) === normDept) return true;
+  }
+  return false;
+}
+// ALSO tries the confirmed site-alias map for the location field and the
+// confirmed department-alias map for the department field - a hint like
+// "QC" or "Serampore" resolves through its own alias group, spelling-
+// tolerant, same mechanism as the dedicated HR-data query engine uses.
 function personHintMatches(emp, hint) {
   refreshSiteAliasCacheIfStale();
-  return departmentHintMatches(emp.department, hint) || departmentHintMatches(emp.location, hint) || departmentHintMatches(emp.designation, hint) || hintMatchesSiteAliasSync(emp.location, hint);
+  refreshDeptAliasCacheIfStale();
+  return departmentHintMatches(emp.department, hint) || departmentHintMatches(emp.location, hint) || departmentHintMatches(emp.designation, hint) || hintMatchesSiteAliasSync(emp.location, hint) || hintMatchesDeptAliasSync(emp.department, hint);
 }
 // Any status (ACTIVE/NOTICE PERIOD/INACTIVE) - the caller decides what to
 // do with each category (notice period is still "currently employed" for
