@@ -241,20 +241,39 @@
   let savedScrollY = 0;
   let currentConversationId = null;
 
-  // The panel covers everything below the app header while open, so the
-  // page content behind/under it shouldn't scroll - not even via an edge
-  // swipe/overscroll bounce. overflow on <body> alone doesn't reliably
-  // stop the page from scrolling (the document's actual scrolling box can
-  // be <html> instead depending on the browser), so both get locked; the
-  // scroll position is saved/restored too as a defensive backstop.
+  // Task 5 (2026-11) LIVE BUG FIX: overflow:hidden alone doesn't stop a
+  // mobile browser's own "scroll the focused input into view" behaviour
+  // the instant the chat input is tapped and the keyboard opens - that
+  // native scroll ignores overflow:hidden and moves the document anyway,
+  // which is exactly what caused the dashboard-home flash behind the
+  // panel: .wf-topbar (the app's own header, a normal in-flow element,
+  // not fixed) shifts with that scroll, syncPanelToViewport's
+  // `panel.top` tracks topbar's live position, and the brief mismatch
+  // between the panel's (position:fixed, viewport-relative) box and the
+  // document's mid-scroll layout let the real dashboard underneath show
+  // through for a frame. Taking <body> out of the scrollable flow
+  // entirely (position:fixed, pinned at its saved scroll offset) means
+  // there is nothing left for that native "scroll into view" behaviour
+  // to scroll - topbar's on-screen position can no longer move at all
+  // while the panel is open, keyboard or no keyboard.
   function lockBodyScroll() {
     savedScrollY = window.scrollY;
     document.documentElement.style.overflow = 'hidden';
     document.body.style.overflow = 'hidden';
+    document.body.style.position = 'fixed';
+    document.body.style.top = '-' + savedScrollY + 'px';
+    document.body.style.left = '0';
+    document.body.style.right = '0';
+    document.body.style.width = '100%';
   }
   function unlockBodyScroll() {
     document.documentElement.style.overflow = '';
     document.body.style.overflow = '';
+    document.body.style.position = '';
+    document.body.style.top = '';
+    document.body.style.left = '';
+    document.body.style.right = '';
+    document.body.style.width = '';
     window.scrollTo(0, savedScrollY);
   }
 
@@ -1321,10 +1340,14 @@
   window.__hrAssistantPanelIsOpen = () => !panel.hidden;
   // Re-sync right on focus/blur too, in addition to the visualViewport
   // listeners above - covers the moment the keyboard is animating in/out
-  // before the viewport has finished settling, so the input bar doesn't
-  // visibly lag behind it.
-  input.addEventListener('focus', () => setTimeout(syncPanelToViewport, 50));
-  input.addEventListener('blur', () => setTimeout(syncPanelToViewport, 50));
+  // before the viewport has finished settling, so the panel doesn't
+  // visibly lag behind it. Task 5 (2026-11) - delegated on the whole
+  // panel (focusin/focusout bubble, unlike focus/blur) rather than just
+  // the main chat input, so every text input/search bar on every page
+  // under Today's Updates gets the same immediate resync the chat input
+  // already had.
+  panel.addEventListener('focusin', (e) => { if (e.target && e.target.tagName === 'INPUT') setTimeout(syncPanelToViewport, 50); });
+  panel.addEventListener('focusout', (e) => { if (e.target && e.target.tagName === 'INPUT') setTimeout(syncPanelToViewport, 50); });
 
   // ---------- Shared stale-while-revalidate cache (speed fix) ----------
   // communications-summary and reminders?filter=X are each fetched from
