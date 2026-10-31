@@ -1582,6 +1582,12 @@ body { background: var(--wi-bg); }
   font-size: 0.78rem; font-weight: 600; line-height: 1.4; animation: mUp .4s cubic-bezier(.2,.7,.2,1) both;
 }
 .wf-comms-system-strip-text { flex: 1; white-space: pre-line; }
+/* Task 1 (2026-10-31) - SUBH daily summary notice only: each line's label
+   in the app's accent colour, the value after it in normal text, nothing
+   bold (overrides the strip's own font-weight:600, which still applies
+   to every other notice type). */
+.wf-comms-daily-notice { font-weight: 400; }
+.wf-comms-daily-label { color: var(--accent); font-weight: 400; }
 .wf-comms-system-strip-dismiss {
   border: none; background: transparent; color: inherit; opacity: .7; cursor: pointer; flex-shrink: 0; padding: 2px;
 }

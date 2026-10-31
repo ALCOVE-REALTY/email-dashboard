@@ -5328,6 +5328,17 @@ const HR_CONFIRMATION_WHICH_PENDING = {
 function requesterRefFor(senderName, senderPhone) {
   return (senderName && senderName !== 'The sender') ? senderName : ('+' + whatsapp.normalizePhone(senderPhone));
 }
+// Task 1 (2026-10-31) - owner-notification sender display: shows "Name
+// (phone)" when a real name is known, otherwise just the phone ONCE -
+// never "919830025114 (919830025114)" (found live: senderName can itself
+// end up equal to the phone digits wherever no real name was ever
+// resolved upstream, same root cause as the identical bug in the
+// Action-needed cards, see hrAssistant.js's own senderDisplay()).
+function senderNameAndPhone(name, phone) {
+  const normalizedPhone = whatsapp.normalizePhone(phone || '');
+  const isReal = Boolean(name) && name !== 'The sender' && whatsapp.normalizePhone(name) !== normalizedPhone;
+  return isReal ? (name + ' (' + phone + ')') : ('+' + normalizedPhone);
+}
 // The summary is always mid-sentence ("...message that <summary>. Can you
 // confirm?") - strips a trailing full stop the classifier's own sentence
 // may already have, so it never doubles up ("...day off day.. Can you").
@@ -5399,7 +5410,7 @@ async function sendHrConfirmationResultToSender(confirmation, outcomeText) {
   const sendResult = await sendWhatsAppChunked(confirmation.senderPhone, outcomeText);
   if (!sendResult.ok) {
     await logInboxEvent({ chatId: confirmation.senderPhone, name: confirmation.senderName, isGroup: false, messageSummary: '[HR confirmation result: ' + confirmation.summary + ']', aCase: 'hr_confirmation_result', sentText: outcomeText, outcome: 'send_failed', sentAt: Date.now() });
-    await postOwnerNotification('⚠️ ' + confirmation.senderName + ' (' + confirmation.senderPhone + ')-ke HR confirmation result pathate giye error holo: ' + sendResult.error);
+    await postOwnerNotification('⚠️ ' + senderNameAndPhone(confirmation.senderName, confirmation.senderPhone) + '-ke HR confirmation result pathate giye error holo: ' + sendResult.error);
     return;
   }
   await appendConvoHistory(confirmation.senderPhone, 'out', outcomeText);
@@ -5436,7 +5447,7 @@ async function closeHrConfirmationReminder(reminderId) {
 async function postHrConfirmationOwnerRecord(confirmation, outcome) {
   const timeLabel = new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' });
   await postOwnerNotification(
-    'HR confirmation record — ' + confirmation.senderName + ' (' + confirmation.senderPhone + '): "' + confirmation.summary + '". ' +
+    'HR confirmation record — ' + senderNameAndPhone(confirmation.senderName, confirmation.senderPhone) + ': "' + confirmation.summary + '". ' +
     'Manager: ' + confirmation.thirdPartyName + ' (' + confirmation.thirdPartyDepartment + '). ' +
     'Question sent at ' + new Date(confirmation.createdAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' }) + '. ' +
     'Answer: ' + outcome + ' (at ' + timeLabel + ').'
@@ -5541,7 +5552,7 @@ async function finalizeHrNoteThirdParty({ phone, senderName, lang, candidate, su
       : onNeverAuto ? 'uni never-auto list-e achen'
       : 'HR confirmations setting off ache';
     await postOwnerNotification(
-      '⚠️ ' + senderName + ' (' + phone + ') HR-bishoy janiyechhen ("' + summary + '"). ' + candidate.name + ' (' + candidate.department + ')-ke confirm korte hobe, kintu ' + reason +
+      '⚠️ ' + senderNameAndPhone(senderName, phone) + ' HR-bishoy janiyechhen ("' + summary + '"). ' + candidate.name + ' (' + candidate.department + ')-ke confirm korte hobe, kintu ' + reason +
       ' - tai automatically message kora hocche na. Apni direct handle korun.'
     );
     return { case: 'acknowledged', replyText: (HR_NOTE_BLOCKED_GENERIC[lang] || HR_NOTE_BLOCKED_GENERIC.english)(candidate.name), summaryForOwner: null, lang };
@@ -6240,7 +6251,7 @@ async function checkHrConfirmationNudges(now) {
     const createdAt = new Date(confirmation.createdAt);
     if (isPastEndOfDayIst(createdAt, now) && !confirmation.escalatedAt) {
       await postOwnerNotification(
-        '⚠️ HR confirmation still pending end of day — ' + confirmation.senderName + ' (' + confirmation.senderPhone + '): "' + confirmation.summary + '". ' +
+        '⚠️ HR confirmation still pending end of day — ' + senderNameAndPhone(confirmation.senderName, confirmation.senderPhone) + ': "' + confirmation.summary + '". ' +
         'Manager ' + confirmation.thirdPartyName + ' (' + confirmation.thirdPartyDepartment + ') has not answered. Please follow up directly.'
       );
       await updateHrConfirmation(confirmation.id, { escalatedAt: Date.now() });
@@ -6579,6 +6590,21 @@ function istNow() {
   const get = (t) => parts.find((p) => p.type === t).value;
   return { date: get('year') + '-' + get('month') + '-' + get('day'), hour: Number(get('hour')), minute: Number(get('minute')) };
 }
+// Task 1 (2026-10-31) - keeps the FIRST record per sender (phone) only,
+// so a sender with several pending items of the same kind (e.g. two
+// separate holding replies) shows up once in the name list below, never
+// repeated - the leading count still reflects every underlying item.
+function uniqueBySenderPhone(list, phoneKey) {
+  const seen = new Set();
+  const out = [];
+  for (const item of list) {
+    const key = whatsapp.normalizePhone(item[phoneKey] || '');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(item);
+  }
+  return out;
+}
 async function buildDailySummary() {
   const { date } = istNow();
   const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
@@ -6598,14 +6624,18 @@ async function buildDailySummary() {
   if (!gw.isConnected) lines.push('⚠️ WhatsApp has been disconnected since ' + gw.disconnectedSinceLabel + ' - reconnect at tools.alcoverealty.in.');
   lines.push('Auto-replies sent yesterday: ' + sentYesterday.length +
     (Object.keys(byCase).length ? ' (' + Object.entries(byCase).map(([c, n]) => c + ': ' + n).join(', ') + ')' : ''));
+  const uniqueFollowups = uniqueBySenderPhone(followups, 'chatId');
   lines.push('Holding replies needing follow-up: ' + followups.length +
-    (followups.length ? ' - ' + followups.slice(0, 10).map((f) => f.name).join(', ') : ''));
+    (uniqueFollowups.length ? ' - ' + uniqueFollowups.slice(0, 10).map((f) => f.name).join(', ') : ''));
+  const uniqueApprovals = uniqueBySenderPhone(pendingApprovals, 'phone');
   lines.push('HR data requests waiting for your approval: ' + pendingApprovals.length +
-    (pendingApprovals.length ? ' - ' + pendingApprovals.slice(0, 10).map((p) => p.name + ' (' + p.dataRequestSummary + ')').join(', ') : ''));
+    (uniqueApprovals.length ? ' - ' + uniqueApprovals.slice(0, 10).map((p) => p.name + ' (' + p.dataRequestSummary + ')').join(', ') : ''));
+  const uniqueNeverAuto = uniqueBySenderPhone(neverAutoPending, 'contactId');
   lines.push('Never-auto messages waiting for you: ' + neverAutoPending.length +
-    (neverAutoPending.length ? ' - ' + neverAutoPending.slice(0, 10).map((d) => d.name).join(', ') : ''));
+    (uniqueNeverAuto.length ? ' - ' + uniqueNeverAuto.slice(0, 10).map((d) => d.name).join(', ') : ''));
+  const uniqueDocs = uniqueBySenderPhone(pendingDocs, 'phone');
   lines.push('Documents received, not yet marked done: ' + pendingDocs.length +
-    (pendingDocs.length ? ' - ' + pendingDocs.slice(0, 10).map((d) => d.phone + ' (' + d.topic + ')').join(', ') : ''));
+    (uniqueDocs.length ? ' - ' + uniqueDocs.slice(0, 10).map((d) => d.phone + ' (' + d.topic + ')').join(', ') : ''));
   return lines.join('\n');
 }
 async function checkAndPostDailySummary() {

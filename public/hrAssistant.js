@@ -710,6 +710,43 @@
     return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   }
 
+  // Task 1 (2026-10-31) - the single shared "name · number" sender
+  // formatter: if a real, distinct name is known, show both; otherwise
+  // show the number (or whatever id is available) ONCE - never
+  // "919830025114 · 919830025114" (found live: the "name" field falls
+  // back to the raw phone/chatId in several places when no real name was
+  // ever resolved, so naive concatenation duplicated the number).
+  function senderDisplay(name, id) {
+    const n = (name == null ? '' : String(name)).trim();
+    const i = (id == null ? '' : String(id)).trim();
+    if (!n || n === 'The sender' || n === i) return i || n;
+    if (!i) return n;
+    return n + ' · ' + i;
+  }
+
+  // Task 1 (2026-10-31) - the SUBH daily summary notice gets each line's
+  // label (everything up to and including the colon) in the app's accent
+  // colour, the value after it in normal text, nothing bold. Every other
+  // notice (gateway disconnect, redelivered-message, etc.) has no fixed
+  // "label: value" shape, so it's left as plain escaped text.
+  const DAILY_SUMMARY_LABELS = [
+    'Auto-replies sent yesterday:',
+    'Holding replies needing follow-up:',
+    'HR data requests waiting for your approval:',
+    'Never-auto messages waiting for you:',
+    'Documents received, not yet marked done:'
+  ];
+  function formatNoticeHtml(text) {
+    const lines = String(text == null ? '' : text).split('\n');
+    if (!/^SUBH daily summary/.test(lines[0] || '')) return escapeHtml(text);
+    const html = lines.map((line) => {
+      const label = DAILY_SUMMARY_LABELS.find((l) => line.indexOf(l) === 0);
+      if (!label) return escapeHtml(line);
+      return '<span class="wf-comms-daily-label">' + escapeHtml(label) + '</span>' + escapeHtml(line.slice(label.length));
+    }).join('\n');
+    return '<span class="wf-comms-daily-notice">' + html + '</span>';
+  }
+
   // Attachments are held only in the browser (as a File object) and never
   // uploaded anywhere - there's no backend endpoint to receive them and the
   // mock/Claude providers have no file-handling capability yet. Picking one
@@ -1928,7 +1965,7 @@
       if (notices.length) {
         commsSystemStrip.hidden = false;
         commsSystemStrip.innerHTML =
-          '<span class="wf-comms-system-strip-text">' + notices.map((n) => escapeHtml(n.text)).join('\n') + '</span>' +
+          '<span class="wf-comms-system-strip-text">' + notices.map((n) => formatNoticeHtml(n.text)).join('\n') + '</span>' +
           '<button type="button" class="wf-comms-system-strip-dismiss" aria-label="Dismiss">' +
             '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>' +
           '</button>';
@@ -1995,8 +2032,8 @@
     if (!openFlowsList) return;
     if (!items.length) { openFlowsList.innerHTML = '<div class="wf-rem-empty">No open flows.</div>'; return; }
     openFlowsList.innerHTML = items.map((it) => {
-      const sender = it.senderName ? (it.senderName + ' · ' + it.phone) : it.phone;
-      const managerLine = it.manager ? (it.manager + (it.managerPhone ? ' · ' + it.managerPhone : '')) : 'Not chosen yet';
+      const sender = senderDisplay(it.senderName, it.phone);
+      const managerLine = it.manager ? senderDisplay(it.manager, it.managerPhone) : 'Not chosen yet';
       return '<div class="wf-auto-task-card wf-open-flow-row" data-chat-id="' + escapeHtml(it.phone || '') + '" role="button" tabindex="0">' +
         '<div class="wf-auto-task-head"><div style="flex:1;min-width:0">' +
           '<div class="wf-auto-task-subject">' + escapeHtml(sender) + '</div>' +
@@ -2760,7 +2797,7 @@
     const waitingTag = item.ageMs > 2 * 60 * 60 * 1000 ? '<span class="wf-action-needed-waiting-tag">Waiting ' + actionNeededAgeLabel(item.ageMs) + '</span>' : '';
     return '<div class="wf-auto-task-card" data-chat-id="' + escapeHtml(item.chatId) + '" data-escalation-id="' + escapeHtml(item.data.id) + '">' +
       '<div class="wf-action-needed-card-head">' +
-        '<span class="wf-auto-task-subject">' + escapeHtml(item.name) + ' · ' + escapeHtml(item.chatId) + waitingTag + '</span>' +
+        '<span class="wf-auto-task-subject">' + escapeHtml(senderDisplay(item.name, item.chatId)) + waitingTag + '</span>' +
         '<button type="button" class="wf-action-needed-openchat" data-open-chat="' + escapeHtml(item.chatId) + '">Open chat ›</button>' +
       '</div>' +
       '<div class="wf-auto-hint">Says ' + escapeHtml(item.data.summaryLocalized || item.data.summary || item.data.topicLabel || 'something') + ' was ' + (item.data.actionKind === 'instruction' ? 'told to them' : 'approved') + ', but couldn\'t say by whom even after 2 re-asks</div>' +
@@ -2803,7 +2840,7 @@
     const waitingTag = item.ageMs > 2 * 60 * 60 * 1000 ? '<span class="wf-action-needed-waiting-tag">Waiting ' + actionNeededAgeLabel(item.ageMs) + '</span>' : '';
     return '<div class="wf-auto-task-card" data-chat-id="' + escapeHtml(item.chatId) + '">' +
       '<div class="wf-action-needed-card-head">' +
-        '<span class="wf-auto-task-subject">' + escapeHtml(item.name) + ' · ' + escapeHtml(item.chatId) + waitingTag + '</span>' +
+        '<span class="wf-auto-task-subject">' + escapeHtml(senderDisplay(item.name, item.chatId)) + waitingTag + '</span>' +
         '<button type="button" class="wf-action-needed-openchat" data-open-chat="' + escapeHtml(item.chatId) + '">Open chat ›</button>' +
       '</div>' +
       '<div class="wf-auto-hint">' + actionNeededAgeLabel(item.ageMs) + ' ago</div>' +
