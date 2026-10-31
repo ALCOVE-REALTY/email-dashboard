@@ -1292,7 +1292,7 @@
   // renderable data for the others; every path still re-fetches fresh
   // data in the background and re-renders when it lands, so nothing here
   // is ever more than one poll cycle stale.
-  const pageDataCache = { comms: null, commsAt: 0, reminders: new Map(), automations: null, openFlows: null, convos: new Map() };
+  const pageDataCache = { comms: null, commsAt: 0, reminders: new Map(), automations: null, openFlows: null, convos: new Map(), siteAliases: null, deptAliases: null };
   // Bumped by invalidateReminderCache (every reminder mutation - done/
   // undo/cancel/snooze/create/edit). Any reminders fetch in flight when a
   // mutation happens captures remMutationSeq at send time and checks it
@@ -2275,17 +2275,12 @@
       '<input type="text" data-role="new-site-aliases" value="' + escapeHtml(suggested) + '" /></label>' +
       '<div class="wf-auto-actions"><button type="button" class="plain" data-action="confirm">Confirm</button></div></div>';
   }
-  async function loadSiteAliasesPage() {
-    if (!siteAliasesList) return;
-    siteAliasesList.innerHTML = '<div class="wf-skeleton-list"><div class="wf-skeleton-row"></div><div class="wf-skeleton-row"></div></div>';
-    if (newSitesList) newSitesList.innerHTML = '';
-    try {
-      const [aliasResp, newSitesResp] = await Promise.all([
-        fetch('/api/workforce/hr-assistant/site-aliases').then((res) => res.json()),
-        fetch('/api/workforce/hr-assistant/new-sites').then((res) => res.json())
-      ]);
-      const aliases = aliasResp.items || [];
-      const newSites = newSitesResp.items || [];
+  // Task 2 (2026-10-31) - stale-while-revalidate, same pattern as every
+  // other hot page in this panel: render instantly from cache (warmed by
+  // prefetchSubhSettingsAll when SUBH Settings opens, see workforce.js),
+  // then always refetch in the background to correct anything that
+  // changed since - never a blocking skeleton when a cached render exists.
+  function renderSiteAliasesPage(aliases, newSites) {
       if (newSitesList) {
         newSitesList.innerHTML = newSites.length ? newSites.map(newSiteCardHtml).join('') : '';
         newSitesList.querySelectorAll('[data-action="confirm"]').forEach((btn) => {
@@ -2296,6 +2291,7 @@
             const aliasWords = (input.value || '').split(',').map((s) => s.trim()).filter(Boolean);
             await runButtonAction(btn, () => postJsonOrThrow('/api/workforce/hr-assistant/new-sites/confirm', { siteValue, aliasWords }), () => {
               closeRowWithToast(card, { title: 'Site confirmed', type: 'success' });
+              pageDataCache.siteAliases = null; // a mutation just happened - never serve the stale cached count/list again
               loadSiteAliasesBadge();
             });
           });
@@ -2321,6 +2317,7 @@
             await runButtonAction(btn, () => fetch('/api/workforce/hr-assistant/site-aliases/' + encodeURIComponent(id), { method: 'DELETE' }).then((res) => res.json()), () => {
               chip.remove();
               showActionToast('Alias deleted');
+              pageDataCache.siteAliases = null; // a mutation just happened - never serve the stale cached list again
               // The group card itself (and its own count) only needs a
               // full reload if that was its LAST alias - cheaper to just
               // re-fetch than track per-group counts client-side for a
@@ -2337,12 +2334,38 @@
           });
         });
       }
+  }
+  async function loadSiteAliasesPage() {
+    if (!siteAliasesList) return;
+    const cached = pageDataCache.siteAliases;
+    if (cached) renderSiteAliasesPage(cached.aliases, cached.newSites);
+    else {
+      siteAliasesList.innerHTML = '<div class="wf-skeleton-list"><div class="wf-skeleton-row"></div><div class="wf-skeleton-row"></div></div>';
+      if (newSitesList) newSitesList.innerHTML = '';
+    }
+    try {
+      const [aliasResp, newSitesResp] = await Promise.all([
+        fetch('/api/workforce/hr-assistant/site-aliases').then((res) => res.json()),
+        fetch('/api/workforce/hr-assistant/new-sites').then((res) => res.json())
+      ]);
+      const aliases = aliasResp.items || [];
+      const newSites = newSitesResp.items || [];
+      pageDataCache.siteAliases = { aliases, newSites };
+      renderSiteAliasesPage(aliases, newSites);
     } catch (err) {
-      siteAliasesList.innerHTML = '<div class="wf-rem-empty">Could not load site names.</div>';
+      if (!cached) siteAliasesList.innerHTML = '<div class="wf-rem-empty">Could not load site names.</div>';
+      // else: keep showing the still-valid cached render
     }
   }
+  // Warms pageDataCache.siteAliases ahead of time (see
+  // prefetchSubhSettingsAll) - the badge reads the same cached "new sites"
+  // count instead of its own separate fetch when it's already warm.
   async function loadSiteAliasesBadge() {
     if (!siteAliasesBadge) return;
+    if (pageDataCache.siteAliases) {
+      setCountBadge(siteAliasesBadge, pageDataCache.siteAliases.newSites.length);
+      return;
+    }
     try {
       const r = await fetch('/api/workforce/hr-assistant/new-sites').then((res) => res.json());
       setCountBadge(siteAliasesBadge, (r.items || []).length);
@@ -2430,6 +2453,7 @@
       }, () => {
         closeSiteAliasSheet();
         showProToast({ title: siteAliasSheetState.mode === 'edit' ? 'Group updated' : 'Group added', type: 'success' });
+        pageDataCache.siteAliases = null; // a mutation just happened - never serve the stale cached list again
         if (panelView === 'siteAliases') loadSiteAliasesPage();
       }, { resetAfterSuccess: true });
     });
@@ -2462,17 +2486,9 @@
       '<input type="text" data-role="new-dept-aliases" value="' + escapeHtml(suggested) + '" /></label>' +
       '<div class="wf-auto-actions"><button type="button" class="plain" data-action="confirm">Confirm</button></div></div>';
   }
-  async function loadDeptAliasesPage() {
-    if (!deptAliasesList) return;
-    deptAliasesList.innerHTML = '<div class="wf-skeleton-list"><div class="wf-skeleton-row"></div><div class="wf-skeleton-row"></div></div>';
-    if (newDeptsList) newDeptsList.innerHTML = '';
-    try {
-      const [aliasResp, newDeptsResp] = await Promise.all([
-        fetch('/api/workforce/hr-assistant/dept-aliases').then((res) => res.json()),
-        fetch('/api/workforce/hr-assistant/new-depts').then((res) => res.json())
-      ]);
-      const aliases = aliasResp.items || [];
-      const newDepts = newDeptsResp.items || [];
+  // Task 2 (2026-10-31) - same stale-while-revalidate treatment as
+  // renderSiteAliasesPage above.
+  function renderDeptAliasesPage(aliases, newDepts) {
       if (newDeptsList) {
         newDeptsList.innerHTML = newDepts.length ? newDepts.map(newDeptCardHtml).join('') : '';
         newDeptsList.querySelectorAll('[data-action="confirm"]').forEach((btn) => {
@@ -2483,6 +2499,7 @@
             const aliasWords = (input.value || '').split(',').map((s) => s.trim()).filter(Boolean);
             await runButtonAction(btn, () => postJsonOrThrow('/api/workforce/hr-assistant/new-depts/confirm', { deptValue, aliasWords }), () => {
               closeRowWithToast(card, { title: 'Department confirmed', type: 'success' });
+              pageDataCache.deptAliases = null; // a mutation just happened - never serve the stale cached count/list again
               loadDeptAliasesBadge();
             });
           });
@@ -2506,6 +2523,7 @@
             await runButtonAction(btn, () => fetch('/api/workforce/hr-assistant/dept-aliases/' + encodeURIComponent(id), { method: 'DELETE' }).then((res) => res.json()), () => {
               chip.remove();
               showActionToast('Alias deleted');
+              pageDataCache.deptAliases = null; // a mutation just happened - never serve the stale cached list again
               if (!deptAliasesList.querySelector('[data-dept-value="' + CSS.escape(chip.closest('[data-dept-value]').dataset.deptValue) + '"] [data-id]')) loadDeptAliasesPage();
             });
           });
@@ -2518,17 +2536,63 @@
           });
         });
       }
+  }
+  async function loadDeptAliasesPage() {
+    if (!deptAliasesList) return;
+    const cached = pageDataCache.deptAliases;
+    if (cached) renderDeptAliasesPage(cached.aliases, cached.newDepts);
+    else {
+      deptAliasesList.innerHTML = '<div class="wf-skeleton-list"><div class="wf-skeleton-row"></div><div class="wf-skeleton-row"></div></div>';
+      if (newDeptsList) newDeptsList.innerHTML = '';
+    }
+    try {
+      const [aliasResp, newDeptsResp] = await Promise.all([
+        fetch('/api/workforce/hr-assistant/dept-aliases').then((res) => res.json()),
+        fetch('/api/workforce/hr-assistant/new-depts').then((res) => res.json())
+      ]);
+      const aliases = aliasResp.items || [];
+      const newDepts = newDeptsResp.items || [];
+      pageDataCache.deptAliases = { aliases, newDepts };
+      renderDeptAliasesPage(aliases, newDepts);
     } catch (err) {
-      deptAliasesList.innerHTML = '<div class="wf-rem-empty">Could not load department names.</div>';
+      if (!cached) deptAliasesList.innerHTML = '<div class="wf-rem-empty">Could not load department names.</div>';
     }
   }
   async function loadDeptAliasesBadge() {
     if (!deptAliasesBadge) return;
+    if (pageDataCache.deptAliases) {
+      setCountBadge(deptAliasesBadge, pageDataCache.deptAliases.newDepts.length);
+      return;
+    }
     try {
       const r = await fetch('/api/workforce/hr-assistant/new-depts').then((res) => res.json());
       setCountBadge(deptAliasesBadge, (r.items || []).length);
     } catch (err) { /* best effort */ }
   }
+  // Task 2 (2026-10-31) - warms both caches the moment SUBH Settings opens
+  // (called from workforce.js - see its own 'subhSettings' view-enter
+  // case), so by the time the owner actually taps into Site names or
+  // Department names, loadSiteAliasesPage/loadDeptAliasesPage render
+  // instantly from cache instead of waiting on a fresh fetch. Runs in
+  // parallel, best-effort - a failure here just means the pages fall back
+  // to their own normal fetch-on-open behavior, same as a cold cache.
+  async function prefetchSubhSettingsAll() {
+    try {
+      const [aliasResp, newSitesResp] = await Promise.all([
+        fetch('/api/workforce/hr-assistant/site-aliases').then((res) => res.json()),
+        fetch('/api/workforce/hr-assistant/new-sites').then((res) => res.json())
+      ]);
+      pageDataCache.siteAliases = { aliases: aliasResp.items || [], newSites: newSitesResp.items || [] };
+    } catch (err) { /* best effort - a real page open will just fetch fresh */ }
+    try {
+      const [deptAliasResp, newDeptsResp] = await Promise.all([
+        fetch('/api/workforce/hr-assistant/dept-aliases').then((res) => res.json()),
+        fetch('/api/workforce/hr-assistant/new-depts').then((res) => res.json())
+      ]);
+      pageDataCache.deptAliases = { aliases: deptAliasResp.items || [], newDepts: newDeptsResp.items || [] };
+    } catch (err) { /* best effort - a real page open will just fetch fresh */ }
+  }
+  window.__hrAssistantPrefetchSubhSettings = prefetchSubhSettingsAll;
   function showDeptAliases() {
     setPanelView('deptAliases');
     loadDeptAliasesPage();
@@ -2589,6 +2653,7 @@
       }, () => {
         closeDeptAliasSheet();
         showProToast({ title: deptAliasSheetState.mode === 'edit' ? 'Group updated' : 'Group added', type: 'success' });
+        pageDataCache.deptAliases = null; // a mutation just happened - never serve the stale cached list again
         if (panelView === 'deptAliases') loadDeptAliasesPage();
       }, { resetAfterSuccess: true });
     });

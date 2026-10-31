@@ -613,6 +613,12 @@ function setView(view, opts = {}) {
     document.getElementById('ipNamePromptPanel').hidden = true;
   }
   if (view === 'subhSettings') {
+    // Task 2 (2026-10-31) - warms the Site names/Department names caches
+    // the moment this view opens, so by the time the owner actually taps
+    // into either page, it renders instantly from cache instead of
+    // waiting on a fresh fetch (see prefetchSubhSettingsAll in
+    // hrAssistant.js).
+    if (window.__hrAssistantPrefetchSubhSettings) window.__hrAssistantPrefetchSubhSettings();
     // UI fix (2026-10-29) - refreshes the "new sites pending" badge on the
     // "Site names" card every time this view is entered (loadView's own
     // cache would otherwise only run this once) - same data the panel's
