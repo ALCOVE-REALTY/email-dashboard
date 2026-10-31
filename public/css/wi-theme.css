@@ -1611,26 +1611,24 @@ body { background: var(--wi-bg); }
   display: flex; align-items: center; gap: 2px; flex-shrink: 0; white-space: nowrap;
 }
 .wf-comms-viewall { font-size: 0.72rem; font-weight: 700; color: var(--wi-primary); cursor: pointer; flex-shrink: 0; }
-@media (max-width: 420px) {
-  .wf-open-flows-btn { width: 36px; height: 36px; }
-  .wf-open-flows-btn-circle { width: 26px; height: 26px; }
-  .wf-open-flows-btn-circle svg { width: 14px; height: 14px; }
-}
-/* Open flows entry point - an hourglass icon button (30px visible circle,
-   44px tap area per direct instruction) sitting between the "Important
-   WhatsApp" title and "View All", with a small count badge overlaid at
-   its top-right corner (hidden at 0 via the shared .wi-count-badge
-   component/setCountBadge - see hrAssistant.js). */
+/* Important WhatsApp header icons (Action needed / Open flows /
+   Templates) - sized for THIS page specifically (Task 3, 2026-10-31):
+   36px visible circle, 48px tap area, ~20px icon, the same on phone and
+   desktop (no longer shrinking on a narrow phone - these are the only
+   three buttons using this class, see workforce.html). With a count
+   badge overlaid at its top-right corner (hidden at 0 via the shared
+   .wi-count-badge component/setCountBadge - see hrAssistant.js). */
 .wf-open-flows-btn {
   position: relative; display: inline-flex; align-items: center; justify-content: center;
-  width: 44px; height: 44px; border: none; background: transparent; padding: 0; cursor: pointer; flex-shrink: 0;
+  width: 48px; height: 48px; border: none; background: transparent; padding: 0; cursor: pointer; flex-shrink: 0;
 }
 .wf-open-flows-btn-circle {
-  width: 30px; height: 30px; border-radius: 50%;
+  width: 36px; height: 36px; border-radius: 50%;
   background: var(--wi-primary-50); color: var(--wi-primary);
   display: flex; align-items: center; justify-content: center;
   transition: background-color .15s ease;
 }
+.wf-open-flows-btn-circle svg { width: 20px; height: 20px; }
 .wf-open-flows-btn:active .wf-open-flows-btn-circle { background: var(--wi-primary-ring); }
 .wf-open-flows-badge { position: absolute; top: 2px; right: 2px; }
 .wf-comms-mail-card {
@@ -1638,6 +1636,9 @@ body { background: var(--wi-bg); }
   padding: 18px 14px; text-align: center; font-size: 0.78rem; font-weight: 600; color: var(--wi-muted);
 }
 .wf-comms-wa-list { display: flex; flex-direction: column; gap: 10px; }
+/* Task 3 (2026-10-31) - infinite-scroll loading indicator at the bottom
+   of the Important WhatsApp list, shown while an older page is loading. */
+.wf-comms-wa-loadmore { display: flex; justify-content: center; padding: 10px 0 4px; }
 /* Shared cold-load placeholder for the Reminders/Important Communications
    lists (speed fix) - shown only when there's no cached response yet to
    render instantly instead; reduced-motion already strips the shimmer

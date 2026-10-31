@@ -1416,8 +1416,6 @@
     // elsewhere, no flicker when nothing's new.
     if (panelView === 'commsHub') {
       renderCommsHubBadges(data);
-    } else if (panelView === 'waAll') {
-      renderWaAllFiltered(data.whatsappAllItems || []);
     } else if (panelView === 'hub') {
       renderHubBadges(data, (pageDataCache.reminders.get('today') && pageDataCache.reminders.get('today').data.counts) || { all: 0 });
     } else if (panelView === 'conversation') {
@@ -1840,11 +1838,15 @@
     // but never actually committed server-side), and guards against a
     // slightly-stale request already in flight (e.g. the View All page's
     // own background refresh) winning the race and silently re-adding it.
+    // Task 3 (2026-10-31) - the Important WhatsApp page's own list is no
+    // longer part of this payload; a delete made while that page is open
+    // just reloads its first page fresh (same search query, if any)
+    // instead of re-rendering from communications-summary.
+    if (panelView === 'waAll') loadWaAllFirstPage();
     const fresh = await fetch('/api/workforce/hr-assistant/communications-summary').then((res) => res.json()).catch(() => null);
     if (fresh) {
       pageDataCache.comms = fresh;
-      if (panelView === 'waAll') renderWaAllFiltered(fresh.whatsappAllItems || []);
-      else if (panelView === 'commsHub') renderCommsHubBadges(fresh);
+      if (panelView === 'commsHub') renderCommsHubBadges(fresh);
       setCountBadge(todayUpdatesBadge, (fresh.importantMailsCount || 0) + (fresh.importantWhatsappCount || 0) + (fresh.remindersPendingCount || 0));
       // Only while the WhatsApp page is actually on screen - commsHeadBadge
       // is shared with the Reminders page header, which means something
@@ -1869,81 +1871,126 @@
       btn.addEventListener('click', (e) => { e.stopPropagation(); handleWaRowDelete(btn); });
     });
   }
-  function renderWaList(container, items) {
-    if (!container) return;
-    if (!items.length) {
-      container.innerHTML = '<div class="wf-comms-empty">Nothing pending - all clear!</div>';
+  // Task 3 (2026-10-31) - Important WhatsApp: ALL conversations, newest
+  // first, server-paginated (30 at a time, GET
+  // /hr-assistant/whatsapp-all-conversations) and server-SEARCHED - the
+  // search bar's `q` is sent to that same endpoint, so it covers every
+  // conversation the store holds, never just whichever pages happen to
+  // be scrolled into view already. waAllRequestId guards against a stale
+  // in-flight request (a slow earlier page-2 fetch, or a superseded
+  // search) winning a race against a newer one and clobbering its result.
+  const WA_ALL_PAGE_SIZE = 30;
+  const WA_ALL_SCROLL_THRESHOLD_PX = 200;
+  let waAllItems = [];
+  let waAllOffset = 0;
+  let waAllHasMore = true;
+  let waAllLoading = false;
+  let waAllQuery = '';
+  let waAllRequestId = 0;
+  let waAllSearchDebounceTimer = null;
+  function waAllLoadMoreRowHtml() {
+    return '<div class="wf-comms-wa-loadmore"><div class="spinner spinner-sm"></div></div>';
+  }
+  // Full (re)render - used only for a fresh load/search, where resetting
+  // scroll to the top is correct/expected. loadWaAllMore below NEVER calls
+  // this - it appends instead, so scrolling to load older conversations
+  // never rebuilds (and never visibly jumps/flickers) the rows already on
+  // screen, per the "no jump" requirement.
+  function renderWaAllList() {
+    if (!commsWaAllList) return;
+    if (!waAllItems.length) {
+      commsWaAllList.innerHTML = waAllLoading
+        ? '<div class="wf-skeleton-list"><div class="wf-skeleton-row"></div><div class="wf-skeleton-row"></div><div class="wf-skeleton-row"></div></div>'
+        : '<div class="wf-comms-empty">' + (waAllQuery ? 'No conversations match "' + escapeHtml(waAllQuery) + '".' : 'Nothing pending - all clear!') + '</div>';
       return;
     }
-    container.innerHTML = items.map((it, i) => buildWaRowHtml(it, i)).join('');
-    wireWaRows(container);
+    commsWaAllList.innerHTML = waAllItems.map((it, i) => buildWaRowHtml(it, i)).join('') + (waAllHasMore ? waAllLoadMoreRowHtml() : '');
+    wireWaRows(commsWaAllList);
   }
-
-  // Live-refresh variant (item 3, 10-15s auto-poll): skips the rebuild
-  // entirely when the list content hasn't actually changed (fingerprint
-  // compare, same technique the Reminders list already uses) - a poll
-  // landing every 10-15s must never flicker/reset scroll position when
-  // nothing is new. When it DOES rebuild, any chatId that wasn't in the
-  // previous render gets a one-time slide-in animation class, so a brand
-  // new sender/message is visibly obvious rather than just silently
-  // appearing at the top on the next poll.
-  const waListState = new WeakMap(); // container -> { fingerprint, chatIds: Set }
-  function waRowFingerprint(it) {
-    return [it.chatId, it.needsYou, it.statusLabel, it.lastMessageTime, it.lastMessageText, it.itemCount].join('\u0001');
+  // Builds new rows in a detached wrapper and wires THEM ONLY, before
+  // insertion - wiring via the shared container (like renderWaAllList
+  // does) would re-select every already-wired row too and stack a
+  // duplicate click/delete listener onto each one every time more load.
+  function waRowsToFragment(items, startIndex) {
+    const wrapper = document.createElement('div');
+    wrapper.innerHTML = items.map((it, i) => buildWaRowHtml(it, startIndex + i)).join('');
+    wireWaRows(wrapper);
+    const frag = document.createDocumentFragment();
+    while (wrapper.firstChild) frag.appendChild(wrapper.firstChild);
+    return frag;
   }
-  function renderWaListLive(container, items) {
-    if (!container) return;
-    const fingerprint = items.map(waRowFingerprint).join('\u0002');
-    const prevState = waListState.get(container) || { fingerprint: null, chatIds: new Set() };
-    if (fingerprint === prevState.fingerprint) return; // nothing changed - skip the rebuild, no flicker
-    const newChatIds = new Set(items.map((it) => it.chatId));
-    renderWaList(container, items);
-    if (prevState.fingerprint !== null) { // not the very first render - a cold load never "slides in"
-      items.forEach((it) => {
-        if (prevState.chatIds.has(it.chatId)) return;
-        const rowEl = container.querySelector('.wf-comms-wa-row[data-chat-id="' + CSS.escape(it.chatId) + '"]');
-        if (rowEl) rowEl.classList.add('wf-card-enter');
-      });
+  async function fetchWaAllPage(offset) {
+    const qs = new URLSearchParams({ offset: String(offset), limit: String(WA_ALL_PAGE_SIZE) });
+    if (waAllQuery) qs.set('q', waAllQuery);
+    const r = await fetch('/api/workforce/hr-assistant/whatsapp-all-conversations?' + qs.toString());
+    return r.json();
+  }
+  async function loadWaAllFirstPage() {
+    const myRequestId = ++waAllRequestId;
+    waAllLoading = true;
+    waAllOffset = 0;
+    waAllItems = [];
+    renderWaAllList();
+    try {
+      const data = await fetchWaAllPage(0);
+      if (myRequestId !== waAllRequestId) return; // superseded by a newer search/reload
+      waAllItems = data.items || [];
+      waAllOffset = waAllItems.length;
+      waAllHasMore = Boolean(data.hasMore);
+    } catch (err) {
+      waAllHasMore = false;
+    } finally {
+      waAllLoading = false;
+      renderWaAllList();
     }
-    waListState.set(container, { fingerprint, chatIds: newChatIds });
   }
-
-  // Task 1 (2026-10-31) - Important WhatsApp search: client-side only
-  // (filters the already-loaded list, no network round trip), matches
-  // sender name, number or message text. Always re-filters from the FULL,
-  // unfiltered dataset (waAllFullItems) - never filters an already-
-  // filtered result - so typing then backspacing never loses rows. Items
-  // arrive already sorted newest-first (mergeRecentWhatsappConversations);
-  // .filter() preserves that order, so results stay in time order with no
-  // extra sort needed.
-  let waAllFullItems = [];
-  let waAllSearchQuery = '';
-  function waItemMatchesQuery(item, q) {
-    const needle = q.toLowerCase();
-    const digits = q.replace(/\D/g, '');
-    if ((item.name || '').toLowerCase().includes(needle)) return true;
-    if ((item.lastMessageText || '').toLowerCase().includes(needle)) return true;
-    if (digits && (item.chatId || '').includes(digits)) return true;
-    return false;
+  async function loadWaAllMore() {
+    if (waAllLoading || !waAllHasMore || !commsWaAllList) return;
+    const myRequestId = waAllRequestId;
+    waAllLoading = true;
+    let loadMoreEl = commsWaAllList.querySelector('.wf-comms-wa-loadmore');
+    if (!loadMoreEl) commsWaAllList.insertAdjacentHTML('beforeend', waAllLoadMoreRowHtml());
+    try {
+      const data = await fetchWaAllPage(waAllOffset);
+      if (myRequestId !== waAllRequestId) return; // superseded by a newer search/reload
+      const newItems = data.items || [];
+      const startIndex = waAllItems.length;
+      waAllItems = waAllItems.concat(newItems);
+      waAllOffset = waAllItems.length;
+      waAllHasMore = Boolean(data.hasMore);
+      loadMoreEl = commsWaAllList.querySelector('.wf-comms-wa-loadmore');
+      if (loadMoreEl) loadMoreEl.remove();
+      commsWaAllList.appendChild(waRowsToFragment(newItems, startIndex));
+      if (waAllHasMore) commsWaAllList.insertAdjacentHTML('beforeend', waAllLoadMoreRowHtml());
+    } catch (err) {
+      loadMoreEl = commsWaAllList.querySelector('.wf-comms-wa-loadmore');
+      if (loadMoreEl) loadMoreEl.remove(); // next scroll near the bottom just retries
+    } finally {
+      waAllLoading = false;
+    }
   }
-  function renderWaAllFiltered(items) {
-    waAllFullItems = items;
-    const q = waAllSearchQuery.trim();
-    renderWaListLive(commsWaAllList, q ? items.filter((it) => waItemMatchesQuery(it, q)) : items);
+  if (commsWaAllPage) {
+    commsWaAllPage.addEventListener('scroll', () => {
+      if (panelView !== 'waAll') return;
+      const { scrollTop, scrollHeight, clientHeight } = commsWaAllPage;
+      if (scrollHeight - scrollTop - clientHeight < WA_ALL_SCROLL_THRESHOLD_PX) loadWaAllMore();
+    });
   }
   if (commsWaAllSearch) {
     commsWaAllSearch.addEventListener('input', () => {
-      waAllSearchQuery = commsWaAllSearch.value;
-      if (commsWaAllSearchClear) commsWaAllSearchClear.hidden = !waAllSearchQuery;
-      renderWaAllFiltered(waAllFullItems);
+      waAllQuery = commsWaAllSearch.value.trim();
+      if (commsWaAllSearchClear) commsWaAllSearchClear.hidden = !waAllQuery;
+      clearTimeout(waAllSearchDebounceTimer);
+      waAllSearchDebounceTimer = setTimeout(loadWaAllFirstPage, 250);
     });
   }
   if (commsWaAllSearchClear) {
     commsWaAllSearchClear.addEventListener('click', () => {
       commsWaAllSearch.value = '';
-      waAllSearchQuery = '';
+      waAllQuery = '';
       commsWaAllSearchClear.hidden = true;
-      renderWaAllFiltered(waAllFullItems);
+      clearTimeout(waAllSearchDebounceTimer);
+      loadWaAllFirstPage();
       commsWaAllSearch.focus();
     });
   }
@@ -1982,23 +2029,18 @@
     if (commsMailCard) commsMailCard.textContent = 'Mail integration coming soon.';
   }
 
-  // The WhatsApp sub-page (Task 4) - same data already in
-  // pageDataCache.comms (warm from the badge poll almost always), stale-
-  // while-revalidate same as every other comms view.
+  // The WhatsApp sub-page (Task 4; Task 3 2026-10-31: now its own
+  // paginated/searched endpoint - see loadWaAllFirstPage - rather than a
+  // field on the shared communications-summary payload). A fresh open of
+  // the page always starts with the search cleared and the first page
+  // freshly loaded - never carries a stale query or a stale list over
+  // from a previous visit.
   function showWaAll() {
     setPanelView('waAll');
-    // A fresh open of the page always starts with the search cleared -
-    // never carries a stale query over from a previous visit.
     if (commsWaAllSearch) commsWaAllSearch.value = '';
-    waAllSearchQuery = '';
+    waAllQuery = '';
     if (commsWaAllSearchClear) commsWaAllSearchClear.hidden = true;
-    const cached = pageDataCache.comms;
-    if (cached) renderWaAllFiltered(cached.whatsappAllItems || []);
-    else if (commsWaAllList) commsWaAllList.innerHTML = '<div class="wf-skeleton-list"><div class="wf-skeleton-row"></div><div class="wf-skeleton-row"></div><div class="wf-skeleton-row"></div></div>';
-    fetch('/api/workforce/hr-assistant/communications-summary').then((r) => r.json()).then((data) => {
-      pageDataCache.comms = data;
-      if (panelView === 'waAll') renderWaAllFiltered(data.whatsappAllItems || []);
-    }).catch(() => { /* keep showing whatever's already rendered */ });
+    loadWaAllFirstPage();
   }
   if (commsHubWaTile) commsHubWaTile.addEventListener('click', () => { pushNav({ type: 'waAll' }); showWaAll(); });
   // The Mails sub-page (Task 4) - static placeholder today (Phase 3 builds
@@ -2996,7 +3038,7 @@
       pageDataCache.commsAt = Date.now();
     } catch (err) {
       if (pageDataCache.comms) return; // keep showing the still-valid cached render
-      data = { importantMailsCount: 0, whatsappItems: [], whatsappAllItems: [], importantWhatsappCount: 0, systemNotices: [] };
+      data = { importantMailsCount: 0, whatsappItems: [], importantWhatsappCount: 0, systemNotices: [] };
     }
     if (panelView !== 'commsHub') return; // navigated away before the fetch resolved
     renderCommsData(data);

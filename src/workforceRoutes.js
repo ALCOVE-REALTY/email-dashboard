@@ -1742,15 +1742,12 @@ router.post('/hr-assistant/whatsapp-list', async (req, res) => {
 // surface here).
 router.get('/hr-assistant/communications-summary', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) {
-    return res.json({ importantMailsCount: 0, whatsappItems: [], whatsappAllItems: [], importantWhatsappCount: 0, systemNotices: [], remindersPendingCount: 0, remindersDueNow: [] });
+    return res.json({ importantMailsCount: 0, whatsappItems: [], importantWhatsappCount: 0, systemNotices: [], remindersPendingCount: 0, remindersDueNow: [] });
   }
   const now = new Date();
   // Speed fix: one shared reminder snapshot (getDashboardSnapshot) instead
   // of two separate reminderService calls (dueReminders + listReminders)
-  // that each independently re-fetched the full reminder list. Same idea
-  // for WhatsApp: getWhatsappVisibilitySnapshot fetches needsYou/inbox-log
-  // ONCE and derives both the 24h main-page view and the unbounded
-  // View-All view from it, rather than paying for that I/O twice.
+  // that each independently re-fetched the full reminder list.
   const [waSnapshot, systemNotices, reminderSnapshot, authAlerts] = await Promise.all([
     whatsappAssistant.getWhatsappVisibilitySnapshot(now),
     whatsappAssistant.listSystemNotices(),
@@ -1768,13 +1765,15 @@ router.get('/hr-assistant/communications-summary', async (req, res) => {
     importantMailsCount: 0, // Phase 3
     // whatsappItems: the main Important Communications page - needs-you
     // (any age) + resolved conversations with activity in the last 24h.
-    // whatsappAllItems: View All - same needs-you set, but resolved
-    // conversations are NOT cut off at 24h (full retained history).
+    // Task 3 (2026-10-31) - the Important WhatsApp page's own full,
+    // infinite-scrolling list is fetched separately now (see
+    // GET /hr-assistant/whatsapp-all-conversations below), only while that
+    // page is actually open, instead of being computed on every poll of
+    // this endpoint whether or not anyone is looking at it.
     whatsappItems: waSnapshot.recentItems,
-    whatsappAllItems: waSnapshot.allItems,
     // Badge/header counts only ever reflect needs-you items, regardless of
-    // which of the two lists above is currently on screen - never the
-    // resolved-conversation rows mixed in for live visibility.
+    // which page is currently on screen - never the resolved-conversation
+    // rows mixed in for live visibility.
     importantWhatsappCount: waSnapshot.needsYouCount,
     systemNotices: allNotices,
     // Home's badge = pending reminders + needs-you WhatsApp items (+ mails
@@ -1784,6 +1783,23 @@ router.get('/hr-assistant/communications-summary', async (req, res) => {
     // below already shows everything due.
     remindersPendingCount: reminderCounts.all
   });
+});
+
+// Task 3 (2026-10-31) - the Important WhatsApp page's own data: ALL
+// conversations, newest first, server-paginated (offset/limit, default
+// page size 30) and server-searched (q, over every conversation this
+// store still holds, never just whatever page happens to be loaded in
+// the browser). Same owner-only gate as communications-summary above.
+router.get('/hr-assistant/whatsapp-all-conversations', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const offset = parseInt(req.query.offset, 10) || 0;
+    const limit = parseInt(req.query.limit, 10) || 30;
+    const result = await whatsappAssistant.listAllWhatsappConversationsPage({ offset, limit, query: req.query.q });
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ---------------- SUBH Reminders (Phase 2) ----------------

@@ -5943,6 +5943,29 @@ async function checkAsync(label, fn) {
   })());
   check('a "list" returnType stays within the official tier (officialEligible=true) by default - name/designation/department/location are all official fields', whatsappAssistant.buildHrDataQueryAnswer(FAKE_HR_QUERY_EMPLOYEES, { returnType: 'list', designation: 'welder' }, 'banglish').officialEligible === true);
   check('a "count" returnType stays conservative (officialEligible=false) - never auto-sent, even though a count alone reveals no individual field', whatsappAssistant.buildHrDataQueryAnswer(FAKE_HR_QUERY_EMPLOYEES, { returnType: 'count', designation: 'welder' }, 'banglish').officialEligible === false);
+
+  console.log('='.repeat(70));
+  console.log('Task 3 (2026-10-31): listAllWhatsappConversationsPage - the Important WhatsApp page\'s own ALL-conversations, paginated + searched source');
+  console.log('='.repeat(70));
+  await checkAsync('listAllWhatsappConversationsPage paginates newest-first and reports hasMore correctly, and its own search (q) covers every conversation it holds, not just the loaded page', async () => {
+    const marker = 'PageTestMarker' + Date.now();
+    const phones = ['910000002401', '910000002402', '910000002403'];
+    for (let i = 0; i < phones.length; i++) {
+      await whatsappAssistant.logInboxEvent({ chatId: phones[i], name: marker + i, isGroup: false, messageSummary: 'hello ' + i, aCase: 'acknowledged', sentText: 'hi ' + i, outcome: 'sent' });
+      await new Promise((r) => setTimeout(r, 5)); // distinct timestamps, newest-first order is deterministic
+    }
+    const all = await whatsappAssistant.listAllWhatsappConversationsPage({ offset: 0, limit: 100, query: marker });
+    if (all.items.length !== 3 || all.total !== 3) return false;
+    // newest first - the LAST one logged (phones[2]) must be first
+    if (all.items[0].chatId !== whatsapp.normalizePhone(phones[2])) return false;
+    const firstPage = await whatsappAssistant.listAllWhatsappConversationsPage({ offset: 0, limit: 2, query: marker });
+    if (firstPage.items.length !== 2 || firstPage.hasMore !== true) return false;
+    const secondPage = await whatsappAssistant.listAllWhatsappConversationsPage({ offset: 2, limit: 2, query: marker });
+    if (secondPage.items.length !== 1 || secondPage.hasMore !== false) return false;
+    const noMatch = await whatsappAssistant.listAllWhatsappConversationsPage({ offset: 0, limit: 30, query: marker + 'NOPE' });
+    return noMatch.items.length === 0 && noMatch.hasMore === false;
+  });
+
   console.log(pass + '/' + (pass + fail) + ' passed' + (fail ? ', ' + fail + ' FAILED' : ''));
   if (failures.length) {
     console.log('Failed checks:');

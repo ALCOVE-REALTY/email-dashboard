@@ -87,7 +87,15 @@ const MAX_AUTO_REPLY_LOG = 2000;
 // runner, not just by prompt wording), capped list same as every other
 // log in this file.
 const INBOX_LOG_KEY = 'wa-inbox-log';
-const MAX_INBOX_LOG = 1000;
+// Task 3 (2026-10-31) - raised from 1000: this cap is a hard RETENTION
+// limit (ltrim below permanently drops whatever falls off the end, not
+// just a fetch limit), and it is the actual reason a low-traffic
+// conversation used to vanish from the Important WhatsApp page entirely -
+// not a day-based cutoff, a combined-across-every-conversation EVENT
+// COUNT one. 20000 gives a realistic HR WhatsApp volume months of real
+// history before anything is ever dropped, while staying a bounded list
+// (never literally unlimited/forever).
+const MAX_INBOX_LOG = 20000;
 const NEVER_AUTO_KEY = 'wa-never-auto-list';
 const DAILY_SUMMARY_DATE_KEY = 'subh-daily-summary-date';
 const GATEWAY_STATUS_KEY = 'wa-gateway-status';
@@ -817,9 +825,44 @@ async function getWhatsappVisibilitySnapshot(now) {
   const needsYou = buildActionableWhatsappItems(approvals, drafts, docs, recentLog, hrConfirmations);
   return {
     recentItems: mergeRecentWhatsappConversations(needsYou, recentLog, nowTs, RECENT_CONVO_WINDOW_MS, dismissedByChat),
-    allItems: mergeRecentWhatsappConversations(needsYou, recentLog, nowTs, Infinity, dismissedByChat),
+    // Task 3 (2026-10-31) - the Important WhatsApp page's own full list is
+    // no longer computed here on every ~12s communications-summary poll
+    // (it used to be, under the name `allItems`, even while that page
+    // wasn't even open) - see listAllWhatsappConversationsPage, called
+    // only when that page is actually open/scrolling/searching.
     needsYouCount: needsYou.length
   };
+}
+
+// Task 3 (2026-10-31) - the Important WhatsApp page's own data source:
+// genuinely ALL conversations (bounded only by MAX_INBOX_LOG's own
+// retention, not the 500-entry cap getWhatsappVisibilitySnapshot's main-
+// page view uses), newest first, server-side paginated (offset/limit) so
+// the page can render the latest 30 instantly and load older ones as the
+// owner scrolls, and server-side SEARCHED (q) so the search bar covers
+// every conversation this store still holds, never just whichever page
+// happens to be loaded in the browser at that moment.
+function waItemMatchesQuery(item, q) {
+  const needle = q.toLowerCase();
+  const digits = q.replace(/\D/g, '');
+  if ((item.name || '').toLowerCase().includes(needle)) return true;
+  if ((item.lastMessageText || '').toLowerCase().includes(needle)) return true;
+  if (digits && (item.chatId || '').includes(digits)) return true;
+  return false;
+}
+async function listAllWhatsappConversationsPage({ offset, limit, query } = {}) {
+  const safeOffset = Math.max(0, Number(offset) || 0);
+  const safeLimit = Math.min(200, Math.max(1, Number(limit) || 30));
+  const [approvals, drafts, docs, recentLog, hrConfirmations, dismissedByChat] = await Promise.all([
+    listPendingApprovals(), listPendingDrafts(), documentRequests.listPendingReceived(),
+    listInboxLog(MAX_INBOX_LOG), listAllHrConfirmations(), listCommsDismissed()
+  ]);
+  const needsYou = buildActionableWhatsappItems(approvals, drafts, docs, recentLog, hrConfirmations);
+  let rows = mergeRecentWhatsappConversations(needsYou, recentLog, Date.now(), Infinity, dismissedByChat);
+  const q = String(query || '').trim();
+  if (q) rows = rows.filter((it) => waItemMatchesQuery(it, q));
+  const page = rows.slice(safeOffset, safeOffset + safeLimit);
+  return { items: page, hasMore: safeOffset + safeLimit < rows.length, total: rows.length };
 }
 
 // Task 1 (2026-10-29) - per-chat "removed from Important WhatsApp" marker,
@@ -11376,6 +11419,7 @@ module.exports = {
   listActionNeededItems,
   listRecentWhatsappConversations,
   getWhatsappVisibilitySnapshot,
+  listAllWhatsappConversationsPage,
   dismissWhatsappItem,
   markCommsRowDismissed,
   listCommsDismissed,
