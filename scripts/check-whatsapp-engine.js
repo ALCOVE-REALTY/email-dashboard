@@ -5921,9 +5921,15 @@ async function checkAsync(label, fn) {
   });
   await checkAsync('an OTHER NON-SENSITIVE field (emergency contact - not one of the 15 official fields) about someone else still queues an approval EVEN from a real ACTIVE employee sender - the official tier never applies to a non-official field', async () => {
     const phone = '919230964121';
+    // Real employee confirmed to actually HAVE emergency contact data on
+    // file (Ayan Das does not - his own record's emergencyContactName/
+    // Number are both blank, so queuePersonFieldApproval's own "nothing
+    // to send" branch creates no approval at all regardless of the
+    // official-tier gate, which this test would otherwise misread as a
+    // gate failure).
     await whatsappAssistant.clearPendingDisambiguation(phone);
-    const d = await whatsappAssistant.handlePersonLookupRequest({ phone, name: 'Radha', lang: 'banglish', personName: 'Ayan Das', personField: 'other_field', personFieldLabel: 'emergency contact', department: null, text: 'Ayan Das er emergency contact ta dao', history: [] });
-    const created = (await listRawApprovalsForPhone(phone)).find((a) => a.resolvedPersonName === 'Ayan Das');
+    const d = await whatsappAssistant.handlePersonLookupRequest({ phone, name: 'Radha', lang: 'banglish', personName: 'Suman Kotal', personField: 'other_field', personFieldLabel: 'emergency contact', department: null, text: 'Suman Kotal er emergency contact ta dao', history: [] });
+    const created = (await listRawApprovalsForPhone(phone)).find((a) => a.resolvedPersonName === 'Suman Kotal');
     const ok = d.case === 'data_holding' && Boolean(created);
     if (created) await whatsappAssistant.removePendingApproval(created.id);
     return ok;
