@@ -978,6 +978,39 @@ scenario('HRQUERY: "QC HOD emp code ar nam dao" (live incident, 2026-10-30) - "Q
     await cleanupHrDataQueryArtifacts(phone);
   }
 });
+scenario('Task 7, LIVE BUG: "Ayan Das er employee code ta dao" (a real ACTIVE employee, real employee code AR001866) resolves to a normal approval card, never the PII refusal - the classifier schema never mentioned employee code and defaults to forbidden_pii "when unsure", which is exactly the live bug this fixes', async () => {
+  const phone = '910000002309';
+  await cleanupHrDataQueryArtifacts(phone);
+  try {
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenEmpCode', firstName: 'ScenEmpCode', text: 'Ayan Das er employee code ta dao', isGroup: false, history: [] });
+    if (d.case !== 'data_holding') return { pass: false, detail: 'expected case=data_holding (a normal approval-gated field), got: ' + d.case + ' text=' + d.replyText + ' - THE LIVE BUG would show case=acknowledged with the PII refusal instead' };
+    const approval = pendingApprovalFor(await whatsappAssistant.listPendingApprovals(), phone);
+    if (!approval || !approval.preparedReplyText) return { pass: false, detail: 'expected a queued approval with a prepared reply, got: ' + JSON.stringify(approval) };
+    const text = approval.preparedReplyText;
+    if (!text.includes('Ayan Das') || !text.includes('AR001866')) return { pass: false, detail: 'expected Ayan Das\'s real employee code AR001866 in the approval, got: ' + text };
+    return { pass: true, detail: 'resolved normally as an approval-gated field: ' + text };
+  } finally {
+    await cleanupHrDataQueryArtifacts(phone);
+  }
+});
+scenario('Task 8: a natural follow-up asking to ALSO include the contact number is understood as a REVISION of the immediately preceding "HR dept er HOD ke?" request - the department is inherited (never re-asked), and the corrected answer REPLACES the first pending approval rather than stacking a second one alongside it', async () => {
+  const phone = '910000002310';
+  await cleanupHrDataQueryArtifacts(phone);
+  try {
+    const d1 = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenRevision', firstName: 'ScenRevision', text: 'HR dept er HOD ke?', isGroup: false, history: [] });
+    if (d1.case !== 'data_holding') return { pass: false, detail: 'expected case=data_holding for the first request, got: ' + d1.case + ' text=' + d1.replyText };
+    const history = [{ direction: 'in', text: 'HR dept er HOD ke?', ts: Date.now() - 2000 }, { direction: 'out', text: d1.replyText, ts: Date.now() - 1000 }];
+    const d2 = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenRevision', firstName: 'ScenRevision', text: 'Oi contact number ta o diye dao please', isGroup: false, history });
+    if (d2.case !== 'data_holding') return { pass: false, detail: 'expected case=data_holding for the revision, got: ' + d2.case + ' text=' + d2.replyText };
+    const mine = (await whatsappAssistant.listPendingApprovals()).filter((a) => whatsapp.normalizePhone(a.phone) === whatsapp.normalizePhone(phone));
+    if (mine.length !== 1) return { pass: false, detail: 'expected exactly ONE approval after the revision (the old one replaced, never stacked), got ' + mine.length + ': ' + JSON.stringify(mine.map((a) => a.preparedReplyText)) };
+    const text = mine[0].preparedReplyText || '';
+    if (!text.includes('Radha Biswas Bhattacharjee') || !/9230964121/.test(text)) return { pass: false, detail: 'expected the real HOD (Radha Biswas Bhattacharjee) AND her real contact number (9230964121) in the single remaining approval, got: ' + text };
+    return { pass: true, detail: 'revision correctly inherited the department and replaced the prior approval: ' + text };
+  } finally {
+    await cleanupHrDataQueryArtifacts(phone);
+  }
+});
 
 const APPROX_USD_PER_MTOK_INPUT = 3;
 const APPROX_USD_PER_MTOK_OUTPUT = 15;
