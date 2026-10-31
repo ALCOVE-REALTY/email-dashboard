@@ -3337,6 +3337,16 @@ function filterEmployeesForHrQuery(employees, query) {
   else if (query.location) rows = rows.filter((e) => e.location && departmentHintMatches(e.location, query.location));
   if (query.company) rows = rows.filter((e) => e.company && departmentHintMatches(e.company, query.company));
   if (query.reportingManagerName) rows = rows.filter((e) => e.reportingManager && departmentHintMatches(e.reportingManager, query.reportingManagerName));
+  // Task 5 (2026-10-31) - owner-chat HR reports: "probation"/"joined in
+  // <month/year>" style filters, same real fields query_employees already
+  // uses (employmentType, e.doj) - never a separate/different notion of
+  // these than the rest of the app already has. There is no real exit-
+  // date field anywhere in this data (confirmed earlier this session) -
+  // "exits" can only ever mean status:'INACTIVE' (all-time, not date-
+  // scoped), already covered by the `status` filter above.
+  if (query.employmentType) rows = rows.filter((e) => e.employmentType === query.employmentType);
+  if (query.dojMonth) rows = rows.filter((e) => e.doj && e.doj.getUTCMonth() + 1 === query.dojMonth);
+  if (query.dojYear) rows = rows.filter((e) => e.doj && e.doj.getUTCFullYear() === query.dojYear);
   return rows;
 }
 function computeHodBreakdown(employees) {
@@ -3367,6 +3377,37 @@ function buildScopeLabel(query) {
 function buildHrDataQueryAnswer(employees, query, lang) {
   const rows = filterEmployeesForHrQuery(employees, query);
   const roleLabel = query.designation ? naturalizeDirectoryValue(query.designation) : (lang === 'english' ? 'employees' : 'kormi');
+  // Task 5/8 (2026-10-31) - a COMPANY-WIDE "dept wise HOD list" is a
+  // genuinely different shape than "hod" (one department's own HOD) -
+  // one line per department, HOD NAME(S) only (comma-separated when a
+  // department has more than one), never a per-person headcount
+  // breakdown. The live bug this replaces: "hod" with no department
+  // filter ran computeHodBreakdown across the WHOLE matching set at
+  // once, grouping by person company-wide ("51 HODs: 1) Sanjib Roy
+  // (55)...") instead of grouping by DEPARTMENT first. A department with
+  // no HOD on file is skipped entirely (never an "NA"/"HOD not set" row)
+  // unless the sender's own wording specifically asked to see that too -
+  // not attempted here, kept to the explicitly spec'd behavior only.
+  if (query.returnType === 'hodByDepartment') {
+    if (!rows.length) {
+      return { outgoingText: (HR_QUERY_NO_MATCH[lang] || HR_QUERY_NO_MATCH.english)('', 'HOD'), dataRequestSummary: 'department-wise HOD list' };
+    }
+    const byDept = new Map();
+    rows.forEach((e) => {
+      if (!e.department) return;
+      if (!byDept.has(e.department)) byDept.set(e.department, []);
+      byDept.get(e.department).push(e);
+    });
+    const deptLines = Array.from(byDept.keys()).sort((a, b) => a.localeCompare(b)).map((dept) => {
+      const breakdown = computeHodBreakdown(byDept.get(dept));
+      return breakdown.length ? { dept, hodNames: breakdown.map((b) => b.name).join(', ') } : null;
+    }).filter(Boolean);
+    if (!deptLines.length) {
+      return { outgoingText: (HR_QUERY_NO_MATCH[lang] || HR_QUERY_NO_MATCH.english)('', 'HOD'), dataRequestSummary: 'department-wise HOD list' };
+    }
+    const outgoingText = deptLines.map((d, i) => (i + 1) + '. ' + naturalizeDirectoryValue(d.dept) + ' — ' + d.hodNames).join('\n');
+    return { outgoingText, dataRequestSummary: 'department-wise HOD list' };
+  }
   if (query.returnType === 'hod') {
     const deptLabel = departmentLabelWithSuffix(query.resolvedDepartment || query.department || '');
     let outgoingText;
@@ -3435,15 +3476,18 @@ function hrDataQueryTool() {
         type: 'object',
         properties: {
           returnType: {
-            type: 'string', enum: ['list', 'count', 'hod'],
-            description: '"list" for a roster of matching employees (e.g. "welder list dao", "Tanmoy Mondal-er under-e kara achen?"). "count" for just a headcount ("koto jon"/"how many"). "hod" for a DEPARTMENT\'s own HOD(s) ("HR dept er HOD ke?", "Admin dept er HOD ke?") - never for one named individual\'s own manager (that is a different, existing flow - see personLookupName/personLookupField elsewhere).'
+            type: 'string', enum: ['list', 'count', 'hod', 'hodByDepartment'],
+            description: '"list" for a roster of matching employees (e.g. "welder list dao", "Tanmoy Mondal-er under-e kara achen?"). "count" for just a headcount ("koto jon"/"how many"). "hod" for ONE DEPARTMENT\'s own HOD(s) ("HR dept er HOD ke?", "Admin dept er HOD ke?") - requires a department. "hodByDepartment" for a COMPANY-WIDE, dept-wise HOD listing ("dept wise HOD list dao", "shob department er HOD ke ke?", "Need all dept. Wise HOD name") - one line per department, names only, never use "hod" with no department for this case. Never "hod"/"hodByDepartment" for one named individual\'s own manager (that is a different, existing flow - see personLookupName/personLookupField elsewhere).'
           },
           designation: { type: 'string', description: 'The role/title keyword as a single canonical English word (e.g. "welder" for "welder"/"welding"/a misspelling of either, "engineer" for "engineers"/"engg") - omit if no role was named.' },
-          department: { type: 'string', description: 'The department name or a distinctive substring of it, exactly as the sender said it (e.g. "Administration", "HR", "Admin") - omit if none was named. Required when returnType is "hod".' },
+          department: { type: 'string', description: 'The department name or a distinctive substring of it, exactly as the sender said it (e.g. "Administration", "HR", "Admin") - omit if none was named. Required when returnType is "hod", never set for "hodByDepartment".' },
           location: { type: 'string', description: 'The site/location name or a distinctive substring, EXACTLY as the sender said it, never translated or normalized - e.g. "Duets", "Triveni Mall". Site aliases/nicknames are resolved separately from these exact words. Omit if none was named.' },
           company: { type: 'string', description: 'The company name or a distinctive substring, if one was named - omit otherwise.' },
           reportingManagerName: { type: 'string', description: 'A manager/HOD\'s name, ONLY when the question filters BY who people report to (e.g. "Tanmoy Mondal-er under-e kara achen?" = people reporting to Tanmoy Mondal) - omit otherwise.' },
-          status: { type: 'string', enum: ['ACTIVE', 'INACTIVE', 'NOTICE PERIOD'], description: 'Omit for the default (Active only) - set only when a specific status was explicitly named.' },
+          status: { type: 'string', enum: ['ACTIVE', 'INACTIVE', 'NOTICE PERIOD'], description: 'Omit for the default (Active only) - set only when a specific status was explicitly named. There is no real exit-date field in this data, so an "exits"/"who left" question is always INACTIVE status only, never date-scoped.' },
+          employmentType: { type: 'string', enum: ['Confirmed', 'Probation'], description: 'Set to "Probation" for a probation-related question (e.g. "probation-e ke ke achen?") - omit otherwise.' },
+          dojMonth: { type: 'integer', description: 'Joining month 1-12, ANY year - e.g. 10 for "who joined in October" (any October). Omit if no month was named.' },
+          dojYear: { type: 'integer', description: 'Exact joining year, e.g. 2024 for "joined in 2024". Omit if no year was named.' },
           hodIncludeEmpCode: { type: 'boolean', description: 'Only relevant when returnType is "hod" - true when the sender ALSO asked for the HOD\'s employee code/number alongside their name (e.g. "QC HOD emp code ar nam dao" asks for BOTH the HOD\'s emp code AND name) - any phrasing meaning employee code/number/ID counts ("emp code", "employee code", "emp id", "employee number"). Omit/false when only the name was asked for.' }
         },
         required: ['returnType']
@@ -10946,6 +10990,7 @@ module.exports = {
   computeHodBreakdown,
   buildHrDataQueryAnswer,
   findEmployeeIdByExactName,
+  hrDataQueryTool,
   extractHrDataQuery,
   handleHrDataQueryRequest,
   runHrDataQueryAndQueue,

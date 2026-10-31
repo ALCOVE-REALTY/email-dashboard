@@ -16,6 +16,7 @@
 // file too to stop the two from drifting again.
 const tools = require('./tools');
 const whatsappAssistant = require('./whatsappAssistant');
+const employeeService = require('../employeeService');
 const { detectMessageLanguage } = require('./languageDetect');
 const memoryService = require('./memoryService');
 
@@ -423,6 +424,22 @@ const TOOL_DEFS_NEUTRAL = [
     }
   },
   {
+    // Task 5 (2026-10-31) - reuses the EXACT SAME "model makes a
+    // structured query, code computes the real answer" engine already
+    // built for WhatsApp data requests (whatsappAssistant.js's
+    // hrDataQueryTool/filterEmployeesForHrQuery/buildHrDataQueryAnswer) -
+    // never a second, independently-drifting copy of that schema. Always
+    // prefer this over query_employees for a department-wise HOD listing
+    // specifically - query_employees's own groupBy can only ever produce
+    // COUNTS per group, never NAMES per group (the exact bug this fixes:
+    // a free-form model summary over a counts-only table used to invent
+    // a wrong "51 HODs: 1) Sanjib Roy (55)..." shape instead of one real
+    // name per department).
+    name: 'build_hr_report',
+    description: 'Build an HR report or data lookup DIRECTLY from the real employee database - you only extract WHAT to look up, the actual names/numbers/lists are computed in code afterward, never invented by you. ALWAYS use this (never query_employees) for: a company-wide department-wise HOD listing ("dept wise HOD list", "shob department er HOD ke ke", "HOD list for every department"), one department\'s own HOD(s), or a plain headcount/roster/probation/joining-month question. If the request is genuinely too vague to extract a returnType from (you cannot tell list vs count vs hod vs hodByDepartment, or which department/role), do NOT call this tool - ask the person which format or filter they want instead, in your own normal reply.',
+    parameters: whatsappAssistant.hrDataQueryTool().function.parameters
+  },
+  {
     name: 'get_data_quality_issues',
     description: 'Get a summary of data quality issues in employee records (missing fields, duplicate IDs).',
     parameters: { type: 'object', properties: {} }
@@ -644,6 +661,54 @@ const TOOL_RUNNERS = {
   get_health_insurance_pending_additions: () => tools.healthInsurancePendingAdditions(),
   get_insurance_status: (input) => tools.insuranceStatus(input.name),
   query_employees: (input) => tools.queryEmployees(input),
+  // Task 5 (2026-10-31) - owner-chat HR reports, same engine as WhatsApp
+  // data requests (see build_hr_report's own tool-definition comment
+  // above). lang is the THIRD runner argument claudeProvider.js already
+  // passes (detectMessageLanguage(message)) - reused directly so the
+  // reply is in the owner's own message language, same rule as WhatsApp.
+  build_hr_report: async (input, user, lang) => {
+    const { employees } = await employeeService.getEmployeeData();
+    const query = Object.assign({}, input);
+    // Department/site aliases resolved the same way WhatsApp data
+    // requests already do (Task 6 extends this further) - a confirmed
+    // alias always wins over the plain substring matcher.
+    if (query.department) {
+      const deptAliasValues = whatsappAssistant.resolveDeptAliasValues(query.department);
+      if (deptAliasValues.length === 1) query.resolvedDepartment = deptAliasValues[0];
+    }
+    if (query.location) {
+      const siteAliasValues = whatsappAssistant.resolveSiteAliasValues(query.location);
+      if (siteAliasValues.length) query.resolvedLocations = siteAliasValues;
+    }
+    const { outgoingText } = whatsappAssistant.buildHrDataQueryAnswer(employees, query, lang || 'english');
+    // A long roster becomes a real downloadable report card (reuses the
+    // EXACT existing isReportCard/Download Excel-PDF machinery
+    // query_employees already triggers, see tools.js's own queryEmployees
+    // for the identical {title,columns,tableRows,fullTableRows,footer}
+    // shape) - anything short (count/hod/hodByDepartment, or a short
+    // list) stays a single LITERAL, code-computed reply (replyText),
+    // bypassing the model's own free-form summary pass entirely so
+    // nothing in it can be invented.
+    const LONG_REPORT_LINE_THRESHOLD = 20;
+    if (query.returnType === 'list' && outgoingText.split('\n').length > LONG_REPORT_LINE_THRESHOLD) {
+      const rows = whatsappAssistant.filterEmployeesForHrQuery(employees, query);
+      const includeLocation = Boolean(query.location);
+      const columns = includeLocation ? ['Name', 'Designation', 'Department', 'Location'] : ['Name', 'Designation', 'Department'];
+      const tableRows = rows.map((e) => {
+        const row = [e.name, e.designation || '—', e.department || '—'];
+        if (includeLocation) row.push(e.location || '—');
+        return row;
+      });
+      return {
+        title: 'HR Report',
+        columns,
+        tableRows: tableRows.slice(0, 100),
+        fullTableRows: tableRows,
+        footer: { label: 'Total Matching', value: rows.length }
+      };
+    }
+    return { replyText: outgoingText };
+  },
   get_data_quality_issues: () => tools.dataQualityIssues(),
   get_insights: () => tools.insightsSummary(),
   get_demographics: (input) => tools.demographics(input.kind),

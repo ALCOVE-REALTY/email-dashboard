@@ -5623,6 +5623,40 @@ async function checkAsync(label, fn) {
     for (const a of mine) await whatsappAssistant.removePendingApproval(a.id);
     return ok;
   });
+  check('LIVE ISSUE FIX (Task 5/8, 2026-10-31): buildHrDataQueryAnswer "hodByDepartment" lists ONE LINE PER DEPARTMENT (names only, comma-separated when a department has more than one HOD) - never the old per-person company-wide headcount breakdown ("hod" with no department used to produce)', (() => {
+    const { outgoingText } = whatsappAssistant.buildHrDataQueryAnswer(FAKE_HR_QUERY_EMPLOYEES, { returnType: 'hodByDepartment' }, 'english');
+    const expected = '1. Administration Ho — Y Manager, Z Manager\n2. Administration Srm — X Manager\n3. Civil — Tanmoy Mondal, Radha Biswas\n4. HR department — Radha Biswas';
+    return outgoingText === expected;
+  })());
+  check('buildHrDataQueryAnswer "hodByDepartment" still respects an ordinary filter (e.g. department substring) scoping it down to just the matching department(s), same grouping logic', (() => {
+    const { outgoingText } = whatsappAssistant.buildHrDataQueryAnswer(FAKE_HR_QUERY_EMPLOYEES, { returnType: 'hodByDepartment', department: 'Civil' }, 'english');
+    return outgoingText === '1. Civil — Tanmoy Mondal, Radha Biswas';
+  })());
+  check('buildHrDataQueryAnswer "hodByDepartment" with no match at all gets the "no one found" sentence, never a crash on an empty grouping', (() => {
+    const { outgoingText } = whatsappAssistant.buildHrDataQueryAnswer([], { returnType: 'hodByDepartment' }, 'banglish');
+    return /pawa jayni/.test(outgoingText);
+  })());
+  const FAKE_JOIN_PROBATION_EMPLOYEES = [
+    { name: 'Nina New', designation: 'Executive', department: 'HR Dept', location: 'HO', company: 'Alcove', reportingManager: 'Radha Biswas', status: 'ACTIVE', employmentType: 'Probation', doj: new Date(Date.UTC(2026, 9, 15)) },
+    { name: 'Oscar Old', designation: 'Executive', department: 'HR Dept', location: 'HO', company: 'Alcove', reportingManager: 'Radha Biswas', status: 'ACTIVE', employmentType: 'Confirmed', doj: new Date(Date.UTC(2020, 2, 1)) },
+    { name: 'Priya Recent', designation: 'Executive', department: 'HR Dept', location: 'HO', company: 'Alcove', reportingManager: 'Radha Biswas', status: 'ACTIVE', employmentType: 'Confirmed', doj: new Date(Date.UTC(2025, 9, 20)) }
+  ];
+  check('Task 5 (2026-10-31): filterEmployeesForHrQuery\'s new employmentType filter finds only Probation staff', (() => {
+    const rows = whatsappAssistant.filterEmployeesForHrQuery(FAKE_JOIN_PROBATION_EMPLOYEES, { employmentType: 'Probation' });
+    return rows.length === 1 && rows[0].name === 'Nina New';
+  })());
+  check('Task 5 (2026-10-31): filterEmployeesForHrQuery\'s new dojMonth filter matches that calendar month in ANY year', (() => {
+    const rows = whatsappAssistant.filterEmployeesForHrQuery(FAKE_JOIN_PROBATION_EMPLOYEES, { dojMonth: 10 });
+    return rows.length === 2 && rows.some((r) => r.name === 'Nina New') && rows.some((r) => r.name === 'Priya Recent');
+  })());
+  check('Task 5 (2026-10-31): filterEmployeesForHrQuery\'s new dojYear filter matches only that exact year', (() => {
+    const rows = whatsappAssistant.filterEmployeesForHrQuery(FAKE_JOIN_PROBATION_EMPLOYEES, { dojYear: 2025 });
+    return rows.length === 1 && rows[0].name === 'Priya Recent';
+  })());
+  check('Task 5 (2026-10-31): dojMonth and dojYear combine as AND, not OR', (() => {
+    const rows = whatsappAssistant.filterEmployeesForHrQuery(FAKE_JOIN_PROBATION_EMPLOYEES, { dojMonth: 10, dojYear: 2026 });
+    return rows.length === 1 && rows[0].name === 'Nina New';
+  })());
   console.log(pass + '/' + (pass + fail) + ' passed' + (fail ? ', ' + fail + ' FAILED' : ''));
   if (failures.length) {
     console.log('Failed checks:');
