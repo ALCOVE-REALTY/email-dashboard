@@ -2155,7 +2155,15 @@ function stripInformalListIntro(text) {
 // here is vulnerable to this the same way. Matched as a WHOLE WORD/PHRASE
 // only (word boundaries at both ends) instead, so "pan" still catches
 // "PAN card"/"his PAN" but never "company", "panel", "expand", etc.
-const FORBIDDEN_PII_LABELS = ['aadhar', 'pan', 'personal email', 'blood group', 'emergency contact', 'permanent address', 'present address', 'bank account', 'ifsc', 'uan', 'esic', 'date of birth', 'salary', 'ctc'];
+// Task 7 (2026-10-31), direct instruction - EXACTLY these 9 sensitive
+// heads are ever forbidden (Aadhaar, PAN, bank details, salary, UAN,
+// ESI, address, DOB, blood group), with synonyms folded into the same
+// head (ifsc -> bank details, ctc -> salary, permanent/present address
+// -> address). Everything else - including personal email and emergency
+// contact, both removed from this list on purpose - is freely shareable
+// about a third party via the normal approval card, same as a name or
+// designation always was.
+const FORBIDDEN_PII_LABELS = ['aadhar', 'pan', 'bank account', 'ifsc', 'uan', 'esic', 'permanent address', 'present address', 'date of birth', 'salary', 'ctc', 'blood group'];
 const FORBIDDEN_PII_RE = new RegExp('\\b(' + FORBIDDEN_PII_LABELS.map((f) => f.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')\\b', 'i');
 function cardHasForbiddenField(card) {
   if (!card) return false;
@@ -2182,20 +2190,41 @@ const PII_BLOCK_REPLY = {
   english: "I can't share someone else's confidential information (like Aadhaar or PAN) over WhatsApp. If you need any help with this, please contact the HR office directly."
 };
 
-// ---------------- Own Aadhaar/PAN exception (narrow, approval-gated) ----------------
+// ---------------- Own sensitive-data exception (narrow, auto-sent) ----------------
 // The ONE case where a normally-forbidden PII field can ever reach a
-// sender over WhatsApp - ONLY their own Aadhaar or PAN, ONLY when their
-// WhatsApp number exactly matches their OWN registered contact number on
-// an ACTIVE employee record, ONLY in a 1:1 chat (isGroup is checked by
-// the caller, same as every identity/greeting check above it), and ONLY
-// after the owner's explicit approval - never automatic, never for
-// anyone else's record (name-based lookups never reach this path at all -
-// see detectOwnSensitiveIdRequest's own comment), never for any other
-// PII field. Every one of these is a real, hard-coded check in this
+// sender over WhatsApp - ONLY their own data, ONLY when their WhatsApp
+// number exactly matches their OWN registered contact number on an
+// ACTIVE employee record, ONLY in a 1:1 chat (isGroup is checked by the
+// caller, same as every identity/greeting check above it), and ONLY for
+// that matched employee's own record - never anyone else's (name-based
+// lookups never reach this path at all - see detectOwnSensitiveIdRequest's
+// own comment). Every one of these is a real, hard-coded check in this
 // function - never an AI judgment call - consistent with the "structural
 // safety over prompt wording" principle this whole file already follows
 // for every other hard block.
-const OWN_SENSITIVE_ID_FIELD_LABEL = { aadhar: 'Aadhaar', pan: 'PAN' };
+// Task 7 (2026-10-31) - generalized from the original Aadhaar/PAN-only
+// exception to all 9 forbidden heads, per direct instruction: the
+// sender's OWN data, once the 3 conditions below hold, is sent in full
+// including every sensitive field, not just Aadhaar/PAN. Bank details
+// and salary have no getter (no such columns exist in the employee data
+// at all - see employeeService.js), so they always fall through to the
+// same "nothing on file" refusal below, which is the correct outcome
+// either way (never reveals whether the field exists).
+const OWN_SENSITIVE_ID_FIELD_LABEL = {
+  aadhar: 'Aadhaar', pan: 'PAN', bank: 'bank account', salary: 'salary',
+  uan: 'UAN', esic: 'ESIC', address: 'address', dob: 'date of birth', bloodGroup: 'blood group'
+};
+const OWN_SENSITIVE_ID_VALUE = {
+  aadhar: (emp) => emp.aadhar || null,
+  pan: (emp) => emp.pan || null,
+  bank: () => null,
+  salary: () => null,
+  uan: (emp) => emp.uan || null,
+  esic: (emp) => emp.esiNumber || null,
+  address: (emp) => emp.presentAddress || emp.permanentAddress || null,
+  dob: (emp) => formatOtherFieldValue('dob', emp.dob),
+  bloodGroup: (emp) => emp.bloodGroup || null
+};
 const OWN_SENSITIVE_ID_LINE = {
   banglish: (fieldLabel, value) => 'Apnar ' + fieldLabel + ' number: ' + value,
   hinglish: (fieldLabel, value) => 'Aapka ' + fieldLabel + ' number: ' + value,
@@ -2221,37 +2250,19 @@ function detectSensitiveIdFieldKeyword(text) {
   const t = String(text || '').toLowerCase();
   if (/\baadha?ar\b/.test(t)) return 'aadhar';
   if (/\bpan\b/.test(t)) return 'pan';
+  if (/\bbank\s*(account|a\/?c)?\b|\bifsc\b/.test(t)) return 'bank';
+  if (/\bsalary\b|\bctc\b/.test(t)) return 'salary';
+  if (/\buan\b/.test(t)) return 'uan';
+  if (/esic|\besi\b/.test(t)) return 'esic';
+  if (/\baddress\b|\bthikana\b|\bpata\b/.test(t)) return 'address';
+  if (/date\s*of\s*birth|\bdob\b|\bbirthday\b/.test(t)) return 'dob';
+  if (/blood\s*group/.test(t)) return 'bloodGroup';
   return null;
 }
 function detectOwnSensitiveIdRequest(text) {
   const t = String(text || '').toLowerCase();
   if (!/\b(amar|amader|mera|meri|my)\b/.test(t)) return null;
   return detectSensitiveIdFieldKeyword(text);
-}
-// Direct instruction (2026-10-27, per Subhodeep's explicit approval) - a
-// plain, self-referential REQUEST for a forbidden-but-not-auto-sendable
-// field ("amar bank account details ta dao") was occasionally getting
-// swept into the HR-notification classification path instead of the
-// normal data-request holding reply - "bank account change" is
-// explicitly listed as one of isHrNotification's own triggering
-// subjects, and a REQUEST for one's own bank details shares enough
-// vocabulary with an INFORMING message about a bank account CHANGE that
-// the model's own judgment was inconsistent between the two. Checked
-// BEFORE classification, same tier as detectOwnSensitiveIdRequest above
-// - but this is NEVER the aadhar/PAN auto-send exception (that function
-// stays untouched and is checked first); it only forces the plain,
-// deterministic holding-reply path for a narrower field set, and only
-// when the message actually looks like a request (not just a mention).
-const SELF_REFERENTIAL_FORBIDDEN_FIELD_RE = /\bbank\s*(account|a\/?c)?\b|\bifsc\b|\bsalary\b|\bctc\b/i;
-const SELF_REFERENTIAL_REQUEST_SHAPE_RE = /\b(dao|den|dite|dile|chai|chahiye|bolo|bolen|batao|bataiye|details?|info(rmation)?|number)\b/i;
-function isSelfReferentialForbiddenFieldRequest(text) {
-  const t = String(text || '').toLowerCase();
-  if (!/\b(amar|amader|mera|meri|my)\b/.test(t)) return null;
-  if (detectSensitiveIdFieldKeyword(t)) return null;
-  const fieldMatch = SELF_REFERENTIAL_FORBIDDEN_FIELD_RE.exec(t);
-  if (!fieldMatch) return null;
-  if (!SELF_REFERENTIAL_REQUEST_SHAPE_RE.test(t)) return null;
-  return fieldMatch[0].replace(/\s+/g, ' ').trim();
 }
 async function handleOwnSensitiveIdRequest({ phone, lang, field, history }) {
   // The ONLY real authorization check - detectOwnSensitiveIdRequest above
@@ -2265,7 +2276,7 @@ async function handleOwnSensitiveIdRequest({ phone, lang, field, history }) {
     return { case: 'acknowledged', replyText: PII_BLOCK_REPLY[lang] || PII_BLOCK_REPLY.english, summaryForOwner: null, lang };
   }
   const emp = found.emp;
-  const value = field === 'aadhar' ? emp.aadhar : emp.pan;
+  const value = (OWN_SENSITIVE_ID_VALUE[field] || (() => null))(emp);
   if (!value) {
     // Nothing on file for this field - never reveal that distinction to
     // the sender (same refusal as every other blocked case, so "no data"
@@ -4258,7 +4269,18 @@ async function queuePersonContactApproval({ phone, requesterLabel, candidate, la
 // ever resolve to one of these specific, already-reviewed fields (or to
 // nothing at all, which falls back to the hard-block refusal - see
 // handlePersonLookupRequest).
-const HARD_BLOCKED_PERSON_FIELD_RE = /aadha?ar|\bpan\b|bank\s*(account|a\/?c)?|\bifsc\b|\bsalary\b|\bctc\b/i;
+// Task 7 (2026-10-31) - the actual code-level hard block, expanded to
+// all 9 forbidden heads (previously only 4: aadhaar/pan/bank/salary -
+// UAN/ESI/address/DOB/blood group were a real compliance gap, going
+// through the normal approval-card path for a third party instead of
+// being hard-blocked).
+const HARD_BLOCKED_PERSON_FIELD_RE = /aadha?ar|\bpan\b|bank\s*(account|a\/?c)?|\bifsc\b|\bsalary\b|\bctc\b|\buan\b|esic|\besi\b|\baddress\b|date\s*of\s*birth|\bdob\b|blood\s*group/i;
+// Task 7 - matches an employee-code/ID request in either the raw
+// message text or a classifier-provided field label. Reused both as a
+// structural override (see handlePersonLookupRequest) and as the
+// APPROVAL_FIELD_ALIASES match pattern below, so the two can never
+// drift apart.
+const EMPLOYEE_CODE_FIELD_RE = /emp(loyee)?\.?\s*(code|id\b|no\.?\b|number)/i;
 function formatOtherFieldValue(key, value) {
   if (!value) return null;
   if (key === 'dob') {
@@ -4275,40 +4297,24 @@ const APPROVAL_FIELD_ALIASES = [
     getValue: (c) => c.emailPersonal || c.email || null
   },
   {
-    key: 'address',
-    match: /address|thikana|\bpata\b/i,
-    label: { banglish: 'address', hinglish: 'address', english: 'address' },
-    getValue: (c) => c.presentAddress || c.permanentAddress || null
-  },
-  {
-    key: 'dob',
-    match: /date\s*of\s*birth|\bdob\b|birthday|jonmo/i,
-    label: { banglish: 'date of birth', hinglish: 'date of birth', english: 'date of birth' },
-    getValue: (c) => formatOtherFieldValue('dob', c.dob)
-  },
-  {
     key: 'emergencyContact',
     match: /emergency/i,
     label: { banglish: 'emergency contact', hinglish: 'emergency contact', english: 'emergency contact' },
     getValue: (c) => c.emergencyContactNumber || c.emergencyContactName || null
   },
+  // Task 7 (2026-10-31) - live bug fix: an employee-code request for a
+  // THIRD PARTY was wrongly hard-blocked because no category ever
+  // mentioned it and the classifier defaults to forbidden_pii when
+  // unsure. Employee code/ID is NOT one of the 9 forbidden heads - this
+  // alias lets it resolve normally to a plain approval card, same as any
+  // other other_field. (Address/DOB/UAN/ESIC/blood group aliases were
+  // removed here - those 9 heads are now hard-blocked before an alias is
+  // ever consulted, see HARD_BLOCKED_PERSON_FIELD_RE above.)
   {
-    key: 'uan',
-    match: /\buan\b/i,
-    label: { banglish: 'UAN number', hinglish: 'UAN number', english: 'UAN number' },
-    getValue: (c) => c.uan || null
-  },
-  {
-    key: 'esic',
-    match: /esic|\besi\b/i,
-    label: { banglish: 'ESIC number', hinglish: 'ESIC number', english: 'ESIC number' },
-    getValue: (c) => c.esiNumber || null
-  },
-  {
-    key: 'bloodGroup',
-    match: /blood/i,
-    label: { banglish: 'blood group', hinglish: 'blood group', english: 'blood group' },
-    getValue: (c) => c.bloodGroup || null
+    key: 'employeeId',
+    match: EMPLOYEE_CODE_FIELD_RE,
+    label: { banglish: 'employee code', hinglish: 'employee code', english: 'employee code' },
+    getValue: (c) => c.employeeId || null
   },
   // Task 2 (2026-10-29) - one named person's OWN reporting manager/HOD
   // ("Subhodeep HR kake report kore?"). alwaysConfirm (see
@@ -4409,15 +4415,32 @@ async function replyInactiveEmployee({ phone, requesterLabel, candidate }) {
 }
 
 async function handlePersonLookupRequest({ phone, name, lang, personName, personField, personFieldLabel, department, text, history }) {
-  // Live review item 5: Aadhaar/PAN/bank account/salary are the ONLY
-  // fields that are ever hard-blocked now, regardless of which
-  // personField value the classifier actually picked - a structural
-  // safety net (same philosophy as textHasForbiddenField/
+  // Task 7 (2026-10-31): exactly 9 heads (Aadhaar/PAN/bank details/
+  // salary/UAN/ESI/address/DOB/blood group) are ever hard-blocked now,
+  // regardless of which personField value the classifier actually picked
+  // - a structural safety net (same philosophy as textHasForbiddenField/
   // cardHasForbiddenField elsewhere in this file), so a mislabeled
   // "other_field" request can never leak one of these. An "other_field"
   // whose label we don't recognize at all is refused the SAME way, rather
   // than guessing at an unvalidated employee field.
-  const fieldAlias = personField === 'other_field' ? resolveApprovalFieldAliasByLabel(personFieldLabel) : null;
+  //
+  // Live bug fix: employee code/ID was wrongly falling into this hard
+  // block too - the classifier's own schema never mentioned it in any
+  // category and defaults to forbidden_pii "when unsure". Rather than
+  // trust prompt wording alone to fix that, this checks the raw message
+  // TEXT directly (same structural-safety principle as every other hard
+  // block here) and overrides whatever personField the classifier picked
+  // (reassigning the parameter itself, so every downstream branch in this
+  // function - the general_details/other_field checks, the disambiguation
+  // state that gets persisted for a later turn, etc. - treats this
+  // consistently as a normal other_field request) whenever the message
+  // plainly asks for an employee code and nothing that is actually one of
+  // the 9 forbidden heads.
+  const isEmployeeCodeRequest = EMPLOYEE_CODE_FIELD_RE.test(text || '') && !HARD_BLOCKED_PERSON_FIELD_RE.test(text || '');
+  if (isEmployeeCodeRequest) personField = 'other_field';
+  const fieldAlias = personField === 'other_field'
+    ? (resolveApprovalFieldAliasByLabel(personFieldLabel) || (isEmployeeCodeRequest ? resolveApprovalFieldAliasByKey('employeeId') : null))
+    : null;
   const isHardBlockedField = personField === 'forbidden_pii' ||
     HARD_BLOCKED_PERSON_FIELD_RE.test(personFieldLabel || '') ||
     (personField === 'other_field' && !fieldAlias);
@@ -4427,16 +4450,14 @@ async function handlePersonLookupRequest({ phone, name, lang, personName, person
     // in the THIRD PERSON, by your own registered name, is the same
     // self-request as "amar Aadhaar chai" (see detectOwnSensitiveIdRequest
     // above decideAutoReplyCore), just not caught by that pronoun-only
-    // check since no "amar/my" was said. Only ever applies to Aadhaar/PAN
-    // specifically (ownField below), and ONLY when the named person
-    // resolves to the EXACT SAME employee record the sender's own phone
-    // already matches - the identical whole-word+fuzzy resolution every
-    // other personLookupName case already uses, never a looser match just
+    // check since no "amar/my" was said. Applies to all 9 forbidden heads
+    // (ownField below), and ONLY when the named person resolves to the
+    // EXACT SAME employee record the sender's own phone already matches -
+    // the identical whole-word+fuzzy resolution every other
+    // personLookupName case already uses, never a looser match just
     // because this is the sensitive path. Any other name (even a real,
     // exact-match employee who just isn't the sender) still falls straight
-    // through to the hard block below, completely unchanged - bank
-    // account/salary/an unrecognized field never gets this exception at
-    // all (detectSensitiveIdFieldKeyword only ever returns aadhar/pan).
+    // through to the hard block below, completely unchanged.
     const ownField = detectSensitiveIdFieldKeyword(text);
     if (ownField && phone) {
       const { matches: ownNameMatches } = await findPersonLookupMatches(personName, department);
@@ -4451,7 +4472,7 @@ async function handlePersonLookupRequest({ phone, name, lang, personName, person
     // Hard block - no approval loop at all, this can never be sent
     // regardless of what the owner says (spec point 1). Unaffected by
     // fuzzy matching - this gate runs before any name resolution.
-    await postOwnerNotification('⚠️ ' + name + ' (' + phone + ') ' + (personName || 'ekjon employee') + '-er sensitive personal data (Aadhar/PAN/bank/salary type) chaiche - WhatsApp-e block kora holo, kichu pathano hoyni.');
+    await postOwnerNotification('⚠️ ' + name + ' (' + phone + ') ' + (personName || 'ekjon employee') + '-er sensitive personal data (Aadhaar/PAN/bank/salary/UAN/ESI/address/DOB/blood group type) chaiche - WhatsApp-e block kora holo, kichu pathano hoyni.');
     return { case: 'acknowledged', replyText: PII_BLOCK_REPLY[lang] || PII_BLOCK_REPLY.english, summaryForOwner: null, lang };
   }
   const otherFieldLabel = fieldAlias ? (fieldAlias.label[lang] || fieldAlias.label.english) : null;
@@ -4554,8 +4575,8 @@ async function handlePersonLookupRequest({ phone, name, lang, personName, person
   // owner-facing multi-candidate approval card - the owner only ever sees
   // ONE normal approval, for whichever single person the sender confirms.
   // "other_field" is every non-hard-blocked field other than contact
-  // number (mail id, address, DOB, emergency contact, UAN, ESIC, blood
-  // group, ...) - same ask-first flow, just a different field.
+  // number (employee code, mail id, emergency contact, reporting
+  // manager, ...) - same ask-first flow, just a different field.
   const isOtherField = personField === 'other_field';
   const pendingFieldTag = isOtherField ? 'other_field' : 'contact_number';
   const fieldKindForQuestion = isOtherField ? otherFieldLabel : 'contact_number';
@@ -7967,8 +7988,8 @@ function classifyTool() {
           wantsData: { type: 'boolean', description: 'true ONLY if they are asking for actual HR/employee data from the company database - counts, lists, names, headcounts, birthdays, who reports to whom, department lists, or any field (even just a phone number) about a named employee, etc. false for a question about their OWN situation (their own letter/salary/attendance), a policy question, an informing message, or small talk - those go through the normal topic/memory/noting path instead, never this one. Judge this from THIS message alone, read as a complete, self-contained question - true for a plain "who is <name>?"/"<name> ke?" even if the conversation history separately discussed a different name or an unresolved earlier question (e.g. a name mentioned while confirming who gave an instruction). Never classify a self-contained new "who is X" question as a continuation of an unrelated, unresolved exchange from history just because a similar-sounding name or topic appeared earlier - that history-leak is a known failure mode. Only let history change this when THIS message is a genuine elliptical fragment that cannot stand alone without it (e.g. a bare "?", "tar ki holo", a pronoun with no antecedent in the message itself).' },
           dataRequestSummary: { type: 'string', description: 'Required only when wantsData is true - restate exactly what data they are asking for, in plain English, e.g. "current list of engineers", "headcount under Yashaswi Shroff", "Ayan Das\'s contact number". Omit when wantsData is false.' },
           personLookupName: { type: 'string', description: 'ONLY when wantsData is true AND the request is for ONE specific field about ONE named person (e.g. "Ayan Das er contact number ta dao", "R amake Ayan Das HR er contact no. ta debe?") - the person\'s name EXACTLY as given in THIS message, first name alone is fine (e.g. "Ayan"). NEVER guess, complete, or expand the name using an earlier message in the conversation history - if THIS message only says "Ayan", output "Ayan", even if an earlier message in this same chat was about a specific "Ayan Biswas" or "Ayan Das". Only carry a name forward from history when the sender explicitly refers back to the same person ("tar", "oi jon-er", "same person", "ওই person", "usi ka") - in that case output the name history already resolved. Omit entirely for any aggregate/list/count/headcount request (e.g. "engineers list", "headcount under X", "who reports to X") - those are never about one person\'s own personal field and must NOT set this.' },
-          personLookupField: { type: 'string', enum: ['contact_number', 'general_details', 'other_field', 'forbidden_pii'], description: 'Required when personLookupName is given. "contact_number" ONLY for their phone/contact/mobile/WhatsApp number. "general_details" ONLY for their full name, designation/role, department, or how long they\'ve been with the company (tenure) - these are not sensitive and never need approval. "other_field" for any other single personal field that is NOT Aadhaar/PAN/bank account/salary - e.g. mail id/personal email, home/permanent/present address, date of birth, emergency contact, UAN number, ESIC/ESI number, blood group, OR that named person\'s OWN reporting manager/HOD (e.g. "Subhodeep HR kake report kore?", "Subhodeep HR-er manager ke?", "X-er HOD ke?" - set personLookupFieldLabel to "reporting manager" for this one); when you choose "other_field" you MUST also set personLookupFieldLabel. Never use "other_field" for a DEPARTMENT\'s own HOD question with no specific person named (e.g. "HR dept er HOD ke?") - that has no personLookupName at all, see wantsData\'s own description. "forbidden_pii" ONLY for Aadhaar, PAN, bank account/IFSC, or salary/CTC - these are NEVER shared regardless of approval. When unsure whether something is Aadhaar/PAN/bank/salary vs. a different field, choose "forbidden_pii" - never guess "other_field" for something that might be one of those four.' },
-          personLookupFieldLabel: { type: 'string', description: 'Required when personLookupField is "other_field" - name the specific field asked about, in a few words (e.g. "mail id", "address", "date of birth", "emergency contact", "UAN number", "ESIC number", "blood group"). Omit otherwise.' },
+          personLookupField: { type: 'string', enum: ['contact_number', 'general_details', 'other_field', 'forbidden_pii'], description: 'Required when personLookupName is given. "contact_number" ONLY for their phone/contact/mobile/WhatsApp number. "general_details" ONLY for their full name, designation/role, department, or how long they\'ve been with the company (tenure) - these are not sensitive and never need approval. "other_field" for any other single personal field that is NOT one of the 9 forbidden heads listed under "forbidden_pii" below - e.g. employee code/employee ID/emp no., mail id/personal email, emergency contact, OR that named person\'s OWN reporting manager/HOD (e.g. "Subhodeep HR kake report kore?", "Subhodeep HR-er manager ke?", "X-er HOD ke?" - set personLookupFieldLabel to "reporting manager" for this one); when you choose "other_field" you MUST also set personLookupFieldLabel. Never use "other_field" for a DEPARTMENT\'s own HOD question with no specific person named (e.g. "HR dept er HOD ke?") - that has no personLookupName at all, see wantsData\'s own description. "forbidden_pii" ONLY for exactly these 9 heads, nothing else: Aadhaar, PAN, bank account/IFSC, salary/CTC, UAN number, ESIC/ESI number, home/permanent/present address, date of birth, blood group - these are NEVER shared regardless of approval. Employee code/ID is NOT forbidden_pii - it is always "other_field", never guess otherwise. When unsure whether a field is genuinely one of these exact 9 heads (e.g. a bank-related term you don\'t recognize) vs. a clearly different field (employee code, designation, location, tenure, etc.), choose "forbidden_pii" only for the genuinely ambiguous bank/salary-shaped case - never for something plainly unrelated like employee code.' },
+          personLookupFieldLabel: { type: 'string', description: 'Required when personLookupField is "other_field" - name the specific field asked about, in a few words (e.g. "employee code", "mail id", "emergency contact", "reporting manager"). Omit otherwise.' },
           personLookupDepartment: { type: 'string', description: 'Optional - a department mentioned to help find the right person when the name alone could match more than one employee, e.g. "HR" in "Ayan Das HR er contact number". Omit if none was mentioned.' }
         },
         required: ['intent', 'language', 'topic', 'topicLabel', 'replyNeeded', 'wantsData']
@@ -8856,30 +8877,22 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
     return { case: 'acknowledged', replyText: EMOJI_ACK_REPLY[lang] || EMOJI_ACK_REPLY.banglish, summaryForOwner: null };
   }
 
-  // Own Aadhaar/PAN exception (the one narrow, approval-gated hole in the
-  // PII hard block - see handleOwnSensitiveIdRequest's own comment for
-  // every condition this actually enforces). Checked before classification
-  // on purpose, same tier as identity/greeting above - never left to the
-  // AI classifier's own judgment call.
+  // Own sensitive-data exception (the one narrow hole in the PII hard
+  // block, generalized in Task 7 to all 9 forbidden heads - see
+  // handleOwnSensitiveIdRequest's own comment for every condition this
+  // actually enforces, including bank/salary which always resolve to
+  // the same "nothing on file" refusal since no such data exists at
+  // all). Checked before classification on purpose, same tier as
+  // identity/greeting above - never left to the AI classifier's own
+  // judgment call, and this single path now also supersedes the old,
+  // narrower "own bank/salary holding-reply" short-circuit (removed) -
+  // a self-referential request for any of the 9 heads is answered
+  // deterministically here, either with the real value or a refusal,
+  // never a vague holding reply.
   if (!isGroup && phone) {
     const ownIdField = detectOwnSensitiveIdRequest(text);
     if (ownIdField) {
       return handleOwnSensitiveIdRequest({ phone, lang: detectLang(text), field: ownIdField, history });
-    }
-  }
-
-  // Own bank/salary/IFSC/CTC request short-circuit (see
-  // isSelfReferentialForbiddenFieldRequest's own comment) - NEVER the
-  // Aadhaar/PAN auto-send exception above, just forces the plain
-  // holding-reply path deterministically.
-  if (!isGroup && phone) {
-    const selfReferentialField = isSelfReferentialForbiddenFieldRequest(text);
-    if (selfReferentialField) {
-      const sLang = resolveStickyLang(text, history, detectLang(text));
-      const followupCount = await incrementFollowupCount(phone);
-      const topicLabel = 'their ' + selfReferentialField;
-      const replyText = await generateConversationReply(text, history, firstName, topicLabel, true, sLang);
-      return { case: 'holding', replyText, summaryForOwner: text.slice(0, 160), topicLabel, topic: 'none', followupCount, intent: 'request', hrTopicArea: 'none', lang: sLang };
     }
   }
 
@@ -11253,7 +11266,6 @@ module.exports = {
   deterministicHrActionKind,
   deterministicApprovalFromSelfInitiatedInforming,
   enforceSuddenInformingVerb,
-  isSelfReferentialForbiddenFieldRequest,
   recordActionKindOverride,
   listActionKindOverrides,
   // Exported for scripts/check-whatsapp-scenarios.js only - record/

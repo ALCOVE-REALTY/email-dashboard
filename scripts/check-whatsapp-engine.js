@@ -100,7 +100,13 @@ async function checkAsync(label, fn) {
   check('detectOwnSensitiveIdRequest: "meri PAN details chahiye" (hinglish) -> pan', whatsappAssistant.detectOwnSensitiveIdRequest('meri PAN details chahiye') === 'pan');
   check('detectOwnSensitiveIdRequest: someone ELSE\'s Aadhaar (no self-referential pronoun) -> null, never matches', whatsappAssistant.detectOwnSensitiveIdRequest('Ayan Das er Aadhaar number dao') === null);
   check('detectOwnSensitiveIdRequest: no pronoun at all -> null', whatsappAssistant.detectOwnSensitiveIdRequest('Aadhaar number dao') === null);
-  check('detectOwnSensitiveIdRequest: own bank details (different field, never this exception) -> null', whatsappAssistant.detectOwnSensitiveIdRequest('amar bank account details dao') === null);
+  check('Task 7: detectOwnSensitiveIdRequest: own bank details -> "bank" (generalized to all 9 heads, was null/a separate short-circuit before Task 7)', whatsappAssistant.detectOwnSensitiveIdRequest('amar bank account details dao') === 'bank');
+  check('Task 7: detectOwnSensitiveIdRequest: own UAN -> "uan"', whatsappAssistant.detectOwnSensitiveIdRequest('amar UAN number ta dao') === 'uan');
+  check('Task 7: detectOwnSensitiveIdRequest: own ESIC -> "esic"', whatsappAssistant.detectOwnSensitiveIdRequest('amar ESIC number ta dao') === 'esic');
+  check('Task 7: detectOwnSensitiveIdRequest: own address -> "address"', whatsappAssistant.detectOwnSensitiveIdRequest('amar address ta dao') === 'address');
+  check('Task 7: detectOwnSensitiveIdRequest: own DOB -> "dob"', whatsappAssistant.detectOwnSensitiveIdRequest('amar date of birth ta dao') === 'dob');
+  check('Task 7: detectOwnSensitiveIdRequest: own blood group -> "bloodGroup"', whatsappAssistant.detectOwnSensitiveIdRequest('amar blood group ta bolo') === 'bloodGroup');
+  check('Task 7: detectOwnSensitiveIdRequest: own salary -> "salary"', whatsappAssistant.detectOwnSensitiveIdRequest('amar salary koto') === 'salary');
 
   // Real directory record reused from the existing "Ayan Biswas"/"Ayan
   // Das" fixtures already established elsewhere in this exact file - a
@@ -146,7 +152,7 @@ async function checkAsync(label, fn) {
       for (const key of ['subh-owner-notifications', 'wa-inbox-log']) {
         const raw = await redis.lrange(key, 0, 200);
         const parsed = raw.map((r) => (typeof r === 'string' ? JSON.parse(r) : r));
-        const clean = parsed.filter((e) => !String(e.text || e.messageSummary || '').includes('Own Aadhaar request') && !String(e.text || e.messageSummary || '').includes('Own PAN request'));
+        const clean = parsed.filter((e) => !/Own .+ request|sent directly to .+ at their own registered number/.test(String(e.text || e.messageSummary || '')));
         if (clean.length !== parsed.length) {
           await redis.del(key);
           for (let i = clean.length - 1; i >= 0; i--) await redis.lpush(key, JSON.stringify(clean[i]));
@@ -191,6 +197,46 @@ async function checkAsync(label, fn) {
         });
       }
     }
+
+    // Task 7 (2026-10-31): the own-data exception generalized from
+    // Aadhaar/PAN to all 9 forbidden heads. Dynamic against the REAL
+    // "Ayan Biswas" record - never assumes a field is populated (that
+    // would be a real-data assumption that can silently go stale, same
+    // lesson as the phone-number lookup above): a field WITH a real
+    // value on file must be sent directly; one WITHOUT (bank/salary have
+    // no such columns at all, see employeeService.js) must be refused,
+    // deterministically, never a vague holding reply either way.
+    const OWN_ID_GENERALIZED_FIELDS = {
+      uan: { label: 'UAN', text: 'amar UAN number ta dao' },
+      esic: { label: 'ESIC', text: 'amar ESIC number ta dao' },
+      address: { label: 'address', text: 'amar address ta dao' },
+      dob: { label: 'date of birth', text: 'amar date of birth ta dao' },
+      bloodGroup: { label: 'blood group', text: 'amar blood group ta bolo' },
+      bank: { label: 'bank account', text: 'amar bank account details ta dao' },
+      salary: { label: 'salary', text: 'amar salary koto' }
+    };
+    for (const [field, { label: fieldLabel, text }] of Object.entries(OWN_ID_GENERALIZED_FIELDS)) {
+      const hasValue = field === 'uan' ? Boolean(ownIdEmp.uan)
+        : field === 'esic' ? Boolean(ownIdEmp.esiNumber)
+        : field === 'address' ? Boolean(ownIdEmp.presentAddress || ownIdEmp.permanentAddress)
+        : field === 'dob' ? Boolean(ownIdEmp.dob)
+        : field === 'bloodGroup' ? Boolean(ownIdEmp.bloodGroup)
+        : false; // bank/salary never have a value - no such columns exist
+      await checkAsync('Task 7: own ' + fieldLabel + ' from the registered number -> ' + (hasValue ? 'sent DIRECTLY, no approval card left behind' : 'refused (nothing on file for this field), never a card, never a vague holding reply'), async () => {
+        try {
+          const decision = await whatsappAssistant.decideAutoReply({ phone: OWN_ID_REAL_PHONE, name: ownIdEmp.name, firstName: ownIdEmp.name.split(' ')[0], text, isGroup: false, history: [] });
+          const approvals = await whatsappAssistant.listPendingApprovals();
+          const anyPending = approvals.some((a) => a.sensitiveIdRequest && a.phone === OWN_ID_REAL_PHONE);
+          if (hasValue) {
+            return decision.case === 'handled_directly' && decision.replyText === null && !anyPending;
+          }
+          return decision.case === 'acknowledged' && decision.replyText.includes('Onno karo gopon tottho') && !anyPending;
+        } finally {
+          await cleanupOwnIdTestArtifacts();
+        }
+      });
+    }
+
     await checkAsync('own Aadhaar approval tamper-protection (executeApprovalSend itself, constructed directly - this code path still backs the never-auto-list fallback below): editing the surrounding text while keeping the real value intact is allowed', async () => {
       const fakeApproval = {
         id: 'test-own-id-' + Date.now(), phone: OWN_ID_REAL_PHONE, name: ownIdEmp.name, lang: 'banglish',
@@ -258,11 +304,17 @@ async function checkAsync(label, fn) {
       const anyCreated = approvals.some((a) => a.sensitiveIdRequest && a.phone === OWN_ID_UNREGISTERED_PHONE);
       return decision.case === 'acknowledged' && decision.replyText.includes('Onno karo gopon tottho') && !anyCreated;
     });
-    await checkAsync('own bank details (a different forbidden field, self-referential) is unaffected by this exception - classified as a self-referential "none" topic (same as before), never reaches a data-approval flow at all, no approval ever created', async () => {
+    await checkAsync('Task 7: own bank details are now generalized into the SAME own-sensitive-data exception (no longer a vague "holding" reply) - from an UNREGISTERED number this is a plain refusal, deterministically, no approval ever created', async () => {
       const decision = await whatsappAssistant.decideAutoReply({ phone: OWN_ID_UNREGISTERED_PHONE, name: 'Test', firstName: 'Test', text: 'amar bank account details ta dao', isGroup: false, history: [] });
       const approvals = await whatsappAssistant.listPendingApprovals();
       const anyCreated = approvals.some((a) => a.phone === OWN_ID_UNREGISTERED_PHONE);
-      return decision.case === 'holding' && !anyCreated;
+      return decision.case === 'acknowledged' && decision.replyText.includes('Onno karo gopon tottho') && !anyCreated;
+    });
+    await checkAsync('Task 7 LOCKED SCENARIO: own salary from a non-matching number -> refusal (never a card, never a vague holding reply)', async () => {
+      const decision = await whatsappAssistant.decideAutoReply({ phone: OWN_ID_UNREGISTERED_PHONE, name: 'Test', firstName: 'Test', text: 'amar salary koto', isGroup: false, history: [] });
+      const approvals = await whatsappAssistant.listPendingApprovals();
+      const anyCreated = approvals.some((a) => a.phone === OWN_ID_UNREGISTERED_PHONE);
+      return decision.case === 'acknowledged' && decision.replyText.includes('Onno karo gopon tottho') && !anyCreated;
     });
     await whatsappAssistant.resetFollowupCount(OWN_ID_UNREGISTERED_PHONE).catch(() => {});
   }
@@ -584,17 +636,14 @@ async function checkAsync(label, fn) {
   });
 
   console.log('='.repeat(70));
-  console.log('LIVE TEST FIXES item 5: only Aadhaar/PAN/bank account/salary are hard-blocked now - every other field (mail id, address, DOB, emergency contact, UAN, ESIC, blood group) is approval-gated, same ask-the-sender-first flow as contact number');
+  console.log('Task 7 (2026-10-31): EXACTLY 9 heads (Aadhaar/PAN/bank details/salary/UAN/ESI/address/DOB/blood group) are hard-blocked for a THIRD PARTY now - everything else (employee code, mail id, emergency contact, reporting manager, etc.) is approval-gated, same ask-the-sender-first flow as contact number');
   console.log('='.repeat(70));
-  check('HARD_BLOCKED_PERSON_FIELD_RE matches "Aadhaar"/"PAN"/"bank account"/"IFSC"/"salary"/"CTC"', ['aadhaar number', 'PAN card', 'bank account number', 'IFSC code', 'salary slip', 'CTC details'].every((t) => whatsappAssistant.HARD_BLOCKED_PERSON_FIELD_RE.test(t)));
-  check('HARD_BLOCKED_PERSON_FIELD_RE does NOT match any of the newly-allowed fields', ['mail id', 'address', 'date of birth', 'emergency contact', 'UAN number', 'ESIC number', 'blood group'].every((t) => !whatsappAssistant.HARD_BLOCKED_PERSON_FIELD_RE.test(t)));
+  check('HARD_BLOCKED_PERSON_FIELD_RE matches all 9 forbidden heads + synonyms', ['aadhaar number', 'PAN card', 'bank account number', 'IFSC code', 'salary slip', 'CTC details', 'UAN number', 'ESIC number', 'ESI number', 'address', 'date of birth', 'blood group'].every((t) => whatsappAssistant.HARD_BLOCKED_PERSON_FIELD_RE.test(t)));
+  check('HARD_BLOCKED_PERSON_FIELD_RE does NOT match any of the still-shareable fields', ['mail id', 'emergency contact', 'employee code', 'reporting manager', 'designation', 'department'].every((t) => !whatsappAssistant.HARD_BLOCKED_PERSON_FIELD_RE.test(t)));
   check('resolveApprovalFieldAliasByLabel recognizes "mail id"/"email address" -> email', ['mail id', 'email address', 'personal email'].every((t) => (whatsappAssistant.resolveApprovalFieldAliasByLabel(t) || {}).key === 'email'));
-  check('resolveApprovalFieldAliasByLabel recognizes "address" -> address', (whatsappAssistant.resolveApprovalFieldAliasByLabel('address') || {}).key === 'address');
-  check('resolveApprovalFieldAliasByLabel recognizes "date of birth" -> dob', (whatsappAssistant.resolveApprovalFieldAliasByLabel('date of birth') || {}).key === 'dob');
   check('resolveApprovalFieldAliasByLabel recognizes "emergency contact" -> emergencyContact', (whatsappAssistant.resolveApprovalFieldAliasByLabel('emergency contact') || {}).key === 'emergencyContact');
-  check('resolveApprovalFieldAliasByLabel recognizes "UAN number" -> uan', (whatsappAssistant.resolveApprovalFieldAliasByLabel('UAN number') || {}).key === 'uan');
-  check('resolveApprovalFieldAliasByLabel recognizes "ESIC number" -> esic', (whatsappAssistant.resolveApprovalFieldAliasByLabel('ESIC number') || {}).key === 'esic');
-  check('resolveApprovalFieldAliasByLabel recognizes "blood group" -> bloodGroup', (whatsappAssistant.resolveApprovalFieldAliasByLabel('blood group') || {}).key === 'bloodGroup');
+  check('Task 7: resolveApprovalFieldAliasByLabel recognizes "employee code"/"emp id"/"employee number" -> employeeId', ['employee code', 'emp id', 'employee number', 'emp code'].every((t) => (whatsappAssistant.resolveApprovalFieldAliasByLabel(t) || {}).key === 'employeeId'));
+  check('Task 7: resolveApprovalFieldAliasByLabel now returns null for address/DOB/UAN/ESIC/blood group - these 9 heads are hard-blocked before an alias is ever consulted, the old approval-gated aliases are gone', ['address', 'date of birth', 'UAN number', 'ESIC number', 'blood group'].every((t) => whatsappAssistant.resolveApprovalFieldAliasByLabel(t) === null));
   check('resolveApprovalFieldAliasByLabel returns null for an unrecognized field (e.g. "passport number") - never guesses a field', whatsappAssistant.resolveApprovalFieldAliasByLabel('passport number') === null);
   await checkAsync('a mislabeled "other_field" request whose label actually says "bank account number" is STILL hard-blocked, regardless of personField - a structural safety net, never trusting the classifier alone', async () => {
     const d = await whatsappAssistant.handlePersonLookupRequest({ phone: LIVE_REVIEW_TEST_PHONE, name: 'Test', lang: 'banglish', personName: 'Ayan Das', personField: 'other_field', personFieldLabel: 'bank account number', department: null, text: 'Ayan Das er bank account number dao', history: [] });
@@ -611,17 +660,57 @@ async function checkAsync(label, fn) {
     if (created) await whatsappAssistant.removePendingApproval(created.id);
     return ok;
   });
-  await checkAsync('an "other_field" request matching 2+ people ("Ayan" + address) asks the SENDER the same way as contact_number/item 1, with the field named in the question', async () => {
+  await checkAsync('an "other_field" request matching 2+ people ("Ayan" + emergency contact) asks the SENDER the same way as contact_number/item 1, with the field named in the question', async () => {
     await whatsappAssistant.clearPendingDisambiguation(LIVE_REVIEW_TEST_PHONE);
-    const d = await whatsappAssistant.handlePersonLookupRequest({ phone: LIVE_REVIEW_TEST_PHONE, name: 'Test', lang: 'banglish', personName: 'Ayan', personField: 'other_field', personFieldLabel: 'address', department: null, text: 'Ayan er address dao', history: [] });
+    const d = await whatsappAssistant.handlePersonLookupRequest({ phone: LIVE_REVIEW_TEST_PHONE, name: 'Test', lang: 'banglish', personName: 'Ayan', personField: 'other_field', personFieldLabel: 'emergency contact', department: null, text: 'Ayan er emergency contact dao', history: [] });
     const pending = await whatsappAssistant.getPendingDisambiguation(LIVE_REVIEW_TEST_PHONE);
-    const ok = d.case === 'acknowledged' && d.replyText.includes('address chaichhen') && Boolean(pending) && pending.pendingField === 'other_field' && pending.fieldAliasKey === 'address';
+    const ok = d.case === 'acknowledged' && d.replyText.includes('chaichhen') && Boolean(pending) && pending.pendingField === 'other_field' && pending.fieldAliasKey === 'emergencyContact';
     await whatsappAssistant.clearPendingDisambiguation(LIVE_REVIEW_TEST_PHONE).catch(() => {});
     return ok;
   });
   await checkAsync('PII_BLOCK_REPLY (new live-review wording) names the field examples and points to the HR office, in all 3 languages', async () => {
     const d = await whatsappAssistant.handlePersonLookupRequest({ phone: LIVE_REVIEW_TEST_PHONE, name: 'Test', lang: 'hinglish', personName: 'Ayan Das', personField: 'forbidden_pii', department: null, text: 'Ayan Das ka Aadhaar number batao', history: [] });
     return d.case === 'acknowledged' && d.replyText.includes('HR office se sampark karein') && d.replyText.includes('Aadhaar');
+  });
+
+  console.log('='.repeat(70));
+  console.log('Task 7 LOCKED SCENARIOS (2026-10-31): the 9-head PII rewrite, including the live bug fix for employee code');
+  console.log('='.repeat(70));
+  await checkAsync('LOCKED: someone else\'s employee code -> a normal approval card is created (THE LIVE BUG - the classifier never mentioning employee code and defaulting to forbidden_pii "when unsure" used to wrongly refuse this)', async () => {
+    await whatsappAssistant.clearPendingDisambiguation(LIVE_REVIEW_TEST_PHONE);
+    // Simulates the exact live bug: the classifier mis-picked forbidden_pii
+    // for a plain employee-code request (no personFieldLabel set, since
+    // forbidden_pii never sets one) - the structural, text-based override
+    // must still recover and treat this as a normal other_field request.
+    const d = await whatsappAssistant.handlePersonLookupRequest({ phone: LIVE_REVIEW_TEST_PHONE, name: 'Test', lang: 'banglish', personName: 'Ayan Das', personField: 'forbidden_pii', personFieldLabel: undefined, department: null, text: 'Ayan Das er employee code ta dao', history: [] });
+    const created = (await listRawApprovalsForPhone(LIVE_REVIEW_TEST_PHONE)).find((a) => a.resolvedPersonName === 'Ayan Das');
+    const ok = d.case === 'data_holding' && Boolean(created) && created.dataRequestSummary.includes('employee code');
+    if (created) await whatsappAssistant.removePendingApproval(created.id);
+    return ok;
+  });
+  await checkAsync('LOCKED: someone else\'s employee code, correctly classified as other_field with label "employee code", also resolves normally (the non-buggy path, unaffected)', async () => {
+    const d = await whatsappAssistant.handlePersonLookupRequest({ phone: LIVE_REVIEW_TEST_PHONE, name: 'Test', lang: 'english', personName: 'Ayan Das', personField: 'other_field', personFieldLabel: 'employee code', department: null, text: 'what is Ayan Das employee code', history: [] });
+    const created = (await listRawApprovalsForPhone(LIVE_REVIEW_TEST_PHONE)).find((a) => a.resolvedPersonName === 'Ayan Das');
+    const ok = d.case === 'data_holding' && Boolean(created) && created.dataRequestSummary.includes('employee code');
+    if (created) await whatsappAssistant.removePendingApproval(created.id);
+    return ok;
+  });
+  await checkAsync('LOCKED: someone else\'s PAN -> refused, no card, regardless of an employee-code-shaped word anywhere nearby', async () => {
+    const d = await whatsappAssistant.handlePersonLookupRequest({ phone: LIVE_REVIEW_TEST_PHONE, name: 'Test', lang: 'banglish', personName: 'Ayan Das', personField: 'forbidden_pii', department: null, text: 'Ayan Das er PAN number ta dao', history: [] });
+    const anyCreated = (await listRawApprovalsForPhone(LIVE_REVIEW_TEST_PHONE)).some((a) => a.resolvedPersonName === 'Ayan Das');
+    return d.case === 'acknowledged' && d.replyText.includes('Onno karo gopon tottho') && !anyCreated;
+  });
+  await checkAsync('LOCKED: someone else\'s contact number -> unaffected regression check, still a normal approval card', async () => {
+    const d = await whatsappAssistant.handlePersonLookupRequest({ phone: LIVE_REVIEW_TEST_PHONE, name: 'Test', lang: 'banglish', personName: 'Ayan Das', personField: 'contact_number', department: null, text: 'Ayan Das er contact number ta dao', history: [] });
+    const created = (await listRawApprovalsForPhone(LIVE_REVIEW_TEST_PHONE)).find((a) => a.resolvedPersonName === 'Ayan Das');
+    const ok = Boolean(created);
+    if (created) await whatsappAssistant.removePendingApproval(created.id);
+    return d.case === 'data_holding' && ok;
+  });
+  await checkAsync('an employee-code-shaped word combined with a genuinely forbidden head in the SAME message (e.g. also asking for salary) is still fully hard-blocked - the override only ever fires when NOTHING forbidden is also present', async () => {
+    const d = await whatsappAssistant.handlePersonLookupRequest({ phone: LIVE_REVIEW_TEST_PHONE, name: 'Test', lang: 'banglish', personName: 'Ayan Das', personField: 'forbidden_pii', department: null, text: 'Ayan Das er employee code ar salary dujonto dao', history: [] });
+    const anyCreated = (await listRawApprovalsForPhone(LIVE_REVIEW_TEST_PHONE)).some((a) => a.resolvedPersonName === 'Ayan Das');
+    return d.case === 'acknowledged' && d.replyText.includes('Onno karo gopon tottho') && !anyCreated;
   });
 
   console.log('='.repeat(70));
@@ -1284,11 +1373,14 @@ async function checkAsync(label, fn) {
     return fixed.includes('informed') && !fixed.includes('told') && !fixed.includes('approved');
   })());
 
-  check('isSelfReferentialForbiddenFieldRequest: the exact live-flaky phrasing ("amar bank account details ta dao") is recognized', Boolean(whatsappAssistant.isSelfReferentialForbiddenFieldRequest('amar bank account details ta dao')));
-  check('isSelfReferentialForbiddenFieldRequest: requires BOTH a self-reference ("amar") AND a request shape - a bare mention with neither is null', whatsappAssistant.isSelfReferentialForbiddenFieldRequest('bank account niye ekta kotha') === null);
-  check('isSelfReferentialForbiddenFieldRequest: a THIRD PARTY\'s bank details ("Tanmoy-er bank account dao", no self-reference) is null - this short-circuit is self-referential ONLY, the existing third-party PII block handles that case unchanged', whatsappAssistant.isSelfReferentialForbiddenFieldRequest('Tanmoy-er bank account details ta dao') === null);
-  check('isSelfReferentialForbiddenFieldRequest: Aadhaar/PAN are explicitly excluded - the existing, separate detectOwnSensitiveIdRequest exception handles those, never this one', whatsappAssistant.isSelfReferentialForbiddenFieldRequest('amar aadhaar number ta dao') === null);
-  check('isSelfReferentialForbiddenFieldRequest: "amar salary koto" (a plain question, no "dao"/"details"/"number") is null - request-shape required, never guessed from the field word alone', whatsappAssistant.isSelfReferentialForbiddenFieldRequest('amar salary') === null);
+  // isSelfReferentialForbiddenFieldRequest removed in Task 7 (2026-10-31) -
+  // its entire original purpose (own bank/salary/IFSC/CTC requests) is now
+  // fully absorbed into the generalized detectOwnSensitiveIdRequest/
+  // handleOwnSensitiveIdRequest own-data exception (see the "Own
+  // Aadhaar/PAN exception" section above, now covering all 9 heads),
+  // which gives a real, deterministic refusal instead of this function's
+  // old vague "holding" reply - a strictly better outcome for the exact
+  // locked scenario ("own salary from a non-matching number -> refusal").
 
   await checkAsync('LIVE BUG, end to end: the exact failing phrasing ("Tanmoy Sir bolechhen ajke bari theke kaj korte") now reliably resolves to INSTRUCTION (telling verb), never "approval" - deterministic, no longer dependent on model variance', async () => {
     // This test needs "Tanmoy" to whole-word-match 2+ ACTIVE employees (so
@@ -1323,11 +1415,11 @@ async function checkAsync(label, fn) {
       await cleanupWfhLeave(phone);
     }
   });
-  await checkAsync('LIVE BUG, end to end: the exact failing phrasing ("amar bank account details ta dao") now reliably gets the plain holding reply, never swept into the HR-notification path - deterministic, no longer dependent on model variance', async () => {
+  await checkAsync('LIVE BUG, end to end: the exact failing phrasing ("amar bank account details ta dao") is never swept into the HR-notification path, deterministically - Task 7 (2026-10-31) strengthened the outcome further, from a vague holding reply to the real own-sensitive-data refusal (own-data exception, unregistered number -> refused)', async () => {
     const phone = '910000000875';
     const d = await whatsappAssistant.decideAutoReply({ phone, name: 'Test', firstName: 'Test', text: 'amar bank account details ta dao', isGroup: false, history: [] });
     const pending = await whatsappAssistant.getPendingHrNoteFlow(phone);
-    const ok = d.case === 'holding' && pending === null;
+    const ok = d.case === 'acknowledged' && d.replyText.includes('Onno karo gopon tottho') && pending === null;
     await whatsappAssistant.resetFollowupCount(phone).catch(() => {});
     return ok;
   });

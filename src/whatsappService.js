@@ -16,10 +16,16 @@ function requireToken() {
 
 // Maytapi wants digits only (no "+", no spaces) with the country code
 // included - a bare 10-digit Indian mobile number (the common case for
-// this HR team) gets "91" prepended; anything else is passed through as
-// typed and left for the gateway itself to accept or reject.
+// this HR team) gets "91" prepended; an 11-digit number starting with a
+// trunk "0" (e.g. "0XXXXXXXXXX", how some phones/gateways render a
+// number) has that leading 0 dropped and "91" prepended the same way
+// (Task 7, 2026-10-31 - this exact normalization, "+91/spaces/leading
+// 0", is required for the sender's-own-number match to work reliably);
+// anything else is passed through as typed and left for the gateway
+// itself to accept or reject.
 function normalizePhone(raw) {
   const digits = String(raw || '').replace(/\D/g, '');
+  if (digits.length === 11 && digits[0] === '0') return '91' + digits.slice(1);
   if (digits.length === 10) return '91' + digits;
   return digits;
 }
