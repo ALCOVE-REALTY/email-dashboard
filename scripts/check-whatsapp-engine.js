@@ -27,6 +27,7 @@ require('dotenv').config();
 const whatsappAssistant = require('../src/aiAssistant/whatsappAssistant');
 const whatsapp = require('../src/whatsappService');
 const employeeService = require('../src/employeeService');
+const inboxLogArchive = require('../src/inboxLogArchive');
 const memoryService = require('../src/aiAssistant/memoryService');
 const tools = require('../src/aiAssistant/tools');
 const documentRequests = require('../src/aiAssistant/documentRequests');
@@ -5970,6 +5971,93 @@ async function checkAsync(label, fn) {
     if (secondPage.items.length !== 1 || secondPage.hasMore !== false) return false;
     const noMatch = await whatsappAssistant.listAllWhatsappConversationsPage({ offset: 0, limit: 30, query: marker + 'NOPE' });
     return noMatch.items.length === 0 && noMatch.hasMore === false;
+  });
+
+  console.log('='.repeat(70));
+  console.log('Task 3 archiving (2026-10-31): wa-inbox-log entries are archived to Google Drive before they are ever trimmed, never silently deleted at the retention cap');
+  console.log('='.repeat(70));
+  // Shared by the 3 tests below. The fake Upstash server only implements
+  // lpush/lrange/ltrim for lists (no rpush/llen) - lpush pushes each arg
+  // to the HEAD in the order given, so the final head->tail order is the
+  // given args REVERSED; passing entries.reverse() restores the intended
+  // head(newest)->tail(oldest) order (entries[0..n-1]). currentLen reads
+  // the length via lrange(0,-1) instead of the unsupported llen.
+  const { Redis } = require('@upstash/redis');
+  const archiveTestRedis = new Redis({ url: process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL, token: process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN });
+  const ARCHIVE_TEST_KEY = 'wa-inbox-log';
+  async function seedNewestFirst(arr) { await archiveTestRedis.lpush(ARCHIVE_TEST_KEY, ...arr.slice().reverse()); }
+  async function currentArchiveTestLen() { return (await archiveTestRedis.lrange(ARCHIVE_TEST_KEY, 0, -1)).length; }
+  await checkAsync('archiveOldInboxLogEntriesIfNeeded does nothing below the archive threshold (cheap no-op - the common case on every tick)', async () => {
+    const original = await archiveTestRedis.lrange(ARCHIVE_TEST_KEY, 0, -1);
+    await archiveTestRedis.del(ARCHIVE_TEST_KEY);
+    try {
+      const small = Array.from({ length: 10 }, (_, i) => JSON.stringify({ ts: Date.now() - i * 1000, chatId: '910000003' + i, name: 'Filler', outcome: 'sent' }));
+      await seedNewestFirst(small);
+      let archiveCalled = false;
+      const origArchive = inboxLogArchive.archiveInboxLogEntries;
+      inboxLogArchive.archiveInboxLogEntries = async () => { archiveCalled = true; };
+      const result = await whatsappAssistant.archiveOldInboxLogEntriesIfNeeded();
+      inboxLogArchive.archiveInboxLogEntries = origArchive;
+      const len = await currentArchiveTestLen();
+      return result.archived === 0 && !archiveCalled && len === 10;
+    } finally {
+      await archiveTestRedis.del(ARCHIVE_TEST_KEY);
+      if (original.length) await seedNewestFirst(original);
+    }
+  });
+  await checkAsync('archiveOldInboxLogEntriesIfNeeded, once past the threshold, archives EXACTLY the oldest excess entries (never the newest MAX_INBOX_LOG) and only trims Redis AFTER the archive call succeeds', async () => {
+    const original = await archiveTestRedis.lrange(ARCHIVE_TEST_KEY, 0, -1);
+    await archiveTestRedis.del(ARCHIVE_TEST_KEY);
+    try {
+      const total = whatsappAssistant.MAX_INBOX_LOG + whatsappAssistant.ARCHIVE_BATCH_THRESHOLD + 1;
+      // index 0 = newest (head), higher index = older (tail) - same
+      // newest-first order lpush/logInboxEvent already produces live.
+      const marker = 'ArchiveTest' + Date.now();
+      const entries = Array.from({ length: total }, (_, i) => ({ ts: Date.now() - i * 1000, chatId: '9100000050' + (i % 10), name: marker + '_' + i, outcome: 'sent' }));
+      await seedNewestFirst(entries.map((e) => JSON.stringify(e)));
+      let archivedWith = null;
+      const origArchive = inboxLogArchive.archiveInboxLogEntries;
+      inboxLogArchive.archiveInboxLogEntries = async (passed) => { archivedWith = passed; };
+      const result = await whatsappAssistant.archiveOldInboxLogEntriesIfNeeded();
+      inboxLogArchive.archiveInboxLogEntries = origArchive;
+      const lenAfter = await currentArchiveTestLen();
+      const expectedArchivedCount = total - whatsappAssistant.MAX_INBOX_LOG;
+      // The archived batch must be exactly entries[MAX_INBOX_LOG .. total-1]
+      // (the OLDEST ones, by array index here, since index i's ts is
+      // Date.now() - i*1000) - its FIRST element (list order) is the
+      // newest-of-the-excess (index MAX_INBOX_LOG), its LAST is the very
+      // oldest (index total-1).
+      const firstOfBatch = archivedWith && archivedWith[0];
+      const lastOfBatch = archivedWith && archivedWith[archivedWith.length - 1];
+      const ok = result.archived === expectedArchivedCount &&
+        Boolean(archivedWith) && archivedWith.length === expectedArchivedCount &&
+        firstOfBatch.name === marker + '_' + whatsappAssistant.MAX_INBOX_LOG &&
+        lastOfBatch.name === marker + '_' + (total - 1) &&
+        lenAfter === whatsappAssistant.MAX_INBOX_LOG;
+      return ok;
+    } finally {
+      await archiveTestRedis.del(ARCHIVE_TEST_KEY);
+      if (original.length) await seedNewestFirst(original);
+    }
+  });
+  await checkAsync('archiveOldInboxLogEntriesIfNeeded never trims Redis when the archive call itself fails (Drive down/not authorized) - nothing is ever silently lost', async () => {
+    const original = await archiveTestRedis.lrange(ARCHIVE_TEST_KEY, 0, -1);
+    await archiveTestRedis.del(ARCHIVE_TEST_KEY);
+    try {
+      const total = whatsappAssistant.MAX_INBOX_LOG + whatsappAssistant.ARCHIVE_BATCH_THRESHOLD + 1;
+      const entries = Array.from({ length: total }, (_, i) => JSON.stringify({ ts: Date.now() - i * 1000, chatId: '910000006', outcome: 'sent' }));
+      await seedNewestFirst(entries);
+      const origArchive = inboxLogArchive.archiveInboxLogEntries;
+      inboxLogArchive.archiveInboxLogEntries = async () => { throw new Error('simulated Drive failure'); };
+      let threw = false;
+      try { await whatsappAssistant.archiveOldInboxLogEntriesIfNeeded(); } catch (err) { threw = true; }
+      inboxLogArchive.archiveInboxLogEntries = origArchive;
+      const lenAfter = await currentArchiveTestLen();
+      return threw && lenAfter === total;
+    } finally {
+      await archiveTestRedis.del(ARCHIVE_TEST_KEY);
+      if (original.length) await seedNewestFirst(original);
+    }
   });
 
   console.log(pass + '/' + (pass + fail) + ' passed' + (fail ? ', ' + fail + ' FAILED' : ''));

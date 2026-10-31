@@ -58,6 +58,7 @@ function fireAndForgetPresence(phone, state) {
 const redisHealth = require('../redisHealth');
 const employeeService = require('../employeeService');
 const fileStorage = require('../fileStorage');
+const inboxLogArchive = require('../inboxLogArchive');
 const workforceAnalytics = require('../workforceAnalytics');
 const tools = require('./tools');
 const memoryService = require('./memoryService');
@@ -95,7 +96,21 @@ const INBOX_LOG_KEY = 'wa-inbox-log';
 // COUNT one. 20000 gives a realistic HR WhatsApp volume months of real
 // history before anything is ever dropped, while staying a bounded list
 // (never literally unlimited/forever).
+// MAX_INBOX_LOG is now the TARGET size the archive job (see
+// archiveOldInboxLogEntriesIfNeeded) keeps the live list trimmed down to -
+// nothing is ever actually deleted at this cap anymore, it's archived to
+// Google Drive first (inboxLogArchive.js, "SUBH Documents/Archive/
+// WhatsApp/<month>"). ARCHIVE_BATCH_THRESHOLD lets the list grow a bit
+// past the target before the archive job bothers running (one Drive
+// round trip per batch of ~500 old entries, not one per message).
+// INBOX_LOG_HARD_CEILING is logInboxEvent's OWN safety-net trim - a true
+// last resort (a few hundred messages of extra headroom beyond the
+// archive threshold) in case the scheduler tick is ever down for a long
+// stretch; in normal operation the archive job always runs first and
+// this ceiling is never actually reached.
 const MAX_INBOX_LOG = 20000;
+const ARCHIVE_BATCH_THRESHOLD = 500;
+const INBOX_LOG_HARD_CEILING = MAX_INBOX_LOG + ARCHIVE_BATCH_THRESHOLD + 500;
 const NEVER_AUTO_KEY = 'wa-never-auto-list';
 const DAILY_SUMMARY_DATE_KEY = 'subh-daily-summary-date';
 const GATEWAY_STATUS_KEY = 'wa-gateway-status';
@@ -1149,7 +1164,11 @@ async function logInboxEvent({ chatId, name, isGroup, messageSummary, aCase, sen
       arrivedAt, seenAt, scheduledSendAt, typingStartedAt, sentAt
     };
     await redis.lpush(INBOX_LOG_KEY, JSON.stringify(entry));
-    await redis.ltrim(INBOX_LOG_KEY, 0, MAX_INBOX_LOG - 1);
+    // Task 3 archiving (2026-10-31) - this is the hard-ceiling safety net
+    // ONLY (see INBOX_LOG_HARD_CEILING's own comment); the normal trim-
+    // down-to-MAX_INBOX_LOG happens in archiveOldInboxLogEntriesIfNeeded,
+    // AFTER the excess is safely archived to Drive, not here.
+    await redis.ltrim(INBOX_LOG_KEY, 0, INBOX_LOG_HARD_CEILING - 1);
   } catch (err) { /* best effort */ }
 }
 async function listInboxLog(limit = 500) {
@@ -1162,9 +1181,35 @@ async function listInboxLog(limit = 500) {
   // would mean the whole live-visibility feature quietly shows nothing,
   // exactly the class of bug already found once in this area.
   return redisHealth.guardedRead(async () => {
-    const raw = (await redis.lrange(INBOX_LOG_KEY, 0, Math.max(1, Math.min(limit, MAX_INBOX_LOG)) - 1)) || [];
+    const raw = (await redis.lrange(INBOX_LOG_KEY, 0, Math.max(1, Math.min(limit, INBOX_LOG_HARD_CEILING)) - 1)) || [];
     return raw.map((item) => { try { return typeof item === 'string' ? JSON.parse(item) : item; } catch (err) { return null; } }).filter(Boolean);
   }, []);
+}
+// Task 3 archiving (2026-10-31) - runs on the scheduler's own tick
+// (whatsappPollScheduler.js), same cheap-idempotent-check philosophy as
+// every other job there: a single LLEN first, real work (a Drive round
+// trip per batch) only when the list has actually grown past the
+// archive threshold. Archives the OLDEST excess entries (inboxLogArchive)
+// and only trims Redis back down to MAX_INBOX_LOG after that succeeds -
+// if Drive is down/not yet authorized, the archive call throws, nothing
+// is trimmed, and the list simply keeps growing (toward
+// INBOX_LOG_HARD_CEILING's own safety net) until the next tick's retry
+// succeeds, rather than ever silently losing data.
+async function archiveOldInboxLogEntriesIfNeeded() {
+  const redis = getClient();
+  if (!redis) return { archived: 0 };
+  // LRANGE past the live end of the list just returns [] (no error, no
+  // need for a separate LLEN first) - this is the everything-under-the-
+  // cap common case on almost every tick, and it's cheap: Redis only
+  // walks the (normally empty) tail beyond MAX_INBOX_LOG, never the
+  // whole list.
+  const raw = (await redis.lrange(INBOX_LOG_KEY, MAX_INBOX_LOG, -1)) || [];
+  if (raw.length <= ARCHIVE_BATCH_THRESHOLD) return { archived: 0 };
+  const entries = raw.map((item) => { try { return typeof item === 'string' ? JSON.parse(item) : item; } catch (err) { return null; } }).filter(Boolean);
+  if (!entries.length) return { archived: 0 };
+  await inboxLogArchive.archiveInboxLogEntries(entries);
+  await redis.ltrim(INBOX_LOG_KEY, 0, MAX_INBOX_LOG - 1);
+  return { archived: entries.length };
 }
 
 // ---------------- Conversation history + loop protection ----------------
@@ -11347,6 +11392,9 @@ module.exports = {
   logAutoReplyEvent,
   logInboxEvent,
   listInboxLog,
+  archiveOldInboxLogEntriesIfNeeded,
+  MAX_INBOX_LOG,
+  ARCHIVE_BATCH_THRESHOLD,
   whatsappInboxSummary,
   whatsappAssistantStatus,
   addToAllowlist,

@@ -264,6 +264,18 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
     } catch (err) {
       log.error('[whatsapp-assistant] automation run failed: ' + err.message);
     }
+    // Task 3 archiving (2026-10-31) - the wa-inbox-log retention cap: once
+    // it's grown a batch past MAX_INBOX_LOG, archive the oldest excess to
+    // Google Drive (SUBH Documents/Archive/WhatsApp/<month>) and only then
+    // trim Redis back down - see whatsappAssistant.js's own comment. A
+    // single LLEN on every tick when there's nothing to do; the real work
+    // (a Drive round trip) only runs once there's an actual batch.
+    try {
+      const result = await whatsappAssistant.archiveOldInboxLogEntriesIfNeeded();
+      if (result.archived) log.log('[whatsapp-assistant] inbox-log archived ' + result.archived + ' old entries to Drive');
+    } catch (err) {
+      log.error('[whatsapp-assistant] inbox-log archive failed: ' + err.message);
+    }
   }, AUTOSEND_FLUSH_MS);
 
   return { stop: () => { clearInterval(autosendInterval); clearInterval(sendFlushInterval); } };
