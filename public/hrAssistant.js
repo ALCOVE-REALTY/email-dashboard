@@ -1271,6 +1271,13 @@
     navStack = [{ type: 'home' }];
     try { window.history.pushState({ hrNav: true, depth: 1 }, ''); } catch (err) { /* best effort */ }
     setPanelView('home');
+    // Task 1 (speed fix) - renders the Today's Updates badge INSTANTLY
+    // from whatever's already in pageDataCache (warm from the page-load
+    // prefetch below, or an earlier open this session) - startCommsPolling
+    // further down still fires its own fresh fetch immediately after, same
+    // stale-while-revalidate pattern showHub()/loadCommsPage() already use
+    // for their own pages.
+    renderTodayUpdatesBadgeFromCache();
     if (!opened) {
       opened = true;
       const name = (document.getElementById('drawerName') && document.getElementById('drawerName').textContent.trim()) || '';
@@ -1520,6 +1527,21 @@
     commsPollTimer = setInterval(pollCommsSummaryIfIdle, 12000);
     document.addEventListener('visibilitychange', handleCommsVisibilityChange);
   }
+  function renderTodayUpdatesBadgeFromCache() {
+    if (!pageDataCache.comms) return;
+    const data = pageDataCache.comms;
+    setCountBadge(todayUpdatesBadge, (data.importantMailsCount || 0) + (data.importantWhatsappCount || 0) + (data.remindersPendingCount || 0));
+  }
+  // Task 1 (speed fix) - prefetches the comms summary + reminders ONCE, the
+  // instant this script runs on the dashboard page itself, well before the
+  // person ever taps "Ask your assistant". Without this, pageDataCache.comms
+  // starts genuinely empty and the FIRST panel open of a session always had
+  // to pay for a full round trip before the badge/hub could show anything -
+  // every page here already renders from cache first when it has one (see
+  // showHub/loadCommsPage), this just makes sure there usually already IS
+  // one by the time the panel opens.
+  pollCommsSummary();
+  prefetchRemindersAll();
   function stopCommsPolling() {
     clearInterval(commsPollTimer);
     commsPollTimer = null;
