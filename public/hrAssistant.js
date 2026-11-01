@@ -4844,6 +4844,15 @@
     await fetchAutoEmployees();
     loadServiceAccountEmailOnce();
     if (t) autoPopulateForm(t); else autoResetForm();
+    // Task 14 (2026-11) LIVE BUG FIX: after a failed save, autoSubjErr/
+    // autoAskErr stay visible (set true by the validation check on Save,
+    // see validateAutoForm below) until the NEXT save attempt explicitly
+    // re-checks them - neither autoResetForm nor autoPopulateForm ever
+    // touched them, so reopening this page (new task or edit) kept
+    // showing a stale "required" error with nothing actually wrong yet.
+    // Every open now starts with both hidden, unconditionally.
+    if (autoSubjErr) autoSubjErr.classList.add('hidden');
+    if (autoAskErr) autoAskErr.classList.add('hidden');
     if (!autoAskExamples.dataset.wired) {
       autoAskExamples.innerHTML = AUTO_EXAMPLES.map((x, i) => '<button type="button" data-ex="' + i + '">' + escapeHtml(x) + '</button>').join('');
       autoAskExamples.dataset.wired = '1';
