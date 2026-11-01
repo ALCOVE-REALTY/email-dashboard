@@ -1617,11 +1617,11 @@ body { background: var(--wi-bg); }
    with the icons, on phone and desktop alike. */
 .wf-comms-section-title {
   flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  /* Task 1 (2026-11) - "Conversations" a touch bigger than the
-     .wf-comms-section-head default (0.8rem) it would otherwise inherit;
-     this is the only place this class is used, so no other header is
-     affected. */
-  font-size: 0.88rem;
+  /* Task 8 (2026-11) - "Conversations" a little bigger again, on top of
+     the Task 1 (2026-11) bump from the .wf-comms-section-head default
+     (0.8rem -> 0.88rem -> 0.95rem); this is the only place this class is
+     used, so no other header is affected. */
+  font-size: 0.95rem;
 }
 .wf-comms-section-actions {
   display: flex; align-items: center; gap: 2px; flex-shrink: 0; white-space: nowrap;
