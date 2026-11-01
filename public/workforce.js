@@ -30,7 +30,7 @@ const wfDrawerBackdrop = document.getElementById('wfDrawerBackdrop');
 const menuBtn = document.getElementById('menuBtn');
 const VIEWS = [
   'overview', 'directory', 'joining', 'exit', 'attrition', 'tenure', 'movement', 'insights', 'quality',
-  'departmentFull', 'locationFull', 'movementDetail', 'doerManagement', 'orgChart', 'healthInsurance', 'coveredEmployees', 'hiAdditions', 'hiExits', 'hiTotalExits', 'hiFamilyMembers', 'hiTotalLives', 'hiPolicyInfo', 'hiFamilyPremium', 'hiAnnualPremium', 'ageDistribution', 'genderDistribution', 'collarDistribution', 'subhSettings', 'profile', 'letterForm', 'letterSuccess', 'letterGenerator', 'interviewPanel'
+  'departmentFull', 'locationFull', 'movementDetail', 'doerManagement', 'orgChart', 'healthInsurance', 'coveredEmployees', 'hiAdditions', 'hiExits', 'hiTotalExits', 'hiFamilyMembers', 'hiTotalLives', 'hiPolicyInfo', 'hiFamilyPremium', 'hiAnnualPremium', 'ageDistribution', 'genderDistribution', 'collarDistribution', 'companyDistribution', 'subhSettings', 'profile', 'letterForm', 'letterSuccess', 'letterGenerator', 'interviewPanel'
 ];
 const viewEls = Object.fromEntries(VIEWS.map((v) => [v, document.getElementById(v + 'View')]));
 
@@ -651,6 +651,7 @@ function loadView(view, forceRefresh) {
   if (view === 'ageDistribution') return loadAgeDistributionView();
   if (view === 'genderDistribution') return loadGenderDistributionView();
   if (view === 'collarDistribution') return loadCollarDistributionView();
+  if (view === 'companyDistribution') return loadCompanyDistributionView();
   if (view === 'profile') return loadProfile();
   if (view === 'movement') return loadMovementView();
   if (view === 'letterGenerator') return loadLetterGeneratorView();
@@ -906,6 +907,22 @@ collarRowsEl.addEventListener('click', (e) => {
 collarRowsEl.addEventListener('keydown', (e) => {
   if (e.key !== 'Enter' && e.key !== ' ') return;
   const row = e.target.closest('[data-collar]');
+  if (!row) return;
+  e.preventDefault();
+  row.click();
+});
+
+// Task 15 (2026-11) - Company Distribution's own drill-down into the
+// Directory, same pattern as Category Distribution above.
+const companyRowsEl = document.getElementById('companyRows');
+companyRowsEl.addEventListener('click', (e) => {
+  const row = e.target.closest('[data-company]');
+  if (!row) return;
+  applyFiltersAndShowDirectory({ status: 'ACTIVE', company: row.dataset.company });
+});
+companyRowsEl.addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter' && e.key !== ' ') return;
+  const row = e.target.closest('[data-company]');
   if (!row) return;
   e.preventDefault();
   row.click();
@@ -6825,6 +6842,53 @@ function renderCollarDonut(buckets) {
   const palette = distributionPalette();
   document.getElementById('collarDonut').innerHTML = buildDonutSvg(
     'mMaskCollar',
+    buckets.map((b, i) => ({ value: b.count, color: palette[i % palette.length] }))
+  );
+}
+
+// Task 15 (2026-11) - Company Distribution (Demographics), same exact
+// design/markup/flow as loadCollarDistributionView above - grouped by the
+// real "Company" column instead of a fixed collar split.
+async function loadCompanyDistributionView() {
+  const rowsEl = document.getElementById('companyRows');
+  rowsEl.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+  try {
+    const data = await fetchJson('/api/workforce/company');
+    const palette = distributionPalette();
+    const total = data.buckets.reduce((sum, b) => sum + b.count, 0) || 1;
+    document.getElementById('companyDonutTotal').textContent = data.eligibleCount.toLocaleString();
+    rowsEl.innerHTML =
+      '<div class="wf-dist-row wf-dist-header">' +
+        '<span class="wf-dist-label-col">Company</span>' +
+        '<span class="wf-dist-num-col">Employees</span>' +
+        '<span class="wf-dist-num-col">% of Total</span>' +
+      '</div>' +
+      data.buckets.map((b, i) => (
+        '<div class="wf-dist-row clickable" tabindex="0" role="button" data-company="' + escapeHtml(b.filterValue) + '">' +
+          '<span class="wf-dist-label-col"><span class="wf-dist-dot" style="background:' + palette[i % palette.length] + '"></span>' + escapeHtml(b.label) + '</span>' +
+          '<span class="wf-dist-num-col">' + b.count + '</span>' +
+          '<span class="wf-dist-num-col">' + (Math.round((b.count / total) * 1000) / 10) + '%</span>' +
+        '</div>'
+      )).join('') +
+      '<div class="wf-dist-row wf-dist-total-row">' +
+        '<span class="wf-dist-label-col"><span class="wf-dist-total-icon">' + icon('total', 14) + '</span>Total</span>' +
+        '<span class="wf-dist-num-col">' + data.eligibleCount + '</span>' +
+        '<span class="wf-dist-num-col">100%</span>' +
+      '</div>';
+    renderCompanyDonut(data.buckets);
+  } catch (err) {
+    rowsEl.innerHTML = '<div class="error-banner">' + escapeHtml(err.message) + '</div>';
+  }
+}
+
+document.getElementById('shareCompanyDistributionPdf').addEventListener('click', (e) => {
+  shareFile(e.currentTarget, '/api/workforce/company/pdf', 'Company_Distribution.pdf', 'companyDistributionShareError', 'Could not share the report - please try again.');
+});
+
+function renderCompanyDonut(buckets) {
+  const palette = distributionPalette();
+  document.getElementById('companyDonut').innerHTML = buildDonutSvg(
+    'mMaskCompany',
     buckets.map((b, i) => ({ value: b.count, color: palette[i % palette.length] }))
   );
 }

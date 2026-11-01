@@ -516,6 +516,11 @@ function matchesFilters(emp, query) {
   if (query.location && !emp.locationKey.includes(normalizeKey(query.location))) return false;
   if (query.reportingManager && !containsAllWords(emp.reportingManager, query.reportingManager)) return false;
   if (query.collar && !formatCollar(emp.groupD).toLowerCase().includes(String(query.collar).toLowerCase())) return false;
+  // Task 15 (2026-11) - Company Distribution's own drill-down into the
+  // Directory, same exact-value convention as collar's filterValue above
+  // (company has no alias/normalized-key treatment, so the raw value is
+  // compared directly, not via a *Key field).
+  if (query.company && (emp.company || '').toLowerCase() !== String(query.company).toLowerCase()) return false;
   if (query.gender && (emp.gender || '').toLowerCase() !== String(query.gender).toLowerCase()) return false;
   if (query.reportingDoer && !containsAllWords(emp.reportingDoer, query.reportingDoer)) return false;
   if (query.employmentType && !(emp.employmentType || '').toLowerCase().includes(String(query.employmentType).toLowerCase())) {

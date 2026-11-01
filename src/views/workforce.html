@@ -62,6 +62,7 @@
         <button class="wf-drawer-subitem" data-view="ageDistribution" aria-pressed="false">Age Distribution</button>
         <button class="wf-drawer-subitem" data-view="genderDistribution" aria-pressed="false">Gender Distribution</button>
         <button class="wf-drawer-subitem" data-view="collarDistribution" aria-pressed="false">Category Distribution</button>
+        <button class="wf-drawer-subitem" data-view="companyDistribution" aria-pressed="false">Company Distribution</button>
       </div>
 
       <button class="wf-drawer-item" data-view="doerManagement" aria-pressed="false">
@@ -2218,6 +2219,36 @@
           <svg id="collarDonut" viewBox="0 0 200 200" style="display:block;"></svg>
           <div class="wf-donut-center">
             <b id="collarDonutTotal">—</b>
+            <span>Total</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Task 15 (2026-11) - Company Distribution (Demographics) - same
+         design/format as Category Distribution above, grouped by the real
+         "Company" column (not Company Location). -->
+    <section id="companyDistributionView" class="wf-view wf-view-flow" hidden>
+      <div class="wf-page-head" data-wi-enter="block">
+        <button class="wf-icon-btn" data-back aria-label="Back to Dashboard">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        </button>
+        <h2>Company Distribution</h2>
+        <button class="wf-icon-btn" id="shareCompanyDistributionPdf" type="button" style="margin-left:auto;" aria-label="Share Company Distribution PDF" title="Share PDF">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+        </button>
+      </div>
+      <p class="wf-inline-error" id="companyDistributionShareError" hidden></p>
+      <div class="wf-panel" data-wi-enter="block">
+        <div class="wf-dist-table" id="companyRows">
+          <div class="loading"><div class="spinner"></div></div>
+        </div>
+      </div>
+      <div class="wf-panel" style="display:flex; justify-content:center;" data-wi-enter="block">
+        <div class="wf-canvas-wrap wf-canvas-wrap--donut wf-canvas-wrap--donut-lg" style="width:200px; height:200px;">
+          <svg id="companyDonut" viewBox="0 0 200 200" style="display:block;"></svg>
+          <div class="wf-donut-center">
+            <b id="companyDonutTotal">—</b>
             <span>Total</span>
           </div>
         </div>

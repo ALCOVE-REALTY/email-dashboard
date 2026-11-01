@@ -886,6 +886,17 @@ router.get('/collar', async (req, res) => {
   }
 });
 
+// Task 15 (2026-11) - Company Distribution (Demographics), same shape/
+// route convention as Category (collar) Distribution just above.
+router.get('/company', async (req, res) => {
+  try {
+    const { employees } = await employeeService.getEmployeeData();
+    res.json(analytics.companyAnalytics(employees));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Shared by the Tenure/Age Distribution/Gender Distribution/Doer Management
 // Share buttons below - all four are the same shape (a label, an employee
 // count, a % of total) with a bold Total row, just different data sources
@@ -973,6 +984,25 @@ router.get('/collar/pdf', async (req, res) => {
     });
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', 'inline; filename="Category_Distribution.pdf"');
+    res.send(pdfBuffer);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/company/pdf', async (req, res) => {
+  try {
+    const { employees } = await employeeService.getEmployeeData();
+    const data = analytics.companyAnalytics(employees);
+    const pdfBuffer = await buildTablePdfBuffer({
+      title: 'Company Distribution Report',
+      subtitle: 'Active Employees · Generated ' + new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
+      columns: ['Company', 'Employees', '% of Total'],
+      rows: distributionPdfRows(data.buckets, data.eligibleCount),
+      landscape: false
+    });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'inline; filename="Company_Distribution.pdf"');
     res.send(pdfBuffer);
   } catch (err) {
     res.status(500).json({ error: err.message });

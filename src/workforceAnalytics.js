@@ -355,6 +355,32 @@ function collarAnalytics(employees) {
   };
 }
 
+// Task 15 (2026-11) - Company Distribution (Demographics): same shape as
+// collarAnalytics above (key/label/filterValue/count buckets, Active-only),
+// but by the plain `company` field instead of a fixed 3-way collar split -
+// company has no alias/normalized-key treatment (unlike department/
+// location/reportingDoer), so the raw value doubles as both the bucket key
+// and the Directory's own ?company= filter value. Sorted by headcount
+// descending, largest company first - same convention groupCount above
+// already uses for Department/Location/Doer breakdowns.
+function companyAnalytics(employees) {
+  const activeEmployees = employees.filter((e) => e.status === 'ACTIVE');
+  const counts = new Map();
+  for (const emp of activeEmployees) {
+    const value = emp.company;
+    if (!value) continue;
+    counts.set(value, (counts.get(value) || 0) + 1);
+  }
+  const buckets = Array.from(counts.entries())
+    .map(([value, count]) => ({ key: value, label: value, filterValue: value, count }))
+    .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
+  return {
+    eligibleCount: activeEmployees.length,
+    activeCount: activeEmployees.length,
+    buckets
+  };
+}
+
 function dataQualityReport(employees) {
   const total = employees.length;
   const missing = {
@@ -750,6 +776,7 @@ module.exports = {
   ageAnalytics,
   genderAnalytics,
   collarAnalytics,
+  companyAnalytics,
   dataQualityReport,
   isProbation,
   calcAge,
