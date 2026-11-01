@@ -4730,39 +4730,38 @@
   }
 
   // ---------- Create/Edit page ----------
-  // Task 9b (2026-11) - the Create page's own default schedule is the
-  // real current IST date/time, rounded UP to the next 5-minute mark
-  // (e.g. 10:42 -> 10:45) - never a blank date/hardcoded 10:00. Mirrors
-  // the backend's own istParts (automationService.js), computed
-  // client-side via the same Intl-in-Asia/Kolkata technique so it's
-  // correct regardless of the device's own timezone setting.
-  function currentIstDateTimeRoundedUp5() {
+  // Task 9b (2026-11), REVERSED by Task 15a (2026-11) per direct
+  // instruction: the Create page's own default schedule is the real
+  // current IST date/time, to the EXACT minute - never rounded up to the
+  // next 5-minute mark (Task 9b's own rounding) and never a blank
+  // date/hardcoded 10:00. Mirrors the backend's own istParts
+  // (automationService.js), computed client-side via the same
+  // Intl-in-Asia/Kolkata technique so it's correct regardless of the
+  // device's own timezone setting. The Ask SUBH/Save logic (e.g.
+  // ensureNotTooSoon on the backend) is untouched - this only affects
+  // what the schedule fields are pre-filled with when the page opens.
+  function currentIstDateTime() {
     const parts = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: false, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date());
     const get = (t) => parts.find((p) => p.type === t).value;
-    let year = Number(get('year')), month = Number(get('month')), day = Number(get('day'));
-    let hour = Number(get('hour')), minute = Number(get('minute'));
-    minute = Math.ceil(minute / 5) * 5;
-    if (minute === 60) {
-      minute = 0;
-      hour += 1;
-      if (hour === 24) {
-        hour = 0;
-        const rolled = new Date(Date.UTC(year, month - 1, day));
-        rolled.setUTCDate(rolled.getUTCDate() + 1);
-        year = rolled.getUTCFullYear(); month = rolled.getUTCMonth() + 1; day = rolled.getUTCDate();
-      }
-    }
     const pad = (n) => String(n).padStart(2, '0');
-    return { date: year + '-' + pad(month) + '-' + pad(day), time: pad(hour) + ':' + pad(minute) };
+    return { date: get('year') + '-' + pad(Number(get('month'))) + '-' + pad(Number(get('day'))), time: pad(Number(get('hour'))) + ':' + pad(Number(get('minute'))) };
   }
   function autoResetForm() {
     autoEditingId = null; autoPlan = null; autoConfirmed = false; autoExcluded = new Set(); autoSelected = new Set();
     autoTableCols = ['Employee_No', 'Employee_Name', 'Designation', 'Department'];
-    const defaultWhen = currentIstDateTimeRoundedUp5();
+    const defaultWhen = currentIstDateTime();
     autoSchedule = { date: defaultWhen.date, time: defaultWhen.time, repeat: 'monthly', every: 2 };
     if (autoSubject) autoSubject.value = '';
     if (autoAsk) autoAsk.value = '';
     if (autoUnderstand) autoUnderstand.innerHTML = '';
+    // Task 15b (2026-11) LIVE BUG FIX: autoRefreshSummary (the only thing
+    // that ever writes autoSummary's content) bails out early while there
+    // is no autoPlan yet (just reset to null above) - on a fresh open this
+    // left the box's own HTML completely empty, rendering as a bare
+    // tinted strip (.wf-auto-summary's own background/padding, no text)
+    // until Ask SUBH produced a plan. A plain placeholder line now fills
+    // it immediately on open, in the box's own established format.
+    if (autoSummary) autoSummary.innerHTML = '<div class="wf-auto-summary-title">Summary</div><div class="wf-auto-summary-line">⚠ Ask SUBH and confirm the plan first</div>';
     autoSheetContext = null;
     if (autoSheetUrl) autoSheetUrl.value = '';
     if (autoSheetMsg) { autoSheetMsg.textContent = ''; autoSheetMsg.classList.add('hidden'); }
