@@ -3347,8 +3347,14 @@ body:not(.printing-org-chart) .org-chart-cards-row + .org-chart-branch-connector
 /* Task 8 (2026-11) - the small, always-visible copy icon under every SUBH
    reply. */
 .wf-ai-msg-copy-btn {
-  border: none; background: transparent; padding: 3px; margin-left: 2px; color: var(--muted);
+  border: none; background: transparent; padding: 3px; color: var(--muted);
   cursor: pointer; display: inline-flex; align-items: center; justify-content: center; border-radius: 6px;
+  /* Task 12 (2026-11) - right-aligned within the message column (which is
+     otherwise left-aligned for an assistant reply, see .wf-ai-msg.assistant
+     .wf-ai-msg-col above) - was defaulting to that same left alignment,
+     sitting flush under the left edge of the bubble instead. align-self
+     overrides just this one child's own cross-axis alignment. */
+  align-self: flex-end;
 }
 .wf-ai-msg-copy-btn:hover, .wf-ai-msg-copy-btn:active { background: var(--accent-bg); color: var(--accent); }
 
