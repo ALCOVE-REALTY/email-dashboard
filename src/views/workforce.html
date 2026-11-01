@@ -469,10 +469,16 @@
              Clear (N) pair shows instead; see hrAssistant.js's
              setRemSelectMode. -->
         <div class="wf-rem-section-head">
+          <!-- Task 9 (2026-11) - the count badge (duplicated the same
+               total already shown in this page's own header badge) is
+               removed, and "Clear" now sits at the far right of the line
+               instead of sandwiched between the label and that badge (see
+               .wf-rem-section-head-normal's own justify-content:
+               space-between in wi-theme.css, which needs exactly these 2
+               children to work). -->
           <span class="wf-rem-section-head-normal" id="hrRemSectionHeadNormal">
             <span id="hrRemSectionHeadLabel">Pending Reminders</span>
             <button type="button" class="wf-rem-clear-link" id="hrRemClearBtn" hidden>Clear</button>
-            <span class="wf-rem-section-badge wi-count-badge primary" id="hrRemSectionBadge">0</span>
           </span>
           <span class="wf-rem-select-bar" id="hrRemSelectBar" hidden>
             <button type="button" class="wf-rem-select-cancel-btn" id="hrRemSelectCancelBtn">Cancel</button>

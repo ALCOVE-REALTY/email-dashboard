@@ -2023,7 +2023,7 @@ body { background: var(--wi-bg); }
 /* Task 3a (2026-11) - the normal label/Clear/count trio and the Cancel/
    Clear (N) selection-mode pair occupy the SAME line, one hidden while
    the other shows (see hrAssistant.js's setRemSelectMode). */
-.wf-rem-section-head-normal { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
+.wf-rem-section-head-normal { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex: 1; min-width: 0; }
 .wf-rem-section-head-normal[hidden] { display: none; }
 .wf-rem-clear-link { border: none; background: transparent; padding: 0; font: inherit; font-size: 0.74rem; font-weight: 700; color: var(--wi-primary); cursor: pointer; }
 .wf-rem-select-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex: 1; }

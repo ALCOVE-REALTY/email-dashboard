@@ -162,7 +162,6 @@
   const remPage = document.getElementById('hrRemPage');
   const remChips = document.getElementById('hrRemChips');
   const remSectionHeadLabel = document.getElementById('hrRemSectionHeadLabel');
-  const remSectionBadge = document.getElementById('hrRemSectionBadge');
   const remList = document.getElementById('hrRemList');
   // Task 3a (2026-11) - "Clear" selection mode.
   const remSectionHeadNormal = document.getElementById('hrRemSectionHeadNormal');
@@ -3976,7 +3975,6 @@
       pageDataCache.reminders.set('everything', { data, at: Date.now() });
       remItemsById = new Map((data.items || []).map((r) => [r.id, r]));
       setCountBadge(commsHeadBadge, data.counts.all);
-      setCountBadge(remSectionBadge, isCompletedFilter(activeRemFilter) ? bucketReminders(data.items, activeRemFilter, new Date()).length : data.counts.all);
       setCountBadge(remCompletedBadge, data.counts.todayCompleted || 0);
       if (remChips) {
         remChips.querySelectorAll('.wf-rem-chip').forEach((chip) => {
@@ -4198,7 +4196,9 @@
     // tile/Home badge a moment later.
     setCountBadge(commsHeadBadge, data.counts.all);
     if (remSectionHeadLabel) remSectionHeadLabel.textContent = isCompletedFilter(filter) ? 'Completed Reminders' : 'Pending Reminders';
-    setCountBadge(remSectionBadge, isCompletedFilter(filter) ? data.items.length : data.counts.all);
+    // Task 9 (2026-11) - hrRemSectionBadge (a duplicate of the header
+    // badge above) is removed from this line entirely, so Clear can sit
+    // at its far right instead (see workforce.html/wi-theme.css).
     // Task 3a (2026-11) - nothing to select/clear on an empty list.
     if (remClearBtn) remClearBtn.hidden = data.items.length === 0;
     // "Today's Completed" row/badge is always TODAY's completed count,
