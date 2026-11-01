@@ -300,6 +300,17 @@ function activeEmployeeNameFor(phone, employees) {
   const emp = (employees || []).find((e) => e.contactNumber && e.status === 'ACTIVE' && whatsapp.normalizePhone(e.contactNumber) === normalized);
   return emp && emp.name ? emp.name : null;
 }
+// Task 1 (2026-11) - the plain-text equivalent of hrAssistant.js's own
+// senderDisplay() ("Name · Number" when a real CURRENT-ACTIVE name is
+// known, otherwise the number once) for callers building a WhatsApp-text
+// reply (buildDailySummary/buildInboxReplyText) rather than a JSON list
+// for the web panel - same fix, same reason (a record's own stored `name`
+// field can be a stale INACTIVE employee's name forever).
+function activeNameOrNumber(phone, employees) {
+  const normalized = whatsapp.normalizePhone(phone || '');
+  const name = activeEmployeeNameFor(normalized, employees);
+  return name ? (name + ' · +' + normalized) : ('+' + normalized);
+}
 function firstNameOf(fullName) {
   return fullName ? String(fullName).trim().split(/\s+/)[0] : null;
 }
@@ -625,29 +636,22 @@ function buildActionableWhatsappItems(approvals, drafts, docs, recentLog, hrConf
   docs.forEach((d) => ensure(d.phone).items.push({ type: 'document', name: null, summary: 'Sent a file for ' + d.topic, ts: d.receivedAt }));
   ambiguousConfirmations.forEach((c) => ensure(c.thirdPartyPhone).items.push({ type: 'hr_confirmation_ambiguous', name: c.thirdPartyName, summary: 'Reply unclear: "' + (c.unclearTexts || []).join('" / "') + '"', ts: c.ambiguousAt || c.createdAt, hrConfirmationId: c.id }));
 
-  // Same placeholder rule as getWhatsappConversation's own `name` (see its
-  // comment) - "The sender" can end up as an item's OR an inbox-log
-  // entry's `name` field when no real name was resolved at reply time,
-  // and must never leak into this row's list-preview label either
-  // (item 5 of the UI-polish request: "never the placeholder").
-  const isRealRowName = (n) => n && n !== 'The sender';
   const rows = Array.from(byChat.values()).map((row) => {
     const latest = row.items.reduce((a, b) => (!a || b.ts > a.ts ? b : a), null);
     const key = row.chatId;
-    const latestName = latest && latest.name;
-    const logName = nameByChat.get(key);
     return {
       chatId: row.chatId,
-      // Task 3 (2026-11) - a CURRENT ACTIVE employee match always wins,
-      // evaluated fresh here (never trusting a historically-stored name,
-      // which may have been captured before the employee went inactive,
-      // or - the actual live bug - from a stale INACTIVE-record match).
-      // Otherwise the row's own display name is whoever the latest item
-      // named (or, failing that, the most recent real inbox-log entry for
-      // this number) - purely a list-preview label; every item's OWN name
-      // (which may differ, see above) is preserved untouched for the
-      // conversation-detail view.
-      name: activeEmployeeNameFor(key, employees) || (isRealRowName(latestName) && latestName) || (isRealRowName(logName) && logName) || key,
+      // Task 1 (2026-11) LIVE BUG FIX: the earlier Task 3 fix still fell
+      // through to whatever an approval/draft/log entry happened to have
+      // STORED as its name (latestName/logName below, now removed) the
+      // moment a current ACTIVE match failed - exactly how "Pinky Sil"/
+      // "Debapriya Sen" (former, now-INACTIVE employees) kept showing for
+      // numbers Vi had since reassigned to someone else: the stale name
+      // was captured back when the record was created and never
+      // recomputed. The display name is now ALWAYS either a CURRENT
+      // ACTIVE employee's own name, freshly looked up on every call, or
+      // the bare number - no other source is trusted, ever.
+      name: activeEmployeeNameFor(key, employees) || key,
       lastMessageText: latest ? latest.summary : '',
       lastMessageTime: latest ? latest.ts : 0,
       itemCount: row.items.length,
@@ -688,16 +692,11 @@ async function listActionableWhatsappItems() {
 // (approve & send / edit / reject) is a decision, so it joins "approvals";
 // a received document needing review is closest to "data_requests".
 async function listActionNeededItems() {
-  const [approvals, drafts, docs, hrConfirmations, recentLog, hrNoteEscalations] = await Promise.all([
+  const [approvals, drafts, docs, hrConfirmations, hrNoteEscalations] = await Promise.all([
     listPendingApprovals(), listPendingDrafts(),
-    documentRequests.listPendingReceived(), listAllHrConfirmations(), listInboxLog(300), listHrNoteEscalations()
+    documentRequests.listPendingReceived(), listAllHrConfirmations(), listHrNoteEscalations()
   ]);
   const ambiguousConfirmations = hrConfirmations.filter((c) => c.status === 'ambiguous_owner_review');
-  const nameByChat = new Map();
-  recentLog.forEach((e) => {
-    const key = whatsapp.normalizePhone(e.chatId);
-    if (e.name && e.name !== 'The sender' && !nameByChat.has(key)) nameByChat.set(key, e.name);
-  });
   const raw = [];
   approvals.forEach((a) => raw.push({ kind: 'approval', category: 'data_requests', chatId: whatsapp.normalizePhone(a.phone), name: a.name, ts: a.createdAt || 0, data: a }));
   drafts.forEach((d) => raw.push({ kind: 'draft', category: 'approvals', chatId: whatsapp.normalizePhone(d.contactId), name: d.name, ts: d.createdAt || 0, data: d }));
@@ -708,7 +707,6 @@ async function listActionNeededItems() {
   // the owner resolves it by typing the real name in, same as the sender
   // would have.
   hrNoteEscalations.forEach((e) => raw.push({ kind: 'hr_note_escalated', category: 'approvals', chatId: whatsapp.normalizePhone(e.phone), name: e.name, ts: e.createdAt || 0, data: e }));
-  const isRealName = (n) => n && n !== 'The sender';
   // Performance fix (2026-10-30): isNeverAuto(item.chatId) used to run as
   // its own SISMEMBER round trip PER item inside this map - this function
   // backs the Action-needed poll that fires every ~12s regardless of which
@@ -719,10 +717,19 @@ async function listActionNeededItems() {
   const neverAutoSet = new Set((await listNeverAuto()).map((p) => whatsapp.normalizePhone(p)));
   const items = await Promise.all(raw.map(async (item) => {
     const directoryMatch = await findEmployeeByPhone(item.chatId).catch(() => null);
-    // Task 3 (2026-11) LIVE BUG FIX: an INACTIVE record must never name a
-    // number (see resolveSenderName's own comment) - only a CURRENT
-    // ACTIVE employee's match does.
-    const displayName = (directoryMatch && directoryMatch.emp.status === 'ACTIVE' && directoryMatch.emp.name) || (isRealName(item.name) && item.name) || nameByChat.get(item.chatId) || item.chatId;
+    // Task 1 (2026-11) LIVE BUG FIX, revised: the Task 3 fix fell back to
+    // a recent INBOX-LOG entry's own stored name (nameByChat, now removed
+    // entirely from this function) the moment no current ACTIVE match was
+    // found - a value from whenever that log entry was written, which is
+    // exactly how a now-INACTIVE former employee's old name ("Pinky Sil",
+    // "Debapriya Sen") kept showing for a number Vi had since reassigned.
+    // item.name itself is NOT the same kind of stale value - it's each
+    // record's own current data (e.g. an ambiguous HR confirmation's
+    // thirdPartyName, naming who that specific confirmation concerns right
+    // now) and stays as a fallback; only the inbox-log cross-reference is
+    // gone. A CURRENT ACTIVE directory match still always wins over it.
+    const isRealItemName = (n) => n && n !== 'The sender';
+    const displayName = (directoryMatch && directoryMatch.emp.status === 'ACTIVE' && directoryMatch.emp.name) || (isRealItemName(item.name) && item.name) || item.chatId;
     // Task 1 (2026-10-29) - the Action-needed card reuses buildConvoActions
     // (same "Never auto-reply" toggle as the conversation page), which
     // needs each item's own current state to render correctly instead of
@@ -807,12 +814,13 @@ function mergeRecentWhatsappConversations(needsYou, recentLog, nowTs, windowMs, 
     if (!statusLabel) continue;
     resolvedRows.push({
       chatId,
-      // Task 3 (2026-11) - same ACTIVE-employee-first rule as the needs-you
-      // rows above (see buildActionableWhatsappItems), evaluated fresh
-      // rather than trusting whatever name this inbox-log entry happened
-      // to store (the exact surface the live "Pinky Sil"/"Pamela Nath"
-      // bug was found on).
-      name: activeEmployeeNameFor(chatId, employees) || (e.name && e.name !== 'The sender' ? e.name : chatId),
+      // Task 1 (2026-11) LIVE BUG FIX: the Task 3 fix still fell back to
+      // this inbox-log entry's OWN stored name when no current ACTIVE
+      // match was found - that stored name is exactly what the live
+      // "Pinky Sil"/"Debapriya Sen" bug was traced to (captured whenever
+      // the entry was logged, never recomputed since). Only a CURRENT
+      // ACTIVE employee match or the bare number is shown now.
+      name: activeEmployeeNameFor(chatId, employees) || chatId,
       lastMessageText: e.sentText || e.messageSummary || '',
       lastMessageTime: e.ts, itemCount: 0, states: [], needsYou: false, statusLabel
     });
@@ -1055,29 +1063,20 @@ async function getWhatsappConversation(chatIdRaw) {
   const myDrafts = drafts.filter((d) => whatsapp.normalizePhone(d.contactId) === chatId);
   const myFollowups = followups.filter((f) => whatsapp.normalizePhone(f.chatId) === chatId);
   const myDocs = docs.filter((d) => whatsapp.normalizePhone(d.phone) === chatId);
-  // "The sender" is a PROMPT-ONLY placeholder (see decideAutoReply's own
-  // senderLabel) baked into approval/draft/follow-up records when no name
-  // was resolved at the time - never a real name, so it must never leak
-  // into this UI-facing header. Prefer the real directory name first,
-  // then any already-resolved name from the other records (skipping the
-  // placeholder), then the bare number - never the placeholder string.
+  // Task 1 (2026-11) LIVE BUG FIX: this used to fall back to whatever name
+  // the latest log entry/approval/draft/follow-up record happened to have
+  // STORED (skipping only the literal "The sender" placeholder) the
+  // moment no current ACTIVE directory match was found - a cached value
+  // from whenever that record was created, which is exactly how a now-
+  // INACTIVE former employee's old name ("Pinky Sil", "Debapriya Sen")
+  // kept showing for a number Vi had since reassigned. The header name,
+  // and every item's own "For: ..." label, is now ALWAYS either a CURRENT
+  // ACTIVE employee's own name (looked up fresh on every call) or the
+  // bare number - no stored name is trusted, ever.
   const directoryMatch = await findEmployeeByPhone(chatId).catch(() => null);
-  // Task 3 (2026-11) LIVE BUG FIX: an INACTIVE record must never name a
-  // number (see resolveSenderName's own comment, and the "Pinky Sil"/
-  // "Debapriya Sen" live incident it documents) - only a CURRENT ACTIVE
-  // employee's match does.
   const isActiveDirectoryMatch = Boolean(directoryMatch && directoryMatch.emp.status === 'ACTIVE' && directoryMatch.emp.name);
-  const isRealName = (n) => n && n !== 'The sender';
-  const name = (isActiveDirectoryMatch && directoryMatch.emp.name) ||
-    [latestLog, myApprovals[0], myDrafts[0], myFollowups[0]].map((r) => r && r.name).find(isRealName) ||
-    chatId;
-  // Same placeholder rule as the conversation-level `name` above, applied
-  // per-item: an individual approval/draft/follow-up record may carry the
-  // "The sender" placeholder even when the conversation as a whole
-  // resolved a real name from a different record - never let that leak
-  // into a card's "For: ..." label, which forLabel (hrAssistant.js) shows
-  // verbatim whenever it differs from the conversation header.
-  const itemLabel = (n) => (isActiveDirectoryMatch && directoryMatch.emp.name) || (isRealName(n) ? n : chatId);
+  const name = (isActiveDirectoryMatch && directoryMatch.emp.name) || chatId;
+  const itemLabel = () => name;
   // Per-bubble delivery status (live incident, 917278793115) - found live:
   // `lastOutcome` below only ever reflects the MOST RECENT inbox-log entry
   // for this whole chat, so two real send_failed sends were completely
@@ -7158,6 +7157,13 @@ async function buildDailySummary() {
   const neverAutoPending = (await listPendingDrafts()).filter((d) => d.type === 'direct');
   const pendingDocs = await documentRequests.listPendingReceived();
   const pendingApprovals = await listPendingApprovals();
+  // Task 1 (2026-11) LIVE BUG FIX: every name below used to be whatever
+  // that record's own `name` field happened to have stored - a cached
+  // value from whenever it was created, which is exactly how a now-
+  // INACTIVE former employee's old name kept appearing in this daily
+  // WhatsApp summary forever. Recomputed fresh against the CURRENT
+  // employee list on every call now, like every other list in this file.
+  const { employees: dailySummaryEmployees } = await employeeService.getEmployeeData();
 
   const lines = ['SUBH daily summary (' + date + '):'];
   const gw = await gatewayStatusSummary();
@@ -7166,13 +7172,13 @@ async function buildDailySummary() {
     (Object.keys(byCase).length ? ' (' + Object.entries(byCase).map(([c, n]) => c + ': ' + n).join(', ') + ')' : ''));
   const uniqueFollowups = uniqueBySenderPhone(followups, 'chatId');
   lines.push('Holding replies needing follow-up: ' + followups.length +
-    (uniqueFollowups.length ? ' - ' + uniqueFollowups.slice(0, 10).map((f) => f.name).join(', ') : ''));
+    (uniqueFollowups.length ? ' - ' + uniqueFollowups.slice(0, 10).map((f) => activeNameOrNumber(f.chatId, dailySummaryEmployees)).join(', ') : ''));
   const uniqueApprovals = uniqueBySenderPhone(pendingApprovals, 'phone');
   lines.push('HR data requests waiting for your approval: ' + pendingApprovals.length +
-    (uniqueApprovals.length ? ' - ' + uniqueApprovals.slice(0, 10).map((p) => p.name + ' (' + p.dataRequestSummary + ')').join(', ') : ''));
+    (uniqueApprovals.length ? ' - ' + uniqueApprovals.slice(0, 10).map((p) => activeNameOrNumber(p.phone, dailySummaryEmployees) + ' (' + p.dataRequestSummary + ')').join(', ') : ''));
   const uniqueNeverAuto = uniqueBySenderPhone(neverAutoPending, 'contactId');
   lines.push('Never-auto messages waiting for you: ' + neverAutoPending.length +
-    (uniqueNeverAuto.length ? ' - ' + uniqueNeverAuto.slice(0, 10).map((d) => d.name).join(', ') : ''));
+    (uniqueNeverAuto.length ? ' - ' + uniqueNeverAuto.slice(0, 10).map((d) => activeNameOrNumber(d.contactId, dailySummaryEmployees)).join(', ') : ''));
   const uniqueDocs = uniqueBySenderPhone(pendingDocs, 'phone');
   lines.push('Documents received, not yet marked done: ' + pendingDocs.length +
     (uniqueDocs.length ? ' - ' + uniqueDocs.slice(0, 10).map((d) => d.phone + ' (' + d.topic + ')').join(', ') : ''));
@@ -7578,7 +7584,7 @@ function groupByChat(items) {
   }
   return order.map((chatId) => buckets.get(chatId));
 }
-function buildInboxReplyText(lang, range, log, pendingPhones, followupKeys, pendingDocs, gw, pendingApprovals) {
+function buildInboxReplyText(lang, range, log, pendingPhones, followupKeys, pendingDocs, gw, pendingApprovals, employees) {
   const T = INBOX_TEXT[resolveLang(lang)];
   const lines = [];
   if (!gw.isConnected) lines.push(T.gatewayWarning(gw.disconnectedSinceLabel));
@@ -7591,7 +7597,14 @@ function buildInboxReplyText(lang, range, log, pendingPhones, followupKeys, pend
     const groups = groupByChat(log);
     let n = 0;
     groups.forEach((group) => {
-      const who = (group[0].isGroup ? 'group ' : '') + (group[0].name || group[0].chatId);
+      // Task 1 (2026-11) LIVE BUG FIX: a 1:1 entry's own stored `name`
+      // used to be shown as-is (a cached value from whenever it was
+      // logged, which could be a now-INACTIVE former employee's old
+      // name) - recomputed fresh against the CURRENT employee list
+      // instead, same rule as every other list in this file. A WhatsApp
+      // group has no employee-directory match at all, so its own real
+      // group name is kept exactly as before.
+      const who = group[0].isGroup ? ('group ' + (group[0].name || group[0].chatId)) : activeNameOrNumber(group[0].chatId, employees);
       if (group.length === 1) {
         n++;
         const e = group[0];
@@ -7608,7 +7621,7 @@ function buildInboxReplyText(lang, range, log, pendingPhones, followupKeys, pend
     });
   }
   if (pendingDocs.length) lines.push(T.docsLine(pendingDocs.map((d) => d.phone + ' (' + d.topic + ')').join(', ')));
-  if (pendingApprovals && pendingApprovals.length) lines.push(T.approvalsLine(pendingApprovals.map((p) => p.name + ' (' + p.dataRequestSummary + ')').join(', ')));
+  if (pendingApprovals && pendingApprovals.length) lines.push(T.approvalsLine(pendingApprovals.map((p) => activeNameOrNumber(p.phone, employees) + ' (' + p.dataRequestSummary + ')').join(', ')));
   lines.push(describeSendMode(T));
   return lines.join('\n');
 }
@@ -7623,9 +7636,10 @@ async function whatsappInboxSummary(rangeRaw, lang, userEmail) {
   const pendingDocs = await documentRequests.listPendingReceived();
   const pendingApprovals = await listPendingApprovals();
   const gw = await gatewayStatusSummary();
+  const { employees } = await employeeService.getEmployeeData();
 
   return {
-    replyText: buildInboxReplyText(lang, range, log, pendingPhones, followupKeys, pendingDocs, gw, pendingApprovals),
+    replyText: buildInboxReplyText(lang, range, log, pendingPhones, followupKeys, pendingDocs, gw, pendingApprovals, employees),
     rangeLabel: range.label,
     officialMessageCount: log.length
   };

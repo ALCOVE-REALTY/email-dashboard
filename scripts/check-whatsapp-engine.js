@@ -6003,10 +6003,17 @@ async function checkAsync(label, fn) {
   console.log('Task 3 (2026-10-31): listAllWhatsappConversationsPage - the Important WhatsApp page\'s own ALL-conversations, paginated + searched source');
   console.log('='.repeat(70));
   await checkAsync('listAllWhatsappConversationsPage paginates newest-first and reports hasMore correctly, and its own search (q) covers every conversation it holds, not just the loaded page', async () => {
+    // Task 1 (2026-11) LIVE BUG FIX - the marker used to be searched for in
+    // each row's own NAME, via a synthetic test number's logged `name`
+    // field; mergeRecentWhatsappConversations no longer trusts any such
+    // stored/logged name for a non-ACTIVE-employee number (the exact
+    // "Pinky Sil"/"Debapriya Sen" live bug fix), so the marker now lives in
+    // the message text instead - waItemMatchesQuery searches that too, and
+    // this test is about pagination/search mechanics, not name resolution.
     const marker = 'PageTestMarker' + Date.now();
     const phones = ['910000002401', '910000002402', '910000002403'];
     for (let i = 0; i < phones.length; i++) {
-      await whatsappAssistant.logInboxEvent({ chatId: phones[i], name: marker + i, isGroup: false, messageSummary: 'hello ' + i, aCase: 'acknowledged', sentText: 'hi ' + i, outcome: 'sent' });
+      await whatsappAssistant.logInboxEvent({ chatId: phones[i], name: null, isGroup: false, messageSummary: marker + i, aCase: 'acknowledged', sentText: marker + i, outcome: 'sent' });
       await new Promise((r) => setTimeout(r, 5)); // distinct timestamps, newest-first order is deterministic
     }
     const all = await whatsappAssistant.listAllWhatsappConversationsPage({ offset: 0, limit: 100, query: marker });
@@ -6166,11 +6173,11 @@ async function checkAsync(label, fn) {
     const rows = whatsappAssistant.buildActionableWhatsappItems(approvals, [], [], [], [], employees);
     return rows.length === 1 && rows[0].name === 'Real Current Name';
   })());
-  check('buildActionableWhatsappItems: an INACTIVE record never names a number - falls back to whatever the item itself stored instead', (() => {
+  check('buildActionableWhatsappItems: an INACTIVE record never names a number - Task 1 (2026-11) LIVE BUG FIX falls back to the bare number now, never any stored name (the exact "Pinky Sil"/"Debapriya Sen" live bug: a stored name can be stale forever)', (() => {
     const employees = [{ name: 'Old Inactive', contactNumber: '919555555555', status: 'INACTIVE' }];
     const approvals = [{ phone: '919555555555', name: 'Stored Name', dataRequestSummary: 'x', createdAt: 1 }];
     const rows = whatsappAssistant.buildActionableWhatsappItems(approvals, [], [], [], [], employees);
-    return rows.length === 1 && rows[0].name === 'Stored Name';
+    return rows.length === 1 && rows[0].name === '919555555555';
   })());
   check('mergeRecentWhatsappConversations: a CURRENT ACTIVE employee match wins for a RESOLVED (non-needs-you) row too, never the inbox-log\'s own stored name', (() => {
     const employees = [{ name: 'Real Current Name', contactNumber: '919666666666', status: 'ACTIVE' }];
@@ -6178,11 +6185,11 @@ async function checkAsync(label, fn) {
     const rows = whatsappAssistant.mergeRecentWhatsappConversations([], recentLog, Date.now(), Infinity, new Map(), employees);
     return rows.length === 1 && rows[0].name === 'Real Current Name';
   })());
-  check('mergeRecentWhatsappConversations: an INACTIVE record never names a resolved row - falls back to the inbox-log\'s own stored name', (() => {
+  check('mergeRecentWhatsappConversations: an INACTIVE record never names a resolved row - Task 1 (2026-11) LIVE BUG FIX falls back to the bare number now, never the inbox-log\'s own stored name (the exact "Pinky Sil"/"Debapriya Sen" live bug: a logged name can be stale forever)', (() => {
     const employees = [{ name: 'Old Inactive', contactNumber: '919777777777', status: 'INACTIVE' }];
     const recentLog = [{ chatId: '919777777777', name: 'Stored Logged Name', outcome: 'sent', case: 'acknowledged', ts: Date.now() }];
     const rows = whatsappAssistant.mergeRecentWhatsappConversations([], recentLog, Date.now(), Infinity, new Map(), employees);
-    return rows.length === 1 && rows[0].name === 'Stored Logged Name';
+    return rows.length === 1 && rows[0].name === '919777777777';
   })());
 
   console.log('='.repeat(70));
