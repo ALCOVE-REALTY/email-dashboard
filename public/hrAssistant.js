@@ -2970,7 +2970,10 @@
     if (fp === lastActionNeededFingerprint) return;
     lastActionNeededFingerprint = fp;
     if (!filtered.length) { actionNeededList.innerHTML = '<div class="wf-rem-empty">Nothing waiting on you right now.</div>'; return; }
-    actionNeededList.innerHTML = filtered.map(actionNeededCardHtml).join('');
+    // Task 7 (2026-11) - filtered arrives oldest-first (listActionNeededItems'
+    // own canonical sort) - reversed here, display-only, same as
+    // buildConvoActions above, so the newest item is always on top.
+    actionNeededList.innerHTML = filtered.slice().reverse().map(actionNeededCardHtml).join('');
     actionNeededList.querySelectorAll('.wf-auto-task-card').forEach((card) => wireActionNeededCard(card, card.dataset.chatId));
   }
   async function loadActionNeeded() {
@@ -3211,7 +3214,12 @@
 
   function buildConvoActions(convo) {
     const groups = [];
-    (convo.pendingApprovals || []).forEach((a) => {
+    // Task 7 (2026-11) LIVE BUG FIX: convo.pendingApprovals arrives
+    // oldest-first (listPendingApprovals' own canonical sort, relied on
+    // elsewhere and left unchanged) - reversed here, display-only, so the
+    // newest request's card renders FIRST/on top of the stack, not last/
+    // at the bottom underneath older ones.
+    (convo.pendingApprovals || []).slice().reverse().forEach((a) => {
       // A grouped multi-candidate approval (several name matches for one
       // contact-number request, see queueMultiCandidateContactApproval)
       // renders as ONE card with a radio list instead of the plain
