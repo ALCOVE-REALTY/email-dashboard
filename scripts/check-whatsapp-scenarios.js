@@ -1012,6 +1012,78 @@ scenario('Task 8: a natural follow-up asking to ALSO include the contact number 
   }
 });
 
+// Task 5 (2026-11) LIVE BUG FIX: "X's under/team" used to only ever
+// filter by the Reporting Manager column - for a Director (Reporting
+// DOER, e.g. Yashaswi Shroff, a real ACTIVE Executive Director) that
+// silently returned zero matches ("Yashaswi Shroff-er under-e kono
+// kormi pawa jayni" for someone with 95 real people under her). Real
+// facts confirmed directly against employeeService before writing
+// these (same convention as the QC HOD scenario above): Yashaswi Shroff
+// is real/ACTIVE/EXECUTIVE DIRECTOR, is a genuine Director (appears in
+// the real Reporting DOER column, never anyone's own Reporting
+// Manager), and has real people under her; Uday Saraf is a real,
+// ACTIVE, non-Director HOD with 5 real direct reports, used as the
+// REGRESSION control (a non-Director's "under" must stay the plain
+// single-number template, never the Doer/direct split).
+scenario('Task 5 LIVE BUG, exact message: "Oct month a Yashaswi shroff er under a koto staff join koreche?" resolves with the Doer/direct-reporting dual count, never the old "kono kormi pawa jayni" (nobody found)', async () => {
+  const phone = '910000002320';
+  await cleanupHrDataQueryArtifacts(phone);
+  try {
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenDoer1', firstName: 'ScenDoer1', text: 'Oct month a Yashaswi shroff er under a koto staff join koreche?', isGroup: false, history: [] });
+    if (d.case !== 'data_holding') return { pass: false, detail: 'expected case=data_holding, got: ' + d.case + ' text=' + d.replyText };
+    const approval = pendingApprovalFor(await whatsappAssistant.listPendingApprovals(), phone);
+    if (!approval || !approval.preparedReplyText) return { pass: false, detail: 'expected a queued approval with a prepared reply, got: ' + JSON.stringify(approval) };
+    const text = approval.preparedReplyText;
+    if (/pawa jayni|kono kormi|not found|no one found/i.test(text)) return { pass: false, detail: 'THE LIVE BUG: got the old "nobody found" reply for a real Director with real people under her - ' + text };
+    // Case-insensitive: this field echoes the sender's OWN wording verbatim
+    // (same established behaviour as the non-Director scope label), never
+    // canonicalizes to the employee record's own exact casing - "Yashaswi
+    // shroff" (the sender's own lowercase "shroff") is correct, not a bug.
+    if (!/yashaswi shroff/i.test(text)) return { pass: false, detail: 'expected Yashaswi Shroff named in the reply, got: ' + text };
+    if (!/doer/i.test(text) || !/direct reporting/i.test(text)) return { pass: false, detail: 'expected the Doer-hisebe/direct-reporting dual count (she is a real Director), got: ' + text };
+    return { pass: true, detail: 'real Director dual-count reply: ' + text };
+  } finally {
+    await cleanupHrDataQueryArtifacts(phone);
+  }
+});
+scenario('Task 5c follow-up: "tader nam din" after the Yashaswi question lists the real names (with DOJ), inheriting the same month/Director filters as a format revision - never repeats the count-only answer or asks the question again', async () => {
+  const phone = '910000002321';
+  await cleanupHrDataQueryArtifacts(phone);
+  try {
+    const d1 = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenDoer2', firstName: 'ScenDoer2', text: 'Oct month a Yashaswi shroff er under a koto staff join koreche?', isGroup: false, history: [] });
+    if (d1.case !== 'data_holding') return { pass: false, detail: 'expected case=data_holding for the first request, got: ' + d1.case + ' text=' + d1.replyText };
+    const history = [{ direction: 'in', text: 'Oct month a Yashaswi shroff er under a koto staff join koreche?', ts: Date.now() - 2000 }, { direction: 'out', text: d1.replyText, ts: Date.now() - 1000 }];
+    const d2 = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenDoer2', firstName: 'ScenDoer2', text: 'tader nam din', isGroup: false, history });
+    if (d2.case !== 'data_holding') return { pass: false, detail: 'expected case=data_holding for the follow-up, got: ' + d2.case + ' text=' + d2.replyText };
+    const mine = (await whatsappAssistant.listPendingApprovals()).filter((a) => whatsapp.normalizePhone(a.phone) === whatsapp.normalizePhone(phone));
+    if (mine.length !== 1) return { pass: false, detail: 'expected exactly ONE approval after the follow-up (the count-only one replaced, never stacked), got ' + mine.length };
+    const text = mine[0].preparedReplyText || '';
+    if (!/^1\.\s/m.test(text)) return { pass: false, detail: 'expected a numbered name list, got: ' + text };
+    if (!text.includes('Yashaswi Shroff') && !/under/i.test(text)) return { pass: false, detail: 'expected the list still scoped to Yashaswi Shroff\'s own under/team, got: ' + text };
+    if (/doer hisebe|tar moddhe/i.test(text)) return { pass: false, detail: 'a name LIST should never repeat the count-only "Doer hisebe/tar moddhe" sentence, got: ' + text };
+    return { pass: true, detail: 'follow-up correctly switched to a names list, same filters inherited: ' + text };
+  } finally {
+    await cleanupHrDataQueryArtifacts(phone);
+  }
+});
+scenario('Task 5 REGRESSION: the same style question for a real NON-Director HOD (Uday Saraf, 5 real direct reports) stays the plain single-number template, never the Doer/direct-reporting split', async () => {
+  const phone = '910000002322';
+  await cleanupHrDataQueryArtifacts(phone);
+  try {
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenDoer3', firstName: 'ScenDoer3', text: 'Uday Saraf er under e koto jon ache?', isGroup: false, history: [] });
+    if (d.case !== 'data_holding') return { pass: false, detail: 'expected case=data_holding, got: ' + d.case + ' text=' + d.replyText };
+    const approval = pendingApprovalFor(await whatsappAssistant.listPendingApprovals(), phone);
+    if (!approval || !approval.preparedReplyText) return { pass: false, detail: 'expected a queued approval with a prepared reply, got: ' + JSON.stringify(approval) };
+    const text = approval.preparedReplyText;
+    if (!text.includes('Uday Saraf')) return { pass: false, detail: 'expected Uday Saraf named in the reply, got: ' + text };
+    if (/doer|direct reporting/i.test(text)) return { pass: false, detail: 'a real non-Director HOD must never get the Doer/direct-reporting split, got: ' + text };
+    if (!/\b5\b/.test(text)) return { pass: false, detail: 'expected the real count (5) in the reply, got: ' + text };
+    return { pass: true, detail: 'non-Director stayed the plain template: ' + text };
+  } finally {
+    await cleanupHrDataQueryArtifacts(phone);
+  }
+});
+
 // Task 2 (2026-10-31) - the three-tier data-sharing rule's OFFICIAL tier:
 // a current ACTIVE employee asking about one of the 15 official fields
 // gets a DIRECT reply (no approval), everyone else (or a >20-person

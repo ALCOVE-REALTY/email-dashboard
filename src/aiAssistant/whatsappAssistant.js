@@ -3570,7 +3570,19 @@ function filterEmployeesForHrQuery(employees, query) {
   if (query.resolvedLocations && query.resolvedLocations.length) rows = rows.filter((e) => query.resolvedLocations.includes(e.location));
   else if (query.location) rows = rows.filter((e) => e.location && departmentHintMatches(e.location, query.location));
   if (query.company) rows = rows.filter((e) => e.company && departmentHintMatches(e.company, query.company));
-  if (query.reportingManagerName) rows = rows.filter((e) => e.reportingManager && departmentHintMatches(e.reportingManager, query.reportingManagerName));
+  // Task 5 (2026-11) LIVE BUG FIX: "X's under/team" used to only ever
+  // filter by Reporting Manager - for a Director (appears in the
+  // Reporting DOER column, e.g. "Yashaswi Shroff") that silently
+  // returned zero matches. isUnderXDirector (computed once by the
+  // caller, see buildHrDataQueryAnswer) says which field this name
+  // actually lives in; resolveAndQueueHrDataQuery/buildHrDataQueryAnswer
+  // use the SAME flag to decide the reply's wording, so the filter here
+  // and the sentence built from it can never disagree about which field
+  // was actually searched.
+  if (query.reportingManagerName) {
+    const field = query.isUnderXDirector ? 'reportingDoer' : 'reportingManager';
+    rows = rows.filter((e) => e[field] && departmentHintMatches(e[field], query.reportingManagerName));
+  }
   // Task 5 (2026-10-31) - owner-chat HR reports: "probation"/"joined in
   // <month/year>" style filters, same real fields query_employees already
   // uses (employmentType, e.doj) - never a separate/different notion of
@@ -3581,7 +3593,45 @@ function filterEmployeesForHrQuery(employees, query) {
   if (query.employmentType) rows = rows.filter((e) => e.employmentType === query.employmentType);
   if (query.dojMonth) rows = rows.filter((e) => e.doj && e.doj.getUTCMonth() + 1 === query.dojMonth);
   if (query.dojYear) rows = rows.filter((e) => e.doj && e.doj.getUTCFullYear() === query.dojYear);
+  // Task 5 (2026-11) - "ei mashe"/"last 3 months" resolve (in code, never
+  // the model) to an actual date range - see resolveDojRelativeRange.
+  // Kept distinct from dojMonth/dojYear above (an exact calendar month,
+  // any number of them) since a relative range can straddle two calendar
+  // months (e.g. "last 3 months" from the 15th).
+  // new Date(...) on an already-real Date is a harmless no-op - this just
+  // also tolerates dojFrom/dojTo coming back as plain ISO strings after a
+  // round trip through the pending-approval store (JSON has no Date type),
+  // e.g. when a later format-revision inherits a prior query's filters.
+  if (query.dojFrom) rows = rows.filter((e) => e.doj && e.doj >= new Date(query.dojFrom));
+  if (query.dojTo) rows = rows.filter((e) => e.doj && e.doj <= new Date(query.dojTo));
   return rows;
+}
+// Task 5 (2026-11) - pure, takes `now` explicitly so it's directly
+// testable with a fixed clock (same philosophy as reminderService's own
+// date resolution). 'this_month' is deliberately NOT handled here - it
+// resolves to a plain dojMonth+dojYear pair instead (a single real
+// calendar month, no range needed); this is only for a range that can
+// genuinely straddle more than one calendar month.
+function resolveDojRelativeRange(dojRelative, dojRelativeMonths, now) {
+  if (dojRelative !== 'last_n_months') return null;
+  const n = Math.max(1, Number(dojRelativeMonths) || 1);
+  const dojTo = new Date(now.getTime());
+  const dojFrom = new Date(now.getTime());
+  dojFrom.setUTCMonth(dojFrom.getUTCMonth() - n);
+  return { dojFrom, dojTo };
+}
+// "Today" as a UTC-midnight Date representing the current IST calendar
+// day - e.doj is itself a UTC-midnight-anchored calendar date (see
+// filterEmployeesForHrQuery's own dojMonth/dojYear use of getUTCMonth/
+// getUTCFullYear), so "this month"/"last N months" must be resolved
+// against the SAME IST calendar day, never a raw `new Date()` (which, for
+// roughly 5.5 hours every IST day - 00:00 to 05:30 - is still the
+// PREVIOUS calendar day in UTC, exactly the kind of off-by-one this would
+// otherwise silently reintroduce).
+function istTodayAsUtcMidnight() {
+  const { date } = istNow();
+  const [y, m, d] = date.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d));
 }
 function computeHodBreakdown(employees) {
   const counts = new Map();
@@ -3604,12 +3654,58 @@ function buildScopeLabel(query) {
   if (query.reportingManagerName) return query.reportingManagerName + '-er under';
   return '';
 }
+// Task 5 (2026-11) - "October-e"/"October mein"/"in October" (optionally
+// with a year, "October 2026-e") for a dojMonth/dojYear filter, or
+// "last N months-e"/"pichhle N mahine mein"/"in the last N months" for a
+// dojFrom/dojTo relative range - English month names/numerals are used
+// as-is in every language here, same as every other HR-query template in
+// this file (e.g. "HOD", "emp code"). Empty string when no date filter
+// was asked for at all.
+const MONTH_NAMES_EN = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+function buildDojScopeLabel(query, lang) {
+  if (query.dojMonth) {
+    const monthName = MONTH_NAMES_EN[query.dojMonth - 1] + (query.dojYear ? ' ' + query.dojYear : '');
+    if (lang === 'hinglish') return monthName + ' mein';
+    if (lang === 'english') return 'in ' + monthName;
+    return monthName + '-e';
+  }
+  if (query.dojFrom && query.dojTo) {
+    const n = query.dojRelativeMonths || Math.round((query.dojTo - query.dojFrom) / (30 * 24 * 60 * 60 * 1000));
+    if (lang === 'hinglish') return 'pichhle ' + n + ' mahine mein';
+    if (lang === 'english') return 'in the last ' + n + ' months';
+    return 'gato ' + n + ' mas-e';
+  }
+  return '';
+}
+// Task 5 (2026-11) LIVE BUG FIX locked scenario: "<Name>-er under-e
+// <dateScope> total <N> jon join korechhen (Doer hisebe), tar moddhe
+// direct reporting <M> jon." - used only for returnType 'count' when the
+// "under X" name is a Director (reportingManagerName matched via
+// reportingDoer, not reportingManager); the plain HR_QUERY_COUNT template
+// just below is untouched and still used for every non-Director case.
+const HR_QUERY_COUNT_UNDER_DOER = {
+  banglish: (name, dateScope, n, m) => name + '-er under-e ' + (dateScope ? dateScope + ' ' : '') + 'total ' + n + ' jon join korechhen (Doer hisebe), tar moddhe direct reporting ' + m + ' jon.',
+  hinglish: (name, dateScope, n, m) => name + ' ke under ' + (dateScope ? dateScope + ' ' : '') + 'total ' + n + ' log join kiye hain (Doer ke taur par), jisme se ' + m + ' seedhe report karte hain.',
+  english: (name, dateScope, n, m) => 'A total of ' + n + ' people joined under ' + name + (dateScope ? ' ' + dateScope : '') + ' (as Doer), of which ' + m + ' report to ' + name + ' directly.'
+};
 // Builds the final outgoing text (never sent directly - always queued
 // through the same owner-approval card every other data request uses,
 // see queueHrDataQueryApproval) and a short English summary for the
 // owner's own notification.
 function buildHrDataQueryAnswer(employees, query, lang) {
-  const rows = filterEmployeesForHrQuery(employees, query);
+  // Task 5 (2026-11) - resolved ONCE here (never re-derived downstream),
+  // so the filter (filterEmployeesForHrQuery) and the reply's own wording
+  // below can never disagree about which field "under X" actually means
+  // for this query.
+  const isUnderXDirector = Boolean(query.reportingManagerName) && employeeService.isDirectorName(employees, query.reportingManagerName);
+  const effQuery = isUnderXDirector ? Object.assign({}, query, { isUnderXDirector: true }) : query;
+  const rows = filterEmployeesForHrQuery(employees, effQuery);
+  // The subset of the Doer-matched rows above that ALSO report to this
+  // person directly ("tar moddhe direct reporting") - always a subset of
+  // `rows` by construction, never computed independently of it.
+  const directRows = isUnderXDirector
+    ? rows.filter((e) => e.reportingManager && departmentHintMatches(e.reportingManager, query.reportingManagerName))
+    : null;
   const roleLabel = query.designation ? naturalizeDirectoryValue(query.designation) : (lang === 'english' ? 'employees' : 'kormi');
   // Task 5/8 (2026-10-31) - a COMPANY-WIDE "dept wise HOD list" is a
   // genuinely different shape than "hod" (one department's own HOD) -
@@ -3689,6 +3785,16 @@ function buildHrDataQueryAnswer(employees, query, lang) {
     return { outgoingText: (HR_QUERY_NO_MATCH[lang] || HR_QUERY_NO_MATCH.english)(scopeLabel, roleLabel), dataRequestSummary: roleLabel + (scopeLabel ? ' in ' + scopeLabel : '') + ' - no match', officialEligible: false, matchCount: 0 };
   }
   if (query.returnType === 'count') {
+    // Task 5 (2026-11) LIVE BUG FIX: a Director's "under" count is always
+    // reported as the two-number "Doer hisebe/direct reporting" sentence
+    // (the locked scenario), never the plain single-number template -
+    // only applies when the sender actually asked "under X" (not every
+    // count question incidentally matching a Director's own department).
+    if (isUnderXDirector) {
+      const dateScope = buildDojScopeLabel(query, lang);
+      const outgoingText = (HR_QUERY_COUNT_UNDER_DOER[lang] || HR_QUERY_COUNT_UNDER_DOER.english)(query.reportingManagerName, dateScope, rows.length, directRows.length);
+      return { outgoingText, dataRequestSummary: 'headcount - ' + roleLabel + ' under ' + query.reportingManagerName + ' (Doer)', officialEligible: false, matchCount: rows.length };
+    }
     return { outgoingText: (HR_QUERY_COUNT[lang] || HR_QUERY_COUNT.english)(scopeLabel, rows.length, roleLabel), dataRequestSummary: 'headcount - ' + roleLabel + (scopeLabel ? ' (' + scopeLabel + ')' : ''), officialEligible: false, matchCount: rows.length };
   }
   // 'list' (default return type) - name/designation/department/location
@@ -3699,10 +3805,16 @@ function buildHrDataQueryAnswer(employees, query, lang) {
   // answer out of the official tier (the mixing rule), regardless of how
   // many other official columns were also asked for.
   const includeLocation = Boolean(query.location);
+  // Task 5c (2026-11) - a date-of-joining filter (explicit month/year or
+  // a relative range) means DOJ itself is what the sender is asking
+  // about, so it's shown on every row ("1. Name — Designation —
+  // Department — DOJ") alongside whatever else was asked for.
+  const includeDoj = Boolean(query.dojMonth || query.dojYear || query.dojFrom);
   const introLine = (HR_QUERY_LIST_INTRO[lang] || HR_QUERY_LIST_INTRO.english)(scopeLabel, rows.length, roleLabel);
   const listLines = rows.slice(0, 100).map((e, i) => {
     const parts = [e.name, naturalizeDirectoryValue(e.designation), naturalizeDirectoryValue(e.department)];
     if (includeLocation) parts.push(naturalizeDirectoryValue(e.location));
+    if (includeDoj && e.doj) parts.push(e.doj.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC' }));
     if (query.listIncludeEmpCode && e.employeeId) parts.push(e.employeeId);
     if (query.listIncludeEmail && e.email) parts.push(e.email);
     if (query.listIncludeContactNo && e.contactNumber) parts.push(e.contactNumber);
@@ -3792,6 +3904,11 @@ function hrDataQueryTool() {
           employmentType: { type: 'string', enum: ['Confirmed', 'Probation'], description: 'Set to "Probation" for a probation-related question (e.g. "probation-e ke ke achen?") - omit otherwise.' },
           dojMonth: { type: 'integer', description: 'Joining month 1-12, ANY year - e.g. 10 for "who joined in October" (any October). Omit if no month was named.' },
           dojYear: { type: 'integer', description: 'Exact joining year, e.g. 2024 for "joined in 2024". Omit if no year was named.' },
+          dojRelative: {
+            type: 'string', enum: ['this_month', 'last_n_months'],
+            description: 'A RELATIVE joining-date phrase, resolved against the real current date by code afterward (never guessed here) - "this_month" for "ei mashe"/"is mahine"/"this month"; "last_n_months" (with dojRelativeMonths set) for "last 3 months"/"pichhle 3 mahine". Omit entirely when an explicit month/year was named instead (use dojMonth/dojYear for that) - never set both.'
+          },
+          dojRelativeMonths: { type: 'integer', description: 'Required only when dojRelative is "last_n_months" - the N in "last N months" (e.g. 3). Omit otherwise.' },
           hodIncludeEmpCode: { type: 'boolean', description: 'Only relevant when returnType is "hod" - true when the sender ALSO asked for the HOD\'s employee code/number alongside their name (e.g. "QC HOD emp code ar nam dao" asks for BOTH the HOD\'s emp code AND name) - any phrasing meaning employee code/number/ID counts ("emp code", "employee code", "emp id", "employee number"). Omit/false when only the name was asked for.' },
           hodIncludeContactNo: { type: 'boolean', description: 'Only relevant when returnType is "hod" - true when the sender ALSO asked for the HOD\'s contact/phone number alongside their name (e.g. "<dept> er HOD-er nam ar contact no." asks for BOTH the HOD\'s name AND contact number). Can be combined with hodIncludeEmpCode if both were asked for. Omit/false when only the name was asked for.' },
           listIncludeEmpCode: { type: 'boolean', description: 'Only relevant when returnType is "list" - true when the sender asked for everyone\'s employee code alongside the roster (e.g. "sob welder-er naam ar emp code dao"). Omit/false otherwise.' },
@@ -3884,6 +4001,25 @@ async function resolveAndQueueHrDataQuery({ phone, name, lang, query, history })
     }
   }
   delete effectiveQuery.isFormatRevision;
+  // Task 5 (2026-11) - "ei mashe"/"last N months" resolved against the
+  // REAL current date here, in code, once, right after extraction -
+  // never left for the model to guess, and never re-resolved again later
+  // (a format-revision follow-up inherits the already-resolved
+  // dojMonth/dojYear or dojFrom/dojTo from the prior request as-is, same
+  // as every other filter field).
+  if (effectiveQuery.dojRelative === 'this_month') {
+    const today = istTodayAsUtcMidnight();
+    effectiveQuery.dojMonth = today.getUTCMonth() + 1;
+    effectiveQuery.dojYear = today.getUTCFullYear();
+  } else if (effectiveQuery.dojRelative === 'last_n_months') {
+    const range = resolveDojRelativeRange('last_n_months', effectiveQuery.dojRelativeMonths, istTodayAsUtcMidnight());
+    if (range) {
+      effectiveQuery.dojFrom = range.dojFrom;
+      effectiveQuery.dojTo = range.dojTo;
+      effectiveQuery.dojRelativeMonths = effectiveQuery.dojRelativeMonths || 1;
+    }
+  }
+  delete effectiveQuery.dojRelative;
   const { employees } = await employeeService.getEmployeeData();
   if (effectiveQuery.department) {
     // A confirmed department alias ("QC" -> "QUALITY") always wins over a
@@ -11576,6 +11712,7 @@ module.exports = {
   filterEmployeesForHrQuery,
   computeHodBreakdown,
   buildHrDataQueryAnswer,
+  resolveDojRelativeRange,
   findEmployeeIdByExactName,
   hrDataQueryTool,
   extractHrDataQuery,

@@ -5886,6 +5886,54 @@ async function checkAsync(label, fn) {
   })());
 
   console.log('='.repeat(70));
+  console.log('Task 5 (2026-11) LIVE BUG FIX: "X\'s under/team" questions report BOTH by Reporting DOER and by direct Reporting Manager when X is a Director - the live bug: "Yashaswi Shroff-er under-e kono kormi pawa jayni" for a real Director with real people under her, because the old filter only ever checked the Reporting Manager column');
+  console.log('='.repeat(70));
+  const FAKE_DOER_EMPLOYEES = [
+    { name: 'Yashaswi Shroff', designation: 'Director', department: 'Management', location: 'HO', company: 'Alcove', reportingManager: 'Board', reportingDoer: '', status: 'ACTIVE', doj: new Date(Date.UTC(2015, 0, 1)) },
+    { name: 'Alice Doe', designation: 'Engineer', department: 'Civil', location: 'HO', company: 'Alcove', reportingManager: 'Bob Manager', reportingDoer: 'Yashaswi Shroff', status: 'ACTIVE', doj: new Date(Date.UTC(2026, 9, 5)) },
+    { name: 'Carol Smith', designation: 'Manager', department: 'Civil', location: 'HO', company: 'Alcove', reportingManager: 'Yashaswi Shroff', reportingDoer: 'Yashaswi Shroff', status: 'ACTIVE', doj: new Date(Date.UTC(2026, 9, 20)) },
+    { name: 'Dave Lee', designation: 'Engineer', department: 'Civil', location: 'HO', company: 'Alcove', reportingManager: 'Bob Manager', reportingDoer: 'Yashaswi Shroff', status: 'ACTIVE', doj: new Date(Date.UTC(2026, 8, 20)) }, // Sept - outside an October filter
+    { name: 'Bob Manager', designation: 'HOD', department: 'Civil', location: 'HO', company: 'Alcove', reportingManager: 'Yashaswi Shroff', reportingDoer: 'Yashaswi Shroff', status: 'ACTIVE', doj: new Date(Date.UTC(2020, 0, 1)) }
+  ];
+  check('employeeService.isDirectorName: true for a real Director (appears in someone\'s Reporting DOER column)', employeeService.isDirectorName(FAKE_DOER_EMPLOYEES, 'Yashaswi Shroff') === true);
+  check('employeeService.isDirectorName: false for an ordinary manager/HOD who never appears as anyone\'s Reporting DOER', employeeService.isDirectorName(FAKE_DOER_EMPLOYEES, 'Bob Manager') === false);
+  check('filterEmployeesForHrQuery: "under" a Director filters by Reporting DOER, never the (empty-for-this-case) Reporting Manager column', (() => {
+    const rows = whatsappAssistant.filterEmployeesForHrQuery(FAKE_DOER_EMPLOYEES, { reportingManagerName: 'Yashaswi Shroff', isUnderXDirector: true });
+    return rows.length === 4 && rows.every((r) => r.name !== 'Yashaswi Shroff');
+  })());
+  check('LIVE BUG FIX: buildHrDataQueryAnswer for a count under a Director, date-filtered, reports BOTH numbers in the exact locked wording - "total 2 jon join korechhen (Doer hisebe), tar moddhe direct reporting 1 jon" (2 joined in October as Doer - Alice, Carol - never Dave\'s September join; of those 2, only Carol also reports to her directly)', (() => {
+    const ans = whatsappAssistant.buildHrDataQueryAnswer(FAKE_DOER_EMPLOYEES, { returnType: 'count', reportingManagerName: 'Yashaswi Shroff', dojMonth: 10, dojYear: 2026 }, 'banglish');
+    return ans.outgoingText === 'Yashaswi Shroff-er under-e October 2026-e total 2 jon join korechhen (Doer hisebe), tar moddhe direct reporting 1 jon.' && ans.matchCount === 2;
+  })());
+  check('REGRESSION: a non-Director "under X" count (a real HOD, never anyone\'s Reporting DOER) stays the plain single-number template, never the Doer/direct split', (() => {
+    const ans = whatsappAssistant.buildHrDataQueryAnswer(FAKE_DOER_EMPLOYEES, { returnType: 'count', reportingManagerName: 'Bob Manager' }, 'banglish');
+    return ans.outgoingText === 'Bob Manager-er under-e total 2 jon kormi achen.';
+  })());
+  check('Task 5c: a "list" (names) answer for a Director\'s "under", date-filtered, shows DOJ on every row - "Name — Designation — Department — DOJ"', (() => {
+    const ans = whatsappAssistant.buildHrDataQueryAnswer(FAKE_DOER_EMPLOYEES, { returnType: 'list', reportingManagerName: 'Yashaswi Shroff', dojMonth: 10, dojYear: 2026 }, 'banglish');
+    return ans.outgoingText.includes('1. Alice Doe — Engineer — Civil — 05 Oct 2026') && ans.outgoingText.includes('2. Carol Smith — Manager — Civil — 20 Oct 2026') && ans.matchCount === 2;
+  })());
+  check('a plain list with no date filter at all never shows a DOJ column', (() => {
+    const ans = whatsappAssistant.buildHrDataQueryAnswer(FAKE_DOER_EMPLOYEES, { returnType: 'list', department: 'Civil' }, 'english');
+    return !ans.outgoingText.includes('Oct 2026') && !ans.outgoingText.includes('Jan 2015');
+  })());
+  check('resolveDojRelativeRange("last_n_months"): "last 3 months" from a fixed clock resolves to an exact [3 months ago, now] range', (() => {
+    const now = new Date(Date.UTC(2026, 10, 1)); // 1 Nov 2026
+    const range = whatsappAssistant.resolveDojRelativeRange('last_n_months', 3, now);
+    return range.dojFrom.toISOString() === '2026-08-01T00:00:00.000Z' && range.dojTo.toISOString() === '2026-11-01T00:00:00.000Z';
+  })());
+  check('resolveDojRelativeRange defaults to 1 month when dojRelativeMonths is missing/invalid, never throws or returns a backwards range', (() => {
+    const now = new Date(Date.UTC(2026, 10, 1));
+    const range = whatsappAssistant.resolveDojRelativeRange('last_n_months', null, now);
+    return range.dojFrom.toISOString() === '2026-10-01T00:00:00.000Z' && range.dojFrom < range.dojTo;
+  })());
+  check('resolveDojRelativeRange returns null for "this_month" (resolved separately to a plain dojMonth/dojYear pair, no range needed)', whatsappAssistant.resolveDojRelativeRange('this_month', null, new Date()) === null);
+  check('filterEmployeesForHrQuery: a dojFrom/dojTo range (as plain ISO strings, the shape they come back as after a round trip through the pending-approval store) filters correctly, same as real Date objects', (() => {
+    const rows = whatsappAssistant.filterEmployeesForHrQuery(FAKE_DOER_EMPLOYEES, { dojFrom: '2026-09-01T00:00:00.000Z', dojTo: '2026-10-10T00:00:00.000Z' });
+    return rows.length === 2 && rows.some((r) => r.name === 'Alice Doe') && rows.some((r) => r.name === 'Dave Lee');
+  })());
+
+  console.log('='.repeat(70));
   console.log('Task 2 (2026-10-31): the three-tier data-sharing rule - OFFICIAL fields (15 named fields) resolve directly for a current ACTIVE employee sender, otherwise (or for a >20-person list) they stay approval-gated, exactly like every other field already does');
   console.log('='.repeat(70));
   check('every new official field alias resolves by label, and is flagged official:true', (() => {

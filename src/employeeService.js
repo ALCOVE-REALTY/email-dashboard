@@ -421,6 +421,23 @@ function matchesWholeWordName(fullName, query) {
   return queryWords.length > 0 && queryWords.every((qw) => nameWords.includes(qw));
 }
 
+// Task 5 (2026-11) LIVE BUG FIX: "X's under/team" questions used to only
+// ever filter by the Reporting Manager column - for a Director (someone
+// who appears in the Reporting DOER column but is rarely anyone's own
+// *direct* Reporting Manager), that silently returned zero matches (the
+// live bug: "Yashaswi Shroff-er under-e kono kormi pawa jayni" for a real
+// Director with real people under her). A name is a Director here if it
+// matches ANY employee's reportingDoer field by whole word - used by
+// both the WhatsApp HR-query pipeline (filterEmployeesForHrQuery) and the
+// owner chat box's query_employees/get_direct_reports tools to decide
+// whether "under X" should search reportingDoer instead of
+// reportingManager, and whether to also report the direct-reports
+// subset separately.
+function isDirectorName(employees, name) {
+  if (!name) return false;
+  return employees.some((e) => e.reportingDoer && matchesWholeWordName(e.reportingDoer, name));
+}
+
 // ---------------- Typo-tolerant ("fuzzy") name matching ----------------
 // ONLY ever used as a FALLBACK after matchesWholeWordName finds nothing -
 // never a replacement for it (a real exact match must always win). Built
@@ -660,6 +677,7 @@ module.exports = {
   parseYearsFromDuration,
   containsAllWords,
   matchesWholeWordName,
+  isDirectorName,
   fuzzyMatchEmployeesByName,
   CACHE_TTL_MS
 };

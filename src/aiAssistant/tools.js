@@ -695,6 +695,23 @@ async function queryEmployees(params = {}) {
   delete rawFilters.sortDir;
   delete rawFilters.limit;
 
+  // Task 5 (2026-11) LIVE BUG FIX: "X's under/team" (reportingManager
+  // filter) silently returned zero matches for a Director (someone who
+  // appears in the Reporting DOER column but is rarely anyone's own
+  // *direct* Reporting Manager, e.g. "Yashaswi Shroff") - the model has no
+  // way to know in advance which of the two columns a given name actually
+  // lives in. Redirected here, transparently, based on the real data,
+  // same isDirectorName the WhatsApp HR-query pipeline uses; the
+  // directReportCount this computes afterward lets the model report both
+  // numbers ("X under <name> as Doer, of which Y report directly") rather
+  // than only the Doer-wide total.
+  let doerRedirectName = null;
+  if (rawFilters.reportingManager && employeeService.isDirectorName(employees, rawFilters.reportingManager)) {
+    doerRedirectName = rawFilters.reportingManager;
+    rawFilters.reportingDoer = rawFilters.reportingManager;
+    delete rawFilters.reportingManager;
+  }
+
   // Grouping BY status is the one case where forcing status:'ACTIVE' as a
   // filter would be self-defeating - see the same exception in
   // group_employees.
@@ -704,6 +721,9 @@ async function queryEmployees(params = {}) {
   delete filters.includeInactive;
 
   const filtered = employeeService.filterEmployees(employees, filters);
+  const directReportCount = doerRedirectName
+    ? filtered.filter((e) => employeeService.matchesWholeWordName(e.reportingManager, doerRedirectName)).length
+    : null;
 
   // Same distinction as list_employees/group_employees: a filter value
   // that matches nothing at all in the whole dataset is a wrong guess,
@@ -742,7 +762,10 @@ async function queryEmployees(params = {}) {
       columns: [def.label, 'Count'],
       tableRows: top,
       fullTableRows: allRows,
-      footer: { label: 'Total Matching' + (groupBy === 'status' ? '' : scopeLabelSuffix(filters)), value: filtered.length }
+      footer: { label: 'Total Matching' + (groupBy === 'status' ? '' : scopeLabelSuffix(filters)), value: filtered.length },
+      note: doerRedirectName
+        ? (doerRedirectName + ' is a Director (Reporting DOER), not anyone\'s direct Reporting Manager - this total is everyone under them as Doer; ' + directReportCount + ' of them report to ' + doerRedirectName + ' directly. Mention both numbers in your answer.')
+        : null
     };
   }
 
@@ -764,15 +787,19 @@ async function queryEmployees(params = {}) {
   const shown = sorted.slice(0, limit);
   const truncated = filtered.length > shown.length;
 
+  const doerNote = doerRedirectName
+    ? (doerRedirectName + ' is a Director (Reporting DOER), not anyone\'s direct Reporting Manager - this total is everyone under them as Doer; ' + directReportCount + ' of them report to ' + doerRedirectName + ' directly. Mention both numbers in your answer.')
+    : null;
+  const truncatedNote = truncated
+    ? ('Showing ' + shown.length + ' of ' + filtered.length + ' in this chat reply - the full list is in View Report/Download.')
+    : null;
   return {
     title: 'Query Results',
     columns: columns.map((f) => QUERY_FIELD_DEFS[f].label),
     tableRows: shown.map((e) => columns.map((f) => QUERY_FIELD_DEFS[f].get(e, names))),
     fullTableRows: sorted.map((e) => columns.map((f) => QUERY_FIELD_DEFS[f].get(e, names))),
     footer: { label: 'Total Matching' + scopeLabelSuffix(filters), value: filtered.length },
-    note: truncated
-      ? ('Showing ' + shown.length + ' of ' + filtered.length + ' in this chat reply - the full list is in View Report/Download.')
-      : null
+    note: [doerNote, truncatedNote].filter(Boolean).join(' ') || null
   };
 }
 // ---------------------------------------------------------------------
