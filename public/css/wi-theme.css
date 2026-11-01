@@ -1899,7 +1899,7 @@ body { background: var(--wi-bg); }
    attached, so tapping it just runs the action again). prefers-reduced-
    motion already strips every animation/transition globally (see this
    file's own catch-all rule near the top). */
-.wf-ai-action-btn { position: relative; overflow: hidden; min-width: 0; transition: color .2s ease, background-color .2s ease; }
+.wf-ai-action-btn, .wf-rem-add-btn { position: relative; overflow: hidden; min-width: 0; transition: color .2s ease, background-color .2s ease; }
 /* Hides the label by making its TEXT COLOR transparent, not opacity on a
    child element - found live: most of these buttons' labels are a bare
    text node ("Mark done", no wrapping <span>), so an earlier `> *
@@ -1909,30 +1909,30 @@ body { background: var(--wi-bg); }
    with a smooth cross-fade via the transition on the base rule above,
    while each ::after overlay below sets its OWN explicit color so it's
    never affected by the parent text being transparent. */
-.wf-convo-action-btn.is-loading, .wf-ai-action-btn.is-loading,
-.wf-convo-action-btn.is-success, .wf-ai-action-btn.is-success,
-.wf-convo-action-btn.is-error, .wf-ai-action-btn.is-error {
+.wf-convo-action-btn.is-loading, .wf-ai-action-btn.is-loading, .wf-rem-add-btn.is-loading,
+.wf-convo-action-btn.is-success, .wf-ai-action-btn.is-success, .wf-rem-add-btn.is-success,
+.wf-convo-action-btn.is-error, .wf-ai-action-btn.is-error, .wf-rem-add-btn.is-error {
   color: transparent !important;
 }
-.wf-convo-action-btn.is-loading::after, .wf-ai-action-btn.is-loading::after, .wf-rem-checkbox.is-loading::after {
+.wf-convo-action-btn.is-loading::after, .wf-ai-action-btn.is-loading::after, .wf-rem-add-btn.is-loading::after, .wf-rem-checkbox.is-loading::after {
   content: ''; position: absolute; top: 50%; left: 50%; width: 15px; height: 15px; margin: -8px 0 0 -8px;
   border: 2px solid rgba(255,255,255,.4); border-top-color: #FFFFFF; border-radius: 50%;
   animation: wiBtnSpin .6s linear infinite;
 }
-.wf-convo-action-btn.outline.is-loading::after, .wf-convo-action-btn.danger.is-loading::after, .wf-ai-action-btn.outline.is-loading::after {
+.wf-convo-action-btn.outline.is-loading::after, .wf-convo-action-btn.danger.is-loading::after, .wf-ai-action-btn.outline.is-loading::after, .wf-rem-add-btn.outline.is-loading::after {
   border-color: var(--wi-border-2); border-top-color: var(--wi-ink);
 }
 @keyframes wiBtnSpin { to { transform: rotate(360deg); } }
 
-.wf-convo-action-btn.is-success, .wf-ai-action-btn.is-success {
+.wf-convo-action-btn.is-success, .wf-ai-action-btn.is-success, .wf-rem-add-btn.is-success {
   background: var(--wi-green) !important; box-shadow: none !important;
 }
-.wf-convo-action-btn.is-success::after, .wf-ai-action-btn.is-success::after {
+.wf-convo-action-btn.is-success::after, .wf-ai-action-btn.is-success::after, .wf-rem-add-btn.is-success::after {
   content: '✓'; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
   font-weight: 900; font-size: 1rem; color: #FFFFFF;
 }
-.wf-convo-action-btn.is-error, .wf-ai-action-btn.is-error { background: var(--wi-red-50) !important; box-shadow: none !important; }
-.wf-convo-action-btn.is-error::after, .wf-ai-action-btn.is-error::after {
+.wf-convo-action-btn.is-error, .wf-ai-action-btn.is-error, .wf-rem-add-btn.is-error { background: var(--wi-red-50) !important; box-shadow: none !important; }
+.wf-convo-action-btn.is-error::after, .wf-ai-action-btn.is-error::after, .wf-rem-add-btn.is-error::after {
   content: 'Retry'; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
   font-weight: 800; font-size: 0.8rem; color: var(--wi-red-700);
 }
