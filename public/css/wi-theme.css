@@ -1948,7 +1948,14 @@ body { background: var(--wi-bg); }
   font-weight: 800; font-size: 0.8rem; color: var(--wi-red-700);
 }
 
-.wf-rem-checkbox.is-loading::after { border-color: var(--wi-border-2); border-top-color: var(--wi-primary); width: 12px; height: 12px; margin: -6px 0 0 -6px; }
+/* Task 17a (2026-11) LIVE BUG FIX: this ::after has no box-sizing:border-box
+   (nothing in this file resets it globally), so its rendered size is
+   12px CONTENT + the shared rule's own 2px border on every side = 16px
+   total - but the centering margin was -6px (half of 12, the box's own
+   unset width, not its real 16px rendered size), shifting the spinner
+   ~2px down-right of true centre. -8px (half of 16) centres it exactly,
+   same visible 12px-ish spinner, same checkbox size. */
+.wf-rem-checkbox.is-loading::after { border-color: var(--wi-border-2); border-top-color: var(--wi-primary); width: 12px; height: 12px; margin: -8px 0 0 -8px; }
 .wf-rem-checkbox.is-success { background: var(--wi-green); border-color: transparent; }
 .wf-rem-checkbox.is-success::after { content: '✓'; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-weight: 900; font-size: .65rem; color: #FFFFFF; }
 .wf-rem-checkbox.is-error { background: var(--wi-red-50); border-color: var(--wi-red-700); }
@@ -2049,7 +2056,6 @@ body { background: var(--wi-bg); }
      hrAssistant.js), not just the text column in the middle. */
   cursor: pointer;
 }
-.wf-rem-row.completing { animation: wiFade .4s ease forwards; opacity: 0; transform: scale(.96); }
 .wf-rem-row-icon {
   width: 34px; height: 34px; border-radius: 50%; flex-shrink: 0; display: flex; align-items: center; justify-content: center;
   margin-top: 1px;

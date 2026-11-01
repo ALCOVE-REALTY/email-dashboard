@@ -3922,20 +3922,54 @@
     return row;
   }
 
+  // Task 17b/c (2026-11) LIVE BUG FIX: this used to fade+scale the row
+  // (.completing, no height transition) then yank it out with a plain
+  // .remove() - the row's own space in the list collapsed INSTANTLY the
+  // moment that fired, a visible jump, not a smooth close-the-gap - and
+  // separately reloaded + fully rebuilt the WHOLE list 450ms later just
+  // to refresh the header/chip counts, a second jump layered on top of
+  // the first. Reuses the same slide+fade+height-collapse row-close
+  // animation Open Flows/Important WhatsApp already use (beginRowCloseExit/
+  // finishRowClose, ~0.3s), and refreshReminderCountsOnly updates every
+  // count in place without ever touching the list's own DOM - only the
+  // one row that was actually completed ever animates or disappears.
   async function completeReminderRow(id, checkboxBtn, rowEl) {
     await runButtonAction(checkboxBtn, () => postJsonOrThrow('/api/workforce/hr-assistant/reminders/' + encodeURIComponent(id) + '/done', {}), async () => {
       invalidateReminderCache();
       if (rowEl) {
-        rowEl.classList.add('completing');
-        setTimeout(() => rowEl.remove(), 380);
+        beginRowCloseExit(rowEl);
+        setTimeout(() => finishRowClose(rowEl), 320);
       }
       showActionToast('Done ✓', async () => {
         await postJson('/api/workforce/hr-assistant/reminders/' + encodeURIComponent(id) + '/undo', {});
         invalidateReminderCache();
         loadRemindersPage(activeRemFilter);
       });
-      setTimeout(() => loadRemindersPage(activeRemFilter), 450);
+      refreshReminderCountsOnly();
     });
+  }
+  // Fetches fresh counts (and keeps remItemsById/the page cache current)
+  // without ever rebuilding #hrRemList - the completed row above already
+  // animated itself out; rebuilding the list here on top of that would
+  // just be the "full re-render" jump this fix removes. The list still
+  // naturally re-syncs itself (via the normal fingerprint check) the next
+  // time it's genuinely re-rendered, e.g. switching filter tabs.
+  async function refreshReminderCountsOnly() {
+    try {
+      const resp = await fetch('/api/workforce/hr-assistant/reminders?filter=everything');
+      const data = await resp.json();
+      pageDataCache.reminders.set('everything', { data, at: Date.now() });
+      remItemsById = new Map((data.items || []).map((r) => [r.id, r]));
+      setCountBadge(commsHeadBadge, data.counts.all);
+      setCountBadge(remSectionBadge, isCompletedFilter(activeRemFilter) ? bucketReminders(data.items, activeRemFilter, new Date()).length : data.counts.all);
+      setCountBadge(remCompletedBadge, data.counts.todayCompleted || 0);
+      if (remChips) {
+        remChips.querySelectorAll('.wf-rem-chip').forEach((chip) => {
+          const countEl = chip.querySelector('.wf-rem-chip-count');
+          setCountBadge(countEl, data.counts[chip.dataset.filter] || 0, { allowZero: true });
+        });
+      }
+    } catch (err) { /* best effort - counts simply stay as they were until the next real reload */ }
   }
 
   // ---- Task 3a (2026-11): "Clear" multi-select ----
