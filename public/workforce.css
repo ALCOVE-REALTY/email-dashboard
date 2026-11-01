@@ -3673,10 +3673,14 @@ body:not(.printing-org-chart) .org-chart-cards-row + .org-chart-branch-connector
   display: flex;
   align-items: center;
   background: var(--accent-bg);
-  border-radius: 999px;
+  /* Task 3 (2026-11) - 22px (not the old 999px capsule) still renders as a
+     fully rounded pill at the single-line height this starts at, but
+     reads as a sensibly-rounded box rather than a stretched capsule once
+     the textarea below grows to its ~4-line max. */
+  border-radius: 22px;
   padding-left: 16px;
 }
-.wf-ai-input-pill input {
+.wf-ai-input-pill textarea {
   flex: 1;
   min-width: 0;
   background: none;
@@ -3684,9 +3688,15 @@ body:not(.printing-org-chart) .org-chart-cards-row + .org-chart-branch-connector
   padding: 12px 0;
   font: inherit;
   font-size: 0.9rem;
+  line-height: 1.3;
   color: var(--ink);
+  resize: none;
+  overflow-y: auto;
+  /* ~4 lines at this font-size/line-height, plus the padding above -
+     kept in sync with autoResizeAssistantInput's own cap in hrAssistant.js. */
+  max-height: 104px;
 }
-.wf-ai-input-pill input:focus { outline: none; }
+.wf-ai-input-pill textarea:focus { outline: none; }
 .wf-ai-input-pill:focus-within { box-shadow: 0 0 0 2px var(--wf-ai-wash-1); }
 .wf-ai-send-btn {
   border-radius: 50%;
@@ -3874,6 +3884,11 @@ body:not(.printing-org-chart) .org-chart-cards-row + .org-chart-branch-connector
   color: var(--ink);
 }
 .wf-ai-history-search input:focus { outline: none; }
+/* Task 3 (2026-11) - these became type="search" (see workforce.html) to
+   avoid Chrome's autofill accessory bar; this row already has its own
+   clear button (.wf-ai-history-search-clear), so the native search
+   cancel-icon is suppressed to avoid a duplicate X. */
+.wf-ai-history-search input[type="search"]::-webkit-search-cancel-button { -webkit-appearance: none; appearance: none; }
 .wf-ai-history-search-clear[hidden] { display: none; }
 .wf-ai-history-search-clear {
   background: none;

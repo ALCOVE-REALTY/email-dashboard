@@ -14,6 +14,18 @@
   // refers to it.
   const form = document.getElementById('hrAssistantForm');
   const input = document.getElementById('assistantQuestion');
+  // Task 3 (2026-11) - `input` is a <textarea> now (see workforce.html's
+  // own comment); grows with its content up to the CSS max-height (kept in
+  // sync with .wf-ai-input-pill textarea's own max-height, 104px) and no
+  // further, then scrolls internally. Resetting height to 'auto' first is
+  // required every time - a textarea's scrollHeight only ever reports
+  // "big enough to fit the content at the CURRENT height" otherwise, so it
+  // would never shrink back down after deleting text.
+  function autoResizeAssistantInput() {
+    input.style.height = 'auto';
+    input.style.height = Math.min(input.scrollHeight, 104) + 'px';
+  }
+  input.addEventListener('input', autoResizeAssistantInput);
   const plusBtn = document.getElementById('hrAssistantPlusBtn');
   const micBtn = document.getElementById('hrAssistantMicBtn');
   const attachmentChip = document.getElementById('hrAssistantAttachmentChip');
@@ -412,6 +424,7 @@
           // expected, same reasoning as every other explicit-tap focus
           // elsewhere in this file.
           input.value = msgMenuText;
+          autoResizeAssistantInput();
           input.focus();
         }
         closeMsgMenu();
@@ -1011,6 +1024,7 @@
           else interim += transcript;
         }
         input.value = (finalTranscript + interim).trim();
+        autoResizeAssistantInput();
       };
       recognition.onerror = () => {
         recognizing = false;
@@ -4433,6 +4447,7 @@
     if (!text && !attachment) return;
 
     input.value = '';
+    autoResizeAssistantInput();
     input.disabled = true;
     const sendBtn = form.querySelector('.wf-ai-send-btn');
     if (sendBtn) sendBtn.disabled = true;
