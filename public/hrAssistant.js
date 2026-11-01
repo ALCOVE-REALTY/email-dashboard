@@ -369,6 +369,99 @@
     row.remove();
   }
 
+  // Task 8 (2026-11) - SUBH chat box only (not WhatsApp conversations):
+  // (a) long-press the sender's own message for a small Copy/Edit popup,
+  // (b) a copy icon under every SUBH reply. Both use the SAME copy
+  // action/toast, per direct instruction ("the shared 'Copied' toast").
+  const MSG_COPY_ICON_SVG = '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+  async function copyMsgTextWithToast(text) {
+    try { await navigator.clipboard.writeText(text); } catch (err) { /* clipboard API unavailable - nothing else to fall back to here */ }
+    showProToast({ title: 'Copied' });
+  }
+
+  // Small floating Copy/Edit popup for long-pressing one's own message -
+  // lazily created once, repositioned/shown next to whichever bubble was
+  // pressed. Edit puts the text back in the input (never sends it again
+  // on its own); Copy uses the same copyMsgTextWithToast as the reply
+  // icon above.
+  let msgMenuEl = null;
+  let msgMenuText = null;
+  function closeMsgMenu() {
+    if (msgMenuEl) msgMenuEl.hidden = true;
+    msgMenuText = null;
+  }
+  function openMsgMenu(bubbleEl, text) {
+    if (!msgMenuEl) {
+      msgMenuEl = document.createElement('div');
+      msgMenuEl.className = 'wf-msg-menu';
+      msgMenuEl.innerHTML =
+        '<button type="button" data-msg-menu-action="copy">Copy</button>' +
+        '<button type="button" data-msg-menu-action="edit">Edit</button>';
+      document.body.appendChild(msgMenuEl);
+      msgMenuEl.addEventListener('click', (e) => {
+        const btn = e.target.closest('[data-msg-menu-action]');
+        if (!btn || msgMenuText === null) return;
+        if (btn.dataset.msgMenuAction === 'copy') {
+          copyMsgTextWithToast(msgMenuText);
+        } else if (btn.dataset.msgMenuAction === 'edit') {
+          // A direct consequence of the person's own tap (long-press ->
+          // Edit), not an automatic update - the keyboard opening here is
+          // expected, same reasoning as every other explicit-tap focus
+          // elsewhere in this file.
+          input.value = msgMenuText;
+          input.focus();
+        }
+        closeMsgMenu();
+      });
+      document.addEventListener('pointerdown', (e) => {
+        if (msgMenuEl && !msgMenuEl.hidden && !msgMenuEl.contains(e.target)) closeMsgMenu();
+      });
+      window.addEventListener('scroll', closeMsgMenu, true);
+    }
+    msgMenuText = text;
+    msgMenuEl.hidden = false;
+    const rect = bubbleEl.getBoundingClientRect();
+    void msgMenuEl.offsetHeight; // ensure its own size is measured before positioning
+    const menuRect = msgMenuEl.getBoundingClientRect();
+    let top = rect.top - menuRect.height - 8;
+    if (top < 8) top = rect.bottom + 8; // not enough room above - show below instead
+    let left = rect.right - menuRect.width;
+    left = Math.max(8, Math.min(left, window.innerWidth - menuRect.width - 8));
+    msgMenuEl.style.top = top + 'px';
+    msgMenuEl.style.left = left + 'px';
+  }
+
+  // Long-press detection (pointer events - same convention as the "Add to
+  // chat" sheet's own swipe handling elsewhere in this file), delegated
+  // on messagesEl since bubbles come and go dynamically. Cancelled by any
+  // real movement (a scroll/swipe in progress, not a press-and-hold) past
+  // a small tolerance.
+  const MSG_LONG_PRESS_MS = 450;
+  const MSG_LONG_PRESS_MOVE_TOLERANCE = 10;
+  let msgLongPressTimer = null;
+  let msgLongPressStart = null;
+  function cancelMsgLongPress() {
+    clearTimeout(msgLongPressTimer);
+    msgLongPressTimer = null;
+    msgLongPressStart = null;
+  }
+  messagesEl.addEventListener('pointerdown', (e) => {
+    const bubbleEl = e.target.closest('.wf-ai-msg.user .wf-ai-bubble');
+    if (!bubbleEl) return;
+    msgLongPressStart = { x: e.clientX, y: e.clientY };
+    clearTimeout(msgLongPressTimer);
+    msgLongPressTimer = setTimeout(() => {
+      msgLongPressTimer = null;
+      openMsgMenu(bubbleEl, bubbleEl.textContent);
+    }, MSG_LONG_PRESS_MS);
+  });
+  messagesEl.addEventListener('pointermove', (e) => {
+    if (!msgLongPressStart) return;
+    if (Math.abs(e.clientX - msgLongPressStart.x) > MSG_LONG_PRESS_MOVE_TOLERANCE || Math.abs(e.clientY - msgLongPressStart.y) > MSG_LONG_PRESS_MOVE_TOLERANCE) cancelMsgLongPress();
+  });
+  messagesEl.addEventListener('pointerup', cancelMsgLongPress);
+  messagesEl.addEventListener('pointercancel', cancelMsgLongPress);
+
   function addBubble(role, text, attachment) {
     const row = document.createElement('div');
     row.className = 'wf-ai-msg ' + role + ' m-pop';
@@ -390,6 +483,18 @@
     bubble.className = 'wf-ai-bubble';
     bubble.textContent = text;
     col.appendChild(bubble);
+    // Task 8 (2026-11) - (a) long-press on the sender's OWN bubble opens a
+    // small Copy/Edit popup (see wireMsgLongPress below); (b) every SUBH
+    // reply gets its own small, always-visible copy icon underneath.
+    if (role === 'assistant' && text) {
+      const copyBtn = document.createElement('button');
+      copyBtn.type = 'button';
+      copyBtn.className = 'wf-ai-msg-copy-btn';
+      copyBtn.setAttribute('aria-label', 'Copy');
+      copyBtn.innerHTML = MSG_COPY_ICON_SVG;
+      copyBtn.addEventListener('click', () => copyMsgTextWithToast(text));
+      col.appendChild(copyBtn);
+    }
     row.appendChild(col);
     messagesEl.appendChild(row);
     scrollToBottom();

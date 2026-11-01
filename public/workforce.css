@@ -3337,6 +3337,34 @@ body:not(.printing-org-chart) .org-chart-cards-row + .org-chart-branch-connector
 }
 .wf-ai-msg.user .wf-ai-bubble { background: var(--accent); color: var(--accent-ink); border-bottom-right-radius: 4px; }
 .wf-ai-msg.assistant .wf-ai-bubble { background: var(--accent-bg); color: var(--ink); border-bottom-left-radius: 4px; }
+/* Task 8 (2026-11) - long-press-to-copy/edit on one's own message: native
+   text-selection is suppressed so a press-and-hold triggers only the
+   custom Copy/Edit popup, never the OS's own selection magnifier at the
+   same time. */
+.wf-ai-msg.user .wf-ai-bubble { -webkit-user-select: none; user-select: none; touch-action: manipulation; }
+
+/* Task 8 (2026-11) - the small, always-visible copy icon under every SUBH
+   reply. */
+.wf-ai-msg-copy-btn {
+  border: none; background: transparent; padding: 3px; margin-left: 2px; color: var(--muted);
+  cursor: pointer; display: inline-flex; align-items: center; justify-content: center; border-radius: 6px;
+}
+.wf-ai-msg-copy-btn:hover, .wf-ai-msg-copy-btn:active { background: var(--accent-bg); color: var(--accent); }
+
+/* Task 8 (2026-11) - the small Copy/Edit popup, positioned next to
+   whichever bubble was long-pressed (see hrAssistant.js's openMsgMenu). */
+.wf-msg-menu {
+  position: fixed; z-index: 90; display: flex; flex-direction: column;
+  background: var(--surface); border-radius: 12px; box-shadow: 0 8px 24px var(--shadow);
+  overflow: hidden; min-width: 120px;
+}
+.wf-msg-menu[hidden] { display: none; }
+.wf-msg-menu button {
+  border: none; background: transparent; padding: 10px 16px; font: inherit; font-size: 0.85rem;
+  font-weight: 600; color: var(--ink); text-align: left; cursor: pointer;
+}
+.wf-msg-menu button:hover, .wf-msg-menu button:active { background: var(--accent-bg); }
+.wf-msg-menu button + button { border-top: 1px solid var(--line); }
 
 .wf-ai-loading-row { display: flex; align-items: flex-end; gap: 8px; max-width: 85%; }
 .wf-ai-loading-avatar {
