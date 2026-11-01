@@ -687,22 +687,63 @@ async function buildMessages(automation, runAt) {
 // day" rule, so "the 31st" on a 30-day month runs on the 30th, and 29 Feb
 // on a non-leap year runs on 28 Feb). ----------------
 function lastDayOfMonth(y, m) { return new Date(Date.UTC(y, m + 1, 0)).getUTCDate(); }
+// Task 9a (2026-11) LIVE BUG FIX: schedule.date/time are an IST wall-clock
+// instant (every time in this feature is IST, per the UI) - this used to
+// build the candidate with Date.UTC(..., h, mi) directly, treating "12:00"
+// as 12:00 UTC instead of 12:00 IST, a +5:30 error that showed up as
+// "Schedule shows 12:00 but Summary says next run ... 17:30" (12:00 +
+// 5:30 = 17:30). month0 is 0-based, same convention Date.UTC itself uses.
+const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+function istWallClockToUtc(year, month0, day, hour, minute) {
+  return new Date(Date.UTC(year, month0, day, hour, minute, 0) - IST_OFFSET_MS);
+}
+// The real current IST calendar date/time, as plain numbers (month is
+// 1-based here, matching the Intl field it comes from - callers that
+// need Date.UTC's own 0-based month subtract 1, same as istWallClockToUtc's
+// own month0 parameter already does elsewhere in this file).
+function istParts(now) {
+  const parts = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: false, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(now);
+  const get = (t) => parts.find((p) => p.type === t).value;
+  return { year: Number(get('year')), month: Number(get('month')), day: Number(get('day')), hour: Number(get('hour')), minute: Number(get('minute')) };
+}
 function computeNextRun(schedule, now) {
   if (!schedule || !schedule.date || !schedule.time) return null;
   const [h, mi] = schedule.time.split(':').map(Number);
   const base = new Date(schedule.date + 'T00:00:00Z');
   const wantDay = base.getUTCDate();
-  let cand = new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), Math.min(wantDay, lastDayOfMonth(base.getUTCFullYear(), base.getUTCMonth())), h, mi));
+  // y/m track the intended IST calendar month/year directly, advanced by
+  // plain month arithmetic - never re-derived from `cand` itself (an
+  // IST-shifted UTC instant), which for an early-IST-morning time
+  // (00:00-05:29) can land on the PREVIOUS UTC calendar day/month and
+  // would otherwise corrupt the "advance by N months" step.
+  let y = base.getUTCFullYear(), m = base.getUTCMonth();
+  let cand = istWallClockToUtc(y, m, Math.min(wantDay, lastDayOfMonth(y, m)), h, mi);
   const step = schedule.repeat === 'monthly' ? 1 : schedule.repeat === 'yearly' ? 12 : schedule.repeat === 'custom' ? (Number(schedule.every) || 1) : 0;
   let guard = 0;
   while (cand.getTime() < now.getTime() && step && guard++ < 1200) {
-    const nm = cand.getUTCMonth() + step;
-    const ny = cand.getUTCFullYear() + Math.floor(nm / 12);
-    const mm = ((nm % 12) + 12) % 12;
-    cand = new Date(Date.UTC(ny, mm, Math.min(wantDay, lastDayOfMonth(ny, mm)), h, mi));
+    const nm = m + step;
+    y = y + Math.floor(nm / 12);
+    m = ((nm % 12) + 12) % 12;
+    cand = istWallClockToUtc(y, m, Math.min(wantDay, lastDayOfMonth(y, m)), h, mi);
   }
   if (cand.getTime() < now.getTime() && !step) return null; // one-time schedule already passed
   return cand.toISOString();
+}
+// Task 9d (2026-11) - Save's own re-check: a schedule accepted a little
+// while ago (e.g. during "Ask SUBH" extraction) can have drifted to
+// within a couple of minutes of firing, or past, by the time the owner
+// actually taps Save - nudges the comparison instant 2 minutes into the
+// future so computeNextRun's own advance-if-passed loop also catches
+// "technically still ahead, but not by enough to trust" as if it had
+// already passed. Returns the same ISO string unchanged when nothing
+// needed to move, so callers can tell the two cases apart by simple
+// string inequality.
+const SAVE_MIN_LEAD_MS = 2 * 60 * 1000;
+function ensureNotTooSoon(schedule, now) {
+  const nextRunAt = computeNextRun(schedule, now);
+  if (!nextRunAt) return nextRunAt;
+  if (new Date(nextRunAt).getTime() - now.getTime() >= SAVE_MIN_LEAD_MS) return nextRunAt;
+  return computeNextRun(schedule, new Date(now.getTime() + SAVE_MIN_LEAD_MS));
 }
 
 // ---------------- Sending ----------------
@@ -1144,8 +1185,26 @@ async function draftPlanFromParsed(parsed, now, sheetContext) {
   const every = parsed.repeat === 'daily' ? 1 : undefined;
   const day = Math.min(31, Math.max(1, Number(parsed.dayOfMonth) || 1));
   const time = /^\d{1,2}:\d{2}$/.test(parsed.timeRaw || '') ? parsed.timeRaw : '10:00';
-  const firstMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
-  const scheduleDate = new Date(Date.UTC(firstMonth.getUTCFullYear(), firstMonth.getUTCMonth(), Math.min(day, lastDayOfMonth(firstMonth.getUTCFullYear(), firstMonth.getUTCMonth()))));
+  // Task 9c (2026-11) LIVE BUG FIX: "1 tarikh 12 pm" etc. used to always
+  // schedule for NEXT month regardless of whether this month's own 1st
+  // at noon was still comfortably ahead. Compared against the REAL
+  // current IST date/time instead (never the model's own guess) - this
+  // month's occurrence is used when it's still at least 5 minutes away,
+  // otherwise the next one; "31 tarikh"/"last day of month" already
+  // falls out of the SAME day-clamp lastDayOfMonth below gives every
+  // other schedule, never a separate case.
+  const [schH, schMi] = time.split(':').map(Number);
+  const nowIst = istParts(now);
+  let targetYear = nowIst.year, targetMonth0 = nowIst.month - 1; // 0-based, matches Date.UTC's own convention
+  let clampedDay = Math.min(day, lastDayOfMonth(targetYear, targetMonth0));
+  let candidateUtc = istWallClockToUtc(targetYear, targetMonth0, clampedDay, schH, schMi);
+  if (candidateUtc.getTime() - now.getTime() < 5 * 60 * 1000) {
+    const nm = targetMonth0 + 1;
+    targetYear += Math.floor(nm / 12);
+    targetMonth0 = ((nm % 12) + 12) % 12;
+    clampedDay = Math.min(day, lastDayOfMonth(targetYear, targetMonth0));
+  }
+  const scheduleDate = new Date(Date.UTC(targetYear, targetMonth0, clampedDay));
   const subjectTemplates = { confirmations: 'Probation Confirmation of {Employee_Name}', birthdays: recCol ? '' : 'Birthday List', master: 'Notice', exits: 'Exits update', sheet: 'Reminder', none: 'Reminder' };
   const bodyTemplates = {
     confirmations: 'Dear Sir/Madam,\n\nKindly confirm the probation confirmation of {Employee_Name}.',
@@ -1179,7 +1238,7 @@ module.exports = {
   SOURCES, EMP_COLUMNS, EMP_PERSON_COLS, sourceDef, sourceKind,
   loadSheetInfo, getSheetLiveHeaders, sheetPlanDependencies, checkSheetDependencies, resolveFuzzyOneOf, resolveColumnName, sheetPersonCols, sheetDateColumns,
   testCond, matchedRows, personContact, contactOk,
-  buildMessages, fillPlaceholders, computeNextRun,
+  buildMessages, fillPlaceholders, computeNextRun, ensureNotTooSoon,
   runAutomation, runDueAutomations, resolveMissedRun,
   parseAutomationAsk, draftPlanFromParsed,
   MISSED_RUN_THRESHOLD_MS

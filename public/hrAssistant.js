@@ -4649,10 +4649,36 @@
   }
 
   // ---------- Create/Edit page ----------
+  // Task 9b (2026-11) - the Create page's own default schedule is the
+  // real current IST date/time, rounded UP to the next 5-minute mark
+  // (e.g. 10:42 -> 10:45) - never a blank date/hardcoded 10:00. Mirrors
+  // the backend's own istParts (automationService.js), computed
+  // client-side via the same Intl-in-Asia/Kolkata technique so it's
+  // correct regardless of the device's own timezone setting.
+  function currentIstDateTimeRoundedUp5() {
+    const parts = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: false, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date());
+    const get = (t) => parts.find((p) => p.type === t).value;
+    let year = Number(get('year')), month = Number(get('month')), day = Number(get('day'));
+    let hour = Number(get('hour')), minute = Number(get('minute'));
+    minute = Math.ceil(minute / 5) * 5;
+    if (minute === 60) {
+      minute = 0;
+      hour += 1;
+      if (hour === 24) {
+        hour = 0;
+        const rolled = new Date(Date.UTC(year, month - 1, day));
+        rolled.setUTCDate(rolled.getUTCDate() + 1);
+        year = rolled.getUTCFullYear(); month = rolled.getUTCMonth() + 1; day = rolled.getUTCDate();
+      }
+    }
+    const pad = (n) => String(n).padStart(2, '0');
+    return { date: year + '-' + pad(month) + '-' + pad(day), time: pad(hour) + ':' + pad(minute) };
+  }
   function autoResetForm() {
     autoEditingId = null; autoPlan = null; autoConfirmed = false; autoExcluded = new Set(); autoSelected = new Set();
     autoTableCols = ['Employee_No', 'Employee_Name', 'Designation', 'Department'];
-    autoSchedule = { date: '', time: '10:00', repeat: 'monthly', every: 2 };
+    const defaultWhen = currentIstDateTimeRoundedUp5();
+    autoSchedule = { date: defaultWhen.date, time: defaultWhen.time, repeat: 'monthly', every: 2 };
     if (autoSubject) autoSubject.value = '';
     if (autoAsk) autoAsk.value = '';
     if (autoUnderstand) autoUnderstand.innerHTML = '';
@@ -4668,8 +4694,8 @@
     if (autoMailSubj) autoMailSubj.value = '';
     if (autoBody) autoBody.value = '';
     if (autoTableToggle) autoTableToggle.checked = false;
-    if (autoDate) autoDate.value = '';
-    if (autoTime) autoTime.value = '10:00';
+    if (autoDate) autoDate.value = defaultWhen.date;
+    if (autoTime) autoTime.value = defaultWhen.time;
     if (autoEvery) autoEvery.value = 2;
     autoCcField.reset();
     if (autoEmpSearch) autoEmpSearch.value = '';
@@ -5219,8 +5245,15 @@
     const schedule = { date: f.date, time: f.time, repeat: f.repeat, every: f.every };
     const payload = { subject: f.subject, originalAsk: (autoAsk && autoAsk.value || '').trim(), plan, excludedKeys: Array.from(autoExcluded), schedule };
     const url = autoEditingId ? '/api/workforce/hr-assistant/automations/' + encodeURIComponent(autoEditingId) : '/api/workforce/hr-assistant/automations';
-    await runButtonAction(autoSaveBtn, () => postJsonOrThrow(url, payload), () => {
-      showAutoToast(autoEditingId ? 'Automation updated ✓' : 'Saved ✓ — first run waits for your approval.');
+    await runButtonAction(autoSaveBtn, () => postJsonOrThrow(url, payload), (result) => {
+      // Task 9d (2026-11) - Save's own re-check moved the schedule (it had
+      // drifted to within 2 minutes of firing, or already passed, since it
+      // was first set up) - told plainly, never silently.
+      if (result && result.scheduleAdjustedTo) {
+        showAutoToast('Run time had passed — moved to ' + autoWhen(result.scheduleAdjustedTo) + '.', 'warning');
+      } else {
+        showAutoToast(autoEditingId ? 'Automation updated ✓' : 'Saved ✓ — first run waits for your approval.');
+      }
       navStack = navStack.filter((n) => n.type !== 'automation');
       pushNav({ type: 'automationList' });
       openAutomationList();

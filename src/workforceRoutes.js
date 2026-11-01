@@ -2037,8 +2037,15 @@ router.post('/hr-assistant/automations', async (req, res) => {
     if (!subject || !String(subject).trim()) return res.status(400).json({ error: 'Task Subject is required.' });
     if (!plan || !schedule || !schedule.date || !schedule.time) return res.status(400).json({ error: 'A confirmed plan and schedule are required.' });
     const record = automationService.newAutomation({ subject: String(subject).trim(), originalAsk, plan, excludedKeys: excludedKeys || [], schedule, now, createdBy: req.hrUser.email });
+    // Task 9d (2026-11) - Save's own re-check: the schedule may have
+    // drifted to within 2 minutes of firing (or already passed) since it
+    // was first put together - moved to the next valid occurrence here,
+    // and the owner is told so via scheduleAdjustedTo (never silently).
+    const safeNextRunAt = automationService.ensureNotTooSoon(schedule, now);
+    const scheduleAdjustedTo = safeNextRunAt !== record.nextRunAt ? safeNextRunAt : null;
+    record.nextRunAt = safeNextRunAt;
     await automationService.saveAutomation(record);
-    res.json({ ok: true, item: record });
+    res.json({ ok: true, item: record, scheduleAdjustedTo });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -2055,10 +2062,18 @@ router.post('/hr-assistant/automations/:id', async (req, res) => {
     if (originalAsk !== undefined) existing.originalAsk = originalAsk;
     if (plan !== undefined) existing.plan = plan;
     if (excludedKeys !== undefined) existing.excludedKeys = excludedKeys;
-    if (schedule !== undefined) { existing.schedule = schedule; existing.nextRunAt = automationService.computeNextRun(schedule, now); existing.pendingMissedRun = null; }
+    let scheduleAdjustedTo = null;
+    if (schedule !== undefined) {
+      existing.schedule = schedule;
+      // Task 9d (2026-11) - same Save-time re-check as creation above.
+      const rawNextRunAt = automationService.computeNextRun(schedule, now);
+      existing.nextRunAt = automationService.ensureNotTooSoon(schedule, now);
+      scheduleAdjustedTo = existing.nextRunAt !== rawNextRunAt ? existing.nextRunAt : null;
+      existing.pendingMissedRun = null;
+    }
     existing.updatedAt = now.toISOString();
     await automationService.saveAutomation(existing);
-    res.json({ ok: true, item: existing });
+    res.json({ ok: true, item: existing, scheduleAdjustedTo });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

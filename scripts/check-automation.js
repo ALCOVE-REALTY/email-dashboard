@@ -572,6 +572,69 @@ async function main() {
     check('a one-time ("none") schedule already in the past returns null, never re-fires', oneTimePast === null);
 
     console.log('='.repeat(70));
+    console.log('Task 9a (2026-11) LIVE BUG FIX: schedule.date/time is an IST wall-clock instant, not UTC - "Schedule shows 12:00 but Summary says next run ... 17:30" (the stored instant was 5:30 too late, since 12:00 was being read as 12:00 UTC)');
+    console.log('='.repeat(70));
+    check('a 12:00 schedule resolves to an instant that is actually 12:00 IST (06:30 UTC), never 12:00 UTC (which would show as 17:30 IST - the exact live bug)', (() => {
+      const r = automationService.computeNextRun({ date: '2026-12-01', time: '12:00', repeat: 'none' }, new Date('2026-11-01T00:00:00Z'));
+      const asIst = new Date(r).toLocaleString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Kolkata' });
+      return new Date(r).getUTCHours() === 6 && new Date(r).getUTCMinutes() === 30 && asIst === '12:00';
+    })());
+    check('an early-morning IST time (02:00) correctly lands on the PREVIOUS UTC calendar day (20:30 UTC) without corrupting the month/day the schedule actually means', (() => {
+      const r = automationService.computeNextRun({ date: '2026-12-01', time: '02:00', repeat: 'none' }, new Date('2026-11-01T00:00:00Z'));
+      const d2 = new Date(r);
+      return d2.getUTCFullYear() === 2026 && d2.getUTCMonth() === 10 && d2.getUTCDate() === 30 && d2.getUTCHours() === 20 && d2.getUTCMinutes() === 30 &&
+        d2.toLocaleString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Kolkata' }) === '01/12/2026, 02:00';
+    })());
+    check('REGRESSION: a monthly repeat with an early-morning IST time still advances by real calendar months, never drifting a month off because of the UTC day-rollover above', (() => {
+      // Dec 1 2026 02:00 IST has already passed by the simulated "now"
+      // (Dec 2) - must advance to Jan 1 2027, never Dec/stay stuck.
+      const r = automationService.computeNextRun({ date: '2026-12-01', time: '02:00', repeat: 'monthly' }, new Date('2026-12-02T00:00:00Z'));
+      const ist = new Date(r).toLocaleString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Kolkata' });
+      return ist === '01/01/2027, 02:00';
+    })());
+
+    console.log('='.repeat(70));
+    console.log('Task 9d (2026-11) - ensureNotTooSoon: Save\'s own re-check moves a schedule that\'s within 2 minutes of firing (or already passed) to the next valid occurrence');
+    console.log('='.repeat(70));
+    check('a schedule comfortably in the future (well past the 2-minute buffer) is left exactly as computeNextRun alone would return it', (() => {
+      const schedule = { date: '2026-12-01', time: '12:00', repeat: 'monthly' };
+      const n = new Date('2026-11-01T00:00:00Z');
+      return automationService.ensureNotTooSoon(schedule, n) === automationService.computeNextRun(schedule, n);
+    })());
+    check('a schedule just 90 seconds away is moved to the NEXT monthly occurrence instead, never left to fire with no real lead time', (() => {
+      const schedule = { date: '2026-12-01', time: '12:00', repeat: 'monthly' };
+      const almostThere = new Date(new Date(automationService.computeNextRun(schedule, new Date('2026-11-01T00:00:00Z'))).getTime() - 90 * 1000);
+      const adjusted = automationService.ensureNotTooSoon(schedule, almostThere);
+      const raw = automationService.computeNextRun(schedule, almostThere);
+      return adjusted !== raw && new Date(adjusted).getUTCMonth() === 0 && new Date(adjusted).getUTCFullYear() === 2027; // January 2027, the following month
+    })());
+    check('a one-time schedule that has already passed, with no repeat to advance to, still returns null (not an error) - the same "nothing left to move to" case computeNextRun already covers', automationService.ensureNotTooSoon({ date: '2020-01-01', time: '10:00', repeat: 'none' }, now) === null);
+
+    console.log('='.repeat(70));
+    console.log('Task 9c (2026-11) LIVE BUG FIX: draftPlanFromParsed used to ALWAYS schedule a plain "day N" ask for next month, even when this month\'s own occurrence was still comfortably ahead');
+    console.log('='.repeat(70));
+    await checkAsync('"the 25th at 6pm", asked on the 1st (comfortably ahead) - uses THIS month, never next', async () => {
+      const parsed = { unclear: [], source: 'none', rec: 'selected', peopleNames: ['someone@example.test'], mediator: 'mail', dayOfMonth: 25, timeRaw: '18:00', repeat: 'monthly' };
+      const draft = await automationService.draftPlanFromParsed(parsed, new Date('2026-11-01T06:00:00.000Z')); // 1 Nov, ~11:30am IST
+      return draft.ok && draft.schedule.date === '2026-11-25';
+    });
+    await checkAsync('"the 5th at 6pm", asked on the 20th (that date already passed this month) - rolls over to NEXT month', async () => {
+      const parsed = { unclear: [], source: 'none', rec: 'selected', peopleNames: ['someone@example.test'], mediator: 'mail', dayOfMonth: 5, timeRaw: '18:00', repeat: 'monthly' };
+      const draft = await automationService.draftPlanFromParsed(parsed, new Date('2026-11-20T06:00:00.000Z')); // 20 Nov, ~11:30am IST
+      return draft.ok && draft.schedule.date === '2026-12-05';
+    });
+    await checkAsync('"the 15th", asked on the 15th itself with its own time just 2 minutes ahead (less than the 5-minute margin) - treated as too soon, rolls to NEXT month, never today', async () => {
+      const parsed = { unclear: [], source: 'none', rec: 'selected', peopleNames: ['someone@example.test'], mediator: 'mail', dayOfMonth: 15, timeRaw: '11:32', repeat: 'monthly' };
+      const draft = await automationService.draftPlanFromParsed(parsed, new Date('2026-11-15T06:00:00.000Z')); // 15 Nov, 11:30am IST - target is 11:32am IST, 2 min ahead
+      return draft.ok && draft.schedule.date === '2026-12-15';
+    });
+    await checkAsync('"31st"/"last day of month", asked when this month\'s real last day is still ahead - uses THIS month\'s own last day (clamped), e.g. February\'s 28th, not literally day 31', async () => {
+      const parsed = { unclear: [], source: 'none', rec: 'selected', peopleNames: ['someone@example.test'], mediator: 'mail', dayOfMonth: 31, timeRaw: '18:00', repeat: 'monthly' };
+      const draft = await automationService.draftPlanFromParsed(parsed, new Date('2026-02-01T06:00:00.000Z')); // 1 Feb 2026 (not a leap year, 28 days)
+      return draft.ok && draft.schedule.date === '2026-02-28';
+    });
+
+    console.log('='.repeat(70));
     console.log('CRUD');
     console.log('='.repeat(70));
     const basicPlan = { source: 'none', rec: 'selected', selectedEmployeeIds: ['H1'], group: 'list', mediator: 'mail', mailSubject: 'Test', body: 'Hello', table: false, tableColumns: [] };
