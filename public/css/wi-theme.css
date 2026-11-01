@@ -507,12 +507,29 @@ body { background: var(--wi-bg); }
    specificity, so without this they rendered anyway, took up real layout
    width, and pushed Share/Export PDF off their reference position. */
 .wf-link-btn[hidden] { display: none; }
-/* Export PDF sits in the same row as its Share circle - matches
-   .wf-icon-btn's own (restored) 38px so the two still sit flush, not
-   its own text-line height. Scoped to "right after a round icon button"
-   (the actual, repeated Share+Export pattern), not every .wf-link-btn
-   (the in-panel "View all" / "View report" links keep their plain text size). */
-.wf-icon-btn + .wf-link-btn { height: 38px; padding: 0 2px 0 6px; }
+/* Task 14 (2026-11) LIVE BUG FIX: every genuine Export PDF/Export
+   Dept. Breakup/Pending Confirmations button now carries its own
+   .wf-export-pdf-btn class (set directly in the markup), not every
+   .wf-link-btn (the in-panel "View all"/"View report" links keep their
+   plain text size) - this used to be scoped to ".wf-icon-btn +
+   .wf-link-btn" (right after a round Share icon button), matching
+   Employee Data's own row, but every OTHER section's Export PDF button
+   that doesn't happen to sit next to a Share icon fell through to the
+   base .wf-link-btn rule above instead and rendered smaller/different -
+   the actual live bug this fixes. 38px matches .wf-icon-btn's own
+   height so the two still sit flush when they ARE side by side.
+   font-size/weight pinned the same way for every one of them too - the
+   generic ".wf-panel .wf-link-btn" rule earlier in this file bumps a
+   plain .wf-link-btn to 14px/800 for other pages' "View all"-style
+   links, which an Export PDF button inside a .wf-panel would otherwise
+   also inherit (previously patched one button at a time, e.g. the old
+   #exportOrgChartPdf-specific override this replaces - fixed here for
+   all of them at once instead). */
+/* .wf-link-btn.wf-export-pdf-btn (not just .wf-export-pdf-btn alone) to
+   match ".wf-panel .wf-link-btn"'s own two-class specificity - otherwise
+   that earlier rule's 14px/800 would still win regardless of source
+   order and silently undo the font-size/weight pin just above. */
+.wf-link-btn.wf-export-pdf-btn { height: 38px; padding: 0 2px 0 6px; font-size: 0.78rem; font-weight: 700; }
 #wfSearch { border-radius: var(--wi-r-input); border-color: var(--wi-border); }
 .wf-link-btn:hover { color: var(--wi-primary-700); text-decoration: none; }
 
@@ -922,12 +939,6 @@ body { background: var(--wi-bg); }
    once workforce-ui-enhance.js wraps it in .wfu-select-wrap, so this is a
    geometry necessity, not a look choice. */
 .wfu-select-wrap:has(#orgChartDeptSelect) { flex: 1 1 auto; min-width: 200px; }
-/* Export PDF text size/weight reverted to main's own .wf-link-btn values
-   (0.78rem/700) - the generic .wf-panel .wf-link-btn rule elsewhere in
-   this file bumps it to 14px/800 for other pages' "View all"-style links,
-   left untouched since only this one button was reported oversized. */
-#exportOrgChartPdf { font-size: 0.78rem; font-weight: 700; }
-
 @keyframes wiFade { from { opacity: 0; } to { opacity: 1; } }
 
 .wi-org-empty { padding: 30px 20px; display: flex; flex-direction: column; align-items: center; gap: 10px; text-align: center; animation: wiFade .3s ease both; }
