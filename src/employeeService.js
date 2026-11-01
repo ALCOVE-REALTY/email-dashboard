@@ -438,6 +438,23 @@ function isDirectorName(employees, name) {
   return employees.some((e) => e.reportingDoer && matchesWholeWordName(e.reportingDoer, name));
 }
 
+// Task 11 (2026-11) LIVE BUG FIX: a joining-month named without a year
+// ("who joined in October?") used to match that month in EVERY year on
+// file - correct for a birthday (dobMonth/dobYear, untouched, since a
+// birthday recurs every year by definition) but wrong for a one-time
+// joining-date event, where the live bug surfaced as "October-e total 10
+// jon" (several different years' Octobers silently summed) instead of the
+// real October-2026 count of 3. A bare month means the most RECENT such
+// month has already happened: this year if it falls in/before the current
+// month, otherwise last year. Pure (nowMonth/nowYear passed in, never
+// read from the real clock here) so it's directly testable with a fixed
+// date - shared by both the owner chat box's query_employees (tools.js)
+// and the WhatsApp HR-query pipeline (whatsappAssistant.js), which must
+// never disagree about what a bare month resolves to.
+function resolveBareDojYear(month, nowMonth, nowYear) {
+  return Number(month) <= Number(nowMonth) ? Number(nowYear) : Number(nowYear) - 1;
+}
+
 // ---------------- Typo-tolerant ("fuzzy") name matching ----------------
 // ONLY ever used as a FALLBACK after matchesWholeWordName finds nothing -
 // never a replacement for it (a real exact match must always win). Built
@@ -683,6 +700,7 @@ module.exports = {
   containsAllWords,
   matchesWholeWordName,
   isDirectorName,
+  resolveBareDojYear,
   fuzzyMatchEmployeesByName,
   CACHE_TTL_MS
 };

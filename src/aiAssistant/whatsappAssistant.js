@@ -3901,8 +3901,8 @@ function hrDataQueryTool() {
           reportingManagerName: { type: 'string', description: 'A manager/HOD\'s name, ONLY when the question filters BY who people report to (e.g. "Tanmoy Mondal-er under-e kara achen?" = people reporting to Tanmoy Mondal) - omit otherwise.' },
           status: { type: 'string', enum: ['ACTIVE', 'INACTIVE', 'NOTICE PERIOD'], description: 'Omit for the default (Active only) - set only when a specific status was explicitly named. There is no real exit-date field in this data, so an "exits"/"who left" question is always INACTIVE status only, never date-scoped.' },
           employmentType: { type: 'string', enum: ['Confirmed', 'Probation'], description: 'Set to "Probation" for a probation-related question (e.g. "probation-e ke ke achen?") - omit otherwise.' },
-          dojMonth: { type: 'integer', description: 'Joining month 1-12, ANY year - e.g. 10 for "who joined in October" (any October). Omit if no month was named.' },
-          dojYear: { type: 'integer', description: 'Exact joining year, e.g. 2024 for "joined in 2024". Omit if no year was named.' },
+          dojMonth: { type: 'integer', description: 'Joining month 1-12 - e.g. 10 for "who joined in October". Omit dojYear if no year was named: it then resolves (in code, not by you) to the MOST RECENT such month, never every year on file - "October" alone means last October, not every October ever.' },
+          dojYear: { type: 'integer', description: 'Exact joining year, e.g. 2024 for "joined in 2024". Only set this when a year was actually named - otherwise leave it unset and let dojMonth alone resolve to its most recent occurrence.' },
           dojRelative: {
             type: 'string', enum: ['this_month', 'last_n_months'],
             description: 'A RELATIVE joining-date phrase, resolved against the real current date by code afterward (never guessed here) - "this_month" for "ei mashe"/"is mahine"/"this month"; "last_n_months" (with dojRelativeMonths set) for "last 3 months"/"pichhle 3 mahine". Omit entirely when an explicit month/year was named instead (use dojMonth/dojYear for that) - never set both.'
@@ -4019,6 +4019,19 @@ async function resolveAndQueueHrDataQuery({ phone, name, lang, query, history })
     }
   }
   delete effectiveQuery.dojRelative;
+  // Task 11 (2026-11) LIVE BUG FIX: a bare dojMonth (no dojYear named)
+  // used to match that month in EVERY year on file - fine for a birthday
+  // (dobMonth/dobYear, untouched), wrong for a one-time joining-date event
+  // ("October" alone means the most recent October that's passed, not
+  // every October the company has ever had). Same fix, same reasoning, as
+  // queryEmployees' own dojMonth handling in tools.js (the owner-chat
+  // path) - resolved once here, in code, right after the dojRelative
+  // block above, never re-resolved on a format-revision follow-up that
+  // already inherited a real dojYear.
+  if (effectiveQuery.dojMonth && !effectiveQuery.dojYear) {
+    const today = istTodayAsUtcMidnight();
+    effectiveQuery.dojYear = employeeService.resolveBareDojYear(effectiveQuery.dojMonth, today.getUTCMonth() + 1, today.getUTCFullYear());
+  }
   const { employees } = await employeeService.getEmployeeData();
   if (effectiveQuery.department) {
     // A confirmed department alias ("QC" -> "QUALITY") always wins over a

@@ -5917,6 +5917,38 @@ async function checkAsync(label, fn) {
     const ans = whatsappAssistant.buildHrDataQueryAnswer(FAKE_DOER_EMPLOYEES, { returnType: 'list', department: 'Civil' }, 'english');
     return !ans.outgoingText.includes('Oct 2026') && !ans.outgoingText.includes('Jan 2015');
   })());
+
+  console.log('='.repeat(70));
+  console.log('Task 11 (2026-11) LIVE BUG FIX: a bare joining month (no year named) resolves to its MOST RECENT occurrence, never every year on file - the live bug: "Oct month a Yashaswi shroff er under a koto staff join koreche?" answered 10 (several different years\' Octobers summed) instead of the real October-2026 count of 3');
+  console.log('='.repeat(70));
+  check('employeeService.resolveBareDojYear: a month already passed this year (or is the current month) resolves to THIS year - October asked, "now" is November 2026', employeeService.resolveBareDojYear(10, 11, 2026) === 2026);
+  check('employeeService.resolveBareDojYear: the exact current month resolves to THIS year', employeeService.resolveBareDojYear(11, 11, 2026) === 2026);
+  check('employeeService.resolveBareDojYear: a month that has not happened yet this year resolves to LAST year - December asked, "now" is November 2026', employeeService.resolveBareDojYear(12, 11, 2026) === 2025);
+  (() => {
+    // Fixed data fixture, deliberately spanning 3 different years' Octobers
+    // under the same Director - reproduces the exact live bug mechanism
+    // (filterEmployeesForHrQuery's own dojMonth-without-dojYear match is
+    // STILL "any year", by design, at that low level; it's the CALLER
+    // (resolveAndQueueHrDataQuery/queryEmployees) that must resolve a bare
+    // month to one real year before filtering, via resolveBareDojYear).
+    const MULTI_YEAR_DOER_EMPLOYEES = [
+      { name: 'Yashaswi Shroff', designation: 'Director', department: 'Management', location: 'HO', company: 'Alcove', reportingManager: 'Board', reportingDoer: '', status: 'ACTIVE', doj: new Date(Date.UTC(2015, 0, 1)) },
+      { name: 'Oct2026 Direct', designation: 'Manager', department: 'Civil', location: 'HO', company: 'Alcove', reportingManager: 'Yashaswi Shroff', reportingDoer: 'Yashaswi Shroff', status: 'ACTIVE', doj: new Date(Date.UTC(2026, 9, 5)) },
+      { name: 'Oct2026 Indirect', designation: 'Engineer', department: 'Civil', location: 'HO', company: 'Alcove', reportingManager: 'Bob Manager', reportingDoer: 'Yashaswi Shroff', status: 'ACTIVE', doj: new Date(Date.UTC(2026, 9, 20)) },
+      { name: 'Oct2025 Indirect', designation: 'Engineer', department: 'Civil', location: 'HO', company: 'Alcove', reportingManager: 'Bob Manager', reportingDoer: 'Yashaswi Shroff', status: 'ACTIVE', doj: new Date(Date.UTC(2025, 9, 12)) },
+      { name: 'Oct2024 Indirect', designation: 'Engineer', department: 'Civil', location: 'HO', company: 'Alcove', reportingManager: 'Bob Manager', reportingDoer: 'Yashaswi Shroff', status: 'ACTIVE', doj: new Date(Date.UTC(2024, 9, 1)) },
+      { name: 'Bob Manager', designation: 'HOD', department: 'Civil', location: 'HO', company: 'Alcove', reportingManager: 'Yashaswi Shroff', reportingDoer: 'Yashaswi Shroff', status: 'ACTIVE', doj: new Date(Date.UTC(2020, 0, 1)) }
+    ];
+    check('REGRESSION DEMONSTRATION: filterEmployeesForHrQuery with a bare dojMonth (no dojYear) still matches every year on file at its own level - proves resolving the year is the CALLER\'s job, not this function\'s', (() => {
+      const rows = whatsappAssistant.filterEmployeesForHrQuery(MULTI_YEAR_DOER_EMPLOYEES, { reportingManagerName: 'Yashaswi Shroff', isUnderXDirector: true, dojMonth: 10 });
+      return rows.length === 4; // 2026 x2 + 2025 + 2024 - the exact "10 instead of 3" shape of the live bug, reproduced on a fixed fixture
+    })());
+    check('LOCKED SCENARIO: the SAME query, with dojYear resolved via resolveBareDojYear(10, 11, 2026) first (as resolveAndQueueHrDataQuery/queryEmployees now do), matches ONLY October 2026 - "total 2 jon join korechhen (Doer hisebe), tar moddhe direct reporting 1 jon"', (() => {
+      const resolvedYear = employeeService.resolveBareDojYear(10, 11, 2026);
+      const ans = whatsappAssistant.buildHrDataQueryAnswer(MULTI_YEAR_DOER_EMPLOYEES, { returnType: 'count', reportingManagerName: 'Yashaswi Shroff', dojMonth: 10, dojYear: resolvedYear }, 'banglish');
+      return ans.outgoingText === 'Yashaswi Shroff-er under-e October 2026-e total 2 jon join korechhen (Doer hisebe), tar moddhe direct reporting 1 jon.' && ans.matchCount === 2;
+    })());
+  })();
   check('resolveDojRelativeRange("last_n_months"): "last 3 months" from a fixed clock resolves to an exact [3 months ago, now] range', (() => {
     const now = new Date(Date.UTC(2026, 10, 1)); // 1 Nov 2026
     const range = whatsappAssistant.resolveDojRelativeRange('last_n_months', 3, now);

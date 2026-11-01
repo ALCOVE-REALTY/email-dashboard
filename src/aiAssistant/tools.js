@@ -712,6 +712,26 @@ async function queryEmployees(params = {}) {
     delete rawFilters.reportingManager;
   }
 
+  // Task 11 (2026-11) LIVE BUG FIX: "Oct month a Yashaswi shroff er under
+  // a koto staff join koreche?" (no year named) returned 10 instead of the
+  // real October-2026 count of 3 - dojMonth alone matches that month in
+  // EVERY year on file (same "any year" rule as dobMonth/dobYear, which IS
+  // correct for a birthday but not for a one-time joining-date event), so
+  // the 10 was several different years' Octobers silently summed together.
+  // A bare month in a joining-date question means the most RECENT such
+  // month has passed (or is passing) - current IST year if that month is
+  // this year or earlier in it, otherwise last year - never "every year
+  // ever", unless the sender/owner also named an explicit year (dojYear
+  // already set, left untouched) or is asking a genuinely year-agnostic
+  // question some other way. dobMonth/dobYear (birthdays) are deliberately
+  // NOT touched - a birthday recurs every year by definition.
+  if (rawFilters.dojMonth && !rawFilters.dojYear) {
+    const istParts = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', year: 'numeric', month: 'numeric' }).formatToParts(new Date());
+    const curMonth = istParts.find((p) => p.type === 'month').value;
+    const curYear = istParts.find((p) => p.type === 'year').value;
+    rawFilters.dojYear = employeeService.resolveBareDojYear(rawFilters.dojMonth, curMonth, curYear);
+  }
+
   // Grouping BY status is the one case where forcing status:'ACTIVE' as a
   // filter would be self-defeating - see the same exception in
   // group_employees.
