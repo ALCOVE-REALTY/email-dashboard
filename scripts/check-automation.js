@@ -738,6 +738,29 @@ async function main() {
     check('resolveMissedRun on a task with no pending missed run is a no-op error, not a crash', (await automationService.resolveMissedRun(rec.id, 'send', now).catch((e) => ({ ok: false, error: e.message }))).ok === false);
 
     console.log('='.repeat(70));
+    console.log('Task 10 (2026-11) - "Attachment as" PDF/Excel: the table attachment is built and sent in whichever format the plan asks for');
+    console.log('='.repeat(70));
+    const attachBasePlan = { source: 'master', conds: automationService.SOURCES.master.defaultConds, match: 'all', rec: 'selected', selectedEmployeeIds: ['H1'], group: 'list', mediator: 'mail', mailSubject: 'Attachment test', body: 'See attached.', table: true, tableColumns: ['Employee_Name'], tablePlacement: 'pdf' };
+    await checkAsync('attachmentFormat omitted (or "pdf") sends a real PDF attachment, same as before Task 10', async () => {
+      const rec2 = await create({ subject: 'PDF attach task', plan: attachBasePlan, excludedKeys: [], schedule: { date: '2026-12-20', time: '10:00', repeat: 'none' } });
+      const before = sentMail.length;
+      const result = await automationService.runAutomation(rec2.id, {}, now);
+      const msg = sentMail[sentMail.length - 1];
+      return result.ok && sentMail.length === before + 1 && msg.kind === 'attachment' &&
+        msg.attachment.contentType === 'application/pdf' && msg.attachment.filename.endsWith('.pdf') &&
+        Buffer.isBuffer(msg.attachment.content) && msg.attachment.content.length > 0;
+    });
+    await checkAsync('attachmentFormat "excel" sends a real .xlsx attachment with the correct content-type instead', async () => {
+      const rec3 = await create({ subject: 'Excel attach task', plan: Object.assign({}, attachBasePlan, { attachmentFormat: 'excel' }), excludedKeys: [], schedule: { date: '2026-12-20', time: '10:00', repeat: 'none' } });
+      const before = sentMail.length;
+      const result = await automationService.runAutomation(rec3.id, {}, now);
+      const msg = sentMail[sentMail.length - 1];
+      return result.ok && sentMail.length === before + 1 && msg.kind === 'attachment' &&
+        msg.attachment.contentType === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' && msg.attachment.filename.endsWith('.xlsx') &&
+        Buffer.isBuffer(msg.attachment.content) && msg.attachment.content.length > 0;
+    });
+
+    console.log('='.repeat(70));
     console.log(pass + '/' + (pass + fail) + ' passed' + (fail ? ', ' + fail + ' FAILED' : ''));
     if (failures.length) { console.log('Failed checks:'); failures.forEach((f) => console.log(' -', f)); }
     console.log('='.repeat(70));

@@ -613,7 +613,16 @@
             <div class="wf-auto-cols" id="autoCols"></div>
             <div class="wf-auto-hint" id="autoColOrder"></div>
             <label class="wf-rem-field" style="margin-top:14px"><span class="wf-auto-label">Put the table</span></label>
-            <div class="wf-auto-seg" id="autoPlaceSeg" style="margin-top:8px"><button type="button" data-v="body" class="on">In the message body</button><button type="button" data-v="pdf">📎 As PDF attachment</button></div>
+            <div class="wf-auto-seg" id="autoPlaceSeg" style="margin-top:8px">
+              <button type="button" data-v="body" class="on">In the message body</button>
+              <span class="wf-auto-attach-wrap">
+                <button type="button" data-v="pdf" id="autoAttachBtn">📎 Attachment as</button>
+                <div class="wf-auto-attach-dropdown hidden" id="autoAttachDropdown">
+                  <button type="button" data-fmt="pdf" class="on">PDF</button>
+                  <button type="button" data-fmt="excel">Excel</button>
+                </div>
+              </span>
+            </div>
             <div class="wf-auto-hint" id="autoPdfWaNote"></div>
           </div>
         </div>

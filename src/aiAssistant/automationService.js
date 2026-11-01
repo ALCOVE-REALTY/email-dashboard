@@ -16,6 +16,7 @@ const employeeService = require('../employeeService');
 const workforceAnalytics = require('../workforceAnalytics');
 const gmailService = require('../gmailService');
 const pdfReport = require('../pdfReport');
+const tableExcelReport = require('../tableExcelReport');
 const sheetsAuth = require('../sheetsAuth');
 const redisHealth = require('../redisHealth');
 
@@ -605,10 +606,12 @@ function tableRowsHtml(list, cols) {
     list.map((r) => '<tr>' + cols.map((c) => '<td>' + escapeHtml(r[c] == null || r[c] === '' ? '—' : r[c]) + '</td>').join('') + '</tr>').join('') + '</table>';
 }
 function escapeHtml(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
-function pdfFileName(subject, who, runAt) {
+// Task 10 (2026-11) - ext defaults to 'pdf' for every existing caller;
+// the automation attachment is the only one that ever passes 'xlsx'.
+function pdfFileName(subject, who, runAt, ext) {
   const base = (subject || 'Report').replace(/[^\w ]+/g, '').trim().replace(/\s+/g, '-');
   const month = runAt.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' }).replace(' ', '-');
-  return (base + (who ? '-' + who.replace(/\s+/g, '-') : '') + '-' + month + '.pdf');
+  return (base + (who ? '-' + who.replace(/\s+/g, '-') : '') + '-' + month + '.' + (ext || 'pdf'));
 }
 
 // Builds every message this run would send - STRICT ISOLATION: each
@@ -752,8 +755,17 @@ async function sendOneMessage(automation, msg, runAt) {
   try {
     if (plan.mediator === 'mail') {
       if (plan.table && msg.table && msg.table.length && msg.tablePlacement === 'pdf') {
-        const buffer = await pdfReport.buildTablePdfBuffer({ title: automation.subject, subtitle: runAt.toDateString(), columns: msg.tableColumns, rows: msg.table.map((r) => msg.tableColumns.map((c) => r[c])), landscape: true });
-        await gmailService.sendMailWithAttachment({ to: msg.addr, cc: plan.cc || undefined, subject: msg.subject, text: msg.body, attachment: { filename: pdfFileName(automation.subject, msg.who, runAt), contentType: 'application/pdf', content: buffer } });
+        // Task 10 (2026-11) - "Attachment as" PDF/Excel: same {title,
+        // subtitle, columns, rows} shape either way (tableExcelReport.js
+        // is the deliberate Excel sibling of pdfReport.js's own builder),
+        // so only which builder/content-type/extension is picked changes.
+        const tableRows = msg.table.map((r) => msg.tableColumns.map((c) => r[c]));
+        const isExcel = plan.attachmentFormat === 'excel';
+        const buffer = isExcel
+          ? await tableExcelReport.buildTableExcelBuffer({ title: automation.subject, subtitle: runAt.toDateString(), columns: msg.tableColumns, rows: tableRows })
+          : await pdfReport.buildTablePdfBuffer({ title: automation.subject, subtitle: runAt.toDateString(), columns: msg.tableColumns, rows: tableRows, landscape: true });
+        const contentType = isExcel ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' : 'application/pdf';
+        await gmailService.sendMailWithAttachment({ to: msg.addr, cc: plan.cc || undefined, subject: msg.subject, text: msg.body, attachment: { filename: pdfFileName(automation.subject, msg.who, runAt, isExcel ? 'xlsx' : 'pdf'), contentType, content: buffer } });
       } else {
         const html = msg.table && msg.table.length ? '<p>' + escapeHtml(msg.body).replace(/\n/g, '<br>') + '</p>' + tableRowsHtml(msg.table, msg.tableColumns) : null;
         if (html) await gmailService.sendMailWithHtml({ to: msg.addr, subject: msg.subject, text: msg.body + (msg.table ? '\n\n' + tableRowsText(msg.table, msg.tableColumns) : ''), html });
@@ -1226,7 +1238,7 @@ async function draftPlanFromParsed(parsed, now, sheetContext) {
       selectedEmployeeIds, selectedRawEmails, cc: null, mediator,
       mailSubject: subjectTemplates[source] || parsed.subjectHint || 'Notice',
       body: bodyTemplates[source] || 'Dear {Employee_Name},\n\n',
-      table, tableColumns, tablePlacement: parsed.wantsPdf ? 'pdf' : 'body'
+      table, tableColumns, tablePlacement: parsed.wantsPdf ? 'pdf' : 'body', attachmentFormat: 'pdf'
     },
     schedule: { date: scheduleDate.toISOString().slice(0, 10), time, repeat, every },
     subject: parsed.subjectHint || { confirmations: 'Confirmation mail to HODs', birthdays: 'Birthday wishes', master: 'Notice to employees', exits: 'Exits update', sheet: (isSheet && sheetTab ? 'Data from ' + sheetTab : 'Reminder'), none: 'Reminder' }[source]

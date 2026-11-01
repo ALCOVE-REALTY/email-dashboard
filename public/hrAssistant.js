@@ -224,6 +224,8 @@
   const autoCols = document.getElementById('autoCols');
   const autoColOrder = document.getElementById('autoColOrder');
   const autoPlaceSeg = document.getElementById('autoPlaceSeg');
+  const autoAttachBtn = document.getElementById('autoAttachBtn');
+  const autoAttachDropdown = document.getElementById('autoAttachDropdown');
   const autoPdfWaNote = document.getElementById('autoPdfWaNote');
   const autoDate = document.getElementById('autoDate');
   const autoTime = document.getElementById('autoTime');
@@ -4523,7 +4525,22 @@
   const AUTO_TOAST_ERR = { toastFn: (msg) => showAutoToast(msg, 'error') };
 
   function autoSegVal(container) { const b = container && container.querySelector('button.on'); return b ? b.dataset.v : null; }
-  function autoSetSeg(container, v) { if (!container) return; container.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.v === v)); }
+  // Task 10 (2026-11) - [data-v] scopes this to the segment's OWN buttons
+  // only: the "Attachment as" button nests its own PDF/Excel dropdown
+  // (data-fmt, not data-v) inside autoPlaceSeg, and this must never touch
+  // that dropdown's own independent .on state.
+  function autoSetSeg(container, v) { if (!container) return; container.querySelectorAll('button[data-v]').forEach((b) => b.classList.toggle('on', b.dataset.v === v)); }
+  // Task 10 (2026-11) - "Attachment as" PDF/Excel, independent of (and
+  // never disturbed by) the body/pdf segment's own .on state above.
+  function autoAttachFormatVal() {
+    const b = autoAttachDropdown && autoAttachDropdown.querySelector('button.on');
+    return b ? b.dataset.fmt : 'pdf';
+  }
+  function autoSetAttachFormat(fmt) {
+    if (!autoAttachDropdown) return;
+    autoAttachDropdown.querySelectorAll('button[data-fmt]').forEach((b) => b.classList.toggle('on', b.dataset.fmt === fmt));
+  }
+  function closeAutoAttachDropdown() { if (autoAttachDropdown) autoAttachDropdown.classList.add('hidden'); }
 
   async function fetchAutoEmployees() {
     if (autoEmployeesCache) return autoEmployeesCache;
@@ -4690,6 +4707,8 @@
     autoSetSeg(autoRecSeg, 'selected');
     autoSetSeg(autoMedSeg, 'mail');
     autoSetSeg(autoPlaceSeg, 'body');
+    autoSetAttachFormat('pdf');
+    closeAutoAttachDropdown();
     autoSetSeg(autoRepSeg, 'monthly');
     if (autoMailSubj) autoMailSubj.value = '';
     if (autoBody) autoBody.value = '';
@@ -4715,6 +4734,8 @@
     autoSetSeg(autoRecSeg, t.plan.rec);
     autoSetSeg(autoMedSeg, t.plan.mediator);
     autoSetSeg(autoPlaceSeg, t.plan.tablePlacement || 'body');
+    autoSetAttachFormat(t.plan.attachmentFormat || 'pdf');
+    closeAutoAttachDropdown();
     autoSetSeg(autoRepSeg, t.schedule.repeat);
     if (autoMailSubj) autoMailSubj.value = t.plan.mailSubject || '';
     if (autoBody) autoBody.value = t.plan.body || '';
@@ -4839,7 +4860,34 @@
 
   [autoGroupSeg, autoRecSeg, autoMedSeg, autoPlaceSeg, autoRepSeg].forEach((seg) => {
     if (!seg) return;
-    seg.addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b) return; autoSetSeg(seg, b.dataset.v); autoSync(); if (autoPlan) renderAutoUnderstanding(); });
+    // Task 10 (2026-11) - !b.dataset.v also guards against the "Attachment
+    // as" dropdown's own PDF/Excel buttons (data-fmt, not data-v), which
+    // live inside autoPlaceSeg and would otherwise deselect BOTH segment
+    // options here if their own click handler's stopPropagation below
+    // were ever bypassed.
+    seg.addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b || !b.dataset.v) return; autoSetSeg(seg, b.dataset.v); autoSync(); if (autoPlan) renderAutoUnderstanding(); });
+  });
+  if (autoAttachBtn) {
+    autoAttachBtn.addEventListener('click', () => {
+      if (autoAttachDropdown) autoAttachDropdown.classList.toggle('hidden');
+    });
+  }
+  if (autoAttachDropdown) {
+    autoAttachDropdown.addEventListener('click', (e) => {
+      e.stopPropagation(); // never let this also reach autoPlaceSeg's own delegated segment-select listener above
+      const b = e.target.closest('[data-fmt]');
+      if (!b) return;
+      autoSetAttachFormat(b.dataset.fmt);
+      closeAutoAttachDropdown();
+      autoSync();
+      if (autoPlan) renderAutoUnderstanding();
+    });
+  }
+  document.addEventListener('click', (e) => {
+    if (autoAttachDropdown && !autoAttachDropdown.classList.contains('hidden') &&
+      !autoAttachDropdown.contains(e.target) && !autoAttachBtn.contains(e.target)) {
+      closeAutoAttachDropdown();
+    }
   });
   if (autoRecCol) autoRecCol.addEventListener('change', () => { autoSync(); if (autoPlan) renderAutoUnderstanding(); });
   if (autoTableToggle) autoTableToggle.addEventListener('change', autoSync);
@@ -4859,6 +4907,7 @@
       body: autoBody ? autoBody.value : '',
       table: autoTableToggle ? autoTableToggle.checked : false,
       tablePlacement: autoSegVal(autoPlaceSeg) || 'body',
+      attachmentFormat: autoAttachFormatVal(),
       date: autoDate ? autoDate.value : '',
       time: autoTime ? autoTime.value : '10:00',
       repeat: autoSegVal(autoRepSeg) || 'monthly',
@@ -4871,7 +4920,8 @@
     return Object.assign({}, base, {
       group: f.group, rec: f.rec, recCol: f.recCol, selectedEmployeeIds: Array.from(autoSelected),
       mediator: f.mediator, mailSubject: f.mailSubject, body: f.body, cc: f.cc || null,
-      table: f.table, tableColumns: [...autoTableCols], tablePlacement: f.mediator === 'wa' ? 'body' : f.tablePlacement
+      table: f.table, tableColumns: [...autoTableCols], tablePlacement: f.mediator === 'wa' ? 'body' : f.tablePlacement,
+      attachmentFormat: f.attachmentFormat || 'pdf'
     });
   }
   let autoSyncTimer = null;
@@ -4957,6 +5007,8 @@
       autoSetSeg(autoRecSeg, draft.plan.rec);
       autoSetSeg(autoMedSeg, draft.plan.mediator);
       autoSetSeg(autoPlaceSeg, draft.plan.tablePlacement || 'body');
+      autoSetAttachFormat(draft.plan.attachmentFormat || 'pdf');
+      closeAutoAttachDropdown();
       autoSetSeg(autoRepSeg, draft.schedule.repeat);
       autoMailSubj.value = draft.plan.mailSubject || '';
       autoBody.value = draft.plan.body || '';
@@ -5116,7 +5168,7 @@
     const lines = [
       '<b>' + (isSheetSrc ? 'Data' : 'Who') + ':</b> ' + escapeHtml(srcLabel) + escapeHtml(describePeriod(autoPlan, f.date)),
       '<b>Sends to:</b> ' + escapeHtml(recTxt) + escapeHtml(how),
-      '<b>By:</b> ' + (f.mediator === 'mail' ? 'Mail' : 'WhatsApp') + (f.table ? ' · table ' + (f.tablePlacement === 'pdf' ? 'as PDF attachment' : 'in the message') : ''),
+      '<b>By:</b> ' + (f.mediator === 'mail' ? 'Mail' : 'WhatsApp') + (f.table ? ' · table ' + (f.tablePlacement === 'pdf' ? 'as ' + (f.attachmentFormat === 'excel' ? 'Excel' : 'PDF') + ' attachment' : 'in the message') : ''),
       '<b>When:</b> ' + escapeHtml(sched) + ', first run ' + escapeHtml(autoLastPreview && autoLastPreview.nextRunAt ? new Date(autoLastPreview.nextRunAt).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' }) : '—')
     ];
     if (f.table && autoTableCols.length) lines.push('<b>Table:</b> ' + escapeHtml(describeTable(autoPlan, autoTableCols)));
@@ -5163,7 +5215,13 @@
       if (m.subject) body += '<div class="subj">Subject: ' + escapeHtml(m.subject) + '</div>';
       body += '<pre>' + escapeHtml(m.body) + '</pre>';
       if (m.table && m.table.length && m.tablePlacement === 'body') body += '<div class="wf-auto-tbl"><table><tr>' + m.tableColumns.map((c) => '<th>' + escapeHtml(c) + '</th>').join('') + '</tr>' + m.table.map((r) => '<tr>' + m.tableColumns.map((c) => '<td>' + escapeHtml(r[c] instanceof Object ? '' : (r[c] == null ? '—' : String(r[c]))) + '</td>').join('') + '</tr>').join('') + '</table></div>';
-      if (m.table && m.table.length && m.tablePlacement === 'pdf') body += '<div class="wf-auto-pdf"><div class="wf-auto-pdf-name">📎 ' + escapeHtml((autoSubject.value || 'Report') + (m.who ? '-' + m.who : '') + '.pdf') + '</div></div>';
+      if (m.table && m.table.length && m.tablePlacement === 'pdf') {
+        // Task 10 (2026-11) - reflects whichever format is currently
+        // selected ("Attachment as" PDF/Excel), same live-form read
+        // autoSubject.value already uses on this exact line.
+        const isExcelPreview = autoAttachFormatVal() === 'excel';
+        body += '<div class="wf-auto-pdf"><div class="wf-auto-pdf-name">📎 ' + escapeHtml((autoSubject.value || 'Report') + (m.who ? '-' + m.who : '') + (isExcelPreview ? '.xlsx' : '.pdf')) + '</div></div>';
+      }
       return body + '</div>';
     }).join('');
     if (autoPreviewBody) autoPreviewBody.innerHTML = html;
