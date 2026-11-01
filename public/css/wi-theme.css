@@ -1606,6 +1606,11 @@ body { background: var(--wi-bg); }
    with the icons, on phone and desktop alike. */
 .wf-comms-section-title {
   flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  /* Task 1 (2026-11) - "Conversations" a touch bigger than the
+     .wf-comms-section-head default (0.8rem) it would otherwise inherit;
+     this is the only place this class is used, so no other header is
+     affected. */
+  font-size: 0.88rem;
 }
 .wf-comms-section-actions {
   display: flex; align-items: center; gap: 2px; flex-shrink: 0; white-space: nowrap;
@@ -1623,12 +1628,15 @@ body { background: var(--wi-bg); }
   width: 48px; height: 48px; border: none; background: transparent; padding: 0; cursor: pointer; flex-shrink: 0;
 }
 .wf-open-flows-btn-circle {
-  width: 36px; height: 36px; border-radius: 50%;
+  /* Task 1 (2026-11) - a touch smaller than before (was 36px/20px icon),
+     to balance against the title above going slightly bigger; the 48px
+     tap area is untouched so the touch target doesn't shrink. */
+  width: 32px; height: 32px; border-radius: 50%;
   background: var(--wi-primary-50); color: var(--wi-primary);
   display: flex; align-items: center; justify-content: center;
   transition: background-color .15s ease;
 }
-.wf-open-flows-btn-circle svg { width: 20px; height: 20px; }
+.wf-open-flows-btn-circle svg { width: 18px; height: 18px; }
 .wf-open-flows-btn:active .wf-open-flows-btn-circle { background: var(--wi-primary-ring); }
 .wf-open-flows-badge { position: absolute; top: 2px; right: 2px; }
 .wf-comms-mail-card {
