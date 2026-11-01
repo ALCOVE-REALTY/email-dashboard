@@ -2437,14 +2437,17 @@ document.getElementById('exportOrgChartPdf').addEventListener('click', async () 
   // svg included - and never got it back afterward either), shrinking
   // the button enough that the department selector's own flex-wrap
   // layout reflowed around it (the live bug: the label appearing to
-  // "move to the right of the selector" while it shrank). The icon now
-  // just spins in place (same .spinning convention as .wf-icon-btn
-  // elsewhere) and only the <span> text changes - the button's own
-  // structure/width never changes, so the selector's layout never moves.
+  // "move to the right of the selector" while it shrank). Only the
+  // <span> text changes now - the button's own structure/width never
+  // changes, so the selector's layout never moves.
+  // Task 10 (2026-11) LIVE BUG FIX: reverses this fix's OWN added
+  // .spinning icon-rotation (per direct instruction - keep the icon
+  // still, "Preparing…" is enough on its own) while keeping the
+  // structural span-text-swap fix above, which is unrelated and still
+  // correct.
   const labelEl = btn.querySelector('span');
   const originalLabel = labelEl.textContent;
   btn.disabled = true;
-  btn.classList.add('spinning');
   labelEl.textContent = 'Preparing…';
 
   // orgChartServerPdf.js no longer drives this button at all - it renders
@@ -2454,7 +2457,6 @@ document.getElementById('exportOrgChartPdf').addEventListener('click', async () 
   if (serverPdf) {
     downloadPdfBlob(serverPdf, dept + '-Org-Chart.pdf');
     btn.disabled = false;
-    btn.classList.remove('spinning');
     labelEl.textContent = originalLabel;
     return;
   }
@@ -2465,12 +2467,10 @@ document.getElementById('exportOrgChartPdf').addEventListener('click', async () 
   } catch (err) {
     alert('Failed to prepare PDF: ' + err.message);
     btn.disabled = false;
-    btn.classList.remove('spinning');
     labelEl.textContent = originalLabel;
     return;
   }
   btn.disabled = false;
-  btn.classList.remove('spinning');
   labelEl.textContent = originalLabel;
 
   const printEl = document.getElementById('orgChartPrintContent');
