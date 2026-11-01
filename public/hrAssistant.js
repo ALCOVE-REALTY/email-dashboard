@@ -4093,7 +4093,14 @@
     opts = opts || {};
     if (!proToastStack) return null;
     const type = opts.type || 'success';
-    const duration = opts.duration || 3000;
+    // Task 7 (2026-11) - was a flat 3s for every toast (success/info/
+    // error/warning alike), both the auto-dismiss timer and the progress
+    // bar's own transition (same `duration` drives both below). Shortened
+    // per direct instruction: success/info at 2s, error (and warning,
+    // grouped with it - not explicitly named, but closer to error than to
+    // a quick success/info confirmation) at 4s so there's time to actually
+    // read what went wrong.
+    const duration = opts.duration || (type === 'error' || type === 'warning' ? 4000 : 2000);
     proToastStack.classList.toggle('anchor-top', opts.anchor === 'top');
     const el = document.createElement('div');
     el.className = 'wf-pro-toast' + (type !== 'success' ? ' ' + type : '');
