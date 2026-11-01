@@ -2783,13 +2783,6 @@ body:not(.printing-org-chart) .org-chart-cards-row + .org-chart-branch-connector
 }
 .wf-mail-dropdown-btn svg { flex-shrink: 0; color: var(--muted); transition: transform .15s ease; }
 .wf-mail-dropdown-btn[aria-expanded="true"] svg { transform: rotate(180deg); }
-/* Task 11 (2026-11) LIVE BUG FIX: unlike the To/Cc suggestion lists above
-   it, "Attachment as" sits right before the popup's own Cancel/Send
-   footer - opening downward (the shared .wf-mail-suggest default) either
-   covered the footer or forced the popup body to scroll to reach it.
-   Opens UPWARD instead, so it's always fully visible above the field and
-   the footer never moves. */
-#mailAttachmentFormatList { top: auto; bottom: calc(100% + 4px); }
 
 .wf-ip-whatsapp-phone-input {
   width: 100%;
