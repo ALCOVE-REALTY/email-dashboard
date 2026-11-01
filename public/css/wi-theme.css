@@ -2192,7 +2192,6 @@ body { background: var(--wi-bg); }
   height: auto; border: none; border-radius: 0; padding: 9px 14px; text-align: left; background: var(--wi-surface); color: var(--wi-ink);
 }
 .wf-auto-attach-dropdown button.on { background: var(--wi-primary-50); color: var(--wi-primary-800); }
-.wf-auto-attach-dropdown button + button { border-top: 1px solid var(--wi-divider); }
 .wf-auto-check { display: flex; align-items: center; gap: 8px; font-size: 0.8rem; font-weight: 700; color: var(--wi-ink); margin-top: 10px; }
 .wf-auto-cols { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 .wf-auto-cols button {
