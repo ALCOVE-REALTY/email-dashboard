@@ -879,7 +879,7 @@ async function checkAsync(label, fn) {
     // it here - the template's own wording is still checked in full.
     return d3.case === 'acknowledged' && d3.replyText.endsWith('Amake sothik naam diye sahajyo korar jonno dhonnobad. Ami Tanmoy Mondal-er sathe kotha bole joto taratari somvob apnake janacchi.') && stillPending === null;
   });
-  await checkAsync('STEP 4 (Banglish): the manager is messaged a short, accurate, ALL-BANGLISH summary (never a mixed-language sentence) asking for confirmation, phrased ACTIVELY as what the manager told the sender (live test fixes item 3: "apni onake ... bolechhen", never passive "bola hoyechhe"), opens with the identity line (item 3\'s other bug: this send used to skip it entirely), and a reminder is created', async () => {
+  await checkAsync('STEP 4 (Banglish): the manager is messaged a short, accurate, ALL-BANGLISH summary (never a mixed-language sentence) asking for confirmation, phrased ACTIVELY as what the manager told the sender (live test fixes item 3: "apni onake ... bolechhen", never passive "bola hoyechhe"), opens with the identity line (item 3\'s other bug: this send used to skip it entirely) - Task 3b (2026-11): no reminder is created any more (that duplicated the SAME confirmation already shown via Open Flows - reminderId now stays null)', async () => {
     const log = await whatsappAssistant.listInboxLog(10);
     const entry = log.find((e) => e.chatId === TANMOY_MONDAL_PHONE && e.case === 'hr_confirmation_sent');
     const confirmations = (await whatsappAssistant.listAllHrConfirmations()).filter((c) => c.senderPhone === HR_SENDER_BN);
@@ -888,7 +888,7 @@ async function checkAsync(label, fn) {
       && entry.sentText.includes('apni onake') && entry.sentText.includes('bolechhen')
       && !entry.sentText.includes('bola hoyechhe') && !entry.sentText.includes('bola hoyeche')
       && !entry.sentText.includes('instead') && !entry.sentText.includes('confirm this')
-      && confirmations.length === 1 && confirmations[0].status === 'awaiting_manager' && Boolean(confirmations[0].reminderId);
+      && confirmations.length === 1 && confirmations[0].status === 'awaiting_manager' && !confirmations[0].reminderId;
   });
   await checkAsync('STEP 5 (Banglish, manager "Haa"): manager gets a short thank-you, sender gets the confirmed-outcome message, status becomes confirmed, reminder closes', async () => {
     const d5 = await whatsappAssistant.decideAutoReply({ phone: TANMOY_MONDAL_PHONE, name: 'Tanmoy Mondal', firstName: 'Tanmoy', text: 'Haa', isGroup: false, history: [] });

@@ -5829,24 +5829,16 @@ async function sendHrConfirmationResultToSender(confirmation, outcomeText) {
   await logInboxEvent({ chatId: confirmation.senderPhone, name: confirmation.senderName, isGroup: false, messageSummary: '[HR confirmation result: ' + confirmation.summary + ']', aCase: 'hr_confirmation_result', sentText: outcomeText, outcome: 'sent', sentAt: Date.now() });
 }
 
-// STEP 6 - a reminder exists for the whole open loop (created alongside
-// the manager message, closed the moment it resolves) and a full record
-// is posted to the owner either way. Lazy require - reminderService.js
-// itself requires this file (to auto-sync reminders from open WhatsApp
-// follow-ups/approvals), so a top-level require here would be circular;
-// requiring it inside each function that needs it resolves cleanly once
-// both modules have finished loading, same precedent as the lazy
-// assistantShared.js require elsewhere in this file.
+// STEP 6 - Task 3b (2026-11) LIVE BUG FIX: this used to also create a
+// "HR confirmation needed" reminder for the whole open loop - a
+// duplicate of the SAME confirmation already shown via Open Flows/
+// listOpenHrFlowsForOwner. Reminders is now manual-reminders-only (plus
+// "Queued reply/Missed while disconnected", which has no other home),
+// so this is a deliberate no-op; closeHrConfirmationReminder below
+// already treats a missing/null reminderId as nothing-to-do, so every
+// existing call site here needs no change.
 async function createHrConfirmationReminder(confirmation) {
-  try {
-    const reminderService = require('./reminderService');
-    const id = await reminderService.saveReminder(reminderService.newReminder({
-      title: 'HR confirmation needed: ' + confirmation.thirdPartyName,
-      detail: confirmation.summary, dueAt: null, priority: 'medium', source: 'whatsapp',
-      sourceType: 'hr_confirmation', sourceRef: confirmation.id, linkedChatId: confirmation.senderPhone, now: new Date()
-    }));
-    return id;
-  } catch (err) { return null; }
+  return null;
 }
 async function closeHrConfirmationReminder(reminderId) {
   if (!reminderId) return;

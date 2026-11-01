@@ -1838,6 +1838,22 @@ router.post('/hr-assistant/reminders', async (req, res) => {
   }
 });
 
+// Task 3a (2026-11) - bulk permanent delete ("Clear (N)" in selection
+// mode). Registered BEFORE the generic /reminders/:id route just below,
+// since Express would otherwise match "delete-many" as that route's
+// :id param first (routes match in registration order).
+router.post('/hr-assistant/reminders/delete-many', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const ids = Array.isArray(req.body && req.body.ids) ? req.body.ids.filter((id) => typeof id === 'string' && id) : [];
+    if (!ids.length) return res.status(400).json({ error: 'ids is required' });
+    await Promise.all(ids.map((id) => reminderService.deleteReminder(id)));
+    res.json({ ok: true, deletedCount: ids.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.post('/hr-assistant/reminders/:id', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
   try {

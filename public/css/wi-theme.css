@@ -2002,6 +2002,34 @@ body { background: var(--wi-bg); }
 .wf-rem-chip[aria-pressed="true"] { background: var(--wi-primary); border-color: var(--wi-primary); color: #FFFFFF; }
 .wf-rem-chip-count { margin-left: 0; }
 .wf-rem-section-head { display: flex; align-items: center; justify-content: space-between; font-size: 0.8rem; font-weight: 800; color: var(--wi-ink); padding: 0 2px; }
+/* Task 3a (2026-11) - the normal label/Clear/count trio and the Cancel/
+   Clear (N) selection-mode pair occupy the SAME line, one hidden while
+   the other shows (see hrAssistant.js's setRemSelectMode). */
+.wf-rem-section-head-normal { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
+.wf-rem-section-head-normal[hidden] { display: none; }
+.wf-rem-clear-link { border: none; background: transparent; padding: 0; font: inherit; font-size: 0.74rem; font-weight: 700; color: var(--wi-primary); cursor: pointer; }
+.wf-rem-select-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex: 1; }
+.wf-rem-select-bar[hidden] { display: none; }
+.wf-rem-select-cancel-btn { border: none; background: transparent; padding: 0; font: inherit; font-size: 0.78rem; font-weight: 700; color: var(--wi-muted); cursor: pointer; }
+/* Same light-fill/dark-text "danger" convention as .wf-convo-action-btn.danger
+   elsewhere in this app, not a solid-red button (this app has no such style). */
+.wf-rem-select-clear-btn {
+  border: none; border-radius: var(--wi-r-pill); background: var(--wi-red-50); color: var(--wi-red-700);
+  font: inherit; font-size: 0.74rem; font-weight: 800; padding: 6px 12px; cursor: pointer;
+}
+.wf-rem-select-clear-btn:disabled { background: var(--wi-border-2); color: var(--wi-muted); cursor: default; }
+.wf-rem-select-all-row[hidden] { display: none; }
+.wf-rem-select-all-row {
+  display: flex; align-items: center; gap: 8px; padding: 0 2px; font-size: 0.78rem; font-weight: 700; color: var(--wi-ink); cursor: pointer;
+}
+.wf-rem-select-checkbox { width: 18px; height: 18px; accent-color: var(--wi-primary); flex-shrink: 0; cursor: pointer; }
+/* Each row's own selection checkbox - present in the DOM always, only
+   shown (and the row's own tap target repurposed for selection) while
+   #hrRemList carries .wf-rem-select-mode. */
+.wf-rem-row-select-wrap { display: none; align-items: center; flex-shrink: 0; margin-top: 1px; }
+.wf-rem-list.wf-rem-select-mode .wf-rem-row-select-wrap { display: flex; }
+.wf-rem-list.wf-rem-select-mode .wf-rem-row-actions { display: none; }
+.wf-rem-list.wf-rem-select-mode .wf-rem-row.wf-rem-row-selected { background: var(--wi-primary-50); }
 .wf-rem-list { display: flex; flex-direction: column; gap: 10px; }
 .wf-rem-row {
   display: flex; align-items: flex-start; gap: 11px; border-radius: var(--wi-r-card); box-shadow: var(--wi-sh-card);

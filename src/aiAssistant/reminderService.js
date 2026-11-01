@@ -11,16 +11,13 @@
 const { Redis } = require('@upstash/redis');
 const whatsapp = require('../whatsappService');
 const whatsappAssistant = require('./whatsappAssistant');
-const documentRequests = require('./documentRequests');
 const memoryService = require('./memoryService');
 const employeeService = require('../employeeService');
 const redisHealth = require('../redisHealth');
-const { isSyntheticTestPhone } = whatsapp;
 
 const REMINDER_PREFIX = 'subh-reminder:';
 const REMINDER_IDS_KEY = 'subh-reminder-ids';
 const SETTINGS_KEY = 'subh-reminder-settings'; // { waOptIn: boolean, waNumber: string|null }
-const EXPIRING_MEMORY_WINDOW_MS = 2 * 24 * 60 * 60 * 1000;
 
 let client;
 let clientChecked = false;
@@ -298,142 +295,51 @@ function filterReminders(reminders, filter, now) {
 // surfaced - listSystemNotices is the only thing that ever renders it.
 
 // ---------------- Auto-created reminders from existing SUBH stores ----------------
-// Called lazily at the top of listReminders (same philosophy as Phase 1's
-// listActionableWhatsappItems) - never a separate scheduler of its own.
-// Dedup key is (sourceType, sourceRef); a resolved source auto-closes its
-// reminder instead of leaving it to go stale. Never touches/creates from
-// anything under the "test:" Redis prefix - scripts/check-reminders.js's
-// simulated sources use that prefix precisely so this function can never
-// see them and can never pollute the owner's real list either.
-// Returns the full, now-current reminder list (existing + newly-created +
-// auto-closed) - callers that need "all reminders after syncing" (see
-// listReminders below) reuse this directly instead of paying for a
-// second listRawReminders() round trip for data already in hand.
+// Task 3b (2026-11) LIVE BUG FIX: Reminders used to auto-create one of
+// these for every open WhatsApp follow-up, pending data-request
+// approval, received document and expiring memory - but approvals and
+// documents are ALSO exactly what Action Needed already shows
+// (buildActionableWhatsappItems' own approvals/docs inputs), so the
+// owner saw the same card twice in two different places (the live
+// complaint: "Yashaswi — data request approval" in both). Per direct
+// instruction, Reminders is now manual-reminders-only, plus "Queued
+// reply went stale"/"Missed while disconnected" (sourceType
+// missed_while_disconnected - created directly in whatsappAssistant.js,
+// not here) since THOSE have no other home anywhere in the app.
+// Reminder creation from the 4 tracked sources is gone entirely (no more
+// ensureReminder/dedup-by-key machinery, no more reading
+// listPendingApprovals/documentRequests/memoryService here); the one
+// still-needed piece of the old follow-ups loop - auto-clearing a
+// wa-open-followups entry the moment the owner replies to that sender
+// manually from their own phone (Task 5, 2026-10-29) - is kept, since
+// listOpenFollowups() backs other things beyond Reminders (e.g. the
+// conversation page) and losing that cleanup would leave stale entries
+// behind there too; it just never creates a reminder for it any more.
+const DISCONTINUED_AUTO_REMINDER_SOURCE_TYPES = ['whatsapp_followup', 'whatsapp_approval', 'document', 'memory_expiry', 'hr_confirmation'];
 async function syncAutoCreatedReminders(now) {
   const existing = await listRawReminders();
-  const byId = new Map(existing.map((r) => [r.id, r]));
-  // A LIVE map, updated the moment a new reminder is created below - not a
-  // point-in-time snapshot. Found live (while first testing this against
-  // real data): wa-open-followups can hold SEVERAL distinct entries for
-  // the SAME chatId (one person can have multiple separate outstanding
-  // complaints) - a snapshot-only check let every one of them pass
-  // "doesn't exist yet" independently and created N duplicate reminders
-  // for the same key instead of one.
-  const byKey = new Map();
-  existing.forEach((r) => { if (r.sourceType && r.sourceRef) byKey.set(r.sourceType + '|' + r.sourceRef, r); });
 
-  const [followups, approvals, docs, memories] = await Promise.all([
-    whatsappAssistant.listOpenFollowups(),
-    whatsappAssistant.listPendingApprovals(),
-    documentRequests.listPendingReceived(),
-    memoryService.listMemories()
-  ]);
-
-  // Never shows the internal "The sender" placeholder (used when a
-  // sender's real first name couldn't be resolved) as if it were a real
-  // name - falls back to the phone number instead, same rule
-  // whatsappAssistant.getWhatsappConversation already follows for its own
-  // header.
-  function labelFor(name, phone) {
-    return (name && name !== 'The sender') ? name : phone;
-  }
-
-  const liveKeys = new Set();
-  async function ensureReminder(key, fields) {
-    // Defense in depth (see isSyntheticTestPhone's own comment) - the 4
-    // source listings above already filter synthetic test contacts out,
-    // but a synthetic number can never create a reminder here either way,
-    // even if a future source forgets to filter upstream.
-    if (fields.linkedChatId && isSyntheticTestPhone(fields.linkedChatId)) return;
-    liveKeys.add(key);
-    if (byKey.has(key)) return;
-    const r = newReminder(fields);
-    await saveReminder(r);
-    byKey.set(key, r);
-    byId.set(r.id, r);
-  }
-
-  // Task 3 (2026-10-28) - "one follow-up per sender PER TOPIC" (direct
-  // instruction): keying by chatId alone collapsed every distinct open
-  // topic for the same sender down to just the first one processed,
-  // silently dropping the rest. Keying by chatId+topic (falling back to
-  // the summary text when no topic was captured) keeps genuinely separate
-  // asks as separate reminders while still merging repeats of the SAME
-  // topic into one (addOpenFollowup's own merge-by-chatId+topic handles
-  // that upstream - see its comment). The title now names the actual
-  // thing still needed, not just "follow-up needed".
+  const followups = await whatsappAssistant.listOpenFollowups();
   for (const f of followups) {
-    // Task 5 (2026-10-29) - "auto-close when I reply manually" (direct
-    // instruction): a "reply needed" reminder used to only ever close via
-    // the explicit "<name> follow up done" chat command or a matching
-    // memory - if the owner just replied to the sender directly from
-    // their own phone, outside SUBH entirely, nothing ever cleared it.
-    // Same gateway-message check catchUpAfterGap already trusts for
-    // "skip a sender I already replied to manually" - clears every open
-    // follow-up for this sender (not just this one topic; a manual reply
-    // from the owner reasonably settles the whole open conversation, same
-    // granularity clearOpenFollowup itself already works at) and skips
-    // creating/keeping its reminder this round, so the very next sync
-    // (auto-close sweep below) marks it completed rather than leaving a
-    // stale reminder for an exchange the owner already handled themselves.
     const manuallyReplied = await whatsapp.listMessages(f.chatId, 20)
       .then((msgs) => whatsappAssistant.hasManualReplyAfter(msgs, f.ts))
       .catch(() => false);
-    if (manuallyReplied) {
-      await whatsappAssistant.clearOpenFollowup(f.chatId).catch(() => {});
-      continue;
-    }
-    const topicKey = f.topic || f.summary || 'general';
-    await ensureReminder('whatsapp_followup|' + f.chatId + '|' + topicKey, {
-      title: labelFor(f.name, f.chatId) + ' — reply needed: ' + (f.summary || f.topic || 'their question'), detail: f.summary, priority: 'high',
-      source: 'whatsapp', sourceType: 'whatsapp_followup', sourceRef: f.chatId + '|' + topicKey, linkedChatId: f.chatId,
-      dueAt: now.toISOString(), hasTime: false, now
-    });
-  }
-  for (const a of approvals) {
-    await ensureReminder('whatsapp_approval|' + a.id, {
-      title: labelFor(a.name, a.phone) + ' — data request approval', detail: a.dataRequestSummary, priority: 'medium',
-      source: 'whatsapp', sourceType: 'whatsapp_approval', sourceRef: a.id, linkedChatId: a.phone,
-      dueAt: now.toISOString(), hasTime: false, now
-    });
-  }
-  for (const d of docs) {
-    await ensureReminder('document|' + d.phone, {
-      title: 'Document received — ' + (d.topic || 'review'), detail: 'From ' + d.phone, priority: 'medium',
-      source: 'whatsapp', sourceType: 'document', sourceRef: d.phone, linkedChatId: d.phone,
-      dueAt: now.toISOString(), hasTime: false, now
-    });
-  }
-  for (const mem of memories) {
-    if (!mem.expiresAt) continue;
-    const expiresMs = new Date(mem.expiresAt).getTime();
-    if (expiresMs - now.getTime() > EXPIRING_MEMORY_WINDOW_MS || expiresMs < now.getTime()) continue;
-    await ensureReminder('memory_expiry|' + mem.id, {
-      title: 'Memory expiring soon — ' + mem.topic, detail: mem.statusFact, priority: 'low',
-      source: 'report', sourceType: 'memory_expiry', sourceRef: mem.id,
-      dueAt: mem.expiresAt, hasTime: false, now
-    });
+    if (manuallyReplied) await whatsappAssistant.clearOpenFollowup(f.chatId).catch(() => {});
   }
 
-  // Auto-close: any existing auto-created, still-pending reminder whose
-  // source is no longer live gets marked completed - never deleted, so it
-  // still shows correctly under "Completed". Mutated+saved directly
-  // (rather than markDone, which would re-fetch each one by id) and in
-  // parallel, since `r` here is already the current, in-memory copy.
-  // manualOverride (set by undoDone) permanently exempts a reminder from
-  // this sweep - an explicit Undo must stick even once the real source
-  // goes on to resolve; only the owner's own "Mark done" closes it again.
-  const toClose = [];
-  for (const [key, r] of byKey.entries()) {
-    if (r.status === 'pending' && !r.manualOverride && !liveKeys.has(key)) toClose.push(r);
-  }
+  // One-time (but safe to keep re-running) cleanup: any already-existing
+  // PENDING reminder of a now-discontinued type gets marked completed -
+  // never deleted, so nothing is lost, it just moves to Completed like
+  // any other resolved reminder - the instant this runs.
+  const toClose = existing.filter((r) =>
+    r.status === 'pending' && !r.manualOverride && DISCONTINUED_AUTO_REMINDER_SOURCE_TYPES.includes(r.sourceType)
+  );
   await Promise.all(toClose.map((r) => {
     r.status = 'completed';
     r.completedAt = now.toISOString();
     return saveReminder(r);
   }));
-
-  return Array.from(byId.values());
+  return existing;
 }
 
 // Speed fix: no longer syncs on every page load (that fanned out to 4

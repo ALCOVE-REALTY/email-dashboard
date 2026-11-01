@@ -153,6 +153,14 @@
   const remSectionHeadLabel = document.getElementById('hrRemSectionHeadLabel');
   const remSectionBadge = document.getElementById('hrRemSectionBadge');
   const remList = document.getElementById('hrRemList');
+  // Task 3a (2026-11) - "Clear" selection mode.
+  const remSectionHeadNormal = document.getElementById('hrRemSectionHeadNormal');
+  const remClearBtn = document.getElementById('hrRemClearBtn');
+  const remSelectBar = document.getElementById('hrRemSelectBar');
+  const remSelectCancelBtn = document.getElementById('hrRemSelectCancelBtn');
+  const remSelectClearBtn = document.getElementById('hrRemSelectClearBtn');
+  const remSelectAllRow = document.getElementById('hrRemSelectAllRow');
+  const remSelectAllCheckbox = document.getElementById('hrRemSelectAllCheckbox');
   const remAddBtn = document.getElementById('hrRemAddBtn');
   const remCompletedRow = document.getElementById('hrRemCompletedRow');
   const remCompletedBadge = document.getElementById('hrRemCompletedBadge');
@@ -3743,6 +3751,12 @@
 
   let remItemsById = new Map();
   let activeRemFilter = 'today';
+  // Task 3a (2026-11) - "Clear" selection mode state. Selection is
+  // per-visit, never persisted - switching filter/tab or leaving the
+  // Reminders page exits it (see the chip/Today's Completed handlers and
+  // setRemSelectMode below).
+  let remSelectMode = false;
+  let remSelectedIds = new Set();
 
   function renderReminderRow(r) {
     const row = document.createElement('div');
@@ -3750,6 +3764,10 @@
     row.dataset.id = r.id;
     const isDone = r.status === 'completed';
     row.innerHTML =
+      // Task 3a (2026-11) - always in the DOM, only shown while the list
+      // carries .wf-rem-select-mode (see setRemSelectMode) - avoids a
+      // full re-render of every row just to enter/exit selection mode.
+      '<span class="wf-rem-row-select-wrap"><input type="checkbox" class="wf-rem-select-checkbox wf-rem-row-select-cb" data-id="' + escapeHtml(r.id) + '" /></span>' +
       '<span class="wf-rem-row-icon ' + r.source + '">' +
         (r.source === 'whatsapp' ? WHATSAPP_SVG : r.source === 'email' ? MAIL_SVG : r.source === 'report'
           ? '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>'
@@ -3767,9 +3785,18 @@
         (isDone ? '' : '<button type="button" class="wf-rem-checkbox" aria-label="Mark done"></button>') +
         '<svg class="wf-rem-row-chevron" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>' +
       '</span>';
-    row.querySelector('[data-open]').addEventListener('click', () => { pushNav({ type: 'reminderDetail', id: r.id }); openReminderDetail(r.id); });
+    // Task 3a (2026-11) - in selection mode, tapping anywhere on the row
+    // toggles its own checkbox instead of opening the detail page.
+    row.querySelector('[data-open]').addEventListener('click', () => {
+      if (remSelectMode) { toggleRemSelection(r.id); return; }
+      pushNav({ type: 'reminderDetail', id: r.id }); openReminderDetail(r.id);
+    });
     const checkbox = row.querySelector('.wf-rem-checkbox');
     if (checkbox) checkbox.addEventListener('click', (e) => { e.stopPropagation(); completeReminderRow(r.id, checkbox, row); });
+    const selectCb = row.querySelector('.wf-rem-row-select-cb');
+    selectCb.checked = remSelectedIds.has(r.id);
+    selectCb.addEventListener('click', (e) => { e.stopPropagation(); toggleRemSelection(r.id); });
+    row.classList.toggle('wf-rem-row-selected', remSelectedIds.has(r.id));
     return row;
   }
 
@@ -3786,6 +3813,88 @@
         loadRemindersPage(activeRemFilter);
       });
       setTimeout(() => loadRemindersPage(activeRemFilter), 450);
+    });
+  }
+
+  // ---- Task 3a (2026-11): "Clear" multi-select ----
+  function updateRemSelectBar() {
+    const n = remSelectedIds.size;
+    if (remSelectClearBtn) {
+      remSelectClearBtn.textContent = 'Clear (' + n + ')';
+      remSelectClearBtn.disabled = n === 0;
+    }
+    if (remSelectAllCheckbox) {
+      const visibleIds = Array.from(remList ? remList.querySelectorAll('.wf-rem-row') : []).map((row) => row.dataset.id);
+      remSelectAllCheckbox.checked = visibleIds.length > 0 && visibleIds.every((id) => remSelectedIds.has(id));
+    }
+  }
+  function toggleRemSelection(id) {
+    if (remSelectedIds.has(id)) remSelectedIds.delete(id); else remSelectedIds.add(id);
+    const row = remList ? remList.querySelector('.wf-rem-row[data-id="' + CSS.escape(id) + '"]') : null;
+    if (row) {
+      const cb = row.querySelector('.wf-rem-row-select-cb');
+      if (cb) cb.checked = remSelectedIds.has(id);
+      row.classList.toggle('wf-rem-row-selected', remSelectedIds.has(id));
+    }
+    updateRemSelectBar();
+  }
+  function setRemSelectMode(on) {
+    remSelectMode = on;
+    remSelectedIds = new Set();
+    if (remList) remList.classList.toggle('wf-rem-select-mode', on);
+    if (remSectionHeadNormal) remSectionHeadNormal.hidden = on;
+    if (remSelectBar) remSelectBar.hidden = !on;
+    if (remSelectAllRow) remSelectAllRow.hidden = !on;
+    if (remList) remList.querySelectorAll('.wf-rem-row-select-cb').forEach((cb) => { cb.checked = false; });
+    if (remList) remList.querySelectorAll('.wf-rem-row-selected').forEach((row) => row.classList.remove('wf-rem-row-selected'));
+    updateRemSelectBar();
+  }
+  if (remClearBtn) remClearBtn.addEventListener('click', () => setRemSelectMode(true));
+  if (remSelectCancelBtn) remSelectCancelBtn.addEventListener('click', () => setRemSelectMode(false));
+  if (remSelectAllCheckbox) {
+    remSelectAllCheckbox.addEventListener('change', () => {
+      const visibleIds = Array.from(remList ? remList.querySelectorAll('.wf-rem-row') : []).map((row) => row.dataset.id);
+      if (remSelectAllCheckbox.checked) visibleIds.forEach((id) => remSelectedIds.add(id));
+      else remSelectedIds = new Set();
+      visibleIds.forEach((id) => {
+        const row = remList.querySelector('.wf-rem-row[data-id="' + CSS.escape(id) + '"]');
+        if (row) {
+          const cb = row.querySelector('.wf-rem-row-select-cb');
+          if (cb) cb.checked = remSelectedIds.has(id);
+          row.classList.toggle('wf-rem-row-selected', remSelectedIds.has(id));
+        }
+      });
+      updateRemSelectBar();
+    });
+  }
+  if (remSelectClearBtn) {
+    remSelectClearBtn.addEventListener('click', async () => {
+      const ids = Array.from(remSelectedIds);
+      if (!ids.length) return;
+      if (!(await showConfirmDialog('Delete ' + ids.length + ' reminder' + (ids.length === 1 ? '' : 's') + '? This can\'t be undone.'))) return;
+      remSelectClearBtn.disabled = true;
+      try {
+        await postJsonOrThrow('/api/workforce/hr-assistant/reminders/delete-many', { ids });
+      } catch (err) {
+        showActionToast("Couldn't delete - please retry.", null, 'error');
+        remSelectClearBtn.disabled = false;
+        return;
+      }
+      ids.forEach((id) => {
+        const row = remList.querySelector('.wf-rem-row[data-id="' + CSS.escape(id) + '"]');
+        if (row) beginRowCloseExit(row);
+      });
+      invalidateReminderCache();
+      setTimeout(() => {
+        ids.forEach((id) => {
+          const row = remList.querySelector('.wf-rem-row[data-id="' + CSS.escape(id) + '"]');
+          finishRowClose(row);
+        });
+        lastRemListFingerprint = null; // force the next render to actually paint over the just-removed rows
+        setRemSelectMode(false);
+        loadRemindersPage(activeRemFilter);
+      }, 320);
+      showProToast({ title: ids.length + ' reminder' + (ids.length === 1 ? '' : 's') + ' deleted' });
     });
   }
 
@@ -3912,6 +4021,8 @@
     setCountBadge(commsHeadBadge, data.counts.all);
     if (remSectionHeadLabel) remSectionHeadLabel.textContent = isCompletedFilter(filter) ? 'Completed Reminders' : 'Pending Reminders';
     setCountBadge(remSectionBadge, isCompletedFilter(filter) ? data.items.length : data.counts.all);
+    // Task 3a (2026-11) - nothing to select/clear on an empty list.
+    if (remClearBtn) remClearBtn.hidden = data.items.length === 0;
     // "Today's Completed" row/badge is always TODAY's completed count,
     // never the full history (that lives under the Completed tab) -
     // regardless of which filter happens to be on screen right now.
@@ -3992,6 +4103,7 @@
     remChips.addEventListener('click', (e) => {
       const chip = e.target.closest('.wf-rem-chip');
       if (!chip) return;
+      if (remSelectMode) setRemSelectMode(false); // Task 3a - switching tabs exits selection mode
       const filter = chip.dataset.filter;
       activeRemFilter = filter;
       syncTopRemindersFilter(filter);
@@ -4004,6 +4116,7 @@
   }
   if (remCompletedRow) {
     remCompletedRow.addEventListener('click', () => {
+      if (remSelectMode) setRemSelectMode(false); // Task 3a - switching tabs exits selection mode
       // Its own back-stack level (item 3) - distinct from whichever filter
       // chip is currently active, so Back returns to THAT tab exactly as
       // left, not all the way out to the hub.

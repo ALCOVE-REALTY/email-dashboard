@@ -463,7 +463,25 @@
           <button type="button" class="wf-rem-chip" data-filter="upcoming" aria-pressed="false">Upcoming <span class="wf-rem-chip-count wi-count-badge neutral">0</span></button>
           <button type="button" class="wf-rem-chip" data-filter="completed" aria-pressed="false">Completed <span class="wf-rem-chip-count wi-count-badge neutral">0</span></button>
         </div>
-        <div class="wf-rem-section-head"><span id="hrRemSectionHeadLabel">Pending Reminders</span><span class="wf-rem-section-badge wi-count-badge primary" id="hrRemSectionBadge">0</span></div>
+        <!-- Task 3a (2026-11) - "Clear" switches the line into selection
+             mode: the normal label/Clear/count trio hides, the Cancel/
+             Clear (N) pair shows instead; see hrAssistant.js's
+             setRemSelectMode. -->
+        <div class="wf-rem-section-head">
+          <span class="wf-rem-section-head-normal" id="hrRemSectionHeadNormal">
+            <span id="hrRemSectionHeadLabel">Pending Reminders</span>
+            <button type="button" class="wf-rem-clear-link" id="hrRemClearBtn" hidden>Clear</button>
+            <span class="wf-rem-section-badge wi-count-badge primary" id="hrRemSectionBadge">0</span>
+          </span>
+          <span class="wf-rem-select-bar" id="hrRemSelectBar" hidden>
+            <button type="button" class="wf-rem-select-cancel-btn" id="hrRemSelectCancelBtn">Cancel</button>
+            <button type="button" class="wf-rem-select-clear-btn" id="hrRemSelectClearBtn" disabled>Clear (0)</button>
+          </span>
+        </div>
+        <label class="wf-rem-select-all-row" id="hrRemSelectAllRow" hidden>
+          <input type="checkbox" id="hrRemSelectAllCheckbox" class="wf-rem-select-checkbox" />
+          <span>All</span>
+        </label>
         <div class="wf-rem-list" id="hrRemList"></div>
         <div class="wf-rem-btn-row">
           <button type="button" class="wf-rem-add-btn" id="hrRemAddBtn">+ Add Reminder</button>
