@@ -3171,6 +3171,12 @@ body:not(.printing-org-chart) .org-chart-cards-row + .org-chart-branch-connector
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  /* Task 2 (2026-11) - a true full-screen overlay (see hrAssistant.js's
+     own comment on syncPanelToViewport): never tracks the app topbar's
+     position, so nothing behind it can show through a scroll glitch.
+     overscroll-behavior stops a scroll-chain from reaching the locked
+     document underneath via this panel's own edges. */
+  overscroll-behavior: contain;
   /* One continuous soft mint-to-white wash behind the whole panel - the
      header paints its own opaque fill over it below, and the messages
      list and input row both stay transparent so this shows through
@@ -3239,6 +3245,7 @@ body:not(.printing-org-chart) .org-chart-cards-row + .org-chart-branch-connector
   flex-direction: column;
   gap: 12px;
   -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
   /* No background of its own - the wash lives on .wf-ai-panel (see above)
      so it runs continuously behind this and the input row with no seam;
      this element only scrolls its own content, not the background. */

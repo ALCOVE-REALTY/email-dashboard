@@ -14,7 +14,6 @@
   // refers to it.
   const form = document.getElementById('hrAssistantForm');
   const input = document.getElementById('assistantQuestion');
-  const topbar = document.querySelector('.wf-topbar');
   const plusBtn = document.getElementById('hrAssistantPlusBtn');
   const micBtn = document.getElementById('hrAssistantMicBtn');
   const attachmentChip = document.getElementById('hrAssistantAttachmentChip');
@@ -253,21 +252,23 @@
   let savedScrollY = 0;
   let currentConversationId = null;
 
-  // Task 5 (2026-11) LIVE BUG FIX: overflow:hidden alone doesn't stop a
-  // mobile browser's own "scroll the focused input into view" behaviour
-  // the instant the chat input is tapped and the keyboard opens - that
-  // native scroll ignores overflow:hidden and moves the document anyway,
-  // which is exactly what caused the dashboard-home flash behind the
-  // panel: .wf-topbar (the app's own header, a normal in-flow element,
-  // not fixed) shifts with that scroll, syncPanelToViewport's
-  // `panel.top` tracks topbar's live position, and the brief mismatch
-  // between the panel's (position:fixed, viewport-relative) box and the
-  // document's mid-scroll layout let the real dashboard underneath show
-  // through for a frame. Taking <body> out of the scrollable flow
-  // entirely (position:fixed, pinned at its saved scroll offset) means
-  // there is nothing left for that native "scroll into view" behaviour
-  // to scroll - topbar's on-screen position can no longer move at all
-  // while the panel is open, keyboard or no keyboard.
+  // Task 2 (2026-11) LIVE BUG FIX, 2nd attempt - the Task 5 (2026-11) fix
+  // above (body position:fixed while the panel is open) was NOT enough on
+  // live: a mobile browser's own "scroll the focused input into view"
+  // behaviour, fired the instant the chat input (or any input under
+  // Today's Updates) is tapped and the keyboard opens, can still nudge the
+  // document even with documentElement/body both overflow:hidden AND body
+  // position:fixed - and the panel used to track the app's own .wf-topbar
+  // (a normal in-flow element) to sit BELOW it, so any such nudge shifted
+  // where the panel's top/bottom landed for a frame, letting the real
+  // dashboard underneath show through the gap. Fixed at the root instead
+  // of chasing the scroll: the panel is now a literal full-screen overlay
+  // (inset 0 - see .wf-ai-panel in workforce.css, unchanged) that no
+  // longer tracks the topbar's position at all, so nothing it depends on
+  // can be nudged out of place; its own header simply covers where the
+  // app's topbar would be. The document is additionally never left
+  // scrollable at all while open (overflow hidden + fixed body, pinned at
+  // its saved offset, below) as a second, independent line of defence.
   function lockBodyScroll() {
     savedScrollY = window.scrollY;
     document.documentElement.style.overflow = 'hidden';
@@ -289,23 +290,23 @@
     window.scrollTo(0, savedScrollY);
   }
 
-  // The panel opens BELOW the app's own header - like Tenure or any other
-  // section - down to the bottom of whatever is actually visible, which
-  // with an on-screen keyboard open is well above window.innerHeight. vh
-  // units and window.innerHeight both describe the full layout viewport
-  // (the part still behind the keyboard on iOS Safari), so the only way
-  // to track the real visible area on both iOS Safari and Android Chrome
-  // is window.visualViewport, kept in sync on every resize/scroll it
-  // fires (keyboard show/hide, orientation change, browser chrome
-  // show/hide).
+  // Keyboard handling, 2nd attempt - the viewport meta now carries
+  // interactive-widget=resizes-content (see workforce.html), which on a
+  // real phone browser makes the KEYBOARD itself shrink the content
+  // viewport (window.innerHeight, vh, and this inset:0 panel's own box all
+  // resize natively) instead of just overlaying a separate visual
+  // viewport on top of an unchanged layout - so the panel's chat area
+  // (flex:1) and input bar (pinned to the panel's own bottom edge, see
+  // workforce.css) already shrink/sit right above the keyboard with zero
+  // JS. visualViewport is kept too, belt-and-suspenders, only to correct
+  // for any residual gap a browser without interactive-widget support (or
+  // a mid-transition frame) might still leave - it no longer touches
+  // `top` at all (the panel is always pinned to the real viewport's own
+  // top edge, never the topbar's position).
   function syncPanelToViewport() {
     if (panel.hidden) return;
-    const headerBottom = topbar ? topbar.getBoundingClientRect().bottom : 0;
     const vv = window.visualViewport;
-    const visibleTop = vv ? vv.offsetTop : 0;
     const visibleBottom = vv ? vv.offsetTop + vv.height : window.innerHeight;
-    const top = Math.max(headerBottom, visibleTop);
-    panel.style.top = top + 'px';
     panel.style.bottom = Math.max(0, window.innerHeight - visibleBottom) + 'px';
     scrollToBottom();
   }
