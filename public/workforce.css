@@ -722,6 +722,12 @@ body {
 }
 .wf-link-btn:hover { text-decoration: underline; }
 .wf-link-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* Task 6 (2026-11) - the Org Chart Export PDF button's own "Preparing…"
+   state: the icon spins in place (same .spinning/mSpin convention as
+   .wf-icon-btn elsewhere) instead of the old textContent swap that wiped
+   the icon out and shrank the button, reflowing the department selector
+   next to it. */
+.wf-link-btn.spinning svg { animation: mSpin .8s linear infinite; }
 
 /* Same solid-accent primary-CTA look as login.css's .login-btn, sized down
    to sit inline in a page header row instead of full-width. */

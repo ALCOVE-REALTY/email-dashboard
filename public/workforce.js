@@ -2415,9 +2415,20 @@ document.getElementById('exportOrgChartPdf').addEventListener('click', async () 
   const dept = document.getElementById('orgChartDeptSelect').value;
   if (!dept) return;
   const btn = document.getElementById('exportOrgChartPdf');
-  const originalLabel = btn.textContent;
+  // Task 6 (2026-11) LIVE BUG FIX: btn.textContent = 'Preparing…' used to
+  // wipe out the button's own icon (textContent replaces ALL children,
+  // svg included - and never got it back afterward either), shrinking
+  // the button enough that the department selector's own flex-wrap
+  // layout reflowed around it (the live bug: the label appearing to
+  // "move to the right of the selector" while it shrank). The icon now
+  // just spins in place (same .spinning convention as .wf-icon-btn
+  // elsewhere) and only the <span> text changes - the button's own
+  // structure/width never changes, so the selector's layout never moves.
+  const labelEl = btn.querySelector('span');
+  const originalLabel = labelEl.textContent;
   btn.disabled = true;
-  btn.textContent = 'Preparing…';
+  btn.classList.add('spinning');
+  labelEl.textContent = 'Preparing…';
 
   // orgChartServerPdf.js no longer drives this button at all - it renders
   // via its own direct path (runServerSideOrgChartExport) instead, so a
@@ -2426,7 +2437,8 @@ document.getElementById('exportOrgChartPdf').addEventListener('click', async () 
   if (serverPdf) {
     downloadPdfBlob(serverPdf, dept + '-Org-Chart.pdf');
     btn.disabled = false;
-    btn.textContent = originalLabel;
+    btn.classList.remove('spinning');
+    labelEl.textContent = originalLabel;
     return;
   }
 
@@ -2436,11 +2448,13 @@ document.getElementById('exportOrgChartPdf').addEventListener('click', async () 
   } catch (err) {
     alert('Failed to prepare PDF: ' + err.message);
     btn.disabled = false;
-    btn.textContent = originalLabel;
+    btn.classList.remove('spinning');
+    labelEl.textContent = originalLabel;
     return;
   }
   btn.disabled = false;
-  btn.textContent = originalLabel;
+  btn.classList.remove('spinning');
+  labelEl.textContent = originalLabel;
 
   const printEl = document.getElementById('orgChartPrintContent');
   printEl.innerHTML = renderOrgChartPdfTreeHtml(treeData);
