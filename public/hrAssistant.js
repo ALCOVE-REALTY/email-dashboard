@@ -3900,9 +3900,16 @@
         (isDone ? '' : '<button type="button" class="wf-rem-checkbox" aria-label="Mark done"></button>') +
         '<svg class="wf-rem-row-chevron" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>' +
       '</span>';
-    // Task 3a (2026-11) - in selection mode, tapping anywhere on the row
-    // toggles its own checkbox instead of opening the detail page.
-    row.querySelector('[data-open]').addEventListener('click', () => {
+    // Task 13 (2026-11) LIVE BUG FIX: the open-tap target used to be just
+    // .wf-rem-row-main (the middle text column) - the icon on the left and
+    // the chevron/padding on the right were dead zones that silently did
+    // nothing, reading as "needs two taps" whenever a tap landed there.
+    // The WHOLE row is the tap target now; the "mark done"/selection
+    // checkboxes below already stopPropagation() so this never double-
+    // fires for them. Task 3a (2026-11) - in selection mode, tapping
+    // anywhere on the row toggles its own checkbox instead of opening the
+    // detail page.
+    row.addEventListener('click', () => {
       if (remSelectMode) { toggleRemSelection(r.id); return; }
       pushNav({ type: 'reminderDetail', id: r.id }); openReminderDetail(r.id);
     });

@@ -2034,6 +2034,9 @@ body { background: var(--wi-bg); }
 .wf-rem-row {
   display: flex; align-items: flex-start; gap: 11px; border-radius: var(--wi-r-card); box-shadow: var(--wi-sh-card);
   background: var(--wi-surface); padding: 12px; animation: mPop .3s cubic-bezier(.2,.7,.2,1) both;
+  /* Task 13 (2026-11) - the whole row opens the reminder now (see
+     hrAssistant.js), not just the text column in the middle. */
+  cursor: pointer;
 }
 .wf-rem-row.completing { animation: wiFade .4s ease forwards; opacity: 0; transform: scale(.96); }
 .wf-rem-row-icon {
