@@ -760,7 +760,11 @@
   function formatNoticeHtml(text) {
     const lines = String(text == null ? '' : text).split('\n');
     if (!/^SUBH daily summary/.test(lines[0] || '')) return escapeHtml(text);
-    const html = lines.map((line) => {
+    const html = lines.map((line, i) => {
+      // Task 2 (2026-11) - the title line itself ("SUBH daily summary
+      // (date):") gets the same accent colour as every other line's
+      // label, not just the labels below it.
+      if (i === 0) return '<span class="wf-comms-daily-label">' + escapeHtml(line) + '</span>';
       const label = DAILY_SUMMARY_LABELS.find((l) => line.indexOf(l) === 0);
       if (!label) return escapeHtml(line);
       return '<span class="wf-comms-daily-label">' + escapeHtml(label) + '</span>' + escapeHtml(line.slice(label.length));
