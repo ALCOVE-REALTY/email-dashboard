@@ -3483,7 +3483,7 @@ async function checkAsync(label, fn) {
   // returns null for all 3 of those outcomes, so whichever one is
   // chronologically latest would hide the row for that reason regardless
   // of the dismiss filter being tested here).
-  check('Task 2 (2026-11) pure unit test: mergeRecentWhatsappConversations\'s needs-you dismiss check is unaffected by this fix - still keyed off the item\'s own lastMessageTime (an approval/draft/etc. is only ever created by something the SENDER did, never by SUBH alone), so a brand new pending item after a dismiss correctly un-hides the row even with NO matching recentLog entry at all', (() => {
+  check('Task 2 (2026-11) pure unit test: a brand new pending item (approval/draft/document/ambiguous-confirmation) created after a dismiss correctly un-hides a needs-you row even with NO matching recentLog entry at all (savePendingApproval/savePendingDraft never write one)', (() => {
     const chatId = '919999000097';
     const dismissedAt = 1_000_000;
     const dismissedByChat = new Map([[chatId, dismissedAt]]);
@@ -3492,6 +3492,24 @@ async function checkAsync(label, fn) {
     const freshNeedsYou = [{ chatId, name: 'Test', lastMessageTime: dismissedAt + 500 }];
     const nowVisible = whatsappAssistant.mergeRecentWhatsappConversations(freshNeedsYou, [], dismissedAt + 5000, Infinity, dismissedByChat, []);
     return stillHidden.length === 0 && nowVisible.some((r) => r.chatId === chatId);
+  })());
+  check('Task 2 (2026-11) LIVE BUG FIX, 3rd attempt: a needs-you row (e.g. a still-pending document/ambiguous-confirmation) stays hidden after dismiss through a purely OUTGOING recentLog event for that chat (a nudge/reminder, no arrivedAt) - the earlier fix only covered this for resolved rows, needs-you rows used their own overridden "sort like WhatsApp" lastMessageTime directly and reopened on any later activity in either direction', (() => {
+    const chatId = '919999000098';
+    const dismissedAt = 1_000_000;
+    const dismissedByChat = new Map([[chatId, dismissedAt]]);
+    const staleNeedsYou = [{ chatId, name: 'Test', lastMessageTime: dismissedAt - 5000 }];
+    const purelyOutgoing = [{ chatId, ts: dismissedAt + 2000, outcome: 'sent' }]; // no arrivedAt
+    const rows = whatsappAssistant.mergeRecentWhatsappConversations(staleNeedsYou, purelyOutgoing, dismissedAt + 10000, Infinity, dismissedByChat, []);
+    return !rows.some((r) => r.chatId === chatId);
+  })());
+  check('Task 2 (2026-11) pure unit test: a needs-you row un-hides on a genuine NEW INCOMING message for that chat (arrivedAt set) even when the pending item itself predates the dismiss - the sender replying again on an already-open approval/draft', (() => {
+    const chatId = '919999000099';
+    const dismissedAt = 1_000_000;
+    const dismissedByChat = new Map([[chatId, dismissedAt]]);
+    const staleNeedsYou = [{ chatId, name: 'Test', lastMessageTime: dismissedAt - 5000 }];
+    const genuineIncoming = [{ chatId, ts: dismissedAt + 2000, outcome: 'sent', arrivedAt: dismissedAt + 2000 }];
+    const rows = whatsappAssistant.mergeRecentWhatsappConversations(staleNeedsYou, genuineIncoming, dismissedAt + 10000, Infinity, dismissedByChat, []);
+    return rows.some((r) => r.chatId === chatId);
   })());
   await checkAsync('listCommsDismissed returns a Map of every dismissed chat, and markCommsRowDismissed overwrites (never duplicates) a chat\'s own entry on a second dismiss', async () => {
     const phone = '919999000094';

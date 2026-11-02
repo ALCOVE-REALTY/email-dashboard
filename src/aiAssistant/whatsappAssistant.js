@@ -828,6 +828,15 @@ function mergeRecentWhatsappConversations(needsYou, recentLog, nowTs, windowMs, 
 
   const needsYouRows = needsYou.map((r) => Object.assign({}, r, {
     needsYou: true, statusLabel: null,
+    // Task 2 (2026-11) LIVE BUG FIX, 3rd attempt: kept separately from the
+    // lastMessageTime override just below (display/sort only, "like real
+    // WhatsApp") because that override pulls in the latest recentLog entry
+    // for this chat in EITHER direction - a purely outgoing event (a
+    // document/ambiguous-confirmation nudge, a reminder, any later auto-
+    // reply in the same chat for an unrelated intent) was wrongly read as
+    // "new activity" by notDismissedNeedsYou below, which used to compare
+    // against this same overridden value directly.
+    itemOriginTs: r.lastMessageTime,
     lastMessageTime: latestTsByChat.has(r.chatId) ? latestTsByChat.get(r.chatId) : r.lastMessageTime
   }));
   // Task 2 (2026-11) LIVE BUG FIX, 2nd attempt: the dismiss check below
@@ -861,22 +870,20 @@ function mergeRecentWhatsappConversations(needsYou, recentLog, nowTs, windowMs, 
   // actually said anything new since the dismiss, so it's filtered out
   // here rather than deleted from any underlying store (the real
   // conversation/history is never touched).
-  // Task 2 (2026-11) FOLLOW-UP FIX: a needs-you row's OWN lastMessageTime
-  // (an approval/draft/document/ambiguous-confirmation's own createdAt,
-  // or the matching recentLog entry if one exists) is NOT subject to the
-  // same "purely outgoing" risk the resolvedRows fix above guards
-  // against - every one of those item types is, by construction, only
-  // ever created as a direct result of something the SENDER did (SUBH
-  // never generates a pending approval/draft/document/ambiguous-
-  // confirmation on its own initiative) - so it stays its own, simpler
-  // check: a genuinely NEW pending item after the dismiss (found live:
-  // the lastGenuineIncoming-only check below incorrectly kept a dismissed
-  // row hidden even after a brand new approval/draft was created for it,
-  // since savePendingApproval/savePendingDraft never write a recentLog
-  // entry with arrivedAt at all).
   const notDismissedNeedsYou = (r) => {
     const dismissedAt = dismissed.get(r.chatId);
-    return !dismissedAt || r.lastMessageTime > dismissedAt;
+    if (!dismissedAt) return true;
+    // itemOriginTs: the pending item's OWN creation time (approval/draft/
+    // document/ambiguous-confirmation createdAt) - a brand new one of
+    // these after the dismiss correctly un-hides the row even with no
+    // matching recentLog entry at all (savePendingApproval/savePendingDraft
+    // never write one). lastGenuineIncomingTsByChat covers the other real
+    // case: the sender replying again on a chat whose needs-you item was
+    // already open before the dismiss (so itemOriginTs alone wouldn't
+    // move). Neither one reacts to a purely outgoing event.
+    if (r.itemOriginTs > dismissedAt) return true;
+    const lastGenuineIncoming = lastGenuineIncomingTsByChat.get(r.chatId);
+    return Boolean(lastGenuineIncoming) && lastGenuineIncoming > dismissedAt;
   };
   const notDismissedResolved = (r) => {
     const dismissedAt = dismissed.get(r.chatId);
