@@ -1911,6 +1911,21 @@ body { background: var(--wi-bg); }
    motion already strips every animation/transition globally (see this
    file's own catch-all rule near the top). */
 .wf-ai-action-btn, .wf-rem-add-btn { position: relative; overflow: hidden; min-width: 0; transition: color .2s ease, background-color .2s ease; }
+/* Task 5 (2026-11) LIVE BUG FIX: this rule's own overflow:hidden (added
+   for the spinner/checkmark overlay above) silently changes a FLEX ITEM's
+   automatic minimum size from "its content's natural size" to 0 (a real
+   CSS Flexbox spec behaviour: the automatic min-size protection only
+   applies when overflow computes as visible) - .wf-rem-add-btn's own
+   Save Automation/Cancel buttons are direct children of .wf-auto-page, a
+   flex-direction:column container, so without that protection they could
+   be flex-shrunk below their own text's height, silently clipping it
+   (half-height, text cut off) - the live bug. Preview/Send test
+   coincidentally looked fine only because an unrelated earlier fix
+   (removing their own .small modifier) happened to leave them with
+   enough slack; this fixes the actual root cause for all four buttons
+   so none of them can ever be shrunk below their natural size again,
+   wherever they're placed. */
+.wf-rem-add-btn { flex-shrink: 0; }
 /* Hides the label by making its TEXT COLOR transparent, not opacity on a
    child element - found live: most of these buttons' labels are a bare
    text node ("Mark done", no wrapping <span>), so an earlier `> *
