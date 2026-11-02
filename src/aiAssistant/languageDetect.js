@@ -41,7 +41,15 @@ const BENGALI_WORDS = [
   // Poila Boishakh/Noboborsho, Saraswati Puja), not tied to any one of them.
   'subho', 'shubho', 'shuvo', 'suvo', 'subheccha', 'shubheccha', 'subhechha', 'shubhechha',
   'preeti', 'pronam', 'dashami', 'bijoya', 'puja', 'pujor', 'pujo', 'dipaboli', 'deepaboli',
-  'noboborsho', 'nababarsho', 'poila', 'boishakh', 'boishakhi'
+  'noboborsho', 'nababarsho', 'poila', 'boishakh', 'boishakhi',
+  // Task 1 (2026-11) LIVE BUG FIX: the owner's own chat-box messages
+  // using these everyday Banglish words fell through to 'english' (none
+  // of the words above matched at all) - "October 2026 a Yashaswi Shroff
+  // er under a koto staff join koreche?" (koto = how many), "Tade nam
+  // din" (nam = name, din = give/day), each got answered in the wrong
+  // language as a result. Safe additions: none collide with a common
+  // English word in this app's HR-domain chat context.
+  'koto', 'nam', 'din'
 ];
 const HINDI_WORDS = [
   'ko', 'mein', 'hai', 'kya', 'kaise', 'batao', 'hoon', 'hain', 'raha', 'rahi', 'rahe', 'kar',

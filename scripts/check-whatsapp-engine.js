@@ -3066,6 +3066,18 @@ async function checkAsync(label, fn) {
 
   const { detectMessageLanguage } = require('../src/aiAssistant/languageDetect');
   check('the language detector now recognizes "thakchey naa" as Banglish (found live: this exact message was mis-detected as English)', detectMessageLanguage('22/10-24/10 thakchey naa') === 'banglish');
+  check('Task 1 (2026-11) LIVE BUG FIX: the owner chat box\'s own real Banglish messages (none of the original word list matched "koto"/"nam"/"din") are now correctly detected as Banglish, not English/Hinglish - the exact live bug behind a correct count being answered back in the wrong language', (() => {
+    const samples = [
+      'October 2026 a Yashaswi Shroff er under a koto staff join koreche?',
+      'Tade nam din',
+      'Yashaswi shroff er under october 2026 a join employee der nam din'
+    ];
+    return samples.every((s) => detectMessageLanguage(s) === 'banglish');
+  })());
+  check('the language-detector fix above does not misclassify plain English chat-box questions as Banglish', (() => {
+    const samples = ['Please send the report by EOD', 'What is the total headcount in Sales?', 'How many people joined this month?', 'Can I get the HOD list for QC department?'];
+    return samples.every((s) => detectMessageLanguage(s) === 'english');
+  })());
 
   check('isNudgeMessage recognizes a bare "?" as a nudge, not a new request', whatsappAssistant.isNudgeMessage('?'));
   check('isNudgeMessage recognizes "??" and "hello?" as nudges', whatsappAssistant.isNudgeMessage('??') && whatsappAssistant.isNudgeMessage('hello?'));
@@ -3300,9 +3312,14 @@ async function checkAsync(label, fn) {
     const items = whatsappAssistant.buildApprovalItems([mockMultiCandApproval]);
     return items.length === 2 && items[0].label.includes('Ayan Das') && items[0].candidateIndex === 0 && items[1].label.includes('Ayan Paul') && items[1].candidateIndex === 1;
   });
-  await checkAsync('buildApprovalItems leaves an ordinary single-candidate approval as exactly ONE item with candidateIndex null', async () => {
-    const items = whatsappAssistant.buildApprovalItems([mockSingleApproval]);
-    return items.length === 1 && items[0].candidateIndex === null && items[0].label === 'Priya';
+  await checkAsync('buildApprovalItems leaves an ordinary single-candidate approval as exactly ONE item with candidateIndex null, labelled with the CURRENT active directory name (never the approval\'s own possibly-stale/placeholder stored name, e.g. "The sender")', async () => {
+    const items = whatsappAssistant.buildApprovalItems([mockSingleApproval], [{ name: 'Priya Sharma', contactNumber: TEST_PHONE, status: 'ACTIVE' }]);
+    return items.length === 1 && items[0].candidateIndex === null && items[0].label === 'Priya Sharma · +' + TEST_PHONE;
+  });
+  await checkAsync('buildApprovalItems falls back to just the number (never the literal "The sender" placeholder) when no current ACTIVE employee matches the phone', async () => {
+    const placeholderApproval = { id: 'test-placeholder-approval', phone: TEST_PHONE, name: 'The sender', lang: 'banglish', dataRequestSummary: 'QC department - HOD' };
+    const items = whatsappAssistant.buildApprovalItems([placeholderApproval], []);
+    return items.length === 1 && items[0].label === '+' + TEST_PHONE && !items[0].label.includes('The sender');
   });
   await checkAsync('buildPendingListQuestion numbers each candidate of a grouped approval as its own addressable option', async () => {
     const items = whatsappAssistant.buildApprovalItems([mockMultiCandApproval]);
@@ -3322,6 +3339,34 @@ async function checkAsync(label, fn) {
     const reply = await whatsappAssistant.executeApprovalSend(Object.assign({}, mockMultiCandApproval, { id: 'test-multicand-' + Date.now() }), null, null);
     return reply.includes('9830000001') && !reply.includes('9830000002');
   });
+
+  console.log('='.repeat(70));
+  console.log('Task 1 (2026-11) LIVE BUG FIX: owner-chat box - a bare number answering "Kon-ta pathabo?" opens that ONE approval instead of looping the full list again');
+  console.log('='.repeat(70));
+  const ownerEmailForApprovalTests = process.env.SUBH_MEMORY_OWNER_EMAIL;
+  await checkAsync('handleApprovalCommand: a bare number right after SUBH\'s own "Kon-ta pathabo?" question opens that single item (its own prepared text + how to decide), never auto-sends, and never repeats the whole list', async () => {
+    // Deliberately NOT a 910000000xxx "synthetic test phone" - listPendingApprovals()
+    // itself filters those out (they exist to keep fake numbers off the real
+    // Important WhatsApp page), which would make handleApprovalCommand see
+    // zero pending approvals and bail out before ever reaching the code
+    // this test exists to exercise.
+    const phone = '919999000198';
+    markPhoneAsActiveEmployeeForTests(phone);
+    const approvalId = await whatsappAssistant.savePendingApproval({
+      phone, name: 'The sender', requestText: 'x', dataRequestSummary: 'QC department - HOD', lang: 'banglish',
+      preparedReplyText: 'QC department-er HOD: Test Sender Employee ' + phone, preparedCard: null, preparedError: null
+    });
+    const history = [{ role: 'user', text: 'QC HOD ke?' }, { role: 'assistant', text: '1) Test Sender Employee ' + phone + ' · +' + phone + ' — QC department - HOD\nKon-ta pathabo?' }];
+    const result = await whatsappAssistant.handleApprovalCommand('1', ownerEmailForApprovalTests, history);
+    const stillPending = (await whatsappAssistant.listPendingApprovals()).some((a) => a.id === approvalId);
+    await whatsappAssistant.executeApprovalReject({ id: approvalId, phone, name: 'The sender' }).catch(() => {});
+    return Boolean(result) && result.reply.includes('QC department-er HOD') && result.reply.toLowerCase().includes('pathao') &&
+      !result.reply.includes('Kon-ta pathabo?') && stillPending;
+  });
+  check('handleApprovalCommand\'s bare-number shortcut only fires when the IMMEDIATELY PRECEDING assistant turn ends in "Kon-ta pathabo?" - pure regex unit check (never on an unrelated reply like a greeting, even with a pending approval and a numeric-looking message)', (() => {
+    const re = /Kon-ta pathabo\?\s*$/;
+    return re.test('1) X — Y\nKon-ta pathabo?') && !re.test('Hello! How can I help?') && !re.test('Kon-ta pathabo? Let me know later.');
+  })());
 
   console.log('='.repeat(70));
   console.log('LIVE BUG FIX: Important WhatsApp rows must never silently disappear on their own - only an explicit owner delete, never a timeout');
@@ -6067,6 +6112,64 @@ async function checkAsync(label, fn) {
       try {
         const result = await assistantShared.TOOL_RUNNERS.build_hr_report({ returnType: 'count', reportingManagerName: 'Test Director', dojRelative: 'this_month' }, {}, 'english');
         return result.replyText.includes('total 1') || /\b1\b/.test(result.replyText);
+      } finally {
+        employeeService.getEmployeeData = origGetData;
+      }
+    });
+    console.log('='.repeat(70));
+    console.log('Task 1 (2026-11) LIVE BUG FIX: the owner chat box\'s OWN data-query path (resolveOwnerChatDataQuery) - a dedicated classify-then-extract step ahead of the old big multi-tool dispatch, so a combined "under X + date" question can never be routed to the wrong tool again');
+    console.log('='.repeat(70));
+    const ownerEmailForDataQueryTests = 'owner-data-query-test@example.com';
+    await checkAsync('resolveOwnerChatDataQuery resolves a bare dojMonth (no year) to its most recent occurrence and produces the IDENTICAL outgoingText buildHrDataQueryAnswer itself would - the SAME engine as WhatsApp, not a second copy', async () => {
+      const origGetData = employeeService.getEmployeeData;
+      employeeService.getEmployeeData = async () => ({ employees: SELF_REF_DOER_EMPLOYEES, departmentNames: new Map(), locationNames: new Map(), reportingManagerNames: new Map(), doerNames: new Map() });
+      try {
+        const todayIst = whatsappAssistant.istTodayAsUtcMidnight();
+        const resolvedYear = employeeService.resolveBareDojYear(10, todayIst.getUTCMonth() + 1, todayIst.getUTCFullYear());
+        const result = await whatsappAssistant.resolveOwnerChatDataQuery({
+          extracted: { returnType: 'count', reportingManagerName: 'Test Director', dojMonth: 10 },
+          message: 'October a Test Director er under e koto jon join koreche?',
+          ownerEmail: ownerEmailForDataQueryTests
+        });
+        const whatsappAnswer = whatsappAssistant.buildHrDataQueryAnswer(SELF_REF_DOER_EMPLOYEES, { returnType: 'count', reportingManagerName: 'Test Director', dojMonth: 10, dojYear: resolvedYear }, 'banglish');
+        return result.reply === whatsappAnswer.outgoingText && resolvedYear === 2026;
+      } finally {
+        employeeService.getEmployeeData = origGetData;
+      }
+    });
+    await checkAsync('resolveOwnerChatDataQuery stores the resolved query as this owner\'s "last data query" context, and a later isFormatRevision follow-up (e.g. "tader nam din") merges onto it - switching returnType to \'list\' while reusing the SAME reportingManagerName/dojMonth/dojYear filters, naming the SAME 3 people the prior count answer was about', async () => {
+      const origGetData = employeeService.getEmployeeData;
+      employeeService.getEmployeeData = async () => ({ employees: SELF_REF_DOER_EMPLOYEES, departmentNames: new Map(), locationNames: new Map(), reportingManagerNames: new Map(), doerNames: new Map() });
+      try {
+        await whatsappAssistant.resolveOwnerChatDataQuery({
+          extracted: { returnType: 'count', reportingManagerName: 'Test Director', dojMonth: 10 },
+          message: 'October a Test Director er under e koto jon join koreche?',
+          ownerEmail: ownerEmailForDataQueryTests
+        });
+        const followUp = await whatsappAssistant.resolveOwnerChatDataQuery({
+          extracted: { returnType: 'list', isFormatRevision: true },
+          message: 'tader nam din',
+          ownerEmail: ownerEmailForDataQueryTests
+        });
+        return followUp && followUp.reply.includes('Direct Normal') && followUp.reply.includes('Direct SelfRef') && followUp.reply.includes('Indirect Person');
+      } finally {
+        employeeService.getEmployeeData = origGetData;
+      }
+    });
+    await checkAsync('resolveOwnerChatDataQuery asks a clarifying question (never guesses) when a department hint matches more than one real department, same disambiguation wording WhatsApp data requests already use', async () => {
+      const origGetData = employeeService.getEmployeeData;
+      const multiDeptFixture = [
+        { name: 'A', designation: 'Engineer', department: 'Administration', location: 'HO', company: 'Alcove', reportingManager: '', reportingDoer: '', status: 'ACTIVE', doj: null },
+        { name: 'B', designation: 'Engineer', department: 'Admin Support', location: 'HO', company: 'Alcove', reportingManager: '', reportingDoer: '', status: 'ACTIVE', doj: null }
+      ];
+      employeeService.getEmployeeData = async () => ({ employees: multiDeptFixture, departmentNames: new Map(), locationNames: new Map(), reportingManagerNames: new Map(), doerNames: new Map() });
+      try {
+        const result = await whatsappAssistant.resolveOwnerChatDataQuery({
+          extracted: { returnType: 'count', department: 'Admin' },
+          message: 'Admin dept e koto jon ache?',
+          ownerEmail: ownerEmailForDataQueryTests + '-dept'
+        });
+        return Boolean(result) && /administration|admin support/i.test(result.reply);
       } finally {
         employeeService.getEmployeeData = origGetData;
       }

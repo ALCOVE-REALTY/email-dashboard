@@ -1435,6 +1435,24 @@ router.post('/hr-assistant/chat', async (req, res) => {
         return res.json({ reply: accountResult.reply, card: null, actions: null, conversationId: savedConversationId });
       }
 
+      // Task 1 (2026-11) LIVE BUG FIX - an HR-data question, or a
+      // follow-up continuing the owner's own immediately preceding data
+      // question (e.g. "Tade nam din" asking for the names after a
+      // count), is resolved deterministically here, BEFORE the approval-
+      // command check below - checked live: with approvals pending,
+      // handleApprovalCommand's own classifier intercepted every message
+      // (including a plain data follow-up) and mis-answered it as if it
+      // were about the pending approvals instead. Same engine, same
+      // code-computed templates, as WhatsApp's own data requests - see
+      // resolveOwnerChatHrDataQuery's own comment. Returns null (falls
+      // through) for anything that isn't a data question at all.
+      const hrDataResult = await whatsappAssistant.resolveOwnerChatHrDataQuery({ message, history, ownerEmail: req.hrUser.email })
+        .catch(() => null);
+      if (hrDataResult) {
+        const savedConversationId = await chatHistoryService.appendTurn(req.hrUser.email, conversationId, { userText: message, assistantText: hrDataResult.reply, card: hrDataResult.card || null, actions: hrDataResult.actions || null }).catch(() => null);
+        return res.json({ reply: hrDataResult.reply, card: hrDataResult.card || null, actions: hrDataResult.actions || null, conversationId: savedConversationId });
+      }
+
       // HR-data-request approval workflow (spec point 6c/6d) - checked
       // before the memory command and the normal AI pipeline, same
       // reasoning as both: whether to approve/reject/edit a pending
@@ -1444,7 +1462,7 @@ router.post('/hr-assistant/chat', async (req, res) => {
       // through) when nothing is pending or this message isn't actually
       // about an approval at all - see handleApprovalCommand's own
       // comment.
-      const approvalResult = await whatsappAssistant.handleApprovalCommand(message, req.hrUser.email)
+      const approvalResult = await whatsappAssistant.handleApprovalCommand(message, req.hrUser.email, history)
         .catch((err) => ({ reply: 'Approval process korte giye error holo: ' + err.message }));
       if (approvalResult) {
         const savedConversationId = await chatHistoryService.appendTurn(req.hrUser.email, conversationId, { userText: message, assistantText: approvalResult.reply, card: null, actions: null }).catch(() => null);

@@ -3960,8 +3960,8 @@ function hrDataQueryTool() {
           reportingManagerName: { type: 'string', description: 'A manager/HOD\'s name, ONLY when the question filters BY who people report to (e.g. "Tanmoy Mondal-er under-e kara achen?" = people reporting to Tanmoy Mondal) - omit otherwise.' },
           status: { type: 'string', enum: ['ACTIVE', 'INACTIVE', 'NOTICE PERIOD'], description: 'Omit for the default (Active only) - set only when a specific status was explicitly named. There is no real exit-date field in this data, so an "exits"/"who left" question is always INACTIVE status only, never date-scoped.' },
           employmentType: { type: 'string', enum: ['Confirmed', 'Probation'], description: 'Set to "Probation" for a probation-related question (e.g. "probation-e ke ke achen?") - omit otherwise.' },
-          dojMonth: { type: 'integer', description: 'Joining month 1-12 - e.g. 10 for "who joined in October". Omit dojYear if no year was named: it then resolves (in code, not by you) to the MOST RECENT such month, never every year on file - "October" alone means last October, not every October ever.' },
-          dojYear: { type: 'integer', description: 'Exact joining year, e.g. 2024 for "joined in 2024". Only set this when a year was actually named - otherwise leave it unset and let dojMonth alone resolve to its most recent occurrence.' },
+          dojMonth: { type: 'integer', description: 'Joining month 1-12 - e.g. 10 for "who joined in October". A short abbreviated/numeric form naming a month together with a trailing 1-2 digit number and NO day-of-month marker ("Oct 26", "Oct\'26", "Oct-26", "10/26") means month=that month, year=that number (expand a 2-digit year to 20YY, e.g. 26 -> 2026) - the trailing number there is a YEAR, never a day, unless the sentence explicitly marks it as a day instead (an ordinal like "26th"/"26 tarikhe"/"26 tarik"/"on the 26th"). Omit dojYear if no year was named at all: it then resolves (in code, not by you) to the MOST RECENT such month, never every year on file - "October" alone means last October, not every October ever.' },
+          dojYear: { type: 'integer', description: 'Exact joining year, e.g. 2024 for "joined in 2024", or 2026 for a trailing 2-digit "26" attached to a month with no day-of-month marker (see dojMonth\'s own description for when that applies). Only set this when a year was actually named - otherwise leave it unset and let dojMonth alone resolve to its most recent occurrence.' },
           dojRelative: {
             type: 'string', enum: ['this_month', 'last_n_months'],
             description: 'A RELATIVE joining-date phrase, resolved against the real current date by code afterward (never guessed here) - "this_month" for "ei mashe"/"is mahine"/"this month"; "last_n_months" (with dojRelativeMonths set) for "last 3 months"/"pichhle 3 mahine". Omit entirely when an explicit month/year was named instead (use dojMonth/dojYear for that) - never set both.'
@@ -3992,6 +3992,159 @@ async function extractHrDataQuery(text, history) {
   } catch (err) {
     return null;
   }
+}
+
+// Task 1 (2026-11) LIVE BUG FIX - the owner's OWN chat box (talking
+// directly to SUBH, never a WhatsApp sender) answered "under X" + date
+// questions unreliably: live root cause traced to the big, generic
+// forced single-tool-pick across ~20 chat-box tools sometimes choosing a
+// DIFFERENT, wrong tool for a combined "under X + joining-date" question
+// (e.g. get_direct_reports, which has no date filter at all) instead of
+// build_hr_report - the model then had to explain that mismatch in its
+// own free text instead of ever reaching a deterministic, code-computed
+// answer (exactly the "Oct 26 mane October 26..." nonsense seen live).
+// A dedicated, narrow classify-AND-extract step, checked BEFORE that big
+// dispatch ever runs, removes the wrong-tool risk entirely for data
+// questions: there is only one decision (is this a data question or
+// not) instead of a pick among ~20 tools, and the real answer always
+// comes from the exact SAME filter/template engine WhatsApp data
+// requests use (filterEmployeesForHrQuery/buildHrDataQueryAnswer) -
+// never the model's own free-form prose. A separate tool schema from
+// hrDataQueryTool (never touching it) so WhatsApp's own, already-
+// reliable extraction - which never needs an "unrelated" escape hatch,
+// since its caller already confirmed data-intent upstream - can never
+// regress from this.
+function ownerChatHrDataQueryTool() {
+  const base = hrDataQueryTool().function.parameters;
+  return {
+    type: 'function',
+    function: {
+      name: 'owner_chat_hr_data_query',
+      description: 'Decide whether the HR manager\'s own message, in their own chat with SUBH (never a WhatsApp sender), is asking to look up or compute something from the real employee database - and if so, the same structured query a WhatsApp data request would extract. Never invent any name, number, or department - only extract WHAT to look up; the real answer is computed afterward from the actual data, in code.',
+      parameters: {
+        type: 'object',
+        properties: Object.assign({
+          unrelated: {
+            type: 'boolean',
+            description: 'true ONLY when this message is clearly NOT asking to look up or compute anything from the employee database - ordinary chat/greeting, asking SUBH to draft/write/translate something, a general "what can you do" question, or an owner-only command (memory/reminder/automation/approval decision). Keep this FALSE for any count/list/HOD/roster/headcount/"who is under X"/joining-date/probation/exits question, and ALSO false for a short follow-up continuing the IMMEDIATELY PRECEDING data question in this same conversation (e.g. "tader nam din"/"give their names" after a count, "shudhu sonkha ta bolo"/"just the count" after a list, "aro details dao" asking for more fields, any other correction of the SAME request\'s format or scope) - for those, leave this false and fill in the fields exactly as you would for a brand-new matching question, setting isFormatRevision true and ONLY the field(s) actually changing (see its own description). If the immediately preceding turn was NOT a data question/answer at all, a short ambiguous message is never assumed to be a data follow-up - set unrelated true instead, never guess.'
+          }
+        }, base.properties),
+        required: ['unrelated']
+      }
+    }
+  };
+}
+function formatOwnerChatHistoryBlock(history) {
+  if (!Array.isArray(history) || !history.length) return '';
+  const lines = history.filter((h) => h && h.text).map((h) => (h.role === 'assistant' ? 'SUBH: ' : 'Owner: ') + h.text);
+  if (!lines.length) return '';
+  return 'Recent conversation in this chat (oldest first, for context only - the CURRENT message to classify is the one in the user turn below, not anything here):\n' + lines.join('\n');
+}
+async function extractOwnerChatHrDataQuery(text, history) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey || !DRAFT_MODEL) return null;
+  const historyBlock = formatOwnerChatHistoryBlock(history);
+  const messages = [];
+  if (historyBlock) messages.push({ role: 'system', content: historyBlock });
+  messages.push({ role: 'user', content: text });
+  const toolDef = ownerChatHrDataQueryTool().function;
+  try {
+    return await callClaudeForcedTool(apiKey, DRAFT_MODEL, messages, toolDef.name, toolDef);
+  } catch (err) {
+    return null;
+  }
+}
+
+// The owner chat box's own "last answered data query" context, so a
+// follow-up ("tader nam din") can be resolved even though - unlike
+// WhatsApp - there is no pending-approval record to find it on (the
+// owner IS the one asking; the computed answer goes straight back to
+// them, nothing is ever queued for their own approval). Keyed by owner
+// email, short TTL - long enough for a real back-and-forth, short enough
+// that reopening the chat days later never silently reuses a stale,
+// unrelated query.
+const OWNER_HR_QUERY_CONTEXT_PREFIX = 'hr-chat-last-data-query:';
+const OWNER_HR_QUERY_CONTEXT_TTL_SECONDS = 20 * 60;
+async function saveOwnerHrQueryContext(ownerEmail, query, lang) {
+  const redis = getClient();
+  if (!redis) return;
+  try {
+    const key = OWNER_HR_QUERY_CONTEXT_PREFIX + String(ownerEmail || '').toLowerCase();
+    await redis.set(key, JSON.stringify({ query, lang, ts: Date.now() }));
+    await redis.expire(key, OWNER_HR_QUERY_CONTEXT_TTL_SECONDS);
+  } catch (err) { /* best effort */ }
+}
+async function getOwnerHrQueryContext(ownerEmail) {
+  const redis = getClient();
+  if (!redis) return null;
+  return redisHealth.guardedRead(async () => {
+    const raw = await redis.get(OWNER_HR_QUERY_CONTEXT_PREFIX + String(ownerEmail || '').toLowerCase());
+    if (!raw) return null;
+    try { return typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (err) { return null; }
+  }, null);
+}
+
+// Entry point from workforceRoutes.js's chat route - checked BEFORE the
+// pending-approval command (so a genuine data question/follow-up never
+// gets swallowed by "is this approving a pending request" just because
+// one happens to be pending right now) and before the normal multi-tool
+// dispatch. Returns null to let the message fall through unchanged
+// whenever this isn't (or can't be resolved as) a data question - never
+// a guess. The AI-only step (extraction) lives here; everything after it
+// is pure/deterministic and split into resolveOwnerChatDataQuery below
+// (directly testable against a hand-built extracted query, same
+// extracts/computes separation as handleHrDataQueryRequest/
+// resolveAndQueueHrDataQuery already use for WhatsApp).
+async function resolveOwnerChatHrDataQuery({ message, history, ownerEmail }) {
+  const extracted = await extractOwnerChatHrDataQuery(message, history);
+  if (!extracted || extracted.unrelated) return null;
+  return resolveOwnerChatDataQuery({ extracted, message, ownerEmail });
+}
+// Mirrors resolveAndQueueHrDataQuery's own date/alias resolution exactly
+// (the SAME engine, just answering the owner directly instead of queuing
+// an approval for them to approve their own request).
+async function resolveOwnerChatDataQuery({ extracted, message, ownerEmail }) {
+  const query = Object.assign({}, extracted);
+  delete query.unrelated;
+  const lang = detectLang(message);
+  let effectiveQuery = query;
+  if (query.isFormatRevision) {
+    const prior = await getOwnerHrQueryContext(ownerEmail);
+    if (prior && prior.query) effectiveQuery = Object.assign({}, prior.query, query);
+  }
+  delete effectiveQuery.isFormatRevision;
+  if (effectiveQuery.dojRelative === 'this_month') {
+    const today = istTodayAsUtcMidnight();
+    effectiveQuery.dojMonth = today.getUTCMonth() + 1;
+    effectiveQuery.dojYear = today.getUTCFullYear();
+  } else if (effectiveQuery.dojRelative === 'last_n_months') {
+    const range = resolveDojRelativeRange('last_n_months', effectiveQuery.dojRelativeMonths, istTodayAsUtcMidnight());
+    if (range) { effectiveQuery.dojFrom = range.dojFrom; effectiveQuery.dojTo = range.dojTo; }
+  }
+  delete effectiveQuery.dojRelative;
+  if (effectiveQuery.dojMonth && !effectiveQuery.dojYear) {
+    const today = istTodayAsUtcMidnight();
+    effectiveQuery.dojYear = employeeService.resolveBareDojYear(effectiveQuery.dojMonth, today.getUTCMonth() + 1, today.getUTCFullYear());
+  }
+  const { employees } = await employeeService.getEmployeeData();
+  if (effectiveQuery.department) {
+    const deptAliasValues = resolveDeptAliasValues(effectiveQuery.department);
+    const deptResult = deptAliasValues.length
+      ? { resolved: deptAliasValues.length === 1 ? deptAliasValues[0] : null, options: deptAliasValues.length > 1 ? deptAliasValues : [] }
+      : resolveDepartmentOptions(employees, effectiveQuery.department);
+    if (deptResult.options.length > 1) {
+      const fn = DEPARTMENT_DISAMBIGUATION_QUESTION[lang] || DEPARTMENT_DISAMBIGUATION_QUESTION.english;
+      return { reply: fn(effectiveQuery.department, deptResult.options), card: null, actions: null };
+    }
+    effectiveQuery.resolvedDepartment = deptResult.resolved;
+  }
+  if (effectiveQuery.location) {
+    const aliasValues = resolveSiteAliasValues(effectiveQuery.location);
+    if (aliasValues.length) effectiveQuery.resolvedLocations = aliasValues;
+  }
+  const { outgoingText } = buildHrDataQueryAnswer(employees, effectiveQuery, lang);
+  await saveOwnerHrQueryContext(ownerEmail, effectiveQuery, lang);
+  return { reply: outgoingText, card: null, actions: null };
 }
 
 // Pending state for a department-name ambiguity question ("Administration
@@ -7073,7 +7226,7 @@ async function executeApprovalReject(approval) {
 // to exactly that candidate even though they all share one approval
 // record/card. An ordinary single-candidate approval contributes exactly
 // one item, same as before this feature existed.
-function buildApprovalItems(pending) {
+function buildApprovalItems(pending, employees) {
   const items = [];
   pending.forEach((approval) => {
     if (Array.isArray(approval.candidates) && approval.candidates.length) {
@@ -7081,7 +7234,14 @@ function buildApprovalItems(pending) {
         items.push({ approval, candidateIndex, label: c.name + ' (' + naturalizeDirectoryValue(c.department) + ')', summary: c.name + ' (' + naturalizeDirectoryValue(c.department) + ') - contact number' });
       });
     } else {
-      items.push({ approval, candidateIndex: null, label: approval.name, summary: approval.dataRequestSummary });
+      // Task 1 (2026-11) LIVE BUG FIX: approval.name is sometimes the
+      // literal placeholder "The sender" (never a real name) - shown
+      // verbatim in the owner-chat pending-approvals list, live. The SAME
+      // "Name · Number" resolver every other WhatsApp-derived list in
+      // this file already uses (a current ACTIVE directory match,
+      // falling back to just the number) replaces it here too, never a
+      // stale/placeholder stored name.
+      items.push({ approval, candidateIndex: null, label: activeNameOrNumber(approval.phone, employees), summary: approval.dataRequestSummary });
     }
   });
   return items;
@@ -7089,6 +7249,16 @@ function buildApprovalItems(pending) {
 function buildPendingListQuestion(items) {
   const lines = items.map((it, i) => (i + 1) + ') ' + it.label + ' — ' + it.summary);
   return (items.length > 1 ? items.length + 'ti approval pending:\n' : '') + lines.join('\n') + '\nKon-ta pathabo?';
+}
+// Task 1 (2026-11) LIVE BUG FIX - "open" a single selected item: its own
+// name, summary, and exact outgoing text, plus how to decide, WITHOUT
+// repeating the whole pending list and WITHOUT ever sending anything
+// automatically - see the bare-number check in handleApprovalCommand.
+function buildApprovalOpenReply(item, index) {
+  const text = item.approval.preparedReplyText || '';
+  const textLine = text ? '\nPathano text: "' + text + '"' : '';
+  return index + ') ' + item.label + ' — ' + item.summary + textLine +
+    '\n\nPathate hole likhun: "' + index + ' pathao"\nBad dite hole likhun: "' + index + ' na"\nChange korte hole likhun: "' + index + ' edit: <apnar instruction>"';
 }
 
 // One `decision` entry per approval actually addressed in this message -
@@ -7143,11 +7313,32 @@ async function classifyApprovalCommand(text, items) {
 // message isn't actually about any pending approval - never hijacks
 // ordinary chat just because a word like "pathao" could theoretically
 // apply to something else entirely.
-async function handleApprovalCommand(text, ownerEmail) {
+async function handleApprovalCommand(text, ownerEmail, history) {
   if (!memoryService.isOwner(ownerEmail)) return null;
   const pending = await listPendingApprovals();
   if (!pending.length) return null;
-  const items = buildApprovalItems(pending);
+  const { employees } = await employeeService.getEmployeeData();
+  const items = buildApprovalItems(pending, employees);
+
+  // Task 1 (2026-11) LIVE BUG FIX: a bare number answering SUBH's own
+  // "Kon-ta pathabo?" question used to go straight through
+  // classifyApprovalCommand below, which has no ACTION to pair with a
+  // lone number and so just re-asked the same question - re-showing the
+  // FULL list again, live-observed as a frustrating loop ("5" -> the
+  // same 5-item list, repeatedly). This is a deterministic, code-only
+  // check for exactly that one case: a bare 1-2 digit reply right after
+  // SUBH's own numbered list is resolved to OPENING that single item
+  // (its own text + how to decide), never auto-sending and never
+  // repeating the whole list.
+  const bareIndexMatch = /^\s*(\d{1,2})\s*$/.exec(text);
+  if (bareIndexMatch) {
+    const lastAssistantTurn = Array.isArray(history) ? history.slice().reverse().find((h) => h && h.role === 'assistant' && h.text) : null;
+    if (lastAssistantTurn && /Kon-ta pathabo\?\s*$/.test(lastAssistantTurn.text)) {
+      const index = Number(bareIndexMatch[1]);
+      const item = items[index - 1];
+      if (item) return { reply: buildApprovalOpenReply(item, index) };
+    }
+  }
 
   const decision = await classifyApprovalCommand(text, items).catch(() => ({ unrelated: true, decisions: [] }));
   if (decision.unrelated) return null;
@@ -11803,6 +11994,12 @@ module.exports = {
   findEmployeeIdByExactName,
   hrDataQueryTool,
   extractHrDataQuery,
+  ownerChatHrDataQueryTool,
+  extractOwnerChatHrDataQuery,
+  resolveOwnerChatHrDataQuery,
+  resolveOwnerChatDataQuery,
+  saveOwnerHrQueryContext,
+  getOwnerHrQueryContext,
   handleHrDataQueryRequest,
   resolveAndQueueHrDataQuery,
   runHrDataQueryAndQueue,
