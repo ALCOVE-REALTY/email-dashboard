@@ -30,6 +30,7 @@ const employeeService = require('../src/employeeService');
 const inboxLogArchive = require('../src/inboxLogArchive');
 const memoryService = require('../src/aiAssistant/memoryService');
 const tools = require('../src/aiAssistant/tools');
+const assistantShared = require('../src/aiAssistant/assistantShared');
 const documentRequests = require('../src/aiAssistant/documentRequests');
 
 // Task 2 (2026-10-31) - many pre-existing tests in this file use a
@@ -5984,6 +5985,70 @@ async function checkAsync(label, fn) {
       const ans = whatsappAssistant.buildHrDataQueryAnswer(MULTI_YEAR_DOER_EMPLOYEES, { returnType: 'count', reportingManagerName: 'Yashaswi Shroff', dojMonth: 10, dojYear: resolvedYear }, 'banglish');
       return ans.outgoingText === 'Yashaswi Shroff-er under-e October 2026-e total 2 jon join korechhen (Doer hisebe), tar moddhe direct reporting 1 jon.' && ans.matchCount === 2;
     })());
+  })();
+
+  console.log('='.repeat(70));
+  console.log('Task 3 (2026-11) LIVE BUG FIX: the SUBH chat box and WhatsApp use ONE SHARED engine for "under X" HR-data questions, with IDENTICAL answer text - the live bug: the chat box answered a generic unfiltered "Total Joiners (Active): 5" (wrong tool picked: get_joining_this_month/get_direct_reports, neither supports both a manager filter AND a date filter together) instead of calling build_hr_report, which already reuses whatsappAssistant\'s own filterEmployeesForHrQuery/buildHrDataQueryAnswer but never resolved a bare dojMonth or dojRelative itself - and a live data check found the expected "1 direct report" only reachable via a SELF-REFERENTIAL Reporting Manager field (the sheet\'s own convention for "top of this branch, directly under the Director")')
+  console.log('='.repeat(70));
+  await (async () => {
+    // Fixed data fixture, deliberately including a SELF-REFERENTIAL
+    // Reporting Manager row (Direct SelfRef's own Reporting Manager is
+    // literally its own name) - reproduces the real October-2026 live
+    // data's own shape (Suman Banerjee), confirmed by a direct read-only
+    // check against employeeService.getEmployeeData(): of the 3 real
+    // employees under Yashaswi Shroff (Doer) in October 2026, the one
+    // expected "direct report" has no row anywhere with Reporting Manager
+    // literally "Yashaswi Shroff" - their OWN Reporting Manager field is
+    // self-referential instead.
+    const SELF_REF_DOER_EMPLOYEES = [
+      { name: 'Test Director', designation: 'Director', department: 'Management', location: 'HO', company: 'Alcove', reportingManager: 'Board', reportingDoer: '', status: 'ACTIVE', doj: new Date(Date.UTC(2015, 0, 1)) },
+      { name: 'Direct Normal', designation: 'Manager', department: 'Civil', location: 'HO', company: 'Alcove', reportingManager: 'Test Director', reportingDoer: 'Test Director', status: 'ACTIVE', doj: new Date(Date.UTC(2026, 9, 5)) },
+      { name: 'Direct SelfRef', designation: 'Head', department: 'Architecture', location: 'HO', company: 'Alcove', reportingManager: 'Direct SelfRef', reportingDoer: 'Test Director', status: 'ACTIVE', doj: new Date(Date.UTC(2026, 9, 12)) },
+      { name: 'Indirect Person', designation: 'Engineer', department: 'Civil', location: 'HO', company: 'Alcove', reportingManager: 'Direct Normal', reportingDoer: 'Test Director', status: 'ACTIVE', doj: new Date(Date.UTC(2026, 9, 8)) }
+    ];
+    check('LOCKED SCENARIO: buildHrDataQueryAnswer counts a SELF-REFERENTIAL Reporting Manager row as a direct report of the Director - "total 3 jon... tar moddhe direct reporting 2 jon" (Direct Normal + Direct SelfRef, never Indirect Person)', (() => {
+      const ans = whatsappAssistant.buildHrDataQueryAnswer(SELF_REF_DOER_EMPLOYEES, { returnType: 'count', reportingManagerName: 'Test Director', dojMonth: 10, dojYear: 2026 }, 'banglish');
+      return ans.outgoingText === 'Test Director-er under-e October 2026-e total 3 jon join korechhen (Doer hisebe), tar moddhe direct reporting 2 jon.' && ans.matchCount === 3;
+    })());
+    await checkAsync('REGRESSION: tools.js\'s queryEmployees own directReportCount agrees EXACTLY with buildHrDataQueryAnswer\'s directRows count on the same self-referential fixture - the two engines can never disagree on this number', async () => {
+      const origGetData = employeeService.getEmployeeData;
+      employeeService.getEmployeeData = async () => ({ employees: SELF_REF_DOER_EMPLOYEES, departmentNames: new Map(), locationNames: new Map(), reportingManagerNames: new Map(), doerNames: new Map() });
+      try {
+        const result = await tools.queryEmployees({ reportingManager: 'Test Director', dojMonth: 10, dojYear: 2026 });
+        return result.note && result.note.includes('2 of them report to Test Director directly');
+      } finally {
+        employeeService.getEmployeeData = origGetData;
+      }
+    });
+    await checkAsync('Task 3 (2026-11) CHAT-BOX TEST HARNESS: assistantShared.TOOL_RUNNERS.build_hr_report (the owner chat box\'s own tool runner) resolves a bare dojMonth (no year) to its most recent occurrence exactly like resolveAndQueueHrDataQuery does, and produces the IDENTICAL outgoingText buildHrDataQueryAnswer itself would for the equivalent resolved query - "ONE engine for both", not a second, independently-drifting copy', async () => {
+      const origGetData = employeeService.getEmployeeData;
+      employeeService.getEmployeeData = async () => ({ employees: SELF_REF_DOER_EMPLOYEES, departmentNames: new Map(), locationNames: new Map(), reportingManagerNames: new Map(), doerNames: new Map() });
+      try {
+        const todayIst = whatsappAssistant.istTodayAsUtcMidnight();
+        const resolvedYear = employeeService.resolveBareDojYear(10, todayIst.getUTCMonth() + 1, todayIst.getUTCFullYear());
+        const chatBoxResult = await assistantShared.TOOL_RUNNERS.build_hr_report({ returnType: 'count', reportingManagerName: 'Test Director', dojMonth: 10 }, {}, 'banglish');
+        const whatsappAnswer = whatsappAssistant.buildHrDataQueryAnswer(SELF_REF_DOER_EMPLOYEES, { returnType: 'count', reportingManagerName: 'Test Director', dojMonth: 10, dojYear: resolvedYear }, 'banglish');
+        return chatBoxResult.replyText === whatsappAnswer.outgoingText && resolvedYear === 2026;
+      } finally {
+        employeeService.getEmployeeData = origGetData;
+      }
+    });
+    await checkAsync('Task 3 (2026-11): build_hr_report also resolves dojRelative ("this_month"/"last_n_months") before filtering, same as resolveAndQueueHrDataQuery - never left unresolved and silently ignored', async () => {
+      const origGetData = employeeService.getEmployeeData;
+      const todayIst = whatsappAssistant.istTodayAsUtcMidnight();
+      const thisMonthFixture = [
+        { name: 'Test Director', designation: 'Director', department: 'Management', location: 'HO', company: 'Alcove', reportingManager: 'Board', reportingDoer: '', status: 'ACTIVE', doj: new Date(Date.UTC(2015, 0, 1)) },
+        { name: 'Joined This Month', designation: 'Engineer', department: 'Civil', location: 'HO', company: 'Alcove', reportingManager: 'Test Director', reportingDoer: 'Test Director', status: 'ACTIVE', doj: new Date(Date.UTC(todayIst.getUTCFullYear(), todayIst.getUTCMonth(), 1)) },
+        { name: 'Joined Long Ago', designation: 'Engineer', department: 'Civil', location: 'HO', company: 'Alcove', reportingManager: 'Test Director', reportingDoer: 'Test Director', status: 'ACTIVE', doj: new Date(Date.UTC(2015, 0, 1)) }
+      ];
+      employeeService.getEmployeeData = async () => ({ employees: thisMonthFixture, departmentNames: new Map(), locationNames: new Map(), reportingManagerNames: new Map(), doerNames: new Map() });
+      try {
+        const result = await assistantShared.TOOL_RUNNERS.build_hr_report({ returnType: 'count', reportingManagerName: 'Test Director', dojRelative: 'this_month' }, {}, 'english');
+        return result.replyText.includes('total 1') || /\b1\b/.test(result.replyText);
+      } finally {
+        employeeService.getEmployeeData = origGetData;
+      }
+    });
   })();
   check('resolveDojRelativeRange("last_n_months"): "last 3 months" from a fixed clock resolves to an exact [3 months ago, now] range', (() => {
     const now = new Date(Date.UTC(2026, 10, 1)); // 1 Nov 2026

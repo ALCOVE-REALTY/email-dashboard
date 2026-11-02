@@ -3746,8 +3746,16 @@ function buildHrDataQueryAnswer(employees, query, lang) {
   // The subset of the Doer-matched rows above that ALSO report to this
   // person directly ("tar moddhe direct reporting") - always a subset of
   // `rows` by construction, never computed independently of it.
+  // Task 3 (2026-11) LIVE BUG FIX: a row whose OWN Reporting Manager field
+  // is SELF-REFERENTIAL (e.g. Suman Banerjee's own Reporting Manager is
+  // literally "Suman Banerjee") is the real data's convention for "top of
+  // this branch - nothing between them and the Director" (confirmed
+  // against the real October-2026 data: this is exactly how the expected
+  // direct-report count of 1 is reached, not 0 from a strict/fuzzy name
+  // match against the Director's own name, which this row's Reporting
+  // Manager field never contains at all).
   const directRows = isUnderXDirector
-    ? rows.filter((e) => e.reportingManager && departmentHintMatches(e.reportingManager, query.reportingManagerName))
+    ? rows.filter((e) => e.reportingManager && (departmentHintMatches(e.reportingManager, query.reportingManagerName) || matchesWholeWordName(e.reportingManager, e.name)))
     : null;
   const roleLabel = query.designation ? naturalizeDirectoryValue(query.designation) : (lang === 'english' ? 'employees' : 'kormi');
   // Task 5/8 (2026-10-31) - a COMPANY-WIDE "dept wise HOD list" is a
@@ -11784,6 +11792,7 @@ module.exports = {
   computeHodBreakdown,
   buildHrDataQueryAnswer,
   resolveDojRelativeRange,
+  istTodayAsUtcMidnight,
   findEmployeeIdByExactName,
   hrDataQueryTool,
   extractHrDataQuery,

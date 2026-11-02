@@ -291,7 +291,7 @@ const TOOL_DEFS_NEUTRAL = [
   },
   {
     name: 'get_joining_this_month',
-    description: 'List employees who joined in a given calendar month (current year). Active only by default. Works for ANY named month - pass month for "January te ke join korlo" etc. For relative phrasing ("next month", "last month" - no month actually named), pass monthOffset instead of computing a month number yourself - you cannot reliably compute this without seeing today\'s real date first.',
+    description: 'List employees who joined in a given calendar month (current year). Active only by default. Works for ANY named month - pass month for "January te ke join korlo" etc. For relative phrasing ("next month", "last month" - no month actually named), pass monthOffset instead of computing a month number yourself - you cannot reliably compute this without seeing today\'s real date first. Do NOT use this if the question ALSO names a specific manager/Director/team ("X er under e", "under X", "X\'s team") or any other filter (department, designation, location, status) together with the month - use build_hr_report instead (dojMonth + reportingManagerName etc.), which supports a joining-month filter combined with any of those and is the ONLY tool that correctly computes a Director\'s two-number Doer/direct-report split.',
     parameters: {
       type: 'object',
       properties: {
@@ -368,7 +368,7 @@ const TOOL_DEFS_NEUTRAL = [
   },
   {
     name: 'query_employees',
-    description: 'General-purpose read-only search over the FULL employee dataset - use this for anything the other tools do not already cover: a specific month\'s birthdays regardless of year, an approximate/partial name, a joining-year breakdown, a tenure-sorted list, "who is under X filtered by department", etc. ALSO use this (not list_employees) whenever the person names specific columns they want, e.g. "Sales department er active staff list - name, designation, phone" means fields:[\'name\',\'designation\',\'contactNumber\'] - contactNumber (phone), emailPersonal, bloodGroup, emergencyContact, permanentAddress, presentAddress, aadhar and pan are all real, available fields here, never say phone/address/etc. aren\'t tracked without checking this tool\'s field list first. Supports filtering on any field, grouping/counting by any field, sorting, and a result limit. Prefer a more specific tool when one exists (e.g. get_department_headcount for a plain department breakdown), but never refuse a question just because no preset tool matches it exactly - use this one instead.',
+    description: 'General-purpose read-only search over the FULL employee dataset - use this for anything the other tools do not already cover: a specific month\'s birthdays regardless of year, an approximate/partial name, a joining-year breakdown, a tenure-sorted list, etc. Do NOT use this for a plain "who/how many is under X" question, even combined with a department/joining-date/designation/status filter - use build_hr_report instead (reportingManagerName), which is the ONLY tool that correctly reports a Director\'s two-number Doer/direct-report split; use query_employees for "under X" ONLY when the person ALSO names SPECIFIC COLUMNS they want back (see the next sentence), which build_hr_report cannot do. ALSO use this (not list_employees) whenever the person names specific columns they want, e.g. "Sales department er active staff list - name, designation, phone" means fields:[\'name\',\'designation\',\'contactNumber\'] - contactNumber (phone), emailPersonal, bloodGroup, emergencyContact, permanentAddress, presentAddress, aadhar and pan are all real, available fields here, never say phone/address/etc. aren\'t tracked without checking this tool\'s field list first. Supports filtering on any field, grouping/counting by any field, sorting, and a result limit. Prefer a more specific tool when one exists (e.g. get_department_headcount for a plain department breakdown), but never refuse a question just because no preset tool matches it exactly - use this one instead.',
     parameters: {
       type: 'object',
       properties: {
@@ -436,7 +436,7 @@ const TOOL_DEFS_NEUTRAL = [
     // a wrong "51 HODs: 1) Sanjib Roy (55)..." shape instead of one real
     // name per department).
     name: 'build_hr_report',
-    description: 'Build an HR report or data lookup DIRECTLY from the real employee database - you only extract WHAT to look up, the actual names/numbers/lists are computed in code afterward, never invented by you. ALWAYS use this (never query_employees) for: a company-wide department-wise HOD listing ("dept wise HOD list", "shob department er HOD ke ke", "HOD list for every department"), one department\'s own HOD(s), or a plain headcount/roster/probation/joining-month question. If the request is genuinely too vague to extract a returnType from (you cannot tell list vs count vs hod vs hodByDepartment, or which department/role), do NOT call this tool - ask the person which format or filter they want instead, in your own normal reply.',
+    description: 'Build an HR report or data lookup DIRECTLY from the real employee database - you only extract WHAT to look up, the actual names/numbers/lists are computed in code afterward, never invented by you. ALWAYS use this (never query_employees, never get_direct_reports, never get_joining_this_month) for: a company-wide department-wise HOD listing ("dept wise HOD list", "shob department er HOD ke ke", "HOD list for every department"), one department\'s own HOD(s), a plain headcount/roster/probation/joining-month question, a "who/how many is under X"/"X\'s team" question (reportingManagerName), or - ESPECIALLY - any question that COMBINES "under X" with a joining-date/month/department/designation/status filter together (e.g. "Yashaswi Shroff-er under-e October-e koto jon join koreche?" - get_direct_reports and get_joining_this_month can each only handle ONE of those two things, never both, and only this tool correctly reports the two-number Doer/direct-report split when X is a Director rather than an ordinary manager). If the request is genuinely too vague to extract a returnType from (you cannot tell list vs count vs hod vs hodByDepartment, or which department/role), do NOT call this tool - ask the person which format or filter they want instead, in your own normal reply.',
     parameters: whatsappAssistant.hrDataQueryTool().function.parameters
   },
   {
@@ -469,7 +469,7 @@ const TOOL_DEFS_NEUTRAL = [
   },
   {
     name: 'get_direct_reports',
-    description: 'DOWNWARD direction only - list employees who report TO a named manager (their team, below them). Use when X is the manager/senior person in the question: "who reports to X", "who\'s on X\'s team", "X er under e kara ache" (who is under X), "X ke under kitne log hain" (how many under X), "X ke under kaun kaun hai" (who all is under X), "X ka team". Do NOT use this for the opposite direction (X\'s OWN manager/HOD) - see get_reporting_manager for that. Nothing to do with health insurance/benefits - never call get_insurance_status for this kind of question.',
+    description: 'DOWNWARD direction only - list employees who report TO a named manager (their team, below them). Use when X is the manager/senior person in the question AND the question asks for nothing else: "who reports to X", "who\'s on X\'s team", "X er under e kara ache" (who is under X), "X ke under kitne log hain" (how many under X), "X ke under kaun kaun hai" (who all is under X), "X ka team". Do NOT use this for the opposite direction (X\'s OWN manager/HOD) - see get_reporting_manager for that. Do NOT use this if the question ALSO asks about a joining-date/month, department, designation, status, or any other filter together with "under X" - use build_hr_report instead (reportingManagerName + dojMonth/dojYear/department/etc.), which supports all of those together AND correctly reports the two-number Doer/direct-report split when X is a Director - this tool alone cannot do either. Nothing to do with health insurance/benefits - never call get_insurance_status for this kind of question.',
     parameters: {
       type: 'object',
       properties: { name: { type: 'string', description: 'The manager/DOER\'s name, as mentioned by the user.' } },
@@ -669,6 +669,33 @@ const TOOL_RUNNERS = {
   build_hr_report: async (input, user, lang) => {
     const { employees } = await employeeService.getEmployeeData();
     const query = Object.assign({}, input);
+    // Task 3 (2026-11) LIVE BUG FIX: this runner handed dojMonth/dojYear/
+    // dojRelative straight through to buildHrDataQueryAnswer/
+    // filterEmployeesForHrQuery without ever resolving them first - a bare
+    // dojMonth (no year named) matched that month in EVERY year on file
+    // ("October-e total 10 jon" instead of the real October-2026 count of
+    // 3 - the exact live bug), and dojRelative ("this_month"/
+    // "last_n_months") was never resolved into real dojMonth/dojYear or
+    // dojFrom/dojTo at all, silently ignored. Same resolution, in the same
+    // order, as whatsappAssistant.js's own resolveAndQueueHrDataQuery -
+    // the ONE engine both paths share must resolve dates identically too,
+    // not just filter/template identically.
+    if (query.dojRelative === 'this_month') {
+      const today = whatsappAssistant.istTodayAsUtcMidnight();
+      query.dojMonth = today.getUTCMonth() + 1;
+      query.dojYear = today.getUTCFullYear();
+    } else if (query.dojRelative === 'last_n_months') {
+      const range = whatsappAssistant.resolveDojRelativeRange('last_n_months', query.dojRelativeMonths, whatsappAssistant.istTodayAsUtcMidnight());
+      if (range) {
+        query.dojFrom = range.dojFrom;
+        query.dojTo = range.dojTo;
+      }
+    }
+    delete query.dojRelative;
+    if (query.dojMonth && !query.dojYear) {
+      const today = whatsappAssistant.istTodayAsUtcMidnight();
+      query.dojYear = employeeService.resolveBareDojYear(query.dojMonth, today.getUTCMonth() + 1, today.getUTCFullYear());
+    }
     // Department/site aliases resolved the same way WhatsApp data
     // requests already do (Task 6 extends this further) - a confirmed
     // alias always wins over the plain substring matcher.

@@ -741,8 +741,14 @@ async function queryEmployees(params = {}) {
   delete filters.includeInactive;
 
   const filtered = employeeService.filterEmployees(employees, filters);
+  // Task 3 (2026-11) LIVE BUG FIX: a row whose OWN Reporting Manager is
+  // SELF-REFERENTIAL (e.g. Suman Banerjee's own Reporting Manager field
+  // is literally "Suman Banerjee") is the real data's convention for "top
+  // of this branch - nothing between them and the Director" - same fix,
+  // same reasoning, as whatsappAssistant.js's buildHrDataQueryAnswer
+  // (identical directRows computation, now in sync with this one).
   const directReportCount = doerRedirectName
-    ? filtered.filter((e) => employeeService.matchesWholeWordName(e.reportingManager, doerRedirectName)).length
+    ? filtered.filter((e) => employeeService.matchesWholeWordName(e.reportingManager, doerRedirectName) || employeeService.matchesWholeWordName(e.reportingManager, e.name)).length
     : null;
 
   // Same distinction as list_employees/group_employees: a filter value
