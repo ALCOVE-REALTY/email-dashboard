@@ -830,17 +830,61 @@ function mergeRecentWhatsappConversations(needsYou, recentLog, nowTs, windowMs, 
     needsYou: true, statusLabel: null,
     lastMessageTime: latestTsByChat.has(r.chatId) ? latestTsByChat.get(r.chatId) : r.lastMessageTime
   }));
+  // Task 2 (2026-11) LIVE BUG FIX, 2nd attempt: the dismiss check below
+  // used to compare against lastMessageTime, which is the time of the
+  // LAST activity in EITHER direction (see "sort like WhatsApp" above) -
+  // so any purely OUTGOING event after a dismiss (SUBH's own auto-reply,
+  // a proactive follow-up, an HR confirmation result, a retried/delayed
+  // send of an OLD message) looked exactly like "new activity" and
+  // incorrectly un-hid the row, even though the sender never sent
+  // anything new. Scoped instead to entries that represent an ACTUAL new
+  // incoming message FROM THE SENDER: arrivedAt is only ever set when the
+  // incoming-message pipeline processed a real inbound message, and the
+  // 3 "skipped" outcomes below are exactly a gateway re-delivery
+  // (skipped_duplicate), a bot-loop guard (skipped_possible_loop) or an
+  // old message surfacing again (skipped_repeated_message) - none of them
+  // a genuinely new message either, so they're excluded the same way a
+  // pure status update (which never reaches logInboxEvent at all) already
+  // is by not having arrivedAt set.
+  const NON_GENUINE_INCOMING_OUTCOMES = new Set(['skipped_duplicate', 'skipped_possible_loop', 'skipped_repeated_message']);
+  const lastGenuineIncomingTsByChat = new Map();
+  for (const e of recentLog) {
+    if (!e.arrivedAt || NON_GENUINE_INCOMING_OUTCOMES.has(e.outcome)) continue;
+    const key = whatsapp.normalizePhone(e.chatId);
+    const existing = lastGenuineIncomingTsByChat.get(key);
+    if (existing === undefined || e.arrivedAt > existing) lastGenuineIncomingTsByChat.set(key, e.arrivedAt);
+  }
   // Live request (2026-10-29) - a row the owner explicitly removed (the
-  // row's own "x" button) stays gone until a STRICTLY NEWER message
-  // arrives for that chat; a dismiss timestamp equal to or after the
-  // row's own lastMessageTime means nothing has happened since the
-  // dismiss, so it's filtered out here rather than deleted from any
-  // underlying store (the real conversation/history is never touched).
-  const notDismissed = (r) => {
+  // row's own "x" button) stays gone until a STRICTLY NEWER genuine
+  // incoming message arrives for that chat; a dismiss timestamp equal to
+  // or after the last genuine incoming message means the sender hasn't
+  // actually said anything new since the dismiss, so it's filtered out
+  // here rather than deleted from any underlying store (the real
+  // conversation/history is never touched).
+  // Task 2 (2026-11) FOLLOW-UP FIX: a needs-you row's OWN lastMessageTime
+  // (an approval/draft/document/ambiguous-confirmation's own createdAt,
+  // or the matching recentLog entry if one exists) is NOT subject to the
+  // same "purely outgoing" risk the resolvedRows fix above guards
+  // against - every one of those item types is, by construction, only
+  // ever created as a direct result of something the SENDER did (SUBH
+  // never generates a pending approval/draft/document/ambiguous-
+  // confirmation on its own initiative) - so it stays its own, simpler
+  // check: a genuinely NEW pending item after the dismiss (found live:
+  // the lastGenuineIncoming-only check below incorrectly kept a dismissed
+  // row hidden even after a brand new approval/draft was created for it,
+  // since savePendingApproval/savePendingDraft never write a recentLog
+  // entry with arrivedAt at all).
+  const notDismissedNeedsYou = (r) => {
     const dismissedAt = dismissed.get(r.chatId);
     return !dismissedAt || r.lastMessageTime > dismissedAt;
   };
-  const rows = needsYouRows.filter(notDismissed).concat(resolvedRows.filter(notDismissed));
+  const notDismissedResolved = (r) => {
+    const dismissedAt = dismissed.get(r.chatId);
+    if (!dismissedAt) return true;
+    const lastGenuineIncoming = lastGenuineIncomingTsByChat.get(r.chatId);
+    return Boolean(lastGenuineIncoming) && lastGenuineIncoming > dismissedAt;
+  };
+  const rows = needsYouRows.filter(notDismissedNeedsYou).concat(resolvedRows.filter(notDismissedResolved));
   // Pure chronological order, newest first - exactly like a real WhatsApp
   // conversation list. The old "needs-you always first" grouping is
   // removed per direct instruction: those rows are visible in the Action

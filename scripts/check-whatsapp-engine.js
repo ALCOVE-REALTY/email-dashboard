@@ -3438,20 +3438,56 @@ async function checkAsync(label, fn) {
     await whatsappAssistant.dismissWhatsappItem(phone).catch(() => {});
     return ok;
   });
-  await checkAsync('dismissing a RESOLVED row (no pending items at all) hides it from the list, and a strictly newer message for that same chat brings it back', async () => {
+  await checkAsync('dismissing a RESOLVED row (no pending items at all) hides it from the list, and a strictly newer GENUINE INCOMING message for that same chat brings it back', async () => {
     const phone = '919999000091';
-    await whatsappAssistant.logInboxEvent({ chatId: phone, name: 'Test', isGroup: false, messageSummary: 'hi', aCase: 'acknowledged', sentText: 'TEST - safe to ignore', outcome: 'sent' });
+    // Task 2 (2026-11) LIVE BUG FIX - arrivedAt set on both entries here
+    // (the real shape of an entry logged while actually processing an
+    // incoming message, e.g. actOnOfficialTurn/sendOrReportAutoReply) -
+    // this is what makes the second one a genuinely NEW incoming message
+    // for the dismiss check below, not just any later activity.
+    await whatsappAssistant.logInboxEvent({ chatId: phone, name: 'Test', isGroup: false, messageSummary: 'hi', aCase: 'acknowledged', sentText: 'TEST - safe to ignore', outcome: 'sent', arrivedAt: Date.now() });
     const before = await whatsappAssistant.listRecentWhatsappConversations(new Date(), Infinity);
     const beforeHas = before.some((r) => r.chatId === whatsapp.normalizePhone(phone));
     await whatsappAssistant.dismissWhatsappItem(phone);
     const afterDismiss = await whatsappAssistant.listRecentWhatsappConversations(new Date(), Infinity);
     const afterDismissHas = afterDismiss.some((r) => r.chatId === whatsapp.normalizePhone(phone));
     await new Promise((resolve) => setTimeout(resolve, 15));
-    await whatsappAssistant.logInboxEvent({ chatId: phone, name: 'Test', isGroup: false, messageSummary: 'hi again', aCase: 'acknowledged', sentText: 'TEST - safe to ignore', outcome: 'sent' });
+    await whatsappAssistant.logInboxEvent({ chatId: phone, name: 'Test', isGroup: false, messageSummary: 'hi again', aCase: 'acknowledged', sentText: 'TEST - safe to ignore', outcome: 'sent', arrivedAt: Date.now() });
     const afterNewMsg = await whatsappAssistant.listRecentWhatsappConversations(new Date(), Infinity);
     const afterNewMsgHas = afterNewMsg.some((r) => r.chatId === whatsapp.normalizePhone(phone));
     return beforeHas && !afterDismissHas && afterNewMsgHas;
   });
+  await checkAsync('Task 2 (2026-11) LIVE BUG FIX: a dismissed row stays hidden through a purely OUTGOING event with no genuine new incoming message - SUBH\'s own proactive follow-up, an HR confirmation result, or a retried send (none of these carry arrivedAt) must never un-hide it', async () => {
+    const phone = '919999000095';
+    await whatsappAssistant.logInboxEvent({ chatId: phone, name: 'Test', isGroup: false, messageSummary: 'hi', aCase: 'acknowledged', sentText: 'TEST - safe to ignore', outcome: 'sent', arrivedAt: Date.now() });
+    await whatsappAssistant.dismissWhatsappItem(phone);
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    // Exactly the shape of a proactive follow-up / HR confirmation result
+    // / retried send - outcome:'sent' but NO arrivedAt, because nothing
+    // the sender just said triggered it.
+    await whatsappAssistant.logInboxEvent({ chatId: phone, name: 'Test', isGroup: false, messageSummary: '[proactive follow-up]', aCase: 'memory', sentText: 'TEST - safe to ignore', outcome: 'sent' });
+    const rows = await whatsappAssistant.listRecentWhatsappConversations(new Date(), Infinity);
+    return !rows.some((r) => r.chatId === whatsapp.normalizePhone(phone));
+  });
+  // Task 2 (2026-11) - the gateway-redelivery/bot-loop/stale-repeat
+  // exclusion (NON_GENUINE_INCOMING_OUTCOMES in mergeRecentWhatsappConversations)
+  // is a direct, one-line `continue` in lastGenuineIncomingTsByChat's own
+  // construction loop - covered by code review rather than a dedicated
+  // test here; a resolvedRow fixture can't isolate it cleanly from the
+  // separate statusLabel exclusion (recentConvoStatusLabel already
+  // returns null for all 3 of those outcomes, so whichever one is
+  // chronologically latest would hide the row for that reason regardless
+  // of the dismiss filter being tested here).
+  check('Task 2 (2026-11) pure unit test: mergeRecentWhatsappConversations\'s needs-you dismiss check is unaffected by this fix - still keyed off the item\'s own lastMessageTime (an approval/draft/etc. is only ever created by something the SENDER did, never by SUBH alone), so a brand new pending item after a dismiss correctly un-hides the row even with NO matching recentLog entry at all', (() => {
+    const chatId = '919999000097';
+    const dismissedAt = 1_000_000;
+    const dismissedByChat = new Map([[chatId, dismissedAt]]);
+    const staleNeedsYou = [{ chatId, name: 'Test', lastMessageTime: dismissedAt - 500 }];
+    const stillHidden = whatsappAssistant.mergeRecentWhatsappConversations(staleNeedsYou, [], dismissedAt + 5000, Infinity, dismissedByChat, []);
+    const freshNeedsYou = [{ chatId, name: 'Test', lastMessageTime: dismissedAt + 500 }];
+    const nowVisible = whatsappAssistant.mergeRecentWhatsappConversations(freshNeedsYou, [], dismissedAt + 5000, Infinity, dismissedByChat, []);
+    return stillHidden.length === 0 && nowVisible.some((r) => r.chatId === chatId);
+  })());
   await checkAsync('listCommsDismissed returns a Map of every dismissed chat, and markCommsRowDismissed overwrites (never duplicates) a chat\'s own entry on a second dismiss', async () => {
     const phone = '919999000094';
     await whatsappAssistant.markCommsRowDismissed(phone, 1000);
