@@ -1183,12 +1183,49 @@
     });
   }
 
+  // Task 4 (2026-11) - the recent-chats list's own fresh fetch, shared by
+  // the prefetch-on-panel-open call and loadHistoryInto's own background
+  // refresh below, so there is exactly one place that calls this endpoint
+  // and populates pageDataCache.history.
+  async function fetchHistoryList() {
+    const resp = await fetch('/api/workforce/hr-assistant/conversations');
+    const data = await resp.json();
+    pageDataCache.history = data;
+    return data;
+  }
+  function prefetchHistoryList() {
+    fetchHistoryList().catch(() => { /* best effort - the history sheet falls back to its own fresh fetch if this never lands */ });
+  }
   async function loadHistoryInto(container, query) {
+    const trimmed = query && query.trim();
+    // Task 4 (2026-11) LIVE BUG FIX: the default (no-search) list always
+    // blanked the container with a spinner and waited for a network
+    // round trip, even though pageDataCache.history is usually already
+    // warm (prefetched the moment the panel opened). Renders instantly
+    // from that cache when there's no search query, then refreshes in the
+    // background and re-renders only if this exact container/query is
+    // still the one on screen when the fresh data lands - same
+    // stale-while-revalidate idiom as loadCommsPage. A search query is
+    // never cached (too many possible values to usefully cache) and keeps
+    // the original always-fresh, spinner-first behaviour.
+    if (!trimmed && pageDataCache.history) {
+      renderHistoryList(container, pageDataCache.history.items || [], query);
+      try {
+        const data = await fetchHistoryList();
+        const isSheet = container === historySheetList;
+        if (isSheet ? !sheetOpen : historyFullPanel.hidden) return; // closed/navigated away before the refresh landed
+        const ownSearch = isSheet ? historySheetSearch : historyFullSearch;
+        if (ownSearch && ownSearch.value.trim()) return; // a search was typed while the background refresh was in flight
+        renderHistoryList(container, data.items || [], query);
+      } catch (err) { /* keep showing the still-valid cached render */ }
+      return;
+    }
     container.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
     try {
-      const url = '/api/workforce/hr-assistant/conversations' + (query && query.trim() ? '?q=' + encodeURIComponent(query.trim()) : '');
+      const url = '/api/workforce/hr-assistant/conversations' + (trimmed ? '?q=' + encodeURIComponent(trimmed) : '');
       const resp = await fetch(url);
       const data = await resp.json();
+      if (!trimmed) pageDataCache.history = data;
       renderHistoryList(container, data.items || [], query);
     } catch (err) {
       renderHistoryList(container, [], query);
@@ -1200,6 +1237,10 @@
       await fetch('/api/workforce/hr-assistant/conversations/' + encodeURIComponent(id), { method: 'DELETE' });
     } catch (err) { /* best-effort - the row is removed from view regardless */ }
     if (currentConversationId === id) currentConversationId = null;
+    // Task 4 (2026-11) - a mutation just happened; never serve this now-
+    // stale cached list again (the caller's own loadHistoryInto right
+    // after this already re-fetches fresh and re-populates it).
+    pageDataCache.history = null;
   }
 
   function wireHistoryList(container) {
@@ -1359,6 +1400,14 @@
       addWelcome(greetName);
     }
     startCommsPolling();
+    // Task 4 (2026-11) - recent chats (the history icon in the header)
+    // used to always show a blocking spinner and wait for a fresh fetch,
+    // even though the list rarely changes between panel opens. Prefetches
+    // it here, the moment the panel itself opens, so pageDataCache.history
+    // is already warm by the time the person actually taps the icon -
+    // same stale-while-revalidate idiom as renderTodayUpdatesBadgeFromCache
+    // above. Fire-and-forget: never blocks or delays anything else here.
+    prefetchHistoryList();
     // Deliberately no auto-focus here - the keyboard should only open when
     // the person actually taps the input, not the moment the panel opens.
   }
@@ -1414,7 +1463,7 @@
   // renderable data for the others; every path still re-fetches fresh
   // data in the background and re-renders when it lands, so nothing here
   // is ever more than one poll cycle stale.
-  const pageDataCache = { comms: null, commsAt: 0, reminders: new Map(), automations: null, openFlows: null, convos: new Map(), siteAliases: null, deptAliases: null };
+  const pageDataCache = { comms: null, commsAt: 0, reminders: new Map(), automations: null, openFlows: null, convos: new Map(), siteAliases: null, deptAliases: null, history: null };
   // Bumped by invalidateReminderCache (every reminder mutation - done/
   // undo/cancel/snooze/create/edit). Any reminders fetch in flight when a
   // mutation happens captures remMutationSeq at send time and checks it
