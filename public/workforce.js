@@ -251,7 +251,10 @@ function setDisplayName(name) {
   document.getElementById('drawerName').textContent = display;
   applyAvatarIdentity(currentUserEmail);
   renderProfileNameRow();
-  if (window.showWiToast) window.showWiToast('Name updated');
+  // Task 1 (2026-11) - the old black-pill showWiToast is replaced by the
+  // one shared professional toast (see hrAssistant.js's own
+  // window.__hrAssistantToast) - no separate notification style anywhere.
+  if (window.__hrAssistantToast) window.__hrAssistantToast('Name updated');
 }
 
 function renderProfileNameRow() {
@@ -2465,7 +2468,9 @@ document.getElementById('exportOrgChartPdf').addEventListener('click', async () 
   try {
     treeData = await fetchJson('/api/workforce/org-chart-pdf?department=' + encodeURIComponent(dept) + '&refresh=1');
   } catch (err) {
-    alert('Failed to prepare PDF: ' + err.message);
+    // Task 1 (2026-11) - every notification in SUBH pages uses the one
+    // shared professional toast now, never a native alert().
+    if (window.__hrAssistantToast) window.__hrAssistantToast('Failed to prepare PDF: ' + err.message, 'error'); else alert('Failed to prepare PDF: ' + err.message);
     btn.disabled = false;
     labelEl.textContent = originalLabel;
     return;
@@ -2875,7 +2880,7 @@ document.getElementById('hiPolicyInfoGrid').addEventListener('click', (e) => {
         loadedViews.delete('healthInsurance');
       }
     } catch (err) {
-      alert('Failed to save: ' + err.message);
+      if (window.__hrAssistantToast) window.__hrAssistantToast('Failed to save: ' + err.message, 'error'); else alert('Failed to save: ' + err.message);
     }
   }
   input.addEventListener('blur', commit);
@@ -5663,7 +5668,7 @@ document.getElementById('exportEmployeesPdf').addEventListener('click', async ()
     try {
       await renderPendingConfirmationsReport();
     } catch (err) {
-      alert('Failed to generate report: ' + err.message);
+      if (window.__hrAssistantToast) window.__hrAssistantToast('Failed to generate report: ' + err.message, 'error'); else alert('Failed to generate report: ' + err.message);
     }
     return;
   }
@@ -6299,7 +6304,7 @@ document.getElementById('exportPendingConfirmationsPdf').addEventListener('click
   try {
     await renderPendingConfirmationsReport();
   } catch (err) {
-    alert('Failed to generate Upcoming Confirmations report: ' + err.message);
+    if (window.__hrAssistantToast) window.__hrAssistantToast('Failed to generate Upcoming Confirmations report: ' + err.message, 'error'); else alert('Failed to generate Upcoming Confirmations report: ' + err.message);
   }
 });
 

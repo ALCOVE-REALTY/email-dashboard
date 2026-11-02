@@ -385,19 +385,28 @@
 
   // Task 8 (2026-11) - SUBH chat box only (not WhatsApp conversations):
   // (a) long-press the sender's own message for a small Copy/Edit popup,
-  // (b) a copy icon under every SUBH reply. Both use the SAME copy
-  // action/toast, per direct instruction ("the shared 'Copied' toast").
+  // (b) a copy icon under every SUBH reply.
+  // Task 1 (2026-11) LIVE BUG FIX: these two used to share the exact same
+  // "Copied" toast - but per direct instruction, the per-reply copy icon
+  // (b) must show NO app toast at all (Android already shows its own
+  // native "Copied" bubble there), while every OTHER copy action,
+  // including the long-press popup's own Copy (a), keeps the app toast.
+  // Split into two functions sharing the one clipboard-write; only the
+  // "WithToast" variant calls showProToast.
   const MSG_COPY_ICON_SVG = '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
-  async function copyMsgTextWithToast(text) {
+  async function copyMsgTextSilent(text) {
     try { await navigator.clipboard.writeText(text); } catch (err) { /* clipboard API unavailable - nothing else to fall back to here */ }
+  }
+  async function copyMsgTextWithToast(text) {
+    await copyMsgTextSilent(text);
     showProToast({ title: 'Copied' });
   }
 
   // Small floating Copy/Edit popup for long-pressing one's own message -
   // lazily created once, repositioned/shown next to whichever bubble was
   // pressed. Edit puts the text back in the input (never sends it again
-  // on its own); Copy uses the same copyMsgTextWithToast as the reply
-  // icon above.
+  // on its own); Copy uses copyMsgTextWithToast (the app toast stays for
+  // this one - see the Task 1 comment above).
   let msgMenuEl = null;
   let msgMenuText = null;
   function closeMsgMenu() {
@@ -501,13 +510,16 @@
     // Task 8 (2026-11) - (a) long-press on the sender's OWN bubble opens a
     // small Copy/Edit popup (see wireMsgLongPress below); (b) every SUBH
     // reply gets its own small, always-visible copy icon underneath.
+    // Task 1 (2026-11) LIVE BUG FIX - this copy icon specifically shows NO
+    // app toast (Android's own native "Copied" bubble already covers it);
+    // every other copy action, including (a) above, keeps the app toast.
     if (role === 'assistant' && text) {
       const copyBtn = document.createElement('button');
       copyBtn.type = 'button';
       copyBtn.className = 'wf-ai-msg-copy-btn';
       copyBtn.setAttribute('aria-label', 'Copy');
       copyBtn.innerHTML = MSG_COPY_ICON_SVG;
-      copyBtn.addEventListener('click', () => copyMsgTextWithToast(text));
+      copyBtn.addEventListener('click', () => copyMsgTextSilent(text));
       col.appendChild(copyBtn);
     }
     row.appendChild(col);
@@ -4077,28 +4089,31 @@
     showProToast({ title: text, type: type || 'success', undo: onUndo });
   }
 
-  // Task 2: ONE shared "professional" toast component (white card, soft
-  // shadow, rounded corners, coloured left accent + icon, ~3s auto-dismiss
-  // with a shrinking progress line) - used ONLY by Open Flows' Close,
-  // Important WhatsApp's remove (x), and the Automated Tasks create/list
-  // pages (via showAutoToast below, now a thin wrapper around this).
-  // Every other button in this file keeps using the plain black-pill
-  // showActionToast above, untouched. Stacks (several toasts can be on
-  // screen at once, newest closest to the input bar) and respects
-  // prefers-reduced-motion (checkmark-draw/progress-shrink become no-ops
-  // in CSS; this function's own JS logic needs no branching for it).
+  // Task 2 (2026-10), Task 1 (2026-11) - ONE shared "professional" toast
+  // component (white card, soft shadow, rounded corners, coloured left
+  // accent + icon, shrinking progress line) - this is now the ONLY toast
+  // style anywhere in SUBH: showActionToast/showAutoToast above/below are
+  // both thin wrappers around it (the old black-pill #hrRemToast element
+  // is long gone), and public/workforce.js's own former alert()/
+  // showWiToast calls now route through window.subhToast (see its
+  // definition further down in this file) into this exact same function.
+  // Stacks (several toasts can be on screen at once, newest closest to
+  // the input bar) and respects prefers-reduced-motion (checkmark-draw/
+  // progress-shrink become no-ops in CSS; this function's own JS logic
+  // needs no branching for it).
   function showProToast(opts) {
     opts = opts || {};
     if (!proToastStack) return null;
     const type = opts.type || 'success';
-    // Task 7 (2026-11) - was a flat 3s for every toast (success/info/
-    // error/warning alike), both the auto-dismiss timer and the progress
-    // bar's own transition (same `duration` drives both below). Shortened
-    // per direct instruction: success/info at 2s, error (and warning,
-    // grouped with it - not explicitly named, but closer to error than to
-    // a quick success/info confirmation) at 4s so there's time to actually
-    // read what went wrong.
-    const duration = opts.duration || (type === 'error' || type === 'warning' ? 4000 : 2000);
+    // Task 1 (2026-11) - was 2s/4s (success-info/error-warning); current
+    // display time reported, then shortened further per direct
+    // instruction: success/info 1.8s, error (and warning, grouped with
+    // it - not explicitly named, but closer to error than to a quick
+    // success/info confirmation) 3.5s. The progress bar's own transition
+    // (below) always matches this exact value, and the ~0.2s fade-out
+    // (the .leaving class, see dismiss()) was already correct and is
+    // unchanged.
+    const duration = opts.duration || (type === 'error' || type === 'warning' ? 3500 : 1800);
     proToastStack.classList.toggle('anchor-top', opts.anchor === 'top');
     const el = document.createElement('div');
     el.className = 'wf-pro-toast' + (type !== 'success' ? ' ' + type : '');
@@ -4136,6 +4151,18 @@
     timer = setTimeout(dismiss, duration);
     return { dismiss };
   }
+  // Task 1 (2026-11) - the one way any OTHER script on this page (today,
+  // only public/workforce.js) raises a SUBH-style notification, so every
+  // notification across all SUBH pages genuinely goes through this same
+  // showProToast - no separate alert()/black-pill/anything else anywhere.
+  // workforce.js loads before this file, but every real call happens from
+  // an event handler well after both scripts have finished their own
+  // top-level setup, so this is always defined by the time it's used;
+  // workforce.js still guards the call in case hrAssistant.js's own early
+  // return (no SUBH markup on this page) ever left it unset.
+  window.__hrAssistantToast = function (text, type) {
+    showProToast({ title: text, type: type || 'success' });
+  };
   // The row-close animation (slide+fade, list closes its own gap in place)
   // shared by Open Flows' Close button and Important WhatsApp's remove
   // (x) - a dedicated class/helper so it never touches the generic
