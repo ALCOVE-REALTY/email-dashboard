@@ -3418,7 +3418,11 @@ async function checkAsync(label, fn) {
     await whatsappAssistant.dismissWhatsappItem(resolvedPhone).catch(() => {});
     await whatsappAssistant.savePendingApproval({ phone: needsYouPhone, name: 'OlderNeedsYou', requestText: 'x', dataRequestSummary: 'TEST - safe to ignore', lang: 'english', preparedReplyText: 'x', preparedCard: null, preparedError: null });
     await new Promise((resolve) => setTimeout(resolve, 15));
-    await whatsappAssistant.logInboxEvent({ chatId: resolvedPhone, name: 'NewerResolved', isGroup: false, messageSummary: 'hi', aCase: 'acknowledged', sentText: 'TEST - safe to ignore', outcome: 'sent' });
+    // Task 2 (2026-11) - arrivedAt set (the real shape of a genuine
+    // auto-reply entry, always incoming-triggered in production) so this
+    // resolved row counts as genuine new activity after the dismiss
+    // above, same reasoning as the other dismiss tests in this file.
+    await whatsappAssistant.logInboxEvent({ chatId: resolvedPhone, name: 'NewerResolved', isGroup: false, messageSummary: 'hi', aCase: 'acknowledged', sentText: 'TEST - safe to ignore', outcome: 'sent', arrivedAt: Date.now() });
     const rows = await whatsappAssistant.listRecentWhatsappConversations(new Date(), Infinity);
     const idxNeedsYou = rows.findIndex((r) => r.chatId === whatsapp.normalizePhone(needsYouPhone));
     const idxResolved = rows.findIndex((r) => r.chatId === whatsapp.normalizePhone(resolvedPhone));
