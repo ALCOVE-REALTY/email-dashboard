@@ -96,6 +96,17 @@
   const openFlowsBadge = document.getElementById('hrOpenFlowsBadge');
   const openFlowsPage = document.getElementById('hrOpenFlowsPage');
   const openFlowsList = document.getElementById('hrOpenFlowsList');
+  // Task 6 (2026-11) - "Attendance Requests" (upgrades the Open flows
+  // entry point above, same icon slot - openFlowsBtn now opens this page
+  // instead, see its click handler further down).
+  const attnPage = document.getElementById('hrAttendanceRequestsPage');
+  const attnMonthSelect = document.getElementById('hrAttnMonthSelect');
+  const attnStatusChips = document.getElementById('hrAttnStatusChips');
+  const attnTypeChips = document.getElementById('hrAttnTypeChips');
+  const attnCountLabel = document.getElementById('hrAttnCountLabel');
+  const attnExportExcel = document.getElementById('hrAttnExportExcel');
+  const attnExportPdf = document.getElementById('hrAttnExportPdf');
+  const attnList = document.getElementById('hrAttnList');
   // Task 6 - "Action needed" unified inbox
   const actionNeededBtn = document.getElementById('hrActionNeededBtn');
   const actionNeededBadge = document.getElementById('hrActionNeededBadge');
@@ -1724,6 +1735,7 @@
     else if (entry.type === 'commsMail') showCommsMail();
     else if (entry.type === 'waAll') showWaAll();
     else if (entry.type === 'openFlows') showOpenFlows();
+    else if (entry.type === 'attendanceRequests') showAttendanceRequests();
     else if (entry.type === 'templates') showTemplates();
     else if (entry.type === 'siteAliases') showSiteAliases();
     else if (entry.type === 'deptAliases') showDeptAliases();
@@ -1773,6 +1785,7 @@
     const isRemDetail = view === 'reminderDetail';
     const isWaAll = view === 'waAll';
     const isOpenFlows = view === 'openFlows';
+    const isAttendanceRequests = view === 'attendanceRequests';
     const isTemplates = view === 'templates';
     const isSiteAliases = view === 'siteAliases';
     const isDeptAliases = view === 'deptAliases';
@@ -1792,6 +1805,7 @@
     if (remDetailPage) remDetailPage.hidden = !isRemDetail;
     if (commsWaAllPage) commsWaAllPage.hidden = !isWaAll;
     if (openFlowsPage) openFlowsPage.hidden = !isOpenFlows;
+    if (attnPage) attnPage.hidden = !isAttendanceRequests;
     if (templatesPage) templatesPage.hidden = !isTemplates;
     if (siteAliasesPage) siteAliasesPage.hidden = !isSiteAliases;
     if (deptAliasesPage) deptAliasesPage.hidden = !isDeptAliases;
@@ -1828,6 +1842,12 @@
       if (commsHeadIcon) commsHeadIcon.innerHTML = WHATSAPP_SVG;
       if (commsHeadTitle) commsHeadTitle.textContent = 'Open flows';
       if (commsHeadSubtitle) commsHeadSubtitle.textContent = 'Confirmations still in progress';
+      if (commsHeadBadge) commsHeadBadge.hidden = true;
+    } else if (isAttendanceRequests) {
+      if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon whatsapp';
+      if (commsHeadIcon) commsHeadIcon.innerHTML = WHATSAPP_SVG;
+      if (commsHeadTitle) commsHeadTitle.textContent = 'Attendance requests';
+      if (commsHeadSubtitle) commsHeadSubtitle.textContent = 'Leave, half-day, late, WFH';
       if (commsHeadBadge) commsHeadBadge.hidden = true;
     } else if (isTemplates) {
       if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon whatsapp';
@@ -2308,7 +2328,175 @@
     setPanelView('openFlows');
     loadOpenFlows();
   }
-  if (openFlowsBtn) openFlowsBtn.addEventListener('click', () => { pushNav({ type: 'openFlows' }); showOpenFlows(); });
+
+  // Task 6 (2026-11) - "Attendance Requests" (upgrades the Open flows
+  // entry point above - same icon, same badge element, now showing the
+  // in-progress attendance-request count instead). Every attendance-type
+  // request (leave/half-day/late/WFH/early leave/comp-off/duty change/
+  // regularisation/other) SUBH's HR-note/confirmation flow has ever
+  // handled, kept permanently.
+  const ATTN_STEP_ORDER = ['Received', 'Approver named', 'Manager asked', 'Manager confirmed', 'Employee informed'];
+  let attnState = { month: null, status: 'in_progress', type: 'all' };
+  function attnMonthLabel(monthKey) {
+    const [y, m] = monthKey.split('-').map(Number);
+    return new Date(Date.UTC(y, m - 1, 1)).toLocaleDateString('en-GB', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+  }
+  function populateAttnMonthSelect() {
+    if (!attnMonthSelect || attnMonthSelect.options.length) return;
+    const now = new Date();
+    for (let i = 0; i < 12; i++) {
+      const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1));
+      const key = d.getUTCFullYear() + '-' + String(d.getUTCMonth() + 1).padStart(2, '0');
+      const opt = document.createElement('option');
+      opt.value = key;
+      opt.textContent = attnMonthLabel(key);
+      attnMonthSelect.appendChild(opt);
+    }
+    attnState.month = attnMonthSelect.value;
+  }
+  function attnDateTime(ts) {
+    if (!ts) return '';
+    return new Date(ts).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', timeZone: 'Asia/Kolkata' }) + ', ' +
+      new Date(ts).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Kolkata' });
+  }
+  // The 5-step progress line - completed steps green, the current step
+  // amber, pending steps grey (CSS handles the actual colouring via these
+  // 3 state classes, same "done/current/pending" convention the rest of
+  // this app's step-style UI already uses).
+  function attnProgressHtml(item) {
+    const stepIndex = { 'Received': 0, 'Approver named': 1, 'Manager asked': 2, 'Manager confirmed/denied': 3, 'Employee informed': 4, 'Expired': 2, 'Cancelled': -1 }[item.currentStep];
+    const completedUpTo = item.status === 'completed' ? 4 : (stepIndex === -1 ? -1 : stepIndex);
+    return '<div class="wf-attn-progress">' + ATTN_STEP_ORDER.map((label, i) => {
+      const dotState = completedUpTo < 0 ? 'cancelled' : i < completedUpTo ? 'done' : i === completedUpTo ? 'current' : 'pending';
+      return '<span class="wf-attn-step wf-attn-step-' + dotState + '"><span class="wf-attn-step-dot"></span><span class="wf-attn-step-label">' + label + '</span></span>';
+    }).join('') + '</div>';
+  }
+  function attnStatusLineHtml(item) {
+    if (item.status === 'completed') {
+      const decision = item.managerDecision === 'confirmed' ? 'Confirmed' : 'Denied';
+      return '<span class="wf-attn-status-line done">✓ ' + decision + ' by ' + escapeHtml(item.approverName || 'the manager') + ' · employee informed ' + attnDateTime(item.employeeInformedAt) + '</span>';
+    }
+    if (item.status === 'expired') return '<span class="wf-attn-status-line expired">⚠ Expired — no manager reply in 7 days</span>';
+    if (item.status === 'cancelled') return '<span class="wf-attn-status-line cancelled">Cancelled</span>';
+    const w = item.waitingOn;
+    if (!w) return '';
+    const since = openFlowsAgeLabel(Date.now() - (w.since || item.receivedAt));
+    const who = w.who === 'sender' ? (item.employeeName || 'the employee') + ' to name the approver' : (w.name || 'the manager') + "'s reply";
+    return '<span class="wf-attn-status-line waiting">' + OPEN_FLOWS_WAITING_ON_ICON + ' Waiting for ' + escapeHtml(who) + ' · ' + since + '</span>';
+  }
+  function renderAttnList(items) {
+    if (!attnList) return;
+    if (!items.length) { attnList.innerHTML = '<div class="wf-rem-empty">No attendance requests for this filter.</div>'; return; }
+    attnList.innerHTML = items.map((it) => {
+      const badgeClass = { 'Leave': 'leave', 'Half-day': 'halfday', 'Late': 'late', 'WFH': 'wfh', 'Early leave': 'early', 'Comp-off': 'compoff', 'Duty change': 'duty', 'Other': 'other', 'Regularisation': 'reg' }[it.requestType] || 'other';
+      const canRemind = it.status === 'in_progress';
+      const canClose = it.status === 'in_progress' || it.status === 'expired';
+      return '<div class="wf-auto-task-card wf-attn-row" data-id="' + escapeHtml(it.id) + '">' +
+        '<div class="wf-auto-task-head"><div style="flex:1;min-width:0">' +
+          '<div class="wf-auto-task-subject">' + escapeHtml(it.employeeName || it.senderPhone) + (it.employeeId ? ' · ' + escapeHtml(it.employeeId) : '') + '</div>' +
+          '<div class="wf-auto-hint">For ' + escapeHtml(it.requestDates) + ' · received ' + attnDateTime(it.receivedAt) + '</div>' +
+        '</div><span class="wf-attn-type-badge wf-attn-type-' + badgeClass + '">' + escapeHtml(it.requestType) + '</span></div>' +
+        attnProgressHtml(it) +
+        attnStatusLineHtml(it) +
+        (canRemind || canClose ? '<div class="wf-open-flow-actions">' +
+          (canRemind ? '<button type="button" class="wf-attn-action-btn wf-attn-remind-btn" data-id="' + escapeHtml(it.id) + '">Remind</button>' : '') +
+          (canClose ? '<button type="button" class="wf-attn-action-btn outline wf-attn-close-btn" data-id="' + escapeHtml(it.id) + '">Close</button>' : '') +
+          '</div>' : '');
+    }).join('');
+    attnList.querySelectorAll('.wf-attn-remind-btn').forEach((btn) => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        if (!(await showConfirmDialog('Send a reminder to whoever this request is waiting on?'))) return;
+        try {
+          await postJsonOrThrow('/api/workforce/hr-assistant/attendance-requests/' + encodeURIComponent(btn.dataset.id) + '/remind', {});
+          showProToast({ title: 'Reminder sent' });
+        } catch (err) {
+          showProToast({ title: err.message || 'Could not send the reminder', type: 'error' });
+        }
+      });
+    });
+    attnList.querySelectorAll('.wf-attn-close-btn').forEach((btn) => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        if (!(await showConfirmDialog('Close this attendance request? It stays in the list, marked Cancelled.'))) return;
+        try {
+          await postJsonOrThrow('/api/workforce/hr-assistant/attendance-requests/' + encodeURIComponent(btn.dataset.id) + '/close', {});
+          showProToast({ title: 'Request closed' });
+          loadAttendanceRequests();
+        } catch (err) {
+          showProToast({ title: err.message || 'Could not close the request', type: 'error' });
+        }
+      });
+    });
+  }
+  async function loadAttendanceRequests() {
+    if (!attnList) return;
+    populateAttnMonthSelect();
+    const qs = new URLSearchParams({ month: attnState.month, type: attnState.type, status: attnState.status });
+    attnList.innerHTML = '<div class="wf-skeleton-list"><div class="wf-skeleton-row"></div><div class="wf-skeleton-row"></div></div>';
+    try {
+      const resp = await fetch('/api/workforce/hr-assistant/attendance-requests?' + qs.toString());
+      const data = await resp.json();
+      if (attnStatusChips) {
+        attnStatusChips.querySelectorAll('.wf-rem-chip').forEach((chip) => {
+          const c = (data.counts || {})[chip.dataset.status] || 0;
+          const countEl = chip.querySelector('.wf-rem-chip-count');
+          if (countEl) countEl.textContent = c;
+        });
+      }
+      if (attnCountLabel) {
+        const label = attnState.status === 'all' ? 'total' : attnState.status.replace('_', ' ');
+        attnCountLabel.textContent = (data.items || []).length + ' ' + label;
+      }
+      renderAttnList(data.items || []);
+    } catch (err) {
+      attnList.innerHTML = '<div class="wf-rem-empty">Could not load attendance requests.</div>';
+    }
+  }
+  if (attnMonthSelect) attnMonthSelect.addEventListener('change', () => { attnState.month = attnMonthSelect.value; loadAttendanceRequests(); });
+  if (attnStatusChips) {
+    attnStatusChips.querySelectorAll('.wf-rem-chip').forEach((chip) => {
+      chip.addEventListener('click', () => {
+        attnStatusChips.querySelectorAll('.wf-rem-chip').forEach((c) => c.setAttribute('aria-pressed', 'false'));
+        chip.setAttribute('aria-pressed', 'true');
+        attnState.status = chip.dataset.status;
+        loadAttendanceRequests();
+      });
+    });
+  }
+  if (attnTypeChips) {
+    attnTypeChips.querySelectorAll('.wf-attn-type-chip').forEach((chip) => {
+      chip.addEventListener('click', () => {
+        attnTypeChips.querySelectorAll('.wf-attn-type-chip').forEach((c) => c.setAttribute('aria-pressed', 'false'));
+        chip.setAttribute('aria-pressed', 'true');
+        attnState.type = chip.dataset.type;
+        loadAttendanceRequests();
+      });
+    });
+  }
+  function attnExportUrl(format) {
+    const qs = new URLSearchParams({ month: attnState.month, type: attnState.type, format });
+    return '/api/workforce/hr-assistant/attendance-requests/export?' + qs.toString();
+  }
+  if (attnExportExcel) attnExportExcel.addEventListener('click', (e) => { e.preventDefault(); window.location.href = attnExportUrl('excel'); });
+  if (attnExportPdf) attnExportPdf.addEventListener('click', (e) => { e.preventDefault(); window.location.href = attnExportUrl('pdf'); });
+  function attnCurrentMonthKey() {
+    const now = new Date();
+    return now.getUTCFullYear() + '-' + String(now.getUTCMonth() + 1).padStart(2, '0');
+  }
+  async function refreshAttnBadge() {
+    if (!openFlowsBadge) return;
+    try {
+      const resp = await fetch('/api/workforce/hr-assistant/attendance-requests?month=' + attnCurrentMonthKey() + '&status=in_progress');
+      const data = await resp.json();
+      setCountBadge(openFlowsBadge, (data.counts && data.counts.in_progress) || 0);
+    } catch (err) { /* keep showing whatever was last known */ }
+  }
+  function showAttendanceRequests() {
+    setPanelView('attendanceRequests');
+    loadAttendanceRequests();
+  }
+  if (openFlowsBtn) openFlowsBtn.addEventListener('click', () => { pushNav({ type: 'attendanceRequests' }); showAttendanceRequests(); });
 
   // Task 5 - growing templates: list (topic/times used/On-off/edit/
   // delete) + the shared Save/Edit sheet, opened either from here or from
@@ -3190,7 +3378,7 @@
   // and a slow/failed fetch never leaves it blank. Only a true cold start
   // (nothing cached yet) shows the skeleton placeholder.
   async function loadCommsPage() {
-    refreshOpenFlowsBadge(); // fire-and-forget, independent of the mails/WhatsApp render below
+    refreshAttnBadge(); // fire-and-forget, independent of the mails/WhatsApp render below
     loadSiteAliasesBadge(); // fire-and-forget, same reasoning
     loadDeptAliasesBadge(); // fire-and-forget, same reasoning
     if (pageDataCache.comms) renderCommsData(pageDataCache.comms);

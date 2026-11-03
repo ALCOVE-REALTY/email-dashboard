@@ -2272,6 +2272,63 @@ body { background: var(--wi-bg); }
 }
 .wf-auto-actions button.primary { background: var(--wi-primary); color: #FFFFFF; }
 .wf-auto-actions button.plain { background: var(--wi-primary-50); color: var(--wi-primary-800); }
+
+/* Task 6 (2026-11) - Attendance Requests page */
+.wf-attn-month-row { padding: 0 2px 8px; }
+.wf-attn-month-select {
+  width: 100%; height: 36px; border-radius: var(--wi-r-input); border: 1.5px solid var(--wi-border-2);
+  background: var(--wi-surface); color: var(--wi-ink); font: inherit; font-weight: 700; font-size: 0.82rem; padding: 0 10px;
+}
+.wf-attn-type-chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 2px 0; }
+.wf-attn-type-chip {
+  height: 28px; border: 1.5px solid var(--wi-border-2); background: var(--wi-surface); color: var(--wi-muted);
+  border-radius: var(--wi-r-pill); padding: 0 10px; font-size: 11.5px; font-weight: 700; font-family: inherit; cursor: pointer;
+  transition: background-color .15s ease, border-color .15s ease, color .15s ease;
+}
+.wf-attn-type-chip[aria-pressed="true"] { background: var(--wi-primary-50); border-color: var(--wi-primary); color: var(--wi-primary-800); }
+.wf-attn-count-row {
+  display: flex; align-items: center; justify-content: space-between; padding: 10px 2px 8px;
+  font-size: 0.78rem; font-weight: 700; color: var(--wi-muted);
+}
+.wf-attn-export { display: flex; gap: 10px; }
+.wf-attn-export a { color: var(--wi-primary-800); font-weight: 800; text-decoration: none; }
+.wf-attn-export a:hover { text-decoration: underline; }
+.wf-attn-type-badge {
+  flex-shrink: 0; font-size: 0.64rem; font-weight: 800; padding: 3px 9px; border-radius: 999px; white-space: nowrap;
+  background: var(--wi-primary-50); color: var(--wi-primary-800);
+}
+.wf-attn-type-halfday { background: var(--wi-yellow-50); color: var(--wi-yellow-700); }
+.wf-attn-type-leave { background: var(--wi-primary-50); color: var(--wi-primary-800); }
+.wf-attn-type-late { background: var(--wi-green-pill); color: var(--wi-green-700); }
+.wf-attn-type-wfh { background: var(--wi-red-50); color: var(--wi-red-700); }
+/* Step progress line: 5 equal-width cells, a dot per step, a connecting
+   line from each non-last dot's own centre across its own cell width
+   (reaches the next dot) - done/current/pending coloured independently
+   of the labels below them. */
+.wf-attn-progress { display: flex; align-items: flex-start; margin: 12px 0 6px; }
+.wf-attn-step { flex: 1; display: flex; flex-direction: column; align-items: center; position: relative; min-width: 0; }
+.wf-attn-step:not(:last-child)::after {
+  content: ''; position: absolute; top: 5px; left: 50%; width: 100%; height: 2px; background: var(--wi-border-2); z-index: 0;
+}
+.wf-attn-step-dot { width: 11px; height: 11px; border-radius: 50%; background: var(--wi-border-2); position: relative; z-index: 1; }
+.wf-attn-step-label { font-size: 0.58rem; color: var(--wi-muted); text-align: center; margin-top: 4px; line-height: 1.25; padding: 0 2px; }
+.wf-attn-step-done .wf-attn-step-dot { background: var(--wi-green-700); }
+.wf-attn-step-done:not(:last-child)::after { background: var(--wi-green-700); }
+.wf-attn-step-done .wf-attn-step-label { color: var(--wi-green-700); font-weight: 700; }
+.wf-attn-step-current .wf-attn-step-dot { background: var(--wi-yellow-700); }
+.wf-attn-step-current .wf-attn-step-label { color: var(--wi-yellow-700); font-weight: 700; }
+.wf-attn-step-cancelled .wf-attn-step-dot { background: var(--wi-red-700); }
+.wf-attn-status-line { display: block; font-size: 0.74rem; font-weight: 700; margin-top: 4px; display: flex; align-items: center; gap: 5px; }
+.wf-attn-status-line svg { flex-shrink: 0; }
+.wf-attn-status-line.waiting { color: var(--wi-yellow-700); }
+.wf-attn-status-line.done { color: var(--wi-green-700); }
+.wf-attn-status-line.expired, .wf-attn-status-line.cancelled { color: var(--wi-red-700); }
+.wf-attn-action-btn {
+  height: 32px; padding: 0 14px; border-radius: 10px; border: none; font-size: 0.72rem; font-weight: 800; cursor: pointer;
+  font-family: inherit; background: var(--wi-primary); color: #FFFFFF;
+}
+.wf-attn-action-btn.outline { background: var(--wi-surface); color: var(--wi-muted); border: 1.5px solid var(--wi-border-2); }
+.wf-open-flow-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 .wf-auto-actions button.danger { background: var(--wi-red-50); color: var(--wi-red-700); }
 
 /* Preview sheet */
