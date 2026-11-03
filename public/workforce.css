@@ -763,19 +763,26 @@ body {
    once (currently just Doer Management's own Send Mail + Export Dept.
    Breakup + Export PDF combination, which doesn't fit on a phone no
    matter how tight the spacing) - that variant becomes its own
-   horizontally scrollable strip, scrollbar hidden, with enough padding/
-   negative-margin on every edge for Send Mail's own box-shadow glow to
-   render before hitting the clip a non-"visible" overflow forces (same
-   reasoning, and same fix, as the plain row's own glow needed before
-   overflow-x:auto was removed from it entirely - this one, unlike that
-   one, genuinely needs to scroll, so the compensation stays). */
+   horizontally scrollable strip (flex:1, takes the remaining width after
+   the count), with enough padding/negative-margin on every edge for Send
+   Mail's own box-shadow glow to render before hitting the clip a
+   non-"visible" overflow forces (same reasoning, and same fix, as the
+   plain row's own glow needed before overflow-x:auto was removed from it
+   entirely - this one, unlike that one, genuinely needs to scroll, so
+   the compensation stays). Correction (2026-11b) - the scrollbar is left
+   visible (the site's own default thin/faint *::-webkit-scrollbar look,
+   see wi-theme.css) rather than hidden, matching how this row looked
+   before Task 2; and the count (.wf-result-summary) is pinned to one
+   line only for THIS 3-button row (scoped via :has() to the row that
+   actually contains .wf-row-actions-scroll) - 2-button rows keep their
+   own existing, unscoped layout untouched. */
 .wf-result-actions { display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
 .wf-result-actions.wf-row-actions-scroll {
-  flex-shrink: 1; min-width: 0; overflow-x: auto;
-  scrollbar-width: none; -ms-overflow-style: none;
+  flex: 1; min-width: 0; overflow-x: auto;
   padding: 16px 8px; margin: -16px -8px;
 }
-.wf-result-actions.wf-row-actions-scroll::-webkit-scrollbar { display: none; }
+.wf-result-row:has(.wf-row-actions-scroll) { gap: 12px; }
+.wf-result-row:has(.wf-row-actions-scroll) .wf-result-summary { white-space: nowrap; flex-shrink: 0; }
 
 .wf-donut-row {
   display: flex;
