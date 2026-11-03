@@ -837,6 +837,15 @@
           document.body.removeChild(link);
           return;
         }
+        // Task 2 (2026-11) - a panelView action stays INSIDE the SUBH
+        // panel (switches to one of its own sub-pages, e.g. Action
+        // needed) instead of closing the panel and navigating to a main
+        // dashboard view like a.view below does.
+        if (a.panelView === 'actionNeeded') {
+          pushNav({ type: 'actionNeeded' });
+          showActionNeeded();
+          return;
+        }
         closePanel();
         if (a.view && typeof setView === 'function') {
           setView(a.view, { resetHistory: true });

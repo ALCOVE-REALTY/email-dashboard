@@ -2,7 +2,7 @@
 // after the access-request approval email was found to silently fail
 // (an expired Google OAuth refresh token, see hrAuthAlerts.js's own
 // comment). Same null-to-fall-through convention every other command
-// handler in the chat pipeline already uses (handleApprovalCommand/
+// handler in the chat pipeline already uses (handleApprovalCountQuestion/
 // handleMemoryMessage/handleReminderCommand) - a message that doesn't
 // match any of these returns null immediately, no Claude call, cheap.
 //

@@ -3307,25 +3307,6 @@ async function checkAsync(label, fn) {
       { name: 'Ayan Paul', department: 'Accounts', outgoingText: 'Ayan Paul-er contact number: 9830000002' }
     ]
   };
-  const mockSingleApproval = { id: 'test-single-approval', phone: TEST_PHONE, name: 'Priya', lang: 'banglish', dataRequestSummary: 'Priya Sharma - contact number' };
-  await checkAsync('buildApprovalItems expands a grouped multi-candidate approval into one addressable item PER CANDIDATE (so "Ayan Das pathao" still resolves to just one)', async () => {
-    const items = whatsappAssistant.buildApprovalItems([mockMultiCandApproval]);
-    return items.length === 2 && items[0].label.includes('Ayan Das') && items[0].candidateIndex === 0 && items[1].label.includes('Ayan Paul') && items[1].candidateIndex === 1;
-  });
-  await checkAsync('buildApprovalItems leaves an ordinary single-candidate approval as exactly ONE item with candidateIndex null, labelled with the CURRENT active directory name (never the approval\'s own possibly-stale/placeholder stored name, e.g. "The sender")', async () => {
-    const items = whatsappAssistant.buildApprovalItems([mockSingleApproval], [{ name: 'Priya Sharma', contactNumber: TEST_PHONE, status: 'ACTIVE' }]);
-    return items.length === 1 && items[0].candidateIndex === null && items[0].label === 'Priya Sharma · +' + TEST_PHONE;
-  });
-  await checkAsync('buildApprovalItems falls back to just the number (never the literal "The sender" placeholder) when no current ACTIVE employee matches the phone', async () => {
-    const placeholderApproval = { id: 'test-placeholder-approval', phone: TEST_PHONE, name: 'The sender', lang: 'banglish', dataRequestSummary: 'QC department - HOD' };
-    const items = whatsappAssistant.buildApprovalItems([placeholderApproval], []);
-    return items.length === 1 && items[0].label === '+' + TEST_PHONE && !items[0].label.includes('The sender');
-  });
-  await checkAsync('buildPendingListQuestion numbers each candidate of a grouped approval as its own addressable option', async () => {
-    const items = whatsappAssistant.buildApprovalItems([mockMultiCandApproval]);
-    const q = whatsappAssistant.buildPendingListQuestion(items);
-    return q.includes('1) Ayan Das') && q.includes('2) Ayan Paul');
-  });
   // executeApprovalSend itself is safe to call here with a FAKE approval
   // object (never actually saved to Redis - the real id never existed, so
   // its own removePendingApproval call is a harmless no-op delete) and
@@ -3341,32 +3322,35 @@ async function checkAsync(label, fn) {
   });
 
   console.log('='.repeat(70));
-  console.log('Task 1 (2026-11) LIVE BUG FIX: owner-chat box - a bare number answering "Kon-ta pathabo?" opens that ONE approval instead of looping the full list again');
+  console.log('Task 2 (2026-11) LIVE BUG FIX: the chat box no longer shows/drives a pending-approvals LIST at all - handleApprovalCommand/classifyApprovalCommand/buildApprovalItems/buildPendingListQuestion/buildApprovalOpenReply are gone (Action needed is the only place to act on approvals now); handleApprovalCountQuestion answers ONLY an explicit "how many pending approvals" question, one line + an action button, never automatically and never in reply to an unrelated follow-up');
   console.log('='.repeat(70));
   const ownerEmailForApprovalTests = process.env.SUBH_MEMORY_OWNER_EMAIL;
-  await checkAsync('handleApprovalCommand: a bare number right after SUBH\'s own "Kon-ta pathabo?" question opens that single item (its own prepared text + how to decide), never auto-sends, and never repeats the whole list', async () => {
-    // Deliberately NOT a 910000000xxx "synthetic test phone" - listPendingApprovals()
-    // itself filters those out (they exist to keep fake numbers off the real
-    // Important WhatsApp page), which would make handleApprovalCommand see
-    // zero pending approvals and bail out before ever reaching the code
-    // this test exists to exercise.
+  check('handleApprovalCommand and its whole list-driven approval-command machinery no longer exist on the module - removed, not just unused, so nothing can accidentally call back into the retired chat-box approval list', !whatsappAssistant.handleApprovalCommand && !whatsappAssistant.buildApprovalItems && !whatsappAssistant.buildPendingListQuestion);
+  await checkAsync('handleApprovalCountQuestion: an explicit "pending approval koyta?" question answers with the real count and an "Open Action needed" action, never the list - checked as "one more than whatever was already pending", never a hardcoded absolute number, since this suite\'s own earlier tests may leave other approvals pending', async () => {
+    const countBefore = (await whatsappAssistant.listPendingApprovals()).length;
     const phone = '919999000198';
-    markPhoneAsActiveEmployeeForTests(phone);
     const approvalId = await whatsappAssistant.savePendingApproval({
-      phone, name: 'The sender', requestText: 'x', dataRequestSummary: 'QC department - HOD', lang: 'banglish',
-      preparedReplyText: 'QC department-er HOD: Test Sender Employee ' + phone, preparedCard: null, preparedError: null
+      phone, name: 'Test', requestText: 'x', dataRequestSummary: 'QC department - HOD', lang: 'banglish', preparedReplyText: 'x', preparedCard: null, preparedError: null
     });
-    const history = [{ role: 'user', text: 'QC HOD ke?' }, { role: 'assistant', text: '1) Test Sender Employee ' + phone + ' · +' + phone + ' — QC department - HOD\nKon-ta pathabo?' }];
-    const result = await whatsappAssistant.handleApprovalCommand('1', ownerEmailForApprovalTests, history);
-    const stillPending = (await whatsappAssistant.listPendingApprovals()).some((a) => a.id === approvalId);
-    await whatsappAssistant.executeApprovalReject({ id: approvalId, phone, name: 'The sender' }).catch(() => {});
-    return Boolean(result) && result.reply.includes('QC department-er HOD') && result.reply.toLowerCase().includes('pathao') &&
-      !result.reply.includes('Kon-ta pathabo?') && stillPending;
+    const result = await whatsappAssistant.handleApprovalCountQuestion('pending approval koyta?', ownerEmailForApprovalTests);
+    await whatsappAssistant.removePendingApproval(approvalId).catch(() => {});
+    const re = new RegExp('\\b' + (countBefore + 1) + '\\b');
+    return Boolean(result) && re.test(result.reply) && Array.isArray(result.actions) && result.actions.some((a) => a.panelView === 'actionNeeded');
   });
-  check('handleApprovalCommand\'s bare-number shortcut only fires when the IMMEDIATELY PRECEDING assistant turn ends in "Kon-ta pathabo?" - pure regex unit check (never on an unrelated reply like a greeting, even with a pending approval and a numeric-looking message)', (() => {
-    const re = /Kon-ta pathabo\?\s*$/;
-    return re.test('1) X — Y\nKon-ta pathabo?') && !re.test('Hello! How can I help?') && !re.test('Kon-ta pathabo? Let me know later.');
-  })());
+  await checkAsync('handleApprovalCountQuestion: always answers with the REAL current count (never silently falls through, never hardcodes a number) and the same action button - checked against whatever listPendingApprovals() itself returns right now, since this suite\'s own earlier tests may leave other approvals pending and a hardcoded expectation would be order-dependent; zero pending approvals gets its own natural "Kono pending approval nei." wording, never a literal "0"', async () => {
+    const realCount = (await whatsappAssistant.listPendingApprovals()).length;
+    const result = await whatsappAssistant.handleApprovalCountQuestion('how many pending approvals are there', ownerEmailForApprovalTests);
+    const countMatches = realCount === 0 ? result.reply.includes('Kono pending approval nei.') : new RegExp('\\b' + realCount + '\\b').test(result.reply);
+    return Boolean(result) && countMatches && Array.isArray(result.actions) && result.actions.some((a) => a.panelView === 'actionNeeded');
+  });
+  await checkAsync('handleApprovalCountQuestion returns null for an ordinary message mentioning "approval" with no count/how-many wording (never intercepts a real decision like "Ayan Das-er ta approve koro")', async () => {
+    const result = await whatsappAssistant.handleApprovalCountQuestion('Ayan Das-er ta approve koro', ownerEmailForApprovalTests);
+    return result === null;
+  });
+  await checkAsync('handleApprovalCountQuestion returns null for an unrelated data follow-up ("Please share their contact no") - never hijacks it, matching Task 2\'s own live bug report', async () => {
+    const result = await whatsappAssistant.handleApprovalCountQuestion('Please share their contact no', ownerEmailForApprovalTests);
+    return result === null;
+  });
 
   console.log('='.repeat(70));
   console.log('LIVE BUG FIX: Important WhatsApp rows must never silently disappear on their own - only an explicit owner delete, never a timeout');

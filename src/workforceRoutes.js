@@ -1439,13 +1439,14 @@ router.post('/hr-assistant/chat', async (req, res) => {
       // follow-up continuing the owner's own immediately preceding data
       // question (e.g. "Tade nam din" asking for the names after a
       // count), is resolved deterministically here, BEFORE the approval-
-      // command check below - checked live: with approvals pending,
-      // handleApprovalCommand's own classifier intercepted every message
-      // (including a plain data follow-up) and mis-answered it as if it
-      // were about the pending approvals instead. Same engine, same
-      // code-computed templates, as WhatsApp's own data requests - see
-      // resolveOwnerChatHrDataQuery's own comment. Returns null (falls
-      // through) for anything that isn't a data question at all.
+      // count check below - checked live: with approvals pending, the
+      // (now-removed) free-text approval-command classifier used to
+      // intercept every message, including a plain data follow-up, and
+      // mis-answered it as if it were about the pending approvals
+      // instead. Same engine, same code-computed templates, as
+      // WhatsApp's own data requests - see resolveOwnerChatHrDataQuery's
+      // own comment. Returns null (falls through) for anything that
+      // isn't a data question at all.
       const hrDataResult = await whatsappAssistant.resolveOwnerChatHrDataQuery({ message, history, ownerEmail: req.hrUser.email })
         .catch(() => null);
       if (hrDataResult) {
@@ -1453,20 +1454,21 @@ router.post('/hr-assistant/chat', async (req, res) => {
         return res.json({ reply: hrDataResult.reply, card: hrDataResult.card || null, actions: hrDataResult.actions || null, conversationId: savedConversationId });
       }
 
-      // HR-data-request approval workflow (spec point 6c/6d) - checked
-      // before the memory command and the normal AI pipeline, same
-      // reasoning as both: whether to approve/reject/edit a pending
-      // WhatsApp data request controls what actually gets sent to a real
-      // person, so it's intercepted deterministically rather than left
-      // to the normal chat flow to stumble into. Returns null (falls
-      // through) when nothing is pending or this message isn't actually
-      // about an approval at all - see handleApprovalCommand's own
-      // comment.
-      const approvalResult = await whatsappAssistant.handleApprovalCommand(message, req.hrUser.email, history)
-        .catch((err) => ({ reply: 'Approval process korte giye error holo: ' + err.message }));
-      if (approvalResult) {
-        const savedConversationId = await chatHistoryService.appendTurn(req.hrUser.email, conversationId, { userText: message, assistantText: approvalResult.reply, card: null, actions: null }).catch(() => null);
-        return res.json({ reply: approvalResult.reply, card: null, actions: null, conversationId: savedConversationId });
+      // Task 2 (2026-11) LIVE BUG FIX: the old free-text approval-command
+      // system (handleApprovalCommand) is removed - its own "Kon-ta
+      // pathabo?" list kept interrupting ordinary conversation, live
+      // (e.g. "Please share their contact no" got answered with the
+      // pending-approvals list). Action needed is now the only place to
+      // act on an approval. The chat box does exactly one narrow,
+      // deterministic thing instead: answer an EXPLICIT "how many pending
+      // approvals" question with a one-line count and a button that opens
+      // Action needed - never shown automatically, never in reply to
+      // anything else. See handleApprovalCountQuestion's own comment.
+      const approvalCountResult = await whatsappAssistant.handleApprovalCountQuestion(message, req.hrUser.email)
+        .catch(() => null);
+      if (approvalCountResult) {
+        const savedConversationId = await chatHistoryService.appendTurn(req.hrUser.email, conversationId, { userText: message, assistantText: approvalCountResult.reply, card: null, actions: approvalCountResult.actions || null }).catch(() => null);
+        return res.json({ reply: approvalCountResult.reply, card: null, actions: approvalCountResult.actions || null, conversationId: savedConversationId });
       }
 
       const memoryResult = await memoryService.handleMemoryMessage(message, req.hrUser.email, history)

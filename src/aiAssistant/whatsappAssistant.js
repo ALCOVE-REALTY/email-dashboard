@@ -1089,10 +1089,9 @@ function shapeHrConfirmationForCard(c, name) {
 // one. Found live while screenshotting this feature: one real pending
 // number here (919999999998) carries THREE separate approvals for three
 // different named requesters (Rahul/Lucy/Simran) - a shared/group number
-// sending on different people's behalf is a real case the chat-command
-// flow already handles correctly (buildPendingListQuestion's own "which
-// one?" list), so collapsing it down to a single pendingApproval here
-// would have silently hidden two of the three from this UI. Every item
+// sending on different people's behalf is a real case, so collapsing it
+// down to a single pendingApproval here would have silently hidden two
+// of the three from this UI. Every item
 // below keeps its own name/id so the frontend can render one action
 // group per item, each clearly labelled with who it's for.
 async function getWhatsappConversation(chatIdRaw) {
@@ -1920,8 +1919,8 @@ async function resolveFollowupsForMemory(memory) {
 // prepared in the background using the EXACT SAME read-only pipeline as
 // the in-app SUBH chat (claudeProvider.getResponse - same tools, same
 // active-only default, same no-PII rules, same card/plain logic), and
-// held here until the owner explicitly approves it in SUBH chat
-// (workforceRoutes.js's chat route, see handleApprovalCommand).
+// held here until the owner explicitly approves it from the Action
+// needed inbox (executeApprovalSend/executeApprovalReject).
 const PENDING_APPROVAL_PREFIX = 'wa-pending-approval:';
 const PENDING_APPROVAL_IDS_KEY = 'wa-pending-approval-ids';
 // Found live - a real HUGE bug (917278793115 and others): this used to
@@ -7218,165 +7217,33 @@ async function executeApprovalReject(approval) {
   return '✓ ' + approval.name + '-ke bole deoa holo, data pathano hoyni.';
 }
 
-// Expands the pending approval RECORDS into one addressable item per
-// actual decision an owner could make - a grouped multi-candidate
-// contact-number approval (ONE record, several candidates - see
-// queueMultiCandidateContactApproval) contributes one item PER
-// CANDIDATE, so typing a specific name ("Ayan Das pathao") still resolves
-// to exactly that candidate even though they all share one approval
-// record/card. An ordinary single-candidate approval contributes exactly
-// one item, same as before this feature existed.
-function buildApprovalItems(pending, employees) {
-  const items = [];
-  pending.forEach((approval) => {
-    if (Array.isArray(approval.candidates) && approval.candidates.length) {
-      approval.candidates.forEach((c, candidateIndex) => {
-        items.push({ approval, candidateIndex, label: c.name + ' (' + naturalizeDirectoryValue(c.department) + ')', summary: c.name + ' (' + naturalizeDirectoryValue(c.department) + ') - contact number' });
-      });
-    } else {
-      // Task 1 (2026-11) LIVE BUG FIX: approval.name is sometimes the
-      // literal placeholder "The sender" (never a real name) - shown
-      // verbatim in the owner-chat pending-approvals list, live. The SAME
-      // "Name · Number" resolver every other WhatsApp-derived list in
-      // this file already uses (a current ACTIVE directory match,
-      // falling back to just the number) replaces it here too, never a
-      // stale/placeholder stored name.
-      items.push({ approval, candidateIndex: null, label: activeNameOrNumber(approval.phone, employees), summary: approval.dataRequestSummary });
-    }
-  });
-  return items;
+// Task 2 (2026-11) LIVE BUG FIX: the chat box's old free-text approval
+// command system (buildApprovalItems/buildPendingListQuestion/
+// buildApprovalOpenReply/approvalCommandTool/classifyApprovalCommand/
+// handleApprovalCommand) is retired entirely, per direct instruction -
+// its own "Kon-ta pathabo?" list kept interrupting ordinary conversation
+// (live: "Please share their contact no" got answered with the pending-
+// approvals list instead of the actual data follow-up it was). Action
+// needed is now the ONLY place to act on a pending approval (Send/Edit/
+// Decline there already calls executeApprovalSend/executeApprovalReject
+// directly, unaffected by this). The chat box now does exactly ONE
+// narrow, deterministic thing for approvals: answer an EXPLICIT "how
+// many pending approvals" question with a one-line count and a button
+// that opens Action needed - never shown automatically, never in reply
+// to anything else.
+const APPROVAL_COUNT_QUESTION_RE = /\bapprovals?\b/i;
+const APPROVAL_COUNT_INTENT_RE = /\b(koyta|koygulo|kotogulo|kota|kitne|kitna|how many|number of|count)\b/i;
+function isApprovalCountQuestion(text) {
+  const t = String(text || '');
+  return APPROVAL_COUNT_QUESTION_RE.test(t) && APPROVAL_COUNT_INTENT_RE.test(t);
 }
-function buildPendingListQuestion(items) {
-  const lines = items.map((it, i) => (i + 1) + ') ' + it.label + ' — ' + it.summary);
-  return (items.length > 1 ? items.length + 'ti approval pending:\n' : '') + lines.join('\n') + '\nKon-ta pathabo?';
-}
-// Task 1 (2026-11) LIVE BUG FIX - "open" a single selected item: its own
-// name, summary, and exact outgoing text, plus how to decide, WITHOUT
-// repeating the whole pending list and WITHOUT ever sending anything
-// automatically - see the bare-number check in handleApprovalCommand.
-function buildApprovalOpenReply(item, index) {
-  const text = item.approval.preparedReplyText || '';
-  const textLine = text ? '\nPathano text: "' + text + '"' : '';
-  return index + ') ' + item.label + ' — ' + item.summary + textLine +
-    '\n\nPathate hole likhun: "' + index + ' pathao"\nBad dite hole likhun: "' + index + ' na"\nChange korte hole likhun: "' + index + ' edit: <apnar instruction>"';
-}
-
-// One `decision` entry per approval actually addressed in this message -
-// NOT one shared action for the whole message, since a real owner
-// message can mix actions per target in a single sentence ("1 pathao, 2
-// na" - approve #1, reject #2, per spec point 6d's own example).
-function approvalCommandTool() {
-  return {
-    type: 'function',
-    function: {
-      name: 'approval_command',
-      description: 'Decide whether the HR manager\'s message is approving, rejecting, or editing one or more pending WhatsApp HR-data-request approvals listed below. A short, ambiguous-looking message like "pathao"/"dao"/"send"/"na" is almost always about these pending approvals (that is exactly what they are waiting for) - only mark it unrelated if it is clearly about something else entirely.',
-      parameters: {
-        type: 'object',
-        properties: {
-          unrelated: { type: 'boolean', description: 'true ONLY if this message is clearly NOT about any pending approval at all (ordinary unrelated chat) - in that case `decisions` must be empty/omitted. A bare "pathao"/"dao"/"send"/"na"/"don\'t send" with pending approvals waiting is NEVER unrelated, even with no target named - that is what "ambiguous, ask which one" is for.' },
-          decisions: {
-            type: 'array',
-            items: {
-              type: 'object',
-              properties: {
-                target: { type: 'integer', description: '1-based index into the pending list given above that this decision applies to. Use 0 to mean EVERY pending request at once (only for an explicit "all" phrasing like "duto-i pathao"/"sob pathao"/"both"/"send all"). If the owner\'s message names a specific person (e.g. "Priya-r ta pathao"), that name MUST match one of the pending items\' own name/description - if it names someone who is NOT in the pending list at all, do NOT guess which pending item was meant; instead leave `decisions` empty for that part of the message (triggering a clarifying question) rather than resolving it to the wrong target.' },
-                action: { type: 'string', enum: ['approve', 'reject', 'edit'] },
-                editInstruction: { type: 'string', description: 'Only when action is "edit" - the owner\'s own instruction for how to narrow/change the answer, e.g. "shudhu count pathao".' }
-              },
-              required: ['target', 'action']
-            },
-            description: 'One entry per decision actually stated. "1 pathao, 2 na" with 2 pending -> [{target:1,action:"approve"},{target:2,action:"reject"}]. A bare "pathao"/"na" with MULTIPLE pending and no target identifiable at all -> leave this EMPTY (not an all-phrasing, not a specific index) so the caller asks which one.'
-          }
-        },
-        required: ['unrelated']
-      }
-    }
-  };
-}
-async function classifyApprovalCommand(text, items) {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey || !DRAFT_MODEL) return { unrelated: true, decisions: [] };
-  const listBlock = items.map((it, i) => (i + 1) + '. ' + it.label + ' (' + it.approval.phone + ') - ' + it.summary).join('\n');
-  const messages = [
-    { role: 'system', content: 'Pending WhatsApp HR-data-request approvals waiting for a decision:\n' + listBlock },
-    { role: 'user', content: text }
-  ];
-  const toolDef = approvalCommandTool().function;
-  const input = await callClaudeForcedTool(apiKey, DRAFT_MODEL, messages, toolDef.name, toolDef).catch(() => null);
-  return input || { unrelated: true, decisions: [] };
-}
-
-// Entry point from workforceRoutes.js's chat route - owner-only, checked
-// alongside handleMemoryMessage. Returns null (let normal chat proceed)
-// when nothing is pending at all, or when the model decides this
-// message isn't actually about any pending approval - never hijacks
-// ordinary chat just because a word like "pathao" could theoretically
-// apply to something else entirely.
-async function handleApprovalCommand(text, ownerEmail, history) {
+async function handleApprovalCountQuestion(text, ownerEmail) {
   if (!memoryService.isOwner(ownerEmail)) return null;
+  if (!isApprovalCountQuestion(text)) return null;
   const pending = await listPendingApprovals();
-  if (!pending.length) return null;
-  const { employees } = await employeeService.getEmployeeData();
-  const items = buildApprovalItems(pending, employees);
-
-  // Task 1 (2026-11) LIVE BUG FIX: a bare number answering SUBH's own
-  // "Kon-ta pathabo?" question used to go straight through
-  // classifyApprovalCommand below, which has no ACTION to pair with a
-  // lone number and so just re-asked the same question - re-showing the
-  // FULL list again, live-observed as a frustrating loop ("5" -> the
-  // same 5-item list, repeatedly). This is a deterministic, code-only
-  // check for exactly that one case: a bare 1-2 digit reply right after
-  // SUBH's own numbered list is resolved to OPENING that single item
-  // (its own text + how to decide), never auto-sending and never
-  // repeating the whole list.
-  const bareIndexMatch = /^\s*(\d{1,2})\s*$/.exec(text);
-  if (bareIndexMatch) {
-    const lastAssistantTurn = Array.isArray(history) ? history.slice().reverse().find((h) => h && h.role === 'assistant' && h.text) : null;
-    if (lastAssistantTurn && /Kon-ta pathabo\?\s*$/.test(lastAssistantTurn.text)) {
-      const index = Number(bareIndexMatch[1]);
-      const item = items[index - 1];
-      if (item) return { reply: buildApprovalOpenReply(item, index) };
-    }
-  }
-
-  const decision = await classifyApprovalCommand(text, items).catch(() => ({ unrelated: true, decisions: [] }));
-  if (decision.unrelated) return null;
-
-  const decisions = Array.isArray(decision.decisions) ? decision.decisions : [];
-  if (!decisions.length) {
-    // Spec 6d: related to the approvals, but no specific target (and not
-    // an explicit "all") could be identified - never guess, always ask.
-    return { reply: buildPendingListQuestion(items) };
-  }
-
-  const expanded = [];
-  decisions.forEach((d) => {
-    if (d.target === 0) {
-      // "Send all" only ever applies to an UNAMBIGUOUS item - a grouped
-      // multi-candidate approval still needs an explicit choice (by name
-      // or by picking a specific numbered item), never silently defaults
-      // to its first candidate just because "send all" was said.
-      items.forEach((it) => { if (it.candidateIndex === null) expanded.push({ item: it, action: d.action, editInstruction: d.editInstruction }); });
-    } else if (items[d.target - 1]) {
-      expanded.push({ item: items[d.target - 1], action: d.action, editInstruction: d.editInstruction });
-    }
-  });
-  if (!expanded.length) return { reply: buildPendingListQuestion(items) };
-
-  const results = [];
-  for (const { item, action, editInstruction } of expanded) {
-    try {
-      if (action === 'reject') results.push(await executeApprovalReject(item.approval));
-      else results.push(await executeApprovalSend(item.approval, action === 'edit' ? editInstruction : null, item.candidateIndex));
-    } catch (err) {
-      // Task 1 (2026-10-29) - a never-auto block on one item (or any other
-      // hard-stop throw this function already used, e.g. the PII checks)
-      // must not abort the rest of a multi-item "send all" batch.
-      results.push((item.label || item.approval.phone) + ': ' + err.message);
-    }
-  }
-  return { reply: results.join('\n') };
+  const n = pending.length;
+  const reply = n === 0 ? 'Kono pending approval nei.' : n + ' ta pending approval ache.';
+  return { reply, card: null, actions: [{ label: 'Open Action needed', panelView: 'actionNeeded' }] };
 }
 
 // ---------------- Daily summary (spec item 4) ----------------
@@ -11960,7 +11827,7 @@ module.exports = {
   listOpenFollowups,
   clearOpenFollowup,
   resolveFollowupsForMemory,
-  handleApprovalCommand,
+  handleApprovalCountQuestion,
   listPendingApprovals,
   handleIncomingMedia,
   isRealSendAllowedFor,
@@ -12152,8 +12019,6 @@ module.exports = {
   // fix and the grouped multi-candidate approval card fix.
   naturalizeDirectoryValue,
   queueMultiCandidateContactApproval,
-  buildApprovalItems,
-  buildPendingListQuestion,
   // Exported for scripts/check-whatsapp-engine.js only - the pending-
   // disambiguation "never silently drop a bare name" fix.
   MAX_DISAMBIGUATION_ATTEMPTS,
