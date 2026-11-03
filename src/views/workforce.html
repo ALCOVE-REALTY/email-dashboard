@@ -1061,27 +1061,23 @@
           <button class="wf-clear-btn" id="clearFilters">Clear filters</button>
         </div>
 
-        <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;">
-          <div class="wf-result-summary" id="resultSummary"></div>
-          <!-- Task 5 (2026-11) LIVE BUG FIX, 2nd attempt: the Task 16
-               (2026-11) fix only padded this row's TOP/BOTTOM (24px) to
-               give Send Mail's own soft box-shadow glow (0 3px 8px -
-               needs ~8px clearance on the X-axis) room before
-               overflow-x:auto's forced-Y-clip quirk - but left the
-               LEFT/RIGHT padding at just 4px, well under the ~8px the
-               glow actually needs, so whichever button sits at this row's
-               visible left edge (sendBirthdayMail/sendDoerBreakupMail -
-               only one shows at a time) still had its glow clipped
-               straight on that side. Restructured into an outer
-               positioning-only span (keeps the original margin-left:auto
-               untouched, so the row's own place in the parent's
-               space-between layout doesn't move) wrapping an inner span
-               that owns the actual overflow-x:auto clip - its padding is
-               now 24px/12px on both axes, with a plain, non-conflicting
-               negative margin on all four sides cancelling it out so nothing
-               shifts, exactly like the vertical-only fix did before it. -->
-          <span style="display:flex; max-width:100%; margin-left:auto;">
-          <span style="display:flex; gap:10px; align-items:center; flex-wrap:nowrap; overflow-x:auto; max-width:100%; margin:-16px -12px; padding:24px 12px;">
+        <!-- Task 6 (2026-11) LIVE BUG FIX: the Task 16/Task 5 "glow
+             clipping" fixes papered over the real problem - overflow-x:auto
+             on this row (present since before either of those commits)
+             turned it into its own little scroll container on narrow
+             phones, so the buttons could be scrolled out of view and
+             Export PDF got cut off at the edge. Removed entirely: with no
+             overflow:hidden/auto anywhere in this row, Send Mail's own
+             box-shadow glow was never actually at risk of clipping in the
+             first place (that only happens with a non-"visible" overflow
+             on an ancestor) - no padding/negative-margin compensation is
+             needed either. Back to one plain flex row, buttons never wrap
+             or scroll, just sized to fit (gap tightened from 10px to 6-8px
+             so the full button set still fits on a Galaxy-S23-width
+             phone). -->
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
+          <div class="wf-result-summary" id="resultSummary" style="min-width:0; margin-bottom:0;"></div>
+          <span style="display:flex; gap:6px; align-items:center; flex-shrink:0;">
             <button class="wf-send-mail-btn" id="sendDoerBreakupMail" type="button" hidden>
               <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h4l2 3h4l2-3h4"/><path d="M5.5 6h13l1.5 6v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-6l1.5-6z"/></svg>
               <span>Send Mail</span>
@@ -1099,7 +1095,6 @@
               <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
             </button>
             <button class="wf-link-btn wf-export-pdf-btn" id="exportEmployeesPdf" type="button"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg><span>Export PDF</span></button>
-          </span>
           </span>
         </div>
         <p class="wf-inline-error" id="employeesShareError" hidden></p>
