@@ -2898,12 +2898,40 @@ function deterministicHrActionKind(text) {
 // something different (plain "sudden" informing) when a different
 // question was asked, which this deliberately does NOT touch.
 const SELF_INITIATED_MARKER_RE = /\b(nijei|nijer\s*uddyoge|nije\s*theke|amar\s*nijer|on\s*my\s*own|by\s*myself)\b/i;
-const FIRST_PERSON_INFORMED_MARKER_RE = /\bbole\s*niyechhi\b|\bjaniye\s*diyechi\b|\bjaniyechi\b|\bbolechi\b|\bi\s+(told|informed)\b/i;
+const FIRST_PERSON_INFORMED_MARKER_RE = /\bbole\s*niyechhi\b|\bbole\s*diyechi\b|\bjaniye\s*diyechi\b|\bjaniyechi\b|\bbolechi\b|\bi\s+(told|informed)\b/i;
 function deterministicApprovalFromSelfInitiatedInforming(text) {
   const t = String(text || '');
   if (ACTION_KIND_NEGATION_RE.test(t)) return null;
   if (SELF_INITIATED_MARKER_RE.test(t) && FIRST_PERSON_INFORMED_MARKER_RE.test(t)) return 'approval';
   return null;
+}
+// Direct instruction (2026-11) - the "unclear-initiator" flow's own
+// model call (extractPersonReference, judging isAnswerToPendingQuestion/
+// isAmbiguous/personName/resolvedActionKind all together) was an
+// intermittent live flake on exactly this self-granted-informing
+// phrasing, not just a test artifact. Unlike
+// deterministicApprovalFromSelfInitiatedInforming above (which only
+// judges the ACTION KIND, still relying on the model for WHO), this
+// pattern is narrow and unambiguous enough to resolve BOTH the kind and
+// the person directly from the text, in code, before the model is ever
+// asked - "<name>-ke bole niyechhi/bole diyechi/janiye diyechi" always
+// means the sender personally informed that named person after already
+// acting on their own, i.e. approval. The captured name must start with
+// a capital letter (the normal way a name is written) so an ordinary
+// pronoun/common noun ("take", "amar manager") is never mistaken for
+// one - those still fall through to the model, same as before. Scoped
+// the same way as the function above - never safe outside the
+// "neutral"/unclear-initiator two-choice context, which is the only
+// place this is called from.
+const INFORMED_PERSON_NAME_RE = /\b([A-Z][A-Za-z.]*(?:\s+[A-Za-z][A-Za-z.]*){0,2})\s*-?\s*ke\s*(?:bole\s*niyechhi|bole\s*diyechi|janiye\s*diyechi)\b/;
+function deterministicApprovalPersonFromInforming(text) {
+  const t = String(text || '');
+  if (ACTION_KIND_NEGATION_RE.test(t)) return null;
+  const m = t.match(INFORMED_PERSON_NAME_RE);
+  if (!m) return null;
+  const personName = m[1].trim();
+  if (!personName || isBareAckOrHonorificOnly(personName)) return null;
+  return { personName, actionKind: 'approval' };
 }
 // Condition 4 (Subhodeep's own instruction) - every case where the rule
 // overrides a DIFFERENT model answer is logged (message text + both
@@ -6959,7 +6987,16 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
   const askWhoQuestion = hrFlow.actionKind === 'neutral'
     ? (HR_NOTE_ASK_WHO_NEUTRAL[lang] || HR_NOTE_ASK_WHO_NEUTRAL.english)(hrFlow.actionPhrase)
     : (HR_NOTE_ASK_WHO_INSTRUCTED[lang] || HR_NOTE_ASK_WHO_INSTRUCTED.english)(hrFlow.actionPhrase);
-  const { personName, hint, isAmbiguous, hasExtraInfo, extraInfoNote, resolvedActionKind, isAnswerToPendingQuestion, isUnrelatedTopic, unrelatedTopicPhrase, isBareAckOrHonorific } = await extractPersonReference(text, { pendingQuestionLabel: askWhoQuestion, history, lang });
+  // Direct instruction (2026-11) - "<name>-ke bole niyechhi/bole diyechi/
+  // janiye diyechi" resolves WHO and the kind in code, before ever
+  // calling the model - see deterministicApprovalPersonFromInforming's
+  // own comment for why this one pattern is safe to fully short-circuit
+  // the model call for, unlike every other "who told/approved you" reply.
+  const detApprovalPerson = hrFlow.actionKind === 'neutral' ? deterministicApprovalPersonFromInforming(text) : null;
+  const extracted = detApprovalPerson
+    ? { personName: detApprovalPerson.personName, hint: null, isAmbiguous: false, hasExtraInfo: false, extraInfoNote: null, resolvedActionKind: detApprovalPerson.actionKind, isAnswerToPendingQuestion: true, isUnrelatedTopic: false, unrelatedTopicPhrase: null, isBareAckOrHonorific: false }
+    : await extractPersonReference(text, { pendingQuestionLabel: askWhoQuestion, history, lang });
+  const { personName, hint, isAmbiguous, hasExtraInfo, extraInfoNote, resolvedActionKind, isAnswerToPendingQuestion, isUnrelatedTopic, unrelatedTopicPhrase, isBareAckOrHonorific } = extracted;
   if (isAmbiguous) {
     return { case: 'acknowledged', replyText: HR_FLOW_CONTEXT_CLARIFY[lang] || HR_FLOW_CONTEXT_CLARIFY.english, summaryForOwner: null, lang };
   }
@@ -6983,8 +7020,10 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
       // only when a clear, unambiguous pattern fits (see
       // deterministicHrActionKind/deterministicApprovalFromSelfInitiated
       // Informing's own comments); otherwise the model's own judgment
-      // stands, exactly as before.
-      const ruleKind = deterministicHrActionKind(text) || deterministicApprovalFromSelfInitiatedInforming(text);
+      // stands, exactly as before. detApprovalPerson (2026-11) already
+      // settled this as "approval" in code, before the model was even
+      // asked, whenever it fired above.
+      const ruleKind = (detApprovalPerson && detApprovalPerson.actionKind) || deterministicHrActionKind(text) || deterministicApprovalFromSelfInitiatedInforming(text);
       const finalKind = ruleKind || modelKind;
       if (ruleKind && ruleKind !== modelKind) await recordActionKindOverride(phone, text, ruleKind, modelKind);
       summaryLocalized = await rephraseForThirdParty(hrFlow.summary, finalKind, lang);
@@ -12322,6 +12361,7 @@ module.exports = {
   // short-circuit (2026-10-27).
   deterministicHrActionKind,
   deterministicApprovalFromSelfInitiatedInforming,
+  deterministicApprovalPersonFromInforming,
   enforceSuddenInformingVerb,
   recordActionKindOverride,
   listActionKindOverrides,

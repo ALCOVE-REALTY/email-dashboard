@@ -34,6 +34,16 @@ const tools = require('../src/aiAssistant/tools');
 const assistantShared = require('../src/aiAssistant/assistantShared');
 const documentRequests = require('../src/aiAssistant/documentRequests');
 
+// Shared by every "did the manager-facing message use a granting verb"
+// check below - the model's own free-form phrasing varies the
+// transliteration of the granting noun (anumoti/onumoti/approval/
+// permission) AND sometimes inserts the sentence's subject/object
+// between the noun and the verb ("onumoti apni onake diyechhen", not
+// just "onumoti diyechhen") - still the same correct granting phrase, so
+// this checks PROXIMITY (within 40 chars, either order), never strict
+// adjacency, to avoid a false "FAIL" on a perfectly valid reordering.
+const GRANTING_PHRASE_RE = /(anumoti|onumoti|approval|permission)[\s\S]{0,40}?diyechhen|diyechhen[\s\S]{0,40}?(anumoti|onumoti|approval|permission)/i;
+
 // Task 2 (2026-10-31) - many pre-existing tests in this file use a
 // throwaway synthetic SENDER phone that was never meant to represent a
 // real employee; they only care about NAME-RESOLUTION/disambiguation/
@@ -1362,8 +1372,13 @@ async function checkAsync(label, fn) {
     // phrasing varies between the two for the SAME word, never a
     // classification difference (found live: actionKind was correctly
     // "approval", with a granting verb, in every single run - only the
-    // transliteration of that one word varied).
-    const ok = Boolean(mgrEntry) && /anumoti diyechhen|onumoti diyechhen|approval diyechhen|permission diyechhen/.test(mgrEntry.sentText) && !mgrEntry.sentText.includes('korte bolechhen');
+    // transliteration of that one word varied). The model also
+    // sometimes inserts the sentence's subject/object between the noun
+    // and the verb ("onumoti apni onake diyechhen", not just "onumoti
+    // diyechhen") - still the same correct granting phrase, so this
+    // checks PROXIMITY (within 40 chars, either order), never strict
+    // adjacency, to avoid a false "FAIL" on a perfectly valid reordering.
+    const ok = Boolean(mgrEntry) && GRANTING_PHRASE_RE.test(mgrEntry.sentText) && !mgrEntry.sentText.includes('korte bolechhen');
     await whatsappAssistant.decideAutoReply({ phone: WFH_LEAVE_TANMOY_PHONE, name: 'Tanmoy Mondal', firstName: 'Tanmoy', text: 'Haa', isGroup: false, history: [] });
     await cleanupWfhLeave(phone);
     return ok;
@@ -1402,6 +1417,23 @@ async function checkAsync(label, fn) {
   check('deterministicApprovalFromSelfInitiatedInforming: the self-initiated marker ALONE (no informing verb) is not enough - returns null', whatsappAssistant.deterministicApprovalFromSelfInitiatedInforming('ami nijei eta korchi') === null);
   check('deterministicApprovalFromSelfInitiatedInforming: the informing verb ALONE (no self-initiated marker) is not enough - returns null, since that\'s the plain "sudden" informing case, a different context entirely', whatsappAssistant.deterministicApprovalFromSelfInitiatedInforming('Tanmoy Sir-ke bole niyechhi') === null);
   check('deterministicApprovalFromSelfInitiatedInforming: condition 2 - negation still guards this function too - both markers are present (self-initiated + informed) but "approval paini" is also present, so this must stay null, never "approval"', whatsappAssistant.deterministicApprovalFromSelfInitiatedInforming('ami nijei korchi, Tanmoy Sir-ke janiyechi, kintu approval paini') === null);
+
+  check('deterministicApprovalPersonFromInforming: "Tanmoy Sir-ke bole niyechhi" resolves BOTH the person ("Tanmoy Sir") and the kind (approval) in code, without the self-initiated marker the function above still requires', (() => {
+    const r = whatsappAssistant.deterministicApprovalPersonFromInforming('ami nijei korchi, Tanmoy Sir-ke bole niyechhi');
+    return r && r.personName === 'Tanmoy Sir' && r.actionKind === 'approval';
+  })());
+  check('deterministicApprovalPersonFromInforming: the "bole diyechi" variant also resolves the person and approval', (() => {
+    const r = whatsappAssistant.deterministicApprovalPersonFromInforming('Tanmoy Sir-ke bole diyechi');
+    return r && r.personName === 'Tanmoy Sir' && r.actionKind === 'approval';
+  })());
+  check('deterministicApprovalPersonFromInforming: the "janiye diyechi" variant also resolves the person and approval', (() => {
+    const r = whatsappAssistant.deterministicApprovalPersonFromInforming('Tanmoy Sir ke janiye diyechi');
+    return r && r.personName === 'Tanmoy Sir' && r.actionKind === 'approval';
+  })());
+  check('deterministicApprovalPersonFromInforming: a lowercase common word/pronoun before "-ke" ("take bole diyechi") is never mistaken for a name - returns null, since the captured name must start with a capital letter', whatsappAssistant.deterministicApprovalPersonFromInforming('take bole diyechi') === null);
+  check('deterministicApprovalPersonFromInforming: a telling-only phrase with no informing verb ("Tanmoy Sir bolechhen") returns null - defers to the model/deterministicHrActionKind exactly as before', whatsappAssistant.deterministicApprovalPersonFromInforming('Tanmoy Sir bolechhen') === null);
+  check('deterministicApprovalPersonFromInforming: negation still guards this function too - returns null, never "approval", when "approval paini" is also present', whatsappAssistant.deterministicApprovalPersonFromInforming('Tanmoy Sir-ke bole niyechhi, kintu approval paini') === null);
+  check('deterministicApprovalPersonFromInforming: no "-ke <verb>" pattern at all returns null (declined to name anyone)', whatsappAssistant.deterministicApprovalPersonFromInforming('kauke boli ni') === null);
 
   check('enforceSuddenInformingVerb: strips a stray "bolechhen" (telling verb) from a "sudden"-kind sentence, replacing it with the informing verb', (() => {
     const fixed = whatsappAssistant.enforceSuddenInformingVerb('Apnake Sender-er sorir kharap thakar bishoy-ta Tanmoy Sir-ke bolechhen', 'banglish');

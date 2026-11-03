@@ -407,3 +407,20 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
   email (never the personal one) -> still an approval card; a >20-person
   department roster -> still an approval card even for a real active
   employee.
+- G (2026-11), unclear-initiator self-granted-informing - a live flake, not
+  just a test artifact: "ami nijei korchi, Tanmoy Sir-ke bole niyechhi" (the
+  unclear-initiator flow's answer to "who told/approved this") occasionally
+  resolved wrong because extractPersonReference's own model call judges WHO
+  and the instruction-vs-approval KIND together in one call, and sometimes
+  misread this self-granted-informing framing (lost the person, marked it
+  ambiguous, or drafted a telling verb into the final message instead of a
+  granting one). Fixed with `deterministicApprovalPersonFromInforming` in
+  whatsappAssistant.js - "<name>-ke bole niyechhi/bole diyechi/janiye
+  diyechi" resolves BOTH who and the kind directly from the text, in code,
+  before the model is ever called; the model is still used for every other
+  phrasing (kept "only for ambiguous wording"), and still drafts the final
+  message's natural wording. Scoped to the neutral/unclear-initiator
+  two-choice context only (continueHrNoteFlow's 'awaiting_name' step with
+  hrFlow.actionKind === 'neutral') - never applied to "sudden"/"instruction"
+  flows. The captured name must start with a capital letter so an ordinary
+  pronoun/common noun ("take", "amar manager") is never mistaken for one.

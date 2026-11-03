@@ -37,6 +37,14 @@ const RUNS_PER_SCENARIO = Number(process.env.SCENARIO_RUNS) || 3;
 const TANMOY_MONDAL_PHONE = '919593446948'; // Tanmoy Mondal, ACTIVE, Assistant Manager, Civil (Plot-B) Structure
 const SUBHODEEP_OWNER_PHONE = '918335804028'; // Subhodeep Kundu Chowdhury, ACTIVE, Assistant Manager, HR DEPT - the owner himself, NOT senior-flagged
 const TAUSIF_PHONE_HINT = 'Tausif'; // matches exactly ONE real ACTIVE employee by first name alone (confirmed in check-whatsapp-engine.js)
+// Shared with check-whatsapp-engine.js's own copy of this check - the
+// model's own free-form phrasing varies the transliteration of the
+// granting noun (anumoti/onumoti/approval/permission) AND sometimes
+// inserts the sentence's subject/object between the noun and the verb
+// ("onumoti apni onake diyechhen", not just "onumoti diyechhen") - still
+// the same correct granting phrase, so this checks PROXIMITY (within 40
+// chars, either order), never strict adjacency.
+const GRANTING_PHRASE_RE = /(anumoti|onumoti|approval|permission)[\s\S]{0,40}?diyechhen|diyechhen[\s\S]{0,40}?(anumoti|onumoti|approval|permission)/i;
 
 async function cleanupHrFlowArtifacts(...phones) {
   try {
@@ -1148,6 +1156,48 @@ scenario('Task 2: a real ACTIVE employee (Radha) asking for a whole department\'
     return { pass: true, detail: 'a >20-person list stayed approval-gated even for a real active employee: ' + approval.preparedReplyText.slice(0, 200) };
   } finally {
     await cleanupHrDataQueryArtifacts(RADHA_PHONE);
+  }
+});
+
+// --- G: unclear-initiator, self-granted-informing resolves as APPROVAL, deterministically ---
+// Direct instruction (2026-11) - this exact scenario was an intermittent
+// live flake (not just a test artifact): extractPersonReference's own
+// model call occasionally mis-read "ami nijei korchi, Tanmoy Sir-ke bole
+// niyechhi" (a clear self-granted-informing framing), either failing to
+// extract the person, marking it ambiguous, or drafting the final
+// message with a telling verb instead of a granting one. Fixed by
+// deterministicApprovalPersonFromInforming in whatsappAssistant.js, which
+// resolves BOTH who and the kind directly from "<name>-ke bole niyechhi/
+// bole diyechi/janiye diyechi" in code, before the model is ever asked -
+// this scenario locks that this is now reliable 3/3 against the real
+// model, since only the final message's PHRASING (never the kind or the
+// person) is still left to the model. "Tanmoy" alone (even with the
+// "Sir" honorific, stripped before matching) is genuinely a first-name
+// match against 4 real ACTIVE employees (confirmed against the real
+// directory) - a "1" reply picks the first candidate, Tanmoy Mondal,
+// exactly like the equivalent deterministic check in
+// check-whatsapp-engine.js already does; this is expected, correct
+// disambiguation, not a flaw in the fix.
+scenario('G: unclear-initiator, self-granted-informing ("Tanmoy Sir-ke bole niyechhi") resolves as APPROVAL with that person, deterministically - never the telling-verb framing, never lost to a model misread', async () => {
+  const phone = '910000000992';
+  await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
+  try {
+    const d1 = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenG', firstName: 'ScenG', text: 'Ami ajke chhutir din duty korchi, ekta important kaj ache', isGroup: false, history: [] });
+    if (!d1.replyText.includes('note kore nilam')) return { pass: false, detail: 'STEP1 reply unexpected: ' + d1.replyText };
+    await whatsappAssistant.decideAutoReply({ phone, name: 'ScenG', firstName: 'ScenG', text: 'ami nijei korchi, Tanmoy Sir-ke bole niyechhi', isGroup: false, history: [] });
+    const beforeTs = Date.now();
+    await whatsappAssistant.decideAutoReply({ phone, name: 'ScenG', firstName: 'ScenG', text: '1', isGroup: false, history: [] });
+    const confirmations = (await whatsappAssistant.listAllHrConfirmations()).filter((c) => c.senderPhone === phone);
+    if (confirmations.length !== 1 || confirmations[0].status !== 'awaiting_manager') return { pass: false, detail: 'expected exactly one awaiting_manager confirmation, got: ' + JSON.stringify(confirmations.map((c) => c.status)) };
+    const log = await whatsappAssistant.listInboxLog(20);
+    const mgrEntry = log.filter((e) => e.chatId === TANMOY_MONDAL_PHONE && e.case === 'hr_confirmation_sent' && (e.sentAt || 0) >= beforeTs).sort((a, b) => (b.sentAt || 0) - (a.sentAt || 0))[0];
+    if (!mgrEntry) return { pass: false, detail: 'no message reached the manager' };
+    if (!GRANTING_PHRASE_RE.test(mgrEntry.sentText)) return { pass: false, detail: 'manager message missing a granting-verb phrase: ' + mgrEntry.sentText };
+    if (mgrEntry.sentText.includes('korte bolechhen')) return { pass: false, detail: 'manager message wrongly used a telling-verb framing: ' + mgrEntry.sentText };
+    await whatsappAssistant.decideAutoReply({ phone: TANMOY_MONDAL_PHONE, name: 'Tanmoy Mondal', firstName: 'Tanmoy', text: 'Haa', isGroup: false, history: [] });
+    return { pass: true, detail: 'resolved deterministically to approval, person Tanmoy, granting-verb message: ' + mgrEntry.sentText };
+  } finally {
+    await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
   }
 });
 
