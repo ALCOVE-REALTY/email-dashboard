@@ -3281,6 +3281,37 @@ body:not(.printing-org-chart) .org-chart-cards-row + .org-chart-branch-connector
      this element only scrolls its own content, not the background. */
 }
 
+/* Task 2 (2026-11) - pull-to-refresh. Chrome's own gesture can't reach any
+   page inside SUBH (the panel is a fixed full-screen overlay - the real
+   <body> behind it never scrolls, so the browser never sees the pull), so
+   this reimplements the same gesture locally per scrollable page (see
+   attachPullToRefresh in hrAssistant.js), with the same look: a white
+   circle with an indigo circular arrow. Kept inside [0, its own
+   container height] at all times (never a negative top) so it's never
+   clipped by the container's own overflow-y:auto - idle at opacity:0, a
+   touchmove sets its own inline transform/opacity to track the pull 1:1
+   (transition:none during the drag), touchend hands back to this
+   transition for the spin-in/settle-back animation. */
+.wf-ptr-indicator {
+  position: absolute;
+  top: 0; left: 50%;
+  width: 34px; height: 34px;
+  margin-left: -17px;
+  border-radius: 50%;
+  background: #FFFFFF;
+  color: var(--accent);
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 2px 10px rgba(0,0,0,.18);
+  opacity: 0;
+  pointer-events: none;
+  z-index: 5;
+  transform: translateY(0);
+  transition: transform .25s cubic-bezier(.2,.7,.2,1), opacity .25s ease;
+}
+.wf-ptr-indicator.wf-ptr-dragging { transition: none; }
+.wf-ptr-indicator.wf-ptr-spinning svg { animation: wfPtrSpin .8s linear infinite; }
+@keyframes wfPtrSpin { to { transform: rotate(360deg); } }
+
 .wf-ai-welcome {
   display: flex;
   flex-direction: column;

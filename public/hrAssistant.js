@@ -5720,4 +5720,118 @@
     }, { resetAfterSuccess: true, toastFn: AUTO_TOAST_ERR.toastFn });
   });
   if (autoCancelBtn) autoCancelBtn.addEventListener('click', navBack);
+
+  // ---------- Pull-to-refresh (Task 2, 2026-11) ----------
+  // Chrome's own pull-down refresh never reaches any page in here: every
+  // one of them lives inside #hrAssistantPanel, a FIXED full-screen
+  // overlay (see .wf-ai-panel's own comment) - the real document behind
+  // it never scrolls, so the browser never even sees the gesture. This
+  // reimplements the same gesture locally, scoped to each page's own
+  // scrollable container, wired to that SAME page's own existing
+  // data-reload function (never a full app/page reload, never a switch
+  // to a different view) - same look as Chrome's own: a white circle
+  // with an indigo circular arrow, following the finger, spinning while
+  // the real reload is in flight.
+  const WF_PTR_THRESHOLD = 70;
+  const WF_PTR_MAX_PULL = 110;
+  const WF_PTR_ARROW_SVG = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><polyline points="21 3 21 9 15 9"/></svg>';
+  function wfPtrIsInteractiveTarget(el) {
+    return Boolean(el && el.closest && el.closest('input, textarea, select, [contenteditable="true"]'));
+  }
+  // `onRefresh` may return a promise (or not) - either way the indicator
+  // stays spinning for at least 400ms, so a near-instant cached reload
+  // never looks like a flicker instead of a real refresh.
+  function attachPullToRefresh(container, onRefresh) {
+    if (!container || container.__wfPtrAttached) return;
+    container.__wfPtrAttached = true;
+    if (getComputedStyle(container).position === 'static') container.style.position = 'relative';
+    const indicator = document.createElement('div');
+    indicator.className = 'wf-ptr-indicator';
+    indicator.innerHTML = WF_PTR_ARROW_SVG;
+    container.prepend(indicator);
+    let startY = 0, startX = 0, tracking = false, dragging = false, refreshing = false;
+    container.addEventListener('touchstart', (e) => {
+      if (refreshing || container.scrollTop > 0 || wfPtrIsInteractiveTarget(e.target)) { tracking = false; return; }
+      const t = e.touches[0];
+      startY = t.clientY; startX = t.clientX; tracking = true; dragging = false;
+    }, { passive: true });
+    container.addEventListener('touchmove', (e) => {
+      if (!tracking || refreshing) return;
+      const t = e.touches[0];
+      const dy = t.clientY - startY, dx = t.clientX - startX;
+      if (!dragging) {
+        if (Math.abs(dy) < 6 && Math.abs(dx) < 6) return;
+        // Only engage for a predominantly vertical, downward drag - a
+        // horizontal swipe (e.g. a scrollable button row) is left alone.
+        if (dy <= 0 || Math.abs(dy) <= Math.abs(dx)) { tracking = false; return; }
+        dragging = true;
+        indicator.classList.add('wf-ptr-dragging');
+      }
+      if (container.scrollTop > 0) { tracking = false; dragging = false; indicator.classList.remove('wf-ptr-dragging', 'wf-ptr-ready'); indicator.style.opacity = '0'; indicator.style.transform = 'translateY(0)'; return; }
+      // "ready" is tied directly to the RAW finger distance (dy) - the
+      // literal "~70px" threshold from the request. The indicator's own
+      // on-screen travel is mildly damped and capped (WF_PTR_MAX_PULL) so
+      // it never races far ahead of the finger on a very long pull, but
+      // that's purely cosmetic and never shifts the trigger point itself.
+      const pull = Math.min(WF_PTR_MAX_PULL, dy * 0.85);
+      const progress = Math.min(1, dy / WF_PTR_THRESHOLD);
+      indicator.style.opacity = String(progress);
+      indicator.style.transform = 'translateY(' + pull + 'px) rotate(' + (progress * 360) + 'deg)';
+      indicator.classList.toggle('wf-ptr-ready', dy >= WF_PTR_THRESHOLD);
+      e.preventDefault();
+    }, { passive: false });
+    function wfPtrFinishDrag() {
+      if (!dragging) { tracking = false; return; }
+      const wasReady = indicator.classList.contains('wf-ptr-ready');
+      dragging = false; tracking = false;
+      indicator.classList.remove('wf-ptr-dragging', 'wf-ptr-ready');
+      if (!wasReady) { indicator.style.opacity = '0'; indicator.style.transform = 'translateY(0)'; return; }
+      refreshing = true;
+      indicator.classList.add('wf-ptr-spinning');
+      indicator.style.opacity = '1';
+      indicator.style.transform = 'translateY(' + WF_PTR_THRESHOLD + 'px)';
+      const startedAt = Date.now();
+      Promise.resolve().then(onRefresh).catch(() => {}).then(() => {
+        const wait = Math.max(0, 400 - (Date.now() - startedAt));
+        setTimeout(() => {
+          indicator.classList.remove('wf-ptr-spinning');
+          indicator.style.opacity = '0';
+          indicator.style.transform = 'translateY(0)';
+          refreshing = false;
+        }, wait);
+      });
+    }
+    container.addEventListener('touchend', wfPtrFinishDrag, { passive: true });
+    container.addEventListener('touchcancel', wfPtrFinishDrag, { passive: true });
+  }
+  // One scrollable container per SUBH page named in the request, each
+  // wired to that SAME page's own existing reload function - never a
+  // fresh/duplicate fetch path, so a pull-refresh can never drift from
+  // what that page's own badge/poll logic already considers "fresh".
+  // "Mails" has no real data source yet (showCommsMail's own static
+  // placeholder) - still wired for a consistent gesture everywhere, it
+  // just re-shows the same placeholder. The Create/Edit Automated Task
+  // form (#hrAutoPage) and a single reminder's own detail page are
+  // intentionally NOT included - mid-edit content should never be
+  // silently replaced by a pull gesture.
+  const WF_PTR_REFRESH_BY_ID = {
+    hrAssistantMessages: () => pollCommsSummary(),
+    hrHubPage: () => showHub(),
+    hrRemPage: () => loadRemindersPage(activeRemFilter),
+    hrAutoListPage: () => loadAutomationsBadgeAndList(true),
+    hrCommsHubPage: () => loadCommsPage(),
+    hrCommsMailPage: () => { showCommsMail(); return Promise.resolve(); },
+    hrCommsWaAllPage: () => loadWaAllFirstPage(),
+    hrOpenFlowsPage: () => loadOpenFlows(),
+    hrAttendanceRequestsPage: () => loadAttendanceRequests(),
+    hrActionNeededPage: () => loadActionNeeded(),
+    hrTemplatesPage: () => loadTemplatesPage(),
+    hrSiteAliasesPage: () => loadSiteAliasesPage(),
+    hrDeptAliasesPage: () => loadDeptAliasesPage(),
+    hrConvoPage: () => reloadConversation()
+  };
+  Object.keys(WF_PTR_REFRESH_BY_ID).forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) attachPullToRefresh(el, WF_PTR_REFRESH_BY_ID[id]);
+  });
 })();
