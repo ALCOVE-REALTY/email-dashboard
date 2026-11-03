@@ -14,6 +14,7 @@ const aiRateLimiter = require('./aiAssistant/rateLimiter');
 const toolCallLog = require('./aiAssistant/toolCallLog');
 const chatHistoryService = require('./chatHistoryService');
 const whatsappAssistant = require('./aiAssistant/whatsappAssistant');
+const attendanceRequestService = require('./aiAssistant/attendanceRequestService');
 const memoryService = require('./aiAssistant/memoryService');
 const documentRequests = require('./aiAssistant/documentRequests');
 const reminderService = require('./aiAssistant/reminderService');
@@ -2367,6 +2368,111 @@ router.post('/hr-assistant/open-flows/close', async (req, res) => {
       return res.json({ ok: true });
     }
     return res.status(400).json({ error: 'kind must be "hr_note_flow" or "hr_confirmation"' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Task 6 (2026-11) - "Attendance Requests" page: an upgrade of the Open
+// Flows entry point in the Important WhatsApp header (same icon slot,
+// renamed) - every attendance-type request (leave/half-day/late/WFH/
+// early leave/comp-off/duty change/regularisation/other) that has come
+// through SUBH's HR-note/confirmation flow, kept permanently (open AND
+// finished), with a month selector and status/type filters.
+router.get('/hr-assistant/attendance-requests', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const monthKey = String(req.query.month || '') || attendanceRequestService.monthKeyOf(Date.now());
+    const type = req.query.type ? String(req.query.type) : 'all';
+    const statusFilter = req.query.status ? String(req.query.status) : 'all';
+    // Every request in this month, regardless of type/status - the base
+    // for both the status-chip counts (In progress/Completed/All) and
+    // the type-chip counts (Leave/Half-day/...), which must stay stable
+    // as the OTHER filter changes, never collapsing to just whichever
+    // single type/status happens to be selected right now.
+    const monthRows = await attendanceRequestService.listForMonth(monthKey, {});
+    const counts = {
+      all: monthRows.length,
+      in_progress: monthRows.filter((r) => r.derivedStatus === 'in_progress').length,
+      completed: monthRows.filter((r) => r.derivedStatus === 'completed').length
+    };
+    const typeCounts = {};
+    monthRows.forEach((r) => { typeCounts[r.requestType] = (typeCounts[r.requestType] || 0) + 1; });
+    let filtered = type === 'all' ? monthRows : monthRows.filter((r) => r.requestType === type);
+    if (statusFilter !== 'all') filtered = filtered.filter((r) => r.derivedStatus === statusFilter);
+    const items = filtered.map((r) => ({
+      id: r.id, employeeName: r.employeeName, employeeId: r.employeeId, requestType: r.requestType,
+      requestDates: r.requestDates, receivedAt: r.receivedAt,
+      status: r.derivedStatus, currentStep: attendanceRequestService.currentStepLabel(r),
+      waitingOn: attendanceRequestService.waitingOnLabel(r),
+      managerDecision: r.managerDecision, managerDecisionAt: r.managerDecisionAt,
+      employeeInformedAt: r.employeeInformedAt, approverName: r.approverName,
+      senderPhone: r.senderPhone, lastReminderAt: r.lastReminderAt,
+      timeline: { receivedAt: r.receivedAt, approverNamedAt: r.approverNamedAt, managerAskedAt: r.managerAskedAt, managerDecisionAt: r.managerDecisionAt, employeeInformedAt: r.employeeInformedAt }
+    }));
+    res.json({ items, counts, typeCounts, month: monthKey });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/hr-assistant/attendance-requests/:id/remind', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const result = await attendanceRequestService.remindRecord(req.params.id);
+    if (!result.ok) return res.status(400).json({ error: result.error });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/hr-assistant/attendance-requests/:id/close', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const result = await attendanceRequestService.closeRecord(req.params.id);
+    if (!result.ok) return res.status(400).json({ error: result.error });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/hr-assistant/attendance-requests/export', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const monthKey = String(req.query.month || '') || attendanceRequestService.monthKeyOf(Date.now());
+    const type = req.query.type ? String(req.query.type) : 'all';
+    const format = String(req.query.format || 'excel').toLowerCase();
+    const rows = await attendanceRequestService.listForMonth(monthKey, { type });
+    const columns = attendanceRequestService.exportColumns();
+    const tableRows = attendanceRequestService.exportRows(rows);
+    const title = 'Attendance Requests';
+    const subtitle = monthKey + (type !== 'all' ? ' · ' + type : '') + ' · ' + rows.length + ' request' + (rows.length === 1 ? '' : 's');
+    const safeName = 'Attendance_Requests_' + monthKey;
+    if (format === 'pdf') {
+      const buf = await buildTablePdfBuffer({ title, subtitle, columns, rows: tableRows, landscape: true });
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', 'attachment; filename="' + safeName + '.pdf"');
+      return res.send(buf);
+    }
+    const buf = await buildTableExcelBuffer({ title, subtitle, columns, rows: tableRows });
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', 'attachment; filename="' + safeName + '.xlsx"');
+    res.send(buf);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// One-time (re-runnable, skips anything already linked) backfill from
+// whatever the real HR-confirmation/note-flow store currently holds -
+// triggered manually by the owner, never automatically.
+router.post('/hr-assistant/attendance-requests/backfill', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const result = await attendanceRequestService.backfillFromExisting();
+    res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

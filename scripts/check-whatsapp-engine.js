@@ -25,6 +25,7 @@ require('dotenv').config({ path: '.env.local' });
 require('dotenv').config();
 
 const whatsappAssistant = require('../src/aiAssistant/whatsappAssistant');
+const attendanceRequestService = require('../src/aiAssistant/attendanceRequestService');
 const whatsapp = require('../src/whatsappService');
 const employeeService = require('../src/employeeService');
 const inboxLogArchive = require('../src/inboxLogArchive');
@@ -6634,6 +6635,149 @@ async function checkAsync(label, fn) {
     // 25 stored, page size 30 - the WHOLE history fits on one page, so
     // this must show all 25, not cap at the old 20.
     return convo.thread.length === 25;
+  });
+
+  console.log('='.repeat(70));
+  console.log('Task 6 (2026-11): Attendance Requests - a permanent 5-step record (Received -> Approver named -> Manager asked -> Manager confirmed/denied -> Employee informed) for every attendance-type HR-note/confirmation flow');
+  console.log('='.repeat(70));
+  check('classifyRequestType recognizes every fixed category from free text, defaulting to "Other" for anything unrecognized', (() => {
+    return attendanceRequestService.classifyRequestType(null, 'half day chai aj') === 'Half-day' &&
+      attendanceRequestService.classifyRequestType(null, 'work from home korte chai') === 'WFH' &&
+      attendanceRequestService.classifyRequestType(null, 'aj deri hobe') === 'Late' &&
+      attendanceRequestService.classifyRequestType(null, 'kalke chhutti nebo') === 'Leave' &&
+      attendanceRequestService.classifyRequestType(null, 'comp off nebo') === 'Comp-off' &&
+      attendanceRequestService.classifyRequestType(null, 'ekta random bishoy') === 'Other';
+  })());
+  check('extractRequestDates finds a recognizable date phrase verbatim, falling back to the received date when none is found', (() => {
+    const receivedAt = Date.UTC(2026, 10, 3);
+    return attendanceRequestService.extractRequestDates('3 Nov e half day chai', receivedAt) === '3 Nov' &&
+      attendanceRequestService.extractRequestDates('22-24 Oct thakbo na', receivedAt).toLowerCase().includes('oct') &&
+      attendanceRequestService.extractRequestDates('ekta random message', receivedAt) === '03 Nov 2026';
+  })());
+  await checkAsync('full lifecycle: Step 1 (Received) creates a record waiting on the SENDER; Step 2 (Approver named) updates it to wait on the manager; Step 3 (Manager asked) links it to a confirmation; Step 4+5 (decision) marks it completed - all against the SAME record, never a duplicate', async () => {
+    const phone = '919999008001';
+    const receivedAt = Date.now();
+    await attendanceRequestService.recordStep1Received({ phone, senderName: 'Test Employee', summary: 'half day chai', topicLabel: 'half day', receivedAt });
+    const afterStep1 = (await attendanceRequestService.listAllRecords()).find((r) => r.senderPhone === phone);
+    const waitingAfterStep1 = afterStep1 && attendanceRequestService.waitingOnLabel(afterStep1);
+
+    await attendanceRequestService.recordStep2ApproverNamed(phone, { name: 'Tanmoy Manager', contactNumber: '919999008002' });
+    const afterStep2 = await attendanceRequestService.getRecord(afterStep1.id);
+    const waitingAfterStep2 = attendanceRequestService.waitingOnLabel(afterStep2);
+
+    const fakeConfirmationId = 'test-confirmation-' + Date.now();
+    await attendanceRequestService.recordStep3ManagerAsked(phone, fakeConfirmationId);
+    const afterStep3 = await attendanceRequestService.getRecord(afterStep1.id);
+
+    await attendanceRequestService.recordStep4And5Decision(fakeConfirmationId, 'confirmed');
+    const afterStep4 = await attendanceRequestService.getRecord(afterStep1.id);
+
+    return Boolean(afterStep1) && waitingAfterStep1.who === 'sender' &&
+      waitingAfterStep2.who === 'manager' && afterStep2.approverName === 'Tanmoy Manager' &&
+      afterStep3.linkedConfirmationId === fakeConfirmationId && Boolean(afterStep3.managerAskedAt) &&
+      afterStep4.status === 'completed' && afterStep4.managerDecision === 'confirmed' && Boolean(afterStep4.employeeInformedAt) &&
+      attendanceRequestService.derivedStatus(afterStep4) === 'completed' &&
+      afterStep1.id === afterStep2.id && afterStep2.id === afterStep3.id && afterStep3.id === afterStep4.id;
+  });
+  await checkAsync('recordBlockedAtApprover marks the record cancelled (never left stuck "in progress" forever) when the safety gate blocks a flow from ever reaching a manager', async () => {
+    const phone = '919999008003';
+    await attendanceRequestService.recordStep1Received({ phone, senderName: 'Test Employee 2', summary: 'leave chai', topicLabel: 'leave', receivedAt: Date.now() });
+    await attendanceRequestService.recordStep2ApproverNamed(phone, { name: 'Senior Director', contactNumber: null });
+    await attendanceRequestService.recordBlockedAtApprover(phone, 'onar phone number record-e nei');
+    const record = (await attendanceRequestService.listAllRecords()).find((r) => r.senderPhone === phone);
+    return Boolean(record) && attendanceRequestService.derivedStatus(record) === 'cancelled';
+  });
+  check('derivedStatus marks a still-open request "expired" after 7 days with no manager reply, without needing any background sweep', (() => {
+    const record = { status: 'in_progress', managerAskedAt: Date.now() - (8 * 24 * 60 * 60 * 1000) };
+    return attendanceRequestService.derivedStatus(record) === 'expired';
+  })());
+  check('derivedStatus never expires a request still waiting on the sender (no manager asked yet) just because it is old', (() => {
+    const record = { status: 'in_progress', managerAskedAt: null };
+    return attendanceRequestService.derivedStatus(record) === 'in_progress';
+  })());
+  await checkAsync('listForMonth filters by month and by type correctly, and never leaks a different month\'s/type\'s records in', async () => {
+    const thisMonthPhone = '919999008004';
+    await attendanceRequestService.recordStep1Received({ phone: thisMonthPhone, senderName: 'Month Test', summary: 'wfh korte chai', topicLabel: 'wfh', receivedAt: Date.now() });
+    const monthKey = attendanceRequestService.monthKeyOf(Date.now());
+    const rows = await attendanceRequestService.listForMonth(monthKey, {});
+    const wfhOnly = await attendanceRequestService.listForMonth(monthKey, { type: 'WFH' });
+    const leaveOnly = await attendanceRequestService.listForMonth(monthKey, { type: 'Leave' });
+    const oldMonth = await attendanceRequestService.listForMonth('2020-01', {});
+    return rows.some((r) => r.senderPhone === thisMonthPhone) &&
+      wfhOnly.some((r) => r.senderPhone === thisMonthPhone) &&
+      !leaveOnly.some((r) => r.senderPhone === thisMonthPhone) &&
+      !oldMonth.some((r) => r.senderPhone === thisMonthPhone);
+  });
+  check('exportColumns/exportRows produce one row per record with the exact 12 documented columns, in the documented order', (() => {
+    const columns = attendanceRequestService.exportColumns();
+    const record = {
+      employeeName: 'Test', employeeId: 'AR0001', department: 'HR', requestType: 'Leave', requestDates: '3 Nov',
+      receivedAt: Date.now(), approverName: 'Manager X', managerDecision: 'confirmed', managerDecisionAt: Date.now(),
+      employeeInformedAt: Date.now(), status: 'completed'
+    };
+    const rows = attendanceRequestService.exportRows([record]);
+    return columns.length === 12 && columns[0] === 'Employee Name' && columns[11] === 'Status' &&
+      rows.length === 1 && rows[0].length === 12 && rows[0][0] === 'Test' && rows[0][6] === 'Manager X' && rows[0][7] === 'Confirmed';
+  })());
+  await checkAsync('remindRecord enforces a 24h cooldown - a second reminder attempt right after the first is refused, never double-sent', async () => {
+    const phone = '919999008005';
+    await attendanceRequestService.recordStep1Received({ phone, senderName: 'Cooldown Test', summary: 'late hobe', topicLabel: 'late', receivedAt: Date.now() });
+    const record = (await attendanceRequestService.listAllRecords()).find((r) => r.senderPhone === phone);
+    await attendanceRequestService.updateRecord(record.id, { lastReminderAt: Date.now() });
+    const result = await attendanceRequestService.remindRecord(record.id);
+    return result.ok === false && /24 hours/i.test(result.error || '');
+  });
+  await checkAsync('closeRecord marks a request cancelled, and derivedStatus reflects it immediately', async () => {
+    const phone = '919999008006';
+    await attendanceRequestService.recordStep1Received({ phone, senderName: 'Close Test', summary: 'duty change chai', topicLabel: 'duty', receivedAt: Date.now() });
+    const record = (await attendanceRequestService.listAllRecords()).find((r) => r.senderPhone === phone);
+    const result = await attendanceRequestService.closeRecord(record.id);
+    const after = await attendanceRequestService.getRecord(record.id);
+    return result.ok === true && attendanceRequestService.derivedStatus(after) === 'cancelled';
+  });
+  await checkAsync('WIRING CHECK: the REAL finalizeHrNoteThirdParty (not a mock) correctly advances a Step-1 record through Step 2 (approver named) and Step 3 (manager asked) when called exactly as handleHrNotificationStart would call it', async () => {
+    const phone = '919999008009';
+    await attendanceRequestService.recordStep1Received({ phone, senderName: 'Wiring Test', summary: 'half day chai', topicLabel: 'half day', receivedAt: Date.now() });
+    const candidate = { name: 'Wiring Test Manager', contactNumber: '919999008010', department: 'Civil', designation: 'Manager' };
+    await whatsappAssistant.finalizeHrNoteThirdParty({
+      phone, senderName: 'Wiring Test', lang: 'banglish', candidate,
+      summary: 'half day chai', summaryLocalized: 'half day chai', topicLabel: 'half day', createdAt: Date.now(), history: []
+    });
+    const record = (await attendanceRequestService.listAllRecords()).find((r) => r.senderPhone === phone);
+    return Boolean(record) && record.approverName === 'Wiring Test Manager' && Boolean(record.approverNamedAt) &&
+      Boolean(record.managerAskedAt) && Boolean(record.linkedConfirmationId) &&
+      attendanceRequestService.derivedStatus(record) === 'in_progress';
+  });
+  await checkAsync('WIRING CHECK: the REAL sendHrConfirmationResultToSender (not a mock) correctly advances that SAME record to Step 4+5 (completed) once the manager\'s decision is saved', async () => {
+    const phone = '919999008011';
+    await attendanceRequestService.recordStep1Received({ phone, senderName: 'Wiring Test 2', summary: 'leave chai', topicLabel: 'leave', receivedAt: Date.now() });
+    const candidate = { name: 'Wiring Test Manager 2', contactNumber: '919999008012', department: 'Civil', designation: 'Manager' };
+    await whatsappAssistant.finalizeHrNoteThirdParty({
+      phone, senderName: 'Wiring Test 2', lang: 'banglish', candidate,
+      summary: 'leave chai', summaryLocalized: 'leave chai', topicLabel: 'leave', createdAt: Date.now(), history: []
+    });
+    const record = (await attendanceRequestService.listAllRecords()).find((r) => r.senderPhone === phone);
+    await whatsappAssistant.updateHrConfirmation(record.linkedConfirmationId, { status: 'confirmed', resolvedAt: Date.now() });
+    const confirmation = await whatsappAssistant.getHrConfirmation(record.linkedConfirmationId);
+    await whatsappAssistant.sendHrConfirmationResultToSender(confirmation, 'TEST - safe to ignore');
+    // The hook inside sendHrConfirmationResultToSender fires as a detached
+    // async IIFE (never blocks the real send) - give it one tick to land.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const after = await attendanceRequestService.getRecord(record.id);
+    return after.status === 'completed' && after.managerDecision === 'confirmed' && Boolean(after.employeeInformedAt);
+  });
+  await checkAsync('backfillFromExisting links a real (fake-store) hrConfirmation it finds into a NEW record, and skips it on a second run (never creates a duplicate)', async () => {
+    const confirmationId = await whatsappAssistant.saveHrConfirmation({
+      senderPhone: '919999008007', senderName: 'Backfill Test', summary: 'wfh chai', summaryLocalized: 'wfh chai', lang: 'banglish',
+      thirdPartyPhone: '919999008008', thirdPartyName: 'Backfill Manager', thirdPartyDepartment: 'Civil',
+      topicLabel: 'wfh', originalMessageAt: Date.now(), status: 'confirmed', createdAt: Date.now(), resolvedAt: Date.now(), remindedAt: null, escalatedAt: null, reminderId: null
+    });
+    const firstRun = await attendanceRequestService.backfillFromExisting();
+    const recordAfterFirst = (await attendanceRequestService.listAllRecords()).find((r) => r.linkedConfirmationId === confirmationId);
+    const secondRun = await attendanceRequestService.backfillFromExisting();
+    const countAfterSecond = (await attendanceRequestService.listAllRecords()).filter((r) => r.linkedConfirmationId === confirmationId).length;
+    return Boolean(recordAfterFirst) && recordAfterFirst.managerDecision === 'confirmed' && recordAfterFirst.status === 'completed' &&
+      countAfterSecond === 1 && firstRun.created >= 1;
   });
 
   console.log(pass + '/' + (pass + fail) + ' passed' + (fail ? ', ' + fail + ' FAILED' : ''));

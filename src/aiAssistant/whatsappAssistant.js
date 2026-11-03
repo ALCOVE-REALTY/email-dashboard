@@ -6075,6 +6075,34 @@ const HR_NOTE_NO_THIRD_PARTY = {
   hinglish: 'Maine aapki baat note kar li hai aur Subhodeep ko bata raha hoon.',
   english: "I've noted this and I'm letting Subhodeep know."
 };
+// Task 6 (2026-11) - Attendance Requests page's own "Remind" button,
+// sender side: a generic, honest nudge that this flow is still waiting
+// on them - never reconstructs the exact original question (5 different
+// pending-step shapes, each its own template); a clear reminder achieves
+// the same purpose without duplicating that logic a third time.
+const HR_NOTE_FLOW_REMINDER = {
+  banglish: (topic) => 'Reminder: Apni "' + topic + '" niye jeta bolechhilen, tar jonne ekta choto info apnar kach theke ekhono dorkar - please jokhon shomoy pan, reply korun.',
+  hinglish: (topic) => 'Reminder: Aapne "' + topic + '" ke baare mein jo bataya tha, uske liye aapse ek chhoti si jaankari abhi bhi chahiye - jab time mile, reply kar dein.',
+  english: (topic) => 'Reminder: I still need one more detail from you about "' + topic + '" - please reply when you get a chance.'
+};
+// Task 6 (2026-11) - Attendance Requests page's own "Remind" button,
+// sender side: nudges whoever the flow is still waiting on to NAME the
+// approver (no confirmation exists yet - see sendHrConfirmationMessageToManager
+// for the manager-side equivalent, already exported).
+async function resendPendingHrNoteFlowNudge(phone) {
+  const normalized = whatsapp.normalizePhone(phone);
+  const hrFlow = await getPendingHrNoteFlow(normalized);
+  if (!hrFlow) return { ok: false, error: 'No pending question found for this sender.' };
+  const lang = hrFlow.lang || 'english';
+  const topic = hrFlow.summaryLocalized || hrFlow.summary || (lang === 'banglish' ? 'ei bishoy' : lang === 'hinglish' ? 'is baat' : 'this matter');
+  const text = (HR_NOTE_FLOW_REMINDER[lang] || HR_NOTE_FLOW_REMINDER.english)(topic);
+  const disclosed = await prependDisclosureIfNeeded(text, normalized, lang);
+  if (!isRealSendAllowedFor(normalized)) return { ok: true, draft: true };
+  const sendResult = await sendWhatsAppChunked(normalized, disclosed);
+  if (!sendResult.ok) return sendResult;
+  await appendConvoHistory(normalized, 'out', disclosed);
+  return { ok: true };
+}
 // LIVE FIX (917278793115) - finalizeHrNoteThirdParty's safety escalation
 // used to return this SAME generic line for every blocking reason, which
 // reads to the sender exactly like a normal "noted" close - they have no
@@ -6310,6 +6338,18 @@ async function sendHrConfirmationMessageToManager(confirmationId) {
 // is "currently" being replied to when this fires from the manager's
 // answer) - same pattern as the manager-facing send above.
 async function sendHrConfirmationResultToSender(confirmation, outcomeText) {
+  // Task 6 (2026-11) - Attendance Requests page, Step 4+5 "Manager
+  // confirmed/denied" + "Employee informed": this function is the SINGLE
+  // point every confirmed/declined outcome passes through, re-fetched
+  // fresh since the caller's own `confirmation` variable here is the
+  // PRE-update object (status was updated separately, just before this
+  // call) - purely additive, never affects the real send below.
+  (async () => {
+    const fresh = await getHrConfirmation(confirmation.id).catch(() => null);
+    if (fresh && (fresh.status === 'confirmed' || fresh.status === 'declined')) {
+      await require('./attendanceRequestService').recordStep4And5Decision(confirmation.id, fresh.status).catch(() => {});
+    }
+  })().catch(() => {});
   outcomeText = await prependDisclosureIfNeeded(outcomeText, confirmation.senderPhone, confirmation.lang);
   if (!isRealSendAllowedFor(confirmation.senderPhone)) {
     await logInboxEvent({ chatId: confirmation.senderPhone, name: confirmation.senderName, isGroup: false, messageSummary: '[HR confirmation result: ' + confirmation.summary + ']', aCase: 'hr_confirmation_result', sentText: outcomeText, outcome: 'draft_mode', sentAt: Date.now() });
@@ -6443,6 +6483,12 @@ async function finalizeHrNoteThirdParty({ phone, senderName, lang, candidate, su
     return { case: 'acknowledged', replyText: (HR_NOTE_SAME_MATTER_ALREADY_PENDING[lang] || HR_NOTE_SAME_MATTER_ALREADY_PENDING.english)(candidate.name), summaryForOwner: null, lang };
   }
   await clearPendingHrNoteFlow(phone);
+  // Task 6 (2026-11) - Attendance Requests page, Step 2 "Approver named":
+  // the single point where a candidate has just been resolved, whether
+  // asked for separately or named upfront in the sender's first message.
+  // Purely additive - never affects this function's own return value.
+  const attendanceRequestService = require('./attendanceRequestService');
+  attendanceRequestService.recordStep2ApproverNamed(phone, candidate).catch(() => {});
   const isSenior = SENIOR_DESIGNATION_RE.test(candidate.designation || '');
   const onNeverAuto = candidate.contactNumber ? await isNeverAuto(candidate.contactNumber) : false;
   const confirmationsEnabled = await isHrConfirmationsEnabled();
@@ -6451,6 +6497,7 @@ async function finalizeHrNoteThirdParty({ phone, senderName, lang, candidate, su
       : isSenior ? 'uni senior designation-e achen (Director/MD/President/VP/CEO)'
       : onNeverAuto ? 'uni never-auto list-e achen'
       : 'HR confirmations setting off ache';
+    attendanceRequestService.recordBlockedAtApprover(phone, reason).catch(() => {});
     await postOwnerNotification(
       '⚠️ ' + senderNameAndPhone(senderName, phone) + ' HR-bishoy janiyechhen ("' + summary + '"). ' + candidate.name + ' (' + candidate.department + ')-ke confirm korte hobe, kintu ' + reason +
       ' - tai automatically message kora hocche na. Apni direct handle korun.'
@@ -6463,6 +6510,8 @@ async function finalizeHrNoteThirdParty({ phone, senderName, lang, candidate, su
     topicLabel: topicLabel || null, originalMessageAt: createdAt || Date.now(),
     status: 'awaiting_manager', createdAt: Date.now(), remindedAt: null, escalatedAt: null, reminderId: null
   });
+  // Task 6 (2026-11) - Attendance Requests page, Step 3 "Manager asked".
+  attendanceRequestService.recordStep3ManagerAsked(phone, confirmationId).catch(() => {});
   await sendHrConfirmationMessageToManager(confirmationId);
   const reminderId = await createHrConfirmationReminder(await getHrConfirmation(confirmationId));
   if (reminderId) await updateHrConfirmation(confirmationId, { reminderId });
@@ -6522,6 +6571,14 @@ async function handleHrNotificationStart({ phone, name, lang, text, history, cla
   // continueHrNoteFlow re-save, all the way into the saved HR confirmation
   // record, for the STEP 5 link-back rule to compare against later.
   const createdAt = Date.now();
+  // Task 6 (2026-11) - Attendance Requests page, Step 1 "Received": this
+  // is the ONE genuine entry point for a brand new HR-note flow (a
+  // continuation re-enters via continueHrNoteFlow/resolveHrNoteThirdParty,
+  // never back through here), so this can never double-create a record
+  // for the same flow. Purely additive - a failure here never affects
+  // the real flow (handleHrNotificationStart's own reply/behavior is
+  // completely unchanged either way).
+  require('./attendanceRequestService').recordStep1Received({ phone, senderName: name, summary, topicLabel, receivedAt: createdAt }).catch(() => {});
   await postOwnerNotification(name + ' (' + phone + ') HR-bishoy janiyechhen: "' + summary + '". Note kora holo.');
 
   // WFH/leave/half-day/off-day-duty FIX, "sudden" - a sudden/emergency
@@ -11937,6 +11994,7 @@ module.exports = {
   markIntroducedToday,
   hasIntroducedTodayDedicated,
   sendHrConfirmationMessageToManager,
+  resendPendingHrNoteFlowNudge,
   checkGatewayConnection,
   gatewayStatusSummary,
   buildAutoReplyStatusReply,
@@ -12123,6 +12181,7 @@ module.exports = {
   saveHrConfirmation,
   getHrConfirmation,
   updateHrConfirmation,
+  sendHrConfirmationResultToSender,
   removeHrConfirmation,
   listPendingHrConfirmationsForPhone,
   listAllHrConfirmations,
@@ -12131,6 +12190,7 @@ module.exports = {
   findDuplicateHrConfirmation,
   listOpenHrFlowsForOwner,
   closeOpenHrNoteFlow,
+  listOpenHrNoteFlows,
   saveSiteAlias,
   getSiteAlias,
   listSiteAliases,
