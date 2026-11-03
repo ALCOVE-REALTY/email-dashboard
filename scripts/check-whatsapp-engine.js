@@ -6007,6 +6007,52 @@ async function checkAsync(label, fn) {
   })());
 
   console.log('='.repeat(70));
+  console.log('Task 3 (2026-11) LIVE BUG FIX: "under X" never includes X themself; proper per-language templates (no mixed-language fragments, period mentioned); "only direct reporting" follow-ups narrow to just the direct-report subset');
+  console.log('='.repeat(70));
+  const SELF_REF_UNDER_TEST_EMPLOYEES = [
+    { name: 'Test Director2', designation: 'Director', department: 'Management', location: 'HO', company: 'Alcove', reportingManager: 'Board', reportingDoer: '', status: 'ACTIVE', doj: new Date(Date.UTC(2015, 0, 1)) },
+    // Suman Banerjee: an HOD/manager (never anyone's Reporting DOER, so
+    // NOT a Director) whose own Reporting Manager field is self-
+    // referential ("top of this branch" convention) - the live bug: this
+    // made him match his OWN "under Suman Banerjee" query.
+    { name: 'Suman Banerjee', designation: 'Head', department: 'Architecture', location: 'HO', company: 'Alcove', reportingManager: 'Suman Banerjee', reportingDoer: 'Test Director2', status: 'ACTIVE', doj: new Date(Date.UTC(2020, 0, 1)) },
+    { name: 'Prerana Maity', designation: 'Manager', department: 'Architecture', location: 'HO', company: 'Alcove', reportingManager: 'Suman Banerjee', reportingDoer: 'Test Director2', status: 'ACTIVE', doj: new Date(Date.UTC(2026, 9, 5)) }
+  ];
+  check('LOCKED SCENARIO (live bug): "Suman Banerjee-er under" never includes Suman Banerjee himself, even though his own self-referential Reporting Manager field would otherwise match his own query - only Prerana Maity is returned, not 2', (() => {
+    const rows = whatsappAssistant.filterEmployeesForHrQuery(SELF_REF_UNDER_TEST_EMPLOYEES, { reportingManagerName: 'Suman Banerjee' });
+    return rows.length === 1 && rows[0].name === 'Prerana Maity';
+  })());
+  check('LOCKED SCENARIO (live bug): buildHrDataQueryAnswer for "Suman Banerjee-er under" in ENGLISH never mixes in the Banglish "-er under" fragment - "1 employees joined under Suman Banerjee..." (roleLabel is always "employees", same as every other English template in this file - not pluralization-aware, a pre-existing, unrelated convention)', (() => {
+    const ans = whatsappAssistant.buildHrDataQueryAnswer(SELF_REF_UNDER_TEST_EMPLOYEES, { returnType: 'list', reportingManagerName: 'Suman Banerjee', dojMonth: 10, dojYear: 2026 }, 'english');
+    return ans.outgoingText.startsWith('1 employees joined under Suman Banerjee in October 2026:') && !ans.outgoingText.includes('-er under') && ans.matchCount === 1;
+  })());
+  check('buildHrDataQueryAnswer for "Suman Banerjee-er under" in BANGLISH mentions the period and never includes Suman Banerjee himself', (() => {
+    const ans = whatsappAssistant.buildHrDataQueryAnswer(SELF_REF_UNDER_TEST_EMPLOYEES, { returnType: 'list', reportingManagerName: 'Suman Banerjee', dojMonth: 10, dojYear: 2026 }, 'banglish');
+    return ans.outgoingText.startsWith('October 2026-e Suman Banerjee-er under-e 1 jon join korechhen:') && ans.outgoingText.includes('Prerana Maity') && !ans.outgoingText.includes('Suman Banerjee —');
+  })());
+  check('a plain (non-Director) "under X" count with NO date filter still mentions the role word, in Banglish - "Bob Manager-er under-e total 2 jon kormi achen." (regression check: the role word must survive the new dedicated under-X template)', (() => {
+    const ans = whatsappAssistant.buildHrDataQueryAnswer(FAKE_DOER_EMPLOYEES, { returnType: 'count', reportingManagerName: 'Bob Manager' }, 'banglish');
+    return ans.outgoingText === 'Bob Manager-er under-e total 2 jon kormi achen.';
+  })());
+  check('a plain (non-Director) "under X" count in ENGLISH never produces "in under X" (the old generic-scope grammar bug) - "A total of 2 employees are under Bob Manager."', (() => {
+    const ans = whatsappAssistant.buildHrDataQueryAnswer(FAKE_DOER_EMPLOYEES, { returnType: 'count', reportingManagerName: 'Bob Manager' }, 'english');
+    return ans.outgoingText === 'A total of 2 employees are under Bob Manager.' && !ans.outgoingText.includes('in under');
+  })());
+  check('LOCKED SCENARIO: "only direct reporting" narrows a Director\'s "under X" count down to just the direct-report subset (1), never the full Doer total (2) - "Direct reporting 1 jon."', (() => {
+    const ans = whatsappAssistant.buildHrDataQueryAnswer(FAKE_DOER_EMPLOYEES, { returnType: 'count', reportingManagerName: 'Yashaswi Shroff', dojMonth: 10, dojYear: 2026, directReportsOnly: true }, 'banglish');
+    return ans.outgoingText === 'Direct reporting 1 jon.' && ans.matchCount === 1;
+  })());
+  check('LOCKED SCENARIO: "Who is direct reporting?" (English) narrows to a NAMED LIST of just the direct report(s) - "Direct report (1):\\n1. Carol Smith..." - never the full 2-person Doer list (Alice Doe excluded)', (() => {
+    const ans = whatsappAssistant.buildHrDataQueryAnswer(FAKE_DOER_EMPLOYEES, { returnType: 'list', reportingManagerName: 'Yashaswi Shroff', dojMonth: 10, dojYear: 2026, directReportsOnly: true }, 'english');
+    return ans.outgoingText.startsWith('Direct report (1):') && ans.outgoingText.includes('Carol Smith') && !ans.outgoingText.includes('Alice Doe') && ans.matchCount === 1;
+  })());
+  check('directReportsOnly is a no-op for a non-Director "under X" (every row there already reports directly by construction) - same 2 people either way', (() => {
+    const withFlag = whatsappAssistant.buildHrDataQueryAnswer(FAKE_DOER_EMPLOYEES, { returnType: 'count', reportingManagerName: 'Bob Manager', directReportsOnly: true }, 'banglish');
+    const withoutFlag = whatsappAssistant.buildHrDataQueryAnswer(FAKE_DOER_EMPLOYEES, { returnType: 'count', reportingManagerName: 'Bob Manager' }, 'banglish');
+    return withFlag.outgoingText === withoutFlag.outgoingText && withFlag.matchCount === 2;
+  })());
+
+  console.log('='.repeat(70));
   console.log('Task 11 (2026-11) LIVE BUG FIX: a bare joining month (no year named) resolves to its MOST RECENT occurrence, never every year on file - the live bug: "Oct month a Yashaswi shroff er under a koto staff join koreche?" answered 10 (several different years\' Octobers summed) instead of the real October-2026 count of 3');
   console.log('='.repeat(70));
   check('employeeService.resolveBareDojYear: a month already passed this year (or is the current month) resolves to THIS year - October asked, "now" is November 2026', employeeService.resolveBareDojYear(10, 11, 2026) === 2026);
@@ -6136,6 +6182,93 @@ async function checkAsync(label, fn) {
           ownerEmail: ownerEmailForDataQueryTests
         });
         return followUp && followUp.reply.includes('Direct Normal') && followUp.reply.includes('Direct SelfRef') && followUp.reply.includes('Indirect Person');
+      } finally {
+        employeeService.getEmployeeData = origGetData;
+      }
+    });
+    await checkAsync('Task 3 (2026-11) follow-up pattern - ADD A FIELD: "please share their contact no" after a names list reuses the SAME filters and adds listIncludeContactNo, showing contact numbers for the same 3 people', async () => {
+      const origGetData = employeeService.getEmployeeData;
+      const withContacts = SELF_REF_DOER_EMPLOYEES.map((e, i) => Object.assign({}, e, { contactNumber: '98765430' + i }));
+      employeeService.getEmployeeData = async () => ({ employees: withContacts, departmentNames: new Map(), locationNames: new Map(), reportingManagerNames: new Map(), doerNames: new Map() });
+      try {
+        await whatsappAssistant.resolveOwnerChatDataQuery({
+          extracted: { returnType: 'list', reportingManagerName: 'Test Director', dojMonth: 10 },
+          message: 'Test Director er under e October e join kora der nam din', ownerEmail: ownerEmailForDataQueryTests + '-addfield'
+        });
+        const followUp = await whatsappAssistant.resolveOwnerChatDataQuery({
+          extracted: { isFormatRevision: true, listIncludeContactNo: true },
+          message: 'Please share their contact no', ownerEmail: ownerEmailForDataQueryTests + '-addfield'
+        });
+        return Boolean(followUp) && followUp.reply.includes('Direct Normal') && followUp.reply.includes('Indirect Person') && /987654\d{2}/.test(followUp.reply);
+      } finally {
+        employeeService.getEmployeeData = origGetData;
+      }
+    });
+    await checkAsync('Task 3 (2026-11) follow-up pattern - NARROW: "shudhu Architecture department er jara" after a names list adds a department filter on top of the SAME reportingManagerName/dojMonth context, excluding Civil-department people', async () => {
+      const origGetData = employeeService.getEmployeeData;
+      employeeService.getEmployeeData = async () => ({ employees: SELF_REF_DOER_EMPLOYEES, departmentNames: new Map(), locationNames: new Map(), reportingManagerNames: new Map(), doerNames: new Map() });
+      try {
+        await whatsappAssistant.resolveOwnerChatDataQuery({
+          extracted: { returnType: 'list', reportingManagerName: 'Test Director', dojMonth: 10 },
+          message: 'Test Director er under e October e join kora der nam din', ownerEmail: ownerEmailForDataQueryTests + '-narrow'
+        });
+        const followUp = await whatsappAssistant.resolveOwnerChatDataQuery({
+          extracted: { isFormatRevision: true, department: 'Architecture' },
+          message: 'shudhu Architecture department er jara, tader dao', ownerEmail: ownerEmailForDataQueryTests + '-narrow'
+        });
+        return Boolean(followUp) && followUp.reply.includes('Direct SelfRef') && !followUp.reply.includes('Direct Normal') && !followUp.reply.includes('Indirect Person');
+      } finally {
+        employeeService.getEmployeeData = origGetData;
+      }
+    });
+    await checkAsync('Task 3 (2026-11) follow-up pattern - COUNT-ONLY: "koyjon?" after a names list switches returnType back to count, reusing the same filters', async () => {
+      const origGetData = employeeService.getEmployeeData;
+      employeeService.getEmployeeData = async () => ({ employees: SELF_REF_DOER_EMPLOYEES, departmentNames: new Map(), locationNames: new Map(), reportingManagerNames: new Map(), doerNames: new Map() });
+      try {
+        await whatsappAssistant.resolveOwnerChatDataQuery({
+          extracted: { returnType: 'list', reportingManagerName: 'Test Director', dojMonth: 10 },
+          message: 'Test Director er under e October e join kora der nam din', ownerEmail: ownerEmailForDataQueryTests + '-countonly'
+        });
+        const followUp = await whatsappAssistant.resolveOwnerChatDataQuery({
+          extracted: { isFormatRevision: true, returnType: 'count' },
+          message: 'koyjon?', ownerEmail: ownerEmailForDataQueryTests + '-countonly'
+        });
+        return Boolean(followUp) && followUp.reply.includes('3') && !followUp.reply.includes('\n1.');
+      } finally {
+        employeeService.getEmployeeData = origGetData;
+      }
+    });
+    await checkAsync('Task 3 (2026-11) follow-up pattern - WHO AMONG THEM: "tader modhye ke probation e achen?" narrows the same "under X" set by an ADDITIONAL employmentType filter, never discarding the base reportingManagerName/date context', async () => {
+      const origGetData = employeeService.getEmployeeData;
+      const probationFixture = SELF_REF_DOER_EMPLOYEES.map((e) => Object.assign({}, e, { employmentType: e.name === 'Direct Normal' ? 'Probation' : 'Confirmed' }));
+      employeeService.getEmployeeData = async () => ({ employees: probationFixture, departmentNames: new Map(), locationNames: new Map(), reportingManagerNames: new Map(), doerNames: new Map() });
+      try {
+        await whatsappAssistant.resolveOwnerChatDataQuery({
+          extracted: { returnType: 'list', reportingManagerName: 'Test Director', dojMonth: 10 },
+          message: 'Test Director er under e October e join kora der nam din', ownerEmail: ownerEmailForDataQueryTests + '-whoamong'
+        });
+        const followUp = await whatsappAssistant.resolveOwnerChatDataQuery({
+          extracted: { isFormatRevision: true, employmentType: 'Probation' },
+          message: 'tader modhye ke probation e achen?', ownerEmail: ownerEmailForDataQueryTests + '-whoamong'
+        });
+        return Boolean(followUp) && followUp.reply.includes('Direct Normal') && !followUp.reply.includes('Direct SelfRef') && !followUp.reply.includes('Indirect Person');
+      } finally {
+        employeeService.getEmployeeData = origGetData;
+      }
+    });
+    await checkAsync('Task 3 (2026-11) follow-up pattern - CONTEXT RESET: a brand new, unrelated question right after a data answer is treated as a fresh query, never merged onto the prior "under X" context (no isFormatRevision set by a fresh extraction)', async () => {
+      const origGetData = employeeService.getEmployeeData;
+      employeeService.getEmployeeData = async () => ({ employees: SELF_REF_DOER_EMPLOYEES, departmentNames: new Map(), locationNames: new Map(), reportingManagerNames: new Map(), doerNames: new Map() });
+      try {
+        await whatsappAssistant.resolveOwnerChatDataQuery({
+          extracted: { returnType: 'count', reportingManagerName: 'Test Director', dojMonth: 10 },
+          message: 'Test Director er under e October e koto jon join koreche?', ownerEmail: ownerEmailForDataQueryTests + '-reset'
+        });
+        const fresh = await whatsappAssistant.resolveOwnerChatDataQuery({
+          extracted: { returnType: 'count', department: 'Civil' },
+          message: 'Civil department e koto jon active ache?', ownerEmail: ownerEmailForDataQueryTests + '-reset'
+        });
+        return Boolean(fresh) && !fresh.reply.includes('Test Director') && !fresh.reply.includes('under');
       } finally {
         employeeService.getEmployeeData = origGetData;
       }

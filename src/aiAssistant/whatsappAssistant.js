@@ -3631,6 +3631,18 @@ function filterEmployeesForHrQuery(employees, query) {
   if (query.reportingManagerName) {
     const field = query.isUnderXDirector ? 'reportingDoer' : 'reportingManager';
     rows = rows.filter((e) => e[field] && departmentHintMatches(e[field], query.reportingManagerName));
+    // Task 3 (2026-11) LIVE BUG FIX: "X-er under" must never include X
+    // themself. Found live ("Suman Banerjee er under..." listed Suman
+    // Banerjee in his own result) - caused by the self-referential
+    // Reporting Manager convention (a row whose own Reporting Manager
+    // field is literally its own name, meaning "top of this branch,
+    // nothing between them and the Director") matching the very person
+    // whose "under" was being asked about. That convention is correct
+    // and UNCHANGED for deciding who counts as a direct report (see
+    // directRows below) - it just must never also put X in their own
+    // "under X" list/count. Excluded by name here, regardless of which
+    // field or convention caused the match.
+    rows = rows.filter((e) => !matchesWholeWordName(e.name, query.reportingManagerName));
   }
   // Task 5 (2026-10-31) - owner-chat HR reports: "probation"/"joined in
   // <month/year>" style filters, same real fields query_employees already
@@ -3695,12 +3707,21 @@ function computeHodBreakdown(employees) {
 // (e.g. "Duets", not whatever internal site value it resolved to) - both
 // the owner and the sender recognize their own wording; the resolved
 // VALUE is only ever used for actually filtering rows, never for display.
+// Task 3 (2026-11) LIVE BUG FIX: the reportingManagerName branch used to
+// always return the Banglish "X-er under" fragment regardless of the
+// answer's own language - live bug: an English-language answer came back
+// as "...employees in Suman Banerjee-er under:", a mixed-language
+// fragment. This function is now only ever used for the "in <scope>"
+// noun-phrase cases (site/department/company); the reportingManagerName
+// ("under X") case has its own dedicated, language-aware sentence shape
+// (HR_QUERY_LIST_UNDER_X / HR_QUERY_COUNT_UNDER_DOER below) since "under
+// X" doesn't fit the generic "in <scope>" slot in English at all ("in
+// under X" is not valid English) - see buildHrDataQueryAnswer.
 function buildScopeLabel(query) {
   if (query.location) return naturalizeDirectoryValue(query.location) + ' site';
   if (query.resolvedDepartment) return naturalizeDirectoryValue(query.resolvedDepartment);
   if (query.department) return naturalizeDirectoryValue(query.department);
   if (query.company) return naturalizeDirectoryValue(query.company);
-  if (query.reportingManagerName) return query.reportingManagerName + '-er under';
   return '';
 }
 // Task 5 (2026-11) - "October-e"/"October mein"/"in October" (optionally
@@ -3736,6 +3757,61 @@ const HR_QUERY_COUNT_UNDER_DOER = {
   banglish: (name, dateScope, n, m) => name + '-er under-e ' + (dateScope ? dateScope + ' ' : '') + 'total ' + n + ' jon join korechhen (Doer hisebe), tar moddhe direct reporting ' + m + ' jon.',
   hinglish: (name, dateScope, n, m) => name + ' ke under ' + (dateScope ? dateScope + ' ' : '') + 'total ' + n + ' log join kiye hain (Doer ke taur par), jisme se ' + m + ' seedhe report karte hain.',
   english: (name, dateScope, n, m) => 'A total of ' + n + ' people joined under ' + name + (dateScope ? ' ' + dateScope : '') + ' (as Doer), of which ' + m + ' report to ' + name + ' directly.'
+};
+// Task 3 (2026-11) LIVE BUG FIX - dedicated, language-aware "under X"
+// templates (count/list/no-match), replacing the old generic buildScopeLabel
+// "X-er under" fragment that only ever read correctly in Banglish. Used
+// for a NON-Director "under X" (every matched row already reports to X
+// directly, no separate Doer/direct split needed - HR_QUERY_COUNT_UNDER_DOER
+// above stays the Director-only template, untouched).
+const HR_QUERY_COUNT_UNDER_X = {
+  banglish: (name, dateScope, n, role) => dateScope
+    ? dateScope + ' ' + name + '-er under-e total ' + n + ' jon join korechhen.'
+    : name + '-er under-e total ' + n + ' jon ' + role + ' achen.',
+  hinglish: (name, dateScope, n, role) => dateScope
+    ? dateScope + ' ' + name + ' ke under total ' + n + ' log join kiye hain.'
+    : name + ' ke under total ' + n + ' ' + role + ' hain.',
+  english: (name, dateScope, n, role) => dateScope
+    ? 'A total of ' + n + ' ' + role + ' joined under ' + name + ' ' + dateScope + '.'
+    : 'A total of ' + n + ' ' + role + ' ' + (n === 1 ? 'is' : 'are') + ' under ' + name + '.'
+};
+// Task 3 (2026-11) - "only direct reporting"/"out of N, who is direct"
+// follow-up: a plain count of just the direct-report subset, no Doer
+// total, no list - used only when the follow-up asks "how many", not
+// "who" (that goes through HR_QUERY_DIRECT_REPORT_INTRO's list shape
+// instead, see below).
+const HR_QUERY_COUNT_DIRECT_ONLY = {
+  banglish: (n) => 'Direct reporting ' + n + ' jon.',
+  hinglish: (n) => 'Direct reporting ' + n + ' jon hain.',
+  english: (n) => n + ' direct report' + (n === 1 ? '' : 's') + '.'
+};
+// List-shape intro for an ordinary (list) "under X" question - mentions
+// the period when one is set (Task 3's own explicit requirement), never
+// mixes languages the way the old generic scope-label path did.
+const HR_QUERY_LIST_UNDER_X = {
+  banglish: (name, dateScope, n, role) => dateScope
+    ? dateScope + ' ' + name + '-er under-e ' + n + ' jon join korechhen:'
+    : name + '-er under-e ' + n + ' jon ' + role + ' achen:',
+  hinglish: (name, dateScope, n, role) => dateScope
+    ? dateScope + ' ' + name + ' ke under ' + n + ' log join kiye hain:'
+    : name + ' ke under ' + n + ' ' + role + ' hain:',
+  english: (name, dateScope, n, role) => dateScope
+    ? n + ' ' + role + ' joined under ' + name + ' ' + dateScope + ':'
+    : n + ' ' + role + ' ' + (n === 1 ? 'is' : 'are') + ' under ' + name + ':'
+};
+// List-shape intro for a "who is direct reporting"/"only direct
+// reporting" follow-up - X is never re-named here (already established
+// earlier in the same conversation), matching the task's own exact
+// locked wording ("Direct reporting 1 jon:" / "Direct report (1):").
+const HR_QUERY_DIRECT_REPORT_INTRO = {
+  banglish: (n) => 'Direct reporting ' + n + ' jon:',
+  hinglish: (n) => 'Direct reporting ' + n + ' jon hain:',
+  english: (n) => 'Direct report' + (n === 1 ? '' : 's') + ' (' + n + '):'
+};
+const HR_QUERY_UNDER_X_NO_MATCH = {
+  banglish: (name) => name + '-er under-e kono kormi pawa jayni.',
+  hinglish: (name) => name + ' ke under koi employee nahi mila.',
+  english: (name) => 'No employees found under ' + name + '.'
 };
 // Builds the final outgoing text (never sent directly - always queued
 // through the same owner-approval card every other data request uses,
@@ -3838,10 +3914,27 @@ function buildHrDataQueryAnswer(employees, query, lang) {
     return { outgoingText, dataRequestSummary: deptLabel + ' - HOD', officialEligible: officialEligible && Boolean(rows.length), matchCount };
   }
   const scopeLabel = buildScopeLabel(query);
-  if (!rows.length) {
+  // Task 3 (2026-11) - "only direct reporting"/"out of N, who is direct"
+  // follow-up - see HR_QUERY_DIRECT_REPORT_INTRO's own comment. A no-op
+  // (same rows as the full "under X" set) for a non-Director "under X",
+  // since every row there already reports to X directly by construction.
+  const directReportsOnly = Boolean(query.directReportsOnly) && isUnderXDirector;
+  const effectiveRows = directReportsOnly ? directRows : rows;
+  if (!effectiveRows.length) {
+    if (directReportsOnly) {
+      const outgoingText = (HR_QUERY_COUNT_DIRECT_ONLY[lang] || HR_QUERY_COUNT_DIRECT_ONLY.english)(0);
+      return { outgoingText, dataRequestSummary: 'direct report headcount under ' + query.reportingManagerName + ' - no match', officialEligible: false, matchCount: 0 };
+    }
+    if (query.reportingManagerName) {
+      return { outgoingText: (HR_QUERY_UNDER_X_NO_MATCH[lang] || HR_QUERY_UNDER_X_NO_MATCH.english)(query.reportingManagerName), dataRequestSummary: roleLabel + ' under ' + query.reportingManagerName + ' - no match', officialEligible: false, matchCount: 0 };
+    }
     return { outgoingText: (HR_QUERY_NO_MATCH[lang] || HR_QUERY_NO_MATCH.english)(scopeLabel, roleLabel), dataRequestSummary: roleLabel + (scopeLabel ? ' in ' + scopeLabel : '') + ' - no match', officialEligible: false, matchCount: 0 };
   }
   if (query.returnType === 'count') {
+    if (directReportsOnly) {
+      const outgoingText = (HR_QUERY_COUNT_DIRECT_ONLY[lang] || HR_QUERY_COUNT_DIRECT_ONLY.english)(directRows.length);
+      return { outgoingText, dataRequestSummary: 'direct report headcount under ' + query.reportingManagerName, officialEligible: false, matchCount: directRows.length };
+    }
     // Task 5 (2026-11) LIVE BUG FIX: a Director's "under" count is always
     // reported as the two-number "Doer hisebe/direct reporting" sentence
     // (the locked scenario), never the plain single-number template -
@@ -3851,6 +3944,11 @@ function buildHrDataQueryAnswer(employees, query, lang) {
       const dateScope = buildDojScopeLabel(query, lang);
       const outgoingText = (HR_QUERY_COUNT_UNDER_DOER[lang] || HR_QUERY_COUNT_UNDER_DOER.english)(query.reportingManagerName, dateScope, rows.length, directRows.length);
       return { outgoingText, dataRequestSummary: 'headcount - ' + roleLabel + ' under ' + query.reportingManagerName + ' (Doer)', officialEligible: false, matchCount: rows.length };
+    }
+    if (query.reportingManagerName) {
+      const dateScope = buildDojScopeLabel(query, lang);
+      const outgoingText = (HR_QUERY_COUNT_UNDER_X[lang] || HR_QUERY_COUNT_UNDER_X.english)(query.reportingManagerName, dateScope, rows.length, roleLabel);
+      return { outgoingText, dataRequestSummary: 'headcount - ' + roleLabel + ' under ' + query.reportingManagerName, officialEligible: false, matchCount: rows.length };
     }
     return { outgoingText: (HR_QUERY_COUNT[lang] || HR_QUERY_COUNT.english)(scopeLabel, rows.length, roleLabel), dataRequestSummary: 'headcount - ' + roleLabel + (scopeLabel ? ' (' + scopeLabel + ')' : ''), officialEligible: false, matchCount: rows.length };
   }
@@ -3867,8 +3965,16 @@ function buildHrDataQueryAnswer(employees, query, lang) {
   // about, so it's shown on every row ("1. Name — Designation —
   // Department — DOJ") alongside whatever else was asked for.
   const includeDoj = Boolean(query.dojMonth || query.dojYear || query.dojFrom);
-  const introLine = (HR_QUERY_LIST_INTRO[lang] || HR_QUERY_LIST_INTRO.english)(scopeLabel, rows.length, roleLabel);
-  const listLines = rows.slice(0, 100).map((e, i) => {
+  let introLine;
+  if (directReportsOnly) {
+    introLine = (HR_QUERY_DIRECT_REPORT_INTRO[lang] || HR_QUERY_DIRECT_REPORT_INTRO.english)(effectiveRows.length);
+  } else if (query.reportingManagerName) {
+    const dateScope = buildDojScopeLabel(query, lang);
+    introLine = (HR_QUERY_LIST_UNDER_X[lang] || HR_QUERY_LIST_UNDER_X.english)(query.reportingManagerName, dateScope, effectiveRows.length, roleLabel);
+  } else {
+    introLine = (HR_QUERY_LIST_INTRO[lang] || HR_QUERY_LIST_INTRO.english)(scopeLabel, effectiveRows.length, roleLabel);
+  }
+  const listLines = effectiveRows.slice(0, 100).map((e, i) => {
     const parts = [e.name, naturalizeDirectoryValue(e.designation), naturalizeDirectoryValue(e.department)];
     if (includeLocation) parts.push(naturalizeDirectoryValue(e.location));
     if (includeDoj && e.doj) parts.push(e.doj.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC' }));
@@ -3879,9 +3985,9 @@ function buildHrDataQueryAnswer(employees, query, lang) {
   }).join('\n');
   return {
     outgoingText: introLine + '\n' + listLines,
-    dataRequestSummary: roleLabel + ' list' + (scopeLabel ? ' (' + scopeLabel + ')' : ''),
+    dataRequestSummary: (directReportsOnly ? 'direct report list under ' + query.reportingManagerName : query.reportingManagerName ? roleLabel + ' list under ' + query.reportingManagerName : roleLabel + ' list' + (scopeLabel ? ' (' + scopeLabel + ')' : '')),
     officialEligible: !query.listIncludeContactNo,
-    matchCount: rows.length
+    matchCount: effectiveRows.length
   };
 }
 
@@ -3957,6 +4063,7 @@ function hrDataQueryTool() {
           location: { type: 'string', description: 'The site/location name or a distinctive substring, EXACTLY as the sender said it, never translated or normalized - e.g. "Duets", "Triveni Mall". Site aliases/nicknames are resolved separately from these exact words. Omit if none was named.' },
           company: { type: 'string', description: 'The company name or a distinctive substring, if one was named - omit otherwise.' },
           reportingManagerName: { type: 'string', description: 'A manager/HOD\'s name, ONLY when the question filters BY who people report to (e.g. "Tanmoy Mondal-er under-e kara achen?" = people reporting to Tanmoy Mondal) - omit otherwise.' },
+          directReportsOnly: { type: 'boolean', description: 'Only relevant when reportingManagerName is set and X is a DIRECTOR - true when the question/follow-up asks ONLY for X\'s DIRECT reports, narrowing an already-discussed "under X" list/count down to just the people who report straight to X (excluding anyone further down the chain who only reports to X via another manager) - e.g. "who is direct reporting?", "who is direct reporting out of 3?", "only direct reporting", "out of N, who is direct". Omit/false for the plain "under X" question itself (the full set, Doer hisebe) - this is only ever set true by a follow-up specifically asking to narrow to direct reports.' },
           status: { type: 'string', enum: ['ACTIVE', 'INACTIVE', 'NOTICE PERIOD'], description: 'Omit for the default (Active only) - set only when a specific status was explicitly named. There is no real exit-date field in this data, so an "exits"/"who left" question is always INACTIVE status only, never date-scoped.' },
           employmentType: { type: 'string', enum: ['Confirmed', 'Probation'], description: 'Set to "Probation" for a probation-related question (e.g. "probation-e ke ke achen?") - omit otherwise.' },
           dojMonth: { type: 'integer', description: 'Joining month 1-12 - e.g. 10 for "who joined in October". A short abbreviated/numeric form naming a month together with a trailing 1-2 digit number and NO day-of-month marker ("Oct 26", "Oct\'26", "Oct-26", "10/26") means month=that month, year=that number (expand a 2-digit year to 20YY, e.g. 26 -> 2026) - the trailing number there is a YEAR, never a day, unless the sentence explicitly marks it as a day instead (an ordinal like "26th"/"26 tarikhe"/"26 tarik"/"on the 26th"). Omit dojYear if no year was named at all: it then resolves (in code, not by you) to the MOST RECENT such month, never every year on file - "October" alone means last October, not every October ever.' },
@@ -3971,7 +4078,7 @@ function hrDataQueryTool() {
           listIncludeEmpCode: { type: 'boolean', description: 'Only relevant when returnType is "list" - true when the sender asked for everyone\'s employee code alongside the roster (e.g. "sob welder-er naam ar emp code dao"). Omit/false otherwise.' },
           listIncludeEmail: { type: 'boolean', description: 'Only relevant when returnType is "list" - true when the sender asked for everyone\'s (official) email/mail id alongside the roster, or asked specifically for a list of emails (e.g. "shob engineer der mail ID daw"). Omit/false otherwise.' },
           listIncludeContactNo: { type: 'boolean', description: 'Only relevant when returnType is "list" - true when the sender asked for everyone\'s contact/phone number alongside the roster. Omit/false otherwise.' },
-          isFormatRevision: { type: 'boolean', description: 'true ONLY when this message is a follow-up correcting the FORMAT, fields, or scope of the sender\'s own IMMEDIATELY PRECEDING data request in this same conversation - never a brand new, different question. E.g. after asking for a dept-wise HOD list, "na shudhu naam dao, onno kichu likho na"/"just names please, nothing else"/"chhoto kore dao"/"total koyjon ache seta o bolo" is a revision of the SAME request; a message about a different department, role, or topic right after is NOT a revision - it is a new question. When true, set ONLY the field(s) that are ACTUALLY changing (e.g. just returnType, or just hodIncludeEmpCode) - omit every field that should stay exactly as it was in the prior request (department/location/designation/etc. are reused automatically from that prior request and must NOT be repeated here unless the sender is also explicitly changing them). Omit (false) for every other message, including the very first data request in a conversation.' }
+          isFormatRevision: { type: 'boolean', description: 'true ONLY when this message is a follow-up refining the SAME data question the sender\'s own IMMEDIATELY PRECEDING data request/answer in this conversation was about - never a brand new, different question. Covers: correcting the format ("na shudhu naam dao, onno kichu likho na"/"just names please, nothing else"/"chhoto kore dao"), asking only for the count after a list or vice versa ("total koyjon ache seta o bolo"/"koyjon?"/"mention names"/"tader nam din"/"nam gulo dao"), ADDING a field to the same people ("unader contact no o dao"/"please share their contact no"/"emp code o dao"/"email ba dao"), NARROWING with an extra filter on the SAME base question ("shudhu Architecture department er jara"/"out of these, who is in Civil"), and narrowing to direct reports only (set directReportsOnly instead - see its own field). A message about a different department, role, or person right after is NOT a revision - it is a new question (leave this false and extract it as a complete, standalone query). When true, set ONLY the field(s) that are ACTUALLY changing (e.g. just returnType, or just listIncludeContactNo, or just department to ADD a narrowing filter) - omit every field that should stay exactly as it was in the prior request (reportingManagerName/dojMonth/dojYear/etc. are reused automatically from that prior request and must NOT be repeated here unless the sender is also explicitly changing them). Omit (false) for every other message, including the very first data request in a conversation.' }
         },
         required: ['returnType']
       }
