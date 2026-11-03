@@ -4148,15 +4148,17 @@
     opts = opts || {};
     if (!proToastStack) return null;
     const type = opts.type || 'success';
-    // Task 1 (2026-11) - was 2s/4s (success-info/error-warning); current
-    // display time reported, then shortened further per direct
-    // instruction: success/info 1.8s, error (and warning, grouped with
-    // it - not explicitly named, but closer to error than to a quick
-    // success/info confirmation) 3.5s. The progress bar's own transition
-    // (below) always matches this exact value, and the ~0.2s fade-out
-    // (the .leaving class, see dismiss()) was already correct and is
-    // unchanged.
-    const duration = opts.duration || (type === 'error' || type === 'warning' ? 3500 : 1800);
+    // Task 4 (2026-11) LIVE BUG FIX: shortened further per direct
+    // instruction - success/info 1.8s -> 1.3s, error/warning 3.5s -> 2s.
+    // A toast with an Undo button is its own case: the button must stay
+    // on screen long enough to actually tap it, so it keeps 3s regardless
+    // of type - this also fixes a real pre-existing mismatch where an
+    // Undo toast (always type 'success' at every call site) disappeared
+    // at 1.8s/1.3s while the caller's own "commit after the undo window"
+    // wait was hardcoded to 3s, so the button vanished long before the
+    // window it was supposed to cover actually closed. The progress bar's
+    // own transition (below) always matches this exact value.
+    const duration = opts.duration || (opts.undo ? 3000 : (type === 'error' || type === 'warning' ? 2000 : 1300));
     proToastStack.classList.toggle('anchor-top', opts.anchor === 'top');
     const el = document.createElement('div');
     el.className = 'wf-pro-toast' + (type !== 'success' ? ' ' + type : '');
@@ -4182,7 +4184,11 @@
       dismissed = true;
       clearTimeout(timer);
       el.classList.add('leaving');
-      setTimeout(() => el.remove(), 220);
+      // Task 4 (2026-11) - fade-out shortened to ~0.15s (matches the
+      // .wf-pro-toast.leaving animation duration in wi-theme.css, +20ms
+      // so the element is removed just after its own exit animation, not
+      // mid-fade), from the previous ~0.2s.
+      setTimeout(() => el.remove(), 170);
     }
     if (opts.undo) {
       const undoBtn = el.querySelector('.wf-pro-toast-undo');

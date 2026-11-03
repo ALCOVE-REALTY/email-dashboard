@@ -2308,10 +2308,12 @@ body { background: var(--wi-bg); }
   box-shadow: 0 10px 28px rgba(0,0,0,.18);
   padding: 12px 14px 14px; display: flex; align-items: flex-start; gap: 9px;
   opacity: 0; transform: translateY(14px) scale(.98);
-  animation: wfProToastIn .28s cubic-bezier(.2,.7,.2,1) forwards;
+  /* Task 4 (2026-11) - slide-in/fade-out both shortened to ~0.15s (from
+     .28s/.2s), matching the quicker toast durations in showProToast. */
+  animation: wfProToastIn .15s cubic-bezier(.2,.7,.2,1) forwards;
 }
 .wf-pro-toast-stack.anchor-top .wf-pro-toast { transform: translateY(-10px) scale(.98); }
-.wf-pro-toast.leaving { animation: wfProToastOut .2s ease forwards; }
+.wf-pro-toast.leaving { animation: wfProToastOut .15s ease forwards; }
 @keyframes wfProToastIn { to { opacity: 1; transform: translateY(0) scale(1); } }
 @keyframes wfProToastOut { to { opacity: 0; transform: scale(.98); } }
 .wf-pro-toast.error { border-left-color: var(--wi-red-700); }
