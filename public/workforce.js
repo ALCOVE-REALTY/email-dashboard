@@ -974,6 +974,20 @@ function syncVariantButtons() {
   // those rather than risk sharing a PDF that doesn't match what's on screen.
   const shareEmployeesBtn = document.getElementById('shareEmployeesPdf');
   if (shareEmployeesBtn) shareEmployeesBtn.hidden = directoryReportVariant !== 'default';
+
+  // Task 2 (2026-11) LIVE BUG FIX: with 3 buttons visible at once (today,
+  // only the 'doerManagement' variant - Send Mail + Export Dept. Breakup
+  // + Export PDF), the group overlapped the employee count on its left.
+  // Counted fresh after every one of the hidden-toggles above (never
+  // hardcoded to one variant by name) so this keeps working correctly if
+  // a future variant ever also shows 3+ buttons at once - see
+  // .wf-row-actions-scroll's own comment in workforce.css for what the
+  // class actually does.
+  const actionsGroup = document.getElementById('wfResultActionsGroup');
+  if (actionsGroup) {
+    const visibleCount = Array.from(actionsGroup.children).filter((el) => !el.hidden).length;
+    actionsGroup.classList.toggle('wf-row-actions-scroll', visibleCount >= 3);
+  }
 }
 
 function applyFiltersAndShowDirectory(filters, reportVariant) {
