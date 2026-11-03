@@ -386,27 +386,21 @@
   // Task 8 (2026-11) - SUBH chat box only (not WhatsApp conversations):
   // (a) long-press the sender's own message for a small Copy/Edit popup,
   // (b) a copy icon under every SUBH reply.
-  // Task 1 (2026-11) LIVE BUG FIX: these two used to share the exact same
-  // "Copied" toast - but per direct instruction, the per-reply copy icon
-  // (b) must show NO app toast at all (Android already shows its own
-  // native "Copied" bubble there), while every OTHER copy action,
-  // including the long-press popup's own Copy (a), keeps the app toast.
-  // Split into two functions sharing the one clipboard-write; only the
-  // "WithToast" variant calls showProToast.
+  // Task 1 (2026-11) LIVE BUG FIX, 2nd attempt: the first fix only
+  // silenced (b) - per direct instruction, EVERY copy action in the SUBH
+  // chat box (including the long-press popup's own Copy, (a)) must show
+  // NO app toast at all, since Android already shows its own native
+  // "Copied" bubble for every one of them.
   const MSG_COPY_ICON_SVG = '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
   async function copyMsgTextSilent(text) {
     try { await navigator.clipboard.writeText(text); } catch (err) { /* clipboard API unavailable - nothing else to fall back to here */ }
-  }
-  async function copyMsgTextWithToast(text) {
-    await copyMsgTextSilent(text);
-    showProToast({ title: 'Copied' });
   }
 
   // Small floating Copy/Edit popup for long-pressing one's own message -
   // lazily created once, repositioned/shown next to whichever bubble was
   // pressed. Edit puts the text back in the input (never sends it again
-  // on its own); Copy uses copyMsgTextWithToast (the app toast stays for
-  // this one - see the Task 1 comment above).
+  // on its own); Copy uses copyMsgTextSilent now (Task 1, 2026-11, 2nd
+  // attempt - see the comment above).
   let msgMenuEl = null;
   let msgMenuText = null;
   function closeMsgMenu() {
@@ -425,7 +419,7 @@
         const btn = e.target.closest('[data-msg-menu-action]');
         if (!btn || msgMenuText === null) return;
         if (btn.dataset.msgMenuAction === 'copy') {
-          copyMsgTextWithToast(msgMenuText);
+          copyMsgTextSilent(msgMenuText);
         } else if (btn.dataset.msgMenuAction === 'edit') {
           // A direct consequence of the person's own tap (long-press ->
           // Edit), not an automatic update - the keyboard opening here is
