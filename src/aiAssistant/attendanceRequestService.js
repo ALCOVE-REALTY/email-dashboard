@@ -116,22 +116,28 @@ async function listAllRecords() {
 
 // ---------------- Step hooks (called from whatsappAssistant.js) ----------------
 
-// Step 1+2 combined - called from finalizeHrNoteThirdParty the moment a
-// third-party approver has just been resolved (candidate picked/
-// confirmed) and the flow is about to either message them or be blocked.
-// `receivedAt` is the flow's own original creation time (threaded
-// through every retry in the note-flow state machine as `createdAt`, so
-// it is already the true "Received" instant, not re-derived here).
 // Step 1 - called once from handleHrNotificationStart, the single real
 // entry point for a BRAND NEW HR notification (a continuation re-enters
 // via continueHrNoteFlow/resolveHrNoteThirdParty instead, never this
 // function again) - so this never double-creates a record for the same
 // flow. Approver not named yet at this point in most cases (card shows
-// "Waiting for <sender> to name the approver").
+// "Waiting for <sender> to name the approver"). `receivedAt` is the
+// flow's own original creation time (threaded through every retry in the
+// note-flow state machine as `createdAt`, so it is already the true
+// "Received" instant, not re-derived here).
 async function recordStep1Received({ phone, senderName, summary, topicLabel, receivedAt }) {
   const employeeService = require('../employeeService');
   const whatsapp = require('../whatsappService');
-  let employeeName = senderName, employeeId = null, department = null;
+  // Task 1 (2026-11) LIVE BUG FIX: senderName can be the literal
+  // placeholder "The sender" (whatsappAssistant's own generic fallback
+  // for an owner-facing SENTENCE, e.g. "The sender mentioned X" - fine
+  // there, never fine as a stored NAME shown on a card/export). Never
+  // stored as employeeName - null falls through to the shared "Name ·
+  // Number" display convention (senderDisplay/activeNameOrNumber)
+  // everywhere this record is shown, same as every other WhatsApp-
+  // derived list in this app already does for a stale/placeholder name.
+  let employeeName = (senderName && senderName !== 'The sender') ? senderName : null;
+  let employeeId = null, department = null;
   try {
     const { employees } = await employeeService.getEmployeeData();
     const normalized = whatsapp.normalizePhone(phone);
@@ -333,7 +339,11 @@ async function backfillFromExisting() {
     const id = newId();
     const record = {
       id,
-      employeeName: (emp && emp.name) || c.senderName, employeeId: (emp && emp.employeeId) || null, department: (emp && emp.department) || null,
+      // Task 1 (2026-11) LIVE BUG FIX: same "never store the literal
+      // placeholder" rule as recordStep1Received - c.senderName can be
+      // "The sender" too.
+      employeeName: (emp && emp.name) || (c.senderName && c.senderName !== 'The sender' ? c.senderName : null),
+      employeeId: (emp && emp.employeeId) || null, department: (emp && emp.department) || null,
       requestType: classifyRequestType(c.topicLabel, c.summary),
       requestDates: extractRequestDates(c.summary, receivedAt),
       senderPhone: normalized,

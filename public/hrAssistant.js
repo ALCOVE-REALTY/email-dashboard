@@ -2341,17 +2341,30 @@
     const [y, m] = monthKey.split('-').map(Number);
     return new Date(Date.UTC(y, m - 1, 1)).toLocaleDateString('en-GB', { month: 'long', year: 'numeric', timeZone: 'UTC' });
   }
+  // Task 1 (2026-11) LIVE BUG FIX: used to be a rolling "last 12 months"
+  // window, which reached back into the PREVIOUS financial year (e.g.
+  // December 2025) - the month list now starts at April of the current
+  // financial year (April-March) and runs up to the current month only,
+  // newest first.
   function populateAttnMonthSelect() {
     if (!attnMonthSelect || attnMonthSelect.options.length) return;
     const now = new Date();
-    for (let i = 0; i < 12; i++) {
-      const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1));
-      const key = d.getUTCFullYear() + '-' + String(d.getUTCMonth() + 1).padStart(2, '0');
+    const curY = now.getUTCFullYear(), curM = now.getUTCMonth(); // 0-indexed
+    const fyStartYear = curM >= 3 ? curY : curY - 1; // financial year begins April
+    const months = [];
+    let y = fyStartYear, m = 3;
+    while (y < curY || (y === curY && m <= curM)) {
+      months.push(y + '-' + String(m + 1).padStart(2, '0'));
+      m++;
+      if (m > 11) { m = 0; y++; }
+    }
+    months.reverse();
+    months.forEach((key) => {
       const opt = document.createElement('option');
       opt.value = key;
       opt.textContent = attnMonthLabel(key);
       attnMonthSelect.appendChild(opt);
-    }
+    });
     attnState.month = attnMonthSelect.value;
   }
   function attnDateTime(ts) {
@@ -2381,7 +2394,12 @@
     const w = item.waitingOn;
     if (!w) return '';
     const since = openFlowsAgeLabel(Date.now() - (w.since || item.receivedAt));
-    const who = w.who === 'sender' ? (item.employeeName || 'the employee') + ' to name the approver' : (w.name || 'the manager') + "'s reply";
+    // Task 1 (2026-11) LIVE BUG FIX: the status line used to fall back to
+    // the raw employeeName field, which can be the literal "The sender"
+    // placeholder (never a real name) - first name or the number only,
+    // same as every other sentence-style sender reference in this app.
+    const firstName = item.employeeName ? String(item.employeeName).trim().split(/\s+/)[0] : null;
+    const who = w.who === 'sender' ? (firstName || item.senderPhone) + ' to name the approver' : (w.name || 'the manager') + "'s reply";
     return '<span class="wf-attn-status-line waiting">' + OPEN_FLOWS_WAITING_ON_ICON + ' Waiting for ' + escapeHtml(who) + ' · ' + since + '</span>';
   }
   function renderAttnList(items) {
@@ -2391,9 +2409,15 @@
       const badgeClass = { 'Leave': 'leave', 'Half-day': 'halfday', 'Late': 'late', 'WFH': 'wfh', 'Early leave': 'early', 'Comp-off': 'compoff', 'Duty change': 'duty', 'Other': 'other', 'Regularisation': 'reg' }[it.requestType] || 'other';
       const canRemind = it.status === 'in_progress';
       const canClose = it.status === 'in_progress' || it.status === 'expired';
+      // Task 1 (2026-11) LIVE BUG FIX: used to show the raw employeeName
+      // (which can be the literal "The sender" placeholder) - the SAME
+      // shared "Name · Number" formatter every other WhatsApp-derived
+      // list in this app already uses, falling back to just the phone
+      // number when no real employee match was found at all.
+      const nameLine = escapeHtml(senderDisplay(it.employeeName, it.senderPhone)) + (it.employeeId ? ' · ' + escapeHtml(it.employeeId) : '');
       return '<div class="wf-auto-task-card wf-attn-row" data-id="' + escapeHtml(it.id) + '">' +
         '<div class="wf-auto-task-head"><div style="flex:1;min-width:0">' +
-          '<div class="wf-auto-task-subject">' + escapeHtml(it.employeeName || it.senderPhone) + (it.employeeId ? ' · ' + escapeHtml(it.employeeId) : '') + '</div>' +
+          '<div class="wf-auto-task-subject">' + nameLine + '</div>' +
           '<div class="wf-auto-hint">For ' + escapeHtml(it.requestDates) + ' · received ' + attnDateTime(it.receivedAt) + '</div>' +
         '</div><span class="wf-attn-type-badge wf-attn-type-' + badgeClass + '">' + escapeHtml(it.requestType) + '</span></div>' +
         attnProgressHtml(it) +
@@ -2478,8 +2502,41 @@
     const qs = new URLSearchParams({ month: attnState.month, type: attnState.type, format });
     return '/api/workforce/hr-assistant/attendance-requests/export?' + qs.toString();
   }
-  if (attnExportExcel) attnExportExcel.addEventListener('click', (e) => { e.preventDefault(); window.location.href = attnExportUrl('excel'); });
-  if (attnExportPdf) attnExportPdf.addEventListener('click', (e) => { e.preventDefault(); window.location.href = attnExportUrl('pdf'); });
+  // Task 1 (2026-11) LIVE BUG FIX: a bare `location.href`/new-tab
+  // navigation to an authenticated API route doesn't carry whatever this
+  // deployment's own login/session layer needs (live symptom: a blank
+  // page showing {"error":"not_authenticated","ok":false}) - every OTHER
+  // download in this app goes through the page's own fetch() instead
+  // (same as shareFile in workforce.js), which DOES carry it. Downloads
+  // the real response as a blob and saves it via a throwaway object-URL
+  // anchor, exactly like shareFile's own "no native share support"
+  // fallback already does - never a direct link/new tab to the API route.
+  async function downloadAuthenticatedFile(url, fallbackFilename) {
+    try {
+      const resp = await fetch(url);
+      if (!resp.ok) {
+        let message = 'Could not download the file.';
+        try { const data = await resp.clone().json(); if (data && data.error) message = data.error; } catch (err) { /* not JSON - keep the generic message */ }
+        throw new Error(message);
+      }
+      const blob = await resp.blob();
+      const disposition = resp.headers.get('Content-Disposition') || '';
+      const match = /filename="?([^";]+)"?/.exec(disposition);
+      const filename = (match && match[1]) || fallbackFilename;
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(blobUrl);
+    } catch (err) {
+      showProToast({ title: err.message || 'Could not download the file', type: 'error' });
+    }
+  }
+  if (attnExportExcel) attnExportExcel.addEventListener('click', (e) => { e.preventDefault(); downloadAuthenticatedFile(attnExportUrl('excel'), 'Attendance_Requests_' + attnState.month + '.xlsx'); });
+  if (attnExportPdf) attnExportPdf.addEventListener('click', (e) => { e.preventDefault(); downloadAuthenticatedFile(attnExportUrl('pdf'), 'Attendance_Requests_' + attnState.month + '.pdf'); });
   function attnCurrentMonthKey() {
     const now = new Date();
     return now.getUTCFullYear() + '-' + String(now.getUTCMonth() + 1).padStart(2, '0');

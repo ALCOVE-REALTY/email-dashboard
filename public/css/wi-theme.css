@@ -2031,9 +2031,16 @@ body { background: var(--wi-bg); }
   border: 1.5px solid var(--wi-border-2); background: var(--wi-surface); color: var(--wi-muted);
   border-radius: var(--wi-r-pill); padding: 0 9px; font-size: 12.5px; font-weight: 700; font-family: inherit; cursor: pointer;
   transition: background-color .15s ease, border-color .15s ease, color .15s ease;
+  white-space: nowrap;
 }
 .wf-rem-chip[aria-pressed="true"] { background: var(--wi-primary); border-color: var(--wi-primary); color: #FFFFFF; }
 .wf-rem-chip-count { margin-left: 0; }
+/* Task 1 (2026-11) LIVE BUG FIX: "In progress" (the longest of this
+   page's 3 chip labels) wrapped onto two lines at Galaxy-S23 width -
+   white-space:nowrap above stops the wrap, this tightens padding/font/
+   gap just for THIS chip set so all 3 still fit on one line each. */
+#hrAttnStatusChips.wf-rem-chips { gap: 6px; }
+#hrAttnStatusChips .wf-rem-chip { padding: 0 6px; font-size: 11.5px; gap: 4px; }
 .wf-rem-section-head { display: flex; align-items: center; justify-content: space-between; font-size: 0.8rem; font-weight: 800; color: var(--wi-ink); padding: 0 2px; }
 /* Task 3a (2026-11) - the normal label/Clear/count trio and the Cancel/
    Clear (N) selection-mode pair occupy the SAME line, one hidden while
@@ -2291,7 +2298,7 @@ body { background: var(--wi-bg); }
   font-size: 0.78rem; font-weight: 700; color: var(--wi-muted);
 }
 .wf-attn-export { display: flex; gap: 10px; }
-.wf-attn-export a { color: var(--wi-primary-800); font-weight: 800; text-decoration: none; }
+.wf-attn-export a { display: inline-flex; align-items: center; gap: 4px; color: var(--wi-primary-800); font-weight: 800; text-decoration: none; }
 .wf-attn-export a:hover { text-decoration: underline; }
 .wf-attn-type-badge {
   flex-shrink: 0; font-size: 0.64rem; font-weight: 800; padding: 3px 9px; border-radius: 999px; white-space: nowrap;
@@ -2315,7 +2322,10 @@ body { background: var(--wi-bg); }
 .wf-attn-step-done .wf-attn-step-dot { background: var(--wi-green-700); }
 .wf-attn-step-done:not(:last-child)::after { background: var(--wi-green-700); }
 .wf-attn-step-done .wf-attn-step-label { color: var(--wi-green-700); font-weight: 700; }
-.wf-attn-step-current .wf-attn-step-dot { background: var(--wi-yellow-700); }
+/* Task 1 (2026-11) LIVE BUG FIX: the current-step DOT only (never the
+   label, the status text, or any other dot) is orange, not the same
+   brownish yellow-700 as the label - per direct instruction. */
+.wf-attn-step-current .wf-attn-step-dot { background: var(--wi-orange); }
 .wf-attn-step-current .wf-attn-step-label { color: var(--wi-yellow-700); font-weight: 700; }
 .wf-attn-step-cancelled .wf-attn-step-dot { background: var(--wi-red-700); }
 .wf-attn-status-line { display: block; font-size: 0.74rem; font-weight: 700; margin-top: 4px; display: flex; align-items: center; gap: 5px; }

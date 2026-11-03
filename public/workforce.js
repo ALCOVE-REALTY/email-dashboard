@@ -7706,9 +7706,30 @@ async function openInterviewPanelDetail(id) {
       // while the fetch was in flight - hide it now that we know the real
       // outcome, instead of leaving that spinner on screen forever.
       fullPanel.hidden = true;
-      pdfBtn.onclick = () => {
+      // Task 1 (2026-11) LIVE BUG FIX: a bare new-tab navigation to this
+      // authenticated API route doesn't carry whatever this deployment's
+      // own login/session layer needs (live symptom: a blank page
+      // showing {"error":"not_authenticated","ok":false}) - fetches the
+      // real PDF through the page's own session instead (same as
+      // shareFile's own fetch, which already works) and saves it as a
+      // download via a throwaway object-URL anchor.
+      pdfBtn.onclick = async () => {
         pdfIncompleteMsg.hidden = true;
-        window.open('/api/interview-panel/' + encodeURIComponent(id) + '/pdf', '_blank');
+        try {
+          const resp = await fetch('/api/interview-panel/' + encodeURIComponent(id) + '/pdf');
+          if (!resp.ok) throw new Error('Could not download the PDF.');
+          const blob = await resp.blob();
+          const blobUrl = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = blobUrl;
+          a.download = (record.name ? record.name.replace(/\s+/g, '_') : 'Interview_Panel') + '.pdf';
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(blobUrl);
+        } catch (err) {
+          if (window.__hrAssistantToast) window.__hrAssistantToast(err.message || 'Could not download the PDF.', 'error'); else alert(err.message || 'Could not download the PDF.');
+        }
       };
     } else {
       fullPanel.hidden = true;
