@@ -263,9 +263,61 @@ async function listMessages(contactId, limit) {
 // real, durable limit. Per direct instruction, groups are excluded
 // permanently and as early as possible - this is the first check any
 // chat/message goes through, before anything else looks at it.
+// Task 5 (2026-11) - also catches the OLD-STYLE WhatsApp group JID shape
+// ("<creator-phone>-<timestamp>", e.g. "919831264332-1491993350") - a
+// real phone-number recipient from this gateway never contains a hyphen
+// at all (confirmed live against the real feed), so this is checked
+// directly rather than relying on the coincidence that stripping the
+// hyphen before counting digits happens to total more than 15 anyway.
 function isGroupChat(contactId) {
-  const digits = String(contactId || '').replace(/\D/g, '');
+  const raw = String(contactId || '');
+  if (/^\d+-\d+$/.test(raw)) return true;
+  const digits = raw.replace(/\D/g, '');
   return digits.length > 15;
+}
+// Task 5 (2026-11) LIVE BUG FIX - WhatsApp broadcast lists, the
+// status-updates feed, and channels/newsletters must never be treated as
+// a real conversation: never stored, never auto-replied to, never shown.
+// This gateway's own /messages feed has not been observed to forward any
+// of these (every real sample checked live was a plain chat or group
+// message), but the JID suffixes are the documented WhatsApp-protocol
+// markers for each - checked defensively in case the gateway's own
+// behavior or a future upstream library version ever starts forwarding
+// one of these through unchanged.
+function isIgnoredBroadcastType(contactId) {
+  const raw = String(contactId || '');
+  return raw === 'status@broadcast' || raw.includes('@broadcast') || raw.includes('@newsletter');
+}
+// Task 5 (2026-11) LIVE BUG FIX - a real phone number from this gateway
+// is always a 12-digit Indian mobile (country code "91" + a 10-digit
+// number starting 6-9, the only valid first digits for an Indian mobile)
+// or, for a non-Indian contact, a plain country-code-prefixed number -
+// E.164 allows up to 15 digits total, but every real contact this
+// gateway has ever shown (confirmed live, read-only, against the actual
+// feed) is 12 digits; nothing observed has ever needed more than 13.
+// Investigated live: several 14-15 digit "senders" with ordinary,
+// personal-sounding message text (never a group/broadcast) turned out to
+// be WhatsApp LID (privacy) IDs - the gateway's own /chats and /messages
+// responses expose NO distinguishing field for these at all (no jid
+// suffix, no senderPn/participantPn, no pushName - just the same bare
+// numeric string shape as a real phone number), so shape is genuinely
+// the only signal available; this threshold is calibrated against that
+// real, observed boundary (every real contact <=13 digits, every
+// confirmed LID >=14), not a guess.
+function isValidPhoneNumber(contactId) {
+  const digits = String(contactId || '').replace(/\D/g, '');
+  if (/^91[6-9]\d{9}$/.test(digits)) return true;
+  return digits.length >= 10 && digits.length <= 13;
+}
+// A sender ID that is neither a group/old-style-group JID, a broadcast/
+// status/channel type, NOR a valid-shaped phone number - per direct
+// instruction, never shown as a bare number and never auto-replied to.
+// See isValidPhoneNumber's own comment for why shape is the only signal
+// this gateway's API surface actually provides.
+function isLikelyLid(contactId) {
+  if (isGroupChat(contactId) || isIgnoredBroadcastType(contactId)) return false;
+  const digits = String(contactId || '').replace(/\D/g, '');
+  return digits.length > 0 && !isValidPhoneNumber(contactId);
 }
 
 // Maytapi's own session-health endpoint - confirmed live (read-only GET,
@@ -293,4 +345,4 @@ async function getConnectionStatus() {
   }
 }
 
-module.exports = { sendWhatsAppMessage, sendPresence, normalizePhone, isSyntheticTestPhone, listChats, listMessages, isGroupChat, getConnectionStatus };
+module.exports = { sendWhatsAppMessage, sendPresence, normalizePhone, isSyntheticTestPhone, listChats, listMessages, isGroupChat, isIgnoredBroadcastType, isValidPhoneNumber, isLikelyLid, getConnectionStatus };

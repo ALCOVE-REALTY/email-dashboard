@@ -3079,6 +3079,37 @@ async function checkAsync(label, fn) {
     return samples.every((s) => detectMessageLanguage(s) === 'english');
   })());
 
+  console.log('='.repeat(70));
+  console.log('Task 5 (2026-11) LIVE BUG FIX: WhatsApp LID senders (15-digit "numbers" with no real-phone-number field anywhere in this gateway\'s payload) are classified correctly, never shown/treated as a real phone number');
+  console.log('='.repeat(70));
+  check('isGroupChat: a NEW-style 18-digit group JID is a group', whatsapp.isGroupChat('120363431609199396'));
+  check('isGroupChat: an OLD-style "<phone>-<timestamp>" group JID is a group, checked directly (not just by coincidence of digit count after stripping the hyphen)', whatsapp.isGroupChat('919831264332-1491993350'));
+  check('isGroupChat: a real 12-digit Indian mobile is never a group', !whatsapp.isGroupChat('919831264332'));
+  check('isIgnoredBroadcastType recognizes status/broadcast/newsletter JIDs', whatsapp.isIgnoredBroadcastType('status@broadcast') && whatsapp.isIgnoredBroadcastType('120363999999999999@broadcast') && whatsapp.isIgnoredBroadcastType('111222333@newsletter'));
+  check('isIgnoredBroadcastType does not flag an ordinary phone number or group id', !whatsapp.isIgnoredBroadcastType('919831264332') && !whatsapp.isIgnoredBroadcastType('120363431609199396'));
+  check('isValidPhoneNumber accepts a real 12-digit Indian mobile (91 + a 10-digit number starting 6-9)', whatsapp.isValidPhoneNumber('919831264332'));
+  check('isValidPhoneNumber rejects "91" + a 10-digit number NOT starting 6-9 as the Indian-mobile shape, but still accepts it under the general 10-13 digit allowance (a non-Indian or landline-shaped number)', whatsapp.isValidPhoneNumber('911234567890'));
+  check('LOCKED SCENARIO (real live data): the 4 confirmed WhatsApp LID ids found in a live, read-only investigation are all rejected as valid phone numbers', (() => {
+    const lids = ['264999666733192', '184546154782975', '142253645373603', '59154735567074'];
+    return lids.every((id) => !whatsapp.isValidPhoneNumber(id));
+  })());
+  check('isLikelyLid: the 4 confirmed live LID ids are flagged, a real phone number and a group/old-style-group id are never flagged', (() => {
+    const lids = ['264999666733192', '184546154782975', '142253645373603', '59154735567074'];
+    return lids.every((id) => whatsapp.isLikelyLid(id)) &&
+      !whatsapp.isLikelyLid('919831264332') &&
+      !whatsapp.isLikelyLid('120363431609199396') &&
+      !whatsapp.isLikelyLid('919831264332-1491993350');
+  })());
+  check('displayNameOrHidden: a LID shows as "Hidden number", never the raw digits; an ordinary number passes through unchanged', whatsappAssistant.displayNameOrHidden('184546154782975') === 'Hidden number' && whatsappAssistant.displayNameOrHidden('919831264332') === '919831264332');
+  check('activeNameOrNumber: a LID with no directory match shows "Hidden number", never a fake "+184546154782975" phone-shaped label', whatsappAssistant.activeNameOrNumber('184546154782975', []) === 'Hidden number');
+  await checkAsync('isKnownLid/markLidKnown: a LID is unknown until marked, then known - the owner-notification "only once per LID" guard', async () => {
+    const lid = '999888777666555';
+    const before = await whatsappAssistant.isKnownLid(lid);
+    await whatsappAssistant.markLidKnown(lid);
+    const after = await whatsappAssistant.isKnownLid(lid);
+    return before === false && after === true;
+  });
+
   check('isNudgeMessage recognizes a bare "?" as a nudge, not a new request', whatsappAssistant.isNudgeMessage('?'));
   check('isNudgeMessage recognizes "??" and "hello?" as nudges', whatsappAssistant.isNudgeMessage('??') && whatsappAssistant.isNudgeMessage('hello?'));
   check('isNudgeMessage rejects real content even if it ends in a question mark', !whatsappAssistant.isNudgeMessage('Amake engineers der list ta dao?'));

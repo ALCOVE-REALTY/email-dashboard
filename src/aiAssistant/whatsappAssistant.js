@@ -300,6 +300,13 @@ function activeEmployeeNameFor(phone, employees) {
   const emp = (employees || []).find((e) => e.contactNumber && e.status === 'ACTIVE' && whatsapp.normalizePhone(e.contactNumber) === normalized);
   return emp && emp.name ? emp.name : null;
 }
+// Task 5 (2026-11) LIVE BUG FIX - the final fallback when no current
+// ACTIVE employee matches: a WhatsApp LID shows as "Hidden number" (per
+// direct instruction, never the raw digits), everything else falls back
+// to the bare id/number as before.
+function displayNameOrHidden(key) {
+  return whatsapp.isLikelyLid(key) ? 'Hidden number' : key;
+}
 // Task 1 (2026-11) - the plain-text equivalent of hrAssistant.js's own
 // senderDisplay() ("Name · Number" when a real CURRENT-ACTIVE name is
 // known, otherwise the number once) for callers building a WhatsApp-text
@@ -309,7 +316,10 @@ function activeEmployeeNameFor(phone, employees) {
 function activeNameOrNumber(phone, employees) {
   const normalized = whatsapp.normalizePhone(phone || '');
   const name = activeEmployeeNameFor(normalized, employees);
-  return name ? (name + ' · +' + normalized) : ('+' + normalized);
+  // Task 5 (2026-11) - a WhatsApp LID is never a real dialable number, so
+  // it never gets a "+" prefix here either - see displayNameOrHidden.
+  const numberLabel = whatsapp.isLikelyLid(normalized) ? 'Hidden number' : '+' + normalized;
+  return name ? (name + ' · ' + numberLabel) : numberLabel;
 }
 function firstNameOf(fullName) {
   return fullName ? String(fullName).trim().split(/\s+/)[0] : null;
@@ -466,6 +476,26 @@ async function listNeverAuto() {
   const redis = getClient();
   if (!redis) return [];
   try { return (await redis.smembers(NEVER_AUTO_KEY)) || []; } catch (err) { return []; }
+}
+
+// Task 5 (2026-11) - every distinct WhatsApp LID ever seen, so the owner
+// is notified about a new one exactly once (not on every repeat message
+// from the same hidden-number sender) - see pollOnce's own LID handling.
+const KNOWN_LIDS_KEY = 'wa-known-lids';
+async function isKnownLid(lidId) {
+  const redis = getClient();
+  if (!redis) return false;
+  try { return Boolean(await redis.sismember(KNOWN_LIDS_KEY, lidId)); } catch (err) { return false; }
+}
+async function markLidKnown(lidId) {
+  const redis = getClient();
+  if (!redis) return;
+  try { await redis.sadd(KNOWN_LIDS_KEY, lidId); } catch (err) { /* best effort */ }
+}
+async function listKnownLids() {
+  const redis = getClient();
+  if (!redis) return [];
+  try { return (await redis.smembers(KNOWN_LIDS_KEY)) || []; } catch (err) { return []; }
 }
 
 // ---------------- Global auto-reply switch ----------------
@@ -651,7 +681,7 @@ function buildActionableWhatsappItems(approvals, drafts, docs, recentLog, hrConf
       // recomputed. The display name is now ALWAYS either a CURRENT
       // ACTIVE employee's own name, freshly looked up on every call, or
       // the bare number - no other source is trusted, ever.
-      name: activeEmployeeNameFor(key, employees) || key,
+      name: activeEmployeeNameFor(key, employees) || displayNameOrHidden(key),
       lastMessageText: latest ? latest.summary : '',
       lastMessageTime: latest ? latest.ts : 0,
       itemCount: row.items.length,
@@ -820,7 +850,7 @@ function mergeRecentWhatsappConversations(needsYou, recentLog, nowTs, windowMs, 
       // "Pinky Sil"/"Debapriya Sen" bug was traced to (captured whenever
       // the entry was logged, never recomputed since). Only a CURRENT
       // ACTIVE employee match or the bare number is shown now.
-      name: activeEmployeeNameFor(chatId, employees) || chatId,
+      name: activeEmployeeNameFor(chatId, employees) || displayNameOrHidden(chatId),
       lastMessageText: e.sentText || e.messageSummary || '',
       lastMessageTime: e.ts, itemCount: 0, states: [], needsYou: false, statusLabel
     });
@@ -11246,6 +11276,7 @@ async function pollOnce() {
 
   const byContact = new Map();
   const byGroup = new Map();
+  const byLid = new Map();
   for (const msg of feed) {
     if (msg.direction !== 'incoming') continue;
     // Spec point 2: never react to WhatsApp system/status messages - but
@@ -11260,6 +11291,21 @@ async function pollOnce() {
     // document-request-specific handling since there's nothing to OCR/
     // read from audio).
     if (msg.type && !['text', 'image', 'document', 'ptt', 'voice', 'audio'].includes(msg.type)) continue;
+    // Task 5 (2026-11) LIVE BUG FIX - status updates/broadcast lists/
+    // channels are ignored completely: never stored, never auto-replied
+    // to, never shown anywhere, same as a group's own system messages.
+    if (whatsapp.isIgnoredBroadcastType(msg.recipient)) continue;
+    // Task 5 (2026-11) LIVE BUG FIX - a WhatsApp LID sender (investigated
+    // live: the gateway exposes no real-phone-number field for these at
+    // all, see isValidPhoneNumber's own comment) is never auto-replied to
+    // and never joins the normal contact pipeline - routed to its own
+    // bucket, handled separately below (visible to the owner as "Hidden
+    // number", logged once per LID).
+    if (!whatsapp.isGroupChat(msg.recipient) && whatsapp.isLikelyLid(msg.recipient)) {
+      if (!byLid.has(msg.recipient)) byLid.set(msg.recipient, []);
+      byLid.get(msg.recipient).push(msg);
+      continue;
+    }
     const bucket = whatsapp.isGroupChat(msg.recipient) ? byGroup : byContact;
     if (!bucket.has(msg.recipient)) bucket.set(msg.recipient, []);
     bucket.get(msg.recipient).push(msg);
@@ -11463,6 +11509,37 @@ async function pollOnce() {
       await setLastSeenId(contactId, highestId);
     } catch (err) {
       results.errors.push({ contact: contactId, message: err.message });
+    }
+  }
+
+  // Task 5 (2026-11) LIVE BUG FIX - WhatsApp LID senders: never auto-
+  // replied to (no decideAutoReplyCore call at all), but still logged so
+  // the row stays visible to the owner - displayed as "Hidden number",
+  // never the raw digits (see mergeRecentWhatsappConversations/
+  // buildActionableWhatsappItems's own name resolution for the matching
+  // display-side fix). An owner notification fires ONCE per distinct LID
+  // ever seen (wa-known-lids), not on every message, so the owner can ask
+  // the gateway/WapDeskPro for phone-number resolution support without
+  // being spammed on every repeat message from the same hidden sender.
+  for (const [lidId, messages] of byLid) {
+    try {
+      const lastSeenId = await getLastSeenId(lidId);
+      const newIncoming = messages.filter((m) => m.id > lastSeenId).sort((a, b) => a.id - b.id);
+      if (!newIncoming.length) continue;
+      const isNewLid = !(await isKnownLid(lidId));
+      for (const m of newIncoming) {
+        await logInboxEvent({
+          chatId: lidId, name: 'Hidden number', isGroup: false, messageSummary: buildIncomingText(m),
+          aCase: null, sentText: null, outcome: 'automatic', arrivedAt: new Date(m.created_at).getTime() || Date.now(), seenAt: Date.now()
+        });
+      }
+      await setLastSeenId(lidId, newIncoming[newIncoming.length - 1].id);
+      if (isNewLid) {
+        await markLidKnown(lidId);
+        await postOwnerNotification('👤 A WhatsApp sender with a hidden number (LID ' + lidId + ') messaged SUBH - the gateway doesn\'t expose their real phone number, so this stays as "Hidden number" and is never auto-replied to. Ask IT/WapDeskPro for LID-to-phone-number resolution if you need to reach them back.');
+      }
+    } catch (err) {
+      results.errors.push({ contact: lidId, message: err.message });
     }
   }
 
@@ -11887,6 +11964,11 @@ module.exports = {
   getAllowlistName,
   resolveSenderName,
   activeEmployeeNameFor,
+  activeNameOrNumber,
+  displayNameOrHidden,
+  isKnownLid,
+  markLidKnown,
+  listKnownLids,
   buildActionableWhatsappItems,
   mergeRecentWhatsappConversations,
   firstNameOf,
