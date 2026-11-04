@@ -564,3 +564,54 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
   ("proti shomobar") - previously logged here as a known, out-of-scope
   weekly-schedule limitation - now resolves cleanly end to end
   (`repeat:"weekly", weekdays:["monday"]`), closing that gap.
+- Task 12 (2026-11), correction to Task 11: "AI understands, code speaks"
+  applies to schedules too - Task 11's repeat/weekdayHints/customEvery/
+  customUnit fields were already model-extracted, but the SCHEMA itself
+  was too narrow to represent several real phrasings ("mashe duibar 1 ar
+  15 tarikh" - twice a month; "last working day of the month"; an
+  explicit future start date for a recurring schedule; a genuinely
+  unsupported pattern like "the 3rd Monday of every month"). The
+  classifier tool gained 4 more fields, resolved in code exactly like
+  every other field here - never a second, code-side NLU layer:
+  `monthDays` (array of 1-31, for 2+ specific days a month),
+  `lastDayOfMonth` (boolean - this app has no holiday calendar, so "last
+  WORKING day" is honestly approximated as the plain calendar last day),
+  `startDateRaw` (only "today"/"tomorrow"/an exact "YYYY-MM-DD" - the
+  model transcribes, exactly like reminderService.js's own `dateRaw`,
+  never computes a relative date itself), and `unsupportedScheduleNote`
+  (set only when the ask genuinely can't be represented - the model's own
+  suggestion for the closest supported option becomes the unclear
+  message, never a guessed, close-but-wrong schedule). `computeNextRun`'s
+  month-stepping branch now tries every day in `monthDays` (or the real
+  last day of the month) within each stepped month, earliest-qualifying
+  first, before advancing - a live bug caught and fixed while building
+  this: the FIRST draft of the anchor-month picker used the EARLIEST
+  listed day to decide whether to roll into next month at all, which
+  wrongly skipped a still-ahead LATER day in the current month (the exact
+  "1st and 15th, asked on the 4th" case - a naive pick would jump to next
+  month's 1st instead of this month's 15th). Fixed by asking
+  `computeNextRun` itself (one source of truth, never a second
+  approximate implementation of the same search) to find the real
+  anchor. `weekdayHints`'s own description now also calls out "shoptaher
+  prothom din" (Sunday, the common South Asian convention) and "ek din
+  por por"/"every alternate X" (every=2) so the model doesn't miss these
+  idioms. UI (`describeScheduleRule`, `autoScheduleExtra`/
+  `wfScheduleExtra` in `hrAssistant.js`) carries `monthDays`/
+  `lastDayOfMonth` through to Save once Ask SUBH sets them (no manual
+  picker exists for either - Ask SUBH is the only way to set them) and
+  clears them the moment the owner manually touches Date/Repeat/Every/
+  Unit/weekday chips, so a stale "twice a month" can never silently
+  outlive a manual edit. Deterministic suite (`scripts/check-
+  automation.js`, 159/159; `scripts/check-workflow.js`, 64/64 confirming
+  Workflows inherit this with zero code of their own) - locked scenarios:
+  monthDays picks the earliest still-ahead day in the CURRENT month (not
+  the literal first-listed one) and correctly rolls every listed day to
+  next month only once ALL of them have passed; lastDayOfMonth alone and
+  composed with custom+months; an explicit start date anchors a day-based
+  repeat on that date, not today; an unparseable start date and a
+  genuinely unsupported pattern are each a specific, named unclear item.
+  Real-model locked 3/3 (`scripts/check-automation-nlu.js`): "shoptaher
+  prothom din", "every Mon", "ek din por por", "mashe duibar 1 ar 15
+  tarikh", "every alternate Saturday", "last working day of the month",
+  "proti Monday 10 tay", "roj sokal 9 tay", "proti 15 din", "every Mon
+  and Thu at 4 pm", and the 3rd-Monday unsupported-pattern case.

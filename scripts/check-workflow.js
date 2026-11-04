@@ -766,6 +766,11 @@ async function main() {
       const after = await workflowService.getWorkflow(w.id);
       return after.status === 'completed' && after.nextRunAt === null;
     });
+    await checkAsync('Task 12 (2026-11): a workflow ask naming "twice a month" resolves monthDays=[1,15], same structured-schedule engine Automated Tasks uses', async () => {
+      const parsed = { unclear: [], source: 'confirmations', rec: 'column', recCol: 'reportingManager', group: 'each', mediator: 'mail', timeRaw: '10:00', repeat: 'monthly', monthDays: [1, 15], rules: [{ when: 'X', replyText: 'Y', then: 'stop' }] };
+      const r = await workflowService.draftWorkflowPlanFromParsed(parsed, now, null);
+      return r.ok && JSON.stringify(r.schedule.monthDays) === JSON.stringify([1, 15]);
+    });
 
     console.log('='.repeat(70));
     console.log(pass + '/' + (pass + fail) + ' passed' + (fail ? ', ' + fail + ' FAILED' : ''));

@@ -1562,6 +1562,18 @@
   // Summary card and the list page's per-task/workflow row - "f" is
   // whatever shape has repeat/every/unit/weekdays (the read-form object,
   // or a saved task/workflow's own schedule).
+  // Task 12 (2026-11) - "1st" / "15th" / "22nd" etc., for the monthDays
+  // summary line below.
+  function ordinal(n) { const v = n % 100; const suf = ['th', 'st', 'nd', 'rd']; return n + (suf[(v - 20) % 10] || suf[v] || suf[0]); }
+  // Only ever set (lastDayOfMonth, or monthDays with 2+ real days) via Ask
+  // SUBH's own structured schedule extraction - there is no manual picker
+  // for these in the Repeat segment, so this only ever has something to
+  // say for an Ask-SUBH-authored monthly/custom-months schedule.
+  function monthDaySuffix(f) {
+    if (f.lastDayOfMonth) return ' on the last day';
+    if (Array.isArray(f.monthDays) && f.monthDays.length > 1) return ' on the ' + f.monthDays.map(ordinal).join(' & ');
+    return '';
+  }
   function describeScheduleRule(f) {
     const weekdayLabel = (keys) => (keys || []).map((k) => { const d = WEEKDAY_DEFS.find((w) => w.key === k); return d ? d.short : k; }).join(', ');
     const repeat = f.repeat === 'none' ? 'once' : f.repeat; // legacy stored value
@@ -1573,9 +1585,9 @@
       const n = f.every || 1;
       const unitLabel = f.unit === 'days' ? (n === 1 ? 'day' : 'days') : f.unit === 'weeks' ? (n === 1 ? 'week' : 'weeks') : (n === 1 ? 'month' : 'months');
       const onWeekdays = f.unit === 'weeks' && f.weekdays && f.weekdays.length ? ' on ' + weekdayLabel(f.weekdays) : '';
-      return 'Every ' + n + ' ' + unitLabel + onWeekdays;
+      return 'Every ' + n + ' ' + unitLabel + onWeekdays + (f.unit === 'months' ? monthDaySuffix(f) : '');
     }
-    return 'Monthly'; // default/legacy
+    return 'Monthly' + monthDaySuffix(f); // default/legacy
   }
 
   // ---------- Important Communications (SUBH Phase 1 redesign) ----------
@@ -4935,6 +4947,14 @@
   let autoEditingId = null;
   let autoPlan = null;        // the full plan object being edited - null until Ask SUBH / an edit populates it
   let autoSchedule = { date: '', time: '10:00', repeat: 'monthly', every: 2 };
+  // Task 12 (2026-11) - monthDays/lastDayOfMonth only ever come from Ask
+  // SUBH's own structured schedule extraction - there is no manual picker
+  // for "twice a month"/"last day of the month" in the Repeat segment, so
+  // they are held here (not read from any DOM control) and carried
+  // through to Save as-is, UNTIL the owner manually touches Date/Repeat/
+  // Every/Unit/weekday chips - at that point they are cleared, since a
+  // manual edit means the owner is now defining the schedule plainly.
+  let autoScheduleExtra = { monthDays: null, lastDayOfMonth: false };
   let autoSelected = new Set();   // selectedEmployeeIds, when rec === 'selected'
   let autoExcluded = new Set();   // row keys left out by the owner in the understanding table
   let autoTableCols = [];
@@ -5123,6 +5143,7 @@
     autoTableCols = ['Employee_No', 'Employee_Name', 'Designation', 'Department'];
     const defaultWhen = currentIstDateTime();
     autoSchedule = { date: defaultWhen.date, time: defaultWhen.time, repeat: 'monthly', every: 2 };
+    autoScheduleExtra = { monthDays: null, lastDayOfMonth: false };
     if (autoSubject) autoSubject.value = '';
     if (autoAsk) autoAsk.value = '';
     if (autoUnderstand) autoUnderstand.innerHTML = '';
@@ -5165,6 +5186,7 @@
     autoSelected = new Set(t.plan.selectedEmployeeIds || []);
     autoTableCols = [...(t.plan.tableColumns || [])];
     autoSchedule = Object.assign({ date: '', time: '10:00', repeat: 'monthly', every: 2, unit: 'months', weekdays: [] }, t.schedule);
+    autoScheduleExtra = { monthDays: t.schedule.monthDays || null, lastDayOfMonth: Boolean(t.schedule.lastDayOfMonth) };
     if (autoSubject) autoSubject.value = t.subject;
     if (autoAsk) autoAsk.value = t.originalAsk || '';
     autoSetSeg(autoGroupSeg, t.plan.group);
@@ -5313,13 +5335,18 @@
     // live inside autoPlaceSeg and would otherwise deselect BOTH segment
     // options here if their own click handler's stopPropagation below
     // were ever bypassed.
-    seg.addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b || !b.dataset.v) return; autoSetSeg(seg, b.dataset.v); autoSync(); if (autoPlan) renderAutoUnderstanding(); });
+    // Task 12 (2026-11) - a manual Repeat click means the owner is now
+    // defining the schedule plainly - monthDays/lastDayOfMonth (Ask
+    // SUBH-only, no manual picker) never silently linger past that.
+    seg.addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b || !b.dataset.v) return; autoSetSeg(seg, b.dataset.v); if (seg === autoRepSeg) autoScheduleExtra = { monthDays: null, lastDayOfMonth: false }; autoSync(); if (autoPlan) renderAutoUnderstanding(); });
   });
   // Weekday chips (Task 11, 2026-11) - MULTI-select toggle, unlike the
   // single-select segments above: clicking one just flips its own "on"
   // state, never clears the others.
   if (autoWeekdaysSeg) autoWeekdaysSeg.addEventListener('click', (e) => { const b = e.target.closest('button[data-v]'); if (!b) return; b.classList.toggle('on'); autoSync(); if (autoPlan) renderAutoUnderstanding(); });
-  if (autoCustomUnit) autoCustomUnit.addEventListener('change', () => { autoSync(); if (autoPlan) renderAutoUnderstanding(); });
+  if (autoCustomUnit) autoCustomUnit.addEventListener('change', () => { autoScheduleExtra = { monthDays: null, lastDayOfMonth: false }; autoSync(); if (autoPlan) renderAutoUnderstanding(); });
+  if (autoDate) autoDate.addEventListener('input', () => { autoScheduleExtra = { monthDays: null, lastDayOfMonth: false }; });
+  if (autoEvery) autoEvery.addEventListener('input', () => { autoScheduleExtra = { monthDays: null, lastDayOfMonth: false }; });
   if (autoAttachBtn) {
     autoAttachBtn.addEventListener('click', () => {
       if (autoAttachDropdown) autoAttachDropdown.classList.toggle('hidden');
@@ -5367,6 +5394,8 @@
       every: autoEvery ? Number(autoEvery.value) || 1 : 2,
       unit: autoCustomUnit ? autoCustomUnit.value : 'months',
       weekdays: getWeekdaySegValues(autoWeekdaysSeg),
+      monthDays: autoScheduleExtra.monthDays,
+      lastDayOfMonth: autoScheduleExtra.lastDayOfMonth,
       cc: autoCcField.getChips().join(', ')
     };
   }
@@ -5412,7 +5441,7 @@
     if (!autoSummary || !autoPlan) return;
     const f = autoReadForm();
     const plan = autoBuildPlanFromForm(f);
-    const schedule = { date: f.date, time: f.time, repeat: f.repeat, every: f.every, unit: f.unit, weekdays: f.weekdays };
+    const schedule = { date: f.date, time: f.time, repeat: f.repeat, every: f.every, unit: f.unit, weekdays: f.weekdays, monthDays: f.monthDays, lastDayOfMonth: f.lastDayOfMonth };
     try {
       const resp = await fetch('/api/workforce/hr-assistant/automations/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ plan, excludedKeys: Array.from(autoExcluded), schedule }) });
       const data = await resp.json();
@@ -5459,6 +5488,7 @@
       autoSelected = new Set(draft.plan.selectedEmployeeIds || []);
       autoTableCols = [...(draft.plan.tableColumns || [])];
       autoSchedule = draft.schedule;
+      autoScheduleExtra = { monthDays: draft.schedule.monthDays || null, lastDayOfMonth: Boolean(draft.schedule.lastDayOfMonth) };
       if (!autoSubject.value) autoSubject.value = draft.subject || '';
       autoSetSeg(autoGroupSeg, draft.plan.group);
       autoSetSeg(autoRecSeg, draft.plan.rec);
@@ -5761,7 +5791,7 @@
     const f = autoReadForm();
     if (!autoValidate(f)) return;
     const plan = autoBuildPlanFromForm(f);
-    const schedule = { date: f.date, time: f.time, repeat: f.repeat, every: f.every, unit: f.unit, weekdays: f.weekdays };
+    const schedule = { date: f.date, time: f.time, repeat: f.repeat, every: f.every, unit: f.unit, weekdays: f.weekdays, monthDays: f.monthDays, lastDayOfMonth: f.lastDayOfMonth };
     const payload = { subject: f.subject, originalAsk: (autoAsk && autoAsk.value || '').trim(), plan, excludedKeys: Array.from(autoExcluded), schedule };
     const url = autoEditingId ? '/api/workforce/hr-assistant/automations/' + encodeURIComponent(autoEditingId) : '/api/workforce/hr-assistant/automations';
     await runButtonAction(autoSaveBtn, () => postJsonOrThrow(url, payload), (result) => {
@@ -5889,6 +5919,9 @@
 
   let wfEditingId = null;
   let wfPlan = null;
+  // Task 12 (2026-11) - same Ask-SUBH-only pass-through as Automated
+  // Tasks' own autoScheduleExtra (see its comment).
+  let wfScheduleExtra = { monthDays: null, lastDayOfMonth: false };
   let wfSelected = new Set();
   let wfExcluded = new Set();
   let wfTableCols = [];
@@ -6013,6 +6046,7 @@
     if (wfEvery) wfEvery.value = 2;
     if (wfCustomUnit) wfCustomUnit.value = 'months';
     if (wfWeekdaysSeg) renderWeekdaySeg(wfWeekdaysSeg, []);
+    wfScheduleExtra = { monthDays: null, lastDayOfMonth: false };
     if (wfAlsoOn) wfAlsoOn.checked = false;
     if (wfAlsoTo) wfAlsoTo.value = 'hr';
     if (wfAlsoSubj) wfAlsoSubj.value = '';
@@ -6052,6 +6086,7 @@
     if (wfEvery) wfEvery.value = w.schedule.every || 2;
     if (wfCustomUnit) wfCustomUnit.value = w.schedule.unit || 'months';
     if (wfWeekdaysSeg) renderWeekdaySeg(wfWeekdaysSeg, w.schedule.weekdays || []);
+    wfScheduleExtra = { monthDays: w.schedule.monthDays || null, lastDayOfMonth: Boolean(w.schedule.lastDayOfMonth) };
     wfCcField.setChips((w.plan.cc || '').split(',').map((s) => s.trim()).filter(Boolean));
     const also = w.plan.also || { on: false };
     if (wfAlsoOn) wfAlsoOn.checked = Boolean(also.on);
@@ -6144,10 +6179,13 @@
 
   [wfGroupSeg, wfRecSeg, wfMedSeg, wfRepSeg].forEach((seg) => {
     if (!seg) return;
-    seg.addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b || !b.dataset.v) return; wfSetSeg(seg, b.dataset.v); wfSync(); if (wfPlan) renderWfUnderstanding(); });
+    // Task 12 (2026-11) - see Automated Tasks' own identical comment.
+    seg.addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b || !b.dataset.v) return; wfSetSeg(seg, b.dataset.v); if (seg === wfRepSeg) wfScheduleExtra = { monthDays: null, lastDayOfMonth: false }; wfSync(); if (wfPlan) renderWfUnderstanding(); });
   });
   if (wfWeekdaysSeg) wfWeekdaysSeg.addEventListener('click', (e) => { const b = e.target.closest('button[data-v]'); if (!b) return; b.classList.toggle('on'); wfSync(); if (wfPlan) renderWfUnderstanding(); });
-  if (wfCustomUnit) wfCustomUnit.addEventListener('change', () => { wfSync(); if (wfPlan) renderWfUnderstanding(); });
+  if (wfCustomUnit) wfCustomUnit.addEventListener('change', () => { wfScheduleExtra = { monthDays: null, lastDayOfMonth: false }; wfSync(); if (wfPlan) renderWfUnderstanding(); });
+  if (wfDate) wfDate.addEventListener('input', () => { wfScheduleExtra = { monthDays: null, lastDayOfMonth: false }; });
+  if (wfEvery) wfEvery.addEventListener('input', () => { wfScheduleExtra = { monthDays: null, lastDayOfMonth: false }; });
   if (wfRecCol) wfRecCol.addEventListener('change', () => { wfSync(); if (wfPlan) renderWfUnderstanding(); });
   if (wfTableToggle) wfTableToggle.addEventListener('change', wfSync);
   if (wfAlsoOn) wfAlsoOn.addEventListener('change', wfSync);
@@ -6173,6 +6211,8 @@
       every: wfEvery ? Number(wfEvery.value) || 1 : 2,
       unit: wfCustomUnit ? wfCustomUnit.value : 'months',
       weekdays: getWeekdaySegValues(wfWeekdaysSeg),
+      monthDays: wfScheduleExtra.monthDays,
+      lastDayOfMonth: wfScheduleExtra.lastDayOfMonth,
       cc: wfCcField.getChips().join(', ')
     };
   }
@@ -6218,7 +6258,7 @@
     if (!wfSummary || !wfPlan) return;
     const f = wfReadForm();
     const plan = wfBuildPlanFromForm(f);
-    const schedule = { date: f.date, time: f.time, repeat: f.repeat, every: f.every, unit: f.unit, weekdays: f.weekdays };
+    const schedule = { date: f.date, time: f.time, repeat: f.repeat, every: f.every, unit: f.unit, weekdays: f.weekdays, monthDays: f.monthDays, lastDayOfMonth: f.lastDayOfMonth };
     try {
       const resp = await fetch('/api/workforce/hr-assistant/workflows/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ plan, excludedKeys: Array.from(wfExcluded), schedule }) });
       const data = await resp.json();
@@ -6320,6 +6360,7 @@
       wfEvery.value = draft.schedule.every || 2;
       if (wfCustomUnit) wfCustomUnit.value = draft.schedule.unit || 'months';
       if (wfWeekdaysSeg) renderWeekdaySeg(wfWeekdaysSeg, draft.schedule.weekdays || []);
+      wfScheduleExtra = { monthDays: draft.schedule.monthDays || null, lastDayOfMonth: Boolean(draft.schedule.lastDayOfMonth) };
       if (wfAlsoOn) wfAlsoOn.checked = Boolean(draft.plan.also && draft.plan.also.on);
       if (wfAlsoTo) wfAlsoTo.value = (draft.plan.also && draft.plan.also.to) || 'hr';
       if (wfAlsoSubj) wfAlsoSubj.value = (draft.plan.also && draft.plan.also.subject) || '';
@@ -6484,7 +6525,7 @@
     const f = wfReadForm();
     if (!wfValidate(f)) return;
     const plan = wfBuildPlanFromForm(f);
-    const schedule = { date: f.date, time: f.time, repeat: f.repeat, every: f.every, unit: f.unit, weekdays: f.weekdays };
+    const schedule = { date: f.date, time: f.time, repeat: f.repeat, every: f.every, unit: f.unit, weekdays: f.weekdays, monthDays: f.monthDays, lastDayOfMonth: f.lastDayOfMonth };
     const payload = { subject: f.subject, originalAsk: (wfAsk && wfAsk.value || '').trim(), plan, excludedKeys: Array.from(wfExcluded), schedule };
     const url = wfEditingId ? '/api/workforce/hr-assistant/workflows/' + encodeURIComponent(wfEditingId) : '/api/workforce/hr-assistant/workflows';
     await runButtonAction(wfSaveBtn, () => postJsonOrThrow(url, payload), (result) => {

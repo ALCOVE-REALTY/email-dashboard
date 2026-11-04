@@ -149,6 +149,72 @@ async function main() {
     check('no data-source conditions were invented for a fixed message', noDataDraft.ok && noDataDraft.plan.conds.length === 0);
 
     console.log('='.repeat(70));
+    console.log('Task 12 (2026-11): "AI understands, code speaks" for schedules - the model extracts a FULLY STRUCTURED schedule (repeat/weekdays/monthDays/interval/time/start date/last-day-of-month), code only validates+computes+summarises, never pattern-matching the free text itself');
+    console.log('='.repeat(70));
+    async function scheduleCase(label, ask, assertFn) {
+      const parsed = await automationService.parseAutomationAsk(ask);
+      const draft = await automationService.draftPlanFromParsed(parsed, now);
+      console.log('  ' + label + ' ->', JSON.stringify(draft.ok ? draft.schedule : draft.unclear));
+      check(label, draft.ok && assertFn(draft.schedule));
+    }
+    await scheduleCase(
+      'LOCKED: "shoptaher prothom din" (first day of the week) resolves weekly on Sunday (South Asian convention)',
+      'Shoptaher prothom din shokal 9 tay Priyanka ke PF challan reminder mail korbe',
+      (s) => s.repeat === 'weekly' && Array.isArray(s.weekdays) && s.weekdays.includes('sunday') && s.time === '09:00'
+    );
+    await scheduleCase(
+      'LOCKED: "every Mon" resolves weekly on Monday',
+      'Send Priyanka a PF challan reminder mail every Mon at 10am',
+      (s) => s.repeat === 'weekly' && JSON.stringify(s.weekdays) === JSON.stringify(['monday'])
+    );
+    await scheduleCase(
+      'LOCKED: "ek din por por" (every other day) resolves custom, every 2 days',
+      'Ek din por por shokal 9 tay Priyanka ke PF challan reminder mail korbe',
+      (s) => s.repeat === 'custom' && s.unit === 'days' && s.every === 2 && s.time === '09:00'
+    );
+    await scheduleCase(
+      'LOCKED: "mashe duibar 1 ar 15 tarikh" (twice a month, the 1st and 15th) resolves monthDays=[1,15]',
+      'Mashe duibar, 1 ar 15 tarikhe, Priyanka ke PF challan reminder mail korbe',
+      (s) => s.repeat === 'monthly' && JSON.stringify(s.monthDays) === JSON.stringify([1, 15])
+    );
+    await scheduleCase(
+      'LOCKED: "every alternate Saturday" resolves custom, every 2 weeks, on Saturday',
+      'Send Priyanka a PF challan reminder mail every alternate Saturday at 10am',
+      (s) => s.repeat === 'custom' && s.unit === 'weeks' && s.every === 2 && Array.isArray(s.weekdays) && s.weekdays.includes('saturday')
+    );
+    await scheduleCase(
+      'LOCKED: "last working day of the month" resolves lastDayOfMonth=true (approximated as the calendar last day - no holiday calendar in this app)',
+      'Last working day of the month e Priyanka ke PF challan reminder mail korbe',
+      (s) => (s.repeat === 'monthly' || (s.repeat === 'custom' && s.unit === 'months')) && s.lastDayOfMonth === true
+    );
+    await scheduleCase(
+      'LOCKED: "proti Monday 10 tay" resolves weekly on Monday at 10:00',
+      'Proti Monday 10 tay Priyanka ke PF challan reminder notice mail korbe',
+      (s) => s.repeat === 'weekly' && JSON.stringify(s.weekdays) === JSON.stringify(['monday']) && s.time === '10:00'
+    );
+    await scheduleCase(
+      'LOCKED: "roj sokal 9 tay" (every day, 9am) resolves daily at 09:00',
+      'Roj sokal 9 tay Priyanka ke PF challan reminder mail korbe',
+      (s) => s.repeat === 'daily' && s.time === '09:00'
+    );
+    await scheduleCase(
+      'LOCKED: "proti 15 din" (every 15 days) resolves custom, every 15 days',
+      'Proti 15 din Priyanka ke PF challan reminder mail korbe',
+      (s) => s.repeat === 'custom' && s.unit === 'days' && s.every === 15
+    );
+    await scheduleCase(
+      'LOCKED: "every Mon and Thu at 4 pm" resolves weekly on BOTH Monday and Thursday at 16:00',
+      'Send Priyanka a PF challan reminder mail every Mon and Thu at 4 pm',
+      (s) => s.repeat === 'weekly' && s.weekdays && s.weekdays.length === 2 && s.weekdays.includes('monday') && s.weekdays.includes('thursday') && s.time === '16:00'
+    );
+    {
+      const parsed = await automationService.parseAutomationAsk('Proti mash-er tritiyo Monday Priyanka ke PF challan reminder mail korbe');
+      const draft = await automationService.draftPlanFromParsed(parsed, now);
+      console.log('  3rd-Monday ->', JSON.stringify(draft.ok ? draft.schedule : draft.unclear));
+      check('a genuinely unrepresentable pattern ("the 3rd Monday of every month") is refused with a specific, named unclear item - never guessed into a close-but-wrong schedule', draft.ok === false && draft.unclear.length > 0);
+    }
+
+    console.log('='.repeat(70));
     console.log(pass + '/' + (pass + fail) + ' passed' + (fail ? ', ' + fail + ' FAILED' : ''));
     if (failures.length) { console.log('Failed checks:'); failures.forEach((f) => console.log(' -', f)); }
     console.log('='.repeat(70));

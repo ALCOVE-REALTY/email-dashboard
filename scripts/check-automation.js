@@ -699,6 +699,57 @@ async function main() {
     });
 
     console.log('='.repeat(70));
+    console.log('Task 12 (2026-11): "AI understands, code speaks" for schedules too - the model extracts a fully structured schedule (monthDays, lastDayOfMonth, an explicit start date, or a named unsupported-pattern note), code validates/computes/writes the summary, never guessing');
+    console.log('='.repeat(70));
+    check('LOCKED: computeNextRun with monthDays picks the EARLIEST qualifying day in the current month, not just the literal first-listed one', (() => {
+      const r = automationService.computeNextRun({ date: '2026-11-01', time: '10:00', repeat: 'monthly', monthDays: [1, 15] }, NOW_WED); // NOW_WED = 4 Nov, 11:30am IST - the 1st has passed
+      const d = new Date(r);
+      return d.getUTCMonth() === 10 && d.getUTCDate() === 15;
+    })());
+    check('monthDays with every candidate in the current month already passed correctly rolls to the SAME day(s) next month', (() => {
+      const r = automationService.computeNextRun({ date: '2026-11-01', time: '10:00', repeat: 'monthly', monthDays: [1, 2] }, NOW_WED); // both 1st and 2nd already passed
+      const d = new Date(r);
+      return d.getUTCMonth() === 11 && d.getUTCDate() === 1;
+    })());
+    check('LOCKED: lastDayOfMonth runs on the real last calendar day of the month, clamped correctly (30 in November)', (() => {
+      const r = automationService.computeNextRun({ date: '2026-11-01', time: '10:00', repeat: 'monthly', lastDayOfMonth: true }, NOW_WED);
+      const d = new Date(r);
+      return d.getUTCMonth() === 10 && d.getUTCDate() === 30;
+    })());
+    check('lastDayOfMonth also composes with custom+months (every 2 months, last day)', (() => {
+      const r = automationService.computeNextRun({ date: '2026-11-01', time: '10:00', repeat: 'custom', unit: 'months', every: 2, lastDayOfMonth: true }, NOW_WED);
+      return new Date(r).getUTCDate() === 30;
+    })());
+    await checkAsync('LOCKED: draftPlanFromParsed resolves "mashe duibar 1 ar 15 tarikh" (twice a month) to monthDays=[1,15], staying in the CURRENT month when the 15th is still ahead', async () => {
+      const draft = await automationService.draftPlanFromParsed({ unclear: [], source: 'none', rec: 'selected', peopleNames: ['someone@example.test'], mediator: 'mail', timeRaw: '10:00', repeat: 'monthly', monthDays: [1, 15] }, NOW_WED);
+      return draft.ok && JSON.stringify(draft.schedule.monthDays) === JSON.stringify([1, 15]) && draft.schedule.date === '2026-11-15';
+    });
+    await checkAsync('monthDays validates/dedupes/sorts - invalid entries dropped, duplicates removed, never trusted blindly from the model', async () => {
+      const draft = await automationService.draftPlanFromParsed({ unclear: [], source: 'none', rec: 'selected', peopleNames: ['someone@example.test'], mediator: 'mail', timeRaw: '10:00', repeat: 'monthly', monthDays: [15, 1, 1, 99, -4] }, NOW_WED);
+      return draft.ok && JSON.stringify(draft.schedule.monthDays) === JSON.stringify([1, 15]);
+    });
+    await checkAsync('LOCKED: "mash er sesh din"/"last working day of the month" resolves to lastDayOfMonth=true, dayOfMonth/monthDays both cleared', async () => {
+      const draft = await automationService.draftPlanFromParsed({ unclear: [], source: 'none', rec: 'selected', peopleNames: ['someone@example.test'], mediator: 'mail', timeRaw: '10:00', repeat: 'monthly', lastDayOfMonth: true, dayOfMonth: 5 }, NOW_WED);
+      return draft.ok && draft.schedule.lastDayOfMonth === true && draft.schedule.monthDays === null;
+    });
+    await checkAsync('LOCKED: an explicit start date ("10 November theke proti shomobar") anchors a weekly schedule on THAT date, not today', async () => {
+      const draft = await automationService.draftPlanFromParsed({ unclear: [], source: 'none', rec: 'selected', peopleNames: ['someone@example.test'], mediator: 'mail', timeRaw: '10:00', repeat: 'weekly', weekdayHints: ['monday'], startDateRaw: '2026-11-10' }, NOW_WED);
+      return draft.ok && draft.schedule.date === '2026-11-10';
+    });
+    await checkAsync('an unparseable explicit start date is a specific, named unclear item - never silently ignored or guessed', async () => {
+      const draft = await automationService.draftPlanFromParsed({ unclear: [], source: 'none', rec: 'selected', peopleNames: ['someone@example.test'], mediator: 'mail', timeRaw: '10:00', repeat: 'daily', startDateRaw: 'next fortnight' }, NOW_WED);
+      return draft.ok === false && draft.unclear.some((u) => /start date/i.test(u));
+    });
+    await checkAsync('LOCKED: a genuinely unsupported pattern ("3rd Monday of every month") surfaces the model\'s OWN suggestion as the unclear item - never guessed into a close-but-wrong schedule', async () => {
+      const draft = await automationService.draftPlanFromParsed({ unclear: [], source: 'none', rec: 'selected', peopleNames: ['someone@example.test'], mediator: 'mail', timeRaw: '10:00', repeat: 'monthly', unsupportedScheduleNote: 'The 3rd Monday of every month is not supported - the closest option is a plain weekly repeat on Monday, or a fixed day of the month.' }, NOW_WED);
+      return draft.ok === false && draft.unclear.some((u) => /3rd Monday/.test(u) && /closest option/i.test(u));
+    });
+    await checkAsync('REGRESSION: monthDays/lastDayOfMonth/startDateRaw all omitted - a plain single-day monthly ask behaves exactly as before (no behavior change for the common case)', async () => {
+      const draft = await automationService.draftPlanFromParsed({ unclear: [], source: 'none', rec: 'selected', peopleNames: ['someone@example.test'], mediator: 'mail', dayOfMonth: 25, timeRaw: '18:00', repeat: 'monthly' }, new Date('2026-11-01T06:00:00.000Z'));
+      return draft.ok && draft.schedule.date === '2026-11-25' && draft.schedule.monthDays === null && !draft.schedule.lastDayOfMonth;
+    });
+
+    console.log('='.repeat(70));
     console.log('Task 11 (2026-11): a one-shot (Once/legacy None) task shows as "completed" once its single run is used up - never stuck "Active" forever with no next run');
     console.log('='.repeat(70));
     await checkAsync('a real run of a "once" task flips status to completed, with nextRunAt left null', async () => {

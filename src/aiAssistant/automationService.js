@@ -752,27 +752,45 @@ function computeNextRun(schedule, now) {
     return cand.getTime() >= now.getTime() ? cand.toISOString() : null;
   }
 
-  // MONTH-STEPPING: monthly, yearly, custom+months.
+  // MONTH-STEPPING: monthly, yearly, custom+months. Resolves to ONE OR
+  // MORE candidate days per stepped month - a plain single day-of-month
+  // (the common case, unchanged), every day in schedule.monthDays
+  // (Task 12, 2026-11 - "twice a month" style schedules, e.g. the 1st AND
+  // 15th), or the real last day of that month (schedule.lastDayOfMonth -
+  // "last day/working day of the month"; this app has no holiday
+  // calendar, so "working day" is approximated as the plain calendar
+  // last day). Each month's OWN candidates are tried earliest-first
+  // before advancing to the next stepped month, so "1st and 15th" visits
+  // both every month rather than skipping one.
   const monthStep = repeat === 'monthly' ? 1
     : repeat === 'yearly' ? 12
     : (repeat === 'custom' && schedule.unit === 'months') ? Math.max(1, Number(schedule.every) || 1)
     : 0;
   if (monthStep) {
+    function candidateDaysFor(y, m) {
+      if (schedule.lastDayOfMonth) return [lastDayOfMonth(y, m)];
+      if (Array.isArray(schedule.monthDays) && schedule.monthDays.length) {
+        return Array.from(new Set(schedule.monthDays.map((d) => Math.min(Math.max(1, Number(d) || 1), lastDayOfMonth(y, m))))).sort((a, b) => a - b);
+      }
+      return [Math.min(anchorDay, lastDayOfMonth(y, m))];
+    }
     // y/m track the intended IST calendar month/year directly, advanced by
     // plain month arithmetic - never re-derived from `cand` itself (an
     // IST-shifted UTC instant), which for an early-IST-morning time
     // (00:00-05:29) can land on the PREVIOUS UTC calendar day/month and
     // would otherwise corrupt the "advance by N months" step.
     let y = base.getUTCFullYear(), m = base.getUTCMonth();
-    let cand = istWallClockToUtc(y, m, Math.min(anchorDay, lastDayOfMonth(y, m)), h, mi);
     let guard = 0;
-    while (cand.getTime() < now.getTime() && guard++ < 1200) {
+    while (guard++ < 1200) {
+      for (const day of candidateDaysFor(y, m)) {
+        const cand = istWallClockToUtc(y, m, day, h, mi);
+        if (cand.getTime() >= now.getTime()) return cand.toISOString();
+      }
       const nm = m + monthStep;
       y = y + Math.floor(nm / 12);
       m = ((nm % 12) + 12) % 12;
-      cand = istWallClockToUtc(y, m, Math.min(anchorDay, lastDayOfMonth(y, m)), h, mi);
     }
-    return cand.toISOString();
+    return null;
   }
 
   // DAY-STEPPING: daily, weekly, custom+days, custom+weeks.
@@ -1047,12 +1065,16 @@ function automationPlanTool(departmentNames, sheetContext) {
           peopleNames: { type: 'array', items: { type: 'string' }, description: 'Only when rec=selected - the exact name(s) or raw email address(es) mentioned, as given (not expanded/guessed). A name is validated against the real directory afterward; anything that already looks like an email address is used as-is.' },
           group: { type: 'string', enum: ['each', 'list'], description: '"each" for one separate message per row (default when rec=column), "list" for one combined message (default when rec=selected).' },
           mediator: { type: 'string', enum: ['mail', 'wa'], description: 'Defaults to mail unless WhatsApp is explicitly mentioned.' },
-          dayOfMonth: { type: 'number', description: 'The day-of-month mentioned (e.g. "1 tarikh" -> 1), 1-31. Omit if not stated (defaults to the 1st).' },
+          dayOfMonth: { type: 'number', description: 'The day-of-month mentioned (e.g. "1 tarikh" -> 1), 1-31, when exactly ONE specific day is named for repeat="monthly" or "custom"+customUnit="months". Omit if not stated (defaults to the 1st) or if monthDays/lastDayOfMonth applies instead - never set together with either of those.' },
+          monthDays: { type: 'array', items: { type: 'number' }, description: 'ONLY for repeat="monthly" or "custom"+customUnit="months", when MORE THAN ONE specific day of the month is named (e.g. "mashe duibar 1 ar 15 tarikh" - twice a month, the 1st and 15th -> [1, 15]). Omit entirely when only one day (use dayOfMonth) or no day at all was named.' },
+          lastDayOfMonth: { type: 'boolean', description: 'ONLY for repeat="monthly" or "custom"+customUnit="months" - true when the ask explicitly means the LAST day of the month ("mash er sesh din", "last day of the month", "last working day of the month" - this app has no holiday/weekend calendar, so "last working day" is approximated as the plain calendar last day). Omit dayOfMonth/monthDays when this is true.' },
           timeRaw: { type: 'string', description: 'HH:MM in 24-hour time (e.g. "10 tay"/"10 AM" -> "10:00"). Omit entirely if not stated (defaults to 10:00).' },
-          repeat: { type: 'string', enum: ['once', 'daily', 'weekly', 'monthly', 'yearly', 'custom'], description: 'Defaults to "monthly" unless stated otherwise. "once" for a single one-time run ("ekbar"/"only once"/"15 tarikh-e ekbar" - a specific date with no recurrence implied). "daily" for "every day"/"roj". "weekly" for a specific weekday or weekdays repeating every single week ("proti Monday"/"proti shomobar"/"every Mon and Thu") - also set weekdayHints. "yearly" for "every year". "custom" for any other explicit interval ("every N days/weeks/months", e.g. "proti 15 din") - also set customEvery/customUnit (and weekdayHints too if customUnit is "weeks" AND specific weekday(s) were named).' },
-          weekdayHints: { type: 'array', items: { type: 'string', enum: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'] }, description: 'Required when repeat is "weekly" - one or more weekdays named (e.g. "proti shomobar" -> ["monday"], "every Mon and Thu" -> ["monday","thursday"]). Only set for repeat="custom" when customUnit is "weeks" AND specific weekday(s) were ALSO named (e.g. "every 2 weeks on Monday") - omit for a plain "every N weeks" with no weekday named. Never set for any other repeat value.' },
-          customEvery: { type: 'number', description: 'Required when repeat is "custom" - the N in "every N days/weeks/months" (e.g. "proti 15 din" -> 15). Omit otherwise.' },
+          repeat: { type: 'string', enum: ['once', 'daily', 'weekly', 'monthly', 'yearly', 'custom'], description: 'Defaults to "monthly" unless stated otherwise. "once" for a single one-time run ("ekbar"/"only once"/"15 tarikh-e ekbar" - a specific date with no recurrence implied). "daily" for "every day"/"roj". "weekly" for a specific weekday or weekdays repeating every single week ("proti Monday"/"proti shomobar"/"shoptaher prothom din" - the first day of the week, Sunday by the common South Asian convention/"every Mon and Thu") - also set weekdayHints. "yearly" for "every year". "custom" for any other explicit interval ("every N days/weeks/months", e.g. "proti 15 din"; "ek din por por"/"every other day" -> every day-based unit 2; "every alternate <weekday>" -> every weeks-unit 2 + that weekday in weekdayHints) - also set customEvery/customUnit (and weekdayHints too if customUnit is "weeks" AND specific weekday(s) were named).' },
+          weekdayHints: { type: 'array', items: { type: 'string', enum: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'] }, description: 'Required when repeat is "weekly" - one or more weekdays named (e.g. "proti shomobar" -> ["monday"], "every Mon and Thu" -> ["monday","thursday"], "shoptaher prothom din" -> ["sunday"]). Only set for repeat="custom" when customUnit is "weeks" AND specific weekday(s) were ALSO named (e.g. "every 2 weeks on Monday", "every alternate Saturday" -> every=2 + ["saturday"]) - omit for a plain "every N weeks" with no weekday named. Never set for any other repeat value.' },
+          customEvery: { type: 'number', description: 'Required when repeat is "custom" - the N in "every N days/weeks/months" (e.g. "proti 15 din" -> 15, "ek din por por"/"every other day" -> 2 with customUnit="days", "every alternate Saturday" -> 2 with customUnit="weeks"). Omit otherwise.' },
           customUnit: { type: 'string', enum: ['days', 'weeks', 'months'], description: 'Required when repeat is "custom" - the unit customEvery refers to, exactly as implied by the ask (din/days -> "days", saptaho/week -> "weeks", mash/month -> "months"). Omit otherwise.' },
+          startDateRaw: { type: 'string', description: 'ONLY for repeat="daily"/"weekly"/"custom" with customUnit "days" or "weeks" - set ONLY when an explicit START date was named for when the recurrence should begin (e.g. "10 November theke proti shomobar" - starting 10 November, every Monday). "today", "tomorrow", or an exact "YYYY-MM-DD" transcribed from what was literally said - NEVER compute a relative date like "next Monday" yourself. Omit entirely when no explicit start was mentioned (defaults to starting today).' },
+          unsupportedScheduleNote: { type: 'string', description: 'ONLY when the schedule described genuinely cannot be represented by any of the fields above (e.g. "the 3rd Monday of every month", "every quarter on the 2nd Friday") - a short, specific note naming what was asked AND the closest option this app actually supports (e.g. "a plain weekly repeat on Monday, or a specific day of the month"). Never silently guess a close-but-wrong schedule or drop the request - always say so here instead, and leave every other schedule field unset.' },
           wantsPdf: { type: 'boolean', description: 'true only if a PDF/attachment was explicitly mentioned.' },
           wantsTable: { type: 'boolean', description: 'true if a list/table of records should be included in the message (e.g. "birthday list", "DOB column", "share a table") - look for a named column or the word list/table.' },
           tableColumnHints: { type: 'array', items: { type: 'string' }, description: 'Only when wantsTable - the column name(s) mentioned or clearly implied (e.g. "DOB", "department", "name"), exactly as given. Validated against the real column set afterward - never invented.' },
@@ -1279,6 +1301,15 @@ async function draftPlanFromParsed(parsed, now, sheetContext) {
     }
   }
 
+  // Task 12 (2026-11) - "AI understands, code speaks" for schedules too:
+  // the model flags a genuinely unrepresentable pattern here (e.g. "the
+  // 3rd Monday of every month") with its own suggestion for the closest
+  // supported option, rather than this app ever guessing a close-but-
+  // wrong schedule or silently dropping the request. Checked first, and
+  // alone, so it is never muddied by a secondary "which day" unclear item
+  // below for the same ask.
+  if (parsed.unsupportedScheduleNote) unclear.push(String(parsed.unsupportedScheduleNote));
+
   // Task 11 (2026-11) - repeat now has 6 top-level values (the old
   // "none"/"daily" model-facing values are gone - "once" and "daily" are
   // each first-class now, never remapped into "custom" the way "daily"
@@ -1299,6 +1330,40 @@ async function draftPlanFromParsed(parsed, now, sheetContext) {
     // to "every N weeks on the same weekday as the first run" - see
     // computeNextRun) - only "weekly" itself REQUIRES at least one.
   }
+  // Task 12 (2026-11) - month-based repeats can now also name MULTIPLE
+  // specific days ("mashe duibar 1 ar 15 tarikh" -> monthDays [1, 15]) or
+  // the month's own last day ("mash er sesh din") - resolved in code
+  // (validated against the real 1-31 range / computeNextRun's own
+  // lastDayOfMonth helper), never trusted to the model's own date
+  // arithmetic. lastDayOfMonth wins over monthDays over the plain
+  // dayOfMonth when more than one is somehow set at once.
+  const isMonthBasedRepeat = repeat === 'once' || repeat === 'monthly' || repeat === 'yearly' || (repeat === 'custom' && unit === 'months');
+  let lastDayOfMonthFlag = false, monthDays = null;
+  if (isMonthBasedRepeat && repeat !== 'once') {
+    lastDayOfMonthFlag = Boolean(parsed.lastDayOfMonth);
+    if (!lastDayOfMonthFlag && Array.isArray(parsed.monthDays) && parsed.monthDays.length) {
+      const validDays = parsed.monthDays.map((d) => Number(d)).filter((d) => Number.isInteger(d) && d >= 1 && d <= 31);
+      if (validDays.length) monthDays = Array.from(new Set(validDays)).sort((a, b) => a - b);
+    }
+  }
+  // Task 12 (2026-11) - an explicit START date for a day-based repeat
+  // ("10 November theke proti shomobar" - starting 10 Nov, every Monday).
+  // The model only ever transcribes "today"/"tomorrow"/an exact
+  // "YYYY-MM-DD" (same posture as reminderService.js's own dateRaw) -
+  // never asked to compute a relative date itself; an unparseable value
+  // is a specific, named unclear item, never silently ignored.
+  let explicitStart = null;
+  if (!isMonthBasedRepeat && parsed.startDateRaw) {
+    const raw = String(parsed.startDateRaw).trim().toLowerCase();
+    const nowIstForStart = istParts(now);
+    if (raw === 'today') explicitStart = { year: nowIstForStart.year, month0: nowIstForStart.month - 1, day: nowIstForStart.day };
+    else if (raw === 'tomorrow') { const t = addDaysToUtcDateParts(nowIstForStart.year, nowIstForStart.month - 1, nowIstForStart.day, 1); explicitStart = { year: t.y, month0: t.m, day: t.d }; }
+    else {
+      const m = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      if (m) explicitStart = { year: Number(m[1]), month0: Number(m[2]) - 1, day: Number(m[3]) };
+      else unclear.push('the exact start date for this repeat (could not understand "' + parsed.startDateRaw + '")');
+    }
+  }
   if (unclear.length) return { ok: false, unclear };
   const group = parsed.group || (rec === 'selected' ? 'list' : 'each');
   const mediator = parsed.mediator === 'wa' ? 'wa' : 'mail';
@@ -1310,13 +1375,28 @@ async function draftPlanFromParsed(parsed, now, sheetContext) {
   // DAY-OF-MONTH, resolved here exactly as before: this month's
   // occurrence when it's still at least 5 minutes away, otherwise next
   // month's (Task 9c's own live bug fix - never the model's own guess).
-  // Day-based repeats (daily/weekly/custom+days/custom+weeks) have no
-  // day-of-month concept at all - the anchor is simply TODAY, and
-  // computeNextRun's own forward search finds the real first qualifying
-  // instant from there (today itself, if still comfortably ahead).
-  const isMonthBased = repeat === 'once' || repeat === 'monthly' || repeat === 'yearly' || (repeat === 'custom' && unit === 'months');
+  // lastDayOfMonth/monthDays schedules use the SAME month-advance logic,
+  // just comparing against computeNextRun's own actual first candidate
+  // for that month instead of a single fixed day. Day-based repeats
+  // (daily/weekly/custom+days/custom+weeks) have no day-of-month concept
+  // at all - the anchor is simply TODAY (or an explicit startDateRaw,
+  // resolved above), and computeNextRun's own forward search finds the
+  // real first qualifying instant from there.
+  const isMonthBased = isMonthBasedRepeat;
   let scheduleDate;
-  if (isMonthBased) {
+  if (isMonthBased && (monthDays || lastDayOfMonthFlag)) {
+    // 2+ candidate days in the SAME month (monthDays) means picking "the
+    // earliest" to test against the 5-minute buffer, the way the plain
+    // single-day case below does, is unsafe - an EARLIER day can have
+    // already passed while a LATER one this same month is still ahead
+    // (the exact "1st and 15th, asked on the 4th" case). Asking
+    // computeNextRun itself (seeded with the current IST month) to find
+    // the real first occurrence sidesteps that - one source of truth,
+    // never a second, approximate implementation of the same search.
+    const probe = computeNextRun({ date: new Date(Date.UTC(nowIst.year, nowIst.month - 1, 1)).toISOString().slice(0, 10), time, repeat, every, unit, monthDays, lastDayOfMonth: lastDayOfMonthFlag }, now);
+    const probeIst = istParts(new Date(probe));
+    scheduleDate = new Date(Date.UTC(probeIst.year, probeIst.month - 1, probeIst.day));
+  } else if (isMonthBased) {
     let targetYear = nowIst.year, targetMonth0 = nowIst.month - 1; // 0-based, matches Date.UTC's own convention
     let clampedDay = Math.min(day, lastDayOfMonth(targetYear, targetMonth0));
     let candidateUtc = istWallClockToUtc(targetYear, targetMonth0, clampedDay, schH, schMi);
@@ -1327,6 +1407,8 @@ async function draftPlanFromParsed(parsed, now, sheetContext) {
       clampedDay = Math.min(day, lastDayOfMonth(targetYear, targetMonth0));
     }
     scheduleDate = new Date(Date.UTC(targetYear, targetMonth0, clampedDay));
+  } else if (explicitStart) {
+    scheduleDate = new Date(Date.UTC(explicitStart.year, explicitStart.month0, explicitStart.day));
   } else {
     scheduleDate = new Date(Date.UTC(nowIst.year, nowIst.month - 1, nowIst.day));
   }
@@ -1353,7 +1435,7 @@ async function draftPlanFromParsed(parsed, now, sheetContext) {
       body: bodyTemplates[source] || 'Dear {Employee_Name},\n\n',
       table, tableColumns, tablePlacement: parsed.wantsPdf ? 'pdf' : 'body', attachmentFormat: 'pdf'
     },
-    schedule: { date: scheduleDate.toISOString().slice(0, 10), time, repeat, every, unit, weekdays },
+    schedule: { date: scheduleDate.toISOString().slice(0, 10), time, repeat, every, unit, weekdays, monthDays, lastDayOfMonth: lastDayOfMonthFlag || undefined },
     subject: parsed.subjectHint || { confirmations: 'Confirmation mail to HODs', birthdays: 'Birthday wishes', master: 'Notice to employees', exits: 'Exits update', sheet: (isSheet && sheetTab ? 'Data from ' + sheetTab : 'Reminder'), none: 'Reminder' }[source]
   };
 }
