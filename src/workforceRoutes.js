@@ -19,6 +19,7 @@ const memoryService = require('./aiAssistant/memoryService');
 const documentRequests = require('./aiAssistant/documentRequests');
 const reminderService = require('./aiAssistant/reminderService');
 const automationService = require('./aiAssistant/automationService');
+const workflowService = require('./aiAssistant/workflowService');
 const sheetsAuth = require('./sheetsAuth');
 const hrAccountCommands = require('./hrAccountCommands');
 const hrAuthAlerts = require('./hrAuthAlerts');
@@ -2243,6 +2244,300 @@ router.post('/hr-assistant/automations/:id/missed-run/skip', async (req, res) =>
   }
 });
 
+// ---------------- SUBH Automate Workflow ----------------
+// Mirrors every one of the Automated Tasks routes above, one-for-one
+// (same owner gate, same error shapes, same "approve only activates,
+// never sends" contract, same missed-run Send/Skip) - "Automated
+// Workflows" is deliberately the SAME shape of feature with reply-
+// handling added on top, never a second, differently-behaved system.
+router.get('/hr-assistant/workflows', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const items = await workflowService.listRawWorkflows();
+    res.json({ items });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/hr-assistant/workflows/ask', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const { text, sheetContext } = req.body || {};
+    if (!text || !String(text).trim()) return res.status(400).json({ error: 'text is required' });
+    const parsed = await workflowService.parseWorkflowAsk(String(text).trim(), sheetContext || null);
+    const draft = await workflowService.draftWorkflowPlanFromParsed(parsed, new Date(), sheetContext || null);
+    res.json(draft);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Sheet loading/service-account address are IDENTICAL to Automated
+// Tasks' own (same Google service account, same read-only client) -
+// reused directly rather than duplicated.
+router.post('/hr-assistant/workflows/load-sheet', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const { sheetUrl } = req.body || {};
+    const result = await automationService.loadSheetInfo(sheetUrl);
+    if (!result.ok) return res.status(400).json({ error: result.error });
+    res.json(Object.assign({}, result, { sheetUrl }));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+router.get('/hr-assistant/workflows/sheet-service-account', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  res.json({ email: sheetsAuth.getServiceAccountEmail() });
+});
+
+// Shared by the in-app Preview sheet AND the create/edit page's own live
+// "N people match for the next run" line - same workflowService.buildWorkflowMessages
+// call either way, so neither can ever show a different answer than what a
+// real run would actually do.
+router.post('/hr-assistant/workflows/preview', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const { plan, excludedKeys, schedule } = req.body || {};
+    if (!plan) return res.status(400).json({ error: 'plan is required' });
+    const now = new Date();
+    const runAt = automationService.computeNextRun(schedule, now);
+    const result = await workflowService.buildWorkflowMessages({ plan, excludedKeys: excludedKeys || [] }, runAt ? new Date(runAt) : now);
+    res.json({ ...result, nextRunAt: runAt });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/hr-assistant/workflows', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const now = new Date();
+    const { subject, originalAsk, plan, excludedKeys, schedule } = req.body || {};
+    if (!subject || !String(subject).trim()) return res.status(400).json({ error: 'Workflow Subject is required.' });
+    if (!plan || !schedule || !schedule.date || !schedule.time) return res.status(400).json({ error: 'A confirmed plan and schedule are required.' });
+    if (!plan.rules || !plan.rules.length) return res.status(400).json({ error: 'Add at least one reply rule.' });
+    const record = workflowService.newWorkflow({ subject: String(subject).trim(), originalAsk, plan, excludedKeys: excludedKeys || [], schedule, now, createdBy: req.hrUser.email });
+    const safeNextRunAt = automationService.ensureNotTooSoon(schedule, now);
+    const scheduleAdjustedTo = safeNextRunAt !== record.nextRunAt ? safeNextRunAt : null;
+    record.nextRunAt = safeNextRunAt;
+    await workflowService.saveWorkflow(record);
+    res.json({ ok: true, item: record, scheduleAdjustedTo });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/hr-assistant/workflows/:id', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const existing = await workflowService.getWorkflow(req.params.id);
+    if (!existing) return res.status(404).json({ error: 'Workflow not found.' });
+    const now = new Date();
+    const { subject, originalAsk, plan, excludedKeys, schedule } = req.body || {};
+    if (subject !== undefined) existing.subject = subject;
+    if (originalAsk !== undefined) existing.originalAsk = originalAsk;
+    if (plan !== undefined) existing.plan = plan;
+    if (excludedKeys !== undefined) existing.excludedKeys = excludedKeys;
+    let scheduleAdjustedTo = null;
+    if (schedule !== undefined) {
+      existing.schedule = schedule;
+      const rawNextRunAt = automationService.computeNextRun(schedule, now);
+      existing.nextRunAt = automationService.ensureNotTooSoon(schedule, now);
+      scheduleAdjustedTo = existing.nextRunAt !== rawNextRunAt ? existing.nextRunAt : null;
+      existing.pendingMissedRun = null;
+    }
+    existing.updatedAt = now.toISOString();
+    await workflowService.saveWorkflow(existing);
+    res.json({ ok: true, item: existing, scheduleAdjustedTo });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.delete('/hr-assistant/workflows/:id', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    await workflowService.deleteWorkflow(req.params.id);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// "Approve first run" only activates the workflow (same contract as
+// Automated Tasks) - it never sends anything itself. The first real send
+// happens exactly like every later one, naturally, when the scheduler
+// finds nextRunAt due.
+router.post('/hr-assistant/workflows/:id/approve', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const w = await workflowService.getWorkflow(req.params.id);
+    if (!w) return res.status(404).json({ error: 'Workflow not found.' });
+    w.status = 'active';
+    w.updatedAt = new Date().toISOString();
+    await workflowService.saveWorkflow(w);
+    res.json({ ok: true, item: w });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+router.post('/hr-assistant/workflows/:id/pause', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const w = await workflowService.getWorkflow(req.params.id);
+    if (!w) return res.status(404).json({ error: 'Workflow not found.' });
+    w.status = 'paused';
+    w.updatedAt = new Date().toISOString();
+    await workflowService.saveWorkflow(w);
+    res.json({ ok: true, item: w });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+router.post('/hr-assistant/workflows/:id/resume', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const w = await workflowService.getWorkflow(req.params.id);
+    if (!w) return res.status(404).json({ error: 'Workflow not found.' });
+    const now = new Date();
+    w.status = 'active';
+    if (!w.nextRunAt || new Date(w.nextRunAt).getTime() < now.getTime()) w.nextRunAt = automationService.computeNextRun(w.schedule, now);
+    w.updatedAt = now.toISOString();
+    await workflowService.saveWorkflow(w);
+    res.json({ ok: true, item: w });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+router.post('/hr-assistant/workflows/:id/run-now', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const result = await workflowService.runWorkflow(req.params.id, {}, new Date());
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+router.post('/hr-assistant/workflows/:id/send-test', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const w = await workflowService.getWorkflow(req.params.id);
+    if (!w) return res.status(404).json({ error: 'Workflow not found.' });
+    // Same owner-identity resolution as Automated Tasks' own send-test -
+    // see that route's own comment for why the login email is never
+    // trusted for a WhatsApp test send.
+    let testTo = w.plan.mediator === 'mail' ? req.hrUser.email : process.env.SUBH_OWNER_WHATSAPP_NUMBER;
+    if (!testTo && w.plan.mediator !== 'mail') {
+      const ownerRecord = await employeeService.findOwnerEmployeeRecord().catch(() => null);
+      testTo = ownerRecord && ownerRecord.contactNumber;
+    }
+    if (!testTo) return res.status(400).json({ error: w.plan.mediator === 'mail' ? 'No owner email on file.' : 'Could not find your own WhatsApp number - check your HR record has a contact number on file, or set SUBH_OWNER_WHATSAPP_NUMBER.' });
+    const result = await workflowService.runWorkflow(req.params.id, { isTest: true, testTo }, new Date());
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+router.post('/hr-assistant/workflows/:id/missed-run/send', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const result = await workflowService.resolveMissedRun(req.params.id, 'send', new Date());
+    if (!result.ok) return res.status(400).json(result);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+router.post('/hr-assistant/workflows/:id/missed-run/skip', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const result = await workflowService.resolveMissedRun(req.params.id, 'skip', new Date());
+    if (!result.ok) return res.status(400).json(result);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+// Progress board - lists every run for a workflow (newest first) and the
+// one it should open to by default (the latest).
+router.get('/hr-assistant/workflows/:id/runs', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const items = await workflowService.listRuns(req.params.id);
+    res.json({ items });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+router.get('/hr-assistant/workflows/:id/runs/:runId', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const run = await workflowService.getRun(req.params.id, req.params.runId);
+    if (!run) return res.status(404).json({ error: 'Run not found.' });
+    res.json({ item: run });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Per-record progress-board actions - every one of these drives the SAME
+// state machine the automatic follow-up/reply-reading jobs also drive
+// (see workflowService.js's own withRecord), never a second copy of the
+// logic. `key` is the record's own stable row/sheet key, exactly as
+// returned in a run's records list.
+router.post('/hr-assistant/workflows/:id/runs/:runId/records/:key/stop', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const result = await workflowService.stopWorkflowRecord(req.params.id, req.params.runId, req.params.key);
+    if (!result.ok) return res.status(400).json(result);
+    res.json(result);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+router.post('/hr-assistant/workflows/:id/runs/:runId/records/:key/mark-done', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const result = await workflowService.markWorkflowRecordDone(req.params.id, req.params.runId, req.params.key);
+    if (!result.ok) return res.status(400).json(result);
+    res.json(result);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+router.post('/hr-assistant/workflows/:id/runs/:runId/records/:key/remind', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const result = await workflowService.remindWorkflowRecordNow(req.params.id, req.params.runId, req.params.key);
+    if (!result.ok) return res.status(400).json(result);
+    res.json(result);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+router.post('/hr-assistant/workflows/:id/runs/:runId/records/:key/approve-send', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const result = await workflowService.approveSendWorkflowRecord(req.params.id, req.params.runId, req.params.key);
+    if (!result.ok) return res.status(400).json(result);
+    res.json(result);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+router.post('/hr-assistant/workflows/:id/runs/:runId/records/:key/decline', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const result = await workflowService.declineWorkflowRecordApproval(req.params.id, req.params.runId, req.params.key);
+    if (!result.ok) return res.status(400).json(result);
+    res.json(result);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+router.post('/hr-assistant/workflows/:id/runs/:runId/records/:key/resolve-unclear', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const { ruleIndex } = req.body || {};
+    if (typeof ruleIndex !== 'number') return res.status(400).json({ error: 'ruleIndex is required.' });
+    const result = await workflowService.resolveUnclearWorkflowRecord(req.params.id, req.params.runId, req.params.key, ruleIndex);
+    if (!result.ok) return res.status(400).json(result);
+    res.json(result);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 router.get('/hr-assistant/whatsapp-conversation/:chatId', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
   try {
@@ -2712,9 +3007,10 @@ router.post('/hr-assistant/new-depts/confirm', async (req, res) => {
 router.get('/hr-assistant/action-needed', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
   try {
-    const [items, automations] = await Promise.all([
+    const [items, automations, workflowItems] = await Promise.all([
       whatsappAssistant.listActionNeededItems(),
-      automationService.listRawAutomations().catch(() => [])
+      automationService.listRawAutomations().catch(() => []),
+      workflowService.listWorkflowActionNeededItems().catch(() => [])
     ]);
     const automationItems = [];
     for (const a of automations) {
@@ -2735,7 +3031,7 @@ router.get('/hr-assistant/action-needed', async (req, res) => {
         });
       }
     }
-    const merged = items.concat(automationItems).sort((x, y) => x.ts - y.ts);
+    const merged = items.concat(automationItems, workflowItems).sort((x, y) => x.ts - y.ts);
     res.json({ items: merged });
   } catch (err) {
     res.status(500).json({ error: err.message });
