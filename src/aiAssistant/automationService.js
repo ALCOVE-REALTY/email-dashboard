@@ -1249,9 +1249,9 @@ module.exports = {
   isAvailable, newAutomation, saveAutomation, getAutomation, listRawAutomations, deleteAutomation,
   SOURCES, EMP_COLUMNS, EMP_PERSON_COLS, sourceDef, sourceKind,
   loadSheetInfo, getSheetLiveHeaders, sheetPlanDependencies, checkSheetDependencies, resolveFuzzyOneOf, resolveColumnName, sheetPersonCols, sheetDateColumns,
-  testCond, matchedRows, personContact, contactOk,
+  testCond, matchedRows, personContact, contactOk, findEmployeeByName, rowKey, rowName,
   buildMessages, fillPlaceholders, computeNextRun, ensureNotTooSoon,
   runAutomation, runDueAutomations, resolveMissedRun,
-  parseAutomationAsk, draftPlanFromParsed,
+  parseAutomationAsk, draftPlanFromParsed, automationPlanTool,
   MISSED_RUN_THRESHOLD_MS
 };

@@ -1,0 +1,748 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>SUBH — Automate Workflow (Sample to test)</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800&display=swap">
+<style>
+:root{
+  --bg:#F6F7FB;--card:#FFFFFF;--text:#030229;--muted:#4A4B68;--line:#E3E4F5;--soft:#EEF0FD;
+  --indigo:#4C55E8;--indigo-d:#3138B8;--red:#E5484D;--red-soft:#FFEDE8;--red-t:#C2361A;--green:#12A150;--green-soft:#E6F6EC;--amber:#B26B00;--amber-soft:#FFF4DB;
+  color-scheme:light;box-sizing:border-box;
+  padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0E0F1A;--card:#181A2B;--text:#F3F3FA;--muted:#B7B8D0;--line:#2B2D45;--soft:#23264A;--red-soft:#3A1F1B;--green-soft:#15301F;--amber-soft:#3A2E12;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#0E0F1A;--card:#181A2B;--text:#F3F3FA;--muted:#B7B8D0;--line:#2B2D45;--soft:#23264A;--red-soft:#3A1F1B;--green-soft:#15301F;--amber-soft:#3A2E12;color-scheme:dark}
+*,*::before,*::after{box-sizing:inherit}
+html{height:100%;scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;min-height:100%;background:var(--bg);color:var(--text);font-family:Nunito,system-ui,sans-serif;font-size:15px}
+button,input,select,textarea{font-family:inherit;font-size:inherit;color:inherit}
+.wrap{max-width:480px;margin:0 auto;padding:16px 16px 48px}
+.demo{background:var(--amber-soft);color:var(--amber);border-radius:12px;padding:8px 12px;font-size:12.5px;font-weight:700;margin-bottom:12px}
+.top{display:flex;align-items:center;gap:12px;margin-bottom:14px}
+.iconbtn{width:44px;height:44px;border-radius:999px;border:0;background:var(--card);box-shadow:0 4px 14px rgba(3,2,41,.08);display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0}
+.tile{width:44px;height:44px;border-radius:14px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+h1{font-size:22px;font-weight:800;margin:0;line-height:1.15}
+.sub{color:var(--muted);font-size:13.5px;margin-top:2px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:20px;padding:16px;margin-bottom:12px}
+.chips{display:flex;gap:8px;margin-bottom:12px}
+.chip{height:32px;padding:0 12px;border-radius:999px;border:1px solid var(--line);background:var(--card);font-size:12.5px;font-weight:700;display:flex;align-items:center;gap:6px}
+.chip.on{background:var(--indigo);border-color:var(--indigo);color:#fff}
+.pill{display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;padding:0 6px;border-radius:999px;font-size:11px;font-weight:800}
+.pill.red{background:#F04438;color:#fff}.pill.soft{background:var(--soft);color:var(--indigo-d)}.pill.on{background:rgba(255,255,255,.25);color:#fff}
+.btnrow{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px}
+.btn{height:44px;border-radius:14px;border:0;font-weight:800;font-size:14px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:0 14px}
+.btn.primary{background:var(--indigo);color:#fff}
+.btn.ghost{background:var(--card);color:var(--indigo);border:1.5px solid var(--indigo)}
+.btn.plain{background:var(--soft);color:var(--text)}
+.btn.danger{background:var(--red-soft);color:var(--red-t)}
+.btn.small{height:34px;border-radius:10px;font-size:12.5px;padding:0 10px}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.row{display:flex;align-items:center;gap:12px;padding:12px 0;border-top:1px solid var(--line)}
+.row:first-child{border-top:0}
+.row .t{font-weight:800;font-size:14.5px}.row .m{color:var(--muted);font-size:12.5px;margin-top:2px}
+.bar{display:flex;align-items:center;gap:12px;background:var(--card);border:1px solid var(--line);border-radius:18px;padding:12px 14px;margin-bottom:10px;cursor:pointer;width:100%;text-align:left}
+.bar .grow{flex:1;font-weight:800}
+.chev{color:var(--muted)}
+label.l{display:block;font-weight:800;font-size:13px;margin:14px 0 6px}
+label.l .req{color:var(--red)}
+input[type=text],input[type=date],input[type=time],input[type=number],select,textarea{width:100%;border:1.5px solid var(--line);background:var(--soft);border-radius:12px;padding:10px 12px;outline:none}
+textarea{min-height:90px;resize:vertical;line-height:1.45}
+input:focus,select:focus,textarea:focus{border-color:var(--indigo)}
+.hint{font-size:12px;color:var(--muted);margin-top:5px}
+.err{font-size:12px;color:var(--red-t);margin-top:5px;font-weight:700}
+.tgrid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.tcard{background:var(--card);border:1.5px solid var(--line);border-radius:16px;padding:12px;text-align:left;cursor:pointer;min-height:96px}
+.tcard.on{border-color:var(--indigo);background:var(--soft)}
+.tcard .e{font-size:20px}.tcard .n{font-weight:800;font-size:13.5px;margin-top:6px;line-height:1.25}.tcard .d{color:var(--muted);font-size:11.5px;margin-top:3px;line-height:1.3}
+.steps{display:flex;gap:6px;margin:4px 0 2px}
+.step{flex:1;height:5px;border-radius:999px;background:var(--line)}
+.step.on{background:var(--indigo)}
+.sechead{display:flex;align-items:center;gap:8px;font-weight:800;font-size:15px}
+.num{width:22px;height:22px;border-radius:999px;background:var(--indigo);color:#fff;font-size:12px;display:flex;align-items:center;justify-content:center}
+.seg{display:flex;flex-wrap:wrap;gap:8px}
+.seg button{height:36px;padding:0 12px;border-radius:999px;border:1.5px solid var(--line);background:var(--card);font-weight:700;font-size:13px;cursor:pointer}
+.seg button.on{background:var(--indigo);border-color:var(--indigo);color:#fff}
+.phs{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.ph{height:28px;padding:0 10px;border-radius:999px;border:1px dashed var(--indigo);background:transparent;color:var(--indigo);font-size:12px;font-weight:700;cursor:pointer}
+.summary{background:var(--soft);border-radius:14px;padding:12px;font-size:13px;line-height:1.5}
+.check{display:flex;align-items:center;gap:8px;font-weight:700;font-size:13.5px;margin-top:10px}
+.emplist{max-height:220px;overflow:auto;border:1px solid var(--line);border-radius:12px;margin-top:8px}
+.emp{display:flex;align-items:center;gap:10px;padding:8px 10px;border-top:1px solid var(--line);font-size:13px}
+.emp:first-child{border-top:0}
+.emp small{color:var(--muted)}
+.status{font-size:11px;font-weight:800;padding:3px 8px;border-radius:999px}
+.s-active{background:var(--green-soft);color:var(--green)}.s-paused{background:var(--amber-soft);color:var(--amber)}.s-pending{background:var(--soft);color:var(--indigo-d)}
+.actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.overlay{position:fixed;inset:0;background:rgba(3,2,41,.45);display:none;align-items:flex-end;justify-content:center;z-index:20}
+.overlay.on{display:flex}
+.sheet{background:var(--card);width:100%;max-width:480px;max-height:86vh;overflow:auto;border-radius:22px 22px 0 0;padding:18px 16px calc(18px + env(safe-area-inset-bottom,0px))}
+.msg{border:1px solid var(--line);border-radius:14px;padding:12px;margin-top:10px;font-size:13px}
+.msg .to{font-weight:800}.msg .subj{font-weight:700;margin:6px 0}
+.msg pre{white-space:pre-wrap;font-family:inherit;margin:6px 0 0;line-height:1.45}
+.tbl{overflow-x:auto;margin-top:6px}
+.tbl table{border-collapse:collapse;font-size:11.5px;min-width:520px}
+.tbl th,.tbl td{border:1px solid var(--muted);padding:4px 6px;text-align:left}
+.cols{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.col{height:30px;padding:0 10px;border-radius:999px;border:1.5px solid var(--line);background:var(--card);font-size:12px;font-weight:700;cursor:pointer}
+.col.on{background:var(--soft);border-color:var(--indigo);color:var(--indigo-d)}
+.pdf{border:1.5px solid var(--line);border-radius:12px;padding:10px;margin-top:8px;background:var(--soft)}
+.pdf .ph2{font-weight:800;font-size:12.5px;margin-bottom:6px}
+.cond{display:grid;grid-template-columns:1fr 1fr;gap:6px;padding:10px;border:1px solid var(--line);border-radius:12px;margin-top:8px;position:relative}
+.cond .full{grid-column:1/-1}
+.cond .rm{position:absolute;top:-9px;right:-9px;width:24px;height:24px;border-radius:999px;border:0;background:var(--red-soft);color:var(--red-t);font-weight:800;cursor:pointer}
+.match{display:flex;align-items:center;gap:8px;background:var(--green-soft);color:var(--green);border-radius:12px;padding:8px 12px;font-weight:800;font-size:13px;margin-top:10px}
+.match.zero{background:var(--amber-soft);color:var(--amber)}
+.sentence{font-size:14px;font-weight:700;margin-top:14px;line-height:2}
+.sline{display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:10px 12px;border:1px solid var(--line);border-radius:14px;margin-top:8px;font-size:14px;font-weight:700;position:relative;background:var(--card)}
+.sline .w{color:var(--muted);font-weight:700}
+select.inl,input.inl{width:auto;min-width:0;padding:6px 10px;border-radius:999px;font-weight:800;color:var(--indigo-d);background:var(--soft);border:1.5px solid transparent;max-width:100%}
+input.inl{width:90px}
+.sline .rm{position:static;margin-left:auto;width:26px;height:26px;border-radius:999px;border:0;background:var(--red-soft);color:var(--red-t);font-weight:800;cursor:pointer}
+.und{border:1.5px solid var(--indigo);border-radius:16px;padding:14px;margin-top:12px;background:var(--soft)}
+.und h3{margin:0 0 8px;font-size:15px}
+.und ul{margin:0;padding-left:18px;line-height:1.6;font-size:13.5px}
+.und table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:10px;background:var(--card);border-radius:10px;overflow:hidden}
+.und td,.und th{padding:7px 8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+.und .x{border:0;background:var(--red-soft);color:var(--red-t);width:24px;height:24px;border-radius:999px;font-weight:800;cursor:pointer}
+.und .ok{color:var(--green);font-weight:800}.und .bad{color:var(--red-t);font-weight:800}
+.ask{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.confirmed{display:flex;align-items:center;gap:8px;background:var(--green-soft);color:var(--green);border-radius:12px;padding:10px 12px;font-weight:800;font-size:13.5px;margin-top:10px}
+.sinfo{border:1px solid var(--line);border-radius:14px;padding:10px 12px;margin-top:10px;background:var(--card);font-size:13px}
+.sinfo .tab{display:flex;gap:8px;align-items:baseline;padding:6px 0;border-top:1px dashed var(--line)}
+.sinfo .tab:first-of-type{border-top:0}
+.note{background:var(--soft);color:var(--indigo-d);border-radius:10px;padding:8px 10px;font-size:12.5px;font-weight:700;margin-top:8px}
+.skip{background:var(--red-soft);color:var(--red-t);border-radius:10px;padding:8px 10px;font-size:12.5px;font-weight:700;margin-top:8px}
+.toast{position:fixed;left:50%;bottom:calc(24px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:#030229;color:#fff;padding:10px 16px;border-radius:12px;font-weight:700;font-size:13.5px;opacity:0;transition:opacity .2s;z-index:30;pointer-events:none;max-width:90vw}
+.toast.on{opacity:1}
+.empty{text-align:center;color:var(--muted);padding:28px 10px}
+.hidden{display:none!important}
+.toast{background:var(--card);color:var(--text);border:1px solid var(--line);border-left:4px solid var(--green);box-shadow:0 8px 24px rgba(3,2,41,.15)}
+.toast.err{border-left-color:var(--red)}
+.chipsin{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
+.chipx{display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 6px 0 10px;border-radius:999px;background:var(--soft);font-size:12.5px;font-weight:700}
+.chipx button{border:0;background:transparent;color:var(--muted);font-weight:800;cursor:pointer;width:22px;height:22px}
+.rule{border:1.5px solid var(--line);border-radius:14px;padding:12px;margin-top:12px;position:relative}
+.rule .rh{font-size:13.5px}
+.rm2{position:absolute;top:-9px;right:-9px;width:24px;height:24px;border-radius:999px;border:0;background:var(--red-soft);color:var(--red-t);font-weight:800;cursor:pointer}
+.exlink{display:block;width:100%;margin-top:14px;padding:0;border:0;background:transparent;text-align:left;color:var(--indigo);font-weight:800;font-size:14px;line-height:1.45;cursor:pointer}
+.ldrow{display:flex;gap:10px;align-items:center;margin-top:8px}
+.ldrow input{flex:1;min-width:0}
+.ldbtn{height:40px!important;border-radius:999px!important;padding:0 18px!important;flex-shrink:0}
+.svc{flex:1;min-width:0;background:var(--soft);border-radius:10px;padding:9px 12px;font-family:ui-monospace,monospace;font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.seg.stack{flex-direction:column;align-items:flex-start}
+.btn.big{height:52px;border-radius:999px;font-size:15px}
+.dd{position:absolute;right:0;top:44px;z-index:5;width:170px;background:var(--card);border-radius:14px;box-shadow:0 8px 24px rgba(3,2,41,.15);overflow:hidden}
+.dd button{display:block;width:100%;text-align:left;padding:12px 16px;border:0;background:var(--card);font-weight:700;font-size:14px;cursor:pointer}
+.dd button.on{background:var(--soft);color:var(--indigo)}
+.tl{margin:0;padding-left:20px;line-height:1.65;font-size:13.5px}
+.tlh{font-weight:800;font-size:13px;margin-top:14px;color:var(--indigo-d)}
+.cnt{display:flex;flex-wrap:wrap;gap:6px}
+.cp{font-size:12px;font-weight:700;padding:4px 10px;border-radius:999px;background:var(--soft);color:var(--indigo-d)}
+.cp.red{background:var(--red-soft);color:var(--red-t)}
+.s-red{background:var(--red-soft);color:var(--red-t)}
+.hist{border-left:2px solid var(--line);margin:10px 0 0 4px;padding-left:10px;font-size:12.5px;line-height:1.55}
+.hd{color:var(--muted);font-weight:700}
+.search{display:flex;align-items:center;gap:10px;height:46px;border:1.5px solid var(--line);border-radius:999px;padding:0 16px;margin-top:14px;background:var(--card)}
+.search input{border:0!important;background:transparent!important;padding:0!important;height:100%}
+#m-to{background:var(--card)}
+
+#v-create .top{gap:12px;margin-bottom:16px}
+#v-create .top .iconbtn{width:44px;height:44px;font-size:22px}
+#v-create .ctile{width:40px;height:40px;border-radius:999px;background:var(--soft);display:flex;align-items:center;justify-content:center;font-size:19px;flex-shrink:0}
+#v-create h1{font-size:21px;font-weight:800}
+#v-create .sub{font-size:13.5px;color:var(--muted)}
+#v-create .card{border:0;border-radius:24px;padding:20px 18px;box-shadow:0 2px 10px rgba(3,2,41,.04);margin-bottom:14px}
+#v-create .sechead{font-size:16px;font-weight:800;gap:10px}
+#v-create .num{width:24px;height:24px;font-size:12.5px;font-weight:800}
+#v-create label.l{font-size:13.5px;font-weight:800;color:var(--muted);margin:16px 0 8px}
+#v-create .hint{font-size:13px;color:var(--muted)}
+#v-create input[type=text],#v-create input[type=date],#v-create input[type=time],#v-create input[type=number],#v-create select{background:var(--card);border:1.5px solid var(--line);border-radius:999px;height:42px;padding:0 16px;font-size:15px}
+#v-create textarea{background:var(--card);border:1.5px solid var(--line);border-radius:22px;padding:12px 16px;font-size:15px}
+#v-create input:focus,#v-create select:focus,#v-create textarea:focus{border-color:var(--indigo)}
+#v-create .seg{gap:8px}
+#v-create .seg button{height:38px;padding:0 16px;border-radius:999px;border:1.5px solid var(--line);font-size:14px;font-weight:800;background:var(--card)}
+#v-create .seg button.on{background:var(--indigo);border-color:var(--indigo);color:#fff}
+#v-create .ph{height:30px;padding:0 12px;border-radius:999px;border:1.5px dashed var(--indigo);font-size:13.5px;font-weight:700}
+#v-create .phs{gap:8px;margin-top:10px}
+#v-create .check{font-size:14.5px;font-weight:800;gap:10px}
+#v-create .check input{width:18px;height:18px;accent-color:var(--indigo)}
+#v-create .exlink{font-size:14px;font-weight:800;color:var(--indigo)}
+#v-create .ldbtn{height:38px!important;font-size:14px!important;border-width:1.5px!important}
+#v-create .svc{background:var(--soft);border-radius:10px;padding:10px 12px;font-size:13px}
+#v-create #b-ask{height:40px;border-radius:999px;font-size:15px}
+#v-create .summary{background:var(--soft);border:0;border-radius:22px;padding:16px 18px;font-size:14px;line-height:1.55;box-shadow:none}
+#v-create .btnrow{gap:12px;margin-bottom:12px}
+#v-create .btn.big{height:48px;border-radius:999px;font-size:15.5px;font-weight:800}
+#v-create .btn.ghost{border-width:1.5px}
+#v-create .search{height:42px;border-radius:999px;border:1.5px solid var(--line)}
+#v-create .btn.small:not(.ldbtn){height:34px;border-radius:999px;padding:0 14px;font-size:13.5px}
+#v-create .dd button{font-size:14.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="demo">Sample to test — demo data only. Nothing is sent. Use the "Demo" buttons on a workflow to simulate replies and days passing.</div>
+
+  <!-- REMINDERS -->
+  <section id="v-rem">
+    <div class="top">
+      <div class="tile" style="background:var(--soft)">⏰</div>
+      <div style="flex:1"><h1>Reminders</h1><div class="sub">Today · Upcoming · Completed</div></div>
+    </div>
+    <div class="btnrow">
+      <button class="btn ghost" onclick="toast('Opens the existing Add Reminder sheet')">+ Add Reminder</button>
+      <button class="btn ghost" onclick="toast('Opens the existing Automate Task page')">⚡ Automate Task</button>
+    </div>
+    <button class="btn primary" id="b-wf" style="width:100%;margin-bottom:14px">🔀 Automate Workflow</button>
+    <div class="card"><div class="row"><div style="flex:1"><div class="t">Submit PF challan</div><div class="m">Today · 5:00 PM</div></div></div></div>
+    <button class="bar"><span class="tile" style="width:34px;height:34px;background:var(--soft)">📅</span><span class="grow">Today's Completed</span><span class="pill soft">0</span><span class="chev">›</span></button>
+    <button class="bar"><span class="tile" style="width:34px;height:34px;background:var(--soft)">⚡</span><span class="grow">Automated Tasks</span><span class="pill soft">2</span><span class="chev">›</span></button>
+    <button class="bar" id="b-wflist"><span class="tile" style="width:34px;height:34px;background:var(--soft)">🔀</span><span class="grow">Automated Workflows</span><span class="pill soft" id="wfCount">0</span><span class="chev">›</span></button>
+  </section>
+
+  <!-- CREATE WORKFLOW -->
+  <section id="v-create" class="hidden">
+    <div class="top">
+      <button class="iconbtn" data-back aria-label="Back">‹</button>
+      <span class="ctile" aria-hidden="true">🔀</span>
+      <div style="flex:1"><h1>Create Workflow</h1><div class="sub">Send, follow up and act on replies — on any topic</div></div>
+    </div>
+
+    <div class="card">
+      <label class="l" style="margin-top:0;font-size:15px;color:var(--text)">Workflow Subject <span class="req">*</span></label>
+      <input type="text" id="f-subject" maxlength="100" placeholder="e.g. Probation confirmation follow-up">
+      <div class="hint" id="f-cnt" style="margin-top:8px">0/100</div>
+    </div>
+
+    <div class="card">
+      <div class="sechead"><span class="num">1</span> Tell SUBH what to automate <span style="color:var(--red)">*</span></div>
+      <textarea id="ask" style="margin-top:12px;min-height:120px" placeholder="e.g. On the 1st of every month, email each HOD about their team members whose probation ends that month and ask whether to confirm, extend or not confirm. Follow up after 2 days if there's no reply, then send the matching letter and update me."></textarea>
+      <label class="l">Google Sheet link (optional)</label>
+      <div class="ldrow"><input type="text" placeholder="https://docs.google.com/spreadsheets/d/…"><button class="btn ghost small ldbtn" id="b-load">Load</button></div>
+      <div class="hint" style="margin-top:8px">Share the sheet as Viewer with:</div>
+      <div class="ldrow"><div class="svc">subhodeep@subhodeeps-project.iam.gserviceaccount.com</div><button class="btn ghost small ldbtn" id="b-copysvc">Copy</button></div>
+      <div id="exList"></div>
+      <button class="btn primary" id="b-ask" style="margin-top:14px;padding:0 22px">✨ Ask SUBH</button>
+      <div class="hint" style="margin-top:12px">Write in Banglish, English or Hinglish. SUBH shows what it understood — nothing is saved until you say it's right.</div>
+      <div id="understand"></div>
+    </div>
+
+    <div class="card">
+      <div class="sechead"><span class="num">2</span> How to send?</div>
+      <div class="seg stack" id="m-group" style="margin-top:12px"><button data-v="each" class="on">One message per employee</button><button data-v="list">One combined list</button></div>
+    </div>
+
+    <div class="card">
+      <div class="sechead"><span class="num">3</span> Who receives?</div>
+      <div class="hint" id="m-count" style="margin-top:4px"></div>
+      <input type="hidden" id="m-data">
+      <div class="seg" id="m-rec" style="margin-top:12px"><button data-v="selected">Selected people</button><button data-v="column" class="on">Person from the data</button></div>
+      <div id="colWrap">
+        <label class="l" style="margin-top:18px;color:var(--muted)">Send to the person in</label>
+        <select id="m-to"><option value="manager">Reporting Manager</option><option value="doer">Reporting DOER</option><option value="self">The employee (own email)</option></select>
+        <div class="hint" style="margin-top:10px">Each record goes only to the person in that column. Every message holds only that one record.</div>
+      </div>
+      <div id="selWrap" class="hidden">
+        <div class="search"><span aria-hidden="true">🔍</span><input type="text" id="empSearch" placeholder="Search employees…"></div>
+        <div style="display:flex;align-items:center;gap:8px;margin-top:10px"><button class="btn ghost small" id="b-all">Select all</button><button class="btn ghost small" id="b-clear">Clear all</button><span class="hint" id="selCount" style="margin:0 0 0 auto">0 selected</span></div>
+        <div class="emplist" id="empList"></div>
+      </div>
+      <label class="l" style="margin-top:18px">Cc (optional)</label>
+      <div class="chipsin" id="cc-to"></div>
+      <input type="text" id="cc-add" placeholder="Add recipient…">
+    </div>
+
+    <div class="card">
+      <div class="sechead"><span class="num">4</span> What message?</div>
+      <label class="l">Mediator <span class="req">*</span></label>
+      <div class="seg" id="m-med"><button data-v="mail" class="on">✉️ Mail</button><button data-v="wa">💬 WhatsApp</button></div>
+      <div id="subjWrap"><label class="l">Mail subject</label>
+      <input type="text" id="m-subj"></div>
+      <label class="l">Body</label>
+      <textarea id="m-body" style="min-height:150px"></textarea>
+      <div class="hint" style="margin-top:12px">Tap to insert:</div>
+      <div class="phs" id="m-phs"></div>
+      <label class="check" style="margin-top:16px"><input type="checkbox" id="m-table"> Add record table</label>
+      <div id="tblWrap" class="hidden">
+        <div class="hint" style="margin-top:12px">Columns — choose from the HR database heads (tap to add/remove, order follows your taps):</div>
+        <div class="phs" id="m-cols"></div>
+        <label class="l">Put the table</label>
+        <div style="position:relative">
+          <div class="seg" id="m-put"><button data-v="body" class="on">In the message body</button><button data-v="att" id="b-att">📎 Attachment as <span id="attFmt"></span></button></div>
+          <div class="dd hidden" id="attDD"><button data-f="PDF" class="on">PDF</button><button data-f="Excel">Excel</button></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="sechead"><span class="num">5</span> Also send <span class="hint" style="margin:0 0 0 auto">(optional)</span></div>
+      <label class="check" style="margin-top:8px"><input type="checkbox" id="a-on"> Send one more message on each run (e.g. a summary to a team)</label>
+      <div id="a-wrap">
+        <label class="l">To</label>
+        <div class="chipsin" id="a-to"></div>
+        <input type="text" id="a-add" placeholder="Type a name or email and press Enter">
+        <label class="l">Cc (optional)</label>
+        <input type="text" id="a-cc" placeholder="name@alcoverealty.in">
+        <label class="l">Subject</label>
+        <input type="text" id="a-subj">
+        <label class="l">Body</label>
+        <textarea id="a-body" style="min-height:180px"></textarea>
+        <label class="check"><input type="checkbox" id="a-table"> Add the record table</label>
+        <label class="check"><input type="checkbox" id="a-docs"> Attach the generated documents</label>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="sechead"><span class="num">6</span> Documents <span class="hint" style="margin:0 0 0 auto">(optional)</span></div>
+      <label class="check" style="margin-top:8px"><input type="checkbox" id="d-on"> Generate one document per record from a template</label>
+      <div id="d-wrap">
+        <label class="l">Template</label>
+        <select id="d-tpl"><option>Confirmation Letter</option><option>Extension of Probation Letter</option><option>Experience Letter</option><option>Relieving Letter</option><option>Upload a Word / Google Doc template…</option></select>
+        <label class="l">Attach to</label>
+        <select id="d-where"><option value="also">The "Also send" message (all documents)</option><option value="first">Each first message (its own document)</option></select>
+        <button class="btn plain small" id="b-doc" style="margin-top:8px">👁 Preview a document</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="sechead"><span class="num">7</span> If there's no reply</div>
+      <div class="tgrid" style="margin-top:8px">
+        <div><label class="l">Follow up after (days)</label><input type="number" id="fu-days" min="1" max="30" value="2"></div>
+        <div><label class="l">Max follow-ups</label><input type="number" id="fu-max" min="1" max="5" value="2"></div>
+      </div>
+      <label class="l">Follow-up message</label>
+      <textarea id="fu-body" style="min-height:100px"></textarea>
+      <div class="hint">Sent in the same mail thread. After the last follow-up SUBH alerts you.</div>
+    </div>
+
+    <div class="card">
+      <div class="sechead"><span class="num">8</span> When they reply</div>
+      <div class="hint">SUBH reads each reply, picks the rule whose meaning matches, and replies in professional English.</div>
+      <div id="rules"></div>
+      <button class="btn plain small" id="b-addrule" style="margin-top:10px">+ Add rule</button>
+      <div class="rule" style="border-style:dashed"><div class="rh">❓ If no rule matches / the reply is not clear</div><div class="hint">SUBH shows you a card with the reply and a button for each rule, plus "Ask again".</div></div>
+    </div>
+
+    <div class="card">
+      <div class="sechead">⏰ Schedule</div>
+      <div class="tgrid">
+        <div><label class="l">Date <span class="req">*</span></label><input type="date" id="s-date"></div>
+        <div><label class="l">Time <span class="req">*</span></label><input type="time" id="s-time" value="10:00"></div>
+      </div>
+      <label class="l">Repeat <span class="req">*</span></label>
+      <div class="seg" id="s-rep"><button data-v="none">None</button><button data-v="monthly" class="on">Monthly</button><button data-v="yearly">Yearly</button><button data-v="custom">Custom</button></div>
+    </div>
+
+    <div class="card summary" id="summary"></div>
+    <div class="btnrow"><button class="btn ghost big" id="b-preview">👁 Preview</button><button class="btn ghost big" id="b-test">Send test to me</button></div>
+    <button class="btn primary big" id="b-save" style="width:100%;margin-bottom:12px">Save Workflow</button>
+    <button class="btn ghost big" data-back style="width:100%">Cancel</button>
+  </section>
+
+  <!-- LIST -->
+  <section id="v-list" class="hidden">
+    <div class="top">
+      <button class="iconbtn" data-back aria-label="Back">‹</button>
+      <div style="flex:1"><h1>Automated Workflows</h1><div class="sub">Multi-step automations and their progress</div></div>
+    </div>
+    <button class="btn primary" id="b-new" style="width:100%;margin-bottom:12px">🔀 New Workflow</button>
+    <div id="wfList"></div>
+  </section>
+
+  <!-- DETAIL / PROGRESS -->
+  <section id="v-detail" class="hidden">
+    <div class="top">
+      <button class="iconbtn" data-back aria-label="Back">‹</button>
+      <div style="flex:1"><h1 id="d-title">Workflow</h1><div class="sub" id="d-sub"></div></div>
+    </div>
+    <div class="card"><div class="cnt" id="d-counts"></div></div>
+    <div class="card" style="background:var(--amber-soft);border-color:transparent">
+      <div style="font-weight:800;color:var(--amber);font-size:13px">Demo controls</div>
+      <div class="actions"><button class="btn plain small" id="b-day">⏩ +1 day (no replies)</button><button class="btn plain small" id="b-reset">↺ Restart demo run</button></div>
+    </div>
+    <div id="d-rows"></div>
+  </section>
+</div>
+
+<div class="overlay" id="ov"><div class="sheet" id="sheet"></div></div>
+<div class="toast" id="toast"></div>
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+function toast(t, kind) { const el = $('#toast'); el.textContent = t; el.className = 'toast on ' + (kind || 'ok'); clearTimeout(toast.t); toast.t = setTimeout(() => el.classList.remove('on'), 2600); }
+const now = new Date(), Y = now.getFullYear(), M = now.getMonth();
+const fmt = d => d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+const addMonths = (d, n) => new Date(d.getFullYear(), d.getMonth() + n, d.getDate());
+const addDays = (d, n) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
+const SIGN = '\n\nRegards,\nSUBH\nHR Assistant to Subhodeep Kundu Chowdhury\nAlcove Realty';
+
+/* ---------- demo directory ---------- */
+const PEOPLE = {
+  'Sanjoy Ghosh': 'sanjoy.mep@alcoverealty.in', 'Pawan Kumar Dhanuka': 'pawan.accounts@alcoverealty.in', 'Tanmoy Mondal': 'tanmoy.civil@alcoverealty.in',
+  'Radha Biswas Bhattacharjee': 'manager.hr@alcoverealty.in', 'Subhodeep Kundu Chowdhury': 'subhodeep@alcoverealty.in', 'Ayan Das': 'ayan.das@alcoverealty.in', 'Moumita Das': 'moumita.hr@alcoverealty.in'
+};
+const HR_TEAM = ['Radha Biswas Bhattacharjee', 'Subhodeep Kundu Chowdhury', 'Ayan Das', 'Moumita Das'].map(n => ({ name: n, email: PEOPLE[n] }));
+const GROUPS = { hr: { label: 'HR team (4)', list: HR_TEAM }, accounts: { label: 'Accounts team', list: [{ name: 'Accounts Team', email: 'accounts@alcoverealty.in' }] } };
+const R = (no, name, des, dept, rm, email, extra = {}) => ({ no, name, des, dept, rm, email, ...extra });
+
+/* ---------- presets (stand-ins for what Claude builds from any description) ---------- */
+const PRESETS = {
+  probation: {
+    match: /confirm|probation/, subject: 'Probation confirmation workflow',
+    ask: 'Proti maser 1 tarikh oi maser pending probation confirmation gulo protita employee-r Reporting Manager ke alada mail korbe, ar HR team-er 4 jon ke confirmation letter-er PDF soho ekta list mail. 2 din-e reply na ele follow-up. Approved hole "Noted with thanks", extension hole koto mash jene employee ke Extension of Probation Period mail.',
+    data: "Probation confirmations due in the run's month",
+    records: [R('AR002162', 'Suvendu Mali', 'Plumbing Supervisor', 'MEP Dept. (PHE)', 'Sanjoy Ghosh', 'suvendu@alcoverealty.in'), R('AR002230', 'Priyanka Samanta', 'Executive', 'Accounts', 'Pawan Kumar Dhanuka', 'priyanka@alcoverealty.in'), R('AR002244', 'Debojyoti Ghatak', 'Sr. Engineer', 'Civil (Plot-B) Finishing', 'Tanmoy Mondal', 'debojyoti@alcoverealty.in'), R('AR002251', 'Rakesh Khamaru', 'IT Executive', 'Information Technology', 'Radha Biswas Bhattacharjee', 'rakesh@alcoverealty.in')].map(r => ({ ...r, Confirmation_Date: fmt(new Date(Y, M + 1, 12)) })),
+    to: 'manager', group: 'each', table: true, day: 1, repeat: 'monthly',
+    mSubj: 'Probation Confirmation – {Employee_Name} ({Employee_No})',
+    mBody: 'Dear {Manager_Name},\n\nI am SUBH, Subhodeep\'s HR Assistant.\n\nThe probation period of {Employee_Name} ({Designation}) is due for confirmation on {Confirmation_Date}. Kindly share your feedback — whether the confirmation is approved, or if you recommend an extension of the probation period.\n\nThank you.',
+    also: { on: true, to: 'hr', subj: 'Pending Confirmation Letters – Current Month', table: true, docs: true, body: 'Dear HR Team,\n\nI am SUBH, Subhodeep\'s HR Assistant.\nI am sharing the list of confirmation letters pending for the current month. Kindly review the list and arrange to obtain the Director\'s signature on the respective confirmation letters.\n\nImportant Note: Please note that the concerned HOD may recommend an extension of the probation period for certain employees. In such cases, kindly hold the processing of the respective confirmation letters. If an extension is recommended, I will review the feedback and send the Extension of Probation Period email to the concerned employee, wherever applicable.\n\nThank you for your cooperation.' },
+    docs: { on: true, tpl: 'Confirmation Letter', where: 'also' },
+    fu: { days: 2, max: 2, body: 'Dear {Manager_Name},\n\nThis is a gentle reminder — we are waiting for your reply on the pending probation confirmation of {Employee_Name}. Kindly share your feedback at the earliest.\n\nThank you.' },
+    rules: [
+      { when: 'Approved / confirmed', sample: 'Approved, kindly confirm.', reply: 'Noted with thanks.', then: 'stop' },
+      { when: 'Extension of the probation period / not approved', sample: 'Please extend the probation period.', askOn: true, detail: 'number of months', askQ: 'Thank you for your feedback. Could you please confirm for how many months the probation period of {Employee_Name} should be extended?', sampleDetail: '3 months', reply: 'Noted with thanks. I will share the Extension of Probation Period letter with {Employee_Name}.', sendOn: true, sendTo: 'self', sendSubj: 'Extension of Probation Period – {Employee_Name}', sendBody: 'Dear {Employee_Name},\n\nThis is to inform you that, based on the review of your performance, your probation period has been extended by {Reply_Detail}. Your reporting manager will guide you on the areas of improvement during this period.\n\nPlease feel free to reach out to the HR team for any clarification.', sendDoc: 'Extension of Probation Letter', askMe: true, then: 'stop' }
+    ]
+  },
+  documents: {
+    match: /document|pan|aadha|bank|kyc/, subject: 'Pending document collection',
+    ask: 'Proti maser 5 tarikh je employee-der PAN ba bank details HR master-e nei, tader nijeder alada mail korbe documents chaiye, ar HR team ke list. 3 din-e reply na ele follow-up, 3 bar porjonto. Documents pele "Thank you, received" bole HR team ke janabe; "pore debo" bolle 3 din pore abar mone koriye debe.',
+    data: 'Employees with PAN or bank details missing in the HR master',
+    records: [R('AR002260', 'Binod Paswan', 'Office Assistant', 'Administration (HO)', 'Radha Biswas Bhattacharjee', 'binod@alcoverealty.in', { Missing_Documents: 'PAN card' }), R('AR002271', 'Sayani Ghosh', 'Executive', 'Accounts', 'Pawan Kumar Dhanuka', 'sayani@alcoverealty.in', { Missing_Documents: 'Bank details (cancelled cheque)' }), R('AR002284', 'Sujoy Kar', 'Site Engineer', 'Civil (Plot-B) Finishing', 'Tanmoy Mondal', 'sujoy@alcoverealty.in', { Missing_Documents: 'PAN card, bank details' })],
+    to: 'self', group: 'each', table: false, day: 5, repeat: 'monthly',
+    mSubj: 'Pending Documents – {Employee_Name}',
+    mBody: 'Dear {Employee_Name},\n\nI am SUBH, Subhodeep\'s HR Assistant.\n\nOur records show that the following document(s) are pending from your side: {Missing_Documents}. Kindly reply to this mail with the document(s) attached at the earliest, so that your HR records can be completed.\n\nThank you.',
+    also: { on: true, to: 'hr', subj: 'Pending Employee Documents – {Current_Month}', table: true, docs: false, body: 'Dear HR Team,\n\nI am SUBH, Subhodeep\'s HR Assistant.\nPlease find below the list of employees whose documents are pending. I have written to each of them and will follow up until the documents are received.\n\nThank you.' },
+    docs: { on: false, tpl: 'Confirmation Letter', where: 'also' },
+    fu: { days: 3, max: 3, body: 'Dear {Employee_Name},\n\nThis is a gentle reminder — we are still waiting for your pending document(s): {Missing_Documents}. Kindly share them at the earliest.\n\nThank you.' },
+    rules: [
+      { when: 'Documents shared / attached', sample: 'Please find the documents attached.', reply: 'Thank you, we have received your documents. The HR team will update your records.', sendOn: true, sendTo: 'hr', sendSubj: 'Documents received – {Employee_Name}', sendBody: 'Dear HR Team,\n\n{Employee_Name} ({Employee_No}) has shared the pending document(s): {Missing_Documents}. Kindly update the HR master.\n\nThank you.', askMe: false, then: 'stop' },
+      { when: 'Will share later', sample: 'I will send it next week.', reply: 'Noted. Kindly share the document(s) at the earliest.', then: 'wait' }
+    ]
+  },
+  exit: {
+    match: /exit|asset|handover|resign|last working/, subject: 'Exit handover follow-up',
+    ask: 'Proti shomobar, jader last working day porer 7 diner moddhe, tader Reporting Manager ke asset ar kaj handover confirm korte mail korbe. 1 din-e reply na ele follow-up. Handover complete hole Accounts team ke F&F process korte mail; kono asset baki thakle kon asset jene employee ke asset return-er mail.',
+    data: 'Employees whose last working day is in the next 7 days',
+    records: [R('AR001120', 'Pravat Kumar Sahoo', 'Site Supervisor', 'Civil Dept. (Duets)', 'Tanmoy Mondal', 'pravat@alcoverealty.in', { Last_Working_Day: fmt(addDays(now, 4)) }), R('AR001544', 'Moumita Paul', 'Sr. Executive', 'Accounts', 'Pawan Kumar Dhanuka', 'moumita.paul@alcoverealty.in', { Last_Working_Day: fmt(addDays(now, 6)) })],
+    to: 'manager', group: 'each', table: true, day: 1, weekday: 6, repeat: 'custom',
+    mSubj: 'Exit Handover Confirmation – {Employee_Name}',
+    mBody: 'Dear {Manager_Name},\n\nI am SUBH, Subhodeep\'s HR Assistant.\n\n{Employee_Name} ({Designation}) has the last working day on {Last_Working_Day}. Kindly confirm whether the work handover and the return of company assets are complete, or let me know if anything is pending.\n\nThank you.',
+    also: { on: false, to: 'hr', subj: '', table: false, docs: false, body: '' },
+    docs: { on: false, tpl: 'Relieving Letter', where: 'first' },
+    fu: { days: 1, max: 2, body: 'Dear {Manager_Name},\n\nThis is a gentle reminder — we are waiting for your confirmation on the exit handover of {Employee_Name}.\n\nThank you.' },
+    rules: [
+      { when: 'Handover complete', sample: 'Handover done, all assets returned.', reply: 'Noted with thanks.', sendOn: true, sendTo: 'accounts', sendSubj: 'F&F Processing – {Employee_Name}', sendBody: 'Dear Accounts Team,\n\nThe exit handover of {Employee_Name} ({Employee_No}), last working day {Last_Working_Day}, is complete. Kindly initiate the Full & Final settlement.\n\nThank you.', askMe: false, then: 'stop' },
+      { when: 'Some assets / work pending', sample: 'Assets are still pending.', askOn: true, detail: 'pending items', askQ: 'Thank you. Could you please list the pending assets or work?', sampleDetail: 'Laptop and site ID card', reply: 'Noted with thanks. I will ask {Employee_Name} to return them.', sendOn: true, sendTo: 'self', sendSubj: 'Pending Asset Return – {Employee_Name}', sendBody: 'Dear {Employee_Name},\n\nAs per your reporting manager, the following item(s) are pending: {Reply_Detail}. Kindly hand them over before your last working day.\n\nThank you.', askMe: false, then: 'wait' }
+    ]
+  }
+};
+const PHS = ['{Employee_Name}', '{Employee_No}', '{Designation}', '{Department}', '{Manager_Name}', '{Current_Month}'];
+const TO_LABEL = { manager: "each record's Reporting Manager", doer: "each record's Reporting DOER", self: 'the employee themself', selected: 'selected people' };
+const recTo = () => segVal('m-rec') === 'selected' ? 'selected' : $('#m-to').value;
+const SEND_TO = [['self', 'The employee'], ['manager', 'The Reporting Manager'], ['hr', 'HR team'], ['accounts', 'Accounts team']];
+
+/* ---------- navigation ---------- */
+const views = ['rem', 'create', 'list', 'detail'];
+let stack = ['rem'];
+function show(v, push = true) {
+  views.forEach(x => $('#v-' + x).classList.toggle('hidden', x !== v));
+  if (push) { stack.push(v); history.pushState({ v }, ''); }
+  window.scrollTo(0, 0);
+  if (v === 'list') renderList();
+  if (v === 'detail') renderDetail();
+  $('#wfCount').textContent = WF.length;
+}
+document.addEventListener('click', e => { if (e.target.closest('[data-back]')) history.back(); });
+window.addEventListener('popstate', () => { stack.pop(); if (!stack.length) stack = ['rem']; show(stack[stack.length - 1], false); });
+history.replaceState({ v: 'rem' }, '');
+function setSeg(id, v) { document.querySelectorAll('#' + id + ' button').forEach(b => b.classList.toggle('on', b.dataset.v === v)); }
+const segVal = id => $('#' + id + ' .on')?.dataset.v;
+document.querySelectorAll('.seg').forEach(s => s.addEventListener('click', e => { const b = e.target.closest('button'); if (!b || b.disabled || !b.dataset.v) return; setSeg(s.id, b.dataset.v); sync(); }));
+
+/* ---------- state ---------- */
+let P = null, RULES = [], alsoTo = [], ccTo = [], selected = new Set(), confirmed = false, WF = [], cur = null;
+const DIR = [['Suman Kotal', 'BUDGET MIS', 'suman@alcoverealty.in', '6291703509'], ['Sandeep Jain', 'BUDGETING DEPT.', 'sandeep@alcoverealty.in', '9830018807'], ['Wrick Karmakar', 'ACCOUNTS', 'accounts.srp@alcoverealty.in', '9831506280'], ['Radha Biswas Bhattacharjee', 'HR DEPT', 'manager.hr@alcoverealty.in', '9830000001'], ['Subhodeep Kundu Chowdhury', 'HR DEPT', 'subhodeep@alcoverealty.in', '9830000002'], ['Ayan Das', 'HR DEPT', 'ayan.das@alcoverealty.in', '9830000003'], ['Pawan Kumar Dhanuka', 'ACCOUNTS', 'pawan.accounts@alcoverealty.in', '9830000004'], ['Tanmoy Mondal', 'CIVIL (PLOT-B)', 'tanmoy.civil@alcoverealty.in', '9830000005']].map(([name, dept, email, phone]) => ({ name, dept, email, phone }));
+DIR.forEach(d => { PEOPLE[d.name] = PEOPLE[d.name] || d.email; });
+function renderEmp() {
+  const q = ($('#empSearch').value || '').toLowerCase();
+  $('#empList').innerHTML = DIR.filter(d => (d.name + d.dept + d.email).toLowerCase().includes(q)).map(d => `<label class="emp"><input type="checkbox" data-sel="${esc(d.name)}" ${selected.has(d.name) ? 'checked' : ''}><div style="flex:1"><div style="font-weight:800;font-size:14px">${esc(d.name)}</div><small>${esc(d.dept)} · ${esc(d.email)} · ${esc(d.phone)}</small></div></label>`).join('');
+  $('#selCount').textContent = selected.size + ' selected';
+}
+function renderCc() { $('#cc-to').innerHTML = ccTo.map((p, i) => `<span class="chipx">${esc(p.name)}<button data-rmcc="${i}" aria-label="Remove">×</button></span>`).join(''); }
+const runDate = () => { const d = $('#s-date').value ? new Date($('#s-date').value + 'T00:00') : new Date(Y, M + 1, 1); return d; };
+function fill(t, r, extra = {}) {
+  return (t || '').replace(/\{(\w+)\}/g, (m, k) => {
+    const v = { Employee_Name: r?.name, Employee_No: r?.no, Designation: r?.des, Department: r?.dept, Manager_Name: r?.rm, Current_Month: runDate().toLocaleDateString('en-GB', { month: 'long', year: 'numeric' }), ...(r || {}), ...extra }[k];
+    return v ?? m;
+  });
+}
+function contact(to, r) {
+  if (to === 'manager' || to === 'doer') return [{ name: r.rm, email: PEOPLE[r.rm] || '' }];
+  if (to === 'self') return [{ name: r.name, email: r.email }];
+  if (GROUPS[to]) return GROUPS[to].list;
+  if (to === 'selected') return DIR.filter(d => selected.has(d.name));
+  return [];
+}
+
+/* ---------- examples ---------- */
+$('#exList').innerHTML = Object.entries(PRESETS).slice(0, 1).map(([k, p]) => `<button class="exlink" data-ex="${k}">${esc(p.ask)}</button>`).join('');
+$('#exList').addEventListener('click', e => { const b = e.target.closest('[data-ex]'); if (!b) return; $('#ask').value = PRESETS[b.dataset.ex].ask; $('#f-subject').value = ''; askSubh(b.dataset.ex); });
+$('#b-ask').onclick = () => askSubh();
+
+function askSubh(force) {
+  const t = $('#ask').value.toLowerCase();
+  if (!t.trim()) { toast('Describe the process first', 'err'); return; }
+  const b = $('#b-ask'); b.disabled = true; b.textContent = '…';
+  setTimeout(() => {
+    b.disabled = false; b.textContent = '✓'; setTimeout(() => b.textContent = '✨ Ask SUBH', 600);
+    const key = force || ['exit', 'documents', 'probation'].find(k => PRESETS[k].match.test(t));
+    confirmed = false;
+    if (!key) { P = null; $('#understand').innerHTML = `<div class="und"><h3>🤔 SUBH needs one more detail</h3><ul><li>Which records is this about (e.g. confirmations, joinings, exits, a Google Sheet)?</li><li>Who should get the first message, and what should happen for each kind of reply?</li></ul><div class="hint">In the real app SUBH (Claude) understands any process you describe. This demo only knows the three examples.</div></div>`; sync(); return; }
+    applyPreset(PRESETS[key]); renderUnderstanding(); sync();
+  }, 700);
+}
+function applyPreset(p) {
+  P = JSON.parse(JSON.stringify({ ...p, match: undefined }));
+  if (!$('#f-subject').value) $('#f-subject').value = p.subject;
+  $('#m-data').value = p.data; setSeg('m-rec', p.to === 'selected' ? 'selected' : 'column'); if (p.to !== 'selected') $('#m-to').value = p.to; setSeg('m-group', p.group); $('#m-table').checked = p.table;
+  $('#m-subj').value = p.mSubj; $('#m-body').value = p.mBody;
+  $('#m-phs').innerHTML = [...PHS, ...Object.keys(p.records[0]).filter(k => /^[A-Z]/.test(k)).map(k => `{${k}}`)].map(x => `<button class="ph" data-ins="m-body">${x}</button>`).join('');
+  $('#a-on').checked = p.also.on; alsoTo = p.also.on ? [...GROUPS[p.also.to].list] : []; $('#a-subj').value = p.also.subj; $('#a-body').value = p.also.body; $('#a-table').checked = p.also.table; $('#a-docs').checked = p.also.docs;
+  $('#d-on').checked = p.docs.on; $('#d-tpl').value = p.docs.tpl; $('#d-where').value = p.docs.where;
+  $('#fu-days').value = p.fu.days; $('#fu-max').value = p.fu.max; $('#fu-body').value = p.fu.body;
+  const d = p.weekday != null ? addDays(now, ((p.weekday - now.getDay() + 7) % 7) || 7) : new Date(Y, M + 1, p.day); $('#s-date').value = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  setSeg('s-rep', p.repeat); RULES = JSON.parse(JSON.stringify(p.rules)); renderRules(); renderTo();
+}
+function sendToLabel(k) { return (SEND_TO.find(x => x[0] === k) || [k, k])[1]; }
+function renderUnderstanding() {
+  if (!P) return;
+  const fu = +$('#fu-days').value, mx = +$('#fu-max').value, rd = runDate();
+  const steps = [
+    `<b>${segVal('s-rep') === 'custom' ? 'Every ' + rd.toLocaleDateString('en-GB', { weekday: 'long' }) : $('#s-rep .on').textContent + ' on the ' + rd.getDate() + ['th', 'st', 'nd', 'rd'][(rd.getDate() % 10 > 3 || Math.floor(rd.getDate() / 10) === 1) ? 0 : rd.getDate() % 10]}, ${$('#s-time').value}</b> — ${esc($('#m-data').value)} (${P.records.length} now)`,
+    `✉️ ${segVal('m-group') === 'each' ? 'One mail per record' : 'One combined list'} → ${esc(TO_LABEL[recTo()])}`,
+    $('#a-on').checked ? `✉️ One mail → ${esc(alsoTo.map(p => p.name).join(', ') || '—')}${$('#d-on').checked && $('#a-docs').checked ? ` with ${P.records.length} ${esc($('#d-tpl').value)} PDFs` : ''}` : null,
+    `🔁 No reply in <b>${fu} day(s)</b> → follow-up in the same thread (max ${mx}), then alert you`,
+    ...RULES.map(r => `${r.askOn ? '⏳' : '✅'} "${esc(r.when)}" → ${r.askOn ? `ask the ${esc(r.detail)} if missing → ` : ''}${r.reply ? `"${esc(r.reply.slice(0, 60))}${r.reply.length > 60 ? '…' : ''}"` : 'no reply'}${r.sendOn ? ` → mail to ${esc(sendToLabel(r.sendTo))}${r.askMe ? ' (asks you first)' : ''}` : ''} → ${r.then === 'stop' ? 'done' : r.then === 'wait' ? 'keep waiting' : 'ask you'}`),
+    '❓ Unclear reply → a card for you'
+  ].filter(Boolean);
+  $('#understand').innerHTML = `<div class="und"><h3>SUBH understood ${confirmed ? '<span class="ok">✓ confirmed</span>' : ''}</h3><ol class="tl">${steps.map(s => `<li>${s}</li>`).join('')}</ol>
+    <table><tr><th>Record</th><th>First mail goes to</th></tr>${P.records.map(r => { const c = contact(recTo(), r)[0]; return `<tr><td>${esc(r.name)}</td><td class="${c && c.email ? 'ok' : 'bad'}">${esc(c ? c.name : '—')}${c && !c.email ? ' — no email, will skip' : ''}</td></tr>`; }).join('')}</table>
+    ${confirmed ? '<div class="confirmed">✓ Plan confirmed — you can still change anything below.</div>' : '<div class="ask"><button class="btn primary small" id="b-yes">✓ Yes, that\'s right</button><button class="btn plain small" id="b-chg">Change it</button></div>'}</div>`;
+  const y = $('#b-yes'); if (y) y.onclick = () => { confirmed = true; renderUnderstanding(); sync(); toast('Plan confirmed ✓'); };
+  const c = $('#b-chg'); if (c) c.onclick = () => $('#ask').focus();
+}
+
+/* ---------- form pieces ---------- */
+function renderTo() { $('#a-to').innerHTML = alsoTo.map((p, i) => `<span class="chipx">${esc(p.name)}<button data-rmto="${i}" aria-label="Remove">×</button></span>`).join('') || '<span class="hint">No recipients yet</span>'; }
+$('#a-to').addEventListener('click', e => { const b = e.target.closest('[data-rmto]'); if (!b) return; alsoTo.splice(+b.dataset.rmto, 1); renderTo(); sync(); });
+$('#a-add').addEventListener('keydown', e => {
+  if (e.key !== 'Enter') return; e.preventDefault();
+  const v = e.target.value.trim(); if (!v) return;
+  const n = Object.keys(PEOPLE).find(k => k.toLowerCase().includes(v.toLowerCase()));
+  if (n) alsoTo.push({ name: n, email: PEOPLE[n] }); else if (/\S+@\S+\.\S+/.test(v)) alsoTo.push({ name: v, email: v }); else { toast('No match — type a name or a valid email', 'err'); return; }
+  e.target.value = ''; renderTo(); sync();
+});
+document.addEventListener('click', e => { const b = e.target.closest('[data-ins]'); if (!b) return; const ta = $('#' + b.dataset.ins); const st = ta.selectionStart ?? ta.value.length; ta.value = ta.value.slice(0, st) + b.textContent + ta.value.slice(st); sync(); });
+function renderRules() {
+  $('#rules').innerHTML = RULES.map((r, i) => `<div class="rule"><button class="rm2" data-rmrule="${i}" aria-label="Remove rule">×</button>
+    <label class="l" style="margin-top:0">If the reply means</label><input type="text" data-r="${i}" data-k="when" value="${esc(r.when)}" placeholder="e.g. Approved">
+    <label class="check"><input type="checkbox" data-r="${i}" data-k="askOn" ${r.askOn ? 'checked' : ''}> First ask for a missing detail</label>
+    ${r.askOn ? `<div class="tgrid"><div><label class="l">Detail</label><input type="text" data-r="${i}" data-k="detail" value="${esc(r.detail || '')}" placeholder="e.g. number of months"></div><div><label class="l">Follow up after (days)</label><input type="number" min="1" data-r="${i}" data-k="askFu" value="${r.askFu || 2}"></div></div>
+      <label class="l">SUBH asks</label><textarea data-r="${i}" data-k="askQ" style="min-height:70px">${esc(r.askQ || '')}</textarea>` : ''}
+    <label class="l">SUBH replies</label><textarea data-r="${i}" data-k="reply" style="min-height:60px">${esc(r.reply || '')}</textarea>
+    <label class="check"><input type="checkbox" data-r="${i}" data-k="sendOn" ${r.sendOn ? 'checked' : ''}> Then send a message to someone</label>
+    ${r.sendOn ? `<label class="l">To</label><select data-r="${i}" data-k="sendTo">${SEND_TO.map(([v, l]) => `<option value="${v}" ${r.sendTo === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
+      <label class="l">Subject</label><input type="text" data-r="${i}" data-k="sendSubj" value="${esc(r.sendSubj || '')}">
+      <label class="l">Body</label><textarea data-r="${i}" data-k="sendBody" style="min-height:110px">${esc(r.sendBody || '')}</textarea>
+      <div class="hint">{Reply_Detail} = what they told SUBH (e.g. "3 months").</div>
+      <label class="l">Attach a document</label><select data-r="${i}" data-k="sendDoc"><option value="">None</option>${['Confirmation Letter', 'Extension of Probation Letter', 'Experience Letter', 'Relieving Letter'].map(d => `<option ${r.sendDoc === d ? 'selected' : ''}>${d}</option>`).join('')}</select>
+      <label class="check"><input type="checkbox" data-r="${i}" data-k="askMe" ${r.askMe ? 'checked' : ''}> Ask me before sending this message</label>` : ''}
+    <label class="l">Then</label><select data-r="${i}" data-k="then"><option value="stop" ${r.then === 'stop' ? 'selected' : ''}>Done for this record</option><option value="wait" ${r.then === 'wait' ? 'selected' : ''}>Keep waiting (follow up again)</option><option value="askme" ${r.then === 'askme' ? 'selected' : ''}>Ask me</option></select></div>`).join('') || '<div class="hint" style="margin-top:8px">No rules yet — add one for each kind of reply.</div>';
+}
+$('#rules').addEventListener('change', e => { const t = e.target, i = t.dataset.r; if (i == null) return; RULES[+i][t.dataset.k] = t.type === 'checkbox' ? t.checked : t.value; if (t.type === 'checkbox') renderRules(); sync(); });
+$('#rules').addEventListener('input', e => { const t = e.target, i = t.dataset.r; if (i == null || t.type === 'checkbox' || t.tagName === 'SELECT') return; RULES[+i][t.dataset.k] = t.value; });
+$('#rules').addEventListener('click', e => { const b = e.target.closest('[data-rmrule]'); if (!b) return; RULES.splice(+b.dataset.rmrule, 1); renderRules(); sync(); });
+$('#b-addrule').onclick = () => { RULES.push({ when: '', sample: 'Custom reply', reply: '', then: 'stop' }); renderRules(); sync(); };
+
+function sync() {
+  $('#a-wrap').classList.toggle('hidden', !$('#a-on').checked);
+  $('#d-wrap').classList.toggle('hidden', !$('#d-on').checked);
+  $('#m-count').textContent = P ? `Records: ${P.data} — ${P.records.length} now.` : 'Ask SUBH first — it fills these steps.';
+  $('#colWrap').classList.toggle('hidden', segVal('m-rec') !== 'column');
+  $('#selWrap').classList.toggle('hidden', segVal('m-rec') !== 'selected');
+  $('#summary').innerHTML = `<b>Summary</b><br>${confirmed ? '✓ Plan confirmed' : '⚠ Ask SUBH and confirm the plan first'}<br>
+    ${P ? `✉️ ${segVal('m-group') === 'each' ? P.records.length + ' mails' : '1 mail'} → ${esc(TO_LABEL[recTo()])}<br>` : ''}
+    ${$('#a-on').checked ? `✉️ + 1 mail → ${alsoTo.length} people<br>` : ''}
+    🔁 Follow up every ${$('#fu-days').value} day(s), up to ${$('#fu-max').value} time(s)<br>
+    🤖 ${RULES.length} reply rule(s)<br>
+    ${$('#s-rep .on').textContent} · next run ${fmt(runDate())}, ${$('#s-time').value}`;
+  if (P && $('#understand .und')) renderUnderstanding();
+}
+['#fu-days', '#fu-max', '#a-on', '#d-on', '#a-docs', '#s-time', '#s-date', '#m-to'].forEach(s => $(s).addEventListener('input', sync));
+
+function resetForm() {
+  P = null; confirmed = false; RULES = []; alsoTo = [];
+  ['#f-subject', '#ask', '#m-data', '#m-subj', '#m-body', '#a-subj', '#a-body', '#a-cc', '#fu-body'].forEach(s => $(s).value = '');
+  $('#understand').innerHTML = ''; $('#m-phs').innerHTML = PHS.map(x => `<button class="ph" data-ins="m-body">${x}</button>`).join('');
+  $('#a-on').checked = false; $('#d-on').checked = false; $('#m-table').checked = false;
+  const d = new Date(Y, M + 1, 1); $('#s-date').value = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`;
+  selected = new Set(); ccTo = []; setSeg('m-rec', 'column'); $('#empSearch').value = ''; renderEmp(); renderCc();
+  renderRules(); renderTo(); sync();
+}
+
+/* ---------- preview ---------- */
+function mailHtml(m) { return `<div class="msg"><div class="to">To: ${esc(m.to)}</div>${m.cc ? `<div class="hint">Cc: ${esc(m.cc)}</div>` : ''}<div class="subj">Subject: ${esc(m.subj)}</div><pre>${esc(m.body)}</pre>${m.att && m.att.length ? `<div class="pdf"><div class="ph2">📎 ${m.att.map(esc).join('<br>📎 ')}</div></div>` : ''}</div>`; }
+const docName = (tpl, r) => `${tpl.replace(/\s+/g, '-')}-${r.name.replace(/\s+/g, '-')}.pdf`;
+function openSheet(html) { $('#sheet').innerHTML = `<button class="iconbtn" style="float:right" onclick="document.querySelector('#ov').classList.remove('on')" aria-label="Close">✕</button>` + html; $('#ov').classList.add('on'); }
+$('#ov').addEventListener('click', e => { if (e.target.id === 'ov') $('#ov').classList.remove('on'); });
+$('#b-preview').onclick = () => {
+  if (!P) { toast('Ask SUBH first', 'err'); return; }
+  const r0 = P.records[0], docs = $('#d-on').checked, tpl = $('#d-tpl').value, to = recTo(), fu = +$('#fu-days').value;
+  const first = P.records.map(r => { const cs = contact(to, r); const c = cs[0] || { name: '—', email: '' }; return mailHtml({ to: cs.map(x => `${x.name} <${x.email}>`).join(', ') || '— (select people)', cc: ccTo.map(x => x.name).join(', '), subj: fill($('#m-subj').value, r), body: fill($('#m-body').value, r) + SIGN, att: docs && $('#d-where').value === 'first' ? [docName(tpl, r)] : null }); }).join('');
+  const items = [
+    ['Day 1 — first message', first],
+    $('#a-on').checked ? ['Day 1 — also sent', mailHtml({ to: alsoTo.map(p => p.name).join(', '), cc: $('#a-cc').value, subj: fill($('#a-subj').value, null), body: fill($('#a-body').value, null) + SIGN, att: docs && $('#a-docs').checked ? P.records.map(r => docName(tpl, r)) : null })] : null,
+    [`Day ${1 + fu} — follow-up if no reply (example)`, mailHtml({ to: contact(to, r0)[0].name, subj: 'Re: ' + fill($('#m-subj').value, r0), body: fill($('#fu-body').value, r0) + SIGN })],
+    ...RULES.flatMap(r => [
+      r.askOn ? [`If the reply means "${r.when}" without the ${r.detail}`, mailHtml({ to: contact(to, r0)[0].name, subj: 'Re: ' + fill($('#m-subj').value, r0), body: fill(r.askQ, r0) + SIGN })] : null,
+      r.reply ? [`If the reply means "${r.when}"`, mailHtml({ to: contact(to, r0)[0].name, subj: 'Re: ' + fill($('#m-subj').value, r0), body: fill(r.reply, r0) + SIGN })] : null,
+      r.sendOn ? [`…then to ${sendToLabel(r.sendTo)}${r.askMe ? ' (after your OK)' : ''}`, mailHtml({ to: contact(r.sendTo, r0).map(c => c.name).join(', '), subj: fill(r.sendSubj, r0), body: fill(r.sendBody, r0, { Reply_Detail: r.sampleDetail || '…' }) + SIGN, att: r.sendDoc ? [docName(r.sendDoc, r0)] : null })] : null
+    ]).filter(Boolean)
+  ].filter(Boolean);
+  openSheet(`<h1 style="font-size:19px">Preview — what SUBH will send</h1><div class="hint">Next run ${fmt(runDate())}, ${$('#s-time').value}</div>${items.map(([h, b]) => `<div class="tlh">${esc(h)}</div>${b}`).join('')}`);
+};
+$('#b-doc').onclick = () => { if (!P) { toast('Ask SUBH first', 'err'); return; } const r = P.records[0]; openSheet(`<h1 style="font-size:19px">Document preview</h1><div class="msg"><pre>Ref: AR/HR/${r.no}\nDate: ${fmt(runDate())}\n\nTo,\n${r.name}\n${r.des}, ${r.dept}\n\nSubject: ${$('#d-tpl').value.replace(' Letter', '')}\n\nDear ${r.name},\n\n[The body of your "${$('#d-tpl').value}" template, filled with this employee's details.]\n\nFor Alcove Realty\n\n\nDirector</pre></div><div class="hint">📎 ${docName($('#d-tpl').value, r)}</div>`); };
+$('#b-test').onclick = () => { const b = $('#b-test'), t = b.textContent; b.disabled = true; b.textContent = '…'; setTimeout(() => { b.textContent = '✓'; setTimeout(() => { b.textContent = t; b.disabled = false; }, 500); toast('Test sent to you (demo)'); }, 700); };
+
+/* ---------- save ---------- */
+$('#b-save').onclick = () => {
+  if (!$('#f-subject').value.trim()) { toast('Workflow Subject is required', 'err'); return; }
+  if (!confirmed || !P) { toast('Ask SUBH and confirm the plan first', 'err'); return; }
+  if (!RULES.length) { toast('Add at least one reply rule', 'err'); return; }
+  const w = { id: 'w' + Date.now(), subject: $('#f-subject').value.trim(), data: $('#m-data').value, records: P.records, to: recTo(), mSubj: $('#m-subj').value, fuDays: +$('#fu-days').value || 2, fuMax: +$('#fu-max').value || 2, fuBody: $('#fu-body').value, also: $('#a-on').checked ? alsoTo.length : 0, rules: JSON.parse(JSON.stringify(RULES)), rep: $('#s-rep .on').textContent, next: runDate() };
+  startRun(w); WF.push(w); toast('Workflow saved ✓ — demo run started');
+  stack = ['rem', 'list']; history.pushState({ v: 'list' }, ''); show('list', false);
+};
+
+/* ---------- run simulation ---------- */
+function startRun(w) {
+  w.day = 1;
+  w.rows = w.records.map(r => { const c = contact(w.to, r)[0]; return { r, c, status: 'waiting', since: 1, fu: 0, hist: [{ d: 1, who: 'SUBH → ' + c.name, txt: fill(w.mSubj, r) }] }; });
+  w.alsoLog = w.also ? `Day 1: SUBH → ${w.also} people (also-send message)` : '';
+}
+const ST = { waiting: ['Waiting', 's-pending'], followed: ['Followed up', 's-pending'], asked: ['Detail asked', 's-paused'], needs: ['Needs you', 's-red'], done: ['Done ✓', 's-active'], noreply: ['No reply — needs you', 's-red'] };
+function pill(l, n, red) { return `<span class="cp ${red && n ? 'red' : ''}">${l} <b>${n}</b></span>`; }
+function renderList() {
+  $('#wfList').innerHTML = WF.length ? WF.map(w => {
+    const c = k => w.rows.filter(x => x.status === k).length;
+    return `<div class="card" style="cursor:pointer" data-open="${w.id}"><div style="display:flex;gap:8px"><div style="flex:1"><div style="font-weight:800;font-size:15.5px">${esc(w.subject)}</div>
+      <div class="hint">${esc(w.data)}</div><div class="hint">${esc(w.rep)} · next run ${fmt(w.next)} · ${w.rows.length} records · ${w.rules.length} rules</div></div><span class="status s-active">Active</span></div>
+      <div class="cnt" style="margin-top:8px">${pill('In progress', c('waiting') + c('followed') + c('asked'))}${pill('Done', c('done'))}${pill('Needs you', c('needs') + c('noreply'), true)}</div></div>`;
+  }).join('') : '<div class="card empty">No workflows yet.<br>Tap “New Workflow” to create one.</div>';
+}
+$('#wfList').addEventListener('click', e => { const c = e.target.closest('[data-open]'); if (!c) return; cur = WF.find(w => w.id === c.dataset.open); show('detail'); });
+function renderDetail() {
+  const w = cur; if (!w) return;
+  $('#d-title').textContent = w.subject; $('#d-sub').textContent = `Demo run · day ${w.day}`;
+  const c = k => w.rows.filter(x => x.status === k).length;
+  $('#d-counts').innerHTML = pill('Waiting', c('waiting')) + pill('Followed up', c('followed')) + pill('Detail asked', c('asked')) + pill('Done', c('done')) + pill('Needs you', c('needs') + c('noreply'), true) + (w.alsoLog ? `<div class="hint" style="width:100%">${esc(w.alsoLog)}</div>` : '');
+  $('#d-rows').innerHTML = w.rows.map((x, i) => {
+    const [lab, cls] = ST[x.status]; let act = '';
+    if (x.status === 'needs' && x.pending != null) act = `<button class="btn primary small" data-a="sendok" data-i="${i}">Approve & send</button><button class="btn plain small" data-a="view" data-i="${i}">View message</button>`;
+    else if (x.status === 'needs') act = w.rules.map((r, k) => `<button class="btn plain small" data-a="pick" data-k="${k}" data-i="${i}">${esc(r.when || 'Rule ' + (k + 1))}</button>`).join('') + `<button class="btn plain small" data-a="again" data-i="${i}">Ask again</button>`;
+    else if (x.status === 'noreply') act = `<button class="btn plain small" data-a="again" data-i="${i}">Send another reminder</button>`;
+    else if (x.status === 'asked') { const r = w.rules[x.rule]; act = `<span class="hint" style="width:100%">Demo — they reply:</span><button class="btn plain small" data-a="detail" data-i="${i}">"${esc(r.sampleDetail || 'the detail')}"</button><button class="btn plain small" data-a="unclear" data-i="${i}">"Dekhchi"</button>`; }
+    else if (x.status !== 'done') act = `<span class="hint" style="width:100%">Demo — they reply:</span>` + w.rules.map((r, k) => `<button class="btn plain small" data-a="reply" data-k="${k}" data-i="${i}">"${esc(r.sample || r.when)}"</button>${r.askOn ? `<button class="btn plain small" data-a="replyd" data-k="${k}" data-i="${i}">"${esc((r.sample || r.when).replace(/\.$/, ''))} — ${esc(r.sampleDetail || '')}"</button>` : ''}`).join('') + `<button class="btn plain small" data-a="unclear" data-i="${i}">"Dekhchi"</button>`;
+    return `<div class="card"><div style="display:flex;gap:8px;align-items:flex-start"><div style="flex:1"><div style="font-weight:800">${esc(x.r.name)}</div><div class="hint" style="margin:0">${esc(x.r.des)} · first mail to ${esc(x.c.name)}${x.fu ? ` · follow-ups ${x.fu}/${w.fuMax}` : ''}</div></div><span class="status ${cls}">${lab}</span></div>
+      <div class="hist">${x.hist.map(h => `<div><span class="hd">Day ${h.d}</span> <b>${esc(h.who)}:</b> ${esc(h.txt)}</div>`).join('')}</div><div class="actions">${act}</div></div>`;
+  }).join('');
+}
+function log(x, who, txt) { x.hist.push({ d: cur.day, who, txt }); }
+function doSend(x, r) {
+  const to = contact(r.sendTo, x.r).map(c => c.name).join(', ');
+  log(x, 'SUBH → ' + to, fill(r.sendSubj, x.r, { Reply_Detail: x.detail || '' }) + (r.sendDoc ? ' · 📎 ' + r.sendDoc : ''));
+}
+function finish(x, r) {
+  if (r.reply) log(x, 'SUBH → ' + x.c.name, fill(r.reply, x.r));
+  if (r.sendOn && r.askMe) { x.status = 'needs'; x.pending = w_rule(r); toast('Waiting for your OK before sending'); return; }
+  if (r.sendOn) doSend(x, r);
+  x.status = r.then === 'stop' ? 'done' : r.then === 'wait' ? 'waiting' : 'needs'; x.since = cur.day; x.fu = r.then === 'wait' ? 0 : x.fu;
+}
+const w_rule = r => cur.rules.indexOf(r);
+$('#d-rows').addEventListener('click', e => {
+  const b = e.target.closest('[data-a]'); if (!b) return;
+  const x = cur.rows[+b.dataset.i], a = b.dataset.a, r = cur.rules[+b.dataset.k];
+  if (a === 'reply' || a === 'pick') {
+    if (a === 'reply') log(x, x.c.name, r.sample || r.when);
+    if (r.askOn) { log(x, 'SUBH → ' + x.c.name, fill(r.askQ, x.r)); x.status = 'asked'; x.rule = +b.dataset.k; x.since = cur.day; x.fu = 0; }
+    else finish(x, r);
+  }
+  if (a === 'replyd') { log(x, x.c.name, `${(r.sample || '').replace(/\.$/, '')} — ${r.sampleDetail}`); x.detail = r.sampleDetail; finish(x, r); }
+  if (a === 'detail') { const rr = cur.rules[x.rule]; log(x, x.c.name, rr.sampleDetail); x.detail = rr.sampleDetail; finish(x, rr); }
+  if (a === 'unclear') { log(x, x.c.name, 'Dekhchi.'); log(x, 'SUBH → you', 'Reply not clear — card shown to you'); x.status = 'needs'; x.pending = null; }
+  if (a === 'again') { log(x, 'SUBH → ' + x.c.name, 'Gentle reminder sent'); x.status = x.rule != null && !x.detail ? 'asked' : 'followed'; x.since = cur.day; x.fu = 0; }
+  if (a === 'sendok') { const rr = cur.rules[x.pending]; doSend(x, rr); x.pending = null; x.status = rr.then === 'wait' ? 'waiting' : 'done'; toast('Sent (demo)'); }
+  if (a === 'view') { const rr = cur.rules[x.pending]; openSheet(`<h1 style="font-size:19px">Waiting for your OK</h1>${mailHtml({ to: contact(rr.sendTo, x.r).map(c => `${c.name} <${c.email}>`).join(', '), subj: fill(rr.sendSubj, x.r, { Reply_Detail: x.detail || '' }), body: fill(rr.sendBody, x.r, { Reply_Detail: x.detail || '' }) + SIGN, att: rr.sendDoc ? [docName(rr.sendDoc, x.r)] : null })}`); return; }
+  renderDetail();
+});
+$('#b-day').onclick = () => {
+  cur.day++;
+  cur.rows.forEach(x => {
+    if (!['waiting', 'followed', 'asked'].includes(x.status)) return;
+    const gap = x.status === 'asked' ? (+cur.rules[x.rule].askFu || 2) : cur.fuDays;
+    if (cur.day - x.since < gap) return;
+    if (x.fu >= cur.fuMax) { x.status = 'noreply'; log(x, 'SUBH → you', `No reply after ${cur.fuMax} follow-ups — please check`); return; }
+    x.fu++; x.since = cur.day;
+    log(x, 'SUBH → ' + x.c.name, x.status === 'asked' ? `Reminder: ${fill(cur.rules[x.rule].askQ, x.r).replace(/^Thank you[^.]*\.\s*/, '')}` : 'Follow-up: ' + fill(cur.fuBody, x.r).split('\n\n')[1]);
+    if (x.status === 'waiting') x.status = 'followed';
+  });
+  renderDetail(); toast('Day ' + cur.day);
+};
+$('#b-reset').onclick = () => { startRun(cur); renderDetail(); toast('Demo run restarted'); };
+
+/* ---------- wire ---------- */
+$('#b-wf').onclick = () => { resetForm(); show('create'); };
+$('#b-new').onclick = () => { resetForm(); show('create'); };
+$('#b-wflist').onclick = () => show('list');
+
+$('#empSearch').addEventListener('input', renderEmp);
+$('#empList').addEventListener('change', e => { const n = e.target.dataset.sel; if (!n) return; e.target.checked ? selected.add(n) : selected.delete(n); renderEmp(); sync(); });
+$('#b-all').onclick = () => { DIR.forEach(d => selected.add(d.name)); renderEmp(); sync(); };
+$('#b-clear').onclick = () => { selected.clear(); renderEmp(); sync(); };
+$('#cc-to').addEventListener('click', e => { const b = e.target.closest('[data-rmcc]'); if (!b) return; ccTo.splice(+b.dataset.rmcc, 1); renderCc(); });
+$('#cc-add').addEventListener('keydown', e => {
+  if (e.key !== 'Enter') return; e.preventDefault();
+  const v = e.target.value.trim(); if (!v) return;
+  const d = DIR.find(x => x.name.toLowerCase().includes(v.toLowerCase()));
+  if (d) ccTo.push({ name: d.name, email: d.email }); else if (/\S+@\S+\.\S+/.test(v)) ccTo.push({ name: v, email: v }); else { toast('No match — type a name or a valid email', 'err'); return; }
+  e.target.value = ''; renderCc();
+});
+$('#m-to').addEventListener('change', sync);
+
+const COLS = ['Employee_No', 'Employee_Name', 'Designation', 'Department', 'DOJ', 'Probation_End', 'Reporting_Manager', 'Location'];
+let colSel = [], attFmt = 'PDF';
+function renderCols() { $('#m-cols').innerHTML = COLS.map(c => `<button class="ph" data-col="${c}" style="${colSel.includes(c) ? 'background:var(--indigo);color:#fff;border-style:solid' : ''}">${colSel.includes(c) ? (colSel.indexOf(c) + 1) + '. ' : ''}${c}</button>`).join(''); }
+function syncMsg() {
+  $('#subjWrap').classList.toggle('hidden', segVal('m-med') !== 'mail');
+  $('#tblWrap').classList.toggle('hidden', !$('#m-table').checked);
+  $('#attFmt').textContent = segVal('m-put') === 'att' ? attFmt : '';
+}
+$('#m-cols').addEventListener('click', e => { const b = e.target.closest('[data-col]'); if (!b) return; const c = b.dataset.col; colSel = colSel.includes(c) ? colSel.filter(x => x !== c) : [...colSel, c]; renderCols(); });
+$('#m-table').addEventListener('change', syncMsg);
+$('#m-med').addEventListener('click', () => setTimeout(syncMsg));
+$('#m-put').addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; setTimeout(() => { syncMsg(); $('#attDD').classList.toggle('hidden', b.dataset.v !== 'att'); }); });
+$('#attDD').addEventListener('click', e => { const b = e.target.closest('[data-f]'); if (!b) return; attFmt = b.dataset.f; $('#attDD').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); $('#attDD').classList.add('hidden'); syncMsg(); });
+document.addEventListener('click', e => { if (!e.target.closest('#m-put') && !e.target.closest('#attDD')) $('#attDD').classList.add('hidden'); });
+$('#f-subject').addEventListener('input', () => { $('#f-cnt').textContent = $('#f-subject').value.length + '/100'; });
+$('#b-load').onclick = () => { const b = $('#b-load'), t = b.textContent; b.disabled = true; b.textContent = '…'; setTimeout(() => { b.textContent = '✓'; setTimeout(() => { b.textContent = t; b.disabled = false; }, 600); toast('Sheet loaded (demo)'); }, 700); };
+$('#b-copysvc').onclick = () => { try { navigator.clipboard.writeText($('.svc').textContent); } catch (e) {} toast('Copied'); };
+renderCols(); syncMsg();
+const _origSync = sync; sync = function () { _origSync(); syncMsg(); };
+
+const _origReset = resetForm; resetForm = function () { _origReset(); colSel = []; attFmt = 'PDF'; setSeg('m-med', 'mail'); setSeg('m-put', 'body'); $('#f-cnt').textContent = '0/100'; renderCols(); syncMsg(); };
+
+</script>
+</body>
+</html>
