@@ -2483,7 +2483,8 @@
         (canRemind || canClose ? '<div class="wf-open-flow-actions">' +
           (canRemind ? '<button type="button" class="wf-attn-action-btn wf-attn-remind-btn" data-id="' + escapeHtml(it.id) + '">Remind</button>' : '') +
           (canClose ? '<button type="button" class="wf-attn-action-btn outline wf-attn-close-btn" data-id="' + escapeHtml(it.id) + '">Close</button>' : '') +
-          '</div>' : '');
+          '</div>' : '') +
+      '</div>'; // Task 14 (2026-11) LIVE BUG FIX - this card's own OUTER div was never closed, so the browser's HTML error-recovery nested every next card inside the previous one (box inside box inside box, narrower each time, labels squashed) instead of a flat list of same-width cards.
     }).join('');
     attnList.querySelectorAll('.wf-attn-remind-btn').forEach((btn) => {
       btn.addEventListener('click', async (e) => {
