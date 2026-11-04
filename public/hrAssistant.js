@@ -1803,6 +1803,9 @@
     else if (entry.type === 'reminderDetail') openReminderDetail(entry.id);
     else if (entry.type === 'automationList') openAutomationList();
     else if (entry.type === 'automation') openAutomationCreate(entry.task || null);
+    else if (entry.type === 'workflowList') openWorkflowList();
+    else if (entry.type === 'workflow') openWorkflowCreate(entry.task || null);
+    else if (entry.type === 'workflowDetail') openWorkflowDetail(entry.id);
   }
   // Used by the in-app back arrow - defers to window.history.back() rather
   // than popping navStack directly, so the SAME popstate handler (below)
@@ -1850,6 +1853,16 @@
     const isActionNeeded = view === 'actionNeeded';
     const isAutoList = view === 'automationList';
     const isAutomation = view === 'automation';
+    // LIVE BUG FIX (2026-11): 'workflow'/'workflowList'/'workflowDetail'
+    // were never recognized here at all - openWorkflowCreate/openWorkflowList/
+    // openWorkflowDetail each called setPanelView with these view names, but
+    // every OTHER page's own isX/hidden toggle below still ran (hiding
+    // Reminders etc.), while no branch ever un-hid hrWorkflowPage/
+    // hrWorkflowListPage/hrWorkflowDetailPage - so the panel went blank
+    // (only the comms header remained) instead of showing the workflow page.
+    const isWorkflowList = view === 'workflowList';
+    const isWorkflow = view === 'workflow';
+    const isWorkflowDetail = view === 'workflowDetail';
     const usesCommsHead = !isHome;
     if (homeHead) homeHead.hidden = !isHome;
     if (commsHead) commsHead.hidden = !usesCommsHead;
@@ -1870,6 +1883,9 @@
     if (actionNeededPage) actionNeededPage.hidden = !isActionNeeded;
     if (autoListPage) autoListPage.hidden = !isAutoList;
     if (autoPage) autoPage.hidden = !isAutomation;
+    if (wfListPage) wfListPage.hidden = !isWorkflowList;
+    if (wfPage) wfPage.hidden = !isWorkflow;
+    if (wfDetailPage) wfDetailPage.hidden = !isWorkflowDetail;
     // Task 4 (2026-10-31) - the "Ask your assistant" input bar now lives
     // ONLY in the SUBH chat box itself (Home) - every other page under
     // Today's Updates and SUBH Settings hides it, not just the handful
@@ -1963,6 +1979,24 @@
       if (commsHeadIcon) commsHeadIcon.innerHTML = '⚡';
       if (commsHeadTitle) commsHeadTitle.textContent = autoEditingId ? 'Edit Automated Task' : 'Create Automated Task';
       if (commsHeadSubtitle) commsHeadSubtitle.textContent = 'Set up a task to run automatically';
+      if (commsHeadBadge) commsHeadBadge.hidden = true;
+    } else if (isWorkflowList) {
+      if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon reminders';
+      if (commsHeadIcon) commsHeadIcon.innerHTML = '🔀';
+      if (commsHeadTitle) commsHeadTitle.textContent = 'Automated Workflows';
+      if (commsHeadSubtitle) commsHeadSubtitle.textContent = 'Your saved workflows';
+      if (commsHeadBadge) commsHeadBadge.hidden = true;
+    } else if (isWorkflow) {
+      if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon reminders';
+      if (commsHeadIcon) commsHeadIcon.innerHTML = '🔀';
+      if (commsHeadTitle) commsHeadTitle.textContent = wfEditingId ? 'Edit Workflow' : 'Create Workflow';
+      if (commsHeadSubtitle) commsHeadSubtitle.textContent = 'Set up a multi-step workflow to run automatically';
+      if (commsHeadBadge) commsHeadBadge.hidden = true;
+    } else if (isWorkflowDetail) {
+      if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon reminders';
+      if (commsHeadIcon) commsHeadIcon.innerHTML = '🔀';
+      if (commsHeadTitle) commsHeadTitle.textContent = 'Workflow';
+      if (commsHeadSubtitle) commsHeadSubtitle.textContent = '';
       if (commsHeadBadge) commsHeadBadge.hidden = true;
     }
   }
@@ -5865,6 +5899,7 @@
   const wfTasksBar = document.getElementById('hrWorkflowTasksBar');
   const wfTasksBadge = document.getElementById('hrWorkflowTasksBadge');
   const wfListPage = document.getElementById('hrWorkflowListPage');
+  const wfPage = document.getElementById('hrWorkflowPage');
   const wfList = document.getElementById('hrWorkflowList');
   const wfNewBtn = document.getElementById('hrWorkflowNewBtn');
   const wfSubject = document.getElementById('wfSubject');

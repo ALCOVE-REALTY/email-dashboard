@@ -12,7 +12,8 @@
     "check:reminders": "node scripts/check-reminders.js",
     "check:automation": "node scripts/check-automation.js",
     "check:automation-nlu": "node scripts/check-automation-nlu.js",
-    "check:mail-compose": "node scripts/check-mail-compose.js"
+    "check:mail-compose": "node scripts/check-mail-compose.js",
+    "check:subh-panel-ui": "node scripts/check-subh-panel-ui.js"
   },
   "dependencies": {
     "@sparticuz/chromium": "^153.0.0",

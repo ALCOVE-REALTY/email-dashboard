@@ -728,3 +728,36 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
   fully covered deterministically; real-world confirmation that the
   specific drop never recurs happens through normal production use after
   deploy.
+- Task 17 (2026-11) LIVE BUG FIX: "🔀 Automate Workflow" opened a BLANK
+  page - tapping it hid the Reminders content but no page ever appeared
+  (only the comms header remained). Root cause: `setPanelView` (the
+  SUBH panel's page router, `public/hrAssistant.js`) had no
+  `'workflow'`/`'workflowList'`/`'workflowDetail'` branch at all -
+  `openWorkflowCreate`/`openWorkflowList`/`openWorkflowDetail` each
+  called it with these view names, every OTHER page's own hide toggle
+  still ran, but nothing ever un-hid `hrWorkflowPage`/
+  `hrWorkflowListPage`/`hrWorkflowDetailPage` (the Create Workflow page,
+  the Automated Workflows list, and the workflow progress board) - all
+  three Workflow pages were affected, not just "Automate Workflow" as
+  first reported. The in-app back-navigation dispatcher
+  (`renderNavEntry`) had the exact same gap for these 3 view types.
+  Fixed by adding `isWorkflowList`/`isWorkflow`/`isWorkflowDetail` to
+  `setPanelView` (hiding/showing `wfListPage`/`wfPage`/`wfDetailPage`,
+  plus the matching comms-header title/subtitle, mirroring the existing
+  Automated-Tasks pattern exactly) and the 3 matching `entry.type`
+  branches to `renderNavEntry`. New headless UI check,
+  `scripts/check-subh-panel-ui.js` (`npm run check:subh-panel-ui`, run
+  manually - needs a real headless Chromium via Playwright, never part
+  of the deterministic fake-store suites): a throwaway local static
+  server serves the real `workforce.html` + `public/` assets (no real
+  login, no real backend - every `/api/**` call is mocked via Playwright
+  request interception), drives the panel exactly as a person would
+  (FAB -> Hub -> Reminders -> each of the 4 buttons: Automate Task,
+  Automated Tasks, Automate Workflow, Automated Workflows), and asserts
+  each target page becomes visible with its key elements (a title/
+  first-section field/Save button for the two Create pages, the list
+  container/New button for the two list pages) with no new JS error
+  thrown opening it. Verified to actually catch the live bug: reverting
+  the `hrAssistant.js` fix and re-running this check reproduces exactly
+  the reported failure (both Workflow buttons show a blank page), never
+  a false pass.
