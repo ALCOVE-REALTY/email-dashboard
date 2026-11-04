@@ -483,9 +483,15 @@ function buildRawMessage({ to, subject, bodyText }) {
 
 // Standalone send (no thread to reply into) - used for OTP emails, which go
 // to arbitrary recipients rather than an existing Gmail thread.
+// Returns { id, threadId } (2026-11, additive - every existing caller
+// already discarded this send's return value, so this never changes
+// their behavior) - lets a caller that needs to find a REPLY later (see
+// workflowService.js's own mail-reply reading) track which thread its
+// own first message landed in, without a second API call.
 async function sendMail({ to, subject, text }) {
   const raw = buildRawMessage({ to, subject, bodyText: text });
-  await gmail().users.messages.send({ userId: 'me', requestBody: { raw } });
+  const resp = await gmail().users.messages.send({ userId: 'me', requestBody: { raw } });
+  return { id: resp.data.id, threadId: resp.data.threadId };
 }
 
 // multipart/alternative - a plain-text part alongside the real HTML one,
@@ -523,9 +529,11 @@ function buildRawMessageAlternative({ to, subject, text, html }) {
     .replace(/=+$/, '');
 }
 
+// Returns { id, threadId } - see sendMail's own comment above.
 async function sendMailWithHtml({ to, subject, text, html }) {
   const raw = buildRawMessageAlternative({ to, subject, text, html });
-  await gmail().users.messages.send({ userId: 'me', requestBody: { raw } });
+  const resp = await gmail().users.messages.send({ userId: 'me', requestBody: { raw } });
+  return { id: resp.data.id, threadId: resp.data.threadId };
 }
 
 // Base64 content is wrapped at 76 chars per line - not strictly required by
@@ -569,15 +577,19 @@ function buildRawMessageWithAttachment({ to, cc, subject, bodyText, attachment }
     .replace(/=+$/, '');
 }
 
+// Returns { id, threadId } - see sendMail's own comment above.
 async function sendMailWithAttachment({ to, cc, subject, text, attachment }) {
   const raw = buildRawMessageWithAttachment({ to, cc, subject, bodyText: text, attachment });
-  await gmail().users.messages.send({ userId: 'me', requestBody: { raw } });
+  const resp = await gmail().users.messages.send({ userId: 'me', requestBody: { raw } });
+  return { id: resp.data.id, threadId: resp.data.threadId };
 }
 
 module.exports = {
   getCounts,
   getMessagesByCategory,
+  listMessageIds,
   getFullMessage,
+  getSignedInAddress,
   sendReply,
   trashMessage,
   getUpcomingJoinings,
