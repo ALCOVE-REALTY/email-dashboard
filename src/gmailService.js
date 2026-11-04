@@ -546,8 +546,14 @@ function wrapBase64(b64) {
 // generated PDF, here) - used for the Health Insurance Exits "Send Mail"
 // button. buildRawMessage/sendMail above stay untouched (plain-text-only,
 // used by OTP delivery) since this is a distinct MIME shape.
-function buildRawMessageWithAttachment({ to, cc, subject, bodyText, attachment }) {
+// `attachments` (2026-11, additive) - an array of {filename, contentType,
+// content} for more than one file in the SAME mail (e.g. a workflow's
+// "also send" message with one generated letter per record) - every
+// existing caller still passes the single `attachment` param, normalized
+// to a one-item array here, so this never changes their own output.
+function buildRawMessageWithAttachment({ to, cc, subject, bodyText, attachment, attachments }) {
   const boundary = 'wf_boundary_' + Date.now().toString(36);
+  const files = attachments && attachments.length ? attachments : (attachment ? [attachment] : []);
   const lines = [
     `To: ${to}`,
     ...(cc ? [`Cc: ${cc}`] : []),
@@ -560,16 +566,20 @@ function buildRawMessageWithAttachment({ to, cc, subject, bodyText, attachment }
     'Content-Transfer-Encoding: base64',
     '',
     Buffer.from(bodyText, 'utf8').toString('base64'),
-    '',
-    `--${boundary}`,
-    `Content-Type: ${attachment.contentType}; name="${attachment.filename}"`,
-    `Content-Disposition: attachment; filename="${attachment.filename}"`,
-    'Content-Transfer-Encoding: base64',
-    '',
-    wrapBase64(attachment.content.toString('base64')),
-    '',
-    `--${boundary}--`
+    ''
   ];
+  files.forEach((f) => {
+    lines.push(
+      `--${boundary}`,
+      `Content-Type: ${f.contentType}; name="${f.filename}"`,
+      `Content-Disposition: attachment; filename="${f.filename}"`,
+      'Content-Transfer-Encoding: base64',
+      '',
+      wrapBase64(f.content.toString('base64')),
+      ''
+    );
+  });
+  lines.push(`--${boundary}--`);
   return Buffer.from(lines.join('\r\n'))
     .toString('base64')
     .replace(/\+/g, '-')
@@ -577,9 +587,12 @@ function buildRawMessageWithAttachment({ to, cc, subject, bodyText, attachment }
     .replace(/=+$/, '');
 }
 
-// Returns { id, threadId } - see sendMail's own comment above.
-async function sendMailWithAttachment({ to, cc, subject, text, attachment }) {
-  const raw = buildRawMessageWithAttachment({ to, cc, subject, bodyText: text, attachment });
+// Returns { id, threadId } - see sendMail's own comment above. Pass
+// EITHER `attachment` (one file, every existing caller) or `attachments`
+// (an array, 2026-11 - a workflow's own "also send" message with
+// multiple generated documents) - never both.
+async function sendMailWithAttachment({ to, cc, subject, text, attachment, attachments }) {
+  const raw = buildRawMessageWithAttachment({ to, cc, subject, bodyText: text, attachment, attachments });
   const resp = await gmail().users.messages.send({ userId: 'me', requestBody: { raw } });
   return { id: resp.data.id, threadId: resp.data.threadId };
 }
