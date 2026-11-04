@@ -2122,6 +2122,10 @@ router.post('/hr-assistant/automations/:id', async (req, res) => {
       existing.nextRunAt = automationService.ensureNotTooSoon(schedule, now);
       scheduleAdjustedTo = existing.nextRunAt !== rawNextRunAt ? existing.nextRunAt : null;
       existing.pendingMissedRun = null;
+      // Task 11 (2026-11) - editing a "Completed" (one-shot already run)
+      // task with a new schedule that actually has a future run revives
+      // it, rather than leaving it stuck showing Completed forever.
+      if (existing.status === 'completed' && existing.nextRunAt) existing.status = 'active';
     }
     existing.updatedAt = now.toISOString();
     await automationService.saveAutomation(existing);
@@ -2347,6 +2351,8 @@ router.post('/hr-assistant/workflows/:id', async (req, res) => {
       existing.nextRunAt = automationService.ensureNotTooSoon(schedule, now);
       scheduleAdjustedTo = existing.nextRunAt !== rawNextRunAt ? existing.nextRunAt : null;
       existing.pendingMissedRun = null;
+      // Task 11 (2026-11) - same revive-on-reschedule as Automated Tasks.
+      if (existing.status === 'completed' && existing.nextRunAt) existing.status = 'active';
     }
     existing.updatedAt = now.toISOString();
     await workflowService.saveWorkflow(existing);

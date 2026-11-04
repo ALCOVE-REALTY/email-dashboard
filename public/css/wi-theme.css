@@ -2281,6 +2281,10 @@ body { background: var(--wi-bg); }
 .wf-auto-task-status.paused { background: var(--wi-yellow-50); color: var(--wi-yellow-700); }
 .wf-auto-task-status.pending { background: var(--wi-primary-50); color: var(--wi-primary-800); }
 .wf-auto-task-status.failed { background: var(--wi-red-50); color: var(--wi-red-700); }
+/* Task 11 (2026-11) - "Completed" (a one-shot Once schedule that has
+   already run) reuses the same neutral tone .wi-count-badge.neutral
+   already uses elsewhere, never a new colour. */
+.wf-auto-task-status.completed { background: #EEF0FF; color: #3138B8; }
 .wf-auto-missed { background: var(--wi-red-50); color: var(--wi-red-700); border-radius: var(--wi-r-input); padding: 8px 10px; font-size: 0.74rem; font-weight: 700; margin-top: 8px; }
 .wf-auto-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 .wf-auto-actions button {

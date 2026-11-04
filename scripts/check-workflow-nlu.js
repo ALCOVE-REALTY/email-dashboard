@@ -78,25 +78,19 @@ async function main() {
     const exitParsed = await workflowService.parseWorkflowAsk(exitAsk);
     const exitDraft = await workflowService.draftWorkflowPlanFromParsed(exitParsed, now, null);
     console.log(JSON.stringify(exitDraft, null, 2));
-    // KNOWN LIMITATION (pre-existing, shared with Automated Tasks): the
-    // schedule model only supports none/monthly/yearly/daily - no "weekly"
-    // repeat - so "proti shomobar" (every Monday) correctly comes back
-    // unclear rather than being guessed as daily/monthly. Tolerant like
-    // scenario 2's own PAN/bank-details gap, for the same reason: this is
-    // automationService's own shared schedule model, out of scope for this
-    // workflow-specific fix (see the final report's "known limitations").
-    const weeklyUnclear = !exitDraft.ok && (exitDraft.unclear || []).some((u) => /weekly|every monday|repeat/i.test(u));
-    check('resolves to one mail per Reporting Manager, mail mediator (or is correctly unclear ONLY about the weekly schedule, never about recipient/mediator)', (exitDraft.ok && exitDraft.plan.rec === 'column' && exitDraft.plan.recCol === 'reportingManager' && exitDraft.plan.mediator === 'mail') || weeklyUnclear);
+    // Task 11 (2026-11) RESOLVED this exact scenario's own former gap:
+    // "proti shomobar" (every Monday) used to come back unclear since the
+    // schedule model had no "weekly" repeat at all - it is now a
+    // first-class repeat value (weekdays: ["monday"]), so this scenario
+    // is expected to resolve cleanly, same as the other two.
+    check('resolves to one mail per Reporting Manager, mail mediator, on a WEEKLY schedule naming Monday', exitDraft.ok && exitDraft.plan.rec === 'column' && exitDraft.plan.recCol === 'reportingManager' && exitDraft.plan.mediator === 'mail' &&
+      exitDraft.schedule.repeat === 'weekly' && Array.isArray(exitDraft.schedule.weekdays) && exitDraft.schedule.weekdays.includes('monday'));
     const completeRule = exitDraft.ok && exitDraft.plan.rules.find((r) => r.sendTo === 'accounts');
     const pendingRule = exitDraft.ok && exitDraft.plan.rules.find((r) => r.askDetail);
-    if (exitDraft.ok) {
-      check('follow-up after 1 day', exitDraft.plan.followUp.days === 1);
-      check('two rules: handover-complete -> Accounts team F&F, pending-assets -> asks for the asset list then mails the employee', exitDraft.plan.rules.length === 2);
-      check('handover-complete rule notifies Accounts for F&F', Boolean(completeRule));
-      check('pending-assets rule asks for the detail, then mails the employee ({Reply_Detail} available)', Boolean(pendingRule) && pendingRule.sendTo === 'self' && /Reply_Detail/.test(pendingRule.sendBody || ''));
-    } else {
-      check('the ONLY unclear item is the weekly-schedule limitation, not a misunderstanding of the recipient/rules themselves', weeklyUnclear && exitDraft.unclear.length === 1);
-    }
+    check('follow-up after 1 day', exitDraft.ok && exitDraft.plan.followUp.days === 1);
+    check('two rules: handover-complete -> Accounts team F&F, pending-assets -> asks for the asset list then mails the employee', exitDraft.ok && exitDraft.plan.rules.length === 2);
+    check('handover-complete rule notifies Accounts for F&F', Boolean(completeRule));
+    check('pending-assets rule asks for the detail, then mails the employee ({Reply_Detail} available)', Boolean(pendingRule) && pendingRule.sendTo === 'self' && /Reply_Detail/.test(pendingRule.sendBody || ''));
 
     console.log('='.repeat(70));
     console.log('Reply classification (real Claude API, against the real rules drafted above) - the model only classifies/extracts; the outgoing text always comes from the owner\'s own rule.replyText, never from the model');

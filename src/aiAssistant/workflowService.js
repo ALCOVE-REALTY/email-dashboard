@@ -672,6 +672,7 @@ async function runWorkflow(id, { isTest = false, testTo = null } = {}, now = new
     workflow.pendingMissedRun = null;
     workflow.nextRunAt = automationService.computeNextRun(workflow.schedule, new Date(runAt.getTime() + 1000));
     workflow.updatedAt = runAt.toISOString();
+    if (!workflow.nextRunAt && automationService.isOneShotSchedule(workflow.schedule)) workflow.status = 'completed';
     await saveWorkflow(workflow);
     return { ok: true, runId, sentCount, skippedCount: records.length - sentCount };
   } finally {
@@ -713,8 +714,12 @@ async function resolveMissedRun(id, action, now = new Date()) {
   if (!workflow || !workflow.pendingMissedRun) return { ok: false, error: 'No missed run pending.' };
   workflow.pendingMissedRun = null;
   workflow.updatedAt = now.toISOString();
+  if (action === 'send') {
+    await saveWorkflow(workflow);
+    return runWorkflow(id, {}, now);
+  }
+  if (!workflow.nextRunAt && automationService.isOneShotSchedule(workflow.schedule)) workflow.status = 'completed';
   await saveWorkflow(workflow);
-  if (action === 'send') return runWorkflow(id, {}, now);
   return { ok: true, skipped: true };
 }
 

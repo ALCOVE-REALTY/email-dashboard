@@ -611,6 +611,130 @@ async function main() {
     check('a one-time schedule that has already passed, with no repeat to advance to, still returns null (not an error) - the same "nothing left to move to" case computeNextRun already covers', automationService.ensureNotTooSoon({ date: '2020-01-01', time: '10:00', repeat: 'none' }, now) === null);
 
     console.log('='.repeat(70));
+    console.log('Task 11 (2026-11): schedule repeat expanded to once/daily/weekly/monthly/yearly/custom(days|weeks|months) - locked scenarios: once, daily, weekly (one and two weekdays), custom every 15 days');
+    console.log('='.repeat(70));
+    const NOW_WED = new Date('2026-11-04T06:00:00.000Z'); // 11:30am IST, Wednesday 4 Nov 2026
+    check('LOCKED: "once" fires at its own date/time and never again (same semantics as the legacy "none")', (() => {
+      const future = automationService.computeNextRun({ date: '2026-11-10', time: '10:00', repeat: 'once' }, NOW_WED);
+      const past = automationService.computeNextRun({ date: '2026-11-01', time: '10:00', repeat: 'once' }, NOW_WED);
+      const legacyNone = automationService.computeNextRun({ date: '2026-11-10', time: '10:00', repeat: 'none' }, NOW_WED);
+      return future === legacyNone && past === null;
+    })());
+    check('LOCKED: "daily" runs today if the time hasn\'t passed yet, else tomorrow - at the same time either way', (() => {
+      const stillAhead = automationService.computeNextRun({ date: '2026-11-04', time: '14:00', repeat: 'daily' }, NOW_WED);
+      const alreadyPassed = automationService.computeNextRun({ date: '2026-11-04', time: '10:00', repeat: 'daily' }, NOW_WED);
+      const d1 = new Date(stillAhead), d2 = new Date(alreadyPassed);
+      return d1.getUTCDate() === 4 && d2.getUTCDate() === 5 && d2.getUTCMonth() === 10;
+    })());
+    check('LOCKED: "weekly" on a single weekday (Monday) finds the NEXT Monday on/after today, same time', (() => {
+      const r = automationService.computeNextRun({ date: '2026-11-04', time: '10:00', repeat: 'weekly', weekdays: ['monday'] }, NOW_WED);
+      const d = new Date(r);
+      return d.getUTCDay() === 1 && d.getUTCDate() === 9; // Monday 9 Nov 2026
+    })());
+    check('LOCKED: "weekly" on TWO weekdays (Mon+Thu) finds whichever comes first - Thursday 5 Nov, before the following Monday', (() => {
+      const r = automationService.computeNextRun({ date: '2026-11-04', time: '10:00', repeat: 'weekly', weekdays: ['monday', 'thursday'] }, NOW_WED);
+      const d = new Date(r);
+      return d.getUTCDay() === 4 && d.getUTCDate() === 5;
+    })());
+    check('weekly subsequent occurrence (fed back in as "now") correctly jumps to the OTHER selected weekday, never the same one twice running', (() => {
+      const first = automationService.computeNextRun({ date: '2026-11-04', time: '10:00', repeat: 'weekly', weekdays: ['monday', 'thursday'] }, NOW_WED);
+      const second = automationService.computeNextRun({ date: '2026-11-04', time: '10:00', repeat: 'weekly', weekdays: ['monday', 'thursday'] }, new Date(new Date(first).getTime() + 1000));
+      return new Date(second).getUTCDay() === 1 && new Date(second).getUTCDate() === 9;
+    })());
+    check('LOCKED: "custom" every 15 days advances by a flat 15-day interval from the anchor date, never a month', (() => {
+      const r = automationService.computeNextRun({ date: '2026-11-01', time: '10:00', repeat: 'custom', unit: 'days', every: 15 }, NOW_WED);
+      const d = new Date(r);
+      return d.getUTCMonth() === 10 && d.getUTCDate() === 16; // Nov 1 + 15 = Nov 16
+    })());
+    check('"custom" every 2 weeks on a named weekday skips the immediate next occurrence of that weekday and lands on the ONE after (the stride, not plain weekly)', (() => {
+      const r = automationService.computeNextRun({ date: '2026-11-02', time: '10:00', repeat: 'custom', unit: 'weeks', every: 2, weekdays: ['monday'] }, NOW_WED); // anchor is itself a Monday
+      const d = new Date(r);
+      return d.getUTCDate() === 16 && d.getUTCDay() === 1; // NOT Nov 9 (the very next Monday) - Nov 16 instead
+    })());
+    check('"custom" every N weeks with NO weekday chosen falls back to the anchor\'s own weekday, every N weeks', (() => {
+      const r = automationService.computeNextRun({ date: '2026-11-02', time: '10:00', repeat: 'custom', unit: 'weeks', every: 3 }, NOW_WED); // anchor Monday, no chips
+      const d = new Date(r);
+      return d.getUTCDate() === 23 && d.getUTCDay() === 1; // Nov 2 + 3*7 = Nov 23, still a Monday
+    })());
+    check('REGRESSION: "custom" every N months still behaves exactly like the old custom-only-ever-months model', (() => {
+      const r = automationService.computeNextRun({ date: '2026-11-01', time: '10:00', repeat: 'custom', unit: 'months', every: 3 }, NOW_WED);
+      const d = new Date(r);
+      return d.getUTCFullYear() === 2027 && d.getUTCMonth() === 1; // Feb 2027
+    })());
+    check('REGRESSION: monthly/yearly are completely untouched by the new day-stepping engine', (() => {
+      const monthly = automationService.computeNextRun({ date: '2026-11-01', time: '10:00', repeat: 'monthly' }, NOW_WED);
+      return new Date(monthly).getUTCMonth() === 11 && new Date(monthly).getUTCDate() === 1; // Dec 1
+    })());
+
+    console.log('='.repeat(70));
+    console.log('Task 11 (2026-11): draftPlanFromParsed resolves the new repeat values from a parsed ask - weekdayHints/customEvery/customUnit, day-of-month resolution skipped entirely for day-based repeats');
+    console.log('='.repeat(70));
+    await checkAsync('"roj" (daily) resolves to repeat=daily, anchored on TODAY (never a day-of-month guess)', async () => {
+      const draft = await automationService.draftPlanFromParsed({ unclear: [], source: 'none', rec: 'selected', peopleNames: ['someone@example.test'], mediator: 'mail', timeRaw: '09:00', repeat: 'daily' }, NOW_WED);
+      return draft.ok && draft.schedule.repeat === 'daily' && draft.schedule.date === '2026-11-04';
+    });
+    await checkAsync('"proti shomobar" (every Monday) resolves to repeat=weekly with weekdays=["monday"]', async () => {
+      const draft = await automationService.draftPlanFromParsed({ unclear: [], source: 'none', rec: 'selected', peopleNames: ['someone@example.test'], mediator: 'mail', timeRaw: '09:00', repeat: 'weekly', weekdayHints: ['monday'] }, NOW_WED);
+      return draft.ok && draft.schedule.repeat === 'weekly' && JSON.stringify(draft.schedule.weekdays) === JSON.stringify(['monday']);
+    });
+    await checkAsync('"every Mon and Thu" resolves to repeat=weekly with BOTH weekdays, never just the first', async () => {
+      const draft = await automationService.draftPlanFromParsed({ unclear: [], source: 'none', rec: 'selected', peopleNames: ['someone@example.test'], mediator: 'mail', timeRaw: '09:00', repeat: 'weekly', weekdayHints: ['monday', 'thursday'] }, NOW_WED);
+      return draft.ok && draft.schedule.weekdays.length === 2 && draft.schedule.weekdays.includes('monday') && draft.schedule.weekdays.includes('thursday');
+    });
+    await checkAsync('"weekly" with NO weekday named at all is unclear, never guessed', async () => {
+      const draft = await automationService.draftPlanFromParsed({ unclear: [], source: 'none', rec: 'selected', peopleNames: ['someone@example.test'], mediator: 'mail', timeRaw: '09:00', repeat: 'weekly' }, NOW_WED);
+      return draft.ok === false && draft.unclear.some((u) => /day/i.test(u));
+    });
+    await checkAsync('"proti 15 din" (every 15 days) resolves to repeat=custom, unit=days, every=15', async () => {
+      const draft = await automationService.draftPlanFromParsed({ unclear: [], source: 'none', rec: 'selected', peopleNames: ['someone@example.test'], mediator: 'mail', timeRaw: '09:00', repeat: 'custom', customEvery: 15, customUnit: 'days' }, NOW_WED);
+      return draft.ok && draft.schedule.repeat === 'custom' && draft.schedule.unit === 'days' && draft.schedule.every === 15;
+    });
+    await checkAsync('"custom" with no every/unit given is unclear, never silently defaulted', async () => {
+      const draft = await automationService.draftPlanFromParsed({ unclear: [], source: 'none', rec: 'selected', peopleNames: ['someone@example.test'], mediator: 'mail', timeRaw: '09:00', repeat: 'custom' }, NOW_WED);
+      return draft.ok === false && draft.unclear.some((u) => /often|every/i.test(u));
+    });
+    await checkAsync('REGRESSION: a plain monthly ask (no repeat stated) still resolves day-of-month exactly as before', async () => {
+      const draft = await automationService.draftPlanFromParsed({ unclear: [], source: 'none', rec: 'selected', peopleNames: ['someone@example.test'], mediator: 'mail', dayOfMonth: 25, timeRaw: '18:00' }, new Date('2026-11-01T06:00:00.000Z'));
+      return draft.ok && draft.schedule.repeat === 'monthly' && draft.schedule.date === '2026-11-25';
+    });
+
+    console.log('='.repeat(70));
+    console.log('Task 11 (2026-11): a one-shot (Once/legacy None) task shows as "completed" once its single run is used up - never stuck "Active" forever with no next run');
+    console.log('='.repeat(70));
+    await checkAsync('a real run of a "once" task flips status to completed, with nextRunAt left null', async () => {
+      const r = await automationService.draftPlanFromParsed({ unclear: [], source: 'none', rec: 'selected', peopleNames: ['someone@example.test'], mediator: 'mail', timeRaw: '10:00', repeat: 'once' }, now);
+      const task = automationService.newAutomation({ subject: 'Once-completion test', plan: r.plan, schedule: r.schedule, now });
+      task.status = 'active';
+      await automationService.saveAutomation(task);
+      await automationService.runAutomation(task.id, {}, new Date(new Date(r.schedule.date + 'T00:00:00Z').getTime() + 24 * 3600000));
+      const after = await automationService.getAutomation(task.id);
+      await automationService.deleteAutomation(task.id);
+      return after.status === 'completed' && after.nextRunAt === null;
+    });
+    await checkAsync('REGRESSION: a real run of a MONTHLY task never flips to completed - it keeps its real next run and stays active', async () => {
+      const r = await automationService.draftPlanFromParsed({ unclear: [], source: 'none', rec: 'selected', peopleNames: ['someone@example.test'], mediator: 'mail', timeRaw: '10:00', repeat: 'monthly' }, now);
+      const task = automationService.newAutomation({ subject: 'Monthly-regression test', plan: r.plan, schedule: r.schedule, now });
+      task.status = 'active';
+      await automationService.saveAutomation(task);
+      await automationService.runAutomation(task.id, {}, new Date(new Date(r.schedule.date + 'T00:00:00Z').getTime() + 24 * 3600000));
+      const after = await automationService.getAutomation(task.id);
+      await automationService.deleteAutomation(task.id);
+      return after.status === 'active' && Boolean(after.nextRunAt);
+    });
+    await checkAsync('skipping a MISSED once-off run also completes it (nothing left to do either way)', async () => {
+      const r = await automationService.draftPlanFromParsed({ unclear: [], source: 'none', rec: 'selected', peopleNames: ['someone@example.test'], mediator: 'mail', timeRaw: '10:00', repeat: 'once' }, now);
+      const task = automationService.newAutomation({ subject: 'Once-skip test', plan: r.plan, schedule: r.schedule, now });
+      task.status = 'active';
+      task.pendingMissedRun = { scheduledFor: task.nextRunAt, discoveredAt: now.toISOString() };
+      task.nextRunAt = null;
+      await automationService.saveAutomation(task);
+      const result = await automationService.resolveMissedRun(task.id, 'skip', now);
+      const after = await automationService.getAutomation(task.id);
+      await automationService.deleteAutomation(task.id);
+      return result.ok && after.status === 'completed';
+    });
+
+    console.log('='.repeat(70));
     console.log('Task 9c (2026-11) LIVE BUG FIX: draftPlanFromParsed used to ALWAYS schedule a plain "day N" ask for next month, even when this month\'s own occurrence was still comfortably ahead');
     console.log('='.repeat(70));
     await checkAsync('"the 25th at 6pm", asked on the 1st (comfortably ahead) - uses THIS month, never next', async () => {

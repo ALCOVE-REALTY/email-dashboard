@@ -253,6 +253,8 @@
   const autoRepSeg = document.getElementById('autoRepSeg');
   const autoCustomWrap = document.getElementById('autoCustomWrap');
   const autoEvery = document.getElementById('autoEvery');
+  const autoCustomUnit = document.getElementById('autoCustomUnit');
+  const autoWeekdaysSeg = document.getElementById('autoWeekdaysSeg');
   const autoRepRule = document.getElementById('autoRepRule');
   const autoSummary = document.getElementById('autoSummary');
   const autoPreviewBtn = document.getElementById('autoPreviewBtn');
@@ -1530,6 +1532,50 @@
       void el.offsetWidth; // restart the animation even if it's still mid-play
       el.classList.add('wi-badge-pop');
     }
+  }
+
+  // ---------- Schedule repeat (Task 11, 2026-11) - shared by Automated
+  // Tasks and Workflows, both of which mirror the exact same Schedule
+  // section markup/behaviour (auto*/wf* id prefixes only) - one set of
+  // helpers instead of two copies. ----------
+  const WEEKDAY_DEFS = [
+    { key: 'monday', short: 'Mon' }, { key: 'tuesday', short: 'Tue' }, { key: 'wednesday', short: 'Wed' },
+    { key: 'thursday', short: 'Thu' }, { key: 'friday', short: 'Fri' }, { key: 'saturday', short: 'Sat' }, { key: 'sunday', short: 'Sun' }
+  ];
+  // Reuses the existing .wf-auto-seg segmented-control look (same classes
+  // Repeat itself uses) as a MULTI-select toggle instead of single-select
+  // - no new style, just more than one button allowed "on" at once.
+  function renderWeekdaySeg(container, selected) {
+    if (!container) return;
+    if (!container.dataset.wired) {
+      container.innerHTML = WEEKDAY_DEFS.map((d) => '<button type="button" data-v="' + d.key + '">' + d.short + '</button>').join('');
+      container.dataset.wired = '1';
+    }
+    const sel = new Set(selected || []);
+    container.querySelectorAll('button[data-v]').forEach((b) => b.classList.toggle('on', sel.has(b.dataset.v)));
+  }
+  function getWeekdaySegValues(container) {
+    if (!container) return [];
+    return Array.from(container.querySelectorAll('button.on[data-v]')).map((b) => b.dataset.v);
+  }
+  // One human-readable rule line, used both by the create/edit page's own
+  // Summary card and the list page's per-task/workflow row - "f" is
+  // whatever shape has repeat/every/unit/weekdays (the read-form object,
+  // or a saved task/workflow's own schedule).
+  function describeScheduleRule(f) {
+    const weekdayLabel = (keys) => (keys || []).map((k) => { const d = WEEKDAY_DEFS.find((w) => w.key === k); return d ? d.short : k; }).join(', ');
+    const repeat = f.repeat === 'none' ? 'once' : f.repeat; // legacy stored value
+    if (repeat === 'once') return 'Once';
+    if (repeat === 'daily') return 'Daily';
+    if (repeat === 'weekly') return 'Every ' + (weekdayLabel(f.weekdays) || '—');
+    if (repeat === 'yearly') return 'Yearly';
+    if (repeat === 'custom') {
+      const n = f.every || 1;
+      const unitLabel = f.unit === 'days' ? (n === 1 ? 'day' : 'days') : f.unit === 'weeks' ? (n === 1 ? 'week' : 'weeks') : (n === 1 ? 'month' : 'months');
+      const onWeekdays = f.unit === 'weeks' && f.weekdays && f.weekdays.length ? ' on ' + weekdayLabel(f.weekdays) : '';
+      return 'Every ' + n + ' ' + unitLabel + onWeekdays;
+    }
+    return 'Monthly'; // default/legacy
   }
 
   // ---------- Important Communications (SUBH Phase 1 redesign) ----------
@@ -4949,6 +4995,7 @@
   // ---------- List page ----------
   function autoStatusPill(t) {
     if (t.status === 'active') return '<span class="wf-auto-task-status active">Active</span>';
+    if (t.status === 'completed') return '<span class="wf-auto-task-status completed">Completed</span>';
     if (t.status === 'paused') return '<span class="wf-auto-task-status paused">Paused</span>';
     if (t.status === 'failed') return '<span class="wf-auto-task-status failed">Failed</span>';
     return '<span class="wf-auto-task-status pending">Waiting for first-run approval</span>';
@@ -4957,12 +5004,7 @@
     if (t.plan.rec === 'column') return 'Person in "' + (t.plan.recCol === 'self' ? 'own contact' : (AUTO_EMP_PERSON_COLS.find((p) => p[0] === t.plan.recCol) || [, t.plan.recCol])[1]) + '"';
     return (t.plan.selectedEmployeeIds || []).length + ' recipient(s)';
   }
-  function autoRepeatLabel(t) {
-    if (t.schedule.repeat === 'none') return 'One time';
-    if (t.schedule.repeat === 'monthly') return 'Monthly';
-    if (t.schedule.repeat === 'yearly') return 'Yearly';
-    return 'Every ' + t.schedule.every + ' months';
-  }
+  function autoRepeatLabel(t) { return describeScheduleRule(t.schedule); }
   function autoWhen(iso) { return iso ? new Date(iso).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' }) : '—'; }
   function renderAutomationList(items) {
     if (!autoList) return;
@@ -5109,6 +5151,8 @@
     if (autoDate) autoDate.value = defaultWhen.date;
     if (autoTime) autoTime.value = defaultWhen.time;
     if (autoEvery) autoEvery.value = 2;
+    if (autoCustomUnit) autoCustomUnit.value = 'months';
+    if (autoWeekdaysSeg) renderWeekdaySeg(autoWeekdaysSeg, []);
     autoCcField.reset();
     if (autoEmpSearch) autoEmpSearch.value = '';
     renderAutoRecCols();
@@ -5120,7 +5164,7 @@
     autoExcluded = new Set(t.excludedKeys || []);
     autoSelected = new Set(t.plan.selectedEmployeeIds || []);
     autoTableCols = [...(t.plan.tableColumns || [])];
-    autoSchedule = Object.assign({ date: '', time: '10:00', repeat: 'monthly', every: 2 }, t.schedule);
+    autoSchedule = Object.assign({ date: '', time: '10:00', repeat: 'monthly', every: 2, unit: 'months', weekdays: [] }, t.schedule);
     if (autoSubject) autoSubject.value = t.subject;
     if (autoAsk) autoAsk.value = t.originalAsk || '';
     autoSetSeg(autoGroupSeg, t.plan.group);
@@ -5129,13 +5173,15 @@
     autoSetSeg(autoPlaceSeg, t.plan.tablePlacement || 'body');
     autoSetAttachFormat(t.plan.attachmentFormat || 'pdf');
     closeAutoAttachDropdown();
-    autoSetSeg(autoRepSeg, t.schedule.repeat);
+    autoSetSeg(autoRepSeg, t.schedule.repeat === 'none' ? 'once' : t.schedule.repeat);
     if (autoMailSubj) autoMailSubj.value = t.plan.mailSubject || '';
     if (autoBody) autoBody.value = t.plan.body || '';
     if (autoTableToggle) autoTableToggle.checked = Boolean(t.plan.table);
     if (autoDate) autoDate.value = t.schedule.date || '';
     if (autoTime) autoTime.value = t.schedule.time || '10:00';
     if (autoEvery) autoEvery.value = t.schedule.every || 2;
+    if (autoCustomUnit) autoCustomUnit.value = t.schedule.unit || 'months';
+    if (autoWeekdaysSeg) renderWeekdaySeg(autoWeekdaysSeg, t.schedule.weekdays || []);
     autoCcField.setChips((t.plan.cc || '').split(',').map((s) => s.trim()).filter(Boolean));
     autoSheetContext = null; // this editing session doesn't have a fresh multi-tab listing yet - tap Load again to refresh/change tab
     if (t.plan.source === 'sheet') {
@@ -5269,6 +5315,11 @@
     // were ever bypassed.
     seg.addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b || !b.dataset.v) return; autoSetSeg(seg, b.dataset.v); autoSync(); if (autoPlan) renderAutoUnderstanding(); });
   });
+  // Weekday chips (Task 11, 2026-11) - MULTI-select toggle, unlike the
+  // single-select segments above: clicking one just flips its own "on"
+  // state, never clears the others.
+  if (autoWeekdaysSeg) autoWeekdaysSeg.addEventListener('click', (e) => { const b = e.target.closest('button[data-v]'); if (!b) return; b.classList.toggle('on'); autoSync(); if (autoPlan) renderAutoUnderstanding(); });
+  if (autoCustomUnit) autoCustomUnit.addEventListener('change', () => { autoSync(); if (autoPlan) renderAutoUnderstanding(); });
   if (autoAttachBtn) {
     autoAttachBtn.addEventListener('click', () => {
       if (autoAttachDropdown) autoAttachDropdown.classList.toggle('hidden');
@@ -5313,7 +5364,9 @@
       date: autoDate ? autoDate.value : '',
       time: autoTime ? autoTime.value : '10:00',
       repeat: autoSegVal(autoRepSeg) || 'monthly',
-      every: autoEvery ? autoEvery.value : 2,
+      every: autoEvery ? Number(autoEvery.value) || 1 : 2,
+      unit: autoCustomUnit ? autoCustomUnit.value : 'months',
+      weekdays: getWeekdaySegValues(autoWeekdaysSeg),
       cc: autoCcField.getChips().join(', ')
     };
   }
@@ -5348,8 +5401,10 @@
     if (autoPdfWaNote) autoPdfWaNote.textContent = f.mediator === 'wa' ? "The WhatsApp gateway doesn't support file attachments yet - the table will go in the message body instead." : '';
     if (f.mediator === 'wa' && autoSegVal(autoPlaceSeg) === 'pdf') autoSetSeg(autoPlaceSeg, 'body');
     if (autoCustomWrap) autoCustomWrap.classList.toggle('hidden', f.repeat !== 'custom');
+    const showWeekdays = f.repeat === 'weekly' || (f.repeat === 'custom' && f.unit === 'weeks');
+    if (autoWeekdaysSeg) { autoWeekdaysSeg.classList.toggle('hidden', !showWeekdays); if (showWeekdays) renderWeekdaySeg(autoWeekdaysSeg, f.weekdays); }
     const day = f.date ? new Date(f.date + 'T00:00:00Z').getUTCDate() : null;
-    if (autoRepRule) autoRepRule.textContent = (f.repeat === 'monthly' && day > 28) ? ('Months without day ' + day + ' run on their last day.') : (f.repeat === 'yearly' && f.date && f.date.slice(5) === '02-29' ? '29 Feb → runs on 28 Feb in non-leap years.' : '');
+    if (autoRepRule) autoRepRule.textContent = (f.repeat === 'monthly' && day > 28) ? ('Months without day ' + day + ' run on their last day.') : (f.repeat === 'yearly' && f.date && f.date.slice(5) === '02-29' ? '29 Feb → runs on 28 Feb in non-leap years.' : (f.repeat === 'weekly' && !f.weekdays.length ? 'Pick at least one day of the week.' : ''));
     clearTimeout(autoSyncTimer);
     autoSyncTimer = setTimeout(autoRefreshSummary, 250);
   }
@@ -5357,7 +5412,7 @@
     if (!autoSummary || !autoPlan) return;
     const f = autoReadForm();
     const plan = autoBuildPlanFromForm(f);
-    const schedule = { date: f.date, time: f.time, repeat: f.repeat, every: f.every };
+    const schedule = { date: f.date, time: f.time, repeat: f.repeat, every: f.every, unit: f.unit, weekdays: f.weekdays };
     try {
       const resp = await fetch('/api/workforce/hr-assistant/automations/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ plan, excludedKeys: Array.from(autoExcluded), schedule }) });
       const data = await resp.json();
@@ -5375,7 +5430,7 @@
           '<div class="wf-auto-summary-line">' + (autoConfirmed ? '✓ Plan confirmed' : '⚠ Ask SUBH and confirm the plan first') + '</div>' +
           '<div class="wf-auto-summary-line">' + escapeHtml(srcLabel) + (autoExcluded.size ? ' · ' + autoExcluded.size + ' removed' : '') + '</div>' +
           '<div class="wf-auto-summary-line">' + (f.mediator === 'mail' ? '✉️ Mail' : '💬 WhatsApp') + ' → ' + escapeHtml(recTxt) + (f.cc ? ' (+ CC)' : '') + '</div>' +
-          '<div class="wf-auto-summary-line">' + (f.repeat === 'custom' ? 'Every ' + f.every + ' mo' : f.repeat.charAt(0).toUpperCase() + f.repeat.slice(1)) + ' · next run <b>' + escapeHtml(data.nextRunAt ? new Date(data.nextRunAt).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' }) : '—') + '</b></div>' +
+          '<div class="wf-auto-summary-line">' + describeScheduleRule(f) + ' · next run <b>' + escapeHtml(data.nextRunAt ? new Date(data.nextRunAt).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' }) : '—') + '</b></div>' +
           '<div class="wf-auto-summary-line">Next run would send <b>' + ((data.sent || []).length) + '</b> message(s).</div>';
       }
       // The understanding card's own per-row table reads autoLastPreview too
@@ -5418,6 +5473,8 @@
       autoDate.value = draft.schedule.date || '';
       autoTime.value = draft.schedule.time || '10:00';
       autoEvery.value = draft.schedule.every || 2;
+      if (autoCustomUnit) autoCustomUnit.value = draft.schedule.unit || 'months';
+      if (autoWeekdaysSeg) renderWeekdaySeg(autoWeekdaysSeg, draft.schedule.weekdays || []);
       renderAutoRecCols();
       if (autoRecCol) autoRecCol.value = draft.plan.recCol || 'reportingDoer';
       renderAutoCols();
@@ -5566,7 +5623,7 @@
     const namedRecipients = [...(autoEmployeesCache || []).filter((e) => autoSelected.has(e.employeeId)).map((e) => e.name), ...(autoPlan.selectedRawEmails || [])];
     const recTxt = f.rec === 'column' ? (f.recCol === 'self' ? 'each person themself' : 'each row\'s own ' + (autoRecCol && autoRecCol.selectedOptions[0] ? autoRecCol.selectedOptions[0].textContent : f.recCol)) : (namedRecipients.join(', ') || '—');
     const how = autoPlan.source === 'none' ? '' : (f.group === 'each' ? ' — one separate message per row' : ' — one combined list');
-    const sched = f.repeat === 'custom' && Number(f.every) === 1 ? 'every day' : (f.repeat === 'custom' ? 'every ' + f.every + ' months' : f.repeat);
+    const sched = describeScheduleRule(f);
     const lines = [
       '<b>' + (isSheetSrc ? 'Data' : 'Who') + ':</b> ' + escapeHtml(srcLabel) + escapeHtml(describePeriod(autoPlan, f.date)),
       '<b>Sends to:</b> ' + escapeHtml(recTxt) + escapeHtml(how),
@@ -5690,6 +5747,8 @@
     if (!askText) { showAutoToast('Tell SUBH what to automate first.', 'warning'); ok = false; }
     if (!autoConfirmed) { showAutoToast('Ask SUBH and confirm the plan first.', 'warning'); ok = false; }
     if (!f.date || !f.time) { showAutoToast('Date and time are required.', 'warning'); ok = false; }
+    if (f.repeat === 'weekly' && !f.weekdays.length) { showAutoToast('Pick at least one day of the week.', 'warning'); ok = false; }
+    if (f.repeat === 'custom' && (!Number(f.every) || !f.unit)) { showAutoToast('Set how often the custom repeat should run.', 'warning'); ok = false; }
     if (f.rec === 'selected' && !autoSelected.size) { showAutoToast('Select at least one recipient.', 'warning'); ok = false; }
     if (!f.body.trim()) { showAutoToast('Message body is required.', 'warning'); ok = false; }
     if (f.table && !autoTableCols.length) { showAutoToast('Pick at least one table column.', 'warning'); ok = false; }
@@ -5702,7 +5761,7 @@
     const f = autoReadForm();
     if (!autoValidate(f)) return;
     const plan = autoBuildPlanFromForm(f);
-    const schedule = { date: f.date, time: f.time, repeat: f.repeat, every: f.every };
+    const schedule = { date: f.date, time: f.time, repeat: f.repeat, every: f.every, unit: f.unit, weekdays: f.weekdays };
     const payload = { subject: f.subject, originalAsk: (autoAsk && autoAsk.value || '').trim(), plan, excludedKeys: Array.from(autoExcluded), schedule };
     const url = autoEditingId ? '/api/workforce/hr-assistant/automations/' + encodeURIComponent(autoEditingId) : '/api/workforce/hr-assistant/automations';
     await runButtonAction(autoSaveBtn, () => postJsonOrThrow(url, payload), (result) => {
@@ -5802,6 +5861,8 @@
   const wfRepSeg = document.getElementById('wfRepSeg');
   const wfCustomWrap = document.getElementById('wfCustomWrap');
   const wfEvery = document.getElementById('wfEvery');
+  const wfCustomUnit = document.getElementById('wfCustomUnit');
+  const wfWeekdaysSeg = document.getElementById('wfWeekdaysSeg');
   const wfRepRule = document.getElementById('wfRepRule');
   const wfSummary = document.getElementById('wfSummary');
   const wfPreviewBtn = document.getElementById('wfPreviewBtn');
@@ -5846,15 +5907,11 @@
   // ---------- List page ----------
   function wfStatusPill(w) {
     if (w.status === 'active') return '<span class="wf-auto-task-status active">Active</span>';
+    if (w.status === 'completed') return '<span class="wf-auto-task-status completed">Completed</span>';
     if (w.status === 'paused') return '<span class="wf-auto-task-status paused">Paused</span>';
     return '<span class="wf-auto-task-status pending">Waiting for first-run approval</span>';
   }
-  function wfRepeatLabel(w) {
-    if (w.schedule.repeat === 'none') return 'One time';
-    if (w.schedule.repeat === 'monthly') return 'Monthly';
-    if (w.schedule.repeat === 'yearly') return 'Yearly';
-    return 'Every ' + w.schedule.every + ' months';
-  }
+  function wfRepeatLabel(w) { return describeScheduleRule(w.schedule); }
   function wfWhen(iso) { return iso ? new Date(iso).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' }) : '—'; }
   function renderWorkflowList(items) {
     if (!wfList) return;
@@ -5954,6 +6011,8 @@
     if (wfDate) wfDate.value = defaultWhen.date;
     if (wfTime) wfTime.value = defaultWhen.time;
     if (wfEvery) wfEvery.value = 2;
+    if (wfCustomUnit) wfCustomUnit.value = 'months';
+    if (wfWeekdaysSeg) renderWeekdaySeg(wfWeekdaysSeg, []);
     if (wfAlsoOn) wfAlsoOn.checked = false;
     if (wfAlsoTo) wfAlsoTo.value = 'hr';
     if (wfAlsoSubj) wfAlsoSubj.value = '';
@@ -5984,13 +6043,15 @@
     wfSetSeg(wfGroupSeg, w.plan.group);
     wfSetSeg(wfRecSeg, w.plan.rec);
     wfSetSeg(wfMedSeg, w.plan.mediator);
-    wfSetSeg(wfRepSeg, w.schedule.repeat);
+    wfSetSeg(wfRepSeg, w.schedule.repeat === 'none' ? 'once' : w.schedule.repeat);
     if (wfMailSubj) wfMailSubj.value = w.plan.mailSubject || '';
     if (wfBody) wfBody.value = w.plan.body || '';
     if (wfTableToggle) wfTableToggle.checked = Boolean(w.plan.table);
     if (wfDate) wfDate.value = w.schedule.date || '';
     if (wfTime) wfTime.value = w.schedule.time || '10:00';
     if (wfEvery) wfEvery.value = w.schedule.every || 2;
+    if (wfCustomUnit) wfCustomUnit.value = w.schedule.unit || 'months';
+    if (wfWeekdaysSeg) renderWeekdaySeg(wfWeekdaysSeg, w.schedule.weekdays || []);
     wfCcField.setChips((w.plan.cc || '').split(',').map((s) => s.trim()).filter(Boolean));
     const also = w.plan.also || { on: false };
     if (wfAlsoOn) wfAlsoOn.checked = Boolean(also.on);
@@ -6085,6 +6146,8 @@
     if (!seg) return;
     seg.addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b || !b.dataset.v) return; wfSetSeg(seg, b.dataset.v); wfSync(); if (wfPlan) renderWfUnderstanding(); });
   });
+  if (wfWeekdaysSeg) wfWeekdaysSeg.addEventListener('click', (e) => { const b = e.target.closest('button[data-v]'); if (!b) return; b.classList.toggle('on'); wfSync(); if (wfPlan) renderWfUnderstanding(); });
+  if (wfCustomUnit) wfCustomUnit.addEventListener('change', () => { wfSync(); if (wfPlan) renderWfUnderstanding(); });
   if (wfRecCol) wfRecCol.addEventListener('change', () => { wfSync(); if (wfPlan) renderWfUnderstanding(); });
   if (wfTableToggle) wfTableToggle.addEventListener('change', wfSync);
   if (wfAlsoOn) wfAlsoOn.addEventListener('change', wfSync);
@@ -6107,7 +6170,9 @@
       date: wfDate ? wfDate.value : '',
       time: wfTime ? wfTime.value : '10:00',
       repeat: wfSegVal(wfRepSeg) || 'monthly',
-      every: wfEvery ? wfEvery.value : 2,
+      every: wfEvery ? Number(wfEvery.value) || 1 : 2,
+      unit: wfCustomUnit ? wfCustomUnit.value : 'months',
+      weekdays: getWeekdaySegValues(wfWeekdaysSeg),
       cc: wfCcField.getChips().join(', ')
     };
   }
@@ -6143,7 +6208,9 @@
     if (wfDocsWrap) wfDocsWrap.classList.toggle('hidden', !(wfDocsOn && wfDocsOn.checked));
     const day = f.date ? new Date(f.date + 'T00:00:00Z').getUTCDate() : null;
     if (wfCustomWrap) wfCustomWrap.classList.toggle('hidden', f.repeat !== 'custom');
-    if (wfRepRule) wfRepRule.textContent = (f.repeat === 'monthly' && day > 28) ? ('Months without day ' + day + ' run on their last day.') : '';
+    const wfShowWeekdays = f.repeat === 'weekly' || (f.repeat === 'custom' && f.unit === 'weeks');
+    if (wfWeekdaysSeg) { wfWeekdaysSeg.classList.toggle('hidden', !wfShowWeekdays); if (wfShowWeekdays) renderWeekdaySeg(wfWeekdaysSeg, f.weekdays); }
+    if (wfRepRule) wfRepRule.textContent = (f.repeat === 'monthly' && day > 28) ? ('Months without day ' + day + ' run on their last day.') : (f.repeat === 'weekly' && !f.weekdays.length ? 'Pick at least one day of the week.' : '');
     clearTimeout(wfSyncTimer);
     wfSyncTimer = setTimeout(wfRefreshSummary, 250);
   }
@@ -6151,7 +6218,7 @@
     if (!wfSummary || !wfPlan) return;
     const f = wfReadForm();
     const plan = wfBuildPlanFromForm(f);
-    const schedule = { date: f.date, time: f.time, repeat: f.repeat, every: f.every };
+    const schedule = { date: f.date, time: f.time, repeat: f.repeat, every: f.every, unit: f.unit, weekdays: f.weekdays };
     try {
       const resp = await fetch('/api/workforce/hr-assistant/workflows/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ plan, excludedKeys: Array.from(wfExcluded), schedule }) });
       const data = await resp.json();
@@ -6167,7 +6234,7 @@
           (data.alsoMessage ? '<div class="wf-auto-summary-line">+ 1 mail → ' + escapeHtml(data.alsoMessage.to) + '</div>' : '') +
           '<div class="wf-auto-summary-line">🔁 Follow up every ' + (wfFuDays ? wfFuDays.value : 2) + ' day(s), up to ' + (wfFuMax ? wfFuMax.value : 2) + ' time(s)</div>' +
           '<div class="wf-auto-summary-line">🤖 ' + wfRules.length + ' reply rule(s)</div>' +
-          '<div class="wf-auto-summary-line">' + (f.repeat === 'custom' ? 'Every ' + f.every + ' mo' : f.repeat.charAt(0).toUpperCase() + f.repeat.slice(1)) + ' · next run <b>' + escapeHtml(data.nextRunAt ? wfWhen(data.nextRunAt) : '—') + '</b></div>' +
+          '<div class="wf-auto-summary-line">' + describeScheduleRule(f) + ' · next run <b>' + escapeHtml(data.nextRunAt ? wfWhen(data.nextRunAt) : '—') + '</b></div>' +
           '<div class="wf-auto-summary-line">Next run would send <b>' + ((data.sent || []).length) + '</b> first message(s).</div>';
       }
       renderWfUnderstanding();
@@ -6251,6 +6318,8 @@
       wfDate.value = draft.schedule.date || '';
       wfTime.value = draft.schedule.time || '10:00';
       wfEvery.value = draft.schedule.every || 2;
+      if (wfCustomUnit) wfCustomUnit.value = draft.schedule.unit || 'months';
+      if (wfWeekdaysSeg) renderWeekdaySeg(wfWeekdaysSeg, draft.schedule.weekdays || []);
       if (wfAlsoOn) wfAlsoOn.checked = Boolean(draft.plan.also && draft.plan.also.on);
       if (wfAlsoTo) wfAlsoTo.value = (draft.plan.also && draft.plan.also.to) || 'hr';
       if (wfAlsoSubj) wfAlsoSubj.value = (draft.plan.also && draft.plan.also.subject) || '';
@@ -6325,7 +6394,7 @@
       '<b>Who:</b> ' + escapeHtml(srcLabel),
       '<b>Sends to:</b> ' + escapeHtml(recTxt) + (f.group === 'each' ? ' — one separate message per row' : ' — one combined list'),
       '<b>By:</b> ' + (f.mediator === 'mail' ? 'Mail' : 'WhatsApp') + (f.table ? ' · table in the message' : ''),
-      '<b>When:</b> ' + f.repeat + ', first run ' + escapeHtml(wfLastPreview && wfLastPreview.nextRunAt ? wfWhen(wfLastPreview.nextRunAt) : '—'),
+      '<b>When:</b> ' + escapeHtml(describeScheduleRule(f)) + ', first run ' + escapeHtml(wfLastPreview && wfLastPreview.nextRunAt ? wfWhen(wfLastPreview.nextRunAt) : '—'),
       '🔁 No reply in <b>' + (wfFuDays ? wfFuDays.value : 2) + ' day(s)</b> → follow up (max ' + (wfFuMax ? wfFuMax.value : 2) + '), then alert you',
       ...wfRules.map((r) => (r.askDetail ? '⏳' : '✅') + ' "' + escapeHtml(r.when || '(unnamed rule)') + '" → ' + (r.askDetail ? 'ask for ' + escapeHtml(r.askDetail) + ' → ' : '') + '"' + escapeHtml((r.replyText || '').slice(0, 60)) + (((r.replyText || '').length > 60) ? '…' : '') + '"' + (r.sendTo ? ' → mail to ' + (WF_SEND_TO_LABELS[r.sendTo] || r.sendTo) + (r.askMeFirst ? ' (asks you first)' : '') : '') + ' → ' + (r.then === 'stop' ? 'done' : r.then === 'wait' ? 'keep waiting' : 'ask you')),
       '❓ Unclear reply → a card for you'
@@ -6399,6 +6468,8 @@
     if (!askText) { showWfToast('Tell SUBH what to automate first.', 'warning'); ok = false; }
     if (!wfConfirmed) { showWfToast('Ask SUBH and confirm the plan first.', 'warning'); ok = false; }
     if (!f.date || !f.time) { showWfToast('Date and time are required.', 'warning'); ok = false; }
+    if (f.repeat === 'weekly' && !f.weekdays.length) { showWfToast('Pick at least one day of the week.', 'warning'); ok = false; }
+    if (f.repeat === 'custom' && (!Number(f.every) || !f.unit)) { showWfToast('Set how often the custom repeat should run.', 'warning'); ok = false; }
     if (f.rec === 'selected' && !wfSelected.size) { showWfToast('Select at least one recipient.', 'warning'); ok = false; }
     if (!f.body.trim()) { showWfToast('Message body is required.', 'warning'); ok = false; }
     if (f.table && !wfTableCols.length) { showWfToast('Pick at least one table column.', 'warning'); ok = false; }
@@ -6413,7 +6484,7 @@
     const f = wfReadForm();
     if (!wfValidate(f)) return;
     const plan = wfBuildPlanFromForm(f);
-    const schedule = { date: f.date, time: f.time, repeat: f.repeat, every: f.every };
+    const schedule = { date: f.date, time: f.time, repeat: f.repeat, every: f.every, unit: f.unit, weekdays: f.weekdays };
     const payload = { subject: f.subject, originalAsk: (wfAsk && wfAsk.value || '').trim(), plan, excludedKeys: Array.from(wfExcluded), schedule };
     const url = wfEditingId ? '/api/workforce/hr-assistant/workflows/' + encodeURIComponent(wfEditingId) : '/api/workforce/hr-assistant/workflows';
     await runButtonAction(wfSaveBtn, () => postJsonOrThrow(url, payload), (result) => {

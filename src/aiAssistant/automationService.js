@@ -709,28 +709,105 @@ function istParts(now) {
   const get = (t) => parts.find((p) => p.type === t).value;
   return { year: Number(get('year')), month: Number(get('month')), day: Number(get('day')), hour: Number(get('hour')), minute: Number(get('minute')) };
 }
+// Task 11 (2026-11) - schedule repeat options expanded from
+// none/monthly/yearly/custom(months only) to once/daily/weekly/monthly/
+// yearly/custom(days|weeks|months), shared by Automated Tasks and
+// Workflows (both call only this function/ensureNotTooSoon - see their
+// own schedule math comments for why that single choke point matters).
+// "none" is the legacy stored value for what the UI now calls "Once" -
+// kept accepted here forever so an already-saved task/workflow keeps
+// working unchanged; every NEW save writes "once" instead (see the UI/
+// draftPlanFromParsed below).
+//
+// Two independent stepping engines, chosen by repeat type:
+// - MONTH-STEPPING (monthly/yearly/custom+unit=months) - unchanged from
+//   before: a day-of-month anchor, clamped to each target month's own
+//   real last day, advanced by whole months.
+// - DAY-STEPPING (daily/weekly/custom+unit=days|weeks) - walks forward
+//   one calendar day at a time from the anchor date, optionally filtered
+//   to a specific weekday SET (weekly; custom+weeks with chips) and/or a
+//   fixed day interval (custom+days), so a weekday filter and an N-unit
+//   stride compose naturally without two separate algorithms.
+const WEEKDAY_NAMES = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+function addDaysToUtcDateParts(y, m, d, days) {
+  const dt = new Date(Date.UTC(y, m, d));
+  dt.setUTCDate(dt.getUTCDate() + days);
+  return { y: dt.getUTCFullYear(), m: dt.getUTCMonth(), d: dt.getUTCDate() };
+}
+function istWeekdayIndex(y, m, d) { return new Date(Date.UTC(y, m, d)).getUTCDay(); }
+function daysBetweenUtcDateParts(y1, m1, d1, y2, m2, d2) {
+  return Math.round((Date.UTC(y2, m2, d2) - Date.UTC(y1, m1, d1)) / 86400000);
+}
 function computeNextRun(schedule, now) {
   if (!schedule || !schedule.date || !schedule.time) return null;
   const [h, mi] = schedule.time.split(':').map(Number);
   const base = new Date(schedule.date + 'T00:00:00Z');
-  const wantDay = base.getUTCDate();
-  // y/m track the intended IST calendar month/year directly, advanced by
-  // plain month arithmetic - never re-derived from `cand` itself (an
-  // IST-shifted UTC instant), which for an early-IST-morning time
-  // (00:00-05:29) can land on the PREVIOUS UTC calendar day/month and
-  // would otherwise corrupt the "advance by N months" step.
-  let y = base.getUTCFullYear(), m = base.getUTCMonth();
-  let cand = istWallClockToUtc(y, m, Math.min(wantDay, lastDayOfMonth(y, m)), h, mi);
-  const step = schedule.repeat === 'monthly' ? 1 : schedule.repeat === 'yearly' ? 12 : schedule.repeat === 'custom' ? (Number(schedule.every) || 1) : 0;
-  let guard = 0;
-  while (cand.getTime() < now.getTime() && step && guard++ < 1200) {
-    const nm = m + step;
-    y = y + Math.floor(nm / 12);
-    m = ((nm % 12) + 12) % 12;
-    cand = istWallClockToUtc(y, m, Math.min(wantDay, lastDayOfMonth(y, m)), h, mi);
+  const anchorDay = base.getUTCDate();
+  const repeat = schedule.repeat;
+
+  // Once (and the legacy "none") - a true one-off: fires only if the
+  // anchor date/time is still ahead of `now`, never repeats after.
+  if (!repeat || repeat === 'none' || repeat === 'once') {
+    const cand = istWallClockToUtc(base.getUTCFullYear(), base.getUTCMonth(), anchorDay, h, mi);
+    return cand.getTime() >= now.getTime() ? cand.toISOString() : null;
   }
-  if (cand.getTime() < now.getTime() && !step) return null; // one-time schedule already passed
-  return cand.toISOString();
+
+  // MONTH-STEPPING: monthly, yearly, custom+months.
+  const monthStep = repeat === 'monthly' ? 1
+    : repeat === 'yearly' ? 12
+    : (repeat === 'custom' && schedule.unit === 'months') ? Math.max(1, Number(schedule.every) || 1)
+    : 0;
+  if (monthStep) {
+    // y/m track the intended IST calendar month/year directly, advanced by
+    // plain month arithmetic - never re-derived from `cand` itself (an
+    // IST-shifted UTC instant), which for an early-IST-morning time
+    // (00:00-05:29) can land on the PREVIOUS UTC calendar day/month and
+    // would otherwise corrupt the "advance by N months" step.
+    let y = base.getUTCFullYear(), m = base.getUTCMonth();
+    let cand = istWallClockToUtc(y, m, Math.min(anchorDay, lastDayOfMonth(y, m)), h, mi);
+    let guard = 0;
+    while (cand.getTime() < now.getTime() && guard++ < 1200) {
+      const nm = m + monthStep;
+      y = y + Math.floor(nm / 12);
+      m = ((nm % 12) + 12) % 12;
+      cand = istWallClockToUtc(y, m, Math.min(anchorDay, lastDayOfMonth(y, m)), h, mi);
+    }
+    return cand.toISOString();
+  }
+
+  // DAY-STEPPING: daily, weekly, custom+days, custom+weeks.
+  const usesWeekdayFilter = (repeat === 'weekly' || (repeat === 'custom' && schedule.unit === 'weeks')) &&
+    Array.isArray(schedule.weekdays) && schedule.weekdays.length > 0;
+  const weekdaySet = usesWeekdayFilter ? new Set(schedule.weekdays.map((w) => WEEKDAY_NAMES.indexOf(w)).filter((i) => i >= 0)) : null;
+  // "Every N weeks" only means something once a weekday filter narrows
+  // candidates to specific days - plain "weekly" is every=1 implicitly,
+  // always satisfied. Measured in whole weeks (7-day blocks) elapsed
+  // since the anchor date, so it works regardless of which weekday(s)
+  // were picked.
+  const weekStride = (repeat === 'custom' && schedule.unit === 'weeks') ? Math.max(1, Number(schedule.every) || 1) : 1;
+  // No weekday filter at all: a flat day interval - daily (1), custom
+  // days (N), or custom weeks with no specific weekday chosen (N*7, i.e.
+  // "every N weeks on the SAME weekday as the anchor").
+  const flatDayStep = repeat === 'daily' ? 1
+    : (repeat === 'custom' && schedule.unit === 'days') ? Math.max(1, Number(schedule.every) || 1)
+    : (repeat === 'custom' && schedule.unit === 'weeks' && !usesWeekdayFilter) ? 7 * Math.max(1, Number(schedule.every) || 1)
+    : 0;
+  if (!weekdaySet && !flatDayStep) return null; // an unrecognised/incomplete repeat - never silently guess a cadence
+  let y = base.getUTCFullYear(), m = base.getUTCMonth(), d = anchorDay;
+  let cand = istWallClockToUtc(y, m, d, h, mi);
+  let guard = 0;
+  const GUARD_MAX = 3700; // ~10 years of daily stepping - a generous but finite search
+  while (guard++ < GUARD_MAX) {
+    const qualifies = weekdaySet
+      ? (weekdaySet.has(istWeekdayIndex(y, m, d)) && Math.floor(daysBetweenUtcDateParts(base.getUTCFullYear(), base.getUTCMonth(), anchorDay, y, m, d) / 7) % weekStride === 0)
+      : true;
+    if (qualifies && cand.getTime() >= now.getTime()) return cand.toISOString();
+    const step = weekdaySet ? 1 : flatDayStep; // stepping by 1 day lets the weekday filter itself pick the right days; a flat interval jumps straight by N
+    const next = addDaysToUtcDateParts(y, m, d, step);
+    y = next.y; m = next.m; d = next.d;
+    cand = istWallClockToUtc(y, m, d, h, mi);
+  }
+  return null;
 }
 // Task 9d (2026-11) - Save's own re-check: a schedule accepted a little
 // while ago (e.g. during "Ask SUBH" extraction) can have drifted to
@@ -805,6 +882,13 @@ async function releaseRunLock(id) {
 // Runs ONE automation right now against current data. `isTest` restricts
 // sending to `testTo` only (used by the "Send test to me" button) and
 // never touches the task's own history/nextRunAt/lastRun.
+// Task 11 (2026-11) - a "once" (or legacy "none") schedule never fires
+// again once its one occurrence is used up - computeNextRun then
+// correctly returns null, and the task/workflow should visibly show as
+// finished rather than sitting as "Active" forever with no next run.
+function isOneShotSchedule(schedule) {
+  return !schedule || !schedule.repeat || schedule.repeat === 'none' || schedule.repeat === 'once';
+}
 async function runAutomation(id, { isTest = false, testTo = null } = {}, now = new Date()) {
   const automation = await getAutomation(id);
   if (!automation) return { ok: false, error: 'Automation not found.' };
@@ -849,6 +933,7 @@ async function runAutomation(id, { isTest = false, testTo = null } = {}, now = n
     automation.pendingMissedRun = null;
     automation.nextRunAt = computeNextRun(automation.schedule, new Date(runAt.getTime() + 1000));
     automation.updatedAt = runAt.toISOString();
+    if (!automation.nextRunAt && isOneShotSchedule(automation.schedule)) automation.status = 'completed';
     // "Same as the sheet" tasks: once per REAL change, tell the owner the
     // table's own columns shifted, then adopt the new baseline so the same
     // change never gets reported twice.
@@ -916,6 +1001,7 @@ async function resolveMissedRun(id, action, now = new Date()) {
   automation.history = [{ runAt: automation.pendingMissedRun.scheduledFor, sentCount: 0, skippedCount: 0, results: [], note: 'Missed run skipped by owner' }, ...(automation.history || [])].slice(0, 20);
   automation.pendingMissedRun = null;
   automation.updatedAt = now.toISOString();
+  if (!automation.nextRunAt && isOneShotSchedule(automation.schedule)) automation.status = 'completed';
   await saveAutomation(automation);
   return { ok: true, skipped: true };
 }
@@ -963,7 +1049,10 @@ function automationPlanTool(departmentNames, sheetContext) {
           mediator: { type: 'string', enum: ['mail', 'wa'], description: 'Defaults to mail unless WhatsApp is explicitly mentioned.' },
           dayOfMonth: { type: 'number', description: 'The day-of-month mentioned (e.g. "1 tarikh" -> 1), 1-31. Omit if not stated (defaults to the 1st).' },
           timeRaw: { type: 'string', description: 'HH:MM in 24-hour time (e.g. "10 tay"/"10 AM" -> "10:00"). Omit entirely if not stated (defaults to 10:00).' },
-          repeat: { type: 'string', enum: ['none', 'monthly', 'yearly', 'daily'], description: 'Defaults to monthly unless "every year"/"once"/"every day" is stated.' },
+          repeat: { type: 'string', enum: ['once', 'daily', 'weekly', 'monthly', 'yearly', 'custom'], description: 'Defaults to "monthly" unless stated otherwise. "once" for a single one-time run ("ekbar"/"only once"/"15 tarikh-e ekbar" - a specific date with no recurrence implied). "daily" for "every day"/"roj". "weekly" for a specific weekday or weekdays repeating every single week ("proti Monday"/"proti shomobar"/"every Mon and Thu") - also set weekdayHints. "yearly" for "every year". "custom" for any other explicit interval ("every N days/weeks/months", e.g. "proti 15 din") - also set customEvery/customUnit (and weekdayHints too if customUnit is "weeks" AND specific weekday(s) were named).' },
+          weekdayHints: { type: 'array', items: { type: 'string', enum: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'] }, description: 'Required when repeat is "weekly" - one or more weekdays named (e.g. "proti shomobar" -> ["monday"], "every Mon and Thu" -> ["monday","thursday"]). Only set for repeat="custom" when customUnit is "weeks" AND specific weekday(s) were ALSO named (e.g. "every 2 weeks on Monday") - omit for a plain "every N weeks" with no weekday named. Never set for any other repeat value.' },
+          customEvery: { type: 'number', description: 'Required when repeat is "custom" - the N in "every N days/weeks/months" (e.g. "proti 15 din" -> 15). Omit otherwise.' },
+          customUnit: { type: 'string', enum: ['days', 'weeks', 'months'], description: 'Required when repeat is "custom" - the unit customEvery refers to, exactly as implied by the ask (din/days -> "days", saptaho/week -> "weeks", mash/month -> "months"). Omit otherwise.' },
           wantsPdf: { type: 'boolean', description: 'true only if a PDF/attachment was explicitly mentioned.' },
           wantsTable: { type: 'boolean', description: 'true if a list/table of records should be included in the message (e.g. "birthday list", "DOB column", "share a table") - look for a named column or the word list/table.' },
           tableColumnHints: { type: 'array', items: { type: 'string' }, description: 'Only when wantsTable - the column name(s) mentioned or clearly implied (e.g. "DOB", "department", "name"), exactly as given. Validated against the real column set afterward - never invented.' },
@@ -1190,33 +1279,57 @@ async function draftPlanFromParsed(parsed, now, sheetContext) {
     }
   }
 
+  // Task 11 (2026-11) - repeat now has 6 top-level values (the old
+  // "none"/"daily" model-facing values are gone - "once" and "daily" are
+  // each first-class now, never remapped into "custom" the way "daily"
+  // used to be). weekdayHints/customEvery/customUnit are only consulted
+  // for the repeat values that actually use them.
+  const repeat = ['once', 'daily', 'weekly', 'monthly', 'yearly', 'custom'].includes(parsed.repeat) ? parsed.repeat : 'monthly';
+  let every, unit, weekdays;
+  if (repeat === 'custom') {
+    unit = ['days', 'weeks', 'months'].includes(parsed.customUnit) ? parsed.customUnit : null;
+    every = Number(parsed.customEvery) > 0 ? Math.round(Number(parsed.customEvery)) : null;
+    if (!unit || !every) unclear.push('how often the custom repeat should run (every how many days/weeks/months)');
+  }
+  if (repeat === 'weekly' || (repeat === 'custom' && unit === 'weeks')) {
+    const resolved = (parsed.weekdayHints || []).filter((w) => WEEKDAY_NAMES.includes(w));
+    if (resolved.length) weekdays = resolved;
+    else if (repeat === 'weekly') unclear.push('which day(s) of the week to repeat on');
+    // custom+weeks with no weekday named is valid on its own (falls back
+    // to "every N weeks on the same weekday as the first run" - see
+    // computeNextRun) - only "weekly" itself REQUIRES at least one.
+  }
   if (unclear.length) return { ok: false, unclear };
   const group = parsed.group || (rec === 'selected' ? 'list' : 'each');
   const mediator = parsed.mediator === 'wa' ? 'wa' : 'mail';
-  const repeat = parsed.repeat === 'daily' ? 'custom' : (parsed.repeat || 'monthly');
-  const every = parsed.repeat === 'daily' ? 1 : undefined;
   const day = Math.min(31, Math.max(1, Number(parsed.dayOfMonth) || 1));
   const time = /^\d{1,2}:\d{2}$/.test(parsed.timeRaw || '') ? parsed.timeRaw : '10:00';
-  // Task 9c (2026-11) LIVE BUG FIX: "1 tarikh 12 pm" etc. used to always
-  // schedule for NEXT month regardless of whether this month's own 1st
-  // at noon was still comfortably ahead. Compared against the REAL
-  // current IST date/time instead (never the model's own guess) - this
-  // month's occurrence is used when it's still at least 5 minutes away,
-  // otherwise the next one; "31 tarikh"/"last day of month" already
-  // falls out of the SAME day-clamp lastDayOfMonth below gives every
-  // other schedule, never a separate case.
   const [schH, schMi] = time.split(':').map(Number);
   const nowIst = istParts(now);
-  let targetYear = nowIst.year, targetMonth0 = nowIst.month - 1; // 0-based, matches Date.UTC's own convention
-  let clampedDay = Math.min(day, lastDayOfMonth(targetYear, targetMonth0));
-  let candidateUtc = istWallClockToUtc(targetYear, targetMonth0, clampedDay, schH, schMi);
-  if (candidateUtc.getTime() - now.getTime() < 5 * 60 * 1000) {
-    const nm = targetMonth0 + 1;
-    targetYear += Math.floor(nm / 12);
-    targetMonth0 = ((nm % 12) + 12) % 12;
-    clampedDay = Math.min(day, lastDayOfMonth(targetYear, targetMonth0));
+  // Month-based repeats (once/monthly/yearly/custom+months) anchor on a
+  // DAY-OF-MONTH, resolved here exactly as before: this month's
+  // occurrence when it's still at least 5 minutes away, otherwise next
+  // month's (Task 9c's own live bug fix - never the model's own guess).
+  // Day-based repeats (daily/weekly/custom+days/custom+weeks) have no
+  // day-of-month concept at all - the anchor is simply TODAY, and
+  // computeNextRun's own forward search finds the real first qualifying
+  // instant from there (today itself, if still comfortably ahead).
+  const isMonthBased = repeat === 'once' || repeat === 'monthly' || repeat === 'yearly' || (repeat === 'custom' && unit === 'months');
+  let scheduleDate;
+  if (isMonthBased) {
+    let targetYear = nowIst.year, targetMonth0 = nowIst.month - 1; // 0-based, matches Date.UTC's own convention
+    let clampedDay = Math.min(day, lastDayOfMonth(targetYear, targetMonth0));
+    let candidateUtc = istWallClockToUtc(targetYear, targetMonth0, clampedDay, schH, schMi);
+    if (candidateUtc.getTime() - now.getTime() < 5 * 60 * 1000) {
+      const nm = targetMonth0 + 1;
+      targetYear += Math.floor(nm / 12);
+      targetMonth0 = ((nm % 12) + 12) % 12;
+      clampedDay = Math.min(day, lastDayOfMonth(targetYear, targetMonth0));
+    }
+    scheduleDate = new Date(Date.UTC(targetYear, targetMonth0, clampedDay));
+  } else {
+    scheduleDate = new Date(Date.UTC(nowIst.year, nowIst.month - 1, nowIst.day));
   }
-  const scheduleDate = new Date(Date.UTC(targetYear, targetMonth0, clampedDay));
   const subjectTemplates = { confirmations: 'Probation Confirmation of {Employee_Name}', birthdays: recCol ? '' : 'Birthday List', master: 'Notice', exits: 'Exits update', sheet: 'Reminder', none: 'Reminder' };
   const bodyTemplates = {
     confirmations: 'Dear Sir/Madam,\n\nKindly confirm the probation confirmation of {Employee_Name}.',
@@ -1240,7 +1353,7 @@ async function draftPlanFromParsed(parsed, now, sheetContext) {
       body: bodyTemplates[source] || 'Dear {Employee_Name},\n\n',
       table, tableColumns, tablePlacement: parsed.wantsPdf ? 'pdf' : 'body', attachmentFormat: 'pdf'
     },
-    schedule: { date: scheduleDate.toISOString().slice(0, 10), time, repeat, every },
+    schedule: { date: scheduleDate.toISOString().slice(0, 10), time, repeat, every, unit, weekdays },
     subject: parsed.subjectHint || { confirmations: 'Confirmation mail to HODs', birthdays: 'Birthday wishes', master: 'Notice to employees', exits: 'Exits update', sheet: (isSheet && sheetTab ? 'Data from ' + sheetTab : 'Reminder'), none: 'Reminder' }[source]
   };
 }
@@ -1250,8 +1363,8 @@ module.exports = {
   SOURCES, EMP_COLUMNS, EMP_PERSON_COLS, sourceDef, sourceKind,
   loadSheetInfo, getSheetLiveHeaders, sheetPlanDependencies, checkSheetDependencies, resolveFuzzyOneOf, resolveColumnName, sheetPersonCols, sheetDateColumns,
   testCond, matchedRows, personContact, contactOk, findEmployeeByName, rowKey, rowName,
-  buildMessages, fillPlaceholders, computeNextRun, ensureNotTooSoon,
+  buildMessages, fillPlaceholders, computeNextRun, ensureNotTooSoon, isOneShotSchedule,
   runAutomation, runDueAutomations, resolveMissedRun,
   parseAutomationAsk, draftPlanFromParsed, automationPlanTool,
-  MISSED_RUN_THRESHOLD_MS
+  MISSED_RUN_THRESHOLD_MS, WEEKDAY_NAMES
 };

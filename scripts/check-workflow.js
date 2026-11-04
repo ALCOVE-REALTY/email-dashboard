@@ -751,6 +751,23 @@ async function main() {
     });
 
     console.log('='.repeat(70));
+    console.log('Task 11 (2026-11): the expanded schedule repeat model (once/daily/weekly/monthly/yearly/custom) is fully inherited from automationService.js - Workflows never reimplement their own schedule math');
+    console.log('='.repeat(70));
+    await checkAsync('a workflow ask naming a weekday ("proti shomobar") resolves repeat=weekly with weekdays=["monday"], same mapping Automated Tasks uses', async () => {
+      const parsed = { unclear: [], source: 'confirmations', rec: 'column', recCol: 'reportingManager', group: 'each', mediator: 'mail', timeRaw: '10:00', repeat: 'weekly', weekdayHints: ['monday'], rules: [{ when: 'X', replyText: 'Y', then: 'stop' }] };
+      const r = await workflowService.draftWorkflowPlanFromParsed(parsed, now, null);
+      return r.ok && r.schedule.repeat === 'weekly' && JSON.stringify(r.schedule.weekdays) === JSON.stringify(['monday']);
+    });
+    await checkAsync('a real "once" workflow run flips status to completed with nextRunAt left null, exactly like Automated Tasks', async () => {
+      const r = await workflowService.draftWorkflowPlanFromParsed({ unclear: [], source: 'confirmations', rec: 'column', recCol: 'reportingManager', group: 'each', mediator: 'mail', timeRaw: '10:00', repeat: 'once', rules: [{ when: 'X', replyText: 'Y', then: 'stop' }] }, now, null);
+      const w = await create({ subject: 'Once-completion workflow test', plan: r.plan, schedule: r.schedule });
+      w.status = 'active'; await workflowService.saveWorkflow(w);
+      await workflowService.runWorkflow(w.id, {}, new Date(new Date(r.schedule.date + 'T00:00:00Z').getTime() + 24 * 3600000));
+      const after = await workflowService.getWorkflow(w.id);
+      return after.status === 'completed' && after.nextRunAt === null;
+    });
+
+    console.log('='.repeat(70));
     console.log(pass + '/' + (pass + fail) + ' passed' + (fail ? ', ' + fail + ' FAILED' : ''));
     if (failures.length) { console.log('Failed checks:'); failures.forEach((f) => console.log(' -', f)); }
     console.log('='.repeat(70));

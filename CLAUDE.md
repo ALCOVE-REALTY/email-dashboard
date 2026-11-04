@@ -513,3 +513,54 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
   sender with Banglish history sends a sticker -> Banglish; a brand-new
   sender with no history sends a bare photo -> English (never the old
   Banglish default).
+- Task 11 (2026-11): schedule Repeat expanded from none/monthly/yearly/
+  custom(months only) to Once/Daily/Weekly/Monthly/Yearly/Custom(days|
+  weeks|months), shared by Automated Tasks and Workflows - both call only
+  `automationService.computeNextRun`/`ensureNotTooSoon`, so this is a
+  single choke point, never duplicated. Root-cause finding: "daily" was
+  already accepted by the old schema but silently BROKEN - it mapped to
+  `{repeat:'custom', every:1}` and the old `computeNextRun` only ever
+  stepped in whole MONTHS, so a "daily" task would actually have fired
+  once a month. Fixed by giving `computeNextRun` two real stepping
+  engines: MONTH-STEPPING (monthly/yearly/custom+unit=months - unchanged
+  day-of-month-clamped-to-the-real-last-day logic) and DAY-STEPPING
+  (daily/weekly/custom+unit=days|weeks - walks forward one calendar day
+  at a time, optionally filtered to a weekday SET for weekly/custom+weeks
+  with chips, and/or a fixed day interval for custom+days - composes
+  naturally since a weekday filter and an N-unit stride are independent
+  checks on the same walk). "once" (the new name for the old "none") is a
+  true one-off - computeNextRun returns null once its single occurrence
+  has passed, and the task/workflow then flips to a new terminal
+  `completed` status (set in `runAutomation`/`resolveMissedRun`'s skip
+  path and their `workflowService.js` mirrors) rather than sitting as
+  "Active" forever with no next run; editing a completed task/workflow
+  with a schedule that has a real future run revives it back to `active`.
+  Ask SUBH maps free text via 3 new/changed classifier-tool fields
+  (`repeat` now has 6 values, `weekdayHints`, `customEvery`+`customUnit`)
+  resolved in CODE exactly like every other schedule field here, never
+  trusted to the model's own arithmetic - "weekly" with no weekday named
+  is correctly `unclear`, never guessed; a day-based repeat's anchor date
+  is simply TODAY (no day-of-month concept at all) and `computeNextRun`'s
+  own forward search finds the real first occurrence from there,
+  including today itself if still comfortably ahead. Fully backward
+  compatible - a stored `repeat:"none"` is accepted everywhere forever,
+  behaving exactly like the new "once". Shared UI (`workforce.html`'s
+  `#autoRepSeg`/`#wfRepSeg` Schedule sections, `hrAssistant.js`'s new
+  `describeScheduleRule`/`renderWeekdaySeg`/`getWeekdaySegValues`
+  helpers used by BOTH Automated Tasks and Workflows) adds weekday chips
+  (reusing the existing `.wf-auto-seg` segmented-control look as a
+  MULTI-select toggle, never a new style) and a unit dropdown for Custom.
+  Deterministic suites (`scripts/check-automation.js`, 148/148;
+  `scripts/check-workflow.js`, 63/63 - Workflows verified to inherit the
+  whole engine with zero schedule code of their own) - locked scenarios:
+  once (fires then never again), daily (today if still ahead, else
+  tomorrow), weekly on one weekday, weekly on two weekdays (picks
+  whichever comes first, then correctly alternates), custom every 15
+  days, custom every N weeks with/without a named weekday (the stride
+  skips the immediate next occurrence), and the completed-status
+  transition (run, and a skipped missed-run, both correctly complete a
+  one-shot; a monthly task never does). Real-model check (`scripts/
+  check-workflow-nlu.js`, 1x): the exit-handover sample scenario
+  ("proti shomobar") - previously logged here as a known, out-of-scope
+  weekly-schedule limitation - now resolves cleanly end to end
+  (`repeat:"weekly", weekdays:["monday"]`), closing that gap.

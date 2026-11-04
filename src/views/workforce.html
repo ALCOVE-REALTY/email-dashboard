@@ -694,8 +694,9 @@
             <label class="wf-rem-field"><span class="wf-auto-label">Time <span class="wf-auto-req">*</span></span><input type="time" id="autoTime" value="10:00" /></label>
           </div>
           <label class="wf-rem-field" style="margin-top:10px"><span class="wf-auto-label">Repeat <span class="wf-auto-req">*</span></span></label>
-          <div class="wf-auto-seg" id="autoRepSeg" style="margin-top:8px"><button type="button" data-v="none">None</button><button type="button" data-v="monthly" class="on">Monthly</button><button type="button" data-v="yearly">Yearly</button><button type="button" data-v="custom">Custom</button></div>
-          <div id="autoCustomWrap" class="hidden wf-auto-row-gap" style="margin-top:10px">Every <input type="number" id="autoEvery" min="1" max="12" value="2" style="width:70px" /> months</div>
+          <div class="wf-auto-seg" id="autoRepSeg" style="margin-top:8px"><button type="button" data-v="once">Once</button><button type="button" data-v="daily">Daily</button><button type="button" data-v="weekly">Weekly</button><button type="button" data-v="monthly" class="on">Monthly</button><button type="button" data-v="yearly">Yearly</button><button type="button" data-v="custom">Custom</button></div>
+          <div id="autoCustomWrap" class="hidden wf-auto-row-gap" style="margin-top:10px">Every <input type="number" id="autoEvery" min="1" max="365" value="2" style="width:70px" /> <select id="autoCustomUnit"><option value="days">days</option><option value="weeks">weeks</option><option value="months" selected>months</option></select></div>
+          <div class="wf-auto-seg hidden" id="autoWeekdaysSeg" style="margin-top:10px"></div>
           <div class="wf-auto-hint" id="autoRepRule"></div>
         </div>
 
@@ -888,8 +889,9 @@
             <label class="wf-rem-field"><span class="wf-auto-label">Time <span class="wf-auto-req">*</span></span><input type="time" id="wfTime" value="10:00" /></label>
           </div>
           <label class="wf-rem-field" style="margin-top:10px"><span class="wf-auto-label">Repeat <span class="wf-auto-req">*</span></span></label>
-          <div class="wf-auto-seg" id="wfRepSeg" style="margin-top:8px"><button type="button" data-v="none">None</button><button type="button" data-v="monthly" class="on">Monthly</button><button type="button" data-v="yearly">Yearly</button><button type="button" data-v="custom">Custom</button></div>
-          <div id="wfCustomWrap" class="hidden wf-auto-row-gap" style="margin-top:10px">Every <input type="number" id="wfEvery" min="1" max="12" value="2" style="width:70px" /> months</div>
+          <div class="wf-auto-seg" id="wfRepSeg" style="margin-top:8px"><button type="button" data-v="once">Once</button><button type="button" data-v="daily">Daily</button><button type="button" data-v="weekly">Weekly</button><button type="button" data-v="monthly" class="on">Monthly</button><button type="button" data-v="yearly">Yearly</button><button type="button" data-v="custom">Custom</button></div>
+          <div id="wfCustomWrap" class="hidden wf-auto-row-gap" style="margin-top:10px">Every <input type="number" id="wfEvery" min="1" max="365" value="2" style="width:70px" /> <select id="wfCustomUnit"><option value="days">days</option><option value="weeks">weeks</option><option value="months" selected>months</option></select></div>
+          <div class="wf-auto-seg hidden" id="wfWeekdaysSeg" style="margin-top:10px"></div>
           <div class="wf-auto-hint" id="wfRepRule"></div>
         </div>
 
