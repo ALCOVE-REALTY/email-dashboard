@@ -9944,6 +9944,25 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
     }
   }
 
+  // Automate Workflow (2026-11) - an open workflow item's own pending
+  // reply, checked at this same early tier. isOpenWorkflowPhone is a
+  // cheap SET-membership check (never a model call) that gates whether
+  // the heavier relevance classification below even runs; that
+  // classification decides ONLY whether THIS message actually answers
+  // the workflow's own pending question - anything else (including its
+  // own "not relevant" verdict, or any error) falls through to every
+  // check below completely unchanged, exactly like continueHrNoteFlow's
+  // own "return null" convention just below. A lazy require avoids a
+  // require cycle (workflowService.js requires this file back, for
+  // postOwnerNotification/isRealSendAllowedFor).
+  if (!isGroup && phone) {
+    const isOpenPhone = await require('./workflowService').isOpenWorkflowPhone(phone).catch(() => false);
+    if (isOpenPhone) {
+      const workflowReply = await require('./workflowService').handlePossibleWorkflowReply(phone, text).catch(() => null);
+      if (workflowReply) return Object.assign({}, workflowReply, { lang: detectLang(text) });
+    }
+  }
+
   if (!isGroup && phone) {
     const hrFlow = await getPendingHrNoteFlow(phone).catch(() => null);
     if (hrFlow) {
