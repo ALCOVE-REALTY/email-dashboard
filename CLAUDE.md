@@ -650,3 +650,31 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
   card's opening div inside the still-open previous one instead of
   starting a new sibling. Fixed by closing the outer div at the end of
   the template - every card is now its own flat, same-width sibling.
+- Task 15 (2026-11) LIVE BUG FIX: "Dept HOD + field" with SEVERAL HODs in
+  that department - live case: "Mdo dept. HOD emp code dao" (MDO has 6
+  HODs) answered with the plain name+headcount HOD list, which never
+  actually answers the employee code that was asked for. Fixed:
+  `buildHrDataQueryAnswer`'s multi-HOD branch now checks whether a field
+  (`hodIncludeEmpCode`/`hodIncludeContactNo`) was also requested - if so
+  it returns a `needsHodChoice` signal instead of the plain list;
+  `runHrDataQueryAndQueue` saves a new `hodOptions` pending state (same
+  `savePendingHrDataQuery`/`continueHrDataQueryFlow` mechanism already
+  used for department-name ambiguity, extended rather than duplicated)
+  and asks which HOD, naming every requested field ("Mdo Dept.-e 6 jon HOD
+  achen: 1) ... 2) ... Apni kar employee code chaichhen?"). The reply is
+  resolved by `continueHodFieldChoice` via the SAME number/name/fuzzy
+  matching `resolveDisambiguationReply` already provides for person
+  disambiguation (only ever needed a `.name` field, so HOD-breakdown
+  objects reuse it directly) and then answered with that one HOD's
+  requested fields - one queued card, or a direct reply for an eligible
+  official-tier sender from a real active employee, per the existing
+  sharing-tier rules. A bare "HOD list"/"ke ke HOD" question (no field
+  requested) is completely unaffected - still the plain HOD_MULTI list.
+  Only ONE HOD matching (e.g. HR dept) is still answered directly, never
+  a choice - the choice only ever applies with 2+ HODs. Deterministic
+  locked scenarios (`scripts/check-whatsapp-engine.js`): the MDO-style
+  multi-HOD + emp-code request asks the choice question, then resolves by
+  number, by name, and re-asks on an unclear reply; a real ACTIVE-employee
+  sender resolving an official-only field gets a direct reply, no card;
+  "MDO dept-er HOD ke ke?" (no field) still gets the plain list; "HR dept
+  HOD-er emp code" (exactly one HOD) is still answered directly.

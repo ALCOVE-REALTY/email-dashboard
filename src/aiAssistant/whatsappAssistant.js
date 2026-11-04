@@ -3657,6 +3657,53 @@ function findEmployeeContactByExactName(employees, name) {
   const match = employees.find((e) => e.name === name && e.status === 'ACTIVE') || employees.find((e) => e.name === name);
   return match ? match.contactNumber : null;
 }
+// The single-HOD answer line (plain name, +emp code, +contact, or both) -
+// shared by buildHrDataQueryAnswer's own breakdown.length===1 case and
+// continueHodFieldChoice below (Task 15, 2026-11 LIVE BUG FIX) so the two
+// paths (one HOD vs. "which of several HODs" resolved down to one) can
+// never drift into different wording for the same fields.
+function buildHodSingleAnswerText(deptLabel, hodName, query, employees, lang) {
+  const empCode = query.hodIncludeEmpCode ? findEmployeeIdByExactName(employees, hodName) : null;
+  const contactNo = query.hodIncludeContactNo ? findEmployeeContactByExactName(employees, hodName) : null;
+  if (empCode && contactNo) return (HR_QUERY_HOD_SINGLE_WITH_CODE_AND_CONTACT[lang] || HR_QUERY_HOD_SINGLE_WITH_CODE_AND_CONTACT.english)(deptLabel, hodName, empCode, contactNo);
+  if (empCode) return (HR_QUERY_HOD_SINGLE_WITH_CODE[lang] || HR_QUERY_HOD_SINGLE_WITH_CODE.english)(deptLabel, hodName, empCode);
+  if (contactNo) return (HR_QUERY_HOD_SINGLE_WITH_CONTACT[lang] || HR_QUERY_HOD_SINGLE_WITH_CONTACT.english)(deptLabel, hodName, contactNo);
+  return (HR_QUERY_HOD_SINGLE[lang] || HR_QUERY_HOD_SINGLE.english)(deptLabel, hodName);
+}
+// Task 15 (2026-11) LIVE BUG FIX - direct instruction: "Dept HOD + field"
+// with SEVERAL HODs ("Mdo dept. HOD emp code dao") must ask which HOD is
+// meant (mentioning every requested field) instead of dumping the whole
+// HOD_MULTI name+headcount list, which never actually answers the field
+// that was asked for. Only applies when a field (emp code/contact no) was
+// ALSO requested - a bare "HOD list"/"ke ke HOD" question still gets the
+// plain HR_QUERY_HOD_MULTI list, unchanged.
+const HOD_FIELD_WORD = {
+  empCode: { banglish: 'employee code', hinglish: 'employee code', english: 'employee code' },
+  contactNo: { banglish: 'contact number', hinglish: 'contact number', english: 'contact number' }
+};
+function buildHodFieldLabel(query, lang) {
+  const parts = [];
+  if (query.hodIncludeEmpCode) parts.push(HOD_FIELD_WORD.empCode[lang] || HOD_FIELD_WORD.empCode.english);
+  if (query.hodIncludeContactNo) parts.push(HOD_FIELD_WORD.contactNo[lang] || HOD_FIELD_WORD.contactNo.english);
+  if (!parts.length) return HOD_FIELD_WORD.empCode.english;
+  if (parts.length === 1) return parts[0];
+  const sep = lang === 'english' ? ' and ' : lang === 'hinglish' ? ' aur ' : ' ar ';
+  return parts.join(sep);
+}
+const HR_QUERY_HOD_FIELD_CHOICE_QUESTION = {
+  banglish: (deptLabel, options, fieldLabel) =>
+    deptLabel + '-e ' + countLabelObjects(options.length, 'banglish') + ' HOD achen:\n' +
+    options.map((o, i) => (i + 1) + ') ' + o.name).join('\n') +
+    '\nApni kar ' + fieldLabel + ' chaichhen?',
+  hinglish: (deptLabel, options, fieldLabel) =>
+    deptLabel + ' mein ' + options.length + ' HOD hain:\n' +
+    options.map((o, i) => (i + 1) + ') ' + o.name).join('\n') +
+    '\nAap kiska ' + fieldLabel + ' chahte hain?',
+  english: (deptLabel, options, fieldLabel) =>
+    deptLabel + ' has ' + options.length + ' HODs:\n' +
+    options.map((o, i) => (i + 1) + ') ' + o.name).join('\n') +
+    '\nWhose ' + fieldLabel + ' would you like?'
+};
 
 // Live bug fix (2026-10-29) - departmentHintMatches alone requires every
 // hint word to be a COMPLETE word in the field (its whole reason for
@@ -3983,17 +4030,13 @@ function buildHrDataQueryAnswer(employees, query, lang) {
       if (!breakdown.length) {
         outgoingText = (HR_QUERY_NO_MATCH[lang] || HR_QUERY_NO_MATCH.english)(deptLabel, 'HOD');
       } else if (breakdown.length === 1) {
-        const empCode = query.hodIncludeEmpCode ? findEmployeeIdByExactName(employees, breakdown[0].name) : null;
-        const contactNo = query.hodIncludeContactNo ? findEmployeeContactByExactName(employees, breakdown[0].name) : null;
-        if (empCode && contactNo) {
-          outgoingText = (HR_QUERY_HOD_SINGLE_WITH_CODE_AND_CONTACT[lang] || HR_QUERY_HOD_SINGLE_WITH_CODE_AND_CONTACT.english)(deptLabel, breakdown[0].name, empCode, contactNo);
-        } else if (empCode) {
-          outgoingText = (HR_QUERY_HOD_SINGLE_WITH_CODE[lang] || HR_QUERY_HOD_SINGLE_WITH_CODE.english)(deptLabel, breakdown[0].name, empCode);
-        } else if (contactNo) {
-          outgoingText = (HR_QUERY_HOD_SINGLE_WITH_CONTACT[lang] || HR_QUERY_HOD_SINGLE_WITH_CONTACT.english)(deptLabel, breakdown[0].name, contactNo);
-        } else {
-          outgoingText = (HR_QUERY_HOD_SINGLE[lang] || HR_QUERY_HOD_SINGLE.english)(deptLabel, breakdown[0].name);
-        }
+        outgoingText = buildHodSingleAnswerText(deptLabel, breakdown[0].name, query, employees, lang);
+      } else if (query.hodIncludeEmpCode || query.hodIncludeContactNo) {
+        // Task 15 (2026-11) LIVE BUG FIX - a field was also asked for, but
+        // more than one HOD matches: ask which HOD is meant (never dump
+        // HOD_MULTI's name+headcount list, which doesn't answer the field
+        // at all) - resolved by continueHodFieldChoice once they pick one.
+        return { needsHodChoice: true, hodOptions: breakdown, deptLabel, hodFieldLabel: buildHodFieldLabel(query, lang) };
       } else {
         outgoingText = (HR_QUERY_HOD_MULTI[lang] || HR_QUERY_HOD_MULTI.english)(deptLabel, breakdown);
       }
@@ -4487,7 +4530,19 @@ async function resolveAndQueueHrDataQuery({ phone, name, lang, query, history })
 // or null when it queued an ordinary approval instead (existing
 // behavior, completely unchanged for every ineligible case).
 async function runHrDataQueryAndQueue({ phone, requesterLabel, lang, employees, query, isRevision }) {
-  const { outgoingText, dataRequestSummary, officialEligible, matchCount } = buildHrDataQueryAnswer(employees, query, lang);
+  const answer = buildHrDataQueryAnswer(employees, query, lang);
+  // Task 15 (2026-11) LIVE BUG FIX - several HODs + a requested field: ask
+  // which HOD is meant instead of queuing/sending anything yet. Returned
+  // the same way a direct-send answer is (a non-null string) so both
+  // existing callers (resolveAndQueueHrDataQuery and continueHrDataQueryFlow
+  // itself, for a department-choice-then-HOD-field case) reply with it
+  // immediately, unchanged - continueHodFieldChoice resolves the pick.
+  if (answer.needsHodChoice) {
+    await savePendingHrDataQuery(phone, { query, lang, hodOptions: answer.hodOptions, hodFieldLabel: answer.hodFieldLabel, deptLabel: answer.deptLabel });
+    const fn = HR_QUERY_HOD_FIELD_CHOICE_QUESTION[lang] || HR_QUERY_HOD_FIELD_CHOICE_QUESTION.english;
+    return fn(answer.deptLabel, answer.hodOptions, answer.hodFieldLabel);
+  }
+  const { outgoingText, dataRequestSummary, officialEligible, matchCount } = answer;
   const withinSizeCap = typeof matchCount !== 'number' || matchCount <= 20;
   if (officialEligible && withinSizeCap && await isSenderActiveEmployee(phone)) {
     const revisionNote = isRevision ? '(format thik kore abar) ' : '';
@@ -4505,6 +4560,11 @@ async function runHrDataQueryAndQueue({ phone, requesterLabel, lang, employees, 
 // substring of one of the offered department names resolves it; anything
 // else just re-asks the same question rather than guessing.
 async function continueHrDataQueryFlow({ phone, name, text, pending }) {
+  // Task 15 (2026-11) LIVE BUG FIX - a "which HOD?" field-choice question
+  // (hodOptions) is a different pending shape than a department-name
+  // ambiguity (departmentOptions) - resolved separately below, since the
+  // reply here picks a PERSON (number/name), not a department string.
+  if (pending.hodOptions) return continueHodFieldChoice({ phone, name, text, pending });
   const lang = pending.lang;
   const options = pending.departmentOptions;
   const t = String(text || '').trim();
@@ -4528,6 +4588,40 @@ async function continueHrDataQueryFlow({ phone, name, text, pending }) {
   const { employees } = await employeeService.getEmployeeData();
   const sentDirect = await runHrDataQueryAndQueue({ phone, requesterLabel: name, lang, employees, query });
   if (sentDirect) return { case: 'acknowledged', replyText: sentDirect, summaryForOwner: null, lang };
+  return { case: 'data_holding', replyText: dataRequestHoldingReply(lang, [], new Date()), summaryForOwner: null };
+}
+// Task 15 (2026-11) LIVE BUG FIX - resolves a reply to the "which HOD?"
+// field-choice question (pending.hodOptions, each {name, count}) raised by
+// runHrDataQueryAndQueue above. Reuses resolveDisambiguationReply/
+// DISAMBIGUATION_CONFLICT_QUESTION exactly like the existing multi-person
+// disambiguation flow does, since those only need a .name field - never a
+// parallel number/name-matching implementation.
+async function continueHodFieldChoice({ phone, name, text, pending }) {
+  const lang = pending.lang;
+  const candidates = pending.hodOptions;
+  const deptLabel = pending.deptLabel || departmentLabelWithSuffix(pending.query.resolvedDepartment || pending.query.department || '');
+  const resolved = resolveDisambiguationReply(candidates, text);
+  if (!resolved) {
+    const fn = HR_QUERY_HOD_FIELD_CHOICE_QUESTION[lang] || HR_QUERY_HOD_FIELD_CHOICE_QUESTION.english;
+    return { case: 'acknowledged', replyText: fn(deptLabel, candidates, pending.hodFieldLabel), summaryForOwner: null, lang };
+  }
+  if (resolved.conflict) {
+    const fn = DISAMBIGUATION_CONFLICT_QUESTION[lang] || DISAMBIGUATION_CONFLICT_QUESTION.english;
+    return { case: 'acknowledged', replyText: fn(resolved.numCandidate, resolved.nameCandidate), summaryForOwner: null, lang };
+  }
+  await clearPendingHrDataQuery(phone);
+  const { employees } = await employeeService.getEmployeeData();
+  const query = pending.query;
+  const outgoingText = buildHodSingleAnswerText(deptLabel, resolved.name, query, employees, lang);
+  const officialEligible = !query.hodIncludeContactNo;
+  const dataRequestSummary = deptLabel + ' - HOD (' + pending.hodFieldLabel + ')';
+  if (officialEligible && await isSenderActiveEmployee(phone)) {
+    await postOwnerNotification(
+      name + ' (' + phone + ') ' + dataRequestSummary + ' (official fields) jigges korechhe - approval chara e direct reply gechhe: \'' + outgoingText + '\''
+    );
+    return { case: 'acknowledged', replyText: outgoingText, summaryForOwner: null, lang };
+  }
+  await queueHrDataQueryApproval({ phone, requesterLabel: name, lang, dataRequestSummary, outgoingText, query, isRevision: false });
   return { case: 'data_holding', replyText: dataRequestHoldingReply(lang, [], new Date()), summaryForOwner: null };
 }
 
@@ -12425,6 +12519,7 @@ module.exports = {
   runHrDataQueryAndQueue,
   findPendingHrDataQueryApproval,
   continueHrDataQueryFlow,
+  continueHodFieldChoice,
   getPendingHrDataQuery,
   savePendingHrDataQuery,
   clearPendingHrDataQuery,

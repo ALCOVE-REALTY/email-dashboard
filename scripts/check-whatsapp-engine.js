@@ -6077,6 +6077,114 @@ async function checkAsync(label, fn) {
   });
 
   console.log('='.repeat(70));
+  console.log('Task 15 (2026-11) LIVE BUG FIX: "Dept HOD + field" with SEVERAL HODs must ask which HOD before answering the field - never dump the name+headcount HOD_MULTI list, which never answers it');
+  console.log('='.repeat(70));
+  // Y Manager/Z Manager are themselves real employee records here (unlike
+  // the plain FAKE_HR_QUERY_EMPLOYEES fixture above, where they are only
+  // ever reportingManager STRINGS) - placed in a different department
+  // ('Leadership') so they never affect the 'Administration HO' breakdown
+  // itself (still Y Manager=2, Z Manager=1, exactly as the existing locked
+  // HOD_MULTI test above expects).
+  const FAKE_HR_QUERY_EMPLOYEES_WITH_HOD_RECORDS = FAKE_HR_QUERY_EMPLOYEES.concat([
+    { name: 'Y Manager', employeeId: 'YMGR001', designation: 'Manager', department: 'Leadership', location: 'HO', company: 'Alcove', reportingManager: 'Big Boss', status: 'ACTIVE', contactNumber: '9111111111' },
+    { name: 'Z Manager', employeeId: 'ZMGR001', designation: 'Manager', department: 'Leadership', location: 'HO', company: 'Alcove', reportingManager: 'Big Boss', status: 'ACTIVE', contactNumber: '9222222222' }
+  ]);
+  check('LIVE BUG FIX: buildHrDataQueryAnswer with MULTIPLE distinct HODs AND hodIncludeEmpCode=true returns needsHodChoice (never the HOD_MULTI name+headcount list, which does not answer the field asked for)', (() => {
+    const answer = whatsappAssistant.buildHrDataQueryAnswer(FAKE_HR_QUERY_EMPLOYEES_WITH_HOD_RECORDS, { returnType: 'hod', resolvedDepartment: 'Administration HO', hodIncludeEmpCode: true }, 'banglish');
+    return answer.needsHodChoice === true && answer.hodOptions.length === 2 && answer.hodOptions[0].name === 'Y Manager' && answer.hodOptions[1].name === 'Z Manager'
+      && answer.deptLabel === 'Administration Ho department' && answer.hodFieldLabel === 'employee code';
+  })());
+  check('LIVE BUG FIX: same multi-HOD case with hodIncludeContactNo=true instead - needsHodChoice with the contact-number field label', (() => {
+    const answer = whatsappAssistant.buildHrDataQueryAnswer(FAKE_HR_QUERY_EMPLOYEES_WITH_HOD_RECORDS, { returnType: 'hod', resolvedDepartment: 'Administration HO', hodIncludeContactNo: true }, 'english');
+    return answer.needsHodChoice === true && answer.hodFieldLabel === 'contact number';
+  })());
+  check('LIVE BUG FIX: both hodIncludeEmpCode and hodIncludeContactNo together name BOTH fields in the choice question label, in the reply\'s own language (banglish "ar", never dropping one)', (() => {
+    const answer = whatsappAssistant.buildHrDataQueryAnswer(FAKE_HR_QUERY_EMPLOYEES_WITH_HOD_RECORDS, { returnType: 'hod', resolvedDepartment: 'Administration HO', hodIncludeEmpCode: true, hodIncludeContactNo: true }, 'banglish');
+    return answer.needsHodChoice === true && answer.hodFieldLabel === 'employee code ar contact number';
+  })());
+  check('REGRESSION: a multi-HOD "HOD list"/"ke ke HOD" question with NO field requested at all is completely unaffected - still the plain HOD_MULTI name+headcount list, never a choice question', (() => {
+    const { outgoingText } = whatsappAssistant.buildHrDataQueryAnswer(FAKE_HR_QUERY_EMPLOYEES_WITH_HOD_RECORDS, { returnType: 'hod', resolvedDepartment: 'Administration HO' }, 'banglish');
+    return outgoingText === 'Administration Ho department-e total duti HOD achen:\n1) Y Manager (2 jon)\n2) Z Manager (1 jon)';
+  })());
+  await checkAsync('LOCKED SCENARIO 1/3 ("Mdo dept. HOD emp code dao"): runHrDataQueryAndQueue with multi-HOD + hodIncludeEmpCode replies with the exact numbered choice question (never queues/sends anything yet) and saves the pending hodOptions state', async () => {
+    const phone = '919999000198';
+    await whatsappAssistant.clearPendingHrDataQuery(phone).catch(() => {});
+    const replyText = await whatsappAssistant.runHrDataQueryAndQueue({ phone, requesterLabel: 'Tester', lang: 'banglish', employees: FAKE_HR_QUERY_EMPLOYEES_WITH_HOD_RECORDS, query: { returnType: 'hod', resolvedDepartment: 'Administration HO', hodIncludeEmpCode: true } });
+    const pending = await whatsappAssistant.getPendingHrDataQuery(phone);
+    const ok = replyText === 'Administration Ho department-e duti HOD achen:\n1) Y Manager\n2) Z Manager\nApni kar employee code chaichhen?'
+      && Boolean(pending) && Array.isArray(pending.hodOptions) && pending.hodOptions.length === 2 && pending.hodFieldLabel === 'employee code';
+    await whatsappAssistant.clearPendingHrDataQuery(phone).catch(() => {});
+    return ok;
+  });
+  // Note: continueHodFieldChoice re-fetches the REAL employee directory
+  // (exactly like continueHrDataQueryFlow's own department-choice sibling
+  // already does) rather than reusing the fake employees array the
+  // original query was built from - so these fixture HOD names ("Y
+  // Manager"/"Z Manager") never match a real employee record and the
+  // answer falls back to the plain name-only sentence, same as the
+  // already-covered "hodIncludeEmpCode=true but no employee record
+  // matches" case above. The choice-RESOLUTION itself (number/name ->
+  // correct person) is what these lock down; buildHodSingleAnswerText's
+  // own emp-code-inclusion is already covered by the earlier
+  // FAKE_HOD_EMP_CODE_EMPLOYEES tests.
+  await checkAsync('LOCKED SCENARIO 1/3 continued (choice -> card): picking the HOD BY NUMBER after the question above clears the pending state and queues ONE approval for that HOD (the sender is not a real active employee here, so this is the queued/"card" tier)', async () => {
+    const phone = '919999000199';
+    await whatsappAssistant.clearPendingHrDataQuery(phone).catch(() => {});
+    for (const a of await whatsappAssistant.listPendingApprovals()) if (whatsapp.normalizePhone(a.phone) === whatsapp.normalizePhone(phone)) await whatsappAssistant.removePendingApproval(a.id);
+    await whatsappAssistant.runHrDataQueryAndQueue({ phone, requesterLabel: 'Tester', lang: 'banglish', employees: FAKE_HR_QUERY_EMPLOYEES_WITH_HOD_RECORDS, query: { returnType: 'hod', resolvedDepartment: 'Administration HO', hodIncludeEmpCode: true } });
+    const pending = await whatsappAssistant.getPendingHrDataQuery(phone);
+    const d = await whatsappAssistant.continueHrDataQueryFlow({ phone, name: 'Tester', text: '1', pending });
+    const stillPending = await whatsappAssistant.getPendingHrDataQuery(phone);
+    const mine = (await whatsappAssistant.listPendingApprovals()).filter((a) => whatsapp.normalizePhone(a.phone) === whatsapp.normalizePhone(phone));
+    const ok = d.case === 'data_holding' && !stillPending && mine.length === 1 && mine[0].preparedReplyText === 'Administration Ho department-er HOD holen Y Manager.';
+    for (const a of mine) await whatsappAssistant.removePendingApproval(a.id);
+    return ok;
+  });
+  await checkAsync('choosing the HOD BY NAME (instead of number) resolves exactly the same way', async () => {
+    const phone = '919999000200';
+    await whatsappAssistant.clearPendingHrDataQuery(phone).catch(() => {});
+    for (const a of await whatsappAssistant.listPendingApprovals()) if (whatsapp.normalizePhone(a.phone) === whatsapp.normalizePhone(phone)) await whatsappAssistant.removePendingApproval(a.id);
+    await whatsappAssistant.runHrDataQueryAndQueue({ phone, requesterLabel: 'Tester', lang: 'banglish', employees: FAKE_HR_QUERY_EMPLOYEES_WITH_HOD_RECORDS, query: { returnType: 'hod', resolvedDepartment: 'Administration HO', hodIncludeEmpCode: true } });
+    const pending = await whatsappAssistant.getPendingHrDataQuery(phone);
+    const d = await whatsappAssistant.continueHrDataQueryFlow({ phone, name: 'Tester', text: 'Z Manager', pending });
+    const mine = (await whatsappAssistant.listPendingApprovals()).filter((a) => whatsapp.normalizePhone(a.phone) === whatsapp.normalizePhone(phone));
+    const ok = d.case === 'data_holding' && mine.length === 1 && mine[0].preparedReplyText === 'Administration Ho department-er HOD holen Z Manager.';
+    for (const a of mine) await whatsappAssistant.removePendingApproval(a.id);
+    return ok;
+  });
+  await checkAsync('an UNCLEAR reply to the HOD-field choice question re-asks the SAME choice question rather than guessing or dropping the flow', async () => {
+    const phone = '919999000201';
+    await whatsappAssistant.clearPendingHrDataQuery(phone).catch(() => {});
+    await whatsappAssistant.runHrDataQueryAndQueue({ phone, requesterLabel: 'Tester', lang: 'banglish', employees: FAKE_HR_QUERY_EMPLOYEES_WITH_HOD_RECORDS, query: { returnType: 'hod', resolvedDepartment: 'Administration HO', hodIncludeEmpCode: true } });
+    const pending = await whatsappAssistant.getPendingHrDataQuery(phone);
+    const d = await whatsappAssistant.continueHrDataQueryFlow({ phone, name: 'Tester', text: 'blah blah unrelated', pending });
+    const stillPending = await whatsappAssistant.getPendingHrDataQuery(phone);
+    const ok = d.case === 'acknowledged' && d.replyText.includes('Y Manager') && d.replyText.includes('Z Manager') && Boolean(stillPending);
+    await whatsappAssistant.clearPendingHrDataQuery(phone).catch(() => {});
+    return ok;
+  });
+  await checkAsync('a real ACTIVE-employee sender resolving the HOD-field choice (official field only) gets ONE direct reply, no approval card - same official-tier direct-send gate as every other HR data query', async () => {
+    const phone = '919230964121'; // Radha Biswas Bhattacharjee - real, ACTIVE (reused from the official-tier tests above)
+    await whatsappAssistant.clearPendingHrDataQuery(phone).catch(() => {});
+    for (const a of await whatsappAssistant.listPendingApprovals()) if (whatsapp.normalizePhone(a.phone) === whatsapp.normalizePhone(phone)) await whatsappAssistant.removePendingApproval(a.id);
+    await whatsappAssistant.runHrDataQueryAndQueue({ phone, requesterLabel: 'Radha', lang: 'banglish', employees: FAKE_HR_QUERY_EMPLOYEES_WITH_HOD_RECORDS, query: { returnType: 'hod', resolvedDepartment: 'Administration HO', hodIncludeEmpCode: true } });
+    const pending = await whatsappAssistant.getPendingHrDataQuery(phone);
+    const d = await whatsappAssistant.continueHrDataQueryFlow({ phone, name: 'Radha', text: '1', pending });
+    const mine = (await whatsappAssistant.listPendingApprovals()).filter((a) => whatsapp.normalizePhone(a.phone) === whatsapp.normalizePhone(phone));
+    const ok = d.case === 'acknowledged' && d.replyText === 'Administration Ho department-er HOD holen Y Manager.' && mine.length === 0;
+    await whatsappAssistant.clearPendingHrDataQuery(phone).catch(() => {});
+    return ok;
+  });
+  check('LOCKED SCENARIO 2/3 ("Mdo dept-er HOD ke ke?" - a bare HOD-list question, no field): still gets the plain multi-HOD list directly, with no pending choice state at all', (() => {
+    const { outgoingText, officialEligible } = whatsappAssistant.buildHrDataQueryAnswer(FAKE_HR_QUERY_EMPLOYEES_WITH_HOD_RECORDS, { returnType: 'hod', resolvedDepartment: 'Administration HO' }, 'banglish');
+    return outgoingText.includes('Y Manager') && outgoingText.includes('Z Manager') && officialEligible === true;
+  })());
+  check('LOCKED SCENARIO 3/3 ("HR dept HOD-er emp code" - exactly ONE HOD in that department): answered directly with name + employee code, never a choice question (the choice only ever applies when 2+ HODs match)', (() => {
+    const { outgoingText } = whatsappAssistant.buildHrDataQueryAnswer(FAKE_HOD_EMP_CODE_EMPLOYEES, { returnType: 'hod', resolvedDepartment: 'QUALITY', hodIncludeEmpCode: true }, 'english');
+    return outgoingText === 'The HOD of Quality department is Priya HOD, Employee Code AR009999.';
+  })());
+
+  console.log('='.repeat(70));
   console.log('Task 8 (2026-10-31): a follow-up correcting the FORMAT of the sender\'s own immediately-preceding data request is a REVISION of that same request, not a new one - its filters are inherited, and the old pending approval is replaced, never stacked alongside the corrected one');
   console.log('='.repeat(70));
   await checkAsync('LOCKED: isFormatRevision + a changed field (e.g. hodIncludeContactNo) REPLACES the prior still-pending approval - exactly ONE approval remains, with the inherited filters plus the new field merged in', async () => {
