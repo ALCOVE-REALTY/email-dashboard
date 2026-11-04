@@ -10697,20 +10697,21 @@ async function decideAutoReply(params) {
 // ---------------- Incoming document handling (spec item 5b/5c) ----------------
 // A fixed, given reply per channel/language - not drafted by the model,
 // since the spec gave this exact wording and there's no real fact to
-// reason about here. Matched to the message's own caption language if
-// it has one (same grammar cues as greetingFor); media has no text of
-// its own to go on, so with no caption this defaults to the Banglish
-// wording the spec itself gave as "the" example.
+// reason about here. Matched to the message's own caption language if it
+// has one; with no caption, resolved via mediaFallbackLang below - THIS
+// sender's own last real language, by phone, defaulting to English, never
+// a hardcoded language and never another sender's (live bug fix, 2026-11
+// - this used to default to Banglish unconditionally whenever there was
+// no caption, regardless of who the sender actually was or what language
+// they'd been writing in).
 const DOC_THANKS = {
   hinglish: 'Dhanyawad, document mil gaya. Subhodeep ko bata raha hoon, jaldi update milega.',
   banglish: 'Dhonnobad, document peyechi. Subhodeep-ke janiye dicchi, taratari update paben.',
   english: 'Thank you, I\'ve received the document. Letting Subhodeep know - you\'ll get an update shortly.'
 };
-function thanksReplyFor(captionText) {
-  if (!captionText) return DOC_THANKS.banglish;
-  if (/[ऀ-ॿ]/.test(captionText) || /\b(ko|mein|hai|kya|kaise|batao)\b/i.test(captionText)) return DOC_THANKS.hinglish;
-  if (/[ঀ-৿]/.test(captionText) || /\b(e|ke|ki|ta|naki|ache|hobe|korbo)\b/i.test(captionText)) return DOC_THANKS.banglish;
-  return DOC_THANKS.english;
+async function thanksReplyFor(contactId, captionText) {
+  const lang = await mediaFallbackLang(contactId, captionText);
+  return { lang, text: DOC_THANKS[lang] || DOC_THANKS.english };
 }
 
 // PENDING LIVE CONFIRMATION (see conversation): the gateway's /messages
@@ -10892,11 +10893,19 @@ const MEDIA_ACK_REPLY = {
   hinglish: 'Maine aapki baat note kar li hai aur Subhodeep ko bata raha hoon.',
   english: "I've noted this and I'm letting Subhodeep know."
 };
+// Live bug fix (2026-11) - a message with no text of its own to detect a
+// language from (media/sticker/voice with no caption, a bare name/number/
+// emoji) is resolved from THIS sender's own last REAL incoming message,
+// by phone (getConvoHistory is already keyed per-contactId) - NEVER any
+// other sender's, and never a shared/global "last language". Defaults to
+// English (not Banglish - the old, pre-fix default) when this sender has
+// no usable history at all, e.g. a brand new sender's very first message
+// being a photo.
 async function mediaFallbackLang(contactId, caption) {
   if (caption) return detectLang(caption);
   const history = await getConvoHistory(contactId, CONVO_HISTORY_MAX).catch(() => []);
   const lastIncoming = (history || []).filter((h) => h.direction === 'in' && h.text).slice(-1)[0];
-  return lastIncoming ? detectLang(lastIncoming.text) : 'banglish';
+  return lastIncoming ? detectLang(lastIncoming.text) : 'english';
 }
 // Task 1 (2026-10-28) - uploads the actual file to SUBH's own Drive
 // storage (fileStorage.js, the owner's own drive.file-scoped OAuth
@@ -10933,7 +10942,7 @@ async function handleJobApplicationMediaDecision(contactId, name, lang, caption,
   await markJobTemplateSentToday(contactId, 'application', now);
   await scheduleAutoSend({
     chatId: contactId, isGroup: false, name,
-    replyText: JOB_APPLICATION_RECEIVED_REPLY[lang] || JOB_APPLICATION_RECEIVED_REPLY.english, case: 'job_application_received',
+    replyText: JOB_APPLICATION_RECEIVED_REPLY[lang] || JOB_APPLICATION_RECEIVED_REPLY.english, lang, case: 'job_application_received',
     summaryForOwner: 'Job application received' + (caption ? ' - ' + caption.slice(0, 160) : '')
   });
   await postOwnerNotification('📄 Job application (CV) received from ' + name + driveNote);
@@ -10945,17 +10954,20 @@ async function handleIncomingMedia(contactId, name, msg) {
     await handleJobApplicationMediaDecision(contactId, name, lang, caption, msg);
     return;
   }
-  if (['ptt', 'voice', 'audio'].includes(msg.type)) {
-    // A voice note is never a document submission - SUBH can't transcribe
-    // it, so this is always just an acknowledgement, never a document-
-    // request fulfilment, regardless of whether one happens to be open.
+  if (['ptt', 'voice', 'audio', 'sticker'].includes(msg.type)) {
+    // A voice note or sticker is never a document submission - SUBH can't
+    // transcribe audio and a sticker carries no real content - so this is
+    // always just an acknowledgement, never a document-request
+    // fulfilment, regardless of whether one happens to be open. Language
+    // is resolved via mediaFallbackLang - THIS sender's own last real
+    // language (live bug fix, 2026-11 - never another sender's).
     const lang = await mediaFallbackLang(contactId, caption);
     await scheduleAutoSend({
       chatId: contactId, isGroup: false, name,
-      replyText: MEDIA_ACK_REPLY[lang] || MEDIA_ACK_REPLY.english, case: 'media_ack',
-      summaryForOwner: '[sent a voice message]'
+      replyText: MEDIA_ACK_REPLY[lang] || MEDIA_ACK_REPLY.english, lang, case: 'media_ack',
+      summaryForOwner: '[sent a ' + (msg.type === 'sticker' ? 'sticker' : 'voice message') + ']'
     });
-    await postOwnerNotification(name + ' sent a voice message - SUBH cannot transcribe audio, acknowledged only.');
+    await postOwnerNotification(name + ' sent a ' + (msg.type === 'sticker' ? 'sticker' : 'voice message') + (msg.type === 'sticker' ? '' : ' - SUBH cannot transcribe audio') + ', acknowledged only.');
     return;
   }
   const openReq = await documentRequests.getOpenRequest(contactId);
@@ -10975,7 +10987,7 @@ async function handleIncomingMedia(contactId, name, msg) {
     const lang = await mediaFallbackLang(contactId, caption);
     await scheduleAutoSend({
       chatId: contactId, isGroup: false, name,
-      replyText: MEDIA_ACK_REPLY[lang] || MEDIA_ACK_REPLY.english, case: 'media_ack',
+      replyText: MEDIA_ACK_REPLY[lang] || MEDIA_ACK_REPLY.english, lang, case: 'media_ack',
       summaryForOwner: '[sent a ' + (msg.type || 'file') + ', no open request]'
     });
     await postOwnerNotification(name + ' sent a file (no open request) - not stored, but acknowledged.');
@@ -10999,9 +11011,10 @@ async function handleIncomingMedia(contactId, name, msg) {
       await postOwnerNotification(name + '\'s file for ' + openReq.topic + ' could not be saved (' + result.reason + ').');
       return;
     }
+    const thanksReply = await thanksReplyFor(contactId, caption);
     await scheduleAutoSend({
       chatId: contactId, isGroup: false, name,
-      replyText: thanksReplyFor(caption), case: 'document_received', memoryId: openReq.memoryId,
+      replyText: thanksReply.text, lang: thanksReply.lang, case: 'document_received', memoryId: openReq.memoryId,
       summaryForOwner: '[sent a ' + (msg.type === 'document' ? 'document' : 'photo') + ' for ' + openReq.topic + ']'
     });
     await postOwnerNotification(
@@ -11491,7 +11504,7 @@ async function catchUpAfterGap(trigger) {
       // the durable handled-id set (never re-act on an id this file has
       // already acted on, by any path, ever).
       const candidates = allMessages
-        .filter((m) => m.direction === 'incoming' && m.id > lastSeenId && (!m.type || ['text', 'image', 'document', 'ptt', 'voice', 'audio'].includes(m.type)))
+        .filter((m) => m.direction === 'incoming' && m.id > lastSeenId && (!m.type || ['text', 'image', 'document', 'ptt', 'voice', 'audio', 'sticker'].includes(m.type)))
         .filter((m) => { const ts = catchupMessageTimestamp(m); return ts > gapWindow.start && ts <= gapWindow.end; })
         .sort((a, b) => a.id - b.id);
       const missed = [];
@@ -11530,7 +11543,7 @@ async function catchUpAfterGap(trigger) {
       const name = resolvedName || contactId;
       const firstName = firstNameOf(resolvedName);
       const oldestTs = catchupMessageTimestamp(missed[0]);
-      const missedTextOnly = missed.filter((m) => !['image', 'document', 'ptt', 'voice', 'audio'].includes(m.type));
+      const missedTextOnly = missed.filter((m) => !['image', 'document', 'ptt', 'voice', 'audio', 'sticker'].includes(m.type));
       const combinedText = combineBurstText(missedTextOnly.map((m) => ({ text: buildIncomingText(m) })));
 
       if (now - oldestTs > CATCHUP_STALE_THRESHOLD_MS) {
@@ -11592,7 +11605,7 @@ async function pollOnce() {
     // and handled the same as image/document (MEDIA_ACK_REPLY, no
     // document-request-specific handling since there's nothing to OCR/
     // read from audio).
-    if (msg.type && !['text', 'image', 'document', 'ptt', 'voice', 'audio'].includes(msg.type)) continue;
+    if (msg.type && !['text', 'image', 'document', 'ptt', 'voice', 'audio', 'sticker'].includes(msg.type)) continue;
     // Task 5 (2026-11) LIVE BUG FIX - status updates/broadcast lists/
     // channels are ignored completely: never stored, never auto-replied
     // to, never shown anywhere, same as a group's own system messages.
@@ -11767,7 +11780,7 @@ async function pollOnce() {
       }
       for (const msg of newIncoming) {
         results.checked++;
-        if (['image', 'document', 'ptt', 'voice', 'audio'].includes(msg.type)) {
+        if (['image', 'document', 'ptt', 'voice', 'audio', 'sticker'].includes(msg.type)) {
           if (autoReplyOn) await handleIncomingMedia(contactId, name, msg).catch(() => {});
           continue;
         }
@@ -12322,6 +12335,9 @@ module.exports = {
   handleApprovalCountQuestion,
   listPendingApprovals,
   handleIncomingMedia,
+  mediaFallbackLang,
+  thanksReplyFor,
+  DOC_THANKS,
   isRealSendAllowedFor,
   executeApprovalSend,
   executeApprovalReject,

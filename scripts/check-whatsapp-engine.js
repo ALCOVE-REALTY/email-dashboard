@@ -4736,11 +4736,10 @@ async function checkAsync(label, fn) {
     await whatsappAssistant.handleIncomingMedia(CV_PDF_PHONE, 'PdfApplicant', { type: 'document', content: {} });
     const after = await whatsappAssistant.listPendingAutoSends();
     const scheduled = after.find((e) => !beforeIds.has(e.id) && e.chatId === CV_PDF_PHONE);
-    // mediaFallbackLang defaults to banglish when there's no caption and
-    // no conversation history (its own documented fallback) - a bare PDF
-    // with neither naturally lands here, so Banglish is the CORRECT
-    // expected language, not a test typo.
-    const ok = Boolean(scheduled) && scheduled.case === 'job_application_received' && scheduled.replyText === whatsappAssistant.JOB_APPLICATION_RECEIVED_REPLY.banglish;
+    // mediaFallbackLang defaults to English (live bug fix, 2026-11 - was
+    // Banglish) when there's no caption and no conversation history for
+    // this sender - a bare PDF with neither naturally lands here.
+    const ok = Boolean(scheduled) && scheduled.case === 'job_application_received' && scheduled.replyText === whatsappAssistant.JOB_APPLICATION_RECEIVED_REPLY.english && scheduled.lang === 'english';
     await whatsappAssistant.clearJobTemplateSentToday(CV_PDF_PHONE).catch(() => {});
     return ok;
   });
@@ -5204,6 +5203,52 @@ async function checkAsync(label, fn) {
     const ok = Boolean(scheduled) && scheduled.case === 'job_application_received' && countIdentityLineOccurrences(scheduled.replyText) === 1;
     await whatsappAssistant.clearJobTemplateSentToday(phone).catch(() => {});
     return ok;
+  });
+
+  console.log('='.repeat(70));
+  console.log('LIVE BUG FIX (2026-11): a message with no text of its own (photo/document/voice/sticker without caption, a bare name/number/emoji) resolves STRICTLY from THIS sender\'s own last language, by phone - never another sender\'s, and never a hardcoded default');
+  console.log('='.repeat(70));
+  await checkAsync('mediaFallbackLang: a caption, when present, is still detected directly from the caption itself (unaffected by this fix)', async () => {
+    return await whatsappAssistant.mediaFallbackLang('910000002510', 'Aapka parcel mil gaya') === 'hinglish';
+  });
+  await checkAsync('LOCKED SCENARIO: sender A chats in Hindi, then sender B (own last language English) sends a bare photo - B gets ENGLISH, never A\'s Hindi', async () => {
+    const phoneA = '910000002511', phoneB = '910000002512';
+    await whatsappAssistant.appendConvoHistory(phoneA, 'in', 'Mera salary abhi tak nahi mila hai, kab milega');
+    await whatsappAssistant.appendConvoHistory(phoneB, 'in', 'Could you please confirm my joining date?');
+    const before = new Set((await whatsappAssistant.listPendingAutoSends()).map((e) => e.id));
+    await whatsappAssistant.handleIncomingMedia(phoneB, 'SenderB', { type: 'image', content: {} });
+    const after = await whatsappAssistant.listPendingAutoSends();
+    const scheduled = after.find((e) => !before.has(e.id) && e.chatId === phoneB);
+    return Boolean(scheduled) && scheduled.lang === 'english' && scheduled.replyText.endsWith(whatsappAssistant.MEDIA_ACK_REPLY.english);
+  });
+  await checkAsync('LOCKED SCENARIO: a sender with Banglish history sends a sticker (no caption) - gets Banglish; stickers are now acknowledged at all (previously an unrecognized type, silently dropped)', async () => {
+    const phone = '910000002513';
+    await whatsappAssistant.appendConvoHistory(phone, 'in', 'Ami ajke thik moto asbo office e, kono samossa nei');
+    const before = new Set((await whatsappAssistant.listPendingAutoSends()).map((e) => e.id));
+    await whatsappAssistant.handleIncomingMedia(phone, 'StickerSender', { type: 'sticker', content: {} });
+    const after = await whatsappAssistant.listPendingAutoSends();
+    const scheduled = after.find((e) => !before.has(e.id) && e.chatId === phone);
+    return Boolean(scheduled) && scheduled.lang === 'banglish' && scheduled.replyText.endsWith(whatsappAssistant.MEDIA_ACK_REPLY.banglish);
+  });
+  await checkAsync('LOCKED SCENARIO: a brand-new sender with no history at all sends a bare photo - defaults to English, never Banglish (was hardcoded Banglish before this fix)', async () => {
+    const phone = '910000002514';
+    const before = new Set((await whatsappAssistant.listPendingAutoSends()).map((e) => e.id));
+    await whatsappAssistant.handleIncomingMedia(phone, 'NewSender', { type: 'image', content: {} });
+    const after = await whatsappAssistant.listPendingAutoSends();
+    const scheduled = after.find((e) => !before.has(e.id) && e.chatId === phone);
+    return Boolean(scheduled) && scheduled.lang === 'english' && scheduled.replyText.endsWith(whatsappAssistant.MEDIA_ACK_REPLY.english);
+  });
+  await checkAsync('thanksReplyFor (document-request fulfilment with no caption) ALSO resolves strictly per-sender via mediaFallbackLang now, never the old hardcoded Banglish default', async () => {
+    const phoneHindiOther = '910000002515', phoneUnderTest = '910000002516';
+    await whatsappAssistant.appendConvoHistory(phoneHindiOther, 'in', 'Mujhe mera increment letter chahiye, kab milega');
+    const result = await whatsappAssistant.thanksReplyFor(phoneUnderTest, '');
+    return result.lang === 'english' && result.text === whatsappAssistant.DOC_THANKS.english;
+  });
+  await checkAsync('thanksReplyFor still picks up THIS sender\'s own Banglish history correctly (never defaulting past a real, usable history)', async () => {
+    const phone = '910000002517';
+    await whatsappAssistant.appendConvoHistory(phone, 'in', 'Ami kalke document ta pathabo, ektu somoy lagbe');
+    const result = await whatsappAssistant.thanksReplyFor(phone, '');
+    return result.lang === 'banglish' && result.text === whatsappAssistant.DOC_THANKS.banglish;
   });
 
   console.log('='.repeat(70));

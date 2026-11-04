@@ -493,3 +493,23 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
   official/non-official combo (even from an active employee) -> one
   combined approval, never a partial direct send; a hard-blocked field
   mixed in -> the whole request refused.
+- J (2026-11), live bug: wrong language for a message with no text of its
+  own (a bare photo/sticker/voice note, no caption) - `mediaFallbackLang`
+  defaulted to Banglish with no history, and the separate `thanksReplyFor`
+  (document-request fulfilment) had its OWN narrower, hardcoded-Banglish-
+  default regex duplicating (inconsistently with) the real detector, never
+  even looking at the sender's own history. Fixed: `thanksReplyFor` now
+  delegates entirely to `mediaFallbackLang` (THIS sender's own last real
+  incoming message, by phone - `getConvoHistory` is already keyed per-
+  contactId, confirmed never cross-sender), defaulting to English (not
+  Banglish) with no usable history; every `scheduleAutoSend` call for a
+  media acknowledgement now passes its own resolved `lang` explicitly
+  rather than relying on `detectLang` re-detecting it from the finished
+  template text. `sticker` is now a recognized, acknowledged message type
+  everywhere a media type is checked (previously silently dropped,
+  matching the live review item 1 fix the "ptt/voice/audio" types already
+  got). Locked scenarios: sender A chats in Hindi, sender B (own last
+  language English) sends a bare photo -> English, never A's Hindi; a
+  sender with Banglish history sends a sticker -> Banglish; a brand-new
+  sender with no history sends a bare photo -> English (never the old
+  Banglish default).
