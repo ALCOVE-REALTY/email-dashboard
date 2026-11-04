@@ -5721,6 +5721,805 @@
   });
   if (autoCancelBtn) autoCancelBtn.addEventListener('click', navBack);
 
+  // ================= SUBH Automate Workflow (2026-11) =================
+  // An Automated Task that also follows up and acts on replies - built
+  // from docs/samples/subh-workflow-sample.html. Mirrors the Automated
+  // Tasks controller just above section-for-section (same reset/populate/
+  // sync/Ask-SUBH/Preview/Test/Save shape, same runButtonAction/
+  // showProToast/createMailChipField plumbing) for sections 1-4 and
+  // Schedule/Summary/Preview/Test/Save/Cancel; sections 5-8 (Also send,
+  // Documents, If there's no reply, When they reply) are new. v1 ships
+  // only the 4 built-in letter templates (direct instruction) - no
+  // custom Word/Google Doc upload option in this UI yet.
+  const WF_EXAMPLES = [
+    'Proti maser 1 tarikh oi maser pending probation confirmation gulo protita employee-r Reporting Manager ke alada mail korbe, ar HR team-er 4 jon ke confirmation letter-er PDF soho ekta list mail. 2 din-e reply na ele follow-up. Approved hole "Noted with thanks", extension hole koto mash jene employee ke Extension of Probation Period mail.'
+  ];
+  const WF_PLACEHOLDERS = ['{Employee_No}', '{Employee_Name}', '{Designation}', '{Department}', '{Manager_Name}', '{Current_Month}', '{Current_Year}'];
+  const WF_DOC_LABELS = { confirmation: 'Confirmation Letter', extension: 'Extension of Probation Letter', experience: 'Experience Letter', relieving: 'Relieving Letter' };
+  const WF_SEND_TO_LABELS = { self: 'The employee', manager: 'The Reporting Manager', hr: 'HR team', accounts: 'Accounts team' };
+
+  // ---------- DOM refs ----------
+  const wfTaskBtn = document.getElementById('hrWorkflowTaskBtn');
+  const wfTasksBar = document.getElementById('hrWorkflowTasksBar');
+  const wfTasksBadge = document.getElementById('hrWorkflowTasksBadge');
+  const wfListPage = document.getElementById('hrWorkflowListPage');
+  const wfList = document.getElementById('hrWorkflowList');
+  const wfNewBtn = document.getElementById('hrWorkflowNewBtn');
+  const wfSubject = document.getElementById('wfSubject');
+  const wfSubjCount = document.getElementById('wfSubjCount');
+  const wfSubjErr = document.getElementById('wfSubjErr');
+  const wfAsk = document.getElementById('wfAsk');
+  const wfAskErr = document.getElementById('wfAskErr');
+  const wfAskExamples = document.getElementById('wfAskExamples');
+  const wfAskBtn = document.getElementById('wfAskBtn');
+  const wfUnderstand = document.getElementById('wfUnderstand');
+  const wfSheetUrl = document.getElementById('wfSheetUrl');
+  const wfSheetLoadBtn = document.getElementById('wfSheetLoadBtn');
+  const wfSheetMsg = document.getElementById('wfSheetMsg');
+  const wfSheetShareEmail = document.getElementById('wfSheetShareEmail');
+  const wfSheetShareCopyBtn = document.getElementById('wfSheetShareCopyBtn');
+  const wfSheetInfo = document.getElementById('wfSheetInfo');
+  const wfGroupCard = document.getElementById('wfGroupCard');
+  const wfGroupSeg = document.getElementById('wfGroupSeg');
+  const wfRecSeg = document.getElementById('wfRecSeg');
+  const wfRecColWrap = document.getElementById('wfRecColWrap');
+  const wfRecCol = document.getElementById('wfRecCol');
+  const wfSelWrap = document.getElementById('wfSelWrap');
+  const wfEmpSearch = document.getElementById('wfEmpSearch');
+  const wfSelAllBtn = document.getElementById('wfSelAllBtn');
+  const wfSelClearBtn = document.getElementById('wfSelClearBtn');
+  const wfSelCount = document.getElementById('wfSelCount');
+  const wfEmpList = document.getElementById('wfEmpList');
+  const wfRecHint = document.getElementById('wfRecHint');
+  const wfMedSeg = document.getElementById('wfMedSeg');
+  const wfMailSubjWrap = document.getElementById('wfMailSubjWrap');
+  const wfMailSubj = document.getElementById('wfMailSubj');
+  const wfBody = document.getElementById('wfBody');
+  const wfPlaceholders = document.getElementById('wfPlaceholders');
+  const wfTableToggle = document.getElementById('wfTableToggle');
+  const wfTableWrap = document.getElementById('wfTableWrap');
+  const wfCols = document.getElementById('wfCols');
+  const wfColOrder = document.getElementById('wfColOrder');
+  const wfAlsoOn = document.getElementById('wfAlsoOn');
+  const wfAlsoWrap = document.getElementById('wfAlsoWrap');
+  const wfAlsoTo = document.getElementById('wfAlsoTo');
+  const wfAlsoSubj = document.getElementById('wfAlsoSubj');
+  const wfAlsoBody = document.getElementById('wfAlsoBody');
+  const wfAlsoTable = document.getElementById('wfAlsoTable');
+  const wfAlsoDocs = document.getElementById('wfAlsoDocs');
+  const wfDocsOn = document.getElementById('wfDocsOn');
+  const wfDocsWrap = document.getElementById('wfDocsWrap');
+  const wfDocsTpl = document.getElementById('wfDocsTpl');
+  const wfDocsWhere = document.getElementById('wfDocsWhere');
+  const wfDocsPreviewBtn = document.getElementById('wfDocsPreviewBtn');
+  const wfFuDays = document.getElementById('wfFuDays');
+  const wfFuMax = document.getElementById('wfFuMax');
+  const wfFuBody = document.getElementById('wfFuBody');
+  const wfRulesEl = document.getElementById('wfRules');
+  const wfAddRuleBtn = document.getElementById('wfAddRuleBtn');
+  const wfDate = document.getElementById('wfDate');
+  const wfTime = document.getElementById('wfTime');
+  const wfRepSeg = document.getElementById('wfRepSeg');
+  const wfCustomWrap = document.getElementById('wfCustomWrap');
+  const wfEvery = document.getElementById('wfEvery');
+  const wfRepRule = document.getElementById('wfRepRule');
+  const wfSummary = document.getElementById('wfSummary');
+  const wfPreviewBtn = document.getElementById('wfPreviewBtn');
+  const wfTestBtn = document.getElementById('wfTestBtn');
+  const wfSaveBtn = document.getElementById('wfSaveBtn');
+  const wfCancelBtn = document.getElementById('wfCancelBtn');
+  const wfPreviewBackdrop = document.getElementById('hrWorkflowPreviewBackdrop');
+  const wfPreviewSheet = document.getElementById('hrWorkflowPreviewSheet');
+  const wfPreviewCloseBtn = document.getElementById('hrWorkflowPreviewCloseBtn');
+  const wfPreviewTitle = document.getElementById('hrWorkflowPreviewTitle');
+  const wfPreviewBody = document.getElementById('hrWorkflowPreviewBody');
+  const wfDetailPage = document.getElementById('hrWorkflowDetailPage');
+  const wfDetailTitle = document.getElementById('wfDetailTitle');
+  const wfDetailSub = document.getElementById('wfDetailSub');
+  const wfDetailActions = document.getElementById('wfDetailActions');
+  const wfDetailCounts = document.getElementById('wfDetailCounts');
+  const wfDetailAlsoLog = document.getElementById('wfDetailAlsoLog');
+  const wfDetailRows = document.getElementById('wfDetailRows');
+
+  const wfCcField = createMailChipField('wfCcChipInput', 'wfCcInput', 'wfCcSuggest');
+
+  function showWfToast(text, type) { showProToast({ title: text, type: type || 'success', anchor: 'top' }); }
+  const WF_TOAST_ERR = { toastFn: (msg) => showWfToast(msg, 'error') };
+
+  let wfEditingId = null;
+  let wfPlan = null;
+  let wfSelected = new Set();
+  let wfExcluded = new Set();
+  let wfTableCols = [];
+  let wfConfirmed = false;
+  let wfLastPreview = null;
+  let wfSheetContext = null;
+  let wfRules = [];
+  let wfSyncTimer = null;
+  let wfDetailWorkflow = null; // the workflow definition currently shown on the progress board
+  let wfDetailRun = null;      // its latest (or selected) run
+
+  function wfSegVal(container) { const b = container && container.querySelector('button.on'); return b ? b.dataset.v : null; }
+  function wfSetSeg(container, v) { if (!container) return; container.querySelectorAll('button[data-v]').forEach((b) => b.classList.toggle('on', b.dataset.v === v)); }
+  function wfResetButtonState(btn) { if (!btn) return; btn.disabled = false; btn.classList.remove('is-loading', 'is-success', 'is-error'); }
+
+  // ---------- List page ----------
+  function wfStatusPill(w) {
+    if (w.status === 'active') return '<span class="wf-auto-task-status active">Active</span>';
+    if (w.status === 'paused') return '<span class="wf-auto-task-status paused">Paused</span>';
+    return '<span class="wf-auto-task-status pending">Waiting for first-run approval</span>';
+  }
+  function wfRepeatLabel(w) {
+    if (w.schedule.repeat === 'none') return 'One time';
+    if (w.schedule.repeat === 'monthly') return 'Monthly';
+    if (w.schedule.repeat === 'yearly') return 'Yearly';
+    return 'Every ' + w.schedule.every + ' months';
+  }
+  function wfWhen(iso) { return iso ? new Date(iso).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' }) : '—'; }
+  function renderWorkflowList(items) {
+    if (!wfList) return;
+    if (!items.length) { wfList.innerHTML = '<div class="wf-rem-empty">No workflows yet.<br>Tap "New Workflow" to create one.</div>'; return; }
+    wfList.innerHTML = items.map((w) => {
+      const missed = w.pendingMissedRun ? '<div class="wf-auto-missed">⚠ Missed run (' + escapeHtml(wfWhen(w.pendingMissedRun.scheduledFor)) + ') — send now?<div class="wf-auto-actions"><button type="button" class="primary" data-a="missed-send" data-id="' + escapeHtml(w.id) + '">Send</button><button type="button" class="plain" data-a="missed-skip" data-id="' + escapeHtml(w.id) + '">Skip</button></div></div>' : '';
+      return '<div class="wf-auto-task-card" data-open="' + escapeHtml(w.id) + '">' +
+        '<div class="wf-auto-task-head"><div style="flex:1;min-width:0">' +
+          '<div class="wf-auto-task-subject">' + escapeHtml(w.subject) + '</div>' +
+          '<div class="wf-auto-hint">' + (w.plan.mediator === 'mail' ? '✉️ Mail' : '💬 WhatsApp') + ' · ' + escapeHtml(wfRepeatLabel(w)) + ' · ' + (w.plan.rules || []).length + ' rule(s)</div>' +
+          '<div class="wf-auto-hint">Next: <b>' + (w.status === 'paused' ? '— (paused)' : escapeHtml(wfWhen(w.nextRunAt))) + '</b></div>' +
+        '</div>' + wfStatusPill(w) + '</div>' +
+        missed +
+        '<div class="wf-auto-actions">' +
+          (w.status === 'pending_approval' ? '<button type="button" class="primary" data-a="approve" data-id="' + escapeHtml(w.id) + '">Approve first run</button>' : '') +
+          '<button type="button" class="plain" data-a="open" data-id="' + escapeHtml(w.id) + '">Progress</button>' +
+          '<button type="button" class="plain" data-a="run" data-id="' + escapeHtml(w.id) + '">Run now</button>' +
+          '<button type="button" class="plain" data-a="edit" data-id="' + escapeHtml(w.id) + '">Edit</button>' +
+          (w.status === 'paused' ? '<button type="button" class="plain" data-a="resume" data-id="' + escapeHtml(w.id) + '">Resume</button>' : (w.status === 'active' ? '<button type="button" class="plain" data-a="pause" data-id="' + escapeHtml(w.id) + '">Pause</button>' : '')) +
+          '<button type="button" class="danger" data-a="delete" data-id="' + escapeHtml(w.id) + '">Delete</button>' +
+        '</div></div>';
+    }).join('');
+  }
+  async function loadWorkflowsBadgeAndList(renderList) {
+    if (renderList && pageDataCache.workflows) renderWorkflowList(pageDataCache.workflows);
+    else if (renderList && wfList) wfList.innerHTML = '<div class="wf-skeleton-list"><div class="wf-skeleton-row"></div><div class="wf-skeleton-row"></div></div>';
+    try {
+      const resp = await fetch('/api/workforce/hr-assistant/workflows');
+      const data = await resp.json();
+      const items = data.items || [];
+      pageDataCache.workflows = items;
+      setCountBadge(wfTasksBadge, items.filter((w) => w.status === 'active' || w.status === 'pending_approval').length, { allowZero: true });
+      if (renderList && panelView === 'workflowList') renderWorkflowList(items);
+      return items;
+    } catch (err) {
+      if (pageDataCache.workflows) return pageDataCache.workflows;
+      if (renderList && wfList) wfList.innerHTML = '<div class="wf-rem-empty">Could not load workflows.</div>';
+      return [];
+    }
+  }
+  function openWorkflowList() { setPanelView('workflowList'); loadWorkflowsBadgeAndList(true); }
+  if (wfTasksBar) wfTasksBar.addEventListener('click', () => { pushNav({ type: 'workflowList' }); openWorkflowList(); });
+  if (wfNewBtn) wfNewBtn.addEventListener('click', () => { pushNav({ type: 'workflow', task: null }); openWorkflowCreate(null); });
+  if (wfTaskBtn) wfTaskBtn.addEventListener('click', () => { pushNav({ type: 'workflow', task: null }); openWorkflowCreate(null); });
+  async function fetchDeleteWorkflow(id) {
+    const resp = await fetch('/api/workforce/hr-assistant/workflows/' + encodeURIComponent(id), { method: 'DELETE' });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.error || 'Request failed.');
+    return data;
+  }
+  if (wfList) {
+    wfList.addEventListener('click', async (e) => {
+      const b = e.target.closest('[data-a]');
+      if (!b) return;
+      const id = b.dataset.id, action = b.dataset.a;
+      if (action === 'open') { await runButtonAction(b, async () => { const items = pageDataCache.workflows || await loadWorkflowsBadgeAndList(false); const w = items.find((x) => x.id === id); if (!w) throw new Error('Could not load that workflow.'); return w; }, (w) => { pushNav({ type: 'workflowDetail', id: w.id }); openWorkflowDetail(w.id); }, { resetAfterSuccess: true, toastFn: WF_TOAST_ERR.toastFn }); return; }
+      if (action === 'edit') { await runButtonAction(b, async () => { const items = pageDataCache.workflows || await loadWorkflowsBadgeAndList(false); const w = items.find((x) => x.id === id); if (!w) throw new Error('Could not load that workflow.'); return w; }, (w) => { pushNav({ type: 'workflow', task: w }); openWorkflowCreate(w); }, { resetAfterSuccess: true, toastFn: WF_TOAST_ERR.toastFn }); return; }
+      if (action === 'approve') { await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/workflows/' + encodeURIComponent(id) + '/approve', {}), () => { showWfToast('First run approved — it will send automatically at its scheduled time.'); loadWorkflowsBadgeAndList(true); }, WF_TOAST_ERR); return; }
+      if (action === 'pause') { await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/workflows/' + encodeURIComponent(id) + '/pause', {}), () => { showWfToast('Paused — no future sends.'); loadWorkflowsBadgeAndList(true); }, WF_TOAST_ERR); return; }
+      if (action === 'resume') { await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/workflows/' + encodeURIComponent(id) + '/resume', {}), () => { showWfToast('Resumed.'); loadWorkflowsBadgeAndList(true); }, WF_TOAST_ERR); return; }
+      if (action === 'run') {
+        if (!(await showConfirmDialog('Run this workflow now? It will really send to everyone who matches, right now.', { confirmLabel: 'Run now' }))) return;
+        await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/workflows/' + encodeURIComponent(id) + '/run-now', {}), (r) => { showWfToast(r.ok ? ('Run complete: ' + (r.sentCount || 0) + ' sent, ' + (r.skippedCount || 0) + ' skipped.') : (r.error || 'Could not run.'), r.ok ? 'success' : 'error'); loadWorkflowsBadgeAndList(true); }, WF_TOAST_ERR);
+        return;
+      }
+      if (action === 'delete') {
+        if (!(await showConfirmDialog('Delete this workflow? This can\'t be undone.', { confirmLabel: 'Delete' }))) return;
+        await runButtonAction(b, () => fetchDeleteWorkflow(id), () => { showWfToast('Deleted.'); loadWorkflowsBadgeAndList(true); }, WF_TOAST_ERR);
+        return;
+      }
+      if (action === 'missed-send') { await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/workflows/' + encodeURIComponent(id) + '/missed-run/send', {}), (r) => { showWfToast('Sent: ' + (r.sentCount || 0) + ' sent, ' + (r.skippedCount || 0) + ' skipped.'); loadWorkflowsBadgeAndList(true); }, WF_TOAST_ERR); return; }
+      if (action === 'missed-skip') { await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/workflows/' + encodeURIComponent(id) + '/missed-run/skip', {}), () => { showWfToast('Skipped.'); loadWorkflowsBadgeAndList(true); }, WF_TOAST_ERR); return; }
+    });
+  }
+
+  // ---------- Create/Edit page ----------
+  function wfResetForm() {
+    wfEditingId = null; wfPlan = null; wfConfirmed = false; wfExcluded = new Set(); wfSelected = new Set();
+    wfTableCols = ['Employee_No', 'Employee_Name', 'Designation', 'Department'];
+    wfRules = [];
+    const defaultWhen = currentIstDateTime();
+    if (wfSubject) wfSubject.value = '';
+    if (wfAsk) wfAsk.value = '';
+    if (wfUnderstand) wfUnderstand.innerHTML = '';
+    if (wfSummary) wfSummary.innerHTML = '<div class="wf-auto-summary-title">Summary</div><div class="wf-auto-summary-line">⚠ Ask SUBH and confirm the plan first</div>';
+    wfSheetContext = null;
+    if (wfSheetUrl) wfSheetUrl.value = '';
+    if (wfSheetMsg) { wfSheetMsg.textContent = ''; wfSheetMsg.classList.add('hidden'); }
+    if (wfSheetInfo) wfSheetInfo.innerHTML = '';
+    wfSetSeg(wfGroupSeg, 'each');
+    wfSetSeg(wfRecSeg, 'column');
+    wfSetSeg(wfMedSeg, 'mail');
+    wfSetSeg(wfRepSeg, 'monthly');
+    if (wfMailSubj) wfMailSubj.value = '';
+    if (wfBody) wfBody.value = '';
+    if (wfTableToggle) wfTableToggle.checked = false;
+    if (wfDate) wfDate.value = defaultWhen.date;
+    if (wfTime) wfTime.value = defaultWhen.time;
+    if (wfEvery) wfEvery.value = 2;
+    if (wfAlsoOn) wfAlsoOn.checked = false;
+    if (wfAlsoTo) wfAlsoTo.value = 'hr';
+    if (wfAlsoSubj) wfAlsoSubj.value = '';
+    if (wfAlsoBody) wfAlsoBody.value = '';
+    if (wfAlsoTable) wfAlsoTable.checked = false;
+    if (wfAlsoDocs) wfAlsoDocs.checked = false;
+    if (wfDocsOn) wfDocsOn.checked = false;
+    if (wfDocsTpl) wfDocsTpl.value = 'confirmation';
+    if (wfDocsWhere) wfDocsWhere.value = 'also';
+    if (wfFuDays) wfFuDays.value = 2;
+    if (wfFuMax) wfFuMax.value = 2;
+    if (wfFuBody) wfFuBody.value = '';
+    wfCcField.reset();
+    if (wfEmpSearch) wfEmpSearch.value = '';
+    renderWfRecCols();
+    renderWfRules();
+  }
+  function wfPopulateForm(w) {
+    wfEditingId = w.id;
+    wfPlan = JSON.parse(JSON.stringify(w.plan));
+    wfConfirmed = true;
+    wfExcluded = new Set(w.excludedKeys || []);
+    wfSelected = new Set(w.plan.selectedEmployeeIds || []);
+    wfTableCols = [...(w.plan.tableColumns || [])];
+    wfRules = JSON.parse(JSON.stringify(w.plan.rules || []));
+    if (wfSubject) wfSubject.value = w.subject;
+    if (wfAsk) wfAsk.value = w.originalAsk || '';
+    wfSetSeg(wfGroupSeg, w.plan.group);
+    wfSetSeg(wfRecSeg, w.plan.rec);
+    wfSetSeg(wfMedSeg, w.plan.mediator);
+    wfSetSeg(wfRepSeg, w.schedule.repeat);
+    if (wfMailSubj) wfMailSubj.value = w.plan.mailSubject || '';
+    if (wfBody) wfBody.value = w.plan.body || '';
+    if (wfTableToggle) wfTableToggle.checked = Boolean(w.plan.table);
+    if (wfDate) wfDate.value = w.schedule.date || '';
+    if (wfTime) wfTime.value = w.schedule.time || '10:00';
+    if (wfEvery) wfEvery.value = w.schedule.every || 2;
+    wfCcField.setChips((w.plan.cc || '').split(',').map((s) => s.trim()).filter(Boolean));
+    const also = w.plan.also || { on: false };
+    if (wfAlsoOn) wfAlsoOn.checked = Boolean(also.on);
+    if (wfAlsoTo) wfAlsoTo.value = also.to || 'hr';
+    if (wfAlsoSubj) wfAlsoSubj.value = also.subject || '';
+    if (wfAlsoBody) wfAlsoBody.value = also.body || '';
+    if (wfAlsoTable) wfAlsoTable.checked = Boolean(also.table);
+    if (wfAlsoDocs) wfAlsoDocs.checked = Boolean(also.docs);
+    const docs = w.plan.docs || { on: false };
+    if (wfDocsOn) wfDocsOn.checked = Boolean(docs.on);
+    if (wfDocsTpl) wfDocsTpl.value = docs.template || 'confirmation';
+    if (wfDocsWhere) wfDocsWhere.value = docs.attachTo || 'also';
+    const fu = w.plan.followUp || { days: 2, max: 2, body: '' };
+    if (wfFuDays) wfFuDays.value = fu.days || 2;
+    if (wfFuMax) wfFuMax.value = fu.max || 2;
+    if (wfFuBody) wfFuBody.value = fu.body || '';
+    wfSheetContext = null;
+    if (w.plan.source === 'sheet') {
+      if (wfSheetUrl) wfSheetUrl.value = w.plan.sheetUrl || '';
+      if (wfSheetInfo) wfSheetInfo.innerHTML = w.plan.sheetTab ? '<div class="wf-auto-sheet-tab on"><div class="title">' + escapeHtml(w.plan.sheetTab) + ' ✓</div><div class="meta">' + ((w.plan.sheetColumns || []).length) + ' column(s) — tap Load above to refresh</div></div>' : '';
+    } else if (wfSheetInfo) wfSheetInfo.innerHTML = '';
+    renderWfRecCols();
+    if (wfRecCol) wfRecCol.value = w.plan.recCol || 'reportingManager';
+    renderWfCols();
+    renderWfEmpList();
+    renderWfRules();
+    renderWfUnderstanding();
+  }
+  async function openWorkflowCreate(w) {
+    wfResetButtonState(wfSaveBtn); wfResetButtonState(wfTestBtn); wfResetButtonState(wfAskBtn); wfResetButtonState(wfSheetLoadBtn);
+    await fetchAutoEmployees();
+    loadServiceAccountEmailOnce().then((email) => { if (wfSheetShareEmail) wfSheetShareEmail.textContent = email; });
+    if (w) wfPopulateForm(w); else wfResetForm();
+    if (wfSubjErr) wfSubjErr.classList.add('hidden');
+    if (wfAskErr) wfAskErr.classList.add('hidden');
+    if (!wfAskExamples.dataset.wired) { wfAskExamples.innerHTML = WF_EXAMPLES.map((x, i) => '<button type="button" data-ex="' + i + '">' + escapeHtml(x) + '</button>').join(''); wfAskExamples.dataset.wired = '1'; }
+    if (!wfPlaceholders.dataset.wired) { wfPlaceholders.innerHTML = WF_PLACEHOLDERS.map((p) => '<button type="button" data-p="' + escapeHtml(p) + '">' + escapeHtml(p) + '</button>').join(''); wfPlaceholders.dataset.wired = '1'; }
+    renderWfEmpList();
+    wfSync();
+    setPanelView('workflow');
+  }
+  function renderWfRecCols() {
+    if (!wfRecCol) return;
+    const opts = (wfPlan && wfPlan.source === 'sheet')
+      ? [['self', 'This row (Email / Phone column)']].concat((wfPlan.sheetColumns || []).filter((c) => !/^(email|phone|e-?mail|contact|mobile)/i.test(c) && !/date/i.test(c)).map((c) => [c, c]))
+      : AUTO_EMP_PERSON_COLS;
+    wfRecCol.innerHTML = opts.map(([v, l]) => '<option value="' + escapeHtml(v) + '">' + escapeHtml(l) + '</option>').join('');
+  }
+  function renderWfEmpList() {
+    if (!wfEmpList || !autoEmployeesCache) return;
+    const q = (wfEmpSearch && wfEmpSearch.value || '').toLowerCase();
+    const filtered = autoEmployeesCache.filter((e) => (e.name + ' ' + e.employeeId + ' ' + e.department).toLowerCase().includes(q));
+    wfEmpList.innerHTML = filtered.map((e) =>
+      '<label class="wf-auto-emp"><input type="checkbox" data-no="' + escapeHtml(e.employeeId) + '" ' + (wfSelected.has(e.employeeId) ? 'checked' : '') + ' />' +
+      '<div style="flex:1"><div style="font-weight:700">' + escapeHtml(e.name) + '</div><small>' + escapeHtml(e.department || '') + ' · ' + escapeHtml(e.email || 'no email') + ' · ' + escapeHtml(e.contactNumber || 'no phone') + '</small></div></label>'
+    ).join('');
+    if (wfSelCount) wfSelCount.textContent = wfSelected.size + ' selected';
+  }
+  if (wfEmpList) wfEmpList.addEventListener('change', (e) => { const no = e.target.dataset.no; if (!no) return; e.target.checked ? wfSelected.add(no) : wfSelected.delete(no); renderWfEmpList(); wfSync(); });
+  if (wfEmpSearch) wfEmpSearch.addEventListener('input', renderWfEmpList);
+  if (wfSelAllBtn) wfSelAllBtn.addEventListener('click', () => { (autoEmployeesCache || []).forEach((e) => wfSelected.add(e.employeeId)); renderWfEmpList(); wfSync(); });
+  if (wfSelClearBtn) wfSelClearBtn.addEventListener('click', () => { wfSelected.clear(); renderWfEmpList(); wfSync(); });
+
+  function renderWfCols() {
+    if (!wfCols) return;
+    const avail = (wfPlan && wfPlan.source === 'sheet') ? (wfPlan.sheetColumns || []) : AUTO_EMP_COLUMNS;
+    wfCols.innerHTML = avail.map((h) => '<button type="button" class="' + (wfTableCols.includes(h) ? 'on' : '') + '" data-c="' + escapeHtml(h) + '">' + (wfTableCols.includes(h) ? '✓ ' : '+ ') + escapeHtml(h) + '</button>').join('');
+    if (wfColOrder) wfColOrder.textContent = wfTableCols.length ? 'Order: ' + wfTableCols.join(' | ') : 'Pick at least one column.';
+  }
+  if (wfCols) wfCols.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-c]'); if (!b) return;
+    const c = b.dataset.c;
+    wfTableCols = wfTableCols.includes(c) ? wfTableCols.filter((x) => x !== c) : [...wfTableCols, c];
+    if (wfPlan && wfPlan.source === 'sheet') wfPlan.sheetUseAllColumns = false;
+    renderWfCols(); wfSync();
+  });
+  let wfLastActiveField = wfBody;
+  if (wfMailSubj) wfMailSubj.addEventListener('focus', () => { wfLastActiveField = wfMailSubj; });
+  if (wfBody) wfBody.addEventListener('focus', () => { wfLastActiveField = wfBody; });
+  if (wfPlaceholders) wfPlaceholders.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-p]'); if (!b) return;
+    const subjectVisible = wfMailSubjWrap && !wfMailSubjWrap.classList.contains('hidden');
+    const field = (wfLastActiveField === wfMailSubj && subjectVisible) ? wfMailSubj : wfBody;
+    if (!field) return;
+    const st = field.selectionStart ?? field.value.length, en = field.selectionEnd ?? st;
+    field.value = field.value.slice(0, st) + b.dataset.p + field.value.slice(en);
+    field.focus(); const caret = st + b.dataset.p.length; field.setSelectionRange(caret, caret);
+    wfLastActiveField = field; wfSync();
+  });
+
+  [wfGroupSeg, wfRecSeg, wfMedSeg, wfRepSeg].forEach((seg) => {
+    if (!seg) return;
+    seg.addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b || !b.dataset.v) return; wfSetSeg(seg, b.dataset.v); wfSync(); if (wfPlan) renderWfUnderstanding(); });
+  });
+  if (wfRecCol) wfRecCol.addEventListener('change', () => { wfSync(); if (wfPlan) renderWfUnderstanding(); });
+  if (wfTableToggle) wfTableToggle.addEventListener('change', wfSync);
+  if (wfAlsoOn) wfAlsoOn.addEventListener('change', wfSync);
+  if (wfDocsOn) wfDocsOn.addEventListener('change', wfSync);
+  [wfSubject, wfMailSubj, wfBody, wfAlsoSubj, wfAlsoBody, wfFuDays, wfFuMax, wfFuBody, wfDate, wfTime, wfEvery].forEach((el) => { if (el) el.addEventListener('input', wfSync); });
+  if (document.getElementById('wfCcInput')) document.getElementById('wfCcInput').addEventListener('input', wfSync);
+  if (document.getElementById('wfCcChipInput')) document.getElementById('wfCcChipInput').addEventListener('click', () => setTimeout(wfSync, 0));
+
+  function wfReadForm() {
+    return {
+      subject: (wfSubject && wfSubject.value || '').trim(),
+      source: wfPlan ? wfPlan.source : 'master',
+      group: wfSegVal(wfGroupSeg) || 'each',
+      rec: wfSegVal(wfRecSeg) || 'column',
+      recCol: wfRecCol ? wfRecCol.value : null,
+      mediator: wfSegVal(wfMedSeg) || 'mail',
+      mailSubject: wfMailSubj ? wfMailSubj.value : '',
+      body: wfBody ? wfBody.value : '',
+      table: wfTableToggle ? wfTableToggle.checked : false,
+      date: wfDate ? wfDate.value : '',
+      time: wfTime ? wfTime.value : '10:00',
+      repeat: wfSegVal(wfRepSeg) || 'monthly',
+      every: wfEvery ? wfEvery.value : 2,
+      cc: wfCcField.getChips().join(', ')
+    };
+  }
+  function wfBuildPlanFromForm(f) {
+    const base = wfPlan || { source: 'master', conds: [], match: 'all', sheetUrl: null, sheetId: null, sheetColumns: null };
+    return Object.assign({}, base, {
+      group: f.group, rec: f.rec, recCol: f.recCol, selectedEmployeeIds: Array.from(wfSelected),
+      mediator: f.mediator, mailSubject: f.mailSubject, body: f.body, cc: f.cc || null,
+      table: f.table, tableColumns: [...wfTableCols], tablePlacement: 'body',
+      also: {
+        on: Boolean(wfAlsoOn && wfAlsoOn.checked), to: wfAlsoTo ? wfAlsoTo.value : 'hr',
+        subject: wfAlsoSubj ? wfAlsoSubj.value : '', body: wfAlsoBody ? wfAlsoBody.value : '',
+        table: Boolean(wfAlsoTable && wfAlsoTable.checked), docs: Boolean(wfAlsoDocs && wfAlsoDocs.checked)
+      },
+      docs: { on: Boolean(wfDocsOn && wfDocsOn.checked), template: wfDocsTpl ? wfDocsTpl.value : 'confirmation', attachTo: wfDocsWhere ? wfDocsWhere.value : 'also' },
+      followUp: { days: Number(wfFuDays && wfFuDays.value) || 2, max: Number(wfFuMax && wfFuMax.value) || 2, body: wfFuBody ? wfFuBody.value : '' },
+      rules: JSON.parse(JSON.stringify(wfRules))
+    });
+  }
+  function wfSync() {
+    const f = wfReadForm();
+    if (wfSubjCount) wfSubjCount.textContent = f.subject.length;
+    const isNone = wfPlan && wfPlan.source === 'none';
+    if (wfGroupCard) wfGroupCard.classList.toggle('hidden', Boolean(isNone));
+    const colBtn = wfRecSeg && wfRecSeg.querySelector('[data-v="column"]');
+    if (colBtn) colBtn.classList.toggle('hidden', Boolean(isNone));
+    if (wfRecColWrap) wfRecColWrap.classList.toggle('hidden', f.rec !== 'column');
+    if (wfSelWrap) wfSelWrap.classList.toggle('hidden', f.rec !== 'selected');
+    if (wfRecHint) wfRecHint.textContent = f.rec === 'column' ? 'Each matching row goes only to the person in that column. Every message holds only that one row.' : '';
+    if (wfMailSubjWrap) wfMailSubjWrap.classList.toggle('hidden', f.mediator !== 'mail');
+    if (wfTableWrap) wfTableWrap.classList.toggle('hidden', !f.table);
+    if (wfAlsoWrap) wfAlsoWrap.classList.toggle('hidden', !(wfAlsoOn && wfAlsoOn.checked));
+    if (wfDocsWrap) wfDocsWrap.classList.toggle('hidden', !(wfDocsOn && wfDocsOn.checked));
+    const day = f.date ? new Date(f.date + 'T00:00:00Z').getUTCDate() : null;
+    if (wfCustomWrap) wfCustomWrap.classList.toggle('hidden', f.repeat !== 'custom');
+    if (wfRepRule) wfRepRule.textContent = (f.repeat === 'monthly' && day > 28) ? ('Months without day ' + day + ' run on their last day.') : '';
+    clearTimeout(wfSyncTimer);
+    wfSyncTimer = setTimeout(wfRefreshSummary, 250);
+  }
+  async function wfRefreshSummary() {
+    if (!wfSummary || !wfPlan) return;
+    const f = wfReadForm();
+    const plan = wfBuildPlanFromForm(f);
+    const schedule = { date: f.date, time: f.time, repeat: f.repeat, every: f.every };
+    try {
+      const resp = await fetch('/api/workforce/hr-assistant/workflows/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ plan, excludedKeys: Array.from(wfExcluded), schedule }) });
+      const data = await resp.json();
+      wfLastPreview = data;
+      const RECCOL_SHORT = { reportingDoer: 'HOD', reportingManager: 'Manager', self: 'the employee' };
+      const recTxt = f.rec === 'column' ? 'the person in "' + (RECCOL_SHORT[f.recCol] || f.recCol || '') + '"' : wfSelected.size + ' selected';
+      if (data.blocked) {
+        wfSummary.innerHTML = '<div class="wf-auto-summary-title">Summary</div><div class="wf-auto-summary-line" style="color:var(--wi-red-700);font-weight:800;white-space:normal">⚠ Can\'t run right now: ' + escapeHtml(data.blocked.reason) + '</div>';
+      } else {
+        wfSummary.innerHTML = '<div class="wf-auto-summary-title">Summary</div>' +
+          '<div class="wf-auto-summary-line">' + (wfConfirmed ? '✓ Plan confirmed' : '⚠ Ask SUBH and confirm the plan first') + '</div>' +
+          '<div class="wf-auto-summary-line">' + (f.mediator === 'mail' ? '✉️ Mail' : '💬 WhatsApp') + ' → ' + escapeHtml(recTxt) + (f.cc ? ' (+ CC)' : '') + '</div>' +
+          (data.alsoMessage ? '<div class="wf-auto-summary-line">+ 1 mail → ' + escapeHtml(data.alsoMessage.to) + '</div>' : '') +
+          '<div class="wf-auto-summary-line">🔁 Follow up every ' + (wfFuDays ? wfFuDays.value : 2) + ' day(s), up to ' + (wfFuMax ? wfFuMax.value : 2) + ' time(s)</div>' +
+          '<div class="wf-auto-summary-line">🤖 ' + wfRules.length + ' reply rule(s)</div>' +
+          '<div class="wf-auto-summary-line">' + (f.repeat === 'custom' ? 'Every ' + f.every + ' mo' : f.repeat.charAt(0).toUpperCase() + f.repeat.slice(1)) + ' · next run <b>' + escapeHtml(data.nextRunAt ? wfWhen(data.nextRunAt) : '—') + '</b></div>' +
+          '<div class="wf-auto-summary-line">Next run would send <b>' + ((data.sent || []).length) + '</b> first message(s).</div>';
+      }
+      renderWfUnderstanding();
+    } catch (err) { /* summary is best-effort - never blocks the form */ }
+  }
+  ['wfFuDays', 'wfFuMax', 'wfAlsoTo', 'wfDocsTpl', 'wfDocsWhere'].forEach((id) => { const el = document.getElementById(id); if (el) el.addEventListener('change', wfSync); });
+
+  // ---------- Rules (Section 8) ----------
+  function wfRenderRuleFields(r, i) {
+    return '<div class="wf-auto-rule-card"><div class="wf-auto-rule-head"><span>Rule ' + (i + 1) + '</span><button type="button" class="wf-auto-cond-rm" data-rmrule="' + i + '" aria-label="Remove rule">×</button></div>' +
+      '<label class="wf-rem-field">If the reply means<input type="text" data-r="' + i + '" data-k="when" value="' + escapeHtml(r.when || '') + '" placeholder="e.g. Approved / confirmed" autocomplete="off"></label>' +
+      '<label class="wf-auto-check"><input type="checkbox" data-r="' + i + '" data-k="askDetail_on" ' + (r.askDetail ? 'checked' : '') + '> First ask for a missing detail</label>' +
+      (r.askDetail ? (
+        '<div class="wf-rem-field-row"><label class="wf-rem-field">Detail<input type="text" data-r="' + i + '" data-k="askDetail" value="' + escapeHtml(r.askDetail || '') + '" placeholder="e.g. number of months" autocomplete="off"></label>' +
+        '<label class="wf-rem-field">Follow up after (days)<input type="number" min="1" data-r="' + i + '" data-k="askFollowUpDays" value="' + (r.askFollowUpDays || '') + '" placeholder="default"></label></div>' +
+        '<label class="wf-rem-field">SUBH asks<textarea data-r="' + i + '" data-k="askQuestion" class="wf-auto-body" style="min-height:70px" autocomplete="off">' + escapeHtml(r.askQuestion || '') + '</textarea></label>'
+      ) : '') +
+      '<label class="wf-rem-field">SUBH replies<textarea data-r="' + i + '" data-k="replyText" class="wf-auto-body" style="min-height:60px" autocomplete="off">' + escapeHtml(r.replyText || '') + '</textarea></label>' +
+      '<label class="wf-auto-check"><input type="checkbox" data-r="' + i + '" data-k="sendTo_on" ' + (r.sendTo ? 'checked' : '') + '> Then send a message to someone</label>' +
+      (r.sendTo ? (
+        '<label class="wf-rem-field">To<select data-r="' + i + '" data-k="sendTo">' + Object.keys(WF_SEND_TO_LABELS).map((v) => '<option value="' + v + '" ' + (r.sendTo === v ? 'selected' : '') + '>' + WF_SEND_TO_LABELS[v] + '</option>').join('') + '</select></label>' +
+        '<label class="wf-rem-field">Subject<input type="text" data-r="' + i + '" data-k="sendSubject" value="' + escapeHtml(r.sendSubject || '') + '" autocomplete="off"></label>' +
+        '<label class="wf-rem-field">Body<textarea data-r="' + i + '" data-k="sendBody" class="wf-auto-body" style="min-height:90px" autocomplete="off">' + escapeHtml(r.sendBody || '') + '</textarea></label>' +
+        '<div class="wf-auto-hint">{Reply_Detail} = what they told SUBH (only filled when "ask for a missing detail" above is used).</div>' +
+        '<label class="wf-rem-field">Attach a document<select data-r="' + i + '" data-k="sendDocument"><option value="">None</option>' + Object.keys(WF_DOC_LABELS).map((v) => '<option value="' + v + '" ' + (r.sendDocument === v ? 'selected' : '') + '>' + WF_DOC_LABELS[v] + '</option>').join('') + '</select></label>' +
+        '<label class="wf-auto-check"><input type="checkbox" data-r="' + i + '" data-k="askMeFirst" ' + (r.askMeFirst ? 'checked' : '') + '> Ask me before sending this message</label>'
+      ) : '') +
+      '<label class="wf-rem-field">Then<select data-r="' + i + '" data-k="then"><option value="stop" ' + (r.then === 'stop' ? 'selected' : '') + '>Done for this record</option><option value="wait" ' + (r.then === 'wait' ? 'selected' : '') + '>Keep waiting (follow up again)</option><option value="askme" ' + (r.then === 'askme' ? 'selected' : '') + '>Ask me</option></select></label>' +
+      '</div>';
+  }
+  function renderWfRules() {
+    if (!wfRulesEl) return;
+    wfRulesEl.innerHTML = wfRules.length ? wfRules.map(wfRenderRuleFields).join('') : '<div class="wf-auto-hint" style="margin-top:8px">No rules yet — add one for each kind of reply.</div>';
+  }
+  if (wfRulesEl) {
+    wfRulesEl.addEventListener('change', (e) => {
+      const t = e.target, i = t.dataset.r; if (i == null) return;
+      const rule = wfRules[+i];
+      if (t.dataset.k === 'askDetail_on') { rule.askDetail = t.checked ? (rule.askDetail || ' ') : null; if (!t.checked) { rule.askQuestion = null; rule.askFollowUpDays = null; } renderWfRules(); wfSync(); return; }
+      if (t.dataset.k === 'sendTo_on') { rule.sendTo = t.checked ? 'self' : null; if (!t.checked) { rule.sendSubject = null; rule.sendBody = null; rule.sendDocument = null; rule.askMeFirst = false; } renderWfRules(); wfSync(); return; }
+      if (t.dataset.k === 'askMeFirst') { rule.askMeFirst = t.checked; wfSync(); return; }
+      rule[t.dataset.k] = t.value;
+      wfSync();
+      if (wfPlan) renderWfUnderstanding();
+    });
+    wfRulesEl.addEventListener('input', (e) => {
+      const t = e.target, i = t.dataset.r; if (i == null || t.type === 'checkbox' || t.tagName === 'SELECT') return;
+      const rule = wfRules[+i];
+      if (t.dataset.k === 'askDetail') rule.askDetail = t.value; else rule[t.dataset.k] = t.value;
+    });
+    wfRulesEl.addEventListener('click', (e) => { const b = e.target.closest('[data-rmrule]'); if (!b) return; wfRules.splice(+b.dataset.rmrule, 1); renderWfRules(); wfSync(); });
+  }
+  if (wfAddRuleBtn) wfAddRuleBtn.addEventListener('click', () => { wfRules.push({ when: '', askDetail: null, askQuestion: null, askFollowUpDays: null, replyText: '', sendTo: null, sendSubject: null, sendBody: null, sendDocument: null, askMeFirst: false, then: 'stop' }); renderWfRules(); wfSync(); });
+
+  // ---------- Ask SUBH ----------
+  if (wfAskExamples) wfAskExamples.addEventListener('click', (e) => { const b = e.target.closest('[data-ex]'); if (!b) return; wfAsk.value = WF_EXAMPLES[+b.dataset.ex]; wfDoAsk(); });
+  if (wfAskBtn) wfAskBtn.addEventListener('click', wfDoAsk);
+  async function wfDoAsk() {
+    const text = (wfAsk && wfAsk.value || '').trim();
+    if (wfAskErr) wfAskErr.classList.toggle('hidden', Boolean(text));
+    if (!text) { showWfToast('Write what you want to automate.', 'warning'); return; }
+    await runButtonAction(wfAskBtn, () => postJsonOrThrow('/api/workforce/hr-assistant/workflows/ask', { text, sheetContext: wfSheetContext }), (draft) => {
+      if (!draft.ok) {
+        wfPlan = null; wfConfirmed = false;
+        if (wfUnderstand) wfUnderstand.innerHTML = '<div class="wf-auto-unclear"><h3>🤔 SUBH needs one more detail</h3><ul>' + draft.unclear.map((u) => '<li>Please tell me ' + escapeHtml(u) + '.</li>').join('') + '</ul><div class="wf-auto-hint">Add it to your sentence above and tap Ask SUBH again.</div></div>';
+        wfSync();
+        return;
+      }
+      wfPlan = draft.plan; wfConfirmed = false; wfExcluded = new Set();
+      wfSelected = new Set(draft.plan.selectedEmployeeIds || []);
+      wfTableCols = [...(draft.plan.tableColumns || [])];
+      wfRules = JSON.parse(JSON.stringify(draft.plan.rules || []));
+      if (!wfSubject.value) wfSubject.value = draft.subject || '';
+      wfSetSeg(wfGroupSeg, draft.plan.group);
+      wfSetSeg(wfRecSeg, draft.plan.rec);
+      wfSetSeg(wfMedSeg, draft.plan.mediator);
+      wfSetSeg(wfRepSeg, draft.schedule.repeat);
+      wfMailSubj.value = draft.plan.mailSubject || '';
+      wfBody.value = draft.plan.body || '';
+      wfTableToggle.checked = Boolean(draft.plan.table);
+      wfDate.value = draft.schedule.date || '';
+      wfTime.value = draft.schedule.time || '10:00';
+      wfEvery.value = draft.schedule.every || 2;
+      if (wfAlsoOn) wfAlsoOn.checked = Boolean(draft.plan.also && draft.plan.also.on);
+      if (wfAlsoTo) wfAlsoTo.value = (draft.plan.also && draft.plan.also.to) || 'hr';
+      if (wfAlsoSubj) wfAlsoSubj.value = (draft.plan.also && draft.plan.also.subject) || '';
+      if (wfAlsoBody) wfAlsoBody.value = (draft.plan.also && draft.plan.also.body) || '';
+      if (wfAlsoTable) wfAlsoTable.checked = Boolean(draft.plan.also && draft.plan.also.table);
+      if (wfAlsoDocs) wfAlsoDocs.checked = Boolean(draft.plan.also && draft.plan.also.docs);
+      if (wfDocsOn) wfDocsOn.checked = Boolean(draft.plan.docs && draft.plan.docs.on);
+      if (wfDocsTpl) wfDocsTpl.value = (draft.plan.docs && draft.plan.docs.template) || 'confirmation';
+      if (wfDocsWhere) wfDocsWhere.value = (draft.plan.docs && draft.plan.docs.attachTo) || 'also';
+      if (wfFuDays) wfFuDays.value = (draft.plan.followUp && draft.plan.followUp.days) || 2;
+      if (wfFuMax) wfFuMax.value = (draft.plan.followUp && draft.plan.followUp.max) || 2;
+      if (wfFuBody) wfFuBody.value = (draft.plan.followUp && draft.plan.followUp.body) || '';
+      renderWfRecCols();
+      if (wfRecCol) wfRecCol.value = draft.plan.recCol || 'reportingManager';
+      renderWfCols();
+      renderWfEmpList();
+      renderWfRules();
+      renderWfSheetInfo();
+      wfSync();
+      renderWfUnderstanding();
+    }, { resetAfterSuccess: true, toastFn: WF_TOAST_ERR.toastFn });
+  }
+  if (wfSheetShareCopyBtn) wfSheetShareCopyBtn.addEventListener('click', async () => {
+    const email = await loadServiceAccountEmailOnce();
+    try { await navigator.clipboard.writeText(email); } catch (err) { /* clipboard API unavailable */ }
+    wfSheetShareCopyBtn.textContent = 'Copied ✓'; wfSheetShareCopyBtn.classList.add('copied');
+    setTimeout(() => { wfSheetShareCopyBtn.textContent = 'Copy'; wfSheetShareCopyBtn.classList.remove('copied'); }, 1800);
+  });
+  function renderWfSheetInfo() {
+    if (!wfSheetInfo) return;
+    if (!wfSheetContext) { wfSheetInfo.innerHTML = ''; return; }
+    const chosenTab = wfPlan && wfPlan.source === 'sheet' ? wfPlan.sheetTab : null;
+    wfSheetInfo.innerHTML = '<div class="wf-auto-sheet-file">✓ ' + escapeHtml(wfSheetContext.fileName) + '</div>' +
+      wfSheetContext.tabs.map((t) => ('<div class="wf-auto-sheet-tab' + (t.title === chosenTab ? ' on' : '') + '" data-tab="' + escapeHtml(t.title) + '"><div class="title">' + escapeHtml(t.title) + (t.title === chosenTab ? ' ✓' : '') + '</div><div class="meta">' + t.rowCount + ' row(s) · ' + (t.headers.length ? escapeHtml(t.headers.join(', ')) : 'no columns found') + '</div></div>')).join('');
+  }
+  if (wfSheetInfo) wfSheetInfo.addEventListener('click', (e) => {
+    const card = e.target.closest('[data-tab]'); if (!card || !wfSheetContext) return;
+    const tab = wfSheetContext.tabs.find((t) => t.title === card.dataset.tab); if (!tab) return;
+    if (!wfPlan) wfPlan = { source: 'sheet', conds: [], match: 'all' };
+    wfPlan.source = 'sheet'; wfPlan.sheetUrl = wfSheetContext.sheetUrl; wfPlan.sheetId = wfSheetContext.sheetId;
+    wfPlan.sheetTab = tab.title; wfPlan.sheetColumns = tab.headers; wfTableCols = [...tab.headers];
+    renderWfSheetInfo(); renderWfRecCols(); renderWfCols(); wfSync();
+    if (wfPlan) renderWfUnderstanding();
+  });
+  if (wfSheetLoadBtn) wfSheetLoadBtn.addEventListener('click', async () => {
+    loadServiceAccountEmailOnce();
+    const url = (wfSheetUrl && wfSheetUrl.value || '').trim();
+    if (wfSheetMsg) wfSheetMsg.classList.add('hidden');
+    if (!/docs\.google\.com\/spreadsheets/.test(url)) { if (wfSheetMsg) { wfSheetMsg.textContent = 'Paste a Google Sheet link first.'; wfSheetMsg.classList.remove('hidden'); } return; }
+    await runButtonAction(wfSheetLoadBtn, () => postJsonOrThrow('/api/workforce/hr-assistant/workflows/load-sheet', { sheetUrl: url }), (r) => {
+      wfSheetContext = { sheetUrl: url, sheetId: r.sheetId, fileName: r.fileName, tabs: r.tabs };
+      if (r.tabs.length === 1) {
+        if (!wfPlan) wfPlan = { source: 'sheet', conds: [], match: 'all' };
+        wfPlan.source = 'sheet'; wfPlan.sheetUrl = url; wfPlan.sheetId = r.sheetId;
+        wfPlan.sheetTab = r.tabs[0].title; wfPlan.sheetColumns = r.tabs[0].headers; wfTableCols = [...r.tabs[0].headers];
+        renderWfRecCols(); renderWfCols();
+      }
+      renderWfSheetInfo(); wfSync();
+      if (wfPlan) renderWfUnderstanding();
+    }, { toastFn: (msg) => { if (wfSheetMsg) { wfSheetMsg.textContent = msg; wfSheetMsg.classList.remove('hidden'); } else showWfToast(msg, 'error'); } });
+  });
+
+  function renderWfUnderstanding() {
+    if (!wfUnderstand) return;
+    if (!wfPlan) { wfUnderstand.innerHTML = ''; return; }
+    const f = wfReadForm();
+    const isSheetSrc = wfPlan.source === 'sheet';
+    const srcLabel = isSheetSrc ? (wfSheetContext ? wfSheetContext.fileName : 'Custom Google Sheet') + (wfPlan.sheetTab ? ' → tab "' + wfPlan.sheetTab + '"' : '') : (AUTO_SOURCE_LABELS[wfPlan.source] || 'Data');
+    const namedRecipients = [...(autoEmployeesCache || []).filter((e) => wfSelected.has(e.employeeId)).map((e) => e.name), ...(wfPlan.selectedRawEmails || [])];
+    const recTxt = f.rec === 'column' ? (f.recCol === 'self' ? 'each person themself' : 'each row\'s own ' + (wfRecCol && wfRecCol.selectedOptions[0] ? wfRecCol.selectedOptions[0].textContent : f.recCol)) : (namedRecipients.join(', ') || '—');
+    const lines = [
+      '<b>Who:</b> ' + escapeHtml(srcLabel),
+      '<b>Sends to:</b> ' + escapeHtml(recTxt) + (f.group === 'each' ? ' — one separate message per row' : ' — one combined list'),
+      '<b>By:</b> ' + (f.mediator === 'mail' ? 'Mail' : 'WhatsApp') + (f.table ? ' · table in the message' : ''),
+      '<b>When:</b> ' + f.repeat + ', first run ' + escapeHtml(wfLastPreview && wfLastPreview.nextRunAt ? wfWhen(wfLastPreview.nextRunAt) : '—'),
+      '🔁 No reply in <b>' + (wfFuDays ? wfFuDays.value : 2) + ' day(s)</b> → follow up (max ' + (wfFuMax ? wfFuMax.value : 2) + '), then alert you',
+      ...wfRules.map((r) => (r.askDetail ? '⏳' : '✅') + ' "' + escapeHtml(r.when || '(unnamed rule)') + '" → ' + (r.askDetail ? 'ask for ' + escapeHtml(r.askDetail) + ' → ' : '') + '"' + escapeHtml((r.replyText || '').slice(0, 60)) + (((r.replyText || '').length > 60) ? '…' : '') + '"' + (r.sendTo ? ' → mail to ' + (WF_SEND_TO_LABELS[r.sendTo] || r.sendTo) + (r.askMeFirst ? ' (asks you first)' : '') : '') + ' → ' + (r.then === 'stop' ? 'done' : r.then === 'wait' ? 'keep waiting' : 'ask you')),
+      '❓ Unclear reply → a card for you'
+    ];
+    wfUnderstand.innerHTML = '<div class="wf-auto-und"><h3>SUBH understood' + (wfConfirmed ? ' <span class="ok">✓ confirmed</span>' : '') + '</h3><ul>' + lines.map((l) => '<li>' + l + '</li>').join('') +
+      '</ul>' + (wfConfirmed ? '<div class="wf-auto-confirmed">✓ Plan confirmed — you can still change anything below.</div>' : '<div class="wf-auto-ask-row"><button type="button" class="wf-ai-action-btn download" id="wfYesBtn">✓ Yes, that\'s right</button><button type="button" class="wf-ai-action-btn outline" id="wfNoBtn">Change it</button></div>') + '</div>';
+    const yesBtn = document.getElementById('wfYesBtn'), noBtn = document.getElementById('wfNoBtn');
+    if (yesBtn) yesBtn.onclick = () => { wfConfirmed = true; renderWfUnderstanding(); wfSync(); showWfToast('Plan confirmed ✓ — check the message & schedule below.'); };
+    if (noBtn) noBtn.onclick = () => { if (wfAsk) wfAsk.focus(); showWfToast('Edit your sentence and tap Ask SUBH again.', 'warning'); };
+  }
+
+  // ---------- Preview / Test / Save ----------
+  function wfRenderPreviewBody(data, title) {
+    if (wfPreviewTitle) wfPreviewTitle.textContent = title;
+    if (data.blocked) {
+      if (wfPreviewBody) wfPreviewBody.innerHTML = '<div class="wf-auto-skip">⚠ Can\'t run right now: ' + escapeHtml(data.blocked.reason) + '</div>';
+      if (wfPreviewBackdrop) wfPreviewBackdrop.hidden = false;
+      if (wfPreviewSheet) { wfPreviewSheet.hidden = false; requestAnimationFrame(() => wfPreviewSheet.classList.add('open')); }
+      return;
+    }
+    const sent = data.sent || [], skipped = data.skipped || [];
+    function msgHtml(m, label) {
+      let body = '<div class="wf-auto-msg"><div class="to">' + label + ' To: ' + escapeHtml(m.to) + ' &lt;' + escapeHtml(m.addr) + '&gt;</div>';
+      if (m.subject) body += '<div class="subj">Subject: ' + escapeHtml(m.subject) + '</div>';
+      body += '<pre>' + escapeHtml(m.body) + '</pre>';
+      if (m.table && m.table.length) body += '<div class="wf-auto-tbl"><table><tr>' + m.tableColumns.map((c) => '<th>' + escapeHtml(c) + '</th>').join('') + '</tr>' + m.table.map((r) => '<tr>' + m.tableColumns.map((c) => '<td>' + escapeHtml(r[c] == null ? '—' : String(r[c])) + '</td>').join('') + '</tr>').join('') + '</table></div>';
+      return body + '</div>';
+    }
+    let html = '<div class="wf-auto-hint">' + sent.length + ' first message(s)' + (data.alsoMessage ? ' + 1 also-send message' : '') + (data.nextRunAt ? ' · run on ' + escapeHtml(wfWhen(data.nextRunAt)) : '') + '</div>';
+    html += skipped.map((s) => '<div class="wf-auto-skip">⚠ ' + escapeHtml(s.who) + ': ' + escapeHtml(s.reason) + '</div>').join('');
+    if (!sent.length && !data.alsoMessage) html += '<div class="wf-rem-empty">Nothing to send on this run.</div>';
+    else { html += sent.map((m, i) => msgHtml(m, (i + 1) + '.')).join(''); if (data.alsoMessage) html += msgHtml(data.alsoMessage, 'Also:'); }
+    if (wfPreviewBody) wfPreviewBody.innerHTML = html;
+    if (wfPreviewBackdrop) wfPreviewBackdrop.hidden = false;
+    if (wfPreviewSheet) { wfPreviewSheet.hidden = false; requestAnimationFrame(() => wfPreviewSheet.classList.add('open')); }
+  }
+  function wfClosePreview() {
+    if (wfPreviewSheet) wfPreviewSheet.classList.remove('open');
+    setTimeout(() => { if (wfPreviewSheet) wfPreviewSheet.hidden = true; if (wfPreviewBackdrop) wfPreviewBackdrop.hidden = true; }, 280);
+  }
+  if (wfPreviewCloseBtn) wfPreviewCloseBtn.addEventListener('click', wfClosePreview);
+  if (wfPreviewBackdrop) wfPreviewBackdrop.addEventListener('click', wfClosePreview);
+  if (wfPreviewBtn) wfPreviewBtn.addEventListener('click', async () => { wfSync(); await wfRefreshSummary(); if (wfLastPreview) wfRenderPreviewBody(wfLastPreview, 'Preview — next run'); });
+  if (wfDocsPreviewBtn) wfDocsPreviewBtn.addEventListener('click', () => {
+    const tpl = wfDocsTpl ? wfDocsTpl.value : 'confirmation';
+    wfPreviewTitle && (wfPreviewTitle.textContent = 'Document preview');
+    if (wfPreviewBody) wfPreviewBody.innerHTML = '<div class="wf-auto-msg"><pre>[The ' + escapeHtml(WF_DOC_LABELS[tpl] || tpl) + ' template, filled with one matching record\'s own details, as a PDF.]</pre></div>';
+    if (wfPreviewBackdrop) wfPreviewBackdrop.hidden = false;
+    if (wfPreviewSheet) { wfPreviewSheet.hidden = false; requestAnimationFrame(() => wfPreviewSheet.classList.add('open')); }
+  });
+  if (wfTestBtn) wfTestBtn.addEventListener('click', async () => {
+    if (!wfEditingId) { showWfToast('Save the workflow first, then you can send a test.', 'warning'); return; }
+    await runButtonAction(wfTestBtn, async () => {
+      const r = await postJsonOrThrow('/api/workforce/hr-assistant/workflows/' + encodeURIComponent(wfEditingId) + '/send-test', {});
+      if (!r.ok) throw new Error(r.error || 'Could not send the test.');
+      const testResult = r.results && r.results[0];
+      if (testResult && testResult.status === 'failed') throw new Error(testResult.error || 'Could not send the test.');
+      return r;
+    }, (r) => {
+      const status = r.results && r.results[0] && r.results[0].status;
+      const msg = status === 'sent' ? 'Test sent to you ✓' : status === 'draft_mode' ? 'Draft mode is on (real sends are off) - nothing was actually sent.' : 'Nothing to test on this run — no message would be sent right now.';
+      showWfToast(msg, status === 'sent' ? 'success' : 'warning');
+    }, { resetAfterSuccess: true, toastFn: WF_TOAST_ERR.toastFn });
+  });
+  function wfValidate(f) {
+    let ok = true;
+    if (wfSubjErr) wfSubjErr.classList.toggle('hidden', Boolean(f.subject));
+    if (!f.subject) ok = false;
+    const askText = (wfAsk && wfAsk.value || '').trim();
+    if (wfAskErr) wfAskErr.classList.toggle('hidden', Boolean(askText));
+    if (!askText) { showWfToast('Tell SUBH what to automate first.', 'warning'); ok = false; }
+    if (!wfConfirmed) { showWfToast('Ask SUBH and confirm the plan first.', 'warning'); ok = false; }
+    if (!f.date || !f.time) { showWfToast('Date and time are required.', 'warning'); ok = false; }
+    if (f.rec === 'selected' && !wfSelected.size) { showWfToast('Select at least one recipient.', 'warning'); ok = false; }
+    if (!f.body.trim()) { showWfToast('Message body is required.', 'warning'); ok = false; }
+    if (f.table && !wfTableCols.length) { showWfToast('Pick at least one table column.', 'warning'); ok = false; }
+    if (wfPlan && wfPlan.source === 'sheet' && !wfPlan.sheetColumns) { showWfToast('Load the Google Sheet first.', 'warning'); ok = false; }
+    if (!wfRules.length) { showWfToast('Add at least one reply rule.', 'warning'); ok = false; }
+    if (wfRules.some((r) => !r.when || !r.replyText)) { showWfToast('Every rule needs "what it means" and "SUBH replies" filled in.', 'warning'); ok = false; }
+    if (wfCcField.getChips().some((e) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e))) { showWfToast('One of the CC addresses doesn\'t look like a valid email.', 'warning'); ok = false; }
+    return ok;
+  }
+  if (wfSaveBtn) wfSaveBtn.addEventListener('click', async () => {
+    wfSync();
+    const f = wfReadForm();
+    if (!wfValidate(f)) return;
+    const plan = wfBuildPlanFromForm(f);
+    const schedule = { date: f.date, time: f.time, repeat: f.repeat, every: f.every };
+    const payload = { subject: f.subject, originalAsk: (wfAsk && wfAsk.value || '').trim(), plan, excludedKeys: Array.from(wfExcluded), schedule };
+    const url = wfEditingId ? '/api/workforce/hr-assistant/workflows/' + encodeURIComponent(wfEditingId) : '/api/workforce/hr-assistant/workflows';
+    await runButtonAction(wfSaveBtn, () => postJsonOrThrow(url, payload), (result) => {
+      if (result && result.scheduleAdjustedTo) showWfToast('Run time had passed — moved to ' + wfWhen(result.scheduleAdjustedTo) + '.', 'warning');
+      else showWfToast(wfEditingId ? 'Workflow updated ✓' : 'Saved ✓ — first run waits for your approval.');
+      navStack = navStack.filter((n) => n.type !== 'workflow');
+      pushNav({ type: 'workflowList' });
+      openWorkflowList();
+    }, { resetAfterSuccess: true, toastFn: WF_TOAST_ERR.toastFn });
+  });
+  if (wfCancelBtn) wfCancelBtn.addEventListener('click', navBack);
+
+  // ---------- Progress board (detail page) ----------
+  const WF_STATE_LABELS = { sent: ['Sent', 's-pending'], waiting: ['Waiting', 's-pending'], followed: ['Followed up', 's-pending'], asked: ['Detail asked', 's-paused'], needs: ['Needs you', 's-red'], done: ['Done ✓', 's-active'], noreply: ['No reply — needs you', 's-red'], stopped: ['Stopped', 's-paused'], skipped: ['Skipped', 's-paused'] };
+  function wfRecordName(rec) { return (rec.row && (rec.row['Employee_Name'] || rec.row['Name'])) || rec.key || '—'; }
+  async function openWorkflowDetail(id) {
+    setPanelView('workflowDetail');
+    try {
+      const w = await (pageDataCache.workflows || []).find((x) => x.id === id) || await (async () => { const items = await loadWorkflowsBadgeAndList(false); return items.find((x) => x.id === id); })();
+      wfDetailWorkflow = w;
+    } catch (err) { wfDetailWorkflow = null; }
+    await wfLoadDetail();
+  }
+  async function wfLoadDetail() {
+    if (!wfDetailWorkflow) return;
+    if (wfDetailTitle) wfDetailTitle.textContent = wfDetailWorkflow.subject;
+    try {
+      const [wResp, runsResp] = await Promise.all([
+        fetch('/api/workforce/hr-assistant/workflows').then((r) => r.json()),
+        fetch('/api/workforce/hr-assistant/workflows/' + encodeURIComponent(wfDetailWorkflow.id) + '/runs').then((r) => r.json())
+      ]);
+      wfDetailWorkflow = (wResp.items || []).find((x) => x.id === wfDetailWorkflow.id) || wfDetailWorkflow;
+      wfDetailRun = (runsResp.items || [])[0] || null;
+    } catch (err) { /* keep showing whatever was last known */ }
+    renderWfDetail();
+  }
+  function renderWfDetail() {
+    if (!wfDetailWorkflow) return;
+    if (wfDetailSub) wfDetailSub.textContent = (wfDetailWorkflow.status === 'paused' ? 'Paused' : 'Next: ' + wfWhen(wfDetailWorkflow.nextRunAt)) + (wfDetailRun ? ' · run ' + wfWhen(wfDetailRun.runAt) : '');
+    if (wfDetailActions) {
+      wfDetailActions.innerHTML =
+        (wfDetailWorkflow.status === 'paused'
+          ? '<button type="button" class="wf-open-flows-btn" data-da="resume" title="Resume"><span class="wf-open-flows-btn-circle">▶</span></button>'
+          : '<button type="button" class="wf-open-flows-btn" data-da="pause" title="Pause"><span class="wf-open-flows-btn-circle">⏸</span></button>') +
+        '<button type="button" class="wf-open-flows-btn" data-da="edit" title="Edit"><span class="wf-open-flows-btn-circle">✎</span></button>' +
+        '<button type="button" class="wf-open-flows-btn" data-da="delete" title="Delete"><span class="wf-open-flows-btn-circle">🗑</span></button>';
+    }
+    const rows = (wfDetailRun && wfDetailRun.records) || [];
+    const c = (k) => rows.filter((x) => x.status === k).length;
+    if (wfDetailCounts) {
+      wfDetailCounts.innerHTML = [
+        ['Waiting', c('waiting') + c('sent')], ['Followed up', c('followed')], ['Detail asked', c('asked')], ['Done', c('done')],
+        ['Needs you', c('needs') + c('noreply'), true]
+      ].map(([l, n, red]) => '<span class="cp' + (red && n ? ' red' : '') + '">' + l + ' <b>' + n + '</b></span>').join('');
+    }
+    if (wfDetailAlsoLog) wfDetailAlsoLog.textContent = (wfDetailRun && wfDetailRun.alsoLog) ? wfDetailRun.alsoLog : '';
+    if (!wfDetailRows) return;
+    if (!rows.length) { wfDetailRows.innerHTML = '<div class="wf-rem-empty">No run yet - it sends automatically at the scheduled time, or tap Run now from the list.</div>'; return; }
+    wfDetailRows.innerHTML = rows.map((rec, i) => {
+      const [lab, cls] = WF_STATE_LABELS[rec.status] || ['—', 's-pending'];
+      let act = '';
+      const rules = (wfDetailWorkflow && wfDetailWorkflow.plan && wfDetailWorkflow.plan.rules) || [];
+      let lastReplySnippet = '';
+      if (rec.status === 'needs' && rec.pendingApproval) act = '<button type="button" class="wf-send-mail-btn" data-da2="sendok" data-i="' + i + '">Approve &amp; send</button><button type="button" class="wf-send-mail-btn" data-da2="decline" data-i="' + i + '">Decline</button>';
+      else if (rec.status === 'needs') {
+        // The reply that came back unclear, plus one button per rule (the
+        // owner tells SUBH which rule it actually meant) and a generic
+        // fallback - matches the approved sample's own unclear-reply card
+        // exactly ("a card for me with the reply, a button per rule and
+        // Ask again").
+        const lastReply = (rec.history || []).slice().reverse().find((h) => h.who !== 'SUBH' && !String(h.who || '').startsWith('SUBH '));
+        lastReplySnippet = lastReply ? '<div class="wf-auto-hint" style="margin-top:6px">Their reply: "' + escapeHtml((lastReply.text || '').slice(0, 160)) + '"</div>' : '';
+        act = rules.map((r, k) => '<button type="button" class="wf-send-mail-btn" data-da2="pickrule" data-i="' + i + '" data-k="' + k + '">' + escapeHtml(r.when || ('Rule ' + (k + 1))) + '</button>').join('') +
+          '<button type="button" class="wf-send-mail-btn" data-da2="markdone" data-i="' + i + '">Mark done</button><button type="button" class="wf-send-mail-btn" data-da2="stop" data-i="' + i + '">Stop</button>';
+      }
+      else if (rec.status === 'noreply') act = '<button type="button" class="wf-send-mail-btn" data-da2="remind" data-i="' + i + '">Send another reminder</button><button type="button" class="wf-send-mail-btn" data-da2="stop" data-i="' + i + '">Stop</button>';
+      else if (!['done', 'stopped', 'skipped'].includes(rec.status)) act = '<button type="button" class="wf-send-mail-btn" data-da2="stop" data-i="' + i + '">Stop</button>';
+      const hist = (rec.history || []).map((h) => '<div><b>' + escapeHtml(h.who) + ':</b> ' + escapeHtml((h.text || '').slice(0, 220)) + '</div>').join('');
+      return '<div class="wf-auto-task-card"><div class="wf-auto-task-head"><div style="flex:1;min-width:0"><div class="wf-auto-task-subject">' + escapeHtml(wfRecordName(rec)) + '</div>' +
+        '<div class="wf-auto-hint">first mail to ' + escapeHtml((rec.contact && rec.contact.name) || '—') + (rec.followUpCount ? ' · follow-ups ' + rec.followUpCount : '') + '</div></div><span class="status ' + cls + '">' + lab + '</span></div>' +
+        lastReplySnippet + '<div class="hist">' + hist + '</div><div class="wf-auto-actions">' + act + '</div></div>';
+    }).join('');
+  }
+  if (wfDetailActions) wfDetailActions.addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-da]'); if (!b || !wfDetailWorkflow) return;
+    const id = wfDetailWorkflow.id, action = b.dataset.da;
+    if (action === 'pause') { await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/workflows/' + encodeURIComponent(id) + '/pause', {}), () => { showWfToast('Paused.'); wfLoadDetail(); }, WF_TOAST_ERR); }
+    if (action === 'resume') { await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/workflows/' + encodeURIComponent(id) + '/resume', {}), () => { showWfToast('Resumed.'); wfLoadDetail(); }, WF_TOAST_ERR); }
+    if (action === 'edit') { pushNav({ type: 'workflow', task: wfDetailWorkflow }); openWorkflowCreate(wfDetailWorkflow); }
+    if (action === 'delete') { if (await showConfirmDialog('Delete this workflow? This can\'t be undone.', { confirmLabel: 'Delete' })) { await runButtonAction(b, () => fetchDeleteWorkflow(id), () => { showWfToast('Deleted.'); navBack(); }, WF_TOAST_ERR); } }
+  });
+  // Per-record actions use the SAME real routes the "Action needed" cards
+  // (Phase 4/5) will also call - never a separate, second implementation.
+  if (wfDetailRows) wfDetailRows.addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-da2]'); if (!b || !wfDetailRun) return;
+    const rec = wfDetailRun.records[+b.dataset.i]; if (!rec) return;
+    const action = b.dataset.da2;
+    const base = '/api/workforce/hr-assistant/workflows/' + encodeURIComponent(wfDetailWorkflow.id) + '/runs/' + encodeURIComponent(wfDetailRun.id) + '/records/' + encodeURIComponent(rec.key);
+    if (action === 'sendok') { await runButtonAction(b, () => postJsonOrThrow(base + '/approve-send', {}), () => { showWfToast('Sent ✓'); wfLoadDetail(); }, WF_TOAST_ERR); return; }
+    if (action === 'decline') { await runButtonAction(b, () => postJsonOrThrow(base + '/decline', {}), () => { showWfToast('Declined - nothing was sent.'); wfLoadDetail(); }, WF_TOAST_ERR); return; }
+    if (action === 'markdone') { await runButtonAction(b, () => postJsonOrThrow(base + '/mark-done', {}), () => { showWfToast('Marked done.'); wfLoadDetail(); }, WF_TOAST_ERR); return; }
+    if (action === 'stop') { await runButtonAction(b, () => postJsonOrThrow(base + '/stop', {}), () => { showWfToast('Stopped.'); wfLoadDetail(); }, WF_TOAST_ERR); return; }
+    if (action === 'remind') { await runButtonAction(b, () => postJsonOrThrow(base + '/remind', {}), () => { showWfToast('Reminder sent.'); wfLoadDetail(); }, WF_TOAST_ERR); return; }
+    if (action === 'pickrule') { await runButtonAction(b, () => postJsonOrThrow(base + '/resolve-unclear', { ruleIndex: +b.dataset.k }), () => { showWfToast('Resolved ✓'); wfLoadDetail(); }, WF_TOAST_ERR); return; }
+  });
+
   // ---------- Pull-to-refresh (Task 2, 2026-11) ----------
   // Chrome's own pull-down refresh never reaches any page in here: every
   // one of them lives inside #hrAssistantPanel, a FIXED full-screen

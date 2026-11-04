@@ -424,3 +424,44 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
   hrFlow.actionKind === 'neutral') - never applied to "sudden"/"instruction"
   flows. The captured name must start with a capital letter so an ordinary
   pronoun/common noun ("take", "amar manager") is never mistaken for one.
+- H (2026-11), SUBH Automate Workflow - a workflow follows up on non-replies
+  and acts on replies using owner-defined rules, built on top of Automated
+  Tasks (`src/aiAssistant/workflowService.js`, reusing automationService.js's
+  own matcher/recipient/sheet helpers rather than reimplementing them; Redis
+  keys `subh-workflow:<id>` / `subh-workflow-run:<id>:<runId>`). AI UNDERSTANDS,
+  CODE SPEAKS throughout: the model only drafts the plan at authoring time and
+  classifies/extracts at reply time (`classify_workflow_reply`/
+  `extract_reply_detail`) - every outgoing word always comes from the owner's
+  own `rule.replyText`/`sendBody` template, never from the model. Deterministic
+  suite: `scripts/check-workflow.js` (67 tests - CRUD/plan drafting, sending +
+  also-send + generated documents, follow-ups, mail + WhatsApp reply
+  understanding with strict per-record isolation, the progress board's manual
+  actions, "Never auto-reply"/the final send gate applying to every workflow
+  send same as everywhere else). Real-model locked scenarios (`scripts/
+  check-workflow-nlu.js`, run manually, 3/3): the three sample asks from
+  `docs/samples/subh-workflow-sample.html` -
+  (1) probation confirmation with an extension-of-probation detail - locked
+  3/3 after a real fix: the `sendDocument` tool-field description didn't
+  originally connect "mail someone the Extension of Probation Period" with
+  actually attaching that generated letter (the model wrote a plain text
+  notice instead) - the field description now says explicitly that naming one
+  of the four letters means generate+attach it, not just describe it in
+  `sendBody`;
+  (2) pending documents ("PAN ba bank details nei") - correctly comes back
+  `unclear` every run, by design: this app's real employee data has no bank
+  fields at all and PAN is deliberately excluded from every automation/
+  workflow column picker, so this demo-only preset can never resolve against
+  real data and SUBH never invents a column to make it resolve anyway;
+  (3) exit handover with a pending-assets detail - correctly comes back
+  `unclear` every run on ONE named point only: "proti shomobar" (every
+  Monday) needs a weekly repeat, and the schedule model (shared with
+  Automated Tasks, in `automationService.js`) only supports
+  none/monthly/yearly/daily - a known, pre-existing limitation, intentionally
+  NOT changed by this feature (changing Automated Tasks' own schedule model is
+  a separate, larger change outside this build's scope) - recipient/mediator/
+  rules themselves resolve correctly regardless. Reply classification itself
+  (the ongoing, unsupervised part of this feature) is locked 3/3 for all three
+  scenarios' own rules: a plain approval, an answer-with-the-detail-already-
+  in-it reply (classifies AND extracts in the same breath), an answer that
+  defers the detail (classifies but extracts nothing, so SUBH asks instead of
+  guessing), and an unrelated reply (never force-matched to any rule).

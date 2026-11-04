@@ -19,6 +19,17 @@ const { Redis } = require('@upstash/redis');
 const automationService = require('./automationService');
 const employeeService = require('../employeeService');
 const redisHealth = require('../redisHealth');
+const gmailService = require('../gmailService');
+const whatsapp = require('../whatsappService');
+const letterPdf = require('../letterPdf');
+// Required lazily (inside the functions that need it, never at module
+// load) specifically because Phase 5 has whatsappAssistant.js require
+// THIS file back (its own early-tier "might this reply be for an open
+// workflow item" check) - a top-level require here would complete that
+// cycle and hand one side a half-initialized module. Calling require()
+// inside a function body only resolves it at call time, by which point
+// both modules have finished loading either way.
+function getWhatsappAssistant() { return require('./whatsappAssistant'); }
 
 const WORKFLOW_PREFIX = 'subh-workflow:';
 const WORKFLOW_IDS_KEY = 'subh-workflow-ids';
@@ -182,6 +193,175 @@ function fillWorkflowPlaceholders(str, ctx) {
   });
 }
 
+// ---------------- Fixed send targets ("hr"/"accounts" team) ----------------
+// Resolved by DEPARTMENT, never a hardcoded name list, so the real roster
+// can change without ever touching this code - same "AI understands,
+// code computes" posture as the rest of this app's HR-data lookups. A
+// department name CONTAINING the given word (case-insensitive) is a
+// match - simple and, for these two specific real departments, never
+// ambiguous (confirmed against the real directory: exactly one
+// department name contains "HR", exactly one contains "ACCOUNT").
+async function resolveTeamContacts(teamWord) {
+  const { employees } = await employeeService.getEmployeeData();
+  const re = new RegExp(teamWord, 'i');
+  return employees
+    .filter((e) => e.status === 'ACTIVE' && re.test(e.department || ''))
+    .map((e) => ({ name: e.name, email: e.email, phone: e.contactNumber }));
+}
+// `sendTo` is one of SEND_TO_TARGETS. `row`/`rowContact` are the SAME
+// record a rule is resolving for (so "self"/"manager" stay scoped to
+// THAT one record, never a different one) - both are optional/null for
+// the also-send message, which only ever uses 'hr'/'accounts'.
+async function resolveSendTarget(sendTo, plan, row, rowContact) {
+  if (sendTo === 'self') return row ? [await automationService.personContact(plan, row, 'self')].filter(Boolean) : [];
+  if (sendTo === 'manager') return row ? [await automationService.personContact(plan, row, 'reportingManager')].filter(Boolean) : (rowContact ? [rowContact] : []);
+  if (sendTo === 'hr') return resolveTeamContacts('HR');
+  if (sendTo === 'accounts') return resolveTeamContacts('ACCOUNT');
+  return [];
+}
+
+// ---------------- Message building (first messages + the optional
+// "also send" message) - STRUCTURALLY mirrors automationService.js's own
+// buildMessages (same row-matching/contact-resolution/table-building via
+// its exported matchedRows/personContact/contactOk, same strict
+// per-record isolation), but fills placeholders with
+// fillWorkflowPlaceholders (broader - any real column, not a fixed
+// whitelist) instead of automationService's own narrow fillPlaceholders,
+// and additionally returns `alsoMessage` when plan.also.on and attaches
+// generated documents per plan.docs (Phase 6). ---------------- */
+function isoDate(v) { return v instanceof Date ? v.toISOString().slice(0, 10) : (typeof v === 'string' && v ? v : null); }
+function addMonthsToIso(iso, months) {
+  if (!iso) return null;
+  const [y, m, d] = iso.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1 + (Number(months) || 0), d));
+  return dt.toISOString().slice(0, 10);
+}
+// v1 ships only the 4 built-in templates (per direct instruction - no
+// custom Word/Google Doc upload in this UI yet). `extra.detail` is only
+// ever used by the 'extension' template, filled from the SAME
+// {Reply_Detail} a rule's own sendDocument captured (the number of
+// months the manager actually stated) - never guessed.
+async function buildWorkflowDocumentBuffer(template, row, runAt, extra) {
+  const r = row || {};
+  const base = {
+    employeeName: r['Employee_Name'] || r['Name'] || '—',
+    employeeId: r['Employee_No'] || '—',
+    companyName: r['Company'] || 'Alcove Realty',
+    refNo: (r['Employee_No'] || 'NA') + '-' + runAt.getTime().toString(36).slice(-6).toUpperCase(),
+    position: r['Designation'] || '—'
+  };
+  const doj = isoDate(r['DOJ']);
+  const confirmationDate = isoDate(r['Confirmation Date']);
+  if (template === 'confirmation') return letterPdf.buildConfirmationLetterPdf(Object.assign({}, base, { title: '', doj, confirmationDate }));
+  if (template === 'extension') {
+    const monthsMatch = /\d+/.exec(String((extra && extra.detail) || ''));
+    const extendedMonths = monthsMatch ? Number(monthsMatch[0]) : 1;
+    return letterPdf.buildExtensionOfProbationLetterPdf(Object.assign({}, base, { doj, originalConfirmationDate: confirmationDate, extendedMonths, newConfirmationDate: addMonthsToIso(confirmationDate, extendedMonths) }));
+  }
+  if (template === 'experience') return letterPdf.buildExperienceLetterPdf(Object.assign({}, base, { doj, lastWorkingDay: isoDate(runAt) }));
+  if (template === 'relieving') return letterPdf.buildRelievingLetterPdf(Object.assign({}, base, { lastWorkingDay: isoDate(runAt) }));
+  return null;
+}
+async function buildRuleSendAttachment(template, row, now, detail) {
+  if (!template || !row) return null;
+  try {
+    const buf = await buildWorkflowDocumentBuffer(template, row, now, { detail });
+    return buf ? { filename: workflowDocFileName(template, row), contentType: 'application/pdf', content: buf } : null;
+  } catch (err) { return null; }
+}
+function workflowDocFileName(template, row) {
+  const who = ((row && (row['Employee_Name'] || row['Name'])) || 'Record').replace(/\s+/g, '_');
+  return (WF_DOC_FILE_LABELS[template] || template) + '-' + who + '.pdf';
+}
+const WF_DOC_FILE_LABELS = { confirmation: 'Confirmation-Letter', extension: 'Extension-of-Probation-Letter', experience: 'Experience-Letter', relieving: 'Relieving-Letter' };
+
+async function buildWorkflowMessages(workflow, runAt) {
+  let plan = workflow.plan;
+  let liveSheetHeaders = null;
+  if (plan.source === 'sheet') {
+    const live = await automationService.getSheetLiveHeaders(plan);
+    if (!live.ok) return { sent: [], skipped: [], rows: [], blocked: { reason: live.error } };
+    liveSheetHeaders = live.headers;
+    const dep = automationService.checkSheetDependencies(plan, liveSheetHeaders);
+    if (!dep.ok) return { sent: [], skipped: [], rows: [], blocked: { reason: dep.reason } };
+    if (plan.sheetUseAllColumns) plan = Object.assign({}, plan, { tableColumns: liveSheetHeaders });
+  }
+  const rows = await automationService.matchedRows(plan, workflow.excludedKeys, runAt);
+  const sent = [];
+  const skipped = [];
+  function tableRowsFor(row) {
+    if (!plan.table || !plan.tableColumns || !plan.tableColumns.length) return null;
+    const out = {};
+    plan.tableColumns.forEach((c) => { const v = row[c]; out[c] = (v == null || v === '') ? '—' : (v instanceof Date ? v.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC' }) : String(v)); });
+    return out;
+  }
+  const docsOnFirst = Boolean(plan.docs && plan.docs.on && plan.docs.attachTo === 'first' && plan.mediator === 'mail');
+  const docsOnAlso = Boolean(plan.docs && plan.docs.on && (!plan.docs.attachTo || plan.docs.attachTo === 'also'));
+  const alsoAttachments = [];
+  async function push(contact, row, who, key) {
+    const name = (contact && contact.name) || '—';
+    if (!automationService.contactOk(contact, plan.mediator)) {
+      skipped.push({ who: name, reason: 'no valid ' + (plan.mediator === 'mail' ? 'email' : 'phone') + (row ? ' (for ' + automationService.rowName(row) + ')' : ''), key: key || null });
+      return;
+    }
+    let attachment = null;
+    if (row && (docsOnFirst || docsOnAlso)) {
+      try {
+        const buf = await buildWorkflowDocumentBuffer(plan.docs.template, row, runAt, null);
+        if (buf) {
+          if (docsOnFirst) attachment = { filename: workflowDocFileName(plan.docs.template, row), contentType: 'application/pdf', content: buf };
+          if (docsOnAlso) alsoAttachments.push({ filename: workflowDocFileName(plan.docs.template, row), contentType: 'application/pdf', content: buf });
+        }
+      } catch (err) { /* a single record's document failing to render must never block its own message or anyone else's */ }
+    }
+    sent.push({
+      to: name, addr: plan.mediator === 'mail' ? contact.email : contact.phone, contact,
+      subject: fillWorkflowPlaceholders(plan.mailSubject, { row, contact, runAt }),
+      body: fillWorkflowPlaceholders(plan.body, { row, contact, runAt }),
+      table: row ? (plan.table ? [tableRowsFor(row)] : null) : null,
+      tableColumns: plan.tableColumns || [], tablePlacement: plan.tablePlacement || 'body',
+      who: who || null, key: key || null, row: row || null, attachment
+    });
+  }
+  if (plan.rec === 'column') {
+    for (const r of rows) {
+      const key = automationService.rowKey(r);
+      const contact = await automationService.personContact(plan, r, plan.recCol);
+      if (!contact) { skipped.push({ who: automationService.rowName(r), reason: 'no ' + (plan.recCol === 'self' ? 'contact' : plan.recCol) + ' linked', key }); continue; }
+      await push(contact, r, automationService.rowName(r), key);
+    }
+  } else {
+    const { employees } = await employeeService.getEmployeeData();
+    const people = employees.filter((e) => (plan.selectedEmployeeIds || []).includes(e.employeeId)).map((e) => ({ name: e.name, email: e.email, phone: e.contactNumber }));
+    (plan.selectedRawEmails || []).forEach((email) => people.push({ name: email, email, phone: '' }));
+    if (plan.group === 'each' && plan.source !== 'none') {
+      for (const r of rows) for (const p of people) await push(p, r, automationService.rowName(r), automationService.rowKey(r));
+    } else {
+      for (const p of people) await push(p, null, null, null);
+    }
+  }
+  let alsoMessage = null;
+  if (plan.also && plan.also.on) {
+    const recipients = await resolveTeamContacts(plan.also.to === 'accounts' ? 'ACCOUNT' : 'HR');
+    const validRecipients = recipients.filter((c) => automationService.contactOk(c, 'mail'));
+    if (validRecipients.length) {
+      alsoMessage = {
+        to: validRecipients.map((c) => c.name).join(', '),
+        addr: validRecipients.map((c) => c.email).join(', '),
+        subject: fillWorkflowPlaceholders(plan.also.subject, { runAt }),
+        body: fillWorkflowPlaceholders(plan.also.body, { runAt }),
+        table: plan.also.table ? rows.map((r) => tableRowsFor(r)) : null,
+        tableColumns: plan.tableColumns || [], tablePlacement: 'body',
+        attachments: (plan.also.docs && alsoAttachments.length) ? alsoAttachments : null
+      };
+    } else {
+      skipped.push({ who: plan.also.to === 'accounts' ? 'Accounts team' : 'HR team', reason: 'no valid email found for that team', key: null });
+    }
+  }
+  const taggedRows = rows.map((r) => Object.assign({ _key: automationService.rowKey(r) }, r));
+  return { sent, skipped, rows: taggedRows, alsoMessage, liveSheetHeaders };
+}
+
 // ---------------- Ask -> plan NLU (Claude, authoring time only - the
 // three sample scenarios in docs/samples/subh-workflow-sample.html are
 // the exact shape this must be able to produce). Superset of
@@ -219,7 +399,7 @@ function workflowPlanTool(departmentNames, sheetContext) {
       sendTo: { type: 'string', enum: SEND_TO_TARGETS, description: 'Only if a FURTHER message should be sent once this rule resolves - "self" the employee, "manager" their Reporting Manager, "hr" the HR team, "accounts" the Accounts team. Omit entirely if no further message is sent.' },
       sendSubject: { type: 'string', description: 'Required when sendTo is set - the further message\'s subject (mail) or omit for WhatsApp.' },
       sendBody: { type: 'string', description: 'Required when sendTo is set - the further message\'s body, placeholders allowed including {Reply_Detail} (what the sender told SUBH, when askDetail was used).' },
-      sendDocument: { type: 'string', enum: DOCUMENT_TEMPLATES, description: 'Only if a generated letter should be attached to the further message - which built-in template. Omit if none.' },
+      sendDocument: { type: 'string', enum: DOCUMENT_TEMPLATES, description: 'Set this whenever the further message IS one of the four named letters (Confirmation Letter, Extension of Probation Period/Letter, Experience Letter, Relieving Letter) rather than just a plain notice - e.g. "extension hole ... employee ke Extension of Probation Period mail" means generate and attach the real Extension of Probation letter, not merely tell them about it in sendBody. sendBody still carries a short covering note either way. Omit only when no letter should be attached.' },
       askMeFirst: { type: 'boolean', description: 'true only if the owner should approve this further message before it actually sends (e.g. "ask me first", "let me check before sending"). Defaults to false.' },
       then: { type: 'string', enum: ['stop', 'wait', 'askme'], description: '"stop" if this record is done once this rule resolves (the default for most rules), "wait" if SUBH should keep waiting/following up afterward (e.g. "will share later"), "askme" if the owner should decide what happens next.' }
     },
@@ -355,12 +535,650 @@ async function draftWorkflowPlanFromParsed(parsed, now, sheetContext) {
   };
 }
 
+// ---------------- Sending (Phase 2) - mirrors automationService.js's own
+// sendOneMessage, PLUS captures the Gmail {id, threadId} for a mail send
+// so the per-record state (below) can find a REPLY in the same thread
+// later (Phase 4), and the WhatsApp phone for the same purpose (Phase 5).
+// Workflow sends never attach a document yet (Phase 6) or a table-as-PDF
+// attachment - `tablePlacement` is always 'body' for a workflow's own
+// first/also message (per the approved plan: "WhatsApp + table as PDF is
+// blocked", and Workflow's own Section 4 never offers an attachment
+// placement at all, only "In the message body"). ---------------- */
+async function sendOneWorkflowMessage(msg) {
+  try {
+    if (msg.addr && msg.addr.includes('@')) {
+      let result;
+      const hasDocs = Boolean(msg.attachment || (msg.attachments && msg.attachments.length));
+      if (hasDocs) {
+        result = await gmailService.sendMailWithAttachment({ to: msg.addr, cc: msg.cc, subject: msg.subject, text: msg.body, attachment: msg.attachment, attachments: msg.attachments });
+      } else if (msg.table && msg.table.length) {
+        const html = '<p>' + String(msg.body).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])).replace(/\n/g, '<br>') + '</p>' +
+          '<table border="1" cellpadding="4" style="border-collapse:collapse"><tr>' + msg.tableColumns.map((c) => '<th>' + c + '</th>').join('') + '</tr>' +
+          msg.table.map((r) => '<tr>' + msg.tableColumns.map((c) => '<td>' + (r[c] == null ? '—' : r[c]) + '</td>').join('') + '</tr>').join('') + '</table>';
+        result = await gmailService.sendMailWithHtml({ to: msg.addr, subject: msg.subject, text: msg.body, html });
+      } else {
+        result = await gmailService.sendMail({ to: msg.addr, subject: msg.subject, text: msg.body });
+      }
+      return { to: msg.to, status: 'sent', messageId: result && result.id, threadId: result && result.threadId };
+    }
+    const text = msg.body + (msg.table && msg.table.length ? '\n\n' + msg.table.map((r) => msg.tableColumns.map((c) => c + ': ' + (r[c] == null ? '—' : r[c])).join('\n')).join('\n\n') : '');
+    if (!getWhatsappAssistant().isRealSendAllowedFor(msg.addr)) return { to: msg.to, status: 'draft_mode' };
+    const result = await whatsapp.sendWhatsAppMessage(msg.addr, text);
+    if (!result.ok) return { to: msg.to, status: 'failed', error: result.error };
+    return { to: msg.to, status: 'sent', waPhone: msg.addr };
+  } catch (err) {
+    return { to: msg.to, status: 'failed', error: err.message };
+  }
+}
+
+async function acquireRunLock(id, now) {
+  const redis = getClient();
+  if (!redis) return true;
+  try {
+    const got = await redis.set(RUN_LOCK_PREFIX + id, String(now.getTime()), { nx: true, ex: RUN_LOCK_TTL_SECONDS });
+    return got === 'OK' || got === true;
+  } catch (err) { return true; }
+}
+async function releaseRunLock(id) {
+  const redis = getClient();
+  if (!redis) return;
+  try { await redis.del(RUN_LOCK_PREFIX + id); } catch (err) { /* best effort */ }
+}
+
+// Adds (or removes) a phone from the "might be a workflow reply" index -
+// called whenever a WhatsApp record's own status changes to/from an open
+// state. Best-effort, same posture as every other fire-and-forget index
+// write in this app (a miss here only means Phase 5's early check costs
+// one extra, harmless model call on that phone's next message, never a
+// lost reply - the phone is still re-added the next time this record (or
+// any other open one for the same number) is touched).
+const OPEN_STATUSES = new Set(['sent', 'waiting', 'followed', 'asked', 'needs']);
+async function syncOpenPhone(phone, isOpen) {
+  if (!phone) return;
+  const redis = getClient();
+  if (!redis) return;
+  try { isOpen ? await redis.sadd(OPEN_PHONES_KEY, phone) : await redis.srem(OPEN_PHONES_KEY, phone); } catch (err) { /* best effort */ }
+}
+async function isOpenWorkflowPhone(phone) {
+  const redis = getClient();
+  if (!redis || !phone) return false;
+  try { return Boolean(await redis.sismember(OPEN_PHONES_KEY, phone)); } catch (err) { return false; }
+}
+
+function newRunId() { return newId(); }
+
+// Runs ONE workflow right now against current data. `isTest` restricts
+// sending to `testTo` only (mail or WhatsApp number) and never creates a
+// real run/record - same "Send test to me" contract as Automated Tasks.
+// A real run is idempotent/locked the same way automationService's own
+// runAutomation is.
+async function runWorkflow(id, { isTest = false, testTo = null } = {}, now = new Date()) {
+  const workflow = await getWorkflow(id);
+  if (!workflow) return { ok: false, error: 'Workflow not found.' };
+  if (!(await acquireRunLock(id, now))) return { ok: false, error: 'Already running.' };
+  try {
+    const runAt = now;
+    const { sent, skipped, alsoMessage, rows, blocked } = await buildWorkflowMessages(workflow, runAt);
+    if (blocked) {
+      if (!isTest) {
+        await getWhatsappAssistant().postOwnerNotification('⚠️ Workflow "' + workflow.subject + '" could not run: ' + blocked.reason + '.').catch(() => {});
+        workflow.history = [{ runId: null, runAt: runAt.toISOString(), sentCount: 0, skippedCount: 0, note: 'Blocked: ' + blocked.reason }, ...(workflow.history || [])].slice(0, 20);
+        workflow.nextRunAt = automationService.computeNextRun(workflow.schedule, new Date(runAt.getTime() + 1000));
+        workflow.updatedAt = runAt.toISOString();
+        await saveWorkflow(workflow);
+      }
+      return { ok: false, error: blocked.reason };
+    }
+    if (isTest) {
+      const results = [];
+      for (const m of sent.slice(0, 1)) results.push(await sendOneWorkflowMessage(Object.assign({}, m, { to: testTo, addr: testTo })));
+      if (alsoMessage) results.push(await sendOneWorkflowMessage(Object.assign({}, alsoMessage, { to: testTo, addr: testTo })));
+      return { ok: true, sentCount: results.filter((r) => r.status === 'sent').length, results };
+    }
+    const runId = newRunId();
+    const records = [];
+    for (const m of sent) {
+      const result = await sendOneWorkflowMessage(m);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      const isMail = Boolean(m.addr && m.addr.includes('@'));
+      const record = {
+        key: m.key, row: m.row, contact: m.contact,
+        status: result.status === 'sent' ? 'waiting' : 'skipped',
+        followUpCount: 0, sinceAt: runAt.toISOString(), ruleIndex: null, detail: null, pendingApproval: null,
+        threadId: result.threadId || null, messageId: result.messageId || null,
+        waPhone: isMail ? null : (result.waPhone || (result.status === 'sent' ? m.addr : null)),
+        history: [{ at: runAt.toISOString(), who: 'SUBH -> ' + m.to, text: result.status === 'sent' ? (m.subject ? m.subject + ' - ' + m.body : m.body) : ('Could not send: ' + (result.error || 'no valid contact')) }]
+      };
+      records.push(record);
+      if (!isMail && record.status === 'waiting') await syncOpenPhone(record.waPhone, true);
+    }
+    skipped.forEach((s) => {
+      records.push({
+        key: s.key, row: null, contact: null, status: 'skipped', followUpCount: 0, sinceAt: runAt.toISOString(),
+        ruleIndex: null, detail: null, pendingApproval: null, threadId: null, messageId: null, waPhone: null,
+        history: [{ at: runAt.toISOString(), who: 'SUBH', text: 'Skipped: ' + s.reason }]
+      });
+    });
+    let alsoLog = null;
+    if (alsoMessage) {
+      const alsoResult = await sendOneWorkflowMessage(alsoMessage);
+      alsoLog = alsoResult.status === 'sent' ? ('Sent to ' + alsoMessage.to) : ('Could not send to ' + alsoMessage.to + ': ' + (alsoResult.error || 'no valid contact'));
+    }
+    const run = { id: runId, workflowId: id, runAt: runAt.toISOString(), createdAt: runAt.toISOString(), updatedAt: runAt.toISOString(), records, alsoLog };
+    await saveRun(id, run);
+    const sentCount = records.filter((r) => r.status !== 'skipped').length;
+    workflow.history = [{ runId, runAt: runAt.toISOString(), sentCount, skippedCount: records.length - sentCount }, ...(workflow.history || [])].slice(0, 20);
+    workflow.lastRunId = runId;
+    workflow.pendingMissedRun = null;
+    workflow.nextRunAt = automationService.computeNextRun(workflow.schedule, new Date(runAt.getTime() + 1000));
+    workflow.updatedAt = runAt.toISOString();
+    await saveWorkflow(workflow);
+    return { ok: true, runId, sentCount, skippedCount: records.length - sentCount };
+  } finally {
+    await releaseRunLock(id);
+  }
+}
+
+// Called from whatsappPollScheduler.js's existing autosendInterval tick -
+// identical missed-run philosophy to automationService.js's own
+// runDueAutomations (same MISSED_RUN_THRESHOLD_MS): due within the last
+// 30 minutes runs for real, due later than that holds for an explicit
+// Send/Skip rather than firing into stale data, and 'pending_approval'
+// workflows are never touched here - only the explicit approve route
+// moves one to 'active'.
+async function runDueWorkflows(now = new Date()) {
+  const all = await listRawWorkflows();
+  let ran = 0, missed = 0;
+  for (const w of all) {
+    if (w.status !== 'active' || !w.nextRunAt) continue;
+    const dueMs = now.getTime() - new Date(w.nextRunAt).getTime();
+    if (dueMs < 0) continue;
+    if (dueMs > MISSED_RUN_THRESHOLD_MS) {
+      if (w.pendingMissedRun && w.pendingMissedRun.scheduledFor === w.nextRunAt) continue;
+      w.pendingMissedRun = { scheduledFor: w.nextRunAt, discoveredAt: now.toISOString() };
+      w.nextRunAt = automationService.computeNextRun(w.schedule, new Date(now.getTime() + 1000));
+      w.updatedAt = now.toISOString();
+      await saveWorkflow(w);
+      await getWhatsappAssistant().postOwnerNotification('⚠️ Workflow "' + w.subject + '" missed its scheduled run (' + new Date(w.pendingMissedRun.scheduledFor).toLocaleString('en-GB', { timeZone: 'Asia/Kolkata' }) + ') - open Automated Workflows to Send or Skip it.').catch(() => {});
+      missed++;
+      continue;
+    }
+    await runWorkflow(w.id, {}, now);
+    ran++;
+  }
+  return { ran, missed };
+}
+async function resolveMissedRun(id, action, now = new Date()) {
+  const workflow = await getWorkflow(id);
+  if (!workflow || !workflow.pendingMissedRun) return { ok: false, error: 'No missed run pending.' };
+  workflow.pendingMissedRun = null;
+  workflow.updatedAt = now.toISOString();
+  await saveWorkflow(workflow);
+  if (action === 'send') return runWorkflow(id, {}, now);
+  return { ok: true, skipped: true };
+}
+
+// ---------------- Action needed (merged into the existing /action-needed
+// route, same "Automations" chip Automated Tasks already uses - a
+// workflow's own pending-approval/missed-run items are the SAME kind of
+// item Automated Tasks already surfaces there; askMe-pending sends and
+// unclear replies are new to Workflow, same category, acted on via the
+// progress board's own per-record buttons (resolveAskMeSend/resolveUnclearReply,
+// added in Phase 4). ---------------- */
+async function listWorkflowActionNeededItems() {
+  const workflows = await listRawWorkflows();
+  const items = [];
+  for (const w of workflows) {
+    if (w.pendingMissedRun) {
+      const ts = new Date(w.pendingMissedRun.scheduledFor).getTime() || Date.now();
+      items.push({ kind: 'workflow_missed_run', category: 'automations', chatId: null, name: 'Missed run — ' + w.subject, ts, ageMs: Math.max(0, Date.now() - ts), data: { id: w.id, subject: w.subject, scheduledFor: w.pendingMissedRun.scheduledFor, discoveredAt: w.pendingMissedRun.discoveredAt } });
+    }
+    if (w.status === 'pending_approval') {
+      const ts = new Date(w.createdAt || Date.now()).getTime() || Date.now();
+      items.push({ kind: 'workflow_first_run', category: 'automations', chatId: null, name: 'Waiting for first-run approval — ' + w.subject, ts, ageMs: Math.max(0, Date.now() - ts), data: { id: w.id, subject: w.subject, nextRunAt: w.nextRunAt } });
+    }
+    if (!w.lastRunId) continue;
+    const run = await getRun(w.id, w.lastRunId).catch(() => null);
+    if (!run) continue;
+    for (const rec of run.records) {
+      if (rec.status === 'needs' && rec.pendingApproval) {
+        const ts = new Date(rec.sinceAt || Date.now()).getTime() || Date.now();
+        items.push({ kind: 'workflow_askme', category: 'automations', chatId: rec.waPhone || null, name: 'Approve message — ' + w.subject + ' (' + ((rec.row && rec.row['Employee_Name']) || rec.key) + ')', ts, ageMs: Math.max(0, Date.now() - ts), data: { id: w.id, runId: run.id, key: rec.key, subject: rec.pendingApproval.sendSubject, body: rec.pendingApproval.sendBody } });
+      } else if (rec.status === 'needs' && !rec.pendingApproval) {
+        const ts = new Date(rec.sinceAt || Date.now()).getTime() || Date.now();
+        const lastReply = rec.history.slice().reverse().find((h) => h.who !== 'SUBH' && !h.who.startsWith('SUBH '));
+        items.push({ kind: 'workflow_unclear', category: 'automations', chatId: rec.waPhone || null, name: 'Reply needs a rule — ' + w.subject + ' (' + ((rec.row && rec.row['Employee_Name']) || rec.key) + ')', ts, ageMs: Math.max(0, Date.now() - ts), data: { id: w.id, runId: run.id, key: rec.key, replyText: lastReply && lastReply.text } });
+      } else if (rec.status === 'noreply') {
+        const ts = new Date(rec.sinceAt || Date.now()).getTime() || Date.now();
+        items.push({ kind: 'workflow_noreply', category: 'automations', chatId: rec.waPhone || null, name: 'No reply — ' + w.subject + ' (' + ((rec.row && rec.row['Employee_Name']) || rec.key) + ')', ts, ageMs: Math.max(0, Date.now() - ts), data: { id: w.id, runId: run.id, key: rec.key } });
+      }
+    }
+  }
+  return items;
+}
+
+// ---------------- Phase 3: follow-ups ----------------
+function isMailRecord(rec) { return Boolean(rec.messageId); }
+function findRecordByKey(run, key) { return run && run.records.find((r) => r.key === key); }
+async function sendFollowUpMessage(rec, text) {
+  if (isMailRecord(rec)) {
+    try { await gmailService.sendReply({ messageId: rec.messageId, replyText: text }); return { ok: true }; }
+    catch (err) { return { ok: false, error: err.message }; }
+  }
+  if (rec.waPhone) {
+    if (!getWhatsappAssistant().isRealSendAllowedFor(rec.waPhone)) return { ok: false, error: 'draft_mode' };
+    return whatsapp.sendWhatsAppMessage(rec.waPhone, text);
+  }
+  return { ok: false, error: 'no contact method' };
+}
+// Called from whatsappPollScheduler.js's existing tick, same cheap
+// idempotent-check philosophy as every other job there - a record only
+// ever gets ONE follow-up per gap period (gated on sinceAt), and the
+// gap for a record currently "asked" uses that ONE rule's own
+// askFollowUpDays when set, never the workflow's general follow-up
+// period (per the approved spec - a specific question can have its own
+// reminder cadence).
+async function advanceFollowUps(now = new Date()) {
+  const workflows = await listRawWorkflows();
+  let advanced = 0, alerted = 0;
+  for (const w of workflows) {
+    if (w.status !== 'active' || !w.lastRunId) continue;
+    const run = await getRun(w.id, w.lastRunId);
+    if (!run) continue;
+    let changed = false;
+    for (const rec of run.records) {
+      if (!['waiting', 'followed', 'asked'].includes(rec.status)) continue;
+      const rule = rec.ruleIndex != null ? (w.plan.rules || [])[rec.ruleIndex] : null;
+      const gapDays = (rec.status === 'asked' && rule && rule.askFollowUpDays) || (w.plan.followUp && w.plan.followUp.days) || 2;
+      const maxFu = (w.plan.followUp && w.plan.followUp.max) || 2;
+      const sinceMs = now.getTime() - new Date(rec.sinceAt).getTime();
+      if (sinceMs < gapDays * 86400000) continue;
+      if (rec.followUpCount >= maxFu) {
+        rec.status = 'noreply';
+        rec.history.push({ at: now.toISOString(), who: 'SUBH', text: 'No reply after ' + maxFu + ' follow-up(s) - alerted the owner.' });
+        await getWhatsappAssistant().postOwnerNotification('⚠️ Workflow "' + w.subject + '": no reply from ' + ((rec.contact && rec.contact.name) || rec.key) + ' after ' + maxFu + ' follow-up(s).').catch(() => {});
+        if (!isMailRecord(rec)) await syncOpenPhone(rec.waPhone, false);
+        alerted++; changed = true; continue;
+      }
+      const text = (rec.status === 'asked' && rule)
+        ? fillWorkflowPlaceholders(rule.askQuestion || (w.plan.followUp && w.plan.followUp.body) || '', { row: rec.row, contact: rec.contact, runAt: now })
+        : fillWorkflowPlaceholders((w.plan.followUp && w.plan.followUp.body) || '', { row: rec.row, contact: rec.contact, runAt: now });
+      const result = await sendFollowUpMessage(rec, text);
+      if (!result.ok) { rec.history.push({ at: now.toISOString(), who: 'SUBH', text: 'Could not send follow-up: ' + (result.error || 'unknown error') }); changed = true; continue; }
+      rec.followUpCount++; rec.sinceAt = now.toISOString();
+      if (rec.status === 'waiting') rec.status = 'followed';
+      rec.history.push({ at: now.toISOString(), who: 'SUBH -> ' + ((rec.contact && rec.contact.name) || rec.key), text });
+      advanced++; changed = true;
+    }
+    if (changed) { run.updatedAt = now.toISOString(); await saveRun(w.id, run); }
+  }
+  return { advanced, alerted };
+}
+
+// ---------------- Phase 4: reply understanding + the rule engine ----------------
+// The model ONLY classifies (which rule, or none) and extracts the
+// requested detail when the reply states it, exactly per the approved
+// spec's "AI understands, code computes" - every outgoing word still
+// comes from the owner's own rule text (replyText/askQuestion/sendBody),
+// filled by fillWorkflowPlaceholders, never model-written.
+function replyClassificationTool(rules) {
+  return {
+    type: 'function',
+    function: {
+      name: 'classify_workflow_reply',
+      description: 'The sender was asked a question and has now replied. Decide which ONE of the numbered rules below best matches the MEANING of this reply (never a keyword match), or that none clearly match. If the matched rule needs a follow-up detail and this SAME reply already states it, extract that detail too.\n' +
+        rules.map((r, i) => i + ': "' + r.when + '"' + (r.askDetail ? ' (needs: ' + r.askDetail + ')' : '')).join('\n'),
+      parameters: {
+        type: 'object',
+        properties: {
+          ruleIndex: { type: 'number', description: 'The 0-based index of the one matching rule from the list above. Omit entirely if the reply is unclear or matches none of them - never guess the closest one.' },
+          detail: { type: 'string', description: 'Only if the matched rule needs a detail AND this reply already states it in the same breath (e.g. "approved, extend by 3 months" -> "3 months") - omit otherwise, even if a rule matched.' }
+        },
+        required: []
+      }
+    }
+  };
+}
+function detailExtractionTool(question) {
+  return {
+    type: 'function',
+    function: {
+      name: 'extract_reply_detail',
+      description: 'SUBH asked: "' + question + '". Decide whether this reply actually answers it, and if so extract the answer exactly as given.',
+      parameters: {
+        type: 'object',
+        properties: {
+          detail: { type: 'string', description: 'The answer, exactly as given (e.g. "3 months", "a laptop and ID card"). Omit if the reply does not actually answer the question.' },
+          isUnclear: { type: 'boolean', description: 'true if the reply does not answer the question at all (e.g. "Dekhchi", a different topic, a further question back).' }
+        },
+        required: ['isUnclear']
+      }
+    }
+  };
+}
+// Every internal call site invokes this via `module.exports.callWorkflowTool(...)`
+// (never the bare identifier) specifically so scripts/check-workflow.js
+// can monkey-patch it the same way every other test suite in this repo
+// mocks an external call (employeeService.getEmployeeData,
+// gmailService.sendMail, ...) - the ONE place reply-understanding talks
+// to the real model, kept swappable without touching the functions that
+// use it.
+async function callWorkflowTool(systemText, userText, toolDef) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey || !MODEL) return null;
+  const resp = await fetch(CLAUDE_API_URL, {
+    method: 'POST',
+    headers: { 'x-api-key': apiKey, 'anthropic-version': CLAUDE_ANTHROPIC_VERSION, 'content-type': 'application/json' },
+    body: JSON.stringify({ model: MODEL, max_tokens: 512, tools: [{ name: toolDef.name, description: toolDef.description, input_schema: toolDef.parameters }], tool_choice: { type: 'auto' }, system: [{ type: 'text', text: systemText }], messages: [{ role: 'user', content: userText }] })
+  }).catch(() => null);
+  if (!resp || !resp.ok) return null;
+  const data = await resp.json().catch(() => null);
+  const block = data && (data.content || []).find((b) => b && b.type === 'tool_use');
+  return block ? block.input : null;
+}
+
+// Resolves ONE already-matched rule against one record: computes SUBH's
+// own reply TO THE SENDER (logged here, but never sent from this
+// function - the caller delivers it the right way for that record's own
+// channel: a mail reply in the same thread, or the return value of a
+// WhatsApp decideAutoReply call), optionally sends a FURTHER message to
+// someone else (immediately, or held for the owner's OK when
+// askMeFirst), then advances status per `then`. Never called with an
+// unresolved rule - the caller (processWorkflowReply) is the only place
+// that decides WHICH rule applies. Returns the reply-to-sender text (or
+// null if the rule has none, which the sample never actually allows but
+// a hand-edited rule could leave blank).
+async function finishWorkflowRule(workflow, run, rec, rule, now) {
+  const ctx = { row: rec.row, contact: rec.contact, runAt: now, extra: { Reply_Detail: rec.detail } };
+  let replyText = null;
+  if (rule.replyText) {
+    replyText = fillWorkflowPlaceholders(rule.replyText, ctx);
+    rec.history.push({ at: now.toISOString(), who: 'SUBH -> ' + ((rec.contact && rec.contact.name) || rec.key), text: replyText });
+  }
+  if (rule.sendTo) {
+    const targets = (await resolveSendTarget(rule.sendTo, workflow.plan, rec.row, rec.contact)).filter((c) => automationService.contactOk(c, 'mail'));
+    const toLabel = targets.map((c) => c.name).join(', ') || (SEND_TO_TARGETS.includes(rule.sendTo) ? rule.sendTo : '—');
+    const pending = {
+      sendTo: rule.sendTo, sendToLabel: toLabel, addrs: targets.map((c) => c.email),
+      sendSubject: fillWorkflowPlaceholders(rule.sendSubject, ctx), sendBody: fillWorkflowPlaceholders(rule.sendBody, ctx),
+      sendDocument: rule.sendDocument || null, ruleThen: rule.then
+    };
+    if (rule.askMeFirst) {
+      rec.status = 'needs'; rec.pendingApproval = pending; rec.sinceAt = now.toISOString();
+      return replyText;
+    }
+    if (targets.length) {
+      const attachment = await buildRuleSendAttachment(pending.sendDocument, rec.row, now, rec.detail);
+      for (const t of targets) await sendOneWorkflowMessage({ to: t.name, addr: t.email, subject: pending.sendSubject, body: pending.sendBody, table: null, tableColumns: [], attachment });
+      rec.history.push({ at: now.toISOString(), who: 'SUBH -> ' + toLabel, text: pending.sendSubject + ' - ' + pending.sendBody });
+    } else {
+      rec.history.push({ at: now.toISOString(), who: 'SUBH', text: 'Could not send the follow-up message - no valid contact for ' + rule.sendTo + '.' });
+    }
+  }
+  rec.pendingApproval = rec.pendingApproval || null;
+  if (rule.then === 'stop') rec.status = 'done';
+  else if (rule.then === 'wait') { rec.status = 'waiting'; rec.followUpCount = 0; rec.sinceAt = now.toISOString(); }
+  else rec.status = 'needs'; // 'askme' - same unclear-style card, per direct instruction
+  if (!isMailRecord(rec) && rec.status !== 'waiting') await syncOpenPhone(rec.waPhone, false);
+  return replyText;
+}
+
+// The single entry point both Phase 4 (mail) and Phase 5 (WhatsApp)
+// reply-reading call once they've found a NEW reply for an open record -
+// logs the sender's own message, classifies it against the workflow's
+// own rules (or, if a detail was specifically being awaited, just
+// extracts that), and dispatches to finishWorkflowRule or an
+// unclear/needs-you card. Never called twice for the same reply (callers
+// de-duplicate by message id / history length before invoking this).
+// Returns the reply-to-SENDER text (or null for an unclear reply, which
+// gets a card instead - never a generic auto-reply) - delivering it is
+// the caller's own job (a mail reply in the same thread, or returned
+// straight from a WhatsApp decideAutoReply call).
+async function processWorkflowReply(workflow, run, rec, replyText, senderLabel, now = new Date()) {
+  rec.history.push({ at: now.toISOString(), who: senderLabel || ((rec.contact && rec.contact.name) || rec.key), text: replyText });
+  if (rec.status === 'asked' && rec.ruleIndex != null) {
+    const rule = (workflow.plan.rules || [])[rec.ruleIndex];
+    if (!rule) { rec.status = 'needs'; rec.pendingApproval = null; return null; }
+    const extracted = await module.exports.callWorkflowTool(
+      'A workflow asked the sender a follow-up question and is waiting for the answer.',
+      replyText,
+      detailExtractionTool(fillWorkflowPlaceholders(rule.askQuestion || '', { row: rec.row, contact: rec.contact, runAt: now })).function
+    );
+    if (extracted && !extracted.isUnclear && extracted.detail) {
+      rec.detail = extracted.detail;
+      return finishWorkflowRule(workflow, run, rec, rule, now);
+    }
+    rec.status = 'needs'; rec.pendingApproval = null; rec.sinceAt = now.toISOString();
+    return null;
+  }
+  const rules = workflow.plan.rules || [];
+  const classified = await module.exports.callWorkflowTool(
+    'A workflow sent a question to this sender and is now reading their reply.',
+    replyText,
+    replyClassificationTool(rules).function
+  );
+  const ruleIndex = classified && typeof classified.ruleIndex === 'number' ? classified.ruleIndex : null;
+  const rule = ruleIndex != null ? rules[ruleIndex] : null;
+  if (!rule) { rec.status = 'needs'; rec.pendingApproval = null; rec.sinceAt = now.toISOString(); return null; }
+  if (rule.askDetail && !(classified && classified.detail)) {
+    const askText = fillWorkflowPlaceholders(rule.askQuestion || '', { row: rec.row, contact: rec.contact, runAt: now });
+    rec.history.push({ at: now.toISOString(), who: 'SUBH -> ' + ((rec.contact && rec.contact.name) || rec.key), text: askText });
+    rec.status = 'asked'; rec.ruleIndex = ruleIndex; rec.followUpCount = 0; rec.sinceAt = now.toISOString();
+    return askText;
+  }
+  if (rule.askDetail) rec.detail = classified.detail;
+  return finishWorkflowRule(workflow, run, rec, rule, now);
+}
+
+// ---------------- Progress board manual actions (owner-triggered, same
+// state machine every automatic path above also drives) ----------------
+async function withRecord(workflowId, runId, key, fn) {
+  const workflow = await getWorkflow(workflowId);
+  const run = await getRun(workflowId, runId);
+  if (!workflow || !run) return { ok: false, error: 'Workflow or run not found.' };
+  const rec = findRecordByKey(run, key);
+  if (!rec) return { ok: false, error: 'Record not found.' };
+  const now = new Date();
+  const result = await fn(workflow, run, rec, now);
+  run.updatedAt = now.toISOString();
+  await saveRun(workflowId, run);
+  return result || { ok: true };
+}
+async function stopWorkflowRecord(workflowId, runId, key) {
+  return withRecord(workflowId, runId, key, async (workflow, run, rec, now) => {
+    rec.status = 'stopped'; rec.pendingApproval = null;
+    rec.history.push({ at: now.toISOString(), who: 'SUBH', text: 'Stopped by you.' });
+    if (!isMailRecord(rec)) await syncOpenPhone(rec.waPhone, false);
+  });
+}
+async function markWorkflowRecordDone(workflowId, runId, key) {
+  return withRecord(workflowId, runId, key, async (workflow, run, rec, now) => {
+    rec.status = 'done'; rec.pendingApproval = null;
+    rec.history.push({ at: now.toISOString(), who: 'SUBH', text: 'Marked done by you.' });
+    if (!isMailRecord(rec)) await syncOpenPhone(rec.waPhone, false);
+  });
+}
+async function remindWorkflowRecordNow(workflowId, runId, key) {
+  return withRecord(workflowId, runId, key, async (workflow, run, rec, now) => {
+    const rule = rec.ruleIndex != null ? (workflow.plan.rules || [])[rec.ruleIndex] : null;
+    const text = (rec.status === 'asked' && rule)
+      ? fillWorkflowPlaceholders(rule.askQuestion || '', { row: rec.row, contact: rec.contact, runAt: now })
+      : fillWorkflowPlaceholders((workflow.plan.followUp && workflow.plan.followUp.body) || '', { row: rec.row, contact: rec.contact, runAt: now });
+    const result = await sendFollowUpMessage(rec, text);
+    if (!result.ok) return { ok: false, error: result.error || 'Could not send.' };
+    rec.followUpCount++; rec.sinceAt = now.toISOString();
+    if (rec.status === 'waiting') rec.status = 'followed'; else if (rec.status === 'noreply') rec.status = 'followed';
+    rec.history.push({ at: now.toISOString(), who: 'SUBH -> ' + ((rec.contact && rec.contact.name) || rec.key), text });
+    if (!isMailRecord(rec)) await syncOpenPhone(rec.waPhone, true);
+    return { ok: true };
+  });
+}
+async function approveSendWorkflowRecord(workflowId, runId, key) {
+  return withRecord(workflowId, runId, key, async (workflow, run, rec, now) => {
+    if (rec.status !== 'needs' || !rec.pendingApproval) return { ok: false, error: 'Nothing pending for this record.' };
+    const pending = rec.pendingApproval;
+    const addrs = pending.addrs || [];
+    if (addrs.length) {
+      const attachment = await buildRuleSendAttachment(pending.sendDocument, rec.row, now, rec.detail);
+      for (const addr of addrs) await sendOneWorkflowMessage({ to: pending.sendToLabel, addr, subject: pending.sendSubject, body: pending.sendBody, table: null, tableColumns: [], attachment });
+      rec.history.push({ at: now.toISOString(), who: 'SUBH -> ' + pending.sendToLabel, text: pending.sendSubject + ' - ' + pending.sendBody });
+    } else {
+      rec.history.push({ at: now.toISOString(), who: 'SUBH', text: 'Could not send - no valid contact for ' + pending.sendTo + '.' });
+    }
+    rec.pendingApproval = null;
+    if (pending.ruleThen === 'stop') rec.status = 'done';
+    else if (pending.ruleThen === 'wait') { rec.status = 'waiting'; rec.followUpCount = 0; rec.sinceAt = now.toISOString(); }
+    else rec.status = 'done';
+    if (!isMailRecord(rec) && rec.status !== 'waiting') await syncOpenPhone(rec.waPhone, false);
+    return { ok: true };
+  });
+}
+async function declineWorkflowRecordApproval(workflowId, runId, key) {
+  return withRecord(workflowId, runId, key, async (workflow, run, rec, now) => {
+    if (rec.status !== 'needs' || !rec.pendingApproval) return { ok: false, error: 'Nothing pending for this record.' };
+    rec.pendingApproval = null; rec.status = 'stopped';
+    rec.history.push({ at: now.toISOString(), who: 'SUBH', text: 'Declined by you - the further message was never sent.' });
+    if (!isMailRecord(rec)) await syncOpenPhone(rec.waPhone, false);
+    return { ok: true };
+  });
+}
+// The "pick a rule" button a genuinely unclear-reply card offers - the
+// owner tells SUBH which rule the reply actually meant, same finishing
+// logic any automatic match uses.
+async function resolveUnclearWorkflowRecord(workflowId, runId, key, ruleIndex) {
+  return withRecord(workflowId, runId, key, async (workflow, run, rec, now) => {
+    const rule = (workflow.plan.rules || [])[ruleIndex];
+    if (!rule) return { ok: false, error: 'That rule no longer exists.' };
+    await finishWorkflowRule(workflow, run, rec, rule, now);
+    return { ok: true };
+  });
+}
+
+// Reply reading - mail. Searches each open mail record's own Gmail
+// thread (the real thread its first message/follow-ups landed in -
+// never a fresh search by subject/sender, which could pick up an
+// unrelated message) for anything new, skips the workflow's OWN sent
+// messages (first message + follow-ups, all in that same thread) by
+// comparing the From address against the signed-in mailbox, and hands
+// every genuinely new incoming message to processWorkflowReply in
+// order. `processedMessageIds` is a small per-record list (bounded by
+// Gmail's own thread size in practice) so a message already handled -
+// including the workflow's own sent ones - is never re-processed.
+let cachedSignedInAddress = null;
+async function checkWorkflowMailReplies(now = new Date()) {
+  const workflows = await listRawWorkflows();
+  let checked = 0, processed = 0;
+  for (const w of workflows) {
+    if (w.status !== 'active' || !w.lastRunId) continue;
+    const run = await getRun(w.id, w.lastRunId);
+    if (!run) continue;
+    let changed = false;
+    for (const rec of run.records) {
+      if (!isMailRecord(rec) || !['waiting', 'followed', 'asked'].includes(rec.status)) continue;
+      checked++;
+      try {
+        if (!cachedSignedInAddress) cachedSignedInAddress = await gmailService.getSignedInAddress().catch(() => null);
+        const ids = (await gmailService.listMessageIds('threadId:' + rec.threadId, 20)) || [];
+        const seen = new Set(rec.processedMessageIds || [rec.messageId]);
+        const newIds = ids.map((x) => x.id).filter((id) => !seen.has(id));
+        for (const id of newIds) {
+          seen.add(id);
+          const msg = await gmailService.getFullMessage(id).catch(() => null);
+          if (!msg) continue;
+          const m = /<([^>]+)>/.exec(msg.from || '');
+          const fromEmail = (m ? m[1] : msg.from || '').toLowerCase();
+          if (cachedSignedInAddress && fromEmail === cachedSignedInAddress.toLowerCase()) continue; // our own sent message in this same thread
+          const replyText = await processWorkflowReply(w, run, rec, msg.bodyText, (rec.contact && rec.contact.name) || fromEmail, now);
+          if (replyText) await gmailService.sendReply({ messageId: id, replyText }).catch((err) => { rec.history.push({ at: now.toISOString(), who: 'SUBH', text: 'Could not send the reply: ' + err.message }); });
+          processed++; changed = true;
+        }
+        rec.processedMessageIds = Array.from(seen);
+      } catch (err) { /* best effort, per record - never blocks another record or workflow */ }
+    }
+    if (changed) { run.updatedAt = now.toISOString(); await saveRun(w.id, run); }
+  }
+  return { checked, processed };
+}
+
+// ---------------- Phase 5: WhatsApp reply priority ----------------
+// Called from whatsappAssistant.js's own early-tier pending-state check
+// (same tier as getPendingHrNoteFlow) - isOpenWorkflowPhone is the cheap
+// SET membership check that gates whether this runs at all; this then
+// finds the SPECIFIC open record for that phone (scanning only active
+// workflows' latest run, never the whole history). A phone can only ever
+// have one genuinely open workflow record at a time in practice (a
+// second workflow targeting the same person while one is already open
+// would be unusual) - the first open match found is used.
+async function findOpenWorkflowRecordByPhone(phone) {
+  const workflows = await listRawWorkflows();
+  for (const w of workflows) {
+    if (w.status !== 'active' || !w.lastRunId) continue;
+    const run = await getRun(w.id, w.lastRunId);
+    if (!run) continue;
+    const rec = run.records.find((r) => r.waPhone === phone && ['waiting', 'followed', 'asked'].includes(r.status));
+    if (rec) return { workflow: w, run, rec };
+  }
+  return null;
+}
+// A narrow, single-purpose classification - judges ONLY whether this
+// message is actually addressing the specific question the workflow is
+// waiting on, never anything broader (no "is this HR-related" judgment,
+// which is the normal engine's own job once this returns false). Fails
+// CLOSED (false - "not an answer") on any API error, so a real failure
+// never accidentally swallows a sender's unrelated message into the
+// wrong flow; it would otherwise just reach the normal engine, which is
+// always the safe side here.
+function workflowReplyRelevanceTool(pendingQuestion) {
+  return {
+    type: 'function',
+    function: {
+      name: 'is_workflow_reply',
+      description: 'An automated workflow is waiting on this sender\'s answer to: "' + pendingQuestion + '". Decide whether this NEW message is actually addressing that question (an answer, a decline, or a related follow-up), or whether it is a different, unrelated topic that happens to arrive from the same number.',
+      parameters: { type: 'object', properties: { isAnswer: { type: 'boolean', description: 'true if this message is actually about the pending workflow question, false if it is a different/unrelated topic.' } }, required: ['isAnswer'] }
+    }
+  };
+}
+async function isWorkflowReplyRelevant(text, pendingQuestion) {
+  const result = await module.exports.callWorkflowTool('Deciding whether an incoming message continues an open automated workflow.', text, workflowReplyRelevanceTool(pendingQuestion).function).catch(() => null);
+  return Boolean(result && result.isAnswer);
+}
+// The single entry point whatsappAssistant.js calls, at the same early
+// pending-state tier as getPendingHrNoteFlow/continueHrNoteFlow. Returns
+// null when this message does NOT belong to the open workflow item (the
+// caller falls through to the normal engine, unchanged) - otherwise a
+// decided reply, same shape as every other early-tier handler's return
+// value in that file.
+async function handlePossibleWorkflowReply(phone, text) {
+  const open = await findOpenWorkflowRecordByPhone(phone);
+  if (!open) return null;
+  const { workflow, run, rec } = open;
+  const pendingQuestion = rec.status === 'asked' && rec.ruleIndex != null
+    ? fillWorkflowPlaceholders(((workflow.plan.rules || [])[rec.ruleIndex] || {}).askQuestion || '', { row: rec.row, contact: rec.contact })
+    : fillWorkflowPlaceholders(workflow.plan.body || '', { row: rec.row, contact: rec.contact });
+  const isRelevant = await isWorkflowReplyRelevant(text, pendingQuestion);
+  if (!isRelevant) return null;
+  const now = new Date();
+  const replyText = await processWorkflowReply(workflow, run, rec, text, null, now);
+  run.updatedAt = now.toISOString();
+  await saveRun(workflow.id, run);
+  return { case: 'acknowledged', replyText: replyText || 'Dhonnobad, apnar reply-ta note kore nilam.', summaryForOwner: null };
+}
+
 module.exports = {
   isAvailable, newWorkflow, saveWorkflow, getWorkflow, listRawWorkflows, deleteWorkflow,
   saveRun, getRun, listRunIds, listRuns,
-  fillWorkflowPlaceholders,
+  fillWorkflowPlaceholders, resolveTeamContacts, resolveSendTarget, buildWorkflowMessages,
   workflowPlanTool, parseWorkflowAsk, draftWorkflowPlanFromParsed, draftRule,
+  sendOneWorkflowMessage, runWorkflow, runDueWorkflows, resolveMissedRun,
+  syncOpenPhone, isOpenWorkflowPhone,
   DOCUMENT_TEMPLATES, SEND_TO_TARGETS,
   MISSED_RUN_THRESHOLD_MS,
-  RUN_LOCK_PREFIX, RUN_LOCK_TTL_SECONDS, OPEN_PHONES_KEY
+  RUN_LOCK_PREFIX, RUN_LOCK_TTL_SECONDS, OPEN_PHONES_KEY,
+  listWorkflowActionNeededItems,
+  advanceFollowUps, processWorkflowReply, finishWorkflowRule, findRecordByKey,
+  stopWorkflowRecord, markWorkflowRecordDone, remindWorkflowRecordNow,
+  approveSendWorkflowRecord, declineWorkflowRecordApproval, resolveUnclearWorkflowRecord,
+  checkWorkflowMailReplies,
+  findOpenWorkflowRecordByPhone, isWorkflowReplyRelevant, handlePossibleWorkflowReply,
+  callWorkflowTool, replyClassificationTool, detailExtractionTool
 };
