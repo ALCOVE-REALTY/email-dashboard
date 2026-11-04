@@ -11,6 +11,7 @@ const whatsappAssistant = require('./aiAssistant/whatsappAssistant');
 const documentRequests = require('./aiAssistant/documentRequests');
 const reminderService = require('./aiAssistant/reminderService');
 const automationService = require('./aiAssistant/automationService');
+const workflowService = require('./aiAssistant/workflowService');
 
 // Lowered 60 -> 15 after a real live incident: a reply that should have
 // gone out within ~60s took minutes, partly because the base poll
@@ -263,6 +264,32 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
       if (result.ran || result.missed) log.log('[whatsapp-assistant] automation check: ' + JSON.stringify(result));
     } catch (err) {
       log.error('[whatsapp-assistant] automation run failed: ' + err.message);
+    }
+    // SUBH Automate Workflow - same philosophy as the Automated Tasks job
+    // right above (its own Redis lock, missed-run Send/Skip, deterministic
+    // against current data), in its own independent try/catch so a failure
+    // here can never affect Automated Tasks or anything else on this tick.
+    try {
+      const result = await workflowService.runDueWorkflows(new Date());
+      if (result.ran || result.missed) log.log('[whatsapp-assistant] workflow check: ' + JSON.stringify(result));
+    } catch (err) {
+      log.error('[whatsapp-assistant] workflow run failed: ' + err.message);
+    }
+    // Workflow follow-ups (its own independent try/catch, same tick) -
+    // advances any open record whose own follow-up gap has elapsed.
+    try {
+      const result = await workflowService.advanceFollowUps(new Date());
+      if (result.advanced || result.alerted) log.log('[whatsapp-assistant] workflow follow-up check: ' + JSON.stringify(result));
+    } catch (err) {
+      log.error('[whatsapp-assistant] workflow follow-up check failed: ' + err.message);
+    }
+    // Workflow mail-reply detection (its own independent try/catch) -
+    // searches each open mail record's own Gmail thread for a NEW reply.
+    try {
+      const result = await workflowService.checkWorkflowMailReplies(new Date());
+      if (result.checked || result.processed) log.log('[whatsapp-assistant] workflow mail-reply check: ' + JSON.stringify(result));
+    } catch (err) {
+      log.error('[whatsapp-assistant] workflow mail-reply check failed: ' + err.message);
     }
     // Task 3 archiving (2026-10-31) - the wa-inbox-log retention cap: once
     // it's grown a batch past MAX_INBOX_LOG, archive the oldest excess to
