@@ -432,4 +432,160 @@ function buildConfirmationLetterPdf(fields) {
   });
 }
 
-module.exports = { buildIncrementLetterPdf, buildPromotionIncrementLetterPdf, buildConfirmationLetterPdf };
+// ---------------- Automate Workflow (2026-11) letter templates ----------------
+// Three new built-in templates, same visual convention as
+// buildConfirmationLetterPdf above (logo, Ref./Date line, recipient
+// block, centered+underlined title, salutation, one body paragraph,
+// short closing, signature, footer) - no existing Word template to
+// reproduce for these (unlike Increment/Confirmation above), so the body
+// copy is original, standard HR wording, kept intentionally short and
+// gender-neutral (never assumes a pronoun not given in the data).
+function buildExtensionOfProbationLetterPdf(fields) {
+  const { employeeName, employeeId, companyName, refNo, position, doj, originalConfirmationDate, extendedMonths, newConfirmationDate } = fields;
+  return new Promise((resolve, reject) => {
+    const doc = new PDFDocument({ size: 'A4', margins: { top: MARGIN_TOP, bottom: MARGIN_BOTTOM, left: MARGIN_LEFT, right: MARGIN_RIGHT } });
+    const chunks = [];
+    doc.on('data', (c) => chunks.push(c));
+    doc.on('end', () => resolve(Buffer.concat(chunks)));
+    doc.on('error', reject);
+    const bodyWidth = doc.page.width - MARGIN_LEFT - MARGIN_RIGHT;
+    doc.image(LOGO_PATH, 28, 21.25, { width: 110.25, height: 56.9 });
+    doc.y = MARGIN_TOP;
+    const refLineY = doc.y;
+    doc.font(BODY_FONT).fontSize(BODY_SIZE).fillColor('#000').text('Ref. No: AR/HR/ExtProb/' + refNo, MARGIN_LEFT, refLineY);
+    const dateStr = ddmmyyyy(new Date().toISOString().slice(0, 10));
+    const dateLabel = 'Date: ';
+    doc.font(BODY_FONT_BOLD).fontSize(BODY_SIZE);
+    const dateLabelWidth = doc.widthOfString(dateLabel);
+    doc.font(BODY_FONT).fontSize(BODY_SIZE);
+    const dateValueWidth = doc.widthOfString(dateStr);
+    doc.font(BODY_FONT_BOLD).text(dateLabel, MARGIN_LEFT + bodyWidth - dateLabelWidth - dateValueWidth, refLineY, { continued: true, lineBreak: false });
+    doc.font(BODY_FONT).text(dateStr, { lineBreak: false });
+    doc.x = MARGIN_LEFT; doc.y = refLineY + doc.currentLineHeight() + 2;
+    doc.moveDown(2);
+    doc.font(BODY_FONT_BOLD).fontSize(BODY_SIZE).text(employeeName);
+    doc.text('Emp ID: ' + employeeId);
+    doc.text('Position: ' + position);
+    doc.moveDown(1.5);
+    doc.font(BODY_FONT_BOLD).fontSize(BODY_SIZE).text('EXTENSION OF PROBATION PERIOD', { align: 'center', underline: true });
+    doc.moveDown(3.5);
+    doc.font(BODY_FONT_BOLD).fontSize(BODY_SIZE).text('Dear ' + employeeName + ',');
+    doc.moveDown(1.2);
+    writeMixed(doc, [
+      { text: 'In reference to your Appointment Letter dated ' }, { text: ddmmyyyy(doj), bold: true },
+      { text: ', this is to inform you that your probation period, originally due for confirmation on ' },
+      { text: ddmmyyyy(originalConfirmationDate), bold: true },
+      { text: ', has been extended by ' }, { text: String(extendedMonths), bold: true },
+      { text: (Number(extendedMonths) === 1 ? ' month' : ' months') + '. Your probation period will now be reviewed for confirmation on or around ' },
+      { text: ddmmyyyy(newConfirmationDate), bold: true },
+      { text: '. All other terms and conditions of your employment remain unchanged.' }
+    ]);
+    doc.moveDown(1.2);
+    doc.font(BODY_FONT).fontSize(BODY_SIZE).text('We encourage you to continue your efforts and look forward to confirming your services at the earliest opportunity.');
+    doc.moveDown(2.5);
+    writeMixed(doc, [{ text: 'For ' }, { text: companyName, bold: true }]);
+    doc.moveDown(6);
+    doc.font(BODY_FONT_ITALIC).fontSize(BODY_SIZE).text('(Authorized Signatory)');
+    drawFooter(doc, companyName, bodyWidth, false);
+    doc.end();
+  });
+}
+
+function buildExperienceLetterPdf(fields) {
+  const { employeeName, employeeId, companyName, refNo, position, doj, lastWorkingDay } = fields;
+  return new Promise((resolve, reject) => {
+    const doc = new PDFDocument({ size: 'A4', margins: { top: MARGIN_TOP, bottom: MARGIN_BOTTOM, left: MARGIN_LEFT, right: MARGIN_RIGHT } });
+    const chunks = [];
+    doc.on('data', (c) => chunks.push(c));
+    doc.on('end', () => resolve(Buffer.concat(chunks)));
+    doc.on('error', reject);
+    const bodyWidth = doc.page.width - MARGIN_LEFT - MARGIN_RIGHT;
+    doc.image(LOGO_PATH, 28, 21.25, { width: 110.25, height: 56.9 });
+    doc.y = MARGIN_TOP;
+    const refLineY = doc.y;
+    doc.font(BODY_FONT).fontSize(BODY_SIZE).fillColor('#000').text('Ref. No: AR/HR/Exp/' + refNo, MARGIN_LEFT, refLineY);
+    const dateStr = ddmmyyyy(new Date().toISOString().slice(0, 10));
+    const dateLabel = 'Date: ';
+    doc.font(BODY_FONT_BOLD).fontSize(BODY_SIZE);
+    const dateLabelWidth = doc.widthOfString(dateLabel);
+    doc.font(BODY_FONT).fontSize(BODY_SIZE);
+    const dateValueWidth = doc.widthOfString(dateStr);
+    doc.font(BODY_FONT_BOLD).text(dateLabel, MARGIN_LEFT + bodyWidth - dateLabelWidth - dateValueWidth, refLineY, { continued: true, lineBreak: false });
+    doc.font(BODY_FONT).text(dateStr, { lineBreak: false });
+    doc.x = MARGIN_LEFT; doc.y = refLineY + doc.currentLineHeight() + 2;
+    doc.moveDown(2);
+    doc.font(BODY_FONT_BOLD).fontSize(BODY_SIZE).text('TO WHOMSOEVER IT MAY CONCERN', { align: 'center', underline: true });
+    doc.moveDown(2);
+    doc.font(BODY_FONT_BOLD).fontSize(BODY_SIZE).text('EXPERIENCE LETTER', { align: 'center', underline: true });
+    doc.moveDown(2.5);
+    writeMixed(doc, [
+      { text: 'This is to certify that ' }, { text: employeeName, bold: true },
+      { text: ' (Employee ID: ' }, { text: employeeId, bold: true },
+      { text: ') was employed with ' }, { text: companyName, bold: true },
+      { text: ' as ' }, { text: position, bold: true },
+      { text: ' from ' }, { text: ddmmyyyy(doj), bold: true },
+      { text: ' to ' }, { text: ddmmyyyy(lastWorkingDay), bold: true },
+      { text: '. During this tenure, the conduct and performance were found satisfactory.' }
+    ]);
+    doc.moveDown(1.2);
+    doc.font(BODY_FONT).fontSize(BODY_SIZE).text('We wish every success in future endeavors.');
+    doc.moveDown(2.5);
+    writeMixed(doc, [{ text: 'For ' }, { text: companyName, bold: true }]);
+    doc.moveDown(6);
+    doc.font(BODY_FONT_ITALIC).fontSize(BODY_SIZE).text('(Authorized Signatory)');
+    drawFooter(doc, companyName, bodyWidth, false);
+    doc.end();
+  });
+}
+
+function buildRelievingLetterPdf(fields) {
+  const { employeeName, employeeId, companyName, refNo, position, lastWorkingDay } = fields;
+  return new Promise((resolve, reject) => {
+    const doc = new PDFDocument({ size: 'A4', margins: { top: MARGIN_TOP, bottom: MARGIN_BOTTOM, left: MARGIN_LEFT, right: MARGIN_RIGHT } });
+    const chunks = [];
+    doc.on('data', (c) => chunks.push(c));
+    doc.on('end', () => resolve(Buffer.concat(chunks)));
+    doc.on('error', reject);
+    const bodyWidth = doc.page.width - MARGIN_LEFT - MARGIN_RIGHT;
+    doc.image(LOGO_PATH, 28, 21.25, { width: 110.25, height: 56.9 });
+    doc.y = MARGIN_TOP;
+    const refLineY = doc.y;
+    doc.font(BODY_FONT).fontSize(BODY_SIZE).fillColor('#000').text('Ref. No: AR/HR/Rel/' + refNo, MARGIN_LEFT, refLineY);
+    const dateStr = ddmmyyyy(new Date().toISOString().slice(0, 10));
+    const dateLabel = 'Date: ';
+    doc.font(BODY_FONT_BOLD).fontSize(BODY_SIZE);
+    const dateLabelWidth = doc.widthOfString(dateLabel);
+    doc.font(BODY_FONT).fontSize(BODY_SIZE);
+    const dateValueWidth = doc.widthOfString(dateStr);
+    doc.font(BODY_FONT_BOLD).text(dateLabel, MARGIN_LEFT + bodyWidth - dateLabelWidth - dateValueWidth, refLineY, { continued: true, lineBreak: false });
+    doc.font(BODY_FONT).text(dateStr, { lineBreak: false });
+    doc.x = MARGIN_LEFT; doc.y = refLineY + doc.currentLineHeight() + 2;
+    doc.moveDown(2);
+    doc.font(BODY_FONT_BOLD).fontSize(BODY_SIZE).text(employeeName);
+    doc.text('Emp ID: ' + employeeId);
+    doc.text('Position: ' + position);
+    doc.moveDown(1.5);
+    doc.font(BODY_FONT_BOLD).fontSize(BODY_SIZE).text('RELIEVING LETTER', { align: 'center', underline: true });
+    doc.moveDown(3.5);
+    doc.font(BODY_FONT_BOLD).fontSize(BODY_SIZE).text('Dear ' + employeeName + ',');
+    doc.moveDown(1.2);
+    writeMixed(doc, [
+      { text: 'This is to inform you that your resignation has been accepted and you are relieved from your duties as ' },
+      { text: position, bold: true }, { text: ' with ' + companyName + ' with effect from ' },
+      { text: ddmmyyyy(lastWorkingDay), bold: true }, { text: '.' }
+    ]);
+    doc.moveDown(1.2);
+    doc.font(BODY_FONT).fontSize(BODY_SIZE).text('We thank you for your services during your tenure with us and wish you success in your future endeavors.');
+    doc.moveDown(2.5);
+    writeMixed(doc, [{ text: 'For ' }, { text: companyName, bold: true }]);
+    doc.moveDown(6);
+    doc.font(BODY_FONT_ITALIC).fontSize(BODY_SIZE).text('(Authorized Signatory)');
+    drawFooter(doc, companyName, bodyWidth, false);
+    doc.end();
+  });
+}
+
+module.exports = {
+  buildIncrementLetterPdf, buildPromotionIncrementLetterPdf, buildConfirmationLetterPdf,
+  buildExtensionOfProbationLetterPdf, buildExperienceLetterPdf, buildRelievingLetterPdf
+};
