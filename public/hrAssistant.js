@@ -3341,9 +3341,40 @@
       });
     });
   }
+  // Task 16 (2026-11) LIVE BUG FIX - a message stuck with no reply/decision
+  // for 2+ minutes (see detectStuckIncomingMessages server-side). No real
+  // action to take beyond seeing the stuck text and either opening the
+  // chat to handle it by hand or dismissing it (clears the underlying
+  // burst buffer too, server-side).
+  function actionNeededStuckIncomingCardHtml(item) {
+    const waitingTag = item.ageMs > 2 * 60 * 1000 ? '<span class="wf-action-needed-waiting-tag">Waiting ' + actionNeededAgeLabel(item.ageMs) + '</span>' : '';
+    return '<div class="wf-auto-task-card" data-chat-id="' + escapeHtml(item.chatId) + '" data-stuck-id="' + escapeHtml(item.data.id) + '">' +
+      '<div class="wf-action-needed-card-head">' +
+        '<span class="wf-auto-task-subject">' + escapeHtml(senderDisplay(item.name, item.chatId)) + waitingTag + '</span>' +
+        '<button type="button" class="wf-action-needed-openchat" data-open-chat="' + escapeHtml(item.chatId) + '">Open chat ›</button>' +
+      '</div>' +
+      '<div class="wf-auto-hint">⏱️ No reply sent for this message yet: "' + escapeHtml(String(item.data.text || '').slice(0, 160)) + '"</div>' +
+      '<div class="wf-auto-hint">' + actionNeededAgeLabel(item.ageMs) + ' ago</div>' +
+      '<div class="wf-auto-actions">' +
+        '<button type="button" class="plain" data-stuck-action="dismiss">Dismiss</button>' +
+      '</div>' +
+    '</div>';
+  }
+  function wireActionNeededStuckIncomingCard(card) {
+    const openChatBtn = card.querySelector('[data-open-chat]');
+    if (openChatBtn) openChatBtn.addEventListener('click', () => { pushNav({ type: 'conversation', chatId: card.dataset.chatId }); openConversationPage(card.dataset.chatId); });
+    const dismissBtn = card.querySelector('[data-stuck-action="dismiss"]');
+    if (dismissBtn) dismissBtn.addEventListener('click', async () => {
+      await runButtonAction(dismissBtn, () => postJsonOrThrow('/api/workforce/hr-assistant/stuck-incoming/' + encodeURIComponent(card.dataset.stuckId) + '/dismiss', {}), () => {
+        closeRowWithToast(card, { title: 'Dismissed', type: 'success' });
+        refreshActionNeeded();
+      });
+    });
+  }
   function actionNeededCardHtml(item) {
     if (item.kind === 'automation_missed_run' || item.kind === 'automation_first_run') return actionNeededAutomationCardHtml(item);
     if (item.kind === 'hr_note_escalated') return actionNeededHrNoteEscalatedCardHtml(item);
+    if (item.kind === 'stuck_incoming') return actionNeededStuckIncomingCardHtml(item);
     const waitingTag = item.ageMs > 2 * 60 * 60 * 1000 ? '<span class="wf-action-needed-waiting-tag">Waiting ' + actionNeededAgeLabel(item.ageMs) + '</span>' : '';
     return '<div class="wf-auto-task-card" data-chat-id="' + escapeHtml(item.chatId) + '">' +
       '<div class="wf-action-needed-card-head">' +
@@ -3357,6 +3388,7 @@
   function wireActionNeededCard(card, chatId) {
     if (card.dataset.automationId) { wireActionNeededAutomationCard(card); return; }
     if (card.dataset.escalationId) { wireActionNeededHrNoteEscalatedCard(card); return; }
+    if (card.dataset.stuckId) { wireActionNeededStuckIncomingCard(card); return; }
     const openChatBtn = card.querySelector('[data-open-chat]');
     if (openChatBtn) openChatBtn.addEventListener('click', () => { pushNav({ type: 'conversation', chatId }); openConversationPage(chatId); });
     card.querySelectorAll('[data-approval-action]').forEach((b) => {

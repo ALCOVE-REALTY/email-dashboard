@@ -3241,6 +3241,74 @@ async function checkAsync(label, fn) {
   });
 
   console.log('='.repeat(70));
+  console.log('Task 16 (2026-11) LIVE BUG FIX (917278793115, 2026-11-04 14:42): a safety net - any incoming message with neither a reply nor a deliberate no-reply decision within 2 minutes is flagged and shown under Action needed');
+  console.log('='.repeat(70));
+  // Numeric, already in normalizePhone's own canonical form (91 + 10
+  // digits) - so the raw contactId used for the burst-buffer/stuck-flag
+  // keys and the NORMALIZED chatId listActionNeededItems displays are
+  // identical, exactly like a real gateway contactId.
+  const STUCK_TEST_CONTACT = '910000000987';
+  await checkAsync('detectStuckIncomingMessages: a burst buffer younger than 2 minutes is NOT flagged', async () => {
+    await whatsappAssistant.clearBurstBuffer(STUCK_TEST_CONTACT).catch(() => {});
+    await whatsappAssistant.dismissStuckIncomingMessage(STUCK_TEST_CONTACT).catch(() => {});
+    const now = Date.now();
+    await whatsappAssistant.saveBurstBuffer(STUCK_TEST_CONTACT, { messages: [{ text: 'hi', arrivedAt: now }], firstSeenAt: now - 30 * 1000, name: 'Stuck Test', firstName: 'Stuck' });
+    await whatsappAssistant.detectStuckIncomingMessages(now);
+    const flagged = (await whatsappAssistant.listStuckIncomingMessages()).some((f) => f.contactId === STUCK_TEST_CONTACT);
+    await whatsappAssistant.clearBurstBuffer(STUCK_TEST_CONTACT).catch(() => {});
+    return !flagged;
+  });
+  await checkAsync('detectStuckIncomingMessages: a burst buffer stuck for OVER 2 minutes IS flagged, with the combined text and sender name, and appears via listActionNeededItems as a stuck_incoming item', async () => {
+    await whatsappAssistant.clearBurstBuffer(STUCK_TEST_CONTACT).catch(() => {});
+    await whatsappAssistant.dismissStuckIncomingMessage(STUCK_TEST_CONTACT).catch(() => {});
+    const now = Date.now();
+    const firstSeenAt = now - 3 * 60 * 1000;
+    await whatsappAssistant.saveBurstBuffer(STUCK_TEST_CONTACT, { messages: [{ text: 'Mdo dept. HOD emp code dao', arrivedAt: firstSeenAt }], firstSeenAt, name: 'Stuck Test', firstName: 'Stuck' });
+    const result = await whatsappAssistant.detectStuckIncomingMessages(now);
+    const stuckRecord = (await whatsappAssistant.listStuckIncomingMessages()).find((f) => f.contactId === STUCK_TEST_CONTACT);
+    const items = await whatsappAssistant.listActionNeededItems();
+    const actionItem = items.find((i) => i.kind === 'stuck_incoming' && i.chatId === STUCK_TEST_CONTACT);
+    const ok = result.flagged >= 1 && Boolean(stuckRecord) && stuckRecord.text === 'Mdo dept. HOD emp code dao' &&
+      Boolean(actionItem) && actionItem.data.text === 'Mdo dept. HOD emp code dao' && actionItem.category === 'data_requests';
+    await whatsappAssistant.clearBurstBuffer(STUCK_TEST_CONTACT).catch(() => {});
+    await whatsappAssistant.dismissStuckIncomingMessage(STUCK_TEST_CONTACT).catch(() => {});
+    return ok;
+  });
+  await checkAsync('detectStuckIncomingMessages: re-running on the SAME still-stuck buffer does not re-flag/re-alert (same record, never a duplicate or an overwritten detectedAt)', async () => {
+    await whatsappAssistant.clearBurstBuffer(STUCK_TEST_CONTACT).catch(() => {});
+    await whatsappAssistant.dismissStuckIncomingMessage(STUCK_TEST_CONTACT).catch(() => {});
+    const now = Date.now();
+    const firstSeenAt = now - 3 * 60 * 1000;
+    await whatsappAssistant.saveBurstBuffer(STUCK_TEST_CONTACT, { messages: [{ text: 'hello', arrivedAt: firstSeenAt }], firstSeenAt, name: 'Stuck Test', firstName: 'Stuck' });
+    await whatsappAssistant.detectStuckIncomingMessages(now);
+    const firstPass = (await whatsappAssistant.listStuckIncomingMessages()).find((f) => f.contactId === STUCK_TEST_CONTACT);
+    await whatsappAssistant.detectStuckIncomingMessages(now + 30 * 1000);
+    const secondPass = (await whatsappAssistant.listStuckIncomingMessages()).filter((f) => f.contactId === STUCK_TEST_CONTACT);
+    const ok = Boolean(firstPass) && secondPass.length === 1 && secondPass[0].detectedAt === firstPass.detectedAt;
+    await whatsappAssistant.clearBurstBuffer(STUCK_TEST_CONTACT).catch(() => {});
+    await whatsappAssistant.dismissStuckIncomingMessage(STUCK_TEST_CONTACT).catch(() => {});
+    return ok;
+  });
+  await checkAsync('dismissStuckIncomingMessage clears both the flag and the underlying burst buffer - there is no real reply left to send, so dismissing also drops the unanswered buffered text', async () => {
+    await whatsappAssistant.clearBurstBuffer(STUCK_TEST_CONTACT).catch(() => {});
+    await whatsappAssistant.dismissStuckIncomingMessage(STUCK_TEST_CONTACT).catch(() => {});
+    const now = Date.now();
+    const firstSeenAt = now - 3 * 60 * 1000;
+    await whatsappAssistant.saveBurstBuffer(STUCK_TEST_CONTACT, { messages: [{ text: 'hello', arrivedAt: firstSeenAt }], firstSeenAt, name: 'Stuck Test', firstName: 'Stuck' });
+    await whatsappAssistant.detectStuckIncomingMessages(now);
+    const result = await whatsappAssistant.dismissStuckIncomingMessage(STUCK_TEST_CONTACT);
+    const stillFlagged = (await whatsappAssistant.listStuckIncomingMessages()).some((f) => f.contactId === STUCK_TEST_CONTACT);
+    const bufferGone = !(await whatsappAssistant.getBurstBuffer(STUCK_TEST_CONTACT));
+    return result.ok === true && !stillFlagged && bufferGone;
+  });
+  await checkAsync('dismissStuckIncomingMessage on an already-resolved/nonexistent item returns a clear error, never a crash', async () => {
+    await whatsappAssistant.clearBurstBuffer(STUCK_TEST_CONTACT).catch(() => {});
+    await whatsappAssistant.dismissStuckIncomingMessage(STUCK_TEST_CONTACT).catch(() => {});
+    const result = await whatsappAssistant.dismissStuckIncomingMessage(STUCK_TEST_CONTACT);
+    return result.ok === false && Boolean(result.error);
+  });
+
+  console.log('='.repeat(70));
   console.log('Typo-tolerant name matching (fuzzy fallback, general-details no-approval reply, sender disambiguation)');
   console.log('='.repeat(70));
   // READ-ONLY against the real directory (findPersonLookupMatches only

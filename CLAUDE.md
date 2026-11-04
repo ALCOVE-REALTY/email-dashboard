@@ -678,3 +678,53 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
   sender resolving an official-only field gets a direct reply, no card;
   "MDO dept-er HOD ke ke?" (no field) still gets the plain list; "HR dept
   HOD-er emp code" (exactly one HOD) is still answered directly.
+- Task 16 (2026-11) LIVE BUG FIX: an incoming message got no reply at all
+  and never showed in the conversation - live case: the test number
+  (917278793115) sent "Mdo dept. HOD emp code dao" at 14:42 IST on
+  2026-11-04, got no reply, then the identical text again at 14:46 was
+  handled normally. Confirmed via the real WhatsApp gateway's own message
+  history (read-only `listMessages` call, no local Redis/log access was
+  available for this investigation) that the 14:42 message DID reach the
+  gateway (id 788757) - this was never a gateway/IT delivery issue, the
+  drop happened after arrival. Root-cause hypothesis (reasoned from code,
+  not directly provable without production log access): the burst-buffer
+  flush loop in `pollOnce` (`whatsappAssistant.js`) already had a retry/
+  generic-fallback/owner-alert safety net around `actOnOfficialTurn`
+  itself (added for this SAME phone number's own prior incident, Task 2,
+  2026-10-28), but the calls AROUND it - `getBurstBuffer`/
+  `clearBurstBuffer`/`hasOpenPendingQuestionState`/`combineBurstText` -
+  were not covered; a throw from any of them (the buffer is already read,
+  and already cleared, by the time `actOnOfficialTurn` is even reached)
+  fell straight to the outer catch, which only ever did
+  `results.errors.push(...)` - no reply, no retry, no owner alert, the
+  message gone for good unless the sender happened to repeat it
+  themselves (exactly what happened live). Fixed by wrapping the ENTIRE
+  per-contact body - buffer fetch through the send - in one try, with the
+  outer catch now giving this failure the SAME safe generic-reply +
+  owner-alert treatment a failed `actOnOfficialTurn` already got. The
+  related `handleIncomingMedia(...).catch(() => {})` silent-swallow (same
+  shape, for media instead of text) now alerts the owner too. Also added,
+  per direct instruction, a general safety net independent of this one
+  root cause: `detectStuckIncomingMessages` (wired into the existing 30s
+  maintenance tick in `whatsappPollScheduler.js`) flags any burst buffer
+  still un-flushed more than 2 minutes past its own first message -
+  posts an owner notification and a new `stuck_incoming` Action-needed
+  card (`GET/POST .../stuck-incoming/:contactId/dismiss`, dismissing also
+  clears the stuck buffer - there's no real reply left to send). Re-
+  detection is a no-op while the SAME buffer (same `firstSeenAt`) is
+  still stuck, so an open burst is never re-alerted every tick; the flag
+  is cleared automatically the moment a real decision (a reply or the
+  safe fallback) is finally made. Deterministic suite (`scripts/check-
+  whatsapp-engine.js`): a buffer younger than 2 minutes is not flagged;
+  one older than 2 minutes is flagged with the right text/sender and
+  shows up via `listActionNeededItems`; re-running on the same stuck
+  buffer never re-flags; dismiss clears both the flag and the buffer;
+  dismissing an already-resolved item returns a clean error, never a
+  crash. Real-model/live-gateway verification note: no `ANTHROPIC_API_KEY`
+  or Redis credentials are configured in this local checkout, so the root-
+  cause mechanism itself (a transient throw inside the flush loop) could
+  not be directly reproduced or re-confirmed against production logs -
+  the fix closes the identified code-level gap and the safety net is
+  fully covered deterministically; real-world confirmation that the
+  specific drop never recurs happens through normal production use after
+  deploy.

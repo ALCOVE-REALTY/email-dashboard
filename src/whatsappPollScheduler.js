@@ -303,6 +303,17 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
     } catch (err) {
       log.error('[whatsapp-assistant] inbox-log archive failed: ' + err.message);
     }
+    // Task 16 (2026-11) LIVE BUG FIX - safety net, direct instruction: any
+    // incoming message that gets neither a reply nor a deliberate no-reply
+    // decision within 2 minutes is flagged here (own independent try/catch,
+    // same philosophy as every other job on this tick) and shown under
+    // Action needed - see detectStuckIncomingMessages's own comment.
+    try {
+      const result = await whatsappAssistant.detectStuckIncomingMessages(new Date());
+      if (result.flagged) log.log('[whatsapp-assistant] stuck incoming message check: flagged ' + result.flagged);
+    } catch (err) {
+      log.error('[whatsapp-assistant] stuck incoming message check failed: ' + err.message);
+    }
   }, AUTOSEND_FLUSH_MS);
 
   return { stop: () => { clearInterval(autosendInterval); clearInterval(sendFlushInterval); } };

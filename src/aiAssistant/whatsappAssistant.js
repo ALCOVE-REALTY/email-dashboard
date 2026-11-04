@@ -722,9 +722,9 @@ async function listActionableWhatsappItems() {
 // (approve & send / edit / reject) is a decision, so it joins "approvals";
 // a received document needing review is closest to "data_requests".
 async function listActionNeededItems() {
-  const [approvals, drafts, docs, hrConfirmations, hrNoteEscalations] = await Promise.all([
+  const [approvals, drafts, docs, hrConfirmations, hrNoteEscalations, stuckIncoming] = await Promise.all([
     listPendingApprovals(), listPendingDrafts(),
-    documentRequests.listPendingReceived(), listAllHrConfirmations(), listHrNoteEscalations()
+    documentRequests.listPendingReceived(), listAllHrConfirmations(), listHrNoteEscalations(), listStuckIncomingMessages()
   ]);
   const ambiguousConfirmations = hrConfirmations.filter((c) => c.status === 'ambiguous_owner_review');
   const raw = [];
@@ -737,6 +737,11 @@ async function listActionNeededItems() {
   // the owner resolves it by typing the real name in, same as the sender
   // would have.
   hrNoteEscalations.forEach((e) => raw.push({ kind: 'hr_note_escalated', category: 'approvals', chatId: whatsapp.normalizePhone(e.phone), name: e.name, ts: e.createdAt || 0, data: e }));
+  // Task 16 (2026-11) - a message stuck with no reply/decision for 2+
+  // minutes (see detectStuckIncomingMessages) - closest existing category
+  // fit is "data_requests" (an unanswered incoming message), still shown
+  // under "All" regardless.
+  stuckIncoming.forEach((s) => raw.push({ kind: 'stuck_incoming', category: 'data_requests', chatId: whatsapp.normalizePhone(s.phone), name: s.name, ts: s.firstSeenAt || s.detectedAt || 0, data: s }));
   // Performance fix (2026-10-30): isNeverAuto(item.chatId) used to run as
   // its own SISMEMBER round trip PER item inside this map - this function
   // backs the Action-needed poll that fires every ~12s regardless of which
@@ -3113,6 +3118,101 @@ async function dismissHrNoteEscalation(id) {
     await redis.srem(HR_NOTE_ESCALATED_IDS_KEY, id);
   } catch (err) { return false; }
   return true;
+}
+// Task 16 (2026-11) LIVE BUG FIX - direct instruction, from the real live
+// incident (917278793115, 2026-11-04 14:42: "Mdo dept. HOD emp code dao"
+// got no reply at all and never showed in the conversation, while the
+// identical retry 4-5 minutes later worked normally): "any incoming
+// message that gets neither a reply nor a deliberate 'no reply' decision
+// within 2 minutes is logged and shown to me (Action needed) so nothing
+// is silently lost." Every official-classified message is buffered (see
+// the official-classify branch in pollOnce) before actOnOfficialTurn ever
+// decides on it - a buffer still sitting un-flushed this long past its
+// OWN first message (STUCK_INCOMING_THRESHOLD_MS, far above the normal
+// quiet/max-wait flush timers) is itself proof something went wrong,
+// independent of exactly where - this is a safety net on top of (never a
+// replacement for) the specific root-cause fix below, so a FUTURE,
+// different silent-drop mechanism is still caught. One record per
+// contact (keyed by the SAME raw contactId the burst-buffer store itself
+// uses, deliberately never normalized here - dismissStuckIncomingMessage
+// has to pass this exact same key straight through to clearBurstBuffer,
+// and burst buffers are never normalized either, see saveBurstBuffer/
+// clearBurstBuffer above). Re-detection is a no-op once already flagged
+// for the SAME stuck buffer (same firstSeenAt), so a still-open burst is
+// never alerted on every tick.
+const STUCK_INCOMING_PREFIX = 'subh-stuck-incoming:';
+const STUCK_INCOMING_IDS_KEY = 'subh-stuck-incoming-ids';
+const STUCK_INCOMING_THRESHOLD_MS = 2 * 60 * 1000;
+async function flagStuckIncomingMessage(contactId, data) {
+  const redis = getClient();
+  if (!redis) return null;
+  const record = Object.assign({ id: contactId, contactId }, data);
+  try {
+    await redis.set(STUCK_INCOMING_PREFIX + contactId, JSON.stringify(record));
+    await redis.sadd(STUCK_INCOMING_IDS_KEY, contactId);
+  } catch (err) { return null; }
+  return record;
+}
+async function getStuckIncomingMessage(contactId) {
+  const redis = getClient();
+  if (!redis) return null;
+  try {
+    const raw = await redis.get(STUCK_INCOMING_PREFIX + contactId);
+    return raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : null;
+  } catch (err) { return null; }
+}
+async function listStuckIncomingMessages() {
+  const redis = getClient();
+  if (!redis) return [];
+  try {
+    const ids = await redis.smembers(STUCK_INCOMING_IDS_KEY);
+    if (!ids || !ids.length) return [];
+    const records = await Promise.all(ids.map((id) => getStuckIncomingMessage(id)));
+    return records.filter(Boolean).sort((a, b) => (a.firstSeenAt || 0) - (b.firstSeenAt || 0));
+  } catch (err) { return []; }
+}
+async function clearStuckIncomingMessage(contactId) {
+  const redis = getClient();
+  if (!redis) return;
+  try {
+    await redis.del(STUCK_INCOMING_PREFIX + contactId);
+    await redis.srem(STUCK_INCOMING_IDS_KEY, contactId);
+  } catch (err) { /* best effort */ }
+}
+// Owner action on the Action-needed card: there is no real reply to send
+// (whatever got this message stuck already failed once) - dismissing it
+// means "I've seen this, drop the unanswered buffered text", so the
+// underlying burst buffer is cleared too, exactly like deciding "no reply
+// needed" for it by hand.
+async function dismissStuckIncomingMessage(contactId) {
+  const existing = await getStuckIncomingMessage(contactId);
+  if (!existing) return { ok: false, error: 'This item is no longer there - it may already be resolved.' };
+  await clearBurstBuffer(contactId).catch(() => {});
+  await clearStuckIncomingMessage(contactId);
+  return { ok: true };
+}
+// Called on the same maintenance tick as every other scheduled check (see
+// whatsappPollScheduler.js) - scans every contact with a still-pending
+// burst buffer and flags any that's been sitting un-flushed for over
+// STUCK_INCOMING_THRESHOLD_MS. Resolution (clearing the flag once a real
+// decision finally happens) lives in the burst-flush loop itself, right
+// next to where that decision is made - see its own comment there.
+async function detectStuckIncomingMessages(now) {
+  const nowTs = now instanceof Date ? now.getTime() : (now || Date.now());
+  let flagged = 0;
+  for (const contactId of await listBurstBufferContactIds()) {
+    const buffer = await getBurstBuffer(contactId).catch(() => null);
+    if (!buffer || !buffer.messages || !buffer.messages.length) continue;
+    const age = nowTs - buffer.firstSeenAt;
+    if (age < STUCK_INCOMING_THRESHOLD_MS) continue;
+    const existing = await getStuckIncomingMessage(contactId);
+    if (existing && existing.firstSeenAt === buffer.firstSeenAt) continue;
+    const text = combineBurstText(buffer.messages);
+    await flagStuckIncomingMessage(contactId, { phone: contactId, name: buffer.name || contactId, text, firstSeenAt: buffer.firstSeenAt, detectedAt: nowTs });
+    await postOwnerNotification('⏱️ A message from ' + (buffer.name || contactId) + ' (' + contactId + ') has had no reply for over 2 minutes: "' + String(text).slice(0, 160) + '" - please check this conversation. (Also shown under Action needed.)').catch(() => {});
+    flagged++;
+  }
+  return { flagged };
 }
 // Owner types in the real name himself - reuses the SAME resolution path
 // (resolveHrNoteThirdParty, including its own disambiguation-list
@@ -11920,7 +12020,13 @@ async function pollOnce() {
       for (const msg of newIncoming) {
         results.checked++;
         if (['image', 'document', 'ptt', 'voice', 'audio', 'sticker'].includes(msg.type)) {
-          if (autoReplyOn) await handleIncomingMedia(contactId, name, msg).catch(() => {});
+          // Task 16 (2026-11) - a bare .catch(() => {}) here used to swallow
+          // a failed media reply with zero owner visibility, the same
+          // silent-drop shape as the burst-buffer gap fixed above (just for
+          // media instead of text).
+          if (autoReplyOn) await handleIncomingMedia(contactId, name, msg).catch((err) => {
+            postOwnerNotification('⚠️ Could not process a ' + msg.type + ' message from ' + (name || contactId) + ': ' + err.message + ' - please check this conversation.').catch(() => {});
+          });
           continue;
         }
         const text = buildIncomingText(msg);
@@ -12002,8 +12108,27 @@ async function pollOnce() {
   // sender who goes quiet still needs their buffered turn decided on a
   // later tick even with nothing new from them that tick).
   for (const contactId of await listBurstBufferContactIds()) {
+    // Task 16 (2026-11) LIVE BUG FIX (917278793115, 2026-11-04 14:42) -
+    // root cause of this specific incident: the Task 2 (2026-10-28) retry/
+    // fallback/alert protection below only ever wrapped actOnOfficialTurn
+    // itself. getBurstBuffer/clearBurstBuffer/hasOpenPendingQuestionState/
+    // combineBurstText were NOT covered - a throw from any of them (the
+    // buffer is already read, and clearBurstBuffer already run, by the
+    // time actOnOfficialTurn is even reached) fell straight to the OUTER
+    // catch at the bottom, which only ever did results.errors.push(...):
+    // no reply, no owner alert, no retry, the message gone for good unless
+    // the sender happened to repeat it themselves (exactly what happened
+    // live: the identical text sent again ~5 minutes later worked
+    // normally). The ENTIRE body - buffer fetch through the send - is now
+    // one try, and the outer catch gives this failure the SAME safe
+    // generic-reply + owner-alert treatment actOnOfficialTurn's own
+    // double-failure already got, using whatever buffered text could
+    // still be read (best-effort: if even the buffer fetch itself failed,
+    // there's no text to reply with, but the owner is still alerted by
+    // contact id, never silently).
+    let buffer = null;
     try {
-      const buffer = await getBurstBuffer(contactId);
+      buffer = await getBurstBuffer(contactId);
       if (!buffer || !buffer.messages.length) { await clearBurstBuffer(contactId); continue; }
       const now = Date.now();
       const lastArrival = buffer.messages[buffer.messages.length - 1].arrivedAt;
@@ -12050,8 +12175,24 @@ async function pollOnce() {
           await postOwnerNotification('⚠️ Could not process a message from ' + (buffer.name || contactId) + ' even after a retry: ' + err2.message + ' - a generic reply was sent, please check this conversation.').catch(() => {});
         }
       }
+      // Task 16 (2026-11) - a real decision (a reply, or the safe generic
+      // fallback above) was just made for this contact's buffered turn -
+      // any earlier "stuck, no reply in 2 minutes" flag for them is now
+      // stale and cleared, same as the normal success path.
+      await clearStuckIncomingMessage(contactId).catch(() => {});
     } catch (err) {
       results.errors.push({ contact: contactId, message: err.message });
+      const fallbackText = buffer && Array.isArray(buffer.messages) ? combineBurstText(buffer.messages) : '';
+      if (buffer) {
+        const lang = fallbackText ? detectLang(fallbackText) : 'english';
+        await scheduleAutoSend({
+          chatId: contactId, isGroup: false, name: buffer.name,
+          replyText: AUTOREPLY_ERROR_FALLBACK[lang] || AUTOREPLY_ERROR_FALLBACK.english,
+          case: 'holding', summaryForOwner: '[auto-reply error before the normal retry path (buffer handling itself threw), generic fallback sent] ' + fallbackText.slice(0, 160)
+        }).catch(() => {});
+        await clearStuckIncomingMessage(contactId).catch(() => {});
+      }
+      await postOwnerNotification('⚠️ Could not process a buffered message from ' + (contactId) + ': ' + err.message + (buffer ? ' - a generic reply was sent, please check this conversation.' : ' - please check this conversation, no reply could be sent.')).catch(() => {});
     }
   }
 
@@ -12487,6 +12628,9 @@ module.exports = {
   resolveHrNoteEscalation,
   dismissHrNoteEscalation,
   flagHrNoteApprovalEscalation,
+  listStuckIncomingMessages,
+  dismissStuckIncomingMessage,
+  detectStuckIncomingMessages,
   listActionableWhatsappItems,
   listActionNeededItems,
   listRecentWhatsappConversations,

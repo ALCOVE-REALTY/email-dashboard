@@ -2639,6 +2639,22 @@ router.post('/hr-assistant/hr-note-escalations/:id/dismiss', async (req, res) =>
   }
 });
 
+// Task 16 (2026-11) LIVE BUG FIX - Action-needed card for a message stuck
+// with no reply/decision for 2+ minutes (see detectStuckIncomingMessages).
+// Dismissing it clears the underlying burst buffer too (see
+// dismissStuckIncomingMessage's own comment) - there's no real reply left
+// to send, this just acknowledges it was seen.
+router.post('/hr-assistant/stuck-incoming/:contactId/dismiss', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const result = await whatsappAssistant.dismissStuckIncomingMessage(req.params.contactId);
+    if (!result.ok) return res.status(400).json({ error: result.error });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Owner visibility fix (live incident: a week-old stuck test confirmation
 // silently blocked all new HR flows from that sender) - every open STEP1/2
 // flow and every open STEP3+ confirmation in one list, with a way to close
