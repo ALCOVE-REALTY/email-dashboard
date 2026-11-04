@@ -768,6 +768,78 @@ async function checkAsync(label, fn) {
   });
 
   console.log('='.repeat(70));
+  console.log('LIVE BUG FIX (2026-11): "Tapas sir er contact no & employee code ki?" - a multi-field request about ONE person must keep EVERY requested field through disambiguation, never just the first');
+  console.log('='.repeat(70));
+  await whatsappAssistant.clearPendingDisambiguation(LIVE_REVIEW_TEST_PHONE).catch(() => {});
+  await checkAsync('THE EXACT LIVE BUG SHAPE: a 2-field request hitting 2+ candidates ("Ayan") asks the sender for BOTH fields in the "which person?" question, not just the first', async () => {
+    const d = await whatsappAssistant.handlePersonLookupRequest({
+      phone: LIVE_REVIEW_TEST_PHONE, name: 'Test', lang: 'banglish', personName: 'Ayan',
+      personField: 'contact_number', extraFields: [{ field: 'other_field', fieldLabel: 'employee code' }],
+      department: null, text: 'Ayan er contact no ar employee code ki?', history: []
+    });
+    const pending = await whatsappAssistant.getPendingDisambiguation(LIVE_REVIEW_TEST_PHONE);
+    return d.case === 'acknowledged' && d.replyText.includes('contact number') && d.replyText.includes('employee code') &&
+      Boolean(pending) && Array.isArray(pending.fieldSpecsRaw) && pending.fieldSpecsRaw.length === 2;
+  });
+  await checkAsync('answering that disambiguation produces ONE approval card naming AND valuing BOTH fields - the contact number is never dropped once the employee code is included', async () => {
+    const d = await whatsappAssistant.decideAutoReply({ phone: LIVE_REVIEW_TEST_PHONE, name: 'Test', firstName: 'Test', text: 'Ayan Das', isGroup: false, history: [] });
+    const created = (await listRawApprovalsForPhone(LIVE_REVIEW_TEST_PHONE)).find((a) => a.resolvedPersonName === 'Ayan Das');
+    const stillPending = await whatsappAssistant.getPendingDisambiguation(LIVE_REVIEW_TEST_PHONE);
+    const ok = d.case === 'data_holding' && Boolean(created) &&
+      created.dataRequestSummary.toLowerCase().includes('contact number') && created.dataRequestSummary.toLowerCase().includes('employee code') &&
+      created.preparedReplyText.toLowerCase().includes('contact number') && created.preparedReplyText.includes('AR001866') &&
+      stillPending === null;
+    if (created) await whatsappAssistant.removePendingApproval(created.id);
+    return ok;
+  });
+  await checkAsync('LOCKED SCENARIO: a two-field request with NO disambiguation needed (an exact full name match) still queues BOTH fields in one go', async () => {
+    const d = await whatsappAssistant.handlePersonLookupRequest({
+      phone: LIVE_REVIEW_TEST_PHONE, name: 'Test', lang: 'banglish', personName: 'Ayan Das',
+      personField: 'contact_number', extraFields: [{ field: 'other_field', fieldLabel: 'employee code' }],
+      department: null, text: 'Ayan Das er contact no ar employee code ki?', history: []
+    });
+    const created = (await listRawApprovalsForPhone(LIVE_REVIEW_TEST_PHONE)).find((a) => a.resolvedPersonName === 'Ayan Das');
+    const ok = d.case === 'data_holding' && Boolean(created) &&
+      created.preparedReplyText.toLowerCase().includes('contact number') && created.preparedReplyText.includes('AR001866');
+    if (created) await whatsappAssistant.removePendingApproval(created.id);
+    return ok;
+  });
+  await checkAsync('a multi-field request where every field is OFFICIAL and the sender IS a real ACTIVE employee sends ONE combined direct reply - no approval card', async () => {
+    const phone = '919230964121'; // Radha Biswas Bhattacharjee - real, ACTIVE
+    await whatsappAssistant.clearPendingDisambiguation(phone);
+    const d = await whatsappAssistant.handlePersonLookupRequest({
+      phone, name: 'Radha', lang: 'banglish', personName: 'Ayan Das',
+      personField: 'general_details', extraFields: [{ field: 'other_field', fieldLabel: 'employee code' }],
+      department: null, text: 'Ayan Das er details ar employee code dao', history: []
+    });
+    const anyCreated = (await listRawApprovalsForPhone(phone)).some((a) => a.resolvedPersonName === 'Ayan Das');
+    return d.case === 'acknowledged' && d.replyText.includes('AR001866') && !anyCreated;
+  });
+  await checkAsync('"strictest tier wins" still applies when fields are MIXED: official (employee code) + non-official (contact number), even from a real ACTIVE employee sender, queues ONE approval covering BOTH - never a partial direct send', async () => {
+    const phone = '919230964121';
+    await whatsappAssistant.clearPendingDisambiguation(phone);
+    const d = await whatsappAssistant.handlePersonLookupRequest({
+      phone, name: 'Radha', lang: 'banglish', personName: 'Ayan Das',
+      personField: 'contact_number', extraFields: [{ field: 'other_field', fieldLabel: 'employee code' }],
+      department: null, text: 'Ayan Das er contact no ar employee code dao', history: []
+    });
+    const created = (await listRawApprovalsForPhone(phone)).find((a) => a.resolvedPersonName === 'Ayan Das');
+    const ok = d.case === 'data_holding' && Boolean(created) &&
+      created.preparedReplyText.toLowerCase().includes('contact number') && created.preparedReplyText.includes('AR001866');
+    if (created) await whatsappAssistant.removePendingApproval(created.id);
+    return ok;
+  });
+  await checkAsync('if ANY of several requested fields is hard-blocked (e.g. salary alongside contact number), the WHOLE multi-field request is refused - never a partial send of just the safe field', async () => {
+    const d = await whatsappAssistant.handlePersonLookupRequest({
+      phone: LIVE_REVIEW_TEST_PHONE, name: 'Test', lang: 'banglish', personName: 'Ayan Das',
+      personField: 'contact_number', extraFields: [{ field: 'forbidden_pii', fieldLabel: 'salary' }],
+      department: null, text: 'Ayan Das er contact no ar salary koto', history: []
+    });
+    const anyCreated = (await listRawApprovalsForPhone(LIVE_REVIEW_TEST_PHONE)).some((a) => a.resolvedPersonName === 'Ayan Das');
+    return d.case === 'acknowledged' && d.replyText.includes('Onno karo gopon tottho') && !anyCreated;
+  });
+
+  console.log('='.repeat(70));
   console.log('LIVE REVIEW round 3, items 1 & 2: language = the message being answered, never mixed - the identity line/disclosure must match the REPLY it is attached to, never a word-list re-detection of the original incoming text');
   console.log('='.repeat(70));
   await checkAsync('THE LIVE BUG (Radha): a genuine Banglish festival greeting with no common HR vocabulary gets a Banglish reply, not English ("Subho Dashami preeti o subhecha tomakey")', async () => {

@@ -2811,6 +2811,16 @@ const DISAMBIGUATION_LAST_QUESTION_GENERIC = {
   english: (fieldLabel) => 'Whose ' + fieldLabel + ' would you like?'
 };
 function resolveDisambiguationLastQuestion(fieldKind, lang) {
+  // 2+ fields requested in one message (live bug fix, 2026-11) - name
+  // ALL of them in the "which person?" question ("...Apni kar employee
+  // code ar contact no. chaichhen?"), never just the first. A single-item
+  // array behaves exactly like the plain-string form below.
+  if (Array.isArray(fieldKind)) {
+    if (fieldKind.length <= 1) return resolveDisambiguationLastQuestion(fieldKind[0], lang);
+    const and = AND_WORD[lang] || AND_WORD.english;
+    const fn = DISAMBIGUATION_LAST_QUESTION_GENERIC[lang] || DISAMBIGUATION_LAST_QUESTION_GENERIC.english;
+    return fn(fieldKind.join(' ' + and + ' '));
+  }
   const known = DISAMBIGUATION_LAST_QUESTION[fieldKind];
   if (known) return known[lang] || known.english;
   const fn = DISAMBIGUATION_LAST_QUESTION_GENERIC[lang] || DISAMBIGUATION_LAST_QUESTION_GENERIC.english;
@@ -3250,10 +3260,16 @@ async function clearPendingNameConfirm(phone) {
 // single match would have gotten - shared by handlePersonLookupRequest's
 // own direct path and the "yes" branch of a confirmed first-name-only
 // lookup, so the two can never silently diverge.
-async function resolveConfirmedPersonLookup({ phone, name, candidate, isInactive, personField, fieldAliasKey, lang, hadTypo, history }) {
+async function resolveConfirmedPersonLookup({ phone, name, candidate, isInactive, personField, fieldAliasKey, fieldSpecsRaw, lang, hadTypo, history }) {
   if (isInactive) {
     await replyInactiveEmployee({ phone, requesterLabel: name, candidate, lang });
     return { case: 'acknowledged', replyText: (INACTIVE_EMPLOYEE_REPLY[lang] || INACTIVE_EMPLOYEE_REPLY.english)(candidate.name, candidate.gender), summaryForOwner: null, lang };
+  }
+  // 2+ fields confirmed via "hyan" to the first-name-only question (live
+  // bug fix, 2026-11) - same combined resolution handlePersonLookupRequest
+  // itself uses, just one turn later.
+  if (Array.isArray(fieldSpecsRaw) && fieldSpecsRaw.length > 1) {
+    return resolveCombinedPersonFields({ phone, requesterLabel: name, candidate, fieldSpecs: fieldSpecsRaw.map(rehydrateLookupFieldSpec), lang, hadTypo, history });
   }
   if (personField === 'general_details') {
     // Task 2 (2026-10-31) - same OFFICIAL-tier sender gate as every other
@@ -5391,7 +5407,128 @@ async function replyInactiveEmployee({ phone, requesterLabel, candidate }) {
   );
 }
 
-async function handlePersonLookupRequest({ phone, name, lang, personName, personField, personFieldLabel, department, text, history }) {
+// ---------------- Multi-field person lookup (live bug fix, 2026-11) ----------------
+// Live bug: "Tapas sir er contact no & employee code ki?" asked for TWO
+// fields about one person, but the whole pipeline (classifier schema,
+// disambiguation state, the final approval card) only ever carried ONE
+// field - the second was silently dropped after the "which person?"
+// question. Every requested field is now carried through as a `fieldSpec`
+// ({ tag: 'contact_number'|'general_details'|'other_field', fieldAlias,
+// rawLabel }) and the WHOLE list travels together through name
+// resolution, disambiguation, and the final send - same "strictest tier
+// wins" philosophy already used elsewhere in this file for a mixed-tier
+// request (never a partial send): when every requested field is an
+// OFFICIAL field AND the sender is a current active employee, the whole
+// list goes out as ONE direct reply; otherwise ONE combined approval
+// card covers all of them. A field missing from the record is listed as
+// "not on file" rather than silently dropped. The overwhelmingly common
+// SINGLE-field case (fieldSpecs.length === 1) is a thin wrapper around
+// the exact pre-existing single-field functions below (queuePersonFieldApproval/
+// sendOfficialFieldDirect/queuePersonContactApproval/
+// queuePersonGeneralDetailsApproval/buildGeneralDetailsReply) - completely
+// unchanged wording/behavior, zero regression risk for every existing
+// locked scenario.
+const CONTACT_NUMBER_FIELD_WORD = { banglish: 'contact number', hinglish: 'contact number', english: 'contact number' };
+const GENERAL_DETAILS_FIELD_WORD = { banglish: 'details', hinglish: 'details', english: 'details' };
+const AND_WORD = { banglish: 'ar', hinglish: 'aur', english: 'and' };
+const MISSING_FIELD_VALUE_WORD = { banglish: 'record-e nei', hinglish: 'record mein nahi hai', english: 'not on file' };
+const COMBINED_POSSESSIVE = {
+  banglish: (name) => name + '-er ',
+  hinglish: (name) => name + ' ka ',
+  english: (name) => name + "'s "
+};
+// Resolves ONE requested field (primary or extra) into a spec, applying
+// the SAME employee-code rescue the single-field path always had - but
+// scoped to ONLY a field that would otherwise be hard-blocked/unresolved,
+// so it can never clobber an ALREADY correctly-resolved different field
+// in the same multi-field request (e.g. "contact no & employee code"
+// must never have its contact_number half reclassified just because the
+// raw text also contains the words "employee code" for the OTHER field).
+function resolveOneLookupFieldSpec(tag, rawLabel, isEmployeeCodeRequest) {
+  let effectiveTag = tag;
+  let fieldAlias = effectiveTag === 'other_field' ? resolveApprovalFieldAliasByLabel(rawLabel) : null;
+  if (isEmployeeCodeRequest && (effectiveTag === 'forbidden_pii' || (effectiveTag === 'other_field' && !fieldAlias))) {
+    effectiveTag = 'other_field';
+    fieldAlias = resolveApprovalFieldAliasByKey('employeeId');
+  }
+  const isHardBlocked = effectiveTag === 'forbidden_pii' ||
+    HARD_BLOCKED_PERSON_FIELD_RE.test(rawLabel || '') ||
+    (effectiveTag === 'other_field' && !fieldAlias);
+  return { tag: effectiveTag, fieldAlias, isHardBlocked, rawLabel: rawLabel || null };
+}
+// Rebuilds a spec from its persisted (JSON-safe) form - fieldAlias is
+// looked up fresh by key rather than ever serialized itself.
+function rehydrateLookupFieldSpec(raw) {
+  return { tag: raw.tag, fieldAlias: raw.tag === 'other_field' ? resolveApprovalFieldAliasByKey(raw.fieldAliasKey) : null, isHardBlocked: false, rawLabel: raw.rawLabel || null };
+}
+function lookupSpecToRaw(spec) {
+  return { tag: spec.tag, fieldAliasKey: spec.fieldAlias ? spec.fieldAlias.key : null, rawLabel: spec.rawLabel || null };
+}
+function lookupSpecLabel(spec, lang) {
+  if (spec.tag === 'contact_number') return CONTACT_NUMBER_FIELD_WORD[lang] || CONTACT_NUMBER_FIELD_WORD.english;
+  if (spec.tag === 'general_details') return GENERAL_DETAILS_FIELD_WORD[lang] || GENERAL_DETAILS_FIELD_WORD.english;
+  return spec.fieldAlias ? (spec.fieldAlias.label[lang] || spec.fieldAlias.label.english) : (spec.rawLabel || 'field');
+}
+function lookupSpecIsOfficial(spec) {
+  if (spec.tag === 'contact_number') return false;
+  if (spec.tag === 'general_details') return true;
+  return Boolean(spec.fieldAlias && spec.fieldAlias.official);
+}
+function lookupSpecValue(spec, candidate) {
+  if (spec.tag === 'contact_number') return candidate.contactNumber || null;
+  if (spec.tag === 'general_details') return null; // bundle - handled specially, see buildCombinedFieldsLine
+  return spec.fieldAlias ? spec.fieldAlias.getValue(candidate) : null;
+}
+// Joins every requested field's own label into ONE sentence covering all
+// of them - "label1: value1, label2: value2." (plus the general-details
+// bundle text prepended, if that was also asked for). A value missing on
+// record is never silently dropped, it reads "not on file" instead.
+function buildCombinedFieldsLine(candidate, fieldSpecs, lang, hadTypo, now) {
+  const generalSpec = fieldSpecs.find((s) => s.tag === 'general_details');
+  const simpleSpecs = fieldSpecs.filter((s) => s.tag !== 'general_details');
+  const parts = simpleSpecs.map((s) => lookupSpecLabel(s, lang) + ': ' + (lookupSpecValue(s, candidate) || (MISSING_FIELD_VALUE_WORD[lang] || MISSING_FIELD_VALUE_WORD.english)));
+  const simpleLine = parts.length ? (COMBINED_POSSESSIVE[lang] || COMBINED_POSSESSIVE.english)(candidate.name) + parts.join(', ') + '.' : '';
+  if (generalSpec) {
+    const generalText = buildGeneralDetailsReply(candidate, lang, hadTypo, now);
+    return simpleLine ? generalText + ' ' + simpleLine : generalText;
+  }
+  return simpleLine;
+}
+// Owner-facing text in this file is always in the owner's own operational
+// Banglish, regardless of the sender's own language - joining with a
+// fixed "ar" here matches that existing convention (see every other
+// postOwnerNotification call in this section).
+function joinFieldLabelsForOwner(fieldSpecs, lang) {
+  return fieldSpecs.map((s) => (s.tag === 'general_details' ? 'general details' : lookupSpecLabel(s, lang))).join(' ar ');
+}
+// ONE confirmed candidate, 2+ requested fields: either one direct reply
+// (every field official AND the sender is a current active employee) or
+// one combined approval card - never a partial send, never a dropped
+// field. Mirrors queuePersonFieldApproval/sendOfficialFieldDirect's own
+// shape, just combined.
+async function resolveCombinedPersonFields({ phone, requesterLabel, candidate, fieldSpecs, lang, hadTypo, history }) {
+  const labelsJoined = joinFieldLabelsForOwner(fieldSpecs, lang);
+  const typoNote = hadTypo ? ' [sender-er deya naam-er banan-e typo chhilo, eta closest match]' : '';
+  if (fieldSpecs.every(lookupSpecIsOfficial) && await isSenderActiveEmployee(phone)) {
+    const combinedLine = buildCombinedFieldsLine(candidate, fieldSpecs, lang, hadTypo, new Date());
+    await postOwnerNotification(requesterLabel + ' (' + phone + ') ' + candidate.name + '-er ' + labelsJoined + ' jigges korechhe.' + typoNote + ' Approval chara e direct reply gechhe: \'' + combinedLine + '\'');
+    return { case: 'acknowledged', replyText: combinedLine, summaryForOwner: null, lang };
+  }
+  const combinedLine = buildCombinedFieldsLine(candidate, fieldSpecs, lang, hadTypo, new Date());
+  const dataRequestSummary = candidate.name + ' (' + candidate.department + ') - ' + labelsJoined;
+  await savePendingApproval({
+    phone, name: requesterLabel, requestText: dataRequestSummary, dataRequestSummary, lang,
+    preparedReplyText: combinedLine, preparedCard: null, preparedError: null,
+    resolvedPersonName: candidate.name
+  });
+  const statusNote = candidate.status === 'NOTICE PERIOD' ? ', notice period-e achen' : '';
+  await postOwnerNotification(
+    requesterLabel + ' (' + phone + ') ' + candidate.name + ' (' + candidate.department + statusNote + ')-er ' + labelsJoined + ' chaichhe.' + typoNote + ' Je message jabe: \'' + combinedLine + '\'. Pathabo?'
+  );
+  return { case: 'data_holding', replyText: dataRequestHoldingReply(lang, history, new Date()), summaryForOwner: null, lang };
+}
+
+async function handlePersonLookupRequest({ phone, name, lang, personName, personField, personFieldLabel, extraFields, department, text, history }) {
   // Task 7 (2026-10-31): exactly 9 heads (Aadhaar/PAN/bank details/
   // salary/UAN/ESI/address/DOB/blood group) are ever hard-blocked now,
   // regardless of which personField value the classifier actually picked
@@ -5414,13 +5551,17 @@ async function handlePersonLookupRequest({ phone, name, lang, personName, person
   // plainly asks for an employee code and nothing that is actually one of
   // the 9 forbidden heads.
   const isEmployeeCodeRequest = EMPLOYEE_CODE_FIELD_RE.test(text || '') && !HARD_BLOCKED_PERSON_FIELD_RE.test(text || '');
-  if (isEmployeeCodeRequest) personField = 'other_field';
-  const fieldAlias = personField === 'other_field'
-    ? (resolveApprovalFieldAliasByLabel(personFieldLabel) || (isEmployeeCodeRequest ? resolveApprovalFieldAliasByKey('employeeId') : null))
-    : null;
-  const isHardBlockedField = personField === 'forbidden_pii' ||
-    HARD_BLOCKED_PERSON_FIELD_RE.test(personFieldLabel || '') ||
-    (personField === 'other_field' && !fieldAlias);
+  // Live bug fix (2026-11) - EVERY requested field ("X & Y", "X ar Y", "X,
+  // Y") is resolved into its own spec and carried through together, never
+  // just the first one. fieldSpecs.length === 1 is the overwhelmingly
+  // common case and takes the exact pre-existing single-field code path
+  // below (personField/fieldAlias/otherFieldLabel aliased straight from
+  // fieldSpecs[0] - byte-identical wording/behavior).
+  const fieldSpecs = [{ tag: personField, label: personFieldLabel }, ...(extraFields || [])]
+    .map((f) => resolveOneLookupFieldSpec(f.tag || f.field, f.label || f.fieldLabel, isEmployeeCodeRequest));
+  personField = fieldSpecs[0].tag;
+  const fieldAlias = fieldSpecs[0].fieldAlias;
+  const isHardBlockedField = fieldSpecs.some((s) => s.isHardBlocked);
   if (isHardBlockedField) {
     // Own-name exception (direct example given: "Subhodeep er Aadhaar
     // chai" when the sender himself IS Subhodeep) - referring to yourself
@@ -5460,7 +5601,9 @@ async function handlePersonLookupRequest({ phone, name, lang, personName, person
   // owner's approval card as a closest match rather than a confirmed name.
   const { matches: allMatches, hadTypo } = await findPersonLookupMatches(personName, department);
   if (!allMatches.length) {
-    const fieldDescription = personField === 'general_details' ? 'details' : (otherFieldLabel || 'contact number');
+    const fieldDescription = fieldSpecs.length > 1
+      ? joinFieldLabelsForOwner(fieldSpecs, lang)
+      : (personField === 'general_details' ? 'details' : (otherFieldLabel || 'contact number'));
     await postOwnerNotification(name + ' (' + phone + ') "' + personName + '"-er ' + fieldDescription + ' cheyechhe, kintu oi naame (ba kachakachi kono banan-e) kono employee pelam na.');
     return { case: 'acknowledged', replyText: (PERSON_NOT_FOUND_REPLY[lang] || PERSON_NOT_FOUND_REPLY.english)(personName), summaryForOwner: null, lang };
   }
@@ -5502,11 +5645,15 @@ async function handlePersonLookupRequest({ phone, name, lang, personName, person
   // ALWAYS confirms a first-name-only reference, hint or not, per direct
   // instruction - that answer reads as more consequential than a private
   // field like an email/DOB.
-  if (current.length + inactive.length === 1 && (!department || (fieldAlias && fieldAlias.alwaysConfirm))) {
+  const anyAlwaysConfirm = fieldSpecs.some((s) => s.fieldAlias && s.fieldAlias.alwaysConfirm);
+  if (current.length + inactive.length === 1 && (!department || anyAlwaysConfirm)) {
     const soleMatch = current[0] || inactive[0];
     if (isFirstNameOnly(personName, soleMatch.name)) {
       const isInactiveCandidate = inactive.length === 1;
-      await savePendingNameConfirm(phone, { candidate: soleMatch, isInactive: isInactiveCandidate, personField, fieldAliasKey: fieldAlias ? fieldAlias.key : null, lang, hadTypo });
+      await savePendingNameConfirm(phone, Object.assign(
+        { candidate: soleMatch, isInactive: isInactiveCandidate, personField, fieldAliasKey: fieldAlias ? fieldAlias.key : null, lang, hadTypo },
+        fieldSpecs.length > 1 ? { fieldSpecsRaw: fieldSpecs.map(lookupSpecToRaw) } : null
+      ));
       await postOwnerNotification(
         name + ' (' + phone + ') "' + personName + '" bolechhe (shudhu first name) - ' + soleMatch.name + ' (' + soleMatch.department + ')' +
         (isInactiveCandidate ? ', inactive' : '') + ' kina, sender-ke jigges kora hocche.'
@@ -5523,6 +5670,23 @@ async function handlePersonLookupRequest({ phone, name, lang, personName, person
     // was exact or fuzzy - an inactive employee's data is never shared.
     await replyInactiveEmployee({ phone, requesterLabel: name, candidate: inactive[0], lang });
     return { case: 'acknowledged', replyText: (INACTIVE_EMPLOYEE_REPLY[lang] || INACTIVE_EMPLOYEE_REPLY.english)(inactive[0].name, inactive[0].gender), summaryForOwner: null, lang };
+  }
+
+  // 2+ fields requested (live bug fix, 2026-11) - combined resolution,
+  // completely separate from the single-field branches below (which stay
+  // byte-identical to before for the fieldSpecs.length === 1 case).
+  if (fieldSpecs.length > 1) {
+    if (current.length === 1) {
+      return resolveCombinedPersonFields({ phone, requesterLabel: name, candidate: current[0], fieldSpecs, lang, hadTypo, history });
+    }
+    await savePendingDisambiguation(phone, { candidates: current, lang, hadTypo, attempts: 1, pendingField: 'multi', fieldSpecsRaw: fieldSpecs.map(lookupSpecToRaw) });
+    const labelsJoined = joinFieldLabelsForOwner(fieldSpecs, lang);
+    await postOwnerNotification(current.length + ' jon "' + personName + '" (' + labelsJoined + ') match korche - sender-ke jigges kora hocche kon jon: ' + current.map((c) => c.name + ' (' + c.department + ')').join(', ') + '.');
+    const queryName = current[0].name.split(' ')[0];
+    const note = hadTypo ? (TYPO_NOTE[lang] || TYPO_NOTE.english) : '';
+    const fn = DISAMBIGUATION_QUESTION[lang] || DISAMBIGUATION_QUESTION.english;
+    const fieldKindsForQuestion = fieldSpecs.map((s) => lookupSpecLabel(s, lang));
+    return { case: 'acknowledged', replyText: note + fn(queryName, current, fieldKindsForQuestion), summaryForOwner: null, lang };
   }
 
   // general_details (spec point 2; Task 2 2026-10-31: these are official
@@ -9000,6 +9164,18 @@ function classifyTool() {
           personLookupName: { type: 'string', description: 'ONLY when wantsData is true AND the request is for ONE specific field about ONE named person (e.g. "Ayan Das er contact number ta dao", "R amake Ayan Das HR er contact no. ta debe?") - the person\'s name EXACTLY as given in THIS message, first name alone is fine (e.g. "Ayan"). NEVER guess, complete, or expand the name using an earlier message in the conversation history - if THIS message only says "Ayan", output "Ayan", even if an earlier message in this same chat was about a specific "Ayan Biswas" or "Ayan Das". Only carry a name forward from history when the sender explicitly refers back to the same person ("tar", "oi jon-er", "same person", "ওই person", "usi ka") - in that case output the name history already resolved. Omit entirely for any aggregate/list/count/headcount request (e.g. "engineers list", "headcount under X", "who reports to X") - those are never about one person\'s own personal field and must NOT set this.' },
           personLookupField: { type: 'string', enum: ['contact_number', 'general_details', 'other_field', 'forbidden_pii'], description: 'Required when personLookupName is given. "contact_number" ONLY for their phone/contact/mobile/WhatsApp number. "general_details" ONLY for their full name, designation/role, department, or how long they\'ve been with the company (tenure) - these are not sensitive and never need approval. "other_field" for any other single personal field that is NOT one of the 9 forbidden heads listed under "forbidden_pii" below - e.g. employee code/employee ID/emp no., mail id/personal email, emergency contact, OR that named person\'s OWN reporting manager/HOD (e.g. "Subhodeep HR kake report kore?", "Subhodeep HR-er manager ke?", "X-er HOD ke?" - set personLookupFieldLabel to "reporting manager" for this one); when you choose "other_field" you MUST also set personLookupFieldLabel. Never use "other_field" for a DEPARTMENT\'s own HOD question with no specific person named (e.g. "HR dept er HOD ke?") - that has no personLookupName at all, see wantsData\'s own description. "forbidden_pii" ONLY for exactly these 9 heads, nothing else: Aadhaar, PAN, bank account/IFSC, salary/CTC, UAN number, ESIC/ESI number, home/permanent/present address, date of birth, blood group - these are NEVER shared regardless of approval. Employee code/ID is NOT forbidden_pii - it is always "other_field", never guess otherwise. When unsure whether a field is genuinely one of these exact 9 heads (e.g. a bank-related term you don\'t recognize) vs. a clearly different field (employee code, designation, location, tenure, etc.), choose "forbidden_pii" only for the genuinely ambiguous bank/salary-shaped case - never for something plainly unrelated like employee code.' },
           personLookupFieldLabel: { type: 'string', description: 'Required when personLookupField is "other_field" - name the specific field asked about, in a few words (e.g. "employee code", "mail id", "emergency contact", "reporting manager"). Omit otherwise.' },
+          personLookupExtraFields: {
+            type: 'array',
+            description: 'Live bug fix (2026-11) - when the SAME message asks for MORE THAN ONE field about the SAME named person ("X-er contact no & employee code ki?", "X ar Y", "X, Y"), personLookupField/personLookupFieldLabel above capture only the FIRST field - every ADDITIONAL field goes here, one entry per field, same enum/label rules as above. NEVER drop a field: a message naming two or more fields about one person must have exactly (N-1) entries here for its N total fields. Omit entirely (or leave empty) when only one field was asked for - this is the common case.',
+            items: {
+              type: 'object',
+              properties: {
+                field: { type: 'string', enum: ['contact_number', 'general_details', 'other_field', 'forbidden_pii'], description: 'Same meaning as personLookupField.' },
+                fieldLabel: { type: 'string', description: 'Required when field is "other_field" - same meaning as personLookupFieldLabel.' }
+              },
+              required: ['field']
+            }
+          },
           personLookupDepartment: { type: 'string', description: 'Optional - a department mentioned to help find the right person when the name alone could match more than one employee, e.g. "HR" in "Ayan Das HR er contact number". Omit if none was mentioned.' }
         },
         required: ['intent', 'language', 'topic', 'topicLabel', 'replyNeeded', 'wantsData']
@@ -10004,7 +10180,7 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
         await clearPendingNameConfirm(phone);
         return resolveConfirmedPersonLookup({
           phone, name: senderLabel, candidate: pendingConfirm.candidate, isInactive: Boolean(pendingConfirm.isInactive),
-          personField: pendingConfirm.personField, fieldAliasKey: pendingConfirm.fieldAliasKey,
+          personField: pendingConfirm.personField, fieldAliasKey: pendingConfirm.fieldAliasKey, fieldSpecsRaw: pendingConfirm.fieldSpecsRaw,
           lang: pendingConfirm.lang, hadTypo: pendingConfirm.hadTypo, history
         });
       }
@@ -10061,7 +10237,13 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
       if (resolved) {
         await clearPendingDisambiguation(phone);
         let finalized;
-        if (pendingDisambig.pendingField === 'contact_number') {
+        if (Array.isArray(pendingDisambig.fieldSpecsRaw) && pendingDisambig.fieldSpecsRaw.length > 1) {
+          finalized = await resolveCombinedPersonFields({
+            phone, requesterLabel: senderLabel, candidate: resolved,
+            fieldSpecs: pendingDisambig.fieldSpecsRaw.map(rehydrateLookupFieldSpec),
+            lang: pendingDisambig.lang, hadTypo: pendingDisambig.hadTypo, history
+          });
+        } else if (pendingDisambig.pendingField === 'contact_number') {
           await queuePersonContactApproval({ phone, requesterLabel: senderLabel, candidate: resolved, lang: pendingDisambig.lang, hadTypo: pendingDisambig.hadTypo });
           finalized = { case: 'data_holding', replyText: dataRequestHoldingReply(pendingDisambig.lang, history, new Date()), summaryForOwner: null };
         } else if (pendingDisambig.pendingField === 'other_field') {
@@ -10116,12 +10298,14 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
         && await hasConfidentPersonMatch(extractedForReresolve.personName, extractedForReresolve.hint);
       if (hasConfidentReresolve) {
         await clearPendingDisambiguation(phone);
-        const fieldAlias = pendingDisambig.pendingField === 'other_field' ? resolveApprovalFieldAliasByKey(pendingDisambig.fieldAliasKey) : null;
+        const hasMultiFields = Array.isArray(pendingDisambig.fieldSpecsRaw) && pendingDisambig.fieldSpecsRaw.length > 1;
+        const fieldAlias = (!hasMultiFields && pendingDisambig.pendingField === 'other_field') ? resolveApprovalFieldAliasByKey(pendingDisambig.fieldAliasKey) : null;
         const reresolved = await handlePersonLookupRequest({
           phone, name: senderLabel, lang: pendingDisambig.lang,
           personName: extractedForReresolve.personName,
-          personField: pendingDisambig.pendingField,
-          personFieldLabel: fieldAlias ? fieldAlias.label.english : undefined,
+          personField: hasMultiFields ? pendingDisambig.fieldSpecsRaw[0].tag : pendingDisambig.pendingField,
+          personFieldLabel: hasMultiFields ? pendingDisambig.fieldSpecsRaw[0].rawLabel : (fieldAlias ? fieldAlias.label.english : undefined),
+          extraFields: hasMultiFields ? pendingDisambig.fieldSpecsRaw.slice(1).map((r) => ({ tag: r.tag, label: r.rawLabel })) : undefined,
           department: extractedForReresolve.hint,
           text, history
         });
@@ -10148,9 +10332,11 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
         if (attempts === 1) {
           const retryPrefix = DISAMBIGUATION_RETRY_PREFIX[lang] || DISAMBIGUATION_RETRY_PREFIX.english;
           const fn = DISAMBIGUATION_QUESTION[lang] || DISAMBIGUATION_QUESTION.english;
-          const retryFieldKind = pendingDisambig.pendingField === 'other_field'
-            ? (((resolveApprovalFieldAliasByKey(pendingDisambig.fieldAliasKey) || {}).label || {})[lang] || 'other_field')
-            : pendingDisambig.pendingField;
+          const retryFieldKind = Array.isArray(pendingDisambig.fieldSpecsRaw) && pendingDisambig.fieldSpecsRaw.length > 1
+            ? pendingDisambig.fieldSpecsRaw.map((r) => lookupSpecLabel(rehydrateLookupFieldSpec(r), lang))
+            : (pendingDisambig.pendingField === 'other_field'
+              ? (((resolveApprovalFieldAliasByKey(pendingDisambig.fieldAliasKey) || {}).label || {})[lang] || 'other_field')
+              : pendingDisambig.pendingField);
           replyText = retryPrefix + fn(queryName, pendingDisambig.candidates, retryFieldKind);
         } else {
           const shortFn = DISAMBIGUATION_SHORT_RETRY[lang] || DISAMBIGUATION_SHORT_RETRY.english;
@@ -10289,6 +10475,7 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
         personName: groundPersonLookupName(classification.personLookupName, text),
         personField: classification.personLookupField,
         personFieldLabel: classification.personLookupFieldLabel,
+        extraFields: classification.personLookupExtraFields,
         department: classification.personLookupDepartment,
         text, history
       });

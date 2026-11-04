@@ -465,3 +465,31 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
   in-it reply (classifies AND extracts in the same breath), an answer that
   defers the detail (classifies but extracts nothing, so SUBH asks instead of
   guessing), and an unrelated reply (never force-matched to any rule).
+- I (2026-11), live bug: multi-field person lookup ("Tapas sir er contact
+  no & employee code ki?") - the classifier schema, the disambiguation
+  state, and the final approval card all only ever carried ONE field, so
+  the second was silently dropped after the "which person?" question.
+  Every requested field is now a `fieldSpec` ({tag, fieldAlias, rawLabel})
+  carried together through name resolution, disambiguation (`pendingFields`/
+  `fieldSpecsRaw`, alongside the untouched single-field
+  `pendingField`/`fieldAliasKey` for the common case), and the final send
+  (`resolveCombinedPersonFields`, `whatsappAssistant.js`) - a new
+  `personLookupExtraFields` array on the classifier tool carries every
+  field beyond the first. Same "strictest tier wins" philosophy this file
+  already used for a single mixed-tier request: every field official AND
+  the sender a real active employee -> ONE direct reply naming/valuing all
+  of them; otherwise ONE combined approval card: never a partial send,
+  never a silently dropped field, a value missing on record reads "not on
+  file" rather than vanishing. A hard-blocked field anywhere in the set
+  hard-blocks the WHOLE request, same as the existing mixing precedent.
+  The overwhelmingly common single-field case is byte-identical to before
+  (fieldSpecs.length === 1 takes the exact pre-existing code path) - zero
+  regression risk for any existing personLookupField locked scenario.
+  Locked scenarios (`scripts/check-whatsapp-engine.js`, real "Ayan"/"Ayan
+  Das" directory records): the exact live bug shape (2+ candidates, "which
+  person?" names BOTH fields, the resolved approval keeps both); a
+  two-field request with NO disambiguation needed; all-official fields
+  from a real active employee sender -> one direct combined reply; a mixed
+  official/non-official combo (even from an active employee) -> one
+  combined approval, never a partial direct send; a hard-blocked field
+  mixed in -> the whole request refused.
