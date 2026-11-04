@@ -534,6 +534,12 @@
           <button type="button" class="wf-rem-add-btn" id="hrRemAddBtn">+ Add Reminder</button>
           <button type="button" class="wf-rem-add-btn outline" id="hrAutoTaskBtn">⚡ Automate Task</button>
         </div>
+        <!-- Automate Workflow (2026-11) - own full-width button right below
+             the Add Reminder/Automate Task row, matching the approved
+             sample's own layout exactly (docs/samples/subh-workflow-sample.html's
+             #b-wf) rather than squeezing a 3rd button into .wf-rem-btn-row's
+             fixed 2-column grid. -->
+        <button type="button" class="wf-rem-add-btn" id="hrWorkflowTaskBtn" style="width:100%;margin-top:10px">🔀 Automate Workflow</button>
         <div class="wf-rem-info-note">Reminders will remain pending and keep showing until you tap Done or Cancel.</div>
         <button type="button" class="wf-rem-completed-row" id="hrRemCompletedRow">
           <span>Today's Completed</span>
@@ -546,6 +552,13 @@
         <button type="button" class="wf-rem-completed-row" id="hrAutoTasksBar">
           <span>⚡ Automated Tasks</span>
           <span class="wf-rem-completed-badge wi-count-badge primary" id="hrAutoTasksBadge">0</span>
+        </button>
+        <!-- Automated Workflows bar (2026-11) - same pattern, directly
+             below the Automated Tasks bar. Badge = active +
+             pending_approval count, same convention as hrAutoTasksBadge. -->
+        <button type="button" class="wf-rem-completed-row" id="hrWorkflowTasksBar">
+          <span>🔀 Automated Workflows</span>
+          <span class="wf-rem-completed-badge wi-count-badge primary" id="hrWorkflowTasksBadge">0</span>
         </button>
       </div>
 
@@ -694,6 +707,231 @@
         </div>
         <button type="button" class="wf-rem-add-btn" id="autoSaveBtn" style="width:100%">Save Automation</button>
         <button type="button" class="wf-rem-add-btn outline" id="autoCancelBtn" style="width:100%;margin-top:10px">Cancel</button>
+      </div>
+
+      <!-- SUBH Automate Workflow (2026-11) - list page. Same pattern as
+           hrAutoListPage above. -->
+      <div class="wf-rem-page" id="hrWorkflowListPage" hidden>
+        <div id="hrWorkflowList"></div>
+        <button type="button" class="wf-rem-add-btn" id="hrWorkflowNewBtn">🔀 New Workflow</button>
+      </div>
+
+      <!-- SUBH Automate Workflow - Create/Edit. Reuses the Create Automated
+           Task page's own CSS classes verbatim (same sizes/fonts/icons/
+           spacing, per direct instruction) - sections 1-4 and Schedule/
+           Summary/Preview/Test/Save/Cancel mirror hrAutoPage exactly;
+           sections 5-8 (Also send/Documents/If no reply/When they reply)
+           are new to Workflow and reuse the SAME field/checkbox/segmented-
+           control/chip classes, never a new look-alike style. Matches
+           docs/samples/subh-workflow-sample.html's own sections/order/copy. -->
+      <div class="wf-auto-page" id="hrWorkflowPage" hidden>
+        <div class="wf-auto-card">
+          <label class="wf-rem-field"><span class="wf-auto-subject-label">Workflow Subject <span class="wf-auto-req">*</span></span>
+            <input type="text" id="wfSubject" maxlength="100" placeholder="e.g. Probation confirmation follow-up" autocomplete="off" />
+          </label>
+          <div class="wf-auto-hint"><span id="wfSubjCount">0</span>/100</div>
+          <div class="wf-auto-err hidden" id="wfSubjErr">Workflow Subject is required.</div>
+        </div>
+
+        <div class="wf-auto-card">
+          <div class="wf-auto-sechead"><span class="wf-auto-num">1</span> <span class="wf-auto-label">Tell SUBH what to automate <span class="wf-auto-req">*</span></span></div>
+          <textarea id="wfAsk" class="wf-auto-ask" placeholder="e.g. On the 1st of every month, email each HOD about their team members whose probation ends that month and ask whether to confirm, extend or not confirm. Follow up after 2 days if there's no reply, then send the matching letter and update me." autocomplete="off"></textarea>
+          <div class="wf-auto-err hidden" id="wfAskErr">Please tell SUBH what to automate.</div>
+          <div id="wfSheetWrap" style="margin-top:12px">
+            <label class="wf-rem-field">Google Sheet link (optional)
+              <div class="wf-auto-row-gap">
+                <input type="text" id="wfSheetUrl" placeholder="https://docs.google.com/spreadsheets/d/…" style="flex:1" autocomplete="off" />
+                <button type="button" class="wf-ai-action-btn outline" id="wfSheetLoadBtn">Load</button>
+              </div>
+            </label>
+            <div class="wf-auto-hint">Share the sheet as Viewer with:</div>
+            <div class="wf-auto-share-row" id="wfSheetShareHint">
+              <span class="wf-auto-share-email" id="wfSheetShareEmail">—</span>
+              <button type="button" id="wfSheetShareCopyBtn" class="wf-auto-copy-btn">Copy</button>
+            </div>
+            <div class="wf-auto-err hidden" id="wfSheetMsg"></div>
+            <div id="wfSheetInfo"></div>
+          </div>
+          <div class="wf-auto-chips" id="wfAskExamples"></div>
+          <button type="button" class="wf-ai-action-btn download" id="wfAskBtn" style="margin-top:8px">✨ Ask SUBH</button>
+          <div class="wf-auto-hint">Write in Banglish, English or Hinglish. SUBH shows what it understood — nothing is saved until you say it's right.</div>
+          <div id="wfUnderstand"></div>
+        </div>
+
+        <div class="wf-auto-card" id="wfGroupCard">
+          <div class="wf-auto-sechead"><span class="wf-auto-num">2</span> How to send?</div>
+          <div class="wf-auto-seg" id="wfGroupSeg" style="margin-top:10px">
+            <button type="button" data-v="each" class="on">One message per employee</button>
+            <button type="button" data-v="list">One combined list</button>
+          </div>
+        </div>
+
+        <div class="wf-auto-card">
+          <div class="wf-auto-sechead"><span class="wf-auto-num">3</span> Who receives?</div>
+          <div class="wf-auto-seg" id="wfRecSeg" style="margin-top:10px">
+            <button type="button" data-v="selected">Selected people</button>
+            <button type="button" data-v="column" class="on">Person from the data</button>
+          </div>
+          <div id="wfRecColWrap" style="margin-top:12px">
+            <label class="wf-rem-field">Send to the person in
+              <select id="wfRecCol"></select>
+            </label>
+          </div>
+          <div id="wfSelWrap" class="hidden">
+            <div style="position:relative;margin-top:10px">
+              <input type="search" id="wfEmpSearch" placeholder="Search employees…" autocomplete="off" style="width:100%;background:var(--wi-surface);border:1px solid var(--wi-border-2);border-radius:var(--wi-r-input);padding:10px 12px 10px 34px;font:inherit;font-size:.85rem;color:var(--wi-ink);" />
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="var(--wi-muted)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="position:absolute;left:11px;top:50%;transform:translateY(-50%);"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            </div>
+            <div class="wf-auto-row-gap" style="margin-top:8px">
+              <button type="button" class="wf-ai-action-btn outline small" id="wfSelAllBtn">Select all</button>
+              <button type="button" class="wf-ai-action-btn outline small" id="wfSelClearBtn">Clear all</button>
+              <span class="wf-auto-hint" id="wfSelCount" style="margin-left:auto">0 selected</span>
+            </div>
+            <div class="wf-auto-emplist" id="wfEmpList"></div>
+          </div>
+          <div class="wf-auto-hint" id="wfRecHint" style="margin-top:10px"></div>
+          <div class="wf-mail-field" style="margin-top:12px;margin-bottom:0">
+            <span class="wf-mail-field-label" style="text-transform:none">Cc (optional)</span>
+            <div class="wf-mail-chip-input" id="wfCcChipInput">
+              <input type="text" id="wfCcInput" autocomplete="off" placeholder="Add recipient…" />
+            </div>
+            <ul class="wf-mail-suggest" id="wfCcSuggest" hidden></ul>
+          </div>
+        </div>
+
+        <div class="wf-auto-card">
+          <div class="wf-auto-sechead"><span class="wf-auto-num">4</span> What message?</div>
+          <label class="wf-rem-field"><span class="wf-auto-label">Mediator <span class="wf-auto-req">*</span></span></label>
+          <div class="wf-auto-seg" id="wfMedSeg"><button type="button" data-v="mail" class="on">✉️ Mail</button><button type="button" data-v="wa">💬 WhatsApp</button></div>
+          <div id="wfMailSubjWrap">
+            <label class="wf-rem-field">Mail subject<input type="text" id="wfMailSubj" autocomplete="off" /></label>
+          </div>
+          <label class="wf-rem-field">Body<textarea id="wfBody" class="wf-auto-body" autocomplete="off"></textarea></label>
+          <div class="wf-auto-hint">Tap to insert:</div>
+          <div class="wf-auto-chips" id="wfPlaceholders"></div>
+          <label class="wf-auto-check"><input type="checkbox" id="wfTableToggle" /> Add record table</label>
+          <div id="wfTableWrap" class="hidden">
+            <div class="wf-auto-hint" style="margin-top:8px">Columns — choose from the HR database heads (tap to add/remove, order follows your taps):</div>
+            <div class="wf-auto-cols" id="wfCols"></div>
+            <div class="wf-auto-hint" id="wfColOrder"></div>
+            <label class="wf-rem-field" style="margin-top:14px"><span class="wf-auto-label">Put the table</span></label>
+            <div class="wf-auto-hint">In the message body (Workflow never offers a PDF/Excel attachment for the first message - see "Documents" below for generated letters).</div>
+          </div>
+        </div>
+
+        <!-- Section 5: Also send (optional) - one more message per run. -->
+        <div class="wf-auto-card">
+          <div class="wf-auto-sechead"><span class="wf-auto-num">5</span> Also send <span class="wf-auto-hint" style="margin:0 0 0 auto">(optional)</span></div>
+          <label class="wf-auto-check" style="margin-top:8px"><input type="checkbox" id="wfAlsoOn" /> Send one more message on each run (e.g. a summary to a team)</label>
+          <div id="wfAlsoWrap" class="hidden" style="margin-top:12px">
+            <label class="wf-rem-field">To
+              <select id="wfAlsoTo"><option value="hr">HR team</option><option value="accounts">Accounts team</option></select>
+            </label>
+            <label class="wf-rem-field">Subject<input type="text" id="wfAlsoSubj" autocomplete="off" /></label>
+            <label class="wf-rem-field">Body<textarea id="wfAlsoBody" class="wf-auto-body" autocomplete="off"></textarea></label>
+            <label class="wf-auto-check"><input type="checkbox" id="wfAlsoTable" /> Add the record table</label>
+            <label class="wf-auto-check"><input type="checkbox" id="wfAlsoDocs" /> Attach the generated documents</label>
+          </div>
+        </div>
+
+        <!-- Section 6: Documents (optional) - v1 ships the 4 built-in
+             letter templates only (per direct instruction) - no custom
+             Word/Google Doc upload option in this UI yet. -->
+        <div class="wf-auto-card">
+          <div class="wf-auto-sechead"><span class="wf-auto-num">6</span> Documents <span class="wf-auto-hint" style="margin:0 0 0 auto">(optional)</span></div>
+          <label class="wf-auto-check" style="margin-top:8px"><input type="checkbox" id="wfDocsOn" /> Generate one document per record from a template</label>
+          <div id="wfDocsWrap" class="hidden" style="margin-top:12px">
+            <label class="wf-rem-field">Template
+              <select id="wfDocsTpl">
+                <option value="confirmation">Confirmation Letter</option>
+                <option value="extension">Extension of Probation Letter</option>
+                <option value="experience">Experience Letter</option>
+                <option value="relieving">Relieving Letter</option>
+              </select>
+            </label>
+            <label class="wf-rem-field">Attach to
+              <select id="wfDocsWhere"><option value="also">The "Also send" message (all documents)</option><option value="first">Each first message (its own document)</option></select>
+            </label>
+            <button type="button" class="wf-ai-action-btn outline small" id="wfDocsPreviewBtn" style="margin-top:8px">👁 Preview a document</button>
+          </div>
+        </div>
+
+        <!-- Section 7: If there's no reply. -->
+        <div class="wf-auto-card">
+          <div class="wf-auto-sechead"><span class="wf-auto-num">7</span> If there's no reply</div>
+          <div class="wf-rem-field-row" style="margin-top:10px">
+            <label class="wf-rem-field"><span class="wf-auto-label">Follow up after (days)</span><input type="number" id="wfFuDays" min="1" max="30" value="2" /></label>
+            <label class="wf-rem-field"><span class="wf-auto-label">Max follow-ups</span><input type="number" id="wfFuMax" min="1" max="5" value="2" /></label>
+          </div>
+          <label class="wf-rem-field">Follow-up message<textarea id="wfFuBody" class="wf-auto-body" autocomplete="off"></textarea></label>
+          <div class="wf-auto-hint">Sent in the same thread. After the last follow-up SUBH alerts you (Action needed → Automations).</div>
+        </div>
+
+        <!-- Section 8: When they reply - one card per rule, rendered/wired
+             by hrAssistant.js (renderWorkflowRules), same per-item
+             add/remove pattern the Reminders/Templates lists already use. -->
+        <div class="wf-auto-card">
+          <div class="wf-auto-sechead"><span class="wf-auto-num">8</span> When they reply</div>
+          <div class="wf-auto-hint">SUBH reads each reply, picks the rule whose meaning matches, and replies in professional English.</div>
+          <div id="wfRules"></div>
+          <button type="button" class="wf-ai-action-btn outline small" id="wfAddRuleBtn" style="margin-top:10px">+ Add rule</button>
+          <div class="wf-auto-rule-card wf-auto-rule-fixed">
+            <div class="wf-auto-rule-head">❓ If no rule matches / the reply is not clear</div>
+            <div class="wf-auto-hint">SUBH shows you a card with the reply and a button for each rule, plus "Ask again".</div>
+          </div>
+        </div>
+
+        <div class="wf-auto-card">
+          <div class="wf-auto-sechead">⏰ Schedule</div>
+          <div class="wf-rem-field-row">
+            <label class="wf-rem-field"><span class="wf-auto-label">Date <span class="wf-auto-req">*</span></span><input type="date" id="wfDate" /></label>
+            <label class="wf-rem-field"><span class="wf-auto-label">Time <span class="wf-auto-req">*</span></span><input type="time" id="wfTime" value="10:00" /></label>
+          </div>
+          <label class="wf-rem-field" style="margin-top:10px"><span class="wf-auto-label">Repeat <span class="wf-auto-req">*</span></span></label>
+          <div class="wf-auto-seg" id="wfRepSeg" style="margin-top:8px"><button type="button" data-v="none">None</button><button type="button" data-v="monthly" class="on">Monthly</button><button type="button" data-v="yearly">Yearly</button><button type="button" data-v="custom">Custom</button></div>
+          <div id="wfCustomWrap" class="hidden wf-auto-row-gap" style="margin-top:10px">Every <input type="number" id="wfEvery" min="1" max="12" value="2" style="width:70px" /> months</div>
+          <div class="wf-auto-hint" id="wfRepRule"></div>
+        </div>
+
+        <div class="wf-auto-card wf-auto-summary" id="wfSummary"></div>
+
+        <div class="wf-rem-btn-row">
+          <button type="button" class="wf-rem-add-btn outline" id="wfPreviewBtn">👁 Preview</button>
+          <button type="button" class="wf-rem-add-btn outline" id="wfTestBtn">Send test to me</button>
+        </div>
+        <button type="button" class="wf-rem-add-btn" id="wfSaveBtn" style="width:100%">Save Workflow</button>
+        <button type="button" class="wf-rem-add-btn outline" id="wfCancelBtn" style="width:100%;margin-top:10px">Cancel</button>
+      </div>
+
+      <!-- Workflow preview/document-preview sheets - same bottom-sheet
+           pattern as hrAutoPreviewSheet. -->
+      <div class="wf-ai-sheet-backdrop" id="hrWorkflowPreviewBackdrop" hidden></div>
+      <div class="wf-rem-sheet wf-auto-preview-sheet" id="hrWorkflowPreviewSheet" hidden role="dialog" aria-label="Preview">
+        <div class="wf-ai-sheet-handle"></div>
+        <div class="wf-ai-sheet-head">
+          <button type="button" class="wf-ai-sheet-close" id="hrWorkflowPreviewCloseBtn" aria-label="Close">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+          <span class="wf-ai-sheet-title" id="hrWorkflowPreviewTitle">Preview</span>
+        </div>
+        <div class="wf-rem-sheet-body" id="hrWorkflowPreviewBody"></div>
+      </div>
+
+      <!-- SUBH Automate Workflow - progress board (detail page). Same
+           design/CSS family as Attendance Requests (wf-comms-page, filter
+           chips, per-item card with an expandable history), per direct
+           instruction. -->
+      <div class="wf-comms-page" id="hrWorkflowDetailPage" hidden>
+        <div class="wf-page-head" data-wi-enter="block" style="padding:0 2px">
+          <span style="flex:1;min-width:0">
+            <h2 id="wfDetailTitle" style="font-size:1rem">Workflow</h2>
+            <p class="wf-note" id="wfDetailSub" style="margin:2px 0 0"></p>
+          </span>
+          <span class="wf-comms-section-actions" id="wfDetailActions"></span>
+        </div>
+        <div class="cnt" id="wfDetailCounts" style="display:flex;flex-wrap:wrap;gap:6px;margin:8px 0"></div>
+        <div class="wf-auto-hint" id="wfDetailAlsoLog"></div>
+        <div id="wfDetailRows"></div>
       </div>
 
       <div class="wf-ai-sheet-backdrop" id="hrRemSheetBackdrop" hidden></div>

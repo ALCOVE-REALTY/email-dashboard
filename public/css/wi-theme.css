@@ -2233,6 +2233,15 @@ body { background: var(--wi-bg); }
 .wf-auto-cond { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 10px 12px; border: 1px solid var(--wi-border-2); border-radius: var(--wi-r-input); margin-top: 8px; font-size: 0.78rem; font-weight: 700; background: var(--wi-surface); }
 .wf-auto-cond select, .wf-auto-cond input { padding: 5px 9px; border-radius: 999px; font-weight: 800; color: var(--wi-primary-800); background: var(--wi-primary-50); border: none; font-family: inherit; font-size: 0.74rem; }
 .wf-auto-cond .wf-auto-cond-rm { margin-left: auto; width: 24px; height: 24px; border-radius: 999px; border: 0; background: var(--wi-red-50); color: var(--wi-red-700); font-weight: 800; cursor: pointer; }
+/* Automate Workflow (2026-11) - one reply rule's own card (Section 8).
+   Same visual language as .wf-auto-cond just above (border/radius/
+   padding/background tokens identical) but stacked (a rule holds several
+   labelled fields, never a single inline row) rather than wrapped - the
+   one genuinely new shape this feature needs, reusing .wf-auto-cond-rm
+   itself for the remove button rather than a second remove-button style. */
+.wf-auto-rule-card { display: flex; flex-direction: column; border: 1px solid var(--wi-border-2); border-radius: var(--wi-r-input); padding: 12px; margin-top: 10px; background: var(--wi-surface); }
+.wf-auto-rule-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-weight: 800; font-size: 0.8rem; color: var(--wi-ink); }
+.wf-auto-rule-fixed { border-style: dashed; }
 
 /* "SUBH understood" card - the plan review/confirm UI */
 .wf-auto-und { border: 1.5px solid var(--wi-primary); border-radius: var(--wi-r-card); padding: 14px; margin-top: 12px; background: var(--wi-primary-50); }
