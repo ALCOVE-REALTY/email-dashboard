@@ -615,3 +615,38 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
   tarikh", "every alternate Saturday", "last working day of the month",
   "proti Monday 10 tay", "roj sokal 9 tay", "proti 15 din", "every Mon
   and Thu at 4 pm", and the 3rd-Monday unsupported-pattern case.
+- Task 13 (2026-11) LIVE BUG FIX (regression after the multi-field person-
+  lookup fix): a reply to "which person?" was sometimes routed to the
+  attendance-flow's own "Kar kotha bolchhen? Puro naam-ta bolben?" re-ask
+  instead - live case: "Tapas sir er contact no & employee code ki?" asked
+  which Tapas, then "4" (and "Tapas Das", and "4 number") each got the
+  attendance confirmation's "didn't understand who" template, or sometimes
+  no reply at all. Root cause: `decideAutoReplyCore` checked up to 4
+  independent per-sender pending-question stores (`pendingHrDataQuery`,
+  an open HR-note flow, a name-confirm, a multi-candidate disambiguation)
+  in a FIXED order, with `pendingHrDataQuery` always winning outright and
+  no cross-store recency comparison among the rest at all - a STALE HR-
+  note flow from earlier in the conversation always intercepted a FRESHER
+  disambiguation reply. Fixed by stamping `lastTouchedAt` on every save
+  (`savePendingDisambiguation`/`savePendingNameConfirm`/
+  `savePendingHrDataQuery`, matching the convention `savePendingHrNoteFlow`
+  already used), hoisting all 4 fetches to one point, and gating each
+  dispatch block on `=== mostRecentPendingAskedAt` - only the single
+  most-recently-asked pending question gets to run its own (unchanged)
+  resolution logic that turn; every block's own internal fallback
+  behavior is untouched. Deterministic locked scenarios (`scripts/check-
+  whatsapp-engine.js`): a stale HR-note flow confirmation + a fresher
+  multi-field disambiguation, resolved by "4", by "Tapas Das", and by
+  "4 number" - each wins over the stale flow and queues both requested
+  fields; the symmetric case (a fresh HR-note flow confirmation right
+  after an older, stale disambiguation) still resolves normally too -
+  recency arbitration works both ways, never a new fixed "X always wins"
+  order.
+- Task 14 (2026-11) LIVE BUG FIX: Attendance Requests cards rendered
+  nested inside each other (box inside box inside box, narrower each
+  time, labels squashed). Root cause: `renderAttnList`'s per-card
+  template opened the outer `.wf-auto-task-card` div but never closed it
+  - the browser's own HTML error-recovery then nested every following
+  card's opening div inside the still-open previous one instead of
+  starting a new sibling. Fixed by closing the outer div at the end of
+  the template - every card is now its own flat, same-width sibling.

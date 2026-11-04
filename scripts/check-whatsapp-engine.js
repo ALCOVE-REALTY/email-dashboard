@@ -6929,6 +6929,132 @@ async function checkAsync(label, fn) {
       countAfterSecond === 1 && firstRun.created >= 1;
   });
 
+  console.log('='.repeat(70));
+  console.log('Task 13 (2026-11) LIVE BUG FIX (regression after e334ee2): a reply to "which person?" must bind to the MOST RECENTLY asked pending question for that sender - not a fixed check order that always favoured a stale HR-note flow confirmation over a fresher multi-field disambiguation');
+  console.log('='.repeat(70));
+  await checkAsync('LOCKED SCENARIO 1/3 ("4"): a STALE pending HR-note flow confirmation does NOT intercept a FRESHER multi-field disambiguation reply - the numbered pick resolves the person lookup (both fields), never the attendance "Kar kotha bolchhen?" re-ask', async () => {
+    const phone = '919999000301';
+    await whatsappAssistant.clearPendingHrNoteFlow(phone).catch(() => {});
+    await whatsappAssistant.clearPendingDisambiguation(phone).catch(() => {});
+    const { employees } = await employeeService.getEmployeeData();
+    const subhodeep = employees.find((e) => e.name === 'Subhodeep Kundu Chowdhury');
+    const candidate = { employeeId: subhodeep.employeeId, name: subhodeep.name, department: 'HR DEPT', contactNumber: subhodeep.contactNumber, status: subhodeep.status, designation: subhodeep.designation };
+    // STALE - saved first, so it is strictly OLDER than the disambiguation below.
+    await whatsappAssistant.savePendingHrNoteFlow(phone, {
+      summary: 'half day leave approval', summaryLocalized: 'apni onake half day-r approval ta diyechhen',
+      topicLabel: 'half day', actionPhrase: 'half day-r approval-ta', actionKind: 'approval', lang: 'banglish',
+      createdAt: Date.now(), step: 'awaiting_confirm_yes_no', candidate, isInactive: false
+    });
+    await new Promise((r) => setTimeout(r, 5));
+    // FRESH - the live bug's own exact request shape: a 2-field lookup on a name matching 2+ real employees.
+    await whatsappAssistant.handlePersonLookupRequest({
+      phone, name: 'Sender', lang: 'banglish', personName: 'Tapas',
+      personField: 'contact_number', extraFields: [{ field: 'other_field', fieldLabel: 'employee code' }],
+      department: null, text: 'Tapas sir er contact no & employee code ki?', history: []
+    });
+    const pending = await whatsappAssistant.getPendingDisambiguation(phone);
+    if (!pending || !Array.isArray(pending.candidates)) return { pass: false, detail: 'expected a saved disambiguation with candidates, got: ' + JSON.stringify(pending) };
+    const idx = pending.candidates.findIndex((c) => c.name === 'Tapas Das');
+    if (idx < 0) return { pass: false, detail: 'expected Tapas Das among the disambiguation candidates: ' + JSON.stringify(pending.candidates.map((c) => c.name)) };
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: String(idx + 1), isGroup: false, history: [] });
+    const created = (await listRawApprovalsForPhone(phone)).find((a) => a.resolvedPersonName === 'Tapas Das');
+    const stillPendingDisambig = await whatsappAssistant.getPendingDisambiguation(phone);
+    const ok = d.case === 'data_holding' && Boolean(created) &&
+      created.preparedReplyText.toLowerCase().includes('contact number') && created.preparedReplyText.includes('AR001913') && created.preparedReplyText.includes('9903910069') &&
+      !d.replyText.includes('Kar kotha bolchhen') && stillPendingDisambig === null;
+    if (created) await whatsappAssistant.removePendingApproval(created.id);
+    await whatsappAssistant.clearPendingHrNoteFlow(phone).catch(() => {});
+    return ok;
+  });
+  await checkAsync('LOCKED SCENARIO 2/3 ("Tapas Das" - a full name instead of a number): same stale-flow-vs-fresh-disambiguation setup, resolved by the exact name instead - still wins over the stale HR-note flow', async () => {
+    const phone = '919999000302';
+    await whatsappAssistant.clearPendingHrNoteFlow(phone).catch(() => {});
+    await whatsappAssistant.clearPendingDisambiguation(phone).catch(() => {});
+    const { employees } = await employeeService.getEmployeeData();
+    const subhodeep = employees.find((e) => e.name === 'Subhodeep Kundu Chowdhury');
+    const candidate = { employeeId: subhodeep.employeeId, name: subhodeep.name, department: 'HR DEPT', contactNumber: subhodeep.contactNumber, status: subhodeep.status, designation: subhodeep.designation };
+    await whatsappAssistant.savePendingHrNoteFlow(phone, {
+      summary: 'half day leave approval', summaryLocalized: 'apni onake half day-r approval ta diyechhen',
+      topicLabel: 'half day', actionPhrase: 'half day-r approval-ta', actionKind: 'approval', lang: 'banglish',
+      createdAt: Date.now(), step: 'awaiting_confirm_yes_no', candidate, isInactive: false
+    });
+    await new Promise((r) => setTimeout(r, 5));
+    await whatsappAssistant.handlePersonLookupRequest({
+      phone, name: 'Sender', lang: 'banglish', personName: 'Tapas',
+      personField: 'contact_number', extraFields: [{ field: 'other_field', fieldLabel: 'employee code' }],
+      department: null, text: 'Tapas sir er contact no & employee code ki?', history: []
+    });
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Tapas Das', isGroup: false, history: [] });
+    const created = (await listRawApprovalsForPhone(phone)).find((a) => a.resolvedPersonName === 'Tapas Das');
+    const ok = d.case === 'data_holding' && Boolean(created) &&
+      created.preparedReplyText.toLowerCase().includes('contact number') && created.preparedReplyText.includes('AR001913') &&
+      !d.replyText.includes('Kar kotha bolchhen');
+    if (created) await whatsappAssistant.removePendingApproval(created.id);
+    await whatsappAssistant.clearPendingHrNoteFlow(phone).catch(() => {});
+    return ok;
+  });
+  await checkAsync('LOCKED SCENARIO 3/3 ("4 number" - a number with trailing filler word, burst-reply shape): same stale-flow-vs-fresh-disambiguation setup, resolved correctly - still wins over the stale HR-note flow', async () => {
+    const phone = '919999000303';
+    await whatsappAssistant.clearPendingHrNoteFlow(phone).catch(() => {});
+    await whatsappAssistant.clearPendingDisambiguation(phone).catch(() => {});
+    const { employees } = await employeeService.getEmployeeData();
+    const subhodeep = employees.find((e) => e.name === 'Subhodeep Kundu Chowdhury');
+    const candidate = { employeeId: subhodeep.employeeId, name: subhodeep.name, department: 'HR DEPT', contactNumber: subhodeep.contactNumber, status: subhodeep.status, designation: subhodeep.designation };
+    await whatsappAssistant.savePendingHrNoteFlow(phone, {
+      summary: 'half day leave approval', summaryLocalized: 'apni onake half day-r approval ta diyechhen',
+      topicLabel: 'half day', actionPhrase: 'half day-r approval-ta', actionKind: 'approval', lang: 'banglish',
+      createdAt: Date.now(), step: 'awaiting_confirm_yes_no', candidate, isInactive: false
+    });
+    await new Promise((r) => setTimeout(r, 5));
+    await whatsappAssistant.handlePersonLookupRequest({
+      phone, name: 'Sender', lang: 'banglish', personName: 'Tapas',
+      personField: 'contact_number', extraFields: [{ field: 'other_field', fieldLabel: 'employee code' }],
+      department: null, text: 'Tapas sir er contact no & employee code ki?', history: []
+    });
+    const pending = await whatsappAssistant.getPendingDisambiguation(phone);
+    const idx = pending.candidates.findIndex((c) => c.name === 'Tapas Das');
+    if (idx < 0) return { pass: false, detail: 'expected Tapas Das among the disambiguation candidates' };
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: (idx + 1) + ' number', isGroup: false, history: [] });
+    const created = (await listRawApprovalsForPhone(phone)).find((a) => a.resolvedPersonName === 'Tapas Das');
+    const ok = d.case === 'data_holding' && Boolean(created) &&
+      created.preparedReplyText.toLowerCase().includes('contact number') && created.preparedReplyText.includes('AR001913') &&
+      !d.replyText.includes('Kar kotha bolchhen');
+    if (created) await whatsappAssistant.removePendingApproval(created.id);
+    await whatsappAssistant.clearPendingHrNoteFlow(phone).catch(() => {});
+    return ok;
+  });
+  await checkAsync('REGRESSION (symmetry check): a FRESH HR-note flow confirmation asked right AFTER an older, now-stale pending disambiguation from the same phone still resolves normally - recency arbitration works both ways, never "disambiguation always wins" as a new fixed order', async () => {
+    const phone = '919999000304';
+    await whatsappAssistant.clearPendingHrNoteFlow(phone).catch(() => {});
+    await whatsappAssistant.clearPendingDisambiguation(phone).catch(() => {});
+    // STALE - a data-request disambiguation, saved first this time.
+    await whatsappAssistant.handlePersonLookupRequest({
+      phone, name: 'Sender', lang: 'banglish', personName: 'Tapas',
+      personField: 'contact_number', extraFields: [{ field: 'other_field', fieldLabel: 'employee code' }],
+      department: null, text: 'Tapas sir er contact no & employee code ki?', history: []
+    });
+    await new Promise((r) => setTimeout(r, 5));
+    // FRESH - a genuine attendance/HR-note confirmation, saved after.
+    const { employees } = await employeeService.getEmployeeData();
+    const subhodeep = employees.find((e) => e.name === 'Subhodeep Kundu Chowdhury');
+    const candidate = { employeeId: subhodeep.employeeId, name: subhodeep.name, department: 'HR DEPT', contactNumber: subhodeep.contactNumber, status: subhodeep.status, designation: subhodeep.designation };
+    await whatsappAssistant.savePendingHrNoteFlow(phone, {
+      summary: 'half day leave approval', summaryLocalized: 'apni onake half day-r approval ta diyechhen',
+      topicLabel: 'half day', actionPhrase: 'half day-r approval-ta', actionKind: 'approval', lang: 'banglish',
+      createdAt: Date.now(), step: 'awaiting_confirm_yes_no', candidate, isInactive: false
+    });
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Haa', isGroup: false, history: [] });
+    // Plain "Haa" alone (no extra burst text to note) resolves to the
+    // ordinary STEP3+4 confirmation wrap, with no "note kore nilam"
+    // clause - that clause only appears when there's actual extra info in
+    // the SAME burst to note (see TASK 5's own locked scenario above,
+    // which sends extra info + "Haa" together).
+    const ok = d.replyText === 'Ami SUBH, Subhodeep-er HR Assistant. Amake sothik naam diye sahajyo korar jonno dhonnobad. Ami Subhodeep Kundu Chowdhury-er sathe kotha bole joto taratari somvob apnake janacchi.';
+    await whatsappAssistant.clearPendingHrNoteFlow(phone).catch(() => {});
+    await whatsappAssistant.clearPendingDisambiguation(phone).catch(() => {});
+    return ok;
+  });
+
   console.log(pass + '/' + (pass + fail) + ' passed' + (fail ? ', ' + fail + ' FAILED' : ''));
   if (failures.length) {
     console.log('Failed checks:');

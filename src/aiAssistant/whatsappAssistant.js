@@ -2027,12 +2027,22 @@ async function removePendingApproval(id) {
 const PENDING_DISAMBIGUATION_PREFIX = 'wa-pending-disambiguation:';
 const PENDING_DISAMBIGUATION_TTL_SECONDS = 30 * 60;
 
+// Task 13 (2026-11) LIVE BUG FIX - lastTouchedAt (same field name/
+// convention as savePendingHrNoteFlow's own stamp) lets the early-tier
+// dispatcher below compare which of a phone's several PENDING question
+// states (this one, a name-confirm, or an HR-note flow) was actually
+// asked most recently, so a reply always binds to the right one instead
+// of a fixed check-order always favouring one kind over another
+// regardless of age (the live bug: a stale HR-note flow left over from
+// an unrelated earlier conversation intercepted "4"/"Tapas Das", meant
+// for a brand-new data-request disambiguation asked afterward).
 async function savePendingDisambiguation(phone, data) {
   const redis = getClient();
   if (!redis) return;
   const key = PENDING_DISAMBIGUATION_PREFIX + whatsapp.normalizePhone(phone);
+  const toSave = Object.assign({}, data, { lastTouchedAt: Date.now() });
   try {
-    await redis.set(key, JSON.stringify(data), { ex: PENDING_DISAMBIGUATION_TTL_SECONDS });
+    await redis.set(key, JSON.stringify(toSave), { ex: PENDING_DISAMBIGUATION_TTL_SECONDS });
     redisHealth.recordWriteSuccess();
   } catch (err) { redisHealth.recordWriteFailure(err); }
 }
@@ -3238,10 +3248,13 @@ const HR_NOTE_DIDNT_UNDERSTAND_WHO = {
 };
 const PENDING_NAME_CONFIRM_PREFIX = 'wa-pending-name-confirm:';
 const PENDING_NAME_CONFIRM_TTL_SECONDS = 30 * 60;
+// Task 13 (2026-11) - lastTouchedAt, same convention/purpose as
+// savePendingDisambiguation's own stamp (see its comment).
 async function savePendingNameConfirm(phone, data) {
   const redis = getClient();
   if (!redis) return;
-  try { await redis.set(PENDING_NAME_CONFIRM_PREFIX + phone, JSON.stringify(data), { ex: PENDING_NAME_CONFIRM_TTL_SECONDS }); } catch (err) { /* best effort */ }
+  const toSave = Object.assign({}, data, { lastTouchedAt: Date.now() });
+  try { await redis.set(PENDING_NAME_CONFIRM_PREFIX + phone, JSON.stringify(toSave), { ex: PENDING_NAME_CONFIRM_TTL_SECONDS }); } catch (err) { /* best effort */ }
 }
 async function getPendingNameConfirm(phone) {
   const redis = getClient();
@@ -4333,12 +4346,15 @@ async function resolveOwnerChatDataQuery({ extracted, message, ownerEmail }) {
 // continueHrDataQueryFlow below once they pick one.
 const HR_QUERY_PENDING_PREFIX = 'wa-hr-query-pending:';
 const HR_QUERY_PENDING_TTL_SECONDS = 15 * 60;
+// Task 13 (2026-11) - lastTouchedAt, same convention/purpose as
+// savePendingDisambiguation's own stamp (see its comment).
 async function savePendingHrDataQuery(phone, data) {
   const redis = getClient();
   if (!redis) return;
   const key = HR_QUERY_PENDING_PREFIX + whatsapp.normalizePhone(phone);
+  const toSave = Object.assign({}, data, { lastTouchedAt: Date.now() });
   try {
-    await redis.set(key, JSON.stringify(data));
+    await redis.set(key, JSON.stringify(toSave));
     await redis.expire(key, HR_QUERY_PENDING_TTL_SECONDS);
   } catch (err) { /* best effort */ }
 }
@@ -10109,17 +10125,6 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
   // could be (found live: a real conversation needed 4 back-and-forth
   // turns to resolve a name, and the note itself got dropped partway
   // through).
-  // Task 2 (2026-10-29) - a pending department-name ambiguity question
-  // from the HR-data query engine ("Administration naame duti department
-  // ache... kontar kotha bolchhen?") is checked before classification
-  // ever runs, same tier as every other pending-state check in this file.
-  if (!isGroup && phone) {
-    const pendingHrQuery = await getPendingHrDataQuery(phone).catch(() => null);
-    if (pendingHrQuery) {
-      return continueHrDataQueryFlow({ phone, name: senderLabel, text, pending: pendingHrQuery });
-    }
-  }
-
   // Automate Workflow (2026-11) - an open workflow item's own pending
   // reply, checked at this same early tier. isOpenWorkflowPhone is a
   // cheap SET-membership check (never a model call) that gates whether
@@ -10139,22 +10144,62 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
     }
   }
 
+  // Task 13 (2026-11) LIVE BUG FIX - state priority / pending-question
+  // binding: a phone can have an HR-note flow pending AT THE SAME TIME as
+  // a data-request disambiguation/name-confirm/department-or-HOD-choice
+  // (most commonly a STALE flow left over from an unrelated earlier
+  // conversation that never got resolved/expired, sitting alongside a
+  // brand-new question). The old fixed check-order below always tried
+  // the HR-note flow (and, before that, a pending HR-data-query choice)
+  // first regardless of age, so a reply meant for a NEWER data-request
+  // question (e.g. "4" picking a disambiguation candidate) got
+  // intercepted by the older flow's own "didn't understand, who do you
+  // mean?" re-ask instead - live case: "Tapas sir er contact no &
+  // employee code ki?" -> disambiguation asked -> "4" wrongly answered by
+  // a stale HR-note flow. All four kinds are fetched once here and reused
+  // by every block below (each already fetched its own independently
+  // before) so comparing recency costs nothing extra. The reply always
+  // binds to whichever question was actually asked MOST RECENTLY - never
+  // a fixed priority between kinds.
+  let hrFlow = null, pendingConfirmPeek = null, pendingDisambigPeek = null, pendingHrQueryPeek = null;
   if (!isGroup && phone) {
-    const hrFlow = await getPendingHrNoteFlow(phone).catch(() => null);
-    if (hrFlow) {
-      // Link-back rule (replaces the earlier cross-day bridge line here
-      // entirely) - the sender's own message already shows the context
-      // when THEY continue a pending flow, on any day, so the
-      // continuation reply is never prefixed with anything. The
-      // day-aware topic mention now lives only on STEP 5's result-to-
-      // sender message (see buildHrConfirmationResultDayPrefix).
-      const continued = await continueHrNoteFlow({ phone, name: senderLabel, text, history, hrFlow });
-      if (continued) return continued;
-      // continueHrNoteFlow returned null - genuinely not a continuation
-      // of this flow (already cleared it) - fall through below as an
-      // ordinary new message.
-    }
+    hrFlow = await getPendingHrNoteFlow(phone).catch(() => null);
+    pendingConfirmPeek = await getPendingNameConfirm(phone).catch(() => null);
+    pendingDisambigPeek = await getPendingDisambiguation(phone).catch(() => null);
+    pendingHrQueryPeek = await getPendingHrDataQuery(phone).catch(() => null);
   }
+  const hrFlowAskedAt = hrFlow ? (hrFlow.lastTouchedAt || 0) : -1;
+  const confirmAskedAt = pendingConfirmPeek ? (pendingConfirmPeek.lastTouchedAt || 0) : -1;
+  const disambigAskedAt = pendingDisambigPeek ? (pendingDisambigPeek.lastTouchedAt || 0) : -1;
+  const hrQueryAskedAt = pendingHrQueryPeek ? (pendingHrQueryPeek.lastTouchedAt || 0) : -1;
+  const mostRecentPendingAskedAt = Math.max(hrFlowAskedAt, confirmAskedAt, disambigAskedAt, hrQueryAskedAt);
+
+  // Task 2 (2026-10-29) - a pending department-name/HOD-choice ambiguity
+  // question from the HR-data query engine ("Administration naame duti
+  // department ache... kontar kotha bolchhen?"; Task 15's own "<dept>-e 6
+  // jon HOD achen... apni kar employee code chaichhen?") - only runs when
+  // it is in fact the most recently asked question for this phone.
+  if (!isGroup && phone && pendingHrQueryPeek && hrQueryAskedAt === mostRecentPendingAskedAt) {
+    return continueHrDataQueryFlow({ phone, name: senderLabel, text, pending: pendingHrQueryPeek });
+  }
+
+  if (!isGroup && phone && hrFlow && hrFlowAskedAt === mostRecentPendingAskedAt) {
+    // Link-back rule (replaces the earlier cross-day bridge line here
+    // entirely) - the sender's own message already shows the context
+    // when THEY continue a pending flow, on any day, so the
+    // continuation reply is never prefixed with anything. The
+    // day-aware topic mention now lives only on STEP 5's result-to-
+    // sender message (see buildHrConfirmationResultDayPrefix).
+    const continued = await continueHrNoteFlow({ phone, name: senderLabel, text, history, hrFlow });
+    if (continued) return continued;
+    // continueHrNoteFlow returned null - genuinely not a continuation
+    // of this flow (already cleared it) - fall through below as an
+    // ordinary new message.
+  }
+  // hrFlow exists but is OLDER than a pending data-request question below
+  // - never processed against this message at all (left untouched for
+  // whenever the sender gets back to it), so the newer question gets
+  // first refusal instead.
 
   // Typo-tolerant name matching (spec point 2) - a sender who was just
   // asked to pick between several "general details" candidates gets THIS
@@ -10172,8 +10217,8 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
   // the general disambiguation state below, since the two are mutually
   // exclusive pending states for the same phone (one asks "which of
   // these 2+ people", the other asks "is it this ONE person").
-  if (!isGroup && phone) {
-    const pendingConfirm = await getPendingNameConfirm(phone).catch(() => null);
+  if (!isGroup && phone && confirmAskedAt === mostRecentPendingAskedAt) {
+    const pendingConfirm = pendingConfirmPeek; // already fetched above, for the recency check
     if (pendingConfirm && pendingConfirm.candidate) {
       const t = text.trim();
       if (isYesAnswer(t)) {
@@ -10209,8 +10254,8 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
   // MAX_DISAMBIGUATION_ATTEMPTS so a genuinely stuck/off-topic exchange
   // can't loop forever - only then does it clear and fall through to the
   // normal pipeline).
-  if (!isGroup && phone) {
-    const pendingDisambig = await getPendingDisambiguation(phone).catch(() => null);
+  if (!isGroup && phone && disambigAskedAt === mostRecentPendingAskedAt) {
+    const pendingDisambig = pendingDisambigPeek; // already fetched above, for the recency check
     if (pendingDisambig && Array.isArray(pendingDisambig.candidates) && pendingDisambig.candidates.length) {
       const resolved = resolveDisambiguationReply(pendingDisambig.candidates, text);
       if (resolved && resolved.conflict) {
