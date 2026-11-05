@@ -303,16 +303,18 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
     } catch (err) {
       log.error('[whatsapp-assistant] inbox-log archive failed: ' + err.message);
     }
-    // Task 16 (2026-11) LIVE BUG FIX - safety net, direct instruction: any
-    // incoming message that gets neither a reply nor a deliberate no-reply
-    // decision within 2 minutes is flagged here (own independent try/catch,
-    // same philosophy as every other job on this tick) and shown under
-    // Action needed - see detectStuckIncomingMessages's own comment.
+    // Task 16 (2026-11), changed to AUTO-RECOVERY by Task 18 (2026-11)
+    // direct instruction: any incoming message that gets neither a reply
+    // nor a deliberate no-reply decision within 2 minutes is re-processed
+    // through the normal pipeline and sent the normal reply (own
+    // independent try/catch, same philosophy as every other job on this
+    // tick) - a card is raised only as a last resort. See
+    // recoverStuckIncomingMessages's own comment.
     try {
-      const result = await whatsappAssistant.detectStuckIncomingMessages(new Date());
-      if (result.flagged) log.log('[whatsapp-assistant] stuck incoming message check: flagged ' + result.flagged);
+      const result = await whatsappAssistant.recoverStuckIncomingMessages(new Date());
+      if (result.recovered || result.failed || result.flagged) log.log('[whatsapp-assistant] stuck message recovery: ' + JSON.stringify(result));
     } catch (err) {
-      log.error('[whatsapp-assistant] stuck incoming message check failed: ' + err.message);
+      log.error('[whatsapp-assistant] stuck message recovery failed: ' + err.message);
     }
   }, AUTOSEND_FLUSH_MS);
 

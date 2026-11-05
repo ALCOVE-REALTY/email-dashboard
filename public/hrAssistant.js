@@ -3375,11 +3375,11 @@
       });
     });
   }
-  // Task 16 (2026-11) LIVE BUG FIX - a message stuck with no reply/decision
-  // for 2+ minutes (see detectStuckIncomingMessages server-side). No real
-  // action to take beyond seeing the stuck text and either opening the
-  // chat to handle it by hand or dismissing it (clears the underlying
-  // burst buffer too, server-side).
+  // Task 16/18 (2026-11) - a message auto-recovery (see
+  // recoverStuckIncomingMessages server-side) could not resolve on its
+  // own. No real action to take beyond seeing the stuck text and either
+  // opening the chat to handle it by hand or dismissing it (clears the
+  // underlying burst buffer too, server-side).
   function actionNeededStuckIncomingCardHtml(item) {
     const waitingTag = item.ageMs > 2 * 60 * 1000 ? '<span class="wf-action-needed-waiting-tag">Waiting ' + actionNeededAgeLabel(item.ageMs) + '</span>' : '';
     return '<div class="wf-auto-task-card" data-chat-id="' + escapeHtml(item.chatId) + '" data-stuck-id="' + escapeHtml(item.data.id) + '">' +

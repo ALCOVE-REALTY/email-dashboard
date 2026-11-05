@@ -3241,70 +3241,151 @@ async function checkAsync(label, fn) {
   });
 
   console.log('='.repeat(70));
-  console.log('Task 16 (2026-11) LIVE BUG FIX (917278793115, 2026-11-04 14:42): a safety net - any incoming message with neither a reply nor a deliberate no-reply decision within 2 minutes is flagged and shown under Action needed');
+  console.log('Task 18 (2026-11), direct instruction: the 2-minute safety net (Task 16) changed from "card only" to AUTO-RECOVERY - SUBH re-processes a stuck message through the normal pipeline instead of just alerting the owner');
   console.log('='.repeat(70));
-  // Numeric, already in normalizePhone's own canonical form (91 + 10
-  // digits) - so the raw contactId used for the burst-buffer/stuck-flag
-  // keys and the NORMALIZED chatId listActionNeededItems displays are
-  // identical, exactly like a real gateway contactId.
-  const STUCK_TEST_CONTACT = '910000000987';
-  await checkAsync('detectStuckIncomingMessages: a burst buffer younger than 2 minutes is NOT flagged', async () => {
-    await whatsappAssistant.clearBurstBuffer(STUCK_TEST_CONTACT).catch(() => {});
-    await whatsappAssistant.dismissStuckIncomingMessage(STUCK_TEST_CONTACT).catch(() => {});
-    const now = Date.now();
-    await whatsappAssistant.saveBurstBuffer(STUCK_TEST_CONTACT, { messages: [{ text: 'hi', arrivedAt: now }], firstSeenAt: now - 30 * 1000, name: 'Stuck Test', firstName: 'Stuck' });
-    await whatsappAssistant.detectStuckIncomingMessages(now);
-    const flagged = (await whatsappAssistant.listStuckIncomingMessages()).some((f) => String(f.contactId) === STUCK_TEST_CONTACT);
-    await whatsappAssistant.clearBurstBuffer(STUCK_TEST_CONTACT).catch(() => {});
-    return !flagged;
-  });
-  await checkAsync('detectStuckIncomingMessages: a burst buffer stuck for OVER 2 minutes IS flagged, with the combined text and sender name, and appears via listActionNeededItems as a stuck_incoming item', async () => {
-    await whatsappAssistant.clearBurstBuffer(STUCK_TEST_CONTACT).catch(() => {});
-    await whatsappAssistant.dismissStuckIncomingMessage(STUCK_TEST_CONTACT).catch(() => {});
+  await checkAsync('recoverStuckIncomingMessages: a dropped message (buffer stuck 2+ minutes) is recovered and answered once - a real reply goes out through the normal pipeline, the buffer/recovery state are cleared, and no card is raised', async () => {
+    const phone = '910000001306';
+    await whatsappAssistant.clearBurstBuffer(phone).catch(() => {});
+    await whatsappAssistant.clearStuckRecoveryState(phone).catch(() => {});
+    await whatsappAssistant.dismissStuckIncomingMessage(phone).catch(() => {});
     const now = Date.now();
     const firstSeenAt = now - 3 * 60 * 1000;
-    await whatsappAssistant.saveBurstBuffer(STUCK_TEST_CONTACT, { messages: [{ text: 'Mdo dept. HOD emp code dao', arrivedAt: firstSeenAt }], firstSeenAt, name: 'Stuck Test', firstName: 'Stuck' });
-    const result = await whatsappAssistant.detectStuckIncomingMessages(now);
-    const stuckRecord = (await whatsappAssistant.listStuckIncomingMessages()).find((f) => String(f.contactId) === STUCK_TEST_CONTACT);
-    const items = await whatsappAssistant.listActionNeededItems();
-    const actionItem = items.find((i) => i.kind === 'stuck_incoming' && String(i.chatId) === STUCK_TEST_CONTACT);
-    const ok = result.flagged >= 1 && Boolean(stuckRecord) && stuckRecord.text === 'Mdo dept. HOD emp code dao' &&
-      Boolean(actionItem) && actionItem.data.text === 'Mdo dept. HOD emp code dao' && actionItem.category === 'data_requests';
-    await whatsappAssistant.clearBurstBuffer(STUCK_TEST_CONTACT).catch(() => {});
-    await whatsappAssistant.dismissStuckIncomingMessage(STUCK_TEST_CONTACT).catch(() => {});
+    await whatsappAssistant.saveBurstBuffer(phone, { messages: [{ text: 'Ok Sir', arrivedAt: firstSeenAt }], firstSeenAt, name: 'Recovery Test', firstName: 'Recovery' });
+    const result = await whatsappAssistant.recoverStuckIncomingMessages(now);
+    const history = await whatsappAssistant.getConvoHistory(phone, 10);
+    const outEntry = history.find((h) => h.direction === 'out');
+    const log = await whatsappAssistant.listStuckRecoveryLog(20);
+    const logEntry = log.find((l) => String(l.contactId) === phone);
+    const ok = result.recovered === 1 && Boolean(outEntry) && Boolean(logEntry) && logEntry.outcome === 'recovered' && logEntry.delayMs >= 3 * 60 * 1000 &&
+      !(await whatsappAssistant.getBurstBuffer(phone)) && !(await whatsappAssistant.getStuckRecoveryState(phone)) &&
+      !(await whatsappAssistant.listStuckIncomingMessages()).some((f) => String(f.contactId) === phone);
     return ok;
   });
-  await checkAsync('detectStuckIncomingMessages: re-running on the SAME still-stuck buffer does not re-flag/re-alert (same record, never a duplicate or an overwritten detectedAt)', async () => {
-    await whatsappAssistant.clearBurstBuffer(STUCK_TEST_CONTACT).catch(() => {});
-    await whatsappAssistant.dismissStuckIncomingMessage(STUCK_TEST_CONTACT).catch(() => {});
+  await checkAsync('recoverStuckIncomingMessages: a message that was actually answered is never re-answered - running it again later is a no-op for that contact', async () => {
+    const phone = '910000001306'; // reuses the now-resolved contact from the previous test
+    const before = await whatsappAssistant.getConvoHistory(phone, 10);
+    const beforeOutCount = before.filter((h) => h.direction === 'out').length;
+    const result = await whatsappAssistant.recoverStuckIncomingMessages(Date.now() + 10 * 60 * 1000);
+    const after = await whatsappAssistant.getConvoHistory(phone, 10);
+    return result.recovered === 0 && after.filter((h) => h.direction === 'out').length === beforeOutCount;
+  });
+  await checkAsync('recoverStuckIncomingMessages: a never-auto contact gets an Action-needed card, never an auto-send - recovery is skipped entirely for it', async () => {
+    const phone = '910000001307';
+    await whatsappAssistant.clearBurstBuffer(phone).catch(() => {});
+    await whatsappAssistant.clearStuckRecoveryState(phone).catch(() => {});
+    await whatsappAssistant.dismissStuckIncomingMessage(phone).catch(() => {});
+    await whatsappAssistant.addToNeverAuto(phone);
     const now = Date.now();
     const firstSeenAt = now - 3 * 60 * 1000;
-    await whatsappAssistant.saveBurstBuffer(STUCK_TEST_CONTACT, { messages: [{ text: 'hello', arrivedAt: firstSeenAt }], firstSeenAt, name: 'Stuck Test', firstName: 'Stuck' });
-    await whatsappAssistant.detectStuckIncomingMessages(now);
-    const firstPass = (await whatsappAssistant.listStuckIncomingMessages()).find((f) => String(f.contactId) === STUCK_TEST_CONTACT);
-    await whatsappAssistant.detectStuckIncomingMessages(now + 30 * 1000);
-    const secondPass = (await whatsappAssistant.listStuckIncomingMessages()).filter((f) => String(f.contactId) === STUCK_TEST_CONTACT);
-    const ok = Boolean(firstPass) && secondPass.length === 1 && secondPass[0].detectedAt === firstPass.detectedAt;
-    await whatsappAssistant.clearBurstBuffer(STUCK_TEST_CONTACT).catch(() => {});
-    await whatsappAssistant.dismissStuckIncomingMessage(STUCK_TEST_CONTACT).catch(() => {});
+    await whatsappAssistant.saveBurstBuffer(phone, { messages: [{ text: 'Ok Sir', arrivedAt: firstSeenAt }], firstSeenAt, name: 'Never Auto Test', firstName: 'Never' });
+    const result = await whatsappAssistant.recoverStuckIncomingMessages(now);
+    const history = await whatsappAssistant.getConvoHistory(phone, 10);
+    const stuck = (await whatsappAssistant.listStuckIncomingMessages()).find((f) => String(f.contactId) === phone);
+    const ok = result.flagged === 1 && !history.some((h) => h.direction === 'out') && Boolean(stuck) && stuck.reason === 'never_auto';
+    await whatsappAssistant.removeFromNeverAuto(phone);
+    await whatsappAssistant.dismissStuckIncomingMessage(phone).catch(() => {});
     return ok;
   });
-  await checkAsync('dismissStuckIncomingMessage clears both the flag and the underlying burst buffer - there is no real reply left to send, so dismissing also drops the unanswered buffered text', async () => {
-    await whatsappAssistant.clearBurstBuffer(STUCK_TEST_CONTACT).catch(() => {});
-    await whatsappAssistant.dismissStuckIncomingMessage(STUCK_TEST_CONTACT).catch(() => {});
+  await checkAsync('recoverStuckIncomingMessages: a message already 30+ minutes old skips recovery entirely (the existing catch-up staleness cutoff) and gets an Action-needed card straight away, never an auto-send', async () => {
+    const phone = '910000001308';
+    await whatsappAssistant.clearBurstBuffer(phone).catch(() => {});
+    await whatsappAssistant.clearStuckRecoveryState(phone).catch(() => {});
+    await whatsappAssistant.dismissStuckIncomingMessage(phone).catch(() => {});
+    const now = Date.now();
+    const firstSeenAt = now - 35 * 60 * 1000;
+    await whatsappAssistant.saveBurstBuffer(phone, { messages: [{ text: 'Ok Sir', arrivedAt: firstSeenAt }], firstSeenAt, name: 'Stale Test', firstName: 'Stale' });
+    const result = await whatsappAssistant.recoverStuckIncomingMessages(now);
+    const history = await whatsappAssistant.getConvoHistory(phone, 10);
+    const stuck = (await whatsappAssistant.listStuckIncomingMessages()).find((f) => String(f.contactId) === phone);
+    const ok = result.flagged === 1 && !history.some((h) => h.direction === 'out') && Boolean(stuck) && stuck.reason === 'too_old';
+    await whatsappAssistant.dismissStuckIncomingMessage(phone).catch(() => {});
+    return ok;
+  });
+  await checkAsync('recoverStuckIncomingMessages: attempt 1 fails -> NOT retried immediately, only once the 2-minute gap has elapsed', async () => {
+    const phone = '910000001309';
+    await whatsappAssistant.clearBurstBuffer(phone).catch(() => {});
+    await whatsappAssistant.clearStuckRecoveryState(phone).catch(() => {});
     const now = Date.now();
     const firstSeenAt = now - 3 * 60 * 1000;
-    await whatsappAssistant.saveBurstBuffer(STUCK_TEST_CONTACT, { messages: [{ text: 'hello', arrivedAt: firstSeenAt }], firstSeenAt, name: 'Stuck Test', firstName: 'Stuck' });
-    await whatsappAssistant.detectStuckIncomingMessages(now);
-    const result = await whatsappAssistant.dismissStuckIncomingMessage(STUCK_TEST_CONTACT);
-    const stillFlagged = (await whatsappAssistant.listStuckIncomingMessages()).some((f) => String(f.contactId) === STUCK_TEST_CONTACT);
-    const bufferGone = !(await whatsappAssistant.getBurstBuffer(STUCK_TEST_CONTACT));
-    return result.ok === true && !stillFlagged && bufferGone;
+    await whatsappAssistant.saveBurstBuffer(phone, { messages: [{ text: 'Ok Sir', arrivedAt: firstSeenAt }], firstSeenAt, name: 'Retry Test', firstName: 'Retry' });
+    const failingAct = async () => { throw new Error('simulated failure'); };
+    const r1 = await whatsappAssistant.recoverStuckIncomingMessages(now, { actOn: failingAct });
+    const stateAfter1 = await whatsappAssistant.getStuckRecoveryState(phone);
+    const r2 = await whatsappAssistant.recoverStuckIncomingMessages(now + 30 * 1000, { actOn: failingAct }); // only 30s later - too soon
+    const stateAfter2 = await whatsappAssistant.getStuckRecoveryState(phone);
+    const ok = r1.failed === 0 && Boolean(stateAfter1) && stateAfter1.attempts === 1 &&
+      r2.failed === 0 && Boolean(stateAfter2) && stateAfter2.attempts === 1 && stateAfter2.lastAttemptAt === stateAfter1.lastAttemptAt;
+    await whatsappAssistant.clearStuckRecoveryState(phone).catch(() => {});
+    return ok;
+  });
+  await checkAsync('recoverStuckIncomingMessages: once the retry gap elapses, attempt 2 runs - when it ALSO fails, an Action-needed card is raised with the error noted, never a 3rd attempt, and nothing was ever auto-sent', async () => {
+    const phone = '910000001309';
+    await whatsappAssistant.clearBurstBuffer(phone).catch(() => {});
+    await whatsappAssistant.clearStuckRecoveryState(phone).catch(() => {});
+    await whatsappAssistant.dismissStuckIncomingMessage(phone).catch(() => {});
+    const now = Date.now();
+    const firstSeenAt = now - 3 * 60 * 1000;
+    await whatsappAssistant.saveBurstBuffer(phone, { messages: [{ text: 'Ok Sir', arrivedAt: firstSeenAt }], firstSeenAt, name: 'Retry Test', firstName: 'Retry' });
+    const failingAct = async () => { throw new Error('simulated failure'); };
+    await whatsappAssistant.recoverStuckIncomingMessages(now, { actOn: failingAct }); // attempt 1
+    const result2 = await whatsappAssistant.recoverStuckIncomingMessages(now + 2 * 60 * 1000 + 1000, { actOn: failingAct }); // attempt 2, 2+ min later
+    const stuck = (await whatsappAssistant.listStuckIncomingMessages()).find((f) => String(f.contactId) === phone);
+    const recoveryGone = !(await whatsappAssistant.getStuckRecoveryState(phone));
+    const history = await whatsappAssistant.getConvoHistory(phone, 10);
+    const result3 = await whatsappAssistant.recoverStuckIncomingMessages(now + 4 * 60 * 1000 + 1000, { actOn: failingAct }); // would-be attempt 3 - must be a no-op
+    const ok = result2.failed === 1 && Boolean(stuck) && stuck.reason === 'recovery_failed' && stuck.lastError === 'simulated failure' &&
+      recoveryGone && !history.some((h) => h.direction === 'out') && result3.failed === 0 && result3.recovered === 0;
+    await whatsappAssistant.dismissStuckIncomingMessage(phone).catch(() => {});
+    return ok;
+  });
+  await checkAsync('recoverStuckIncomingMessages: a recovery attempt more than 5 minutes after the original message opens with the exact "Derite reply korar jonno dukkhito." apology line', async () => {
+    const phone = '910000001310';
+    await whatsappAssistant.clearBurstBuffer(phone).catch(() => {});
+    await whatsappAssistant.clearStuckRecoveryState(phone).catch(() => {});
+    const now = Date.now();
+    const firstSeenAt = now - 6 * 60 * 1000;
+    // Same Banglish phrase the existing catch-up apology test uses, so the
+    // reply's language is reliably detected as banglish (never 'Ok Sir',
+    // which resolves to English and would exercise a different template
+    // of the SAME apology line, not a different behavior).
+    await whatsappAssistant.saveBurstBuffer(phone, { messages: [{ text: 'Amar attendance thik ache kina bolben?', arrivedAt: firstSeenAt }], firstSeenAt, name: 'Apology Test', firstName: 'Apology' });
+    await whatsappAssistant.recoverStuckIncomingMessages(now);
+    const history = await whatsappAssistant.getConvoHistory(phone, 10);
+    const outEntry = history.find((h) => h.direction === 'out');
+    return Boolean(outEntry) && outEntry.text.startsWith('Derite reply korar jonno dukkhito.');
+  });
+  await checkAsync('recoverStuckIncomingMessages: a recovery attempt under 5 minutes after the original message gets NO apology prefix', async () => {
+    const phone = '910000001311';
+    await whatsappAssistant.clearBurstBuffer(phone).catch(() => {});
+    await whatsappAssistant.clearStuckRecoveryState(phone).catch(() => {});
+    const now = Date.now();
+    const firstSeenAt = now - 2 * 60 * 1000 - 5000; // just over the 2-min recovery threshold, well under 5 min
+    await whatsappAssistant.saveBurstBuffer(phone, { messages: [{ text: 'Amar attendance thik ache kina bolben?', arrivedAt: firstSeenAt }], firstSeenAt, name: 'No Apology Test', firstName: 'NoApology' });
+    await whatsappAssistant.recoverStuckIncomingMessages(now);
+    const history = await whatsappAssistant.getConvoHistory(phone, 10);
+    const outEntry = history.find((h) => h.direction === 'out');
+    return Boolean(outEntry) && !outEntry.text.startsWith('Derite reply korar jonno dukkhito.') && !outEntry.text.startsWith('Sorry for the late reply.');
+  });
+  await checkAsync('dismissStuckIncomingMessage clears the card (the underlying buffer is already gone by the time a card exists, since recovery claims and clears it before ever raising one)', async () => {
+    const phone = '910000001312';
+    await whatsappAssistant.clearBurstBuffer(phone).catch(() => {});
+    await whatsappAssistant.clearStuckRecoveryState(phone).catch(() => {});
+    await whatsappAssistant.dismissStuckIncomingMessage(phone).catch(() => {});
+    await whatsappAssistant.addToNeverAuto(phone);
+    const now = Date.now();
+    const firstSeenAt = now - 3 * 60 * 1000;
+    await whatsappAssistant.saveBurstBuffer(phone, { messages: [{ text: 'Ok Sir', arrivedAt: firstSeenAt }], firstSeenAt, name: 'Dismiss Test', firstName: 'Dismiss' });
+    await whatsappAssistant.recoverStuckIncomingMessages(now);
+    const result = await whatsappAssistant.dismissStuckIncomingMessage(phone);
+    const stillFlagged = (await whatsappAssistant.listStuckIncomingMessages()).some((f) => String(f.contactId) === phone);
+    await whatsappAssistant.removeFromNeverAuto(phone);
+    return result.ok === true && !stillFlagged;
   });
   await checkAsync('dismissStuckIncomingMessage on an already-resolved/nonexistent item returns a clear error, never a crash', async () => {
-    await whatsappAssistant.clearBurstBuffer(STUCK_TEST_CONTACT).catch(() => {});
-    await whatsappAssistant.dismissStuckIncomingMessage(STUCK_TEST_CONTACT).catch(() => {});
-    const result = await whatsappAssistant.dismissStuckIncomingMessage(STUCK_TEST_CONTACT);
+    const phone = '910000001313';
+    await whatsappAssistant.clearBurstBuffer(phone).catch(() => {});
+    await whatsappAssistant.dismissStuckIncomingMessage(phone).catch(() => {});
+    const result = await whatsappAssistant.dismissStuckIncomingMessage(phone);
     return result.ok === false && Boolean(result.error);
   });
 

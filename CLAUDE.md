@@ -767,3 +767,45 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
   the `hrAssistant.js` fix and re-running this check reproduces exactly
   the reported failure (both Workflow buttons show a blank page), never
   a false pass.
+- Task 18 (2026-11), correction to Task 16, direct instruction: the
+  2-minute safety net changes from "card only" to AUTO-RECOVERY - SUBH
+  re-processes a stuck message through the normal pipeline and sends the
+  normal reply, instead of just alerting the owner. A burst buffer still
+  un-flushed after 2 minutes is promoted into a dedicated
+  `wa-stuck-recovery:*` store (`recoverStuckIncomingMessages`, replacing
+  the old `detectStuckIncomingMessages`) - a deliberate ONE-WAY handoff
+  that clears the buffer from the normal `wa-burst-buffer:*` store in the
+  same step, so the fast poll/flush loop can never also pick up and
+  re-process the SAME buffer (the double-reply risk this instruction
+  explicitly calls out is prevented structurally, never by a content/
+  dedup check). The actual re-processing (`actOnStuckRecoveryTurn`) is a
+  close copy of the existing catch-up feature's own `actOnCatchupTurn`
+  (same "duplicate rather than risk touching a working closure/copy"
+  convention that function's own comment already explains) - same
+  decide+send pipeline, same final send gate/Never-auto toggle/dedup/
+  language rules, reusing the exact given `CATCHUP_APOLOGY_LINE` wording
+  ("Derite reply korar jonno dukkhito.") but gated on its own 5-minute
+  threshold rather than catch-up's 10-30 minute window. A short `{nx:
+  true}` lock (same idiom as automationService.js/workflowService.js's
+  own run locks, but FAILS CLOSED on error - a missed attempt just waits
+  for the next 30s tick, never risks a double-send) guards against two
+  overlapping ticks both attempting the same contact; the recovery state
+  is re-fetched fresh inside that lock for idempotency. A failed attempt
+  is retried exactly once, 2 minutes later; a card is raised only once
+  both attempts have failed (with the error noted), the contact is
+  never-auto, or the message is already 30+ minutes old (the existing
+  catch-up staleness cutoff - recovery is never attempted for either of
+  those last two cases at all). Every recovery outcome (message, delay,
+  outcome) is logged via `logStuckRecovery`/`listStuckRecoveryLog` for
+  visibility. Deterministic suite (`scripts/check-whatsapp-engine.js`,
+  using a `deps.actOn` test-only injection seam to force the "both
+  attempts failed" branch, since the real pipeline's own
+  `decideAutoReply` already has its own internal fallback-reply safety
+  net and practically never throws): a dropped message is recovered and
+  answered exactly once, never re-answered on a later tick; a never-auto
+  contact gets a card with no auto-send; a message already 30+ minutes
+  old gets a card straight away with no recovery attempt; attempt 1
+  failing is not retried before the 2-minute gap elapses, and a second
+  failure raises the card with the error noted and never a 3rd attempt;
+  a reply more than 5 minutes after the original message gets the exact
+  apology prefix, one under 5 minutes does not.

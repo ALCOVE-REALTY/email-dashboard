@@ -737,10 +737,11 @@ async function listActionNeededItems() {
   // the owner resolves it by typing the real name in, same as the sender
   // would have.
   hrNoteEscalations.forEach((e) => raw.push({ kind: 'hr_note_escalated', category: 'approvals', chatId: whatsapp.normalizePhone(e.phone), name: e.name, ts: e.createdAt || 0, data: e }));
-  // Task 16 (2026-11) - a message stuck with no reply/decision for 2+
-  // minutes (see detectStuckIncomingMessages) - closest existing category
-  // fit is "data_requests" (an unanswered incoming message), still shown
-  // under "All" regardless.
+  // Task 16/18 (2026-11) - a message auto-recovery (see
+  // recoverStuckIncomingMessages) couldn't resolve on its own: both
+  // attempts failed, the contact is never-auto, or it's 30+ min old.
+  // Closest existing category fit is "data_requests" (an unanswered
+  // incoming message), still shown under "All" regardless.
   stuckIncoming.forEach((s) => raw.push({ kind: 'stuck_incoming', category: 'data_requests', chatId: whatsapp.normalizePhone(s.phone), name: s.name, ts: s.firstSeenAt || s.detectedAt || 0, data: s }));
   // Performance fix (2026-10-30): isNeverAuto(item.chatId) used to run as
   // its own SISMEMBER round trip PER item inside this map - this function
@@ -3122,27 +3123,21 @@ async function dismissHrNoteEscalation(id) {
 // Task 16 (2026-11) LIVE BUG FIX - direct instruction, from the real live
 // incident (917278793115, 2026-11-04 14:42: "Mdo dept. HOD emp code dao"
 // got no reply at all and never showed in the conversation, while the
-// identical retry 4-5 minutes later worked normally): "any incoming
-// message that gets neither a reply nor a deliberate 'no reply' decision
-// within 2 minutes is logged and shown to me (Action needed) so nothing
-// is silently lost." Every official-classified message is buffered (see
-// the official-classify branch in pollOnce) before actOnOfficialTurn ever
-// decides on it - a buffer still sitting un-flushed this long past its
-// OWN first message (STUCK_INCOMING_THRESHOLD_MS, far above the normal
-// quiet/max-wait flush timers) is itself proof something went wrong,
-// independent of exactly where - this is a safety net on top of (never a
-// replacement for) the specific root-cause fix below, so a FUTURE,
-// different silent-drop mechanism is still caught. One record per
-// contact (keyed by the SAME raw contactId the burst-buffer store itself
-// uses, deliberately never normalized here - dismissStuckIncomingMessage
-// has to pass this exact same key straight through to clearBurstBuffer,
-// and burst buffers are never normalized either, see saveBurstBuffer/
-// clearBurstBuffer above). Re-detection is a no-op once already flagged
-// for the SAME stuck buffer (same firstSeenAt), so a still-open burst is
-// never alerted on every tick.
+// identical retry 4-5 minutes later worked normally): originally "any
+// incoming message that gets neither a reply nor a deliberate 'no reply'
+// decision within 2 minutes is logged and shown to me (Action needed)".
+// Task 18 (2026-11), correction: this store now only ever gets a record
+// once AUTO-RECOVERY (see recoverStuckIncomingMessages, near
+// actOnStuckRecoveryTurn) has either exhausted both attempts, skipped a
+// never-auto contact, or skipped a message already 30+ minutes old - a
+// card is the LAST resort, never the first response to a stuck message
+// any more. One record per contact (keyed by the SAME raw contactId the
+// burst-buffer store itself uses, deliberately never normalized here -
+// dismissStuckIncomingMessage has to pass this exact same key straight
+// through to clearBurstBuffer, and burst buffers are never normalized
+// either, see saveBurstBuffer/clearBurstBuffer above).
 const STUCK_INCOMING_PREFIX = 'subh-stuck-incoming:';
 const STUCK_INCOMING_IDS_KEY = 'subh-stuck-incoming-ids';
-const STUCK_INCOMING_THRESHOLD_MS = 2 * 60 * 1000;
 async function flagStuckIncomingMessage(contactId, data) {
   const redis = getClient();
   if (!redis) return null;
@@ -3191,28 +3186,98 @@ async function dismissStuckIncomingMessage(contactId) {
   await clearStuckIncomingMessage(contactId);
   return { ok: true };
 }
-// Called on the same maintenance tick as every other scheduled check (see
-// whatsappPollScheduler.js) - scans every contact with a still-pending
-// burst buffer and flags any that's been sitting un-flushed for over
-// STUCK_INCOMING_THRESHOLD_MS. Resolution (clearing the flag once a real
-// decision finally happens) lives in the burst-flush loop itself, right
-// next to where that decision is made - see its own comment there.
-async function detectStuckIncomingMessages(now) {
-  const nowTs = now instanceof Date ? now.getTime() : (now || Date.now());
-  let flagged = 0;
-  for (const contactId of await listBurstBufferContactIds()) {
-    const buffer = await getBurstBuffer(contactId).catch(() => null);
-    if (!buffer || !buffer.messages || !buffer.messages.length) continue;
-    const age = nowTs - buffer.firstSeenAt;
-    if (age < STUCK_INCOMING_THRESHOLD_MS) continue;
-    const existing = await getStuckIncomingMessage(contactId);
-    if (existing && existing.firstSeenAt === buffer.firstSeenAt) continue;
-    const text = combineBurstText(buffer.messages);
-    await flagStuckIncomingMessage(contactId, { phone: contactId, name: buffer.name || contactId, text, firstSeenAt: buffer.firstSeenAt, detectedAt: nowTs });
-    await postOwnerNotification('⏱️ A message from ' + (buffer.name || contactId) + ' (' + contactId + ') has had no reply for over 2 minutes: "' + String(text).slice(0, 160) + '" - please check this conversation. (Also shown under Action needed.)').catch(() => {});
-    flagged++;
-  }
-  return { flagged };
+// Task 18 (2026-11), direct instruction: changes the 2-minute safety net
+// above from "card only" to AUTO-RECOVERY. A burst buffer still
+// un-flushed after STUCK_RECOVERY_THRESHOLD_MS is promoted into this
+// dedicated store by recoverStuckIncomingMessages below (see its own
+// comment, near actOnStuckRecoveryTurn) - a ONE-WAY handoff that clears
+// the buffer from the normal wa-burst-buffer store the instant it's
+// promoted, so the fast poll/flush loop can never also pick up and
+// re-process the SAME buffer (the double-reply risk this instruction
+// explicitly calls out). Only once recovery is exhausted/skipped does a
+// stuck_incoming card (the store above) ever get raised.
+const STUCK_RECOVERY_PREFIX = 'wa-stuck-recovery:';
+const STUCK_RECOVERY_IDS_KEY = 'wa-stuck-recovery-ids';
+const STUCK_RECOVERY_LOCK_PREFIX = 'wa-stuck-recovery-lock:';
+const STUCK_RECOVERY_LOCK_TTL_SECONDS = 90;
+const STUCK_RECOVERY_THRESHOLD_MS = 2 * 60 * 1000;
+const STUCK_RECOVERY_RETRY_GAP_MS = 2 * 60 * 1000;
+const STUCK_RECOVERY_APOLOGY_THRESHOLD_MS = 5 * 60 * 1000;
+const STUCK_RECOVERY_MAX_ATTEMPTS = 2;
+const STUCK_RECOVERY_LOG_KEY = 'wa-stuck-recovery-log';
+const STUCK_RECOVERY_LOG_MAX = 200;
+async function saveStuckRecoveryState(contactId, state) {
+  const redis = getClient();
+  if (!redis) return;
+  try {
+    await redis.set(STUCK_RECOVERY_PREFIX + contactId, JSON.stringify(state), { ex: 2 * 60 * 60 });
+    await redis.sadd(STUCK_RECOVERY_IDS_KEY, contactId);
+  } catch (err) { /* best effort */ }
+}
+async function getStuckRecoveryState(contactId) {
+  const redis = getClient();
+  if (!redis) return null;
+  try {
+    const raw = await redis.get(STUCK_RECOVERY_PREFIX + contactId);
+    return raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : null;
+  } catch (err) { return null; }
+}
+async function clearStuckRecoveryState(contactId) {
+  const redis = getClient();
+  if (!redis) return;
+  try {
+    await redis.del(STUCK_RECOVERY_PREFIX + contactId);
+    await redis.srem(STUCK_RECOVERY_IDS_KEY, contactId);
+  } catch (err) { /* best effort */ }
+}
+async function listStuckRecoveryContactIds() {
+  const redis = getClient();
+  if (!redis) return [];
+  try { return (await redis.smembers(STUCK_RECOVERY_IDS_KEY)) || []; } catch (err) { return []; }
+}
+// Overlap guard, same `{ nx: true, ex: ... }` idiom already used by
+// automationService.js/workflowService.js's own run locks - FAILS CLOSED
+// on error (returns false, never attempts recovery), unlike those two,
+// since a missed recovery attempt just waits for the next 30s tick while
+// a double-attempt risks the exact double-reply this feature exists to
+// prevent.
+async function acquireStuckRecoveryLock(contactId) {
+  const redis = getClient();
+  if (!redis) return false;
+  try {
+    const got = await redis.set(STUCK_RECOVERY_LOCK_PREFIX + contactId, '1', { nx: true, ex: STUCK_RECOVERY_LOCK_TTL_SECONDS });
+    return got === 'OK' || got === true;
+  } catch (err) { return false; }
+}
+async function releaseStuckRecoveryLock(contactId) {
+  const redis = getClient();
+  if (!redis) return;
+  try { await redis.del(STUCK_RECOVERY_LOCK_PREFIX + contactId); } catch (err) { /* best effort */ }
+}
+// "Log every recovery (message, delay, outcome) so I can see how often it
+// happens" - a simple capped list, newest first, read-only elsewhere.
+async function logStuckRecovery(entry) {
+  const redis = getClient();
+  if (!redis) return;
+  try {
+    // contactId is always stringified here, never left as whatever type a
+    // Redis SET round trip happened to hand back (a numeric-looking phone
+    // can come back as a real JS number, not a string - see
+    // listBurstBufferContactIds/listStuckRecoveryContactIds) - this log is
+    // for the owner to actually read, so its own contactId field stays a
+    // plain, consistent string regardless.
+    const toSave = Object.assign({ at: Date.now() }, entry, { contactId: String(entry.contactId) });
+    await redis.lpush(STUCK_RECOVERY_LOG_KEY, JSON.stringify(toSave));
+    await redis.ltrim(STUCK_RECOVERY_LOG_KEY, 0, STUCK_RECOVERY_LOG_MAX - 1);
+  } catch (err) { /* best effort */ }
+}
+async function listStuckRecoveryLog(limit) {
+  const redis = getClient();
+  if (!redis) return [];
+  try {
+    const raws = await redis.lrange(STUCK_RECOVERY_LOG_KEY, 0, (limit || 50) - 1);
+    return raws.map((raw) => { try { return typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (err) { return null; } }).filter(Boolean);
+  } catch (err) { return []; }
 }
 // Owner types in the real name himself - reuses the SAME resolution path
 // (resolveHrNoteThirdParty, including its own disambiguation-list
@@ -11644,6 +11709,187 @@ async function actOnCatchupTurn({ contactId, name, firstName, text, arrivedAt, s
   }
   return { answered: false };
 }
+// Task 18 (2026-11), direct instruction: close copy of actOnCatchupTurn
+// right above (same "duplicate rather than risk touching a working
+// closure/copy" convention its own comment explains), re-processing ONE
+// stuck message through the normal decide+send pipeline for the
+// auto-recovery safety net (recoverStuckIncomingMessages below).
+// needsApology mirrors the catch-up feature's own apology-line idea, just
+// gated on STUCK_RECOVERY_APOLOGY_THRESHOLD_MS (5 min, this feature's own
+// threshold - never catch-up's 10-30 min window) and reusing the exact
+// same given wording (CATCHUP_APOLOGY_LINE). Any failure INSIDE
+// decideAutoReply already has its own fallback-reply safety net here
+// (same as actOnCatchupTurn) - a THROW out of this function means
+// something else failed (e.g. scheduleAutoSend/Redis), which is what
+// recoverStuckIncomingMessages treats as "this attempt failed" for its
+// own retry-then-card bookkeeping.
+async function actOnStuckRecoveryTurn({ contactId, name, firstName, text, firstSeenAt, now }) {
+  const history = await getConvoHistory(contactId, CONVO_HISTORY_MAX);
+  await appendConvoHistory(contactId, 'in', text);
+  let decision;
+  try {
+    decision = await decideAutoReply({ phone: contactId, name, firstName, text, isGroup: false, history: history.slice(-10) });
+  } catch (err) {
+    console.error('[whatsapp] stuck-recovery decideAutoReply threw for ' + contactId + ':', err);
+    const lang = detectLang(text);
+    decision = {
+      case: 'holding',
+      replyText: AUTOREPLY_ERROR_FALLBACK[lang] || AUTOREPLY_ERROR_FALLBACK.english,
+      summaryForOwner: '[auto-reply error, generic fallback sent] ' + text.slice(0, 160)
+    };
+    await postOwnerNotification(
+      '⚠️ ' + name + ' (' + contactId + ')-er stuck-recovery message-e auto-reply toiri korte giye error hoyeche: ' +
+      String((err && err.message) || err).slice(0, 160) + ' - generic fallback reply pathano hoyeche, code check korun.'
+    ).catch(() => {});
+  }
+  if (decision && decision.replyText && (now - firstSeenAt) > STUCK_RECOVERY_APOLOGY_THRESHOLD_MS) {
+    const lang = decision.lang || detectLang(decision.replyText);
+    decision.replyText = (CATCHUP_APOLOGY_LINE[lang] || CATCHUP_APOLOGY_LINE.english) + decision.replyText;
+  }
+  if (decision && decision.case === 'automatic') {
+    await logInboxEvent({ chatId: contactId, name, isGroup: false, messageSummary: text, aCase: 'automatic', sentText: null, outcome: 'automatic', arrivedAt: firstSeenAt, seenAt: now });
+    return { answered: false };
+  }
+  if (decision && decision.replyText) {
+    await appendConvoHistory(contactId, 'out', decision.replyText);
+    // Never-auto contacts are already filtered out by the caller before
+    // this function is ever reached (they go straight to a stuck_incoming
+    // card per direct instruction, never a pending draft here too) - this
+    // mirrors actOnCatchupTurn's own branch only as defense in depth, for
+    // the same reason that function keeps it.
+    if (await isNeverAuto(contactId)) {
+      await savePendingDraft({ type: 'direct', contactId, name, messagePreview: text.slice(0, 200), draftReply: decision.replyText, createdAt: Date.now() });
+      await postOwnerNotification(name + ' (never-auto list) asked (stuck-recovery): ' + text.slice(0, 160) + ' — draft ready, your review needed');
+      await logAutoReplyEvent({ senderType: 'direct', aCase: decision.case, memoryId: decision.memoryId || null, action: 'never_auto_drafted' });
+      await logInboxEvent({ chatId: contactId, name, isGroup: false, messageSummary: text, aCase: decision.case, sentText: decision.replyText, outcome: 'never_auto_pending', arrivedAt: firstSeenAt, seenAt: now, intent: decision.intent, hrTopicArea: decision.hrTopicArea });
+      return { answered: false };
+    }
+    await scheduleAutoSend({
+      chatId: contactId, isGroup: false, name,
+      replyText: decision.replyText, case: decision.case, memoryId: decision.memoryId || null,
+      summaryForOwner: decision.summaryForOwner || null, topicLabel: decision.topicLabel || null, topic: decision.topic || null,
+      followupCount: decision.followupCount || null, intent: decision.intent || null, hrTopicArea: decision.hrTopicArea || null,
+      arrivedAt: firstSeenAt, seenAt: now, typingStartedAt: null
+    });
+    return { answered: true };
+  }
+  return { answered: false };
+}
+// Task 18 (2026-11), direct instruction - the 2-minute safety net (Task
+// 16) changed from "card only" to AUTO-RECOVERY: SUBH itself re-processes
+// a stuck message through the normal pipeline above and sends the normal
+// reply, rather than just alerting the owner. Called on the same
+// maintenance tick as every other scheduled check (see
+// whatsappPollScheduler.js). Two phases:
+//   1) PROMOTE - any burst buffer still un-flushed after
+//      STUCK_RECOVERY_THRESHOLD_MS is moved into the dedicated
+//      wa-stuck-recovery:* store, clearing it from the normal
+//      wa-burst-buffer:* store in the SAME step. This is a deliberate
+//      ONE-WAY handoff: the fast poll/flush loop only ever reads the
+//      burst-buffer store, so once a buffer is promoted here, that loop
+//      can never also pick it up and re-process it - the exact double-
+//      reply risk direct instruction calls out is prevented structurally,
+//      not by a content/dedup check.
+//   2) ACT - for each contact currently in recovery: a never-auto contact
+//      or a message already >= CATCHUP_STALE_THRESHOLD_MS (30 min, the
+//      existing catch-up staleness cutoff) skips recovery entirely and
+//      raises the stuck_incoming card straight away (direct instruction:
+//      recovery is never attempted for either case). Otherwise, an
+//      attempt is made at most once every STUCK_RECOVERY_RETRY_GAP_MS (2
+//      min) - a short NX lock (acquireStuckRecoveryLock) guards against
+//      two overlapping ticks both attempting the SAME contact, and the
+//      recovery state is re-fetched fresh inside that lock (idempotency:
+//      if it's gone or superseded, someone else already resolved it, so
+//      this tick does nothing). A successful attempt (answered true or
+//      false - either way a real decision was made, satisfying "a reply
+//      or a deliberate no-reply decision") clears the recovery state; a
+//      thrown failure increments the attempt count and tries again next
+//      time the retry gap elapses, or raises the card once
+//      STUCK_RECOVERY_MAX_ATTEMPTS (2) is reached. Every recovery outcome
+//      is logged via logStuckRecovery regardless of which branch it took.
+// `deps.actOn` is a test-only seam (defaults to the real
+// actOnStuckRecoveryTurn) - there is no other way to deterministically
+// force the "both attempts failed" branch without it, since the real
+// pipeline's own decideAutoReply/scheduleAutoSend practically never throw
+// (decideAutoReply already has its own internal fallback-reply safety
+// net - see actOnStuckRecoveryTurn's own comment).
+async function recoverStuckIncomingMessages(now, deps) {
+  const nowTs = now instanceof Date ? now.getTime() : (now || Date.now());
+  const act = (deps && deps.actOn) || actOnStuckRecoveryTurn;
+  let recovered = 0, failed = 0, flagged = 0;
+
+  for (const contactId of await listBurstBufferContactIds()) {
+    const buffer = await getBurstBuffer(contactId).catch(() => null);
+    if (!buffer || !buffer.messages || !buffer.messages.length) continue;
+    if (nowTs - buffer.firstSeenAt < STUCK_RECOVERY_THRESHOLD_MS) continue;
+    const existing = await getStuckRecoveryState(contactId);
+    if (existing && existing.firstSeenAt === buffer.firstSeenAt) continue; // already promoted
+    await clearBurstBuffer(contactId);
+    await saveStuckRecoveryState(contactId, {
+      messages: buffer.messages, name: buffer.name, firstName: buffer.firstName,
+      firstSeenAt: buffer.firstSeenAt, attempts: 0, lastAttemptAt: 0, lastError: null
+    });
+  }
+
+  for (const contactId of await listStuckRecoveryContactIds()) {
+    const state = await getStuckRecoveryState(contactId).catch(() => null);
+    if (!state) continue;
+    const combinedText = combineBurstText(state.messages);
+    const delayMs = nowTs - state.firstSeenAt;
+
+    if (await isNeverAuto(contactId).catch(() => true)) {
+      await flagStuckIncomingMessage(contactId, { phone: contactId, name: state.name || contactId, text: combinedText, firstSeenAt: state.firstSeenAt, detectedAt: nowTs, reason: 'never_auto' });
+      await postOwnerNotification('⏱️ A message from ' + (state.name || contactId) + ' (' + contactId + ') could not be auto-recovered (Never auto-reply is on): "' + combinedText.slice(0, 160) + '" - please check this conversation. (Also shown under Action needed.)').catch(() => {});
+      await logStuckRecovery({ contactId, text: combinedText, delayMs, attempt: state.attempts, outcome: 'skipped_never_auto' });
+      await clearStuckRecoveryState(contactId);
+      flagged++;
+      continue;
+    }
+
+    if (delayMs >= CATCHUP_STALE_THRESHOLD_MS) {
+      await flagStuckIncomingMessage(contactId, { phone: contactId, name: state.name || contactId, text: combinedText, firstSeenAt: state.firstSeenAt, detectedAt: nowTs, reason: 'too_old' });
+      await postOwnerNotification('⏱️ A message from ' + (state.name || contactId) + ' (' + contactId + ') is over 30 minutes old and was never auto-recovered: "' + combinedText.slice(0, 160) + '" - please check this conversation. (Also shown under Action needed.)').catch(() => {});
+      await logStuckRecovery({ contactId, text: combinedText, delayMs, attempt: state.attempts, outcome: 'skipped_too_old' });
+      await clearStuckRecoveryState(contactId);
+      flagged++;
+      continue;
+    }
+
+    if (state.attempts >= STUCK_RECOVERY_MAX_ATTEMPTS) continue; // safety guard only - cleared on exhaustion below
+    if (state.attempts >= 1 && (nowTs - state.lastAttemptAt) < STUCK_RECOVERY_RETRY_GAP_MS) continue; // not yet time for the retry
+
+    if (!(await acquireStuckRecoveryLock(contactId))) continue;
+    try {
+      const freshState = await getStuckRecoveryState(contactId);
+      if (!freshState || freshState.firstSeenAt !== state.firstSeenAt) continue; // resolved/superseded concurrently - nothing to do
+
+      const attemptNumber = freshState.attempts + 1;
+      try {
+        const result = await act({
+          contactId, name: freshState.name, firstName: freshState.firstName, text: combinedText,
+          firstSeenAt: freshState.firstSeenAt, now: nowTs
+        });
+        await logStuckRecovery({ contactId, text: combinedText, delayMs, attempt: attemptNumber, outcome: result && result.answered ? 'recovered' : 'resolved_no_reply' });
+        await clearStuckRecoveryState(contactId);
+        recovered++;
+      } catch (err) {
+        console.error('[whatsapp] stuck-recovery attempt ' + attemptNumber + ' threw for ' + contactId + ':', err);
+        await logStuckRecovery({ contactId, text: combinedText, delayMs, attempt: attemptNumber, outcome: 'failed', error: err.message });
+        if (attemptNumber >= STUCK_RECOVERY_MAX_ATTEMPTS) {
+          await flagStuckIncomingMessage(contactId, { phone: contactId, name: freshState.name || contactId, text: combinedText, firstSeenAt: freshState.firstSeenAt, detectedAt: nowTs, reason: 'recovery_failed', lastError: err.message });
+          await postOwnerNotification('⚠️ Could not auto-recover a message from ' + (freshState.name || contactId) + ' (' + contactId + ') after ' + attemptNumber + ' attempts: ' + err.message + ' - please check this conversation. (Also shown under Action needed.)').catch(() => {});
+          await clearStuckRecoveryState(contactId);
+          failed++;
+        } else {
+          await saveStuckRecoveryState(contactId, Object.assign({}, freshState, { attempts: attemptNumber, lastAttemptAt: nowTs, lastError: err.message }));
+        }
+      }
+    } finally {
+      await releaseStuckRecoveryLock(contactId);
+    }
+  }
+  return { recovered, failed, flagged };
+}
 // The one entry point - called on a confirmed reconnect and once at
 // scheduler startup. `trigger` is purely descriptive (shows up in logs),
 // never changes behavior.
@@ -12630,7 +12876,12 @@ module.exports = {
   flagHrNoteApprovalEscalation,
   listStuckIncomingMessages,
   dismissStuckIncomingMessage,
-  detectStuckIncomingMessages,
+  recoverStuckIncomingMessages,
+  actOnStuckRecoveryTurn,
+  getStuckRecoveryState,
+  saveStuckRecoveryState,
+  clearStuckRecoveryState,
+  listStuckRecoveryLog,
   listActionableWhatsappItems,
   listActionNeededItems,
   listRecentWhatsappConversations,

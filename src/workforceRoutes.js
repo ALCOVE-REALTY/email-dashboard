@@ -2639,8 +2639,8 @@ router.post('/hr-assistant/hr-note-escalations/:id/dismiss', async (req, res) =>
   }
 });
 
-// Task 16 (2026-11) LIVE BUG FIX - Action-needed card for a message stuck
-// with no reply/decision for 2+ minutes (see detectStuckIncomingMessages).
+// Task 16/18 (2026-11) - Action-needed card for a message auto-recovery
+// (see recoverStuckIncomingMessages) could not resolve on its own.
 // Dismissing it clears the underlying burst buffer too (see
 // dismissStuckIncomingMessage's own comment) - there's no real reply left
 // to send, this just acknowledges it was seen.
