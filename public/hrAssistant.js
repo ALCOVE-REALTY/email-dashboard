@@ -6583,10 +6583,31 @@
     renderWfRules();
     renderWfUnderstanding();
   }
+  // TASK 1(b) (2026-11), direct instruction - every Drive template (Google
+  // Doc / .docx already in the owner's "SUBH Letter Templates" folder)
+  // appears automatically alongside the 4 built-in letters. Always
+  // rebuilt from the live merged list (never cached) so a template added
+  // to Drive shows up the next time this page opens, with no separate
+  // "refresh" step. The 4 built-in <option>s already in the markup are a
+  // safe fallback if this fetch fails (e.g. offline) - the dropdown still
+  // works, it just won't show any Drive templates that session.
+  async function loadWfDocsTemplateOptions() {
+    if (!wfDocsTpl) return;
+    try {
+      const r = await fetch('/api/workforce/hr-assistant/letter-templates').then((res) => res.json());
+      const items = r.items || [];
+      if (items.length) wfDocsTpl.innerHTML = items.map((t) => '<option value="' + escapeHtml(t.key) + '">' + escapeHtml(t.label) + '</option>').join('');
+    } catch (err) { /* best effort - see comment above */ }
+  }
   async function openWorkflowCreate(w) {
     wfResetButtonState(wfSaveBtn); wfResetButtonState(wfTestBtn); wfResetButtonState(wfAskBtn); wfResetButtonState(wfSheetLoadBtn);
     await fetchAutoEmployees();
     loadServiceAccountEmailOnce().then((email) => { if (wfSheetShareEmail) wfSheetShareEmail.textContent = email; });
+    // Must finish BEFORE wfPopulateForm/wfResetForm below, since they set
+    // wfDocsTpl.value - a <select> silently ignores a value with no
+    // matching <option> yet, so a saved Drive-template workflow would
+    // otherwise re-open showing the wrong (first) template selected.
+    await loadWfDocsTemplateOptions();
     if (w) wfPopulateForm(w); else wfResetForm();
     if (wfSubjErr) wfSubjErr.classList.add('hidden');
     if (wfAskErr) wfAskErr.classList.add('hidden');

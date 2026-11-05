@@ -22,6 +22,7 @@ const automationService = require('./aiAssistant/automationService');
 const workflowService = require('./aiAssistant/workflowService');
 const companyDetailsService = require('./aiAssistant/companyDetailsService');
 const letterSettingsService = require('./aiAssistant/letterSettingsService');
+const driveTemplatesService = require('./aiAssistant/driveTemplatesService');
 const sheetsAuth = require('./sheetsAuth');
 const hrAccountCommands = require('./hrAccountCommands');
 const hrAuthAlerts = require('./hrAuthAlerts');
@@ -3066,32 +3067,52 @@ router.post('/hr-assistant/letter-logo', async (req, res) => {
   }
 });
 
-// TASK 1(c) (2026-11), direct instruction - "Letter settings": Ref No.
+// TASK 1(b)/(c) (2026-11), direct instruction - "Letter settings": Ref No.
 // format (with a live preview + tap-to-insert chips), a code per letter
 // type, and one counter per company + letter type for the CURRENT
 // financial year (a future FY's counter is created automatically on its
-// own first letter - nothing to show or set up here ahead of time). Only
-// the 4 built-in letter types today; Drive-template letter codes/counters
-// join this same list once TASK 1(b)/(d) (Drive template discovery) land.
-const BUILTIN_LETTER_TYPES = ['confirmation', 'extension', 'experience', 'relieving'];
+// own first letter - nothing to show or set up here ahead of time). The
+// letter-type list itself is now the SAME merged (built-in + Drive
+// template) list driveTemplatesService.listAllLetterTemplates() gives the
+// Create Workflow page's own Template dropdown - the two can never show
+// different templates.
 router.get('/hr-assistant/letter-settings', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
   try {
     const now = new Date();
     const fy = letterSettingsService.computeFinancialYear(now);
-    const [settings, companies, registerLink] = await Promise.all([
+    const [settings, companies, registerLink, templates] = await Promise.all([
       letterSettingsService.getLetterSettings(),
       companyDetailsService.getCompanyNamesFromHr(),
-      letterSettingsService.getLetterRegisterLink()
+      letterSettingsService.getLetterRegisterLink(),
+      driveTemplatesService.listAllLetterTemplates()
     ]);
+    const letterTypeLabels = Object.assign({}, settings.letterTypeLabels);
+    const letterCodes = {};
+    templates.forEach((t) => { letterTypeLabels[t.key] = t.label; letterCodes[t.key] = t.code; });
+    const letterTypes = templates.map((t) => t.key);
     const counters = [];
     for (const company of companies) {
-      for (const letterType of BUILTIN_LETTER_TYPES) {
+      for (const letterType of letterTypes) {
         const current = await letterSettingsService.getCounterValue(company, letterType, fy);
         counters.push({ company, letterType, fy, nextNumber: current + 1 });
       }
     }
-    res.json(Object.assign({ fy, companies, letterTypes: BUILTIN_LETTER_TYPES, counters, registerLink }, settings));
+    res.json(Object.assign({}, settings, { fy, companies, letterTypes, letterTypeLabels, letterCodes, counters, registerLink }));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+// TASK 1(b) (2026-11), direct instruction - the merged Template list
+// (built-in + every Drive template) for the Create Workflow page's own
+// dropdown - same source listAllLetterTemplates() above, so a template
+// added to Drive shows up here without any separate "refresh" step (this
+// route always lists fresh, never cached server-side).
+router.get('/hr-assistant/letter-templates', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const items = await driveTemplatesService.listAllLetterTemplates();
+    res.json({ items });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

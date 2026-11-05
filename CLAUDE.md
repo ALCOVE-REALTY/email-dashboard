@@ -1051,3 +1051,62 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
   new checks failed exactly as expected). `scripts/check-automation.js`/
   `check-reminders.js`/`check-whatsapp-engine.js` re-run clean (the
   `empRow` Gender addition is additive and touches no existing field).
+- Task 24 (2026-11), TASK 1(b) of the same batch - Drive template
+  discovery: every Google Doc / .docx already in the owner's own
+  "SUBH Letter Templates" Drive folder (confirmed, via a one-off
+  read-only live check against the real folder id
+  `1ecugXqFBrNTvFDPxgQnZBq8ueItQduTW`, that the service account
+  genuinely has access - folder name "SUBH Letter Templates", currently
+  empty) now appears automatically in the Create Workflow page's own
+  Template dropdown, alongside the 4 built-in letters. New
+  `src/aiAssistant/driveTemplatesService.js`: `listDriveTemplateFiles()`
+  (read-only `sheetsAuth.getDriveClient`, a `files.list` query scoped to
+  the exact folder id, matching ONLY `application/vnd.google-apps.document`
+  or `.docx` mimeTypes and excluding trashed files - the "Letter
+  Register" sheet this same folder holds is a spreadsheet, so it's never
+  matched here, no special-casing needed) and
+  `listAllLetterTemplates()` (the ONE merged list both the Template
+  dropdown and the Letter settings page's own code/counter list read
+  from, so the two can never disagree - each Drive template gets a
+  `drive:<fileId>` key, distinct from the 4 fixed built-in keys, and a
+  sensible auto-derived default letter code from its own file name
+  (`defaultCodeForName` - initials for a multi-word name, e.g. "Bonus
+  Letter" -> "BL") until the owner changes it in Letter settings - the
+  SAME generic `letterSettingsService.saveLetterCode`/`getLetterCodes`
+  already works unmodified for any key string, built-in or Drive, no
+  change needed there). A Drive-listing failure (unreachable, no service
+  account) never crashes the merged list - it just falls back to the 4
+  built-ins, same "never block on an optional piece" posture used
+  throughout this feature. `GET /hr-assistant/letter-settings` now
+  builds its `letterTypes`/`letterTypeLabels`/`letterCodes`/counters from
+  this same merged list instead of a hardcoded 4-item array; new
+  `GET /hr-assistant/letter-templates` route feeds the Workflow page's
+  dropdown directly (always listed fresh, never cached server-side, so a
+  newly-uploaded Drive template shows up the next time the page opens
+  with no separate "refresh" action). Frontend: `wfDocsTpl`'s 4 static
+  `<option>`s are a fallback only - `loadWfDocsTemplateOptions()`
+  rebuilds the whole dropdown from the live merged list every time
+  Create Workflow opens, awaited BEFORE `wfPopulateForm`/`wfResetForm`
+  set `.value` (a `<select>` silently ignores a value with no matching
+  `<option>` yet, which would otherwise make a saved Drive-template
+  workflow re-open showing the wrong template selected). Deterministic
+  suite (`scripts/check-drive-templates.js`, `npm run check:drive-templates`,
+  19/19, Drive calls stubbed via `sheetsAuth.getDriveClient` - no real
+  Drive account touched): code derivation, key helpers, the folder-scoped
+  query, the merged list's shape and ordering, a saved code overriding
+  the auto-derived default, and a Drive error never crashing the merged
+  list. Headless UI check (`scripts/check-subh-panel-ui.js`, 59/59): a
+  mocked Drive template ("Bonus Letter") appears in the real dropdown
+  alongside all 4 built-ins - verified to catch a regression by reverting
+  and re-running. Still pending: placeholder detection, the Claude-based
+  field-mapping proposal (HR column / derived rule / ref no. / fixed
+  text, model proposes structure only, code fills - "AI understands,
+  code speaks"), the owner mapping-review UI, and generation itself
+  (copy -> convert .docx to a Google Doc if needed -> Docs API
+  placeholder fill -> export PDF -> attach -> delete the temp copy) -
+  this task only lands discovery/listing. (Unrelated, noticed while
+  testing on this Windows dev machine: `check-drive-templates.js`
+  occasionally hits a harmless `UV_HANDLE_CLOSING` libuv assertion during
+  Node's own process-exit teardown, AFTER all checks have already printed
+  and passed - a pre-existing Windows/libuv flake, not a test or
+  correctness bug; re-running shows it's intermittent.)

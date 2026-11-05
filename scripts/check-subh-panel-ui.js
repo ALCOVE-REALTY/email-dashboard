@@ -95,6 +95,24 @@ function check(label, ok, detail) {
     if (method !== 'GET') { route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true }) }); return; }
     route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: [], employees: [], count: 0, unreadCount: 0 }) });
   });
+  // TASK 1(b) (2026-11), direct instruction - registered AFTER the generic
+  // mock above so Playwright's own most-recently-added-wins precedence
+  // gives this ONE route its own fake Drive template, letting the Create
+  // Workflow page's Template dropdown test below assert it actually
+  // appears (see Task 24 below).
+  await page.route('**/api/workforce/hr-assistant/letter-templates', (route) => {
+    route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify({
+        items: [
+          { key: 'confirmation', label: 'Confirmation', builtin: true, code: 'CONF' },
+          { key: 'extension', label: 'Extension of Probation', builtin: true, code: 'EXT' },
+          { key: 'experience', label: 'Experience', builtin: true, code: 'EXP' },
+          { key: 'relieving', label: 'Relieving', builtin: true, code: 'REL' },
+          { key: 'drive:faketpl1', label: 'Bonus Letter', builtin: false, driveFileId: 'faketpl1', code: 'BL' }
+        ]
+      })
+    });
+  });
 
   await page.goto(base + '/workforce.html', { waitUntil: 'domcontentloaded' });
   await page.waitForTimeout(500); // let the page's own startup prefetches settle
@@ -183,6 +201,15 @@ function check(label, ok, detail) {
   await page.waitForTimeout(150);
   await page.click('#hrWorkflowTaskBtn');
   await page.waitForTimeout(250);
+
+  // Task 24 (2026-11), TASK 1(b), direct instruction - every Drive
+  // template appears automatically in the Template dropdown alongside the
+  // 4 built-in letters (mocked above with one fake Drive template,
+  // "Bonus Letter").
+  const docsTplOptions = await page.evaluate(() => Array.from(document.querySelectorAll('#wfDocsTpl option')).map((o) => ({ value: o.value, label: o.textContent })));
+  check('Create Workflow, Template dropdown: all 4 built-in letters are present', ['confirmation', 'extension', 'experience', 'relieving'].every((k) => docsTplOptions.some((o) => o.value === k)), 'got: ' + JSON.stringify(docsTplOptions));
+  check('Create Workflow, Template dropdown: the fake Drive template ("Bonus Letter") appears automatically, with its own drive: key', docsTplOptions.some((o) => o.value === 'drive:faketpl1' && o.label === 'Bonus Letter'), 'got: ' + JSON.stringify(docsTplOptions));
+
   const wfLayout = await page.evaluate(() => {
     const askBtn = document.getElementById('wfAskBtn');
     const exampleBtn = document.querySelector('#wfAskExamples button');
