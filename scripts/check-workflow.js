@@ -751,6 +751,45 @@ async function main() {
     });
 
     console.log('='.repeat(70));
+    console.log('Task 20 (2026-11) LIVE BUG FIX, direct instruction: "Preview a document" generates the REAL PDF (exactly the file that would be attached), never a placeholder text string');
+    console.log('='.repeat(70));
+    await checkAsync('previewWorkflowDocument with no docs.template set returns a clear error, never a crash', async () => {
+      const base = await workflowService.draftWorkflowPlanFromParsed({ unclear: [], source: 'confirmations', rec: 'column', recCol: 'reportingManager', group: 'each', mediator: 'mail', rules: [{ when: 'X', replyText: 'Y', then: 'stop' }] }, now, null);
+      const result = await workflowService.previewWorkflowDocument(base.plan, now);
+      return result.ok === false && Boolean(result.error);
+    });
+    await checkAsync('previewWorkflowDocument generates a real PDF for the first matching record when the plan actually matches someone', async () => {
+      const base = await workflowService.draftWorkflowPlanFromParsed({
+        unclear: [], source: 'confirmations', rec: 'column', recCol: 'reportingManager', group: 'each', mediator: 'mail',
+        documentsOn: true, documentsTemplate: 'confirmation', documentsAttachTo: 'first', rules: [{ when: 'X', replyText: 'Y', then: 'stop' }]
+      }, now, null);
+      const result = await workflowService.previewWorkflowDocument(base.plan, now);
+      return result.ok === true && result.usedSample === false && Buffer.isBuffer(result.buffer) && result.buffer.length > 0 &&
+        result.filename.startsWith('Confirmation-Letter-');
+    });
+    await checkAsync('previewWorkflowDocument falls back to a SAMPLE real employee (never blocks) when the current plan matches no one yet', async () => {
+      const base = await workflowService.draftWorkflowPlanFromParsed({
+        unclear: [], source: 'confirmations', rec: 'column', recCol: 'reportingManager', group: 'each', mediator: 'mail',
+        documentsOn: true, documentsTemplate: 'experience', documentsAttachTo: 'first', rules: [{ when: 'X', replyText: 'Y', then: 'stop' }]
+      }, now, null);
+      // "exits" matches nobody in this fixture (every employee is ACTIVE) -
+      // a plan that currently resolves to zero rows, same as an owner who
+      // hasn't finished configuring one yet.
+      const plan = Object.assign({}, base.plan, { source: 'exits', conds: automationService.SOURCES.exits.defaultConds });
+      const result = await workflowService.previewWorkflowDocument(plan, now);
+      return result.ok === true && result.usedSample === true && Buffer.isBuffer(result.buffer) && result.buffer.length > 0;
+    });
+    await checkAsync('previewWorkflowDocument never requires the workflow to be saved first - works from a freshly-drafted plan alone', async () => {
+      const base = await workflowService.draftWorkflowPlanFromParsed({
+        unclear: [], source: 'confirmations', rec: 'column', recCol: 'reportingManager', group: 'each', mediator: 'mail',
+        documentsOn: true, documentsTemplate: 'relieving', documentsAttachTo: 'first', rules: [{ when: 'X', replyText: 'Y', then: 'stop' }]
+      }, now, null);
+      // Never saved/created anywhere - just the drafted plan object itself.
+      const result = await workflowService.previewWorkflowDocument(base.plan, now);
+      return result.ok === true && Buffer.isBuffer(result.buffer) && result.buffer.length > 0;
+    });
+
+    console.log('='.repeat(70));
     console.log('Task 19 (2026-11) - "Attachment as" PDF/Excel for a Workflow\'s own record table (first message), matching the Automated Task page\'s existing feature (previously Workflow could only ever put the table in the message body)');
     console.log('='.repeat(70));
     async function makeTableAttachWorkflow(overrides) {

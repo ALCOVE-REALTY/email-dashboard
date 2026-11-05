@@ -202,6 +202,40 @@ function check(label, ok, detail) {
   check('Create Workflow: the long example chip never clips its own text (no internal horizontal overflow)', wfLayout.exampleOverflows === false, 'got: ' + JSON.stringify(wfLayout));
   check('Create Workflow: the new "Put the table" chips (TASK 4) are present, matching the Create Automated Task page', await page.locator('#wfPlaceSeg').count() > 0 && await page.locator('#wfAttachBtn').count() > 0);
 
+  // Task 20 (2026-11) - "Preview a document" (TASK 1a) renders a REAL PDF
+  // (mocked here with a tiny fake PDF, since this check never calls the
+  // real letter generator) instead of the old placeholder text string -
+  // asserts the preview sheet gets a real <iframe> onto a PDF data: URL
+  // plus a working Download link, never the bare "[The Confirmation
+  // Letter template...]" text.
+  const FAKE_PDF_BASE64 = Buffer.from('%PDF-1.4 fake test pdf').toString('base64');
+  await page.route('**/api/workforce/hr-assistant/workflows/preview-document', (route) => {
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, pdfBase64: FAKE_PDF_BASE64, filename: 'Confirmation-Letter-Test.pdf', usedSample: true }) });
+  });
+  const docPreviewErrBefore = consoleErrors.length + pageErrors.length;
+  await page.click('#wfDocsOn');
+  await page.waitForTimeout(150);
+  await page.click('#wfDocsPreviewBtn');
+  await page.waitForTimeout(250);
+  const docPreview = await page.evaluate(() => {
+    const iframe = document.querySelector('.wf-auto-doc-preview');
+    const dl = document.querySelector('#hrWorkflowPreviewBody a[download]');
+    return {
+      sheetVisible: document.getElementById('hrWorkflowPreviewSheet') ? !document.getElementById('hrWorkflowPreviewSheet').hidden : null,
+      iframeSrcOk: iframe ? iframe.getAttribute('src').startsWith('data:application/pdf;base64,') : false,
+      downloadName: dl ? dl.getAttribute('download') : null,
+      downloadHrefOk: dl ? dl.getAttribute('href').startsWith('data:application/pdf;base64,') : false,
+      stillShowsPlaceholderText: ((document.getElementById('hrWorkflowPreviewBody') || {}).textContent || '').includes('as a PDF.]')
+    };
+  });
+  check('Create Workflow, "Preview a document": the preview sheet opens with a real embedded PDF (<iframe> onto a PDF data: URL), never the old placeholder text', docPreview.sheetVisible === true && docPreview.iframeSrcOk === true && !docPreview.stillShowsPlaceholderText, 'got: ' + JSON.stringify(docPreview));
+  check('Create Workflow, "Preview a document": a working Download link is present with the real generated filename', docPreview.downloadHrefOk === true && docPreview.downloadName === 'Confirmation-Letter-Test.pdf', 'got: ' + JSON.stringify(docPreview));
+  const docPreviewErrAfter = consoleErrors.length + pageErrors.length;
+  check('Create Workflow, "Preview a document": no JS error was thrown generating the preview', docPreviewErrAfter === docPreviewErrBefore,
+    'new errors: ' + JSON.stringify(consoleErrors.slice(docPreviewErrBefore).concat(pageErrors.slice(docPreviewErrBefore))));
+  await page.click('#hrWorkflowPreviewCloseBtn');
+  await page.waitForTimeout(350);
+
   const wfRuleErrBefore = consoleErrors.length + pageErrors.length;
   await page.click('#wfAddRuleBtn');
   await page.waitForTimeout(150);

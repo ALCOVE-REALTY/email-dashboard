@@ -2395,6 +2395,10 @@ body { background: var(--wi-bg); }
 .wf-auto-preview-sheet .wf-auto-tbl th, .wf-auto-preview-sheet .wf-auto-tbl td { border: 1px solid var(--wi-border-2); padding: 4px 6px; text-align: left; }
 .wf-auto-preview-sheet .wf-auto-pdf { border: 1.5px solid var(--wi-border-2); border-radius: var(--wi-r-input); padding: 10px; margin-top: 8px; background: var(--wi-primary-50); }
 .wf-auto-preview-sheet .wf-auto-pdf-name { font-weight: 800; font-size: 0.72rem; margin-bottom: 6px; color: var(--wi-ink); }
+/* Task 20 (2026-11) - "Preview a document"'s real, rendered PDF (TASK 1a):
+   a tall enough embed to show a real page at a glance, its own scrollbar
+   for the rest, never the page itself scrolling sideways to fit it. */
+.wf-auto-doc-preview { width: 100%; height: 60vh; border: 1.5px solid var(--wi-border-2); border-radius: var(--wi-r-input); display: block; box-sizing: border-box; }
 .wf-auto-skip { background: var(--wi-red-50); color: var(--wi-red-700); border-radius: var(--wi-r-input); padding: 8px 10px; font-size: 0.72rem; font-weight: 700; margin-top: 8px; }
 
 /* UI fix (2026-10-29): ONE shared "professional" toast component - white

@@ -276,6 +276,41 @@ function workflowDocFileName(template, row) {
   return (WF_DOC_FILE_LABELS[template] || template) + '-' + who + '.pdf';
 }
 const WF_DOC_FILE_LABELS = { confirmation: 'Confirmation-Letter', extension: 'Extension-of-Probation-Letter', experience: 'Experience-Letter', relieving: 'Relieving-Letter' };
+// Task 20 (2026-11) LIVE BUG FIX, direct instruction: "Preview a document"
+// used to show only placeholder TEXT ("[The Confirmation Letter
+// template...]") - this generates the REAL PDF instead, for the first
+// record the CURRENT in-progress plan actually matches (same
+// automationService.matchedRows path the message preview already uses,
+// so preview never disagrees with what a real run would do), or a SAMPLE
+// real employee (via automationService.empRow - the exact same row shape
+// matchedRows itself returns) when nothing matches yet, so the preview
+// never blocks on a fully-configured plan. Works from the plan object
+// alone - never requires the workflow to be saved first.
+async function previewWorkflowDocument(plan, now) {
+  const template = plan && plan.docs && plan.docs.template;
+  if (!template) return { ok: false, error: 'Choose a letter template first.' };
+  let row = null;
+  try {
+    const rows = await automationService.matchedRows(plan, [], now);
+    row = (rows && rows[0]) || null;
+  } catch (err) { /* a plan that can't resolve yet (e.g. an unshared sheet) just falls through to the sample below */ }
+  let usedSample = false;
+  if (!row) {
+    const { employees } = await employeeService.getEmployeeData();
+    const sample = employees.find((e) => e.status === 'ACTIVE') || employees[0];
+    if (!sample) return { ok: false, error: 'No employee data is available to build a sample from yet.' };
+    row = automationService.empRow(sample);
+    usedSample = true;
+  }
+  let buffer;
+  try {
+    buffer = await buildWorkflowDocumentBuffer(template, row, now, {});
+  } catch (err) {
+    return { ok: false, error: 'Could not generate this document: ' + err.message };
+  }
+  if (!buffer) return { ok: false, error: 'Could not generate this document.' };
+  return { ok: true, buffer, filename: workflowDocFileName(template, row), usedSample };
+}
 
 async function buildWorkflowMessages(workflow, runAt) {
   let plan = workflow.plan;
@@ -1230,5 +1265,6 @@ module.exports = {
   approveSendWorkflowRecord, declineWorkflowRecordApproval, resolveUnclearWorkflowRecord,
   checkWorkflowMailReplies,
   findOpenWorkflowRecordByPhone, isWorkflowReplyRelevant, handlePossibleWorkflowReply,
-  callWorkflowTool, replyClassificationTool, detailExtractionTool
+  callWorkflowTool, replyClassificationTool, detailExtractionTool,
+  previewWorkflowDocument, buildWorkflowDocumentBuffer, workflowDocFileName
 };

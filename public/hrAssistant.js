@@ -6611,12 +6611,28 @@
   if (wfPreviewCloseBtn) wfPreviewCloseBtn.addEventListener('click', wfClosePreview);
   if (wfPreviewBackdrop) wfPreviewBackdrop.addEventListener('click', wfClosePreview);
   if (wfPreviewBtn) wfPreviewBtn.addEventListener('click', async () => { wfSync(); await wfRefreshSummary(); if (wfLastPreview) wfRenderPreviewBody(wfLastPreview, 'Preview — next run'); });
-  if (wfDocsPreviewBtn) wfDocsPreviewBtn.addEventListener('click', () => {
+  // Task 20 (2026-11) LIVE BUG FIX, direct instruction: real PDF instead
+  // of a placeholder text string - fetches the actual generated PDF
+  // (exactly the file that will be attached) and renders it inline
+  // (scrollable, real pages) via an <iframe> onto a data: URL, plus a
+  // Download button that saves the SAME bytes, never a second re-fetch.
+  if (wfDocsPreviewBtn) wfDocsPreviewBtn.addEventListener('click', async () => {
     const tpl = wfDocsTpl ? wfDocsTpl.value : 'confirmation';
     wfPreviewTitle && (wfPreviewTitle.textContent = 'Document preview');
-    if (wfPreviewBody) wfPreviewBody.innerHTML = '<div class="wf-auto-msg"><pre>[The ' + escapeHtml(WF_DOC_LABELS[tpl] || tpl) + ' template, filled with one matching record\'s own details, as a PDF.]</pre></div>';
+    if (wfPreviewBody) wfPreviewBody.innerHTML = '<div class="wf-rem-empty">Generating the ' + escapeHtml(WF_DOC_LABELS[tpl] || tpl) + '…</div>';
     if (wfPreviewBackdrop) wfPreviewBackdrop.hidden = false;
     if (wfPreviewSheet) { wfPreviewSheet.hidden = false; requestAnimationFrame(() => wfPreviewSheet.classList.add('open')); }
+    try {
+      const plan = wfBuildPlanFromForm(wfReadForm());
+      const data = await postJsonOrThrow('/api/workforce/hr-assistant/workflows/preview-document', { plan });
+      const dataUrl = 'data:application/pdf;base64,' + data.pdfBase64;
+      if (wfPreviewBody) wfPreviewBody.innerHTML =
+        (data.usedSample ? '<div class="wf-auto-hint">No record matches this plan yet - showing a sample employee\'s details instead.</div>' : '') +
+        '<iframe src="' + dataUrl + '" class="wf-auto-doc-preview" title="Document preview"></iframe>' +
+        '<a class="wf-ai-action-btn download" style="margin-top:10px;display:inline-flex" href="' + dataUrl + '" download="' + escapeHtml(data.filename) + '">⬇ Download</a>';
+    } catch (err) {
+      if (wfPreviewBody) wfPreviewBody.innerHTML = '<div class="wf-auto-skip">⚠ ' + escapeHtml(err.message || 'Could not generate this document.') + '</div>';
+    }
   });
   if (wfTestBtn) wfTestBtn.addEventListener('click', async () => {
     if (!wfEditingId) { showWfToast('Save the workflow first, then you can send a test.', 'warning'); return; }

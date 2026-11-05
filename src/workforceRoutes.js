@@ -2314,6 +2314,24 @@ router.post('/hr-assistant/workflows/preview', async (req, res) => {
   }
 });
 
+// Task 20 (2026-11) LIVE BUG FIX, direct instruction - real PDF for
+// "Preview a document" (previously just a placeholder text string). Works
+// from the in-progress plan alone, never requires the workflow to be
+// saved first - see previewWorkflowDocument's own comment for the real-
+// match-vs-sample-record fallback.
+router.post('/hr-assistant/workflows/preview-document', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const { plan } = req.body || {};
+    if (!plan) return res.status(400).json({ error: 'plan is required' });
+    const result = await workflowService.previewWorkflowDocument(plan, new Date());
+    if (!result.ok) return res.status(400).json({ error: result.error });
+    res.json({ ok: true, pdfBase64: result.buffer.toString('base64'), filename: result.filename, usedSample: result.usedSample });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.post('/hr-assistant/workflows', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
   try {
