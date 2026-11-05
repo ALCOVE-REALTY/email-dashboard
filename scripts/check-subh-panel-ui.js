@@ -74,7 +74,12 @@ function check(label, ok, detail) {
   const base = 'http://127.0.0.1:' + port;
 
   const browser = await chromium.launch();
-  const page = await browser.newPage();
+  // Task 19 (2026-11) - phone width (384px), per direct instruction, so
+  // the Create Workflow page's own layout fixes (compact Ask SUBH button,
+  // the example box's shape, rule-card overflow) are verified under the
+  // same narrow viewport they were reported broken at, not Playwright's
+  // own desktop default.
+  const page = await browser.newPage({ viewport: { width: 384, height: 800 } });
 
   const consoleErrors = [];
   const pageErrors = [];
@@ -158,6 +163,65 @@ function check(label, ok, detail) {
     check(t.label + ': no JS error was thrown opening this page', errAfter === errBefore,
       'new errors: ' + JSON.stringify(consoleErrors.slice(errBefore).concat(pageErrors.slice(errBefore))));
   }
+
+  // Task 19 (2026-11) - Create Workflow page layout fixes, verified at
+  // phone width (384px, the viewport this page is opened at throughout
+  // this whole script - see newPage above):
+  //  (a) Ask SUBH is the same compact pill as Create Automated Task's own
+  //      (align-self: flex-start, never full width).
+  //  (b) the long example chip is a small-radius rectangle that never
+  //      overflows its own box, never the old 999px oval/stadium shape.
+  //  (c) adding a rule and revealing "Follow up after (days)" never makes
+  //      the page scroll horizontally, and that field stays on-screen.
+  await page.evaluate(() => { if (window.__hrAssistantClosePanel) window.__hrAssistantClosePanel(); });
+  await page.waitForTimeout(100);
+  await page.click('#hrAssistantBtn');
+  await page.waitForTimeout(150);
+  await page.click('#hrTodayUpdatesCard');
+  await page.waitForTimeout(150);
+  await page.click('#hrHubRemindersTile');
+  await page.waitForTimeout(150);
+  await page.click('#hrWorkflowTaskBtn');
+  await page.waitForTimeout(250);
+  const wfLayout = await page.evaluate(() => {
+    const askBtn = document.getElementById('wfAskBtn');
+    const exampleBtn = document.querySelector('#wfAskExamples button');
+    const askBtnStyle = askBtn ? getComputedStyle(askBtn) : null;
+    const exampleStyle = exampleBtn ? getComputedStyle(exampleBtn) : null;
+    return {
+      askBtnAlignSelf: askBtnStyle ? askBtnStyle.alignSelf : null,
+      askBtnWidth: askBtn ? askBtn.getBoundingClientRect().width : null,
+      pageWidth: document.getElementById('hrWorkflowPage') ? document.getElementById('hrWorkflowPage').getBoundingClientRect().width : null,
+      exampleBorderRadius: exampleStyle ? exampleStyle.borderRadius : null,
+      exampleOverflows: exampleBtn ? (exampleBtn.scrollWidth > exampleBtn.clientWidth + 1) : null
+    };
+  });
+  check('Create Workflow: Ask SUBH is a compact pill (align-self: flex-start), never stretched full width', wfLayout.askBtnAlignSelf === 'flex-start', 'got: ' + JSON.stringify(wfLayout));
+  check('Create Workflow: Ask SUBH button is visibly narrower than the page (a real compact pill, not just the CSS property alone)', wfLayout.askBtnWidth != null && wfLayout.pageWidth != null && wfLayout.askBtnWidth < wfLayout.pageWidth * 0.6, 'got: ' + JSON.stringify(wfLayout));
+  check('Create Workflow: the long example chip has a small rectangular corner radius (~10px), never the old 999px oval/stadium shape', /^10px/.test(wfLayout.exampleBorderRadius || ''), 'got: ' + JSON.stringify(wfLayout.exampleBorderRadius));
+  check('Create Workflow: the long example chip never clips its own text (no internal horizontal overflow)', wfLayout.exampleOverflows === false, 'got: ' + JSON.stringify(wfLayout));
+  check('Create Workflow: the new "Put the table" chips (TASK 4) are present, matching the Create Automated Task page', await page.locator('#wfPlaceSeg').count() > 0 && await page.locator('#wfAttachBtn').count() > 0);
+
+  const wfRuleErrBefore = consoleErrors.length + pageErrors.length;
+  await page.click('#wfAddRuleBtn');
+  await page.waitForTimeout(150);
+  await page.click('.wf-auto-rule-card [data-k="askDetail_on"]');
+  await page.waitForTimeout(150);
+  const wfOverflow = await page.evaluate(() => {
+    const page2 = document.getElementById('hrWorkflowPage');
+    const fuInput = document.querySelector('.wf-auto-rule-card [data-k="askFollowUpDays"]');
+    return {
+      pageScrollWidth: page2 ? page2.scrollWidth : null,
+      pageClientWidth: page2 ? page2.clientWidth : null,
+      fuInputRight: fuInput ? fuInput.getBoundingClientRect().right : null,
+      viewportWidth: window.innerWidth
+    };
+  });
+  check('Create Workflow, "When they reply" rule card: no horizontal scrolling anywhere on the page after revealing "Follow up after (days)"', wfOverflow.pageScrollWidth != null && wfOverflow.pageScrollWidth <= wfOverflow.pageClientWidth + 1, 'got: ' + JSON.stringify(wfOverflow));
+  check('Create Workflow, "When they reply" rule card: "Follow up after (days)" stays fully on-screen (never runs off the right edge)', wfOverflow.fuInputRight != null && wfOverflow.fuInputRight <= wfOverflow.viewportWidth, 'got: ' + JSON.stringify(wfOverflow));
+  const wfRuleErrAfter = consoleErrors.length + pageErrors.length;
+  check('Create Workflow, "When they reply" rule card: no JS error was thrown adding a rule and revealing its fields', wfRuleErrAfter === wfRuleErrBefore,
+    'new errors: ' + JSON.stringify(consoleErrors.slice(wfRuleErrBefore).concat(pageErrors.slice(wfRuleErrBefore))));
 
   // Task 14 (2026-11) LIVE BUG FIX regression guard: Attendance Requests
   // cards used to render nested inside each other (renderAttnList's own

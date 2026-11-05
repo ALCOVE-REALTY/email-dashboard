@@ -2137,12 +2137,26 @@ body { background: var(--wi-bg); }
 }
 .wf-rem-sheet.open { transform: translateY(0); }
 .wf-rem-sheet-body { padding: 4px 18px 14px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
-.wf-rem-field { display: flex; flex-direction: column; gap: 5px; font-size: 0.76rem; font-weight: 700; color: var(--wi-muted); flex: 1; }
+/* Task 19 (2026-11) LIVE BUG FIX - min-width:0 added: a flex item's
+   default min-width is 'auto', which refuses to shrink below its own
+   content's intrinsic width - inside .wf-rem-field-row below, that's
+   what forced the row (and so the whole rule card and the page under it)
+   wider than the screen, never actually wrapping, however much space was
+   available. width:100% added too (this field's own input/select/
+   textarea previously had no explicit width at all - only ever looked
+   right because every single-field label happened to be the only/last
+   flex item in its own full-width row, never exercised in a 2-up row
+   with real width competition until this rule-card case). */
+.wf-rem-field { display: flex; flex-direction: column; gap: 5px; font-size: 0.76rem; font-weight: 700; color: var(--wi-muted); flex: 1; min-width: 0; }
 .wf-rem-field input, .wf-rem-field textarea, .wf-rem-field select {
   border: 1.5px solid var(--wi-border-2); border-radius: var(--wi-r-input); padding: 9px 11px; font-size: 0.84rem;
-  font-family: inherit; color: var(--wi-ink); background: var(--wi-surface);
+  font-family: inherit; color: var(--wi-ink); background: var(--wi-surface); width: 100%; box-sizing: border-box;
 }
-.wf-rem-field-row { display: flex; gap: 10px; }
+/* flex-wrap added: two fields only sit side by side when they both fit -
+   below that, each .wf-rem-field's own flex-basis (140px) forces it onto
+   its own full-width line instead of being squeezed. */
+.wf-rem-field-row { display: flex; flex-wrap: wrap; gap: 10px; }
+.wf-rem-field-row > .wf-rem-field { flex: 1 1 140px; }
 .wf-rem-checkbox-row { display: flex; align-items: center; gap: 8px; font-size: 0.78rem; font-weight: 600; color: var(--wi-ink); }
 .wf-rem-sheet-foot { display: flex; gap: 10px; padding: 12px 18px 18px; border-top: 1px solid var(--wi-divider); flex-shrink: 0; }
 .wf-rem-sheet-foot .wf-ai-action-btn { flex: 1; justify-content: center; }
@@ -2161,7 +2175,14 @@ body { background: var(--wi-bg); }
 .wf-rem-add-btn.outline { background: var(--wi-surface); color: var(--wi-primary); border: 1.5px solid var(--wi-primary); box-shadow: none; }
 
 .wf-auto-page[hidden] { display: none; }
-.wf-auto-page { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 10px 14px 14px; display: flex; flex-direction: column; gap: 12px; }
+/* Task 19 (2026-11) LIVE BUG FIX - overflow-x explicitly hidden here, not
+   left to default: setting only overflow-y (as this rule always has)
+   computes the OTHER axis to 'auto' per spec, so without this a wide
+   descendant (see .wf-rem-field-row's own fix below) could still open a
+   horizontal scrollbar on THIS inner scroll container even though the
+   page body itself is already overflow-x:hidden (styles.css) - that
+   outer guard only ever covered the page, never this nested one. */
+.wf-auto-page { flex: 1; overflow-y: auto; overflow-x: hidden; -webkit-overflow-scrolling: touch; padding: 10px 14px 14px; display: flex; flex-direction: column; gap: 12px; }
 /* Several Create/Edit fields toggle a plain ".hidden" class (Mail
    subject, "Send to the person in", the table-column picker, "Every N
    months", the "How to send?" card) with no matching rule anywhere to
@@ -2249,7 +2270,7 @@ body { background: var(--wi-bg); }
    labelled fields, never a single inline row) rather than wrapped - the
    one genuinely new shape this feature needs, reusing .wf-auto-cond-rm
    itself for the remove button rather than a second remove-button style. */
-.wf-auto-rule-card { display: flex; flex-direction: column; border: 1px solid var(--wi-border-2); border-radius: var(--wi-r-input); padding: 12px; margin-top: 10px; background: var(--wi-surface); }
+.wf-auto-rule-card { display: flex; flex-direction: column; min-width: 0; box-sizing: border-box; border: 1px solid var(--wi-border-2); border-radius: var(--wi-r-input); padding: 12px; margin-top: 10px; background: var(--wi-surface); }
 .wf-auto-rule-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-weight: 800; font-size: 0.8rem; color: var(--wi-ink); }
 .wf-auto-rule-fixed { border-style: dashed; }
 
