@@ -421,6 +421,46 @@
         </div>
       </div>
 
+      <!-- TASK 1(e) (2026-11), direct instruction - "Company details":
+           one card per real HR Company value (edit-only, never a separate
+           add/delete - cards come and go with the HR data), plus one
+           shared Letter logo at the top. -->
+      <div class="wf-comms-page" id="hrCompanyDetailsPage" hidden>
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:4px 4px 6px">
+          <span class="wf-ai-sheet-title" style="font-size:14px">Letter logo</span>
+        </div>
+        <div class="wf-rem-list" id="hrLetterLogoRow"></div>
+        <input type="file" id="hrLetterLogoFileInput" accept="image/*" hidden />
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 4px 6px">
+          <span class="wf-ai-sheet-title" style="font-size:14px">Company details</span>
+        </div>
+        <div class="wf-rem-list" id="hrCompanyDetailsList"></div>
+      </div>
+
+      <div class="wf-ai-sheet-backdrop" id="hrCompanyDetailSheetBackdrop" hidden></div>
+      <div class="wf-rem-sheet" id="hrCompanyDetailSheet" hidden role="dialog" aria-label="Edit company details">
+        <div class="wf-ai-sheet-handle"></div>
+        <div class="wf-ai-sheet-head">
+          <button type="button" class="wf-ai-sheet-close" id="hrCompanyDetailSheetCloseBtn" aria-label="Close">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+          <span class="wf-ai-sheet-title" id="hrCompanyDetailSheetTitle">Edit company</span>
+        </div>
+        <div class="wf-rem-sheet-body">
+          <label class="wf-rem-field"><span>Company code <span class="wf-auto-req">*</span></span><input type="text" id="hrCompanyCodeInput" maxlength="20" placeholder="e.g. ARPL" autocomplete="off" /></label>
+          <label class="wf-rem-field"><span>Registered address</span><textarea id="hrCompanyAddressInput" style="min-height:60px" autocomplete="off"></textarea></label>
+          <label class="wf-rem-field"><span>CIN / GSTIN</span><input type="text" id="hrCompanyCinInput" autocomplete="off" /></label>
+          <label class="wf-rem-field"><span>Phone</span><input type="text" id="hrCompanyPhoneInput" autocomplete="off" /></label>
+          <label class="wf-rem-field"><span>Email</span><input type="text" id="hrCompanyEmailInput" autocomplete="off" /></label>
+          <label class="wf-rem-field"><span>Website</span><input type="text" id="hrCompanyWebsiteInput" autocomplete="off" /></label>
+          <div class="wf-auto-err hidden" id="hrCompanyDetailSheetErr"></div>
+        </div>
+        <div class="wf-rem-sheet-foot">
+          <button type="button" class="wf-ai-action-btn outline" id="hrCompanyDetailSheetCancelBtn">Cancel</button>
+          <button type="button" class="wf-ai-action-btn download" id="hrCompanyDetailSheetSaveBtn"><span>Save</span></button>
+        </div>
+      </div>
+
       <!-- Save/Edit template sheet - same bottom-sheet pattern as the
            Reminders Add/Edit sheet. Opened either from "Save as template"
            on a model-written reply bubble (topic/whenToUse blank,
@@ -2619,6 +2659,23 @@
           </span>
           <span class="wf-hub-tile-end">
             <span class="wf-hub-tile-badge wi-count-badge danger" id="hrDeptAliasesBadge" hidden></span>
+            <svg class="wf-hub-tile-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+          </span>
+        </button>
+        <!-- TASK 1(e) (2026-11), direct instruction - "Company details":
+             letter-facing fields (code/address/CIN/phone/email/website)
+             for each real Company value already in the HR data, plus one
+             shared Letter logo. Same compact-tile entry pattern as Site/
+             Department names above. -->
+        <button type="button" class="wf-hub-tile wf-hub-tile--compact" id="subhSettingsCompanyDetailsBtn" style="margin-top:10px">
+          <span class="wf-hub-tile-icon comms">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18"/><path d="M5 21V7l8-4v18"/><path d="M19 21V11l-6-4"/><path d="M9 9h.01M9 12h.01M9 15h.01"/></svg>
+          </span>
+          <span class="wf-hub-tile-main">
+            <span class="wf-hub-tile-title">Company details</span>
+            <span class="wf-hub-tile-sub">Code, address, CIN/GSTIN, contact + the letter logo</span>
+          </span>
+          <span class="wf-hub-tile-end">
             <svg class="wf-hub-tile-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
           </span>
         </button>

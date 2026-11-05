@@ -299,6 +299,38 @@ function check(label, ok, detail) {
   check('Attendance Requests: no JS error was thrown rendering the list', attnErrAfter === attnErrBefore,
     'new errors: ' + JSON.stringify(consoleErrors.slice(attnErrBefore).concat(pageErrors.slice(attnErrBefore))));
 
+  // TASK 1(e) (2026-11), direct instruction - "Company details" settings
+  // page: opened the same way the real "SUBH Settings" dashboard tile
+  // opens it (window.__hrAssistantOpenCompanyDetails), asserts the list
+  // renders one card per fake company and the edit sheet opens with that
+  // company's saved fields pre-filled, at the same 384px phone width as
+  // every other check in this script.
+  await page.route('**/api/workforce/hr-assistant/company-details', (route) => {
+    const items = [
+      { company: 'Alcove Realty Pvt Ltd', code: 'ARPL', address: '123 HO Street', cin: 'U12345WB2015PTC000001', phone: '033-1234-5678', email: 'hr@alcoverealty.in', website: 'https://alcoverealty.in' },
+      { company: 'Subh Ventures Pvt Ltd', code: '', address: '', cin: '', phone: '', email: '', website: '' }
+    ];
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items, logo: null }) });
+  });
+  await page.evaluate(() => { if (window.__hrAssistantClosePanel) window.__hrAssistantClosePanel(); });
+  await page.waitForTimeout(100);
+  const companyErrBefore = consoleErrors.length + pageErrors.length;
+  await page.evaluate(() => { window.__hrAssistantOpenCompanyDetails(); });
+  await page.waitForTimeout(250);
+  check('Company details page opens (not a blank page)', await page.locator('#hrCompanyDetailsPage').isVisible());
+  const companyHeadTitle = await page.locator('#hrCommsHeadTitle').textContent().catch(() => null);
+  check('Company details: header title reads "Company details"', (companyHeadTitle || '').trim() === 'Company details', 'got: ' + JSON.stringify(companyHeadTitle));
+  const companyCards = await page.locator('#hrCompanyDetailsList [data-company]').count();
+  check('Company details: both fake companies render as cards', companyCards === 2, 'got: ' + companyCards);
+  await page.click('#hrCompanyDetailsList [data-company="Alcove Realty Pvt Ltd"] [data-action="edit-company"]');
+  await page.waitForTimeout(350);
+  check('Company details: edit sheet opens for the tapped card', await page.locator('#hrCompanyDetailSheet').isVisible());
+  const codeVal = await page.locator('#hrCompanyCodeInput').inputValue().catch(() => null);
+  check('Company details: edit sheet pre-fills the saved company code', codeVal === 'ARPL', 'got: ' + JSON.stringify(codeVal));
+  const companyErrAfter = consoleErrors.length + pageErrors.length;
+  check('Company details: no JS error was thrown opening the page or the edit sheet', companyErrAfter === companyErrBefore,
+    'new errors: ' + JSON.stringify(consoleErrors.slice(companyErrBefore).concat(pageErrors.slice(companyErrBefore))));
+
   // Informational only, never a failure here: workforce.js's own main
   // dashboard (unrelated to the SUBH panel this check targets) fires its
   // own staggered prefetch of several analytics endpoints on load, each

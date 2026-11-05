@@ -160,6 +160,25 @@
   const deptAliasInput = document.getElementById('hrDeptAliasInput');
   const deptAliasDeptValueInput = document.getElementById('hrDeptAliasDeptValueInput');
   const deptAliasSheetTitle = document.getElementById('hrDeptAliasSheetTitle');
+  // Company details (TASK 1e, 2026-11) - flat list, no alias-groups: one
+  // card per real HR Company value, edit-only.
+  const companyDetailsPage = document.getElementById('hrCompanyDetailsPage');
+  const companyDetailsList = document.getElementById('hrCompanyDetailsList');
+  const letterLogoRow = document.getElementById('hrLetterLogoRow');
+  const letterLogoFileInput = document.getElementById('hrLetterLogoFileInput');
+  const companyDetailSheetBackdrop = document.getElementById('hrCompanyDetailSheetBackdrop');
+  const companyDetailSheet = document.getElementById('hrCompanyDetailSheet');
+  const companyDetailSheetCloseBtn = document.getElementById('hrCompanyDetailSheetCloseBtn');
+  const companyDetailSheetCancelBtn = document.getElementById('hrCompanyDetailSheetCancelBtn');
+  const companyDetailSheetSaveBtn = document.getElementById('hrCompanyDetailSheetSaveBtn');
+  const companyDetailSheetTitle = document.getElementById('hrCompanyDetailSheetTitle');
+  const companyCodeInput = document.getElementById('hrCompanyCodeInput');
+  const companyAddressInput = document.getElementById('hrCompanyAddressInput');
+  const companyCinInput = document.getElementById('hrCompanyCinInput');
+  const companyPhoneInput = document.getElementById('hrCompanyPhoneInput');
+  const companyEmailInput = document.getElementById('hrCompanyEmailInput');
+  const companyWebsiteInput = document.getElementById('hrCompanyWebsiteInput');
+  const companyDetailSheetErr = document.getElementById('hrCompanyDetailSheetErr');
   const convoPage = document.getElementById('hrConvoPage');
   const convoThread = document.getElementById('hrConvoThread');
   const convoActions = document.getElementById('hrConvoActions');
@@ -1479,7 +1498,7 @@
   // renderable data for the others; every path still re-fetches fresh
   // data in the background and re-renders when it lands, so nothing here
   // is ever more than one poll cycle stale.
-  const pageDataCache = { comms: null, commsAt: 0, reminders: new Map(), automations: null, openFlows: null, convos: new Map(), siteAliases: null, deptAliases: null, history: null };
+  const pageDataCache = { comms: null, commsAt: 0, reminders: new Map(), automations: null, openFlows: null, convos: new Map(), siteAliases: null, deptAliases: null, companyDetails: null, history: null };
   // Bumped by invalidateReminderCache (every reminder mutation - done/
   // undo/cancel/snooze/create/edit). Any reminders fetch in flight when a
   // mutation happens captures remMutationSeq at send time and checks it
@@ -1797,6 +1816,7 @@
     else if (entry.type === 'templates') showTemplates();
     else if (entry.type === 'siteAliases') showSiteAliases();
     else if (entry.type === 'deptAliases') showDeptAliases();
+    else if (entry.type === 'companyDetails') showCompanyDetails();
     else if (entry.type === 'actionNeeded') showActionNeeded();
     else if (entry.type === 'conversation') openConversationPage(entry.chatId);
     else if (entry.type === 'reminders') { activeRemFilter = entry.filter; setPanelView('reminders'); loadRemindersPage(entry.filter); }
@@ -1850,6 +1870,7 @@
     const isTemplates = view === 'templates';
     const isSiteAliases = view === 'siteAliases';
     const isDeptAliases = view === 'deptAliases';
+    const isCompanyDetails = view === 'companyDetails';
     const isActionNeeded = view === 'actionNeeded';
     const isAutoList = view === 'automationList';
     const isAutomation = view === 'automation';
@@ -1880,6 +1901,7 @@
     if (templatesPage) templatesPage.hidden = !isTemplates;
     if (siteAliasesPage) siteAliasesPage.hidden = !isSiteAliases;
     if (deptAliasesPage) deptAliasesPage.hidden = !isDeptAliases;
+    if (companyDetailsPage) companyDetailsPage.hidden = !isCompanyDetails;
     if (actionNeededPage) actionNeededPage.hidden = !isActionNeeded;
     if (autoListPage) autoListPage.hidden = !isAutoList;
     if (autoPage) autoPage.hidden = !isAutomation;
@@ -1940,6 +1962,12 @@
       if (commsHeadIcon) commsHeadIcon.innerHTML = WHATSAPP_SVG;
       if (commsHeadTitle) commsHeadTitle.textContent = 'Department names';
       if (commsHeadSubtitle) commsHeadSubtitle.textContent = 'Colloquial department names matched to the HR Master';
+      if (commsHeadBadge) commsHeadBadge.hidden = true;
+    } else if (isCompanyDetails) {
+      if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon whatsapp';
+      if (commsHeadIcon) commsHeadIcon.innerHTML = WHATSAPP_SVG;
+      if (commsHeadTitle) commsHeadTitle.textContent = 'Company details';
+      if (commsHeadSubtitle) commsHeadSubtitle.textContent = 'Code, address, CIN/GSTIN, contact + the letter logo';
       if (commsHeadBadge) commsHeadBadge.hidden = true;
     } else if (isActionNeeded) {
       if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon whatsapp';
@@ -3178,6 +3206,10 @@
       ]);
       pageDataCache.deptAliases = { aliases: deptAliasResp.items || [], newDepts: newDeptsResp.items || [] };
     } catch (err) { /* best effort - a real page open will just fetch fresh */ }
+    try {
+      const companyResp = await fetch('/api/workforce/hr-assistant/company-details').then((res) => res.json());
+      pageDataCache.companyDetails = { items: companyResp.items || [], logo: companyResp.logo || null };
+    } catch (err) { /* best effort - a real page open will just fetch fresh */ }
   }
   window.__hrAssistantPrefetchSubhSettings = prefetchSubhSettingsAll;
   function showDeptAliases() {
@@ -3243,6 +3275,148 @@
         pageDataCache.deptAliases = null; // a mutation just happened - never serve the stale cached list again
         if (panelView === 'deptAliases') loadDeptAliasesPage();
       }, { resetAfterSuccess: true });
+    });
+  }
+
+  // Company details (TASK 1e, 2026-11), direct instruction - a flat list,
+  // no alias-groups: one card per real HR Company value, edit-only (cards
+  // come and go with the HR data, never a separate add/delete here), plus
+  // one shared "Letter logo" at the top used on every letter.
+  function companyDetailCardHtml(item) {
+    const summaryParts = [item.code, item.phone, item.email].filter(Boolean);
+    return '<div class="wf-auto-task-card" data-company="' + escapeHtml(item.company) + '">' +
+      '<div class="wf-auto-task-head"><div style="flex:1;min-width:0">' +
+      '<div class="wf-auto-task-subject">' + escapeHtml(item.company) + '</div>' +
+      '<div class="wf-auto-hint">' + (summaryParts.length ? escapeHtml(summaryParts.join(' · ')) : 'No details saved yet') + '</div>' +
+      '</div></div>' +
+      '<div class="wf-auto-actions"><button type="button" class="plain" data-action="edit-company">Edit</button></div></div>';
+  }
+  function letterLogoRowHtml(logo) {
+    const preview = logo && logo.dataUrl
+      ? '<img src="' + escapeHtml(logo.dataUrl) + '" alt="Letter logo" style="height:40px;max-width:120px;object-fit:contain;border-radius:6px;border:1px solid var(--wi-border-2)" />'
+      : '<div class="wf-auto-hint">No logo uploaded yet</div>';
+    return '<div class="wf-auto-task-card" id="hrLetterLogoCard">' +
+      '<div class="wf-auto-task-head"><div style="flex:1;min-width:0">' + preview + '</div></div>' +
+      '<div class="wf-auto-actions"><button type="button" class="plain" data-action="upload-logo">' + (logo && logo.dataUrl ? 'Replace' : 'Upload') + '</button></div></div>';
+  }
+  function renderCompanyDetailsPage(items, logo) {
+    if (letterLogoRow) {
+      letterLogoRow.innerHTML = letterLogoRowHtml(logo);
+      const uploadBtn = letterLogoRow.querySelector('[data-action="upload-logo"]');
+      if (uploadBtn) uploadBtn.addEventListener('click', () => { if (letterLogoFileInput) letterLogoFileInput.click(); });
+    }
+    if (!companyDetailsList) return;
+    if (!items.length) { companyDetailsList.innerHTML = '<div class="wf-rem-empty">No companies found in the HR data yet.</div>'; return; }
+    companyDetailsList.innerHTML = items.map(companyDetailCardHtml).join('');
+    companyDetailsList.querySelectorAll('[data-action="edit-company"]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const company = btn.closest('[data-company]').dataset.company;
+        const item = items.find((i) => i.company === company);
+        openCompanyDetailSheet(item);
+      });
+    });
+  }
+  async function loadCompanyDetailsPage() {
+    if (!companyDetailsList) return;
+    const cached = pageDataCache.companyDetails;
+    if (cached) renderCompanyDetailsPage(cached.items, cached.logo);
+    else {
+      companyDetailsList.innerHTML = '<div class="wf-skeleton-list"><div class="wf-skeleton-row"></div><div class="wf-skeleton-row"></div></div>';
+      if (letterLogoRow) letterLogoRow.innerHTML = '';
+    }
+    try {
+      const r = await fetch('/api/workforce/hr-assistant/company-details').then((res) => res.json());
+      const items = r.items || [];
+      const logo = r.logo || null;
+      pageDataCache.companyDetails = { items, logo };
+      renderCompanyDetailsPage(items, logo);
+    } catch (err) {
+      if (!cached) companyDetailsList.innerHTML = '<div class="wf-rem-empty">Could not load company details.</div>';
+    }
+  }
+  function showCompanyDetails() {
+    setPanelView('companyDetails');
+    loadCompanyDetailsPage();
+  }
+  // Opened from the top-level "SUBH Settings" dashboard view's own
+  // "Company details" card (see workforce.js) - same pattern as
+  // __hrAssistantOpenSiteAliases/__hrAssistantOpenDeptAliases.
+  window.__hrAssistantOpenCompanyDetails = function () {
+    const wasOpen = typeof panel !== 'undefined' && !panel.hidden;
+    if (!wasOpen && typeof openPanel === 'function') {
+      openPanel();
+      navStack = [{ type: 'companyDetails' }];
+    } else {
+      pushNav({ type: 'companyDetails' });
+    }
+    showCompanyDetails();
+  };
+  function closeCompanyDetailSheet() {
+    companyDetailSheetBackdrop.classList.remove('open');
+    companyDetailSheet.classList.remove('open');
+    setTimeout(() => { companyDetailSheetBackdrop.hidden = true; companyDetailSheet.hidden = true; }, 320);
+  }
+  let companyDetailSheetCompany = '';
+  function openCompanyDetailSheet(item) {
+    companyDetailSheetCompany = item.company;
+    if (companyDetailSheetTitle) companyDetailSheetTitle.textContent = 'Edit "' + item.company + '"';
+    if (companyCodeInput) companyCodeInput.value = item.code || '';
+    if (companyAddressInput) companyAddressInput.value = item.address || '';
+    if (companyCinInput) companyCinInput.value = item.cin || '';
+    if (companyPhoneInput) companyPhoneInput.value = item.phone || '';
+    if (companyEmailInput) companyEmailInput.value = item.email || '';
+    if (companyWebsiteInput) companyWebsiteInput.value = item.website || '';
+    if (companyDetailSheetErr) { companyDetailSheetErr.textContent = ''; companyDetailSheetErr.classList.add('hidden'); }
+    companyDetailSheetBackdrop.hidden = false;
+    companyDetailSheet.hidden = false;
+    void companyDetailSheet.offsetHeight;
+    companyDetailSheetBackdrop.classList.add('open');
+    companyDetailSheet.classList.add('open');
+  }
+  if (companyDetailSheetCloseBtn) companyDetailSheetCloseBtn.addEventListener('click', closeCompanyDetailSheet);
+  if (companyDetailSheetCancelBtn) companyDetailSheetCancelBtn.addEventListener('click', closeCompanyDetailSheet);
+  if (companyDetailSheetBackdrop) companyDetailSheetBackdrop.addEventListener('click', closeCompanyDetailSheet);
+  if (companyDetailSheetSaveBtn) {
+    companyDetailSheetSaveBtn.addEventListener('click', async () => {
+      const code = (companyCodeInput.value || '').trim();
+      if (!code) {
+        if (companyDetailSheetErr) { companyDetailSheetErr.textContent = 'Company code is required.'; companyDetailSheetErr.classList.remove('hidden'); }
+        return;
+      }
+      if (companyDetailSheetErr) { companyDetailSheetErr.textContent = ''; companyDetailSheetErr.classList.add('hidden'); }
+      const fields = {
+        code,
+        address: (companyAddressInput.value || '').trim(),
+        cin: (companyCinInput.value || '').trim(),
+        phone: (companyPhoneInput.value || '').trim(),
+        email: (companyEmailInput.value || '').trim(),
+        website: (companyWebsiteInput.value || '').trim()
+      };
+      await runButtonAction(companyDetailSheetSaveBtn, () => postJsonOrThrow('/api/workforce/hr-assistant/company-details/' + encodeURIComponent(companyDetailSheetCompany), fields), () => {
+        closeCompanyDetailSheet();
+        showProToast({ title: 'Company details saved', type: 'success' });
+        pageDataCache.companyDetails = null; // a mutation just happened - never serve the stale cached list again
+        if (panelView === 'companyDetails') loadCompanyDetailsPage();
+      }, { resetAfterSuccess: true });
+    });
+  }
+  if (letterLogoFileInput) {
+    letterLogoFileInput.addEventListener('change', () => {
+      const file = letterLogoFileInput.files && letterLogoFileInput.files[0];
+      letterLogoFileInput.value = '';
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = async () => {
+        try {
+          await postJsonOrThrow('/api/workforce/hr-assistant/letter-logo', { dataUrl: reader.result, contentType: file.type || null });
+          showProToast({ title: 'Letter logo updated', type: 'success' });
+          pageDataCache.companyDetails = null; // a mutation just happened - never serve the stale cached logo again
+          if (panelView === 'companyDetails') loadCompanyDetailsPage();
+        } catch (err) {
+          showActionToast((err && err.message) || 'Could not upload the logo.', null, 'error');
+        }
+      };
+      reader.readAsDataURL(file);
     });
   }
 
@@ -6887,6 +7061,7 @@
     hrTemplatesPage: () => loadTemplatesPage(),
     hrSiteAliasesPage: () => loadSiteAliasesPage(),
     hrDeptAliasesPage: () => loadDeptAliasesPage(),
+    hrCompanyDetailsPage: () => loadCompanyDetailsPage(),
     hrConvoPage: () => reloadConversation()
   };
   Object.keys(WF_PTR_REFRESH_BY_ID).forEach((id) => {

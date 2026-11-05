@@ -20,6 +20,7 @@ const documentRequests = require('./aiAssistant/documentRequests');
 const reminderService = require('./aiAssistant/reminderService');
 const automationService = require('./aiAssistant/automationService');
 const workflowService = require('./aiAssistant/workflowService');
+const companyDetailsService = require('./aiAssistant/companyDetailsService');
 const sheetsAuth = require('./sheetsAuth');
 const hrAccountCommands = require('./hrAccountCommands');
 const hrAuthAlerts = require('./hrAuthAlerts');
@@ -3020,6 +3021,44 @@ router.post('/hr-assistant/new-depts/confirm', async (req, res) => {
     if (!deptValue) return res.status(400).json({ error: 'deptValue is required' });
     const ok = await whatsappAssistant.confirmNewDept(deptValue, Array.isArray(aliasWords) ? aliasWords : []);
     if (!ok) return res.status(500).json({ error: 'Could not confirm this department.' });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// TASK 1(e) (2026-11), direct instruction - "Company details" settings:
+// one card per distinct Company value already in the real HR data (the
+// company's own full legal name IS that HR column value - never stored
+// again here), edit-only, cards come and go with the HR data. Plus one
+// shared "Letter logo" for every company/letter.
+router.get('/hr-assistant/company-details', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const items = await companyDetailsService.listCompanyDetails();
+    const logo = await companyDetailsService.getLetterLogo();
+    res.json({ items, logo });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+router.post('/hr-assistant/company-details/:company', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const result = await companyDetailsService.saveCompanyDetails(decodeURIComponent(req.params.company), req.body || {});
+    if (!result.ok) return res.status(400).json({ error: result.error });
+    res.json({ ok: true, item: result.item });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+router.post('/hr-assistant/letter-logo', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const { dataUrl, contentType } = req.body || {};
+    if (!dataUrl) return res.status(400).json({ error: 'dataUrl is required' });
+    const result = await companyDetailsService.saveLetterLogo({ dataUrl, contentType });
+    if (!result.ok) return res.status(400).json({ error: result.error });
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.message });

@@ -539,6 +539,14 @@ if (subhSettingsDeptNamesBtn) {
     if (window.__hrAssistantOpenDeptAliases) window.__hrAssistantOpenDeptAliases();
   });
 }
+// Company details (TASK 1e, 2026-11) - same entry pattern as Site/
+// Department names above.
+const subhSettingsCompanyDetailsBtn = document.getElementById('subhSettingsCompanyDetailsBtn');
+if (subhSettingsCompanyDetailsBtn) {
+  subhSettingsCompanyDetailsBtn.addEventListener('click', () => {
+    if (window.__hrAssistantOpenCompanyDetails) window.__hrAssistantOpenCompanyDetails();
+  });
+}
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && !wfDrawer.hidden) closeDrawer();
 });

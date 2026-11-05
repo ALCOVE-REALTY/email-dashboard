@@ -866,3 +866,74 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
   anywhere on the page with the field staying fully on-screen - verified
   to actually catch the rule-card overflow bug by reverting the CSS fix
   and re-running.
+- Task 20 (2026-11), TASK 1(a) of the same letter-templates batch -
+  Create Workflow's "Preview a document" generated only a placeholder
+  text string client-side, never the real file that would actually be
+  attached. New route `POST /hr-assistant/workflows/preview-document`
+  calls `workflowService.previewWorkflowDocument(plan, now)`, which
+  resolves the plan's first real matching row via
+  `automationService.matchedRows` (falling back to a sample ACTIVE
+  employee, via a newly-exported `automationService.empRow`, when
+  nothing matches yet - e.g. an unshared sheet or a brand new plan) and
+  generates the SAME PDF buffer the real send path would via the
+  existing `buildWorkflowDocumentBuffer`/`workflowDocFileName`. The
+  panel renders it as a real `<iframe>` onto a `data:application/pdf`
+  URL (scrollable, rendered pages) plus a Download link with the real
+  filename, in the same `wfPreviewSheet`/`wfPreviewBody` the message
+  preview already uses. Deterministic suite (`scripts/check-workflow.js`)
+  and a headless UI check (`scripts/check-subh-panel-ui.js`, mocking the
+  new route) - verified to catch a regression by reverting and
+  re-running (also caught a test-authoring bug: the check's selectors
+  initially used the JS *variable* names `#wfPreviewSheet`/`#wfPreviewBody`
+  instead of the real DOM ids `#hrWorkflowPreviewSheet`/
+  `#hrWorkflowPreviewBody`, silently leaving the sheet open and breaking
+  a later test).
+- Task 21 (2026-11), TASK 1(e) of the same batch - "Company details"
+  settings (☰ → SUBH Settings → Company details, same design/instant-
+  cache pattern as Site/Department names): one card per distinct,
+  non-blank `Company` value already present in the real HR data
+  (`employeeService.getEmployeeData()` - the company's own full legal
+  NAME is that HR column value itself, never stored again here) with
+  only the extra letter-facing fields an HR row doesn't carry - code
+  (used in the Ref No., e.g. "ARPL"), registered address, CIN/GSTIN,
+  phone, email, website, all optional except the code - edit-only, no
+  separate add/delete (cards come and go with the HR data: a company
+  that stops appearing in the HR Master simply loses its card, even
+  though its saved details stay in the store untouched in case it comes
+  back). Plus one shared "Letter logo" upload at the top of the page,
+  used on every letter regardless of company. New
+  `src/aiAssistant/companyDetailsService.js` (its own file, kept
+  separate from the still-pending Letter Settings/ref-no work so each
+  TASK 1 commit's module surface stays minimal) - same Redis
+  get/set-by-key convention as every other settings-style store in this
+  app, `isAvailable()` so a route can fail cleanly with no store
+  configured. 3 new owner-gated routes in `workforceRoutes.js`: `GET
+  /hr-assistant/company-details`, `POST
+  /hr-assistant/company-details/:company`, `POST
+  /hr-assistant/letter-logo`. The logo upload is a base64 data URL in a
+  plain JSON body (same no-multer/no-new-dependency convention already
+  used for PDF bytes elsewhere in this app), which required raising
+  Express's global `express.json()` body limit from the 100kb default to
+  5mb in `server.js` (a global body parser already consumes the request
+  before any route-specific override could apply, so a per-route limit
+  was not an option - every other route's own body stays far under this,
+  so it is a no-op for everything else). Frontend mirrors the Site/
+  Department names pattern exactly (`setPanelView`'s `isCompanyDetails`
+  branch, `pageDataCache.companyDetails`, `prefetchSubhSettingsAll`
+  warming it, `window.__hrAssistantOpenCompanyDetails`'s back-navigation
+  handling) but as a flat list with no alias-groups, since a company
+  value is never split into multiple colloquial names the way a site/
+  department can be. Deterministic suite
+  (`scripts/check-company-details.js`, `npm run check:company-details`):
+  distinct-company derivation (blanks excluded, alphabetically sorted),
+  blank defaults for a never-saved company, save rejected for a company
+  no longer in the HR data, save/get/list round-trip, fields trimmed
+  with only `code` required, a company that drops out of the HR data
+  loses its card while its stored details survive untouched, letter-logo
+  save/get round-trip. Headless UI check (`scripts/check-subh-panel-ui.js`):
+  opening the page renders both fake companies as cards, tapping Edit
+  opens the sheet pre-filled with that company's saved code, no JS
+  error - verified to actually catch a regression by reverting the
+  frontend wiring and re-running (the suite crashed with
+  `window.__hrAssistantOpenCompanyDetails is not a function`, confirming
+  the check genuinely exercises this new entry point).

@@ -34,7 +34,14 @@ const { buildTablePdfBuffer } = require('./src/pdfReport');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(express.json());
+// Task 1e (2026-11) - the "Letter logo" upload (Company details settings)
+// sends its image as a base64 data URL in a plain JSON body, same
+// no-multer/no-new-dependency convention already used for PDF bytes
+// elsewhere in this app - Express's own default 100kb JSON limit is too
+// small for even a modest logo once base64-inflated, so the global limit
+// is raised modestly. Every other route's own body is still well under
+// this, so this is a no-op for everything else.
+app.use(express.json({ limit: '5mb' }));
 
 app.get('/api/status', (req, res) => {
   const status = getConfigStatus();
