@@ -1109,4 +1109,72 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
   occasionally hits a harmless `UV_HANDLE_CLOSING` libuv assertion during
   Node's own process-exit teardown, AFTER all checks have already printed
   and passed - a pre-existing Windows/libuv flake, not a test or
-  correctness bug; re-running shows it's intermittent.)
+  correctness bug; re-running shows it's intermittent. The same flake
+  recurred in Task 25 below - same conclusion, not revisited there.)
+- Task 25 (2026-11), TASK 1(c) of the same batch - placeholder detection
+  + the field-mapping engine for Drive templates (the backend half of
+  "AI understands, code speaks" for TASK 1(b)/(d); no routes/UI yet - see
+  Task 26+). New `src/aiAssistant/driveTemplateFieldsService.js`:
+  - `extractPlaceholders(fileId, mimeType)`: a native Google Doc is read
+    directly via the Docs API (`sheetsAuth.getDocsClient`, walking
+    `body.content` AND `headers`/`footers` recursively through tables -
+    a letterhead placeholder is never missed); a `.docx` is converted to
+    a TEMP Google Doc copy first (`sheetsAuth.getDriveWriteClient`'s
+    `files.copy`, the exact "copy the template" mechanism TASK 1(d)'s
+    generation step will reuse), read the same way, then the temp copy
+    is ALWAYS deleted (even if reading its text throws) - never left
+    behind, never the owner's original touched. `{Placeholder}` matching
+    is single-line/non-nested, deduped in first-seen order.
+  - The fixed, validated option lists every proposal is checked against:
+    `HR_COLUMNS` (the exact same safe whitelist
+    `automationService.EMP_COLUMNS` already exposes - aadhar/pan are not
+    IN this list, so they can never be proposed or picked here either),
+    `DERIVED_RULES` (title/his_her/he_she/confirmation_date/
+    extension_end_date - the SAME Gender-based title/pronoun rules and
+    DOJ+probation-months/+{Reply_Detail} math the built-in letters
+    already use, available here too), `COMPANY_FIELDS` (Company_Name/
+    Code/Address/CIN/Phone/Email/Website), plus `ref_no` and `today`.
+  - `sanitizeMapping(raw)`: the ONE gate every mapping passes through -
+    model-proposed or owner-edited - before being trusted or saved; an
+    `hr_column`/`derived`/`company_field` naming anything outside the
+    fixed lists above (or a `fixed` mapping with blank text) always
+    degrades to `source: 'unknown'`, never silently kept.
+  - `resolveFieldValue(mapping, ctx)`: the ONLY function that turns a
+    saved mapping into a real value - code only, never the model. A
+    missing/empty source value (no Gender set, a company field never
+    configured, an HR column blank on this record, `extension_end_date`
+    needing BOTH a confirmation date and the reply-captured months)
+    always comes back `{ ok: false, reason }`, never a guess or a blank -
+    this is what TASK 1(d)'s generation step will use to hold a record's
+    letter.
+  - `getTemplateMapping`/`saveTemplateMapping`: per-template (by its
+    `drive:<fileId>` key) saved mapping, Redis-backed, same
+    get/set-by-key convention as every other settings store in this app;
+    `saveTemplateMapping` re-sanitizes every entry on save, so a
+    corrupted/hand-edited payload can never persist an invalid mapping.
+  - `proposeFieldMapping(placeholders)`: calls the model
+    (`callMappingTool`, exposed via `module.exports.callMappingTool` so
+    it's mockable the same way `workflowService.callWorkflowTool` is)
+    with the placeholder list + the 3 fixed option lists above, asking it
+    to propose STRUCTURE only (never an actual value, except literal
+    fixed text when obviously appropriate) - then sanitizes every
+    returned proposal AND guarantees every placeholder gets SOME
+    proposal back (`unknown` for anything the model never mentioned or
+    proposed invalidly), so a placeholder can never be silently dropped
+    from the mapping review.
+  Deterministic suite (`scripts/check-drive-template-fields.js`,
+  `npm run check:drive-template-fields`, 51/51, zero real Drive/Docs/
+  Claude calls - `callMappingTool`/`sheetsAuth`'s client getters
+  stubbed): placeholder matching (dedup, no cross-line, no nested
+  braces), text extraction across paragraphs/tables/headers/footers, the
+  native-Doc-vs-.docx-copy-then-delete path (including temp-copy cleanup
+  on a read failure), every `sanitizeMapping` degrade-to-unknown case,
+  every `resolveFieldValue` source including Gender-unset/missing-column/
+  unset-company-field holds, the saved-mapping round-trip with
+  sanitization on save, and `proposeFieldMapping` never trusting an
+  invalid model proposal or dropping an unmentioned placeholder. The real
+  Claude call itself (`callMappingTool`) is NOT exercised by this
+  suite - it needs a separate, explicitly opt-in real-API script (the
+  same `check-workflow-nlu.js`-style convention already used elsewhere in
+  this codebase) once the owner actually has real templates uploaded to
+  test against.

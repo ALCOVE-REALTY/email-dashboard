@@ -16,7 +16,8 @@
     "check:subh-panel-ui": "node scripts/check-subh-panel-ui.js",
     "check:company-details": "node scripts/check-company-details.js",
     "check:letter-settings": "node scripts/check-letter-settings.js",
-    "check:drive-templates": "node scripts/check-drive-templates.js"
+    "check:drive-templates": "node scripts/check-drive-templates.js",
+    "check:drive-template-fields": "node scripts/check-drive-template-fields.js"
   },
   "dependencies": {
     "@sparticuz/chromium": "^153.0.0",
