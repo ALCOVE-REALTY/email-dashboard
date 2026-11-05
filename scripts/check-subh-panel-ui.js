@@ -7,12 +7,19 @@
 // 'workflowDetail' branch at all, so nothing ever un-hid
 // hrWorkflowPage/hrWorkflowListPage/hrWorkflowDetailPage.
 //
+// Also covers the Attendance Requests nesting bug (commit 9e69764):
+// renderAttnList's own outer div was never closed, so the browser's HTML
+// error-recovery nested every following card inside the still-open
+// previous one (box inside box inside box) instead of a flat list.
+//
 // This script loads the REAL workforce.html + public/ assets from a
 // throwaway local static server (no real login, no real backend) with
 // every /api/** call mocked by Playwright's request interception, drives
 // the panel exactly the way a person would (FAB -> Hub -> Reminders ->
-// each of the 4 buttons), and asserts each target page becomes visible
-// with its key elements, with no JS error thrown along the way.
+// each of the 4 buttons, and separately FAB -> Hub -> Important
+// Communications -> WhatsApp -> Attendance Requests), and asserts each
+// target page becomes visible with its key elements, with no JS error
+// thrown along the way.
 //
 // Run manually: node scripts/check-subh-panel-ui.js
 // (not part of the default "run everything" suites - needs a real
@@ -151,6 +158,48 @@ function check(label, ok, detail) {
     check(t.label + ': no JS error was thrown opening this page', errAfter === errBefore,
       'new errors: ' + JSON.stringify(consoleErrors.slice(errBefore).concat(pageErrors.slice(errBefore))));
   }
+
+  // Task 14 (2026-11) LIVE BUG FIX regression guard: Attendance Requests
+  // cards used to render nested inside each other (renderAttnList's own
+  // outer div was never closed, so the browser's HTML error-recovery
+  // nested every following card inside the still-open previous one).
+  // Fixed in commit 9e69764 - this drives the real page with 2+ fake
+  // requests and asserts they render as flat siblings, never nested, so
+  // a future regression here is caught the same way as the workflow
+  // blank-page bug above.
+  await page.route('**/api/workforce/hr-assistant/attendance-requests**', (route) => {
+    const items = [
+      { id: 'attn-test-1', employeeName: 'Test Employee One', senderPhone: '910000000001', employeeId: 'AR000001', requestDates: '5 Nov', receivedAt: Date.now(), requestType: 'Leave', status: 'in_progress' },
+      { id: 'attn-test-2', employeeName: 'Test Employee Two', senderPhone: '910000000002', employeeId: 'AR000002', requestDates: '6 Nov', receivedAt: Date.now(), requestType: 'WFH', status: 'in_progress' },
+      { id: 'attn-test-3', employeeName: 'Test Employee Three', senderPhone: '910000000003', employeeId: 'AR000003', requestDates: '7 Nov', receivedAt: Date.now(), requestType: 'Half-day', status: 'expired' }
+    ];
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items, counts: { all: items.length } }) });
+  });
+  await page.evaluate(() => { if (window.__hrAssistantClosePanel) window.__hrAssistantClosePanel(); });
+  await page.waitForTimeout(100);
+  await page.click('#hrAssistantBtn');
+  await page.waitForTimeout(150);
+  await page.click('#hrTodayUpdatesCard');
+  await page.waitForTimeout(150);
+  await page.click('#hrHubCommsTile');
+  await page.waitForTimeout(150);
+  await page.click('#hrCommsHubWaTile');
+  await page.waitForTimeout(150);
+  const attnErrBefore = consoleErrors.length + pageErrors.length;
+  await page.click('#hrOpenFlowsBtn');
+  await page.waitForTimeout(250);
+  check('Attendance Requests page opens (not a blank page)', await page.locator('#hrAttendanceRequestsPage').isVisible());
+  const attnNesting = await page.evaluate(() => {
+    const rows = Array.from(document.querySelectorAll('#hrAttnList .wf-attn-row'));
+    const directChildren = Array.from(document.querySelectorAll('#hrAttnList > .wf-attn-row'));
+    const anyNested = rows.some((row) => row.parentElement.closest('.wf-attn-row'));
+    return { total: rows.length, directChildren: directChildren.length, anyNested };
+  });
+  check('Attendance Requests: all 3 fake requests render (no card swallowed by a nesting bug)', attnNesting.total === 3, 'got: ' + JSON.stringify(attnNesting));
+  check('Attendance Requests: every card is a DIRECT sibling of the list container, none nested inside another card', attnNesting.directChildren === 3 && !attnNesting.anyNested, 'got: ' + JSON.stringify(attnNesting));
+  const attnErrAfter = consoleErrors.length + pageErrors.length;
+  check('Attendance Requests: no JS error was thrown rendering the list', attnErrAfter === attnErrBefore,
+    'new errors: ' + JSON.stringify(consoleErrors.slice(attnErrBefore).concat(pageErrors.slice(attnErrBefore))));
 
   // Informational only, never a failure here: workforce.js's own main
   // dashboard (unrelated to the SUBH panel this check targets) fires its

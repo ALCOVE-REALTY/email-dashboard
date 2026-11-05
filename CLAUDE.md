@@ -650,6 +650,12 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
   card's opening div inside the still-open previous one instead of
   starting a new sibling. Fixed by closing the outer div at the end of
   the template - every card is now its own flat, same-width sibling.
+  Regression guard added to `scripts/check-subh-panel-ui.js` (2026-11):
+  navigates to the Attendance Requests page with 3 mocked requests and
+  asserts every `.wf-attn-row` is a DIRECT child of the list container
+  (never nested inside another row) - verified to actually catch the bug
+  by reverting the fix and re-running (reproduces `directChildren:1,
+  anyNested:true` instead of 3 flat siblings).
 - Task 15 (2026-11) LIVE BUG FIX: "Dept HOD + field" with SEVERAL HODs in
   that department - live case: "Mdo dept. HOD emp code dao" (MDO has 6
   HODs) answered with the plain name+headcount HOD list, which never
