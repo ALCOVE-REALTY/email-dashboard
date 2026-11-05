@@ -361,7 +361,7 @@ function buildConfirmationLetterPdf(fields) {
     // Letter (unlike Promotion & Increment's separate lines).
     const refLineY = doc.y;
     doc.font(BODY_FONT).fontSize(BODY_SIZE).fillColor('#000')
-      .text('Ref. No: AR/HR/Conf./' + refNo, MARGIN_LEFT, refLineY);
+      .text('Ref. No: ' + refNo, MARGIN_LEFT, refLineY);
     const dateLabel = 'Date: ';
     doc.font(BODY_FONT_BOLD).fontSize(BODY_SIZE);
     const dateLabelWidth = doc.widthOfString(dateLabel);
@@ -380,8 +380,12 @@ function buildConfirmationLetterPdf(fields) {
 
     // Recipient block - "Position:", not "Department:" (this template has
     // no department line at all).
+    // TASK 1(c) (2026-11) - title (Mr./Ms.) is now derived from the real
+    // Gender column and can legitimately be empty (gender not set) -
+    // never a hardcoded leading space in that case.
+    const titlePrefix = title ? title + ' ' : '';
     doc.font(BODY_FONT_BOLD).fontSize(BODY_SIZE);
-    doc.text(title + ' ' + employeeName);
+    doc.text(titlePrefix + employeeName);
     doc.text('Emp ID: ' + employeeId);
     doc.text('Position: ' + position);
     doc.moveDown(1.5);
@@ -391,7 +395,7 @@ function buildConfirmationLetterPdf(fields) {
     doc.moveDown(3.5);
 
     // Salutation.
-    doc.font(BODY_FONT_BOLD).fontSize(BODY_SIZE).text('Dear ' + title + ' ' + employeeName + ',');
+    doc.font(BODY_FONT_BOLD).fontSize(BODY_SIZE).text('Dear ' + titlePrefix + employeeName + ',');
     doc.moveDown(1.2);
 
     writeMixed(doc, [
@@ -452,7 +456,7 @@ function buildExtensionOfProbationLetterPdf(fields) {
     doc.image(LOGO_PATH, 28, 21.25, { width: 110.25, height: 56.9 });
     doc.y = MARGIN_TOP;
     const refLineY = doc.y;
-    doc.font(BODY_FONT).fontSize(BODY_SIZE).fillColor('#000').text('Ref. No: AR/HR/ExtProb/' + refNo, MARGIN_LEFT, refLineY);
+    doc.font(BODY_FONT).fontSize(BODY_SIZE).fillColor('#000').text('Ref. No: ' + refNo, MARGIN_LEFT, refLineY);
     const dateStr = ddmmyyyy(new Date().toISOString().slice(0, 10));
     const dateLabel = 'Date: ';
     doc.font(BODY_FONT_BOLD).fontSize(BODY_SIZE);
@@ -503,7 +507,7 @@ function buildExperienceLetterPdf(fields) {
     doc.image(LOGO_PATH, 28, 21.25, { width: 110.25, height: 56.9 });
     doc.y = MARGIN_TOP;
     const refLineY = doc.y;
-    doc.font(BODY_FONT).fontSize(BODY_SIZE).fillColor('#000').text('Ref. No: AR/HR/Exp/' + refNo, MARGIN_LEFT, refLineY);
+    doc.font(BODY_FONT).fontSize(BODY_SIZE).fillColor('#000').text('Ref. No: ' + refNo, MARGIN_LEFT, refLineY);
     const dateStr = ddmmyyyy(new Date().toISOString().slice(0, 10));
     const dateLabel = 'Date: ';
     doc.font(BODY_FONT_BOLD).fontSize(BODY_SIZE);
@@ -550,7 +554,7 @@ function buildRelievingLetterPdf(fields) {
     doc.image(LOGO_PATH, 28, 21.25, { width: 110.25, height: 56.9 });
     doc.y = MARGIN_TOP;
     const refLineY = doc.y;
-    doc.font(BODY_FONT).fontSize(BODY_SIZE).fillColor('#000').text('Ref. No: AR/HR/Rel/' + refNo, MARGIN_LEFT, refLineY);
+    doc.font(BODY_FONT).fontSize(BODY_SIZE).fillColor('#000').text('Ref. No: ' + refNo, MARGIN_LEFT, refLineY);
     const dateStr = ddmmyyyy(new Date().toISOString().slice(0, 10));
     const dateLabel = 'Date: ';
     doc.font(BODY_FONT_BOLD).fontSize(BODY_SIZE);

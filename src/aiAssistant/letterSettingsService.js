@@ -11,6 +11,7 @@
 // Google Sheet created inside the SAME Drive folder the owner already
 // shared with the service account as Editor (never a new folder).
 const { Redis } = require('@upstash/redis');
+const { Readable } = require('stream');
 const sheetsAuth = require('../sheetsAuth');
 
 let client;
@@ -205,11 +206,24 @@ async function appendToLetterRegister({ date, refNo, employeeCode, name, company
   return link;
 }
 
+// Uploads one SENT letter's PDF into the same "SUBH Letter Templates"
+// Drive folder, so the Letter Register's own "PDF Link" column points at
+// the actual file that went out - never called for a preview/test send.
+async function uploadSentLetterPdf({ buffer, filename }) {
+  const drive = sheetsAuth.getDriveWriteClient();
+  const file = await drive.files.create({
+    resource: { name: filename, parents: [LETTER_TEMPLATES_FOLDER_ID] },
+    media: { mimeType: 'application/pdf', body: Readable.from(buffer) },
+    fields: 'id, webViewLink'
+  });
+  return { fileId: file.data.id, url: file.data.webViewLink || ('https://drive.google.com/file/d/' + file.data.id + '/view') };
+}
+
 module.exports = {
   isAvailable: () => Boolean(getClient()),
   LETTER_TEMPLATES_FOLDER_ID, DEFAULT_REF_FORMAT, DEFAULT_LETTER_CODES, LETTER_TYPE_LABELS, REF_FORMAT_PLACEHOLDERS,
   computeFinancialYear, renderRefNo, padSerial,
   getRefNoFormat, saveRefNoFormat, getLetterCodes, saveLetterCode, getLetterSettings,
   getCounterValue, setCounterOverride, previewNextRefNo, assignRefNo,
-  getLetterRegisterLink, ensureLetterRegisterSheet, appendToLetterRegister
+  getLetterRegisterLink, ensureLetterRegisterSheet, appendToLetterRegister, uploadSentLetterPdf
 };

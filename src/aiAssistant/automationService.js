@@ -136,7 +136,11 @@ function empRow(e) {
     'DOB': e.dob, 'Tenure': e.tenure, 'Total Experience': e.totalExperience,
     'Employment Type': e.employmentType, 'Status': e.status,
     'Reporting DOER': e.reportingDoer, 'Reporting Manager': e.reportingManager,
-    'Official Email': e.email, 'Personal Email': e.emailPersonal, 'Contact No': e.contactNumber
+    'Official Email': e.email, 'Personal Email': e.emailPersonal, 'Contact No': e.contactNumber,
+    // TASK 1(c) (2026-11) - letter Title (Mr./Ms.) derivation needs the
+    // real Gender column; not added to EMP_COLUMNS (never a pickable
+    // condition/recipient column in the Automated Task/Workflow UI).
+    'Gender': e.gender
   };
 }
 async function empRows() {

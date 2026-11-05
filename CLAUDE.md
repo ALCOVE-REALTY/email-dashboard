@@ -987,3 +987,67 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
   never closed it, leaving it open to intercept every later test's clicks
   at that same screen position - now explicitly closed at the end of its
   own test block).
+- Task 23 (2026-11), TASK 1(c)/(e) of the same batch - the real company
+  details + atomic Ref No. engine (Task 21/22) is now actually wired into
+  the 4 built-in letters, replacing the throwaway, non-sequential
+  placeholder (`employeeId + '-' + runAt.getTime().toString(36)...`)
+  `buildWorkflowDocumentBuffer` used before. New
+  `resolveLetterRefNo(template, row, runAt, isRealSend)`: looks up the
+  row's own `Company` in `companyDetailsService`; a company with no code
+  set throws (a placeholder SUBH can't map is never guessed, per the
+  "AI understands, code speaks" principle) - every caller either surfaces
+  that as a clear Preview error (`previewWorkflowDocument`'s own
+  try/catch) or, for a REAL run, holds that one record's letter (its
+  plain message still sends - a doc failure never blocks the message or
+  any other record's send, same posture as the pre-existing per-record
+  failure guard) and posts an owner notification naming the exact reason,
+  never silently drops it. `isRealSend` is threaded all the way from
+  `runWorkflow`'s own `!isTest` through `buildWorkflowMessages` into
+  `buildWorkflowDocumentBuffer` - it is the ONLY thing that decides
+  whether `letterSettingsService.assignRefNo` actually consumes a number
+  or the fixed "Ref No. will be assigned on sending" text is used instead,
+  so Preview and "Send test to me" can never burn a real serial.
+  `buildWorkflowDocumentBuffer` now returns `{ buffer, refNo, fy, serial }`
+  (previously a bare buffer) so a caller can log the exact number that was
+  actually used, updated at all 3 call sites
+  (`previewWorkflowDocument`, `buildRuleSendAttachment` - the "When they
+  reply" rule-triggered sends, now always a real send since a rule only
+  ever fires on a genuine incoming reply - and `buildWorkflowMessages`'s
+  own `push`). Every real send now also calls the new
+  `recordSentLetter`/`letterSettingsService.uploadSentLetterPdf`
+  (uploads the exact sent PDF into the SUBH Letter Templates Drive
+  folder) and `appendToLetterRegister` (best-effort - a Register/upload
+  failure never undoes or blocks the letter that was already sent).
+  Title (Mr./Ms.) is now derived from the real `Gender` HR column
+  (`titleFromGender` - marital-status neutral, empty when gender isn't
+  set, never guessed) for `buildConfirmationLetterPdf` - the only one of
+  the 4 built-in letters whose body copy actually uses a title today;
+  `automationService.empRow` gained a `'Gender'` key for this (additive,
+  never added to the pickable `EMP_COLUMNS` list). `his/her`/`he/she`
+  pronoun derivation from Gender is NOT wired up anywhere yet - none of
+  the 4 built-in letters' body copy uses a pronoun at all (confirmed by
+  reading every one), so this is reserved for TASK 1(b)/(d)'s Drive
+  templates, whose placeholders are arbitrary and may well ask for one.
+  Confirmation Date (DOJ + probation months) and the extension end date
+  (confirmation date + {Reply_Detail}) were ALREADY correctly wired
+  before this task (via `workforceAnalytics.probationCompletionDate` and
+  the rule's own captured `Reply_Detail` respectively) - confirmed, not
+  changed. `src/letterPdf.js`: all 4 hardcoded `'Ref. No: AR/HR/...'`-
+  style prefixes removed in favor of the full, already-formatted `refNo`
+  string; `buildConfirmationLetterPdf`'s title/name join no longer leaves
+  a stray leading space when title is empty. Deterministic suite
+  (`scripts/check-workflow.js`, 78/78): Preview shows the fixed
+  placeholder text; Title derivation from a record with no Gender set
+  comes back empty; a real run assigns real sequential numbers in the
+  configured format and never reuses one (2 runs checked); "Send test to
+  me" never assigns a real number and never touches the Letter Register;
+  a company with no code set holds its letter, sends the plain message
+  anyway, and notifies the owner with the exact reason - all existing
+  letter-generation tests updated to seed a real company code via
+  `companyDetailsService.saveCompanyDetails('Alcove', { code: 'ALC' })`
+  in the fixture, with Drive/Sheets write calls stubbed via `sheetsAuth`'s
+  own client getters (same convention as `check-letter-settings.js`) -
+  verified to catch a regression by reverting and re-running (4 of the
+  new checks failed exactly as expected). `scripts/check-automation.js`/
+  `check-reminders.js`/`check-whatsapp-engine.js` re-run clean (the
+  `empRow` Gender addition is additive and touches no existing field).

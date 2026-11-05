@@ -24,6 +24,8 @@ const whatsapp = require('../whatsappService');
 const letterPdf = require('../letterPdf');
 const pdfReport = require('../pdfReport');
 const tableExcelReport = require('../tableExcelReport');
+const companyDetailsService = require('./companyDetailsService');
+const letterSettingsService = require('./letterSettingsService');
 // Required lazily (inside the functions that need it, never at module
 // load) specifically because Phase 5 has whatsappAssistant.js require
 // THIS file back (its own early-tier "might this reply be for an open
@@ -238,37 +240,88 @@ function addMonthsToIso(iso, months) {
   const dt = new Date(Date.UTC(y, m - 1 + (Number(months) || 0), d));
   return dt.toISOString().slice(0, 10);
 }
+// TASK 1(c)/(e) (2026-11), direct instruction - Title (Mr./Ms.) derived
+// from the real Gender column, marital-status neutral; no pronoun guess
+// when gender isn't set (never defaults to either one).
+function titleFromGender(gender) {
+  const g = String(gender || '').trim().toLowerCase();
+  if (g === 'male' || g === 'm') return 'Mr.';
+  if (g === 'female' || g === 'f') return 'Ms.';
+  return '';
+}
+// TASK 1(c) (2026-11), direct instruction - the real Ref No., built from
+// the company's OWN code (SUBH Settings -> Company details) and
+// letterSettingsService's own format/letter-code/counter engine. A
+// placeholder SUBH can't map (here: a company with no code set yet) is
+// never guessed - this throws, and every caller below either surfaces
+// that as a clear Preview error or holds the one record's letter and
+// notifies the owner, never sends a letter with a blank/fake ref no.
+// `isRealSend` is the ONLY thing that decides whether a real number is
+// actually consumed (assignRefNo) vs just previewed (the fixed
+// "Ref No. will be assigned on sending" text, per direct instruction).
+async function resolveLetterRefNo(template, row, runAt, isRealSend) {
+  const company = (row && row['Company']) || '';
+  const details = company ? await companyDetailsService.getCompanyDetails(company) : null;
+  const companyCode = details && details.code;
+  if (!companyCode) {
+    throw new Error('Company code is not set for "' + (company || 'this company') + '" - add it in SUBH Settings -> Company details.');
+  }
+  if (!isRealSend) return { refNo: 'Ref No. will be assigned on sending', companyCode };
+  const assigned = await letterSettingsService.assignRefNo({ company, companyCode, letterType: template, date: runAt });
+  return { refNo: assigned.refNo, companyCode, fy: assigned.fy, serial: assigned.serial };
+}
+// Logs one REAL sent letter to the Letter Register sheet (TASK 1(c)/(e)) -
+// best-effort: a Register/Drive-upload failure must never undo or block
+// the letter that has already actually been sent.
+async function recordSentLetter({ template, row, runAt, refNo, buffer, filename, workflowSubject }) {
+  try {
+    const upload = await letterSettingsService.uploadSentLetterPdf({ buffer, filename });
+    await letterSettingsService.appendToLetterRegister({
+      date: isoDate(runAt), refNo, employeeCode: (row && row['Employee_No']) || '', name: (row && (row['Employee_Name'] || row['Name'])) || '',
+      company: (row && row['Company']) || '', letterType: template, workflow: workflowSubject || '', pdfLink: upload.url
+    });
+  } catch (err) { /* best effort - see comment above */ }
+}
 // v1 ships only the 4 built-in templates (per direct instruction - no
 // custom Word/Google Doc upload in this UI yet). `extra.detail` is only
 // ever used by the 'extension' template, filled from the SAME
 // {Reply_Detail} a rule's own sendDocument captured (the number of
-// months the manager actually stated) - never guessed.
+// months the manager actually stated) - never guessed. Returns
+// `{ buffer, refNo, fy, serial }` (fy/serial only set for a real send) -
+// never just a bare buffer, so a caller can log the real ref no. actually
+// used without re-deriving it.
 async function buildWorkflowDocumentBuffer(template, row, runAt, extra) {
   const r = row || {};
+  const isRealSend = Boolean(extra && extra.isRealSend);
+  const refResolved = await resolveLetterRefNo(template, r, runAt, isRealSend);
   const base = {
     employeeName: r['Employee_Name'] || r['Name'] || '—',
     employeeId: r['Employee_No'] || '—',
     companyName: r['Company'] || 'Alcove Realty',
-    refNo: (r['Employee_No'] || 'NA') + '-' + runAt.getTime().toString(36).slice(-6).toUpperCase(),
+    refNo: refResolved.refNo,
     position: r['Designation'] || '—'
   };
   const doj = isoDate(r['DOJ']);
   const confirmationDate = isoDate(r['Confirmation Date']);
-  if (template === 'confirmation') return letterPdf.buildConfirmationLetterPdf(Object.assign({}, base, { title: '', doj, confirmationDate }));
-  if (template === 'extension') {
+  let buffer = null;
+  if (template === 'confirmation') buffer = await letterPdf.buildConfirmationLetterPdf(Object.assign({}, base, { title: titleFromGender(r['Gender']), doj, confirmationDate }));
+  else if (template === 'extension') {
     const monthsMatch = /\d+/.exec(String((extra && extra.detail) || ''));
     const extendedMonths = monthsMatch ? Number(monthsMatch[0]) : 1;
-    return letterPdf.buildExtensionOfProbationLetterPdf(Object.assign({}, base, { doj, originalConfirmationDate: confirmationDate, extendedMonths, newConfirmationDate: addMonthsToIso(confirmationDate, extendedMonths) }));
-  }
-  if (template === 'experience') return letterPdf.buildExperienceLetterPdf(Object.assign({}, base, { doj, lastWorkingDay: isoDate(runAt) }));
-  if (template === 'relieving') return letterPdf.buildRelievingLetterPdf(Object.assign({}, base, { lastWorkingDay: isoDate(runAt) }));
-  return null;
+    buffer = await letterPdf.buildExtensionOfProbationLetterPdf(Object.assign({}, base, { doj, originalConfirmationDate: confirmationDate, extendedMonths, newConfirmationDate: addMonthsToIso(confirmationDate, extendedMonths) }));
+  } else if (template === 'experience') buffer = await letterPdf.buildExperienceLetterPdf(Object.assign({}, base, { doj, lastWorkingDay: isoDate(runAt) }));
+  else if (template === 'relieving') buffer = await letterPdf.buildRelievingLetterPdf(Object.assign({}, base, { lastWorkingDay: isoDate(runAt) }));
+  else return null;
+  return { buffer, refNo: refResolved.refNo, fy: refResolved.fy, serial: refResolved.serial };
 }
-async function buildRuleSendAttachment(template, row, now, detail) {
+async function buildRuleSendAttachment(template, row, now, detail, workflowSubject) {
   if (!template || !row) return null;
   try {
-    const buf = await buildWorkflowDocumentBuffer(template, row, now, { detail });
-    return buf ? { filename: workflowDocFileName(template, row), contentType: 'application/pdf', content: buf } : null;
+    const result = await buildWorkflowDocumentBuffer(template, row, now, { detail, isRealSend: true });
+    if (!result || !result.buffer) return null;
+    const filename = workflowDocFileName(template, row);
+    await recordSentLetter({ template, row, runAt: now, refNo: result.refNo, buffer: result.buffer, filename, workflowSubject });
+    return { filename, contentType: 'application/pdf', content: result.buffer };
   } catch (err) { return null; }
 }
 function workflowDocFileName(template, row) {
@@ -302,17 +355,21 @@ async function previewWorkflowDocument(plan, now) {
     row = automationService.empRow(sample);
     usedSample = true;
   }
-  let buffer;
+  let result;
   try {
-    buffer = await buildWorkflowDocumentBuffer(template, row, now, {});
+    result = await buildWorkflowDocumentBuffer(template, row, now, {});
   } catch (err) {
     return { ok: false, error: 'Could not generate this document: ' + err.message };
   }
-  if (!buffer) return { ok: false, error: 'Could not generate this document.' };
-  return { ok: true, buffer, filename: workflowDocFileName(template, row), usedSample };
+  if (!result || !result.buffer) return { ok: false, error: 'Could not generate this document.' };
+  return { ok: true, buffer: result.buffer, filename: workflowDocFileName(template, row), usedSample };
 }
 
-async function buildWorkflowMessages(workflow, runAt) {
+// `isRealSend` (TASK 1(c), 2026-11) decides whether a letter's Ref No. is
+// actually assigned (consuming a real number, only for the genuine run
+// path in runWorkflow) or just the fixed preview placeholder text (every
+// "Send test" call) - never the model, never a guess.
+async function buildWorkflowMessages(workflow, runAt, isRealSend) {
   let plan = workflow.plan;
   let liveSheetHeaders = null;
   if (plan.source === 'sheet') {
@@ -344,12 +401,24 @@ async function buildWorkflowMessages(workflow, runAt) {
     let attachment = null;
     if (row && (docsOnFirst || docsOnAlso)) {
       try {
-        const buf = await buildWorkflowDocumentBuffer(plan.docs.template, row, runAt, null);
-        if (buf) {
-          if (docsOnFirst) attachment = { filename: workflowDocFileName(plan.docs.template, row), contentType: 'application/pdf', content: buf };
-          if (docsOnAlso) alsoAttachments.push({ filename: workflowDocFileName(plan.docs.template, row), contentType: 'application/pdf', content: buf });
+        const result = await buildWorkflowDocumentBuffer(plan.docs.template, row, runAt, { isRealSend });
+        if (result && result.buffer) {
+          const filename = workflowDocFileName(plan.docs.template, row);
+          if (docsOnFirst) attachment = { filename, contentType: 'application/pdf', content: result.buffer };
+          if (docsOnAlso) alsoAttachments.push({ filename, contentType: 'application/pdf', content: result.buffer });
+          // TASK 1(e) (2026-11), direct instruction - every SENT letter is
+          // logged to the Letter Register; a preview/test never logs one
+          // (isRealSend is false there, and the ref no. is only ever the
+          // placeholder text in that case anyway).
+          if (isRealSend) await recordSentLetter({ template: plan.docs.template, row, runAt, refNo: result.refNo, buffer: result.buffer, filename, workflowSubject: workflow.subject });
         }
-      } catch (err) { /* a single record's document failing to render must never block its own message or anyone else's */ }
+      } catch (err) {
+        // A single record's letter failing to render must never block its
+        // own message or anyone else's - but for a REAL run, the owner
+        // needs to know that record's letter was held (never sent with a
+        // blank/fake ref no.), per direct instruction.
+        if (isRealSend) await getWhatsappAssistant().postOwnerNotification('⚠️ Could not generate the ' + plan.docs.template + ' letter for ' + automationService.rowName(row) + ' in "' + workflow.subject + '": ' + err.message).catch(() => {});
+      }
     }
     sent.push({
       to: name, addr: plan.mediator === 'mail' ? contact.email : contact.phone, contact,
@@ -698,7 +767,7 @@ async function runWorkflow(id, { isTest = false, testTo = null } = {}, now = new
   if (!(await acquireRunLock(id, now))) return { ok: false, error: 'Already running.' };
   try {
     const runAt = now;
-    const { sent, skipped, alsoMessage, rows, blocked } = await buildWorkflowMessages(workflow, runAt);
+    const { sent, skipped, alsoMessage, rows, blocked } = await buildWorkflowMessages(workflow, runAt, !isTest);
     if (blocked) {
       if (!isTest) {
         await getWhatsappAssistant().postOwnerNotification('⚠️ Workflow "' + workflow.subject + '" could not run: ' + blocked.reason + '.').catch(() => {});
@@ -993,7 +1062,7 @@ async function finishWorkflowRule(workflow, run, rec, rule, now) {
       return replyText;
     }
     if (targets.length) {
-      const attachment = await buildRuleSendAttachment(pending.sendDocument, rec.row, now, rec.detail);
+      const attachment = await buildRuleSendAttachment(pending.sendDocument, rec.row, now, rec.detail, workflow.subject);
       for (const t of targets) await sendOneWorkflowMessage({ to: t.name, addr: t.email, subject: pending.sendSubject, body: pending.sendBody, table: null, tableColumns: [], attachment });
       rec.history.push({ at: now.toISOString(), who: 'SUBH -> ' + toLabel, text: pending.sendSubject + ' - ' + pending.sendBody });
     } else {
@@ -1104,7 +1173,7 @@ async function approveSendWorkflowRecord(workflowId, runId, key) {
     const pending = rec.pendingApproval;
     const addrs = pending.addrs || [];
     if (addrs.length) {
-      const attachment = await buildRuleSendAttachment(pending.sendDocument, rec.row, now, rec.detail);
+      const attachment = await buildRuleSendAttachment(pending.sendDocument, rec.row, now, rec.detail, workflow.subject);
       for (const addr of addrs) await sendOneWorkflowMessage({ to: pending.sendToLabel, addr, subject: pending.sendSubject, body: pending.sendBody, table: null, tableColumns: [], attachment });
       rec.history.push({ at: now.toISOString(), who: 'SUBH -> ' + pending.sendToLabel, text: pending.sendSubject + ' - ' + pending.sendBody });
     } else {

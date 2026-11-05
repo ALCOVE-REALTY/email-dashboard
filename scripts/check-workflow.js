@@ -112,6 +112,27 @@ async function main() {
   whatsappAssistant.isRealSendAllowedFor = () => true;
   whatsappAssistant.postOwnerNotification = async (text) => { ownerNotifications.push(text); };
 
+  // TASK 1(c) (2026-11) - letter generation now needs a real company code
+  // (SUBH Settings -> Company details) to build a Ref No.; seed the fake
+  // fixture's one company ('Alcove') with one so every pre-existing
+  // letter-generation test keeps working. Letter Register writes (Drive/
+  // Sheets) are stubbed via sheetsAuth's own client getters, same
+  // convention as scripts/check-letter-settings.js - never a real call.
+  const companyDetailsService = require('../src/aiAssistant/companyDetailsService');
+  const letterSettingsService = require('../src/aiAssistant/letterSettingsService');
+  const sheetsAuth = require('../src/sheetsAuth');
+  await companyDetailsService.saveCompanyDetails('Alcove', { code: 'ALC' });
+  const origGetDriveWriteClient = sheetsAuth.getDriveWriteClient;
+  const origGetSheetsWriteClient = sheetsAuth.getSheetsWriteClient;
+  const registerAppends = [];
+  sheetsAuth.getDriveWriteClient = () => ({ files: { create: async () => ({ data: { id: 'fake-sheet', webViewLink: 'https://docs.google.com/spreadsheets/d/fake-sheet' } }) } });
+  sheetsAuth.getSheetsWriteClient = () => ({
+    spreadsheets: { values: {
+      update: async () => ({}),
+      append: async (opts) => { registerAppends.push(opts); return {}; }
+    } }
+  });
+
   try {
     console.log('='.repeat(70));
     console.log('CRUD: workflow definitions + runs (same convention as reminderService.js/automationService.js)');
@@ -790,6 +811,102 @@ async function main() {
     });
 
     console.log('='.repeat(70));
+    console.log('Task 23 (2026-11), TASK 1(c)/(e) - real company + Ref No. (never a throwaway placeholder) + Title from Gender wired into the 4 built-in letters; preview/test never consume a real number');
+    console.log('='.repeat(70));
+    await checkAsync('previewWorkflowDocument shows the fixed "Ref No. will be assigned on sending" text, never a real/fake number', async () => {
+      const origBuildConfirmation = letterPdfRef.buildConfirmationLetterPdf;
+      let captured = null;
+      letterPdfRef.buildConfirmationLetterPdf = async (fields) => { captured = fields; return origBuildConfirmation(fields); };
+      try {
+        const base = await workflowService.draftWorkflowPlanFromParsed({
+          unclear: [], source: 'confirmations', rec: 'column', recCol: 'reportingManager', group: 'each', mediator: 'mail',
+          documentsOn: true, documentsTemplate: 'confirmation', documentsAttachTo: 'first', rules: [{ when: 'X', replyText: 'Y', then: 'stop' }]
+        }, now, null);
+        const result = await workflowService.previewWorkflowDocument(base.plan, now);
+        return result.ok === true && captured && captured.refNo === 'Ref No. will be assigned on sending';
+      } finally { letterPdfRef.buildConfirmationLetterPdf = origBuildConfirmation; }
+    });
+    await checkAsync('previewWorkflowDocument derives Title (Mr./Ms.) from the real Gender column', async () => {
+      const origBuildConfirmation = letterPdfRef.buildConfirmationLetterPdf;
+      let captured = null;
+      letterPdfRef.buildConfirmationLetterPdf = async (fields) => { captured = fields; return origBuildConfirmation(fields); };
+      try {
+        // Alice Emp (E1) is this fixture's own confirmations-matching
+        // employee but has no Gender set in FAKE_EMPLOYEES - Title must
+        // come back empty (marital-status neutral default), never a
+        // guessed Mr./Ms.
+        const base = await workflowService.draftWorkflowPlanFromParsed({
+          unclear: [], source: 'confirmations', rec: 'column', recCol: 'reportingManager', group: 'each', mediator: 'mail',
+          documentsOn: true, documentsTemplate: 'confirmation', documentsAttachTo: 'first', rules: [{ when: 'X', replyText: 'Y', then: 'stop' }]
+        }, now, null);
+        await workflowService.previewWorkflowDocument(base.plan, now);
+        return captured && captured.title === '';
+      } finally { letterPdfRef.buildConfirmationLetterPdf = origBuildConfirmation; }
+    });
+    await checkAsync('a REAL run (never a test) assigns a real sequential Ref No. in the configured format and never reuses one', async () => {
+      const origBuildConfirmation = letterPdfRef.buildConfirmationLetterPdf;
+      const captured = [];
+      letterPdfRef.buildConfirmationLetterPdf = async (fields) => { captured.push(fields.refNo); return origBuildConfirmation(fields); };
+      try {
+        const before = registerAppends.length;
+        const base = await workflowService.draftWorkflowPlanFromParsed({
+          unclear: [], source: 'confirmations', rec: 'column', recCol: 'reportingManager', group: 'each', mediator: 'mail',
+          documentsOn: true, documentsTemplate: 'confirmation', documentsAttachTo: 'first', rules: [{ when: 'X', replyText: 'Y', then: 'stop' }]
+        }, now, null);
+        const w = await create({ subject: 'Real ref no. test', plan: base.plan, schedule: { date: '2026-11-15', time: '10:00', repeat: 'monthly' } });
+        w.status = 'active'; await workflowService.saveWorkflow(w);
+        const run1 = await workflowService.runWorkflow(w.id, {}, now);
+        const run2 = await workflowService.runWorkflow(w.id, {}, new Date(now.getTime() + 1000));
+        const okRun = run1.ok && run2.ok;
+        const format = captured.every((r) => /^ALC\/HR\/CONF\/\d{4}-\d{2}\/\d{4}$/.test(r));
+        const serials = captured.map((r) => Number(r.split('/').pop()));
+        const neverReused = new Set(serials).size === serials.length;
+        const appended = registerAppends.length > before;
+        return okRun && captured.length >= 2 && format && neverReused && appended;
+      } finally { letterPdfRef.buildConfirmationLetterPdf = origBuildConfirmation; }
+    });
+    await checkAsync('"Send test to me" never assigns a real number - still shows the preview placeholder, and the Letter Register is never touched', async () => {
+      const origBuildConfirmation = letterPdfRef.buildConfirmationLetterPdf;
+      const captured = [];
+      letterPdfRef.buildConfirmationLetterPdf = async (fields) => { captured.push(fields.refNo); return origBuildConfirmation(fields); };
+      try {
+        const before = registerAppends.length;
+        const base = await workflowService.draftWorkflowPlanFromParsed({
+          unclear: [], source: 'confirmations', rec: 'column', recCol: 'reportingManager', group: 'each', mediator: 'mail',
+          documentsOn: true, documentsTemplate: 'confirmation', documentsAttachTo: 'first', rules: [{ when: 'X', replyText: 'Y', then: 'stop' }]
+        }, now, null);
+        const w = await create({ subject: 'Send test ref no. test', plan: base.plan, schedule: { date: '2026-11-15', time: '10:00', repeat: 'monthly' } });
+        w.status = 'active'; await workflowService.saveWorkflow(w);
+        const result = await workflowService.runWorkflow(w.id, { isTest: true, testTo: 'owner@co.test' }, now);
+        return result.ok === true && captured.length >= 1 && captured.every((r) => r === 'Ref No. will be assigned on sending') && registerAppends.length === before;
+      } finally { letterPdfRef.buildConfirmationLetterPdf = origBuildConfirmation; }
+    });
+    await checkAsync('a real send for a company with NO code set holds that record\'s letter (never sent with a blank/fake ref no.) and notifies the owner, but still sends the plain message', async () => {
+      const notifBefore = ownerNotifications.length;
+      const base = await workflowService.draftWorkflowPlanFromParsed({
+        unclear: [], source: 'confirmations', rec: 'column', recCol: 'reportingManager', group: 'each', mediator: 'mail',
+        documentsOn: true, documentsTemplate: 'confirmation', documentsAttachTo: 'first', rules: [{ when: 'X', replyText: 'Y', then: 'stop' }]
+      }, now, null);
+      // A DIFFERENT (never-configured) company, injected via a sheet-free
+      // plan tweak: swap the condition to match Asha Accounts (A1,
+      // company 'Alcove' too in this fixture) is not useful here since
+      // every fixture employee shares the one 'Alcove' company that IS
+      // configured - instead, temporarily clear its saved code to
+      // simulate "not configured yet" without touching the fixture.
+      const saved = await companyDetailsService.getCompanyDetails('Alcove');
+      await companyDetailsService.saveCompanyDetails('Alcove', { code: '' });
+      try {
+        const w = await create({ subject: 'Missing company code test', plan: base.plan, schedule: { date: '2026-11-15', time: '10:00', repeat: 'monthly' } });
+        w.status = 'active'; await workflowService.saveWorkflow(w);
+        const beforeAttach = sentMail.filter((m) => m.kind === 'attachment').length;
+        const result = await workflowService.runWorkflow(w.id, {}, now);
+        const afterAttach = sentMail.filter((m) => m.kind === 'attachment').length;
+        return result.ok === true && afterAttach === beforeAttach && // never sent with an attachment built from a blank/fake ref no.
+          ownerNotifications.length > notifBefore && /company code is not set/i.test(ownerNotifications[ownerNotifications.length - 1]);
+      } finally { await companyDetailsService.saveCompanyDetails('Alcove', saved); }
+    });
+
+    console.log('='.repeat(70));
     console.log('Task 19 (2026-11) - "Attachment as" PDF/Excel for a Workflow\'s own record table (first message), matching the Automated Task page\'s existing feature (previously Workflow could only ever put the table in the message body)');
     console.log('='.repeat(70));
     async function makeTableAttachWorkflow(overrides) {
@@ -893,6 +1010,8 @@ async function main() {
     whatsappAssistant.isRealSendAllowedFor = origIsRealSendAllowedFor;
     whatsappAssistant.postOwnerNotification = origPostOwnerNotification;
     workflowService.callWorkflowTool = origCallWorkflowTool;
+    sheetsAuth.getDriveWriteClient = origGetDriveWriteClient;
+    sheetsAuth.getSheetsWriteClient = origGetSheetsWriteClient;
     console.log('Cleaning up', createdIds.length, 'test-created workflow(s)...');
     for (const id of createdIds) await workflowService.deleteWorkflow(id);
   }
