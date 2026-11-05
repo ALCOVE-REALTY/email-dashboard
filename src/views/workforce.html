@@ -816,7 +816,17 @@
             <div class="wf-auto-cols" id="wfCols"></div>
             <div class="wf-auto-hint" id="wfColOrder"></div>
             <label class="wf-rem-field" style="margin-top:14px"><span class="wf-auto-label">Put the table</span></label>
-            <div class="wf-auto-hint">In the message body (Workflow never offers a PDF/Excel attachment for the first message - see "Documents" below for generated letters).</div>
+            <div class="wf-auto-seg" id="wfPlaceSeg" style="margin-top:8px">
+              <button type="button" data-v="body" class="on">In the message body</button>
+              <span class="wf-auto-attach-wrap">
+                <button type="button" data-v="pdf" id="wfAttachBtn">📎 Attachment as</button>
+                <div class="wf-auto-attach-dropdown hidden" id="wfAttachDropdown">
+                  <button type="button" data-fmt="pdf" class="on">PDF</button>
+                  <button type="button" data-fmt="excel">Excel</button>
+                </div>
+              </span>
+            </div>
+            <div class="wf-auto-hint" id="wfPdfWaNote"></div>
           </div>
         </div>
 

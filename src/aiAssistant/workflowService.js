@@ -22,6 +22,8 @@ const redisHealth = require('../redisHealth');
 const gmailService = require('../gmailService');
 const whatsapp = require('../whatsappService');
 const letterPdf = require('../letterPdf');
+const pdfReport = require('../pdfReport');
+const tableExcelReport = require('../tableExcelReport');
 // Required lazily (inside the functions that need it, never at module
 // load) specifically because Phase 5 has whatsappAssistant.js require
 // THIS file back (its own early-tier "might this reply be for an open
@@ -319,7 +321,7 @@ async function buildWorkflowMessages(workflow, runAt) {
       subject: fillWorkflowPlaceholders(plan.mailSubject, { row, contact, runAt }),
       body: fillWorkflowPlaceholders(plan.body, { row, contact, runAt }),
       table: row ? (plan.table ? [tableRowsFor(row)] : null) : null,
-      tableColumns: plan.tableColumns || [], tablePlacement: plan.tablePlacement || 'body',
+      tableColumns: plan.tableColumns || [], tablePlacement: plan.tablePlacement || 'body', attachmentFormat: plan.attachmentFormat || 'pdf',
       who: who || null, key: key || null, row: row || null, attachment
     });
   }
@@ -535,22 +537,56 @@ async function draftWorkflowPlanFromParsed(parsed, now, sheetContext) {
   };
 }
 
+// A table-attachment's own filename - deliberately separate from
+// letterPdf.js's own document filenames (see docAttachments below), same
+// "subject-who-month.ext" shape automationService.js's pdfFileName uses.
+function tableAttachmentFileName(subject, who, ext) {
+  const base = (subject || 'Table').replace(/[^\w ]+/g, '').trim().replace(/\s+/g, '-');
+  const month = new Date().toLocaleDateString('en-GB', { month: 'long', year: 'numeric' }).replace(' ', '-');
+  return (base + (who ? '-' + String(who).replace(/\s+/g, '-') : '') + '-' + month + '.' + (ext || 'pdf'));
+}
 // ---------------- Sending (Phase 2) - mirrors automationService.js's own
 // sendOneMessage, PLUS captures the Gmail {id, threadId} for a mail send
 // so the per-record state (below) can find a REPLY in the same thread
 // later (Phase 4), and the WhatsApp phone for the same purpose (Phase 5).
-// Workflow sends never attach a document yet (Phase 6) or a table-as-PDF
-// attachment - `tablePlacement` is always 'body' for a workflow's own
-// first/also message (per the approved plan: "WhatsApp + table as PDF is
-// blocked", and Workflow's own Section 4 never offers an attachment
-// placement at all, only "In the message body"). ---------------- */
+// Task 19 (2026-11) - "Attachment as" PDF/Excel for the record table
+// (mirrors automationService.js's own table-attachment branch exactly),
+// separate from (and combinable with) any generated-letter attachment
+// (msg.attachment/msg.attachments, Phase 6) - all are combined into one
+// list first (never silently dropping one in favor of the other, since
+// sendMailWithAttachment only ever honors `attachments` when BOTH are
+// passed - see its own buildRawMessageWithAttachment), then sent via the
+// singular `attachment` call shape when there's exactly one (unchanged
+// from before this task, and still what every existing single-doc
+// caller/test expects byte-for-byte) or `attachments` only once there
+// are genuinely 2+. WhatsApp + PDF stays blocked (no send-media
+// capability on the gateway today) - a table there can only ever be
+// tablePlacement 'body', rendered as text,
+// unchanged below.
 async function sendOneWorkflowMessage(msg) {
   try {
     if (msg.addr && msg.addr.includes('@')) {
       let result;
-      const hasDocs = Boolean(msg.attachment || (msg.attachments && msg.attachments.length));
-      if (hasDocs) {
-        result = await gmailService.sendMailWithAttachment({ to: msg.addr, cc: msg.cc, subject: msg.subject, text: msg.body, attachment: msg.attachment, attachments: msg.attachments });
+      const docAttachments = msg.attachments && msg.attachments.length ? msg.attachments : (msg.attachment ? [msg.attachment] : []);
+      let tableAttachment = null;
+      if (msg.table && msg.table.length && msg.tablePlacement === 'pdf') {
+        const tableRows = msg.table.map((r) => msg.tableColumns.map((c) => r[c]));
+        const isExcel = msg.attachmentFormat === 'excel';
+        const buffer = isExcel
+          ? await tableExcelReport.buildTableExcelBuffer({ title: msg.subject, subtitle: new Date().toDateString(), columns: msg.tableColumns, rows: tableRows })
+          : await pdfReport.buildTablePdfBuffer({ title: msg.subject, subtitle: new Date().toDateString(), columns: msg.tableColumns, rows: tableRows, landscape: true });
+        const contentType = isExcel ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' : 'application/pdf';
+        tableAttachment = { filename: tableAttachmentFileName(msg.subject, msg.to, isExcel ? 'xlsx' : 'pdf'), contentType, content: buffer };
+      }
+      const allAttachments = tableAttachment ? docAttachments.concat([tableAttachment]) : docAttachments;
+      if (allAttachments.length === 1) {
+        // Single attachment (whatever its source - a generated letter or
+        // just the table) keeps the existing singular `attachment` call
+        // shape, never `attachments`, to stay byte-for-byte compatible
+        // with every existing caller/test of this single-doc case.
+        result = await gmailService.sendMailWithAttachment({ to: msg.addr, cc: msg.cc, subject: msg.subject, text: msg.body, attachment: allAttachments[0] });
+      } else if (allAttachments.length > 1) {
+        result = await gmailService.sendMailWithAttachment({ to: msg.addr, cc: msg.cc, subject: msg.subject, text: msg.body, attachments: allAttachments });
       } else if (msg.table && msg.table.length) {
         const html = '<p>' + String(msg.body).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])).replace(/\n/g, '<br>') + '</p>' +
           '<table border="1" cellpadding="4" style="border-collapse:collapse"><tr>' + msg.tableColumns.map((c) => '<th>' + c + '</th>').join('') + '</tr>' +

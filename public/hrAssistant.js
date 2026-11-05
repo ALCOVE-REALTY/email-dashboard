@@ -5937,6 +5937,10 @@
   const wfTableWrap = document.getElementById('wfTableWrap');
   const wfCols = document.getElementById('wfCols');
   const wfColOrder = document.getElementById('wfColOrder');
+  const wfPlaceSeg = document.getElementById('wfPlaceSeg');
+  const wfAttachBtn = document.getElementById('wfAttachBtn');
+  const wfAttachDropdown = document.getElementById('wfAttachDropdown');
+  const wfPdfWaNote = document.getElementById('wfPdfWaNote');
   const wfAlsoOn = document.getElementById('wfAlsoOn');
   const wfAlsoWrap = document.getElementById('wfAlsoWrap');
   const wfAlsoTo = document.getElementById('wfAlsoTo');
@@ -6003,6 +6007,17 @@
 
   function wfSegVal(container) { const b = container && container.querySelector('button.on'); return b ? b.dataset.v : null; }
   function wfSetSeg(container, v) { if (!container) return; container.querySelectorAll('button[data-v]').forEach((b) => b.classList.toggle('on', b.dataset.v === v)); }
+  // Task 19 (2026-11) - "Attachment as" PDF/Excel, same pattern as the
+  // Automated Task page's own autoAttachFormatVal/autoSetAttachFormat.
+  function wfAttachFormatVal() {
+    const b = wfAttachDropdown && wfAttachDropdown.querySelector('button.on');
+    return b ? b.dataset.fmt : 'pdf';
+  }
+  function wfSetAttachFormat(fmt) {
+    if (!wfAttachDropdown) return;
+    wfAttachDropdown.querySelectorAll('button[data-fmt]').forEach((b) => b.classList.toggle('on', b.dataset.fmt === fmt));
+  }
+  function closeWfAttachDropdown() { if (wfAttachDropdown) wfAttachDropdown.classList.add('hidden'); }
   function wfResetButtonState(btn) { if (!btn) return; btn.disabled = false; btn.classList.remove('is-loading', 'is-success', 'is-error'); }
 
   // ---------- List page ----------
@@ -6105,6 +6120,9 @@
     wfSetSeg(wfGroupSeg, 'each');
     wfSetSeg(wfRecSeg, 'column');
     wfSetSeg(wfMedSeg, 'mail');
+    wfSetSeg(wfPlaceSeg, 'body');
+    wfSetAttachFormat('pdf');
+    closeWfAttachDropdown();
     wfSetSeg(wfRepSeg, 'monthly');
     if (wfMailSubj) wfMailSubj.value = '';
     if (wfBody) wfBody.value = '';
@@ -6145,6 +6163,9 @@
     wfSetSeg(wfGroupSeg, w.plan.group);
     wfSetSeg(wfRecSeg, w.plan.rec);
     wfSetSeg(wfMedSeg, w.plan.mediator);
+    wfSetSeg(wfPlaceSeg, w.plan.tablePlacement || 'body');
+    wfSetAttachFormat(w.plan.attachmentFormat || 'pdf');
+    closeWfAttachDropdown();
     wfSetSeg(wfRepSeg, w.schedule.repeat === 'none' ? 'once' : w.schedule.repeat);
     if (wfMailSubj) wfMailSubj.value = w.plan.mailSubject || '';
     if (wfBody) wfBody.value = w.plan.body || '';
@@ -6245,10 +6266,34 @@
     wfLastActiveField = field; wfSync();
   });
 
-  [wfGroupSeg, wfRecSeg, wfMedSeg, wfRepSeg].forEach((seg) => {
+  [wfGroupSeg, wfRecSeg, wfMedSeg, wfRepSeg, wfPlaceSeg].forEach((seg) => {
     if (!seg) return;
     // Task 12 (2026-11) - see Automated Tasks' own identical comment.
+    // Task 19 (2026-11) - !b.dataset.v also guards against wfAttachDropdown's
+    // own PDF/Excel buttons (data-fmt, not data-v) nested inside wfPlaceSeg.
     seg.addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b || !b.dataset.v) return; wfSetSeg(seg, b.dataset.v); if (seg === wfRepSeg) wfScheduleExtra = { monthDays: null, lastDayOfMonth: false }; wfSync(); if (wfPlan) renderWfUnderstanding(); });
+  });
+  if (wfAttachBtn) {
+    wfAttachBtn.addEventListener('click', () => {
+      if (wfAttachDropdown) wfAttachDropdown.classList.toggle('hidden');
+    });
+  }
+  if (wfAttachDropdown) {
+    wfAttachDropdown.addEventListener('click', (e) => {
+      e.stopPropagation(); // never let this also reach wfPlaceSeg's own delegated segment-select listener above
+      const b = e.target.closest('[data-fmt]');
+      if (!b) return;
+      wfSetAttachFormat(b.dataset.fmt);
+      closeWfAttachDropdown();
+      wfSync();
+      if (wfPlan) renderWfUnderstanding();
+    });
+  }
+  document.addEventListener('click', (e) => {
+    if (wfAttachDropdown && !wfAttachDropdown.classList.contains('hidden') &&
+      !wfAttachDropdown.contains(e.target) && !wfAttachBtn.contains(e.target)) {
+      closeWfAttachDropdown();
+    }
   });
   if (wfWeekdaysSeg) wfWeekdaysSeg.addEventListener('click', (e) => { const b = e.target.closest('button[data-v]'); if (!b) return; b.classList.toggle('on'); wfSync(); if (wfPlan) renderWfUnderstanding(); });
   if (wfCustomUnit) wfCustomUnit.addEventListener('change', () => { wfScheduleExtra = { monthDays: null, lastDayOfMonth: false }; wfSync(); if (wfPlan) renderWfUnderstanding(); });
@@ -6273,6 +6318,8 @@
       mailSubject: wfMailSubj ? wfMailSubj.value : '',
       body: wfBody ? wfBody.value : '',
       table: wfTableToggle ? wfTableToggle.checked : false,
+      tablePlacement: wfSegVal(wfPlaceSeg) || 'body',
+      attachmentFormat: wfAttachFormatVal(),
       date: wfDate ? wfDate.value : '',
       time: wfTime ? wfTime.value : '10:00',
       repeat: wfSegVal(wfRepSeg) || 'monthly',
@@ -6289,7 +6336,7 @@
     return Object.assign({}, base, {
       group: f.group, rec: f.rec, recCol: f.recCol, selectedEmployeeIds: Array.from(wfSelected),
       mediator: f.mediator, mailSubject: f.mailSubject, body: f.body, cc: f.cc || null,
-      table: f.table, tableColumns: [...wfTableCols], tablePlacement: 'body',
+      table: f.table, tableColumns: [...wfTableCols], tablePlacement: f.mediator === 'wa' ? 'body' : f.tablePlacement, attachmentFormat: f.attachmentFormat,
       also: {
         on: Boolean(wfAlsoOn && wfAlsoOn.checked), to: wfAlsoTo ? wfAlsoTo.value : 'hr',
         subject: wfAlsoSubj ? wfAlsoSubj.value : '', body: wfAlsoBody ? wfAlsoBody.value : '',
@@ -6312,6 +6359,13 @@
     if (wfRecHint) wfRecHint.textContent = f.rec === 'column' ? 'Each matching row goes only to the person in that column. Every message holds only that one row.' : '';
     if (wfMailSubjWrap) wfMailSubjWrap.classList.toggle('hidden', f.mediator !== 'mail');
     if (wfTableWrap) wfTableWrap.classList.toggle('hidden', !f.table);
+    // Task 19 (2026-11) - same WhatsApp-blocks-PDF note/reset as the
+    // Automated Task page's own autoSync (the gateway has no send-media
+    // capability today) - a table there can only ever go in the body.
+    const wfPdfBtn = wfPlaceSeg && wfPlaceSeg.querySelector('[data-v="pdf"]');
+    if (wfPdfBtn) wfPdfBtn.disabled = f.mediator === 'wa';
+    if (wfPdfWaNote) wfPdfWaNote.textContent = f.mediator === 'wa' ? "The WhatsApp gateway doesn't support file attachments yet - the table will go in the message body instead." : '';
+    if (f.mediator === 'wa' && wfSegVal(wfPlaceSeg) === 'pdf') wfSetSeg(wfPlaceSeg, 'body');
     if (wfAlsoWrap) wfAlsoWrap.classList.toggle('hidden', !(wfAlsoOn && wfAlsoOn.checked));
     if (wfDocsWrap) wfDocsWrap.classList.toggle('hidden', !(wfDocsOn && wfDocsOn.checked));
     const day = f.date ? new Date(f.date + 'T00:00:00Z').getUTCDate() : null;
@@ -6419,6 +6473,9 @@
       wfSetSeg(wfGroupSeg, draft.plan.group);
       wfSetSeg(wfRecSeg, draft.plan.rec);
       wfSetSeg(wfMedSeg, draft.plan.mediator);
+      wfSetSeg(wfPlaceSeg, draft.plan.tablePlacement || 'body');
+      wfSetAttachFormat(draft.plan.attachmentFormat || 'pdf');
+      closeWfAttachDropdown();
       wfSetSeg(wfRepSeg, draft.schedule.repeat);
       wfMailSubj.value = draft.plan.mailSubject || '';
       wfBody.value = draft.plan.body || '';
@@ -6502,7 +6559,7 @@
     const lines = [
       '<b>Who:</b> ' + escapeHtml(srcLabel),
       '<b>Sends to:</b> ' + escapeHtml(recTxt) + (f.group === 'each' ? ' — one separate message per row' : ' — one combined list'),
-      '<b>By:</b> ' + (f.mediator === 'mail' ? 'Mail' : 'WhatsApp') + (f.table ? ' · table in the message' : ''),
+      '<b>By:</b> ' + (f.mediator === 'mail' ? 'Mail' : 'WhatsApp') + (f.table ? ' · table ' + (f.tablePlacement === 'pdf' ? 'as ' + (f.attachmentFormat === 'excel' ? 'Excel' : 'PDF') + ' attachment' : 'in the message') : ''),
       '<b>When:</b> ' + escapeHtml(describeScheduleRule(f)) + ', first run ' + escapeHtml(wfLastPreview && wfLastPreview.nextRunAt ? wfWhen(wfLastPreview.nextRunAt) : '—'),
       '🔁 No reply in <b>' + (wfFuDays ? wfFuDays.value : 2) + ' day(s)</b> → follow up (max ' + (wfFuMax ? wfFuMax.value : 2) + '), then alert you',
       ...wfRules.map((r) => (r.askDetail ? '⏳' : '✅') + ' "' + escapeHtml(r.when || '(unnamed rule)') + '" → ' + (r.askDetail ? 'ask for ' + escapeHtml(r.askDetail) + ' → ' : '') + '"' + escapeHtml((r.replyText || '').slice(0, 60)) + (((r.replyText || '').length > 60) ? '…' : '') + '"' + (r.sendTo ? ' → mail to ' + (WF_SEND_TO_LABELS[r.sendTo] || r.sendTo) + (r.askMeFirst ? ' (asks you first)' : '') : '') + ' → ' + (r.then === 'stop' ? 'done' : r.then === 'wait' ? 'keep waiting' : 'ask you')),
@@ -6529,7 +6586,14 @@
       let body = '<div class="wf-auto-msg"><div class="to">' + label + ' To: ' + escapeHtml(m.to) + ' &lt;' + escapeHtml(m.addr) + '&gt;</div>';
       if (m.subject) body += '<div class="subj">Subject: ' + escapeHtml(m.subject) + '</div>';
       body += '<pre>' + escapeHtml(m.body) + '</pre>';
-      if (m.table && m.table.length) body += '<div class="wf-auto-tbl"><table><tr>' + m.tableColumns.map((c) => '<th>' + escapeHtml(c) + '</th>').join('') + '</tr>' + m.table.map((r) => '<tr>' + m.tableColumns.map((c) => '<td>' + escapeHtml(r[c] == null ? '—' : String(r[c])) + '</td>').join('') + '</tr>').join('') + '</table></div>';
+      if (m.table && m.table.length && m.tablePlacement !== 'pdf') body += '<div class="wf-auto-tbl"><table><tr>' + m.tableColumns.map((c) => '<th>' + escapeHtml(c) + '</th>').join('') + '</tr>' + m.table.map((r) => '<tr>' + m.tableColumns.map((c) => '<td>' + escapeHtml(r[c] == null ? '—' : String(r[c])) + '</td>').join('') + '</tr>').join('') + '</table></div>';
+      if (m.table && m.table.length && m.tablePlacement === 'pdf') {
+        // Task 19 (2026-11) - reflects whichever format is currently
+        // selected ("Attachment as" PDF/Excel), same live-form read
+        // wfSubject.value already uses on this exact line.
+        const isExcelPreview = wfAttachFormatVal() === 'excel';
+        body += '<div class="wf-auto-pdf"><div class="wf-auto-pdf-name">📎 ' + escapeHtml((wfSubject.value || 'Report') + (m.who ? '-' + m.who : '') + (isExcelPreview ? '.xlsx' : '.pdf')) + '</div></div>';
+      }
       return body + '</div>';
     }
     let html = '<div class="wf-auto-hint">' + sent.length + ' first message(s)' + (data.alsoMessage ? ' + 1 also-send message' : '') + (data.nextRunAt ? ' · run on ' + escapeHtml(wfWhen(data.nextRunAt)) : '') + '</div>';

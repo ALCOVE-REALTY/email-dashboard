@@ -751,6 +751,63 @@ async function main() {
     });
 
     console.log('='.repeat(70));
+    console.log('Task 19 (2026-11) - "Attachment as" PDF/Excel for a Workflow\'s own record table (first message), matching the Automated Task page\'s existing feature (previously Workflow could only ever put the table in the message body)');
+    console.log('='.repeat(70));
+    async function makeTableAttachWorkflow(overrides) {
+      const base = await workflowService.draftWorkflowPlanFromParsed(Object.assign({ unclear: [], source: 'confirmations', rec: 'column', recCol: 'reportingManager', group: 'each', mediator: 'mail', followUpDays: 1, followUpMax: 2, rules: [{ when: 'X', replyText: 'Y', then: 'stop' }] }, overrides.parsed || {}), now, null);
+      const plan = Object.assign({}, base.plan, { table: true, tableColumns: ['Employee_Name', 'Designation'], tablePlacement: 'pdf', attachmentFormat: overrides.attachmentFormat || 'pdf' });
+      const w = await create({ subject: overrides.subject || 'Table attach workflow', plan, schedule: { date: '2026-11-15', time: '10:00', repeat: 'monthly' } });
+      w.status = 'active'; await workflowService.saveWorkflow(w);
+      const result = await workflowService.runWorkflow(w.id, {}, now);
+      const run = await workflowService.getRun(w.id, result.runId);
+      return { w, run };
+    }
+    await checkAsync('tablePlacement "pdf" + attachmentFormat omitted (default "pdf") attaches a real PDF of the record table to each record\'s own first message, via the singular `attachment` call shape', async () => {
+      const before = sentMail.filter((m) => m.kind === 'attachment').length;
+      const { run } = await makeTableAttachWorkflow({ subject: 'Table PDF test' });
+      const calls = sentMail.filter((m) => m.kind === 'attachment').slice(before);
+      return run.records.length >= 1 && calls.length === run.records.length &&
+        calls.every((m) => m.attachment && m.attachment.contentType === 'application/pdf' && Buffer.isBuffer(m.attachment.content) && m.attachment.content.length > 0) &&
+        !calls.some((m) => m.attachments);
+    });
+    await checkAsync('attachmentFormat "excel" sends a real .xlsx attachment of the record table instead', async () => {
+      const before = sentMail.filter((m) => m.kind === 'attachment').length;
+      const { run } = await makeTableAttachWorkflow({ subject: 'Table Excel test', attachmentFormat: 'excel' });
+      const calls = sentMail.filter((m) => m.kind === 'attachment').slice(before);
+      return run.records.length >= 1 && calls.length === run.records.length &&
+        calls.every((m) => m.attachment && m.attachment.contentType === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' && m.attachment.filename.endsWith('.xlsx') && Buffer.isBuffer(m.attachment.content) && m.attachment.content.length > 0);
+    });
+    await checkAsync('tablePlacement "body" (unchanged default behavior) still renders the table inline, never as an attachment', async () => {
+      const before = sentMail.filter((m) => m.kind === 'attachment').length;
+      await makeRealRunWorkflow({ subject: 'Table body test' });
+      return sentMail.filter((m) => m.kind === 'attachment').length === before;
+    });
+    await checkAsync('a table-as-PDF attachment combines correctly with a generated-letter attachment on the SAME first message (2 attachments, via the plural `attachments` array, never silently dropping one)', async () => {
+      const before = sentMail.filter((m) => m.kind === 'attachment').length;
+      const base = await workflowService.draftWorkflowPlanFromParsed({
+        unclear: [], source: 'confirmations', rec: 'column', recCol: 'reportingManager', group: 'each', mediator: 'mail', followUpDays: 1, followUpMax: 2,
+        documentsOn: true, documentsTemplate: 'confirmation', documentsAttachTo: 'first', rules: [{ when: 'X', replyText: 'Y', then: 'stop' }]
+      }, now, null);
+      const plan = Object.assign({}, base.plan, { table: true, tableColumns: ['Employee_Name'], tablePlacement: 'pdf', attachmentFormat: 'pdf' });
+      const w = await create({ subject: 'Table + letter test', plan, schedule: { date: '2026-11-15', time: '10:00', repeat: 'monthly' } });
+      w.status = 'active'; await workflowService.saveWorkflow(w);
+      const result = await workflowService.runWorkflow(w.id, {}, now);
+      const run = await workflowService.getRun(w.id, result.runId);
+      const calls = sentMail.filter((m) => m.kind === 'attachment').slice(before);
+      // Distinguish the two attachments by the letter's own exact filename
+      // PREFIX (workflowDocFileName's WF_DOC_FILE_LABELS, "Confirmation-
+      // Letter-...") rather than a loose "Confirmation" substring - the
+      // "confirmations" data source's own default mail subject also
+      // happens to contain that word, so a substring check on the TABLE
+      // attachment's filename (built from the mail subject) is not a
+      // reliable way to tell the two apart.
+      return run.records.length >= 1 && calls.length === run.records.length &&
+        calls.every((m) => Array.isArray(m.attachments) && m.attachments.length === 2 &&
+          m.attachments.some((a) => a.contentType === 'application/pdf' && a.filename.startsWith('Confirmation-Letter-')) &&
+          m.attachments.some((a) => a.contentType === 'application/pdf' && !a.filename.startsWith('Confirmation-Letter-')));
+    });
+
+    console.log('='.repeat(70));
     console.log('Task 11 (2026-11): the expanded schedule repeat model (once/daily/weekly/monthly/yearly/custom) is fully inherited from automationService.js - Workflows never reimplement their own schedule math');
     console.log('='.repeat(70));
     await checkAsync('a workflow ask naming a weekday ("proti shomobar") resolves repeat=weekly with weekdays=["monday"], same mapping Automated Tasks uses', async () => {
