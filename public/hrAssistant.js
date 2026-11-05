@@ -179,6 +179,25 @@
   const companyEmailInput = document.getElementById('hrCompanyEmailInput');
   const companyWebsiteInput = document.getElementById('hrCompanyWebsiteInput');
   const companyDetailSheetErr = document.getElementById('hrCompanyDetailSheetErr');
+  // Letter settings (TASK 1c, 2026-11) - Ref No. format, letter codes,
+  // counters, Letter Register link.
+  const letterSettingsPage = document.getElementById('hrLetterSettingsPage');
+  const letterRefFormatInput = document.getElementById('hrLetterRefFormatInput');
+  const letterRefFormatPreview = document.getElementById('hrLetterRefFormatPreview');
+  const letterRefFormatChips = document.getElementById('hrLetterRefFormatChips');
+  const letterRefFormatErr = document.getElementById('hrLetterRefFormatErr');
+  const letterRefFormatSaveBtn = document.getElementById('hrLetterRefFormatSaveBtn');
+  const letterCodesList = document.getElementById('hrLetterCodesList');
+  const letterCountersList = document.getElementById('hrLetterCountersList');
+  const letterRegisterRow = document.getElementById('hrLetterRegisterRow');
+  const letterCounterSheetBackdrop = document.getElementById('hrLetterCounterSheetBackdrop');
+  const letterCounterSheet = document.getElementById('hrLetterCounterSheet');
+  const letterCounterSheetCloseBtn = document.getElementById('hrLetterCounterSheetCloseBtn');
+  const letterCounterSheetCancelBtn = document.getElementById('hrLetterCounterSheetCancelBtn');
+  const letterCounterSheetSaveBtn = document.getElementById('hrLetterCounterSheetSaveBtn');
+  const letterCounterSheetTitle = document.getElementById('hrLetterCounterSheetTitle');
+  const letterCounterNextInput = document.getElementById('hrLetterCounterNextInput');
+  const letterCounterSheetErr = document.getElementById('hrLetterCounterSheetErr');
   const convoPage = document.getElementById('hrConvoPage');
   const convoThread = document.getElementById('hrConvoThread');
   const convoActions = document.getElementById('hrConvoActions');
@@ -1498,7 +1517,7 @@
   // renderable data for the others; every path still re-fetches fresh
   // data in the background and re-renders when it lands, so nothing here
   // is ever more than one poll cycle stale.
-  const pageDataCache = { comms: null, commsAt: 0, reminders: new Map(), automations: null, openFlows: null, convos: new Map(), siteAliases: null, deptAliases: null, companyDetails: null, history: null };
+  const pageDataCache = { comms: null, commsAt: 0, reminders: new Map(), automations: null, openFlows: null, convos: new Map(), siteAliases: null, deptAliases: null, companyDetails: null, letterSettings: null, history: null };
   // Bumped by invalidateReminderCache (every reminder mutation - done/
   // undo/cancel/snooze/create/edit). Any reminders fetch in flight when a
   // mutation happens captures remMutationSeq at send time and checks it
@@ -1817,6 +1836,7 @@
     else if (entry.type === 'siteAliases') showSiteAliases();
     else if (entry.type === 'deptAliases') showDeptAliases();
     else if (entry.type === 'companyDetails') showCompanyDetails();
+    else if (entry.type === 'letterSettings') showLetterSettings();
     else if (entry.type === 'actionNeeded') showActionNeeded();
     else if (entry.type === 'conversation') openConversationPage(entry.chatId);
     else if (entry.type === 'reminders') { activeRemFilter = entry.filter; setPanelView('reminders'); loadRemindersPage(entry.filter); }
@@ -1871,6 +1891,7 @@
     const isSiteAliases = view === 'siteAliases';
     const isDeptAliases = view === 'deptAliases';
     const isCompanyDetails = view === 'companyDetails';
+    const isLetterSettings = view === 'letterSettings';
     const isActionNeeded = view === 'actionNeeded';
     const isAutoList = view === 'automationList';
     const isAutomation = view === 'automation';
@@ -1902,6 +1923,7 @@
     if (siteAliasesPage) siteAliasesPage.hidden = !isSiteAliases;
     if (deptAliasesPage) deptAliasesPage.hidden = !isDeptAliases;
     if (companyDetailsPage) companyDetailsPage.hidden = !isCompanyDetails;
+    if (letterSettingsPage) letterSettingsPage.hidden = !isLetterSettings;
     if (actionNeededPage) actionNeededPage.hidden = !isActionNeeded;
     if (autoListPage) autoListPage.hidden = !isAutoList;
     if (autoPage) autoPage.hidden = !isAutomation;
@@ -1968,6 +1990,12 @@
       if (commsHeadIcon) commsHeadIcon.innerHTML = WHATSAPP_SVG;
       if (commsHeadTitle) commsHeadTitle.textContent = 'Company details';
       if (commsHeadSubtitle) commsHeadSubtitle.textContent = 'Code, address, CIN/GSTIN, contact + the letter logo';
+      if (commsHeadBadge) commsHeadBadge.hidden = true;
+    } else if (isLetterSettings) {
+      if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon whatsapp';
+      if (commsHeadIcon) commsHeadIcon.innerHTML = WHATSAPP_SVG;
+      if (commsHeadTitle) commsHeadTitle.textContent = 'Letter settings';
+      if (commsHeadSubtitle) commsHeadSubtitle.textContent = 'Reference number format, letter codes + counters';
       if (commsHeadBadge) commsHeadBadge.hidden = true;
     } else if (isActionNeeded) {
       if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon whatsapp';
@@ -3210,6 +3238,9 @@
       const companyResp = await fetch('/api/workforce/hr-assistant/company-details').then((res) => res.json());
       pageDataCache.companyDetails = { items: companyResp.items || [], logo: companyResp.logo || null };
     } catch (err) { /* best effort - a real page open will just fetch fresh */ }
+    try {
+      pageDataCache.letterSettings = await fetch('/api/workforce/hr-assistant/letter-settings').then((res) => res.json());
+    } catch (err) { /* best effort - a real page open will just fetch fresh */ }
   }
   window.__hrAssistantPrefetchSubhSettings = prefetchSubhSettingsAll;
   function showDeptAliases() {
@@ -3417,6 +3448,180 @@
         }
       };
       reader.readAsDataURL(file);
+    });
+  }
+
+  // Letter settings (TASK 1c, 2026-11), direct instruction - Ref No.
+  // format with a live preview + tap-to-insert chips, a code per letter
+  // type, atomic per-company/type/FY counters with an owner Edit
+  // override, and the Letter Register sheet link. A reference number is
+  // assigned only when a letter is actually sent (server-side,
+  // letterSettingsService.assignRefNo) - this page only ever PEEKS at the
+  // next number, never consumes one.
+  let letterSettingsState = { letterTypeLabels: {}, fy: '' };
+  function letterRefFormatSamplePreview(format) {
+    const types = Object.keys(letterSettingsState.letterTypeLabels || {});
+    const firstType = types[0] || 'confirmation';
+    const letterCode = (letterSettingsState.letterCodes && letterSettingsState.letterCodes[firstType]) || 'CONF';
+    return (format || '')
+      .split('{Company_Code}').join('ARPL')
+      .split('{Letter_Code}').join(letterCode)
+      .split('{FY}').join(letterSettingsState.fy || '2026-27')
+      .split('{Serial}').join('0001');
+  }
+  function updateLetterRefFormatPreview() {
+    if (!letterRefFormatPreview) return;
+    const format = (letterRefFormatInput && letterRefFormatInput.value) || '';
+    letterRefFormatPreview.textContent = format ? ('Example: ' + letterRefFormatSamplePreview(format)) : '';
+  }
+  function letterCodeRowHtml(letterType, label, code) {
+    return '<div class="wf-auto-task-card" data-letter-type="' + escapeHtml(letterType) + '">' +
+      '<div class="wf-auto-task-head"><div style="flex:1;min-width:0">' +
+      '<div class="wf-auto-task-subject">' + escapeHtml(label) + '</div>' +
+      '<label class="wf-rem-field" style="margin-top:6px"><input type="text" data-role="letter-code-input" value="' + escapeHtml(code || '') + '" maxlength="10" /></label>' +
+      '</div></div>' +
+      '<div class="wf-auto-actions"><button type="button" class="plain" data-action="save-letter-code">Save</button></div></div>';
+  }
+  function letterCounterRowHtml(item) {
+    const label = (letterSettingsState.letterTypeLabels && letterSettingsState.letterTypeLabels[item.letterType]) || item.letterType;
+    return '<div class="wf-auto-task-card" data-company="' + escapeHtml(item.company) + '" data-letter-type="' + escapeHtml(item.letterType) + '">' +
+      '<div class="wf-auto-task-head"><div style="flex:1;min-width:0">' +
+      '<div class="wf-auto-task-subject">' + escapeHtml(item.company) + ' · ' + escapeHtml(label) + '</div>' +
+      '<div class="wf-auto-hint">Next number: ' + escapeHtml(String(item.nextNumber).padStart(4, '0')) + '</div>' +
+      '</div></div>' +
+      '<div class="wf-auto-actions"><button type="button" class="plain" data-action="edit-counter">Edit</button></div></div>';
+  }
+  function renderLetterSettingsPage(data) {
+    letterSettingsState = data;
+    if (letterRefFormatInput) letterRefFormatInput.value = data.refFormat || '';
+    updateLetterRefFormatPreview();
+    if (letterRefFormatChips) {
+      letterRefFormatChips.innerHTML = (data.placeholders || []).map((p) =>
+        '<button type="button" class="plain" data-chip="' + escapeHtml(p) + '" style="font-size:0.74rem;padding:5px 10px;border-radius:999px;background:var(--wi-primary-50);color:var(--wi-primary-800);border:none;font-weight:700">' + escapeHtml(p) + '</button>'
+      ).join('');
+      letterRefFormatChips.querySelectorAll('[data-chip]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          if (!letterRefFormatInput) return;
+          const chip = btn.dataset.chip;
+          const start = letterRefFormatInput.selectionStart != null ? letterRefFormatInput.selectionStart : letterRefFormatInput.value.length;
+          const end = letterRefFormatInput.selectionEnd != null ? letterRefFormatInput.selectionEnd : letterRefFormatInput.value.length;
+          const val = letterRefFormatInput.value || '';
+          letterRefFormatInput.value = val.slice(0, start) + chip + val.slice(end);
+          letterRefFormatInput.focus();
+          const pos = start + chip.length;
+          letterRefFormatInput.setSelectionRange(pos, pos);
+          updateLetterRefFormatPreview();
+        });
+      });
+    }
+    if (letterCodesList) {
+      letterCodesList.innerHTML = (data.letterTypes || []).map((t) => letterCodeRowHtml(t, (data.letterTypeLabels || {})[t] || t, (data.letterCodes || {})[t])).join('');
+      letterCodesList.querySelectorAll('[data-action="save-letter-code"]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          const card = btn.closest('[data-letter-type]');
+          const letterType = card.dataset.letterType;
+          const code = card.querySelector('[data-role="letter-code-input"]').value;
+          await runButtonAction(btn, () => postJsonOrThrow('/api/workforce/hr-assistant/letter-settings/letter-code', { letterType, code }), () => {
+            showActionToast('Letter code saved');
+            pageDataCache.letterSettings = null;
+          }, { resetAfterSuccess: true });
+        });
+      });
+    }
+    if (letterCountersList) {
+      if (!(data.counters || []).length) letterCountersList.innerHTML = '<div class="wf-rem-empty">No companies found in the HR data yet.</div>';
+      else {
+        letterCountersList.innerHTML = data.counters.map(letterCounterRowHtml).join('');
+        letterCountersList.querySelectorAll('[data-action="edit-counter"]').forEach((btn) => {
+          btn.addEventListener('click', () => {
+            const card = btn.closest('[data-company]');
+            openLetterCounterSheet({ company: card.dataset.company, letterType: card.dataset.letterType });
+          });
+        });
+      }
+    }
+    if (letterRegisterRow) {
+      letterRegisterRow.innerHTML = data.registerLink && data.registerLink.url
+        ? '<div class="wf-auto-task-card"><div class="wf-auto-task-head"><div style="flex:1;min-width:0"><div class="wf-auto-hint">Every sent letter is logged here automatically.</div></div></div><div class="wf-auto-actions"><a class="wf-ai-action-btn download" href="' + escapeHtml(data.registerLink.url) + '" target="_blank" rel="noopener"><span>Open Letter Register ↗</span></a></div></div>'
+        : '<div class="wf-rem-empty">Not created yet - created automatically when the first letter is sent.</div>';
+    }
+  }
+  async function loadLetterSettingsPage() {
+    if (!letterCodesList) return;
+    const cached = pageDataCache.letterSettings;
+    if (cached) renderLetterSettingsPage(cached);
+    else {
+      letterCodesList.innerHTML = '<div class="wf-skeleton-list"><div class="wf-skeleton-row"></div><div class="wf-skeleton-row"></div></div>';
+      if (letterCountersList) letterCountersList.innerHTML = '';
+    }
+    try {
+      const data = await fetch('/api/workforce/hr-assistant/letter-settings').then((res) => res.json());
+      pageDataCache.letterSettings = data;
+      renderLetterSettingsPage(data);
+    } catch (err) {
+      if (!cached) letterCodesList.innerHTML = '<div class="wf-rem-empty">Could not load letter settings.</div>';
+    }
+  }
+  function showLetterSettings() {
+    setPanelView('letterSettings');
+    loadLetterSettingsPage();
+  }
+  window.__hrAssistantOpenLetterSettings = function () {
+    const wasOpen = typeof panel !== 'undefined' && !panel.hidden;
+    if (!wasOpen && typeof openPanel === 'function') {
+      openPanel();
+      navStack = [{ type: 'letterSettings' }];
+    } else {
+      pushNav({ type: 'letterSettings' });
+    }
+    showLetterSettings();
+  };
+  if (letterRefFormatInput) letterRefFormatInput.addEventListener('input', updateLetterRefFormatPreview);
+  if (letterRefFormatSaveBtn) {
+    letterRefFormatSaveBtn.addEventListener('click', async () => {
+      if (letterRefFormatErr) { letterRefFormatErr.textContent = ''; letterRefFormatErr.classList.add('hidden'); }
+      await runButtonAction(letterRefFormatSaveBtn, () => postJsonOrThrow('/api/workforce/hr-assistant/letter-settings/ref-format', { format: letterRefFormatInput.value }), () => {
+        showProToast({ title: 'Ref No. format saved', type: 'success' });
+        pageDataCache.letterSettings = null;
+      }, { resetAfterSuccess: true, toastFn: (msg) => { if (letterRefFormatErr) { letterRefFormatErr.textContent = msg; letterRefFormatErr.classList.remove('hidden'); } } });
+    });
+  }
+  function closeLetterCounterSheet() {
+    letterCounterSheetBackdrop.classList.remove('open');
+    letterCounterSheet.classList.remove('open');
+    setTimeout(() => { letterCounterSheetBackdrop.hidden = true; letterCounterSheet.hidden = true; }, 320);
+  }
+  let letterCounterSheetState = { company: '', letterType: '' };
+  function openLetterCounterSheet({ company, letterType }) {
+    letterCounterSheetState = { company, letterType };
+    const item = (letterSettingsState.counters || []).find((c) => c.company === company && c.letterType === letterType);
+    const label = (letterSettingsState.letterTypeLabels || {})[letterType] || letterType;
+    if (letterCounterSheetTitle) letterCounterSheetTitle.textContent = 'Edit "' + company + ' · ' + label + '"';
+    if (letterCounterNextInput) letterCounterNextInput.value = item ? item.nextNumber : 1;
+    if (letterCounterSheetErr) { letterCounterSheetErr.textContent = ''; letterCounterSheetErr.classList.add('hidden'); }
+    letterCounterSheetBackdrop.hidden = false;
+    letterCounterSheet.hidden = false;
+    void letterCounterSheet.offsetHeight;
+    letterCounterSheetBackdrop.classList.add('open');
+    letterCounterSheet.classList.add('open');
+  }
+  if (letterCounterSheetCloseBtn) letterCounterSheetCloseBtn.addEventListener('click', closeLetterCounterSheet);
+  if (letterCounterSheetCancelBtn) letterCounterSheetCancelBtn.addEventListener('click', closeLetterCounterSheet);
+  if (letterCounterSheetBackdrop) letterCounterSheetBackdrop.addEventListener('click', closeLetterCounterSheet);
+  if (letterCounterSheetSaveBtn) {
+    letterCounterSheetSaveBtn.addEventListener('click', async () => {
+      const nextNumber = Number(letterCounterNextInput.value);
+      if (!Number.isInteger(nextNumber) || nextNumber < 1) {
+        if (letterCounterSheetErr) { letterCounterSheetErr.textContent = 'Enter a whole number of 1 or more.'; letterCounterSheetErr.classList.remove('hidden'); }
+        return;
+      }
+      if (letterCounterSheetErr) { letterCounterSheetErr.textContent = ''; letterCounterSheetErr.classList.add('hidden'); }
+      await runButtonAction(letterCounterSheetSaveBtn, () => postJsonOrThrow('/api/workforce/hr-assistant/letter-settings/counter', { company: letterCounterSheetState.company, letterType: letterCounterSheetState.letterType, nextNumber }), () => {
+        closeLetterCounterSheet();
+        showProToast({ title: 'Counter updated', type: 'success' });
+        pageDataCache.letterSettings = null;
+        if (panelView === 'letterSettings') loadLetterSettingsPage();
+      }, { resetAfterSuccess: true });
     });
   }
 
@@ -7062,6 +7267,7 @@
     hrSiteAliasesPage: () => loadSiteAliasesPage(),
     hrDeptAliasesPage: () => loadDeptAliasesPage(),
     hrCompanyDetailsPage: () => loadCompanyDetailsPage(),
+    hrLetterSettingsPage: () => loadLetterSettingsPage(),
     hrConvoPage: () => reloadConversation()
   };
   Object.keys(WF_PTR_REFRESH_BY_ID).forEach((id) => {

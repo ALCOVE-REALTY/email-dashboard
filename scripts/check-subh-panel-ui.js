@@ -330,6 +330,62 @@ function check(label, ok, detail) {
   const companyErrAfter = consoleErrors.length + pageErrors.length;
   check('Company details: no JS error was thrown opening the page or the edit sheet', companyErrAfter === companyErrBefore,
     'new errors: ' + JSON.stringify(consoleErrors.slice(companyErrBefore).concat(pageErrors.slice(companyErrBefore))));
+  // The edit sheet is a fixed-position overlay OUTSIDE the panel's own
+  // hidden-toggle (same as every other wf-rem-sheet in this app) - closing
+  // the panel does not close it, and leaving it open intercepts every
+  // subsequent click at this same screen position in later test blocks.
+  await page.click('#hrCompanyDetailSheetCloseBtn');
+  await page.waitForTimeout(350);
+
+  // TASK 1(c) (2026-11), direct instruction - "Letter settings" page:
+  // opened the same way the real "SUBH Settings" dashboard tile opens it
+  // (window.__hrAssistantOpenLetterSettings), asserts the Ref No. format
+  // input/preview/chips, the letter-code rows and the counters list all
+  // render, and tapping a counter's Edit opens the sheet pre-filled with
+  // its real next number.
+  await page.route('**/api/workforce/hr-assistant/letter-settings', (route) => {
+    route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify({
+        refFormat: '{Company_Code}/HR/{Letter_Code}/{FY}/{Serial}',
+        letterCodes: { confirmation: 'CONF', extension: 'EXT', experience: 'EXP', relieving: 'REL' },
+        placeholders: ['{Company_Code}', '{Letter_Code}', '{FY}', '{Serial}'],
+        letterTypeLabels: { confirmation: 'Confirmation', extension: 'Extension of Probation', experience: 'Experience', relieving: 'Relieving' },
+        fy: '2026-27',
+        companies: ['Alcove Realty Pvt Ltd'],
+        letterTypes: ['confirmation', 'extension', 'experience', 'relieving'],
+        counters: [{ company: 'Alcove Realty Pvt Ltd', letterType: 'confirmation', fy: '2026-27', nextNumber: 7 }],
+        registerLink: null
+      })
+    });
+  });
+  await page.evaluate(() => { if (window.__hrAssistantClosePanel) window.__hrAssistantClosePanel(); });
+  await page.waitForTimeout(100);
+  const letterErrBefore = consoleErrors.length + pageErrors.length;
+  await page.evaluate(() => { window.__hrAssistantOpenLetterSettings(); });
+  await page.waitForTimeout(250);
+  check('Letter settings page opens (not a blank page)', await page.locator('#hrLetterSettingsPage').isVisible());
+  const letterHeadTitle = await page.locator('#hrCommsHeadTitle').textContent().catch(() => null);
+  check('Letter settings: header title reads "Letter settings"', (letterHeadTitle || '').trim() === 'Letter settings', 'got: ' + JSON.stringify(letterHeadTitle));
+  const refFormatVal = await page.locator('#hrLetterRefFormatInput').inputValue().catch(() => null);
+  check('Letter settings: Ref No. format input is pre-filled', refFormatVal === '{Company_Code}/HR/{Letter_Code}/{FY}/{Serial}', 'got: ' + JSON.stringify(refFormatVal));
+  const previewText = await page.locator('#hrLetterRefFormatPreview').textContent().catch(() => null);
+  check('Letter settings: a live example preview is shown', (previewText || '').includes('ARPL') && (previewText || '').includes('0001'), 'got: ' + JSON.stringify(previewText));
+  const chipCount = await page.locator('#hrLetterRefFormatChips [data-chip]').count();
+  check('Letter settings: all 4 tap-to-insert placeholder chips are present', chipCount === 4, 'got: ' + chipCount);
+  const codeRows = await page.locator('#hrLetterCodesList [data-letter-type]').count();
+  check('Letter settings: all 4 built-in letter codes render as rows', codeRows === 4, 'got: ' + codeRows);
+  const counterCards = await page.locator('#hrLetterCountersList [data-company]').count();
+  check('Letter settings: the fake counter renders as a card', counterCards === 1, 'got: ' + counterCards);
+  await page.click('#hrLetterCountersList [data-action="edit-counter"]');
+  await page.waitForTimeout(350);
+  check('Letter settings: counter edit sheet opens', await page.locator('#hrLetterCounterSheet').isVisible());
+  const nextVal = await page.locator('#hrLetterCounterNextInput').inputValue().catch(() => null);
+  check('Letter settings: counter edit sheet pre-fills the real next number (7)', nextVal === '7', 'got: ' + JSON.stringify(nextVal));
+  const letterErrAfter = consoleErrors.length + pageErrors.length;
+  check('Letter settings: no JS error was thrown opening the page or the counter sheet', letterErrAfter === letterErrBefore,
+    'new errors: ' + JSON.stringify(consoleErrors.slice(letterErrBefore).concat(pageErrors.slice(letterErrBefore))));
+  await page.click('#hrLetterCounterSheetCloseBtn');
+  await page.waitForTimeout(350);
 
   // Informational only, never a failure here: workforce.js's own main
   // dashboard (unrelated to the SUBH panel this check targets) fires its

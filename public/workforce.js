@@ -547,6 +547,13 @@ if (subhSettingsCompanyDetailsBtn) {
     if (window.__hrAssistantOpenCompanyDetails) window.__hrAssistantOpenCompanyDetails();
   });
 }
+// Letter settings (TASK 1c, 2026-11) - same entry pattern as above.
+const subhSettingsLetterSettingsBtn = document.getElementById('subhSettingsLetterSettingsBtn');
+if (subhSettingsLetterSettingsBtn) {
+  subhSettingsLetterSettingsBtn.addEventListener('click', () => {
+    if (window.__hrAssistantOpenLetterSettings) window.__hrAssistantOpenLetterSettings();
+  });
+}
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && !wfDrawer.hidden) closeDrawer();
 });

@@ -461,6 +461,57 @@
         </div>
       </div>
 
+      <!-- TASK 1(c) (2026-11), direct instruction - "Letter settings". -->
+      <div class="wf-comms-page" id="hrLetterSettingsPage" hidden>
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:4px 4px 6px">
+          <span class="wf-ai-sheet-title" style="font-size:14px">Reference number format</span>
+        </div>
+        <label class="wf-rem-field" style="padding:0 4px">
+          <span>Format (must include {Serial})</span>
+          <input type="text" id="hrLetterRefFormatInput" autocomplete="off" />
+        </label>
+        <div class="wf-auto-hint" id="hrLetterRefFormatPreview" style="padding:4px 4px 0"></div>
+        <div id="hrLetterRefFormatChips" style="display:flex;flex-wrap:wrap;gap:6px;padding:8px 4px"></div>
+        <div class="wf-auto-err hidden" id="hrLetterRefFormatErr" style="padding:0 4px"></div>
+        <div style="padding:6px 4px 0">
+          <button type="button" class="wf-ai-action-btn download" id="hrLetterRefFormatSaveBtn"><span>Save format</span></button>
+        </div>
+
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 4px 6px">
+          <span class="wf-ai-sheet-title" style="font-size:14px">Letter codes</span>
+        </div>
+        <div class="wf-rem-list" id="hrLetterCodesList"></div>
+
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 4px 6px">
+          <span class="wf-ai-sheet-title" style="font-size:14px">Counters (current financial year)</span>
+        </div>
+        <div class="wf-rem-list" id="hrLetterCountersList"></div>
+
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 4px 6px">
+          <span class="wf-ai-sheet-title" style="font-size:14px">Letter Register</span>
+        </div>
+        <div class="wf-rem-list" id="hrLetterRegisterRow"></div>
+      </div>
+
+      <div class="wf-ai-sheet-backdrop" id="hrLetterCounterSheetBackdrop" hidden></div>
+      <div class="wf-rem-sheet" id="hrLetterCounterSheet" hidden role="dialog" aria-label="Edit counter">
+        <div class="wf-ai-sheet-handle"></div>
+        <div class="wf-ai-sheet-head">
+          <button type="button" class="wf-ai-sheet-close" id="hrLetterCounterSheetCloseBtn" aria-label="Close">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+          <span class="wf-ai-sheet-title" id="hrLetterCounterSheetTitle">Edit counter</span>
+        </div>
+        <div class="wf-rem-sheet-body">
+          <label class="wf-rem-field"><span>Next number to issue</span><input type="number" min="1" step="1" id="hrLetterCounterNextInput" autocomplete="off" /></label>
+          <div class="wf-auto-err hidden" id="hrLetterCounterSheetErr"></div>
+        </div>
+        <div class="wf-rem-sheet-foot">
+          <button type="button" class="wf-ai-action-btn outline" id="hrLetterCounterSheetCancelBtn">Cancel</button>
+          <button type="button" class="wf-ai-action-btn download" id="hrLetterCounterSheetSaveBtn"><span>Save</span></button>
+        </div>
+      </div>
+
       <!-- Save/Edit template sheet - same bottom-sheet pattern as the
            Reminders Add/Edit sheet. Opened either from "Save as template"
            on a model-written reply bubble (topic/whenToUse blank,
@@ -2674,6 +2725,22 @@
           <span class="wf-hub-tile-main">
             <span class="wf-hub-tile-title">Company details</span>
             <span class="wf-hub-tile-sub">Code, address, CIN/GSTIN, contact + the letter logo</span>
+          </span>
+          <span class="wf-hub-tile-end">
+            <svg class="wf-hub-tile-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+          </span>
+        </button>
+        <!-- TASK 1(c) (2026-11), direct instruction - "Letter settings":
+             Ref No. format (live preview + tap-to-insert chips), a code
+             per letter type, atomic per-company/type/FY counters with an
+             owner Edit override, and the Letter Register sheet link. -->
+        <button type="button" class="wf-hub-tile wf-hub-tile--compact" id="subhSettingsLetterSettingsBtn" style="margin-top:10px">
+          <span class="wf-hub-tile-icon comms">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+          </span>
+          <span class="wf-hub-tile-main">
+            <span class="wf-hub-tile-title">Letter settings</span>
+            <span class="wf-hub-tile-sub">Reference number format, letter codes + counters</span>
           </span>
           <span class="wf-hub-tile-end">
             <svg class="wf-hub-tile-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>

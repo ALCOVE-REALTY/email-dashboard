@@ -115,4 +115,41 @@ function getDriveClient() {
   return driveClient;
 }
 
-module.exports = { getSheetsReadOnlyClient, getSheetsWriteClient, hasServiceAccount, getDriveClient, getServiceAccountEmail, warmSheetsClient };
+// Write-capable Drive client (TASK 1, 2026-11, direct instruction) - needed
+// only by the SUBH Letter Templates feature: creating the "Letter Register"
+// sheet inside the owner-provided Drive folder, and (later) copying a
+// template file, converting a .docx copy to a Google Doc, exporting the
+// filled copy as PDF, and deleting the temp copy. Full `drive` scope (not
+// `drive.file`) because this needs to read/copy/export files the SERVICE
+// ACCOUNT did not itself create (the owner's own template files) - same
+// service account credential as every other client above, just a broader
+// scope, so this is additive and never affects getDriveClient()'s existing
+// read-only callers.
+const DRIVE_WRITE_SCOPES = ['https://www.googleapis.com/auth/drive'];
+let driveWriteClient = null;
+
+function getDriveWriteClient() {
+  requireCredentials();
+  if (!driveWriteClient) {
+    const auth = new google.auth.GoogleAuth({ credentials, scopes: DRIVE_WRITE_SCOPES });
+    driveWriteClient = google.drive({ version: 'v3', auth });
+  }
+  return driveWriteClient;
+}
+
+// Docs API client (TASK 1, 2026-11) - placeholder-fill via batchUpdate/
+// replaceAllText on a copied template (native Google Doc, or a .docx
+// converted to one on copy). Same service account, `documents` scope.
+const DOCS_SCOPES = ['https://www.googleapis.com/auth/documents'];
+let docsClient = null;
+
+function getDocsClient() {
+  requireCredentials();
+  if (!docsClient) {
+    const auth = new google.auth.GoogleAuth({ credentials, scopes: DOCS_SCOPES });
+    docsClient = google.docs({ version: 'v1', auth });
+  }
+  return docsClient;
+}
+
+module.exports = { getSheetsReadOnlyClient, getSheetsWriteClient, hasServiceAccount, getDriveClient, getDriveWriteClient, getDocsClient, getServiceAccountEmail, warmSheetsClient };

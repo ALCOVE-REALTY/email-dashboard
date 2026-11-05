@@ -21,6 +21,7 @@ const reminderService = require('./aiAssistant/reminderService');
 const automationService = require('./aiAssistant/automationService');
 const workflowService = require('./aiAssistant/workflowService');
 const companyDetailsService = require('./aiAssistant/companyDetailsService');
+const letterSettingsService = require('./aiAssistant/letterSettingsService');
 const sheetsAuth = require('./sheetsAuth');
 const hrAccountCommands = require('./hrAccountCommands');
 const hrAuthAlerts = require('./hrAuthAlerts');
@@ -3060,6 +3061,71 @@ router.post('/hr-assistant/letter-logo', async (req, res) => {
     const result = await companyDetailsService.saveLetterLogo({ dataUrl, contentType });
     if (!result.ok) return res.status(400).json({ error: result.error });
     res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// TASK 1(c) (2026-11), direct instruction - "Letter settings": Ref No.
+// format (with a live preview + tap-to-insert chips), a code per letter
+// type, and one counter per company + letter type for the CURRENT
+// financial year (a future FY's counter is created automatically on its
+// own first letter - nothing to show or set up here ahead of time). Only
+// the 4 built-in letter types today; Drive-template letter codes/counters
+// join this same list once TASK 1(b)/(d) (Drive template discovery) land.
+const BUILTIN_LETTER_TYPES = ['confirmation', 'extension', 'experience', 'relieving'];
+router.get('/hr-assistant/letter-settings', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const now = new Date();
+    const fy = letterSettingsService.computeFinancialYear(now);
+    const [settings, companies, registerLink] = await Promise.all([
+      letterSettingsService.getLetterSettings(),
+      companyDetailsService.getCompanyNamesFromHr(),
+      letterSettingsService.getLetterRegisterLink()
+    ]);
+    const counters = [];
+    for (const company of companies) {
+      for (const letterType of BUILTIN_LETTER_TYPES) {
+        const current = await letterSettingsService.getCounterValue(company, letterType, fy);
+        counters.push({ company, letterType, fy, nextNumber: current + 1 });
+      }
+    }
+    res.json(Object.assign({ fy, companies, letterTypes: BUILTIN_LETTER_TYPES, counters, registerLink }, settings));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+router.post('/hr-assistant/letter-settings/ref-format', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const result = await letterSettingsService.saveRefNoFormat((req.body || {}).format);
+    if (!result.ok) return res.status(400).json({ error: result.error });
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+router.post('/hr-assistant/letter-settings/letter-code', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const { letterType, code } = req.body || {};
+    const result = await letterSettingsService.saveLetterCode(letterType, code);
+    if (!result.ok) return res.status(400).json({ error: result.error });
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+router.post('/hr-assistant/letter-settings/counter', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const { company, letterType, nextNumber } = req.body || {};
+    if (!company || !letterType) return res.status(400).json({ error: 'company and letterType are required.' });
+    const fy = letterSettingsService.computeFinancialYear(new Date());
+    const result = await letterSettingsService.setCounterOverride(company, letterType, fy, nextNumber);
+    if (!result.ok) return res.status(400).json({ error: result.error });
+    res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

@@ -937,3 +937,53 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
   frontend wiring and re-running (the suite crashed with
   `window.__hrAssistantOpenCompanyDetails is not a function`, confirming
   the check genuinely exercises this new entry point).
+- Task 22 (2026-11), TASK 1(c) of the same batch - "Letter settings"
+  (☰ → SUBH Settings → Letter settings): Ref No. format (default
+  `{Company_Code}/HR/{Letter_Code}/{FY}/{Serial}`) with a live example
+  preview and 4 tap-to-insert placeholder chips, a code per letter type
+  (defaults CONF/EXT/EXP/REL - Drive-template codes join this same list
+  once TASK 1(b)/(d) land), and one atomic counter per company + letter
+  type + financial year with an owner "Edit" override to continue from
+  the existing manual register. New `src/aiAssistant/letterSettingsService.js`:
+  `computeFinancialYear(date)` (1 Apr - 31 Mar, e.g. a November 2026 date
+  -> "2026-27"), `previewNextRefNo` (read-only peek, used by Preview/Send
+  test AND the settings page's own counter list - NEVER touches the real
+  counter) vs `assignRefNo` (the only function that actually consumes a
+  number, via `redis.incr` - atomic, so two concurrent sends can never
+  collide, and an unset key auto-starts a brand new FY's counter at
+  0001 with no manual setup). A reference number is assigned ONLY when a
+  letter is actually sent; preview/test must keep showing "Ref No. will
+  be assigned on sending" once this is wired into the real send path
+  (still pending - this task only lands the settings/counter engine
+  itself). Every sent letter will be appended
+  (`appendToLetterRegister`) to a "Letter Register" Google Sheet created
+  once, idempotently, INSIDE the owner's existing "SUBH Letter Templates"
+  Drive folder (`1ecugXqFBrNTvFDPxgQnZBq8ueItQduTW` - direct instruction:
+  reuse this exact folder, never create a new one) via a new write-
+  capable Drive client (`sheetsAuth.getDriveWriteClient`, full `drive`
+  scope, same service account) and the existing `getSheetsWriteClient`;
+  its link is cached in Redis and shown on the Letter settings page. Also
+  added `sheetsAuth.getDocsClient` (Docs API, `documents` scope) ahead of
+  the still-pending TASK 1(b)/(d) Drive-template placeholder-fill work,
+  unused until then. Deterministic suite
+  (`scripts/check-letter-settings.js`, `npm run check:letter-settings`,
+  38/38): FY boundaries (31 Mar vs 1 Apr), ref-no rendering/padding,
+  format validation (must include `{Serial}` or it's rejected - could
+  otherwise issue the same number twice), per-type letter-code save
+  isolation, counter isolation across company/type/FY (each gets its own
+  independent sequence), a simulated concurrent double-assignment never
+  colliding, the counter override continuing numbering from an owner-
+  chosen number and then incrementing normally after, and the Letter
+  Register's create-once/reuse/append behavior (Drive/Sheets write calls
+  stubbed by monkey-patching `sheetsAuth`'s own client getters - no real
+  Drive account touched). Headless UI check
+  (`scripts/check-subh-panel-ui.js`, 57/57): opening the page shows the
+  pre-filled format input, a live example preview, all 4 chips, all 4
+  letter-code rows and the counter card; tapping Edit opens the sheet
+  pre-filled with the real next number - verified to catch a regression
+  by reverting and re-running (also fixed a pre-existing latent bug this
+  same check surfaced: the Company Details edit sheet is a fixed-position
+  overlay OUTSIDE the panel's own hidden-toggle, so closing the panel
+  never closed it, leaving it open to intercept every later test's clicks
+  at that same screen position - now explicitly closed at the end of its
+  own test block).
