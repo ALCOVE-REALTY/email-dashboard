@@ -2181,7 +2181,7 @@ body { background: var(--wi-bg); }
 .wf-auto-subject-label { display: inline; font-size: 0.92rem; font-weight: 800; color: var(--wi-ink); }
 .wf-ai-action-btn.small { padding: 5px 10px; font-size: 0.72rem; }
 .wf-rem-add-btn.small { padding: 9px; font-size: 0.8rem; }
-#autoAskBtn { align-self: flex-start; }
+#autoAskBtn, #wfAskBtn { align-self: flex-start; }
 .wf-auto-hint { font-size: 0.72rem; color: var(--wi-muted); margin-top: 4px; }
 .wf-auto-err { font-size: 0.72rem; color: var(--wi-red-700); font-weight: 700; margin-top: 4px; }
 .wf-auto-err.hidden { display: none; }
@@ -2194,6 +2194,16 @@ body { background: var(--wi-bg); }
   height: auto; padding: 5px 10px; border-radius: 999px; border: 1px dashed var(--wi-primary); background: transparent;
   color: var(--wi-primary); font-size: 0.72rem; font-weight: 700; cursor: pointer; font-family: inherit; text-align: left;
 }
+/* Task 19 (2026-11) LIVE BUG FIX - the Workflow page's own example
+   (WF_EXAMPLES) is a long, multi-sentence paragraph, unlike the
+   Automated Task page's short one-liner - the shared 999px pill radius
+   above turns a wrapped, multi-line box into a tall oval/stadium shape
+   whose curved corners crowd the text at the start/end of each wrapped
+   line. Scoped to #wfAskExamples only (never the shorter Automated Task
+   chip, which still wants its normal pill shape) - a small, rectangular
+   corner radius instead, with the same dashed indigo border and padding,
+   height still auto so it keeps growing with the text. */
+#wfAskExamples button { border-radius: 10px; white-space: normal; }
 .wf-auto-row-gap { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .wf-auto-seg { display: flex; flex-wrap: wrap; gap: 8px; }
 .wf-auto-seg button {
