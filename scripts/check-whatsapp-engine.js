@@ -3254,7 +3254,7 @@ async function checkAsync(label, fn) {
     const now = Date.now();
     await whatsappAssistant.saveBurstBuffer(STUCK_TEST_CONTACT, { messages: [{ text: 'hi', arrivedAt: now }], firstSeenAt: now - 30 * 1000, name: 'Stuck Test', firstName: 'Stuck' });
     await whatsappAssistant.detectStuckIncomingMessages(now);
-    const flagged = (await whatsappAssistant.listStuckIncomingMessages()).some((f) => f.contactId === STUCK_TEST_CONTACT);
+    const flagged = (await whatsappAssistant.listStuckIncomingMessages()).some((f) => String(f.contactId) === STUCK_TEST_CONTACT);
     await whatsappAssistant.clearBurstBuffer(STUCK_TEST_CONTACT).catch(() => {});
     return !flagged;
   });
@@ -3265,9 +3265,9 @@ async function checkAsync(label, fn) {
     const firstSeenAt = now - 3 * 60 * 1000;
     await whatsappAssistant.saveBurstBuffer(STUCK_TEST_CONTACT, { messages: [{ text: 'Mdo dept. HOD emp code dao', arrivedAt: firstSeenAt }], firstSeenAt, name: 'Stuck Test', firstName: 'Stuck' });
     const result = await whatsappAssistant.detectStuckIncomingMessages(now);
-    const stuckRecord = (await whatsappAssistant.listStuckIncomingMessages()).find((f) => f.contactId === STUCK_TEST_CONTACT);
+    const stuckRecord = (await whatsappAssistant.listStuckIncomingMessages()).find((f) => String(f.contactId) === STUCK_TEST_CONTACT);
     const items = await whatsappAssistant.listActionNeededItems();
-    const actionItem = items.find((i) => i.kind === 'stuck_incoming' && i.chatId === STUCK_TEST_CONTACT);
+    const actionItem = items.find((i) => i.kind === 'stuck_incoming' && String(i.chatId) === STUCK_TEST_CONTACT);
     const ok = result.flagged >= 1 && Boolean(stuckRecord) && stuckRecord.text === 'Mdo dept. HOD emp code dao' &&
       Boolean(actionItem) && actionItem.data.text === 'Mdo dept. HOD emp code dao' && actionItem.category === 'data_requests';
     await whatsappAssistant.clearBurstBuffer(STUCK_TEST_CONTACT).catch(() => {});
@@ -3281,9 +3281,9 @@ async function checkAsync(label, fn) {
     const firstSeenAt = now - 3 * 60 * 1000;
     await whatsappAssistant.saveBurstBuffer(STUCK_TEST_CONTACT, { messages: [{ text: 'hello', arrivedAt: firstSeenAt }], firstSeenAt, name: 'Stuck Test', firstName: 'Stuck' });
     await whatsappAssistant.detectStuckIncomingMessages(now);
-    const firstPass = (await whatsappAssistant.listStuckIncomingMessages()).find((f) => f.contactId === STUCK_TEST_CONTACT);
+    const firstPass = (await whatsappAssistant.listStuckIncomingMessages()).find((f) => String(f.contactId) === STUCK_TEST_CONTACT);
     await whatsappAssistant.detectStuckIncomingMessages(now + 30 * 1000);
-    const secondPass = (await whatsappAssistant.listStuckIncomingMessages()).filter((f) => f.contactId === STUCK_TEST_CONTACT);
+    const secondPass = (await whatsappAssistant.listStuckIncomingMessages()).filter((f) => String(f.contactId) === STUCK_TEST_CONTACT);
     const ok = Boolean(firstPass) && secondPass.length === 1 && secondPass[0].detectedAt === firstPass.detectedAt;
     await whatsappAssistant.clearBurstBuffer(STUCK_TEST_CONTACT).catch(() => {});
     await whatsappAssistant.dismissStuckIncomingMessage(STUCK_TEST_CONTACT).catch(() => {});
@@ -3297,7 +3297,7 @@ async function checkAsync(label, fn) {
     await whatsappAssistant.saveBurstBuffer(STUCK_TEST_CONTACT, { messages: [{ text: 'hello', arrivedAt: firstSeenAt }], firstSeenAt, name: 'Stuck Test', firstName: 'Stuck' });
     await whatsappAssistant.detectStuckIncomingMessages(now);
     const result = await whatsappAssistant.dismissStuckIncomingMessage(STUCK_TEST_CONTACT);
-    const stillFlagged = (await whatsappAssistant.listStuckIncomingMessages()).some((f) => f.contactId === STUCK_TEST_CONTACT);
+    const stillFlagged = (await whatsappAssistant.listStuckIncomingMessages()).some((f) => String(f.contactId) === STUCK_TEST_CONTACT);
     const bufferGone = !(await whatsappAssistant.getBurstBuffer(STUCK_TEST_CONTACT));
     return result.ok === true && !stillFlagged && bufferGone;
   });
