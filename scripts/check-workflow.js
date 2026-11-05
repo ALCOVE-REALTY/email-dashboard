@@ -806,6 +806,14 @@ async function main() {
           m.attachments.some((a) => a.contentType === 'application/pdf' && a.filename.startsWith('Confirmation-Letter-')) &&
           m.attachments.some((a) => a.contentType === 'application/pdf' && !a.filename.startsWith('Confirmation-Letter-')));
     });
+    await checkAsync('Ask SUBH direct instruction: when the ask only says a follow-up should happen, with no wording for it, the follow-up body falls back to a real professional reminder (never empty), naming the actual first-mail subject, addressed to {Manager_Name}', async () => {
+      const r = await workflowService.draftWorkflowPlanFromParsed({
+        unclear: [], source: 'confirmations', rec: 'column', recCol: 'reportingManager', group: 'each', mediator: 'mail',
+        subjectHint: 'Probation confirmation pending', followUpDays: 2, rules: [{ when: 'X', replyText: 'Y', then: 'stop' }]
+      }, now, null);
+      return r.ok && Boolean(r.plan.followUp.body) && r.plan.followUp.body.startsWith('Dear {Manager_Name},') &&
+        r.plan.followUp.body.toLowerCase().includes('reminder') && r.plan.followUp.body.includes(r.plan.mailSubject || r.subject);
+    });
 
     console.log('='.repeat(70));
     console.log('Task 11 (2026-11): the expanded schedule repeat model (once/daily/weekly/monthly/yearly/custom) is fully inherited from automationService.js - Workflows never reimplement their own schedule math');

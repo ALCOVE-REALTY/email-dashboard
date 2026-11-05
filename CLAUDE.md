@@ -809,3 +809,60 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
   failure raises the card with the error noted and never a 3rd attempt;
   a reply more than 5 minutes after the original message gets the exact
   apology prefix, one under 5 minutes does not.
+- Task 19 (2026-11) - Create Workflow page fixes + letter templates
+  batch, compared against the Create Automated Task page (reference):
+  - Ask SUBH + example box: `#autoAskBtn { align-self: flex-start; }`
+    had no matching `#wfAskBtn` rule, so Workflow's own button stretched
+    full width inside `.wf-auto-card`'s flex-column default
+    `align-items: stretch`. The long, multi-sentence workflow example
+    also sat inside the shared chip style's 999px pill radius, which
+    turns a wrapped multi-line box into an oval/stadium shape whose
+    curved corners crowd the text - scoped a small (10px) rectangular
+    radius to `#wfAskExamples` only, leaving the Automated Task page's
+    own short one-liner chip untouched.
+  - "When they reply" rule-card overflow: `.wf-rem-field-row` laid its
+    two fields out with plain `display: flex` (no wrap), and each
+    `.wf-rem-field` only had `flex: 1` with no `min-width` override - a
+    flex item's default `min-width: auto` refuses to shrink below its
+    own content's intrinsic width, forcing "Follow up after (days)" (and
+    the whole page under it) wider than the screen. Fixed with
+    `min-width: 0` + an explicit `width` on every field's own input,
+    `flex-wrap` on the row with a 140px flex-basis per field (two fields
+    sit side by side only when they fit, otherwise stack full width),
+    an explicit `overflow-x: hidden` on the page's own scroll container
+    (the body-level guard never covered this nested one), and
+    `min-width: 0`/`box-sizing: border-box` on the rule card itself.
+  - "Attachment as" PDF/Excel for the record table (first message):
+    Workflow previously only ever offered "In the message body" - added
+    the same chips as Create Automated Task, wired through the same
+    `tablePlacement`/`attachmentFormat` plan fields that page already
+    uses end to end (form read/write, edit/draft-load population, New
+    reset, WhatsApp-blocks-PDF note, preview sheet, plan summary line).
+    `sendOneWorkflowMessage` now builds a real PDF/Excel of the table
+    (same `pdfReport.js`/`tableExcelReport.js` builders
+    `automationService.js`'s own table-attachment feature already uses)
+    and combines it with any generated-letter attachment into one list -
+    a single attachment still uses the existing `attachment` call shape
+    (byte-for-byte compatible with every existing single-doc caller/
+    test), 2+ use `attachments`, so a table and a letter can go out on
+    the same message without either ever silently dropping the other.
+  - Follow-up message auto-fill: when an Ask SUBH sentence only says a
+    follow-up should happen ("2 din-e reply na ele follow-up") without
+    saying what it should SAY, the model's own `followUpBody` comes back
+    empty - the generic fallback used `{Employee_Name}` and vague
+    wording; now addressed to `{Manager_Name}` in the same
+    "Dear ..., ... Thank you." style as a normal first mail, naming the
+    actual first message's own mail subject instead of a vague "your
+    reply".
+  Deterministic suites (`scripts/check-workflow.js`): default PDF
+  attachment, Excel attachment, the unchanged body-only case, a table +
+  letter combined on the same message (2 real attachments), and the
+  follow-up fallback wording. Headless UI check
+  (`scripts/check-subh-panel-ui.js`), now run at phone width (384px):
+  Ask SUBH is a real compact pill narrower than the page, the example
+  chip has the small rectangular radius and never clips its own text,
+  the new table-placement chips are present, and adding a rule and
+  revealing "Follow up after (days)" causes no horizontal scrolling
+  anywhere on the page with the field staying fully on-screen - verified
+  to actually catch the rule-card overflow bug by reverting the CSS fix
+  and re-running.

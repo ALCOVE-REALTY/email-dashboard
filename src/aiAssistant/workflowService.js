@@ -522,10 +522,19 @@ async function draftWorkflowPlanFromParsed(parsed, now, sheetContext) {
     docs = { on: true, template: template || 'confirmation', attachTo: parsed.documentsAttachTo === 'first' ? 'first' : 'also' };
   }
 
+  // Task 19 (2026-11) LIVE BUG FIX, direct instruction: when the ask only
+  // says a follow-up should happen ("2 din-e reply na ele follow-up")
+  // without saying what it should SAY, the model's own followUpBody comes
+  // back empty - this generic fallback fills the box with a real,
+  // professional reminder instead of leaving it blank, in the same
+  // "Dear {Manager_Name}, ... Thank you." style as a normal first mail,
+  // naming the actual topic (the first message's own mail subject) rather
+  // than a vague "your reply".
+  const followUpTopic = String((base.plan && base.plan.mailSubject) || base.subject || 'this').trim();
   const followUp = {
     days: Number(parsed.followUpDays) > 0 ? Number(parsed.followUpDays) : 2,
     max: Number(parsed.followUpMax) > 0 ? Number(parsed.followUpMax) : 2,
-    body: String(parsed.followUpBody || '').trim() || 'Dear {Employee_Name},\n\nThis is a gentle reminder - we are still waiting for your reply. Kindly share it at the earliest.\n\nThank you.'
+    body: String(parsed.followUpBody || '').trim() || ('Dear {Manager_Name},\n\nThis is a gentle reminder - we are waiting for your reply on ' + followUpTopic + '.\n\nThank you.')
   };
 
   if (unclear.length) return { ok: false, unclear };
