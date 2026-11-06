@@ -23,6 +23,7 @@ const workflowService = require('./aiAssistant/workflowService');
 const companyDetailsService = require('./aiAssistant/companyDetailsService');
 const letterSettingsService = require('./aiAssistant/letterSettingsService');
 const driveTemplatesService = require('./aiAssistant/driveTemplatesService');
+const driveTemplateFieldsService = require('./aiAssistant/driveTemplateFieldsService');
 const sheetsAuth = require('./sheetsAuth');
 const hrAccountCommands = require('./hrAccountCommands');
 const hrAuthAlerts = require('./hrAuthAlerts');
@@ -3113,6 +3114,50 @@ router.get('/hr-assistant/letter-templates', async (req, res) => {
   try {
     const items = await driveTemplatesService.listAllLetterTemplates();
     res.json({ items });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+// TASK 1(c) (2026-11), direct instruction - placeholder detection + field
+// mapping for ONE Drive template: extracts its real placeholders live,
+// loads any already-saved mapping, and auto-proposes (via Claude, then
+// strictly validated) for any placeholder that isn't saved yet - a saved
+// owner choice is NEVER overwritten by a fresh proposal. Every placeholder
+// always comes back with SOME mapping (worst case 'unknown'), so the
+// owner's review UI never has a gap.
+router.get('/hr-assistant/letter-templates/:key/fields', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const key = decodeURIComponent(req.params.key);
+    if (!driveTemplatesService.isDriveTemplateKey(key)) return res.status(400).json({ error: 'Only a Drive template has placeholders to map.' });
+    const templates = await driveTemplatesService.listAllLetterTemplates();
+    const meta = templates.find((t) => t.key === key);
+    if (!meta) return res.status(404).json({ error: 'This Drive template is no longer available.' });
+    const fileId = driveTemplatesService.driveFileIdFromKey(key);
+    const [placeholders, saved] = await Promise.all([
+      driveTemplateFieldsService.extractPlaceholders(fileId, meta.mimeType),
+      driveTemplateFieldsService.getTemplateMapping(key)
+    ]);
+    const missing = placeholders.filter((p) => !saved[p]);
+    const proposed = missing.length ? await driveTemplateFieldsService.proposeFieldMapping(missing) : {};
+    const mapping = {};
+    placeholders.forEach((p) => { mapping[p] = saved[p] || proposed[p] || { source: 'unknown' }; });
+    res.json({
+      placeholders, mapping,
+      hrColumns: driveTemplateFieldsService.HR_COLUMNS, derivedRules: driveTemplateFieldsService.DERIVED_RULES, companyFields: driveTemplateFieldsService.COMPANY_FIELDS
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+router.post('/hr-assistant/letter-templates/:key/fields', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const key = decodeURIComponent(req.params.key);
+    if (!driveTemplatesService.isDriveTemplateKey(key)) return res.status(400).json({ error: 'Only a Drive template has a mapping to save.' });
+    const result = await driveTemplateFieldsService.saveTemplateMapping(key, (req.body || {}).mapping || {});
+    if (!result.ok) return res.status(400).json({ error: result.error });
+    res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

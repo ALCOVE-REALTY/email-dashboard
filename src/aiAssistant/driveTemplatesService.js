@@ -56,10 +56,21 @@ async function listAllLetterTemplates() {
     letterSettingsService.getLetterCodes()
   ]);
   const builtin = BUILTIN_TEMPLATES.map((t) => ({ key: t.key, label: t.label, builtin: true, code: codes[t.key] || '' }));
-  const drive = files.map((f) => {
+  const drive = await Promise.all(files.map(async (f) => {
     const key = driveTemplateKey(f.id);
-    return { key, label: f.name, builtin: false, driveFileId: f.id, mimeType: f.mimeType, code: codes[key] || defaultCodeForName(f.name) };
-  });
+    const existing = codes[key];
+    const code = existing || defaultCodeForName(f.name);
+    // The FIRST time a Drive template is discovered, its sensible default
+    // code is persisted into the SAME raw store letterSettingsService's
+    // own assignRefNo/previewNextRefNo read from - otherwise a real Ref
+    // No. would fall back to assignRefNo's own generic
+    // `letterType.toUpperCase()` (here, the ugly literal "DRIVE:<fileId>")
+    // instead of this template's real default, until the owner happened
+    // to open Letter settings first. Best-effort; the owner can still
+    // change it there any time, exactly as for a built-in letter.
+    if (!existing) await letterSettingsService.saveLetterCode(key, code).catch(() => {});
+    return { key, label: f.name, builtin: false, driveFileId: f.id, mimeType: f.mimeType, code };
+  }));
   return builtin.concat(drive);
 }
 

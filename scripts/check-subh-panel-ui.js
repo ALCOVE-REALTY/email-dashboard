@@ -113,6 +113,20 @@ function check(label, ok, detail) {
       })
     });
   });
+  // Task 27 (2026-11), TASK 1(c) - the field-mapping fetch for the one
+  // fake Drive template above, so the mapping-review UI test below has
+  // something real to render.
+  await page.route('**/api/workforce/hr-assistant/letter-templates/drive%3Afaketpl1/fields', (route) => {
+    route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify({
+        placeholders: ['{Employee_Name}', '{Mystery_Field}'],
+        mapping: { '{Employee_Name}': { source: 'hr_column', column: 'Employee_Name' }, '{Mystery_Field}': { source: 'unknown' } },
+        hrColumns: ['Employee_No', 'Employee_Name', 'Designation'],
+        derivedRules: { title: 'Title - Mr./Ms. from Gender' },
+        companyFields: { Company_Code: 'Company code' }
+      })
+    });
+  });
 
   await page.goto(base + '/workforce.html', { waitUntil: 'domcontentloaded' });
   await page.waitForTimeout(500); // let the page's own startup prefetches settle
@@ -209,6 +223,44 @@ function check(label, ok, detail) {
   const docsTplOptions = await page.evaluate(() => Array.from(document.querySelectorAll('#wfDocsTpl option')).map((o) => ({ value: o.value, label: o.textContent })));
   check('Create Workflow, Template dropdown: all 4 built-in letters are present', ['confirmation', 'extension', 'experience', 'relieving'].every((k) => docsTplOptions.some((o) => o.value === k)), 'got: ' + JSON.stringify(docsTplOptions));
   check('Create Workflow, Template dropdown: the fake Drive template ("Bonus Letter") appears automatically, with its own drive: key', docsTplOptions.some((o) => o.value === 'drive:faketpl1' && o.label === 'Bonus Letter'), 'got: ' + JSON.stringify(docsTplOptions));
+
+  // Task 27 (2026-11), TASK 1(c), direct instruction - selecting a Drive
+  // template reveals the field-mapping review section with one row per
+  // real placeholder, each pre-filled with SUBH's own proposal (here
+  // mocked: one hr_column mapping, one left as "Ask me" since it maps to
+  // 'unknown').
+  const mappingErrBefore = consoleErrors.length + pageErrors.length;
+  await page.click('#wfDocsOn');
+  await page.waitForTimeout(150);
+  await page.selectOption('#wfDocsTpl', 'drive:faketpl1');
+  await page.waitForTimeout(250);
+  const mapping = await page.evaluate(() => {
+    const wrapHidden = document.getElementById('wfDocsMappingWrap').hidden || document.getElementById('wfDocsMappingWrap').classList.contains('hidden');
+    const rows = Array.from(document.querySelectorAll('#wfDocsMappingList [data-placeholder]'));
+    return {
+      wrapVisible: !wrapHidden,
+      rowCount: rows.length,
+      rows: rows.map((r) => ({ placeholder: r.dataset.placeholder, source: r.querySelector('[data-role="source"]').value, hasColumnSelect: Boolean(r.querySelector('[data-role="column"]')) }))
+    };
+  });
+  check('Create Workflow, Field mapping: the mapping section becomes visible for a Drive template', mapping.wrapVisible === true, 'got: ' + JSON.stringify(mapping));
+  check('Create Workflow, Field mapping: one row per real placeholder renders', mapping.rowCount === 2, 'got: ' + JSON.stringify(mapping));
+  check('Create Workflow, Field mapping: a proposed hr_column mapping is pre-selected with its own column dropdown', mapping.rows.some((r) => r.placeholder === '{Employee_Name}' && r.source === 'hr_column' && r.hasColumnSelect), 'got: ' + JSON.stringify(mapping));
+  check('Create Workflow, Field mapping: an unmapped placeholder shows as "Ask me" (unknown), never a silent guess', mapping.rows.some((r) => r.placeholder === '{Mystery_Field}' && r.source === 'unknown'), 'got: ' + JSON.stringify(mapping));
+  await page.selectOption('#wfDocsTpl', 'confirmation');
+  await page.waitForTimeout(150);
+  const mappingHiddenForBuiltin = await page.evaluate(() => {
+    const el = document.getElementById('wfDocsMappingWrap');
+    return el.hidden || el.classList.contains('hidden');
+  });
+  check('Create Workflow, Field mapping: the section hides again for a built-in template (no placeholders to map)', mappingHiddenForBuiltin === true);
+  const mappingErrAfter = consoleErrors.length + pageErrors.length;
+  check('Create Workflow, Field mapping: no JS error was thrown loading/switching the mapping', mappingErrAfter === mappingErrBefore,
+    'new errors: ' + JSON.stringify(consoleErrors.slice(mappingErrBefore).concat(pageErrors.slice(mappingErrBefore))));
+  // Restores Documents to OFF - the later "Preview a document" check
+  // below (Task 20) turns it ON itself and expects to start from OFF.
+  await page.click('#wfDocsOn');
+  await page.waitForTimeout(150);
 
   const wfLayout = await page.evaluate(() => {
     const askBtn = document.getElementById('wfAskBtn');

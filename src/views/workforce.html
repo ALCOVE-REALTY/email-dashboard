@@ -936,9 +936,12 @@
           </div>
         </div>
 
-        <!-- Section 6: Documents (optional) - v1 ships the 4 built-in
-             letter templates only (per direct instruction) - no custom
-             Word/Google Doc upload option in this UI yet. -->
+        <!-- Section 6: Documents (optional) - the 4 built-in letter
+             templates plus every Google Doc/.docx in the SUBH Letter
+             Templates Drive folder (TASK 1b, 2026-11); wfDocsTpl's own
+             <option>s here are a fallback only - loadWfDocsTemplateOptions
+             rebuilds this select from the live merged list every time this
+             page opens. -->
         <div class="wf-auto-card">
           <div class="wf-auto-sechead"><span class="wf-auto-num">6</span> Documents <span class="wf-auto-hint" style="margin:0 0 0 auto">(optional)</span></div>
           <label class="wf-auto-check" style="margin-top:8px"><input type="checkbox" id="wfDocsOn" /> Generate one document per record from a template</label>
@@ -951,6 +954,16 @@
                 <option value="relieving">Relieving Letter</option>
               </select>
             </label>
+            <!-- TASK 1(c) (2026-11), direct instruction - shown only for a
+                 Drive template: SUBH detects every {placeholder} and
+                 proposes how to fill it; the owner reviews/changes each
+                 before saving. A placeholder SUBH can't map comes back
+                 "Ask me" (source unknown) rather than a guess. -->
+            <div id="wfDocsMappingWrap" class="hidden" style="margin-top:4px">
+              <div class="wf-auto-hint">Field mapping - SUBH proposed these; review and change any that need it.</div>
+              <div id="wfDocsMappingList" style="display:flex;flex-direction:column;gap:10px;margin-top:6px"></div>
+              <button type="button" class="wf-ai-action-btn outline small" id="wfDocsMappingSaveBtn" style="margin-top:8px"><span>Save mapping</span></button>
+            </div>
             <label class="wf-rem-field">Attach to
               <select id="wfDocsWhere"><option value="also">The "Also send" message (all documents)</option><option value="first">Each first message (its own document)</option></select>
             </label>

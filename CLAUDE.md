@@ -1178,3 +1178,88 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
   same `check-workflow-nlu.js`-style convention already used elsewhere in
   this codebase) once the owner actually has real templates uploaded to
   test against.
+- Task 26/27 (2026-11), TASK 1(d) - the final piece: Drive template
+  generation, wired into `buildWorkflowDocumentBuffer` (Preview/Send
+  test/a real run) through the SAME real company+Ref No. engine the 4
+  built-in letters already use, plus the owner's field-mapping review UI
+  on the Create Workflow page. This completes the "Create Workflow page
+  fixes + letter templates" request (TASK 1 of 5).
+  - New `src/aiAssistant/driveTemplateGenerationService.js`:
+    `generateDriveTemplateLetter(fileId, mimeType, mapping, placeholders,
+    ctx)` - per direct instruction, "copy the template, replace
+    placeholders per record, export PDF, attach, delete the temp copy."
+    Every placeholder is resolved FIRST (`resolveFieldValue`, code only)
+    - if even one fails, NOTHING is copied and the whole letter is held
+    (every failing placeholder named with its reason), never a partial/
+    blank send. The copy always targets `GOOGLE_DOC_MIME`, which is what
+    performs the .docx -> Google Doc conversion automatically - one
+    unified path, no separate .docx branch anywhere in generation. The
+    temp copy is deleted in a `finally` - even when `batchUpdate`/export
+    itself throws, never left behind in the owner's Drive.
+  - `workflowService.js`'s `buildWorkflowDocumentBuffer` now branches on
+    `driveTemplatesService.isDriveTemplateKey(template)` to a new
+    `buildDriveTemplateDocumentBuffer`, sharing the exact same
+    `resolveLetterRefNo`/`isRealSend` gating and `{ buffer, refNo, fy,
+    serial }` return shape the 4 built-ins use - Preview/"Send test" show
+    the fixed placeholder ref no. text and never touch the Letter
+    Register; a real run assigns a real number, attaches the real PDF,
+    and logs it via the same `recordSentLetter`. LIVE BUG FIXED during
+    this: `driveTemplatesService.listAllLetterTemplates` MUST run (and
+    its own code-persisting side effect complete) BEFORE
+    `resolveLetterRefNo` for a Drive template - the two were originally
+    called in the other order, so a brand-new Drive template's very
+    first real Ref No. fell back to `assignRefNo`'s own generic
+    `letterType.toUpperCase()` (the raw `"DRIVE:<fileId>"`) instead of
+    its real auto-derived code; caught by the suite below, not by
+    inspection. `extendedMonthsFromDetail` (the `{Reply_Detail}` months
+    parsing the built-in extension letter already did inline) is now a
+    shared helper, used identically by both the built-in extension
+    letter and a Drive template's `extension_end_date` derived rule.
+  - `driveTemplatesService.listAllLetterTemplates` also now PERSISTS a
+    newly-discovered Drive template's auto-derived default letter code
+    into `letterSettingsService`'s own raw code store on first
+    discovery (best-effort) - otherwise that store (which `assignRefNo`/
+    `previewNextRefNo` read directly, independent of this merged list)
+    would never actually see the sensible default until the owner
+    happened to open Letter settings first; the owner can still change
+    it there any time, exactly as for a built-in letter.
+  - Frontend (Create Workflow, Section 6 "Documents"): a new "Field
+    mapping" block appears ONLY for a Drive template (hidden for a
+    built-in, which has no placeholders) - `loadWfDocsMapping()` fetches
+    the live placeholder list + proposed/saved mapping from the new `GET
+    /hr-assistant/letter-templates/:key/fields` route whenever the
+    Template dropdown changes (or on page open, for a saved Drive-
+    template workflow), rendering one row per placeholder with a Source
+    dropdown (HR column / Derived rule / Company field / Reference
+    number / Today's date / Fixed text / Ask me) and a conditional
+    secondary control; "Save mapping" posts the reviewed mapping to the
+    matching `POST` route (`driveTemplateFieldsService.saveTemplateMapping`,
+    which re-sanitizes on save, same as Task 25).
+  Deterministic suites: `scripts/check-drive-template-generation.js`
+  (`npm run check:drive-template-generation`, 14/14, zero real Drive/Docs
+  calls): the full copy/fill/export/delete happy path (asserting the
+  SOURCE is copied not edited, `matchCase: true` on every replace, the
+  TEMP copy is what's exported and deleted), a missing/unresolvable value
+  holding the WHOLE letter before anything is even copied, the temp copy
+  still being deleted when `batchUpdate` itself throws, and a `.docx`
+  source using the identical path. `scripts/check-workflow.js`'s new
+  "Task 26" section (part of its now-81/81): Preview shows the
+  placeholder ref no. text for a Drive template, a real run assigns a
+  real sequential Ref No. in the configured format/attaches/logs it to
+  the Letter Register/cleans up the temp copy, and an unmapped
+  placeholder holds the record's letter + notifies the owner while the
+  plain message still sends - verified to catch a regression by
+  reverting and re-running (3 of the new checks failed exactly as
+  expected). Headless UI check (`scripts/check-subh-panel-ui.js`'s new
+  "Task 27", part of its now-65/65): selecting the fake Drive template
+  reveals the mapping section with the real placeholder rows pre-filled
+  from the mocked proposal (including the "Ask me" case for an
+  unmapped one), and it hides again for a built-in template - verified
+  to catch a regression by reverting and re-running.
+  Deliberately NOT done (noted as a minor, non-blocking gap, not
+  revisited in this batch): the Ask SUBH plan-extraction tool
+  (`documentsTemplate` in `workflowService.js`'s own NLU schema) still
+  only offers the 4 built-in template keys, so a plain-language ask can't
+  yet have SUBH pick a Drive template on its own - the owner can always
+  select one manually from the Template dropdown regardless, same as
+  every other field that schema can leave for the owner to set by hand.

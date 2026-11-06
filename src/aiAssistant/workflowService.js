@@ -26,6 +26,9 @@ const pdfReport = require('../pdfReport');
 const tableExcelReport = require('../tableExcelReport');
 const companyDetailsService = require('./companyDetailsService');
 const letterSettingsService = require('./letterSettingsService');
+const driveTemplatesService = require('./driveTemplatesService');
+const driveTemplateFieldsService = require('./driveTemplateFieldsService');
+const driveTemplateGenerationService = require('./driveTemplateGenerationService');
 // Required lazily (inside the functions that need it, never at module
 // load) specifically because Phase 5 has whatsappAssistant.js require
 // THIS file back (its own early-tier "might this reply be for an open
@@ -282,10 +285,39 @@ async function recordSentLetter({ template, row, runAt, refNo, buffer, filename,
     });
   } catch (err) { /* best effort - see comment above */ }
 }
-// v1 ships only the 4 built-in templates (per direct instruction - no
-// custom Word/Google Doc upload in this UI yet). `extra.detail` is only
-// ever used by the 'extension' template, filled from the SAME
-// {Reply_Detail} a rule's own sendDocument captured (the number of
+// {Reply_Detail}'s own captured number of months - shared by the built-in
+// extension letter AND a Drive template's 'extension_end_date' derived
+// rule, so the two can never compute this differently.
+function extendedMonthsFromDetail(detail) {
+  const monthsMatch = /\d+/.exec(String(detail || ''));
+  return monthsMatch ? Number(monthsMatch[0]) : 1;
+}
+// TASK 1(d) (2026-11), direct instruction - "copy the template, replace
+// placeholders per record, export PDF, attach, delete the temp copy."
+// Every placeholder is resolved (code only, via resolveFieldValue) BEFORE
+// anything is copied - a record missing even one mapped value never
+// touches Drive at all (see generateDriveTemplateLetter's own comment);
+// the thrown error here is what buildWorkflowMessages' own `push` (for a
+// real run) turns into "hold this record's letter + notify the owner",
+// the exact same posture the 4 built-in letters already have.
+async function buildDriveTemplateDocumentBuffer(meta, row, runAt, extra, refResolved) {
+  const fileId = meta.driveFileId;
+  const placeholders = await driveTemplateFieldsService.extractPlaceholders(fileId, meta.mimeType);
+  const mapping = await driveTemplateFieldsService.getTemplateMapping(meta.key);
+  const company = row['Company'] || '';
+  const companyDetails = company ? await companyDetailsService.getCompanyDetails(company) : null;
+  const ctx = { row, companyDetails, refNo: refResolved.refNo, now: runAt, extra: { extendedMonths: extendedMonthsFromDetail(extra && extra.detail) } };
+  const genResult = await driveTemplateGenerationService.generateDriveTemplateLetter(fileId, meta.mimeType, mapping, placeholders, ctx);
+  if (!genResult.ok) throw new Error(genResult.error);
+  return genResult.buffer;
+}
+// v1 shipped only the 4 built-in templates; TASK 1(b)/(d) (2026-11) added
+// every Drive template (driveTemplatesService.isDriveTemplateKey) through
+// the SAME entry point, sharing the SAME real Ref No. resolution
+// (resolveLetterRefNo) and return shape below - callers never need to
+// know which kind of template they asked for. `extra.detail` is only ever
+// used by the 'extension'/'extension_end_date' path, filled from the
+// SAME {Reply_Detail} a rule's own sendDocument captured (the number of
 // months the manager actually stated) - never guessed. Returns
 // `{ buffer, refNo, fy, serial }` (fy/serial only set for a real send) -
 // never just a bare buffer, so a caller can log the real ref no. actually
@@ -293,6 +325,20 @@ async function recordSentLetter({ template, row, runAt, refNo, buffer, filename,
 async function buildWorkflowDocumentBuffer(template, row, runAt, extra) {
   const r = row || {};
   const isRealSend = Boolean(extra && extra.isRealSend);
+  if (driveTemplatesService.isDriveTemplateKey(template)) {
+    // listAllLetterTemplates also persists this template's own sensible
+    // default letter code on first discovery - MUST happen before
+    // resolveLetterRefNo below, or the very first real Ref No. for a
+    // brand new Drive template would fall back to assignRefNo's own
+    // generic `letterType.toUpperCase()` (the raw "DRIVE:<fileId>") for
+    // lack of a saved code yet.
+    const templates = await driveTemplatesService.listAllLetterTemplates();
+    const meta = templates.find((t) => t.key === template);
+    if (!meta) throw new Error('This Drive template is no longer available - it may have been moved or deleted from the SUBH Letter Templates folder.');
+    const refResolved = await resolveLetterRefNo(template, r, runAt, isRealSend);
+    const buffer = await buildDriveTemplateDocumentBuffer(meta, r, runAt, extra, refResolved);
+    return { buffer, refNo: refResolved.refNo, fy: refResolved.fy, serial: refResolved.serial };
+  }
   const refResolved = await resolveLetterRefNo(template, r, runAt, isRealSend);
   const base = {
     employeeName: r['Employee_Name'] || r['Name'] || '—',
@@ -306,8 +352,7 @@ async function buildWorkflowDocumentBuffer(template, row, runAt, extra) {
   let buffer = null;
   if (template === 'confirmation') buffer = await letterPdf.buildConfirmationLetterPdf(Object.assign({}, base, { title: titleFromGender(r['Gender']), doj, confirmationDate }));
   else if (template === 'extension') {
-    const monthsMatch = /\d+/.exec(String((extra && extra.detail) || ''));
-    const extendedMonths = monthsMatch ? Number(monthsMatch[0]) : 1;
+    const extendedMonths = extendedMonthsFromDetail(extra && extra.detail);
     buffer = await letterPdf.buildExtensionOfProbationLetterPdf(Object.assign({}, base, { doj, originalConfirmationDate: confirmationDate, extendedMonths, newConfirmationDate: addMonthsToIso(confirmationDate, extendedMonths) }));
   } else if (template === 'experience') buffer = await letterPdf.buildExperienceLetterPdf(Object.assign({}, base, { doj, lastWorkingDay: isoDate(runAt) }));
   else if (template === 'relieving') buffer = await letterPdf.buildRelievingLetterPdf(Object.assign({}, base, { lastWorkingDay: isoDate(runAt) }));

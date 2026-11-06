@@ -6330,6 +6330,9 @@
   const wfDocsOn = document.getElementById('wfDocsOn');
   const wfDocsWrap = document.getElementById('wfDocsWrap');
   const wfDocsTpl = document.getElementById('wfDocsTpl');
+  const wfDocsMappingWrap = document.getElementById('wfDocsMappingWrap');
+  const wfDocsMappingList = document.getElementById('wfDocsMappingList');
+  const wfDocsMappingSaveBtn = document.getElementById('wfDocsMappingSaveBtn');
   const wfDocsWhere = document.getElementById('wfDocsWhere');
   const wfDocsPreviewBtn = document.getElementById('wfDocsPreviewBtn');
   const wfFuDays = document.getElementById('wfFuDays');
@@ -6599,6 +6602,91 @@
       if (items.length) wfDocsTpl.innerHTML = items.map((t) => '<option value="' + escapeHtml(t.key) + '">' + escapeHtml(t.label) + '</option>').join('');
     } catch (err) { /* best effort - see comment above */ }
   }
+  // TASK 1(c) (2026-11), direct instruction - field mapping for a Drive
+  // template: SUBH detects every {placeholder} and proposes how to fill
+  // it (HR column / derived rule / company field / reference number /
+  // today's date / fixed text / "Ask me" when it can't map one); the
+  // owner reviews and changes any before Save mapping. Hidden entirely
+  // for a built-in template (confirmation/extension/experience/relieving),
+  // which has no placeholders to map.
+  const WF_MAPPING_SOURCE_LABELS = { hr_column: 'HR column', derived: 'Derived rule', company_field: 'Company field', ref_no: 'Reference number', today: "Today's date", fixed: 'Fixed text', unknown: 'Ask me' };
+  let wfMappingData = null; // last-loaded { hrColumns, derivedRules, companyFields } for the current template
+  function wfMappingSecondaryHtml(placeholder, m) {
+    if (m.source === 'hr_column') {
+      return '<select data-role="column">' + wfMappingData.hrColumns.map((c) => '<option value="' + escapeHtml(c) + '"' + (c === m.column ? ' selected' : '') + '>' + escapeHtml(c) + '</option>').join('') + '</select>';
+    }
+    if (m.source === 'derived') {
+      return '<select data-role="rule">' + Object.keys(wfMappingData.derivedRules).map((k) => '<option value="' + escapeHtml(k) + '"' + (k === m.rule ? ' selected' : '') + '>' + escapeHtml(wfMappingData.derivedRules[k]) + '</option>').join('') + '</select>';
+    }
+    if (m.source === 'company_field') {
+      return '<select data-role="field">' + Object.keys(wfMappingData.companyFields).map((k) => '<option value="' + escapeHtml(k) + '"' + (k === m.field ? ' selected' : '') + '>' + escapeHtml(wfMappingData.companyFields[k]) + ' (' + escapeHtml(k) + ')</option>').join('') + '</select>';
+    }
+    if (m.source === 'fixed') {
+      return '<input type="text" data-role="value" value="' + escapeHtml(m.value || '') + '" placeholder="Fixed text" />';
+    }
+    return '';
+  }
+  function wfMappingRowHtml(placeholder, m) {
+    return '<div class="wf-auto-task-card" data-placeholder="' + escapeHtml(placeholder) + '" style="padding:10px">' +
+      '<div class="wf-auto-task-subject" style="font-family:monospace">' + escapeHtml(placeholder) + '</div>' +
+      '<label class="wf-rem-field" style="margin-top:6px"><span>Source</span><select data-role="source">' +
+      Object.keys(WF_MAPPING_SOURCE_LABELS).map((k) => '<option value="' + k + '"' + (k === m.source ? ' selected' : '') + '>' + WF_MAPPING_SOURCE_LABELS[k] + '</option>').join('') +
+      '</select></label>' +
+      '<div data-role="secondary" style="margin-top:6px">' + wfMappingSecondaryHtml(placeholder, m) + '</div>' +
+      '</div>';
+  }
+  function wfRerenderMappingSecondary(card) {
+    const placeholder = card.dataset.placeholder;
+    const source = card.querySelector('[data-role="source"]').value;
+    const secondary = card.querySelector('[data-role="secondary"]');
+    secondary.innerHTML = wfMappingSecondaryHtml(placeholder, { source });
+  }
+  function renderWfDocsMapping(data) {
+    wfMappingData = { hrColumns: data.hrColumns || [], derivedRules: data.derivedRules || {}, companyFields: data.companyFields || {} };
+    if (!wfDocsMappingList) return;
+    wfDocsMappingList.innerHTML = (data.placeholders || []).map((p) => wfMappingRowHtml(p, data.mapping[p] || { source: 'unknown' })).join('');
+    wfDocsMappingList.querySelectorAll('[data-role="source"]').forEach((sel) => {
+      sel.addEventListener('change', () => wfRerenderMappingSecondary(sel.closest('[data-placeholder]')));
+    });
+  }
+  // Fetches the live placeholder/proposal list for whichever Drive
+  // template is currently selected - a no-op (and the section hides) for
+  // a built-in template, which has no placeholders at all.
+  async function loadWfDocsMapping() {
+    if (!wfDocsTpl || !wfDocsMappingWrap) return;
+    const key = wfDocsTpl.value;
+    const isDrive = key.indexOf('drive:') === 0;
+    wfDocsMappingWrap.classList.toggle('hidden', !isDrive);
+    if (!isDrive) return;
+    wfDocsMappingList.innerHTML = '<div class="wf-skeleton-list"><div class="wf-skeleton-row"></div><div class="wf-skeleton-row"></div></div>';
+    try {
+      const data = await fetch('/api/workforce/hr-assistant/letter-templates/' + encodeURIComponent(key) + '/fields').then((res) => res.json());
+      if (data.error) { wfDocsMappingList.innerHTML = '<div class="wf-rem-empty">' + escapeHtml(data.error) + '</div>'; return; }
+      renderWfDocsMapping(data);
+    } catch (err) {
+      wfDocsMappingList.innerHTML = '<div class="wf-rem-empty">Could not load this template\'s placeholders.</div>';
+    }
+  }
+  if (wfDocsTpl) wfDocsTpl.addEventListener('change', loadWfDocsMapping);
+  if (wfDocsMappingSaveBtn) {
+    wfDocsMappingSaveBtn.addEventListener('click', async () => {
+      const key = wfDocsTpl.value;
+      const mapping = {};
+      wfDocsMappingList.querySelectorAll('[data-placeholder]').forEach((card) => {
+        const placeholder = card.dataset.placeholder;
+        const source = card.querySelector('[data-role="source"]').value;
+        const entry = { source };
+        if (source === 'hr_column') entry.column = card.querySelector('[data-role="column"]').value;
+        else if (source === 'derived') entry.rule = card.querySelector('[data-role="rule"]').value;
+        else if (source === 'company_field') entry.field = card.querySelector('[data-role="field"]').value;
+        else if (source === 'fixed') entry.value = card.querySelector('[data-role="value"]').value;
+        mapping[placeholder] = entry;
+      });
+      await runButtonAction(wfDocsMappingSaveBtn, () => postJsonOrThrow('/api/workforce/hr-assistant/letter-templates/' + encodeURIComponent(key) + '/fields', { mapping }), () => {
+        showActionToast('Field mapping saved');
+      }, { resetAfterSuccess: true });
+    });
+  }
   async function openWorkflowCreate(w) {
     wfResetButtonState(wfSaveBtn); wfResetButtonState(wfTestBtn); wfResetButtonState(wfAskBtn); wfResetButtonState(wfSheetLoadBtn);
     await fetchAutoEmployees();
@@ -6615,6 +6703,9 @@
     if (!wfPlaceholders.dataset.wired) { wfPlaceholders.innerHTML = WF_PLACEHOLDERS.map((p) => '<button type="button" data-p="' + escapeHtml(p) + '">' + escapeHtml(p) + '</button>').join(''); wfPlaceholders.dataset.wired = '1'; }
     renderWfEmpList();
     wfSync();
+    // Drive-template field mapping, same reasoning as loadWfDocsTemplateOptions's
+    // own comment - must run AFTER wfDocsTpl.value is actually set above.
+    await loadWfDocsMapping();
     setPanelView('workflow');
   }
   function renderWfRecCols() {

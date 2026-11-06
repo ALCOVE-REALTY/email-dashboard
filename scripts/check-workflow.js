@@ -120,18 +120,36 @@ async function main() {
   // convention as scripts/check-letter-settings.js - never a real call.
   const companyDetailsService = require('../src/aiAssistant/companyDetailsService');
   const letterSettingsService = require('../src/aiAssistant/letterSettingsService');
+  const driveTemplatesService = require('../src/aiAssistant/driveTemplatesService');
+  const driveTemplateFieldsService = require('../src/aiAssistant/driveTemplateFieldsService');
   const sheetsAuth = require('../src/sheetsAuth');
   await companyDetailsService.saveCompanyDetails('Alcove', { code: 'ALC' });
   const origGetDriveWriteClient = sheetsAuth.getDriveWriteClient;
   const origGetSheetsWriteClient = sheetsAuth.getSheetsWriteClient;
+  const origGetDocsClient = sheetsAuth.getDocsClient;
   const registerAppends = [];
-  sheetsAuth.getDriveWriteClient = () => ({ files: { create: async () => ({ data: { id: 'fake-sheet', webViewLink: 'https://docs.google.com/spreadsheets/d/fake-sheet' } }) } });
+  // TASK 1(d) (2026-11) - the SAME write-client stub also covers Drive
+  // template generation's own copy/export/delete calls (files.create
+  // stays dedicated to the Letter Register sheet / logo upload paths).
+  const driveCopyCalls = [];
+  const driveExportCalls = [];
+  const driveDeleteCalls = [];
+  const docsBatchUpdateCalls = [];
+  sheetsAuth.getDriveWriteClient = () => ({
+    files: {
+      create: async () => ({ data: { id: 'fake-sheet', webViewLink: 'https://docs.google.com/spreadsheets/d/fake-sheet' } }),
+      copy: async (opts) => { driveCopyCalls.push(opts); return { data: { id: 'fake-temp-doc' } }; },
+      export: async (opts) => { driveExportCalls.push(opts); return { data: Buffer.from('%PDF-1.4 fake drive template pdf') }; },
+      delete: async (opts) => { driveDeleteCalls.push(opts.fileId); return {}; }
+    }
+  });
   sheetsAuth.getSheetsWriteClient = () => ({
     spreadsheets: { values: {
       update: async () => ({}),
       append: async (opts) => { registerAppends.push(opts); return {}; }
     } }
   });
+  sheetsAuth.getDocsClient = () => ({ documents: { batchUpdate: async (opts) => { docsBatchUpdateCalls.push(opts); return {}; } } });
 
   try {
     console.log('='.repeat(70));
@@ -907,6 +925,73 @@ async function main() {
     });
 
     console.log('='.repeat(70));
+    console.log('Task 26 (2026-11), TASK 1(d) - generation from a Drive template is wired into buildWorkflowDocumentBuffer/previewWorkflowDocument/a real run, through the SAME real company+Ref No. engine the 4 built-in letters use');
+    console.log('='.repeat(70));
+    const origListAllLetterTemplates = driveTemplatesService.listAllLetterTemplates;
+    const origExtractPlaceholders = driveTemplateFieldsService.extractPlaceholders;
+    const origGetTemplateMapping = driveTemplateFieldsService.getTemplateMapping;
+    const DRIVE_TPL_KEY = 'drive:faketpl1';
+    driveTemplatesService.listAllLetterTemplates = async () => [{ key: DRIVE_TPL_KEY, label: 'Bonus Letter', builtin: false, driveFileId: 'faketpl1', mimeType: driveTemplatesService.GOOGLE_DOC_MIME, code: 'BL' }];
+    driveTemplateFieldsService.extractPlaceholders = async () => ['{Employee_Name}', '{Ref_No}'];
+    driveTemplateFieldsService.getTemplateMapping = async () => ({ '{Employee_Name}': { source: 'hr_column', column: 'Employee_Name' }, '{Ref_No}': { source: 'ref_no' } });
+    // The real listAllLetterTemplates() self-heals a Drive template's
+    // letter code into letterSettingsService's own raw store on first
+    // discovery (see driveTemplatesService.js) - since this fixture
+    // stubs listAllLetterTemplates out entirely above, that side effect
+    // never runs, so the code is seeded directly here instead, same as
+    // 'Alcove' company code is seeded above for the built-in letters.
+    await letterSettingsService.saveLetterCode(DRIVE_TPL_KEY, 'BL');
+    try {
+      await checkAsync('previewWorkflowDocument for a Drive template fills it with the fixed placeholder ref no. text, never a real/fake number', async () => {
+        driveCopyCalls.length = 0; docsBatchUpdateCalls.length = 0; driveDeleteCalls.length = 0;
+        const base = await workflowService.draftWorkflowPlanFromParsed({ unclear: [], source: 'confirmations', rec: 'column', recCol: 'reportingManager', group: 'each', mediator: 'mail', rules: [{ when: 'X', replyText: 'Y', then: 'stop' }] }, now, null);
+        const plan = Object.assign({}, base.plan, { docs: { on: true, template: DRIVE_TPL_KEY, attachTo: 'first' } });
+        const result = await workflowService.previewWorkflowDocument(plan, now);
+        const refReq = docsBatchUpdateCalls[0].resource.requests.find((r) => r.replaceAllText.containsText.text === '{Ref_No}');
+        return result.ok === true && Buffer.isBuffer(result.buffer) && result.buffer.length > 0 &&
+          refReq.replaceAllText.replaceText === 'Ref No. will be assigned on sending' &&
+          driveCopyCalls.length === 1 && driveDeleteCalls.length === 1; // the temp copy is always cleaned up
+      });
+      await checkAsync('a REAL run fills a Drive template with a real sequential Ref No., attaches the generated PDF, appends to the Letter Register, and cleans up the temp copy', async () => {
+        const before = registerAppends.length;
+        driveCopyCalls.length = 0; docsBatchUpdateCalls.length = 0; driveDeleteCalls.length = 0; driveExportCalls.length = 0;
+        const base = await workflowService.draftWorkflowPlanFromParsed({ unclear: [], source: 'confirmations', rec: 'column', recCol: 'reportingManager', group: 'each', mediator: 'mail', rules: [{ when: 'X', replyText: 'Y', then: 'stop' }] }, now, null);
+        const plan = Object.assign({}, base.plan, { docs: { on: true, template: DRIVE_TPL_KEY, attachTo: 'first' } });
+        const w = await create({ subject: 'Drive template real send test', plan, schedule: { date: '2026-11-15', time: '10:00', repeat: 'monthly' } });
+        w.status = 'active'; await workflowService.saveWorkflow(w);
+        const beforeAttach = sentMail.filter((m) => m.kind === 'attachment').length;
+        const result = await workflowService.runWorkflow(w.id, {}, now);
+        const afterAttach = sentMail.filter((m) => m.kind === 'attachment').length;
+        const refReq = docsBatchUpdateCalls[0].resource.requests.find((r) => r.replaceAllText.containsText.text === '{Ref_No}');
+        return result.ok === true && afterAttach > beforeAttach &&
+          /^ALC\/HR\/BL\/\d{4}-\d{2}\/\d{4}$/.test(refReq.replaceAllText.replaceText) &&
+          driveExportCalls.length >= 1 && driveDeleteCalls.length >= 1 && // the temp copy is exported then cleaned up
+          registerAppends.length > before; // every SENT Drive-template letter is logged too, same as the built-ins
+      });
+      await checkAsync('a Drive template with an UNMAPPED placeholder holds that record\'s letter on a real send (never copies/sends with a blank) and notifies the owner, but the plain message still sends', async () => {
+        const notifBefore = ownerNotifications.length;
+        const origMapping = driveTemplateFieldsService.getTemplateMapping;
+        driveTemplateFieldsService.getTemplateMapping = async () => ({ '{Employee_Name}': { source: 'hr_column', column: 'Employee_Name' } }); // '{Ref_No}' left unmapped
+        try {
+          driveCopyCalls.length = 0;
+          const base = await workflowService.draftWorkflowPlanFromParsed({ unclear: [], source: 'confirmations', rec: 'column', recCol: 'reportingManager', group: 'each', mediator: 'mail', rules: [{ when: 'X', replyText: 'Y', then: 'stop' }] }, now, null);
+          const plan = Object.assign({}, base.plan, { docs: { on: true, template: DRIVE_TPL_KEY, attachTo: 'first' } });
+          const w = await create({ subject: 'Drive template unmapped placeholder test', plan, schedule: { date: '2026-11-15', time: '10:00', repeat: 'monthly' } });
+          w.status = 'active'; await workflowService.saveWorkflow(w);
+          const beforeAttach = sentMail.filter((m) => m.kind === 'attachment').length;
+          const result = await workflowService.runWorkflow(w.id, {}, now);
+          const afterAttach = sentMail.filter((m) => m.kind === 'attachment').length;
+          return result.ok === true && afterAttach === beforeAttach && driveCopyCalls.length === 0 && // never even copied the template
+            ownerNotifications.length > notifBefore && /could not fill/i.test(ownerNotifications[ownerNotifications.length - 1]);
+        } finally { driveTemplateFieldsService.getTemplateMapping = origMapping; }
+      });
+    } finally {
+      driveTemplatesService.listAllLetterTemplates = origListAllLetterTemplates;
+      driveTemplateFieldsService.extractPlaceholders = origExtractPlaceholders;
+      driveTemplateFieldsService.getTemplateMapping = origGetTemplateMapping;
+    }
+
+    console.log('='.repeat(70));
     console.log('Task 19 (2026-11) - "Attachment as" PDF/Excel for a Workflow\'s own record table (first message), matching the Automated Task page\'s existing feature (previously Workflow could only ever put the table in the message body)');
     console.log('='.repeat(70));
     async function makeTableAttachWorkflow(overrides) {
@@ -1012,6 +1097,7 @@ async function main() {
     workflowService.callWorkflowTool = origCallWorkflowTool;
     sheetsAuth.getDriveWriteClient = origGetDriveWriteClient;
     sheetsAuth.getSheetsWriteClient = origGetSheetsWriteClient;
+    sheetsAuth.getDocsClient = origGetDocsClient;
     console.log('Cleaning up', createdIds.length, 'test-created workflow(s)...');
     for (const id of createdIds) await workflowService.deleteWorkflow(id);
   }
