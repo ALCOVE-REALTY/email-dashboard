@@ -75,13 +75,24 @@ async function getLetterCodes() {
     return Object.assign({}, DEFAULT_LETTER_CODES, saved);
   } catch (err) { return Object.assign({}, DEFAULT_LETTER_CODES); }
 }
+// TASK 2 (2026-11), direct instruction - a letter code is 2-6 letters
+// (A-Z only, case-insensitive on input but always stored uppercase) and
+// UNIQUE across every current letter type - the one gate every save goes
+// through, whether it's an owner's own Edit or driveTemplatesService's own
+// self-healing default for a newly-discovered Drive template (so an edge-
+// case template name that can't produce a clean default, e.g. one with
+// punctuation, simply leaves that template codeless until the owner sets
+// one by hand - never a half-valid code silently saved).
+const LETTER_CODE_RE = /^[A-Z]{2,6}$/;
 async function saveLetterCode(letterType, code) {
   const redis = getClient();
   if (!redis) return { ok: false, error: 'No store configured.' };
-  const trimmed = String(code || '').trim();
+  const trimmed = String(code || '').trim().toUpperCase();
   if (!letterType) return { ok: false, error: 'letterType is required.' };
-  if (!trimmed) return { ok: false, error: 'Letter code cannot be empty.' };
+  if (!LETTER_CODE_RE.test(trimmed)) return { ok: false, error: 'Code must be 2-6 letters (A-Z).' };
   const codes = await getLetterCodes();
+  const conflictType = Object.keys(codes).find((k) => k !== letterType && codes[k] === trimmed);
+  if (conflictType) return { ok: false, error: 'That code is already used by another letter type.' };
   codes[letterType] = trimmed;
   try { await redis.set(LETTER_CODES_KEY, JSON.stringify(codes)); } catch (err) { return { ok: false, error: err.message }; }
   return { ok: true, codes };

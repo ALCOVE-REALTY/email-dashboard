@@ -1717,3 +1717,47 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
   (86/86) and the headless UI check (384px, 65/65, including the counter
   card/edit-sheet flow with the new per-type-only shape) both stay clean
   with no behavior changes needed beyond this task's own scope.
+
+- Task 34 (2026-11), direct instruction, TASK 2 of "Letter settings +
+  Company details changes" - letter types already followed the templates
+  automatically (`driveTemplatesService.listAllLetterTemplates()` was
+  already the source of `letterTypes` on the Letter settings page, built
+  earlier this session) - a removed template already disappeared from the
+  list with its counter/code kept in the store untouched, since nothing
+  purges them just because a type is momentarily absent from the current
+  Drive listing (now locked with its own dedicated test). What TASK 2
+  actually changed: the letter-CODE cards' own editing UI and validation.
+  - `saveLetterCode` now enforces 2-6 letters (A-Z only, case-insensitive
+    input normalized to uppercase) and UNIQUENESS across every current
+    letter type - the one authoritative gate both an owner's Edit AND
+    `driveTemplatesService`'s own self-healing default-code call go
+    through (an edge-case template name that can't produce a clean
+    default - e.g. one with punctuation - simply leaves that template
+    codeless until the owner sets one by hand, never a half-valid code
+    silently saved).
+  - Frontend: each letter-code card now shows the code as TEXT with an
+    Edit button only - the always-visible input + Save button are gone.
+    Edit reveals an inline field + Save/Cancel; Cancel reverts without
+    saving; an invalid/duplicate code shows its error inline, never
+    reaching the network on an obviously-invalid format. LIVE BUG FOUND
+    AND FIXED while building this: `.wf-auto-actions` has its own
+    explicit `display: flex` CSS rule, which (author-stylesheet origin
+    beats user-agent origin in the cascade, regardless of selector
+    specificity) overrides the native `[hidden]` attribute's default
+    `display: none` - the Save/Cancel action row kept rendering even
+    with `hidden` set. Fixed by toggling `.style.display` directly for
+    those two elements (inline styles always win); the OTHER two toggled
+    elements have no such conflicting class and use the plain `hidden`
+    attribute/property as normal - caught by the suite's own revert-and-
+    rerun check, not by inspection.
+  Deterministic suite (`scripts/check-letter-settings.js`'s now-48/48, +7
+  new): 1/7/duplicate code formats all correctly rejected, a lowercase
+  input normalizes to uppercase, re-saving a type with its OWN current
+  code is never flagged as a self-duplicate, and a template's code/
+  counter survive being (simulated) removed from the Drive listing.
+  Headless UI check (384px, now-70/70, +5 new): no always-visible Save
+  button, Edit reveals the field, an invalid code shows its error inline
+  without saving, Cancel reverts cleanly - each verified to actually fail
+  without the fix (the `.wf-auto-actions` bug above was caught exactly
+  this way). `scripts/check-workflow.js` stays clean (86/86, untouched by
+  this task).

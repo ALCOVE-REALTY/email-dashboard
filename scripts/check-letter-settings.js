@@ -73,6 +73,39 @@ async function main() {
   check('an empty code is rejected', emptyCode.ok === false);
 
   console.log('='.repeat(70));
+  console.log('TASK 2 (2026-11), direct instruction - letter codes: 2-6 letters, unique, normalized to uppercase');
+  console.log('='.repeat(70));
+  const tooShort = await letterSettingsService.saveLetterCode('confirmation', 'C');
+  check('a 1-letter code is rejected (must be 2-6 letters)', tooShort.ok === false);
+  const tooLong = await letterSettingsService.saveLetterCode('confirmation', 'TOOLONGG');
+  check('a 7-letter code is rejected (must be 2-6 letters)', tooLong.ok === false);
+  const withDigits = await letterSettingsService.saveLetterCode('confirmation', 'CF1');
+  check('a code with a digit is rejected (letters only)', withDigits.ok === false);
+  const lowercaseIn = await letterSettingsService.saveLetterCode('confirmation', 'conf');
+  check('a lowercase input is accepted and normalized to uppercase', lowercaseIn.ok === true && lowercaseIn.codes.confirmation === 'CONF');
+  const duplicate = await letterSettingsService.saveLetterCode('extension', 'CONF');
+  check('a code already used by ANOTHER letter type is rejected (unique across all types)', duplicate.ok === false);
+  const sameTypeSameCode = await letterSettingsService.saveLetterCode('confirmation', 'CONF');
+  check('re-saving the SAME letter type with its OWN current code is never rejected as a "duplicate" of itself', sameTypeSameCode.ok === true);
+
+  console.log('='.repeat(70));
+  console.log('TASK 2 (2026-11), direct instruction - a template removed from the Drive folder disappears from the list, but its counter and letter-code HISTORY are kept in the store (never deleted)');
+  console.log('='.repeat(70));
+  await checkAsync('a letter type\'s saved code and counter survive even after it is no longer returned by listAllLetterTemplates (simulating the template being removed from Drive) - picked back up again if the template ever reappears', async () => {
+    const driveTemplatesService = require('../src/aiAssistant/driveTemplatesService');
+    const origList = driveTemplatesService.listAllLetterTemplates;
+    const GONE_TYPE = 'drive:gonetpl1';
+    await letterSettingsService.saveLetterCode(GONE_TYPE, 'GONE');
+    await letterSettingsService.assignRefNo({ companyCode: 'ARPL', letterType: GONE_TYPE, date: new Date('2026-11-05T00:00:00.000Z') });
+    driveTemplatesService.listAllLetterTemplates = async () => []; // simulates the template no longer being in the Drive folder
+    const listWithoutIt = await driveTemplatesService.listAllLetterTemplates();
+    driveTemplatesService.listAllLetterTemplates = origList;
+    const codesStillThere = await letterSettingsService.getLetterCodes();
+    const counterStillThere = await letterSettingsService.getCounterValue(GONE_TYPE, '2026-27');
+    return listWithoutIt.length === 0 && codesStillThere[GONE_TYPE] === 'GONE' && counterStillThere === 1;
+  });
+
+  console.log('='.repeat(70));
   console.log('TASK 1 (2026-11), direct instruction - Counters: atomic increment, per LETTER TYPE + FY only (company never splits the serial), never reused');
   console.log('='.repeat(70));
   check('a never-issued counter reads 0', (await letterSettingsService.getCounterValue('confirmation', '2026-27')) === 0);

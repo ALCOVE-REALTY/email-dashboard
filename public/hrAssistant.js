@@ -3474,13 +3474,27 @@
     const format = (letterRefFormatInput && letterRefFormatInput.value) || '';
     letterRefFormatPreview.textContent = format ? ('Example: ' + letterRefFormatSamplePreview(format)) : '';
   }
+  // TASK 2 (2026-11), direct instruction - letter types follow the
+  // templates automatically, never an Add/Delete here; each card shows
+  // the name and its code as TEXT with an Edit button only - no
+  // always-visible Save button. Edit reveals an inline field + Save/
+  // Cancel (code unique/uppercase/2-6 letters, validated authoritatively
+  // server-side in letterSettingsService.saveLetterCode).
   function letterCodeRowHtml(letterType, label, code) {
     return '<div class="wf-auto-task-card" data-letter-type="' + escapeHtml(letterType) + '">' +
       '<div class="wf-auto-task-head"><div style="flex:1;min-width:0">' +
       '<div class="wf-auto-task-subject">' + escapeHtml(label) + '</div>' +
-      '<label class="wf-rem-field" style="margin-top:6px"><input type="text" data-role="letter-code-input" value="' + escapeHtml(code || '') + '" maxlength="10" /></label>' +
+      '<div class="wf-auto-hint" data-role="letter-code-display">Code: ' + escapeHtml(code || '—') + '</div>' +
+      '<div data-role="letter-code-edit-wrap" style="margin-top:6px" hidden>' +
+      '<label class="wf-rem-field"><input type="text" data-role="letter-code-input" value="' + escapeHtml(code || '') + '" maxlength="6" style="text-transform:uppercase" /></label>' +
+      '<div class="wf-auto-err hidden" data-role="letter-code-err" style="padding:0"></div>' +
+      '</div>' +
       '</div></div>' +
-      '<div class="wf-auto-actions"><button type="button" class="plain" data-action="save-letter-code">Save</button></div></div>';
+      '<div class="wf-auto-actions" data-role="letter-code-actions-view"><button type="button" class="plain" data-action="edit-letter-code">Edit</button></div>' +
+      '<div class="wf-auto-actions" data-role="letter-code-actions-edit" style="display:none">' +
+      '<button type="button" class="plain" data-action="save-letter-code">Save</button>' +
+      '<button type="button" class="plain" data-action="cancel-letter-code">Cancel</button>' +
+      '</div></div>';
   }
   // TASK 1 (2026-11), direct instruction - counters run per LETTER TYPE
   // only now (never split by company) - one card per type, "<Label> ·
@@ -3518,15 +3532,53 @@
     }
     if (letterCodesList) {
       letterCodesList.innerHTML = (data.letterTypes || []).map((t) => letterCodeRowHtml(t, (data.letterTypeLabels || {})[t] || t, (data.letterCodes || {})[t])).join('');
+      // .wf-auto-actions has its own explicit `display: flex` rule, which
+      // (author stylesheet origin beats user-agent origin in the cascade)
+      // overrides the native [hidden] attribute's default display:none -
+      // those two toggle via inline style instead; the other two have no
+      // such conflicting rule, so the plain attribute works for them.
+      function setLetterCodeEditMode(card, editing) {
+        card.querySelector('[data-role="letter-code-display"]').hidden = editing;
+        card.querySelector('[data-role="letter-code-edit-wrap"]').hidden = !editing;
+        card.querySelector('[data-role="letter-code-actions-view"]').style.display = editing ? 'none' : '';
+        card.querySelector('[data-role="letter-code-actions-edit"]').style.display = editing ? '' : 'none';
+      }
+      letterCodesList.querySelectorAll('[data-action="edit-letter-code"]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const card = btn.closest('[data-letter-type]');
+          setLetterCodeEditMode(card, true);
+          const input = card.querySelector('[data-role="letter-code-input"]');
+          if (input) { input.focus(); input.select(); }
+        });
+      });
+      letterCodesList.querySelectorAll('[data-action="cancel-letter-code"]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const card = btn.closest('[data-letter-type]');
+          const letterType = card.dataset.letterType;
+          const input = card.querySelector('[data-role="letter-code-input"]');
+          if (input) input.value = (letterSettingsState.letterCodes || {})[letterType] || '';
+          const err = card.querySelector('[data-role="letter-code-err"]');
+          if (err) { err.textContent = ''; err.classList.add('hidden'); }
+          setLetterCodeEditMode(card, false);
+        });
+      });
       letterCodesList.querySelectorAll('[data-action="save-letter-code"]').forEach((btn) => {
         btn.addEventListener('click', async () => {
           const card = btn.closest('[data-letter-type]');
           const letterType = card.dataset.letterType;
-          const code = card.querySelector('[data-role="letter-code-input"]').value;
+          const input = card.querySelector('[data-role="letter-code-input"]');
+          const code = (input ? input.value : '').trim().toUpperCase();
+          const err = card.querySelector('[data-role="letter-code-err"]');
+          if (!/^[A-Z]{2,6}$/.test(code)) {
+            if (err) { err.textContent = 'Code must be 2-6 letters (A-Z).'; err.classList.remove('hidden'); }
+            return;
+          }
+          if (err) { err.textContent = ''; err.classList.add('hidden'); }
           await runButtonAction(btn, () => postJsonOrThrow('/api/workforce/hr-assistant/letter-settings/letter-code', { letterType, code }), () => {
             showActionToast('Letter code saved');
             pageDataCache.letterSettings = null;
-          }, { resetAfterSuccess: true });
+            loadLetterSettingsPage();
+          }, { resetAfterSuccess: true, toastFn: (msg) => { if (err) { err.textContent = msg; err.classList.remove('hidden'); } } });
         });
       });
     }

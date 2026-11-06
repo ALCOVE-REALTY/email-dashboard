@@ -452,6 +452,31 @@ function check(label, ok, detail) {
   check('Letter settings: all 4 tap-to-insert placeholder chips are present', chipCount === 4, 'got: ' + chipCount);
   const codeRows = await page.locator('#hrLetterCodesList [data-letter-type]').count();
   check('Letter settings: all 4 built-in letter codes render as rows', codeRows === 4, 'got: ' + codeRows);
+
+  // TASK 2 (2026-11), direct instruction - letter-code cards show the
+  // code as TEXT with an Edit button only; Edit reveals an inline field +
+  // Save/Cancel (no always-visible Save), an invalid code shows an error
+  // inline without ever reaching the network, and Cancel reverts cleanly.
+  await page.route('**/api/workforce/hr-assistant/letter-settings/letter-code', (route) => {
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, codes: { confirmation: 'CNF' } }) });
+  });
+  const firstCodeCard = page.locator('#hrLetterCodesList [data-letter-type]').first();
+  const saveBtnVisibleBeforeEdit = await firstCodeCard.locator('[data-action="save-letter-code"]').isVisible().catch(() => false);
+  check('Letter settings: a letter-code card has NO always-visible Save button (TASK 2: Edit only)', saveBtnVisibleBeforeEdit === false);
+  await firstCodeCard.locator('[data-action="edit-letter-code"]').click();
+  await page.waitForTimeout(150);
+  check('Letter settings: Edit reveals the inline code field', await firstCodeCard.locator('[data-role="letter-code-input"]').isVisible());
+  check('Letter settings: Edit hides the static code display', await firstCodeCard.locator('[data-role="letter-code-display"]').isHidden());
+  await firstCodeCard.locator('[data-role="letter-code-input"]').fill('1');
+  await firstCodeCard.locator('[data-action="save-letter-code"]').click();
+  await page.waitForTimeout(150);
+  check('Letter settings: an invalid code (not 2-6 letters) shows an inline error, never saved', await firstCodeCard.locator('[data-role="letter-code-err"]').isVisible());
+  await firstCodeCard.locator('[data-action="cancel-letter-code"]').click();
+  await page.waitForTimeout(150);
+  const displayVisibleAfterCancel = await firstCodeCard.locator('[data-role="letter-code-display"]').isVisible();
+  const inputHiddenAfterCancel = await firstCodeCard.locator('[data-role="letter-code-input"]').isHidden();
+  check('Letter settings: Cancel reverts to the static display, hiding the edit field again', displayVisibleAfterCancel && inputHiddenAfterCancel);
+
   const counterCards = await page.locator('#hrLetterCountersList [data-letter-type]').count();
   check('Letter settings: the fake counter renders as a card (TASK 1, 2026-11: one per letter type, no company)', counterCards === 1, 'got: ' + counterCards);
   await page.click('#hrLetterCountersList [data-action="edit-counter"]');
