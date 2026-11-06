@@ -11744,6 +11744,36 @@ async function handleJobApplicationMediaDecision(contactId, name, lang, caption,
 // can't check. Never called for an ACTIVE employee (see handleIncomingMedia)
 // or a spreadsheet - in both cases the final answer is already fixed
 // regardless of what the content turns out to be, so no API call is spent.
+// RULE CLARIFICATION (2026-11), direct instruction, audit item 4 - the
+// filename/caption TEXT itself used to be decided by regex alone
+// (looksLikeCvByNameHint); classifyDocumentContentAsCv (below) only ever
+// looks at the document's own BINARY content, never this text, so a
+// caption the keyword regex misses (e.g. "Sharing my profile for your
+// kind review" - clearly CV-shaped in meaning, no literal cv/resume/job/
+// apply/vacancy word) silently fell straight to the content check or the
+// default, with the TEXT's own meaning never actually understood by
+// anything. This gives the model one cheap, no-download-needed chance to
+// judge the text's meaning BEFORE the costlier content-based check -
+// returns null (never a guess) whenever there's no text at all to judge,
+// so the "bare PDF, no caption" locked scenario costs zero extra API
+// calls, exactly as before this fix.
+async function classifyDocumentCaptionAsCv(nameHint) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  const text = String(nameHint || '').trim();
+  if (!apiKey || !DRAFT_MODEL || !text) return null;
+  try {
+    const data = await postClaudeMessages(apiKey, {
+      model: DRAFT_MODEL, max_tokens: 10,
+      system: [{ type: 'text', text: 'A WhatsApp document attachment has this filename/caption text. Does it indicate the document is a CV/resume/biodata/job application, or something else (an ordinary work document, report, list, letter, invoice, photo, etc.)? Judge by MEANING, not just an exact keyword. Reply with exactly one word: cv or other.' }],
+      messages: [{ role: 'user', content: text }]
+    });
+    const textBlock = (data.content || []).find((b) => b && b.type === 'text');
+    const verdict = textBlock && String(textBlock.text || '').trim().toLowerCase();
+    if (verdict && verdict.includes('cv')) return 'cv';
+    if (verdict && verdict.includes('other')) return 'not_cv';
+    return null;
+  } catch (err) { return null; }
+}
 async function classifyDocumentContentAsCv(msg) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey || !DRAFT_MODEL) return null;
@@ -11756,21 +11786,15 @@ async function classifyDocumentContentAsCv(msg) {
     if (buffer.length > 15 * 1024 * 1024) return null; // oversized - skip rather than block on a huge encode/upload
     const mimeType = resp.headers.get('content-type') || '';
     if (!mimeType.includes('pdf')) return null; // only a PDF is reliably classifiable this way today
-    const apiResp = await fetch(CLAUDE_API_URL, {
-      method: 'POST',
-      headers: { 'x-api-key': apiKey, 'anthropic-version': CLAUDE_ANTHROPIC_VERSION, 'content-type': 'application/json' },
-      body: JSON.stringify({
-        model: DRAFT_MODEL, max_tokens: 10,
-        messages: [{
-          role: 'user', content: [
-            { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: buffer.toString('base64') } },
-            { type: 'text', text: 'Is this document a CV/resume/biodata of a job candidate, or something else (a work document, report, list, letter, invoice, etc.)? Reply with exactly one word: cv or other.' }
-          ]
-        }]
-      })
+    const data = await postClaudeMessages(apiKey, {
+      model: DRAFT_MODEL, max_tokens: 10,
+      messages: [{
+        role: 'user', content: [
+          { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: buffer.toString('base64') } },
+          { type: 'text', text: 'Is this document a CV/resume/biodata of a job candidate, or something else (a work document, report, list, letter, invoice, etc.)? Reply with exactly one word: cv or other.' }
+        ]
+      }]
     });
-    if (!apiResp.ok) return null;
-    const data = await apiResp.json();
     const textBlock = (data.content || []).find((b) => b && b.type === 'text');
     const verdict = textBlock && String(textBlock.text || '').trim().toLowerCase();
     if (verdict && verdict.includes('cv')) return 'cv';
@@ -11877,8 +11901,23 @@ async function handleIncomingMedia(contactId, name, msg) {
       }
       let isCv = looksLikeCvByNameHint(nameHint);
       if (!isCv) {
-        const verdict = await classifyDocumentContentAsCv(msg).catch(() => null);
-        isCv = verdict !== 'not_cv'; // null (couldn't check) or 'cv' -> keep the original "bare document -> CV" default; only an explicit 'not_cv' changes the outcome
+        // RULE CLARIFICATION (2026-11), audit item 4 - a filename/caption
+        // the keyword regex misses (e.g. "Sharing my profile for your
+        // kind review") still gets a real model judgment of its own
+        // MEANING before falling to the costlier content-based check or
+        // the default - cheap and needs no download, so tried first;
+        // returns null instantly (zero API calls) when there's no text
+        // at all to judge, keeping the "bare PDF, no caption" scenario
+        // exactly as cheap as before this fix.
+        const captionVerdict = await classifyDocumentCaptionAsCv(nameHint).catch(() => null);
+        if (captionVerdict === 'cv') {
+          isCv = true;
+        } else if (captionVerdict === 'not_cv') {
+          isCv = false;
+        } else {
+          const verdict = await classifyDocumentContentAsCv(msg).catch(() => null);
+          isCv = verdict !== 'not_cv'; // null (couldn't check) or 'cv' -> keep the original "bare document -> CV" default; only an explicit 'not_cv' changes the outcome
+        }
       }
       if (isCv) {
         await handleJobApplicationMediaDecision(contactId, name, lang, caption, msg);
@@ -13706,6 +13745,7 @@ module.exports = {
   looksLikeCvByNameHint,
   extractDocumentNameHint,
   classifyDocumentContentAsCv,
+  classifyDocumentCaptionAsCv,
   clearNotingBurstState,
   CV_RECEIVED_REPLY,
   MEDIA_ACK_REPLY,

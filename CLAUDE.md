@@ -73,9 +73,12 @@ deterministic suite + that area's real-model scenarios (3x) after.
    touching it; deferred pending his go-ahead on priority order.
 4. **`handleIncomingMedia`'s caption-based CV check** (`looksLikeCvMessage`/
    `looksLikeCvByNameHint`, Task 29) - media messages never reach `classify()`
-   at all; the caption-TEXT decision is 100% regex (only the document's own
-   binary CONTENT ever reaches a model, via `classifyDocumentContentAsCv`).
-   **NOT YET FIXED** - narrower than 1-3, not yet scheduled.
+   at all; the caption-TEXT decision was 100% regex (only the document's own
+   binary CONTENT ever reached a model, via `classifyDocumentContentAsCv`).
+   **FIXED** (Task 32, below) - `classifyDocumentCaptionAsCv` gives the model
+   one cheap, no-download-needed chance to judge the caption/filename TEXT's
+   own meaning whenever the keyword regex misses, tried BEFORE the costlier
+   content-based check. Order approved by Subhodeep: fixed before item 3.
 
 Already-compliant patterns found in the same file, reused rather than
 reinvented for the fixes above: `isBareAckOrHonorificOnly`, `isGreetingOnly`,
@@ -1619,3 +1622,52 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
   by far the largest blast radius - gates nearly every outgoing reply's
   language) and `handleIncomingMedia`'s caption-text CV check (audit item
   4) are both still code-only; neither has been touched.
+
+- Task 32 (2026-11), direct instruction - RULE CLARIFICATION follow-through,
+  audit item 4, order approved by Subhodeep (this before `detectLang`): the
+  document/CV job-application decision's filename/caption TEXT was decided
+  by regex alone (`looksLikeCvByNameHint`); `classifyDocumentContentAsCv`
+  (Task 29) only ever judged the document's own binary CONTENT, so a caption
+  clearly CV-shaped by MEANING but missing a literal cv/resume/job/apply/
+  vacancy word (e.g. "Sharing my profile for your kind review, hope to hear
+  from HR soon") silently fell straight to the costlier content check (which
+  needs a real download link - still unconfirmed for this gateway) or the
+  bare default, with the text's own meaning never actually judged by
+  anything.
+  - `classifyDocumentCaptionAsCv(nameHint)` - a cheap, TEXT-ONLY model call
+    (no download needed) tried FIRST whenever the deterministic keyword
+    check misses, before the costlier content-based check. Returns `null`
+    instantly (zero API calls) when there's no caption/filename text at
+    all, so the "bare PDF, no caption" locked scenario costs exactly what
+    it did before this fix. A confident `cv`/`not_cv` verdict is used
+    directly (skipping the content check entirely when the caption alone
+    already answers it, e.g. a confidently-not-a-CV caption needs no
+    download); an inconclusive/unavailable result falls through unchanged
+    to `classifyDocumentContentAsCv`, then the original default - a model
+    failure/timeout always falls back to the exact prior behavior, never
+    silence, never a guess.
+  - Both this and `classifyDocumentContentAsCv` now route through the
+    shared cost-tracked `postClaudeMessages` helper (previously a second,
+    untracked raw `fetch` call) - every model call in this decision now
+    participates in `getApiCallStats`/the scenario runner's own cost report.
+  - **Never changed an existing fast path or test** (direct safety rule):
+    `looksLikeCvByNameHint`/`looksLikeSpreadsheetFile`/the employee gate are
+    completely unchanged; a filename that already matches the keyword regex
+    (e.g. "Resume_Rahul.pdf") never even reaches the new model call - locked
+    with a dedicated zero-API-calls regression test.
+  Deterministic suite (`scripts/check-whatsapp-engine.js`'s new "RULE
+  CLARIFICATION... audit item 4" section, 5 checks, part of its now-
+  930/930): a caption with no literal keyword but clear CV meaning resolves
+  via a scripted model stub; a caption confidently read as NOT a CV skips
+  straight to noting (content check never even attempted); a simulated
+  model-call failure falls through to the original default unchanged; an
+  already-exact keyword match makes zero extra API calls; `null`-on-empty-
+  text costs zero API calls. One pre-existing test flaked on an unrelated,
+  already-documented stale assertion (confirmed via two full clean re-runs,
+  930/930 both times) - not a regression.
+  Real-model suite (`scripts/check-whatsapp-scenarios.js`, `SCENARIO_FILTER=
+  "caption"`, 3x each): 2/2 new scenarios reliable - the CV-meaning caption
+  resolves as a CV, and the clearly-work caption resolves as not-a-CV, both
+  against the real model. Cost: 6 real calls for $0.0027 (~$0.00045/call -
+  smaller than the manager-confirmation calls, since this is TEXT-only, no
+  document attached).

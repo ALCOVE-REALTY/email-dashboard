@@ -5292,6 +5292,105 @@ async function checkAsync(label, fn) {
     return ok;
   });
 
+  console.log('='.repeat(70));
+  console.log('RULE CLARIFICATION (2026-11), direct instruction, audit item 4 - a filename/caption the deterministic keyword regex misses now gets a real model judgment of its own MEANING before falling to the content-based check or the default');
+  console.log('='.repeat(70));
+  function stubTextOnlyClaudeCall(verdictWord) {
+    const originalFetch = global.fetch;
+    global.fetch = async (url, opts) => {
+      if (String(url).includes('api.anthropic.com') && opts && typeof opts.body === 'string') {
+        const body = JSON.parse(opts.body);
+        const userMsg = (body.messages || []).find((m) => m.role === 'user');
+        if (userMsg && typeof userMsg.content === 'string') {
+          return { ok: true, json: async () => ({ content: [{ type: 'text', text: verdictWord }] }) };
+        }
+      }
+      return originalFetch(url, opts);
+    };
+    return originalFetch;
+  }
+  check('classifyDocumentCaptionAsCv: returns null instantly (zero API calls) when there is no text at all to judge', (() => {
+    let called = false;
+    const originalFetch = global.fetch;
+    global.fetch = async (...args) => { called = true; return originalFetch(...args); };
+    return whatsappAssistant.classifyDocumentCaptionAsCv('').then((r) => {
+      global.fetch = originalFetch;
+      return r === null && !called;
+    });
+  })());
+  await checkAsync('LOCKED SCENARIO: a caption with no literal cv/resume/job/apply/vacancy word, but clearly CV-shaped by MEANING ("Sharing my profile for your kind review, hope to hear from HR soon"), from an unknown number - the model resolves it where the keyword regex cannot', async () => {
+    const CAPTION_MEANING_PHONE = '910000001311';
+    await whatsappAssistant.clearJobTemplateSentToday(CAPTION_MEANING_PHONE).catch(() => {});
+    const originalFetch = stubTextOnlyClaudeCall('cv');
+    const beforeIds = new Set((await whatsappAssistant.listPendingAutoSends()).map((e) => e.id));
+    try {
+      await whatsappAssistant.handleIncomingMedia(CAPTION_MEANING_PHONE, 'Stranger', { type: 'document', content: { caption: 'Sharing my profile for your kind review, hope to hear from HR soon' } });
+    } finally {
+      global.fetch = originalFetch;
+    }
+    const after = await whatsappAssistant.listPendingAutoSends();
+    const scheduled = after.find((e) => !beforeIds.has(e.id) && e.chatId === CAPTION_MEANING_PHONE);
+    const ok = Boolean(scheduled) && scheduled.case === 'job_application_received';
+    await whatsappAssistant.clearJobTemplateSentToday(CAPTION_MEANING_PHONE).catch(() => {});
+    return ok;
+  });
+  await checkAsync('a caption the keyword regex misses AND the model confidently reads as NOT a CV ("Please see attached site inspection report") - resolves to noting, without ever needing to download/check the file\'s own content', async () => {
+    const CAPTION_NOT_CV_PHONE = '910000001312';
+    await whatsappAssistant.clearNotingBurstState(CAPTION_NOT_CV_PHONE).catch(() => {});
+    const originalFetch = stubTextOnlyClaudeCall('other');
+    const beforeIds = new Set((await whatsappAssistant.listPendingAutoSends()).map((e) => e.id));
+    try {
+      await whatsappAssistant.handleIncomingMedia(CAPTION_NOT_CV_PHONE, 'Stranger', { type: 'document', content: { caption: 'Please see attached site inspection report' } });
+    } finally {
+      global.fetch = originalFetch;
+    }
+    const after = await whatsappAssistant.listPendingAutoSends();
+    const scheduled = after.find((e) => !beforeIds.has(e.id) && e.chatId === CAPTION_NOT_CV_PHONE);
+    const ok = Boolean(scheduled) && scheduled.case === 'media_ack';
+    await whatsappAssistant.clearNotingBurstState(CAPTION_NOT_CV_PHONE).catch(() => {});
+    return ok;
+  });
+  await checkAsync('SAFETY: when the caption-text model call fails/times out, falls through unchanged to the content-based check (and then the original default) - never silence, never a guess', async () => {
+    const CAPTION_FAIL_PHONE = '910000001313';
+    await whatsappAssistant.clearJobTemplateSentToday(CAPTION_FAIL_PHONE).catch(() => {});
+    const originalFetch = global.fetch;
+    global.fetch = async (url, opts) => {
+      if (String(url).includes('api.anthropic.com')) throw new Error('simulated network failure');
+      return originalFetch(url, opts);
+    };
+    const beforeIds = new Set((await whatsappAssistant.listPendingAutoSends()).map((e) => e.id));
+    try {
+      await whatsappAssistant.handleIncomingMedia(CAPTION_FAIL_PHONE, 'Stranger', { type: 'document', content: { caption: 'Sharing my profile for your kind review' } });
+    } finally {
+      global.fetch = originalFetch;
+    }
+    const after = await whatsappAssistant.listPendingAutoSends();
+    const scheduled = after.find((e) => !beforeIds.has(e.id) && e.chatId === CAPTION_FAIL_PHONE);
+    // The caption-model call failed, the content check also has no real
+    // mediaUrl here, so this correctly falls to the ORIGINAL default for a
+    // non-employee sender (assume CV) - never silence, never left unhandled.
+    const ok = Boolean(scheduled) && scheduled.case === 'job_application_received';
+    await whatsappAssistant.clearJobTemplateSentToday(CAPTION_FAIL_PHONE).catch(() => {});
+    return ok;
+  });
+  await checkAsync('REGRESSION: a filename that ALREADY matches the deterministic keyword regex ("Resume_Rahul.pdf") never even reaches the caption-text model call - zero extra API calls for an already-exact fast-path match', async () => {
+    let apiCalled = false;
+    const originalFetch = global.fetch;
+    global.fetch = async (url, opts) => {
+      if (String(url).includes('api.anthropic.com')) apiCalled = true;
+      return originalFetch(url, opts);
+    };
+    const REGRESSION_PHONE = '910000001314';
+    await whatsappAssistant.clearJobTemplateSentToday(REGRESSION_PHONE).catch(() => {});
+    try {
+      await whatsappAssistant.handleIncomingMedia(REGRESSION_PHONE, 'Rahul', { type: 'document', content: { filename: 'Resume_Rahul.pdf' } });
+    } finally {
+      global.fetch = originalFetch;
+    }
+    await whatsappAssistant.clearJobTemplateSentToday(REGRESSION_PHONE).catch(() => {});
+    return !apiCalled;
+  });
+
   // --- Item 8: WhatsApp edits are invisible to id-based dedup - resumed on restart ---
   const EDIT_TEST_PHONE = '910000000973';
   await checkAsync('setup: getStoredMessageText/storeMessageText round-trip for a message id', async () => {

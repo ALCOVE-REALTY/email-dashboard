@@ -1300,6 +1300,44 @@ scenario('RULE CLARIFICATION, REGRESSION GUARD: a genuinely unrelated reply (no 
   }
 });
 
+// ============================================================
+// RULE CLARIFICATION (2026-11), direct instruction, audit item 4 - a
+// document's filename/caption TEXT used to be decided by regex alone
+// (looksLikeCvByNameHint); classifyDocumentContentAsCv only ever judged
+// the document's own binary CONTENT. A caption clearly CV-shaped by
+// MEANING but with no literal cv/resume/job/apply/vacancy word used to
+// fall straight to the content check (which needs a real download link -
+// still unconfirmed for this gateway) or the bare default. This replays
+// that exact gap against the REAL model.
+scenario('RULE CLARIFICATION, LOCKED SCENARIO: a document captioned "Sharing my profile for your kind review, hope to hear from HR soon" (no literal cv/resume/job/apply/vacancy word) from an unknown number - the model reads the caption\'s own MEANING as a CV where the keyword regex cannot', async () => {
+  const phone = '910000003101';
+  await whatsappAssistant.clearJobTemplateSentToday(phone).catch(() => {});
+  try {
+    const beforeIds = new Set((await whatsappAssistant.listPendingAutoSends()).map((e) => e.id));
+    await whatsappAssistant.handleIncomingMedia(phone, 'ScenCaption', { type: 'document', content: { caption: 'Sharing my profile for your kind review, hope to hear from HR soon' } });
+    const after = await whatsappAssistant.listPendingAutoSends();
+    const scheduled = after.find((e) => !beforeIds.has(e.id) && e.chatId === phone);
+    if (!scheduled || scheduled.case !== 'job_application_received') return { pass: false, detail: 'expected the job-application template via the model, got: ' + JSON.stringify(scheduled) };
+    return { pass: true, detail: 'resolved as a CV via the caption\'s own meaning, never the keyword list' };
+  } finally {
+    await whatsappAssistant.clearJobTemplateSentToday(phone).catch(() => {});
+  }
+});
+scenario('RULE CLARIFICATION, LOCKED SCENARIO: a document captioned "Please see the attached site inspection report" (no CV signal at all) from an unknown number - the model correctly reads this as NOT a CV, no download/content check ever needed', async () => {
+  const phone = '910000003102';
+  await whatsappAssistant.clearNotingBurstState(phone).catch(() => {});
+  try {
+    const beforeIds = new Set((await whatsappAssistant.listPendingAutoSends()).map((e) => e.id));
+    await whatsappAssistant.handleIncomingMedia(phone, 'ScenCaption2', { type: 'document', content: { caption: 'Please see the attached site inspection report' } });
+    const after = await whatsappAssistant.listPendingAutoSends();
+    const scheduled = after.find((e) => !beforeIds.has(e.id) && e.chatId === phone);
+    if (!scheduled || scheduled.case !== 'media_ack') return { pass: false, detail: 'expected the ordinary noting template, got: ' + JSON.stringify(scheduled) };
+    return { pass: true, detail: 'correctly read as not a CV from the caption\'s own meaning' };
+  } finally {
+    await whatsappAssistant.clearNotingBurstState(phone).catch(() => {});
+  }
+});
+
 const APPROX_USD_PER_MTOK_INPUT = 3;
 const APPROX_USD_PER_MTOK_OUTPUT = 15;
 
