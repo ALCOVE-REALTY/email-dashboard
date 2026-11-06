@@ -6723,6 +6723,163 @@ const HR_CONFIRMATION_WHICH_PENDING = {
   hinglish: (list) => 'Aapko maine ek se zyada confirmation request bheji hai, kis baare mein bata rahe hain? ' + list,
   english: (list) => "I've sent you more than one confirmation request - which one are you answering? " + list
 };
+// LIVE BUG FIX (2026-11), direct instruction, BUG 2 - a manager with 2+
+// open confirmations now gets ONE combined numbered message (instead of
+// a separate STEP 4 send per item, which the old code did unconditionally
+// every time a new item arrived for the same manager), and the OLD
+// per-reply behavior above (HR_CONFIRMATION_WHICH_PENDING, re-sent
+// verbatim on EVERY reply regardless of what the manager actually wrote,
+// even a perfectly clear multi-item answer) is now only a genuine last
+// resort - see handleMultiHrConfirmationManagerReply below, which
+// actually tries to understand numbered ("1 No 2 Yes 3 Yes"), by-name
+// ("Sagar- yes"), and bulk ("Sob haa") answers first.
+const HR_CONFIRMATION_TO_MANAGER_COMBINED = {
+  banglish: (list, n) => 'Apnar theke ' + n + 'ti bishoye confirmation proyojon:\n' + list + '\nProtitar jonno Haa/Na janaben, jemon "1 Haa, 2 Haa, 3 Na", ba sob thik hole "Sob haa".',
+  hinglish: (list, n) => 'Aapse ' + n + ' baaton par confirmation chahiye:\n' + list + '\nHar ek ke liye Haan/Na bataiye, jaise "1 Haan, 2 Haan, 3 Na", ya sab thik hai to "Sab haan".',
+  english: (list, n) => 'I need your confirmation on ' + n + ' items:\n' + list + '\nPlease reply Yes/No for each, e.g. "1 Yes, 2 Yes, 3 No", or "Yes to all" if all are fine.'
+};
+const HR_CONFIRMATION_TO_MANAGER_COMBINED_REMINDER = {
+  banglish: (list, n) => 'Ektu mone koriye dicchi, apnar theke ei ' + n + 'ti bishoye confirmation ekhono pawa jayni:\n' + list + '\nProtitar jonno Haa/Na janaben, jemon "1 Haa, 2 Haa, 3 Na", ba sob thik hole "Sob haa".',
+  hinglish: (list, n) => 'Yaad dila raha hoon, in ' + n + ' baaton par aapka confirmation abhi tak nahi mila hai:\n' + list + '\nHar ek ke liye Haan/Na bataiye, jaise "1 Haan, 2 Haan, 3 Na", ya "Sab haan".',
+  english: (list, n) => "Just a reminder, I'm still waiting on your confirmation for these " + n + ' items:\n' + list + '\nPlease reply Yes/No for each, e.g. "1 Yes, 2 Yes, 3 No", or "Yes to all".'
+};
+// rule (b) - "a single bare Yes/No with several open items -> ask once
+// 'Sob kotar jonno?'" - deliberately distinct wording from
+// HR_CONFIRMATION_WHICH_PENDING (that one's for genuinely unparseable
+// text; this one's specifically for an answer that's clear on its own
+// but doesn't say WHICH item(s) it's for).
+const HR_CONFIRMATION_WHICH_ANSWER_FOR = {
+  banglish: (list) => 'Sob kotar jonno bolchen? ' + list,
+  hinglish: (list) => 'Sab ke baare mein bol rahe hain? ' + list,
+  english: (list) => 'Which one(s) is that for? ' + list
+};
+const HR_CONFIRMATION_MULTI_ACK = {
+  banglish: (n) => n === 1 ? 'Dhonnobad, note kora holo.' : 'Dhonnobad, ' + n + '-ta bishoy note kora holo.',
+  hinglish: (n) => n === 1 ? 'Dhanyavaad, note kar liya.' : 'Dhanyavaad, ' + n + ' baatein note kar li.',
+  english: (n) => n === 1 ? 'Thank you, noted.' : 'Thank you, noted all ' + n + '.'
+};
+const HR_CONFIRMATION_UNKNOWN_NUMBERS_NOTE = {
+  banglish: (nums) => ' Number ' + nums.join(', ') + '-e kono bishoy nei, tai bad deoya holo.',
+  hinglish: (nums) => ' Number ' + nums.join(', ') + ' ke liye koi baat nahi hai, isliye chhod diya.',
+  english: (nums) => " There's no item " + nums.join(', ') + ", so I've ignored " + (nums.length > 1 ? 'those' : 'that') + '.'
+};
+// rule (c) - "items still unanswered after a partial answer -> ask only
+// about those, by name."
+const HR_CONFIRMATION_MULTI_REMAINING = {
+  banglish: (list) => ' Baki ache: ' + list + ' - Haa/Na janaben.',
+  hinglish: (list) => ' Baaki hai: ' + list + ' - Haan/Na bataiye.',
+  english: (list) => " Still pending: " + list + ' - please reply Yes/No.'
+};
+// Non-anchored copies of the single-item isYesAnswer/isNoAnswer word
+// lists (NAME_CONFIRM_YES_RE/NO_RE are anchored with ^, meant for "is
+// this WHOLE reply a yes/no" - here these test a short SEGMENT of text
+// immediately following a number or a name, e.g. "2yes" or "Sagar- yes",
+// so they must match anywhere in that segment, not just at its start).
+// "+" on each word's own distinctive trailing letter(s) so emphatic
+// repeated-letter forms (the live bug's own "Yessssss") are recognized
+// directly, without relying on the shared collapseRepeatedLetters (which
+// collapses any 3+ run to exactly 2 - fine for "Haaa"->"Haa" since "haa"
+// already has 2 a's, but "Yessssss"->"Yess" still has an extra trailing
+// "s" that plain "yes" doesn't match). Scoped to this new multi-item
+// parser only - isYesAnswer/isNoAnswer/collapseRepeatedLetters themselves
+// are unchanged everywhere else.
+const YES_WORD_RE = /\b(haa+n?|hya+n?|ha|hae|ho|ye+s+|yea+h+|ye+p+|ji+|jee+|thik(\s*ache)?|correct|approved|confirmed)\b/i;
+const NO_WORD_RE = /\b(na+h?i?|noi|no+|nope+|nah+|not(\s*approved)?)\b/i;
+// Anchored (^) copies of the above, for the "is this reply BARE yes/no"
+// check specifically (parseMultiConfirmationReply's own fallback) - same
+// tolerant word list, but only when the reply fundamentally IS a yes/no,
+// not just contains one somewhere.
+const BARE_YES_RE = /^(haa+n?|hya+n?|ha|hae|ho|ye+s+|yea+h+|ye+p+|ji+|jee+|thik(\s*ache)?|correct|approved|confirmed)\b/i;
+const BARE_NO_RE = /^(na+h?i?|noi|no+|nope+|nah+|not(\s*approved)?)\b/i;
+function escapeRegExpLiteral(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+// rule (b) - "Sob haa"/"all yes"/"Yes to all" applies ONE verdict to
+// EVERY currently open item for this manager in one shot.
+const HR_CONFIRMATION_ALL_WORD_RE = /\b(sob+|shob+|all)\b/i;
+// Stable cross-message numbering (see handleMultiHrConfirmationManagerReply's
+// own comment) - "2" must always mean the SAME person across a slower,
+// separately-sent burst, even after item 1 has already been answered and
+// dropped out of the currently-open set. numberingList is the full batch
+// (any status) sorted by batchIndex when a batchId exists; stillOpenList
+// is the currently-open subset actually eligible to be resolved.
+function parseMultiConfirmationReply(text, numberingList, stillOpenList) {
+  const t = String(text || '');
+  const openIds = new Set(stillOpenList.map((c) => c.id));
+  const byId = new Map();
+  const unknownNumbers = [];
+
+  if (HR_CONFIRMATION_ALL_WORD_RE.test(t)) {
+    const yes = YES_WORD_RE.test(t), no = NO_WORD_RE.test(t);
+    if (yes && !no) { stillOpenList.forEach((c) => byId.set(c.id, { confirmation: c, answer: 'yes' })); return { answers: Array.from(byId.values()), unknownNumbers: [], bareYesNo: null, bulk: true }; }
+    if (no && !yes) { stillOpenList.forEach((c) => byId.set(c.id, { confirmation: c, answer: 'no' })); return { answers: Array.from(byId.values()), unknownNumbers: [], bareYesNo: null, bulk: true }; }
+  }
+
+  // Each number's own "answer segment" runs from right after it to the
+  // START of the next number (or end of string) - correctly handles
+  // "1 No 2 Yes 3 Yes" (space-separated), "1. Yes" (one number, alone),
+  // and "2yes" (no space at all) all with the same sliding window.
+  const numMatches = [];
+  const numRe = /\d+/g;
+  let mm;
+  while ((mm = numRe.exec(t))) numMatches.push({ n: parseInt(mm[0], 10), start: mm.index, end: mm.index + mm[0].length });
+  for (let i = 0; i < numMatches.length; i++) {
+    const segStart = numMatches[i].end;
+    const segEndReal = i + 1 < numMatches.length ? numMatches[i + 1].start : t.length;
+    const segment = t.slice(segStart, segEndReal);
+    const item = numberingList[numMatches[i].n - 1];
+    if (!item || !openIds.has(item.id)) {
+      if (YES_WORD_RE.test(segment) || NO_WORD_RE.test(segment)) {
+        if (!item) unknownNumbers.push(numMatches[i].n); // a real, still-open sibling with no such number - genuinely unknown; an already-resolved item is silently skipped, not reported as unknown
+      }
+      continue;
+    }
+    if (YES_WORD_RE.test(segment)) byId.set(item.id, { confirmation: item, answer: 'yes' });
+    else if (NO_WORD_RE.test(segment)) byId.set(item.id, { confirmation: item, answer: 'no' });
+  }
+
+  for (const c of stillOpenList) {
+    if (byId.has(c.id)) continue;
+    const firstName = (c.senderName || '').trim().split(/\s+/)[0];
+    if (!firstName || firstName.length < 2) continue;
+    const re = new RegExp('\\b' + escapeRegExpLiteral(firstName) + '\\b', 'i');
+    const nm = re.exec(t);
+    if (!nm) continue;
+    const segment = t.slice(nm.index + firstName.length, nm.index + firstName.length + 40);
+    if (YES_WORD_RE.test(segment)) byId.set(c.id, { confirmation: c, answer: 'yes' });
+    else if (NO_WORD_RE.test(segment)) byId.set(c.id, { confirmation: c, answer: 'no' });
+  }
+
+  if (byId.size) return { answers: Array.from(byId.values()), unknownNumbers: Array.from(new Set(unknownNumbers)), bareYesNo: null, bulk: false };
+  const bare = BARE_YES_RE.test(t) ? 'yes' : (BARE_NO_RE.test(t) ? 'no' : null);
+  return { answers: [], unknownNumbers: Array.from(new Set(unknownNumbers)), bareYesNo: bare, bulk: false };
+}
+function sortPendingForDisplay(list) {
+  return list.slice().sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+}
+// rule (d) - loop guard: a manager whose reply resolves NOTHING at all
+// (not even a bare yes/no that at least narrows it down) gets ONE retry
+// ask; a SECOND consecutive unresolved reply escalates every currently
+// open item to the owner instead of asking a third time - this is what
+// structurally guarantees "never send the same text twice in a row" (the
+// retry text is sent at most once per unclear streak; the next failure
+// escalates rather than repeating it). Reset to zero the moment ANY item
+// actually gets resolved. Same 1-retry-then-escalate shape as the
+// existing single-item MAX_HR_CONFIRMATION_UNCLEAR_ATTEMPTS, for
+// consistency between the two paths.
+function multiConfirmUnclearKey(phone) { return 'wa-hr-multi-unclear:' + whatsapp.normalizePhone(phone); }
+async function incrementMultiConfirmUnclearCount(phone) {
+  const redis = getClient();
+  if (!redis) return 1;
+  try {
+    const n = await redis.incr(multiConfirmUnclearKey(phone));
+    await redis.expire(multiConfirmUnclearKey(phone), 24 * 60 * 60);
+    return n;
+  } catch (err) { return 1; }
+}
+async function clearMultiConfirmUnclearCount(phone) {
+  const redis = getClient();
+  if (!redis) return;
+  try { await redis.del(multiConfirmUnclearKey(phone)); } catch (err) { /* best effort */ }
+}
 
 // A sender-facing reference to the third party, for the manager-facing
 // STEP 4 message ("...message esechhe je...") - the sender's real name
@@ -6777,6 +6934,26 @@ async function prependDisclosureIfNeeded(text, phone, lang) {
   return (AI_DISCLOSURE_LINE[lang] || AI_DISCLOSURE_LINE.english) + ' ' + text;
 }
 
+// Extracted from sendHrConfirmationMessageToManager's own former inline
+// send/log mechanics (behavior-for-behavior identical) so the NEW
+// combined-message sends (sendHrConfirmationMessageToManagerCombined
+// below) go through the exact same draft-mode/error/logging path,
+// instead of a second, potentially-diverging copy of it.
+async function sendRawHrConfirmationTextToManager(managerPhone, managerName, text, logSummary) {
+  if (!isRealSendAllowedFor(managerPhone)) {
+    await logInboxEvent({ chatId: managerPhone, name: managerName, isGroup: false, messageSummary: logSummary, aCase: 'hr_confirmation_sent', sentText: text, outcome: 'draft_mode', sentAt: Date.now() });
+    return { ok: true, draft: true };
+  }
+  const sendResult = await sendWhatsAppChunked(managerPhone, text);
+  if (!sendResult.ok) {
+    await logInboxEvent({ chatId: managerPhone, name: managerName, isGroup: false, messageSummary: logSummary, aCase: 'hr_confirmation_sent', sentText: text, outcome: 'send_failed', sentAt: Date.now() });
+    await postOwnerNotification('⚠️ ' + managerName + ' (' + managerPhone + ')-ke HR confirmation message pathate giye error holo: ' + sendResult.error);
+    return sendResult;
+  }
+  await appendConvoHistory(managerPhone, 'out', text);
+  await logInboxEvent({ chatId: managerPhone, name: managerName, isGroup: false, messageSummary: logSummary, aCase: 'hr_confirmation_sent', sentText: text, outcome: 'sent', sentAt: Date.now() });
+  return { ok: true };
+}
 async function sendHrConfirmationMessageToManager(confirmationId) {
   const confirmation = await getHrConfirmation(confirmationId);
   if (!confirmation) return { ok: false, error: 'confirmation record not found' };
@@ -6786,19 +6963,52 @@ async function sendHrConfirmationMessageToManager(confirmationId) {
     (HR_CONFIRMATION_TO_MANAGER[lang] || HR_CONFIRMATION_TO_MANAGER.english)(requesterRef, summaryForSentence(confirmation.summaryLocalized || confirmation.summary)),
     confirmation.thirdPartyPhone, lang
   );
-  if (!isRealSendAllowedFor(confirmation.thirdPartyPhone)) {
-    await logInboxEvent({ chatId: confirmation.thirdPartyPhone, name: confirmation.thirdPartyName, isGroup: false, messageSummary: '[HR confirmation request: ' + confirmation.summary + ']', aCase: 'hr_confirmation_sent', sentText: text, outcome: 'draft_mode', sentAt: Date.now() });
-    return { ok: true, draft: true };
+  return sendRawHrConfirmationTextToManager(confirmation.thirdPartyPhone, confirmation.thirdPartyName, text, '[HR confirmation request: ' + confirmation.summary + ']');
+}
+// LIVE BUG FIX (2026-11), direct instruction, BUG 2(a) - a manager with
+// 2+ currently open ('awaiting_manager') confirmations gets ONE combined
+// numbered message instead of a separate STEP 4 per item; a NEW item
+// arriving for a manager who already has others open is "folded into a
+// single follow-up message" by re-sending the FULL combined list (old +
+// new) rather than a separate solo message for just the new one. Used
+// both for the initial combined ask (isReminder=false) and the combined
+// 3-hour re-ask (isReminder=true, see checkHrConfirmationNudges) - only
+// the wrapping template differs. Stamps a fresh shared batchId + stable
+// per-item batchIndex (createdAt order) on every currently-open item
+// EVERY time this runs, so a later reply naming a number still points at
+// the right person later, including across a slow, separately-sent
+// burst where some siblings may have already been answered (see
+// handleMultiHrConfirmationManagerReply's own numbering comment).
+async function sendHrConfirmationMessageToManagerCombined(managerPhone, isReminder) {
+  const pending = sortPendingForDisplay(await listPendingHrConfirmationsForPhone(managerPhone));
+  if (!pending.length) return { ok: true };
+  if (pending.length === 1 && !isReminder) return sendHrConfirmationMessageToManager(pending[0].id);
+  if (pending.length === 1) {
+    // isReminder, single item - identical to the ORIGINAL (pre-combining)
+    // single-item reminder text/send in checkHrConfirmationNudges, never
+    // logged to the inbox (unchanged from before this fix).
+    const only = pending[0];
+    const text = await prependDisclosureIfNeeded(
+      (HR_CONFIRMATION_MANAGER_UNCLEAR_RETRY[only.lang] || HR_CONFIRMATION_MANAGER_UNCLEAR_RETRY.english)(summaryForSentence(only.summaryLocalized || only.summary)),
+      managerPhone, only.lang
+    );
+    if (isRealSendAllowedFor(managerPhone)) {
+      const sendResult = await sendWhatsAppChunked(managerPhone, text);
+      if (sendResult.ok) await appendConvoHistory(managerPhone, 'out', text);
+    }
+    return { ok: true };
   }
-  const sendResult = await sendWhatsAppChunked(confirmation.thirdPartyPhone, text);
-  if (!sendResult.ok) {
-    await logInboxEvent({ chatId: confirmation.thirdPartyPhone, name: confirmation.thirdPartyName, isGroup: false, messageSummary: '[HR confirmation request: ' + confirmation.summary + ']', aCase: 'hr_confirmation_sent', sentText: text, outcome: 'send_failed', sentAt: Date.now() });
-    await postOwnerNotification('⚠️ ' + confirmation.thirdPartyName + ' (' + confirmation.thirdPartyPhone + ')-ke HR confirmation message pathate giye error holo: ' + sendResult.error);
-    return sendResult;
+  const batchId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  for (let i = 0; i < pending.length; i++) {
+    await updateHrConfirmation(pending[i].id, { batchId, batchIndex: i + 1 });
   }
-  await appendConvoHistory(confirmation.thirdPartyPhone, 'out', text);
-  await logInboxEvent({ chatId: confirmation.thirdPartyPhone, name: confirmation.thirdPartyName, isGroup: false, messageSummary: '[HR confirmation request: ' + confirmation.summary + ']', aCase: 'hr_confirmation_sent', sentText: text, outcome: 'sent', sentAt: Date.now() });
-  return { ok: true };
+  const lang = pending[0].lang;
+  const list = pending.map((c, i) => (i + 1) + ') ' + requesterRefFor(c.senderName, c.senderPhone) + ' - ' + summaryForSentence(c.summaryLocalized || c.summary)).join('\n');
+  const tmpl = isReminder
+    ? (HR_CONFIRMATION_TO_MANAGER_COMBINED_REMINDER[lang] || HR_CONFIRMATION_TO_MANAGER_COMBINED_REMINDER.english)
+    : (HR_CONFIRMATION_TO_MANAGER_COMBINED[lang] || HR_CONFIRMATION_TO_MANAGER_COMBINED.english);
+  const text = await prependDisclosureIfNeeded(tmpl(list, pending.length), managerPhone, lang);
+  return sendRawHrConfirmationTextToManager(managerPhone, pending[0].thirdPartyName, text, '[HR confirmation request: ' + pending.length + ' items]');
 }
 
 // Side-effect send to the ORIGINAL sender (a different chat than whoever
@@ -6979,7 +7189,12 @@ async function finalizeHrNoteThirdParty({ phone, senderName, lang, candidate, su
   });
   // Task 6 (2026-11) - Attendance Requests page, Step 3 "Manager asked".
   attendanceRequestService.recordStep3ManagerAsked(phone, confirmationId).catch(() => {});
-  await sendHrConfirmationMessageToManager(confirmationId);
+  // LIVE BUG FIX (2026-11), direct instruction, BUG 2(a) - if this
+  // manager already has other open confirmations, this new one is folded
+  // into ONE combined message with them, never sent as its own separate
+  // STEP 4 (sendHrConfirmationMessageToManagerCombined falls back to the
+  // plain single-item send when this is the manager's only open item).
+  await sendHrConfirmationMessageToManagerCombined(candidate.contactNumber, false);
   const reminderId = await createHrConfirmationReminder(await getHrConfirmation(confirmationId));
   if (reminderId) await updateHrConfirmation(confirmationId, { reminderId });
   const fn = HR_NOTE_THANK_SENDER[lang] || HR_NOTE_THANK_SENDER.english;
@@ -7532,10 +7747,101 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
 // A manager's reply to STEP 4's confirmation message - checked early
 // (same tier as pendingNameConfirm/pendingDisambig), since a bare
 // "Haa"/"Na" only makes sense in light of this specific pending question.
+// Shared by the single-item path below AND the multi-item path (see
+// handleMultiHrConfirmationManagerReply) - extracted so the two can never
+// resolve a "yes"/"no" two different ways (STEP 5 send, owner record,
+// reminder close are all identical either way).
+async function resolveOneHrConfirmationAnswer(confirmation, answer) {
+  const originalMessageDate = new Date(confirmation.originalMessageAt || confirmation.createdAt || Date.now());
+  const daysSinceOriginal = calendarDaysBetweenIst(originalMessageDate, new Date());
+  const resultPrefix = buildHrConfirmationResultDayPrefix(confirmation.lang, confirmation.topicLabel, daysSinceOriginal, originalMessageDate);
+  if (answer === 'yes') {
+    await updateHrConfirmation(confirmation.id, { status: 'confirmed', resolvedAt: Date.now() });
+    await closeHrConfirmationReminder(confirmation.reminderId);
+    await sendHrConfirmationResultToSender(confirmation, resultPrefix + (HR_CONFIRMATION_SENDER_RESULT_YES[confirmation.lang] || HR_CONFIRMATION_SENDER_RESULT_YES.english)(confirmation.thirdPartyName));
+    await postHrConfirmationOwnerRecord(confirmation, 'Yes (confirmed)');
+  } else {
+    await updateHrConfirmation(confirmation.id, { status: 'declined', resolvedAt: Date.now() });
+    await closeHrConfirmationReminder(confirmation.reminderId);
+    await sendHrConfirmationResultToSender(confirmation, resultPrefix + (HR_CONFIRMATION_SENDER_RESULT_NO[confirmation.lang] || HR_CONFIRMATION_SENDER_RESULT_NO.english)(confirmation.thirdPartyName));
+    await postHrConfirmationOwnerRecord(confirmation, 'No (not confirmed)');
+  }
+}
+// LIVE BUG FIX (2026-11), direct instruction, BUG 2(b)/(c)/(d) - a
+// manager with 2+ open confirmations used to get the SAME disambiguation
+// list re-sent verbatim on EVERY reply, regardless of what they actually
+// wrote (even a perfectly clear "1 No 2 Yes 3 Yes") - the root cause of
+// the live loop. This now actually tries to understand the reply first.
+async function handleMultiHrConfirmationManagerReply({ phone, text, lang, pendingConfirmations }) {
+  const sorted = sortPendingForDisplay(pendingConfirmations);
+  const replyLang = sorted[0].lang || lang;
+  const t = collapseRepeatedLetters(String(text || '').trim());
+  if (isDeferredAnswerReply(t)) {
+    return { case: 'acknowledged', replyText: HR_CONFIRMATION_MANAGER_DEFER_ACK[replyLang] || HR_CONFIRMATION_MANAGER_DEFER_ACK.english, summaryForOwner: null, lang: replyLang };
+  }
+  // Stable cross-message numbering - "2" must always mean the SAME
+  // person even across a slower, separately-sent burst where an earlier
+  // sibling (e.g. "1") has already been answered and dropped out of the
+  // currently-open set. Resolved against the FULL batch (any status)
+  // sharing the latest batchId sendHrConfirmationMessageToManagerCombined
+  // stamped on every currently-open item, sorted by that fixed
+  // batchIndex - never just "whatever's currently left", which would
+  // silently renumber and misattribute an answer. Falls back to the
+  // currently-open list itself (positional) when no batchId exists yet
+  // (e.g. a confirmation saved directly, bypassing the combined sender -
+  // only ever the case in a test fixture, never in production once a
+  // combined message has actually gone out).
+  const batchId = sorted[0].batchId;
+  let numberingList = sorted;
+  if (batchId) {
+    const allInBatch = (await listAllHrConfirmations()).filter((c) => c.batchId === batchId);
+    if (allInBatch.length) numberingList = allInBatch.sort((a, b) => (a.batchIndex || 0) - (b.batchIndex || 0));
+  }
+  const parsed = parseMultiConfirmationReply(t, numberingList, sorted);
+
+  if (parsed.answers.length) {
+    await clearMultiConfirmUnclearCount(phone);
+    for (const { confirmation, answer } of parsed.answers) {
+      await resolveOneHrConfirmationAnswer(confirmation, answer);
+    }
+    const resolvedIds = new Set(parsed.answers.map((a) => a.confirmation.id));
+    const remaining = sorted.filter((c) => !resolvedIds.has(c.id));
+    let ackText = (HR_CONFIRMATION_MULTI_ACK[replyLang] || HR_CONFIRMATION_MULTI_ACK.english)(parsed.answers.length);
+    if (parsed.unknownNumbers.length) ackText += (HR_CONFIRMATION_UNKNOWN_NUMBERS_NOTE[replyLang] || HR_CONFIRMATION_UNKNOWN_NUMBERS_NOTE.english)(parsed.unknownNumbers);
+    if (remaining.length) {
+      const remainingList = remaining.map((c) => requesterRefFor(c.senderName, c.senderPhone)).join(', ');
+      ackText += (HR_CONFIRMATION_MULTI_REMAINING[replyLang] || HR_CONFIRMATION_MULTI_REMAINING.english)(remainingList);
+    }
+    return { case: 'acknowledged', replyText: ackText, summaryForOwner: null, lang: replyLang };
+  }
+
+  // Nothing resolved at all - rule (d), loop guard: ONE retry ask max; a
+  // second consecutive unresolved reply escalates every currently open
+  // item instead of repeating the same text a third time.
+  const unclearCount = await incrementMultiConfirmUnclearCount(phone);
+  if (unclearCount > MAX_HR_CONFIRMATION_UNCLEAR_ATTEMPTS) {
+    for (const c of sorted) {
+      await updateHrConfirmation(c.id, { status: 'ambiguous_owner_review', unclearAttempts: (c.unclearAttempts || 0) + 1, ambiguousAt: Date.now() });
+    }
+    await clearMultiConfirmUnclearCount(phone);
+    const list = sorted.map((c) => requesterRefFor(c.senderName, c.senderPhone) + ': "' + c.summary + '"').join('; ');
+    await postOwnerNotification(
+      '🤔 ' + sorted[0].thirdPartyName + '-er reply bujhte parchi na, ekadhik bishoy niye pending: ' + list + '. ' +
+      'WhatsApp section-e giye protita item-er jonno Confirmed / Not confirmed / Ask again theke bechhe nin.'
+    );
+    return { case: 'acknowledged', replyText: HR_CONFIRMATION_MANAGER_THANKS_UNCLEAR[replyLang] || HR_CONFIRMATION_MANAGER_THANKS_UNCLEAR.english, summaryForOwner: null, lang: replyLang };
+  }
+  const list = sorted.map((c, i) => (i + 1) + ') ' + requesterRefFor(c.senderName, c.senderPhone) + ' - ' + summaryForSentence(c.summaryLocalized || c.summary)).join(' ');
+  if (parsed.bareYesNo) {
+    // rule (b) - a single bare Yes/No with several open items - ask ONCE
+    // which one(s) it's for, never guess (not even "the oldest one").
+    return { case: 'acknowledged', replyText: (HR_CONFIRMATION_WHICH_ANSWER_FOR[replyLang] || HR_CONFIRMATION_WHICH_ANSWER_FOR.english)(list), summaryForOwner: null, lang: replyLang };
+  }
+  return { case: 'acknowledged', replyText: (HR_CONFIRMATION_WHICH_PENDING[replyLang] || HR_CONFIRMATION_WHICH_PENDING.english)(list), summaryForOwner: null, lang: replyLang };
+}
 async function handleHrConfirmationManagerReply({ phone, text, lang, pendingConfirmations, history }) {
   if (pendingConfirmations.length > 1) {
-    const list = pendingConfirmations.map((c, i) => (i + 1) + ') ' + c.senderName + ' - ' + c.summary).join(' ');
-    return { case: 'acknowledged', replyText: (HR_CONFIRMATION_WHICH_PENDING[lang] || HR_CONFIRMATION_WHICH_PENDING.english)(list), summaryForOwner: null, lang };
+    return handleMultiHrConfirmationManagerReply({ phone, text, lang, pendingConfirmations });
   }
   const confirmation = pendingConfirmations[0];
   // The reply TO THE MANAGER uses the confirmation's own recorded
@@ -7546,26 +7852,21 @@ async function handleHrConfirmationManagerReply({ phone, text, lang, pendingConf
   // exact class of bug behind item 2's mixed-language fix).
   const replyLang = confirmation.lang || lang;
   const t = text.trim();
-  // Link-back rule - STEP 5's result-to-sender message only, prefixed
-  // when it's sent on a LATER calendar day than the sender's own
-  // ORIGINAL message (never "last touched"). originalMessageAt falls
-  // back to the confirmation's own createdAt for any record saved before
-  // this field existed.
-  const originalMessageDate = new Date(confirmation.originalMessageAt || confirmation.createdAt || Date.now());
-  const daysSinceOriginal = calendarDaysBetweenIst(originalMessageDate, new Date());
-  const resultPrefix = buildHrConfirmationResultDayPrefix(confirmation.lang, confirmation.topicLabel, daysSinceOriginal, originalMessageDate);
-  if (isYesAnswer(t)) {
-    await updateHrConfirmation(confirmation.id, { status: 'confirmed', resolvedAt: Date.now() });
-    await closeHrConfirmationReminder(confirmation.reminderId);
-    await sendHrConfirmationResultToSender(confirmation, resultPrefix + (HR_CONFIRMATION_SENDER_RESULT_YES[confirmation.lang] || HR_CONFIRMATION_SENDER_RESULT_YES.english)(confirmation.thirdPartyName));
-    await postHrConfirmationOwnerRecord(confirmation, 'Yes (confirmed)');
+  // LIVE BUG FIX (2026-11), BUG 2 - a reply like "3 yes" can genuinely
+  // arrive here down to the LAST item of what used to be a multi-item
+  // batch (its siblings already answered and dropped out of "pending",
+  // so this is now the only one left) - a leading number+punctuation is
+  // stripped before the plain yes/no check so that leftover numbering
+  // still resolves, instead of being misread as unclear. Only used for
+  // this yes/no check; the ORIGINAL text is still what's logged/shown
+  // for the unclear-retry path below.
+  const tForYesNo = t.replace(/^\d+\s*[.):\-]?\s*/, '');
+  if (isYesAnswer(tForYesNo)) {
+    await resolveOneHrConfirmationAnswer(confirmation, 'yes');
     return { case: 'acknowledged', replyText: HR_CONFIRMATION_MANAGER_THANKS_YES[replyLang] || HR_CONFIRMATION_MANAGER_THANKS_YES.english, summaryForOwner: null, lang: replyLang };
   }
-  if (isNoAnswer(t)) {
-    await updateHrConfirmation(confirmation.id, { status: 'declined', resolvedAt: Date.now() });
-    await closeHrConfirmationReminder(confirmation.reminderId);
-    await sendHrConfirmationResultToSender(confirmation, resultPrefix + (HR_CONFIRMATION_SENDER_RESULT_NO[confirmation.lang] || HR_CONFIRMATION_SENDER_RESULT_NO.english)(confirmation.thirdPartyName));
-    await postHrConfirmationOwnerRecord(confirmation, 'No (not confirmed)');
+  if (isNoAnswer(tForYesNo)) {
+    await resolveOneHrConfirmationAnswer(confirmation, 'no');
     return { case: 'acknowledged', replyText: HR_CONFIRMATION_MANAGER_THANKS_NO[replyLang] || HR_CONFIRMATION_MANAGER_THANKS_NO.english, summaryForOwner: null, lang: replyLang };
   }
   // Task 3 - "I'll check and answer later" is not unclear; acknowledge
@@ -7679,29 +7980,40 @@ function isPastEndOfDayIst(fromDate, now) {
   const { end } = workingHoursWindowForIstDay(year, month, day);
   return now >= end;
 }
+// LIVE BUG FIX (2026-11), direct instruction, BUG 2(a) "re-asks also
+// combined" - grouped by manager so a manager with several pending items
+// gets ONE combined end-of-day escalation notice and ONE combined 3-hour
+// re-ask (via sendHrConfirmationMessageToManagerCombined, which restates
+// the FULL currently-open list, never just the ones that happen to be due
+// this tick) - never a separate send per item, the live bug's second
+// symptom (3 separate re-asks 16:54-16:57 for the same manager). A
+// manager with exactly ONE pending item behaves byte-for-byte as before
+// this fix (see sendHrConfirmationMessageToManagerCombined's own
+// single-item branch) - these two tests' own single-manager scenarios are
+// unaffected.
 async function checkHrConfirmationNudges(now) {
   const all = await listAllHrConfirmations();
-  for (const confirmation of all) {
-    if (confirmation.status !== 'awaiting_manager') continue;
-    const createdAt = new Date(confirmation.createdAt);
-    if (isPastEndOfDayIst(createdAt, now) && !confirmation.escalatedAt) {
+  const pending = all.filter((c) => c.status === 'awaiting_manager');
+  const byManager = new Map();
+  for (const c of pending) {
+    const key = whatsapp.normalizePhone(c.thirdPartyPhone);
+    if (!byManager.has(key)) byManager.set(key, []);
+    byManager.get(key).push(c);
+  }
+  for (const [managerPhone, group] of byManager) {
+    const toEscalate = group.filter((c) => isPastEndOfDayIst(new Date(c.createdAt), now) && !c.escalatedAt);
+    if (toEscalate.length) {
+      const list = sortPendingForDisplay(toEscalate).map((c) => senderNameAndPhone(c.senderName, c.senderPhone) + ': "' + c.summary + '"').join('; ');
       await postOwnerNotification(
-        '⚠️ HR confirmation still pending end of day — ' + senderNameAndPhone(confirmation.senderName, confirmation.senderPhone) + ': "' + confirmation.summary + '". ' +
-        'Manager ' + confirmation.thirdPartyName + ' (' + confirmation.thirdPartyDepartment + ') has not answered. Please follow up directly.'
+        '⚠️ HR confirmation still pending end of day — manager ' + group[0].thirdPartyName + ' (' + group[0].thirdPartyDepartment + ') has not answered: ' + list + '. Please follow up directly.'
       );
-      await updateHrConfirmation(confirmation.id, { escalatedAt: Date.now() });
-      continue;
+      for (const c of toEscalate) await updateHrConfirmation(c.id, { escalatedAt: Date.now() });
     }
-    if (!confirmation.remindedAt && workingHoursElapsedSince(createdAt, now) >= 180) {
-      const text = await prependDisclosureIfNeeded(
-        (HR_CONFIRMATION_MANAGER_UNCLEAR_RETRY[confirmation.lang] || HR_CONFIRMATION_MANAGER_UNCLEAR_RETRY.english)(summaryForSentence(confirmation.summaryLocalized || confirmation.summary)),
-        confirmation.thirdPartyPhone, confirmation.lang
-      );
-      if (isRealSendAllowedFor(confirmation.thirdPartyPhone)) {
-        const sendResult = await sendWhatsAppChunked(confirmation.thirdPartyPhone, text);
-        if (sendResult.ok) await appendConvoHistory(confirmation.thirdPartyPhone, 'out', text);
-      }
-      await updateHrConfirmation(confirmation.id, { remindedAt: Date.now() });
+    const notEscalated = group.filter((c) => !toEscalate.includes(c));
+    const dueForReminder = notEscalated.filter((c) => !c.remindedAt && workingHoursElapsedSince(new Date(c.createdAt), now) >= 180);
+    if (dueForReminder.length) {
+      await sendHrConfirmationMessageToManagerCombined(managerPhone, true);
+      for (const c of dueForReminder) await updateHrConfirmation(c.id, { remindedAt: Date.now() });
     }
   }
 }
@@ -12778,6 +13090,7 @@ module.exports = {
   markIntroducedToday,
   hasIntroducedTodayDedicated,
   sendHrConfirmationMessageToManager,
+  sendHrConfirmationMessageToManagerCombined,
   resendPendingHrNoteFlowNudge,
   checkGatewayConnection,
   gatewayStatusSummary,
@@ -13016,6 +13329,11 @@ module.exports = {
   normalizeBengaliNamePhonetics,
   findEmployeesByPhoneticNameMatch,
   checkHrConfirmationNudges,
+  // Exported for scripts/check-whatsapp-engine.js only - LIVE BUG FIX
+  // (2026-11), BUG 2: a manager with 2+ open confirmations.
+  clearMultiConfirmUnclearCount,
+  parseMultiConfirmationReply,
+  sortPendingForDisplay,
   // Exported for scripts/check-whatsapp-engine.js only - live review:
   // connection-drop false alarms + catch-up after a gap.
   getGatewayState,

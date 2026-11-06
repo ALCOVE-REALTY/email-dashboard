@@ -1302,3 +1302,97 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
   on a separate run (passed cleanly on immediate re-run, same code) -
   this is the suite's already-documented real-model variance, not a
   regression from this change.
+
+- Task 30 (2026-11), direct instruction - LIVE BUG FIX, BUG 2: a manager
+  ("Biye 73") with 2+ pending HR confirmations (Sagar/Tathagata/Swattik's
+  attendance) got a SEPARATE STEP 4 message per item, then no matter how
+  clearly they answered ("1 No 2 Yes 3 Yes", by name, "Sob haa"),
+  `handleHrConfirmationManagerReply`'s very first line (`if
+  (pendingConfirmations.length > 1)`) unconditionally re-sent the
+  identical disambiguation list forever - it never even tried to parse
+  the reply. Root cause fixed at both ends: how the ask goes out, and how
+  the answer is understood.
+  - `sendHrConfirmationMessageToManagerCombined(managerPhone, isReminder)` -
+    a manager with 2+ currently open confirmations gets ONE combined
+    numbered message (`HR_CONFIRMATION_TO_MANAGER_COMBINED`/`..._REMINDER`
+    for the ask vs. the 3-hour re-ask); a manager with exactly one pending
+    item behaves BYTE-FOR-BYTE as before this fix (delegates straight to
+    the original `sendHrConfirmationMessageToManager`, or replicates the
+    original single-item reminder text inline) - the two pre-existing
+    single-manager nudge tests needed no changes. `finalizeHrNoteThirdParty`
+    (new confirmation) and the now-manager-grouped `checkHrConfirmationNudges`
+    (3-hour re-ask/end-of-day escalation) both call this - "re-asks also
+    combined" for free, from the same source of truth.
+  - Stable cross-message numbering: every combined send stamps a fresh
+    shared `batchId` + a per-item `batchIndex` (createdAt order) on EVERY
+    currently-open item. A later reply naming a number is resolved against
+    the FULL batch (any status, via `listAllHrConfirmations().filter(c =>
+    c.batchId === ...)`), never just "whatever's currently left" - so "2"
+    still means the same person even in a slow, separately-sent burst
+    where an earlier sibling has already been answered and dropped out of
+    "pending" (its own locked-scenario test proves this: "1. Yes" / "2yes"
+    / "3 yes" sent as 3 separate `decideAutoReply` calls, each one
+    reducing the pending set before the next arrives).
+  - `parseMultiConfirmationReply(text, numberingList, stillOpenList)` -
+    understands bulk ("Sob haa"/"all yes"/"Yes to all" - one verdict for
+    every open item), numbered ("1 No 2 Yes 3 Yes", "1. Yes", "2yes" - a
+    sliding window from each number to the next, handling spaced/unspaced/
+    multi-line forms identically), and by-name ("Sagar- yes", "Swattik
+    na" - first-name word-boundary match + a short lookahead window)
+    answers, any mix, in one message or across a burst. A number with no
+    matching item is ignored and mentioned once
+    (`HR_CONFIRMATION_UNKNOWN_NUMBERS_NOTE`); an already-RESOLVED
+    sibling's number is silently skipped (never reported as "unknown" -
+    it's not unknown, it's just done). Items still open after a partial
+    answer are asked about by name (`HR_CONFIRMATION_MULTI_REMAINING`),
+    never the full list again. The single-item path
+    (`handleHrConfirmationManagerReply`'s `length === 1` branch) also
+    strips a leading leftover number (e.g. "3 yes" once items 1-2 have
+    already resolved and dropped out) before its own plain yes/no check,
+    so numbering understood earlier in a batch still works once only the
+    last item remains.
+  - A single bare Yes/No with 2+ open items resolves NOTHING and asks ONCE
+    "Sob kotar jonno?" (`HR_CONFIRMATION_WHICH_ANSWER_FOR`) - a following
+    "Haa, sob" (bulk) then resolves everyone. LIVE BUG FIXED during this:
+    the live transcript's own "Yessssss" didn't register as a bare yes at
+    all - `collapseRepeatedLetters` (shared, unchanged) only folds a 3+
+    run down to 2 identical letters (fine for "Haaa"->"Haa", since "haa"
+    already has 2 a's; not fine for "Yessssss"->"Yess", since "yes" has
+    only 1 "s"). Fixed with new, LOCALLY-SCOPED `YES_WORD_RE`/`NO_WORD_RE`/
+    `BARE_YES_RE`/`BARE_NO_RE` that tolerate arbitrary trailing-letter
+    repetition directly (`ye+s+` etc.) - the shared `isYesAnswer`/
+    `isNoAnswer`/`collapseRepeatedLetters` used by every OTHER flow in this
+    file are untouched.
+  - Loop guard (rule d): `wa-hr-multi-unclear:<managerPhone>`, same
+    1-retry-then-escalate shape as the existing single-item
+    `MAX_HR_CONFIRMATION_UNCLEAR_ATTEMPTS`. A reply that resolves NOTHING
+    increments this; a SECOND consecutive one escalates every currently
+    open item to `ambiguous_owner_review` (reusing the EXISTING WhatsApp-
+    section card UI verbatim - one card per item, Confirmed/Not
+    confirmed/Ask again - no new UI needed) instead of asking a third
+    time. This structurally guarantees "never send the same text twice in
+    a row": the retry text goes out at most once per unclear streak; the
+    next failure escalates rather than repeating it. Reset to zero the
+    instant ANY item actually resolves.
+  - `resolveOneHrConfirmationAnswer(confirmation, answer)` - extracted
+    from the single-item path's own former inline yes/no handling so the
+    single- and multi-item paths can never resolve a "yes"/"no" two
+    different ways.
+  Purely deterministic - this entire fix is regex/state-machine based, no
+  model call anywhere in it, so there is no real-API scenario to run for
+  it; covered end-to-end by `scripts/check-whatsapp-engine.js`'s new "BUG
+  2" section (11 checks, part of its now-919/919): the live conversation's
+  exact shape (3 senders, 1 manager, "Sagar"/"Tathagata"/"Swattik")
+  resolved via "1 No 2 Yes 3 Yes" in one message, the SAME 3 answers sent
+  as a slow separate-message burst (proving the stable-numbering fix), by
+  name in one message, "Sob haa", "Yessssss" (the exact live text) → "Sob
+  kotar jonno?" → "Haa, sob", an unknown-number ("4 yes") being
+  ignored-and-mentioned-once, a partial answer leaving the rest asked
+  about by name, the loop-guard escalating on the 2nd unclear reply
+  (never repeating the first reply's text), the combined reminder send,
+  and the "fold a new item into one combined message" behavior itself.
+  One PRE-EXISTING test needed updating, not a regression: a bare "Haa"
+  with 2 pending items used to assert the old generic "more than one...
+  which one are you answering?" wording - now correctly asserts the new,
+  more specific "which one(s) is that for?" wording per rule (b), while
+  still confirming neither item resolves.

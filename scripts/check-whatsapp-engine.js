@@ -1119,12 +1119,14 @@ async function checkAsync(label, fn) {
     return ok;
   });
 
-  await checkAsync('several pending confirmations for the SAME manager - a bare "Haa" asks which one instead of guessing', async () => {
+  await checkAsync('several pending confirmations for the SAME manager - a bare "Haa" asks which one(s) it\'s for instead of guessing, and resolves NEITHER (LIVE BUG FIX 2026-11, BUG 2, rule (b): updated from the old generic "more than one" list to the dedicated "which one(s) is that for?" ask, since a bare yes/no is understood on its own now - just not which item(s) it answers - never the fully-generic disambiguation text used for genuinely unparseable replies)', async () => {
     const SA = '910000000868', SB = '910000000869';
     const c1 = await whatsappAssistant.saveHrConfirmation({ senderPhone: SA, senderName: 'SenderA', summary: 'summary A', summaryLocalized: 'summary A', lang: 'english', thirdPartyPhone: TANMOY_MONDAL_PHONE, thirdPartyName: 'Tanmoy Mondal', thirdPartyDepartment: 'Civil', status: 'awaiting_manager', createdAt: Date.now(), remindedAt: null, escalatedAt: null, reminderId: null });
     const c2 = await whatsappAssistant.saveHrConfirmation({ senderPhone: SB, senderName: 'SenderB', summary: 'summary B', summaryLocalized: 'summary B', lang: 'english', thirdPartyPhone: TANMOY_MONDAL_PHONE, thirdPartyName: 'Tanmoy Mondal', thirdPartyDepartment: 'Civil', status: 'awaiting_manager', createdAt: Date.now(), remindedAt: null, escalatedAt: null, reminderId: null });
     const d = await whatsappAssistant.decideAutoReply({ phone: TANMOY_MONDAL_PHONE, name: 'Tanmoy Mondal', firstName: 'Tanmoy', text: 'Haa', isGroup: false, history: [] });
-    const ok = d.replyText.includes('more than one') && d.replyText.includes('SenderA') && d.replyText.includes('SenderB');
+    const [after1, after2] = await Promise.all([whatsappAssistant.getHrConfirmation(c1), whatsappAssistant.getHrConfirmation(c2)]);
+    const ok = /which one/i.test(d.replyText) && d.replyText.includes('SenderA') && d.replyText.includes('SenderB') && after1.status === 'awaiting_manager' && after2.status === 'awaiting_manager';
+    await whatsappAssistant.clearMultiConfirmUnclearCount(TANMOY_MONDAL_PHONE).catch(() => {});
     await whatsappAssistant.removeHrConfirmation(c1);
     await whatsappAssistant.removeHrConfirmation(c2);
     return ok;
@@ -4494,6 +4496,149 @@ async function checkAsync(label, fn) {
     await cleanupHrFlowArtifacts(SAURAV_PHONE, TANMOY_MONDAL_PHONE);
     return ok;
   });
+
+  console.log('='.repeat(70));
+  console.log('LIVE BUG FIX (2026-11), BUG 2: one manager with several pending HR confirmations - ONE combined message instead of separate ones, every real answer form understood, and a loop guard instead of repeating the same disambiguation list forever');
+  console.log('='.repeat(70));
+  const MULTI_MGR_PHONE = '910000001500';
+  const SAGAR_PHONE = '910000001501';
+  const TATHAGATA_PHONE = '910000001502';
+  const SWATTIK_PHONE = '910000001503';
+  async function seedThreePending() {
+    await cleanupHrFlowArtifacts(MULTI_MGR_PHONE, SAGAR_PHONE, TATHAGATA_PHONE, SWATTIK_PHONE);
+    await whatsappAssistant.clearMultiConfirmUnclearCount(MULTI_MGR_PHONE).catch(() => {});
+    const base = { lang: 'banglish', thirdPartyPhone: MULTI_MGR_PHONE, thirdPartyName: 'Biye 73', thirdPartyDepartment: 'Site', status: 'awaiting_manager', remindedAt: null, escalatedAt: null, reminderId: null };
+    const sagarId = await whatsappAssistant.saveHrConfirmation(Object.assign({}, base, { senderPhone: SAGAR_PHONE, senderName: 'Sagar', summary: 'half day asbe', summaryLocalized: 'Sagar kal half day asbe', createdAt: Date.now() }));
+    const tathagataId = await whatsappAssistant.saveHrConfirmation(Object.assign({}, base, { senderPhone: TATHAGATA_PHONE, senderName: 'Tathagata', summary: 'first half off', summaryLocalized: 'Tathagata kal first half-e asbe na', createdAt: Date.now() + 1 }));
+    const swattikId = await whatsappAssistant.saveHrConfirmation(Object.assign({}, base, { senderPhone: SWATTIK_PHONE, senderName: 'Swattik', summary: 'second half half day', summaryLocalized: 'Swattik kal second half-e half day asbe', createdAt: Date.now() + 2 }));
+    return { sagarId, tathagataId, swattikId };
+  }
+  function allConfirmed(ids) {
+    return Promise.all(ids.map((id) => whatsappAssistant.getHrConfirmation(id)));
+  }
+  await checkAsync('rule (a): a NEW confirmation for a manager who already has one open gets FOLDED into one combined message - never a separate STEP 4 send', async () => {
+    await cleanupHrFlowArtifacts(MULTI_MGR_PHONE, SAGAR_PHONE, TATHAGATA_PHONE);
+    const firstId = await whatsappAssistant.saveHrConfirmation({ senderPhone: SAGAR_PHONE, senderName: 'Sagar', summary: 'half day asbe', summaryLocalized: 'Sagar kal half day asbe', lang: 'banglish', thirdPartyPhone: MULTI_MGR_PHONE, thirdPartyName: 'Biye 73', thirdPartyDepartment: 'Site', status: 'awaiting_manager', createdAt: Date.now(), remindedAt: null, escalatedAt: null, reminderId: null });
+    await whatsappAssistant.sendHrConfirmationMessageToManagerCombined(MULTI_MGR_PHONE, false); // the ONLY pending item - plain single-item send
+    await whatsappAssistant.saveHrConfirmation({ senderPhone: TATHAGATA_PHONE, senderName: 'Tathagata', summary: 'first half off', summaryLocalized: 'Tathagata kal first half-e asbe na', lang: 'banglish', thirdPartyPhone: MULTI_MGR_PHONE, thirdPartyName: 'Biye 73', thirdPartyDepartment: 'Site', status: 'awaiting_manager', createdAt: Date.now() + 1, remindedAt: null, escalatedAt: null, reminderId: null });
+    const beforeLog = (await whatsappAssistant.listInboxLog(50)).filter((e) => e.chatId === MULTI_MGR_PHONE && e.case === 'hr_confirmation_sent').length;
+    await whatsappAssistant.sendHrConfirmationMessageToManagerCombined(MULTI_MGR_PHONE, false); // now 2 pending - ONE combined message
+    const log = (await whatsappAssistant.listInboxLog(50)).filter((e) => e.chatId === MULTI_MGR_PHONE && e.case === 'hr_confirmation_sent');
+    const latest = log.slice().sort((a, b) => b.ts - a.ts)[0]; // listInboxLog is newest-first already, but sort explicitly rather than assume
+    const ok = log.length === beforeLog + 1 && latest.sentText.includes('Sagar') && latest.sentText.includes('Tathagata') && /1\)/.test(latest.sentText) && /2\)/.test(latest.sentText);
+    await cleanupHrFlowArtifacts(MULTI_MGR_PHONE, SAGAR_PHONE, TATHAGATA_PHONE);
+    return ok;
+  });
+  await checkAsync('LOCKED SCENARIO: "1 No 2 Yes 3 Yes" in ONE message resolves all three correctly in one shot (item 1 declined, items 2 and 3 confirmed), each sender\'s own STEP 5 result sent, and no pending confirmation left for this manager', async () => {
+    const { sagarId, tathagataId, swattikId } = await seedThreePending();
+    await whatsappAssistant.sendHrConfirmationMessageToManagerCombined(MULTI_MGR_PHONE, false); // stamps stable batch numbering
+    const d = await whatsappAssistant.decideAutoReply({ phone: MULTI_MGR_PHONE, name: 'Biye 73', firstName: 'Biye', text: '1 No 2 Yes 3 Yes', isGroup: false, history: [] });
+    const [sagar, tathagata, swattik] = await allConfirmed([sagarId, tathagataId, swattikId]);
+    const stillPending = await whatsappAssistant.listPendingHrConfirmationsForPhone(MULTI_MGR_PHONE);
+    const ok = Boolean(d.replyText) && sagar.status === 'declined' && tathagata.status === 'confirmed' && swattik.status === 'confirmed' && stillPending.length === 0;
+    await cleanupHrFlowArtifacts(MULTI_MGR_PHONE, SAGAR_PHONE, TATHAGATA_PHONE, SWATTIK_PHONE);
+    return ok;
+  });
+  await checkAsync('LOCKED SCENARIO: separate "1. Yes" / "2yes" / "3 yes" sent as a SLOW burst (one decideAutoReply call per message, items dropping out of "pending" in between) still resolve the RIGHT person each time - numbering stays stable even after earlier siblings in the same batch are already answered', async () => {
+    const { sagarId, tathagataId, swattikId } = await seedThreePending();
+    await whatsappAssistant.sendHrConfirmationMessageToManagerCombined(MULTI_MGR_PHONE, false); // stamps batchIndex 1=Sagar, 2=Tathagata, 3=Swattik
+    await whatsappAssistant.decideAutoReply({ phone: MULTI_MGR_PHONE, name: 'Biye 73', firstName: 'Biye', text: '1. Yes', isGroup: false, history: [] });
+    const afterFirst = await whatsappAssistant.getHrConfirmation(sagarId);
+    await whatsappAssistant.decideAutoReply({ phone: MULTI_MGR_PHONE, name: 'Biye 73', firstName: 'Biye', text: '2yes', isGroup: false, history: [] });
+    const afterSecond = await whatsappAssistant.getHrConfirmation(tathagataId);
+    await whatsappAssistant.decideAutoReply({ phone: MULTI_MGR_PHONE, name: 'Biye 73', firstName: 'Biye', text: '3 yes', isGroup: false, history: [] });
+    const afterThird = await whatsappAssistant.getHrConfirmation(swattikId);
+    const ok = afterFirst.status === 'confirmed' && afterSecond.status === 'confirmed' && afterThird.status === 'confirmed';
+    await cleanupHrFlowArtifacts(MULTI_MGR_PHONE, SAGAR_PHONE, TATHAGATA_PHONE, SWATTIK_PHONE);
+    return ok;
+  });
+  await checkAsync('LOCKED SCENARIO: by-name answers "Sagar- yes", "Tathagata- yes", "Swattik- yes" (one message, mixed with dashes) each resolve the correct person', async () => {
+    const { sagarId, tathagataId, swattikId } = await seedThreePending();
+    const d = await whatsappAssistant.decideAutoReply({ phone: MULTI_MGR_PHONE, name: 'Biye 73', firstName: 'Biye', text: 'Sagar- yes\nTathagata- yes\nSwattik- yes', isGroup: false, history: [] });
+    const [sagar, tathagata, swattik] = await allConfirmed([sagarId, tathagataId, swattikId]);
+    const ok = Boolean(d.replyText) && sagar.status === 'confirmed' && tathagata.status === 'confirmed' && swattik.status === 'confirmed';
+    await cleanupHrFlowArtifacts(MULTI_MGR_PHONE, SAGAR_PHONE, TATHAGATA_PHONE, SWATTIK_PHONE);
+    return ok;
+  });
+  await checkAsync('LOCKED SCENARIO: "Sob haa" (bulk, all yes) resolves every currently open item at once', async () => {
+    const { sagarId, tathagataId, swattikId } = await seedThreePending();
+    await whatsappAssistant.decideAutoReply({ phone: MULTI_MGR_PHONE, name: 'Biye 73', firstName: 'Biye', text: 'Sob haa', isGroup: false, history: [] });
+    const [sagar, tathagata, swattik] = await allConfirmed([sagarId, tathagataId, swattikId]);
+    const ok = sagar.status === 'confirmed' && tathagata.status === 'confirmed' && swattik.status === 'confirmed';
+    await cleanupHrFlowArtifacts(MULTI_MGR_PHONE, SAGAR_PHONE, TATHAGATA_PHONE, SWATTIK_PHONE);
+    return ok;
+  });
+  await checkAsync('LOCKED SCENARIO: a single bare "Yes" with 3 open items resolves NOTHING and asks once "which one(s)" - then "Haa, sob" (yes, all) resolves every item', async () => {
+    const { sagarId, tathagataId, swattikId } = await seedThreePending();
+    const d1 = await whatsappAssistant.decideAutoReply({ phone: MULTI_MGR_PHONE, name: 'Biye 73', firstName: 'Biye', text: 'Yessssss', isGroup: false, history: [] });
+    const [sagarMid, tathagataMid, swattikMid] = await allConfirmed([sagarId, tathagataId, swattikId]);
+    const noneResolvedYet = sagarMid.status === 'awaiting_manager' && tathagataMid.status === 'awaiting_manager' && swattikMid.status === 'awaiting_manager';
+    const askedWhichOnes = /kotar jonno|which one/i.test(d1.replyText);
+    const d2 = await whatsappAssistant.decideAutoReply({ phone: MULTI_MGR_PHONE, name: 'Biye 73', firstName: 'Biye', text: 'Haa, sob', isGroup: false, history: [] });
+    const [sagar, tathagata, swattik] = await allConfirmed([sagarId, tathagataId, swattikId]);
+    const ok = noneResolvedYet && askedWhichOnes && Boolean(d2.replyText) && sagar.status === 'confirmed' && tathagata.status === 'confirmed' && swattik.status === 'confirmed';
+    await cleanupHrFlowArtifacts(MULTI_MGR_PHONE, SAGAR_PHONE, TATHAGATA_PHONE, SWATTIK_PHONE);
+    return ok;
+  });
+  await checkAsync('rule (b)/(c): "1 yes 2 yes 3 yes 4 yes" ignores the non-existent item 4 (mentioned once in the reply), resolves items 1-3, and leaves nothing pending', async () => {
+    const { sagarId, tathagataId, swattikId } = await seedThreePending();
+    await whatsappAssistant.sendHrConfirmationMessageToManagerCombined(MULTI_MGR_PHONE, false);
+    const d = await whatsappAssistant.decideAutoReply({ phone: MULTI_MGR_PHONE, name: 'Biye 73', firstName: 'Biye', text: '1 yes 2 yes 3 yes 4 yes', isGroup: false, history: [] });
+    const [sagar, tathagata, swattik] = await allConfirmed([sagarId, tathagataId, swattikId]);
+    const mentions4 = /4/.test(d.replyText);
+    const ok = sagar.status === 'confirmed' && tathagata.status === 'confirmed' && swattik.status === 'confirmed' && mentions4;
+    await cleanupHrFlowArtifacts(MULTI_MGR_PHONE, SAGAR_PHONE, TATHAGATA_PHONE, SWATTIK_PHONE);
+    return ok;
+  });
+  await checkAsync('rule (c): answering only item 1 ("1 yes") leaves 2 and 3 open and asks about THOSE, by name, not the full list again', async () => {
+    const { sagarId, tathagataId, swattikId } = await seedThreePending();
+    await whatsappAssistant.sendHrConfirmationMessageToManagerCombined(MULTI_MGR_PHONE, false);
+    const d = await whatsappAssistant.decideAutoReply({ phone: MULTI_MGR_PHONE, name: 'Biye 73', firstName: 'Biye', text: '1 yes', isGroup: false, history: [] });
+    const [sagar, tathagata, swattik] = await allConfirmed([sagarId, tathagataId, swattikId]);
+    const mentionsRemaining = d.replyText.includes('Tathagata') && d.replyText.includes('Swattik') && !/1\)/.test(d.replyText);
+    const ok = sagar.status === 'confirmed' && tathagata.status === 'awaiting_manager' && swattik.status === 'awaiting_manager' && mentionsRemaining;
+    await cleanupHrFlowArtifacts(MULTI_MGR_PHONE, SAGAR_PHONE, TATHAGATA_PHONE, SWATTIK_PHONE);
+    return ok;
+  });
+  await checkAsync('rule (d) loop guard: TWO consecutive genuinely unclear replies escalate every currently open item to the owner (Action-needed cards), never a third identical disambiguation resend - the live bug this fixes', async () => {
+    await seedThreePending();
+    const { sagarId, tathagataId, swattikId } = await whatsappAssistant.listPendingHrConfirmationsForPhone(MULTI_MGR_PHONE).then(async (list) => {
+      const byName = Object.fromEntries(list.map((c) => [c.senderName.toLowerCase(), c.id]));
+      return { sagarId: byName.sagar, tathagataId: byName.tathagata, swattikId: byName.swattik };
+    });
+    const d1 = await whatsappAssistant.decideAutoReply({ phone: MULTI_MGR_PHONE, name: 'Biye 73', firstName: 'Biye', text: 'accha hmm', isGroup: false, history: [] });
+    const firstReplyText = d1.replyText;
+    const d2 = await whatsappAssistant.decideAutoReply({ phone: MULTI_MGR_PHONE, name: 'Biye 73', firstName: 'Biye', text: 'accha hmm abar eita bujhte parchi na', isGroup: false, history: [] });
+    const [sagar, tathagata, swattik] = await allConfirmed([sagarId, tathagataId, swattikId]);
+    const neverRepeatedVerbatim = d2.replyText !== firstReplyText;
+    const allEscalated = sagar.status === 'ambiguous_owner_review' && tathagata.status === 'ambiguous_owner_review' && swattik.status === 'ambiguous_owner_review';
+    const nothingLeftPending = (await whatsappAssistant.listPendingHrConfirmationsForPhone(MULTI_MGR_PHONE)).length === 0;
+    await Promise.all([sagarId, tathagataId, swattikId].map((id) => whatsappAssistant.resolveAmbiguousHrConfirmation(id, 'confirmed')));
+    const ok = neverRepeatedVerbatim && allEscalated && nothingLeftPending;
+    await cleanupHrFlowArtifacts(MULTI_MGR_PHONE, SAGAR_PHONE, TATHAGATA_PHONE, SWATTIK_PHONE);
+    return ok;
+  });
+  await checkAsync('rule (a) "re-asks also combined": checkHrConfirmationNudges sends ONE combined 3-hour re-ask for a manager with 2 pending items, not two separate ones', async () => {
+    await cleanupHrFlowArtifacts(MULTI_MGR_PHONE, SAGAR_PHONE, TATHAGATA_PHONE);
+    const oldCreatedAt = new Date('2026-10-20T09:30:00+05:30').getTime();
+    const base = { lang: 'banglish', thirdPartyPhone: MULTI_MGR_PHONE, thirdPartyName: 'Biye 73', thirdPartyDepartment: 'Site', status: 'awaiting_manager', remindedAt: null, escalatedAt: null, reminderId: null };
+    const id1 = await whatsappAssistant.saveHrConfirmation(Object.assign({}, base, { senderPhone: SAGAR_PHONE, senderName: 'Sagar', summary: 'half day asbe', summaryLocalized: 'Sagar kal half day asbe', createdAt: oldCreatedAt }));
+    const id2 = await whatsappAssistant.saveHrConfirmation(Object.assign({}, base, { senderPhone: TATHAGATA_PHONE, senderName: 'Tathagata', summary: 'first half off', summaryLocalized: 'Tathagata kal first half-e asbe na', createdAt: oldCreatedAt + 1 }));
+    const beforeLog = (await whatsappAssistant.listInboxLog(50)).filter((e) => e.chatId === MULTI_MGR_PHONE && e.case === 'hr_confirmation_sent').length;
+    await whatsappAssistant.checkHrConfirmationNudges(new Date('2026-10-20T13:00:00+05:30')); // 3.5 working hours later
+    const afterLog = (await whatsappAssistant.listInboxLog(50)).filter((e) => e.chatId === MULTI_MGR_PHONE && e.case === 'hr_confirmation_sent');
+    const [c1, c2] = await allConfirmed([id1, id2]);
+    const ok = afterLog.length === beforeLog + 1 && Boolean(c1.remindedAt) && Boolean(c2.remindedAt);
+    await cleanupHrFlowArtifacts(MULTI_MGR_PHONE, SAGAR_PHONE, TATHAGATA_PHONE);
+    return ok;
+  });
+  check('parseMultiConfirmationReply: numbers already resolved (not in the still-open list) are silently skipped, never reported as "unknown"', (() => {
+    const numbering = [{ id: 'a', senderName: 'A' }, { id: 'b', senderName: 'B' }];
+    const stillOpen = [numbering[1]]; // "a" already resolved
+    const r = whatsappAssistant.parseMultiConfirmationReply('1 yes 2 yes', numbering, stillOpen);
+    return r.answers.length === 1 && r.answers[0].confirmation.id === 'b' && r.unknownNumbers.length === 0;
+  })());
+  console.log('='.repeat(70));
 
   // --- Items 3 & 6: number/name conflict + short non-repeating retry ---
   const mockTanmoyFour = [
