@@ -1303,6 +1303,82 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
   this is the suite's already-documented real-model variance, not a
   regression from this change.
 
+- Task 29 (2026-11), direct instruction - LIVE BUG FIX, BUG 1: work
+  documents (e.g. two `.xlsx` files, "update list"/"Update inactive
+  list.xlsx") from a current employee (Biswajit, Site HR) were getting the
+  job-application template. Root cause: `handleIncomingMedia`'s "no open
+  document request, bare document" fallback defaulted EVERY such document
+  straight to a CV (`handleJobApplicationMediaDecision`), with no check at
+  all for the file's own name/extension or whether the sender was a real
+  employee - its own design comment even called this "the single locked
+  scenario this exists for" (an unknown number's bare PDF), but the branch
+  itself was never actually scoped to only that case.
+  - `looksLikeSpreadsheetFile(nameHint)` - `.xlsx`/`.xls`/`.csv` are NEVER
+    CVs, checked FIRST, before any keyword match - a file literally named
+    "Job Vacancy Tracker.xlsx" still never triggers the template.
+  - `extractDocumentNameHint(msg)` - defensively tries `filename`/
+    `fileName`/`file_name`/`documentName`, falling back to `caption` (same
+    "the gateway's exact shape is still unconfirmed" posture as the
+    existing `extractMediaUrl`/`extractQuotedText`).
+  - `DOCUMENT_CV_NAME_RE`/`looksLikeCvByNameHint(nameHint)` - a FILENAME is
+    never a question the way free conversational text can be, so this is
+    deliberately looser than `CV_KEYWORDS_RE` (left exactly as it was for
+    conversational text, keeping the existing vacancy-enquiry-vs-application
+    distinction intact) - a bare "job"/"apply"/"vacancy" in a document's
+    own name is already an unambiguous CV signal. LIVE BUG FIXED during
+    this: `\b` word boundaries don't work across an underscore (it's a
+    `\w` character), so "Resume_Rahul.pdf" never matched at all until the
+    check normalizes `_`/`.`/`-` to spaces first - caught by its own new
+    test, not by inspection.
+  - `handleIncomingMedia` now resolves the sender via `findEmployeeByPhone`
+    FIRST; an ACTIVE employee or a spreadsheet short-circuits straight to
+    the noting path before any keyword/content check ever runs - the
+    job-application reply only fires when BOTH hold (a real CV signal AND
+    the sender is not a current ACTIVE employee), exactly as specified.
+  - `classifyDocumentContentAsCv(msg)` - best-effort model classification
+    of the document's own CONTENT (a real PDF download + a one-word
+    cv/other Claude call) for the one remaining genuinely ambiguous case: a
+    generically-named document from a non-employee with no keyword signal
+    either way. Any failure (no API key, no download link - still PENDING
+    LIVE CONFIRMATION per `extractMediaUrl`'s own comment, non-PDF,
+    oversized, a bad response) returns `null`, which keeps the ORIGINAL
+    "assume CV" default unchanged - this can only ever correct a false
+    positive, never invent one it can't actually check.
+  - "Once per burst" noting (`sendNotingReplyForWorkDocument`,
+    `wa-noting-burst:<phone>`, 120s TTL) - several work documents sent
+    close together (the live bug: two `.xlsx` files back to back) now get
+    ONE noting reply, not one per file; later ones within the window are
+    still reported to the owner, never silently dropped.
+  Deterministic suite (`scripts/check-whatsapp-engine.js`'s new "BUG 1"
+  section, 11 checks, part of its now-919/919, zero real API calls needed
+  for any of the 3 locked scenarios): the two live `.xlsx` files from a
+  synthetic ACTIVE employee (`markPhoneAsActiveEmployeeForTests`, never
+  the shared `TANMOY_MONDAL_PHONE` manager fixture, to avoid cross-talk
+  with the unrelated HR-confirmation tests) get the noting template, the
+  second one within the burst window is suppressed but still
+  owner-notified; "Resume_Rahul.pdf" from an unknown number still gets the
+  job-application template (filename-only signal); "Offer letter signed"
+  from the same employee gets noting; a spreadsheet literally named "Job
+  Vacancy Tracker.xlsx" from an unknown number is STILL never a CV (the
+  spreadsheet exclusion beats the filename keyword match);
+  `classifyDocumentContentAsCv` is exercised with a `global.fetch` stub
+  routed BY URL (not call order - the fake Upstash Redis client ALSO calls
+  the global fetch internally, so a naive "1st call = file, 2nd = Claude"
+  stub silently corrupts Redis reads too, caught by its own test run, not
+  inspection) - a generic PDF + the model saying "other" flips a
+  non-employee's bare-document default to noting, and no mediaUrl at all
+  keeps the original "assume CV" default, unaffected by this fix.
+  Real-model check: `scripts/check-whatsapp-scenarios.js` filtered to
+  "Task 1" (`SCENARIO_FILTER="Task 1"`, each scenario's own default 3
+  runs, since this task touched the shared `CV_KEYWORDS_RE` by adding
+  "biodata") - confirmed clean except one PRE-EXISTING, unrelated stale
+  assertion found during this verification (that file's own "Task 1: a
+  CV-only PDF..." scenario still asserts the OLD Banglish-default
+  language; confirmed via `git stash` that this already fails on the
+  untouched baseline, caused by an earlier, unrelated `mediaFallbackLang`
+  default-language fix that was never back-ported into this scenario's
+  own assertion - not touched here, flagged for Subhodeep separately).
+
 - Task 30 (2026-11), direct instruction - LIVE BUG FIX, BUG 2: a manager
   ("Biye 73") with 2+ pending HR confirmations (Sagar/Tathagata/Swattik's
   attendance) got a SEPARATE STEP 4 message per item, then no matter how

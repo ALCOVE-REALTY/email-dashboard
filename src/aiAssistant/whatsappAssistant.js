@@ -11392,9 +11392,49 @@ function buildIncomingText(msg) {
 // shared my CV...") - the real live case sent the PDF with no caption at
 // all, then this text 14 minutes later, so both call sites need the
 // same check.
-const CV_KEYWORDS_RE = /\b(cv|resum[ae]|my\s*(job\s*)?application|apply(ing)?\s*for\s*(a\s*|any\s*)?(job|position|post)|interested\s*in\s*(joining|working)|looking\s*for\s*(a\s*)?job)\b/i;
+const CV_KEYWORDS_RE = /\b(cv|resum[ae]|bio[-\s]?data|my\s*(job\s*)?application|apply(ing)?\s*for\s*(a\s*|any\s*)?(job|position|post)|interested\s*in\s*(joining|working)|looking\s*for\s*(a\s*)?job)\b/i;
 function looksLikeCvMessage(text) {
   return CV_KEYWORDS_RE.test(String(text || ''));
+}
+// LIVE BUG FIX (2026-11), direct instruction - a work document (an Excel/
+// CSV sheet an employee is literally working on) was getting the
+// job-application template because handleIncomingMedia's old "no open
+// request, bare document" fallback defaulted EVERY such document straight
+// to a CV, with no check at all for the file's own name/extension or who
+// sent it. Spreadsheets are NEVER CVs, full stop - checked first, before
+// any keyword match, so a file named e.g. "Job Vacancy Tracker.xlsx"
+// still never triggers the job-application template.
+const SPREADSHEET_EXT_RE = /\.(xlsx|xls|csv)\b/i;
+function looksLikeSpreadsheetFile(nameHint) {
+  return SPREADSHEET_EXT_RE.test(String(nameHint || ''));
+}
+// A FILENAME/caption on an actual document attachment is never a
+// question the way free conversational text can be - CV_KEYWORDS_RE
+// (above) deliberately excludes a bare "job"/"apply"/"vacancy" because in
+// CONVERSATION those are often a vacancy ENQUIRY ("Is there a vacancy for
+// an accountant?"), never an application; that ambiguity doesn't exist
+// for a document's own name, so this separate, looser regex is used only
+// there (never for looksLikeCvMessage's own conversational-text callers).
+const DOCUMENT_CV_NAME_RE = /\b(cv|resum[ae]|bio[-\s]?data|job|apply|applying|application|vacanc(y|ies))\b/i;
+function looksLikeCvByNameHint(nameHint) {
+  const hint = String(nameHint || '');
+  if (looksLikeSpreadsheetFile(hint)) return false;
+  // Underscore is a \w word character, so "Resume_Rahul.pdf" has no real
+  // \b boundary between "Resume" and "_" - a very common filename
+  // separator that would otherwise defeat every \b-anchored alternative
+  // above. Normalized to spaces for THIS check only (looksLikeSpreadsheetFile,
+  // above, already ran against the real, unmodified string).
+  return DOCUMENT_CV_NAME_RE.test(hint.replace(/[_.-]+/g, ' '));
+}
+// Defensively tries every plausible field name a filename might arrive
+// under (same posture as extractMediaUrl/extractQuotedText above - this
+// gateway's exact document-message shape beyond {type, caption} is still
+// unconfirmed), falling back to the caption itself, which several real
+// gateways populate with the file's own name when the sender didn't type
+// a separate caption.
+function extractDocumentNameHint(msg) {
+  const c = msg.content || {};
+  return c.filename || c.fileName || c.file_name || c.documentName || c.caption || '';
 }
 // Task 1 - the SINGLE fixed template for every job application/CV/resume,
 // never a model-written reply (replaces the old CV_RECEIVED_REPLY, which
@@ -11563,9 +11603,107 @@ async function handleJobApplicationMediaDecision(contactId, name, lang, caption,
   });
   await postOwnerNotification('📄 Job application (CV) received from ' + name + driveNote);
 }
+// LIVE BUG FIX (2026-11), direct instruction - the final arbiter for a
+// document whose own name/caption gives NO deterministic CV/spreadsheet
+// signal at all (e.g. a bare, generically-named PDF). Best-effort only:
+// needs a real download link (extractMediaUrl - still PENDING LIVE
+// CONFIRMATION per its own comment above) and a PDF (the only format
+// reliably classifiable this way today); any failure/timeout/unsupported
+// type returns null, which the caller treats as "inconclusive" and keeps
+// the existing default for a non-employee sender (a bare, unlabeled
+// document still defaults to a CV, same as before this fix) - this can
+// only ever CORRECT a false positive, never invent one when it genuinely
+// can't check. Never called for an ACTIVE employee (see handleIncomingMedia)
+// or a spreadsheet - in both cases the final answer is already fixed
+// regardless of what the content turns out to be, so no API call is spent.
+async function classifyDocumentContentAsCv(msg) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey || !DRAFT_MODEL) return null;
+  const mediaUrl = extractMediaUrl(msg);
+  if (!mediaUrl) return null;
+  try {
+    const resp = await fetch(mediaUrl);
+    if (!resp.ok) return null;
+    const buffer = Buffer.from(await resp.arrayBuffer());
+    if (buffer.length > 15 * 1024 * 1024) return null; // oversized - skip rather than block on a huge encode/upload
+    const mimeType = resp.headers.get('content-type') || '';
+    if (!mimeType.includes('pdf')) return null; // only a PDF is reliably classifiable this way today
+    const apiResp = await fetch(CLAUDE_API_URL, {
+      method: 'POST',
+      headers: { 'x-api-key': apiKey, 'anthropic-version': CLAUDE_ANTHROPIC_VERSION, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: DRAFT_MODEL, max_tokens: 10,
+        messages: [{
+          role: 'user', content: [
+            { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: buffer.toString('base64') } },
+            { type: 'text', text: 'Is this document a CV/resume/biodata of a job candidate, or something else (a work document, report, list, letter, invoice, etc.)? Reply with exactly one word: cv or other.' }
+          ]
+        }]
+      })
+    });
+    if (!apiResp.ok) return null;
+    const data = await apiResp.json();
+    const textBlock = (data.content || []).find((b) => b && b.type === 'text');
+    const verdict = textBlock && String(textBlock.text || '').trim().toLowerCase();
+    if (verdict && verdict.includes('cv')) return 'cv';
+    if (verdict && verdict.includes('other')) return 'not_cv';
+    return null;
+  } catch (err) { return null; }
+}
+// "Once per burst" (2026-11, direct instruction) - several ordinary work
+// documents sent close together (the live bug: two .xlsx files back to
+// back) now get ONE noting reply, not one per file; later ones within
+// this short rolling window are still reported to the owner, just
+// without a repeated reply - same "further ones are just logged" shape
+// already used for job-application/vacancy templates (see
+// getJobTemplatesSentToday), but scoped to a short window instead of a
+// full calendar day, since an ordinary work document isn't a once-a-day
+// event the way a CV submission is.
+const NOTING_BURST_WINDOW_SECONDS = 120;
+function notingBurstKey(phone) { return 'wa-noting-burst:' + whatsapp.normalizePhone(phone); }
+async function wasNotingSentRecently(phone) {
+  const redis = getClient();
+  if (!redis) return false;
+  try { return Boolean(await redis.get(notingBurstKey(phone))); } catch (err) { return false; }
+}
+async function markNotingSentRecently(phone) {
+  const redis = getClient();
+  if (!redis) return;
+  try { await redis.set(notingBurstKey(phone), '1', { ex: NOTING_BURST_WINDOW_SECONDS }); } catch (err) { /* best effort */ }
+}
+// Test-hygiene only (same role as clearJobTemplateSentToday etc.) - lets
+// the regression suite reset a test phone's noting-burst state so a
+// rerun on the SAME real window stays deterministic.
+async function clearNotingBurstState(phone) {
+  const redis = getClient();
+  if (!redis) return;
+  try { await redis.del(notingBurstKey(phone)); } catch (err) { /* best effort */ }
+}
+async function sendNotingReplyForWorkDocument(contactId, name, lang, msg) {
+  if (await wasNotingSentRecently(contactId)) {
+    await postOwnerNotification(name + ' sent another file (' + (msg.type || 'file') + ') shortly after - already noted, not re-acknowledged.').catch(() => {});
+    return;
+  }
+  await markNotingSentRecently(contactId);
+  await scheduleAutoSend({
+    chatId: contactId, isGroup: false, name,
+    replyText: MEDIA_ACK_REPLY[lang] || MEDIA_ACK_REPLY.english, lang, case: 'media_ack',
+    summaryForOwner: '[sent a ' + (msg.type || 'file') + ', no open request]'
+  });
+  await postOwnerNotification(name + ' sent a file (no open request) - not stored, but acknowledged.');
+}
 async function handleIncomingMedia(contactId, name, msg) {
   const caption = (msg.content && msg.content.caption) || '';
-  if (looksLikeCvMessage(caption)) {
+  const nameHint = extractDocumentNameHint(msg);
+  // LIVE BUG FIX (2026-11), direct instruction - the job-application
+  // template only ever fires when it's really a CV AND the sender is not
+  // a current (ACTIVE) employee. Checked here, at the very top, since
+  // this guards EVERY path below, including the caption-based fast path
+  // that used to run completely unconditionally.
+  const empMatch = await findEmployeeByPhone(contactId).catch(() => null);
+  const isActiveEmployee = Boolean(empMatch && empMatch.emp && empMatch.emp.status === 'ACTIVE');
+  const isSpreadsheet = looksLikeSpreadsheetFile(nameHint);
+  if (!isSpreadsheet && !isActiveEmployee && looksLikeCvMessage(caption)) {
     const lang = await mediaFallbackLang(contactId, caption);
     await handleJobApplicationMediaDecision(contactId, name, lang, caption, msg);
     return;
@@ -11589,15 +11727,36 @@ async function handleIncomingMedia(contactId, name, msg) {
   const openReq = await documentRequests.getOpenRequest(contactId);
   if (!openReq) {
     // Task 1 - a bare PDF (no caption, no open document request to
-    // fulfil) defaults to a CV/job application on this HR WhatsApp
-    // number - the single locked scenario this exists for ("a CV-only
-    // PDF with no text"). Scoped to 'document' only, never a bare image
-    // (far more ambiguous without any caption text - could be anything),
-    // and only once there is genuinely no open request this could
-    // instead be fulfilling (checked above, unchanged).
+    // fulfil) used to default to a CV/job application unconditionally -
+    // the single locked scenario this originally existed for ("a CV-only
+    // PDF with no text" from an unknown number). LIVE BUG FIX (2026-11,
+    // direct instruction): that default is now gated - never for a
+    // spreadsheet (never a CV, regardless of sender) and never for a
+    // current ACTIVE employee (a work document from a colleague gets the
+    // normal noting template, not the job-application template, no
+    // matter what its name/caption says). Only once neither of those
+    // applies does the filename/caption keyword check, then (if still
+    // inconclusive) a best-effort look at the document's own content,
+    // decide it - falling back to the ORIGINAL "assume CV" default only
+    // when genuinely nothing else can tell either way, exactly as before
+    // this fix for a non-employee sender. Scoped to 'document' only,
+    // never a bare image (far more ambiguous with no caption at all).
     if (msg.type === 'document') {
       const lang = await mediaFallbackLang(contactId, caption);
-      await handleJobApplicationMediaDecision(contactId, name, lang, caption, msg);
+      if (isSpreadsheet || isActiveEmployee) {
+        await sendNotingReplyForWorkDocument(contactId, name, lang, msg);
+        return;
+      }
+      let isCv = looksLikeCvByNameHint(nameHint);
+      if (!isCv) {
+        const verdict = await classifyDocumentContentAsCv(msg).catch(() => null);
+        isCv = verdict !== 'not_cv'; // null (couldn't check) or 'cv' -> keep the original "bare document -> CV" default; only an explicit 'not_cv' changes the outcome
+      }
+      if (isCv) {
+        await handleJobApplicationMediaDecision(contactId, name, lang, caption, msg);
+      } else {
+        await sendNotingReplyForWorkDocument(contactId, name, lang, msg);
+      }
       return;
     }
     const lang = await mediaFallbackLang(contactId, caption);
@@ -13410,6 +13569,14 @@ module.exports = {
   // Exported for scripts/check-whatsapp-engine.js only - live review
   // item 1 (CV/media acknowledgement, never-silent media handling).
   looksLikeCvMessage,
+  // Exported for scripts/check-whatsapp-engine.js only - LIVE BUG FIX
+  // (2026-11): work documents from employees wrongly getting the
+  // job-application template.
+  looksLikeSpreadsheetFile,
+  looksLikeCvByNameHint,
+  extractDocumentNameHint,
+  classifyDocumentContentAsCv,
+  clearNotingBurstState,
   CV_RECEIVED_REPLY,
   MEDIA_ACK_REPLY,
   handleIncomingMedia,

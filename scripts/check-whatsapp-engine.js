@@ -5053,6 +5053,116 @@ async function checkAsync(label, fn) {
     return ok;
   });
 
+  console.log('='.repeat(70));
+  console.log('LIVE BUG FIX (2026-11), BUG 1: a work document (Excel/CSV, or any ordinary file) from a current employee must get the noting template, never the job-application template - only a real CV (by filename/caption/content) from someone who is NOT a current ACTIVE employee gets the job-application template');
+  console.log('='.repeat(70));
+  // A dedicated synthetic ACTIVE employee phone (markPhoneAsActiveEmployeeForTests,
+  // see its own comment above) - never TANMOY_MONDAL_PHONE, which these
+  // tests would otherwise share with the unrelated HR-confirmation-manager
+  // tests elsewhere in this file.
+  const DOC_SENDER_EMPLOYEE_PHONE = '910000001310';
+  markPhoneAsActiveEmployeeForTests(DOC_SENDER_EMPLOYEE_PHONE);
+  await checkAsync('LOCKED SCENARIO: an .xlsx file from an ACTIVE employee (caption "update list") gets the noting template, never the job-application template', async () => {
+    await whatsappAssistant.clearNotingBurstState(DOC_SENDER_EMPLOYEE_PHONE).catch(() => {});
+    await whatsappAssistant.clearJobTemplateSentToday(DOC_SENDER_EMPLOYEE_PHONE).catch(() => {});
+    const beforeIds = new Set((await whatsappAssistant.listPendingAutoSends()).map((e) => e.id));
+    await whatsappAssistant.handleIncomingMedia(DOC_SENDER_EMPLOYEE_PHONE, 'Biswajit', { type: 'document', content: { caption: 'update list', filename: 'SRM Diwali Gifts Distribution List.xlsx' } });
+    const after = await whatsappAssistant.listPendingAutoSends();
+    const scheduled = after.find((e) => !beforeIds.has(e.id) && e.chatId === DOC_SENDER_EMPLOYEE_PHONE);
+    const ok = Boolean(scheduled) && scheduled.case === 'media_ack' && scheduled.replyText === whatsappAssistant.MEDIA_ACK_REPLY.english;
+    await whatsappAssistant.clearNotingBurstState(DOC_SENDER_EMPLOYEE_PHONE).catch(() => {});
+    return ok;
+  });
+  await checkAsync('LOCKED SCENARIO: a SECOND .xlsx file ("Update inactive list.xlsx") from the SAME employee shortly after - once-per-burst means no SECOND noting reply is scheduled, but the owner still hears about it', async () => {
+    await whatsappAssistant.clearNotingBurstState(DOC_SENDER_EMPLOYEE_PHONE).catch(() => {});
+    await whatsappAssistant.handleIncomingMedia(DOC_SENDER_EMPLOYEE_PHONE, 'Biswajit', { type: 'document', content: { filename: 'SRM Diwali Gifts Distribution List.xlsx' } });
+    const beforeIds = new Set((await whatsappAssistant.listPendingAutoSends()).map((e) => e.id));
+    const notifBefore = (await whatsappAssistant.listOwnerNotifications()).length;
+    await whatsappAssistant.handleIncomingMedia(DOC_SENDER_EMPLOYEE_PHONE, 'Biswajit', { type: 'document', content: { filename: 'Update inactive list.xlsx' } });
+    const after = await whatsappAssistant.listPendingAutoSends();
+    const scheduledAgain = after.some((e) => !beforeIds.has(e.id) && e.chatId === DOC_SENDER_EMPLOYEE_PHONE);
+    const notifAfter = (await whatsappAssistant.listOwnerNotifications()).length;
+    const ok = !scheduledAgain && notifAfter > notifBefore;
+    await whatsappAssistant.clearNotingBurstState(DOC_SENDER_EMPLOYEE_PHONE).catch(() => {});
+    return ok;
+  });
+  const RESUME_RAHUL_PHONE = '910000001306';
+  await checkAsync('LOCKED SCENARIO: a PDF named "Resume_Rahul.pdf" (no caption) from an unknown number gets the job-application template - the filename alone is the CV signal', async () => {
+    await whatsappAssistant.clearJobTemplateSentToday(RESUME_RAHUL_PHONE).catch(() => {});
+    const beforeIds = new Set((await whatsappAssistant.listPendingAutoSends()).map((e) => e.id));
+    await whatsappAssistant.handleIncomingMedia(RESUME_RAHUL_PHONE, 'Rahul', { type: 'document', content: { filename: 'Resume_Rahul.pdf' } });
+    const after = await whatsappAssistant.listPendingAutoSends();
+    const scheduled = after.find((e) => !beforeIds.has(e.id) && e.chatId === RESUME_RAHUL_PHONE);
+    const ok = Boolean(scheduled) && scheduled.case === 'job_application_received';
+    await whatsappAssistant.clearJobTemplateSentToday(RESUME_RAHUL_PHONE).catch(() => {});
+    return ok;
+  });
+  await checkAsync('LOCKED SCENARIO: a PDF captioned "Offer letter signed" from an ACTIVE employee gets the noting template, never the job-application template', async () => {
+    await whatsappAssistant.clearNotingBurstState(DOC_SENDER_EMPLOYEE_PHONE).catch(() => {});
+    const beforeIds = new Set((await whatsappAssistant.listPendingAutoSends()).map((e) => e.id));
+    await whatsappAssistant.handleIncomingMedia(DOC_SENDER_EMPLOYEE_PHONE, 'Biswajit', { type: 'document', content: { caption: 'Offer letter signed' } });
+    const after = await whatsappAssistant.listPendingAutoSends();
+    const scheduled = after.find((e) => !beforeIds.has(e.id) && e.chatId === DOC_SENDER_EMPLOYEE_PHONE);
+    const ok = Boolean(scheduled) && scheduled.case === 'media_ack';
+    await whatsappAssistant.clearNotingBurstState(DOC_SENDER_EMPLOYEE_PHONE).catch(() => {});
+    return ok;
+  });
+  unmarkPhoneAsActiveEmployeeForTests(DOC_SENDER_EMPLOYEE_PHONE);
+  check('looksLikeSpreadsheetFile recognizes .xlsx/.xls/.csv regardless of other wording', whatsappAssistant.looksLikeSpreadsheetFile('Job Vacancy Tracker.xlsx') && whatsappAssistant.looksLikeSpreadsheetFile('data.CSV') && !whatsappAssistant.looksLikeSpreadsheetFile('Resume_Rahul.pdf'));
+  check('looksLikeCvByNameHint: spreadsheets are NEVER CVs even when the filename itself says "job"/"vacancy"', !whatsappAssistant.looksLikeCvByNameHint('Job Vacancy Tracker.xlsx'));
+  check('looksLikeCvByNameHint: a PDF literally named with a CV/job/vacancy word is a CV signal by filename alone', whatsappAssistant.looksLikeCvByNameHint('Resume_Rahul.pdf') && whatsappAssistant.looksLikeCvByNameHint('Job Application Form.pdf') && whatsappAssistant.looksLikeCvByNameHint('Vacancy_Response.pdf'));
+  check('looksLikeCvByNameHint: a plain, non-CV filename/caption is not a CV signal', !whatsappAssistant.looksLikeCvByNameHint('Offer letter signed') && !whatsappAssistant.looksLikeCvByNameHint('Site photos.pdf'));
+  const VACANCY_XLSX_PHONE = '910000001307';
+  await checkAsync('REGRESSION: a spreadsheet named "Job Vacancy Tracker.xlsx" from an UNKNOWN number still never gets the job-application template - the spreadsheet exclusion beats the filename keyword match', async () => {
+    await whatsappAssistant.clearNotingBurstState(VACANCY_XLSX_PHONE).catch(() => {});
+    await whatsappAssistant.clearJobTemplateSentToday(VACANCY_XLSX_PHONE).catch(() => {});
+    const beforeIds = new Set((await whatsappAssistant.listPendingAutoSends()).map((e) => e.id));
+    await whatsappAssistant.handleIncomingMedia(VACANCY_XLSX_PHONE, 'Stranger', { type: 'document', content: { filename: 'Job Vacancy Tracker.xlsx' } });
+    const after = await whatsappAssistant.listPendingAutoSends();
+    const scheduled = after.find((e) => !beforeIds.has(e.id) && e.chatId === VACANCY_XLSX_PHONE);
+    const ok = Boolean(scheduled) && scheduled.case === 'media_ack';
+    await whatsappAssistant.clearNotingBurstState(VACANCY_XLSX_PHONE).catch(() => {});
+    return ok;
+  });
+  const CONTENT_CLASSIFY_PHONE = '910000001308';
+  await checkAsync('classifyDocumentContentAsCv: a real download link + the model saying "other" lets a genuinely ambiguous, generically-named PDF from an unknown number fall through to the noting template instead of the old blanket CV default', async () => {
+    const originalFetch = global.fetch;
+    // Routed by URL, not call order - the fake Upstash Redis client ALSO
+    // calls the global fetch internally (every Redis op this function's
+    // own call chain makes goes through it), so a bare "1st call = file,
+    // 2nd call = Claude" stub would hijack those too and silently corrupt
+    // Redis reads - everything else must fall through to the real fetch.
+    global.fetch = async (url, opts) => {
+      if (url === 'https://example.test/file.pdf') return { ok: true, headers: { get: () => 'application/pdf' }, arrayBuffer: async () => Buffer.from('%PDF-1.4 fake').buffer };
+      if (String(url).includes('api.anthropic.com')) return { ok: true, json: async () => ({ content: [{ type: 'text', text: 'other' }] }) };
+      return originalFetch(url, opts);
+    };
+    await whatsappAssistant.clearNotingBurstState(CONTENT_CLASSIFY_PHONE).catch(() => {});
+    await whatsappAssistant.clearJobTemplateSentToday(CONTENT_CLASSIFY_PHONE).catch(() => {});
+    const beforeIds = new Set((await whatsappAssistant.listPendingAutoSends()).map((e) => e.id));
+    try {
+      await whatsappAssistant.handleIncomingMedia(CONTENT_CLASSIFY_PHONE, 'Stranger', { type: 'document', content: { url: 'https://example.test/file.pdf' } });
+    } finally {
+      global.fetch = originalFetch;
+    }
+    const after = await whatsappAssistant.listPendingAutoSends();
+    const scheduled = after.find((e) => !beforeIds.has(e.id) && e.chatId === CONTENT_CLASSIFY_PHONE);
+    const ok = Boolean(scheduled) && scheduled.case === 'media_ack';
+    await whatsappAssistant.clearNotingBurstState(CONTENT_CLASSIFY_PHONE).catch(() => {});
+    return ok;
+  });
+  await checkAsync('classifyDocumentContentAsCv: when the download/classification genuinely cannot run (no ANTHROPIC_API_KEY/no download link), a generically-named PDF from an unknown number keeps the ORIGINAL "assume CV" default, unaffected by this fix', async () => {
+    const CONTENT_CLASSIFY_FALLBACK_PHONE = '910000001309';
+    await whatsappAssistant.clearJobTemplateSentToday(CONTENT_CLASSIFY_FALLBACK_PHONE).catch(() => {});
+    const beforeIds = new Set((await whatsappAssistant.listPendingAutoSends()).map((e) => e.id));
+    await whatsappAssistant.handleIncomingMedia(CONTENT_CLASSIFY_FALLBACK_PHONE, 'Stranger', { type: 'document', content: {} });
+    const after = await whatsappAssistant.listPendingAutoSends();
+    const scheduled = after.find((e) => !beforeIds.has(e.id) && e.chatId === CONTENT_CLASSIFY_FALLBACK_PHONE);
+    const ok = Boolean(scheduled) && scheduled.case === 'job_application_received';
+    await whatsappAssistant.clearJobTemplateSentToday(CONTENT_CLASSIFY_FALLBACK_PHONE).catch(() => {});
+    return ok;
+  });
+
   // --- Item 8: WhatsApp edits are invisible to id-based dedup - resumed on restart ---
   const EDIT_TEST_PHONE = '910000000973';
   await checkAsync('setup: getStoredMessageText/storeMessageText round-trip for a message id', async () => {
