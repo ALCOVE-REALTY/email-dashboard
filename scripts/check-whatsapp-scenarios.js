@@ -1201,6 +1201,105 @@ scenario('G: unclear-initiator, self-granted-informing ("Tanmoy Sir-ke bole niye
   }
 });
 
+// ============================================================
+// RULE CLARIFICATION (2026-11), direct instruction - "AI UNDERSTANDS, CODE
+// SPEAKS": the manager-confirmation-reply deterministic fast path
+// (parseMultiConfirmationReply / isYesAnswer / isNoAnswer) only catches
+// trivially exact forms; anything it leaves unresolved now reaches a real
+// model (classifyManagerConfirmationReply) before being treated as
+// unclear. The live gap this closes: "Sagar thik ache, baki duto na"
+// (Sagar's fine, the other two no) used to resolve Sagar by a lucky
+// name-match but silently LOSE the group reference to the other two
+// entirely - these scenarios replay that exact natural phrasing against
+// the REAL model, 3x each.
+async function seedThreeRealPending(mgrPhone, s1, s2, s3) {
+  const base = { lang: 'banglish', thirdPartyPhone: mgrPhone, thirdPartyName: 'Tanmoy Mondal', thirdPartyDepartment: 'Civil', status: 'awaiting_manager', remindedAt: null, escalatedAt: null, reminderId: null };
+  const id1 = await whatsappAssistant.saveHrConfirmation(Object.assign({}, base, { senderPhone: s1.phone, senderName: s1.name, summary: s1.summary, summaryLocalized: s1.summary, createdAt: Date.now() }));
+  const id2 = await whatsappAssistant.saveHrConfirmation(Object.assign({}, base, { senderPhone: s2.phone, senderName: s2.name, summary: s2.summary, summaryLocalized: s2.summary, createdAt: Date.now() + 1 }));
+  const id3 = await whatsappAssistant.saveHrConfirmation(Object.assign({}, base, { senderPhone: s3.phone, senderName: s3.name, summary: s3.summary, summaryLocalized: s3.summary, createdAt: Date.now() + 2 }));
+  return [id1, id2, id3];
+}
+scenario('RULE CLARIFICATION, LOCKED SCENARIO: "Sagar thik ache, baki duto na" (Sagar is fine, the other two no) - the model resolves the "baki duto" (remaining two) group reference the deterministic parser cannot', async () => {
+  const mgrPhone = TANMOY_MONDAL_PHONE;
+  const s1 = { phone: '910000003001', name: 'Sagar', summary: 'kal half day asbe' };
+  const s2 = { phone: '910000003002', name: 'Tathagata', summary: 'kal first half-e asbe na' };
+  const s3 = { phone: '910000003003', name: 'Swattik', summary: 'kal second half-e half day asbe' };
+  await cleanupHrFlowArtifacts(mgrPhone, s1.phone, s2.phone, s3.phone);
+  try {
+    const [id1, id2, id3] = await seedThreeRealPending(mgrPhone, s1, s2, s3);
+    const d = await whatsappAssistant.decideAutoReply({ phone: mgrPhone, name: 'Tanmoy Mondal', firstName: 'Tanmoy', text: 'Sagar thik ache, baki duto na', isGroup: false, history: [] });
+    const [c1, c2, c3] = await Promise.all([id1, id2, id3].map((id) => whatsappAssistant.getHrConfirmation(id)));
+    if (!d.replyText) return { pass: false, detail: 'expected a reply to the manager' };
+    if (c1.status !== 'confirmed') return { pass: false, detail: 'Sagar should be confirmed, got ' + c1.status };
+    if (c2.status !== 'declined') return { pass: false, detail: 'Tathagata (part of "baki duto") should be declined, got ' + c2.status };
+    if (c3.status !== 'declined') return { pass: false, detail: 'Swattik (part of "baki duto") should be declined, got ' + c3.status };
+    return { pass: true, detail: 'Sagar confirmed, both remaining correctly declined via the group reference' };
+  } finally {
+    await cleanupHrFlowArtifacts(mgrPhone, s1.phone, s2.phone, s3.phone);
+  }
+});
+scenario('RULE CLARIFICATION, LOCKED SCENARIO: "prothom dutor haa, Swattik-er na" (the first two yes, Swattik\'s no) - the model resolves the "prothom duto" (first two) group reference', async () => {
+  const mgrPhone = TANMOY_MONDAL_PHONE;
+  const s1 = { phone: '910000003004', name: 'Sagar', summary: 'kal half day asbe' };
+  const s2 = { phone: '910000003005', name: 'Tathagata', summary: 'kal first half-e asbe na' };
+  const s3 = { phone: '910000003006', name: 'Swattik', summary: 'kal second half-e half day asbe' };
+  await cleanupHrFlowArtifacts(mgrPhone, s1.phone, s2.phone, s3.phone);
+  try {
+    const [id1, id2, id3] = await seedThreeRealPending(mgrPhone, s1, s2, s3);
+    const d = await whatsappAssistant.decideAutoReply({ phone: mgrPhone, name: 'Tanmoy Mondal', firstName: 'Tanmoy', text: 'prothom dutor haa, Swattik-er na', isGroup: false, history: [] });
+    const [c1, c2, c3] = await Promise.all([id1, id2, id3].map((id) => whatsappAssistant.getHrConfirmation(id)));
+    if (!d.replyText) return { pass: false, detail: 'expected a reply to the manager' };
+    if (c1.status !== 'confirmed') return { pass: false, detail: 'Sagar (first of "prothom duto") should be confirmed, got ' + c1.status };
+    if (c2.status !== 'confirmed') return { pass: false, detail: 'Tathagata (second of "prothom duto") should be confirmed, got ' + c2.status };
+    if (c3.status !== 'declined') return { pass: false, detail: 'Swattik should be declined, got ' + c3.status };
+    return { pass: true, detail: 'first two confirmed via the group reference, Swattik correctly declined by name' };
+  } finally {
+    await cleanupHrFlowArtifacts(mgrPhone, s1.phone, s2.phone, s3.phone);
+  }
+});
+scenario('RULE CLARIFICATION, LOCKED SCENARIO: single-pending-item natural phrasing "Hmm thik ache, allow kore dilam" (fine, I\'ve allowed it) - the model resolves a real yes the fixed yes-word list does not cover', async () => {
+  const mgrPhone = TANMOY_MONDAL_PHONE;
+  const senderPhone = '910000003007';
+  await cleanupHrFlowArtifacts(mgrPhone, senderPhone);
+  try {
+    const id = await whatsappAssistant.saveHrConfirmation({
+      senderPhone, senderName: 'ScenSolo', summary: 'kal half day asbe', summaryLocalized: 'kal half day asbe',
+      lang: 'banglish', thirdPartyPhone: mgrPhone, thirdPartyName: 'Tanmoy Mondal', thirdPartyDepartment: 'Civil',
+      status: 'awaiting_manager', createdAt: Date.now(), remindedAt: null, escalatedAt: null, reminderId: null
+    });
+    const d = await whatsappAssistant.decideAutoReply({ phone: mgrPhone, name: 'Tanmoy Mondal', firstName: 'Tanmoy', text: 'Hmm thik ache, allow kore dilam', isGroup: false, history: [] });
+    const after = await whatsappAssistant.getHrConfirmation(id);
+    if (!d.replyText) return { pass: false, detail: 'expected a reply to the manager' };
+    if (after.status !== 'confirmed') return { pass: false, detail: 'expected confirmed via the model, got ' + after.status };
+    return { pass: true, detail: 'resolved yes via the model, never left unclear' };
+  } finally {
+    await cleanupHrFlowArtifacts(mgrPhone, senderPhone);
+  }
+});
+scenario('RULE CLARIFICATION, REGRESSION GUARD: a genuinely unrelated reply (no yes/no/decision for anything) still escalates after 2 unclear turns against the REAL model, never loops a 3rd time', async () => {
+  const mgrPhone = TANMOY_MONDAL_PHONE;
+  const senderPhone = '910000003008';
+  await cleanupHrFlowArtifacts(mgrPhone, senderPhone);
+  try {
+    const id = await whatsappAssistant.saveHrConfirmation({
+      senderPhone, senderName: 'ScenUnclear', summary: 'kal half day asbe', summaryLocalized: 'kal half day asbe',
+      lang: 'banglish', thirdPartyPhone: mgrPhone, thirdPartyName: 'Tanmoy Mondal', thirdPartyDepartment: 'Civil',
+      status: 'awaiting_manager', createdAt: Date.now(), remindedAt: null, escalatedAt: null, reminderId: null, unclearAttempts: 0, unclearTexts: []
+    });
+    const d1 = await whatsappAssistant.decideAutoReply({ phone: mgrPhone, name: 'Tanmoy Mondal', firstName: 'Tanmoy', text: 'Ei maser attendance sheet ta kobe pathaben?', isGroup: false, history: [] });
+    const mid = await whatsappAssistant.getHrConfirmation(id);
+    const d2 = await whatsappAssistant.decideAutoReply({ phone: mgrPhone, name: 'Tanmoy Mondal', firstName: 'Tanmoy', text: 'Ota alada bishoy, eta niye ki bolchen bujhini', isGroup: false, history: [] });
+    const after = await whatsappAssistant.getHrConfirmation(id);
+    if (mid.status !== 'awaiting_manager') return { pass: false, detail: 'first unrelated reply should not resolve or escalate yet, got ' + mid.status };
+    if (!d1.replyText || !d2.replyText) return { pass: false, detail: 'expected a reply both times, never silence' };
+    if (after.status !== 'ambiguous_owner_review') return { pass: false, detail: 'expected escalation to the owner after 2 unclear turns, got ' + after.status };
+    if (d2.replyText === d1.replyText) return { pass: false, detail: 'the second reply must never repeat the first verbatim' };
+    return { pass: true, detail: 'escalated correctly after 2 genuinely unclear turns, never looped a 3rd time' };
+  } finally {
+    await cleanupHrFlowArtifacts(mgrPhone, senderPhone);
+  }
+});
+
 const APPROX_USD_PER_MTOK_INPUT = 3;
 const APPROX_USD_PER_MTOK_OUTPUT = 15;
 

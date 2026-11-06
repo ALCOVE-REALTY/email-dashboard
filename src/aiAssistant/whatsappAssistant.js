@@ -7751,6 +7751,65 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
 // handleMultiHrConfirmationManagerReply) - extracted so the two can never
 // resolve a "yes"/"no" two different ways (STEP 5 send, owner record,
 // reminder close are all identical either way).
+// RULE CLARIFICATION (2026-11), direct instruction - "AI UNDERSTANDS, CODE
+// SPEAKS": the deterministic parser above (parseMultiConfirmationReply) and
+// isYesAnswer/isNoAnswer/isDeferredAnswerReply are fast paths ONLY for
+// trivially exact forms (a bare "Haa", "1 No 2 Yes 3 Yes", "Sagar- yes").
+// The live bug this closes: natural phrasing like "Sagar thik ache, baki
+// duto na" (Sagar's fine, the other two no) or "prothom dutor haa,
+// Swattik-er na" (first two yes, Swattik's no) used to fall straight to a
+// hardcoded "which one(s)?" ask or escalation - code was the FINAL arbiter
+// of meaning for anything outside its own pattern list, never consulting
+// the model. Called whenever the deterministic pass leaves ANY item
+// unresolved (not just when it resolves nothing) - "baki duto" only makes
+// sense in light of which items a fast, exact match already caught (e.g.
+// a literal name mention), so the model always sees the FULL pending list
+// and the manager's one real piece of text, never a narrowed subset.
+// Matches the established toolTool()->{type:'function',function:{name,
+// description,parameters}} shape used by every other tool call in this
+// file (classifyDisambiguationReplyTool etc.) so this one goes through the
+// SAME shared callClaudeForcedTool/postClaudeMessages path - real cost
+// tracking (getApiCallStats, the scenario runner's own COST REPORT) and
+// scenario-replay caching both apply here for free, instead of a second,
+// untracked raw fetch call.
+function managerConfirmationReplyTool() {
+  return {
+    type: 'function',
+    function: {
+      name: 'manager_confirmation_reply',
+      description: 'A manager was asked by WhatsApp to confirm or deny one or more pending HR matters. Read their reply and decide, for EACH numbered item listed, whether they mean yes (confirmed), no (declined), or did not address that specific item at all. Judge by MEANING in Banglish/Hinglish/English or any mix - never require an exact word or format. Group references work too ("baki duto na" = the remaining/other items get no; "prothom dutor haa" = the first two get yes; "sob thik ache" = every item gets yes).',
+      parameters: {
+        type: 'object',
+        properties: {
+          isDeferred: { type: 'boolean', description: 'true ONLY if the reply, as a whole, means "I will check and get back to you" with no actual yes/no decision for ANY item yet - never true if even one item got a real answer.' },
+          verdicts: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                index: { type: 'number', description: 'The 1-based item number exactly as listed in the prompt.' },
+                verdict: { type: 'string', enum: ['yes', 'no', 'unknown'], description: '"unknown" if this reply does not address this specific item at all, or if a bare yes/no in the reply genuinely does not make clear WHICH item(s) it is for - never guess which one.' }
+              },
+              required: ['index', 'verdict']
+            },
+            description: 'Exactly one entry per item listed in the prompt, in the same order.'
+          }
+        },
+        required: ['verdicts']
+      }
+    }
+  };
+}
+async function classifyManagerConfirmationReply(text, items) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey || !DRAFT_MODEL) return null;
+  const toolDef = managerConfirmationReplyTool().function;
+  const list = items.map((it, i) => (i + 1) + ') ' + requesterRefFor(it.senderName, it.senderPhone) + ' - ' + summaryForSentence(it.summaryLocalized || it.summary)).join('\n');
+  const systemPrompt = 'A manager is being asked via WhatsApp to confirm or deny one or more pending HR matters. These are the pending items:\n' + list;
+  try {
+    return await callClaudeForcedTool(apiKey, DRAFT_MODEL, [{ role: 'system', content: systemPrompt }, { role: 'user', content: text }], toolDef.name, toolDef);
+  } catch (err) { return null; }
+}
 async function resolveOneHrConfirmationAnswer(confirmation, answer) {
   const originalMessageDate = new Date(confirmation.originalMessageAt || confirmation.createdAt || Date.now());
   const daysSinceOriginal = calendarDaysBetweenIst(originalMessageDate, new Date());
@@ -7798,15 +7857,58 @@ async function handleMultiHrConfirmationManagerReply({ phone, text, lang, pendin
     if (allInBatch.length) numberingList = allInBatch.sort((a, b) => (a.batchIndex || 0) - (b.batchIndex || 0));
   }
   const parsed = parseMultiConfirmationReply(t, numberingList, sorted);
+  const deterministicResolvedIds = new Set(parsed.answers.map((a) => a.confirmation.id));
+  let remaining = sorted.filter((c) => !deterministicResolvedIds.has(c.id));
+  let totalResolvedCount = parsed.answers.length;
+  for (const { confirmation, answer } of parsed.answers) {
+    await resolveOneHrConfirmationAnswer(confirmation, answer);
+  }
 
-  if (parsed.answers.length) {
-    await clearMultiConfirmUnclearCount(phone);
-    for (const { confirmation, answer } of parsed.answers) {
-      await resolveOneHrConfirmationAnswer(confirmation, answer);
+  // RULE CLARIFICATION (2026-11), direct instruction - "AI UNDERSTANDS,
+  // CODE SPEAKS": the deterministic pass above only catches trivially
+  // exact forms (a number/name directly followed by a yes/no word, or a
+  // bulk "sob"); anything it leaves unresolved must reach the model
+  // before being treated as unclear - never guessed, never silently
+  // dropped. The live bug this closes: "Sagar thik ache, baki duto na"
+  // used to resolve Sagar by a lucky name-match but silently LOSE "the
+  // other two: no" entirely, since the deterministic parser has no
+  // concept of a group reference like "baki"/"prothom duto". Only called
+  // when something is still unresolved after the deterministic pass - a
+  // fully-exact reply never costs an API call. The model sees the FULL
+  // pending list (for context on what "baki"/"prothom" could mean) and
+  // the manager's one real message; its verdict is honored only for
+  // items STILL unresolved (never overriding an already-exact match).
+  let modelDeferred = false;
+  if (remaining.length) {
+    const modelResult = await classifyManagerConfirmationReply(text, sorted).catch(() => null);
+    if (modelResult) {
+      if (modelResult.isDeferred && !parsed.answers.length) {
+        modelDeferred = true;
+      } else {
+        const stillOpenIds = new Set(remaining.map((c) => c.id));
+        const modelAnswers = [];
+        (modelResult.verdicts || []).forEach((v) => {
+          if (v.verdict !== 'yes' && v.verdict !== 'no') return;
+          const item = sorted[v.index - 1];
+          if (item && stillOpenIds.has(item.id)) modelAnswers.push({ confirmation: item, answer: v.verdict });
+        });
+        if (modelAnswers.length) {
+          for (const { confirmation, answer } of modelAnswers) await resolveOneHrConfirmationAnswer(confirmation, answer);
+          const modelResolvedIds = new Set(modelAnswers.map((a) => a.confirmation.id));
+          remaining = remaining.filter((c) => !modelResolvedIds.has(c.id));
+          totalResolvedCount += modelAnswers.length;
+        }
+      }
     }
-    const resolvedIds = new Set(parsed.answers.map((a) => a.confirmation.id));
-    const remaining = sorted.filter((c) => !resolvedIds.has(c.id));
-    let ackText = (HR_CONFIRMATION_MULTI_ACK[replyLang] || HR_CONFIRMATION_MULTI_ACK.english)(parsed.answers.length);
+  }
+
+  if (modelDeferred) {
+    return { case: 'acknowledged', replyText: HR_CONFIRMATION_MANAGER_DEFER_ACK[replyLang] || HR_CONFIRMATION_MANAGER_DEFER_ACK.english, summaryForOwner: null, lang: replyLang };
+  }
+
+  if (totalResolvedCount) {
+    await clearMultiConfirmUnclearCount(phone);
+    let ackText = (HR_CONFIRMATION_MULTI_ACK[replyLang] || HR_CONFIRMATION_MULTI_ACK.english)(totalResolvedCount);
     if (parsed.unknownNumbers.length) ackText += (HR_CONFIRMATION_UNKNOWN_NUMBERS_NOTE[replyLang] || HR_CONFIRMATION_UNKNOWN_NUMBERS_NOTE.english)(parsed.unknownNumbers);
     if (remaining.length) {
       const remainingList = remaining.map((c) => requesterRefFor(c.senderName, c.senderPhone)).join(', ');
@@ -7815,9 +7917,11 @@ async function handleMultiHrConfirmationManagerReply({ phone, text, lang, pendin
     return { case: 'acknowledged', replyText: ackText, summaryForOwner: null, lang: replyLang };
   }
 
-  // Nothing resolved at all - rule (d), loop guard: ONE retry ask max; a
-  // second consecutive unresolved reply escalates every currently open
-  // item instead of repeating the same text a third time.
+  // Genuinely nothing resolved - neither the deterministic pass nor the
+  // model (or the model call itself was unavailable/failed) - rule (d),
+  // loop guard: ONE retry ask max; a second consecutive unresolved reply
+  // escalates every currently open item instead of repeating the same
+  // text a third time.
   const unclearCount = await incrementMultiConfirmUnclearCount(phone);
   if (unclearCount > MAX_HR_CONFIRMATION_UNCLEAR_ATTEMPTS) {
     for (const c of sorted) {
@@ -7875,9 +7979,33 @@ async function handleHrConfirmationManagerReply({ phone, text, lang, pendingConf
   if (isDeferredAnswerReply(t)) {
     return { case: 'acknowledged', replyText: HR_CONFIRMATION_MANAGER_DEFER_ACK[replyLang] || HR_CONFIRMATION_MANAGER_DEFER_ACK.english, summaryForOwner: null, lang: replyLang };
   }
-  // Neither yes nor no - one clarifying question max (never a loop); after
-  // that, stop asking and hand it to the owner as a card (Confirmed / Not
-  // confirmed / Ask again) instead of re-asking indefinitely.
+  // RULE CLARIFICATION (2026-11), direct instruction - "AI UNDERSTANDS,
+  // CODE SPEAKS": the deterministic checks above only catch trivially
+  // exact forms (a bare "Haa"/"Yes"/"Na"/"No", a known defer phrase).
+  // Anything else must reach the model before being treated as unclear -
+  // never guessed, never silently turned into a repeated clarifying
+  // question. If the model call itself fails/times out/is unavailable,
+  // this falls through unchanged to the existing unclear-retry/escalation
+  // path below - never sends nothing, never guesses.
+  const modelResult = await classifyManagerConfirmationReply(text, [confirmation]).catch(() => null);
+  if (modelResult) {
+    if (modelResult.isDeferred) {
+      return { case: 'acknowledged', replyText: HR_CONFIRMATION_MANAGER_DEFER_ACK[replyLang] || HR_CONFIRMATION_MANAGER_DEFER_ACK.english, summaryForOwner: null, lang: replyLang };
+    }
+    const verdict = (modelResult.verdicts || []).find((v) => v.index === 1);
+    if (verdict && verdict.verdict === 'yes') {
+      await resolveOneHrConfirmationAnswer(confirmation, 'yes');
+      return { case: 'acknowledged', replyText: HR_CONFIRMATION_MANAGER_THANKS_YES[replyLang] || HR_CONFIRMATION_MANAGER_THANKS_YES.english, summaryForOwner: null, lang: replyLang };
+    }
+    if (verdict && verdict.verdict === 'no') {
+      await resolveOneHrConfirmationAnswer(confirmation, 'no');
+      return { case: 'acknowledged', replyText: HR_CONFIRMATION_MANAGER_THANKS_NO[replyLang] || HR_CONFIRMATION_MANAGER_THANKS_NO.english, summaryForOwner: null, lang: replyLang };
+    }
+  }
+  // Neither yes nor no, even after asking the model (or the model call
+  // itself was unavailable) - one clarifying question max (never a loop);
+  // after that, stop asking and hand it to the owner as a card (Confirmed /
+  // Not confirmed / Ask again) instead of re-asking indefinitely.
   const unclearAttempts = confirmation.unclearAttempts || 0;
   const unclearTexts = (confirmation.unclearTexts || []).concat([t]);
   if (unclearAttempts >= MAX_HR_CONFIRMATION_UNCLEAR_ATTEMPTS) {
@@ -13493,6 +13621,8 @@ module.exports = {
   clearMultiConfirmUnclearCount,
   parseMultiConfirmationReply,
   sortPendingForDisplay,
+  classifyManagerConfirmationReply,
+  managerConfirmationReplyTool,
   // Exported for scripts/check-whatsapp-engine.js only - live review:
   // connection-drop false alarms + catch-up after a gap.
   getGatewayState,

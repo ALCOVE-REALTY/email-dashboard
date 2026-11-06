@@ -20,11 +20,72 @@ required, and Claude has no way to confirm that step happened on its own.
 
 ## Design principle: AI UNDERSTANDS, CODE SPEAKS
 
-AI UNDERSTANDS, CODE SPEAKS. The model decides meaning (who is meant, yes/no, a
-new name given, answer vs extra info vs new topic) as structured output only -
-it never writes the reply. Code turns that decision into the fixed template
-text. Deterministic rules handle clear-cut cases; anything they can't resolve
-confidently goes to the model's understanding, never to a repeated fixed reply.
+**RULE CLARIFICATION (2026-11), direct instruction - this keeps coming back, so
+it is now unambiguous:** understanding any human-written text (WhatsApp
+messages, replies, mail replies, owner chat, Ask SUBH inputs, schedules, rules)
+is done by the MODEL with structured output. Code may only (a) fast-path
+trivially exact forms (e.g. a bare "Haa"/"Yes"/"1"), and (b) validate, compute
+and write the reply from templates. If the code fast path doesn't match with
+certainty, the model MUST be called before treating the text as unclear.
+Code-only understanding (regex/keyword lists as the final decision) is not
+allowed. "Deterministic-first" means a fast path, never a replacement for the
+model. Tests: lock real-model scenarios for the model path; deterministic
+tests only for the fast path and the code that applies the model's result.
+
+The model decides meaning (who is meant, yes/no, a new name given, answer vs
+extra info vs new topic, which item(s) a multi-part answer resolves) as
+structured output only - it never writes the reply. Code turns that decision
+into the fixed template text. A deterministic fast path may short-circuit an
+EXACT, unambiguous form (see examples throughout this file), but the moment a
+real message doesn't match that exact shape, the fallback is a MODEL call,
+never a "could not understand, re-ask" reply built purely from code's own
+failure to match a regex/keyword list. See "Audit: text understood only by
+code" below for the standing list of places this applies and their current
+status.
+
+### Audit: text understood only by code (2026-11)
+
+Full audit requested and run 2026-11 across `whatsappAssistant.js` (where
+essentially all of it lives), `automationService.js`, `reminderService.js`,
+`workflowService.js`, `driveTemplateFieldsService.js`, `attendanceRequestService.js`.
+Order approved by Subhodeep; fixed one area per commit, each with the full
+deterministic suite + that area's real-model scenarios (3x) after.
+
+1. **`handleHrConfirmationManagerReply` (single pending item)** - yes/no/defer
+   for one manager reply. Was: `isYesAnswer`/`isNoAnswer`/`isDeferredAnswerReply`
+   only, a miss went straight to a hardcoded unclear retry/escalation, no model
+   anywhere. **FIXED** (Task 31, below) - `classifyManagerConfirmationReply` is
+   now called whenever the deterministic check misses, before the unclear path.
+2. **`handleMultiHrConfirmationManagerReply`/`parseMultiConfirmationReply`**
+   (commit `1b11e28`) - which pending item(s) a reply resolves. Was: a miss (or
+   a partial match leaving items unresolved) went to a hardcoded "which one(s)?"
+   ask/escalation, no model. **FIXED** (Task 31) - same model call, given the
+   FULL pending list, whenever anything remains unresolved after the
+   deterministic pass (not just when nothing resolves at all) - this is what
+   lets "Sagar thik ache, baki duto na" resolve correctly (a lucky name-match
+   on Sagar plus a real model understanding of "baki duto" = the other two).
+3. **`detectLang`** - picks the reply language for nearly every outgoing
+   message. File's own comment: "deterministic, no AI call, no model
+   fallback" - a word-count heuristic patched live by adding words each time
+   it misclassified. **NOT YET FIXED** - by far the largest blast radius of
+   anything in this audit (gates the language of almost every reply, not one
+   flow), explicitly flagged to Subhodeep for a scope/cost discussion before
+   touching it; deferred pending his go-ahead on priority order.
+4. **`handleIncomingMedia`'s caption-based CV check** (`looksLikeCvMessage`/
+   `looksLikeCvByNameHint`, Task 29) - media messages never reach `classify()`
+   at all; the caption-TEXT decision is 100% regex (only the document's own
+   binary CONTENT ever reaches a model, via `classifyDocumentContentAsCv`).
+   **NOT YET FIXED** - narrower than 1-3, not yet scheduled.
+
+Already-compliant patterns found in the same file, reused rather than
+reinvented for the fixes above: `isBareAckOrHonorificOnly`, `isGreetingOnly`,
+`isIdentityQuestion`, `isClosingMessage`, `detectFestivalWishReply` (all gate
+*before* a real `classify()`/`classifyOfficialMessage()` call, so a miss
+always reaches the model); `deterministicHrActionKind` (model runs first,
+code only *overrides* it in narrow documented cases, `null` keeps the
+model's own answer otherwise). `automationService.js`/`reminderService.js`/
+`workflowService.js` were all found already compliant - they compute/
+validate from already-model-extracted structured values, never raw text.
 
 ### SUBH reply routing table
 
@@ -1472,3 +1533,89 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
   which one are you answering?" wording - now correctly asserts the new,
   more specific "which one(s) is that for?" wording per rule (b), while
   still confirming neither item resolves.
+
+- Task 31 (2026-11), direct instruction - RULE CLARIFICATION follow-through,
+  audit items 1+2: manager-confirmation-reply understanding now calls a real
+  model whenever its own deterministic fast path leaves anything unresolved,
+  for both the single-pending-item path (`handleHrConfirmationManagerReply`)
+  and the multi-item path (`handleMultiHrConfirmationManagerReply` from
+  `1b11e28`) - treated as ONE area/commit since they're the same reply
+  understanding problem at N=1 vs N>1, sharing one real classifier.
+  - `managerConfirmationReplyTool()`/`classifyManagerConfirmationReply(text,
+    items)` - ONE shared tool call for both paths (a list of 1 or more
+    pending items, each gets a yes/no/unknown verdict, plus an `isDeferred`
+    flag). Explicitly understands GROUP references ("baki duto na" = the
+    remaining items; "prothom dutor haa" = the first N) and arbitrary natural
+    phrasing a fixed word list can't enumerate. Routed through the SAME
+    shared `callClaudeForcedTool`/`postClaudeMessages` path every other
+    model call in this file uses - not a second, untracked raw `fetch` - so
+    it participates in the existing cost-tracking (`getApiCallStats`) and
+    the scenario runner's own replay cache for free.
+  - **Never removes or changes an existing fast path** (direct safety
+    rule) - `parseMultiConfirmationReply`/`isYesAnswer`/`isNoAnswer`/
+    `isDeferredAnswerReply` are completely unchanged; the model is only
+    ever consulted for whatever the fast path leaves unresolved. Single
+    item: the three existing deterministic checks run first, unchanged;
+    only a miss on all three now reaches the model before falling to the
+    (also unchanged) unclear-retry/escalation path. Multi-item: the
+    deterministic pass resolves what it can first (unchanged behavior,
+    unchanged ack wording when it resolves everything - zero API calls for
+    a fully-exact reply); the model is called ONLY when something remains
+    unresolved afterward, given the manager's one real message and the
+    FULL pending list, and its verdicts are honored ONLY for items still
+    unresolved (never overriding an already-exact deterministic match).
+  - **Model-call-failure safety** (direct safety rule) - every call site
+    wraps `classifyManagerConfirmationReply` in `.catch(() => null)`; a
+    `null` result (API down, timeout, missing key) falls straight through
+    to the EXISTING unclear-retry/escalation path, unchanged - never
+    silence, never a guess. Locked with 2 dedicated tests simulating a real
+    network failure (single- and multi-item).
+  - One pre-existing test's wording was already corrected for this exact
+    reason in Task 30's own commit (a bare "Haa" with 2 pending items now
+    asks "which one(s) is that for?", not the old generic list) - no
+    further existing-test changes were needed this time; every other test
+    in the suite passed completely unchanged.
+  **Cost** (direct ask, measured, not guessed): routed through the shared
+  cost-tracked call path; a real 3x scenario run of the 4 new locked
+  scenarios made 15 real API calls for $0.0420 total (~$0.0028/call
+  average - a small system prompt listing the pending items + a short
+  tool-schema result, Sonnet pricing). Each call is a single small tool
+  request (no chaining), well inside the 30-second reply budget. **Before**
+  this change: 0 model calls/day for this decision (100% deterministic).
+  **After**: a call fires only when a manager's reply leaves at least one
+  pending item unresolved after the deterministic pass - in practice this
+  is every genuinely-unclear single-item reply (same rare cases that used
+  to go straight to the old hardcoded retry) PLUS every multi-item reply
+  that doesn't fully resolve its whole pending set in one exact message
+  (including, by design, a "slow burst" reply that only addresses ONE
+  item while others are still open, since the model is also asked to
+  check whether that same message says anything about the rest). I do not
+  have real production volume for this specific flow to give an exact
+  calls/day number - at the measured ~$0.003/call, even a generous
+  estimate of 20-30 extra calls/day would cost under $0.10/day (~$3/month),
+  genuinely negligible regardless of exact volume; Subhodeep can confirm
+  real HR-confirmation-reply volume from the Important Communications page
+  once this is live if a precise number is wanted.
+  Deterministic suite (`scripts/check-whatsapp-engine.js`'s new "RULE
+  CLARIFICATION" section, 6 checks, part of its now-925/925): a scripted
+  model response correctly resolves both group-reference examples, a
+  model-reported `isDeferred` (phrased unlike the fixed defer regex) is
+  honored, and BOTH call sites (single- and multi-item) fall back to the
+  existing unclear path, never silently, when the model call itself fails
+  (simulated network error) - installed via a URL+tool-name-matched
+  `global.fetch` intercept (`installManagerConfirmationModelStub`) that
+  passes everything else (including the fake Redis client's own internal
+  calls) straight through to the real fetch, so every OTHER existing test
+  in this region needed zero changes and stayed deterministic.
+  Real-model suite (`scripts/check-whatsapp-scenarios.js`'s new "RULE
+  CLARIFICATION" scenarios, `SCENARIO_FILTER="RULE CLARIFICATION"`, 3x
+  each): 4/4 reliable - "Sagar thik ache, baki duto na", "prothom dutor
+  haa, Swattik-er na", a single-item natural "Hmm thik ache, allow kore
+  dilam" (a real yes the fixed word list doesn't cover), and a genuinely
+  unrelated reply still correctly escalating after 2 real-model-confirmed
+  unclear turns (never a 3rd identical ask).
+  Not yet done (explicitly deferred, per Subhodeep's own "show me the
+  audit list, I'll approve the order" rule): `detectLang` (audit item 3,
+  by far the largest blast radius - gates nearly every outgoing reply's
+  language) and `handleIncomingMedia`'s caption-text CV check (audit item
+  4) are both still code-only; neither has been touched.

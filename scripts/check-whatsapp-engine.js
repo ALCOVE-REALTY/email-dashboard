@@ -82,6 +82,40 @@ function unmarkPhoneAsActiveEmployeeForTests(phone) {
   TEST_SENDER_ACTIVE_PHONES.delete(whatsapp.normalizePhone(phone));
 }
 
+// RULE CLARIFICATION (2026-11), direct instruction - "AI UNDERSTANDS, CODE
+// SPEAKS": whatsappAssistant.js's manager-confirmation-reply handling now
+// calls a real model (classifyManagerConfirmationReply) whenever its own
+// deterministic fast path leaves anything unresolved - EVERY existing test
+// below that reaches that fallback must stay deterministic (zero real API
+// calls), so this intercepts ONLY a `manager_confirmation_reply` tool
+// request specifically (by inspecting the real request body, not just the
+// URL) and answers it with a scripted response; anything else (Redis's own
+// internal fetch calls, any OTHER tool/classification call) passes straight
+// through to the real fetch, completely untouched. The default response
+// ("model also can't tell, nothing deferred") preserves every EXISTING
+// test's original behavior exactly - set managerConfirmationModelResponse
+// to something else immediately before a test that needs the model to
+// actually resolve something, and reset it to the default right after.
+let managerConfirmationModelResponse = () => ({ verdicts: [], isDeferred: false });
+function resetManagerConfirmationModelResponse() {
+  managerConfirmationModelResponse = () => ({ verdicts: [], isDeferred: false });
+}
+function installManagerConfirmationModelStub() {
+  const originalFetch = global.fetch;
+  global.fetch = async (url, opts) => {
+    if (String(url).includes('api.anthropic.com') && opts && typeof opts.body === 'string') {
+      let body = null;
+      try { body = JSON.parse(opts.body); } catch (err) { body = null; }
+      if (body && Array.isArray(body.tools) && body.tools[0] && body.tools[0].name === 'manager_confirmation_reply') {
+        const result = managerConfirmationModelResponse(body);
+        return { ok: true, json: async () => ({ content: result ? [{ type: 'tool_use', input: result }] : [] }) };
+      }
+    }
+    return originalFetch(url, opts);
+  };
+  return originalFetch;
+}
+
 let pass = 0;
 let fail = 0;
 const failures = [];
@@ -4439,6 +4473,10 @@ async function checkAsync(label, fn) {
     } catch (err) { /* best effort */ }
   }
 
+  // RULE CLARIFICATION (2026-11) - installed once for this whole region
+  // (through the "BUG 2" section below), restored right after it; see the
+  // helper's own comment above for why this is safe to wrap broadly.
+  const origFetchForMgrConfirmModel = installManagerConfirmationModelStub();
   console.log('='.repeat(70));
   console.log('LIVE REVIEW 2026-10-25 (Saurav +918777899838 / manager Tanmoy Mondal / CV sender +918637030300): replays the 9 reported cases against the real decision path');
   console.log('='.repeat(70));
@@ -4632,6 +4670,95 @@ async function checkAsync(label, fn) {
     await cleanupHrFlowArtifacts(MULTI_MGR_PHONE, SAGAR_PHONE, TATHAGATA_PHONE);
     return ok;
   });
+
+  console.log('='.repeat(70));
+  console.log('RULE CLARIFICATION (2026-11), direct instruction - "AI UNDERSTANDS, CODE SPEAKS": natural-language manager replies the deterministic fast path cannot parse now reach a real model BEFORE being treated as unclear (the live gap: "Sagar thik ache, baki duto na" used to resolve Sagar by a lucky name-match but silently lose "baki duto na" - the group reference to the other two - entirely)');
+  console.log('='.repeat(70));
+  await checkAsync('LOCKED SCENARIO (model path, scripted): "Sagar thik ache, baki duto na" (Sagar is fine, the other two no) - the deterministic pass catches Sagar by his own name, the model resolves "baki duto" (the remaining two) as a group reference', async () => {
+    const { sagarId, tathagataId, swattikId } = await seedThreePending();
+    managerConfirmationModelResponse = () => ({ verdicts: [{ index: 1, verdict: 'yes' }, { index: 2, verdict: 'no' }, { index: 3, verdict: 'no' }], isDeferred: false });
+    const d = await whatsappAssistant.decideAutoReply({ phone: MULTI_MGR_PHONE, name: 'Biye 73', firstName: 'Biye', text: 'Sagar thik ache, baki duto na', isGroup: false, history: [] });
+    const [sagar, tathagata, swattik] = await allConfirmed([sagarId, tathagataId, swattikId]);
+    const ok = Boolean(d.replyText) && sagar.status === 'confirmed' && tathagata.status === 'declined' && swattik.status === 'declined';
+    resetManagerConfirmationModelResponse();
+    await cleanupHrFlowArtifacts(MULTI_MGR_PHONE, SAGAR_PHONE, TATHAGATA_PHONE, SWATTIK_PHONE);
+    return ok;
+  });
+  await checkAsync('LOCKED SCENARIO (model path, scripted): "prothom dutor haa, Swattik-er na" (the first two yes, Swattik\'s no) - deterministic catches Swattik by name, the model resolves "prothom duto" (the first two) as a group reference', async () => {
+    const { sagarId, tathagataId, swattikId } = await seedThreePending();
+    managerConfirmationModelResponse = () => ({ verdicts: [{ index: 1, verdict: 'yes' }, { index: 2, verdict: 'yes' }, { index: 3, verdict: 'no' }], isDeferred: false });
+    const d = await whatsappAssistant.decideAutoReply({ phone: MULTI_MGR_PHONE, name: 'Biye 73', firstName: 'Biye', text: 'prothom dutor haa, Swattik-er na', isGroup: false, history: [] });
+    const [sagar, tathagata, swattik] = await allConfirmed([sagarId, tathagataId, swattikId]);
+    const ok = Boolean(d.replyText) && sagar.status === 'confirmed' && tathagata.status === 'confirmed' && swattik.status === 'declined';
+    resetManagerConfirmationModelResponse();
+    await cleanupHrFlowArtifacts(MULTI_MGR_PHONE, SAGAR_PHONE, TATHAGATA_PHONE, SWATTIK_PHONE);
+    return ok;
+  });
+  await checkAsync('model understands "I will check and let you know" phrased differently than the fixed defer regex - isDeferred from the model is honored the same as the deterministic defer check', async () => {
+    const { sagarId, tathagataId, swattikId } = await seedThreePending();
+    managerConfirmationModelResponse = () => ({ verdicts: [], isDeferred: true });
+    const d = await whatsappAssistant.decideAutoReply({ phone: MULTI_MGR_PHONE, name: 'Biye 73', firstName: 'Biye', text: 'Ektu busy achi, shob kota confirm kore WhatsApp-e message debo', isGroup: false, history: [] });
+    const [sagar, tathagata, swattik] = await allConfirmed([sagarId, tathagataId, swattikId]);
+    const ok = Boolean(d.replyText) && sagar.status === 'awaiting_manager' && tathagata.status === 'awaiting_manager' && swattik.status === 'awaiting_manager';
+    resetManagerConfirmationModelResponse();
+    await cleanupHrFlowArtifacts(MULTI_MGR_PHONE, SAGAR_PHONE, TATHAGATA_PHONE, SWATTIK_PHONE);
+    return ok;
+  });
+  await checkAsync('SAFETY: when the model call itself fails/times out, the manager still gets a reply (the existing unclear-retry path), never silence and never a guess - simulated network failure, multi-item', async () => {
+    const { sagarId, tathagataId, swattikId } = await seedThreePending();
+    const origFetch = global.fetch;
+    global.fetch = async (url, opts) => {
+      if (String(url).includes('api.anthropic.com')) throw new Error('simulated network failure');
+      return origFetch(url, opts);
+    };
+    let d;
+    try {
+      d = await whatsappAssistant.decideAutoReply({ phone: MULTI_MGR_PHONE, name: 'Biye 73', firstName: 'Biye', text: 'Sagar thik ache, baki duto na', isGroup: false, history: [] });
+    } finally {
+      global.fetch = origFetch;
+    }
+    const [sagar, tathagata, swattik] = await allConfirmed([sagarId, tathagataId, swattikId]);
+    // The model call failed, so only the deterministic match (Sagar, by
+    // his own name) resolves - never silence, and the other two correctly
+    // stay pending rather than being guessed at.
+    const ok = Boolean(d.replyText) && sagar.status === 'confirmed' && tathagata.status === 'awaiting_manager' && swattik.status === 'awaiting_manager';
+    await cleanupHrFlowArtifacts(MULTI_MGR_PHONE, SAGAR_PHONE, TATHAGATA_PHONE, SWATTIK_PHONE);
+    return ok;
+  });
+  await checkAsync('SAFETY: single-pending-item path - when the model call fails, the manager still gets the existing unclear-retry reply, never silence', async () => {
+    const SINGLE_SENDER = '910000001504';
+    await cleanupHrFlowArtifacts(MULTI_MGR_PHONE, SINGLE_SENDER);
+    const id = await whatsappAssistant.saveHrConfirmation({ senderPhone: SINGLE_SENDER, senderName: 'Solo', summary: 'half day asbe', summaryLocalized: 'Solo kal half day asbe', lang: 'banglish', thirdPartyPhone: MULTI_MGR_PHONE, thirdPartyName: 'Biye 73', thirdPartyDepartment: 'Site', status: 'awaiting_manager', createdAt: Date.now(), remindedAt: null, escalatedAt: null, reminderId: null, unclearAttempts: 0, unclearTexts: [] });
+    const origFetch = global.fetch;
+    global.fetch = async (url, opts) => {
+      if (String(url).includes('api.anthropic.com')) throw new Error('simulated network failure');
+      return origFetch(url, opts);
+    };
+    let d;
+    try {
+      d = await whatsappAssistant.decideAutoReply({ phone: MULTI_MGR_PHONE, name: 'Biye 73', firstName: 'Biye', text: 'accha bujhlam na thik ki bolchen', isGroup: false, history: [] });
+    } finally {
+      global.fetch = origFetch;
+    }
+    const after = await whatsappAssistant.getHrConfirmation(id);
+    const ok = Boolean(d.replyText) && after.status === 'awaiting_manager' && (after.unclearAttempts || 0) === 1;
+    await cleanupHrFlowArtifacts(MULTI_MGR_PHONE, SINGLE_SENDER);
+    return ok;
+  });
+  await checkAsync('model resolves a single-pending-item reply the deterministic fast path cannot - "thik ache korbo" (fine, will do it) is a real yes, phrased unlike the fixed yes-word list', async () => {
+    const SINGLE_SENDER2 = '910000001505';
+    await cleanupHrFlowArtifacts(MULTI_MGR_PHONE, SINGLE_SENDER2);
+    const id = await whatsappAssistant.saveHrConfirmation({ senderPhone: SINGLE_SENDER2, senderName: 'Solo2', summary: 'half day asbe', summaryLocalized: 'Solo2 kal half day asbe', lang: 'banglish', thirdPartyPhone: MULTI_MGR_PHONE, thirdPartyName: 'Biye 73', thirdPartyDepartment: 'Site', status: 'awaiting_manager', createdAt: Date.now(), remindedAt: null, escalatedAt: null, reminderId: null });
+    managerConfirmationModelResponse = () => ({ verdicts: [{ index: 1, verdict: 'yes' }], isDeferred: false });
+    const d = await whatsappAssistant.decideAutoReply({ phone: MULTI_MGR_PHONE, name: 'Biye 73', firstName: 'Biye', text: 'Hmm thik ache, allow kore dilam', isGroup: false, history: [] });
+    const after = await whatsappAssistant.getHrConfirmation(id);
+    const ok = Boolean(d.replyText) && after.status === 'confirmed';
+    resetManagerConfirmationModelResponse();
+    await cleanupHrFlowArtifacts(MULTI_MGR_PHONE, SINGLE_SENDER2);
+    return ok;
+  });
+  console.log('='.repeat(70));
+
   check('parseMultiConfirmationReply: numbers already resolved (not in the still-open list) are silently skipped, never reported as "unknown"', (() => {
     const numbering = [{ id: 'a', senderName: 'A' }, { id: 'b', senderName: 'B' }];
     const stillOpen = [numbering[1]]; // "a" already resolved
@@ -4639,6 +4766,8 @@ async function checkAsync(label, fn) {
     return r.answers.length === 1 && r.answers[0].confirmation.id === 'b' && r.unknownNumbers.length === 0;
   })());
   console.log('='.repeat(70));
+  global.fetch = origFetchForMgrConfirmModel;
+  resetManagerConfirmationModelResponse();
 
   // --- Items 3 & 6: number/name conflict + short non-repeating retry ---
   const mockTanmoyFour = [
