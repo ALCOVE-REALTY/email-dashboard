@@ -30,8 +30,15 @@ const BLANK_DETAILS = { code: '', address: '', cin: '', phone: '', email: '', we
 // Distinct, real `Company` values currently in the HR data - never stored
 // anywhere itself, always derived fresh, so a company that stops existing
 // in the HR Master simply stops having a card (no stale "ghost" company).
-async function getCompanyNamesFromHr() {
-  const { employees } = await employeeService.getEmployeeData();
+// TASK 3 (2026-11), direct instruction - "the usual cache refresh": passes
+// `forceRefresh` straight through to employeeService.getEmployeeData, the
+// SAME `?refresh=1`-driven convention already used by every other HR-data
+// route in this app (src/workforceRoutes.js's own wantsForceRefresh) -
+// without this, a same-minute sheet edit could still show the old list for
+// up to employeeService's own 2-minute passive cache window even though
+// the webhook-push invalidation (cacheBus) usually beats that anyway.
+async function getCompanyNamesFromHr({ forceRefresh } = {}) {
+  const { employees } = await employeeService.getEmployeeData({ forceRefresh });
   return [...new Set(employees.map((e) => e.company).filter(Boolean))].sort((a, b) => a.localeCompare(b));
 }
 async function getCompanyDetails(company) {
@@ -46,8 +53,8 @@ async function getCompanyDetails(company) {
 // (or the blank defaults) - this IS the list the settings page renders,
 // never a separate "list of saved records" that could drift from the HR
 // Master.
-async function listCompanyDetails() {
-  const companies = await getCompanyNamesFromHr();
+async function listCompanyDetails({ forceRefresh } = {}) {
+  const companies = await getCompanyNamesFromHr({ forceRefresh });
   return Promise.all(companies.map(async (company) => {
     const saved = await getCompanyDetails(company);
     return Object.assign({ company }, BLANK_DETAILS, saved || {});

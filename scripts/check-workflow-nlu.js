@@ -45,10 +45,24 @@ async function main() {
     console.log('='.repeat(70));
     const probationAsk = 'Proti maser 1 tarikh oi maser pending probation confirmation gulo protita employee-r Reporting Manager ke alada mail korbe, ar HR team-er 4 jon ke confirmation letter-er PDF soho ekta list mail. 2 din-e reply na ele follow-up. Approved hole "Noted with thanks", extension hole koto mash jene employee ke Extension of Probation Period mail.';
     const probationParsed = await workflowService.parseWorkflowAsk(probationAsk);
-    const probationDraft = await workflowService.draftWorkflowPlanFromParsed(probationParsed, now, null);
+    console.log(JSON.stringify(probationParsed, null, 2));
+    // TASK 5(c) (2026-11), direct instruction - "HR team-er 4 jon ke"
+    // names a COUNT, not actual people; SUBH must never invent 4 names to
+    // fill the quota, so the real model's own output run through
+    // draftWorkflowPlanFromParsed as-is must leave this unresolved
+    // (a correctly-named "also send" unclear item), same posture as
+    // Scenario 2 below tolerates an unclear outcome.
+    const probationDraftAsAsked = await workflowService.draftWorkflowPlanFromParsed(probationParsed, now, null);
+    check('the model never invents 4 names for "HR team-er 4 jon ke" - draft is unresolved with a named "also send" unclear item, never a guess', !probationDraftAsAsked.ok && Array.isArray(probationDraftAsAsked.unclear) && probationDraftAsAsked.unclear.some((u) => /also send/i.test(u)));
+    // Re-drafts the SAME real model output with the ambiguous group
+    // replaced by real, resolvable names (as if the owner had answered
+    // SUBH's clarifying question), to keep verifying every OTHER part of
+    // this locked scenario exactly as before.
+    const probationParsedResolved = Object.assign({}, probationParsed, { alsoSendTo: ['Hema HOD', 'Alice Emp'] });
+    const probationDraft = await workflowService.draftWorkflowPlanFromParsed(probationParsedResolved, now, null);
     console.log(JSON.stringify(probationDraft, null, 2));
     check('resolves to the confirmations source, one mail per Reporting Manager', probationDraft.ok && probationDraft.plan.source === 'confirmations' && probationDraft.plan.rec === 'column' && probationDraft.plan.recCol === 'reportingManager' && probationDraft.plan.mediator === 'mail');
-    check('also-send to HR team with documents attached', probationDraft.ok && probationDraft.plan.also.on && probationDraft.plan.also.to === 'hr' && probationDraft.plan.also.docs);
+    check('also-send to the given real people, with documents attached', probationDraft.ok && probationDraft.plan.also.on && probationDraft.plan.also.to.length === 2 && probationDraft.plan.also.to.includes('hema@co.test') && probationDraft.plan.also.to.includes('alice@co.test') && probationDraft.plan.also.docs);
     check('documents on, confirmation template', probationDraft.ok && probationDraft.plan.docs.on && probationDraft.plan.docs.template === 'confirmation');
     check('follow-up after 2 days', probationDraft.ok && probationDraft.plan.followUp.days === 2);
     check('two rules: a plain "approved" and an "extension" rule that asks for a detail then mails the employee', probationDraft.ok && probationDraft.plan.rules.length === 2);

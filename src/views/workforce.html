@@ -926,9 +926,18 @@
           <div class="wf-auto-sechead"><span class="wf-auto-num">5</span> Also send <span class="wf-auto-hint" style="margin:0 0 0 auto">(optional)</span></div>
           <label class="wf-auto-check" style="margin-top:8px"><input type="checkbox" id="wfAlsoOn" /> Send one more message on each run (e.g. a summary to a team)</label>
           <div id="wfAlsoWrap" class="hidden" style="margin-top:12px">
-            <label class="wf-rem-field">To
-              <select id="wfAlsoTo"><option value="hr">HR team</option><option value="accounts">Accounts team</option></select>
-            </label>
+            <!-- TASK 5(c) (2026-11), direct instruction - the same
+                 search-and-select chip field as Cc (createMailChipField):
+                 type a name, department or email to search, pick a match
+                 or press Enter to add a typed email as-is; multiple
+                 recipients, each a removable chip. -->
+            <div class="wf-mail-field" style="margin:0 0 12px">
+              <span class="wf-mail-field-label" style="text-transform:none">To</span>
+              <div class="wf-mail-chip-input" id="wfAlsoToChipInput">
+                <input type="text" id="wfAlsoToInput" autocomplete="off" placeholder="Add recipient…" />
+              </div>
+              <ul class="wf-mail-suggest" id="wfAlsoToSuggest" hidden></ul>
+            </div>
             <label class="wf-rem-field">Subject<input type="text" id="wfAlsoSubj" autocomplete="off" /></label>
             <label class="wf-rem-field">Body<textarea id="wfAlsoBody" class="wf-auto-body" autocomplete="off"></textarea></label>
             <label class="wf-auto-check"><input type="checkbox" id="wfAlsoTable" /> Add the record table</label>
@@ -1429,7 +1438,7 @@
              or scroll, just sized to fit (gap tightened from 10px to 6-8px
              so the full button set still fits on a Galaxy-S23-width
              phone). -->
-        <div class="wf-result-row" style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
+        <div class="wf-result-row" style="display:flex; align-items:center; justify-content:space-between;">
           <div class="wf-result-summary" id="resultSummary" style="min-width:0; margin-bottom:0;"></div>
           <span class="wf-result-actions" id="wfResultActionsGroup">
             <button class="wf-send-mail-btn" id="sendDoerBreakupMail" type="button" hidden>

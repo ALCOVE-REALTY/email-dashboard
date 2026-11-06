@@ -3047,7 +3047,7 @@ router.post('/hr-assistant/new-depts/confirm', async (req, res) => {
 router.get('/hr-assistant/company-details', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
   try {
-    const items = await companyDetailsService.listCompanyDetails();
+    const items = await companyDetailsService.listCompanyDetails({ forceRefresh: wantsForceRefresh(req) });
     const logo = await companyDetailsService.getLetterLogo();
     res.json({ items, logo });
   } catch (err) {
@@ -3199,6 +3199,20 @@ router.post('/hr-assistant/letter-settings/counter', async (req, res) => {
     if (!letterType) return res.status(400).json({ error: 'letterType is required.' });
     const fy = letterSettingsService.computeFinancialYear(new Date());
     const result = await letterSettingsService.setCounterOverride(letterType, fy, nextNumber);
+    if (!result.ok) return res.status(400).json({ error: result.error });
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+// TASK 4(a) (2026-11), direct instruction - the owner pastes the link of
+// a Google Sheet THEY created (inside "SUBH Letter Templates", so they
+// own it) to use as the Letter Register; SUBH writes the header row only
+// if it's empty and never creates this sheet itself.
+router.post('/hr-assistant/letter-settings/register', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const result = await letterSettingsService.setRegisterSheetLink((req.body || {}).url);
     if (!result.ok) return res.status(400).json({ error: result.error });
     res.json(result);
   } catch (err) {

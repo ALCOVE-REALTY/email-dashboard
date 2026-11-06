@@ -781,7 +781,25 @@ body {
   flex: 1; min-width: 0; overflow-x: auto;
   padding: 16px 8px; margin: -16px -8px;
 }
-.wf-result-row:has(.wf-row-actions-scroll) { gap: 12px; }
+/* TASK 5(a) (2026-11), direct instruction. `.wf-result-row`'s `gap` used
+   to be set ONLY via an inline style on the element itself
+   (workforce.html) - an inline style always wins over ANY stylesheet
+   rule for that same property, so a `:has()` override here could never
+   actually take effect no matter how it was written (caught by directly
+   measuring the real rendered gap with Playwright, not assumed from the
+   CSS alone - it measured 0px). Fixed by moving the gap here, as a real
+   base rule the more specific selector below can actually override:
+   8px by default, matching the inline value every row used before. */
+.wf-result-row { gap: 8px; }
+/* The scrollable strip's own compensating -8px left margin (part of the
+   `margin: -16px -8px` above) was ALSO eating 8px straight back out of
+   this row's gap, so the strip visibly started only ~4px after the
+   count even with `gap: 8px` genuinely applied. Bumped to 24px so the
+   strip's actual visible starting edge sits ~16px after the count, net
+   of that -8px pullback - the pullback itself is untouched, since it's
+   still needed so Send Mail's own glow isn't clipped at either scroll
+   extreme. */
+.wf-result-row:has(.wf-row-actions-scroll) { gap: 24px; }
 .wf-result-row:has(.wf-row-actions-scroll) .wf-result-summary { white-space: nowrap; flex-shrink: 0; }
 
 .wf-donut-row {

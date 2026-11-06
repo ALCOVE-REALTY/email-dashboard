@@ -83,6 +83,26 @@ async function main() {
     employeeService.getEmployeeData = async () => fakeEmployeeData();
 
     console.log('='.repeat(70));
+    console.log('TASK 3 (2026-11), direct instruction - "the usual cache refresh": getCompanyNamesFromHr/listCompanyDetails pass forceRefresh straight through to employeeService.getEmployeeData, same convention every other HR-data route uses');
+    console.log('='.repeat(70));
+    await checkAsync('listCompanyDetails({forceRefresh:true}) asks employeeService for a forced refresh, not just whatever happens to be cached', async () => {
+      let sawForceRefresh = false;
+      const spy = async (opts) => { sawForceRefresh = Boolean(opts && opts.forceRefresh); return fakeEmployeeData(); };
+      employeeService.getEmployeeData = spy;
+      await companyDetailsService.listCompanyDetails({ forceRefresh: true });
+      employeeService.getEmployeeData = async () => fakeEmployeeData();
+      return sawForceRefresh;
+    });
+    await checkAsync('listCompanyDetails() with no argument still works exactly as before (forceRefresh defaults to falsy, never required)', async () => {
+      let sawForceRefresh = 'unset';
+      const spy = async (opts) => { sawForceRefresh = Boolean(opts && opts.forceRefresh); return fakeEmployeeData(); };
+      employeeService.getEmployeeData = spy;
+      await companyDetailsService.listCompanyDetails();
+      employeeService.getEmployeeData = async () => fakeEmployeeData();
+      return sawForceRefresh === false;
+    });
+
+    console.log('='.repeat(70));
     console.log('Letter logo: saveLetterLogo / getLetterLogo round-trip, one shared logo');
     console.log('='.repeat(70));
     check('no logo saved yet returns null', (await companyDetailsService.getLetterLogo()) === null);

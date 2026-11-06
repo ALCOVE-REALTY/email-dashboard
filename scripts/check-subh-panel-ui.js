@@ -265,14 +265,18 @@ function check(label, ok, detail) {
   const wfLayout = await page.evaluate(() => {
     const askBtn = document.getElementById('wfAskBtn');
     const exampleBtn = document.querySelector('#wfAskExamples button');
+    const addRuleBtn = document.getElementById('wfAddRuleBtn');
     const askBtnStyle = askBtn ? getComputedStyle(askBtn) : null;
     const exampleStyle = exampleBtn ? getComputedStyle(exampleBtn) : null;
+    const addRuleBtnStyle = addRuleBtn ? getComputedStyle(addRuleBtn) : null;
     return {
       askBtnAlignSelf: askBtnStyle ? askBtnStyle.alignSelf : null,
       askBtnWidth: askBtn ? askBtn.getBoundingClientRect().width : null,
       pageWidth: document.getElementById('hrWorkflowPage') ? document.getElementById('hrWorkflowPage').getBoundingClientRect().width : null,
       exampleBorderRadius: exampleStyle ? exampleStyle.borderRadius : null,
-      exampleOverflows: exampleBtn ? (exampleBtn.scrollWidth > exampleBtn.clientWidth + 1) : null
+      exampleOverflows: exampleBtn ? (exampleBtn.scrollWidth > exampleBtn.clientWidth + 1) : null,
+      addRuleBtnAlignSelf: addRuleBtnStyle ? addRuleBtnStyle.alignSelf : null,
+      addRuleBtnWidth: addRuleBtn ? addRuleBtn.getBoundingClientRect().width : null
     };
   });
   check('Create Workflow: Ask SUBH is a compact pill (align-self: flex-start), never stretched full width', wfLayout.askBtnAlignSelf === 'flex-start', 'got: ' + JSON.stringify(wfLayout));
@@ -280,6 +284,39 @@ function check(label, ok, detail) {
   check('Create Workflow: the long example chip has a small rectangular corner radius (~10px), never the old 999px oval/stadium shape', /^10px/.test(wfLayout.exampleBorderRadius || ''), 'got: ' + JSON.stringify(wfLayout.exampleBorderRadius));
   check('Create Workflow: the long example chip never clips its own text (no internal horizontal overflow)', wfLayout.exampleOverflows === false, 'got: ' + JSON.stringify(wfLayout));
   check('Create Workflow: the new "Put the table" chips (TASK 4) are present, matching the Create Automated Task page', await page.locator('#wfPlaceSeg').count() > 0 && await page.locator('#wfAttachBtn').count() > 0);
+  // TASK 5(b) (2026-11), direct instruction - "+ Add rule" is a compact,
+  // left-aligned pill (same align-self: flex-start fix Ask SUBH already
+  // needed), never the old full-width outlined button.
+  check('Create Workflow: "+ Add rule" is a compact pill (align-self: flex-start), never stretched full width', wfLayout.addRuleBtnAlignSelf === 'flex-start', 'got: ' + JSON.stringify(wfLayout));
+  check('Create Workflow: "+ Add rule" button is visibly narrower than the page (a real compact pill, not just the CSS property alone)', wfLayout.addRuleBtnWidth != null && wfLayout.pageWidth != null && wfLayout.addRuleBtnWidth < wfLayout.pageWidth * 0.6, 'got: ' + JSON.stringify(wfLayout));
+
+  // TASK 5(c) (2026-11), direct instruction - "Also send"'s own "To"
+  // field is now the same search-and-select chip widget as Cc, never the
+  // old HR team/Accounts team <select>: type a name -> pick a matching
+  // employee, or type a raw email and press Enter -> both become
+  // removable chips.
+  check('Create Workflow: the old HR team/Accounts team dropdown is gone', await page.locator('#wfAlsoTo').count() === 0);
+  await page.route('**/api/workforce/mail-directory', (route) => {
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ directory: [{ name: 'Hema HOD', email: 'hema@co.test' }, { name: 'Rohit HOD', email: 'rohit@co.test' }] }) });
+  });
+  const wfAlsoErrBefore = consoleErrors.length + pageErrors.length;
+  await page.click('#wfAlsoOn');
+  await page.waitForTimeout(150);
+  check('Create Workflow, "Also send": the Cc-style chip field is visible once "Also send" is turned on', await page.locator('#wfAlsoToChipInput').isVisible());
+  await page.fill('#wfAlsoToInput', 'Hema');
+  await page.waitForTimeout(200);
+  await page.click('#wfAlsoToSuggest li[data-email="hema@co.test"]');
+  await page.waitForTimeout(100);
+  await page.fill('#wfAlsoToInput', 'outside@vendor.test');
+  await page.keyboard.press('Enter');
+  await page.waitForTimeout(100);
+  const wfAlsoChips = await page.locator('#wfAlsoToChipInput .wf-mail-chip').allTextContents();
+  check('Create Workflow, "Also send": picking a matched employee AND typing+entering a raw email both become removable chips', wfAlsoChips.some((t) => t.includes('hema@co.test')) && wfAlsoChips.some((t) => t.includes('outside@vendor.test')), 'got: ' + JSON.stringify(wfAlsoChips));
+  const wfAlsoErrAfter = consoleErrors.length + pageErrors.length;
+  check('Create Workflow, "Also send": no JS error was thrown using the chip field', wfAlsoErrAfter === wfAlsoErrBefore,
+    'new errors: ' + JSON.stringify(consoleErrors.slice(wfAlsoErrBefore).concat(pageErrors.slice(wfAlsoErrBefore))));
+  await page.click('#wfAlsoOn');
+  await page.waitForTimeout(150);
 
   // Task 20 (2026-11) - "Preview a document" (TASK 1a) renders a REAL PDF
   // (mocked here with a tiny fake PDF, since this check never calls the
@@ -384,7 +421,11 @@ function check(label, ok, detail) {
   // renders one card per fake company and the edit sheet opens with that
   // company's saved fields pre-filled, at the same 384px phone width as
   // every other check in this script.
-  await page.route('**/api/workforce/hr-assistant/company-details', (route) => {
+  // TASK 3 (2026-11) - the real page now always requests ?refresh=1 (see
+  // its own comment) - this pattern must match that too, not just the
+  // bare path, or the real request falls through to the real network and
+  // the test hangs/fails on a 404 instead of hitting this mock.
+  await page.route('**/api/workforce/hr-assistant/company-details**', (route) => {
     const items = [
       { company: 'Alcove Realty Pvt Ltd', code: 'ARPL', address: '123 HO Street', cin: 'U12345WB2015PTC000001', phone: '033-1234-5678', email: 'hr@alcoverealty.in', website: 'https://alcoverealty.in' },
       { company: 'Subh Ventures Pvt Ltd', code: '', address: '', cin: '', phone: '', email: '', website: '' }
@@ -489,6 +530,26 @@ function check(label, ok, detail) {
     'new errors: ' + JSON.stringify(consoleErrors.slice(letterErrBefore).concat(pageErrors.slice(letterErrBefore))));
   await page.click('#hrLetterCounterSheetCloseBtn');
   await page.waitForTimeout(350);
+
+  // TASK 4(a) (2026-11), direct instruction - Letter Register: with no
+  // register sheet set yet (registerLink: null in the fixture above),
+  // "Set register sheet" + a paste-a-link input show instead of the old
+  // dead "Not created yet" text; setting one round-trips through the new
+  // POST endpoint without a JS error.
+  const registerSetBtnText = await page.locator('#hrLetterRegisterRow [data-action="set-letter-register"]').textContent().catch(() => null);
+  check('Letter settings: with no register sheet set, "Set register sheet" is shown, never the old dead "Not created yet" text', (registerSetBtnText || '').trim() === 'Set register sheet', 'got: ' + JSON.stringify(registerSetBtnText));
+  const registerInputVisible = await page.locator('#hrLetterRegisterRow [data-role="letter-register-input"]').isVisible().catch(() => false);
+  check('Letter settings: an input to paste the owner\'s own register sheet link is shown', registerInputVisible);
+  await page.route('**/api/workforce/hr-assistant/letter-settings/register', (route) => {
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, link: { sheetId: 'fake-id', url: 'https://docs.google.com/spreadsheets/d/fake-id' } }) });
+  });
+  const registerErrBefore = consoleErrors.length + pageErrors.length;
+  await page.locator('#hrLetterRegisterRow [data-role="letter-register-input"]').fill('https://docs.google.com/spreadsheets/d/fake-id');
+  await page.locator('#hrLetterRegisterRow [data-action="set-letter-register"]').click();
+  await page.waitForTimeout(250);
+  const registerErrAfter = consoleErrors.length + pageErrors.length;
+  check('Letter settings: setting a register sheet link round-trips without a JS error', registerErrAfter === registerErrBefore,
+    'new errors: ' + JSON.stringify(consoleErrors.slice(registerErrBefore).concat(pageErrors.slice(registerErrBefore))));
 
   // Informational only, never a failure here: workforce.js's own main
   // dashboard (unrelated to the SUBH panel this check targets) fires its

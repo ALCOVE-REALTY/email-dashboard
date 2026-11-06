@@ -82,12 +82,30 @@ async function saveWorkflow(record) {
   });
   return record.id;
 }
+// TASK 5(c) (2026-11), direct instruction - "Also send" recipients are
+// now specific people/emails (the same Cc-style chip field), never a
+// floating 'hr'/'accounts' team keyword. Self-healing, read-time
+// migration (same posture as this repo's other "ensure migrated"
+// conversions, e.g. letterSettingsService's own counter migration): the
+// FIRST time an OLD saved workflow is read, its plan.also.to STRING is
+// converted into the actual emails that team currently contains and
+// persisted back - a one-time freeze, since there is no more live
+// "whole team" option to keep re-resolving against going forward.
+async function migrateWorkflowAlsoTo(record) {
+  if (record && record.plan && record.plan.also && typeof record.plan.also.to === 'string') {
+    const contacts = await resolveTeamContacts(record.plan.also.to === 'accounts' ? 'ACCOUNT' : 'HR');
+    record.plan.also.to = contacts.filter((c) => automationService.contactOk(c, 'mail')).map((c) => c.email);
+    await saveWorkflow(record);
+  }
+  return record;
+}
 async function getWorkflow(id) {
   const redis = getClient();
   if (!redis) return null;
   try {
     const raw = await redis.get(WORKFLOW_PREFIX + id);
-    return raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : null;
+    const record = raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : null;
+    return record ? migrateWorkflowAlsoTo(record) : null;
   } catch (err) { return null; }
 }
 async function listRawWorkflows() {
@@ -104,6 +122,7 @@ async function listRawWorkflows() {
       try { out.push(typeof raw === 'string' ? JSON.parse(raw) : raw); } catch (err) { missingIds.push(ids[i]); }
     });
     if (missingIds.length) await redis.srem(WORKFLOW_IDS_KEY, ...missingIds);
+    await Promise.all(out.map((rec) => migrateWorkflowAlsoTo(rec)));
     return out;
   }, []);
 }
@@ -273,17 +292,23 @@ async function resolveLetterRefNo(template, row, runAt, isRealSend) {
   const assigned = await letterSettingsService.assignRefNo({ companyCode, letterType: template, date: runAt });
   return { refNo: assigned.refNo, companyCode, fy: assigned.fy, serial: assigned.serial };
 }
-// Logs one REAL sent letter to the Letter Register sheet (TASK 1(c)/(e)) -
-// best-effort: a Register/Drive-upload failure must never undo or block
-// the letter that has already actually been sent.
-async function recordSentLetter({ template, row, runAt, refNo, buffer, filename, workflowSubject }) {
-  try {
-    const upload = await letterSettingsService.uploadSentLetterPdf({ buffer, filename });
-    await letterSettingsService.appendToLetterRegister({
-      date: isoDate(runAt), refNo, employeeCode: (row && row['Employee_No']) || '', name: (row && (row['Employee_Name'] || row['Name'])) || '',
-      company: (row && row['Company']) || '', letterType: template, workflow: workflowSubject || '', pdfLink: upload.url
-    });
-  } catch (err) { /* best effort - see comment above */ }
+// Logs one REAL sent letter to the Letter Register sheet (TASK 1(c)/(e),
+// TASK 4(a)/(b)/(c)/(d) 2026-11, direct instruction) - uploads the PDF
+// into "Issued Letters/<FY>/<Month>" and appends one register row,
+// including the Batch value shared by every letter from the same
+// workflow run. Deliberately NOT best-effort: TASK 4(d) requires a letter
+// to be HELD, never sent, if it cannot be logged, so this THROWS on any
+// failure (no register sheet set, Drive write failure, etc.) - every
+// caller must catch it, withhold that record's attachment, and notify
+// the owner, while the record's own plain message still sends.
+async function recordSentLetter({ template, row, runAt, refNo, buffer, filename, workflowSubject, batch }) {
+  const link = await letterSettingsService.getLetterRegisterLink();
+  if (!link || !link.sheetId) throw new Error('No Letter Register sheet is set - set one in Letter settings first.');
+  const upload = await letterSettingsService.uploadSentLetterPdf({ buffer, filename, date: runAt });
+  await letterSettingsService.appendToLetterRegister({
+    date: isoDate(runAt), refNo, employeeCode: (row && row['Employee_No']) || '', name: (row && (row['Employee_Name'] || row['Name'])) || '',
+    company: (row && row['Company']) || '', letterType: template, workflow: workflowSubject || '', batch: batch || '', pdfLink: upload.url
+  });
 }
 // {Reply_Detail}'s own captured number of months - shared by the built-in
 // extension letter AND a Drive template's 'extension_end_date' derived
@@ -365,9 +390,16 @@ async function buildRuleSendAttachment(template, row, now, detail, workflowSubje
     const result = await buildWorkflowDocumentBuffer(template, row, now, { detail, isRealSend: true });
     if (!result || !result.buffer) return null;
     const filename = workflowDocFileName(template, row);
-    await recordSentLetter({ template, row, runAt: now, refNo: result.refNo, buffer: result.buffer, filename, workflowSubject });
+    // TASK 4(d) (2026-11), direct instruction - the register write happens
+    // BEFORE the attachment is handed back, so a Drive/register failure
+    // holds this letter (no attachment at all, the rule's own plain
+    // message still sends) instead of sending one that was never logged.
+    await recordSentLetter({ template, row, runAt: now, refNo: result.refNo, buffer: result.buffer, filename, workflowSubject, batch: null });
     return { filename, contentType: 'application/pdf', content: result.buffer };
-  } catch (err) { return null; }
+  } catch (err) {
+    await getWhatsappAssistant().postOwnerNotification('⚠️ Could not generate the ' + template + ' letter for ' + automationService.rowName(row) + ' in "' + workflowSubject + '": ' + err.message).catch(() => {});
+    return null;
+  }
 }
 function workflowDocFileName(template, row) {
   const who = ((row && (row['Employee_Name'] || row['Name'])) || 'Record').replace(/\s+/g, '_');
@@ -437,6 +469,11 @@ async function buildWorkflowMessages(workflow, runAt, isRealSend) {
   const docsOnFirst = Boolean(plan.docs && plan.docs.on && plan.docs.attachTo === 'first' && plan.mediator === 'mail');
   const docsOnAlso = Boolean(plan.docs && plan.docs.on && (!plan.docs.attachTo || plan.docs.attachTo === 'also'));
   const alsoAttachments = [];
+  // TASK 4(b) (2026-11), direct instruction - every letter from THIS run
+  // shares one Batch value (e.g. "Probation confirmation · 01 Dec 2026"),
+  // so letters sent together are rows the owner can filter together in
+  // the Letter Register, each still with its own PDF link.
+  const batch = workflow.subject + ' · ' + runAt.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC' });
   async function push(contact, row, who, key) {
     const name = (contact && contact.name) || '—';
     if (!automationService.contactOk(contact, plan.mediator)) {
@@ -449,19 +486,21 @@ async function buildWorkflowMessages(workflow, runAt, isRealSend) {
         const result = await buildWorkflowDocumentBuffer(plan.docs.template, row, runAt, { isRealSend });
         if (result && result.buffer) {
           const filename = workflowDocFileName(plan.docs.template, row);
+          // TASK 4(d) (2026-11), direct instruction - the Letter Register
+          // write happens BEFORE the attachment is set below, so a real
+          // letter is never attached to the outgoing message unless it
+          // was actually logged; a preview/test never logs one (isRealSend
+          // is false there, and the ref no. is only ever the placeholder
+          // text in that case anyway).
+          if (isRealSend) await recordSentLetter({ template: plan.docs.template, row, runAt, refNo: result.refNo, buffer: result.buffer, filename, workflowSubject: workflow.subject, batch });
           if (docsOnFirst) attachment = { filename, contentType: 'application/pdf', content: result.buffer };
           if (docsOnAlso) alsoAttachments.push({ filename, contentType: 'application/pdf', content: result.buffer });
-          // TASK 1(e) (2026-11), direct instruction - every SENT letter is
-          // logged to the Letter Register; a preview/test never logs one
-          // (isRealSend is false there, and the ref no. is only ever the
-          // placeholder text in that case anyway).
-          if (isRealSend) await recordSentLetter({ template: plan.docs.template, row, runAt, refNo: result.refNo, buffer: result.buffer, filename, workflowSubject: workflow.subject });
         }
       } catch (err) {
-        // A single record's letter failing to render must never block its
-        // own message or anyone else's - but for a REAL run, the owner
-        // needs to know that record's letter was held (never sent with a
-        // blank/fake ref no.), per direct instruction.
+        // A single record's letter failing to render OR log must never
+        // block its own message or anyone else's - but for a REAL run,
+        // the owner needs to know that record's letter was held (never
+        // sent unlogged / with a blank ref no.), per direct instruction.
         if (isRealSend) await getWhatsappAssistant().postOwnerNotification('⚠️ Could not generate the ' + plan.docs.template + ' letter for ' + automationService.rowName(row) + ' in "' + workflow.subject + '": ' + err.message).catch(() => {});
       }
     }
@@ -493,12 +532,17 @@ async function buildWorkflowMessages(workflow, runAt, isRealSend) {
   }
   let alsoMessage = null;
   if (plan.also && plan.also.on) {
-    const recipients = await resolveTeamContacts(plan.also.to === 'accounts' ? 'ACCOUNT' : 'HR');
-    const validRecipients = recipients.filter((c) => automationService.contactOk(c, 'mail'));
+    // TASK 5(c) (2026-11), direct instruction - plan.also.to is an array
+    // of specific emails the owner picked (chip field), never a team
+    // keyword; an OLD workflow's 'hr'/'accounts' string is converted to
+    // real emails on read (see migrateWorkflowAlsoTo), so it's always an
+    // array by the time a real/test run gets here.
+    const toEmails = Array.isArray(plan.also.to) ? plan.also.to : [];
+    const validRecipients = toEmails.filter((e) => automationService.contactOk({ email: e }, 'mail'));
     if (validRecipients.length) {
       alsoMessage = {
-        to: validRecipients.map((c) => c.name).join(', '),
-        addr: validRecipients.map((c) => c.email).join(', '),
+        to: validRecipients.join(', '),
+        addr: validRecipients.join(', '),
         subject: fillWorkflowPlaceholders(plan.also.subject, { runAt }),
         body: fillWorkflowPlaceholders(plan.also.body, { runAt }),
         table: plan.also.table ? rows.map((r) => tableRowsFor(r)) : null,
@@ -506,7 +550,7 @@ async function buildWorkflowMessages(workflow, runAt, isRealSend) {
         attachments: (plan.also.docs && alsoAttachments.length) ? alsoAttachments : null
       };
     } else {
-      skipped.push({ who: plan.also.to === 'accounts' ? 'Accounts team' : 'HR team', reason: 'no valid email found for that team', key: null });
+      skipped.push({ who: 'Also send', reason: 'no valid recipient configured', key: null });
     }
   }
   const taggedRows = rows.map((r) => Object.assign({ _key: automationService.rowKey(r) }, r));
@@ -588,7 +632,7 @@ function workflowPlanTool(departmentNames, sheetContext, templateOptions) {
         type: 'object',
         properties: Object.assign({}, base ? base.function.parameters.properties : {}, {
           alsoSendOn: { type: 'boolean', description: 'true only if ONE MORE message (e.g. a summary to a team) should be sent on every run, alongside the per-record messages. Defaults to false.' },
-          alsoSendTo: { type: 'string', enum: ['hr', 'accounts'], description: 'Required when alsoSendOn is true - who receives it.' },
+          alsoSendTo: { type: 'array', items: { type: 'string' }, description: 'Required when alsoSendOn is true - the exact people this message goes to, each either a real person\'s name (matched against the real directory) or a raw email address. If the ask only names a GROUP without saying who its actual members are (e.g. "HR team-er 4 jon ke" without naming those 4 people), leave this empty and explain in `unclear` instead of guessing who.' },
           alsoSendSubject: { type: 'string', description: 'Required when alsoSendOn is true.' },
           alsoSendBody: { type: 'string', description: 'Required when alsoSendOn is true, placeholders allowed.' },
           alsoSendTable: { type: 'boolean', description: 'Only when alsoSendOn is true - true if this message should include the record table.' },
@@ -628,6 +672,33 @@ async function parseWorkflowAsk(text, sheetContext, templateOptions) {
   const data = await resp.json();
   const block = (data.content || []).find((b) => b && b.type === 'tool_use');
   return block ? block.input : { unclear: ['Could not understand that - please try rephrasing'] };
+}
+
+// TASK 5(c) (2026-11), direct instruction - resolves the "also send"
+// recipients the NLU extracted from free text (names and/or raw emails)
+// into real email addresses, using the EXACT SAME whole-word-then-fuzzy
+// name matching automationService.draftPlanFromParsed already uses for
+// its own people-by-name resolution - never a guess: 0 or 2+ matches for
+// a name both come back unresolved/ambiguous instead of silently picking
+// one or all of them.
+async function resolveAlsoSendNames(names, employees) {
+  const EMAIL_RE = /^\S+@\S+\.\S+$/;
+  const emails = [];
+  const unresolved = [];
+  const ambiguous = [];
+  for (const raw of (names || [])) {
+    const trimmed = String(raw || '').trim();
+    if (!trimmed) continue;
+    if (EMAIL_RE.test(trimmed)) { emails.push(trimmed); continue; }
+    let pool = employees.filter((e) => employeeService.matchesWholeWordName(e.name, trimmed));
+    if (!pool.length) pool = employeeService.fuzzyMatchEmployeesByName(employees, trimmed);
+    const active = pool.filter((e) => e.status === 'ACTIVE');
+    const matches = active.length ? active : pool;
+    if (matches.length === 1 && matches[0].email) emails.push(matches[0].email);
+    else if (matches.length === 0) unresolved.push(trimmed);
+    else ambiguous.push({ name: trimmed, candidates: matches.map((e) => e.name).join(', ') });
+  }
+  return { emails, unresolved, ambiguous };
 }
 
 // Resolves one rule's raw parsed fields into a concrete rule object,
@@ -676,15 +747,25 @@ async function draftWorkflowPlanFromParsed(parsed, now, sheetContext, templateOp
   });
   if (!rules.length && !unclear.length) unclear.push('at least one rule for what happens when someone replies');
 
-  let also = { on: false, to: null, subject: null, body: null, table: false, docs: false };
+  let also = { on: false, to: [], subject: null, body: null, table: false, docs: false };
   if (parsed.alsoSendOn) {
-    const to = ['hr', 'accounts'].includes(parsed.alsoSendTo) ? parsed.alsoSendTo : null;
-    if (!to) unclear.push('who the "also send" message goes to (HR team or Accounts team)');
+    // TASK 5(c) (2026-11), direct instruction - "also send" recipients
+    // are now specific people/emails SUBH fills from the ask text, never
+    // a floating team keyword; a name that doesn't resolve to exactly
+    // one real person, or a vague unnamed group, goes to `unclear`
+    // instead of a guess.
+    const { employees } = await employeeService.getEmployeeData();
+    const resolved = await resolveAlsoSendNames(parsed.alsoSendTo, employees);
+    unclear.push(
+      ...resolved.unresolved.map((n) => 'a person named "' + n + '" for the "also send" message (not found in the directory)'),
+      ...resolved.ambiguous.map((a) => 'which "' + a.name + '" you mean for the "also send" message (' + a.candidates + ')')
+    );
+    if (!resolved.emails.length && !resolved.unresolved.length && !resolved.ambiguous.length) unclear.push('who the "also send" message goes to');
     const subject = String(parsed.alsoSendSubject || '').trim();
     const body = String(parsed.alsoSendBody || '').trim();
     if (!subject) unclear.push('the subject of the "also send" message');
     if (!body) unclear.push('the body of the "also send" message');
-    also = { on: true, to: to || 'hr', subject: subject || null, body: body || null, table: Boolean(parsed.alsoSendTable), docs: Boolean(parsed.alsoSendDocs) };
+    also = { on: true, to: resolved.emails, subject: subject || null, body: body || null, table: Boolean(parsed.alsoSendTable), docs: Boolean(parsed.alsoSendDocs) };
   }
 
   let docs = { on: false, template: null, attachTo: 'also' };

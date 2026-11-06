@@ -3356,7 +3356,10 @@
       if (letterLogoRow) letterLogoRow.innerHTML = '';
     }
     try {
-      const r = await fetch('/api/workforce/hr-assistant/company-details').then((res) => res.json());
+      // TASK 3 (2026-11) - "on every load": force a live HR-data check
+      // (same ?refresh=1 convention other pages already use), rather than
+      // risk showing a list up to 2 minutes stale on this settings page.
+      const r = await fetch('/api/workforce/hr-assistant/company-details?refresh=1').then((res) => res.json());
       const items = r.items || [];
       const logo = r.logo || null;
       pageDataCache.companyDetails = { items, logo };
@@ -3595,9 +3598,37 @@
       }
     }
     if (letterRegisterRow) {
+      // TASK 4(a) (2026-11), direct instruction - the owner sets the
+      // register by pasting the link of a Google Sheet they created
+      // themselves in "SUBH Letter Templates" (so they own it and have
+      // edit rights); when none is set yet, show "Set register sheet"
+      // instead of the old dead "Not created yet" text.
       letterRegisterRow.innerHTML = data.registerLink && data.registerLink.url
         ? '<div class="wf-auto-task-card"><div class="wf-auto-task-head"><div style="flex:1;min-width:0"><div class="wf-auto-hint">Every sent letter is logged here automatically.</div></div></div><div class="wf-auto-actions"><a class="wf-ai-action-btn download" href="' + escapeHtml(data.registerLink.url) + '" target="_blank" rel="noopener"><span>Open Letter Register ↗</span></a></div></div>'
-        : '<div class="wf-rem-empty">Not created yet - created automatically when the first letter is sent.</div>';
+        : '<div class="wf-auto-task-card"><div class="wf-auto-task-head"><div style="flex:1;min-width:0">' +
+          '<div class="wf-auto-hint">Paste the link of a Google Sheet you created yourself in "SUBH Letter Templates" - SUBH will write the header row and start logging every sent letter to it.</div>' +
+          '<label class="wf-rem-field" style="margin-top:8px"><input type="text" data-role="letter-register-input" placeholder="https://docs.google.com/spreadsheets/d/…" autocomplete="off" /></label>' +
+          '<div class="wf-auto-err hidden" data-role="letter-register-err" style="padding:0"></div>' +
+          '</div></div>' +
+          '<div class="wf-auto-actions"><button type="button" class="plain" data-action="set-letter-register">Set register sheet</button></div></div>';
+      const setRegisterBtn = letterRegisterRow.querySelector('[data-action="set-letter-register"]');
+      if (setRegisterBtn) {
+        setRegisterBtn.addEventListener('click', async () => {
+          const input = letterRegisterRow.querySelector('[data-role="letter-register-input"]');
+          const err = letterRegisterRow.querySelector('[data-role="letter-register-err"]');
+          const url = (input ? input.value : '').trim();
+          if (!url) {
+            if (err) { err.textContent = 'Paste the sheet link first.'; err.classList.remove('hidden'); }
+            return;
+          }
+          if (err) { err.textContent = ''; err.classList.add('hidden'); }
+          await runButtonAction(setRegisterBtn, () => postJsonOrThrow('/api/workforce/hr-assistant/letter-settings/register', { url }), () => {
+            showActionToast('Letter Register sheet set');
+            pageDataCache.letterSettings = null;
+            loadLetterSettingsPage();
+          }, { resetAfterSuccess: true, toastFn: (msg) => { if (err) { err.textContent = msg; err.classList.remove('hidden'); } } });
+        });
+      }
     }
   }
   async function loadLetterSettingsPage() {
@@ -6376,7 +6407,6 @@
   const wfPdfWaNote = document.getElementById('wfPdfWaNote');
   const wfAlsoOn = document.getElementById('wfAlsoOn');
   const wfAlsoWrap = document.getElementById('wfAlsoWrap');
-  const wfAlsoTo = document.getElementById('wfAlsoTo');
   const wfAlsoSubj = document.getElementById('wfAlsoSubj');
   const wfAlsoBody = document.getElementById('wfAlsoBody');
   const wfAlsoTable = document.getElementById('wfAlsoTable');
@@ -6421,6 +6451,10 @@
   const wfDetailRows = document.getElementById('wfDetailRows');
 
   const wfCcField = createMailChipField('wfCcChipInput', 'wfCcInput', 'wfCcSuggest');
+  // TASK 5(c) (2026-11), direct instruction - "Also send"'s own To field
+  // is the same search-and-select chip widget as Cc, never the old HR
+  // team/Accounts team dropdown.
+  const wfAlsoToField = createMailChipField('wfAlsoToChipInput', 'wfAlsoToInput', 'wfAlsoToSuggest');
 
   function showWfToast(text, type) { showProToast({ title: text, type: type || 'success', anchor: 'top' }); }
   const WF_TOAST_ERR = { toastFn: (msg) => showWfToast(msg, 'error') };
@@ -6570,7 +6604,7 @@
     if (wfWeekdaysSeg) renderWeekdaySeg(wfWeekdaysSeg, []);
     wfScheduleExtra = { monthDays: null, lastDayOfMonth: false };
     if (wfAlsoOn) wfAlsoOn.checked = false;
-    if (wfAlsoTo) wfAlsoTo.value = 'hr';
+    wfAlsoToField.reset();
     if (wfAlsoSubj) wfAlsoSubj.value = '';
     if (wfAlsoBody) wfAlsoBody.value = '';
     if (wfAlsoTable) wfAlsoTable.checked = false;
@@ -6615,7 +6649,7 @@
     wfCcField.setChips((w.plan.cc || '').split(',').map((s) => s.trim()).filter(Boolean));
     const also = w.plan.also || { on: false };
     if (wfAlsoOn) wfAlsoOn.checked = Boolean(also.on);
-    if (wfAlsoTo) wfAlsoTo.value = also.to || 'hr';
+    wfAlsoToField.setChips(Array.isArray(also.to) ? also.to : []);
     if (wfAlsoSubj) wfAlsoSubj.value = also.subject || '';
     if (wfAlsoBody) wfAlsoBody.value = also.body || '';
     if (wfAlsoTable) wfAlsoTable.checked = Boolean(also.table);
@@ -6851,6 +6885,8 @@
   [wfSubject, wfMailSubj, wfBody, wfAlsoSubj, wfAlsoBody, wfFuDays, wfFuMax, wfFuBody, wfDate, wfTime, wfEvery].forEach((el) => { if (el) el.addEventListener('input', wfSync); });
   if (document.getElementById('wfCcInput')) document.getElementById('wfCcInput').addEventListener('input', wfSync);
   if (document.getElementById('wfCcChipInput')) document.getElementById('wfCcChipInput').addEventListener('click', () => setTimeout(wfSync, 0));
+  if (document.getElementById('wfAlsoToInput')) document.getElementById('wfAlsoToInput').addEventListener('input', wfSync);
+  if (document.getElementById('wfAlsoToChipInput')) document.getElementById('wfAlsoToChipInput').addEventListener('click', () => setTimeout(wfSync, 0));
 
   function wfReadForm() {
     return {
@@ -6883,7 +6919,7 @@
       mediator: f.mediator, mailSubject: f.mailSubject, body: f.body, cc: f.cc || null,
       table: f.table, tableColumns: [...wfTableCols], tablePlacement: f.mediator === 'wa' ? 'body' : f.tablePlacement, attachmentFormat: f.attachmentFormat,
       also: {
-        on: Boolean(wfAlsoOn && wfAlsoOn.checked), to: wfAlsoTo ? wfAlsoTo.value : 'hr',
+        on: Boolean(wfAlsoOn && wfAlsoOn.checked), to: wfAlsoToField.getChips(),
         subject: wfAlsoSubj ? wfAlsoSubj.value : '', body: wfAlsoBody ? wfAlsoBody.value : '',
         table: Boolean(wfAlsoTable && wfAlsoTable.checked), docs: Boolean(wfAlsoDocs && wfAlsoDocs.checked)
       },
@@ -6947,7 +6983,7 @@
       renderWfUnderstanding();
     } catch (err) { /* summary is best-effort - never blocks the form */ }
   }
-  ['wfFuDays', 'wfFuMax', 'wfAlsoTo', 'wfDocsTpl', 'wfDocsWhere'].forEach((id) => { const el = document.getElementById(id); if (el) el.addEventListener('change', wfSync); });
+  ['wfFuDays', 'wfFuMax', 'wfDocsTpl', 'wfDocsWhere'].forEach((id) => { const el = document.getElementById(id); if (el) el.addEventListener('change', wfSync); });
 
   // ---------- Rules (Section 8) ----------
   function wfRenderRuleFields(r, i) {
@@ -7032,7 +7068,7 @@
       if (wfWeekdaysSeg) renderWeekdaySeg(wfWeekdaysSeg, draft.schedule.weekdays || []);
       wfScheduleExtra = { monthDays: draft.schedule.monthDays || null, lastDayOfMonth: Boolean(draft.schedule.lastDayOfMonth) };
       if (wfAlsoOn) wfAlsoOn.checked = Boolean(draft.plan.also && draft.plan.also.on);
-      if (wfAlsoTo) wfAlsoTo.value = (draft.plan.also && draft.plan.also.to) || 'hr';
+      wfAlsoToField.setChips((draft.plan.also && draft.plan.also.to) || []);
       if (wfAlsoSubj) wfAlsoSubj.value = (draft.plan.also && draft.plan.also.subject) || '';
       if (wfAlsoBody) wfAlsoBody.value = (draft.plan.also && draft.plan.also.body) || '';
       if (wfAlsoTable) wfAlsoTable.checked = Boolean(draft.plan.also && draft.plan.also.table);
@@ -7211,6 +7247,10 @@
     if (!wfRules.length) { showWfToast('Add at least one reply rule.', 'warning'); ok = false; }
     if (wfRules.some((r) => !r.when || !r.replyText)) { showWfToast('Every rule needs "what it means" and "SUBH replies" filled in.', 'warning'); ok = false; }
     if (wfCcField.getChips().some((e) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e))) { showWfToast('One of the CC addresses doesn\'t look like a valid email.', 'warning'); ok = false; }
+    if (wfAlsoOn && wfAlsoOn.checked) {
+      if (!wfAlsoToField.getChips().length) { showWfToast('Add at least one "Also send" recipient.', 'warning'); ok = false; }
+      else if (wfAlsoToField.getChips().some((e) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e))) { showWfToast('One of the "Also send" addresses doesn\'t look like a valid email.', 'warning'); ok = false; }
+    }
     return ok;
   }
   if (wfSaveBtn) wfSaveBtn.addEventListener('click', async () => {

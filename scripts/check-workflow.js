@@ -135,21 +135,60 @@ async function main() {
   const driveExportCalls = [];
   const driveDeleteCalls = [];
   const docsBatchUpdateCalls = [];
+  // TASK 4(c) (2026-11) - a stateful fake folder tree (Issued Letters/
+  // <FY>/<Month>) so letterSettingsService.uploadSentLetterPdf's own
+  // files.list-then-create lookups behave like real Drive: a folder
+  // created for one real send is reused by every later one, never
+  // duplicated. Persists across every getDriveWriteClient() call in this
+  // whole suite run via closure, same as driveCopyCalls etc. above.
+  const fakeDriveFolders = [];
+  let fakeFolderCounter = 0;
+  let fakeFileCounter = 0;
   sheetsAuth.getDriveWriteClient = () => ({
     files: {
-      create: async () => ({ data: { id: 'fake-sheet', webViewLink: 'https://docs.google.com/spreadsheets/d/fake-sheet' } }),
+      create: async (opts) => {
+        const res = opts.resource || {};
+        if (res.mimeType === 'application/vnd.google-apps.folder') {
+          const id = 'fake-folder-' + (++fakeFolderCounter);
+          fakeDriveFolders.push({ id, name: res.name, parentId: (res.parents || [])[0] });
+          return { data: { id } };
+        }
+        const id = 'fake-file-' + (++fakeFileCounter);
+        return { data: { id, webViewLink: 'https://drive.google.com/file/d/' + id + '/view' } };
+      },
+      list: async (opts) => {
+        const nameMatch = /name = '([^']*)'/.exec(opts.q || '');
+        const parentMatch = /'([^']*)' in parents/.exec(opts.q || '');
+        const name = nameMatch ? nameMatch[1] : null;
+        const parentId = parentMatch ? parentMatch[1] : null;
+        const found = fakeDriveFolders.filter((f) => f.name === name && f.parentId === parentId);
+        return { data: { files: found.map((f) => ({ id: f.id, name: f.name })) } };
+      },
       copy: async (opts) => { driveCopyCalls.push(opts); return { data: { id: 'fake-temp-doc' } }; },
       export: async (opts) => { driveExportCalls.push(opts); return { data: Buffer.from('%PDF-1.4 fake drive template pdf') }; },
       delete: async (opts) => { driveDeleteCalls.push(opts.fileId); return {}; }
     }
   });
+  // TASK 4(a) (2026-11) - the Letter Register is now an OWNER-set sheet
+  // (never auto-created); `registerHeaderWritten` simulates it already
+  // having a header row after the one setRegisterSheetLink call below, so
+  // every real-send test's register append just works, same as before.
+  let registerHeaderWritten = false;
   sheetsAuth.getSheetsWriteClient = () => ({
     spreadsheets: { values: {
-      update: async () => ({}),
+      get: async () => ({ data: { values: registerHeaderWritten ? [['Date', 'Ref No.', 'Employee Code', 'Name', 'Company', 'Letter Type', 'Workflow', 'Batch', 'PDF Link']] : [] } }),
+      update: async () => { registerHeaderWritten = true; return {}; },
       append: async (opts) => { registerAppends.push(opts); return {}; }
     } }
   });
   sheetsAuth.getDocsClient = () => ({ documents: { batchUpdate: async (opts) => { docsBatchUpdateCalls.push(opts); return {}; } } });
+  // Every real send in this suite logs to the Letter Register (TASK
+  // 1(e)/4), which now THROWS (holding the letter) unless a register
+  // sheet is set first - seed one here, same as the 'Alcove' company code
+  // seeded just above, so every pre-existing attachment test keeps
+  // passing exactly as before.
+  const registerSetup = await letterSettingsService.setRegisterSheetLink('https://docs.google.com/spreadsheets/d/fake-register-sheet');
+  if (!registerSetup.ok) throw new Error('test setup: could not set the fake Letter Register sheet - ' + registerSetup.error);
 
   try {
     console.log('='.repeat(70));
@@ -205,7 +244,7 @@ async function main() {
         unclear: [], source: 'confirmations', when: 'inMonth', rec: 'column', recCol: 'reportingManager', group: 'each', mediator: 'mail',
         dayOfMonth: 1, timeRaw: '10:00', repeat: 'monthly',
         subjectHint: 'Probation confirmation workflow',
-        alsoSendOn: true, alsoSendTo: 'hr', alsoSendSubject: 'Pending Confirmation Letters', alsoSendBody: 'Dear HR Team,\n\nList attached.', alsoSendTable: true, alsoSendDocs: true,
+        alsoSendOn: true, alsoSendTo: ['Hema HOD'], alsoSendSubject: 'Pending Confirmation Letters', alsoSendBody: 'Dear HR Team,\n\nList attached.', alsoSendTable: true, alsoSendDocs: true,
         documentsOn: true, documentsTemplate: 'confirmation', documentsAttachTo: 'also',
         followUpDays: 2, followUpMax: 2, followUpBody: 'Dear {Manager_Name},\n\nReminder.',
         rules: [
@@ -218,7 +257,7 @@ async function main() {
       const p = r.plan;
       return p.source === 'confirmations' && p.recCol === 'reportingManager' &&
         p.conds.some((c) => c.col === 'Confirmation Date' && c.op === 'inMonth') &&
-        p.also.on && p.also.to === 'hr' && p.also.table === true && p.also.docs === true &&
+        p.also.on && Array.isArray(p.also.to) && p.also.to.length === 1 && p.also.to[0] === 'hema@co.test' && p.also.table === true && p.also.docs === true &&
         p.docs.on && p.docs.template === 'confirmation' && p.docs.attachTo === 'also' &&
         p.followUp.days === 2 && p.followUp.max === 2 &&
         p.rules.length === 2 && p.rules[0].then === 'stop' && p.rules[0].sendTo === null &&
@@ -278,6 +317,21 @@ async function main() {
     await checkAsync('alsoSendOn with missing subject/body/to each gets its own named unclear item, none silently guessed', async () => {
       const r = await workflowService.draftWorkflowPlanFromParsed({ unclear: [], source: 'master', rec: 'column', recCol: 'self', group: 'each', mediator: 'mail', alsoSendOn: true, rules: [{ when: 'X', replyText: 'Y', then: 'stop' }] }, now, null);
       return !r.ok && r.unclear.length === 3 && r.unclear.some((u) => u.includes('who the "also send"')) && r.unclear.some((u) => u.includes('subject of the "also send"')) && r.unclear.some((u) => u.includes('body of the "also send"'));
+    });
+    console.log('='.repeat(70));
+    console.log('TASK 5(c) (2026-11), direct instruction - "also send" recipients are specific people/emails SUBH fills from the ask text, never a guessed group');
+    console.log('='.repeat(70));
+    await checkAsync('a named real person in alsoSendTo resolves to their real email (whole-word match, same as the base plan\'s own people-by-name resolution)', async () => {
+      const r = await workflowService.draftWorkflowPlanFromParsed({ unclear: [], source: 'master', rec: 'column', recCol: 'self', group: 'each', mediator: 'mail', alsoSendOn: true, alsoSendTo: ['Rohit HOD'], alsoSendSubject: 'FYI', alsoSendBody: 'See attached.', rules: [{ when: 'X', replyText: 'Y', then: 'stop' }] }, now, null);
+      return r.ok && r.plan.also.to.length === 1 && r.plan.also.to[0] === 'rohit@co.test';
+    });
+    await checkAsync('a raw email in alsoSendTo passes through as-is, mixed with a resolved name', async () => {
+      const r = await workflowService.draftWorkflowPlanFromParsed({ unclear: [], source: 'master', rec: 'column', recCol: 'self', group: 'each', mediator: 'mail', alsoSendOn: true, alsoSendTo: ['Hema HOD', 'external@vendor.test'], alsoSendSubject: 'FYI', alsoSendBody: 'See attached.', rules: [{ when: 'X', replyText: 'Y', then: 'stop' }] }, now, null);
+      return r.ok && r.plan.also.to.length === 2 && r.plan.also.to.includes('hema@co.test') && r.plan.also.to.includes('external@vendor.test');
+    });
+    await checkAsync('a named person NOT in the directory ("4 jon" with no real names given, or a made-up name) goes to unclear, never silently dropped or guessed', async () => {
+      const r = await workflowService.draftWorkflowPlanFromParsed({ unclear: [], source: 'master', rec: 'column', recCol: 'self', group: 'each', mediator: 'mail', alsoSendOn: true, alsoSendTo: ['Ghost Person'], alsoSendSubject: 'FYI', alsoSendBody: 'See attached.', rules: [{ when: 'X', replyText: 'Y', then: 'stop' }] }, now, null);
+      return !r.ok && r.unclear.some((u) => u.includes('Ghost Person') && u.includes('not found'));
     });
     await checkAsync('documentsOn with no recognizable template is unclear, never defaults silently', async () => {
       const r = await workflowService.draftWorkflowPlanFromParsed({ unclear: [], source: 'master', rec: 'column', recCol: 'self', group: 'each', mediator: 'mail', documentsOn: true, documentsTemplate: 'made-up-template', rules: [{ when: 'X', replyText: 'Y', then: 'stop' }] }, now, null);
@@ -340,16 +394,31 @@ async function main() {
         bobMsg && bobMsg.to === 'Rohit HOD' && bobMsg.body.includes('Dear Rohit HOD') && bobMsg.body.includes('(IT)') &&
         !aliceMsg.body.includes('Bob') && !bobMsg.body.includes('Alice'); // STRICT ISOLATION - never another record's data
     });
-    await checkAsync('plan.also.on builds a SEPARATE combined message to the real HR team, with every matched record in its own table (never one record\'s own message)', async () => {
+    await checkAsync('plan.also.on builds a SEPARATE combined message to the specific people chosen, with every matched record in its own table (never one record\'s own message)', async () => {
       const r = await workflowService.draftWorkflowPlanFromParsed({
         unclear: [], source: 'confirmations', rec: 'column', recCol: 'reportingManager', group: 'each', mediator: 'mail',
-        alsoSendOn: true, alsoSendTo: 'hr', alsoSendSubject: 'Pending list', alsoSendBody: 'See table.', alsoSendTable: true,
+        alsoSendOn: true, alsoSendTo: ['Hema HOD'], alsoSendSubject: 'Pending list', alsoSendBody: 'See table.', alsoSendTable: true,
         rules: [{ when: 'X', replyText: 'Y', then: 'stop' }]
       }, now, null);
       if (!r.ok) return false;
       const { alsoMessage, rows } = await workflowService.buildWorkflowMessages({ plan: r.plan, excludedKeys: [] }, now);
-      return alsoMessage && alsoMessage.to.includes('Hema HOD') && alsoMessage.subject === 'Pending list' &&
+      return alsoMessage && alsoMessage.to === 'hema@co.test' && alsoMessage.subject === 'Pending list' &&
         alsoMessage.table && alsoMessage.table.length === rows.length && rows.length >= 2;
+    });
+    await checkAsync('an OLD saved workflow\'s plan.also.to STRING (\'hr\'/\'accounts\', from before this change) is migrated on read to the real current team emails, and keeps sending to them exactly as before', async () => {
+      const r = await workflowService.draftWorkflowPlanFromParsed({
+        unclear: [], source: 'confirmations', rec: 'column', recCol: 'reportingManager', group: 'each', mediator: 'mail',
+        alsoSendOn: true, alsoSendTo: ['Hema HOD'], alsoSendSubject: 'Pending list', alsoSendBody: 'See table.',
+        rules: [{ when: 'X', replyText: 'Y', then: 'stop' }]
+      }, now, null);
+      if (!r.ok) return false;
+      const legacyPlan = Object.assign({}, r.plan, { also: Object.assign({}, r.plan.also, { to: 'hr' }) }); // simulates a pre-TASK-5(c) saved record
+      const w = await create({ subject: 'Legacy also.to migration test', plan: legacyPlan, schedule: { date: '2026-12-01', time: '10:00', repeat: 'monthly' } });
+      // The fake HR department (Hema HOD/Alice Emp/Eve Emp) has 3 ACTIVE members.
+      const reloaded = await workflowService.getWorkflow(w.id);
+      if (!Array.isArray(reloaded.plan.also.to) || reloaded.plan.also.to.length !== 3 || !reloaded.plan.also.to.includes('hema@co.test')) return false;
+      const rereloaded = await workflowService.getWorkflow(w.id); // a SECOND read must not re-migrate/duplicate
+      return Array.isArray(rereloaded.plan.also.to) && rereloaded.plan.also.to.length === 3 && rereloaded.plan.also.to.includes('hema@co.test');
     });
 
     console.log('='.repeat(70));
@@ -733,7 +802,7 @@ async function main() {
       const before = sentMail.filter((m) => m.kind === 'attachment').length;
       const { run } = await makeRealRunWorkflow({
         subject: 'Docs-also test', documentsOn: true, documentsTemplate: 'experience', documentsAttachTo: 'also',
-        alsoSendOn: true, alsoSendTo: 'hr', alsoSendSubject: 'FYI', alsoSendBody: 'See attached.', alsoSendDocs: true
+        alsoSendOn: true, alsoSendTo: ['Hema HOD'], alsoSendSubject: 'FYI', alsoSendBody: 'See attached.', alsoSendDocs: true
       });
       const calls = sentMail.filter((m) => m.kind === 'attachment').slice(before);
       const alsoCall = calls.find((m) => m.attachments);
@@ -787,6 +856,59 @@ async function main() {
         return run.records.length >= 1 && run.records.every((r) => r.status === 'waiting')
           && sentMail.filter((m) => m.kind === 'attachment').length === beforeAttach; // no attachment went out, but the run itself completed fine
       } finally { letterPdfRef.buildConfirmationLetterPdf = origBuildConfirmation; }
+    });
+
+    console.log('='.repeat(70));
+    console.log('TASK 4(b)/(d) (2026-11), direct instruction - Letter Register: one shared Batch value per run (distinct PDF links per letter); a register-write failure HOLDS that record\'s letter (never attaches/sends an unlogged PDF), the plain message still sends, owner notified');
+    console.log('='.repeat(70));
+    await checkAsync('every letter from the SAME run shares one Batch value, but each gets its own distinct PDF link in the Letter Register', async () => {
+      const before = registerAppends.length;
+      const { run } = await makeRealRunWorkflow({ subject: 'Batch value test', documentsOn: true, documentsTemplate: 'confirmation', documentsAttachTo: 'first' });
+      const rows = registerAppends.slice(before).map((a) => a.resource.values[0]);
+      const batches = new Set(rows.map((r) => r[7]));
+      const pdfLinks = new Set(rows.map((r) => r[8]));
+      return run.records.length >= 2 && rows.length === run.records.length &&
+        batches.size === 1 && [...batches][0].startsWith('Batch value test · ') &&
+        pdfLinks.size === rows.length; // distinct PDF links, never the same file reused across records
+    });
+    await checkAsync('a Letter Register write failure HOLDS that record\'s letter (no PDF attached) but the record\'s own plain message still sends, and the owner is notified', async () => {
+      const origAppend = letterSettingsService.appendToLetterRegister;
+      letterSettingsService.appendToLetterRegister = async () => { throw new Error('simulated register append failure'); };
+      try {
+        const notifBefore = ownerNotifications.length;
+        const beforeAttach = sentMail.filter((m) => m.kind === 'attachment').length;
+        const beforeAnyMail = sentMail.length;
+        const { run } = await makeRealRunWorkflow({ subject: 'Register failure test', documentsOn: true, documentsTemplate: 'confirmation', documentsAttachTo: 'first' });
+        return run.records.length >= 1 &&
+          sentMail.filter((m) => m.kind === 'attachment').length === beforeAttach && // no attachment went out
+          sentMail.length === beforeAnyMail + run.records.length && // the plain message still sent, one per record
+          ownerNotifications.length > notifBefore && /could not generate the confirmation letter/i.test(ownerNotifications[ownerNotifications.length - 1]);
+      } finally { letterSettingsService.appendToLetterRegister = origAppend; }
+    });
+    await checkAsync('with NO register sheet set at all, every real-send letter is held the same way (never sent unlogged), while the plain message still sends', async () => {
+      const origGetLink = letterSettingsService.getLetterRegisterLink;
+      letterSettingsService.getLetterRegisterLink = async () => null;
+      try {
+        const notifBefore = ownerNotifications.length;
+        const beforeAttach = sentMail.filter((m) => m.kind === 'attachment').length;
+        const { run } = await makeRealRunWorkflow({ subject: 'No register set test', documentsOn: true, documentsTemplate: 'confirmation', documentsAttachTo: 'first' });
+        return run.records.length >= 1 &&
+          sentMail.filter((m) => m.kind === 'attachment').length === beforeAttach &&
+          ownerNotifications.length > notifBefore && /no letter register sheet is set/i.test(ownerNotifications[ownerNotifications.length - 1]);
+      } finally { letterSettingsService.getLetterRegisterLink = origGetLink; }
+    });
+    await checkAsync('a matched rule\'s own sendDocument ALSO holds its letter (no attachment) on a register-write failure, while the reply message with no attachment still sends', async () => {
+      workflowService.callWorkflowTool = async (sys, user, tool) => (tool.name === 'classify_workflow_reply' ? { ruleIndex: 0 } : { isUnclear: true });
+      const origAppend = letterSettingsService.appendToLetterRegister;
+      letterSettingsService.appendToLetterRegister = async () => { throw new Error('simulated register append failure'); };
+      try {
+        const before = sentMail.filter((m) => m.kind === 'attachment').length;
+        const { run } = await makeRealRunWorkflow({ subject: 'Rule sendDocument register failure test', rules: [{ when: 'Confirmed', replyText: 'Noted.', sendTo: 'self', sendSubject: 'Your confirmation letter', sendBody: 'Please find it attached.', sendDocument: 'confirmation', then: 'stop' }] });
+        const rec = run.records[0];
+        simulateIncomingMail(rec.threadId, rec.contact.email, 'Confirmed, thank you.');
+        await workflowService.checkWorkflowMailReplies(new Date(now.getTime() + 60000));
+        return sentMail.filter((m) => m.kind === 'attachment').length === before; // never attached an unlogged letter
+      } finally { letterSettingsService.appendToLetterRegister = origAppend; workflowService.callWorkflowTool = origCallWorkflowTool; }
     });
 
     console.log('='.repeat(70));

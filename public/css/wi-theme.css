@@ -2202,7 +2202,13 @@ body { background: var(--wi-bg); }
 .wf-auto-subject-label { display: inline; font-size: 0.92rem; font-weight: 800; color: var(--wi-ink); }
 .wf-ai-action-btn.small { padding: 5px 10px; font-size: 0.72rem; }
 .wf-rem-add-btn.small { padding: 9px; font-size: 0.8rem; }
-#autoAskBtn, #wfAskBtn { align-self: flex-start; }
+/* TASK 5(b) (2026-11), direct instruction - "+ Add rule" is already
+   .wf-ai-action-btn.outline.small, same classes as Load/Copy, but its
+   parent .wf-auto-card is a column flex container with the default
+   align-items:stretch, which stretches ANY flex item (even an
+   inline-flex one) to the full cross-axis width - same root cause
+   #autoAskBtn/#wfAskBtn already needed this exact fix for. */
+#autoAskBtn, #wfAskBtn, #wfAddRuleBtn { align-self: flex-start; }
 .wf-auto-hint { font-size: 0.72rem; color: var(--wi-muted); margin-top: 4px; }
 .wf-auto-err { font-size: 0.72rem; color: var(--wi-red-700); font-weight: 700; margin-top: 4px; }
 .wf-auto-err.hidden { display: none; }

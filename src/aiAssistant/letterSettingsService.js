@@ -273,50 +273,96 @@ async function getLetterRegisterLink() {
   } catch (err) { return null; }
 }
 
-const LETTER_REGISTER_HEADERS = ['Date', 'Ref No.', 'Employee Code', 'Name', 'Company', 'Letter Type', 'Workflow', 'PDF Link'];
+const LETTER_REGISTER_HEADERS = ['Date', 'Ref No.', 'Employee Code', 'Name', 'Company', 'Letter Type', 'Workflow', 'Batch', 'PDF Link'];
 
-// Idempotent: creates the "Letter Register" Google Sheet inside the
-// owner's own "SUBH Letter Templates" Drive folder the FIRST time it's
-// needed, caches its id/url in Redis, and reuses that same sheet on every
-// later call - never a second register sheet.
-async function ensureLetterRegisterSheet() {
-  const existing = await getLetterRegisterLink();
-  if (existing && existing.sheetId) return existing;
-  const drive = sheetsAuth.getDriveWriteClient();
-  const file = await drive.files.create({
-    resource: { name: 'Letter Register', mimeType: 'application/vnd.google-apps.spreadsheet', parents: [LETTER_TEMPLATES_FOLDER_ID] },
-    fields: 'id, webViewLink'
-  });
-  const sheetId = file.data.id;
-  const url = file.data.webViewLink || ('https://docs.google.com/spreadsheets/d/' + sheetId);
+function parseSheetId(url) {
+  const m = String(url || '').match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+  return m ? m[1] : null;
+}
+
+// TASK 4(a) (2026-11), direct instruction - the owner creates the Letter
+// Register sheet THEMSELVES (inside "SUBH Letter Templates", so they own
+// it and have edit rights) and pastes its link here; SUBH never creates
+// this sheet itself any more. Auto-creating a brand-new Drive file is
+// exactly the kind of service-account write that can fail with "storage
+// quota exceeded" (a service account has no storage of its own), whereas
+// editing an EXISTING sheet the owner already created only needs edit
+// access, never quota. The header row is written only if the sheet is
+// currently empty - an owner who already put something in row 1 is never
+// overwritten.
+async function setRegisterSheetLink(url) {
+  const sheetId = parseSheetId(url);
+  if (!sheetId) return { ok: false, error: 'That link does not look like a Google Sheet - paste the full URL.' };
   const sheets = sheetsAuth.getSheetsWriteClient();
-  await sheets.spreadsheets.values.update({
-    spreadsheetId: sheetId, range: 'A1', valueInputOption: 'RAW', resource: { values: [LETTER_REGISTER_HEADERS] }
-  });
-  const link = { sheetId, url };
+  let existingRow;
+  try {
+    const got = await sheets.spreadsheets.values.get({ spreadsheetId: sheetId, range: 'A1:I1' });
+    existingRow = (got.data.values && got.data.values[0]) || [];
+  } catch (err) {
+    const msg = /permission|forbidden|403/i.test(String(err.message || ''))
+      ? 'No access - share this sheet as Editor with the SUBH service account first.'
+      : 'Could not open that sheet - check the link and try again. (' + err.message + ')';
+    return { ok: false, error: msg };
+  }
+  if (!existingRow.length) {
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: sheetId, range: 'A1', valueInputOption: 'RAW', resource: { values: [LETTER_REGISTER_HEADERS] }
+    });
+  }
+  const link = { sheetId, url: 'https://docs.google.com/spreadsheets/d/' + sheetId };
   const redis = getClient();
-  if (redis) { try { await redis.set(REGISTER_SHEET_KEY, JSON.stringify(link)); } catch (err) { /* best effort - a later call just creates/caches again */ } }
-  return link;
+  if (!redis) return { ok: false, error: 'No store configured.' };
+  try { await redis.set(REGISTER_SHEET_KEY, JSON.stringify(link)); } catch (err) { return { ok: false, error: err.message }; }
+  return { ok: true, link };
 }
 
 // Appends one row per SENT letter - never called for a preview/test send.
-async function appendToLetterRegister({ date, refNo, employeeCode, name, company, letterType, workflow, pdfLink }) {
-  const link = await ensureLetterRegisterSheet();
+// Throws (never best-effort) if no register sheet is set yet - TASK 4(d),
+// direct instruction: a letter is never sent without a register entry, so
+// the caller must catch this, hold that record's letter, and notify the
+// owner, while the record's plain message still sends.
+async function appendToLetterRegister({ date, refNo, employeeCode, name, company, letterType, workflow, batch, pdfLink }) {
+  const link = await getLetterRegisterLink();
+  if (!link || !link.sheetId) throw new Error('No Letter Register sheet is set - set one in Letter settings first.');
   const sheets = sheetsAuth.getSheetsWriteClient();
-  const row = [date, refNo, employeeCode || '', name || '', company || '', LETTER_TYPE_LABELS[letterType] || letterType, workflow || '', pdfLink || ''];
+  const row = [date, refNo, employeeCode || '', name || '', company || '', LETTER_TYPE_LABELS[letterType] || letterType, workflow || '', batch || '', pdfLink || ''];
   await sheets.spreadsheets.values.append({
     spreadsheetId: link.sheetId, range: 'A1', valueInputOption: 'RAW', insertDataOption: 'INSERT_ROWS', resource: { values: [row] }
   });
   return link;
 }
 
-// Uploads one SENT letter's PDF into the same "SUBH Letter Templates"
-// Drive folder, so the Letter Register's own "PDF Link" column points at
-// the actual file that went out - never called for a preview/test send.
-async function uploadSentLetterPdf({ buffer, filename }) {
+const ISSUED_LETTERS_FOLDER_NAME = 'Issued Letters';
+const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+
+// Finds a direct child folder by exact name under parentId, creating it
+// if it doesn't exist yet - idempotent, so repeated uploads in the same
+// month reuse the same folder rather than creating a new one each time.
+async function getOrCreateDriveFolder(drive, parentId, name) {
+  const q = "'" + parentId + "' in parents and name = '" + String(name).replace(/'/g, "\\'") + "' and mimeType = 'application/vnd.google-apps.folder' and trashed = false";
+  const list = await drive.files.list({ q, fields: 'files(id, name)', spaces: 'drive' });
+  const found = list.data.files && list.data.files[0];
+  if (found) return found.id;
+  const created = await drive.files.create({ resource: { name, mimeType: 'application/vnd.google-apps.folder', parents: [parentId] }, fields: 'id' });
+  return created.data.id;
+}
+
+// Uploads one SENT letter's PDF into "SUBH Letter Templates/Issued
+// Letters/<FY>/<Month>" (TASK 4(c), 2026-11, direct instruction),
+// creating the nested subfolders as needed - never called for a preview/
+// test send. Never called before a register sheet is confirmed set (see
+// workflowService.js's recordSentLetter) - a letter is held, not sent,
+// if this throws.
+async function uploadSentLetterPdf({ buffer, filename, date }) {
   const drive = sheetsAuth.getDriveWriteClient();
+  const when = date instanceof Date ? date : new Date();
+  const fy = computeFinancialYear(when);
+  const month = MONTH_NAMES[when.getUTCMonth()];
+  const issuedFolderId = await getOrCreateDriveFolder(drive, LETTER_TEMPLATES_FOLDER_ID, ISSUED_LETTERS_FOLDER_NAME);
+  const fyFolderId = await getOrCreateDriveFolder(drive, issuedFolderId, fy);
+  const monthFolderId = await getOrCreateDriveFolder(drive, fyFolderId, month);
   const file = await drive.files.create({
-    resource: { name: filename, parents: [LETTER_TEMPLATES_FOLDER_ID] },
+    resource: { name: filename, parents: [monthFolderId] },
     media: { mimeType: 'application/pdf', body: Readable.from(buffer) },
     fields: 'id, webViewLink'
   });
@@ -329,7 +375,7 @@ module.exports = {
   computeFinancialYear, renderRefNo, padSerial,
   getRefNoFormat, saveRefNoFormat, getLetterCodes, saveLetterCode, getLetterSettings,
   getCounterValue, setCounterOverride, previewNextRefNo, assignRefNo,
-  getLetterRegisterLink, ensureLetterRegisterSheet, appendToLetterRegister, uploadSentLetterPdf,
+  getLetterRegisterLink, setRegisterSheetLink, appendToLetterRegister, uploadSentLetterPdf,
   // TASK 1 (2026-11) - exported for scripts/check-letter-settings.js only.
   migrateCountersToPerTypeOnly, resetCountersMigrationCheckForTests
 };

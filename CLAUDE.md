@@ -1761,3 +1761,225 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
   without the fix (the `.wf-auto-actions` bug above was caught exactly
   this way). `scripts/check-workflow.js` stays clean (86/86, untouched by
   this task).
+
+- Task 35 (2026-11), direct instruction, TASK 3 of "Letter settings +
+  Company details changes" - companies already followed the HR data
+  automatically (`companyDetailsService.getCompanyNamesFromHr()`/
+  `listCompanyDetails()` were already built, this session, to derive the
+  list fresh from `employeeService.getEmployeeData()` every call, keep a
+  removed company's saved details untouched in the store, and never
+  expose an Add/Delete button) - confirmed both by the EXISTING
+  deterministic test (`check-company-details.js`'s own "A company that
+  drops out of the HR data stops having a card") and by a live, read-only
+  check against the real HR sheet right now, directly confirming
+  Subhodeep's own cited example ("AMBA - North Block - 25-03-2025") is
+  already absent from the real Company column.
+  - The real gap: "with the usual cache refresh" - this route never
+    supported the `?refresh=1` force-refresh convention every other
+    HR-data route in this app already has (`workforceRoutes.js`'s own
+    `wantsForceRefresh`), so a same-minute sheet edit could still show
+    the old list for up to `employeeService`'s own 2-minute passive cache
+    window (the webhook-push invalidation usually beats that, but isn't
+    guaranteed to for every edit type). `getCompanyNamesFromHr`/
+    `listCompanyDetails` now take an optional `{ forceRefresh }`,
+    threaded through to `employeeService.getEmployeeData`; the route
+    passes `wantsForceRefresh(req)`; the frontend's `loadCompanyDetailsPage`
+    now always requests `?refresh=1` - "on every load" means every load,
+    not whatever happened to be cached up to 2 minutes ago.
+  Deterministic suite (`scripts/check-company-details.js`'s now-18/18, +2
+  new): `forceRefresh: true` is proven to actually reach
+  `employeeService.getEmployeeData`; calling with no argument at all still
+  works exactly as before (optional, never required - every existing
+  caller/test unaffected). Headless UI check (384px, 70/70, unchanged
+  count - the existing Company Details checks already cover this page):
+  the mocked route pattern needed broadening to match the new `?refresh=1`
+  query string (`**/company-details**`, not the old exact-path pattern) -
+  caught immediately by a real test failure, not assumed.
+
+- Task 36 (2026-11), direct instruction, TASK 4 of "Letter settings +
+  Company details changes" - Letter Register + Issued Letters, redesigned
+  around the real risk Subhodeep flagged: a service account has no Drive
+  storage of its own, so auto-CREATING a brand-new file (the register
+  sheet) can fail with "storage quota exceeded," while editing an
+  EXISTING file the owner already owns never hits that wall.
+  - TASK 4(a): `letterSettingsService.ensureLetterRegisterSheet()` (auto-
+    create) is GONE. `setRegisterSheetLink(url)` now takes the link to a
+    sheet the owner created themselves inside "SUBH Letter Templates"
+    (so they own it, have edit rights, and it's never a second file SUBH
+    is responsible for creating) - parses the sheet id from the URL,
+    opens it with the service account's write client, and writes the
+    header row ONLY if row 1 is currently empty (an owner who already put
+    something there is never overwritten). New route `POST /hr-assistant/
+    letter-settings/register`. Frontend: when no link is set, the Letter
+    Register card now shows a paste-a-link input + "Set register sheet"
+    button instead of the old dead "Not created yet" text.
+  - TASK 4(b): every letter from the SAME workflow run now shares one
+    Batch value (`<workflow subject> · <DD Mon YYYY>`, e.g. "Probation
+    confirmation · 01 Dec 2026"), computed once per `buildWorkflowMessages`
+    call and passed through to every `recordSentLetter` call in that run -
+    a new `Batch` column sits between `Workflow` and `PDF Link` in
+    `LETTER_REGISTER_HEADERS`. Each letter still gets its own distinct
+    PDF link; only the Batch value is shared.
+  - TASK 4(c): `uploadSentLetterPdf` now saves into "SUBH Letter
+    Templates/Issued Letters/<FY>/<Month>" (e.g. "Issued Letters/2026-27/
+    December"), via a new idempotent `getOrCreateDriveFolder` helper
+    (`files.list` by exact name+parent, `files.create` only if not
+    found) - a second letter the same month reuses the existing folders,
+    never duplicates them.
+  - TASK 4(d), the behavior change: `recordSentLetter` was "best-effort -
+    a Register/Drive-upload failure must never undo or block the letter
+    that has already actually been sent." That's exactly backwards from
+    what was asked - direct instruction: "keep letters held (never sent
+    without the register entry)." `recordSentLetter` no longer swallows
+    its own errors; it throws (no register sheet set, Drive/Sheets write
+    failure, anything) and the register write now happens BEFORE the
+    attachment is set on the outgoing message (`buildWorkflowMessages`'s
+    `push()` closure and `buildRuleSendAttachment`, the "When they reply"
+    rule-level send path, both reordered the same way) - a failure there
+    means the attachment is simply never set, the owner gets a named
+    `postOwnerNotification`, and the record's own PLAIN message still
+    sends (the pre-existing "a document failure never blocks the send"
+    guarantee, now correctly extended to cover a LOGGING failure too,
+    not just a rendering one).
+  - Live verification (direct instruction: "Don't claim it works until a
+    real file appears in the folder") - run once against the REAL Drive,
+    not mocks: `uploadSentLetterPdf` with a real tiny PDF buffer FAILS
+    with exactly the predicted error - `Error: Service Accounts do not
+    have storage quota. Leverage shared drives..., or use OAuth
+    delegation... instead.` (HTTP 403). No file was created; nothing to
+    clean up. Per direct instruction, Subhodeep's two options: (1) a
+    Shared Drive (move/recreate "SUBH Letter Templates" as a Shared
+    Drive the service account is a member of - shared-drive storage is
+    NOT the service account's own, so this removes the quota wall
+    entirely), or (2) OAuth domain-wide delegation (the service account
+    impersonates Subhodeep's own Google account for just this write, so
+    the file is created AS him, using his own Drive storage). Until one
+    of these is set up, TASK 4(d)'s hold-the-letter behavior (above) is
+    what actually runs on every real send with a document attached: the
+    attachment is correctly withheld, the owner is notified with this
+    exact reason, and the record's own plain message still sends - a
+    letter is never silently sent unlogged because of this gap.
+  Deterministic suite (`scripts/check-letter-settings.js`, `scripts/
+  check-workflow.js`): new coverage for `setRegisterSheetLink` (rejects a
+  non-sheet link, writes the header only when empty, never re-writes an
+  already-headered sheet, caches the link), `appendToLetterRegister`
+  throwing with no register set, the nested Issued Letters/FY/Month
+  folder tree (created once, reused on a second upload the same month, a
+  new Month folder under the SAME FY folder for a different month), the
+  shared Batch value with distinct PDF links across a multi-record run,
+  a register-write failure holding a record's letter (no attachment, the
+  plain message still sends, owner notified) for BOTH the main run path
+  and the rule-level sendDocument path, and the same hold behavior with
+  no register sheet configured at all.
+
+- Task 37 (2026-11), direct instruction, TASK 5 of "Letter settings +
+  Company details changes" - three small, independent UI fixes, one
+  commit each in spirit (batched into this same final commit per
+  Subhodeep's own mid-task instruction to stop testing/committing after
+  every task and run everything once at the end instead).
+  - TASK 5(a): the Doer Management/Employee Data 3-button action row
+    (Send Mail + Export Dept. Breakup + Export PDF) was starting its
+    horizontally-scrollable strip only ~4px after the "241 employees"
+    count, not the ~16px it should. TWO stacked root causes, the second
+    one caught only by directly MEASURING the real rendered gap with
+    Playwright rather than trusting the CSS change alone (the first fix
+    attempt measured 0px - a silent no-op): (1) `.wf-result-row`'s own
+    `gap` was set ONLY via an inline style on the element itself
+    (`workforce.html`) - an inline style always wins over ANY stylesheet
+    rule for the same property, so a `:has()`-scoped override could never
+    take effect no matter how it was written; moved to a real
+    `.wf-result-row { gap: 8px; }` base rule in the stylesheet so the
+    more specific selector below can actually win. (2) the strip's own
+    compensating `margin: -16px -8px` (needed so Send Mail's box-shadow
+    glow isn't clipped by `overflow-x: auto` at either scroll extreme)
+    was eating 8px straight back out of that gap. Fixed by bumping
+    `.wf-result-row:has(.wf-row-actions-scroll)`'s gap to 24px (net 16px
+    after that same -8px pullback) - the glow-compensation mechanism
+    itself is untouched. Verified by measuring the real rendered gap
+    (384px viewport) against the real CSS files: 4px before, exactly
+    16px after, and a revert-and-rerun back to 4px confirming the fix is
+    what's responsible, not a coincidence.
+  - TASK 5(b): "+ Add rule" (Create Workflow -> "When they reply") was
+    already `.wf-ai-action-btn.outline.small` - the SAME classes as Load/
+    Copy/Select all - but still rendered full-width, because its parent
+    `.wf-auto-card` is a column flex container with the default
+    `align-items: stretch`, which stretches ANY flex item (even an
+    inline-flex one like `.wf-ai-action-btn`) to the full cross-axis
+    width. `#autoAskBtn`/`#wfAskBtn` already needed this exact fix for
+    this exact reason - `#wfAddRuleBtn` just joins that same rule
+    (`align-self: flex-start`).
+  - TASK 5(c), the bigger one: "Also send"'s own "To" field was a
+    `<select>` offering only the whole "HR team"/"Accounts team"
+    department group - replaced with the SAME search-and-select chip
+    field as Cc (`createMailChipField`, reused as-is, never modified, so
+    Cc's own look/behavior is untouched per direct instruction): type a
+    name/department/email to search real employees, pick a match or
+    type-and-Enter a raw email, each becomes a removable chip, multiple
+    recipients.
+    - `plan.also.to` is now an array of emails (was the string `'hr'`/
+      `'accounts'`). `buildWorkflowMessages`'s also-message resolution no
+      longer calls `resolveTeamContacts` for the Also Send path at all -
+      it just filters/joins the array directly.
+    - Ask SUBH: the `alsoSendTo` NLU field is now an array of names/raw
+      emails (was an `enum: ['hr','accounts']`). A new
+      `resolveAlsoSendNames` helper resolves each one the EXACT same
+      whole-word-then-fuzzy way `automationService.draftPlanFromParsed`
+      already resolves its own named-people fields - 0 or 2+ matches for
+      a name both go to a named `unclear` item, never a guess. Direct
+      instruction's own example ("HR team-er 4 jon ke" - 4 people from
+      HR team, without naming them) is exactly what this is for: a vague
+      group with no named members resolves to nothing and SUBH asks,
+      never invents 4 names to fill the quota.
+    - Migration: an OLD saved workflow's `plan.also.to` STRING survives
+      with a read-time, self-healing `migrateWorkflowAlsoTo` (same
+      posture as Task 33's own counter migration) - the FIRST time such a
+      record is read (`getWorkflow`/`listRawWorkflows`), its `'hr'`/
+      `'accounts'` string is converted to the real emails that
+      department's ACTIVE members have RIGHT NOW and persisted back, so
+      an existing workflow keeps sending to the same real people without
+      ever needing a manual fix, and never re-migrates on a later read.
+  Deterministic suite (`scripts/check-workflow.js`): a named real person
+  in `alsoSendTo` resolves to their real email; a raw email passes
+  through mixed with a resolved name; an unresolvable name goes to a
+  named `unclear` item; the also-message building test now proves
+  sending to specific chosen people (not a whole-team keyword); the
+  legacy-string migration test proves a `'hr'`/`'accounts'` record
+  converts to real current team emails on first read and never re-
+  migrates/duplicates on a second. `scripts/check-workflow-nlu.js`
+  (opt-in, real API, not part of the default suite) updated: the locked
+  Scenario 1 ask's own "HR team-er 4 jon ke" now has its own assertion
+  that the real model's output, run through `draftWorkflowPlanFromParsed`
+  completely unmodified, correctly comes back unresolved rather than
+  inventing 4 names - the rest of that locked scenario's assertions are
+  re-verified against the same real model output with the ambiguous
+  group swapped for two real, resolvable names (as if the owner had
+  answered SUBH's own clarifying question), so the model's understanding
+  of every OTHER part of that scenario (source/recipient/docs/follow-up/
+  rules) stays verified exactly as before.
+  Headless UI check (384px): "+ Add rule" is a real, visibly-narrower-
+  than-the-page compact pill, same assertion style as Ask SUBH's own
+  check; the old `#wfAlsoTo` `<select>` is confirmed gone; the Also Send
+  chip field accepts both a picked employee match and a typed-and-
+  entered raw email as two separate removable chips, with no JS error.
+
+- Final verification for this whole batch (TASK 3 + TASK 4 + TASK 5(a)/
+  (b)/(c)), run ONCE at the end per Subhodeep's own mid-task instruction
+  (stop testing/committing after every task - finish everything, then one
+  full pass): `check-company-details` 18/18, `check-letter-settings`
+  55/55, `check-workflow` 94/94, `check-automation` 159/159,
+  `check-reminders` 47/47, `check-drive-templates` 19/19,
+  `check-drive-template-fields` 51/51, `check-drive-template-generation`
+  14/14, headless UI check (384px) 79/79 - all clean, zero regressions
+  anywhere this batch's own diff touches. Two PRE-EXISTING, unrelated
+  findings surfaced by this same full run (neither touched by this
+  batch's diff, not fixed here, reported to Subhodeep separately):
+  `check-mail-compose` had 4 Birthday-list failures from a date-fragile
+  test fixture (a hardcoded Oct 29 DOB stopped matching "this month" once
+  the real date rolled past October - a test bug, not a product bug);
+  `check-whatsapp-scenarios` (real model, $2.90/387 calls) came back 57
+  reliable / 2 flaky / 5 BROKEN (0/3 each) on scenarios entirely outside
+  this session's diff (CV-no-caption classification, a phonetic WhatsApp
+  name lookup, a disambiguation re-resolution case, a salary-slip
+  misrouted into the attendance-approval flow, and a HOD reporting-
+  structure regression) - flagged for Subhodeep to prioritize separately,
+  not folded into this commit.

@@ -1,8 +1,9 @@
 // Persisted regression suite for "Letter settings" (TASK 1c, 2026-11,
 // direct instruction): Ref No. format, letter codes, atomic per-company +
-// letter-type + financial-year counters, and the Letter Register Google
-// Sheet. Fully deterministic, zero Claude API calls. The real Google Drive/
-// Sheets write calls (ensureLetterRegisterSheet/appendToLetterRegister) are
+// letter-type + financial-year counters, and the owner-set Letter
+// Register Google Sheet (TASK 4(a)/(c), 2026-11). Fully deterministic,
+// zero Claude API calls. The real Google Drive/Sheets write calls
+// (setRegisterSheetLink/appendToLetterRegister/uploadSentLetterPdf) are
 // stubbed by monkey-patching src/sheetsAuth.js's own exported client
 // getters, in-process, never touching a real Drive/Sheets account - same
 // "fake the client, not the service" convention used throughout this repo
@@ -187,47 +188,103 @@ async function main() {
   });
 
   console.log('='.repeat(70));
-  console.log('Letter Register: created once inside the owner-provided Drive folder, cached, appended to on every send');
+  console.log('TASK 4(a) (2026-11), direct instruction - Letter Register: the OWNER sets it by pasting a link to a sheet they created themselves; SUBH never creates it');
   console.log('='.repeat(70));
   const origGetDriveWriteClient = sheetsAuth.getDriveWriteClient;
   const origGetSheetsWriteClient = sheetsAuth.getSheetsWriteClient;
-  let createCalls = 0;
   let appendCalls = [];
   let valuesUpdateCalls = [];
+  let valuesGetCalls = [];
   const FAKE_SHEET_ID = 'fake-sheet-id-123';
-  sheetsAuth.getDriveWriteClient = () => ({
-    files: {
-      create: async (opts) => {
-        createCalls++;
-        check('the register sheet is created INSIDE the exact owner-provided folder (never a new one)', (opts.resource.parents || [])[0] === letterSettingsService.LETTER_TEMPLATES_FOLDER_ID);
-        check('the register sheet is a native Google Sheet', opts.resource.mimeType === 'application/vnd.google-apps.spreadsheet');
-        return { data: { id: FAKE_SHEET_ID, webViewLink: 'https://docs.google.com/spreadsheets/d/' + FAKE_SHEET_ID } };
-      }
-    }
-  });
+  let fakeHeaderRow = [];
   sheetsAuth.getSheetsWriteClient = () => ({
     spreadsheets: {
       values: {
+        get: async (opts) => { valuesGetCalls.push(opts); return { data: { values: fakeHeaderRow.length ? [fakeHeaderRow] : [] } }; },
         update: async (opts) => { valuesUpdateCalls.push(opts); return {}; },
         append: async (opts) => { appendCalls.push(opts); return {}; }
       }
     }
   });
   try {
-    const link1 = await letterSettingsService.ensureLetterRegisterSheet();
-    check('ensureLetterRegisterSheet creates the sheet and returns its id/url', link1.sheetId === FAKE_SHEET_ID && Boolean(link1.url));
-    check('the header row is written on creation', valuesUpdateCalls.length === 1 && valuesUpdateCalls[0].resource.values[0][0] === 'Date');
-    const link2 = await letterSettingsService.ensureLetterRegisterSheet();
-    check('a SECOND call reuses the cached sheet, never creating a second one', createCalls === 1 && link2.sheetId === FAKE_SHEET_ID);
+    console.log('-'.repeat(70));
+    const noRegisterYet = await letterSettingsService.getLetterRegisterLink();
+    check('before anything is set, getLetterRegisterLink returns null', noRegisterYet === null);
+    await (async () => {
+      try { await letterSettingsService.appendToLetterRegister({ date: '2026-11-05', refNo: 'X', letterType: 'confirmation' }); check('appendToLetterRegister never reaches this line when no register is set', false); }
+      catch (err) { check('appendToLetterRegister THROWS (never silently swallows) when no register sheet is set yet - TASK 4(d)\'s "hold the letter" depends on this', /no letter register sheet is set/i.test(err.message)); }
+    })();
+
+    const badLink = await letterSettingsService.setRegisterSheetLink('not a real link');
+    check('setRegisterSheetLink rejects a link that is not a Google Sheets URL', badLink.ok === false);
+
+    const goodLink = await letterSettingsService.setRegisterSheetLink('https://docs.google.com/spreadsheets/d/' + FAKE_SHEET_ID + '/edit');
+    check('setRegisterSheetLink accepts a real sheet link and returns its id/url', goodLink.ok === true && goodLink.link.sheetId === FAKE_SHEET_ID);
+    check('the header row is written because the pasted sheet was empty', valuesUpdateCalls.length === 1 && valuesUpdateCalls[0].resource.values[0][0] === 'Date' && valuesUpdateCalls[0].resource.values[0].includes('Batch'));
     const cachedLink = await letterSettingsService.getLetterRegisterLink();
     check('getLetterRegisterLink returns the cached link for the Letter settings page', cachedLink && cachedLink.sheetId === FAKE_SHEET_ID);
 
-    await letterSettingsService.appendToLetterRegister({ date: '2026-11-05', refNo: 'ARPL/HR/CONF/2026-27/0001', employeeCode: 'E001', name: 'Alice Emp', company: 'Alcove Realty Pvt Ltd', letterType: 'confirmation', workflow: 'Monthly confirmations', pdfLink: 'https://drive.google.com/file/d/xyz' });
-    check('appendToLetterRegister appends exactly one row to the cached sheet', appendCalls.length === 1 && appendCalls[0].spreadsheetId === FAKE_SHEET_ID);
-    check('the appended row has the ref no. and employee details in the documented column order', appendCalls[0].resource.values[0][1] === 'ARPL/HR/CONF/2026-27/0001' && appendCalls[0].resource.values[0][2] === 'E001' && appendCalls[0].resource.values[0][3] === 'Alice Emp');
+    fakeHeaderRow = ['Date', 'Ref No.', 'Employee Code', 'Name', 'Company', 'Letter Type', 'Workflow', 'Batch', 'PDF Link'];
+    valuesUpdateCalls = [];
+    const resetLink = await letterSettingsService.setRegisterSheetLink('https://docs.google.com/spreadsheets/d/' + FAKE_SHEET_ID);
+    check('re-setting the SAME (already-headered) sheet never overwrites row 1 again', resetLink.ok === true && valuesUpdateCalls.length === 0);
+
+    await letterSettingsService.appendToLetterRegister({ date: '2026-11-05', refNo: 'ARPL/HR/CONF/2026-27/0001', employeeCode: 'E001', name: 'Alice Emp', company: 'Alcove Realty Pvt Ltd', letterType: 'confirmation', workflow: 'Monthly confirmations', batch: 'Monthly confirmations · 05 Nov 2026', pdfLink: 'https://drive.google.com/file/d/xyz' });
+    check('appendToLetterRegister appends exactly one row to the set sheet', appendCalls.length === 1 && appendCalls[0].spreadsheetId === FAKE_SHEET_ID);
+    const appendedRow = appendCalls[0].resource.values[0];
+    check('the appended row has the ref no./employee details/Batch in the documented column order (Date, Ref No., Employee Code, Name, Company, Letter Type, Workflow, Batch, PDF Link)', appendedRow[1] === 'ARPL/HR/CONF/2026-27/0001' && appendedRow[2] === 'E001' && appendedRow[3] === 'Alice Emp' && appendedRow[7] === 'Monthly confirmations · 05 Nov 2026' && appendedRow[8] === 'https://drive.google.com/file/d/xyz');
+  } finally {
+    sheetsAuth.getSheetsWriteClient = origGetSheetsWriteClient;
+  }
+
+  console.log('='.repeat(70));
+  console.log('TASK 4(c) (2026-11), direct instruction - uploadSentLetterPdf: nested "Issued Letters/<FY>/<Month>" folders, created as needed and reused');
+  console.log('='.repeat(70));
+  const driveFolders = []; // { id, name, parentId } - simulates real Drive folder state across calls
+  let fakeFolderCounter = 0;
+  let fakeFileCounter = 0;
+  const driveFileCreateCalls = [];
+  sheetsAuth.getDriveWriteClient = () => ({
+    files: {
+      list: async (opts) => {
+        const nameMatch = /name = '([^']*)'/.exec(opts.q || '');
+        const parentMatch = /'([^']*)' in parents/.exec(opts.q || '');
+        const name = nameMatch ? nameMatch[1] : null;
+        const parentId = parentMatch ? parentMatch[1] : null;
+        const found = driveFolders.filter((f) => f.name === name && f.parentId === parentId);
+        return { data: { files: found.map((f) => ({ id: f.id, name: f.name })) } };
+      },
+      create: async (opts) => {
+        const res = opts.resource || {};
+        if (res.mimeType === 'application/vnd.google-apps.folder') {
+          const id = 'fake-folder-' + (++fakeFolderCounter);
+          driveFolders.push({ id, name: res.name, parentId: (res.parents || [])[0] });
+          return { data: { id } };
+        }
+        driveFileCreateCalls.push(opts);
+        const id = 'fake-pdf-' + (++fakeFileCounter);
+        return { data: { id, webViewLink: 'https://drive.google.com/file/d/' + id + '/view' } };
+      }
+    }
+  });
+  try {
+    const upload1 = await letterSettingsService.uploadSentLetterPdf({ buffer: Buffer.from('%PDF fake'), filename: 'Confirmation-Letter-Alice.pdf', date: new Date('2026-12-05T00:00:00.000Z') });
+    check('uploadSentLetterPdf returns a usable file id/url', Boolean(upload1.fileId) && /drive\.google\.com/.test(upload1.url));
+    check('exactly 3 folders are created for a brand-new FY/month path: Issued Letters, the FY, the month', driveFolders.length === 3);
+    const issued = driveFolders.find((f) => f.name === 'Issued Letters' && f.parentId === letterSettingsService.LETTER_TEMPLATES_FOLDER_ID);
+    const fyFolder = driveFolders.find((f) => f.name === '2026-27' && issued && f.parentId === issued.id);
+    const monthFolder = driveFolders.find((f) => f.name === 'December' && fyFolder && f.parentId === fyFolder.id);
+    check('the nesting is exactly Issued Letters -> <FY> -> <Month>', Boolean(issued) && Boolean(fyFolder) && Boolean(monthFolder));
+    check('the PDF file itself is created inside the Month folder', driveFileCreateCalls[0].resource.parents[0] === monthFolder.id);
+
+    const beforeSecond = driveFolders.length;
+    await letterSettingsService.uploadSentLetterPdf({ buffer: Buffer.from('%PDF fake 2'), filename: 'Confirmation-Letter-Bob.pdf', date: new Date('2026-12-20T00:00:00.000Z') });
+    check('a SECOND letter the same month reuses the existing Issued Letters/FY/Month folders - never creates duplicates', driveFolders.length === beforeSecond);
+
+    await letterSettingsService.uploadSentLetterPdf({ buffer: Buffer.from('%PDF fake 3'), filename: 'Confirmation-Letter-Carl.pdf', date: new Date('2027-01-10T00:00:00.000Z') });
+    check('a letter in a DIFFERENT month (same FY) gets its own new Month folder under the SAME FY folder', driveFolders.some((f) => f.name === 'January' && f.parentId === fyFolder.id));
   } finally {
     sheetsAuth.getDriveWriteClient = origGetDriveWriteClient;
-    sheetsAuth.getSheetsWriteClient = origGetSheetsWriteClient;
   }
 
   console.log('='.repeat(70));

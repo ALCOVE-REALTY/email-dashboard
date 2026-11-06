@@ -35,9 +35,11 @@ function defaultCodeForName(name) {
 
 // Every Google Doc / .docx directly inside the folder (never a subfolder -
 // the owner's own templates, nothing nested), excluding anything trashed.
-// The "Letter Register" Google Sheet this same folder holds (see
-// letterSettingsService.ensureLetterRegisterSheet) is a spreadsheet, so
-// it's never matched by this mimeType filter - no special-casing needed.
+// The owner's own "Letter Register" Google Sheet (TASK 4(a), 2026-11 -
+// letterSettingsService.setRegisterSheetLink) and the "Issued Letters"
+// subfolder tree (TASK 4(c)) can both live in this same folder - neither
+// is a Google Doc/.docx, so neither is ever matched by this mimeType
+// filter, and the subfolder is never recursed into anyway.
 async function listDriveTemplateFiles() {
   if (!sheetsAuth.hasServiceAccount()) return [];
   const drive = sheetsAuth.getDriveClient();
