@@ -2273,8 +2273,17 @@ router.post('/hr-assistant/workflows/ask', async (req, res) => {
   try {
     const { text, sheetContext } = req.body || {};
     if (!text || !String(text).trim()) return res.status(400).json({ error: 'text is required' });
-    const parsed = await workflowService.parseWorkflowAsk(String(text).trim(), sheetContext || null);
-    const draft = await workflowService.draftWorkflowPlanFromParsed(parsed, new Date(), sheetContext || null);
+    // Closing the "Ask SUBH can't pick a Drive template by name" gap
+    // (2026-11, direct instruction): fetch the real template list (4
+    // built-ins + whatever's actually in the SUBH Letter Templates Drive
+    // folder) ONCE and feed it to both the NLU tool and its own
+    // validation, so a plain-language mention of a Drive template's name
+    // resolves to that exact template - never guessed. Best-effort: if
+    // Drive is briefly unreachable, falls back to just the 4 built-ins
+    // rather than failing the whole ask.
+    const templateOptions = await driveTemplatesService.listAllLetterTemplates().catch(() => []);
+    const parsed = await workflowService.parseWorkflowAsk(String(text).trim(), sheetContext || null, templateOptions);
+    const draft = await workflowService.draftWorkflowPlanFromParsed(parsed, new Date(), sheetContext || null, templateOptions);
     res.json(draft);
   } catch (err) {
     res.status(500).json({ error: err.message });

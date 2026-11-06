@@ -93,6 +93,25 @@ async function main() {
     check('pending-assets rule asks for the detail, then mails the employee ({Reply_Detail} available)', Boolean(pendingRule) && pendingRule.sendTo === 'self' && /Reply_Detail/.test(pendingRule.sendBody || ''));
 
     console.log('='.repeat(70));
+    console.log('Scenario 4 (2026-11, direct instruction): a plain-language ask naming a Drive template by its own name resolves to that template, not a built-in guess - real Claude API');
+    console.log('='.repeat(70));
+    const DRIVE_TEMPLATE_OPTIONS = [
+      { key: 'confirmation', label: 'Confirmation' }, { key: 'extension', label: 'Extension of Probation' },
+      { key: 'experience', label: 'Experience' }, { key: 'relieving', label: 'Relieving' },
+      { key: 'drive:apt1', label: 'Appointment Letter' }
+    ];
+    const appointmentAsk = 'Proti maser 1 tarikh oi maser pending probation confirmation gulo protita employee-r Reporting Manager ke Appointment Letter template diye mail korbe. Approved hole "Noted with thanks" bolbe.';
+    const appointmentParsed = await workflowService.parseWorkflowAsk(appointmentAsk, null, DRIVE_TEMPLATE_OPTIONS);
+    const appointmentDraft = await workflowService.draftWorkflowPlanFromParsed(appointmentParsed, now, null, DRIVE_TEMPLATE_OPTIONS);
+    console.log(JSON.stringify(appointmentDraft, null, 2));
+    check('"Appointment Letter template diye" resolves documentsTemplate to the real Drive key, not a built-in guess', appointmentDraft.ok && appointmentDraft.plan.docs.on && appointmentDraft.plan.docs.template === 'drive:apt1');
+    const noMatchAsk = 'Proti maser 1 tarikh oi maser pending probation confirmation gulo protita employee-r Reporting Manager ke "Welcome Aboard" letter template diye mail korbe. Approved hole "Noted with thanks" bolbe.';
+    const noMatchParsed = await workflowService.parseWorkflowAsk(noMatchAsk, null, DRIVE_TEMPLATE_OPTIONS);
+    const noMatchDraft = await workflowService.draftWorkflowPlanFromParsed(noMatchParsed, now, null, DRIVE_TEMPLATE_OPTIONS);
+    console.log(JSON.stringify(noMatchDraft, null, 2));
+    check('a named template that matches none of the real options comes back unclear (in the model\'s own words or the code\'s own fallback), never a guessed built-in', !noMatchDraft.ok && noMatchDraft.unclear.some((u) => /template/i.test(u)));
+
+    console.log('='.repeat(70));
     console.log('Reply classification (real Claude API, against the real rules drafted above) - the model only classifies/extracts; the outgoing text always comes from the owner\'s own rule.replyText, never from the model');
     console.log('='.repeat(70));
     async function classify(rules, replyText) {

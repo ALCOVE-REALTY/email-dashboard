@@ -1256,10 +1256,49 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
   from the mocked proposal (including the "Ask me" case for an
   unmapped one), and it hides again for a built-in template - verified
   to catch a regression by reverting and re-running.
-  Deliberately NOT done (noted as a minor, non-blocking gap, not
-  revisited in this batch): the Ask SUBH plan-extraction tool
-  (`documentsTemplate` in `workflowService.js`'s own NLU schema) still
-  only offers the 4 built-in template keys, so a plain-language ask can't
-  yet have SUBH pick a Drive template on its own - the owner can always
-  select one manually from the Template dropdown regardless, same as
-  every other field that schema can leave for the owner to set by hand.
+- Task 28 (2026-11), direct instruction - closes the Task 26/27 gap noted
+  above: Ask SUBH's plan-extraction tool can now pick a Drive template BY
+  NAME from a plain-language ask (e.g. "Appointment Letter template
+  diye"), not just the 4 built-ins.
+  - `workflowPlanTool`'s `documentsTemplate`/`sendDocument` fields build
+    their `enum` from a `templateOptions` list the CALLER supplies
+    (`driveTemplatesService.listAllLetterTemplates()` - always the 4
+    built-ins plus whatever's actually in the SUBH Letter Templates Drive
+    folder right now), with the description spelling out every "key —
+    label" pair so the model can match the ask's own wording to the
+    correct key. `draftWorkflowPlanFromParsed`/`draftRule` validate
+    against that SAME list (`templateKeys(templateOptions)`), never a
+    hardcoded 4-item array - a key the model emits is only ever accepted
+    if it's genuinely one of the real, current options. The route
+    (`POST /hr-assistant/workflows/ask`) fetches this list ONCE and
+    passes it to both `parseWorkflowAsk` and `draftWorkflowPlanFromParsed`
+    so the two can never disagree on what's available; a brief Drive
+    outage falls back to just the 4 built-ins rather than failing the ask.
+  - Every caller that doesn't pass a `templateOptions` list (every
+    pre-existing test, and `check-workflow-nlu.js`'s own older scenarios)
+    keeps behaving exactly as before: `templateChoices`/`templateKeys`
+    fall back to `driveTemplatesService.BUILTIN_TEMPLATES`, so this is a
+    zero-regression, zero-new-network-calls change for anything that
+    doesn't opt in - `check-workflow.js` stays fully deterministic.
+  - When the ask names a template matching none of the real options, the
+    model has no valid enum value to emit for it, so the existing "no
+    template chosen" `unclear` path fires - confirmed live (real Claude
+    API) to report it in a specific, named way rather than silently
+    guessing a built-in.
+  Deterministic suite: `scripts/check-workflow.js`'s new "Task 28"
+  section (part of its now-86/86): `documentsTemplate`/`sendDocument`
+  resolve to a Drive key that's actually in the passed `templateOptions`
+  list, the identical key is rejected back to `unclear` when NO list is
+  passed (proving it's never a hardcoded allowance), a made-up key that
+  matches nothing in the list still falls to `unclear`, and a real run
+  sends correctly when `docs.template` is a Drive key resolved this way.
+  Real-API suite (`scripts/check-workflow-nlu.js`'s new "Scenario 4",
+  opt-in, costs real quota): a plain-language ask naming "Appointment
+  Letter" (a fake Drive template in the passed list) resolves
+  `documentsTemplate` to its real key, not a built-in guess; a second ask
+  naming a template that matches nothing comes back `unclear` by name.
+  Confirmed against the live model (2 of 2 runs correct for both new
+  checks); one of the suite's own PRE-EXISTING scenario-1 checks flaked
+  on a separate run (passed cleanly on immediate re-run, same code) -
+  this is the suite's already-documented real-model variance, not a
+  regression from this change.

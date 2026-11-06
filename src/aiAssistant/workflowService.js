@@ -531,7 +531,27 @@ const MODEL = process.env.CLAUDE_MODEL_MAIN;
 const DOCUMENT_TEMPLATES = ['confirmation', 'extension', 'experience', 'relieving'];
 const SEND_TO_TARGETS = ['self', 'manager', 'hr', 'accounts'];
 
-function workflowPlanTool(departmentNames, sheetContext) {
+// Closing the "Ask SUBH can't pick a Drive template by name" gap
+// (2026-11, direct instruction): when a caller has already fetched the
+// real template list (driveTemplatesService.listAllLetterTemplates -
+// always the 4 built-ins plus whatever's actually in the SUBH Letter
+// Templates Drive folder), the NLU tool's own enum and the validation
+// below both use it, so a plain-language mention of a Drive template's
+// name (e.g. "Appointment Letter diye") can resolve straight to that
+// template - never guessed, always one of the real, current options; if
+// none matches, the model has nothing valid to pick and the existing
+// "no template chosen" unclear path fires, exactly as for a built-in.
+// Any caller that doesn't pass a list (every pre-existing test, and
+// check-workflow-nlu.js's own calls) keeps behaving exactly as before -
+// just the 4 built-in keys, zero Drive lookups, zero new network calls.
+function templateChoices(templateOptions) {
+  return (templateOptions && templateOptions.length) ? templateOptions : driveTemplatesService.BUILTIN_TEMPLATES;
+}
+function templateKeys(templateOptions) {
+  return templateChoices(templateOptions).map((t) => t.key);
+}
+
+function workflowPlanTool(departmentNames, sheetContext, templateOptions) {
   const base = automationService.automationPlanTool
     ? automationService.automationPlanTool(departmentNames, sheetContext)
     : null;
@@ -539,6 +559,9 @@ function workflowPlanTool(departmentNames, sheetContext) {
     ? ' A Google Sheet is currently loaded ("' + (sheetContext.fileName || 'the sheet') + '") with these tabs and their real columns: ' +
       sheetContext.tabs.map((t) => '"' + t.title + '" (' + (t.headers || []).join(', ') + ')').join('; ') + '. When the ask clearly refers to this sheet or one of its tabs, use source="sheet".'
     : '';
+  const templates = templateChoices(templateOptions);
+  const templateEnum = templates.map((t) => t.key);
+  const templateListText = templates.map((t) => t.key + ' — ' + t.label).join('; ');
   const ruleItem = {
     type: 'object',
     properties: {
@@ -550,7 +573,7 @@ function workflowPlanTool(departmentNames, sheetContext) {
       sendTo: { type: 'string', enum: SEND_TO_TARGETS, description: 'Only if a FURTHER message should be sent once this rule resolves - "self" the employee, "manager" their Reporting Manager, "hr" the HR team, "accounts" the Accounts team. Omit entirely if no further message is sent.' },
       sendSubject: { type: 'string', description: 'Required when sendTo is set - the further message\'s subject (mail) or omit for WhatsApp.' },
       sendBody: { type: 'string', description: 'Required when sendTo is set - the further message\'s body, placeholders allowed including {Reply_Detail} (what the sender told SUBH, when askDetail was used).' },
-      sendDocument: { type: 'string', enum: DOCUMENT_TEMPLATES, description: 'Set this whenever the further message IS one of the four named letters (Confirmation Letter, Extension of Probation Period/Letter, Experience Letter, Relieving Letter) rather than just a plain notice - e.g. "extension hole ... employee ke Extension of Probation Period mail" means generate and attach the real Extension of Probation letter, not merely tell them about it in sendBody. sendBody still carries a short covering note either way. Omit only when no letter should be attached.' },
+      sendDocument: { type: 'string', enum: templateEnum, description: 'Set this whenever the further message IS a named letter (one of the 4 built-ins, or a template from the SUBH Letter Templates Drive folder) rather than just a plain notice - e.g. "extension hole ... employee ke Extension of Probation Period mail" means generate and attach the real Extension of Probation letter, not merely tell them about it in sendBody. Match the ask\'s own template name against the real options below and use its exact key. sendBody still carries a short covering note either way. Available templates: ' + templateListText + '. Omit when no letter should be attached, or when the ask names a template matching none of these (explain that in `unclear` instead of guessing).' },
       askMeFirst: { type: 'boolean', description: 'true only if the owner should approve this further message before it actually sends (e.g. "ask me first", "let me check before sending"). Defaults to false.' },
       then: { type: 'string', enum: ['stop', 'wait', 'askme'], description: '"stop" if this record is done once this rule resolves (the default for most rules), "wait" if SUBH should keep waiting/following up afterward (e.g. "will share later"), "askme" if the owner should decide what happens next.' }
     },
@@ -571,7 +594,7 @@ function workflowPlanTool(departmentNames, sheetContext) {
           alsoSendTable: { type: 'boolean', description: 'Only when alsoSendOn is true - true if this message should include the record table.' },
           alsoSendDocs: { type: 'boolean', description: 'Only when alsoSendOn is true and documentsOn is true - true if every generated document should be attached to this message instead of/alongside each first message.' },
           documentsOn: { type: 'boolean', description: 'true only if one generated letter per record is mentioned (a confirmation/extension/experience/relieving letter). Defaults to false.' },
-          documentsTemplate: { type: 'string', enum: DOCUMENT_TEMPLATES, description: 'Required when documentsOn is true - which built-in letter template.' },
+          documentsTemplate: { type: 'string', enum: templateEnum, description: 'Required when documentsOn is true - the key of the letter template to generate, matched by name against the real templates available: ' + templateListText + '. If the ask names a template matching none of these, leave this unset and explain in `unclear` instead of guessing.' },
           documentsAttachTo: { type: 'string', enum: ['also', 'first'], description: 'Only when documentsOn is true - "also" attaches to the also-send message, "first" attaches to each record\'s own first message. Defaults to "also".' },
           followUpDays: { type: 'number', description: 'How many days to wait before following up when there is no reply. Defaults to 2.' },
           followUpMax: { type: 'number', description: 'Maximum number of follow-ups before SUBH alerts the owner. Defaults to 2.' },
@@ -584,12 +607,12 @@ function workflowPlanTool(departmentNames, sheetContext) {
   };
 }
 
-async function parseWorkflowAsk(text, sheetContext) {
+async function parseWorkflowAsk(text, sheetContext, templateOptions) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey || !MODEL) return { unclear: ['SUBH\'s language model is not configured on this server'] };
   const { departmentNames } = await employeeService.getEmployeeData();
   const deptList = Array.from(departmentNames.values());
-  const toolDef = workflowPlanTool(deptList, sheetContext).function;
+  const toolDef = workflowPlanTool(deptList, sheetContext, templateOptions).function;
   const resp = await fetch(CLAUDE_API_URL, {
     method: 'POST',
     headers: { 'x-api-key': apiKey, 'anthropic-version': CLAUDE_ANTHROPIC_VERSION, 'content-type': 'application/json' },
@@ -613,7 +636,7 @@ async function parseWorkflowAsk(text, sheetContext) {
 // draftPlanFromParsed's own column/people resolution) and pushing a
 // specific, named problem into `unclear` for anything required but
 // missing - never silently dropped.
-function draftRule(raw, index, unclear) {
+function draftRule(raw, index, unclear, templateOptions) {
   const when = String((raw && raw.when) || '').trim();
   if (!when) { unclear.push('rule ' + (index + 1) + ': what this reply means'); return null; }
   const replyText = String((raw && raw.replyText) || '').trim();
@@ -625,7 +648,7 @@ function draftRule(raw, index, unclear) {
   const sendSubject = sendTo ? String((raw && raw.sendSubject) || '').trim() : null;
   const sendBody = sendTo ? String((raw && raw.sendBody) || '').trim() : null;
   if (sendTo && !sendBody) { unclear.push('rule ' + (index + 1) + ' ("' + when + '"): the body of the further message to send'); return null; }
-  const sendDocument = sendTo && raw && DOCUMENT_TEMPLATES.includes(raw.sendDocument) ? raw.sendDocument : null;
+  const sendDocument = sendTo && raw && templateKeys(templateOptions).includes(raw.sendDocument) ? raw.sendDocument : null;
   const then = raw && ['stop', 'wait', 'askme'].includes(raw.then) ? raw.then : 'stop';
   return {
     when, askDetail, askQuestion,
@@ -642,13 +665,13 @@ function draftRule(raw, index, unclear) {
 // re-implemented here, so the two features can never resolve the same
 // kind of ask two different ways. Only the workflow-specific fields
 // (rules/also-send/documents/follow-up) are drafted in this function.
-async function draftWorkflowPlanFromParsed(parsed, now, sheetContext) {
+async function draftWorkflowPlanFromParsed(parsed, now, sheetContext, templateOptions) {
   const base = await automationService.draftPlanFromParsed(parsed, now, sheetContext);
   if (!base.ok) return base;
   const unclear = [];
   const rules = [];
   (parsed.rules || []).forEach((r, i) => {
-    const rule = draftRule(r, i, unclear);
+    const rule = draftRule(r, i, unclear, templateOptions);
     if (rule) rules.push(rule);
   });
   if (!rules.length && !unclear.length) unclear.push('at least one rule for what happens when someone replies');
@@ -666,8 +689,8 @@ async function draftWorkflowPlanFromParsed(parsed, now, sheetContext) {
 
   let docs = { on: false, template: null, attachTo: 'also' };
   if (parsed.documentsOn) {
-    const template = DOCUMENT_TEMPLATES.includes(parsed.documentsTemplate) ? parsed.documentsTemplate : null;
-    if (!template) unclear.push('which letter template to generate (Confirmation, Extension of Probation, Experience, or Relieving)');
+    const template = templateKeys(templateOptions).includes(parsed.documentsTemplate) ? parsed.documentsTemplate : null;
+    if (!template) unclear.push('which letter template to generate (' + templateChoices(templateOptions).map((t) => t.label).join(', ') + ')');
     docs = { on: true, template: template || 'confirmation', attachTo: parsed.documentsAttachTo === 'first' ? 'first' : 'also' };
   }
 

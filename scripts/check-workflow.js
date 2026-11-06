@@ -992,6 +992,51 @@ async function main() {
     }
 
     console.log('='.repeat(70));
+    console.log('Task 28 (2026-11), direct instruction - closing the "Ask SUBH can\'t pick a Drive template by name" gap: a caller-supplied real template list (built-ins + Drive) is what documentsTemplate/sendDocument are validated against, never a hardcoded 4-item list');
+    console.log('='.repeat(70));
+    const FAKE_TEMPLATE_OPTIONS = [
+      { key: 'confirmation', label: 'Confirmation' }, { key: 'extension', label: 'Extension of Probation' },
+      { key: 'experience', label: 'Experience' }, { key: 'relieving', label: 'Relieving' },
+      { key: 'drive:apt1', label: 'Appointment Letter' }
+    ];
+    await checkAsync('documentsTemplate resolves to a Drive template key when it is present in the passed template list (the NLU tool would only ever emit a key it was given)', async () => {
+      const r = await workflowService.draftWorkflowPlanFromParsed({ unclear: [], source: 'master', rec: 'column', recCol: 'self', group: 'each', mediator: 'mail', documentsOn: true, documentsTemplate: 'drive:apt1', rules: [{ when: 'X', replyText: 'Y', then: 'stop' }] }, now, null, FAKE_TEMPLATE_OPTIONS);
+      return r.ok && r.plan.docs.on && r.plan.docs.template === 'drive:apt1';
+    });
+    await checkAsync('the SAME Drive key is rejected (falls to unclear, never silently accepted) when no template list is passed at all - it is only ever a valid choice when it is actually a real, current option', async () => {
+      const r = await workflowService.draftWorkflowPlanFromParsed({ unclear: [], source: 'master', rec: 'column', recCol: 'self', group: 'each', mediator: 'mail', documentsOn: true, documentsTemplate: 'drive:apt1', rules: [{ when: 'X', replyText: 'Y', then: 'stop' }] }, now, null);
+      return !r.ok && r.unclear.some((u) => u.includes('which letter template'));
+    });
+    await checkAsync('a rule\'s own sendDocument resolves to a Drive template key the same way', async () => {
+      const r = await workflowService.draftWorkflowPlanFromParsed({ unclear: [], source: 'master', rec: 'column', recCol: 'self', group: 'each', mediator: 'mail', rules: [{ when: 'Confirmed', replyText: 'Noted.', sendTo: 'self', sendSubject: 'Your letter', sendBody: 'Attached.', sendDocument: 'drive:apt1', then: 'stop' }] }, now, null, FAKE_TEMPLATE_OPTIONS);
+      return r.ok && r.plan.rules[0].sendDocument === 'drive:apt1';
+    });
+    await checkAsync('a made-up key that matches nothing in the passed list (not even a Drive one) still falls to unclear, never guessed', async () => {
+      const r = await workflowService.draftWorkflowPlanFromParsed({ unclear: [], source: 'master', rec: 'column', recCol: 'self', group: 'each', mediator: 'mail', documentsOn: true, documentsTemplate: 'drive:does-not-exist', rules: [{ when: 'X', replyText: 'Y', then: 'stop' }] }, now, null, FAKE_TEMPLATE_OPTIONS);
+      return !r.ok && r.unclear.some((u) => u.includes('which letter template') && u.includes('Appointment Letter'));
+    });
+    await checkAsync('a REAL run honors a docs.template that is a Drive key resolved this way, through the same buildWorkflowDocumentBuffer path as Task 26', async () => {
+      driveTemplatesService.listAllLetterTemplates = async () => [{ key: DRIVE_TPL_KEY, label: 'Bonus Letter', builtin: false, driveFileId: 'faketpl1', mimeType: driveTemplatesService.GOOGLE_DOC_MIME, code: 'BL' }];
+      driveTemplateFieldsService.extractPlaceholders = async () => ['{Employee_Name}'];
+      driveTemplateFieldsService.getTemplateMapping = async () => ({ '{Employee_Name}': { source: 'hr_column', column: 'Employee_Name' } });
+      try {
+        const r = await workflowService.draftWorkflowPlanFromParsed({ unclear: [], source: 'confirmations', rec: 'column', recCol: 'reportingManager', group: 'each', mediator: 'mail', documentsOn: true, documentsTemplate: DRIVE_TPL_KEY, rules: [{ when: 'X', replyText: 'Y', then: 'stop' }] }, now, null, [{ key: DRIVE_TPL_KEY, label: 'Bonus Letter' }]);
+        if (!r.ok || r.plan.docs.template !== DRIVE_TPL_KEY) return false;
+        const plan = Object.assign({}, r.plan, { docs: { on: true, template: DRIVE_TPL_KEY, attachTo: 'first' } });
+        const w = await create({ subject: 'By-name Drive template real send test', plan, schedule: { date: '2026-11-15', time: '10:00', repeat: 'monthly' } });
+        w.status = 'active'; await workflowService.saveWorkflow(w);
+        const beforeAttach = sentMail.filter((m) => m.kind === 'attachment').length;
+        const result = await workflowService.runWorkflow(w.id, {}, now);
+        const afterAttach = sentMail.filter((m) => m.kind === 'attachment').length;
+        return result.ok === true && afterAttach > beforeAttach;
+      } finally {
+        driveTemplatesService.listAllLetterTemplates = origListAllLetterTemplates;
+        driveTemplateFieldsService.extractPlaceholders = origExtractPlaceholders;
+        driveTemplateFieldsService.getTemplateMapping = origGetTemplateMapping;
+      }
+    });
+
+    console.log('='.repeat(70));
     console.log('Task 19 (2026-11) - "Attachment as" PDF/Excel for a Workflow\'s own record table (first message), matching the Automated Task page\'s existing feature (previously Workflow could only ever put the table in the message body)');
     console.log('='.repeat(70));
     async function makeTableAttachWorkflow(overrides) {
