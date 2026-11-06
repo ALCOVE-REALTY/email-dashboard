@@ -25,6 +25,13 @@ async function main() {
   await require('./testBootstrap').setupTestEnvironment();
   const letterSettingsService = require('../src/aiAssistant/letterSettingsService');
   const sheetsAuth = require('../src/sheetsAuth');
+  // Direct access to the local fake Upstash store (same convention as
+  // check-whatsapp-engine.js's own getRawRedisClient) - needed to plant an
+  // OLD-shape counter key directly, simulating data written before TASK 1.
+  async function getRawRedisClient() {
+    const { Redis } = require('@upstash/redis');
+    return new Redis({ url: process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL, token: process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN });
+  }
 
   console.log('='.repeat(70));
   console.log('computeFinancialYear: 1 Apr - 31 Mar');
@@ -66,46 +73,85 @@ async function main() {
   check('an empty code is rejected', emptyCode.ok === false);
 
   console.log('='.repeat(70));
-  console.log('Counters: atomic increment, per company+type+FY isolation, never reused');
+  console.log('TASK 1 (2026-11), direct instruction - Counters: atomic increment, per LETTER TYPE + FY only (company never splits the serial), never reused');
   console.log('='.repeat(70));
-  check('a never-issued counter reads 0', (await letterSettingsService.getCounterValue('Alcove Realty Pvt Ltd', 'confirmation', '2026-27')) === 0);
-  const preview1 = await letterSettingsService.previewNextRefNo({ company: 'Alcove Realty Pvt Ltd', companyCode: 'ARPL', letterType: 'confirmation', date: new Date('2026-11-05T00:00:00.000Z') });
-  check('previewNextRefNo shows 0001 for a brand-new company/type/FY and does NOT consume it', preview1.nextSerial === 1 && preview1.refNo.endsWith('/0001'));
-  check('a preview never increments the real counter', (await letterSettingsService.getCounterValue('Alcove Realty Pvt Ltd', 'confirmation', '2026-27')) === 0);
+  check('a never-issued counter reads 0', (await letterSettingsService.getCounterValue('confirmation', '2026-27')) === 0);
+  const preview1 = await letterSettingsService.previewNextRefNo({ companyCode: 'ARPL', letterType: 'confirmation', date: new Date('2026-11-05T00:00:00.000Z') });
+  check('previewNextRefNo shows 0001 for a brand-new type/FY and does NOT consume it', preview1.nextSerial === 1 && preview1.refNo.endsWith('/0001'));
+  check('a preview never increments the real counter', (await letterSettingsService.getCounterValue('confirmation', '2026-27')) === 0);
 
-  const assign1 = await letterSettingsService.assignRefNo({ company: 'Alcove Realty Pvt Ltd', companyCode: 'ARPL', letterType: 'confirmation', date: new Date('2026-11-05T00:00:00.000Z') });
+  const assign1 = await letterSettingsService.assignRefNo({ companyCode: 'ARPL', letterType: 'confirmation', date: new Date('2026-11-05T00:00:00.000Z') });
   check('the first real assignment gets serial 1 (0001)', assign1.serial === 1 && assign1.refNo.endsWith('/0001'));
-  const assign2 = await letterSettingsService.assignRefNo({ company: 'Alcove Realty Pvt Ltd', companyCode: 'ARPL', letterType: 'confirmation', date: new Date('2026-11-06T00:00:00.000Z') });
-  check('the second assignment for the SAME company/type/FY gets serial 2, never reusing 1', assign2.serial === 2);
-  const assignOtherCompany = await letterSettingsService.assignRefNo({ company: 'Subh Ventures Pvt Ltd', companyCode: 'SVPL', letterType: 'confirmation', date: new Date('2026-11-05T00:00:00.000Z') });
-  check('a DIFFERENT company has its own independent counter, unaffected by the first company\'s assignments', assignOtherCompany.serial === 1);
-  const assignOtherType = await letterSettingsService.assignRefNo({ company: 'Alcove Realty Pvt Ltd', companyCode: 'ARPL', letterType: 'extension', date: new Date('2026-11-05T00:00:00.000Z') });
-  check('a DIFFERENT letter type for the same company has its own independent counter', assignOtherType.serial === 1);
-  const assignOtherFy = await letterSettingsService.assignRefNo({ company: 'Alcove Realty Pvt Ltd', companyCode: 'ARPL', letterType: 'confirmation', date: new Date('2025-06-01T00:00:00.000Z') });
-  check('a DIFFERENT (earlier) financial year for the same company/type has its own independent counter, auto-created starting at 1', assignOtherFy.serial === 1 && assignOtherFy.fy === '2025-26');
+  const assign2 = await letterSettingsService.assignRefNo({ companyCode: 'ARPL', letterType: 'confirmation', date: new Date('2026-11-06T00:00:00.000Z') });
+  check('the second assignment for the SAME type/FY gets serial 2, never reusing 1', assign2.serial === 2);
+  const assignOtherCompany = await letterSettingsService.assignRefNo({ companyCode: 'SVPL', letterType: 'confirmation', date: new Date('2026-11-05T00:00:00.000Z') });
+  check('LOCKED SCENARIO: a DIFFERENT company for the SAME letter type/FY SHARES the one counter (serial 3, never restarting at 1) - this is the whole point of TASK 1 (Confirmation 1 - Alcove Developers, Confirmation 2 - Alcove Construction, Confirmation 3 - AMBA Highrise...)', assignOtherCompany.serial === 3);
+  const assignOtherType = await letterSettingsService.assignRefNo({ companyCode: 'ARPL', letterType: 'extension', date: new Date('2026-11-05T00:00:00.000Z') });
+  check('a DIFFERENT letter type still has its own independent counter', assignOtherType.serial === 1);
+  const assignOtherFy = await letterSettingsService.assignRefNo({ companyCode: 'ARPL', letterType: 'confirmation', date: new Date('2025-06-01T00:00:00.000Z') });
+  check('a DIFFERENT (earlier) financial year for the same type has its own independent counter, auto-created starting at 1', assignOtherFy.serial === 1 && assignOtherFy.fy === '2025-26');
 
-  await checkAsync('two "concurrent" assignments for the same company/type/FY never collide (atomic incr - simulated via Promise.all)', async () => {
+  await checkAsync('two "concurrent" assignments for the same type/FY never collide (atomic incr - simulated via Promise.all) - continuing the SAME shared counter (3 already used above), never colliding with each other or restarting', async () => {
     const [a, b] = await Promise.all([
-      letterSettingsService.assignRefNo({ company: 'Concurrency Co', companyCode: 'CC', letterType: 'confirmation', date: new Date('2026-11-05T00:00:00.000Z') }),
-      letterSettingsService.assignRefNo({ company: 'Concurrency Co', companyCode: 'CC', letterType: 'confirmation', date: new Date('2026-11-05T00:00:00.000Z') })
+      letterSettingsService.assignRefNo({ companyCode: 'CC', letterType: 'confirmation', date: new Date('2026-11-05T00:00:00.000Z') }),
+      letterSettingsService.assignRefNo({ companyCode: 'CC', letterType: 'confirmation', date: new Date('2026-11-05T00:00:00.000Z') })
     ]);
     const serials = [a.serial, b.serial].sort();
-    return serials[0] === 1 && serials[1] === 2;
+    return serials[0] === 4 && serials[1] === 5;
   });
 
   console.log('='.repeat(70));
   console.log('Counter override (Edit): continuing from an existing manual register');
   console.log('='.repeat(70));
-  const overrideBad = await letterSettingsService.setCounterOverride('Alcove Realty Pvt Ltd', 'relieving', '2026-27', 0);
+  const overrideBad = await letterSettingsService.setCounterOverride('relieving', '2026-27', 0);
   check('an override below 1 is rejected', overrideBad.ok === false);
-  const override = await letterSettingsService.setCounterOverride('Alcove Realty Pvt Ltd', 'relieving', '2026-27', 47);
+  const override = await letterSettingsService.setCounterOverride('relieving', '2026-27', 47);
   check('a valid override succeeds', override.ok === true && override.nextNumber === 47);
-  const previewAfterOverride = await letterSettingsService.previewNextRefNo({ company: 'Alcove Realty Pvt Ltd', companyCode: 'ARPL', letterType: 'relieving', date: new Date('2026-11-05T00:00:00.000Z') });
+  const previewAfterOverride = await letterSettingsService.previewNextRefNo({ companyCode: 'ARPL', letterType: 'relieving', date: new Date('2026-11-05T00:00:00.000Z') });
   check('the next PREVIEWED number reflects the override exactly (47)', previewAfterOverride.nextSerial === 47);
-  const assignAfterOverride = await letterSettingsService.assignRefNo({ company: 'Alcove Realty Pvt Ltd', companyCode: 'ARPL', letterType: 'relieving', date: new Date('2026-11-05T00:00:00.000Z') });
+  const assignAfterOverride = await letterSettingsService.assignRefNo({ companyCode: 'ARPL', letterType: 'relieving', date: new Date('2026-11-05T00:00:00.000Z') });
   check('the next REAL assignment after an override actually issues 47, not 1', assignAfterOverride.serial === 47);
-  const assignAfterOverride2 = await letterSettingsService.assignRefNo({ company: 'Alcove Realty Pvt Ltd', companyCode: 'ARPL', letterType: 'relieving', date: new Date('2026-11-05T00:00:00.000Z') });
-  check('numbering continues normally (48) after an override, never resets', assignAfterOverride2.serial === 48);
+  const assignAfterOverride2 = await letterSettingsService.assignRefNo({ companyCode: 'SVPL', letterType: 'relieving', date: new Date('2026-11-05T00:00:00.000Z') });
+  check('numbering continues normally (48) after an override, never resets - and a DIFFERENT company still shares it', assignAfterOverride2.serial === 48);
+
+  console.log('='.repeat(70));
+  console.log('TASK 1 migration: an existing OLD per-company counter is folded into the new per-type-only counter, taking the HIGHEST next number across companies');
+  console.log('='.repeat(70));
+  await checkAsync('migrateCountersToPerTypeOnly: two old per-company counters for the SAME type/FY migrate to ONE counter holding the HIGHEST value, and the old keys are removed', async () => {
+    const redis = await getRawRedisClient();
+    // Simulate the OLD key shape directly (company:letterType:fy) - as if
+    // written before this task existed.
+    await redis.set('subh-letter-counter:Alcove Developers:experience:2027-28', 12);
+    await redis.set('subh-letter-counter:Alcove Construction:experience:2027-28', 19);
+    await redis.set('subh-letter-counter:AMBA Highrise:experience:2027-28', 5);
+    letterSettingsService.resetCountersMigrationCheckForTests();
+    await redis.del('subh-letter-counter-migrated-v2'); // force the migration to actually run again for this test
+    const value = await letterSettingsService.getCounterValue('experience', '2027-28');
+    const oldKeysGone = !(await redis.get('subh-letter-counter:Alcove Developers:experience:2027-28'))
+      && !(await redis.get('subh-letter-counter:Alcove Construction:experience:2027-28'))
+      && !(await redis.get('subh-letter-counter:AMBA Highrise:experience:2027-28'));
+    return value === 19 && oldKeysGone;
+  });
+  await checkAsync('migrateCountersToPerTypeOnly: a Drive-template letter type ("drive:<fileId>", which itself contains a colon) is parsed correctly, never mistaken for a company name boundary', async () => {
+    const redis = await getRawRedisClient();
+    await redis.set('subh-letter-counter:Alcove Developers:drive:faketpl1:2027-28', 3);
+    await redis.set('subh-letter-counter:AMBA Highrise:drive:faketpl1:2027-28', 8);
+    letterSettingsService.resetCountersMigrationCheckForTests();
+    await redis.del('subh-letter-counter-migrated-v2');
+    const value = await letterSettingsService.getCounterValue('drive:faketpl1', '2027-28');
+    return value === 8;
+  });
+  await checkAsync('the migration only ever runs ONCE (idempotent) - once the flag is set, a later stray old-shape key is left completely untouched, proving it genuinely checks the flag rather than re-scanning every call', async () => {
+    const redis = await getRawRedisClient();
+    await redis.set('subh-letter-counter:Leftover Co:confirmation:2028-29', 99);
+    // Deliberately NOT resetting the migration-checked flag here - the
+    // earlier tests in this suite already ran the real migration once, so
+    // this stray old key (for a brand new FY the migration never saw) must
+    // be left exactly as-is: never folded in, never deleted.
+    const value = await letterSettingsService.getCounterValue('confirmation', '2028-29');
+    const stillThere = await redis.get('subh-letter-counter:Leftover Co:confirmation:2028-29');
+    return value === 0 && Number(stillThere) === 99;
+  });
 
   console.log('='.repeat(70));
   console.log('Letter Register: created once inside the owner-provided Drive folder, cached, appended to on every send');

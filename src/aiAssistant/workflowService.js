@@ -270,7 +270,7 @@ async function resolveLetterRefNo(template, row, runAt, isRealSend) {
     throw new Error('Company code is not set for "' + (company || 'this company') + '" - add it in SUBH Settings -> Company details.');
   }
   if (!isRealSend) return { refNo: 'Ref No. will be assigned on sending', companyCode };
-  const assigned = await letterSettingsService.assignRefNo({ company, companyCode, letterType: template, date: runAt });
+  const assigned = await letterSettingsService.assignRefNo({ companyCode, letterType: template, date: runAt });
   return { refNo: assigned.refNo, companyCode, fy: assigned.fy, serial: assigned.serial };
 }
 // Logs one REAL sent letter to the Letter Register sheet (TASK 1(c)/(e)) -

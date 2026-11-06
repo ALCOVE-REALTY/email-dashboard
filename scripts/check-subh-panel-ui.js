@@ -430,9 +430,8 @@ function check(label, ok, detail) {
         placeholders: ['{Company_Code}', '{Letter_Code}', '{FY}', '{Serial}'],
         letterTypeLabels: { confirmation: 'Confirmation', extension: 'Extension of Probation', experience: 'Experience', relieving: 'Relieving' },
         fy: '2026-27',
-        companies: ['Alcove Realty Pvt Ltd'],
         letterTypes: ['confirmation', 'extension', 'experience', 'relieving'],
-        counters: [{ company: 'Alcove Realty Pvt Ltd', letterType: 'confirmation', fy: '2026-27', nextNumber: 7 }],
+        counters: [{ letterType: 'confirmation', fy: '2026-27', nextNumber: 7 }],
         registerLink: null
       })
     });
@@ -453,8 +452,8 @@ function check(label, ok, detail) {
   check('Letter settings: all 4 tap-to-insert placeholder chips are present', chipCount === 4, 'got: ' + chipCount);
   const codeRows = await page.locator('#hrLetterCodesList [data-letter-type]').count();
   check('Letter settings: all 4 built-in letter codes render as rows', codeRows === 4, 'got: ' + codeRows);
-  const counterCards = await page.locator('#hrLetterCountersList [data-company]').count();
-  check('Letter settings: the fake counter renders as a card', counterCards === 1, 'got: ' + counterCards);
+  const counterCards = await page.locator('#hrLetterCountersList [data-letter-type]').count();
+  check('Letter settings: the fake counter renders as a card (TASK 1, 2026-11: one per letter type, no company)', counterCards === 1, 'got: ' + counterCards);
   await page.click('#hrLetterCountersList [data-action="edit-counter"]');
   await page.waitForTimeout(350);
   check('Letter settings: counter edit sheet opens', await page.locator('#hrLetterCounterSheet').isVisible());

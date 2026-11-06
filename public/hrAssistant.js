@@ -3482,12 +3482,14 @@
       '</div></div>' +
       '<div class="wf-auto-actions"><button type="button" class="plain" data-action="save-letter-code">Save</button></div></div>';
   }
+  // TASK 1 (2026-11), direct instruction - counters run per LETTER TYPE
+  // only now (never split by company) - one card per type, "<Label> ·
+  // next 0013".
   function letterCounterRowHtml(item) {
     const label = (letterSettingsState.letterTypeLabels && letterSettingsState.letterTypeLabels[item.letterType]) || item.letterType;
-    return '<div class="wf-auto-task-card" data-company="' + escapeHtml(item.company) + '" data-letter-type="' + escapeHtml(item.letterType) + '">' +
+    return '<div class="wf-auto-task-card" data-letter-type="' + escapeHtml(item.letterType) + '">' +
       '<div class="wf-auto-task-head"><div style="flex:1;min-width:0">' +
-      '<div class="wf-auto-task-subject">' + escapeHtml(item.company) + ' · ' + escapeHtml(label) + '</div>' +
-      '<div class="wf-auto-hint">Next number: ' + escapeHtml(String(item.nextNumber).padStart(4, '0')) + '</div>' +
+      '<div class="wf-auto-task-subject">' + escapeHtml(label) + ' · next ' + escapeHtml(String(item.nextNumber).padStart(4, '0')) + '</div>' +
       '</div></div>' +
       '<div class="wf-auto-actions"><button type="button" class="plain" data-action="edit-counter">Edit</button></div></div>';
   }
@@ -3529,13 +3531,13 @@
       });
     }
     if (letterCountersList) {
-      if (!(data.counters || []).length) letterCountersList.innerHTML = '<div class="wf-rem-empty">No companies found in the HR data yet.</div>';
+      if (!(data.counters || []).length) letterCountersList.innerHTML = '<div class="wf-rem-empty">No letter types found yet.</div>';
       else {
         letterCountersList.innerHTML = data.counters.map(letterCounterRowHtml).join('');
         letterCountersList.querySelectorAll('[data-action="edit-counter"]').forEach((btn) => {
           btn.addEventListener('click', () => {
-            const card = btn.closest('[data-company]');
-            openLetterCounterSheet({ company: card.dataset.company, letterType: card.dataset.letterType });
+            const card = btn.closest('[data-letter-type]');
+            openLetterCounterSheet({ letterType: card.dataset.letterType });
           });
         });
       }
@@ -3591,12 +3593,12 @@
     letterCounterSheet.classList.remove('open');
     setTimeout(() => { letterCounterSheetBackdrop.hidden = true; letterCounterSheet.hidden = true; }, 320);
   }
-  let letterCounterSheetState = { company: '', letterType: '' };
-  function openLetterCounterSheet({ company, letterType }) {
-    letterCounterSheetState = { company, letterType };
-    const item = (letterSettingsState.counters || []).find((c) => c.company === company && c.letterType === letterType);
+  let letterCounterSheetState = { letterType: '' };
+  function openLetterCounterSheet({ letterType }) {
+    letterCounterSheetState = { letterType };
+    const item = (letterSettingsState.counters || []).find((c) => c.letterType === letterType);
     const label = (letterSettingsState.letterTypeLabels || {})[letterType] || letterType;
-    if (letterCounterSheetTitle) letterCounterSheetTitle.textContent = 'Edit "' + company + ' · ' + label + '"';
+    if (letterCounterSheetTitle) letterCounterSheetTitle.textContent = 'Edit "' + label + '"';
     if (letterCounterNextInput) letterCounterNextInput.value = item ? item.nextNumber : 1;
     if (letterCounterSheetErr) { letterCounterSheetErr.textContent = ''; letterCounterSheetErr.classList.add('hidden'); }
     letterCounterSheetBackdrop.hidden = false;
@@ -3616,7 +3618,7 @@
         return;
       }
       if (letterCounterSheetErr) { letterCounterSheetErr.textContent = ''; letterCounterSheetErr.classList.add('hidden'); }
-      await runButtonAction(letterCounterSheetSaveBtn, () => postJsonOrThrow('/api/workforce/hr-assistant/letter-settings/counter', { company: letterCounterSheetState.company, letterType: letterCounterSheetState.letterType, nextNumber }), () => {
+      await runButtonAction(letterCounterSheetSaveBtn, () => postJsonOrThrow('/api/workforce/hr-assistant/letter-settings/counter', { letterType: letterCounterSheetState.letterType, nextNumber }), () => {
         closeLetterCounterSheet();
         showProToast({ title: 'Counter updated', type: 'success' });
         pageDataCache.letterSettings = null;

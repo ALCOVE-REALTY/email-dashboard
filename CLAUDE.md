@@ -1671,3 +1671,49 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
   against the real model. Cost: 6 real calls for $0.0027 (~$0.00045/call -
   smaller than the manager-confirmation calls, since this is TEXT-only, no
   document attached).
+
+- Task 33 (2026-11), direct instruction, TASK 1 of "Letter settings +
+  Company details changes" - letter-number COUNTERS now run per LETTER
+  TYPE ONLY, never split by company: the live problem was serials running
+  per-company instead of per-type (Confirmation 1 - Alcove Developers,
+  Confirmation 2 - Alcove Construction, Confirmation 3 - AMBA Highrise,
+  instead of one shared 1/2/3 sequence) - the owner's own manual register
+  has always been one sequence per letter type, company never splits it.
+  - `counterKey(letterType, fy)` (was `counterKey(company, letterType, fy)`) -
+    `getCounterValue`/`setCounterOverride`/`previewNextRefNo`/`assignRefNo`
+    all drop the `company` parameter; `companyCode` stays (still needed to
+    RENDER `{Company_Code}` in the Ref No. format - it just never affects
+    WHICH counter gets incremented anymore). Updated the one real caller
+    (`workflowService.js`'s `resolveLetterRefNo`) and the Letter settings
+    routes/UI to match.
+  - `migrateCountersToPerTypeOnly()` - a one-time, best-effort migration
+    that scans every existing counter key, finds the OLD per-company shape
+    (`<prefix><company>:<letterType>:<fy>`), groups by (letterType, fy),
+    and folds each group into the new key at the HIGHEST next number any
+    company had reached (never backwards, never colliding) - then deletes
+    the old keys. Guarded by `COUNTER_KEY_LETTER_TYPE_RE` matching the
+    letter type at the END of the key suffix (`confirmation| extension|
+    experience|relieving|drive:[A-Za-z0-9_-]+`) so a Drive template's own
+    key shape (`drive:<fileId>`, which ALREADY contains a colon) is parsed
+    correctly and never mistaken for a company-name boundary - locked with
+    its own dedicated test. Runs via `ensureCountersMigrated()`, gated by
+    BOTH a Redis flag (`subh-letter-counter-migrated-v2`, so it only ever
+    really runs once across every server instance/restart) and an
+    in-process flag (so every counter call after the first in a given
+    process is a free no-op) - called at the top of all four counter
+    functions, best-effort (a migration failure never blocks a real
+    counter read/write).
+  - Frontend: the Counters section is now one card per letter type
+    ("Confirmation · next 0013" + Edit), no company shown or needed - the
+    always-two-field edit sheet/payload (`company` + `letterType`) is now
+    just `letterType`.
+  Deterministic suite (`scripts/check-letter-settings.js`'s now-41/41, +3
+  new): the LOCKED scenario proving a different company for the SAME
+  letter type/FY now SHARES the one counter (serial 3, never restarting at
+  1) - this is the actual point of the task; the migration folding two old
+  per-company counters into the highest value and deleting the old keys;
+  the Drive-template colon-parsing edge case; idempotency (a stray old key
+  left untouched once the flag is already set). `scripts/check-workflow.js`
+  (86/86) and the headless UI check (384px, 65/65, including the counter
+  card/edit-sheet flow with the new per-type-only shape) both stay clean
+  with no behavior changes needed beyond this task's own scope.

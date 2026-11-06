@@ -3079,21 +3079,23 @@ router.post('/hr-assistant/letter-logo', async (req, res) => {
 
 // TASK 1(b)/(c) (2026-11), direct instruction - "Letter settings": Ref No.
 // format (with a live preview + tap-to-insert chips), a code per letter
-// type, and one counter per company + letter type for the CURRENT
-// financial year (a future FY's counter is created automatically on its
-// own first letter - nothing to show or set up here ahead of time). The
-// letter-type list itself is now the SAME merged (built-in + Drive
-// template) list driveTemplatesService.listAllLetterTemplates() gives the
-// Create Workflow page's own Template dropdown - the two can never show
-// different templates.
+// type, and ONE counter per letter type (TASK 1, 2026-11 follow-up, direct
+// instruction - counters run per letter type only, never split by company;
+// see letterSettingsService.js's own migrateCountersToPerTypeOnly for how
+// an existing per-company counter is folded in) for the CURRENT financial
+// year (a future FY's counter is created automatically on its own first
+// letter - nothing to show or set up here ahead of time). The letter-type
+// list itself is the SAME merged (built-in + Drive template) list
+// driveTemplatesService.listAllLetterTemplates() gives the Create Workflow
+// page's own Template dropdown - the two can never show different
+// templates.
 router.get('/hr-assistant/letter-settings', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
   try {
     const now = new Date();
     const fy = letterSettingsService.computeFinancialYear(now);
-    const [settings, companies, registerLink, templates] = await Promise.all([
+    const [settings, registerLink, templates] = await Promise.all([
       letterSettingsService.getLetterSettings(),
-      companyDetailsService.getCompanyNamesFromHr(),
       letterSettingsService.getLetterRegisterLink(),
       driveTemplatesService.listAllLetterTemplates()
     ]);
@@ -3102,13 +3104,11 @@ router.get('/hr-assistant/letter-settings', async (req, res) => {
     templates.forEach((t) => { letterTypeLabels[t.key] = t.label; letterCodes[t.key] = t.code; });
     const letterTypes = templates.map((t) => t.key);
     const counters = [];
-    for (const company of companies) {
-      for (const letterType of letterTypes) {
-        const current = await letterSettingsService.getCounterValue(company, letterType, fy);
-        counters.push({ company, letterType, fy, nextNumber: current + 1 });
-      }
+    for (const letterType of letterTypes) {
+      const current = await letterSettingsService.getCounterValue(letterType, fy);
+      counters.push({ letterType, fy, nextNumber: current + 1 });
     }
-    res.json(Object.assign({}, settings, { fy, companies, letterTypes, letterTypeLabels, letterCodes, counters, registerLink }));
+    res.json(Object.assign({}, settings, { fy, letterTypes, letterTypeLabels, letterCodes, counters, registerLink }));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -3195,10 +3195,10 @@ router.post('/hr-assistant/letter-settings/letter-code', async (req, res) => {
 router.post('/hr-assistant/letter-settings/counter', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
   try {
-    const { company, letterType, nextNumber } = req.body || {};
-    if (!company || !letterType) return res.status(400).json({ error: 'company and letterType are required.' });
+    const { letterType, nextNumber } = req.body || {};
+    if (!letterType) return res.status(400).json({ error: 'letterType is required.' });
     const fy = letterSettingsService.computeFinancialYear(new Date());
-    const result = await letterSettingsService.setCounterOverride(company, letterType, fy, nextNumber);
+    const result = await letterSettingsService.setCounterOverride(letterType, fy, nextNumber);
     if (!result.ok) return res.status(400).json({ error: result.error });
     res.json(result);
   } catch (err) {
