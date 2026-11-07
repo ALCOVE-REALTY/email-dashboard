@@ -3344,13 +3344,32 @@ async function handleUnclearFlowReply({ phone, name, hrFlow, lang }) {
 // handled by returning null: the flow is kept open (never cleared) and
 // the caller falls through to SUBH's normal pipeline for a real answer,
 // exactly like a flow that was never open would.
-async function handleUnresolvedPersonReference({ phone, name, hrFlow, lang, extracted }) {
+async function handleUnresolvedPersonReference({ phone, name, hrFlow, lang, extracted, stepQuestion }) {
   if (extracted.isBareAckOrHonorific || extracted.isAmbiguous) {
     return handleUnclearFlowReply({ phone, name, hrFlow, lang });
   }
   if (extracted.isUnrelatedTopic && extracted.unrelatedTopicPhrase) {
     await savePendingHrNoteFlow(phone, hrFlow);
     return { case: 'acknowledged', replyText: (HR_FLOW_UNRELATED_TOPIC_ACK[lang] || HR_FLOW_UNRELATED_TOPIC_ACK.english)(extracted.unrelatedTopicPhrase), summaryForOwner: null, lang };
+  }
+  // LIVE BUG FIX (2026-11, direct instruction, the Pallabi flake) - extra
+  // info on the SAME still-open matter (no approver named, not a new
+  // topic - e.g. "Ektu janiyo ami tahole Mahuya di ke bole debo") used to
+  // fall all the way through to `return null` below, which hands the
+  // REPLY TEXT to the general free-form AI drafter (the flow itself
+  // stayed open either way) - that drafter is what was inconsistent,
+  // sometimes giving a reasonable reply and sometimes the generic "I'll
+  // check and get back to you" live-bug text. Fixed the same way every
+  // other "extra info, pending question still open" case in this file
+  // already is (disambiguation's Case A, STEP1) - a deterministic
+  // template re-stating the open question, never the free-form drafter,
+  // once the model has already told us (via `extracted`) that this is
+  // exactly that situation.
+  if (extracted.hasExtraInfo && stepQuestion) {
+    const reminderCount = hrFlow.extraInfoReminderCount || 0;
+    await savePendingHrNoteFlow(phone, Object.assign({}, hrFlow, { extraInfoReminderCount: reminderCount + 1 }));
+    const prefix = EXTRA_INFO_NOTE_PREFIX[lang] || EXTRA_INFO_NOTE_PREFIX.english;
+    return { case: 'acknowledged', replyText: prefix + buildExtraInfoPendingReminder(lang, stepQuestion, reminderCount), summaryForOwner: null, lang };
   }
   await savePendingHrNoteFlow(phone, hrFlow);
   return null;
@@ -7403,7 +7422,7 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
     // ("Pujo-y office koto din bondho?") all got the identical text,
     // forever. handleUnresolvedPersonReference now tells these apart - see
     // its own comment.
-    return handleUnresolvedPersonReference({ phone, name, hrFlow, lang, extracted });
+    return handleUnresolvedPersonReference({ phone, name, hrFlow, lang, extracted, stepQuestion: pendingQuestionLabel });
   }
   if (hrFlow.step === 'awaiting_disambiguation_choice') {
     const resolved = resolveDisambiguationReply(hrFlow.candidates, text);
