@@ -2529,12 +2529,23 @@ const OWN_SENSITIVE_ID_LINE = {
 // himself is Subhodeep - a real example given directly: referring to
 // yourself in the third person, by your own registered name, is just as
 // much a self-request as "amar Aadhaar chai").
+// LIVE BUG FIX (2026-11, direct instruction) - "salary slip"/"payslip"/
+// "salary certificate" is a DOCUMENT request, never the bare salary-
+// figure/CTC disclosure this hard block exists to stop. Without this
+// exclusion, "Amar last month er salary slip ta pathaben please?" (my ->
+// "amar" + "salary" keyword) matched the 'salary' field below and was
+// wrongly hard-blocked with the Aadhaar/PAN refusal reply. Excluded only
+// from the 'salary' branch specifically (not a short-circuit of the
+// whole function) so a message naming BOTH a salary slip AND a genuinely
+// forbidden field (e.g. "salary slip ar amar UAN number ta dao") still
+// correctly hard-blocks on that other field.
+const SALARY_DOCUMENT_REQUEST_RE = /\bsalary\s*-?\s*slip\b|\bpay\s*-?\s*slip\b|\bpayslip\b|\bsalary\s*certificate\b/;
 function detectSensitiveIdFieldKeyword(text) {
   const t = String(text || '').toLowerCase();
   if (/\baadha?ar\b/.test(t)) return 'aadhar';
   if (/\bpan\b/.test(t)) return 'pan';
   if (/\bbank\s*(account|a\/?c)?\b|\bifsc\b/.test(t)) return 'bank';
-  if (/\bsalary\b|\bctc\b/.test(t)) return 'salary';
+  if (/\bsalary\b|\bctc\b/.test(t) && !SALARY_DOCUMENT_REQUEST_RE.test(t)) return 'salary';
   if (/\buan\b/.test(t)) return 'uan';
   if (/esic|\besi\b/.test(t)) return 'esic';
   if (/\baddress\b|\bthikana\b|\bpata\b/.test(t)) return 'address';
@@ -9864,7 +9875,7 @@ function classifyTool() {
           isJobApplication: { type: 'boolean', description: 'true when the sender is applying for a job/vacancy at this company, or is submitting/mentioning their own CV/resume as a candidate for employment - in ANY phrasing or language, never a fixed keyword list (e.g. "I am applying for the Site Supervisor position, I have 5 years of experience, my email is...", a message naming a role + experience + contact details with no explicit "CV" word at all, a bare follow-up like "I have shared my CV"/"I have sent my application", or an attached CV/resume file with little or no caption text). Judge by MEANING (a candidate representing themselves for a role), never by requiring an exact phrase - the live bug this fixes is a real application that used none of the old fixed keywords. NEVER true for a vacancy enquiry (see isVacancyEnquiry) - submitting/mentioning a CV or application is this field; merely asking whether a role exists is not.' },
           isVacancyEnquiry: { type: 'boolean', description: 'true ONLY when the sender is asking WHETHER there is an opening/vacancy/requirement for a role - they are NOT submitting an application or CV. E.g. "Is there any vacancy for an accountant?", "Alcove-e Site Supervisor post-e kono opening ache?". Mutually exclusive with isJobApplication - if they are also applying/sharing a CV in the same message, use isJobApplication instead, never both.' },
           vacancyEnquiryPosition: { type: 'string', description: 'Required only when isVacancyEnquiry is true AND a specific position/role was actually named - the position name as a short noun phrase, in English (e.g. "accountant", "Site Supervisor"). Omit entirely if they asked about openings in general without naming one.' },
-          isHrNotification: { type: 'boolean', description: 'Live bug fix (2026-10-29): true for the sender\'s OWN attendance/time-off matter that needs a manager\'s OK - leave, late coming, early leaving, a half-day, attendance regularisation, an off-day-in-lieu/comp-off, a duty/schedule change, or work from home (WFH, any spelling/phrasing - "ghar/bari theke kaj", "remote kaj", "ghar se kaam", etc.) - in ANY phrasing: a plain informing statement ("ajke WFH korchi"), a request or plan ("ami aajke half day kore Saturday full day korte chai", "kalke chuti nebo"), or a question about getting it approved - this topic list is NEVER gated on intent being "informing" specifically, unlike the rest of this field. Also true, but ONLY when intent is "informing" (a plain statement, nothing being asked for), for: a salary/bank account change, or any other work-location update. false otherwise - including a GENERAL policy question about any of these topics (not about the sender\'s own situation), a request for documents/data/a salary slip, a complaint, or any other "informing"/"request"/"question" message unrelated to the topics above (e.g. sharing news, a document_sent message).' },
+          isHrNotification: { type: 'boolean', description: 'Live bug fix (2026-10-29): true for the sender\'s OWN attendance/time-off matter that needs a manager\'s OK - leave, late coming, early leaving, a half-day, attendance regularisation, an off-day-in-lieu/comp-off, a duty/schedule change, or work from home (WFH, any spelling/phrasing - "ghar/bari theke kaj", "remote kaj", "ghar se kaam", etc.) - in ANY phrasing: a plain informing statement ("ajke WFH korchi"), a request or plan ("ami aajke half day kore Saturday full day korte chai", "kalke chuti nebo"), or a question about getting it approved - this topic list is NEVER gated on intent being "informing" specifically, unlike the rest of this field. Also true, but ONLY when intent is "informing" (a plain statement, nothing being asked for), for: a salary/bank account change, or any other work-location update. false otherwise - including a GENERAL policy question about any of these topics (not about the sender\'s own situation), a request for documents/data/a salary slip, a complaint, or any other "informing"/"request"/"question" message unrelated to the topics above (e.g. sharing news, a document_sent message). LIVE BUG FIX (2026-11): a request for a DOCUMENT or RECORD about a past period (a salary slip, payslip, Form 16, offer/appointment letter copy, attendance report, etc. - "last month-er salary slip ta pathaben please?", "October-er payslip dao") is false here, even though it also names a past month and uses a request/polite-ask verb exactly like a real attendance matter does - a reference to "last month"/a specific month name is NEVER by itself evidence of an attendance-approval topic; this field is only ever true for the sender\'s OWN leave/late-coming/half-day/WFH/comp-off/duty-change/regularisation matter, never a request to be SENT a document.' },
           hrNotificationSummary: { type: 'string', description: 'Required when isHrNotification is true - a short, accurate, neutral summary in ENGLISH of exactly what they informed, e.g. "told to do duty today instead of his scheduled off, was asked to take a different day off in lieu" or "worked from home today with manager\'s approval". For the HR note and the owner\'s own notifications only (English, like every other owner-facing label) - never sent to the sender or a third party as-is. State only what the sender actually said, nothing invented, including whatever date(s) they gave (today/yesterday/a specific date or range).' },
           hrNotificationActionKind: { type: 'string', enum: ['instruction', 'approval', 'sudden', 'neutral'], description: 'Judge this from what actually happened, never from the TOPIC and never from a fixed keyword list - WFH/leave/half-day/late-coming can be EITHER "instruction" or "approval" depending on who initiated it, exactly like a duty change can. "instruction" - a manager/supervisor TOLD or ASKED the sender to do something, in ANY words that mean telling/asking, regardless of topic (duty on an off day, a duty/shift/site change, overtime, travel, OR a manager telling the sender to work from home / take a day off / come in late - e.g. "Tanmoy Sir bolechhen ajke bari theke kaj korte" IS "instruction", not "approval", even though the topic is work-from-home, because the sender is reporting being TOLD to do it, not asking for it). "approval" - the sender ASKED and was ALLOWED/GRANTED something (work from home, leave, a half-day, late coming, early leaving, a comp-off/off-day-in-lieu taken) - this is the sender\'s OWN initiative, confirmed/allowed by someone else, never something that person told them to do. If a single message has both an instruction AND a related off-day granted as part of it (e.g. "duty korte bolechhe, bodole onno din chhutti debe" - told to do duty, will get a day off in lieu), use "instruction" - the off day is part of what was instructed. "sudden" - a sudden/unplanned event they are simply informing HR about (sudden illness, an accident, "I can\'t come in today") - not a planned WFH/leave/half-day/late-coming with an instruction or approval behind it. Use "neutral" only if genuinely unclear whether it was an instruction or an approval (the initiator isn\'t stated and can\'t be inferred) - e.g. "Ami ajke chhutir din duty korchi" with no mention of who told or allowed it. A message mixing MORE THAN ONE of these topics as the sender\'s own request or plan (e.g. "ami aajke half day kore Saturday full day kore nite chai" - a half-day today swapped for a Saturday comp-off) is still judged by WHO initiated it, exactly like a single-topic message - usually "approval" (the sender\'s own ask, whether or not it has actually been granted yet) - never "neutral" just because it mixes topics; "neutral" is reserved for when the INITIATOR genuinely can\'t be told, not for when the topic itself is mixed or hard to name in one word.' },
           hrNotificationApprovalGranted: { type: 'boolean', description: 'Required ONLY when hrNotificationActionKind is "approval" - true if the approval has ALREADY been obtained/happened (the message is in past/present tense about something already settled, e.g. "ajke WFH korchi", "aj chhutti niyechhi", "half day peyechi"). false if this is about the FUTURE and not yet confirmed as approved (e.g. "kalke chuti nebo", "porshu WFH korbo", "ajke half day nebo" said as a plan/intent, not a done deal) - judge by tense/certainty, not just whether the date is today or later. Omit entirely for every other hrNotificationActionKind.' },
@@ -10712,6 +10723,25 @@ const AUTOREPLY_ERROR_FALLBACK = {
   english: "I've received your message. I'm having trouble preparing a reply right now, so I've let Subhodeep know directly - you'll get a personal update shortly."
 };
 
+// LIVE BUG FIX (2026-11, direct instruction) - a request naming one of
+// these specific, unambiguous document/credential types is NEVER an
+// attendance-approval matter, no matter what classifyOfficialMessage's
+// own isHrNotification came back as. Found live: "Amar last month er
+// salary slip ta pathaben please?" was classified isHrNotification:true
+// (the model latched onto "last month" + a request verb, the exact
+// shape an attendance-approval ask also takes) and wrongly entered the
+// approval flow. This is a deterministic SAFETY OVERRIDE on top of the
+// model's own classification, not a replacement for it - it only ever
+// turns a wrong "true" back to "false" for these specific, named
+// document types; every other isHrNotification judgment (which topics
+// genuinely count as attendance, who initiated it, etc.) is still the
+// model's own call entirely, same "AI understands, code speaks" posture
+// as everywhere else in this file.
+const NON_ATTENDANCE_DOCUMENT_REQUEST_RE = /\b(salary[\s-]*slip|pay[\s-]*slip|payslip|form[\s-]*16|offer\s*letter|appointment\s*letter)\b/i;
+function isClearNonAttendanceDocumentRequest(text) {
+  return NON_ATTENDANCE_DOCUMENT_REQUEST_RE.test(String(text || ''));
+}
+
 // The single decision point for spec section 3.1 (a/b/c) - called for
 // EVERY official message (1:1 official, or a tagged group message).
 // phone is null for groups (sender unidentified there, case b never
@@ -11193,8 +11223,11 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
   // late coming, attendance, off-day-in-lieu/comp-off, duty change,
   // salary/bank account change, or work location update is noted (and,
   // when a third party gave the instruction, confirmed with them) rather
-  // than just acknowledged or escalated generically.
-  if (!isGroup && classification.isHrNotification) {
+  // than just acknowledged or escalated generically. isClearNonAttendanceDocumentRequest
+  // is the LIVE BUG FIX safety override (see its own comment) - a salary
+  // slip/payslip/Form 16/offer or appointment letter request never enters
+  // this flow even if the model's own isHrNotification came back true.
+  if (!isGroup && classification.isHrNotification && !isClearNonAttendanceDocumentRequest(text)) {
     const lang = classification.language || detectLang(text);
     return handleHrNotificationStart({ phone, name: senderLabel, lang, text, history, classification });
   }

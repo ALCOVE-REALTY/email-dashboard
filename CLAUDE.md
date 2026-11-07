@@ -11,6 +11,31 @@ coding after his answer. Never silently change an existing text, step or flow.
 Before every commit, all deterministic suites AND the real-model scenario runner
 (locked scenarios) must pass; if any locked scenario fails, do not commit.
 
+**Hard rules added 2026-11, direct instruction, after a live regression (salary-slip
+requests wrongly entering the attendance-approval flow) reached a local commit
+undetected, because only the one scenario believed affected was re-run with
+`SCENARIO_FILTER`, never the full suite:**
+
+a. **Run the FULL locked-scenario suite before reporting any batch done** -
+   `check-whatsapp-scenarios`, every group, never a `SCENARIO_FILTER`-narrowed run as
+   the final check (narrowing is fine for fast iteration WHILE fixing something, never
+   as the last word on whether it's done). If any scenario comes back `[BROKEN]`, the
+   batch is NOT done: either fix it before reporting, or tell Subhodeep clearly and
+   explicitly which scenario(s) are broken, their exact `(n/3)` result, and why they're
+   believed unrelated to the current change - never silently commit past a broken
+   scenario, and never leave a regression for him to discover after he pushes.
+b. **List affected flows BEFORE coding, not after.** Before writing any change to
+   message routing, state priority, or pending-question binding, list which existing
+   flows it could plausibly affect (attendance approval, HR/employee data requests,
+   salary/document requests, job applications, manager confirmations, workflows) and
+   add a locked scenario for each one genuinely at risk - written before the fix, so it
+   can actually catch a regression the fix itself introduces, not just confirm what the
+   fix was meant to do.
+c. **List routing-touching commits in every final report.** Any final report on a
+   change in this area must list the exact `origin/main..HEAD` commits that touch
+   message routing/classification/state-priority code, so Subhodeep knows precisely
+   what to test live before pushing - not just a summary of what changed.
+
 **After committing, the commit must actually be pushed and deployed before being
 reported as fixed.** A local-only commit is not a fix — verify `git status` shows
 the branch is not ahead of `origin/main` (or confirm the deploy happened) before
@@ -1983,3 +2008,74 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
   misrouted into the attendance-approval flow, and a HOD reporting-
   structure regression) - flagged for Subhodeep to prioritize separately,
   not folded into this commit.
+
+- Task 38 (2026-11), direct instruction, URGENT live regression - a salary-slip
+  request ("Amar last month er salary slip ta pathaben please?") was wrongly
+  routed into the attendance-approval flow.
+  - Investigation (per the NEW hard rule (a) above, which this incident is what
+    prompted): bisected `src/aiAssistant/whatsappAssistant.js` across every local
+    commit back to `origin/main` itself against this exact scenario
+    (`SCENARIO_FILTER="salary-slip REQUEST" SCENARIO_RUNS=3`) - it was BROKEN on
+    `origin/main` too. This is a PRE-EXISTING live bug, not a regression from any
+    of this session's 7 local commits - none of them touch the code actually
+    responsible (confirmed by reading every diff, not assumed).
+  - Root cause (NOT what the test's own description suggested): it was never the
+    `isHrNotification` classifier gate - that field's schema already explicitly
+    excluded "a request for documents/data/a salary slip", and the dispatch code
+    never even reached it for this text. The real cause:
+    `detectSensitiveIdFieldKeyword`'s bare `\bsalary\b` keyword, used by the
+    PRE-classification "own sensitive ID" fast path (`detectOwnSensitiveIdRequest`,
+    checked BEFORE the model classifier even runs, matching a self-referential
+    pronoun "amar/amader/mera/meri/my" + a sensitive-field keyword in the same
+    message) - "salary slip" matched the bare `salary` keyword exactly like "amar
+    salary koto?" (a genuine CTC-figure disclosure risk) would, routing to
+    `handleOwnSensitiveIdRequest`, whose `salary` field ALWAYS returns null (hard-
+    blocked by design) - so the sender got the Aadhaar/PAN refusal reply instead
+    of their normal path. Subhodeep's own live test ("Amake ager month er salary
+    slip ta dao") happened not to reproduce it only because "Amake" (object case,
+    "to me") isn't in the pronoun list - "Amar" (possessive, "my") is.
+  - Fix: `detectSensitiveIdFieldKeyword` now excludes a `salary slip`/`pay slip`/
+    `payslip`/`salary certificate`-shaped request from the `salary` keyword match
+    specifically (not a short-circuit of the whole function - a message naming
+    BOTH a salary slip AND a genuinely forbidden field, e.g. "...salary slip ar
+    amar UAN number ta dao", still correctly hard-blocks on the other field). A
+    second, independent safety net was also added on the `isHrNotification`
+    dispatch itself (`isClearNonAttendanceDocumentRequest`, matching salary slip/
+    payslip/Form 16/offer or appointment letter) for the separate hypothetical
+    failure mode where the MODEL's own classification could still wrongly set
+    `isHrNotification: true` for such a request - defense in depth, not the actual
+    fix for this specific bug. The `isHrNotification` schema text was also
+    tightened with an explicit counter-example (a past-month reference + a
+    request verb is never by itself evidence of an attendance topic).
+  - New locked scenarios added to `check-whatsapp-scenarios.js` (and the list
+    below): "Amake ager month er salary slip ta dao" (Subhodeep's own exact live
+    phrasing), "October-er payslip pathan", "Form 16 dao", "offer letter-er copy
+    lagbe" - all confirmed to never enter the attendance-approval flow or the
+    sensitive-ID hard block; plus "Kal chuti nebo" and "aaj late hobe" - confirmed
+    to STILL correctly start the approval/HR-note flow, proving the fix is
+    precisely scoped and doesn't block genuine attendance matters.
+  - Gate (per new hard rule (a)): FULL suites re-run, not just the affected
+    scenario - `check-whatsapp-engine` 930/930, `check-subh-language` 40/40 (0
+    flagged - the earlier run's 1 flag was pure model variance, did not recur),
+    `check-reminders` 47/47, `check-automation` 159/159, and the FULL
+    `check-whatsapp-scenarios` (all 70 scenarios, not filtered): 64 reliable / 2
+    flaky / 4 broken - every scenario this fix touches or could plausibly affect
+    is reliable; the 2 flaky + 4 broken are the EXACT SAME pre-existing, unrelated
+    ones already flagged separately above (one broken scenario - the salary-slip
+    one - is now fixed, moving the earlier count from 5 broken down to 4). Per
+    hard rule (a): this batch is reported as done for its own specific fix, with
+    the 4 remaining pre-existing broken scenarios named explicitly, not silently
+    left for Subhodeep to discover.
+  - Per new hard rule (c): commits in this batch touching WhatsApp message
+    routing/classification - see the commit for this task's own hash; no other
+    commit in `origin/main..HEAD` touches `src/aiAssistant/whatsappAssistant.js`.
+
+- New locked scenarios (Task 38, 2026-11):
+  - "Amake ager month er salary slip ta dao" / "October-er payslip pathan" /
+    "Form 16 dao" / "offer letter-er copy lagbe" → never enter the attendance-
+    approval flow or the sensitive-ID hard block (document/record requests are
+    never attendance matters, regardless of a past-month reference + request verb
+    shape that superficially resembles one).
+  - "Kal chuti nebo" / "aaj late hobe" → still correctly start the attendance-
+    approval/HR-note flow - the document-request fix above is scoped precisely
+    and never blocks a genuine attendance matter.

@@ -815,6 +815,109 @@ scenario('ISSUE2 REGRESSION (direct instruction): a salary-slip REQUEST never en
     await cleanupHrFlowArtifacts(phone);
   }
 });
+// LIVE BUG FIX (2026-11, direct instruction) - root cause was NOT the
+// isHrNotification gate at all (that field's own schema already excluded
+// document/salary-slip requests, and the dispatch code never even
+// reached it for this text): detectSensitiveIdFieldKeyword's bare
+// \bsalary\b match, used by the PRE-classification "own sensitive ID"
+// fast path (detectOwnSensitiveIdRequest), wrongly caught "salary slip"/
+// "payslip" as the sensitive salary-FIGURE/CTC disclosure it exists to
+// hard-block, firing the Aadhaar/PAN refusal reply instead of letting
+// the message through to its normal path. Confirmed present even on
+// origin/main (pre-existing, not a regression from any local commit) -
+// the user's own live-tested phrasing ("Amake...dao") just happened to
+// use the object-case pronoun "amake", not "amar", so it never tripped
+// the pronoun+keyword fast path at all. Fixed in
+// detectSensitiveIdFieldKeyword (own comment there has the full detail);
+// the isClearNonAttendanceDocumentRequest gate on isHrNotification (see
+// decideAutoReplyCore) is kept as a second, independent safety net for
+// the SEPARATE hypothetical failure mode the model-level classifier
+// itself could still produce.
+scenario('LIVE BUG FIX (2026-11, direct instruction): "Amake ager month er salary slip ta dao" (object-case "amake", not "amar") never enters the attendance-approval flow or the sensitive-ID hard block', async () => {
+  const phone = '910000002206';
+  await cleanupHrFlowArtifacts(phone);
+  try {
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenSlip2', firstName: 'ScenSlip2', text: 'Amake ager month er salary slip ta dao', isGroup: false, history: [] });
+    const pending = await whatsappAssistant.getPendingHrNoteFlow(phone);
+    if (d.case === 'acknowledged' || pending) return { pass: false, detail: 'wrongly routed into the attendance-approval flow (case=' + d.case + ', pending=' + JSON.stringify(pending) + '): ' + d.replyText };
+    if (d.replyText && /aadha?ar|\bpan\b/i.test(d.replyText)) return { pass: false, detail: 'wrongly hard-blocked as a sensitive-ID request: ' + d.replyText };
+    return { pass: true, detail: 'salary-slip request (object-case pronoun) unaffected' };
+  } finally {
+    await cleanupHrFlowArtifacts(phone);
+  }
+});
+scenario('LIVE BUG FIX (2026-11, direct instruction): "October-er payslip pathan" never enters the attendance-approval flow or the sensitive-ID hard block', async () => {
+  const phone = '910000002207';
+  await cleanupHrFlowArtifacts(phone);
+  try {
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenPayslip', firstName: 'ScenPayslip', text: 'October-er payslip pathan', isGroup: false, history: [] });
+    const pending = await whatsappAssistant.getPendingHrNoteFlow(phone);
+    if (d.case === 'acknowledged' || pending) return { pass: false, detail: 'wrongly routed into the attendance-approval flow (case=' + d.case + ', pending=' + JSON.stringify(pending) + '): ' + d.replyText };
+    if (d.replyText && /aadha?ar|\bpan\b/i.test(d.replyText)) return { pass: false, detail: 'wrongly hard-blocked as a sensitive-ID request: ' + d.replyText };
+    return { pass: true, detail: 'payslip request unaffected' };
+  } finally {
+    await cleanupHrFlowArtifacts(phone);
+  }
+});
+scenario('LIVE BUG FIX (2026-11, direct instruction): "Form 16 dao" never enters the attendance-approval flow', async () => {
+  const phone = '910000002208';
+  await cleanupHrFlowArtifacts(phone);
+  try {
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenForm16', firstName: 'ScenForm16', text: 'Form 16 dao', isGroup: false, history: [] });
+    const pending = await whatsappAssistant.getPendingHrNoteFlow(phone);
+    if (d.case === 'acknowledged' || pending) return { pass: false, detail: 'wrongly routed into the attendance-approval flow (case=' + d.case + ', pending=' + JSON.stringify(pending) + '): ' + d.replyText };
+    return { pass: true, detail: 'Form 16 request unaffected' };
+  } finally {
+    await cleanupHrFlowArtifacts(phone);
+  }
+});
+scenario('LIVE BUG FIX (2026-11, direct instruction): "offer letter-er copy lagbe" never enters the attendance-approval flow', async () => {
+  const phone = '910000002209';
+  await cleanupHrFlowArtifacts(phone);
+  try {
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenOfferLetter', firstName: 'ScenOfferLetter', text: 'offer letter-er copy lagbe', isGroup: false, history: [] });
+    const pending = await whatsappAssistant.getPendingHrNoteFlow(phone);
+    if (d.case === 'acknowledged' || pending) return { pass: false, detail: 'wrongly routed into the attendance-approval flow (case=' + d.case + ', pending=' + JSON.stringify(pending) + '): ' + d.replyText };
+    return { pass: true, detail: 'offer letter request unaffected' };
+  } finally {
+    await cleanupHrFlowArtifacts(phone);
+  }
+});
+scenario('LIVE BUG FIX REGRESSION (direct instruction): "Kal chuti nebo" (a genuine future leave plan) still correctly starts the attendance-approval flow, unaffected by the salary-slip/document fix', async () => {
+  const phone = '910000002210';
+  await cleanupHrFlowArtifacts(phone);
+  try {
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenLeavePlan', firstName: 'ScenLeavePlan', text: 'Kal chuti nebo', isGroup: false, history: [] });
+    const pending = await whatsappAssistant.getPendingHrNoteFlow(phone);
+    // A future leave plan with no name given yet can legitimately land on
+    // either 'awaiting_approval_obtained' (has it been granted yet?) or
+    // 'awaiting_name' (who granted it?), depending on tense/certainty the
+    // model reads from the exact wording - both ARE the approval flow;
+    // only actionKind:'approval' + case:'acknowledged' is the real oracle.
+    if (d.case !== 'acknowledged' || !pending || pending.actionKind !== 'approval') return { pass: false, detail: 'expected an approval-flavored flow, got: case=' + d.case + ', pending=' + JSON.stringify(pending) + ', reply: ' + d.replyText };
+    return { pass: true, detail: 'leave plan correctly started the approval flow' };
+  } finally {
+    await cleanupHrFlowArtifacts(phone);
+  }
+});
+scenario('LIVE BUG FIX REGRESSION (direct instruction): "aaj late hobe" (a genuine late-coming notice) still correctly starts the attendance-approval/notification flow, unaffected by the salary-slip/document fix', async () => {
+  const phone = '910000002211';
+  await cleanupHrFlowArtifacts(phone);
+  try {
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenLateHobe', firstName: 'ScenLateHobe', text: 'aaj late hobe', isGroup: false, history: [] });
+    const pending = await whatsappAssistant.getPendingHrNoteFlow(phone);
+    // "aaj late hobe" is genuinely ambiguous between a planned late-coming
+    // needing approval and a same-day "sudden" notice (the model reads
+    // this from certainty/tense cues the bare phrase doesn't force either
+    // way) - both are the SAME attendance/HR-note flow this fix must
+    // never block; only case:'acknowledged' + a real pending flow record
+    // is the oracle here, never one specific actionKind/step.
+    if (d.case !== 'acknowledged' || !pending) return { pass: false, detail: 'expected the HR-note/attendance flow to start, got: case=' + d.case + ', pending=' + JSON.stringify(pending) + ', reply: ' + d.replyText };
+    return { pass: true, detail: 'late-coming notice correctly started the HR-note flow' };
+  } finally {
+    await cleanupHrFlowArtifacts(phone);
+  }
+});
 
 // Task 4 (2026-10-27) - approximate Claude Sonnet per-token pricing
 // (USD), used only to turn the tracked token counts into a rough cost
