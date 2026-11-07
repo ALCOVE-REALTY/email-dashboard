@@ -88,6 +88,15 @@ async function cleanupHrFlowArtifacts(...phones) {
     await whatsappAssistant.clearPendingDisambiguation(p).catch(() => {});
     await whatsappAssistant.clearPendingNameConfirm(p).catch(() => {});
     await whatsappAssistant.clearGreetingEchoToday(p, new Date()).catch(() => {});
+    // LIVE TEST BUG FIX (2026-11, direct instruction) - without this, the
+    // real "SUBH introduces itself once per calendar day" rule (a genuine,
+    // intentional, already-deterministic behavior - decideAutoReply's own
+    // identityPrefix concatenation) correctly suppresses the identity
+    // line on the 2nd/3rd of this suite's own 3 repeated runs of the SAME
+    // scenario against the SAME phone, which looked like real-model
+    // flakiness but was actually a missing test-cleanup gap. Exported as
+    // clearIntroducedToday - was simply never called here before.
+    await whatsappAssistant.clearIntroducedToday(p, new Date()).catch(() => {});
   }
 }
 
@@ -975,6 +984,9 @@ async function cleanupHrDataQueryArtifacts(...phones) {
     await whatsappAssistant.clearPendingHrDataQuery(p).catch(() => {});
     await whatsappAssistant.clearPendingNameConfirm(p).catch(() => {});
     await whatsappAssistant.clearPendingDisambiguation(p).catch(() => {});
+    // Same latent gap as cleanupHrFlowArtifacts's own fix above - see its
+    // comment.
+    await whatsappAssistant.clearIntroducedToday(p, new Date()).catch(() => {});
   }
 }
 function pendingApprovalFor(approvals, phone) {
