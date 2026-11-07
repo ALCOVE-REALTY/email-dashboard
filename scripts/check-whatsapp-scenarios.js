@@ -25,6 +25,36 @@ require('dotenv').config();
 
 const whatsappAssistant = require('../src/aiAssistant/whatsappAssistant');
 const whatsapp = require('../src/whatsappService');
+const employeeService = require('../src/employeeService');
+
+function d(iso) { return new Date(iso + 'T00:00:00.000Z'); }
+// FIXED fixture for the "under X" headcount scenario below (direct
+// instruction, 2026-11) - this file otherwise deliberately tests against
+// the REAL live company directory (see the file-level comment above), but
+// a scenario whose pass/fail depends on an exact LIVE headcount number
+// breaks every time that number drifts from real hiring/attrition,
+// completely unrelated to any actual code regression (confirmed: this is
+// exactly what happened to the real "Uday Saraf, 5 direct reports"
+// scenario). Swapped in via a scoped employeeService.getEmployeeData
+// monkey-patch for ONLY that one scenario's own run (never global - every
+// other scenario in this file keeps testing against the real directory,
+// unaffected), same "fake the client/service, not the test's own logic"
+// convention check-workflow.js/check-automation.js already use.
+function fixtureEmployeeData(extra) {
+  const base = [
+    { employeeId: 'UX1', name: 'Praveen Oberoi', designation: 'Manager', department: 'Testbench Unit', location: 'HO', company: 'Alcove', reportingDoer: null, reportingManager: null, doj: d('2015-01-01'), dob: d('1980-01-01'), tenure: '10y', totalExperience: '15y', email: 'fixturehod@co.test', emailPersonal: '', contactNumber: '9000000301', employmentType: 'Confirmed', status: 'ACTIVE' },
+    ...[1, 2, 3, 4, 5].map((n) => ({
+      employeeId: 'UX' + (n + 1), name: 'Fixture Report ' + n, designation: 'Executive', department: 'Testbench Unit', location: 'HO', company: 'Alcove',
+      // reportingManager (never reportingDoer) - keeps this HOD correctly
+      // classified as a plain, non-Director manager (a Director is
+      // identified by appearing in someone's Reporting DOER column
+      // instead - see assistantShared.js's own tool description).
+      reportingDoer: null, reportingManager: 'Praveen Oberoi',
+      doj: d('2022-01-0' + n), dob: d('1990-01-0' + n), tenure: '3y', totalExperience: '5y', email: 'fixturereport' + n + '@co.test', emailPersonal: '', contactNumber: '900000030' + (n + 1), employmentType: 'Confirmed', status: 'ACTIVE'
+    }))
+  ];
+  return { employees: base.concat(extra || []), departmentNames: new Map([['Testbench Unit', 'Testbench Unit']]), locationNames: new Map(), doerNames: new Map(), reportingManagerNames: new Map() };
+}
 
 // Override with SCENARIO_RUNS=1 for a quick single-pass check (e.g. to
 // prove a new scenario reproduces a bug before fixing it) - the default
@@ -1177,22 +1207,47 @@ scenario('Task 5c follow-up: "tader nam din" after the Yashaswi question lists t
     await cleanupHrDataQueryArtifacts(phone);
   }
 });
-scenario('Task 5 REGRESSION: the same style question for a real NON-Director HOD (Uday Saraf, 5 real direct reports) stays the plain single-number template, never the Doer/direct-reporting split', async () => {
+// FIXTURE-BASED (2026-11, direct instruction) - was a real-headcount
+// scenario ("Uday Saraf, 5 direct reports") that silently broke as real
+// attrition changed his real count to 4, with zero code regression
+// involved. Now runs against a small, fixed employeeService fixture
+// (never the real directory) so routine HR data changes can never touch
+// this scenario again - only an actual code change to the Director/non-
+// Director split logic itself can fail it now.
+scenario('Task 5 REGRESSION: the same style question for a NON-Director HOD stays the plain single-number template, never the Doer/direct-reporting split (fixed fixture, not live HR data)', async () => {
   const phone = '910000002322';
   await cleanupHrDataQueryArtifacts(phone);
+  const origGetEmployeeData = employeeService.getEmployeeData;
+  employeeService.getEmployeeData = async () => fixtureEmployeeData();
   try {
-    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenDoer3', firstName: 'ScenDoer3', text: 'Uday Saraf er under e koto jon ache?', isGroup: false, history: [] });
-    if (d.case !== 'data_holding') return { pass: false, detail: 'expected case=data_holding, got: ' + d.case + ' text=' + d.replyText };
+    const d1 = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenDoer3', firstName: 'ScenDoer3', text: 'Praveen Oberoi er under e koto jon ache?', isGroup: false, history: [] });
+    if (d1.case !== 'data_holding') return { pass: false, detail: 'expected case=data_holding, got: ' + d1.case + ' text=' + d1.replyText };
     const approval = pendingApprovalFor(await whatsappAssistant.listPendingApprovals(), phone);
     if (!approval || !approval.preparedReplyText) return { pass: false, detail: 'expected a queued approval with a prepared reply, got: ' + JSON.stringify(approval) };
     const text = approval.preparedReplyText;
-    if (!text.includes('Uday Saraf')) return { pass: false, detail: 'expected Uday Saraf named in the reply, got: ' + text };
-    if (/doer|direct reporting/i.test(text)) return { pass: false, detail: 'a real non-Director HOD must never get the Doer/direct-reporting split, got: ' + text };
-    if (!/\b5\b/.test(text)) return { pass: false, detail: 'expected the real count (5) in the reply, got: ' + text };
+    if (!text.includes('Praveen Oberoi')) return { pass: false, detail: 'expected the fixture HOD named in the reply, got: ' + text };
+    if (/doer|direct reporting/i.test(text)) return { pass: false, detail: 'a non-Director HOD must never get the Doer/direct-reporting split, got: ' + text };
+    if (!/\b5\b/.test(text)) return { pass: false, detail: 'expected the fixture count (5) in the reply, got: ' + text };
     return { pass: true, detail: 'non-Director stayed the plain template: ' + text };
   } finally {
+    employeeService.getEmployeeData = origGetEmployeeData;
     await cleanupHrDataQueryArtifacts(phone);
   }
+});
+// READ-ONLY, INFORMATIONAL ONLY (direct instruction) - never gates pass/
+// fail (any error is swallowed, any value is just printed) - prints
+// today's REAL Uday Saraf direct-report count so Subhodeep can see at a
+// glance whether the real number has drifted from whatever he last
+// remembers, without that drift ever being able to break this suite.
+scenario('INFO ONLY (never gates): today\'s real Uday Saraf direct-report count, for visibility', async () => {
+  try {
+    const { employees } = await employeeService.getEmployeeData();
+    const real = employees.filter((e) => e.status === 'ACTIVE' && e.name !== 'Uday Saraf' && e.reportingManager && e.reportingManager.toLowerCase().includes('uday saraf'));
+    console.log('    [info] real current ACTIVE direct-report count for Uday Saraf: ' + real.length + ' (' + real.map((e) => e.name).join(', ') + ')');
+  } catch (err) {
+    console.log('    [info] could not read the real Uday Saraf count: ' + err.message);
+  }
+  return { pass: true, detail: 'informational only' };
 });
 
 // Task 2 (2026-10-31) - the three-tier data-sharing rule's OFFICIAL tier:
