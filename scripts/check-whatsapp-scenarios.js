@@ -750,32 +750,53 @@ scenario('Task 1: a CV-only PDF with no caption/text and no open document reques
   }
 });
 
+// STALE TEST FIX (2026-11, direct instruction investigation) - these two
+// scenarios predate commit 8e324d1 ("Task 2: three-tier rule for sharing
+// HR data over WhatsApp", 2026-10-31), which correctly tightened
+// general_details (name/designation/department/tenure) to only ever be
+// sent DIRECTLY to a verified current ACTIVE-employee sender - anyone
+// else (like these scenarios' own synthetic "Enquirer"/"Sender" test
+// phones, deliberately unregistered numbers) now correctly gets the
+// generic holding reply while the real, resolved answer is queued for
+// the owner's approval instead (handlePersonLookupRequest's own
+// general_details branch, queuePersonGeneralDetailsApproval). That is
+// NOT a regression - it is the intended, already-tested security
+// behavior. What these two scenarios actually exist to prove (the
+// phonetic match resolves to the ONE correct person, never the wrong
+// "Sandip", and a disambiguation re-resolves against the whole directory
+// instead of repeating a stale list) is still fully provable - just via
+// the QUEUED approval's own resolvedPersonName, not the sender-facing
+// reply text, which is now always the generic holding line for a
+// non-employee sender. Confirmed by bisecting: the EXACT old reply-text
+// assertion was never touched by anything after 8e324d1 itself.
 scenario('Task 4, LIVE BUG: "Svodip HR k?" (phonetic + "HR" hint) resolves directly to ONE person (Subhodeep Kundu Chowdhury), never a disambiguation list and never the wrong "Sandip"', async () => {
   const phone = '910000002101';
-  await whatsappAssistant.clearPendingDisambiguation(phone).catch(() => {});
+  await cleanupHrDataQueryArtifacts(phone);
   try {
     const d = await whatsappAssistant.decideAutoReply({ phone, name: 'Enquirer', firstName: 'Enquirer', text: 'Svodip HR k?', isGroup: false, history: [] });
-    if (!d.replyText.includes('Subhodeep Kundu Chowdhury') || /\bSandip\b/.test(d.replyText)) {
-      return { pass: false, detail: 'expected a direct resolution to Subhodeep Kundu Chowdhury, got: ' + d.replyText };
+    const approval = pendingApprovalFor(await whatsappAssistant.listPendingApprovals(), phone);
+    if (d.case !== 'data_holding' || !approval || approval.resolvedPersonName !== 'Subhodeep Kundu Chowdhury') {
+      return { pass: false, detail: 'expected a queued approval resolved to Subhodeep Kundu Chowdhury, got: case=' + d.case + ', approval=' + JSON.stringify(approval) + ', reply: ' + d.replyText };
     }
-    return { pass: true, detail: 'resolved directly, no disambiguation list' };
+    return { pass: true, detail: 'resolved directly to the one correct person (queued for owner approval, never a disambiguation list, never "Sandip")' };
   } finally {
-    await whatsappAssistant.clearPendingDisambiguation(phone).catch(() => {});
+    await cleanupHrDataQueryArtifacts(phone);
   }
 });
 scenario('Task 4: a pending disambiguation list (ambiguous "Tanmoy") is RE-RESOLVED against the whole directory when "Na" names someone else entirely, never repeats the identical list', async () => {
   const phone = '910000002102';
-  await whatsappAssistant.clearPendingDisambiguation(phone).catch(() => {});
+  await cleanupHrDataQueryArtifacts(phone);
   try {
     const d1 = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Tanmoy-er department ki?', isGroup: false, history: [] });
     const h1 = [{ direction: 'in', text: 'Tanmoy-er department ki?', ts: Date.now() - 2000 }, { direction: 'out', text: d1.replyText, ts: Date.now() - 1000 }];
     const d2 = await whatsappAssistant.decideAutoReply({ phone, name: 'Sender', firstName: 'Sender', text: 'Naa, Subhodeep Kundu Chowdhury er kotha bolchi', isGroup: false, history: h1 });
-    if (!d2.replyText.includes('Subhodeep Kundu Chowdhury') || /charjon/.test(d2.replyText)) {
-      return { pass: false, detail: 'expected re-resolution to Subhodeep Kundu Chowdhury, got: ' + d2.replyText };
+    const approval = pendingApprovalFor(await whatsappAssistant.listPendingApprovals(), phone);
+    if (d2.case !== 'data_holding' || !approval || approval.resolvedPersonName !== 'Subhodeep Kundu Chowdhury') {
+      return { pass: false, detail: 'expected a queued approval re-resolved to Subhodeep Kundu Chowdhury, got: case=' + d2.case + ', approval=' + JSON.stringify(approval) + ', reply: ' + d2.replyText };
     }
-    return { pass: true, detail: 'correctly re-resolved against the whole directory' };
+    return { pass: true, detail: 'correctly re-resolved against the whole directory (queued for owner approval)' };
   } finally {
-    await whatsappAssistant.clearPendingDisambiguation(phone).catch(() => {});
+    await cleanupHrDataQueryArtifacts(phone);
   }
 });
 
