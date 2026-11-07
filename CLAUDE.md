@@ -1,5 +1,50 @@
 # Working rules for this repo
 
+## IMPACT CHECK — MANDATORY (2026-11, direct instruction)
+
+Permanent hard rules, followed in every session, for any request that touches this
+app's behaviour (not just WhatsApp routing - this supersedes and broadens the older
+single "Before implementing any new logic/flow/step" note below, which stays as
+WhatsApp-specific detail under this same umbrella):
+
+1. **Before writing any code for a request**, do an impact check: which existing
+   features, flows, shared functions, templates, routing/state-priority, schedules,
+   send paths, data rules, or shared UI components the change could touch or alter.
+2. **If there is ANY risk** that something already working could change or break
+   (even "probably fine"), STOP before coding and send an Impact Report:
+   - What was asked for (1 line).
+   - What existing behaviour could be affected — each item with a concrete example in
+     simple words (e.g. "a salary-slip request might be treated as an attendance
+     request").
+   - Which tests / locked scenarios already cover it, and which new ones will be
+     added.
+   - The plan to avoid the risk, and any lower-risk alternative.
+   Then WAIT for explicit OK. Never start coding before that answer.
+3. **If there is no risk at all**, say "Impact check: no existing behaviour affected"
+   in one line and proceed.
+4. **If a new risk is discovered mid-task**, stop and report it the same way before
+   continuing - never push through and mention it only in the final report.
+5. **Never "fix" or change working behaviour that wasn't asked about**, even when it
+   looks like an improvement - suggest it and wait, exactly like any other new risk.
+6. **Gate before reporting anything done**: full deterministic suites (`npm run
+   check:all`, or each `check:*` script individually) + the headless UI check + the
+   FULL locked-scenario suite (`check-whatsapp-scenarios`, every group, never a
+   `SCENARIO_FILTER`-narrowed run as the final word) - 0 broken. Any broken or flaky
+   result means the work is NOT done: fix it, or report it clearly and explicitly -
+   never leave it for Subhodeep to discover after a push.
+
+A committed git **pre-push hook** (`githooks/pre-push`, installed into
+`.git/hooks/pre-push` by `scripts/install-git-hooks.js` via npm's own `prepare`
+lifecycle script - runs automatically on `npm install`, or by hand with `npm run
+prepare`) runs every fully deterministic suite plus the headless UI check
+(`scripts/run-pre-push-checks.js`, also runnable directly as `npm run check:all`) and
+BLOCKS the push if anything fails, printing which suite. The real-model suites
+(`check-subh-language.js`, `check-whatsapp-scenarios.js`, `check-automation-nlu.js`,
+`check-workflow-nlu.js`) are deliberately NOT in the hook - they cost real Claude API
+calls per run and stay in the manual report-gate (rule 6 above) instead, so a push
+never silently costs money. Bypass only when genuinely safe to:
+`git push --no-verify`.
+
 ## Before implementing any new logic/flow/step
 
 Before implementing ANY new logic/flow/step, analyse its impact on existing live

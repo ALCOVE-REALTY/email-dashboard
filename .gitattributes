@@ -1,0 +1,6 @@
+# Git hook scripts must always use LF line endings, regardless of each
+# contributor's core.autocrlf setting - a CRLF-mangled shebang line
+# breaks the shell's ability to run the file at all. Without this, a
+# Windows checkout (core.autocrlf=true, the common Windows default)
+# would silently corrupt githooks/pre-push on checkout.
+githooks/* text eol=lf

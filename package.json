@@ -6,6 +6,8 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
+    "prepare": "node scripts/install-git-hooks.js",
+    "check:all": "node scripts/run-pre-push-checks.js",
     "check:subh-language": "node scripts/check-subh-language.js",
     "check:whatsapp-engine": "node scripts/check-whatsapp-engine.js",
     "check:whatsapp-scenarios": "node scripts/check-whatsapp-scenarios.js",
@@ -18,7 +20,9 @@
     "check:letter-settings": "node scripts/check-letter-settings.js",
     "check:drive-templates": "node scripts/check-drive-templates.js",
     "check:drive-template-fields": "node scripts/check-drive-template-fields.js",
-    "check:drive-template-generation": "node scripts/check-drive-template-generation.js"
+    "check:drive-template-generation": "node scripts/check-drive-template-generation.js",
+    "check:workflow": "node scripts/check-workflow.js",
+    "check:workflow-nlu": "node scripts/check-workflow-nlu.js"
   },
   "dependencies": {
     "@sparticuz/chromium": "^153.0.0",

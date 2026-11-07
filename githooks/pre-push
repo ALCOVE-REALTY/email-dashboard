@@ -1,0 +1,27 @@
+#!/bin/sh
+# Committed git pre-push hook (CLAUDE.md, "IMPACT CHECK - MANDATORY", 2026-11,
+# direct instruction). Installed into .git/hooks/pre-push by
+# scripts/install-git-hooks.js (runs automatically via npm's "prepare"
+# lifecycle on `npm install`, or manually with `npm run prepare`).
+#
+# Runs every fully deterministic check-*.js suite plus the headless UI
+# check (scripts/run-pre-push-checks.js) and BLOCKS the push if any of
+# them fails, printing which one. Real-model suites (check-subh-
+# language.js, check-whatsapp-scenarios.js, check-automation-nlu.js,
+# check-workflow-nlu.js) are deliberately NOT run here - they cost real
+# Claude API calls per run and stay in the manual report-gate instead, so
+# a push never silently costs money.
+#
+# Bypass only when you genuinely mean to (e.g. pushing a docs-only
+# change you've already verified by hand): `git push --no-verify`.
+
+echo "Running pre-push checks (deterministic suites + headless UI check)..."
+node "$(git rev-parse --show-toplevel)/scripts/run-pre-push-checks.js"
+status=$?
+if [ $status -ne 0 ]; then
+  echo ""
+  echo "Pre-push checks FAILED - push blocked. Fix the failing suite(s) above,"
+  echo "or use 'git push --no-verify' if you are certain this push is safe."
+  exit 1
+fi
+exit 0
