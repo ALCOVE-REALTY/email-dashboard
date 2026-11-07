@@ -719,6 +719,18 @@ scenario('Task 1: an enquiry followed by a CV the same day - the enquiry gets it
     await whatsappAssistant.clearJobTemplateSentToday(phone).catch(() => {});
   }
 });
+// STALE TEST FIX (2026-11, direct instruction investigation) - this
+// scenario predates commit 98a6f64 ("Fix: WhatsApp media/sticker
+// acknowledgements used the wrong sender's language", 2026-11-04), which
+// deliberately and correctly changed mediaFallbackLang's own no-caption/
+// no-history default from Banglish to English (a real live bug: a sender
+// with no history was getting a reply in the wrong language, leaking
+// from elsewhere). That commit updated check-whatsapp-engine.js's own
+// equivalent locked scenario to expect English, but this SEPARATE
+// real-model scenario file was missed. Not a regression - bisected and
+// confirmed check-whatsapp-engine.js's own CV-PDF-no-caption scenario
+// (updated by the very same commit) still passes at 930/930 with the
+// English expectation.
 scenario('Task 1: a CV-only PDF with no caption/text and no open document request defaults to a job application and gets the fixed template', async () => {
   const phone = '910000001405';
   await whatsappAssistant.clearJobTemplateSentToday(phone).catch(() => {});
@@ -727,8 +739,9 @@ scenario('Task 1: a CV-only PDF with no caption/text and no open document reques
     await whatsappAssistant.handleIncomingMedia(phone, 'ScenPdf', { type: 'document', content: {} });
     const after = await whatsappAssistant.listPendingAutoSends();
     const scheduled = after.find((e) => !beforeIds.has(e.id) && e.chatId === phone);
-    // mediaFallbackLang defaults to banglish with no caption/history.
-    if (!scheduled || scheduled.case !== 'job_application_received' || scheduled.replyText !== whatsappAssistant.JOB_APPLICATION_RECEIVED_REPLY.banglish) {
+    // mediaFallbackLang defaults to English with no caption/history
+    // (live bug fix, 2026-11-04 - was Banglish).
+    if (!scheduled || scheduled.case !== 'job_application_received' || scheduled.replyText !== whatsappAssistant.JOB_APPLICATION_RECEIVED_REPLY.english) {
       return { pass: false, detail: 'expected a scheduled job_application_received send, got: ' + JSON.stringify(scheduled) };
     }
     return { pass: true, detail: 'bare PDF correctly defaulted to a job application' };
