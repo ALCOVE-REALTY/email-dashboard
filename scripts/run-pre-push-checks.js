@@ -34,11 +34,25 @@ const DETERMINISTIC_SUITES = [
 // Claude/Drive calls) - run last since it's the slowest.
 const UI_CHECK = 'check-subh-panel-ui.js';
 
+// A non-zero exit does not always mean the suite's own checks failed - a
+// known, pre-existing, harmless Node/libuv issue on Windows
+// ("Assertion failed: !(handle->flags & UV_HANDLE_CLOSING)", src\win\
+// async.c) can crash the process during its OWN post-exit teardown,
+// AFTER every real check has already run and printed its own "N/N
+// passed" summary line. Only ever treated as a pass when that exact
+// signature is present AND the suite's own summary shows every check
+// passing (N/N, not e.g. 47/51) - any other non-zero exit, or a summary
+// showing a real failure, still fails normally.
+function isHarmlessWindowsTeardownCrash(output, status) {
+  if (!/Assertion failed:.*UV_HANDLE_CLOSING/.test(output)) return false;
+  const summary = output.match(/(\d+)\/(\d+) passed/);
+  return Boolean(summary && summary[1] === summary[2]);
+}
 function runOne(scriptName) {
   const scriptPath = path.join(__dirname, scriptName);
   const result = spawnSync(process.execPath, [scriptPath], { encoding: 'utf8', env: process.env });
   const output = (result.stdout || '') + (result.stderr || '');
-  const passed = result.status === 0;
+  const passed = result.status === 0 || isHarmlessWindowsTeardownCrash(output, result.status);
   return { scriptName, passed, output, status: result.status };
 }
 
