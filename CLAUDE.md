@@ -2124,3 +2124,80 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
   - "Kal chuti nebo" / "aaj late hobe" → still correctly start the attendance-
     approval/HR-note flow - the document-request fix above is scoped precisely
     and never blocks a genuine attendance matter.
+
+- Task 39 (2026-11), direct instruction, TASK 4(d) follow-up - the file-CREATING
+  Drive/Docs operations for SUBH Letter Templates now run as Subhodeep's own
+  Google identity (OAuth), not the service account, closing the "Service
+  Accounts do not have storage quota" gap recorded under Task 36 above.
+  Subhodeep gave the exact pre-existing folder/sheet to use (never create new
+  ones): "SUBH Letter Templates" folder, its "Issued Letters" subfolder
+  (`1uRYzSXURXoMi6kC8MmuKlruhFHvZqF8r`), and a "Letter Register" sheet he
+  created himself - the Register sheet keeps writing via the service account
+  (already Editor on that sheet); only copy/export/delete/batchUpdate/folder-
+  create switch identity.
+  - `src/subhDriveAuth.js` (the separate, already-existing OAuth identity for
+    SUBH's own Drive access - NOT auth.js's Gmail/CV-upload identity) had its
+    `SCOPES` broadened from `drive.file` to full `https://www.googleapis.com/
+    auth/drive` + `https://www.googleapis.com/auth/documents`. Reason:
+    `drive.file` only ever sees a file/folder THIS app itself created through
+    this identity - it cannot see a folder the owner made by hand via Drive's
+    own UI at all, which is exactly "SUBH Letter Templates"/"Issued Letters".
+    Full `drive` is additive for the existing CV-upload feature
+    (`fileStorage.js`, its own separate "SUBH Documents" folder tree) - a
+    `drive.file`-shaped call still works under the broader scope, so that
+    feature's behavior is unchanged. `documents` scope is new and needed
+    because filling a copied template's placeholders (Docs `batchUpdate`)
+    must be done by the SAME identity that owns the copy - once the temp copy
+    is created under Subhodeep's own identity, the service account has no
+    permission to edit it at all.
+  - New `getDocsClient()` added alongside the existing `getDriveClient()`.
+  - **Guardrails (direct instruction, all 4 enforced in code, not just by the
+    narrower scope)**, in new `src/subhDriveGuard.js`:
+    1. **Hard folder allowlist** - an in-memory allowlist seeded with the
+       known "SUBH Letter Templates" folder id and the given "Issued Letters"
+       folder id; every guarded call checks the target/parent folder against
+       it FIRST and throws (logging a `refused` line) on anything outside -
+       this identity's broader scope is never trusted to self-limit. The
+       allowlist only grows as this module itself creates/confirms a folder
+       as a verified child of an already-allowed one (the `<FY>`/`<Month>`
+       subfolders) - it can never be told to trust an arbitrary folder at
+       runtime. A template file to copy is independently checked
+       (`assertTemplateFileAllowed`, a `files.get` + parent check) before
+       every copy. The existing `fileStorage.js` CV-upload paths don't use
+       this guard at all and keep their current behavior unchanged.
+    2. **Delete only what this module created** - a per-process
+       `ownedFileIds` set tracks every temp copy THIS module just created;
+       `guardedDeleteOwned`/`guardedExport`/`guardedBatchUpdate` all refuse
+       to act on any file id not in that set. Subhodeep's own templates can
+       never be deleted or batch-edited by this code, structurally, not just
+       by convention.
+    3. **Every operation logged** - `logDriveOp` prints one structured
+       `[subh-drive-guard] <ISO time> <action> {...detail}` line (action,
+       file id/name, folder, time) to the server log for every guarded call,
+       including refused ones.
+    4. **Token stays out of git** - confirmed: `subh-drive-token.json` is
+       already in `.gitignore` (verified via `git ls-files`, no change
+       needed). **Moving "SUBH Letter Templates" to a Shared Drive later
+       would let the service account do all of this instead** - a Shared
+       Drive's storage isn't the service account's own, so it would never
+       hit the storage-quota wall from Task 36, and this whole broad-scope
+       OAuth identity + guardrail layer could be retired in favor of the
+       service account alone. Not done now (Subhodeep chose the OAuth route
+       for TASK 4(d)); left as the lower-risk long-term option.
+  - Exactly 2 call sites switched from the service account to this identity,
+    guarded: `driveTemplateGenerationService.js` (copy template → batchUpdate
+    placeholders → export PDF → delete temp copy, used by BOTH "Preview a
+    document" and a real send - one path, no separate branch) and
+    `letterSettingsService.js`'s `uploadSentLetterPdf` (now points directly
+    at the given `ISSUED_LETTERS_FOLDER_ID` rather than finding/creating an
+    "Issued Letters" folder by name, then creates/reuses `<FY>`/`<Month>`
+    under it via `subhDriveGuard.guardedGetOrCreateFolder`). Register sheet
+    reads/writes (`appendToLetterRegister`, `setRegisterSheetLink`,
+    `getLetterRegisterLink`) are UNCHANGED - still the service account.
+  - Deterministic suites updated for the new client/guard (same mock
+    convention throughout - stub `subhDriveAuth.getDriveClient`/
+    `getDocsClient`, not `sheetsAuth`'s): `check-letter-settings.js` 55/55,
+    `check-drive-template-generation.js` 14/14, `check-workflow.js` 94/94 -
+    all three previously mocked the service account's Drive/Docs clients for
+    these exact call sites; now mock the OAuth client instead, same
+    assertions, still fully deterministic/free/zero real Drive calls.

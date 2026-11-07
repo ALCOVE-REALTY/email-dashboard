@@ -123,14 +123,20 @@ async function main() {
   const driveTemplatesService = require('../src/aiAssistant/driveTemplatesService');
   const driveTemplateFieldsService = require('../src/aiAssistant/driveTemplateFieldsService');
   const sheetsAuth = require('../src/sheetsAuth');
+  const subhDriveAuth = require('../src/subhDriveAuth');
+  const subhDriveGuard = require('../src/subhDriveGuard');
   await companyDetailsService.saveCompanyDetails('Alcove', { code: 'ALC' });
-  const origGetDriveWriteClient = sheetsAuth.getDriveWriteClient;
   const origGetSheetsWriteClient = sheetsAuth.getSheetsWriteClient;
-  const origGetDocsClient = sheetsAuth.getDocsClient;
+  const origGetDriveClient = subhDriveAuth.getDriveClient;
+  const origGetDocsClient = subhDriveAuth.getDocsClient;
   const registerAppends = [];
-  // TASK 1(d) (2026-11) - the SAME write-client stub also covers Drive
-  // template generation's own copy/export/delete calls (files.create
-  // stays dedicated to the Letter Register sheet / logo upload paths).
+  // TASK 4(d) (2026-11), direct instruction - file-CREATING Drive/Docs
+  // operations (Drive template copy/export/delete, the <FY>/<Month>
+  // folder tree, the uploaded PDF) now run as the owner's own OAuth
+  // identity (subhDriveAuth), never the service account - same mock
+  // convention as scripts/check-letter-settings.js and
+  // scripts/check-drive-template-generation.js. Register sheet writes
+  // (below) stay on the service account via sheetsAuth, unchanged.
   const driveCopyCalls = [];
   const driveExportCalls = [];
   const driveDeleteCalls = [];
@@ -139,13 +145,18 @@ async function main() {
   // <FY>/<Month>) so letterSettingsService.uploadSentLetterPdf's own
   // files.list-then-create lookups behave like real Drive: a folder
   // created for one real send is reused by every later one, never
-  // duplicated. Persists across every getDriveWriteClient() call in this
+  // duplicated. Persists across every getDriveClient() call in this
   // whole suite run via closure, same as driveCopyCalls etc. above.
   const fakeDriveFolders = [];
   let fakeFolderCounter = 0;
   let fakeFileCounter = 0;
-  sheetsAuth.getDriveWriteClient = () => ({
+  subhDriveAuth.getDriveClient = () => ({
     files: {
+      // subhDriveGuard's own assertTemplateFileAllowed reads this before
+      // every copy to confirm the source file is a direct child of SUBH
+      // Letter Templates - every Drive-template fileId in this suite
+      // represents one, so this always reports that real folder.
+      get: async (opts) => ({ data: { id: opts.fileId, name: 'Fake Template', parents: [subhDriveGuard.LETTER_TEMPLATES_FOLDER_ID] } }),
       create: async (opts) => {
         const res = opts.resource || {};
         if (res.mimeType === 'application/vnd.google-apps.folder') {
@@ -181,7 +192,7 @@ async function main() {
       append: async (opts) => { registerAppends.push(opts); return {}; }
     } }
   });
-  sheetsAuth.getDocsClient = () => ({ documents: { batchUpdate: async (opts) => { docsBatchUpdateCalls.push(opts); return {}; } } });
+  subhDriveAuth.getDocsClient = () => ({ documents: { batchUpdate: async (opts) => { docsBatchUpdateCalls.push(opts); return {}; } } });
   // Every real send in this suite logs to the Letter Register (TASK
   // 1(e)/4), which now THROWS (holding the letter) unless a register
   // sheet is set first - seed one here, same as the 'Alcove' company code
@@ -1262,9 +1273,9 @@ async function main() {
     whatsappAssistant.isRealSendAllowedFor = origIsRealSendAllowedFor;
     whatsappAssistant.postOwnerNotification = origPostOwnerNotification;
     workflowService.callWorkflowTool = origCallWorkflowTool;
-    sheetsAuth.getDriveWriteClient = origGetDriveWriteClient;
+    subhDriveAuth.getDriveClient = origGetDriveClient;
     sheetsAuth.getSheetsWriteClient = origGetSheetsWriteClient;
-    sheetsAuth.getDocsClient = origGetDocsClient;
+    subhDriveAuth.getDocsClient = origGetDocsClient;
     console.log('Cleaning up', createdIds.length, 'test-created workflow(s)...');
     for (const id of createdIds) await workflowService.deleteWorkflow(id);
   }

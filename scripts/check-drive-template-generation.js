@@ -1,9 +1,11 @@
 // Persisted regression suite for Drive template letter generation (TASK
 // 1(d), 2026-11, direct instruction): copy the template, replace
 // placeholders per record, export PDF, delete the temp copy. Fully
-// deterministic, zero real Drive/Docs calls - sheetsAuth's client getters
-// are stubbed, same convention as scripts/check-letter-settings.js. Run
-// with `node scripts/check-drive-template-generation.js`.
+// deterministic, zero real Drive/Docs calls - subhDriveAuth's client
+// getters (the owner's own OAuth identity, used for these file-CREATING
+// operations since 2026-11) are stubbed, same convention as
+// scripts/check-letter-settings.js. Run with
+// `node scripts/check-drive-template-generation.js`.
 require('dotenv').config({ path: '.env.local' });
 require('dotenv').config();
 
@@ -22,7 +24,8 @@ async function main() {
   await require('./testBootstrap').setupTestEnvironment();
   const genService = require('../src/aiAssistant/driveTemplateGenerationService');
   const driveTemplatesService = require('../src/aiAssistant/driveTemplatesService');
-  const sheetsAuth = require('../src/sheetsAuth');
+  const subhDriveAuth = require('../src/subhDriveAuth');
+  const subhDriveGuard = require('../src/subhDriveGuard');
 
   const row = { 'Employee_Name': 'Alice Emp', 'Company': 'Alcove Realty Pvt Ltd', 'Gender': 'Female' };
   const mapping = {
@@ -36,22 +39,27 @@ async function main() {
   console.log('='.repeat(70));
   console.log('generateDriveTemplateLetter - the happy path (copy, fill, export, delete)');
   console.log('='.repeat(70));
-  const origGetDriveWriteClient = sheetsAuth.getDriveWriteClient;
-  const origGetDocsClient = sheetsAuth.getDocsClient;
+  const origGetDriveClient = subhDriveAuth.getDriveClient;
+  const origGetDocsClient = subhDriveAuth.getDocsClient;
   let copyCalls = [];
   let batchUpdateCalls = [];
   let exportCalls = [];
   let deleteCalls = [];
   function freshStubs() {
     copyCalls = []; batchUpdateCalls = []; exportCalls = []; deleteCalls = [];
-    sheetsAuth.getDriveWriteClient = () => ({
+    subhDriveAuth.getDriveClient = () => ({
       files: {
+        // subhDriveGuard's own assertTemplateFileAllowed reads this
+        // BEFORE every copy, to confirm the source file is really a
+        // direct child of SUBH Letter Templates - every test fileId here
+        // represents one, so this always reports that real folder.
+        get: async (opts) => ({ data: { id: opts.fileId, name: 'Fake Template', parents: [subhDriveGuard.LETTER_TEMPLATES_FOLDER_ID] } }),
         copy: async (opts) => { copyCalls.push(opts); return { data: { id: 'temp-letter-1' } }; },
         export: async (opts) => { exportCalls.push(opts); return { data: Buffer.from('%PDF-1.4 fake') }; },
         delete: async (opts) => { deleteCalls.push(opts.fileId); return {}; }
       }
     });
-    sheetsAuth.getDocsClient = () => ({ documents: { batchUpdate: async (opts) => { batchUpdateCalls.push(opts); return {}; } } });
+    subhDriveAuth.getDocsClient = () => ({ documents: { batchUpdate: async (opts) => { batchUpdateCalls.push(opts); return {}; } } });
   }
   freshStubs();
   try {
@@ -69,8 +77,8 @@ async function main() {
     check('the TEMP copy is exported as a PDF, never the original', exportCalls.length === 1 && exportCalls[0].fileId === 'temp-letter-1' && exportCalls[0].mimeType === 'application/pdf');
     check('the temp copy is deleted afterward - never left behind in the owner\'s Drive', deleteCalls.length === 1 && deleteCalls[0] === 'temp-letter-1');
   } finally {
-    sheetsAuth.getDriveWriteClient = origGetDriveWriteClient;
-    sheetsAuth.getDocsClient = origGetDocsClient;
+    subhDriveAuth.getDriveClient = origGetDriveClient;
+    subhDriveAuth.getDocsClient = origGetDocsClient;
   }
 
   console.log('='.repeat(70));
@@ -84,8 +92,8 @@ async function main() {
     check('generation fails with a clear reason naming the exact unresolved placeholder', result.ok === false && result.error.includes('{Confirmation_Date}'));
     check('nothing is ever copied when a value can\'t be resolved (checked BEFORE touching Drive at all)', copyCalls.length === 0);
   } finally {
-    sheetsAuth.getDriveWriteClient = origGetDriveWriteClient;
-    sheetsAuth.getDocsClient = origGetDocsClient;
+    subhDriveAuth.getDriveClient = origGetDriveClient;
+    subhDriveAuth.getDocsClient = origGetDocsClient;
   }
   await checkAsync('an unmapped (unknown) placeholder also holds the letter, never sent with the literal {Placeholder} text', async () => {
     freshStubs();
@@ -93,8 +101,8 @@ async function main() {
       const result = await genService.generateDriveTemplateLetter('src-file-1', driveTemplatesService.GOOGLE_DOC_MIME, { '{Mystery}': { source: 'unknown' } }, ['{Mystery}'], ctx);
       return result.ok === false && copyCalls.length === 0;
     } finally {
-      sheetsAuth.getDriveWriteClient = origGetDriveWriteClient;
-      sheetsAuth.getDocsClient = origGetDocsClient;
+      subhDriveAuth.getDriveClient = origGetDriveClient;
+      subhDriveAuth.getDocsClient = origGetDocsClient;
     }
   });
 
@@ -103,15 +111,15 @@ async function main() {
   console.log('='.repeat(70));
   await checkAsync('a batchUpdate failure still deletes the temp copy before the error propagates', async () => {
     freshStubs();
-    sheetsAuth.getDocsClient = () => ({ documents: { batchUpdate: async () => { throw new Error('Docs API boom'); } } });
+    subhDriveAuth.getDocsClient = () => ({ documents: { batchUpdate: async () => { throw new Error('Docs API boom'); } } });
     try {
       await genService.generateDriveTemplateLetter('src-file-1', driveTemplatesService.GOOGLE_DOC_MIME, mapping, placeholders, ctx);
       return false;
     } catch (err) {
       return deleteCalls.length === 1 && deleteCalls[0] === 'temp-letter-1';
     } finally {
-      sheetsAuth.getDriveWriteClient = origGetDriveWriteClient;
-      sheetsAuth.getDocsClient = origGetDocsClient;
+      subhDriveAuth.getDriveClient = origGetDriveClient;
+      subhDriveAuth.getDocsClient = origGetDocsClient;
     }
   });
 
@@ -123,8 +131,8 @@ async function main() {
     const result = await genService.generateDriveTemplateLetter('docx-file-1', driveTemplatesService.DOCX_MIME, mapping, placeholders, ctx);
     check('a .docx source still succeeds via the same copy-as-Google-Doc mechanism', result.ok === true && copyCalls[0].fileId === 'docx-file-1' && copyCalls[0].resource.mimeType === driveTemplatesService.GOOGLE_DOC_MIME);
   } finally {
-    sheetsAuth.getDriveWriteClient = origGetDriveWriteClient;
-    sheetsAuth.getDocsClient = origGetDocsClient;
+    subhDriveAuth.getDriveClient = origGetDriveClient;
+    subhDriveAuth.getDocsClient = origGetDocsClient;
   }
 
   console.log('='.repeat(70));

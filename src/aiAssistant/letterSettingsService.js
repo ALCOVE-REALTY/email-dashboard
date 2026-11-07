@@ -13,6 +13,8 @@
 const { Redis } = require('@upstash/redis');
 const { Readable } = require('stream');
 const sheetsAuth = require('../sheetsAuth');
+const subhDriveAuth = require('../subhDriveAuth');
+const subhDriveGuard = require('../subhDriveGuard');
 
 let client;
 let clientChecked = false;
@@ -332,40 +334,31 @@ async function appendToLetterRegister({ date, refNo, employeeCode, name, company
   return link;
 }
 
-const ISSUED_LETTERS_FOLDER_NAME = 'Issued Letters';
 const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 
-// Finds a direct child folder by exact name under parentId, creating it
-// if it doesn't exist yet - idempotent, so repeated uploads in the same
-// month reuse the same folder rather than creating a new one each time.
-async function getOrCreateDriveFolder(drive, parentId, name) {
-  const q = "'" + parentId + "' in parents and name = '" + String(name).replace(/'/g, "\\'") + "' and mimeType = 'application/vnd.google-apps.folder' and trashed = false";
-  const list = await drive.files.list({ q, fields: 'files(id, name)', spaces: 'drive' });
-  const found = list.data.files && list.data.files[0];
-  if (found) return found.id;
-  const created = await drive.files.create({ resource: { name, mimeType: 'application/vnd.google-apps.folder', parents: [parentId] }, fields: 'id' });
-  return created.data.id;
-}
-
-// Uploads one SENT letter's PDF into "SUBH Letter Templates/Issued
-// Letters/<FY>/<Month>" (TASK 4(c), 2026-11, direct instruction),
-// creating the nested subfolders as needed - never called for a preview/
-// test send. Never called before a register sheet is confirmed set (see
-// workflowService.js's recordSentLetter) - a letter is held, not sent,
-// if this throws.
+// Uploads one SENT letter's PDF into the owner's own, pre-existing
+// "SUBH Letter Templates/Issued Letters/<FY>/<Month>" (TASK 4(c)/(d),
+// 2026-11, direct instruction), creating the <FY>/<Month> subfolders as
+// needed - never called for a preview/test send. Never called before a
+// register sheet is confirmed set (see workflowService.js's
+// recordSentLetter) - a letter is held, not sent, if this throws.
+//
+// Runs as the owner's own Google identity (subhDriveAuth), not the
+// service account - file CREATION needs real storage quota, which a
+// service account has none of. Points directly at
+// subhDriveGuard.ISSUED_LETTERS_FOLDER_ID (the EXACT existing "Issued
+// Letters" folder the owner already created) rather than finding/
+// creating one by name - never risks a second "Issued Letters" folder.
+// Every call goes through subhDriveGuard's own folder-allowlist/logging
+// guardrails regardless of what the broader OAuth scope could reach.
 async function uploadSentLetterPdf({ buffer, filename, date }) {
-  const drive = sheetsAuth.getDriveWriteClient();
+  const drive = subhDriveAuth.getDriveClient();
   const when = date instanceof Date ? date : new Date();
   const fy = computeFinancialYear(when);
   const month = MONTH_NAMES[when.getUTCMonth()];
-  const issuedFolderId = await getOrCreateDriveFolder(drive, LETTER_TEMPLATES_FOLDER_ID, ISSUED_LETTERS_FOLDER_NAME);
-  const fyFolderId = await getOrCreateDriveFolder(drive, issuedFolderId, fy);
-  const monthFolderId = await getOrCreateDriveFolder(drive, fyFolderId, month);
-  const file = await drive.files.create({
-    resource: { name: filename, parents: [monthFolderId] },
-    media: { mimeType: 'application/pdf', body: Readable.from(buffer) },
-    fields: 'id, webViewLink'
-  });
+  const fyFolderId = await subhDriveGuard.guardedGetOrCreateFolder(drive, subhDriveGuard.ISSUED_LETTERS_FOLDER_ID, fy);
+  const monthFolderId = await subhDriveGuard.guardedGetOrCreateFolder(drive, fyFolderId, month);
+  const file = await subhDriveGuard.guardedUploadFile(drive, monthFolderId, filename, 'application/pdf', Readable.from(buffer));
   return { fileId: file.data.id, url: file.data.webViewLink || ('https://drive.google.com/file/d/' + file.data.id + '/view') };
 }
 

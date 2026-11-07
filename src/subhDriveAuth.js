@@ -1,11 +1,29 @@
-// A SEPARATE Google OAuth identity + token, specifically for SUBH's
+// A SEPARATE Google OAuth identity + token, specifically for SUBH's own
 // document storage - deliberately NOT auth.js's own oauth2Client/
 // GOOGLE_REFRESH_TOKEN (that one carries broad Gmail + full 'drive'
 // scope for the existing CV-upload feature). This one is authorized by
-// the owner (subhodeep@alcoverealty.in) separately, scoped to EXACTLY
-// drive.file - the app can only ever see files/folders IT creates, or
-// that are individually shared with it, never anything else in that
-// Drive account.
+// the owner (subhodeep@alcoverealty.in) separately.
+//
+// SCOPE (2026-11, direct instruction) - broadened from `drive.file` to
+// full `drive` + `documents`. `drive.file` was originally chosen as the
+// narrowest scope that worked for fileStorage.js's own CV-upload feature
+// (which only ever creates ITS OWN folder tree, "SUBH Documents") - but
+// it cannot see a folder/file the owner created by hand outside this
+// app at all, which is exactly the problem for SUBH Letter Templates:
+// copying an existing template, and saving issued-letter PDFs into the
+// owner's own pre-existing "Issued Letters" folder, both genuinely
+// require full `drive` visibility; filling a copied template's
+// placeholders via Google Docs' batchUpdate additionally needs
+// `documents`. Broadening is additive for the EXISTING CV-upload paths
+// (a drive.file-capable call still works under full `drive` scope), so
+// their behaviour is unchanged - but it is a real increase in what this
+// one token can reach if it were ever leaked, so every Letter-Templates
+// operation that uses it is ADDITIONALLY fenced in code regardless (see
+// subhDriveGuard.js) - folder allowlist, delete-only-what-we-created,
+// full operation logging. Moving "SUBH Letter Templates" to a Shared
+// Drive later would let the SERVICE ACCOUNT do this instead (removing
+// the need for this broad a scope on a real user's own token at all) -
+// see CLAUDE.md.
 //
 // Reuses the SAME registered OAuth client (GOOGLE_CLIENT_ID/SECRET,
 // same Google Cloud project as auth.js) and the SAME already-registered
@@ -18,7 +36,7 @@ const { google } = require('googleapis');
 
 const TOKEN_PATH = path.join(__dirname, '..', 'subh-drive-token.json');
 const CREDENTIALS_PATH = path.join(__dirname, '..', 'credentials.json');
-const SCOPES = ['https://www.googleapis.com/auth/drive.file'];
+const SCOPES = ['https://www.googleapis.com/auth/drive', 'https://www.googleapis.com/auth/documents'];
 const OAUTH_STATE = 'subh-drive';
 
 function loadClientCredentials() {
@@ -75,5 +93,13 @@ function getDriveClient() {
   if (!isAuthenticated()) throw new Error('SUBH Drive is not connected yet - visit /subh-drive-auth to complete the one-time consent.');
   return google.drive({ version: 'v3', auth: oauth2Client });
 }
+// Docs API client (2026-11, direct instruction) - needed to fill a
+// copied template's placeholders (batchUpdate) once the copy is created
+// under THIS identity rather than the service account's - the service
+// account has no permission to edit a file it doesn't own/wasn't shared.
+function getDocsClient() {
+  if (!isAuthenticated()) throw new Error('SUBH Drive is not connected yet - visit /subh-drive-auth to complete the one-time consent.');
+  return google.docs({ version: 'v1', auth: oauth2Client });
+}
 
-module.exports = { OAUTH_STATE, getAuthUrl, handleCallback, isAuthenticated, getDriveClient };
+module.exports = { OAUTH_STATE, getAuthUrl, handleCallback, isAuthenticated, getDriveClient, getDocsClient };

@@ -26,6 +26,8 @@ async function main() {
   await require('./testBootstrap').setupTestEnvironment();
   const letterSettingsService = require('../src/aiAssistant/letterSettingsService');
   const sheetsAuth = require('../src/sheetsAuth');
+  const subhDriveAuth = require('../src/subhDriveAuth');
+  const subhDriveGuard = require('../src/subhDriveGuard');
   // Direct access to the local fake Upstash store (same convention as
   // check-whatsapp-engine.js's own getRawRedisClient) - needed to plant an
   // OLD-shape counter key directly, simulating data written before TASK 1.
@@ -190,7 +192,6 @@ async function main() {
   console.log('='.repeat(70));
   console.log('TASK 4(a) (2026-11), direct instruction - Letter Register: the OWNER sets it by pasting a link to a sheet they created themselves; SUBH never creates it');
   console.log('='.repeat(70));
-  const origGetDriveWriteClient = sheetsAuth.getDriveWriteClient;
   const origGetSheetsWriteClient = sheetsAuth.getSheetsWriteClient;
   let appendCalls = [];
   let valuesUpdateCalls = [];
@@ -238,13 +239,14 @@ async function main() {
   }
 
   console.log('='.repeat(70));
-  console.log('TASK 4(c) (2026-11), direct instruction - uploadSentLetterPdf: nested "Issued Letters/<FY>/<Month>" folders, created as needed and reused');
+  console.log('TASK 4(c)/(d) (2026-11), direct instruction - uploadSentLetterPdf: runs as the owner\'s own OAuth identity (subhDriveAuth), straight into the EXISTING "Issued Letters" folder (never finds/creates one by name), nested <FY>/<Month> folders created as needed and reused, every call guarded');
   console.log('='.repeat(70));
+  const origGetDriveClient = subhDriveAuth.getDriveClient;
   const driveFolders = []; // { id, name, parentId } - simulates real Drive folder state across calls
   let fakeFolderCounter = 0;
   let fakeFileCounter = 0;
   const driveFileCreateCalls = [];
-  sheetsAuth.getDriveWriteClient = () => ({
+  subhDriveAuth.getDriveClient = () => ({
     files: {
       list: async (opts) => {
         const nameMatch = /name = '([^']*)'/.exec(opts.q || '');
@@ -270,21 +272,23 @@ async function main() {
   try {
     const upload1 = await letterSettingsService.uploadSentLetterPdf({ buffer: Buffer.from('%PDF fake'), filename: 'Confirmation-Letter-Alice.pdf', date: new Date('2026-12-05T00:00:00.000Z') });
     check('uploadSentLetterPdf returns a usable file id/url', Boolean(upload1.fileId) && /drive\.google\.com/.test(upload1.url));
-    check('exactly 3 folders are created for a brand-new FY/month path: Issued Letters, the FY, the month', driveFolders.length === 3);
-    const issued = driveFolders.find((f) => f.name === 'Issued Letters' && f.parentId === letterSettingsService.LETTER_TEMPLATES_FOLDER_ID);
-    const fyFolder = driveFolders.find((f) => f.name === '2026-27' && issued && f.parentId === issued.id);
+    // Only 2 folders now (FY + Month) - "Issued Letters" is the EXISTING,
+    // known subhDriveGuard.ISSUED_LETTERS_FOLDER_ID, never found/created
+    // by name, so it never appears in driveFolders at all.
+    check('exactly 2 folders are created for a brand-new FY/month path (FY, the month) - "Issued Letters" is the known existing folder, never searched/created by name', driveFolders.length === 2);
+    const fyFolder = driveFolders.find((f) => f.name === '2026-27' && f.parentId === subhDriveGuard.ISSUED_LETTERS_FOLDER_ID);
     const monthFolder = driveFolders.find((f) => f.name === 'December' && fyFolder && f.parentId === fyFolder.id);
-    check('the nesting is exactly Issued Letters -> <FY> -> <Month>', Boolean(issued) && Boolean(fyFolder) && Boolean(monthFolder));
+    check('the nesting is exactly the existing Issued Letters folder -> <FY> -> <Month>', Boolean(fyFolder) && Boolean(monthFolder));
     check('the PDF file itself is created inside the Month folder', driveFileCreateCalls[0].resource.parents[0] === monthFolder.id);
 
     const beforeSecond = driveFolders.length;
     await letterSettingsService.uploadSentLetterPdf({ buffer: Buffer.from('%PDF fake 2'), filename: 'Confirmation-Letter-Bob.pdf', date: new Date('2026-12-20T00:00:00.000Z') });
-    check('a SECOND letter the same month reuses the existing Issued Letters/FY/Month folders - never creates duplicates', driveFolders.length === beforeSecond);
+    check('a SECOND letter the same month reuses the existing FY/Month folders - never creates duplicates', driveFolders.length === beforeSecond);
 
     await letterSettingsService.uploadSentLetterPdf({ buffer: Buffer.from('%PDF fake 3'), filename: 'Confirmation-Letter-Carl.pdf', date: new Date('2027-01-10T00:00:00.000Z') });
     check('a letter in a DIFFERENT month (same FY) gets its own new Month folder under the SAME FY folder', driveFolders.some((f) => f.name === 'January' && f.parentId === fyFolder.id));
   } finally {
-    sheetsAuth.getDriveWriteClient = origGetDriveWriteClient;
+    subhDriveAuth.getDriveClient = origGetDriveClient;
   }
 
   console.log('='.repeat(70));

@@ -7,7 +7,8 @@
 // separate .docx-specific branch here at all (same mechanism
 // driveTemplateFieldsService.extractPlaceholders already uses for
 // placeholder detection).
-const sheetsAuth = require('../sheetsAuth');
+const subhDriveAuth = require('../subhDriveAuth');
+const subhDriveGuard = require('../subhDriveGuard');
 const driveTemplatesService = require('./driveTemplatesService');
 const fieldsService = require('./driveTemplateFieldsService');
 
@@ -30,26 +31,33 @@ async function generateDriveTemplateLetter(fileId, mimeType, mapping, placeholde
   });
   if (failures.length) return { ok: false, error: 'Could not fill: ' + failures.join(', ') };
 
-  const drive = sheetsAuth.getDriveWriteClient();
-  const docs = sheetsAuth.getDocsClient();
+  // TASK 4(d) (2026-11), direct instruction - these are file-CREATING
+  // Drive operations (copy/export/delete), which a service account can
+  // never do (no storage quota of its own) - run as the owner's own
+  // Google identity instead (subhDriveAuth), every call fenced through
+  // subhDriveGuard's own allowlist/owned-file/logging guardrails
+  // regardless of what the broader OAuth scope could technically reach.
+  const drive = subhDriveAuth.getDriveClient();
+  const docs = subhDriveAuth.getDocsClient();
   // Copying to mimeType GOOGLE_DOC_MIME is what performs the .docx ->
   // Google Doc conversion for a .docx source; a native Google Doc source
   // is simply copied as-is (same call either way) - the owner's own
   // original file is NEVER opened for editing, only this throwaway copy.
-  const copy = await drive.files.copy({ fileId, resource: { name: 'SUBH generated letter (temp)', mimeType: driveTemplatesService.GOOGLE_DOC_MIME } });
+  const copy = await subhDriveGuard.guardedCopyTemplate(drive, fileId, { name: 'SUBH generated letter (temp)', mimeType: driveTemplatesService.GOOGLE_DOC_MIME });
   const tempId = copy.data.id;
   try {
     const requests = Object.keys(values).map((placeholder) => ({
       replaceAllText: { containsText: { text: placeholder, matchCase: true }, replaceText: values[placeholder] }
     }));
-    if (requests.length) await docs.documents.batchUpdate({ documentId: tempId, resource: { requests } });
-    const exported = await drive.files.export({ fileId: tempId, mimeType: 'application/pdf' }, { responseType: 'arraybuffer' });
+    if (requests.length) await subhDriveGuard.guardedBatchUpdate(docs, tempId, { requests });
+    const exported = await subhDriveGuard.guardedExport(drive, tempId, 'application/pdf');
     const buffer = Buffer.isBuffer(exported.data) ? exported.data : Buffer.from(exported.data);
     return { ok: true, buffer };
   } finally {
     // Always deleted - whether the fill/export above succeeded or threw -
-    // never a stray temp copy left behind in the owner's Drive.
-    await drive.files.delete({ fileId: tempId }).catch(() => {});
+    // never a stray temp copy left behind in the owner's Drive. Guarded:
+    // can only ever delete a file this module itself just created.
+    await subhDriveGuard.guardedDeleteOwned(drive, tempId).catch(() => {});
   }
 }
 
