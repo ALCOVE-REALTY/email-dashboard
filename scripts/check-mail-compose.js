@@ -59,6 +59,21 @@ async function readExcelRows(buffer) {
 }
 
 function d(iso) { return new Date(iso + 'T00:00:00.000Z'); }
+// TEST-FIXTURE FIX (2026-11, direct instruction) - the Birthday-list
+// route (workforceRoutes.js's /birthdays/*) reads the real system clock
+// directly (`new Date()`, no injection point) to decide "this month", so
+// a hardcoded DOB (e.g. a fixed "1990-10-29") only matches "this month"
+// in whichever real month the fixture was written in - it silently
+// breaks every other month of the year with zero code regression
+// involved (confirmed: this is exactly what happened once the real date
+// rolled past October). Computed relative to the REAL current month
+// instead, same principle as the Uday Saraf HR-data fixture fix - day 15
+// is used (not 29/30/31) so it's never accidentally invalid/rolled into
+// the next month in February or any 30-day month.
+function thisMonthDob() {
+  const now = new Date();
+  return d(now.getUTCFullYear() + '-' + String(now.getUTCMonth() + 1).padStart(2, '0') + '-15');
+}
 
 async function main() {
   const employeeService = require('../src/employeeService');
@@ -87,7 +102,7 @@ async function main() {
     {
       employeeId: 'E2', name: 'Beta Two', designation: 'Officer', department: 'Operations', departmentKey: 'ops',
       groupD: 'Staff', location: 'HO', gender: 'Female', reportingDoer: 'Dina Doer', reportingDoerKey: 'dina doer',
-      doj: d('2021-06-20'), dob: d('1990-10-29'), status: 'ACTIVE'
+      doj: d('2021-06-20'), dob: thisMonthDob(), status: 'ACTIVE'
     }
   ];
   employeeService.getEmployeeData = async () => ({
