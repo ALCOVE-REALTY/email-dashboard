@@ -25,11 +25,20 @@
 // the need for this broad a scope on a real user's own token at all) -
 // see CLAUDE.md.
 //
-// Reuses the SAME registered OAuth client (GOOGLE_CLIENT_ID/SECRET,
-// same Google Cloud project as auth.js) and the SAME already-registered
-// redirect URI (/oauth2callback) - server.js tells the two flows apart
-// by the `state` query param, so no new redirect URI needs adding in
-// the Google Cloud Console.
+// Reuses the SAME registered OAuth client (GOOGLE_CLIENT_ID/SECRET, same
+// Google Cloud project as auth.js) but NOT its redirect URI - the shared
+// GOOGLE_REDIRECT_URI still carries this app's OLD "/p/email-dashboard/"
+// base path from before the Employee Deploy Platform migration, and
+// auth.js's own working Gmail flow depends on that exact value, so it is
+// never changed for this. SUBH_DRIVE_REDIRECT_URI (2026-11, direct
+// instruction) is this flow's own, separate redirect URI env var,
+// defaulting to the correct current base path - set it only to override
+// (e.g. local dev against http://localhost:3000/oauth2callback). Both
+// flows still land on the SAME /oauth2callback Express route; server.js
+// tells them apart by the `state` query param (see server.js). Whatever
+// value this resolves to MUST also be listed as an Authorized redirect
+// URI for this OAuth client in the Google Cloud Console, or Google
+// refuses the consent with a redirect_uri_mismatch error - see CLAUDE.md.
 const fs = require('fs');
 const path = require('path');
 const { google } = require('googleapis');
@@ -39,26 +48,24 @@ const CREDENTIALS_PATH = path.join(__dirname, '..', 'credentials.json');
 const SCOPES = ['https://www.googleapis.com/auth/drive', 'https://www.googleapis.com/auth/documents'];
 const OAUTH_STATE = 'subh-drive';
 
+// Only clientId/clientSecret are taken from here - the redirect URI is
+// this flow's own (see SUBH_DRIVE_DEFAULT_REDIRECT_URI below), never
+// GOOGLE_REDIRECT_URI/credentials.json's redirect_uris (those belong to
+// auth.js's own Gmail flow).
 function loadClientCredentials() {
   if (fs.existsSync(CREDENTIALS_PATH)) {
     const raw = JSON.parse(fs.readFileSync(CREDENTIALS_PATH, 'utf8'));
     const creds = raw.web || raw.installed;
-    return {
-      clientId: creds.client_id,
-      clientSecret: creds.client_secret,
-      redirectUri: process.env.GOOGLE_REDIRECT_URI || (creds.redirect_uris && creds.redirect_uris[0]) || 'http://localhost:3000/oauth2callback'
-    };
+    return { clientId: creds.client_id, clientSecret: creds.client_secret };
   }
-  return {
-    clientId: process.env.GOOGLE_CLIENT_ID,
-    clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-    redirectUri: process.env.GOOGLE_REDIRECT_URI
-  };
+  return { clientId: process.env.GOOGLE_CLIENT_ID, clientSecret: process.env.GOOGLE_CLIENT_SECRET };
 }
 
 function trim(value) { return (value || '').trim(); }
 const creds = loadClientCredentials();
-const oauth2Client = new google.auth.OAuth2(trim(creds.clientId), trim(creds.clientSecret), trim(creds.redirectUri) || undefined);
+const SUBH_DRIVE_DEFAULT_REDIRECT_URI = 'https://employees.alcoverealty.in/p/workforce-intelligence/oauth2callback';
+const subhDriveRedirectUri = trim(process.env.SUBH_DRIVE_REDIRECT_URI) || SUBH_DRIVE_DEFAULT_REDIRECT_URI;
+const oauth2Client = new google.auth.OAuth2(trim(creds.clientId), trim(creds.clientSecret), subhDriveRedirectUri);
 
 function loadStoredToken() {
   if (process.env.SUBH_DRIVE_REFRESH_TOKEN) {

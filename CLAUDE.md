@@ -2201,3 +2201,36 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
     all three previously mocked the service account's Drive/Docs clients for
     these exact call sites; now mock the OAuth client instead, same
     assertions, still fully deterministic/free/zero real Drive calls.
+
+- Task 40 (2026-11), direct instruction, TASK 4(d) follow-up - re-consenting
+  `subh-drive-token.json` in production under Task 39's broadened scope
+  failed: Google reported `redirect_uri=https://employees.alcoverealty.in/
+  p/email-dashboard/oauth2callback` - the shared `GOOGLE_REDIRECT_URI` env
+  var (owned by auth.js's own working Gmail flow) still carries this app's
+  OLD base path from before the Employee Deploy Platform migration to
+  "/p/workforce-intelligence/". Changing `GOOGLE_REDIRECT_URI` itself was
+  explicitly ruled out (it would break that already-working Gmail flow).
+  - `src/subhDriveAuth.js` now has its OWN redirect URI, entirely separate
+    from `GOOGLE_REDIRECT_URI`/`credentials.json`'s `redirect_uris`: a new
+    `SUBH_DRIVE_REDIRECT_URI` env var, defaulting to
+    `https://employees.alcoverealty.in/p/workforce-intelligence/oauth2callback`
+    when unset (so no env var needs setting in production at all - only for
+    an override, e.g. local dev against `http://localhost:3000/
+    oauth2callback`). `loadClientCredentials()` now only supplies
+    clientId/clientSecret (still the SAME registered OAuth client/project as
+    auth.js) - the dead `redirectUri` field it used to also return is gone.
+  - `/oauth2callback` in `server.js` needed NO change - it already branches
+    on the `state` query param to call `subhDriveAuth.handleCallback` for
+    this flow, and `google.auth.OAuth2#getToken()` automatically uses
+    whatever redirect URI the client was CONSTRUCTED with (the new
+    `SUBH_DRIVE_REDIRECT_URI`-based one) for the token exchange, matching
+    whatever `getAuthUrl()` sent Google in the first place - verified by
+    reading the `googleapis`/`google-auth-library` behavior, not assumed.
+  - **This value must be listed as an Authorized redirect URI for this
+    OAuth client in the Google Cloud Console** (Subhodeep to verify/add
+    there - Claude has no access to Google Cloud Console or the Alcove
+    Deploy env var dashboard). `.env.example` documents the new optional
+    var.
+  - No test changes needed (no suite exercises `getAuthUrl`/
+    `loadClientCredentials`). Full gate re-run: all 11 deterministic suites
+    + headless UI check pass clean.
