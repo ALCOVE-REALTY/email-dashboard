@@ -68,7 +68,14 @@ function isHarmlessWindowsTeardownCrash(output, status) {
 function runOne(scriptName) {
   return new Promise((resolve) => {
     const scriptPath = path.join(__dirname, scriptName);
-    const child = spawn(process.execPath, [scriptPath], { env: process.env });
+    // Cost (2026-11, direct instruction - "the pre-push hook must make
+    // zero real API calls, today") - check-whatsapp-engine.js/check-
+    // reminders.js both check this and skip (or already fully mock)
+    // every real-model-dependent test, so the hook never spends real
+    // money no matter what's configured in .env - harmless for every
+    // other suite here, which never reads this var at all.
+    const env = Object.assign({}, process.env, { SKIP_REAL_MODEL: '1' });
+    const child = spawn(process.execPath, [scriptPath], { env });
     let output = '';
     child.stdout.on('data', (d) => { output += d; });
     child.stderr.on('data', (d) => { output += d; });
