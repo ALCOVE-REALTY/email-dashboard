@@ -26,12 +26,33 @@ WhatsApp-specific detail under this same umbrella):
    continuing - never push through and mention it only in the final report.
 5. **Never "fix" or change working behaviour that wasn't asked about**, even when it
    looks like an improvement - suggest it and wait, exactly like any other new risk.
-6. **Gate before reporting anything done**: full deterministic suites (`npm run
-   check:all`, or each `check:*` script individually) + the headless UI check + the
-   FULL locked-scenario suite (`check-whatsapp-scenarios`, every group, never a
-   `SCENARIO_FILTER`-narrowed run as the final word) - 0 broken. Any broken or flaky
-   result means the work is NOT done: fix it, or report it clearly and explicitly -
-   never leave it for Subhodeep to discover after a push.
+6. **Gate before reporting anything done** (revised 2026-11, direct instruction -
+   REPLACES the earlier "run the FULL locked-scenario suite before reporting done"
+   rule): full deterministic suites (`npm run check:all`, or each `check:*` script
+   individually) + the headless UI check - both free, zero real API calls, mandatory
+   every time - 0 broken. Real-model scenarios (`check-whatsapp-scenarios.js`) are NOT
+   part of this mandatory gate any more - they follow the cost rules below instead
+   (run only when asked, or the one affected group 1x when a change touches
+   understanding/routing). Any broken or flaky result in the mandatory gate means the
+   work is NOT done: fix it, or report it clearly and explicitly - never leave it for
+   Subhodeep to discover after a push.
+7. **Cost (2026-11, direct instruction)** - tests stay free/near-free by default, with
+   zero quality tradeoff in live SUBH behavior (no model downgrade, no removed
+   escalation, no budget cap that disables AI):
+   - The pre-push hook and every deterministic `check:*` suite make zero real API
+     calls - `scripts/run-pre-push-checks.js` sets `SKIP_REAL_MODEL=1` for every
+     suite it runs; `check-whatsapp-engine.js`/`check-reminders.js` skip (or already
+     fully mock) any test that would otherwise reach a real model call, printing
+     "Skipped N real-model tests" rather than failing. See "Test tiers" below for the
+     full mechanism.
+   - `check-whatsapp-scenarios.js` is never automatic - run it only when Subhodeep
+     asks, or the one group a change's understanding/routing actually affects, at 1x;
+     3x only for scenarios being newly locked. Use `SCENARIO_REPLAY_CACHE=1` to avoid
+     re-paying for unchanged steps. Print the estimated cost before running and the
+     actual cost after (the suite's own cost-report line) - abort and ask Subhodeep
+     first if a run would exceed $1.
+   - Every final report of a batch of work ends with a line: "API spend for this
+     batch: $X (tests)".
 
 A committed git **pre-push hook** (`githooks/pre-push`, installed into
 `.git/hooks/pre-push` by `scripts/install-git-hooks.js` via npm's own `prepare`
@@ -227,21 +248,42 @@ access from this environment.
 
 ## Test tiers (reduce API cost)
 
-Per direct instruction (2026-10-27) - match the test tier to the size of the change,
-never run the full, expensive suite by default:
+Per direct instruction (2026-10-27, revised 2026-11) - match the test tier to the
+size of the change, never run the full, expensive suite by default:
 
 1. **Per-change (the default, every edit)**: `node scripts/check-whatsapp-engine.js`
-   only - fully deterministic, zero real API calls for the vast majority of its
-   checks, free to run as often as needed.
+   only - fully deterministic, ZERO real API calls (see "Skip mechanism" below), free
+   to run as often as needed.
 2. **A change that touches the HR-note/confirmation flow, classification, or
    wording shown to a real sender/manager**: also run the scenarios that flow
    actually affects, ONCE - `SCENARIO_RUNS=1 SCENARIO_FILTER="<name or keyword>"
    node scripts/check-whatsapp-scenarios.js`. Never the full scenario set, never 3x,
-   for an ordinary change.
-3. **"Release check" - only right before pushing/deploying**: the full scenario
+   for an ordinary change. Print the estimated cost before running and the actual
+   cost after; abort and ask Subhodeep first if a run would exceed $1.
+3. **"Release check" - only when Subhodeep asks for it**, never automatic and never
+   part of the mandatory gate (see IMPACT CHECK rule 6/7 above): the full scenario
    suite at its normal 3x reliability gate - `node scripts/check-whatsapp-scenarios.js`
    (no `SCENARIO_RUNS`/`SCENARIO_FILTER` overrides). This is the only tier that
-   should ever cost the full 3x-per-scenario API spend.
+   should ever cost the full 3x-per-scenario API spend, and only on request.
+
+**Skip mechanism** (2026-11, direct instruction - "the pre-push hook must make zero
+real API calls") - `check-whatsapp-engine.js` installs one suite-level fallback fetch,
+active whenever no `ANTHROPIC_API_KEY` is configured or `SKIP_REAL_MODEL=1` is set
+(`run-pre-push-checks.js` sets this for every suite it runs): any call that reaches
+it throws a distinct `SKIPPED_REAL_MODEL_CALL`, caught and counted/printed as
+`[skip]`, never `[FAIL]` - prints "Skipped N real-model tests (run with
+RUN_REAL_MODEL=1 and a real ANTHROPIC_API_KEY)" at the end. A test with its own
+per-test stub (e.g. `installManagerConfirmationModelStub`) still answers its
+matching calls directly without ever reaching this fallback, so an already-mocked
+test is never wrongly counted as skipped. A rare test that calls a classifier
+directly and asserts on its own graceful-fallback return value (never throws), or
+only reads state an earlier, now-skipped test would have created, is explicitly
+tagged with `checkAsyncRealModel` instead of `checkAsync` so it skips cleanly too -
+tag a new test the same way if it hits either case. `check-reminders.js`'s own 3
+real-model tests are fully, explicitly mocked instead (its `reminder_command` tool
+has a narrow, fixed decision space) - same zero-API-call result, no skip needed.
+`RUN_REAL_MODEL=1` (with a real key) forces real calls through this fallback, for
+occasionally verifying the skipped tests still pass for real.
 
 **Record & replay cache** (`src/aiAssistant/whatsappAssistant.js`'s `postClaudeMessages`,
 test-only, a complete no-op in production): set `SCENARIO_REPLAY_CACHE=1` to cache
@@ -2276,3 +2318,54 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
     `check-whatsapp-engine.js`'s own runtime) - same 158 pre-existing
     API-key failures, zero NEW ones, confirming parallelizing introduced no
     regressions.
+
+- Task 42 (2026-11), direct instruction - development/testing API cost
+  reduction ("COST" prompt). Live SUBH quality explicitly unchanged (no
+  model downgrade, no removed escalation, no budget cap that disables AI).
+  - **Tests ~free by default**: see "Test tiers" above and IMPACT CHECK
+    rules 6/7 - the big hand-written-mock effort for
+    `check-whatsapp-engine.js` was tried first (a committed, git-tracked
+    replay cache keyed by a hash of the exact request), found UNRELIABLE
+    (running the identical suite twice with a real key produced different
+    cache-worthy request content ~10% of the time - some non-deterministic
+    element in request context isn't byte-identical run to run), fully
+    reverted, and replaced with the simpler skip mechanism documented
+    above. The mandatory report gate no longer includes the full
+    locked-scenario suite - it's cost-ruled like every other real-model
+    run now (rule 7 above).
+  - **Live duplicate-call investigation** - looked for why the same
+    request might be sent to the model 2-4x within seconds: the two most
+    likely mechanisms both already have solid guards. Gateway re-delivery
+    (a message arriving again under a brand-new id) is caught by
+    `isMessageHandledByContent` BEFORE `decideAutoReply` is ever called
+    (both in the main poll loop and in `recoverStuckIncomingMessages`'s
+    catch-up path) - no model call happens for a genuine re-delivery.
+    Stuck-message recovery retries are capped at `STUCK_RECOVERY_MAX_ATTEMPTS`
+    (2) with a real `STUCK_RECOVERY_RETRY_GAP_MS` (2 minutes) between
+    attempts and a Redis lock (`acquireStuckRecoveryLock`) preventing
+    concurrent double-processing - not "within seconds" by construction.
+    No smoking-gun duplicate-call bug found by reading the code alone.
+    Root blocker: `whatsappAssistant.js` has NEVER logged its own real
+    model calls anywhere persistent (`apiCallStats` is in-memory, test-only,
+    reset every process) - there is no live telemetry to confirm or rule
+    out the pattern Subhodeep observed. This is exactly what the AI usage
+    page below is for; once it's live and logging real calls, re-check
+    for an actual 2-4x-within-seconds pattern against real data rather
+    than static code reading.
+  - **AI usage page** (owner-only, SUBH Settings) - NOT YET BUILT. Scoped
+    but deferred given the size of this batch: needs a persistent log of
+    every real whatsappAssistant.js call (phone/contact, tool name,
+    timestamp, token usage, live vs. test) - `postClaudeMessages` is the
+    one shared low-level function every real call already funnels
+    through, the natural single place to add this logging hook - plus a
+    new page reading today/this-week/this-month split by live vs. tests
+    and by feature, and a `SUBH_DAILY_AI_ALERT_USD` (default 3) daily
+    live-spend toast/Action-needed alert, alert-only, never stopping or
+    degrading AI. Revisit as its own task.
+  - API spend for this batch: ~$8-10 (tests) - several full real-key runs
+    of `check-whatsapp-engine.js` (~155-315 real calls each) while
+    investigating the replay-cache approach, capturing ground-truth data,
+    and verifying the final skip mechanism, plus a handful of tiny
+    (`max_tokens:1`) model-availability checks. No stored telemetry exists
+    to bill this precisely (see the duplicate-call finding above) - this
+    is a methodology-based estimate, not a verified figure.
