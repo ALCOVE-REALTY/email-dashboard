@@ -26,6 +26,7 @@ const companyDetailsService = require('./aiAssistant/companyDetailsService');
 const letterSettingsService = require('./aiAssistant/letterSettingsService');
 const driveTemplatesService = require('./aiAssistant/driveTemplatesService');
 const driveTemplateFieldsService = require('./aiAssistant/driveTemplateFieldsService');
+const driveTemplateGenerationService = require('./aiAssistant/driveTemplateGenerationService');
 const sheetsAuth = require('./sheetsAuth');
 const hrAccountCommands = require('./hrAccountCommands');
 const hrAuthAlerts = require('./hrAuthAlerts');
@@ -3279,6 +3280,86 @@ router.post('/hr-assistant/letter-settings/register', async (req, res) => {
     const result = await letterSettingsService.setRegisterSheetLink((req.body || {}).url);
     if (!result.ok) return res.status(400).json({ error: result.error });
     res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// "Send test letter to me" (2026-11, direct instruction) - verifies the
+// REAL copy -> fill -> export PDF -> save to Issued Letters/<FY>/<Month>
+// -> register-append chain end to end, on production (where the real
+// Redis-backed Letter Register link/letter codes actually live - this is
+// exactly what local dev couldn't reach during the TASK 4(d) OAuth live
+// test). A fixed TEST Ref No. (never assignRefNo - the real counter is
+// never touched), the register row clearly marked TEST, and the PDF
+// mailed ONLY to the owner's own signed-in address - never the employee,
+// never anyone else. Drive templates only (the ones needing the OAuth
+// identity this verifies) - a built-in letter type already has its own
+// proven PDF path and doesn't need this button.
+router.post('/hr-assistant/letter-settings/send-test-letter', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const { templateKey } = req.body || {};
+    if (!templateKey || !driveTemplatesService.isDriveTemplateKey(templateKey)) {
+      return res.status(400).json({ error: 'templateKey must be a Drive template key ("drive:<fileId>").' });
+    }
+    const templates = await driveTemplatesService.listAllLetterTemplates();
+    const tpl = templates.find((t) => t.key === templateKey);
+    if (!tpl) return res.status(404).json({ error: 'That template was not found in SUBH Letter Templates.' });
+
+    const [{ employees }, mapping] = await Promise.all([
+      employeeService.getEmployeeData(),
+      driveTemplateFieldsService.getTemplateMapping(templateKey)
+    ]);
+    if (!Object.keys(mapping).length) {
+      return res.status(400).json({ error: 'No field mapping is saved for this template yet - review and save it in Letter settings first.' });
+    }
+    let chosen = null, companyDetails = null;
+    for (const e of employees) {
+      if (e.status !== 'ACTIVE' || !e.doj || !e.company) continue;
+      const cd = await companyDetailsService.getCompanyDetails(e.company).catch(() => null);
+      if (cd && cd.code) { chosen = e; companyDetails = cd; break; }
+    }
+    if (!chosen) return res.status(400).json({ error: 'No eligible real employee found (ACTIVE, has a DOJ, and a company with a code set in Company details).' });
+
+    const now = new Date();
+    const fy = letterSettingsService.computeFinancialYear(now);
+    const letterCode = tpl.code || 'TPL';
+    const refNo = companyDetails.code + '/HR/' + letterCode + '/' + fy + '/TEST';
+    const row = automationService.empRow(chosen);
+    const placeholders = Object.keys(mapping);
+    const ctx = { row, companyDetails, refNo, now };
+    const genResult = await driveTemplateGenerationService.generateDriveTemplateLetter(tpl.driveFileId, tpl.mimeType, mapping, placeholders, ctx);
+    if (!genResult.ok) return res.status(400).json({ error: 'Could not fill the template: ' + genResult.error });
+
+    const filename = 'TEST-' + tpl.label.replace(/\.(docx?|gdoc)$/i, '').replace(/\s+/g, '-') + '-' + chosen.name.replace(/\s+/g, '_') + '.pdf';
+    const uploadResult = await letterSettingsService.uploadSentLetterPdf({ buffer: genResult.buffer, filename, date: now });
+
+    let registerError = null;
+    try {
+      await letterSettingsService.appendToLetterRegister({
+        date: now.toISOString().slice(0, 10), refNo, employeeCode: chosen.employeeId,
+        name: chosen.name, company: chosen.company, letterType: 'confirmation',
+        workflow: 'TEST - Send test letter to me (' + tpl.label + ')', batch: 'TEST · ' + now.toISOString().slice(0, 10),
+        pdfLink: uploadResult.url
+      });
+    } catch (err) {
+      registerError = err.message; // still mail the PDF below - a register-append failure here is reported, not silently swallowed
+    }
+
+    const ownerEmail = await gmailService.getSignedInAddress().catch(() => null);
+    if (!ownerEmail) return res.status(500).json({ error: 'Could not determine the signed-in Gmail address to send the test to.' });
+    await gmailService.sendMailWithAttachment({
+      to: ownerEmail,
+      subject: 'SUBH test letter - ' + tpl.label,
+      text: 'Test letter for ' + chosen.name + ' (' + chosen.employeeId + '), Ref No. ' + refNo + '. This is a TEST send - the Confirmation counter was not touched, and the Letter Register row (if it appended) is marked TEST.',
+      attachment: { filename, contentType: 'application/pdf', content: genResult.buffer }
+    });
+
+    res.json({
+      ok: true, employeeName: chosen.name, employeeCode: chosen.employeeId, refNo,
+      pdfUrl: uploadResult.url, mailedTo: ownerEmail, registerAppended: !registerError, registerError
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

@@ -3500,6 +3500,12 @@
   // Cancel (code unique/uppercase/2-6 letters, validated authoritatively
   // server-side in letterSettingsService.saveLetterCode).
   function letterCodeRowHtml(letterType, label, code) {
+    // "Send test letter to me" (2026-11, direct instruction) - Drive
+    // templates only (built-in letter types already have a proven PDF
+    // path and don't need this). Verifies the real copy/fill/export/
+    // save/register-append chain end to end on production.
+    const isDrive = typeof letterType === 'string' && letterType.indexOf('drive:') === 0;
+    const sendTestBtn = isDrive ? '<button type="button" class="plain" data-action="send-test-letter">Send test to me</button>' : '';
     return '<div class="wf-auto-task-card" data-letter-type="' + escapeHtml(letterType) + '">' +
       '<div class="wf-auto-task-head"><div style="flex:1;min-width:0">' +
       '<div class="wf-auto-task-subject">' + escapeHtml(label) + '</div>' +
@@ -3509,7 +3515,7 @@
       '<div class="wf-auto-err hidden" data-role="letter-code-err" style="padding:0"></div>' +
       '</div>' +
       '</div></div>' +
-      '<div class="wf-auto-actions" data-role="letter-code-actions-view"><button type="button" class="plain" data-action="edit-letter-code">Edit</button></div>' +
+      '<div class="wf-auto-actions" data-role="letter-code-actions-view"><button type="button" class="plain" data-action="edit-letter-code">Edit</button>' + sendTestBtn + '</div>' +
       '<div class="wf-auto-actions" data-role="letter-code-actions-edit" style="display:none">' +
       '<button type="button" class="plain" data-action="save-letter-code">Save</button>' +
       '<button type="button" class="plain" data-action="cancel-letter-code">Cancel</button>' +
@@ -3598,6 +3604,15 @@
             pageDataCache.letterSettings = null;
             loadLetterSettingsPage();
           }, { resetAfterSuccess: true, toastFn: (msg) => { if (err) { err.textContent = msg; err.classList.remove('hidden'); } } });
+        });
+      });
+      letterCodesList.querySelectorAll('[data-action="send-test-letter"]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          const card = btn.closest('[data-letter-type]');
+          const templateKey = card.dataset.letterType;
+          await runButtonAction(btn, () => postJsonOrThrow('/api/workforce/hr-assistant/letter-settings/send-test-letter', { templateKey }), (result) => {
+            showActionToast('Test letter sent to ' + result.mailedTo + ' (Ref No. ' + result.refNo + ')' + (result.registerAppended ? '' : ' - register append failed, see server log'));
+          }, { resetAfterSuccess: true });
         });
       });
     }
