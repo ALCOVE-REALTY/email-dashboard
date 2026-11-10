@@ -116,8 +116,37 @@ function installManagerConfirmationModelStub() {
   return originalFetch;
 }
 
+// Cost (2026-11, direct instruction - "the pre-push hook must make zero
+// real API calls, today") - whenever no ANTHROPIC_API_KEY is configured,
+// or SKIP_REAL_MODEL=1 is set explicitly (what run-pre-push-checks.js
+// does for every suite), any check that would have reached a real
+// api.anthropic.com call instead gets a distinct SKIPPED_REAL_MODEL_CALL
+// throw and is counted/printed as skipped, never failed. This is a
+// SUITE-LEVEL fallback fetch, installed before any test runs - a test
+// with its OWN per-test stub (e.g. installManagerConfirmationModelStub)
+// still answers its matching calls directly without ever reaching this
+// one, so an already-mocked test is never wrongly counted as skipped.
+// RUN_REAL_MODEL=1 forces real calls regardless (fails loudly with no
+// key, which is the correct, honest outcome of asking for that).
+const SKIP_REAL_MODEL = process.env.RUN_REAL_MODEL !== '1' && (!process.env.ANTHROPIC_API_KEY || process.env.SKIP_REAL_MODEL === '1');
+if (SKIP_REAL_MODEL) {
+  // Several classifier functions (generateConversationReply, etc.) have
+  // their own early "no ANTHROPIC_API_KEY at all" guard that throws a
+  // DIFFERENT message before ever reaching a fetch call - a dummy,
+  // non-empty value satisfies those guards so the ONLY thing that
+  // actually trips is the fetch-level interception below, giving one
+  // consistent, recognizable skip reason everywhere.
+  if (!process.env.ANTHROPIC_API_KEY) process.env.ANTHROPIC_API_KEY = 'test-key-not-real';
+  const originalFetch = global.fetch;
+  global.fetch = async (url, opts) => {
+    if (String(url).includes('api.anthropic.com')) throw new Error('SKIPPED_REAL_MODEL_CALL');
+    return originalFetch(url, opts);
+  };
+}
+
 let pass = 0;
 let fail = 0;
+let skipped = 0;
 const failures = [];
 
 function check(label, condition) {
@@ -136,10 +165,29 @@ async function checkAsync(label, fn) {
     const result = await fn();
     check(label, result);
   } catch (err) {
+    if (err.message === 'SKIPPED_REAL_MODEL_CALL') {
+      skipped++;
+      console.log('[skip]', label, '(real-model test, no key/SKIP_REAL_MODEL=1)');
+      return;
+    }
     fail++;
     failures.push(label + ' (threw: ' + err.message + ')');
     console.log('[FAIL]', label, '- threw:', err.message);
   }
+}
+// For the rare test that doesn't cleanly surface SKIPPED_REAL_MODEL_CALL
+// as a throw - either it calls a classifier directly and asserts on its
+// own graceful-fallback return value (never throws), or it only reads
+// state an EARLIER, now-skipped test would have created - explicitly
+// tagged, skipped before ever running, rather than failing on a
+// fallback/empty result that looks like a real regression but isn't one.
+async function checkAsyncRealModel(label, fn) {
+  if (SKIP_REAL_MODEL) {
+    skipped++;
+    console.log('[skip]', label, '(real-model test, no key/SKIP_REAL_MODEL=1)');
+    return;
+  }
+  return checkAsync(label, fn);
 }
 
 (async () => {
@@ -997,7 +1045,7 @@ async function checkAsync(label, fn) {
     // it here - the template's own wording is still checked in full.
     return d3.case === 'acknowledged' && d3.replyText.endsWith('Amake sothik naam diye sahajyo korar jonno dhonnobad. Ami Tanmoy Mondal-er sathe kotha bole joto taratari somvob apnake janacchi.') && stillPending === null;
   });
-  await checkAsync('STEP 4 (Banglish): the manager is messaged a short, accurate, ALL-BANGLISH summary (never a mixed-language sentence) asking for confirmation, phrased ACTIVELY as what the manager told the sender (live test fixes item 3: "apni onake ... bolechhen", never passive "bola hoyechhe"), opens with the identity line (item 3\'s other bug: this send used to skip it entirely) - Task 3b (2026-11): no reminder is created any more (that duplicated the SAME confirmation already shown via Open Flows - reminderId now stays null)', async () => {
+  await checkAsyncRealModel('STEP 4 (Banglish): the manager is messaged a short, accurate, ALL-BANGLISH summary (never a mixed-language sentence) asking for confirmation, phrased ACTIVELY as what the manager told the sender (live test fixes item 3: "apni onake ... bolechhen", never passive "bola hoyechhe"), opens with the identity line (item 3\'s other bug: this send used to skip it entirely) - Task 3b (2026-11): no reminder is created any more (that duplicated the SAME confirmation already shown via Open Flows - reminderId now stays null)', async () => {
     const log = await whatsappAssistant.listInboxLog(10);
     const entry = log.find((e) => e.chatId === TANMOY_MONDAL_PHONE && e.case === 'hr_confirmation_sent');
     const confirmations = (await whatsappAssistant.listAllHrConfirmations()).filter((c) => c.senderPhone === HR_SENDER_BN);
@@ -2268,7 +2316,7 @@ async function checkAsync(label, fn) {
     const r = await whatsappAssistant.extractPersonReference('Ayon HR k?', { pendingQuestionLabel: 'Apnake ei instruction-ta ke diyechhen?', history: [] });
     return r.isAnswerToPendingQuestion === false && !r.personName;
   });
-  await checkAsync('extractPersonReference (unit): a bare name+hint with no question form still counts as an answer (spec: "bare names... without a question form still count as answers")', async () => {
+  await checkAsyncRealModel('extractPersonReference (unit): a bare name+hint with no question form still counts as an answer (spec: "bare names... without a question form still count as answers")', async () => {
     const r = await whatsappAssistant.extractPersonReference('Ayan HR', { pendingQuestionLabel: 'Apnake ei instruction-ta ke diyechhen?', history: [] });
     return r.isAnswerToPendingQuestion === true && r.personName === 'Ayan';
   });
@@ -4707,6 +4755,13 @@ async function checkAsync(label, fn) {
   await checkAsync('SAFETY: when the model call itself fails/times out, the manager still gets a reply (the existing unclear-retry path), never silence and never a guess - simulated network failure, multi-item', async () => {
     const { sagarId, tathagataId, swattikId } = await seedThreePending();
     const origFetch = global.fetch;
+    const origReplayForce = process.env.SCENARIO_REPLAY_FORCE;
+    // This exact text has a cached SUCCESS response from an earlier
+    // scenario above - SCENARIO_REPLAY_FORCE=1 skips the cache READ so
+    // this test's own throwing fetch override is actually reached,
+    // rather than the real model call being silently short-circuited by
+    // a cache hit before it ever gets a turn.
+    process.env.SCENARIO_REPLAY_FORCE = '1';
     global.fetch = async (url, opts) => {
       if (String(url).includes('api.anthropic.com')) throw new Error('simulated network failure');
       return origFetch(url, opts);
@@ -4716,6 +4771,7 @@ async function checkAsync(label, fn) {
       d = await whatsappAssistant.decideAutoReply({ phone: MULTI_MGR_PHONE, name: 'Biye 73', firstName: 'Biye', text: 'Sagar thik ache, baki duto na', isGroup: false, history: [] });
     } finally {
       global.fetch = origFetch;
+      if (origReplayForce === undefined) delete process.env.SCENARIO_REPLAY_FORCE; else process.env.SCENARIO_REPLAY_FORCE = origReplayForce;
     }
     const [sagar, tathagata, swattik] = await allConfirmed([sagarId, tathagataId, swattikId]);
     // The model call failed, so only the deterministic match (Sagar, by
@@ -4730,6 +4786,8 @@ async function checkAsync(label, fn) {
     await cleanupHrFlowArtifacts(MULTI_MGR_PHONE, SINGLE_SENDER);
     const id = await whatsappAssistant.saveHrConfirmation({ senderPhone: SINGLE_SENDER, senderName: 'Solo', summary: 'half day asbe', summaryLocalized: 'Solo kal half day asbe', lang: 'banglish', thirdPartyPhone: MULTI_MGR_PHONE, thirdPartyName: 'Biye 73', thirdPartyDepartment: 'Site', status: 'awaiting_manager', createdAt: Date.now(), remindedAt: null, escalatedAt: null, reminderId: null, unclearAttempts: 0, unclearTexts: [] });
     const origFetch = global.fetch;
+    const origReplayForce = process.env.SCENARIO_REPLAY_FORCE;
+    process.env.SCENARIO_REPLAY_FORCE = '1'; // skip a possible cache hit so the throwing override below is actually reached
     global.fetch = async (url, opts) => {
       if (String(url).includes('api.anthropic.com')) throw new Error('simulated network failure');
       return origFetch(url, opts);
@@ -4739,6 +4797,7 @@ async function checkAsync(label, fn) {
       d = await whatsappAssistant.decideAutoReply({ phone: MULTI_MGR_PHONE, name: 'Biye 73', firstName: 'Biye', text: 'accha bujhlam na thik ki bolchen', isGroup: false, history: [] });
     } finally {
       global.fetch = origFetch;
+      if (origReplayForce === undefined) delete process.env.SCENARIO_REPLAY_FORCE; else process.env.SCENARIO_REPLAY_FORCE = origReplayForce;
     }
     const after = await whatsappAssistant.getHrConfirmation(id);
     const ok = Boolean(d.replyText) && after.status === 'awaiting_manager' && (after.unclearAttempts || 0) === 1;
@@ -5354,6 +5413,8 @@ async function checkAsync(label, fn) {
     const CAPTION_FAIL_PHONE = '910000001313';
     await whatsappAssistant.clearJobTemplateSentToday(CAPTION_FAIL_PHONE).catch(() => {});
     const originalFetch = global.fetch;
+    const origReplayForce = process.env.SCENARIO_REPLAY_FORCE;
+    process.env.SCENARIO_REPLAY_FORCE = '1'; // skip a possible cache hit so the throwing override below is actually reached
     global.fetch = async (url, opts) => {
       if (String(url).includes('api.anthropic.com')) throw new Error('simulated network failure');
       return originalFetch(url, opts);
@@ -5363,6 +5424,7 @@ async function checkAsync(label, fn) {
       await whatsappAssistant.handleIncomingMedia(CAPTION_FAIL_PHONE, 'Stranger', { type: 'document', content: { caption: 'Sharing my profile for your kind review' } });
     } finally {
       global.fetch = originalFetch;
+      if (origReplayForce === undefined) delete process.env.SCENARIO_REPLAY_FORCE; else process.env.SCENARIO_REPLAY_FORCE = origReplayForce;
     }
     const after = await whatsappAssistant.listPendingAutoSends();
     const scheduled = after.find((e) => !beforeIds.has(e.id) && e.chatId === CAPTION_FAIL_PHONE);
@@ -7800,6 +7862,7 @@ async function checkAsync(label, fn) {
     console.log('Failed checks:');
     failures.forEach((f) => console.log(' -', f));
   }
+  if (skipped) console.log('Skipped ' + skipped + ' real-model tests (run with RUN_REAL_MODEL=1 and a real ANTHROPIC_API_KEY)');
   console.log('='.repeat(70));
   process.exit(fail ? 1 : 0);
 })().catch((err) => {
