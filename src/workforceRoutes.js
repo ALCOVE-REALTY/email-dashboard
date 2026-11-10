@@ -1675,7 +1675,31 @@ router.get('/hr-assistant/diag/anthropic-key', async (req, res) => {
   const key = process.env.ANTHROPIC_API_KEY || '';
   if (!key) return res.json({ configured: false });
   const fingerprint = crypto.createHash('sha256').update(key).digest('hex').slice(0, 8);
-  res.json({ configured: true, length: key.length, prefix: key.slice(0, 7), fingerprint });
+  const result = { configured: true, length: key.length, prefix: key.slice(0, 7), fingerprint };
+  // ?test=1 (2026-11, direct instruction) - the fingerprint matching
+  // doesn't prove the key actually WORKS against Anthropic right now, so
+  // this makes ONE tiny real call (cheapest model, max_tokens:1) and
+  // reports only the HTTP status and Anthropic's own error "type" field
+  // (e.g. "authentication_error") - never the key, never the response
+  // body, which could echo request details back.
+  if (req.query.test === '1') {
+    try {
+      const resp = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+        body: JSON.stringify({ model: 'claude-3-5-haiku-20241022', max_tokens: 1, messages: [{ role: 'user', content: 'hi' }] })
+      });
+      result.testStatus = resp.status;
+      if (!resp.ok) {
+        const body = await resp.json().catch(() => null);
+        result.testErrorType = (body && body.error && body.error.type) || null;
+      }
+    } catch (err) {
+      result.testStatus = null;
+      result.testErrorType = 'request_failed';
+    }
+  }
+  res.json(result);
 });
 
 router.get('/hr-assistant/tool-log', async (req, res) => {
