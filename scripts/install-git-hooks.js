@@ -39,4 +39,14 @@ function main() {
   }
 }
 
-main();
+// Never fails the caller (2026-11, direct instruction - a Docker deploy's
+// `npm ci` runs "prepare" before scripts/ is even copied into the image,
+// and the deployed server has no .git at all) - package.json's own
+// "prepare" script already short-circuits before ever requiring this
+// file (CI/NODE_ENV=production, or no .git), but this is defense in
+// depth for anyone running `npm run prepare`/this file directly.
+try {
+  main();
+} catch (err) {
+  console.log('install-git-hooks: skipping (' + err.message + ')');
+}
