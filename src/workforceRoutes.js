@@ -1,4 +1,5 @@
 const express = require('express');
+const crypto = require('crypto');
 const employeeService = require('./employeeService');
 const analytics = require('./workforceAnalytics');
 const movementTracker = require('./movementTracker');
@@ -1659,6 +1660,24 @@ router.post('/hr-assistant/export', async (req, res) => {
 // employee data (see toolCallLog.js). Any signed-in HR user can review it
 // (same requireHrAuth gate as everything else on this router); there's no
 // separate admin tier in this app.
+// Owner-only diagnostic (2026-11, direct instruction) - the push-blocking
+// "invalid x-api-key" turned out to survive three different pasted
+// values, raising the question of whether production is even using the
+// SAME key as whatever's in .env locally. This compares a server's
+// configured ANTHROPIC_API_KEY by SHA-256 fingerprint only - never the
+// key itself - against another server's fingerprint from the same route,
+// so a mismatch is provable without either key ever leaving its own
+// process. ANTHROPIC_API_KEY is the ONLY env var any Claude call site in
+// this app reads (verified by grepping every src/aiAssistant/*.js) - no
+// alias, no base-URL override exists to also check.
+router.get('/hr-assistant/diag/anthropic-key', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  const key = process.env.ANTHROPIC_API_KEY || '';
+  if (!key) return res.json({ configured: false });
+  const fingerprint = crypto.createHash('sha256').update(key).digest('hex').slice(0, 8);
+  res.json({ configured: true, length: key.length, prefix: key.slice(0, 7), fingerprint });
+});
+
 router.get('/hr-assistant/tool-log', async (req, res) => {
   const limit = Math.min(parseInt(req.query.limit, 10) || 100, 500);
   const items = await toolCallLog.listRecent(limit);
