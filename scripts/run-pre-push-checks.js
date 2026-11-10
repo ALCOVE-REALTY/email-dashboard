@@ -33,6 +33,7 @@ const { spawn } = require('child_process');
 
 const DETERMINISTIC_SUITES = [
   'check-company-details.js',
+  'check-ai-usage-log.js',
   'check-letter-settings.js',
   'check-drive-templates.js',
   'check-drive-template-fields.js',

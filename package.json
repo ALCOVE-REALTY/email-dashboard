@@ -17,6 +17,7 @@
     "check:mail-compose": "node scripts/check-mail-compose.js",
     "check:subh-panel-ui": "node scripts/check-subh-panel-ui.js",
     "check:company-details": "node scripts/check-company-details.js",
+    "check:ai-usage-log": "node scripts/check-ai-usage-log.js",
     "check:letter-settings": "node scripts/check-letter-settings.js",
     "check:drive-templates": "node scripts/check-drive-templates.js",
     "check:drive-template-fields": "node scripts/check-drive-template-fields.js",

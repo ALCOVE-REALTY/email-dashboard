@@ -49,6 +49,12 @@ function setupApiKey() {
 
 async function setupTestEnvironment() {
   setupApiKey();
+  // AI usage log (2026-11, direct instruction) - marks every real call
+  // ANY test script makes (including check-whatsapp-scenarios.js's real-
+  // model runs, and an ALLOW_LIVE=1 diagnostic against the real store) as
+  // a test, so it never inflates the "live" spend figures the AI usage
+  // page reports - see src/aiAssistant/aiUsageLog.js.
+  process.env.AI_USAGE_IS_TEST = '1';
   const configuredUrl = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
   if (process.env.ALLOW_LIVE === '1') {
     console.log('='.repeat(70));
