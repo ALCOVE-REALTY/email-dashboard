@@ -493,6 +493,35 @@
         <div class="wf-rem-list" id="hrLetterRegisterRow"></div>
       </div>
 
+      <!-- AI usage (2026-11), direct instruction - read-only: real-time
+           spend from src/aiAssistant/aiUsageLog.js, today/this week/this
+           month, live vs. tests, by feature. -->
+      <div class="wf-comms-page" id="hrAiUsagePage" hidden>
+        <div class="wf-rem-chips" id="hrAiUsageChips">
+          <button type="button" class="wf-rem-chip" data-range="today" aria-pressed="true">Today</button>
+          <button type="button" class="wf-rem-chip" data-range="week" aria-pressed="false">This week</button>
+          <button type="button" class="wf-rem-chip" data-range="month" aria-pressed="false">This month</button>
+        </div>
+        <div style="display:flex;gap:10px;padding:14px 4px 6px">
+          <div style="flex:1;background:var(--wi-surface-2,rgba(0,0,0,.04));border-radius:12px;padding:10px 12px">
+            <div class="wf-auto-hint" style="margin:0">Live</div>
+            <div id="hrAiUsageLiveTotal" style="font-size:18px;font-weight:600">$0.00</div>
+          </div>
+          <div style="flex:1;background:var(--wi-surface-2,rgba(0,0,0,.04));border-radius:12px;padding:10px 12px">
+            <div class="wf-auto-hint" style="margin:0">Tests</div>
+            <div id="hrAiUsageTestTotal" style="font-size:18px;font-weight:600">$0.00</div>
+          </div>
+          <div style="flex:1;background:var(--wi-surface-2,rgba(0,0,0,.04));border-radius:12px;padding:10px 12px">
+            <div class="wf-auto-hint" style="margin:0">Total</div>
+            <div id="hrAiUsageGrandTotal" style="font-size:18px;font-weight:600">$0.00</div>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 4px 6px">
+          <span class="wf-ai-sheet-title" style="font-size:14px">By feature</span>
+        </div>
+        <div class="wf-rem-list" id="hrAiUsageFeatureList"></div>
+      </div>
+
       <div class="wf-ai-sheet-backdrop" id="hrLetterCounterSheetBackdrop" hidden></div>
       <div class="wf-rem-sheet" id="hrLetterCounterSheet" hidden role="dialog" aria-label="Edit counter">
         <div class="wf-ai-sheet-handle"></div>
@@ -2763,6 +2792,20 @@
           <span class="wf-hub-tile-main">
             <span class="wf-hub-tile-title">Letter settings</span>
             <span class="wf-hub-tile-sub">Reference number format, letter codes + counters</span>
+          </span>
+          <span class="wf-hub-tile-end">
+            <svg class="wf-hub-tile-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+          </span>
+        </button>
+        <!-- AI usage (2026-11), direct instruction - same compact-tile entry
+             pattern as every other SUBH Settings page above. -->
+        <button type="button" class="wf-hub-tile wf-hub-tile--compact" id="subhSettingsAiUsageBtn" style="margin-top:10px">
+          <span class="wf-hub-tile-icon comms">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+          </span>
+          <span class="wf-hub-tile-main">
+            <span class="wf-hub-tile-title">AI usage</span>
+            <span class="wf-hub-tile-sub">Spend today/this week/this month, live vs. tests</span>
           </span>
           <span class="wf-hub-tile-end">
             <svg class="wf-hub-tile-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>

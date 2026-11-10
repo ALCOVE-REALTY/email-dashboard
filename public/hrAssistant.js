@@ -198,6 +198,13 @@
   const letterCounterSheetTitle = document.getElementById('hrLetterCounterSheetTitle');
   const letterCounterNextInput = document.getElementById('hrLetterCounterNextInput');
   const letterCounterSheetErr = document.getElementById('hrLetterCounterSheetErr');
+  // AI usage (2026-11, direct instruction) - read-only spend summary.
+  const aiUsagePage = document.getElementById('hrAiUsagePage');
+  const aiUsageChips = document.getElementById('hrAiUsageChips');
+  const aiUsageLiveTotal = document.getElementById('hrAiUsageLiveTotal');
+  const aiUsageTestTotal = document.getElementById('hrAiUsageTestTotal');
+  const aiUsageGrandTotal = document.getElementById('hrAiUsageGrandTotal');
+  const aiUsageFeatureList = document.getElementById('hrAiUsageFeatureList');
   const convoPage = document.getElementById('hrConvoPage');
   const convoThread = document.getElementById('hrConvoThread');
   const convoActions = document.getElementById('hrConvoActions');
@@ -1837,6 +1844,7 @@
     else if (entry.type === 'deptAliases') showDeptAliases();
     else if (entry.type === 'companyDetails') showCompanyDetails();
     else if (entry.type === 'letterSettings') showLetterSettings();
+    else if (entry.type === 'aiUsage') showAiUsage();
     else if (entry.type === 'actionNeeded') showActionNeeded();
     else if (entry.type === 'conversation') openConversationPage(entry.chatId);
     else if (entry.type === 'reminders') { activeRemFilter = entry.filter; setPanelView('reminders'); loadRemindersPage(entry.filter); }
@@ -1892,6 +1900,7 @@
     const isDeptAliases = view === 'deptAliases';
     const isCompanyDetails = view === 'companyDetails';
     const isLetterSettings = view === 'letterSettings';
+    const isAiUsage = view === 'aiUsage';
     const isActionNeeded = view === 'actionNeeded';
     const isAutoList = view === 'automationList';
     const isAutomation = view === 'automation';
@@ -1924,6 +1933,7 @@
     if (deptAliasesPage) deptAliasesPage.hidden = !isDeptAliases;
     if (companyDetailsPage) companyDetailsPage.hidden = !isCompanyDetails;
     if (letterSettingsPage) letterSettingsPage.hidden = !isLetterSettings;
+    if (aiUsagePage) aiUsagePage.hidden = !isAiUsage;
     if (actionNeededPage) actionNeededPage.hidden = !isActionNeeded;
     if (autoListPage) autoListPage.hidden = !isAutoList;
     if (autoPage) autoPage.hidden = !isAutomation;
@@ -1996,6 +2006,12 @@
       if (commsHeadIcon) commsHeadIcon.innerHTML = WHATSAPP_SVG;
       if (commsHeadTitle) commsHeadTitle.textContent = 'Letter settings';
       if (commsHeadSubtitle) commsHeadSubtitle.textContent = 'Reference number format, letter codes + counters';
+      if (commsHeadBadge) commsHeadBadge.hidden = true;
+    } else if (isAiUsage) {
+      if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon whatsapp';
+      if (commsHeadIcon) commsHeadIcon.innerHTML = WHATSAPP_SVG;
+      if (commsHeadTitle) commsHeadTitle.textContent = 'AI usage';
+      if (commsHeadSubtitle) commsHeadSubtitle.textContent = 'Spend today/this week/this month, live vs. tests';
       if (commsHeadBadge) commsHeadBadge.hidden = true;
     } else if (isActionNeeded) {
       if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon whatsapp';
@@ -3661,6 +3677,67 @@
     }
     showLetterSettings();
   };
+
+  // AI usage (2026-11, direct instruction) - read-only: today/this week/
+  // this month totals (live vs. tests) + a by-feature breakdown, from
+  // GET /hr-assistant/ai-usage (src/aiAssistant/aiUsageLog.js).
+  let activeAiUsageRange = 'today';
+  let aiUsageSummaryCache = null;
+  function renderAiUsageRange(summary, range) {
+    const r = (summary && summary[range]) || { liveUsd: 0, testUsd: 0, totalUsd: 0, byFeature: [] };
+    if (aiUsageLiveTotal) aiUsageLiveTotal.textContent = '$' + r.liveUsd.toFixed(2);
+    if (aiUsageTestTotal) aiUsageTestTotal.textContent = '$' + r.testUsd.toFixed(2);
+    if (aiUsageGrandTotal) aiUsageGrandTotal.textContent = '$' + r.totalUsd.toFixed(2);
+    if (!aiUsageFeatureList) return;
+    if (!r.byFeature.length) {
+      aiUsageFeatureList.innerHTML = '<div class="wf-rem-empty">No AI calls recorded for this period.</div>';
+      return;
+    }
+    aiUsageFeatureList.innerHTML = r.byFeature.map((f) => (
+      '<div class="wf-rem-item" style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px">' +
+        '<span>' + escapeHtml(f.feature) + '</span>' +
+        '<span style="display:flex;gap:10px;align-items:center">' +
+          '<span class="wf-auto-hint" style="margin:0">' + f.calls + ' call' + (f.calls === 1 ? '' : 's') + '</span>' +
+          '<strong>$' + f.usd.toFixed(2) + '</strong>' +
+        '</span>' +
+      '</div>'
+    )).join('');
+  }
+  async function loadAiUsagePage() {
+    if (!aiUsageFeatureList) return;
+    if (aiUsageSummaryCache) renderAiUsageRange(aiUsageSummaryCache, activeAiUsageRange);
+    else aiUsageFeatureList.innerHTML = '<div class="wf-skeleton-list"><div class="wf-skeleton-row"></div><div class="wf-skeleton-row"></div></div>';
+    try {
+      const summary = await fetch('/api/workforce/hr-assistant/ai-usage').then((res) => res.json());
+      aiUsageSummaryCache = summary;
+      renderAiUsageRange(summary, activeAiUsageRange);
+    } catch (err) {
+      if (!aiUsageSummaryCache) aiUsageFeatureList.innerHTML = '<div class="wf-rem-empty">Could not load AI usage.</div>';
+    }
+  }
+  if (aiUsageChips) {
+    aiUsageChips.addEventListener('click', (e) => {
+      const chip = e.target.closest('.wf-rem-chip');
+      if (!chip) return;
+      activeAiUsageRange = chip.dataset.range;
+      aiUsageChips.querySelectorAll('.wf-rem-chip').forEach((c) => c.setAttribute('aria-pressed', String(c === chip)));
+      if (aiUsageSummaryCache) renderAiUsageRange(aiUsageSummaryCache, activeAiUsageRange);
+    });
+  }
+  function showAiUsage() {
+    setPanelView('aiUsage');
+    loadAiUsagePage();
+  }
+  window.__hrAssistantOpenAiUsage = function () {
+    const wasOpen = typeof panel !== 'undefined' && !panel.hidden;
+    if (!wasOpen && typeof openPanel === 'function') {
+      openPanel();
+      navStack = [{ type: 'aiUsage' }];
+    } else {
+      pushNav({ type: 'aiUsage' });
+    }
+    showAiUsage();
+  };
   if (letterRefFormatInput) letterRefFormatInput.addEventListener('input', updateLetterRefFormatPreview);
   if (letterRefFormatSaveBtn) {
     letterRefFormatSaveBtn.addEventListener('click', async () => {
@@ -3869,10 +3946,28 @@
       });
     });
   }
+  // AI usage alert (2026-11, direct instruction) - alert only, never an
+  // action to take beyond looking at the page; no dismiss button, it
+  // simply stops appearing once the day rolls over (the underlying flag
+  // is per-day - see aiUsageLog.getTodaysFiredAlert).
+  function actionNeededAiUsageCardHtml(item) {
+    return '<div class="wf-auto-task-card" data-ai-usage-alert="1">' +
+      '<div class="wf-action-needed-card-head">' +
+        '<span class="wf-auto-task-subject">💰 Today\'s live AI spend: $' + Number(item.data.liveUsd).toFixed(2) + '</span>' +
+        '<button type="button" class="wf-action-needed-openchat" data-open-ai-usage="1">View AI usage ›</button>' +
+      '</div>' +
+      '<div class="wf-auto-hint">Passed today\'s alert threshold - alert only, AI keeps working normally.</div>' +
+    '</div>';
+  }
+  function wireActionNeededAiUsageCard(card) {
+    const openBtn = card.querySelector('[data-open-ai-usage]');
+    if (openBtn) openBtn.addEventListener('click', () => { pushNav({ type: 'aiUsage' }); showAiUsage(); });
+  }
   function actionNeededCardHtml(item) {
     if (item.kind === 'automation_missed_run' || item.kind === 'automation_first_run') return actionNeededAutomationCardHtml(item);
     if (item.kind === 'hr_note_escalated') return actionNeededHrNoteEscalatedCardHtml(item);
     if (item.kind === 'stuck_incoming') return actionNeededStuckIncomingCardHtml(item);
+    if (item.kind === 'ai_usage_alert') return actionNeededAiUsageCardHtml(item);
     const waitingTag = item.ageMs > 2 * 60 * 60 * 1000 ? '<span class="wf-action-needed-waiting-tag">Waiting ' + actionNeededAgeLabel(item.ageMs) + '</span>' : '';
     return '<div class="wf-auto-task-card" data-chat-id="' + escapeHtml(item.chatId) + '">' +
       '<div class="wf-action-needed-card-head">' +
@@ -3887,6 +3982,7 @@
     if (card.dataset.automationId) { wireActionNeededAutomationCard(card); return; }
     if (card.dataset.escalationId) { wireActionNeededHrNoteEscalatedCard(card); return; }
     if (card.dataset.stuckId) { wireActionNeededStuckIncomingCard(card); return; }
+    if (card.dataset.aiUsageAlert) { wireActionNeededAiUsageCard(card); return; }
     const openChatBtn = card.querySelector('[data-open-chat]');
     if (openChatBtn) openChatBtn.addEventListener('click', () => { pushNav({ type: 'conversation', chatId }); openConversationPage(chatId); });
     card.querySelectorAll('[data-approval-action]').forEach((b) => {

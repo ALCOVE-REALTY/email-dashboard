@@ -554,6 +554,13 @@ if (subhSettingsLetterSettingsBtn) {
     if (window.__hrAssistantOpenLetterSettings) window.__hrAssistantOpenLetterSettings();
   });
 }
+// AI usage (2026-11) - same entry pattern as above.
+const subhSettingsAiUsageBtn = document.getElementById('subhSettingsAiUsageBtn');
+if (subhSettingsAiUsageBtn) {
+  subhSettingsAiUsageBtn.addEventListener('click', () => {
+    if (window.__hrAssistantOpenAiUsage) window.__hrAssistantOpenAiUsage();
+  });
+}
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && !wfDrawer.hidden) closeDrawer();
 });
