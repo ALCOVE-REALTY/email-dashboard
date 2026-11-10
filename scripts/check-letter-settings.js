@@ -161,7 +161,9 @@ async function main() {
     await redis.set('subh-letter-counter:Alcove Construction:experience:2027-28', 19);
     await redis.set('subh-letter-counter:AMBA Highrise:experience:2027-28', 5);
     letterSettingsService.resetCountersMigrationCheckForTests();
+    letterSettingsService.resetCountersCodeMigrationCheckForTests(); // the per-code pass must also re-run so the resulting per-type key lands in the (new) per-code shape getCounterValue actually reads
     await redis.del('subh-letter-counter-migrated-v2'); // force the migration to actually run again for this test
+    await redis.del('subh-letter-counter-migrated-to-code-v1');
     const value = await letterSettingsService.getCounterValue('experience', '2027-28');
     const oldKeysGone = !(await redis.get('subh-letter-counter:Alcove Developers:experience:2027-28'))
       && !(await redis.get('subh-letter-counter:Alcove Construction:experience:2027-28'))
@@ -173,7 +175,9 @@ async function main() {
     await redis.set('subh-letter-counter:Alcove Developers:drive:faketpl1:2027-28', 3);
     await redis.set('subh-letter-counter:AMBA Highrise:drive:faketpl1:2027-28', 8);
     letterSettingsService.resetCountersMigrationCheckForTests();
+    letterSettingsService.resetCountersCodeMigrationCheckForTests();
     await redis.del('subh-letter-counter-migrated-v2');
+    await redis.del('subh-letter-counter-migrated-to-code-v1');
     const value = await letterSettingsService.getCounterValue('drive:faketpl1', '2027-28');
     return value === 8;
   });
@@ -187,6 +191,59 @@ async function main() {
     const value = await letterSettingsService.getCounterValue('confirmation', '2028-29');
     const stillThere = await redis.get('subh-letter-counter:Leftover Co:confirmation:2028-29');
     return value === 0 && Number(stillThere) === 99;
+  });
+
+  console.log('='.repeat(70));
+  console.log('TASK 2 migration: counters are re-keyed by LETTER CODE (not template type) - this is the live CONF/CONF collision (built-in "Confirmation" + a Drive template, both code CONF) folded into one shared counter, keeping the highest number, never losing one');
+  console.log('='.repeat(70));
+  await checkAsync('migrateCountersToPerCodeOnly: two DIFFERENT template types that share the SAME letter code merge into ONE counter holding the HIGHEST value, and the old per-type keys are removed', async () => {
+    const redis = await getRawRedisClient();
+    // Simulate two template types sharing one code directly in the codes
+    // store (driveTemplatesService's own self-healing default-code
+    // assignment can produce this without going through saveLetterCode's
+    // owner-facing uniqueness gate - this IS the real, already-live
+    // collision this migration exists to fix).
+    const rawCodes = await redis.get('subh-letter-codes');
+    const codes = Object.assign({}, typeof rawCodes === 'string' ? JSON.parse(rawCodes) : (rawCodes || {}));
+    codes['drive:faketplcollide'] = codes.confirmation; // both now 'CONF'
+    await redis.set('subh-letter-codes', JSON.stringify(codes));
+    // Simulate the OLD per-TYPE key shape directly, as if written before
+    // this migration existed.
+    await redis.set('subh-letter-counter:confirmation:2029-30', 7);
+    await redis.set('subh-letter-counter:drive:faketplcollide:2029-30', 15);
+    letterSettingsService.resetCountersMigrationCheckForTests();
+    letterSettingsService.resetCountersCodeMigrationCheckForTests();
+    await redis.del('subh-letter-counter-migrated-v2');
+    await redis.del('subh-letter-counter-migrated-to-code-v1');
+    const valueViaConfirmation = await letterSettingsService.getCounterValue('confirmation', '2029-30');
+    const valueViaDrive = await letterSettingsService.getCounterValue('drive:faketplcollide', '2029-30');
+    const oldKeysGone = !(await redis.get('subh-letter-counter:confirmation:2029-30'))
+      && !(await redis.get('subh-letter-counter:drive:faketplcollide:2029-30'));
+    const newSharedKey = await redis.get('subh-letter-counter:CONF:2029-30');
+    return valueViaConfirmation === 15 && valueViaDrive === 15 && oldKeysGone && Number(newSharedKey) === 15;
+  });
+  await checkAsync('migrateCountersToPerCodeOnly: a per-code counter that already holds a HIGHER value than a stray old per-type key is never dropped down (max, never loses a number)', async () => {
+    const redis = await getRawRedisClient();
+    await redis.set('subh-letter-counter:CONF:2029-31', 50); // already the winning per-code shape
+    await redis.set('subh-letter-counter:confirmation:2029-31', 3); // a stray, lower, old-shape key
+    await letterSettingsService.migrateCountersToPerCodeOnly(); // call directly - flags already consumed above
+    const value = await letterSettingsService.getCounterValue('confirmation', '2029-31');
+    return value === 50;
+  });
+  await checkAsync('migrateCountersToPerCodeOnly is idempotent - running it again immediately changes nothing and throws nothing', async () => {
+    const before = await letterSettingsService.getCounterValue('confirmation', '2029-30');
+    await letterSettingsService.migrateCountersToPerCodeOnly();
+    await letterSettingsService.migrateCountersToPerCodeOnly();
+    const after = await letterSettingsService.getCounterValue('confirmation', '2029-30');
+    return before === 15 && after === 15;
+  });
+  await checkAsync('the per-code migration only ever runs ONCE through ensureCountersMigratedToCode (idempotent at the guard level too) - a later stray old-shape key left by a test is not silently folded in on every call', async () => {
+    const redis = await getRawRedisClient();
+    await redis.set('subh-letter-counter:confirmation:2029-32', 77);
+    // Deliberately NOT resetting either migration-checked flag here.
+    const value = await letterSettingsService.getCounterValue('confirmation', '2029-32');
+    const stillThere = await redis.get('subh-letter-counter:confirmation:2029-32');
+    return value === 0 && Number(stillThere) === 77;
   });
 
   console.log('='.repeat(70));

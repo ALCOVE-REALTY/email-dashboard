@@ -109,25 +109,35 @@ function renderRefNo(format, { companyCode, letterCode, fy, serial }) {
     .split('{Serial}').join(padSerial(serial));
 }
 
-// TASK 1 (2026-11), direct instruction - counters run PER LETTER TYPE
-// ONLY, never split by company: the serial for "Confirmation" is one
-// single sequence shared across every company (Alcove Developers, Alcove
-// Construction, AMBA Highrise, ...), matching how the owner's own manual
-// register has always worked. The company code can still appear in the
-// Ref No. FORMAT (via {Company_Code}), it just never affects which
-// counter is incremented. See migrateCountersToPerTypeOnly below for how
-// an existing per-company counter (the old key shape) is folded in.
-function counterKey(letterType, fy) {
-  return COUNTER_PREFIX + letterType + ':' + fy;
+// TASK 1 (2026-11, direct instruction): counters run per letter type only
+// (never split by company). REVISED (2026-11, direct instruction):
+// counters now key by LETTER CODE + FY, not by template type - swapping
+// which file backs a given code (e.g. replacing the built-in
+// "Confirmation" letter with a Drive template that also uses code CONF)
+// keeps the SAME serial running, instead of silently starting a second,
+// colliding sequence under the same visible code. The company code can
+// still appear in the Ref No. FORMAT (via {Company_Code}), it just never
+// affects which counter is incremented. `counterKey`'s own first argument
+// is now always a resolved CODE (e.g. "CONF"), never a template key - see
+// migrateCountersToPerCodeOnly below for how today's already-live
+// duplicate (built-in 'confirmation' and a Drive template, both CONF) is
+// folded into one.
+function counterKey(code, fy) {
+  return COUNTER_PREFIX + code + ':' + fy;
 }
-// Current counter value (0 if this type/FY has never issued a letter
-// yet) - a read-only peek, never increments anything.
+// Current counter value (0 if this code/FY has never issued a letter
+// yet) - a read-only peek, never increments anything. Still takes the
+// TEMPLATE's own letterType (every external caller already has this, not
+// the code) and resolves the code internally - so every existing caller
+// (routes, workflowService, tests) needed zero changes for the re-keying.
 async function getCounterValue(letterType, fy) {
-  await ensureCountersMigrated();
+  await ensureCountersMigratedToCode();
   const redis = getClient();
   if (!redis) return 0;
   try {
-    const raw = await redis.get(counterKey(letterType, fy));
+    const codes = await getLetterCodes();
+    const code = codes[letterType] || letterType.toUpperCase();
+    const raw = await redis.get(counterKey(code, fy));
     const n = raw === null || raw === undefined ? 0 : Number(raw);
     return Number.isFinite(n) ? n : 0;
   } catch (err) { return 0; }
@@ -135,21 +145,25 @@ async function getCounterValue(letterType, fy) {
 // Owner-facing override (Letter settings' own "Edit" on a counter) - lets
 // the owner continue numbering from their existing manual register instead
 // of restarting at 0001. `nextNumber` is the NEXT ref number that should be
-// issued, so the counter itself is stored one below it.
+// issued, so the counter itself is stored one below it. Setting the
+// override for ANY type sharing a code sets it for every type sharing
+// that code, since they're now the same counter by construction.
 async function setCounterOverride(letterType, fy, nextNumber) {
-  await ensureCountersMigrated();
+  await ensureCountersMigratedToCode();
   const redis = getClient();
   if (!redis) return { ok: false, error: 'No store configured.' };
   const n = Number(nextNumber);
   if (!Number.isInteger(n) || n < 1) return { ok: false, error: 'The next number must be a whole number of 1 or more.' };
-  try { await redis.set(counterKey(letterType, fy), n - 1); } catch (err) { return { ok: false, error: err.message }; }
+  const codes = await getLetterCodes();
+  const code = codes[letterType] || letterType.toUpperCase();
+  try { await redis.set(counterKey(code, fy), n - 1); } catch (err) { return { ok: false, error: err.message }; }
   return { ok: true, nextNumber: n };
 }
 
 // Read-only - shown in Preview/Send-test and on the Letter settings page's
 // own counters list. Never touches the real counter.
 async function previewNextRefNo({ companyCode, letterType, date }) {
-  await ensureCountersMigrated();
+  await ensureCountersMigratedToCode();
   const format = await getRefNoFormat();
   const codes = await getLetterCodes();
   const fy = computeFinancialYear(date);
@@ -163,20 +177,22 @@ async function previewNextRefNo({ companyCode, letterType, date }) {
 
 // The ONLY function that actually consumes a number - called exactly once,
 // at the moment a letter is really sent. redis.incr is atomic: two
-// concurrent sends for the same letter type/FY (regardless of company) can
-// never receive the same serial, and a key that doesn't exist yet starts
-// at 0 and INCRs to 1 (the "a new FY's counter is created automatically,
-// starting at 0001" rule, with no separate creation step needed).
+// concurrent sends for the same CODE/FY (regardless of which template or
+// company) can never receive the same serial, and a key that doesn't
+// exist yet starts at 0 and INCRs to 1 (the "a new FY's counter is
+// created automatically, starting at 0001" rule, with no separate
+// creation step needed).
 async function assignRefNo({ companyCode, letterType, date }) {
-  await ensureCountersMigrated();
+  await ensureCountersMigratedToCode();
   const redis = getClient();
   if (!redis) throw new Error('No store configured - cannot assign a reference number.');
   const format = await getRefNoFormat();
   const codes = await getLetterCodes();
   const fy = computeFinancialYear(date);
-  const serial = await redis.incr(counterKey(letterType, fy));
+  const letterCode = codes[letterType] || letterType.toUpperCase();
+  const serial = await redis.incr(counterKey(letterCode, fy));
   return {
-    refNo: renderRefNo(format, { companyCode, letterCode: codes[letterType] || letterType.toUpperCase(), fy, serial }),
+    refNo: renderRefNo(format, { companyCode, letterCode, fy, serial }),
     fy, serial
   };
 }
@@ -261,6 +277,89 @@ async function ensureCountersMigrated() {
 // Test-hygiene only - lets the regression suite re-arm the migration check
 // for a fresh scenario within the same process.
 function resetCountersMigrationCheckForTests() { countersMigrationChecked = false; }
+
+// One-time migration (TASK 2, 2026-11, direct instruction): counters now
+// key by LETTER CODE, not by letter/template type - folds every per-type
+// counter ("<prefix><letterType>:<fy>", written by the OLD scheme or by
+// migrateCountersToPerTypeOnly above) into a per-code counter
+// ("<prefix><code>:<fy>"), taking the HIGHEST next number across every
+// type that currently shares a code - the live example this was built
+// for: the built-in 'confirmation' type and a real Drive template already
+// both resolve to code CONF, so each had been running its own, colliding
+// serial. Taking the max means replacing a template never loses a number
+// already issued under the other key, and never restarts at 0001. Runs
+// AFTER the old migration above (ensureCountersMigratedToCode calls
+// ensureCountersMigrated first) so any still-old-shape per-company key is
+// folded into a per-type key before this pass groups by code. Idempotent:
+// a key that is already its own group's winning per-code key is left
+// alone on a repeat run (see scripts/check-letter-settings.js).
+async function migrateCountersToPerCodeOnly() {
+  const redis = getClient();
+  if (!redis) return;
+  let cursor = '0';
+  const allKeys = [];
+  do {
+    const [next, keys] = await redis.scan(cursor, { match: COUNTER_PREFIX + '*', count: 100 });
+    cursor = next;
+    allKeys.push(...keys);
+  } while (cursor !== '0');
+  if (!allKeys.length) return;
+  const codes = await getLetterCodes();
+  const entries = [];
+  for (const key of allKeys) {
+    const suffix = key.slice(COUNTER_PREFIX.length);
+    const fyMatch = suffix.match(/:(\d{4}-\d{2})$/);
+    if (!fyMatch) continue; // doesn't cleanly match the known shape - never guessed
+    const fy = fyMatch[1];
+    const letterType = suffix.slice(0, suffix.length - fy.length - 1);
+    if (!letterType) continue;
+    const code = codes[letterType] || letterType.toUpperCase();
+    entries.push({ key, fy, code });
+  }
+  if (!entries.length) return;
+  const values = await redis.mget(...entries.map((e) => e.key));
+  const maxByCodeFy = new Map();
+  entries.forEach((e, i) => {
+    const v = Number(values[i]) || 0;
+    const groupKey = e.code + '\u0000' + e.fy;
+    maxByCodeFy.set(groupKey, Math.max(maxByCodeFy.get(groupKey) || 0, v));
+  });
+  for (const [groupKey, maxVal] of maxByCodeFy) {
+    const [code, fy] = groupKey.split('\u0000');
+    const winningKey = counterKey(code, fy);
+    const currentRaw = await redis.get(winningKey);
+    const current = currentRaw === null || currentRaw === undefined ? 0 : (Number(currentRaw) || 0);
+    if (maxVal > current) await redis.set(winningKey, maxVal);
+  }
+  const toDelete = entries
+    .filter((e) => e.key !== counterKey(e.code, e.fy))
+    .map((e) => e.key);
+  if (toDelete.length) await redis.del(...toDelete);
+}
+const COUNTER_CODE_MIGRATED_KEY = 'subh-letter-counter-migrated-to-code-v1';
+let countersCodeMigrationChecked = false;
+// Same guard shape as ensureCountersMigrated above (Redis flag + in-process
+// flag, best-effort, never blocks a real counter operation) - but always
+// runs the older per-type migration first, so a deployment landing on this
+// code for the very first time still migrates correctly in one pass
+// (old per-company keys -> per-type keys -> per-code keys) rather than
+// needing two separate server restarts.
+async function ensureCountersMigratedToCode() {
+  await ensureCountersMigrated();
+  if (countersCodeMigrationChecked) return;
+  countersCodeMigrationChecked = true;
+  const redis = getClient();
+  if (!redis) return;
+  try {
+    const already = await redis.get(COUNTER_CODE_MIGRATED_KEY);
+    if (already) return;
+    await migrateCountersToPerCodeOnly();
+    await redis.set(COUNTER_CODE_MIGRATED_KEY, '1');
+  } catch (err) { /* best effort - never block a real counter operation */ }
+}
+// Test-hygiene only - lets the regression suite re-arm this migration
+// check for a fresh scenario within the same process.
+function resetCountersCodeMigrationCheckForTests() { countersCodeMigrationChecked = false; }
 
 async function getLetterSettings() {
   return { refFormat: await getRefNoFormat(), letterCodes: await getLetterCodes(), placeholders: REF_FORMAT_PLACEHOLDERS, letterTypeLabels: LETTER_TYPE_LABELS };
@@ -370,5 +469,7 @@ module.exports = {
   getCounterValue, setCounterOverride, previewNextRefNo, assignRefNo,
   getLetterRegisterLink, setRegisterSheetLink, appendToLetterRegister, uploadSentLetterPdf,
   // TASK 1 (2026-11) - exported for scripts/check-letter-settings.js only.
-  migrateCountersToPerTypeOnly, resetCountersMigrationCheckForTests
+  migrateCountersToPerTypeOnly, resetCountersMigrationCheckForTests,
+  // TASK 2 (2026-11) - exported for scripts/check-letter-settings.js only.
+  migrateCountersToPerCodeOnly, resetCountersCodeMigrationCheckForTests
 };
