@@ -18,6 +18,7 @@ const { Redis } = require('@upstash/redis');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const aiUsageLog = require('./aiUsageLog');
 const whatsapp = require('../whatsappService');
 // Off by default (reply-restoration request) - the gateway confirmed has
 // no route for this yet (every plausible endpoint name 404s), so until
@@ -9263,7 +9264,37 @@ async function postClaudeMessages(apiKey, body) {
     apiCallStats.cacheReadTokens += data.usage.cache_read_input_tokens || 0;
   }
   if (replayEnabled && cacheKey) writeReplayCache(cacheKey, data);
+  logAiUsageForCall(body, data);
   return data;
+}
+// AI usage log (2026-11, direct instruction) - the feature is inferred
+// from the request itself (never threaded as an extra parameter through
+// every one of this file's ~17 calling functions): the one tool name
+// used for a given purpose already identifies it uniquely, and every
+// free-form (no `tools`) call in this file is reply-draft generation -
+// there is no other free-form use here. Never throws (recordUsage itself
+// never throws either, but this stays defensive since it runs after the
+// real call has already succeeded).
+function featureForClaudeCall(body) {
+  const toolName = body && Array.isArray(body.tools) && body.tools[0] && body.tools[0].name;
+  if (toolName === 'manager_confirmation_reply') return 'manager confirmation';
+  if (toolName === 'extract_hr_data_query') return 'data request';
+  if (toolName === 'owner_chat_hr_data_query') return 'owner chat';
+  return 'WhatsApp auto-reply';
+}
+function logAiUsageForCall(body, data) {
+  try {
+    const usage = data && data.usage;
+    aiUsageLog.recordUsage({
+      feature: featureForClaudeCall(body),
+      model: body && body.model,
+      inputTokens: usage && usage.input_tokens,
+      outputTokens: usage && usage.output_tokens,
+      cacheWriteTokens: usage && usage.cache_creation_input_tokens,
+      cacheReadTokens: usage && usage.cache_read_input_tokens,
+      isTest: Boolean(process.env.AI_USAGE_IS_TEST)
+    }).catch(() => {});
+  } catch (err) { /* best effort */ }
 }
 // Found live: claude-sonnet-5-5 (CLAUDE_MODEL_MAIN, used by every
 // caller of this function) occasionally puts its own chain-of-thought

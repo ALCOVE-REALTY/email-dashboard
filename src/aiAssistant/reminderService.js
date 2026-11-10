@@ -14,6 +14,7 @@ const whatsappAssistant = require('./whatsappAssistant');
 const memoryService = require('./memoryService');
 const employeeService = require('../employeeService');
 const redisHealth = require('../redisHealth');
+const aiUsageLog = require('./aiUsageLog');
 
 const REMINDER_PREFIX = 'subh-reminder:';
 const REMINDER_IDS_KEY = 'subh-reminder-ids';
@@ -488,6 +489,12 @@ async function parseReminderCommand(text, now) {
   });
   if (!resp.ok) throw new Error('reminder_command parse API error ' + resp.status);
   const data = await resp.json();
+  aiUsageLog.recordUsage({
+    feature: 'workflow/task', model: MODEL,
+    inputTokens: data.usage && data.usage.input_tokens, outputTokens: data.usage && data.usage.output_tokens,
+    cacheWriteTokens: data.usage && data.usage.cache_creation_input_tokens, cacheReadTokens: data.usage && data.usage.cache_read_input_tokens,
+    isTest: Boolean(process.env.AI_USAGE_IS_TEST)
+  }).catch(() => {});
   const block = (data.content || []).find((b) => b && b.type === 'tool_use');
   return block ? block.input : { kind: 'create' };
 }

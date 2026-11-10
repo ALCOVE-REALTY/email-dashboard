@@ -19,6 +19,7 @@ const pdfReport = require('../pdfReport');
 const tableExcelReport = require('../tableExcelReport');
 const sheetsAuth = require('../sheetsAuth');
 const redisHealth = require('../redisHealth');
+const aiUsageLog = require('./aiUsageLog');
 
 const AUTOMATION_PREFIX = 'subh-automation:';
 const AUTOMATION_IDS_KEY = 'subh-automation-ids';
@@ -1116,6 +1117,12 @@ async function parseAutomationAsk(text, sheetContext) {
   });
   if (!resp.ok) throw new Error('automation_plan parse API error ' + resp.status);
   const data = await resp.json();
+  aiUsageLog.recordUsage({
+    feature: 'workflow/task', model: MODEL,
+    inputTokens: data.usage && data.usage.input_tokens, outputTokens: data.usage && data.usage.output_tokens,
+    cacheWriteTokens: data.usage && data.usage.cache_creation_input_tokens, cacheReadTokens: data.usage && data.usage.cache_read_input_tokens,
+    isTest: Boolean(process.env.AI_USAGE_IS_TEST)
+  }).catch(() => {});
   const block = (data.content || []).find((b) => b && b.type === 'tool_use');
   return block ? block.input : { unclear: ['Could not understand that - please try rephrasing'] };
 }

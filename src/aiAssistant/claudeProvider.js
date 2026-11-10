@@ -14,6 +14,7 @@
 // server-side module, never logged or returned to the browser.
 const toolCallLog = require('./toolCallLog');
 const shared = require('./assistantShared');
+const aiUsageLog = require('./aiUsageLog');
 
 const API_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_VERSION = '2023-06-01';
@@ -107,7 +108,14 @@ async function postMessages(apiKey, body) {
     const bodyText = await resp.text().catch(() => '');
     throw new Error('Claude API error ' + resp.status + (bodyText ? ': ' + bodyText.slice(0, 300) : ''));
   }
-  return resp.json();
+  const data = await resp.json();
+  aiUsageLog.recordUsage({
+    feature: 'owner chat', model: body && body.model,
+    inputTokens: data.usage && data.usage.input_tokens, outputTokens: data.usage && data.usage.output_tokens,
+    cacheWriteTokens: data.usage && data.usage.cache_creation_input_tokens, cacheReadTokens: data.usage && data.usage.cache_read_input_tokens,
+    isTest: Boolean(process.env.AI_USAGE_IS_TEST)
+  }).catch(() => {});
+  return data;
 }
 
 // toolMode:

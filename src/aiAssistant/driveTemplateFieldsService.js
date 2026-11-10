@@ -10,6 +10,7 @@ const { Redis } = require('@upstash/redis');
 const sheetsAuth = require('../sheetsAuth');
 const driveTemplatesService = require('./driveTemplatesService');
 const workforceAnalytics = require('../workforceAnalytics');
+const aiUsageLog = require('./aiUsageLog');
 
 let client;
 let clientChecked = false;
@@ -274,6 +275,14 @@ async function callMappingTool(placeholders) {
   }).catch(() => null);
   if (!resp || !resp.ok) return null;
   const data = await resp.json().catch(() => null);
+  if (data) {
+    aiUsageLog.recordUsage({
+      feature: 'letters', model: MODEL,
+      inputTokens: data.usage && data.usage.input_tokens, outputTokens: data.usage && data.usage.output_tokens,
+      cacheWriteTokens: data.usage && data.usage.cache_creation_input_tokens, cacheReadTokens: data.usage && data.usage.cache_read_input_tokens,
+      isTest: Boolean(process.env.AI_USAGE_IS_TEST)
+    }).catch(() => {});
+  }
   const block = data && (data.content || []).find((b) => b && b.type === 'tool_use');
   return block ? block.input : null;
 }

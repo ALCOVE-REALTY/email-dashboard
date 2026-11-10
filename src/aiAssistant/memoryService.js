@@ -11,6 +11,7 @@
 // no-op/empty-result rather than throwing when Redis isn't configured.
 const { Redis } = require('@upstash/redis');
 const employeeService = require('../employeeService');
+const aiUsageLog = require('./aiUsageLog');
 
 const MEMORY_KEY_PREFIX = 'subh-memory:';
 const MEMORY_INDEX_KEY = 'subh-memory-ids';
@@ -334,6 +335,12 @@ async function parseMemoryCommand(text) {
     throw new Error('memory_command parse API error ' + resp.status + (bodyText ? ': ' + bodyText.slice(0, 300) : ''));
   }
   const data = await resp.json();
+  aiUsageLog.recordUsage({
+    feature: 'other', model: MODEL,
+    inputTokens: data.usage && data.usage.input_tokens, outputTokens: data.usage && data.usage.output_tokens,
+    cacheWriteTokens: data.usage && data.usage.cache_creation_input_tokens, cacheReadTokens: data.usage && data.usage.cache_read_input_tokens,
+    isTest: Boolean(process.env.AI_USAGE_IS_TEST)
+  }).catch(() => {});
   const block = (data.content || []).find((b) => b && b.type === 'tool_use');
   return block ? block.input : { kind: 'mention_only' };
 }

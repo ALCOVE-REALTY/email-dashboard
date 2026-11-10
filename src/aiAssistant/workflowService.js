@@ -29,6 +29,7 @@ const letterSettingsService = require('./letterSettingsService');
 const driveTemplatesService = require('./driveTemplatesService');
 const driveTemplateFieldsService = require('./driveTemplateFieldsService');
 const driveTemplateGenerationService = require('./driveTemplateGenerationService');
+const aiUsageLog = require('./aiUsageLog');
 // Required lazily (inside the functions that need it, never at module
 // load) specifically because Phase 5 has whatsappAssistant.js require
 // THIS file back (its own early-tier "might this reply be for an open
@@ -670,6 +671,12 @@ async function parseWorkflowAsk(text, sheetContext, templateOptions) {
   });
   if (!resp.ok) throw new Error('workflow_plan parse API error ' + resp.status);
   const data = await resp.json();
+  aiUsageLog.recordUsage({
+    feature: 'workflow/task', model: MODEL,
+    inputTokens: data.usage && data.usage.input_tokens, outputTokens: data.usage && data.usage.output_tokens,
+    cacheWriteTokens: data.usage && data.usage.cache_creation_input_tokens, cacheReadTokens: data.usage && data.usage.cache_read_input_tokens,
+    isTest: Boolean(process.env.AI_USAGE_IS_TEST)
+  }).catch(() => {});
   const block = (data.content || []).find((b) => b && b.type === 'tool_use');
   return block ? block.input : { unclear: ['Could not understand that - please try rephrasing'] };
 }
@@ -1176,6 +1183,14 @@ async function callWorkflowTool(systemText, userText, toolDef) {
   }).catch(() => null);
   if (!resp || !resp.ok) return null;
   const data = await resp.json().catch(() => null);
+  if (data) {
+    aiUsageLog.recordUsage({
+      feature: 'workflow/task', model: MODEL,
+      inputTokens: data.usage && data.usage.input_tokens, outputTokens: data.usage && data.usage.output_tokens,
+      cacheWriteTokens: data.usage && data.usage.cache_creation_input_tokens, cacheReadTokens: data.usage && data.usage.cache_read_input_tokens,
+      isTest: Boolean(process.env.AI_USAGE_IS_TEST)
+    }).catch(() => {});
+  }
   const block = data && (data.content || []).find((b) => b && b.type === 'tool_use');
   return block ? block.input : null;
 }
