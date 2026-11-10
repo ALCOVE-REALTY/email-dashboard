@@ -12,6 +12,7 @@ const documentRequests = require('./aiAssistant/documentRequests');
 const reminderService = require('./aiAssistant/reminderService');
 const automationService = require('./aiAssistant/automationService');
 const workflowService = require('./aiAssistant/workflowService');
+const aiUsageLog = require('./aiAssistant/aiUsageLog');
 
 // Lowered 60 -> 15 after a real live incident: a reply that should have
 // gone out within ~60s took minutes, partly because the base poll
@@ -274,6 +275,23 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
       if (result.ran || result.missed) log.log('[whatsapp-assistant] workflow check: ' + JSON.stringify(result));
     } catch (err) {
       log.error('[whatsapp-assistant] workflow run failed: ' + err.message);
+    }
+    // AI usage daily spend alert (2026-11, direct instruction) - alert
+    // only, never stops or degrades AI. Fires at most once per day (see
+    // aiUsageLog.checkDailyAlertDue's own flag), as a toast (owner
+    // notification) - the "Action needed" card itself reads the same
+    // fired-alert flag directly (src/workforceRoutes.js), so nothing else
+    // needs to happen here.
+    try {
+      const dueUsd = await aiUsageLog.checkDailyAlertDue(new Date());
+      if (typeof dueUsd === 'number') {
+        const threshold = Number(process.env.SUBH_DAILY_AI_ALERT_USD) || aiUsageLog.DEFAULT_DAILY_ALERT_USD;
+        await whatsappAssistant.postOwnerNotification(
+          '💰 Today\'s live AI spend ($' + dueUsd.toFixed(2) + ') has passed the $' + threshold + ' alert threshold - see Action needed / SUBH Settings > AI usage.'
+        ).catch(() => {});
+      }
+    } catch (err) {
+      log.error('[whatsapp-assistant] AI usage alert check failed: ' + err.message);
     }
     // Workflow follow-ups (its own independent try/catch, same tick) -
     // advances any open record whose own follow-up gap has elapsed.

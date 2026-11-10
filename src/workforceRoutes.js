@@ -21,6 +21,7 @@ const documentRequests = require('./aiAssistant/documentRequests');
 const reminderService = require('./aiAssistant/reminderService');
 const automationService = require('./aiAssistant/automationService');
 const workflowService = require('./aiAssistant/workflowService');
+const aiUsageLog = require('./aiAssistant/aiUsageLog');
 const companyDetailsService = require('./aiAssistant/companyDetailsService');
 const letterSettingsService = require('./aiAssistant/letterSettingsService');
 const driveTemplatesService = require('./aiAssistant/driveTemplatesService');
@@ -1708,6 +1709,20 @@ router.get('/hr-assistant/diag/anthropic-key', async (req, res) => {
   res.json(result);
 });
 
+// AI usage page (2026-11, direct instruction) - owner-only, SUBH Settings.
+// Today/this-week/this-month totals (live vs. tests) + a by-feature
+// breakdown, backed by src/aiAssistant/aiUsageLog.js's own day-keyed
+// Redis log (every real call across all 7 call sites that make one).
+router.get('/hr-assistant/ai-usage', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const summary = await aiUsageLog.getUsageSummary();
+    res.json(summary);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.get('/hr-assistant/tool-log', async (req, res) => {
   const limit = Math.min(parseInt(req.query.limit, 10) || 100, 500);
   const items = await toolCallLog.listRecent(limit);
@@ -3290,11 +3305,21 @@ router.post('/hr-assistant/letter-settings/register', async (req, res) => {
 router.get('/hr-assistant/action-needed', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
   try {
-    const [items, automations, workflowItems] = await Promise.all([
+    const [items, automations, workflowItems, aiUsageAlertUsd] = await Promise.all([
       whatsappAssistant.listActionNeededItems(),
       automationService.listRawAutomations().catch(() => []),
-      workflowService.listWorkflowActionNeededItems().catch(() => [])
+      workflowService.listWorkflowActionNeededItems().catch(() => []),
+      aiUsageLog.getTodaysFiredAlert().catch(() => null)
     ]);
+    const aiUsageItems = [];
+    if (typeof aiUsageAlertUsd === 'number') {
+      const ts = new Date(new Date().toISOString().slice(0, 10) + 'T00:00:00.000Z').getTime();
+      aiUsageItems.push({
+        kind: 'ai_usage_alert', category: 'ai_usage', chatId: null,
+        name: 'Today\'s live AI spend has passed the alert threshold', ts, ageMs: Math.max(0, Date.now() - ts),
+        data: { liveUsd: aiUsageAlertUsd }
+      });
+    }
     const automationItems = [];
     for (const a of automations) {
       if (a.pendingMissedRun) {
@@ -3314,7 +3339,7 @@ router.get('/hr-assistant/action-needed', async (req, res) => {
         });
       }
     }
-    const merged = items.concat(automationItems, workflowItems).sort((x, y) => x.ts - y.ts);
+    const merged = items.concat(automationItems, workflowItems, aiUsageItems).sort((x, y) => x.ts - y.ts);
     res.json({ items: merged });
   } catch (err) {
     res.status(500).json({ error: err.message });
