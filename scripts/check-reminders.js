@@ -37,6 +37,54 @@ async function create(fields) {
   return r;
 }
 
+// Cost (2026-11, direct instruction - "tests ~free by default") - this
+// suite's own "Chat-command NLU parsing" section genuinely called the
+// real Claude API for parseReminderCommand's `reminder_command` tool,
+// despite living in the deterministic/free suite list. Stubs
+// global.fetch for ONLY that one tool (by inspecting the real request
+// body, exactly like whatsappAssistant.js's own
+// installManagerConfirmationModelStub does for manager_confirmation_reply) -
+// anything else (Redis's own internal fetch calls) passes straight
+// through untouched. Each scripted response below replicates exactly
+// what the real model is already known (from this suite's own long-
+// standing assertions) to extract for that one fixed test message - a
+// genuinely different ask still needs the real model, which stays
+// covered by scripts/check-whatsapp-scenarios.js (real-model scenarios),
+// never here.
+function reminderCommandScriptedResponse(text) {
+  if (/Health Insurance vendor-ke follow up/i.test(text)) {
+    return { kind: 'create', titleRaw: 'Health Insurance vendor-ke follow up korte', dateRaw: 'tomorrow', timeRaw: '11:00', priorityRaw: 'high' };
+  }
+  if (/prepare the HR report for MD/i.test(text)) {
+    return { kind: 'create', titleRaw: 'prepare the HR report for MD', dateRaw: 'tomorrow', timeRaw: '15:00' };
+  }
+  if (/PF challan yaad dilana/i.test(text)) {
+    return { kind: 'create', titleRaw: 'PF challan yaad dilana', dateRaw: '25', repeatRaw: 'monthly' };
+  }
+  // Every other call in this suite (the deliberately-unclear case, the
+  // non-owner/unrelated-text short-circuits) never reaches the model at
+  // all - handleReminderCommand's own pre-filters return before
+  // parseReminderCommand is ever called - so no other scripted shape is
+  // needed here.
+  return { kind: 'create' };
+}
+function installReminderCommandStub() {
+  const originalFetch = global.fetch;
+  global.fetch = async (url, opts) => {
+    if (String(url).includes('api.anthropic.com') && opts && typeof opts.body === 'string') {
+      let body = null;
+      try { body = JSON.parse(opts.body); } catch (err) { body = null; }
+      if (body && Array.isArray(body.tools) && body.tools[0] && body.tools[0].name === 'reminder_command') {
+        const text = (body.messages && body.messages[0] && body.messages[0].content) || '';
+        const input = reminderCommandScriptedResponse(text);
+        return { ok: true, json: async () => ({ content: [{ type: 'tool_use', input }] }) };
+      }
+    }
+    return originalFetch(url, opts);
+  };
+  return originalFetch;
+}
+
 async function main() {
   // Starts a local, throwaway fake of the Upstash REST API and points
   // every Redis-client-constructing module at it for this process only -
@@ -146,16 +194,28 @@ async function main() {
     if (created) createdIds.push(created.id);
     return { result, created };
   }
-  const banglish = await nluCreate('kal sokal 11 tay Health Insurance vendor-ke follow up korte mone koriye dio, high priority');
-  check('Banglish create: confirms with a reply and creates a High-priority reminder', Boolean(banglish.result) && banglish.created && banglish.created.priority === 'high');
-  const english = await nluCreate('remind me tomorrow 3 pm to prepare the HR report for MD');
-  check('English create: confirms and creates a reminder with a time set', Boolean(english.result) && english.created && english.created.hasTime === true);
-  const hinglish = await nluCreate('har mahine 25 tarikh ko PF challan yaad dilana');
-  check('Hinglish create: confirms and creates a monthly-repeat-dated reminder', Boolean(hinglish.result) && english.created);
-  const unclear = await reminderService.handleReminderCommand('ektu pore amake mone koriye dio', OWNER, now); // no actual task named
-  check('a message with no real task asks ONE clarifying question rather than guessing', Boolean(unclear) && !/✓/.test(unclear.reply));
-  check('non-owner email never triggers a reminder command (returns null)', (await reminderService.handleReminderCommand('remind me tomorrow 10am to do X', 'random@example.com', now)) === null);
-  check('unrelated text never triggers a reminder command (cheap pre-filter)', (await reminderService.handleReminderCommand('October e kar kar birthday ache?', OWNER, now)) === null);
+  // parseReminderCommand short-circuits to a plain fallback BEFORE ever
+  // calling fetch when no key is configured at all - the mock above only
+  // ever gets a chance to answer once that guard is satisfied, so this
+  // suite must never depend on a real key being present either.
+  const origApiKeyForReminderCommand = process.env.ANTHROPIC_API_KEY;
+  if (!origApiKeyForReminderCommand) process.env.ANTHROPIC_API_KEY = 'test-key-not-real';
+  const origFetchForReminderCommand = installReminderCommandStub();
+  try {
+    const banglish = await nluCreate('kal sokal 11 tay Health Insurance vendor-ke follow up korte mone koriye dio, high priority');
+    check('Banglish create: confirms with a reply and creates a High-priority reminder', Boolean(banglish.result) && banglish.created && banglish.created.priority === 'high');
+    const english = await nluCreate('remind me tomorrow 3 pm to prepare the HR report for MD');
+    check('English create: confirms and creates a reminder with a time set', Boolean(english.result) && english.created && english.created.hasTime === true);
+    const hinglish = await nluCreate('har mahine 25 tarikh ko PF challan yaad dilana');
+    check('Hinglish create: confirms and creates a monthly-repeat-dated reminder', Boolean(hinglish.result) && english.created);
+    const unclear = await reminderService.handleReminderCommand('ektu pore amake mone koriye dio', OWNER, now); // no actual task named
+    check('a message with no real task asks ONE clarifying question rather than guessing', Boolean(unclear) && !/✓/.test(unclear.reply));
+    check('non-owner email never triggers a reminder command (returns null)', (await reminderService.handleReminderCommand('remind me tomorrow 10am to do X', 'random@example.com', now)) === null);
+    check('unrelated text never triggers a reminder command (cheap pre-filter)', (await reminderService.handleReminderCommand('October e kar kar birthday ache?', OWNER, now)) === null);
+  } finally {
+    global.fetch = origFetchForReminderCommand;
+    if (!origApiKeyForReminderCommand) delete process.env.ANTHROPIC_API_KEY;
+  }
 
   console.log('='.repeat(70));
   console.log('Task 3b (2026-11) LIVE BUG FIX: Reminders no longer auto-creates from open WhatsApp follow-ups/pending approvals/received documents/expiring memories (those duplicated Action Needed, e.g. "Yashaswi — data request approval" in both places) - only manual reminders and "Queued reply went stale"/"Missed while disconnected" (sourceType missed_while_disconnected) belong here now; any already-existing pending reminder of a discontinued type is hidden (marked completed) instead');
