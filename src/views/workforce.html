@@ -541,6 +541,28 @@
         </div>
       </div>
 
+      <!-- Field mapping review (2026-11), direct instruction - per Drive
+           template: SUBH proposes a source for every placeholder, the
+           owner reviews/changes and saves. Opened from the template's own
+           "Fields" button, or automatically by "Send test to me" when no
+           mapping is saved yet (pre-filled with the same proposal). -->
+      <div class="wf-ai-sheet-backdrop" id="hrFieldMappingSheetBackdrop" hidden></div>
+      <div class="wf-rem-sheet" id="hrFieldMappingSheet" hidden role="dialog" aria-label="Review field mapping">
+        <div class="wf-ai-sheet-handle"></div>
+        <div class="wf-ai-sheet-head">
+          <button type="button" class="wf-ai-sheet-close" id="hrFieldMappingSheetCloseBtn" aria-label="Close">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+          <span class="wf-ai-sheet-title" id="hrFieldMappingSheetTitle">Review fields</span>
+        </div>
+        <div class="wf-rem-sheet-body" id="hrFieldMappingList" style="max-height:50vh;overflow-y:auto"></div>
+        <div class="wf-auto-err hidden" id="hrFieldMappingSheetErr" style="padding:0 16px"></div>
+        <div class="wf-rem-sheet-foot">
+          <button type="button" class="wf-ai-action-btn outline" id="hrFieldMappingSheetCancelBtn">Cancel</button>
+          <button type="button" class="wf-ai-action-btn download" id="hrFieldMappingSheetSaveBtn"><span>Save</span></button>
+        </div>
+      </div>
+
       <!-- Save/Edit template sheet - same bottom-sheet pattern as the
            Reminders Add/Edit sheet. Opened either from "Save as template"
            on a model-written reply bubble (topic/whenToUse blank,

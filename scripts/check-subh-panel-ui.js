@@ -467,12 +467,15 @@ function check(label, ok, detail) {
     route.fulfill({
       status: 200, contentType: 'application/json', body: JSON.stringify({
         refFormat: '{Company_Code}/HR/{Letter_Code}/{FY}/{Serial}',
-        letterCodes: { confirmation: 'CONF', extension: 'EXT', experience: 'EXP', relieving: 'REL' },
+        letterCodes: { confirmation: 'CONF', extension: 'EXT', experience: 'EXP', relieving: 'REL', 'drive:faketpl1': 'BL' },
         placeholders: ['{Company_Code}', '{Letter_Code}', '{FY}', '{Serial}'],
-        letterTypeLabels: { confirmation: 'Confirmation', extension: 'Extension of Probation', experience: 'Experience', relieving: 'Relieving' },
+        letterTypeLabels: { confirmation: 'Confirmation', extension: 'Extension of Probation', experience: 'Experience', relieving: 'Relieving', 'drive:faketpl1': 'Bonus Letter' },
         fy: '2026-27',
-        letterTypes: ['confirmation', 'extension', 'experience', 'relieving'],
+        letterTypes: ['confirmation', 'extension', 'experience', 'relieving', 'drive:faketpl1'],
         counters: [{ letterType: 'confirmation', fy: '2026-27', nextNumber: 7 }],
+        // "Fields" button/status (2026-11) - starts unmapped so the Fields
+        // sheet + Save flow below has something real to exercise.
+        fieldsStatus: { 'drive:faketpl1': { mapped: 0, total: 2 } },
         registerLink: null
       })
     });
@@ -492,7 +495,7 @@ function check(label, ok, detail) {
   const chipCount = await page.locator('#hrLetterRefFormatChips [data-chip]').count();
   check('Letter settings: all 4 tap-to-insert placeholder chips are present', chipCount === 4, 'got: ' + chipCount);
   const codeRows = await page.locator('#hrLetterCodesList [data-letter-type]').count();
-  check('Letter settings: all 4 built-in letter codes render as rows', codeRows === 4, 'got: ' + codeRows);
+  check('Letter settings: all 4 built-in letter codes + the 1 fake Drive template render as rows', codeRows === 5, 'got: ' + codeRows);
 
   // TASK 2 (2026-11), direct instruction - letter-code cards show the
   // code as TEXT with an Edit button only; Edit reveals an inline field +
@@ -530,6 +533,60 @@ function check(label, ok, detail) {
     'new errors: ' + JSON.stringify(consoleErrors.slice(letterErrBefore).concat(pageErrors.slice(letterErrBefore))));
   await page.click('#hrLetterCounterSheetCloseBtn');
   await page.waitForTimeout(350);
+
+  // Field mapping review + "Send test to me" (2026-11), direct instruction -
+  // "Fields" opens the SAME review/proposal sheet as the Create Workflow
+  // page (reused code, not a second implementation), Save persists it,
+  // then "Send test to me" runs for real (mocked success here).
+  const driveCard = page.locator('#hrLetterCodesList [data-letter-type="drive:faketpl1"]');
+  const fieldsStatusText = await driveCard.locator('[data-role="letter-fields-status"]').textContent().catch(() => null);
+  check('Letter settings: the fake Drive template shows "Fields: 2 need your input" before mapping', (fieldsStatusText || '').includes('2 need your input'), 'got: ' + JSON.stringify(fieldsStatusText));
+  const fieldsErrBefore = consoleErrors.length + pageErrors.length;
+  await driveCard.locator('[data-action="open-field-mapping"]').click();
+  await page.waitForTimeout(300);
+  check('Letter settings, Fields: the review sheet opens', await page.locator('#hrFieldMappingSheet').isVisible());
+  const fieldRows = await page.locator('#hrFieldMappingList [data-placeholder]').count();
+  check('Letter settings, Fields: one row per real placeholder renders (reusing Create Workflow\'s own mapping UI)', fieldRows === 2, 'got: ' + fieldRows);
+  const proposedSource = await page.locator('#hrFieldMappingList [data-placeholder="{Employee_Name}"] [data-role="source"]').inputValue().catch(() => null);
+  check('Letter settings, Fields: the proposed hr_column mapping is pre-selected', proposedSource === 'hr_column', 'got: ' + JSON.stringify(proposedSource));
+  await page.route('**/api/workforce/hr-assistant/letter-templates/drive%3Afaketpl1/fields', (route) => {
+    const method = route.request().method();
+    if (method !== 'POST') { route.fallback(); return; }
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, mapping: {} }) });
+  });
+  // Re-mocked with the now-mapped status (2/2) - loadLetterSettingsPage()
+  // re-fetches this same route right after Save, same "most recently
+  // registered route wins" precedence already used elsewhere in this file.
+  await page.route('**/api/workforce/hr-assistant/letter-settings', (route) => {
+    route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify({
+        refFormat: '{Company_Code}/HR/{Letter_Code}/{FY}/{Serial}',
+        letterCodes: { confirmation: 'CONF', extension: 'EXT', experience: 'EXP', relieving: 'REL', 'drive:faketpl1': 'BL' },
+        placeholders: ['{Company_Code}', '{Letter_Code}', '{FY}', '{Serial}'],
+        letterTypeLabels: { confirmation: 'Confirmation', extension: 'Extension of Probation', experience: 'Experience', relieving: 'Relieving', 'drive:faketpl1': 'Bonus Letter' },
+        fy: '2026-27',
+        letterTypes: ['confirmation', 'extension', 'experience', 'relieving', 'drive:faketpl1'],
+        counters: [{ letterType: 'confirmation', fy: '2026-27', nextNumber: 7 }],
+        fieldsStatus: { 'drive:faketpl1': { mapped: 2, total: 2 } },
+        registerLink: null
+      })
+    });
+  });
+  await page.route('**/api/workforce/hr-assistant/letter-settings/send-test-letter', (route) => {
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, employeeName: 'Fake Employee', refNo: 'ARPL/HR/BL/2026-27/TEST', pdfUrl: 'https://drive.google.com/file/d/fake/view', mailedTo: 'owner@test.com', registerAppended: true }) });
+  });
+  await page.click('#hrFieldMappingSheetSaveBtn');
+  await page.waitForTimeout(1100); // runButtonAction's ~550ms success delay + the sheet's own 320ms close transition
+  check('Letter settings, Fields: Save closes the sheet', await page.locator('#hrFieldMappingSheet').isHidden());
+  const fieldsStatusAfterSave = await driveCard.locator('[data-role="letter-fields-status"]').textContent().catch(() => null);
+  check('Letter settings, Fields: the card refreshes to show the new mapped count after Save', (fieldsStatusAfterSave || '').includes('2/2 mapped'), 'got: ' + JSON.stringify(fieldsStatusAfterSave));
+  await driveCard.locator('[data-action="send-test-letter"]').click();
+  await page.waitForTimeout(900); // runButtonAction's own ~550ms success delay before the toast fires
+  const toastText = await page.locator('.wf-pro-toast').first().textContent().catch(() => null);
+  check('Letter settings: "Send test to me" runs after Save and shows a success toast naming the real Ref No.', (toastText || '').includes('ARPL/HR/BL/2026-27/TEST'), 'got: ' + JSON.stringify(toastText));
+  const fieldsErrAfter = consoleErrors.length + pageErrors.length;
+  check('Letter settings, Fields/Send test flow: no JS error was thrown', fieldsErrAfter === fieldsErrBefore,
+    'new errors: ' + JSON.stringify(consoleErrors.slice(fieldsErrBefore).concat(pageErrors.slice(fieldsErrBefore))));
 
   // TASK 4(a) (2026-11), direct instruction - Letter Register: with no
   // register sheet set yet (registerLink: null in the fixture above),

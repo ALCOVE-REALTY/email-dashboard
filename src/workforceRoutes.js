@@ -3173,7 +3173,23 @@ router.get('/hr-assistant/letter-settings', async (req, res) => {
       const current = await letterSettingsService.getCounterValue(letterType, fy);
       counters.push({ letterType, fy, nextNumber: current + 1 });
     }
-    res.json(Object.assign({}, settings, { fy, letterTypes, letterTypeLabels, letterCodes, counters, registerLink }));
+    // Field-mapping status (2026-11, direct instruction) - "Fields: N/M
+    // mapped" per Drive template, same live extractPlaceholders()/
+    // getTemplateMapping() pair the Fields review sheet itself uses, so
+    // this card can never show a count that disagrees with what Save
+    // would actually persist. Built-in types have no placeholders at all.
+    const fieldsStatus = {};
+    await Promise.all(templates.filter((t) => driveTemplatesService.isDriveTemplateKey(t.key)).map(async (t) => {
+      try {
+        const [placeholders, saved] = await Promise.all([
+          driveTemplateFieldsService.extractPlaceholders(t.driveFileId, t.mimeType),
+          driveTemplateFieldsService.getTemplateMapping(t.key)
+        ]);
+        const mapped = placeholders.filter((p) => saved[p] && saved[p].source && saved[p].source !== 'unknown').length;
+        fieldsStatus[t.key] = { mapped, total: placeholders.length };
+      } catch (err) { fieldsStatus[t.key] = { mapped: 0, total: 0, error: err.message }; }
+    }));
+    res.json(Object.assign({}, settings, { fy, letterTypes, letterTypeLabels, letterCodes, counters, registerLink, fieldsStatus }));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -3312,7 +3328,11 @@ router.post('/hr-assistant/letter-settings/send-test-letter', async (req, res) =
       driveTemplateFieldsService.getTemplateMapping(templateKey)
     ]);
     if (!Object.keys(mapping).length) {
-      return res.status(400).json({ error: 'No field mapping is saved for this template yet - review and save it in Letter settings first.' });
+      // code: 'no_mapping' (2026-11, direct instruction) - a reliable,
+      // machine-readable marker (not string-matching) so the frontend can
+      // open the SAME Fields review sheet automatically, pre-filled with
+      // SUBH's own proposal, instead of a dead-end error.
+      return res.status(400).json({ error: 'No field mapping is saved for this template yet - review and save it below, then this runs again automatically.', code: 'no_mapping' });
     }
     let chosen = null, companyDetails = null;
     for (const e of employees) {

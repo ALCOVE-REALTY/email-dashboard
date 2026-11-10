@@ -198,6 +198,15 @@
   const letterCounterSheetTitle = document.getElementById('hrLetterCounterSheetTitle');
   const letterCounterNextInput = document.getElementById('hrLetterCounterNextInput');
   const letterCounterSheetErr = document.getElementById('hrLetterCounterSheetErr');
+  // Field mapping review (2026-11, direct instruction).
+  const fieldMappingSheetBackdrop = document.getElementById('hrFieldMappingSheetBackdrop');
+  const fieldMappingSheet = document.getElementById('hrFieldMappingSheet');
+  const fieldMappingSheetCloseBtn = document.getElementById('hrFieldMappingSheetCloseBtn');
+  const fieldMappingSheetCancelBtn = document.getElementById('hrFieldMappingSheetCancelBtn');
+  const fieldMappingSheetSaveBtn = document.getElementById('hrFieldMappingSheetSaveBtn');
+  const fieldMappingSheetTitle = document.getElementById('hrFieldMappingSheetTitle');
+  const fieldMappingList = document.getElementById('hrFieldMappingList');
+  const fieldMappingSheetErr = document.getElementById('hrFieldMappingSheetErr');
   // AI usage (2026-11, direct instruction) - read-only spend summary.
   const aiUsagePage = document.getElementById('hrAiUsagePage');
   const aiUsageChips = document.getElementById('hrAiUsageChips');
@@ -3478,6 +3487,97 @@
   // letterSettingsService.assignRefNo) - this page only ever PEEKS at the
   // next number, never consumes one.
   let letterSettingsState = { letterTypeLabels: {}, fy: '' };
+
+  // Field mapping review (2026-11, direct instruction) - per Drive
+  // template: SUBH proposes a source for every placeholder (via
+  // GET /hr-assistant/letter-templates/:key/fields, which only ever
+  // auto-proposes for a placeholder with no SAVED choice yet - a saved
+  // owner choice is never overwritten), the owner reviews/edits, Save
+  // persists it (shared by Letter settings, workflows and tasks - the
+  // same mapping everywhere, since it's keyed by template, not by
+  // caller). "Send test to me" opens this SAME sheet automatically when
+  // no mapping is saved yet, and re-runs itself once Save succeeds.
+  let fieldMappingState = { templateKey: null, autoSendTestBtn: null };
+  async function runSendTestLetter(btn, templateKey) {
+    await runButtonAction(btn, () => postJsonOrThrow('/api/workforce/hr-assistant/letter-settings/send-test-letter', { templateKey }), (result) => {
+      showActionToast('Test letter sent to ' + result.mailedTo + ' (Ref No. ' + result.refNo + ')' + (result.registerAppended ? '' : ' - register append failed, see server log'));
+    }, {
+      resetAfterSuccess: true,
+      toastFn: (msg, err) => {
+        if (err && err.code === 'no_mapping') { openFieldMappingSheet(templateKey, { autoSendTestBtn: btn }); return; }
+        showActionToast(msg, null, 'error');
+      }
+    });
+  }
+  // Reuses wfMappingRowHtml/wfMappingSecondaryHtml/wfMappingData/
+  // WF_MAPPING_SOURCE_LABELS - the SAME row-rendering code the Create
+  // Workflow page's own field-mapping review already uses (defined
+  // further down this file), rather than a second, parallel
+  // implementation - keeps both surfaces behaviorally identical by
+  // construction, not by convention.
+  function readFieldMappingFromDom(container) {
+    const mapping = {};
+    container.querySelectorAll('[data-placeholder]').forEach((card) => {
+      const placeholder = card.dataset.placeholder;
+      const source = card.querySelector('[data-role="source"]').value;
+      const entry = { source };
+      if (source === 'hr_column') entry.column = card.querySelector('[data-role="column"]').value;
+      else if (source === 'derived') entry.rule = card.querySelector('[data-role="rule"]').value;
+      else if (source === 'company_field') entry.field = card.querySelector('[data-role="field"]').value;
+      else if (source === 'fixed') entry.value = card.querySelector('[data-role="value"]').value;
+      mapping[placeholder] = entry;
+    });
+    return mapping;
+  }
+  function closeFieldMappingSheet() {
+    if (!fieldMappingSheetBackdrop || !fieldMappingSheet) return;
+    fieldMappingSheetBackdrop.classList.remove('open');
+    fieldMappingSheet.classList.remove('open');
+    setTimeout(() => { fieldMappingSheetBackdrop.hidden = true; fieldMappingSheet.hidden = true; }, 320);
+  }
+  async function openFieldMappingSheet(templateKey, opts) {
+    opts = opts || {};
+    fieldMappingState = { templateKey, autoSendTestBtn: opts.autoSendTestBtn || null };
+    if (fieldMappingSheetTitle) fieldMappingSheetTitle.textContent = 'Review fields';
+    if (fieldMappingSheetErr) { fieldMappingSheetErr.textContent = ''; fieldMappingSheetErr.classList.add('hidden'); }
+    if (!fieldMappingSheetBackdrop || !fieldMappingSheet || !fieldMappingList) return;
+    fieldMappingList.innerHTML = '<div class="wf-skeleton-list"><div class="wf-skeleton-row"></div><div class="wf-skeleton-row"></div></div>';
+    fieldMappingSheetBackdrop.hidden = false;
+    fieldMappingSheet.hidden = false;
+    void fieldMappingSheet.offsetHeight;
+    fieldMappingSheetBackdrop.classList.add('open');
+    fieldMappingSheet.classList.add('open');
+    try {
+      const data = await fetch('/api/workforce/hr-assistant/letter-templates/' + encodeURIComponent(templateKey) + '/fields').then((r) => r.json());
+      if (data.error) throw new Error(data.error);
+      wfMappingData = { hrColumns: data.hrColumns || [], derivedRules: data.derivedRules || {}, companyFields: data.companyFields || {} };
+      fieldMappingList.innerHTML = (data.placeholders || []).map((p) => wfMappingRowHtml(p, data.mapping[p] || { source: 'unknown' })).join('');
+      fieldMappingList.querySelectorAll('[data-role="source"]').forEach((sel) => {
+        sel.addEventListener('change', () => wfRerenderMappingSecondary(sel.closest('[data-placeholder]')));
+      });
+    } catch (err) {
+      fieldMappingList.innerHTML = '<div class="wf-rem-empty">Could not load fields: ' + escapeHtml(err.message) + '</div>';
+    }
+  }
+  if (fieldMappingSheetCloseBtn) fieldMappingSheetCloseBtn.addEventListener('click', closeFieldMappingSheet);
+  if (fieldMappingSheetCancelBtn) fieldMappingSheetCancelBtn.addEventListener('click', closeFieldMappingSheet);
+  if (fieldMappingSheetBackdrop) fieldMappingSheetBackdrop.addEventListener('click', closeFieldMappingSheet);
+  if (fieldMappingSheetSaveBtn) {
+    fieldMappingSheetSaveBtn.addEventListener('click', async () => {
+      const mapping = readFieldMappingFromDom(fieldMappingList);
+      const templateKey = fieldMappingState.templateKey;
+      const autoSendTestBtn = fieldMappingState.autoSendTestBtn;
+      await runButtonAction(fieldMappingSheetSaveBtn, () => postJsonOrThrow('/api/workforce/hr-assistant/letter-templates/' + encodeURIComponent(templateKey) + '/fields', { mapping }), async () => {
+        closeFieldMappingSheet();
+        pageDataCache.letterSettings = null;
+        loadLetterSettingsPage();
+        // "after Save, continue the test" (direct instruction) - only
+        // when this sheet was opened automatically by "Send test to me"
+        // hitting the no-mapping dead end, never for a plain "Fields" open.
+        if (autoSendTestBtn) await runSendTestLetter(autoSendTestBtn, templateKey);
+      }, { resetAfterSuccess: true, toastFn: (msg) => { if (fieldMappingSheetErr) { fieldMappingSheetErr.textContent = msg; fieldMappingSheetErr.classList.remove('hidden'); } } });
+    });
+  }
   function letterRefFormatSamplePreview(format) {
     const types = Object.keys(letterSettingsState.letterTypeLabels || {});
     const firstType = types[0] || 'confirmation';
@@ -3499,23 +3599,37 @@
   // always-visible Save button. Edit reveals an inline field + Save/
   // Cancel (code unique/uppercase/2-6 letters, validated authoritatively
   // server-side in letterSettingsService.saveLetterCode).
-  function letterCodeRowHtml(letterType, label, code) {
+  function letterCodeRowHtml(letterType, label, code, fieldsStatus) {
     // "Send test letter to me" (2026-11, direct instruction) - Drive
     // templates only (built-in letter types already have a proven PDF
     // path and don't need this). Verifies the real copy/fill/export/
     // save/register-append chain end to end on production.
     const isDrive = typeof letterType === 'string' && letterType.indexOf('drive:') === 0;
     const sendTestBtn = isDrive ? '<button type="button" class="plain" data-action="send-test-letter">Send test to me</button>' : '';
+    // Field mapping (2026-11, direct instruction) - "Fields" opens the
+    // review/proposal sheet; the hint line shows live mapped/total counts
+    // from the server's own fieldsStatus (same source the sheet itself
+    // uses, so this can never disagree with what Save would persist).
+    let fieldsHint = '';
+    let fieldsBtn = '';
+    if (isDrive) {
+      fieldsBtn = '<button type="button" class="plain" data-action="open-field-mapping">Fields</button>';
+      const fs = fieldsStatus || { mapped: 0, total: 0 };
+      const fieldsText = fs.total === 0 ? 'no placeholders found' :
+        (fs.mapped === fs.total ? fs.total + '/' + fs.total + ' mapped' : (fs.total - fs.mapped) + ' need your input');
+      fieldsHint = '<div class="wf-auto-hint" data-role="letter-fields-status">Fields: ' + escapeHtml(fieldsText) + '</div>';
+    }
     return '<div class="wf-auto-task-card" data-letter-type="' + escapeHtml(letterType) + '">' +
       '<div class="wf-auto-task-head"><div style="flex:1;min-width:0">' +
       '<div class="wf-auto-task-subject">' + escapeHtml(label) + '</div>' +
       '<div class="wf-auto-hint" data-role="letter-code-display">Code: ' + escapeHtml(code || '—') + '</div>' +
+      fieldsHint +
       '<div data-role="letter-code-edit-wrap" style="margin-top:6px" hidden>' +
       '<label class="wf-rem-field"><input type="text" data-role="letter-code-input" value="' + escapeHtml(code || '') + '" maxlength="6" style="text-transform:uppercase" /></label>' +
       '<div class="wf-auto-err hidden" data-role="letter-code-err" style="padding:0"></div>' +
       '</div>' +
       '</div></div>' +
-      '<div class="wf-auto-actions" data-role="letter-code-actions-view"><button type="button" class="plain" data-action="edit-letter-code">Edit</button>' + sendTestBtn + '</div>' +
+      '<div class="wf-auto-actions" data-role="letter-code-actions-view"><button type="button" class="plain" data-action="edit-letter-code">Edit</button>' + fieldsBtn + sendTestBtn + '</div>' +
       '<div class="wf-auto-actions" data-role="letter-code-actions-edit" style="display:none">' +
       '<button type="button" class="plain" data-action="save-letter-code">Save</button>' +
       '<button type="button" class="plain" data-action="cancel-letter-code">Cancel</button>' +
@@ -3556,7 +3670,7 @@
       });
     }
     if (letterCodesList) {
-      letterCodesList.innerHTML = (data.letterTypes || []).map((t) => letterCodeRowHtml(t, (data.letterTypeLabels || {})[t] || t, (data.letterCodes || {})[t])).join('');
+      letterCodesList.innerHTML = (data.letterTypes || []).map((t) => letterCodeRowHtml(t, (data.letterTypeLabels || {})[t] || t, (data.letterCodes || {})[t], (data.fieldsStatus || {})[t])).join('');
       // .wf-auto-actions has its own explicit `display: flex` rule, which
       // (author stylesheet origin beats user-agent origin in the cascade)
       // overrides the native [hidden] attribute's default display:none -
@@ -3607,12 +3721,15 @@
         });
       });
       letterCodesList.querySelectorAll('[data-action="send-test-letter"]').forEach((btn) => {
-        btn.addEventListener('click', async () => {
+        btn.addEventListener('click', () => {
           const card = btn.closest('[data-letter-type]');
-          const templateKey = card.dataset.letterType;
-          await runButtonAction(btn, () => postJsonOrThrow('/api/workforce/hr-assistant/letter-settings/send-test-letter', { templateKey }), (result) => {
-            showActionToast('Test letter sent to ' + result.mailedTo + ' (Ref No. ' + result.refNo + ')' + (result.registerAppended ? '' : ' - register append failed, see server log'));
-          }, { resetAfterSuccess: true });
+          runSendTestLetter(btn, card.dataset.letterType);
+        });
+      });
+      letterCodesList.querySelectorAll('[data-action="open-field-mapping"]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const card = btn.closest('[data-letter-type]');
+          openFieldMappingSheet(card.dataset.letterType);
         });
       });
     }
@@ -4190,7 +4307,14 @@
   // try/catch) instead of silently returning {ok:false}.
   async function postJsonOrThrow(url, body) {
     const r = await postJson(url, body);
-    if (!r.ok) throw new Error((r.data && r.data.error) || 'Request failed.');
+    if (!r.ok) {
+      const err = new Error((r.data && r.data.error) || 'Request failed.');
+      // A machine-readable error code (2026-11), when the server sends one
+      // (e.g. "no_mapping") - purely additive, every existing catch site
+      // here only ever reads err.message, never err.code.
+      if (r.data && r.data.code) err.code = r.data.code;
+      throw err;
+    }
     return r.data;
   }
 
@@ -4234,7 +4358,10 @@
       btn.classList.remove('is-loading');
       btn.classList.add('is-error');
       btn.disabled = false;
-      toast((err && err.message) || 'Something went wrong - tap Retry.');
+      // Second arg (the raw error) is new (2026-11) and purely additive -
+      // every existing toastFn only takes (msg), so passing a 2nd param
+      // they never declared changes nothing for them.
+      toast((err && err.message) || 'Something went wrong - tap Retry.', err);
     }
   }
   // Fades + collapses a card out of the DOM in place - never touches any
