@@ -53,6 +53,19 @@ WhatsApp-specific detail under this same umbrella):
      first if a run would exceed $1.
    - Every final report of a batch of work ends with a line: "API spend for this
      batch: $X (tests)".
+8. **Safety rules alongside the cheaper tests (2026-11, direct instruction)** - the
+   cost rules above never trade away correctness verification:
+   - If the impact check (rule 1/2) finds the change touches understanding, routing,
+     classification, or templates/language, running the affected real-model
+     scenario(s) once is MANDATORY before reporting done - not optional, and not
+     something a cost concern can skip. The final report must list exactly which
+     scenario(s) ran and their results (not just "ran the scenario suite").
+   - Once a week, or whenever Subhodeep asks "weekly check", run the FULL real-model
+     scenario suite once (no filter) and report results + actual cost (expected
+     roughly $2-3) - this is the one standing exception to rule 7's "never automatic".
+   - Every final report includes a short "Live smoke test" list: 4-6 exact WhatsApp
+     messages Subhodeep can send from the test phone after deploying, each with the
+     expected reply, covering the areas the change actually touched.
 
 A committed git **pre-push hook** (`githooks/pre-push`, installed into
 `.git/hooks/pre-push` by `scripts/install-git-hooks.js` via npm's own `prepare`
@@ -62,7 +75,7 @@ prepare`) runs every fully deterministic suite plus the headless UI check
 BLOCKS the push if anything fails, printing which suite. The real-model suites
 (`check-subh-language.js`, `check-whatsapp-scenarios.js`, `check-automation-nlu.js`,
 `check-workflow-nlu.js`) are deliberately NOT in the hook - they cost real Claude API
-calls per run and stay in the manual report-gate (rule 6 above) instead, so a push
+calls per run and stay in the manual report-gate (rules 7/8 above) instead, so a push
 never silently costs money. Bypass only when genuinely safe to:
 `git push --no-verify`.
 
