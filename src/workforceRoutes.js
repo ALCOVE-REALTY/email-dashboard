@@ -1678,16 +1678,22 @@ router.get('/hr-assistant/diag/anthropic-key', async (req, res) => {
   const result = { configured: true, length: key.length, prefix: key.slice(0, 7), fingerprint };
   // ?test=1 (2026-11, direct instruction) - the fingerprint matching
   // doesn't prove the key actually WORKS against Anthropic right now, so
-  // this makes ONE tiny real call (cheapest model, max_tokens:1) and
-  // reports only the HTTP status and Anthropic's own error "type" field
-  // (e.g. "authentication_error") - never the key, never the response
-  // body, which could echo request details back.
+  // this makes ONE tiny real call (max_tokens:1) and reports only the
+  // HTTP status and Anthropic's own error "type" field (e.g.
+  // "authentication_error") - never the key, never the response body,
+  // which could echo request details back. Uses CLAUDE_MODEL_FAST (the
+  // SAME env var every other fast-tier call site in this app already
+  // reads, see claudeProvider.js) rather than its own hardcoded model
+  // string - direct instruction (2026-11): a hardcoded model id here
+  // caused its own separate 404 once CLAUDE_MODEL_MAIN's value was fixed,
+  // since that hardcoded one wasn't available to the new key at all.
   if (req.query.test === '1') {
+    if (!process.env.CLAUDE_MODEL_FAST) return res.json(Object.assign(result, { testStatus: null, testErrorType: 'CLAUDE_MODEL_FAST is not set' }));
     try {
       const resp = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-        body: JSON.stringify({ model: 'claude-3-5-haiku-20241022', max_tokens: 1, messages: [{ role: 'user', content: 'hi' }] })
+        body: JSON.stringify({ model: process.env.CLAUDE_MODEL_FAST, max_tokens: 1, messages: [{ role: 'user', content: 'hi' }] })
       });
       result.testStatus = resp.status;
       if (!resp.ok) {
