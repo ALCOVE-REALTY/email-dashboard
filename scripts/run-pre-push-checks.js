@@ -12,11 +12,24 @@
 // scripts/*.js: a new check-*.js suite that is genuinely deterministic
 // (zero real Claude/Drive/Sheets calls) belongs here; a real-model one
 // never does.
+//
+// PARALLEL (2026-11, direct instruction - "make the hook faster") - every
+// suite below starts its OWN isolated in-memory fake Upstash store
+// (scripts/testBootstrap.js, a fresh random-port server per process) and
+// the headless UI check binds a random port too (check-subh-panel-ui.js) -
+// confirmed by reading both before parallelizing, not assumed - so all of
+// them are safe to run CONCURRENTLY as separate child processes, never
+// sharing state. Previously sequential (~370s observed); check-whatsapp-
+// engine.js alone is ~260-280s and dominates the critical path - direct
+// instruction, confirmed: keep its FULL 930 checks in the hook (never a
+// trimmed subset, to avoid any silent coverage gap in exactly the file
+// that has caught the most live bugs historically), accepting ~4.5 min
+// rather than a true 3-minute target that would require cutting it down.
 require('dotenv').config({ path: '.env.local' });
 require('dotenv').config();
 
 const path = require('path');
-const { spawnSync } = require('child_process');
+const { spawn } = require('child_process');
 
 const DETERMINISTIC_SUITES = [
   'check-company-details.js',
@@ -31,7 +44,7 @@ const DETERMINISTIC_SUITES = [
   'check-whatsapp-engine.js'
 ];
 // Headless Playwright UI check (also deterministic/mocked - no real
-// Claude/Drive calls) - run last since it's the slowest.
+// Claude/Drive calls).
 const UI_CHECK = 'check-subh-panel-ui.js';
 
 // A non-zero exit does not always mean the suite's own checks failed - a
@@ -48,31 +61,59 @@ function isHarmlessWindowsTeardownCrash(output, status) {
   const summary = output.match(/(\d+)\/(\d+) passed/);
   return Boolean(summary && summary[1] === summary[2]);
 }
+
+// Runs one suite as its own child process, resolving once it exits -
+// never rejects (a spawn error is reported the same way a failing suite
+// would be, so one bad suite can never crash the whole parallel batch).
 function runOne(scriptName) {
-  const scriptPath = path.join(__dirname, scriptName);
-  const result = spawnSync(process.execPath, [scriptPath], { encoding: 'utf8', env: process.env });
-  const output = (result.stdout || '') + (result.stderr || '');
-  const passed = result.status === 0 || isHarmlessWindowsTeardownCrash(output, result.status);
-  return { scriptName, passed, output, status: result.status };
+  return new Promise((resolve) => {
+    const scriptPath = path.join(__dirname, scriptName);
+    const child = spawn(process.execPath, [scriptPath], { env: process.env });
+    let output = '';
+    child.stdout.on('data', (d) => { output += d; });
+    child.stderr.on('data', (d) => { output += d; });
+    child.on('error', (err) => {
+      resolve({ scriptName, passed: false, output: output + '\n' + err.message, status: null });
+    });
+    child.on('close', (status) => {
+      const passed = status === 0 || isHarmlessWindowsTeardownCrash(output, status);
+      resolve({ scriptName, passed, output, status });
+    });
+  });
 }
 
-function main() {
-  const results = [];
-  for (const suite of DETERMINISTIC_SUITES.concat([UI_CHECK])) {
-    process.stdout.write('Running ' + suite + '...\n');
-    const r = runOne(suite);
-    results.push(r);
-    if (r.passed) process.stdout.write('  OK\n');
-    else process.stdout.write('  FAILED (exit ' + r.status + ')\n');
-  }
+async function main() {
+  const suites = DETERMINISTIC_SUITES.concat([UI_CHECK]);
+  const pending = new Set(suites);
+  const start = Date.now();
+  process.stdout.write('Running ' + suites.length + ' suites in parallel: ' + suites.join(', ') + '\n');
+
+  // Progress heartbeat every 30s (direct instruction) - so a push never
+  // looks hung during the ~4-5 min this takes; cleared once every suite
+  // has resolved.
+  const heartbeat = setInterval(() => {
+    const elapsed = Math.round((Date.now() - start) / 1000);
+    process.stdout.write('  ... still running (' + elapsed + 's): ' + Array.from(pending).join(', ') + '\n');
+  }, 30000);
+
+  const results = await Promise.all(suites.map((suite) =>
+    runOne(suite).then((r) => {
+      pending.delete(suite);
+      process.stdout.write((r.passed ? '  OK   ' : '  FAIL ') + suite + '\n');
+      return r;
+    })
+  ));
+  clearInterval(heartbeat);
+
   const failed = results.filter((r) => !r.passed);
   console.log('='.repeat(70));
+  const elapsedTotal = Math.round((Date.now() - start) / 1000);
   if (!failed.length) {
-    console.log('ALL ' + results.length + ' deterministic suites + headless UI check passed.');
+    console.log('ALL ' + results.length + ' deterministic suites + headless UI check passed (' + elapsedTotal + 's).');
     console.log('='.repeat(70));
     process.exit(0);
   }
-  console.log(failed.length + ' of ' + results.length + ' suite(s) FAILED:');
+  console.log(failed.length + ' of ' + results.length + ' suite(s) FAILED (' + elapsedTotal + 's):');
   failed.forEach((r) => console.log(' - ' + r.scriptName));
   console.log('='.repeat(70));
   failed.forEach((r) => {

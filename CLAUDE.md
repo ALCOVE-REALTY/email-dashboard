@@ -2234,3 +2234,45 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
   - No test changes needed (no suite exercises `getAuthUrl`/
     `loadClientCredentials`). Full gate re-run: all 11 deterministic suites
     + headless UI check pass clean.
+
+- Task 41 (2026-11), direct instruction - `git push` blocked by the pre-push
+  hook; investigated and made the hook faster.
+  - Root cause of the failures (NOT a code bug, NOT date-dependent): the
+    live `ANTHROPIC_API_KEY` in `.env.local` was being rejected by Anthropic
+    with `401 invalid x-api-key` (rotated/expired outside this session).
+    Every test making a real Claude call failed with that exact error and
+    nothing else - `check-reminders.js`'s "Chat-command NLU parsing"
+    section (3 tests - it genuinely calls Claude despite living in the
+    "deterministic" suite list) and `check-whatsapp-engine.js` (155 tests -
+    this file also has several real-model fallback paths, e.g.
+    `classifyManagerConfirmationReply`'s model fallback, the stuck-recovery
+    path's `decideAutoReply`). Confirmed by reading every one of the 158
+    failure messages - all 158, no exceptions, were the identical 401.
+    Fixed by Subhodeep updating the key (outside this session - Claude
+    cannot read/set it, `.env.local` holds credentials).
+  - Hook speed (direct instruction: parallel + a quick subset + a 30s
+    progress line, target under 3 min): measured every suite individually
+    first rather than guessing where the ~370s sequential time went -
+    `check-whatsapp-engine.js` alone is ~260-280s (930 checks, by far the
+    slowest), the headless UI check ~36s, the other 9 suites ~73s combined.
+    Confirmed (by reading `scripts/testBootstrap.js` and
+    `check-subh-panel-ui.js`) that EVERY suite starts its own isolated,
+    random-port, in-memory fake Upstash store and the UI check binds a
+    random port too - so all suites are safe to run fully in parallel, no
+    shared state. Asked Subhodeep how to handle `check-whatsapp-engine.js`
+    specifically, since even with everything else parallelized it alone
+    exceeds the 3-minute target and a "quick subset" would mean picking
+    which of its 468 scenarios to skip without having verified none depend
+    on another's leftover state - he chose keeping the FULL suite,
+    parallelized only, accepting ~4.5 min over a true 3-minute target
+    with any coverage risk in the file that has caught the most live bugs.
+  - `scripts/run-pre-push-checks.js` rewritten: `spawn` (concurrent) instead
+    of `spawnSync` (sequential) for all 11 suites, a 30s heartbeat line
+    listing which suites are still pending, same failure-reporting/
+    Windows-teardown-crash-tolerance logic as before, unchanged. No change
+    needed to `githooks/pre-push` itself (calls the script generically).
+    Measured: 283s real wall-clock (down from ~370-400s sequential, the
+    expected ~25-30% improvement since the critical path is now just
+    `check-whatsapp-engine.js`'s own runtime) - same 158 pre-existing
+    API-key failures, zero NEW ones, confirming parallelizing introduced no
+    regressions.
