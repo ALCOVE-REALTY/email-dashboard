@@ -2640,3 +2640,60 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
   Full 12-suite deterministic gate + headless UI: clean. API spend: ~$0.19
   (21 real calls across the 4 new locked scenarios, 3x each) - the
   deterministic suite itself made zero real calls.
+
+- PART 2(f) (2026-11), direct instruction, Gourab Chakraborty incident -
+  context/acks/language. Three fixes, all in
+  `src/aiAssistant/whatsappAssistant.js`.
+  1. A bare acknowledgement ("Ha...", "yes", "ok", "thik ache") that
+  merely answers the previous message was reaching the real classifier
+  and getting a "could you elaborate?" clarify line, since nothing
+  deterministically recognized it as "nothing to resolve" the way
+  isClosingMessage already does for actual closing words. Fixed by
+  reusing the EXISTING `isBareAckOrHonorificOnly` (already used
+  elsewhere for the HR-note flow's own "who said this" continuation),
+  placed at the EXACT same point `isClosingMessage` already sits (after
+  every pending-question/flow check has had first refusal) - never
+  earlier, since several of those checks (manager-confirmation-reply,
+  HR-note flow continuation, disambiguation) have their OWN specific
+  handling for a bare "Haa"/"Yss sir" that must run first; two placement
+  attempts before this one broke several real-model-dependent test
+  chains that were previously passing only via an implicit "throws and
+  gets marked skip" side effect under `SKIP_REAL_MODEL=1` - converted
+  those specific tests to `checkAsyncRealModel` to honestly reflect that
+  dependency instead of relying on it by accident.
+  2. "You're most welcome!" fired on a bare "ok" - `CLOSING_MESSAGE_RE`
+  bundled real thanks words and plain closing/ack words into one
+  category, both mapping to the same welcome reply. Fixed as a side
+  effect of (1): `isBareAckOrHonorificOnly` is checked first and
+  intercepts "ok"/"thik ache" before ever reaching `isClosingMessage`,
+  so only an ACTUAL thank-you (never matched by the bare-ack regex)
+  still gets the welcome reply.
+  3. Replies ignored the OWNER's own manually-typed messages when
+  deciding language - only the sender's own messages were ever read as
+  signal. Confirmed the owner's manual sends were never captured
+  anywhere at all (every `appendConvoHistory(..., 'out', ...)` call site
+  is SUBH's own automated reply). Per direct instruction, with explicit
+  limits: reused the EXISTING manual-reply detection
+  (`sendOrReportAutoReply`'s own flush-time `hasManualReplyAfter` check,
+  which already calls `whatsapp.listMessages` for that chat) rather than
+  adding new polling-loop logic - `captureOwnerManualMessagesFromGateway`
+  piggybacks on that SAME already-happening gateway call to also extract
+  and store (`wa-owner-manual:<phone>`, capped at the last 5 texts, 7-
+  day TTL) any outgoing message that does NOT match SUBH's own tracked
+  send history - by construction, SUBH's own replies can never count.
+  `resolveStickyLangWithOwnerFallback` (closing-message replies) and
+  `mediaFallbackLang` (media with no caption) consult this store ONLY
+  when the sender's own recent messages give no clear signal - the
+  sender's own clear language always wins, checked first.
+  Locked scenarios (`scripts/check-whatsapp-scenarios.js`, real model,
+  3/3 each, $0 - none needed a real call): question in chat -> "Ha..."
+  -> no reply; bare "ok" -> no reply; an actual "thank you" -> welcome
+  reply in the chat's own language; a returned .xlsx with no caption in
+  a Banglish chat -> Banglish noting reply (the exact 16:56 incident).
+  Also deterministically locked in `check-whatsapp-engine.js` (827
+  checks in that suite): the capture/exclude-SUBH's-own round-trip, the
+  5-message cap, the owner-fallback-wins-only-when-sender-has-no-signal
+  tests (both directions), and the sender-always-wins regression.
+  Full 12-suite deterministic gate + headless UI: clean. API spend: $0
+  for the new locked scenarios (none needed a real call); the owner-
+  language feature's own tests are fully deterministic/mocked.

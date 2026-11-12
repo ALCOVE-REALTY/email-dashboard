@@ -1778,6 +1778,62 @@ scenario('PART 2 (new), LOCKED SCENARIO: raising an already-CONFIRMED matter aga
   }
 });
 
+// --- PART 2(f) (2026-11), direct instruction - Gourab Chakraborty
+// incident: a bare acknowledgement is neither an unclear request nor a
+// real thank-you, and replies must follow the conversation's language
+// including the owner's own manually-typed messages. All 4 locked
+// scenarios the user explicitly required, named "PART 2(f) (new),
+// LOCKED SCENARIO: ..." so SCENARIO_FILTER="PART 2(f) (new)" selects
+// just these. ---
+scenario('PART 2(f) (new), LOCKED SCENARIO: a question is open in the chat (the owner asked something), the sender replies "Ha..." - a bare acknowledgement, not an unclear new request - gets NO reply at all, never the "could you elaborate?" clarify line', async () => {
+  const phone = '910000001450';
+  try {
+    const history = [{ direction: 'out', text: '1st nov. Sunday chilo dekhe niyecho to?', ts: Date.now() - 60000 }];
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenAckReal1', firstName: 'ScenAckReal1', text: 'Ha...', isGroup: false, history });
+    if (d.replyText !== null) return { pass: false, detail: 'live bug reproduced: got a reply for a bare acknowledgement: ' + JSON.stringify(d) };
+    return { pass: true, detail: 'correctly produced no reply' };
+  } finally {
+    await cleanupHrFlowArtifacts(phone);
+  }
+});
+scenario('PART 2(f) (new), LOCKED SCENARIO: a bare "ok" gets NO reply - it is a closing acknowledgement, never a thank-you worth a "You\'re most welcome" reply', async () => {
+  const phone = '910000001451';
+  try {
+    const history = [{ direction: 'out', text: 'Ami apnar bishoy-ta note kore nilam ar Subhodeep-ke janiye dicchi.', ts: Date.now() - 60000 }];
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenAckReal2', firstName: 'ScenAckReal2', text: 'ok', isGroup: false, history });
+    if (d.replyText !== null) return { pass: false, detail: 'live bug reproduced: got a reply for a bare "ok": ' + JSON.stringify(d) };
+    return { pass: true, detail: 'correctly produced no reply' };
+  } finally {
+    await cleanupHrFlowArtifacts(phone);
+  }
+});
+scenario('PART 2(f) (new), LOCKED SCENARIO: an ACTUAL "thank you" gets the welcome reply, in the chat\'s own established language - never English when the conversation is Banglish', async () => {
+  const phone = '910000001452';
+  try {
+    const history = [{ direction: 'in', text: 'Ajke ami office ashte parbo na, sorir ta thik nei', ts: Date.now() - 60000 }];
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenThanksReal', firstName: 'ScenThanksReal', text: 'Thank you', isGroup: false, history });
+    if (!d.replyText || d.lang !== 'banglish') return { pass: false, detail: 'expected a Banglish welcome reply, got: ' + JSON.stringify(d) };
+    return { pass: true, detail: 'got the Banglish welcome reply: ' + d.replyText };
+  } finally {
+    await cleanupHrFlowArtifacts(phone);
+  }
+});
+scenario('PART 2(f) (new), LOCKED SCENARIO: a returned .xlsx with NO caption, in an established Banglish chat, gets the Banglish noting/ack reply - never English (the live incident, the 16:56 file-ack)', async () => {
+  const phone = '910000001453';
+  try {
+    await whatsappAssistant.clearNotingBurstState(phone).catch(() => {});
+    await whatsappAssistant.appendConvoHistory(phone, 'in', 'Ajke ami office ashte parbo na, sorir ta thik nei');
+    const beforeIds = new Set((await whatsappAssistant.listPendingAutoSends()).map((e) => e.id));
+    await whatsappAssistant.handleIncomingMedia(phone, 'ScenMediaReal', { type: 'document', content: { filename: 'Attendance.xlsx' } });
+    const after = await whatsappAssistant.listPendingAutoSends();
+    const scheduled = after.find((e) => !beforeIds.has(e.id) && e.chatId === phone);
+    if (!scheduled || scheduled.lang !== 'banglish') return { pass: false, detail: 'expected a Banglish media-ack reply, got: ' + JSON.stringify(scheduled) };
+    return { pass: true, detail: 'got the Banglish media-ack reply: ' + JSON.stringify(scheduled) };
+  } finally {
+    await whatsappAssistant.clearNotingBurstState(phone).catch(() => {});
+  }
+});
+
 const APPROX_USD_PER_MTOK_INPUT = 3;
 const APPROX_USD_PER_MTOK_OUTPUT = 15;
 

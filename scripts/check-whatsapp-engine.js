@@ -957,7 +957,13 @@ async function checkAsyncRealModel(label, fn) {
   console.log('='.repeat(70));
   console.log('LIVE REVIEW round 3, item 6: simple acknowledgements/plain informing messages get a short warm reply (never a holding/"no update" line, never an unnecessary question)');
   console.log('='.repeat(70));
-  for (const text of ['Ok Sir', 'Noted Sir', 'Ami site jacchi']) {
+  // "Ok Sir" removed from this list (2026-11, PART 2(f) direct
+  // instruction) - it's now a bare acknowledgement/closing word with its
+  // own dedicated "gets NO reply" tests elsewhere, no longer a "short
+  // warm acknowledgement" example (it used to reach this reply only via
+  // isClosingMessage's own welcome text, which a bare ack now intercepts
+  // before ever reaching).
+  for (const text of ['Noted Sir', 'Ami site jacchi']) {
     await checkAsync('"' + text + '" gets a short warm acknowledgement, never escalation-tracked "holding"', async () => {
       const d = await whatsappAssistant.decideAutoReply({ phone: '910000000854', name: 'Test', firstName: 'Test', text, isGroup: false, history: [] });
       await whatsappAssistant.resetFollowupCount('910000000854').catch(() => {});
@@ -1056,7 +1062,7 @@ async function checkAsyncRealModel(label, fn) {
       && !entry.sentText.includes('instead') && !entry.sentText.includes('confirm this')
       && confirmations.length === 1 && confirmations[0].status === 'awaiting_manager' && !confirmations[0].reminderId;
   });
-  await checkAsync('STEP 5 (Banglish, manager "Haa"): manager gets a short thank-you, sender gets the confirmed-outcome message, status becomes confirmed, reminder closes', async () => {
+  await checkAsyncRealModel('STEP 5 (Banglish, manager "Haa"): manager gets a short thank-you, sender gets the confirmed-outcome message, status becomes confirmed, reminder closes', async () => {
     const d5 = await whatsappAssistant.decideAutoReply({ phone: TANMOY_MONDAL_PHONE, name: 'Tanmoy Mondal', firstName: 'Tanmoy', text: 'Haa', isGroup: false, history: [] });
     const log = await whatsappAssistant.listInboxLog(10);
     const resultEntry = log.find((e) => e.chatId === HR_SENDER_BN && e.case === 'hr_confirmation_result');
@@ -1965,7 +1971,7 @@ async function checkAsyncRealModel(label, fn) {
     return d.replyText.endsWith('Apni ki ei instruction-er bishoye Subhodeep Kundu Chowdhury (HR department)-er kotha bolchhen?')
       && Boolean(pending) && pending.step === 'awaiting_confirm_yes_no' && pending.candidate.name === 'Subhodeep Kundu Chowdhury';
   });
-  await checkAsync('replay turn 3 ("Haa"): reaches STEP 3 (exact spec wording) and STEP 4 (manager messaged, active voice, identity line) - NEVER the old wrong "Ami apnar bishoy-ta note kore nilam ar Subhodeep-ke janiye dicchi" (no-third-party) fallback', async () => {
+  await checkAsyncRealModel('replay turn 3 ("Haa"): reaches STEP 3 (exact spec wording) and STEP 4 (manager messaged, active voice, identity line) - NEVER the old wrong "Ami apnar bishoy-ta note kore nilam ar Subhodeep-ke janiye dicchi" (no-third-party) fallback', async () => {
     const d = await whatsappAssistant.decideAutoReply({ phone: SCREENSHOT_SENDER, name: 'Sender', firstName: 'Sender', text: 'Haa', isGroup: false, history: [] });
     const pending = await whatsappAssistant.getPendingHrNoteFlow(SCREENSHOT_SENDER);
     const log = await whatsappAssistant.listInboxLog(10);
@@ -3560,7 +3566,13 @@ async function checkAsyncRealModel(label, fn) {
     await whatsappAssistant.dismissStuckIncomingMessage(phone).catch(() => {});
     const now = PART0_TEST_NOW;
     const firstSeenAt = now - 3 * 60 * 1000;
-    await whatsappAssistant.saveBurstBuffer(phone, { messages: [{ text: 'Ok Sir', arrivedAt: firstSeenAt }], firstSeenAt, name: 'Recovery Test', firstName: 'Recovery' });
+    // "Thank you", not "Ok Sir" (2026-11, PART 2(f) direct instruction) -
+    // "Ok Sir" is now a bare acknowledgement with NO reply at all, which
+    // would make this test's own "a real reply goes out" assertion
+    // meaningless; "Thank you" still deterministically produces a real
+    // reply (the closing-message welcome text), unrelated to what this
+    // test is actually checking (the recovery mechanism itself).
+    await whatsappAssistant.saveBurstBuffer(phone, { messages: [{ text: 'Thank you', arrivedAt: firstSeenAt }], firstSeenAt, name: 'Recovery Test', firstName: 'Recovery' });
     const result = await whatsappAssistant.recoverStuckIncomingMessages(now);
     const history = await whatsappAssistant.getConvoHistory(phone, 10);
     const outEntry = history.find((h) => h.direction === 'out');
@@ -4861,7 +4873,7 @@ async function checkAsyncRealModel(label, fn) {
     const confirmations = (await whatsappAssistant.listAllHrConfirmations()).filter((c) => c.senderPhone === SAURAV_PHONE);
     return d3.case === 'acknowledged' && confirmations.length === 1 && confirmations[0].status === 'awaiting_manager';
   });
-  await checkAsync('item 9, OLD vs NEW: manager replying "Haaa" (3 a\'s) is now recognized as YES directly - previously this exact text failed the old exact-count regex and re-asked the identical question', async () => {
+  await checkAsyncRealModel('item 9, OLD vs NEW: manager replying "Haaa" (3 a\'s) is now recognized as YES directly - previously this exact text failed the old exact-count regex and re-asked the identical question', async () => {
     const d = await whatsappAssistant.decideAutoReply({ phone: TANMOY_MONDAL_PHONE, name: 'Tanmoy Mondal', firstName: 'Tanmoy', text: 'Haaa', isGroup: false, history: [] });
     const confirmations = (await whatsappAssistant.listAllHrConfirmations()).filter((c) => c.senderPhone === SAURAV_PHONE);
     const ok = d.case === 'acknowledged' && !d.replyText.includes('Ektu nishchit kore') && confirmations.length === 1 && confirmations[0].status === 'confirmed';
@@ -5351,16 +5363,28 @@ async function checkAsyncRealModel(label, fn) {
   check('resolveStickyLang: a short message in an established English conversation stays English, overriding a Banglish fallback', whatsappAssistant.resolveStickyLang('Thik ache', [{ direction: 'in', text: 'I was not feeling well today so I could not come to office', ts: 1 }], 'banglish') === 'english');
   check('resolveStickyLang: a FULL message clearly in a different language is never overridden, even with an established conversation language', whatsappAssistant.resolveStickyLang('Please let me know when I will get my salary slip', [{ direction: 'in', text: 'Ajke ami office ashte parbo na, sorir ta thik nei', ts: 1 }], 'english') === 'english');
   check('resolveStickyLang: with no established language yet (brand new conversation), the caller\'s own fallback is used unchanged', whatsappAssistant.resolveStickyLang('Haa', [], 'english') === 'english');
-  await checkAsync('LIVE BUG, end to end (deterministic path): "Ok sir" (a closing message, no model call) inside a Banglish conversation gets the BANGLISH closing acknowledgement, never the English one', async () => {
+  await checkAsync('PART 2(f) LIVE BUG FIX (2026-11), direct instruction: "Ok sir" is a bare acknowledgement, never a real thank-you - gets NO reply at all, never the "most welcome" closing ack (that reply direction is reserved for an ACTUAL thank-you)', async () => {
     const phone = '910000000973';
     const history = [{ direction: 'in', text: 'Ajke ami office ashte parbo na, sorir ta thik nei', ts: Date.now() - 60000 }];
     const d = await whatsappAssistant.decideAutoReply({ phone, name: 'StickyTest', firstName: 'StickyTest', text: 'Ok sir', isGroup: false, history });
-    return d.lang === 'banglish' && d.replyText.includes('Kono chinta nei');
+    return d.replyText === null;
   });
-  await checkAsync('LIVE BUG, end to end (deterministic path): a short Bengali-looking "Thik ache" inside an ENGLISH conversation stays English, never switches to Banglish', async () => {
+  await checkAsync('PART 2(f) LIVE BUG FIX (2026-11), direct instruction: "Thik ache" is likewise a bare acknowledgement, never a real thank-you - gets NO reply', async () => {
     const phone = '910000000974';
     const history = [{ direction: 'in', text: 'I was not feeling well today so I could not come to office', ts: Date.now() - 60000 }];
     const d = await whatsappAssistant.decideAutoReply({ phone, name: 'StickyTest2', firstName: 'StickyTest2', text: 'Thik ache', isGroup: false, history });
+    return d.replyText === null;
+  });
+  await checkAsync('LIVE BUG, end to end (deterministic path): an ACTUAL thank-you ("Thank you" - 2 words, short enough to be sticky, same as "Ok sir"/"Thik ache" were) inside a Banglish conversation gets the BANGLISH closing acknowledgement, never the English one - language stickiness on the real closing-reply path is unaffected by the bare-ack change above', async () => {
+    const phone = '910000000975';
+    const history = [{ direction: 'in', text: 'Ajke ami office ashte parbo na, sorir ta thik nei', ts: Date.now() - 60000 }];
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'StickyTest3', firstName: 'StickyTest3', text: 'Thank you', isGroup: false, history });
+    return d.lang === 'banglish' && d.replyText.includes('Kono chinta nei');
+  });
+  await checkAsync('LIVE BUG, end to end (deterministic path): an ACTUAL thank-you ("Thank you") inside an ENGLISH conversation stays English, never switches to Banglish', async () => {
+    const phone = '910000000976';
+    const history = [{ direction: 'in', text: 'I was not feeling well today so I could not come to office', ts: Date.now() - 60000 }];
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'StickyTest4', firstName: 'StickyTest4', text: 'Thank you', isGroup: false, history });
     return d.lang === 'english' && d.replyText.includes('most welcome');
   });
 
@@ -6025,9 +6049,9 @@ async function checkAsyncRealModel(label, fn) {
       const d = await whatsappAssistant.decideAutoReply({ phone: LANG_TEMPLATE_PHONE, name: 'Sender', firstName: 'Sender', text: 'Amader office-e ki canteen ache?', isGroup: false, history: [] });
       return !d.replyText.includes('TASK1-');
     });
-    await checkAsync('REGRESSION: a short "ok sir" after a Banglish message stays Banglish - the existing language-stickiness feeding classification.language is unaffected by the new per-template language pick', async () => {
+    await checkAsync('REGRESSION: a short "Thank you" after a Banglish message stays Banglish - the existing language-stickiness feeding classification.language is unaffected by the new per-template language pick ("ok sir" itself is no longer usable as this example - PART 2(f) made it a bare ack with no reply/lang at all, see its own dedicated tests)', async () => {
       const history = [{ direction: 'in', text: 'Ajke ektu sharirik asubidha, office asa hobe na', ts: Date.now() - 10000 }];
-      const d = await whatsappAssistant.decideAutoReply({ phone: LANG_TEMPLATE_PHONE, name: 'Sender', firstName: 'Sender', text: 'ok sir', isGroup: false, history });
+      const d = await whatsappAssistant.decideAutoReply({ phone: LANG_TEMPLATE_PHONE, name: 'Sender', firstName: 'Sender', text: 'Thank you', isGroup: false, history });
       return d.lang === 'banglish';
     });
     await checkAsync('cleanup', async () => {
@@ -6048,18 +6072,18 @@ async function checkAsyncRealModel(label, fn) {
       return Boolean(flow) && flow.step === 'awaiting_approval_obtained' && d.replyText.includes('chhutti-r approval-ta niyechhen');
     });
     let firstRetryText = null;
-    await checkAsync('LOCKED SCENARIO: "Yss sir" (a bare honorific, not a name) gets the SPEC re-ask template, never the free-form "eta ki amar age-r proshno-r uttor" line', async () => {
+    await checkAsyncRealModel('LOCKED SCENARIO: "Yss sir" (a bare honorific, not a name) gets the SPEC re-ask template, never the free-form "eta ki amar age-r proshno-r uttor" line', async () => {
       const d = await whatsappAssistant.decideAutoReply({ phone: LOOP_PHONE, name: 'Sender', firstName: 'Sender', text: 'Yss sir', isGroup: false, history: [] });
       firstRetryText = d.replyText;
       const flow = await whatsappAssistant.getPendingHrNoteFlow(LOOP_PHONE);
       return d.replyText === (whatsappAssistant.HR_NOTE_DIDNT_UNDERSTAND_WHO.banglish) && flow.step === 'awaiting_approval_obtained' && flow.unclearAttempts === 1;
     });
-    await checkAsync('LOCKED SCENARIO: "Ager prosner uttor" (the exact live-replayed repeat) gets a DIFFERENT re-ask - never the identical text twice in a row', async () => {
+    await checkAsyncRealModel('LOCKED SCENARIO: "Ager prosner uttor" (the exact live-replayed repeat) gets a DIFFERENT re-ask - never the identical text twice in a row', async () => {
       const d = await whatsappAssistant.decideAutoReply({ phone: LOOP_PHONE, name: 'Sender', firstName: 'Sender', text: 'Yss sir', isGroup: false, history: [] });
       const flow = await whatsappAssistant.getPendingHrNoteFlow(LOOP_PHONE);
       return d.replyText !== firstRetryText && d.replyText === whatsappAssistant.HR_NOTE_DIDNT_UNDERSTAND_WHO_RETRY2.banglish && flow.step === 'awaiting_approval_obtained' && flow.unclearAttempts === 2;
     });
-    await checkAsync('LOCKED SCENARIO: a THIRD unclear reply stops asking - closes the sender-side loop, flags an owner "Approvals" card instead, and never leaves the sender with no reply at all', async () => {
+    await checkAsyncRealModel('LOCKED SCENARIO: a THIRD unclear reply stops asking - closes the sender-side loop, flags an owner "Approvals" card instead, and never leaves the sender with no reply at all', async () => {
       const d = await whatsappAssistant.decideAutoReply({ phone: LOOP_PHONE, name: 'Sender', firstName: 'Sender', text: 'Yss sir', isGroup: false, history: [] });
       const flow = await whatsappAssistant.getPendingHrNoteFlow(LOOP_PHONE);
       const escalations = await whatsappAssistant.listHrNoteEscalations();
@@ -8357,6 +8381,126 @@ async function checkAsyncRealModel(label, fn) {
     const row = rows.find((r) => r.chatId === phone);
     return Boolean(row) && row.lastMessageText === 'CARD TEXT ONLY';
   })());
+
+  console.log('='.repeat(70));
+  console.log('PART 2(f) (2026-11), direct instruction, Gourab Chakraborty incident: a bare acknowledgement is neither an unclear request nor a real thank-you');
+  console.log('='.repeat(70));
+  await checkAsync('LOCKED SCENARIO: a question is open in the chat, the sender replies "Ha..." - a bare acknowledgement, not a new unclear request - gets NO reply, never the model-drafted "could you elaborate?" clarify line', async () => {
+    const phone = '910000001430';
+    const history = [
+      { direction: 'out', text: '1st nov. Sunday chilo dekhe niyecho to?', ts: Date.now() - 60000 }
+    ];
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenAck1', firstName: 'ScenAck1', text: 'Ha...', isGroup: false, history });
+    return d.replyText === null;
+  });
+  await checkAsync('LOCKED SCENARIO: a bare "ok" gets NO reply - it is a closing acknowledgement, never a thank-you worth a "You\'re most welcome" reply', async () => {
+    const phone = '910000001431';
+    const history = [{ direction: 'out', text: 'Ami apnar bishoy-ta note kore nilam ar Subhodeep-ke janiye dicchi.', ts: Date.now() - 60000 }];
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenAck2', firstName: 'ScenAck2', text: 'ok', isGroup: false, history });
+    return d.replyText === null;
+  });
+  check('isBareAckOrHonorificOnly recognizes every shape the user named: "Ha...", "yes", "ok", "thik ache", trailing punctuation/honorifics', ['Ha...', 'yes', 'ok', 'thik ache', 'Haa sir', 'Yes.', 'Ji'].every((t) => whatsappAssistant.isBareAckOrHonorificOnly(t)));
+  check('isBareAckOrHonorificOnly never matches a message with real content alongside the ack ("Yes, Tanmoy Sir bolechhen" still needs full processing)', !whatsappAssistant.isBareAckOrHonorificOnly('Yes, Tanmoy Sir bolechhen'));
+  await checkAsync('a bare ack correctly produces NO reply even while a manager confirmation is still being awaited (never reaches the extra-info model call for a message with nothing to note)', async () => {
+    const phone = '910000001432';
+    const managerPhone = '910000001433';
+    await cleanupHrFlowArtifacts(phone, managerPhone);
+    await whatsappAssistant.saveHrConfirmation({
+      senderPhone: phone, senderName: 'ScenAck3', summary: 'late coming today', summaryLocalized: 'ajke deri kore eshechi', lang: 'banglish',
+      thirdPartyPhone: managerPhone, thirdPartyName: 'Awaiting Manager', thirdPartyDepartment: 'OPS',
+      topicLabel: 'deri kore asha', originalMessageAt: Date.now(),
+      status: 'awaiting_manager', createdAt: Date.now(), remindedAt: null, escalatedAt: null, reminderId: null
+    });
+    try {
+      const d = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenAck3', firstName: 'ScenAck3', text: 'Haa', isGroup: false, history: [] });
+      return d.replyText === null;
+    } finally {
+      await cleanupHrFlowArtifacts(phone, managerPhone);
+    }
+  });
+
+  console.log('='.repeat(70));
+  console.log('PART 2(f) point 3 (2026-11), direct instruction: replies follow the conversation\'s language including the OWNER\'s own manually-typed messages - used ONLY when the sender\'s own recent messages give no clear signal, SUBH\'s own past replies never count');
+  console.log('='.repeat(70));
+  await checkAsync('captureOwnerManualMessagesFromGateway: a gateway outgoing message matching SUBH\'s OWN tracked send is excluded; the owner\'s own, different manual message is captured', async () => {
+    const phone = '910000001440';
+    await whatsappAssistant.clearOwnerManualMessages(phone).catch(() => {});
+    await whatsappAssistant.appendConvoHistory(phone, 'out', 'SUBH own automated reply text');
+    const gatewayMessages = [
+      { id: 1, direction: 'outgoing', content: { text: 'SUBH own automated reply text' } },
+      { id: 2, direction: 'outgoing', content: { text: '1st nov. Sunday chilo dekhe niyecho to?' } },
+      { id: 3, direction: 'incoming', content: { text: 'Ha...' } }
+    ];
+    await whatsappAssistant.captureOwnerManualMessagesFromGateway(phone, gatewayMessages);
+    const stored = await whatsappAssistant.getOwnerManualMessages(phone);
+    const ok = stored.length === 1 && stored[0] === '1st nov. Sunday chilo dekhe niyecho to?';
+    await whatsappAssistant.clearOwnerManualMessages(phone).catch(() => {});
+    return ok;
+  });
+  await checkAsync('getOwnerManualMessages/saveOwnerManualMessages: capped at the last 5 per chat', async () => {
+    const phone = '910000001441';
+    await whatsappAssistant.clearOwnerManualMessages(phone).catch(() => {});
+    await whatsappAssistant.saveOwnerManualMessages(phone, ['one', 'two', 'three', 'four', 'five']);
+    await whatsappAssistant.captureOwnerManualMessagesFromGateway(phone, [{ id: 10, direction: 'outgoing', content: { text: 'six' } }]);
+    const stored = await whatsappAssistant.getOwnerManualMessages(phone);
+    const ok = stored.length === 5 && stored[0] === 'two' && stored[4] === 'six';
+    await whatsappAssistant.clearOwnerManualMessages(phone).catch(() => {});
+    return ok;
+  });
+  await checkAsync('LOCKED SCENARIO: the owner wrote a clear BANGLISH message in this chat; the sender then sends a short/ambiguous "Ha..." with no language signal of its own - resolves BANGLISH from the owner\'s own message', async () => {
+    const phone = '910000001442';
+    await whatsappAssistant.clearOwnerManualMessages(phone).catch(() => {});
+    await whatsappAssistant.saveOwnerManualMessages(phone, ['Ajke ami office ashte parbo na, sorir ta thik nei']);
+    const lang = await whatsappAssistant.resolveStickyLangWithOwnerFallback(phone, 'Ha...', [], 'english');
+    const ok = lang === 'banglish';
+    await whatsappAssistant.clearOwnerManualMessages(phone).catch(() => {});
+    return ok;
+  });
+  await checkAsync('LOCKED SCENARIO: the owner wrote a clear ENGLISH message in this chat; the sender then sends a bare "ok" - resolves ENGLISH from the owner\'s own message', async () => {
+    const phone = '910000001443';
+    await whatsappAssistant.clearOwnerManualMessages(phone).catch(() => {});
+    await whatsappAssistant.saveOwnerManualMessages(phone, ['Did you confirm the Sunday holiday already?']);
+    const lang = await whatsappAssistant.resolveStickyLangWithOwnerFallback(phone, 'ok', [], 'banglish');
+    const ok = lang === 'english';
+    await whatsappAssistant.clearOwnerManualMessages(phone).catch(() => {});
+    return ok;
+  });
+  await checkAsync('the SENDER\'s own clear language always wins over the owner\'s stored messages - never even consulted when the sender\'s own history already has a clear established signal', async () => {
+    const phone = '910000001444';
+    await whatsappAssistant.clearOwnerManualMessages(phone).catch(() => {});
+    await whatsappAssistant.saveOwnerManualMessages(phone, ['Did you confirm the Sunday holiday already?']); // owner: English
+    const history = [{ direction: 'in', text: 'Ajke ami office ashte parbo na, sorir ta thik nei', ts: Date.now() - 60000 }]; // sender: clear Banglish
+    const lang = await whatsappAssistant.resolveStickyLangWithOwnerFallback(phone, 'Ha...', history, 'english');
+    const ok = lang === 'banglish';
+    await whatsappAssistant.clearOwnerManualMessages(phone).catch(() => {});
+    return ok;
+  });
+  await checkAsync('a fully clear, non-short message from the sender is never overridden by the owner\'s stored messages either (owner fallback only ever applies to a short/ambiguous CURRENT message)', async () => {
+    const phone = '910000001446';
+    await whatsappAssistant.clearOwnerManualMessages(phone).catch(() => {});
+    await whatsappAssistant.saveOwnerManualMessages(phone, ['Did you confirm the Sunday holiday already?']); // owner: English
+    const lang = await whatsappAssistant.resolveStickyLangWithOwnerFallback(phone, 'Please let me know when I will get my salary slip', [], 'english');
+    const ok = lang === 'english'; // the sender's own full message, unaffected
+    await whatsappAssistant.clearOwnerManualMessages(phone).catch(() => {});
+    return ok;
+  });
+  await checkAsync('LOCKED SCENARIO: a returned document with NO caption, in an established Banglish chat, replies in Banglish (the live incident - the 16:56 file-ack)', async () => {
+    const phone = '910000001445';
+    await whatsappAssistant.clearOwnerManualMessages(phone).catch(() => {});
+    await whatsappAssistant.appendConvoHistory(phone, 'in', 'Ajke ami office ashte parbo na, sorir ta thik nei');
+    const lang = await whatsappAssistant.mediaFallbackLang(phone, '');
+    const ok = lang === 'banglish';
+    return ok;
+  });
+  await checkAsync('mediaFallbackLang: with NO sender signal at all, falls back to the owner\'s own recent manual message in the same chat', async () => {
+    const phone = '910000001447';
+    await whatsappAssistant.clearOwnerManualMessages(phone).catch(() => {});
+    await whatsappAssistant.saveOwnerManualMessages(phone, ['Ajke ami office ashte parbo na, sorir ta thik nei']);
+    const lang = await whatsappAssistant.mediaFallbackLang(phone, '');
+    const ok = lang === 'banglish';
+    await whatsappAssistant.clearOwnerManualMessages(phone).catch(() => {});
+    return ok;
+  });
 
   console.log(pass + '/' + (pass + fail) + ' passed' + (fail ? ', ' + fail + ' FAILED' : ''));
   if (failures.length) {

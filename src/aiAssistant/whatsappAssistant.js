@@ -1795,6 +1795,12 @@ async function sendOrReportAutoReply(entry) {
     try {
       const recent = await whatsapp.listMessages(entry.chatId, 20);
       manuallyAnswered = hasManualReplyAfter(recent, entry.arrivedAt);
+      // PART 2(f), direct instruction - piggyback on this SAME gateway
+      // call (never a new one) to also capture the owner's own manual
+      // messages in this chat for language purposes. Fire-and-forget:
+      // never awaited into the send-skip decision above, never allowed
+      // to slow or block a real reply.
+      captureOwnerManualMessagesFromGateway(entry.chatId, recent).catch(() => {});
     } catch (err) { /* best effort - a failed check must never block a real reply from going out */ }
     if (manuallyAnswered) {
       await logInboxEvent({
@@ -10896,6 +10902,98 @@ function resolveStickyLang(text, history, fallbackLang) {
   return looksLikeBareNameNumberOrEmoji(text) ? 'english' : fallbackLang;
 }
 
+// LIVE BUG FIX (2026-11), direct instruction, PART 2(f) point 3 - the
+// Gourab Chakraborty incident: SUBH replied in English to a Banglish
+// conversation because the ONLY language signal it ever reads is the
+// SENDER's own messages - the owner's own manually-typed WhatsApp
+// messages in the same chat were never captured anywhere at all. Per
+// direct instruction, with explicit limits: reuse the EXISTING manual-
+// reply detection (sendOrReportAutoReply's own flush-time
+// hasManualReplyAfter check, which already calls whatsapp.listMessages
+// for this exact chat) rather than adding any new polling-loop logic -
+// this just ALSO extracts owner-manual texts from that SAME already-
+// happening gateway call, as a side effect, never a new API call of its
+// own. Stores only the last 5 texts per chat, 7-day TTL, text only. Used
+// for language ONLY as a fallback of last resort, when the sender's own
+// recent messages give no clear signal at all - the sender's own clear
+// language always wins, and SUBH's own past replies never count (they
+// are excluded at capture time, by construction: only a gateway-
+// reported outgoing message that does NOT match anything in SUBH's own
+// tracked send history gets kept).
+const OWNER_MANUAL_MSG_PREFIX = 'wa-owner-manual:';
+const OWNER_MANUAL_MSG_MAX = 5;
+const OWNER_MANUAL_MSG_TTL_SECONDS = 7 * 24 * 60 * 60;
+async function getOwnerManualMessages(contactId) {
+  const redis = getClient();
+  if (!redis) return [];
+  try {
+    const raw = await redis.get(OWNER_MANUAL_MSG_PREFIX + contactId);
+    const parsed = raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (err) { return []; }
+}
+async function saveOwnerManualMessages(contactId, texts) {
+  const redis = getClient();
+  if (!redis) return;
+  try { await redis.set(OWNER_MANUAL_MSG_PREFIX + contactId, JSON.stringify(texts.slice(-OWNER_MANUAL_MSG_MAX)), { ex: OWNER_MANUAL_MSG_TTL_SECONDS }); } catch (err) { /* best effort */ }
+}
+// Test-hygiene only (same role as clearJobTemplateSentToday etc.).
+async function clearOwnerManualMessages(contactId) {
+  const redis = getClient();
+  if (!redis) return;
+  try { await redis.del(OWNER_MANUAL_MSG_PREFIX + contactId); } catch (err) { /* best effort */ }
+}
+// Best-effort extraction: of the gateway's own reported messages for
+// this chat (the SAME list sendOrReportAutoReply's manual-reply check
+// already fetched), keep only the outgoing ones whose text does NOT
+// appear anywhere in SUBH's own tracked send history for this contact -
+// by elimination, those are messages the owner typed manually on the
+// phone, never SUBH's own automated replies. "If capture fails,
+// behaviour stays exactly as today" - wrapped end to end, never throws,
+// never blocks or slows the real send path it piggybacks on.
+async function captureOwnerManualMessagesFromGateway(contactId, gatewayMessages) {
+  try {
+    if (!gatewayMessages || !gatewayMessages.length) return;
+    const subhHistory = await getConvoHistory(contactId, CONVO_HISTORY_MAX);
+    const subhSentTexts = new Set(subhHistory.filter((h) => h.direction === 'out' && h.text).map((h) => h.text));
+    const ownerTexts = gatewayMessages
+      .filter((m) => m.direction === 'outgoing' && m.content && typeof m.content.text === 'string' && m.content.text.trim())
+      .sort((a, b) => (a.id || 0) - (b.id || 0))
+      .map((m) => m.content.text.trim())
+      .filter((t) => !subhSentTexts.has(t));
+    if (!ownerTexts.length) return;
+    const existing = await getOwnerManualMessages(contactId);
+    await saveOwnerManualMessages(contactId, existing.concat(ownerTexts));
+  } catch (err) { /* best effort - capture failing must never affect the real send path it piggybacks on */ }
+}
+// The owner-manual equivalent of detectEstablishedConversationLanguage -
+// the most recent STORED owner message that itself carries real
+// language signal (skipping past any short/ambiguous one), or null when
+// there's nothing usable yet. A live gateway call was already made (or
+// not) by whatever earlier flush captured these texts - reading them
+// back here is a plain, fast Redis read, never a new gateway call.
+async function ownerManualLanguageSignal(contactId) {
+  const texts = await getOwnerManualMessages(contactId).catch(() => []);
+  for (let i = texts.length - 1; i >= 0; i--) {
+    if (!isShortOrAmbiguousForLanguage(texts[i])) return detectLang(texts[i]);
+  }
+  return null;
+}
+// The one place the owner-manual fallback is actually applied - "use
+// them for language ONLY when the sender's own recent messages give no
+// clear signal": resolveStickyLang's own sender-based resolution runs
+// FIRST and unconditionally wins whenever it has anything at all; the
+// owner-manual store is consulted only for the narrower leftover case
+// (current message short/ambiguous AND no established sender language
+// either).
+async function resolveStickyLangWithOwnerFallback(contactId, text, history, fallbackLang) {
+  const senderBased = resolveStickyLang(text, history, fallbackLang);
+  if (!isShortOrAmbiguousForLanguage(text)) return senderBased;
+  if (detectEstablishedConversationLanguage(history)) return senderBased;
+  const ownerLang = await ownerManualLanguageSignal(contactId).catch(() => null);
+  return ownerLang || senderBased;
+}
+
 // Live review item 4 - a plain-text closing remark ("Thank you"/"Ok"/
 // "Thik ache"/"No Sir thank you") with nothing left open. Structural
 // (regex), not left to the model, same principle as isEmojiOnlyMessage -
@@ -11520,6 +11618,24 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
     }
   }
 
+  // LIVE BUG FIX (2026-11), direct instruction, PART 2(f) - the Gourab
+  // Chakraborty incident: a bare acknowledgement ("Ha...", "yes", "ok",
+  // "thik ache", a bare honorific) is not a real "thanks" and not an
+  // unclear new request either. Placed at the EXACT same point
+  // isClosingMessage already sits (see its own comment just below) - by
+  // this point every pending-question/flow check above has already had
+  // first refusal, so reaching here with a bare ack means there is
+  // genuinely nothing open and nothing new being asked. Gets NO reply at
+  // all, never a model-drafted "could you elaborate?" clarify line.
+  // Checked BEFORE isClosingMessage so a bare "ok"/"thik ache" never gets
+  // the "You're most welcome" reply either - that reply is reserved for
+  // an ACTUAL thank-you (CLOSING_MESSAGE_RE's thank-you wording is never
+  // matched by isBareAckOrHonorificOnly, so a real "Thank you"/"Dhonnobad"
+  // still falls through to the unchanged logic below).
+  if (!isGroup && isBareAckOrHonorificOnly(text)) {
+    return { case: 'acknowledged', replyText: null, summaryForOwner: null };
+  }
+
   // Live review item 4 - a plain closing message ("Thank you"/"Ok"/"Thik
   // ache"/"No Sir thank you") gets at most ONE short reply per
   // conversation, never a back-and-forth of pleasantries. By this point
@@ -11531,7 +11647,7 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
     if (lastOut && isClosingAckReplyText(lastOut.text)) {
       return { case: 'acknowledged', replyText: null, summaryForOwner: null };
     }
-    const lang = resolveStickyLang(text, history, await detectLangSmart(text, history));
+    const lang = phone ? await resolveStickyLangWithOwnerFallback(phone, text, history, await detectLangSmart(text, history)) : resolveStickyLang(text, history, await detectLangSmart(text, history));
     return { case: 'acknowledged', replyText: CLOSING_ACK_REPLY[lang] || CLOSING_ACK_REPLY.english, summaryForOwner: null, lang };
   }
 
@@ -12086,6 +12202,19 @@ const MEDIA_ACK_REPLY = {
 async function mediaFallbackLang(contactId, caption) {
   const history = await getConvoHistory(contactId, CONVO_HISTORY_MAX).catch(() => []);
   if (caption) return detectLangSmart(caption, history);
+  // LIVE BUG FIX (2026-11), direct instruction, PART 2(f) - media with no
+  // caption carries no language signal of its own. Tries the sender's
+  // own established conversation language first (never guessed, skips
+  // past any short/ambiguous past message the same way the closing-
+  // message path already does); only when the sender gives no signal
+  // either does the owner's own recent manual messages in this chat get
+  // consulted (never SUBH's own past replies); the OLD behaviour (the
+  // literal last incoming message, or English) stays the final fallback,
+  // unchanged, when neither has anything usable.
+  const established = detectEstablishedConversationLanguage(history);
+  if (established) return established;
+  const ownerLang = await ownerManualLanguageSignal(contactId).catch(() => null);
+  if (ownerLang) return ownerLang;
   const lastIncoming = (history || []).filter((h) => h.direction === 'in' && h.text).slice(-1)[0];
   return lastIncoming ? detectLangSmart(lastIncoming.text, history) : 'english';
 }
@@ -14235,6 +14364,14 @@ module.exports = {
   detectEstablishedConversationLanguage,
   resolveStickyLang,
   looksLikeBareNameNumberOrEmoji,
+  // Exported for scripts/check-whatsapp-engine.js only - PART 2(f),
+  // owner-manual-message language fallback (2026-11).
+  getOwnerManualMessages,
+  saveOwnerManualMessages,
+  clearOwnerManualMessages,
+  captureOwnerManualMessagesFromGateway,
+  ownerManualLanguageSignal,
+  resolveStickyLangWithOwnerFallback,
   // Exported for scripts/check-whatsapp-engine.js only - deterministic-
   // first instruction/approval classification and the own-bank-details
   // short-circuit (2026-10-27).
