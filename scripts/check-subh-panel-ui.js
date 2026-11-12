@@ -104,10 +104,9 @@ function check(label, ok, detail) {
     route.fulfill({
       status: 200, contentType: 'application/json', body: JSON.stringify({
         items: [
-          { key: 'confirmation', label: 'Confirmation', builtin: true, code: 'CONF' },
-          { key: 'extension', label: 'Extension of Probation', builtin: true, code: 'EXT' },
-          { key: 'experience', label: 'Experience', builtin: true, code: 'EXP' },
-          { key: 'relieving', label: 'Relieving', builtin: true, code: 'REL' },
+          // TASK 2 (2026-11), direct instruction ("Letter types cleanup"):
+          // the 4 built-in letters are gone - only real Drive templates
+          // ever appear.
           { key: 'drive:faketpl1', label: 'Bonus Letter', builtin: false, driveFileId: 'faketpl1', code: 'BL' }
         ]
       })
@@ -221,7 +220,7 @@ function check(label, ok, detail) {
   // 4 built-in letters (mocked above with one fake Drive template,
   // "Bonus Letter").
   const docsTplOptions = await page.evaluate(() => Array.from(document.querySelectorAll('#wfDocsTpl option')).map((o) => ({ value: o.value, label: o.textContent })));
-  check('Create Workflow, Template dropdown: all 4 built-in letters are present', ['confirmation', 'extension', 'experience', 'relieving'].every((k) => docsTplOptions.some((o) => o.value === k)), 'got: ' + JSON.stringify(docsTplOptions));
+  check('TASK 2 (2026-11): Create Workflow, Template dropdown: the 4 built-in letters are GONE (only real Drive templates appear)', ['confirmation', 'extension', 'experience', 'relieving'].every((k) => !docsTplOptions.some((o) => o.value === k)), 'got: ' + JSON.stringify(docsTplOptions));
   check('Create Workflow, Template dropdown: the fake Drive template ("Bonus Letter") appears automatically, with its own drive: key', docsTplOptions.some((o) => o.value === 'drive:faketpl1' && o.label === 'Bonus Letter'), 'got: ' + JSON.stringify(docsTplOptions));
 
   // Task 27 (2026-11), TASK 1(c), direct instruction - selecting a Drive
@@ -247,13 +246,10 @@ function check(label, ok, detail) {
   check('Create Workflow, Field mapping: one row per real placeholder renders', mapping.rowCount === 2, 'got: ' + JSON.stringify(mapping));
   check('Create Workflow, Field mapping: a proposed hr_column mapping is pre-selected with its own column dropdown', mapping.rows.some((r) => r.placeholder === '{Employee_Name}' && r.source === 'hr_column' && r.hasColumnSelect), 'got: ' + JSON.stringify(mapping));
   check('Create Workflow, Field mapping: an unmapped placeholder shows as "Ask me" (unknown), never a silent guess', mapping.rows.some((r) => r.placeholder === '{Mystery_Field}' && r.source === 'unknown'), 'got: ' + JSON.stringify(mapping));
-  await page.selectOption('#wfDocsTpl', 'confirmation');
-  await page.waitForTimeout(150);
-  const mappingHiddenForBuiltin = await page.evaluate(() => {
-    const el = document.getElementById('wfDocsMappingWrap');
-    return el.hidden || el.classList.contains('hidden');
-  });
-  check('Create Workflow, Field mapping: the section hides again for a built-in template (no placeholders to map)', mappingHiddenForBuiltin === true);
+  // TASK 2 (2026-11), direct instruction: the "hides again for a built-in
+  // template" case this used to cover no longer exists - every template
+  // is a Drive one now, so the mapping section is always relevant once a
+  // template is selected.
   const mappingErrAfter = consoleErrors.length + pageErrors.length;
   check('Create Workflow, Field mapping: no JS error was thrown loading/switching the mapping', mappingErrAfter === mappingErrBefore,
     'new errors: ' + JSON.stringify(consoleErrors.slice(mappingErrBefore).concat(pageErrors.slice(mappingErrBefore))));
@@ -467,12 +463,17 @@ function check(label, ok, detail) {
     route.fulfill({
       status: 200, contentType: 'application/json', body: JSON.stringify({
         refFormat: '{Company_Code}/HR/{Letter_Code}/{FY}/{Serial}',
-        letterCodes: { confirmation: 'CONF', extension: 'EXT', experience: 'EXP', relieving: 'REL', 'drive:faketpl1': 'BL' },
+        // TASK 2 (2026-11), direct instruction ("Letter types cleanup"):
+        // only real Drive templates, counters keyed by CODE (one card per
+        // code, not per template).
+        letterCodes: { 'drive:faketpl1': 'BL' },
         placeholders: ['{Company_Code}', '{Letter_Code}', '{FY}', '{Serial}'],
-        letterTypeLabels: { confirmation: 'Confirmation', extension: 'Extension of Probation', experience: 'Experience', relieving: 'Relieving', 'drive:faketpl1': 'Bonus Letter' },
+        letterTypeLabels: { 'drive:faketpl1': 'Bonus Letter' },
         fy: '2026-27',
-        letterTypes: ['confirmation', 'extension', 'experience', 'relieving', 'drive:faketpl1'],
-        counters: [{ letterType: 'confirmation', fy: '2026-27', nextNumber: 7 }],
+        letterTypes: ['drive:faketpl1'],
+        counters: [{ code: 'BL', templateKeys: ['drive:faketpl1'], fy: '2026-27', nextNumber: 7 }],
+        duplicateCodeWarnings: [],
+        missingTemplateWorkflows: [],
         // "Fields" button/status (2026-11) - starts unmapped so the Fields
         // sheet + Save flow below has something real to exercise.
         fieldsStatus: { 'drive:faketpl1': { mapped: 0, total: 2 } },
@@ -495,7 +496,7 @@ function check(label, ok, detail) {
   const chipCount = await page.locator('#hrLetterRefFormatChips [data-chip]').count();
   check('Letter settings: all 4 tap-to-insert placeholder chips are present', chipCount === 4, 'got: ' + chipCount);
   const codeRows = await page.locator('#hrLetterCodesList [data-letter-type]').count();
-  check('Letter settings: all 4 built-in letter codes + the 1 fake Drive template render as rows', codeRows === 5, 'got: ' + codeRows);
+  check('TASK 2 (2026-11): only the real Drive template renders as a row - the 4 built-ins are gone', codeRows === 1, 'got: ' + codeRows);
 
   // TASK 2 (2026-11), direct instruction - letter-code cards show the
   // code as TEXT with an Edit button only; Edit reveals an inline field +
@@ -521,8 +522,23 @@ function check(label, ok, detail) {
   const inputHiddenAfterCancel = await firstCodeCard.locator('[data-role="letter-code-input"]').isHidden();
   check('Letter settings: Cancel reverts to the static display, hiding the edit field again', displayVisibleAfterCancel && inputHiddenAfterCancel);
 
-  const counterCards = await page.locator('#hrLetterCountersList [data-letter-type]').count();
-  check('Letter settings: the fake counter renders as a card (TASK 1, 2026-11: one per letter type, no company)', counterCards === 1, 'got: ' + counterCards);
+  // TASK 2 (2026-11), direct instruction - editable display name next to
+  // the code (Edit), independent of the code's own Edit.
+  await page.route('**/api/workforce/hr-assistant/letter-settings/display-name', (route) => {
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, names: { 'drive:faketpl1': 'My Renamed Letter' } }) });
+  });
+  const nameSaveBtnVisibleBeforeEdit = await firstCodeCard.locator('[data-action="save-letter-name"]').isVisible().catch(() => false);
+  check('Letter settings: a letter-code card has NO always-visible name Save button either', nameSaveBtnVisibleBeforeEdit === false);
+  await firstCodeCard.locator('[data-action="edit-letter-name"]').click();
+  await page.waitForTimeout(150);
+  check('Letter settings: Edit name reveals the inline name field', await firstCodeCard.locator('[data-role="letter-name-input"]').isVisible());
+  await firstCodeCard.locator('[data-role="letter-name-input"]').fill('');
+  await firstCodeCard.locator('[data-action="save-letter-name"]').click();
+  await page.waitForTimeout(150);
+  check('Letter settings: an empty name shows an inline error, never saved', await firstCodeCard.locator('[data-role="letter-name-err"]').isVisible());
+
+  const counterCards = await page.locator('#hrLetterCountersList [data-code]').count();
+  check('Letter settings: the fake counter renders as a card (TASK 2, 2026-11: one per CODE)', counterCards === 1, 'got: ' + counterCards);
   await page.click('#hrLetterCountersList [data-action="edit-counter"]');
   await page.waitForTimeout(350);
   check('Letter settings: counter edit sheet opens', await page.locator('#hrLetterCounterSheet').isVisible());
@@ -561,12 +577,14 @@ function check(label, ok, detail) {
     route.fulfill({
       status: 200, contentType: 'application/json', body: JSON.stringify({
         refFormat: '{Company_Code}/HR/{Letter_Code}/{FY}/{Serial}',
-        letterCodes: { confirmation: 'CONF', extension: 'EXT', experience: 'EXP', relieving: 'REL', 'drive:faketpl1': 'BL' },
+        letterCodes: { 'drive:faketpl1': 'BL' },
         placeholders: ['{Company_Code}', '{Letter_Code}', '{FY}', '{Serial}'],
-        letterTypeLabels: { confirmation: 'Confirmation', extension: 'Extension of Probation', experience: 'Experience', relieving: 'Relieving', 'drive:faketpl1': 'Bonus Letter' },
+        letterTypeLabels: { 'drive:faketpl1': 'Bonus Letter' },
         fy: '2026-27',
-        letterTypes: ['confirmation', 'extension', 'experience', 'relieving', 'drive:faketpl1'],
-        counters: [{ letterType: 'confirmation', fy: '2026-27', nextNumber: 7 }],
+        letterTypes: ['drive:faketpl1'],
+        counters: [{ code: 'BL', templateKeys: ['drive:faketpl1'], fy: '2026-27', nextNumber: 7 }],
+        duplicateCodeWarnings: [],
+        missingTemplateWorkflows: [],
         fieldsStatus: { 'drive:faketpl1': { mapped: 2, total: 2 } },
         registerLink: null
       })
@@ -587,6 +605,35 @@ function check(label, ok, detail) {
   const fieldsErrAfter = consoleErrors.length + pageErrors.length;
   check('Letter settings, Fields/Send test flow: no JS error was thrown', fieldsErrAfter === fieldsErrBefore,
     'new errors: ' + JSON.stringify(consoleErrors.slice(fieldsErrBefore).concat(pageErrors.slice(fieldsErrBefore))));
+
+  // TASK 2 (2026-11), direct instruction - "Two templates use CONF - they
+  // share one serial" warning, shown when 2+ templates currently share a
+  // code (two templates now sharing BL, re-fetched on reload).
+  await page.route('**/api/workforce/hr-assistant/letter-settings', (route) => {
+    route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify({
+        refFormat: '{Company_Code}/HR/{Letter_Code}/{FY}/{Serial}',
+        letterCodes: { 'drive:faketpl1': 'BL', 'drive:faketpl2': 'BL' },
+        placeholders: ['{Company_Code}', '{Letter_Code}', '{FY}', '{Serial}'],
+        letterTypeLabels: { 'drive:faketpl1': 'Bonus Letter', 'drive:faketpl2': 'Bonus Letter Two' },
+        fy: '2026-27',
+        letterTypes: ['drive:faketpl1', 'drive:faketpl2'],
+        counters: [{ code: 'BL', templateKeys: ['drive:faketpl1', 'drive:faketpl2'], fy: '2026-27', nextNumber: 7 }],
+        duplicateCodeWarnings: [{ code: 'BL', templateKeys: ['drive:faketpl1', 'drive:faketpl2'], labels: ['Bonus Letter', 'Bonus Letter Two'] }],
+        missingTemplateWorkflows: [{ id: 'wf1', subject: 'Old confirmation workflow', fields: [{ field: 'docs.template', template: 'confirmation' }] }],
+        fieldsStatus: { 'drive:faketpl1': { mapped: 2, total: 2 }, 'drive:faketpl2': { mapped: 0, total: 1 } },
+        registerLink: null
+      })
+    });
+  });
+  await page.evaluate(() => window.__hrAssistantOpenLetterSettings && window.__hrAssistantOpenLetterSettings());
+  await page.waitForTimeout(300);
+  const dupWarningText = await page.locator('#hrLetterDuplicateCodeWarnings').textContent().catch(() => null);
+  check('Letter settings: duplicate-code warning shows when 2 templates share a code', (dupWarningText || '').includes('BL') && (dupWarningText || '').includes('share one serial'), 'got: ' + JSON.stringify(dupWarningText));
+  const missingSectionVisible = await page.locator('#hrLetterMissingTemplatesSection').isVisible().catch(() => false);
+  check('Letter settings: "Needs a template picked" section shows a workflow still pointing at a retired built-in', missingSectionVisible);
+  const missingText = await page.locator('#hrLetterMissingTemplatesList').textContent().catch(() => null);
+  check('Letter settings: the missing-template workflow names the affected field', (missingText || '').includes('Old confirmation workflow') && (missingText || '').includes('docs.template'), 'got: ' + JSON.stringify(missingText));
 
   // TASK 4(a) (2026-11), direct instruction - Letter Register: with no
   // register sheet set yet (registerLink: null in the fixture above),

@@ -480,6 +480,10 @@
         <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 4px 6px">
           <span class="wf-ai-sheet-title" style="font-size:14px">Letter codes</span>
         </div>
+        <!-- TASK 2 (2026-11), direct instruction - "Two templates use CONF
+             - they share one serial": shown only when 2+ templates
+             currently share a code. -->
+        <div id="hrLetterDuplicateCodeWarnings"></div>
         <div class="wf-rem-list" id="hrLetterCodesList"></div>
 
         <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 4px 6px">
@@ -491,6 +495,16 @@
           <span class="wf-ai-sheet-title" style="font-size:14px">Letter Register</span>
         </div>
         <div class="wf-rem-list" id="hrLetterRegisterRow"></div>
+
+        <!-- TASK 2 (2026-11), direct instruction - "if any saved workflow/
+             task still points to a built-in letter, list them for me":
+             only rendered when non-empty. -->
+        <div id="hrLetterMissingTemplatesSection" hidden>
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 4px 6px">
+            <span class="wf-ai-sheet-title" style="font-size:14px">Needs a template picked</span>
+          </div>
+          <div class="wf-rem-list" id="hrLetterMissingTemplatesList"></div>
+        </div>
       </div>
 
       <!-- AI usage (2026-11), direct instruction - read-only: real-time
@@ -996,22 +1010,22 @@
           </div>
         </div>
 
-        <!-- Section 6: Documents (optional) - the 4 built-in letter
-             templates plus every Google Doc/.docx in the SUBH Letter
-             Templates Drive folder (TASK 1b, 2026-11); wfDocsTpl's own
-             <option>s here are a fallback only - loadWfDocsTemplateOptions
-             rebuilds this select from the live merged list every time this
-             page opens. -->
+        <!-- Section 6: Documents (optional) - every Google Doc/.docx in
+             the SUBH Letter Templates Drive folder (TASK 1(b), 2026-11).
+             TASK 2 (2026-11), direct instruction ("Letter types cleanup"):
+             the 4 built-in letters are removed - only real Drive
+             templates ever appear. wfDocsTpl starts with just a
+             placeholder <option> - loadWfDocsTemplateOptions always
+             rebuilds this select from the live list every time this page
+             opens, including to "no templates yet" when the folder is
+             empty (never a stale built-in fallback). -->
         <div class="wf-auto-card">
           <div class="wf-auto-sechead"><span class="wf-auto-num">6</span> Documents <span class="wf-auto-hint" style="margin:0 0 0 auto">(optional)</span></div>
           <label class="wf-auto-check" style="margin-top:8px"><input type="checkbox" id="wfDocsOn" /> Generate one document per record from a template</label>
           <div id="wfDocsWrap" class="hidden" style="margin-top:12px">
             <label class="wf-rem-field">Template
               <select id="wfDocsTpl">
-                <option value="confirmation">Confirmation Letter</option>
-                <option value="extension">Extension of Probation Letter</option>
-                <option value="experience">Experience Letter</option>
-                <option value="relieving">Relieving Letter</option>
+                <option value="">Loading templates…</option>
               </select>
             </label>
             <!-- TASK 1(c) (2026-11), direct instruction - shown only for a

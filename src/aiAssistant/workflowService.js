@@ -127,6 +127,35 @@ async function listRawWorkflows() {
     return out;
   }, []);
 }
+// TASK 2 (2026-11), direct instruction ("Letter types cleanup", item 1):
+// "if any saved workflow/task still points to a built-in letter, list
+// them for me" - scans every saved workflow's plan.docs.template and
+// every rule's own sendDocument against the SAME real, current template
+// list buildWorkflowDocumentBuffer itself checks, so this list can never
+// disagree with what a real run would actually do. A workflow is listed
+// once even if BOTH its docs.template and a rule's sendDocument are
+// missing (fields names which ones). Surfaced on Letter settings, not
+// here on Workflow's own action-needed list, since the fix (picking a new
+// Drive template) happens on the workflow/task itself, not per-record.
+async function listWorkflowsWithMissingTemplates() {
+  const [workflows, templates] = await Promise.all([listRawWorkflows(), driveTemplatesService.listAllLetterTemplates()]);
+  const validKeys = new Set(templates.map((t) => t.key));
+  const out = [];
+  for (const w of workflows) {
+    const plan = w.plan || {};
+    const fields = [];
+    if (plan.docs && plan.docs.on && plan.docs.template && !validKeys.has(plan.docs.template)) {
+      fields.push({ field: 'docs.template', template: plan.docs.template });
+    }
+    (plan.rules || []).forEach((rule, i) => {
+      if (rule.sendDocument && !validKeys.has(rule.sendDocument)) {
+        fields.push({ field: 'rules[' + i + '].sendDocument', template: rule.sendDocument });
+      }
+    });
+    if (fields.length) out.push({ id: w.id, subject: w.subject, status: w.status, fields });
+  }
+  return out;
+}
 async function deleteWorkflow(id) {
   const redis = getClient();
   if (!redis) return;
@@ -351,20 +380,32 @@ async function buildDriveTemplateDocumentBuffer(meta, row, runAt, extra, refReso
 async function buildWorkflowDocumentBuffer(template, row, runAt, extra) {
   const r = row || {};
   const isRealSend = Boolean(extra && extra.isRealSend);
+  // TASK 2 (2026-11), direct instruction ("Letter types cleanup"): every
+  // template - a Drive one, or a retired built-in key a saved workflow/
+  // task may still reference - is looked up against the SAME real,
+  // current list before anything is built. listAllLetterTemplates no
+  // longer returns the 4 built-ins, so a workflow still pointing at one
+  // of them now holds here with the SAME "Template missing" message a
+  // deleted/moved Drive template already produced - one consistent path,
+  // never two different kinds of "missing" disagreeing with each other.
+  // (This also persists a brand-new Drive template's own sensible default
+  // letter code/display name on first discovery - MUST happen before
+  // resolveLetterRefNo below, or the very first real Ref No. would fall
+  // back to assignRefNo's own generic `letterType.toUpperCase()`.)
+  const templates = await driveTemplatesService.listAllLetterTemplates();
+  const meta = templates.find((t) => t.key === template);
+  if (!meta) throw new Error('Template missing - choose a Drive template.');
   if (driveTemplatesService.isDriveTemplateKey(template)) {
-    // listAllLetterTemplates also persists this template's own sensible
-    // default letter code on first discovery - MUST happen before
-    // resolveLetterRefNo below, or the very first real Ref No. for a
-    // brand new Drive template would fall back to assignRefNo's own
-    // generic `letterType.toUpperCase()` (the raw "DRIVE:<fileId>") for
-    // lack of a saved code yet.
-    const templates = await driveTemplatesService.listAllLetterTemplates();
-    const meta = templates.find((t) => t.key === template);
-    if (!meta) throw new Error('This Drive template is no longer available - it may have been moved or deleted from the SUBH Letter Templates folder.');
     const refResolved = await resolveLetterRefNo(template, r, runAt, isRealSend);
     const buffer = await buildDriveTemplateDocumentBuffer(meta, r, runAt, extra, refResolved);
     return { buffer, refNo: refResolved.refNo, fy: refResolved.fy, serial: refResolved.serial };
   }
+  // Dead code from here down (TASK 2, 2026-11, direct instruction: kept
+  // for now, "dead code is fine, we'll remove later" - never deleted).
+  // Unreachable in practice since listAllLetterTemplates no longer
+  // returns a built-in key, so `meta` above can never resolve for one -
+  // the throw above already holds any saved workflow/task still pointing
+  // at a built-in letter before this point is ever reached.
   const refResolved = await resolveLetterRefNo(template, r, runAt, isRealSend);
   const base = {
     employeeName: r['Employee_Name'] || r['Name'] || '—',
@@ -579,18 +620,23 @@ const SEND_TO_TARGETS = ['self', 'manager', 'hr', 'accounts'];
 // Closing the "Ask SUBH can't pick a Drive template by name" gap
 // (2026-11, direct instruction): when a caller has already fetched the
 // real template list (driveTemplatesService.listAllLetterTemplates -
-// always the 4 built-ins plus whatever's actually in the SUBH Letter
-// Templates Drive folder), the NLU tool's own enum and the validation
-// below both use it, so a plain-language mention of a Drive template's
-// name (e.g. "Appointment Letter diye") can resolve straight to that
-// template - never guessed, always one of the real, current options; if
-// none matches, the model has nothing valid to pick and the existing
-// "no template chosen" unclear path fires, exactly as for a built-in.
-// Any caller that doesn't pass a list (every pre-existing test, and
-// check-workflow-nlu.js's own calls) keeps behaving exactly as before -
-// just the 4 built-in keys, zero Drive lookups, zero new network calls.
+// every real production caller does, see workforceRoutes.js), the NLU
+// tool's own enum and the validation below both use it, so a
+// plain-language mention of a Drive template's name (e.g. "Appointment
+// Letter diye") can resolve straight to that template - never guessed,
+// always one of the real, current options; if none matches, the model
+// has nothing valid to pick and the existing "no template chosen"
+// unclear path fires. TASK 2 (2026-11), direct instruction ("Letter
+// types cleanup"): the 4 built-in letters are gone, so the fallback only
+// kicks in when NO list was passed at all (every pre-existing test, and
+// check-workflow-nlu.js's own calls, keep behaving exactly as before) -
+// a caller that DID pass a list, even an empty one (the real production
+// state before any Drive template has ever been uploaded), gets exactly
+// that list and never silently falls back to offering a retired
+// built-in. `[]` and `undefined`/no-arg are deliberately NOT the same
+// case here.
 function templateChoices(templateOptions) {
-  return (templateOptions && templateOptions.length) ? templateOptions : driveTemplatesService.BUILTIN_TEMPLATES;
+  return templateOptions || driveTemplatesService.BUILTIN_TEMPLATES;
 }
 function templateKeys(templateOptions) {
   return templateChoices(templateOptions).map((t) => t.key);
@@ -1492,7 +1538,7 @@ module.exports = {
   DOCUMENT_TEMPLATES, SEND_TO_TARGETS,
   MISSED_RUN_THRESHOLD_MS,
   RUN_LOCK_PREFIX, RUN_LOCK_TTL_SECONDS, OPEN_PHONES_KEY,
-  listWorkflowActionNeededItems,
+  listWorkflowActionNeededItems, listWorkflowsWithMissingTemplates,
   advanceFollowUps, processWorkflowReply, finishWorkflowRule, findRecordByKey,
   stopWorkflowRecord, markWorkflowRecordDone, remindWorkflowRecordNow,
   approveSendWorkflowRecord, declineWorkflowRecordApproval, resolveUnclearWorkflowRecord,

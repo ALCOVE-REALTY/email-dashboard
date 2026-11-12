@@ -190,6 +190,9 @@
   const letterCodesList = document.getElementById('hrLetterCodesList');
   const letterCountersList = document.getElementById('hrLetterCountersList');
   const letterRegisterRow = document.getElementById('hrLetterRegisterRow');
+  const letterDuplicateCodeWarnings = document.getElementById('hrLetterDuplicateCodeWarnings');
+  const letterMissingTemplatesSection = document.getElementById('hrLetterMissingTemplatesSection');
+  const letterMissingTemplatesList = document.getElementById('hrLetterMissingTemplatesList');
   const letterCounterSheetBackdrop = document.getElementById('hrLetterCounterSheetBackdrop');
   const letterCounterSheet = document.getElementById('hrLetterCounterSheet');
   const letterCounterSheetCloseBtn = document.getElementById('hrLetterCounterSheetCloseBtn');
@@ -3595,33 +3598,35 @@
   }
   // TASK 2 (2026-11), direct instruction - letter types follow the
   // templates automatically, never an Add/Delete here; each card shows
-  // the name and its code as TEXT with an Edit button only - no
-  // always-visible Save button. Edit reveals an inline field + Save/
-  // Cancel (code unique/uppercase/2-6 letters, validated authoritatively
-  // server-side in letterSettingsService.saveLetterCode).
+  // the display name (editable, next to the code) and its code as TEXT
+  // with Edit buttons only - no always-visible Save button. Each Edit
+  // reveals its own inline field + Save/Cancel (code unique/uppercase/
+  // 2-6 letters, validated authoritatively server-side in
+  // letterSettingsService.saveLetterCode/saveLetterDisplayName).
   function letterCodeRowHtml(letterType, label, code, fieldsStatus) {
-    // "Send test letter to me" (2026-11, direct instruction) - Drive
-    // templates only (built-in letter types already have a proven PDF
-    // path and don't need this). Verifies the real copy/fill/export/
-    // save/register-append chain end to end on production.
-    const isDrive = typeof letterType === 'string' && letterType.indexOf('drive:') === 0;
-    const sendTestBtn = isDrive ? '<button type="button" class="plain" data-action="send-test-letter">Send test to me</button>' : '';
+    // "Send test letter to me" (2026-11, direct instruction) - every
+    // template is a Drive one now (TASK 2, 2026-11).
+    const sendTestBtn = '<button type="button" class="plain" data-action="send-test-letter">Send test to me</button>';
     // Field mapping (2026-11, direct instruction) - "Fields" opens the
     // review/proposal sheet; the hint line shows live mapped/total counts
     // from the server's own fieldsStatus (same source the sheet itself
     // uses, so this can never disagree with what Save would persist).
-    let fieldsHint = '';
-    let fieldsBtn = '';
-    if (isDrive) {
-      fieldsBtn = '<button type="button" class="plain" data-action="open-field-mapping">Fields</button>';
-      const fs = fieldsStatus || { mapped: 0, total: 0 };
-      const fieldsText = fs.total === 0 ? 'no placeholders found' :
-        (fs.mapped === fs.total ? fs.total + '/' + fs.total + ' mapped' : (fs.total - fs.mapped) + ' need your input');
-      fieldsHint = '<div class="wf-auto-hint" data-role="letter-fields-status">Fields: ' + escapeHtml(fieldsText) + '</div>';
-    }
+    const fieldsBtn = '<button type="button" class="plain" data-action="open-field-mapping">Fields</button>';
+    const fs = fieldsStatus || { mapped: 0, total: 0 };
+    const fieldsText = fs.total === 0 ? 'no placeholders found' :
+      (fs.mapped === fs.total ? fs.total + '/' + fs.total + ' mapped' : (fs.total - fs.mapped) + ' need your input');
+    const fieldsHint = '<div class="wf-auto-hint" data-role="letter-fields-status">Fields: ' + escapeHtml(fieldsText) + '</div>';
     return '<div class="wf-auto-task-card" data-letter-type="' + escapeHtml(letterType) + '">' +
       '<div class="wf-auto-task-head"><div style="flex:1;min-width:0">' +
-      '<div class="wf-auto-task-subject">' + escapeHtml(label) + '</div>' +
+      '<div class="wf-auto-task-subject" data-role="letter-name-display">' + escapeHtml(label) +
+      ' <button type="button" class="plain" data-action="edit-letter-name" style="font-size:0.7rem;padding:2px 6px">Edit name</button></div>' +
+      '<div data-role="letter-name-edit-wrap" style="margin-top:4px" hidden>' +
+      '<label class="wf-rem-field"><input type="text" data-role="letter-name-input" value="' + escapeHtml(label || '') + '" /></label>' +
+      '<div class="wf-auto-err hidden" data-role="letter-name-err" style="padding:0"></div>' +
+      '<div class="wf-auto-actions" style="margin-top:4px">' +
+      '<button type="button" class="plain" data-action="save-letter-name">Save</button>' +
+      '<button type="button" class="plain" data-action="cancel-letter-name">Cancel</button>' +
+      '</div></div>' +
       '<div class="wf-auto-hint" data-role="letter-code-display">Code: ' + escapeHtml(code || '—') + '</div>' +
       fieldsHint +
       '<div data-role="letter-code-edit-wrap" style="margin-top:6px" hidden>' +
@@ -3629,20 +3634,23 @@
       '<div class="wf-auto-err hidden" data-role="letter-code-err" style="padding:0"></div>' +
       '</div>' +
       '</div></div>' +
-      '<div class="wf-auto-actions" data-role="letter-code-actions-view"><button type="button" class="plain" data-action="edit-letter-code">Edit</button>' + fieldsBtn + sendTestBtn + '</div>' +
+      '<div class="wf-auto-actions" data-role="letter-code-actions-view"><button type="button" class="plain" data-action="edit-letter-code">Edit code</button>' + fieldsBtn + sendTestBtn + '</div>' +
       '<div class="wf-auto-actions" data-role="letter-code-actions-edit" style="display:none">' +
       '<button type="button" class="plain" data-action="save-letter-code">Save</button>' +
       '<button type="button" class="plain" data-action="cancel-letter-code">Cancel</button>' +
       '</div></div>';
   }
-  // TASK 1 (2026-11), direct instruction - counters run per LETTER TYPE
-  // only now (never split by company) - one card per type, "<Label> ·
-  // next 0013".
+  // TASK 2 (2026-11), direct instruction - counters now key by LETTER
+  // CODE, not by template (letterSettingsService's own counterKey), so
+  // this renders ONE card per code - "<code> (<label1>, <label2>) · next
+  // 0013" when 2+ templates share it, just "<label> · next 0013"
+  // otherwise.
   function letterCounterRowHtml(item) {
-    const label = (letterSettingsState.letterTypeLabels && letterSettingsState.letterTypeLabels[item.letterType]) || item.letterType;
-    return '<div class="wf-auto-task-card" data-letter-type="' + escapeHtml(item.letterType) + '">' +
+    const labels = (item.templateKeys || []).map((k) => (letterSettingsState.letterTypeLabels && letterSettingsState.letterTypeLabels[k]) || k);
+    const title = labels.length > 1 ? (item.code + ' (' + labels.join(', ') + ')') : (labels[0] || item.code);
+    return '<div class="wf-auto-task-card" data-code="' + escapeHtml(item.code) + '" data-template-key="' + escapeHtml((item.templateKeys || [])[0] || '') + '">' +
       '<div class="wf-auto-task-head"><div style="flex:1;min-width:0">' +
-      '<div class="wf-auto-task-subject">' + escapeHtml(label) + ' · next ' + escapeHtml(String(item.nextNumber).padStart(4, '0')) + '</div>' +
+      '<div class="wf-auto-task-subject">' + escapeHtml(title) + ' · next ' + escapeHtml(String(item.nextNumber).padStart(4, '0')) + '</div>' +
       '</div></div>' +
       '<div class="wf-auto-actions"><button type="button" class="plain" data-action="edit-counter">Edit</button></div></div>';
   }
@@ -3732,6 +3740,57 @@
           openFieldMappingSheet(card.dataset.letterType);
         });
       });
+      // TASK 2 (2026-11), direct instruction - editable display name, same
+      // view/edit toggle shape as the code above, its own independent
+      // Edit/Save/Cancel.
+      function setLetterNameEditMode(card, editing) {
+        card.querySelector('[data-role="letter-name-display"]').hidden = editing;
+        card.querySelector('[data-role="letter-name-edit-wrap"]').hidden = !editing;
+      }
+      letterCodesList.querySelectorAll('[data-action="edit-letter-name"]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const card = btn.closest('[data-letter-type]');
+          setLetterNameEditMode(card, true);
+          const input = card.querySelector('[data-role="letter-name-input"]');
+          if (input) { input.focus(); input.select(); }
+        });
+      });
+      letterCodesList.querySelectorAll('[data-action="cancel-letter-name"]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const card = btn.closest('[data-letter-type]');
+          const letterType = card.dataset.letterType;
+          const input = card.querySelector('[data-role="letter-name-input"]');
+          if (input) input.value = (letterSettingsState.letterTypeLabels || {})[letterType] || '';
+          const err = card.querySelector('[data-role="letter-name-err"]');
+          if (err) { err.textContent = ''; err.classList.add('hidden'); }
+          setLetterNameEditMode(card, false);
+        });
+      });
+      letterCodesList.querySelectorAll('[data-action="save-letter-name"]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          const card = btn.closest('[data-letter-type]');
+          const letterType = card.dataset.letterType;
+          const input = card.querySelector('[data-role="letter-name-input"]');
+          const name = (input ? input.value : '').trim();
+          const err = card.querySelector('[data-role="letter-name-err"]');
+          if (!name) {
+            if (err) { err.textContent = 'Name cannot be empty.'; err.classList.remove('hidden'); }
+            return;
+          }
+          if (err) { err.textContent = ''; err.classList.add('hidden'); }
+          await runButtonAction(btn, () => postJsonOrThrow('/api/workforce/hr-assistant/letter-settings/display-name', { letterType, name }), () => {
+            showActionToast('Name saved');
+            pageDataCache.letterSettings = null;
+            loadLetterSettingsPage();
+          }, { resetAfterSuccess: true, toastFn: (msg) => { if (err) { err.textContent = msg; err.classList.remove('hidden'); } } });
+        });
+      });
+    }
+    if (letterDuplicateCodeWarnings) {
+      const warnings = data.duplicateCodeWarnings || [];
+      letterDuplicateCodeWarnings.innerHTML = warnings.map((w) =>
+        '<div class="wf-auto-err" style="margin:0 4px 8px;padding:8px 10px">Two templates use ' + escapeHtml(w.code) + ' - they share one serial (' + w.labels.map(escapeHtml).join(', ') + ').</div>'
+      ).join('');
     }
     if (letterCountersList) {
       if (!(data.counters || []).length) letterCountersList.innerHTML = '<div class="wf-rem-empty">No letter types found yet.</div>';
@@ -3739,10 +3798,22 @@
         letterCountersList.innerHTML = data.counters.map(letterCounterRowHtml).join('');
         letterCountersList.querySelectorAll('[data-action="edit-counter"]').forEach((btn) => {
           btn.addEventListener('click', () => {
-            const card = btn.closest('[data-letter-type]');
-            openLetterCounterSheet({ letterType: card.dataset.letterType });
+            const card = btn.closest('[data-code]');
+            openLetterCounterSheet({ code: card.dataset.code, letterType: card.dataset.templateKey });
           });
         });
+      }
+    }
+    if (letterMissingTemplatesSection && letterMissingTemplatesList) {
+      const missing = data.missingTemplateWorkflows || [];
+      letterMissingTemplatesSection.hidden = !missing.length;
+      if (missing.length) {
+        letterMissingTemplatesList.innerHTML = missing.map((w) =>
+          '<div class="wf-auto-task-card"><div class="wf-auto-task-head"><div style="flex:1;min-width:0">' +
+          '<div class="wf-auto-task-subject">' + escapeHtml(w.subject || w.id) + '</div>' +
+          '<div class="wf-auto-hint">Template missing - choose a Drive template. (' + w.fields.map((f) => escapeHtml(f.field)).join(', ') + ')</div>' +
+          '</div></div></div>'
+        ).join('');
       }
     }
     if (letterRegisterRow) {
@@ -3885,12 +3956,17 @@
     letterCounterSheet.classList.remove('open');
     setTimeout(() => { letterCounterSheetBackdrop.hidden = true; letterCounterSheet.hidden = true; }, 320);
   }
+  // TASK 2 (2026-11), direct instruction - counters are per CODE now;
+  // `letterType` here is just a REPRESENTATIVE template key (any template
+  // sharing this code resolves to the exact same counter server-side), so
+  // the existing letterType-based counter route needs no change.
   let letterCounterSheetState = { letterType: '' };
-  function openLetterCounterSheet({ letterType }) {
+  function openLetterCounterSheet({ code, letterType }) {
     letterCounterSheetState = { letterType };
-    const item = (letterSettingsState.counters || []).find((c) => c.letterType === letterType);
-    const label = (letterSettingsState.letterTypeLabels || {})[letterType] || letterType;
-    if (letterCounterSheetTitle) letterCounterSheetTitle.textContent = 'Edit "' + label + '"';
+    const item = (letterSettingsState.counters || []).find((c) => c.code === code);
+    const labels = (item && item.templateKeys || []).map((k) => (letterSettingsState.letterTypeLabels || {})[k] || k);
+    const title = labels.length ? labels.join(', ') : (code || letterType);
+    if (letterCounterSheetTitle) letterCounterSheetTitle.textContent = 'Edit "' + title + '"';
     if (letterCounterNextInput) letterCounterNextInput.value = item ? item.nextNumber : 1;
     if (letterCounterSheetErr) { letterCounterSheetErr.textContent = ''; letterCounterSheetErr.classList.add('hidden'); }
     letterCounterSheetBackdrop.hidden = false;
@@ -6593,8 +6669,14 @@
     'Proti maser 1 tarikh oi maser pending probation confirmation gulo protita employee-r Reporting Manager ke alada mail korbe, ar HR team-er 4 jon ke confirmation letter-er PDF soho ekta list mail. 2 din-e reply na ele follow-up. Approved hole "Noted with thanks", extension hole koto mash jene employee ke Extension of Probation Period mail.'
   ];
   const WF_PLACEHOLDERS = ['{Employee_No}', '{Employee_Name}', '{Designation}', '{Department}', '{Manager_Name}', '{Current_Month}', '{Current_Year}'];
-  const WF_DOC_LABELS = { confirmation: 'Confirmation Letter', extension: 'Extension of Probation Letter', experience: 'Experience Letter', relieving: 'Relieving Letter' };
   const WF_SEND_TO_LABELS = { self: 'The employee', manager: 'The Reporting Manager', hr: 'HR team', accounts: 'Accounts team' };
+  // TASK 2 (2026-11), direct instruction ("Letter types cleanup"): the 4
+  // built-in letters are gone - both the Section 6 "Template" dropdown
+  // (wfDocsTpl) and a rule's own "Attach a document" dropdown now list
+  // only real, current Drive templates, from this ONE live list
+  // (loadWfDocsTemplateOptions populates it, re-rendering any already-
+  // drawn rules so the two dropdowns can never disagree).
+  let wfTemplateOptionsList = [];
 
   // ---------- DOM refs ----------
   const wfTaskBtn = document.getElementById('hrWorkflowTaskBtn');
@@ -6848,7 +6930,7 @@
     if (wfAlsoTable) wfAlsoTable.checked = false;
     if (wfAlsoDocs) wfAlsoDocs.checked = false;
     if (wfDocsOn) wfDocsOn.checked = false;
-    if (wfDocsTpl) wfDocsTpl.value = 'confirmation';
+    if (wfDocsTpl) wfDocsTpl.value = '';
     if (wfDocsWhere) wfDocsWhere.value = 'also';
     if (wfFuDays) wfFuDays.value = 2;
     if (wfFuMax) wfFuMax.value = 2;
@@ -6894,7 +6976,12 @@
     if (wfAlsoDocs) wfAlsoDocs.checked = Boolean(also.docs);
     const docs = w.plan.docs || { on: false };
     if (wfDocsOn) wfDocsOn.checked = Boolean(docs.on);
-    if (wfDocsTpl) wfDocsTpl.value = docs.template || 'confirmation';
+    // TASK 2 (2026-11), direct instruction: no more 'confirmation' default
+    // - a <select> silently ignores a value with no matching <option>,
+    // which is exactly right here: if this workflow's saved template is a
+    // retired built-in or a since-deleted Drive file, the dropdown simply
+    // shows no selection rather than silently swapping in some other one.
+    if (wfDocsTpl) wfDocsTpl.value = docs.template || '';
     if (wfDocsWhere) wfDocsWhere.value = docs.attachTo || 'also';
     const fu = w.plan.followUp || { days: 2, max: 2, body: '' };
     if (wfFuDays) wfFuDays.value = fu.days || 2;
@@ -6914,19 +7001,27 @@
   }
   // TASK 1(b) (2026-11), direct instruction - every Drive template (Google
   // Doc / .docx already in the owner's "SUBH Letter Templates" folder)
-  // appears automatically alongside the 4 built-in letters. Always
-  // rebuilt from the live merged list (never cached) so a template added
-  // to Drive shows up the next time this page opens, with no separate
-  // "refresh" step. The 4 built-in <option>s already in the markup are a
-  // safe fallback if this fetch fails (e.g. offline) - the dropdown still
-  // works, it just won't show any Drive templates that session.
+  // appears automatically. TASK 2 (2026-11), direct instruction ("Letter
+  // types cleanup"): the 4 built-ins are gone - always rebuilt from the
+  // live list (never cached) so a template added to Drive shows up the
+  // next time this page opens, with no separate "refresh" step, and an
+  // EMPTY list renders as "No templates yet" rather than leaving stale
+  // markup in place (never silently falling back to a built-in).
   async function loadWfDocsTemplateOptions() {
     if (!wfDocsTpl) return;
+    let items = [];
     try {
       const r = await fetch('/api/workforce/hr-assistant/letter-templates').then((res) => res.json());
-      const items = r.items || [];
-      if (items.length) wfDocsTpl.innerHTML = items.map((t) => '<option value="' + escapeHtml(t.key) + '">' + escapeHtml(t.label) + '</option>').join('');
-    } catch (err) { /* best effort - see comment above */ }
+      items = r.items || [];
+    } catch (err) { /* best effort - falls through to the empty-state option below */ }
+    wfTemplateOptionsList = items;
+    wfDocsTpl.innerHTML = items.length
+      ? items.map((t) => '<option value="' + escapeHtml(t.key) + '">' + escapeHtml(t.label) + '</option>').join('')
+      : '<option value="">No templates yet - add one to SUBH Letter Templates</option>';
+    // A rule's own "Attach a document" dropdown (wfRenderRuleFields) reads
+    // from wfTemplateOptionsList too - re-render any rules already drawn
+    // before this fetch resolved, so it never shows a stale/empty list.
+    if (wfRulesEl) renderWfRules();
   }
   // TASK 1(c) (2026-11), direct instruction - field mapping for a Drive
   // template: SUBH detects every {placeholder} and proposes how to fill
@@ -7161,7 +7256,7 @@
         subject: wfAlsoSubj ? wfAlsoSubj.value : '', body: wfAlsoBody ? wfAlsoBody.value : '',
         table: Boolean(wfAlsoTable && wfAlsoTable.checked), docs: Boolean(wfAlsoDocs && wfAlsoDocs.checked)
       },
-      docs: { on: Boolean(wfDocsOn && wfDocsOn.checked), template: wfDocsTpl ? wfDocsTpl.value : 'confirmation', attachTo: wfDocsWhere ? wfDocsWhere.value : 'also' },
+      docs: { on: Boolean(wfDocsOn && wfDocsOn.checked), template: wfDocsTpl ? wfDocsTpl.value : '', attachTo: wfDocsWhere ? wfDocsWhere.value : 'also' },
       followUp: { days: Number(wfFuDays && wfFuDays.value) || 2, max: Number(wfFuMax && wfFuMax.value) || 2, body: wfFuBody ? wfFuBody.value : '' },
       rules: JSON.parse(JSON.stringify(wfRules))
     });
@@ -7240,7 +7335,7 @@
         '<label class="wf-rem-field">Subject<input type="text" data-r="' + i + '" data-k="sendSubject" value="' + escapeHtml(r.sendSubject || '') + '" autocomplete="off"></label>' +
         '<label class="wf-rem-field">Body<textarea data-r="' + i + '" data-k="sendBody" class="wf-auto-body" style="min-height:90px" autocomplete="off">' + escapeHtml(r.sendBody || '') + '</textarea></label>' +
         '<div class="wf-auto-hint">{Reply_Detail} = what they told SUBH (only filled when "ask for a missing detail" above is used).</div>' +
-        '<label class="wf-rem-field">Attach a document<select data-r="' + i + '" data-k="sendDocument"><option value="">None</option>' + Object.keys(WF_DOC_LABELS).map((v) => '<option value="' + v + '" ' + (r.sendDocument === v ? 'selected' : '') + '>' + WF_DOC_LABELS[v] + '</option>').join('') + '</select></label>' +
+        '<label class="wf-rem-field">Attach a document<select data-r="' + i + '" data-k="sendDocument"><option value="">None</option>' + wfTemplateOptionsList.map((t) => '<option value="' + escapeHtml(t.key) + '" ' + (r.sendDocument === t.key ? 'selected' : '') + '>' + escapeHtml(t.label) + '</option>').join('') + '</select></label>' +
         '<label class="wf-auto-check"><input type="checkbox" data-r="' + i + '" data-k="askMeFirst" ' + (r.askMeFirst ? 'checked' : '') + '> Ask me before sending this message</label>'
       ) : '') +
       '<label class="wf-rem-field">Then<select data-r="' + i + '" data-k="then"><option value="stop" ' + (r.then === 'stop' ? 'selected' : '') + '>Done for this record</option><option value="wait" ' + (r.then === 'wait' ? 'selected' : '') + '>Keep waiting (follow up again)</option><option value="askme" ' + (r.then === 'askme' ? 'selected' : '') + '>Ask me</option></select></label>' +
@@ -7312,7 +7407,7 @@
       if (wfAlsoTable) wfAlsoTable.checked = Boolean(draft.plan.also && draft.plan.also.table);
       if (wfAlsoDocs) wfAlsoDocs.checked = Boolean(draft.plan.also && draft.plan.also.docs);
       if (wfDocsOn) wfDocsOn.checked = Boolean(draft.plan.docs && draft.plan.docs.on);
-      if (wfDocsTpl) wfDocsTpl.value = (draft.plan.docs && draft.plan.docs.template) || 'confirmation';
+      if (wfDocsTpl) wfDocsTpl.value = (draft.plan.docs && draft.plan.docs.template) || '';
       if (wfDocsWhere) wfDocsWhere.value = (draft.plan.docs && draft.plan.docs.attachTo) || 'also';
       if (wfFuDays) wfFuDays.value = (draft.plan.followUp && draft.plan.followUp.days) || 2;
       if (wfFuMax) wfFuMax.value = (draft.plan.followUp && draft.plan.followUp.max) || 2;
@@ -7436,9 +7531,10 @@
   // (scrollable, real pages) via an <iframe> onto a data: URL, plus a
   // Download button that saves the SAME bytes, never a second re-fetch.
   if (wfDocsPreviewBtn) wfDocsPreviewBtn.addEventListener('click', async () => {
-    const tpl = wfDocsTpl ? wfDocsTpl.value : 'confirmation';
+    const tpl = wfDocsTpl ? wfDocsTpl.value : '';
     wfPreviewTitle && (wfPreviewTitle.textContent = 'Document preview');
-    if (wfPreviewBody) wfPreviewBody.innerHTML = '<div class="wf-rem-empty">Generating the ' + escapeHtml(WF_DOC_LABELS[tpl] || tpl) + '…</div>';
+    const tplLabel = (wfTemplateOptionsList.find((t) => t.key === tpl) || {}).label || tpl;
+    if (wfPreviewBody) wfPreviewBody.innerHTML = '<div class="wf-rem-empty">Generating the ' + escapeHtml(tplLabel) + '…</div>';
     if (wfPreviewBackdrop) wfPreviewBackdrop.hidden = false;
     if (wfPreviewSheet) { wfPreviewSheet.hidden = false; requestAnimationFrame(() => wfPreviewSheet.classList.add('open')); }
     try {

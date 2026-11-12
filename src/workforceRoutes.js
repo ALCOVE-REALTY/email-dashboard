@@ -3143,43 +3143,60 @@ router.post('/hr-assistant/letter-logo', async (req, res) => {
 });
 
 // TASK 1(b)/(c) (2026-11), direct instruction - "Letter settings": Ref No.
-// format (with a live preview + tap-to-insert chips), a code per letter
-// type, and ONE counter per letter type (TASK 1, 2026-11 follow-up, direct
-// instruction - counters run per letter type only, never split by company;
-// see letterSettingsService.js's own migrateCountersToPerTypeOnly for how
-// an existing per-company counter is folded in) for the CURRENT financial
-// year (a future FY's counter is created automatically on its own first
-// letter - nothing to show or set up here ahead of time). The letter-type
-// list itself is the SAME merged (built-in + Drive template) list
-// driveTemplatesService.listAllLetterTemplates() gives the Create Workflow
-// page's own Template dropdown - the two can never show different
-// templates.
+// format (with a live preview + tap-to-insert chips), a code + display
+// name per template. TASK 2 (2026-11), direct instruction ("Letter types
+// cleanup"): the letter-type list is now ONLY real Drive templates
+// (driveTemplatesService.listAllLetterTemplates() no longer returns the 4
+// built-ins - same list the Create Workflow page's own Template dropdown
+// uses, so the two can never disagree); counters are now ONE CARD PER
+// CODE, not per template (letterSettingsService's own counters are keyed
+// by code - see migrateCountersToPerCodeOnly - so two templates sharing a
+// code already share one real counter; this just renders that correctly
+// instead of showing it twice); `duplicateCodeWarnings` flags any code
+// still used by 2+ templates ("Two templates use CONF..."); `missingTemplateWorkflows`
+// lists any saved workflow/task whose plan.docs.template or a rule's
+// sendDocument no longer resolves to a real template (a retired built-in,
+// or a Drive file since moved/deleted) - the owner's own "list them for
+// me" requirement.
 router.get('/hr-assistant/letter-settings', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
   try {
     const now = new Date();
     const fy = letterSettingsService.computeFinancialYear(now);
-    const [settings, registerLink, templates] = await Promise.all([
+    const [settings, registerLink, templates, missingTemplateWorkflows] = await Promise.all([
       letterSettingsService.getLetterSettings(),
       letterSettingsService.getLetterRegisterLink(),
-      driveTemplatesService.listAllLetterTemplates()
+      driveTemplatesService.listAllLetterTemplates(),
+      workflowService.listWorkflowsWithMissingTemplates().catch(() => [])
     ]);
-    const letterTypeLabels = Object.assign({}, settings.letterTypeLabels);
+    const letterTypeLabels = {};
     const letterCodes = {};
     templates.forEach((t) => { letterTypeLabels[t.key] = t.label; letterCodes[t.key] = t.code; });
     const letterTypes = templates.map((t) => t.key);
+    // One counter card per CODE (not per template) - group templates by
+    // their resolved code, then read the counter ONCE per code (any
+    // template sharing that code resolves to the exact same counter
+    // internally, so the representative type's value is correct for all
+    // of them).
+    const byCode = new Map();
+    templates.forEach((t) => {
+      if (!t.code) return;
+      if (!byCode.has(t.code)) byCode.set(t.code, []);
+      byCode.get(t.code).push(t.key);
+    });
     const counters = [];
-    for (const letterType of letterTypes) {
-      const current = await letterSettingsService.getCounterValue(letterType, fy);
-      counters.push({ letterType, fy, nextNumber: current + 1 });
+    for (const [code, templateKeys] of byCode) {
+      const current = await letterSettingsService.getCounterValue(templateKeys[0], fy);
+      counters.push({ code, templateKeys, fy, nextNumber: current + 1 });
     }
+    const duplicateCodeWarnings = driveTemplatesService.findDuplicateLetterCodeWarnings(templates);
     // Field-mapping status (2026-11, direct instruction) - "Fields: N/M
     // mapped" per Drive template, same live extractPlaceholders()/
     // getTemplateMapping() pair the Fields review sheet itself uses, so
     // this card can never show a count that disagrees with what Save
-    // would actually persist. Built-in types have no placeholders at all.
+    // would actually persist.
     const fieldsStatus = {};
-    await Promise.all(templates.filter((t) => driveTemplatesService.isDriveTemplateKey(t.key)).map(async (t) => {
+    await Promise.all(templates.map(async (t) => {
       try {
         const [placeholders, saved] = await Promise.all([
           driveTemplateFieldsService.extractPlaceholders(t.driveFileId, t.mimeType),
@@ -3189,7 +3206,20 @@ router.get('/hr-assistant/letter-settings', async (req, res) => {
         fieldsStatus[t.key] = { mapped, total: placeholders.length };
       } catch (err) { fieldsStatus[t.key] = { mapped: 0, total: 0, error: err.message }; }
     }));
-    res.json(Object.assign({}, settings, { fy, letterTypes, letterTypeLabels, letterCodes, counters, registerLink, fieldsStatus }));
+    res.json(Object.assign({}, settings, { fy, letterTypes, letterTypeLabels, letterCodes, counters, duplicateCodeWarnings, missingTemplateWorkflows, registerLink, fieldsStatus }));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+// TASK 2 (2026-11), direct instruction - editable display name per
+// template, alongside its code (letterSettingsService.saveLetterDisplayName).
+router.post('/hr-assistant/letter-settings/display-name', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const { letterType, name } = req.body || {};
+    const result = await letterSettingsService.saveLetterDisplayName(letterType, name);
+    if (!result.ok) return res.status(400).json({ error: result.error });
+    res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

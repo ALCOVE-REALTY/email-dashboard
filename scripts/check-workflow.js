@@ -64,7 +64,6 @@ async function main() {
   const gmailService = require('../src/gmailService');
   const whatsapp = require('../src/whatsappService');
   const whatsappAssistant = require('../src/aiAssistant/whatsappAssistant');
-  const letterPdfRef = require('../src/letterPdf');
 
   const origGetEmployeeData = employeeService.getEmployeeData;
   const origSendMail = gmailService.sendMail;
@@ -200,6 +199,39 @@ async function main() {
   // passing exactly as before.
   const registerSetup = await letterSettingsService.setRegisterSheetLink('https://docs.google.com/spreadsheets/d/fake-register-sheet');
   if (!registerSetup.ok) throw new Error('test setup: could not set the fake Letter Register sheet - ' + registerSetup.error);
+
+  // TASK 2 (2026-11), direct instruction ("Letter types cleanup"): the 4
+  // built-in letters (confirmation/extension/experience/relieving) are no
+  // longer valid, selectable templates anywhere in the real app - every
+  // template is a Drive one now (driveTemplatesService.listAllLetterTemplates
+  // returns Drive templates only). This ONE fake Drive template stands in
+  // for "a real Drive template" for every test below that used to pass a
+  // built-in key, reusing the Drive/Docs client fakes already stubbed just
+  // above (subhDriveAuth.getDriveClient/getDocsClient) - no new mocking
+  // needed, just a different template key.
+  const origListAllLetterTemplates = driveTemplatesService.listAllLetterTemplates;
+  const origExtractPlaceholders = driveTemplateFieldsService.extractPlaceholders;
+  const origGetTemplateMapping = driveTemplateFieldsService.getTemplateMapping;
+  const DRIVE_TPL_KEY = 'drive:faketpl1';
+  const DRIVE_TEMPLATE_OPTIONS = [{ key: DRIVE_TPL_KEY, label: 'Bonus Letter' }];
+  driveTemplatesService.listAllLetterTemplates = async () => [{ key: DRIVE_TPL_KEY, label: 'Bonus Letter', builtin: false, driveFileId: 'faketpl1', mimeType: driveTemplatesService.GOOGLE_DOC_MIME, code: 'BL' }];
+  driveTemplateFieldsService.extractPlaceholders = async () => ['{Employee_Name}', '{Ref_No}'];
+  driveTemplateFieldsService.getTemplateMapping = async () => ({ '{Employee_Name}': { source: 'hr_column', column: 'Employee_Name' }, '{Ref_No}': { source: 'ref_no' } });
+  // listAllLetterTemplates is stubbed out entirely above, so its own
+  // first-discovery code self-heal never runs - seed it directly, same as
+  // the 'Alcove' company code seeded above.
+  await letterSettingsService.saveLetterCode(DRIVE_TPL_KEY, 'BL');
+  // Every real/preview Ref No. for a Drive template is captured as a
+  // {Ref_No} replaceAllText request on the fake Docs batchUpdate call
+  // (docsBatchUpdateCalls, above) - this pulls just those out, in order,
+  // the same way the built-in letters used to be captured by stubbing
+  // letterPdf.js's own buildConfirmationLetterPdf.
+  function capturedRefNos() {
+    return docsBatchUpdateCalls
+      .map((c) => (c.resource.requests || []).find((r) => r.replaceAllText && r.replaceAllText.containsText.text === '{Ref_No}'))
+      .filter(Boolean)
+      .map((r) => r.replaceAllText.replaceText);
+  }
 
   try {
     console.log('='.repeat(70));
@@ -522,7 +554,7 @@ async function main() {
     console.log('Phase 3: follow-ups - per-record gap tracking, exhaustion -> noreply + one owner alert, never silently drops the next scheduled run');
     console.log('='.repeat(70));
     async function makeRealRunWorkflow(overrides) {
-      const r = await workflowService.draftWorkflowPlanFromParsed(Object.assign({ unclear: [], source: 'confirmations', rec: 'column', recCol: 'reportingManager', group: 'each', mediator: 'mail', followUpDays: 1, followUpMax: 2, rules: [{ when: 'X', replyText: 'Y', then: 'stop' }] }, overrides), now, null);
+      const r = await workflowService.draftWorkflowPlanFromParsed(Object.assign({ unclear: [], source: 'confirmations', rec: 'column', recCol: 'reportingManager', group: 'each', mediator: 'mail', followUpDays: 1, followUpMax: 2, rules: [{ when: 'X', replyText: 'Y', then: 'stop' }] }, overrides), now, null, DRIVE_TEMPLATE_OPTIONS);
       const w = await create({ subject: overrides && overrides.subject || 'FU workflow', plan: r.plan, schedule: { date: '2026-11-15', time: '10:00', repeat: 'monthly' } });
       // advanceFollowUps/checkWorkflowMailReplies both gate on status==='active'
       // (a real workflow only reaches that via the explicit approve route) -
@@ -799,11 +831,11 @@ async function main() {
     });
 
     console.log('='.repeat(70));
-    console.log('Phase 6: documents - built-in letters generated and attached deterministically, never blocking a send if generation fails');
+    console.log('Phase 6: documents - a Drive template generated and attached deterministically, never blocking a send if generation fails (TASK 2, 2026-11, direct instruction: the 4 built-in letters are gone - every template is a Drive one now, same DRIVE_TPL_KEY fixture as Task 26 below)');
     console.log('='.repeat(70));
     await checkAsync('docs.attachTo="first" attaches a real generated PDF to EACH record\'s own first message (mail), via sendMailWithAttachment with a single `attachment`', async () => {
       const before = sentMail.filter((m) => m.kind === 'attachment').length;
-      const { run } = await makeRealRunWorkflow({ subject: 'Docs-first test', documentsOn: true, documentsTemplate: 'confirmation', documentsAttachTo: 'first' });
+      const { run } = await makeRealRunWorkflow({ subject: 'Docs-first test', documentsOn: true, documentsTemplate: DRIVE_TPL_KEY, documentsAttachTo: 'first' });
       const calls = sentMail.filter((m) => m.kind === 'attachment').slice(before);
       return calls.length === run.records.length
         && calls.every((m) => m.attachment && m.attachment.contentType === 'application/pdf' && Buffer.isBuffer(m.attachment.content) && m.attachment.content.length > 0)
@@ -812,7 +844,7 @@ async function main() {
     await checkAsync('docs.attachTo="also" (default) collects one document per matched record into the SINGLE "also send" message as an `attachments` array, not onto each record\'s own message', async () => {
       const before = sentMail.filter((m) => m.kind === 'attachment').length;
       const { run } = await makeRealRunWorkflow({
-        subject: 'Docs-also test', documentsOn: true, documentsTemplate: 'experience', documentsAttachTo: 'also',
+        subject: 'Docs-also test', documentsOn: true, documentsTemplate: DRIVE_TPL_KEY, documentsAttachTo: 'also',
         alsoSendOn: true, alsoSendTo: ['Hema HOD'], alsoSendSubject: 'FYI', alsoSendBody: 'See attached.', alsoSendDocs: true
       });
       const calls = sentMail.filter((m) => m.kind === 'attachment').slice(before);
@@ -832,7 +864,7 @@ async function main() {
       workflowService.callWorkflowTool = async (sys, user, tool) => (tool.name === 'classify_workflow_reply' ? { ruleIndex: 0 } : { isUnclear: true });
       try {
         const before = sentMail.filter((m) => m.kind === 'attachment').length;
-        const { w, run } = await makeRealRunWorkflow({ subject: 'Rule sendDocument test', rules: [{ when: 'Confirmed', replyText: 'Noted.', sendTo: 'self', sendSubject: 'Your confirmation letter', sendBody: 'Please find it attached.', sendDocument: 'confirmation', then: 'stop' }] });
+        const { w, run } = await makeRealRunWorkflow({ subject: 'Rule sendDocument test', rules: [{ when: 'Confirmed', replyText: 'Noted.', sendTo: 'self', sendSubject: 'Your confirmation letter', sendBody: 'Please find it attached.', sendDocument: DRIVE_TPL_KEY, then: 'stop' }] });
         const rec = run.records[0];
         simulateIncomingMail(rec.threadId, rec.contact.email, 'Confirmed, thank you.');
         await workflowService.checkWorkflowMailReplies(new Date(now.getTime() + 60000));
@@ -846,7 +878,7 @@ async function main() {
       workflowService.callWorkflowTool = async (sys, user, tool) => (tool.name === 'classify_workflow_reply' ? { ruleIndex: 0 } : { isUnclear: true });
       try {
         const before = sentMail.filter((m) => m.kind === 'attachment').length;
-        const { w, run } = await makeRealRunWorkflow({ subject: 'Rule sendDocument approve test', rules: [{ when: 'Confirmed', replyText: 'Noted.', sendTo: 'self', sendSubject: 'Your relieving letter', sendBody: 'Attached.', sendDocument: 'relieving', askMeFirst: true, then: 'stop' }] });
+        const { w, run } = await makeRealRunWorkflow({ subject: 'Rule sendDocument approve test', rules: [{ when: 'Confirmed', replyText: 'Noted.', sendTo: 'self', sendSubject: 'Your relieving letter', sendBody: 'Attached.', sendDocument: DRIVE_TPL_KEY, askMeFirst: true, then: 'stop' }] });
         const rec = run.records[0];
         simulateIncomingMail(rec.threadId, rec.contact.email, 'Confirmed, thank you.');
         await workflowService.checkWorkflowMailReplies(new Date(now.getTime() + 60000));
@@ -858,15 +890,15 @@ async function main() {
       } finally { workflowService.callWorkflowTool = origCallWorkflowTool; }
     });
     await checkAsync('a document generation failure for one record never blocks that record\'s own message or any other record\'s send', async () => {
-      const origBuildConfirmation = letterPdfRef.buildConfirmationLetterPdf;
-      letterPdfRef.buildConfirmationLetterPdf = () => { throw new Error('simulated pdf failure'); };
+      const origBatchUpdate = subhDriveAuth.getDocsClient;
+      subhDriveAuth.getDocsClient = () => ({ documents: { batchUpdate: async () => { throw new Error('simulated pdf failure'); } } });
       try {
         const beforeReplies = sentReplies.length;
         const beforeAttach = sentMail.filter((m) => m.kind === 'attachment').length;
-        const { run } = await makeRealRunWorkflow({ subject: 'Docs-failure test', documentsOn: true, documentsTemplate: 'confirmation', documentsAttachTo: 'first' });
+        const { run } = await makeRealRunWorkflow({ subject: 'Docs-failure test', documentsOn: true, documentsTemplate: DRIVE_TPL_KEY, documentsAttachTo: 'first' });
         return run.records.length >= 1 && run.records.every((r) => r.status === 'waiting')
           && sentMail.filter((m) => m.kind === 'attachment').length === beforeAttach; // no attachment went out, but the run itself completed fine
-      } finally { letterPdfRef.buildConfirmationLetterPdf = origBuildConfirmation; }
+      } finally { subhDriveAuth.getDocsClient = origBatchUpdate; }
     });
 
     console.log('='.repeat(70));
@@ -874,7 +906,7 @@ async function main() {
     console.log('='.repeat(70));
     await checkAsync('every letter from the SAME run shares one Batch value, but each gets its own distinct PDF link in the Letter Register', async () => {
       const before = registerAppends.length;
-      const { run } = await makeRealRunWorkflow({ subject: 'Batch value test', documentsOn: true, documentsTemplate: 'confirmation', documentsAttachTo: 'first' });
+      const { run } = await makeRealRunWorkflow({ subject: 'Batch value test', documentsOn: true, documentsTemplate: DRIVE_TPL_KEY, documentsAttachTo: 'first' });
       const rows = registerAppends.slice(before).map((a) => a.resource.values[0]);
       const batches = new Set(rows.map((r) => r[7]));
       const pdfLinks = new Set(rows.map((r) => r[8]));
@@ -889,11 +921,11 @@ async function main() {
         const notifBefore = ownerNotifications.length;
         const beforeAttach = sentMail.filter((m) => m.kind === 'attachment').length;
         const beforeAnyMail = sentMail.length;
-        const { run } = await makeRealRunWorkflow({ subject: 'Register failure test', documentsOn: true, documentsTemplate: 'confirmation', documentsAttachTo: 'first' });
+        const { run } = await makeRealRunWorkflow({ subject: 'Register failure test', documentsOn: true, documentsTemplate: DRIVE_TPL_KEY, documentsAttachTo: 'first' });
         return run.records.length >= 1 &&
           sentMail.filter((m) => m.kind === 'attachment').length === beforeAttach && // no attachment went out
           sentMail.length === beforeAnyMail + run.records.length && // the plain message still sent, one per record
-          ownerNotifications.length > notifBefore && /could not generate the confirmation letter/i.test(ownerNotifications[ownerNotifications.length - 1]);
+          ownerNotifications.length > notifBefore && /could not generate the/i.test(ownerNotifications[ownerNotifications.length - 1]);
       } finally { letterSettingsService.appendToLetterRegister = origAppend; }
     });
     await checkAsync('with NO register sheet set at all, every real-send letter is held the same way (never sent unlogged), while the plain message still sends', async () => {
@@ -902,7 +934,7 @@ async function main() {
       try {
         const notifBefore = ownerNotifications.length;
         const beforeAttach = sentMail.filter((m) => m.kind === 'attachment').length;
-        const { run } = await makeRealRunWorkflow({ subject: 'No register set test', documentsOn: true, documentsTemplate: 'confirmation', documentsAttachTo: 'first' });
+        const { run } = await makeRealRunWorkflow({ subject: 'No register set test', documentsOn: true, documentsTemplate: DRIVE_TPL_KEY, documentsAttachTo: 'first' });
         return run.records.length >= 1 &&
           sentMail.filter((m) => m.kind === 'attachment').length === beforeAttach &&
           ownerNotifications.length > notifBefore && /no letter register sheet is set/i.test(ownerNotifications[ownerNotifications.length - 1]);
@@ -914,7 +946,7 @@ async function main() {
       letterSettingsService.appendToLetterRegister = async () => { throw new Error('simulated register append failure'); };
       try {
         const before = sentMail.filter((m) => m.kind === 'attachment').length;
-        const { run } = await makeRealRunWorkflow({ subject: 'Rule sendDocument register failure test', rules: [{ when: 'Confirmed', replyText: 'Noted.', sendTo: 'self', sendSubject: 'Your confirmation letter', sendBody: 'Please find it attached.', sendDocument: 'confirmation', then: 'stop' }] });
+        const { run } = await makeRealRunWorkflow({ subject: 'Rule sendDocument register failure test', rules: [{ when: 'Confirmed', replyText: 'Noted.', sendTo: 'self', sendSubject: 'Your confirmation letter', sendBody: 'Please find it attached.', sendDocument: DRIVE_TPL_KEY, then: 'stop' }] });
         const rec = run.records[0];
         simulateIncomingMail(rec.threadId, rec.contact.email, 'Confirmed, thank you.');
         await workflowService.checkWorkflowMailReplies(new Date(now.getTime() + 60000));
@@ -933,17 +965,17 @@ async function main() {
     await checkAsync('previewWorkflowDocument generates a real PDF for the first matching record when the plan actually matches someone', async () => {
       const base = await workflowService.draftWorkflowPlanFromParsed({
         unclear: [], source: 'confirmations', rec: 'column', recCol: 'reportingManager', group: 'each', mediator: 'mail',
-        documentsOn: true, documentsTemplate: 'confirmation', documentsAttachTo: 'first', rules: [{ when: 'X', replyText: 'Y', then: 'stop' }]
-      }, now, null);
+        documentsOn: true, documentsTemplate: DRIVE_TPL_KEY, documentsAttachTo: 'first', rules: [{ when: 'X', replyText: 'Y', then: 'stop' }]
+      }, now, null, DRIVE_TEMPLATE_OPTIONS);
       const result = await workflowService.previewWorkflowDocument(base.plan, now);
       return result.ok === true && result.usedSample === false && Buffer.isBuffer(result.buffer) && result.buffer.length > 0 &&
-        result.filename.startsWith('Confirmation-Letter-');
+        result.filename.startsWith(DRIVE_TPL_KEY + '-');
     });
     await checkAsync('previewWorkflowDocument falls back to a SAMPLE real employee (never blocks) when the current plan matches no one yet', async () => {
       const base = await workflowService.draftWorkflowPlanFromParsed({
         unclear: [], source: 'confirmations', rec: 'column', recCol: 'reportingManager', group: 'each', mediator: 'mail',
-        documentsOn: true, documentsTemplate: 'experience', documentsAttachTo: 'first', rules: [{ when: 'X', replyText: 'Y', then: 'stop' }]
-      }, now, null);
+        documentsOn: true, documentsTemplate: DRIVE_TPL_KEY, documentsAttachTo: 'first', rules: [{ when: 'X', replyText: 'Y', then: 'stop' }]
+      }, now, null, DRIVE_TEMPLATE_OPTIONS);
       // "exits" matches nobody in this fixture (every employee is ACTIVE) -
       // a plan that currently resolves to zero rows, same as an owner who
       // hasn't finished configuring one yet.
@@ -954,90 +986,64 @@ async function main() {
     await checkAsync('previewWorkflowDocument never requires the workflow to be saved first - works from a freshly-drafted plan alone', async () => {
       const base = await workflowService.draftWorkflowPlanFromParsed({
         unclear: [], source: 'confirmations', rec: 'column', recCol: 'reportingManager', group: 'each', mediator: 'mail',
-        documentsOn: true, documentsTemplate: 'relieving', documentsAttachTo: 'first', rules: [{ when: 'X', replyText: 'Y', then: 'stop' }]
-      }, now, null);
+        documentsOn: true, documentsTemplate: DRIVE_TPL_KEY, documentsAttachTo: 'first', rules: [{ when: 'X', replyText: 'Y', then: 'stop' }]
+      }, now, null, DRIVE_TEMPLATE_OPTIONS);
       // Never saved/created anywhere - just the drafted plan object itself.
       const result = await workflowService.previewWorkflowDocument(base.plan, now);
       return result.ok === true && Buffer.isBuffer(result.buffer) && result.buffer.length > 0;
     });
 
     console.log('='.repeat(70));
-    console.log('Task 23 (2026-11), TASK 1(c)/(e) - real company + Ref No. (never a throwaway placeholder) + Title from Gender wired into the 4 built-in letters; preview/test never consume a real number');
+    console.log('Task 23 (2026-11), TASK 1(c)/(e) - real company + Ref No. (never a throwaway placeholder) wired into a Drive template; preview/test never consume a real number. (TASK 2, 2026-11, direct instruction: the Title-from-Gender test that used to live here was built-in-letter-specific - letterPdf.js\'s own field, never a Drive template concept - and is removed along with the built-in letters themselves; letterPdf.js\'s 4 builder functions are kept as dead code per direct instruction, just no longer reachable from a real send.)');
     console.log('='.repeat(70));
     await checkAsync('previewWorkflowDocument shows the fixed "Ref No. will be assigned on sending" text, never a real/fake number', async () => {
-      const origBuildConfirmation = letterPdfRef.buildConfirmationLetterPdf;
-      let captured = null;
-      letterPdfRef.buildConfirmationLetterPdf = async (fields) => { captured = fields; return origBuildConfirmation(fields); };
-      try {
-        const base = await workflowService.draftWorkflowPlanFromParsed({
-          unclear: [], source: 'confirmations', rec: 'column', recCol: 'reportingManager', group: 'each', mediator: 'mail',
-          documentsOn: true, documentsTemplate: 'confirmation', documentsAttachTo: 'first', rules: [{ when: 'X', replyText: 'Y', then: 'stop' }]
-        }, now, null);
-        const result = await workflowService.previewWorkflowDocument(base.plan, now);
-        return result.ok === true && captured && captured.refNo === 'Ref No. will be assigned on sending';
-      } finally { letterPdfRef.buildConfirmationLetterPdf = origBuildConfirmation; }
+      docsBatchUpdateCalls.length = 0;
+      const base = await workflowService.draftWorkflowPlanFromParsed({
+        unclear: [], source: 'confirmations', rec: 'column', recCol: 'reportingManager', group: 'each', mediator: 'mail',
+        documentsOn: true, documentsTemplate: DRIVE_TPL_KEY, documentsAttachTo: 'first', rules: [{ when: 'X', replyText: 'Y', then: 'stop' }]
+      }, now, null, DRIVE_TEMPLATE_OPTIONS);
+      const result = await workflowService.previewWorkflowDocument(base.plan, now);
+      const refNos = capturedRefNos();
+      return result.ok === true && refNos.length === 1 && refNos[0] === 'Ref No. will be assigned on sending';
     });
-    await checkAsync('previewWorkflowDocument derives Title (Mr./Ms.) from the real Gender column', async () => {
-      const origBuildConfirmation = letterPdfRef.buildConfirmationLetterPdf;
-      let captured = null;
-      letterPdfRef.buildConfirmationLetterPdf = async (fields) => { captured = fields; return origBuildConfirmation(fields); };
-      try {
-        // Alice Emp (E1) is this fixture's own confirmations-matching
-        // employee but has no Gender set in FAKE_EMPLOYEES - Title must
-        // come back empty (marital-status neutral default), never a
-        // guessed Mr./Ms.
-        const base = await workflowService.draftWorkflowPlanFromParsed({
-          unclear: [], source: 'confirmations', rec: 'column', recCol: 'reportingManager', group: 'each', mediator: 'mail',
-          documentsOn: true, documentsTemplate: 'confirmation', documentsAttachTo: 'first', rules: [{ when: 'X', replyText: 'Y', then: 'stop' }]
-        }, now, null);
-        await workflowService.previewWorkflowDocument(base.plan, now);
-        return captured && captured.title === '';
-      } finally { letterPdfRef.buildConfirmationLetterPdf = origBuildConfirmation; }
-    });
-    await checkAsync('a REAL run (never a test) assigns a real sequential Ref No. in the configured format and never reuses one', async () => {
-      const origBuildConfirmation = letterPdfRef.buildConfirmationLetterPdf;
-      const captured = [];
-      letterPdfRef.buildConfirmationLetterPdf = async (fields) => { captured.push(fields.refNo); return origBuildConfirmation(fields); };
-      try {
-        const before = registerAppends.length;
-        const base = await workflowService.draftWorkflowPlanFromParsed({
-          unclear: [], source: 'confirmations', rec: 'column', recCol: 'reportingManager', group: 'each', mediator: 'mail',
-          documentsOn: true, documentsTemplate: 'confirmation', documentsAttachTo: 'first', rules: [{ when: 'X', replyText: 'Y', then: 'stop' }]
-        }, now, null);
-        const w = await create({ subject: 'Real ref no. test', plan: base.plan, schedule: { date: '2026-11-15', time: '10:00', repeat: 'monthly' } });
-        w.status = 'active'; await workflowService.saveWorkflow(w);
-        const run1 = await workflowService.runWorkflow(w.id, {}, now);
-        const run2 = await workflowService.runWorkflow(w.id, {}, new Date(now.getTime() + 1000));
-        const okRun = run1.ok && run2.ok;
-        const format = captured.every((r) => /^ALC\/HR\/CONF\/\d{4}-\d{2}\/\d{4}$/.test(r));
-        const serials = captured.map((r) => Number(r.split('/').pop()));
-        const neverReused = new Set(serials).size === serials.length;
-        const appended = registerAppends.length > before;
-        return okRun && captured.length >= 2 && format && neverReused && appended;
-      } finally { letterPdfRef.buildConfirmationLetterPdf = origBuildConfirmation; }
+    await checkAsync('a REAL run (never a test) assigns a real sequential Ref No. in the configured format and never reuses one, across two separate runs', async () => {
+      docsBatchUpdateCalls.length = 0;
+      const before = registerAppends.length;
+      const base = await workflowService.draftWorkflowPlanFromParsed({
+        unclear: [], source: 'confirmations', rec: 'column', recCol: 'reportingManager', group: 'each', mediator: 'mail',
+        documentsOn: true, documentsTemplate: DRIVE_TPL_KEY, documentsAttachTo: 'first', rules: [{ when: 'X', replyText: 'Y', then: 'stop' }]
+      }, now, null, DRIVE_TEMPLATE_OPTIONS);
+      const w = await create({ subject: 'Real ref no. test', plan: base.plan, schedule: { date: '2026-11-15', time: '10:00', repeat: 'monthly' } });
+      w.status = 'active'; await workflowService.saveWorkflow(w);
+      const run1 = await workflowService.runWorkflow(w.id, {}, now);
+      const run2 = await workflowService.runWorkflow(w.id, {}, new Date(now.getTime() + 1000));
+      const okRun = run1.ok && run2.ok;
+      const captured = capturedRefNos();
+      const format = captured.every((r) => /^ALC\/HR\/BL\/\d{4}-\d{2}\/\d{4}$/.test(r));
+      const serials = captured.map((r) => Number(r.split('/').pop()));
+      const neverReused = new Set(serials).size === serials.length;
+      const appended = registerAppends.length > before;
+      return okRun && captured.length >= 2 && format && neverReused && appended;
     });
     await checkAsync('"Send test to me" never assigns a real number - still shows the preview placeholder, and the Letter Register is never touched', async () => {
-      const origBuildConfirmation = letterPdfRef.buildConfirmationLetterPdf;
-      const captured = [];
-      letterPdfRef.buildConfirmationLetterPdf = async (fields) => { captured.push(fields.refNo); return origBuildConfirmation(fields); };
-      try {
-        const before = registerAppends.length;
-        const base = await workflowService.draftWorkflowPlanFromParsed({
-          unclear: [], source: 'confirmations', rec: 'column', recCol: 'reportingManager', group: 'each', mediator: 'mail',
-          documentsOn: true, documentsTemplate: 'confirmation', documentsAttachTo: 'first', rules: [{ when: 'X', replyText: 'Y', then: 'stop' }]
-        }, now, null);
-        const w = await create({ subject: 'Send test ref no. test', plan: base.plan, schedule: { date: '2026-11-15', time: '10:00', repeat: 'monthly' } });
-        w.status = 'active'; await workflowService.saveWorkflow(w);
-        const result = await workflowService.runWorkflow(w.id, { isTest: true, testTo: 'owner@co.test' }, now);
-        return result.ok === true && captured.length >= 1 && captured.every((r) => r === 'Ref No. will be assigned on sending') && registerAppends.length === before;
-      } finally { letterPdfRef.buildConfirmationLetterPdf = origBuildConfirmation; }
+      docsBatchUpdateCalls.length = 0;
+      const before = registerAppends.length;
+      const base = await workflowService.draftWorkflowPlanFromParsed({
+        unclear: [], source: 'confirmations', rec: 'column', recCol: 'reportingManager', group: 'each', mediator: 'mail',
+        documentsOn: true, documentsTemplate: DRIVE_TPL_KEY, documentsAttachTo: 'first', rules: [{ when: 'X', replyText: 'Y', then: 'stop' }]
+      }, now, null, DRIVE_TEMPLATE_OPTIONS);
+      const w = await create({ subject: 'Send test ref no. test', plan: base.plan, schedule: { date: '2026-11-15', time: '10:00', repeat: 'monthly' } });
+      w.status = 'active'; await workflowService.saveWorkflow(w);
+      const result = await workflowService.runWorkflow(w.id, { isTest: true, testTo: 'owner@co.test' }, now);
+      const captured = capturedRefNos();
+      return result.ok === true && captured.length >= 1 && captured.every((r) => r === 'Ref No. will be assigned on sending') && registerAppends.length === before;
     });
     await checkAsync('a real send for a company with NO code set holds that record\'s letter (never sent with a blank/fake ref no.) and notifies the owner, but still sends the plain message', async () => {
       const notifBefore = ownerNotifications.length;
       const base = await workflowService.draftWorkflowPlanFromParsed({
         unclear: [], source: 'confirmations', rec: 'column', recCol: 'reportingManager', group: 'each', mediator: 'mail',
-        documentsOn: true, documentsTemplate: 'confirmation', documentsAttachTo: 'first', rules: [{ when: 'X', replyText: 'Y', then: 'stop' }]
-      }, now, null);
+        documentsOn: true, documentsTemplate: DRIVE_TPL_KEY, documentsAttachTo: 'first', rules: [{ when: 'X', replyText: 'Y', then: 'stop' }]
+      }, now, null, DRIVE_TEMPLATE_OPTIONS);
       // A DIFFERENT (never-configured) company, injected via a sheet-free
       // plan tweak: swap the condition to match Asha Accounts (A1,
       // company 'Alcove' too in this fixture) is not useful here since
@@ -1058,23 +1064,9 @@ async function main() {
     });
 
     console.log('='.repeat(70));
-    console.log('Task 26 (2026-11), TASK 1(d) - generation from a Drive template is wired into buildWorkflowDocumentBuffer/previewWorkflowDocument/a real run, through the SAME real company+Ref No. engine the 4 built-in letters use');
+    console.log('Task 26 (2026-11), TASK 1(d) - generation from a Drive template is wired into buildWorkflowDocumentBuffer/previewWorkflowDocument/a real run, through the SAME real company+Ref No. engine (DRIVE_TPL_KEY fixture set up once near the top of this file - also used by Phase 6/Task 20/Task 23 above now that the 4 built-in letters are gone)');
     console.log('='.repeat(70));
-    const origListAllLetterTemplates = driveTemplatesService.listAllLetterTemplates;
-    const origExtractPlaceholders = driveTemplateFieldsService.extractPlaceholders;
-    const origGetTemplateMapping = driveTemplateFieldsService.getTemplateMapping;
-    const DRIVE_TPL_KEY = 'drive:faketpl1';
-    driveTemplatesService.listAllLetterTemplates = async () => [{ key: DRIVE_TPL_KEY, label: 'Bonus Letter', builtin: false, driveFileId: 'faketpl1', mimeType: driveTemplatesService.GOOGLE_DOC_MIME, code: 'BL' }];
-    driveTemplateFieldsService.extractPlaceholders = async () => ['{Employee_Name}', '{Ref_No}'];
-    driveTemplateFieldsService.getTemplateMapping = async () => ({ '{Employee_Name}': { source: 'hr_column', column: 'Employee_Name' }, '{Ref_No}': { source: 'ref_no' } });
-    // The real listAllLetterTemplates() self-heals a Drive template's
-    // letter code into letterSettingsService's own raw store on first
-    // discovery (see driveTemplatesService.js) - since this fixture
-    // stubs listAllLetterTemplates out entirely above, that side effect
-    // never runs, so the code is seeded directly here instead, same as
-    // 'Alcove' company code is seeded above for the built-in letters.
-    await letterSettingsService.saveLetterCode(DRIVE_TPL_KEY, 'BL');
-    try {
+    {
       await checkAsync('previewWorkflowDocument for a Drive template fills it with the fixed placeholder ref no. text, never a real/fake number', async () => {
         driveCopyCalls.length = 0; docsBatchUpdateCalls.length = 0; driveDeleteCalls.length = 0;
         const base = await workflowService.draftWorkflowPlanFromParsed({ unclear: [], source: 'confirmations', rec: 'column', recCol: 'reportingManager', group: 'each', mediator: 'mail', rules: [{ when: 'X', replyText: 'Y', then: 'stop' }] }, now, null);
@@ -1118,10 +1110,6 @@ async function main() {
             ownerNotifications.length > notifBefore && /could not fill/i.test(ownerNotifications[ownerNotifications.length - 1]);
         } finally { driveTemplateFieldsService.getTemplateMapping = origMapping; }
       });
-    } finally {
-      driveTemplatesService.listAllLetterTemplates = origListAllLetterTemplates;
-      driveTemplateFieldsService.extractPlaceholders = origExtractPlaceholders;
-      driveTemplateFieldsService.getTemplateMapping = origGetTemplateMapping;
     }
 
     console.log('='.repeat(70));
@@ -1149,24 +1137,18 @@ async function main() {
       return !r.ok && r.unclear.some((u) => u.includes('which letter template') && u.includes('Appointment Letter'));
     });
     await checkAsync('a REAL run honors a docs.template that is a Drive key resolved this way, through the same buildWorkflowDocumentBuffer path as Task 26', async () => {
-      driveTemplatesService.listAllLetterTemplates = async () => [{ key: DRIVE_TPL_KEY, label: 'Bonus Letter', builtin: false, driveFileId: 'faketpl1', mimeType: driveTemplatesService.GOOGLE_DOC_MIME, code: 'BL' }];
-      driveTemplateFieldsService.extractPlaceholders = async () => ['{Employee_Name}'];
-      driveTemplateFieldsService.getTemplateMapping = async () => ({ '{Employee_Name}': { source: 'hr_column', column: 'Employee_Name' } });
-      try {
-        const r = await workflowService.draftWorkflowPlanFromParsed({ unclear: [], source: 'confirmations', rec: 'column', recCol: 'reportingManager', group: 'each', mediator: 'mail', documentsOn: true, documentsTemplate: DRIVE_TPL_KEY, rules: [{ when: 'X', replyText: 'Y', then: 'stop' }] }, now, null, [{ key: DRIVE_TPL_KEY, label: 'Bonus Letter' }]);
-        if (!r.ok || r.plan.docs.template !== DRIVE_TPL_KEY) return false;
-        const plan = Object.assign({}, r.plan, { docs: { on: true, template: DRIVE_TPL_KEY, attachTo: 'first' } });
-        const w = await create({ subject: 'By-name Drive template real send test', plan, schedule: { date: '2026-11-15', time: '10:00', repeat: 'monthly' } });
-        w.status = 'active'; await workflowService.saveWorkflow(w);
-        const beforeAttach = sentMail.filter((m) => m.kind === 'attachment').length;
-        const result = await workflowService.runWorkflow(w.id, {}, now);
-        const afterAttach = sentMail.filter((m) => m.kind === 'attachment').length;
-        return result.ok === true && afterAttach > beforeAttach;
-      } finally {
-        driveTemplatesService.listAllLetterTemplates = origListAllLetterTemplates;
-        driveTemplateFieldsService.extractPlaceholders = origExtractPlaceholders;
-        driveTemplateFieldsService.getTemplateMapping = origGetTemplateMapping;
-      }
+      // The global DRIVE_TPL_KEY fixture (set up once near the top of this
+      // file) already provides exactly this Drive template/placeholder/
+      // mapping shape - no local reassignment needed here.
+      const r = await workflowService.draftWorkflowPlanFromParsed({ unclear: [], source: 'confirmations', rec: 'column', recCol: 'reportingManager', group: 'each', mediator: 'mail', documentsOn: true, documentsTemplate: DRIVE_TPL_KEY, rules: [{ when: 'X', replyText: 'Y', then: 'stop' }] }, now, null, [{ key: DRIVE_TPL_KEY, label: 'Bonus Letter' }]);
+      if (!r.ok || r.plan.docs.template !== DRIVE_TPL_KEY) return false;
+      const plan = Object.assign({}, r.plan, { docs: { on: true, template: DRIVE_TPL_KEY, attachTo: 'first' } });
+      const w = await create({ subject: 'By-name Drive template real send test', plan, schedule: { date: '2026-11-15', time: '10:00', repeat: 'monthly' } });
+      w.status = 'active'; await workflowService.saveWorkflow(w);
+      const beforeAttach = sentMail.filter((m) => m.kind === 'attachment').length;
+      const result = await workflowService.runWorkflow(w.id, {}, now);
+      const afterAttach = sentMail.filter((m) => m.kind === 'attachment').length;
+      return result.ok === true && afterAttach > beforeAttach;
     });
 
     console.log('='.repeat(70));
@@ -1205,8 +1187,8 @@ async function main() {
       const before = sentMail.filter((m) => m.kind === 'attachment').length;
       const base = await workflowService.draftWorkflowPlanFromParsed({
         unclear: [], source: 'confirmations', rec: 'column', recCol: 'reportingManager', group: 'each', mediator: 'mail', followUpDays: 1, followUpMax: 2,
-        documentsOn: true, documentsTemplate: 'confirmation', documentsAttachTo: 'first', rules: [{ when: 'X', replyText: 'Y', then: 'stop' }]
-      }, now, null);
+        documentsOn: true, documentsTemplate: DRIVE_TPL_KEY, documentsAttachTo: 'first', rules: [{ when: 'X', replyText: 'Y', then: 'stop' }]
+      }, now, null, DRIVE_TEMPLATE_OPTIONS);
       const plan = Object.assign({}, base.plan, { table: true, tableColumns: ['Employee_Name'], tablePlacement: 'pdf', attachmentFormat: 'pdf' });
       const w = await create({ subject: 'Table + letter test', plan, schedule: { date: '2026-11-15', time: '10:00', repeat: 'monthly' } });
       w.status = 'active'; await workflowService.saveWorkflow(w);
@@ -1214,16 +1196,16 @@ async function main() {
       const run = await workflowService.getRun(w.id, result.runId);
       const calls = sentMail.filter((m) => m.kind === 'attachment').slice(before);
       // Distinguish the two attachments by the letter's own exact filename
-      // PREFIX (workflowDocFileName's WF_DOC_FILE_LABELS, "Confirmation-
-      // Letter-...") rather than a loose "Confirmation" substring - the
+      // PREFIX (workflowDocFileName's fallback to the raw template key,
+      // "drive:faketpl1-...") rather than a loose substring - the
       // "confirmations" data source's own default mail subject also
-      // happens to contain that word, so a substring check on the TABLE
-      // attachment's filename (built from the mail subject) is not a
-      // reliable way to tell the two apart.
+      // happens to contain the word "Confirmation", so a substring check
+      // on the TABLE attachment's filename (built from the mail subject)
+      // is not a reliable way to tell the two apart.
       return run.records.length >= 1 && calls.length === run.records.length &&
         calls.every((m) => Array.isArray(m.attachments) && m.attachments.length === 2 &&
-          m.attachments.some((a) => a.contentType === 'application/pdf' && a.filename.startsWith('Confirmation-Letter-')) &&
-          m.attachments.some((a) => a.contentType === 'application/pdf' && !a.filename.startsWith('Confirmation-Letter-')));
+          m.attachments.some((a) => a.contentType === 'application/pdf' && a.filename.startsWith(DRIVE_TPL_KEY + '-')) &&
+          m.attachments.some((a) => a.contentType === 'application/pdf' && !a.filename.startsWith(DRIVE_TPL_KEY + '-')));
     });
     await checkAsync('Ask SUBH direct instruction: when the ask only says a follow-up should happen, with no wording for it, the follow-up body falls back to a real professional reminder (never empty), naming the actual first-mail subject, addressed to {Manager_Name}', async () => {
       const r = await workflowService.draftWorkflowPlanFromParsed({
@@ -1257,6 +1239,50 @@ async function main() {
     });
 
     console.log('='.repeat(70));
+    console.log('TASK 2 (2026-11), direct instruction ("Letter types cleanup", item 1) - listWorkflowsWithMissingTemplates: "if any saved workflow/task still points to a built-in letter, list them for me"');
+    console.log('='.repeat(70));
+    await checkAsync('a workflow whose plan.docs.template no longer resolves to a real template is listed, naming the field and the stale template key', async () => {
+      const w = await create({ subject: 'Stale docs.template workflow', plan: { source: 'none', rules: [], docs: { on: true, template: 'confirmation', attachTo: 'first' } }, schedule: { date: '2026-12-01', time: '10:00', repeat: 'monthly' } });
+      const list = await workflowService.listWorkflowsWithMissingTemplates();
+      const entry = list.find((x) => x.id === w.id);
+      return Boolean(entry) && entry.fields.some((f) => f.field === 'docs.template' && f.template === 'confirmation');
+    });
+    await checkAsync('a workflow whose rule sendDocument no longer resolves to a real template is listed the same way, naming the rule index', async () => {
+      const w = await create({ subject: 'Stale sendDocument workflow', plan: { source: 'none', rules: [{ when: 'X', replyText: 'Y', sendDocument: 'relieving', then: 'stop' }] }, schedule: { date: '2026-12-01', time: '10:00', repeat: 'monthly' } });
+      const list = await workflowService.listWorkflowsWithMissingTemplates();
+      const entry = list.find((x) => x.id === w.id);
+      return Boolean(entry) && entry.fields.some((f) => f.field === 'rules[0].sendDocument' && f.template === 'relieving');
+    });
+    await checkAsync('a workflow pointing at the REAL, current Drive template (DRIVE_TPL_KEY) is never listed', async () => {
+      const w = await create({ subject: 'Valid Drive template workflow', plan: { source: 'none', rules: [], docs: { on: true, template: DRIVE_TPL_KEY, attachTo: 'first' } }, schedule: { date: '2026-12-01', time: '10:00', repeat: 'monthly' } });
+      const list = await workflowService.listWorkflowsWithMissingTemplates();
+      return !list.some((x) => x.id === w.id);
+    });
+    await checkAsync('a workflow with docs off and no rule sendDocument at all is never listed (nothing to flag)', async () => {
+      const w = await create({ subject: 'No docs workflow', plan: { source: 'none', rules: [{ when: 'X', replyText: 'Y', then: 'stop' }] }, schedule: { date: '2026-12-01', time: '10:00', repeat: 'monthly' } });
+      const list = await workflowService.listWorkflowsWithMissingTemplates();
+      return !list.some((x) => x.id === w.id);
+    });
+    await checkAsync('a REAL run of a workflow whose docs.template is a retired built-in HOLDS that record\'s letter ("Template missing - choose a Drive template"), never breaking the record\'s own plain message', async () => {
+      // documentsTemplate: 'confirmation' can no longer resolve through
+      // draftWorkflowPlanFromParsed's own validation (templateOptions is
+      // always the real Drive-only list once passed, see
+      // makeRealRunWorkflow above) - the plan is built directly instead,
+      // simulating an OLD saved workflow from before this cleanup.
+      const base = await workflowService.draftWorkflowPlanFromParsed({ unclear: [], source: 'confirmations', rec: 'column', recCol: 'reportingManager', group: 'each', mediator: 'mail', rules: [{ when: 'X', replyText: 'Y', then: 'stop' }] }, now, null);
+      const plan = Object.assign({}, base.plan, { docs: { on: true, template: 'confirmation', attachTo: 'first' } });
+      const notifBefore = ownerNotifications.length;
+      const beforeAttach = sentMail.filter((m) => m.kind === 'attachment').length;
+      const w = await create({ subject: 'Retired built-in real-run test', plan, schedule: { date: '2026-11-15', time: '10:00', repeat: 'monthly' } });
+      w.status = 'active'; await workflowService.saveWorkflow(w);
+      const result = await workflowService.runWorkflow(w.id, {}, now);
+      const run = await workflowService.getRun(w.id, result.runId);
+      return run.records.length >= 1 && run.records.every((r) => r.status === 'waiting') &&
+        sentMail.filter((m) => m.kind === 'attachment').length === beforeAttach &&
+        ownerNotifications.length > notifBefore && /template missing/i.test(ownerNotifications[ownerNotifications.length - 1]);
+    });
+
+    console.log('='.repeat(70));
     console.log(pass + '/' + (pass + fail) + ' passed' + (fail ? ', ' + fail + ' FAILED' : ''));
     if (failures.length) { console.log('Failed checks:'); failures.forEach((f) => console.log(' -', f)); }
     console.log('='.repeat(70));
@@ -1276,6 +1302,9 @@ async function main() {
     subhDriveAuth.getDriveClient = origGetDriveClient;
     sheetsAuth.getSheetsWriteClient = origGetSheetsWriteClient;
     subhDriveAuth.getDocsClient = origGetDocsClient;
+    driveTemplatesService.listAllLetterTemplates = origListAllLetterTemplates;
+    driveTemplateFieldsService.extractPlaceholders = origExtractPlaceholders;
+    driveTemplateFieldsService.getTemplateMapping = origGetTemplateMapping;
     console.log('Cleaning up', createdIds.length, 'test-created workflow(s)...');
     for (const id of createdIds) await workflowService.deleteWorkflow(id);
   }

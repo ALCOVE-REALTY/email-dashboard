@@ -34,6 +34,7 @@ const LETTER_TEMPLATES_FOLDER_ID = process.env.SUBH_LETTER_TEMPLATES_FOLDER_ID |
 
 const REF_FORMAT_KEY = 'subh-letter-ref-format';
 const LETTER_CODES_KEY = 'subh-letter-codes';
+const LETTER_DISPLAY_NAMES_KEY = 'subh-letter-display-names';
 const REGISTER_SHEET_KEY = 'subh-letter-register-sheet';
 const COUNTER_PREFIX = 'subh-letter-counter:';
 
@@ -98,6 +99,32 @@ async function saveLetterCode(letterType, code) {
   codes[letterType] = trimmed;
   try { await redis.set(LETTER_CODES_KEY, JSON.stringify(codes)); } catch (err) { return { ok: false, error: err.message }; }
   return { ok: true, codes };
+}
+
+// TASK 2 (2026-11), direct instruction - a clean, owner-editable display
+// name per template key, alongside its code. driveTemplatesService's own
+// deriveDisplayName() seeds this the first time a Drive template is
+// discovered (same self-heal pattern as a letter code); the owner can
+// then rename it here any time without affecting the underlying Drive
+// file name or the letter code/counter, which are keyed separately.
+async function getLetterDisplayNames() {
+  const redis = getClient();
+  if (!redis) return {};
+  try {
+    const raw = await redis.get(LETTER_DISPLAY_NAMES_KEY);
+    return raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : {};
+  } catch (err) { return {}; }
+}
+async function saveLetterDisplayName(letterType, name) {
+  const redis = getClient();
+  if (!redis) return { ok: false, error: 'No store configured.' };
+  const trimmed = String(name || '').trim();
+  if (!letterType) return { ok: false, error: 'letterType is required.' };
+  if (!trimmed) return { ok: false, error: 'Display name cannot be empty.' };
+  const names = await getLetterDisplayNames();
+  names[letterType] = trimmed;
+  try { await redis.set(LETTER_DISPLAY_NAMES_KEY, JSON.stringify(names)); } catch (err) { return { ok: false, error: err.message }; }
+  return { ok: true, names };
 }
 
 function padSerial(n) { return String(n).padStart(4, '0'); }
@@ -465,7 +492,7 @@ module.exports = {
   isAvailable: () => Boolean(getClient()),
   LETTER_TEMPLATES_FOLDER_ID, DEFAULT_REF_FORMAT, DEFAULT_LETTER_CODES, LETTER_TYPE_LABELS, REF_FORMAT_PLACEHOLDERS,
   computeFinancialYear, renderRefNo, padSerial,
-  getRefNoFormat, saveRefNoFormat, getLetterCodes, saveLetterCode, getLetterSettings,
+  getRefNoFormat, saveRefNoFormat, getLetterCodes, saveLetterCode, getLetterDisplayNames, saveLetterDisplayName, getLetterSettings,
   getCounterValue, setCounterOverride, previewNextRefNo, assignRefNo,
   getLetterRegisterLink, setRegisterSheetLink, appendToLetterRegister, uploadSentLetterPdf,
   // TASK 1 (2026-11) - exported for scripts/check-letter-settings.js only.
