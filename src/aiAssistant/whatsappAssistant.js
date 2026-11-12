@@ -9280,6 +9280,11 @@ function featureForClaudeCall(body) {
   if (toolName === 'manager_confirmation_reply') return 'manager confirmation';
   if (toolName === 'extract_hr_data_query') return 'data request';
   if (toolName === 'owner_chat_hr_data_query') return 'owner chat';
+  // classifyLanguageViaModel is a free-form call (no tool - see its own
+  // comment for why), so it's identified by its own fixed system prompt
+  // instead of a tool name.
+  const systemText = body && Array.isArray(body.system) && body.system[0] && body.system[0].text;
+  if (systemText === LANGUAGE_DETECT_SYSTEM_PROMPT) return 'language detection';
   return 'WhatsApp auto-reply';
 }
 function logAiUsageForCall(body, data) {
@@ -9618,6 +9623,130 @@ async function generateGroupDraft(groupName, messageText, memoryFact) {
 // also used by openaiProvider.js's in-app chat validation - kept this
 // export name since it's already wired through decideAutoReply/tests.
 const detectLang = require('./languageDetect').detectMessageLanguage;
+const hasWordListSignal = require('./languageDetect').hasWordListSignal;
+
+// Audit item 2/3 (2026-11), direct instruction - detectLang is a pure
+// word-list match with NO model fallback; a message using vocabulary not
+// in that list finds zero signal and silently defaults to 'english' with
+// no real evidence either way (the exact live-bug pattern this file's
+// own word-list comments keep documenting one patch at a time). This
+// keeps the word list as the FAST PATH (instant, free, used first,
+// completely unchanged) and asks the model only for the genuinely
+// uncertain remainder: zero word-list signal AND the message has enough
+// real content to carry one at all (a short/bare-token message - a bare
+// "ok", a name, a number, an emoji - is excluded here exactly like
+// resolveStickyLang's own isShortOrAmbiguousForLanguage/
+// looksLikeBareNameNumberOrEmoji checks, reusing the SAME established
+// definition of "nothing to read" rather than inventing a second one).
+// WhatsApp only - the in-app chat pipeline (openaiProvider.js) was
+// deliberately kept model-free by an earlier direct correction and is
+// NOT touched by this.
+//
+// Cached by exact text (bounded LRU, ~2,000 entries / 7-day TTL,
+// whichever evicts first) so the SAME text - very commonly re-passed to
+// detectLang/detectLangSmart several times while handling one incoming
+// message (e.g. a bare "Haa" also re-read later by
+// detectEstablishedConversationLanguage's own history scan on a LATER
+// message from the same sender) - only ever costs one real model call,
+// not one per call site. A model failure/timeout is never cached (so a
+// transient outage doesn't lock in the fallback for a week) and always
+// falls back to the exact prior behavior (the deterministic 'english'
+// default) - the fast path (real word-list evidence either way) never
+// even reaches the cache or the model at all.
+const LANG_MODEL_CACHE_MAX = 2000;
+const LANG_MODEL_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const langModelCache = new Map(); // text -> { lang, at }
+function langModelCacheGet(text) {
+  const hit = langModelCache.get(text);
+  if (!hit) return null;
+  if (Date.now() - hit.at > LANG_MODEL_CACHE_TTL_MS) { langModelCache.delete(text); return null; }
+  // Re-insert to move this entry to the end (Map preserves insertion
+  // order) - a true LRU recency bump, so a frequently-repeated text is
+  // never evicted just because it was first seen long ago.
+  langModelCache.delete(text);
+  langModelCache.set(text, hit);
+  return hit.lang;
+}
+function langModelCacheSet(text, lang) {
+  if (langModelCache.size >= LANG_MODEL_CACHE_MAX) {
+    const oldestKey = langModelCache.keys().next().value;
+    langModelCache.delete(oldestKey);
+  }
+  langModelCache.set(text, { lang, at: Date.now() });
+}
+// Test-hygiene only - lets the regression suite start each scenario with
+// a clean cache.
+function resetLangModelCacheForTests() { langModelCache.clear(); }
+// Live finding (2026-11): a FORCED-TOOL call for this (the convention
+// every OTHER classifier in this file uses) reproducibly truncated mid-
+// JSON on this exact model (claude-sonnet-5-5) - stop_reason "max_tokens"
+// with an EMPTY tool input ({}), at both max_tokens:20 and :50, silently
+// read as "the model failed" and falling back to the deterministic
+// default every time (the actual cause of 2 straight 0/3 real-model
+// scenario runs). A plain free-form "reply with one word" call (same
+// pattern as classifyDocumentCaptionAsCv just below) resolved the exact
+// same message correctly in 6 output tokens on the first real try - used
+// here instead, deliberately NOT a tool call.
+const LANGUAGE_DETECT_SYSTEM_PROMPT = 'This is one incoming WhatsApp message to an HR assistant for an Indian company. Employees commonly write in plain English, or in Bengali (Banglish) or Hindi (Hinglish) typed in Roman/Latin letters rather than native script. Decide which of the three this ONE message is actually written in, judging by the real words/meaning - it is very often NOT English, so do not default to English just because a word looks unfamiliar. Reply with exactly one word: english, banglish, or hinglish.';
+async function classifyLanguageViaModel(text) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  const t = String(text || '').trim();
+  if (!apiKey || !DRAFT_MODEL || !t) return null;
+  try {
+    const reply = await callClaudeChat(apiKey, DRAFT_MODEL, [{ role: 'system', content: LANGUAGE_DETECT_SYSTEM_PROMPT }, { role: 'user', content: t }], 10);
+    const verdict = String(reply || '').trim().toLowerCase();
+    if (verdict.includes('banglish')) return 'banglish';
+    if (verdict.includes('hinglish')) return 'hinglish';
+    if (verdict.includes('english')) return 'english';
+    return null;
+  } catch (err) { return null; }
+}
+// The one new entry point - a drop-in async replacement for detectLang(text)
+// at the handful of call sites that decide THIS incoming message's own
+// language before anything else gets a chance to (greeting/festival-wish/
+// identity/CV/sensitive-ID/HR-confirmation-reply/workflow-reply/closing/
+// emoji/media-caption fast paths - see each call site's own comment).
+// `history` is this sender's own conversation history (already in scope
+// at every one of those call sites) - read-only, used only as a cost
+// guard (see below), never passed on to or combined with
+// detectEstablishedConversationLanguage/resolveStickyLang in any new way.
+// Deliberately NOT used for: the history-scan inside
+// detectEstablishedConversationLanguage or resolveStickyLang itself (the
+// per-sender "sticky" language memory this task was told to leave
+// completely unchanged - upgrading the history walk would also risk
+// several model calls per incoming message, not one), re-labelling
+// SUBH's OWN already-composed reply text, validateModelReply's own
+// language-drift check (which specifically depends on detectLang's
+// deterministic "found no signal" meaning), or any error-fallback path
+// (deliberately kept zero-latency/zero-cost during an already-degraded
+// error condition).
+async function detectLangSmart(text, history) {
+  const base = detectLang(text);
+  if (hasWordListSignal(text)) return base; // real evidence either way - the fast path, no model ever involved
+  if (isShortOrAmbiguousForLanguage(text) || looksLikeBareNameNumberOrEmoji(text)) return base; // nothing for a model to read either
+  // Cost guard: zero word-list signal is the ROUTINE case for a plain
+  // English message too - the word lists only ever look for Bengali/
+  // Hindi vocabulary, so EVERY genuine English sentence scores zero
+  // exactly the same way a novel-vocabulary Banglish/Hindi one does.
+  // Calling the model on every one of those would multiply cost far
+  // beyond "genuinely uncertain text" (most HR WhatsApp traffic that
+  // isn't Banglish/Hinglish is plain English). detectEstablishedConversationLanguage
+  // is read ONLY as an extra signal here, never modified or called with
+  // different inputs than before - a sender whose own conversation is
+  // already established as English gets their later zero-signal message
+  // treated as English with no model call (overwhelmingly correct,
+  // free); a sender established as Banglish/Hinglish, or a brand-new
+  // sender with no history yet (given one real check on their first
+  // substantial message), is the genuinely worthwhile case to check.
+  const established = history ? detectEstablishedConversationLanguage(history) : null;
+  if (established === 'english') return base;
+  const cached = langModelCacheGet(text);
+  if (cached) return cached;
+  const modelLang = await classifyLanguageViaModel(text);
+  if (!modelLang) return base; // model failure/timeout - current behavior, never cached
+  langModelCacheSet(text, modelLang);
+  return modelLang;
+}
 const INFORMAL_BENGALI_RE = /\b(tumi|tomar|tor|tui)\b/i;
 const INFORMAL_HINDI_RE = /\b(tum|tumhe|tera|tujhe|teri|tu)\b/i;
 function isInformal(text, lang) {
@@ -10808,7 +10937,7 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
   // once-per-day rule as everything else (live bug: "Hii"/"Hello" both
   // got the full intro the same day it was already given at 12:46).
   if (!isGroup && isGreetingOnly(text)) {
-    const lang = detectLang(text);
+    const lang = await detectLangSmart(text, history);
     const alreadyIntroducedToday = phone && await hasIntroducedTodayIST(history, new Date(), phone);
     const greetingDict = alreadyIntroducedToday ? GREETING_REPLY_SHORT : GREETING_REPLY;
     return { case: 'acknowledged', replyText: greetingDict[lang] || greetingDict.english, summaryForOwner: null, lang };
@@ -10821,7 +10950,7 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
   if (!isGroup) {
     const wishReply = detectFestivalWishReply(text);
     if (wishReply) {
-      const lang = detectLang(text);
+      const lang = await detectLangSmart(text, history);
       return { case: 'acknowledged', replyText: wishReply[lang] || wishReply.english, summaryForOwner: null, lang };
     }
   }
@@ -10833,14 +10962,14 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
   // message as a reason to not reply, which a genuine CV message often
   // reads exactly like.
   if (!isGroup && phone && looksLikeCvMessage(text)) {
-    return handleJobApplicationDecision(phone, detectLang(text), text);
+    return handleJobApplicationDecision(phone, await detectLangSmart(text, history), text);
   }
   if (!isGroup && isIdentityQuestion(text)) {
-    const lang = detectLang(text);
+    const lang = await detectLangSmart(text, history);
     return { case: 'acknowledged', replyText: IDENTITY_REPLY[lang] || IDENTITY_REPLY.english, summaryForOwner: null, lang };
   }
   if (!isGroup && IDENTITY_CONFIRM_RE.test(text)) {
-    const lang = detectLang(text);
+    const lang = await detectLangSmart(text, history);
     return { case: 'acknowledged', replyText: IDENTITY_CONFIRM_REPLY[lang] || IDENTITY_CONFIRM_REPLY.english, summaryForOwner: null, lang };
   }
   if (!isGroup && isEmojiOnlyMessage(text)) {
@@ -10854,7 +10983,7 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
     // recent real incoming message in this chat, same as a human would
     // judge which language to react in.
     const lastRealIncoming = (history || []).filter((h) => h.direction === 'in' && !isEmojiOnlyMessage(h.text)).slice(-1)[0];
-    const lang = lastRealIncoming ? detectLang(lastRealIncoming.text) : 'banglish';
+    const lang = lastRealIncoming ? await detectLangSmart(lastRealIncoming.text, history) : 'banglish';
     return { case: 'acknowledged', replyText: EMOJI_ACK_REPLY[lang] || EMOJI_ACK_REPLY.banglish, summaryForOwner: null };
   }
 
@@ -10873,7 +11002,7 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
   if (!isGroup && phone) {
     const ownIdField = detectOwnSensitiveIdRequest(text);
     if (ownIdField) {
-      return handleOwnSensitiveIdRequest({ phone, lang: detectLang(text), field: ownIdField, history });
+      return handleOwnSensitiveIdRequest({ phone, lang: await detectLangSmart(text, history), field: ownIdField, history });
     }
   }
 
@@ -10891,7 +11020,7 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
   if (!isGroup && phone) {
     const pendingHrConfirmations = await listPendingHrConfirmationsForPhone(phone).catch(() => []);
     if (pendingHrConfirmations.length) {
-      return handleHrConfirmationManagerReply({ phone, text, lang: detectLang(text), pendingConfirmations: pendingHrConfirmations, history });
+      return handleHrConfirmationManagerReply({ phone, text, lang: await detectLangSmart(text, history), pendingConfirmations: pendingHrConfirmations, history });
     }
   }
 
@@ -10919,7 +11048,7 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
     const isOpenPhone = await require('./workflowService').isOpenWorkflowPhone(phone).catch(() => false);
     if (isOpenPhone) {
       const workflowReply = await require('./workflowService').handlePossibleWorkflowReply(phone, text).catch(() => null);
-      if (workflowReply) return Object.assign({}, workflowReply, { lang: detectLang(text) });
+      if (workflowReply) return Object.assign({}, workflowReply, { lang: await detectLangSmart(text, history) });
     }
   }
 
@@ -11197,7 +11326,7 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
       const verdict = await classifyExtraInfoOnly(text, { topicLabel: awaiting.topicLabel || awaiting.summary, thirdPartyName: awaiting.thirdPartyName }).catch(() => ({ hasExtraInfo: false, extraInfoNote: null }));
       if (verdict.hasExtraInfo) {
         await recordExtraInfoNote(phone, senderLabel, verdict.extraInfoNote || text, 'waiting on ' + awaiting.thirdPartyName + '\'s confirmation');
-        const waitingLang = awaiting.lang || detectLang(text);
+        const waitingLang = awaiting.lang || await detectLangSmart(text, history);
         const prefix = EXTRA_INFO_NOTE_PREFIX[waitingLang] || EXTRA_INFO_NOTE_PREFIX.english;
         const statusFn = EXTRA_INFO_WAITING_STATUS[waitingLang] || EXTRA_INFO_WAITING_STATUS.english;
         return { case: 'acknowledged', replyText: prefix + statusFn(awaiting.thirdPartyName), summaryForOwner: null, lang: waitingLang };
@@ -11216,7 +11345,7 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
     if (lastOut && isClosingAckReplyText(lastOut.text)) {
       return { case: 'acknowledged', replyText: null, summaryForOwner: null };
     }
-    const lang = resolveStickyLang(text, history, detectLang(text));
+    const lang = resolveStickyLang(text, history, await detectLangSmart(text, history));
     return { case: 'acknowledged', replyText: CLOSING_ACK_REPLY[lang] || CLOSING_ACK_REPLY.english, summaryForOwner: null, lang };
   }
 
@@ -11769,10 +11898,10 @@ const MEDIA_ACK_REPLY = {
 // no usable history at all, e.g. a brand new sender's very first message
 // being a photo.
 async function mediaFallbackLang(contactId, caption) {
-  if (caption) return detectLang(caption);
   const history = await getConvoHistory(contactId, CONVO_HISTORY_MAX).catch(() => []);
+  if (caption) return detectLangSmart(caption, history);
   const lastIncoming = (history || []).filter((h) => h.direction === 'in' && h.text).slice(-1)[0];
-  return lastIncoming ? detectLang(lastIncoming.text) : 'english';
+  return lastIncoming ? detectLangSmart(lastIncoming.text, history) : 'english';
 }
 // Task 1 (2026-10-28) - uploads the actual file to SUBH's own Drive
 // storage (fileStorage.js, the owner's own drive.file-scoped OAuth
@@ -13538,6 +13667,9 @@ module.exports = {
   firstNameOf,
   classify,
   detectLang,
+  detectLangSmart,
+  classifyLanguageViaModel,
+  resetLangModelCacheForTests,
   isInformal,
   generateConversationReply,
   containsUnbackedTimeframePromise,

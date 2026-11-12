@@ -83,4 +83,21 @@ function detectMessageLanguage(text) {
   return bengaliCount >= hindiCount ? 'banglish' : 'hinglish';
 }
 
-module.exports = { detectMessageLanguage };
+// Audit item 2/3 (2026-11), direct instruction - lets a caller tell the
+// difference between "detectMessageLanguage said english because it
+// found real evidence this is English" and "it said english only because
+// it found NO evidence either way" (today's silent default, the exact gap
+// that misclassifies new/uncommon Banglish or Hindi vocabulary). Purely
+// additive - detectMessageLanguage's own behavior/signature is completely
+// unchanged, so every existing caller (including the in-app chat pipeline
+// and existing deterministic tests) is unaffected.
+function hasWordListSignal(text) {
+  const t = String(text || '');
+  if (/[ऀ-ॿ]/.test(t)) return true;
+  if (/[ঀ-৿]/.test(t)) return true;
+  const bengaliCount = countMatches(BENGALI_RE, t) + (BENGALI_SUFFIX_RE.test(t) ? 2 : 0);
+  const hindiCount = countMatches(HINDI_RE, t);
+  return bengaliCount > 0 || hindiCount > 0;
+}
+
+module.exports = { detectMessageLanguage, hasWordListSignal };

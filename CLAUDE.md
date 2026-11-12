@@ -171,10 +171,31 @@ deterministic suite + that area's real-model scenarios (3x) after.
 3. **`detectLang`** - picks the reply language for nearly every outgoing
    message. File's own comment: "deterministic, no AI call, no model
    fallback" - a word-count heuristic patched live by adding words each time
-   it misclassified. **NOT YET FIXED** - by far the largest blast radius of
-   anything in this audit (gates the language of almost every reply, not one
-   flow), explicitly flagged to Subhodeep for a scope/cost discussion before
-   touching it; deferred pending his go-ahead on priority order.
+   it misclassified. **FIXED** (2026-11, direct instruction, scope approved
+   in advance given this item's own largest-blast-radius risk) -
+   `languageDetect.js`'s own `detectMessageLanguage` is completely unchanged
+   (still the fast path, still used as-is for the per-sender sticky-language
+   history scan and the separate in-app chat pipeline, which stays
+   deliberately model-free per an earlier direct correction). A NEW,
+   separate `whatsappAssistant.detectLangSmart(text, history)` wraps it for
+   the ~13 call sites that decide ONE incoming WhatsApp message's own
+   language before classification ever runs (greeting/festival-wish/CV/
+   identity/sensitive-ID/HR-confirmation-reply/workflow-reply/closing/
+   emoji/media-caption) - asks the model ONLY when the word list found zero
+   signal for either language AND the text has enough real content to carry
+   one (a bare ack/name/number/emoji never reaches it) AND the sender's own
+   established conversation (read-only via the existing, untouched
+   `detectEstablishedConversationLanguage`) isn't already confidently
+   English - that last guard is the one that keeps the call genuinely rare:
+   a plain English sentence scores zero signal exactly like a novel-
+   vocabulary Banglish/Hindi one does, so without it the model would fire
+   on most ordinary English traffic too. Cached by exact text (bounded LRU,
+   ~2,000 entries / 7-day TTL), so the same text is never billed twice; a
+   model failure/timeout is never cached and falls back to the exact prior
+   (deterministic) behavior. Error-fallback paths (`actOnCatchupTurn` etc.)
+   and reply-text relabeling were deliberately left untouched - see
+   `detectLangSmart`'s own comment for the full list of what this does and
+   does not touch.
 4. **`handleIncomingMedia`'s caption-based CV check** (`looksLikeCvMessage`/
    `looksLikeCvByNameHint`, Task 29) - media messages never reach `classify()`
    at all; the caption-TEXT decision was 100% regex (only the document's own

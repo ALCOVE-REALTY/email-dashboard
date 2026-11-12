@@ -3269,6 +3269,169 @@ async function checkAsyncRealModel(label, fn) {
   })());
 
   console.log('='.repeat(70));
+  console.log('Audit item 2/3 (2026-11), direct instruction - detectLangSmart: a model fallback ONLY for genuinely uncertain text, at most one real call per distinct text (cached, bounded), model failure -> current behavior unchanged');
+  console.log('='.repeat(70));
+  {
+    // Mirrors installManagerConfirmationModelStub's own convention (a
+    // per-test fetch intercept keyed by the tool name, which answers
+    // directly without ever reaching the suite-level SKIP_REAL_MODEL
+    // fallback) - responseFn receives the parsed request body and
+    // returns a language string, or the literal 'THROW' to simulate a
+    // real model failure.
+    function installLanguageModelStub(responseFn) {
+      const originalFetch = global.fetch;
+      global.fetch = async (url, opts) => {
+        if (String(url).includes('api.anthropic.com') && opts && typeof opts.body === 'string') {
+          let body = null;
+          try { body = JSON.parse(opts.body); } catch (err) { body = null; }
+          // classifyLanguageViaModel is a free-form call (no tool - a
+          // forced-tool call for this specific request shape reproducibly
+          // truncated mid-JSON on the real model, see its own comment) -
+          // matched here by its own fixed, distinctive system prompt text
+          // instead of a tool name, responding with a plain text block
+          // (the word itself), not a tool_use block.
+          const systemText = body && Array.isArray(body.system) && body.system[0] && body.system[0].text;
+          if (systemText && systemText.includes('Reply with exactly one word: english, banglish, or hinglish.')) {
+            const result = responseFn(body);
+            if (result === 'THROW') throw new Error('simulated language-model failure');
+            return { ok: true, json: async () => ({ content: result ? [{ type: 'text', text: result }] : [] }) };
+          }
+        }
+        return originalFetch(url, opts);
+      };
+      return originalFetch;
+    }
+    const ZERO_SIGNAL_TEXT = 'Biye barite giyechilam gramer barite, phirte dhorte parini thik somoy moto';
+    check('test setup: the chosen "genuinely uncertain" sentence really is a zero-signal case for the deterministic detector today', whatsappAssistant.detectLang(ZERO_SIGNAL_TEXT) === 'english');
+    await checkAsync('fast path: a message WITH real word-list signal never calls the model at all, regardless of API key/stub', async () => {
+      const origFetch = installLanguageModelStub(() => { throw new Error('should never be called - fast path'); });
+      try {
+        whatsappAssistant.resetLangModelCacheForTests();
+        whatsappAssistant.resetApiCallStats();
+        const result = await whatsappAssistant.detectLangSmart('Ajke ami office ashte parbo na, sorir ta thik nei');
+        return result === 'banglish' && whatsappAssistant.getApiCallStats().realCalls === 0;
+      } finally { global.fetch = origFetch; }
+    });
+    await checkAsync('short/bare-token guard: a bare "Haa", a name, and an emoji never call the model either - nothing for a model to usefully read', async () => {
+      const origFetch = installLanguageModelStub(() => { throw new Error('should never be called - short/bare-token guard'); });
+      try {
+        whatsappAssistant.resetLangModelCacheForTests();
+        whatsappAssistant.resetApiCallStats();
+        const r1 = await whatsappAssistant.detectLangSmart('Haa');
+        const r2 = await whatsappAssistant.detectLangSmart('Paramita');
+        const r3 = await whatsappAssistant.detectLangSmart('👍');
+        return r1 === 'english' && r2 === 'english' && r3 === 'english' && whatsappAssistant.getApiCallStats().realCalls === 0;
+      } finally { global.fetch = origFetch; }
+    });
+    await checkAsync('genuinely uncertain text (zero signal, enough real words): the model is called exactly once, and its answer is trusted', async () => {
+      const origFetch = installLanguageModelStub(() => 'banglish');
+      try {
+        whatsappAssistant.resetLangModelCacheForTests();
+        whatsappAssistant.resetApiCallStats();
+        const result = await whatsappAssistant.detectLangSmart(ZERO_SIGNAL_TEXT);
+        return result === 'banglish' && whatsappAssistant.getApiCallStats().realCalls === 1;
+      } finally { global.fetch = origFetch; }
+    });
+    await checkAsync('cached: calling detectLangSmart again with the EXACT SAME text never calls the model a second time ("at most one call per incoming message")', async () => {
+      const origFetch = installLanguageModelStub(() => 'banglish');
+      try {
+        whatsappAssistant.resetLangModelCacheForTests();
+        whatsappAssistant.resetApiCallStats();
+        const r1 = await whatsappAssistant.detectLangSmart(ZERO_SIGNAL_TEXT);
+        const r2 = await whatsappAssistant.detectLangSmart(ZERO_SIGNAL_TEXT);
+        return r1 === 'banglish' && r2 === 'banglish' && whatsappAssistant.getApiCallStats().realCalls === 1;
+      } finally { global.fetch = origFetch; }
+    });
+    await checkAsync('model failure/timeout falls back to the EXACT prior behavior (the deterministic default), never throws, never blocks', async () => {
+      const origFetch = installLanguageModelStub(() => 'THROW');
+      try {
+        whatsappAssistant.resetLangModelCacheForTests();
+        whatsappAssistant.resetApiCallStats();
+        const result = await whatsappAssistant.detectLangSmart(ZERO_SIGNAL_TEXT);
+        return result === 'english'; // the same answer detectLang(text) alone would have given
+      } finally { global.fetch = origFetch; }
+    });
+    await checkAsync('a model failure is never cached - a later retry of the same text gets a fresh chance (e.g. a transient outage should not lock in the fallback for a week)', async () => {
+      let attempt = 0;
+      const origFetch = installLanguageModelStub(() => { attempt++; return attempt === 1 ? 'THROW' : 'banglish'; });
+      try {
+        whatsappAssistant.resetLangModelCacheForTests();
+        whatsappAssistant.resetApiCallStats();
+        const r1 = await whatsappAssistant.detectLangSmart(ZERO_SIGNAL_TEXT);
+        const r2 = await whatsappAssistant.detectLangSmart(ZERO_SIGNAL_TEXT);
+        // attempt counts every invocation of the stub (including the
+        // thrown one); apiCallStats.realCalls only counts a call that
+        // actually got a response back (postClaudeMessages increments it
+        // AFTER resp.json() succeeds) - a thrown fetch never reaches that
+        // line, so only the SECOND (successful) call counts there.
+        return r1 === 'english' && r2 === 'banglish' && attempt === 2 && whatsappAssistant.getApiCallStats().realCalls === 1;
+      } finally { global.fetch = origFetch; }
+    });
+    await checkAsync('cost guard: a sender with an ESTABLISHED ENGLISH conversation gets a later zero-signal message resolved as English with NO model call (most real HR WhatsApp traffic that is not Banglish/Hinglish is plain English, which also scores zero on the word list - this guard is what keeps the model call rare, not routine)', async () => {
+      const origFetch = installLanguageModelStub(() => { throw new Error('should never be called - established English conversation'); });
+      try {
+        whatsappAssistant.resetLangModelCacheForTests();
+        whatsappAssistant.resetApiCallStats();
+        const history = [{ direction: 'in', text: 'I was not feeling well today so I could not come to office.', ts: Date.now() - 60000 }];
+        const result = await whatsappAssistant.detectLangSmart(ZERO_SIGNAL_TEXT, history);
+        return result === 'english' && whatsappAssistant.getApiCallStats().realCalls === 0;
+      } finally { global.fetch = origFetch; }
+    });
+    await checkAsync('cost guard does not block a genuinely worthwhile check: a sender with an ESTABLISHED BANGLISH/HINGLISH conversation (or no history at all, a brand-new sender) still gets a zero-signal message checked against the model', async () => {
+      const origFetch = installLanguageModelStub(() => 'banglish');
+      try {
+        whatsappAssistant.resetLangModelCacheForTests();
+        whatsappAssistant.resetApiCallStats();
+        const banglishHistory = [{ direction: 'in', text: 'Ajke ami office ashte parbo na, sorir ta thik nei.', ts: Date.now() - 60000 }];
+        const r1 = await whatsappAssistant.detectLangSmart(ZERO_SIGNAL_TEXT, banglishHistory);
+        whatsappAssistant.resetLangModelCacheForTests();
+        whatsappAssistant.resetApiCallStats();
+        const r2 = await whatsappAssistant.detectLangSmart(ZERO_SIGNAL_TEXT, []); // brand-new sender, no history at all
+        return r1 === 'banglish' && r2 === 'banglish' && whatsappAssistant.getApiCallStats().realCalls === 1;
+      } finally { global.fetch = origFetch; }
+    });
+    await checkAsync('the cache is bounded (LRU, ~2,000 entries) - filling it past capacity evicts the oldest entry rather than growing forever', async () => {
+      const origFetch = installLanguageModelStub(() => 'hinglish');
+      try {
+        whatsappAssistant.resetLangModelCacheForTests();
+        // Built from ZERO_SIGNAL_TEXT (already confirmed zero word-list
+        // signal above) plus a plain number suffix, never a word - the
+        // original "abhi ... filler<N>" text accidentally contained
+        // "abhi", itself a listed Hindi word, so every call here used to
+        // take the fast path and never reach the cache at all.
+        const first = ZERO_SIGNAL_TEXT + ' 0';
+        await whatsappAssistant.detectLangSmart(first);
+        for (let i = 1; i <= 2000; i++) {
+          await whatsappAssistant.detectLangSmart(ZERO_SIGNAL_TEXT + ' ' + i);
+        }
+        // The very first entry should now be evicted (capacity 2000, 2001
+        // distinct entries inserted) - a repeat of it must call the model
+        // again rather than serve a stale/impossible cache hit.
+        whatsappAssistant.resetApiCallStats();
+        await whatsappAssistant.detectLangSmart(first);
+        return whatsappAssistant.getApiCallStats().realCalls === 1;
+      } finally { global.fetch = origFetch; }
+    });
+    await checkAsync('featureForClaudeCall attributes this new call to its own "language detection" bucket in the AI usage log, never lumped in with reply-draft generation', async () => {
+      const origFetch = installLanguageModelStub(() => 'banglish');
+      try {
+        whatsappAssistant.resetLangModelCacheForTests();
+        const aiUsageLog = require('../src/aiAssistant/aiUsageLog');
+        const origRecordUsage = aiUsageLog.recordUsage;
+        let capturedFeature = null;
+        aiUsageLog.recordUsage = async (entry) => { capturedFeature = entry && entry.feature; };
+        try {
+          await whatsappAssistant.detectLangSmart(ZERO_SIGNAL_TEXT);
+          await new Promise((resolve) => setTimeout(resolve, 10)); // logAiUsageForCall is fire-and-forget
+          return capturedFeature === 'language detection';
+        } finally { aiUsageLog.recordUsage = origRecordUsage; }
+      } finally { global.fetch = origFetch; }
+    });
+    whatsappAssistant.resetLangModelCacheForTests();
+    whatsappAssistant.resetApiCallStats();
+  }
+
+  console.log('='.repeat(70));
   console.log('Task 5 (2026-11) LIVE BUG FIX: WhatsApp LID senders (15-digit "numbers" with no real-phone-number field anywhere in this gateway\'s payload) are classified correctly, never shown/treated as a real phone number');
   console.log('='.repeat(70));
   check('isGroupChat: a NEW-style 18-digit group JID is a group', whatsapp.isGroupChat('120363431609199396'));

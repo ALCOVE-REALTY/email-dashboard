@@ -662,6 +662,57 @@ scenario('Language stickiness (reverse): a short reply (a bare name) inside an e
   }
 });
 
+// --- Audit item 2/3 (2026-11), direct instruction: detectLang's model
+// fallback for genuinely uncertain text - NEW scenarios, run 3x (named
+// "Language (new): ..." so SCENARIO_FILTER="Language (new):" selects only
+// these, distinct from the 2 EXISTING "Language stickiness" scenarios
+// just above, which are re-run 1x to confirm no regression). ---
+scenario('Language (new): a genuinely new-vocabulary Banglish message (zero word-list signal) is still correctly detected via the model fallback, never silently defaulted to English', async () => {
+  // Found by testing real candidate Banglish sentences against the
+  // deterministic word list directly - this one uses no word and no
+  // hyphenated suffix the list recognizes at all, so
+  // detectLang(text) itself (the OLD, unfixed behavior) returns
+  // 'english' with zero real evidence - exactly the live-bug pattern
+  // this task fixes. Calls detectLangSmart directly (not through
+  // decideAutoReply) since this is specifically testing the new
+  // function's own model-fallback decision, not a full conversation
+  // reply - every other scenario in this file tests decideAutoReply
+  // end-to-end precisely because the OLD behavior never involved a
+  // model call at all here.
+  const text = 'Biye barite giyechilam gramer barite, phirte dhorte parini thik somoy moto';
+  const oldBehavior = whatsappAssistant.detectLang(text);
+  if (oldBehavior !== 'english') return { pass: false, detail: 'test setup stale: this sentence is no longer a zero-signal case for the deterministic detector (now returns ' + oldBehavior + ') - pick a different sentence' };
+  // An established Banglish history (matching the real bug pattern this
+  // fixes: a sender already writing Banglish hits a word this list
+  // doesn't recognize) - also proves the cost guard doesn't block a
+  // genuinely worthwhile check.
+  const history = [{ direction: 'in', text: 'Ajke ami office ashte parbo na, sorir ta thik nei.', ts: Date.now() - 60000 }];
+  whatsappAssistant.resetLangModelCacheForTests();
+  const smart = await whatsappAssistant.detectLangSmart(text, history);
+  if (smart !== 'banglish') return { pass: false, detail: 'expected the model fallback to correctly identify this as Banglish, got: ' + smart };
+  return { pass: true, detail: 'deterministic detector alone said "english" (zero signal) - the model fallback correctly said "banglish"' };
+});
+scenario('Language (new): a sender whose previous messages were Banglish sends a clear, FULL English message - reply is English (sticky history never overrides a message that actually has its own language); the next clear Banglish message replies Banglish again', async () => {
+  const phone = '910000001212';
+  try {
+    const history = [
+      { direction: 'in', text: 'Ajke ami office ashte parbo na, sorir ta thik nei.', ts: Date.now() - 7200000 },
+      { direction: 'out', text: "Thik ache, apnar shorir bhalo hok.", ts: Date.now() - 7100000 }
+    ];
+    const d1 = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenStickyNew', firstName: 'ScenStickyNew', text: 'Please share my salary slip for October', isGroup: false, history });
+    if (d1.lang !== 'english') return { pass: false, detail: 'expected a clear, full English message to reply in English even with established Banglish history (lang=' + d1.lang + '): ' + d1.replyText };
+    const history2 = history.concat([
+      { direction: 'in', text: 'Please share my salary slip for October', ts: Date.now() - 60000 },
+      { direction: 'out', text: d1.replyText || '', ts: Date.now() - 50000 }
+    ]);
+    const d2 = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenStickyNew', firstName: 'ScenStickyNew', text: 'Amar October mash-er salary slip ta pathiye debe please', isGroup: false, history: history2 });
+    if (d2.lang !== 'banglish') return { pass: false, detail: 'expected the next clear, full Banglish message to reply in Banglish (lang=' + d2.lang + '): ' + d2.replyText };
+    return { pass: true, detail: 'English message got English (lang=' + d1.lang + '), next Banglish message got Banglish (lang=' + d2.lang + ') - stickiness correctly never applied to either, since both had their own clear, detectable language' };
+  } finally {
+    await cleanupHrFlowArtifacts(phone);
+  }
+});
+
 // --- Task 1 (2026-10-27): job applications and vacancy enquiries always get fixed templates ---
 scenario('Task 1, LIVE BUG: the exact failing live application (naming a position, experience, a cut-off email - none of the old fixed keywords) gets the fixed job-application template, never a free-form reply', async () => {
   const phone = '910000001401';
