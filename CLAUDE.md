@@ -2697,3 +2697,60 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
   Full 12-suite deterministic gate + headless UI: clean. API spend: $0
   for the new locked scenarios (none needed a real call); the owner-
   language feature's own tests are fully deterministic/mocked.
+
+- PART A (2026-11), direct instruction, URGENT DATA LOSS - Company
+  Details (Alcove Realty Pvt. Ltd.) looked blank days after being saved.
+  Investigated with evidence, not assumption, per direct correction:
+  (1) grepped every write to `subh-company-details:*` across the whole
+  codebase - the ONLY writer is `saveCompanyDetails`, called from exactly
+  one owner-only HTTP route; there is NO delete code path anywhere, and
+  no migration/rebuild/test touches this key at all. (2) `git log` since
+  the save found zero commits touching `companyDetailsService.js` or
+  `employeeService.js`'s company-field parsing - the key-derivation code
+  itself did not change. (3) `saveCompanyDetails` never read its own
+  write back before reporting "Saved" - a real, separate gap, now fixed.
+  (4) Found, while tracing the storage layer, that production had
+  already been migrated off Upstash to a self-hosted store
+  (`subh-store`, see `docs/redis-self-hosted-migration.md`) on 2026-10-
+  17 - over 3 weeks before `companyDetailsService.js` even existed
+  (2026-11-05), so that migration itself cannot be the cause of THIS
+  incident, though it's why the diagnostic route below reports which
+  store host a given process is actually talking to.
+  Root cause (the remaining, unproven-by-assumption explanation this
+  investigation could not fully confirm without live production access,
+  which this app has no credentials for - env vars live only in the
+  Alcove Deploy dashboard): `subh-company-details:<company>` is the ONLY
+  settings store in this app keyed by a raw, human-editable string (the
+  HR sheet's own Company column text) rather than a stable owner-
+  assigned code or system ID - a byte-for-byte change to that cell
+  (period/space/case) would silently orphan the old entry without ever
+  deleting it. Added `GET /hr-assistant/diag/company-details-store`
+  (owner-only, read-only - every operation is get/scan/ttl/exists/
+  dbsize, nothing can write or delete) reporting every saved key, whether
+  it has a code, its TTL, the store's host + a token fingerprint (never
+  the token itself, same pattern as the existing `/diag/anthropic-key`),
+  other settings keys for comparison, and the audit log below - for
+  confirming the exact before/after against live data once deployed.
+  Fix (self-healing, not manual data surgery): `getCompanyDetails` now
+  falls back to a normalized-key (case/punctuation/whitespace-
+  insensitive) match across every saved key on an exact-match miss -
+  reattached automatically ONLY when EXACTLY ONE match exists (written
+  under the new name, the OLD key never deleted); with 2+ matches, it
+  NEVER guesses - posts an owner notification naming every candidate
+  (at most once per company per day) and leaves the card blank, same as
+  today, until the owner resolves it by hand. Every reattachment,
+  ambiguous-match, and explicit owner save is now logged
+  (`subh-company-details-audit`, time/action/company/source/before-
+  after). `saveCompanyDetails` now reads its own write back before ever
+  reporting success - a save that doesn't verify is reported as a real
+  error, never a false "Saved".
+  PART A step 4 (checked every other settings store the same way):
+  letter codes/display names/field mappings are keyed by Drive file ID
+  or a fixed legacy type name; counters by an owner-assigned code;
+  register sheet link is one single fixed key; reminders/AI usage by
+  generated IDs/dates. None of them are keyed by a value that can drift
+  the way a sheet cell's text can - Company Details is the only store
+  with this exposure.
+  Full 12-suite deterministic gate + headless UI: clean. API spend: $0
+  (no real Claude/Drive calls - fully mocked, same as check-company-
+  details.js's own existing convention).

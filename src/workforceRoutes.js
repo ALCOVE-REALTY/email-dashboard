@@ -1710,6 +1710,25 @@ router.get('/hr-assistant/diag/anthropic-key', async (req, res) => {
   res.json(result);
 });
 
+// PART A (2026-11), direct instruction, URGENT DATA LOSS investigation -
+// owner-only, READ-ONLY. Company Details looked blank after being saved
+// days earlier - this reports exactly what's in whatever store this
+// process is connected to right now (host only, never the token - same
+// fingerprint pattern as /diag/anthropic-key above), every saved
+// company-detail key with whether it has a code and its TTL, a few other
+// settings keys for comparison, and the CURRENT HR company list - so the
+// owner can compare before/after and see any mismatch directly, instead
+// of guessing. See companyDetailsService.diagCompanyDetailsStore's own
+// comment - every operation here is a read, nothing can write or delete.
+router.get('/hr-assistant/diag/company-details-store', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    res.json(await companyDetailsService.diagCompanyDetailsStore());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // AI usage page (2026-11, direct instruction) - owner-only, SUBH Settings.
 // Today/this-week/this-month totals (live vs. tests) + a by-feature
 // breakdown, backed by src/aiAssistant/aiUsageLog.js's own day-keyed

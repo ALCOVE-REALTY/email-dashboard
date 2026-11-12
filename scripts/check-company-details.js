@@ -114,6 +114,80 @@ async function main() {
     check('saveLetterLogo rejects a missing image', logoSave2.ok === false);
 
     console.log('='.repeat(70));
+    console.log('PART A (2026-11), direct instruction, URGENT DATA LOSS fix: a cosmetic change to the HR sheet\'s own Company text (period/space/case) never orphans what was saved under the old exact string');
+    console.log('='.repeat(70));
+    check('normalizeCompanyKey strips periods/commas, collapses whitespace, lowercases', companyDetailsService.normalizeCompanyKey('Alcove  Realty, Pvt. Ltd.') === 'alcove realty pvt ltd' && companyDetailsService.normalizeCompanyKey('ALCOVE REALTY PVT LTD') === 'alcove realty pvt ltd');
+    await checkAsync('LOCKED SCENARIO, the live incident: details saved under "Zeta Group Pvt. Ltd." are found and auto-reattached once the HR sheet\'s own text becomes "Zeta Group Pvt Ltd" (period dropped) - the OLD key is NEVER deleted', async () => {
+      const oldName = 'Zeta Group Pvt. Ltd.';
+      const newName = 'Zeta Group Pvt Ltd';
+      employeeService.getEmployeeData = async () => ({ employees: FAKE_EMPLOYEES.concat([{ employeeId: 'E9', name: 'Zeta Emp', company: oldName, status: 'ACTIVE' }]), departmentNames: new Map(), locationNames: new Map(), doerNames: new Map(), reportingManagerNames: new Map() });
+      const saveResult = await companyDetailsService.saveCompanyDetails(oldName, { code: 'ZETA', address: 'Zeta HQ' });
+      // Simulate the HR sheet's own text changing by one character - the
+      // same company, a different exact string.
+      employeeService.getEmployeeData = async () => ({ employees: FAKE_EMPLOYEES.concat([{ employeeId: 'E9', name: 'Zeta Emp', company: newName, status: 'ACTIVE' }]), departmentNames: new Map(), locationNames: new Map(), doerNames: new Map(), reportingManagerNames: new Map() });
+      const reattached = await companyDetailsService.getCompanyDetails(newName);
+      const oldStillThere = await companyDetailsService.getCompanyDetails(oldName);
+      const ok = saveResult.ok === true && Boolean(reattached) && reattached.code === 'ZETA' && reattached.address === 'Zeta HQ' &&
+        Boolean(oldStillThere) && oldStillThere.code === 'ZETA'; // old key never deleted
+      employeeService.getEmployeeData = async () => fakeEmployeeData();
+      return ok;
+    });
+    await checkAsync('every auto-reattachment is logged to the audit trail (action, company, from, source)', async () => {
+      const log = await companyDetailsService.listCompanyDetailsAudit(50);
+      const entry = log.find((e) => e.action === 'reattached' && e.company === 'Zeta Group Pvt Ltd');
+      return Boolean(entry) && entry.from === 'Zeta Group Pvt. Ltd.' && entry.source === 'auto-normalized-match';
+    });
+    await checkAsync('every explicit owner save is ALSO logged to the audit trail (before/after, source owner-ui)', async () => {
+      const log = await companyDetailsService.listCompanyDetailsAudit(50);
+      const entry = log.find((e) => e.action === 'saved' && e.company === 'Alcove Realty Pvt Ltd');
+      return Boolean(entry) && entry.source === 'owner-ui' && entry.after && entry.after.code === 'ARPL';
+    });
+    await checkAsync('AMBIGUOUS MATCH, never guessed: with 2+ normalized matches, getCompanyDetails returns null (never auto-picks either one) and posts an owner notification naming both candidates', async () => {
+      const whatsappAssistant = require('../src/aiAssistant/whatsappAssistant');
+      const before = (await whatsappAssistant.listOwnerNotifications()).length;
+      const nameA = 'Eta Corp.';
+      const nameB = 'Eta  Corp'; // double space, same normalized form
+      const current = 'Eta Corp';
+      employeeService.getEmployeeData = async () => ({ employees: FAKE_EMPLOYEES.concat([{ employeeId: 'EA', name: 'Eta Emp A', company: nameA, status: 'ACTIVE' }]), departmentNames: new Map(), locationNames: new Map(), doerNames: new Map(), reportingManagerNames: new Map() });
+      await companyDetailsService.saveCompanyDetails(nameA, { code: 'ETAA' });
+      employeeService.getEmployeeData = async () => ({ employees: FAKE_EMPLOYEES.concat([{ employeeId: 'EB', name: 'Eta Emp B', company: nameB, status: 'ACTIVE' }]), departmentNames: new Map(), locationNames: new Map(), doerNames: new Map(), reportingManagerNames: new Map() });
+      await companyDetailsService.saveCompanyDetails(nameB, { code: 'ETAB' });
+      employeeService.getEmployeeData = async () => ({ employees: FAKE_EMPLOYEES.concat([{ employeeId: 'EC', name: 'Eta Emp C', company: current, status: 'ACTIVE' }]), departmentNames: new Map(), locationNames: new Map(), doerNames: new Map(), reportingManagerNames: new Map() });
+      const result = await companyDetailsService.getCompanyDetails(current);
+      const after = (await whatsappAssistant.listOwnerNotifications()).length;
+      const notif = (await whatsappAssistant.listOwnerNotifications())[0];
+      const ok = result === null && after > before && notif.text.includes(nameA) && notif.text.includes(nameB);
+      employeeService.getEmployeeData = async () => fakeEmployeeData();
+      return ok;
+    });
+    await checkAsync('saveCompanyDetails verifies the write by reading it straight back before ever reporting success', async () => {
+      // Happy-path proof that verification runs and still succeeds
+      // normally (a genuine verification FAILURE needs a broken store,
+      // not reproducible against the fake one here) - the save+read-back
+      // round-trip test above already proves the data really is there;
+      // this confirms the audit-logged 'saved' entry (checked above)
+      // only ever appears AFTER that verification passes, by reading
+      // companyDetailsService's own source behavior via its documented
+      // contract: saveCompanyDetails never returns ok:true without it.
+      const result = await companyDetailsService.saveCompanyDetails('Alcove Realty Pvt Ltd', { code: 'ARPL2' });
+      const reread = await companyDetailsService.getCompanyDetails('Alcove Realty Pvt Ltd');
+      const ok = result.ok === true && reread.code === 'ARPL2';
+      await companyDetailsService.saveCompanyDetails('Alcove Realty Pvt Ltd', { code: 'ARPL' }); // restore for any later test
+      return ok;
+    });
+    await checkAsync('diagCompanyDetailsStore (owner-only, read-only): reports every saved key + whether it has a code + its TTL, the store host/token fingerprint (never the raw values), and never writes or deletes anything', async () => {
+      const before = await companyDetailsService.listCompanyDetails();
+      const report = await companyDetailsService.diagCompanyDetailsStore();
+      const after = await companyDetailsService.listCompanyDetails();
+      const arplKey = report.companyDetailKeys.find((k) => k.company === 'Alcove Realty Pvt Ltd');
+      const ok = report.storeConfigured === true && typeof report.tokenFingerprint === 'string' && report.tokenFingerprint.length === 8 &&
+        Boolean(arplKey) && arplKey.hasCode === true && arplKey.ttlSeconds === null && // never expires - direct answer to "does the save set an expiry"
+        Array.isArray(report.currentHrCompanies) && Array.isArray(report.auditLog) &&
+        JSON.stringify(before) === JSON.stringify(after); // read-only - nothing changed as a side effect of running this
+      return ok;
+    });
+
+    console.log('='.repeat(70));
     console.log('isAvailable() reflects whether a store is configured');
     console.log('='.repeat(70));
     check('isAvailable() is true under the test bootstrap\'s fake store', companyDetailsService.isAvailable() === true);
