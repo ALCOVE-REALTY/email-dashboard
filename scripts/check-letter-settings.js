@@ -86,10 +86,22 @@ async function main() {
   check('a code with a digit is rejected (letters only)', withDigits.ok === false);
   const lowercaseIn = await letterSettingsService.saveLetterCode('confirmation', 'conf');
   check('a lowercase input is accepted and normalized to uppercase', lowercaseIn.ok === true && lowercaseIn.codes.confirmation === 'CONF');
-  const duplicate = await letterSettingsService.saveLetterCode('extension', 'CONF');
-  check('a code already used by ANOTHER letter type is rejected (unique across all types)', duplicate.ok === false);
+  const duplicateActive = await letterSettingsService.saveLetterCode('drive:tplA', 'ABCD');
+  check('an ACTIVE (drive:) letter type can take a fresh code', duplicateActive.ok === true);
+  const duplicate = await letterSettingsService.saveLetterCode('drive:tplB', 'ABCD');
+  check('a code already used by ANOTHER ACTIVE letter type is rejected (unique across active types)', duplicate.ok === false);
   const sameTypeSameCode = await letterSettingsService.saveLetterCode('confirmation', 'CONF');
   check('re-saving the SAME letter type with its OWN current code is never rejected as a "duplicate" of itself', sameTypeSameCode.ok === true);
+
+  console.log('='.repeat(70));
+  console.log('LIVE BUG FIX (2026-11), direct instruction - a retired built-in (confirmation/extension/experience/relieving, no longer selectable since Task 2) still holds its fixed default code in the store forever (getLetterCodes merges it in on every read), but must NEVER count as "already used by another letter type" for an ACTIVE Drive template - only active Drive templates are checked against each other');
+  console.log('='.repeat(70));
+  const retiredClash = await letterSettingsService.saveLetterCode('drive:tplConf', 'CONF');
+  check('an ACTIVE Drive template CAN use a code that collides with a retired built-in\'s own default code (e.g. CONF) - never a false "already used" rejection', retiredClash.ok === true && retiredClash.codes['drive:tplConf'] === 'CONF');
+  const retiredClashNoop = await letterSettingsService.saveLetterCode('drive:tplConf', 'CONF');
+  check('saving that SAME code again (no real change) is a no-op success', retiredClashNoop.ok === true);
+  const codesAfterRetiredClash = await letterSettingsService.getLetterCodes();
+  check('the retired built-in\'s own default is still returned by getLetterCodes for legacy lookups (merged in, unaffected)', codesAfterRetiredClash.confirmation === 'CONF');
 
   console.log('='.repeat(70));
   console.log('TASK 2 (2026-11), direct instruction - a template removed from the Drive folder disappears from the list, but its counter and letter-code HISTORY are kept in the store (never deleted)');

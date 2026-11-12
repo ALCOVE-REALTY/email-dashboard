@@ -94,9 +94,28 @@ async function saveLetterCode(letterType, code) {
   if (!letterType) return { ok: false, error: 'letterType is required.' };
   if (!LETTER_CODE_RE.test(trimmed)) return { ok: false, error: 'Code must be 2-6 letters (A-Z).' };
   const codes = await getLetterCodes();
-  const conflictType = Object.keys(codes).find((k) => k !== letterType && codes[k] === trimmed);
+  // LIVE BUG FIX (2026-11), direct instruction - DEFAULT_LETTER_CODES'
+  // own keys (the retired built-ins, never selectable since Task 2) are
+  // merged into every getLetterCodes() read forever, for legacy lookups -
+  // but that means they must never count as a "used by another letter
+  // type" conflict, or any active Drive template whose code happens to
+  // match one (e.g. CONF) could never save, not even its own unchanged
+  // code. Also a no-op success when the code isn't actually changing.
+  if (codes[letterType] === trimmed) return { ok: true, codes };
+  const conflictType = Object.keys(codes).find((k) => k !== letterType && !(k in DEFAULT_LETTER_CODES) && codes[k] === trimmed);
   if (conflictType) return { ok: false, error: 'That code is already used by another letter type.' };
   codes[letterType] = trimmed;
+  // Drop a retired built-in's OWN stale override only when it's the exact
+  // one that collided in value with what we just saved - never the other,
+  // unrelated retired types (a direct legacy-key save, the only way this
+  // can still touch them, must otherwise behave exactly as before).
+  // getLetterCodes() re-merges the hardcoded DEFAULT_LETTER_CODES on every
+  // read regardless, so this never breaks legacy resolution - it only
+  // stops a leftover saved override from outliving Task 2's removal of
+  // these types and causing the same false conflict again later.
+  for (const k of Object.keys(DEFAULT_LETTER_CODES)) {
+    if (k !== letterType && codes[k] === trimmed) delete codes[k];
+  }
   try { await redis.set(LETTER_CODES_KEY, JSON.stringify(codes)); } catch (err) { return { ok: false, error: err.message }; }
   return { ok: true, codes };
 }

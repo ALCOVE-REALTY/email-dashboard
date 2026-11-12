@@ -8,6 +8,8 @@
 // 'unknown'` - the owner reviews/sets it, never a guess silently baked in.
 const { Redis } = require('@upstash/redis');
 const sheetsAuth = require('../sheetsAuth');
+const subhDriveAuth = require('../subhDriveAuth');
+const subhDriveGuard = require('../subhDriveGuard');
 const driveTemplatesService = require('./driveTemplatesService');
 const workforceAnalytics = require('../workforceAnalytics');
 const aiUsageLog = require('./aiUsageLog');
@@ -72,14 +74,22 @@ async function extractPlaceholders(fileId, mimeType) {
     return extractPlaceholdersFromText(extractTextFromGoogleDoc(doc.data));
   }
   if (mimeType === driveTemplatesService.DOCX_MIME) {
-    const drive = sheetsAuth.getDriveWriteClient();
-    const copy = await drive.files.copy({ fileId, resource: { name: 'SUBH temp placeholder scan', mimeType: driveTemplatesService.GOOGLE_DOC_MIME } });
+    // LIVE BUG FIX (2026-11), direct instruction - copying/deleting a file
+    // is a Drive storage-creating operation a service account can never
+    // do (no storage quota of its own - "Service Accounts do not have
+    // storage quota"), exactly like generateDriveTemplateLetter already
+    // found (TASK 4(d)) - same fix here: the owner's own OAuth identity
+    // (subhDriveAuth), fenced through subhDriveGuard's allowlist/owned-
+    // file guardrails, never the service account.
+    const drive = subhDriveAuth.getDriveClient();
+    const docsOwner = subhDriveAuth.getDocsClient();
+    const copy = await subhDriveGuard.guardedCopyTemplate(drive, fileId, { name: 'SUBH temp placeholder scan', mimeType: driveTemplatesService.GOOGLE_DOC_MIME });
     const tempId = copy.data.id;
     try {
-      const doc = await docs.documents.get({ documentId: tempId });
+      const doc = await docsOwner.documents.get({ documentId: tempId });
       return extractPlaceholdersFromText(extractTextFromGoogleDoc(doc.data));
     } finally {
-      await drive.files.delete({ fileId: tempId }).catch(() => {});
+      await subhDriveGuard.guardedDeleteOwned(drive, tempId).catch(() => {});
     }
   }
   throw new Error('Unsupported template file type: ' + mimeType);

@@ -1536,7 +1536,7 @@
   // renderable data for the others; every path still re-fetches fresh
   // data in the background and re-renders when it lands, so nothing here
   // is ever more than one poll cycle stale.
-  const pageDataCache = { comms: null, commsAt: 0, reminders: new Map(), automations: null, openFlows: null, convos: new Map(), siteAliases: null, deptAliases: null, companyDetails: null, letterSettings: null, history: null };
+  const pageDataCache = { comms: null, commsAt: 0, reminders: new Map(), automations: null, openFlows: null, convos: new Map(), siteAliases: null, deptAliases: null, companyDetails: null, letterSettings: null, letterFields: new Map(), history: null };
   // Bumped by invalidateReminderCache (every reminder mutation - done/
   // undo/cancel/snooze/create/edit). Any reminders fetch in flight when a
   // mutation happens captures remMutationSeq at send time and checks it
@@ -3550,14 +3550,24 @@
     void fieldMappingSheet.offsetHeight;
     fieldMappingSheetBackdrop.classList.add('open');
     fieldMappingSheet.classList.add('open');
-    try {
-      const data = await fetch('/api/workforce/hr-assistant/letter-templates/' + encodeURIComponent(templateKey) + '/fields').then((r) => r.json());
-      if (data.error) throw new Error(data.error);
+    function renderFields(data) {
       wfMappingData = { hrColumns: data.hrColumns || [], derivedRules: data.derivedRules || {}, companyFields: data.companyFields || {} };
       fieldMappingList.innerHTML = (data.placeholders || []).map((p) => wfMappingRowHtml(p, data.mapping[p] || { source: 'unknown' })).join('');
       fieldMappingList.querySelectorAll('[data-role="source"]').forEach((sel) => {
         sel.addEventListener('change', () => wfRerenderMappingSecondary(sel.closest('[data-placeholder]')));
       });
+    }
+    // Prefetched by loadLetterSettingsPage right after the Letter Settings
+    // page itself loads - render instantly from cache when present, never
+    // re-fetching (and never showing the skeleton at all) for a template
+    // already warmed this way.
+    const cachedFields = pageDataCache.letterFields.get(templateKey);
+    if (cachedFields) { renderFields(cachedFields); return; }
+    try {
+      const data = await fetch('/api/workforce/hr-assistant/letter-templates/' + encodeURIComponent(templateKey) + '/fields').then((r) => r.json());
+      if (data.error) throw new Error(data.error);
+      pageDataCache.letterFields.set(templateKey, data);
+      renderFields(data);
     } catch (err) {
       fieldMappingList.innerHTML = '<div class="wf-rem-empty">Could not load fields: ' + escapeHtml(err.message) + '</div>';
     }
@@ -3573,6 +3583,7 @@
       await runButtonAction(fieldMappingSheetSaveBtn, () => postJsonOrThrow('/api/workforce/hr-assistant/letter-templates/' + encodeURIComponent(templateKey) + '/fields', { mapping }), async () => {
         closeFieldMappingSheet();
         pageDataCache.letterSettings = null;
+        pageDataCache.letterFields.delete(templateKey);
         loadLetterSettingsPage();
         // "after Save, continue the test" (direct instruction) - only
         // when this sheet was opened automatically by "Send test to me"
@@ -3736,8 +3747,13 @@
       });
       letterCodesList.querySelectorAll('[data-action="open-field-mapping"]').forEach((btn) => {
         btn.addEventListener('click', () => {
+          // LIVE BUG FIX (2026-11), direct instruction - no busy-guard here
+          // before meant a fast double-tap could fire two concurrent
+          // fetches for the same template's fields.
+          if (btn.disabled) return;
+          btn.disabled = true;
           const card = btn.closest('[data-letter-type]');
-          openFieldMappingSheet(card.dataset.letterType);
+          openFieldMappingSheet(card.dataset.letterType).finally(() => { btn.disabled = false; });
         });
       });
       // TASK 2 (2026-11), direct instruction - editable display name, same
@@ -3862,9 +3878,29 @@
       const data = await fetch('/api/workforce/hr-assistant/letter-settings').then((res) => res.json());
       pageDataCache.letterSettings = data;
       renderLetterSettingsPage(data);
+      prefetchLetterTemplateFields(data.letterTypes || []);
     } catch (err) {
       if (!cached) letterCodesList.innerHTML = '<div class="wf-rem-empty">Could not load letter settings.</div>';
     }
+  }
+  // LIVE BUG FIX (2026-11), direct instruction - "Fields" used to only ever
+  // start loading a template's placeholders/mapping once the owner tapped
+  // it, so the sheet (already open-immediately-with-a-skeleton, see
+  // openFieldMappingSheet below) sat on that skeleton for a full live Drive
+  // round-trip every time. Fired once, right after the Letter Settings
+  // page's own data resolves, for every current letter type not already
+  // cached - a tap on "Fields" afterward then renders straight from cache,
+  // instantly. Best-effort only: a failed prefetch just leaves that one
+  // template to fall back to its own normal on-tap fetch, never surfaced
+  // as an error here.
+  function prefetchLetterTemplateFields(letterTypes) {
+    letterTypes.forEach((templateKey) => {
+      if (pageDataCache.letterFields.has(templateKey)) return;
+      fetch('/api/workforce/hr-assistant/letter-templates/' + encodeURIComponent(templateKey) + '/fields')
+        .then((r) => r.json())
+        .then((data) => { if (!data.error) pageDataCache.letterFields.set(templateKey, data); })
+        .catch(() => {});
+    });
   }
   function showLetterSettings() {
     setPanelView('letterSettings');

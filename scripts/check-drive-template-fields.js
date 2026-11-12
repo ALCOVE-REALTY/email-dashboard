@@ -25,6 +25,8 @@ async function main() {
   const svc = require('../src/aiAssistant/driveTemplateFieldsService');
   const driveTemplatesService = require('../src/aiAssistant/driveTemplatesService');
   const sheetsAuth = require('../src/sheetsAuth');
+  const subhDriveAuth = require('../src/subhDriveAuth');
+  const subhDriveGuard = require('../src/subhDriveGuard');
 
   console.log('='.repeat(70));
   console.log('extractPlaceholdersFromText');
@@ -56,18 +58,29 @@ async function main() {
   console.log('extractPlaceholders: native Google Doc vs .docx (converted via a temp copy, then deleted)');
   console.log('='.repeat(70));
   const origGetDocsClient = sheetsAuth.getDocsClient;
-  const origGetDriveWriteClient = sheetsAuth.getDriveWriteClient;
+  const origAuthGetDriveClient = subhDriveAuth.getDriveClient;
+  const origAuthGetDocsClient = subhDriveAuth.getDocsClient;
   let docsGetCalls = [];
   let copyCalls = [];
   let deleteCalls = [];
   sheetsAuth.getDocsClient = () => ({
     documents: { get: async (opts) => { docsGetCalls.push(opts.documentId); return { data: { body: { content: [{ paragraph: { elements: [{ textRun: { content: 'Hello {Employee_Name}' } }] } }] } } } } }
   });
-  sheetsAuth.getDriveWriteClient = () => ({
+  // LIVE BUG FIX (2026-11) - the .docx branch now copies/deletes as the
+  // owner's own OAuth identity (subhDriveAuth), fenced through
+  // subhDriveGuard, never the service account - same stubbing convention
+  // as scripts/check-drive-template-generation.js. subhDriveGuard's own
+  // assertTemplateFileAllowed reads the source file first to confirm it's
+  // really inside SUBH Letter Templates, before ever copying it.
+  subhDriveAuth.getDriveClient = () => ({
     files: {
+      get: async (opts) => ({ data: { id: opts.fileId, name: 'Fake Template', parents: [subhDriveGuard.LETTER_TEMPLATES_FOLDER_ID] } }),
       copy: async (opts) => { copyCalls.push(opts); return { data: { id: 'temp-copy-1' } }; },
       delete: async (opts) => { deleteCalls.push(opts.fileId); return {}; }
     }
+  });
+  subhDriveAuth.getDocsClient = () => ({
+    documents: { get: async (opts) => { docsGetCalls.push(opts.documentId); return { data: { body: { content: [{ paragraph: { elements: [{ textRun: { content: 'Hello {Employee_Name}' } }] } }] } } } } }
   });
   try {
     const nativeResult = await svc.extractPlaceholders('native-doc-1', driveTemplatesService.GOOGLE_DOC_MIME);
@@ -75,17 +88,17 @@ async function main() {
 
     docsGetCalls = [];
     const docxResult = await svc.extractPlaceholders('docx-file-1', driveTemplatesService.DOCX_MIME);
-    check('a .docx is converted to a TEMP Google Doc copy first', copyCalls.length === 1 && copyCalls[0].fileId === 'docx-file-1' && copyCalls[0].resource.mimeType === driveTemplatesService.GOOGLE_DOC_MIME);
+    check('a .docx is converted to a TEMP Google Doc copy first, as the owner\'s own OAuth identity (never the service account, which has no storage quota)', copyCalls.length === 1 && copyCalls[0].fileId === 'docx-file-1' && copyCalls[0].resource.mimeType === driveTemplatesService.GOOGLE_DOC_MIME);
     check('placeholders are read from the temp copy, not the original', docsGetCalls[0] === 'temp-copy-1');
     check('the temp copy is deleted afterward - never left behind', deleteCalls[0] === 'temp-copy-1');
     check('the extracted placeholders are correct either way', JSON.stringify(docxResult) === JSON.stringify(['{Employee_Name}']));
 
     await checkAsync('the temp copy is deleted even if reading its text throws (never leaks a stray Drive file)', async () => {
-      const origGet = sheetsAuth.getDocsClient;
-      sheetsAuth.getDocsClient = () => ({ documents: { get: async () => { throw new Error('boom'); } } });
+      const origGet = subhDriveAuth.getDocsClient;
+      subhDriveAuth.getDocsClient = () => ({ documents: { get: async () => { throw new Error('boom'); } } });
       deleteCalls = [];
       try { await svc.extractPlaceholders('docx-file-2', driveTemplatesService.DOCX_MIME); } catch (err) { /* expected */ }
-      sheetsAuth.getDocsClient = origGet;
+      subhDriveAuth.getDocsClient = origGet;
       return deleteCalls.length === 1;
     });
 
@@ -95,7 +108,8 @@ async function main() {
     });
   } finally {
     sheetsAuth.getDocsClient = origGetDocsClient;
-    sheetsAuth.getDriveWriteClient = origGetDriveWriteClient;
+    subhDriveAuth.getDriveClient = origAuthGetDriveClient;
+    subhDriveAuth.getDocsClient = origAuthGetDocsClient;
   }
 
   console.log('='.repeat(70));

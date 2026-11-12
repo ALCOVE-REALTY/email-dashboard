@@ -2459,3 +2459,54 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
   API spend for this batch: $0 - every investigation/diagnostic run used
   `SKIP_REAL_MODEL=1` or the fake store exclusively; the scenario runner's
   own cost report confirms 0 real API calls for both new locked scenarios.
+
+- PART 1 (2026-11), direct instruction - three Letter Settings live bugs,
+  none touching understanding/routing/classification/templates/language
+  (no real-model scenarios needed, rule 8).
+  (a) Edit code -> Save without changes -> "already used by another letter
+  type": `getLetterCodes()` (`letterSettingsService.js`) merges
+  `DEFAULT_LETTER_CODES` (the 4 built-ins retired by Task 2, never
+  selectable since) into every read, forever, for legacy lookups -
+  `saveLetterCode`'s own conflict scan included those phantom entries, so
+  any active Drive template whose code happened to match one of them
+  (e.g. CONF) could never save, not even its own unchanged code. Fixed:
+  the conflict scan now excludes `DEFAULT_LETTER_CODES`' own keys
+  entirely (uniqueness is only ever checked among active, `drive:`-keyed
+  templates); saving an unchanged code is now an explicit no-op success;
+  and a retired built-in's stale override is dropped from the store the
+  moment its VALUE collides with what's being saved (never the other,
+  unrelated retired keys) - `getLetterCodes()` still re-merges the
+  hardcoded defaults on every read regardless, so legacy resolution is
+  unaffected.
+  (b) "Could not load fields: Service Accounts do not have storage
+  quota..." / "no placeholders found": `extractPlaceholders`'s `.docx`
+  branch (`driveTemplateFieldsService.js`) was copying the template via
+  the SERVICE ACCOUNT (`sheetsAuth.getDriveWriteClient()`), which has no
+  Drive storage quota of its own to create a file in - the exact same
+  problem `generateDriveTemplateLetter` already hit and fixed (TASK 4(d)),
+  never migrated here when that was fixed. Fixed the same way: the
+  owner's own OAuth identity (`subhDriveAuth`), fenced through
+  `subhDriveGuard.guardedCopyTemplate`/`guardedDeleteOwned`, for the
+  `.docx` copy/delete only - the native Google Doc branch was already
+  read-only and unaffected.
+  (c) Letter Settings buttons sometimes needing two taps / sheets opening
+  slowly: two compounding causes - a cold-open race (the page shows a
+  bare skeleton with NO buttons at all while its own data is in flight;
+  a tap during that window lands on nothing) mitigated by this page's
+  existing cache-then-fetch pattern on repeat visits; and "Fields"
+  specifically had no busy-guard at all (unlike Save/Send test, which
+  already go through `runButtonAction`), so a fast double-tap could fire
+  two concurrent fetches, plus its sheet's own data was never fetched
+  until the first tap. Fixed: `loadLetterSettingsPage` now prefetches
+  every active template's fields right after the page's own data
+  resolves (`pageDataCache.letterFields`), so a later tap on "Fields"
+  renders instantly from cache instead of waiting on a live Drive
+  round-trip; the "Fields" button now has the same disable-while-busy
+  guard the other two already had; the cache entry for a template is
+  cleared the moment its mapping is actually saved, so a reopen never
+  shows stale data.
+  Verification: full 12-suite deterministic gate + headless UI clean
+  (159s) - `check-subh-panel-ui.js` already covers the exact Letter
+  Settings -> Fields -> Save flow touched by (b)/(c), `check-letter-
+  settings.js`/`check-drive-template-fields.js` cover (a)/(b) directly.
+  API spend: $0 (no real Claude/Drive calls in any test - fully mocked).
