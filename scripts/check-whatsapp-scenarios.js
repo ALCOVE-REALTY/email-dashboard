@@ -1646,6 +1646,70 @@ scenario('RULE CLARIFICATION, LOCKED SCENARIO: a document captioned "Please see 
   }
 });
 
+// --- PART 0 (2026-11), direct instruction, URGENT - locked scenarios for
+// the mass-unsolicited-send incident. Neither of these two specifically
+// needs the real model (one tests a pure timing/state guard, the other a
+// fixed-template media ack), but both are explicitly requested as locked
+// scenarios here, and both genuinely exercise the real end-to-end
+// functions (recoverStuckIncomingMessages/handleIncomingMedia/
+// processDueAutoSends), not a mock of them. ---
+scenario('PART 0 (new), LOCKED SCENARIO: a buffered message left over from BEFORE this server instance\'s own restart is never auto-recovered, even though it is well under 30 minutes old by the clock - "never on startup backfill"', async () => {
+  const phone = '910000009021';
+  await whatsappAssistant.clearBurstBuffer(phone).catch(() => {});
+  await whatsappAssistant.clearStuckRecoveryState(phone).catch(() => {});
+  await whatsappAssistant.dismissStuckIncomingMessage(phone).catch(() => {});
+  const origEnv = process.env.SUBH_STUCK_RECOVERY;
+  process.env.SUBH_STUCK_RECOVERY = '1';
+  try {
+    const firstSeenAt = whatsappAssistant.SERVER_START_TS - 2000; // predates this process's own start
+    const now = whatsappAssistant.SERVER_START_TS + 3 * 60 * 1000; // 3 min after start - well under the 30-min staleness cutoff on its own, isolating this guard
+    await whatsappAssistant.saveBurstBuffer(phone, { messages: [{ text: 'Ajke office jete parchi na, sorir kharap', arrivedAt: firstSeenAt }], firstSeenAt, name: 'ScenRestart', firstName: 'ScenRestart' });
+    const result = await whatsappAssistant.recoverStuckIncomingMessages(now);
+    const history = await whatsappAssistant.getConvoHistory(phone, 10);
+    if (result.recovered !== 0 || history.some((h) => h.direction === 'out')) {
+      return { pass: false, detail: 'live bug reproduced: a message left over from before this restart was auto-recovered and sent, got: ' + JSON.stringify(result) };
+    }
+    const flagged = (await whatsappAssistant.listStuckIncomingMessages()).some((f) => String(f.contactId) === phone);
+    if (!flagged) return { pass: false, detail: 'expected the leftover message to be flagged as a card for the owner, found none' };
+    return { pass: true, detail: 'correctly never auto-recovered a pre-restart leftover message, flagged a card instead' };
+  } finally {
+    await whatsappAssistant.clearBurstBuffer(phone).catch(() => {});
+    await whatsappAssistant.clearStuckRecoveryState(phone).catch(() => {});
+    await whatsappAssistant.dismissStuckIncomingMessage(phone).catch(() => {});
+    if (origEnv === undefined) delete process.env.SUBH_STUCK_RECOVERY; else process.env.SUBH_STUCK_RECOVERY = origEnv;
+  }
+});
+scenario('PART 0 (new), LOCKED SCENARIO: one incoming image gets exactly ONE reply, even when processDueAutoSends is invoked "concurrently" (simulating two briefly-overlapping scheduler instances during a deploy) - the live incident (Subhash got 3 identical replies for one image, Ashish 2)', async () => {
+  const phone = '910000009022';
+  await whatsappAssistant.clearNotingBurstState(phone).catch(() => {});
+  const originalFetch = global.fetch;
+  const originalEnv = process.env.WHATSAPP_ASSISTANT_REAL_SEND;
+  process.env.WHATSAPP_ASSISTANT_REAL_SEND = '1';
+  let sendCount = 0;
+  global.fetch = async (url, opts) => {
+    if (String(url).includes('/sendMessage')) {
+      const body = JSON.parse(opts.body);
+      if (body.to_number === whatsapp.normalizePhone(phone)) sendCount++;
+      return { ok: true, json: async () => ({ success: true }) };
+    }
+    return originalFetch(url, opts);
+  };
+  try {
+    await whatsappAssistant.handleIncomingMedia(phone, 'ScenOneImage', { type: 'image', content: {} });
+    const { Redis } = require('@upstash/redis');
+    const redis = new Redis({ url: process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL, token: process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN });
+    const ids = await redis.zrange('wa-pending-autosend-zset', 0, -1);
+    for (const id of ids) await redis.zadd('wa-pending-autosend-zset', { score: Date.now() - 1000, member: id });
+    await Promise.all([whatsappAssistant.processDueAutoSends(), whatsappAssistant.processDueAutoSends()]);
+    if (sendCount !== 1) return { pass: false, detail: 'expected exactly 1 real send for one image, got ' + sendCount };
+    return { pass: true, detail: 'one image produced exactly one real send, even under a simulated concurrent flush' };
+  } finally {
+    global.fetch = originalFetch;
+    process.env.WHATSAPP_ASSISTANT_REAL_SEND = originalEnv;
+    await whatsappAssistant.clearNotingBurstState(phone).catch(() => {});
+  }
+});
+
 const APPROX_USD_PER_MTOK_INPUT = 3;
 const APPROX_USD_PER_MTOK_OUTPUT = 15;
 

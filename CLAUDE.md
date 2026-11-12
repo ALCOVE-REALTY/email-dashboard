@@ -2403,3 +2403,59 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
     (`max_tokens:1`) model-availability checks. No stored telemetry exists
     to bill this precisely (see the duplicate-call finding above) - this
     is a methodology-based estimate, not a verified figure.
+
+- PART 0 (2026-11), direct instruction, URGENT LIVE INCIDENT - unsolicited
+  mass sends (the identity line sent to Suman Banerjee, Ramjee Thakur,
+  Sanjoy Kumar Ghosh, Jagaran Paul and others who had sent nothing new) and
+  one-image-many-replies (Subhash x3, Ashish x2). Two independent root
+  causes in `recoverStuckIncomingMessages`/`scheduleAutoSend`/
+  `processDueAutoSends`, both in `src/aiAssistant/whatsappAssistant.js`:
+  (1) the 2-minute stuck-message auto-recovery (`28cf9a2`) had no check
+  that a buffer's `firstSeenAt` actually postdates this server instance's
+  own start - a deploy/restart resurrecting old buffered state got
+  auto-answered as if freshly stuck; (2) `processDueAutoSends` called
+  `redis.zrem`/`redis.del` on a due entry without checking `zrem`'s return
+  value, so two overlapping scheduler ticks (plausible around a deploy)
+  could both claim and send the SAME queued entry. Fixed: a module-level
+  `SERVER_START_TS` (captured once at process start) plus a kill switch
+  (`SUBH_STUCK_RECOVERY`, env-gated, OFF by default - recovery only
+  flags/never auto-sends until explicitly turned on) and a "predates
+  server start" guard inside the ACT phase of `recoverStuckIncomingMessages`
+  (separate from, and complementary to, the existing flush-time staleness
+  check from `ae747cf` - that one catches "sat too long in the queue",
+  this one catches "should never have been scheduled at all"); a hard
+  freshness gate added at the very top of `scheduleAutoSend` itself - every
+  caller must now pass either `arrivedAt` (the ORIGINAL incoming message's
+  own timestamp, <30 min old) or an explicit `notFreshnessGated: true` for
+  flow-steps/reminders/owner-approved cards, or the send is blocked and
+  flagged, never silently dropped; and `processDueAutoSends` now checks
+  `zrem`'s return value so only the caller that actually claimed an entry
+  ever sends it. Retrofitted all 13 existing `scheduleAutoSend` call sites
+  across the file with the correct one of the two.
+  Locked scenarios (`scripts/check-whatsapp-scenarios.js`, real model,
+  3/3, $0 - neither needed a real call): a buffer left over from before
+  this server instance's own restart is never auto-recovered, even well
+  under 30 minutes old ("never on startup backfill"); one incoming image
+  gets exactly ONE reply even under a simulated concurrent
+  `processDueAutoSends` flush (the Subhash/Ashish incident).
+  Also deterministically locked in `check-whatsapp-engine.js` (own section,
+  791 checks total in that suite): the kill switch defaults OFF and never
+  re-pings the owner for the same stuck message; the SERVER_START_TS guard;
+  all 4 combinations of the new `scheduleAutoSend` gate (missing both
+  fields blocked, stale `arrivedAt` blocked+flagged, fresh `arrivedAt`
+  allowed, `notFreshnessGated:true` bypasses); the zrem-based
+  no-double-send fix under simulated concurrency.
+  Found and fixed during this work: 5 of `check-whatsapp-engine.js`'s own
+  PRE-EXISTING `recoverStuckIncomingMessages` tests used a real
+  `Date.now()`-based "now", which raced the new SERVER_START_TS guard
+  whenever the suite reached that point in under the test's own simulated
+  2-6 minute delay (reliably reproduced under the pre-push hook's
+  `SKIP_REAL_MODEL=1`, which runs fast enough to hit this every time) -
+  fixed by anchoring those tests to `SERVER_START_TS + 20min` instead of
+  real wall-clock time, which also resolved a 6th, downstream test failure
+  (an unrelated .xlsx-noting-template assertion that happened to share a
+  test phone number with one of the five). Production code for this guard
+  was correct throughout; only the tests needed fixing.
+  API spend for this batch: $0 - every investigation/diagnostic run used
+  `SKIP_REAL_MODEL=1` or the fake store exclusively; the scenario runner's
+  own cost report confirms 0 real API calls for both new locked scenarios.

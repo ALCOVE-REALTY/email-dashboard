@@ -39,6 +39,29 @@ function isTypingPresenceEnabled() {
 function isCatchupEnabled() {
   return process.env.WHATSAPP_CATCHUP === '1';
 }
+// PART 0 (2026-11), direct instruction - URGENT kill switch, shipped as
+// its own first step: a live incident sent SUBH's generic noting reply
+// to several senders who had sent nothing new (Suman Banerjee,
+// Sanjoy Kumar Ghosh, Jagaran Paul, others), most likely the 2-minute
+// stuck-message auto-recovery reprocessing a buffer left over from a
+// server restart (or a deploy-time replay) as if it were fresh. Default
+// OFF until the full fix (server-start-time check, the final-send-gate
+// hard rule, media dedup) lands - set SUBH_STUCK_RECOVERY=1 to re-enable.
+function isStuckRecoveryEnabled() {
+  return process.env.SUBH_STUCK_RECOVERY === '1';
+}
+// PART 0 (2026-11), direct instruction - "never on startup backfill":
+// captured ONCE, the instant this module is first loaded (Node module
+// caching means this happens exactly once per real process lifetime,
+// regardless of which entry point requires it first) - a buffer/pending
+// state whose own firstSeenAt predates THIS instance's own start can
+// never have arrived while this instance was the one actually polling
+// the gateway; it can only be left over from before a restart (a crash,
+// a deploy, or a previous instance that never cleanly flushed it).
+// recoverStuckIncomingMessages uses this to refuse auto-recovery for any
+// such leftover state, regardless of how young it happens to measure as
+// relative to "now".
+const SERVER_START_TS = Date.now();
 // Found during the 0512bc1 outage investigation: every typing-presence
 // call site below used to AWAIT whatsapp.sendPresence(), on the same
 // hot reply path as the real sendMessage call that always followed it.
@@ -1540,6 +1563,33 @@ function randomDelayMs() { return (2 + Math.random() * 2) * 1000; }
 // so a never-auto draft's PREVIEW (which never reaches this function)
 // still shows the identity line exactly as it does today.
 async function scheduleAutoSend(entry, sendAtOverride) {
+  // PART 0 (2026-11), direct instruction, URGENT - hard rule at the final
+  // send gate, after a live incident sent SUBH's generic noting reply to
+  // several senders who had sent nothing new: every auto-reply either
+  // carries entry.arrivedAt (the ORIGINAL triggering incoming message's
+  // own WhatsApp timestamp - never this process's own receive time) and
+  // is less than 30 minutes old, or is explicitly marked
+  // entry.notFreshnessGated (a flow-step continuation, a scheduled
+  // reminder, or an owner-approved card - none of which are triggered by
+  // a fresh incoming message at all). A caller that provides NEITHER is a
+  // code bug, not a gap to silently let through - fails CLOSED (never
+  // queued, never sent) and is flagged loudly, the same posture every
+  // other safety net in this file already takes. This is the one
+  // function every queued auto-reply, from every path, always passes
+  // through - see this function's own long-standing header comment.
+  if (!entry.notFreshnessGated) {
+    if (!entry.arrivedAt) {
+      console.error('[whatsapp] scheduleAutoSend BLOCKED for ' + entry.chatId + ' (case: ' + entry.case + ') - neither arrivedAt nor notFreshnessGated was set on this entry. This is a code bug in the caller, not a genuinely stale message - no reply was sent.');
+      await postOwnerNotification('⚠️ A reply to ' + (entry.name || entry.chatId) + ' was blocked by a safety check (missing freshness info) - please tell IT. No message was sent.').catch(() => {});
+      return null;
+    }
+    if (Date.now() - entry.arrivedAt > CATCHUP_STALE_THRESHOLD_MS) {
+      console.warn('[whatsapp] scheduleAutoSend BLOCKED for ' + entry.chatId + ' - the triggering message is older than 30 minutes (arrivedAt ' + new Date(entry.arrivedAt).toISOString() + ').');
+      await flagStuckIncomingMessage(entry.chatId, { phone: entry.chatId, name: entry.name || entry.chatId, text: entry.summaryForOwner || entry.replyText || '', firstSeenAt: entry.arrivedAt, detectedAt: Date.now(), reason: 'too_old_at_send_gate' }).catch(() => {});
+      await postOwnerNotification('⏱️ A reply to ' + (entry.name || entry.chatId) + ' was NOT sent - the triggering message is over 30 minutes old (safety gate). Please check this conversation.').catch(() => {});
+      return null;
+    }
+  }
   const redis = getClient();
   if (!redis) return;
   if (entry.replyText) {
@@ -1580,12 +1630,23 @@ async function processDueAutoSends() {
   const due = (await redisHealth.guardedRead(() => redis.zrange(PENDING_AUTOSEND_ZSET, 0, now, { byScore: true }), [])) || [];
   let processed = 0;
   for (const id of due) {
+    // PART 0 (2026-11), direct instruction, URGENT FIX - a live incident
+    // (Subhash got 3 identical replies for one image, Ashish 2) traced to
+    // this ZREM's return value never being checked: if two scheduler
+    // instances ever run even briefly overlapping (e.g. the old and new
+    // instance both still polling for a few seconds during a deploy),
+    // both could ZRANGE the same due id before either removed it, then
+    // both would fetch+send it. ZREM on a Redis sorted set is atomic -
+    // only the ONE call that actually removes the member returns a
+    // truthy count; every other concurrent caller gets 0 and must never
+    // proceed, since someone else already claimed this exact send.
+    const claimed = await redis.zrem(PENDING_AUTOSEND_ZSET, id).catch(() => 0);
+    if (!claimed) continue;
     let entry;
     try {
       const raw = await redis.get(PENDING_AUTOSEND_PREFIX + id);
       entry = raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : null;
     } catch (err) { entry = null; }
-    await redis.zrem(PENDING_AUTOSEND_ZSET, id).catch(() => {});
     await redis.del(PENDING_AUTOSEND_PREFIX + id).catch(() => {});
     if (!entry) continue;
     // Found during the 0512bc1 outage: this call had no try/catch of its
@@ -3306,7 +3367,10 @@ async function resolveHrNoteEscalation(id, personName, hint) {
     actionPhrase: escalation.actionPhrase, actionKind: escalation.actionKind, createdAt: escalation.createdAt, history: []
   });
   if (resolved && resolved.replyText) {
-    await scheduleAutoSend({ chatId: escalation.phone, isGroup: false, name: escalation.name, replyText: resolved.replyText, case: resolved.case, lang: resolved.lang });
+    // Owner-approved-card send (the owner just typed the real name in
+    // themselves, possibly long after the original message) - explicitly
+    // exempt from the freshness gate, per direct instruction.
+    await scheduleAutoSend({ chatId: escalation.phone, isGroup: false, name: escalation.name, replyText: resolved.replyText, case: resolved.case, lang: resolved.lang, notFreshnessGated: true });
   }
   await dismissHrNoteEscalation(id);
   return { ok: true };
@@ -11939,7 +12003,8 @@ async function handleJobApplicationMediaDecision(contactId, name, lang, caption,
   await scheduleAutoSend({
     chatId: contactId, isGroup: false, name,
     replyText: JOB_APPLICATION_RECEIVED_REPLY[lang] || JOB_APPLICATION_RECEIVED_REPLY.english, lang, case: 'job_application_received',
-    summaryForOwner: 'Job application received' + (caption ? ' - ' + caption.slice(0, 160) : '')
+    summaryForOwner: 'Job application received' + (caption ? ' - ' + caption.slice(0, 160) : ''),
+    arrivedAt: msg.created_at ? new Date(msg.created_at).getTime() : Date.now()
   });
   await postOwnerNotification('📄 Job application (CV) received from ' + name + driveNote);
 }
@@ -12052,7 +12117,8 @@ async function sendNotingReplyForWorkDocument(contactId, name, lang, msg) {
   await scheduleAutoSend({
     chatId: contactId, isGroup: false, name,
     replyText: MEDIA_ACK_REPLY[lang] || MEDIA_ACK_REPLY.english, lang, case: 'media_ack',
-    summaryForOwner: '[sent a ' + (msg.type || 'file') + ', no open request]'
+    summaryForOwner: '[sent a ' + (msg.type || 'file') + ', no open request]',
+    arrivedAt: msg.created_at ? new Date(msg.created_at).getTime() : Date.now()
   });
   await postOwnerNotification(name + ' sent a file (no open request) - not stored, but acknowledged.');
 }
@@ -12083,7 +12149,8 @@ async function handleIncomingMedia(contactId, name, msg) {
     await scheduleAutoSend({
       chatId: contactId, isGroup: false, name,
       replyText: MEDIA_ACK_REPLY[lang] || MEDIA_ACK_REPLY.english, lang, case: 'media_ack',
-      summaryForOwner: '[sent a ' + (msg.type === 'sticker' ? 'sticker' : 'voice message') + ']'
+      summaryForOwner: '[sent a ' + (msg.type === 'sticker' ? 'sticker' : 'voice message') + ']',
+      arrivedAt: msg.created_at ? new Date(msg.created_at).getTime() : Date.now()
     });
     await postOwnerNotification(name + ' sent a ' + (msg.type === 'sticker' ? 'sticker' : 'voice message') + (msg.type === 'sticker' ? '' : ' - SUBH cannot transcribe audio') + ', acknowledged only.');
     return;
@@ -12142,7 +12209,8 @@ async function handleIncomingMedia(contactId, name, msg) {
     await scheduleAutoSend({
       chatId: contactId, isGroup: false, name,
       replyText: MEDIA_ACK_REPLY[lang] || MEDIA_ACK_REPLY.english, lang, case: 'media_ack',
-      summaryForOwner: '[sent a ' + (msg.type || 'file') + ', no open request]'
+      summaryForOwner: '[sent a ' + (msg.type || 'file') + ', no open request]',
+      arrivedAt: msg.created_at ? new Date(msg.created_at).getTime() : Date.now()
     });
     await postOwnerNotification(name + ' sent a file (no open request) - not stored, but acknowledged.');
     return;
@@ -12169,7 +12237,8 @@ async function handleIncomingMedia(contactId, name, msg) {
     await scheduleAutoSend({
       chatId: contactId, isGroup: false, name,
       replyText: thanksReply.text, lang: thanksReply.lang, case: 'document_received', memoryId: openReq.memoryId,
-      summaryForOwner: '[sent a ' + (msg.type === 'document' ? 'document' : 'photo') + ' for ' + openReq.topic + ']'
+      summaryForOwner: '[sent a ' + (msg.type === 'document' ? 'document' : 'photo') + ' for ' + openReq.topic + ']',
+      arrivedAt: msg.created_at ? new Date(msg.created_at).getTime() : Date.now()
     });
     await postOwnerNotification(
       name + ' sent a ' + (msg.type === 'document' ? 'document' : 'photo') + ' for ' + openReq.topic +
@@ -12665,6 +12734,31 @@ async function actOnStuckRecoveryTurn({ contactId, name, firstName, text, firstS
 // net - see actOnStuckRecoveryTurn's own comment).
 async function recoverStuckIncomingMessages(now, deps) {
   const nowTs = now instanceof Date ? now.getTime() : (now || Date.now());
+  if (!isStuckRecoveryEnabled()) {
+    // Kill switch OFF (the default - see isStuckRecoveryEnabled's own
+    // comment) - never auto-send. Still raises the owner-visible "stuck"
+    // card (Action needed), same as the original Task 16 "card only"
+    // behavior this replaced, but never re-pings the owner for the SAME
+    // stuck message on every later tick - only once per distinct
+    // firstSeenAt. The burst buffer itself is left completely untouched
+    // (never promoted/cleared), so the normal fast-flush loop can still
+    // pick it up and resolve it the instant whatever was actually wrong
+    // clears up on its own.
+    let flagged = 0;
+    for (const contactId of await listBurstBufferContactIds()) {
+      const buffer = await getBurstBuffer(contactId).catch(() => null);
+      if (!buffer || !buffer.messages || !buffer.messages.length) continue;
+      if (nowTs - buffer.firstSeenAt < STUCK_RECOVERY_THRESHOLD_MS) continue;
+      const existingCard = await getStuckIncomingMessage(contactId).catch(() => null);
+      const alreadyFlagged = Boolean(existingCard && existingCard.firstSeenAt === buffer.firstSeenAt);
+      await flagStuckIncomingMessage(contactId, { phone: contactId, name: buffer.name || contactId, text: combineBurstText(buffer.messages), firstSeenAt: buffer.firstSeenAt, detectedAt: nowTs, reason: 'recovery_disabled' }).catch(() => {});
+      if (!alreadyFlagged) {
+        await postOwnerNotification('⏱️ A message from ' + (buffer.name || contactId) + ' (' + contactId + ') has been stuck for over 2 minutes - auto-recovery is currently OFF (SUBH_STUCK_RECOVERY), please check this conversation. (Also shown under Action needed.)').catch(() => {});
+      }
+      flagged++;
+    }
+    return { recovered: 0, failed: 0, flagged, disabled: true };
+  }
   const act = (deps && deps.actOn) || actOnStuckRecoveryTurn;
   let recovered = 0, failed = 0, flagged = 0;
 
@@ -12700,6 +12794,23 @@ async function recoverStuckIncomingMessages(now, deps) {
       await flagStuckIncomingMessage(contactId, { phone: contactId, name: state.name || contactId, text: combinedText, firstSeenAt: state.firstSeenAt, detectedAt: nowTs, reason: 'too_old' });
       await postOwnerNotification('⏱️ A message from ' + (state.name || contactId) + ' (' + contactId + ') is over 30 minutes old and was never auto-recovered: "' + combinedText.slice(0, 160) + '" - please check this conversation. (Also shown under Action needed.)').catch(() => {});
       await logStuckRecovery({ contactId, text: combinedText, delayMs, attempt: state.attempts, outcome: 'skipped_too_old' });
+      await clearStuckRecoveryState(contactId);
+      flagged++;
+      continue;
+    }
+
+    // PART 0 (2026-11), direct instruction, URGENT - "never on startup
+    // backfill": a buffer whose own firstSeenAt predates THIS process's
+    // own start can only be left over from before a restart (this
+    // instance never saw it arrive) - never auto-recovered, regardless
+    // of how young it still measures as relative to "now". This is
+    // deliberately a SEPARATE check from the 30-minute staleness check
+    // above - a buffer can be well under 30 minutes old in absolute terms
+    // and still predate this instance, e.g. right after a deploy.
+    if (state.firstSeenAt < SERVER_START_TS) {
+      await flagStuckIncomingMessage(contactId, { phone: contactId, name: state.name || contactId, text: combinedText, firstSeenAt: state.firstSeenAt, detectedAt: nowTs, reason: 'predates_server_start' });
+      await postOwnerNotification('⏱️ A message from ' + (state.name || contactId) + ' (' + contactId + ') was left over from before this server last restarted - never auto-recovered, please check this conversation. (Also shown under Action needed.)').catch(() => {});
+      await logStuckRecovery({ contactId, text: combinedText, delayMs, attempt: state.attempts, outcome: 'skipped_predates_server_start' });
       await clearStuckRecoveryState(contactId);
       flagged++;
       continue;
@@ -12788,11 +12899,17 @@ async function resumeStuckPendingQuestionsOnStartup() {
       await storeMessageText(contactId, lastIncoming.id, currentText);
       if (decision && decision.replyText) {
         await appendConvoHistory(contactId, 'out', decision.replyText);
+        // A flow-step resume (the sender just EDITED an already-handled
+        // message, resolving an open pending question) - exempt from the
+        // freshness gate per direct instruction; the guard above (only an
+        // ALREADY-handled id can be "edited") is this path's own real
+        // safety net, not a message-age check.
         await scheduleAutoSend({
           chatId: contactId, isGroup: false, name,
           replyText: decision.replyText, case: decision.case, memoryId: decision.memoryId || null,
           summaryForOwner: decision.summaryForOwner || null, topicLabel: decision.topicLabel || null, topic: decision.topic || null,
-          followupCount: decision.followupCount || null, intent: decision.intent || null, hrTopicArea: decision.hrTopicArea || null
+          followupCount: decision.followupCount || null, intent: decision.intent || null, hrTopicArea: decision.hrTopicArea || null,
+          notFreshnessGated: true
         });
         resumed++;
       }
@@ -13266,7 +13383,8 @@ async function pollOnce() {
           await scheduleAutoSend({
             chatId: contactId, isGroup: false, name: buffer.name,
             replyText: AUTOREPLY_ERROR_FALLBACK[lang] || AUTOREPLY_ERROR_FALLBACK.english,
-            case: 'holding', summaryForOwner: '[auto-reply error after retry, generic fallback sent] ' + combinedText.slice(0, 160)
+            case: 'holding', summaryForOwner: '[auto-reply error after retry, generic fallback sent] ' + combinedText.slice(0, 160),
+            arrivedAt: buffer.firstSeenAt
           }).catch(() => {});
           await postOwnerNotification('⚠️ Could not process a message from ' + (buffer.name || contactId) + ' even after a retry: ' + err2.message + ' - a generic reply was sent, please check this conversation.').catch(() => {});
         }
@@ -13284,7 +13402,8 @@ async function pollOnce() {
         await scheduleAutoSend({
           chatId: contactId, isGroup: false, name: buffer.name,
           replyText: AUTOREPLY_ERROR_FALLBACK[lang] || AUTOREPLY_ERROR_FALLBACK.english,
-          case: 'holding', summaryForOwner: '[auto-reply error before the normal retry path (buffer handling itself threw), generic fallback sent] ' + fallbackText.slice(0, 160)
+          case: 'holding', summaryForOwner: '[auto-reply error before the normal retry path (buffer handling itself threw), generic fallback sent] ' + fallbackText.slice(0, 160),
+          arrivedAt: buffer.firstSeenAt
         }).catch(() => {});
         await clearStuckIncomingMessage(contactId).catch(() => {});
       }
@@ -13323,7 +13442,8 @@ async function pollOnce() {
           await scheduleAutoSend({
             chatId: groupId, isGroup: true, name,
             replyText: decision.replyText, case: decision.case, memoryId: decision.memoryId || null,
-            summaryForOwner: decision.summaryForOwner || null
+            summaryForOwner: decision.summaryForOwner || null,
+            arrivedAt: msg.created_at ? new Date(msg.created_at).getTime() : Date.now()
           });
           results.scheduled++;
         }
@@ -13896,6 +14016,8 @@ module.exports = {
   CATCHUP_APOLOGY_THRESHOLD_MS,
   CATCHUP_STALE_THRESHOLD_MS,
   computeCatchupGapWindow,
+  SERVER_START_TS,
+  isStuckRecoveryEnabled,
   isMessageHandled,
   markMessageHandled,
   hasOwnReplyAfter,
