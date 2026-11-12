@@ -9751,6 +9751,17 @@ function resetLangModelCacheForTests() { langModelCache.clear(); }
 // pattern as classifyDocumentCaptionAsCv just below) resolved the exact
 // same message correctly in 6 output tokens on the first real try - used
 // here instead, deliberately NOT a tool call.
+// FOLLOW-UP AUDIT (2026-11, direct instruction): re-tested at
+// max_tokens:100 too - that one came back complete. So this is a real
+// max_tokens FLOOR for a forced tool call (~100 tokens for the call's own
+// overhead before the model's actual answer fits), not a schema/model
+// quirk independent of budget as first suspected. Audited every OTHER
+// forced-tool-call classifier in this codebase (18 total, including the
+// other single-enum/boolean-field ones - is_same_hr_matter,
+// is_workflow_reply) live against the real model: every one of them
+// already uses 512-2048 tokens (default 1024), comfortably clear of that
+// floor, and NONE truncated. This fix stays scoped to this one call site
+// - nothing else needs it.
 const LANGUAGE_DETECT_SYSTEM_PROMPT = 'This is one incoming WhatsApp message to an HR assistant for an Indian company. Employees commonly write in plain English, or in Bengali (Banglish) or Hindi (Hinglish) typed in Roman/Latin letters rather than native script. Decide which of the three this ONE message is actually written in, judging by the real words/meaning - it is very often NOT English, so do not default to English just because a word looks unfamiliar. Reply with exactly one word: english, banglish, or hinglish.';
 async function classifyLanguageViaModel(text) {
   const apiKey = process.env.ANTHROPIC_API_KEY;

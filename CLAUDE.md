@@ -2510,3 +2510,52 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
   Settings -> Fields -> Save flow touched by (b)/(c), `check-letter-
   settings.js`/`check-drive-template-fields.js` cover (a)/(b) directly.
   API spend: $0 (no real Claude/Drive calls in any test - fully mocked).
+
+- Two direct-instruction audits (2026-11), both against the real live
+  model/codebase - no production bugs found in either, one documentation
+  correction made.
+  1. TRUNCATION CHECK: audited all 18 forced-tool-call classifiers in the
+  codebase (extract_hr_data_query, is_same_hr_matter, manager_confirmation_
+  reply, extract_person_reference, rephrase_for_third_party, classify_
+  disambiguation_reply, classify_extra_info_only, classify_official_
+  message, match_reply_template, generate_template_versions, workflow_plan,
+  classify_workflow_reply, extract_reply_detail, is_workflow_reply,
+  propose_field_mapping, reminder_command, memory_command, automation_
+  plan) live against the real model, including the two other single-
+  enum/boolean-field schemas most likely to share detectLang's original
+  bug (`is_same_hr_matter`, `is_workflow_reply`). **None truncated.**
+  Root cause refined: re-testing detectLang's original forced-tool call at
+  `max_tokens:100` (vs. the originally-tried 20/50) came back complete -
+  this is a real max_tokens FLOOR for a forced tool call's own overhead
+  (~100 tokens), not a schema/model quirk independent of budget as first
+  suspected (comment corrected in `whatsappAssistant.js` near
+  `classifyLanguageViaModel`). Every other classifier already uses
+  512-2048 tokens, comfortably clear of that floor - this fix stays
+  correctly scoped to the one call site it was already fixed at.
+  detectLang extra model-call volume/cost (not previously computed): the
+  triple gate (zero word-list signal AND real content AND not already
+  confidently English) makes this genuinely rare; estimated 20-40 calls/
+  day at ~$0.0005-0.0008/call (tiny free-form call) = under $0.03/day
+  (~$1/month) - negligible.
+  2. 30-MIN SEND GATE AUDIT: mapped every WhatsApp send path in the
+  codebase against PART 0's freshness gate - all 13 `scheduleAutoSend`
+  callers still carry the correct `arrivedAt`/`notFreshnessGated` field
+  (no drift since PART 0); every direct-send path that bypasses
+  `scheduleAutoSend` entirely (STEP 4/5 to manager, STEP 5 result to
+  sender, manager reminders/re-asks, owner-approved card
+  approve/reject, Automated Tasks incl. birthdays, Reminders ->
+  WhatsApp, Workflow messages, Compose "Send", interview panel links)
+  is a synchronous action fired by a live event (a fresh manager reply,
+  an owner's tap, a scheduled tick re-checking current state) rather than
+  a persisted queue entry that could be resurrected or double-claimed -
+  the specific vulnerability class the gate exists for. Confirmed
+  directly: the missed-while-disconnected backlog path
+  (`sendOrReportAutoReply`'s flush-time staleness check, `ae747cf`) only
+  fires when `entry.arrivedAt` is set, producing a card + a `reminderService`
+  entry and never sending - exempt entries (no `arrivedAt`) correctly
+  skip it, since they were never about incoming-message freshness. No
+  gaps found; no code changes needed.
+  API spend for both audits: real model calls made for audit 1 only (one
+  realistic call per classifier, 18 total, plus 2 extra max_tokens:100
+  re-tests) - small free-form/short-schema calls, well under $0.50 total.
+  Audit 2 was pure code reading, $0.
