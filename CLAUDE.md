@@ -2559,3 +2559,84 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
   realistic call per classifier, 18 total, plus 2 extra max_tokens:100
   re-tests) - small free-form/short-schema calls, well under $0.50 total.
   Audit 2 was pure code reading, $0.
+
+- PART 2 (2026-11), direct instruction, URGENT - 5 live bugs in WhatsApp
+  understanding/flows, all fixed in `src/aiAssistant/whatsappAssistant.js`
+  unless noted.
+  (a) A salary-advance FOLLOW-UP ("sir amar salary advance ta ekhono
+  paini") was wrongly hard-blocked as a sensitive-data request. Root
+  cause: `detectSensitiveIdFieldKeyword`'s 'salary'/'bank' keyword match
+  routed straight into `handleOwnSensitiveIdRequest`, which has NO real
+  getter for those two fields (no such columns exist) - a keyword match
+  could only ever mis-fire into a dead-end refusal, never actually
+  disclose anything, unlike the other 7 forbidden heads (Aadhaar/PAN/
+  etc.) which keep their pure keyword fast path, unchanged. Fixed: "the
+  model decides, the keyword check is only a fast path" - a new tiny
+  free-form model call (`classifySalaryBankFigureRequestViaModel`, same
+  safe pattern as `classifyLanguageViaModel`, never a forced tool call)
+  judges whether the message is LITERALLY asking for the figure/detail;
+  only a clear "no" falls through to the normal HR-note flow. Model
+  failure/unavailable -> conservative default preserved (still
+  hard-blocks, never the other way).
+  (b) STEP 4's manager-facing message stated the wrong type/date for a
+  "second-half joining" report, and Devika Majumdar's identically-shaped
+  message fell to generic conversation instead of starting the approval
+  flow. Two root causes: `classifyOfficialMessage`'s date context used
+  `new Date().toISOString()` (UTC), not IST - from IST 00:00-05:29 each
+  day the UTC calendar date is a day BEHIND the real IST date, resolving
+  "today"/"tomorrow" wrong in that window (fixed: reuses `istDayKeyOf`,
+  already used elsewhere in this file for the same UTC/IST problem); and
+  `isHrNotification`/`hrNotificationTopicLabel`'s tool description had no
+  explicit example for "joining from the second half of the day" - a
+  genuinely distinct matter from both half-day and late-coming, close
+  enough in wording that the model could conflate or miss it entirely -
+  fixed by adding one, the same way other edge cases got anchored over
+  this file's history. `attendanceRequestService.js`'s own
+  `REQUEST_TYPE_CATEGORIES` also gained a matching "Second-half joining"
+  category so the Attendance Requests card states the correct type too.
+  (c) Abhijit Nandi's attendance message created no Attendance Requests
+  card. Confirmed via the real model: the card-creation wiring itself
+  (Task 6) was already correct and unconditional inside
+  `handleHrNotificationStart`/`finalizeHrNoteThirdParty` - a missing card
+  meant the message never reached that code at all, falling to generic
+  conversation for the same classifier-prompt-coverage reason as (b)'s
+  Devika Majumdar case. The same prompt fix covers both.
+  (d) Sourav Majumder's flow, closed Wed 4 Nov, got an unprompted new
+  STEP-4 message to the manager on Sat 7 Nov. Two confirmed, independent
+  gaps: `findDuplicateHrConfirmation` only ever checked PENDING
+  ('awaiting_manager') confirmations, never already-RESOLVED
+  ('confirmed'/'declined') ones - the same sender raising an
+  already-resolved matter again had nothing stopping a brand-new
+  confirmation and a second manager ask. Fixed: now matches resolved
+  records too; the caller replies with the EXISTING result (reusing
+  STEP 5's own wording), never re-asking the manager. Separately,
+  `checkHrConfirmationNudges` had no time-of-day/day-of-week gate on the
+  actual SEND of a reminder/re-ask (only on how elapsed working-minutes
+  accumulate) - fixed with a new `isHrNudgeSendableNowIst` guard,
+  09:30-19:00 IST, never Sunday; a reminder due outside that window
+  simply waits for the next in-window tick, never skipped.
+  (e) The Important WhatsApp list sometimes showed a stale message
+  instead of the conversation's actual latest one. Root cause:
+  `mergeRecentWhatsappConversations` already overrode a needs-you row's
+  `lastMessageTime` from the real latest activity, but never did the same
+  for `lastMessageText` - it stayed frozen on the pending card's own
+  (possibly older) text forever. Fixed: both now come from the same
+  latest `recentLog` entry, with the card's own text kept only as a
+  fallback when no later entry exists at all.
+  Locked scenarios (`scripts/check-whatsapp-scenarios.js`, real model,
+  3/3 each): all 4 the user required - salary-advance follow-up ->
+  noting flow; "second half" joining -> correct type, never generic
+  conversation; attendance flow -> Attendance Requests card always
+  created; already-confirmed matter raised again -> existing result,
+  never a second manager ask. Also deterministically locked in
+  `check-whatsapp-engine.js` (811 checks in that suite): the salary/bank
+  model-confirmation routing (both "no" and model-failure directions);
+  `istDayKeyOf`'s UTC/IST boundary; the new "Second-half joining"
+  category; the resolved-duplicate-detection branch (confirmed AND
+  declined); all `isHrNudgeSendableNowIst` boundaries (09:29/09:30,
+  18:59/19:00, Sunday, Saturday) plus a `checkHrConfirmationNudges`
+  integration test proving a due reminder is delayed (never skipped)
+  outside the window; the stale-preview-text fix.
+  Full 12-suite deterministic gate + headless UI: clean. API spend: ~$0.19
+  (21 real calls across the 4 new locked scenarios, 3x each) - the
+  deterministic suite itself made zero real calls.

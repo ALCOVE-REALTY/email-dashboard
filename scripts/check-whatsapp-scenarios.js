@@ -1710,6 +1710,74 @@ scenario('PART 0 (new), LOCKED SCENARIO: one incoming image gets exactly ONE rep
   }
 });
 
+// --- PART 2 (2026-11), direct instruction - Live bugs: WhatsApp
+// understanding/flows. All 4 locked scenarios the user explicitly
+// required, named "PART 2 (new), LOCKED SCENARIO: ..." so
+// SCENARIO_FILTER="PART 2 (new)" selects just these. ---
+scenario('PART 2 (new), LOCKED SCENARIO: a salary-advance FOLLOW-UP ("sir amar salary advance ta ekhono paini") never hits the PII hard-block - it is not literally asking to be told a salary figure, so the model routes it to the normal HR-note flow instead', async () => {
+  const phone = '910000001420';
+  await cleanupHrFlowArtifacts(phone);
+  try {
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenSalaryAdv', firstName: 'ScenSalaryAdv', text: 'sir amar salary advance ta ekhono paini', isGroup: false, history: [] });
+    const isPiiRefusal = Object.values(whatsappAssistant.PII_BLOCK_REPLY).includes(d.replyText);
+    if (isPiiRefusal) return { pass: false, detail: 'live bug reproduced: salary-advance follow-up was hard-blocked with the PII refusal: ' + d.replyText };
+    return { pass: true, detail: 'got a normal reply (noting/HR-note flow), never the PII hard-block: ' + d.replyText };
+  } finally {
+    await cleanupHrFlowArtifacts(phone);
+  }
+});
+scenario('PART 2 (new), LOCKED SCENARIO: "joining from the second half of the day" (naming the manager upfront) starts the manager approval flow with its OWN topic, never mislabeled as half-day and never falling to generic conversation (the Devika Majumdar failure mode)', async () => {
+  const phone = '910000001421';
+  await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
+  try {
+    await whatsappAssistant.decideAutoReply({ phone, name: 'ScenSecondHalf', firstName: 'ScenSecondHalf', text: 'Sir ajke second half theke office asbo, Tanmoy Mondal ke janiyechi.', isGroup: false, history: [] });
+    const confirmations = (await whatsappAssistant.listAllHrConfirmations()).filter((c) => c.senderPhone === phone);
+    if (!confirmations.length) return { pass: false, detail: 'live bug reproduced: no HR confirmation flow was started at all (fell to generic conversation, same failure mode as Devika Majumdar\'s message)' };
+    const c = confirmations[0];
+    const looksLikeHalfDay = /half.?day/i.test(c.topicLabel || '') || /half.?day/i.test(c.summary || '');
+    if (looksLikeHalfDay) return { pass: false, detail: 'live bug reproduced: "second half joining" was mislabeled as a half-day request: topicLabel=' + c.topicLabel + ', summary=' + c.summary };
+    return { pass: true, detail: 'started the flow correctly: topicLabel=' + c.topicLabel + ', summary=' + c.summary };
+  } finally {
+    await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
+  }
+});
+scenario('PART 2 (new), LOCKED SCENARIO: starting an attendance-type HR-note flow always creates its Attendance Requests card at STEP 1 (the Abhijit Nandi incident - no card was ever created)', async () => {
+  const phone = '910000001422';
+  await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
+  try {
+    const attendanceRequestService = require('../src/aiAssistant/attendanceRequestService');
+    const now = new Date();
+    const monthKey = now.getUTCFullYear() + '-' + String(now.getUTCMonth() + 1).padStart(2, '0');
+    await whatsappAssistant.decideAutoReply({ phone, name: 'ScenAttendCard', firstName: 'ScenAttendCard', text: 'Ajke amake deri kore aste bola hoyechhe, Tanmoy Mondal bolechhen.', isGroup: false, history: [] });
+    const after = await attendanceRequestService.listForMonth(monthKey);
+    const created = after.find((r) => r.senderPhone === whatsapp.normalizePhone(phone));
+    if (!created) return { pass: false, detail: 'live bug reproduced: no Attendance Requests record/card was created for this attendance-type message' };
+    return { pass: true, detail: 'card created, requestType=' + created.requestType + ', status=' + created.status };
+  } finally {
+    await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
+  }
+});
+scenario('PART 2 (new), LOCKED SCENARIO: raising an already-CONFIRMED matter again to the SAME manager gets the EXISTING result (the Sourav Majumder incident) - never a second manager message; the real model judges "same matter" correctly', async () => {
+  const phone = '910000001423';
+  await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
+  try {
+    const candidate = { employeeId: 'SCENTANMOY', name: 'Tanmoy Mondal', department: 'Civil (Plot-B) Structure', contactNumber: TANMOY_MONDAL_PHONE, status: 'ACTIVE', designation: 'Assistant Manager' };
+    await whatsappAssistant.saveHrConfirmation({
+      senderPhone: phone, senderName: 'ScenSourav', summary: 'late coming today, informed by Tanmoy Mondal', summaryLocalized: 'ajke deri kore eshechi, Tanmoy Mondal bolechhen', lang: 'banglish',
+      thirdPartyPhone: TANMOY_MONDAL_PHONE, thirdPartyName: candidate.name, thirdPartyDepartment: candidate.department,
+      topicLabel: 'deri kore asha', originalMessageAt: Date.now() - 3 * 24 * 60 * 60 * 1000,
+      status: 'confirmed', createdAt: Date.now() - 3 * 24 * 60 * 60 * 1000, resolvedAt: Date.now() - 3 * 24 * 60 * 60 * 1000, remindedAt: null, escalatedAt: null, reminderId: null
+    });
+    const result = await whatsappAssistant.finalizeHrNoteThirdParty({ phone, senderName: 'ScenSourav', lang: 'banglish', candidate, summary: 'late coming today, informed by Tanmoy Mondal, repeated', summaryLocalized: 'abar ajke deri kore eshechi, Tanmoy Mondal bolechhen', createdAt: Date.now(), history: [] });
+    const confirmationsAfter = (await whatsappAssistant.listAllHrConfirmations()).filter((c) => c.senderPhone === phone);
+    if (confirmationsAfter.length !== 1) return { pass: false, detail: 'live bug reproduced: a second confirmation was created (' + confirmationsAfter.length + ' total) instead of reusing the existing resolved one' };
+    if (!/confirmed this|confirm kar di hai|confirm korechhen/.test(result.replyText)) return { pass: false, detail: 'did not get the EXISTING result reply - got: ' + result.replyText };
+    return { pass: true, detail: 'correctly reused the existing confirmed result, no second manager ask: ' + result.replyText };
+  } finally {
+    await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
+  }
+});
+
 const APPROX_USD_PER_MTOK_INPUT = 3;
 const APPROX_USD_PER_MTOK_OUTPUT = 15;
 

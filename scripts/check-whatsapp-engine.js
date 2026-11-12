@@ -8163,6 +8163,201 @@ async function checkAsyncRealModel(label, fn) {
     return ok;
   });
 
+  console.log('='.repeat(70));
+  console.log('PART 2 (2026-11), direct instruction, URGENT - Live bugs: WhatsApp understanding/flows');
+  console.log('='.repeat(70));
+
+  console.log('(a) salary/bank keyword match: the model decides, the keyword check is only a fast path');
+  function installSalaryBankModelStub(responseFn) {
+    const originalFetch = global.fetch;
+    global.fetch = async (url, opts) => {
+      if (String(url).includes('api.anthropic.com') && opts && typeof opts.body === 'string') {
+        let body = null;
+        try { body = JSON.parse(opts.body); } catch (err) { body = null; }
+        if (body && Array.isArray(body.system) && body.system[0] && body.system[0].text === whatsappAssistant.SALARY_BANK_FIGURE_REQUEST_SYSTEM_PROMPT) {
+          const text = responseFn(body);
+          return { ok: true, json: async () => ({ content: text === null ? [] : [{ type: 'text', text }], usage: { input_tokens: 10, output_tokens: 2 } }) };
+        }
+      }
+      return originalFetch(url, opts);
+    };
+    return originalFetch;
+  }
+  check('detectOwnSensitiveIdRequest("sir amar salary advance ta ekhono paini") still matches the salary keyword (the fast path correctly TRIGGERS - it is the OUTCOME that is now model-decided, not the detection itself)', whatsappAssistant.detectOwnSensitiveIdRequest('sir amar salary advance ta ekhono paini') === 'salary');
+  await checkAsync('LIVE BUG FIX: a salary/bank keyword match still hard-blocks (the existing, conservative default) when the model confirmation call is unavailable/fails - an API outage must never be how a genuine figure/detail request slips through', async () => {
+    const phone = '910000001330';
+    await cleanupHrFlowArtifacts(phone);
+    // No stub installed here - the blanket SKIP_REAL_MODEL fetch throw is
+    // caught INSIDE classifySalaryBankFigureRequestViaModel's own
+    // try/catch, returning null (model unavailable), exactly like a real
+    // outage would - proving the conservative default holds either way.
+    try {
+      const d = await whatsappAssistant.decideAutoReply({ phone, name: 'SalaryFailTest', firstName: 'SalaryFailTest', text: 'amar bank account number ta bolo', isGroup: false, history: [] });
+      // .includes, not exact equality - the first reply of the day gets
+      // the "Ami SUBH..." identity line prepended, so the refusal text
+      // itself is a SUFFIX of the real reply, not the whole thing.
+      const ok = Object.values(whatsappAssistant.PII_BLOCK_REPLY).some((text) => (d.replyText || '').includes(text));
+      return ok;
+    } finally {
+      await cleanupHrFlowArtifacts(phone);
+    }
+  });
+  await checkAsync('LIVE BUG FIX, the actual live incident: "sir amar salary advance ta ekhono paini" (a FOLLOW-UP about an already-requested advance, not a figure disclosure) - once the model says "no" (not literally asking for the figure), it does NOT take the dead-end hard-block path - proven by the flow reaching classifyOfficialMessage\'s own mandatory real-model call instead of resolving with the PII refusal', async () => {
+    const phone = '910000001331';
+    await cleanupHrFlowArtifacts(phone);
+    const origFetch = installSalaryBankModelStub(() => 'no');
+    try {
+      let resolvedReply = null;
+      try {
+        const d = await whatsappAssistant.decideAutoReply({ phone, name: 'SalaryAdvTest', firstName: 'SalaryAdvTest', text: 'sir amar salary advance ta ekhono paini', isGroup: false, history: [] });
+        resolvedReply = d.replyText;
+      } catch (err) {
+        if (err.message === 'SKIPPED_REAL_MODEL_CALL') return true; // reached the normal classifier, as intended - the real-model locked scenario covers what it resolves TO
+        throw err;
+      }
+      // If it resolved without even reaching a real-model call, it must
+      // NOT have been the PII hard-block reply (which this stub's "no"
+      // verdict must prevent) - .includes, not exact equality, since a
+      // first-of-the-day reply gets the "Ami SUBH..." intro prepended.
+      return !Object.values(whatsappAssistant.PII_BLOCK_REPLY).some((text) => (resolvedReply || '').includes(text));
+    } finally {
+      global.fetch = origFetch;
+      await cleanupHrFlowArtifacts(phone);
+    }
+  });
+
+  console.log('(b) STEP 4 date must be computed in IST, never UTC - the midnight-5:30am IST window where the two calendar days differ');
+  check('istDayKeyOf resolves to the IST calendar day, not the UTC one - 2026-11-11T19:00:00Z is 2026-11-12T00:30 IST (the next IST day already)', whatsappAssistant.istDayKeyOf(new Date('2026-11-11T19:00:00.000Z')) === '2026-11-12');
+  check('istDayKeyOf for an ordinary daytime IST instant matches its own UTC calendar day too (sanity check - most of the day the two agree)', whatsappAssistant.istDayKeyOf(new Date('2026-11-11T10:00:00.000Z')) === '2026-11-11');
+
+  console.log('(b)/(c) "second half of the day" joining is its own attendance category, never conflated with half-day/late-coming/Other');
+  check('classifyRequestType recognizes "second half" joining as its own category, distinct from Half-day and Late', attendanceRequestService.classifyRequestType('second half-e join', 'will join from the second half of the day today') === 'Second-half joining');
+  check('classifyRequestType still recognizes an ordinary half-day request as Half-day, unaffected by the new category', attendanceRequestService.classifyRequestType('half day', 'taking a half day today') === 'Half-day');
+  check('classifyRequestType still recognizes ordinary late-coming as Late, unaffected by the new category', attendanceRequestService.classifyRequestType('deri kore asha', 'coming in late today') === 'Late');
+
+  console.log('(d) Sourav Majumder incident, part 1: a matter already RESOLVED (confirmed/declined) and raised again by the SAME sender to the SAME manager never starts a second manager ask - replies with the EXISTING result');
+  function installIsSameHrMatterStub(forceMatch) {
+    const originalFetch = global.fetch;
+    global.fetch = async (url, opts) => {
+      if (String(url).includes('api.anthropic.com') && opts && typeof opts.body === 'string') {
+        let body = null;
+        try { body = JSON.parse(opts.body); } catch (err) { body = null; }
+        if (body && Array.isArray(body.tools) && body.tools[0] && body.tools[0].name === 'is_same_hr_matter') {
+          return { ok: true, json: async () => ({ content: [{ type: 'tool_use', input: { isSameMatter: forceMatch } }] }) };
+        }
+      }
+      return originalFetch(url, opts);
+    };
+    return originalFetch;
+  }
+  await checkAsync('findDuplicateHrConfirmation now also matches an already-RESOLVED (confirmed) record for the same sender+manager+matter, not just a still-pending one', async () => {
+    const phone = '910000001340';
+    const managerPhone = '910000001341';
+    await cleanupHrFlowArtifacts(phone, managerPhone);
+    const confirmationId = await whatsappAssistant.saveHrConfirmation({
+      senderPhone: phone, senderName: 'Sourav Test', summary: 'late coming today', summaryLocalized: 'ajke deri kore eshechi', lang: 'banglish',
+      thirdPartyPhone: managerPhone, thirdPartyName: 'Resolved Manager', thirdPartyDepartment: 'OPS',
+      topicLabel: 'deri kore asha', originalMessageAt: Date.now() - 3 * 24 * 60 * 60 * 1000,
+      status: 'confirmed', createdAt: Date.now() - 3 * 24 * 60 * 60 * 1000, resolvedAt: Date.now() - 3 * 24 * 60 * 60 * 1000, remindedAt: null, escalatedAt: null, reminderId: null
+    });
+    const origFetch = installIsSameHrMatterStub(true);
+    try {
+      const found = await whatsappAssistant.findDuplicateHrConfirmation(phone, managerPhone, 'late coming today, repeated');
+      return Boolean(found) && found.id === confirmationId && found.status === 'confirmed';
+    } finally {
+      global.fetch = origFetch;
+      await cleanupHrFlowArtifacts(phone, managerPhone);
+    }
+  });
+  await checkAsync('LIVE BUG FIX, the actual live incident: raising an already-CONFIRMED matter again to the SAME manager gets the EXISTING result (same wording STEP 5 already uses), never a second manager message - finalizeHrNoteThirdParty called directly, as handleHrNotificationStart would', async () => {
+    const phone = '910000001342';
+    const managerPhone = '910000001343';
+    await cleanupHrFlowArtifacts(phone, managerPhone);
+    const candidate = { employeeId: 'TESTMGRRESOLVED', name: 'Resolved Manager Two', department: 'OPS', contactNumber: managerPhone, status: 'ACTIVE', designation: 'MANAGER' };
+    await whatsappAssistant.saveHrConfirmation({
+      senderPhone: phone, senderName: 'Sourav Test Two', summary: 'late coming today', summaryLocalized: 'ajke deri kore eshechi', lang: 'banglish',
+      thirdPartyPhone: managerPhone, thirdPartyName: candidate.name, thirdPartyDepartment: candidate.department,
+      topicLabel: 'deri kore asha', originalMessageAt: Date.now() - 3 * 24 * 60 * 60 * 1000,
+      status: 'confirmed', createdAt: Date.now() - 3 * 24 * 60 * 60 * 1000, resolvedAt: Date.now() - 3 * 24 * 60 * 60 * 1000, remindedAt: null, escalatedAt: null, reminderId: null
+    });
+    const origFetch = installIsSameHrMatterStub(true);
+    try {
+      const result = await whatsappAssistant.finalizeHrNoteThirdParty({ phone, senderName: 'Sourav Test Two', lang: 'banglish', candidate, summary: 'late coming today, repeated', summaryLocalized: 'abar ajke deri kore eshechi', createdAt: Date.now(), history: [] });
+      const confirmationsAfter = (await whatsappAssistant.listAllHrConfirmations()).filter((c) => c.senderPhone === phone);
+      const ok = confirmationsAfter.length === 1 && /confirmed this|confirm kar di hai|confirm korechhen/.test(result.replyText);
+      return ok;
+    } finally {
+      global.fetch = origFetch;
+      await cleanupHrFlowArtifacts(phone, managerPhone);
+    }
+  });
+  await checkAsync('a matter already DECLINED, raised again, gets the EXISTING "did not confirm" result, never a second manager ask', async () => {
+    const phone = '910000001344';
+    const managerPhone = '910000001345';
+    await cleanupHrFlowArtifacts(phone, managerPhone);
+    const candidate = { employeeId: 'TESTMGRDECLINED', name: 'Declined Manager', department: 'OPS', contactNumber: managerPhone, status: 'ACTIVE', designation: 'MANAGER' };
+    await whatsappAssistant.saveHrConfirmation({
+      senderPhone: phone, senderName: 'Declined Sender', summary: 'half day today', summaryLocalized: 'ajke half day', lang: 'banglish',
+      thirdPartyPhone: managerPhone, thirdPartyName: candidate.name, thirdPartyDepartment: candidate.department,
+      topicLabel: 'half day', originalMessageAt: Date.now() - 2 * 24 * 60 * 60 * 1000,
+      status: 'declined', createdAt: Date.now() - 2 * 24 * 60 * 60 * 1000, resolvedAt: Date.now() - 2 * 24 * 60 * 60 * 1000, remindedAt: null, escalatedAt: null, reminderId: null
+    });
+    const origFetch = installIsSameHrMatterStub(true);
+    try {
+      const result = await whatsappAssistant.finalizeHrNoteThirdParty({ phone, senderName: 'Declined Sender', lang: 'banglish', candidate, summary: 'half day today, repeated', summaryLocalized: 'abar ajke half day', createdAt: Date.now(), history: [] });
+      const confirmationsAfter = (await whatsappAssistant.listAllHrConfirmations()).filter((c) => c.senderPhone === phone);
+      const ok = confirmationsAfter.length === 1 && /did not confirm|nahi ki|confirm korenni/.test(result.replyText);
+      return ok;
+    } finally {
+      global.fetch = origFetch;
+      await cleanupHrFlowArtifacts(phone, managerPhone);
+    }
+  });
+
+  console.log('(d) Sourav Majumder incident, part 2: a manager reminder/re-ask is only ever SENT within 09:30-19:00 IST, never on a Sunday');
+  check('isHrNudgeSendableNowIst is false just before 09:30 IST', !whatsappAssistant.isHrNudgeSendableNowIst(new Date('2026-11-02T09:29:00+05:30')));
+  check('isHrNudgeSendableNowIst is true at exactly 09:30 IST', whatsappAssistant.isHrNudgeSendableNowIst(new Date('2026-11-02T09:30:00+05:30')));
+  check('isHrNudgeSendableNowIst is true at 18:59 IST', whatsappAssistant.isHrNudgeSendableNowIst(new Date('2026-11-02T18:59:00+05:30')));
+  check('isHrNudgeSendableNowIst is false at 19:00 IST (the window ends here, not 18:30)', !whatsappAssistant.isHrNudgeSendableNowIst(new Date('2026-11-02T19:00:00+05:30')));
+  check('isHrNudgeSendableNowIst is false on a Sunday, even at a normal working hour', !whatsappAssistant.isHrNudgeSendableNowIst(new Date('2026-11-01T12:00:00+05:30')));
+  check('isHrNudgeSendableNowIst is true on a Saturday (a normal working day, unaffected - the Nov-7 incident was a Saturday, not itself a window violation)', whatsappAssistant.isHrNudgeSendableNowIst(new Date('2026-11-07T12:00:00+05:30')));
+  await checkAsync('checkHrConfirmationNudges never actually SENDS a due reminder outside 09:30-19:00 IST - it waits for the next in-window tick instead of skipping it entirely', async () => {
+    const HR_SENDER_NIGHT = '910000001350';
+    const id = await whatsappAssistant.saveHrConfirmation({
+      senderPhone: HR_SENDER_NIGHT, senderName: 'SenderNight', summary: 'test night gate', summaryLocalized: 'test night gate',
+      lang: 'english', thirdPartyPhone: TANMOY_MONDAL_PHONE, thirdPartyName: 'Tanmoy Mondal', thirdPartyDepartment: 'Civil',
+      status: 'awaiting_manager', createdAt: new Date('2026-11-02T09:30:00+05:30').getTime(), remindedAt: null, escalatedAt: null, reminderId: null
+    });
+    await whatsappAssistant.checkHrConfirmationNudges(new Date('2026-11-02T21:00:00+05:30')); // well past 180 working minutes, but OUTSIDE the 09:30-19:00 send window
+    const afterNight = await whatsappAssistant.getHrConfirmation(id);
+    const notSentAtNight = !afterNight.remindedAt;
+    await whatsappAssistant.checkHrConfirmationNudges(new Date('2026-11-03T10:00:00+05:30')); // next morning, inside the window - should send now
+    const afterMorning = await whatsappAssistant.getHrConfirmation(id);
+    const sentNextMorning = Boolean(afterMorning.remindedAt);
+    await whatsappAssistant.removeHrConfirmation(id);
+    return notSentAtNight && sentNextMorning;
+  });
+
+  console.log('(e) Important WhatsApp list: a row\'s preview text always follows the conversation\'s actual LATEST message, never a stale pending-card text');
+  check('mergeRecentWhatsappConversations: a needs-you row\'s lastMessageText updates to the LATEST real message in that chat, never stuck on the pending card\'s own (older) text', (() => {
+    const phone = '910000009099';
+    const needsYou = [{ chatId: phone, name: 'StaleCardTest', lastMessageText: 'OLD CARD TEXT (stale)', lastMessageTime: 1000, itemCount: 1, states: ['approval'] }];
+    const recentLog = [
+      { chatId: phone, ts: 1000, sentText: 'OLD CARD TEXT (stale)' },
+      { chatId: phone, ts: 5000, sentText: 'A much later, real message' }
+    ];
+    const rows = whatsappAssistant.mergeRecentWhatsappConversations(needsYou, recentLog, 10000, undefined, new Map(), []);
+    const row = rows.find((r) => r.chatId === phone);
+    return Boolean(row) && row.lastMessageText === 'A much later, real message' && row.lastMessageTime === 5000;
+  })());
+  check('mergeRecentWhatsappConversations: with NO later recentLog entry at all, a needs-you row keeps its own card text (the fallback still works)', (() => {
+    const phone = '910000009098';
+    const needsYou = [{ chatId: phone, name: 'NoLogTest', lastMessageText: 'CARD TEXT ONLY', lastMessageTime: 1000, itemCount: 1, states: ['approval'] }];
+    const rows = whatsappAssistant.mergeRecentWhatsappConversations(needsYou, [], 10000, undefined, new Map(), []);
+    const row = rows.find((r) => r.chatId === phone);
+    return Boolean(row) && row.lastMessageText === 'CARD TEXT ONLY';
+  })());
+
   console.log(pass + '/' + (pass + fail) + ' passed' + (fail ? ', ' + fail + ' FAILED' : ''));
   if (failures.length) {
     console.log('Failed checks:');

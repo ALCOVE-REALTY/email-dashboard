@@ -41,6 +41,13 @@ function newId() {
 }
 
 const REQUEST_TYPE_CATEGORIES = [
+  // LIVE BUG FIX (2026-11), direct instruction - a distinct matter from
+  // both "half-day" (leave for half a day) and "late coming" (a few
+  // minutes/an hour late): the sender is joining only from the second
+  // half of today's shift. Checked before "half.?day" below for clarity,
+  // even though that pattern alone wouldn't match "second half" anyway
+  // (no "day" immediately follows "half" in that phrase).
+  { re: /second[- ]half|dwitiyo?\s*(ardhek|half)|2nd[- ]half/i, label: 'Second-half joining' },
   { re: /half.?[- ]?day/i, label: 'Half-day' },
   { re: /work[- ]from[- ]home|\bwfh\b|bari.*(theke|thaka).*kaj/i, label: 'WFH' },
   { re: /comp.?[- ]?off|working another day|workingday|off.?[- ]?day.*duty|duty.*off.?[- ]?day/i, label: 'Comp-off' },

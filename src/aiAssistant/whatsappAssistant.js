@@ -850,10 +850,21 @@ function mergeRecentWhatsappConversations(needsYou, recentLog, nowTs, windowMs, 
   // chat - the max ts per chat here is that true "last activity" instant,
   // used below for every row regardless of needsYou status.
   const latestTsByChat = new Map();
+  // LIVE BUG FIX (2026-11), direct instruction - "row preview = latest
+  // message, pending-card text never overrides it": lastMessageTime was
+  // already overridden below from this same real last-activity instant,
+  // but lastMessageText was not - a needs-you row kept showing its
+  // pending card's OWN summary/description text forever, even after a
+  // later real message in that chat moved the row's timestamp forward.
+  // Tracked together so both always come from the SAME latest entry.
+  const latestTextByChat = new Map();
   for (const e of recentLog) {
     const key = whatsapp.normalizePhone(e.chatId);
     const existing = latestTsByChat.get(key);
-    if (existing === undefined || e.ts > existing) latestTsByChat.set(key, e.ts);
+    if (existing === undefined || e.ts > existing) {
+      latestTsByChat.set(key, e.ts);
+      latestTextByChat.set(key, e.sentText || e.messageSummary || '');
+    }
   }
 
   // Latest resolved entry per chat within the window - one row per
@@ -897,7 +908,8 @@ function mergeRecentWhatsappConversations(needsYou, recentLog, nowTs, windowMs, 
     // "new activity" by notDismissedNeedsYou below, which used to compare
     // against this same overridden value directly.
     itemOriginTs: r.lastMessageTime,
-    lastMessageTime: latestTsByChat.has(r.chatId) ? latestTsByChat.get(r.chatId) : r.lastMessageTime
+    lastMessageTime: latestTsByChat.has(r.chatId) ? latestTsByChat.get(r.chatId) : r.lastMessageTime,
+    lastMessageText: latestTextByChat.has(r.chatId) ? latestTextByChat.get(r.chatId) : r.lastMessageText
   }));
   // Task 2 (2026-11) LIVE BUG FIX, 2nd attempt: the dismiss check below
   // used to compare against lastMessageTime, which is the time of the
@@ -2619,6 +2631,43 @@ function detectOwnSensitiveIdRequest(text) {
   const t = String(text || '').toLowerCase();
   if (!/\b(amar|amader|mera|meri|my)\b/.test(t)) return null;
   return detectSensitiveIdFieldKeyword(text);
+}
+// LIVE BUG FIX (2026-11), direct instruction - "the model decides (AI
+// understands), the keyword check is only a fast path": unlike the other
+// 7 forbidden heads (Aadhaar/PAN/UAN/ESIC/address/DOB/blood group, which
+// have real values and a genuine "never disclose" requirement, so the
+// keyword match staying a pure deterministic fast path is correct and
+// unchanged), 'salary'/'bank' have NO real getter at all - a keyword
+// match can never actually disclose anything, only ever mis-fire. Found
+// live: "sir amar salary advance ta ekhono paini" (a FOLLOW-UP asking
+// about an already-requested salary advance, not a figure/amount
+// disclosure at all) matched amar+salary and was hard-blocked with the
+// generic PII refusal, same failure mode SALARY_DOCUMENT_REQUEST_RE
+// already fixed for "salary slip" - but that was one more regex
+// exclusion, the same whack-a-mole that would never cover "advance"/
+// "bonus"/"loan against salary"/"salary not credited"/etc. one at a
+// time. This tiny free-form model call (same safe pattern
+// classifyLanguageViaModel/classifyDocumentCaptionAsCv already use -
+// never a forced tool call, see the truncation-floor finding on
+// classifyLanguageViaModel's own comment) judges the ACTUAL meaning
+// instead: is this literally asking to be told a salary figure/bank
+// detail right now, or something else that merely mentions the word.
+// Model failure/unavailable -> null -> treated as "yes" (the
+// conservative, PRE-EXISTING default: hard-block), never the other way -
+// an API outage must never be how a genuine figure/detail request slips
+// through.
+const SALARY_BANK_FIGURE_REQUEST_SYSTEM_PROMPT = 'This is one incoming WhatsApp message to an HR assistant, from an employee, that mentions their OWN salary or bank account. Decide: is this message LITERALLY asking to be told a salary amount/figure, CTC, or bank account/IFSC number right now - something that would have to be read out or sent back as data? Or is it something else that merely MENTIONS salary or bank without asking for the figure/detail itself - e.g. a follow-up or status check about a salary ADVANCE, a delayed/missing payment, a loan against salary, a bonus, a reimbursement, or any other HR matter. Reply with exactly one word: yes (it is literally asking to be told the figure/detail) or no (it is something else).';
+async function classifySalaryBankFigureRequestViaModel(text) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  const t = String(text || '').trim();
+  if (!apiKey || !DRAFT_MODEL || !t) return null;
+  try {
+    const reply = await callClaudeChat(apiKey, DRAFT_MODEL, [{ role: 'system', content: SALARY_BANK_FIGURE_REQUEST_SYSTEM_PROMPT }, { role: 'user', content: t }], 10);
+    const verdict = String(reply || '').trim().toLowerCase();
+    if (verdict.startsWith('yes')) return true;
+    if (verdict.startsWith('no')) return false;
+    return null;
+  } catch (err) { return null; }
 }
 async function handleOwnSensitiveIdRequest({ phone, lang, field, history }) {
   // The ONLY real authorization check - detectOwnSensitiveIdRequest above
@@ -6569,20 +6618,28 @@ async function isSameHrMatter(summaryA, summaryB) {
   const input = await callClaudeForcedTool(apiKey, DRAFT_MODEL, [{ role: 'system', content: systemPrompt }, { role: 'user', content: 'Compare Matter A and Matter B.' }], toolDef.name, toolDef).catch(() => null);
   return Boolean(input && input.isSameMatter);
 }
-// Returns the specific pending confirmation this new report duplicates
-// (same manager, same matter) or null - never blocks on an unrelated
-// pending confirmation to a different manager or about a different topic.
+// Returns the specific confirmation this new report duplicates (same
+// sender, same manager, same matter) or null - PENDING ('awaiting_manager')
+// or already RESOLVED ('confirmed'/'declined') - never an unrelated
+// confirmation to a different manager or about a different topic.
+// LIVE BUG FIX (2026-11), direct instruction - the Sourav Majumder
+// incident: this used to only ever look at 'awaiting_manager' records, so
+// the sender raising the SAME already-resolved matter again had nothing
+// stopping a brand-new confirmation from being created and the manager
+// asked a second time. Callers branch on the returned record's own
+// `status` - pending gets the existing "already waiting" reply, resolved
+// gets the existing result, neither ever starts a new ask.
 async function findDuplicateHrConfirmation(senderPhone, managerContactNumber, newSummary) {
   if (!managerContactNumber) return null;
   const all = await listAllHrConfirmations();
   const normalizedSender = whatsapp.normalizePhone(senderPhone);
   const normalizedManager = whatsapp.normalizePhone(managerContactNumber);
-  const sameManagerPending = all.filter((r) =>
-    r.status === 'awaiting_manager' &&
+  const sameManagerSameSender = all.filter((r) =>
+    (r.status === 'awaiting_manager' || r.status === 'confirmed' || r.status === 'declined') &&
     whatsapp.normalizePhone(r.senderPhone) === normalizedSender &&
     whatsapp.normalizePhone(r.thirdPartyPhone) === normalizedManager
   );
-  for (const existing of sameManagerPending) {
+  for (const existing of sameManagerSameSender) {
     if (await isSameHrMatter(existing.summary, newSummary)) return existing;
   }
   return null;
@@ -7252,6 +7309,16 @@ async function finalizeHrNoteThirdParty({ phone, senderName, lang, candidate, su
   const duplicate = await findDuplicateHrConfirmation(phone, candidate.contactNumber, summary);
   if (duplicate) {
     await clearPendingHrNoteFlow(phone);
+    // LIVE BUG FIX (2026-11), direct instruction - a matter already
+    // RESOLVED (confirmed/declined) gets the EXISTING result, in the
+    // sender's own current language, never a second manager ask - same
+    // wording STEP 5 already uses for this exact outcome.
+    if (duplicate.status === 'confirmed' || duplicate.status === 'declined') {
+      const resultFn = duplicate.status === 'confirmed'
+        ? (HR_CONFIRMATION_SENDER_RESULT_YES[lang] || HR_CONFIRMATION_SENDER_RESULT_YES.english)
+        : (HR_CONFIRMATION_SENDER_RESULT_NO[lang] || HR_CONFIRMATION_SENDER_RESULT_NO.english);
+      return { case: 'acknowledged', replyText: resultFn(duplicate.thirdPartyName || candidate.name), summaryForOwner: null, lang };
+    }
     return { case: 'acknowledged', replyText: (HR_NOTE_SAME_MATTER_ALREADY_PENDING[lang] || HR_NOTE_SAME_MATTER_ALREADY_PENDING.english)(candidate.name), summaryForOwner: null, lang };
   }
   await clearPendingHrNoteFlow(phone);
@@ -8214,6 +8281,24 @@ function isPastEndOfDayIst(fromDate, now) {
 // this fix (see sendHrConfirmationMessageToManagerCombined's own
 // single-item branch) - these two tests' own single-manager scenarios are
 // unaffected.
+// LIVE BUG FIX (2026-11), direct instruction - the Sourav Majumder
+// incident (a reminder/escalation sent on a Saturday - a working day, not
+// itself a violation, but the user separately asked for this window to
+// be made explicit and enforced): a manager's WhatsApp must only ever be
+// SENT a reminder/re-ask within 09:30-19:00 IST, never on a Sunday, never
+// at night - deliberately separate from workingHoursElapsedSince's own
+// (more conservative, 09:30-18:30) measure of how much of a day counts
+// toward the 3-hour threshold. A reminder that becomes due outside this
+// window simply waits for the next in-window tick, never marked
+// remindedAt until it actually sends - delayed, never skipped.
+function isHrNudgeSendableNowIst(now) {
+  const reminderService = require('./reminderService');
+  const { year, month, day, hour, minute } = reminderService.istParts(now);
+  const dayOfWeek = new Date(Date.UTC(year, month - 1, day)).getUTCDay(); // 0 = Sunday
+  if (dayOfWeek === 0) return false;
+  const minutesOfDay = hour * 60 + minute;
+  return minutesOfDay >= 9 * 60 + 30 && minutesOfDay < 19 * 60;
+}
 async function checkHrConfirmationNudges(now) {
   const all = await listAllHrConfirmations();
   const pending = all.filter((c) => c.status === 'awaiting_manager');
@@ -8234,7 +8319,11 @@ async function checkHrConfirmationNudges(now) {
     }
     const notEscalated = group.filter((c) => !toEscalate.includes(c));
     const dueForReminder = notEscalated.filter((c) => !c.remindedAt && workingHoursElapsedSince(new Date(c.createdAt), now) >= 180);
-    if (dueForReminder.length) {
+    // LIVE BUG FIX (2026-11), direct instruction - never actually SEND a
+    // manager reminder outside 09:30-19:00 IST or on a Sunday. Not marked
+    // remindedAt when skipped, so it fires on the next in-window tick
+    // instead - delayed, never dropped.
+    if (dueForReminder.length && isHrNudgeSendableNowIst(now)) {
       await sendHrConfirmationMessageToManagerCombined(managerPhone, true);
       for (const c of dueForReminder) await updateHrConfirmation(c.id, { remindedAt: Date.now() });
     }
@@ -10129,13 +10218,13 @@ function classifyTool() {
           isJobApplication: { type: 'boolean', description: 'true when the sender is applying for a job/vacancy at this company, or is submitting/mentioning their own CV/resume as a candidate for employment - in ANY phrasing or language, never a fixed keyword list (e.g. "I am applying for the Site Supervisor position, I have 5 years of experience, my email is...", a message naming a role + experience + contact details with no explicit "CV" word at all, a bare follow-up like "I have shared my CV"/"I have sent my application", or an attached CV/resume file with little or no caption text). Judge by MEANING (a candidate representing themselves for a role), never by requiring an exact phrase - the live bug this fixes is a real application that used none of the old fixed keywords. NEVER true for a vacancy enquiry (see isVacancyEnquiry) - submitting/mentioning a CV or application is this field; merely asking whether a role exists is not.' },
           isVacancyEnquiry: { type: 'boolean', description: 'true ONLY when the sender is asking WHETHER there is an opening/vacancy/requirement for a role - they are NOT submitting an application or CV. E.g. "Is there any vacancy for an accountant?", "Alcove-e Site Supervisor post-e kono opening ache?". Mutually exclusive with isJobApplication - if they are also applying/sharing a CV in the same message, use isJobApplication instead, never both.' },
           vacancyEnquiryPosition: { type: 'string', description: 'Required only when isVacancyEnquiry is true AND a specific position/role was actually named - the position name as a short noun phrase, in English (e.g. "accountant", "Site Supervisor"). Omit entirely if they asked about openings in general without naming one.' },
-          isHrNotification: { type: 'boolean', description: 'Live bug fix (2026-10-29): true for the sender\'s OWN attendance/time-off matter that needs a manager\'s OK - leave, late coming, early leaving, a half-day, attendance regularisation, an off-day-in-lieu/comp-off, a duty/schedule change, or work from home (WFH, any spelling/phrasing - "ghar/bari theke kaj", "remote kaj", "ghar se kaam", etc.) - in ANY phrasing: a plain informing statement ("ajke WFH korchi"), a request or plan ("ami aajke half day kore Saturday full day korte chai", "kalke chuti nebo"), or a question about getting it approved - this topic list is NEVER gated on intent being "informing" specifically, unlike the rest of this field. Also true, but ONLY when intent is "informing" (a plain statement, nothing being asked for), for: a salary/bank account change, or any other work-location update. false otherwise - including a GENERAL policy question about any of these topics (not about the sender\'s own situation), a request for documents/data/a salary slip, a complaint, or any other "informing"/"request"/"question" message unrelated to the topics above (e.g. sharing news, a document_sent message). LIVE BUG FIX (2026-11): a request for a DOCUMENT or RECORD about a past period (a salary slip, payslip, Form 16, offer/appointment letter copy, attendance report, etc. - "last month-er salary slip ta pathaben please?", "October-er payslip dao") is false here, even though it also names a past month and uses a request/polite-ask verb exactly like a real attendance matter does - a reference to "last month"/a specific month name is NEVER by itself evidence of an attendance-approval topic; this field is only ever true for the sender\'s OWN leave/late-coming/half-day/WFH/comp-off/duty-change/regularisation matter, never a request to be SENT a document.' },
+          isHrNotification: { type: 'boolean', description: 'Live bug fix (2026-10-29): true for the sender\'s OWN attendance/time-off matter that needs a manager\'s OK - leave, late coming, early leaving, a half-day, JOINING FROM THE SECOND HALF OF THE DAY (a DISTINCT matter from both "half-day" and "late coming" - the sender is informing that they will only join/report for the second half of today\'s shift, e.g. "ajke second half theke join korbo", "aj dupurer por office asbo", "will join from 2pm today" - never relabel this as a plain "half day" leave or as ordinary "late coming" by a few minutes/an hour; it is its own topic), attendance regularisation, an off-day-in-lieu/comp-off, a duty/schedule change, or work from home (WFH, any spelling/phrasing - "ghar/bari theke kaj", "remote kaj", "ghar se kaam", etc.) - in ANY phrasing: a plain informing statement ("ajke WFH korchi"), a request or plan ("ami aajke half day kore Saturday full day korte chai", "kalke chuti nebo"), or a question about getting it approved - this topic list is NEVER gated on intent being "informing" specifically, unlike the rest of this field. Also true, but ONLY when intent is "informing" (a plain statement, nothing being asked for), for: a salary/bank account change, or any other work-location update. false otherwise - including a GENERAL policy question about any of these topics (not about the sender\'s own situation), a request for documents/data/a salary slip, a complaint, or any other "informing"/"request"/"question" message unrelated to the topics above (e.g. sharing news, a document_sent message). LIVE BUG FIX (2026-11): a request for a DOCUMENT or RECORD about a past period (a salary slip, payslip, Form 16, offer/appointment letter copy, attendance report, etc. - "last month-er salary slip ta pathaben please?", "October-er payslip dao") is false here, even though it also names a past month and uses a request/polite-ask verb exactly like a real attendance matter does - a reference to "last month"/a specific month name is NEVER by itself evidence of an attendance-approval topic; this field is only ever true for the sender\'s OWN leave/late-coming/half-day/WFH/comp-off/duty-change/regularisation matter, never a request to be SENT a document.' },
           hrNotificationSummary: { type: 'string', description: 'Required when isHrNotification is true - a short, accurate, neutral summary in ENGLISH of exactly what they informed, e.g. "told to do duty today instead of his scheduled off, was asked to take a different day off in lieu" or "worked from home today with manager\'s approval". For the HR note and the owner\'s own notifications only (English, like every other owner-facing label) - never sent to the sender or a third party as-is. State only what the sender actually said, nothing invented, including whatever date(s) they gave (today/yesterday/a specific date or range).' },
           hrNotificationActionKind: { type: 'string', enum: ['instruction', 'approval', 'sudden', 'neutral'], description: 'Judge this from what actually happened, never from the TOPIC and never from a fixed keyword list - WFH/leave/half-day/late-coming can be EITHER "instruction" or "approval" depending on who initiated it, exactly like a duty change can. "instruction" - a manager/supervisor TOLD or ASKED the sender to do something, in ANY words that mean telling/asking, regardless of topic (duty on an off day, a duty/shift/site change, overtime, travel, OR a manager telling the sender to work from home / take a day off / come in late - e.g. "Tanmoy Sir bolechhen ajke bari theke kaj korte" IS "instruction", not "approval", even though the topic is work-from-home, because the sender is reporting being TOLD to do it, not asking for it). "approval" - the sender ASKED and was ALLOWED/GRANTED something (work from home, leave, a half-day, late coming, early leaving, a comp-off/off-day-in-lieu taken) - this is the sender\'s OWN initiative, confirmed/allowed by someone else, never something that person told them to do. If a single message has both an instruction AND a related off-day granted as part of it (e.g. "duty korte bolechhe, bodole onno din chhutti debe" - told to do duty, will get a day off in lieu), use "instruction" - the off day is part of what was instructed. "sudden" - a sudden/unplanned event they are simply informing HR about (sudden illness, an accident, "I can\'t come in today") - not a planned WFH/leave/half-day/late-coming with an instruction or approval behind it. Use "neutral" only if genuinely unclear whether it was an instruction or an approval (the initiator isn\'t stated and can\'t be inferred) - e.g. "Ami ajke chhutir din duty korchi" with no mention of who told or allowed it. A message mixing MORE THAN ONE of these topics as the sender\'s own request or plan (e.g. "ami aajke half day kore Saturday full day kore nite chai" - a half-day today swapped for a Saturday comp-off) is still judged by WHO initiated it, exactly like a single-topic message - usually "approval" (the sender\'s own ask, whether or not it has actually been granted yet) - never "neutral" just because it mixes topics; "neutral" is reserved for when the INITIATOR genuinely can\'t be told, not for when the topic itself is mixed or hard to name in one word.' },
           hrNotificationApprovalGranted: { type: 'boolean', description: 'Required ONLY when hrNotificationActionKind is "approval" - true if the approval has ALREADY been obtained/happened (the message is in past/present tense about something already settled, e.g. "ajke WFH korchi", "aj chhutti niyechhi", "half day peyechi"). false if this is about the FUTURE and not yet confirmed as approved (e.g. "kalke chuti nebo", "porshu WFH korbo", "ajke half day nebo" said as a plan/intent, not a done deal) - judge by tense/certainty, not just whether the date is today or later. Omit entirely for every other hrNotificationActionKind.' },
           hrNotificationActionPhrase: { type: 'string', description: 'Required when isHrNotification is true - a short noun phrase, correctly inflected in the message\'s own detected language (the `language` field), that completes the sentence "Apnake ei ___ ke diyechhen" (Banglish) / "Aapko yeh ___ kisne diya hai" (Hinglish) / "who gave you this ___" (English). For hrNotificationActionKind "instruction": "instruction-ta" (banglish) / "instruction" (hinglish/english) - always this literal word, never the topic. For "approval": the topic + a correctly-inflected "approval" suffix in that language, e.g. Banglish "work from home-er approval-ta", "chhutti-r approval-ta", "half day-r approval-ta" (apply normal Bengali possessive inflection - "-er" after a consonant-ending word, "-r" after a vowel-ending one); Hinglish "work from home ki approval", "chhutti ki approval"; English "work from home approval", "leave approval". For "sudden": same shape as "neutral" below (there is no approval/instruction noun yet). For "neutral": the TOPIC + a correctly-inflected "bishoy-ta" suffix (never the bare placeholder alone) - e.g. Banglish "duty-r bishoy-ta" (not just "bishoy-ta"), Hinglish "duty ki baat", English "this duty matter" - apply the same possessive-inflection rule as "approval" above. When the matter mixes more than one topic in one message (e.g. a half-day today swapped for a Saturday comp-off) or a single topic can\'t be named cleanly, use the generic placeholder "ei bishoye" (Banglish) / "is bishoy mein" (Hinglish) / "this matter" (English) in place of the topic name, with the same correctly-inflected suffix - e.g. for hrNotificationActionKind "approval", Banglish "ei bishoye approval-ta" (producing "Apni ki ei bishoye approval-ta niyechhen?"), Hinglish "is bishoy mein approval", English "this matter\'s approval".' },
           hrNotificationSummaryLocalized: { type: 'string', description: 'Required when isHrNotification is true - the SAME fact as hrNotificationSummary above, but written naturally in the message\'s own detected language (the `language` field) AND, when hrNotificationInvolvesThirdParty is true, phrased as a SECOND-PERSON, ACTIVE-VOICE statement addressed directly TO that third party, describing what THEY did for the sender - never a passive, sender-centric phrasing. The sender is "onake"/"use"/"them" (never named here), the third party is addressed as "apni"/"aap"/"you" with a formal, active verb conjugation, never passive ("bola hoyechhe"/"kaha gaya hai"/"was told"). The verb depends on hrNotificationActionKind: "instruction" uses a telling verb ("bolechhen"/"kaha hai"/"told") - e.g. for "ajke amake duty korte boleche r er bodole onno din chuti nite boleche": "apni onake ajke duty korte bolechhen, ar er bodole onno din chhutti nite bolechhen" (NOT "...bola hoyechhe..."). "approval" uses a granting verb ("diyechhen"/"di hai"/"gave") - e.g. for a Banglish WFH message "ajke bari theke kaj korechi, Tanmoy Sir approve korechhen": "apni onake ajke bari theke kaj (work from home) korar approval diyechhen". "sudden" and "neutral" have no fixed verb yet (the kind/initiator may still be unknown at this point) - phrase these naturally in first person for now (e.g. "ajke sorir kharap thakar karone aste parbo na" / "ajke chhutir din duty korchi") even if hrNotificationInvolvesThirdParty is true; a corrected, properly-addressed version is generated separately once the initiator is actually known. This version is inserted verbatim mid-sentence into the message sent TO that third party ("...message esechhe je <this>. Eta ki apnar theke confirm?"), so it must read grammatically as a direct, natural continuation of that sentence and never mix in English words/phrasing (except a short English term like "work from home" that has no natural Banglish/Hinglish equivalent). When hrNotificationInvolvesThirdParty is false (no third party to address), phrase it naturally in first person instead, the same as before.' },
-          hrNotificationTopicLabel: { type: 'string', description: 'Required when isHrNotification is true - a SHORT (2-4 word) natural noun phrase naming the topic, written in the message\'s own detected language (the `language` field), e.g. for a Banglish duty/off-day-in-lieu message: "duty ar chhutti", for a late-coming message: "deri kore asha", for a work-from-home message: "work from home", for a half-day message: "half day", for a salary/bank change: "bank account", for a work-location update: "kormosthol poriborton". Used ONLY to briefly remind the sender what an old, resumed conversation was about after a multi-day gap (e.g. "Gotokal-er ' + "'" + 'duty ar chhutti' + "'" + '-bishoy-ta niye bolchi") - never sent as a sentence by itself, so it must read naturally as a short phrase slotted into "...-bishoy-ta niye bolchi" (Banglish) or equivalent, not a full sentence or a translated English label.' },
+          hrNotificationTopicLabel: { type: 'string', description: 'Required when isHrNotification is true - a SHORT (2-4 word) natural noun phrase naming the topic, written in the message\'s own detected language (the `language` field), e.g. for a Banglish duty/off-day-in-lieu message: "duty ar chhutti", for a late-coming message: "deri kore asha", for a joining-from-second-half message: "second half-e join", for a work-from-home message: "work from home", for a half-day message: "half day", for a salary/bank change: "bank account", for a work-location update: "kormosthol poriborton". Used ONLY to briefly remind the sender what an old, resumed conversation was about after a multi-day gap (e.g. "Gotokal-er ' + "'" + 'duty ar chhutti' + "'" + '-bishoy-ta niye bolchi") - never sent as a sentence by itself, so it must read naturally as a short phrase slotted into "...-bishoy-ta niye bolchi" (Banglish) or equivalent, not a full sentence or a translated English label.' },
           hrNotificationThirdPartyName: { type: 'string', description: 'Optional, only with isHrNotification true - if the sender named a specific OTHER person (e.g. a manager/supervisor) who gave them this instruction or is otherwise involved and should confirm it, that person\'s name exactly as given. Omit if no one else was named.' },
           hrNotificationThirdPartyHint: { type: 'string', description: 'Optional - a department/site/designation hint for the third party named above, if one was given (e.g. "Srirampur site"). Omit if none was mentioned.' },
           hrNotificationInvolvesThirdParty: { type: 'boolean', description: 'Required when isHrNotification is true - true whenever SOMEONE ELSE (a manager/supervisor) needs to confirm this, even if not yet named: this includes hrNotificationActionKind "instruction" (someone TOLD the sender to do something, e.g. "Ajke amake duty korte bola hoyechhe"), "approval" (someone ALLOWED/GRANTED the sender something they asked for - WFH, leave, a half-day, late coming - e.g. "Ajke ami bari theke kaj korchi"/"Kalke chuti nebo" DOES need a third party: someone approved or will approve it, even though the sender initiated it themselves), and "neutral" (unclear who, but someone is still involved). Set false ONLY for hrNotificationActionKind "sudden" (a sudden/emergency report - handled by asking separately whether the sender informed their manager, not by this field) or for a genuinely solo notice with no approval/instruction concept at all (e.g. a salary/bank-account update, a work-location change with nothing to confirm).' },
@@ -10186,7 +10275,17 @@ async function classifyOfficialMessage(text, history) {
   if (!apiKey) throw new Error('whatsappAssistant.classifyOfficialMessage called without ANTHROPIC_API_KEY set');
   if (!DRAFT_MODEL) throw new Error('whatsappAssistant.classifyOfficialMessage called without CLAUDE_MODEL_MAIN set');
   const historyBlock = formatHistoryBlock(history);
-  const messages = [{ role: 'system', content: 'Today\'s real date is ' + new Date().toISOString().slice(0, 10) + ' (UTC).' }];
+  // LIVE BUG FIX (2026-11), direct instruction - this used to give the
+  // model the UTC calendar date, not IST. IST is UTC+5:30, so from IST
+  // 00:00 to 05:29 each day the UTC date is a day BEHIND the real IST
+  // date - a message sent in that window saying "today"/"tomorrow" (e.g.
+  // a second-half-joining report) got resolved against the WRONG
+  // calendar day, which then flowed verbatim into STEP 4's manager-facing
+  // text (there's no separate structured date field - the date is part
+  // of the free-text hrNotificationSummary this classifier produces).
+  // istDayKeyOf (below) already does this same UTC->IST conversion for
+  // the identity-line feature - reused here for the identical reason.
+  const messages = [{ role: 'system', content: 'Today\'s real date is ' + istDayKeyOf(new Date()) + ' (IST, India Standard Time).' }];
   if (historyBlock) messages.push({ role: 'system', content: historyBlock });
   messages.push({ role: 'user', content: text });
   const toolDef = classifyTool().function;
@@ -11076,7 +11175,19 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
   // never a vague holding reply.
   if (!isGroup && phone) {
     const ownIdField = detectOwnSensitiveIdRequest(text);
-    if (ownIdField) {
+    if (ownIdField === 'salary' || ownIdField === 'bank') {
+      // LIVE BUG FIX (2026-11), direct instruction - "the model decides,
+      // the keyword check is only a fast path" for these two heads only
+      // (see classifySalaryBankFigureRequestViaModel's own comment for
+      // why - they have no real getter, so a keyword match can only ever
+      // mis-fire, never actually disclose anything). A clear "no" falls
+      // through to the normal classifier below, which routes it into the
+      // HR-note/noting flow like any other message.
+      const isLiteralFigureRequest = await classifySalaryBankFigureRequestViaModel(text);
+      if (isLiteralFigureRequest !== false) {
+        return handleOwnSensitiveIdRequest({ phone, lang: await detectLangSmart(text, history), field: ownIdField, history });
+      }
+    } else if (ownIdField) {
       return handleOwnSensitiveIdRequest({ phone, lang: await detectLangSmart(text, history), field: ownIdField, history });
     }
   }
@@ -13716,6 +13827,14 @@ async function validateModelReply(replyText, lang, groundingText) {
 module.exports = {
   isAvailable,
   pollOnce,
+  PII_BLOCK_REPLY,
+  detectOwnSensitiveIdRequest,
+  detectSensitiveIdFieldKeyword,
+  SALARY_BANK_FIGURE_REQUEST_SYSTEM_PROMPT,
+  classifySalaryBankFigureRequestViaModel,
+  findDuplicateHrConfirmation,
+  isHrNudgeSendableNowIst,
+  istDayKeyOf,
   saveReplyTemplate,
   getReplyTemplate,
   listReplyTemplates,
