@@ -24,6 +24,7 @@ const workflowService = require('./aiAssistant/workflowService');
 const aiUsageLog = require('./aiAssistant/aiUsageLog');
 const companyDetailsService = require('./aiAssistant/companyDetailsService');
 const storeHealthDiag = require('./aiAssistant/storeHealthDiag');
+const fullStoreBackupService = require('./aiAssistant/fullStoreBackupService');
 const letterSettingsService = require('./aiAssistant/letterSettingsService');
 const driveTemplatesService = require('./aiAssistant/driveTemplatesService');
 const driveTemplateFieldsService = require('./aiAssistant/driveTemplateFieldsService');
@@ -1739,6 +1740,36 @@ router.get('/hr-assistant/diag/older-keys', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
   try {
     res.json(await storeHealthDiag.diagOlderKeysStillExist());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Full one-time store backup/restore (2026-11, direct instruction) -
+// "before I deploy subh-store (a restart), I need a full backup in case
+// persistence is off and the restart wipes it." See
+// fullStoreBackupService.js's own comment for exactly what this covers
+// (every key, any Redis type) and the restore-is-additive-only guarantee.
+router.get('/hr-assistant/diag/full-backup', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const backup = await fullStoreBackupService.exportFullStore();
+    res.setHeader('Content-Disposition', 'attachment; filename="subh-store-backup-' + backup.exportedAt.replace(/[:.]/g, '-') + '.json"');
+    res.json(backup);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+// Body: { backup: <the exact JSON downloaded above>, confirm: true }.
+// Without confirm:true, this only returns the preview (counts by type,
+// a sample of key names) and writes nothing - call it once to show what
+// WOULD be restored, then again with confirm:true once the owner agrees.
+router.post('/hr-assistant/diag/full-backup/restore', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const { backup, confirm } = req.body || {};
+    if (!backup || !Array.isArray(backup.keys)) return res.status(400).json({ error: 'body.backup must be the exact JSON from /diag/full-backup.' });
+    res.json(await fullStoreBackupService.restoreFullStore(backup, { confirm: confirm === true }));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

@@ -113,6 +113,20 @@ function createStore() {
       if (entry.expiresAt === null) return -1;
       return Math.max(0, Math.ceil((entry.expiresAt - now) / 1000));
     },
+    // Added (2026-11) for the full-store backup/restore feature, which
+    // needs TYPE to dump a key regardless of its shape - every entry
+    // already carries its own `.type` (see createStore's own comment),
+    // this just surfaces it the same way a real Redis TYPE command
+    // would ('none' for a missing/expired key, never an error).
+    type(args, now) {
+      const entry = get(args[0], now);
+      return entry ? entry.type : 'none';
+    },
+    exists(args, now) {
+      let count = 0;
+      for (const key of args) { if (get(key, now)) count++; }
+      return count;
+    },
     sadd(args, now) {
       const [key, ...members] = args;
       const entry = ensure(key, 'set', now);
@@ -192,14 +206,20 @@ function createStore() {
       const entry = get(key, now);
       const lower = opts.map((o) => String(o).toLowerCase());
       const sorted = entry ? [...entry.value.entries()].sort((a, b) => a[1] - b[1]) : [];
+      // withscores (2026-11, added for the full-store backup feature,
+      // which needs every member's score to dump a zset) - flattens to
+      // [member1, score1, member2, score2, ...], same shape a real
+      // Redis/Upstash ZRANGE ... WITHSCORES returns, applied AFTER
+      // whichever selection (byscore or plain index range) below.
+      const withScores = lower.includes('withscores');
+      const toOutput = (pairs) => withScores ? pairs.flatMap(([m, sc]) => [m, sc]) : pairs.map(([m]) => m);
       if (lower.includes('byscore')) {
         const lo = min === '-inf' ? -Infinity : Number(min);
         const hi = max === '+inf' ? Infinity : Number(max);
-        return sorted.filter(([, score]) => score >= lo && score <= hi).map(([m]) => m);
+        return toOutput(sorted.filter(([, score]) => score >= lo && score <= hi));
       }
-      const members = sorted.map(([m]) => m);
-      const [s, e] = resolveRange(min, max, members.length);
-      return e < s ? [] : members.slice(s, e + 1);
+      const [s, e] = resolveRange(min, max, sorted.length);
+      return e < s ? [] : toOutput(sorted.slice(s, e + 1));
     },
     zrem(args, now) {
       const entry = get(args[0], now);
