@@ -49,33 +49,53 @@ async function main() {
   check('the export includes a summary (totalKeys, byType, skippedCount, skippedKeys)', backup.summary && backup.summary.totalKeys === backup.keyCount && backup.summary.byType.string >= 2 && backup.summary.byType.hash >= 1 && backup.summary.skippedCount === 0 && Array.isArray(backup.summary.skippedKeys));
 
   console.log('='.repeat(70));
-  console.log('LIVE BUG FIX: a key that throws mid-read (e.g. the real production incident - @upstash/redis\'s own HGETALL deserializer does result.length with no null-guard, and ioredis\'s own reply transform can return null for an empty/vanished hash through subh-store\'s generic passthrough) is skipped and counted, never crashes the whole export');
+  console.log('LIVE BUG FIX (follow-up, 2026-11, direct instruction - "make every future backup complete"): production reported totalKeys 909, skippedCount 70, EVERY one a wa-msg-text:<number> hash hitting the HGETALL-null crash. HGETALL is now never called anywhere in this file - hashes are read via HKEYS+HMGET instead, bypassing the bug entirely rather than catching it after the fact. Goal: skippedCount = 0 for this scenario.');
   console.log('='.repeat(70));
-  await checkAsync('a key whose read throws the EXACT real production error is skipped (summary.skippedKeys names it and the error), every OTHER key is still exported correctly', async () => {
+  await checkAsync('a hash that would have crashed the OLD HGETALL-based read is now read via HKEYS+HMGET instead and exported CORRECTLY - not skipped (forcing HGETALL itself to fail is now a complete non-event, proving it is never called)', async () => {
+    await redis.del('test-backup:wasbad-hash').catch(() => {});
+    await redis.hset('test-backup:wasbad-hash', { f1: 'v1', f2: 'v2' });
+    env.store._forceNullOnce('hgetall', 'test-backup:wasbad-hash'); // would have crashed the old code - must now be irrelevant
+    const result = await svc.exportFullStore();
+    const entry = result.keys.find((e) => e.key === 'test-backup:wasbad-hash');
+    env.store._clearForcedFault('hgetall', 'test-backup:wasbad-hash');
+    await redis.del('test-backup:wasbad-hash').catch(() => {});
+    return result.summary.skippedCount === 0 && Boolean(entry) && entry.value.f1 === 'v1' && entry.value.f2 === 'v2';
+  });
+  await checkAsync('a hash that has vanished entirely by the time HKEYS runs (HKEYS returns nothing) is captured as a genuinely EMPTY hash {} - not skipped', async () => {
+    await redis.del('test-backup:vanished-at-hkeys').catch(() => {});
+    await redis.hset('test-backup:vanished-at-hkeys', { f: 'v' });
+    env.store._forceNullOnce('hkeys', 'test-backup:vanished-at-hkeys');
+    const result = await svc.exportFullStore();
+    const entry = result.keys.find((e) => e.key === 'test-backup:vanished-at-hkeys');
+    env.store._clearForcedFault('hkeys', 'test-backup:vanished-at-hkeys');
+    await redis.del('test-backup:vanished-at-hkeys').catch(() => {});
+    return result.summary.skippedCount === 0 && Boolean(entry) && JSON.stringify(entry.value) === '{}';
+  });
+  await checkAsync('a hash that still has fields at HKEYS time but has vanished by the time HMGET runs (the classic race, one step later) is also captured as EMPTY {} - not skipped', async () => {
+    await redis.del('test-backup:vanished-at-hmget').catch(() => {});
+    await redis.hset('test-backup:vanished-at-hmget', { f: 'v' });
+    env.store._forceNullOnce('hmget', 'test-backup:vanished-at-hmget');
+    const result = await svc.exportFullStore();
+    const entry = result.keys.find((e) => e.key === 'test-backup:vanished-at-hmget');
+    env.store._clearForcedFault('hmget', 'test-backup:vanished-at-hmget');
+    await redis.del('test-backup:vanished-at-hmget').catch(() => {});
+    return result.summary.skippedCount === 0 && Boolean(entry) && JSON.stringify(entry.value) === '{}';
+  });
+  await checkAsync('per-key fault isolation still holds for a genuinely unexpected failure (not the fixed HGETALL bug) - a key whose TYPE read throws is skipped and counted, every OTHER key (before AND after it) is still exported correctly', async () => {
     await redis.set('test-backup:before-bad-key', 'still exported');
-    await redis.del('test-backup:bad-hash').catch(() => {});
-    await redis.hset('test-backup:bad-hash', { f: 'v' });
+    await redis.set('test-backup:really-broken', 'irrelevant');
     await redis.set('test-backup:after-bad-key', 'still exported too');
-    // fullStoreBackupService.js builds its OWN internal Redis client (a
-    // separate instance from this test's own `redis`, same class) -
-    // @upstash/redis defines hgetall as a per-INSTANCE class field, not a
-    // prototype method, so patching Redis.prototype never reaches it.
-    // Instead, fault-inject at the fake store itself (one level below
-    // the SDK): the next HGETALL for this key returns a raw `null` over
-    // the wire, which is exactly what the real SDK's own HGETALL
-    // deserializer has no null-guard for - reproducing the real crash
-    // via the real SDK code path, not a hand-thrown stand-in error.
-    env.store._forceNullOnce('hgetall', 'test-backup:bad-hash');
+    env.store._forceThrow('type', 'test-backup:really-broken', 'simulated real failure, unrelated to HGETALL');
     const result = await svc.exportFullStore();
     const byKey2 = {};
     for (const e of result.keys) byKey2[e.key] = e;
-    const skippedEntry = result.summary.skippedKeys.find((s) => s.key === 'test-backup:bad-hash');
-    const ok = Boolean(skippedEntry) && skippedEntry.error.includes("reading 'length'") && result.summary.skippedCount === 1 &&
-      !byKey2['test-backup:bad-hash'] && // the bad key is never in the real export
+    const skippedEntry = result.summary.skippedKeys.find((s) => s.key === 'test-backup:really-broken');
+    const ok = Boolean(skippedEntry) && skippedEntry.error.includes('simulated real failure') && result.summary.skippedCount === 1 &&
+      !byKey2['test-backup:really-broken'] &&
       byKey2['test-backup:before-bad-key'] && byKey2['test-backup:before-bad-key'].value === 'still exported' &&
       byKey2['test-backup:after-bad-key'] && byKey2['test-backup:after-bad-key'].value === 'still exported too';
-    env.store._clearForcedFault('hgetall', 'test-backup:bad-hash');
-    for (const k of ['test-backup:before-bad-key', 'test-backup:bad-hash', 'test-backup:after-bad-key']) await redis.del(k).catch(() => {});
+    env.store._clearForcedThrow('type', 'test-backup:really-broken');
+    for (const k of ['test-backup:before-bad-key', 'test-backup:really-broken', 'test-backup:after-bad-key']) await redis.del(k).catch(() => {});
     return ok;
   });
 

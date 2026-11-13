@@ -37,6 +37,12 @@ function createStore() {
   // Test-only, persistent fault injection (2026-11) - see `_forceNullOnce`
   // on the returned store object below.
   const forcedNullOnce = new Set();
+  // Test-only, persistent "this command+key throws a real error" fault
+  // injection - see `_forceThrow` below. Separate from forcedNullOnce
+  // (which simulates a raw-null WIRE reply, not a thrown error) so a
+  // test can prove per-key fault isolation for ANY unexpected failure,
+  // not just the one specific (now-fixed) HGETALL bug.
+  const forcedThrow = new Map();
 
   function isExpired(entry, now) {
     return entry.expiresAt !== null && entry.expiresAt <= now;
@@ -255,6 +261,18 @@ function createStore() {
       if (!entry) return null;
       return entry.value.has(String(args[1])) ? entry.value.get(String(args[1])) : null;
     },
+    // Added (2026-11) for the full-store backup's HGETALL bypass fix -
+    // real Redis returns an empty array, never null, for a missing key.
+    hkeys(args, now) {
+      const entry = get(args[0], now);
+      if (!entry) return [];
+      return [...entry.value.keys()];
+    },
+    hmget(args, now) {
+      const [key, ...fields] = args;
+      const entry = get(key, now);
+      return fields.map((f) => (entry && entry.value.has(String(f)) ? entry.value.get(String(f)) : null));
+    },
     // Real Redis/Upstash HGETALL wire format is a FLAT array
     // [field1, value1, field2, value2, ...] - the @upstash/redis client
     // itself converts that into an object client-side (see its own
@@ -310,6 +328,7 @@ function createStore() {
       const lname = String(name).toLowerCase();
       const forceKey = lname + ':' + args[0];
       if (forcedNullOnce.has(forceKey)) return null;
+      if (forcedThrow.has(forceKey)) throw new Error(forcedThrow.get(forceKey));
       const fn = commands[lname];
       if (!fn) throw new Error('unsupported command in fake Upstash server: ' + name);
       return fn(args, Date.now());
@@ -339,6 +358,12 @@ function createStore() {
     // _clearForcedFault to turn it back off.
     _forceNullOnce(command, key) { forcedNullOnce.add(String(command).toLowerCase() + ':' + key); },
     _clearForcedFault(command, key) { forcedNullOnce.delete(String(command).toLowerCase() + ':' + key); },
+    // Test-only - makes `exec()` throw a REAL error for this command+key
+    // (as opposed to _forceNullOnce's raw-null wire reply) - proves a
+    // caller's per-key fault isolation holds for any unexpected failure,
+    // not only the one specific HGETALL bug that prompted _forceNullOnce.
+    _forceThrow(command, key, message) { forcedThrow.set(String(command).toLowerCase() + ':' + key, message || 'forced test failure'); },
+    _clearForcedThrow(command, key) { forcedThrow.delete(String(command).toLowerCase() + ':' + key); },
     // Test-only bulk seed (2026-11) - sets many string keys directly in
     // the in-memory Map, bypassing the HTTP wire entirely. Used only to
     // build a large (e.g. 20,000-key) fixture quickly for a backup/

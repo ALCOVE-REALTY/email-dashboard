@@ -73,23 +73,70 @@ async function mapWithConcurrency(items, limit, fn) {
 
 // LIVE BUG FIX (2026-11), direct instruction - production (subh-store,
 // not Upstash) threw "Cannot read properties of null (reading
-// 'length')" on this route. Root-caused by tracing the REAL installed
-// @upstash/redis SDK (node_modules) against subh-store's own real
-// restHandler.js (a GENERIC passthrough to ioredis's `.call()`, which
-// means ioredis's own per-command reply transforms - like HGETALL's -
-// still apply even through the generic path): the SDK's own HGETALL
-// deserializer (`deserialize3` in the installed SDK) does `result.length`
-// with NO null-guard at all - and ioredis's own hgetall reply transform
-// can legitimately return `null` (not `{}`/`[]`) for a hash that's
-// empty or vanished, exactly the "a key expired/was deleted between
-// scan and read" race already flagged as a risk. Real Upstash's own
-// backend apparently normalizes this away before it ever reaches the
-// client; subh-store's deliberately-generic passthrough does not. This
-// can't be patched inside the installed SDK, so every per-key read
-// below is now independently fault-tolerant: ANY failure for ANY single
-// key (this one, or anything else unexpected) is caught, that one key
-// is skipped and counted, and the export continues - never fails the
-// whole backup over one bad key.
+// 'length')" on this route, and a FOLLOW-UP live run (direct
+// instruction, "make every future backup complete") showed this was no
+// edge case: production reported totalKeys 909, skippedCount 70, EVERY
+// ONE of them a `wa-msg-text:<number>` hash hitting this exact error.
+// Root-caused by tracing the REAL installed @upstash/redis SDK
+// (node_modules) against subh-store's own real restHandler.js (a
+// GENERIC passthrough to ioredis's `.call()`, which means ioredis's own
+// per-command reply transforms - like HGETALL's - still apply even
+// through the generic path): the SDK's own HGETALL deserializer
+// (`deserialize3`) does `result.length` with NO null-guard at all - and
+// ioredis's own hgetall reply transform can legitimately return `null`
+// (not `{}`/`[]`) for a hash that's empty or vanished, exactly the "a
+// key expired/was deleted between scan and read" race already flagged
+// as a risk (`wa-msg-text:*` carries a 30-day TTL, refreshed on every
+// write - any contact inactive 30+ days has it expire naturally, and
+// the SCAN-then-read-later window is exactly when that expiry can land
+// mid-backup). Real Upstash's own backend apparently normalizes this
+// away before it ever reaches the client; subh-store's deliberately-
+// generic passthrough does not, and this can't be patched inside the
+// installed SDK.
+//
+// FIX (not just a catch): HGETALL is never called anywhere in this
+// file any more - readHashSafely below reads a hash via HKEYS (an array
+// reply, no special transform - its default deserializer, parseResponse,
+// already wraps itself in try/catch) + HMGET instead, bypassing the
+// buggy command entirely rather than catching its crash after the fact.
+// HMGET's OWN deserializer (deserialize4) turns out to have the exact
+// same missing-null-guard shape (`result.every(...)` with no check that
+// `result` isn't `null`) - just far less likely to manifest, since a
+// real HMGET reply for a missing key is normally an array of nulls (one
+// per field), never a bare null. Since that possibility can't be ruled
+// out through subh-store's same generic passthrough, the HMGET call
+// below is wrapped too - any failure there, right after HKEYS just
+// succeeded for the very same key, is overwhelmingly the hash vanishing
+// in that brief window, not a real connectivity problem, so it's
+// treated as empty, same as the "all fields came back null" case. A
+// hash with zero fields (HKEYS returns `[]`) is handled the same way.
+// Either way: a genuinely EMPTY/vanished hash counts as empty, not a
+// failure - skippedCount should be 0 in ordinary operation, not "lower."
+//
+// Every per-key read is still independently fault-tolerant on top of
+// this: ANY failure for ANY single key (this one, or anything else
+// unexpected) is caught, that one key is skipped and counted, and the
+// export continues - never fails the whole backup over one bad key.
+async function readHashSafely(redis, key) {
+  const fields = (await redis.hkeys(key)) || [];
+  if (fields.length === 0) return {};
+  let values;
+  try {
+    values = await redis.hmget(key, ...fields);
+  } catch (err) {
+    return {};
+  }
+  if (!values) return {}; // every field came back null - the hash vanished between HKEYS and HMGET; still just empty, not a failure
+  // NOTE: @upstash/redis's own HMGET deserializer (deserialize4) returns
+  // an OBJECT keyed by field NAME, not a positional array matching real
+  // Redis HMGET wire semantics - confirmed directly against the fake
+  // store, not assumed (an earlier draft indexed `values[i]` here and
+  // silently dropped every field).
+  const obj = {};
+  fields.forEach((f) => { if (values[f] !== null && values[f] !== undefined) obj[f] = values[f]; });
+  return obj;
+}
+
 async function readKey(redis, key) {
   const type = await redis.type(key);
   const ttl = await redis.ttl(key); // -1 = no expiry, -2 = key gone (race, skip)
@@ -104,7 +151,7 @@ async function readKey(redis, key) {
     return { key, type, ttl, value: (await redis.smembers(key)) || [] };
   }
   if (type === 'hash') {
-    return { key, type, ttl, value: (await redis.hgetall(key)) || {} };
+    return { key, type, ttl, value: await readHashSafely(redis, key) };
   }
   if (type === 'zset') {
     const flat = (await redis.zrange(key, 0, -1, { withScores: true })) || [];
@@ -115,22 +162,25 @@ async function readKey(redis, key) {
   return { key, type: type || 'none', ttl, value: null, unsupported: true };
 }
 
-// Reads a whole batch of keys in exactly 2 real HTTP round trips (one
-// pipelined TYPE+TTL call, one pipelined type-dispatched value call) -
-// "pipelined/parallel reads", not one key at a time, per direct
-// instruction - rather than relying on the SDK's own implicit auto-
-// pipelining (confirmed, by timing it, NOT to batch reliably across a
-// concurrency-limited worker pool once workers drift out of sync after
-// the first wave: an earlier draft of this fix took 42s for 20,000 keys
-// locally with concurrency alone; explicit pipelining is what actually
-// gets the round-trip count down).
+// Reads a whole batch of keys in a handful of real HTTP round trips (one
+// pipelined TYPE+TTL call, one pipelined value call for every non-hash
+// key, and - only when the batch actually has hash keys - one pipelined
+// HKEYS call + one pipelined HMGET call for them, per readHashSafely's
+// own comment on why HGETALL is never used) - "pipelined/parallel
+// reads", not one key at a time, per direct instruction - rather than
+// relying on the SDK's own implicit auto-pipelining (confirmed, by
+// timing it, NOT to batch reliably across a concurrency-limited worker
+// pool once workers drift out of sync after the first wave: an earlier
+// draft of this fix took 42s for 20,000 keys locally with concurrency
+// alone; explicit pipelining is what actually gets the round-trip count
+// down).
 //
-// If EITHER pipeline call throws - one key's reply can't be
-// deserialized, e.g. the exact LIVE BUG FIX above (a null HGETALL) - the
-// WHOLE batch falls back to the slow, already-fault-isolating
+// If any pipeline call throws - one key's reply can't be deserialized -
+// the WHOLE batch falls back to the slow, already-fault-isolating
 // mapWithConcurrency(readKey) path, so a single bad key can still never
 // take any other key in the batch down with it; this fallback is the
-// exceptional path, not the common one.
+// exceptional path, not the common one (and, with HGETALL gone
+// entirely, should now be rare in practice too).
 async function readKeysBatchPipelined(redis, keys) {
   if (keys.length === 0) return [];
   const fallbackIndividually = () => mapWithConcurrency(keys, READ_CONCURRENCY, async (key) => {
@@ -148,30 +198,79 @@ async function readKeysBatchPipelined(redis, keys) {
   }
   const liveMeta = meta.filter((m) => m.ttl !== -2 && m.type && m.type !== 'none');
   if (liveMeta.length === 0) return meta.map(() => ({ ok: true, entry: null }));
-  let readResults;
+  const nonHashMeta = liveMeta.filter((m) => m.type !== 'hash');
+  const hashMeta = liveMeta.filter((m) => m.type === 'hash');
+
+  let nonHashResults = [];
   try {
-    const phase2 = redis.pipeline();
-    for (const m of liveMeta) {
-      if (m.type === 'string') phase2.get(m.key);
-      else if (m.type === 'list') phase2.lrange(m.key, 0, -1);
-      else if (m.type === 'set') phase2.smembers(m.key);
-      else if (m.type === 'hash') phase2.hgetall(m.key);
-      else if (m.type === 'zset') phase2.zrange(m.key, 0, -1, { withScores: true });
-      else phase2.exists(m.key); // unsupported type - value unused, just keeps the pipeline index aligned
+    if (nonHashMeta.length) {
+      const phase2 = redis.pipeline();
+      for (const m of nonHashMeta) {
+        if (m.type === 'string') phase2.get(m.key);
+        else if (m.type === 'list') phase2.lrange(m.key, 0, -1);
+        else if (m.type === 'set') phase2.smembers(m.key);
+        else if (m.type === 'zset') phase2.zrange(m.key, 0, -1, { withScores: true });
+        else phase2.exists(m.key); // unsupported type - value unused, just keeps the pipeline index aligned
+      }
+      nonHashResults = await phase2.exec();
     }
-    readResults = await phase2.exec();
   } catch (err) {
     return fallbackIndividually();
   }
+
+  const hashValues = new Map(); // key -> {}
+  if (hashMeta.length) {
+    let hkeysResults;
+    try {
+      const hkeysPipeline = redis.pipeline();
+      for (const m of hashMeta) hkeysPipeline.hkeys(m.key);
+      hkeysResults = await hkeysPipeline.exec();
+    } catch (err) {
+      // HKEYS itself failing is a genuinely unknown problem (it has no
+      // special reply transform to crash on) - never assumed to just
+      // mean "empty"; fall back to the slow, fault-isolating path.
+      return fallbackIndividually();
+    }
+    const toHmget = hashMeta.map((m, i) => ({ key: m.key, fields: hkeysResults[i] || [] })).filter((x) => x.fields.length > 0);
+    let hmgetResults = [];
+    if (toHmget.length) {
+      try {
+        const hmgetPipeline = redis.pipeline();
+        for (const x of toHmget) hmgetPipeline.hmget(x.key, ...x.fields);
+        hmgetResults = await hmgetPipeline.exec();
+      } catch (err) {
+        // HMGET's own deserializer has the same missing-null-guard
+        // shape as HGETALL's (see readHashSafely's own comment) - since
+        // HKEYS just succeeded moments ago for every one of these
+        // hashes, a failure here is overwhelmingly all of them vanishing
+        // in that brief window, not a real connectivity problem. Treat
+        // every hash in THIS pipelined call as empty rather than paying
+        // for a full-batch fallback (hundreds of non-hash keys too) just
+        // because one hash's timing lost this particular race.
+        hmgetResults = toHmget.map(() => null);
+      }
+    }
+    let hmgetIdx = 0;
+    hashMeta.forEach((m, i) => {
+      const fields = hkeysResults[i] || [];
+      if (fields.length === 0) { hashValues.set(m.key, {}); return; }
+      const values = hmgetResults[hmgetIdx++];
+      // See readHashSafely's own note - values is keyed by field NAME.
+      const obj = {};
+      if (values) fields.forEach((f) => { if (values[f] !== null && values[f] !== undefined) obj[f] = values[f]; });
+      hashValues.set(m.key, obj);
+    });
+  }
+
   const results = [];
   let readIdx = 0;
   for (const m of meta) {
     if (m.ttl === -2 || !m.type || m.type === 'none') { results.push({ ok: true, entry: null }); continue; }
-    const raw = readResults[readIdx++];
+    if (m.type === 'hash') { results.push({ ok: true, entry: { key: m.key, type: m.type, ttl: m.ttl, value: hashValues.get(m.key) || {} } }); continue; }
+    const raw = nonHashResults[readIdx++];
     if (m.type === 'string') { results.push({ ok: true, entry: { key: m.key, type: m.type, ttl: m.ttl, value: raw } }); continue; }
     if (m.type === 'list') { results.push({ ok: true, entry: { key: m.key, type: m.type, ttl: m.ttl, value: raw || [] } }); continue; }
     if (m.type === 'set') { results.push({ ok: true, entry: { key: m.key, type: m.type, ttl: m.ttl, value: raw || [] } }); continue; }
-    if (m.type === 'hash') { results.push({ ok: true, entry: { key: m.key, type: m.type, ttl: m.ttl, value: raw || {} } }); continue; }
     if (m.type === 'zset') {
       const flat = raw || [];
       const pairs = [];
