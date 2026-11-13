@@ -23,6 +23,7 @@ const automationService = require('./aiAssistant/automationService');
 const workflowService = require('./aiAssistant/workflowService');
 const aiUsageLog = require('./aiAssistant/aiUsageLog');
 const companyDetailsService = require('./aiAssistant/companyDetailsService');
+const storeHealthDiag = require('./aiAssistant/storeHealthDiag');
 const letterSettingsService = require('./aiAssistant/letterSettingsService');
 const driveTemplatesService = require('./aiAssistant/driveTemplatesService');
 const driveTemplateFieldsService = require('./aiAssistant/driveTemplateFieldsService');
@@ -1724,6 +1725,20 @@ router.get('/hr-assistant/diag/company-details-store', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
   try {
     res.json(await companyDetailsService.diagCompanyDetailsStore());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PART A follow-up (2026-11), direct instruction - "do OLDER keys still
+// exist" (reminders/automations/AI-usage days/letter counters from well
+// before this incident)? Owner-only, READ-ONLY - see
+// storeHealthDiag.diagOlderKeysStillExist's own comment for exactly what
+// this checks and why.
+router.get('/hr-assistant/diag/older-keys', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    res.json(await storeHealthDiag.diagOlderKeysStillExist());
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
