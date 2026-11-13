@@ -17,7 +17,7 @@ async function checkAsync(label, fn) {
 }
 
 async function main() {
-  await require('./testBootstrap').setupTestEnvironment();
+  const env = await require('./testBootstrap').setupTestEnvironment();
   const { Redis } = require('@upstash/redis');
   const svc = require('../src/aiAssistant/fullStoreBackupService');
   const redis = new Redis({ url: process.env.KV_REST_API_URL, token: process.env.KV_REST_API_TOKEN });
@@ -46,6 +46,37 @@ async function main() {
   check('a set key is captured with all members', byKey['test-backup:set'] && byKey['test-backup:set'].value.sort().join(',') === 'x,y');
   check('a hash key is captured with all fields', byKey['test-backup:hash'] && byKey['test-backup:hash'].value.f1 === 'v1' && byKey['test-backup:hash'].value.f2 === 'v2');
   check('a sorted-set key is captured with member+score pairs (a type the existing migration script does NOT support)', byKey['test-backup:zset'] && JSON.stringify(byKey['test-backup:zset'].value) === JSON.stringify([{ member: 'm1', score: 1 }, { member: 'm2', score: 2 }]));
+  check('the export includes a summary (totalKeys, byType, skippedCount, skippedKeys)', backup.summary && backup.summary.totalKeys === backup.keyCount && backup.summary.byType.string >= 2 && backup.summary.byType.hash >= 1 && backup.summary.skippedCount === 0 && Array.isArray(backup.summary.skippedKeys));
+
+  console.log('='.repeat(70));
+  console.log('LIVE BUG FIX: a key that throws mid-read (e.g. the real production incident - @upstash/redis\'s own HGETALL deserializer does result.length with no null-guard, and ioredis\'s own reply transform can return null for an empty/vanished hash through subh-store\'s generic passthrough) is skipped and counted, never crashes the whole export');
+  console.log('='.repeat(70));
+  await checkAsync('a key whose read throws the EXACT real production error is skipped (summary.skippedKeys names it and the error), every OTHER key is still exported correctly', async () => {
+    await redis.set('test-backup:before-bad-key', 'still exported');
+    await redis.del('test-backup:bad-hash').catch(() => {});
+    await redis.hset('test-backup:bad-hash', { f: 'v' });
+    await redis.set('test-backup:after-bad-key', 'still exported too');
+    // fullStoreBackupService.js builds its OWN internal Redis client (a
+    // separate instance from this test's own `redis`, same class) -
+    // @upstash/redis defines hgetall as a per-INSTANCE class field, not a
+    // prototype method, so patching Redis.prototype never reaches it.
+    // Instead, fault-inject at the fake store itself (one level below
+    // the SDK): the next HGETALL for this key returns a raw `null` over
+    // the wire, which is exactly what the real SDK's own HGETALL
+    // deserializer has no null-guard for - reproducing the real crash
+    // via the real SDK code path, not a hand-thrown stand-in error.
+    env.store._forceNullOnce('hgetall', 'test-backup:bad-hash');
+    const result = await svc.exportFullStore();
+    const byKey2 = {};
+    for (const e of result.keys) byKey2[e.key] = e;
+    const skippedEntry = result.summary.skippedKeys.find((s) => s.key === 'test-backup:bad-hash');
+    const ok = Boolean(skippedEntry) && skippedEntry.error.includes("reading 'length'") && result.summary.skippedCount === 1 &&
+      !byKey2['test-backup:bad-hash'] && // the bad key is never in the real export
+      byKey2['test-backup:before-bad-key'] && byKey2['test-backup:before-bad-key'].value === 'still exported' &&
+      byKey2['test-backup:after-bad-key'] && byKey2['test-backup:after-bad-key'].value === 'still exported too';
+    for (const k of ['test-backup:before-bad-key', 'test-backup:bad-hash', 'test-backup:after-bad-key']) await redis.del(k).catch(() => {});
+    return ok;
+  });
 
   console.log('='.repeat(70));
   console.log('restoreFullStore: preview-only (no confirm) writes NOTHING');

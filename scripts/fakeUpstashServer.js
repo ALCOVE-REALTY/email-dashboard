@@ -34,6 +34,9 @@ const http = require('http');
 // Redis clone); every command here is one this codebase actually issues.
 function createStore() {
   const data = new Map();
+  // Test-only, one-shot fault injection (2026-11) - see `_forceNullOnce`
+  // on the returned store object below.
+  const forcedNullOnce = new Set();
 
   function isExpired(entry, now) {
     return entry.expiresAt !== null && entry.expiresAt <= now;
@@ -285,13 +288,33 @@ function createStore() {
 
   return {
     exec(name, args) {
-      const fn = commands[String(name).toLowerCase()];
+      const lname = String(name).toLowerCase();
+      const forceKey = lname + ':' + args[0];
+      if (forcedNullOnce.has(forceKey)) {
+        forcedNullOnce.delete(forceKey);
+        return null;
+      }
+      const fn = commands[lname];
       if (!fn) throw new Error('unsupported command in fake Upstash server: ' + name);
       return fn(args, Date.now());
     },
     // Test-only introspection/reset, not part of the Redis protocol.
     _clear() { data.clear(); },
-    _dumpKeys() { return [...data.keys()]; }
+    _dumpKeys() { return [...data.keys()]; },
+    // Test-only, one-shot fault injection (2026-11) - reproduces the real
+    // production incident: a key whose read comes back as a raw `null`
+    // over the wire (ioredis's own per-command reply transform can
+    // legitimately do this for a hash that's empty or vanished between a
+    // TYPE check and the actual read - the exact race already flagged as
+    // a risk), which @upstash/redis's own deserialize3 then crashes on
+    // with NO null-guard at all ("Cannot read properties of null (reading
+    // 'length')"). Returning raw `null` straight from `exec` - before the
+    // normal per-command handler ever runs, and before `encodeResult`
+    // (which passes null through unencoded) - reproduces the exact wire
+    // shape the real SDK chokes on, not just a same-text thrown error.
+    // Fires exactly once for the named command+key, then reverts to
+    // normal, so only ONE read of that key is affected.
+    _forceNullOnce(command, key) { forcedNullOnce.add(String(command).toLowerCase() + ':' + key); }
   };
 }
 

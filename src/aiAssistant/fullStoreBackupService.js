@@ -36,6 +36,25 @@ function getClient() {
 
 const SCAN_BATCH = 500;
 
+// LIVE BUG FIX (2026-11), direct instruction - production (subh-store,
+// not Upstash) threw "Cannot read properties of null (reading
+// 'length')" on this route. Root-caused by tracing the REAL installed
+// @upstash/redis SDK (node_modules) against subh-store's own real
+// restHandler.js (a GENERIC passthrough to ioredis's `.call()`, which
+// means ioredis's own per-command reply transforms - like HGETALL's -
+// still apply even through the generic path): the SDK's own HGETALL
+// deserializer (`deserialize3` in the installed SDK) does `result.length`
+// with NO null-guard at all - and ioredis's own hgetall reply transform
+// can legitimately return `null` (not `{}`/`[]`) for a hash that's
+// empty or vanished, exactly the "a key expired/was deleted between
+// scan and read" race already flagged as a risk. Real Upstash's own
+// backend apparently normalizes this away before it ever reaches the
+// client; subh-store's deliberately-generic passthrough does not. This
+// can't be patched inside the installed SDK, so every per-key read
+// below is now independently fault-tolerant: ANY failure for ANY single
+// key (this one, or anything else unexpected) is caught, that one key
+// is skipped and counted, and the export continues - never fails the
+// whole backup over one bad key.
 async function readKey(redis, key) {
   const type = await redis.type(key);
   const ttl = await redis.ttl(key); // -1 = no expiry, -2 = key gone (race, skip)
@@ -44,13 +63,13 @@ async function readKey(redis, key) {
     return { key, type, ttl, value: await redis.get(key) };
   }
   if (type === 'list') {
-    return { key, type, ttl, value: await redis.lrange(key, 0, -1) };
+    return { key, type, ttl, value: (await redis.lrange(key, 0, -1)) || [] };
   }
   if (type === 'set') {
-    return { key, type, ttl, value: await redis.smembers(key) };
+    return { key, type, ttl, value: (await redis.smembers(key)) || [] };
   }
   if (type === 'hash') {
-    return { key, type, ttl, value: await redis.hgetall(key) };
+    return { key, type, ttl, value: (await redis.hgetall(key)) || {} };
   }
   if (type === 'zset') {
     const flat = (await redis.zrange(key, 0, -1, { withScores: true })) || [];
@@ -65,16 +84,36 @@ async function exportFullStore() {
   const redis = getClient();
   if (!redis) throw new Error('No store configured.');
   const entries = [];
+  const skippedKeys = [];
   let cursor = '0';
   do {
-    const [nextCursor, keys] = await redis.scan(cursor, { count: SCAN_BATCH });
-    cursor = nextCursor;
+    let nextCursor, keys;
+    try {
+      const scanResult = await redis.scan(cursor, { count: SCAN_BATCH });
+      [nextCursor, keys] = Array.isArray(scanResult) ? scanResult : [null, null];
+    } catch (err) {
+      skippedKeys.push({ key: '(scan cursor ' + cursor + ')', error: err.message });
+      break;
+    }
+    if (!Array.isArray(keys)) { skippedKeys.push({ key: '(scan cursor ' + cursor + ')', error: 'scan returned no key list' }); break; }
+    cursor = nextCursor || '0';
     for (const key of keys) {
-      const entry = await readKey(redis, key);
-      if (entry) entries.push(entry);
+      try {
+        const entry = await readKey(redis, key);
+        if (entry) entries.push(entry);
+      } catch (err) {
+        skippedKeys.push({ key, error: err.message });
+      }
     }
   } while (cursor !== '0');
-  return { exportedAt: new Date().toISOString(), keyCount: entries.length, keys: entries };
+  const byType = {};
+  for (const entry of entries) byType[entry.type] = (byType[entry.type] || 0) + 1;
+  return {
+    exportedAt: new Date().toISOString(),
+    keyCount: entries.length,
+    summary: { totalKeys: entries.length, byType, skippedCount: skippedKeys.length, skippedKeys },
+    keys: entries
+  };
 }
 
 function summarizeBackup(backup) {
