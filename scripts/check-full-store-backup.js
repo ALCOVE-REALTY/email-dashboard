@@ -167,7 +167,7 @@ async function main() {
   env.store._deleteByPrefix('test-backup-large:');
 
   console.log('='.repeat(70));
-  console.log('Background backup job (2026-11, direct instruction - the browser must never wait): starts immediately, uploads to Drive "SUBH Letter Templates/Backups/<date-time>.json" under the owner\'s own OAuth, status is pollable');
+  console.log('Background backup job (2026-11, direct instruction - the browser must never wait): starts immediately, uploads to Drive "SUBH Letter Templates/Backup/<date-time>.json" under the owner\'s own OAuth, status is pollable');
   console.log('='.repeat(70));
   const subhDriveAuth = require('../src/subhDriveAuth');
   const origIsAuthenticated = subhDriveAuth.isAuthenticated;
@@ -224,7 +224,7 @@ async function main() {
     check('the job eventually finishes ("done") with a real result naming totalKeys/byType/the Drive link/elapsedMs', Boolean(finalJob) && finalJob.status === 'done' &&
       finalJob.result && finalJob.result.totalKeys > 0 && finalJob.result.byType.string > 0 &&
       /drive\.google\.com/.test(finalJob.result.driveLink) && typeof finalJob.result.elapsedMs === 'number' && finalJob.result.elapsedMs >= 0);
-    check('the uploaded file actually landed inside a "Backups" folder under the known SUBH Letter Templates folder - never a new top-level folder', driveFolders.some((f) => f.name === 'Backups' && f.parentId === require('../src/subhDriveGuard').LETTER_TEMPLATES_FOLDER_ID));
+    check('the uploaded file actually landed inside a "Backup" folder under the known SUBH Letter Templates folder - never a new top-level folder', driveFolders.some((f) => f.name === svc.BACKUP_FOLDER_NAME && f.parentId === require('../src/subhDriveGuard').LETTER_TEMPLATES_FOLDER_ID));
     // The lock is released in the job's own `finally` block, right after
     // (not before) its status flips to "done" - poll briefly rather than
     // asserting on the very first attempt, to avoid a race against that
@@ -273,6 +273,7 @@ async function main() {
     restoreRealDrive();
   }
   check('getBackupJob returns null for an id that was never started', (await svc.getBackupJob('nonexistent-job-id')) === null);
+  check('exactly ONE "Backup" folder exists across every upload in this run (2 separate jobs + 1 retry) - it is found and reused, never re-created', driveFolders.filter((f) => f.name === svc.BACKUP_FOLDER_NAME).length === 1);
 
   console.log('='.repeat(70));
   console.log(pass + '/' + (pass + fail) + ' passed' + (fail ? ', ' + fail + ' FAILED' : ''));

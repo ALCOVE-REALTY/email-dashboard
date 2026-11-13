@@ -398,12 +398,32 @@ async function restoreFullStore(backup, { confirm } = {}) {
 // export in the background (never awaited by the HTTP request that
 // started it - this app is a persistent Node process, not serverless,
 // so the job keeps running after the response is already sent) and
-// uploads its own JSON straight to Drive "SUBH Letter Templates/Backups/
+// uploads its own JSON straight to Drive "SUBH Letter Templates/Backup/
 // <date-time>.json" under the owner's own OAuth identity (subhDriveAuth -
 // the service account has no storage quota of its own, same reason
 // letterSettingsService's own uploadSentLetterPdf uses it, not the
 // service account). A caller polls getBackupJob(jobId) for progress and,
 // once done, the Drive link + summary.
+//
+// Folder name (2026-11, direct instruction - "use SUBH Letter Templates/
+// Backup, create it if missing, reuse it afterwards, never a second
+// folder, add it to the Drive guard allowlist"): BACKUP_FOLDER_NAME is
+// the one place this name is spelled, reused by items 3/4 (the daily
+// job and the recent-backups list) so they can never drift onto a
+// different folder. "Add it to the Drive guard allowlist" is already
+// true structurally, not just by convention: guardedGetOrCreateFolder
+// (subhDriveGuard.js) only ever creates/reuses a folder under a PARENT
+// that's already allowed - LETTER_TEMPLATES_FOLDER_ID is a static seed
+// of that allowlist - and the instant it finds/creates "Backup", it
+// adds that folder's own id to the allowlist too (allowedFolderIds.add,
+// in subhDriveGuard.js), so every later upload into it passes the same
+// real-Drive-verified check every other Letter-Templates folder does.
+// There's no STATIC id to hardcode the way ISSUED_LETTERS_FOLDER_ID has
+// one - unlike that folder (which the owner created by hand ahead of
+// time), "Backup" doesn't exist yet in production; the dynamic
+// list-or-create-then-allow mechanism IS the correct way to onboard it,
+// not a gap to fill with a second, parallel static constant.
+const BACKUP_FOLDER_NAME = 'Backup';
 const JOB_PREFIX = 'subh-full-backup-job:';
 const JOB_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 days - the durable copy is the Drive file, not this status record
 const JOB_LOCK_KEY = 'subh-full-backup-job-lock';
@@ -444,12 +464,16 @@ async function finishBackupJob(jobId, { status, result, error }) {
 // Letter-Templates feature already uses) - every call goes through
 // subhDriveGuard's own folder-allowlist/logging guardrails regardless of
 // what the broader OAuth scope could reach.
+async function getBackupFolderId(drive) {
+  return subhDriveGuard.guardedGetOrCreateFolder(drive, subhDriveGuard.LETTER_TEMPLATES_FOLDER_ID, BACKUP_FOLDER_NAME);
+}
+
 async function uploadBackupToDrive(backup, filename) {
   if (!subhDriveAuth.isAuthenticated()) throw new Error('SUBH Drive is not connected yet - visit /subh-drive-auth to complete the one-time consent before a backup can be uploaded.');
   const drive = subhDriveAuth.getDriveClient();
-  const backupsFolderId = await subhDriveGuard.guardedGetOrCreateFolder(drive, subhDriveGuard.LETTER_TEMPLATES_FOLDER_ID, 'Backups');
+  const backupFolderId = await getBackupFolderId(drive);
   const buffer = Buffer.from(JSON.stringify(backup), 'utf8');
-  const file = await subhDriveGuard.guardedUploadFile(drive, backupsFolderId, filename, 'application/json', Readable.from(buffer));
+  const file = await subhDriveGuard.guardedUploadFile(drive, backupFolderId, filename, 'application/json', Readable.from(buffer));
   return { fileId: file.data.id, url: file.data.webViewLink || ('https://drive.google.com/file/d/' + file.data.id + '/view') };
 }
 
@@ -498,4 +522,4 @@ async function startBackupJob({ startedBy } = {}) {
   return { jobId, alreadyRunning: false };
 }
 
-module.exports = { exportFullStore, summarizeBackup, restoreFullStore, startBackupJob, getBackupJob };
+module.exports = { exportFullStore, summarizeBackup, restoreFullStore, startBackupJob, getBackupJob, BACKUP_FOLDER_NAME, getBackupFolderId };
