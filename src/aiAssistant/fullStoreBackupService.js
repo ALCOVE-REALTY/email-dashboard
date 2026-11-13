@@ -22,6 +22,9 @@
 // has grown new keys since the backup was taken (the standing "owner
 // data is sacred, never deleted by code" rule applies here too).
 const { Redis } = require('@upstash/redis');
+const { Readable } = require('stream');
+const subhDriveAuth = require('../subhDriveAuth');
+const subhDriveGuard = require('../subhDriveGuard');
 
 let client;
 let clientChecked = false;
@@ -35,6 +38,38 @@ function getClient() {
 }
 
 const SCAN_BATCH = 500;
+// Fallback read concurrency (2026-11, direct instruction - the live
+// proxy-timeout fix below) - override with FULL_BACKUP_CONCURRENCY. Only
+// used when a batch's own pipelined read (see readKeysBatchPipelined)
+// fails and falls back to reading that one batch key-by-key - the
+// normal, fast path never goes through this at all.
+const READ_CONCURRENCY = Number(process.env.FULL_BACKUP_CONCURRENCY) > 0 ? Number(process.env.FULL_BACKUP_CONCURRENCY) : 20;
+// Yielded between SCAN batches (direct instruction: "make sure the job
+// can't slow down or block live WhatsApp replies... yields between
+// batches") - this Node process also runs the WhatsApp poll scheduler
+// and every other HTTP request, so a large export must hand control
+// back to the event loop regularly rather than running as one long
+// unbroken stretch of work.
+const BATCH_YIELD_MS = 20;
+function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
+
+// Runs `fn` over `items` with at most `limit` in flight at once - see
+// READ_CONCURRENCY's own comment for why this matters. `fn` must never
+// reject (every caller here already catches its own per-key errors and
+// returns a tagged result instead).
+async function mapWithConcurrency(items, limit, fn) {
+  const results = new Array(items.length);
+  let next = 0;
+  async function worker() {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i], i);
+    }
+  }
+  const workerCount = Math.max(1, Math.min(limit, items.length));
+  await Promise.all(Array.from({ length: workerCount }, worker));
+  return results;
+}
 
 // LIVE BUG FIX (2026-11), direct instruction - production (subh-store,
 // not Upstash) threw "Cannot read properties of null (reading
@@ -80,12 +115,85 @@ async function readKey(redis, key) {
   return { key, type: type || 'none', ttl, value: null, unsupported: true };
 }
 
-async function exportFullStore() {
+// Reads a whole batch of keys in exactly 2 real HTTP round trips (one
+// pipelined TYPE+TTL call, one pipelined type-dispatched value call) -
+// "pipelined/parallel reads", not one key at a time, per direct
+// instruction - rather than relying on the SDK's own implicit auto-
+// pipelining (confirmed, by timing it, NOT to batch reliably across a
+// concurrency-limited worker pool once workers drift out of sync after
+// the first wave: an earlier draft of this fix took 42s for 20,000 keys
+// locally with concurrency alone; explicit pipelining is what actually
+// gets the round-trip count down).
+//
+// If EITHER pipeline call throws - one key's reply can't be
+// deserialized, e.g. the exact LIVE BUG FIX above (a null HGETALL) - the
+// WHOLE batch falls back to the slow, already-fault-isolating
+// mapWithConcurrency(readKey) path, so a single bad key can still never
+// take any other key in the batch down with it; this fallback is the
+// exceptional path, not the common one.
+async function readKeysBatchPipelined(redis, keys) {
+  if (keys.length === 0) return [];
+  const fallbackIndividually = () => mapWithConcurrency(keys, READ_CONCURRENCY, async (key) => {
+    try { return { ok: true, entry: await readKey(redis, key) }; }
+    catch (err) { return { ok: false, key, error: err.message }; }
+  });
+  let meta;
+  try {
+    const phase1 = redis.pipeline();
+    for (const key of keys) { phase1.type(key); phase1.ttl(key); }
+    const phase1Results = await phase1.exec();
+    meta = keys.map((key, i) => ({ key, type: phase1Results[i * 2], ttl: phase1Results[i * 2 + 1] }));
+  } catch (err) {
+    return fallbackIndividually();
+  }
+  const liveMeta = meta.filter((m) => m.ttl !== -2 && m.type && m.type !== 'none');
+  if (liveMeta.length === 0) return meta.map(() => ({ ok: true, entry: null }));
+  let readResults;
+  try {
+    const phase2 = redis.pipeline();
+    for (const m of liveMeta) {
+      if (m.type === 'string') phase2.get(m.key);
+      else if (m.type === 'list') phase2.lrange(m.key, 0, -1);
+      else if (m.type === 'set') phase2.smembers(m.key);
+      else if (m.type === 'hash') phase2.hgetall(m.key);
+      else if (m.type === 'zset') phase2.zrange(m.key, 0, -1, { withScores: true });
+      else phase2.exists(m.key); // unsupported type - value unused, just keeps the pipeline index aligned
+    }
+    readResults = await phase2.exec();
+  } catch (err) {
+    return fallbackIndividually();
+  }
+  const results = [];
+  let readIdx = 0;
+  for (const m of meta) {
+    if (m.ttl === -2 || !m.type || m.type === 'none') { results.push({ ok: true, entry: null }); continue; }
+    const raw = readResults[readIdx++];
+    if (m.type === 'string') { results.push({ ok: true, entry: { key: m.key, type: m.type, ttl: m.ttl, value: raw } }); continue; }
+    if (m.type === 'list') { results.push({ ok: true, entry: { key: m.key, type: m.type, ttl: m.ttl, value: raw || [] } }); continue; }
+    if (m.type === 'set') { results.push({ ok: true, entry: { key: m.key, type: m.type, ttl: m.ttl, value: raw || [] } }); continue; }
+    if (m.type === 'hash') { results.push({ ok: true, entry: { key: m.key, type: m.type, ttl: m.ttl, value: raw || {} } }); continue; }
+    if (m.type === 'zset') {
+      const flat = raw || [];
+      const pairs = [];
+      for (let i = 0; i < flat.length; i += 2) pairs.push({ member: flat[i], score: flat[i + 1] });
+      results.push({ ok: true, entry: { key: m.key, type: m.type, ttl: m.ttl, value: pairs } });
+      continue;
+    }
+    results.push({ ok: true, entry: { key: m.key, type: m.type, ttl: m.ttl, value: null, unsupported: true } });
+  }
+  return results;
+}
+
+// `onProgress({ keysScanned, entries, skippedCount })` is called once per
+// SCAN batch (not per key) - used by the background job below to report
+// live progress; a throwing onProgress never aborts the export itself.
+async function exportFullStore({ onProgress } = {}) {
   const redis = getClient();
   if (!redis) throw new Error('No store configured.');
   const entries = [];
   const skippedKeys = [];
   let cursor = '0';
+  let keysScanned = 0;
   do {
     let nextCursor, keys;
     try {
@@ -97,14 +205,17 @@ async function exportFullStore() {
     }
     if (!Array.isArray(keys)) { skippedKeys.push({ key: '(scan cursor ' + cursor + ')', error: 'scan returned no key list' }); break; }
     cursor = nextCursor || '0';
-    for (const key of keys) {
-      try {
-        const entry = await readKey(redis, key);
-        if (entry) entries.push(entry);
-      } catch (err) {
-        skippedKeys.push({ key, error: err.message });
-      }
+    // Pipelined batch read (2 round trips for the whole batch), not one
+    // key per round trip - see readKeysBatchPipelined's own comment.
+    const batchResults = await readKeysBatchPipelined(redis, keys);
+    for (const r of batchResults) {
+      if (r.ok) { if (r.entry) entries.push(r.entry); }
+      else skippedKeys.push({ key: r.key, error: r.error });
     }
+    keysScanned += keys.length;
+    if (onProgress) { try { await onProgress({ keysScanned, entries: entries.length, skippedCount: skippedKeys.length }); } catch (err) { /* progress reporting must never abort the export itself */ } }
+    // Yield the event loop between batches - see BATCH_YIELD_MS's comment.
+    await sleep(BATCH_YIELD_MS);
   } while (cursor !== '0');
   const byType = {};
   for (const entry of entries) byType[entry.type] = (byType[entry.type] || 0) + 1;
@@ -182,4 +293,110 @@ async function restoreFullStore(backup, { confirm } = {}) {
   return Object.assign({ preview: false, restoredCount: results.filter((r) => r.restored).length, skippedCount: results.filter((r) => r.skipped).length, errors }, preview);
 }
 
-module.exports = { exportFullStore, summarizeBackup, restoreFullStore };
+// Background job (2026-11, direct instruction) - the synchronous export
+// above can be slow enough on production's real key count to be cut off
+// by a proxy/request timeout before it finishes. This runs the SAME
+// export in the background (never awaited by the HTTP request that
+// started it - this app is a persistent Node process, not serverless,
+// so the job keeps running after the response is already sent) and
+// uploads its own JSON straight to Drive "SUBH Letter Templates/Backups/
+// <date-time>.json" under the owner's own OAuth identity (subhDriveAuth -
+// the service account has no storage quota of its own, same reason
+// letterSettingsService's own uploadSentLetterPdf uses it, not the
+// service account). A caller polls getBackupJob(jobId) for progress and,
+// once done, the Drive link + summary.
+const JOB_PREFIX = 'subh-full-backup-job:';
+const JOB_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 days - the durable copy is the Drive file, not this status record
+const JOB_LOCK_KEY = 'subh-full-backup-job-lock';
+const JOB_LOCK_TTL_SECONDS = 30 * 60; // self-heals if the process restarts mid-job
+
+async function saveBackupJob(job) {
+  const redis = getClient();
+  if (!redis) return;
+  await redis.set(JOB_PREFIX + job.id, JSON.stringify(job), { ex: JOB_TTL_SECONDS });
+}
+async function getBackupJob(jobId) {
+  const redis = getClient();
+  if (!redis) return null;
+  const raw = await redis.get(JOB_PREFIX + jobId);
+  if (!raw) return null;
+  try { return typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (err) { return null; }
+}
+async function updateBackupJobProgress(jobId, progress) {
+  const job = await getBackupJob(jobId);
+  if (!job) return;
+  job.progress = progress;
+  job.updatedAt = new Date().toISOString();
+  await saveBackupJob(job);
+}
+async function finishBackupJob(jobId, { status, result, error }) {
+  const job = await getBackupJob(jobId);
+  if (!job) return;
+  job.status = status;
+  job.result = result || null;
+  job.error = error || null;
+  job.completedAt = new Date().toISOString();
+  job.updatedAt = job.completedAt;
+  await saveBackupJob(job);
+}
+
+// Uploads into the owner's existing "SUBH Letter Templates" Drive folder
+// (never a new top-level folder, same existing folder every other
+// Letter-Templates feature already uses) - every call goes through
+// subhDriveGuard's own folder-allowlist/logging guardrails regardless of
+// what the broader OAuth scope could reach.
+async function uploadBackupToDrive(backup, filename) {
+  if (!subhDriveAuth.isAuthenticated()) throw new Error('SUBH Drive is not connected yet - visit /subh-drive-auth to complete the one-time consent before a backup can be uploaded.');
+  const drive = subhDriveAuth.getDriveClient();
+  const backupsFolderId = await subhDriveGuard.guardedGetOrCreateFolder(drive, subhDriveGuard.LETTER_TEMPLATES_FOLDER_ID, 'Backups');
+  const buffer = Buffer.from(JSON.stringify(backup), 'utf8');
+  const file = await subhDriveGuard.guardedUploadFile(drive, backupsFolderId, filename, 'application/json', Readable.from(buffer));
+  return { fileId: file.data.id, url: file.data.webViewLink || ('https://drive.google.com/file/d/' + file.data.id + '/view') };
+}
+
+async function runBackupJobInBackground(jobId) {
+  const startedAt = Date.now();
+  try {
+    const backup = await exportFullStore({ onProgress: (progress) => updateBackupJobProgress(jobId, progress) });
+    const filename = backup.exportedAt.replace(/[:.]/g, '-') + '.json';
+    const drive = await uploadBackupToDrive(backup, filename);
+    await finishBackupJob(jobId, {
+      status: 'done',
+      result: {
+        exportedAt: backup.exportedAt, totalKeys: backup.keyCount, byType: backup.summary.byType,
+        skippedCount: backup.summary.skippedCount, skippedKeys: backup.summary.skippedKeys,
+        driveFileId: drive.fileId, driveLink: drive.url, filename, elapsedMs: Date.now() - startedAt
+      }
+    });
+  } catch (err) {
+    await finishBackupJob(jobId, { status: 'failed', error: err.message });
+  } finally {
+    const redis = getClient();
+    if (redis) await redis.del(JOB_LOCK_KEY).catch(() => {});
+  }
+}
+
+// Starts the background job and returns immediately - never awaits
+// runBackupJobInBackground. A job already running is reused (returns
+// its existing id with alreadyRunning:true) rather than starting a
+// second overlapping export.
+async function startBackupJob({ startedBy } = {}) {
+  const redis = getClient();
+  if (!redis) throw new Error('No store configured.');
+  const lockOwner = await redis.get(JOB_LOCK_KEY).catch(() => null);
+  if (lockOwner) {
+    const existingJob = await getBackupJob(lockOwner).catch(() => null);
+    if (existingJob && existingJob.status === 'running') return { jobId: lockOwner, alreadyRunning: true };
+  }
+  const jobId = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  const now = new Date().toISOString();
+  const job = { id: jobId, status: 'running', startedAt: now, updatedAt: now, completedAt: null, startedBy: startedBy || null, progress: { keysScanned: 0, entries: 0, skippedCount: 0 }, result: null, error: null };
+  await saveBackupJob(job);
+  await redis.set(JOB_LOCK_KEY, jobId, { ex: JOB_LOCK_TTL_SECONDS }).catch(() => {});
+  runBackupJobInBackground(jobId).catch((err) => {
+    console.error('[full-store-backup] background job ' + jobId + ' crashed: ' + err.message);
+  });
+  return { jobId, alreadyRunning: false };
+}
+
+module.exports = { exportFullStore, summarizeBackup, restoreFullStore, startBackupJob, getBackupJob };

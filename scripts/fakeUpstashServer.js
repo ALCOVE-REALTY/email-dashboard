@@ -34,7 +34,7 @@ const http = require('http');
 // Redis clone); every command here is one this codebase actually issues.
 function createStore() {
   const data = new Map();
-  // Test-only, one-shot fault injection (2026-11) - see `_forceNullOnce`
+  // Test-only, persistent fault injection (2026-11) - see `_forceNullOnce`
   // on the returned store object below.
   const forcedNullOnce = new Set();
 
@@ -124,6 +124,11 @@ function createStore() {
     type(args, now) {
       const entry = get(args[0], now);
       return entry ? entry.type : 'none';
+    },
+    dbsize(args, now) {
+      let count = 0;
+      for (const key of data.keys()) { if (get(key, now)) count++; }
+      return count;
     },
     exists(args, now) {
       let count = 0;
@@ -270,19 +275,33 @@ function createStore() {
       for (const f of fields) { if (entry.value.delete(String(f))) removed++; }
       return removed;
     },
+    // Paginates by a plain numeric offset encoded as the cursor string -
+    // real Redis SCAN's cursor is an opaque bucket index with its own
+    // under-mutation guarantees, deliberately NOT replicated here (this
+    // is a correctness-focused double, not a clone); every caller in
+    // this codebase already loops `while (cursor !== '0')`, so a plain
+    // offset is a faithful enough stand-in. 2026-11 fix: this used to
+    // return every matching key in one page regardless of COUNT, which
+    // meant a test exercising "batches of 500" against this fake store
+    // never actually went through more than one batch no matter how
+    // large the fixture - real pagination is what makes a large-fixture
+    // test (e.g. 20,000 keys) actually prove batching, not just prove
+    // correctness in one giant page.
     scan(args, now) {
-      const [, ...opts] = args;
+      const [cursorArg, ...opts] = args;
       const lower = opts.map((o) => String(o).toLowerCase());
       const matchIdx = lower.indexOf('match');
       const pattern = matchIdx !== -1 ? opts[matchIdx + 1] : '*';
+      const countIdx = lower.indexOf('count');
+      const count = countIdx !== -1 ? Number(opts[countIdx + 1]) || 1000 : 1000;
       const re = new RegExp('^' + String(pattern).replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$');
-      const keys = [];
-      for (const key of data.keys()) { if (get(key, now) && re.test(key)) keys.push(key); }
-      // Single-page scan (every matching key returned at once, cursor '0'
-      // means "done") - a correctness-focused fake never needs real
-      // incremental pagination, and every caller in this codebase already
-      // loops `while (cursor !== '0')`, which terminates immediately here.
-      return ['0', keys];
+      const allMatching = [];
+      for (const key of data.keys()) { if (get(key, now) && re.test(key)) allMatching.push(key); }
+      const offset = Number(cursorArg) || 0;
+      const page = allMatching.slice(offset, offset + count);
+      const nextOffset = offset + count;
+      const nextCursor = nextOffset >= allMatching.length ? '0' : String(nextOffset);
+      return [nextCursor, page];
     }
   };
 
@@ -290,10 +309,7 @@ function createStore() {
     exec(name, args) {
       const lname = String(name).toLowerCase();
       const forceKey = lname + ':' + args[0];
-      if (forcedNullOnce.has(forceKey)) {
-        forcedNullOnce.delete(forceKey);
-        return null;
-      }
+      if (forcedNullOnce.has(forceKey)) return null;
       const fn = commands[lname];
       if (!fn) throw new Error('unsupported command in fake Upstash server: ' + name);
       return fn(args, Date.now());
@@ -301,20 +317,41 @@ function createStore() {
     // Test-only introspection/reset, not part of the Redis protocol.
     _clear() { data.clear(); },
     _dumpKeys() { return [...data.keys()]; },
-    // Test-only, one-shot fault injection (2026-11) - reproduces the real
-    // production incident: a key whose read comes back as a raw `null`
-    // over the wire (ioredis's own per-command reply transform can
-    // legitimately do this for a hash that's empty or vanished between a
-    // TYPE check and the actual read - the exact race already flagged as
-    // a risk), which @upstash/redis's own deserialize3 then crashes on
-    // with NO null-guard at all ("Cannot read properties of null (reading
-    // 'length')"). Returning raw `null` straight from `exec` - before the
-    // normal per-command handler ever runs, and before `encodeResult`
-    // (which passes null through unencoded) - reproduces the exact wire
-    // shape the real SDK chokes on, not just a same-text thrown error.
-    // Fires exactly once for the named command+key, then reverts to
-    // normal, so only ONE read of that key is affected.
-    _forceNullOnce(command, key) { forcedNullOnce.add(String(command).toLowerCase() + ':' + key); }
+    // Test-only, PERSISTENT fault injection (2026-11, named "...Once" for
+    // "once you call this, this command+key is faulty" - NOT one-shot;
+    // see below for why) - reproduces the real production incident: a
+    // key whose read comes back as a raw `null` over the wire (ioredis's
+    // own per-command reply transform can legitimately do this for a
+    // hash that's empty or vanished between a TYPE check and the actual
+    // read - the exact race already flagged as a risk), which
+    // @upstash/redis's own deserialize3 then crashes on with NO null-
+    // guard at all ("Cannot read properties of null (reading 'length')").
+    // Returning raw `null` straight from `exec` - before the normal
+    // per-command handler ever runs, and before `encodeResult` (which
+    // passes null through unencoded) - reproduces the exact wire shape
+    // the real SDK chokes on, not just a same-text thrown error.
+    // PERSISTENT, not one-shot (2026-11 fix): a pipelined read that hits
+    // this fault falls back to retrying that same key individually - if
+    // the fault only fired once, the server would have already "used it
+    // up" answering the pipelined attempt, and the individual retry
+    // would then see the real (non-faulty) value, silently healing a
+    // failure the test means to prove stays failed. Call
+    // _clearForcedFault to turn it back off.
+    _forceNullOnce(command, key) { forcedNullOnce.add(String(command).toLowerCase() + ':' + key); },
+    _clearForcedFault(command, key) { forcedNullOnce.delete(String(command).toLowerCase() + ':' + key); },
+    // Test-only bulk seed (2026-11) - sets many string keys directly in
+    // the in-memory Map, bypassing the HTTP wire entirely. Used only to
+    // build a large (e.g. 20,000-key) fixture quickly for a backup/
+    // export test - round-tripping that many keys one at a time over
+    // real HTTP would make that test needlessly slow.
+    _seedStrings(prefix, count) {
+      for (let i = 0; i < count; i++) data.set(prefix + i, { type: 'string', value: 'v' + i, expiresAt: null });
+    },
+    // Test-only bulk delete, the teardown counterpart to _seedStrings -
+    // same "bypass the wire for a large fixture" reasoning.
+    _deleteByPrefix(prefix) {
+      for (const key of [...data.keys()]) { if (key.startsWith(prefix)) data.delete(key); }
+    }
   };
 }
 

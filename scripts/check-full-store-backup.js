@@ -74,6 +74,7 @@ async function main() {
       !byKey2['test-backup:bad-hash'] && // the bad key is never in the real export
       byKey2['test-backup:before-bad-key'] && byKey2['test-backup:before-bad-key'].value === 'still exported' &&
       byKey2['test-backup:after-bad-key'] && byKey2['test-backup:after-bad-key'].value === 'still exported too';
+    env.store._clearForcedFault('hgetall', 'test-backup:bad-hash');
     for (const k of ['test-backup:before-bad-key', 'test-backup:bad-hash', 'test-backup:after-bad-key']) await redis.del(k).catch(() => {});
     return ok;
   });
@@ -114,6 +115,144 @@ async function main() {
   for (const k of ['test-backup:string', 'test-backup:string-no-ttl', 'test-backup:list', 'test-backup:set', 'test-backup:hash', 'test-backup:zset', 'test-backup:not-in-backup']) {
     await redis.del(k).catch(() => {});
   }
+
+  console.log('='.repeat(70));
+  console.log('LARGE STORE (2026-11, direct instruction - fixes the live proxy timeout): 20,000 keys, batched + concurrency-limited reads, incremental progress, never one long blocking stretch');
+  console.log('='.repeat(70));
+  await checkAsync('exportFullStore handles 20,000 keys, reports byType correctly, and progress fires incrementally across batches (never one giant jump at the end)', async () => {
+    env.store._seedStrings('test-backup-large:', 20000);
+    const progressSnapshots = [];
+    const t0 = Date.now();
+    const largeBackup = await svc.exportFullStore({ onProgress: (p) => progressSnapshots.push(p.keysScanned) });
+    const elapsedMs = Date.now() - t0;
+    console.log('    (local fake-store timing: 20,000 keys exported in ' + elapsedMs + 'ms, concurrency=' + (Number(process.env.FULL_BACKUP_CONCURRENCY) || 20) + ')');
+    const largeCount = largeBackup.keys.filter((e) => e.key.startsWith('test-backup-large:')).length;
+    const progressIncreasing = progressSnapshots.length >= 5 &&
+      progressSnapshots.every((v, i) => i === 0 || v >= progressSnapshots[i - 1]) &&
+      progressSnapshots[progressSnapshots.length - 1] >= largeCount;
+    return largeCount === 20000 && largeBackup.summary.byType.string >= 20000 && progressIncreasing;
+  });
+  await checkAsync('the export yields the event loop between batches - other scheduled work (e.g. a timer) keeps ticking throughout, never starved by one long blocking call', async () => {
+    let ticks = 0;
+    const timer = setInterval(() => { ticks++; }, 5);
+    try {
+      await svc.exportFullStore();
+    } finally {
+      clearInterval(timer);
+    }
+    return ticks > 5; // a genuinely blocking implementation would tick close to 0
+  });
+  // Bulk-delete the 20,000 seeded keys (bypassing the wire, same as the
+  // seed) so they never pollute key counts in any later test/run.
+  env.store._deleteByPrefix('test-backup-large:');
+
+  console.log('='.repeat(70));
+  console.log('Background backup job (2026-11, direct instruction - the browser must never wait): starts immediately, uploads to Drive "SUBH Letter Templates/Backups/<date-time>.json" under the owner\'s own OAuth, status is pollable');
+  console.log('='.repeat(70));
+  const subhDriveAuth = require('../src/subhDriveAuth');
+  const origIsAuthenticated = subhDriveAuth.isAuthenticated;
+  const origGetDriveClient = subhDriveAuth.getDriveClient;
+  const driveFolders = [];
+  const driveFiles = [];
+  let fakeFolderCounter = 0, fakeFileCounter = 0;
+  function installFakeDrive({ uploadDelayMs = 0 } = {}) {
+    subhDriveAuth.isAuthenticated = () => true;
+    subhDriveAuth.getDriveClient = () => ({
+      files: {
+        list: async (opts) => {
+          const nameMatch = /name = '([^']*)'/.exec(opts.q || '');
+          const parentMatch = /'([^']*)' in parents/.exec(opts.q || '');
+          const found = driveFolders.filter((f) => f.name === (nameMatch && nameMatch[1]) && f.parentId === (parentMatch && parentMatch[1]));
+          return { data: { files: found.map((f) => ({ id: f.id, name: f.name })) } };
+        },
+        create: async (opts) => {
+          const res = opts.resource || {};
+          if (res.mimeType === 'application/vnd.google-apps.folder') {
+            const id = 'fake-backup-folder-' + (++fakeFolderCounter);
+            driveFolders.push({ id, name: res.name, parentId: (res.parents || [])[0] });
+            return { data: { id } };
+          }
+          if (uploadDelayMs) await new Promise((r) => setTimeout(r, uploadDelayMs));
+          const id = 'fake-backup-file-' + (++fakeFileCounter);
+          driveFiles.push({ id, name: res.name, parentId: (res.parents || [])[0] });
+          return { data: { id, webViewLink: 'https://drive.google.com/file/d/' + id + '/view' } };
+        }
+      }
+    });
+  }
+  function restoreRealDrive() {
+    subhDriveAuth.isAuthenticated = origIsAuthenticated;
+    subhDriveAuth.getDriveClient = origGetDriveClient;
+  }
+  try {
+    installFakeDrive({ uploadDelayMs: 150 });
+    await redis.set('test-backup:job-key', 'job-value');
+    const started = await svc.startBackupJob({ startedBy: 'owner@test' });
+    check('startBackupJob returns a job id immediately and never blocks on the export itself', Boolean(started.jobId) && started.alreadyRunning === false);
+
+    const immediateStatus = await svc.getBackupJob(started.jobId);
+    check('the status is pollable right away and starts as "running"', Boolean(immediateStatus) && immediateStatus.status === 'running' && immediateStatus.startedBy === 'owner@test');
+
+    const secondStart = await svc.startBackupJob({ startedBy: 'owner@test' });
+    check('starting a second job while one is already running reuses the SAME job id instead of starting an overlapping export', secondStart.jobId === started.jobId && secondStart.alreadyRunning === true);
+
+    let finalJob = null;
+    for (let i = 0; i < 100 && (!finalJob || finalJob.status === 'running'); i++) {
+      await new Promise((r) => setTimeout(r, 50));
+      finalJob = await svc.getBackupJob(started.jobId);
+    }
+    check('the job eventually finishes ("done") with a real result naming totalKeys/byType/the Drive link/elapsedMs', Boolean(finalJob) && finalJob.status === 'done' &&
+      finalJob.result && finalJob.result.totalKeys > 0 && finalJob.result.byType.string > 0 &&
+      /drive\.google\.com/.test(finalJob.result.driveLink) && typeof finalJob.result.elapsedMs === 'number' && finalJob.result.elapsedMs >= 0);
+    check('the uploaded file actually landed inside a "Backups" folder under the known SUBH Letter Templates folder - never a new top-level folder', driveFolders.some((f) => f.name === 'Backups' && f.parentId === require('../src/subhDriveGuard').LETTER_TEMPLATES_FOLDER_ID));
+    // The lock is released in the job's own `finally` block, right after
+    // (not before) its status flips to "done" - poll briefly rather than
+    // asserting on the very first attempt, to avoid a race against that
+    // same-function ordering.
+    let laterStart = null;
+    for (let i = 0; i < 20; i++) {
+      laterStart = await svc.startBackupJob({ startedBy: 'owner@test' });
+      if (laterStart.jobId !== started.jobId) break;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    check('a second, LATER job no longer reuses the first one - the lock was released once the first finished', laterStart.jobId !== started.jobId);
+    await redis.del('test-backup:job-key').catch(() => {});
+  } finally {
+    restoreRealDrive();
+  }
+
+  console.log('='.repeat(70));
+  console.log('Background backup job: a failure (e.g. SUBH Drive not connected) is reported, never silently lost, and the lock is released so a retry can succeed');
+  console.log('='.repeat(70));
+  try {
+    subhDriveAuth.isAuthenticated = () => false;
+    subhDriveAuth.getDriveClient = origGetDriveClient;
+    const failingStart = await svc.startBackupJob({ startedBy: 'owner@test' });
+    let failedJob = null;
+    for (let i = 0; i < 100 && (!failedJob || failedJob.status === 'running'); i++) {
+      await new Promise((r) => setTimeout(r, 50));
+      failedJob = await svc.getBackupJob(failingStart.jobId);
+    }
+    check('a Drive-upload failure marks the job "failed" with the real reason, not a silent hang', Boolean(failedJob) && failedJob.status === 'failed' && /SUBH Drive is not connected/.test(failedJob.error || ''));
+
+    installFakeDrive({});
+    let retryStart = null;
+    for (let i = 0; i < 20; i++) {
+      retryStart = await svc.startBackupJob({ startedBy: 'owner@test' });
+      if (retryStart.jobId !== failingStart.jobId) break;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    check('the lock was released after the failure, so a retry starts a genuinely new job (never stuck "already running" forever)', retryStart.jobId !== failingStart.jobId);
+    let retryJob = null;
+    for (let i = 0; i < 100 && (!retryJob || retryJob.status === 'running'); i++) {
+      await new Promise((r) => setTimeout(r, 50));
+      retryJob = await svc.getBackupJob(retryStart.jobId);
+    }
+    check('the retry succeeds once Drive is reachable again', Boolean(retryJob) && retryJob.status === 'done');
+  } finally {
+    restoreRealDrive();
+  }
+  check('getBackupJob returns null for an id that was never started', (await svc.getBackupJob('nonexistent-job-id')) === null);
 
   console.log('='.repeat(70));
   console.log(pass + '/' + (pass + fail) + ' passed' + (fail ? ', ' + fail + ' FAILED' : ''));

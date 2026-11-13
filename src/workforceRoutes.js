@@ -1750,12 +1750,43 @@ router.get('/hr-assistant/diag/older-keys', async (req, res) => {
 // persistence is off and the restart wipes it." See
 // fullStoreBackupService.js's own comment for exactly what this covers
 // (every key, any Redis type) and the restore-is-additive-only guarantee.
+// Direct download - now batched/concurrency-limited internally (see
+// fullStoreBackupService.js), so it's meaningfully faster than before,
+// but production's real key count can still be slow enough to be cut
+// off by a proxy/request timeout before the browser gets a response.
+// Keep this for a smaller/local store; for production, use the two
+// background-job routes below instead (they never block the request).
 router.get('/hr-assistant/diag/full-backup', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
   try {
     const backup = await fullStoreBackupService.exportFullStore();
     res.setHeader('Content-Disposition', 'attachment; filename="subh-store-backup-' + backup.exportedAt.replace(/[:.]/g, '-') + '.json"');
     res.json(backup);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+// Background full-store backup job (2026-11, direct instruction - fixes
+// the live proxy-timeout seen on the synchronous route above). Starts
+// the export in the background and returns immediately with a job id;
+// the export uploads its own JSON straight to Drive "SUBH Letter
+// Templates/Backups/<date-time>.json" under the owner's own OAuth
+// identity once done - poll the status route below for progress and the
+// Drive link.
+router.post('/hr-assistant/diag/full-backup/start', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    res.json(await fullStoreBackupService.startBackupJob({ startedBy: req.hrUser.email }));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+router.get('/hr-assistant/diag/full-backup/status/:jobId', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const job = await fullStoreBackupService.getBackupJob(req.params.jobId);
+    if (!job) return res.status(404).json({ error: 'No backup job found with that id (it may have expired after 7 days).' });
+    res.json(job);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
