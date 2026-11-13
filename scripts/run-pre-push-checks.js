@@ -43,7 +43,10 @@ const DETERMINISTIC_SUITES = [
   'check-workflow.js',
   'check-mail-compose.js',
   'check-whatsapp-engine.js',
-  'check-full-store-backup.js'
+  'check-full-store-backup.js',
+  'check-settings-audit-log.js',
+  'check-migration-helper.js',
+  'check-settings-health.js'
 ];
 // Headless Playwright UI check (also deterministic/mocked - no real
 // Claude/Drive calls).

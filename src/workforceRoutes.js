@@ -25,6 +25,7 @@ const aiUsageLog = require('./aiAssistant/aiUsageLog');
 const companyDetailsService = require('./aiAssistant/companyDetailsService');
 const storeHealthDiag = require('./aiAssistant/storeHealthDiag');
 const fullStoreBackupService = require('./aiAssistant/fullStoreBackupService');
+const settingsHealthCheck = require('./aiAssistant/settingsHealthCheck');
 const letterSettingsService = require('./aiAssistant/letterSettingsService');
 const driveTemplatesService = require('./aiAssistant/driveTemplatesService');
 const driveTemplateFieldsService = require('./aiAssistant/driveTemplateFieldsService');
@@ -3571,12 +3572,13 @@ router.post('/hr-assistant/letter-settings/send-test-letter', async (req, res) =
 router.get('/hr-assistant/action-needed', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
   try {
-    const [items, automations, workflowItems, aiUsageAlertUsd, backupAlertItem] = await Promise.all([
+    const [items, automations, workflowItems, aiUsageAlertUsd, backupAlertItem, settingsHealthItems] = await Promise.all([
       whatsappAssistant.listActionNeededItems(),
       automationService.listRawAutomations().catch(() => []),
       workflowService.listWorkflowActionNeededItems().catch(() => []),
       aiUsageLog.getTodaysFiredAlert().catch(() => null),
-      fullStoreBackupService.getBackupActionNeededItem().catch(() => null)
+      fullStoreBackupService.getBackupActionNeededItem().catch(() => null),
+      settingsHealthCheck.getSettingsHealthActionNeededItems().catch(() => [])
     ]);
     const backupItems = backupAlertItem ? [backupAlertItem] : [];
     const aiUsageItems = [];
@@ -3607,7 +3609,7 @@ router.get('/hr-assistant/action-needed', async (req, res) => {
         });
       }
     }
-    const merged = items.concat(automationItems, workflowItems, aiUsageItems, backupItems).sort((x, y) => x.ts - y.ts);
+    const merged = items.concat(automationItems, workflowItems, aiUsageItems, backupItems, settingsHealthItems).sort((x, y) => x.ts - y.ts);
     res.json({ items: merged });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -3621,6 +3623,19 @@ router.post('/hr-assistant/daily-backup/dismiss', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
   try {
     res.json(await fullStoreBackupService.dismissBackupActionNeeded());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+// Dismiss a "settings group is now empty" card (PART B item 4) - same
+// convention as every other dismiss route here: only clears this ONE
+// card, never touches the underlying data. The card re-appears
+// automatically if the SAME group empties out again later (a fresh
+// flag, not the same one re-shown).
+router.post('/hr-assistant/settings-health/:group/dismiss', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    res.json(await settingsHealthCheck.dismissFlaggedGroup(req.params.group));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

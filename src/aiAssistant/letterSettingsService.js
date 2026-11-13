@@ -15,6 +15,7 @@ const { Readable } = require('stream');
 const sheetsAuth = require('../sheetsAuth');
 const subhDriveAuth = require('../subhDriveAuth');
 const subhDriveGuard = require('../subhDriveGuard');
+const settingsAuditLog = require('./settingsAuditLog');
 
 let client;
 let clientChecked = false;
@@ -65,7 +66,9 @@ async function saveRefNoFormat(format) {
   const trimmed = String(format || '').trim();
   if (!trimmed) return { ok: false, error: 'Ref No. format cannot be empty.' };
   if (!trimmed.includes('{Serial}')) return { ok: false, error: 'The format must include {Serial}, or the same reference number could be issued twice.' };
+  const before = await getRefNoFormat();
   try { await redis.set(REF_FORMAT_KEY, trimmed); } catch (err) { return { ok: false, error: err.message }; }
+  await settingsAuditLog.logSettingsAudit('letter-ref-format', { action: 'saved', before, after: trimmed, source: 'owner-ui' });
   return { ok: true, format: trimmed };
 }
 
@@ -116,7 +119,9 @@ async function saveLetterCode(letterType, code) {
   for (const k of Object.keys(DEFAULT_LETTER_CODES)) {
     if (k !== letterType && codes[k] === trimmed) delete codes[k];
   }
+  const before = (await getLetterCodes())[letterType] || null;
   try { await redis.set(LETTER_CODES_KEY, JSON.stringify(codes)); } catch (err) { return { ok: false, error: err.message }; }
+  await settingsAuditLog.logSettingsAudit('letter-codes', { action: 'saved', letterType, before, after: trimmed, source: 'owner-ui' });
   return { ok: true, codes };
 }
 
@@ -141,8 +146,10 @@ async function saveLetterDisplayName(letterType, name) {
   if (!letterType) return { ok: false, error: 'letterType is required.' };
   if (!trimmed) return { ok: false, error: 'Display name cannot be empty.' };
   const names = await getLetterDisplayNames();
+  const before = names[letterType] || null;
   names[letterType] = trimmed;
   try { await redis.set(LETTER_DISPLAY_NAMES_KEY, JSON.stringify(names)); } catch (err) { return { ok: false, error: err.message }; }
+  await settingsAuditLog.logSettingsAudit('letter-display-names', { action: 'saved', letterType, before, after: trimmed, source: 'owner-ui' });
   return { ok: true, names };
 }
 
@@ -202,7 +209,12 @@ async function setCounterOverride(letterType, fy, nextNumber) {
   if (!Number.isInteger(n) || n < 1) return { ok: false, error: 'The next number must be a whole number of 1 or more.' };
   const codes = await getLetterCodes();
   const code = codes[letterType] || letterType.toUpperCase();
+  const beforeRaw = await redis.get(counterKey(code, fy)).catch(() => null);
+  const before = (beforeRaw === null || beforeRaw === undefined) ? null : Number(beforeRaw) + 1; // stored value is next-1; report as the next number it WAS about to issue
   try { await redis.set(counterKey(code, fy), n - 1); } catch (err) { return { ok: false, error: err.message }; }
+  // Highest-consequence write in this file - a wrong override can
+  // duplicate or skip a real reference number - always audited.
+  await settingsAuditLog.logSettingsAudit('letter-counter', { action: 'override', code, fy, before, after: n, source: 'owner-ui' });
   return { ok: true, nextNumber: n };
 }
 
@@ -459,7 +471,9 @@ async function setRegisterSheetLink(url) {
   const link = { sheetId, url: 'https://docs.google.com/spreadsheets/d/' + sheetId };
   const redis = getClient();
   if (!redis) return { ok: false, error: 'No store configured.' };
+  const before = await getLetterRegisterLink();
   try { await redis.set(REGISTER_SHEET_KEY, JSON.stringify(link)); } catch (err) { return { ok: false, error: err.message }; }
+  await settingsAuditLog.logSettingsAudit('letter-register-sheet', { action: 'saved', before, after: link, source: 'owner-ui' });
   return { ok: true, link };
 }
 

@@ -8502,6 +8502,43 @@ async function checkAsyncRealModel(label, fn) {
     return ok;
   });
 
+  console.log('='.repeat(70));
+  console.log('Audit log (PART B item 2, 2026-11, direct instruction) - site/dept aliases and saved reply templates each record a before/after entry; a pure usage-count bump never does');
+  console.log('='.repeat(70));
+  const settingsAuditLog = require('../src/aiAssistant/settingsAuditLog');
+  await checkAsync('saveSiteAlias/deleteSiteAlias each record an audit entry', async () => {
+    const alias = await whatsappAssistant.saveSiteAlias({ alias: 'AuditTestSiteAlias', siteValue: 'Audit-Test-Site', confirmed: true });
+    const [savedEntry] = await settingsAuditLog.listSettingsAudit('site-alias', 1);
+    const savedOk = savedEntry && savedEntry.action === 'saved' && savedEntry.id === alias.id && savedEntry.after.siteValue === 'Audit-Test-Site';
+    await whatsappAssistant.deleteSiteAlias(alias.id);
+    const [deletedEntry] = await settingsAuditLog.listSettingsAudit('site-alias', 1);
+    const deletedOk = deletedEntry && deletedEntry.action === 'deleted' && deletedEntry.id === alias.id && deletedEntry.before.siteValue === 'Audit-Test-Site';
+    return savedOk && deletedOk;
+  });
+  await checkAsync('saveDeptAlias/deleteDeptAlias each record an audit entry', async () => {
+    const alias = await whatsappAssistant.saveDeptAlias({ alias: 'AuditTestDeptAlias', deptValue: 'Audit-Test-Dept', confirmed: true });
+    const [savedEntry] = await settingsAuditLog.listSettingsAudit('dept-alias', 1);
+    const savedOk = savedEntry && savedEntry.action === 'saved' && savedEntry.id === alias.id && savedEntry.after.deptValue === 'Audit-Test-Dept';
+    await whatsappAssistant.deleteDeptAlias(alias.id);
+    const [deletedEntry] = await settingsAuditLog.listSettingsAudit('dept-alias', 1);
+    const deletedOk = deletedEntry && deletedEntry.action === 'deleted' && deletedEntry.id === alias.id;
+    return savedOk && deletedOk;
+  });
+  await checkAsync('saveReplyTemplate/deleteReplyTemplate each record an audit entry, but incrementReplyTemplateUsage (a pure usage-count bump, not an owner edit) never does', async () => {
+    const tpl = await whatsappAssistant.saveReplyTemplate({ topic: 'Audit test topic', whenToUse: 'audit test', replyText: 'Audit test reply.' });
+    const [savedEntry] = await settingsAuditLog.listSettingsAudit('reply-template', 1);
+    const savedOk = savedEntry && savedEntry.action === 'saved' && savedEntry.id === tpl.id && savedEntry.after.topic === 'Audit test topic';
+    const beforeBump = (await settingsAuditLog.listSettingsAudit('reply-template', 50)).length;
+    await whatsappAssistant.incrementReplyTemplateUsage(tpl.id);
+    await whatsappAssistant.incrementReplyTemplateUsage(tpl.id);
+    const afterBump = (await settingsAuditLog.listSettingsAudit('reply-template', 50)).length;
+    const bumpSkippedOk = afterBump === beforeBump;
+    await whatsappAssistant.deleteReplyTemplate(tpl.id);
+    const [deletedEntry] = await settingsAuditLog.listSettingsAudit('reply-template', 1);
+    const deletedOk = deletedEntry && deletedEntry.action === 'deleted' && deletedEntry.id === tpl.id;
+    return savedOk && bumpSkippedOk && deletedOk;
+  });
+
   console.log(pass + '/' + (pass + fail) + ' passed' + (fail ? ', ' + fail + ' FAILED' : ''));
   if (failures.length) {
     console.log('Failed checks:');

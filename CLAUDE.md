@@ -79,6 +79,67 @@ calls per run and stay in the manual report-gate (rules 7/8 above) instead, so a
 never silently costs money. Bypass only when genuinely safe to:
 `git push --no-verify`.
 
+## Owner data safety — PERMANENT HARD RULES (PART B, 2026-11, direct instruction)
+
+Grew out of a real incident (Company Details going blank with no evidence of why) and
+is now enforced structurally, in code, not just as a prompting convention - see the
+"Structural safety over prompts" principle this repo already follows. Six rules:
+
+1. **Owner data is sacred** - never deleted/overwritten by code on its own (a rebuild,
+   migration, cleanup job, cache refresh, or a test run) - only an explicit owner
+   action (via the app's own UI) changes it. `scripts/testBootstrap.js`'s
+   `looksLikeLiveStore` guard (rule 3 below) and every migration/backup/restore
+   function's own additive-only design (rules 2/5 below) are what make this true in
+   code, not just in wording.
+2. **Migrations are additive**: copy to a new key, verify the copy, keep the OLD key
+   (a 30-day TTL, never an immediate delete), idempotent, logged. Enforced by the
+   shared `src/aiAssistant/migrationHelper.js` (`runAdditiveMigration`) - every
+   migration written from now on calls into this, never hand-rolls its own
+   copy/delete logic. (The two pre-existing ad hoc migrations in
+   `letterSettingsService.js`, `migrateCountersToPerTypeOnly`/
+   `migrateCountersToPerCodeOnly`, predate this rule and already ran in production,
+   deleting their old keys immediately - a known, accepted, already-settled exception;
+   retrofitting them would be pointless since those keys are already gone on every
+   real deployment.)
+3. **Tests can never touch production** - `scripts/testBootstrap.js`'s
+   `looksLikeLiveStore()` hard-refuses (`process.exit(1)`, never a silent fallback) to
+   even start a test run if the configured store URL looks like production
+   (`employees.alcoverealty.in` or `subh-store`); the only bypass is the deliberately
+   loud `ALLOW_LIVE=1`. Every `check-*.js` suite goes through this via
+   `setupTestEnvironment()` - confirmed directly, not assumed.
+4. **Audit log**: every write/delete to an owner-settings store records time, the
+   change (before/after), and a source, via the shared
+   `src/aiAssistant/settingsAuditLog.js` (`logSettingsAudit`/`listSettingsAudit`) - one
+   generic helper, not reinvented per store. Wired into all ~10 owner-settings stores:
+   company details (its own, earlier `logCompanyDetailsAudit`/`companyDetailsService.js`,
+   predates this shared helper and is left as-is), the letter logo, Ref No. format,
+   letter codes, letter display names, the counter override, the Letter Register
+   sheet link (all `letterSettingsService.js`), Drive template field mappings
+   (`driveTemplateFieldsService.js`), and site aliases/department aliases/saved reply
+   templates (`whatsappAssistant.js`) - save AND delete, for each. A pure usage-count
+   bump (`incrementReplyTemplateUsage`) is deliberately excluded - not an owner edit,
+   and would otherwise crowd out real changes in the capped per-group list. An
+   owner-only "Settings history" VIEW (with Restore) exists today only for Company
+   Details (see its own diag route) - the other 9 stores have the audit log itself,
+   but not yet a dedicated history UI; building that out for the rest is a deliberately
+   separate, later task.
+5. **Daily automatic backup**: the full store (not just "owner settings" - every key,
+   any type) is backed up nightly, 02:00-05:00 IST, with catch-up/retries/a 30-day
+   retention and an owner-only "Restore from backup" - see `fullStoreBackupService.js`
+   and the "Data & backups" page in SUBH Settings. This supersedes the narrower
+   original framing of this rule ("owner settings only, one JSON file") - a full-store
+   backup covers owner settings too, with no separate second backup system needed.
+6. **Health check after deploy**: if a settings group that had data before is now
+   empty, a red Action-needed card is shown instead of silently continuing - never a
+   group that simply never had any data in the first place. Runs once at process
+   start (a deploy IS a process restart - there's no real deploy-hook mechanism this
+   app has access to, see "Deployment" below) and once a day afterwards on the
+   existing scheduler tick. See `src/aiAssistant/settingsHealthCheck.js`
+   (`runSettingsHealthCheck`/`checkSettingsHealthDaily`) - generic by construction
+   (counts each group's own real Redis key shape directly, not via each store's own
+   service module), so a future settings store just needs an entry added to its
+   `GROUPS` map, not a new check written from scratch.
+
 ## Before implementing any new logic/flow/step
 
 Before implementing ANY new logic/flow/step, analyse its impact on existing live

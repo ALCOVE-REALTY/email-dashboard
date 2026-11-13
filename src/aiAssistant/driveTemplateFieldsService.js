@@ -13,6 +13,7 @@ const subhDriveGuard = require('../subhDriveGuard');
 const driveTemplatesService = require('./driveTemplatesService');
 const workforceAnalytics = require('../workforceAnalytics');
 const aiUsageLog = require('./aiUsageLog');
+const settingsAuditLog = require('./settingsAuditLog');
 
 let client;
 let clientChecked = false;
@@ -231,7 +232,9 @@ async function saveTemplateMapping(templateKey, mapping) {
   if (!redis) return { ok: false, error: 'No store configured.' };
   const clean = {};
   Object.keys(mapping || {}).forEach((placeholder) => { clean[placeholder] = sanitizeMapping(mapping[placeholder]); });
+  const before = await getTemplateMapping(templateKey);
   try { await redis.set(MAPPING_PREFIX + templateKey, JSON.stringify(clean)); } catch (err) { return { ok: false, error: err.message }; }
+  await settingsAuditLog.logSettingsAudit('drive-template-mapping', { action: 'saved', templateKey, before, after: clean, source: 'owner-ui' });
   return { ok: true, mapping: clean };
 }
 

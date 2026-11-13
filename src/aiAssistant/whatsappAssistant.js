@@ -87,6 +87,7 @@ const workforceAnalytics = require('../workforceAnalytics');
 const tools = require('./tools');
 const memoryService = require('./memoryService');
 const documentRequests = require('./documentRequests');
+const settingsAuditLog = require('./settingsAuditLog');
 
 const LAST_SEEN_PREFIX = 'wa-last-seen:';
 const DRAFT_KEY = 'wa-pending-drafts';
@@ -3716,10 +3717,12 @@ async function saveSiteAlias(data) {
   if (!redis) return null;
   const id = data.id || newSiteAliasId();
   const record = { id, alias: data.alias, siteValue: data.siteValue, confirmed: data.confirmed !== false, createdAt: data.createdAt || Date.now() };
+  const before = await getSiteAlias(id);
   try {
     await redis.set(SITE_ALIAS_PREFIX + id, JSON.stringify(record));
     await redis.sadd(SITE_ALIAS_IDS_KEY, id);
   } catch (err) { return null; }
+  await settingsAuditLog.logSettingsAudit('site-alias', { action: 'saved', id, before, after: record, source: 'owner-ui' });
   return record;
 }
 async function getSiteAlias(id) {
@@ -3743,10 +3746,12 @@ async function listSiteAliases() {
 async function deleteSiteAlias(id) {
   const redis = getClient();
   if (!redis) return false;
+  const before = await getSiteAlias(id);
   try {
     await redis.del(SITE_ALIAS_PREFIX + id);
     await redis.srem(SITE_ALIAS_IDS_KEY, id);
   } catch (err) { return false; }
+  await settingsAuditLog.logSettingsAudit('site-alias', { action: 'deleted', id, before, after: null, source: 'owner-ui' });
   return true;
 }
 // Place-name transliteration varies more than a typo ("Srirampur" and
@@ -5071,10 +5076,12 @@ async function saveDeptAlias(data) {
   if (!redis) return null;
   const id = data.id || newDeptAliasId();
   const record = { id, alias: data.alias, deptValue: data.deptValue, confirmed: data.confirmed !== false, createdAt: data.createdAt || Date.now() };
+  const before = await getDeptAlias(id);
   try {
     await redis.set(DEPT_ALIAS_PREFIX + id, JSON.stringify(record));
     await redis.sadd(DEPT_ALIAS_IDS_KEY, id);
   } catch (err) { return null; }
+  await settingsAuditLog.logSettingsAudit('dept-alias', { action: 'saved', id, before, after: record, source: 'owner-ui' });
   return record;
 }
 async function getDeptAlias(id) {
@@ -5098,10 +5105,12 @@ async function listDeptAliases() {
 async function deleteDeptAlias(id) {
   const redis = getClient();
   if (!redis) return false;
+  const before = await getDeptAlias(id);
   try {
     await redis.del(DEPT_ALIAS_PREFIX + id);
     await redis.srem(DEPT_ALIAS_IDS_KEY, id);
   } catch (err) { return false; }
+  await settingsAuditLog.logSettingsAudit('dept-alias', { action: 'deleted', id, before, after: null, source: 'owner-ui' });
   return true;
 }
 let deptAliasCache = [];
@@ -13727,6 +13736,7 @@ async function saveReplyTemplate(data) {
   const redis = getClient();
   if (!redis) return null;
   const id = data.id || newReplyTemplateId();
+  const before = await getReplyTemplate(id);
   const record = {
     id,
     topic: data.topic,
@@ -13741,6 +13751,20 @@ async function saveReplyTemplate(data) {
     await redis.set(REPLY_TEMPLATE_PREFIX + id, JSON.stringify(record));
     await redis.sadd(REPLY_TEMPLATE_IDS_KEY, id);
   } catch (err) { return null; }
+  // incrementReplyTemplateUsage also goes through this same function -
+  // a pure usage-count bump is not an owner edit and would otherwise
+  // crowd out real changes in the capped audit list, so it's skipped
+  // whenever EVERY owner-editable field is unchanged from before.
+  // replyText is an object ({english, banglish, hinglish}, not a plain
+  // string) since Task 1 (2026-10-28) - a reference check (===) would
+  // always be false even for identical content (confirmed directly,
+  // not assumed - caught by this change's own test), so it's compared
+  // by value here, same as everywhere else in this file that diffs it.
+  const isPureUsageBump = before && before.topic === record.topic && before.whenToUse === record.whenToUse &&
+    JSON.stringify(before.replyText) === JSON.stringify(record.replyText) && before.enabled === record.enabled;
+  if (!isPureUsageBump) {
+    await settingsAuditLog.logSettingsAudit('reply-template', { action: 'saved', id, before, after: record, source: 'owner-ui' });
+  }
   return record;
 }
 async function getReplyTemplate(id) {
@@ -13764,10 +13788,12 @@ async function listReplyTemplates() {
 async function deleteReplyTemplate(id) {
   const redis = getClient();
   if (!redis) return false;
+  const before = await getReplyTemplate(id);
   try {
     await redis.del(REPLY_TEMPLATE_PREFIX + id);
     await redis.srem(REPLY_TEMPLATE_IDS_KEY, id);
   } catch (err) { return false; }
+  await settingsAuditLog.logSettingsAudit('reply-template', { action: 'deleted', id, before, after: null, source: 'owner-ui' });
   return true;
 }
 async function setReplyTemplateEnabled(id, enabled) {

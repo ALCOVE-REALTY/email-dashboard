@@ -12,6 +12,7 @@
 const { Redis } = require('@upstash/redis');
 const crypto = require('crypto');
 const employeeService = require('../employeeService');
+const settingsAuditLog = require('./settingsAuditLog');
 
 let client;
 let clientChecked = false;
@@ -207,9 +208,18 @@ async function saveLetterLogo({ dataUrl, contentType }) {
   const redis = getClient();
   if (!redis) return { ok: false, error: 'No store configured.' };
   if (!dataUrl) return { ok: false, error: 'No image given.' };
+  const before = await getLetterLogo();
   try {
     await redis.set(LETTER_LOGO_KEY, JSON.stringify({ dataUrl, contentType: contentType || null, updatedAt: Date.now() }));
   } catch (err) { return { ok: false, error: err.message }; }
+  // Metadata only, never the actual image data in the audit entry -
+  // the logo itself can be re-fetched from the live key if ever needed.
+  await settingsAuditLog.logSettingsAudit('letter-logo', {
+    action: 'saved',
+    before: before ? { hadLogo: true, contentType: before.contentType || null } : { hadLogo: false },
+    after: { hadLogo: true, contentType: contentType || null },
+    source: 'owner-ui'
+  });
   return { ok: true };
 }
 async function getLetterLogo() {

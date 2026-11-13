@@ -112,6 +112,11 @@ async function main() {
     check('getLetterLogo returns the saved data URL and content type', logo && logo.dataUrl === 'data:image/png;base64,AAAA' && logo.contentType === 'image/png');
     const logoSave2 = await companyDetailsService.saveLetterLogo({ dataUrl: '', contentType: 'image/png' });
     check('saveLetterLogo rejects a missing image', logoSave2.ok === false);
+    await checkAsync('saveLetterLogo records an audit entry (metadata only, never the actual image data)', async () => {
+      const auditLog = require('../src/aiAssistant/settingsAuditLog');
+      const [latest] = await auditLog.listSettingsAudit('letter-logo', 1);
+      return latest && latest.action === 'saved' && latest.after.hadLogo === true && latest.before.hadLogo === false && !('dataUrl' in latest.after);
+    });
 
     console.log('='.repeat(70));
     console.log('PART A (2026-11), direct instruction, URGENT DATA LOSS fix: a cosmetic change to the HR sheet\'s own Company text (period/space/case) never orphans what was saved under the old exact string');

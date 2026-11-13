@@ -194,6 +194,16 @@ async function main() {
   });
 
   console.log('='.repeat(70));
+  console.log('Audit log (PART B item 2, 2026-11, direct instruction)');
+  console.log('='.repeat(70));
+  await checkAsync('saveTemplateMapping records a before/after audit entry', async () => {
+    const auditLog = require('../src/aiAssistant/settingsAuditLog');
+    await svc.saveTemplateMapping('drive:audit-test-template', { '{Name}': { source: 'hr_column', column: 'Employee_Name' } });
+    const [latest] = await auditLog.listSettingsAudit('drive-template-mapping', 1);
+    return latest && latest.action === 'saved' && latest.templateKey === 'drive:audit-test-template' && latest.after['{Name}'].column === 'Employee_Name';
+  });
+
+  console.log('='.repeat(70));
   console.log(pass + '/' + (pass + fail) + ' passed' + (fail ? ', ' + fail + ' FAILED' : ''));
   if (failures.length) { console.log('Failed checks:'); failures.forEach((f) => console.log(' -', f)); }
   console.log('='.repeat(70));

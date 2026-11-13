@@ -14,6 +14,7 @@ const automationService = require('./aiAssistant/automationService');
 const workflowService = require('./aiAssistant/workflowService');
 const aiUsageLog = require('./aiAssistant/aiUsageLog');
 const fullStoreBackupService = require('./aiAssistant/fullStoreBackupService');
+const settingsHealthCheck = require('./aiAssistant/settingsHealthCheck');
 
 // Lowered 60 -> 15 after a real live incident: a reply that should have
 // gone out within ~60s took minutes, partly because the base poll
@@ -94,6 +95,16 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
     log.log('[whatsapp-assistant] scheduler NOT started: ' + reason);
     return null;
   }
+
+  // Settings health check, once at startup (PART B item 4, 2026-11,
+  // direct instruction - "health check after deploy") - a deploy IS a
+  // process restart, so this is the practical "after deploy" hook this
+  // app actually has (no real deploy-hook mechanism exists, see
+  // CLAUDE.md's Deployment section). Fire-and-forget, never blocks the
+  // scheduler from starting on a slow/failed check.
+  settingsHealthCheck.runSettingsHealthCheck().catch((err) => {
+    log.error('[whatsapp-assistant] startup settings health check failed: ' + err.message);
+  });
 
   const commitId = getCommitId();
   let consecutiveErrors = 0;
@@ -346,6 +357,15 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
       await fullStoreBackupService.checkDailyBackup();
     } catch (err) {
       log.error('[whatsapp-assistant] daily backup check failed: ' + err.message);
+    }
+    // Settings health check, once a day (PART B item 4) - the startup
+    // check above covers "after deploy"; this covers a process that
+    // stays up for many days without restarting. Same cheap idempotent
+    // date-flag gate as every other daily check on this tick.
+    try {
+      await settingsHealthCheck.checkSettingsHealthDaily();
+    } catch (err) {
+      log.error('[whatsapp-assistant] settings health check failed: ' + err.message);
     }
   }, AUTOSEND_FLUSH_MS);
 

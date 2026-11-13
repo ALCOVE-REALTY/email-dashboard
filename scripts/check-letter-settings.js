@@ -367,6 +367,53 @@ async function main() {
   check('getLetterSettings includes the ref format, letter codes, placeholders and type labels', Boolean(settings.refFormat) && Boolean(settings.letterCodes) && Array.isArray(settings.placeholders) && Boolean(settings.letterTypeLabels));
 
   console.log('='.repeat(70));
+  console.log('Audit log (PART B item 2, 2026-11, direct instruction) - every one of this file\'s 5 save points records a before/after audit entry');
+  console.log('='.repeat(70));
+  const auditLog = require('../src/aiAssistant/settingsAuditLog');
+  await checkAsync('saveRefNoFormat records before/after', async () => {
+    await letterSettingsService.saveRefNoFormat('{Letter_Code}/{Serial}/{FY}');
+    const [latest] = await auditLog.listSettingsAudit('letter-ref-format', 1);
+    const ok = latest && latest.action === 'saved' && latest.after === '{Letter_Code}/{Serial}/{FY}';
+    await letterSettingsService.saveRefNoFormat(letterSettingsService.DEFAULT_REF_FORMAT);
+    return ok;
+  });
+  await checkAsync('saveLetterCode records the letterType + before/after', async () => {
+    await letterSettingsService.saveLetterCode('experience', 'EXPR');
+    const [latest] = await auditLog.listSettingsAudit('letter-codes', 1);
+    return latest && latest.action === 'saved' && latest.letterType === 'experience' && latest.after === 'EXPR' && latest.before === 'EXP';
+  });
+  await checkAsync('saveLetterDisplayName records the letterType + before/after', async () => {
+    await letterSettingsService.saveLetterDisplayName('experience', 'Experience Letter v2');
+    const [latest] = await auditLog.listSettingsAudit('letter-display-names', 1);
+    return latest && latest.action === 'saved' && latest.letterType === 'experience' && latest.after === 'Experience Letter v2';
+  });
+  await checkAsync('setCounterOverride records the override (highest-consequence write in this file, always audited)', async () => {
+    await letterSettingsService.setCounterOverride('relieving', '2026-27', 99);
+    const [latest] = await auditLog.listSettingsAudit('letter-counter', 1);
+    return latest && latest.action === 'override' && latest.fy === '2026-27' && latest.after === 99;
+  });
+  await checkAsync('setRegisterSheetLink records before/after (stubbed Sheets client, same convention as the rest of this suite)', async () => {
+    const origGetSheetsWriteClient2 = sheetsAuth.getSheetsWriteClient;
+    sheetsAuth.getSheetsWriteClient = () => ({
+      spreadsheets: {
+        values: {
+          get: async () => ({ data: { values: [['Date', 'Ref No.']] } }),
+          update: async () => ({})
+        }
+      }
+    });
+    let ok;
+    try {
+      await letterSettingsService.setRegisterSheetLink('https://docs.google.com/spreadsheets/d/AUDIT_TEST_SHEET_ID/edit');
+      const [latest] = await auditLog.listSettingsAudit('letter-register-sheet', 1);
+      ok = latest && latest.action === 'saved' && latest.after && latest.after.sheetId === 'AUDIT_TEST_SHEET_ID';
+    } finally {
+      sheetsAuth.getSheetsWriteClient = origGetSheetsWriteClient2;
+    }
+    return ok;
+  });
+
+  console.log('='.repeat(70));
   console.log(pass + '/' + (pass + fail) + ' passed' + (fail ? ', ' + fail + ' FAILED' : ''));
   if (failures.length) { console.log('Failed checks:'); failures.forEach((f) => console.log(' -', f)); }
   console.log('='.repeat(70));
