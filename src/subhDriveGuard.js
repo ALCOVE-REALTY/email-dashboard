@@ -115,6 +115,42 @@ async function guardedDeleteOwned(drive, fileId) {
   ownedFileIds.delete(fileId);
 }
 
+// Deletes a file a DURABLE manifest (e.g. fullStoreBackupService.js's
+// own backup list, 2026-11, direct instruction - "delete only backup
+// files SUBH created, older than 30 days") claims it created - NOT
+// `guardedDeleteOwned` above, which is same-process-only by design
+// (`ownedFileIds` is in-memory, reset on every restart) and would
+// refuse every one of these on principle, since a 30-day-old file will
+// always span many restarts. The safety instead comes from an
+// independent, real Drive read, right before deleting, confirming the
+// file is STILL a direct child of the given (already-allowed) folder -
+// so a bug in the manifest alone could never cause a deletion outside
+// that one folder, and nothing the owner placed there by hand (this
+// checks real current parentage, not the manifest's own say-so) is
+// ever touched.
+async function assertManifestFileAllowed(drive, fileId, folderId) {
+  let meta;
+  try {
+    meta = await drive.files.get({ fileId, fields: 'id, name, parents', supportsAllDrives: true });
+  } catch (err) {
+    logDriveOp('delete-manifest-file:REFUSED', { reason: 'could not read the file to verify its folder: ' + err.message, fileId });
+    throw new Error('Refused: could not verify file ' + fileId + ' is inside the expected folder (' + err.message + ').');
+  }
+  const parents = meta.data.parents || [];
+  if (!parents.includes(folderId)) {
+    logDriveOp('delete-manifest-file:REFUSED', { reason: 'file is not a direct child of the expected folder', fileId, name: meta.data.name, parents, folderId });
+    throw new Error('Refused: file ' + fileId + ' (' + meta.data.name + ') is not inside the expected folder - will not delete it.');
+  }
+  return meta.data;
+}
+async function guardedDeleteManifestFile(drive, fileId, folderId) {
+  assertFolderAllowed(folderId, 'delete-manifest-file');
+  const meta = await assertManifestFileAllowed(drive, fileId, folderId);
+  logDriveOp('delete-manifest-file', { fileId, name: meta.name, folderId });
+  await drive.files.delete({ fileId, supportsAllDrives: true });
+  logDriveOp('delete-manifest-file:done', { fileId });
+}
+
 // Finds a direct child folder by exact name under parentId, creating it
 // if it doesn't exist yet - idempotent, so repeated uploads in the same
 // month reuse the same folder rather than creating a new one each time.
@@ -148,5 +184,5 @@ async function guardedUploadFile(drive, parentId, name, mimeType, bodyStream) {
 module.exports = {
   LETTER_TEMPLATES_FOLDER_ID, ISSUED_LETTERS_FOLDER_ID,
   guardedCopyTemplate, guardedExport, guardedBatchUpdate, guardedDeleteOwned,
-  guardedGetOrCreateFolder, guardedUploadFile
+  guardedGetOrCreateFolder, guardedUploadFile, guardedDeleteManifestFile
 };

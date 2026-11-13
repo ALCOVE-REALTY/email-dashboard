@@ -3532,12 +3532,14 @@ router.post('/hr-assistant/letter-settings/send-test-letter', async (req, res) =
 router.get('/hr-assistant/action-needed', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
   try {
-    const [items, automations, workflowItems, aiUsageAlertUsd] = await Promise.all([
+    const [items, automations, workflowItems, aiUsageAlertUsd, backupAlertItem] = await Promise.all([
       whatsappAssistant.listActionNeededItems(),
       automationService.listRawAutomations().catch(() => []),
       workflowService.listWorkflowActionNeededItems().catch(() => []),
-      aiUsageLog.getTodaysFiredAlert().catch(() => null)
+      aiUsageLog.getTodaysFiredAlert().catch(() => null),
+      fullStoreBackupService.getBackupActionNeededItem().catch(() => null)
     ]);
+    const backupItems = backupAlertItem ? [backupAlertItem] : [];
     const aiUsageItems = [];
     if (typeof aiUsageAlertUsd === 'number') {
       const ts = new Date(new Date().toISOString().slice(0, 10) + 'T00:00:00.000Z').getTime();
@@ -3566,8 +3568,20 @@ router.get('/hr-assistant/action-needed', async (req, res) => {
         });
       }
     }
-    const merged = items.concat(automationItems, workflowItems, aiUsageItems).sort((x, y) => x.ts - y.ts);
+    const merged = items.concat(automationItems, workflowItems, aiUsageItems, backupItems).sort((x, y) => x.ts - y.ts);
     res.json({ items: merged });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+// Dismiss the daily-backup-failed card (2026-11, direct instruction) -
+// same convention as every other dismiss route in this file: it only
+// ever clears the ONE card it names, never touches the underlying
+// record otherwise (tonight's 02:00 run still happens normally).
+router.post('/hr-assistant/daily-backup/dismiss', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    res.json(await fullStoreBackupService.dismissBackupActionNeeded());
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

@@ -468,13 +468,102 @@ async function getBackupFolderId(drive) {
   return subhDriveGuard.guardedGetOrCreateFolder(drive, subhDriveGuard.LETTER_TEMPLATES_FOLDER_ID, BACKUP_FOLDER_NAME);
 }
 
+// Durable manifest of every backup file EVER created by this service
+// (ad-hoc "Backup now" AND the nightly job alike - recorded at this ONE
+// shared upload point so neither path can ever drift out of sync with
+// it), 2026-11 direct instruction - "delete only backup files SUBH
+// created, older than 30 days" needs a real record of what was created
+// and when, since subhDriveGuard's own same-process-only ownedFileIds
+// can't help here (see guardedDeleteManifestFile's own comment). A
+// Redis LIST, newest first; capped well above a normal 30-day cadence
+// so a burst of ad-hoc backups in one day can never silently evict an
+// older entry pruning hasn't reached yet.
+const MANIFEST_KEY = 'subh-backup-manifest';
+const MANIFEST_MAX = 200;
+async function recordBackupManifestEntry(entry) {
+  const redis = getClient();
+  if (!redis) return;
+  // Best-effort - a manifest-write failure must never undo or block a
+  // backup that has already genuinely succeeded.
+  try {
+    await redis.lpush(MANIFEST_KEY, JSON.stringify(entry));
+    await redis.ltrim(MANIFEST_KEY, 0, MANIFEST_MAX - 1);
+  } catch (err) { /* best effort */ }
+}
+async function listBackupManifest(limit) {
+  const redis = getClient();
+  if (!redis) return [];
+  try {
+    const raw = await redis.lrange(MANIFEST_KEY, 0, (limit || MANIFEST_MAX) - 1);
+    // @upstash/redis's own default deserializer already tries JSON.parse
+    // on every string result - an entry here can arrive already parsed
+    // into a real object (confirmed directly, not assumed: JSON.parse on
+    // an object silently stringifies it to "[object Object]" first and
+    // then throws, which an earlier draft's try/catch swallowed into a
+    // silent empty manifest).
+    return (raw || []).map((r) => {
+      if (r && typeof r === 'object') return r;
+      try { return JSON.parse(r); } catch (err) { return null; }
+    }).filter(Boolean);
+  } catch (err) { return []; }
+}
+
 async function uploadBackupToDrive(backup, filename) {
   if (!subhDriveAuth.isAuthenticated()) throw new Error('SUBH Drive is not connected yet - visit /subh-drive-auth to complete the one-time consent before a backup can be uploaded.');
   const drive = subhDriveAuth.getDriveClient();
   const backupFolderId = await getBackupFolderId(drive);
   const buffer = Buffer.from(JSON.stringify(backup), 'utf8');
   const file = await subhDriveGuard.guardedUploadFile(drive, backupFolderId, filename, 'application/json', Readable.from(buffer));
-  return { fileId: file.data.id, url: file.data.webViewLink || ('https://drive.google.com/file/d/' + file.data.id + '/view') };
+  const result = { fileId: file.data.id, url: file.data.webViewLink || ('https://drive.google.com/file/d/' + file.data.id + '/view') };
+  const createdAt = new Date().toISOString();
+  await recordBackupManifestEntry({
+    fileId: result.fileId, filename, driveLink: result.url, createdAt,
+    totalKeys: backup.keyCount, skippedCount: backup.summary.skippedCount
+  });
+  return result;
+}
+
+// Deletes every manifest entry older than RETENTION_DAYS (2026-11,
+// direct instruction) - called once a night, right after a successful
+// backup (never on a failed night - nothing new to make room for, and
+// never worth the risk on a night that's already going badly). A
+// per-file delete failure is kept in the manifest to retry the next
+// time this runs, never silently dropped.
+const RETENTION_DAYS = 30;
+async function pruneOldBackups() {
+  const manifest = await listBackupManifest(MANIFEST_MAX);
+  const cutoffMs = Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000;
+  const stillGood = [];
+  const toDelete = [];
+  for (const entry of manifest) {
+    if (new Date(entry.createdAt).getTime() < cutoffMs) toDelete.push(entry);
+    else stillGood.push(entry);
+  }
+  if (toDelete.length === 0) return { deleted: 0, errors: [] };
+  if (!subhDriveAuth.isAuthenticated()) return { deleted: 0, errors: toDelete.map((e) => ({ fileId: e.fileId, error: 'SUBH Drive is not connected' })) };
+  const drive = subhDriveAuth.getDriveClient();
+  const backupFolderId = await getBackupFolderId(drive);
+  const errors = [];
+  const keepAfterFailure = [];
+  let deleted = 0;
+  for (const entry of toDelete) {
+    try {
+      await subhDriveGuard.guardedDeleteManifestFile(drive, entry.fileId, backupFolderId);
+      deleted++;
+    } catch (err) {
+      errors.push({ fileId: entry.fileId, filename: entry.filename, error: err.message });
+      keepAfterFailure.push(entry);
+    }
+  }
+  const redis = getClient();
+  if (redis) {
+    const newManifest = stillGood.concat(keepAfterFailure);
+    try {
+      await redis.del(MANIFEST_KEY);
+      for (let i = newManifest.length - 1; i >= 0; i--) await redis.lpush(MANIFEST_KEY, JSON.stringify(newManifest[i]));
+    } catch (err) { /* best effort - the manifest can self-heal on the next cycle */ }
+  }
+  return { deleted, errors };
 }
 
 async function runBackupJobInBackground(jobId) {
@@ -483,14 +572,17 @@ async function runBackupJobInBackground(jobId) {
     const backup = await exportFullStore({ onProgress: (progress) => updateBackupJobProgress(jobId, progress) });
     const filename = backup.exportedAt.replace(/[:.]/g, '-') + '.json';
     const drive = await uploadBackupToDrive(backup, filename);
-    await finishBackupJob(jobId, {
-      status: 'done',
-      result: {
-        exportedAt: backup.exportedAt, totalKeys: backup.keyCount, byType: backup.summary.byType,
-        skippedCount: backup.summary.skippedCount, skippedKeys: backup.summary.skippedKeys,
-        driveFileId: drive.fileId, driveLink: drive.url, filename, elapsedMs: Date.now() - startedAt
-      }
-    });
+    const result = {
+      exportedAt: backup.exportedAt, totalKeys: backup.keyCount, byType: backup.summary.byType,
+      skippedCount: backup.summary.skippedCount, skippedKeys: backup.summary.skippedKeys,
+      driveFileId: drive.fileId, driveLink: drive.url, filename, elapsedMs: Date.now() - startedAt
+    };
+    await finishBackupJob(jobId, { status: 'done', result });
+    // An ad-hoc "Backup now" that succeeds also satisfies "only one
+    // backup per day" for the automatic nightly job - direct
+    // instruction. A manual run from a PREVIOUS calendar day never
+    // skips tonight's, only today's own IST date is marked done.
+    await markDailyBackupDoneIfToday(result).catch(() => {});
   } catch (err) {
     await finishBackupJob(jobId, { status: 'failed', error: err.message });
   } finally {
@@ -522,4 +614,171 @@ async function startBackupJob({ startedBy } = {}) {
   return { jobId, alreadyRunning: false };
 }
 
-module.exports = { exportFullStore, summarizeBackup, restoreFullStore, startBackupJob, getBackupJob, BACKUP_FOLDER_NAME, getBackupFolderId };
+// Daily automatic backup (PART B, 2026-11, direct instruction) - every
+// night, within a 02:00-05:00 IST window only. No cron: checked on the
+// SAME 30s tick whatsappPollScheduler.js already runs every other daily/
+// recurring check on (same pattern as whatsappAssistant.js's own
+// checkAndPostDailySummary - a date-flag + hour/minute gate, not a
+// precise timer). This is also what gives "catch-up" for free: if the
+// server was down at 02:00, the first tick after it's back that lands
+// inside the window finds today's state still 'pending' with no
+// attempts yet and just starts right then - no special-cased catch-up
+// code, the ordinary window+status check already behaves that way.
+const DAILY_STATE_KEY = 'subh-backup-daily-state';
+const DAILY_WINDOW_START_HOUR = 2; // 02:00 IST
+const DAILY_WINDOW_END_HOUR = 5; // 05:00 IST - exclusive, the window never runs AT 05:00 itself
+const DAILY_MAX_ATTEMPTS = 3;
+const DAILY_RETRY_GAP_MS = 30 * 60 * 1000;
+const DAILY_RUN_LOCK_KEY = 'subh-backup-daily-run-lock';
+const DAILY_RUN_LOCK_TTL_SECONDS = 10 * 60; // self-heals if the process dies mid-attempt
+
+// `now` is always an explicit parameter, never read internally via
+// `Date.now()`/`new Date()` directly - same testability convention
+// already used throughout this codebase (automationService.
+// runDueAutomations(now), whatsappAssistant.checkHrConfirmationNudges(now)
+// etc.), so a deterministic test can simulate "it's 03:30 IST" exactly.
+function istNow(now) {
+  const parts = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: false, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(now);
+  const get = (t) => parts.find((p) => p.type === t).value;
+  return { date: get('year') + '-' + get('month') + '-' + get('day'), hour: Number(get('hour')), minute: Number(get('minute')) };
+}
+function freshDailyState(date) {
+  return { date, status: 'pending', attempts: [], result: null, cardDismissedAt: null };
+}
+async function getDailyBackupState() {
+  const redis = getClient();
+  if (!redis) return null;
+  const raw = await redis.get(DAILY_STATE_KEY);
+  if (!raw) return null;
+  try { return typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (err) { return null; }
+}
+async function saveDailyBackupState(state) {
+  const redis = getClient();
+  if (!redis) return;
+  await redis.set(DAILY_STATE_KEY, JSON.stringify(state));
+}
+async function markDailyBackupDoneIfToday(result, now = new Date()) {
+  const { date } = istNow(now);
+  let state = await getDailyBackupState();
+  if (!state || state.date !== date) state = freshDailyState(date);
+  if (state.status === 'done') return;
+  state.status = 'done';
+  state.result = result;
+  await saveDailyBackupState(state);
+}
+
+// One real attempt (export + Drive upload), mutating `state` in place -
+// never throws; a failure is recorded as a failed attempt, same as a
+// success is recorded as the final result.
+async function runDailyBackupAttempt(state, now) {
+  const attemptAt = now.toISOString();
+  try {
+    const backup = await exportFullStore();
+    const filename = backup.exportedAt.replace(/[:.]/g, '-') + '.json';
+    const drive = await uploadBackupToDrive(backup, filename);
+    state.status = 'done';
+    state.result = {
+      exportedAt: backup.exportedAt, totalKeys: backup.keyCount, byType: backup.summary.byType,
+      skippedCount: backup.summary.skippedCount, skippedKeys: backup.summary.skippedKeys,
+      driveFileId: drive.fileId, driveLink: drive.url, filename
+    };
+    state.attempts.push({ at: attemptAt, ok: true, error: null });
+    // Only after an actual success, same night - never worth the extra
+    // Drive calls on a night that's already failing.
+    await pruneOldBackups().catch((err) => console.error('[full-store-backup] prune after daily backup failed: ' + err.message));
+  } catch (err) {
+    state.attempts.push({ at: attemptAt, ok: false, error: err.message });
+  }
+}
+
+// Called every ~30s from whatsappPollScheduler.js's existing tick - see
+// the block comment above for why this is a cheap idempotent check, not
+// a precise timer. Exhausts up to DAILY_MAX_ATTEMPTS retries, 30 min
+// apart, ALL within the window; once either the window closes (hour
+// >= 5) or the retries are exhausted, the day is finalized as
+// 'failed_final' and never attempted again until tomorrow's window -
+// "never run it during the day" (direct instruction).
+async function checkDailyBackup(now = new Date()) {
+  const redis = getClient();
+  if (!redis) return;
+  const { date, hour } = istNow(now);
+  let state = await getDailyBackupState();
+  const isNewDay = !state || state.date !== date;
+  if (isNewDay) state = freshDailyState(date);
+
+  const inWindow = hour >= DAILY_WINDOW_START_HOUR && hour < DAILY_WINDOW_END_HOUR;
+
+  if (state.status === 'pending' && hour >= DAILY_WINDOW_END_HOUR) {
+    state.status = 'failed_final';
+    await saveDailyBackupState(state);
+    return;
+  }
+  if (isNewDay) await saveDailyBackupState(state);
+  if (state.status !== 'pending' || !inWindow) return;
+
+  // Exhausted today's retry budget - finalize now rather than waiting
+  // out a theoretical next retry gap that would never actually fire.
+  if (state.attempts.length >= DAILY_MAX_ATTEMPTS) {
+    state.status = 'failed_final';
+    await saveDailyBackupState(state);
+    return;
+  }
+  const lastAttempt = state.attempts[state.attempts.length - 1];
+  if (lastAttempt && (now.getTime() - new Date(lastAttempt.at).getTime()) < DAILY_RETRY_GAP_MS) return; // too soon for a retry
+
+  // Never run two at once.
+  const gotLock = await redis.set(DAILY_RUN_LOCK_KEY, '1', { nx: true, ex: DAILY_RUN_LOCK_TTL_SECONDS }).catch(() => null);
+  if (!(gotLock === 'OK' || gotLock === true)) return;
+  try {
+    // Re-fetch fresh state inside the lock - another tick/process may
+    // already have acted on this attempt between our read above and
+    // actually acquiring the lock.
+    let fresh = await getDailyBackupState();
+    if (!fresh || fresh.date !== date) fresh = freshDailyState(date);
+    if (fresh.status !== 'pending') return;
+    if (fresh.attempts.length >= DAILY_MAX_ATTEMPTS) { fresh.status = 'failed_final'; await saveDailyBackupState(fresh); return; }
+    const freshLast = fresh.attempts[fresh.attempts.length - 1];
+    if (freshLast && (now.getTime() - new Date(freshLast.at).getTime()) < DAILY_RETRY_GAP_MS) return;
+    await runDailyBackupAttempt(fresh, now);
+    await saveDailyBackupState(fresh);
+  } finally {
+    await redis.del(DAILY_RUN_LOCK_KEY).catch(() => {});
+  }
+}
+
+// Action-needed card (2026-11, direct instruction) - "show me an
+// Action-needed card in the morning... never silent", same inline-item
+// convention as the existing ai_usage_alert card (workforceRoutes.js's
+// GET /hr-assistant/action-needed): no chatId, a plain getter here, the
+// route concatenates it into the merged list.
+async function getBackupActionNeededItem() {
+  const state = await getDailyBackupState();
+  if (!state || state.status !== 'failed_final' || state.cardDismissedAt) return null;
+  const lastAttempt = state.attempts[state.attempts.length - 1] || null;
+  // ts is a NUMBER (epoch ms), matching every other item in this merged
+  // list (e.g. the existing ai_usage_alert card) - the route sorts the
+  // whole merged array with `(x, y) => x.ts - y.ts`.
+  const ts = new Date(lastAttempt ? lastAttempt.at : (state.date + 'T05:00:00+05:30')).getTime() || Date.now();
+  return {
+    kind: 'daily_backup_failed',
+    category: 'backup',
+    chatId: null,
+    name: 'Nightly backup',
+    ts,
+    ageMs: Math.max(0, Date.now() - ts),
+    data: { date: state.date, attempts: state.attempts.length, lastError: lastAttempt ? lastAttempt.error : null }
+  };
+}
+async function dismissBackupActionNeeded() {
+  const state = await getDailyBackupState();
+  if (!state) return { ok: false, error: 'No backup state found.' };
+  state.cardDismissedAt = new Date().toISOString();
+  await saveDailyBackupState(state);
+  return { ok: true };
+}
+
+module.exports = {
+  exportFullStore, summarizeBackup, restoreFullStore, startBackupJob, getBackupJob, BACKUP_FOLDER_NAME, getBackupFolderId,
+  listBackupManifest, pruneOldBackups,
+  checkDailyBackup, getDailyBackupState, getBackupActionNeededItem, dismissBackupActionNeeded
+};

@@ -196,6 +196,19 @@ async function main() {
           const id = 'fake-backup-file-' + (++fakeFileCounter);
           driveFiles.push({ id, name: res.name, parentId: (res.parents || [])[0] });
           return { data: { id, webViewLink: 'https://drive.google.com/file/d/' + id + '/view' } };
+        },
+        // Added for pruneOldBackups/guardedDeleteManifestFile - it reads
+        // the file's real current parent before ever deleting it.
+        get: async (opts) => {
+          const file = driveFiles.find((f) => f.id === opts.fileId);
+          if (!file) throw new Error('fake Drive: no such file ' + opts.fileId);
+          return { data: { id: file.id, name: file.name, parents: [file.parentId] } };
+        },
+        delete: async (opts) => {
+          const idx = driveFiles.findIndex((f) => f.id === opts.fileId);
+          if (idx === -1) throw new Error('fake Drive: no such file ' + opts.fileId);
+          driveFiles.splice(idx, 1);
+          return { data: {} };
         }
       }
     });
@@ -274,6 +287,120 @@ async function main() {
   }
   check('getBackupJob returns null for an id that was never started', (await svc.getBackupJob('nonexistent-job-id')) === null);
   check('exactly ONE "Backup" folder exists across every upload in this run (2 separate jobs + 1 retry) - it is found and reused, never re-created', driveFolders.filter((f) => f.name === svc.BACKUP_FOLDER_NAME).length === 1);
+
+  // IST has a fixed +05:30 offset (no DST) - building the Date directly
+  // with that offset gives exact control over the IST wall-clock time
+  // istNow() will derive, regardless of the test machine's own timezone.
+  function istDate(dateStr, hour, minute) {
+    return new Date(dateStr + 'T' + String(hour).padStart(2, '0') + ':' + String(minute).padStart(2, '0') + ':00.000+05:30');
+  }
+
+  console.log('='.repeat(70));
+  console.log('Daily automatic backup (item 3, 2026-11, direct instruction) - 02:00-05:00 IST window, catch-up if the server was down, up to 3 retries 30 min apart ALL within the window, an Action-needed card if there is still no successful backup by 05:00, never two attempts at once');
+  console.log('='.repeat(70));
+  try {
+    installFakeDrive({});
+    await checkAsync('scenario: server down at 02:00, back at 03:30 - runs right then (catch-up is just the ordinary window+status check, no special code)', async () => {
+      const result = await svc.checkDailyBackup(istDate('2026-11-14', 3, 30));
+      const state = await svc.getDailyBackupState();
+      return state && state.date === '2026-11-14' && state.status === 'done' && state.attempts.length === 1 && state.attempts[0].ok === true;
+    });
+    await checkAsync('scenario: already done today (same date, still in-window) - a later check makes NO new attempt and never re-uploads', async () => {
+      const before = fakeFileCounter;
+      await svc.checkDailyBackup(istDate('2026-11-14', 3, 45));
+      const state = await svc.getDailyBackupState();
+      return state.date === '2026-11-14' && state.status === 'done' && state.attempts.length === 1 && fakeFileCounter === before;
+    });
+  } finally {
+    restoreRealDrive();
+  }
+
+  await checkAsync('scenario: the server only comes back at 06:00 (window already closed) - no backup is ever attempted, and the Action-needed card is shown', async () => {
+    const result = await svc.checkDailyBackup(istDate('2026-11-15', 6, 0));
+    const state = await svc.getDailyBackupState();
+    if (!(state && state.date === '2026-11-15' && state.status === 'failed_final' && state.attempts.length === 0)) return false;
+    const card = await svc.getBackupActionNeededItem();
+    return Boolean(card) && card.kind === 'daily_backup_failed' && card.data.date === '2026-11-15' && card.data.attempts === 0;
+  });
+
+  try {
+    subhDriveAuth.isAuthenticated = () => false; // every attempt fails
+    subhDriveAuth.getDriveClient = origGetDriveClient;
+    await checkAsync('scenario: a failing night retries up to 3 times, 30 min apart, then finalizes and shows the card - a retry attempted too soon (5 min) is correctly skipped', async () => {
+      await svc.checkDailyBackup(istDate('2026-11-16', 2, 0)); // attempt 1 - fails
+      let state = await svc.getDailyBackupState();
+      if (!(state.attempts.length === 1 && state.status === 'pending')) return false;
+
+      await svc.checkDailyBackup(istDate('2026-11-16', 2, 5)); // only 5 min later - too soon, no new attempt
+      state = await svc.getDailyBackupState();
+      if (state.attempts.length !== 1) return false;
+
+      await svc.checkDailyBackup(istDate('2026-11-16', 2, 30)); // attempt 2 - fails
+      state = await svc.getDailyBackupState();
+      if (!(state.attempts.length === 2 && state.status === 'pending')) return false;
+
+      await svc.checkDailyBackup(istDate('2026-11-16', 3, 0)); // attempt 3 - fails
+      state = await svc.getDailyBackupState();
+      if (!(state.attempts.length === 3 && state.status === 'pending')) return false; // not finalized yet - that happens on the NEXT check
+
+      await svc.checkDailyBackup(istDate('2026-11-16', 3, 1)); // retries exhausted - finalizes immediately, never a 4th attempt
+      state = await svc.getDailyBackupState();
+      if (!(state.attempts.length === 3 && state.status === 'failed_final')) return false;
+
+      const card = await svc.getBackupActionNeededItem();
+      return Boolean(card) && card.data.date === '2026-11-16' && card.data.attempts === 3 && /SUBH Drive is not connected/.test(card.data.lastError || '');
+    });
+    await checkAsync('once finalized as failed_final, the window closing again (05:00+) never re-attempts a 4th time', async () => {
+      await svc.checkDailyBackup(istDate('2026-11-16', 4, 50));
+      const state = await svc.getDailyBackupState();
+      return state.attempts.length === 3 && state.status === 'failed_final';
+    });
+  } finally {
+    restoreRealDrive();
+  }
+
+  try {
+    installFakeDrive({ uploadDelayMs: 100 }); // slow enough that two concurrent checks genuinely overlap
+    await checkAsync('never run two at once - two concurrent checks for the same brand-new day only ever produce ONE real attempt', async () => {
+      const now = istDate('2026-11-17', 2, 0);
+      await Promise.all([svc.checkDailyBackup(now), svc.checkDailyBackup(now)]);
+      const state = await svc.getDailyBackupState();
+      return state.date === '2026-11-17' && state.attempts.length === 1 && state.status === 'done';
+    });
+  } finally {
+    restoreRealDrive();
+  }
+
+  console.log('='.repeat(70));
+  console.log('pruneOldBackups (item 3) - deletes only manifest entries past 30 days, keeps recent ones, retries a failed delete next time rather than losing track of it');
+  console.log('='.repeat(70));
+  try {
+    installFakeDrive({});
+    await checkAsync('an entry older than 30 days is deleted from Drive and removed from the manifest; a recent entry is left completely untouched; a delete that itself fails is kept in the manifest to retry later', async () => {
+      await redis.del('subh-backup-manifest').catch(() => {});
+      // Seed directly (bypassing uploadBackupToDrive) so this test
+      // controls exactly which entries exist and their exact ages.
+      const oldOkEntry = { fileId: 'old-ok-file', filename: 'old-ok.json', driveLink: 'https://drive.google.com/file/d/old-ok-file/view', createdAt: new Date(Date.now() - 40 * 24 * 60 * 60 * 1000).toISOString(), totalKeys: 10, skippedCount: 0 };
+      const oldFailEntry = { fileId: 'old-fail-file', filename: 'old-fail.json', driveLink: 'https://drive.google.com/file/d/old-fail-file/view', createdAt: new Date(Date.now() - 35 * 24 * 60 * 60 * 1000).toISOString(), totalKeys: 10, skippedCount: 0 };
+      const recentEntry = { fileId: 'recent-file', filename: 'recent.json', driveLink: 'https://drive.google.com/file/d/recent-file/view', createdAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString(), totalKeys: 10, skippedCount: 0 };
+      // old-ok-file lives in the known Backup folder (deletable); old-fail-file does NOT (the guard must refuse it, proving the real-Drive-read check, not just the manifest's own say-so, decides what's deletable).
+      const backupFolderId = driveFolders.find((f) => f.name === svc.BACKUP_FOLDER_NAME).id;
+      driveFiles.push({ id: 'old-ok-file', name: 'old-ok.json', parentId: backupFolderId });
+      driveFiles.push({ id: 'old-fail-file', name: 'old-fail.json', parentId: 'some-other-folder-not-the-backup-one' });
+      for (const e of [oldOkEntry, oldFailEntry, recentEntry]) await redis.lpush('subh-backup-manifest', JSON.stringify(e));
+
+      const result = await svc.pruneOldBackups();
+      const remaining = await svc.listBackupManifest();
+      const remainingIds = remaining.map((e) => e.fileId);
+      return result.deleted === 1 && result.errors.length === 1 && result.errors[0].fileId === 'old-fail-file' &&
+        !remainingIds.includes('old-ok-file') && // deleted, removed from the manifest
+        remainingIds.includes('old-fail-file') && // delete failed - kept for a future retry, never silently dropped
+        remainingIds.includes('recent-file'); // untouched - not old enough
+    });
+  } finally {
+    restoreRealDrive();
+    await redis.del('subh-backup-manifest').catch(() => {});
+  }
 
   console.log('='.repeat(70));
   console.log(pass + '/' + (pass + fail) + ' passed' + (fail ? ', ' + fail + ' FAILED' : ''));

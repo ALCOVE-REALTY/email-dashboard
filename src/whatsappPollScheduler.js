@@ -13,6 +13,7 @@ const reminderService = require('./aiAssistant/reminderService');
 const automationService = require('./aiAssistant/automationService');
 const workflowService = require('./aiAssistant/workflowService');
 const aiUsageLog = require('./aiAssistant/aiUsageLog');
+const fullStoreBackupService = require('./aiAssistant/fullStoreBackupService');
 
 // Lowered 60 -> 15 after a real live incident: a reply that should have
 // gone out within ~60s took minutes, partly because the base poll
@@ -333,6 +334,18 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
       if (result.recovered || result.failed || result.flagged) log.log('[whatsapp-assistant] stuck message recovery: ' + JSON.stringify(result));
     } catch (err) {
       log.error('[whatsapp-assistant] stuck message recovery failed: ' + err.message);
+    }
+    // Daily automatic full-store backup (PART B, 2026-11, direct
+    // instruction) - a cheap idempotent window+date check the rest of
+    // the time; the real work (export + Drive upload) only runs inside
+    // the 02:00-05:00 IST window, at most 3 times, 30 min apart - see
+    // fullStoreBackupService.checkDailyBackup's own comment. Its own
+    // independent try/catch, same philosophy as every other job here -
+    // a failure here can never affect anything else on this tick.
+    try {
+      await fullStoreBackupService.checkDailyBackup();
+    } catch (err) {
+      log.error('[whatsapp-assistant] daily backup check failed: ' + err.message);
     }
   }, AUTOSEND_FLUSH_MS);
 
