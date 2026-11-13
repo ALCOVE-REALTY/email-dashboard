@@ -194,14 +194,25 @@ async function main() {
           }
           if (uploadDelayMs) await new Promise((r) => setTimeout(r, uploadDelayMs));
           const id = 'fake-backup-file-' + (++fakeFileCounter);
-          driveFiles.push({ id, name: res.name, parentId: (res.parents || [])[0] });
+          // Reads the real uploaded body (a Readable stream, same as
+          // guardedUploadFile's real call) so a later alt:'media' GET
+          // (item 4's preview/restore-from-Drive) can return genuine
+          // content, not just metadata.
+          let content = '';
+          if (opts.media && opts.media.body) {
+            for await (const chunk of opts.media.body) content += chunk.toString('utf8');
+          }
+          driveFiles.push({ id, name: res.name, parentId: (res.parents || [])[0], content });
           return { data: { id, webViewLink: 'https://drive.google.com/file/d/' + id + '/view' } };
         },
-        // Added for pruneOldBackups/guardedDeleteManifestFile - it reads
-        // the file's real current parent before ever deleting it.
+        // Added for pruneOldBackups/guardedDeleteManifestFile/item 4's
+        // download - it reads the file's real current parent before
+        // ever acting on it, and alt:'media' returns the real uploaded
+        // content for a download.
         get: async (opts) => {
           const file = driveFiles.find((f) => f.id === opts.fileId);
           if (!file) throw new Error('fake Drive: no such file ' + opts.fileId);
+          if (opts.alt === 'media') return { data: file.content || '' };
           return { data: { id: file.id, name: file.name, parents: [file.parentId] } };
         },
         delete: async (opts) => {
@@ -400,6 +411,45 @@ async function main() {
   } finally {
     restoreRealDrive();
     await redis.del('subh-backup-manifest').catch(() => {});
+  }
+
+  console.log('='.repeat(70));
+  console.log('"Data & backups" page (item 4, 2026-11, direct instruction) - preview/restore straight from the real Drive file, never a client-supplied body; refuses a file outside the known Backup folder');
+  console.log('='.repeat(70));
+  try {
+    installFakeDrive({});
+    await checkAsync('previewBackupFromDrive/restoreBackupFromDrive round-trip a real uploaded backup: preview shows the real counts, no-confirm only previews and writes nothing, confirm:true actually restores', async () => {
+      await redis.set('test-backup:restore-target', 'ORIGINAL');
+      const started = await svc.startBackupJob({ startedBy: 'owner@test' });
+      let job = null;
+      for (let i = 0; i < 100 && (!job || job.status === 'running'); i++) { await new Promise((r) => setTimeout(r, 50)); job = await svc.getBackupJob(started.jobId); }
+      if (!(job && job.status === 'done')) return false;
+      const fileId = job.result.driveFileId;
+
+      const preview = await svc.previewBackupFromDrive(fileId);
+      if (!(preview.totalKeys === job.result.totalKeys && Array.isArray(preview.sampleKeys))) return false;
+
+      await redis.set('test-backup:restore-target', 'CHANGED-AFTER-BACKUP');
+      const previewOnly = await svc.restoreBackupFromDrive(fileId, {});
+      const stillChanged = await redis.get('test-backup:restore-target');
+      if (!(previewOnly.preview === true && stillChanged === 'CHANGED-AFTER-BACKUP')) return false;
+
+      const restored = await svc.restoreBackupFromDrive(fileId, { confirm: true });
+      const backToOriginal = await redis.get('test-backup:restore-target');
+      return restored.preview === false && restored.restoredCount > 0 && backToOriginal === 'ORIGINAL';
+    });
+    await checkAsync('a file outside the known Backup folder is refused, even if the id otherwise points at something real on the fake drive - the real-Drive-read parentage check runs before any content is ever returned', async () => {
+      driveFiles.push({ id: 'sneaky-file', name: 'sneaky.json', parentId: 'some-other-folder-not-the-backup-one', content: '{"keys":[]}' });
+      try {
+        await svc.previewBackupFromDrive('sneaky-file');
+        return false;
+      } catch (err) {
+        return /not inside the expected folder/.test(err.message);
+      }
+    });
+  } finally {
+    restoreRealDrive();
+    await redis.del('test-backup:restore-target').catch(() => {});
   }
 
   console.log('='.repeat(70));

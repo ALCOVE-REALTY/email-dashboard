@@ -128,27 +128,43 @@ async function guardedDeleteOwned(drive, fileId) {
 // that one folder, and nothing the owner placed there by hand (this
 // checks real current parentage, not the manifest's own say-so) is
 // ever touched.
-async function assertManifestFileAllowed(drive, fileId, folderId) {
+// Generic manifest-file parentage check, reused by both
+// guardedDeleteManifestFile and guardedDownloadFile below - the real
+// Drive read is the same regardless of what happens next (delete vs.
+// download), only the logged action name differs.
+async function assertFileInFolder(drive, fileId, folderId, action) {
   let meta;
   try {
     meta = await drive.files.get({ fileId, fields: 'id, name, parents', supportsAllDrives: true });
   } catch (err) {
-    logDriveOp('delete-manifest-file:REFUSED', { reason: 'could not read the file to verify its folder: ' + err.message, fileId });
+    logDriveOp(action + ':REFUSED', { reason: 'could not read the file to verify its folder: ' + err.message, fileId });
     throw new Error('Refused: could not verify file ' + fileId + ' is inside the expected folder (' + err.message + ').');
   }
   const parents = meta.data.parents || [];
   if (!parents.includes(folderId)) {
-    logDriveOp('delete-manifest-file:REFUSED', { reason: 'file is not a direct child of the expected folder', fileId, name: meta.data.name, parents, folderId });
-    throw new Error('Refused: file ' + fileId + ' (' + meta.data.name + ') is not inside the expected folder - will not delete it.');
+    logDriveOp(action + ':REFUSED', { reason: 'file is not a direct child of the expected folder', fileId, name: meta.data.name, parents, folderId });
+    throw new Error('Refused: file ' + fileId + ' (' + meta.data.name + ') is not inside the expected folder - will not ' + action + ' it.');
   }
   return meta.data;
 }
 async function guardedDeleteManifestFile(drive, fileId, folderId) {
   assertFolderAllowed(folderId, 'delete-manifest-file');
-  const meta = await assertManifestFileAllowed(drive, fileId, folderId);
+  const meta = await assertFileInFolder(drive, fileId, folderId, 'delete-manifest-file');
   logDriveOp('delete-manifest-file', { fileId, name: meta.name, folderId });
   await drive.files.delete({ fileId, supportsAllDrives: true });
   logDriveOp('delete-manifest-file:done', { fileId });
+}
+// Downloads a manifest file's own raw content (e.g. a backup JSON, for
+// the "Restore from backup" preview/confirm flow, 2026-11 direct
+// instruction) - same real-Drive-read parentage check as the delete
+// above, so a restore can never be pointed at a file outside the known
+// Backup folder even if the caller's own fileId came from somewhere
+// untrusted.
+async function guardedDownloadFile(drive, fileId, folderId) {
+  assertFolderAllowed(folderId, 'download');
+  const meta = await assertFileInFolder(drive, fileId, folderId, 'download');
+  logDriveOp('download', { fileId, name: meta.name, folderId });
+  return drive.files.get({ fileId, alt: 'media', supportsAllDrives: true }, { responseType: 'text' });
 }
 
 // Finds a direct child folder by exact name under parentId, creating it
@@ -184,5 +200,5 @@ async function guardedUploadFile(drive, parentId, name, mimeType, bodyStream) {
 module.exports = {
   LETTER_TEMPLATES_FOLDER_ID, ISSUED_LETTERS_FOLDER_ID,
   guardedCopyTemplate, guardedExport, guardedBatchUpdate, guardedDeleteOwned,
-  guardedGetOrCreateFolder, guardedUploadFile, guardedDeleteManifestFile
+  guardedGetOrCreateFolder, guardedUploadFile, guardedDeleteManifestFile, guardedDownloadFile
 };

@@ -777,8 +777,33 @@ async function dismissBackupActionNeeded() {
   return { ok: true };
 }
 
+// "Restore from backup" (item 4, 2026-11, direct instruction) - pick a
+// file (from listBackupManifest, the SAME "recent backups" list the
+// page shows), preview counts, confirm. Downloads the file's own raw
+// content straight from Drive (never trusts a client-supplied body for
+// restore, unlike the old upload-your-own-JSON diag route) - guardedDownloadFile
+// independently re-verifies the file is still inside the known Backup
+// folder before returning anything.
+async function downloadBackupFromDrive(fileId) {
+  if (!subhDriveAuth.isAuthenticated()) throw new Error('SUBH Drive is not connected yet - visit /subh-drive-auth to complete the one-time consent.');
+  const drive = subhDriveAuth.getDriveClient();
+  const backupFolderId = await getBackupFolderId(drive);
+  const res = await subhDriveGuard.guardedDownloadFile(drive, fileId, backupFolderId);
+  const raw = typeof res.data === 'string' ? res.data : JSON.stringify(res.data);
+  return JSON.parse(raw);
+}
+async function previewBackupFromDrive(fileId) {
+  const backup = await downloadBackupFromDrive(fileId);
+  return summarizeBackup(backup);
+}
+async function restoreBackupFromDrive(fileId, { confirm } = {}) {
+  const backup = await downloadBackupFromDrive(fileId);
+  return restoreFullStore(backup, { confirm: confirm === true });
+}
+
 module.exports = {
   exportFullStore, summarizeBackup, restoreFullStore, startBackupJob, getBackupJob, BACKUP_FOLDER_NAME, getBackupFolderId,
   listBackupManifest, pruneOldBackups,
-  checkDailyBackup, getDailyBackupState, getBackupActionNeededItem, dismissBackupActionNeeded
+  checkDailyBackup, getDailyBackupState, getBackupActionNeededItem, dismissBackupActionNeeded,
+  previewBackupFromDrive, restoreBackupFromDrive
 };

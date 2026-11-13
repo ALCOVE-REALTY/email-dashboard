@@ -217,6 +217,18 @@
   const aiUsageTestTotal = document.getElementById('hrAiUsageTestTotal');
   const aiUsageGrandTotal = document.getElementById('hrAiUsageGrandTotal');
   const aiUsageFeatureList = document.getElementById('hrAiUsageFeatureList');
+  // Data & backups (item 4, 2026-11) - Backup now, recent backups,
+  // Restore from backup.
+  const dataBackupsPage = document.getElementById('hrDataBackupsPage');
+  const backupNowBtn = document.getElementById('hrBackupNowBtn');
+  const backupNowResult = document.getElementById('hrBackupNowResult');
+  const backupDailyStatus = document.getElementById('hrBackupDailyStatus');
+  const backupRecentList = document.getElementById('hrBackupRecentList');
+  const backupRestoreBackdrop = document.getElementById('hrBackupRestoreBackdrop');
+  const backupRestoreSheet = document.getElementById('hrBackupRestoreSheet');
+  const backupRestoreCloseBtn = document.getElementById('hrBackupRestoreCloseBtn');
+  const backupRestoreTitle = document.getElementById('hrBackupRestoreTitle');
+  const backupRestoreBody = document.getElementById('hrBackupRestoreBody');
   const convoPage = document.getElementById('hrConvoPage');
   const convoThread = document.getElementById('hrConvoThread');
   const convoActions = document.getElementById('hrConvoActions');
@@ -1536,7 +1548,7 @@
   // renderable data for the others; every path still re-fetches fresh
   // data in the background and re-renders when it lands, so nothing here
   // is ever more than one poll cycle stale.
-  const pageDataCache = { comms: null, commsAt: 0, reminders: new Map(), automations: null, openFlows: null, convos: new Map(), siteAliases: null, deptAliases: null, companyDetails: null, letterSettings: null, letterFields: new Map(), history: null };
+  const pageDataCache = { comms: null, commsAt: 0, reminders: new Map(), automations: null, openFlows: null, convos: new Map(), siteAliases: null, deptAliases: null, companyDetails: null, letterSettings: null, letterFields: new Map(), history: null, dataBackups: null };
   // Bumped by invalidateReminderCache (every reminder mutation - done/
   // undo/cancel/snooze/create/edit). Any reminders fetch in flight when a
   // mutation happens captures remMutationSeq at send time and checks it
@@ -1856,6 +1868,7 @@
     else if (entry.type === 'deptAliases') showDeptAliases();
     else if (entry.type === 'companyDetails') showCompanyDetails();
     else if (entry.type === 'letterSettings') showLetterSettings();
+    else if (entry.type === 'dataBackups') showDataBackups();
     else if (entry.type === 'aiUsage') showAiUsage();
     else if (entry.type === 'actionNeeded') showActionNeeded();
     else if (entry.type === 'conversation') openConversationPage(entry.chatId);
@@ -1913,6 +1926,7 @@
     const isCompanyDetails = view === 'companyDetails';
     const isLetterSettings = view === 'letterSettings';
     const isAiUsage = view === 'aiUsage';
+    const isDataBackups = view === 'dataBackups';
     const isActionNeeded = view === 'actionNeeded';
     const isAutoList = view === 'automationList';
     const isAutomation = view === 'automation';
@@ -1946,6 +1960,7 @@
     if (companyDetailsPage) companyDetailsPage.hidden = !isCompanyDetails;
     if (letterSettingsPage) letterSettingsPage.hidden = !isLetterSettings;
     if (aiUsagePage) aiUsagePage.hidden = !isAiUsage;
+    if (dataBackupsPage) dataBackupsPage.hidden = !isDataBackups;
     if (actionNeededPage) actionNeededPage.hidden = !isActionNeeded;
     if (autoListPage) autoListPage.hidden = !isAutoList;
     if (autoPage) autoPage.hidden = !isAutomation;
@@ -2024,6 +2039,12 @@
       if (commsHeadIcon) commsHeadIcon.innerHTML = WHATSAPP_SVG;
       if (commsHeadTitle) commsHeadTitle.textContent = 'AI usage';
       if (commsHeadSubtitle) commsHeadSubtitle.textContent = 'Spend today/this week/this month, live vs. tests';
+      if (commsHeadBadge) commsHeadBadge.hidden = true;
+    } else if (isDataBackups) {
+      if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon whatsapp';
+      if (commsHeadIcon) commsHeadIcon.innerHTML = WHATSAPP_SVG;
+      if (commsHeadTitle) commsHeadTitle.textContent = 'Data & backups';
+      if (commsHeadSubtitle) commsHeadSubtitle.textContent = 'Backup now, recent backups, restore from backup';
       if (commsHeadBadge) commsHeadBadge.hidden = true;
     } else if (isActionNeeded) {
       if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon whatsapp';
@@ -3977,6 +3998,156 @@
     }
     showAiUsage();
   };
+
+  // Data & backups (item 4, 2026-11), direct instruction - Backup now
+  // (reuses the SAME ad-hoc job the owner-only diag route already
+  // starts/polls - nothing duplicated), recent backups, Restore from
+  // backup (preview -> confirm, additive-only).
+  function renderBackupDailyStatus(dailyState) {
+    if (!backupDailyStatus) return;
+    if (!dailyState) { backupDailyStatus.textContent = ''; return; }
+    if (dailyState.status === 'done' && dailyState.result) {
+      const when = new Date(dailyState.result.exportedAt || dailyState.date).toLocaleString();
+      backupDailyStatus.innerHTML = '✓ Last successful backup: ' + escapeHtml(when) + ' · ' + (dailyState.result.totalKeys || 0) + ' keys';
+    } else if (dailyState.status === 'failed_final') {
+      const attempts = dailyState.attempts || [];
+      const lastErr = attempts.length ? attempts[attempts.length - 1].error : null;
+      backupDailyStatus.innerHTML = '⚠ Last night\'s backup didn\'t complete (' + attempts.length + ' attempt(s)' + (lastErr ? ', last error: ' + escapeHtml(lastErr) : '') + ').';
+    } else {
+      backupDailyStatus.textContent = '';
+    }
+  }
+  function backupRowHtml(b) {
+    const when = b.createdAt ? new Date(b.createdAt).toLocaleString() : '—';
+    const sub = (b.totalKeys || 0) + ' keys' + (b.skippedCount ? ', ' + b.skippedCount + ' skipped' : '');
+    return '<div class="wf-auto-task-card" data-file-id="' + escapeHtml(b.fileId) + '">' +
+      '<div class="wf-auto-task-head"><div style="flex:1;min-width:0">' +
+      '<div class="wf-auto-task-subject">' + escapeHtml(when) + '</div>' +
+      '<div class="wf-auto-hint">' + escapeHtml(sub) + '</div>' +
+      '</div></div>' +
+      '<div class="wf-auto-actions">' +
+      '<a class="plain" href="' + escapeHtml(b.driveLink || '#') + '" target="_blank" rel="noopener">Open</a>' +
+      '<button type="button" class="plain" data-action="restore-backup">Restore</button>' +
+      '</div></div>';
+  }
+  function renderBackupRecentList(recent) {
+    if (!backupRecentList) return;
+    if (!recent || !recent.length) { backupRecentList.innerHTML = '<div class="wf-rem-empty">No backups yet.</div>'; return; }
+    backupRecentList.innerHTML = recent.map(backupRowHtml).join('');
+    backupRecentList.querySelectorAll('[data-action="restore-backup"]').forEach((btn) => {
+      btn.addEventListener('click', () => openBackupRestoreSheet(btn.closest('[data-file-id]').dataset.fileId));
+    });
+  }
+  async function loadDataBackupsPage() {
+    if (!backupRecentList) return;
+    const cached = pageDataCache.dataBackups;
+    if (cached) { renderBackupRecentList(cached.recent); renderBackupDailyStatus(cached.dailyState); }
+    else backupRecentList.innerHTML = '<div class="wf-skeleton-list"><div class="wf-skeleton-row"></div><div class="wf-skeleton-row"></div></div>';
+    try {
+      const r = await fetch('/api/workforce/hr-assistant/backups').then((res) => res.json());
+      pageDataCache.dataBackups = { recent: r.recent || [], dailyState: r.dailyState || null };
+      renderBackupRecentList(r.recent || []);
+      renderBackupDailyStatus(r.dailyState || null);
+    } catch (err) {
+      if (!cached) backupRecentList.innerHTML = '<div class="wf-rem-empty">Could not load backups.</div>';
+    }
+  }
+  function showDataBackups() {
+    setPanelView('dataBackups');
+    if (backupNowResult) backupNowResult.innerHTML = '';
+    loadDataBackupsPage();
+  }
+  // Opened from the top-level "SUBH Settings" dashboard view's own
+  // "Data & backups" card (see public/workforce.js) - same pattern as
+  // __hrAssistantOpenCompanyDetails/__hrAssistantOpenAiUsage.
+  window.__hrAssistantOpenDataBackups = function () {
+    const wasOpen = typeof panel !== 'undefined' && !panel.hidden;
+    if (!wasOpen && typeof openPanel === 'function') {
+      openPanel();
+      navStack = [{ type: 'dataBackups' }];
+    } else {
+      pushNav({ type: 'dataBackups' });
+    }
+    showDataBackups();
+  };
+  // Polls the SAME ad-hoc backup job status route the owner-only diag
+  // route already uses - never a separate/duplicate job mechanism.
+  async function pollBackupJobUntilDone(jobId) {
+    for (let i = 0; i < 200; i++) {
+      const job = await fetch('/api/workforce/hr-assistant/diag/full-backup/status/' + encodeURIComponent(jobId)).then((res) => res.json());
+      if (job.status === 'done') return job;
+      if (job.status === 'failed') throw new Error(job.error || 'Backup failed.');
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+    }
+    throw new Error('Backup is taking longer than expected - check back shortly.');
+  }
+  if (backupNowBtn) {
+    backupNowBtn.addEventListener('click', () => {
+      if (backupNowResult) backupNowResult.innerHTML = '';
+      runButtonAction(backupNowBtn, async () => {
+        const started = await postJsonOrThrow('/api/workforce/hr-assistant/diag/full-backup/start', {});
+        return pollBackupJobUntilDone(started.jobId);
+      }, (job) => {
+        const result = job.result || {};
+        if (backupNowResult) {
+          backupNowResult.innerHTML = '✓ ' + (result.totalKeys || 0) + ' keys backed up' + (result.skippedCount ? ', ' + result.skippedCount + ' skipped' : '') +
+            (result.driveLink ? ' - <a href="' + escapeHtml(result.driveLink) + '" target="_blank" rel="noopener">Open in Drive</a>' : '');
+        }
+        pageDataCache.dataBackups = null; // a new backup just happened - never serve the stale cached list/status again
+        if (panelView === 'dataBackups') loadDataBackupsPage();
+      }, { resetAfterSuccess: true, toastFn: (msg) => { if (backupNowResult) backupNowResult.innerHTML = '⚠ ' + escapeHtml(msg); } });
+    });
+  }
+  function closeBackupRestoreSheet() {
+    if (backupRestoreBackdrop) backupRestoreBackdrop.classList.remove('open');
+    if (backupRestoreSheet) backupRestoreSheet.classList.remove('open');
+    setTimeout(() => { if (backupRestoreBackdrop) backupRestoreBackdrop.hidden = true; if (backupRestoreSheet) backupRestoreSheet.hidden = true; }, 280);
+  }
+  if (backupRestoreCloseBtn) backupRestoreCloseBtn.addEventListener('click', closeBackupRestoreSheet);
+  if (backupRestoreBackdrop) backupRestoreBackdrop.addEventListener('click', closeBackupRestoreSheet);
+  function renderBackupRestoreConfirmed(result) {
+    if (!backupRestoreBody) return;
+    if (result.errors && result.errors.length) {
+      backupRestoreBody.innerHTML = '<div class="wf-auto-hint">✓ Restored ' + result.restoredCount + ' key(s).</div>' +
+        '<div class="wf-auto-skip">⚠ ' + result.errors.length + ' key(s) could not be restored.</div>';
+    } else {
+      backupRestoreBody.innerHTML = '<div class="wf-auto-hint">✓ Restored ' + result.restoredCount + ' key(s). Nothing else was touched.</div>';
+    }
+  }
+  function renderBackupRestorePreview(fileId, preview) {
+    if (!backupRestoreBody) return;
+    const when = preview.exportedAt ? new Date(preview.exportedAt).toLocaleString() : '—';
+    const byType = Object.entries(preview.byType || {}).map(([t, n]) => t + ': ' + n).join(', ') || '—';
+    backupRestoreBody.innerHTML =
+      '<div class="wf-auto-hint">Backed up: ' + escapeHtml(when) + '</div>' +
+      '<div class="wf-auto-hint">Total keys: ' + (preview.totalKeys || 0) + '</div>' +
+      '<div class="wf-auto-hint">By type: ' + escapeHtml(byType) + '</div>' +
+      '<div class="wf-auto-hint" style="margin-top:10px">This will restore every key in this backup. It will never delete anything that isn\'t in the file.</div>' +
+      '<button type="button" class="wf-ai-action-btn download" id="hrBackupRestoreConfirmBtn" style="width:100%;margin-top:14px"><span>Confirm restore</span></button>';
+    const confirmBtn = document.getElementById('hrBackupRestoreConfirmBtn');
+    if (confirmBtn) {
+      confirmBtn.addEventListener('click', () => {
+        runButtonAction(confirmBtn, () => postJsonOrThrow('/api/workforce/hr-assistant/backups/' + encodeURIComponent(fileId) + '/restore', { confirm: true }), (result) => {
+          renderBackupRestoreConfirmed(result);
+          showActionToast('Restore complete');
+        }, { toastFn: (msg) => showActionToast(msg, null, 'error') });
+      });
+    }
+  }
+  async function openBackupRestoreSheet(fileId) {
+    if (!backupRestoreSheet) return;
+    if (backupRestoreTitle) backupRestoreTitle.textContent = 'Restore from backup';
+    if (backupRestoreBody) backupRestoreBody.innerHTML = '<div class="wf-rem-empty">Loading preview…</div>';
+    if (backupRestoreBackdrop) backupRestoreBackdrop.hidden = false;
+    backupRestoreSheet.hidden = false;
+    requestAnimationFrame(() => { if (backupRestoreBackdrop) backupRestoreBackdrop.classList.add('open'); backupRestoreSheet.classList.add('open'); });
+    try {
+      const preview = await postJsonOrThrow('/api/workforce/hr-assistant/backups/' + encodeURIComponent(fileId) + '/preview', {});
+      renderBackupRestorePreview(fileId, preview);
+    } catch (err) {
+      if (backupRestoreBody) backupRestoreBody.innerHTML = '<div class="wf-auto-skip">⚠ ' + escapeHtml(err.message || 'Could not load this backup.') + '</div>';
+    }
+  }
   if (letterRefFormatInput) letterRefFormatInput.addEventListener('input', updateLetterRefFormatPreview);
   if (letterRefFormatSaveBtn) {
     letterRefFormatSaveBtn.addEventListener('click', async () => {
@@ -7844,6 +8015,7 @@
     hrDeptAliasesPage: () => loadDeptAliasesPage(),
     hrCompanyDetailsPage: () => loadCompanyDetailsPage(),
     hrLetterSettingsPage: () => loadLetterSettingsPage(),
+    hrDataBackupsPage: () => loadDataBackupsPage(),
     hrConvoPage: () => reloadConversation()
   };
   Object.keys(WF_PTR_REFRESH_BY_ID).forEach((id) => {

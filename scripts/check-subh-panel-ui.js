@@ -655,6 +655,102 @@ function check(label, ok, detail) {
   check('Letter settings: setting a register sheet link round-trips without a JS error', registerErrAfter === registerErrBefore,
     'new errors: ' + JSON.stringify(consoleErrors.slice(registerErrBefore).concat(pageErrors.slice(registerErrBefore))));
 
+  // Item 4 (2026-11), direct instruction - "Data & backups" settings
+  // page: Backup now (spinner -> success + Drive link, reusing the SAME
+  // ad-hoc job start/status routes the owner-only diag route already
+  // uses), the recent-backups list, and the Restore-from-backup preview
+  // -> confirm sheet. Opened the same way the real "SUBH Settings"
+  // dashboard tile opens it (window.__hrAssistantOpenDataBackups), same
+  // convention as Company details/Letter settings above.
+  await page.route('**/api/workforce/hr-assistant/backups', (route) => {
+    if (route.request().method() !== 'GET') { route.fallback(); return; }
+    route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify({
+        recent: [
+          { fileId: 'fake-backup-1', filename: 'b1.json', driveLink: 'https://drive.google.com/file/d/fake-backup-1/view', createdAt: '2026-11-13T02:00:00.000Z', totalKeys: 909, skippedCount: 0 },
+          { fileId: 'fake-backup-2', filename: 'b2.json', driveLink: 'https://drive.google.com/file/d/fake-backup-2/view', createdAt: '2026-11-12T02:00:00.000Z', totalKeys: 905, skippedCount: 0 }
+        ],
+        dailyState: { date: '2026-11-13', status: 'done', attempts: [{ at: '2026-11-13T02:00:00.000Z', ok: true, error: null }], result: { exportedAt: '2026-11-13T02:00:00.000Z', totalKeys: 909 }, cardDismissedAt: null }
+      })
+    });
+  });
+  let fakeBackupJobPolls = 0;
+  await page.route('**/api/workforce/hr-assistant/diag/full-backup/start', (route) => {
+    fakeBackupJobPolls = 0;
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ jobId: 'fake-job-1', alreadyRunning: false }) });
+  });
+  // Stateful - "running" on the first poll, "done" from the second poll
+  // onward, so the test can assert BOTH the loading state and the real
+  // success state rather than only ever seeing one or the other.
+  await page.route('**/api/workforce/hr-assistant/diag/full-backup/status/fake-job-1', (route) => {
+    fakeBackupJobPolls++;
+    if (fakeBackupJobPolls < 2) {
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ id: 'fake-job-1', status: 'running', progress: { keysScanned: 500 } }) });
+    } else {
+      route.fulfill({
+        status: 200, contentType: 'application/json', body: JSON.stringify({
+          id: 'fake-job-1', status: 'done',
+          result: { exportedAt: '2026-11-13T10:00:00.000Z', totalKeys: 910, byType: { string: 900, hash: 10 }, skippedCount: 0, driveFileId: 'fake-backup-3', driveLink: 'https://drive.google.com/file/d/fake-backup-3/view', filename: 'b3.json', elapsedMs: 1234 }
+        })
+      });
+    }
+  });
+  await page.route('**/api/workforce/hr-assistant/backups/fake-backup-1/preview', (route) => {
+    route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify({
+        exportedAt: '2026-11-13T02:00:00.000Z', totalKeys: 909, byType: { string: 850, hash: 59 }, sampleKeys: ['subh-company-details:Alcove']
+      })
+    });
+  });
+  await page.route('**/api/workforce/hr-assistant/backups/fake-backup-1/restore', (route) => {
+    route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify({
+        preview: false, restoredCount: 909, skippedCount: 0, errors: [], exportedAt: '2026-11-13T02:00:00.000Z', totalKeys: 909, byType: { string: 850, hash: 59 }, sampleKeys: []
+      })
+    });
+  });
+
+  await page.evaluate(() => { if (window.__hrAssistantClosePanel) window.__hrAssistantClosePanel(); });
+  await page.waitForTimeout(100);
+  const backupsErrBefore = consoleErrors.length + pageErrors.length;
+  await page.evaluate(() => { window.__hrAssistantOpenDataBackups(); });
+  await page.waitForTimeout(250);
+  check('Data & backups page opens (not a blank page)', await page.locator('#hrDataBackupsPage').isVisible());
+  const backupsHeadTitle = await page.locator('#hrCommsHeadTitle').textContent().catch(() => null);
+  check('Data & backups: header title reads "Data & backups"', (backupsHeadTitle || '').trim() === 'Data & backups', 'got: ' + JSON.stringify(backupsHeadTitle));
+  const recentCards = await page.locator('#hrBackupRecentList [data-file-id]').count();
+  check('Data & backups: both fake recent backups render as rows', recentCards === 2, 'got: ' + recentCards);
+  const dailyStatusText = await page.locator('#hrBackupDailyStatus').textContent().catch(() => null);
+  check('Data & backups: "last successful backup" status line renders from the fake dailyState', (dailyStatusText || '').includes('Last successful backup'), 'got: ' + JSON.stringify(dailyStatusText));
+
+  await page.click('#hrBackupNowBtn');
+  await page.waitForTimeout(400);
+  const isLoadingDuringPoll = await page.locator('#hrBackupNowBtn').evaluate((el) => el.classList.contains('is-loading'));
+  check('Data & backups: "Backup now" shows the loading state while the job is still running', isLoadingDuringPoll);
+  await page.waitForTimeout(2200); // past the 1500ms poll interval, until the fake job resolves "done"
+  const backupNowResultText = await page.locator('#hrBackupNowResult').textContent().catch(() => null);
+  check('Data & backups: "Backup now" shows the success result with the real key count and the Drive link once done', (backupNowResultText || '').includes('910') && (backupNowResultText || '').includes('Open in Drive'), 'got: ' + JSON.stringify(backupNowResultText));
+
+  await page.click('#hrBackupRecentList [data-file-id="fake-backup-1"] [data-action="restore-backup"]');
+  await page.waitForTimeout(400);
+  check('Data & backups: tapping "Restore" opens the preview sheet', await page.locator('#hrBackupRestoreSheet').isVisible());
+  const previewBodyText = await page.locator('#hrBackupRestoreBody').textContent().catch(() => null);
+  check('Data & backups: the preview sheet shows the real counts and the additive-only explanation', (previewBodyText || '').includes('909') && (previewBodyText || '').includes('never delete anything'), 'got: ' + JSON.stringify(previewBodyText));
+
+  await page.click('#hrBackupRestoreConfirmBtn');
+  // runButtonAction holds the "is-success" state for 550ms before firing
+  // onSuccess (same generic helper every other action button here uses) -
+  // wait past that, not just past the (instant, mocked) request itself.
+  await page.waitForTimeout(900);
+  const restoreResultText = await page.locator('#hrBackupRestoreBody').textContent().catch(() => null);
+  check('Data & backups: "Confirm restore" shows the real restored count once done', (restoreResultText || '').includes('Restored 909'), 'got: ' + JSON.stringify(restoreResultText));
+
+  const backupsErrAfter = consoleErrors.length + pageErrors.length;
+  check('Data & backups: no JS error was thrown through Backup now / Restore preview / Confirm restore', backupsErrAfter === backupsErrBefore,
+    'new errors: ' + JSON.stringify(consoleErrors.slice(backupsErrBefore).concat(pageErrors.slice(backupsErrBefore))));
+  await page.click('#hrBackupRestoreCloseBtn');
+  await page.waitForTimeout(350);
+
   // Informational only, never a failure here: workforce.js's own main
   // dashboard (unrelated to the SUBH panel this check targets) fires its
   // own staggered prefetch of several analytics endpoints on load, each

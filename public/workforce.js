@@ -554,6 +554,13 @@ if (subhSettingsLetterSettingsBtn) {
     if (window.__hrAssistantOpenLetterSettings) window.__hrAssistantOpenLetterSettings();
   });
 }
+// Data & backups (item 4, 2026-11) - same entry pattern as above.
+const subhSettingsDataBackupsBtn = document.getElementById('subhSettingsDataBackupsBtn');
+if (subhSettingsDataBackupsBtn) {
+  subhSettingsDataBackupsBtn.addEventListener('click', () => {
+    if (window.__hrAssistantOpenDataBackups) window.__hrAssistantOpenDataBackups();
+  });
+}
 // AI usage (2026-11) - same entry pattern as above.
 const subhSettingsAiUsageBtn = document.getElementById('subhSettingsAiUsageBtn');
 if (subhSettingsAiUsageBtn) {

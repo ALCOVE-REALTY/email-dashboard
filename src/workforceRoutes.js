@@ -1806,6 +1806,45 @@ router.post('/hr-assistant/diag/full-backup/restore', async (req, res) => {
   }
 });
 
+// "Data & backups" page (item 4, 2026-11, direct instruction) - owner-
+// only, SUBH Settings: Backup now (reuses the diag/full-backup/start +
+// status routes above verbatim - same job, same polling, nothing
+// duplicated), a list of recent backups, and Restore from backup
+// (pick a file -> preview -> confirm).
+router.get('/hr-assistant/backups', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const [recent, dailyState] = await Promise.all([
+      fullStoreBackupService.listBackupManifest(),
+      fullStoreBackupService.getDailyBackupState()
+    ]);
+    res.json({ recent, dailyState });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+router.post('/hr-assistant/backups/:fileId/preview', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    res.json(await fullStoreBackupService.previewBackupFromDrive(req.params.fileId));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+// Body: { confirm: true }. Without it, this behaves exactly like the
+// preview route above (fullStoreBackupService.restoreFullStore's own
+// "no confirm -> preview only, writes nothing" guarantee) - the
+// frontend always calls /preview first anyway, this is just the same
+// safety held at the API level too.
+router.post('/hr-assistant/backups/:fileId/restore', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    res.json(await fullStoreBackupService.restoreBackupFromDrive(req.params.fileId, { confirm: req.body && req.body.confirm === true }));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // AI usage page (2026-11, direct instruction) - owner-only, SUBH Settings.
 // Today/this-week/this-month totals (live vs. tests) + a by-feature
 // breakdown, backed by src/aiAssistant/aiUsageLog.js's own day-keyed
