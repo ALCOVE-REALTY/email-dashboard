@@ -655,6 +655,48 @@ function check(label, ok, detail) {
   check('Letter settings: setting a register sheet link round-trips without a JS error', registerErrAfter === registerErrBefore,
     'new errors: ' + JSON.stringify(consoleErrors.slice(registerErrBefore).concat(pageErrors.slice(registerErrBefore))));
 
+  // PART C item 3 (2026-11), direct instruction - Test employee picker:
+  // pre-fills with the server's own default on page load, typing filters
+  // suggestions (including an ineligible candidate's own reason), picking
+  // one updates the field, and "Send test to me" posts that exact
+  // employeeId - replacing the old silent first-eligible auto-pick with
+  // an owner choice.
+  const PARTC_PICKER_RESULTS = [
+    { employeeId: 'PCU1', name: 'Default Pick', eligible: true, reason: null, needsCompanyDetails: false },
+    { employeeId: 'PCU2', name: 'Ineligible Pick', eligible: false, reason: 'Ineligible Pick is not an ACTIVE employee (status: INACTIVE).', needsCompanyDetails: false }
+  ];
+  await page.route('**/api/workforce/hr-assistant/letter-settings/employee-picker**', (route) => {
+    const url = new URL(route.request().url());
+    const q = (url.searchParams.get('q') || '').toLowerCase();
+    const results = q ? PARTC_PICKER_RESULTS.filter((e) => e.name.toLowerCase().includes(q)) : PARTC_PICKER_RESULTS;
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ results, defaultEmployeeId: 'PCU1' }) });
+  });
+  let lastSendTestBody = null;
+  await page.route('**/api/workforce/hr-assistant/letter-settings/send-test-letter', (route) => {
+    lastSendTestBody = route.request().postDataJSON();
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, employeeName: lastSendTestBody.employeeId === 'PCU2' ? 'Ineligible Pick' : 'Fake Employee', refNo: 'ARPL/HR/BL/2026-27/TEST', pdfUrl: 'https://drive.google.com/file/d/fake/view', mailedTo: 'owner@test.com', registerAppended: true }) });
+  });
+  await page.evaluate(() => window.__hrAssistantOpenLetterSettings && window.__hrAssistantOpenLetterSettings());
+  await page.waitForTimeout(300);
+  const pickerDefaultVal = await page.locator('#hrLetterTestEmployeeInput').inputValue().catch(() => null);
+  check('Test employee picker: pre-fills with the server\'s own default on page load, never blank', pickerDefaultVal === 'Default Pick', 'got: ' + JSON.stringify(pickerDefaultVal));
+  await page.locator('#hrLetterTestEmployeeInput').fill('Ineligible');
+  await page.waitForTimeout(250);
+  const suggestText = await page.locator('#hrLetterTestEmployeeSuggest').textContent().catch(() => null);
+  check('Test employee picker: typing filters suggestions, showing an ineligible candidate\'s own specific reason', (suggestText || '').includes('Ineligible Pick') && (suggestText || '').includes('not an ACTIVE employee'), 'got: ' + JSON.stringify(suggestText));
+  await page.locator('#hrLetterTestEmployeeSuggest li').first().click();
+  await page.waitForTimeout(150);
+  const pickerValAfterSelect = await page.locator('#hrLetterTestEmployeeInput').inputValue().catch(() => null);
+  check('Test employee picker: clicking a suggestion updates the field to that candidate', pickerValAfterSelect === 'Ineligible Pick', 'got: ' + JSON.stringify(pickerValAfterSelect));
+  const suggestHiddenAfterSelect = await page.locator('#hrLetterTestEmployeeSuggest').isHidden().catch(() => false);
+  check('Test employee picker: the suggestion list closes after picking', suggestHiddenAfterSelect);
+  await page.locator('#hrLetterCodesList [data-letter-type] [data-action="send-test-letter"]').first().click();
+  await page.waitForTimeout(900);
+  check('Test employee picker: "Send test to me" posts the EXACT picked employeeId, not the old silent auto-pick', Boolean(lastSendTestBody) && lastSendTestBody.employeeId === 'PCU2', 'got: ' + JSON.stringify(lastSendTestBody));
+  const pickerErrAfter = consoleErrors.length + pageErrors.length;
+  check('Test employee picker: no JS error was thrown through the whole pre-fill/search/select/send flow', pickerErrAfter === registerErrAfter,
+    'new errors: ' + JSON.stringify(consoleErrors.slice(registerErrAfter).concat(pageErrors.slice(registerErrAfter))));
+
   // Item 4 (2026-11), direct instruction - "Data & backups" settings
   // page: Backup now (spinner -> success + Drive link, reusing the SAME
   // ad-hoc job start/status routes the owner-only diag route already
@@ -716,6 +758,14 @@ function check(label, ok, detail) {
   await page.evaluate(() => { window.__hrAssistantOpenDataBackups(); });
   await page.waitForTimeout(250);
   check('Data & backups page opens (not a blank page)', await page.locator('#hrDataBackupsPage').isVisible());
+  // Two small UI fixes (2026-11, direct instruction, 384px): "Backup now"
+  // needs real breathing room below the page header (it has no section-
+  // title row above it, unlike Company details/Letter settings), and
+  // the gap is measured directly rather than trusting a CSS rule exists.
+  const backupNowBox = await page.locator('#hrBackupNowBtn').boundingBox();
+  const backupsPageBox = await page.locator('#hrDataBackupsPage').boundingBox();
+  const backupNowTopGap = (backupNowBox && backupsPageBox) ? (backupNowBox.y - backupsPageBox.y) : null;
+  check('Data & backups: "Backup now" sits with real breathing room below the page top, not jammed under the header', typeof backupNowTopGap === 'number' && backupNowTopGap >= 18, 'got topGap: ' + backupNowTopGap);
   const backupsHeadTitle = await page.locator('#hrCommsHeadTitle').textContent().catch(() => null);
   check('Data & backups: header title reads "Data & backups"', (backupsHeadTitle || '').trim() === 'Data & backups', 'got: ' + JSON.stringify(backupsHeadTitle));
   const recentCards = await page.locator('#hrBackupRecentList [data-file-id]').count();
@@ -736,6 +786,16 @@ function check(label, ok, detail) {
   check('Data & backups: tapping "Restore" opens the preview sheet', await page.locator('#hrBackupRestoreSheet').isVisible());
   const previewBodyText = await page.locator('#hrBackupRestoreBody').textContent().catch(() => null);
   check('Data & backups: the preview sheet shows the real counts and the additive-only explanation', (previewBodyText || '').includes('909') && (previewBodyText || '').includes('never delete anything'), 'got: ' + JSON.stringify(previewBodyText));
+
+  // "Confirm restore" text was rendering left-aligned (width:100% on a
+  // button whose base .wf-ai-action-btn is inline-flex with no
+  // justify-content set, so it only ever centered by accident at its
+  // natural content width) - measured directly, not just trusted.
+  const confirmBtnBox = await page.locator('#hrBackupRestoreConfirmBtn').boundingBox();
+  const confirmTextBox = await page.locator('#hrBackupRestoreConfirmBtn span').boundingBox();
+  const confirmLeftGap = (confirmTextBox && confirmBtnBox) ? (confirmTextBox.x - confirmBtnBox.x) : null;
+  const confirmRightGap = (confirmTextBox && confirmBtnBox) ? ((confirmBtnBox.x + confirmBtnBox.width) - (confirmTextBox.x + confirmTextBox.width)) : null;
+  check('Data & backups: "Confirm restore" text is centered in its button, not left-aligned', typeof confirmLeftGap === 'number' && Math.abs(confirmLeftGap - confirmRightGap) < 8, 'leftGap: ' + confirmLeftGap + ' rightGap: ' + confirmRightGap);
 
   await page.click('#hrBackupRestoreConfirmBtn');
   // runButtonAction holds the "is-success" state for 550ms before firing

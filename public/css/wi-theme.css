@@ -1586,6 +1586,13 @@ body { background: var(--wi-bg); }
    here rather than raising .wf-comms-page's own padding-top, which would
    shift every sub-page's layout, not just this one. */
 #hrCommsHubPage { padding-top: 18px; }
+/* Data & backups (item 4, 2026-11) - "Backup now" sits directly under the
+   header with no section-title row above it (unlike Company details/
+   Letter settings, whose first element is a text label before any
+   control) - same "needs a little more breathing room below the header"
+   case as the hub page above, same fix, scoped here rather than raising
+   .wf-comms-page's own padding-top for every sub-page. */
+#hrDataBackupsPage { padding-top: 18px; }
 .wf-comms-system-strip[hidden] { display: none; }
 .wf-comms-system-strip {
   display: flex; align-items: flex-start; gap: 10px; padding: 11px 12px;

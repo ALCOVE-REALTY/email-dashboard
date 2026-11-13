@@ -16,6 +16,7 @@ const sheetsAuth = require('../sheetsAuth');
 const subhDriveAuth = require('../subhDriveAuth');
 const subhDriveGuard = require('../subhDriveGuard');
 const settingsAuditLog = require('./settingsAuditLog');
+const companyDetailsService = require('./companyDetailsService');
 
 let client;
 let clientChecked = false;
@@ -521,6 +522,68 @@ async function uploadSentLetterPdf({ buffer, filename, date }) {
   return { fileId: file.data.id, url: file.data.webViewLink || ('https://drive.google.com/file/d/' + file.data.id + '/view') };
 }
 
+// PART C item 3 (2026-11, direct instruction) - "Test employee" picker
+// for "Send test to me", replacing the old silent first-eligible
+// auto-pick with an owner choice + specific, per-candidate missing-
+// field messaging. ONE shared eligibility check, used by both the
+// employee-picker route (annotating every candidate the owner sees)
+// and the actual send route (so a picked-but-ineligible employee gets
+// the EXACT same reason, never a generic message) - never two copies
+// of the same logic. Checked in order; the FIRST failing condition is
+// what's reported, matching how a human would read down a checklist.
+async function checkTestEmployeeEligibility(employee) {
+  if (!employee) return { eligible: false, reason: 'That employee could not be found.' };
+  if (employee.status !== 'ACTIVE') {
+    return { eligible: false, reason: employee.name + ' is not an ACTIVE employee (status: ' + (employee.status || 'unknown') + ').' };
+  }
+  if (!employee.doj) return { eligible: false, reason: employee.name + ' has no Date of Joining on file.' };
+  if (!employee.company) return { eligible: false, reason: employee.name + ' has no Company on file.' };
+  const cd = await companyDetailsService.getCompanyDetails(employee.company).catch(() => null);
+  if (!cd || !cd.code) {
+    return {
+      eligible: false,
+      reason: employee.name + '\'s company (' + employee.company + ') has no code set in Company Details.',
+      needsCompanyDetails: true
+    };
+  }
+  return { eligible: true, reason: null, companyDetails: cd };
+}
+
+const LAST_TEST_EMPLOYEE_KEY = 'subh-last-test-employee-id';
+async function getLastTestEmployeeId() {
+  const redis = getClient();
+  if (!redis) return null;
+  try { return await redis.get(LAST_TEST_EMPLOYEE_KEY); } catch (err) { return null; }
+}
+async function setLastTestEmployeeId(employeeId) {
+  const redis = getClient();
+  if (!redis || !employeeId) return;
+  try { await redis.set(LAST_TEST_EMPLOYEE_KEY, employeeId); } catch (err) { /* best effort - never blocks a real send */ }
+}
+
+// Who "Send test to me" uses when the owner hasn't explicitly chosen
+// anyone - the LAST actually-used employee if they still qualify
+// (direct instruction - "default to last used"), else the first
+// eligible employee in array order, exactly the ORIGINAL auto-pick
+// logic (unchanged, so any existing caller that never passes an
+// employeeId keeps behaving the same way it always has on a fresh
+// store with no last-used value yet).
+async function pickDefaultTestEmployee(employees) {
+  const lastId = await getLastTestEmployeeId();
+  if (lastId) {
+    const last = employees.find((e) => e.employeeId === lastId);
+    if (last) {
+      const check = await checkTestEmployeeEligibility(last);
+      if (check.eligible) return { employee: last, companyDetails: check.companyDetails };
+    }
+  }
+  for (const e of employees) {
+    const check = await checkTestEmployeeEligibility(e);
+    if (check.eligible) return { employee: e, companyDetails: check.companyDetails };
+  }
+  return { employee: null, companyDetails: null };
+}
+
 module.exports = {
   isAvailable: () => Boolean(getClient()),
   LETTER_TEMPLATES_FOLDER_ID, DEFAULT_REF_FORMAT, DEFAULT_LETTER_CODES, LETTER_TYPE_LABELS, REF_FORMAT_PLACEHOLDERS,
@@ -528,6 +591,7 @@ module.exports = {
   getRefNoFormat, saveRefNoFormat, getLetterCodes, saveLetterCode, getLetterDisplayNames, saveLetterDisplayName, getLetterSettings,
   getCounterValue, setCounterOverride, previewNextRefNo, assignRefNo,
   getLetterRegisterLink, setRegisterSheetLink, appendToLetterRegister, uploadSentLetterPdf,
+  checkTestEmployeeEligibility, getLastTestEmployeeId, setLastTestEmployeeId, pickDefaultTestEmployee,
   // TASK 1 (2026-11) - exported for scripts/check-letter-settings.js only.
   migrateCountersToPerTypeOnly, resetCountersMigrationCheckForTests,
   // TASK 2 (2026-11) - exported for scripts/check-letter-settings.js only.

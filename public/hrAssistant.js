@@ -187,6 +187,9 @@
   const letterRefFormatChips = document.getElementById('hrLetterRefFormatChips');
   const letterRefFormatErr = document.getElementById('hrLetterRefFormatErr');
   const letterRefFormatSaveBtn = document.getElementById('hrLetterRefFormatSaveBtn');
+  const letterTestEmployeeInput = document.getElementById('hrLetterTestEmployeeInput');
+  const letterTestEmployeeSuggest = document.getElementById('hrLetterTestEmployeeSuggest');
+  const letterTestEmployeeErr = document.getElementById('hrLetterTestEmployeeErr');
   const letterCodesList = document.getElementById('hrLetterCodesList');
   const letterCountersList = document.getElementById('hrLetterCountersList');
   const letterRegisterRow = document.getElementById('hrLetterRegisterRow');
@@ -3512,6 +3515,91 @@
   // next number, never consumes one.
   let letterSettingsState = { letterTypeLabels: {}, fy: '' };
 
+  // Test employee picker (PART C item 3, 2026-11, direct instruction) -
+  // who "Send test to me" sends as, shared by every letter type's own
+  // Send-test button. Modeled on the existing single-select employee
+  // picker (public/workforce.js's ipWhatsappEmployeeSearchInput/
+  // ipWhatsappEmployeeSuggest) - same input/suggest-list/click-to-select
+  // shape, server-filtered (not a client-side pre-fetched directory)
+  // since each candidate also needs a live eligibility check.
+  let letterTestEmployeeSelectedId = null;
+  let letterTestEmployeeSearchToken = 0; // stale-response guard, same convention as createMailChipField's own directory fetch
+  function renderLetterTestEmployeeSuggest(results) {
+    if (!letterTestEmployeeSuggest) return;
+    letterTestEmployeeSuggest.innerHTML = '';
+    if (!results.length) {
+      const li = document.createElement('li');
+      li.className = 'empty';
+      li.textContent = 'No matching employee found.';
+      letterTestEmployeeSuggest.appendChild(li);
+      letterTestEmployeeSuggest.hidden = false;
+      return;
+    }
+    results.forEach((emp) => {
+      const li = document.createElement('li');
+      const b = document.createElement('b');
+      b.textContent = emp.name + (emp.employeeId ? ' (' + emp.employeeId + ')' : '');
+      li.appendChild(b);
+      if (!emp.eligible) {
+        li.style.opacity = '0.65';
+        const sub = document.createElement('span');
+        sub.className = 'wf-mail-suggest-sub';
+        sub.textContent = '⚠ ' + emp.reason;
+        li.appendChild(sub);
+      }
+      li.addEventListener('click', () => {
+        letterTestEmployeeSelectedId = emp.employeeId;
+        letterTestEmployeeInput.value = emp.name;
+        letterTestEmployeeSuggest.hidden = true;
+        if (letterTestEmployeeErr) { letterTestEmployeeErr.textContent = ''; letterTestEmployeeErr.classList.add('hidden'); }
+      });
+      letterTestEmployeeSuggest.appendChild(li);
+    });
+    letterTestEmployeeSuggest.hidden = false;
+  }
+  async function searchLetterTestEmployees(q) {
+    const token = ++letterTestEmployeeSearchToken;
+    let data;
+    try {
+      data = await fetch('/api/workforce/hr-assistant/letter-settings/employee-picker?q=' + encodeURIComponent(q)).then((r) => r.json());
+    } catch (err) { return; }
+    if (token !== letterTestEmployeeSearchToken) return; // the input changed again while this was in flight
+    renderLetterTestEmployeeSuggest(data.results || []);
+  }
+  if (letterTestEmployeeInput) {
+    letterTestEmployeeInput.addEventListener('input', () => {
+      letterTestEmployeeSelectedId = null; // typing again invalidates a prior pick, same convention as the existing ipWhatsapp picker
+      const q = letterTestEmployeeInput.value.trim();
+      if (!q) { letterTestEmployeeSuggest.hidden = true; return; }
+      searchLetterTestEmployees(q);
+    });
+    letterTestEmployeeInput.addEventListener('focus', () => {
+      if (letterTestEmployeeInput.value.trim()) searchLetterTestEmployees(letterTestEmployeeInput.value.trim());
+    });
+    document.addEventListener('click', (e) => {
+      if (!e.target.closest('#hrLetterTestEmployeeInput') && !e.target.closest('#hrLetterTestEmployeeSuggest')) {
+        letterTestEmployeeSuggest.hidden = true;
+      }
+    });
+  }
+  // Pre-fills the picker with whoever "Send test to me" would currently
+  // default to, the moment the Letter Settings page itself loads - the
+  // field is never blank on first open. Best-effort: a failure here just
+  // leaves the field blank, and Send Test still falls back to the
+  // server's own default (no employeeId sent) exactly as before this
+  // picker existed.
+  async function initLetterTestEmployeePicker() {
+    if (!letterTestEmployeeInput) return;
+    try {
+      const data = await fetch('/api/workforce/hr-assistant/letter-settings/employee-picker').then((r) => r.json());
+      const match = (data.results || []).find((e) => e.employeeId === data.defaultEmployeeId);
+      if (match) {
+        letterTestEmployeeSelectedId = match.employeeId;
+        letterTestEmployeeInput.value = match.name;
+      }
+    } catch (err) { /* best effort */ }
+  }
+
   // Field mapping review (2026-11, direct instruction) - per Drive
   // template: SUBH proposes a source for every placeholder (via
   // GET /hr-assistant/letter-templates/:key/fields, which only ever
@@ -3523,12 +3611,23 @@
   // no mapping is saved yet, and re-runs itself once Save succeeds.
   let fieldMappingState = { templateKey: null, autoSendTestBtn: null };
   async function runSendTestLetter(btn, templateKey) {
-    await runButtonAction(btn, () => postJsonOrThrow('/api/workforce/hr-assistant/letter-settings/send-test-letter', { templateKey }), (result) => {
+    await runButtonAction(btn, () => postJsonOrThrow('/api/workforce/hr-assistant/letter-settings/send-test-letter', {
+      templateKey, employeeId: letterTestEmployeeSelectedId || undefined
+    }), (result) => {
       showActionToast('Test letter sent to ' + result.mailedTo + ' (Ref No. ' + result.refNo + ')' + (result.registerAppended ? '' : ' - register append failed, see server log'));
     }, {
       resetAfterSuccess: true,
       toastFn: (msg, err) => {
         if (err && err.code === 'no_mapping') { openFieldMappingSheet(templateKey, { autoSendTestBtn: btn }); return; }
+        // PART C item 3 (2026-11, direct instruction) - "specific missing-
+        // field messaging with a button to open Company Details."
+        if (err && err.needsCompanyDetails) {
+          showProToast({
+            title: msg, type: 'error', undo: () => { if (window.__hrAssistantOpenCompanyDetails) window.__hrAssistantOpenCompanyDetails(); },
+            actionLabel: 'Open Company Details'
+          });
+          return;
+        }
         showActionToast(msg, null, 'error');
       }
     });
@@ -3900,6 +3999,7 @@
       pageDataCache.letterSettings = data;
       renderLetterSettingsPage(data);
       prefetchLetterTemplateFields(data.letterTypes || []);
+      initLetterTestEmployeePicker();
     } catch (err) {
       if (!cached) letterCodesList.innerHTML = '<div class="wf-rem-empty">Could not load letter settings.</div>';
     }
@@ -4123,7 +4223,7 @@
       '<div class="wf-auto-hint">Total keys: ' + (preview.totalKeys || 0) + '</div>' +
       '<div class="wf-auto-hint">By type: ' + escapeHtml(byType) + '</div>' +
       '<div class="wf-auto-hint" style="margin-top:10px">This will restore every key in this backup. It will never delete anything that isn\'t in the file.</div>' +
-      '<button type="button" class="wf-ai-action-btn download" id="hrBackupRestoreConfirmBtn" style="width:100%;margin-top:14px"><span>Confirm restore</span></button>';
+      '<button type="button" class="wf-ai-action-btn download" id="hrBackupRestoreConfirmBtn" style="width:100%;margin-top:14px;justify-content:center"><span>Confirm restore</span></button>';
     const confirmBtn = document.getElementById('hrBackupRestoreConfirmBtn');
     if (confirmBtn) {
       confirmBtn.addEventListener('click', () => {
@@ -4596,6 +4696,9 @@
       // (e.g. "no_mapping") - purely additive, every existing catch site
       // here only ever reads err.message, never err.code.
       if (r.data && r.data.code) err.code = r.data.code;
+      // PART C item 3 (2026-11) - same additive convention, for
+      // send-test-letter's own needsCompanyDetails flag.
+      if (r.data && r.data.needsCompanyDetails) err.needsCompanyDetails = true;
       throw err;
     }
     return r.data;
@@ -5536,7 +5639,7 @@
         '<span class="wf-pro-toast-title"></span>' +
         (opts.subtext ? '<span class="wf-pro-toast-subtext"></span>' : '') +
       '</span>' +
-      (opts.undo ? '<button type="button" class="wf-pro-toast-undo">Undo</button>' : '') +
+      (opts.undo ? '<button type="button" class="wf-pro-toast-undo">' + (opts.actionLabel || 'Undo') + '</button>' : '') +
       '<span class="wf-pro-toast-progress"></span>';
     el.querySelector('.wf-pro-toast-title').textContent = opts.title || '';
     if (opts.subtext) el.querySelector('.wf-pro-toast-subtext').textContent = opts.subtext;

@@ -3489,6 +3489,7 @@ router.post('/hr-assistant/letter-settings/send-test-letter', async (req, res) =
     const tpl = templates.find((t) => t.key === templateKey);
     if (!tpl) return res.status(404).json({ error: 'That template was not found in SUBH Letter Templates.' });
 
+    const { employeeId } = req.body || {};
     const [{ employees }, mapping] = await Promise.all([
       employeeService.getEmployeeData(),
       driveTemplateFieldsService.getTemplateMapping(templateKey)
@@ -3500,13 +3501,25 @@ router.post('/hr-assistant/letter-settings/send-test-letter', async (req, res) =
       // SUBH's own proposal, instead of a dead-end error.
       return res.status(400).json({ error: 'No field mapping is saved for this template yet - review and save it below, then this runs again automatically.', code: 'no_mapping' });
     }
+    // PART C item 3 (2026-11, direct instruction) - an explicitly chosen
+    // employee (from the new picker) gets checked and, if ineligible,
+    // reported with the EXACT specific reason (never the old one-size-
+    // fits-all message); with no choice given, falls back to the last-
+    // used-then-auto-pick default, unchanged for any existing caller.
     let chosen = null, companyDetails = null;
-    for (const e of employees) {
-      if (e.status !== 'ACTIVE' || !e.doj || !e.company) continue;
-      const cd = await companyDetailsService.getCompanyDetails(e.company).catch(() => null);
-      if (cd && cd.code) { chosen = e; companyDetails = cd; break; }
+    if (employeeId) {
+      chosen = employees.find((e) => e.employeeId === employeeId) || null;
+      const check = await letterSettingsService.checkTestEmployeeEligibility(chosen);
+      if (!check.eligible) {
+        return res.status(400).json({ error: check.reason, needsCompanyDetails: Boolean(check.needsCompanyDetails) });
+      }
+      companyDetails = check.companyDetails;
+    } else {
+      const picked = await letterSettingsService.pickDefaultTestEmployee(employees);
+      chosen = picked.employee;
+      companyDetails = picked.companyDetails;
+      if (!chosen) return res.status(400).json({ error: 'No eligible real employee found (ACTIVE, has a DOJ, and a company with a code set in Company details).' });
     }
-    if (!chosen) return res.status(400).json({ error: 'No eligible real employee found (ACTIVE, has a DOJ, and a company with a code set in Company details).' });
 
     const now = new Date();
     const fy = letterSettingsService.computeFinancialYear(now);
@@ -3542,10 +3555,50 @@ router.post('/hr-assistant/letter-settings/send-test-letter', async (req, res) =
       attachment: { filename, contentType: 'application/pdf', content: genResult.buffer }
     });
 
+    await letterSettingsService.setLastTestEmployeeId(chosen.employeeId);
     res.json({
       ok: true, employeeName: chosen.name, employeeCode: chosen.employeeId, refNo,
       pdfUrl: uploadResult.url, mailedTo: ownerEmail, registerAppended: !registerError, registerError
     });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+// Test employee picker (PART C item 3, 2026-11, direct instruction) -
+// search by name/employee code, each candidate annotated with whether
+// it currently qualifies for "Send test to me" and, if not, the exact
+// reason (same shared check send-test-letter itself uses, never a
+// second copy). `defaultEmployeeId` is who the send route would pick
+// if the owner never explicitly chooses anyone - lets the picker
+// pre-fill itself instead of opening blank.
+router.get('/hr-assistant/letter-settings/employee-picker', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const q = String(req.query.q || '').trim().toLowerCase();
+    const { employees } = await employeeService.getEmployeeData();
+    const defaultPick = await letterSettingsService.pickDefaultTestEmployee(employees);
+    let candidates = employees;
+    if (q) {
+      candidates = employees.filter((e) =>
+        String(e.name || '').toLowerCase().includes(q) || String(e.employeeId || '').toLowerCase().includes(q));
+    }
+    candidates = candidates.slice(0, 15);
+    // The default pick is always represented in the response, even if
+    // they'd otherwise fall outside the first 15 candidates - so the
+    // frontend can always pre-fill the picker with them on first load,
+    // never leaving the field blank just because of where they happen
+    // to sit in the employee list.
+    if (defaultPick.employee && !candidates.some((e) => e.employeeId === defaultPick.employee.employeeId)) {
+      candidates = [defaultPick.employee].concat(candidates);
+    }
+    const results = await Promise.all(candidates.map(async (e) => {
+      const check = await letterSettingsService.checkTestEmployeeEligibility(e);
+      return {
+        employeeId: e.employeeId, name: e.name, eligible: check.eligible,
+        reason: check.reason, needsCompanyDetails: Boolean(check.needsCompanyDetails)
+      };
+    }));
+    res.json({ results, defaultEmployeeId: defaultPick.employee ? defaultPick.employee.employeeId : null });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

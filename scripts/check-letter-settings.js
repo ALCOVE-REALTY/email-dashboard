@@ -414,6 +414,74 @@ async function main() {
   });
 
   console.log('='.repeat(70));
+  console.log('Test employee eligibility (PART C item 3, 2026-11, direct instruction) - specific, per-candidate missing-field messaging, shared by the picker route and the actual send route');
+  console.log('='.repeat(70));
+  const companyDetailsService = require('../src/aiAssistant/companyDetailsService');
+  const employeeService = require('../src/employeeService');
+  const origGetEmployeeData = employeeService.getEmployeeData;
+  const PARTC_EMPLOYEES = [
+    { employeeId: 'PC1', name: 'Eligible Emp', status: 'ACTIVE', doj: '2020-01-01', company: 'PartC Co With Code' },
+    { employeeId: 'PC2', name: 'Inactive Emp', status: 'INACTIVE', doj: '2020-01-01', company: 'PartC Co With Code' },
+    { employeeId: 'PC3', name: 'No Doj Emp', status: 'ACTIVE', doj: '', company: 'PartC Co With Code' },
+    { employeeId: 'PC4', name: 'No Company Emp', status: 'ACTIVE', doj: '2020-01-01', company: '' },
+    { employeeId: 'PC5', name: 'Codeless Co Emp', status: 'ACTIVE', doj: '2020-01-01', company: 'PartC Co No Code' }
+  ];
+  employeeService.getEmployeeData = async () => ({ employees: PARTC_EMPLOYEES, departmentNames: new Map(), locationNames: new Map(), doerNames: new Map(), reportingManagerNames: new Map() });
+  await companyDetailsService.saveCompanyDetails('PartC Co With Code', { code: 'PCW' });
+  // 'PartC Co No Code' is deliberately never saved - getCompanyDetails
+  // returns blank defaults (no .code) for it, matching the real "never
+  // configured yet" case.
+  try {
+    await checkAsync('an explicit, fully-eligible employeeId is accepted (checkTestEmployeeEligibility)', async () => {
+      const check = await letterSettingsService.checkTestEmployeeEligibility(PARTC_EMPLOYEES[0]);
+      return check.eligible === true && check.companyDetails && check.companyDetails.code === 'PCW';
+    });
+    await checkAsync('not found at all -> the specific "could not be found" message', async () => {
+      const check = await letterSettingsService.checkTestEmployeeEligibility(null);
+      return check.eligible === false && check.reason === 'That employee could not be found.';
+    });
+    await checkAsync('not ACTIVE -> names the employee and their real status, never a generic message', async () => {
+      const check = await letterSettingsService.checkTestEmployeeEligibility(PARTC_EMPLOYEES[1]);
+      return check.eligible === false && check.reason === 'Inactive Emp is not an ACTIVE employee (status: INACTIVE).' && !check.needsCompanyDetails;
+    });
+    await checkAsync('no DOJ -> names the employee specifically', async () => {
+      const check = await letterSettingsService.checkTestEmployeeEligibility(PARTC_EMPLOYEES[2]);
+      return check.eligible === false && check.reason === 'No Doj Emp has no Date of Joining on file.';
+    });
+    await checkAsync('no company -> names the employee specifically', async () => {
+      const check = await letterSettingsService.checkTestEmployeeEligibility(PARTC_EMPLOYEES[3]);
+      return check.eligible === false && check.reason === 'No Company Emp has no Company on file.';
+    });
+    await checkAsync('company has no code set -> names the employee AND the company, and sets needsCompanyDetails:true so the UI can offer to open Company Details', async () => {
+      const check = await letterSettingsService.checkTestEmployeeEligibility(PARTC_EMPLOYEES[4]);
+      return check.eligible === false && check.reason === 'Codeless Co Emp\'s company (PartC Co No Code) has no code set in Company Details.' && check.needsCompanyDetails === true;
+    });
+    await checkAsync('pickDefaultTestEmployee falls back to the first eligible employee in array order when nothing was ever used before (the ORIGINAL auto-pick, unchanged)', async () => {
+      await letterSettingsService.setLastTestEmployeeId(null); // no-op (guarded), confirms a falsy id never gets persisted
+      const picked = await letterSettingsService.pickDefaultTestEmployee(PARTC_EMPLOYEES);
+      return picked.employee && picked.employee.employeeId === 'PC1';
+    });
+    await checkAsync('pickDefaultTestEmployee prefers the last-used employee once one has actually been used, and still qualifies', async () => {
+      await letterSettingsService.setLastTestEmployeeId('PC1');
+      const picked = await letterSettingsService.pickDefaultTestEmployee(PARTC_EMPLOYEES);
+      return picked.employee && picked.employee.employeeId === 'PC1';
+    });
+    await checkAsync('a last-used employee who no longer qualifies (e.g. since deactivated) is skipped - falls back to the normal auto-pick instead of a dead end', async () => {
+      await letterSettingsService.setLastTestEmployeeId('PC2'); // PC2 is INACTIVE - never eligible
+      const picked = await letterSettingsService.pickDefaultTestEmployee(PARTC_EMPLOYEES);
+      return picked.employee && picked.employee.employeeId === 'PC1'; // falls through to the first real eligible one
+    });
+    await checkAsync('no eligible employee at all -> pickDefaultTestEmployee reports null cleanly, never throws', async () => {
+      const noneEligible = PARTC_EMPLOYEES.slice(1, 4); // INACTIVE / no DOJ / no company - none qualify
+      const picked = await letterSettingsService.pickDefaultTestEmployee(noneEligible);
+      return picked.employee === null;
+    });
+  } finally {
+    employeeService.getEmployeeData = origGetEmployeeData;
+    await letterSettingsService.setLastTestEmployeeId(null).catch(() => {});
+  }
+
+  console.log('='.repeat(70));
   console.log(pass + '/' + (pass + fail) + ' passed' + (fail ? ', ' + fail + ' FAILED' : ''));
   if (failures.length) { console.log('Failed checks:'); failures.forEach((f) => console.log(' -', f)); }
   console.log('='.repeat(70));

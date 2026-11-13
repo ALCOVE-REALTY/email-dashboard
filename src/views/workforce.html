@@ -477,6 +477,23 @@
           <button type="button" class="wf-ai-action-btn download" id="hrLetterRefFormatSaveBtn"><span>Save format</span></button>
         </div>
 
+        <!-- PART C item 3 (2026-11), direct instruction - "Test employee"
+             picker: who "Send test to me" uses, shared by every letter
+             type's own Send-test button below (one picker, not one per
+             card - it's about WHICH employee's data to test with,
+             independent of which template). -->
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 4px 6px">
+          <span class="wf-ai-sheet-title" style="font-size:14px">Test employee</span>
+        </div>
+        <div class="wf-auto-hint" style="padding:0 4px 4px">Used by every "Send test to me" button below.</div>
+        <div style="position:relative;padding:0 4px">
+          <label class="wf-rem-field">
+            <input type="text" id="hrLetterTestEmployeeInput" autocomplete="off" placeholder="Search by name or employee code…" />
+          </label>
+          <ul id="hrLetterTestEmployeeSuggest" class="wf-mail-suggest" hidden></ul>
+        </div>
+        <div class="wf-auto-err hidden" id="hrLetterTestEmployeeErr" style="padding:4px 4px 0"></div>
+
         <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 4px 6px">
           <span class="wf-ai-sheet-title" style="font-size:14px">Letter codes</span>
         </div>
