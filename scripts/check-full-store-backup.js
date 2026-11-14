@@ -302,9 +302,32 @@ async function main() {
   // IST has a fixed +05:30 offset (no DST) - building the Date directly
   // with that offset gives exact control over the IST wall-clock time
   // istNow() will derive, regardless of the test machine's own timezone.
-  function istDate(dateStr, hour, minute) {
-    return new Date(dateStr + 'T' + String(hour).padStart(2, '0') + ':' + String(minute).padStart(2, '0') + ':00.000+05:30');
+  //
+  // LIVE BUG FIX (2026-11) - an earlier draft used hardcoded literal
+  // dates here ('2026-11-14' etc.), comfortably in the future when
+  // written. Real wall-clock time then genuinely caught up to them: an
+  // EARLIER test in this same file (the "Background backup job"
+  // section, via startBackupJob -> markDailyBackupDoneIfToday) stamps
+  // subh-backup-daily-state using the REAL `new Date()`, so once today's
+  // real date became 2026-11-14 too, that earlier test's real-time
+  // write collided with this section's hardcoded '2026-11-14' - the
+  // state was already {date:'2026-11-14', status:'done'} before this
+  // section's own first scenario even ran, so checkDailyBackup saw "not
+  // pending" and silently skipped the attempt entirely. Confirmed by
+  // reproducing it exactly (re-running after the real date rolled over)
+  // before fixing - not assumed. Fixed by deriving these test dates from
+  // the REAL current date plus a permanent, large (+2 year) offset, so
+  // they can never collide with whatever "today" really is, no matter
+  // when this suite runs - not a one-off hardcoded date ever again.
+  const TEST_DAY_BASE = new Date(Date.now() + 2 * 365 * 24 * 60 * 60 * 1000);
+  function farFutureDateStr(daysOffset) {
+    const y = TEST_DAY_BASE.getUTCFullYear(), m = TEST_DAY_BASE.getUTCMonth(), d = TEST_DAY_BASE.getUTCDate();
+    return new Date(Date.UTC(y, m, d + daysOffset)).toISOString().slice(0, 10);
   }
+  function istDate(daysOffset, hour, minute) {
+    return new Date(farFutureDateStr(daysOffset) + 'T' + String(hour).padStart(2, '0') + ':' + String(minute).padStart(2, '0') + ':00.000+05:30');
+  }
+  const TEST_DAY_0 = farFutureDateStr(0), TEST_DAY_1 = farFutureDateStr(1), TEST_DAY_2 = farFutureDateStr(2), TEST_DAY_3 = farFutureDateStr(3);
 
   console.log('='.repeat(70));
   console.log('Daily automatic backup (item 3, 2026-11, direct instruction) - 02:00-05:00 IST window, catch-up if the server was down, up to 3 retries 30 min apart ALL within the window, an Action-needed card if there is still no successful backup by 05:00, never two attempts at once');
@@ -312,57 +335,57 @@ async function main() {
   try {
     installFakeDrive({});
     await checkAsync('scenario: server down at 02:00, back at 03:30 - runs right then (catch-up is just the ordinary window+status check, no special code)', async () => {
-      const result = await svc.checkDailyBackup(istDate('2026-11-14', 3, 30));
+      const result = await svc.checkDailyBackup(istDate(0, 3, 30));
       const state = await svc.getDailyBackupState();
-      return state && state.date === '2026-11-14' && state.status === 'done' && state.attempts.length === 1 && state.attempts[0].ok === true;
+      return state && state.date === TEST_DAY_0 && state.status === 'done' && state.attempts.length === 1 && state.attempts[0].ok === true;
     });
     await checkAsync('scenario: already done today (same date, still in-window) - a later check makes NO new attempt and never re-uploads', async () => {
       const before = fakeFileCounter;
-      await svc.checkDailyBackup(istDate('2026-11-14', 3, 45));
+      await svc.checkDailyBackup(istDate(0, 3, 45));
       const state = await svc.getDailyBackupState();
-      return state.date === '2026-11-14' && state.status === 'done' && state.attempts.length === 1 && fakeFileCounter === before;
+      return state.date === TEST_DAY_0 && state.status === 'done' && state.attempts.length === 1 && fakeFileCounter === before;
     });
   } finally {
     restoreRealDrive();
   }
 
   await checkAsync('scenario: the server only comes back at 06:00 (window already closed) - no backup is ever attempted, and the Action-needed card is shown', async () => {
-    const result = await svc.checkDailyBackup(istDate('2026-11-15', 6, 0));
+    const result = await svc.checkDailyBackup(istDate(1, 6, 0));
     const state = await svc.getDailyBackupState();
-    if (!(state && state.date === '2026-11-15' && state.status === 'failed_final' && state.attempts.length === 0)) return false;
+    if (!(state && state.date === TEST_DAY_1 && state.status === 'failed_final' && state.attempts.length === 0)) return false;
     const card = await svc.getBackupActionNeededItem();
-    return Boolean(card) && card.kind === 'daily_backup_failed' && card.data.date === '2026-11-15' && card.data.attempts === 0;
+    return Boolean(card) && card.kind === 'daily_backup_failed' && card.data.date === TEST_DAY_1 && card.data.attempts === 0;
   });
 
   try {
     subhDriveAuth.isAuthenticated = () => false; // every attempt fails
     subhDriveAuth.getDriveClient = origGetDriveClient;
     await checkAsync('scenario: a failing night retries up to 3 times, 30 min apart, then finalizes and shows the card - a retry attempted too soon (5 min) is correctly skipped', async () => {
-      await svc.checkDailyBackup(istDate('2026-11-16', 2, 0)); // attempt 1 - fails
+      await svc.checkDailyBackup(istDate(2, 2, 0)); // attempt 1 - fails
       let state = await svc.getDailyBackupState();
       if (!(state.attempts.length === 1 && state.status === 'pending')) return false;
 
-      await svc.checkDailyBackup(istDate('2026-11-16', 2, 5)); // only 5 min later - too soon, no new attempt
+      await svc.checkDailyBackup(istDate(2, 2, 5)); // only 5 min later - too soon, no new attempt
       state = await svc.getDailyBackupState();
       if (state.attempts.length !== 1) return false;
 
-      await svc.checkDailyBackup(istDate('2026-11-16', 2, 30)); // attempt 2 - fails
+      await svc.checkDailyBackup(istDate(2, 2, 30)); // attempt 2 - fails
       state = await svc.getDailyBackupState();
       if (!(state.attempts.length === 2 && state.status === 'pending')) return false;
 
-      await svc.checkDailyBackup(istDate('2026-11-16', 3, 0)); // attempt 3 - fails
+      await svc.checkDailyBackup(istDate(2, 3, 0)); // attempt 3 - fails
       state = await svc.getDailyBackupState();
       if (!(state.attempts.length === 3 && state.status === 'pending')) return false; // not finalized yet - that happens on the NEXT check
 
-      await svc.checkDailyBackup(istDate('2026-11-16', 3, 1)); // retries exhausted - finalizes immediately, never a 4th attempt
+      await svc.checkDailyBackup(istDate(2, 3, 1)); // retries exhausted - finalizes immediately, never a 4th attempt
       state = await svc.getDailyBackupState();
       if (!(state.attempts.length === 3 && state.status === 'failed_final')) return false;
 
       const card = await svc.getBackupActionNeededItem();
-      return Boolean(card) && card.data.date === '2026-11-16' && card.data.attempts === 3 && /SUBH Drive is not connected/.test(card.data.lastError || '');
+      return Boolean(card) && card.data.date === TEST_DAY_2 && card.data.attempts === 3 && /SUBH Drive is not connected/.test(card.data.lastError || '');
     });
     await checkAsync('once finalized as failed_final, the window closing again (05:00+) never re-attempts a 4th time', async () => {
-      await svc.checkDailyBackup(istDate('2026-11-16', 4, 50));
+      await svc.checkDailyBackup(istDate(2, 4, 50));
       const state = await svc.getDailyBackupState();
       return state.attempts.length === 3 && state.status === 'failed_final';
     });
@@ -373,10 +396,10 @@ async function main() {
   try {
     installFakeDrive({ uploadDelayMs: 100 }); // slow enough that two concurrent checks genuinely overlap
     await checkAsync('never run two at once - two concurrent checks for the same brand-new day only ever produce ONE real attempt', async () => {
-      const now = istDate('2026-11-17', 2, 0);
+      const now = istDate(3, 2, 0);
       await Promise.all([svc.checkDailyBackup(now), svc.checkDailyBackup(now)]);
       const state = await svc.getDailyBackupState();
-      return state.date === '2026-11-17' && state.attempts.length === 1 && state.status === 'done';
+      return state.date === TEST_DAY_3 && state.attempts.length === 1 && state.status === 'done';
     });
   } finally {
     restoreRealDrive();

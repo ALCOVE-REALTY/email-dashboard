@@ -612,7 +612,14 @@ function check(label, ok, detail) {
   check('Letter settings, Fields: the card refreshes to show the new mapped count after Save', (fieldsStatusAfterSave || '').includes('2/2 mapped'), 'got: ' + JSON.stringify(fieldsStatusAfterSave));
   const sendTestBtn = driveCard.locator('[data-action="send-test-letter"]');
   await sendTestBtn.click();
-  await page.waitForTimeout(150); // well before the mock's own 400ms delay resolves - the request is still in flight
+  // LIVE BUG FIX (2026-11) - 150ms was shorter than the CSS transition
+  // itself (.wf-card-action-btn's `transition: color .2s ease`, 200ms),
+  // so this sometimes sampled color mid-transition (e.g. rgba(..., 0.004)
+  // - visually transparent already, but not exactly 0 yet) and failed
+  // flakily depending on timing, not on whether the fix actually works.
+  // 300ms is comfortably past the 200ms transition and still well before
+  // the mock's own 400ms delay resolves - the request is still in flight.
+  await page.waitForTimeout(300);
   const sendTestLoadingState = await sendTestBtn.evaluate((el) => ({
     isLoading: el.classList.contains('is-loading'), disabled: el.disabled, color: getComputedStyle(el).color
   }));
