@@ -8620,6 +8620,18 @@ async function checkAsyncRealModel(label, fn) {
       && hi === 'apni onake kal (13 November) half day nebar approval diyechhen'
       && en === 'you gave approval for tomorrow (13 November)';
   })());
+  check('fillHrNoteDatePlaceholder: English "on {Date}" drops the redundant "on" for a bare relative day word ("on today"/"on tomorrow" read as bad grammar) but keeps "on" for an explicit date/weekday (both correct English)', (() => {
+    const today = whatsappAssistant.resolveHrNoteDate('aaj', HR_DATE_ARRIVAL);
+    const tomorrow = whatsappAssistant.resolveHrNoteDate('kal', HR_DATE_ARRIVAL);
+    const explicitDate = whatsappAssistant.resolveHrNoteDate('15 November', HR_DATE_ARRIVAL);
+    const template = 'in the second half on {Date}';
+    const todayText = whatsappAssistant.fillHrNoteDatePlaceholder(template, whatsappAssistant.formatHrNoteDatePhrase(today, 'english'));
+    const tomorrowText = whatsappAssistant.fillHrNoteDatePlaceholder(template, whatsappAssistant.formatHrNoteDatePhrase(tomorrow, 'english'));
+    const explicitText = whatsappAssistant.fillHrNoteDatePlaceholder(template, whatsappAssistant.formatHrNoteDatePhrase(explicitDate, 'english'));
+    return todayText === 'in the second half today (12 November)'
+      && tomorrowText === 'in the second half tomorrow (13 November)'
+      && explicitText === 'in the second half on 15 November';
+  })());
   check('fillHrNoteDatePlaceholder: defensive no-crash fallback when the token is missing from the phrase (never throws, strips a stray token instead)', (() => {
     const noToken = whatsappAssistant.fillHrNoteDatePlaceholder('plain text with no token', 'anything');
     const ambiguousPhrase = whatsappAssistant.fillHrNoteDatePlaceholder('apni {Date} chuti nebar approval diyechhen', '');

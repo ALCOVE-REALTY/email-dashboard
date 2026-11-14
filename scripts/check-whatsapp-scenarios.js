@@ -636,16 +636,26 @@ scenario('T2-6: "HAA" + A SEPARATE TOPIC, ANOTHER FLOW ALREADY OPEN FOR A DIFFER
 });
 
 // --- Language stickiness (2026-10-26 live incident) ---
-scenario('Language stickiness: a short "Yss sir" reply inside an established Banglish conversation stays Banglish, never switches to English', async () => {
+// Originally written to guard against a different bug (a short reply
+// wrongly switching the reply's LANGUAGE away from Banglish). Superseded
+// by the later, broader PART 2(f) rule (2026-11): a bare acknowledgement
+// with nothing open in the chat gets NO reply at all - "Yss sir" here has
+// no pending question to ack, so silence is the correct, current behavior
+// (not a regression - reproduced identically on the pre-2026-11 baseline
+// too; the language-switch question this test originally asked simply no
+// longer applies once the reply is correctly silence). Updated 2026-11,
+// direct instruction, to assert the current correct behavior instead of
+// the stale pre-PART-2(f) expectation. The "Yss sir" reply INSIDE an open
+// flow (a real pending question awaiting an answer) is a separate code
+// path with its own existing locked re-ask-template scenario(s) elsewhere
+// in this file - intentionally untouched here.
+scenario('Language stickiness (updated 2026-11): a short "Yss sir" reply with no open question in the chat gets NO reply at all (bare acknowledgement, PART 2(f) rule) - not a language-switch bug', async () => {
   const phone = '910000001210';
   try {
     const history = [{ direction: 'in', text: 'Ajke ami office ashte parbo na, sorir ta thik nei.', ts: Date.now() - 60000 }];
     const d = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenSticky1', firstName: 'ScenSticky1', text: 'Yss sir', isGroup: false, history });
-    // d.lang is the decision's own authoritative language choice - more
-    // reliable than inspecting replyText's literal prefix, since not
-    // every reply shape leads with a separate identity line.
-    if (!d.replyText || d.lang !== 'banglish') return { pass: false, detail: 'live bug reproduced: switched away from Banglish for a short reply in a Banglish conversation (lang=' + d.lang + '): ' + d.replyText };
-    return { pass: true, detail: 'stayed Banglish for the short reply' };
+    if (d.replyText !== null) return { pass: false, detail: 'expected no reply (bare ack, nothing open), got: ' + JSON.stringify(d) };
+    return { pass: true, detail: 'correctly produced no reply' };
   } finally {
     await cleanupHrFlowArtifacts(phone);
   }
@@ -1130,7 +1140,7 @@ async function cleanupHrDataQueryArtifacts(...phones) {
 function pendingApprovalFor(approvals, phone) {
   return approvals.find((a) => whatsapp.normalizePhone(a.phone) === whatsapp.normalizePhone(phone));
 }
-scenario('HRQUERY: "Duets er engineers list dao" (site + designation, no alias needed - "Duets" already matches "Duets-Site" by its own name) lists exactly the 4 real ACTIVE Duets-Site engineers', async () => {
+scenario('HRQUERY: "Duets er engineers list dao" (site + designation, no alias needed - "Duets" already matches "Duets-Site" by its own name) lists exactly the real ACTIVE Duets-Site engineers', async () => {
   const phone = '910000002301';
   await cleanupHrDataQueryArtifacts(phone);
   try {
@@ -1139,7 +1149,17 @@ scenario('HRQUERY: "Duets er engineers list dao" (site + designation, no alias n
     const approval = pendingApprovalFor(await whatsappAssistant.listPendingApprovals(), phone);
     if (!approval || !approval.preparedReplyText) return { pass: false, detail: 'expected a queued approval with a prepared reply, got: ' + JSON.stringify(approval) };
     const text = approval.preparedReplyText;
-    const realNames = ['Abhishek Saha', 'Raghunath Halder', 'Anirban Bera', 'Subhadip Das'];
+    // Derived from the live HR data at test time (2026-11, direct
+    // instruction) rather than a hand-typed name list, so ordinary
+    // headcount drift (someone leaving/moving site) can never break this
+    // test again the way it did when "Raghunath Halder" left Duets-Site -
+    // same filter fields/semantics decideAutoReply's own HR-data-query
+    // path already uses (employeeService.filterEmployees: status +
+    // location + designation, same substring/case-insensitive matching).
+    const employeeService = require('../src/employeeService');
+    const { employees } = await employeeService.getEmployeeData();
+    const realNames = employeeService.filterEmployees(employees, { status: 'ACTIVE', location: 'duets', designation: 'engineer' }).map((e) => e.name);
+    if (!realNames.length) return { pass: false, detail: 'live data had no ACTIVE Duets-Site engineers to compare against - cannot verify this scenario right now' };
     const missing = realNames.filter((n) => !text.includes(n));
     if (missing.length) return { pass: false, detail: 'expected all 4 real Duets-Site engineers listed, missing: ' + missing.join(', ') + ' - got: ' + text };
     if (!/duets/i.test(text)) return { pass: false, detail: 'expected "Duets" named in the reply, got: ' + text };

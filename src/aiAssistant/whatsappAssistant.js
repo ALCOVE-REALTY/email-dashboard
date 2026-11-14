@@ -6999,10 +6999,21 @@ function formatHrNoteDatePhrase(resolved, lang) {
 // duplicated per call site. Defensive no-crash fallback if the token is
 // somehow missing (an older cached value, or the model simply forgot
 // it): the text is returned as-is rather than throwing.
+// A bare relative day-word phrase ("today (12 November)", "tomorrow (13
+// November)", "aaj (12 November)", ...) never takes a leading "on" in
+// English ("on today" is bad grammar), unlike an explicit date/weekday/range
+// ("on 15 November", "on Monday (16 November)" are both fine). The model
+// can't know ahead of time which kind {Date} will resolve to, so it may
+// write "...on {Date}" either way - code corrects the one case that's
+// actually wrong, regardless of how the model phrased the sentence.
+const HR_NOTE_RELATIVE_DAY_LABELS = Object.values(HR_NOTE_DAY_WORD_LABEL).flatMap(o => Object.values(o));
 function fillHrNoteDatePlaceholder(text, phrase) {
   if (!text) return text;
   if (!phrase) return String(text).replace(/\s*\{Date\}\s*/g, ' ').replace(/\s+/g, ' ').trim();
-  return String(text).replace(/\{Date\}/g, phrase);
+  const lowerPhrase = phrase.toLowerCase();
+  const isBareRelative = HR_NOTE_RELATIVE_DAY_LABELS.some(label => lowerPhrase.startsWith(label.toLowerCase() + ' ('));
+  const source = isBareRelative ? String(text).replace(/\bon\s+\{Date\}/gi, '{Date}') : String(text);
+  return source.replace(/\{Date\}/g, phrase);
 }
 const HR_NOTE_ASK_WHICH_DATE = {
   banglish: 'Eta thik kon tarikher jonno, ektu specific kore bolben? (jemon "15 November" ba "kal")',
