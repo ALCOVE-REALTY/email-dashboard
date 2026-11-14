@@ -3048,6 +3048,21 @@
           <div style="margin-top:10px">
             <button type="button" class="wf-ai-action-btn outline" id="twcSaveSettingsBtn"><span>Save</span></button>
           </div>
+
+          <!-- "Field mapping" (2026-11, new feature, direct instruction
+               after the live header-mismatch bug) - which REAL
+               Employee_Master header each of the 4 API fields reads from,
+               so a renamed header never needs a code change again. Each
+               dropdown is populated from the LIVE row-4 headers. -->
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 0 6px">
+            <span class="wf-ai-sheet-title" style="font-size:14px">Field mapping</span>
+          </div>
+          <div class="wf-auto-hint" style="padding:0 0 6px">Which real Employee_Master column (row 4) each field reads from. Pick again here if a column is ever renamed - no code change needed.</div>
+          <div id="twcFieldMappingRows" style="display:flex;flex-direction:column;gap:10px"></div>
+          <div class="wf-auto-err hidden" id="twcFieldMappingErr" style="padding:4px 0 0"></div>
+          <div style="margin-top:10px">
+            <button type="button" class="wf-ai-action-btn outline" id="twcSaveFieldMappingBtn"><span>Save field mapping</span></button>
+          </div>
         </div>
       </div>
     </section>

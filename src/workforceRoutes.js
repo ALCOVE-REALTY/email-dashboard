@@ -3878,6 +3878,33 @@ router.get('/hr-assistant/together-we-can/failure', async (req, res) => {
   }
 });
 
+// "Field mapping" (2026-11, new feature, direct instruction after the live
+// header-mismatch bug) - which real Employee_Master header each of the 4
+// API fields reads from, owner-editable from a dropdown of the LIVE row-4
+// headers (getHeaderList is mapping-independent, so this works even while
+// the currently-saved mapping is broken - exactly this bug's own repro).
+router.get('/hr-assistant/together-we-can/field-mapping', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const [mapping, headers] = await Promise.all([
+      togetherWeCanService.getFieldMapping(),
+      togetherWeCanService.getHeaderList()
+    ]);
+    res.json({ mapping, headers });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+router.post('/hr-assistant/together-we-can/field-mapping', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const { empCode, status, hodId, reportingDoerId } = req.body || {};
+    res.json(await togetherWeCanService.saveFieldMapping({ empCode, status, hodId, reportingDoerId }));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 router.get('/hr-assistant/together-we-can/settings', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
   try {

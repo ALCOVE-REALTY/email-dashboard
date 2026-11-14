@@ -49,36 +49,54 @@ const HEADER_ROW = 4; // row 1: title, row 2: blank, row 3: column numbers, row 
 const SHEET_RANGE = `'${TAB_NAME}'!A${HEADER_ROW}:BC`;
 const CACHE_TTL_MS = 2 * 60 * 1000; // same cadence as employeeService.CACHE_TTL_MS
 
-// Exact header text to locate, case/whitespace-insensitively - NEVER a
-// hardcoded column letter. Per the spec: Emp Code is currently column B,
-// Status is currently AM, HOD-1 ID is currently AV, Reporting Doer Id is
-// currently AW - none of that is relied on; only the header text is.
-const REQUIRED_HEADERS = {
-  empCode: 'Emp Code',
-  status: 'Status',
+// LIVE BUG FIX (2026-11), direct instruction - the real Employee_Master
+// headers (confirmed directly against the live sheet, 2026-11, via this
+// same sheetsAuth/getSheetsReadOnlyClient path) are "New Emp. No." (col B),
+// "STATUS" (AM), "HOD-1 ID" (AV), "REPORTING DOER ID" (AW) - NOT the
+// originally-assumed "Emp Code"/"Status"/"HOD-1 ID"/"Reporting Doer Id".
+// "Emp Code" never existed in the real sheet at all - that one wrong
+// assumption was the entire live bug ("could not find column header(s)...
+// Emp Code"); Status/HOD-1 ID/Reporting Doer Id all matched fine already
+// (case-insensitively) and were never actually broken.
+//
+// These are now only the DEFAULT values for an OWNER-EDITABLE mapping
+// (getFieldMapping/saveFieldMapping below, persisted in Redis, shown as a
+// "Field mapping" picker on the Together We Can card) - never hardcoded
+// column letters, and never silently relied on again if the sheet's
+// headers are renamed in the future: the owner re-picks the header from a
+// live dropdown instead of needing a code change.
+const DEFAULT_FIELD_MAPPING = {
+  empCode: 'New Emp. No.',
+  status: 'STATUS',
   hodId: 'HOD-1 ID',
-  reportingDoerId: 'Reporting Doer Id'
+  reportingDoerId: 'REPORTING DOER ID'
 };
 
 const CANONICAL_STATUSES = ['ACTIVE', 'INACTIVE', 'NOTICE PERIOD'];
 const BATCH_SIZE = 200;
 
+// Case/whitespace/DOT-insensitive, per direct instruction ("New Emp. No."
+// must match regardless of how its dot/spacing is typed) - dots stripped
+// FIRST, then whitespace collapsed, then lower-cased, so "New Emp. No."
+// and "new emp no" (or "NEW   EMP.NO.") all normalize identically.
 function normalizeHeaderText(h) {
-  return String(h == null ? '' : h).trim().replace(/\s+/g, ' ').toLowerCase();
+  return String(h == null ? '' : h).replace(/\./g, '').trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
 // Never silently falls back to a hardcoded column letter - a missing
-// header is a loud configuration error, not a guess.
-function locateColumns(headerRow) {
+// header (the saved mapping naming a header that no longer exists in a
+// later sheet read) is a loud, specific configuration error pointing the
+// owner at "Field mapping", not a guess.
+function locateColumns(headerRow, mapping) {
   const normalized = (headerRow || []).map(normalizeHeaderText);
   const indices = {};
   const missing = [];
-  Object.entries(REQUIRED_HEADERS).forEach(([key, label]) => {
+  Object.entries(mapping).forEach(([key, label]) => {
     const idx = normalized.indexOf(normalizeHeaderText(label));
-    if (idx === -1) missing.push(label); else indices[key] = idx;
+    if (idx === -1) missing.push('"' + label + '"'); else indices[key] = idx;
   });
   if (missing.length) {
-    throw new Error('Together We Can: could not find column header(s) in Employee_Master row ' + HEADER_ROW + ': ' + missing.join(', ') + '.');
+    throw new Error('Together We Can: the saved field mapping names column header(s) that no longer exist in Employee_Master row ' + HEADER_ROW + ': ' + missing.join(', ') + '. Open "Field mapping" on the Together We Can card and re-pick the real header(s).');
   }
   return indices;
 }
@@ -93,7 +111,7 @@ function normalizeStatus(raw) {
 }
 
 // ---------------- Sheet read + cache (own small cache, see module header) ----------------
-let cache = { rows: null, fetchedAt: 0, gen: -1 };
+let cache = { rows: null, mapping: null, fetchedAt: 0, gen: -1 };
 let inFlight = null;
 let inFlightGen = -1;
 
@@ -103,28 +121,33 @@ async function fetchSheetValues() {
   return res.data.values || [];
 }
 
-function parseSheetValues(values) {
+// Reads the LIVE sheet AND the current saved field mapping together, and
+// parses through whatever mapping is currently saved (never a hardcoded
+// header-name constant) - the one place both come together. Used by every
+// forced/background refresh below, so a mapping change always takes
+// effect on the very next read.
+async function fetchAndParseSheet() {
+  const [values, mapping] = await Promise.all([fetchSheetValues(), getFieldMapping()]);
   const headerRow = values[0] || [];
   const dataRows = values.slice(1);
-  const cols = locateColumns(headerRow);
-  return dataRows.map((r) => ({
+  const cols = locateColumns(headerRow, mapping);
+  const rows = dataRows.map((r) => ({
     empCode: cleanCell(r[cols.empCode]),
     statusRaw: cleanCell(r[cols.status]),
     hodId: cleanCell(r[cols.hodId]),
     reportingDoerId: cleanCell(r[cols.reportingDoerId])
   }));
+  return { rows, mapping };
 }
 
 function refreshCache() {
   if (inFlight && inFlightGen === cacheBus.current()) return inFlight;
   const gen = cacheBus.current();
   inFlightGen = gen;
-  const p = (async () => {
-    const values = await fetchSheetValues();
-    const rows = parseSheetValues(values);
-    cache = { rows, fetchedAt: Date.now(), gen };
+  const p = fetchAndParseSheet().then(({ rows, mapping }) => {
+    cache = { rows, mapping, fetchedAt: Date.now(), gen };
     return cache;
-  })();
+  });
   inFlight = p;
   return p.finally(() => { if (inFlight === p) inFlight = null; });
 }
@@ -144,9 +167,8 @@ function refreshCache() {
 // before the click, not a race with some earlier unrelated read.
 async function getRawSheetRows({ forceRefresh = false } = {}) {
   if (forceRefresh) {
-    const values = await fetchSheetValues();
-    const rows = parseSheetValues(values);
-    cache = { rows, fetchedAt: Date.now(), gen: cacheBus.current() };
+    const { rows, mapping } = await fetchAndParseSheet();
+    cache = { rows, mapping, fetchedAt: Date.now(), gen: cacheBus.current() };
     return rows;
   }
   const hasCache = Boolean(cache.rows) && cache.gen === cacheBus.current();
@@ -156,10 +178,23 @@ async function getRawSheetRows({ forceRefresh = false } = {}) {
   return cache.rows;
 }
 
+// For the "Field mapping" picker's header dropdown - a tiny, ALWAYS-fresh,
+// mapping-INDEPENDENT read of just the raw header row (never routed
+// through locateColumns/fetchAndParseSheet, which would throw if the
+// CURRENT saved mapping is broken - exactly the live bug this feature
+// exists to let the owner fix). A single-row range is cheap enough that
+// this intentionally has no cache of its own.
+async function getHeaderList() {
+  const sheets = sheetsAuth.getSheetsReadOnlyClient();
+  const res = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `'${TAB_NAME}'!A${HEADER_ROW}:BC${HEADER_ROW}` });
+  const headerRow = (res.data.values || [])[0] || [];
+  return headerRow.map(cleanCell).filter(Boolean);
+}
+
 // Exposed for tests only - clears the in-process cache so a test can
 // change its fake sheet data between checks without stale rows leaking
 // across them.
-function _clearCacheForTest() { cache = { rows: null, fetchedAt: 0, gen: -1 }; inFlight = null; inFlightGen = -1; }
+function _clearCacheForTest() { cache = { rows: null, mapping: null, fetchedAt: 0, gen: -1 }; inFlight = null; inFlightGen = -1; }
 
 // ---------------- Eligibility (warnings + what actually gets sent) ----------------
 // A row with no Emp_Code AND nothing else in these 4 columns is a true
@@ -234,8 +269,10 @@ const HISTORY_KEY = 'subh-twc:history';
 const SETTINGS_KEY = 'subh-twc:settings';
 const DAILY_STATE_KEY = 'subh-twc:daily-state';
 const FAILURE_KEY = 'subh-twc:last-failure';
+const FIELD_MAPPING_KEY = 'subh-twc:field-mapping';
 const HISTORY_MAX = 10;
 const DEFAULT_SETTINGS = { enabled: false, time: '21:00' };
+const FIELD_MAPPING_FIELDS = ['empCode', 'status', 'hodId', 'reportingDoerId'];
 
 function parseJsonSafe(raw, fallback) {
   if (raw === null || raw === undefined) return fallback;
@@ -304,6 +341,39 @@ async function getFailure() {
   const redis = getRedis();
   if (!redis) return null;
   try { return parseJsonSafe(await redis.get(FAILURE_KEY), null); } catch (err) { return null; }
+}
+
+// "Field mapping" (2026-11, new feature, direct instruction after the
+// live header-mismatch bug) - which REAL Employee_Master header each of
+// the 4 API fields reads from, owner-editable (a dropdown of the live
+// row-4 headers, see getHeaderList above) and persisted here, same Redis
+// convention as every other Together We Can setting. Falls back to
+// DEFAULT_FIELD_MAPPING (the real headers confirmed against the live
+// sheet) until the owner ever saves one of their own - works correctly
+// out of the box, never requires a visit to this page first.
+async function getFieldMapping() {
+  const redis = getRedis();
+  if (!redis) return Object.assign({}, DEFAULT_FIELD_MAPPING);
+  try { return Object.assign({}, DEFAULT_FIELD_MAPPING, parseJsonSafe(await redis.get(FIELD_MAPPING_KEY), {})); }
+  catch (err) { return Object.assign({}, DEFAULT_FIELD_MAPPING); }
+}
+async function saveFieldMapping(mapping) {
+  const clean = {};
+  const missing = [];
+  FIELD_MAPPING_FIELDS.forEach((key) => {
+    const value = mapping && mapping[key];
+    if (typeof value !== 'string' || !value.trim()) missing.push(key);
+    else clean[key] = value.trim();
+  });
+  if (missing.length) throw new Error('Missing a header choice for: ' + missing.join(', ') + '.');
+  const redis = getRedis();
+  if (redis) await redis.set(FIELD_MAPPING_KEY, JSON.stringify(clean));
+  // The mapping just changed - drop the in-process sheet cache so the
+  // VERY NEXT read (even a non-forced one, e.g. the employee picker)
+  // re-parses under the new mapping rather than serving rows that were
+  // parsed under the old one moments ago.
+  _clearCacheForTest();
+  return clean;
 }
 
 async function getSettings() {
@@ -434,6 +504,15 @@ async function sendFullSync({ triggeredBy = 'manual' } = {}) {
     await saveSnapshotForRows(successfulRows);
   }
 
+  // "shown in history" (2026-11, direct instruction) - the field mapping
+  // ACTIVE for this specific sync attempt, so the owner/IT can see exactly
+  // which real sheet header each field came from. Fetched fresh here
+  // (cheap, one Redis get) rather than reaching into the sheet-read
+  // cache's internals, so this is correct even on the failure path above
+  // (e.g. a mapping whose header just vanished - the entry still names
+  // the mapping that was ATTEMPTED).
+  const mappingUsed = await getFieldMapping().catch(() => null);
+
   const entry = {
     triggeredBy,
     employeeCount: sendRows.length,
@@ -445,6 +524,7 @@ async function sendFullSync({ triggeredBy = 'manual' } = {}) {
     httpStatus: result.httpStatus || null,
     responseBodyText: result.responseBodyText || null,
     batches: (result.batches || []).map((b) => ({ startIndex: b.startIndex, endIndex: b.endIndex, ok: b.ok, status: b.status, bodyText: b.bodyText })),
+    fieldMapping: mappingUsed,
     warningsCount: warnings.length,
     // PROOF (2026-11, direct instruction) - the exact JSON for one real
     // employee, kept in history so the owner can show IT exactly what was
@@ -557,8 +637,13 @@ module.exports = {
   checkDailyAutoSync,
   getLastSnapshot,
   getFailure,
+  getFieldMapping,
+  saveFieldMapping,
+  getHeaderList,
   normalizeStatus,
+  normalizeHeaderText,
   CANONICAL_STATUSES,
+  DEFAULT_FIELD_MAPPING,
   BATCH_SIZE,
   _clearCacheForTest
 };

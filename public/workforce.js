@@ -834,8 +834,47 @@ function twcRenderHistory(history) {
     if (h.samplePayload) {
       html += '<div style="margin-left:14px;opacity:.8">Sent (sample): ' + escapeHtml(JSON.stringify(h.samplePayload)) + '</div>';
     }
+    // "shown in history" (2026-11, direct instruction) - which real sheet
+    // header each field came from for THIS specific sync attempt.
+    if (h.fieldMapping) {
+      html += '<div style="margin-left:14px;opacity:.8">Mapping: ' + escapeHtml(JSON.stringify(h.fieldMapping)) + '</div>';
+    }
     return html;
   }).join('');
+}
+
+// "Field mapping" (2026-11, new feature) - one row per API field, each a
+// dropdown of the LIVE row-4 headers (never hand-typed, so a typo can
+// never silently create a new broken mapping).
+const TWC_FIELD_LABELS = [
+  { key: 'empCode', label: 'Emp Code' },
+  { key: 'status', label: 'Status' },
+  { key: 'hodId', label: 'HOD ID' },
+  { key: 'reportingDoerId', label: 'Reporting Doer ID' }
+];
+function twcRenderFieldMapping(mapping, headers) {
+  const container = document.getElementById('twcFieldMappingRows');
+  container.innerHTML = TWC_FIELD_LABELS.map(({ key, label }) => {
+    const current = (mapping && mapping[key]) || '';
+    // The current saved value is always offered even if it's no longer in
+    // the live header list (exactly the "header vanished" case) - so the
+    // owner sees what's currently (mis)configured, not a dropdown that
+    // silently jumped to something else.
+    const options = headers.includes(current) ? headers : [current].concat(headers);
+    const optionsHtml = options.map((h) => '<option value="' + escapeHtml(h) + '"' + (h === current ? ' selected' : '') + '>' + escapeHtml(h) + '</option>').join('');
+    return '<label class="wf-rem-field"><span style="font-size:12px;opacity:.75">' + escapeHtml(label) + '</span>' +
+      '<select data-twc-field="' + key + '">' + optionsHtml + '</select></label>';
+  }).join('');
+}
+async function twcLoadFieldMapping() {
+  try {
+    const data = await fetchJson('/api/workforce/hr-assistant/together-we-can/field-mapping');
+    twcRenderFieldMapping(data.mapping || {}, data.headers || []);
+  } catch (err) {
+    const errEl = document.getElementById('twcFieldMappingErr');
+    errEl.textContent = 'Could not load the live sheet headers: ' + err.message;
+    errEl.classList.remove('hidden');
+  }
 }
 
 async function loadIntegrationsView() {
@@ -850,6 +889,32 @@ async function loadIntegrationsView() {
     twcRenderHistory(data.history || []);
   } catch (err) { /* leave "No syncs yet" placeholder */ }
   await twcLoadAndRenderFailure();
+  await twcLoadFieldMapping();
+}
+
+const twcSaveFieldMappingBtn = document.getElementById('twcSaveFieldMappingBtn');
+if (twcSaveFieldMappingBtn) {
+  twcSaveFieldMappingBtn.addEventListener('click', async () => {
+    const errEl = document.getElementById('twcFieldMappingErr');
+    errEl.classList.add('hidden');
+    const body = {};
+    document.querySelectorAll('#twcFieldMappingRows select[data-twc-field]').forEach((sel) => { body[sel.dataset.twcField] = sel.value; });
+    twcSaveFieldMappingBtn.disabled = true;
+    try {
+      const res = await fetch('/api/workforce/hr-assistant/together-we-can/field-mapping', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Could not save the field mapping.');
+      twcToast('Field mapping saved', 'success');
+      await twcLoadFieldMapping(); // re-render from the server's own confirmed value
+    } catch (err) {
+      errEl.textContent = err.message;
+      errEl.classList.remove('hidden');
+    } finally {
+      twcSaveFieldMappingBtn.disabled = false;
+    }
+  });
 }
 
 const twcPreviewBtn = document.getElementById('twcPreviewBtn');

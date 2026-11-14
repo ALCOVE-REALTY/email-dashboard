@@ -143,6 +143,21 @@ function check(label, ok, detail) {
       })
     });
   });
+  // "Field mapping" (2026-11, new feature) - a mutable current mapping so
+  // the save-then-reload assertion below can confirm the round-trip, plus
+  // a "vanished header" case: the saved reportingDoerId value
+  // ("Old Reporting Doer Column") is deliberately NOT in the live headers
+  // list, same shape togetherWeCanService.js produces for a renamed column.
+  let fieldMapping = { empCode: 'New Emp. No.', status: 'STATUS', hodId: 'HOD-1 ID', reportingDoerId: 'Old Reporting Doer Column' };
+  const liveHeaders = ['New Emp. No.', 'Person Accountable', 'STATUS', 'HOD-1 ID', 'REPORTING DOER ID'];
+  await page.route('**/api/workforce/hr-assistant/together-we-can/field-mapping', (route) => {
+    if (route.request().method() === 'POST') {
+      fieldMapping = JSON.parse(route.request().postData());
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(fieldMapping) });
+      return;
+    }
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ mapping: fieldMapping, headers: liveHeaders }) });
+  });
   await page.route('**/api/workforce/hr-assistant/together-we-can/test-one', (route) => {
     route.fulfill({
       status: 200, contentType: 'application/json', body: JSON.stringify({
@@ -315,8 +330,28 @@ function check(label, ok, detail) {
   await page.waitForTimeout(100);
   check('Checking "Automatically sync once a day" reveals the time field', await page.locator('#twcAutoSyncTimeRow').isVisible());
 
+  // ---- "Field mapping" (2026-11, new feature) ----
+  const empCodeSelectValue = await page.locator('#twcFieldMappingRows select[data-twc-field="empCode"]').inputValue();
+  check('Emp Code dropdown is pre-selected to the current saved mapping ("New Emp. No.")', empCodeSelectValue === 'New Emp. No.');
+  const empCodeOptionsText = await page.locator('#twcFieldMappingRows select[data-twc-field="empCode"]').innerText();
+  check('Emp Code dropdown lists the LIVE row-4 headers (never hand-typed)', empCodeOptionsText.includes('New Emp. No.') && empCodeOptionsText.includes('Person Accountable') && empCodeOptionsText.includes('STATUS'));
+  const reportingDoerOptionsText = await page.locator('#twcFieldMappingRows select[data-twc-field="reportingDoerId"]').innerText();
+  check('A saved mapping value that no longer exists in the live headers (a renamed/vanished column) is still shown as the current selection, never silently swapped to something else', reportingDoerOptionsText.includes('Old Reporting Doer Column'));
+  const reportingDoerSelectedValue = await page.locator('#twcFieldMappingRows select[data-twc-field="reportingDoerId"]').inputValue();
+  check('...and it is the one actually SELECTED (not just listed)', reportingDoerSelectedValue === 'Old Reporting Doer Column');
+
+  // Round-trip: re-point Reporting Doer ID at the real live header, save,
+  // and confirm it comes back correctly selected after a reload from the server.
+  await page.selectOption('#twcFieldMappingRows select[data-twc-field="reportingDoerId"]', 'REPORTING DOER ID');
+  await page.click('#twcSaveFieldMappingBtn');
+  await page.waitForTimeout(250);
+  const mappingSavedToastText = await page.locator('.wf-pro-toast').last().textContent().catch(() => null);
+  check('Saving the field mapping shows a success toast', (mappingSavedToastText || '').includes('Field mapping saved'));
+  const reportingDoerAfterSave = await page.locator('#twcFieldMappingRows select[data-twc-field="reportingDoerId"]').inputValue();
+  check('After saving, the dropdown reflects the NEW value (re-rendered from the server\'s own confirmed response, not just left as-is)', reportingDoerAfterSave === 'REPORTING DOER ID');
+
   const errorsAfterIntegrations = consoleErrors.length + pageErrors.length;
-  check('No JS error was thrown through opening Integrations, Preview, Sync Now, the employee picker or Test-one',
+  check('No JS error was thrown through opening Integrations, Preview, Sync Now, the employee picker, Test-one or Field mapping',
     errorsAfterIntegrations === errorsBeforeIntegrations,
     'new errors: ' + JSON.stringify(consoleErrors.concat(pageErrors)));
 

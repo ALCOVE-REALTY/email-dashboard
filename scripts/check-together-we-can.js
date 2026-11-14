@@ -136,6 +136,18 @@ async function main() {
   };
 
   try {
+    // The MAIN_FIXTURE below deliberately uses non-standard header text
+    // ("Emp Code"/"Status"/"HOD-1 ID"/"Reporting Doer Id" - NOT the real
+    // sheet's actual headers, confirmed 2026-11 as "New Emp. No."/
+    // "STATUS"/"HOD-1 ID"/"REPORTING DOER ID") specifically to prove
+    // header-TEXT-driven lookup independent of any particular real-world
+    // string. Since the field mapping is now owner-editable rather than a
+    // hardcoded constant, every test below explicitly SAVES a mapping
+    // naming these exact fixture headers first - this is itself the
+    // mapping round-trip this suite is meant to cover (pick -> save ->
+    // used by Preview/Sync), not a workaround.
+    await togetherWeCanService.saveFieldMapping({ empCode: 'Emp Code', status: 'Status', hodId: 'HOD-1 ID', reportingDoerId: 'Reporting Doer Id' });
+
     console.log('='.repeat(70));
     console.log('Header-name field extraction + eligibility (preview, no send)');
     console.log('='.repeat(70));
@@ -352,8 +364,8 @@ async function main() {
       const result = await togetherWeCanService.sendFullSync({ triggeredBy: 'broken-headers-test' });
       setFixture(MAIN_FIXTURE);
       const failure = await togetherWeCanService.getFailure();
-      return result.ok === false && result.mode === 'error' && /could not find column header/i.test(result.reason) &&
-        Boolean(failure) && /could not find column header/i.test(failure.reason);
+      return result.ok === false && result.mode === 'error' && /names column header\(s\) that no longer exist/i.test(result.reason) &&
+        Boolean(failure) && /Field mapping/i.test(failure.reason);
     });
     await checkAsync('a later SUCCESSFUL sync clears the persistent failure record', async () => {
       fetchScript = null;
@@ -377,7 +389,15 @@ async function main() {
     });
     await checkAsync('postRows surfaces a clear, exact "timed out" reason on an aborted request, never a silent/garbled one', async () => {
       const origFetch = global.fetch;
-      global.fetch = async () => { const e = new Error('The operation was aborted.'); e.name = 'AbortError'; throw e; };
+      // Filtered by URL, same convention as the suite-level mock - an
+      // unfiltered override here would ALSO break the Redis client's own
+      // internal fetch calls (getFieldMapping/getLastSnapshot etc. all go
+      // through fetch too), silently falling back to DEFAULT_FIELD_MAPPING
+      // mid-test rather than testing what this check actually means to.
+      global.fetch = async (url, opts) => {
+        if (String(url) === process.env.TWC_API_URL) { const e = new Error('The operation was aborted.'); e.name = 'AbortError'; throw e; }
+        return origFetch(url, opts);
+      };
       try {
         const result = await togetherWeCanService.sendTestOne({ employeeId: 'AR001' });
         return result.ok === false && /Timed out waiting for a response from TWC_API_URL/.test(result.responseBodyText);
@@ -427,6 +447,88 @@ async function main() {
     });
 
     console.log('='.repeat(70));
+    console.log('Field mapping (2026-11, new feature) - owner-editable, live-header-driven, never a silent wrong-column read');
+    console.log('='.repeat(70));
+    check('DEFAULT_FIELD_MAPPING matches the REAL Employee_Master headers confirmed against the live sheet (2026-11) - "New Emp. No." (not "Emp Code"), "STATUS", "HOD-1 ID", "REPORTING DOER ID"',
+      togetherWeCanService.DEFAULT_FIELD_MAPPING.empCode === 'New Emp. No.' &&
+      togetherWeCanService.DEFAULT_FIELD_MAPPING.status === 'STATUS' &&
+      togetherWeCanService.DEFAULT_FIELD_MAPPING.hodId === 'HOD-1 ID' &&
+      togetherWeCanService.DEFAULT_FIELD_MAPPING.reportingDoerId === 'REPORTING DOER ID');
+
+    check('Header matching is case/whitespace/DOT-insensitive, per direct instruction - "New Emp. No." and "new   emp no" (no dots, extra space) normalize identically',
+      togetherWeCanService.normalizeHeaderText('New Emp. No.') === togetherWeCanService.normalizeHeaderText('new   emp no') &&
+      togetherWeCanService.normalizeHeaderText('REPORTING DOER ID') === togetherWeCanService.normalizeHeaderText('Reporting Doer Id'));
+
+    await checkAsync('end-to-end: a header written with different dots/case/spacing than the saved mapping still resolves correctly (never a false "missing header" error)', async () => {
+      const DOTTY_FIXTURE = MAIN_FIXTURE.map((r) => r.slice());
+      DOTTY_FIXTURE[0] = DOTTY_FIXTURE[0].slice();
+      DOTTY_FIXTURE[0][COL.empCode] = '  EMP.  CODE  '; // dots + extra spaces + different case vs the saved mapping's "Emp Code"
+      setFixture(DOTTY_FIXTURE);
+      const preview = await togetherWeCanService.buildPreview({ forceRefresh: true });
+      setFixture(MAIN_FIXTURE);
+      return preview.employeeCount === 4; // same 4 eligible rows as the MAIN_FIXTURE baseline - the header matched despite the formatting differences
+    });
+
+    await checkAsync('GET field-mapping route returns the current saved mapping AND the live row-4 headers (for the dropdown) - independent of whether the CURRENT mapping is even valid', async () => {
+      setFixture(MAIN_FIXTURE);
+      const res = await callRoute(workforceRoutes, 'get', '/hr-assistant/together-we-can/field-mapping', { email: OWNER });
+      const headerRowValues = MAIN_FIXTURE[0].filter(Boolean);
+      return res.status === 200 && res.body.mapping.empCode === 'Emp Code' &&
+        headerRowValues.every((h) => res.body.headers.includes(h));
+    });
+
+    await checkAsync('mapping ROUND-TRIP: picking a different real header via the field-mapping route is saved, and Preview/Sync then resolve through it (not the old one)', async () => {
+      const RENAMED_FIXTURE = MAIN_FIXTURE.map((r) => r.slice());
+      RENAMED_FIXTURE[0] = RENAMED_FIXTURE[0].slice();
+      RENAMED_FIXTURE[0][COL.empCode] = 'Staff Code'; // the sheet's Emp Code column has been renamed
+      setFixture(RENAMED_FIXTURE);
+      // Before re-pointing the mapping, the OLD header name no longer
+      // resolves - confirms this is a genuine re-point, not a no-op.
+      const before = await togetherWeCanService.buildPreview({ forceRefresh: true }).catch((err) => ({ threw: err.message }));
+      const saveRes = await callRoute(workforceRoutes, 'post', '/hr-assistant/together-we-can/field-mapping', { email: OWNER, body: { empCode: 'Staff Code', status: 'Status', hodId: 'HOD-1 ID', reportingDoerId: 'Reporting Doer Id' } });
+      const after = await togetherWeCanService.buildPreview({ forceRefresh: true });
+      const syncRes = await togetherWeCanService.sendFullSync({ triggeredBy: 'mapping-roundtrip-test' });
+      const history = await togetherWeCanService.listHistory();
+      const entry = history.find((h) => h.triggeredBy === 'mapping-roundtrip-test');
+      // Restore the standard mapping/fixture for every test after this one.
+      await togetherWeCanService.saveFieldMapping({ empCode: 'Emp Code', status: 'Status', hodId: 'HOD-1 ID', reportingDoerId: 'Reporting Doer Id' });
+      setFixture(MAIN_FIXTURE);
+      return Boolean(before.threw) && saveRes.status === 200 && saveRes.body.empCode === 'Staff Code' &&
+        after.employeeCount === 4 && syncRes.ok === true &&
+        Boolean(entry) && entry.fieldMapping && entry.fieldMapping.empCode === 'Staff Code'; // "shown in history"
+    });
+
+    await checkAsync('saving an incomplete mapping (a blank/missing field) is rejected, never silently half-saved', async () => {
+      const before = await togetherWeCanService.getFieldMapping();
+      try {
+        await togetherWeCanService.saveFieldMapping({ empCode: 'Emp Code', status: '', hodId: 'HOD-1 ID', reportingDoerId: 'Reporting Doer Id' });
+        return false;
+      } catch (err) {
+        const after = await togetherWeCanService.getFieldMapping();
+        return /status/.test(err.message) && JSON.stringify(after) === JSON.stringify(before); // unchanged - never a partial save
+      }
+    });
+
+    await checkAsync('a saved mapping whose header later VANISHES from the sheet (renamed/removed) surfaces as a clear config error via the SAME Action-needed-card mechanism, never a silent wrong-column read', async () => {
+      // The mapping right now correctly names "Emp Code" - a later sheet
+      // edit renames that column, with NOTHING in the mapping changed.
+      const VANISHED_FIXTURE = MAIN_FIXTURE.map((r) => r.slice());
+      VANISHED_FIXTURE[0] = VANISHED_FIXTURE[0].slice();
+      VANISHED_FIXTURE[0][COL.empCode] = 'Employee Reference'; // renamed - "Emp Code" (the saved mapping value) no longer exists anywhere in row 4
+      setFixture(VANISHED_FIXTURE);
+      const result = await togetherWeCanService.sendFullSync({ triggeredBy: 'vanished-header-test' });
+      setFixture(MAIN_FIXTURE);
+      const failure = await togetherWeCanService.getFailure();
+      return result.ok === false && result.mode === 'error' && /"Emp Code"/.test(result.reason) && /Field mapping/i.test(result.reason) &&
+        Boolean(failure) && /"Emp Code"/.test(failure.reason);
+    });
+    // Recover the Action-needed card back to clean for the owner-gating
+    // section below (which otherwise would hit a real sync against a
+    // lingering failed state - harmless either way, but keeps that
+    // section's own intent - "does the route respond at all" - clean).
+    await togetherWeCanService.sendFullSync({ triggeredBy: 'post-field-mapping-cleanup' });
+
+    console.log('='.repeat(70));
     console.log('Owner-gating: every "Together We Can" route, same pattern as the rest of this codebase');
     console.log('='.repeat(70));
     fetchScript = null;
@@ -436,6 +538,8 @@ async function main() {
       { method: 'post', path: '/hr-assistant/together-we-can/test-one', body: { employeeId: 'AR001' } },
       { method: 'get', path: '/hr-assistant/together-we-can/history' },
       { method: 'get', path: '/hr-assistant/together-we-can/failure' },
+      { method: 'get', path: '/hr-assistant/together-we-can/field-mapping' },
+      { method: 'post', path: '/hr-assistant/together-we-can/field-mapping', body: { empCode: 'Emp Code', status: 'Status', hodId: 'HOD-1 ID', reportingDoerId: 'Reporting Doer Id' } },
       { method: 'get', path: '/hr-assistant/together-we-can/settings' },
       { method: 'post', path: '/hr-assistant/together-we-can/settings', body: { enabled: false, time: '21:00' } },
       { method: 'get', path: '/hr-assistant/together-we-can/employees' }
