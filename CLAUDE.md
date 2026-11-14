@@ -2815,3 +2815,106 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
   Full 12-suite deterministic gate + headless UI: clean. API spend: $0
   (no real Claude/Drive calls - fully mocked, same as check-company-
   details.js's own existing convention).
+- Language (new) - sticky history never overrides a CURRENT message that
+  has its own clear, detectable language (direct instruction, 2026-11) -
+  a sender whose previous messages were Banglish sends a clear, FULL
+  English message ("Please share my salary slip for October") -> replies
+  in English; the very next clear, FULL Banglish message ("Amar October
+  mash-er salary slip ta pathiye debe please") -> replies in Banglish
+  again. Stickiness (detectEstablishedConversationLanguage, read inside
+  detectLangSmart) only ever applies when the CURRENT message itself has
+  no detectable language of its own (zero word-list signal AND short/
+  ambiguous) - this scenario proves it's never allowed to override a
+  message that plainly does. The test for this scenario already existed
+  in scripts/check-whatsapp-scenarios.js (written earlier this session)
+  but had never actually been run/confirmed/logged here - locked now:
+  3/3 reliable, no code changes needed (this was pure verification of
+  already-correct behavior, not a fix). Cost: 18 real API calls, ~$0.14.
+- Explicit dates in STEP 4/Attendance card (direct instruction, 2026-11) -
+  every attendance-flow manager-confirmation message, and the Attendance
+  Requests card, now states an EXPLICIT calendar date, never a bare "aaj"/
+  "kal" left for the manager/owner to work out. "AI understands, code
+  speaks": the classifier (`hrNotificationDateRaw`, classifyTool) only
+  ever TRANSCRIBES the sender's own raw date words verbatim (never
+  computes a date); `resolveHrNoteDate`/`formatHrNoteDatePhrase`/
+  `fillHrNoteDatePlaceholder` (whatsappAssistant.js) do the real
+  resolution/formatting/substitution, in code, using IST throughout
+  (reminderService.istParts/addIstDays, the SAME source of "today" as
+  istDayKeyOf elsewhere in this file). Rules: no day word/"aaj"/"today" ->
+  arrival date; "kal"/"tomorrow" -> +1 day; "porshu" -> +2 days;
+  "gotokal"/"yesterday" -> -1 day (added mid-task - an HR note CAN be
+  about something that already happened, unlike a reminder, which is
+  always future-pointing); an explicit date (DD Month/DD-MM/bare day) ->
+  nearest sensible year (automationService's own anchor-date philosophy,
+  never a second convention); a weekday name -> nearest occurrence
+  forward, INCLUSIVE of today if today already IS that weekday; a range
+  ("D1 theke D2 Month") -> a start/end pair. Genuinely unclear ("next
+  week") or a day-word that CONTRADICTS an explicit date in the same raw
+  text -> `{ambiguous:true}`, NEVER a guess - a new `'awaiting_date_choice'`
+  flow step (continueHrNoteFlow) asks the sender which date they meant
+  (bounded retries, `MAX_HR_NOTE_DATE_CLARIFY_ATTEMPTS = 2`, then
+  escalates to the owner rather than guessing forever), re-resolving
+  their plain-text answer with the SAME deterministic resolver (no extra
+  model call needed for this narrow, date-only re-ask). The model's own
+  `hrNotificationSummaryLocalized`/`rephraseForThirdParty` output now
+  always includes a literal `{Date}` placeholder token in place of any
+  date reference - substituted ONCE, right after resolution, before the
+  text is ever used as a manager-facing `summary` (a new `datePhrase`
+  field threads through the SAME pending-flow/resolveHrNoteThirdParty
+  plumbing `actionPhrase`/`topicLabel` already use, so a later turn's
+  fresh rephrase - "neutral"/"sudden" kinds resolved after a follow-up
+  answer - can still substitute the already-resolved date, never losing
+  it). The Attendance Requests card's own `requestDates` field is
+  overwritten with this SAME resolved date (`attendanceRequestService.
+  recordDateResolved`, called right after resolution) instead of its old
+  independent regex scrape (`extractRequestDates`) - the card now shows
+  the EXACT SAME date STEP 4 showed the manager, never a second,
+  independent guess; a legacy record this is never called for keeps its
+  old regex-guessed date forever (additive, no migration needed).
+  LIVE BUGS FOUND DURING THIS TASK'S OWN real-model scenario runs (never
+  reached a commit) - two casual Banglish spelling variants the classifier
+  correctly transcribed but the resolver's own day-word regexes didn't
+  recognize, both wrongly triggering the "which date?" ask on ordinary,
+  unambiguous messages: (1) "Ajke" (single-a) failed `\baaj\w*\b`
+  (double-a only) - broke the EXISTING STEP1-5 Banglish HR-note flow
+  test outright (a live regression this task itself introduced, caught
+  before commit); (2) "Kalke" (kal+suffix) failed `\bkal\b` (exact word
+  only) the same way "aaj"/"ajke" already needed a `\w*` suffix allowance
+  - broke the existing "Kalke chuti nebo" future-approval tests. Both
+  fixed (`isToday`/`isTomorrow` now allow the same casual suffix
+  inflection "ajke"/"ajkei"/"aj-i" FORBIDDEN_TIMEFRAME_RE already lists
+  for "today", plus `kal\w*` for "tomorrow") and reconfirmed via direct
+  real-model repro before locking. A THIRD live bug found the same way,
+  in the FULL unfiltered suite run (never caught by the filtered 3x runs
+  above, since those used clean "20 November"-style phrasing): the
+  model transcribed a sender's own "20 th October" (a literal space
+  before the ordinal suffix) verbatim - `explicitWordRe`/`rangeRe`
+  required the suffix immediately adjacent to the digit, so this also
+  wrongly triggered the "which date?" ask, breaking the EXISTING T2-1/
+  T2-2 Banglish HR-note scenarios. Fixed with `\s*` before the optional
+  suffix in both regexes, reconfirmed (both scenarios back to 3/3)
+  before locking. Locked scenarios (7, all new, 3/3 reliable): plain
+  "aaj", "kal", an explicit "DD Month" date (computed relative to the
+  real run date, never a hardcoded literal - same TEST_DAY_BASE lesson
+  check-full-store-backup.js already applied), a weekday name, a date
+  range, a genuinely unclear date (asks, then resolves), and a genuine
+  model-level contradiction (needed an explicit "othoba"/"or" phrasing -
+  a bare "aaj <date>" or "aaj, mane <date>" both read as the sender
+  correcting themselves, which the model correctly resolves non-
+  ambiguously on its own, not a bug). Full unfiltered
+  `check-whatsapp-scenarios.js` run (final, after all 3 fixes above):
+  89/91 reliable, 0 flaky, 2 broken - both confirmed, via `git stash`,
+  to already fail identically on the untouched pre-task baseline (same
+  "confirmed against the untouched baseline" convention Task 29 already
+  used) - genuinely unrelated to this task, not touched: "Language
+  stickiness: a short 'Yss sir'..." (0 real API calls even on a fresh
+  run - fails before any model call, a pre-existing bug in bare-ack
+  handling with no open flow, nothing to do with dates) and "HRQUERY:
+  'Duets er engineers list dao'" (a real model call that correctly lists
+  4 real ACTIVE Duets-Site engineers from the CURRENT live directory,
+  missing one - "Raghunath Halder" - the EXACT same real-data-drift failure
+  mode as the documented "Uday Saraf, 5 direct reports" precedent
+  elsewhere in this file, not a code regression). Cost across every
+  scenario run this task made (2 full unfiltered runs plus the filtered
+  3x/debug runs while fixing): see this batch's own commit message for
+  the total.

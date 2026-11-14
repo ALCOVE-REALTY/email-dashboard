@@ -170,6 +170,27 @@ async function recordStep1Received({ phone, senderName, summary, topicLabel, rec
   if (redis) { try { await redis.set(BY_NOTEFLOW_PHONE_PREFIX + normalizedPhone, id); } catch (err) { /* best effort */ } }
   return id;
 }
+// Explicit-date task (2026-11) - called once whatsappAssistant.js's own
+// date resolver (resolveHrNoteDate/formatHrNoteCalendarDate) has settled on
+// a real calendar date for this flow (immediately, or after the sender
+// answered the 'awaiting_date_choice' clarifying question) - overwrites
+// Step 1's own best-effort regex guess (extractRequestDates) with the
+// SAME real, resolved date STEP 4 shows the manager, never a second,
+// independent guess. Additive/backward-compatible: a record this is never
+// called for (every flow that predates this feature) simply keeps its
+// original regex-guessed requestDates forever, exactly as before.
+async function recordDateResolved(phone, requestDatesDisplay) {
+  if (!requestDatesDisplay) return null;
+  const whatsapp = require('../whatsappService');
+  const redis = getClient();
+  if (!redis) return null;
+  const normalized = whatsapp.normalizePhone(phone);
+  let id;
+  try { id = await redis.get(BY_NOTEFLOW_PHONE_PREFIX + normalized); } catch (err) { return null; }
+  if (!id) return null;
+  await updateRecord(id, { requestDates: requestDatesDisplay, requestDatesResolved: true });
+  return id;
+}
 // Step 2 - called from finalizeHrNoteThirdParty, the single point where
 // a candidate approver has just been resolved (whether asked for
 // separately or named upfront in the sender's very first message) -
@@ -426,7 +447,7 @@ function exportRows(records) {
 module.exports = {
   classifyRequestType, extractRequestDates,
   saveRecord, getRecord, updateRecord, listAllRecords,
-  recordStep1Received, recordStep2ApproverNamed, recordStep3ManagerAsked, recordBlockedAtApprover, recordStep4And5Decision,
+  recordStep1Received, recordDateResolved, recordStep2ApproverNamed, recordStep3ManagerAsked, recordBlockedAtApprover, recordStep4And5Decision,
   derivedStatus, currentStepLabel, waitingOnLabel, monthKeyOf,
   listForMonth, remindRecord, closeRecord, backfillFromExisting,
   exportColumns, exportRows,

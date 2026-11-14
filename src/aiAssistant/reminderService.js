@@ -565,5 +565,7 @@ module.exports = {
   saveSettings,
   resolveReminderDateTime,
   handleReminderCommand,
-  istParts
+  istParts,
+  addIstDays,
+  istDateToUtc
 };

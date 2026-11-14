@@ -1834,6 +1834,167 @@ scenario('PART 2(f) (new), LOCKED SCENARIO: a returned .xlsx with NO caption, in
   }
 });
 
+// Explicit-date task (2026-11), direct instruction - locked scenarios for
+// the date rules in STEP 4's manager message (resolveHrNoteDate/
+// formatHrNoteDatePhrase, see whatsappAssistant.js). All dates used here
+// are computed RELATIVE to the real wall clock at run time (never a
+// hardcoded literal date) - this suite runs on whatever day it's actually
+// invoked, so a fixed-looking date would eventually collide with real
+// time (same lesson check-full-store-backup.js's own TEST_DAY_BASE fix
+// already applied this session).
+const HR_DATE_MONTH_DISPLAY = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+function istTodayParts() {
+  const parts = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date());
+  const get = (t) => Number(parts.find((p) => p.type === t).value);
+  return { year: get('year'), month: get('month'), day: get('day') };
+}
+function istDatePlusDays(days) {
+  const t = istTodayParts();
+  const d = new Date(Date.UTC(t.year, t.month - 1, t.day));
+  d.setUTCDate(d.getUTCDate() + days);
+  return { y: d.getUTCFullYear(), m: d.getUTCMonth() + 1, d: d.getUTCDate() };
+}
+function fmtHrDate(parts) { return parts.d + ' ' + HR_DATE_MONTH_DISPLAY[parts.m - 1]; }
+function nextWeekdayIstInclusive(targetDow) {
+  const t = istTodayParts();
+  for (let offset = 0; offset < 7; offset++) {
+    const cand = istDatePlusDays(offset);
+    if (new Date(Date.UTC(cand.y, cand.m - 1, cand.d)).getUTCDay() === targetDow) return cand;
+  }
+  return istDatePlusDays(0);
+}
+
+scenario('Explicit-date (new): a plain "aaj" WFH/approval message, manager named upfront - STEP 4 states the real calendar date, "aaj (<today>)", never a bare "aaj"', async () => {
+  const phone = '910000001101';
+  await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
+  try {
+    await whatsappAssistant.decideAutoReply({ phone, name: 'ScenDate1', firstName: 'ScenDate1', text: 'Aaj ami bari theke kaj korchi, Tanmoy Mondal eta janen ar approve korechhen.', isGroup: false, history: [] });
+    const confirmations = (await whatsappAssistant.listAllHrConfirmations()).filter((c) => c.senderPhone === phone);
+    if (confirmations.length !== 1) return { pass: false, detail: 'expected exactly one confirmation, got ' + confirmations.length };
+    const expected = 'aaj (' + fmtHrDate(istDatePlusDays(0)) + ')';
+    if (!confirmations[0].summaryLocalized.includes(expected)) return { pass: false, detail: 'expected "' + expected + '" in: ' + confirmations[0].summaryLocalized };
+    return { pass: true, detail: 'got: ' + confirmations[0].summaryLocalized };
+  } finally {
+    await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
+  }
+});
+
+scenario('Explicit-date (new): "kal" (tomorrow) leave + manager named - STEP 4 states "kal (<tomorrow\'s real date>)"', async () => {
+  const phone = '910000001102';
+  await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
+  try {
+    await whatsappAssistant.decideAutoReply({ phone, name: 'ScenDate2', firstName: 'ScenDate2', text: 'Kalke chuti nebo, Tanmoy Mondal approve korechhen.', isGroup: false, history: [] });
+    const confirmations = (await whatsappAssistant.listAllHrConfirmations()).filter((c) => c.senderPhone === phone);
+    if (confirmations.length !== 1) return { pass: false, detail: 'expected exactly one confirmation, got ' + confirmations.length };
+    const expected = 'kal (' + fmtHrDate(istDatePlusDays(1)) + ')';
+    if (!confirmations[0].summaryLocalized.includes(expected)) return { pass: false, detail: 'expected "' + expected + '" in: ' + confirmations[0].summaryLocalized };
+    return { pass: true, detail: 'got: ' + confirmations[0].summaryLocalized };
+  } finally {
+    await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
+  }
+});
+
+scenario('Explicit-date (new): an explicit "DD Month" date (10 days out, relative - never a hardcoded literal date) + manager named - STEP 4 states that exact date, no day-word prefix needed since the sender already gave an explicit date', async () => {
+  const phone = '910000001103';
+  await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
+  try {
+    const target = istDatePlusDays(10);
+    const text = target.d + ' ' + HR_DATE_MONTH_DISPLAY[target.m - 1] + '-e chuti nebo, Tanmoy Mondal approve korechhen.';
+    await whatsappAssistant.decideAutoReply({ phone, name: 'ScenDate3', firstName: 'ScenDate3', text, isGroup: false, history: [] });
+    const confirmations = (await whatsappAssistant.listAllHrConfirmations()).filter((c) => c.senderPhone === phone);
+    if (confirmations.length !== 1) return { pass: false, detail: 'expected exactly one confirmation, got ' + confirmations.length };
+    const expected = fmtHrDate(target);
+    if (!confirmations[0].summaryLocalized.includes(expected)) return { pass: false, detail: 'expected "' + expected + '" in: ' + confirmations[0].summaryLocalized };
+    return { pass: true, detail: 'got: ' + confirmations[0].summaryLocalized };
+  } finally {
+    await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
+  }
+});
+
+scenario('Explicit-date (new): a weekday name ("Monday") + manager named - STEP 4 states the nearest coming Monday\'s real date, "Monday (<date>)"', async () => {
+  const phone = '910000001104';
+  await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
+  try {
+    await whatsappAssistant.decideAutoReply({ phone, name: 'ScenDate4', firstName: 'ScenDate4', text: 'Monday WFH korbo, Tanmoy Mondal eta janen ar approve korechhen.', isGroup: false, history: [] });
+    const confirmations = (await whatsappAssistant.listAllHrConfirmations()).filter((c) => c.senderPhone === phone);
+    if (confirmations.length !== 1) return { pass: false, detail: 'expected exactly one confirmation, got ' + confirmations.length };
+    const expected = 'Monday (' + fmtHrDate(nextWeekdayIstInclusive(1)) + ')';
+    if (!confirmations[0].summaryLocalized.includes(expected)) return { pass: false, detail: 'expected "' + expected + '" in: ' + confirmations[0].summaryLocalized };
+    return { pass: true, detail: 'got: ' + confirmations[0].summaryLocalized };
+  } finally {
+    await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
+  }
+});
+
+scenario('Explicit-date (new): a date RANGE ("D1 theke D2 Month", 10-12 days out, relative) + manager named - STEP 4 states both days of the range', async () => {
+  const phone = '910000001105';
+  await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
+  try {
+    const start = istDatePlusDays(10), end = istDatePlusDays(12);
+    const text = start.d + ' theke ' + end.d + ' ' + HR_DATE_MONTH_DISPLAY[end.m - 1] + ' chuti nebo, Tanmoy Mondal approve korechhen.';
+    await whatsappAssistant.decideAutoReply({ phone, name: 'ScenDate5', firstName: 'ScenDate5', text, isGroup: false, history: [] });
+    const confirmations = (await whatsappAssistant.listAllHrConfirmations()).filter((c) => c.senderPhone === phone);
+    if (confirmations.length !== 1) return { pass: false, detail: 'expected exactly one confirmation (date range must not be treated as ambiguous), got ' + confirmations.length };
+    const summary = confirmations[0].summaryLocalized;
+    if (!summary.includes(String(start.d)) || !summary.includes(String(end.d))) return { pass: false, detail: 'expected both ' + start.d + ' and ' + end.d + ' in: ' + summary };
+    return { pass: true, detail: 'got: ' + summary };
+  } finally {
+    await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
+  }
+});
+
+scenario('Explicit-date (new): a genuinely unclear date ("porer hoptay"/next week) asks the sender WHICH date, never guesses - then a clear answer resolves it and messages the manager', async () => {
+  const phone = '910000001106';
+  await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
+  try {
+    const d1 = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenDate6', firstName: 'ScenDate6', text: 'Porer hoptay chuti nebo, Tanmoy Mondal approve korechhen.', isGroup: false, history: [] });
+    const pending = await whatsappAssistant.getPendingHrNoteFlow(phone);
+    if (!pending || pending.step !== 'awaiting_date_choice') return { pass: false, detail: 'expected awaiting_date_choice, got: ' + JSON.stringify(pending) + ' reply: ' + d1.replyText };
+    const confirmationsBefore = (await whatsappAssistant.listAllHrConfirmations()).filter((c) => c.senderPhone === phone);
+    if (confirmationsBefore.length !== 0) return { pass: false, detail: 'should never guess and message the manager before the date is clarified' };
+    const target = istDatePlusDays(5);
+    const d2 = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenDate6', firstName: 'ScenDate6', text: target.d + ' ' + HR_DATE_MONTH_DISPLAY[target.m - 1], isGroup: false, history: [] });
+    const confirmations = (await whatsappAssistant.listAllHrConfirmations()).filter((c) => c.senderPhone === phone);
+    if (confirmations.length !== 1) return { pass: false, detail: 'expected the flow to resolve and message the manager after a clear answer, got ' + confirmations.length + ' reply: ' + d2.replyText };
+    const expected = fmtHrDate(target);
+    if (!confirmations[0].summaryLocalized.includes(expected)) return { pass: false, detail: 'expected "' + expected + '" in: ' + confirmations[0].summaryLocalized };
+    return { pass: true, detail: 'asked first, then resolved correctly: ' + confirmations[0].summaryLocalized };
+  } finally {
+    await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
+  }
+});
+
+scenario('Explicit-date (new): a day-word CONTRADICTING an explicit date in the same message ("aaj <a date 10 days out>") asks which date, never guesses one over the other - then a clear answer resolves it', async () => {
+  const phone = '910000001107';
+  await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
+  try {
+    const conflicting = istDatePlusDays(10);
+    // Real-model runs showed BOTH "Aaj, mane <date>" (a correction - "mane"
+    // = "meaning"/i.e.) AND a bare "Aaj <date>-e" (read as "today [I'm
+    // informing that]... on <date>", aaj describing the INFORMING, not the
+    // leave) resolve non-ambiguously - the model correctly reads "aaj" as
+    // NOT describing the event date in both phrasings, which is actually
+    // correct understanding, not a bug. A genuine, model-level conflict
+    // needs an explicit either/or ("othoba" - "or") so there are
+    // unmistakably TWO candidate dates for the SAME event with no
+    // resolution given.
+    const text = 'Chuti-ta aaj othoba ' + conflicting.d + ' ' + HR_DATE_MONTH_DISPLAY[conflicting.m - 1] + '-e lagbe, Tanmoy Mondal approve korechhen.';
+    const d1 = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenDate7', firstName: 'ScenDate7', text, isGroup: false, history: [] });
+    const pending = await whatsappAssistant.getPendingHrNoteFlow(phone);
+    const confirmationsBefore = (await whatsappAssistant.listAllHrConfirmations()).filter((c) => c.senderPhone === phone);
+    if (confirmationsBefore.length !== 0) return { pass: false, detail: 'should never guess which of the two conflicting dates was meant: ' + JSON.stringify(confirmationsBefore.map((c) => c.summaryLocalized)) };
+    if (!pending || pending.step !== 'awaiting_date_choice') return { pass: false, detail: 'expected awaiting_date_choice (contradiction), got: ' + JSON.stringify(pending) + ' reply: ' + d1.replyText };
+    const d2 = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenDate7', firstName: 'ScenDate7', text: conflicting.d + ' ' + HR_DATE_MONTH_DISPLAY[conflicting.m - 1], isGroup: false, history: [] });
+    const confirmations = (await whatsappAssistant.listAllHrConfirmations()).filter((c) => c.senderPhone === phone);
+    if (confirmations.length !== 1) return { pass: false, detail: 'expected the flow to resolve after a clear answer, got ' + confirmations.length + ' reply: ' + d2.replyText };
+    const expected = fmtHrDate(conflicting);
+    if (!confirmations[0].summaryLocalized.includes(expected)) return { pass: false, detail: 'expected "' + expected + '" in: ' + confirmations[0].summaryLocalized };
+    return { pass: true, detail: 'asked on contradiction, then resolved correctly: ' + confirmations[0].summaryLocalized };
+  } finally {
+    await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
+  }
+});
+
 const APPROX_USD_PER_MTOK_INPUT = 3;
 const APPROX_USD_PER_MTOK_OUTPUT = 15;
 

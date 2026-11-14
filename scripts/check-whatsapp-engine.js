@@ -8539,6 +8539,109 @@ async function checkAsyncRealModel(label, fn) {
     return savedOk && bumpSkippedOk && deletedOk;
   });
 
+  console.log('='.repeat(70));
+  console.log('Explicit-date task (2026-11, direct instruction) - resolveHrNoteDate/formatHrNoteDatePhrase/fillHrNoteDatePlaceholder, and the Attendance Requests card reusing the SAME resolved date');
+  console.log('='.repeat(70));
+  // "today = 12 Nov 2026" throughout, IST - matches the user's own 5
+  // rendered examples (scripts/render-5-examples.js) and the locked
+  // real-model scenarios in check-whatsapp-scenarios.js.
+  const HR_DATE_ARRIVAL = new Date('2026-11-12T06:00:00+05:30').getTime(); // Thursday
+  const HR_DATE_EARLY_ARRIVAL = new Date('2026-11-12T03:35:00+05:30').getTime(); // crosses UTC day boundary
+  check('resolveHrNoteDate: no day word -> arrival date (today)', (() => {
+    const r = whatsappAssistant.resolveHrNoteDate('', HR_DATE_ARRIVAL);
+    return !r.ambiguous && r.kind === 'today' && r.y === 2026 && r.m === 11 && r.d === 12;
+  })());
+  check('resolveHrNoteDate: "aaj"/"today" -> arrival date', (() => {
+    const r1 = whatsappAssistant.resolveHrNoteDate('aaj', HR_DATE_ARRIVAL);
+    const r2 = whatsappAssistant.resolveHrNoteDate('today', HR_DATE_ARRIVAL);
+    return !r1.ambiguous && r1.d === 12 && !r2.ambiguous && r2.d === 12;
+  })());
+  check('resolveHrNoteDate: "kal"/"tomorrow" -> arrival + 1 day', (() => {
+    const r1 = whatsappAssistant.resolveHrNoteDate('kal', HR_DATE_ARRIVAL);
+    const r2 = whatsappAssistant.resolveHrNoteDate('tomorrow', HR_DATE_ARRIVAL);
+    return !r1.ambiguous && r1.d === 13 && r1.m === 11 && !r2.ambiguous && r2.d === 13;
+  })());
+  check('resolveHrNoteDate: "porshu" -> arrival + 2 days', (() => {
+    const r = whatsappAssistant.resolveHrNoteDate('porshu', HR_DATE_ARRIVAL);
+    return !r.ambiguous && r.kind === 'dayAfterTomorrow' && r.d === 14 && r.m === 11;
+  })());
+  check('resolveHrNoteDate: explicit "DD Month" / "Month DD" / "DD/MM"', (() => {
+    const r1 = whatsappAssistant.resolveHrNoteDate('15 November', HR_DATE_ARRIVAL);
+    const r2 = whatsappAssistant.resolveHrNoteDate('November 15', HR_DATE_ARRIVAL);
+    const r3 = whatsappAssistant.resolveHrNoteDate('15/11', HR_DATE_ARRIVAL);
+    const ok = (r) => !r.ambiguous && r.kind === 'explicit' && r.y === 2026 && r.m === 11 && r.d === 15;
+    return ok(r1) && ok(r2) && ok(r3);
+  })());
+  check('resolveHrNoteDate: explicit date already passed this year rolls to next year', (() => {
+    const r = whatsappAssistant.resolveHrNoteDate('1 January', HR_DATE_ARRIVAL);
+    return !r.ambiguous && r.kind === 'explicit' && r.y === 2027 && r.m === 1 && r.d === 1;
+  })());
+  check('resolveHrNoteDate: bare day-of-month, upcoming this month vs. already passed rolls to next month', (() => {
+    const upcoming = whatsappAssistant.resolveHrNoteDate('20', HR_DATE_ARRIVAL);
+    const passed = whatsappAssistant.resolveHrNoteDate('5', HR_DATE_ARRIVAL);
+    return !upcoming.ambiguous && upcoming.m === 11 && upcoming.d === 20
+      && !passed.ambiguous && passed.m === 12 && passed.d === 5;
+  })());
+  check('resolveHrNoteDate: weekday name - nearest occurrence forward, INCLUSIVE of today if today already IS that weekday', (() => {
+    const sameDay = whatsappAssistant.resolveHrNoteDate('Thursday', HR_DATE_ARRIVAL); // 12 Nov 2026 is a Thursday
+    const forward = whatsappAssistant.resolveHrNoteDate('Monday', HR_DATE_ARRIVAL); // next Monday is the 16th
+    return !sameDay.ambiguous && sameDay.kind === 'weekday' && sameDay.d === 12
+      && !forward.ambiguous && forward.kind === 'weekday' && forward.d === 16 && forward.m === 11;
+  })());
+  check('resolveHrNoteDate: range "D1 theke D2 Month" / "D1-D2 Month"', (() => {
+    const r1 = whatsappAssistant.resolveHrNoteDate('15 theke 17 November', HR_DATE_ARRIVAL);
+    const r2 = whatsappAssistant.resolveHrNoteDate('15-17 November', HR_DATE_ARRIVAL);
+    const ok = (r) => !r.ambiguous && r.range && r.start.d === 15 && r.end.d === 17 && r.start.m === 11 && r.end.m === 11;
+    return ok(r1) && ok(r2);
+  })());
+  check('resolveHrNoteDate: genuinely unclear ("next week") -> ambiguous, never a guess', (() => {
+    const r = whatsappAssistant.resolveHrNoteDate('next week', HR_DATE_ARRIVAL);
+    return r.ambiguous === true;
+  })());
+  check('resolveHrNoteDate: contradiction ("aaj 15 November" when today is the 12th) -> ambiguous, never a guess', (() => {
+    const r = whatsappAssistant.resolveHrNoteDate('aaj 15 November', HR_DATE_ARRIVAL);
+    return r.ambiguous === true;
+  })());
+  check('resolveHrNoteDate: day-word and explicit date that AGREE is not a contradiction', (() => {
+    const r = whatsappAssistant.resolveHrNoteDate('aaj 12 November', HR_DATE_ARRIVAL);
+    return !r.ambiguous && r.m === 11 && r.d === 12;
+  })());
+  check('resolveHrNoteDate: IST day boundary - a message received 03:35 IST still resolves "aaj" to the correct IST calendar day, never the UTC-behind day', (() => {
+    const r = whatsappAssistant.resolveHrNoteDate('aaj', HR_DATE_EARLY_ARRIVAL);
+    return !r.ambiguous && r.y === 2026 && r.m === 11 && r.d === 12;
+  })());
+  check('formatHrNoteDatePhrase/fillHrNoteDatePlaceholder: {Date} substitution lands correctly in all 3 languages', (() => {
+    const resolved = whatsappAssistant.resolveHrNoteDate('kal', HR_DATE_ARRIVAL);
+    const template = 'apni onake {Date} half day nebar approval diyechhen';
+    const bn = whatsappAssistant.fillHrNoteDatePlaceholder(template, whatsappAssistant.formatHrNoteDatePhrase(resolved, 'banglish'));
+    const hi = whatsappAssistant.fillHrNoteDatePlaceholder(template, whatsappAssistant.formatHrNoteDatePhrase(resolved, 'hinglish'));
+    const en = whatsappAssistant.fillHrNoteDatePlaceholder('you gave approval for {Date}', whatsappAssistant.formatHrNoteDatePhrase(resolved, 'english'));
+    return bn === 'apni onake kal (13 November) half day nebar approval diyechhen'
+      && hi === 'apni onake kal (13 November) half day nebar approval diyechhen'
+      && en === 'you gave approval for tomorrow (13 November)';
+  })());
+  check('fillHrNoteDatePlaceholder: defensive no-crash fallback when the token is missing from the phrase (never throws, strips a stray token instead)', (() => {
+    const noToken = whatsappAssistant.fillHrNoteDatePlaceholder('plain text with no token', 'anything');
+    const ambiguousPhrase = whatsappAssistant.fillHrNoteDatePlaceholder('apni {Date} chuti nebar approval diyechhen', '');
+    return noToken === 'plain text with no token' && ambiguousPhrase === 'apni chuti nebar approval diyechhen';
+  })());
+  await checkAsync('Attendance Requests card: recordDateResolved overwrites the regex-guessed requestDates with the SAME resolved date STEP 4 used', async () => {
+    const attendanceRequestService = require('../src/aiAssistant/attendanceRequestService');
+    const phone = '910000HRDATE1';
+    const id = await attendanceRequestService.recordStep1Received({ phone, senderName: 'Date Test Employee', summary: 'took half day tomorrow', topicLabel: 'half day', receivedAt: HR_DATE_ARRIVAL });
+    const resolved = whatsappAssistant.resolveHrNoteDate('kal', HR_DATE_ARRIVAL);
+    await attendanceRequestService.recordDateResolved(phone, whatsappAssistant.formatHrNoteCalendarDate(resolved));
+    const record = await attendanceRequestService.getRecord(id);
+    return Boolean(record) && record.requestDates === '13 November' && record.requestDatesResolved === true;
+  });
+  await checkAsync('Attendance Requests card: a legacy record this is never called for keeps its original regex-guessed requestDates (backward compatible, no migration needed)', async () => {
+    const attendanceRequestService = require('../src/aiAssistant/attendanceRequestService');
+    const phone = '910000HRDATE2';
+    const id = await attendanceRequestService.recordStep1Received({ phone, senderName: 'Legacy Date Test Employee', summary: 'chuti nebo 22 October theke 24 October', topicLabel: 'leave', receivedAt: HR_DATE_ARRIVAL });
+    const record = await attendanceRequestService.getRecord(id);
+    return Boolean(record) && typeof record.requestDates === 'string' && record.requestDatesResolved !== true;
+  });
+
   console.log(pass + '/' + (pass + fail) + ' passed' + (fail ? ', ' + fail + ' FAILED' : ''));
   if (failures.length) {
     console.log('Failed checks:');

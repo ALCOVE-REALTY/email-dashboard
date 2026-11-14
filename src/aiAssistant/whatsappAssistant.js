@@ -6818,6 +6818,198 @@ const HR_NOTE_THANK_SENDER = {
   hinglish: (thirdPartyName) => 'Sahi naam batane ke liye dhanyavaad. Main ' + thirdPartyName + ' se baat karke jald se jald aapko bata dunga.',
   english: (thirdPartyName) => "Thank you for giving me the correct name. I'll speak with " + thirdPartyName + " and get back to you as soon as possible."
 };
+
+// Explicit-date task (2026-11), direct instruction - STEP 4's manager
+// message, and the Attendance Requests card, must both state an EXPLICIT
+// calendar date, never a bare "aaj"/"kal" left to the manager/owner to
+// work out themselves. "AI understands, code speaks": the classifier
+// (hrNotificationDateRaw, see classifyTool below) only ever TRANSCRIBES
+// the sender's own raw date words verbatim - every one of the functions
+// below does the actual date MATH and FORMATTING, in code, using IST
+// throughout (reminderService.istParts/addIstDays - the exact same
+// Intl.DateTimeFormat-in-Asia/Kolkata technique istDayKeyOf already uses
+// elsewhere in this file, never a second, different "what is today"
+// source). Returns { ambiguous:true } rather than ever guessing when the
+// raw text doesn't resolve confidently to one calendar day (or, for a
+// range, one pair) - the caller's job (see HR_NOTE_ASK_WHICH_DATE below
+// and the 'awaiting_date_choice' flow step) is to ask the sender, never
+// to pick one guess over another.
+function hrNoteWeekdayIndex(y, m, d) { return new Date(Date.UTC(y, m - 1, d)).getUTCDay(); }
+const HR_NOTE_MONTH_NAMES = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
+const HR_NOTE_MONTH_ABBR = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+const HR_NOTE_MONTH_DISPLAY = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+const HR_NOTE_WEEKDAY_NAMES = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+const HR_NOTE_WEEKDAY_DISPLAY = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+function hrNoteMonthIndex(tok) {
+  const t = String(tok || '').toLowerCase();
+  let i = HR_NOTE_MONTH_NAMES.indexOf(t);
+  if (i === -1) i = HR_NOTE_MONTH_ABBR.indexOf(t.slice(0, 3));
+  return i; // -1 if not a recognised month
+}
+const HR_NOTE_MONTH_ALT = '(' + HR_NOTE_MONTH_NAMES.concat(HR_NOTE_MONTH_ABBR).join('|') + ')';
+// Nearest sensible future date for an explicit day+month with no year
+// stated - same "anchor date, advance to next occurrence if already
+// passed" philosophy automationService.js's own computeNextRun uses for
+// a yearly/monthly anchor with no year, never a second, different rule.
+function hrNoteResolveExplicitYear(month, day, arrival) {
+  const passed = (month < arrival.month) || (month === arrival.month && day < arrival.day);
+  return arrival.year + (passed ? 1 : 0);
+}
+function resolveHrNoteDate(dateRaw, arrivalMs) {
+  const reminderService = require('./reminderService');
+  const arrival = reminderService.istParts(new Date(arrivalMs));
+  const raw = String(dateRaw || '').trim().toLowerCase();
+  if (!raw) return { ambiguous: false, kind: 'today', y: arrival.year, m: arrival.month, d: arrival.day };
+
+  // Range: "15 theke 17 November" / "15-17 November" / "15 to 17 November".
+  // \s* before the ordinal suffix - found live: the model transcribed a
+  // sender's own "20 th October" (a literal space before "th") verbatim,
+  // and a suffix-must-be-adjacent pattern wrongly called it ambiguous.
+  const rangeRe = new RegExp('\\b(\\d{1,2})\\s*(?:st|nd|rd|th)?\\s*(?:theke|to|-|\\u2013)\\s*(\\d{1,2})\\s*(?:st|nd|rd|th)?\\s+' + HR_NOTE_MONTH_ALT + '\\b', 'i');
+  const rangeMatch = raw.match(rangeRe);
+  if (rangeMatch) {
+    const d1 = Number(rangeMatch[1]), d2 = Number(rangeMatch[2]);
+    const mi = hrNoteMonthIndex(rangeMatch[3]);
+    if (mi === -1 || d1 < 1 || d1 > 31 || d2 < 1 || d2 > 31) return { ambiguous: true };
+    const y = hrNoteResolveExplicitYear(mi + 1, d1, arrival);
+    return { ambiguous: false, kind: 'range', range: true, start: { y, m: mi + 1, d: d1 }, end: { y, m: mi + 1, d: d2 } };
+  }
+
+  // Explicit date: "15 November" / "November 15" / "15/11" (DD/MM).
+  const explicitWordRe = new RegExp('\\b(\\d{1,2})\\s*(?:st|nd|rd|th)?\\s+' + HR_NOTE_MONTH_ALT + '\\b|\\b' + HR_NOTE_MONTH_ALT + '\\s+(\\d{1,2})\\s*(?:st|nd|rd|th)?\\b', 'i');
+  const explicitSlashRe = /\b(\d{1,2})[\/\-](\d{1,2})\b/;
+  let explicitDate = null;
+  const wordMatch = raw.match(explicitWordRe);
+  if (wordMatch) {
+    const day = Number(wordMatch[1] || wordMatch[4]);
+    const mi = hrNoteMonthIndex(wordMatch[2] || wordMatch[3]);
+    if (mi !== -1 && day >= 1 && day <= 31) explicitDate = { m: mi + 1, d: day };
+  }
+  if (!explicitDate) {
+    const slashMatch = raw.match(explicitSlashRe);
+    if (slashMatch) {
+      const d = Number(slashMatch[1]), m = Number(slashMatch[2]);
+      if (m >= 1 && m <= 12 && d >= 1 && d <= 31) explicitDate = { m, d };
+    }
+  }
+
+  // Weekday name - nearest occurrence forward, INCLUSIVE of the arrival
+  // day itself if it already IS that weekday.
+  const weekdayMatch = raw.match(new RegExp('\\b(' + HR_NOTE_WEEKDAY_NAMES.join('|') + ')\\b', 'i'));
+  let weekdayDate = null;
+  if (weekdayMatch) {
+    const targetIdx = HR_NOTE_WEEKDAY_NAMES.indexOf(weekdayMatch[1].toLowerCase());
+    for (let offset = 0; offset < 7; offset++) {
+      const cand = reminderService.addIstDays(arrival.year, arrival.month, arrival.day, offset);
+      if (hrNoteWeekdayIndex(cand.year, cand.month, cand.day) === targetIdx) { weekdayDate = cand; break; }
+    }
+  }
+
+  // Day-word (aaj/today, kal/tomorrow, porshu, gotokal/yesterday). Spelling
+  // variants allow a trailing suffix (\w*) the SAME way "aaj"/"kal" are
+  // casually inflected in real Banglish ("ajke", "kalke") - found live
+  // (real-model scenario runs, 2026-11): the model transcribed a sender's
+  // own "Ajke"/"Kalke" verbatim into hrNotificationDateRaw, and a
+  // suffix-less "aaj only"/"kal only" pattern wrongly called both
+  // ambiguous. "gotokal" (yesterday) is a PAST reference, handled
+  // separately from "kal" (which this app's own established convention,
+  // same as reminderService.js, always reads as tomorrow) - an HR note can
+  // genuinely be about something that already happened ("Gotokal bari
+  // theke kaj korechilam" - worked from home yesterday), unlike a
+  // reminder, which is always future-pointing.
+  const isDayAfter = /\bporshu\b/.test(raw);
+  const isYesterday = /\b(gotokal|yesterday)\b/.test(raw);
+  const isTomorrow = /\bkal\w*\b|\btomorrow\b|\bagamikal\b/.test(raw) && !isYesterday;
+  const isToday = /\b(aaj\w*|ajkei?|aj-i|aj|today)\b/.test(raw);
+  let dayWordDate = null, dayWordKind = null;
+  if (isDayAfter) { dayWordDate = reminderService.addIstDays(arrival.year, arrival.month, arrival.day, 2); dayWordKind = 'dayAfterTomorrow'; }
+  else if (isYesterday) { dayWordDate = reminderService.addIstDays(arrival.year, arrival.month, arrival.day, -1); dayWordKind = 'yesterday'; }
+  else if (isTomorrow) { dayWordDate = reminderService.addIstDays(arrival.year, arrival.month, arrival.day, 1); dayWordKind = 'tomorrow'; }
+  else if (isToday) { dayWordDate = { year: arrival.year, month: arrival.month, day: arrival.day }; dayWordKind = 'today'; }
+
+  // Contradiction check: more than one kind of date reference found in the
+  // SAME raw text (e.g. "aaj 15 November" when today isn't the 15th) -
+  // never guess which one the sender meant; if they agree (today already
+  // IS the 15th), there's nothing to resolve, carry on as normal.
+  const candidates = [];
+  if (explicitDate) candidates.push({ y: hrNoteResolveExplicitYear(explicitDate.m, explicitDate.d, arrival), m: explicitDate.m, d: explicitDate.d, kind: 'explicit' });
+  if (weekdayDate) candidates.push({ y: weekdayDate.year, m: weekdayDate.month, d: weekdayDate.day, kind: 'weekday' });
+  if (dayWordDate) candidates.push({ y: dayWordDate.year, m: dayWordDate.month, d: dayWordDate.day, kind: dayWordKind });
+
+  if (!candidates.length) {
+    // Bare day-of-month, e.g. "25" - this IST month unless it already
+    // passed, then the next month (same rule reminderService's own
+    // resolveReminderDateTime uses for its own bare-day case).
+    const bareDayMatch = raw.match(/^(\d{1,2})$/);
+    if (bareDayMatch) {
+      const day = Number(bareDayMatch[1]);
+      if (day >= 1 && day <= 31) {
+        let y = arrival.year, m = arrival.month;
+        if (day < arrival.day) { m += 1; if (m > 12) { m = 1; y += 1; } }
+        return { ambiguous: false, kind: 'explicit', y, m, d: day };
+      }
+    }
+    return { ambiguous: true };
+  }
+  if (candidates.length > 1) {
+    const first = candidates[0];
+    if (!candidates.every((c) => c.y === first.y && c.m === first.m && c.d === first.d)) return { ambiguous: true };
+  }
+  const chosen = candidates[0];
+  return { ambiguous: false, kind: chosen.kind, y: chosen.y, m: chosen.m, d: chosen.d };
+}
+const HR_NOTE_DAY_WORD_LABEL = {
+  today: { banglish: 'aaj', hinglish: 'aaj', english: 'today' },
+  tomorrow: { banglish: 'kal', hinglish: 'kal', english: 'tomorrow' },
+  dayAfterTomorrow: { banglish: 'porshu', hinglish: 'parso', english: 'day after tomorrow' },
+  yesterday: { banglish: 'gotokal', hinglish: 'kal', english: 'yesterday' }
+};
+// Plain calendar-date rendering (no day-word prefix) - shared by
+// formatHrNoteDatePhrase below AND the Attendance Requests card
+// (attendanceRequestService.recordDateResolved), so the card always shows
+// the EXACT SAME resolved date STEP 4 showed the manager, never a second,
+// independent guess.
+function formatHrNoteCalendarDate(resolved) {
+  if (!resolved || resolved.ambiguous) return '';
+  const fmtDate = (m, d) => d + ' ' + HR_NOTE_MONTH_DISPLAY[m - 1];
+  if (resolved.range) {
+    const sameMonth = resolved.start.m === resolved.end.m && resolved.start.y === resolved.end.y;
+    return sameMonth
+      ? (resolved.start.d + '–' + resolved.end.d + ' ' + HR_NOTE_MONTH_DISPLAY[resolved.start.m - 1])
+      : (fmtDate(resolved.start.m, resolved.start.d) + '–' + fmtDate(resolved.end.m, resolved.end.d));
+  }
+  return fmtDate(resolved.m, resolved.d);
+}
+function formatHrNoteDatePhrase(resolved, lang) {
+  if (!resolved || resolved.ambiguous) return '';
+  const dateStr = formatHrNoteCalendarDate(resolved);
+  if (resolved.range) return dateStr;
+  if (resolved.kind === 'today' || resolved.kind === 'tomorrow' || resolved.kind === 'dayAfterTomorrow' || resolved.kind === 'yesterday') {
+    const label = (HR_NOTE_DAY_WORD_LABEL[resolved.kind][lang] || HR_NOTE_DAY_WORD_LABEL[resolved.kind].english);
+    return label + ' (' + dateStr + ')';
+  }
+  if (resolved.kind === 'weekday') {
+    return HR_NOTE_WEEKDAY_DISPLAY[hrNoteWeekdayIndex(resolved.y, resolved.m, resolved.d)] + ' (' + dateStr + ')';
+  }
+  return dateStr;
+}
+// Single substitution point for the `{Date}` placeholder every
+// hrNotificationSummaryLocalized/rephraseForThirdParty output now
+// includes (see classifyTool/rephraseForThirdPartyTool below) - never
+// duplicated per call site. Defensive no-crash fallback if the token is
+// somehow missing (an older cached value, or the model simply forgot
+// it): the text is returned as-is rather than throwing.
+function fillHrNoteDatePlaceholder(text, phrase) {
+  if (!text) return text;
+  if (!phrase) return String(text).replace(/\s*\{Date\}\s*/g, ' ').replace(/\s+/g, ' ').trim();
+  return String(text).replace(/\{Date\}/g, phrase);
+}
+const HR_NOTE_ASK_WHICH_DATE = {
+  banglish: 'Eta thik kon tarikher jonno, ektu specific kore bolben? (jemon "15 November" ba "kal")',
+  hinglish: 'Yeh exactly kis tarikh ke liye hai, thoda specific bata denge? (jaise "15 November" ya "kal")',
+  english: 'Could you tell me the exact date this is for? (e.g. "15 November" or "tomorrow")'
+};
+
 const HR_CONFIRMATION_TO_MANAGER = {
   banglish: (requesterRef, summary) => 'Apnar theke ekta bishoye confirmation proyojon, tai apnake message korlam. Kichukkhon age ' + requesterRef + ' theke amar kache message esechhe je ' + summary + '. Eta ki apnar theke confirm?',
   hinglish: (requesterRef, summary) => 'Aapse ek baat confirm karni thi, isliye message kiya. Thodi der pehle ' + requesterRef + ' se mujhe message mila hai ki ' + summary + '. Kya yeh aapki taraf se confirm hai?',
@@ -7244,7 +7436,7 @@ async function postHrConfirmationOwnerRecord(confirmation, outcome) {
 // handlePersonLookupRequest already uses - several matches ask the
 // sender which one, a first-name-only single match confirms once, no
 // match asks for the full name again.
-async function resolveHrNoteThirdParty({ phone, name, lang, personName, department, summary, summaryLocalized, topicLabel, actionPhrase, actionKind, createdAt, previousCandidateId, history }) {
+async function resolveHrNoteThirdParty({ phone, name, lang, personName, department, summary, summaryLocalized, topicLabel, actionPhrase, actionKind, createdAt, previousCandidateId, history, datePhrase }) {
   // `createdAt` is the SENDER'S ORIGINAL message timestamp for this flow,
   // set once in handleHrNotificationStart and threaded through every
   // re-save from here on - never reset to Date.now() on a re-save, since
@@ -7262,11 +7454,11 @@ async function resolveHrNoteThirdParty({ phone, name, lang, personName, departme
     // message, a corrected name, had nothing left to continue and the
     // whole thing silently fell back to "no third party"). Re-saves the
     // SAME flow, still awaiting a name, instead of dropping it.
-    await savePendingHrNoteFlow(phone, { summary, summaryLocalized, topicLabel, actionPhrase, actionKind, lang, createdAt: originalCreatedAt, step: 'awaiting_name' });
+    await savePendingHrNoteFlow(phone, { summary, summaryLocalized, topicLabel, actionPhrase, actionKind, lang, createdAt: originalCreatedAt, datePhrase, step: 'awaiting_name' });
     return { case: 'acknowledged', replyText: HR_NOTE_NAME_NOT_FOUND[lang] || HR_NOTE_NAME_NOT_FOUND.english, summaryForOwner: null, lang };
   }
   if (current.length > 1) {
-    await savePendingHrNoteFlow(phone, { summary, summaryLocalized, topicLabel, actionPhrase, actionKind, lang, createdAt: originalCreatedAt, step: 'awaiting_disambiguation_choice', candidates: current, hadTypo, attempts: 1 });
+    await savePendingHrNoteFlow(phone, { summary, summaryLocalized, topicLabel, actionPhrase, actionKind, lang, createdAt: originalCreatedAt, datePhrase, step: 'awaiting_disambiguation_choice', candidates: current, hadTypo, attempts: 1 });
     const queryName = current[0].name.split(' ')[0];
     const note = hadTypo ? (TYPO_NOTE[lang] || TYPO_NOTE.english) : '';
     const fn = HR_NOTE_DISAMBIGUATION_QUESTION[lang] || HR_NOTE_DISAMBIGUATION_QUESTION.english;
@@ -7298,11 +7490,11 @@ async function resolveHrNoteThirdParty({ phone, name, lang, personName, departme
     // elsewhere in the message (e.g. a duty LOCATION, not the named
     // person's own department) got picked up as a stray hint.
     if (department && !personHintMatches(soleMatch, department)) {
-      await savePendingHrNoteFlow(phone, { summary, summaryLocalized, topicLabel, actionPhrase, actionKind, lang, createdAt: originalCreatedAt, step: 'awaiting_confirm_yes_no', candidate: soleMatch, isInactive: false });
+      await savePendingHrNoteFlow(phone, { summary, summaryLocalized, topicLabel, actionPhrase, actionKind, lang, createdAt: originalCreatedAt, datePhrase, step: 'awaiting_confirm_yes_no', candidate: soleMatch, isInactive: false });
       const fn = HR_NOTE_HINT_MISMATCH_CONFIRM[lang] || HR_NOTE_HINT_MISMATCH_CONFIRM.english;
       return { case: 'acknowledged', replyText: fn(department, soleMatch.name, soleMatch.department), summaryForOwner: null, lang };
     }
-    await savePendingHrNoteFlow(phone, { summary, summaryLocalized, topicLabel, actionPhrase, actionKind, lang, createdAt: originalCreatedAt, step: 'awaiting_confirm_yes_no', candidate: soleMatch, isInactive: false });
+    await savePendingHrNoteFlow(phone, { summary, summaryLocalized, topicLabel, actionPhrase, actionKind, lang, createdAt: originalCreatedAt, datePhrase, step: 'awaiting_confirm_yes_no', candidate: soleMatch, isInactive: false });
     const fn = HR_NOTE_CONFIRM_QUESTION[lang] || HR_NOTE_CONFIRM_QUESTION.english;
     return { case: 'acknowledged', replyText: fn(soleMatch.name, soleMatch.department, actionWord), summaryForOwner: null, lang };
   }
@@ -7440,6 +7632,42 @@ async function handleHrNotificationStart({ phone, name, lang, text, history, cla
   require('./attendanceRequestService').recordStep1Received({ phone, senderName: name, summary, topicLabel, receivedAt: createdAt }).catch(() => {});
   await postOwnerNotification(name + ' (' + phone + ') HR-bishoy janiyechhen: "' + summary + '". Note kora holo.');
 
+  // Explicit-date task (2026-11), direct instruction - resolved BEFORE any
+  // of the existing sudden/approval/third-party branching below, using the
+  // sender's own hrNotificationDateRaw transcription (see classifyTool) and
+  // this message's own IST arrival instant (createdAt, just above) - never
+  // guessed. An ambiguous/contradictory date (see resolveHrNoteDate's own
+  // comment) asks the SENDER which date they mean FIRST, before anything
+  // else - the manager-facing message must already carry the right date
+  // the very first time it's sent, never a bare "aaj"/"kal" left unresolved.
+  const dateResolved = resolveHrNoteDate(classification.hrNotificationDateRaw, createdAt);
+  const thirdPartyName = classification.hrNotificationThirdPartyName || null;
+  const thirdPartyHint = classification.hrNotificationThirdPartyHint || null;
+  const involvesThirdParty = Boolean(classification.hrNotificationInvolvesThirdParty);
+  const approvalGranted = classification.hrNotificationApprovalGranted;
+  if (dateResolved.ambiguous) {
+    await savePendingHrNoteFlow(phone, {
+      summary, summaryLocalized, topicLabel, actionPhrase, actionKind, lang, createdAt,
+      thirdPartyName, thirdPartyHint, involvesThirdParty, approvalGranted,
+      step: 'awaiting_date_choice', attempts: 1
+    });
+    return { case: 'acknowledged', replyText: HR_NOTE_ASK_WHICH_DATE[lang] || HR_NOTE_ASK_WHICH_DATE.english, summaryForOwner: null, lang };
+  }
+  const datePhrase = formatHrNoteDatePhrase(dateResolved, lang);
+  summaryLocalized = fillHrNoteDatePlaceholder(summaryLocalized, datePhrase);
+  require('./attendanceRequestService').recordDateResolved(phone, formatHrNoteCalendarDate(dateResolved)).catch(() => {});
+  return continueHrNoteAfterDateResolved({ phone, name, lang, history, summary, summaryLocalized, topicLabel, actionPhrase, actionKind, createdAt, datePhrase, thirdPartyName, thirdPartyHint, involvesThirdParty, approvalGranted });
+}
+
+// Factored out of handleHrNotificationStart (explicit-date task, 2026-11) so
+// the SAME continuation can be reached either immediately (the date
+// resolved with no ambiguity on the first turn) or resumed later, once the
+// sender has answered the 'awaiting_date_choice' clarifying question below
+// - never duplicated between the two. `summaryLocalized` arriving here has
+// ALREADY had its `{Date}` placeholder substituted (or never had one) -
+// everything from here on is exactly the pre-existing sudden/approval/
+// third-party logic, unchanged in behavior.
+async function continueHrNoteAfterDateResolved({ phone, name, lang, history, summary, summaryLocalized, topicLabel, actionPhrase, actionKind, createdAt, datePhrase, thirdPartyName, thirdPartyHint, involvesThirdParty, approvalGranted }) {
   // WFH/leave/half-day/off-day-duty FIX, "sudden" - a sudden/emergency
   // report has no instruction/approval framing at all; SUBH never assumes
   // a manager is involved, it asks first. A manager already named in the
@@ -7447,14 +7675,14 @@ async function handleHrNotificationStart({ phone, name, lang, text, history, cla
   // - summaryLocalized needs rebuilding either way, since the classifier
   // only ever phrases a "sudden" fact in first person.
   if (actionKind === 'sudden') {
-    if (classification.hrNotificationThirdPartyName) {
-      const rephrased = enforceSuddenInformingVerb(await rephraseForThirdParty(summary, 'sudden', lang), lang);
+    if (thirdPartyName) {
+      const rephrased = fillHrNoteDatePlaceholder(enforceSuddenInformingVerb(await rephraseForThirdParty(summary, 'sudden', lang), lang), datePhrase);
       return resolveHrNoteThirdParty({
-        phone, name, lang, personName: classification.hrNotificationThirdPartyName,
-        department: classification.hrNotificationThirdPartyHint, summary, summaryLocalized: rephrased, topicLabel, actionPhrase, actionKind: 'sudden', createdAt, history
+        phone, name, lang, personName: thirdPartyName,
+        department: thirdPartyHint, summary, summaryLocalized: rephrased, topicLabel, actionPhrase, actionKind: 'sudden', createdAt, history, datePhrase
       });
     }
-    await savePendingHrNoteFlow(phone, { summary, summaryLocalized, topicLabel, actionPhrase, lang, createdAt, actionKind, step: 'awaiting_manager_informed' });
+    await savePendingHrNoteFlow(phone, { summary, summaryLocalized, topicLabel, actionPhrase, lang, createdAt, actionKind, datePhrase, step: 'awaiting_manager_informed' });
     return { case: 'acknowledged', replyText: HR_NOTE_SUDDEN_ASK_MANAGER_INFORMED[lang] || HR_NOTE_SUDDEN_ASK_MANAGER_INFORMED.english, summaryForOwner: null, lang };
   }
 
@@ -7466,19 +7694,19 @@ async function handleHrNotificationStart({ phone, name, lang, text, history, cla
   // approval was obtained - no extra question needed, goes straight
   // through below exactly like the already-granted case (summaryLocalized
   // is already correctly phrased for "approval" regardless of tense).
-  if (actionKind === 'approval' && classification.hrNotificationApprovalGranted === false && !classification.hrNotificationThirdPartyName) {
-    await savePendingHrNoteFlow(phone, { summary, summaryLocalized, topicLabel, actionPhrase, lang, createdAt, actionKind, step: 'awaiting_approval_obtained' });
+  if (actionKind === 'approval' && approvalGranted === false && !thirdPartyName) {
+    await savePendingHrNoteFlow(phone, { summary, summaryLocalized, topicLabel, actionPhrase, lang, createdAt, actionKind, datePhrase, step: 'awaiting_approval_obtained' });
     return { case: 'acknowledged', replyText: (HR_NOTE_APPROVAL_FUTURE_ASK[lang] || HR_NOTE_APPROVAL_FUTURE_ASK.english)(actionPhrase), summaryForOwner: null, lang };
   }
 
-  if (classification.hrNotificationThirdPartyName) {
+  if (thirdPartyName) {
     return resolveHrNoteThirdParty({
-      phone, name, lang, personName: classification.hrNotificationThirdPartyName,
-      department: classification.hrNotificationThirdPartyHint, summary, summaryLocalized, topicLabel, actionPhrase, actionKind, createdAt, history
+      phone, name, lang, personName: thirdPartyName,
+      department: thirdPartyHint, summary, summaryLocalized, topicLabel, actionPhrase, actionKind, createdAt, history, datePhrase
     });
   }
-  if (classification.hrNotificationInvolvesThirdParty) {
-    await savePendingHrNoteFlow(phone, { summary, summaryLocalized, topicLabel, actionPhrase, lang, createdAt, actionKind, step: 'awaiting_name' });
+  if (involvesThirdParty) {
+    await savePendingHrNoteFlow(phone, { summary, summaryLocalized, topicLabel, actionPhrase, lang, createdAt, actionKind, datePhrase, step: 'awaiting_name' });
     // WFH/leave/half-day/off-day-duty FIX, "neutral" - the initiator
     // genuinely isn't stated; the question can't commit to either verb
     // yet, so it asks with both ("bolechhen ba approve korechhen") - the
@@ -7501,8 +7729,38 @@ async function handleHrNotificationStart({ phone, name, lang, text, history, cla
 // this flow at all (spec: "until... the sender changes topic") - the
 // caller falls through to normal classification in that case; every
 // other outcome returns a real decision.
+const MAX_HR_NOTE_DATE_CLARIFY_ATTEMPTS = 2;
 async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
   const lang = hrFlow.lang;
+  // Explicit-date task (2026-11) - the sender is answering "which date did
+  // you mean?" (hrFlow.step === 'awaiting_date_choice', saved by
+  // handleHrNotificationStart's own date-resolution gate). Re-runs the SAME
+  // deterministic resolver on their plain-text reply directly (it already
+  // understands "15 November"/"kal"/"Monday"/a range on its own, with no
+  // model call needed for this narrow, date-only context) - never guesses:
+  // a still-ambiguous reply re-asks (bounded), never silently picks one.
+  if (hrFlow.step === 'awaiting_date_choice') {
+    const resolved = resolveHrNoteDate(text.trim(), hrFlow.createdAt);
+    if (resolved.ambiguous) {
+      const attempts = hrFlow.attempts || 1;
+      if (attempts < MAX_HR_NOTE_DATE_CLARIFY_ATTEMPTS) {
+        await savePendingHrNoteFlow(phone, Object.assign({}, hrFlow, { attempts: attempts + 1 }));
+        return { case: 'acknowledged', replyText: HR_NOTE_ASK_WHICH_DATE[lang] || HR_NOTE_ASK_WHICH_DATE.english, summaryForOwner: null, lang };
+      }
+      await clearPendingHrNoteFlow(phone);
+      await postOwnerNotification(senderNameAndPhone(name, phone) + ' HR-bishoy janiyechhen ("' + hrFlow.summary + '") kintu tarikh-ta confirm kora jayni - apni direct handle korun.');
+      return { case: 'acknowledged', replyText: HR_NOTE_NO_THIRD_PARTY[lang] || HR_NOTE_NO_THIRD_PARTY.english, summaryForOwner: null, lang };
+    }
+    const datePhrase = formatHrNoteDatePhrase(resolved, lang);
+    const summaryLocalized = fillHrNoteDatePlaceholder(hrFlow.summaryLocalized, datePhrase);
+    require('./attendanceRequestService').recordDateResolved(phone, formatHrNoteCalendarDate(resolved)).catch(() => {});
+    return continueHrNoteAfterDateResolved({
+      phone, name, lang, history, summary: hrFlow.summary, summaryLocalized, topicLabel: hrFlow.topicLabel,
+      actionPhrase: hrFlow.actionPhrase, actionKind: hrFlow.actionKind, createdAt: hrFlow.createdAt, datePhrase,
+      thirdPartyName: hrFlow.thirdPartyName, thirdPartyHint: hrFlow.thirdPartyHint,
+      involvesThirdParty: hrFlow.involvesThirdParty, approvalGranted: hrFlow.approvalGranted
+    });
+  }
   // WFH/leave/half-day/off-day-duty FIX - "sudden": did the sender also
   // inform their reporting manager? A name given (even combined with a
   // "yes") moves straight to the confirmation flow; "no" closes the note
@@ -7518,15 +7776,15 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
       return { case: 'acknowledged', replyText: HR_FLOW_CONTEXT_CLARIFY[lang] || HR_FLOW_CONTEXT_CLARIFY.english, summaryForOwner: null, lang };
     }
     if (extracted.personName) {
-      const rephrased = enforceSuddenInformingVerb(await rephraseForThirdParty(hrFlow.summary, 'sudden', lang), lang);
-      return resolveHrNoteThirdParty({ phone, name, lang, personName: extracted.personName, department: extracted.hint, summary: hrFlow.summary, summaryLocalized: rephrased, topicLabel: hrFlow.topicLabel, actionPhrase: hrFlow.actionPhrase, actionKind: 'sudden', createdAt: hrFlow.createdAt, history });
+      const rephrased = fillHrNoteDatePlaceholder(enforceSuddenInformingVerb(await rephraseForThirdParty(hrFlow.summary, 'sudden', lang), lang), hrFlow.datePhrase);
+      return resolveHrNoteThirdParty({ phone, name, lang, personName: extracted.personName, department: extracted.hint, summary: hrFlow.summary, summaryLocalized: rephrased, topicLabel: hrFlow.topicLabel, actionPhrase: hrFlow.actionPhrase, actionKind: 'sudden', createdAt: hrFlow.createdAt, history, datePhrase: hrFlow.datePhrase });
     }
     if (isNoAnswer(t)) {
       await clearPendingHrNoteFlow(phone);
       return { case: 'acknowledged', replyText: HR_NOTE_SUDDEN_CLOSE_NO_MANAGER[lang] || HR_NOTE_SUDDEN_CLOSE_NO_MANAGER.english, summaryForOwner: null, lang };
     }
     if (isYesAnswer(t)) {
-      await savePendingHrNoteFlow(phone, { summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, actionPhrase: hrFlow.actionPhrase, lang, createdAt: hrFlow.createdAt, actionKind: 'sudden', step: 'awaiting_name' });
+      await savePendingHrNoteFlow(phone, { summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, actionPhrase: hrFlow.actionPhrase, lang, createdAt: hrFlow.createdAt, actionKind: 'sudden', datePhrase: hrFlow.datePhrase, step: 'awaiting_name' });
       return { case: 'acknowledged', replyText: HR_NOTE_ASK_NAME_ONLY[lang] || HR_NOTE_ASK_NAME_ONLY.english, summaryForOwner: null, lang };
     }
     return { case: 'acknowledged', replyText: HR_FLOW_CONTEXT_CLARIFY[lang] || HR_FLOW_CONTEXT_CLARIFY.english, summaryForOwner: null, lang };
@@ -7553,14 +7811,14 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
       return handleUnclearFlowReply({ phone, name, hrFlow, lang });
     }
     if (extracted.personName) {
-      return resolveHrNoteThirdParty({ phone, name, lang, personName: extracted.personName, department: extracted.hint, summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, actionPhrase: hrFlow.actionPhrase, actionKind: 'approval', createdAt: hrFlow.createdAt, history });
+      return resolveHrNoteThirdParty({ phone, name, lang, personName: extracted.personName, department: extracted.hint, summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, actionPhrase: hrFlow.actionPhrase, actionKind: 'approval', createdAt: hrFlow.createdAt, history, datePhrase: hrFlow.datePhrase });
     }
     if (isNoAnswer(t)) {
       await clearPendingHrNoteFlow(phone);
       return { case: 'acknowledged', replyText: HR_NOTE_APPROVAL_NOT_YET_CLOSE[lang] || HR_NOTE_APPROVAL_NOT_YET_CLOSE.english, summaryForOwner: null, lang };
     }
     if (isYesAnswer(t)) {
-      await savePendingHrNoteFlow(phone, { summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, actionPhrase: hrFlow.actionPhrase, lang, createdAt: hrFlow.createdAt, actionKind: 'approval', step: 'awaiting_name' });
+      await savePendingHrNoteFlow(phone, { summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, actionPhrase: hrFlow.actionPhrase, lang, createdAt: hrFlow.createdAt, actionKind: 'approval', datePhrase: hrFlow.datePhrase, step: 'awaiting_name' });
       return { case: 'acknowledged', replyText: HR_NOTE_ASK_NAME_ONLY[lang] || HR_NOTE_ASK_NAME_ONLY.english, summaryForOwner: null, lang };
     }
     // Live bug fix (917278793115) - this used to be the SAME blind
@@ -7636,7 +7894,7 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
     const hasConfidentReresolve = extractedForReresolve.personName
       && await hasConfidentPersonMatch(extractedForReresolve.personName, extractedForReresolve.hint);
     if (hasConfidentReresolve) {
-      const reresolved = await resolveHrNoteThirdParty({ phone, name, lang, personName: extractedForReresolve.personName, department: extractedForReresolve.hint, summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, actionPhrase: hrFlow.actionPhrase, actionKind: hrFlow.actionKind, createdAt: hrFlow.createdAt, history });
+      const reresolved = await resolveHrNoteThirdParty({ phone, name, lang, personName: extractedForReresolve.personName, department: extractedForReresolve.hint, summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, actionPhrase: hrFlow.actionPhrase, actionKind: hrFlow.actionKind, createdAt: hrFlow.createdAt, history, datePhrase: hrFlow.datePhrase });
       if (disambigVerdict.hasExtraInfo && reresolved && reresolved.replyText) {
         return Object.assign({}, reresolved, { replyText: wrapWithExtraInfoNote(lang, reresolved.replyText) });
       }
@@ -7732,7 +7990,7 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
         return { case: 'acknowledged', replyText: HR_FLOW_CONTEXT_CLARIFY[lang] || HR_FLOW_CONTEXT_CLARIFY.english, summaryForOwner: null, lang };
       }
       if (extracted.personName) {
-        return resolveHrNoteThirdParty({ phone, name, lang, personName: extracted.personName, department: extracted.hint, summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, actionPhrase: hrFlow.actionPhrase, actionKind: hrFlow.actionKind, createdAt: hrFlow.createdAt, previousCandidateId: hrFlow.candidate.employeeId, history });
+        return resolveHrNoteThirdParty({ phone, name, lang, personName: extracted.personName, department: extracted.hint, summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, actionPhrase: hrFlow.actionPhrase, actionKind: hrFlow.actionKind, createdAt: hrFlow.createdAt, previousCandidateId: hrFlow.candidate.employeeId, history, datePhrase: hrFlow.datePhrase });
       }
       if (remainder) {
         // The "No" cancelled the old candidate, but the remainder is a
@@ -7745,7 +8003,7 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
         // plain "give me the correct full name" retry alongside the
         // separate topic's own reply, never just one or the other.
         if (extracted.isUnrelatedTopic && extracted.unrelatedTopicPhrase) {
-          await savePendingHrNoteFlow(phone, { summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, actionPhrase: hrFlow.actionPhrase, lang, createdAt: hrFlow.createdAt, step: 'awaiting_name' });
+          await savePendingHrNoteFlow(phone, { summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, actionPhrase: hrFlow.actionPhrase, datePhrase: hrFlow.datePhrase, lang, createdAt: hrFlow.createdAt, step: 'awaiting_name' });
           const retryText = NAME_CONFIRM_RETRY[lang] || NAME_CONFIRM_RETRY.english;
           const topicAck = (HR_FLOW_UNRELATED_TOPIC_ACK[lang] || HR_FLOW_UNRELATED_TOPIC_ACK.english)(extracted.unrelatedTopicPhrase);
           return { case: 'acknowledged', replyText: retryText + ' ' + topicAck, summaryForOwner: null, lang };
@@ -7760,13 +8018,13 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
         // for its own real answer - exactly as before Task 3 (see the
         // "Ayon HR k?" locked scenario this must never break).
         if (extracted.isBareAckOrHonorific) {
-          await savePendingHrNoteFlow(phone, { summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, actionPhrase: hrFlow.actionPhrase, lang, createdAt: hrFlow.createdAt, step: 'awaiting_name' });
+          await savePendingHrNoteFlow(phone, { summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, actionPhrase: hrFlow.actionPhrase, datePhrase: hrFlow.datePhrase, lang, createdAt: hrFlow.createdAt, step: 'awaiting_name' });
           return { case: 'acknowledged', replyText: NAME_CONFIRM_RETRY[lang] || NAME_CONFIRM_RETRY.english, summaryForOwner: null, lang };
         }
         await clearPendingHrNoteFlow(phone);
         return null;
       }
-      await savePendingHrNoteFlow(phone, { summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, actionPhrase: hrFlow.actionPhrase, lang, createdAt: hrFlow.createdAt, step: 'awaiting_name' });
+      await savePendingHrNoteFlow(phone, { summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, actionPhrase: hrFlow.actionPhrase, datePhrase: hrFlow.datePhrase, lang, createdAt: hrFlow.createdAt, step: 'awaiting_name' });
       return { case: 'acknowledged', replyText: NAME_CONFIRM_RETRY[lang] || NAME_CONFIRM_RETRY.english, summaryForOwner: null, lang };
     }
     // Neither a yes nor a no word - the sender may simply have answered
@@ -7782,7 +8040,7 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
       return { case: 'acknowledged', replyText: HR_FLOW_CONTEXT_CLARIFY[lang] || HR_FLOW_CONTEXT_CLARIFY.english, summaryForOwner: null, lang };
     }
     if (extracted.personName) {
-      return resolveHrNoteThirdParty({ phone, name, lang, personName: extracted.personName, department: extracted.hint, summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, actionPhrase: hrFlow.actionPhrase, actionKind: hrFlow.actionKind, createdAt: hrFlow.createdAt, previousCandidateId: hrFlow.candidate.employeeId, history });
+      return resolveHrNoteThirdParty({ phone, name, lang, personName: extracted.personName, department: extracted.hint, summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, actionPhrase: hrFlow.actionPhrase, actionKind: hrFlow.actionKind, createdAt: hrFlow.createdAt, previousCandidateId: hrFlow.candidate.employeeId, history, datePhrase: hrFlow.datePhrase });
     }
     // Direct instruction (2026-10-25) - a genuinely unrelated topic is
     // answered on its own; the original confirm question is still exactly
@@ -7857,12 +8115,12 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
       const ruleKind = (detApprovalPerson && detApprovalPerson.actionKind) || deterministicHrActionKind(text) || deterministicApprovalFromSelfInitiatedInforming(text);
       const finalKind = ruleKind || modelKind;
       if (ruleKind && ruleKind !== modelKind) await recordActionKindOverride(phone, text, ruleKind, modelKind);
-      summaryLocalized = await rephraseForThirdParty(hrFlow.summary, finalKind, lang);
+      summaryLocalized = fillHrNoteDatePlaceholder(await rephraseForThirdParty(hrFlow.summary, finalKind, lang), hrFlow.datePhrase);
       resolvedKindForConfirm = finalKind;
     } else if (hrFlow.actionKind === 'sudden') {
-      summaryLocalized = enforceSuddenInformingVerb(await rephraseForThirdParty(hrFlow.summary, 'sudden', lang), lang);
+      summaryLocalized = fillHrNoteDatePlaceholder(enforceSuddenInformingVerb(await rephraseForThirdParty(hrFlow.summary, 'sudden', lang), lang), hrFlow.datePhrase);
     }
-    const resolved = await resolveHrNoteThirdParty({ phone, name, lang, personName, department: hint, summary: hrFlow.summary, summaryLocalized, topicLabel: hrFlow.topicLabel, actionPhrase: hrFlow.actionPhrase, actionKind: resolvedKindForConfirm, createdAt: hrFlow.createdAt, history });
+    const resolved = await resolveHrNoteThirdParty({ phone, name, lang, personName, department: hint, summary: hrFlow.summary, summaryLocalized, topicLabel: hrFlow.topicLabel, actionPhrase: hrFlow.actionPhrase, actionKind: resolvedKindForConfirm, createdAt: hrFlow.createdAt, history, datePhrase: hrFlow.datePhrase });
     // Case B.
     if (hasExtraInfo && resolved && resolved.replyText) {
       return Object.assign({}, resolved, { replyText: wrapWithExtraInfoNote(lang, resolved.replyText) });
@@ -10077,7 +10335,7 @@ function rephraseForThirdPartyTool() {
       parameters: {
         type: 'object',
         properties: {
-          summaryLocalized: { type: 'string', description: 'The rephrased sentence, in the target language. The sender is referred to as "onake"/"use"/"them" (never named). The third party is addressed as "apni"/"aap"/"you", never passive voice. Use a telling verb ("bolechhen"/"kaha hai"/"told") if actionKind is "instruction", a granting verb ("diyechhen"/"di hai"/"gave") if "approval", or a natural informing phrasing with no telling/granting verb (e.g. "...apnake janiyechhen je...") if actionKind is "sudden" - a sudden/emergency situation being reported, not something told or approved by the third party.' }
+          summaryLocalized: { type: 'string', description: 'The rephrased sentence, in the target language. The sender is referred to as "onake"/"use"/"them" (never named). The third party is addressed as "apni"/"aap"/"you", never passive voice. Use a telling verb ("bolechhen"/"kaha hai"/"told") if actionKind is "instruction", a granting verb ("diyechhen"/"di hai"/"gave") if "approval", or a natural informing phrasing with no telling/granting verb (e.g. "...apnake janiyechhen je...") if actionKind is "sudden" - a sudden/emergency situation being reported, not something told or approved by the third party. EXPLICIT-DATE TASK (2026-11) - if the Fact mentions any date reference (today/tomorrow/a specific date/a day name/a range), write the LITERAL placeholder token `{Date}` in place of it, positioned naturally in the sentence - never write out the actual date words yourself, code fills in the real, calendar-correct date afterwards. Omit `{Date}` only if the Fact genuinely has no date component.' }
         },
         required: ['summaryLocalized']
       }
@@ -10235,10 +10493,11 @@ function classifyTool() {
           vacancyEnquiryPosition: { type: 'string', description: 'Required only when isVacancyEnquiry is true AND a specific position/role was actually named - the position name as a short noun phrase, in English (e.g. "accountant", "Site Supervisor"). Omit entirely if they asked about openings in general without naming one.' },
           isHrNotification: { type: 'boolean', description: 'Live bug fix (2026-10-29): true for the sender\'s OWN attendance/time-off matter that needs a manager\'s OK - leave, late coming, early leaving, a half-day, JOINING FROM THE SECOND HALF OF THE DAY (a DISTINCT matter from both "half-day" and "late coming" - the sender is informing that they will only join/report for the second half of today\'s shift, e.g. "ajke second half theke join korbo", "aj dupurer por office asbo", "will join from 2pm today" - never relabel this as a plain "half day" leave or as ordinary "late coming" by a few minutes/an hour; it is its own topic), attendance regularisation, an off-day-in-lieu/comp-off, a duty/schedule change, or work from home (WFH, any spelling/phrasing - "ghar/bari theke kaj", "remote kaj", "ghar se kaam", etc.) - in ANY phrasing: a plain informing statement ("ajke WFH korchi"), a request or plan ("ami aajke half day kore Saturday full day korte chai", "kalke chuti nebo"), or a question about getting it approved - this topic list is NEVER gated on intent being "informing" specifically, unlike the rest of this field. Also true, but ONLY when intent is "informing" (a plain statement, nothing being asked for), for: a salary/bank account change, or any other work-location update. false otherwise - including a GENERAL policy question about any of these topics (not about the sender\'s own situation), a request for documents/data/a salary slip, a complaint, or any other "informing"/"request"/"question" message unrelated to the topics above (e.g. sharing news, a document_sent message). LIVE BUG FIX (2026-11): a request for a DOCUMENT or RECORD about a past period (a salary slip, payslip, Form 16, offer/appointment letter copy, attendance report, etc. - "last month-er salary slip ta pathaben please?", "October-er payslip dao") is false here, even though it also names a past month and uses a request/polite-ask verb exactly like a real attendance matter does - a reference to "last month"/a specific month name is NEVER by itself evidence of an attendance-approval topic; this field is only ever true for the sender\'s OWN leave/late-coming/half-day/WFH/comp-off/duty-change/regularisation matter, never a request to be SENT a document.' },
           hrNotificationSummary: { type: 'string', description: 'Required when isHrNotification is true - a short, accurate, neutral summary in ENGLISH of exactly what they informed, e.g. "told to do duty today instead of his scheduled off, was asked to take a different day off in lieu" or "worked from home today with manager\'s approval". For the HR note and the owner\'s own notifications only (English, like every other owner-facing label) - never sent to the sender or a third party as-is. State only what the sender actually said, nothing invented, including whatever date(s) they gave (today/yesterday/a specific date or range).' },
+          hrNotificationDateRaw: { type: 'string', description: 'Required when isHrNotification is true - the sender\'s OWN raw date reference, transcribed EXACTLY as they said it, in whatever word(s) they used: "aaj"/"today", "kal"/"tomorrow", "porshu", an explicit date ("15 November", "15/11"), a weekday name ("Monday"), or a range ("15 theke 17 November"). Transcribe ONLY - never compute, resolve, or guess an actual calendar date yourself (no arithmetic, no turning a weekday into a date) - that is done in code afterwards, exactly like this tool\'s own dateRaw field works for reminderService.js. Omit entirely (or leave empty) if the sender gave no date reference of any kind.' },
           hrNotificationActionKind: { type: 'string', enum: ['instruction', 'approval', 'sudden', 'neutral'], description: 'Judge this from what actually happened, never from the TOPIC and never from a fixed keyword list - WFH/leave/half-day/late-coming can be EITHER "instruction" or "approval" depending on who initiated it, exactly like a duty change can. "instruction" - a manager/supervisor TOLD or ASKED the sender to do something, in ANY words that mean telling/asking, regardless of topic (duty on an off day, a duty/shift/site change, overtime, travel, OR a manager telling the sender to work from home / take a day off / come in late - e.g. "Tanmoy Sir bolechhen ajke bari theke kaj korte" IS "instruction", not "approval", even though the topic is work-from-home, because the sender is reporting being TOLD to do it, not asking for it). "approval" - the sender ASKED and was ALLOWED/GRANTED something (work from home, leave, a half-day, late coming, early leaving, a comp-off/off-day-in-lieu taken) - this is the sender\'s OWN initiative, confirmed/allowed by someone else, never something that person told them to do. If a single message has both an instruction AND a related off-day granted as part of it (e.g. "duty korte bolechhe, bodole onno din chhutti debe" - told to do duty, will get a day off in lieu), use "instruction" - the off day is part of what was instructed. "sudden" - a sudden/unplanned event they are simply informing HR about (sudden illness, an accident, "I can\'t come in today") - not a planned WFH/leave/half-day/late-coming with an instruction or approval behind it. Use "neutral" only if genuinely unclear whether it was an instruction or an approval (the initiator isn\'t stated and can\'t be inferred) - e.g. "Ami ajke chhutir din duty korchi" with no mention of who told or allowed it. A message mixing MORE THAN ONE of these topics as the sender\'s own request or plan (e.g. "ami aajke half day kore Saturday full day kore nite chai" - a half-day today swapped for a Saturday comp-off) is still judged by WHO initiated it, exactly like a single-topic message - usually "approval" (the sender\'s own ask, whether or not it has actually been granted yet) - never "neutral" just because it mixes topics; "neutral" is reserved for when the INITIATOR genuinely can\'t be told, not for when the topic itself is mixed or hard to name in one word.' },
           hrNotificationApprovalGranted: { type: 'boolean', description: 'Required ONLY when hrNotificationActionKind is "approval" - true if the approval has ALREADY been obtained/happened (the message is in past/present tense about something already settled, e.g. "ajke WFH korchi", "aj chhutti niyechhi", "half day peyechi"). false if this is about the FUTURE and not yet confirmed as approved (e.g. "kalke chuti nebo", "porshu WFH korbo", "ajke half day nebo" said as a plan/intent, not a done deal) - judge by tense/certainty, not just whether the date is today or later. Omit entirely for every other hrNotificationActionKind.' },
           hrNotificationActionPhrase: { type: 'string', description: 'Required when isHrNotification is true - a short noun phrase, correctly inflected in the message\'s own detected language (the `language` field), that completes the sentence "Apnake ei ___ ke diyechhen" (Banglish) / "Aapko yeh ___ kisne diya hai" (Hinglish) / "who gave you this ___" (English). For hrNotificationActionKind "instruction": "instruction-ta" (banglish) / "instruction" (hinglish/english) - always this literal word, never the topic. For "approval": the topic + a correctly-inflected "approval" suffix in that language, e.g. Banglish "work from home-er approval-ta", "chhutti-r approval-ta", "half day-r approval-ta" (apply normal Bengali possessive inflection - "-er" after a consonant-ending word, "-r" after a vowel-ending one); Hinglish "work from home ki approval", "chhutti ki approval"; English "work from home approval", "leave approval". For "sudden": same shape as "neutral" below (there is no approval/instruction noun yet). For "neutral": the TOPIC + a correctly-inflected "bishoy-ta" suffix (never the bare placeholder alone) - e.g. Banglish "duty-r bishoy-ta" (not just "bishoy-ta"), Hinglish "duty ki baat", English "this duty matter" - apply the same possessive-inflection rule as "approval" above. When the matter mixes more than one topic in one message (e.g. a half-day today swapped for a Saturday comp-off) or a single topic can\'t be named cleanly, use the generic placeholder "ei bishoye" (Banglish) / "is bishoy mein" (Hinglish) / "this matter" (English) in place of the topic name, with the same correctly-inflected suffix - e.g. for hrNotificationActionKind "approval", Banglish "ei bishoye approval-ta" (producing "Apni ki ei bishoye approval-ta niyechhen?"), Hinglish "is bishoy mein approval", English "this matter\'s approval".' },
-          hrNotificationSummaryLocalized: { type: 'string', description: 'Required when isHrNotification is true - the SAME fact as hrNotificationSummary above, but written naturally in the message\'s own detected language (the `language` field) AND, when hrNotificationInvolvesThirdParty is true, phrased as a SECOND-PERSON, ACTIVE-VOICE statement addressed directly TO that third party, describing what THEY did for the sender - never a passive, sender-centric phrasing. The sender is "onake"/"use"/"them" (never named here), the third party is addressed as "apni"/"aap"/"you" with a formal, active verb conjugation, never passive ("bola hoyechhe"/"kaha gaya hai"/"was told"). The verb depends on hrNotificationActionKind: "instruction" uses a telling verb ("bolechhen"/"kaha hai"/"told") - e.g. for "ajke amake duty korte boleche r er bodole onno din chuti nite boleche": "apni onake ajke duty korte bolechhen, ar er bodole onno din chhutti nite bolechhen" (NOT "...bola hoyechhe..."). "approval" uses a granting verb ("diyechhen"/"di hai"/"gave") - e.g. for a Banglish WFH message "ajke bari theke kaj korechi, Tanmoy Sir approve korechhen": "apni onake ajke bari theke kaj (work from home) korar approval diyechhen". "sudden" and "neutral" have no fixed verb yet (the kind/initiator may still be unknown at this point) - phrase these naturally in first person for now (e.g. "ajke sorir kharap thakar karone aste parbo na" / "ajke chhutir din duty korchi") even if hrNotificationInvolvesThirdParty is true; a corrected, properly-addressed version is generated separately once the initiator is actually known. This version is inserted verbatim mid-sentence into the message sent TO that third party ("...message esechhe je <this>. Eta ki apnar theke confirm?"), so it must read grammatically as a direct, natural continuation of that sentence and never mix in English words/phrasing (except a short English term like "work from home" that has no natural Banglish/Hinglish equivalent). When hrNotificationInvolvesThirdParty is false (no third party to address), phrase it naturally in first person instead, the same as before.' },
+          hrNotificationSummaryLocalized: { type: 'string', description: 'Required when isHrNotification is true - the SAME fact as hrNotificationSummary above, but written naturally in the message\'s own detected language (the `language` field) AND, when hrNotificationInvolvesThirdParty is true, phrased as a SECOND-PERSON, ACTIVE-VOICE statement addressed directly TO that third party, describing what THEY did for the sender - never a passive, sender-centric phrasing. The sender is "onake"/"use"/"them" (never named here), the third party is addressed as "apni"/"aap"/"you" with a formal, active verb conjugation, never passive ("bola hoyechhe"/"kaha gaya hai"/"was told"). The verb depends on hrNotificationActionKind: "instruction" uses a telling verb ("bolechhen"/"kaha hai"/"told") - e.g. for "ajke amake duty korte boleche r er bodole onno din chuti nite boleche": "apni onake ajke duty korte bolechhen, ar er bodole onno din chhutti nite bolechhen" (NOT "...bola hoyechhe..."). "approval" uses a granting verb ("diyechhen"/"di hai"/"gave") - e.g. for a Banglish WFH message "ajke bari theke kaj korechi, Tanmoy Sir approve korechhen": "apni onake ajke bari theke kaj (work from home) korar approval diyechhen". "sudden" and "neutral" have no fixed verb yet (the kind/initiator may still be unknown at this point) - phrase these naturally in first person for now (e.g. "ajke sorir kharap thakar karone aste parbo na" / "ajke chhutir din duty korchi") even if hrNotificationInvolvesThirdParty is true; a corrected, properly-addressed version is generated separately once the initiator is actually known. This version is inserted verbatim mid-sentence into the message sent TO that third party ("...message esechhe je <this>. Eta ki apnar theke confirm?"), so it must read grammatically as a direct, natural continuation of that sentence and never mix in English words/phrasing (except a short English term like "work from home" that has no natural Banglish/Hinglish equivalent). When hrNotificationInvolvesThirdParty is false (no third party to address), phrase it naturally in first person instead, the same as before. EXPLICIT-DATE TASK (2026-11) - whenever this fact involves a date (today/tomorrow/a specific date/a day name/a range - essentially always, for this topic list), write the LITERAL placeholder token `{Date}` in place of that date reference, positioned exactly where the date reference naturally belongs in the sentence (e.g. Banglish "apni onake {Date} second half-e office join korar approval diyechhen", English "you gave them approval to join office in the second half on {Date}") - never write out the actual date words yourself, code fills in `{Date}` with the real, calendar-correct date afterwards. Omit `{Date}` only on the rare fact that genuinely has no date component at all.' },
           hrNotificationTopicLabel: { type: 'string', description: 'Required when isHrNotification is true - a SHORT (2-4 word) natural noun phrase naming the topic, written in the message\'s own detected language (the `language` field), e.g. for a Banglish duty/off-day-in-lieu message: "duty ar chhutti", for a late-coming message: "deri kore asha", for a joining-from-second-half message: "second half-e join", for a work-from-home message: "work from home", for a half-day message: "half day", for a salary/bank change: "bank account", for a work-location update: "kormosthol poriborton". Used ONLY to briefly remind the sender what an old, resumed conversation was about after a multi-day gap (e.g. "Gotokal-er ' + "'" + 'duty ar chhutti' + "'" + '-bishoy-ta niye bolchi") - never sent as a sentence by itself, so it must read naturally as a short phrase slotted into "...-bishoy-ta niye bolchi" (Banglish) or equivalent, not a full sentence or a translated English label.' },
           hrNotificationThirdPartyName: { type: 'string', description: 'Optional, only with isHrNotification true - if the sender named a specific OTHER person (e.g. a manager/supervisor) who gave them this instruction or is otherwise involved and should confirm it, that person\'s name exactly as given. Omit if no one else was named.' },
           hrNotificationThirdPartyHint: { type: 'string', description: 'Optional - a department/site/designation hint for the third party named above, if one was given (e.g. "Srirampur site"). Omit if none was mentioned.' },
@@ -14419,5 +14678,15 @@ module.exports = {
   handleVacancyEnquiryDecision,
   getJobTemplatesSentToday,
   clearJobTemplateSentToday,
-  listPendingAutoSends
+  listPendingAutoSends,
+  // Exported for scripts/check-whatsapp-engine.js only - explicit-date
+  // resolver/formatter for STEP 4's manager message (2026-11).
+  resolveHrNoteDate,
+  formatHrNoteDatePhrase,
+  formatHrNoteCalendarDate,
+  fillHrNoteDatePlaceholder,
+  continueHrNoteAfterDateResolved,
+  HR_CONFIRMATION_TO_MANAGER,
+  requesterRefFor,
+  summaryForSentence
 };
