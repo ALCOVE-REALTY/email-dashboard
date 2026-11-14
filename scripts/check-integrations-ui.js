@@ -70,7 +70,15 @@ function check(label, ok, detail) {
 
   const consoleErrors = [];
   const pageErrors = [];
-  page.on('console', (msg) => { if (msg.type() === 'error') consoleErrors.push(msg.text()); });
+  // "Failed to load resource: ... 404" is Chromium's own network-level log
+  // for a missing static asset (e.g. favicon.ico, a source map) on this
+  // check's minimal static server - never a real application JS error, and
+  // expected again after page.reload() (the durability check below). Real
+  // application errors (thrown exceptions, console.error from our own
+  // code) are never this exact browser-generated message, so filtering it
+  // out never hides a genuine regression - same spirit as check-subh-
+  // panel-ui.js's own "pre-existing, unrelated noise" tolerance.
+  page.on('console', (msg) => { if (msg.type() === 'error' && !/Failed to load resource/.test(msg.text())) consoleErrors.push(msg.text()); });
   page.on('pageerror', (err) => pageErrors.push(err.message));
 
   // Generic permissive mock for every /api/** call this page's own
@@ -190,6 +198,101 @@ function check(label, ok, detail) {
   check('Sync history re-renders with the new entry after a successful sync (not just the toast)', (historyText || '').includes('3 employees'));
   const lastSyncedText = await page.locator('#twcLastSyncedLine').textContent().catch(() => null);
   check('"Last synced" line updates with the employee count', (lastSyncedText || '').includes('3 employees'));
+  check('No Action-needed failure banner is shown after a successful sync', !(await page.locator('#twcFailureBanner').isVisible()));
+
+  // ---- Live bug fix (2026-11) regression coverage: mocked failure modes ----
+  // a real HTTP error, a client-side timeout, and a missing-URL config
+  // error - each must show an error toast with the EXACT reason, re-render
+  // history as a failed attempt, and raise the persistent Action-needed
+  // banner with a working Retry button. Re-registers the sync-now/failure
+  // routes per scenario (Playwright: last-registered route wins).
+
+  // Scenario A: a real HTTP 500 from the batched send (exactly the shape
+  // togetherWeCanService.js's own sendRowsWithRetryAndBatching produces).
+  let failureRecord = null;
+  await page.route('**/api/workforce/hr-assistant/together-we-can/failure', (route) => {
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ failure: failureRecord }) });
+  });
+  await page.route('**/api/workforce/hr-assistant/together-we-can/sync-now', (route) => {
+    failureRecord = { reason: 'Batch send failed for rows 1-4 (HTTP 500): internal server error at Together We Can', httpStatus: 500, responseBodyText: 'internal server error at Together We Can', triggeredBy: 'manual:test', at: new Date().toISOString() };
+    route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify({
+        ok: false, employeeCount: 4, counts: { ACTIVE: 2, INACTIVE: 1, 'NOTICE PERIOD': 1 }, changedSinceLastSync: 1,
+        mode: 'batched', reason: failureRecord.reason, httpStatus: 500, responseBodyText: 'internal server error at Together We Can',
+        batches: [{ startIndex: 0, endIndex: 3, ok: false, status: 500, bodyText: 'internal server error at Together We Can' }], warnings: []
+      })
+    });
+  });
+  await page.click('#twcSyncNowBtn');
+  await page.waitForTimeout(350);
+  const errToastText = await page.locator('.wf-pro-toast').last().textContent().catch(() => null);
+  check('A real HTTP 500 shows an error toast with the EXACT reason (HTTP status + response text), never a generic one', (errToastText || '').includes('HTTP 500') && (errToastText || '').includes('internal server error at Together We Can'));
+  check('Sync Now button returns to its normal state after a failure (never stuck busy)', await page.locator('#twcSyncNowBtn').isEnabled());
+  check('A persistent Action-needed banner appears naming the exact failure reason', await page.locator('#twcFailureBanner').isVisible() && (await page.locator('#twcFailureText').textContent() || '').includes('internal server error at Together We Can'));
+  check('The Action-needed banner has a Retry button', await page.locator('#twcFailureRetryBtn').isVisible());
+
+  // Reload the page entirely - the banner must be durable (server-backed),
+  // not just an in-memory toast that vanishes on refresh.
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForTimeout(400);
+  await page.click('#menuBtn');
+  await page.waitForTimeout(150);
+  await page.click('[data-view="integrations"]');
+  await page.waitForTimeout(300);
+  check('The Action-needed banner survives a full page reload (durable, Redis-backed, not just an in-memory toast)', await page.locator('#twcFailureBanner').isVisible());
+
+  // Scenario B: tapping Retry re-runs the exact same sync - on success this
+  // time, the banner must clear and the normal success toast/history must
+  // appear, same as a fresh "Sync data now" tap.
+  await page.route('**/api/workforce/hr-assistant/together-we-can/sync-now', (route) => {
+    failureRecord = null;
+    route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify({
+        ok: true, employeeCount: 4, counts: { ACTIVE: 2, INACTIVE: 1, 'NOTICE PERIOD': 1 }, changedSinceLastSync: 0,
+        mode: 'single', httpStatus: 200, responseBodyText: 'OK', batches: [], warnings: []
+      })
+    });
+  });
+  await page.click('#twcFailureRetryBtn');
+  await page.waitForTimeout(350);
+  check('Retry re-runs the sync and, on success, clears the Action-needed banner', !(await page.locator('#twcFailureBanner').isVisible()));
+  const retryToastText = await page.locator('.wf-pro-toast').last().textContent().catch(() => null);
+  check('Retry shows the normal success toast on a successful retry', (retryToastText || '').includes('Synced'));
+
+  // Scenario C: TWC_API_URL missing on the server - the real shape
+  // togetherWeCanService.js produces when postRows finds no URL configured.
+  await page.route('**/api/workforce/hr-assistant/together-we-can/sync-now', (route) => {
+    failureRecord = { reason: 'Batch send failed for rows 1-4 (HTTP network error): TWC_API_URL is not configured.', httpStatus: null, responseBodyText: null, triggeredBy: 'manual:test', at: new Date().toISOString() };
+    route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify({
+        ok: false, employeeCount: 4, counts: { ACTIVE: 2, INACTIVE: 1, 'NOTICE PERIOD': 1 }, changedSinceLastSync: 0,
+        mode: 'batched', reason: failureRecord.reason, httpStatus: null, responseBodyText: null,
+        batches: [{ startIndex: 0, endIndex: 3, ok: false, status: null, bodyText: 'TWC_API_URL is not configured.' }], warnings: []
+      })
+    });
+  });
+  await page.click('#twcSyncNowBtn');
+  await page.waitForTimeout(350);
+  const missingUrlToastText = await page.locator('.wf-pro-toast').last().textContent().catch(() => null);
+  check('A missing TWC_API_URL on the server shows a clear, specific error toast (never a silent no-op)', (missingUrlToastText || '').includes('TWC_API_URL is not configured'));
+  check('The Action-needed banner names the missing-URL reason', (await page.locator('#twcFailureText').textContent() || '').includes('TWC_API_URL is not configured'));
+
+  // Scenario D: a client-side TIMEOUT - the server never responds at all;
+  // Playwright's clock is faked so the frontend's real 60s AbortController
+  // fires without this test actually waiting 60 real seconds.
+  await page.clock.install({ time: Date.now() });
+  await page.route('**/api/workforce/hr-assistant/together-we-can/sync-now', () => { /* never calls route.fulfill/continue - simulates a hung request */ });
+  await page.click('#twcSyncNowBtn');
+  await page.waitForTimeout(50);
+  check('Sync Now shows its spinner while the request is hung', await page.locator('#twcSyncNowBtn .spinner').count() > 0);
+  await page.clock.fastForward(61000); // instantly advance past the 60s client-side timeout
+  await page.waitForTimeout(300);
+  const timeoutToastText = await page.locator('.wf-pro-toast').last().textContent().catch(() => null);
+  check('A hung request times out at 60s with a clear "timed out" toast, never spinning forever', (timeoutToastText || '').toLowerCase().includes('timed out'));
+  check('Sync Now button recovers from a timeout (never stuck busy forever)', await page.locator('#twcSyncNowBtn').isEnabled());
+  // No clock.uninstall() in this Playwright version - resumeing real time
+  // isn't needed for the remaining checks below (plain clicks/fills and
+  // page.waitForTimeout, which is a Node-side wait, not a page JS timer).
 
   // ---- Test-employee picker ----
   await page.fill('#twcTestEmployeeInput', 'Asha');

@@ -2995,6 +2995,16 @@
           </div>
           <div class="wf-note" style="margin:0 0 14px">Pushes Emp Code, Status, HOD ID and Reporting Doer ID to the Together We Can system (togetherwecan.alcoverealty.in). No AI involved - a plain, deterministic data sync.</div>
 
+          <!-- Live bug fix (2026-11), direct instruction - a persistent
+               "Action needed" style card for the last failed sync (never
+               just an easy-to-miss toast), with its own Retry button.
+               Loaded on page open and after every Sync/Retry attempt;
+               cleared automatically the moment a later sync succeeds. -->
+          <div id="twcFailureBanner" style="display:none;margin-bottom:14px;padding:10px 12px;border-radius:10px;background:var(--wi-red-50, #fee2e2);border:1px solid var(--wi-red-700, #b91c1c)">
+            <div style="font-weight:700;color:var(--wi-red-700, #b91c1c);font-size:.82rem;word-break:break-word" id="twcFailureText"></div>
+            <button type="button" class="wf-ai-action-btn outline" id="twcFailureRetryBtn" style="margin-top:8px"><span>Retry</span></button>
+          </div>
+
           <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
             <button type="button" class="wf-ai-action-btn outline" id="twcPreviewBtn"><span>Preview</span></button>
             <button type="button" class="wf-ai-action-btn download" id="twcSyncNowBtn"><span>Sync data now</span></button>

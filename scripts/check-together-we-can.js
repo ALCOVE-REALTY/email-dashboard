@@ -105,6 +105,7 @@ async function main() {
   const sheetsAuth = require('../src/sheetsAuth');
   const togetherWeCanService = require('../src/aiAssistant/togetherWeCanService');
   const workforceRoutes = require('../src/workforceRoutes');
+  const employeeService = require('../src/employeeService');
 
   const origGetSheetsReadOnlyClient = sheetsAuth.getSheetsReadOnlyClient;
   const origHasServiceAccount = sheetsAuth.hasServiceAccount;
@@ -314,6 +315,118 @@ async function main() {
     await togetherWeCanService.saveSettings({ enabled: false, time: '21:00' }); // back to off-by-default for cleanliness
 
     console.log('='.repeat(70));
+    console.log('LIVE BUG FIX regression tests (2026-11) - no silent "did nothing" exit, ever');
+    console.log('='.repeat(70));
+    setFixture(MAIN_FIXTURE);
+    fetchScript = null;
+
+    await checkAsync('forceRefresh ALWAYS performs a brand-new live fetch, never reusing an in-flight promise started by an earlier non-forced background refresh', async () => {
+      togetherWeCanService._clearCacheForTest();
+      // Kick off a slow, NON-forced background refresh first (simulating
+      // the "isStale" background-refresh path) against the OLD fixture...
+      const slowFixture = MAIN_FIXTURE;
+      let resolveSlow;
+      const slowPromise = new Promise((resolve) => { resolveSlow = resolve; });
+      const origGetClient = sheetsAuth.getSheetsReadOnlyClient;
+      sheetsAuth.getSheetsReadOnlyClient = () => ({
+        spreadsheets: { values: { get: async () => { await slowPromise; return { data: { values: slowFixture } }; } } }
+      });
+      const backgroundRead = togetherWeCanService.listPickerCandidates(); // not forced - starts the slow in-flight fetch
+      await new Promise((resolve) => setTimeout(resolve, 20)); // let it actually start before the forced call below
+      // ...then swap to a DIFFERENT fixture and call with forceRefresh:true
+      // DURING that still-pending background read. If forceRefresh ever
+      // reused the in-flight promise, this would still see the OLD data.
+      const NEW_FIXTURE = [headerRow(), dataRow({ empCode: 'FRESH001', status: 'ACTIVE', hodId: '', reportingDoerId: '' })];
+      sheetsAuth.getSheetsReadOnlyClient = () => makeFakeSheetsClient(NEW_FIXTURE);
+      const forced = await togetherWeCanService.buildPreview({ forceRefresh: true });
+      resolveSlow(); // let the slow background read finish too, so it doesn't leak into later tests
+      await backgroundRead.catch(() => {});
+      sheetsAuth.getSheetsReadOnlyClient = origGetClient;
+      return forced.employeeCount === 1 && forced.counts.ACTIVE === 1;
+    });
+    setFixture(MAIN_FIXTURE);
+
+    await checkAsync('a sheet-read failure (e.g. a missing column header) is caught, never thrown past sendFullSync, logged to history, and recorded as the persistent failure', async () => {
+      const BROKEN_FIXTURE = [new Array(35).fill('Some Other Column'), dataRow({ empCode: 'X1', status: 'ACTIVE' })]; // no "Emp Code"/"Status"/etc. headers at all
+      setFixture(BROKEN_FIXTURE);
+      const result = await togetherWeCanService.sendFullSync({ triggeredBy: 'broken-headers-test' });
+      setFixture(MAIN_FIXTURE);
+      const failure = await togetherWeCanService.getFailure();
+      return result.ok === false && result.mode === 'error' && /could not find column header/i.test(result.reason) &&
+        Boolean(failure) && /could not find column header/i.test(failure.reason);
+    });
+    await checkAsync('a later SUCCESSFUL sync clears the persistent failure record', async () => {
+      fetchScript = null;
+      const result = await togetherWeCanService.sendFullSync({ triggeredBy: 'recovery-test' });
+      const failure = await togetherWeCanService.getFailure();
+      return result.ok === true && failure === null;
+    });
+    await checkAsync('0 eligible rows is reported as a FAILURE (ok:false, with a clear reason), never a silent/implicit success', async () => {
+      const EMPTY_FIXTURE = [headerRow()]; // headers only, zero data rows
+      setFixture(EMPTY_FIXTURE);
+      const result = await togetherWeCanService.sendFullSync({ triggeredBy: 'empty-test' });
+      setFixture(MAIN_FIXTURE);
+      const failure = await togetherWeCanService.getFailure();
+      return result.ok === false && result.employeeCount === 0 && /0 rows/.test(result.reason) &&
+        Boolean(failure) && /0 rows/.test(failure.reason);
+    });
+    await checkAsync('getFailure/clearFailure round-trip cleanly with no store-shaped surprises', async () => {
+      fetchScript = null;
+      await togetherWeCanService.sendFullSync({ triggeredBy: 'clear-again' }); // succeeds against MAIN_FIXTURE -> clears the empty-rows failure above
+      return (await togetherWeCanService.getFailure()) === null;
+    });
+    await checkAsync('postRows surfaces a clear, exact "timed out" reason on an aborted request, never a silent/garbled one', async () => {
+      const origFetch = global.fetch;
+      global.fetch = async () => { const e = new Error('The operation was aborted.'); e.name = 'AbortError'; throw e; };
+      try {
+        const result = await togetherWeCanService.sendTestOne({ employeeId: 'AR001' });
+        return result.ok === false && /Timed out waiting for a response from TWC_API_URL/.test(result.responseBodyText);
+      } finally { global.fetch = origFetch; }
+    });
+    await checkAsync('a plain HTTP 500 (non-network) failure surfaces its exact status + response body as the reason, after retry-once', async () => {
+      fetchScript = [{ ok: false, status: 500, bodyText: 'internal server error at Together We Can' }, { ok: false, status: 500, bodyText: 'internal server error at Together We Can' }];
+      fetchCallCount = 0;
+      const result = await togetherWeCanService.sendFullSync({ triggeredBy: 'http-500-test' });
+      fetchScript = null;
+      // 4 eligible rows from MAIN_FIXTURE -> under the 200-batch threshold, so
+      // this becomes exactly ONE batch (startIndex 0) that also fails -
+      // reason must name the exact HTTP status and body, never a generic one.
+      return result.ok === false && result.mode === 'batched' && /HTTP 500/.test(result.reason) && /internal server error at Together We Can/.test(result.reason);
+    });
+    await checkAsync('every failed sync (manual or auto) still gets a history entry - never silently un-logged', async () => {
+      const history = await togetherWeCanService.listHistory();
+      return history.some((h) => h.triggeredBy === 'broken-headers-test' && h.ok === false) &&
+        history.some((h) => h.triggeredBy === 'empty-test' && h.ok === false) &&
+        history.some((h) => h.triggeredBy === 'http-500-test' && h.ok === false);
+    });
+    await checkAsync('a successful sync\'s history entry carries the exact JSON "proof" payload for one real employee', async () => {
+      const history = await togetherWeCanService.listHistory();
+      const recovery = history.find((h) => h.triggeredBy === 'recovery-test');
+      return Boolean(recovery) && recovery.samplePayload && typeof recovery.samplePayload.Emp_Code === 'string' &&
+        Object.keys(recovery.samplePayload).sort().join(',') === 'Emp_Code,HOD_ID,Reporting_DOER_id,STATUS';
+    });
+
+    await checkAsync('the Preview ROUTE enriches diff/warning messages with the employee\'s real NAME (owner-facing fix), never just the bare Emp Code', async () => {
+      const origGetEmployeeData = employeeService.getEmployeeData;
+      employeeService.getEmployeeData = async () => ({ employees: [{ employeeId: 'AR001', name: 'Tathagata Sengupta' }] });
+      try {
+        // AR001's status in CHANGED_FIXTURE (still loaded from the diff
+        // section earlier? no - MAIN_FIXTURE was restored) - force a fresh
+        // diff by sending a modified AR001 row once more.
+        const changedOnceMore = MAIN_FIXTURE.map((r) => r.slice());
+        const idx = changedOnceMore.findIndex((r) => r[COL.empCode] === 'AR001');
+        changedOnceMore[idx] = dataRow({ empCode: 'AR001', status: 'NOTICE PERIOD', hodId: 'AR002', reportingDoerId: 'AR003' });
+        setFixture(changedOnceMore);
+        const res = await callRoute(workforceRoutes, 'get', '/hr-assistant/together-we-can/preview', { email: OWNER });
+        setFixture(MAIN_FIXTURE);
+        const item = (res.body.changedSinceLastSync.items || []).find((i) => i.empCode === 'AR001');
+        return res.status === 200 && Boolean(item) && item.message.startsWith('Tathagata Sengupta (AR001):');
+      } finally {
+        employeeService.getEmployeeData = origGetEmployeeData;
+      }
+    });
+
+    console.log('='.repeat(70));
     console.log('Owner-gating: every "Together We Can" route, same pattern as the rest of this codebase');
     console.log('='.repeat(70));
     fetchScript = null;
@@ -322,6 +435,7 @@ async function main() {
       { method: 'post', path: '/hr-assistant/together-we-can/sync-now' },
       { method: 'post', path: '/hr-assistant/together-we-can/test-one', body: { employeeId: 'AR001' } },
       { method: 'get', path: '/hr-assistant/together-we-can/history' },
+      { method: 'get', path: '/hr-assistant/together-we-can/failure' },
       { method: 'get', path: '/hr-assistant/together-we-can/settings' },
       { method: 'post', path: '/hr-assistant/together-we-can/settings', body: { enabled: false, time: '21:00' } },
       { method: 'get', path: '/hr-assistant/together-we-can/employees' }

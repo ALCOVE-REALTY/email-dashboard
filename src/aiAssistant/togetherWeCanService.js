@@ -129,11 +129,29 @@ function refreshCache() {
   return p.finally(() => { if (inFlight === p) inFlight = null; });
 }
 
+// LIVE BUG FIX (2026-11) - forceRefresh used to call refreshCache(), which
+// itself has an in-flight dedup guard (`if (inFlight && inFlightGen ===
+// cacheBus.current()) return inFlight;`) that does NOT know about
+// forceRefresh at all. If any earlier, non-forced background refresh
+// (kicked off by the `isStale` branch below, from an EARLIER call) was
+// still in flight at the moment a forceRefresh call landed, forceRefresh
+// would get handed that ALREADY-STARTED promise instead of a truly fresh
+// read - meaning a sheet edit made between that background refresh
+// starting and the forceRefresh call would be silently missed. A
+// forceRefresh call now ALWAYS performs its own brand-new live fetch,
+// never reusing any in-flight or cached promise - this is what guarantees
+// Preview/Sync/Test-one always see a change made to the sheet moments
+// before the click, not a race with some earlier unrelated read.
 async function getRawSheetRows({ forceRefresh = false } = {}) {
+  if (forceRefresh) {
+    const values = await fetchSheetValues();
+    const rows = parseSheetValues(values);
+    cache = { rows, fetchedAt: Date.now(), gen: cacheBus.current() };
+    return rows;
+  }
   const hasCache = Boolean(cache.rows) && cache.gen === cacheBus.current();
   const isStale = !hasCache || Date.now() - cache.fetchedAt >= CACHE_TTL_MS;
   if (!hasCache) return (await refreshCache()).rows;
-  if (forceRefresh) return (await refreshCache()).rows;
   if (isStale) refreshCache().catch(() => {});
   return cache.rows;
 }
@@ -215,6 +233,7 @@ const SNAPSHOT_KEY = 'subh-twc:last-snapshot';
 const HISTORY_KEY = 'subh-twc:history';
 const SETTINGS_KEY = 'subh-twc:settings';
 const DAILY_STATE_KEY = 'subh-twc:daily-state';
+const FAILURE_KEY = 'subh-twc:last-failure';
 const HISTORY_MAX = 10;
 const DEFAULT_SETTINGS = { enabled: false, time: '21:00' };
 
@@ -262,6 +281,31 @@ async function listHistory() {
   } catch (err) { return []; }
 }
 
+// Live bug fix (2026-11), direct instruction - "any failure in Preview or
+// Sync must never end silently": a durable, Action-needed-style failure
+// record, separate from (but written alongside) the history entry above,
+// so the Integrations page itself can show a persistent "Together We Can
+// sync failed — <reason>" card with a Retry button that survives a page
+// reload/restart - not just a toast the owner might have missed. Cleared
+// automatically the moment a later sync succeeds.
+async function recordFailure({ reason, httpStatus, responseBodyText, triggeredBy }) {
+  const redis = getRedis();
+  if (!redis) return;
+  try {
+    await redis.set(FAILURE_KEY, JSON.stringify({ reason: reason || 'Unknown error.', httpStatus: httpStatus || null, responseBodyText: responseBodyText || null, triggeredBy: triggeredBy || null, at: new Date().toISOString() }));
+  } catch (err) { /* best effort */ }
+}
+async function clearFailure() {
+  const redis = getRedis();
+  if (!redis) return;
+  try { await redis.del(FAILURE_KEY); } catch (err) { /* best effort */ }
+}
+async function getFailure() {
+  const redis = getRedis();
+  if (!redis) return null;
+  try { return parseJsonSafe(await redis.get(FAILURE_KEY), null); } catch (err) { return null; }
+}
+
 async function getSettings() {
   const redis = getRedis();
   if (!redis) return Object.assign({}, DEFAULT_SETTINGS);
@@ -278,22 +322,44 @@ async function saveSettings({ enabled, time }) {
 }
 
 // ---------------- HTTP send (never mocked in real/live usage - only in tests) ----------------
+// Live bug fix (2026-11) - postRows used to THROW when TWC_API_URL was
+// unset, which propagated straight out of sendFullSync uncaught - no
+// history entry was ever recorded for that attempt (the owner's "every
+// sync attempt, including failures, is logged to history" rule was
+// silently broken for exactly this one failure mode). postRows now always
+// RESOLVES to the same {ok, status, bodyText} shape - sendFullSync/
+// sendTestOne decide what to do with it, never a thrown exception for a
+// configuration problem.
+const POST_TIMEOUT_MS = 20000; // per HTTP attempt - bounds a hung external API instead of blocking forever
 async function postRows(rows) {
   const url = process.env.TWC_API_URL;
-  if (!url) { const err = new Error('TWC_API_URL is not configured.'); err.code = 'no_url'; throw err; }
+  if (!url) return { ok: false, status: null, bodyText: 'TWC_API_URL is not configured.' };
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), POST_TIMEOUT_MS);
   try {
-    const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(rows) });
+    const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(rows), signal: controller.signal });
     const bodyText = await res.text().catch(() => '');
     return { ok: res.ok, status: res.status, bodyText };
   } catch (networkErr) {
-    return { ok: false, status: null, bodyText: 'Network error: ' + networkErr.message };
+    const timedOut = networkErr && (networkErr.name === 'AbortError');
+    return { ok: false, status: null, bodyText: timedOut ? ('Timed out waiting for a response from TWC_API_URL (' + (POST_TIMEOUT_MS / 1000) + 's).') : ('Network error: ' + networkErr.message) };
+  } finally {
+    clearTimeout(timer);
   }
 }
 
 // Full request -> retry once -> batches of 200, exactly per spec. Reports
 // exactly which batch(es) failed (by row-range) and why (raw status/body).
+// LIVE BUG FIX (2026-11): 0 eligible rows used to return {ok:true,
+// mode:'empty'} - a sync that sent NOTHING over the wire was reported as a
+// SUCCESS, with no toast/history distinguishing it from a real sync. Per
+// the owner's explicit rule, "a sync that sent 0 rows when changes exist
+// also counts as a failure" - this now always reports ok:false for an
+// empty send, with a clear reason, never silently "succeeding".
 async function sendRowsWithRetryAndBatching(rows) {
-  if (!rows.length) return { ok: true, mode: 'empty', batches: [] };
+  if (!rows.length) {
+    return { ok: false, mode: 'empty', httpStatus: null, responseBodyText: null, batches: [], reason: 'No eligible employees were found to send (0 rows) - nothing was sent to Together We Can. Check Employee_Master headers/data before retrying.' };
+  }
   const first = await postRows(rows);
   if (first.ok) {
     return { ok: true, mode: 'single', httpStatus: first.status, responseBodyText: first.bodyText, batches: [{ startIndex: 0, endIndex: rows.length - 1, ok: true, status: first.status, bodyText: first.bodyText, rows }] };
@@ -308,8 +374,12 @@ async function sendRowsWithRetryAndBatching(rows) {
     const r = await postRows(slice);
     batches.push({ startIndex: i, endIndex: i + slice.length - 1, ok: r.ok, status: r.status, bodyText: r.bodyText, rows: slice });
   }
-  const anyFail = batches.some((b) => !b.ok);
-  return { ok: !anyFail, mode: 'batched', batches, lastSingleAttempt: { httpStatus: retry.status, responseBodyText: retry.bodyText } };
+  const failedBatches = batches.filter((b) => !b.ok);
+  function describeBatch(b) {
+    return 'rows ' + (b.startIndex + 1) + '-' + (b.endIndex + 1) + ' (HTTP ' + (b.status || 'network error') + '): ' + (b.bodyText || 'no response body');
+  }
+  const reason = failedBatches.length ? ('Batch send failed for ' + failedBatches.map(describeBatch).join('; ')) : null;
+  return { ok: !failedBatches.length, mode: 'batched', batches, reason, lastSingleAttempt: { httpStatus: retry.status, responseBodyText: retry.bodyText } };
 }
 
 // ---------------- Public actions ----------------
@@ -323,12 +393,38 @@ async function buildPreview({ forceRefresh = true } = {}) {
 
 // ALWAYS a full sync of every eligible employee (never partial/delta over
 // the wire) - per spec, "changed since last sync" is informational only.
+//
+// LIVE BUG FIX (2026-11), direct instruction - this used to let an
+// exception from getRawSheetRows/buildEligibility (e.g. the Sheets API
+// failing, or a missing column header) propagate straight out, UNCAUGHT,
+// past recordHistory - that one attempt was never logged anywhere at all
+// ("every sync attempt, including failures, is logged to history" was
+// silently broken for exactly this failure mode, on top of the separate
+// 0-rows-reported-as-success bug fixed in sendRowsWithRetryAndBatching
+// above). sendFullSync now NEVER throws - every possible failure (a read
+// error, 0 eligible rows, an HTTP/network failure, a timeout) is caught
+// here, always recorded to history AND to the persistent failure record
+// (recordFailure) that drives the Integrations page's Action-needed card,
+// and always returned as the SAME {ok:false, reason, ...} shape the
+// caller (the route, or the daily auto-sync tick) can check deterministically.
 async function sendFullSync({ triggeredBy = 'manual' } = {}) {
-  const rawRows = await getRawSheetRows({ forceRefresh: true });
-  const { sendRows, warnings, counts } = buildEligibility(rawRows);
-  const snapshot = await getLastSnapshot();
-  const diff = diffAgainstSnapshot(sendRows, snapshot);
-  const result = await sendRowsWithRetryAndBatching(sendRows);
+  let sendRows = [];
+  let warnings = [];
+  let counts = { ACTIVE: 0, INACTIVE: 0, 'NOTICE PERIOD': 0 };
+  let diff = { count: 0, items: [] };
+  let result;
+  try {
+    const rawRows = await getRawSheetRows({ forceRefresh: true });
+    ({ sendRows, warnings, counts } = buildEligibility(rawRows));
+    const snapshot = await getLastSnapshot();
+    diff = diffAgainstSnapshot(sendRows, snapshot);
+    result = await sendRowsWithRetryAndBatching(sendRows);
+  } catch (err) {
+    // A failure reading/parsing the sheet itself (Sheets API error, a
+    // missing/renamed column header, etc.) - never reaches the HTTP send
+    // at all. Still logged exactly like any other failed attempt.
+    result = { ok: false, mode: 'error', httpStatus: null, responseBodyText: null, batches: [], reason: err.message };
+  }
 
   if (result.mode === 'single' || result.mode === 'single-retry') {
     await saveSnapshotForRows(sendRows);
@@ -345,12 +441,21 @@ async function sendFullSync({ triggeredBy = 'manual' } = {}) {
     changedSinceLastSync: diff.count,
     ok: result.ok,
     mode: result.mode,
+    reason: result.reason || null,
     httpStatus: result.httpStatus || null,
     responseBodyText: result.responseBodyText || null,
     batches: (result.batches || []).map((b) => ({ startIndex: b.startIndex, endIndex: b.endIndex, ok: b.ok, status: b.status, bodyText: b.bodyText })),
-    warningsCount: warnings.length
+    warningsCount: warnings.length,
+    // PROOF (2026-11, direct instruction) - the exact JSON for one real
+    // employee, kept in history so the owner can show IT exactly what was
+    // sent. Deliberately just the FIRST row (not the whole payload, which
+    // could be large) - every batch's own real httpStatus/bodyText above
+    // already covers "what did Together We Can's side actually say back".
+    samplePayload: sendRows[0] || null
   };
   await recordHistory(entry);
+  if (result.ok) await clearFailure();
+  else await recordFailure({ reason: result.reason, httpStatus: result.httpStatus, responseBodyText: result.responseBodyText, triggeredBy });
   return Object.assign({}, entry, { warnings, diff });
 }
 
@@ -427,21 +532,18 @@ async function checkDailyAutoSync(now = new Date()) {
 
   state.status = 'running';
   await saveDailyState(state);
-  try {
-    const result = await sendFullSync({ triggeredBy: 'auto-schedule' });
-    state.status = 'done';
-    state.result = { ok: result.ok, employeeCount: result.employeeCount };
-    await saveDailyState(state);
-    return { skipped: false, result };
-  } catch (err) {
-    // sendFullSync already retries once + falls back to batching inside
-    // itself - a throw here means something genuinely unrecoverable (e.g.
-    // TWC_API_URL not configured). Never retried again today.
-    state.status = 'failed_final';
-    state.error = err.message;
-    await saveDailyState(state);
-    throw err;
-  }
+  // sendFullSync never throws (see its own comment) - it always resolves
+  // to {ok, reason, ...}, already recorded to history and to the
+  // persistent failure record (recordFailure) that drives the
+  // Integrations page's own Action-needed card. 'done' here just means
+  // "today's one scheduled attempt happened", not that it succeeded -
+  // state.result.ok / state.result.reason carry the real outcome, same as
+  // any manual sync.
+  const result = await sendFullSync({ triggeredBy: 'auto-schedule' });
+  state.status = 'done';
+  state.result = { ok: result.ok, employeeCount: result.employeeCount, reason: result.reason || null };
+  await saveDailyState(state);
+  return { skipped: false, result };
 }
 
 module.exports = {
@@ -454,6 +556,7 @@ module.exports = {
   saveSettings,
   checkDailyAutoSync,
   getLastSnapshot,
+  getFailure,
   normalizeStatus,
   CANONICAL_STATUSES,
   BATCH_SIZE,

@@ -726,6 +726,45 @@ function twcToast(text, type) {
   else if (type === 'error') alert(text);
 }
 
+// Live bug fix (2026-11), direct instruction ("Timeout 60s") - every
+// Preview/Sync/Test-one request now has a hard client-side ceiling so a
+// hung request can never leave the spinner (or the owner) waiting
+// forever; on abort this throws a clearly-labelled timeout error, caught
+// by the SAME try/catch every other failure already goes through (never
+// a separate silent path).
+const TWC_TIMEOUT_MS = 60000;
+async function twcFetchWithTimeout(url, opts) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TWC_TIMEOUT_MS);
+  try {
+    return await fetch(url, Object.assign({}, opts, { signal: controller.signal }));
+  } catch (err) {
+    if (err && err.name === 'AbortError') throw new Error('Timed out after ' + (TWC_TIMEOUT_MS / 1000) + 's waiting for a response.');
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Live bug fix (2026-11), direct instruction - a persistent "Action
+// needed" style card (not just an ephemeral toast) for the last failed
+// sync, loaded on page open and refreshed after every Sync/Retry attempt,
+// so a failure is never missed just because a toast wasn't seen in time.
+function twcRenderFailure(failure) {
+  const banner = document.getElementById('twcFailureBanner');
+  const textEl = document.getElementById('twcFailureText');
+  if (!failure) { banner.style.display = 'none'; return; }
+  const detail = failure.httpStatus ? (' (HTTP ' + failure.httpStatus + (failure.responseBodyText ? ': ' + failure.responseBodyText : '') + ')') : '';
+  textEl.textContent = 'Together We Can sync failed — ' + failure.reason + detail;
+  banner.style.display = '';
+}
+async function twcLoadAndRenderFailure() {
+  try {
+    const data = await fetchJson('/api/workforce/hr-assistant/together-we-can/failure');
+    twcRenderFailure(data.failure || null);
+  } catch (err) { /* leave whatever was last shown */ }
+}
+
 function twcSetBtnBusy(btn, busyLabel) {
   if (!btn) return;
   btn.dataset.origHtml = btn.innerHTML;
@@ -767,15 +806,35 @@ function twcRenderHistory(history) {
     lastLine.textContent = 'Last synced: never';
     return;
   }
-  const last = history[0];
-  const lastWhen = new Date(last.at).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
-  lastLine.textContent = 'Last synced: ' + lastWhen + ' · ' + last.employeeCount + ' employees';
+  // "Last synced" means the last SUCCESSFUL sync specifically (a failed
+  // attempt never updated the real Together We Can data) - distinct from
+  // the full history list below, which shows every attempt including
+  // failures.
+  const lastSuccess = history.find((h) => h.ok);
+  if (lastSuccess) {
+    const lastWhen = new Date(lastSuccess.at).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+    lastLine.textContent = 'Last synced: ' + lastWhen + ' · ' + lastSuccess.employeeCount + ' employees';
+  } else {
+    lastLine.textContent = 'Last synced: never (no successful sync yet)';
+  }
+  // PROOF (2026-11, direct instruction) - every entry shows the real raw
+  // HTTP status + response body (so the owner can tell "we got a 200 but
+  // the portal didn't change" apart from a genuine send failure) AND the
+  // exact JSON sent for one real employee (samplePayload), so the owner
+  // can show IT precisely what this app sent.
   listEl.innerHTML = history.map((h) => {
     const when = new Date(h.at).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
     const statusIcon = h.ok ? '✓' : '✗';
-    const resultText = h.ok ? 'OK' : ('FAILED' + (h.httpStatus ? ' (HTTP ' + h.httpStatus + ')' : ''));
-    return '<div>' + statusIcon + ' ' + when + ' · ' + h.employeeCount + ' employees (' + escapeHtml(twcCountsLine(h.counts || {})) +
+    const resultText = h.ok ? 'OK' : ('FAILED - ' + escapeHtml(h.reason || 'unknown error'));
+    let html = '<div>' + statusIcon + ' ' + when + ' · ' + h.employeeCount + ' employees (' + escapeHtml(twcCountsLine(h.counts || {})) +
       ') · ' + h.changedSinceLastSync + ' changed · ' + resultText + '</div>';
+    if (h.httpStatus || h.responseBodyText) {
+      html += '<div style="margin-left:14px;opacity:.8">HTTP ' + escapeHtml(String(h.httpStatus || '—')) + ' · ' + escapeHtml(h.responseBodyText || '') + '</div>';
+    }
+    if (h.samplePayload) {
+      html += '<div style="margin-left:14px;opacity:.8">Sent (sample): ' + escapeHtml(JSON.stringify(h.samplePayload)) + '</div>';
+    }
+    return html;
   }).join('');
 }
 
@@ -790,6 +849,7 @@ async function loadIntegrationsView() {
     const data = await fetchJson('/api/workforce/hr-assistant/together-we-can/history');
     twcRenderHistory(data.history || []);
   } catch (err) { /* leave "No syncs yet" placeholder */ }
+  await twcLoadAndRenderFailure();
 }
 
 const twcPreviewBtn = document.getElementById('twcPreviewBtn');
@@ -799,7 +859,9 @@ if (twcPreviewBtn) {
     twcBusy = true;
     twcSetBtnBusy(twcPreviewBtn, 'Previewing…');
     try {
-      const data = await fetchJson('/api/workforce/hr-assistant/together-we-can/preview');
+      const res = await twcFetchWithTimeout('/api/workforce/hr-assistant/together-we-can/preview');
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Preview failed.');
       twcRenderPreview(data);
     } catch (err) {
       twcToast('Preview failed: ' + err.message, 'error');
@@ -810,34 +872,51 @@ if (twcPreviewBtn) {
   });
 }
 
-const twcSyncNowBtn = document.getElementById('twcSyncNowBtn');
-if (twcSyncNowBtn) {
-  twcSyncNowBtn.addEventListener('click', async () => {
-    if (twcBusy) return; // second taps ignored while busy
-    twcBusy = true;
-    twcSetBtnBusy(twcSyncNowBtn, 'Syncing…');
+// Shared by both the "Sync data now" button and the failure banner's
+// Retry button - one source of truth for what a sync attempt does and how
+// its result is shown, so Retry can never behave differently from a
+// fresh tap of Sync Now.
+async function twcRunSync(btn) {
+  if (twcBusy) return; // second taps ignored while busy
+  twcBusy = true;
+  twcSetBtnBusy(btn, 'Syncing…');
+  try {
+    const res = await twcFetchWithTimeout('/api/workforce/hr-assistant/together-we-can/sync-now', { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Sync failed.');
+    if (!data.ok) {
+      // data.reason is always set now (sendFullSync never throws without
+      // one - see togetherWeCanService.js) - covers 0-rows-sent, a batch
+      // failure (by row-range + raw HTTP status/body), or a sheet-read
+      // error, each with its own exact reason rather than a generic one.
+      const detail = data.reason || (data.responseBodyText ? ('HTTP ' + data.httpStatus + ': ' + data.responseBodyText) : 'unknown error');
+      throw new Error(detail);
+    }
+    twcToast('Synced · ' + data.employeeCount + ' employees (' + twcCountsLine(data.counts) + ') · ' + data.changedSinceLastSync + ' changed since last sync', 'success');
+  } catch (err) {
+    twcToast('Sync failed - ' + err.message, 'error');
+  } finally {
+    // Always re-read the server's own durable history + failure record
+    // (not just reflect the one response just received) - so the page
+    // stays correct even if this attempt itself threw before the server
+    // finished recording anything (e.g. a client-side timeout while the
+    // server is still working), and the Action-needed banner is never
+    // left showing a stale failure after a successful retry.
     try {
-      const res = await fetch('/api/workforce/hr-assistant/together-we-can/sync-now', { method: 'POST' });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Sync failed.');
-      if (!data.ok) {
-        const failedBatches = (data.batches || []).filter((b) => !b.ok);
-        const detail = failedBatches.length
-          ? failedBatches.map((b) => 'rows ' + (b.startIndex + 1) + '-' + (b.endIndex + 1) + ': HTTP ' + (b.status || 'network error')).join('; ')
-          : (data.responseBodyText || 'unknown error');
-        throw new Error('Sync failed - ' + detail);
-      }
-      twcToast('Synced · ' + data.employeeCount + ' employees (' + twcCountsLine(data.counts) + ') · ' + data.changedSinceLastSync + ' changed since last sync', 'success');
       const history = await fetchJson('/api/workforce/hr-assistant/together-we-can/history');
       twcRenderHistory(history.history || []);
-    } catch (err) {
-      twcToast(err.message, 'error');
-    } finally {
-      twcRestoreBtn(twcSyncNowBtn);
-      twcBusy = false;
-    }
-  });
+    } catch (err) { /* best effort */ }
+    await twcLoadAndRenderFailure();
+    twcRestoreBtn(btn);
+    twcBusy = false;
+  }
 }
+
+const twcSyncNowBtn = document.getElementById('twcSyncNowBtn');
+if (twcSyncNowBtn) twcSyncNowBtn.addEventListener('click', () => twcRunSync(twcSyncNowBtn));
+
+const twcFailureRetryBtn = document.getElementById('twcFailureRetryBtn');
+if (twcFailureRetryBtn) twcFailureRetryBtn.addEventListener('click', () => twcRunSync(twcFailureRetryBtn));
 
 // ---- Test-employee picker (mirrors the ipWhatsapp employee picker above:
 // client-side cached full list, fetched once, filtered on input) ----

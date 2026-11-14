@@ -3794,10 +3794,42 @@ router.post('/hr-assistant/subh-notifications/dismiss', async (req, res) => {
 // gated exactly like every other owner-only route on this router
 // (memoryService.isOwner(req.hrUser.email)). Zero AI/Claude calls - pure
 // deterministic data sync (src/aiAssistant/togetherWeCanService.js).
+
+// Live bug fix (2026-11), direct instruction - Preview's diff/warning
+// messages only ever named an Emp Code ("AR001: status ACTIVE ->
+// INACTIVE"), never the employee's real NAME the owner actually
+// recognizes at a glance. Best-effort name enrichment lives here, at the
+// route layer (via the already-cached employee directory), not inside
+// togetherWeCanService.js - keeps that module's own messages Emp-Code-
+// only and simple to assert on in its deterministic test suite; a
+// directory lookup failure here never breaks Preview, it just falls back
+// to the Emp-Code-only wording.
+async function twcEmployeeNameMap() {
+  try {
+    const { employees } = await employeeService.getEmployeeData();
+    return new Map(employees.map((e) => [e.employeeId, e.name]));
+  } catch (err) { return new Map(); }
+}
+function twcEnrichMessage(message, empCode, nameMap) {
+  if (!empCode) return message;
+  const name = nameMap.get(empCode);
+  if (!name) return message;
+  return message.replace(empCode + ':', name + ' (' + empCode + '):');
+}
+function twcEnrichPreview(preview, nameMap) {
+  const changed = preview.changedSinceLastSync || { count: 0, items: [] };
+  const items = changed.items.map((i) => Object.assign({}, i, { message: twcEnrichMessage(i.message, i.empCode, nameMap) }));
+  const warnings = (preview.warnings || []).map((w) => Object.assign({}, w, { message: twcEnrichMessage(w.message, w.empCode, nameMap) }));
+  return Object.assign({}, preview, { changedSinceLastSync: Object.assign({}, changed, { items }), warnings });
+}
 router.get('/hr-assistant/together-we-can/preview', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
   try {
-    res.json(await togetherWeCanService.buildPreview({ forceRefresh: true }));
+    const [preview, nameMap] = await Promise.all([
+      togetherWeCanService.buildPreview({ forceRefresh: true }),
+      twcEmployeeNameMap()
+    ]);
+    res.json(twcEnrichPreview(preview, nameMap));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -3827,6 +3859,20 @@ router.get('/hr-assistant/together-we-can/history', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
   try {
     res.json({ history: await togetherWeCanService.listHistory() });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Live bug fix (2026-11), direct instruction - the persistent "Together We
+// Can sync failed — <reason>" Action-needed-style card the Integrations
+// page loads on open (and after any failed sync), so a failure is never
+// only an easy-to-miss toast. Cleared automatically the moment a later
+// sync (manual or auto) succeeds - see togetherWeCanService.clearFailure.
+router.get('/hr-assistant/together-we-can/failure', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    res.json({ failure: await togetherWeCanService.getFailure() });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
