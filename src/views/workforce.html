@@ -485,12 +485,22 @@
         <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 4px 6px">
           <span class="wf-ai-sheet-title" style="font-size:14px">Test employee</span>
         </div>
-        <div class="wf-auto-hint" style="padding:0 4px 4px">Used by every "Send test to me" button below.</div>
-        <div style="position:relative;padding:0 4px">
-          <label class="wf-rem-field">
-            <input type="text" id="hrLetterTestEmployeeInput" autocomplete="off" placeholder="Search by name or employee code…" />
-          </label>
-          <ul id="hrLetterTestEmployeeSuggest" class="wf-mail-suggest" hidden></ul>
+        <!-- Task 4(a) (2026-11), direct instruction - the hint line and
+             search bar were sitting far below the title: each was its
+             own flex child of .wf-comms-page (gap:16px BETWEEN every
+             child), so title->hint and hint->search bar each paid that
+             16px gap separately. Wrapped in ONE outer div so they're a
+             SINGLE flex child - title->content is now exactly one 16px
+             gap, same as every other section on this page (e.g.
+             Reference number format's title->field). -->
+        <div style="padding:0 4px">
+          <div class="wf-auto-hint" style="padding:0 0 4px">Used by every "Send test to me" button below.</div>
+          <div style="position:relative">
+            <label class="wf-rem-field">
+              <input type="text" id="hrLetterTestEmployeeInput" autocomplete="off" placeholder="Search by name or employee code…" />
+            </label>
+            <ul id="hrLetterTestEmployeeSuggest" class="wf-mail-suggest" hidden></ul>
+          </div>
         </div>
         <div class="wf-auto-err hidden" id="hrLetterTestEmployeeErr" style="padding:4px 4px 0"></div>
 
@@ -532,6 +542,12 @@
           <button type="button" class="wf-rem-chip" data-range="today" aria-pressed="true">Today</button>
           <button type="button" class="wf-rem-chip" data-range="week" aria-pressed="false">This week</button>
           <button type="button" class="wf-rem-chip" data-range="month" aria-pressed="false">This month</button>
+        </div>
+        <!-- TASK 2 (2026-11), direct instruction - on its own line, same
+             chip style as the row above (a plain flex row would just
+             squeeze a 4th chip into the same line). -->
+        <div class="wf-rem-chips" id="hrAiUsageChipsYear" style="margin-top:8px">
+          <button type="button" class="wf-rem-chip" data-range="year" aria-pressed="false">This year</button>
         </div>
         <div style="display:flex;gap:10px;padding:14px 4px 6px">
           <div style="flex:1;background:var(--wi-surface-2,rgba(0,0,0,.04));border-radius:12px;padding:10px 12px">
@@ -579,6 +595,29 @@
           <span class="wf-ai-sheet-title" id="hrBackupRestoreTitle">Restore from backup</span>
         </div>
         <div class="wf-rem-sheet-body" id="hrBackupRestoreBody"></div>
+      </div>
+
+      <!-- Settings history (TASK 3, 2026-11), direct instruction - every
+           write/delete to owner settings (settingsAuditLog.js's ~9 shared
+           stores + company-details' own earlier audit list), filterable
+           by group, with Restore per change. -->
+      <div class="wf-comms-page" id="hrSettingsHistoryPage" hidden>
+        <div class="wf-rem-chips" id="hrSettingsHistoryChips">
+          <button type="button" class="wf-rem-chip" data-group="" aria-pressed="true">All</button>
+        </div>
+        <div class="wf-rem-list" id="hrSettingsHistoryList" style="margin-top:14px"></div>
+      </div>
+
+      <div class="wf-ai-sheet-backdrop" id="hrSettingsHistoryRestoreBackdrop" hidden></div>
+      <div class="wf-rem-sheet wf-auto-preview-sheet" id="hrSettingsHistoryRestoreSheet" hidden role="dialog" aria-label="Restore this change">
+        <div class="wf-ai-sheet-handle"></div>
+        <div class="wf-ai-sheet-head">
+          <button type="button" class="wf-ai-sheet-close" id="hrSettingsHistoryRestoreCloseBtn" aria-label="Close">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+          <span class="wf-ai-sheet-title">Restore this change</span>
+        </div>
+        <div class="wf-rem-sheet-body" id="hrSettingsHistoryRestoreBody"></div>
       </div>
 
       <div class="wf-ai-sheet-backdrop" id="hrLetterCounterSheetBackdrop" hidden></div>
@@ -2903,6 +2942,22 @@
           <span class="wf-hub-tile-main">
             <span class="wf-hub-tile-title">Data &amp; backups</span>
             <span class="wf-hub-tile-sub">Backup now, recent backups, restore from backup</span>
+          </span>
+          <span class="wf-hub-tile-end">
+            <svg class="wf-hub-tile-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+          </span>
+        </button>
+        <!-- Settings history (TASK 3, 2026-11, direct instruction) - every
+             write/delete to owner settings, filterable by group, with a
+             Restore button per change. Same compact-tile entry pattern
+             as above. -->
+        <button type="button" class="wf-hub-tile wf-hub-tile--compact" id="subhSettingsHistoryBtn" style="margin-top:10px">
+          <span class="wf-hub-tile-icon comms">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 16 14"/></svg>
+          </span>
+          <span class="wf-hub-tile-main">
+            <span class="wf-hub-tile-title">Settings history</span>
+            <span class="wf-hub-tile-sub">Every change to owner settings, with Restore</span>
           </span>
           <span class="wf-hub-tile-end">
             <svg class="wf-hub-tile-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>

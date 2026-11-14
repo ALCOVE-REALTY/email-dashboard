@@ -26,6 +26,7 @@ const companyDetailsService = require('./aiAssistant/companyDetailsService');
 const storeHealthDiag = require('./aiAssistant/storeHealthDiag');
 const fullStoreBackupService = require('./aiAssistant/fullStoreBackupService');
 const settingsHealthCheck = require('./aiAssistant/settingsHealthCheck');
+const settingsHistoryService = require('./aiAssistant/settingsHistoryService');
 const letterSettingsService = require('./aiAssistant/letterSettingsService');
 const driveTemplatesService = require('./aiAssistant/driveTemplatesService');
 const driveTemplateFieldsService = require('./aiAssistant/driveTemplateFieldsService');
@@ -3594,7 +3595,7 @@ router.get('/hr-assistant/letter-settings/employee-picker', async (req, res) => 
     const results = await Promise.all(candidates.map(async (e) => {
       const check = await letterSettingsService.checkTestEmployeeEligibility(e);
       return {
-        employeeId: e.employeeId, name: e.name, eligible: check.eligible,
+        employeeId: e.employeeId, name: e.name, company: e.company || null, eligible: check.eligible,
         reason: check.reason, needsCompanyDetails: Boolean(check.needsCompanyDetails)
       };
     }));
@@ -3689,6 +3690,36 @@ router.post('/hr-assistant/settings-health/:group/dismiss', async (req, res) => 
   if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
   try {
     res.json(await settingsHealthCheck.dismissFlaggedGroup(req.params.group));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// "Settings history" (TASK 3, 2026-11, direct instruction) - owner-only,
+// filterable by group, with Restore per change. `?group=<name>` narrows
+// to one group (same names settingsAuditLog's groups already use, plus
+// 'company-details'); omitted shows every group, newest first.
+router.get('/hr-assistant/settings-history', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const [items, groups] = await Promise.all([
+      settingsHistoryService.listHistory({ group: req.query.group || null }),
+      settingsHistoryService.listHistoryGroups()
+    ]);
+    res.json({ items, groups });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+// Body: { entry: <the EXACT history item from the list above> }. Restore
+// re-uses the store's own existing save/delete function - no more
+// powerful than the owner re-typing the old value by hand via Edit.
+router.post('/hr-assistant/settings-history/restore', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const entry = req.body && req.body.entry;
+    if (!entry || !entry.group) return res.status(400).json({ error: 'body.entry (the exact history item) is required.' });
+    res.json(await settingsHistoryService.restoreEntry(entry));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

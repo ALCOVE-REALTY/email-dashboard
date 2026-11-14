@@ -142,19 +142,31 @@ function startOfMonth(now) {
   const d = new Date(now || Date.now());
   return dayKey(new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1)));
 }
+function startOfYear(now) {
+  const d = new Date(now || Date.now());
+  return dayKey(new Date(Date.UTC(d.getUTCFullYear(), 0, 1)));
+}
 
-// {today, week, month} each summarize()'d - the one function both the
-// AI usage page and the daily-alert check build on, so they can never
-// disagree about what "today"/"this week"/"this month" means.
+// {today, week, month, year} each summarize()'d - the one function both
+// the AI usage page and the daily-alert check build on, so they can
+// never disagree about what "today"/"this week"/"this month"/"this
+// year" means. TASK 2 (2026-11, direct instruction) added `year` -
+// fetches from Jan 1 instead of the month start (year start is always
+// <= month start <= week start <= today), so today/week/month are now
+// just filters of the SAME single fetch rather than a separate query -
+// strictly a superset of the old data, same results for the 3
+// pre-existing fields.
 async function getUsageSummary(now) {
   const today = dayKey(now || Date.now());
-  const monthStart = startOfMonth(now);
-  const entries = await getEntriesSince(monthStart, now); // month start always <= week start <= today
+  const yearStart = startOfYear(now);
+  const entries = await getEntriesSince(yearStart, now);
+  const monthStartKey = startOfMonth(now);
   const weekStartKey = startOfWeek(now);
   return {
     today: summarize(entries.filter((e) => dayKey(e.ts) === today)),
     week: summarize(entries.filter((e) => dayKey(e.ts) >= weekStartKey)),
-    month: summarize(entries)
+    month: summarize(entries.filter((e) => dayKey(e.ts) >= monthStartKey)),
+    year: summarize(entries)
   };
 }
 

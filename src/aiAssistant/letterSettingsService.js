@@ -218,6 +218,25 @@ async function setCounterOverride(letterType, fy, nextNumber) {
   await settingsAuditLog.logSettingsAudit('letter-counter', { action: 'override', code, fy, before, after: n, source: 'owner-ui' });
   return { ok: true, nextNumber: n };
 }
+// Settings history's own Restore (TASK 3, 2026-11, direct instruction) -
+// a history entry for this group already stores the resolved CODE
+// directly (never a letterType), so this writes the counter key
+// directly rather than going through setCounterOverride's own
+// letterType->code resolution, which would need a letterType the
+// history entry never had in the first place. Still goes through the
+// SAME validation/audit convention as a manual override.
+async function restoreCounterRaw(code, fy, nextNumber) {
+  await ensureCountersMigratedToCode();
+  const redis = getClient();
+  if (!redis) return { ok: false, error: 'No store configured.' };
+  const n = Number(nextNumber);
+  if (!Number.isInteger(n) || n < 1) return { ok: false, error: 'The next number must be a whole number of 1 or more.' };
+  const beforeRaw = await redis.get(counterKey(code, fy)).catch(() => null);
+  const before = (beforeRaw === null || beforeRaw === undefined) ? null : Number(beforeRaw) + 1;
+  try { await redis.set(counterKey(code, fy), n - 1); } catch (err) { return { ok: false, error: err.message }; }
+  await settingsAuditLog.logSettingsAudit('letter-counter', { action: 'override', code, fy, before, after: n, source: 'settings-history-restore' });
+  return { ok: true, nextNumber: n };
+}
 
 // Read-only - shown in Preview/Send-test and on the Letter settings page's
 // own counters list. Never touches the real counter.
@@ -589,7 +608,7 @@ module.exports = {
   LETTER_TEMPLATES_FOLDER_ID, DEFAULT_REF_FORMAT, DEFAULT_LETTER_CODES, LETTER_TYPE_LABELS, REF_FORMAT_PLACEHOLDERS,
   computeFinancialYear, renderRefNo, padSerial,
   getRefNoFormat, saveRefNoFormat, getLetterCodes, saveLetterCode, getLetterDisplayNames, saveLetterDisplayName, getLetterSettings,
-  getCounterValue, setCounterOverride, previewNextRefNo, assignRefNo,
+  getCounterValue, setCounterOverride, restoreCounterRaw, previewNextRefNo, assignRefNo,
   getLetterRegisterLink, setRegisterSheetLink, appendToLetterRegister, uploadSentLetterPdf,
   checkTestEmployeeEligibility, getLastTestEmployeeId, setLastTestEmployeeId, pickDefaultTestEmployee,
   // TASK 1 (2026-11) - exported for scripts/check-letter-settings.js only.

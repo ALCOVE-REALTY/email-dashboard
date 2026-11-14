@@ -590,7 +590,19 @@ function check(label, ok, detail) {
       })
     });
   });
-  await page.route('**/api/workforce/hr-assistant/letter-settings/send-test-letter', (route) => {
+  // Task 4(c) (2026-11), direct instruction, LIVE BUG FIX - "Send test to
+  // me" gave NO visible feedback live, despite an earlier (wrong) report
+  // that this was already done: root cause was the button's own class
+  // ("plain", a lightweight inline card action) never matching the CSS
+  // selectors runButtonAction's is-loading/is-success/is-error classes
+  // need (.wf-convo-action-btn/.wf-ai-action-btn/.wf-rem-add-btn only) -
+  // the JS correctly added the classes and disabled the button, but
+  // nothing was ever styled to SHOW it. Delaying the mocked response and
+  // actually reading getComputedStyle mid-flight (not just checking the
+  // class exists in the DOM) is what actually catches this - a class
+  // existing proves nothing if no CSS selector matches it.
+  await page.route('**/api/workforce/hr-assistant/letter-settings/send-test-letter', async (route) => {
+    await new Promise((r) => setTimeout(r, 400));
     route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, employeeName: 'Fake Employee', refNo: 'ARPL/HR/BL/2026-27/TEST', pdfUrl: 'https://drive.google.com/file/d/fake/view', mailedTo: 'owner@test.com', registerAppended: true }) });
   });
   await page.click('#hrFieldMappingSheetSaveBtn');
@@ -598,13 +610,49 @@ function check(label, ok, detail) {
   check('Letter settings, Fields: Save closes the sheet', await page.locator('#hrFieldMappingSheet').isHidden());
   const fieldsStatusAfterSave = await driveCard.locator('[data-role="letter-fields-status"]').textContent().catch(() => null);
   check('Letter settings, Fields: the card refreshes to show the new mapped count after Save', (fieldsStatusAfterSave || '').includes('2/2 mapped'), 'got: ' + JSON.stringify(fieldsStatusAfterSave));
-  await driveCard.locator('[data-action="send-test-letter"]').click();
+  const sendTestBtn = driveCard.locator('[data-action="send-test-letter"]');
+  await sendTestBtn.click();
+  await page.waitForTimeout(150); // well before the mock's own 400ms delay resolves - the request is still in flight
+  const sendTestLoadingState = await sendTestBtn.evaluate((el) => ({
+    isLoading: el.classList.contains('is-loading'), disabled: el.disabled, color: getComputedStyle(el).color
+  }));
+  check('Letter settings: "Send test to me" REALLY shows a visible loading state while in flight (disabled + its text hidden via color:transparent, not just the class present in the DOM with no matching CSS)',
+    sendTestLoadingState.isLoading && sendTestLoadingState.disabled && sendTestLoadingState.color === 'rgba(0, 0, 0, 0)', 'got: ' + JSON.stringify(sendTestLoadingState));
+  await page.waitForTimeout(400); // past the mock's own delay - the request has now resolved
+  const sendTestSuccessState = await sendTestBtn.evaluate((el) => ({
+    isSuccess: el.classList.contains('is-success'), bg: getComputedStyle(el).backgroundColor
+  }));
+  check('Letter settings: "Send test to me" shows a REAL visible green success tick once the request resolves', sendTestSuccessState.isSuccess && /rgb/.test(sendTestSuccessState.bg), 'got: ' + JSON.stringify(sendTestSuccessState));
   await page.waitForTimeout(900); // runButtonAction's own ~550ms success delay before the toast fires
   const toastText = await page.locator('.wf-pro-toast').first().textContent().catch(() => null);
   check('Letter settings: "Send test to me" runs after Save and shows a success toast naming the real Ref No.', (toastText || '').includes('ARPL/HR/BL/2026-27/TEST'), 'got: ' + JSON.stringify(toastText));
   const fieldsErrAfter = consoleErrors.length + pageErrors.length;
   check('Letter settings, Fields/Send test flow: no JS error was thrown', fieldsErrAfter === fieldsErrBefore,
     'new errors: ' + JSON.stringify(consoleErrors.slice(fieldsErrBefore).concat(pageErrors.slice(fieldsErrBefore))));
+
+  // Error path - the specific "no company code" message + its inline
+  // "Open Company Details" action (not a dead-end generic error toast).
+  await page.route('**/api/workforce/hr-assistant/letter-settings/send-test-letter', (route) => {
+    route.fulfill({ status: 400, contentType: 'application/json', body: JSON.stringify({ error: 'Alcove Realty Pvt. Ltd. has no company code set in Company Details.', needsCompanyDetails: true }) });
+  });
+  await sendTestBtn.click();
+  await page.waitForTimeout(300);
+  // .last() not .first() - toasts STACK (several can be on screen at
+  // once, e.g. the earlier success toast may not have auto-dismissed
+  // yet), so .first() can pick up a stale PRIOR toast instead of this
+  // one - caught by this exact test run (the success toast's own text
+  // was read back here on the first draft).
+  const errToastText = await page.locator('.wf-pro-toast').last().textContent().catch(() => null);
+  check('Letter settings: "Send test to me" error shows the SPECIFIC company-code message, not a generic one', (errToastText || '').includes('Alcove Realty Pvt. Ltd. has no company code'), 'got: ' + JSON.stringify(errToastText));
+  const openCompanyDetailsBtnText = await page.locator('.wf-pro-toast .wf-pro-toast-undo').last().textContent().catch(() => null);
+  check('Letter settings: the error toast has a working "Open Company Details" action, not a dead end', (openCompanyDetailsBtnText || '').trim() === 'Open Company Details', 'got: ' + JSON.stringify(openCompanyDetailsBtnText));
+  const sendTestAfterError = await sendTestBtn.evaluate((el) => ({ disabled: el.disabled, isError: el.classList.contains('is-error') }));
+  check('Letter settings: "Send test to me" button returns to normal (re-enabled) after an error, never stuck', !sendTestAfterError.disabled, 'got: ' + JSON.stringify(sendTestAfterError));
+  await page.locator('.wf-pro-toast .wf-pro-toast-undo').last().click();
+  await page.waitForTimeout(300);
+  check('Letter settings: tapping "Open Company Details" on the error toast actually opens that page', await page.locator('#hrCompanyDetailsPage').isVisible());
+  await page.evaluate(() => window.__hrAssistantOpenLetterSettings && window.__hrAssistantOpenLetterSettings());
+  await page.waitForTimeout(300);
 
   // TASK 2 (2026-11), direct instruction - "Two templates use CONF - they
   // share one serial" warning, shown when 2+ templates currently share a
@@ -697,6 +745,49 @@ function check(label, ok, detail) {
   check('Test employee picker: no JS error was thrown through the whole pre-fill/search/select/send flow', pickerErrAfter === registerErrAfter,
     'new errors: ' + JSON.stringify(consoleErrors.slice(registerErrAfter).concat(pageErrors.slice(registerErrAfter))));
 
+  // TASK 2 (2026-11), direct instruction - AI usage page: chip row moved
+  // slightly lower, a new "This year" chip on its own line below the
+  // existing row, same chip style, showing the year's totals + by-
+  // feature list.
+  await page.route('**/api/workforce/hr-assistant/ai-usage', (route) => {
+    route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify({
+        today: { liveUsd: 1.11, testUsd: 0, totalUsd: 1.11, liveCalls: 1, testCalls: 0, totalCalls: 1, byFeature: [{ feature: 'today-feature', usd: 1.11, calls: 1 }] },
+        week: { liveUsd: 2.22, testUsd: 0, totalUsd: 2.22, liveCalls: 2, testCalls: 0, totalCalls: 2, byFeature: [{ feature: 'week-feature', usd: 2.22, calls: 2 }] },
+        month: { liveUsd: 3.33, testUsd: 0, totalUsd: 3.33, liveCalls: 3, testCalls: 0, totalCalls: 3, byFeature: [{ feature: 'month-feature', usd: 3.33, calls: 3 }] },
+        year: { liveUsd: 44.44, testUsd: 0, totalUsd: 44.44, liveCalls: 44, testCalls: 0, totalCalls: 44, byFeature: [{ feature: 'year-feature', usd: 44.44, calls: 44 }] }
+      })
+    });
+  });
+  await page.evaluate(() => { if (window.__hrAssistantClosePanel) window.__hrAssistantClosePanel(); });
+  await page.waitForTimeout(100);
+  const aiUsageErrBefore = consoleErrors.length + pageErrors.length;
+  await page.evaluate(() => { window.__hrAssistantOpenAiUsage(); });
+  await page.waitForTimeout(250);
+  check('AI usage page opens (not a blank page)', await page.locator('#hrAiUsagePage').isVisible());
+  const aiUsageChipsBox = await page.locator('#hrAiUsageChips').boundingBox();
+  const aiUsagePageBox = await page.locator('#hrAiUsagePage').boundingBox();
+  const aiUsageTopGap = (aiUsageChipsBox && aiUsagePageBox) ? (aiUsageChipsBox.y - aiUsagePageBox.y) : null;
+  check('AI usage: the chip row sits with more breathing room below the page top than the old cramped 4px/8px', typeof aiUsageTopGap === 'number' && aiUsageTopGap >= 14, 'got topGap: ' + aiUsageTopGap);
+  const yearChipBox = await page.locator('#hrAiUsageChipsYear').boundingBox();
+  check('AI usage: "This year" sits on its OWN line below the Today/This week/This month row, not squeezed onto the same line', Boolean(yearChipBox) && Boolean(aiUsageChipsBox) && yearChipBox.y > (aiUsageChipsBox.y + aiUsageChipsBox.height - 2));
+  const liveTotalBefore = await page.locator('#hrAiUsageLiveTotal').textContent().catch(() => null);
+  check('AI usage: defaults to "Today" on open, showing today\'s totals', (liveTotalBefore || '').includes('1.11'), 'got: ' + JSON.stringify(liveTotalBefore));
+  await page.click('[data-range="year"]');
+  await page.waitForTimeout(150);
+  const liveTotalYear = await page.locator('#hrAiUsageLiveTotal').textContent().catch(() => null);
+  check('AI usage: tapping "This year" shows the year\'s own totals (same generic render path as the other 3 chips, nothing special-cased)', (liveTotalYear || '').includes('44.44'), 'got: ' + JSON.stringify(liveTotalYear));
+  const todayChipPressed = await page.locator('[data-range="today"]').getAttribute('aria-pressed').catch(() => null);
+  const yearChipPressed = await page.locator('[data-range="year"]').getAttribute('aria-pressed').catch(() => null);
+  check('AI usage: picking "This year" un-presses "Today" (one shared selection across both chip rows, not two independent ones)', todayChipPressed === 'false' && yearChipPressed === 'true', 'got today=' + todayChipPressed + ' year=' + yearChipPressed);
+  const featureListText = await page.locator('#hrAiUsageFeatureList').textContent().catch(() => null);
+  check('AI usage: the by-feature list shows the year\'s own feature breakdown once "This year" is selected', (featureListText || '').includes('year-feature'), 'got: ' + JSON.stringify(featureListText));
+  await page.click('[data-range="today"]'); // back to default for the next test's own panel-close assumptions
+  await page.waitForTimeout(150);
+  const aiUsageErrAfter = consoleErrors.length + pageErrors.length;
+  check('AI usage: no JS error was thrown through opening the page or switching ranges', aiUsageErrAfter === aiUsageErrBefore,
+    'new errors: ' + JSON.stringify(consoleErrors.slice(aiUsageErrBefore).concat(pageErrors.slice(aiUsageErrBefore))));
+
   // Item 4 (2026-11), direct instruction - "Data & backups" settings
   // page: Backup now (spinner -> success + Drive link, reusing the SAME
   // ad-hoc job start/status routes the owner-only diag route already
@@ -765,7 +856,7 @@ function check(label, ok, detail) {
   const backupNowBox = await page.locator('#hrBackupNowBtn').boundingBox();
   const backupsPageBox = await page.locator('#hrDataBackupsPage').boundingBox();
   const backupNowTopGap = (backupNowBox && backupsPageBox) ? (backupNowBox.y - backupsPageBox.y) : null;
-  check('Data & backups: "Backup now" sits with real breathing room below the page top, not jammed under the header', typeof backupNowTopGap === 'number' && backupNowTopGap >= 18, 'got topGap: ' + backupNowTopGap);
+  check('Data & backups: "Backup now" sits with real breathing room below the page top, not jammed under the header (TASK 1, 2026-11 - raised further, 18px was still too close)', typeof backupNowTopGap === 'number' && backupNowTopGap >= 32, 'got topGap: ' + backupNowTopGap);
   const backupsHeadTitle = await page.locator('#hrCommsHeadTitle').textContent().catch(() => null);
   check('Data & backups: header title reads "Data & backups"', (backupsHeadTitle || '').trim() === 'Data & backups', 'got: ' + JSON.stringify(backupsHeadTitle));
   const recentCards = await page.locator('#hrBackupRecentList [data-file-id]').count();
@@ -809,6 +900,65 @@ function check(label, ok, detail) {
   check('Data & backups: no JS error was thrown through Backup now / Restore preview / Confirm restore', backupsErrAfter === backupsErrBefore,
     'new errors: ' + JSON.stringify(consoleErrors.slice(backupsErrBefore).concat(pageErrors.slice(backupsErrBefore))));
   await page.click('#hrBackupRestoreCloseBtn');
+  await page.waitForTimeout(350);
+
+  // TASK 3 (2026-11), direct instruction - "Settings history": every
+  // write/delete to owner settings, filterable by group, Restore per
+  // change. Opened the same way as every other SUBH Settings page
+  // (window.__hrAssistantOpenSettingsHistory).
+  const fakeHistoryItems = [
+    { group: 'company-details', groupLabel: 'Company details', restorable: true, at: '2026-11-14T02:00:00.000Z', action: 'saved', company: 'Alcove Realty Pvt Ltd', before: { code: 'ARPL1' }, after: { code: 'ARPL2' }, source: 'owner-ui' },
+    { group: 'letter-logo', groupLabel: 'Letter logo', restorable: false, at: '2026-11-13T01:00:00.000Z', action: 'saved', before: { hadLogo: false }, after: { hadLogo: true }, source: 'owner-ui' }
+  ];
+  await page.route('**/api/workforce/hr-assistant/settings-history', (route) => {
+    if (route.request().method() !== 'GET') { route.fallback(); return; }
+    route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify({
+        items: fakeHistoryItems,
+        groups: [{ group: 'company-details', label: 'Company details', restorable: true }, { group: 'letter-logo', label: 'Letter logo', restorable: false }]
+      })
+    });
+  });
+  let lastHistoryRestoreBody = null;
+  await page.route('**/api/workforce/hr-assistant/settings-history/restore', (route) => {
+    lastHistoryRestoreBody = JSON.parse(route.request().postData() || '{}');
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, item: { code: 'ARPL1' } }) });
+  });
+  await page.evaluate(() => { if (window.__hrAssistantClosePanel) window.__hrAssistantClosePanel(); });
+  await page.waitForTimeout(100);
+  const historyErrBefore = consoleErrors.length + pageErrors.length;
+  await page.evaluate(() => { window.__hrAssistantOpenSettingsHistory(); });
+  await page.waitForTimeout(250);
+  check('Settings history page opens (not a blank page)', await page.locator('#hrSettingsHistoryPage').isVisible());
+  const historyHeadTitle = await page.locator('#hrCommsHeadTitle').textContent().catch(() => null);
+  check('Settings history: header title reads "Settings history"', (historyHeadTitle || '').trim() === 'Settings history', 'got: ' + JSON.stringify(historyHeadTitle));
+  const historyCards = await page.locator('#hrSettingsHistoryList [data-history-idx]').count();
+  check('Settings history: both fake history entries render as rows', historyCards === 2, 'got: ' + historyCards);
+  const restorableRowBtns = await page.locator('#hrSettingsHistoryList [data-history-idx="0"] [data-action="restore-history"]').count();
+  const nonRestorableRowBtns = await page.locator('#hrSettingsHistoryList [data-history-idx="1"] [data-action="restore-history"]').count();
+  check('Settings history: a restorable entry (company details) shows a Restore button; a non-restorable one (letter logo - image bytes never kept in history) does not', restorableRowBtns === 1 && nonRestorableRowBtns === 0, 'got restorable=' + restorableRowBtns + ' nonRestorable=' + nonRestorableRowBtns);
+  const historyChipsCount = await page.locator('#hrSettingsHistoryChips .wf-rem-chip').count();
+  check('Settings history: filter chips render for "All" + each real group', historyChipsCount === 3, 'got: ' + historyChipsCount);
+  await page.click('#hrSettingsHistoryChips [data-group="letter-logo"]');
+  await page.waitForTimeout(150);
+  const filteredCards = await page.locator('#hrSettingsHistoryList [data-history-idx]').count();
+  check('Settings history: picking a group chip filters the list to just that group', filteredCards === 1, 'got: ' + filteredCards);
+  await page.click('#hrSettingsHistoryChips [data-group=""]');
+  await page.waitForTimeout(150);
+  await page.click('#hrSettingsHistoryList [data-history-idx="0"] [data-action="restore-history"]');
+  await page.waitForTimeout(250);
+  check('Settings history: tapping Restore opens the preview sheet showing the change', await page.locator('#hrSettingsHistoryRestoreSheet').isVisible());
+  const historyRestoreBodyText = await page.locator('#hrSettingsHistoryRestoreBody').textContent().catch(() => null);
+  check('Settings history: the preview sheet names the group and the before/after change', (historyRestoreBodyText || '').includes('Company details') && (historyRestoreBodyText || '').includes('ARPL1'), 'got: ' + JSON.stringify(historyRestoreBodyText));
+  await page.click('#hrSettingsHistoryRestoreConfirmBtn');
+  await page.waitForTimeout(900);
+  check('Settings history: "Confirm restore" posts the EXACT history entry (group + before/after), not a re-derived guess', Boolean(lastHistoryRestoreBody) && lastHistoryRestoreBody.entry && lastHistoryRestoreBody.entry.group === 'company-details' && lastHistoryRestoreBody.entry.before.code === 'ARPL1', 'got: ' + JSON.stringify(lastHistoryRestoreBody));
+  const historyRestoreResultText = await page.locator('#hrSettingsHistoryRestoreBody').textContent().catch(() => null);
+  check('Settings history: shows the real restored confirmation once done', (historyRestoreResultText || '').includes('Restored'), 'got: ' + JSON.stringify(historyRestoreResultText));
+  const historyErrAfter = consoleErrors.length + pageErrors.length;
+  check('Settings history: no JS error was thrown through opening, filtering, previewing or confirming a restore', historyErrAfter === historyErrBefore,
+    'new errors: ' + JSON.stringify(consoleErrors.slice(historyErrBefore).concat(pageErrors.slice(historyErrBefore))));
+  await page.click('#hrSettingsHistoryRestoreCloseBtn');
   await page.waitForTimeout(350);
 
   // Informational only, never a failure here: workforce.js's own main

@@ -568,6 +568,13 @@ if (subhSettingsAiUsageBtn) {
     if (window.__hrAssistantOpenAiUsage) window.__hrAssistantOpenAiUsage();
   });
 }
+// Settings history (TASK 3, 2026-11) - same entry pattern as above.
+const subhSettingsHistoryBtn = document.getElementById('subhSettingsHistoryBtn');
+if (subhSettingsHistoryBtn) {
+  subhSettingsHistoryBtn.addEventListener('click', () => {
+    if (window.__hrAssistantOpenSettingsHistory) window.__hrAssistantOpenSettingsHistory();
+  });
+}
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && !wfDrawer.hidden) closeDrawer();
 });

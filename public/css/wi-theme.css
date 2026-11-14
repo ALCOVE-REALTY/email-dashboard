@@ -1591,8 +1591,14 @@ body { background: var(--wi-bg); }
    Letter settings, whose first element is a text label before any
    control) - same "needs a little more breathing room below the header"
    case as the hub page above, same fix, scoped here rather than raising
-   .wf-comms-page's own padding-top for every sub-page. */
-#hrDataBackupsPage { padding-top: 18px; }
+   .wf-comms-page's own padding-top for every sub-page. TASK 1 (2026-11,
+   direct instruction) - 18px was still too close; raised further. */
+#hrDataBackupsPage { padding-top: 32px; }
+/* AI usage (TASK 2, 2026-11, direct instruction) - "move the chip row
+   slightly lower" - same no-section-title-row case as Data & backups
+   above, a smaller nudge since this one only needed "slightly", not
+   "still too close". */
+#hrAiUsagePage { padding-top: 14px; }
 .wf-comms-system-strip[hidden] { display: none; }
 .wf-comms-system-strip {
   display: flex; align-items: flex-start; gap: 10px; padding: 11px 12px;
@@ -1917,7 +1923,7 @@ body { background: var(--wi-bg); }
    attached, so tapping it just runs the action again). prefers-reduced-
    motion already strips every animation/transition globally (see this
    file's own catch-all rule near the top). */
-.wf-ai-action-btn, .wf-rem-add-btn { position: relative; overflow: hidden; min-width: 0; transition: color .2s ease, background-color .2s ease; }
+.wf-ai-action-btn, .wf-rem-add-btn, .wf-card-action-btn { position: relative; overflow: hidden; min-width: 0; transition: color .2s ease, background-color .2s ease; }
 /* Task 5 (2026-11) LIVE BUG FIX: this rule's own overflow:hidden (added
    for the spinner/checkmark overlay above) silently changes a FLEX ITEM's
    automatic minimum size from "its content's natural size" to 0 (a real
@@ -1942,12 +1948,12 @@ body { background: var(--wi-bg); }
    with a smooth cross-fade via the transition on the base rule above,
    while each ::after overlay below sets its OWN explicit color so it's
    never affected by the parent text being transparent. */
-.wf-convo-action-btn.is-loading, .wf-ai-action-btn.is-loading, .wf-rem-add-btn.is-loading,
-.wf-convo-action-btn.is-success, .wf-ai-action-btn.is-success, .wf-rem-add-btn.is-success,
-.wf-convo-action-btn.is-error, .wf-ai-action-btn.is-error, .wf-rem-add-btn.is-error {
+.wf-convo-action-btn.is-loading, .wf-ai-action-btn.is-loading, .wf-rem-add-btn.is-loading, .wf-card-action-btn.is-loading,
+.wf-convo-action-btn.is-success, .wf-ai-action-btn.is-success, .wf-rem-add-btn.is-success, .wf-card-action-btn.is-success,
+.wf-convo-action-btn.is-error, .wf-ai-action-btn.is-error, .wf-rem-add-btn.is-error, .wf-card-action-btn.is-error {
   color: transparent !important;
 }
-.wf-convo-action-btn.is-loading::after, .wf-ai-action-btn.is-loading::after, .wf-rem-add-btn.is-loading::after, .wf-rem-checkbox.is-loading::after {
+.wf-convo-action-btn.is-loading::after, .wf-ai-action-btn.is-loading::after, .wf-rem-add-btn.is-loading::after, .wf-card-action-btn.is-loading::after, .wf-rem-checkbox.is-loading::after {
   content: ''; position: absolute; top: 50%; left: 50%; width: 15px; height: 15px; margin: -8px 0 0 -8px;
   border: 2px solid rgba(255,255,255,.4); border-top-color: #FFFFFF; border-radius: 50%;
   animation: wiBtnSpin .6s linear infinite;
@@ -1955,17 +1961,27 @@ body { background: var(--wi-bg); }
 .wf-convo-action-btn.outline.is-loading::after, .wf-convo-action-btn.danger.is-loading::after, .wf-ai-action-btn.outline.is-loading::after, .wf-rem-add-btn.outline.is-loading::after {
   border-color: var(--wi-border-2); border-top-color: var(--wi-ink);
 }
+/* .wf-card-action-btn (2026-11, direct instruction, Task 4(c) LIVE BUG
+   FIX) - a lightweight ".plain"-styled inline card action (Letter
+   settings' "Send test to me"/"Save" code/name buttons) that still
+   drives runButtonAction. Its own background is light (var(--wi-primary-50),
+   not white text on a colored pill like the other three), so its spinner
+   border uses the SAME dark-on-light treatment as those buttons' own
+   .outline/.danger variant above, never the white-on-color default. */
+.wf-card-action-btn.is-loading::after {
+  border-color: var(--wi-border-2); border-top-color: var(--wi-ink);
+}
 @keyframes wiBtnSpin { to { transform: rotate(360deg); } }
 
-.wf-convo-action-btn.is-success, .wf-ai-action-btn.is-success, .wf-rem-add-btn.is-success {
+.wf-convo-action-btn.is-success, .wf-ai-action-btn.is-success, .wf-rem-add-btn.is-success, .wf-card-action-btn.is-success {
   background: var(--wi-green) !important; box-shadow: none !important;
 }
-.wf-convo-action-btn.is-success::after, .wf-ai-action-btn.is-success::after, .wf-rem-add-btn.is-success::after {
+.wf-convo-action-btn.is-success::after, .wf-ai-action-btn.is-success::after, .wf-rem-add-btn.is-success::after, .wf-card-action-btn.is-success::after {
   content: '✓'; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
   font-weight: 900; font-size: 1rem; color: #FFFFFF;
 }
-.wf-convo-action-btn.is-error, .wf-ai-action-btn.is-error, .wf-rem-add-btn.is-error { background: var(--wi-red-50) !important; box-shadow: none !important; }
-.wf-convo-action-btn.is-error::after, .wf-ai-action-btn.is-error::after, .wf-rem-add-btn.is-error::after {
+.wf-convo-action-btn.is-error, .wf-ai-action-btn.is-error, .wf-rem-add-btn.is-error, .wf-card-action-btn.is-error { background: var(--wi-red-50) !important; box-shadow: none !important; }
+.wf-convo-action-btn.is-error::after, .wf-ai-action-btn.is-error::after, .wf-rem-add-btn.is-error::after, .wf-card-action-btn.is-error::after {
   content: 'Retry'; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
   font-weight: 800; font-size: 0.8rem; color: var(--wi-red-700);
 }

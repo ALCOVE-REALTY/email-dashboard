@@ -69,6 +69,25 @@ async function main() {
   });
 
   console.log('='.repeat(70));
+  console.log('TASK 2 (2026-11), direct instruction - getUsageSummary.year: this calendar year\'s totals + by-feature, an EARLIER month this year counts, a PRIOR year never does');
+  console.log('='.repeat(70));
+  await checkAsync('an entry from earlier THIS YEAR but a different month (so NOT in "month") still appears in "year"', async () => {
+    const earlierThisYear = new Date('2026-03-05T09:00:00.000Z'); // same year as `now` (2026-11-10), different month
+    await aiUsageLog.recordUsage({ feature: 'march-feature', model: 'claude-sonnet-5-5', inputTokens: 300, outputTokens: 100, isTest: false, now: earlierThisYear });
+    const summary = await aiUsageLog.getUsageSummary(now);
+    const inMonth = summary.month.byFeature.some((f) => f.feature === 'march-feature');
+    const inYear = summary.year.byFeature.some((f) => f.feature === 'march-feature');
+    return !inMonth && inYear;
+  });
+  await checkAsync('an entry from a PRIOR calendar year never appears in "year"; year totals are always >= month totals', async () => {
+    const lastYear = new Date('2025-12-20T09:00:00.000Z');
+    await aiUsageLog.recordUsage({ feature: 'last-year-feature', model: 'claude-sonnet-5-5', inputTokens: 999, outputTokens: 999, isTest: false, now: lastYear });
+    const summary = await aiUsageLog.getUsageSummary(now);
+    const neverInYear = !summary.year.byFeature.some((f) => f.feature === 'last-year-feature');
+    return neverInYear && summary.year.liveCalls >= summary.month.liveCalls && summary.year.totalUsd >= summary.month.totalUsd;
+  });
+
+  console.log('='.repeat(70));
   console.log('checkDailyAlertDue: fires once per day at/above threshold, never again the same day, resets the next day');
   console.log('='.repeat(70));
   await checkAsync('under the threshold never fires', async () => {

@@ -216,6 +216,7 @@
   // AI usage (2026-11, direct instruction) - read-only spend summary.
   const aiUsagePage = document.getElementById('hrAiUsagePage');
   const aiUsageChips = document.getElementById('hrAiUsageChips');
+  const aiUsageChipsYear = document.getElementById('hrAiUsageChipsYear'); // TASK 2 (2026-11) - "This year", its own row
   const aiUsageLiveTotal = document.getElementById('hrAiUsageLiveTotal');
   const aiUsageTestTotal = document.getElementById('hrAiUsageTestTotal');
   const aiUsageGrandTotal = document.getElementById('hrAiUsageGrandTotal');
@@ -232,6 +233,14 @@
   const backupRestoreCloseBtn = document.getElementById('hrBackupRestoreCloseBtn');
   const backupRestoreTitle = document.getElementById('hrBackupRestoreTitle');
   const backupRestoreBody = document.getElementById('hrBackupRestoreBody');
+  // Settings history (TASK 3, 2026-11, direct instruction).
+  const settingsHistoryPage = document.getElementById('hrSettingsHistoryPage');
+  const settingsHistoryChips = document.getElementById('hrSettingsHistoryChips');
+  const settingsHistoryList = document.getElementById('hrSettingsHistoryList');
+  const settingsHistoryRestoreBackdrop = document.getElementById('hrSettingsHistoryRestoreBackdrop');
+  const settingsHistoryRestoreSheet = document.getElementById('hrSettingsHistoryRestoreSheet');
+  const settingsHistoryRestoreCloseBtn = document.getElementById('hrSettingsHistoryRestoreCloseBtn');
+  const settingsHistoryRestoreBody = document.getElementById('hrSettingsHistoryRestoreBody');
   const convoPage = document.getElementById('hrConvoPage');
   const convoThread = document.getElementById('hrConvoThread');
   const convoActions = document.getElementById('hrConvoActions');
@@ -1551,7 +1560,7 @@
   // renderable data for the others; every path still re-fetches fresh
   // data in the background and re-renders when it lands, so nothing here
   // is ever more than one poll cycle stale.
-  const pageDataCache = { comms: null, commsAt: 0, reminders: new Map(), automations: null, openFlows: null, convos: new Map(), siteAliases: null, deptAliases: null, companyDetails: null, letterSettings: null, letterFields: new Map(), history: null, dataBackups: null };
+  const pageDataCache = { comms: null, commsAt: 0, reminders: new Map(), automations: null, openFlows: null, convos: new Map(), siteAliases: null, deptAliases: null, companyDetails: null, letterSettings: null, letterFields: new Map(), history: null, dataBackups: null, settingsHistory: null };
   // Bumped by invalidateReminderCache (every reminder mutation - done/
   // undo/cancel/snooze/create/edit). Any reminders fetch in flight when a
   // mutation happens captures remMutationSeq at send time and checks it
@@ -1873,6 +1882,7 @@
     else if (entry.type === 'letterSettings') showLetterSettings();
     else if (entry.type === 'dataBackups') showDataBackups();
     else if (entry.type === 'aiUsage') showAiUsage();
+    else if (entry.type === 'settingsHistory') showSettingsHistory();
     else if (entry.type === 'actionNeeded') showActionNeeded();
     else if (entry.type === 'conversation') openConversationPage(entry.chatId);
     else if (entry.type === 'reminders') { activeRemFilter = entry.filter; setPanelView('reminders'); loadRemindersPage(entry.filter); }
@@ -1930,6 +1940,7 @@
     const isLetterSettings = view === 'letterSettings';
     const isAiUsage = view === 'aiUsage';
     const isDataBackups = view === 'dataBackups';
+    const isSettingsHistory = view === 'settingsHistory'; // TASK 3 (2026-11)
     const isActionNeeded = view === 'actionNeeded';
     const isAutoList = view === 'automationList';
     const isAutomation = view === 'automation';
@@ -1964,6 +1975,7 @@
     if (letterSettingsPage) letterSettingsPage.hidden = !isLetterSettings;
     if (aiUsagePage) aiUsagePage.hidden = !isAiUsage;
     if (dataBackupsPage) dataBackupsPage.hidden = !isDataBackups;
+    if (settingsHistoryPage) settingsHistoryPage.hidden = !isSettingsHistory;
     if (actionNeededPage) actionNeededPage.hidden = !isActionNeeded;
     if (autoListPage) autoListPage.hidden = !isAutoList;
     if (autoPage) autoPage.hidden = !isAutomation;
@@ -2048,6 +2060,12 @@
       if (commsHeadIcon) commsHeadIcon.innerHTML = WHATSAPP_SVG;
       if (commsHeadTitle) commsHeadTitle.textContent = 'Data & backups';
       if (commsHeadSubtitle) commsHeadSubtitle.textContent = 'Backup now, recent backups, restore from backup';
+      if (commsHeadBadge) commsHeadBadge.hidden = true;
+    } else if (isSettingsHistory) {
+      if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon whatsapp';
+      if (commsHeadIcon) commsHeadIcon.innerHTML = WHATSAPP_SVG;
+      if (commsHeadTitle) commsHeadTitle.textContent = 'Settings history';
+      if (commsHeadSubtitle) commsHeadSubtitle.textContent = 'Every change to owner settings, with Restore';
       if (commsHeadBadge) commsHeadBadge.hidden = true;
     } else if (isActionNeeded) {
       if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon whatsapp';
@@ -3538,15 +3556,24 @@
     results.forEach((emp) => {
       const li = document.createElement('li');
       const b = document.createElement('b');
-      b.textContent = emp.name + (emp.employeeId ? ' (' + emp.employeeId + ')' : '');
+      b.textContent = emp.name;
       li.appendChild(b);
+      // Task 4(b) (2026-11), direct instruction - "name · code · company",
+      // same shape as this app's OTHER employee search boxes (the
+      // ipWhatsapp employee picker's own <b>name</b> + sub-line, public/
+      // workforce.js) - always shown, not only on an ineligible match; an
+      // ineligible candidate's own specific reason is appended to the
+      // SAME sub-line rather than replacing it, so the owner still sees
+      // who they are even when they can't be picked.
+      const sub = document.createElement('span');
+      sub.className = 'wf-mail-suggest-sub';
+      let subText = [emp.employeeId, emp.company].filter(Boolean).join(' · ');
       if (!emp.eligible) {
         li.style.opacity = '0.65';
-        const sub = document.createElement('span');
-        sub.className = 'wf-mail-suggest-sub';
-        sub.textContent = '⚠ ' + emp.reason;
-        li.appendChild(sub);
+        subText = subText ? (subText + ' · ⚠ ' + emp.reason) : ('⚠ ' + emp.reason);
       }
+      sub.textContent = subText;
+      li.appendChild(sub);
       li.addEventListener('click', () => {
         letterTestEmployeeSelectedId = emp.employeeId;
         letterTestEmployeeInput.value = emp.name;
@@ -3737,7 +3764,7 @@
   function letterCodeRowHtml(letterType, label, code, fieldsStatus) {
     // "Send test letter to me" (2026-11, direct instruction) - every
     // template is a Drive one now (TASK 2, 2026-11).
-    const sendTestBtn = '<button type="button" class="plain" data-action="send-test-letter">Send test to me</button>';
+    const sendTestBtn = '<button type="button" class="plain wf-card-action-btn" data-action="send-test-letter">Send test to me</button>';
     // Field mapping (2026-11, direct instruction) - "Fields" opens the
     // review/proposal sheet; the hint line shows live mapped/total counts
     // from the server's own fieldsStatus (same source the sheet itself
@@ -3755,7 +3782,7 @@
       '<label class="wf-rem-field"><input type="text" data-role="letter-name-input" value="' + escapeHtml(label || '') + '" /></label>' +
       '<div class="wf-auto-err hidden" data-role="letter-name-err" style="padding:0"></div>' +
       '<div class="wf-auto-actions" style="margin-top:4px">' +
-      '<button type="button" class="plain" data-action="save-letter-name">Save</button>' +
+      '<button type="button" class="plain wf-card-action-btn" data-action="save-letter-name">Save</button>' +
       '<button type="button" class="plain" data-action="cancel-letter-name">Cancel</button>' +
       '</div></div>' +
       '<div class="wf-auto-hint" data-role="letter-code-display">Code: ' + escapeHtml(code || '—') + '</div>' +
@@ -3767,7 +3794,7 @@
       '</div></div>' +
       '<div class="wf-auto-actions" data-role="letter-code-actions-view"><button type="button" class="plain" data-action="edit-letter-code">Edit code</button>' + fieldsBtn + sendTestBtn + '</div>' +
       '<div class="wf-auto-actions" data-role="letter-code-actions-edit" style="display:none">' +
-      '<button type="button" class="plain" data-action="save-letter-code">Save</button>' +
+      '<button type="button" class="plain wf-card-action-btn" data-action="save-letter-code">Save</button>' +
       '<button type="button" class="plain" data-action="cancel-letter-code">Cancel</button>' +
       '</div></div>';
   }
@@ -4075,15 +4102,23 @@
       if (!aiUsageSummaryCache) aiUsageFeatureList.innerHTML = '<div class="wf-rem-empty">Could not load AI usage.</div>';
     }
   }
-  if (aiUsageChips) {
-    aiUsageChips.addEventListener('click', (e) => {
-      const chip = e.target.closest('.wf-rem-chip');
-      if (!chip) return;
-      activeAiUsageRange = chip.dataset.range;
-      aiUsageChips.querySelectorAll('.wf-rem-chip').forEach((c) => c.setAttribute('aria-pressed', String(c === chip)));
-      if (aiUsageSummaryCache) renderAiUsageRange(aiUsageSummaryCache, activeAiUsageRange);
+  // TASK 2 (2026-11) - "This year" lives in its OWN row/container (a
+  // plain flex row can't wrap a 4th chip onto its own line), so picking
+  // a chip in either row must un-press the other row's chip too - one
+  // shared handler bound to both containers, never two separate
+  // "selected range" states.
+  function onAiUsageChipClick(e) {
+    const chip = e.target.closest('.wf-rem-chip');
+    if (!chip) return;
+    activeAiUsageRange = chip.dataset.range;
+    [aiUsageChips, aiUsageChipsYear].forEach((container) => {
+      if (!container) return;
+      container.querySelectorAll('.wf-rem-chip').forEach((c) => c.setAttribute('aria-pressed', String(c === chip)));
     });
+    if (aiUsageSummaryCache) renderAiUsageRange(aiUsageSummaryCache, activeAiUsageRange);
   }
+  if (aiUsageChips) aiUsageChips.addEventListener('click', onAiUsageChipClick);
+  if (aiUsageChipsYear) aiUsageChipsYear.addEventListener('click', onAiUsageChipClick);
   function showAiUsage() {
     setPanelView('aiUsage');
     loadAiUsagePage();
@@ -4170,6 +4205,135 @@
     }
     showDataBackups();
   };
+
+  // Settings history (TASK 3, 2026-11, direct instruction) - every
+  // write/delete to owner settings, filterable by group, Restore per
+  // change (re-uses each store's own real save/delete function - no
+  // more powerful than the owner re-typing the old value by hand).
+  const RESTORABLE_ACTIONS = { saved: true, deleted: true, override: true };
+  let activeSettingsHistoryGroup = '';
+  function formatHistoryValue(v) {
+    if (v === null || v === undefined) return '(none)';
+    if (typeof v === 'object') return Object.keys(v).length ? JSON.stringify(v) : '(empty)';
+    return String(v);
+  }
+  function describeHistoryEntry(e) {
+    if (e.action === 'saved' || e.action === 'override') {
+      if (e.before && typeof e.before === 'object' && e.after && typeof e.after === 'object') {
+        const changedKeys = Object.keys(e.after).filter((k) => JSON.stringify(e.after[k]) !== JSON.stringify((e.before || {})[k]));
+        if (!changedKeys.length) return 'Saved (no visible change)';
+        return changedKeys.map((k) => k + ': ' + formatHistoryValue(e.before[k]) + ' → ' + formatHistoryValue(e.after[k])).join(', ');
+      }
+      return formatHistoryValue(e.before) + ' → ' + formatHistoryValue(e.after);
+    }
+    if (e.action === 'deleted') return 'Deleted: ' + formatHistoryValue(e.before);
+    if (e.action === 'ambiguous_match') return 'Ambiguous match - candidates: ' + (e.candidates || []).join(', ');
+    if (e.action === 'reattached') return 'Reattached from "' + escapeHtml(e.from || '') + '"';
+    return e.action || 'Change';
+  }
+  function historyRowHtml(e, idx) {
+    const when = e.at ? new Date(e.at).toLocaleString() : '—';
+    const canRestore = e.restorable !== false && RESTORABLE_ACTIONS[e.action];
+    return '<div class="wf-auto-task-card" data-history-idx="' + idx + '">' +
+      '<div class="wf-auto-task-head"><div style="flex:1;min-width:0">' +
+      '<div class="wf-auto-task-subject">' + escapeHtml(e.groupLabel || e.group) + '</div>' +
+      '<div class="wf-auto-hint">' + escapeHtml(when) + ' · ' + escapeHtml(describeHistoryEntry(e)) + '</div>' +
+      '</div></div>' +
+      (canRestore ? '<div class="wf-auto-actions"><button type="button" class="plain" data-action="restore-history">Restore</button></div>' : '') +
+      '</div>';
+  }
+  let settingsHistoryItemsCache = [];
+  function renderSettingsHistoryList(items) {
+    if (!settingsHistoryList) return;
+    settingsHistoryItemsCache = items || [];
+    if (!settingsHistoryItemsCache.length) { settingsHistoryList.innerHTML = '<div class="wf-rem-empty">No history yet for this group.</div>'; return; }
+    settingsHistoryList.innerHTML = settingsHistoryItemsCache.map(historyRowHtml).join('');
+    settingsHistoryList.querySelectorAll('[data-action="restore-history"]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const idx = Number(btn.closest('[data-history-idx]').dataset.historyIdx);
+        openSettingsHistoryRestoreSheet(settingsHistoryItemsCache[idx]);
+      });
+    });
+  }
+  function renderSettingsHistoryChips(groups) {
+    if (!settingsHistoryChips) return;
+    const chipsHtml = '<button type="button" class="wf-rem-chip" data-group="" aria-pressed="' + (activeSettingsHistoryGroup === '' ? 'true' : 'false') + '">All</button>' +
+      (groups || []).map((g) => '<button type="button" class="wf-rem-chip" data-group="' + escapeHtml(g.group) + '" aria-pressed="' + (activeSettingsHistoryGroup === g.group ? 'true' : 'false') + '">' + escapeHtml(g.label) + '</button>').join('');
+    settingsHistoryChips.innerHTML = chipsHtml;
+  }
+  async function loadSettingsHistoryPage() {
+    if (!settingsHistoryList) return;
+    const cached = pageDataCache.settingsHistory;
+    if (cached) { renderSettingsHistoryChips(cached.groups); renderSettingsHistoryList(filterHistoryByGroup(cached.items)); }
+    else settingsHistoryList.innerHTML = '<div class="wf-skeleton-list"><div class="wf-skeleton-row"></div><div class="wf-skeleton-row"></div></div>';
+    try {
+      const r = await fetch('/api/workforce/hr-assistant/settings-history').then((res) => res.json());
+      pageDataCache.settingsHistory = { items: r.items || [], groups: r.groups || [] };
+      renderSettingsHistoryChips(r.groups || []);
+      renderSettingsHistoryList(filterHistoryByGroup(r.items || []));
+    } catch (err) {
+      if (!cached) settingsHistoryList.innerHTML = '<div class="wf-rem-empty">Could not load settings history.</div>';
+    }
+  }
+  function filterHistoryByGroup(items) {
+    if (!activeSettingsHistoryGroup) return items;
+    return (items || []).filter((e) => e.group === activeSettingsHistoryGroup);
+  }
+  if (settingsHistoryChips) {
+    settingsHistoryChips.addEventListener('click', (e) => {
+      const chip = e.target.closest('.wf-rem-chip');
+      if (!chip) return;
+      activeSettingsHistoryGroup = chip.dataset.group || '';
+      settingsHistoryChips.querySelectorAll('.wf-rem-chip').forEach((c) => c.setAttribute('aria-pressed', String(c === chip)));
+      const cached = pageDataCache.settingsHistory;
+      if (cached) renderSettingsHistoryList(filterHistoryByGroup(cached.items));
+    });
+  }
+  function showSettingsHistory() {
+    setPanelView('settingsHistory');
+    loadSettingsHistoryPage();
+  }
+  window.__hrAssistantOpenSettingsHistory = function () {
+    const wasOpen = typeof panel !== 'undefined' && !panel.hidden;
+    if (!wasOpen && typeof openPanel === 'function') {
+      openPanel();
+      navStack = [{ type: 'settingsHistory' }];
+    } else {
+      pushNav({ type: 'settingsHistory' });
+    }
+    showSettingsHistory();
+  };
+  function closeSettingsHistoryRestoreSheet() {
+    if (settingsHistoryRestoreBackdrop) settingsHistoryRestoreBackdrop.classList.remove('open');
+    if (settingsHistoryRestoreSheet) settingsHistoryRestoreSheet.classList.remove('open');
+    setTimeout(() => { if (settingsHistoryRestoreBackdrop) settingsHistoryRestoreBackdrop.hidden = true; if (settingsHistoryRestoreSheet) settingsHistoryRestoreSheet.hidden = true; }, 280);
+  }
+  if (settingsHistoryRestoreCloseBtn) settingsHistoryRestoreCloseBtn.addEventListener('click', closeSettingsHistoryRestoreSheet);
+  if (settingsHistoryRestoreBackdrop) settingsHistoryRestoreBackdrop.addEventListener('click', closeSettingsHistoryRestoreSheet);
+  function openSettingsHistoryRestoreSheet(entry) {
+    if (!settingsHistoryRestoreSheet || !settingsHistoryRestoreBody) return;
+    const when = entry.at ? new Date(entry.at).toLocaleString() : '—';
+    settingsHistoryRestoreBody.innerHTML =
+      '<div class="wf-auto-hint">' + escapeHtml(entry.groupLabel || entry.group) + ' · ' + escapeHtml(when) + '</div>' +
+      '<div class="wf-auto-hint" style="margin-top:6px">' + escapeHtml(describeHistoryEntry(entry)) + '</div>' +
+      '<div class="wf-auto-hint" style="margin-top:10px">This will write the earlier value back, the same as editing it by hand. Nothing else is touched.</div>' +
+      '<button type="button" class="wf-ai-action-btn download" id="hrSettingsHistoryRestoreConfirmBtn" style="width:100%;margin-top:14px;justify-content:center"><span>Confirm restore</span></button>';
+    settingsHistoryRestoreBackdrop.hidden = false;
+    settingsHistoryRestoreSheet.hidden = false;
+    requestAnimationFrame(() => { settingsHistoryRestoreBackdrop.classList.add('open'); settingsHistoryRestoreSheet.classList.add('open'); });
+    const confirmBtn = document.getElementById('hrSettingsHistoryRestoreConfirmBtn');
+    if (confirmBtn) {
+      confirmBtn.addEventListener('click', () => {
+        runButtonAction(confirmBtn, () => postJsonOrThrow('/api/workforce/hr-assistant/settings-history/restore', { entry }), (result) => {
+          if (!result || result.ok === false) throw new Error((result && result.error) || 'Could not restore this change.');
+          settingsHistoryRestoreBody.innerHTML = '<div class="wf-auto-hint">✓ Restored.</div>';
+          showActionToast('Restored');
+          pageDataCache.settingsHistory = null;
+          if (panelView === 'settingsHistory') loadSettingsHistoryPage();
+        }, { toastFn: (msg) => showActionToast(msg, null, 'error') });
+      });
+    }
+  }
   // Polls the SAME ad-hoc backup job status route the owner-only diag
   // route already uses - never a separate/duplicate job mechanism.
   async function pollBackupJobUntilDone(jobId) {
@@ -8119,6 +8283,7 @@
     hrCompanyDetailsPage: () => loadCompanyDetailsPage(),
     hrLetterSettingsPage: () => loadLetterSettingsPage(),
     hrDataBackupsPage: () => loadDataBackupsPage(),
+    hrSettingsHistoryPage: () => loadSettingsHistoryPage(),
     hrConvoPage: () => reloadConversation()
   };
   Object.keys(WF_PTR_REFRESH_BY_ID).forEach((id) => {
