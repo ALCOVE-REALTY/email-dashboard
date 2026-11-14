@@ -37,6 +37,7 @@ const hrAuthAlerts = require('./hrAuthAlerts');
 const fileStorage = require('./fileStorage');
 const whatsapp = require('./whatsappService');
 const redisHealth = require('./redisHealth');
+const togetherWeCanService = require('./aiAssistant/togetherWeCanService');
 
 const router = express.Router();
 
@@ -3787,6 +3788,90 @@ router.post('/hr-assistant/subh-notifications/dismiss', async (req, res) => {
   await whatsappAssistant.dismissSystemNotices();
   await hrAuthAlerts.clearAuthAlerts();
   res.json({ ok: true });
+});
+
+// "Together We Can" sync (2026-11, new feature) - owner-only, every route
+// gated exactly like every other owner-only route on this router
+// (memoryService.isOwner(req.hrUser.email)). Zero AI/Claude calls - pure
+// deterministic data sync (src/aiAssistant/togetherWeCanService.js).
+router.get('/hr-assistant/together-we-can/preview', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    res.json(await togetherWeCanService.buildPreview({ forceRefresh: true }));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/hr-assistant/together-we-can/sync-now', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    res.json(await togetherWeCanService.sendFullSync({ triggeredBy: 'manual:' + req.hrUser.email }));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/hr-assistant/together-we-can/test-one', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const { employeeId } = req.body || {};
+    if (!employeeId) return res.status(400).json({ error: 'employeeId is required.' });
+    res.json(await togetherWeCanService.sendTestOne({ employeeId }));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/hr-assistant/together-we-can/history', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    res.json({ history: await togetherWeCanService.listHistory() });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/hr-assistant/together-we-can/settings', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    res.json(await togetherWeCanService.getSettings());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/hr-assistant/together-we-can/settings', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const { enabled, time } = req.body || {};
+    res.json(await togetherWeCanService.saveSettings({ enabled, time }));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Employee picker for "Test with one employee" - name/company enrichment
+// (best-effort, via the already-cached employee directory) happens here,
+// not inside togetherWeCanService.js, so that module's own test surface
+// stays limited to mocking sheetsAuth alone.
+router.get('/hr-assistant/together-we-can/employees', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const candidates = await togetherWeCanService.listPickerCandidates();
+    let byId = new Map();
+    try {
+      const { employees } = await employeeService.getEmployeeData();
+      byId = new Map(employees.map((e) => [e.employeeId, e]));
+    } catch (err) { /* best effort - picker still works with just Emp Code if the directory lookup fails */ }
+    const results = candidates.map((c) => {
+      const emp = byId.get(c.employeeId);
+      return { employeeId: c.employeeId, name: (emp && emp.name) || c.employeeId, company: emp && emp.company, statusRaw: c.statusRaw };
+    });
+    res.json({ results });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 module.exports = router;

@@ -311,6 +311,71 @@ older unrelated message's details) and, for "informing" messages specifically,
 is structurally impossible after section 1 (the model never drafts that reply
 at all).
 
+## Integrations (2026-11, new feature) - "Together We Can" sync
+
+A new top-level owner-only page, **Integrations** (☰ menu, registered in
+`src/views/workforce.html`/`public/workforce.js` the EXACT same way as "SUBH
+Settings" - a normal `wf-view` dashboard view, never nested inside the SUBH
+Settings page itself). Holds one card today, "Together We Can", written so
+more integration cards can be added later inside the same
+`#integrationsCards` container without restructuring.
+
+**Zero AI/Claude calls anywhere in this feature** - a purely deterministic
+data push, `src/aiAssistant/togetherWeCanService.js`. Pushes exactly 4 fields
+(`Emp_Code`, `STATUS`, `HOD_ID`, `Reporting_DOER_id`) to
+`POST $TWC_API_URL` (no auth at all, by design - IT confirmed no token/header
+needed) as a JSON array. Data source: the SAME live Employee_Master Google
+Sheet employeeService.js already reads, via the SAME Sheets auth client
+(`sheetsAuth.getSheetsReadOnlyClient`) and the SAME cache-invalidation signal
+(`cacheBus`) - but its own small, header-NAME-located fetch/cache for just
+these 4 fields (never a hardcoded column letter), deliberately kept separate
+from employeeService.js's own hardcoded-column-index fields rather than
+widening that shared, payload-optimized range for every other caller (see
+the service file's own top-of-file comment for the full reasoning).
+
+- `STATUS` is normalized (case/whitespace-insensitive) to exactly one of
+  `ACTIVE`/`INACTIVE`/`NOTICE PERIOD`; anything else is NOT sent for that row
+  and shown as an "unknown status value" warning. A row with no Emp Code is
+  skipped and warned; a row missing its HOD ID or Reporting Doer ID is still
+  sent (empty string) and warned; an HOD ID/Reporting Doer ID that doesn't
+  match any row's own Emp Code elsewhere in the sheet is warned as a
+  dangling reference (still sent).
+- **Sync data now** always sends a FULL sync of every eligible employee
+  (never a delta over the wire - "changed since last sync" on Preview is
+  informational only). Normally one request; on failure, retries once; if
+  that also fails, splits into batches of 200 and reports exactly which
+  batch(es) failed (row-range + raw HTTP status/body).
+- **Preview** computes counts/warnings/what-changed without sending
+  anything. **Test with one employee** (its own picker, mirroring the
+  ipWhatsapp employee-picker pattern already in `public/workforce.js`) is a
+  REAL send of a single-element array to the real endpoint - never mocked in
+  live usage, since it's how the owner verifies the endpoint.
+- History (last 10 syncs, capped via the same `lpush`+`ltrim` Redis
+  convention `settingsAuditLog.js`/`aiUsageLog.js` already use) and the
+  "last successful sync" snapshot (for the changed-since-last-sync diff) are
+  both durable in Redis (`subh-twc:*` keys) - a restart never causes a false
+  "everything changed".
+- **Optional daily auto-sync** (off by default, a time-of-day setting) is
+  checked from the SAME existing periodic tick `whatsappPollScheduler.js`
+  already runs every other daily job on, in its own independent try/catch
+  (never touching any other job's block there) -
+  `togetherWeCanService.checkDailyAutoSync`.
+- Every route (`/hr-assistant/together-we-can/*` in `src/workforceRoutes.js`)
+  is owner-gated with the exact same one-line pattern as every other
+  owner-only route on this router (`memoryService.isOwner(req.hrUser.email)`
+  -> 403).
+- Deterministic suite: `scripts/check-together-we-can.js` (also wired into
+  `scripts/run-pre-push-checks.js`'s `DETERMINISTIC_SUITES`) - zero real
+  network calls, `sheetsAuth.getSheetsReadOnlyClient` and `global.fetch` are
+  both fully mocked for the whole run (the real
+  `togetherwecan.alcoverealty.in` host is asserted as never contacted).
+
+**Required env var**: `TWC_API_URL` (the full endpoint URL - e.g.
+`https://togetherwecan.alcoverealty.in/api/employee_master/update`) must be
+set in the Alcove Deploy dashboard before any real send works; with it unset,
+Preview/history/settings still work but Sync/Test-one fail with a clear
+"TWC_API_URL is not configured" error, never a silent no-op.
+
 ## Deployment
 
 **Not Vercel. Never run the `vercel` CLI or check Vercel deployments for this

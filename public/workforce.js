@@ -30,7 +30,7 @@ const wfDrawerBackdrop = document.getElementById('wfDrawerBackdrop');
 const menuBtn = document.getElementById('menuBtn');
 const VIEWS = [
   'overview', 'directory', 'joining', 'exit', 'attrition', 'tenure', 'movement', 'insights', 'quality',
-  'departmentFull', 'locationFull', 'movementDetail', 'doerManagement', 'orgChart', 'healthInsurance', 'coveredEmployees', 'hiAdditions', 'hiExits', 'hiTotalExits', 'hiFamilyMembers', 'hiTotalLives', 'hiPolicyInfo', 'hiFamilyPremium', 'hiAnnualPremium', 'ageDistribution', 'genderDistribution', 'collarDistribution', 'companyDistribution', 'subhSettings', 'profile', 'letterForm', 'letterSuccess', 'letterGenerator', 'interviewPanel'
+  'departmentFull', 'locationFull', 'movementDetail', 'doerManagement', 'orgChart', 'healthInsurance', 'coveredEmployees', 'hiAdditions', 'hiExits', 'hiTotalExits', 'hiFamilyMembers', 'hiTotalLives', 'hiPolicyInfo', 'hiFamilyPremium', 'hiAnnualPremium', 'ageDistribution', 'genderDistribution', 'collarDistribution', 'companyDistribution', 'subhSettings', 'integrations', 'profile', 'letterForm', 'letterSuccess', 'letterGenerator', 'interviewPanel'
 ];
 const viewEls = Object.fromEntries(VIEWS.map((v) => [v, document.getElementById(v + 'View')]));
 
@@ -695,6 +695,7 @@ function loadView(view, forceRefresh) {
   if (view === 'movement') return loadMovementView();
   if (view === 'letterGenerator') return loadLetterGeneratorView();
   if (view === 'interviewPanel') return refreshInterviewPanelView();
+  if (view === 'integrations') return loadIntegrationsView();
   // exit / attrition are static "not available" panels — nothing to fetch.
   return Promise.resolve();
 }
@@ -708,6 +709,257 @@ async function loadProfile() {
   } catch {
     // Profile display is non-critical - leave the placeholders.
   }
+}
+
+// ---------- Integrations: "Together We Can" sync (2026-11, new feature) ----------
+// Owner-only page, registered in the ☰ drawer the same way as SUBH
+// Settings (see VIEWS/loadView above and workforce.html's #integrationsView).
+// Every request below hits a brand-new, owner-gated route
+// (src/workforceRoutes.js) backed by src/aiAssistant/togetherWeCanService.js -
+// zero AI/Claude calls anywhere in this feature.
+let twcBusy = false; // "second taps ignored while busy" - Sync Now and Test-one both gate through this
+let twcEmployeeCache = null; // lazily fetched once, client-side filtered (same convention as the ipWhatsapp employee picker above)
+let twcSelectedEmployee = null;
+
+function twcToast(text, type) {
+  if (window.__hrAssistantToast) window.__hrAssistantToast(text, type);
+  else if (type === 'error') alert(text);
+}
+
+function twcSetBtnBusy(btn, busyLabel) {
+  if (!btn) return;
+  btn.dataset.origHtml = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner spinner-sm"></span><span>' + escapeHtml(busyLabel) + '</span>';
+}
+function twcRestoreBtn(btn) {
+  if (!btn) return;
+  btn.disabled = false;
+  if (btn.dataset.origHtml) btn.innerHTML = btn.dataset.origHtml;
+}
+
+function twcCountsLine(counts) {
+  return ['ACTIVE', 'NOTICE PERIOD', 'INACTIVE'].map((k) => k + ' ' + (counts[k] || 0)).join(' · ');
+}
+
+function twcRenderPreview(data) {
+  const el = document.getElementById('twcPreviewResult');
+  const warnings = data.warnings || [];
+  const changed = data.changedSinceLastSync || { count: 0, items: [] };
+  let html = '<div><b>Will send:</b> ' + data.employeeCount + ' employees (' + escapeHtml(twcCountsLine(data.counts || {})) + ')</div>';
+  html += '<div><b>Changed since last successful sync:</b> ' + changed.count + '</div>';
+  if (changed.items.length) {
+    html += '<div style="margin:2px 0 0 14px">' + changed.items.map((i) => '<div>' + escapeHtml(i.message) + '</div>').join('') + '</div>';
+  }
+  html += '<div><b>Warnings:</b> ' + warnings.length + '</div>';
+  if (warnings.length) {
+    html += '<div style="margin:2px 0 0 14px">' + warnings.slice(0, 50).map((w) => '<div>' + escapeHtml(w.message) + '</div>').join('') + '</div>';
+  }
+  el.innerHTML = html;
+  el.style.display = '';
+}
+
+function twcRenderHistory(history) {
+  const listEl = document.getElementById('twcHistoryList');
+  const lastLine = document.getElementById('twcLastSyncedLine');
+  if (!history.length) {
+    listEl.innerHTML = '<div class="wf-note">No syncs yet.</div>';
+    lastLine.textContent = 'Last synced: never';
+    return;
+  }
+  const last = history[0];
+  const lastWhen = new Date(last.at).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+  lastLine.textContent = 'Last synced: ' + lastWhen + ' · ' + last.employeeCount + ' employees';
+  listEl.innerHTML = history.map((h) => {
+    const when = new Date(h.at).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+    const statusIcon = h.ok ? '✓' : '✗';
+    const resultText = h.ok ? 'OK' : ('FAILED' + (h.httpStatus ? ' (HTTP ' + h.httpStatus + ')' : ''));
+    return '<div>' + statusIcon + ' ' + when + ' · ' + h.employeeCount + ' employees (' + escapeHtml(twcCountsLine(h.counts || {})) +
+      ') · ' + h.changedSinceLastSync + ' changed · ' + resultText + '</div>';
+  }).join('');
+}
+
+async function loadIntegrationsView() {
+  try {
+    const settings = await fetchJson('/api/workforce/hr-assistant/together-we-can/settings');
+    document.getElementById('twcAutoSyncEnabled').checked = Boolean(settings.enabled);
+    document.getElementById('twcAutoSyncTime').value = settings.time || '21:00';
+    document.getElementById('twcAutoSyncTimeRow').style.display = settings.enabled ? '' : 'none';
+  } catch (err) { /* leave defaults */ }
+  try {
+    const data = await fetchJson('/api/workforce/hr-assistant/together-we-can/history');
+    twcRenderHistory(data.history || []);
+  } catch (err) { /* leave "No syncs yet" placeholder */ }
+}
+
+const twcPreviewBtn = document.getElementById('twcPreviewBtn');
+if (twcPreviewBtn) {
+  twcPreviewBtn.addEventListener('click', async () => {
+    if (twcBusy) return;
+    twcBusy = true;
+    twcSetBtnBusy(twcPreviewBtn, 'Previewing…');
+    try {
+      const data = await fetchJson('/api/workforce/hr-assistant/together-we-can/preview');
+      twcRenderPreview(data);
+    } catch (err) {
+      twcToast('Preview failed: ' + err.message, 'error');
+    } finally {
+      twcRestoreBtn(twcPreviewBtn);
+      twcBusy = false;
+    }
+  });
+}
+
+const twcSyncNowBtn = document.getElementById('twcSyncNowBtn');
+if (twcSyncNowBtn) {
+  twcSyncNowBtn.addEventListener('click', async () => {
+    if (twcBusy) return; // second taps ignored while busy
+    twcBusy = true;
+    twcSetBtnBusy(twcSyncNowBtn, 'Syncing…');
+    try {
+      const res = await fetch('/api/workforce/hr-assistant/together-we-can/sync-now', { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Sync failed.');
+      if (!data.ok) {
+        const failedBatches = (data.batches || []).filter((b) => !b.ok);
+        const detail = failedBatches.length
+          ? failedBatches.map((b) => 'rows ' + (b.startIndex + 1) + '-' + (b.endIndex + 1) + ': HTTP ' + (b.status || 'network error')).join('; ')
+          : (data.responseBodyText || 'unknown error');
+        throw new Error('Sync failed - ' + detail);
+      }
+      twcToast('Synced · ' + data.employeeCount + ' employees (' + twcCountsLine(data.counts) + ') · ' + data.changedSinceLastSync + ' changed since last sync', 'success');
+      const history = await fetchJson('/api/workforce/hr-assistant/together-we-can/history');
+      twcRenderHistory(history.history || []);
+    } catch (err) {
+      twcToast(err.message, 'error');
+    } finally {
+      twcRestoreBtn(twcSyncNowBtn);
+      twcBusy = false;
+    }
+  });
+}
+
+// ---- Test-employee picker (mirrors the ipWhatsapp employee picker above:
+// client-side cached full list, fetched once, filtered on input) ----
+function twcRenderSuggest(matches) {
+  const suggestEl = document.getElementById('twcTestEmployeeSuggest');
+  suggestEl.innerHTML = '';
+  if (!matches.length) {
+    const li = document.createElement('li');
+    li.className = 'empty';
+    li.textContent = 'No matching employee found.';
+    suggestEl.appendChild(li);
+    suggestEl.hidden = false;
+    return;
+  }
+  matches.slice(0, 20).forEach((emp) => {
+    const li = document.createElement('li');
+    const b = document.createElement('b');
+    b.textContent = emp.name;
+    const sub = document.createElement('span');
+    sub.className = 'wf-mail-suggest-sub';
+    sub.textContent = [emp.employeeId, emp.company].filter(Boolean).join(' · ');
+    li.appendChild(b);
+    li.appendChild(sub);
+    li.addEventListener('click', () => {
+      twcSelectedEmployee = emp;
+      document.getElementById('twcTestEmployeeInput').value = emp.name;
+      suggestEl.hidden = true;
+      document.getElementById('twcTestEmployeeErr').classList.add('hidden');
+    });
+    suggestEl.appendChild(li);
+  });
+  suggestEl.hidden = false;
+}
+async function twcLoadEmployees() {
+  if (twcEmployeeCache) return twcEmployeeCache;
+  const data = await fetchJson('/api/workforce/hr-assistant/together-we-can/employees');
+  twcEmployeeCache = Array.isArray(data.results) ? data.results : [];
+  return twcEmployeeCache;
+}
+const twcTestEmployeeInput = document.getElementById('twcTestEmployeeInput');
+if (twcTestEmployeeInput) {
+  twcTestEmployeeInput.addEventListener('input', async () => {
+    twcSelectedEmployee = null; // typing again invalidates a prior pick
+    const q = twcTestEmployeeInput.value.trim().toLowerCase();
+    const suggestEl = document.getElementById('twcTestEmployeeSuggest');
+    if (!q) { suggestEl.hidden = true; return; }
+    const employees = await twcLoadEmployees();
+    const matches = employees.filter((emp) => (emp.name || '').toLowerCase().includes(q) || (emp.employeeId || '').toLowerCase().includes(q));
+    twcRenderSuggest(matches);
+  });
+  twcTestEmployeeInput.addEventListener('focus', () => {
+    if (twcTestEmployeeInput.value.trim()) document.getElementById('twcTestEmployeeSuggest').hidden = false;
+  });
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('#twcTestEmployeeInput') && !e.target.closest('#twcTestEmployeeSuggest')) {
+      document.getElementById('twcTestEmployeeSuggest').hidden = true;
+    }
+  });
+}
+
+const twcTestOneBtn = document.getElementById('twcTestOneBtn');
+if (twcTestOneBtn) {
+  twcTestOneBtn.addEventListener('click', async () => {
+    if (twcBusy) return;
+    const errEl = document.getElementById('twcTestEmployeeErr');
+    if (!twcSelectedEmployee) {
+      errEl.textContent = 'Search and select an employee first.';
+      errEl.classList.remove('hidden');
+      return;
+    }
+    errEl.classList.add('hidden');
+    twcBusy = true;
+    twcSetBtnBusy(twcTestOneBtn, 'Sending…');
+    try {
+      const res = await fetch('/api/workforce/hr-assistant/together-we-can/test-one', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ employeeId: twcSelectedEmployee.employeeId })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Test send failed.');
+      const resultEl = document.getElementById('twcTestOneResult');
+      resultEl.style.display = '';
+      resultEl.innerHTML = '<div><b>Sent:</b> ' + escapeHtml(JSON.stringify(data.row)) + '</div>' +
+        '<div><b>HTTP status:</b> ' + escapeHtml(String(data.httpStatus)) + '</div>' +
+        '<div><b>Response body:</b> <pre style="white-space:pre-wrap;word-break:break-all;margin:4px 0 0">' + escapeHtml(data.responseBodyText || '') + '</pre></div>' +
+        (data.warning ? '<div>⚠ ' + escapeHtml(data.warning) + '</div>' : '');
+      twcToast(data.ok ? 'Test send OK (HTTP ' + data.httpStatus + ')' : 'Test send got HTTP ' + data.httpStatus, data.ok ? 'success' : 'error');
+    } catch (err) {
+      twcToast('Test send failed: ' + err.message, 'error');
+    } finally {
+      twcRestoreBtn(twcTestOneBtn);
+      twcBusy = false;
+    }
+  });
+}
+
+const twcAutoSyncEnabled = document.getElementById('twcAutoSyncEnabled');
+if (twcAutoSyncEnabled) {
+  twcAutoSyncEnabled.addEventListener('change', () => {
+    document.getElementById('twcAutoSyncTimeRow').style.display = twcAutoSyncEnabled.checked ? '' : 'none';
+  });
+}
+const twcSaveSettingsBtn = document.getElementById('twcSaveSettingsBtn');
+if (twcSaveSettingsBtn) {
+  twcSaveSettingsBtn.addEventListener('click', async () => {
+    twcSaveSettingsBtn.disabled = true;
+    try {
+      const res = await fetch('/api/workforce/hr-assistant/together-we-can/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: twcAutoSyncEnabled.checked, time: document.getElementById('twcAutoSyncTime').value })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Could not save.');
+      twcToast('Daily auto-sync settings saved', 'success');
+    } catch (err) {
+      twcToast('Could not save settings: ' + err.message, 'error');
+    } finally {
+      twcSaveSettingsBtn.disabled = false;
+    }
+  });
 }
 
 // ---------- Overview ----------

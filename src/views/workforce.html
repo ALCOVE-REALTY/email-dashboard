@@ -92,6 +92,14 @@
       <button class="wf-drawer-item" data-view="subhSettings" aria-pressed="false">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>SUBH Settings
       </button>
+      <!-- "Together We Can" sync (2026-11, new feature) - a NEW top-level
+           owner-only page, deliberately registered the EXACT same way as
+           "SUBH Settings" right above (a normal ☰-menu dashboard view,
+           #integrationsView, same shell/header/back-behaviour), never
+           nested inside the SUBH Settings page itself. -->
+      <button class="wf-drawer-item" data-view="integrations" aria-pressed="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 20V10"/><path d="M12 20V4"/><path d="M6 20v-6"/></svg>Integrations
+      </button>
       <button class="wf-drawer-item" data-view="profile" aria-pressed="false">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M5 21v-2a7 7 0 0 1 14 0v2"/></svg>Profile
       </button>
@@ -2963,6 +2971,74 @@
             <svg class="wf-hub-tile-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
           </span>
         </button>
+      </div>
+    </section>
+
+    <!-- Integrations (2026-11, new feature) - a NEW top-level owner-only
+         page, registered in the ☰ drawer the EXACT same way as "SUBH
+         Settings" above (same shell: .wf-page-head with back button + h2,
+         same wf-view class) - deliberately NOT nested inside the
+         SUBH Settings page. Holds one card today ("Together We Can"),
+         written so more integration cards can be added later inside the
+         same #integrationsCards container without restructuring. -->
+    <section id="integrationsView" class="wf-view" hidden>
+      <div class="wf-page-head" data-wi-enter="block">
+        <button class="wf-icon-btn" data-back aria-label="Back to Dashboard">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        </button>
+        <h2>Integrations</h2>
+      </div>
+      <div id="integrationsCards" style="margin-top:10px" data-wi-enter="block">
+        <div class="wf-panel" id="twcCard">
+          <div class="wf-panel-head">
+            <h3>Together We Can</h3>
+          </div>
+          <div class="wf-note" style="margin:0 0 14px">Pushes Emp Code, Status, HOD ID and Reporting Doer ID to the Together We Can system (togetherwecan.alcoverealty.in). No AI involved - a plain, deterministic data sync.</div>
+
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+            <button type="button" class="wf-ai-action-btn outline" id="twcPreviewBtn"><span>Preview</span></button>
+            <button type="button" class="wf-ai-action-btn download" id="twcSyncNowBtn"><span>Sync data now</span></button>
+          </div>
+
+          <div id="twcPreviewResult" class="wf-rem-list" style="display:none;margin-bottom:14px;font-size:.82rem;line-height:1.5"></div>
+
+          <p class="wf-note" id="twcLastSyncedLine" style="margin:0">Last synced: never</p>
+
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 0 6px">
+            <span class="wf-ai-sheet-title" style="font-size:14px">Sync history</span>
+          </div>
+          <div class="wf-rem-list" id="twcHistoryList" style="font-size:.82rem"><div class="wf-note">No syncs yet.</div></div>
+
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 0 6px">
+            <span class="wf-ai-sheet-title" style="font-size:14px">Test with one employee</span>
+          </div>
+          <div class="wf-auto-hint" style="padding:0 0 6px">Sends ONLY this one employee's row to the real endpoint, right now.</div>
+          <div style="position:relative">
+            <label class="wf-rem-field">
+              <input type="text" id="twcTestEmployeeInput" autocomplete="off" placeholder="Search by name or Emp Code…" />
+            </label>
+            <ul id="twcTestEmployeeSuggest" class="wf-mail-suggest" hidden></ul>
+          </div>
+          <div class="wf-auto-err hidden" id="twcTestEmployeeErr" style="padding:4px 0 0"></div>
+          <div style="margin-top:10px">
+            <button type="button" class="wf-ai-action-btn outline" id="twcTestOneBtn"><span>Test with one employee</span></button>
+          </div>
+          <div id="twcTestOneResult" class="wf-rem-list" style="display:none;margin-top:10px;font-size:.82rem;line-height:1.5"></div>
+
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 0 6px">
+            <span class="wf-ai-sheet-title" style="font-size:14px">Daily auto-sync</span>
+          </div>
+          <label class="wf-auto-check"><input type="checkbox" id="twcAutoSyncEnabled" /> Automatically sync once a day</label>
+          <div id="twcAutoSyncTimeRow" style="margin-top:8px;display:none">
+            <label class="wf-rem-field">
+              <span style="font-size:12px;opacity:.75">Time (IST)</span>
+              <input type="time" id="twcAutoSyncTime" value="21:00" />
+            </label>
+          </div>
+          <div style="margin-top:10px">
+            <button type="button" class="wf-ai-action-btn outline" id="twcSaveSettingsBtn"><span>Save</span></button>
+          </div>
+        </div>
       </div>
     </section>
 

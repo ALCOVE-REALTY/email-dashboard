@@ -15,6 +15,7 @@ const workflowService = require('./aiAssistant/workflowService');
 const aiUsageLog = require('./aiAssistant/aiUsageLog');
 const fullStoreBackupService = require('./aiAssistant/fullStoreBackupService');
 const settingsHealthCheck = require('./aiAssistant/settingsHealthCheck');
+const togetherWeCanService = require('./aiAssistant/togetherWeCanService');
 
 // Lowered 60 -> 15 after a real live incident: a reply that should have
 // gone out within ~60s took minutes, partly because the base poll
@@ -366,6 +367,18 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
       await settingsHealthCheck.checkSettingsHealthDaily();
     } catch (err) {
       log.error('[whatsapp-assistant] settings health check failed: ' + err.message);
+    }
+    // "Together We Can" optional daily auto-sync (2026-11, new feature) -
+    // its own independent try/catch, same philosophy as every other job
+    // on this tick - a failure here can never affect anything else on
+    // this tick (WhatsApp/SUBH assistant included). Off by default
+    // (togetherWeCanService.checkDailyAutoSync itself no-ops instantly
+    // unless the owner has explicitly enabled it in Integrations).
+    try {
+      const result = await togetherWeCanService.checkDailyAutoSync(new Date());
+      if (!result.skipped) log.log('[together-we-can] daily auto-sync: ' + JSON.stringify(result.result));
+    } catch (err) {
+      log.error('[together-we-can] daily auto-sync check failed: ' + err.message);
     }
   }, AUTOSEND_FLUSH_MS);
 

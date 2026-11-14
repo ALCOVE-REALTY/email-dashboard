@@ -47,11 +47,15 @@ const DETERMINISTIC_SUITES = [
   'check-settings-audit-log.js',
   'check-migration-helper.js',
   'check-settings-health.js',
-  'check-settings-history.js'
+  'check-settings-history.js',
+  'check-together-we-can.js'
 ];
-// Headless Playwright UI check (also deterministic/mocked - no real
-// Claude/Drive calls).
-const UI_CHECK = 'check-subh-panel-ui.js';
+// Headless Playwright UI checks (also deterministic/mocked - no real
+// Claude/Drive calls). check-integrations-ui.js (2026-11, new feature)
+// covers the new "Integrations"/"Together We Can" page - a different
+// surface from check-subh-panel-ui.js's SUBH assistant panel, kept as its
+// own separate script rather than growing that already very large file.
+const UI_CHECKS = ['check-subh-panel-ui.js', 'check-integrations-ui.js'];
 
 // A non-zero exit does not always mean the suite's own checks failed - a
 // known, pre-existing, harmless Node/libuv issue on Windows
@@ -96,7 +100,7 @@ function runOne(scriptName) {
 }
 
 async function main() {
-  const suites = DETERMINISTIC_SUITES.concat([UI_CHECK]);
+  const suites = DETERMINISTIC_SUITES.concat(UI_CHECKS);
   const pending = new Set(suites);
   const start = Date.now();
   process.stdout.write('Running ' + suites.length + ' suites in parallel: ' + suites.join(', ') + '\n');

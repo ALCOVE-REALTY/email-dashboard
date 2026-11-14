@@ -23,7 +23,9 @@
     "check:drive-template-fields": "node scripts/check-drive-template-fields.js",
     "check:drive-template-generation": "node scripts/check-drive-template-generation.js",
     "check:workflow": "node scripts/check-workflow.js",
-    "check:workflow-nlu": "node scripts/check-workflow-nlu.js"
+    "check:workflow-nlu": "node scripts/check-workflow-nlu.js",
+    "check:together-we-can": "node scripts/check-together-we-can.js",
+    "check:integrations-ui": "node scripts/check-integrations-ui.js"
   },
   "dependencies": {
     "@sparticuz/chromium": "^153.0.0",
