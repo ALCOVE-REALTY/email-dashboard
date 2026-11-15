@@ -181,11 +181,18 @@ function check(label, ok, detail) {
     'New Emp. No.', 'Person Accountable', 'STATUS', 'HOD-1 ID', 'REPORTING DOER ID',
     'Date of Joining', 'Designation', 'Department', 'Location', 'Blood Group', 'PAN', 'Aadhar'
   ];
+  // Flaky-test fix (2026-11, direct instruction) - same one-shot-gate
+  // pattern as the sync-now/settings-save mocks above: a fixed
+  // setTimeout(250) here raced a fixed page.waitForTimeout(60) at the
+  // test site under system load (confirmed live - this exact check
+  // failed in a full run-pre-push-checks.js run). Holds the POST until
+  // the test proves the spinner really rendered, no sleep, no race.
+  let releaseFieldMappingSave;
+  const fieldMappingSaveGate = new Promise((resolve) => { releaseFieldMappingSave = resolve; });
   await page.route('**/api/workforce/hr-assistant/together-we-can/field-mapping', async (route) => {
     if (route.request().method() === 'POST') {
       fieldMapping = JSON.parse(route.request().postData());
-      // A deliberate short delay so Save's own spinner state is actually observable.
-      await new Promise((resolve) => setTimeout(resolve, 250));
+      await fieldMappingSaveGate;
       route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(fieldMapping) });
       return;
     }
@@ -487,8 +494,13 @@ function check(label, ok, detail) {
   check('Picking a list item fills the field and closes the dropdown', reportingDoerAfterPick === 'REPORTING DOER ID' && reportingDoerListHiddenAfterPick,
     'value=' + JSON.stringify(reportingDoerAfterPick) + ' hidden=' + reportingDoerListHiddenAfterPick);
   const saveFieldMappingClick = page.click('#twcSaveFieldMappingBtn');
-  await page.waitForTimeout(60);
+  // Deterministic: wait for the real request to land, then for the
+  // spinner to actually be in the DOM - never a fixed sleep (see the gate
+  // on the field-mapping mock above), so this can't race under load.
+  await page.waitForRequest('**/api/workforce/hr-assistant/together-we-can/field-mapping');
+  await page.waitForSelector('#twcSaveFieldMappingBtn .spinner');
   check('Item 7(b): Save field mapping shows a spinner inside the button while in flight', await page.locator('#twcSaveFieldMappingBtn .spinner').count() > 0);
+  releaseFieldMappingSave(); // busy-state is proven - let the held mock response land
   await saveFieldMappingClick;
   await page.waitForTimeout(900);
   const mappingSavedToastText = await page.locator('.wf-pro-toast').last().textContent().catch(() => null);

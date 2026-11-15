@@ -226,6 +226,69 @@ function check(label, ok, detail) {
   await page.waitForTimeout(300);
   const toFieldAfterTimeoutRetry = await page.locator('#mailToChipInput').textContent();
   check('A hung first attempt times out at 8s and the one retry succeeds - never stuck forever', (toFieldAfterTimeoutRetry || '').includes('after-timeout-retry@co.test'));
+  await page.click('#mailComposeCloseBtn');
+  await page.waitForTimeout(150);
+
+  // ---- Scenario E (2026-11, direct instruction) - CROSS-SECTION cache
+  // isolation: opening Send Mail on two different sections back-to-back
+  // must never leak one section's cached recipients into the other (e.g.
+  // the insurer's address must never appear on a different section's
+  // popup). mailDefaultsCache is a Map keyed by the FULL defaultsUrl
+  // string (public/workforce.js:6804), and every Send Mail call site in
+  // the app - HI Pending Exits, HI New Additions, Doer Breakup, Birthday
+  // (public/workforce.js:4185/4320/7024/7036) - passes its own distinct
+  // defaultsUrl (Doer Breakup's even includes a per-doer query param), so
+  // this same keyed-by-URL mechanism is what isolates ALL FOUR real
+  // sections, not just the two exercised live here. Runs last (after
+  // Scenario D's own page.reload()) so it starts from a genuinely clean
+  // cache, rather than reusing Scenario B's already-cached Exits entry,
+  // which would otherwise invalidate Scenario C/D's own "this popup has
+  // never been opened/cached before" preconditions.
+  await page.locator('[data-back]:visible').first().click(); // back to the Health Insurance dashboard from Additions (Scenario D's own page)
+  await page.waitForTimeout(300);
+  exitsScript = [{ ok: true, to: 'first-open@co.test' }];
+  await page.click('[data-kpi="hiExits"]');
+  await page.waitForTimeout(300);
+  await page.click('#sendHiExitsMail');
+  await page.waitForTimeout(300); // let Exits' own fresh fetch resolve and cache
+  const exitsSeedText = await page.locator('#mailToChipInput').textContent();
+  check('Exits popup shows its own recipient on this fresh (post-reload) open', (exitsSeedText || '').includes('first-open@co.test'));
+  await page.click('#mailComposeCloseBtn');
+  await page.waitForTimeout(150);
+
+  await page.locator('[data-back]:visible').first().click();
+  await page.waitForTimeout(300);
+  additionsScript = [{ ok: true, to: 'additions-only@co.test' }];
+  await page.click('[data-kpi="hiAdditions"]');
+  await page.waitForTimeout(300);
+  await page.click('#sendHiAdditionsMail');
+  await page.waitForTimeout(300); // let Additions' own fresh fetch resolve and cache
+  const additionsFirstOpenText = await page.locator('#mailToChipInput').textContent();
+  check('Additions popup shows its OWN recipient on first open, never Exits\' cached one', (additionsFirstOpenText || '').includes('additions-only@co.test') && !(additionsFirstOpenText || '').includes('first-open@co.test'));
+  await page.click('#mailComposeCloseBtn');
+  await page.waitForTimeout(150);
+
+  await page.locator('[data-back]:visible').first().click();
+  await page.waitForTimeout(300);
+  await page.click('[data-kpi="hiExits"]');
+  await page.waitForTimeout(300);
+  await page.click('#sendHiExitsMail');
+  await page.waitForTimeout(50);
+  const exitsReopenText = await page.locator('#mailToChipInput').textContent();
+  check('Reopening Exits right after Additions was opened shows ONLY Exits\' own cached recipient, never Additions\'', (exitsReopenText || '').includes('first-open@co.test') && !(exitsReopenText || '').includes('additions-only@co.test'), 'got: ' + JSON.stringify(exitsReopenText));
+  await page.click('#mailComposeCloseBtn');
+  await page.waitForTimeout(150);
+
+  await page.locator('[data-back]:visible').first().click();
+  await page.waitForTimeout(300);
+  await page.click('[data-kpi="hiAdditions"]');
+  await page.waitForTimeout(300);
+  await page.click('#sendHiAdditionsMail');
+  await page.waitForTimeout(50);
+  const additionsReopenText = await page.locator('#mailToChipInput').textContent();
+  check('Reopening Additions right after Exits was reopened shows ONLY Additions\' own cached recipient, never Exits\'', (additionsReopenText || '').includes('additions-only@co.test') && !(additionsReopenText || '').includes('first-open@co.test'));
+  await page.click('#mailComposeCloseBtn');
+  await page.waitForTimeout(150);
 
   const errorsAfter = consoleErrors.length + pageErrors.length;
   check('No JS error was thrown through any mail-compose scenario', errorsAfter === errorsBefore, 'new errors: ' + JSON.stringify(consoleErrors.concat(pageErrors)));
