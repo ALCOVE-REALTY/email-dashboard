@@ -3282,35 +3282,82 @@
       setCountBadge(deptAliasesBadge, (r.items || []).length);
     } catch (err) { /* best effort */ }
   }
-  // Task 2 (2026-10-31) - warms both caches the moment SUBH Settings opens
-  // (called from workforce.js - see its own 'subhSettings' view-enter
-  // case), so by the time the owner actually taps into Site names or
-  // Department names, loadSiteAliasesPage/loadDeptAliasesPage render
-  // instantly from cache instead of waiting on a fresh fetch. Runs in
-  // parallel, best-effort - a failure here just means the pages fall back
-  // to their own normal fetch-on-open behavior, same as a cold cache.
-  async function prefetchSubhSettingsAll() {
-    try {
-      const [aliasResp, newSitesResp] = await Promise.all([
-        fetch('/api/workforce/hr-assistant/site-aliases').then((res) => res.json()),
-        fetch('/api/workforce/hr-assistant/new-sites').then((res) => res.json())
-      ]);
-      pageDataCache.siteAliases = { aliases: aliasResp.items || [], newSites: newSitesResp.items || [] };
-    } catch (err) { /* best effort - a real page open will just fetch fresh */ }
-    try {
-      const [deptAliasResp, newDeptsResp] = await Promise.all([
-        fetch('/api/workforce/hr-assistant/dept-aliases').then((res) => res.json()),
-        fetch('/api/workforce/hr-assistant/new-depts').then((res) => res.json())
-      ]);
-      pageDataCache.deptAliases = { aliases: deptAliasResp.items || [], newDepts: newDeptsResp.items || [] };
-    } catch (err) { /* best effort - a real page open will just fetch fresh */ }
-    try {
-      const companyResp = await fetch('/api/workforce/hr-assistant/company-details').then((res) => res.json());
-      pageDataCache.companyDetails = { items: companyResp.items || [], logo: companyResp.logo || null };
-    } catch (err) { /* best effort - a real page open will just fetch fresh */ }
-    try {
-      pageDataCache.letterSettings = await fetch('/api/workforce/hr-assistant/letter-settings').then((res) => res.json());
-    } catch (err) { /* best effort - a real page open will just fetch fresh */ }
+  // Task 2 (2026-10-31) - warms every SUBH Settings tile's own cache the
+  // moment SUBH Settings opens (called from workforce.js - see its own
+  // 'subhSettings' view-enter case), so by the time the owner actually
+  // taps into any one of them, that page renders instantly from cache
+  // instead of waiting on a fresh fetch. Best-effort, one isolated
+  // try/catch per tile - a single slow/failing endpoint only ever leaves
+  // ITS OWN tile to fall back to a normal fetch-on-open, never blocks or
+  // breaks any other tile's own prefetch.
+  //
+  // ISSUE 4 (2026-11), live bug fix, two real root causes found here:
+  // 1. Only 4 of this page's 7 tiles were ever warmed here (Site names/
+  //    Department names/Company details/Letter settings) - AI usage/Data
+  //    & backups/Settings history each already had the right "render
+  //    from cache, refetch in background" pattern in their own
+  //    load*Page() (same as the other 4), but their caches were simply
+  //    never warmed here, so the FIRST tap into any of them after
+  //    opening SUBH Settings always paid the full live round trip
+  //    on-screen. All 7 are now warmed, consistently.
+  // 2. Despite this function's own comment already claiming "Runs in
+  //    parallel", the 4 original fetch groups were actually chained
+  //    SEQUENTIALLY (each `await`ed before the next one even started) -
+  //    on a slow connection this could add up to several real round
+  //    trips' worth of time before every tile was warm. Every group
+  //    below now actually runs concurrently (each its own self-contained
+  //    async function, invoked immediately and raced together in one
+  //    Promise.all) - total time is now roughly the SLOWEST single
+  //    endpoint, not the sum of all of them.
+  function prefetchSubhSettingsAll() {
+    return Promise.all([
+      (async () => {
+        try {
+          const [aliasResp, newSitesResp] = await Promise.all([
+            fetch('/api/workforce/hr-assistant/site-aliases').then((res) => res.json()),
+            fetch('/api/workforce/hr-assistant/new-sites').then((res) => res.json())
+          ]);
+          pageDataCache.siteAliases = { aliases: aliasResp.items || [], newSites: newSitesResp.items || [] };
+        } catch (err) { /* best effort - a real page open will just fetch fresh */ }
+      })(),
+      (async () => {
+        try {
+          const [deptAliasResp, newDeptsResp] = await Promise.all([
+            fetch('/api/workforce/hr-assistant/dept-aliases').then((res) => res.json()),
+            fetch('/api/workforce/hr-assistant/new-depts').then((res) => res.json())
+          ]);
+          pageDataCache.deptAliases = { aliases: deptAliasResp.items || [], newDepts: newDeptsResp.items || [] };
+        } catch (err) { /* best effort - a real page open will just fetch fresh */ }
+      })(),
+      (async () => {
+        try {
+          const companyResp = await fetch('/api/workforce/hr-assistant/company-details').then((res) => res.json());
+          pageDataCache.companyDetails = { items: companyResp.items || [], logo: companyResp.logo || null };
+        } catch (err) { /* best effort - a real page open will just fetch fresh */ }
+      })(),
+      (async () => {
+        try {
+          pageDataCache.letterSettings = await fetch('/api/workforce/hr-assistant/letter-settings').then((res) => res.json());
+        } catch (err) { /* best effort - a real page open will just fetch fresh */ }
+      })(),
+      (async () => {
+        try {
+          aiUsageSummaryCache = await fetch('/api/workforce/hr-assistant/ai-usage').then((res) => res.json());
+        } catch (err) { /* best effort - a real page open will just fetch fresh */ }
+      })(),
+      (async () => {
+        try {
+          const r = await fetch('/api/workforce/hr-assistant/backups').then((res) => res.json());
+          pageDataCache.dataBackups = { recent: r.recent || [], dailyState: r.dailyState || null };
+        } catch (err) { /* best effort - a real page open will just fetch fresh */ }
+      })(),
+      (async () => {
+        try {
+          const r = await fetch('/api/workforce/hr-assistant/settings-history').then((res) => res.json());
+          pageDataCache.settingsHistory = { items: r.items || [] };
+        } catch (err) { /* best effort - a real page open will just fetch fresh */ }
+      })()
+    ]);
   }
   window.__hrAssistantPrefetchSubhSettings = prefetchSubhSettingsAll;
   function showDeptAliases() {

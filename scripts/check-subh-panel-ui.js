@@ -1154,6 +1154,48 @@ function check(label, ok, detail) {
   await page.click('#hrSettingsHistoryRestoreCloseBtn');
   await page.waitForTimeout(350);
 
+  // ISSUE 4 (2026-11), live bug fix - prefetchSubhSettingsAll() (fired the
+  // moment the "SUBH Settings" dashboard view opens) used to warm only 4
+  // of its 7 tiles' caches (Site names/Department names/Company details/
+  // Letter settings) - AI usage/Data & backups/Settings history were
+  // missing, so the FIRST tap into any of them always showed the
+  // skeleton-then-fetch path even though their own load*Page() already
+  // had the right "render from cache" logic. Proven here the way the
+  // real app actually triggers it: call the SAME prefetch function the
+  // dashboard calls, await it, then open each of the 3 previously-
+  // missing pages and assert the skeleton is NEVER shown even for an
+  // instant - real content renders synchronously from the now-warm
+  // cache, exactly like the other 4 tiles already did.
+  await page.evaluate(() => { if (window.__hrAssistantClosePanel) window.__hrAssistantClosePanel(); });
+  await page.waitForTimeout(100);
+  const prefetchErrBefore = consoleErrors.length + pageErrors.length;
+  await page.evaluate(() => window.__hrAssistantPrefetchSubhSettings());
+  const aiUsageAfterPrefetch = await page.evaluate(() => {
+    window.__hrAssistantOpenAiUsage();
+    const el = document.getElementById('hrAiUsageFeatureList');
+    return { hasSkeleton: Boolean(el && el.querySelector('.wf-skeleton-list')), text: el ? el.textContent : null };
+  });
+  check('ISSUE 4: AI usage renders instantly from the hub-level prefetch - no skeleton ever shown, not even a flash', !aiUsageAfterPrefetch.hasSkeleton, 'got: ' + JSON.stringify(aiUsageAfterPrefetch));
+  await page.evaluate(() => { if (window.__hrAssistantClosePanel) window.__hrAssistantClosePanel(); });
+  const backupsAfterPrefetch = await page.evaluate(() => {
+    window.__hrAssistantOpenDataBackups();
+    const el = document.getElementById('hrBackupRecentList');
+    return { hasSkeleton: Boolean(el && el.querySelector('.wf-skeleton-list')), text: el ? el.textContent : null };
+  });
+  check('ISSUE 4: Data & backups renders instantly from the hub-level prefetch - no skeleton ever shown', !backupsAfterPrefetch.hasSkeleton, 'got: ' + JSON.stringify(backupsAfterPrefetch));
+  await page.evaluate(() => { if (window.__hrAssistantClosePanel) window.__hrAssistantClosePanel(); });
+  const historyAfterPrefetch = await page.evaluate(() => {
+    window.__hrAssistantOpenSettingsHistory();
+    const el = document.getElementById('hrSettingsHistoryList');
+    return { hasSkeleton: Boolean(el && el.querySelector('.wf-skeleton-list')), text: el ? el.textContent : null };
+  });
+  check('ISSUE 4: Settings history renders instantly from the hub-level prefetch - no skeleton ever shown', !historyAfterPrefetch.hasSkeleton, 'got: ' + JSON.stringify(historyAfterPrefetch));
+  await page.evaluate(() => { if (window.__hrAssistantClosePanel) window.__hrAssistantClosePanel(); });
+  await page.waitForTimeout(150);
+  const prefetchErrAfter = consoleErrors.length + pageErrors.length;
+  check('ISSUE 4: no JS error was thrown prefetching or opening any of the 3 previously-cold pages', prefetchErrAfter === prefetchErrBefore,
+    'new errors: ' + JSON.stringify(consoleErrors.slice(prefetchErrBefore).concat(pageErrors.slice(prefetchErrBefore))));
+
   // Informational only, never a failure here: workforce.js's own main
   // dashboard (unrelated to the SUBH panel this check targets) fires its
   // own staggered prefetch of several analytics endpoints on load, each
