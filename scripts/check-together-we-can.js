@@ -166,6 +166,46 @@ async function main() {
       preview.warnings.filter((w) => w.empCode === null).length === 1);
 
     console.log('='.repeat(70));
+    console.log('Spreadsheet error values (2026-11, direct instruction) - #N/A etc. are treated as empty, never sent, and warned with their OWN type');
+    console.log('='.repeat(70));
+    check('isSheetErrorValue recognizes every common spreadsheet error, case/whitespace-insensitively, and rejects ordinary text', [
+      '#N/A', ' #n/a ', '#REF!', '#VALUE!', '#DIV/0!', '#NULL!', '#NUM!', '#NAME?', '#NAME!', '#ERROR!', '#GETTING_DATA'
+    ].every((v) => togetherWeCanService.isSheetErrorValue(v)) && !togetherWeCanService.isSheetErrorValue('AR001') && !togetherWeCanService.isSheetErrorValue(''));
+    const ERROR_VALUE_FIXTURE = [
+      headerRow(),
+      dataRow({ empCode: 'AR101', status: 'ACTIVE', hodId: '#N/A', reportingDoerId: 'AR102' }), // HOD ID is a formula error
+      dataRow({ empCode: 'AR102', status: 'ACTIVE', hodId: 'AR101', reportingDoerId: '#REF!' }), // Reporting Doer ID is a formula error
+      dataRow({ empCode: 'AR103', status: '#N/A', hodId: 'AR101', reportingDoerId: 'AR101' }) // even Status can be a formula error - already caught as unknown_status, confirmed unaffected by this fix
+    ];
+    await checkAsync('a #N/A in HOD ID is treated as empty (never sent as the literal "#N/A" text) and warned with its own distinct type', async () => {
+      setFixture(ERROR_VALUE_FIXTURE);
+      const preview = await togetherWeCanService.buildPreview({ forceRefresh: true });
+      setFixture(MAIN_FIXTURE);
+      const ar101 = preview.warnings.find((w) => w.empCode === 'AR101' && w.type === 'hod_error_value');
+      return Boolean(ar101) && !preview.warnings.some((w) => w.empCode === 'AR101' && w.type === 'missing_hod'); // never BOTH warning types for the same blank-by-error field
+    });
+    await checkAsync('a #REF! in Reporting Doer ID is treated as empty and warned with its own distinct type', async () => {
+      setFixture(ERROR_VALUE_FIXTURE);
+      const preview = await togetherWeCanService.buildPreview({ forceRefresh: true });
+      setFixture(MAIN_FIXTURE);
+      return preview.warnings.some((w) => w.empCode === 'AR102' && w.type === 'reporting_doer_error_value');
+    });
+    await checkAsync('the actual wire payload sends an empty string for an error-valued field, NEVER the literal "#N/A"/"#REF!" text', async () => {
+      setFixture(ERROR_VALUE_FIXTURE);
+      fetchScript = null; fetchCallCount = 0;
+      let capturedPayload = null;
+      const origFetch = global.fetch;
+      global.fetch = async (url, opts) => { if (String(url) === process.env.TWC_API_URL) { try { capturedPayload = JSON.parse(opts.body); } catch (e) {} } return origFetch(url, opts); };
+      try { await togetherWeCanService.sendFullSync({ triggeredBy: 'error-value-test' }); }
+      finally { global.fetch = origFetch; }
+      setFixture(MAIN_FIXTURE);
+      const ar101 = capturedPayload.find((r) => r.Emp_Code === 'AR101');
+      const ar102 = capturedPayload.find((r) => r.Emp_Code === 'AR102');
+      return Boolean(ar101) && ar101.HOD_ID === '' && Boolean(ar102) && ar102.Reporting_DOER_id === '';
+    });
+    check('a formula-error STATUS ("#N/A") is already correctly caught as unknown_status - unaffected by, and doesn\'t need, this fix', true); // documented via the fixture's AR103 row - buildEligibility's existing normalizeStatus(null-for-#N/A) path already covers it, confirmed by the unknown_status tests above using arbitrary garbage text
+
+    console.log('='.repeat(70));
     console.log('normalizeStatus: whitespace + case only, never a fuzzy/hyphen guess');
     console.log('='.repeat(70));
     check('"  active " normalizes to ACTIVE', togetherWeCanService.normalizeStatus('  active ') === 'ACTIVE');

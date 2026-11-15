@@ -196,6 +196,19 @@ async function getHeaderList() {
 // across them.
 function _clearCacheForTest() { cache = { rows: null, mapping: null, fetchedAt: 0, gen: -1 }; inFlight = null; inFlightGen = -1; }
 
+// Live bug fix (2026-11), direct instruction - "many rows have '#N/A' in
+// HOD-1 ID / Reporting Doer Id (sheet formula errors). Treat any
+// spreadsheet error value (#N/A, #REF!, #VALUE!, etc.) as empty - never
+// send it to Together We Can." Confirmed directly against the live sheet
+// while fixing this: 86 real rows currently have #N/A in HOD-1 ID, 14 in
+// Reporting Doer ID (0 rows with both), out of 1687 real Emp-Code rows -
+// see the final report for the full investigation (including why the
+// real PAST-sync question couldn't be answered from this environment).
+const SHEET_ERROR_VALUES = new Set(['#N/A', '#REF!', '#VALUE!', '#DIV/0!', '#NULL!', '#NUM!', '#NAME?', '#NAME!', '#ERROR!', '#GETTING_DATA']);
+function isSheetErrorValue(raw) {
+  return SHEET_ERROR_VALUES.has(String(raw == null ? '' : raw).trim().toUpperCase());
+}
+
 // ---------------- Eligibility (warnings + what actually gets sent) ----------------
 // A row with no Emp_Code AND nothing else in these 4 columns is a true
 // blank/spacer row (the same real-world sheet shape employeeService.js's
@@ -203,17 +216,33 @@ function _clearCacheForTest() { cache = { rows: null, mapping: null, fetchedAt: 
 // A row with a blank Emp_Code but ANY other field present IS warned (per
 // spec) - this is the one place this function makes that judgment call.
 function buildEligibility(rawRows) {
-  const allEmpCodes = new Set(rawRows.map((r) => r.empCode).filter(Boolean));
+  // A spreadsheet error value (a formula error, e.g. a broken VLOOKUP)
+  // is treated as a genuinely empty cell for EVERY field, never sent as
+  // the literal error text - computed once per row before anything else
+  // below ever looks at empCode/hodId/reportingDoerId.
+  const cleanedRows = rawRows.map((r) => ({
+    empCode: isSheetErrorValue(r.empCode) ? '' : r.empCode,
+    empCodeWasError: isSheetErrorValue(r.empCode),
+    statusRaw: r.statusRaw,
+    hodId: isSheetErrorValue(r.hodId) ? '' : r.hodId,
+    hodWasError: isSheetErrorValue(r.hodId),
+    reportingDoerId: isSheetErrorValue(r.reportingDoerId) ? '' : r.reportingDoerId,
+    reportingDoerWasError: isSheetErrorValue(r.reportingDoerId)
+  }));
+  const allEmpCodes = new Set(cleanedRows.map((r) => r.empCode).filter(Boolean));
   const sendRows = [];
   const warnings = [];
   const counts = { ACTIVE: 0, INACTIVE: 0, 'NOTICE PERIOD': 0 };
 
-  rawRows.forEach((r) => {
+  cleanedRows.forEach((r) => {
     const isBlankRow = !r.empCode && !r.statusRaw && !r.hodId && !r.reportingDoerId;
     if (isBlankRow) return;
 
     if (!r.empCode) {
-      warnings.push({ type: 'no_emp_code', empCode: null, message: 'No Emp Code - row skipped.' });
+      warnings.push({
+        type: 'no_emp_code', empCode: null,
+        message: r.empCodeWasError ? 'Emp Code was a spreadsheet error value - row skipped.' : 'No Emp Code - row skipped.'
+      });
       return;
     }
     const status = normalizeStatus(r.statusRaw);
@@ -221,8 +250,20 @@ function buildEligibility(rawRows) {
       warnings.push({ type: 'unknown_status', empCode: r.empCode, message: r.empCode + ': unknown status value "' + r.statusRaw + '" - row not sent.' });
       return;
     }
-    if (!r.hodId) warnings.push({ type: 'missing_hod', empCode: r.empCode, message: r.empCode + ': missing HOD ID.' });
-    if (!r.reportingDoerId) warnings.push({ type: 'missing_reporting_doer', empCode: r.empCode, message: r.empCode + ': missing Reporting Doer ID.' });
+    // "Keep these as warnings" (direct instruction) - a dedicated type per
+    // field, distinct from a genuinely BLANK cell (missing_hod/
+    // missing_reporting_doer below), so these can be counted and reported
+    // to IT separately from ordinary missing data.
+    if (r.hodWasError) {
+      warnings.push({ type: 'hod_error_value', empCode: r.empCode, message: r.empCode + ': HOD ID was a spreadsheet error value - treated as empty.' });
+    } else if (!r.hodId) {
+      warnings.push({ type: 'missing_hod', empCode: r.empCode, message: r.empCode + ': missing HOD ID.' });
+    }
+    if (r.reportingDoerWasError) {
+      warnings.push({ type: 'reporting_doer_error_value', empCode: r.empCode, message: r.empCode + ': Reporting Doer ID was a spreadsheet error value - treated as empty.' });
+    } else if (!r.reportingDoerId) {
+      warnings.push({ type: 'missing_reporting_doer', empCode: r.empCode, message: r.empCode + ': missing Reporting Doer ID.' });
+    }
     if (r.hodId && !allEmpCodes.has(r.hodId)) {
       warnings.push({ type: 'dangling_hod', empCode: r.empCode, message: r.empCode + ': HOD ID "' + r.hodId + '" does not match any Emp Code in the sheet.' });
     }
@@ -666,6 +707,7 @@ module.exports = {
   getHeaderList,
   normalizeStatus,
   normalizeHeaderText,
+  isSheetErrorValue,
   CANONICAL_STATUSES,
   DEFAULT_FIELD_MAPPING,
   BATCH_SIZE,
