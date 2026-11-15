@@ -3310,7 +3310,10 @@
             <li role="option" data-value="excel" aria-selected="false">Excel (.xlsx)</li>
           </ul>
         </div>
-        <p class="wf-mail-compose-error" id="mailComposeError" hidden></p>
+        <div class="wf-mail-compose-error" id="mailComposeError" hidden>
+          <span id="mailComposeErrorText"></span>
+          <button type="button" class="wf-mail-compose-error-retry" id="mailComposeErrorRetryBtn" hidden>Retry</button>
+        </div>
       </div>
       <div class="wf-mail-compose-foot">
         <button class="wf-clear-btn" id="mailComposeCancelBtn" type="button">Cancel</button>

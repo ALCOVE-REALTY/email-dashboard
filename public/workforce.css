@@ -2937,8 +2937,25 @@ body:not(.printing-org-chart) .org-chart-cards-row + .org-chart-branch-connector
   margin: 10px 0 0;
   font-size: 0.8rem;
   color: var(--important);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 .wf-mail-compose-error[hidden] { display: none; }
+.wf-mail-compose-error-retry {
+  border: 1px solid var(--important);
+  color: var(--important);
+  background: none;
+  border-radius: 6px;
+  padding: 2px 10px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.wf-mail-compose-error-retry[hidden] { display: none; }
+.wf-mail-compose-error-retry:hover { background: var(--important); color: #fff; }
 
 .wf-mail-compose-foot {
   display: flex;

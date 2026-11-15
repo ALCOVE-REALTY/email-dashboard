@@ -6623,18 +6623,85 @@ const mailAttachmentFormat = (() => {
   });
   return { getValue: () => value, setValue, close };
 })();
-let mailComposeContext = null; // { sendUrl, sendBody, defaultSubject, defaultText, subjectOverride, textOverride } for whichever Send Mail button opened this
+let mailComposeContext = null; // { sendUrl, sendBody, defaultsUrl, defaultSubject, defaultText, subjectOverride, textOverride } for whichever Send Mail button opened this
 
-function showMailComposeError(message) {
+// Root cause (2026-11 investigation) of "opening it sometimes takes long and
+// then shows 'Could not load default recipients: Failed to fetch'":
+// openMailCompose used to `await fetchJson(defaultsUrl)` directly, with (a) no
+// timeout - a slow/hanging network path (or a cold Sheets read behind
+// /mail-defaults) just sat there with the popup open and nothing usable yet,
+// (b) no retry - one transient blip and the popup gave up for good, and (c)
+// no cache - even once a fetch HAD succeeded before, the very next open of
+// the SAME popup paid for a brand-new network round trip from scratch every
+// time. Fix below: a small per-URL cache (shared by all 4 openMailCompose
+// call sites - Doer Breakup, Birthday, HI Exits, HI Additions - since they
+// each use their own defaultsUrl as the cache key) + an 8s timeout + exactly
+// one retry, wired into openMailCompose so the popup always opens instantly.
+const MAIL_DEFAULTS_TIMEOUT_MS = 8000;
+const mailDefaultsCache = new Map(); // defaultsUrl -> last successfully-fetched defaults object
+
+async function fetchJsonWithTimeout(url, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { signal: controller.signal });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error || 'Failed to load');
+    }
+    return await res.json();
+  } catch (err) {
+    if (err && err.name === 'AbortError') throw new Error('Timed out (' + (timeoutMs / 1000) + 's)');
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Timeout + exactly one retry, per spec - never more than 2 real attempts
+// total for one open/refresh.
+async function fetchMailDefaultsWithRetry(url) {
+  try {
+    return await fetchJsonWithTimeout(url, MAIL_DEFAULTS_TIMEOUT_MS);
+  } catch (firstErr) {
+    return await fetchJsonWithTimeout(url, MAIL_DEFAULTS_TIMEOUT_MS);
+  }
+}
+
+function showMailComposeError(message, { onRetry } = {}) {
   const errEl = document.getElementById('mailComposeError');
-  errEl.textContent = message;
+  document.getElementById('mailComposeErrorText').textContent = message;
+  const retryBtn = document.getElementById('mailComposeErrorRetryBtn');
+  retryBtn.hidden = !onRetry;
+  retryBtn.onclick = onRetry || null;
   errEl.hidden = false;
+}
+
+function hideMailComposeError() {
+  const errEl = document.getElementById('mailComposeError');
+  errEl.hidden = true;
+  document.getElementById('mailComposeErrorText').textContent = '';
+  document.getElementById('mailComposeErrorRetryBtn').hidden = true;
 }
 
 function closeMailCompose() {
   document.getElementById('mailComposeOverlay').hidden = true;
   mailComposeContext = null;
   mailAttachmentFormat.close();
+}
+
+function applyMailDefaultsToForm(defaults) {
+  mailToField.setChips((defaults.to || '').split(',').map((s) => s.trim()).filter(Boolean));
+  mailCcField.setChips((defaults.cc || '').split(',').map((s) => s.trim()).filter(Boolean));
+  mailComposeContext.defaultSubject = defaults.subject || '';
+  mailComposeContext.defaultText = defaults.text || '';
+  const formatField = document.getElementById('mailAttachmentFormatField');
+  if (defaults.hasAttachment) {
+    formatField.hidden = false;
+    mailAttachmentFormat.setValue(defaults.defaultFormat === 'excel' ? 'excel' : 'pdf');
+  } else {
+    formatField.hidden = true;
+  }
 }
 
 // Opens the shared popup pre-filled with this button's own default
@@ -6645,11 +6712,18 @@ function closeMailCompose() {
 // response - the format dropdown and the subject/body override both reset
 // to this section's own defaults on every fresh open, never carrying over
 // from whatever mail was composed last.
+//
+// Fix (2026-11, this task): the popup now opens INSTANTLY. If a previous
+// open of this same defaultsUrl ever succeeded, that cached copy is applied
+// to the form right away (synchronously, before any network call), and a
+// fresh copy is then fetched in the background to silently refresh it. The
+// To/Cc boxes are always left usable immediately - either with cached data
+// pre-filled, or blank and ready for the user to type into - never blocked
+// on the network, matching the pre-existing (and preserved) non-blocking
+// behavior of Send itself.
 async function openMailCompose({ defaultsUrl, sendUrl, sendBody }) {
-  mailComposeContext = { sendUrl, sendBody, defaultSubject: '', defaultText: '', subjectOverride: null, textOverride: null };
-  const errEl = document.getElementById('mailComposeError');
-  errEl.hidden = true;
-  errEl.textContent = '';
+  mailComposeContext = { sendUrl, sendBody, defaultsUrl, defaultSubject: '', defaultText: '', subjectOverride: null, textOverride: null };
+  hideMailComposeError();
   mailToField.reset();
   mailCcField.reset();
   const sendBtn = document.getElementById('mailComposeSendBtn');
@@ -6660,18 +6734,31 @@ async function openMailCompose({ defaultsUrl, sendUrl, sendBody }) {
   mailAttachmentFormat.setValue('pdf');
   document.getElementById('mailComposeOverlay').hidden = false;
 
+  const cached = mailDefaultsCache.get(defaultsUrl);
+  if (cached) applyMailDefaultsToForm(cached);
+
+  await refreshMailDefaults(defaultsUrl, { hadCache: Boolean(cached) });
+}
+
+// Fetch (timeout + 1 retry) + cache-write + apply-if-still-relevant, shared
+// by openMailCompose's own background refresh and the error banner's Retry
+// button. Guards every apply against the popup having moved on (closed, or
+// reopened for a different section) while this fetch was in flight.
+async function refreshMailDefaults(defaultsUrl, { hadCache }) {
   try {
-    const defaults = await fetchJson(defaultsUrl);
-    mailToField.setChips((defaults.to || '').split(',').map((s) => s.trim()).filter(Boolean));
-    mailCcField.setChips((defaults.cc || '').split(',').map((s) => s.trim()).filter(Boolean));
-    mailComposeContext.defaultSubject = defaults.subject || '';
-    mailComposeContext.defaultText = defaults.text || '';
-    if (defaults.hasAttachment) {
-      formatField.hidden = false;
-      mailAttachmentFormat.setValue(defaults.defaultFormat === 'excel' ? 'excel' : 'pdf');
+    const defaults = await fetchMailDefaultsWithRetry(defaultsUrl);
+    mailDefaultsCache.set(defaultsUrl, defaults);
+    if (mailComposeContext && mailComposeContext.defaultsUrl === defaultsUrl) {
+      applyMailDefaultsToForm(defaults);
+      hideMailComposeError();
     }
   } catch (err) {
-    showMailComposeError('Could not load default recipients: ' + err.message);
+    if (!(mailComposeContext && mailComposeContext.defaultsUrl === defaultsUrl)) return;
+    if (hadCache) return; // already showing usable (if slightly stale) cached recipients - fail the background refresh silently, To/Cc stay exactly as they are
+    showMailComposeError(
+      'Could not load default recipients: ' + err.message + '. You can still type recipients below, or',
+      { onRetry: () => { refreshMailDefaults(defaultsUrl, { hadCache: false }); } }
+    );
   }
 }
 

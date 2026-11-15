@@ -55,7 +55,7 @@ const DETERMINISTIC_SUITES = [
 // covers the new "Integrations"/"Together We Can" page - a different
 // surface from check-subh-panel-ui.js's SUBH assistant panel, kept as its
 // own separate script rather than growing that already very large file.
-const UI_CHECKS = ['check-subh-panel-ui.js', 'check-integrations-ui.js'];
+const UI_CHECKS = ['check-subh-panel-ui.js', 'check-integrations-ui.js', 'check-mail-compose-ui.js'];
 
 // A non-zero exit does not always mean the suite's own checks failed - a
 // known, pre-existing, harmless Node/libuv issue on Windows
