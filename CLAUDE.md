@@ -39,18 +39,20 @@ WhatsApp-specific detail under this same umbrella):
 7. **Cost (2026-11, direct instruction)** - tests stay free/near-free by default, with
    zero quality tradeoff in live SUBH behavior (no model downgrade, no removed
    escalation, no budget cap that disables AI):
-   - The pre-push hook and every deterministic `check:*` suite make zero real API
-     calls - `scripts/run-pre-push-checks.js` sets `SKIP_REAL_MODEL=1` for every
-     suite it runs; `check-whatsapp-engine.js`/`check-reminders.js` skip (or already
-     fully mock) any test that would otherwise reach a real model call, printing
-     "Skipped N real-model tests" rather than failing. See "Test tiers" below for the
-     full mechanism.
+   - Every `check-*.js` script skips real-model calls UNLESS `RUN_REAL_MODEL=1` is
+     explicitly set (`scripts/testBootstrap.js`'s own central gate) - a bare `node
+     scripts/<any>.js` must never bill by accident, whatever keys are configured.
+     `run-pre-push-checks.js` explicitly clears `RUN_REAL_MODEL` for every suite it
+     runs, so the gate is always zero-cost. See "Test tiers" below for the full
+     mechanism and its hard rules.
    - `check-whatsapp-scenarios.js` is never automatic - run it only when Subhodeep
-     asks, or the one group a change's understanding/routing actually affects, at 1x;
-     3x only for scenarios being newly locked. Use `SCENARIO_REPLAY_CACHE=1` to avoid
-     re-paying for unchanged steps. Print the estimated cost before running and the
-     actual cost after (the suite's own cost-report line) - abort and ask Subhodeep
-     first if a run would exceed $1.
+     asks, or the one group a change's understanding/routing/classification/
+     templates/language actually affects, at 1x; 3x only for scenarios being newly
+     locked. Correctness first - never skip a genuinely needed real-model check to
+     save cost. Use `SCENARIO_REPLAY_CACHE=1` to avoid re-paying for unchanged steps.
+     `RUN_REAL_MODEL=1` prints the estimated cost before running and refuses to
+     proceed past $1 (`RUN_REAL_MODEL_BUDGET_USD=<amount>` to approve more) - never a
+     full-suite run without Subhodeep's OK, never a repeated run "just to see".
    - Every final report of a batch of work ends with a line: "API spend for this
      batch: $X (tests)".
 8. **Safety rules alongside the cheaper tests (2026-11, direct instruction)** - the
@@ -412,38 +414,70 @@ Per direct instruction (2026-10-27, revised 2026-11) - match the test tier to th
 size of the change, never run the full, expensive suite by default:
 
 1. **Per-change (the default, every edit)**: `node scripts/check-whatsapp-engine.js`
-   only - fully deterministic, ZERO real API calls (see "Skip mechanism" below), free
-   to run as often as needed.
-2. **A change that touches the HR-note/confirmation flow, classification, or
-   wording shown to a real sender/manager**: also run the scenarios that flow
-   actually affects, ONCE - `SCENARIO_RUNS=1 SCENARIO_FILTER="<name or keyword>"
-   node scripts/check-whatsapp-scenarios.js`. Never the full scenario set, never 3x,
-   for an ordinary change. Print the estimated cost before running and the actual
-   cost after; abort and ask Subhodeep first if a run would exceed $1.
+   only - fully deterministic, ZERO real API calls (see "Cost gate" below, hard rule
+   1), free to run as often as needed.
+2. **A change that touches AI understanding, routing, classification, templates, or
+   language** - correctness first, don't skip a needed check to save cost - run the
+   scenarios that change actually affects, ONCE (3x for a NEWLY locked scenario) -
+   `RUN_REAL_MODEL=1 SCENARIO_RUNS=1 SCENARIO_FILTER="<name or keyword>" node
+   scripts/check-whatsapp-scenarios.js` (`ANTHROPIC_API_KEY_TEST` must be set - see
+   hard rule 3). Never the full scenario set, never 3x, for an ordinary change.
 3. **"Release check" - only when Subhodeep asks for it**, never automatic and never
    part of the mandatory gate (see IMPACT CHECK rule 6/7 above): the full scenario
-   suite at its normal 3x reliability gate - `node scripts/check-whatsapp-scenarios.js`
-   (no `SCENARIO_RUNS`/`SCENARIO_FILTER` overrides). This is the only tier that
-   should ever cost the full 3x-per-scenario API spend, and only on request.
+   suite at its normal 3x reliability gate - `RUN_REAL_MODEL=1
+   RUN_REAL_MODEL_BUDGET_USD=<amount> node scripts/check-whatsapp-scenarios.js` (no
+   `SCENARIO_RUNS`/`SCENARIO_FILTER` overrides). This is the only tier that should
+   ever cost the full 3x-per-scenario API spend, and only on request - what's not
+   allowed: a full-suite run without Subhodeep's OK, a repeated run "just to see", or
+   a bare run that bills by accident (see hard rule 1).
 
-**Skip mechanism** (2026-11, direct instruction - "the pre-push hook must make zero
-real API calls") - `check-whatsapp-engine.js` installs one suite-level fallback fetch,
-active whenever no `ANTHROPIC_API_KEY` is configured or `SKIP_REAL_MODEL=1` is set
-(`run-pre-push-checks.js` sets this for every suite it runs): any call that reaches
-it throws a distinct `SKIPPED_REAL_MODEL_CALL`, caught and counted/printed as
-`[skip]`, never `[FAIL]` - prints "Skipped N real-model tests (run with
-RUN_REAL_MODEL=1 and a real ANTHROPIC_API_KEY)" at the end. A test with its own
-per-test stub (e.g. `installManagerConfirmationModelStub`) still answers its
-matching calls directly without ever reaching this fallback, so an already-mocked
-test is never wrongly counted as skipped. A rare test that calls a classifier
-directly and asserts on its own graceful-fallback return value (never throws), or
-only reads state an earlier, now-skipped test would have created, is explicitly
-tagged with `checkAsyncRealModel` instead of `checkAsync` so it skips cleanly too -
-tag a new test the same way if it hits either case. `check-reminders.js`'s own 3
-real-model tests are fully, explicitly mocked instead (its `reminder_command` tool
-has a narrow, fixed decision space) - same zero-API-call result, no skip needed.
-`RUN_REAL_MODEL=1` (with a real key) forces real calls through this fallback, for
-occasionally verifying the skipped tests still pass for real.
+### Cost gate - HARD RULES (2026-11, direct instruction, after a bare
+`node scripts/check-whatsapp-engine.js` invocation was discovered silently making
+real, billed Claude API calls the whole time it was investigated as "flaky" - the
+model's own real response variance, not test-state leakage, was the actual cause).
+Centralized in `scripts/testBootstrap.js`, used by every `check-*.js` script:
+
+1. **Every test script skips real-model calls UNLESS `RUN_REAL_MODEL=1` is set
+   explicitly.** A bare `node scripts/<any>.js` must never bill by accident, whatever
+   keys happen to be sitting in `.env`/`.env.local`. `testBootstrap.js` installs the
+   one fetch-level gate every script's real Claude calls pass through
+   (`installModelCallGate`/`shouldSkipRealModel`) - a script with its own per-test
+   stub (e.g. `installManagerConfirmationModelStub`, `check-reminders.js`'s
+   `reminder_command` stub) still answers its matching calls directly, never reaching
+   this fallback, so an already-mocked test is never wrongly counted as skipped. A
+   skipped call throws a distinct `SKIPPED_REAL_MODEL_CALL`, caught and printed as
+   `[skip]`, never `[FAIL]` - `checkAsync` handles this generically (any test that
+   happens to reach the model gets skipped cleanly), `checkAsyncRealModel` is for a
+   test that needs to skip BEFORE even calling its function (reads state an
+   earlier-skipped test would have created, or asserts on a graceful-fallback value
+   that never throws).
+2. **`RUN_REAL_MODEL=1` prints a pre-flight cost estimate and refuses to proceed past
+   $1 unless `RUN_REAL_MODEL_BUDGET_USD=<amount>` raises the ceiling** -
+   `preflightRealModelBudgetCheck(estimatedCalls, opts)`, called with the script's own
+   best estimate (scenario count × runs-per-scenario for `check-whatsapp-scenarios.js`;
+   a known, bounded `checkAsyncRealModel` count for `check-whatsapp-engine.js`; a
+   documented heuristic constant - `ASSUMED_COST_PER_CALL_USD`, currently $0.02 -
+   otherwise). Every script prints its real final cost too, always - `Real API
+   calls: N · cost $X`, including `N=0` - via `printRealApiCostLine(opts)`; a script
+   with its own precise, token-based accounting (`check-whatsapp-scenarios.js`) passes
+   its own `{count, costUsd}` instead of the heuristic default.
+3. **Tests never use the live SUBH key, ever, by design** - they read
+   `ANTHROPIC_API_KEY_TEST` only, even when `RUN_REAL_MODEL=1`. No
+   `ANTHROPIC_API_KEY_TEST` configured → real-model checks are skipped with a clear
+   message, never a silent fallback to the live key's quota/billing. Set it in
+   `.env.local` to actually run a real-model check.
+4. **`check-whatsapp-scenarios.js` is real-model-only by design** - a bare run (or
+   `RUN_REAL_MODEL=1` with no usable test key) prints one clear message and exits
+   before attempting a single scenario, rather than "running" all of them and
+   reporting every one as `BROKEN` (misleading - they were never attempted, not
+   failing).
+5. **Any other `check-*.js` script that reaches the model indirectly** (requires
+   `whatsappAssistant.js`/`reminderService.js`/`automationService.js`/
+   `workflowService.js`/`provider.js`, even just for a shared helper) is protected
+   automatically by the same central gate once it calls `setupTestEnvironment()` - no
+   per-script duplication needed. Audit a NEW `check-*.js` script the same way before
+   assuming it's exempt: grep the services it requires for `api.anthropic.com`, don't
+   just grep the script's own file for the literal string.
 
 **Record & replay cache** (`src/aiAssistant/whatsappAssistant.js`'s `postClaudeMessages`,
 test-only, a complete no-op in production): set `SCENARIO_REPLAY_CACHE=1` to cache
@@ -452,17 +486,6 @@ by a hash of model+system+messages+tools) and replay it on a later run with the 
 same inputs instead of paying for another real call - e.g. re-running the same
 scenario filter twice while iterating on an unrelated fix. Add `SCENARIO_REPLAY_FORCE=1`
 to force a genuinely fresh model answer for that one run (still updates the cache).
-
-**Cost report**: every `check-whatsapp-scenarios.js` run (any tier) prints a line at
-the end - real API calls, cached replays avoided, input/output tokens, and a rough
-USD estimate (approximate Sonnet pricing, not billing-accurate).
-
-**Separate test API key**: set `ANTHROPIC_API_KEY_TEST` in `.env.local` to use a
-distinct key for test runs (never the production key's quota/billing) - picked up
-automatically by `scripts/testBootstrap.js`. Not yet enforced as a hard requirement
-(falls back to whatever `ANTHROPIC_API_KEY` is already configured, same as before,
-with a warning) - ask Subhodeep before making that fallback a hard stop, since it
-would change the zero-config "just run the tests" experience.
 
 ## Locked scenarios (real-model scenario runner)
 

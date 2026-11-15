@@ -602,6 +602,7 @@ async function main() {
   console.log(pass + '/' + (pass + fail) + ' passed' + (fail ? ', ' + fail + ' FAILED' : ''));
   if (failures.length) { console.log('Failed checks:'); failures.forEach((f) => console.log(' -', f)); }
   console.log('API spend for this batch: $0 (tests) - zero real Claude/Sheets/HTTP calls, sheetsAuth + global.fetch fully mocked.');
+  require('./testBootstrap').printRealApiCostLine({ count: 0, costUsd: 0 });
   console.log('='.repeat(70));
 }
 

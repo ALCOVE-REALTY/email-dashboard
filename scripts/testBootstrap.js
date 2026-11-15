@@ -26,29 +26,134 @@ function looksLikeLiveStore(url) {
   return /employees\.alcoverealty\.in/i.test(String(url || '')) || /subh-store/i.test(String(url || ''));
 }
 
-// Task 4 (2026-10-27) - prefer a dedicated test-only Anthropic key over
-// the live one, same spirit as the Redis store guard above but NOT a
-// hard stop: unlike the Redis case (where silently touching a different
-// store would be actively dangerous), a test run falling back to the
-// live ANTHROPIC_API_KEY is just real quota/billing on a key Subhodeep
-// already has configured - exactly what every test run before this
-// point already did. Only warns; ask him first before making this a
-// hard refusal, since that would change the zero-config "just run the
-// tests" experience documented in CLAUDE.md.
+// COST GATE (2026-11, direct instruction from the owner after a bare
+// `node scripts/check-whatsapp-engine.js` invocation was discovered to be
+// silently making real, billed Claude API calls the entire time - the
+// old default here just WARNED and fell back to the live key). The
+// contract now, for every script that calls setupTestEnvironment():
+//
+//   1. A bare run (RUN_REAL_MODEL unset, or anything other than '1')
+//      ALWAYS skips every real-model call - never bills by accident,
+//      whatever keys happen to be sitting in .env/.env.local.
+//   2. RUN_REAL_MODEL=1 opts in, but ONLY ever uses ANTHROPIC_API_KEY_TEST
+//      - never the live key, even as a fallback. No ANTHROPIC_API_KEY_TEST
+//      configured -> real-model checks are skipped anyway, with a clear
+//      message, not a silent live-key fallback.
+//   3. When real calls are genuinely going to happen, a script calls
+//      preflightRealModelBudgetCheck() with its own estimated call count
+//      BEFORE running anything, and the process refuses to proceed past
+//      $1 of estimated spend unless RUN_REAL_MODEL_BUDGET_USD=<amount>
+//      raises that ceiling.
+//   4. Every script ends with printRealApiCostLine() - "Real API calls: N
+//      · cost $X", including N=0 - so a glance at the end of any
+//      script's output says whether it spent anything, every time.
+const RUN_REAL_MODEL = process.env.RUN_REAL_MODEL === '1';
+// Heuristic ONLY, for the PRE-FLIGHT estimate before anything has
+// actually run (there is no real usage to measure yet) - documented
+// rather than precise. Derived from this suite's own observed real
+// costs (e.g. a 91-scenario x3 full run of check-whatsapp-scenarios.js
+// cost ~$8.15, ~$0.03/scenario-execution; check-whatsapp-scenarios.js's
+// own post-hoc report is exact, computed from real token counts, and
+// this constant never overrides that - it only ever estimates BEFORE a
+// run, for the budget gate). A script with its own better per-call
+// estimate (like check-whatsapp-scenarios.js's scenario x run count)
+// should pass its own assumedCostPerCallUsd override instead of relying
+// on this default.
+const ASSUMED_COST_PER_CALL_USD = 0.02;
+let realApiCallCount = 0;
+let usableTestKey = false;
+
+function getRealModelBudgetUsd() {
+  const raw = process.env.RUN_REAL_MODEL_BUDGET_USD;
+  const n = raw != null ? Number(raw) : NaN;
+  return Number.isFinite(n) && n > 0 ? n : 1;
+}
+
+// Tests never use the live SUBH key, ever, by design - they read
+// ANTHROPIC_API_KEY_TEST only. Returns whether a usable key was found;
+// setupTestEnvironment uses this to decide whether real calls can
+// possibly go through at all this run.
 function setupApiKey() {
+  if (!RUN_REAL_MODEL) {
+    // Nothing is going to call the model for real this run regardless of
+    // what's configured - still set A non-empty placeholder so functions
+    // with their own "no ANTHROPIC_API_KEY at all" guard throw that
+    // specific, different error rather than this one; the fetch-level
+    // gate below is the one thing that actually trips.
+    if (!process.env.ANTHROPIC_API_KEY) process.env.ANTHROPIC_API_KEY = 'test-key-not-real';
+    return false;
+  }
   const testKey = process.env.ANTHROPIC_API_KEY_TEST;
   if (testKey) {
     process.env.ANTHROPIC_API_KEY = testKey;
-    console.log('Using ANTHROPIC_API_KEY_TEST for this test run (not the live key).');
-    return;
+    console.log('RUN_REAL_MODEL=1: using ANTHROPIC_API_KEY_TEST for real-model checks (never the live key).');
+    return true;
   }
-  if (process.env.ANTHROPIC_API_KEY) {
-    console.log('ANTHROPIC_API_KEY_TEST is not set - this test run will use the LIVE ANTHROPIC_API_KEY (real quota/billing) for any model-dependent check. Set ANTHROPIC_API_KEY_TEST in .env.local to use a separate test key instead.');
+  delete process.env.ANTHROPIC_API_KEY;
+  console.log('RUN_REAL_MODEL=1 but ANTHROPIC_API_KEY_TEST is not set in .env.local - real-model checks will be SKIPPED (tests never fall back to the live key). Set ANTHROPIC_API_KEY_TEST to actually run them.');
+  return false;
+}
+
+// The ONE place every real Claude call from a check-*.js script's own
+// process passes through. Installed by setupTestEnvironment() before
+// anything else touches network - a script that spawns a REAL separate
+// server process (check-subh-panel-ui.js, check-integrations-ui.js) is
+// not covered by this (different process), but those two scripts mock
+// every /api/** call via Playwright request interception instead, so no
+// real backend - and therefore no real Claude key - is ever reachable
+// from them either.
+function installModelCallGate(skip) {
+  const originalFetch = global.fetch;
+  global.fetch = async (url, opts) => {
+    if (String(url).includes('api.anthropic.com')) {
+      if (skip) throw new Error('SKIPPED_REAL_MODEL_CALL');
+      realApiCallCount++;
+    }
+    return originalFetch(url, opts);
+  };
+}
+
+function shouldSkipRealModel() {
+  return !RUN_REAL_MODEL || !usableTestKey;
+}
+
+// Call BEFORE running anything that would spend real money, with this
+// run's own best estimate of how many real calls it's about to make
+// (e.g. scenario count x runs-per-scenario). A no-op when nothing is
+// actually going to call the model this run (shouldSkipRealModel()) -
+// nothing to budget for. Refuses to proceed (exit 1) past $1 of
+// estimated spend unless RUN_REAL_MODEL_BUDGET_USD raises the ceiling.
+function preflightRealModelBudgetCheck(estimatedCalls, opts) {
+  if (shouldSkipRealModel()) return;
+  const perCall = (opts && opts.assumedCostPerCallUsd) || ASSUMED_COST_PER_CALL_USD;
+  const estimatedUsd = estimatedCalls * perCall;
+  const budget = getRealModelBudgetUsd();
+  const label = (opts && opts.label) || (estimatedCalls + ' estimated real API call(s)');
+  console.log('Pre-flight estimate: ' + label + ' × ~$' + perCall.toFixed(4) + '/call ≈ $' + estimatedUsd.toFixed(4) + ' (heuristic, not exact - see testBootstrap.js)');
+  if (estimatedUsd > budget) {
+    console.error('='.repeat(70));
+    console.error('REFUSING TO RUN: estimated cost $' + estimatedUsd.toFixed(4) + ' exceeds the $' + budget.toFixed(2) + ' budget.');
+    console.error('Set RUN_REAL_MODEL_BUDGET_USD=<amount> to approve a higher spend, or narrow the run (e.g. SCENARIO_FILTER) to reduce it.');
+    console.error('='.repeat(70));
+    process.exit(1);
   }
 }
 
+// Every script's own final line, always - "including 0" per the owner's
+// own rule, so a glance at any script's tail says whether it spent
+// anything, every time. A script with its own precise, token-based cost
+// (check-whatsapp-scenarios.js) passes its own {count, costUsd}; anything
+// else defaults to this module's own tracked real-call count and the
+// ASSUMED_COST_PER_CALL_USD heuristic.
+function printRealApiCostLine(opts) {
+  const count = (opts && typeof opts.count === 'number') ? opts.count : realApiCallCount;
+  const costUsd = (opts && typeof opts.costUsd === 'number') ? opts.costUsd : (count * ASSUMED_COST_PER_CALL_USD);
+  console.log('Real API calls: ' + count + ' · cost $' + costUsd.toFixed(4));
+}
+
 async function setupTestEnvironment() {
-  setupApiKey();
+  usableTestKey = setupApiKey();
+  installModelCallGate(shouldSkipRealModel());
   // AI usage log (2026-11, direct instruction) - marks every real call
   // ANY test script makes (including check-whatsapp-scenarios.js's real-
   // model runs, and an ALLOW_LIVE=1 diagnostic against the real store) as
@@ -118,4 +223,11 @@ async function setupTestEnvironment() {
   return { usingLive: false, stop: fake.close, store: fake.store };
 }
 
-module.exports = { setupTestEnvironment };
+module.exports = {
+  setupTestEnvironment,
+  shouldSkipRealModel,
+  preflightRealModelBudgetCheck,
+  printRealApiCostLine,
+  getRealModelBudgetUsd,
+  RUN_REAL_MODEL
+};

@@ -229,7 +229,19 @@ async function main() {
   // every Redis-client-constructing module at it for this process only -
   // see testBootstrap.js's own comment. Pass ALLOW_LIVE=1 to use the
   // real configured store instead (never the default).
-  await require('./testBootstrap').setupTestEnvironment();
+  const testBootstrap = require('./testBootstrap');
+  await testBootstrap.setupTestEnvironment();
+  // Cost gate (2026-11, direct instruction) - this script is real-model-
+  // only by design (the file header already says so), but had no gate at
+  // all before this - it would just attempt every real call outright.
+  // Same RUN_REAL_MODEL=1 + ANTHROPIC_API_KEY_TEST-only contract as every
+  // other script now.
+  if (testBootstrap.shouldSkipRealModel()) {
+    console.log('RUN_REAL_MODEL is not set (or ANTHROPIC_API_KEY_TEST is missing) - this script is real-model-only, skipping. Set RUN_REAL_MODEL=1 and ANTHROPIC_API_KEY_TEST in .env.local to run it.');
+    testBootstrap.printRealApiCostLine({ count: 0, costUsd: 0 });
+    process.exit(0);
+  }
+  testBootstrap.preflightRealModelBudgetCheck(30, { label: '~30 real reply-generation call(s)' });
   redis = new Redis({
     url: process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL,
     token: process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN
@@ -337,6 +349,7 @@ async function main() {
   });
   console.log('='.repeat(70));
   console.log(`${results.length - failCount}/${results.length} passed, ${failCount} flagged`);
+  testBootstrap.printRealApiCostLine();
   return failCount;
   }
 }

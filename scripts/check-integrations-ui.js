@@ -360,6 +360,7 @@ function check(label, ok, detail) {
 
   console.log(pass + '/' + (pass + fail) + ' passed' + (fail ? ', ' + fail + ' FAILED' : ''));
   if (failures.length) { console.log('Failed checks:'); failures.forEach((f) => console.log(' -', f)); }
+  console.log('Real API calls: 0 · cost $0.0000'); // no real backend - every /api/** call is mocked, see file header
   process.exit(fail ? 1 : 0);
 })().catch((err) => {
   console.error('SUITE CRASHED', err);

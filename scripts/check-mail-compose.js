@@ -208,6 +208,7 @@ async function main() {
     console.log('Failures:');
     failures.forEach((f) => console.log(' - ' + f));
   }
+  console.log('Real API calls: 0 · cost $0.0000'); // fully deterministic by design, zero Claude API calls - see file header
   process.exit(fail ? 1 : 0);
 }
 

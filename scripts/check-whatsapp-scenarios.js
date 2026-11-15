@@ -2019,7 +2019,23 @@ const APPROX_USD_PER_MTOK_INPUT = 3;
 const APPROX_USD_PER_MTOK_OUTPUT = 15;
 
 async function runAll() {
-  await require('./testBootstrap').setupTestEnvironment();
+  const testBootstrap = require('./testBootstrap');
+  await testBootstrap.setupTestEnvironment();
+  // Cost gate (2026-11, direct instruction) - this entire script is
+  // real-model-only by design (that's its whole purpose), so unlike
+  // check-whatsapp-engine.js there is nothing meaningful to run at all
+  // once real calls are skipped. A bare `node scripts/check-whatsapp-
+  // scenarios.js` (the new default) exits cleanly here, before touching
+  // a single scenario, rather than "running" all of them and reporting
+  // every one as BROKEN (misleading - they didn't break, they were never
+  // attempted).
+  if (testBootstrap.shouldSkipRealModel()) {
+    console.log('='.repeat(70));
+    console.log('RUN_REAL_MODEL is not set (or ANTHROPIC_API_KEY_TEST is missing) - this entire scenario suite is real-model-only, so there is nothing safe to run. Set RUN_REAL_MODEL=1 and ANTHROPIC_API_KEY_TEST in .env.local to actually run it (optionally SCENARIO_FILTER=<substring> to scope it, SCENARIO_RUNS=1 for a single pass).');
+    console.log('='.repeat(70));
+    testBootstrap.printRealApiCostLine({ count: 0, costUsd: 0 });
+    process.exit(0);
+  }
   whatsappAssistant.resetApiCallStats();
   let reliableCount = 0;
   let flakyCount = 0;
@@ -2030,6 +2046,15 @@ async function runAll() {
   // full set.
   const filter = process.env.SCENARIO_FILTER;
   const scenariosToRun = filter ? scenarios.filter((s) => s.name.includes(filter)) : scenarios;
+  // Pre-flight estimate (2026-11, direct instruction) - ~$0.03/scenario-
+  // execution is this file's own observed average (a full 91-scenario x3
+  // run cost ~$8.15 ≈ $0.030/execution), tighter than testBootstrap's
+  // generic per-call default since this script already knows exactly how
+  // many scenario executions it's about to run.
+  testBootstrap.preflightRealModelBudgetCheck(scenariosToRun.length * RUNS_PER_SCENARIO, {
+    assumedCostPerCallUsd: 0.03,
+    label: scenariosToRun.length + ' scenario(s) × ' + RUNS_PER_SCENARIO + ' run(s)'
+  });
   for (const s of scenariosToRun) {
     const runResults = [];
     for (let i = 0; i < RUNS_PER_SCENARIO; i++) {
@@ -2075,6 +2100,7 @@ async function runAll() {
     + ' - ' + stats.inputTokens + ' input + ' + stats.outputTokens + ' output tokens'
     + (stats.cacheWriteTokens || stats.cacheReadTokens ? ' (' + stats.cacheWriteTokens + ' prompt-cache write + ' + stats.cacheReadTokens + ' prompt-cache read)' : '')
     + ', ~$' + estimatedUsd.toFixed(4) + ' estimated (approximate Sonnet pricing, not billing-accurate)');
+  require('./testBootstrap').printRealApiCostLine({ count: stats.realCalls, costUsd: estimatedUsd });
   console.log('='.repeat(70));
   process.exit(flakyCount + brokenCount > 0 ? 1 : 0);
 }

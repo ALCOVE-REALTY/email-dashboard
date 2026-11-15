@@ -79,12 +79,13 @@ function runOne(scriptName) {
   return new Promise((resolve) => {
     const scriptPath = path.join(__dirname, scriptName);
     // Cost (2026-11, direct instruction - "the pre-push hook must make
-    // zero real API calls, today") - check-whatsapp-engine.js/check-
-    // reminders.js both check this and skip (or already fully mock)
-    // every real-model-dependent test, so the hook never spends real
-    // money no matter what's configured in .env - harmless for every
-    // other suite here, which never reads this var at all.
-    const env = Object.assign({}, process.env, { SKIP_REAL_MODEL: '1' });
+    // zero real API calls, ever") - every check-*.js script now defaults
+    // to skipping real-model calls UNLESS RUN_REAL_MODEL=1 is explicitly
+    // set (testBootstrap.js's own gate) - this explicitly clears it
+    // regardless of what the invoking shell happens to have set, so the
+    // gate can never spend real money no matter what's configured.
+    const env = Object.assign({}, process.env);
+    delete env.RUN_REAL_MODEL;
     const child = spawn(process.execPath, [scriptPath], { env });
     let output = '';
     child.stdout.on('data', (d) => { output += d; });

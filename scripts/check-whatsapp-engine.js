@@ -116,33 +116,19 @@ function installManagerConfirmationModelStub() {
   return originalFetch;
 }
 
-// Cost (2026-11, direct instruction - "the pre-push hook must make zero
-// real API calls, today") - whenever no ANTHROPIC_API_KEY is configured,
-// or SKIP_REAL_MODEL=1 is set explicitly (what run-pre-push-checks.js
-// does for every suite), any check that would have reached a real
-// api.anthropic.com call instead gets a distinct SKIPPED_REAL_MODEL_CALL
-// throw and is counted/printed as skipped, never failed. This is a
-// SUITE-LEVEL fallback fetch, installed before any test runs - a test
-// with its OWN per-test stub (e.g. installManagerConfirmationModelStub)
-// still answers its matching calls directly without ever reaching this
-// one, so an already-mocked test is never wrongly counted as skipped.
-// RUN_REAL_MODEL=1 forces real calls regardless (fails loudly with no
-// key, which is the correct, honest outcome of asking for that).
-const SKIP_REAL_MODEL = process.env.RUN_REAL_MODEL !== '1' && (!process.env.ANTHROPIC_API_KEY || process.env.SKIP_REAL_MODEL === '1');
-if (SKIP_REAL_MODEL) {
-  // Several classifier functions (generateConversationReply, etc.) have
-  // their own early "no ANTHROPIC_API_KEY at all" guard that throws a
-  // DIFFERENT message before ever reaching a fetch call - a dummy,
-  // non-empty value satisfies those guards so the ONLY thing that
-  // actually trips is the fetch-level interception below, giving one
-  // consistent, recognizable skip reason everywhere.
-  if (!process.env.ANTHROPIC_API_KEY) process.env.ANTHROPIC_API_KEY = 'test-key-not-real';
-  const originalFetch = global.fetch;
-  global.fetch = async (url, opts) => {
-    if (String(url).includes('api.anthropic.com')) throw new Error('SKIPPED_REAL_MODEL_CALL');
-    return originalFetch(url, opts);
-  };
-}
+// Cost gate (2026-11, direct instruction) - centralized in testBootstrap.js
+// now (shouldSkipRealModel/installModelCallGate), not duplicated here -
+// this used to install its OWN fetch-level SKIP_REAL_MODEL block at
+// module-load time, which is exactly the bug that let a bare `node
+// scripts/check-whatsapp-engine.js` silently make real, billed calls
+// whenever a real ANTHROPIC_API_KEY happened to be configured (the old
+// condition only skipped when NO key was present). testBootstrap's gate
+// is installed inside setupTestEnvironment() below, before any check
+// runs, and defaults to skipping unless RUN_REAL_MODEL=1 is explicitly
+// set (and even then, only ever uses ANTHROPIC_API_KEY_TEST - never the
+// live key). checkAsyncRealModel below reads shouldSkipRealModel() from
+// there rather than keeping its own copy of this logic.
+const testBootstrap = require('./testBootstrap');
 
 let pass = 0;
 let fail = 0;
@@ -167,7 +153,7 @@ async function checkAsync(label, fn) {
   } catch (err) {
     if (err.message === 'SKIPPED_REAL_MODEL_CALL') {
       skipped++;
-      console.log('[skip]', label, '(real-model test, no key/SKIP_REAL_MODEL=1)');
+      console.log('[skip]', label, '(real-model call - set RUN_REAL_MODEL=1 and ANTHROPIC_API_KEY_TEST to run it)');
       return;
     }
     fail++;
@@ -182,9 +168,9 @@ async function checkAsync(label, fn) {
 // tagged, skipped before ever running, rather than failing on a
 // fallback/empty result that looks like a real regression but isn't one.
 async function checkAsyncRealModel(label, fn) {
-  if (SKIP_REAL_MODEL) {
+  if (testBootstrap.shouldSkipRealModel()) {
     skipped++;
-    console.log('[skip]', label, '(real-model test, no key/SKIP_REAL_MODEL=1)');
+    console.log('[skip]', label, '(real-model test - set RUN_REAL_MODEL=1 and ANTHROPIC_API_KEY_TEST to run it)');
     return;
   }
   return checkAsync(label, fn);
@@ -198,7 +184,12 @@ async function checkAsyncRealModel(label, fn) {
   // ANY check below touches Redis - whatsappAssistant.js's own client is
   // a lazy singleton, cached forever after its first real call, so this
   // being first guarantees every check in this file gets the fake store.
-  await require('./testBootstrap').setupTestEnvironment();
+  await testBootstrap.setupTestEnvironment();
+  // 9 checkAsyncRealModel-tagged checks in this file - a known, bounded
+  // count (unlike check-whatsapp-scenarios.js, this suite is mostly
+  // deterministic by design, so this estimate is tight, not a rough
+  // scenario-count heuristic).
+  testBootstrap.preflightRealModelBudgetCheck(9, { label: '9 checkAsyncRealModel check(s)' });
 
   console.log('='.repeat(70));
   console.log('OWNER IDENTITY (live incident, 2026-10-26): the owner\'s own employee record must never resolve to a different real person, even one whose own directory row happens to list the owner\'s shared/login email');
@@ -2284,9 +2275,20 @@ async function checkAsyncRealModel(label, fn) {
     // directly - same tolerant-of-shape philosophy the comment above
     // already applies to the direct-answer-vs-confirm-step question.
     const questionApproval = d3.case === 'data_holding' ? (await listRawApprovalsForPhone(phone)).find((a) => (a.preparedReplyText || '').includes('Ayan Das')) : null;
+    // Bug fix (2026-11, test-only - confirmed via isolated repro that the
+    // real decideAutoReply call chain never throws here; the crash was
+    // purely this assertion's own bug): d3.replyText can legitimately be
+    // null here too - same official-tier-gate "queued as an approval
+    // instead of sent directly" shape questionApproval already accounts
+    // for, just reached for THIS particular message's own resolution
+    // instead of d3.case alone. Calling .includes() on it unconditionally
+    // crashed the test with "Cannot read properties of null" whenever
+    // that shape came up - never a production bug, since production code
+    // handles a null replyText (an approval-queued reply) correctly
+    // everywhere else; only this test's own assertion assumed non-null.
     const questionOk = pendingAfterQuestion === null
-      && (d3.replyText.includes('Ayan Das') || Boolean(questionApproval))
-      && !d3.replyText.includes('kotha bole joto taratari somvob'); // never the HR-flow's own "I'll speak with them" thank-you wording
+      && ((d3.replyText && d3.replyText.includes('Ayan Das')) || Boolean(questionApproval))
+      && !(d3.replyText && d3.replyText.includes('kotha bole joto taratari somvob')); // never the HR-flow's own "I'll speak with them" thank-you wording
     if (questionApproval) await whatsappAssistant.removePendingApproval(questionApproval.id);
     // Whatever d3 was (direct answer or its own confirm question), "Haa"
     // must never resolve to messaging anyone about the ORIGINAL duty/off-day
@@ -2296,7 +2298,7 @@ async function checkAsyncRealModel(label, fn) {
     const wrongfulThirdPartyMessage = log.find((e) => e.case === 'hr_confirmation_sent' && (e.chatId === AYAN_DAS_PHONE || e.chatId === SUBHODEEP_KC_PHONE) && (e.sentAt || e.ts || 0) >= testStartedAt);
     const confirmations = (await whatsappAssistant.listAllHrConfirmations()).filter((c) => c.senderPhone === phone);
     const answerOk = !wrongfulThirdPartyMessage && confirmations.length === 0
-      && !d4.replyText.includes('Subhodeep Kundu Chowdhury') && !d4.replyText.includes('kotha bole joto taratari somvob');
+      && !(d4.replyText && d4.replyText.includes('Subhodeep Kundu Chowdhury')) && !(d4.replyText && d4.replyText.includes('kotha bole joto taratari somvob'));
     await cleanupHrFlowArtifacts(phone, SUBHODEEP_KC_PHONE, AYAN_DAS_PHONE);
     return stepOk && questionOk && answerOk;
   });
@@ -2357,8 +2359,13 @@ async function checkAsyncRealModel(label, fn) {
     const log = await whatsappAssistant.listInboxLog(50);
     const mgrEntry = log.filter((e) => e.chatId === SUBHODEEP_KC_PHONE && e.case === 'hr_confirmation_sent').sort((a, b) => (b.sentAt || 0) - (a.sentAt || 0))[0];
     const confirmations = (await whatsappAssistant.listAllHrConfirmations()).filter((c) => c.senderPhone === phone);
+    // Same test-only null-replyText bug as the sibling scenario just
+    // above (2026-11) - lastReply.replyText (the sender's own final
+    // acknowledgement) can legitimately be null too (queued for owner
+    // approval instead of sent directly); the real invariants this test
+    // actually cares about (mgrEntry/confirmations) don't depend on it.
     const ok = Boolean(mgrEntry) && confirmations.length === 1 && confirmations[0].thirdPartyName === 'Subhodeep Kundu Chowdhury' && confirmations[0].status === 'awaiting_manager'
-      && !lastReply.replyText.includes('note kore nilam ar Subhodeep-ke janiye dicchi');
+      && !(lastReply.replyText && lastReply.replyText.includes('note kore nilam ar Subhodeep-ke janiye dicchi'));
     await cleanupHrFlowArtifacts(phone, SUBHODEEP_KC_PHONE);
     return ok;
   });
@@ -8659,7 +8666,8 @@ async function checkAsyncRealModel(label, fn) {
     console.log('Failed checks:');
     failures.forEach((f) => console.log(' -', f));
   }
-  if (skipped) console.log('Skipped ' + skipped + ' real-model tests (run with RUN_REAL_MODEL=1 and a real ANTHROPIC_API_KEY)');
+  if (skipped) console.log('Skipped ' + skipped + ' real-model tests (run with RUN_REAL_MODEL=1 and ANTHROPIC_API_KEY_TEST set)');
+  testBootstrap.printRealApiCostLine();
   console.log('='.repeat(70));
   process.exit(fail ? 1 : 0);
 })().catch((err) => {

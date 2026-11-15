@@ -938,6 +938,7 @@ async function main() {
     console.log('='.repeat(70));
     console.log(pass + '/' + (pass + fail) + ' passed' + (fail ? ', ' + fail + ' FAILED' : ''));
     if (failures.length) { console.log('Failed checks:'); failures.forEach((f) => console.log(' -', f)); }
+    require('./testBootstrap').printRealApiCostLine();
     console.log('='.repeat(70));
   } finally {
     employeeService.getEmployeeData = origGetEmployeeData;

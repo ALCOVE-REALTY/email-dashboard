@@ -28,11 +28,23 @@ const FAKE_EMPLOYEES = [
 const FAKE_DEPARTMENT_NAMES = new Map([['HR', 'HR'], ['IT', 'IT'], ['ACCOUNTS', 'ACCOUNTS']]);
 
 async function main() {
-  if (!process.env.ANTHROPIC_API_KEY || !process.env.CLAUDE_MODEL_MAIN) {
-    console.log('ANTHROPIC_API_KEY / CLAUDE_MODEL_MAIN not set - skipping (this suite needs real API access).');
+  const testBootstrap = require('./testBootstrap');
+  await testBootstrap.setupTestEnvironment();
+  // Cost gate (2026-11, direct instruction) - same RUN_REAL_MODEL=1 +
+  // ANTHROPIC_API_KEY_TEST-only contract as every other script now; used
+  // to gate on "is any key configured", which a bare run satisfies
+  // whenever the live key is already in .env/.env.local.
+  if (testBootstrap.shouldSkipRealModel()) {
+    console.log('RUN_REAL_MODEL is not set (or ANTHROPIC_API_KEY_TEST is missing) - skipping (this suite needs real API access; set RUN_REAL_MODEL=1 and ANTHROPIC_API_KEY_TEST in .env.local to run it).');
+    testBootstrap.printRealApiCostLine({ count: 0, costUsd: 0 });
     process.exit(0);
   }
-  await require('./testBootstrap').setupTestEnvironment();
+  if (!process.env.CLAUDE_MODEL_MAIN) {
+    console.log('CLAUDE_MODEL_MAIN not set - skipping (this suite needs real API access).');
+    testBootstrap.printRealApiCostLine({ count: 0, costUsd: 0 });
+    process.exit(0);
+  }
+  testBootstrap.preflightRealModelBudgetCheck(11, { label: '11 workflowService real-model call(s)' });
   const workflowService = require('../src/aiAssistant/workflowService');
   const employeeService = require('../src/employeeService');
   const origGetEmployeeData = employeeService.getEmployeeData;
@@ -173,6 +185,7 @@ async function main() {
     console.log('='.repeat(70));
     console.log(pass + '/' + (pass + fail) + ' passed' + (fail ? ', ' + fail + ' FAILED' : ''));
     if (failures.length) { console.log('Failed checks:'); failures.forEach((f) => console.log(' -', f)); }
+    testBootstrap.printRealApiCostLine();
     console.log('='.repeat(70));
   } finally {
     employeeService.getEmployeeData = origGetEmployeeData;
