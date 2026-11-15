@@ -3213,6 +3213,7 @@ async function loadHealthInsuranceView(forceRefresh) {
       .then((bundle) => {
         jsonPrefetchCache.set('/api/insurance/covered-employees', Promise.resolve(bundle.coveredEmployees));
         jsonPrefetchCache.set('/api/insurance/exits', Promise.resolve(bundle.exits));
+        jsonPrefetchCache.set('/api/insurance/exits/pending', Promise.resolve(bundle.pendingExits));
         jsonPrefetchCache.set('/api/insurance/additions', Promise.resolve(bundle.additions));
         jsonPrefetchCache.set('/api/insurance/family-members', Promise.resolve(bundle.familyMembers));
         jsonPrefetchCache.set('/api/insurance/total-insured-lives', Promise.resolve(bundle.totalInsuredLives));
@@ -4084,7 +4085,11 @@ async function loadHiExitsView() {
   document.getElementById('hiExitsDesigFilter').value = '';
   document.getElementById('hiExitsStatusFilter').value = '';
   try {
-    const data = await fetchJson('/api/insurance/exits');
+    // TASK 2 (2026-11), direct instruction - Pending Exits is now a genuine
+    // queue (Pending rows only), reading its OWN route - never
+    // '/api/insurance/exits' any more (that stays Total Exits' own,
+    // unfiltered feed - see loadHiTotalExitsView just below).
+    const data = await fetchJson('/api/insurance/exits/pending');
     hiExitsAllItems = data.items;
     hiExitsRawRows = data.rawRows;
 
@@ -4203,7 +4208,8 @@ document.getElementById('sendHiExitsMail').addEventListener('click', () => {
   openMailCompose({
     defaultsUrl: '/api/insurance/exits/mail-defaults',
     sendUrl: '/api/insurance/exits/send-mail',
-    sendBody: {}
+    sendBody: {},
+    onSent: () => { loadHiExitsView(); }
   });
 });
 
@@ -4337,9 +4343,185 @@ document.getElementById('sendHiAdditionsMail').addEventListener('click', () => {
   openMailCompose({
     defaultsUrl: '/api/insurance/additions/mail-defaults',
     sendUrl: '/api/insurance/additions/send-mail',
-    sendBody: {}
+    sendBody: {},
+    onSent: () => { loadHiAdditionsView(); }
   });
 });
+
+// ---------- Sent history (shared by New Addition Requests + Pending Exits,
+// TASK 2, 2026-11) ----------
+// One shared pair of overlays (list of batch CARDS -> tap -> detail sheet),
+// same structural pattern as the Integrations page's own sync-history (see
+// scripts/check-integrations-ui.js) - a `hiSentHistoryKind` ('additions' |
+// 'exits') decides which /api/insurance/<kind>/* routes each action hits,
+// so this logic is written once rather than duplicated per section.
+let hiSentHistoryKind = null;
+let hiSentHistoryBatches = [];
+let hiSentHistoryCurrentBatchId = null;
+
+function hiToast(text, type) {
+  if (window.__hrAssistantToast) window.__hrAssistantToast(text, type);
+  else if (type === 'error') alert(text);
+}
+
+function hiFormatSentOn(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '—';
+  return d.toLocaleDateString(undefined, { day: '2-digit', month: 'short', year: 'numeric' }) +
+    ' · ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+}
+
+function hiSentHistoryBasePath() { return hiSentHistoryKind === 'exits' ? '/api/insurance/exits' : '/api/insurance/additions'; }
+
+function openHiSentHistory(kind) {
+  hiSentHistoryKind = kind;
+  document.getElementById('hiSentHistoryOverlay').hidden = false;
+  loadHiSentHistoryList();
+}
+function closeHiSentHistory() {
+  document.getElementById('hiSentHistoryOverlay').hidden = true;
+}
+
+async function loadHiSentHistoryList() {
+  const listEl = document.getElementById('hiSentHistoryList');
+  listEl.innerHTML = '<li class="empty"><div class="loading"><div class="spinner"></div></div></li>';
+  try {
+    const data = await fetchJson(hiSentHistoryBasePath() + '/sent-history');
+    hiSentHistoryBatches = data.batches || [];
+    renderHiSentHistoryList();
+  } catch (err) {
+    listEl.innerHTML = '<li class="error-banner">' + escapeHtml(err.message) + '</li>';
+  }
+}
+
+function renderHiSentHistoryList() {
+  const listEl = document.getElementById('hiSentHistoryList');
+  // Spec: shown always, including the empty state - "✓ All requests sent to insurer".
+  listEl.innerHTML = hiSentHistoryBatches.length
+    ? hiSentHistoryBatches
+        .map((b) => (
+          '<li data-batch-id="' + escapeHtml(b.batchId) + '">' +
+            '<span class="wf-emp-main">' +
+              '<span class="wf-emp-name">' + hiFormatSentOn(b.sentOn) + '</span>' +
+              '<span class="wf-emp-meta">' + b.count + ' ' + (b.count === 1 ? 'person' : 'people') + (b.to ? ' · ' + escapeHtml(b.to) : '') + '</span>' +
+            '</span>' +
+            '<span class="wf-emp-chevron"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg></span>' +
+          '</li>'
+        ))
+        .join('')
+    : '<li class="empty">✓ All requests sent to insurer</li>';
+}
+
+document.getElementById('hiSentHistoryList').addEventListener('click', (e) => {
+  const li = e.target.closest('[data-batch-id]');
+  if (!li) return;
+  openHiSentHistoryDetail(li.dataset.batchId);
+});
+document.getElementById('hiSentHistoryCloseBtn').addEventListener('click', closeHiSentHistory);
+document.getElementById('hiSentHistoryOverlay').addEventListener('click', (e) => {
+  if (e.target.id === 'hiSentHistoryOverlay') closeHiSentHistory();
+});
+
+async function openHiSentHistoryDetail(batchId) {
+  hiSentHistoryCurrentBatchId = batchId;
+  document.getElementById('hiSentHistoryDetailOverlay').hidden = false;
+  document.getElementById('hiSentHistoryDetailError').hidden = true;
+  document.getElementById('hiSentHistoryDetailTitle').textContent = 'Batch';
+  document.getElementById('hiSentHistoryDetailMeta').textContent = '';
+  const listEl = document.getElementById('hiSentHistoryDetailList');
+  listEl.innerHTML = '<li class="empty"><div class="loading"><div class="spinner"></div></div></li>';
+  try {
+    const data = await fetchJson(hiSentHistoryBasePath() + '/sent-history/' + encodeURIComponent(batchId));
+    document.getElementById('hiSentHistoryDetailTitle').textContent = hiFormatSentOn(data.sentOn);
+    document.getElementById('hiSentHistoryDetailMeta').textContent =
+      data.count + ' ' + (data.count === 1 ? 'person' : 'people') +
+      (data.to ? ' · To: ' + data.to : '') + (data.cc ? ' · Cc: ' + data.cc : '');
+    listEl.innerHTML = data.items.length
+      ? data.items
+          .map((p) => (
+            '<li data-employee-id="' + escapeHtml(p.employeeId) + '">' +
+              '<span class="wf-emp-main">' +
+                '<span class="wf-emp-name">' + escapeHtml(p.name) + '</span>' +
+                '<span class="wf-emp-meta">' + escapeHtml(p.employeeId) + (p.familyCount > 0 ? ' · Self + ' + p.familyCount + ' Family' : ' · Self only') + '</span>' +
+              '</span>' +
+              '<button type="button" class="wf-link-btn hi-move-to-pending-btn" data-employee-id="' + escapeHtml(p.employeeId) + '">Move to Pending</button>' +
+            '</li>'
+          ))
+          .join('')
+      : '<li class="empty">No one left in this batch.</li>';
+  } catch (err) {
+    listEl.innerHTML = '';
+    document.getElementById('hiSentHistoryDetailError').textContent = err.message;
+    document.getElementById('hiSentHistoryDetailError').hidden = false;
+  }
+}
+function closeHiSentHistoryDetail() { document.getElementById('hiSentHistoryDetailOverlay').hidden = true; }
+document.getElementById('hiSentHistoryDetailCloseBtn').addEventListener('click', closeHiSentHistoryDetail);
+document.getElementById('hiSentHistoryDetailBackBtn').addEventListener('click', closeHiSentHistoryDetail);
+document.getElementById('hiSentHistoryDetailOverlay').addEventListener('click', (e) => {
+  if (e.target.id === 'hiSentHistoryDetailOverlay') closeHiSentHistoryDetail();
+});
+
+// "Move a person back to Pending" - clears their Sent status on the sheet;
+// since batch membership is always derived LIVE from the sheet's current
+// data (never a frozen snapshot), they disappear from this batch's people
+// list immediately, and the batch card's own count updates to match.
+document.getElementById('hiSentHistoryDetailList').addEventListener('click', async (e) => {
+  const btn = e.target.closest('.hi-move-to-pending-btn');
+  if (!btn) return;
+  btn.disabled = true;
+  btn.textContent = 'Moving…';
+  try {
+    const res = await fetch(hiSentHistoryBasePath() + '/move-to-pending', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ employeeId: btn.dataset.employeeId })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Failed to move back to Pending');
+    hiToast('Moved back to Pending');
+    await openHiSentHistoryDetail(hiSentHistoryCurrentBatchId);
+    await loadHiSentHistoryList();
+    if (hiSentHistoryKind === 'additions') loadHiAdditionsView();
+    else loadHiExitsView();
+  } catch (err) {
+    btn.disabled = false;
+    btn.textContent = 'Move to Pending';
+    hiToast(err.message, 'error');
+  }
+});
+
+// "Resend batch" - re-sends the mail to this batch's CURRENT members and,
+// on success, re-stamps them onto a brand-new batch id/timestamp (never
+// flips through Pending in between - see insuranceService.js's own comment
+// on resendAdditionsBatch/resendExitsBatch for why).
+document.getElementById('hiSentHistoryResendBtn').addEventListener('click', async () => {
+  const btn = document.getElementById('hiSentHistoryResendBtn');
+  const label = btn.querySelector('span');
+  btn.disabled = true;
+  label.textContent = 'Resending…';
+  try {
+    const res = await fetch(hiSentHistoryBasePath() + '/sent-history/' + encodeURIComponent(hiSentHistoryCurrentBatchId) + '/resend', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Failed to resend');
+    hiToast('Resent to ' + data.sentCount + ' ' + (data.sentCount === 1 ? 'person' : 'people'));
+    closeHiSentHistoryDetail();
+    await loadHiSentHistoryList();
+  } catch (err) {
+    hiToast(err.message, 'error');
+  } finally {
+    btn.disabled = false;
+    label.textContent = 'Resend batch';
+  }
+});
+
+document.getElementById('hiAdditionsSentHistoryLink').addEventListener('click', () => openHiSentHistory('additions'));
+document.getElementById('hiExitsSentHistoryLink').addEventListener('click', () => openHiSentHistory('exits'));
 
 // ---------- Total Exits (Health Insurance drill-down) ----------
 // Same data/list/design as Pending Exits' Exits page (both read
@@ -5948,10 +6130,14 @@ const jsonPrefetchCache = new Map();
 const MULTI_READ_PREFETCH_URLS = new Set([
   '/api/workforce/overview',
   '/api/workforce/breakdowns?status=ACTIVE',
-  // Pending Exits and Total Exits are two different pages reading this same
-  // URL (see loadHiTotalExitsView's own comment) - without this, whichever
-  // of the two opens second always misses the bundle cache and re-fetches.
-  '/api/insurance/exits'
+  // Total Exits reads this (unfiltered) URL (see loadHiTotalExitsView's own
+  // comment) - kept multi-read so a later re-open never misses the bundle
+  // cache and re-fetches needlessly.
+  '/api/insurance/exits',
+  // TASK 2 (2026-11) - Pending Exits now reads its OWN, queue-filtered URL
+  // (never the same one Total Exits reads - see loadHiExitsView) - same
+  // multi-read reasoning as above.
+  '/api/insurance/exits/pending'
 ]);
 
 function prefetchJson(url) {
@@ -6721,8 +6907,8 @@ function applyMailDefaultsToForm(defaults) {
 // pre-filled, or blank and ready for the user to type into - never blocked
 // on the network, matching the pre-existing (and preserved) non-blocking
 // behavior of Send itself.
-async function openMailCompose({ defaultsUrl, sendUrl, sendBody }) {
-  mailComposeContext = { sendUrl, sendBody, defaultsUrl, defaultSubject: '', defaultText: '', subjectOverride: null, textOverride: null };
+async function openMailCompose({ defaultsUrl, sendUrl, sendBody, onSent }) {
+  mailComposeContext = { sendUrl, sendBody, defaultsUrl, onSent: onSent || null, defaultSubject: '', defaultText: '', subjectOverride: null, textOverride: null };
   hideMailComposeError();
   mailToField.reset();
   mailCcField.reset();
@@ -6795,6 +6981,13 @@ document.getElementById('mailComposeSendBtn').addEventListener('click', async ()
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Failed to send mail');
     label.textContent = 'Sent ✓';
+    // TASK 2 (2026-11) - lets a section react to a successful send (e.g. HI
+    // Additions/Exits reload their now-shorter Pending list) without this
+    // shared popup knowing anything about what any particular section is -
+    // optional, every other call site simply doesn't pass it.
+    if (mailComposeContext.onSent) {
+      try { mailComposeContext.onSent(data); } catch (e) { /* a section's own refresh failing must never block the popup closing */ }
+    }
     setTimeout(closeMailCompose, 1200);
   } catch (err) {
     showMailComposeError(err.message);

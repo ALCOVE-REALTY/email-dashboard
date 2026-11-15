@@ -54,10 +54,48 @@ function buildHealthInsuranceSummary({ members, additions, deletions, activeEmpl
     employeePremium,
     familyPremium,
     annualPremium,
-    newAdditionRequests: additions.length,
-    exits: deletions.length,
+    // TASK 2 (2026-11), direct instruction - "send once" queues: both of
+    // these now count PENDING rows only (grouped by employeeId, so a self +
+    // 2-family addition/exit counts once - same grouping buildAdditionsList/
+    // buildExitsList use for the on-screen lists) - the dashboard card and
+    // its matching list page must always show the same number. `status` is
+    // undefined for any caller that hasn't been updated to pass insurance
+    // Service's own parsed rows (defensive `|| 'Pending'` so this never
+    // silently reads 0 against stale/partial test fixtures).
+    newAdditionRequests: countPendingGroups(additions),
+    pendingExits: countPendingGroups(deletions),
+    // Total Exits (unchanged, per direct instruction: "stays exactly as
+    // now, shows everyone, no queue logic") - every exit row regardless of
+    // Pending/Sent/Skipped status, same grouping as buildExitsList.
+    exits: countAllGroups(deletions),
     coverage
   };
+}
+
+function countAllGroups(rows) {
+  const byEmployee = new Map();
+  rows.forEach((r) => {
+    if (!byEmployee.has(r.employeeId)) byEmployee.set(r.employeeId, []);
+    byEmployee.get(r.employeeId).push(r);
+  });
+  let count = 0;
+  byEmployee.forEach((group) => { if (group.some((r) => String(r.relationship || '').toLowerCase() === 'self')) count++; });
+  return count;
+}
+
+function countPendingGroups(rows) {
+  const byEmployee = new Map();
+  rows.forEach((r) => {
+    if (!byEmployee.has(r.employeeId)) byEmployee.set(r.employeeId, []);
+    byEmployee.get(r.employeeId).push(r);
+  });
+  let count = 0;
+  byEmployee.forEach((group) => {
+    const hasSelf = group.some((r) => String(r.relationship || '').toLowerCase() === 'self');
+    const isPending = group.every((r) => (r.status || 'Pending') === 'Pending');
+    if (hasSelf && isPending) count++;
+  });
+  return count;
 }
 
 // One row per covered employee (their own "Self" row), with their family
@@ -386,6 +424,56 @@ function sortAdditionsSelfFirst(additions) {
   return groups.flatMap((g) => g.rows);
 }
 
+// TASK 2 (2026-11) - groups rows by employeeId (self + family share one
+// group, same as buildAdditionsList/buildExitsList's own grouping) and keeps
+// every row of a group whose rows all pass `predicate` - used so a filter
+// is applied PER REQUEST (the whole family), never splitting one addition/
+// exit request across Pending and Sent.
+function filterGroupsByStatus(rows, predicate) {
+  const byEmployee = new Map();
+  const order = [];
+  rows.forEach((r) => {
+    if (!byEmployee.has(r.employeeId)) { byEmployee.set(r.employeeId, []); order.push(r.employeeId); }
+    byEmployee.get(r.employeeId).push(r);
+  });
+  const keepIds = new Set();
+  order.forEach((id) => { if (predicate(byEmployee.get(id))) keepIds.add(id); });
+  return rows.filter((r) => keepIds.has(r.employeeId));
+}
+
+// New Addition Requests / Pending Exits pages+Send Mail - only rows whose
+// WHOLE request (self + family) is still Pending.
+function filterPendingRows(rows) {
+  return filterGroupsByStatus(rows, (group) => group.every((r) => (r.status || 'Pending') === 'Pending'));
+}
+
+// Sent-history "batches" view - groups already-Sent rows by their Batch ID,
+// one card per batch (date, count, the rows themselves for the detail
+// view). Sorted newest-first. A row with no batchId (shouldn't happen for a
+// genuinely Sent row, but defensive) is simply excluded - nothing to group
+// it under.
+function groupSentRowsByBatch(rows) {
+  const byBatch = new Map();
+  rows.forEach((r) => {
+    if (r.status !== 'Sent' || !r.batchId) return;
+    if (!byBatch.has(r.batchId)) byBatch.set(r.batchId, []);
+    byBatch.get(r.batchId).push(r);
+  });
+  const batches = [];
+  byBatch.forEach((batchRows, batchId) => {
+    const byEmployee = new Map();
+    batchRows.forEach((r) => {
+      if (!byEmployee.has(r.employeeId)) byEmployee.set(r.employeeId, []);
+      byEmployee.get(r.employeeId).push(r);
+    });
+    let count = 0;
+    byEmployee.forEach((g) => { if (g.some((r) => String(r.relationship || '').toLowerCase() === 'self')) count++; });
+    batches.push({ batchId, sentOn: batchRows[0].sentOn, count, rows: batchRows });
+  });
+  batches.sort((a, b) => String(b.sentOn || '').localeCompare(String(a.sentOn || '')));
+  return batches;
+}
+
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 // Derived from Policy Information's own Start/End Date fields (manually
@@ -430,5 +518,7 @@ module.exports = {
   sortDeletionsSelfFirst,
   buildAdditionsList,
   sortAdditionsSelfFirst,
-  policyRenewalInfo
+  policyRenewalInfo,
+  filterPendingRows,
+  groupSentRowsByBatch
 };

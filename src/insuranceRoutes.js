@@ -93,6 +93,9 @@ function buildTotalInsuredLivesResponse(insuranceData, hrData) {
   return { total: items.length, items };
 }
 
+// Total Exits (unchanged per direct instruction - "stays exactly as now,
+// shows everyone, no queue logic") - every Deletions-tab row regardless of
+// Pending/Sent/Skipped status.
 function buildExitsResponse(insuranceData, hrData) {
   const hrByEmployeeId = new Map(hrData.employees.map((e) => [e.employeeId, e]));
   const items = analytics.buildExitsList(insuranceData.deletions).map((c) => {
@@ -111,9 +114,22 @@ function buildExitsResponse(insuranceData, hrData) {
   return { total: items.length, items, rawRows };
 }
 
+// TASK 2 (2026-11), direct instruction - Pending Exits is now a genuine
+// queue: only rows whose whole exit request (self + family) is still
+// Pending. A DIFFERENT field/route from Total Exits above - the two must
+// never read the same underlying list again (see insuranceRoutes.js's own
+// /exits/pending route and public/workforce.js's loadHiExitsView).
+function buildPendingExitsResponse(insuranceData, hrData) {
+  return buildExitsResponse(Object.assign({}, insuranceData, { deletions: analytics.filterPendingRows(insuranceData.deletions) }), hrData);
+}
+
 function buildAdditionsResponse(insuranceData, hrData) {
+  // TASK 2 (2026-11), direct instruction - New Addition Requests shows only
+  // Pending rows/count (there is no separate "Total Additions" page, so
+  // this is filtered directly rather than adding a second response builder).
+  const pendingAdditions = analytics.filterPendingRows(insuranceData.additions);
   const hrByEmployeeId = new Map(hrData.employees.map((e) => [e.employeeId, e]));
-  const items = analytics.buildAdditionsList(insuranceData.additions).map((c) => {
+  const items = analytics.buildAdditionsList(pendingAdditions).map((c) => {
     const hr = hrByEmployeeId.get(c.employeeId);
     return {
       employeeId: c.employeeId,
@@ -125,8 +141,55 @@ function buildAdditionsResponse(insuranceData, hrData) {
       familyCount: c.familyCount
     };
   });
-  const rawRows = analytics.sortAdditionsSelfFirst(insuranceData.additions);
+  const rawRows = analytics.sortAdditionsSelfFirst(pendingAdditions);
   return { total: items.length, items, rawRows };
+}
+
+// Sent-history batches - one card per Batch ID, newest first. `to`/`cc` come
+// from insuranceService's own best-effort Redis record (see
+// insuranceService.js's recordBatchMeta comment) - falls back to '' if that
+// record is unavailable (e.g. Redis not configured), never fails the list.
+async function buildSentHistoryResponse(rows) {
+  const batches = analytics.groupSentRowsByBatch(rows);
+  const withMeta = await Promise.all(batches.map(async (b) => {
+    const meta = await insuranceService.getBatchMeta(b.batchId);
+    return { batchId: b.batchId, sentOn: b.sentOn, count: b.count, to: (meta && meta.to) || '', cc: (meta && meta.cc) || '' };
+  }));
+  return { batches: withMeta };
+}
+
+async function buildSentHistoryDetailResponse(rows, batchId, hrData) {
+  const batchRows = rows.filter((r) => r.status === 'Sent' && r.batchId === batchId);
+  if (!batchRows.length) return null;
+  const hrByEmployeeId = new Map(hrData.employees.map((e) => [e.employeeId, e]));
+  const byEmployee = new Map();
+  batchRows.forEach((r) => {
+    if (!byEmployee.has(r.employeeId)) byEmployee.set(r.employeeId, []);
+    byEmployee.get(r.employeeId).push(r);
+  });
+  const items = [];
+  byEmployee.forEach((group, employeeId) => {
+    const selfRow = group.find((r) => String(r.relationship || '').toLowerCase() === 'self');
+    if (!selfRow) return;
+    const hr = hrByEmployeeId.get(employeeId);
+    items.push({
+      employeeId,
+      name: selfRow.name,
+      department: hr ? (hrData.departmentNames.get(hr.departmentKey) || hr.department) : '',
+      designation: hr ? hr.designation : '',
+      familyCount: group.length - 1
+    });
+  });
+  items.sort((a, b) => a.name.localeCompare(b.name));
+  const meta = await insuranceService.getBatchMeta(batchId);
+  return {
+    batchId,
+    sentOn: batchRows[0].sentOn,
+    to: (meta && meta.to) || '',
+    cc: (meta && meta.cc) || '',
+    count: items.length,
+    items
+  };
 }
 
 function buildPolicyInfoResponse(policyValues) {
@@ -170,6 +233,7 @@ router.get('/health-insurance-bundle', async (req, res) => {
       familyMembers: buildFamilyMembersResponse(insuranceData, hrData),
       totalInsuredLives: buildTotalInsuredLivesResponse(insuranceData, hrData),
       exits: buildExitsResponse(insuranceData, hrData),
+      pendingExits: buildPendingExitsResponse(insuranceData, hrData),
       additions: buildAdditionsResponse(insuranceData, hrData),
       policyInfo: buildPolicyInfoResponse(policyValues),
       familyPremiumBreakdown: { groups: analytics.buildFamilyPremiumBreakdown(insuranceData.members) },
@@ -367,6 +431,107 @@ router.get('/exits', async (req, res) => {
   }
 });
 
+// TASK 2 (2026-11), direct instruction - "Pending Exits" own queue-filtered
+// route (NEVER the same field/route GET /exits above feeds Total Exits
+// with) - see public/workforce.js's loadHiExitsView.
+router.get('/exits/pending', async (req, res) => {
+  try {
+    const forceRefresh = wantsForceRefresh(req);
+    const [insuranceData, hrData] = await Promise.all([
+      insuranceService.getInsuranceData({ forceRefresh }),
+      employeeService.getEmployeeData({ forceRefresh })
+    ]);
+    res.json(buildPendingExitsResponse(insuranceData, hrData));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Sent-history: batch cards (date, count, recipients), newest first.
+router.get('/exits/sent-history', async (req, res) => {
+  try {
+    const insuranceData = await insuranceService.getInsuranceData({});
+    res.json(await buildSentHistoryResponse(insuranceData.deletions));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Sent-history: one batch's own people (tap a card -> who's in it).
+router.get('/exits/sent-history/:batchId', async (req, res) => {
+  try {
+    const [insuranceData, hrData] = await Promise.all([
+      insuranceService.getInsuranceData({}),
+      employeeService.getEmployeeData({})
+    ]);
+    const detail = await buildSentHistoryDetailResponse(insuranceData.deletions, req.params.batchId, hrData);
+    if (!detail) return res.status(404).json({ error: 'Batch not found.' });
+    res.json(detail);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// "Resend batch" - re-sends the mail to exactly this batch's CURRENT
+// members (a person moved back to Pending since the original send is
+// naturally excluded - batch membership is always the sheet's current
+// Batch ID column, never a frozen snapshot), and on success re-stamps them
+// onto a brand-new batch id/timestamp (see insuranceService.resendExitsBatch
+// for why) - status never passes back through Pending in between.
+router.post('/exits/sent-history/:batchId/resend', async (req, res) => {
+  try {
+    const insuranceData = await insuranceService.getInsuranceData({ forceRefresh: true });
+    const batchRows = insuranceData.deletions.filter((r) => r.status === 'Sent' && r.batchId === req.params.batchId);
+    if (!batchRows.length) return res.status(404).json({ error: 'Batch not found or has no remaining members (everyone in it may have been moved back to Pending).' });
+
+    const meta = await insuranceService.getBatchMeta(req.params.batchId);
+    const to = (req.body && req.body.to) || (meta && meta.to) || '';
+    const cc = (req.body && req.body.cc) || (meta && meta.cc) || '';
+    if (!to) return res.status(400).json({ error: 'No recipient on file for this batch - resend with an explicit "to".' });
+    const format = (meta && meta.format) === 'excel' ? 'excel' : 'pdf';
+
+    const rawRows = analytics.sortDeletionsSelfFirst(batchRows);
+    const tableRows = rawRows.map((r, i) => [i + 1, r.corporateName, r.employeeId, r.name, r.gender, r.relationship, r.dateOfLeaving, r.reason]);
+    const subtitle = rawRows.length + ' record' + (rawRows.length === 1 ? '' : 's') + ' · Generated ' +
+      new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+    const attachmentBuffer = format === 'excel'
+      ? await buildTableExcelBuffer({ title: 'Health Insurance Exits Report', subtitle, columns: EXITS_PDF_COLUMNS, rows: tableRows })
+      : await buildTablePdfBuffer({ title: 'Health Insurance Exits Report', subtitle, columns: EXITS_PDF_COLUMNS, rows: tableRows });
+
+    await gmailService.sendMailWithAttachment({
+      to, cc, subject: EXITS_MAIL_SUBJECT, text: EXITS_MAIL_TEXT,
+      attachment: {
+        filename: 'Health_Insurance_Exits_Resend_' + new Date().toISOString().slice(0, 10) + (format === 'excel' ? '.xlsx' : '.pdf'),
+        content: attachmentBuffer,
+        contentType: format === 'excel' ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' : 'application/pdf'
+      }
+    });
+
+    const rowNumbers = batchRows.map((r) => r.rowNumber);
+    const result = await insuranceService.resendExitsBatch(rowNumbers, { to, cc, format });
+    res.json({ ok: true, newBatchId: result.batchId, sentCount: rowNumbers.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// "Move a person back to Pending" - clears every row currently Sent for this
+// employeeId (self + family move together, same grouping as everything
+// else here) back to Pending. Never deletes anything.
+router.post('/exits/move-to-pending', async (req, res) => {
+  try {
+    const employeeId = req.body && req.body.employeeId;
+    if (!employeeId) return res.status(400).json({ error: 'employeeId is required.' });
+    const insuranceData = await insuranceService.getInsuranceData({ forceRefresh: true });
+    const rowNumbers = insuranceData.deletions.filter((r) => r.employeeId === employeeId && r.status === 'Sent').map((r) => r.rowNumber);
+    if (!rowNumbers.length) return res.status(404).json({ error: 'No Sent exit rows found for this employee.' });
+    await insuranceService.moveExitsToPending(rowNumbers);
+    res.json({ ok: true, movedCount: rowNumbers.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Live default To/Cc for the Exits Send Mail compose popup to pre-fill
 // (public/workforce.js's openMailCompose) - same lookup the send route
 // itself falls back to when no override is given.
@@ -394,13 +559,20 @@ router.post('/exits/send-mail', async (req, res) => {
     const subjectOverride = req.body && typeof req.body.subject === 'string' ? req.body.subject.trim() : '';
     const textOverride = req.body && typeof req.body.text === 'string' ? req.body.text.trim() : '';
 
-    const [insuranceData, recipients] = await Promise.all([
-      insuranceService.getInsuranceData({}),
+    // TASK 2 (2026-11), direct instruction - "send once" queue: force-refresh
+    // so this always sees the real CURRENT Pending set (never a stale cache
+    // read deciding what "pending" means at the moment of send), and send
+    // only those rows - never a row already Sent/Skipped.
+    const [insuranceDataFull, recipients] = await Promise.all([
+      insuranceService.getInsuranceData({ forceRefresh: true }),
       overrideTo
         ? Promise.resolve({ to: overrideTo, cc: req.body && typeof req.body.cc === 'string' ? req.body.cc.trim() : '' })
         : insuranceService.getMailRecipients()
     ]);
-    const rawRows = analytics.sortDeletionsSelfFirst(insuranceData.deletions);
+    const pendingDeletions = analytics.filterPendingRows(insuranceDataFull.deletions);
+    if (!pendingDeletions.length) return res.status(400).json({ error: 'No pending exits to send - everyone has already been sent to the insurer.' });
+
+    const rawRows = analytics.sortDeletionsSelfFirst(pendingDeletions);
     // Sr No is a fresh running serial over the displayed (Self-first) order,
     // not the sheet's original Sr No column - that would otherwise show
     // out-of-sequence numbers like 4, 7, 13, 3... after the reorder. Same
@@ -424,7 +596,12 @@ router.post('/exits/send-mail', async (req, res) => {
       }
     });
 
-    res.json({ ok: true, sentTo: recipients.to, cc: recipients.cc, recordCount: rawRows.length });
+    // Only reached once the mail has actually sent successfully - on any
+    // failure above, nothing below ever runs, so no row is ever written.
+    const rowNumbers = pendingDeletions.map((r) => r.rowNumber);
+    const result = await insuranceService.markExitsSent(rowNumbers, { to: recipients.to, cc: recipients.cc, format });
+
+    res.json({ ok: true, sentTo: recipients.to, cc: recipients.cc, recordCount: rawRows.length, batchId: result.batchId });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -468,13 +645,19 @@ router.post('/additions/send-mail', async (req, res) => {
     const subjectOverride = req.body && typeof req.body.subject === 'string' ? req.body.subject.trim() : '';
     const textOverride = req.body && typeof req.body.text === 'string' ? req.body.text.trim() : '';
 
-    const [insuranceData, recipients] = await Promise.all([
-      insuranceService.getInsuranceData({}),
+    // TASK 2 (2026-11), direct instruction - same "send once" queue as Exits
+    // above: force-refresh, send only the current Pending rows, mark Sent
+    // ONLY after the mail actually sends.
+    const [insuranceDataFull, recipients] = await Promise.all([
+      insuranceService.getInsuranceData({ forceRefresh: true }),
       overrideTo
         ? Promise.resolve({ to: overrideTo, cc: req.body && typeof req.body.cc === 'string' ? req.body.cc.trim() : '' })
         : insuranceService.getMailRecipients()
     ]);
-    const rawRows = analytics.sortAdditionsSelfFirst(insuranceData.additions);
+    const pendingAdditions = analytics.filterPendingRows(insuranceDataFull.additions);
+    if (!pendingAdditions.length) return res.status(400).json({ error: 'No pending addition requests to send - everyone has already been sent to the insurer.' });
+
+    const rawRows = analytics.sortAdditionsSelfFirst(pendingAdditions);
     // Sl. No. is a fresh running serial over the displayed (Self-first)
     // order, not the sheet's original Sl. No. column - same reasoning as
     // the Exits PDF's Sr No. Same rows/columns/order for either format.
@@ -497,7 +680,92 @@ router.post('/additions/send-mail', async (req, res) => {
       }
     });
 
-    res.json({ ok: true, sentTo: recipients.to, cc: recipients.cc, recordCount: rawRows.length });
+    // Only reached once the mail has actually sent successfully.
+    const rowNumbers = pendingAdditions.map((r) => r.rowNumber);
+    const result = await insuranceService.markAdditionsSent(rowNumbers, { to: recipients.to, cc: recipients.cc, format });
+
+    res.json({ ok: true, sentTo: recipients.to, cc: recipients.cc, recordCount: rawRows.length, batchId: result.batchId });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Sent-history: batch cards (date, count, recipients), newest first.
+router.get('/additions/sent-history', async (req, res) => {
+  try {
+    const insuranceData = await insuranceService.getInsuranceData({});
+    res.json(await buildSentHistoryResponse(insuranceData.additions));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Sent-history: one batch's own people (tap a card -> who's in it).
+router.get('/additions/sent-history/:batchId', async (req, res) => {
+  try {
+    const [insuranceData, hrData] = await Promise.all([
+      insuranceService.getInsuranceData({}),
+      employeeService.getEmployeeData({})
+    ]);
+    const detail = await buildSentHistoryDetailResponse(insuranceData.additions, req.params.batchId, hrData);
+    if (!detail) return res.status(404).json({ error: 'Batch not found.' });
+    res.json(detail);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// "Resend batch" - same semantics as Exits' own resend (see that route's own
+// comment): re-sends to the batch's CURRENT members and re-stamps them onto
+// a brand-new batch id/timestamp on success.
+router.post('/additions/sent-history/:batchId/resend', async (req, res) => {
+  try {
+    const insuranceData = await insuranceService.getInsuranceData({ forceRefresh: true });
+    const batchRows = insuranceData.additions.filter((r) => r.status === 'Sent' && r.batchId === req.params.batchId);
+    if (!batchRows.length) return res.status(404).json({ error: 'Batch not found or has no remaining members (everyone in it may have been moved back to Pending).' });
+
+    const meta = await insuranceService.getBatchMeta(req.params.batchId);
+    const to = (req.body && req.body.to) || (meta && meta.to) || '';
+    const cc = (req.body && req.body.cc) || (meta && meta.cc) || '';
+    if (!to) return res.status(400).json({ error: 'No recipient on file for this batch - resend with an explicit "to".' });
+    const format = (meta && meta.format) === 'excel' ? 'excel' : 'pdf';
+
+    const rawRows = analytics.sortAdditionsSelfFirst(batchRows);
+    const tableRows = rawRows.map((r, i) => [i + 1, r.corporateName, r.employeeId, r.name, r.doj, r.dob, r.gender, r.relationship, r.sumInsured]);
+    const subtitle = rawRows.length + ' record' + (rawRows.length === 1 ? '' : 's') + ' · Generated ' +
+      new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+    const attachmentBuffer = format === 'excel'
+      ? await buildTableExcelBuffer({ title: 'Health Insurance New Addition Requests', subtitle, columns: ADDITIONS_PDF_COLUMNS, rows: tableRows })
+      : await buildTablePdfBuffer({ title: 'Health Insurance New Addition Requests', subtitle, columns: ADDITIONS_PDF_COLUMNS, rows: tableRows });
+
+    await gmailService.sendMailWithAttachment({
+      to, cc, subject: ADDITIONS_MAIL_SUBJECT, text: ADDITIONS_MAIL_TEXT,
+      attachment: {
+        filename: 'Health_Insurance_Additions_Resend_' + new Date().toISOString().slice(0, 10) + (format === 'excel' ? '.xlsx' : '.pdf'),
+        content: attachmentBuffer,
+        contentType: format === 'excel' ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' : 'application/pdf'
+      }
+    });
+
+    const rowNumbers = batchRows.map((r) => r.rowNumber);
+    const result = await insuranceService.resendAdditionsBatch(rowNumbers, { to, cc, format });
+    res.json({ ok: true, newBatchId: result.batchId, sentCount: rowNumbers.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// "Move a person back to Pending" - clears every row currently Sent for this
+// employeeId (self + family) back to Pending. Never deletes anything.
+router.post('/additions/move-to-pending', async (req, res) => {
+  try {
+    const employeeId = req.body && req.body.employeeId;
+    if (!employeeId) return res.status(400).json({ error: 'employeeId is required.' });
+    const insuranceData = await insuranceService.getInsuranceData({ forceRefresh: true });
+    const rowNumbers = insuranceData.additions.filter((r) => r.employeeId === employeeId && r.status === 'Sent').map((r) => r.rowNumber);
+    if (!rowNumbers.length) return res.status(404).json({ error: 'No Sent addition rows found for this employee.' });
+    await insuranceService.moveAdditionsToPending(rowNumbers);
+    res.json({ ok: true, movedCount: rowNumbers.length });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

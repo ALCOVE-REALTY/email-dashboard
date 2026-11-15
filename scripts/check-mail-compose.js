@@ -88,9 +88,21 @@ async function main() {
   const origGetAllDoerMailRecipients = insuranceService.getAllDoerMailRecipients;
   const origGetBirthdayMailRecipients = insuranceService.getBirthdayMailRecipients;
   const origSendMailWithAttachment = gmailService.sendMailWithAttachment;
+  const origMarkAdditionsSent = insuranceService.markAdditionsSent;
+  const origMarkExitsSent = insuranceService.markExitsSent;
 
   const sentMail = [];
   gmailService.sendMailWithAttachment = async (m) => { sentMail.push(m); return { ok: true }; };
+  // TASK 2 (2026-11) - this suite is only about the shared Send Mail
+  // popup's own mail CONTENT (format/subject/body), never the "send once"
+  // queue mechanics (own full coverage: scripts/check-hi-insurance-queue.js,
+  // with a real fake sheet). insuranceService.getInsuranceData is mocked
+  // wholesale right below (a fixed object with no rowNumber/queueCols), so
+  // the real markAdditionsSent/markExitsSent - which write to a real Sheets
+  // client - are stubbed out here too, to keep this suite's own real-call
+  // count at exactly zero.
+  insuranceService.markAdditionsSent = async () => ({ batchId: 'TEST-BATCH', sentOn: new Date().toISOString() });
+  insuranceService.markExitsSent = async () => ({ batchId: 'TEST-BATCH', sentOn: new Date().toISOString() });
 
   const FAKE_DEPARTMENT_NAMES = new Map([['hr', 'HR'], ['ops', 'Operations']]);
   const FAKE_EMPLOYEES = [
@@ -200,6 +212,8 @@ async function main() {
     insuranceService.getAllDoerMailRecipients = origGetAllDoerMailRecipients;
     insuranceService.getBirthdayMailRecipients = origGetBirthdayMailRecipients;
     gmailService.sendMailWithAttachment = origSendMailWithAttachment;
+    insuranceService.markAdditionsSent = origMarkAdditionsSent;
+    insuranceService.markExitsSent = origMarkExitsSent;
   }
 
   console.log('='.repeat(70));

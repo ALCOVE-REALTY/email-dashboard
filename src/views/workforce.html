@@ -2537,6 +2537,12 @@
         </span>
       </div>
 
+      <!-- TASK 2 (2026-11) - always shown (even when empty - see the JS
+           empty-state text), never removed once a request is sent. -->
+      <button class="hi-sent-history-link" id="hiExitsSentHistoryLink" type="button" data-wi-enter="block">
+        🕘 Sent history ›
+      </button>
+
       <ul class="wf-emp-list" id="hiExitsList" data-wi-enter="list">
         <li class="empty"><div class="loading"><div class="spinner"></div></div></li>
       </ul>
@@ -2583,6 +2589,12 @@
           <button class="wf-link-btn wf-export-pdf-btn" id="exportHiAdditionsPdf" type="button"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg><span>Export PDF</span></button>
         </span>
       </div>
+
+      <!-- TASK 2 (2026-11) - always shown (even when empty - see the JS
+           empty-state text), never removed once a request is sent. -->
+      <button class="hi-sent-history-link" id="hiAdditionsSentHistoryLink" type="button" data-wi-enter="block">
+        🕘 Sent history ›
+      </button>
 
       <ul class="wf-emp-list" id="hiAdditionsList" data-wi-enter="list">
         <li class="empty"><div class="loading"><div class="spinner"></div></div></li>
@@ -3352,6 +3364,55 @@
         <button class="wf-clear-btn" id="mailEditSubjectBodyCancelBtn" type="button">Cancel</button>
         <button class="wf-send-mail-btn" id="mailEditSubjectBodySaveBtn" type="button">
           <span>Save</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- TASK 2 (2026-11) - Sent history: one shared pair of overlays reused
+       by BOTH New Addition Requests and Pending Exits (a `kind` state in
+       workforce.js decides which /api/insurance/<additions|exits>/* routes
+       each tap hits) - same "list of cards -> tap -> detail sheet" pattern
+       as the Integrations page's own sync-history (see
+       scripts/check-integrations-ui.js for the UI convention this mirrors). -->
+  <div class="wf-modal-overlay" id="hiSentHistoryOverlay" hidden>
+    <div class="wf-mail-compose" role="dialog" aria-modal="true" aria-label="Sent history">
+      <div class="wf-mail-compose-head">
+        <h3 id="hiSentHistoryTitle">Sent history</h3>
+        <button class="wf-icon-btn" id="hiSentHistoryCloseBtn" type="button" aria-label="Close">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="wf-mail-compose-body">
+        <ul class="wf-emp-list" id="hiSentHistoryList">
+          <li class="empty"><div class="loading"><div class="spinner"></div></div></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <div class="wf-modal-overlay" id="hiSentHistoryDetailOverlay" hidden>
+    <div class="wf-mail-compose" role="dialog" aria-modal="true" aria-label="Batch detail">
+      <div class="wf-mail-compose-head">
+        <button class="wf-icon-btn" id="hiSentHistoryDetailBackBtn" type="button" aria-label="Back to Sent history">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        </button>
+        <h3 id="hiSentHistoryDetailTitle">Batch</h3>
+        <button class="wf-icon-btn" id="hiSentHistoryDetailCloseBtn" type="button" aria-label="Close">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="wf-mail-compose-body">
+        <p class="wf-note" id="hiSentHistoryDetailMeta" style="margin-top:0;"></p>
+        <p class="wf-mail-compose-error" id="hiSentHistoryDetailError" hidden></p>
+        <ul class="wf-emp-list" id="hiSentHistoryDetailList">
+          <li class="empty"><div class="loading"><div class="spinner"></div></div></li>
+        </ul>
+      </div>
+      <div class="wf-mail-compose-foot">
+        <button class="wf-send-mail-btn" id="hiSentHistoryResendBtn" type="button">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h4l2 3h4l2-3h4"/><path d="M5.5 6h13l1.5 6v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-6l1.5-6z"/></svg>
+          <span>Resend batch</span>
         </button>
       </div>
     </div>

@@ -699,6 +699,25 @@ body {
   margin-bottom: 12px;
 }
 .hi-ce-total-row b { color: var(--accent); }
+
+/* TASK 2 (2026-11) - "Sent history" link: sits directly under "Total" (left
+   side of the total/send-mail/export row above), on its own row, nudging
+   the card list below it down slightly. Always shown, including the empty
+   state (plain text, "✓ All requests sent to insurer"), per spec. */
+.hi-sent-history-link {
+  display: block;
+  background: none;
+  border: 0;
+  padding: 0;
+  margin: -6px 0 12px;
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--accent);
+  cursor: pointer;
+  text-align: left;
+}
+.hi-sent-history-link:hover { text-decoration: underline; }
 .hi-ce-name-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .hi-ce-sub { font-size: 0.74rem; color: var(--ink); font-weight: 600; margin-top: 3px; }
 

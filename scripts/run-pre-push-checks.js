@@ -48,28 +48,35 @@ const DETERMINISTIC_SUITES = [
   'check-migration-helper.js',
   'check-settings-health.js',
   'check-settings-history.js',
-  'check-together-we-can.js'
+  'check-together-we-can.js',
+  'check-hi-insurance-queue.js'
 ];
 // Headless Playwright UI checks (also deterministic/mocked - no real
 // Claude/Drive calls). check-integrations-ui.js (2026-11, new feature)
 // covers the new "Integrations"/"Together We Can" page - a different
 // surface from check-subh-panel-ui.js's SUBH assistant panel, kept as its
 // own separate script rather than growing that already very large file.
-const UI_CHECKS = ['check-subh-panel-ui.js', 'check-integrations-ui.js', 'check-mail-compose-ui.js'];
+const UI_CHECKS = ['check-subh-panel-ui.js', 'check-integrations-ui.js', 'check-mail-compose-ui.js', 'check-hi-insurance-queue-ui.js'];
 
 // A non-zero exit does not always mean the suite's own checks failed - a
 // known, pre-existing, harmless Node/libuv issue on Windows
 // ("Assertion failed: !(handle->flags & UV_HANDLE_CLOSING)", src\win\
 // async.c) can crash the process during its OWN post-exit teardown,
-// AFTER every real check has already run and printed its own "N/N
-// passed" summary line. Only ever treated as a pass when that exact
-// signature is present AND the suite's own summary shows every check
-// passing (N/N, not e.g. 47/51) - any other non-zero exit, or a summary
-// showing a real failure, still fails normally.
+// AFTER every real check has already run and printed its own summary
+// line. Only ever treated as a pass when that exact signature is present
+// AND the suite's own summary shows every check passing - any other
+// non-zero exit, or a summary showing a real failure, still fails
+// normally. Two summary shapes are recognized: the headless-UI-check
+// convention ("N/N passed") and the plain check-*.js convention this
+// crash was also observed hitting (2026-11) - "N passed, M failed", only
+// treated as a full pass when M is exactly 0.
 function isHarmlessWindowsTeardownCrash(output, status) {
   if (!/Assertion failed:.*UV_HANDLE_CLOSING/.test(output)) return false;
-  const summary = output.match(/(\d+)\/(\d+) passed/);
-  return Boolean(summary && summary[1] === summary[2]);
+  const uiSummary = output.match(/(\d+)\/(\d+) passed/);
+  if (uiSummary) return uiSummary[1] === uiSummary[2];
+  const detSummary = output.match(/(\d+) passed, (\d+) failed/);
+  if (detSummary) return detSummary[2] === '0';
+  return false;
 }
 
 // Runs one suite as its own child process, resolving once it exits -
