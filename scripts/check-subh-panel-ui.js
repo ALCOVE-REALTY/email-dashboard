@@ -102,6 +102,29 @@ function check(label, ok, detail) {
   else { fail++; failures.push(label + (detail ? ' -- ' + detail : '')); console.log('[FAIL] ' + label + (detail ? ' -- ' + detail : '')); }
 }
 
+// Page frame fix (2026-11, direct instruction, reworked same day) - the
+// real #wfTopbar element (never a replica/copy) is relocated to the top of
+// #hrAssistantPanel for exactly the 7 SUBH-Settings sub-pages. Asserts all
+// 5 real, FUNCTIONAL elements (hamburger, wordmark text, refresh, SUBH
+// button, profile photo) are visible, AND that the element currently
+// showing really is #wfTopbar itself (same id), not a second copy.
+async function checkRealTopbarFrame(page, pageLabel) {
+  const topbar = page.locator('#wfTopbar');
+  const insidePanel = await page.evaluate(() => {
+    const t = document.getElementById('wfTopbar');
+    const p = document.getElementById('hrAssistantPanel');
+    return Boolean(t && p && p.contains(t));
+  });
+  check(pageLabel + ': the REAL #wfTopbar (not a replica) is relocated inside the SUBH panel', insidePanel);
+  check(pageLabel + ': real top bar is visible with all 5 elements (hamburger, wordmark, refresh, SUBH button, profile photo)',
+    await topbar.isVisible() &&
+    await page.locator('#menuBtn').isVisible() &&
+    (await page.locator('.wf-wordmark').first().textContent() || '').includes('Workforce') &&
+    await page.locator('#refreshBtn').isVisible() &&
+    await page.locator('#hrAssistantBtn').isVisible() &&
+    await page.locator('#profileAvatar').isVisible());
+}
+
 (async () => {
   const server = await startStaticServer();
   const port = server.address().port;
@@ -170,6 +193,25 @@ function check(label, ok, detail) {
   await page.click('#hrAssistantBtn');
   await page.waitForTimeout(200);
   check('panel opens to Home', await page.locator('#hrTodayUpdatesCard').isVisible());
+  // Regression guard (2026-11, direct instruction) - the page-frame fix for
+  // the 7 SUBH-Settings sub-pages must NEVER touch the main chat panel's
+  // own full-screen-overlay behavior (Task 2, 2026-11 - a documented real
+  // fix for a keyboard-scroll-nudge bug). On Home, #wfTopbar must stay
+  // exactly where it started (NOT relocated into the panel), and the panel
+  // itself must still be the same true full-screen overlay (fixed, 0 inset).
+  const homeFrameState = await page.evaluate(() => {
+    const t = document.getElementById('wfTopbar');
+    const p = document.getElementById('hrAssistantPanel');
+    const shell = document.querySelector('.wf-shell');
+    const cs = window.getComputedStyle(p);
+    return {
+      topbarInShell: Boolean(t && shell && shell.contains(t) && !p.contains(t)),
+      panelPosition: cs.position,
+      panelInsetsZero: cs.top === '0px' && cs.left === '0px' && cs.right === '0px' && cs.bottom === '0px'
+    };
+  });
+  check('Home: the real #wfTopbar stays in .wf-shell (never relocated for the main chat panel)', homeFrameState.topbarInShell, JSON.stringify(homeFrameState));
+  check('Home: the SUBH panel is still a true full-screen overlay (position:fixed, 0 inset) - unchanged by the settings page-frame fix', homeFrameState.panelPosition === 'fixed' && homeFrameState.panelInsetsZero, JSON.stringify(homeFrameState));
 
   await page.click('#hrTodayUpdatesCard');
   await page.waitForTimeout(200);
@@ -444,7 +486,12 @@ function check(label, ok, detail) {
   // Regression guard (2026-11) - the new "SUBH Settings page frame"/no-
   // WhatsApp-icon changes are scoped to the 7 named settings sub-pages
   // ONLY; a genuine WhatsApp-related page must be completely unaffected.
-  check('Attendance Requests (a genuine WhatsApp page): the top-bar replica stays HIDDEN - unaffected by the SUBH-Settings page-frame change', !(await page.locator('#hrSettingsPageTopbar').isVisible()));
+  check('Attendance Requests (a genuine WhatsApp page): #wfTopbar stays in .wf-shell, NOT relocated into the panel - unaffected by the SUBH-Settings page-frame change',
+    await page.evaluate(() => {
+      const t = document.getElementById('wfTopbar');
+      const p = document.getElementById('hrAssistantPanel');
+      return Boolean(t && p && !p.contains(t));
+    }));
   check('Attendance Requests: its own WhatsApp icon still shows - unaffected by the settings-pages icon removal', await page.locator('#hrCommsHeadIcon').isVisible());
   const attnNesting = await page.evaluate(() => {
     const rows = Array.from(document.querySelectorAll('#hrAttnList .wf-attn-row'));
@@ -558,6 +605,25 @@ function check(label, ok, detail) {
     actionNeededErrAfter === actionNeededErrBefore,
     'new errors: ' + JSON.stringify(consoleErrors.slice(actionNeededErrBefore).concat(pageErrors.slice(actionNeededErrBefore))));
 
+  // Page frame fix (2026-11) - Site names and Department names are 2 of
+  // the 7 SUBH-Settings sub-pages too; opened directly the same way the
+  // real SUBH Settings hub opens them, just to confirm the relocated real
+  // top bar reaches these 2 as well (not just the 4 already covered by
+  // their own, more detailed sections below).
+  await page.evaluate(() => { if (window.__hrAssistantClosePanel) window.__hrAssistantClosePanel(); });
+  await page.waitForTimeout(100);
+  await page.evaluate(() => { window.__hrAssistantOpenSiteAliases(); });
+  await page.waitForTimeout(250);
+  check('Site names page opens (not a blank page)', await page.locator('#hrSiteAliasesPage').isVisible());
+  await checkRealTopbarFrame(page, 'Site names');
+
+  await page.evaluate(() => { if (window.__hrAssistantClosePanel) window.__hrAssistantClosePanel(); });
+  await page.waitForTimeout(100);
+  await page.evaluate(() => { window.__hrAssistantOpenDeptAliases(); });
+  await page.waitForTimeout(250);
+  check('Department names page opens (not a blank page)', await page.locator('#hrDeptAliasesPage').isVisible());
+  await checkRealTopbarFrame(page, 'Department names');
+
   // TASK 1(e) (2026-11), direct instruction - "Company details" settings
   // page: opened the same way the real "SUBH Settings" dashboard tile
   // opens it (window.__hrAssistantOpenCompanyDetails), asserts the list
@@ -581,6 +647,7 @@ function check(label, ok, detail) {
   await page.evaluate(() => { window.__hrAssistantOpenCompanyDetails(); });
   await page.waitForTimeout(250);
   check('Company details page opens (not a blank page)', await page.locator('#hrCompanyDetailsPage').isVisible());
+  await checkRealTopbarFrame(page, 'Company details');
   const companyHeadTitle = await page.locator('#hrCommsHeadTitle').textContent().catch(() => null);
   check('Company details: header title reads "Company details"', (companyHeadTitle || '').trim() === 'Company details', 'got: ' + JSON.stringify(companyHeadTitle));
   const companyCards = await page.locator('#hrCompanyDetailsList [data-company]').count();
@@ -636,11 +703,26 @@ function check(label, ok, detail) {
   check('Letter settings page opens (not a blank page)', await page.locator('#hrLetterSettingsPage').isVisible());
   const letterHeadTitle = await page.locator('#hrCommsHeadTitle').textContent().catch(() => null);
   check('Letter settings: header title reads "Letter settings"', (letterHeadTitle || '').trim() === 'Letter settings', 'got: ' + JSON.stringify(letterHeadTitle));
-  // Page frame + no WhatsApp icon (2026-11, direct instruction) - every
-  // SUBH-Settings sub-page shows the real-top-bar replica above its own
-  // heading/back-button row, and never a WhatsApp icon bubble.
-  check('Letter settings: shows the "Workforce Intelligence" top-bar replica (SUBH Settings page frame)', await page.locator('#hrSettingsPageTopbar').isVisible());
+  // Page frame + no WhatsApp icon (2026-11, direct instruction; page frame
+  // reworked same day) - every SUBH-Settings sub-page shows the REAL
+  // #wfTopbar above its own heading/back-button row, and never a WhatsApp
+  // icon bubble.
+  await checkRealTopbarFrame(page, 'Letter settings');
   check('Letter settings: no WhatsApp icon between the back button and the heading', !(await page.locator('#hrCommsHeadIcon').isVisible()));
+  // Functional proof (2026-11), not just "visible" - the real hamburger
+  // button on the relocated #wfTopbar actually opens the real drawer (same
+  // element, same listener - this would be impossible on a replica with
+  // "no functional buttons", the exact thing the owner's live correction
+  // was about).
+  await page.click('#menuBtn');
+  await page.waitForTimeout(150);
+  check('Letter settings: the relocated top bar\'s hamburger button really opens the real ☰ drawer', await page.locator('#wfDrawer').isVisible());
+  // The backdrop is full-screen but the 300px-wide drawer itself sits on
+  // top of its left portion and intercepts clicks there - click a point on
+  // the right-hand strip of the backdrop that the drawer doesn't cover.
+  await page.locator('#wfDrawerBackdrop').click({ position: { x: 370, y: 10 } });
+  await page.waitForTimeout(150);
+  check('Letter settings: closing the drawer returns to Letter settings, still showing its own top bar', await page.locator('#hrLetterSettingsPage').isVisible() && await page.locator('#wfTopbar').isVisible());
   const refFormatVal = await page.locator('#hrLetterRefFormatInput').inputValue().catch(() => null);
   check('Letter settings: Ref No. format input is pre-filled', refFormatVal === '{Company_Code}/HR/{Letter_Code}/{FY}/{Serial}', 'got: ' + JSON.stringify(refFormatVal));
   const previewText = await page.locator('#hrLetterRefFormatPreview').textContent().catch(() => null);
@@ -1006,7 +1088,7 @@ function check(label, ok, detail) {
   await page.evaluate(() => { window.__hrAssistantOpenAiUsage(); });
   await page.waitForTimeout(250);
   check('AI usage page opens (not a blank page)', await page.locator('#hrAiUsagePage').isVisible());
-  check('AI usage: shows the "Workforce Intelligence" top-bar replica (SUBH Settings page frame)', await page.locator('#hrSettingsPageTopbar').isVisible());
+  await checkRealTopbarFrame(page, 'AI usage');
   check('AI usage: no WhatsApp icon between the back button and the heading', !(await page.locator('#hrCommsHeadIcon').isVisible()));
   const aiUsageChipsBox = await page.locator('#hrAiUsageChips').boundingBox();
   const aiUsagePageBox = await page.locator('#hrAiUsagePage').boundingBox();
@@ -1113,7 +1195,7 @@ function check(label, ok, detail) {
   await page.evaluate(() => { window.__hrAssistantOpenDataBackups(); });
   await page.waitForTimeout(250);
   check('Data & backups page opens (not a blank page)', await page.locator('#hrDataBackupsPage').isVisible());
-  check('Data & backups: shows the "Workforce Intelligence" top-bar replica (SUBH Settings page frame)', await page.locator('#hrSettingsPageTopbar').isVisible());
+  await checkRealTopbarFrame(page, 'Data & backups');
   check('Data & backups: no WhatsApp icon between the back button and the heading', !(await page.locator('#hrCommsHeadIcon').isVisible()));
   // Two small UI fixes (2026-11, direct instruction, 384px): "Backup now"
   // needs real breathing room below the page header (it has no section-
@@ -1206,7 +1288,7 @@ function check(label, ok, detail) {
   await page.evaluate(() => { window.__hrAssistantOpenSettingsHistory(); });
   await page.waitForTimeout(250);
   check('Settings history page opens (not a blank page)', await page.locator('#hrSettingsHistoryPage').isVisible());
-  check('Settings history: shows the "Workforce Intelligence" top-bar replica (SUBH Settings page frame)', await page.locator('#hrSettingsPageTopbar').isVisible());
+  await checkRealTopbarFrame(page, 'Settings history');
   check('Settings history: no WhatsApp icon between the back button and the heading', !(await page.locator('#hrCommsHeadIcon').isVisible()));
   const historyHeadTitle = await page.locator('#hrCommsHeadTitle').textContent().catch(() => null);
   check('Settings history: header title reads "Settings history"', (historyHeadTitle || '').trim() === 'Settings history', 'got: ' + JSON.stringify(historyHeadTitle));

@@ -3249,6 +3249,20 @@ body:not(.printing-org-chart) .org-chart-cards-row + .org-chart-branch-connector
    with window.visualViewport so the bottom edge tracks the visible
    viewport (above the on-screen keyboard) rather than the full layout
    viewport (behind it). */
+/* Page frame fix (2026-11, direct instruction) - the real #wfTopbar (see
+   workforce.html's own comment) gets this ONE style change only while
+   hrAssistant.js has relocated it to the top of .wf-ai-panel for a SUBH
+   Settings sub-page: same padding/background the old top-bar replica div
+   used to carry, flex-shrink:0 so the scrollable panel content below
+   (flex:1 areas) never squeezes it. Removed again the moment the real
+   element is moved back out to .wf-shell. */
+.wf-topbar--in-settings-panel {
+  padding: 14px 20px 0;
+  margin-bottom: 0;
+  flex-shrink: 0;
+  background: var(--paper);
+}
+
 .wf-ai-panel[hidden] { display: none; }
 .wf-ai-panel {
   position: fixed;

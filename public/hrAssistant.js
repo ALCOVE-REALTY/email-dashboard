@@ -74,11 +74,36 @@
   const commsHeadTitle = document.getElementById('hrCommsHeadTitle');
   const commsHeadSubtitle = document.getElementById('hrCommsHeadSubtitle');
   const commsHeadBadge = document.getElementById('hrCommsHeadBadge');
-  // "SUBH Settings" page frame (2026-11, direct instruction) - a visual
-  // replica of the real app top bar, shown ONLY for the 7 SUBH-Settings
-  // sub-pages (see setPanelView's isSettingsSubpage) - see this element's
-  // own comment in workforce.html for why it exists at all.
-  const settingsPageTopbar = document.getElementById('hrSettingsPageTopbar');
+  // "SUBH Settings" page frame (2026-11, direct instruction; reworked same
+  // day after a live correction - the owner's actual complaint was that the
+  // first version was only a visual replica with no working buttons).
+  // #wfTopbar is the ONE real app top bar (see its own comment in
+  // workforce.html) - relocateRealTopbarForSettingsSubpage() below
+  // physically moves that SAME element in and out of this panel, never
+  // copies it, so every button on it (hamburger, refresh, SUBH, profile
+  // photo) stays fully functional while a settings sub-page is shown.
+  const realTopbar = document.getElementById('wfTopbar');
+  const realTopbarHomeAnchor = document.getElementById('wfTopbarHomeAnchor');
+  // Moves #wfTopbar to the top of this panel (active=true, for one of the 7
+  // SUBH-Settings sub-pages) or back to its normal spot in .wf-shell
+  // (active=false, right before realTopbarHomeAnchor - every other page,
+  // and whenever the panel itself closes). A DOM move (appendChild/
+  // insertBefore) keeps every existing event listener intact - this is
+  // the real element, not a clone - and is a no-op if it's already where
+  // it needs to be, so calling it repeatedly (e.g. on every setPanelView)
+  // is always safe.
+  function relocateRealTopbarForSettingsSubpage(active) {
+    if (!realTopbar) return;
+    if (active) {
+      if (realTopbar.parentElement !== panel) panel.insertBefore(realTopbar, panel.firstChild);
+      realTopbar.classList.add('wf-topbar--in-settings-panel');
+    } else {
+      if (realTopbar.parentElement === panel && realTopbarHomeAnchor && realTopbarHomeAnchor.parentNode) {
+        realTopbarHomeAnchor.parentNode.insertBefore(realTopbar, realTopbarHomeAnchor);
+      }
+      realTopbar.classList.remove('wf-topbar--in-settings-panel');
+    }
+  }
   const todayUpdatesCard = document.getElementById('hrTodayUpdatesCard');
   const todayUpdatesBadge = document.getElementById('hrTodayUpdatesBadge');
   // Task 4 (2026-10-28) - Important Communications hub: a hub page (two
@@ -1530,6 +1555,14 @@
   // opened from. Only a direct close (the X button, or navBack() finding
   // nothing left to pop) still owns an un-consumed history entry to unwind.
   function closePanel(fromPopstate) {
+    // Page frame (2026-11) - closePanel can fire directly from a hardware
+    // back press/gesture while a SUBH-Settings sub-page is showing
+    // (navBack()/the popstate handler both call this straight through when
+    // navStack is down to just 'home', skipping setPanelView entirely) -
+    // #wfTopbar must always be put back in .wf-shell before the panel
+    // disappears, or the real dashboard underneath would be left with no
+    // top bar at all. A no-op if it's already there.
+    relocateRealTopbarForSettingsSubpage(false);
     panel.hidden = true;
     unlockBodyScroll();
     if (window.visualViewport) {
@@ -1954,10 +1987,10 @@
     const isAiUsage = view === 'aiUsage';
     const isDataBackups = view === 'dataBackups';
     const isSettingsHistory = view === 'settingsHistory'; // TASK 3 (2026-11)
-    // Page frame (2026-11, direct instruction) - the 7 SUBH-Settings
-    // sub-pages, and ONLY these, show the real-top-bar replica above the
-    // normal back-button+heading row (see hrSettingsPageTopbar's own
-    // comment in workforce.html).
+    // Page frame (2026-11, direct instruction; reworked same day) - the 7
+    // SUBH-Settings sub-pages, and ONLY these, show the REAL #wfTopbar
+    // above the normal back-button+heading row (see
+    // relocateRealTopbarForSettingsSubpage's own comment above).
     const isSettingsSubpage = isSiteAliases || isDeptAliases || isCompanyDetails || isLetterSettings || isAiUsage || isDataBackups || isSettingsHistory;
     const isActionNeeded = view === 'actionNeeded';
     const isAutoList = view === 'automationList';
@@ -1982,7 +2015,7 @@
     // cascade, so it wins, leaving the element visibly displayed despite
     // `hidden` being set. An inline style always wins regardless of
     // specificity ties, so this toggles style.display directly instead.
-    if (settingsPageTopbar) settingsPageTopbar.style.display = isSettingsSubpage ? '' : 'none';
+    relocateRealTopbarForSettingsSubpage(isSettingsSubpage);
     if (todayUpdatesCard) todayUpdatesCard.hidden = !isHome;
     messagesEl.hidden = !isHome;
     if (commsHubPage) commsHubPage.hidden = !isCommsHub;
