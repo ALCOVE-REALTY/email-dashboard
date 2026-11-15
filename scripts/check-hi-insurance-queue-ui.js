@@ -159,7 +159,15 @@ function check(label, ok, detail) {
     route.fulfill({
       status: 200, contentType: 'application/json', body: JSON.stringify({
         coveredEmployees: 0, totalActiveEmployees: 0, employeePremium: 0, familyMembers: 0, familyPremium: 0,
-        totalInsuredLives: 0, annualPremium: 0, newAdditionRequests: pendingCount, pendingExits: 0, exits: 0,
+        // exits/pendingExits deliberately DIFFERENT non-zero numbers (not
+        // both 0) - LIVE BUG FOUND reviewing this suite: the "Pending
+        // Exits" dashboard card read `data.exits` (same field as "Total
+        // Exits") instead of `data.pendingExits`, and this fixture's old
+        // exits:0/pendingExits:0 couldn't have caught that (both read as
+        // "0" either way) - fixed in public/workforce.js, and this
+        // fixture + the check below now actually proves the two cards
+        // read two different fields.
+        totalInsuredLives: 0, annualPremium: 0, newAdditionRequests: pendingCount, pendingExits: 5, exits: 17,
         coverage: { employees: 0, spouse: 0, children: 0, parents: 0, other: 0 },
         renewal: { hasDates: false, daysRemaining: null, progressPct: null, startDate: null, endDate: null }
       })
@@ -206,6 +214,13 @@ function check(label, ok, detail) {
 
   const hiAdditionsCardText = await page.locator('[data-kpi="hiAdditions"]').textContent();
   check('"New Addition Requests" KPI card shows the Pending count (3), matching the 3 Pending fixture people', /3/.test(hiAdditionsCardText || ''), 'got: ' + JSON.stringify(hiAdditionsCardText));
+
+  // LIVE BUG FIX regression lock: "Pending Exits" must read pendingExits
+  // (5), never the same field "Total Exits" reads (exits: 17).
+  const hiExitsCardText = await page.locator('[data-kpi="hiExits"]').textContent();
+  check('"Pending Exits" KPI card shows pendingExits (5), not the Total Exits value (17)', /5/.test(hiExitsCardText || '') && !/17/.test(hiExitsCardText || ''), 'got: ' + JSON.stringify(hiExitsCardText));
+  const hiTotalExitsCardText = await page.locator('[data-kpi="hiTotalExits"]').textContent();
+  check('"Total Exits" KPI card still shows the unfiltered exits value (17), unaffected by the queue feature', /17/.test(hiTotalExitsCardText || ''), 'got: ' + JSON.stringify(hiTotalExitsCardText));
 
   await page.click('[data-kpi="hiAdditions"]');
   await page.waitForTimeout(300);

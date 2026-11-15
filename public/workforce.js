@@ -3236,7 +3236,7 @@ async function loadHealthInsuranceView(forceRefresh) {
       kpiCard({ key: 'hiTotalLives', label: 'Total Insured Lives', value: data.totalInsuredLives, tone: 'ins-purple', icon: 'total', deltaSub: 'Employees + Family', liveNum: true }) +
       kpiCard({ key: 'hiAnnualPremium', label: 'Annual Premium', value: formatLakhs(data.annualPremium), tone: 'ins-green', icon: 'money', deltaSub: 'FY 26-27' }) +
       kpiCard({ key: 'hiAdditions', label: 'New Addition Requests', value: data.newAdditionRequests, tone: 'ins-green', icon: 'plusCircle', deltaSub: 'Pending' }) +
-      kpiCard({ key: 'hiExits', label: 'Pending Exits', value: data.exits, tone: 'ins-red', icon: 'exitDoor', deltaSub: 'From Insurance' }) +
+      kpiCard({ key: 'hiExits', label: 'Pending Exits', value: data.pendingExits, tone: 'ins-red', icon: 'exitDoor', deltaSub: 'From Insurance' }) +
       // clickable deliberately omitted (not set to false), same as every
       // other Health Insurance card - non-interactivity comes from
       // #healthInsuranceView's own CSS, not the disabled attribute (which
