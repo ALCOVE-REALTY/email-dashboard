@@ -92,6 +92,62 @@ async function main() {
   }
 
   console.log('='.repeat(70));
+  console.log('ISSUE 3(a) (2026-11), live bug fix - SUBH\'s own internal temp-copy names are never treated as a real template, and any PAST leak into the owner\'s real stores self-heals');
+  console.log('='.repeat(70));
+  const subhDriveGuard = require('../src/subhDriveGuard');
+  const settingsAuditLog = require('../src/aiAssistant/settingsAuditLog');
+  const origGetDriveClient3 = sheetsAuth.getDriveClient;
+  sheetsAuth.getDriveClient = () => ({
+    files: {
+      list: async () => ({
+        data: {
+          files: [
+            { id: 'real1', name: 'Real Letter', mimeType: driveTemplatesService.GOOGLE_DOC_MIME },
+            // A temp copy, transiently sitting in the SAME scanned folder
+            // (Drive's own files.copy with no `parents` override lands it
+            // there - see subhDriveGuard's own comment) - must never be
+            // treated as a genuine template.
+            { id: 'temptpl', name: subhDriveGuard.SUBH_TEMP_COPY_NAMES[1], mimeType: driveTemplatesService.GOOGLE_DOC_MIME }
+          ]
+        }
+      })
+    }
+  });
+  try {
+    const files = await driveTemplatesService.listDriveTemplateFiles();
+    check('listDriveTemplateFiles excludes a file named exactly like one of SUBH\'s own known temp-copy names', files.length === 1 && files[0].id === 'real1');
+    const all = await driveTemplatesService.listAllLetterTemplates();
+    check('listAllLetterTemplates never surfaces the temp-copy file as a discovered template (no auto-seeded code/name for it)', all.length === 1 && all[0].key === 'drive:real1');
+    const namesAfter = await letterSettingsService.getLetterDisplayNames();
+    const codesAfter = await letterSettingsService.getLetterCodes();
+    check('...and never wrote a display name or code for it either', !namesAfter['drive:temptpl'] && !codesAfter['drive:temptpl']);
+
+    // Now simulate a PAST leak (as if this fix didn't exist yet) directly
+    // against the real save functions, then confirm the self-heal cleans
+    // it up, logs a clearly-labelled correction, and leaves the
+    // legitimate "Real Letter" entry completely untouched.
+    await letterSettingsService.saveLetterDisplayName('drive:leaked1', subhDriveGuard.SUBH_TEMP_COPY_NAMES[0]);
+    await letterSettingsService.saveLetterCode('drive:leaked1', 'SGLT');
+    const correction = await letterSettingsService.correctTempCopyLeaks();
+    check('correctTempCopyLeaks reports exactly the one leaked entry it found and removed', correction.corrected === 1);
+    const namesAfterHeal = await letterSettingsService.getLetterDisplayNames();
+    const codesAfterHeal = await letterSettingsService.getLetterCodes();
+    check('the leaked display name is gone from the real store', !namesAfterHeal['drive:leaked1']);
+    check('the leaked letter code (same discovery event) is gone too', !codesAfterHeal['drive:leaked1']);
+    check('a legitimate, real entry (the "Real Letter" saved earlier via the normal discovery path) is completely untouched', namesAfterHeal['drive:real1'] === 'Real Letter' || driveTemplatesService.deriveDisplayName('Real Letter') === 'Real Letter');
+    const nameHistory = await settingsAuditLog.listSettingsAudit('letter-display-names', 10);
+    const correctionEntry = nameHistory.find((e) => e.letterType === 'drive:leaked1' && e.action === 'corrected');
+    check('the removal is logged as a CLEARLY-LABELLED system correction (never source: owner-ui), with a plain-language reason', Boolean(correctionEntry) && correctionEntry.source === 'system-correction' && typeof correctionEntry.reason === 'string' && correctionEntry.reason.length > 0 && correctionEntry.before === subhDriveGuard.SUBH_TEMP_COPY_NAMES[0]);
+    const codeHistory = await settingsAuditLog.listSettingsAudit('letter-codes', 10);
+    const codeCorrectionEntry = codeHistory.find((e) => e.letterType === 'drive:leaked1' && e.action === 'corrected');
+    check('the matching letter-code removal is ALSO logged as a system correction', Boolean(codeCorrectionEntry) && codeCorrectionEntry.source === 'system-correction');
+    const secondRun = await letterSettingsService.correctTempCopyLeaks();
+    check('correctTempCopyLeaks is idempotent - a second run (already clean) finds nothing left to correct', secondRun.corrected === 0);
+  } finally {
+    sheetsAuth.getDriveClient = origGetDriveClient3;
+  }
+
+  console.log('='.repeat(70));
   console.log('TASK 2 (2026-11), direct instruction - deriveDisplayName: strip extension, "_" -> space, drop a trailing "Template"/"- Template"');
   console.log('='.repeat(70));
   check('strips the extension, replaces underscores, drops a trailing "_Template"', driveTemplatesService.deriveDisplayName('Confirmation_Letter_Template.docx') === 'Confirmation Letter');

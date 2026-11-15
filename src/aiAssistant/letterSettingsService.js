@@ -154,6 +154,51 @@ async function saveLetterDisplayName(letterType, name) {
   return { ok: true, names };
 }
 
+// ISSUE 3(a) (2026-11), live bug fix - a real data correction, done
+// carefully and logged (never silent): SUBH's own internal temp-copy
+// names (subhDriveGuard.SUBH_TEMP_COPY_NAMES) have, in the past, leaked
+// into the owner's REAL letter-display-names/letter-codes stores (root
+// cause: driveTemplatesService.listDriveTemplateFiles() could transiently
+// see a temp Drive-template copy before it was deleted and treat it as a
+// genuinely new template - fixed structurally at the source, in that
+// function, so this can never happen again; this is the one-time
+// self-heal for any entry that ALREADY got written that way before that
+// fix existed). Idempotent (a no-op once already clean) and safe to call
+// on every listAllLetterTemplates() pass - touches ONLY an entry whose
+// value is EXACTLY one of the known temp-copy names, never any other
+// entry, real or not. Each removal is logged as its own history entry
+// with `source: 'system-correction'` (never 'owner-ui') plus a plain-
+// language `reason`, so Settings history always shows WHY, never a
+// silent deletion.
+async function correctTempCopyLeaks() {
+  const redis = getClient();
+  if (!redis) return { corrected: 0 };
+  const [names, codes] = await Promise.all([getLetterDisplayNames(), getLetterCodes()]);
+  const leakedKeys = Object.keys(names).filter((k) => subhDriveGuard.SUBH_TEMP_COPY_NAMES.includes(names[k]));
+  if (!leakedKeys.length) return { corrected: 0 };
+  let codesChanged = false;
+  for (const key of leakedKeys) {
+    const beforeName = names[key];
+    delete names[key];
+    await settingsAuditLog.logSettingsAudit('letter-display-names', {
+      action: 'corrected', letterType: key, before: beforeName, after: null, source: 'system-correction',
+      reason: 'SUBH\'s own internal temp Drive copy ("' + beforeName + '") transiently appeared in the SUBH Letter Templates folder and was wrongly auto-saved here as a display name - removed; this was never a real owner choice.'
+    });
+    if (Object.prototype.hasOwnProperty.call(codes, key)) {
+      const beforeCode = codes[key];
+      delete codes[key];
+      codesChanged = true;
+      await settingsAuditLog.logSettingsAudit('letter-codes', {
+        action: 'corrected', letterType: key, before: beforeCode, after: null, source: 'system-correction',
+        reason: 'Same leaked temp-copy discovery as the matching "Letter display names" correction above - this letter code was never a real owner choice either.'
+      });
+    }
+  }
+  try { await redis.set(LETTER_DISPLAY_NAMES_KEY, JSON.stringify(names)); } catch (err) { /* best effort */ }
+  if (codesChanged) { try { await redis.set(LETTER_CODES_KEY, JSON.stringify(codes)); } catch (err) { /* best effort */ } }
+  return { corrected: leakedKeys.length };
+}
+
 function padSerial(n) { return String(n).padStart(4, '0'); }
 function renderRefNo(format, { companyCode, letterCode, fy, serial }) {
   return format
@@ -608,6 +653,7 @@ module.exports = {
   LETTER_TEMPLATES_FOLDER_ID, DEFAULT_REF_FORMAT, DEFAULT_LETTER_CODES, LETTER_TYPE_LABELS, REF_FORMAT_PLACEHOLDERS,
   computeFinancialYear, renderRefNo, padSerial,
   getRefNoFormat, saveRefNoFormat, getLetterCodes, saveLetterCode, getLetterDisplayNames, saveLetterDisplayName, getLetterSettings,
+  correctTempCopyLeaks,
   getCounterValue, setCounterOverride, restoreCounterRaw, previewNextRefNo, assignRefNo,
   getLetterRegisterLink, setRegisterSheetLink, appendToLetterRegister, uploadSentLetterPdf,
   checkTestEmployeeEligibility, getLastTestEmployeeId, setLastTestEmployeeId, pickDefaultTestEmployee,

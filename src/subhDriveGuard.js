@@ -35,6 +35,25 @@
 const LETTER_TEMPLATES_FOLDER_ID = process.env.SUBH_LETTER_TEMPLATES_FOLDER_ID || '1ecugXqFBrNTvFDPxgQnZBq8ueItQduTW';
 const ISSUED_LETTERS_FOLDER_ID = process.env.SUBH_ISSUED_LETTERS_FOLDER_ID || '1uRYzSXURXoMi6kC8MmuKlruhFHvZqF8r';
 
+// ISSUE 3(a) (2026-11), live bug fix - the ONLY names SUBH's own code ever
+// gives a temp Drive-template copy (driveTemplateGenerationService.js's
+// "fill and export a PDF" copy, driveTemplateFieldsService.js's .docx
+// "read placeholders" copy). Drive's own `files.copy` places a copy in
+// the SAME parent folder as its source with no `parents` override, so a
+// temp copy transiently sits in the real "SUBH Letter Templates" folder
+// between its own creation and guardedDeleteOwned() a moment later - if
+// driveTemplatesService.listDriveTemplateFiles() happens to list that
+// folder during that exact window, the temp file looked like a genuine
+// newly-discovered template, and listAllLetterTemplates()'s own "seed a
+// default code/display name for a template never seen before" self-heal
+// then wrote this temp copy's own name straight into the owner's REAL
+// display-names/letter-codes stores (the live bug: Settings history
+// showed "Letter display names · (none) → SUBH temp placeholder scan").
+// A single shared constant - both temp-copy creators below AND
+// driveTemplatesService's own discovery filter use this exact list, so
+// neither can drift out of sync with the other.
+const SUBH_TEMP_COPY_NAMES = ['SUBH generated letter (temp)', 'SUBH temp placeholder scan'];
+
 // Seeded with the two known-safe roots; grows ONLY as this module itself
 // confirms/creates a folder that is a direct child of an already-allowed
 // one - never from anything a caller merely claims is safe.
@@ -198,7 +217,7 @@ async function guardedUploadFile(drive, parentId, name, mimeType, bodyStream) {
 }
 
 module.exports = {
-  LETTER_TEMPLATES_FOLDER_ID, ISSUED_LETTERS_FOLDER_ID,
+  LETTER_TEMPLATES_FOLDER_ID, ISSUED_LETTERS_FOLDER_ID, SUBH_TEMP_COPY_NAMES,
   guardedCopyTemplate, guardedExport, guardedBatchUpdate, guardedDeleteOwned,
   guardedGetOrCreateFolder, guardedUploadFile, guardedDeleteManifestFile, guardedDownloadFile
 };

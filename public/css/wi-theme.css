@@ -1599,6 +1599,13 @@ body { background: var(--wi-bg); }
    above, a smaller nudge since this one only needed "slightly", not
    "still too close". */
 #hrAiUsagePage { padding-top: 14px; }
+/* Settings history (ISSUE 3(b), 2026-11, direct instruction) - the filter
+   chips that used to be its first element are gone, so this page is now
+   the same "no section-title row above the first control" case as AI
+   usage/Data & backups above - same "a little below the heading, not
+   touching it" treatment as AI usage (the list itself starts right at
+   the page top otherwise, since .wf-rem-list has no margin of its own). */
+#hrSettingsHistoryPage { padding-top: 14px; }
 .wf-comms-system-strip[hidden] { display: none; }
 .wf-comms-system-strip {
   display: flex; align-items: flex-start; gap: 10px; padding: 11px 12px;

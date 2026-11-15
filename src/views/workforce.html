@@ -611,15 +611,13 @@
         <div class="wf-rem-sheet-body" id="hrBackupRestoreBody"></div>
       </div>
 
-      <!-- Settings history (TASK 3, 2026-11), direct instruction - every
+      <!-- Settings history (TASK 3, 2026-11; ISSUE 3(b), 2026-11, direct
+           instruction - filter chips removed: one single list of every
            write/delete to owner settings (settingsAuditLog.js's ~9 shared
-           stores + company-details' own earlier audit list), filterable
-           by group, with Restore per change. -->
+           stores + company-details' own earlier audit list), newest
+           first, with Restore per change. -->
       <div class="wf-comms-page" id="hrSettingsHistoryPage" hidden>
-        <div class="wf-rem-chips" id="hrSettingsHistoryChips">
-          <button type="button" class="wf-rem-chip" data-group="" aria-pressed="true">All</button>
-        </div>
-        <div class="wf-rem-list" id="hrSettingsHistoryList" style="margin-top:14px"></div>
+        <div class="wf-rem-list" id="hrSettingsHistoryList"></div>
       </div>
 
       <div class="wf-ai-sheet-backdrop" id="hrSettingsHistoryRestoreBackdrop" hidden></div>

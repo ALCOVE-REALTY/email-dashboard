@@ -1084,13 +1084,23 @@ function check(label, ok, detail) {
   await page.click('#hrBackupRestoreCloseBtn');
   await page.waitForTimeout(350);
 
-  // TASK 3 (2026-11), direct instruction - "Settings history": every
-  // write/delete to owner settings, filterable by group, Restore per
-  // change. Opened the same way as every other SUBH Settings page
+  // TASK 3 / ISSUE 3 (2026-11), direct instruction - "Settings history":
+  // every write/delete to owner settings, Restore per change. ISSUE
+  // 3(b): the filter chips are GONE - one single list, newest first.
+  // Opened the same way as every other SUBH Settings page
   // (window.__hrAssistantOpenSettingsHistory).
   const fakeHistoryItems = [
     { group: 'company-details', groupLabel: 'Company details', restorable: true, at: '2026-11-14T02:00:00.000Z', action: 'saved', company: 'Alcove Realty Pvt Ltd', before: { code: 'ARPL1' }, after: { code: 'ARPL2' }, source: 'owner-ui' },
-    { group: 'letter-logo', groupLabel: 'Letter logo', restorable: false, at: '2026-11-13T01:00:00.000Z', action: 'saved', before: { hadLogo: false }, after: { hadLogo: true }, source: 'owner-ui' }
+    { group: 'letter-logo', groupLabel: 'Letter logo', restorable: false, at: '2026-11-13T01:00:00.000Z', action: 'saved', before: { hadLogo: false }, after: { hadLogo: true }, source: 'owner-ui' },
+    // ISSUE 3(a) (2026-11) - a clearly-labelled system correction (never
+    // an owner edit) must render distinctly, never blending in with the
+    // rest of the list, and must never offer a Restore button (restoring
+    // a leaked temp-copy name as a real display name would be absurd).
+    {
+      group: 'letter-display-names', groupLabel: 'Letter display names', restorable: false, at: '2026-11-15T03:00:00.000Z', action: 'corrected',
+      letterType: 'drive:leaked1', before: 'SUBH temp placeholder scan', after: null, source: 'system-correction',
+      reason: 'SUBH\'s own internal temp Drive copy ("SUBH temp placeholder scan") transiently appeared in the SUBH Letter Templates folder and was wrongly auto-saved here as a display name - removed; this was never a real owner choice.'
+    }
   ];
   await page.route('**/api/workforce/hr-assistant/settings-history', (route) => {
     if (route.request().method() !== 'GET') { route.fallback(); return; }
@@ -1114,19 +1124,20 @@ function check(label, ok, detail) {
   check('Settings history page opens (not a blank page)', await page.locator('#hrSettingsHistoryPage').isVisible());
   const historyHeadTitle = await page.locator('#hrCommsHeadTitle').textContent().catch(() => null);
   check('Settings history: header title reads "Settings history"', (historyHeadTitle || '').trim() === 'Settings history', 'got: ' + JSON.stringify(historyHeadTitle));
+  check('ISSUE 3(b): the filter chips are GONE from this page', await page.locator('#hrSettingsHistoryChips').count() === 0);
   const historyCards = await page.locator('#hrSettingsHistoryList [data-history-idx]').count();
-  check('Settings history: both fake history entries render as rows', historyCards === 2, 'got: ' + historyCards);
+  check('Settings history: ALL 3 fake history entries render as ONE single list (no filtering)', historyCards === 3, 'got: ' + historyCards);
+  const historyListBox = await page.locator('#hrSettingsHistoryList').boundingBox();
+  const historyPageBox = await page.locator('#hrSettingsHistoryPage').boundingBox();
+  const historyTopGap = (historyListBox && historyPageBox) ? (historyListBox.y - historyPageBox.y) : null;
+  check('ISSUE 3(b): the list starts a little below the page heading, not touching it (same spacing as other settings pages)', typeof historyTopGap === 'number' && historyTopGap >= 10 && historyTopGap <= 40, 'got topGap: ' + historyTopGap);
   const restorableRowBtns = await page.locator('#hrSettingsHistoryList [data-history-idx="0"] [data-action="restore-history"]').count();
   const nonRestorableRowBtns = await page.locator('#hrSettingsHistoryList [data-history-idx="1"] [data-action="restore-history"]').count();
   check('Settings history: a restorable entry (company details) shows a Restore button; a non-restorable one (letter logo - image bytes never kept in history) does not', restorableRowBtns === 1 && nonRestorableRowBtns === 0, 'got restorable=' + restorableRowBtns + ' nonRestorable=' + nonRestorableRowBtns);
-  const historyChipsCount = await page.locator('#hrSettingsHistoryChips .wf-rem-chip').count();
-  check('Settings history: filter chips render for "All" + each real group', historyChipsCount === 3, 'got: ' + historyChipsCount);
-  await page.click('#hrSettingsHistoryChips [data-group="letter-logo"]');
-  await page.waitForTimeout(150);
-  const filteredCards = await page.locator('#hrSettingsHistoryList [data-history-idx]').count();
-  check('Settings history: picking a group chip filters the list to just that group', filteredCards === 1, 'got: ' + filteredCards);
-  await page.click('#hrSettingsHistoryChips [data-group=""]');
-  await page.waitForTimeout(150);
+  const correctionRowText = await page.locator('#hrSettingsHistoryList [data-history-idx="2"]').textContent().catch(() => null);
+  check('ISSUE 3(a): the system-correction entry is clearly labelled as such, with its plain-language reason shown', (correctionRowText || '').includes('System correction') && (correctionRowText || '').includes('never a real owner choice'), 'got: ' + JSON.stringify(correctionRowText));
+  const correctionRestoreBtns = await page.locator('#hrSettingsHistoryList [data-history-idx="2"] [data-action="restore-history"]').count();
+  check('ISSUE 3(a): the system-correction entry never offers a Restore button', correctionRestoreBtns === 0);
   await page.click('#hrSettingsHistoryList [data-history-idx="0"] [data-action="restore-history"]');
   await page.waitForTimeout(250);
   check('Settings history: tapping Restore opens the preview sheet showing the change', await page.locator('#hrSettingsHistoryRestoreSheet').isVisible());

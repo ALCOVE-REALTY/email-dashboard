@@ -43,7 +43,7 @@ async function generateDriveTemplateLetter(fileId, mimeType, mapping, placeholde
   // Google Doc conversion for a .docx source; a native Google Doc source
   // is simply copied as-is (same call either way) - the owner's own
   // original file is NEVER opened for editing, only this throwaway copy.
-  const copy = await subhDriveGuard.guardedCopyTemplate(drive, fileId, { name: 'SUBH generated letter (temp)', mimeType: driveTemplatesService.GOOGLE_DOC_MIME });
+  const copy = await subhDriveGuard.guardedCopyTemplate(drive, fileId, { name: subhDriveGuard.SUBH_TEMP_COPY_NAMES[0], mimeType: driveTemplatesService.GOOGLE_DOC_MIME });
   const tempId = copy.data.id;
   try {
     const requests = Object.keys(values).map((placeholder) => ({

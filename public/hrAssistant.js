@@ -236,7 +236,6 @@
   const backupRestoreBody = document.getElementById('hrBackupRestoreBody');
   // Settings history (TASK 3, 2026-11, direct instruction).
   const settingsHistoryPage = document.getElementById('hrSettingsHistoryPage');
-  const settingsHistoryChips = document.getElementById('hrSettingsHistoryChips');
   const settingsHistoryList = document.getElementById('hrSettingsHistoryList');
   const settingsHistoryRestoreBackdrop = document.getElementById('hrSettingsHistoryRestoreBackdrop');
   const settingsHistoryRestoreSheet = document.getElementById('hrSettingsHistoryRestoreSheet');
@@ -4270,7 +4269,6 @@
   // change (re-uses each store's own real save/delete function - no
   // more powerful than the owner re-typing the old value by hand).
   const RESTORABLE_ACTIONS = { saved: true, deleted: true, override: true };
-  let activeSettingsHistoryGroup = '';
   function formatHistoryValue(v) {
     if (v === null || v === undefined) return '(none)';
     if (typeof v === 'object') return Object.keys(v).length ? JSON.stringify(v) : '(empty)';
@@ -4286,6 +4284,7 @@
       return formatHistoryValue(e.before) + ' → ' + formatHistoryValue(e.after);
     }
     if (e.action === 'deleted') return 'Deleted: ' + formatHistoryValue(e.before);
+    if (e.action === 'corrected') return 'Removed: ' + formatHistoryValue(e.before);
     if (e.action === 'ambiguous_match') return 'Ambiguous match - candidates: ' + (e.candidates || []).join(', ');
     if (e.action === 'reattached') return 'Reattached from "' + escapeHtml(e.from || '') + '"';
     return e.action || 'Change';
@@ -4293,19 +4292,31 @@
   function historyRowHtml(e, idx) {
     const when = e.at ? new Date(e.at).toLocaleString() : '—';
     const canRestore = e.restorable !== false && RESTORABLE_ACTIONS[e.action];
+    // ISSUE 3(a) (2026-11), direct instruction - a system-made correction
+    // (e.g. undoing SUBH's own internal temp-copy name that leaked into a
+    // real owner-settings store) must read as CLEARLY not an owner edit,
+    // never blend in with the rest of the list.
+    const isSystemCorrection = e.source === 'system-correction';
     return '<div class="wf-auto-task-card" data-history-idx="' + idx + '">' +
       '<div class="wf-auto-task-head"><div style="flex:1;min-width:0">' +
-      '<div class="wf-auto-task-subject">' + escapeHtml(e.groupLabel || e.group) + '</div>' +
+      '<div class="wf-auto-task-subject">' + escapeHtml(e.groupLabel || e.group) +
+      (isSystemCorrection ? ' <span class="wf-auto-hint" style="color:var(--wi-danger,#B3261E);font-weight:800">⚙ System correction</span>' : '') +
+      '</div>' +
       '<div class="wf-auto-hint">' + escapeHtml(when) + ' · ' + escapeHtml(describeHistoryEntry(e)) + '</div>' +
+      (isSystemCorrection && e.reason ? '<div class="wf-auto-hint">' + escapeHtml(e.reason) + '</div>' : '') +
       '</div></div>' +
       (canRestore ? '<div class="wf-auto-actions"><button type="button" class="plain" data-action="restore-history">Restore</button></div>' : '') +
       '</div>';
   }
   let settingsHistoryItemsCache = [];
+  // ISSUE 3(b) (2026-11), direct instruction - removed the filter chips:
+  // one single list of every setting change, newest first, no group
+  // filtering UI any more (listHistory's own backend sort already puts
+  // newest first - this just renders it as-is).
   function renderSettingsHistoryList(items) {
     if (!settingsHistoryList) return;
     settingsHistoryItemsCache = items || [];
-    if (!settingsHistoryItemsCache.length) { settingsHistoryList.innerHTML = '<div class="wf-rem-empty">No history yet for this group.</div>'; return; }
+    if (!settingsHistoryItemsCache.length) { settingsHistoryList.innerHTML = '<div class="wf-rem-empty">No settings changes yet.</div>'; return; }
     settingsHistoryList.innerHTML = settingsHistoryItemsCache.map(historyRowHtml).join('');
     settingsHistoryList.querySelectorAll('[data-action="restore-history"]').forEach((btn) => {
       btn.addEventListener('click', () => {
@@ -4314,39 +4325,18 @@
       });
     });
   }
-  function renderSettingsHistoryChips(groups) {
-    if (!settingsHistoryChips) return;
-    const chipsHtml = '<button type="button" class="wf-rem-chip" data-group="" aria-pressed="' + (activeSettingsHistoryGroup === '' ? 'true' : 'false') + '">All</button>' +
-      (groups || []).map((g) => '<button type="button" class="wf-rem-chip" data-group="' + escapeHtml(g.group) + '" aria-pressed="' + (activeSettingsHistoryGroup === g.group ? 'true' : 'false') + '">' + escapeHtml(g.label) + '</button>').join('');
-    settingsHistoryChips.innerHTML = chipsHtml;
-  }
   async function loadSettingsHistoryPage() {
     if (!settingsHistoryList) return;
     const cached = pageDataCache.settingsHistory;
-    if (cached) { renderSettingsHistoryChips(cached.groups); renderSettingsHistoryList(filterHistoryByGroup(cached.items)); }
+    if (cached) renderSettingsHistoryList(cached.items);
     else settingsHistoryList.innerHTML = '<div class="wf-skeleton-list"><div class="wf-skeleton-row"></div><div class="wf-skeleton-row"></div></div>';
     try {
       const r = await fetch('/api/workforce/hr-assistant/settings-history').then((res) => res.json());
-      pageDataCache.settingsHistory = { items: r.items || [], groups: r.groups || [] };
-      renderSettingsHistoryChips(r.groups || []);
-      renderSettingsHistoryList(filterHistoryByGroup(r.items || []));
+      pageDataCache.settingsHistory = { items: r.items || [] };
+      renderSettingsHistoryList(r.items || []);
     } catch (err) {
       if (!cached) settingsHistoryList.innerHTML = '<div class="wf-rem-empty">Could not load settings history.</div>';
     }
-  }
-  function filterHistoryByGroup(items) {
-    if (!activeSettingsHistoryGroup) return items;
-    return (items || []).filter((e) => e.group === activeSettingsHistoryGroup);
-  }
-  if (settingsHistoryChips) {
-    settingsHistoryChips.addEventListener('click', (e) => {
-      const chip = e.target.closest('.wf-rem-chip');
-      if (!chip) return;
-      activeSettingsHistoryGroup = chip.dataset.group || '';
-      settingsHistoryChips.querySelectorAll('.wf-rem-chip').forEach((c) => c.setAttribute('aria-pressed', String(c === chip)));
-      const cached = pageDataCache.settingsHistory;
-      if (cached) renderSettingsHistoryList(filterHistoryByGroup(cached.items));
-    });
   }
   function showSettingsHistory() {
     setPanelView('settingsHistory');

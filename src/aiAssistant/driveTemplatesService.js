@@ -17,6 +17,7 @@
 // 1(c)/(d)) is a separate module.
 const sheetsAuth = require('../sheetsAuth');
 const letterSettingsService = require('./letterSettingsService');
+const subhDriveGuard = require('../subhDriveGuard');
 
 const GOOGLE_DOC_MIME = 'application/vnd.google-apps.document';
 const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
@@ -98,7 +99,19 @@ async function listDriveTemplateFiles() {
   const q = "'" + letterSettingsService.LETTER_TEMPLATES_FOLDER_ID + "' in parents and trashed = false and (" +
     "mimeType = '" + GOOGLE_DOC_MIME + "' or mimeType = '" + DOCX_MIME + "')";
   const res = await drive.files.list({ q, fields: 'files(id, name, mimeType)', pageSize: 100 });
-  return res.data.files || [];
+  const files = res.data.files || [];
+  // ISSUE 3(a) (2026-11), live bug fix - Drive's own `files.copy` (used by
+  // both driveTemplateGenerationService.js's letter-fill and
+  // driveTemplateFieldsService.js's .docx placeholder scan) places a temp
+  // copy in this SAME folder with no `parents` override, so it can
+  // transiently show up in this exact listing between its own creation
+  // and deletion a moment later. Filtered out here by its own known,
+  // fixed name (subhDriveGuard.SUBH_TEMP_COPY_NAMES - the only names
+  // SUBH's code ever gives such a copy) so it can never again be treated
+  // as a genuinely new template and self-heal a default code/display
+  // name into the owner's real stores (the live bug this was found from:
+  // "Letter display names · (none) → SUBH temp placeholder scan").
+  return files.filter((f) => !subhDriveGuard.SUBH_TEMP_COPY_NAMES.includes(f.name));
 }
 
 // The merged list the Template dropdown (Create Workflow) and Letter
@@ -108,6 +121,14 @@ async function listDriveTemplateFiles() {
 // the Drive folder appear here now - the 4 built-ins are gone (see
 // BUILTIN_TEMPLATES above for why the constant itself is kept).
 async function listAllLetterTemplates() {
+  // ISSUE 3(a) (2026-11), live bug fix - best-effort, idempotent self-heal
+  // of any PAST temp-copy-name leak into the owner's real display-names/
+  // letter-codes stores (see correctTempCopyLeaks' own comment) - safe to
+  // run on every call (a no-op once clean), and run here specifically so
+  // production self-corrects the next time anyone opens Letter settings/
+  // Create Workflow/etc. after this fix deploys, without needing direct
+  // access to the live store.
+  await letterSettingsService.correctTempCopyLeaks().catch(() => {});
   const [files, codes, displayNames] = await Promise.all([
     listDriveTemplateFiles().catch(() => []),
     letterSettingsService.getLetterCodes(),

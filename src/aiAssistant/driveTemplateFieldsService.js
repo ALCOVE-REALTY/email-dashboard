@@ -84,7 +84,7 @@ async function extractPlaceholders(fileId, mimeType) {
     // file guardrails, never the service account.
     const drive = subhDriveAuth.getDriveClient();
     const docsOwner = subhDriveAuth.getDocsClient();
-    const copy = await subhDriveGuard.guardedCopyTemplate(drive, fileId, { name: 'SUBH temp placeholder scan', mimeType: driveTemplatesService.GOOGLE_DOC_MIME });
+    const copy = await subhDriveGuard.guardedCopyTemplate(drive, fileId, { name: subhDriveGuard.SUBH_TEMP_COPY_NAMES[1], mimeType: driveTemplatesService.GOOGLE_DOC_MIME });
     const tempId = copy.data.id;
     try {
       const doc = await docsOwner.documents.get({ documentId: tempId });
