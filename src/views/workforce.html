@@ -531,7 +531,30 @@
                field, createMailChipField in workforce.js): typing shows
                a dropdown of matches, tapping one shows the pick as a
                removable chip instead of plain input text. -->
+          <!-- Item 3 (2026-11), direct instruction, reworked same day (live
+               correction) - "must also be exactly the same as the
+               Organization Chart search box - same component, look and
+               dropdown behaviour; only ACTIVE employees; tap to select."
+               Investigated live: Org Chart's real searchable control is the
+               app's global select-enhancer (workforce-ui-enhance.js,
+               reused verbatim for Field mapping above, item 2) - but that
+               component only works over a small, already-fully-fetched
+               option list; this picker searches the REAL employee
+               directory (hundreds of people) with a PER-CANDIDATE
+               eligibility reason computed server-side on each keystroke
+               (see workforceRoutes.js's own comment on this exact route -
+               pre-fetching everyone up front to feed a <select> would
+               redo the sequential-eligibility-check slowness that route
+               was already rewritten to avoid). .wf-mail-suggest (this
+               picker's existing mechanism, already used by the ipWhatsapp
+               employee picker) is the right component for a server-driven
+               search like this - kept, not replaced. The one genuine,
+               confirmed visual gap against Org Chart/Employee Data's own
+               search boxes was the missing magnifying-glass icon, added
+               below (scoped to this ONE picker, not every .wf-mail-chip-
+               input app-wide - Send Mail's To/Cc fields are untouched). -->
           <div class="wf-mail-field" style="margin:0">
+            <svg class="wf-mail-field-search-icon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="var(--muted)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
             <div class="wf-mail-chip-input" id="hrLetterTestEmployeeChipInput">
               <input type="text" id="hrLetterTestEmployeeInput" autocomplete="off" placeholder="Search by name or employee code…" />
             </div>

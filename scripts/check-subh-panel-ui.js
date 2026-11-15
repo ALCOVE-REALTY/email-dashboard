@@ -891,6 +891,14 @@ function check(label, ok, detail) {
   check('Test employee picker: pre-fills with the server\'s own default on page load, shown as a chip, never blank', (pickerDefaultChipText || '').includes('Default Pick'), 'got: ' + JSON.stringify(pickerDefaultChipText));
   const inputHiddenWithDefaultChip = await page.locator('#hrLetterTestEmployeeInput').isHidden().catch(() => false);
   check('Test employee picker: the text input is hidden while a chip is shown', inputHiddenWithDefaultChip);
+  // Item 3 (2026-11), direct instruction, live correction - a real
+  // magnifying-glass search icon (same look as Employee Data's #wfSearch /
+  // Org Chart's enhanced-select search box), scoped to ONLY this picker.
+  const testEmpIconBox = await page.locator('.wf-mail-field-search-icon').boundingBox();
+  check('Test employee picker: shows a real search icon, same look as the app\'s other search boxes', Boolean(testEmpIconBox));
+  const testEmpChipInputBox = await page.locator('#hrLetterTestEmployeeChipInput').boundingBox();
+  check('Test employee picker: the icon sits inside the search box, not overlapping the text/chips', Boolean(testEmpIconBox) && Boolean(testEmpChipInputBox) && testEmpIconBox.x > testEmpChipInputBox.x && testEmpIconBox.x < testEmpChipInputBox.x + testEmpChipInputBox.width);
+  check('The icon is scoped to ONLY this one picker - every other chip-input field in the app (e.g. ipWhatsapp\'s employee picker) is untouched', await page.locator('.wf-mail-field-search-icon').count() === 1);
   // Clear the default chip first - the input only reappears (and can be
   // typed into) once there's no chip, same as every other chip field.
   await page.locator('#hrLetterTestEmployeeChipInput .wf-mail-chip button').click();

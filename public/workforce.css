@@ -2839,6 +2839,13 @@ body:not(.printing-org-chart) .org-chart-cards-row + .org-chart-branch-connector
 .wf-mail-field:last-child { margin-bottom: 0; }
 .wf-mail-field-label { display: block; font-size: 0.76rem; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 6px; }
 
+/* Item 3 (2026-11), direct instruction - Letter settings' "Test employee"
+   search icon (same look as Employee Data's #wfSearch / Org Chart's
+   enhanced-select search box) - scoped to ONLY the one picker that carries
+   this icon element, never every .wf-mail-chip-input app-wide. */
+.wf-mail-field-search-icon { position: absolute; left: 11px; top: 21px; transform: translateY(-50%); pointer-events: none; z-index: 1; }
+.wf-mail-field:has(> .wf-mail-field-search-icon) .wf-mail-chip-input { padding-left: 28px; }
+
 /* UI fix (2026-10-29) - the "Attachment as" custom dropdown button
    (replaces a native <select>, whose option list opened wherever the
    browser/OS chose rather than reliably below the field). Its own option
