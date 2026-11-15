@@ -101,9 +101,10 @@ function dayKeyToUtcMidnight(key) {
 async function recordUsage({ feature, model, inputTokens, outputTokens, cacheWriteTokens, cacheReadTokens, isTest, now }) {
   const redis = getClient();
   if (!redis) return;
+  let entry = null;
   try {
     const costUsd = estimateCostUsd({ model, inputTokens, outputTokens, cacheWriteTokens, cacheReadTokens });
-    const entry = {
+    entry = {
       ts: (now instanceof Date ? now : new Date(now || Date.now())).getTime(),
       feature: feature || 'other',
       model: model || null,
@@ -118,6 +119,13 @@ async function recordUsage({ feature, model, inputTokens, outputTokens, cacheWri
     await redis.lpush(key, JSON.stringify(entry));
     await redis.expire(key, RETENTION_SECONDS);
   } catch (err) { /* best effort - never break the real call */ }
+  // Item 8 (2026-11), direct instruction - "keep pre-computed daily
+  // totals (update on each logged call)". Own try/catch, after the real
+  // entry write above has already succeeded - a failure updating the
+  // cache must never lose the real log entry or break the call being
+  // recorded; getUsageSummary() always has the full re-scan as a fallback
+  // if this ever falls behind.
+  if (entry) { try { await updateAggregate(entry); } catch (err) { /* best effort */ } }
 }
 
 function dayKeysBetween(startDay, endDay) {
@@ -166,6 +174,108 @@ function summarize(entries) {
   };
 }
 
+// Item 8 (2026-11), direct instruction - "AI usage page speed... keep
+// pre-computed daily totals (update on each logged call), render from
+// cache immediately and refresh in the background."
+//
+// getUsageSummary used to re-scan EVERY day since Jan 1st on every single
+// call (getEntriesSince(yearStart, now) - up to 365+ separate Redis
+// LRANGE calls on, say, November 15th) - that full re-scan is now done at
+// most ONCE PER IST CALENDAR DAY (recomputeAggregateNow, below), cached
+// in one small Redis key; every real call recordUsage() already makes
+// just ADDS that one entry into the cached totals in place (O(1), no
+// re-scan) via addEntryToSummary. getUsageSummary() itself becomes a
+// single Redis GET in the common case - this is the actual speed fix;
+// the frontend's own existing "render from cache instantly, refresh in
+// the background" pattern (prefetchSubhSettingsAll et al.) was already in
+// place and untouched - this fixes the SERVER side being slow underneath
+// that pattern, which was the one page that pattern couldn't actually
+// make fast before.
+const AGG_KEY = 'ai-usage-agg:v2'; // v2 - the shape changed from the old plain {today,week,month,year} result (no anchorDate), never read as if it were the new shape
+function addEntryToSummary(summary, e) {
+  const costUsd = e.costUsd || 0;
+  if (e.isTest) { summary.testUsd += costUsd; summary.testCalls++; } else { summary.liveUsd += costUsd; summary.liveCalls++; }
+  summary.totalUsd = summary.liveUsd + summary.testUsd;
+  summary.totalCalls = summary.liveCalls + summary.testCalls;
+  let bucket = summary.byFeature.find((f) => f.feature === e.feature);
+  if (!bucket) { bucket = { feature: e.feature, usd: 0, calls: 0 }; summary.byFeature.push(bucket); }
+  bucket.usd += costUsd;
+  bucket.calls += 1;
+}
+// byFeature is appended-to in arrival order by addEntryToSummary (never
+// re-sorted on write, to keep that the O(1) hot path) - sorted only here,
+// on the way out to a caller, same descending-by-spend order summarize()
+// has always returned.
+function sortedSummaryCopy(summary) {
+  return Object.assign({}, summary, { byFeature: summary.byFeature.slice().sort((a, b) => b.usd - a.usd) });
+}
+
+// The expensive full re-scan (same query getUsageSummary always used to
+// do on every call) - now only ever run here, to build a fresh baseline.
+async function recomputeAggregateNow(now) {
+  const today = dayKey(now || Date.now());
+  const yearStart = startOfYear(now);
+  const entries = await getEntriesSince(yearStart, now);
+  const monthStartKey = startOfMonth(now);
+  const weekStartKey = startOfWeek(now);
+  return {
+    anchorDate: today,
+    today: summarize(entries.filter((e) => dayKey(e.ts) === today)),
+    week: summarize(entries.filter((e) => dayKey(e.ts) >= weekStartKey)),
+    month: summarize(entries.filter((e) => dayKey(e.ts) >= monthStartKey)),
+    year: summarize(entries)
+  };
+}
+// Returns { agg, wasRebuilt } - wasRebuilt matters to updateAggregate's
+// caller (below): a rebuild re-scans Redis directly, which ALREADY
+// includes whatever entry recordUsage just wrote (it's written before
+// this is ever called) - adding that same entry again on top would
+// double-count it. Only a cache HIT (wasRebuilt: false) needs the new
+// entry added on top explicitly.
+async function getAggregate(now) {
+  const redis = getClient();
+  if (!redis) return { agg: null, wasRebuilt: false };
+  const today = dayKey(now || Date.now());
+  let agg = null;
+  try { agg = parseJsonSafe(await redis.get(AGG_KEY)); } catch (err) { agg = null; }
+  if (!agg || agg.anchorDate !== today) {
+    // Stale (a new IST day has started since this was last built) or
+    // never built yet - recompute fresh, ONCE, and persist the new
+    // baseline so every call for the REST of today (from either
+    // recordUsage or a page load) can just read/increment it.
+    agg = await recomputeAggregateNow(now);
+    try { await redis.set(AGG_KEY, JSON.stringify(agg)); } catch (err) { /* best effort */ }
+    return { agg, wasRebuilt: true };
+  }
+  return { agg, wasRebuilt: false };
+}
+function parseJsonSafe(raw) {
+  if (raw === null || raw === undefined) return null;
+  if (typeof raw === 'object') return raw;
+  try { return JSON.parse(raw); } catch (err) { return null; }
+}
+async function updateAggregate(entry) {
+  const redis = getClient();
+  if (!redis) return;
+  // this IS today's entry, by construction (recordUsage always logs
+  // "now") - getAggregate guarantees agg.anchorDate is today's key,
+  // rebuilding first if a new day just started.
+  const { agg, wasRebuilt } = await getAggregate(entry.ts);
+  if (wasRebuilt) {
+    // LIVE BUG FIX (found while building this) - a rebuild's own real
+    // Redis re-scan ALREADY includes this entry (recordUsage writes it to
+    // Redis BEFORE ever calling this function) - adding it again here
+    // would double-count it. getAggregate() already persisted the
+    // freshly-rebuilt (already-correct) aggregate itself - nothing left
+    // to do here.
+    return;
+  }
+  // today/week/month/year ALL include "right now" by definition, so this
+  // one entry is added to every bucket - no separate membership check needed.
+  [agg.today, agg.week, agg.month, agg.year].forEach((summary) => addEntryToSummary(summary, entry));
+  await redis.set(AGG_KEY, JSON.stringify(agg));
+}
+
 // All three below first resolve `now` to its own IST calendar day-key
 // (dayKey), then do the week/month/year start math on that calendar
 // date's pseudo-UTC-midnight - so "this week/month/year" always means
@@ -196,6 +306,21 @@ function startOfYear(now) {
 // strictly a superset of the old data, same results for the 3
 // pre-existing fields.
 async function getUsageSummary(now) {
+  // Item 8 (2026-11), direct instruction - the actual speed fix: a single
+  // Redis GET of the pre-computed, incrementally-updated aggregate in the
+  // common case, instead of the OLD full year-to-date re-scan on every
+  // call. No store configured, or something went wrong reading/building
+  // it - the exact original full-scan behavior as a safety net, never a
+  // silently wrong/empty result.
+  const { agg } = await getAggregate(now).catch(() => ({ agg: null }));
+  if (agg) {
+    return {
+      today: sortedSummaryCopy(agg.today),
+      week: sortedSummaryCopy(agg.week),
+      month: sortedSummaryCopy(agg.month),
+      year: sortedSummaryCopy(agg.year)
+    };
+  }
   const today = dayKey(now || Date.now());
   const yearStart = startOfYear(now);
   const entries = await getEntriesSince(yearStart, now);

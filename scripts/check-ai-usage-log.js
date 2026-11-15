@@ -132,6 +132,56 @@ async function main() {
   });
 
   console.log('='.repeat(70));
+  console.log('Item 8 (2026-11), direct instruction - pre-computed daily totals, updated incrementally per logged call, instead of a full year-to-date re-scan on every read');
+  console.log('='.repeat(70));
+  function countFetchCalls(fn) {
+    let calls = 0;
+    const origFetch = global.fetch;
+    global.fetch = async (...args) => { calls++; return origFetch(...args); };
+    return (async () => { try { await fn(); } finally { global.fetch = origFetch; } return calls; })();
+  }
+  // A deliberately distant, isolated year (never touched by any other
+  // test in this file) so this suite's own entries can't pollute the
+  // "year" bucket the call-count comparison below depends on.
+  const SPEED_DAY = new Date('2030-11-20T09:00:00.000Z');
+  const SPEED_DAY_LATER = new Date('2030-11-20T10:00:00.000Z');
+  const SPEED_NEXT_DAY = new Date('2030-11-21T09:00:00.000Z');
+
+  let firstRecordCalls, cachedReadCalls, secondRecordCalls;
+  await checkAsync('the FIRST call of a brand-new IST day builds the aggregate from a real full re-scan (the old, slow path) - just once', async () => {
+    firstRecordCalls = await countFetchCalls(() => aiUsageLog.recordUsage({ feature: 'workflow', model: 'claude-sonnet-5-5', inputTokens: 1000, outputTokens: 500, isTest: true, now: SPEED_DAY }));
+    return firstRecordCalls > 5; // a real year-to-date scan from Jan 1 necessarily makes many Redis round trips
+  });
+  await checkAsync('EVERY SUBSEQUENT read the SAME day is a single cached lookup - dramatically fewer Redis calls than the cold path above (the actual speed fix)', async () => {
+    cachedReadCalls = await countFetchCalls(() => aiUsageLog.getUsageSummary(SPEED_DAY_LATER));
+    return cachedReadCalls <= 2 && cachedReadCalls < firstRecordCalls;
+  });
+  await checkAsync('a SECOND recordUsage call the same day is ALSO just a cheap increment (no re-scan), not the expensive cold path again', async () => {
+    secondRecordCalls = await countFetchCalls(() => aiUsageLog.recordUsage({ feature: 'letters', model: 'claude-sonnet-5-5', inputTokens: 2000, outputTokens: 1000, isTest: true, now: SPEED_DAY_LATER }));
+    // A handful of calls (the real entry write + the cached-aggregate get/set), nowhere near a 300+-day re-scan.
+    return secondRecordCalls <= 10 && secondRecordCalls < firstRecordCalls / 10;
+  });
+  await checkAsync('after 2 real calls today, the cached summary\'s totals are exactly correct (incremental updates match a real re-scan)', async () => {
+    const summary = await aiUsageLog.getUsageSummary(SPEED_DAY_LATER);
+    const workflow = summary.today.byFeature.find((f) => f.feature === 'workflow');
+    const letters = summary.today.byFeature.find((f) => f.feature === 'letters');
+    return summary.today.testCalls === 2 && Boolean(workflow) && workflow.calls === 1 && Boolean(letters) && letters.calls === 1 &&
+      summary.year.testCalls === 2; // both calls are also within "this year"
+  });
+  await checkAsync('byFeature stays sorted by spend (descending) on read, even though it\'s only appended-to (never re-sorted) on each incremental update', async () => {
+    const summary = await aiUsageLog.getUsageSummary(SPEED_DAY_LATER);
+    const byFeature = summary.today.byFeature;
+    return byFeature.length >= 2 && byFeature.every((f, i) => i === 0 || byFeature[i - 1].usd >= f.usd);
+  });
+  await checkAsync('a NEW IST day correctly rebuilds the aggregate from scratch (never stale/carried-over from the previous day)', async () => {
+    await aiUsageLog.recordUsage({ feature: 'other', model: 'claude-sonnet-5-5', inputTokens: 1000, outputTokens: 0, isTest: true, now: SPEED_NEXT_DAY });
+    const summary = await aiUsageLog.getUsageSummary(SPEED_NEXT_DAY);
+    // "Today" (the new day) has only today's 1 call; "year" still
+    // correctly includes yesterday's 2 calls too (3 total this year).
+    return summary.today.testCalls === 1 && summary.year.testCalls === 3;
+  });
+
+  console.log('='.repeat(70));
   console.log('checkDailyAlertDue: fires once per day at/above threshold, never again the same day, resets the next day');
   console.log('='.repeat(70));
   await checkAsync('under the threshold never fires', async () => {
