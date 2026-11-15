@@ -29,12 +29,36 @@ const path = require('path');
 const http = require('http');
 const fs = require('fs');
 const { chromium } = require('playwright');
+const PDFDocument = require('pdfkit');
+
+// Item 4(c) (2026-11), direct instruction - a REAL, validly-structured
+// one-page PDF (built with pdfkit, already a server-side dependency here -
+// never a hand-typed fake byte string), so the preview sheet's own pdf.js
+// rendering can be genuinely exercised end to end (real <canvas> pages
+// appearing), not just its graceful-fallback-on-a-corrupt-file path.
+function buildTinyPdfBase64(text) {
+  return new Promise((resolve, reject) => {
+    const doc = new PDFDocument({ size: 'A4', margin: 50 });
+    const chunks = [];
+    doc.on('data', (c) => chunks.push(c));
+    doc.on('end', () => resolve(Buffer.concat(chunks).toString('base64')));
+    doc.on('error', reject);
+    doc.fontSize(20).text(text || 'Test PDF page', { align: 'center' });
+    doc.end();
+  });
+}
 
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 const WORKFORCE_HTML = path.join(__dirname, '..', 'src', 'views', 'workforce.html');
+// Item 4(c) (2026-11) - the real app vendors pdf.js from node_modules the
+// exact same way it already vendors chart.js (see server.js's own
+// /vendor/chart.js static route) - this throwaway test server mirrors
+// that ONE extra route so the preview sheet's real pdf.js rendering can
+// be genuinely exercised here, not just its graceful-fallback path.
+const PDFJS_BUILD_DIR = path.join(__dirname, '..', 'node_modules', 'pdfjs-dist', 'build');
 
 const MIME = {
-  '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css',
+  '.html': 'text/html', '.js': 'application/javascript', '.mjs': 'text/javascript', '.css': 'text/css',
   '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.json': 'application/json'
 };
 
@@ -45,6 +69,16 @@ function startStaticServer() {
       fs.readFile(WORKFORCE_HTML, (err, data) => {
         if (err) { res.writeHead(500); res.end('err'); return; }
         res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.end(data);
+      });
+      return;
+    }
+    if (urlPath.startsWith('/vendor/pdfjs-dist/')) {
+      const filePath = path.join(PDFJS_BUILD_DIR, urlPath.slice('/vendor/pdfjs-dist/'.length));
+      if (!filePath.startsWith(PDFJS_BUILD_DIR)) { res.writeHead(403); res.end(); return; }
+      fs.readFile(filePath, (err, data) => {
+        if (err) { res.writeHead(404); res.end('not found: ' + urlPath); return; }
+        res.writeHead(200, { 'Content-Type': MIME[path.extname(filePath)] || 'application/octet-stream' });
         res.end(data);
       });
       return;
@@ -315,12 +349,14 @@ function check(label, ok, detail) {
   await page.waitForTimeout(150);
 
   // Task 20 (2026-11) - "Preview a document" (TASK 1a) renders a REAL PDF
-  // (mocked here with a tiny fake PDF, since this check never calls the
-  // real letter generator) instead of the old placeholder text string -
-  // asserts the preview sheet gets a real <iframe> onto a PDF data: URL
-  // plus a working Download link, never the bare "[The Confirmation
-  // Letter template...]" text.
-  const FAKE_PDF_BASE64 = Buffer.from('%PDF-1.4 fake test pdf').toString('base64');
+  // (a genuine one-page PDF built with pdfkit, since this check never calls
+  // the real letter generator) instead of the old placeholder text string.
+  // Item 4(c) (2026-11), direct instruction, live correction - the preview
+  // now renders real <canvas> PAGES via pdf.js (never an <iframe> onto a
+  // data: URL - that's exactly what fell back to Chrome Android's own
+  // native raw-base64-text UI, the owner's actual complaint), plus a small
+  // centered "Open" button alongside the existing Download link.
+  const FAKE_PDF_BASE64 = await buildTinyPdfBase64('Confirmation Letter test page');
   await page.route('**/api/workforce/hr-assistant/workflows/preview-document', (route) => {
     route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, pdfBase64: FAKE_PDF_BASE64, filename: 'Confirmation-Letter-Test.pdf', usedSample: true }) });
   });
@@ -328,19 +364,25 @@ function check(label, ok, detail) {
   await page.click('#wfDocsOn');
   await page.waitForTimeout(150);
   await page.click('#wfDocsPreviewBtn');
-  await page.waitForTimeout(250);
+  await page.waitForTimeout(1500); // pdf.js's own lazy module load + render
   const docPreview = await page.evaluate(() => {
-    const iframe = document.querySelector('.wf-auto-doc-preview');
+    const box = document.querySelector('.wf-auto-doc-preview');
+    const canvases = box ? box.querySelectorAll('canvas') : [];
+    const openBtn = document.querySelector('#hrWorkflowPreviewBody .wf-auto-doc-preview-openrow a[target="_blank"]');
     const dl = document.querySelector('#hrWorkflowPreviewBody a[download]');
     return {
       sheetVisible: document.getElementById('hrWorkflowPreviewSheet') ? !document.getElementById('hrWorkflowPreviewSheet').hidden : null,
-      iframeSrcOk: iframe ? iframe.getAttribute('src').startsWith('data:application/pdf;base64,') : false,
+      pageCount: canvases.length,
+      firstPageHasPixels: canvases.length ? canvases[0].width > 0 && canvases[0].height > 0 : false,
+      openBtnText: openBtn ? openBtn.textContent.trim() : null,
+      openBtnHrefOk: openBtn ? openBtn.getAttribute('href').startsWith('data:application/pdf;base64,') : false,
       downloadName: dl ? dl.getAttribute('download') : null,
       downloadHrefOk: dl ? dl.getAttribute('href').startsWith('data:application/pdf;base64,') : false,
       stillShowsPlaceholderText: ((document.getElementById('hrWorkflowPreviewBody') || {}).textContent || '').includes('as a PDF.]')
     };
   });
-  check('Create Workflow, "Preview a document": the preview sheet opens with a real embedded PDF (<iframe> onto a PDF data: URL), never the old placeholder text', docPreview.sheetVisible === true && docPreview.iframeSrcOk === true && !docPreview.stillShowsPlaceholderText, 'got: ' + JSON.stringify(docPreview));
+  check('Create Workflow, "Preview a document": the preview sheet renders the REAL PDF as actual page(s) (pdf.js canvas), never the old placeholder text or a raw iframe', docPreview.sheetVisible === true && docPreview.pageCount >= 1 && docPreview.firstPageHasPixels === true && !docPreview.stillShowsPlaceholderText, 'got: ' + JSON.stringify(docPreview));
+  check('Create Workflow, "Preview a document": a small "Open" button (same style as the app\'s other small buttons) opens the exact same PDF in a new tab', docPreview.openBtnText === 'Open' && docPreview.openBtnHrefOk === true, 'got: ' + JSON.stringify(docPreview));
   check('Create Workflow, "Preview a document": a working Download link is present with the real generated filename', docPreview.downloadHrefOk === true && docPreview.downloadName === 'Confirmation-Letter-Test.pdf', 'got: ' + JSON.stringify(docPreview));
   const docPreviewErrAfter = consoleErrors.length + pageErrors.length;
   check('Create Workflow, "Preview a document": no JS error was thrown generating the preview', docPreviewErrAfter === docPreviewErrBefore,
@@ -761,10 +803,30 @@ function check(label, ok, detail) {
   // ISSUE 2(c) (2026-11), direct instruction - tap -> spinner -> green
   // tick -> PDF PREVIEW (never an immediate email/toast any more).
   check('ISSUE 2(c): "Send test to me" opens a PDF PREVIEW (the SAME sheet/viewer Create Workflow\'s own "Preview a document" uses), never an immediate email', await page.locator('#hrWorkflowPreviewSheet').isVisible());
+  // Item 4(a) (2026-11), direct instruction, live correction - the title
+  // reads "<Letter type> - <Employee name>" (real letterTypeLabels value +
+  // the real employeeName the server returned), never the old generic
+  // "Test letter preview" and never raw base64.
   const previewTitle = await page.locator('#hrWorkflowPreviewTitle').textContent().catch(() => null);
-  check('Letter settings: the preview sheet title reads "Test letter preview"', (previewTitle || '').trim() === 'Test letter preview', 'got: ' + JSON.stringify(previewTitle));
-  const previewIframeSrc = await page.locator('#hrWorkflowPreviewBody .wf-auto-doc-preview').getAttribute('src').catch(() => null);
-  check('Letter settings: the preview sheet shows a real embedded PDF (<iframe> onto a PDF data: URL)', (previewIframeSrc || '').startsWith('data:application/pdf;base64,'), 'got: ' + JSON.stringify(previewIframeSrc));
+  check('Letter settings: the preview sheet title reads "<Letter type> - <Employee name>"', (previewTitle || '').trim() === 'Bonus Letter - Fake Employee', 'got: ' + JSON.stringify(previewTitle));
+  const previewTitleStyle = await page.locator('#hrWorkflowPreviewTitle').evaluate((el) => getComputedStyle(el).webkitLineClamp || getComputedStyle(el).getPropertyValue('-webkit-line-clamp'));
+  check('Letter settings: the title is set up to wrap to at most 2 lines (never cut off or overflow), via -webkit-line-clamp:2', String(previewTitleStyle).trim() === '2', 'got: ' + JSON.stringify(previewTitleStyle));
+  // Item 4(c): a real rendered page, not an <iframe> onto a raw data: URL
+  // (that iframe is exactly what Chrome Android's own native fallback -
+  // raw base64 text + a big blue "Open" button - replaced, the owner's
+  // real complaint).
+  await page.waitForTimeout(1200); // pdf.js's own lazy module load + render
+  const letterPreviewCanvas = await page.evaluate(() => {
+    const box = document.querySelector('#hrWorkflowPreviewBody .wf-auto-doc-preview');
+    const canvases = box ? box.querySelectorAll('canvas') : [];
+    return { pageCount: canvases.length, firstPageHasPixels: canvases.length ? canvases[0].width > 0 && canvases[0].height > 0 : false, noIframe: document.querySelectorAll('#hrWorkflowPreviewBody iframe').length === 0 };
+  });
+  check('Letter settings: the preview sheet shows the real letter rendered as actual page(s) (pdf.js canvas), never an <iframe> onto a raw PDF data: URL', letterPreviewCanvas.pageCount >= 1 && letterPreviewCanvas.firstPageHasPixels === true && letterPreviewCanvas.noIframe === true, 'got: ' + JSON.stringify(letterPreviewCanvas));
+  // Item 4(b): a small, centered "Open" button (same small-button style as
+  // the app's other outline actions), never a full-width blue one.
+  const letterOpenBtnBox = await page.locator('#hrWorkflowPreviewBody .wf-auto-doc-preview-openrow a[target="_blank"]').boundingBox();
+  const letterPreviewBodyBox = await page.locator('#hrWorkflowPreviewBody').boundingBox();
+  check('Letter settings: the "Open" button is small (not full-width) and centred inside the preview area', Boolean(letterOpenBtnBox) && Boolean(letterPreviewBodyBox) && letterOpenBtnBox.width < letterPreviewBodyBox.width * 0.6, 'got: open=' + JSON.stringify(letterOpenBtnBox) + ' body=' + JSON.stringify(letterPreviewBodyBox));
   check('Letter settings: opening the preview never emailed anything by itself', emailTestLetterCalls === 0);
   const previewBodyTextBeforeEmail = await page.locator('#hrWorkflowPreviewBody').textContent().catch(() => null);
   check('Letter settings: the preview names the real employee/Ref No. and says nothing has been sent yet', (previewBodyTextBeforeEmail || '').includes('Fake Employee') && (previewBodyTextBeforeEmail || '').includes('ARPL/HR/BL/2026-27/TEST') && (previewBodyTextBeforeEmail || '').includes('Nothing has been sent yet'), 'got: ' + JSON.stringify(previewBodyTextBeforeEmail));

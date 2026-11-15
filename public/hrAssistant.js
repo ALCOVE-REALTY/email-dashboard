@@ -3776,9 +3776,18 @@
   // row is touched until the owner explicitly taps that - a closed/
   // abandoned preview is a no-op. Test Ref No. stays TEST either way;
   // the real counter is never touched by this feature at all.
-  function openLetterTestPreview(previewResult, templateKey) {
+  // Item 4(a) (2026-11), direct instruction, live correction - the sheet's
+  // title reads "<Letter type> - <Employee name>" (e.g. "Confirmation
+  // Letter - Subhodeep Kundu Chowdhury") instead of the old generic "Test
+  // letter preview" - letterLabel is the real display name already shown
+  // on this template's own card (data-letter-label, set in
+  // letterCodeRowHtml above), falling back to the raw template key on the
+  // rare chance it's missing. Wrapping/never-overflowing is handled in CSS
+  // (#hrWorkflowPreviewTitle, scoped to this one shared sheet).
+  function openLetterTestPreview(previewResult, templateKey, letterLabel) {
+    const title = (letterLabel || templateKey) + ' - ' + previewResult.employeeName;
     openPdfPreviewSheet({
-      title: 'Test letter preview',
+      title,
       fetchPdf: () => Promise.resolve(previewResult),
       buildExtraHtml: () => (
         '<div class="wf-auto-hint" style="margin-top:10px">For ' + escapeHtml(previewResult.employeeName) + ' (' + escapeHtml(previewResult.employeeCode) + '), Ref No. ' + escapeHtml(previewResult.refNo) + '. Nothing has been sent yet.</div>' +
@@ -3798,15 +3807,15 @@
       }
     }).catch(() => {}); // error already rendered inline by openPdfPreviewSheet
   }
-  async function runSendTestLetter(btn, templateKey) {
+  async function runSendTestLetter(btn, templateKey, letterLabel) {
     await runButtonAction(btn, () => postJsonOrThrow('/api/workforce/hr-assistant/letter-settings/send-test-letter', {
       templateKey, employeeId: letterTestEmployeeSelectedId || undefined
     }), (result) => {
-      openLetterTestPreview(result, templateKey);
+      openLetterTestPreview(result, templateKey, letterLabel);
     }, {
       resetAfterSuccess: true,
       toastFn: (msg, err) => {
-        if (err && err.code === 'no_mapping') { openFieldMappingSheet(templateKey, { autoSendTestBtn: btn }); return; }
+        if (err && err.code === 'no_mapping') { openFieldMappingSheet(templateKey, { autoSendTestBtn: btn, autoSendTestLabel: letterLabel }); return; }
         // PART C item 3 (2026-11, direct instruction) - "specific missing-
         // field messaging with a button to open Company Details."
         if (err && err.needsCompanyDetails) {
@@ -3848,7 +3857,7 @@
   }
   async function openFieldMappingSheet(templateKey, opts) {
     opts = opts || {};
-    fieldMappingState = { templateKey, autoSendTestBtn: opts.autoSendTestBtn || null };
+    fieldMappingState = { templateKey, autoSendTestBtn: opts.autoSendTestBtn || null, autoSendTestLabel: opts.autoSendTestLabel || null };
     if (fieldMappingSheetTitle) fieldMappingSheetTitle.textContent = 'Review fields';
     if (fieldMappingSheetErr) { fieldMappingSheetErr.textContent = ''; fieldMappingSheetErr.classList.add('hidden'); }
     if (!fieldMappingSheetBackdrop || !fieldMappingSheet || !fieldMappingList) return;
@@ -3888,6 +3897,7 @@
       const mapping = readFieldMappingFromDom(fieldMappingList);
       const templateKey = fieldMappingState.templateKey;
       const autoSendTestBtn = fieldMappingState.autoSendTestBtn;
+      const autoSendTestLabel = fieldMappingState.autoSendTestLabel;
       await runButtonAction(fieldMappingSheetSaveBtn, () => postJsonOrThrow('/api/workforce/hr-assistant/letter-templates/' + encodeURIComponent(templateKey) + '/fields', { mapping }), async () => {
         closeFieldMappingSheet();
         pageDataCache.letterSettings = null;
@@ -3896,7 +3906,7 @@
         // "after Save, continue the test" (direct instruction) - only
         // when this sheet was opened automatically by "Send test to me"
         // hitting the no-mapping dead end, never for a plain "Fields" open.
-        if (autoSendTestBtn) await runSendTestLetter(autoSendTestBtn, templateKey);
+        if (autoSendTestBtn) await runSendTestLetter(autoSendTestBtn, templateKey, autoSendTestLabel);
       }, { resetAfterSuccess: true, toastFn: (msg) => { if (fieldMappingSheetErr) { fieldMappingSheetErr.textContent = msg; fieldMappingSheetErr.classList.remove('hidden'); } } });
     });
   }
@@ -3935,7 +3945,7 @@
     const fieldsText = fs.total === 0 ? 'no placeholders found' :
       (fs.mapped === fs.total ? fs.total + '/' + fs.total + ' mapped' : (fs.total - fs.mapped) + ' need your input');
     const fieldsHint = '<div class="wf-auto-hint" data-role="letter-fields-status">Fields: ' + escapeHtml(fieldsText) + '</div>';
-    return '<div class="wf-auto-task-card" data-letter-type="' + escapeHtml(letterType) + '">' +
+    return '<div class="wf-auto-task-card" data-letter-type="' + escapeHtml(letterType) + '" data-letter-label="' + escapeHtml(label) + '">' +
       '<div class="wf-auto-task-head"><div style="flex:1;min-width:0">' +
       '<div class="wf-auto-task-subject" data-role="letter-name-display">' + escapeHtml(label) +
       ' <button type="button" class="plain" data-action="edit-letter-name" style="font-size:0.7rem;padding:2px 6px">Edit name</button></div>' +
@@ -4050,7 +4060,7 @@
       letterCodesList.querySelectorAll('[data-action="send-test-letter"]').forEach((btn) => {
         btn.addEventListener('click', () => {
           const card = btn.closest('[data-letter-type]');
-          runSendTestLetter(btn, card.dataset.letterType);
+          runSendTestLetter(btn, card.dataset.letterType, card.dataset.letterLabel);
         });
       });
       letterCodesList.querySelectorAll('[data-action="open-field-mapping"]').forEach((btn) => {
@@ -8282,9 +8292,23 @@
   if (wfPreviewBtn) wfPreviewBtn.addEventListener('click', async () => { wfSync(); await wfRefreshSummary(); if (wfLastPreview) wfRenderPreviewBody(wfLastPreview, 'Preview — next run'); });
   // Task 20 (2026-11) LIVE BUG FIX, direct instruction: real PDF instead
   // of a placeholder text string - fetches the actual generated PDF
-  // (exactly the file that will be attached) and renders it inline
-  // (scrollable, real pages) via an <iframe> onto a data: URL, plus a
-  // Download button that saves the SAME bytes, never a second re-fetch.
+  // (exactly the file that will be attached) and renders it inline.
+  //
+  // Item 4 (2026-11), direct instruction, live correction - the previous
+  // <iframe src="data:application/pdf;base64,...">  looked fine on
+  // desktop, but on Chrome Android a data-URI PDF an iframe can't render
+  // inline falls back to the BROWSER'S OWN native UI: raw base64 text
+  // spilling out of the box, plus a big full-width blue "Open" button -
+  // not a CSS bug in this app's own markup. The real fix is rendering the
+  // PDF ourselves, client-side, with pdf.js (lazy-loaded, see
+  // wfLoadPdfJs below - zero network/API calls beyond the one-time library
+  // fetch; it only decodes bytes already sent by the server) onto real
+  // <canvas> pages, fit to the box's own width - readable on any device
+  // without ever leaving the app. A small, app-styled "Open" button (same
+  // outline style as the app's other small buttons, centered under the
+  // pages - never Chrome's own giant native one) still opens the PDF in a
+  // new tab for anyone who wants it full-size, alongside the existing
+  // Download link.
   //
   // ISSUE 2(c) (2026-11), direct instruction - factored out of this one
   // click handler into a SHARED function so Letter settings' "Send test
@@ -8292,7 +8316,49 @@
   // this file) reuses this SAME preview sheet/viewer instead of building
   // a second one. `buildExtraHtml`/`onRendered` let a caller add its own
   // controls (e.g. "Email to me") into the SAME rendered body without
-  // forking the markup or the iframe/Download wiring.
+  // forking the markup or the canvas/Download/Open wiring - this function
+  // stays generic (Workflow's own "Preview a document" caller needs its
+  // own appropriate title, never a letter-specific one - see
+  // openLetterTestPreview's own title string for that caller's half).
+  let wfPdfJsModulePromise = null;
+  function wfLoadPdfJs() {
+    if (!wfPdfJsModulePromise) {
+      wfPdfJsModulePromise = import('/vendor/pdfjs-dist/pdf.min.mjs').then((mod) => {
+        mod.GlobalWorkerOptions.workerSrc = '/vendor/pdfjs-dist/pdf.worker.min.mjs';
+        return mod;
+      });
+    }
+    return wfPdfJsModulePromise;
+  }
+  function wfBase64ToUint8Array(base64) {
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes;
+  }
+  // Renders every page of the given base64 PDF as its own <canvas>, fit to
+  // containerEl's own current width (times devicePixelRatio for a sharp,
+  // not blurry, render on a high-DPI phone screen), appended in order.
+  async function wfRenderPdfPages(containerEl, pdfBase64) {
+    const pdfjsLib = await wfLoadPdfJs();
+    const loadingTask = pdfjsLib.getDocument({ data: wfBase64ToUint8Array(pdfBase64) });
+    const pdf = await loadingTask.promise;
+    const cssWidth = Math.max(1, containerEl.clientWidth - 16); // minus the box's own padding
+    const dpr = window.devicePixelRatio || 1;
+    for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+      const page = await pdf.getPage(pageNum);
+      const baseViewport = page.getViewport({ scale: 1 });
+      const scale = cssWidth / baseViewport.width;
+      const viewport = page.getViewport({ scale: scale * dpr });
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.round(viewport.width);
+      canvas.height = Math.round(viewport.height);
+      canvas.style.width = Math.round(cssWidth) + 'px';
+      containerEl.appendChild(canvas);
+      const ctx = canvas.getContext('2d');
+      await page.render({ canvasContext: ctx, viewport }).promise;
+    }
+  }
   function openPdfPreviewSheet({ title, loadingLabel, fetchPdf, buildExtraHtml, onRendered }) {
     if (wfPreviewTitle) wfPreviewTitle.textContent = title || 'Document preview';
     if (wfPreviewBody) wfPreviewBody.innerHTML = '<div class="wf-rem-empty">' + escapeHtml(loadingLabel || 'Generating…') + '</div>';
@@ -8305,9 +8371,25 @@
         const extraHtml = buildExtraHtml ? buildExtraHtml(data) : '';
         if (wfPreviewBody) wfPreviewBody.innerHTML =
           (data.usedSample ? '<div class="wf-auto-hint">No record matches this plan yet - showing a sample employee\'s details instead.</div>' : '') +
-          '<iframe src="' + dataUrl + '" class="wf-auto-doc-preview" title="Document preview"></iframe>' +
-          '<a class="wf-ai-action-btn download" style="margin-top:10px;display:inline-flex" href="' + dataUrl + '" download="' + escapeHtml(data.filename) + '">⬇ Download</a>' +
+          '<div class="wf-auto-doc-preview" id="wfPdfPreviewPages"><div class="wf-rem-empty">Rendering…</div></div>' +
+          '<div class="wf-auto-doc-preview-openrow" style="margin-top:10px;gap:8px">' +
+          '<a class="wf-ai-action-btn outline" href="' + dataUrl + '" target="_blank" rel="noopener">Open</a>' +
+          '<a class="wf-ai-action-btn outline" href="' + dataUrl + '" download="' + escapeHtml(data.filename) + '">⬇ Download</a>' +
+          '</div>' +
           extraHtml;
+        const pagesEl = wfPreviewBody ? wfPreviewBody.querySelector('#wfPdfPreviewPages') : null;
+        if (pagesEl) {
+          try {
+            pagesEl.innerHTML = '';
+            await wfRenderPdfPages(pagesEl, data.pdfBase64);
+          } catch (renderErr) {
+            // Rendering itself failing (a malformed PDF, pdf.js failing to
+            // load) must never hide the Open/Download buttons above, which
+            // already work from the exact same bytes regardless - only
+            // this one box falls back to a plain message.
+            pagesEl.innerHTML = '<div class="wf-auto-hint">Could not render a preview - use Open or Download above.</div>';
+          }
+        }
         if (onRendered) onRendered(data);
         return data;
       } catch (err) {

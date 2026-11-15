@@ -595,6 +595,20 @@ app.use(
   express.static(path.join(__dirname, 'node_modules', 'chart.js', 'dist'), { maxAge: '7d' })
 );
 
+// Item 4(c) (2026-11), direct instruction - "Test letter preview" (and the
+// Create Workflow "Preview a document" sheet, same shared viewer) renders
+// the PDF as real pages (canvas images), not a raw base64 fallback. Served
+// the SAME way chart.js already is above (a plain static vendor folder,
+// zero bundler step) - pdfjs-dist is a pure client-side rendering library;
+// nothing here calls out to any network/API to do the rendering, it only
+// decodes bytes the server already sent. Served from node_modules/
+// pdfjs-dist/build, which ships ONLY .mjs (ES module) files in this
+// version - hrAssistant.js loads it with a lazy dynamic import().
+app.use(
+  '/vendor/pdfjs-dist',
+  express.static(path.join(__dirname, 'node_modules', 'pdfjs-dist', 'build'), { maxAge: '7d' })
+);
+
 const VALID_CATEGORIES = ['unread', 'important', 'read', 'recent', 'candidates'];
 
 app.get('/api/counts', requireAuth, async (req, res) => {
