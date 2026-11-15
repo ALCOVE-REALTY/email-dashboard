@@ -399,6 +399,11 @@ function check(label, ok, detail) {
   await page.click('#hrOpenFlowsBtn');
   await page.waitForTimeout(250);
   check('Attendance Requests page opens (not a blank page)', await page.locator('#hrAttendanceRequestsPage').isVisible());
+  // Regression guard (2026-11) - the new "SUBH Settings page frame"/no-
+  // WhatsApp-icon changes are scoped to the 7 named settings sub-pages
+  // ONLY; a genuine WhatsApp-related page must be completely unaffected.
+  check('Attendance Requests (a genuine WhatsApp page): the top-bar replica stays HIDDEN - unaffected by the SUBH-Settings page-frame change', !(await page.locator('#hrSettingsPageTopbar').isVisible()));
+  check('Attendance Requests: its own WhatsApp icon still shows - unaffected by the settings-pages icon removal', await page.locator('#hrCommsHeadIcon').isVisible());
   const attnNesting = await page.evaluate(() => {
     const rows = Array.from(document.querySelectorAll('#hrAttnList .wf-attn-row'));
     const directChildren = Array.from(document.querySelectorAll('#hrAttnList > .wf-attn-row'));
@@ -589,6 +594,11 @@ function check(label, ok, detail) {
   check('Letter settings page opens (not a blank page)', await page.locator('#hrLetterSettingsPage').isVisible());
   const letterHeadTitle = await page.locator('#hrCommsHeadTitle').textContent().catch(() => null);
   check('Letter settings: header title reads "Letter settings"', (letterHeadTitle || '').trim() === 'Letter settings', 'got: ' + JSON.stringify(letterHeadTitle));
+  // Page frame + no WhatsApp icon (2026-11, direct instruction) - every
+  // SUBH-Settings sub-page shows the real-top-bar replica above its own
+  // heading/back-button row, and never a WhatsApp icon bubble.
+  check('Letter settings: shows the "Workforce Intelligence" top-bar replica (SUBH Settings page frame)', await page.locator('#hrSettingsPageTopbar').isVisible());
+  check('Letter settings: no WhatsApp icon between the back button and the heading', !(await page.locator('#hrCommsHeadIcon').isVisible()));
   const refFormatVal = await page.locator('#hrLetterRefFormatInput').inputValue().catch(() => null);
   check('Letter settings: Ref No. format input is pre-filled', refFormatVal === '{Company_Code}/HR/{Letter_Code}/{FY}/{Serial}', 'got: ' + JSON.stringify(refFormatVal));
   const previewText = await page.locator('#hrLetterRefFormatPreview').textContent().catch(() => null);
@@ -926,6 +936,8 @@ function check(label, ok, detail) {
   await page.evaluate(() => { window.__hrAssistantOpenAiUsage(); });
   await page.waitForTimeout(250);
   check('AI usage page opens (not a blank page)', await page.locator('#hrAiUsagePage').isVisible());
+  check('AI usage: shows the "Workforce Intelligence" top-bar replica (SUBH Settings page frame)', await page.locator('#hrSettingsPageTopbar').isVisible());
+  check('AI usage: no WhatsApp icon between the back button and the heading', !(await page.locator('#hrCommsHeadIcon').isVisible()));
   const aiUsageChipsBox = await page.locator('#hrAiUsageChips').boundingBox();
   const aiUsagePageBox = await page.locator('#hrAiUsagePage').boundingBox();
   const aiUsageTopGap = (aiUsageChipsBox && aiUsagePageBox) ? (aiUsageChipsBox.y - aiUsagePageBox.y) : null;
@@ -1031,6 +1043,8 @@ function check(label, ok, detail) {
   await page.evaluate(() => { window.__hrAssistantOpenDataBackups(); });
   await page.waitForTimeout(250);
   check('Data & backups page opens (not a blank page)', await page.locator('#hrDataBackupsPage').isVisible());
+  check('Data & backups: shows the "Workforce Intelligence" top-bar replica (SUBH Settings page frame)', await page.locator('#hrSettingsPageTopbar').isVisible());
+  check('Data & backups: no WhatsApp icon between the back button and the heading', !(await page.locator('#hrCommsHeadIcon').isVisible()));
   // Two small UI fixes (2026-11, direct instruction, 384px): "Backup now"
   // needs real breathing room below the page header (it has no section-
   // title row above it, unlike Company details/Letter settings), and
@@ -1122,6 +1136,8 @@ function check(label, ok, detail) {
   await page.evaluate(() => { window.__hrAssistantOpenSettingsHistory(); });
   await page.waitForTimeout(250);
   check('Settings history page opens (not a blank page)', await page.locator('#hrSettingsHistoryPage').isVisible());
+  check('Settings history: shows the "Workforce Intelligence" top-bar replica (SUBH Settings page frame)', await page.locator('#hrSettingsPageTopbar').isVisible());
+  check('Settings history: no WhatsApp icon between the back button and the heading', !(await page.locator('#hrCommsHeadIcon').isVisible()));
   const historyHeadTitle = await page.locator('#hrCommsHeadTitle').textContent().catch(() => null);
   check('Settings history: header title reads "Settings history"', (historyHeadTitle || '').trim() === 'Settings history', 'got: ' + JSON.stringify(historyHeadTitle));
   check('ISSUE 3(b): the filter chips are GONE from this page', await page.locator('#hrSettingsHistoryChips').count() === 0);

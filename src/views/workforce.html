@@ -118,6 +118,26 @@
          reachable from wherever the common header is, regardless of
          which view is currently active. -->
     <div class="wf-ai-panel" id="hrAssistantPanel" hidden role="dialog" aria-label="HR Assistant">
+      <!-- "SUBH Settings" page frame (2026-11, direct instruction) - the
+           SUBH Settings hub (a normal top-level dashboard view, see
+           #subhSettingsView) already shows the app's real top bar for
+           free (same .wf-shell as every other dashboard view); every
+           sub-page it opens lives inside THIS panel instead (a true
+           full-screen overlay covering the real top bar, see the
+           .wf-ai-panel comment below), so the frame would otherwise break
+           the instant the owner taps into Site names/AI usage/etc. This
+           is a visual replica of that SAME top bar (reuses .wf-topbar/
+           .wf-wordmark verbatim - no functional buttons, since those
+           belong to the real shell underneath), shown ONLY for the 7
+           SUBH-Settings sub-pages (see hrAssistant.js's setPanelView,
+           isSettingsSubpage) - every other panel page (chat Home,
+           Important Communications, Reminders, Automated Tasks/Workflow,
+           Action needed...) is deliberately untouched by this. -->
+      <div class="wf-topbar" id="hrSettingsPageTopbar" hidden style="padding:14px 20px 0;margin-bottom:0;flex-shrink:0;background:var(--paper)">
+        <div class="wf-brand">
+          <h1 class="wf-wordmark" style="font-size:1rem">Workforce<span>Intelligence</span></h1>
+        </div>
+      </div>
       <div class="wf-ai-panel-head">
         <span class="wf-ai-panel-icon">
           <svg width="34" height="34" viewBox="0 0 200 200" aria-hidden="true"><rect x="8" y="8" width="184" height="184" rx="52" fill="#4C55E8"/><line x1="100" y1="44" x2="100" y2="60" stroke="#FFFFFF" stroke-width="6" stroke-linecap="round"/><circle cx="100" cy="40" r="8" fill="#FFBE2E"/><rect x="46" y="90" width="14" height="34" rx="7" fill="#FFFFFF" fill-opacity="0.75"/><rect x="140" y="90" width="14" height="34" rx="7" fill="#FFFFFF" fill-opacity="0.75"/><rect x="56" y="60" width="88" height="86" rx="32" fill="#FFFFFF"/><rect x="68" y="78" width="64" height="46" rx="20" fill="#2A2F9E"/><path d="M81 103 Q87 95 93 103M107 103 Q113 95 119 103" fill="none" stroke="#FFFFFF" stroke-width="5" stroke-linecap="round"/><path d="M93 111 Q100 117 107 111" fill="none" stroke="#FFFFFF" stroke-width="4.5" stroke-linecap="round"/></svg>

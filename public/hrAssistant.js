@@ -74,6 +74,11 @@
   const commsHeadTitle = document.getElementById('hrCommsHeadTitle');
   const commsHeadSubtitle = document.getElementById('hrCommsHeadSubtitle');
   const commsHeadBadge = document.getElementById('hrCommsHeadBadge');
+  // "SUBH Settings" page frame (2026-11, direct instruction) - a visual
+  // replica of the real app top bar, shown ONLY for the 7 SUBH-Settings
+  // sub-pages (see setPanelView's isSettingsSubpage) - see this element's
+  // own comment in workforce.html for why it exists at all.
+  const settingsPageTopbar = document.getElementById('hrSettingsPageTopbar');
   const todayUpdatesCard = document.getElementById('hrTodayUpdatesCard');
   const todayUpdatesBadge = document.getElementById('hrTodayUpdatesBadge');
   // Task 4 (2026-10-28) - Important Communications hub: a hub page (two
@@ -1941,6 +1946,11 @@
     const isAiUsage = view === 'aiUsage';
     const isDataBackups = view === 'dataBackups';
     const isSettingsHistory = view === 'settingsHistory'; // TASK 3 (2026-11)
+    // Page frame (2026-11, direct instruction) - the 7 SUBH-Settings
+    // sub-pages, and ONLY these, show the real-top-bar replica above the
+    // normal back-button+heading row (see hrSettingsPageTopbar's own
+    // comment in workforce.html).
+    const isSettingsSubpage = isSiteAliases || isDeptAliases || isCompanyDetails || isLetterSettings || isAiUsage || isDataBackups || isSettingsHistory;
     const isActionNeeded = view === 'actionNeeded';
     const isAutoList = view === 'automationList';
     const isAutomation = view === 'automation';
@@ -1957,6 +1967,14 @@
     const usesCommsHead = !isHome;
     if (homeHead) homeHead.hidden = !isHome;
     if (commsHead) commsHead.hidden = !usesCommsHead;
+    // Live bug fix (2026-11), found while building this - the `hidden`
+    // ATTRIBUTE doesn't reliably hide this element: .wf-topbar's own class
+    // rule (`display: flex`) has EQUAL CSS specificity to the browser's
+    // default `[hidden] { display: none }` and comes later in the
+    // cascade, so it wins, leaving the element visibly displayed despite
+    // `hidden` being set. An inline style always wins regardless of
+    // specificity ties, so this toggles style.display directly instead.
+    if (settingsPageTopbar) settingsPageTopbar.style.display = isSettingsSubpage ? '' : 'none';
     if (todayUpdatesCard) todayUpdatesCard.hidden = !isHome;
     messagesEl.hidden = !isHome;
     if (commsHubPage) commsHubPage.hidden = !isCommsHub;
@@ -1987,6 +2005,15 @@
     // Today's Updates and SUBH Settings hides it, not just the handful
     // that used to be listed by name here.
     if (inputArea) inputArea.hidden = !isHome;
+    // Item 3 (2026-11), direct instruction - default to visible; only the 7
+    // SUBH-Settings sub-page branches below hide it (channel-neutral pages
+    // never show a WhatsApp-styled icon bubble at all, not even an empty
+    // one - .wf-comms-head-icon's own base class still has a background
+    // circle even with no icon inside). style.display, not the `hidden`
+    // attribute - see settingsPageTopbar's own comment above for why the
+    // attribute alone doesn't reliably work against this class's own
+    // unconditional `display: flex`.
+    if (commsHeadIcon) commsHeadIcon.style.display = '';
     if (isCommsHub) {
       if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon';
       if (commsHeadIcon) commsHeadIcon.innerHTML = MAIL_SVG;
@@ -2026,44 +2053,58 @@
       if (commsHeadSubtitle) commsHeadSubtitle.textContent = 'Saved fixed replies for recurring topics';
       if (commsHeadBadge) commsHeadBadge.hidden = true;
     } else if (isSiteAliases) {
-      if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon whatsapp';
-      if (commsHeadIcon) commsHeadIcon.innerHTML = WHATSAPP_SVG;
+      // Item 3 (2026-11), direct instruction - channel-neutral settings page, never a WhatsApp icon (or ANY icon bubble).
+      if (commsHeadIcon) commsHeadIcon.style.display = 'none';
+      if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon';
+      if (commsHeadIcon) commsHeadIcon.innerHTML = '';
       if (commsHeadTitle) commsHeadTitle.textContent = 'Site names';
       if (commsHeadSubtitle) commsHeadSubtitle.textContent = 'Colloquial site names matched to the HR Master';
       if (commsHeadBadge) commsHeadBadge.hidden = true;
     } else if (isDeptAliases) {
-      if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon whatsapp';
-      if (commsHeadIcon) commsHeadIcon.innerHTML = WHATSAPP_SVG;
+      // Item 3 (2026-11), direct instruction - channel-neutral settings page, never a WhatsApp icon (or ANY icon bubble).
+      if (commsHeadIcon) commsHeadIcon.style.display = 'none';
+      if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon';
+      if (commsHeadIcon) commsHeadIcon.innerHTML = '';
       if (commsHeadTitle) commsHeadTitle.textContent = 'Department names';
       if (commsHeadSubtitle) commsHeadSubtitle.textContent = 'Colloquial department names matched to the HR Master';
       if (commsHeadBadge) commsHeadBadge.hidden = true;
     } else if (isCompanyDetails) {
-      if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon whatsapp';
-      if (commsHeadIcon) commsHeadIcon.innerHTML = WHATSAPP_SVG;
+      // Item 3 (2026-11), direct instruction - channel-neutral settings page, never a WhatsApp icon (or ANY icon bubble).
+      if (commsHeadIcon) commsHeadIcon.style.display = 'none';
+      if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon';
+      if (commsHeadIcon) commsHeadIcon.innerHTML = '';
       if (commsHeadTitle) commsHeadTitle.textContent = 'Company details';
       if (commsHeadSubtitle) commsHeadSubtitle.textContent = 'Code, address, CIN/GSTIN, contact + the letter logo';
       if (commsHeadBadge) commsHeadBadge.hidden = true;
     } else if (isLetterSettings) {
-      if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon whatsapp';
-      if (commsHeadIcon) commsHeadIcon.innerHTML = WHATSAPP_SVG;
+      // Item 3 (2026-11), direct instruction - channel-neutral settings page, never a WhatsApp icon (or ANY icon bubble).
+      if (commsHeadIcon) commsHeadIcon.style.display = 'none';
+      if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon';
+      if (commsHeadIcon) commsHeadIcon.innerHTML = '';
       if (commsHeadTitle) commsHeadTitle.textContent = 'Letter settings';
       if (commsHeadSubtitle) commsHeadSubtitle.textContent = 'Reference number format, letter codes + counters';
       if (commsHeadBadge) commsHeadBadge.hidden = true;
     } else if (isAiUsage) {
-      if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon whatsapp';
-      if (commsHeadIcon) commsHeadIcon.innerHTML = WHATSAPP_SVG;
+      // Item 3 (2026-11), direct instruction - channel-neutral settings page, never a WhatsApp icon (or ANY icon bubble).
+      if (commsHeadIcon) commsHeadIcon.style.display = 'none';
+      if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon';
+      if (commsHeadIcon) commsHeadIcon.innerHTML = '';
       if (commsHeadTitle) commsHeadTitle.textContent = 'AI usage';
       if (commsHeadSubtitle) commsHeadSubtitle.textContent = 'Spend today/this week/this month, live vs. tests';
       if (commsHeadBadge) commsHeadBadge.hidden = true;
     } else if (isDataBackups) {
-      if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon whatsapp';
-      if (commsHeadIcon) commsHeadIcon.innerHTML = WHATSAPP_SVG;
+      // Item 3 (2026-11), direct instruction - channel-neutral settings page, never a WhatsApp icon (or ANY icon bubble).
+      if (commsHeadIcon) commsHeadIcon.style.display = 'none';
+      if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon';
+      if (commsHeadIcon) commsHeadIcon.innerHTML = '';
       if (commsHeadTitle) commsHeadTitle.textContent = 'Data & backups';
       if (commsHeadSubtitle) commsHeadSubtitle.textContent = 'Backup now, recent backups, restore from backup';
       if (commsHeadBadge) commsHeadBadge.hidden = true;
     } else if (isSettingsHistory) {
-      if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon whatsapp';
-      if (commsHeadIcon) commsHeadIcon.innerHTML = WHATSAPP_SVG;
+      // Item 3 (2026-11), direct instruction - channel-neutral settings page, never a WhatsApp icon (or ANY icon bubble).
+      if (commsHeadIcon) commsHeadIcon.style.display = 'none';
+      if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon';
+      if (commsHeadIcon) commsHeadIcon.innerHTML = '';
       if (commsHeadTitle) commsHeadTitle.textContent = 'Settings history';
       if (commsHeadSubtitle) commsHeadSubtitle.textContent = 'Every change to owner settings, with Restore';
       if (commsHeadBadge) commsHeadBadge.hidden = true;
