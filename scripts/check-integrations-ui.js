@@ -175,6 +175,13 @@ function check(label, ok, detail) {
   await page.click('#menuBtn');
   await page.waitForTimeout(150);
   check('drawer opens with an "Integrations" entry (registered exactly like SUBH Settings)', await page.locator('[data-view="integrations"]').isVisible());
+  // Menu order (2026-11, direct instruction): ... Data Quality -> Integrations -> SUBH Settings -> Profile.
+  const drawerOrder = await page.locator('#wfDrawer [data-view]').evaluateAll((els) => els.map((e) => e.dataset.view));
+  check('☰ menu order: Data Quality -> Integrations -> SUBH Settings -> Profile',
+    drawerOrder.indexOf('quality') < drawerOrder.indexOf('integrations') &&
+    drawerOrder.indexOf('integrations') < drawerOrder.indexOf('subhSettings') &&
+    drawerOrder.indexOf('subhSettings') < drawerOrder.indexOf('profile'),
+    'got order: ' + JSON.stringify(drawerOrder));
 
   await page.click('[data-view="integrations"]');
   await page.waitForTimeout(300);
