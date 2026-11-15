@@ -2064,6 +2064,20 @@ body { background: var(--wi-bg); }
    gap just for THIS chip set so all 3 still fit on one line each. */
 #hrAttnStatusChips.wf-rem-chips { gap: 6px; }
 #hrAttnStatusChips .wf-rem-chip { padding: 0 6px; font-size: 11.5px; gap: 4px; }
+/* AI usage page - live bug fix (2026-11): "This year" lives in its own
+   row (see hrAiUsageChipsYear's own comment for why - a 4th chip can't
+   wrap onto its own line inside the same flex row as the other three),
+   but it inherited .wf-rem-chip's `flex:1`, which stretches it to fill
+   100% of its own row's width since it's the only child there - looked
+   oversized next to Today/This week/This month. `flex: none` here sizes
+   it to its own content instead, same as its siblings, and the row's
+   default flex-start alignment already left-aligns it directly under
+   "Today". The gap between the two rows used to be .wf-comms-page's own
+   16px flex `gap` PLUS an extra 8px inline margin-top on top of it (24px
+   total) - that extra margin is removed entirely here, leaving just the
+   same 16px spacing every other section on this page already uses
+   (reduced from 24px, and consistent rather than a one-off wider gap). */
+#hrAiUsageChipsYear .wf-rem-chip { flex: none; }
 .wf-rem-section-head { display: flex; align-items: center; justify-content: space-between; font-size: 0.8rem; font-weight: 800; color: var(--wi-ink); padding: 0 2px; }
 /* Task 3a (2026-11) - the normal label/Clear/count trio and the Cancel/
    Clear (N) selection-mode pair occupy the SAME line, one hidden while

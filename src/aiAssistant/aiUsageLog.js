@@ -2,8 +2,8 @@
 // call this app makes, across every feature, logged to one place: time,
 // feature, model, tokens, estimated cost, live vs. test. Backed by the
 // same Upstash Redis every other store here uses, one list key per
-// calendar day (UTC - a usage/cost dashboard doesn't need IST precision
-// the way business-hour logic elsewhere in this app does), each capped
+// calendar day (IST, 2026-11 fix - see dayKey() below for why this must
+// match the owner's own calendar day, not a plain UTC one), each capped
 // with a ~91-day TTL so cleanup is automatic - never an ever-growing key.
 // Fails soft everywhere (a logging failure must never break the real
 // call it's recording), matching every other Redis-backed piece of this
@@ -54,8 +54,42 @@ function estimateCostUsd({ model, inputTokens, outputTokens, cacheWriteTokens, c
     + (Number(cacheReadTokens) || 0) / 1e6 * price.input * 0.1;
 }
 
-function dayKey(date) { return (date instanceof Date ? date : new Date(date || Date.now())).toISOString().slice(0, 10); }
+// IST calendar day (YYYY-MM-DD) a UTC instant falls on - the SAME
+// Intl.DateTimeFormat-in-Asia/Kolkata technique as whatsappAssistant.js's
+// own istDayKeyOf (not reused directly to avoid a dependency on that huge
+// file - duplicated here deliberately, same established pattern).
+//
+// FIX (2026-11, live bug): this used to be `.toISOString().slice(0,10)` -
+// a plain UTC calendar day. Since this app and its owner are in India
+// (IST = UTC+5:30), any call made between 00:00-05:29 IST falls in the
+// PREVIOUS UTC calendar day - so a real call made e.g. at 1am IST got
+// filed under "yesterday" while the owner, opening the AI usage page a
+// few hours later the same IST morning, saw "Today" (and, whenever
+// yesterday also happened to be a week/month/year boundary, the other
+// chips too) come back $0.00 even though the entry was really recorded
+// and never expired - it was just bucketed into a day the owner wasn't
+// looking at. `check-ai-usage-log.js`'s existing tests never caught this
+// because every one of them uses a mid-day UTC timestamp (09:00-17:00
+// UTC), which is never inside the mismatch window - new tests below
+// cover it directly.
+function dayKey(date) {
+  const d = date instanceof Date ? date : new Date(date || Date.now());
+  const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(d);
+  const get = (t) => (parts.find((p) => p.type === t) || {}).value || '';
+  return get('year') + '-' + get('month') + '-' + get('day');
+}
 function redisKeyForDay(day) { return KEY_PREFIX + day; }
+// A 'YYYY-MM-DD' day-key string -> a Date representing that SAME
+// calendar date's UTC midnight. A calendar date's day-of-week/month/year
+// components don't depend on timezone, so this pseudo-instant is safe to
+// run getUTCDay()/getUTCMonth()/etc. on purely for calendar arithmetic
+// (never used as a real instant) - this is what lets startOfWeek/Month/
+// Year below compute IST period boundaries using plain, timezone-free
+// date math once the IST day-key itself has been read via dayKey() above.
+function dayKeyToUtcMidnight(key) {
+  const [y, m, d] = key.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d));
+}
 
 // Never throws - a logging failure must never break the real call it's
 // recording. isTest: set by every call site from
@@ -98,8 +132,8 @@ function dayKeysBetween(startDay, endDay) {
 }
 
 // Returns every entry recorded on or after `startDay` (a 'YYYY-MM-DD'
-// string, UTC) through today, oldest first. Never throws - an empty
-// array on any failure.
+// string, IST calendar day) through today, oldest first. Never throws -
+// an empty array on any failure.
 async function getEntriesSince(startDay, now) {
   const redis = getClient();
   if (!redis) return [];
@@ -132,19 +166,24 @@ function summarize(entries) {
   };
 }
 
+// All three below first resolve `now` to its own IST calendar day-key
+// (dayKey), then do the week/month/year start math on that calendar
+// date's pseudo-UTC-midnight - so "this week/month/year" always means
+// the IST calendar period the owner is actually in, not whatever UTC
+// happens to straddle at call time.
 function startOfWeek(now) {
-  const d = new Date(now || Date.now());
-  const day = d.getUTCDay(); // 0=Sun
+  const todayMidnight = dayKeyToUtcMidnight(dayKey(now));
+  const day = todayMidnight.getUTCDay(); // 0=Sun
   const diff = (day + 6) % 7; // days since Monday
-  return dayKey(new Date(d.getTime() - diff * 24 * 60 * 60 * 1000));
+  return dayKey(new Date(todayMidnight.getTime() - diff * 24 * 60 * 60 * 1000));
 }
 function startOfMonth(now) {
-  const d = new Date(now || Date.now());
-  return dayKey(new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1)));
+  const todayMidnight = dayKeyToUtcMidnight(dayKey(now));
+  return dayKey(new Date(Date.UTC(todayMidnight.getUTCFullYear(), todayMidnight.getUTCMonth(), 1)));
 }
 function startOfYear(now) {
-  const d = new Date(now || Date.now());
-  return dayKey(new Date(Date.UTC(d.getUTCFullYear(), 0, 1)));
+  const todayMidnight = dayKeyToUtcMidnight(dayKey(now));
+  return dayKey(new Date(Date.UTC(todayMidnight.getUTCFullYear(), 0, 1)));
 }
 
 // {today, week, month, year} each summarize()'d - the one function both

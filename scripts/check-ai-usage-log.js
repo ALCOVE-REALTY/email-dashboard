@@ -88,6 +88,50 @@ async function main() {
   });
 
   console.log('='.repeat(70));
+  console.log('LIVE BUG FIX (2026-11): day-key/period boundaries use IST, not UTC - a call made just after midnight IST (still the PREVIOUS UTC calendar day) must count as TODAY, not vanish into "yesterday"');
+  console.log('='.repeat(70));
+  await checkAsync('a call at 1am IST (= 19:30 UTC the prior day) is bucketed under the IST day it really happened on, not the UTC day', async () => {
+    // 2026-11-20 is a Friday. 1:00 AM IST on the 20th = 19:30 UTC on the
+    // 19th - the OLD `.toISOString().slice(0,10)` UTC day-key would have
+    // filed this under "2026-11-19", one real IST day off.
+    const oneAmIst = new Date('2026-11-19T19:30:00.000Z');
+    return aiUsageLog.dayKey(oneAmIst) === '2026-11-20';
+  });
+  await checkAsync('"Today" totals include a call made at 1am IST even though its UTC instant is still the previous UTC day', async () => {
+    const oneAmIst = new Date('2026-11-19T19:30:00.000Z'); // 2026-11-20, 1:00 AM IST
+    await aiUsageLog.recordUsage({ feature: 'late-night-call', model: 'claude-sonnet-5-5', inputTokens: 1000, outputTokens: 500, isTest: false, now: oneAmIst });
+    const summary = await aiUsageLog.getUsageSummary(oneAmIst);
+    return summary.today.byFeature.some((f) => f.feature === 'late-night-call');
+  });
+  await checkAsync('"This week"/"This month"/"This year" all still include that same 1am-IST entry when queried LATER the same IST day', async () => {
+    const oneAmIst = new Date('2026-11-19T19:30:00.000Z'); // 2026-11-20, 1:00 AM IST
+    const laterSameIstDay = new Date('2026-11-20T10:00:00.000Z'); // 2026-11-20, 3:30 PM IST - same IST day, well after the old UTC rollover
+    await aiUsageLog.recordUsage({ feature: 'late-night-call-2', model: 'claude-sonnet-5-5', inputTokens: 1000, outputTokens: 500, isTest: false, now: oneAmIst });
+    const summary = await aiUsageLog.getUsageSummary(laterSameIstDay);
+    return summary.today.byFeature.some((f) => f.feature === 'late-night-call-2') &&
+      summary.week.byFeature.some((f) => f.feature === 'late-night-call-2') &&
+      summary.month.byFeature.some((f) => f.feature === 'late-night-call-2') &&
+      summary.year.byFeature.some((f) => f.feature === 'late-night-call-2');
+  });
+  await checkAsync('a call made just BEFORE midnight IST (still the SAME UTC day) is correctly NOT counted as the next IST day', async () => {
+    // 11:55 PM IST on 2026-11-20 = 18:25 UTC on 2026-11-20 (same UTC day) -
+    // must stay keyed under 2026-11-20, not leak into 2026-11-21.
+    const before = new Date('2026-11-20T18:25:00.000Z');
+    return aiUsageLog.dayKey(before) === '2026-11-20';
+  });
+  await checkAsync('startOfWeek/startOfMonth/startOfYear resolve from the IST calendar day, not a UTC one, at the IST-midnight boundary', async () => {
+    // 2026-12-01 00:10 AM IST = 2026-11-30 18:40 UTC - a plain UTC day-key
+    // would wrongly see this as still November for month/year-start math.
+    const justAfterIstMidnight = new Date('2026-11-30T18:40:00.000Z');
+    await aiUsageLog.recordUsage({ feature: 'month-rollover-call', model: 'claude-sonnet-5-5', inputTokens: 1000, outputTokens: 500, isTest: false, now: justAfterIstMidnight });
+    const summary = await aiUsageLog.getUsageSummary(justAfterIstMidnight);
+    // It's really Dec 1st IST - "today" must show it, and it must count as
+    // part of December (this month), not November.
+    return summary.today.byFeature.some((f) => f.feature === 'month-rollover-call') &&
+      summary.month.byFeature.some((f) => f.feature === 'month-rollover-call');
+  });
+
+  console.log('='.repeat(70));
   console.log('checkDailyAlertDue: fires once per day at/above threshold, never again the same day, resets the next day');
   console.log('='.repeat(70));
   await checkAsync('under the threshold never fires', async () => {

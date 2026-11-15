@@ -878,6 +878,27 @@ function check(label, ok, detail) {
   check('AI usage: the chip row sits with more breathing room below the page top than the old cramped 4px/8px', typeof aiUsageTopGap === 'number' && aiUsageTopGap >= 14, 'got topGap: ' + aiUsageTopGap);
   const yearChipBox = await page.locator('#hrAiUsageChipsYear').boundingBox();
   check('AI usage: "This year" sits on its OWN line below the Today/This week/This month row, not squeezed onto the same line', Boolean(yearChipBox) && Boolean(aiUsageChipsBox) && yearChipBox.y > (aiUsageChipsBox.y + aiUsageChipsBox.height - 2));
+  // LIVE BUG FIX (2026-11) - "This year" used to be the sole child of its
+  // own flex row, so .wf-rem-chip's shared `flex:1` stretched it to fill
+  // 100% of that row's width (way bigger than its siblings). Tapping the
+  // actual "This year" button and measuring its real rendered box (not
+  // just trusting the CSS rule exists) against the real "Today" chip's
+  // own box catches both halves of the fix: same size as its siblings,
+  // and left-aligned directly under "Today" (never centered/stretched).
+  // NOTE: yearChipBox above is the CONTAINER row's own box (full-width by
+  // construction, same as the row above it) - size/alignment must be
+  // measured on the actual BUTTON inside it, not the row.
+  const yearBtnBox = await page.locator('[data-range="year"]').boundingBox();
+  const todayChipBox = await page.locator('[data-range="today"]').boundingBox();
+  const yearRowGap = (yearChipBox && aiUsageChipsBox) ? (yearChipBox.y - (aiUsageChipsBox.y + aiUsageChipsBox.height)) : null;
+  check('AI usage: "This year" is the SAME size as Today/This week/This month (not stretched full-width)', Boolean(yearBtnBox) && Boolean(todayChipBox) && Math.abs(yearBtnBox.width - todayChipBox.width) < 40, 'got yearWidth=' + (yearBtnBox && yearBtnBox.width) + ' todayWidth=' + (todayChipBox && todayChipBox.width));
+  check('AI usage: "This year" is left-aligned directly under "Today" (same left edge as the row above)', Boolean(yearBtnBox) && Boolean(todayChipBox) && Math.abs(yearBtnBox.x - todayChipBox.x) < 3, 'got yearX=' + (yearBtnBox && yearBtnBox.x) + ' todayX=' + (todayChipBox && todayChipBox.x));
+  // .wf-comms-page is a flex column with its own 16px `gap` between every
+  // direct child - the OLD markup added an extra 8px margin-top on top of
+  // that (24px total); the fix removes the extra margin entirely, leaving
+  // just the page's normal 16px rhythm (reduced, and consistent with every
+  // other section gap on this page, rather than a one-off wider gap).
+  check('AI usage: the gap between the two chip rows is reduced to the page\'s normal 16px rhythm (not the old 24px)', typeof yearRowGap === 'number' && yearRowGap >= 14 && yearRowGap <= 18, 'got rowGap: ' + yearRowGap);
   const liveTotalBefore = await page.locator('#hrAiUsageLiveTotal').textContent().catch(() => null);
   check('AI usage: defaults to "Today" on open, showing today\'s totals', (liveTotalBefore || '').includes('1.11'), 'got: ' + JSON.stringify(liveTotalBefore));
   await page.click('[data-range="year"]');
