@@ -343,6 +343,29 @@ async function getFailure() {
   try { return parseJsonSafe(await redis.get(FAILURE_KEY), null); } catch (err) { return null; }
 }
 
+// Live request (2026-11, direct instruction) - the SAME unified "Action
+// Needed" list every other system/automated alert lands in (see
+// src/workforceRoutes.js's GET /hr-assistant/action-needed, which merges
+// this in alongside the daily-backup-failed and settings-health items),
+// category 'automations', so this failure is never visible ONLY as a
+// standalone banner on the Integrations page. Shape matches the existing
+// automation_missed_run/daily_backup_failed items exactly (kind/category/
+// chatId:null/name/ts/ageMs/data) - no one-off shape.
+async function getActionNeededItem() {
+  const failure = await getFailure();
+  if (!failure) return null;
+  const ts = new Date(failure.at).getTime() || Date.now();
+  return {
+    kind: 'together_we_can_failed',
+    category: 'automations',
+    chatId: null,
+    name: 'Together We Can sync failed',
+    ts,
+    ageMs: Math.max(0, Date.now() - ts),
+    data: { reason: failure.reason, httpStatus: failure.httpStatus, responseBodyText: failure.responseBodyText, triggeredBy: failure.triggeredBy }
+  };
+}
+
 // "Field mapping" (2026-11, new feature, direct instruction after the
 // live header-mismatch bug) - which REAL Employee_Master header each of
 // the 4 API fields reads from, owner-editable (a dropdown of the live
@@ -637,6 +660,7 @@ module.exports = {
   checkDailyAutoSync,
   getLastSnapshot,
   getFailure,
+  getActionNeededItem,
   getFieldMapping,
   saveFieldMapping,
   getHeaderList,

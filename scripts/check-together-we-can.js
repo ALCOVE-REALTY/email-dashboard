@@ -447,6 +447,36 @@ async function main() {
     });
 
     console.log('='.repeat(70));
+    console.log('Unified "Action Needed" list - the Together We Can failure lands under the SAME "Automations" chip as every other system alert (2026-11, direct instruction)');
+    console.log('='.repeat(70));
+    await checkAsync('getActionNeededItem() returns null when there is no current failure', async () => {
+      await togetherWeCanService.sendFullSync({ triggeredBy: 'action-needed-baseline-success' }); // clears any lingering failure from earlier sections
+      return (await togetherWeCanService.getActionNeededItem()) === null;
+    });
+    await checkAsync('after a real failure, getActionNeededItem() returns the SAME shape every other automation item in the unified list uses (kind/category/chatId/name/ts/ageMs/data), with the REAL failure reason', async () => {
+      fetchScript = [{ ok: false, status: 503, bodyText: 'service unavailable at Together We Can' }, { ok: false, status: 503, bodyText: 'service unavailable at Together We Can' }];
+      fetchCallCount = 0;
+      await togetherWeCanService.sendFullSync({ triggeredBy: 'action-needed-failure-test' });
+      fetchScript = null;
+      const item = await togetherWeCanService.getActionNeededItem();
+      return Boolean(item) && item.kind === 'together_we_can_failed' && item.category === 'automations' && item.chatId === null &&
+        typeof item.ts === 'number' && typeof item.ageMs === 'number' &&
+        /HTTP 503/.test(item.data.reason) && /service unavailable at Together We Can/.test(item.data.reason) && item.data.httpStatus === null; // batched mode - no single httpStatus, the reason string itself carries the per-batch status
+    });
+    await checkAsync('the UNIFIED /hr-assistant/action-needed route merges this item in, category "automations", with its reason matching the real underlying failure - not a one-off list', async () => {
+      const res = await callRoute(workforceRoutes, 'get', '/hr-assistant/action-needed', { email: OWNER });
+      const twcItem = (res.body.items || []).find((i) => i.kind === 'together_we_can_failed');
+      const realFailure = await togetherWeCanService.getFailure();
+      return res.status === 200 && Boolean(twcItem) && twcItem.category === 'automations' && twcItem.data.reason === realFailure.reason;
+    });
+    await checkAsync('once the sync succeeds again (e.g. via Retry), the item disappears from the unified list too, not just the standalone banner', async () => {
+      fetchScript = null;
+      await togetherWeCanService.sendFullSync({ triggeredBy: 'action-needed-recovery-test' });
+      const res = await callRoute(workforceRoutes, 'get', '/hr-assistant/action-needed', { email: OWNER });
+      return !(res.body.items || []).some((i) => i.kind === 'together_we_can_failed');
+    });
+
+    console.log('='.repeat(70));
     console.log('Field mapping (2026-11, new feature) - owner-editable, live-header-driven, never a silent wrong-column read');
     console.log('='.repeat(70));
     check('DEFAULT_FIELD_MAPPING matches the REAL Employee_Master headers confirmed against the live sheet (2026-11) - "New Emp. No." (not "Emp Code"), "STATUS", "HOD-1 ID", "REPORTING DOER ID"',

@@ -3627,15 +3627,17 @@ router.get('/hr-assistant/letter-settings/employee-picker', async (req, res) => 
 router.get('/hr-assistant/action-needed', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
   try {
-    const [items, automations, workflowItems, aiUsageAlertUsd, backupAlertItem, settingsHealthItems] = await Promise.all([
+    const [items, automations, workflowItems, aiUsageAlertUsd, backupAlertItem, settingsHealthItems, twcFailureItem] = await Promise.all([
       whatsappAssistant.listActionNeededItems(),
       automationService.listRawAutomations().catch(() => []),
       workflowService.listWorkflowActionNeededItems().catch(() => []),
       aiUsageLog.getTodaysFiredAlert().catch(() => null),
       fullStoreBackupService.getBackupActionNeededItem().catch(() => null),
-      settingsHealthCheck.getSettingsHealthActionNeededItems().catch(() => [])
+      settingsHealthCheck.getSettingsHealthActionNeededItems().catch(() => []),
+      togetherWeCanService.getActionNeededItem().catch(() => null)
     ]);
     const backupItems = backupAlertItem ? [backupAlertItem] : [];
+    const twcItems = twcFailureItem ? [twcFailureItem] : [];
     const aiUsageItems = [];
     if (typeof aiUsageAlertUsd === 'number') {
       const ts = new Date(new Date().toISOString().slice(0, 10) + 'T00:00:00.000Z').getTime();
@@ -3664,7 +3666,7 @@ router.get('/hr-assistant/action-needed', async (req, res) => {
         });
       }
     }
-    const merged = items.concat(automationItems, workflowItems, aiUsageItems, backupItems, settingsHealthItems).sort((x, y) => x.ts - y.ts);
+    const merged = items.concat(automationItems, workflowItems, aiUsageItems, backupItems, settingsHealthItems, twcItems).sort((x, y) => x.ts - y.ts);
     res.json({ items: merged });
   } catch (err) {
     res.status(500).json({ error: err.message });

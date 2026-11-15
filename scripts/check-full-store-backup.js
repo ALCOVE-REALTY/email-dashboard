@@ -354,7 +354,7 @@ async function main() {
     const state = await svc.getDailyBackupState();
     if (!(state && state.date === TEST_DAY_1 && state.status === 'failed_final' && state.attempts.length === 0)) return false;
     const card = await svc.getBackupActionNeededItem();
-    return Boolean(card) && card.kind === 'daily_backup_failed' && card.data.date === TEST_DAY_1 && card.data.attempts === 0;
+    return Boolean(card) && card.kind === 'daily_backup_failed' && card.category === 'automations' && card.data.date === TEST_DAY_1 && card.data.attempts === 0;
   });
 
   try {
@@ -382,7 +382,7 @@ async function main() {
       if (!(state.attempts.length === 3 && state.status === 'failed_final')) return false;
 
       const card = await svc.getBackupActionNeededItem();
-      return Boolean(card) && card.data.date === TEST_DAY_2 && card.data.attempts === 3 && /SUBH Drive is not connected/.test(card.data.lastError || '');
+      return Boolean(card) && card.category === 'automations' && card.data.date === TEST_DAY_2 && card.data.attempts === 3 && /SUBH Drive is not connected/.test(card.data.lastError || '');
     });
     await checkAsync('once finalized as failed_final, the window closing again (05:00+) never re-attempts a 4th time', async () => {
       await svc.checkDailyBackup(istDate(2, 4, 50));
@@ -392,6 +392,45 @@ async function main() {
   } finally {
     restoreRealDrive();
   }
+
+  // Live request (2026-11, direct instruction) - "Retry now" on the unified
+  // Action Needed card's own "Automations" entry reuses the EXACT SAME
+  // manual backup job (runBackupJobInBackground, via startBackupJob) the
+  // Data & Backups page's "Backup now" button already calls - a successful
+  // manual run must ACTUALLY clear this card (via markDailyBackupDoneIfToday,
+  // called from that job's own success path), not just visually close in
+  // the UI while the underlying failed_final state lingers.
+  await checkAsync('a successful MANUAL backup (the real "Retry now"/"Backup now" job) clears the failed_final Action-needed card, not just the UI', async () => {
+    subhDriveAuth.isAuthenticated = () => false; // still failing - the daily state is failed_final
+    await svc.checkDailyBackup(istDate(3, 2, 0));
+    await svc.checkDailyBackup(istDate(3, 2, 31));
+    await svc.checkDailyBackup(istDate(3, 3, 1));
+    await svc.checkDailyBackup(istDate(3, 3, 2)); // retries exhausted -> failed_final
+    const beforeState = await svc.getDailyBackupState();
+    const beforeCard = await svc.getBackupActionNeededItem();
+    if (!(beforeState.status === 'failed_final' && Boolean(beforeCard))) return false;
+    // Now the manual job succeeds (Drive reconnected) - same job a real
+    // "Retry now"/"Backup now" tap triggers. Uses the SAME fake-success
+    // Drive mock as every other passing-case test in this file (never the
+    // real Drive client - zero real network calls).
+    installFakeDrive();
+    await svc.startBackupJob({ startedBy: 'test-retry' });
+    // Polls the DAILY STATE itself, not one specific job id - an earlier
+    // test's own background job could still legitimately hold the same
+    // "only one backup at a time" lock (startBackupJob's alreadyRunning
+    // dedup) for a moment, so this waits for the OUTCOME that actually
+    // matters (today's run recorded as done) rather than assuming this
+    // call's own jobId is the one that finishes.
+    let afterState = null;
+    for (let i = 0; i < 100; i++) {
+      afterState = await svc.getDailyBackupState();
+      if (afterState && afterState.status === 'done') break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    restoreRealDrive();
+    const afterCard = await svc.getBackupActionNeededItem();
+    return Boolean(afterState) && afterState.status === 'done' && afterCard === null;
+  });
 
   try {
     installFakeDrive({ uploadDelayMs: 100 }); // slow enough that two concurrent checks genuinely overlap

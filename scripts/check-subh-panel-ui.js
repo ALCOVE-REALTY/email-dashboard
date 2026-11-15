@@ -411,6 +411,106 @@ function check(label, ok, detail) {
   check('Attendance Requests: no JS error was thrown rendering the list', attnErrAfter === attnErrBefore,
     'new errors: ' + JSON.stringify(consoleErrors.slice(attnErrBefore).concat(pageErrors.slice(attnErrBefore))));
 
+  // Live request (2026-11, direct instruction) - every system/automated
+  // alert (nightly backup failure, a settings group going empty,
+  // Together We Can sync failures) now lands under the SAME "Automations"
+  // chip in the unified Action Needed list, alongside Automated Tasks/
+  // Workflow items, each with its own real reason and a working
+  // Retry/Open action - not a one-off card shape. Registered AFTER the
+  // generic mock at the top of this file (last-registered wins).
+  let twcSyncNowCalls = 0;
+  // `now` is captured ONCE here, outside the route handler - a fresh
+  // Date.now() inside the handler would give every poll a slightly
+  // different `ts`, defeating renderActionNeeded's own fingerprint-based
+  // re-render skip (ts is part of the fingerprint) and causing the WHOLE
+  // list to rebuild (re-adding every card) after each refreshActionNeeded()
+  // poll, undoing a card's own just-finished close animation - a real bug
+  // found while writing this check, not a product one.
+  const actionNeededMockNow = Date.now();
+  await page.route('**/api/workforce/hr-assistant/action-needed', (route) => {
+    const now = actionNeededMockNow;
+    route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify({
+        items: [
+          {
+            kind: 'daily_backup_failed', category: 'automations', chatId: null, name: 'Nightly backup',
+            ts: now - 3600000, ageMs: 3600000, data: { date: '2026-11-13', attempts: 3, lastError: 'SUBH Drive is not connected yet' }
+          },
+          {
+            kind: 'settings_group_empty', category: 'automations', chatId: null, name: '"site-alias" settings are now empty',
+            ts: now - 7200000, ageMs: 7200000, data: { group: 'site-alias', lastKnownGoodCount: 12, firstFlaggedAt: new Date(now - 7200000).toISOString() }
+          },
+          {
+            kind: 'together_we_can_failed', category: 'automations', chatId: null, name: 'Together We Can sync failed',
+            ts: now - 1800000, ageMs: 1800000, data: { reason: 'Batch send failed for rows 1-4 (HTTP 500): internal server error', httpStatus: 500, responseBodyText: 'internal server error', triggeredBy: 'manual:test' }
+          }
+        ]
+      })
+    });
+  });
+  let backupStartCalls = 0;
+  let backupDismissCalls = 0;
+  let settingsHealthDismissCalls = 0;
+  await page.route('**/api/workforce/hr-assistant/daily-backup/dismiss', (route) => { backupDismissCalls++; route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true }) }); });
+  await page.route('**/api/workforce/hr-assistant/diag/full-backup/start', (route) => { backupStartCalls++; route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ jobId: 'fake-job-1' }) }); });
+  await page.route('**/api/workforce/hr-assistant/diag/full-backup/status/fake-job-1', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ status: 'done', result: { totalKeys: 42 } }) }));
+  await page.route('**/api/workforce/hr-assistant/settings-health/site-alias/dismiss', (route) => { settingsHealthDismissCalls++; route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true }) }); });
+  await page.route('**/api/workforce/hr-assistant/together-we-can/sync-now', (route) => {
+    twcSyncNowCalls++;
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, employeeCount: 7, counts: { ACTIVE: 7, INACTIVE: 0, 'NOTICE PERIOD': 0 }, changedSinceLastSync: 0 }) });
+  });
+
+  await page.evaluate(() => { if (window.__hrAssistantClosePanel) window.__hrAssistantClosePanel(); });
+  await page.waitForTimeout(100);
+  await page.click('#hrAssistantBtn');
+  await page.waitForTimeout(150);
+  await page.click('#hrTodayUpdatesCard');
+  await page.waitForTimeout(150);
+  await page.click('#hrHubCommsTile');
+  await page.waitForTimeout(150);
+  await page.click('#hrCommsHubWaTile');
+  await page.waitForTimeout(150);
+  const actionNeededErrBefore = consoleErrors.length + pageErrors.length;
+  await page.click('#hrActionNeededBtn');
+  await page.waitForTimeout(300);
+  check('Action Needed page opens (not a blank page)', await page.locator('#hrActionNeededPage').isVisible());
+  await page.click('#hrActionNeededChips [data-filter="automations"]');
+  await page.waitForTimeout(150);
+  const automationsCount = await page.locator('#hrActionNeededChips [data-filter="automations"] [data-count]').textContent();
+  check('The "Automations" chip counts all 3 system-alert items (backup/settings-health/Together We Can)', automationsCount.trim() === '3', 'got: ' + automationsCount);
+  const listText = await page.locator('#hrActionNeededList').textContent();
+  check('Nightly backup card shows its REAL failure reason text', listText.includes('SUBH Drive is not connected yet'));
+  check('Settings-health card shows its REAL group name and count', listText.includes('"site-alias" settings are now empty') && listText.includes('12'));
+  check('Together We Can card shows its REAL failure reason (HTTP status + body)', listText.includes('500') && listText.includes('internal server error'));
+
+  // Nightly backup: "Retry now" actually calls the real backup-start/
+  // status routes and closes the card on success.
+  await page.click('[data-backup-failed="1"] [data-backup-action="retry"]');
+  // runButtonAction's own built-in 550ms success-flash delay + closeRowWithToast's
+  // 320ms exit animation = ~870ms minimum before the row is actually
+  // removed from the DOM (finishRowClose's plain row.remove(), see its own
+  // definition) - comfortably clear of that floor, not a race.
+  await page.waitForTimeout(1500);
+  check('Nightly backup "Retry now" actually calls /diag/full-backup/start', backupStartCalls === 1, 'calls: ' + backupStartCalls);
+  check('Nightly backup "Retry now" closes the card on success', await page.locator('[data-backup-failed="1"]').count() === 0);
+
+  // Settings-health: "Dismiss" actually calls the real per-group dismiss route.
+  await page.click('[data-settings-health-group="site-alias"] [data-settings-health-action="dismiss"]');
+  await page.waitForTimeout(1500);
+  check('Settings-health "Dismiss" actually calls the real per-group dismiss route', settingsHealthDismissCalls === 1, 'calls: ' + settingsHealthDismissCalls);
+  check('Settings-health "Dismiss" closes the card', await page.locator('[data-settings-health-group="site-alias"]').count() === 0);
+
+  // Together We Can: "Retry" actually calls the real sync-now route.
+  await page.click('[data-twc-failed="1"] [data-twc-action="retry"]');
+  await page.waitForTimeout(1500);
+  check('Together We Can "Retry" actually calls the real sync-now route', twcSyncNowCalls === 1);
+  check('...and closes the card on a successful retry', await page.locator('[data-twc-failed="1"]').count() === 0);
+
+  const actionNeededErrAfter = consoleErrors.length + pageErrors.length;
+  check('Action Needed: no JS error was thrown opening the page, filtering by Automations, or working any of the 3 cards\' actions',
+    actionNeededErrAfter === actionNeededErrBefore,
+    'new errors: ' + JSON.stringify(consoleErrors.slice(actionNeededErrBefore).concat(pageErrors.slice(actionNeededErrBefore))));
+
   // TASK 1(e) (2026-11), direct instruction - "Company details" settings
   // page: opened the same way the real "SUBH Settings" dashboard tile
   // opens it (window.__hrAssistantOpenCompanyDetails), asserts the list

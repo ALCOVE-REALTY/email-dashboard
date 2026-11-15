@@ -147,7 +147,11 @@ async function getSettingsHealthActionNeededItems() {
     const ts = new Date(f.firstFlaggedAt).getTime() || Date.now();
     return {
       kind: 'settings_group_empty',
-      category: 'settings_health',
+      // Live request (2026-11, direct instruction) - every system/
+      // automated alert now lands under the SAME "Automations" chip in
+      // the unified Action Needed list, rather than its own one-off
+      // category.
+      category: 'automations',
       chatId: null,
       name: '"' + f.group + '" settings are now empty (had ' + f.lastKnownGoodCount + ' before)',
       ts,

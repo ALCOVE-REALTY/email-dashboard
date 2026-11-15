@@ -4642,11 +4642,137 @@
     const openBtn = card.querySelector('[data-open-ai-usage]');
     if (openBtn) openBtn.addEventListener('click', () => { pushNav({ type: 'aiUsage' }); showAiUsage(); });
   }
+  // Live request (2026-11, direct instruction) - every system/automated
+  // alert (nightly backup failure, a settings group going empty,
+  // Together We Can sync failures) now lands under the SAME "Automations"
+  // chip as Automated Tasks/Workflow items, each with its own real
+  // reason and a working Retry/Open action - same inline-card convention
+  // as actionNeededAutomationCardHtml above, not a one-off pattern.
+  //
+  // Nightly backup failure - "Retry now" reuses the EXACT SAME job
+  // (postJsonOrThrow('/diag/full-backup/start') + pollBackupJobUntilDone)
+  // the Data & Backups page's own "Backup now" button already uses - one
+  // source of truth. A successful run already marks today's daily-backup
+  // state 'done' server-side (fullStoreBackupService.
+  // markDailyBackupDoneIfToday, called from the SAME job's own success
+  // path) - that's what makes this card disappear on the next poll.
+  function actionNeededBackupFailedCardHtml(item) {
+    const waitingTag = item.ageMs > 2 * 60 * 60 * 1000 ? '<span class="wf-action-needed-waiting-tag">Waiting ' + actionNeededAgeLabel(item.ageMs) + '</span>' : '';
+    return '<div class="wf-auto-task-card" data-backup-failed="1">' +
+      '<div class="wf-action-needed-card-head">' +
+        '<span class="wf-auto-task-subject">Nightly backup failed' + waitingTag + '</span>' +
+        '<button type="button" class="wf-action-needed-openchat" data-open-data-backups="1">Data & backups ›</button>' +
+      '</div>' +
+      '<div class="wf-auto-hint">' + escapeHtml(item.data.lastError || 'Unknown error') + ' (' + (item.data.attempts || 0) + ' attempt(s), ' + escapeHtml(item.data.date || '') + ')</div>' +
+      '<div class="wf-auto-hint">' + actionNeededAgeLabel(item.ageMs) + ' ago</div>' +
+      '<div class="wf-auto-actions">' +
+        '<button type="button" class="primary" data-backup-action="retry">Retry now</button>' +
+        '<button type="button" class="plain" data-backup-action="dismiss">Dismiss</button>' +
+      '</div>' +
+    '</div>';
+  }
+  function wireActionNeededBackupFailedCard(card) {
+    const openBtn = card.querySelector('[data-open-data-backups]');
+    if (openBtn) openBtn.addEventListener('click', () => { if (window.__hrAssistantOpenDataBackups) window.__hrAssistantOpenDataBackups(); });
+    card.querySelectorAll('[data-backup-action]').forEach((b) => {
+      b.addEventListener('click', async () => {
+        if (b.dataset.backupAction === 'dismiss') {
+          await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/daily-backup/dismiss', {}), () => {
+            closeRowWithToast(card, { title: 'Dismissed', type: 'success' });
+            refreshActionNeeded();
+          });
+          return;
+        }
+        await runButtonAction(b, async () => {
+          const started = await postJsonOrThrow('/api/workforce/hr-assistant/diag/full-backup/start', {});
+          return pollBackupJobUntilDone(started.jobId);
+        }, () => {
+          closeRowWithToast(card, { title: 'Backup completed', type: 'success' });
+          refreshActionNeeded();
+        }, { toastFn: (msg) => showActionToast(msg, null, 'error') });
+      });
+    });
+  }
+  // A settings group going empty is informational (go check if that's
+  // expected), never a "retry" - "Open" takes the owner to Settings
+  // history to investigate/restore; Dismiss reuses the existing
+  // settings-health dismiss route exactly as the dedicated Settings
+  // health page's own card already does.
+  function actionNeededSettingsHealthCardHtml(item) {
+    const waitingTag = item.ageMs > 2 * 60 * 60 * 1000 ? '<span class="wf-action-needed-waiting-tag">Waiting ' + actionNeededAgeLabel(item.ageMs) + '</span>' : '';
+    return '<div class="wf-auto-task-card" data-settings-health-group="' + escapeHtml(item.data.group) + '">' +
+      '<div class="wf-action-needed-card-head">' +
+        '<span class="wf-auto-task-subject">"' + escapeHtml(item.data.group) + '" settings are now empty' + waitingTag + '</span>' +
+        '<button type="button" class="wf-action-needed-openchat" data-open-settings-history="1">Settings history ›</button>' +
+      '</div>' +
+      '<div class="wf-auto-hint">Had ' + (item.data.lastKnownGoodCount || 0) + ' before - check if this is expected.</div>' +
+      '<div class="wf-auto-hint">' + actionNeededAgeLabel(item.ageMs) + ' ago</div>' +
+      '<div class="wf-auto-actions">' +
+        '<button type="button" class="plain" data-settings-health-action="dismiss">Dismiss</button>' +
+      '</div>' +
+    '</div>';
+  }
+  function wireActionNeededSettingsHealthCard(card) {
+    const openBtn = card.querySelector('[data-open-settings-history]');
+    if (openBtn) openBtn.addEventListener('click', () => { if (window.__hrAssistantOpenSettingsHistory) window.__hrAssistantOpenSettingsHistory(); });
+    const dismissBtn = card.querySelector('[data-settings-health-action="dismiss"]');
+    if (dismissBtn) dismissBtn.addEventListener('click', async () => {
+      await runButtonAction(dismissBtn, () => postJsonOrThrow('/api/workforce/hr-assistant/settings-health/' + encodeURIComponent(card.dataset.settingsHealthGroup) + '/dismiss', {}), () => {
+        closeRowWithToast(card, { title: 'Dismissed', type: 'success' });
+        refreshActionNeeded();
+      });
+    });
+  }
+  // Together We Can sync failure - "Retry" re-runs the sync directly from
+  // this card (same /sync-now route the Integrations page's own "Sync
+  // data now"/Retry button calls); "Open Integrations ›" navigates to the
+  // real page (a plain top-level ☰-menu dashboard view in workforce.js,
+  // not part of this panel) - closes this panel first, then calls
+  // workforce.js's own global setView, same as any other cross-script
+  // open-page call in this file (e.g. window.__hrAssistantOpenCompanyDetails
+  // pattern, just in the other direction since this page lives outside
+  // the panel). sync-now always resolves HTTP 200 even on a DOMAIN
+  // failure (ok:false) - postJsonOrThrow only throws on a real HTTP/`error`
+  // failure, so the real ok/reason check happens inside onSuccess here,
+  // never assumed from "the request didn't throw".
+  function actionNeededTwcFailedCardHtml(item) {
+    const waitingTag = item.ageMs > 2 * 60 * 60 * 1000 ? '<span class="wf-action-needed-waiting-tag">Waiting ' + actionNeededAgeLabel(item.ageMs) + '</span>' : '';
+    const detail = item.data.httpStatus ? (' (HTTP ' + item.data.httpStatus + (item.data.responseBodyText ? ': ' + item.data.responseBodyText : '') + ')') : '';
+    return '<div class="wf-auto-task-card" data-twc-failed="1">' +
+      '<div class="wf-action-needed-card-head">' +
+        '<span class="wf-auto-task-subject">Together We Can sync failed' + waitingTag + '</span>' +
+        '<button type="button" class="wf-action-needed-openchat" data-open-integrations="1">Integrations ›</button>' +
+      '</div>' +
+      '<div class="wf-auto-hint">' + escapeHtml((item.data.reason || 'Unknown error') + detail) + '</div>' +
+      '<div class="wf-auto-hint">' + actionNeededAgeLabel(item.ageMs) + ' ago</div>' +
+      '<div class="wf-auto-actions">' +
+        '<button type="button" class="primary" data-twc-action="retry">Retry</button>' +
+      '</div>' +
+    '</div>';
+  }
+  function wireActionNeededTwcFailedCard(card) {
+    const openBtn = card.querySelector('[data-open-integrations]');
+    if (openBtn) openBtn.addEventListener('click', () => {
+      if (window.__hrAssistantClosePanel) window.__hrAssistantClosePanel();
+      if (window.setView) window.setView('integrations', { resetHistory: true });
+    });
+    const retryBtn = card.querySelector('[data-twc-action="retry"]');
+    if (retryBtn) retryBtn.addEventListener('click', async () => {
+      await runButtonAction(retryBtn, () => postJsonOrThrow('/api/workforce/hr-assistant/together-we-can/sync-now', {}), (r) => {
+        refreshActionNeeded();
+        if (r && r.ok) closeRowWithToast(card, { title: 'Synced ✓ ' + r.employeeCount + ' employees', type: 'success' });
+        else showActionToast('Still failing: ' + ((r && r.reason) || 'unknown error'), null, 'error');
+      }, { toastFn: (msg) => showActionToast(msg, null, 'error') });
+    });
+  }
   function actionNeededCardHtml(item) {
     if (item.kind === 'automation_missed_run' || item.kind === 'automation_first_run') return actionNeededAutomationCardHtml(item);
     if (item.kind === 'hr_note_escalated') return actionNeededHrNoteEscalatedCardHtml(item);
     if (item.kind === 'stuck_incoming') return actionNeededStuckIncomingCardHtml(item);
     if (item.kind === 'ai_usage_alert') return actionNeededAiUsageCardHtml(item);
+    if (item.kind === 'daily_backup_failed') return actionNeededBackupFailedCardHtml(item);
+    if (item.kind === 'settings_group_empty') return actionNeededSettingsHealthCardHtml(item);
+    if (item.kind === 'together_we_can_failed') return actionNeededTwcFailedCardHtml(item);
     const waitingTag = item.ageMs > 2 * 60 * 60 * 1000 ? '<span class="wf-action-needed-waiting-tag">Waiting ' + actionNeededAgeLabel(item.ageMs) + '</span>' : '';
     return '<div class="wf-auto-task-card" data-chat-id="' + escapeHtml(item.chatId) + '">' +
       '<div class="wf-action-needed-card-head">' +
@@ -4662,6 +4788,9 @@
     if (card.dataset.escalationId) { wireActionNeededHrNoteEscalatedCard(card); return; }
     if (card.dataset.stuckId) { wireActionNeededStuckIncomingCard(card); return; }
     if (card.dataset.aiUsageAlert) { wireActionNeededAiUsageCard(card); return; }
+    if (card.dataset.backupFailed) { wireActionNeededBackupFailedCard(card); return; }
+    if (card.dataset.settingsHealthGroup) { wireActionNeededSettingsHealthCard(card); return; }
+    if (card.dataset.twcFailed) { wireActionNeededTwcFailedCard(card); return; }
     const openChatBtn = card.querySelector('[data-open-chat]');
     if (openChatBtn) openChatBtn.addEventListener('click', () => { pushNav({ type: 'conversation', chatId }); openConversationPage(chatId); });
     card.querySelectorAll('[data-approval-action]').forEach((b) => {

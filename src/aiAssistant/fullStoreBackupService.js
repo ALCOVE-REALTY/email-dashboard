@@ -761,7 +761,11 @@ async function getBackupActionNeededItem() {
   const ts = new Date(lastAttempt ? lastAttempt.at : (state.date + 'T05:00:00+05:30')).getTime() || Date.now();
   return {
     kind: 'daily_backup_failed',
-    category: 'backup',
+    // Live request (2026-11, direct instruction) - every system/automated
+    // alert (this one, settings-health, workflow runs, Together We Can)
+    // now lands under the SAME "Automations" chip in the unified Action
+    // Needed list, rather than each having its own one-off category.
+    category: 'automations',
     chatId: null,
     name: 'Nightly backup',
     ts,

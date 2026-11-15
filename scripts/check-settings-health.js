@@ -99,7 +99,9 @@ async function main() {
   await checkAsync('getSettingsHealthActionNeededItems returns one card per currently-flagged group, in the Action-needed-card shape', async () => {
     const items = await health.getSettingsHealthActionNeededItems();
     const entry = items.find((i) => i.data.group === 'dept-alias');
-    return Boolean(entry) && entry.kind === 'settings_group_empty' && typeof entry.ts === 'number' && entry.data.lastKnownGoodCount === 1;
+    // Live request (2026-11, direct instruction) - lands under the SAME
+    // "Automations" chip as every other system/automated alert now.
+    return Boolean(entry) && entry.kind === 'settings_group_empty' && entry.category === 'automations' && typeof entry.ts === 'number' && entry.data.lastKnownGoodCount === 1;
   });
   await checkAsync('dismissFlaggedGroup clears that one card; a group that is not flagged returns a clean error, never a crash', async () => {
     const dismissed = await health.dismissFlaggedGroup('dept-alias');
