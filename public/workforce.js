@@ -916,28 +916,124 @@ if (twcHistorySheetCloseBtn) twcHistorySheetCloseBtn.addEventListener('click', t
 const twcHistorySheetBackdrop = document.getElementById('twcHistorySheetBackdrop');
 if (twcHistorySheetBackdrop) twcHistorySheetBackdrop.addEventListener('click', twcCloseHistorySheet);
 
+// Item 7(a) (2026-11), direct instruction - "find the ONE shared dropdown
+// component/pattern this app already uses in multiple places... fix the
+// keyboard-avoidance there once, so it's inherited everywhere." The real
+// shared pattern across this app's searchable pickers (the ipWhatsapp
+// employee picker below, the Letter Settings "Test employee" picker in
+// hrAssistant.js) is: a text input + an absolutely-positioned
+// .wf-mail-suggest <ul> of matches. Field mapping's own dropdowns are
+// converted to this SAME pattern here (were plain native <select>s, which
+// never had this problem but also never looked/behaved like every other
+// searchable picker in the app).
+//
+// window.visualViewport shrinks (and its offsetTop grows) exactly when
+// the on-screen keyboard opens - this repositions the suggestion list to
+// sit ABOVE the input (not below, where the keyboard would cover it)
+// whenever there isn't enough real visible space below, and keeps it
+// correctly placed as the keyboard opens/closes/resizes. Exposed on
+// window so hrAssistant.js's own picker(s) can reuse the exact same
+// function rather than a second copy.
+function wfKeepSuggestAboveKeyboard(suggestEl, anchorEl) {
+  if (!suggestEl || !anchorEl || !window.visualViewport) return function () {};
+  function reposition() {
+    if (suggestEl.hidden) return;
+    const vv = window.visualViewport;
+    const anchorRect = anchorEl.getBoundingClientRect();
+    const keyboardOverlap = Math.max(0, window.innerHeight - (vv.height + vv.offsetTop));
+    const spaceBelow = window.innerHeight - anchorRect.bottom - keyboardOverlap;
+    if (spaceBelow < 160) {
+      // Not enough room below the input before the keyboard starts -
+      // flip the list to open upward instead, clamped to the real
+      // visible space above the input.
+      suggestEl.style.top = '';
+      suggestEl.style.bottom = 'calc(100% + 4px)';
+      suggestEl.style.maxHeight = Math.max(100, anchorRect.top - vv.offsetTop - 8) + 'px';
+    } else {
+      suggestEl.style.bottom = '';
+      suggestEl.style.top = 'calc(100% + 4px)';
+      suggestEl.style.maxHeight = '';
+    }
+  }
+  window.visualViewport.addEventListener('resize', reposition);
+  window.visualViewport.addEventListener('scroll', reposition);
+  return reposition;
+}
+window.wfKeepSuggestAboveKeyboard = wfKeepSuggestAboveKeyboard;
+
 // "Field mapping" (2026-11, new feature) - one row per API field, each a
-// dropdown of the LIVE row-4 headers (never hand-typed, so a typo can
-// never silently create a new broken mapping).
+// SEARCHABLE dropdown (type to filter) over the LIVE row-4 headers (never
+// hand-typed free text, so a typo can never silently create a new broken
+// mapping - picking a suggestion is the only way to set a value).
 const TWC_FIELD_LABELS = [
   { key: 'empCode', label: 'Emp Code' },
   { key: 'status', label: 'Status' },
   { key: 'hodId', label: 'HOD ID' },
   { key: 'reportingDoerId', label: 'Reporting Doer ID' }
 ];
+let twcFieldMappingHeaders = [];
+const twcFieldMappingValues = {};
+const twcFieldMappingRepositioners = {};
 function twcRenderFieldMapping(mapping, headers) {
+  twcFieldMappingHeaders = headers;
   const container = document.getElementById('twcFieldMappingRows');
   container.innerHTML = TWC_FIELD_LABELS.map(({ key, label }) => {
     const current = (mapping && mapping[key]) || '';
-    // The current saved value is always offered even if it's no longer in
-    // the live header list (exactly the "header vanished" case) - so the
-    // owner sees what's currently (mis)configured, not a dropdown that
-    // silently jumped to something else.
-    const options = headers.includes(current) ? headers : [current].concat(headers);
-    const optionsHtml = options.map((h) => '<option value="' + escapeHtml(h) + '"' + (h === current ? ' selected' : '') + '>' + escapeHtml(h) + '</option>').join('');
+    twcFieldMappingValues[key] = current;
     return '<label class="wf-rem-field"><span style="font-size:12px;opacity:.75">' + escapeHtml(label) + '</span>' +
-      '<select data-twc-field="' + key + '">' + optionsHtml + '</select></label>';
+      '<div style="position:relative">' +
+        '<input type="text" data-twc-field="' + key + '" autocomplete="off" value="' + escapeHtml(current) + '" placeholder="Search the real sheet headers…" />' +
+        '<ul class="wf-mail-suggest" data-twc-suggest="' + key + '" hidden></ul>' +
+      '</div>' +
+    '</label>';
   }).join('');
+  TWC_FIELD_LABELS.forEach(({ key }) => twcWireFieldMappingInput(key));
+}
+function twcRenderFieldMappingSuggest(key, matches) {
+  const suggestEl = document.querySelector('[data-twc-suggest="' + key + '"]');
+  suggestEl.innerHTML = '';
+  if (!matches.length) {
+    const li = document.createElement('li');
+    li.className = 'empty';
+    li.textContent = 'No matching header found.';
+    suggestEl.appendChild(li);
+  } else {
+    matches.slice(0, 30).forEach((h) => {
+      const li = document.createElement('li');
+      li.textContent = h;
+      // LIVE BUG FIX (found while building this) - clicking a suggestion
+      // blurs the input first (mousedown fires before click), and that
+      // blur/refocus cycle re-triggers the 'focus' handler below, which
+      // re-opens the list right after this click closes it. preventDefault
+      // on mousedown stops the input from ever losing focus in the first
+      // place, so no stray 'focus' event fires after picking.
+      li.addEventListener('mousedown', (e) => e.preventDefault());
+      li.addEventListener('click', () => {
+        twcFieldMappingValues[key] = h;
+        document.querySelector('input[data-twc-field="' + key + '"]').value = h;
+        suggestEl.hidden = true;
+      });
+      suggestEl.appendChild(li);
+    });
+  }
+  suggestEl.hidden = false;
+  if (twcFieldMappingRepositioners[key]) twcFieldMappingRepositioners[key]();
+}
+function twcWireFieldMappingInput(key) {
+  const inputEl = document.querySelector('input[data-twc-field="' + key + '"]');
+  const suggestEl = document.querySelector('[data-twc-suggest="' + key + '"]');
+  if (!inputEl || !suggestEl) return;
+  twcFieldMappingRepositioners[key] = wfKeepSuggestAboveKeyboard(suggestEl, inputEl);
+  inputEl.addEventListener('input', () => {
+    const q = inputEl.value.trim().toLowerCase();
+    twcFieldMappingValues[key] = inputEl.value.trim(); // typed-but-not-yet-picked text still counts as "current" for Save, same as the old <select>'s own value
+    const matches = q ? twcFieldMappingHeaders.filter((h) => h.toLowerCase().includes(q)) : twcFieldMappingHeaders;
+    twcRenderFieldMappingSuggest(key, matches);
+  });
+  inputEl.addEventListener('focus', () => twcRenderFieldMappingSuggest(key, twcFieldMappingHeaders.filter((h) => h.toLowerCase().includes(inputEl.value.trim().toLowerCase()))));
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('input[data-twc-field="' + key + '"]') && !e.target.closest('[data-twc-suggest="' + key + '"]')) suggestEl.hidden = true;
+  });
 }
 async function twcLoadFieldMapping() {
   try {
@@ -1016,22 +1112,24 @@ if (twcSaveFieldMappingBtn) {
   twcSaveFieldMappingBtn.addEventListener('click', async () => {
     const errEl = document.getElementById('twcFieldMappingErr');
     errEl.classList.add('hidden');
-    const body = {};
-    document.querySelectorAll('#twcFieldMappingRows select[data-twc-field]').forEach((sel) => { body[sel.dataset.twcField] = sel.value; });
-    twcSaveFieldMappingBtn.disabled = true;
+    const body = Object.assign({}, twcFieldMappingValues);
+    // Item 7(b) (2026-11), direct instruction - spinner inside the button -> green tick -> back to normal.
+    twcSetBtnBusy(twcSaveFieldMappingBtn, 'Saving…');
     try {
       const res = await fetch('/api/workforce/hr-assistant/together-we-can/field-mapping', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Could not save the field mapping.');
+      twcSaveFieldMappingBtn.innerHTML = '<span>✓ Saved</span>';
+      await new Promise((resolve) => setTimeout(resolve, 700));
       twcToast('Field mapping saved', 'success');
       await twcLoadFieldMapping(); // re-render from the server's own confirmed value
     } catch (err) {
       errEl.textContent = err.message;
       errEl.classList.remove('hidden');
     } finally {
-      twcSaveFieldMappingBtn.disabled = false;
+      twcRestoreBtn(twcSaveFieldMappingBtn);
     }
   });
 }
@@ -7926,6 +8024,10 @@ let ipWhatsappPendingLink = null;
 let ipWhatsappPendingType = 'candidate';
 let ipWhatsappSelectedEmployee = null;
 let ipWhatsappEmployeeCache = null; // lazily fetched, reused for the rest of the session
+// Item 7(a) (2026-11), direct instruction - shared keyboard-avoidance fix
+// (see wfKeepSuggestAboveKeyboard's own comment), applied to this picker
+// too, not just the new Field mapping one.
+const ipWhatsappEmployeeReposition = wfKeepSuggestAboveKeyboard(ipWhatsappEmployeeSuggest, ipWhatsappEmployeeSearchInput);
 
 // Same two shapes the backend itself accepts (see whatsappService.js's
 // normalizePhone) - a bare 10-digit Indian mobile, or one already carrying
@@ -7968,6 +8070,7 @@ function renderIpWhatsappEmployeeSuggest(matches) {
     li.textContent = 'No matching employee found.';
     ipWhatsappEmployeeSuggest.appendChild(li);
     ipWhatsappEmployeeSuggest.hidden = false;
+    ipWhatsappEmployeeReposition();
     return;
   }
   matches.slice(0, 20).forEach((emp) => {
@@ -7979,6 +8082,11 @@ function renderIpWhatsappEmployeeSuggest(matches) {
     sub.textContent = emp.contactNumber;
     li.appendChild(b);
     li.appendChild(sub);
+    // Item 7(a) (2026-11), direct instruction - same shared fix as Field
+    // mapping's own picker: without this, picking a suggestion blurs the
+    // input first, and that blur/refocus cycle re-opens this very list
+    // right after the click closes it.
+    li.addEventListener('mousedown', (e) => e.preventDefault());
     li.addEventListener('click', () => {
       ipWhatsappSelectedEmployee = emp;
       ipWhatsappEmployeeSearchInput.value = emp.name;
@@ -7988,6 +8096,7 @@ function renderIpWhatsappEmployeeSuggest(matches) {
     ipWhatsappEmployeeSuggest.appendChild(li);
   });
   ipWhatsappEmployeeSuggest.hidden = false;
+  ipWhatsappEmployeeReposition(); // item 7(a) - keep above the keyboard
 }
 
 ipWhatsappEmployeeSearchInput.addEventListener('input', async () => {

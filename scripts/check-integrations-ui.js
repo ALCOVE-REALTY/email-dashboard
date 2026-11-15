@@ -159,9 +159,11 @@ function check(label, ok, detail) {
   // list, same shape togetherWeCanService.js produces for a renamed column.
   let fieldMapping = { empCode: 'New Emp. No.', status: 'STATUS', hodId: 'HOD-1 ID', reportingDoerId: 'Old Reporting Doer Column' };
   const liveHeaders = ['New Emp. No.', 'Person Accountable', 'STATUS', 'HOD-1 ID', 'REPORTING DOER ID'];
-  await page.route('**/api/workforce/hr-assistant/together-we-can/field-mapping', (route) => {
+  await page.route('**/api/workforce/hr-assistant/together-we-can/field-mapping', async (route) => {
     if (route.request().method() === 'POST') {
       fieldMapping = JSON.parse(route.request().postData());
+      // A deliberate short delay so Save's own spinner state is actually observable.
+      await new Promise((resolve) => setTimeout(resolve, 250));
       route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(fieldMapping) });
       return;
     }
@@ -381,25 +383,43 @@ function check(label, ok, detail) {
   await page.waitForTimeout(100);
   check('Unticking saves immediately (no Save tap needed) and the time field disappears', !(await page.locator('#twcAutoSyncTimeRow').isVisible()) && !(await page.locator('#twcSaveSettingsRow').isVisible()));
 
-  // ---- "Field mapping" (2026-11, new feature) ----
-  const empCodeSelectValue = await page.locator('#twcFieldMappingRows select[data-twc-field="empCode"]').inputValue();
-  check('Emp Code dropdown is pre-selected to the current saved mapping ("New Emp. No.")', empCodeSelectValue === 'New Emp. No.');
-  const empCodeOptionsText = await page.locator('#twcFieldMappingRows select[data-twc-field="empCode"]').innerText();
-  check('Emp Code dropdown lists the LIVE row-4 headers (never hand-typed)', empCodeOptionsText.includes('New Emp. No.') && empCodeOptionsText.includes('Person Accountable') && empCodeOptionsText.includes('STATUS'));
-  const reportingDoerOptionsText = await page.locator('#twcFieldMappingRows select[data-twc-field="reportingDoerId"]').innerText();
-  check('A saved mapping value that no longer exists in the live headers (a renamed/vanished column) is still shown as the current selection, never silently swapped to something else', reportingDoerOptionsText.includes('Old Reporting Doer Column'));
-  const reportingDoerSelectedValue = await page.locator('#twcFieldMappingRows select[data-twc-field="reportingDoerId"]').inputValue();
-  check('...and it is the one actually SELECTED (not just listed)', reportingDoerSelectedValue === 'Old Reporting Doer Column');
+  // ---- Item 7 (2026-11), direct instruction - Field mapping's dropdowns
+  // are now the SAME searchable input+suggestion-list pattern as every
+  // other picker in the app (never a native <select>). ----
+  const empCodeInputValue = await page.locator('input[data-twc-field="empCode"]').inputValue();
+  check('Emp Code field is pre-filled with the current saved mapping ("New Emp. No.")', empCodeInputValue === 'New Emp. No.');
+  const reportingDoerInputValue = await page.locator('input[data-twc-field="reportingDoerId"]').inputValue();
+  check('A saved mapping value that no longer exists in the live headers (a renamed/vanished column) is still shown as the current value, never silently swapped to something else', reportingDoerInputValue === 'Old Reporting Doer Column');
 
-  // Round-trip: re-point Reporting Doer ID at the real live header, save,
-  // and confirm it comes back correctly selected after a reload from the server.
-  await page.selectOption('#twcFieldMappingRows select[data-twc-field="reportingDoerId"]', 'REPORTING DOER ID');
-  await page.click('#twcSaveFieldMappingBtn');
-  await page.waitForTimeout(250);
+  // Searching/filtering: typing narrows the suggestion list to real live headers.
+  await page.fill('input[data-twc-field="reportingDoerId"]', 'reporting');
+  await page.waitForTimeout(150);
+  const reportingSuggestText = await page.locator('[data-twc-suggest="reportingDoerId"]').textContent();
+  check('Typing filters the suggestion list to matching LIVE headers (search, never hand-typed free text)', reportingSuggestText.includes('REPORTING DOER ID') && !reportingSuggestText.includes('New Emp. No.'));
+  check('wfKeepSuggestAboveKeyboard (the ONE shared keyboard-avoidance fix) is exposed on window and reused here, not a second copy', typeof (await page.evaluate(() => typeof window.wfKeepSuggestAboveKeyboard)) === 'string' && (await page.evaluate(() => typeof window.wfKeepSuggestAboveKeyboard)) === 'function');
+
+  // Round-trip: re-point Reporting Doer ID at the real live header (via
+  // the search+pick flow, same as any other picker in the app), save, and
+  // confirm it comes back correctly filled after a reload from the server.
+  await page.click('[data-twc-suggest="reportingDoerId"] li >> text=REPORTING DOER ID');
+  await page.waitForTimeout(100);
+  const reportingDoerAfterPick = await page.locator('input[data-twc-field="reportingDoerId"]').inputValue();
+  const reportingSuggestVisibleAfterPick = await page.locator('[data-twc-suggest="reportingDoerId"]').isVisible();
+  // LIVE BUG FIX found while building this check - picking a suggestion
+  // used to blur-then-refocus the input, re-opening the list right after
+  // the click closed it (fixed with mousedown preventDefault on every
+  // suggestion item - see twcRenderFieldMappingSuggest's own comment).
+  check('Picking a suggestion fills the field and closes the dropdown (never reopens from a blur/refocus cycle)', reportingDoerAfterPick === 'REPORTING DOER ID' && !reportingSuggestVisibleAfterPick,
+    'value=' + JSON.stringify(reportingDoerAfterPick) + ' suggestVisible=' + reportingSuggestVisibleAfterPick);
+  const saveFieldMappingClick = page.click('#twcSaveFieldMappingBtn');
+  await page.waitForTimeout(60);
+  check('Item 7(b): Save field mapping shows a spinner inside the button while in flight', await page.locator('#twcSaveFieldMappingBtn .spinner').count() > 0);
+  await saveFieldMappingClick;
+  await page.waitForTimeout(900);
   const mappingSavedToastText = await page.locator('.wf-pro-toast').last().textContent().catch(() => null);
   check('Saving the field mapping shows a success toast', (mappingSavedToastText || '').includes('Field mapping saved'));
-  const reportingDoerAfterSave = await page.locator('#twcFieldMappingRows select[data-twc-field="reportingDoerId"]').inputValue();
-  check('After saving, the dropdown reflects the NEW value (re-rendered from the server\'s own confirmed response, not just left as-is)', reportingDoerAfterSave === 'REPORTING DOER ID');
+  const reportingDoerAfterSave = await page.locator('input[data-twc-field="reportingDoerId"]').inputValue();
+  check('After saving, the field reflects the NEW value (re-rendered from the server\'s own confirmed response, not just left as-is)', reportingDoerAfterSave === 'REPORTING DOER ID');
 
   const errorsAfterIntegrations = consoleErrors.length + pageErrors.length;
   check('No JS error was thrown through opening Integrations, Preview, Sync Now, the employee picker, Test-one or Field mapping',

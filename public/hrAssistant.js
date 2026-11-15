@@ -194,6 +194,14 @@
   const letterRefFormatSaveBtn = document.getElementById('hrLetterRefFormatSaveBtn');
   const letterTestEmployeeInput = document.getElementById('hrLetterTestEmployeeInput');
   const letterTestEmployeeSuggest = document.getElementById('hrLetterTestEmployeeSuggest');
+  // Item 7(a) (2026-11), direct instruction - the SAME shared keyboard-
+  // avoidance fix public/workforce.js's own ipWhatsapp/Field-mapping
+  // pickers use (window.wfKeepSuggestAboveKeyboard - workforce.js loads
+  // before this file, so it's always defined by the time any real
+  // picker interaction happens), never a second copy of this logic.
+  const letterTestEmployeeReposition = window.wfKeepSuggestAboveKeyboard
+    ? window.wfKeepSuggestAboveKeyboard(letterTestEmployeeSuggest, letterTestEmployeeInput)
+    : function () {};
   const letterTestEmployeeErr = document.getElementById('hrLetterTestEmployeeErr');
   const letterTestEmployeeChipInput = document.getElementById('hrLetterTestEmployeeChipInput');
   const letterCodesList = document.getElementById('hrLetterCodesList');
@@ -3675,6 +3683,7 @@
       li.textContent = 'No matching employee found.';
       letterTestEmployeeSuggest.appendChild(li);
       letterTestEmployeeSuggest.hidden = false;
+      letterTestEmployeeReposition();
       return;
     }
     results.forEach((emp) => {
@@ -3698,10 +3707,16 @@
       }
       sub.textContent = subText;
       li.appendChild(sub);
+      // Item 7(a) (2026-11), direct instruction - same shared fix as every
+      // other picker: without this, picking a suggestion blurs the input
+      // first, and that blur/refocus cycle re-opens this very list right
+      // after the click closes it.
+      li.addEventListener('mousedown', (e) => e.preventDefault());
       li.addEventListener('click', () => selectLetterTestEmployee(emp));
       letterTestEmployeeSuggest.appendChild(li);
     });
     letterTestEmployeeSuggest.hidden = false;
+    letterTestEmployeeReposition();
   }
   async function searchLetterTestEmployees(q) {
     const token = ++letterTestEmployeeSearchToken;
