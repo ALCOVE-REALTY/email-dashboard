@@ -3074,15 +3074,28 @@
           <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 0 6px">
             <span class="wf-ai-sheet-title" style="font-size:14px">Daily auto-sync</span>
           </div>
-          <label class="wf-auto-check"><input type="checkbox" id="twcAutoSyncEnabled" /> Automatically sync once a day</label>
-          <div id="twcAutoSyncTimeRow" style="margin-top:8px;display:none">
-            <label class="wf-rem-field">
-              <span style="font-size:12px;opacity:.75">Time (IST)</span>
-              <input type="time" id="twcAutoSyncTime" value="21:00" />
-            </label>
+          <!-- Item 6 (2026-11), direct instruction - tick -> time picker +
+               Save appear; Save -> spinner -> tick -> collapses to "Daily
+               sync at HH:MM · Edit"; untick -> saves immediately (spinner
+               -> tick), time row disappears, daily sync is off. -->
+          <div id="twcAutoSyncSummary" style="display:none;align-items:center;justify-content:space-between">
+            <span>Daily sync at <b id="twcAutoSyncSummaryTime">21:00</b></span>
+            <button type="button" class="plain" id="twcAutoSyncEditBtn">Edit</button>
           </div>
-          <div style="margin-top:10px">
-            <button type="button" class="wf-ai-action-btn outline" id="twcSaveSettingsBtn"><span>Save</span></button>
+          <div id="twcAutoSyncEditor">
+            <label class="wf-auto-check">
+              <input type="checkbox" id="twcAutoSyncEnabled" /> Automatically sync once a day
+              <span id="twcAutoSyncInlineStatus" style="display:none;margin-left:6px"></span>
+            </label>
+            <div id="twcAutoSyncTimeRow" style="margin-top:8px;display:none">
+              <label class="wf-rem-field">
+                <span style="font-size:12px;opacity:.75">Time (IST)</span>
+                <input type="time" id="twcAutoSyncTime" value="21:00" />
+              </label>
+            </div>
+            <div style="margin-top:10px;display:none" id="twcSaveSettingsRow">
+              <button type="button" class="wf-ai-action-btn outline" id="twcSaveSettingsBtn"><span>Save</span></button>
+            </div>
           </div>
 
           <!-- "Field mapping" (2026-11, new feature, direct instruction

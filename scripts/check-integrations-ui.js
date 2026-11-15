@@ -92,8 +92,15 @@ function check(label, ok, detail) {
 
   // ---- Together We Can - specific mocks, registered AFTER the generic one above (last-registered wins) ----
   let historyCalls = 0;
-  await page.route('**/api/workforce/hr-assistant/together-we-can/settings', (route) => {
-    if (route.request().method() === 'POST') { route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ enabled: true, time: '21:30' }) }); return; }
+  await page.route('**/api/workforce/hr-assistant/together-we-can/settings', async (route) => {
+    if (route.request().method() === 'POST') {
+      // A deliberate short delay so Save's own spinner state is actually
+      // observable between the click and the response landing (same
+      // reasoning as the existing Sync Now/Backup-now UI checks).
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ enabled: true, time: '21:30' }) });
+      return;
+    }
     route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ enabled: false, time: '21:00' }) });
   });
   // First load: empty ("No syncs yet."). After "Sync data now" has run
@@ -196,7 +203,7 @@ function check(label, ok, detail) {
   await page.waitForTimeout(250);
 
   // ---- 384px clipping check - every key control fits inside the viewport ----
-  const KEY_SELECTORS = ['#twcPreviewBtn', '#twcSyncNowBtn', '#twcAutoSyncEnabled', '#twcSaveSettingsBtn'];
+  const KEY_SELECTORS = ['#twcPreviewBtn', '#twcSyncNowBtn', '#twcAutoSyncEnabled'];
   for (const sel of KEY_SELECTORS) {
     const box = await page.locator(sel).boundingBox();
     check(sel + ' is present and not clipped at 384px width', Boolean(box) && box.x >= 0 && (box.x + box.width) <= 384 + 1,
@@ -348,11 +355,31 @@ function check(label, ok, detail) {
   // removed from this page entirely; confirm it's genuinely gone.
   check('"Test with one employee" section is gone from the Together We Can page', await page.locator('#twcTestEmployeeInput').count() === 0 && await page.locator('#twcTestOneBtn').count() === 0);
 
-  // ---- Daily auto-sync toggle reveals the time field ----
-  check('Auto-sync time field is hidden while disabled (default)', !(await page.locator('#twcAutoSyncTimeRow').isVisible()));
+  // ---- Item 6 (2026-11), direct instruction - Daily auto-sync: tick ->
+  // time+Save appear -> Save shows a spinner then a tick -> collapses to
+  // "Daily sync at HH:MM · Edit" -> Edit re-opens the editor -> untick ->
+  // saves immediately (spinner -> tick), time row disappears, off. ----
+  check('Auto-sync starts in the plain editor (off, unticked), no summary row shown', await page.locator('#twcAutoSyncSummary').isVisible() === false && !(await page.locator('#twcAutoSyncTimeRow').isVisible()));
+  check('Auto-sync time field + Save are hidden while disabled (default)', !(await page.locator('#twcAutoSyncTimeRow').isVisible()) && !(await page.locator('#twcSaveSettingsRow').isVisible()));
   await page.click('#twcAutoSyncEnabled');
   await page.waitForTimeout(100);
-  check('Checking "Automatically sync once a day" reveals the time field', await page.locator('#twcAutoSyncTimeRow').isVisible());
+  check('Checking "Automatically sync once a day" reveals the time field + Save button', await page.locator('#twcAutoSyncTimeRow').isVisible() && await page.locator('#twcSaveSettingsRow').isVisible());
+  const saveBtnBox = await page.locator('#twcSaveSettingsBtn').boundingBox();
+  check('#twcSaveSettingsBtn is present and not clipped at 384px width', Boolean(saveBtnBox) && saveBtnBox.x >= 0 && (saveBtnBox.x + saveBtnBox.width) <= 384 + 1, saveBtnBox ? ('x=' + saveBtnBox.x + ' width=' + saveBtnBox.width) : 'not found/not visible');
+  const saveClick = page.click('#twcSaveSettingsBtn');
+  await page.waitForTimeout(60);
+  check('Save shows a spinner inside the button while in flight', await page.locator('#twcSaveSettingsBtn .spinner').count() > 0);
+  await saveClick;
+  await page.waitForTimeout(1100);
+  check('After Save, the row collapses to "Daily sync at <time> · Edit"', await page.locator('#twcAutoSyncSummary').isVisible() && !(await page.locator('#twcAutoSyncEditor').isVisible()));
+  const summaryTimeText = await page.locator('#twcAutoSyncSummaryTime').textContent();
+  check('The summary shows the real saved time', summaryTimeText === '21:30', 'got: ' + summaryTimeText);
+  await page.click('#twcAutoSyncEditBtn');
+  await page.waitForTimeout(150);
+  check('"Edit" re-opens the editor, pre-ticked with the time field showing', await page.locator('#twcAutoSyncEditor').isVisible() && await page.locator('#twcAutoSyncEnabled').isChecked() && await page.locator('#twcAutoSyncTimeRow').isVisible());
+  await page.click('#twcAutoSyncEnabled'); // untick
+  await page.waitForTimeout(100);
+  check('Unticking saves immediately (no Save tap needed) and the time field disappears', !(await page.locator('#twcAutoSyncTimeRow').isVisible()) && !(await page.locator('#twcSaveSettingsRow').isVisible()));
 
   // ---- "Field mapping" (2026-11, new feature) ----
   const empCodeSelectValue = await page.locator('#twcFieldMappingRows select[data-twc-field="empCode"]').inputValue();

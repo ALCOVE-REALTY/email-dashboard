@@ -1001,9 +1001,7 @@ async function loadIntegrationsListStatus() {
 async function loadTwcDetail() {
   try {
     const settings = await fetchJson('/api/workforce/hr-assistant/together-we-can/settings');
-    document.getElementById('twcAutoSyncEnabled').checked = Boolean(settings.enabled);
-    document.getElementById('twcAutoSyncTime').value = settings.time || '21:00';
-    document.getElementById('twcAutoSyncTimeRow').style.display = settings.enabled ? '' : 'none';
+    twcShowAutoSync(settings);
   } catch (err) { /* leave defaults */ }
   try {
     const data = await fetchJson('/api/workforce/hr-assistant/together-we-can/history');
@@ -1111,29 +1109,91 @@ if (twcFailureRetryBtn) twcFailureRetryBtn.addEventListener('click', () => twcRu
 // check-together-we-can.js's own deterministic tests still cover them) -
 // only the frontend section is gone.
 
+// Item 6 (2026-11), direct instruction - "tick the box -> time picker +
+// Save appear; Save -> spinner inside the button -> green tick -> the row
+// then reads 'Daily sync at 21:00 · Edit'. Untick -> saves immediately
+// (spinner -> tick), the time row disappears and daily sync is off."
+function twcShowAutoSyncSummary(time) {
+  document.getElementById('twcAutoSyncSummary').style.display = 'flex';
+  document.getElementById('twcAutoSyncEditor').style.display = 'none';
+  document.getElementById('twcAutoSyncSummaryTime').textContent = time || '21:00';
+}
+function twcShowAutoSyncEditor(enabled, time) {
+  document.getElementById('twcAutoSyncSummary').style.display = 'none';
+  document.getElementById('twcAutoSyncEditor').style.display = '';
+  document.getElementById('twcAutoSyncEnabled').checked = Boolean(enabled);
+  document.getElementById('twcAutoSyncTime').value = time || '21:00';
+  document.getElementById('twcAutoSyncTimeRow').style.display = enabled ? '' : 'none';
+  document.getElementById('twcSaveSettingsRow').style.display = enabled ? '' : 'none';
+}
+// Entry point after a fresh settings fetch - "on" shows the collapsed
+// summary row directly (never the editor first), "off" shows the plain
+// unticked checkbox (editor state, no time row/Save until ticked).
+function twcShowAutoSync(settings) {
+  if (settings && settings.enabled) twcShowAutoSyncSummary(settings.time);
+  else twcShowAutoSyncEditor(false, settings && settings.time);
+}
+async function twcSaveAutoSyncSettings(enabled, time) {
+  const res = await fetch('/api/workforce/hr-assistant/together-we-can/settings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled, time })
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Could not save.');
+  return data;
+}
+
 const twcAutoSyncEnabled = document.getElementById('twcAutoSyncEnabled');
 if (twcAutoSyncEnabled) {
-  twcAutoSyncEnabled.addEventListener('change', () => {
-    document.getElementById('twcAutoSyncTimeRow').style.display = twcAutoSyncEnabled.checked ? '' : 'none';
+  twcAutoSyncEnabled.addEventListener('change', async () => {
+    const checked = twcAutoSyncEnabled.checked;
+    document.getElementById('twcAutoSyncTimeRow').style.display = checked ? '' : 'none';
+    document.getElementById('twcSaveSettingsRow').style.display = checked ? '' : 'none';
+    if (checked) return; // only Save commits an ENABLED schedule - see twcSaveSettingsBtn below
+    // Unticking saves immediately - a small inline spinner-then-tick next
+    // to the checkbox (there's no dedicated button for this action).
+    const statusEl = document.getElementById('twcAutoSyncInlineStatus');
+    statusEl.style.display = '';
+    statusEl.innerHTML = '<span class="spinner spinner-sm"></span>';
+    twcAutoSyncEnabled.disabled = true;
+    try {
+      await twcSaveAutoSyncSettings(false, document.getElementById('twcAutoSyncTime').value);
+      statusEl.textContent = '✓';
+      setTimeout(() => { statusEl.style.display = 'none'; statusEl.textContent = ''; }, 900);
+    } catch (err) {
+      statusEl.style.display = 'none';
+      twcToast('Could not save settings: ' + err.message, 'error');
+      twcAutoSyncEnabled.checked = true; // revert - the save failed, still really on
+      document.getElementById('twcAutoSyncTimeRow').style.display = '';
+      document.getElementById('twcSaveSettingsRow').style.display = '';
+    } finally {
+      twcAutoSyncEnabled.disabled = false;
+    }
+  });
+}
+const twcAutoSyncEditBtn = document.getElementById('twcAutoSyncEditBtn');
+if (twcAutoSyncEditBtn) {
+  twcAutoSyncEditBtn.addEventListener('click', () => {
+    const currentTime = document.getElementById('twcAutoSyncSummaryTime').textContent;
+    twcShowAutoSyncEditor(true, currentTime);
   });
 }
 const twcSaveSettingsBtn = document.getElementById('twcSaveSettingsBtn');
 if (twcSaveSettingsBtn) {
   twcSaveSettingsBtn.addEventListener('click', async () => {
-    twcSaveSettingsBtn.disabled = true;
+    twcSetBtnBusy(twcSaveSettingsBtn, 'Saving…');
     try {
-      const res = await fetch('/api/workforce/hr-assistant/together-we-can/settings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled: twcAutoSyncEnabled.checked, time: document.getElementById('twcAutoSyncTime').value })
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Could not save.');
-      twcToast('Daily auto-sync settings saved', 'success');
+      const time = document.getElementById('twcAutoSyncTime').value;
+      const data = await twcSaveAutoSyncSettings(twcAutoSyncEnabled.checked, time);
+      // Green tick, then collapse into the summary row.
+      twcSaveSettingsBtn.innerHTML = '<span>✓ Saved</span>';
+      await new Promise((resolve) => setTimeout(resolve, 700));
+      twcShowAutoSyncSummary(data.time || time);
+      twcRestoreBtn(twcSaveSettingsBtn); // restore the button's own markup for next time it's shown
     } catch (err) {
+      twcRestoreBtn(twcSaveSettingsBtn);
       twcToast('Could not save settings: ' + err.message, 'error');
-    } finally {
-      twcSaveSettingsBtn.disabled = false;
     }
   });
 }
