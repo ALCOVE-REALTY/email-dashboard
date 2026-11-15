@@ -137,9 +137,16 @@ function check(label, ok, detail) {
     });
     route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ batchId, sentOn: batch.sentOn, to: batch.to, cc: batch.cc, count: items.length, items }) });
   });
+  // Flaky-test fix (2026-11, direct instruction) - same one-shot-gate
+  // pattern used for Together We Can's Sync Now/Save mocks: holds here
+  // until the test proves the "Resending…" busy state really rendered,
+  // never a fixed sleep, so there is no timing window to race under
+  // load.
+  let releaseResend;
+  const resendGate = new Promise((resolve) => { releaseResend = resolve; });
   await page.route(/\/api\/insurance\/additions\/sent-history\/[^/]+\/resend$/, async (route) => {
     const batchId = decodeURIComponent(route.request().url().split('/').slice(-2, -1)[0]);
-    await new Promise((resolve) => setTimeout(resolve, 150));
+    await resendGate;
     const batch = sentBatches().find((b) => b.batchId === batchId);
     if (!batch || !batch.employeeIds.length) { route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: 'Batch not found or has no remaining members.' }) }); return; }
     const newBatchId = 'ADD-TEST-' + (nextBatchSeq++);
@@ -286,8 +293,14 @@ function check(label, ok, detail) {
   const resendBox = await page.locator('#hiSentHistoryResendBtn').boundingBox();
   check('"Resend batch" button is present and not clipped at 384px width', Boolean(resendBox) && resendBox.x >= 0 && (resendBox.x + resendBox.width) <= 384 + 1, resendBox ? JSON.stringify(resendBox) : 'not found');
   const resendClick = page.click('#hiSentHistoryResendBtn');
-  await page.waitForTimeout(60);
+  // Deterministic: the click handler sets the button's "Resending…" text
+  // SYNCHRONOUSLY before it calls fetch() (public/workforce.js's
+  // hiSentHistoryResendBtn listener), so once the real request has
+  // genuinely been sent, that text is guaranteed to already be set -
+  // never a fixed sleep, so this can't race under load.
+  await page.waitForRequest(/\/api\/insurance\/additions\/sent-history\/[^/]+\/resend$/);
   check('Resend shows a "Resending..." busy state', (await page.locator('#hiSentHistoryResendBtn span').textContent() || '').toLowerCase().includes('resending'));
+  releaseResend(); // busy-state is proven - let the held mock response land
   await resendClick;
   await page.waitForTimeout(400);
   check('Resend closes the detail sheet on success', !(await page.locator('#hiSentHistoryDetailOverlay').isVisible()));

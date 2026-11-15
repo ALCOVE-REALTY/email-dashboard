@@ -92,12 +92,23 @@ function check(label, ok, detail) {
 
   // ---- Together We Can - specific mocks, registered AFTER the generic one above (last-registered wins) ----
   let historyCalls = 0;
+  // Flaky-test fix (2026-11, direct instruction): the old fixed
+  // setTimeout(250) here + a fixed page.waitForTimeout(60) at the test
+  // site raced against real system load (e.g. this suite running
+  // alongside 21 others in run-pre-push-checks.js) - under load the
+  // busy-state assertion could fire before the spinner actually rendered
+  // or after this mock had already resolved. Replaced with a one-shot
+  // gate: the FIRST POST (tick -> Save) holds here until the test proves
+  // the spinner is really in the DOM (page.waitForSelector, never a
+  // sleep) and calls releaseSettingsSave() - no timing window to race in
+  // either direction. The gate only resolves once, so the LATER untick ->
+  // save-immediately POST (which never asserts a busy state) just sails
+  // through unheld the instant it fires - nothing extra needed for it.
+  let releaseSettingsSave;
+  const settingsSaveGate = new Promise((resolve) => { releaseSettingsSave = resolve; });
   await page.route('**/api/workforce/hr-assistant/together-we-can/settings', async (route) => {
     if (route.request().method() === 'POST') {
-      // A deliberate short delay so Save's own spinner state is actually
-      // observable between the click and the response landing (same
-      // reasoning as the existing Sync Now/Backup-now UI checks).
-      await new Promise((resolve) => setTimeout(resolve, 250));
+      await settingsSaveGate;
       route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ enabled: true, time: '21:30' }) });
       return;
     }
@@ -139,11 +150,14 @@ function check(label, ok, detail) {
       })
     });
   });
+  // Flaky-test fix (2026-11, direct instruction) - same one-shot-gate
+  // pattern as the settings-save mock below: holds here until the test
+  // proves the spinner really rendered (page.waitForSelector, never a
+  // fixed sleep), so there is no timing window to race under load.
+  let releaseSyncNow;
+  const syncNowGate = new Promise((resolve) => { releaseSyncNow = resolve; });
   await page.route('**/api/workforce/hr-assistant/together-we-can/sync-now', async (route) => {
-    // A deliberate short delay so the button's own spinner/busy state is
-    // actually observable between the click and the response landing,
-    // same reasoning as the existing Backup-now UI check.
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    await syncNowGate;
     hasSyncedOnce = true;
     route.fulfill({
       status: 200, contentType: 'application/json', body: JSON.stringify({
@@ -251,12 +265,17 @@ function check(label, ok, detail) {
   // ---- Sync data now: spinner -> tick/toast, history updates ----
   const syncBtnTextBefore = await page.locator('#twcSyncNowBtn').textContent();
   const syncClick = page.click('#twcSyncNowBtn');
-  await page.waitForTimeout(80); // mid-flight, before the deliberately-delayed mock response lands
+  // Deterministic: wait for the real request to land, then for the
+  // spinner to actually be in the DOM - never a fixed sleep (see the gate
+  // on the sync-now mock above), so this can't race under load.
+  await page.waitForRequest('**/api/workforce/hr-assistant/together-we-can/sync-now');
+  await page.waitForSelector('#twcSyncNowBtn .spinner');
   check('Sync Now button shows a spinner and is disabled while the sync is in flight', await page.locator('#twcSyncNowBtn .spinner').count() > 0 && await page.locator('#twcSyncNowBtn').isDisabled());
   // Second tap while busy is ignored - clicking again must not throw or double-fire.
   await page.click('#twcSyncNowBtn', { force: true }).catch(() => {});
+  releaseSyncNow(); // busy-state is proven - let the held mock response land
   await syncClick;
-  await page.waitForTimeout(300);
+  await page.waitForSelector('#twcSyncNowBtn .spinner', { state: 'detached' }); // deterministic: wait for it to actually finish, never a fixed sleep
   check('Sync Now button returns to its normal (non-busy) state after success', await page.locator('#twcSyncNowBtn').isEnabled() && (await page.locator('#twcSyncNowBtn').textContent()) === syncBtnTextBefore);
   const toastText = await page.locator('.wf-pro-toast').last().textContent().catch(() => null);
   check('Success toast names the counts and changed-since-last-sync figure', (toastText || '').includes('Synced') && (toastText || '').includes('3 employees') && (toastText || '').includes('1 changed'));
@@ -397,8 +416,13 @@ function check(label, ok, detail) {
   const saveBtnBox = await page.locator('#twcSaveSettingsBtn').boundingBox();
   check('#twcSaveSettingsBtn is present and not clipped at 384px width', Boolean(saveBtnBox) && saveBtnBox.x >= 0 && (saveBtnBox.x + saveBtnBox.width) <= 384 + 1, saveBtnBox ? ('x=' + saveBtnBox.x + ' width=' + saveBtnBox.width) : 'not found/not visible');
   const saveClick = page.click('#twcSaveSettingsBtn');
-  await page.waitForTimeout(60);
+  // Deterministic: wait for the real request to land, then for the
+  // spinner to actually be in the DOM - never a fixed sleep (see the gate
+  // on the settings mock above), so this can't race under load.
+  await page.waitForRequest('**/api/workforce/hr-assistant/together-we-can/settings');
+  await page.waitForSelector('#twcSaveSettingsBtn .spinner');
   check('Save shows a spinner inside the button while in flight', await page.locator('#twcSaveSettingsBtn .spinner').count() > 0);
+  releaseSettingsSave(); // busy-state is proven - let the held mock response land
   await saveClick;
   await page.waitForTimeout(1100);
   check('After Save, the row collapses to "Daily sync at <time> · Edit"', await page.locator('#twcAutoSyncSummary').isVisible() && !(await page.locator('#twcAutoSyncEditor').isVisible()));
