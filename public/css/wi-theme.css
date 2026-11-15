@@ -2032,6 +2032,21 @@ body { background: var(--wi-bg); }
   display: flex; align-items: center; gap: 12px; border: none; border-radius: var(--wi-r-card);
   box-shadow: var(--wi-sh-card); background: var(--wi-surface); padding: 16px 14px; text-align: left;
   font-family: inherit; cursor: pointer; transition: transform .18s ease; animation: mUp .4s cubic-bezier(.2,.7,.2,1) both;
+  /* Live bug fix (2026-11) - a <button>, even with display:flex set here,
+     keeps the browser's own "shrink-to-fit" width behaviour for form
+     controls unless told otherwise: it only happened to reach full width
+     everywhere this class was already used because every one of THOSE
+     tiles' own title+subtitle text was long enough to overflow and get
+     clamped back out to the container's width. The Integrations list's
+     "Together We Can" card has much shorter default text ("Not synced
+     yet") and has no such overflow to rely on, so it rendered short -
+     "stops short on the right" - confirmed live (Playwright, 384px): the
+     very same markup/classes measured 231px instead of the full 352px
+     available. width:100% makes every .wf-hub-tile always span its
+     container, matching how it already visually appeared everywhere else,
+     regardless of how long or short its own text happens to be. */
+  width: 100%;
+  box-sizing: border-box;
 }
 .wf-hub-tile:active { transform: scale(.98); }
 /* UI fix (2026-10-29) - the SUBH Settings page's "Site names" card: less

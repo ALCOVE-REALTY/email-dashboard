@@ -194,6 +194,26 @@ function check(label, ok, detail) {
   check('Integrations opens to the LIST (one card per integration), not the detail page directly', await page.locator('#integrationsListPanel').isVisible() && !(await page.locator('#integrationsDetailPanel').isVisible()));
   const twcStatusLineText = await page.locator('#integrationsTwcStatusLine').textContent();
   check('The "Together We Can" list card shows its real status line ("Last synced <time> · OK/Failed", or "Not synced yet")', /Not synced yet|Last synced/.test(twcStatusLineText || ''), 'got: ' + JSON.stringify(twcStatusLineText));
+
+  // Item 1 (2026-11), direct instruction, live bug fix - the card used to
+  // "stop short on the right": a <button> (even with display:flex set)
+  // keeps the browser's own shrink-to-fit width behaviour for form
+  // controls, and this card's own short default text ("Not synced yet")
+  // never overflowed far enough to get clamped back out to full width the
+  // way every other (longer-text) .wf-hub-tile in this app happened to.
+  // Confirmed live at 384px (Playwright): same markup/classes measured
+  // 231px instead of the full available width before the fix
+  // (width:100% added to .wf-hub-tile in wi-theme.css).
+  const twcCardBox = await page.locator('#integrationsTwcCardBtn').boundingBox();
+  const listPanelBox = await page.locator('#integrationsListPanel').boundingBox();
+  check('The "Together We Can" card spans the FULL width of the list panel (same left/right margins as the screen/other list cards), never stopping short on the right',
+    Boolean(twcCardBox) && Boolean(listPanelBox) && Math.abs(twcCardBox.width - listPanelBox.width) < 1 && Math.abs(twcCardBox.x - listPanelBox.x) < 1,
+    'card=' + JSON.stringify(twcCardBox) + ' listPanel=' + JSON.stringify(listPanelBox));
+  const integrationsPageHeadBox = await page.locator('#integrationsView .wf-page-head').boundingBox();
+  check('The list sits a bit lower than the generic 10px convention - at least 14px of real space under the heading',
+    Boolean(integrationsPageHeadBox) && Boolean(listPanelBox) && (listPanelBox.y - (integrationsPageHeadBox.y + integrationsPageHeadBox.height)) >= 14,
+    'gap=' + JSON.stringify(listPanelBox && integrationsPageHeadBox ? listPanelBox.y - (integrationsPageHeadBox.y + integrationsPageHeadBox.height) : null));
+
   await page.click('#integrationsTwcCardBtn');
   await page.waitForTimeout(250);
   check('Tapping the card opens the current Together We Can detail page', await page.locator('#integrationsDetailPanel').isVisible() && !(await page.locator('#integrationsListPanel').isVisible()));
