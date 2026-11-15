@@ -482,6 +482,166 @@ async function main() {
   }
 
   console.log('='.repeat(70));
+  console.log('ISSUE 2 (2026-11), live bug fixes - employee-picker (ACTIVE-only + no slow per-keystroke default-pick scan), send-test-letter split into preview/email steps, and the shared withTimeout mechanism');
+  console.log('='.repeat(70));
+  const workforceRoutes = require('../src/workforceRoutes');
+  const driveTemplatesService2 = require('../src/aiAssistant/driveTemplatesService');
+  const driveTemplateFieldsService = require('../src/aiAssistant/driveTemplateFieldsService');
+  const driveTemplateGenerationService = require('../src/aiAssistant/driveTemplateGenerationService');
+  const gmailService = require('../src/gmailService');
+  const memoryService = require('../src/aiAssistant/memoryService');
+  // Same route-handler-direct-call convention as scripts/check-together-we-can.js
+  // / scripts/check-mail-compose.js - no real HTTP server, no supertest.
+  function findRouteHandler(router, method, path) {
+    for (const layer of router.stack) {
+      if (layer.route && layer.route.path === path && layer.route.methods[method]) {
+        return layer.route.stack[layer.route.stack.length - 1].handle;
+      }
+    }
+    throw new Error('route not found: ' + method + ' ' + path);
+  }
+  function fakeRes() {
+    return { statusCode: 200, _json: null, status(code) { this.statusCode = code; return this; }, json(obj) { this._json = obj; return this; } };
+  }
+  async function callRoute(router, method, path, { body, query, email } = {}) {
+    const handler = findRouteHandler(router, method, path);
+    const req = { body: body || {}, query: query || {}, hrUser: { email: email || '' } };
+    const res = fakeRes();
+    await handler(req, res);
+    return { status: res.statusCode, body: res._json };
+  }
+  const OWNER = 'owner@issue2test.local';
+  // doj is a real Date object here (not a string) - matches the real
+  // shape employeeService.getEmployeeData() actually returns; empRow's
+  // own probationCompletionDate(e.doj) calls .getUTCFullYear() on it, so
+  // a plain string (fine for the checkTestEmployeeEligibility-only tests
+  // above, which never reach empRow) would throw once the full preview
+  // pipeline below is exercised.
+  const ISSUE2_EMPLOYEES = [
+    { employeeId: 'I2-1', name: 'Active Eligible', status: 'ACTIVE', doj: new Date('2020-01-01'), company: 'Issue2 Co With Code' },
+    { employeeId: 'I2-2', name: 'Active No Code', status: 'ACTIVE', doj: new Date('2020-01-01'), company: 'Issue2 Co No Code' },
+    { employeeId: 'I2-3', name: 'Inactive Person', status: 'INACTIVE', doj: new Date('2020-01-01'), company: 'Issue2 Co With Code' },
+    { employeeId: 'I2-4', name: 'Notice Period Person', status: 'NOTICE PERIOD', doj: new Date('2020-01-01'), company: 'Issue2 Co With Code' }
+  ];
+  const origIsOwner = memoryService.isOwner;
+  const origGetEmployeeData2 = employeeService.getEmployeeData;
+  const origListAllLetterTemplates = driveTemplatesService2.listAllLetterTemplates;
+  const origGetTemplateMapping = driveTemplateFieldsService.getTemplateMapping;
+  const origGenerateDriveTemplateLetter = driveTemplateGenerationService.generateDriveTemplateLetter;
+  const origUploadSentLetterPdf = letterSettingsService.uploadSentLetterPdf;
+  const origAppendToLetterRegister = letterSettingsService.appendToLetterRegister;
+  const origGetSignedInAddress = gmailService.getSignedInAddress;
+  const origSendMailWithAttachment = gmailService.sendMailWithAttachment;
+  memoryService.isOwner = (email) => email === OWNER;
+  employeeService.getEmployeeData = async () => ({ employees: ISSUE2_EMPLOYEES, departmentNames: new Map(), locationNames: new Map(), doerNames: new Map(), reportingManagerNames: new Map() });
+  driveTemplatesService2.listAllLetterTemplates = async () => ([{ key: 'drive:issue2tpl', driveFileId: 'issue2tpl', mimeType: 'application/vnd.google-apps.document', label: 'Issue2 Letter', code: 'I2L' }]);
+  driveTemplateFieldsService.getTemplateMapping = async () => ({ '{Employee_Name}': { source: 'hr_column', column: 'Employee_Name' } });
+  let generateCalls = 0;
+  driveTemplateGenerationService.generateDriveTemplateLetter = async () => { generateCalls++; return { ok: true, buffer: Buffer.from('%PDF-1.4 fake issue2 letter') }; };
+  let uploadCalls = 0;
+  letterSettingsService.uploadSentLetterPdf = async ({ buffer }) => { uploadCalls++; return { fileId: 'fake-upload-' + uploadCalls, url: 'https://drive.google.com/file/d/fake-upload-' + uploadCalls + '/view', buffer }; };
+  let registerCalls = 0;
+  const registerRows = [];
+  letterSettingsService.appendToLetterRegister = async (row) => { registerCalls++; registerRows.push(row); };
+  gmailService.getSignedInAddress = async () => OWNER;
+  let sendMailCalls = 0;
+  const sentMails = [];
+  gmailService.sendMailWithAttachment = async (opts) => { sendMailCalls++; sentMails.push(opts); };
+  await companyDetailsService.saveCompanyDetails('Issue2 Co With Code', { code: 'I2C' });
+  try {
+    await checkAsync('employee-picker (no query): only ACTIVE employees are ever offered - INACTIVE/NOTICE PERIOD are filtered out entirely, never shown with a status reason', async () => {
+      const res = await callRoute(workforceRoutes, 'get', '/hr-assistant/letter-settings/employee-picker', { email: OWNER });
+      const ids = res.body.results.map((r) => r.employeeId);
+      return res.status === 200 && ids.includes('I2-1') && ids.includes('I2-2') && !ids.includes('I2-3') && !ids.includes('I2-4');
+    });
+    await checkAsync('employee-picker (no query): defaultEmployeeId is the real auto-pick', async () => {
+      const res = await callRoute(workforceRoutes, 'get', '/hr-assistant/letter-settings/employee-picker', { email: OWNER });
+      return res.body.defaultEmployeeId === 'I2-1';
+    });
+    await checkAsync('employee-picker (WITH a query): still ACTIVE-only, and defaultEmployeeId is null (ISSUE 2(a) perf fix - the frontend never reads it for a typed search, so it is never computed/returned for one)', async () => {
+      const res = await callRoute(workforceRoutes, 'get', '/hr-assistant/letter-settings/employee-picker', { email: OWNER, query: { q: 'person' } });
+      const ids = res.body.results.map((r) => r.employeeId);
+      return res.status === 200 && !ids.includes('I2-3') && !ids.includes('I2-4') && res.body.defaultEmployeeId === null;
+    });
+    await checkAsync('employee-picker (WITH a query): a still-ACTIVE but otherwise-ineligible candidate is still shown, with their real specific reason', async () => {
+      const res = await callRoute(workforceRoutes, 'get', '/hr-assistant/letter-settings/employee-picker', { email: OWNER, query: { q: 'No Code' } });
+      const match = res.body.results.find((r) => r.employeeId === 'I2-2');
+      return Boolean(match) && match.eligible === false && match.needsCompanyDetails === true && /no code set in Company Details/.test(match.reason);
+    });
+    await checkAsync('employee-picker: a non-owner gets 403, never any employee data', async () => {
+      const res = await callRoute(workforceRoutes, 'get', '/hr-assistant/letter-settings/employee-picker', { email: 'not-owner@test.local' });
+      return res.status === 403;
+    });
+
+    await checkAsync('send-test-letter (preview step): returns a filled PDF for the EXPLICITLY picked employee, never emails or registers anything', async () => {
+      const res = await callRoute(workforceRoutes, 'post', '/hr-assistant/letter-settings/send-test-letter', { email: OWNER, body: { templateKey: 'drive:issue2tpl', employeeId: 'I2-1' } });
+      return res.status === 200 && res.body.ok === true && res.body.employeeCode === 'I2-1' &&
+        res.body.refNo === 'I2C/HR/I2L/' + letterSettingsService.computeFinancialYear(new Date()) + '/TEST' &&
+        typeof res.body.pdfBase64 === 'string' && res.body.pdfBase64.length > 0 &&
+        sendMailCalls === 0 && registerCalls === 0 && uploadCalls === 0;
+    });
+    await checkAsync('send-test-letter (preview step): an ineligible explicit pick is rejected with its specific reason, same shared check as the picker', async () => {
+      const res = await callRoute(workforceRoutes, 'post', '/hr-assistant/letter-settings/send-test-letter', { email: OWNER, body: { templateKey: 'drive:issue2tpl', employeeId: 'I2-2' } });
+      return res.status === 400 && res.body.needsCompanyDetails === true;
+    });
+
+    const previewRes = await callRoute(workforceRoutes, 'post', '/hr-assistant/letter-settings/send-test-letter', { email: OWNER, body: { templateKey: 'drive:issue2tpl', employeeId: 'I2-1' } });
+    const generateCallsBeforeEmail = generateCalls;
+    await checkAsync('send-test-letter/email: mails + appends a TEST register row using the EXACT previewed PDF bytes/Ref No. (never regenerated)', async () => {
+      const res = await callRoute(workforceRoutes, 'post', '/hr-assistant/letter-settings/send-test-letter/email', {
+        email: OWNER, body: { employeeId: 'I2-1', templateKey: 'drive:issue2tpl', refNo: previewRes.body.refNo, filename: previewRes.body.filename, pdfBase64: previewRes.body.pdfBase64 }
+      });
+      const lastMail = sentMails[sentMails.length - 1];
+      const lastRow = registerRows[registerRows.length - 1];
+      return res.status === 200 && res.body.ok === true && res.body.mailedTo === OWNER && res.body.registerAppended === true &&
+        generateCalls === generateCallsBeforeEmail && // never regenerated - the template-fill service was NOT called again
+        lastMail.attachment.content.toString('base64') === previewRes.body.pdfBase64 &&
+        lastRow.refNo === previewRes.body.refNo && /^TEST ·/.test(lastRow.batch) &&
+        lastRow.workflow.includes('TEST - Send test letter to me');
+    });
+    await checkAsync('send-test-letter/email: a mere preview (never emailed) left zero register rows / zero sends - confirms the earlier preview-step test above never touched either', () => registerCalls === 1 && sendMailCalls === 1);
+    await checkAsync('send-test-letter/email: missing the previewed PDF (e.g. a stale/forged request) is rejected with a clear error, never silently emails something else', async () => {
+      const res = await callRoute(workforceRoutes, 'post', '/hr-assistant/letter-settings/send-test-letter/email', { email: OWNER, body: { employeeId: 'I2-1', templateKey: 'drive:issue2tpl' } });
+      return res.status === 400 && /previewed letter/.test(res.body.error);
+    });
+
+    console.log('-'.repeat(70));
+    console.log('withTimeout (ISSUE 2(b), live bug fix) - the shared mechanism behind both routes\' 30s ceiling, proven with a tiny ms value rather than really waiting 30s');
+    console.log('-'.repeat(70));
+    await checkAsync('withTimeout resolves normally when the real work finishes before the deadline', async () => {
+      const result = await workforceRoutes.withTimeout(Promise.resolve('real result'), 200, 'should never see this');
+      return result === 'real result';
+    });
+    await checkAsync('withTimeout rejects with a clear, specific, flagged error when the real work never resolves in time (the exact mechanism that stops "Send test to me" from spinning forever)', async () => {
+      const neverResolves = new Promise(() => {}); // simulates a hung real Drive/Gmail call
+      try {
+        await workforceRoutes.withTimeout(neverResolves, 30, 'Taking too long - stuck.');
+        return false;
+      } catch (err) {
+        return err.isTimeout === true && err.message === 'Taking too long - stuck.';
+      }
+    });
+    await checkAsync('withTimeout propagates the real work\'s own error unchanged when IT fails before the deadline (a timeout is never confused with a real failure)', async () => {
+      try {
+        await workforceRoutes.withTimeout(Promise.reject(new Error('real failure')), 200, 'should never see this');
+        return false;
+      } catch (err) {
+        return err.message === 'real failure' && !err.isTimeout;
+      }
+    });
+  } finally {
+    memoryService.isOwner = origIsOwner;
+    employeeService.getEmployeeData = origGetEmployeeData2;
+    driveTemplatesService2.listAllLetterTemplates = origListAllLetterTemplates;
+    driveTemplateFieldsService.getTemplateMapping = origGetTemplateMapping;
+    driveTemplateGenerationService.generateDriveTemplateLetter = origGenerateDriveTemplateLetter;
+    letterSettingsService.uploadSentLetterPdf = origUploadSentLetterPdf;
+    letterSettingsService.appendToLetterRegister = origAppendToLetterRegister;
+    gmailService.getSignedInAddress = origGetSignedInAddress;
+    gmailService.sendMailWithAttachment = origSendMailWithAttachment;
+  }
+
+  console.log('='.repeat(70));
   console.log(pass + '/' + (pass + fail) + ' passed' + (fail ? ', ' + fail + ' FAILED' : ''));
   if (failures.length) { console.log('Failed checks:'); failures.forEach((f) => console.log(' -', f)); }
   require('./testBootstrap').printRealApiCostLine();

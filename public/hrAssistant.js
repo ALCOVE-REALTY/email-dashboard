@@ -190,6 +190,7 @@
   const letterTestEmployeeInput = document.getElementById('hrLetterTestEmployeeInput');
   const letterTestEmployeeSuggest = document.getElementById('hrLetterTestEmployeeSuggest');
   const letterTestEmployeeErr = document.getElementById('hrLetterTestEmployeeErr');
+  const letterTestEmployeeChipInput = document.getElementById('hrLetterTestEmployeeChipInput');
   const letterCodesList = document.getElementById('hrLetterCodesList');
   const letterCountersList = document.getElementById('hrLetterCountersList');
   const letterRegisterRow = document.getElementById('hrLetterRegisterRow');
@@ -3541,7 +3542,43 @@
   // shape, server-filtered (not a client-side pre-fetched directory)
   // since each candidate also needs a live eligibility check.
   let letterTestEmployeeSelectedId = null;
+  let letterTestEmployeeSelectedName = null;
   let letterTestEmployeeSearchToken = 0; // stale-response guard, same convention as createMailChipField's own directory fetch
+  // ISSUE 2(a) (2026-11), direct instruction - a pick is now shown as a
+  // removable CHIP (same .wf-mail-chip visual language as every other
+  // employee/contact search in this app - createMailChipField in
+  // workforce.js), not plain input text: the input hides while a chip is
+  // shown, and the × button clears it and brings the input back, same
+  // shape as Create Workflow's "Also send" To field.
+  function renderLetterTestEmployeeChip() {
+    if (!letterTestEmployeeChipInput || !letterTestEmployeeInput) return;
+    const existing = letterTestEmployeeChipInput.querySelector('.wf-mail-chip');
+    if (existing) existing.remove();
+    if (!letterTestEmployeeSelectedId) {
+      letterTestEmployeeInput.hidden = false;
+      return;
+    }
+    letterTestEmployeeInput.hidden = true;
+    const chip = document.createElement('span');
+    chip.className = 'wf-mail-chip';
+    chip.innerHTML = '<span>' + escapeHtml(letterTestEmployeeSelectedName || '') + '</span><button type="button" aria-label="Clear selected employee">×</button>';
+    chip.querySelector('button').addEventListener('click', () => {
+      letterTestEmployeeSelectedId = null;
+      letterTestEmployeeSelectedName = null;
+      letterTestEmployeeInput.value = '';
+      renderLetterTestEmployeeChip();
+      letterTestEmployeeInput.focus();
+    });
+    letterTestEmployeeChipInput.insertBefore(chip, letterTestEmployeeInput);
+  }
+  function selectLetterTestEmployee(emp) {
+    letterTestEmployeeSelectedId = emp.employeeId;
+    letterTestEmployeeSelectedName = emp.name;
+    letterTestEmployeeInput.value = '';
+    letterTestEmployeeSuggest.hidden = true;
+    if (letterTestEmployeeErr) { letterTestEmployeeErr.textContent = ''; letterTestEmployeeErr.classList.add('hidden'); }
+    renderLetterTestEmployeeChip();
+  }
   function renderLetterTestEmployeeSuggest(results) {
     if (!letterTestEmployeeSuggest) return;
     letterTestEmployeeSuggest.innerHTML = '';
@@ -3561,10 +3598,10 @@
       // Task 4(b) (2026-11), direct instruction - "name · code · company",
       // same shape as this app's OTHER employee search boxes (the
       // ipWhatsapp employee picker's own <b>name</b> + sub-line, public/
-      // workforce.js) - always shown, not only on an ineligible match; an
-      // ineligible candidate's own specific reason is appended to the
-      // SAME sub-line rather than replacing it, so the owner still sees
-      // who they are even when they can't be picked.
+      // workforce.js). ISSUE 2(a) (2026-11) - the picker now only ever
+      // receives ACTIVE candidates from the server, so the "ineligible"
+      // sub-line reason left here covers a still-ACTIVE employee missing
+      // a DOJ/company/company-code only, never a status mismatch.
       const sub = document.createElement('span');
       sub.className = 'wf-mail-suggest-sub';
       let subText = [emp.employeeId, emp.company].filter(Boolean).join(' · ');
@@ -3574,12 +3611,7 @@
       }
       sub.textContent = subText;
       li.appendChild(sub);
-      li.addEventListener('click', () => {
-        letterTestEmployeeSelectedId = emp.employeeId;
-        letterTestEmployeeInput.value = emp.name;
-        letterTestEmployeeSuggest.hidden = true;
-        if (letterTestEmployeeErr) { letterTestEmployeeErr.textContent = ''; letterTestEmployeeErr.classList.add('hidden'); }
-      });
+      li.addEventListener('click', () => selectLetterTestEmployee(emp));
       letterTestEmployeeSuggest.appendChild(li);
     });
     letterTestEmployeeSuggest.hidden = false;
@@ -3595,7 +3627,7 @@
   }
   if (letterTestEmployeeInput) {
     letterTestEmployeeInput.addEventListener('input', () => {
-      letterTestEmployeeSelectedId = null; // typing again invalidates a prior pick, same convention as the existing ipWhatsapp picker
+      letterTestEmployeeSelectedId = null; letterTestEmployeeSelectedName = null; // typing again invalidates a prior pick, same convention as the existing ipWhatsapp picker
       const q = letterTestEmployeeInput.value.trim();
       if (!q) { letterTestEmployeeSuggest.hidden = true; return; }
       searchLetterTestEmployees(q);
@@ -3604,26 +3636,23 @@
       if (letterTestEmployeeInput.value.trim()) searchLetterTestEmployees(letterTestEmployeeInput.value.trim());
     });
     document.addEventListener('click', (e) => {
-      if (!e.target.closest('#hrLetterTestEmployeeInput') && !e.target.closest('#hrLetterTestEmployeeSuggest')) {
+      if (!e.target.closest('#hrLetterTestEmployeeChipInput') && !e.target.closest('#hrLetterTestEmployeeSuggest')) {
         letterTestEmployeeSuggest.hidden = true;
       }
     });
   }
   // Pre-fills the picker with whoever "Send test to me" would currently
   // default to, the moment the Letter Settings page itself loads - the
-  // field is never blank on first open. Best-effort: a failure here just
-  // leaves the field blank, and Send Test still falls back to the
-  // server's own default (no employeeId sent) exactly as before this
-  // picker existed.
+  // field is never blank on first open, shown as a chip immediately
+  // (ISSUE 2(a)). Best-effort: a failure here just leaves the field
+  // blank, and Send Test still falls back to the server's own default
+  // (no employeeId sent) exactly as before this picker existed.
   async function initLetterTestEmployeePicker() {
     if (!letterTestEmployeeInput) return;
     try {
       const data = await fetch('/api/workforce/hr-assistant/letter-settings/employee-picker').then((r) => r.json());
       const match = (data.results || []).find((e) => e.employeeId === data.defaultEmployeeId);
-      if (match) {
-        letterTestEmployeeSelectedId = match.employeeId;
-        letterTestEmployeeInput.value = match.name;
-      }
+      if (match) selectLetterTestEmployee(match);
     } catch (err) { /* best effort */ }
   }
 
@@ -3637,11 +3666,41 @@
   // caller). "Send test to me" opens this SAME sheet automatically when
   // no mapping is saved yet, and re-runs itself once Save succeeds.
   let fieldMappingState = { templateKey: null, autoSendTestBtn: null };
+  // ISSUE 2(c) (2026-11), direct instruction - "Send test to me" now
+  // opens a PDF PREVIEW first (openPdfPreviewSheet, defined further down
+  // this file alongside Create Workflow's own "Preview a document" -
+  // the SAME sheet/viewer, reused, never a second one), with an optional
+  // "Email to me" inside it. Nothing is mailed and no Letter Register
+  // row is touched until the owner explicitly taps that - a closed/
+  // abandoned preview is a no-op. Test Ref No. stays TEST either way;
+  // the real counter is never touched by this feature at all.
+  function openLetterTestPreview(previewResult, templateKey) {
+    openPdfPreviewSheet({
+      title: 'Test letter preview',
+      fetchPdf: () => Promise.resolve(previewResult),
+      buildExtraHtml: () => (
+        '<div class="wf-auto-hint" style="margin-top:10px">For ' + escapeHtml(previewResult.employeeName) + ' (' + escapeHtml(previewResult.employeeCode) + '), Ref No. ' + escapeHtml(previewResult.refNo) + '. Nothing has been sent yet.</div>' +
+        '<button type="button" class="wf-ai-action-btn" data-action="email-test-letter" style="margin-top:10px">✉ Email to me</button>'
+      ),
+      onRendered: () => {
+        const emailBtn = wfPreviewBody ? wfPreviewBody.querySelector('[data-action="email-test-letter"]') : null;
+        if (!emailBtn) return;
+        emailBtn.addEventListener('click', () => {
+          runButtonAction(emailBtn, () => postJsonOrThrow('/api/workforce/hr-assistant/letter-settings/send-test-letter/email', {
+            employeeId: previewResult.employeeCode, templateKey,
+            refNo: previewResult.refNo, filename: previewResult.filename, pdfBase64: previewResult.pdfBase64
+          }), (emailResult) => {
+            showActionToast('Test letter sent to ' + emailResult.mailedTo + ' (Ref No. ' + previewResult.refNo + ')' + (emailResult.registerAppended ? '' : ' - register append failed, see server log'));
+          }, { toastFn: (msg) => showActionToast(msg, null, 'error') });
+        });
+      }
+    }).catch(() => {}); // error already rendered inline by openPdfPreviewSheet
+  }
   async function runSendTestLetter(btn, templateKey) {
     await runButtonAction(btn, () => postJsonOrThrow('/api/workforce/hr-assistant/letter-settings/send-test-letter', {
       templateKey, employeeId: letterTestEmployeeSelectedId || undefined
     }), (result) => {
-      showActionToast('Test letter sent to ' + result.mailedTo + ' (Ref No. ' + result.refNo + ')' + (result.registerAppended ? '' : ' - register append failed, see server log'));
+      openLetterTestPreview(result, templateKey);
     }, {
       resetAfterSuccess: true,
       toastFn: (msg, err) => {
@@ -8133,24 +8192,48 @@
   // (exactly the file that will be attached) and renders it inline
   // (scrollable, real pages) via an <iframe> onto a data: URL, plus a
   // Download button that saves the SAME bytes, never a second re-fetch.
-  if (wfDocsPreviewBtn) wfDocsPreviewBtn.addEventListener('click', async () => {
-    const tpl = wfDocsTpl ? wfDocsTpl.value : '';
-    wfPreviewTitle && (wfPreviewTitle.textContent = 'Document preview');
-    const tplLabel = (wfTemplateOptionsList.find((t) => t.key === tpl) || {}).label || tpl;
-    if (wfPreviewBody) wfPreviewBody.innerHTML = '<div class="wf-rem-empty">Generating the ' + escapeHtml(tplLabel) + '…</div>';
+  //
+  // ISSUE 2(c) (2026-11), direct instruction - factored out of this one
+  // click handler into a SHARED function so Letter settings' "Send test
+  // to me" (runSendTestLetter/openLetterTestPreview, defined earlier in
+  // this file) reuses this SAME preview sheet/viewer instead of building
+  // a second one. `buildExtraHtml`/`onRendered` let a caller add its own
+  // controls (e.g. "Email to me") into the SAME rendered body without
+  // forking the markup or the iframe/Download wiring.
+  function openPdfPreviewSheet({ title, loadingLabel, fetchPdf, buildExtraHtml, onRendered }) {
+    if (wfPreviewTitle) wfPreviewTitle.textContent = title || 'Document preview';
+    if (wfPreviewBody) wfPreviewBody.innerHTML = '<div class="wf-rem-empty">' + escapeHtml(loadingLabel || 'Generating…') + '</div>';
     if (wfPreviewBackdrop) wfPreviewBackdrop.hidden = false;
     if (wfPreviewSheet) { wfPreviewSheet.hidden = false; requestAnimationFrame(() => wfPreviewSheet.classList.add('open')); }
-    try {
-      const plan = wfBuildPlanFromForm(wfReadForm());
-      const data = await postJsonOrThrow('/api/workforce/hr-assistant/workflows/preview-document', { plan });
-      const dataUrl = 'data:application/pdf;base64,' + data.pdfBase64;
-      if (wfPreviewBody) wfPreviewBody.innerHTML =
-        (data.usedSample ? '<div class="wf-auto-hint">No record matches this plan yet - showing a sample employee\'s details instead.</div>' : '') +
-        '<iframe src="' + dataUrl + '" class="wf-auto-doc-preview" title="Document preview"></iframe>' +
-        '<a class="wf-ai-action-btn download" style="margin-top:10px;display:inline-flex" href="' + dataUrl + '" download="' + escapeHtml(data.filename) + '">⬇ Download</a>';
-    } catch (err) {
-      if (wfPreviewBody) wfPreviewBody.innerHTML = '<div class="wf-auto-skip">⚠ ' + escapeHtml(err.message || 'Could not generate this document.') + '</div>';
-    }
+    return (async () => {
+      try {
+        const data = await fetchPdf();
+        const dataUrl = 'data:application/pdf;base64,' + data.pdfBase64;
+        const extraHtml = buildExtraHtml ? buildExtraHtml(data) : '';
+        if (wfPreviewBody) wfPreviewBody.innerHTML =
+          (data.usedSample ? '<div class="wf-auto-hint">No record matches this plan yet - showing a sample employee\'s details instead.</div>' : '') +
+          '<iframe src="' + dataUrl + '" class="wf-auto-doc-preview" title="Document preview"></iframe>' +
+          '<a class="wf-ai-action-btn download" style="margin-top:10px;display:inline-flex" href="' + dataUrl + '" download="' + escapeHtml(data.filename) + '">⬇ Download</a>' +
+          extraHtml;
+        if (onRendered) onRendered(data);
+        return data;
+      } catch (err) {
+        if (wfPreviewBody) wfPreviewBody.innerHTML = '<div class="wf-auto-skip">⚠ ' + escapeHtml(err.message || 'Could not generate this document.') + '</div>';
+        throw err;
+      }
+    })();
+  }
+  if (wfDocsPreviewBtn) wfDocsPreviewBtn.addEventListener('click', () => {
+    const tpl = wfDocsTpl ? wfDocsTpl.value : '';
+    const tplLabel = (wfTemplateOptionsList.find((t) => t.key === tpl) || {}).label || tpl;
+    openPdfPreviewSheet({
+      title: 'Document preview',
+      loadingLabel: 'Generating the ' + tplLabel + '…',
+      fetchPdf: () => {
+        const plan = wfBuildPlanFromForm(wfReadForm());
+        return postJsonOrThrow('/api/workforce/hr-assistant/workflows/preview-document', { plan });
+      }
+    }).catch(() => {}); // error already rendered inline by openPdfPreviewSheet - nothing else to do here
   });
   if (wfTestBtn) wfTestBtn.addEventListener('click', async () => {
     if (!wfEditingId) { showWfToast('Save the workflow first, then you can send a test.', 'warning'); return; }

@@ -701,9 +701,26 @@ function check(label, ok, detail) {
   // actually reading getComputedStyle mid-flight (not just checking the
   // class exists in the DOM) is what actually catches this - a class
   // existing proves nothing if no CSS selector matches it.
+  // ISSUE 2(b)/(c) (2026-11), direct instruction, LIVE BUG FIX - "Send
+  // test to me" used to call ONE route that filled the template AND
+  // emailed the owner AND appended a Letter Register row in a single
+  // request, with no timeout anywhere in that chain - a hung real Drive/
+  // Gmail call meant the button's own spinner sat there forever, never
+  // resolving (the actual live bug reported). Split into two steps:
+  // this route now only returns a PDF for PREVIEW (reusing Create
+  // Workflow's own "Preview a document" sheet - never a second viewer);
+  // nothing is emailed or registered until the owner explicitly taps
+  // "Email to me" inside that preview (see the second route below).
   await page.route('**/api/workforce/hr-assistant/letter-settings/send-test-letter', async (route) => {
     await new Promise((r) => setTimeout(r, 400));
-    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, employeeName: 'Fake Employee', refNo: 'ARPL/HR/BL/2026-27/TEST', pdfUrl: 'https://drive.google.com/file/d/fake/view', mailedTo: 'owner@test.com', registerAppended: true }) });
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, employeeName: 'Fake Employee', employeeCode: 'FAKE1', refNo: 'ARPL/HR/BL/2026-27/TEST', filename: 'TEST-Bonus-Letter-Fake_Employee.pdf', pdfBase64: FAKE_PDF_BASE64 }) });
+  });
+  let emailTestLetterCalls = 0;
+  let lastEmailTestLetterBody = null;
+  await page.route('**/api/workforce/hr-assistant/letter-settings/send-test-letter/email', (route) => {
+    emailTestLetterCalls++;
+    lastEmailTestLetterBody = route.request().postDataJSON();
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, mailedTo: 'owner@test.com', registerAppended: true, pdfUrl: 'https://drive.google.com/file/d/fake/view' }) });
   });
   await page.click('#hrFieldMappingSheetSaveBtn');
   await page.waitForTimeout(1100); // runButtonAction's ~550ms success delay + the sheet's own 320ms close transition
@@ -730,9 +747,26 @@ function check(label, ok, detail) {
     isSuccess: el.classList.contains('is-success'), bg: getComputedStyle(el).backgroundColor
   }));
   check('Letter settings: "Send test to me" shows a REAL visible green success tick once the request resolves', sendTestSuccessState.isSuccess && /rgb/.test(sendTestSuccessState.bg), 'got: ' + JSON.stringify(sendTestSuccessState));
+  await page.waitForTimeout(900); // runButtonAction's own ~550ms success delay before the preview sheet opens
+  // ISSUE 2(c) (2026-11), direct instruction - tap -> spinner -> green
+  // tick -> PDF PREVIEW (never an immediate email/toast any more).
+  check('ISSUE 2(c): "Send test to me" opens a PDF PREVIEW (the SAME sheet/viewer Create Workflow\'s own "Preview a document" uses), never an immediate email', await page.locator('#hrWorkflowPreviewSheet').isVisible());
+  const previewTitle = await page.locator('#hrWorkflowPreviewTitle').textContent().catch(() => null);
+  check('Letter settings: the preview sheet title reads "Test letter preview"', (previewTitle || '').trim() === 'Test letter preview', 'got: ' + JSON.stringify(previewTitle));
+  const previewIframeSrc = await page.locator('#hrWorkflowPreviewBody .wf-auto-doc-preview').getAttribute('src').catch(() => null);
+  check('Letter settings: the preview sheet shows a real embedded PDF (<iframe> onto a PDF data: URL)', (previewIframeSrc || '').startsWith('data:application/pdf;base64,'), 'got: ' + JSON.stringify(previewIframeSrc));
+  check('Letter settings: opening the preview never emailed anything by itself', emailTestLetterCalls === 0);
+  const previewBodyTextBeforeEmail = await page.locator('#hrWorkflowPreviewBody').textContent().catch(() => null);
+  check('Letter settings: the preview names the real employee/Ref No. and says nothing has been sent yet', (previewBodyTextBeforeEmail || '').includes('Fake Employee') && (previewBodyTextBeforeEmail || '').includes('ARPL/HR/BL/2026-27/TEST') && (previewBodyTextBeforeEmail || '').includes('Nothing has been sent yet'), 'got: ' + JSON.stringify(previewBodyTextBeforeEmail));
+  const emailTestLetterBtn = page.locator('#hrWorkflowPreviewBody [data-action="email-test-letter"]');
+  check('Letter settings: the preview sheet has an "Email to me" button', await emailTestLetterBtn.count() > 0);
+  await emailTestLetterBtn.click();
   await page.waitForTimeout(900); // runButtonAction's own ~550ms success delay before the toast fires
-  const toastText = await page.locator('.wf-pro-toast').first().textContent().catch(() => null);
-  check('Letter settings: "Send test to me" runs after Save and shows a success toast naming the real Ref No.', (toastText || '').includes('ARPL/HR/BL/2026-27/TEST'), 'got: ' + JSON.stringify(toastText));
+  check('Letter settings: tapping "Email to me" posts the EXACT previewed PDF/Ref No. (never regenerated)', emailTestLetterCalls === 1 && Boolean(lastEmailTestLetterBody) && lastEmailTestLetterBody.refNo === 'ARPL/HR/BL/2026-27/TEST' && lastEmailTestLetterBody.pdfBase64 === FAKE_PDF_BASE64, 'got calls=' + emailTestLetterCalls + ' body=' + JSON.stringify(lastEmailTestLetterBody));
+  const toastText = await page.locator('.wf-pro-toast').last().textContent().catch(() => null);
+  check('Letter settings: "Email to me" shows a success toast naming the real Ref No.', (toastText || '').includes('ARPL/HR/BL/2026-27/TEST'), 'got: ' + JSON.stringify(toastText));
+  await page.click('#hrWorkflowPreviewCloseBtn');
+  await page.waitForTimeout(350);
   const fieldsErrAfter = consoleErrors.length + pageErrors.length;
   check('Letter settings, Fields/Send test flow: no JS error was thrown', fieldsErrAfter === fieldsErrBefore,
     'new errors: ' + JSON.stringify(consoleErrors.slice(fieldsErrBefore).concat(pageErrors.slice(fieldsErrBefore))));
@@ -810,15 +844,19 @@ function check(label, ok, detail) {
   check('Letter settings: setting a register sheet link round-trips without a JS error', registerErrAfter === registerErrBefore,
     'new errors: ' + JSON.stringify(consoleErrors.slice(registerErrBefore).concat(pageErrors.slice(registerErrBefore))));
 
-  // PART C item 3 (2026-11), direct instruction - Test employee picker:
-  // pre-fills with the server's own default on page load, typing filters
-  // suggestions (including an ineligible candidate's own reason), picking
-  // one updates the field, and "Send test to me" posts that exact
+  // PART C item 3 / ISSUE 2(a) (2026-11), direct instruction - Test
+  // employee picker: pre-fills with the server's own default on page
+  // load (shown as a CHIP, not plain input text), typing filters
+  // suggestions (only ever ACTIVE employees now - an ineligible-but-
+  // still-ACTIVE candidate's own specific reason, e.g. missing company
+  // code, is still shown), tap-to-select shows the pick as a removable
+  // chip (same .wf-mail-chip widget as the rest of the app), and "Send
+  // test to me" (now the preview step, ISSUE 2(c)) posts that exact
   // employeeId - replacing the old silent first-eligible auto-pick with
   // an owner choice.
   const PARTC_PICKER_RESULTS = [
-    { employeeId: 'PCU1', name: 'Default Pick', eligible: true, reason: null, needsCompanyDetails: false },
-    { employeeId: 'PCU2', name: 'Ineligible Pick', eligible: false, reason: 'Ineligible Pick is not an ACTIVE employee (status: INACTIVE).', needsCompanyDetails: false }
+    { employeeId: 'PCU1', name: 'Default Pick', company: 'Alcove Realty Pvt Ltd', eligible: true, reason: null, needsCompanyDetails: false },
+    { employeeId: 'PCU2', name: 'Ineligible Pick', company: 'Subh Ventures Pvt Ltd', eligible: false, reason: 'Ineligible Pick\'s company (Subh Ventures Pvt Ltd) has no code set in Company Details.', needsCompanyDetails: true }
   ];
   await page.route('**/api/workforce/hr-assistant/letter-settings/employee-picker**', (route) => {
     const url = new URL(route.request().url());
@@ -829,27 +867,43 @@ function check(label, ok, detail) {
   let lastSendTestBody = null;
   await page.route('**/api/workforce/hr-assistant/letter-settings/send-test-letter', (route) => {
     lastSendTestBody = route.request().postDataJSON();
-    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, employeeName: lastSendTestBody.employeeId === 'PCU2' ? 'Ineligible Pick' : 'Fake Employee', refNo: 'ARPL/HR/BL/2026-27/TEST', pdfUrl: 'https://drive.google.com/file/d/fake/view', mailedTo: 'owner@test.com', registerAppended: true }) });
+    route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify({
+        ok: true, employeeName: lastSendTestBody.employeeId === 'PCU2' ? 'Ineligible Pick' : 'Fake Employee',
+        employeeCode: lastSendTestBody.employeeId || 'PCU1', refNo: 'ARPL/HR/BL/2026-27/TEST',
+        filename: 'TEST-Bonus-Letter.pdf', pdfBase64: FAKE_PDF_BASE64
+      })
+    });
   });
   await page.evaluate(() => window.__hrAssistantOpenLetterSettings && window.__hrAssistantOpenLetterSettings());
   await page.waitForTimeout(300);
-  const pickerDefaultVal = await page.locator('#hrLetterTestEmployeeInput').inputValue().catch(() => null);
-  check('Test employee picker: pre-fills with the server\'s own default on page load, never blank', pickerDefaultVal === 'Default Pick', 'got: ' + JSON.stringify(pickerDefaultVal));
+  const pickerDefaultChipText = await page.locator('#hrLetterTestEmployeeChipInput .wf-mail-chip').textContent().catch(() => null);
+  check('Test employee picker: pre-fills with the server\'s own default on page load, shown as a chip, never blank', (pickerDefaultChipText || '').includes('Default Pick'), 'got: ' + JSON.stringify(pickerDefaultChipText));
+  const inputHiddenWithDefaultChip = await page.locator('#hrLetterTestEmployeeInput').isHidden().catch(() => false);
+  check('Test employee picker: the text input is hidden while a chip is shown', inputHiddenWithDefaultChip);
+  // Clear the default chip first - the input only reappears (and can be
+  // typed into) once there's no chip, same as every other chip field.
+  await page.locator('#hrLetterTestEmployeeChipInput .wf-mail-chip button').click();
+  await page.waitForTimeout(150);
+  check('Test employee picker: clearing the chip (×) brings the input back, empty', await page.locator('#hrLetterTestEmployeeInput').isVisible() && await page.locator('#hrLetterTestEmployeeChipInput .wf-mail-chip').count() === 0);
   await page.locator('#hrLetterTestEmployeeInput').fill('Ineligible');
   await page.waitForTimeout(250);
   const suggestText = await page.locator('#hrLetterTestEmployeeSuggest').textContent().catch(() => null);
-  check('Test employee picker: typing filters suggestions, showing an ineligible candidate\'s own specific reason', (suggestText || '').includes('Ineligible Pick') && (suggestText || '').includes('not an ACTIVE employee'), 'got: ' + JSON.stringify(suggestText));
+  check('Test employee picker: typing filters suggestions, showing an ACTIVE-but-ineligible candidate\'s own specific reason (never a non-ACTIVE one - those are no longer offered at all)', (suggestText || '').includes('Ineligible Pick') && (suggestText || '').includes('no code set in Company Details'), 'got: ' + JSON.stringify(suggestText));
   await page.locator('#hrLetterTestEmployeeSuggest li').first().click();
   await page.waitForTimeout(150);
-  const pickerValAfterSelect = await page.locator('#hrLetterTestEmployeeInput').inputValue().catch(() => null);
-  check('Test employee picker: clicking a suggestion updates the field to that candidate', pickerValAfterSelect === 'Ineligible Pick', 'got: ' + JSON.stringify(pickerValAfterSelect));
+  const pickerChipAfterSelect = await page.locator('#hrLetterTestEmployeeChipInput .wf-mail-chip').textContent().catch(() => null);
+  check('Test employee picker: clicking a suggestion shows that candidate as a chip (not plain input text)', (pickerChipAfterSelect || '').includes('Ineligible Pick'), 'got: ' + JSON.stringify(pickerChipAfterSelect));
   const suggestHiddenAfterSelect = await page.locator('#hrLetterTestEmployeeSuggest').isHidden().catch(() => false);
   check('Test employee picker: the suggestion list closes after picking', suggestHiddenAfterSelect);
   await page.locator('#hrLetterCodesList [data-letter-type] [data-action="send-test-letter"]').first().click();
   await page.waitForTimeout(900);
-  check('Test employee picker: "Send test to me" posts the EXACT picked employeeId, not the old silent auto-pick', Boolean(lastSendTestBody) && lastSendTestBody.employeeId === 'PCU2', 'got: ' + JSON.stringify(lastSendTestBody));
+  check('Test employee picker: "Send test to me" (the preview step) posts the EXACT picked employeeId, not the old silent auto-pick', Boolean(lastSendTestBody) && lastSendTestBody.employeeId === 'PCU2', 'got: ' + JSON.stringify(lastSendTestBody));
+  check('ISSUE 2(c): the preview sheet opens for the picked employee, naming them', (await page.locator('#hrWorkflowPreviewBody').textContent().catch(() => '') || '').includes('Ineligible Pick'));
+  await page.click('#hrWorkflowPreviewCloseBtn');
+  await page.waitForTimeout(350);
   const pickerErrAfter = consoleErrors.length + pageErrors.length;
-  check('Test employee picker: no JS error was thrown through the whole pre-fill/search/select/send flow', pickerErrAfter === registerErrAfter,
+  check('Test employee picker: no JS error was thrown through the whole pre-fill/clear/search/select/send flow', pickerErrAfter === registerErrAfter,
     'new errors: ' + JSON.stringify(consoleErrors.slice(registerErrAfter).concat(pageErrors.slice(registerErrAfter))));
 
   // TASK 2 (2026-11), direct instruction - AI usage page: chip row moved

@@ -503,10 +503,16 @@
              Reference number format's title->field). -->
         <div style="padding:0 4px">
           <div class="wf-auto-hint" style="padding:0 0 4px">Used by every "Send test to me" button below.</div>
-          <div style="position:relative">
-            <label class="wf-rem-field">
+          <!-- ISSUE 2(a) (2026-11), direct instruction - same
+               search-and-select chip widget as every other employee
+               search in this app (e.g. Create Workflow's "Also send" To
+               field, createMailChipField in workforce.js): typing shows
+               a dropdown of matches, tapping one shows the pick as a
+               removable chip instead of plain input text. -->
+          <div class="wf-mail-field" style="margin:0">
+            <div class="wf-mail-chip-input" id="hrLetterTestEmployeeChipInput">
               <input type="text" id="hrLetterTestEmployeeInput" autocomplete="off" placeholder="Search by name or employee code…" />
-            </label>
+            </div>
             <ul id="hrLetterTestEmployeeSuggest" class="wf-mail-suggest" hidden></ul>
           </div>
         </div>

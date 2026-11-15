@@ -3469,100 +3469,174 @@ router.post('/hr-assistant/letter-settings/register', async (req, res) => {
   }
 });
 
-// "Send test letter to me" (2026-11, direct instruction) - verifies the
-// REAL copy -> fill -> export PDF -> save to Issued Letters/<FY>/<Month>
-// -> register-append chain end to end, on production (where the real
-// Redis-backed Letter Register link/letter codes actually live - this is
-// exactly what local dev couldn't reach during the TASK 4(d) OAuth live
-// test). A fixed TEST Ref No. (never assignRefNo - the real counter is
-// never touched), the register row clearly marked TEST, and the PDF
-// mailed ONLY to the owner's own signed-in address - never the employee,
-// never anyone else. Drive templates only (the ones needing the OAuth
-// identity this verifies) - a built-in letter type already has its own
-// proven PDF path and doesn't need this button.
+// ISSUE 2 (2026-11), live bug fix + new behaviour, direct instruction -
+// "Send test to me" used to fill the template AND immediately email the
+// owner AND append a TEST Letter Register row, all in ONE request, with
+// NO timeout anywhere in that chain (listAllLetterTemplates/
+// getTemplateMapping/generateDriveTemplateLetter/uploadSentLetterPdf/
+// appendToLetterRegister/getSignedInAddress/sendMailWithAttachment are
+// all real Drive/Sheets/Gmail network calls) - if any single one of them
+// ever hung, the request itself never resolved and the button's own
+// spinner sat there forever with no error ever reaching the frontend to
+// clear it (the actual live bug reported). `withTimeout` below puts a
+// hard 30s ceiling around the whole chain either way, reporting a clear,
+// specific timeout error rather than hanging silently - see its own
+// comment for the one known, accepted tradeoff (the real Drive/Gmail
+// call already in flight isn't truly cancelled, since neither this route
+// nor the services it calls hold an AbortController anywhere in this
+// chain; a very rare late success after a reported timeout can still
+// complete in the background - acceptable for an owner-triggered manual
+// test/diagnostic action, never anything automated or employee-facing).
+//
+// Split into two steps (shared validation/resolution factored into
+// resolveSendTestLetterContext, used by both):
+//  1. This route only fills the template and returns the PDF for
+//     PREVIEW (frontend reuses Create Workflow's own "Preview a
+//     document" sheet, see openPdfPreviewSheet in hrAssistant.js - never
+//     a second preview viewer). No Letter Register row, no email - a
+//     closed/abandoned preview never shows up as a real TEST row. The
+//     Ref No. shown here IS the final one used if the owner goes on to
+//     email it (never re-rolled), but the real counter is never touched
+//     either way (assignRefNo is never called by this feature).
+//  2. POST .../send-test-letter/email, reached ONLY from the preview
+//     sheet's own "Email to me" button, takes the EXACT pdfBase64/
+//     filename/refNo this route just generated (never regenerated) so
+//     what gets registered/emailed is provably identical to what the
+//     owner just looked at - this is the ONLY place a TEST Letter
+//     Register row is appended or the owner's mailbox is sent anything.
+const SEND_TEST_LETTER_TIMEOUT_MS = 30000;
+const SEND_TEST_LETTER_TIMEOUT_MESSAGE = 'This is taking too long (over 30s) - the Drive or Gmail step may be stuck. Please try again in a moment.';
+function withTimeout(promise, ms, message) {
+  let timer;
+  const timeout = new Promise((_resolve, reject) => {
+    timer = setTimeout(() => { const e = new Error(message); e.isTimeout = true; reject(e); }, ms);
+  });
+  return Promise.race([Promise.resolve(promise), timeout]).finally(() => clearTimeout(timer));
+}
+// Resolves WHICH template/mapping/employee a "Send test to me" preview
+// or email step is for - one place so the two steps can never disagree.
+// Never touches `res` - returns {ok:true, tpl, mapping, chosen,
+// companyDetails} or {ok:false, status, body} for the caller to send.
+async function resolveSendTestLetterContext(reqBody) {
+  const { templateKey, employeeId } = reqBody || {};
+  if (!templateKey || !driveTemplatesService.isDriveTemplateKey(templateKey)) {
+    return { ok: false, status: 400, body: { error: 'templateKey must be a Drive template key ("drive:<fileId>").' } };
+  }
+  const templates = await driveTemplatesService.listAllLetterTemplates();
+  const tpl = templates.find((t) => t.key === templateKey);
+  if (!tpl) return { ok: false, status: 404, body: { error: 'That template was not found in SUBH Letter Templates.' } };
+
+  const [{ employees }, mapping] = await Promise.all([
+    employeeService.getEmployeeData(),
+    driveTemplateFieldsService.getTemplateMapping(templateKey)
+  ]);
+  if (!Object.keys(mapping).length) {
+    // code: 'no_mapping' (2026-11, direct instruction) - a reliable,
+    // machine-readable marker (not string-matching) so the frontend can
+    // open the SAME Fields review sheet automatically, pre-filled with
+    // SUBH's own proposal, instead of a dead-end error.
+    return { ok: false, status: 400, body: { error: 'No field mapping is saved for this template yet - review and save it below, then this runs again automatically.', code: 'no_mapping' } };
+  }
+  // PART C item 3 (2026-11, direct instruction) - an explicitly chosen
+  // employee (from the picker) gets checked and, if ineligible, reported
+  // with the EXACT specific reason (never a one-size-fits-all message);
+  // with no choice given, falls back to the last-used-then-auto-pick
+  // default, unchanged for any existing caller.
+  let chosen = null, companyDetails = null;
+  if (employeeId) {
+    chosen = employees.find((e) => e.employeeId === employeeId) || null;
+    const check = await letterSettingsService.checkTestEmployeeEligibility(chosen);
+    if (!check.eligible) {
+      return { ok: false, status: 400, body: { error: check.reason, needsCompanyDetails: Boolean(check.needsCompanyDetails) } };
+    }
+    companyDetails = check.companyDetails;
+  } else {
+    const picked = await letterSettingsService.pickDefaultTestEmployee(employees);
+    chosen = picked.employee;
+    companyDetails = picked.companyDetails;
+    if (!chosen) return { ok: false, status: 400, body: { error: 'No eligible real employee found (ACTIVE, has a DOJ, and a company with a code set in Company details).' } };
+  }
+  return { ok: true, tpl, mapping, chosen, companyDetails };
+}
+async function buildSendTestLetterPreview(reqBody) {
+  const resolved = await resolveSendTestLetterContext(reqBody);
+  if (!resolved.ok) return resolved;
+  const { tpl, mapping, chosen, companyDetails } = resolved;
+
+  const now = new Date();
+  const fy = letterSettingsService.computeFinancialYear(now);
+  const letterCode = tpl.code || 'TPL';
+  const refNo = companyDetails.code + '/HR/' + letterCode + '/' + fy + '/TEST';
+  const row = automationService.empRow(chosen);
+  const placeholders = Object.keys(mapping);
+  const ctx = { row, companyDetails, refNo, now };
+  const genResult = await driveTemplateGenerationService.generateDriveTemplateLetter(tpl.driveFileId, tpl.mimeType, mapping, placeholders, ctx);
+  if (!genResult.ok) return { ok: false, status: 400, body: { error: 'Could not fill the template: ' + genResult.error } };
+
+  const filename = 'TEST-' + tpl.label.replace(/\.(docx?|gdoc)$/i, '').replace(/\s+/g, '-') + '-' + chosen.name.replace(/\s+/g, '_') + '.pdf';
+  return {
+    ok: true, status: 200, body: {
+      ok: true, employeeName: chosen.name, employeeCode: chosen.employeeId, refNo, filename,
+      pdfBase64: genResult.buffer.toString('base64')
+    }
+  };
+}
 router.post('/hr-assistant/letter-settings/send-test-letter', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
   try {
-    const { templateKey } = req.body || {};
-    if (!templateKey || !driveTemplatesService.isDriveTemplateKey(templateKey)) {
-      return res.status(400).json({ error: 'templateKey must be a Drive template key ("drive:<fileId>").' });
-    }
-    const templates = await driveTemplatesService.listAllLetterTemplates();
-    const tpl = templates.find((t) => t.key === templateKey);
-    if (!tpl) return res.status(404).json({ error: 'That template was not found in SUBH Letter Templates.' });
+    const result = await withTimeout(buildSendTestLetterPreview(req.body), SEND_TEST_LETTER_TIMEOUT_MS, SEND_TEST_LETTER_TIMEOUT_MESSAGE);
+    res.status(result.status).json(result.body);
+  } catch (err) {
+    if (err.isTimeout) return res.status(504).json({ error: err.message, timeout: true });
+    res.status(500).json({ error: err.message });
+  }
+});
+async function buildSendTestLetterEmail(reqBody) {
+  const { employeeId, templateKey, refNo, filename, pdfBase64 } = reqBody || {};
+  if (!refNo || !filename || !pdfBase64) {
+    return { ok: false, status: 400, body: { error: 'Missing the previewed letter - generate the preview again before emailing.' } };
+  }
+  const { employees } = await employeeService.getEmployeeData();
+  const chosen = employees.find((e) => e.employeeId === employeeId) || null;
+  const check = await letterSettingsService.checkTestEmployeeEligibility(chosen);
+  if (!check.eligible) return { ok: false, status: 400, body: { error: check.reason, needsCompanyDetails: Boolean(check.needsCompanyDetails) } };
+  const templates = await driveTemplatesService.listAllLetterTemplates();
+  const tpl = templates.find((t) => t.key === templateKey);
+  const buffer = Buffer.from(pdfBase64, 'base64');
+  const now = new Date();
+  const uploadResult = await letterSettingsService.uploadSentLetterPdf({ buffer, filename, date: now });
 
-    const { employeeId } = req.body || {};
-    const [{ employees }, mapping] = await Promise.all([
-      employeeService.getEmployeeData(),
-      driveTemplateFieldsService.getTemplateMapping(templateKey)
-    ]);
-    if (!Object.keys(mapping).length) {
-      // code: 'no_mapping' (2026-11, direct instruction) - a reliable,
-      // machine-readable marker (not string-matching) so the frontend can
-      // open the SAME Fields review sheet automatically, pre-filled with
-      // SUBH's own proposal, instead of a dead-end error.
-      return res.status(400).json({ error: 'No field mapping is saved for this template yet - review and save it below, then this runs again automatically.', code: 'no_mapping' });
-    }
-    // PART C item 3 (2026-11, direct instruction) - an explicitly chosen
-    // employee (from the new picker) gets checked and, if ineligible,
-    // reported with the EXACT specific reason (never the old one-size-
-    // fits-all message); with no choice given, falls back to the last-
-    // used-then-auto-pick default, unchanged for any existing caller.
-    let chosen = null, companyDetails = null;
-    if (employeeId) {
-      chosen = employees.find((e) => e.employeeId === employeeId) || null;
-      const check = await letterSettingsService.checkTestEmployeeEligibility(chosen);
-      if (!check.eligible) {
-        return res.status(400).json({ error: check.reason, needsCompanyDetails: Boolean(check.needsCompanyDetails) });
-      }
-      companyDetails = check.companyDetails;
-    } else {
-      const picked = await letterSettingsService.pickDefaultTestEmployee(employees);
-      chosen = picked.employee;
-      companyDetails = picked.companyDetails;
-      if (!chosen) return res.status(400).json({ error: 'No eligible real employee found (ACTIVE, has a DOJ, and a company with a code set in Company details).' });
-    }
-
-    const now = new Date();
-    const fy = letterSettingsService.computeFinancialYear(now);
-    const letterCode = tpl.code || 'TPL';
-    const refNo = companyDetails.code + '/HR/' + letterCode + '/' + fy + '/TEST';
-    const row = automationService.empRow(chosen);
-    const placeholders = Object.keys(mapping);
-    const ctx = { row, companyDetails, refNo, now };
-    const genResult = await driveTemplateGenerationService.generateDriveTemplateLetter(tpl.driveFileId, tpl.mimeType, mapping, placeholders, ctx);
-    if (!genResult.ok) return res.status(400).json({ error: 'Could not fill the template: ' + genResult.error });
-
-    const filename = 'TEST-' + tpl.label.replace(/\.(docx?|gdoc)$/i, '').replace(/\s+/g, '-') + '-' + chosen.name.replace(/\s+/g, '_') + '.pdf';
-    const uploadResult = await letterSettingsService.uploadSentLetterPdf({ buffer: genResult.buffer, filename, date: now });
-
-    let registerError = null;
-    try {
-      await letterSettingsService.appendToLetterRegister({
-        date: now.toISOString().slice(0, 10), refNo, employeeCode: chosen.employeeId,
-        name: chosen.name, company: chosen.company, letterType: 'confirmation',
-        workflow: 'TEST - Send test letter to me (' + tpl.label + ')', batch: 'TEST · ' + now.toISOString().slice(0, 10),
-        pdfLink: uploadResult.url
-      });
-    } catch (err) {
-      registerError = err.message; // still mail the PDF below - a register-append failure here is reported, not silently swallowed
-    }
-
-    const ownerEmail = await gmailService.getSignedInAddress().catch(() => null);
-    if (!ownerEmail) return res.status(500).json({ error: 'Could not determine the signed-in Gmail address to send the test to.' });
-    await gmailService.sendMailWithAttachment({
-      to: ownerEmail,
-      subject: 'SUBH test letter - ' + tpl.label,
-      text: 'Test letter for ' + chosen.name + ' (' + chosen.employeeId + '), Ref No. ' + refNo + '. This is a TEST send - the Confirmation counter was not touched, and the Letter Register row (if it appended) is marked TEST.',
-      attachment: { filename, contentType: 'application/pdf', content: genResult.buffer }
-    });
-
-    await letterSettingsService.setLastTestEmployeeId(chosen.employeeId);
-    res.json({
-      ok: true, employeeName: chosen.name, employeeCode: chosen.employeeId, refNo,
-      pdfUrl: uploadResult.url, mailedTo: ownerEmail, registerAppended: !registerError, registerError
+  let registerError = null;
+  try {
+    await letterSettingsService.appendToLetterRegister({
+      date: now.toISOString().slice(0, 10), refNo, employeeCode: chosen.employeeId,
+      name: chosen.name, company: chosen.company, letterType: 'confirmation',
+      workflow: 'TEST - Send test letter to me (' + (tpl ? tpl.label : templateKey) + ')', batch: 'TEST · ' + now.toISOString().slice(0, 10),
+      pdfLink: uploadResult.url
     });
   } catch (err) {
+    registerError = err.message; // still mail the PDF below - a register-append failure here is reported, not silently swallowed
+  }
+
+  const ownerEmail = await gmailService.getSignedInAddress().catch(() => null);
+  if (!ownerEmail) return { ok: false, status: 500, body: { error: 'Could not determine the signed-in Gmail address to send the test to.' } };
+  await gmailService.sendMailWithAttachment({
+    to: ownerEmail,
+    subject: 'SUBH test letter - ' + (tpl ? tpl.label : templateKey),
+    text: 'Test letter for ' + chosen.name + ' (' + chosen.employeeId + '), Ref No. ' + refNo + '. This is a TEST send - the Confirmation counter was not touched, and the Letter Register row (if it appended) is marked TEST.',
+    attachment: { filename, contentType: 'application/pdf', content: buffer }
+  });
+
+  await letterSettingsService.setLastTestEmployeeId(chosen.employeeId);
+  return { ok: true, status: 200, body: { ok: true, mailedTo: ownerEmail, registerAppended: !registerError, registerError, pdfUrl: uploadResult.url } };
+}
+router.post('/hr-assistant/letter-settings/send-test-letter/email', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const result = await withTimeout(buildSendTestLetterEmail(req.body), SEND_TEST_LETTER_TIMEOUT_MS, SEND_TEST_LETTER_TIMEOUT_MESSAGE);
+    res.status(result.status).json(result.body);
+  } catch (err) {
+    if (err.isTimeout) return res.status(504).json({ error: err.message, timeout: true });
     res.status(500).json({ error: err.message });
   }
 });
@@ -3573,17 +3647,48 @@ router.post('/hr-assistant/letter-settings/send-test-letter', async (req, res) =
 // second copy). `defaultEmployeeId` is who the send route would pick
 // if the owner never explicitly chooses anyone - lets the picker
 // pre-fill itself instead of opening blank.
+//
+// ISSUE 2(a) (2026-11), live bug fix - typing into this search bar
+// showed NO dropdown in production. Root cause: `pickDefaultTestEmployee`
+// was being recomputed on EVERY keystroke request (even one WITH a
+// search query, where the frontend never reads `defaultEmployeeId` at
+// all - see initLetterTestEmployeePicker in hrAssistant.js, which only
+// ever calls this route with no `q`). That function's own fallback path
+// does a SEQUENTIAL for-loop over the WHOLE real employee list, awaiting
+// a Redis-backed company-details check per employee until it finds the
+// first eligible one - on the real employee directory (hundreds of
+// people), this is slow enough that several keystrokes in a row each
+// fire their own slow request, and `searchLetterTestEmployees`'s own
+// stale-response guard (by design) discards every response except the
+// LAST one to resolve - so the suggestion list never visibly updated
+// while typing continued, looking exactly like "no dropdown ever
+// appears". Now only computed when `q` is empty (the one case the
+// frontend actually needs it for). Also now matches "the app's other
+// employee search" pattern (e.g. the ipWhatsapp picker's own
+// `employees-whatsapp` route) by only ever showing ACTIVE employees -
+// an inactive/notice-period person is no longer offered as a pick at
+// all (previously shown greyed-out with a status reason).
 router.get('/hr-assistant/letter-settings/employee-picker', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
   try {
     const q = String(req.query.q || '').trim().toLowerCase();
-    const { employees } = await employeeService.getEmployeeData();
-    const defaultPick = await letterSettingsService.pickDefaultTestEmployee(employees);
+    const { employees: allEmployees } = await employeeService.getEmployeeData();
+    const employees = allEmployees.filter((e) => e.status === 'ACTIVE');
     let candidates = employees;
     if (q) {
       candidates = employees.filter((e) =>
         String(e.name || '').toLowerCase().includes(q) || String(e.employeeId || '').toLowerCase().includes(q));
+      candidates = candidates.slice(0, 15);
+      const results = await Promise.all(candidates.map(async (e) => {
+        const check = await letterSettingsService.checkTestEmployeeEligibility(e);
+        return {
+          employeeId: e.employeeId, name: e.name, company: e.company || null, eligible: check.eligible,
+          reason: check.reason, needsCompanyDetails: Boolean(check.needsCompanyDetails)
+        };
+      }));
+      return res.json({ results, defaultEmployeeId: null });
     }
+    const defaultPick = await letterSettingsService.pickDefaultTestEmployee(employees);
     candidates = candidates.slice(0, 15);
     // The default pick is always represented in the response, even if
     // they'd otherwise fall outside the first 15 candidates - so the
@@ -3950,3 +4055,8 @@ router.get('/hr-assistant/together-we-can/employees', async (req, res) => {
 });
 
 module.exports = router;
+// ISSUE 2(b) (2026-11) - exported ONLY so scripts/check-letter-settings.js
+// can unit-test the generic timeout mechanism itself (a tiny ms value, not
+// the real 30s production constant - no test ever actually waits 30s for
+// this) without needing a real hung Drive/Gmail call to prove it works.
+module.exports.withTimeout = withTimeout;
