@@ -3965,7 +3965,15 @@ router.post('/hr-assistant/together-we-can/test-one', async (req, res) => {
 router.get('/hr-assistant/together-we-can/history', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
   try {
-    res.json({ history: await togetherWeCanService.listHistory() });
+    const [history, nameMap] = await Promise.all([togetherWeCanService.listHistory(), twcEmployeeNameMap()]);
+    // Item 4(b) (2026-11), direct instruction - the sync history detail
+    // sheet's summary names each changed employee ("Tathagata Sengupta
+    // (AR00xxxx): ...") - same best-effort name enrichment as Preview,
+    // applied here to each entry's own changedItems.
+    const enriched = history.map((h) => Object.assign({}, h, {
+      changedItems: (h.changedItems || []).map((i) => Object.assign({}, i, { message: twcEnrichMessage(i.message, i.empCode, nameMap) }))
+    }));
+    res.json({ history: enriched });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

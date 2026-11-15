@@ -486,6 +486,26 @@ async function main() {
       }
     });
 
+    await checkAsync('item 4(b): the history ROUTE stores+returns the full changedItems/warnings for each entry (not just counts), enriched with the employee\'s real name', async () => {
+      const origGetEmployeeData = employeeService.getEmployeeData;
+      employeeService.getEmployeeData = async () => ({ employees: [{ employeeId: 'AR001', name: 'Tathagata Sengupta' }] });
+      try {
+        const changedOnceMore = MAIN_FIXTURE.map((r) => r.slice());
+        const idx = changedOnceMore.findIndex((r) => r[COL.empCode] === 'AR001');
+        changedOnceMore[idx] = dataRow({ empCode: 'AR001', status: 'INACTIVE', hodId: 'AR002', reportingDoerId: 'AR003' });
+        setFixture(changedOnceMore);
+        await togetherWeCanService.sendFullSync({ triggeredBy: 'history-detail-test' });
+        setFixture(MAIN_FIXTURE);
+        const res = await callRoute(workforceRoutes, 'get', '/hr-assistant/together-we-can/history', { email: OWNER });
+        const entry = (res.body.history || []).find((h) => h.triggeredBy === 'history-detail-test');
+        const changedItem = entry && (entry.changedItems || []).find((i) => i.empCode === 'AR001');
+        return res.status === 200 && Boolean(entry) && Array.isArray(entry.warnings) && entry.warnings.length > 0 &&
+          Boolean(changedItem) && changedItem.message.startsWith('Tathagata Sengupta (AR001):');
+      } finally {
+        employeeService.getEmployeeData = origGetEmployeeData;
+      }
+    });
+
     console.log('='.repeat(70));
     console.log('Unified "Action Needed" list - the Together We Can failure lands under the SAME "Automations" chip as every other system alert (2026-11, direct instruction)');
     console.log('='.repeat(70));

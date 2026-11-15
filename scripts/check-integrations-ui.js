@@ -96,15 +96,26 @@ function check(label, ok, detail) {
     if (route.request().method() === 'POST') { route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ enabled: true, time: '21:30' }) }); return; }
     route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ enabled: false, time: '21:00' }) });
   });
+  // First load: empty ("No syncs yet."). After "Sync data now" has run
+  // once, a later history fetch reflects one real entry - proves the
+  // page re-renders history after a sync, not just the toast. A mutable
+  // flag (not a raw call counter - the list page ALSO polls /history for
+  // its own status line, so counting calls would be fragile) flipped by
+  // the sync-now mock below.
+  let hasSyncedOnce = false;
   await page.route('**/api/workforce/hr-assistant/together-we-can/history', (route) => {
     historyCalls++;
-    // First load: empty ("No syncs yet."). After "Sync data now" has run
-    // once, a later history fetch reflects one real entry - proves the
-    // page re-renders history after a sync, not just the toast.
-    const history = historyCalls <= 1 ? [] : [{
+    const history = !hasSyncedOnce ? [] : [{
       at: '2026-11-14T10:00:00.000Z', triggeredBy: 'manual:test', employeeCount: 3,
       counts: { ACTIVE: 2, INACTIVE: 1, 'NOTICE PERIOD': 0 }, changedSinceLastSync: 1,
-      ok: true, mode: 'single', httpStatus: 200, responseBodyText: 'OK'
+      ok: true, mode: 'single', httpStatus: 200, responseBodyText: 'OK',
+      changedItems: [{ empCode: 'AR001', kind: 'changed', message: 'Tathagata Sengupta (AR001): status ACTIVE -> INACTIVE' }],
+      warnings: [
+        { type: 'missing_hod', empCode: 'AR002', message: 'AR002: missing HOD ID.' },
+        { type: 'hod_error_value', empCode: 'AR003', message: 'AR003: HOD ID was a spreadsheet error value - treated as empty.' }
+      ],
+      samplePayload: { Emp_Code: 'AR001', STATUS: 'ACTIVE', HOD_ID: 'AR002', Reporting_DOER_id: 'AR003' },
+      fieldMapping: { empCode: 'New Emp. No.', status: 'STATUS', hodId: 'HOD-1 ID', reportingDoerId: 'REPORTING DOER ID' }
     }];
     route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ history }) });
   });
@@ -126,20 +137,11 @@ function check(label, ok, detail) {
     // actually observable between the click and the response landing,
     // same reasoning as the existing Backup-now UI check.
     await new Promise((resolve) => setTimeout(resolve, 300));
+    hasSyncedOnce = true;
     route.fulfill({
       status: 200, contentType: 'application/json', body: JSON.stringify({
         ok: true, employeeCount: 3, counts: { ACTIVE: 2, INACTIVE: 1, 'NOTICE PERIOD': 0 },
         changedSinceLastSync: 1, mode: 'single', httpStatus: 200, responseBodyText: 'OK', batches: [], warnings: []
-      })
-    });
-  });
-  await page.route('**/api/workforce/hr-assistant/together-we-can/employees', (route) => {
-    route.fulfill({
-      status: 200, contentType: 'application/json', body: JSON.stringify({
-        results: [
-          { employeeId: 'AR001', name: 'Asha Roy', company: 'Alcove Realty', statusRaw: 'Active' },
-          { employeeId: 'AR002', name: 'Bikram Sen', company: 'Alcove Realty', statusRaw: 'Inactive' }
-        ]
       })
     });
   });
@@ -158,15 +160,6 @@ function check(label, ok, detail) {
     }
     route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ mapping: fieldMapping, headers: liveHeaders }) });
   });
-  await page.route('**/api/workforce/hr-assistant/together-we-can/test-one', (route) => {
-    route.fulfill({
-      status: 200, contentType: 'application/json', body: JSON.stringify({
-        ok: true, httpStatus: 200, responseBodyText: '{"received":1}',
-        row: { Emp_Code: 'AR001', STATUS: 'ACTIVE', HOD_ID: 'AR002', Reporting_DOER_id: 'AR003' }, warning: null
-      })
-    });
-  });
-
   await page.goto(base + '/workforce.html', { waitUntil: 'domcontentloaded' });
   await page.waitForTimeout(500); // let the page's own startup prefetches settle
   const errorsBeforeIntegrations = consoleErrors.length + pageErrors.length;
@@ -186,10 +179,24 @@ function check(label, ok, detail) {
   await page.click('[data-view="integrations"]');
   await page.waitForTimeout(300);
   check('Integrations view becomes visible (not a blank page)', await page.locator('#integrationsView').isVisible());
+  // Item 4(a) (2026-11), direct instruction - Integrations opens a LIST
+  // page first (one card per connected integration), never the detail
+  // page directly.
+  check('Integrations opens to the LIST (one card per integration), not the detail page directly', await page.locator('#integrationsListPanel').isVisible() && !(await page.locator('#integrationsDetailPanel').isVisible()));
+  const twcStatusLineText = await page.locator('#integrationsTwcStatusLine').textContent();
+  check('The "Together We Can" list card shows its real status line ("Last synced <time> · OK/Failed", or "Not synced yet")', /Not synced yet|Last synced/.test(twcStatusLineText || ''), 'got: ' + JSON.stringify(twcStatusLineText));
+  await page.click('#integrationsTwcCardBtn');
+  await page.waitForTimeout(250);
+  check('Tapping the card opens the current Together We Can detail page', await page.locator('#integrationsDetailPanel').isVisible() && !(await page.locator('#integrationsListPanel').isVisible()));
   check('"Together We Can" card is present', (await page.locator('#twcCard').textContent() || '').includes('Together We Can'));
+  await page.click('#integrationsBackBtn');
+  await page.waitForTimeout(250);
+  check('The back button from the detail page returns to the LIST (not Dashboard)', await page.locator('#integrationsListPanel').isVisible() && await page.locator('#integrationsView').isVisible());
+  await page.click('#integrationsTwcCardBtn'); // back into detail for the rest of this check
+  await page.waitForTimeout(250);
 
   // ---- 384px clipping check - every key control fits inside the viewport ----
-  const KEY_SELECTORS = ['#twcPreviewBtn', '#twcSyncNowBtn', '#twcTestEmployeeInput', '#twcTestOneBtn', '#twcAutoSyncEnabled', '#twcSaveSettingsBtn'];
+  const KEY_SELECTORS = ['#twcPreviewBtn', '#twcSyncNowBtn', '#twcAutoSyncEnabled', '#twcSaveSettingsBtn'];
   for (const sel of KEY_SELECTORS) {
     const box = await page.locator(sel).boundingBox();
     check(sel + ' is present and not clipped at 384px width', Boolean(box) && box.x >= 0 && (box.x + box.width) <= 384 + 1,
@@ -221,6 +228,25 @@ function check(label, ok, detail) {
   const lastSyncedText = await page.locator('#twcLastSyncedLine').textContent().catch(() => null);
   check('"Last synced" line updates with the employee count', (lastSyncedText || '').includes('3 employees'));
   check('No Action-needed failure banner is shown after a successful sync', !(await page.locator('#twcFailureBanner').isVisible()));
+
+  // Item 4(b) (2026-11), direct instruction - sync history is a list of
+  // CARDS (one per sync), never a raw text dump; tapping a card opens a
+  // clean detail sheet (summary -> warnings grouped/counted -> collapsed
+  // Technical details), with no raw JSON on the main view.
+  check('Sync history renders as tappable CARDS, not a raw text dump', await page.locator('#twcHistoryList [data-history-idx]').count() === 1);
+  check('No raw JSON is visible on the main history list (moved into the detail sheet)', !/[{[]"/.test(historyText || ''));
+  await page.click('#twcHistoryList [data-history-idx="0"]');
+  await page.waitForTimeout(400);
+  check('Tapping a history card opens the detail sheet', await page.locator('#twcHistorySheet').isVisible());
+  const sheetBodyText = await page.locator('#twcHistorySheetBody').textContent();
+  check('Detail sheet summary names the changed employee by name + code and what changed', sheetBodyText.includes('Tathagata Sengupta (AR001): status ACTIVE -> INACTIVE'));
+  check('Detail sheet shows the warnings GROUPED and COUNTED (e.g. "1 rows: HOD ID missing")', /1 rows: HOD ID missing/.test(sheetBodyText) && /1 rows: HOD ID is a spreadsheet error/.test(sheetBodyText));
+  check('Detail sheet has a collapsed "Technical details" section (HTTP status, sample payload, mapping) - present but not on the main view', sheetBodyText.includes('Technical details') && sheetBodyText.includes('HTTP status') && /New Emp\. No\./.test(sheetBodyText));
+  const sheetBox = await page.locator('#twcHistorySheet').boundingBox();
+  check('Detail sheet fits the screen width at 384px (no text cut off on the right)', Boolean(sheetBox) && sheetBox.x >= 0 && (sheetBox.x + sheetBox.width) <= 384 + 1, 'got: ' + JSON.stringify(sheetBox));
+  await page.click('#twcHistorySheetCloseBtn');
+  await page.waitForTimeout(400);
+  check('Detail sheet closes', !(await page.locator('#twcHistorySheet').isVisible()));
 
   // ---- Live bug fix (2026-11) regression coverage: mocked failure modes ----
   // a real HTTP error, a client-side timeout, and a missing-URL config
@@ -261,6 +287,8 @@ function check(label, ok, detail) {
   await page.waitForTimeout(150);
   await page.click('[data-view="integrations"]');
   await page.waitForTimeout(300);
+  await page.click('#integrationsTwcCardBtn'); // Integrations always reopens to the list - into the detail page to see the banner
+  await page.waitForTimeout(250);
   check('The Action-needed banner survives a full page reload (durable, Redis-backed, not just an in-memory toast)', await page.locator('#twcFailureBanner').isVisible());
 
   // Scenario B: tapping Retry re-runs the exact same sync - on success this
@@ -316,20 +344,9 @@ function check(label, ok, detail) {
   // isn't needed for the remaining checks below (plain clicks/fills and
   // page.waitForTimeout, which is a Node-side wait, not a page JS timer).
 
-  // ---- Test-employee picker ----
-  await page.fill('#twcTestEmployeeInput', 'Asha');
-  await page.waitForTimeout(200);
-  check('Employee picker opens with a matching suggestion', await page.locator('#twcTestEmployeeSuggest li').first().isVisible());
-  const suggestText = await page.locator('#twcTestEmployeeSuggest').textContent().catch(() => null);
-  check('Suggestion shows the employee name and Emp Code', (suggestText || '').includes('Asha Roy') && (suggestText || '').includes('AR001'));
-  await page.click('#twcTestEmployeeSuggest li >> text=Asha Roy');
-  await page.waitForTimeout(100);
-  check('Picking a suggestion fills the input with the employee name and closes the dropdown', (await page.inputValue('#twcTestEmployeeInput')) === 'Asha Roy' && !(await page.locator('#twcTestEmployeeSuggest').isVisible()));
-
-  await page.click('#twcTestOneBtn');
-  await page.waitForTimeout(250);
-  const testOneText = await page.locator('#twcTestOneResult').textContent().catch(() => null);
-  check('Test-one shows the exact raw HTTP status and response body', (testOneText || '').includes('HTTP status:') && (testOneText || '').includes('200') && (testOneText || '').includes('{"received":1}'));
+  // Item 5 (2026-11), direct instruction - "Test with one employee" is
+  // removed from this page entirely; confirm it's genuinely gone.
+  check('"Test with one employee" section is gone from the Together We Can page', await page.locator('#twcTestEmployeeInput').count() === 0 && await page.locator('#twcTestOneBtn').count() === 0);
 
   // ---- Daily auto-sync toggle reveals the time field ----
   check('Auto-sync time field is hidden while disabled (default)', !(await page.locator('#twcAutoSyncTimeRow').isVisible()));

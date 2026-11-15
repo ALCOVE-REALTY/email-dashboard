@@ -665,6 +665,13 @@ function setView(view, opts = {}) {
     if (window.__hrAssistantRefreshSiteAliasesBadge) window.__hrAssistantRefreshSiteAliasesBadge();
     if (window.__hrAssistantRefreshDeptAliasesBadge) window.__hrAssistantRefreshDeptAliasesBadge();
   }
+  if (view === 'integrations') {
+    // Item 4(a) (2026-11), direct instruction - "Integrations opens a LIST
+    // page of connected software" - always lands back on the list, never
+    // mid-detail from a previous visit (same reset convention as
+    // orgChart/letterGenerator/interviewPanel above).
+    if (typeof showIntegrationsList === 'function') showIntegrationsList();
+  }
   // All views live in the same scrolling document (sections are toggled via
   // [hidden], not real navigation), so the old scroll position otherwise
   // carries over - e.g. leaving a long list scrolled down, then reopening
@@ -695,7 +702,7 @@ function loadView(view, forceRefresh) {
   if (view === 'movement') return loadMovementView();
   if (view === 'letterGenerator') return loadLetterGeneratorView();
   if (view === 'interviewPanel') return refreshInterviewPanelView();
-  if (view === 'integrations') return loadIntegrationsView();
+  if (view === 'integrations') return loadIntegrationsListStatus();
   // exit / attrition are static "not available" panels — nothing to fetch.
   return Promise.resolve();
 }
@@ -718,8 +725,6 @@ async function loadProfile() {
 // (src/workforceRoutes.js) backed by src/aiAssistant/togetherWeCanService.js -
 // zero AI/Claude calls anywhere in this feature.
 let twcBusy = false; // "second taps ignored while busy" - Sync Now and Test-one both gate through this
-let twcEmployeeCache = null; // lazily fetched once, client-side filtered (same convention as the ipWhatsapp employee picker above)
-let twcSelectedEmployee = null;
 
 function twcToast(text, type) {
   if (window.__hrAssistantToast) window.__hrAssistantToast(text, type);
@@ -798,7 +803,25 @@ function twcRenderPreview(data) {
   el.style.display = '';
 }
 
+// Item 4(b) (2026-11), direct instruction - "replace the raw text dump
+// with a list of cards, one per sync... Tapping a card opens a clean
+// detail sheet." Keeps the real fetched history so the detail sheet can
+// look a specific entry back up by index when its card is tapped.
+let twcHistoryCache = [];
+const TWC_WARNING_TYPE_LABELS = {
+  no_emp_code: 'no Emp Code - row skipped',
+  unknown_status: 'unknown status value - row not sent',
+  missing_hod: 'HOD ID missing',
+  missing_reporting_doer: 'Reporting Doer ID missing',
+  hod_error_value: 'HOD ID is a spreadsheet error (e.g. #N/A)',
+  reporting_doer_error_value: 'Reporting Doer ID is a spreadsheet error (e.g. #N/A)',
+  dangling_hod: 'HOD ID doesn\'t match any real Emp Code',
+  dangling_reporting_doer: 'Reporting Doer ID doesn\'t match any real Emp Code'
+};
+function twcWarningGroupLabel(type) { return TWC_WARNING_TYPE_LABELS[type] || type; }
+
 function twcRenderHistory(history) {
+  twcHistoryCache = history;
   const listEl = document.getElementById('twcHistoryList');
   const lastLine = document.getElementById('twcLastSyncedLine');
   if (!history.length) {
@@ -817,31 +840,81 @@ function twcRenderHistory(history) {
   } else {
     lastLine.textContent = 'Last synced: never (no successful sync yet)';
   }
-  // PROOF (2026-11, direct instruction) - every entry shows the real raw
-  // HTTP status + response body (so the owner can tell "we got a 200 but
-  // the portal didn't change" apart from a genuine send failure) AND the
-  // exact JSON sent for one real employee (samplePayload), so the owner
-  // can show IT precisely what this app sent.
-  listEl.innerHTML = history.map((h) => {
+  // One tappable card per sync - date-time, ✓/✗, counts by status, changed
+  // count. No raw JSON/HTTP details here any more - those moved into the
+  // detail sheet's own collapsed "Technical details" section.
+  listEl.innerHTML = history.map((h, idx) => {
     const when = new Date(h.at).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
     const statusIcon = h.ok ? '✓' : '✗';
     const resultText = h.ok ? 'OK' : ('FAILED - ' + escapeHtml(h.reason || 'unknown error'));
-    let html = '<div>' + statusIcon + ' ' + when + ' · ' + h.employeeCount + ' employees (' + escapeHtml(twcCountsLine(h.counts || {})) +
-      ') · ' + h.changedSinceLastSync + ' changed · ' + resultText + '</div>';
-    if (h.httpStatus || h.responseBodyText) {
-      html += '<div style="margin-left:14px;opacity:.8">HTTP ' + escapeHtml(String(h.httpStatus || '—')) + ' · ' + escapeHtml(h.responseBodyText || '') + '</div>';
-    }
-    if (h.samplePayload) {
-      html += '<div style="margin-left:14px;opacity:.8">Sent (sample): ' + escapeHtml(JSON.stringify(h.samplePayload)) + '</div>';
-    }
-    // "shown in history" (2026-11, direct instruction) - which real sheet
-    // header each field came from for THIS specific sync attempt.
-    if (h.fieldMapping) {
-      html += '<div style="margin-left:14px;opacity:.8">Mapping: ' + escapeHtml(JSON.stringify(h.fieldMapping)) + '</div>';
-    }
-    return html;
+    return '<button type="button" class="wf-hub-tile wf-hub-tile--compact" data-history-idx="' + idx + '" style="text-align:left;width:100%">' +
+      '<span class="wf-hub-tile-main">' +
+        '<span class="wf-hub-tile-title">' + statusIcon + ' ' + escapeHtml(when) + '</span>' +
+        '<span class="wf-hub-tile-sub">' + h.employeeCount + ' employees (' + escapeHtml(twcCountsLine(h.counts || {})) + ') · ' + h.changedSinceLastSync + ' changed · ' + resultText + '</span>' +
+      '</span>' +
+      '<span class="wf-hub-tile-end"><svg class="wf-hub-tile-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg></span>' +
+    '</button>';
   }).join('');
 }
+
+function twcOpenHistorySheet(idx) {
+  const h = twcHistoryCache[idx];
+  if (!h) return;
+  const when = new Date(h.at).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+  document.getElementById('twcHistorySheetTitle').textContent = (h.ok ? '✓ ' : '✗ ') + when;
+
+  // 1) Summary first - the real per-employee changes, by name + code.
+  const changedItems = h.changedItems || [];
+  let html = '<div><b>' + (h.ok ? (h.employeeCount + ' employees synced') : 'Sync failed') + '</b></div>';
+  if (!h.ok) html += '<div style="color:var(--wi-red-700,#b91c1c)">' + escapeHtml(h.reason || 'Unknown error') + '</div>';
+  html += '<div>' + changedItems.length + ' employee' + (changedItems.length === 1 ? '' : 's') + ' changed since the last successful sync:</div>';
+  if (changedItems.length) {
+    html += '<div style="padding-left:14px">' + changedItems.map((i) => '<div>' + escapeHtml(i.message) + '</div>').join('') + '</div>';
+  }
+
+  // 2) Warnings - grouped and counted, each group expandable.
+  const warnings = h.warnings || [];
+  if (warnings.length) {
+    const groups = new Map();
+    warnings.forEach((w) => { const list = groups.get(w.type) || []; list.push(w); groups.set(w.type, list); });
+    html += '<div style="margin-top:10px"><b>Warnings (' + warnings.length + ')</b></div>';
+    Array.from(groups.entries()).forEach(([type, list]) => {
+      html += '<details style="margin-top:4px"><summary>' + list.length + ' rows: ' + escapeHtml(twcWarningGroupLabel(type)) + '</summary>' +
+        '<div style="padding-left:14px;max-height:160px;overflow-y:auto">' + list.map((w) => '<div>' + escapeHtml(w.message) + '</div>').join('') + '</div></details>';
+    });
+  }
+
+  // 3) Technical details, collapsed - for IT.
+  html += '<details style="margin-top:14px"><summary><b>Technical details</b></summary><div style="padding-left:14px">';
+  html += '<div>HTTP status: ' + escapeHtml(String(h.httpStatus || '—')) + '</div>';
+  if (h.responseBodyText) html += '<div>Response: <pre style="white-space:pre-wrap;word-break:break-all;margin:4px 0 0">' + escapeHtml(h.responseBodyText) + '</pre></div>';
+  if (h.samplePayload) html += '<div style="margin-top:6px">Sample sent row: <pre style="white-space:pre-wrap;word-break:break-all;margin:4px 0 0">' + escapeHtml(JSON.stringify(h.samplePayload)) + '</pre></div>';
+  if (h.fieldMapping) html += '<div style="margin-top:6px">Field mapping used: <pre style="white-space:pre-wrap;word-break:break-all;margin:4px 0 0">' + escapeHtml(JSON.stringify(h.fieldMapping)) + '</pre></div>';
+  html += '</div></details>';
+
+  document.getElementById('twcHistorySheetBody').innerHTML = html;
+  document.getElementById('twcHistorySheetBackdrop').hidden = false;
+  const sheet = document.getElementById('twcHistorySheet');
+  sheet.hidden = false;
+  requestAnimationFrame(() => sheet.classList.add('open'));
+}
+function twcCloseHistorySheet() {
+  const sheet = document.getElementById('twcHistorySheet');
+  sheet.classList.remove('open');
+  document.getElementById('twcHistorySheetBackdrop').hidden = true;
+  setTimeout(() => { sheet.hidden = true; }, 320);
+}
+const twcHistoryListEl = document.getElementById('twcHistoryList');
+if (twcHistoryListEl) {
+  twcHistoryListEl.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-history-idx]');
+    if (btn) twcOpenHistorySheet(Number(btn.dataset.historyIdx));
+  });
+}
+const twcHistorySheetCloseBtn = document.getElementById('twcHistorySheetCloseBtn');
+if (twcHistorySheetCloseBtn) twcHistorySheetCloseBtn.addEventListener('click', twcCloseHistorySheet);
+const twcHistorySheetBackdrop = document.getElementById('twcHistorySheetBackdrop');
+if (twcHistorySheetBackdrop) twcHistorySheetBackdrop.addEventListener('click', twcCloseHistorySheet);
 
 // "Field mapping" (2026-11, new feature) - one row per API field, each a
 // dropdown of the LIVE row-4 headers (never hand-typed, so a typo can
@@ -877,7 +950,55 @@ async function twcLoadFieldMapping() {
   }
 }
 
-async function loadIntegrationsView() {
+// Item 4(a) (2026-11), direct instruction - "Integrations opens a LIST page
+// of connected software - one card per integration... Tapping the card
+// opens the current Together We Can page." List <-> detail navigation,
+// own back-button logic (not the generic [data-back] handler - the back
+// button means different things at each level).
+let integrationsShowingDetail = false;
+function showIntegrationsList() {
+  integrationsShowingDetail = false;
+  document.getElementById('integrationsListPanel').style.display = '';
+  document.getElementById('integrationsDetailPanel').style.display = 'none';
+  document.getElementById('integrationsHeading').textContent = 'Integrations';
+  loadIntegrationsListStatus();
+}
+function showIntegrationsDetail() {
+  integrationsShowingDetail = true;
+  document.getElementById('integrationsListPanel').style.display = 'none';
+  document.getElementById('integrationsDetailPanel').style.display = '';
+  document.getElementById('integrationsHeading').textContent = 'Together We Can';
+  window.scrollTo(0, 0);
+  loadTwcDetail();
+}
+const integrationsBackBtn = document.getElementById('integrationsBackBtn');
+if (integrationsBackBtn) {
+  integrationsBackBtn.addEventListener('click', () => {
+    if (integrationsShowingDetail) { showIntegrationsList(); return; }
+    // Same "back to Dashboard" behavior the generic [data-back] handler
+    // gives every other top-level page - this button isn't [data-back]
+    // itself since it means something different at the detail level above.
+    const prev = viewHistory.pop();
+    setView(prev || 'overview', { isBack: true });
+  });
+}
+const integrationsTwcCardBtn = document.getElementById('integrationsTwcCardBtn');
+if (integrationsTwcCardBtn) integrationsTwcCardBtn.addEventListener('click', showIntegrationsDetail);
+
+async function loadIntegrationsListStatus() {
+  const lineEl = document.getElementById('integrationsTwcStatusLine');
+  if (!lineEl) return;
+  try {
+    const data = await fetchJson('/api/workforce/hr-assistant/together-we-can/history');
+    const history = data.history || [];
+    if (!history.length) { lineEl.textContent = 'Not synced yet'; return; }
+    const last = history[0];
+    const when = new Date(last.at).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+    lineEl.textContent = 'Last synced ' + when + ' · ' + (last.ok ? 'OK' : 'Failed');
+  } catch (err) { /* leave whatever was last shown */ }
+}
+
+async function loadTwcDetail() {
   try {
     const settings = await fetchJson('/api/workforce/hr-assistant/together-we-can/settings');
     document.getElementById('twcAutoSyncEnabled').checked = Boolean(settings.enabled);
@@ -983,101 +1104,12 @@ if (twcSyncNowBtn) twcSyncNowBtn.addEventListener('click', () => twcRunSync(twcS
 const twcFailureRetryBtn = document.getElementById('twcFailureRetryBtn');
 if (twcFailureRetryBtn) twcFailureRetryBtn.addEventListener('click', () => twcRunSync(twcFailureRetryBtn));
 
-// ---- Test-employee picker (mirrors the ipWhatsapp employee picker above:
-// client-side cached full list, fetched once, filtered on input) ----
-function twcRenderSuggest(matches) {
-  const suggestEl = document.getElementById('twcTestEmployeeSuggest');
-  suggestEl.innerHTML = '';
-  if (!matches.length) {
-    const li = document.createElement('li');
-    li.className = 'empty';
-    li.textContent = 'No matching employee found.';
-    suggestEl.appendChild(li);
-    suggestEl.hidden = false;
-    return;
-  }
-  matches.slice(0, 20).forEach((emp) => {
-    const li = document.createElement('li');
-    const b = document.createElement('b');
-    b.textContent = emp.name;
-    const sub = document.createElement('span');
-    sub.className = 'wf-mail-suggest-sub';
-    sub.textContent = [emp.employeeId, emp.company].filter(Boolean).join(' · ');
-    li.appendChild(b);
-    li.appendChild(sub);
-    li.addEventListener('click', () => {
-      twcSelectedEmployee = emp;
-      document.getElementById('twcTestEmployeeInput').value = emp.name;
-      suggestEl.hidden = true;
-      document.getElementById('twcTestEmployeeErr').classList.add('hidden');
-    });
-    suggestEl.appendChild(li);
-  });
-  suggestEl.hidden = false;
-}
-async function twcLoadEmployees() {
-  if (twcEmployeeCache) return twcEmployeeCache;
-  const data = await fetchJson('/api/workforce/hr-assistant/together-we-can/employees');
-  twcEmployeeCache = Array.isArray(data.results) ? data.results : [];
-  return twcEmployeeCache;
-}
-const twcTestEmployeeInput = document.getElementById('twcTestEmployeeInput');
-if (twcTestEmployeeInput) {
-  twcTestEmployeeInput.addEventListener('input', async () => {
-    twcSelectedEmployee = null; // typing again invalidates a prior pick
-    const q = twcTestEmployeeInput.value.trim().toLowerCase();
-    const suggestEl = document.getElementById('twcTestEmployeeSuggest');
-    if (!q) { suggestEl.hidden = true; return; }
-    const employees = await twcLoadEmployees();
-    const matches = employees.filter((emp) => (emp.name || '').toLowerCase().includes(q) || (emp.employeeId || '').toLowerCase().includes(q));
-    twcRenderSuggest(matches);
-  });
-  twcTestEmployeeInput.addEventListener('focus', () => {
-    if (twcTestEmployeeInput.value.trim()) document.getElementById('twcTestEmployeeSuggest').hidden = false;
-  });
-  document.addEventListener('click', (e) => {
-    if (!e.target.closest('#twcTestEmployeeInput') && !e.target.closest('#twcTestEmployeeSuggest')) {
-      document.getElementById('twcTestEmployeeSuggest').hidden = true;
-    }
-  });
-}
-
-const twcTestOneBtn = document.getElementById('twcTestOneBtn');
-if (twcTestOneBtn) {
-  twcTestOneBtn.addEventListener('click', async () => {
-    if (twcBusy) return;
-    const errEl = document.getElementById('twcTestEmployeeErr');
-    if (!twcSelectedEmployee) {
-      errEl.textContent = 'Search and select an employee first.';
-      errEl.classList.remove('hidden');
-      return;
-    }
-    errEl.classList.add('hidden');
-    twcBusy = true;
-    twcSetBtnBusy(twcTestOneBtn, 'Sending…');
-    try {
-      const res = await fetch('/api/workforce/hr-assistant/together-we-can/test-one', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ employeeId: twcSelectedEmployee.employeeId })
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Test send failed.');
-      const resultEl = document.getElementById('twcTestOneResult');
-      resultEl.style.display = '';
-      resultEl.innerHTML = '<div><b>Sent:</b> ' + escapeHtml(JSON.stringify(data.row)) + '</div>' +
-        '<div><b>HTTP status:</b> ' + escapeHtml(String(data.httpStatus)) + '</div>' +
-        '<div><b>Response body:</b> <pre style="white-space:pre-wrap;word-break:break-all;margin:4px 0 0">' + escapeHtml(data.responseBodyText || '') + '</pre></div>' +
-        (data.warning ? '<div>⚠ ' + escapeHtml(data.warning) + '</div>' : '');
-      twcToast(data.ok ? 'Test send OK (HTTP ' + data.httpStatus + ')' : 'Test send got HTTP ' + data.httpStatus, data.ok ? 'success' : 'error');
-    } catch (err) {
-      twcToast('Test send failed: ' + err.message, 'error');
-    } finally {
-      twcRestoreBtn(twcTestOneBtn);
-      twcBusy = false;
-    }
-  });
-}
+// Item 5 (2026-11), direct instruction - "Remove the 'Test with one
+// employee' section from Together We Can." The backend route
+// (POST /together-we-can/test-one) and togetherWeCanService.sendTestOne
+// are deliberately left in place (never asked to be removed, and
+// check-together-we-can.js's own deterministic tests still cover them) -
+// only the frontend section is gone.
 
 const twcAutoSyncEnabled = document.getElementById('twcAutoSyncEnabled');
 if (twcAutoSyncEnabled) {

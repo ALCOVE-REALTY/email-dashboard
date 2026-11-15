@@ -590,6 +590,12 @@ async function sendFullSync({ triggeredBy = 'manual' } = {}) {
     batches: (result.batches || []).map((b) => ({ startIndex: b.startIndex, endIndex: b.endIndex, ok: b.ok, status: b.status, bodyText: b.bodyText })),
     fieldMapping: mappingUsed,
     warningsCount: warnings.length,
+    // Item 4(b) (2026-11), direct instruction - the sync history detail
+    // sheet needs the REAL per-employee change list and the full warnings
+    // list (grouped/counted client-side), not just the bare counts that
+    // used to be all this entry stored.
+    warnings,
+    changedItems: diff.items,
     // PROOF (2026-11, direct instruction) - the exact JSON for one real
     // employee, kept in history so the owner can show IT exactly what was
     // sent. Deliberately just the FIRST row (not the whole payload, which

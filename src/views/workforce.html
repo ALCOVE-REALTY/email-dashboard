@@ -3009,12 +3009,38 @@
          same #integrationsCards container without restructuring. -->
     <section id="integrationsView" class="wf-view" hidden>
       <div class="wf-page-head" data-wi-enter="block">
-        <button class="wf-icon-btn" data-back aria-label="Back to Dashboard">
+        <!-- Item 4(a) (2026-11), direct instruction - "Integrations opens a
+             LIST page of connected software"; tapping a card opens that
+             integration's own page. This one back button serves BOTH
+             levels (own id, not the generic [data-back] handler) -
+             integrationsBackBtn's own JS decides "back to the list" vs
+             "back to Dashboard" depending on which panel is showing. -->
+        <button class="wf-icon-btn" id="integrationsBackBtn" aria-label="Back">
           <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
         </button>
-        <h2>Integrations</h2>
+        <h2 id="integrationsHeading">Integrations</h2>
       </div>
-      <div id="integrationsCards" style="margin-top:10px" data-wi-enter="block">
+
+      <!-- List panel - one card per connected integration. More cards are
+           added here later without restructuring anything above/below. -->
+      <div id="integrationsListPanel" data-wi-enter="block" style="margin-top:10px">
+        <button type="button" class="wf-hub-tile wf-hub-tile--compact" id="integrationsTwcCardBtn">
+          <span class="wf-hub-tile-icon comms">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 20V10"/><path d="M12 20V4"/><path d="M6 20v-6"/></svg>
+          </span>
+          <span class="wf-hub-tile-main">
+            <span class="wf-hub-tile-title">Together We Can</span>
+            <span class="wf-hub-tile-sub" id="integrationsTwcStatusLine">Not synced yet</span>
+          </span>
+          <span class="wf-hub-tile-end">
+            <svg class="wf-hub-tile-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+          </span>
+        </button>
+      </div>
+
+      <!-- Detail panel - the current Together We Can page, shown when its
+           list card is tapped. -->
+      <div id="integrationsDetailPanel" style="display:none;margin-top:10px" data-wi-enter="block">
         <div class="wf-panel" id="twcCard">
           <div class="wf-panel-head">
             <h3>Together We Can</h3>
@@ -3044,22 +3070,6 @@
             <span class="wf-ai-sheet-title" style="font-size:14px">Sync history</span>
           </div>
           <div class="wf-rem-list" id="twcHistoryList" style="font-size:.82rem"><div class="wf-note">No syncs yet.</div></div>
-
-          <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 0 6px">
-            <span class="wf-ai-sheet-title" style="font-size:14px">Test with one employee</span>
-          </div>
-          <div class="wf-auto-hint" style="padding:0 0 6px">Sends ONLY this one employee's row to the real endpoint, right now.</div>
-          <div style="position:relative">
-            <label class="wf-rem-field">
-              <input type="text" id="twcTestEmployeeInput" autocomplete="off" placeholder="Search by name or Emp Code…" />
-            </label>
-            <ul id="twcTestEmployeeSuggest" class="wf-mail-suggest" hidden></ul>
-          </div>
-          <div class="wf-auto-err hidden" id="twcTestEmployeeErr" style="padding:4px 0 0"></div>
-          <div style="margin-top:10px">
-            <button type="button" class="wf-ai-action-btn outline" id="twcTestOneBtn"><span>Test with one employee</span></button>
-          </div>
-          <div id="twcTestOneResult" class="wf-rem-list" style="display:none;margin-top:10px;font-size:.82rem;line-height:1.5"></div>
 
           <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 0 6px">
             <span class="wf-ai-sheet-title" style="font-size:14px">Daily auto-sync</span>
@@ -3092,6 +3102,24 @@
         </div>
       </div>
     </section>
+
+    <!-- Item 4(b) (2026-11), direct instruction - sync history detail
+         sheet: summary first (changed employees by name+code), then
+         warnings grouped+counted with an expandable list, then a
+         collapsed "Technical details" for IT. Same bottom-sheet
+         convention as every other sheet in this app (.wf-rem-sheet,
+         max-height:86vh, its own body scrolls - never cut off). -->
+    <div class="wf-ai-sheet-backdrop" id="twcHistorySheetBackdrop" hidden></div>
+    <div class="wf-rem-sheet" id="twcHistorySheet" hidden role="dialog" aria-label="Sync details">
+      <div class="wf-ai-sheet-handle"></div>
+      <div class="wf-ai-sheet-head">
+        <button type="button" class="wf-ai-sheet-close" id="twcHistorySheetCloseBtn" aria-label="Close">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+        <span class="wf-ai-sheet-title" id="twcHistorySheetTitle">Sync details</span>
+      </div>
+      <div class="wf-rem-sheet-body" id="twcHistorySheetBody"></div>
+    </div>
 
     <!-- Profile -->
     <section id="profileView" class="wf-view" hidden>
