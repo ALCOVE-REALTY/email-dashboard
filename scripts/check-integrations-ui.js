@@ -158,7 +158,15 @@ function check(label, ok, detail) {
   // ("Old Reporting Doer Column") is deliberately NOT in the live headers
   // list, same shape togetherWeCanService.js produces for a renamed column.
   let fieldMapping = { empCode: 'New Emp. No.', status: 'STATUS', hodId: 'HOD-1 ID', reportingDoerId: 'Old Reporting Doer Column' };
-  const liveHeaders = ['New Emp. No.', 'Person Accountable', 'STATUS', 'HOD-1 ID', 'REPORTING DOER ID'];
+  // Item 2 (2026-11), direct instruction - a realistic Employee_Master row-4
+  // header count (well above the select-enhancer's own 8-option
+  // SEARCH_THRESHOLD, see workforce-ui-enhance.js), so this check actually
+  // exercises the real search box inside the dropdown, not just the plain
+  // list a shorter fixture would silently skip.
+  const liveHeaders = [
+    'New Emp. No.', 'Person Accountable', 'STATUS', 'HOD-1 ID', 'REPORTING DOER ID',
+    'Date of Joining', 'Designation', 'Department', 'Location', 'Blood Group', 'PAN', 'Aadhar'
+  ];
   await page.route('**/api/workforce/hr-assistant/together-we-can/field-mapping', async (route) => {
     if (route.request().method() === 'POST') {
       fieldMapping = JSON.parse(route.request().postData());
@@ -403,34 +411,57 @@ function check(label, ok, detail) {
   await page.waitForTimeout(100);
   check('Unticking saves immediately (no Save tap needed) and the time field disappears', !(await page.locator('#twcAutoSyncTimeRow').isVisible()) && !(await page.locator('#twcSaveSettingsRow').isVisible()));
 
-  // ---- Item 7 (2026-11), direct instruction - Field mapping's dropdowns
-  // are now the SAME searchable input+suggestion-list pattern as every
-  // other picker in the app (never a native <select>). ----
-  const empCodeInputValue = await page.locator('input[data-twc-field="empCode"]').inputValue();
-  check('Emp Code field is pre-filled with the current saved mapping ("New Emp. No.")', empCodeInputValue === 'New Emp. No.');
-  const reportingDoerInputValue = await page.locator('input[data-twc-field="reportingDoerId"]').inputValue();
-  check('A saved mapping value that no longer exists in the live headers (a renamed/vanished column) is still shown as the current value, never silently swapped to something else', reportingDoerInputValue === 'Old Reporting Doer Column');
+  // ---- Item 2 (2026-11), direct instruction, reworked same day (live
+  // correction) - Field mapping's 4 dropdowns must be "exactly the same
+  // searchable select box as the Organization Chart page's search box".
+  // Investigated live: that's the app's existing GLOBAL select enhancer
+  // (workforce-ui-enhance.js), which auto-wraps every real <select> - not
+  // .wf-mail-suggest (a different component, see the Letter Settings "Test
+  // employee" section below). Field mapping now renders a real <select>
+  // per field and lets that SAME enhancer wrap it: a .wfu-select-trigger
+  // button showing the current value, opening a .wfu-select-list popup
+  // with its own search box (icon included) since there are well over 8
+  // live headers here - the exact component, not a lookalike. ----
+  const twcSelectTrigger = (key) => page.locator('select[data-twc-field="' + key + '"]').locator('xpath=..').locator('.wfu-select-trigger');
+  const empCodeTriggerText = (await twcSelectTrigger('empCode').textContent() || '').trim();
+  check('Emp Code field is pre-filled with the current saved mapping ("New Emp. No.")', empCodeTriggerText === 'New Emp. No.', 'got: ' + JSON.stringify(empCodeTriggerText));
+  const reportingDoerTriggerText = (await twcSelectTrigger('reportingDoerId').textContent() || '').trim();
+  check('A saved mapping value that no longer exists in the live headers (a renamed/vanished column) is still shown as the current value, never silently swapped to something else', reportingDoerTriggerText === 'Old Reporting Doer Column', 'got: ' + JSON.stringify(reportingDoerTriggerText));
 
-  // Searching/filtering: typing narrows the suggestion list to real live headers.
-  await page.fill('input[data-twc-field="reportingDoerId"]', 'reporting');
+  check('Reusing the SAME global select-enhancer Org Chart uses (workforce-ui-enhance.js), not a second copy of any dropdown logic', typeof (await page.evaluate(() => typeof window.__wfuSelectEnhanceLoaded)) === 'string' && (await page.evaluate(() => window.__wfuSelectEnhanceLoaded)) === true);
+
+  await twcSelectTrigger('reportingDoerId').click();
   await page.waitForTimeout(150);
-  const reportingSuggestText = await page.locator('[data-twc-suggest="reportingDoerId"]').textContent();
-  check('Typing filters the suggestion list to matching LIVE headers (search, never hand-typed free text)', reportingSuggestText.includes('REPORTING DOER ID') && !reportingSuggestText.includes('New Emp. No.'));
-  check('wfKeepSuggestAboveKeyboard (the ONE shared keyboard-avoidance fix) is exposed on window and reused here, not a second copy', typeof (await page.evaluate(() => typeof window.wfKeepSuggestAboveKeyboard)) === 'string' && (await page.evaluate(() => typeof window.wfKeepSuggestAboveKeyboard)) === 'function');
+  const reportingDoerList = page.locator('select[data-twc-field="reportingDoerId"]').locator('xpath=..').locator('.wfu-select-list');
+  check('Tapping the trigger opens the popup dropdown list (same component as Org Chart\'s own department picker)', await reportingDoerList.isVisible());
+  check('The dropdown has its own SEARCH BOX with an icon (same look as the Org Chart/Employee Data search boxes), since there are more than 8 real headers', await reportingDoerList.locator('.wfu-select-search svg').count() > 0 && await reportingDoerList.locator('.wfu-select-search input').count() > 0);
+  await reportingDoerList.locator('.wfu-select-search input').fill('reporting');
+  await page.waitForTimeout(100);
+  // .wfu-select-item hidden (not matching) rows stay in the DOM with the
+  // `hidden` attribute (never removed) - textContent on the container would
+  // include them regardless, so this reads only the VISIBLE (:not([hidden]))
+  // items' text, matching what the owner would actually see on screen.
+  const reportingDoerVisibleItemsText = await reportingDoerList.locator('.wfu-select-item:not([hidden])').evaluateAll((els) => els.map((e) => e.textContent).join(' | '));
+  check('Typing in the search box filters the list to matching LIVE headers (search, never hand-typed free text)', reportingDoerVisibleItemsText.includes('REPORTING DOER ID') && reportingDoerVisibleItemsText.includes('Old Reporting Doer Column') && !reportingDoerVisibleItemsText.includes('New Emp. No.'), 'got: ' + JSON.stringify(reportingDoerVisibleItemsText));
 
   // Round-trip: re-point Reporting Doer ID at the real live header (via
-  // the search+pick flow, same as any other picker in the app), save, and
-  // confirm it comes back correctly filled after a reload from the server.
-  await page.click('[data-twc-suggest="reportingDoerId"] li >> text=REPORTING DOER ID');
+  // the search+pick flow, same as Org Chart's own department picker), save,
+  // and confirm it comes back correctly filled after a reload from the server.
+  await reportingDoerList.locator('.wfu-select-item:not([hidden])', { hasText: 'REPORTING DOER ID' }).click();
   await page.waitForTimeout(100);
-  const reportingDoerAfterPick = await page.locator('input[data-twc-field="reportingDoerId"]').inputValue();
-  const reportingSuggestVisibleAfterPick = await page.locator('[data-twc-suggest="reportingDoerId"]').isVisible();
-  // LIVE BUG FIX found while building this check - picking a suggestion
-  // used to blur-then-refocus the input, re-opening the list right after
-  // the click closed it (fixed with mousedown preventDefault on every
-  // suggestion item - see twcRenderFieldMappingSuggest's own comment).
-  check('Picking a suggestion fills the field and closes the dropdown (never reopens from a blur/refocus cycle)', reportingDoerAfterPick === 'REPORTING DOER ID' && !reportingSuggestVisibleAfterPick,
-    'value=' + JSON.stringify(reportingDoerAfterPick) + ' suggestVisible=' + reportingSuggestVisibleAfterPick);
+  const reportingDoerAfterPick = (await twcSelectTrigger('reportingDoerId').textContent() || '').trim();
+  // The popup's "closed" state is its real `hidden` PROPERTY (what
+  // workforce-ui-enhance.js's own open()/close() toggle, and what its CSS
+  // keys off via :not([hidden])) - the element itself stays in normal flow
+  // (display:flex is unconditional on .wfu-select-list) and only fades via
+  // opacity/pointer-events when closed, so Playwright's generic isVisible()
+  // (which only looks at display/size) would misleadingly still call it
+  // "visible" even though it's faded out and unclickable. Same app-specific
+  // nuance as this app's own documented [hidden]-vs-class-specificity bug
+  // class (see item 5) - checking the real property is the honest signal.
+  const reportingDoerListHiddenAfterPick = await reportingDoerList.evaluate((el) => el.hidden);
+  check('Picking a list item fills the field and closes the dropdown', reportingDoerAfterPick === 'REPORTING DOER ID' && reportingDoerListHiddenAfterPick,
+    'value=' + JSON.stringify(reportingDoerAfterPick) + ' hidden=' + reportingDoerListHiddenAfterPick);
   const saveFieldMappingClick = page.click('#twcSaveFieldMappingBtn');
   await page.waitForTimeout(60);
   check('Item 7(b): Save field mapping shows a spinner inside the button while in flight', await page.locator('#twcSaveFieldMappingBtn .spinner').count() > 0);
@@ -438,7 +469,7 @@ function check(label, ok, detail) {
   await page.waitForTimeout(900);
   const mappingSavedToastText = await page.locator('.wf-pro-toast').last().textContent().catch(() => null);
   check('Saving the field mapping shows a success toast', (mappingSavedToastText || '').includes('Field mapping saved'));
-  const reportingDoerAfterSave = await page.locator('input[data-twc-field="reportingDoerId"]').inputValue();
+  const reportingDoerAfterSave = (await twcSelectTrigger('reportingDoerId').textContent() || '').trim();
   check('After saving, the field reflects the NEW value (re-rendered from the server\'s own confirmed response, not just left as-is)', reportingDoerAfterSave === 'REPORTING DOER ID');
 
   const errorsAfterIntegrations = consoleErrors.length + pageErrors.length;

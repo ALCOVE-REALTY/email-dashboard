@@ -961,79 +961,55 @@ function wfKeepSuggestAboveKeyboard(suggestEl, anchorEl) {
 }
 window.wfKeepSuggestAboveKeyboard = wfKeepSuggestAboveKeyboard;
 
-// "Field mapping" (2026-11, new feature) - one row per API field, each a
-// SEARCHABLE dropdown (type to filter) over the LIVE row-4 headers (never
+// "Field mapping" (2026-11, new feature; reworked same day, items 2+3 live
+// correction) - one row per API field, each picking ONE value from the
+// LIVE row-4 headers (a small, fully-known, already-fetched list - never
 // hand-typed free text, so a typo can never silently create a new broken
-// mapping - picking a suggestion is the only way to set a value).
+// mapping). ITEM 2 (direct instruction): "must use exactly the same
+// searchable select box as the Organization Chart page's search box - same
+// look, size, icon, dropdown list and behaviour... Reuse that component,
+// don't build a new one." Investigated live: Org Chart's real searchable
+// picker is #orgChartDeptSelect, a plain native <select> auto-wrapped by
+// the app's existing global select enhancer (workforce-ui-enhance.js's
+// enhanceSelect) into a trigger button + popup list, which itself gets a
+// search box (icon included) once it has more than 8 options
+// (SEARCH_THRESHOLD) - NOT the .wf-mail-suggest pattern b2b29dc put here
+// a few hours earlier (that's a different, DIFFERENT component, built for
+// free-text server-driven search - see the Letter Settings "Test employee"
+// picker below for why that one keeps it). Field mapping's own data is
+// architecturally identical to Org Chart's department list (a small,
+// already-fully-fetched set of options), so this now renders a REAL
+// <select> per field and lets the SAME global enhancer wrap it - zero new
+// UI code, the exact component reused verbatim.
 const TWC_FIELD_LABELS = [
   { key: 'empCode', label: 'Emp Code' },
   { key: 'status', label: 'Status' },
   { key: 'hodId', label: 'HOD ID' },
   { key: 'reportingDoerId', label: 'Reporting Doer ID' }
 ];
-let twcFieldMappingHeaders = [];
-const twcFieldMappingValues = {};
-const twcFieldMappingRepositioners = {};
 function twcRenderFieldMapping(mapping, headers) {
-  twcFieldMappingHeaders = headers;
   const container = document.getElementById('twcFieldMappingRows');
   container.innerHTML = TWC_FIELD_LABELS.map(({ key, label }) => {
     const current = (mapping && mapping[key]) || '';
-    twcFieldMappingValues[key] = current;
+    // The current saved value is always offered even if it's no longer in
+    // the live header list (a renamed/vanished column) - so the owner sees
+    // what's currently (mis)configured, never silently swapped to
+    // something else. Same rule the old native <select> (pre-b2b29dc) and
+    // Org Chart's own department list both already follow.
+    const options = headers.includes(current) ? headers : [current].concat(headers);
+    const optionsHtml = options.map((h) => '<option value="' + escapeHtml(h) + '"' + (h === current ? ' selected' : '') + '>' + escapeHtml(h) + '</option>').join('');
     return '<label class="wf-rem-field"><span style="font-size:12px;opacity:.75">' + escapeHtml(label) + '</span>' +
-      '<div style="position:relative">' +
-        '<input type="text" data-twc-field="' + key + '" autocomplete="off" value="' + escapeHtml(current) + '" placeholder="Search the real sheet headers…" />' +
-        '<ul class="wf-mail-suggest" data-twc-suggest="' + key + '" hidden></ul>' +
-      '</div>' +
+      '<select data-twc-field="' + key + '">' + optionsHtml + '</select>' +
     '</label>';
   }).join('');
-  TWC_FIELD_LABELS.forEach(({ key }) => twcWireFieldMappingInput(key));
+  // The global enhancer (workforce-ui-enhance.js) watches .wf-shell for any
+  // newly-added <select> and wraps it automatically - this innerHTML swap
+  // is exactly that case (same as any other dynamically-populated select
+  // on this page), so nothing further needs to be wired here.
 }
-function twcRenderFieldMappingSuggest(key, matches) {
-  const suggestEl = document.querySelector('[data-twc-suggest="' + key + '"]');
-  suggestEl.innerHTML = '';
-  if (!matches.length) {
-    const li = document.createElement('li');
-    li.className = 'empty';
-    li.textContent = 'No matching header found.';
-    suggestEl.appendChild(li);
-  } else {
-    matches.slice(0, 30).forEach((h) => {
-      const li = document.createElement('li');
-      li.textContent = h;
-      // LIVE BUG FIX (found while building this) - clicking a suggestion
-      // blurs the input first (mousedown fires before click), and that
-      // blur/refocus cycle re-triggers the 'focus' handler below, which
-      // re-opens the list right after this click closes it. preventDefault
-      // on mousedown stops the input from ever losing focus in the first
-      // place, so no stray 'focus' event fires after picking.
-      li.addEventListener('mousedown', (e) => e.preventDefault());
-      li.addEventListener('click', () => {
-        twcFieldMappingValues[key] = h;
-        document.querySelector('input[data-twc-field="' + key + '"]').value = h;
-        suggestEl.hidden = true;
-      });
-      suggestEl.appendChild(li);
-    });
-  }
-  suggestEl.hidden = false;
-  if (twcFieldMappingRepositioners[key]) twcFieldMappingRepositioners[key]();
-}
-function twcWireFieldMappingInput(key) {
-  const inputEl = document.querySelector('input[data-twc-field="' + key + '"]');
-  const suggestEl = document.querySelector('[data-twc-suggest="' + key + '"]');
-  if (!inputEl || !suggestEl) return;
-  twcFieldMappingRepositioners[key] = wfKeepSuggestAboveKeyboard(suggestEl, inputEl);
-  inputEl.addEventListener('input', () => {
-    const q = inputEl.value.trim().toLowerCase();
-    twcFieldMappingValues[key] = inputEl.value.trim(); // typed-but-not-yet-picked text still counts as "current" for Save, same as the old <select>'s own value
-    const matches = q ? twcFieldMappingHeaders.filter((h) => h.toLowerCase().includes(q)) : twcFieldMappingHeaders;
-    twcRenderFieldMappingSuggest(key, matches);
-  });
-  inputEl.addEventListener('focus', () => twcRenderFieldMappingSuggest(key, twcFieldMappingHeaders.filter((h) => h.toLowerCase().includes(inputEl.value.trim().toLowerCase()))));
-  document.addEventListener('click', (e) => {
-    if (!e.target.closest('input[data-twc-field="' + key + '"]') && !e.target.closest('[data-twc-suggest="' + key + '"]')) suggestEl.hidden = true;
-  });
+function twcFieldMappingValue(key) {
+  const select = document.querySelector('select[data-twc-field="' + key + '"]');
+  return select ? select.value : '';
 }
 async function twcLoadFieldMapping() {
   try {
@@ -1112,7 +1088,8 @@ if (twcSaveFieldMappingBtn) {
   twcSaveFieldMappingBtn.addEventListener('click', async () => {
     const errEl = document.getElementById('twcFieldMappingErr');
     errEl.classList.add('hidden');
-    const body = Object.assign({}, twcFieldMappingValues);
+    const body = {};
+    TWC_FIELD_LABELS.forEach(({ key }) => { body[key] = twcFieldMappingValue(key); });
     // Item 7(b) (2026-11), direct instruction - spinner inside the button -> green tick -> back to normal.
     twcSetBtnBusy(twcSaveFieldMappingBtn, 'Saving…');
     try {
