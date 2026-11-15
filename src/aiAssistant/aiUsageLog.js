@@ -91,6 +91,45 @@ function dayKeyToUtcMidnight(key) {
   return new Date(Date.UTC(y, m - 1, d));
 }
 
+// LIVE BUG FIX (2026-11, found investigating a real hang): every call
+// site invokes recordUsage() WITHOUT awaiting it (logAiUsageForCall in
+// whatsappAssistant.js is itself synchronous and does
+// `aiUsageLog.recordUsage(...).catch(() => {})` - fire-and-forget, by
+// design, so logging never slows down the real reply it's attached to).
+// recordUsageInner's own updateAggregate() does a plain GET AGG_KEY,
+// mutate in memory, SET AGG_KEY - safe for ONE call at a time, but a
+// burst of calls that are never awaited by their callers can all start
+// concurrently, each reading the same stale AGG_KEY before any of the
+// others has written its own update back (lost updates), and - the part
+// that actually caused the hang - with no caller ever waiting for any of
+// them, nothing bounds how many can be in flight at once. Reproduced
+// live by check-whatsapp-engine.js's own "the cache is bounded (LRU)"
+// test, which calls detectLangSmart 2001 times in a tight loop, each a
+// real (stubbed) model call that logs usage: that fired ~2001 concurrent
+// recordUsage chains, each holding its own copy of the (growing)
+// aggregate object pending its own GET/SET round trip, which piled up
+// memory without bound and buried the local Redis client/server
+// connections under thousands of simultaneous requests - the very next
+// real Redis call in the suite (an unrelated isKnownLid/markLidKnown
+// test) then sat queued behind that backlog for 30+ minutes. This can
+// happen in production too, from any real burst of Claude calls close
+// together (several WhatsApp messages/flows at once) - not a hang at
+// realistic production volumes, but a genuine data-correctness bug
+// (today/week/month/year totals silently undercounting) every time two
+// calls' own updateAggregate windows overlap.
+//
+// Fixed by serializing every recordUsage call through one promise chain,
+// so at most one is ever actually touching Redis at a time, in the order
+// callers invoked it - callers still never await it (unchanged), but now
+// there is only ever one real GET/SET pair outstanding regardless of how
+// many logging calls arrive in a burst, so neither the race nor the
+// unbounded pileup can happen again.
+let recordUsageQueue = Promise.resolve();
+function recordUsage(args) {
+  const run = recordUsageQueue.then(() => recordUsageInner(args));
+  recordUsageQueue = run.catch(() => {}); // a failure must never break the NEXT queued call's turn
+  return run;
+}
 // Never throws - a logging failure must never break the real call it's
 // recording. isTest: set by every call site from
 // Boolean(process.env.AI_USAGE_IS_TEST), itself set once by
@@ -98,7 +137,7 @@ function dayKeyToUtcMidnight(key) {
 // the real-model scenario suite) - this keeps every test run's spend out
 // of the "live" figures without each of the 7 call sites needing its own
 // test-detection logic.
-async function recordUsage({ feature, model, inputTokens, outputTokens, cacheWriteTokens, cacheReadTokens, isTest, now }) {
+async function recordUsageInner({ feature, model, inputTokens, outputTokens, cacheWriteTokens, cacheReadTokens, isTest, now }) {
   const redis = getClient();
   if (!redis) return;
   let entry = null;

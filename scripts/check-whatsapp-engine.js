@@ -146,14 +146,42 @@ function check(label, condition) {
   }
 }
 
+// Hard per-test timeout (2026-11, direct instruction after a real 31+
+// minute hang reached this suite via the pre-push hook) - no single
+// test's own promise may ever hang the whole suite/hook again, no matter
+// what new bug a future change introduces. 15s: the slowest legitimately
+// passing test observed in this file is the LRU-cache-fill test (2001
+// sequential detectLangSmart calls against a fully-stubbed model, ~2.6s
+// end to end) - 15s leaves roughly 5x headroom above that without being
+// so long a real hang still feels "stuck" to whoever is watching a push.
+// Uses Promise.race against a timer that is ALWAYS cleared (both on the
+// real result and on the timeout itself winning) so a clean run never
+// leaves a dangling timer handle keeping the process alive - also
+// .unref()'d as a second, independent safety net for the same reason.
+const TEST_TIMEOUT_MS = 15000;
+function withTimeout(label, fn) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error('TIMED_OUT_AFTER_' + TEST_TIMEOUT_MS + 'MS')), TEST_TIMEOUT_MS);
+    timer.unref();
+  });
+  return Promise.race([fn(), timeout]).finally(() => clearTimeout(timer));
+}
+
 async function checkAsync(label, fn) {
   try {
-    const result = await fn();
+    const result = await withTimeout(label, fn);
     check(label, result);
   } catch (err) {
     if (err.message === 'SKIPPED_REAL_MODEL_CALL') {
       skipped++;
       console.log('[skip]', label, '(real-model call - set RUN_REAL_MODEL=1 and ANTHROPIC_API_KEY_TEST to run it)');
+      return;
+    }
+    if (err.message && err.message.startsWith('TIMED_OUT_AFTER_')) {
+      fail++;
+      failures.push(label + ' (TIMED OUT after ' + (TEST_TIMEOUT_MS / 1000) + 's)');
+      console.log('[FAIL]', label, '- TIMED OUT after ' + (TEST_TIMEOUT_MS / 1000) + 's');
       return;
     }
     fail++;
