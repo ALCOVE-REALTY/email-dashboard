@@ -1459,5 +1459,13 @@ module.exports = {
   buildMessages, fillPlaceholders, computeNextRun, ensureNotTooSoon, isOneShotSchedule,
   runAutomation, runDueAutomations, resolveMissedRun,
   parseAutomationAsk, draftPlanFromParsed, automationPlanTool,
-  MISSED_RUN_THRESHOLD_MS, WEEKDAY_NAMES
+  MISSED_RUN_THRESHOLD_MS, WEEKDAY_NAMES,
+  // PHASE 3 (2026-11, Workflow Automation extension) - additive exports
+  // only, never wired into this file's OWN calling behaviour (Automated
+  // Tasks keeps using computeNextRun/ensureNotTooSoon exactly as before -
+  // these two were already purely-functional, stateless IST date-math
+  // helpers; exposing them just lets workflowService.js reuse the SAME
+  // IST wall-clock<->UTC conversion for its own "advance to next working
+  // day" logic instead of re-deriving the +5:30 offset a second time).
+  istWallClockToUtc, istParts
 };

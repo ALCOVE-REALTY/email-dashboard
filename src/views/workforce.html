@@ -1253,6 +1253,18 @@
           </div>
           <label class="wf-rem-field">Follow-up message<textarea id="wfFuBody" class="wf-auto-body" autocomplete="off"></textarea></label>
           <div class="wf-auto-hint">Sent in the same thread. After the last follow-up SUBH alerts you (Action needed → Automations).</div>
+
+          <!-- PHASE 3 (2026-11) - "Smarter follow-ups". All three
+               unticked/empty by default = today's behaviour exactly. -->
+          <div class="wf-nf-box" id="wfFuSmartBox">
+            <div class="wf-nf-title">Smarter follow-ups <span class="wf-nf-badge">NEW</span></div>
+            <label class="wf-auto-check"><input type="checkbox" id="wfFuWorkingDaysOnly"> Working days only (skip Sundays &amp; holidays)</label>
+            <label class="wf-auto-check"><input type="checkbox" id="wfFuFixedTimeOn"> Send at a fixed time</label>
+            <div class="wf-nf-time-wrap hidden" id="wfFuFixedTimeWrap"><input type="time" id="wfFuFixedTime" value="10:00" /></div>
+            <label class="wf-auto-check"><input type="checkbox" id="wfFuMentionMissing"> Mention what's still missing (e.g. pending items or documents)</label>
+            <div class="wf-auto-hint">All unticked = exactly today's behaviour. Any reply stops the follow-ups (as today).</div>
+            <div class="wf-nf-example" id="wfFuLiveExample"></div>
+          </div>
         </div>
 
         <!-- Section 8: When they reply - one card per rule, rendered/wired
@@ -1280,6 +1292,16 @@
           <div id="wfCustomWrap" class="hidden wf-auto-row-gap" style="margin-top:10px">Every <input type="number" id="wfEvery" min="1" max="365" value="2" style="width:70px" /> <select id="wfCustomUnit"><option value="days">days</option><option value="weeks">weeks</option><option value="months" selected>months</option></select></div>
           <div class="wf-auto-seg hidden" id="wfWeekdaysSeg" style="margin-top:10px"></div>
           <div class="wf-auto-hint" id="wfRepRule"></div>
+
+          <!-- PHASE 3 (2026-11) - run-on-next-working-day. Off by default
+               = today's behaviour exactly (runs on the date even if it's a
+               Sunday/holiday). -->
+          <div class="wf-nf-box" id="wfScheduleWorkingDayBox">
+            <div class="wf-nf-title">Working day <span class="wf-nf-badge">NEW</span></div>
+            <label class="wf-auto-check"><input type="checkbox" id="wfSkipToNextWorkingDay"> If it falls on a Sunday/holiday → run on the next working day</label>
+            <div class="wf-auto-hint">Unticked = today's behaviour (runs on the date even if it's a Sunday).</div>
+            <div class="wf-nf-next-run" id="wfScheduleNextRun"></div>
+          </div>
         </div>
 
         <div class="wf-auto-card wf-auto-summary" id="wfSummary"></div>

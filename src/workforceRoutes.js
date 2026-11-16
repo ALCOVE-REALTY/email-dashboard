@@ -2523,9 +2523,21 @@ router.post('/hr-assistant/workflows/preview', async (req, res) => {
     const { plan, excludedKeys, schedule } = req.body || {};
     if (!plan) return res.status(400).json({ error: 'plan is required' });
     const now = new Date();
-    const runAt = automationService.computeNextRun(schedule, now);
-    const result = await workflowService.buildWorkflowMessages({ plan, excludedKeys: excludedKeys || [] }, runAt ? new Date(runAt) : now);
-    res.json({ ...result, nextRunAt: runAt });
+    // PHASE 3 (2026-11) - rawNextRunAt is the UNADJUSTED value (today's
+    // exact behaviour); runAt additionally advances past a Sunday/
+    // holiday ONLY when schedule.skipToNextWorkingDay is set, so the
+    // Create Workflow page's new Schedule green box can show "moved from
+    // X" only when something genuinely moved. followUpExample is the
+    // "Smarter follow-ups" live example, computed from the CURRENT
+    // (possibly unsaved) plan.followUp - same real holiday data the
+    // engine itself will use, never a static string.
+    const rawNextRunAt = automationService.computeNextRun(schedule, now);
+    const runAt = await workflowService.computeWorkflowNextRun(schedule, now);
+    const [result, followUpExample] = await Promise.all([
+      workflowService.buildWorkflowMessages({ plan, excludedKeys: excludedKeys || [] }, runAt ? new Date(runAt) : now),
+      workflowService.buildFollowUpLiveExample(plan.followUp, now)
+    ]);
+    res.json({ ...result, nextRunAt: runAt, rawNextRunAt, followUpExample });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -2558,7 +2570,12 @@ router.post('/hr-assistant/workflows', async (req, res) => {
     if (!plan || !schedule || !schedule.date || !schedule.time) return res.status(400).json({ error: 'A confirmed plan and schedule are required.' });
     if (!plan.rules || !plan.rules.length) return res.status(400).json({ error: 'Add at least one reply rule.' });
     const record = workflowService.newWorkflow({ subject: String(subject).trim(), originalAsk, plan, excludedKeys: excludedKeys || [], schedule, now, createdBy: req.hrUser.email });
-    const safeNextRunAt = automationService.ensureNotTooSoon(schedule, now);
+    // PHASE 3 (2026-11) - workflowService.ensureWorkflowNotTooSoon mirrors
+    // automationService.ensureNotTooSoon byte-for-byte whenever
+    // schedule.skipToNextWorkingDay is off (today's default for every
+    // workflow), and additionally advances past a Sunday/holiday when
+    // it's on.
+    const safeNextRunAt = await workflowService.ensureWorkflowNotTooSoon(schedule, now);
     const scheduleAdjustedTo = safeNextRunAt !== record.nextRunAt ? safeNextRunAt : null;
     record.nextRunAt = safeNextRunAt;
     await workflowService.saveWorkflow(record);
@@ -2583,7 +2600,7 @@ router.post('/hr-assistant/workflows/:id', async (req, res) => {
     if (schedule !== undefined) {
       existing.schedule = schedule;
       const rawNextRunAt = automationService.computeNextRun(schedule, now);
-      existing.nextRunAt = automationService.ensureNotTooSoon(schedule, now);
+      existing.nextRunAt = await workflowService.ensureWorkflowNotTooSoon(schedule, now);
       scheduleAdjustedTo = existing.nextRunAt !== rawNextRunAt ? existing.nextRunAt : null;
       existing.pendingMissedRun = null;
       // Task 11 (2026-11) - same revive-on-reschedule as Automated Tasks.

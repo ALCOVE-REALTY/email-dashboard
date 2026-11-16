@@ -17,6 +17,7 @@
 // automationService.js/reminderService.js.
 const { Redis } = require('@upstash/redis');
 const automationService = require('./automationService');
+const holidaysService = require('./holidaysService');
 const employeeService = require('../employeeService');
 const redisHealth = require('../redisHealth');
 const gmailService = require('../gmailService');
@@ -179,6 +180,155 @@ function newWorkflow({ subject, originalAsk, plan, excludedKeys, schedule, now, 
   };
   record.nextRunAt = automationService.computeNextRun(schedule, now);
   return record;
+}
+
+// ---------------- PHASE 3 (2026-11): "Working day" schedule/follow-up
+// helpers - owner's own wording: "If it falls on a Sunday/holiday → run
+// on the next working day" (Schedule) and "Working days only (skip
+// Sundays & holidays)" / "Send at a fixed time" / "Mention what's still
+// missing" (follow-ups). Saturdays are WORKING days - only Sunday and an
+// explicit owner-added holiday (holidaysService.isHoliday, which already
+// folds Sunday in) are ever skipped. Every function below takes `now`/an
+// explicit instant and is a pure function of its inputs - same
+// testability convention as the rest of this file - and NONE of this is
+// wired into automationService.js's own Automated Task behaviour; only
+// its two already-pure, already-stateless IST date helpers
+// (istWallClockToUtc/istParts) are reused, to avoid a second
+// re-derivation of the +5:30 IST offset.
+function pad2(n) { return String(n).padStart(2, '0'); }
+function pad4(n) { return String(n).padStart(4, '0'); }
+function istDateStringOf(date) {
+  const p = automationService.istParts(date);
+  return pad4(p.year) + '-' + pad2(p.month) + '-' + pad2(p.day);
+}
+// Guard: at most 2 weeks of day-stepping - Sunday + any realistic run of
+// consecutive holidays resolves in well under this; a finite bound so a
+// corrupted/huge holiday list can never spin forever.
+const WORKING_DAY_ADVANCE_GUARD = 14;
+// Steps a UTC ISO instant forward, one calendar day (IST) at a time,
+// keeping the SAME IST wall-clock hour/minute, until it lands on a day
+// that is neither a Sunday nor a stored holiday. Returns the instant
+// UNCHANGED (same ISO string) when it is already a working day - a
+// caller can tell "was this moved at all" by simple string inequality,
+// same convention automationService.ensureNotTooSoon already uses.
+async function advanceNextRunToWorkingDay(nextRunAtIso) {
+  if (!nextRunAtIso) return nextRunAtIso;
+  let dt = new Date(nextRunAtIso);
+  let guard = 0;
+  while (guard++ < WORKING_DAY_ADVANCE_GUARD) {
+    const nonWorking = await holidaysService.isHoliday(istDateStringOf(dt));
+    if (!nonWorking) return dt.toISOString();
+    const p = automationService.istParts(dt);
+    dt = automationService.istWallClockToUtc(p.year, p.month - 1, p.day + 1, p.hour, p.minute);
+  }
+  return dt.toISOString();
+}
+// The ONE place a workflow's own nextRunAt is ever computed from its
+// schedule - wraps automationService.computeNextRun (untouched, still
+// the single source of the actual repeat-cadence MATH) and, ONLY when
+// schedule.skipToNextWorkingDay is explicitly true, advances the result
+// past a Sunday/holiday. When the flag is false/absent (today's default,
+// and every pre-Phase-3 saved schedule) this returns automationService's
+// own value completely unchanged - no holiday lookup is even attempted,
+// so the OFF path is structurally, not just coincidentally, identical to
+// before Phase 3 existed.
+async function computeWorkflowNextRun(schedule, now) {
+  const base = automationService.computeNextRun(schedule, now);
+  if (!base || !schedule || !schedule.skipToNextWorkingDay) return base;
+  return advanceNextRunToWorkingDay(base);
+}
+// Workflow's own equivalent of automationService.ensureNotTooSoon
+// (Task 9d's "accepted a schedule a little while ago, Save happens a
+// couple of minutes later" nudge) - duplicated as a tiny constant rather
+// than calling into automationService's own sync version, because this
+// one needs to be async (a holiday lookup is real I/O) and
+// automationService.js's own calling behaviour must never change.
+// Byte-identical to automationService.ensureNotTooSoon's own result
+// whenever skipToNextWorkingDay is off.
+const WORKFLOW_SAVE_MIN_LEAD_MS = 2 * 60 * 1000;
+async function ensureWorkflowNotTooSoon(schedule, now) {
+  const nextRunAt = await computeWorkflowNextRun(schedule, now);
+  if (!nextRunAt) return nextRunAt;
+  if (new Date(nextRunAt).getTime() - now.getTime() >= WORKFLOW_SAVE_MIN_LEAD_MS) return nextRunAt;
+  return computeWorkflowNextRun(schedule, new Date(now.getTime() + WORKFLOW_SAVE_MIN_LEAD_MS));
+}
+// Resolves the 3 "Smarter follow-ups" options for ONE record's current
+// follow-up, per the owner's own "Same options apply to a rule's own
+// Follow up after (days)" instruction: documented choice - a rule being
+// actively "asked" (awaiting its own askDetail answer) may set its own
+// askFollowUpWorkingDaysOnly/askFollowUpFixedTimeOfDay/
+// askFollowUpMentionMissing companions to askFollowUpDays, which win over
+// the plan-level followUp.* settings for THAT record only; any rule that
+// doesn't set a given field (null/undefined, the default for every rule
+// today and every already-saved rule) falls back to the plan-level
+// setting, which itself defaults to off/empty - so a record with no
+// per-rule override and no plan-level setting behaves exactly as before
+// Phase 3, and this never throws regardless of how little of the shape
+// is present (a hand-edited or legacy rule/plan object).
+function effectiveFollowUpSettings(rec, rule, workflow) {
+  const planFu = (workflow && workflow.plan && workflow.plan.followUp) || {};
+  const useRuleLevel = Boolean(rec && rec.status === 'asked' && rule);
+  return {
+    workingDaysOnly: Boolean(useRuleLevel && rule.askFollowUpWorkingDaysOnly != null ? rule.askFollowUpWorkingDaysOnly : planFu.workingDaysOnly),
+    fixedTimeOfDay: (useRuleLevel && rule.askFollowUpFixedTimeOfDay) ? rule.askFollowUpFixedTimeOfDay : (planFu.fixedTimeOfDay || null),
+    mentionMissing: Boolean(useRuleLevel && rule.askFollowUpMentionMissing != null ? rule.askFollowUpMentionMissing : planFu.mentionMissing)
+  };
+}
+// true once a due follow-up is actually allowed to fire RIGHT NOW, given
+// its effective settings - working-days-only defers past a Sunday/
+// holiday (the follow-up still happens, just on the next tick that finds
+// a working day - never lost, per the owner's own spec), and a fixed
+// time-of-day holds it until that time has actually arrived on its due
+// day (at/after, never before, per the owner's own "not before, not
+// exactly-at-due-moment if that moment is earlier in the day"). Neither
+// gate is ever consulted when both settings are off - the common,
+// default case never pays for a holiday lookup at all.
+async function isFollowUpTimingReady(now, settings) {
+  if (settings.workingDaysOnly) {
+    const nonWorking = await holidaysService.isHoliday(istDateStringOf(now));
+    if (nonWorking) return false;
+  }
+  if (settings.fixedTimeOfDay) {
+    const parts = String(settings.fixedTimeOfDay).split(':');
+    const fixedMinutes = (Number(parts[0]) || 0) * 60 + (Number(parts[1]) || 0);
+    const nowParts = automationService.istParts(now);
+    const nowMinutes = nowParts.hour * 60 + nowParts.minute;
+    if (nowMinutes < fixedMinutes) return false;
+  }
+  return true;
+}
+// "Live example" for the Create Workflow page's own "Smarter follow-ups"
+// green box - a REAL computation (today's date via `now`, the REAL
+// holiday list via advanceNextRunToWorkingDay) from the form's
+// CURRENTLY-set follow-up options, never a static/hardcoded string. Mirrors
+// the owner's own example shape ("first mail Thu, follow up after 1
+// working day, max 3, 10:00 → Fri, Sat, skip Sun, Mon → no reply next
+// working day → Action-needed card"): one step for "today" (the example's
+// stand-in first mail, since a brand-new/in-progress workflow has no real
+// first send yet), one step per follow-up up to `max`, and a final "no
+// reply" step one more gap after the last follow-up - every step uses the
+// exact same advanceNextRunToWorkingDay helper the real engine uses, so
+// the example can never show a date the real engine would not actually use.
+async function buildFollowUpLiveExample(followUp, now) {
+  const fu = followUp || {};
+  const gapDays = Number(fu.days) > 0 ? Number(fu.days) : 2;
+  const max = Math.min(Number(fu.max) > 0 ? Number(fu.max) : 2, 10); // sane upper bound for a UI example list
+  const workingDaysOnly = Boolean(fu.workingDaysOnly);
+  const fixedTimeOfDay = fu.fixedTimeOfDay || null;
+  async function stepFrom(prevDate) {
+    let candidate = new Date(prevDate.getTime() + gapDays * 86400000);
+    if (workingDaysOnly) candidate = new Date(await advanceNextRunToWorkingDay(candidate.toISOString()));
+    return candidate;
+  }
+  const steps = [{ kind: 'first', date: istDateStringOf(now) }];
+  let cursor = now;
+  for (let i = 1; i <= max; i++) {
+    cursor = await stepFrom(cursor);
+    steps.push({ kind: 'followup', n: i, date: istDateStringOf(cursor), time: fixedTimeOfDay });
+  }
+  cursor = await stepFrom(cursor);
+  steps.push({ kind: 'noreply', date: istDateStringOf(cursor) });
+  return steps;
 }
 
 // ---------------- CRUD: one run's fixed record snapshot + per-record state/history ----------------
@@ -974,7 +1124,7 @@ async function runWorkflow(id, { isTest = false, testTo = null } = {}, now = new
       if (!isTest) {
         await getWhatsappAssistant().postOwnerNotification('⚠️ Workflow "' + workflow.subject + '" could not run: ' + blocked.reason + '.').catch(() => {});
         workflow.history = [{ runId: null, runAt: runAt.toISOString(), sentCount: 0, skippedCount: 0, note: 'Blocked: ' + blocked.reason }, ...(workflow.history || [])].slice(0, 20);
-        workflow.nextRunAt = automationService.computeNextRun(workflow.schedule, new Date(runAt.getTime() + 1000));
+        workflow.nextRunAt = await computeWorkflowNextRun(workflow.schedule, new Date(runAt.getTime() + 1000));
         workflow.updatedAt = runAt.toISOString();
         await saveWorkflow(workflow);
       }
@@ -1021,7 +1171,7 @@ async function runWorkflow(id, { isTest = false, testTo = null } = {}, now = new
     workflow.history = [{ runId, runAt: runAt.toISOString(), sentCount, skippedCount: records.length - sentCount }, ...(workflow.history || [])].slice(0, 20);
     workflow.lastRunId = runId;
     workflow.pendingMissedRun = null;
-    workflow.nextRunAt = automationService.computeNextRun(workflow.schedule, new Date(runAt.getTime() + 1000));
+    workflow.nextRunAt = await computeWorkflowNextRun(workflow.schedule, new Date(runAt.getTime() + 1000));
     workflow.updatedAt = runAt.toISOString();
     if (!workflow.nextRunAt && automationService.isOneShotSchedule(workflow.schedule)) workflow.status = 'completed';
     await saveWorkflow(workflow);
@@ -1048,7 +1198,7 @@ async function runDueWorkflows(now = new Date()) {
     if (dueMs > MISSED_RUN_THRESHOLD_MS) {
       if (w.pendingMissedRun && w.pendingMissedRun.scheduledFor === w.nextRunAt) continue;
       w.pendingMissedRun = { scheduledFor: w.nextRunAt, discoveredAt: now.toISOString() };
-      w.nextRunAt = automationService.computeNextRun(w.schedule, new Date(now.getTime() + 1000));
+      w.nextRunAt = await computeWorkflowNextRun(w.schedule, new Date(now.getTime() + 1000));
       w.updatedAt = now.toISOString();
       await saveWorkflow(w);
       await getWhatsappAssistant().postOwnerNotification('⚠️ Workflow "' + w.subject + '" missed its scheduled run (' + new Date(w.pendingMissedRun.scheduledFor).toLocaleString('en-GB', { timeZone: 'Asia/Kolkata' }) + ') - open Automated Workflows to Send or Skip it.').catch(() => {});
@@ -1149,6 +1299,17 @@ async function advanceFollowUps(now = new Date()) {
       const maxFu = (w.plan.followUp && w.plan.followUp.max) || 2;
       const sinceMs = now.getTime() - new Date(rec.sinceAt).getTime();
       if (sinceMs < gapDays * 86400000) continue;
+      // PHASE 3 (2026-11) "Smarter follow-ups" - workingDaysOnly/
+      // fixedTimeOfDay gate BOTH the regular follow-up send below AND
+      // this max-reached alert, per the owner's own worked example
+      // ("...Mon → no reply next working day → Action-needed card" - the
+      // final alert itself lands on the next WORKING day too, not the
+      // instant the gap elapses). Neither setting on (today's default
+      // for every workflow) -> isFollowUpTimingReady returns true
+      // immediately with zero extra lookups, so this tick behaves
+      // exactly as before Phase 3 existed.
+      const fuSettings = effectiveFollowUpSettings(rec, rule, w);
+      if ((fuSettings.workingDaysOnly || fuSettings.fixedTimeOfDay) && !(await isFollowUpTimingReady(now, fuSettings))) continue; // deferred, not lost - re-checked next tick
       if (rec.followUpCount >= maxFu) {
         rec.status = 'noreply';
         rec.history.push({ at: now.toISOString(), who: 'SUBH', text: 'No reply after ' + maxFu + ' follow-up(s) - alerted the owner.' });
@@ -1156,9 +1317,17 @@ async function advanceFollowUps(now = new Date()) {
         if (!isMailRecord(rec)) await syncOpenPhone(rec.waPhone, false);
         alerted++; changed = true; continue;
       }
-      const text = (rec.status === 'asked' && rule)
+      let text = (rec.status === 'asked' && rule)
         ? fillWorkflowPlaceholders(rule.askQuestion || (w.plan.followUp && w.plan.followUp.body) || '', { row: rec.row, contact: rec.contact, runAt: now })
         : fillWorkflowPlaceholders((w.plan.followUp && w.plan.followUp.body) || '', { row: rec.row, contact: rec.contact, runAt: now });
+      // "Mention what's still missing" - reuses the SAME askDetail
+      // context a rule's own "ask for a missing detail" already defines,
+      // never a new invented concept; a plain no-reply follow-up (no
+      // active askDetail) has no "missing detail" concept today, so
+      // there's nothing to add there and the text is left unchanged.
+      if (fuSettings.mentionMissing && rec.status === 'asked' && rule && rule.askDetail) {
+        text += '\n\nWe are still waiting for: ' + rule.askDetail + '.';
+      }
       const result = await sendFollowUpMessage(rec, text);
       if (!result.ok) { rec.history.push({ at: now.toISOString(), who: 'SUBH', text: 'Could not send follow-up: ' + (result.error || 'unknown error') }); changed = true; continue; }
       rec.followUpCount++; rec.sinceAt = now.toISOString();
@@ -1545,5 +1714,8 @@ module.exports = {
   checkWorkflowMailReplies,
   findOpenWorkflowRecordByPhone, isWorkflowReplyRelevant, handlePossibleWorkflowReply,
   callWorkflowTool, replyClassificationTool, detailExtractionTool,
-  previewWorkflowDocument, buildWorkflowDocumentBuffer, workflowDocFileName
+  previewWorkflowDocument, buildWorkflowDocumentBuffer, workflowDocFileName,
+  // PHASE 3 (2026-11) - working-day schedule/follow-up helpers.
+  advanceNextRunToWorkingDay, computeWorkflowNextRun, ensureWorkflowNotTooSoon,
+  effectiveFollowUpSettings, isFollowUpTimingReady, buildFollowUpLiveExample
 };

@@ -2311,6 +2311,22 @@ body { background: var(--wi-bg); }
 }
 .wf-auto-attach-dropdown button.on { background: var(--wi-primary-50); color: var(--wi-primary-800); }
 .wf-auto-check { display: flex; align-items: center; gap: 8px; font-size: 0.8rem; font-weight: 700; color: var(--wi-ink); margin-top: 10px; }
+/* PHASE 3 (2026-11, Workflow Automation extension) - "Smarter follow-ups" +
+   the Schedule "next working day" green box. Matches the look (dashed
+   green border, green pill "NEW" badge) of docs/design/workflow-v2-sample.html's
+   own .nf/.ot/.nb classes, re-expressed with this app's REAL design tokens
+   (--wi-green*) instead of that mockup's own hardcoded hex colours - there
+   is no pre-existing production "new feature" box class, so this is new,
+   additive CSS, never touching any existing selector's rule. */
+.wf-nf-box { background: var(--wi-green-50); border: 1.5px dashed var(--wi-green); border-radius: var(--wi-r-input); padding: 12px; margin-top: 14px; }
+.wf-nf-title { display: flex; align-items: center; gap: 6px; font-weight: 800; color: var(--wi-green-700); font-size: 0.78rem; margin-bottom: 2px; }
+.wf-nf-badge { background: var(--wi-green); color: #fff; border-radius: 999px; font-size: 0.6rem; font-weight: 800; padding: 1px 7px; letter-spacing: 0.02em; }
+.wf-nf-box .wf-auto-check { margin-top: 8px; }
+.wf-nf-box .wf-auto-hint { margin-top: 6px; }
+.wf-nf-time-wrap { margin-top: 6px; margin-left: 24px; }
+.wf-nf-example, .wf-nf-next-run { margin-top: 8px; font-size: 0.74rem; color: var(--wi-ink); line-height: 1.5; }
+.wf-nf-example b, .wf-nf-next-run b { color: var(--wi-green-700); }
+.wf-nf-moved { color: var(--wi-muted); font-weight: 600; }
 .wf-auto-cols { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 .wf-auto-cols button {
   height: 30px; padding: 0 10px; border-radius: 999px; border: 1.5px solid var(--wi-border-2); background: var(--wi-surface);

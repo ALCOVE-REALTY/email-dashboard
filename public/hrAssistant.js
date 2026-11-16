@@ -7694,6 +7694,13 @@
   const wfFuDays = document.getElementById('wfFuDays');
   const wfFuMax = document.getElementById('wfFuMax');
   const wfFuBody = document.getElementById('wfFuBody');
+  // PHASE 3 (2026-11) - "Smarter follow-ups" green box.
+  const wfFuWorkingDaysOnly = document.getElementById('wfFuWorkingDaysOnly');
+  const wfFuFixedTimeOn = document.getElementById('wfFuFixedTimeOn');
+  const wfFuFixedTimeWrap = document.getElementById('wfFuFixedTimeWrap');
+  const wfFuFixedTime = document.getElementById('wfFuFixedTime');
+  const wfFuMentionMissing = document.getElementById('wfFuMentionMissing');
+  const wfFuLiveExample = document.getElementById('wfFuLiveExample');
   const wfRulesEl = document.getElementById('wfRules');
   const wfAddRuleBtn = document.getElementById('wfAddRuleBtn');
   const wfDate = document.getElementById('wfDate');
@@ -7704,6 +7711,9 @@
   const wfCustomUnit = document.getElementById('wfCustomUnit');
   const wfWeekdaysSeg = document.getElementById('wfWeekdaysSeg');
   const wfRepRule = document.getElementById('wfRepRule');
+  // PHASE 3 (2026-11) - Schedule's own "run on the next working day" green box.
+  const wfSkipToNextWorkingDay = document.getElementById('wfSkipToNextWorkingDay');
+  const wfScheduleNextRun = document.getElementById('wfScheduleNextRun');
   const wfSummary = document.getElementById('wfSummary');
   const wfPreviewBtn = document.getElementById('wfPreviewBtn');
   const wfTestBtn = document.getElementById('wfTestBtn');
@@ -7771,6 +7781,21 @@
   }
   function wfRepeatLabel(w) { return describeScheduleRule(w.schedule); }
   function wfWhen(iso) { return iso ? new Date(iso).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' }) : '—'; }
+  // PHASE 3 (2026-11) - a plain "YYYY-MM-DD" calendar date string (as
+  // workflowService.buildFollowUpLiveExample returns), formatted for
+  // display - never re-parsed as a timezone-sensitive instant.
+  function wfDateOnly(dateStr) { return dateStr ? new Date(dateStr + 'T00:00:00Z').toLocaleDateString('en-GB', { day: '2-digit', month: 'short', timeZone: 'UTC' }) : '—'; }
+  // Owner's own instruction: "Summary / Preview ... also show the new
+  // options when used" - only appends anything when at least one
+  // "Smarter follow-ups" option is actually on; all off (today's default)
+  // -> empty string, Summary line unchanged from before Phase 3.
+  function wfSmartFollowUpSummarySuffix(f) {
+    const bits = [];
+    if (f.fuWorkingDaysOnly) bits.push('working days only');
+    if (f.fuFixedTimeOfDay) bits.push('at ' + f.fuFixedTimeOfDay);
+    if (f.fuMentionMissing) bits.push('mentions what\'s missing');
+    return bits.length ? ' (' + bits.join(', ') + ')' : '';
+  }
   function renderWorkflowList(items) {
     if (!wfList) return;
     if (!items.length) { wfList.innerHTML = '<div class="wf-rem-empty">No workflows yet.<br>Tap "New Workflow" to create one.</div>'; return; }
@@ -7875,6 +7900,7 @@
     if (wfCustomUnit) wfCustomUnit.value = 'months';
     if (wfWeekdaysSeg) renderWeekdaySeg(wfWeekdaysSeg, []);
     wfScheduleExtra = { monthDays: null, lastDayOfMonth: false };
+    if (wfSkipToNextWorkingDay) wfSkipToNextWorkingDay.checked = false;
     if (wfAlsoOn) wfAlsoOn.checked = false;
     wfAlsoToField.reset();
     if (wfAlsoSubj) wfAlsoSubj.value = '';
@@ -7887,6 +7913,10 @@
     if (wfFuDays) wfFuDays.value = 2;
     if (wfFuMax) wfFuMax.value = 2;
     if (wfFuBody) wfFuBody.value = '';
+    if (wfFuWorkingDaysOnly) wfFuWorkingDaysOnly.checked = false;
+    if (wfFuFixedTimeOn) wfFuFixedTimeOn.checked = false;
+    if (wfFuFixedTime) wfFuFixedTime.value = '10:00';
+    if (wfFuMentionMissing) wfFuMentionMissing.checked = false;
     wfCcField.reset();
     if (wfEmpSearch) wfEmpSearch.value = '';
     renderWfRecCols();
@@ -7918,6 +7948,7 @@
     if (wfCustomUnit) wfCustomUnit.value = w.schedule.unit || 'months';
     if (wfWeekdaysSeg) renderWeekdaySeg(wfWeekdaysSeg, w.schedule.weekdays || []);
     wfScheduleExtra = { monthDays: w.schedule.monthDays || null, lastDayOfMonth: Boolean(w.schedule.lastDayOfMonth) };
+    if (wfSkipToNextWorkingDay) wfSkipToNextWorkingDay.checked = Boolean(w.schedule.skipToNextWorkingDay);
     wfCcField.setChips((w.plan.cc || '').split(',').map((s) => s.trim()).filter(Boolean));
     const also = w.plan.also || { on: false };
     if (wfAlsoOn) wfAlsoOn.checked = Boolean(also.on);
@@ -7939,6 +7970,10 @@
     if (wfFuDays) wfFuDays.value = fu.days || 2;
     if (wfFuMax) wfFuMax.value = fu.max || 2;
     if (wfFuBody) wfFuBody.value = fu.body || '';
+    if (wfFuWorkingDaysOnly) wfFuWorkingDaysOnly.checked = Boolean(fu.workingDaysOnly);
+    if (wfFuFixedTimeOn) wfFuFixedTimeOn.checked = Boolean(fu.fixedTimeOfDay);
+    if (wfFuFixedTime) wfFuFixedTime.value = fu.fixedTimeOfDay || '10:00';
+    if (wfFuMentionMissing) wfFuMentionMissing.checked = Boolean(fu.mentionMissing);
     wfSheetContext = null;
     if (w.plan.source === 'sheet') {
       if (wfSheetUrl) wfSheetUrl.value = w.plan.sheetUrl || '';
@@ -8194,6 +8229,11 @@
       weekdays: getWeekdaySegValues(wfWeekdaysSeg),
       monthDays: wfScheduleExtra.monthDays,
       lastDayOfMonth: wfScheduleExtra.lastDayOfMonth,
+      // PHASE 3 (2026-11) - off by default, today's behaviour unchanged.
+      skipToNextWorkingDay: Boolean(wfSkipToNextWorkingDay && wfSkipToNextWorkingDay.checked),
+      fuWorkingDaysOnly: Boolean(wfFuWorkingDaysOnly && wfFuWorkingDaysOnly.checked),
+      fuFixedTimeOfDay: (wfFuFixedTimeOn && wfFuFixedTimeOn.checked && wfFuFixedTime) ? wfFuFixedTime.value : null,
+      fuMentionMissing: Boolean(wfFuMentionMissing && wfFuMentionMissing.checked),
       cc: wfCcField.getChips().join(', ')
     };
   }
@@ -8209,7 +8249,11 @@
         table: Boolean(wfAlsoTable && wfAlsoTable.checked), docs: Boolean(wfAlsoDocs && wfAlsoDocs.checked)
       },
       docs: { on: Boolean(wfDocsOn && wfDocsOn.checked), template: wfDocsTpl ? wfDocsTpl.value : '', attachTo: wfDocsWhere ? wfDocsWhere.value : 'also' },
-      followUp: { days: Number(wfFuDays && wfFuDays.value) || 2, max: Number(wfFuMax && wfFuMax.value) || 2, body: wfFuBody ? wfFuBody.value : '' },
+      followUp: {
+        days: Number(wfFuDays && wfFuDays.value) || 2, max: Number(wfFuMax && wfFuMax.value) || 2, body: wfFuBody ? wfFuBody.value : '',
+        // PHASE 3 (2026-11) - "Smarter follow-ups", off/empty by default.
+        workingDaysOnly: f.fuWorkingDaysOnly, fixedTimeOfDay: f.fuFixedTimeOfDay, mentionMissing: f.fuMentionMissing
+      },
       rules: JSON.parse(JSON.stringify(wfRules))
     });
   }
@@ -8239,6 +8283,8 @@
     const wfShowWeekdays = f.repeat === 'weekly' || (f.repeat === 'custom' && f.unit === 'weeks');
     if (wfWeekdaysSeg) { wfWeekdaysSeg.classList.toggle('hidden', !wfShowWeekdays); if (wfShowWeekdays) renderWeekdaySeg(wfWeekdaysSeg, f.weekdays); }
     if (wfRepRule) wfRepRule.textContent = (f.repeat === 'monthly' && day > 28) ? ('Months without day ' + day + ' run on their last day.') : (f.repeat === 'weekly' && !f.weekdays.length ? 'Pick at least one day of the week.' : '');
+    // PHASE 3 (2026-11) - "Send at a fixed time" reveals its own time field, same checkbox-reveals-wrap convention as Also-send/Documents above.
+    if (wfFuFixedTimeWrap) wfFuFixedTimeWrap.classList.toggle('hidden', !(wfFuFixedTimeOn && wfFuFixedTimeOn.checked));
     clearTimeout(wfSyncTimer);
     wfSyncTimer = setTimeout(wfRefreshSummary, 250);
   }
@@ -8246,11 +8292,35 @@
     if (!wfSummary || !wfPlan) return;
     const f = wfReadForm();
     const plan = wfBuildPlanFromForm(f);
-    const schedule = { date: f.date, time: f.time, repeat: f.repeat, every: f.every, unit: f.unit, weekdays: f.weekdays, monthDays: f.monthDays, lastDayOfMonth: f.lastDayOfMonth };
+    const schedule = { date: f.date, time: f.time, repeat: f.repeat, every: f.every, unit: f.unit, weekdays: f.weekdays, monthDays: f.monthDays, lastDayOfMonth: f.lastDayOfMonth, skipToNextWorkingDay: f.skipToNextWorkingDay };
     try {
       const resp = await fetch('/api/workforce/hr-assistant/workflows/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ plan, excludedKeys: Array.from(wfExcluded), schedule }) });
       const data = await resp.json();
       wfLastPreview = data;
+      // PHASE 3 (2026-11) - Schedule's own "Next run:" live preview, built
+      // from the SAME real /preview response the Summary panel already
+      // uses (never a second, client-side-guessed computation) - shows
+      // the moved-from date only when the flag actually moved something.
+      if (wfScheduleNextRun) {
+        if (!data.nextRunAt) { wfScheduleNextRun.textContent = ''; }
+        else {
+          const moved = data.rawNextRunAt && data.rawNextRunAt !== data.nextRunAt;
+          wfScheduleNextRun.innerHTML = 'Next run: <b>' + escapeHtml(wfWhen(data.nextRunAt)) + '</b>' +
+            (moved ? ' <span class="wf-nf-moved">(Sunday/holiday → moved from ' + escapeHtml(wfWhen(data.rawNextRunAt)) + ')</span>' : '');
+        }
+      }
+      // "Smarter follow-ups" live example - a REAL computation from the
+      // CURRENT follow-up settings/today's date/the real holiday list
+      // (workflowService.buildFollowUpLiveExample), never a static string.
+      if (wfFuLiveExample) {
+        const steps = data.followUpExample || [];
+        const fmtStep = (s) => {
+          if (s.kind === 'first') return 'First mail ' + wfDateOnly(s.date);
+          if (s.kind === 'followup') return 'Follow-up ' + s.n + ': ' + wfDateOnly(s.date) + (s.time ? ' · ' + s.time : '');
+          return 'No reply by ' + wfDateOnly(s.date) + ' → Action-needed card';
+        };
+        wfFuLiveExample.innerHTML = steps.length ? '<b>Live example:</b> ' + steps.map(fmtStep).join(' → ') : '';
+      }
       const RECCOL_SHORT = { reportingDoer: 'HOD', reportingManager: 'Manager', self: 'the employee' };
       const recTxt = f.rec === 'column' ? 'the person in "' + (RECCOL_SHORT[f.recCol] || f.recCol || '') + '"' : wfSelected.size + ' selected';
       if (data.blocked) {
@@ -8260,7 +8330,8 @@
           '<div class="wf-auto-summary-line">' + (wfConfirmed ? '✓ Plan confirmed' : '⚠ Ask SUBH and confirm the plan first') + '</div>' +
           '<div class="wf-auto-summary-line">' + (f.mediator === 'mail' ? '✉️ Mail' : '💬 WhatsApp') + ' → ' + escapeHtml(recTxt) + (f.cc ? ' (+ CC)' : '') + '</div>' +
           (data.alsoMessage ? '<div class="wf-auto-summary-line">+ 1 mail → ' + escapeHtml(data.alsoMessage.to) + '</div>' : '') +
-          '<div class="wf-auto-summary-line">🔁 Follow up every ' + (wfFuDays ? wfFuDays.value : 2) + ' day(s), up to ' + (wfFuMax ? wfFuMax.value : 2) + ' time(s)</div>' +
+          '<div class="wf-auto-summary-line">🔁 Follow up every ' + (wfFuDays ? wfFuDays.value : 2) + ' day(s), up to ' + (wfFuMax ? wfFuMax.value : 2) + ' time(s)' + wfSmartFollowUpSummarySuffix(f) + '</div>' +
+          (f.skipToNextWorkingDay ? '<div class="wf-auto-summary-line">📅 Runs on the next working day if it falls on a Sunday/holiday</div>' : '') +
           '<div class="wf-auto-summary-line">🤖 ' + wfRules.length + ' reply rule(s)</div>' +
           '<div class="wf-auto-summary-line">' + describeScheduleRule(f) + ' · next run <b>' + escapeHtml(data.nextRunAt ? wfWhen(data.nextRunAt) : '—') + '</b></div>' +
           '<div class="wf-auto-summary-line">Next run would send <b>' + ((data.sent || []).length) + '</b> first message(s).</div>';
@@ -8268,7 +8339,7 @@
       renderWfUnderstanding();
     } catch (err) { /* summary is best-effort - never blocks the form */ }
   }
-  ['wfFuDays', 'wfFuMax', 'wfDocsTpl', 'wfDocsWhere'].forEach((id) => { const el = document.getElementById(id); if (el) el.addEventListener('change', wfSync); });
+  ['wfFuDays', 'wfFuMax', 'wfDocsTpl', 'wfDocsWhere', 'wfSkipToNextWorkingDay', 'wfFuWorkingDaysOnly', 'wfFuFixedTimeOn', 'wfFuFixedTime', 'wfFuMentionMissing'].forEach((id) => { const el = document.getElementById(id); if (el) el.addEventListener('change', wfSync); });
 
   // ---------- Rules (Section 8) ----------
   function wfRenderRuleFields(r, i) {
@@ -8278,7 +8349,18 @@
       (r.askDetail ? (
         '<div class="wf-rem-field-row"><label class="wf-rem-field">Detail<input type="text" data-r="' + i + '" data-k="askDetail" value="' + escapeHtml(r.askDetail || '') + '" placeholder="e.g. number of months" autocomplete="off"></label>' +
         '<label class="wf-rem-field">Follow up after (days)<input type="number" min="1" data-r="' + i + '" data-k="askFollowUpDays" value="' + (r.askFollowUpDays || '') + '" placeholder="default"></label></div>' +
-        '<label class="wf-rem-field">SUBH asks<textarea data-r="' + i + '" data-k="askQuestion" class="wf-auto-body" style="min-height:70px" autocomplete="off">' + escapeHtml(r.askQuestion || '') + '</textarea></label>'
+        '<label class="wf-rem-field">SUBH asks<textarea data-r="' + i + '" data-k="askQuestion" class="wf-auto-body" style="min-height:70px" autocomplete="off">' + escapeHtml(r.askQuestion || '') + '</textarea></label>' +
+        // PHASE 3 (2026-11) - "Same options apply to a rule's own Follow
+        // up after (days)" (owner's own wording) - mirrors the plan-level
+        // "Smarter follow-ups" box's 3 options for THIS rule's own
+        // cadence; unset (the default for every rule) falls back to the
+        // plan-level setting (effectiveFollowUpSettings in workflowService.js).
+        '<div class="wf-rem-field-row" style="margin-top:4px">' +
+        '<label class="wf-auto-check"><input type="checkbox" data-r="' + i + '" data-k="askFollowUpWorkingDaysOnly" ' + (r.askFollowUpWorkingDaysOnly ? 'checked' : '') + '> Working days only</label>' +
+        '<label class="wf-auto-check"><input type="checkbox" data-r="' + i + '" data-k="askFollowUpFixedTimeOn" ' + (r.askFollowUpFixedTimeOfDay ? 'checked' : '') + '> Fixed time</label>' +
+        '</div>' +
+        (r.askFollowUpFixedTimeOfDay ? '<label class="wf-rem-field">Time<input type="time" data-r="' + i + '" data-k="askFollowUpFixedTimeOfDay" value="' + escapeHtml(r.askFollowUpFixedTimeOfDay) + '"></label>' : '') +
+        '<label class="wf-auto-check"><input type="checkbox" data-r="' + i + '" data-k="askFollowUpMentionMissing" ' + (r.askFollowUpMentionMissing ? 'checked' : '') + '> Mention what\'s still missing</label>'
       ) : '') +
       '<label class="wf-rem-field">SUBH replies<textarea data-r="' + i + '" data-k="replyText" class="wf-auto-body" style="min-height:60px" autocomplete="off">' + escapeHtml(r.replyText || '') + '</textarea></label>' +
       '<label class="wf-auto-check"><input type="checkbox" data-r="' + i + '" data-k="sendTo_on" ' + (r.sendTo ? 'checked' : '') + '> Then send a message to someone</label>' +
@@ -8301,7 +8383,11 @@
     wfRulesEl.addEventListener('change', (e) => {
       const t = e.target, i = t.dataset.r; if (i == null) return;
       const rule = wfRules[+i];
-      if (t.dataset.k === 'askDetail_on') { rule.askDetail = t.checked ? (rule.askDetail || ' ') : null; if (!t.checked) { rule.askQuestion = null; rule.askFollowUpDays = null; } renderWfRules(); wfSync(); return; }
+      if (t.dataset.k === 'askDetail_on') { rule.askDetail = t.checked ? (rule.askDetail || ' ') : null; if (!t.checked) { rule.askQuestion = null; rule.askFollowUpDays = null; rule.askFollowUpWorkingDaysOnly = null; rule.askFollowUpFixedTimeOfDay = null; rule.askFollowUpMentionMissing = null; } renderWfRules(); wfSync(); return; }
+      // PHASE 3 (2026-11) - rule-level "Smarter follow-ups" companions, same checkbox-derives-from-value convention as askDetail_on/sendTo_on above.
+      if (t.dataset.k === 'askFollowUpWorkingDaysOnly') { rule.askFollowUpWorkingDaysOnly = t.checked; wfSync(); return; }
+      if (t.dataset.k === 'askFollowUpMentionMissing') { rule.askFollowUpMentionMissing = t.checked; wfSync(); return; }
+      if (t.dataset.k === 'askFollowUpFixedTimeOn') { rule.askFollowUpFixedTimeOfDay = t.checked ? (rule.askFollowUpFixedTimeOfDay || '10:00') : null; renderWfRules(); wfSync(); return; }
       if (t.dataset.k === 'sendTo_on') { rule.sendTo = t.checked ? 'self' : null; if (!t.checked) { rule.sendSubject = null; rule.sendBody = null; rule.sendDocument = null; rule.askMeFirst = false; } renderWfRules(); wfSync(); return; }
       if (t.dataset.k === 'askMeFirst') { rule.askMeFirst = t.checked; wfSync(); return; }
       rule[t.dataset.k] = t.value;
@@ -8315,7 +8401,7 @@
     });
     wfRulesEl.addEventListener('click', (e) => { const b = e.target.closest('[data-rmrule]'); if (!b) return; wfRules.splice(+b.dataset.rmrule, 1); renderWfRules(); wfSync(); });
   }
-  if (wfAddRuleBtn) wfAddRuleBtn.addEventListener('click', () => { wfRules.push({ when: '', askDetail: null, askQuestion: null, askFollowUpDays: null, replyText: '', sendTo: null, sendSubject: null, sendBody: null, sendDocument: null, askMeFirst: false, then: 'stop' }); renderWfRules(); wfSync(); });
+  if (wfAddRuleBtn) wfAddRuleBtn.addEventListener('click', () => { wfRules.push({ when: '', askDetail: null, askQuestion: null, askFollowUpDays: null, askFollowUpWorkingDaysOnly: null, askFollowUpFixedTimeOfDay: null, askFollowUpMentionMissing: null, replyText: '', sendTo: null, sendSubject: null, sendBody: null, sendDocument: null, askMeFirst: false, then: 'stop' }); renderWfRules(); wfSync(); });
 
   // ---------- Ask SUBH ----------
   if (wfAskExamples) wfAskExamples.addEventListener('click', (e) => { const b = e.target.closest('[data-ex]'); if (!b) return; wfAsk.value = WF_EXAMPLES[+b.dataset.ex]; wfDoAsk(); });
@@ -8352,6 +8438,7 @@
       if (wfCustomUnit) wfCustomUnit.value = draft.schedule.unit || 'months';
       if (wfWeekdaysSeg) renderWeekdaySeg(wfWeekdaysSeg, draft.schedule.weekdays || []);
       wfScheduleExtra = { monthDays: draft.schedule.monthDays || null, lastDayOfMonth: Boolean(draft.schedule.lastDayOfMonth) };
+      if (wfSkipToNextWorkingDay) wfSkipToNextWorkingDay.checked = Boolean(draft.schedule.skipToNextWorkingDay);
       if (wfAlsoOn) wfAlsoOn.checked = Boolean(draft.plan.also && draft.plan.also.on);
       wfAlsoToField.setChips((draft.plan.also && draft.plan.also.to) || []);
       if (wfAlsoSubj) wfAlsoSubj.value = (draft.plan.also && draft.plan.also.subject) || '';
@@ -8364,6 +8451,10 @@
       if (wfFuDays) wfFuDays.value = (draft.plan.followUp && draft.plan.followUp.days) || 2;
       if (wfFuMax) wfFuMax.value = (draft.plan.followUp && draft.plan.followUp.max) || 2;
       if (wfFuBody) wfFuBody.value = (draft.plan.followUp && draft.plan.followUp.body) || '';
+      if (wfFuWorkingDaysOnly) wfFuWorkingDaysOnly.checked = Boolean(draft.plan.followUp && draft.plan.followUp.workingDaysOnly);
+      if (wfFuFixedTimeOn) wfFuFixedTimeOn.checked = Boolean(draft.plan.followUp && draft.plan.followUp.fixedTimeOfDay);
+      if (wfFuFixedTime) wfFuFixedTime.value = (draft.plan.followUp && draft.plan.followUp.fixedTimeOfDay) || '10:00';
+      if (wfFuMentionMissing) wfFuMentionMissing.checked = Boolean(draft.plan.followUp && draft.plan.followUp.mentionMissing);
       renderWfRecCols();
       if (wfRecCol) wfRecCol.value = draft.plan.recCol || 'reportingManager';
       renderWfCols();
@@ -8640,7 +8731,7 @@
     const f = wfReadForm();
     if (!wfValidate(f)) return;
     const plan = wfBuildPlanFromForm(f);
-    const schedule = { date: f.date, time: f.time, repeat: f.repeat, every: f.every, unit: f.unit, weekdays: f.weekdays, monthDays: f.monthDays, lastDayOfMonth: f.lastDayOfMonth };
+    const schedule = { date: f.date, time: f.time, repeat: f.repeat, every: f.every, unit: f.unit, weekdays: f.weekdays, monthDays: f.monthDays, lastDayOfMonth: f.lastDayOfMonth, skipToNextWorkingDay: f.skipToNextWorkingDay };
     const payload = { subject: f.subject, originalAsk: (wfAsk && wfAsk.value || '').trim(), plan, excludedKeys: Array.from(wfExcluded), schedule };
     const url = wfEditingId ? '/api/workforce/hr-assistant/workflows/' + encodeURIComponent(wfEditingId) : '/api/workforce/hr-assistant/workflows';
     await runButtonAction(wfSaveBtn, () => postJsonOrThrow(url, payload), (result) => {
