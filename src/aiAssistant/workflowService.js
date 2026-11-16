@@ -38,6 +38,17 @@ const aiUsageLog = require('./aiUsageLog');
 // always seen - always call sheetsAuth.getSheetsReadOnlyClient()/
 // getSheetsWriteClient() through this live module reference.
 const sheetsAuth = require('../sheetsAuth');
+// PHASE 5 (2026-11) - "Also do: Save attachments to a Drive folder" runs
+// as SUBH's own Google identity (subhDriveAuth), fenced through the SAME
+// folder-allowlist guard (subhDriveGuard) letterSettingsService.js's own
+// Issued-Letters upload already uses - never sheetsAuth's service-account
+// Drive client (confirmed unused anywhere else in this codebase; the
+// real, tested Drive-write pattern in this app is subhDriveAuth +
+// subhDriveGuard, not sheetsAuth.getDriveWriteClient). Also not
+// destructured, same monkey-patch-friendly reasoning as sheetsAuth above.
+const subhDriveAuth = require('../subhDriveAuth');
+const subhDriveGuard = require('../subhDriveGuard');
+const { Readable } = require('stream');
 // Required lazily (inside the functions that need it, never at module
 // load) specifically because Phase 5 has whatsappAssistant.js require
 // THIS file back (its own early-tier "might this reply be for an open
@@ -421,15 +432,42 @@ async function resolveTeamContacts(teamWord) {
     .filter((e) => e.status === 'ACTIVE' && re.test(e.department || ''))
     .map((e) => ({ name: e.name, email: e.email, phone: e.contactNumber }));
 }
-// `sendTo` is one of SEND_TO_TARGETS. `row`/`rowContact` are the SAME
-// record a rule is resolving for (so "self"/"manager" stay scoped to
-// THAT one record, never a different one) - both are optional/null for
-// the also-send message, which only ever uses 'hr'/'accounts'.
-async function resolveSendTarget(sendTo, plan, row, rowContact) {
+// `sendTo` is one of SEND_TO_TARGETS (plus, PHASE 5 2026-11, the two
+// per-rule-only extras below). `row`/`rowContact` are the SAME record a
+// rule is resolving for (so "self"/"manager" stay scoped to THAT one
+// record, never a different one) - both are optional/null for the
+// also-send message, which only ever uses 'hr'/'accounts'. `sendToEmail`
+// is only ever read for 'anyEmail' (the owner's own free-typed address on
+// THIS rule - RULE_SEND_TO_TARGETS below, never the plan-level
+// also-send/alsoSendTo, which already has its own separate resolution).
+async function resolveSendTarget(sendTo, plan, row, rowContact, sendToEmail) {
   if (sendTo === 'self') return row ? [await automationService.personContact(plan, row, 'self')].filter(Boolean) : [];
   if (sendTo === 'manager') return row ? [await automationService.personContact(plan, row, 'reportingManager')].filter(Boolean) : (rowContact ? [rowContact] : []);
   if (sendTo === 'hr') return resolveTeamContacts('HR');
   if (sendTo === 'accounts') return resolveTeamContacts('ACCOUNT');
+  // PHASE 5 (2026-11) - "Then send a message to someone" -> To gains
+  // "Each Company's Accounts Team (Company details)" at the PER-RULE
+  // level too (Phase 4 already built this for the top-level recipient
+  // dropdown, companyAccountsTeam-by-row-Company-then-Phase-2-
+  // accountsEmails[] - reused directly here, scoped to THIS record's own
+  // row, never the whole matched set like Phase 4's own one-message-per-
+  // company grouping, since a rule resolves per-REPLY/per-record).
+  if (sendTo === 'companyAccountsTeam') {
+    const company = row ? String(row['Company'] || '').trim() : '';
+    if (!company) return [];
+    const details = await companyDetailsService.getCompanyDetails(company);
+    const emails = (details && details.accountsEmails) || [];
+    if (!emails.length) return [];
+    return [{ name: company + ' Accounts Team', email: emails.join(', '), phone: '' }];
+  }
+  // "Any email" - a free-typed address entered directly on this rule
+  // (rule.sendToEmail), never guessed/looked up - an empty/missing value
+  // resolves to no target at all (reported the same "no valid contact"
+  // way every other empty resolution already is).
+  if (sendTo === 'anyEmail') {
+    const email = String(sendToEmail || '').trim();
+    return email ? [{ name: email, email, phone: '' }] : [];
+  }
   return [];
 }
 
@@ -583,7 +621,34 @@ async function buildWorkflowDocumentBuffer(template, row, runAt, extra) {
   else return null;
   return { buffer, refNo: refResolved.refNo, fy: refResolved.fy, serial: refResolved.serial };
 }
-async function buildRuleSendAttachment(template, row, now, detail, workflowSubject) {
+// PHASE 5 (2026-11) - "Attach a document" -> "Attachments from the reply
+// (forward)": forwards the REAL attachment(s) that arrived on the exact
+// reply that matched this rule (rec.lastReplyAttachments/
+// lastReplyMessageId, set by processWorkflowReply below) - never
+// regenerates or refetches anything else. Mail-channel only today (see
+// this phase's own report for why WhatsApp attachment access isn't wired
+// yet) - `replyAttachments` is simply `{messageId: null, attachments: []}`
+// for a WhatsApp record, so this cleanly returns null (nothing to
+// forward) rather than erroring. Returns an ARRAY when forwarding
+// (possibly 2+ files), never the single-object shape the 4 letter
+// templates return below - callers tell the two apart with
+// Array.isArray, exactly as sendOneWorkflowMessage already distinguishes
+// its own singular `attachment` vs plural `attachments`.
+async function resolveRuleReplyAttachments(replyAttachments) {
+  const messageId = replyAttachments && replyAttachments.messageId;
+  const atts = (replyAttachments && replyAttachments.attachments) || [];
+  if (!messageId || !atts.length) return null;
+  const files = [];
+  for (const a of atts) {
+    try {
+      const data = await gmailService.downloadAttachmentData(messageId, a.attachmentId);
+      if (data) files.push({ filename: a.filename || 'attachment', contentType: a.mimeType || 'application/octet-stream', content: data });
+    } catch (err) { /* best effort per file - a download failure for one attachment never blocks the others */ }
+  }
+  return files.length ? files : null;
+}
+async function buildRuleSendAttachment(template, row, now, detail, workflowSubject, replyAttachments) {
+  if (template === RULE_SEND_DOCUMENT_ATTACHMENTS_FROM_REPLY) return resolveRuleReplyAttachments(replyAttachments);
   if (!template || !row) return null;
   try {
     const result = await buildWorkflowDocumentBuffer(template, row, now, { detail, isRealSend: true });
@@ -869,8 +934,17 @@ async function buildWorkflowMessages(workflow, runAt, isRealSend) {
   // sent message's own absolute sheet row number, which matchedRows'
   // output never carries - built ONCE per run (only when actually
   // configured) and attached to each sent message below.
+  // PHASE 5 (2026-11) - ALSO built whenever any rule's own "Also do:
+  // Update the sheet" is configured (rule.alsoDo.sheetUpdate.on) - that
+  // feature needs this SAME per-record row number (writeRuleSheetUpdateCell
+  // reads rec.sheetRowNumbers, set from this map below), independently of
+  // whether the top-level afterSend option is ever used on the same plan.
   let sheetRowNumberByKey = null;
-  if (plan.source === 'sheet' && sheetOptions && sheetOptions.afterSend && sheetOptions.afterSend.column) {
+  const needsSheetRowNumbers = plan.source === 'sheet' && (
+    (sheetOptions && sheetOptions.afterSend && sheetOptions.afterSend.column) ||
+    (plan.rules || []).some((r) => r && r.alsoDo && r.alsoDo.sheetUpdate && r.alsoDo.sheetUpdate.on && r.alsoDo.sheetUpdate.column)
+  );
+  if (needsSheetRowNumbers) {
     sheetRowNumberByKey = await loadSheetRowNumberMap(plan).catch(() => null); // best-effort - a failure here just skips the write-back for this run, never blocks sending
   }
   const sent = [];
@@ -1043,6 +1117,38 @@ const MODEL = process.env.CLAUDE_MODEL_MAIN;
 
 const DOCUMENT_TEMPLATES = ['confirmation', 'extension', 'experience', 'relieving'];
 const SEND_TO_TARGETS = ['self', 'manager', 'hr', 'accounts'];
+// PHASE 5 (2026-11) - per-rule-only "To" extras (manually configured in
+// the Create Workflow UI, never AI-drafted - drafting these from plain
+// text is explicitly Phase 7's job, not this phase's). Kept SEPARATE
+// from SEND_TO_TARGETS (never merged into it) since that constant is also
+// the NLU tool's own enum (workflowPlanTool) and draftRule's own
+// validation for plan-level/also-send resolution - widening it would let
+// the model draft these two values too, which isn't approved yet.
+const RULE_SEND_TO_EXTRA_TARGETS = ['companyAccountsTeam', 'anyEmail'];
+// "Attach a document" dropdown's new, non-template option (forwards the
+// real attachment(s) on the triggering reply - see
+// buildRuleSendAttachment/resolveRuleReplyAttachments below) - kept
+// separate from DOCUMENT_TEMPLATES/driveTemplatesService's own template
+// keys for the exact same reason as RULE_SEND_TO_EXTRA_TARGETS above.
+const RULE_SEND_DOCUMENT_ATTACHMENTS_FROM_REPLY = 'attachmentsFromReply';
+// "Then" dropdown's new value (alongside stop/wait/askme) - the record
+// waits specifically for a LATER reply that carries a real attachment;
+// see the 'waitingAttachments' record status below.
+const RULE_THEN_WAIT_FOR_ATTACHMENTS = 'waitForAttachments';
+// `rule.detailFields` is a single comma-separated STRING of field names
+// (e.g. "amount, reference no., date") - matching the owner's own approved
+// design reference (docs/design/workflow-v2-sample.html's `take` field)
+// exactly, deliberately NOT a {name,hint} object array: simpler to type,
+// edit and render (one text input, same free-text-field convention as
+// askDetail), and the design reference never asked for a per-field hint.
+// Parsed into a clean array wherever the engine actually needs it (never
+// stored pre-split, so retyping/editing stays a plain text edit like
+// every other free-text rule field) - trims and drops empty entries so a
+// stray leading/trailing comma typed mid-edit never produces a bogus
+// blank field name.
+function parseDetailFieldNames(raw) {
+  return String(raw || '').split(',').map((s) => s.trim()).filter(Boolean);
+}
 
 // Closing the "Ask SUBH can't pick a Drive template by name" gap
 // (2026-11, direct instruction): when a caller has already fetched the
@@ -1370,7 +1476,11 @@ async function releaseRunLock(id) {
 // one extra, harmless model call on that phone's next message, never a
 // lost reply - the phone is still re-added the next time this record (or
 // any other open one for the same number) is touched).
-const OPEN_STATUSES = new Set(['sent', 'waiting', 'followed', 'asked', 'needs']);
+// PHASE 5 (2026-11) - 'waitingAttachments' added (a record waiting
+// specifically for a later attachment-bearing reply is still an OPEN
+// workflow item for every purpose this set already serves - the phone
+// stays in the "might be a workflow reply" index, same as 'waiting').
+const OPEN_STATUSES = new Set(['sent', 'waiting', 'followed', 'asked', 'needs', 'waitingAttachments']);
 async function syncOpenPhone(phone, isOpen) {
   if (!phone) return;
   const redis = getClient();
@@ -1432,6 +1542,13 @@ async function runWorkflow(id, { isTest = false, testTo = null } = {}, now = new
         followUpCount: 0, sinceAt: runAt.toISOString(), ruleIndex: null, detail: null, pendingApproval: null,
         threadId: result.threadId || null, messageId: result.messageId || null,
         waPhone: isMail ? null : (result.waPhone || (result.status === 'sent' ? m.addr : null)),
+        // PHASE 5 (2026-11) - this record's own real sheet row number(s)
+        // (same source Phase 4's top-level afterSend write already used,
+        // just now ALSO kept per-record) - needed so a rule's own "Also
+        // do: Update the sheet" can target this ONE record's row,
+        // never a sheet-wide filter. `[]` for every non-sheet-sourced
+        // workflow, unchanged.
+        sheetRowNumbers: m.sheetRowNumbers || [],
         history: [{ at: runAt.toISOString(), who: 'SUBH -> ' + m.to, text: result.status === 'sent' ? (m.subject ? m.subject + ' - ' + m.body : m.body) : ('Could not send: ' + (result.error || 'no valid contact')) }]
       };
       records.push(record);
@@ -1639,40 +1756,86 @@ async function advanceFollowUps(now = new Date()) {
 // spec's "AI understands, code computes" - every outgoing word still
 // comes from the owner's own rule text (replyText/askQuestion/sendBody),
 // filled by fillWorkflowPlaceholders, never model-written.
+// PHASE 5 (2026-11) - "Details — take from the reply": extends the SAME
+// classify call (never a second model round trip) to also surface any of
+// the OWNER-NAMED fields (rule.detailFields) this reply already states,
+// alongside the existing single askDetail `detail` field - purely
+// additive: a rule with no detailFields set contributes nothing to
+// `anyFields` below, so the tool's schema (and therefore every existing
+// mocked test response) is BYTE-IDENTICAL to before this phase whenever
+// no rule in the list uses detailFields. "AI understands, code speaks" -
+// the model only extracts raw values it actually finds; which field a
+// matched rule needed, whether one is still missing, and what to do about
+// it are ALL decided in code (processWorkflowReply below), never here.
 function replyClassificationTool(rules) {
+  const perRuleFields = rules.map((r) => parseDetailFieldNames(r && r.detailFields));
+  const allFieldNames = Array.from(new Set(perRuleFields.flat()));
+  const properties = {
+    ruleIndex: { type: 'number', description: 'The 0-based index of the one matching rule from the list above. Omit entirely if the reply is unclear or matches none of them - never guess the closest one.' },
+    detail: { type: 'string', description: 'Only if the matched rule needs a detail AND this reply already states it in the same breath (e.g. "approved, extend by 3 months" -> "3 months") - omit otherwise, even if a rule matched.' }
+  };
+  if (allFieldNames.length) {
+    properties.details = {
+      type: 'object',
+      description: 'Named details to extract from this SAME reply, ONLY when genuinely stated - never invent or guess a value. Relevant only for the rule that actually matches:\n' +
+        rules.map((r, i) => (perRuleFields[i].length ? i + ': ' + perRuleFields[i].join(', ') : null)).filter(Boolean).join('\n'),
+      properties: Object.fromEntries(allFieldNames.map((n) => [n, { type: 'string', description: 'Omit this field entirely if "' + n + '" is not actually stated in this reply.' }]))
+    };
+  }
   return {
     type: 'function',
     function: {
       name: 'classify_workflow_reply',
       description: 'The sender was asked a question and has now replied. Decide which ONE of the numbered rules below best matches the MEANING of this reply (never a keyword match), or that none clearly match. If the matched rule needs a follow-up detail and this SAME reply already states it, extract that detail too.\n' +
         rules.map((r, i) => i + ': "' + r.when + '"' + (r.askDetail ? ' (needs: ' + r.askDetail + ')' : '')).join('\n'),
-      parameters: {
-        type: 'object',
-        properties: {
-          ruleIndex: { type: 'number', description: 'The 0-based index of the one matching rule from the list above. Omit entirely if the reply is unclear or matches none of them - never guess the closest one.' },
-          detail: { type: 'string', description: 'Only if the matched rule needs a detail AND this reply already states it in the same breath (e.g. "approved, extend by 3 months" -> "3 months") - omit otherwise, even if a rule matched.' }
-        },
-        required: []
-      }
+      parameters: { type: 'object', properties, required: [] }
     }
   };
 }
-function detailExtractionTool(question) {
+// `detailFieldNames` (PHASE 5, 2026-11, additive - omitted/empty is
+// byte-identical to before this phase) - the ONE rule already being
+// specifically asked about (rec.status === 'asked') can ALSO surface any
+// of its own named detailFields in this SAME answer, in the same breath
+// as the single askDetail answer (e.g. "approved, 3 months, ref INV-204"
+// answering both "number of months" AND a configured {Reference} field).
+function detailExtractionTool(question, detailFieldNames) {
+  const fields = detailFieldNames || [];
+  const properties = {
+    detail: { type: 'string', description: 'The answer, exactly as given (e.g. "3 months", "a laptop and ID card"). Omit if the reply does not actually answer the question.' },
+    isUnclear: { type: 'boolean', description: 'true if the reply does not answer the question at all (e.g. "Dekhchi", a different topic, a further question back).' }
+  };
+  if (fields.length) {
+    properties.details = {
+      type: 'object',
+      description: 'Any of these named details, ONLY when this SAME reply actually states them - never invent or guess a value: ' + fields.join(', '),
+      properties: Object.fromEntries(fields.map((n) => [n, { type: 'string', description: 'Omit this field entirely if "' + n + '" is not actually stated in this reply.' }]))
+    };
+  }
   return {
     type: 'function',
     function: {
       name: 'extract_reply_detail',
       description: 'SUBH asked: "' + question + '". Decide whether this reply actually answers it, and if so extract the answer exactly as given.',
-      parameters: {
-        type: 'object',
-        properties: {
-          detail: { type: 'string', description: 'The answer, exactly as given (e.g. "3 months", "a laptop and ID card"). Omit if the reply does not actually answer the question.' },
-          isUnclear: { type: 'boolean', description: 'true if the reply does not answer the question at all (e.g. "Dekhchi", a different topic, a further question back).' }
-        },
-        required: ['isUnclear']
-      }
+      parameters: { type: 'object', properties, required: ['isUnclear'] }
     }
   };
+}
+// Merges any newly-extracted named details into `rec.details` (additive -
+// a field once captured for a record is never cleared by a LATER reply
+// that simply doesn't mention it again) and returns the merged object, so
+// every call site can pass the SAME up-to-date map into
+// fillWorkflowPlaceholders's `extra` without duplicating this merge
+// logic. Never invents/overwrites with an empty value - only a real,
+// non-empty extracted string is ever merged in.
+function mergeExtractedDetails(rec, extractedDetails) {
+  if (!rec.details) rec.details = {};
+  if (extractedDetails && typeof extractedDetails === 'object') {
+    Object.keys(extractedDetails).forEach((k) => {
+      const v = extractedDetails[k];
+      if (v != null && String(v).trim() !== '') rec.details[k] = String(v);
+    });
+  }
+  return rec.details;
 }
 // Every internal call site invokes this via `module.exports.callWorkflowTool(...)`
 // (never the bare identifier) specifically so scripts/check-workflow.js
@@ -1714,39 +1877,153 @@ async function callWorkflowTool(systemText, userText, toolDef) {
 // that decides WHICH rule applies. Returns the reply-to-sender text (or
 // null if the rule has none, which the sample never actually allows but
 // a hand-edited rule could leave blank).
-async function finishWorkflowRule(workflow, run, rec, rule, now) {
-  const ctx = { row: rec.row, contact: rec.contact, runAt: now, extra: { Reply_Detail: rec.detail } };
+// `ruleIndex` (PHASE 5, 2026-11, additive) - only needed so a
+// `then: 'waitForAttachments'` record can remember WHICH rule set up the
+// wait (rec.waitRuleIndex), for when the later attachment-bearing reply
+// finally arrives and this same rule's "Also do" must run against it.
+// Every existing call site that doesn't know/care about this (none of
+// them used `then: 'waitForAttachments'` before this phase) simply omits
+// it - `undefined` is fine, since it is only ever read back on that one
+// new branch.
+async function finishWorkflowRule(workflow, run, rec, rule, now, ruleIndex) {
+  const ctx = { row: rec.row, contact: rec.contact, runAt: now, extra: Object.assign({ Reply_Detail: rec.detail }, rec.details || {}) };
   let replyText = null;
   if (rule.replyText) {
     replyText = fillWorkflowPlaceholders(rule.replyText, ctx);
     rec.history.push({ at: now.toISOString(), who: 'SUBH -> ' + ((rec.contact && rec.contact.name) || rec.key), text: replyText });
   }
   if (rule.sendTo) {
-    const targets = (await resolveSendTarget(rule.sendTo, workflow.plan, rec.row, rec.contact)).filter((c) => automationService.contactOk(c, 'mail'));
-    const toLabel = targets.map((c) => c.name).join(', ') || (SEND_TO_TARGETS.includes(rule.sendTo) ? rule.sendTo : '—');
+    const targets = (await resolveSendTarget(rule.sendTo, workflow.plan, rec.row, rec.contact, rule.sendToEmail)).filter((c) => automationService.contactOk(c, 'mail'));
+    const toLabel = targets.map((c) => c.name).join(', ') || (SEND_TO_TARGETS.includes(rule.sendTo) || RULE_SEND_TO_EXTRA_TARGETS.includes(rule.sendTo) ? rule.sendTo : '—');
     const pending = {
       sendTo: rule.sendTo, sendToLabel: toLabel, addrs: targets.map((c) => c.email),
       sendSubject: fillWorkflowPlaceholders(rule.sendSubject, ctx), sendBody: fillWorkflowPlaceholders(rule.sendBody, ctx),
-      sendDocument: rule.sendDocument || null, ruleThen: rule.then
+      sendDocument: rule.sendDocument || null, ruleThen: rule.then, ruleIndex: ruleIndex != null ? ruleIndex : null
     };
     if (rule.askMeFirst) {
       rec.status = 'needs'; rec.pendingApproval = pending; rec.sinceAt = now.toISOString();
       return replyText;
     }
     if (targets.length) {
-      const attachment = await buildRuleSendAttachment(pending.sendDocument, rec.row, now, rec.detail, workflow.subject);
-      for (const t of targets) await sendOneWorkflowMessage({ to: t.name, addr: t.email, subject: pending.sendSubject, body: pending.sendBody, table: null, tableColumns: [], attachment });
+      // PHASE 5 (2026-11) - "Attachments from the reply (forward)" can
+      // resolve to MULTIPLE real files (Array.isArray), unlike the 4
+      // letter templates above (always a single generated document) -
+      // sendOneWorkflowMessage already supports both shapes (singular
+      // `attachment` / plural `attachments`), so both are passed through
+      // and it picks whichever one is actually populated.
+      const attachmentResult = await buildRuleSendAttachment(pending.sendDocument, rec.row, now, rec.detail, workflow.subject, { messageId: rec.lastReplyMessageId, attachments: rec.lastReplyAttachments });
+      const attachment = Array.isArray(attachmentResult) ? null : attachmentResult;
+      const attachments = Array.isArray(attachmentResult) ? attachmentResult : null;
+      for (const t of targets) await sendOneWorkflowMessage({ to: t.name, addr: t.email, subject: pending.sendSubject, body: pending.sendBody, table: null, tableColumns: [], attachment, attachments });
       rec.history.push({ at: now.toISOString(), who: 'SUBH -> ' + toLabel, text: pending.sendSubject + ' - ' + pending.sendBody });
     } else {
       rec.history.push({ at: now.toISOString(), who: 'SUBH', text: 'Could not send the follow-up message - no valid contact for ' + rule.sendTo + '.' });
     }
   }
   rec.pendingApproval = rec.pendingApproval || null;
-  if (rule.then === 'stop') rec.status = 'done';
-  else if (rule.then === 'wait') { rec.status = 'waiting'; rec.followUpCount = 0; rec.sinceAt = now.toISOString(); }
-  else rec.status = 'needs'; // 'askme' - same unclear-style card, per direct instruction
-  if (!isMailRecord(rec) && rec.status !== 'waiting') await syncOpenPhone(rec.waPhone, false);
+  // PHASE 5 (2026-11) - "Wait for attachments": a NEW `then` branch,
+  // deliberately checked before stop/wait/askme below (mutually
+  // exclusive with all three, exactly like they already are with each
+  // other) - the record waits specifically for a LATER reply carrying a
+  // real attachment; "Also do" (driveUpload/sheetUpdate) is deliberately
+  // deferred to THAT moment (runRuleAlsoDo below, called from
+  // processWorkflowReply's own 'waitingAttachments' branch), never run
+  // here, since the attachment this rule cares about typically hasn't
+  // arrived yet - see this phase's report for the full reasoning.
+  if (rule.then === RULE_THEN_WAIT_FOR_ATTACHMENTS) {
+    rec.status = 'waitingAttachments'; rec.waitRuleIndex = ruleIndex != null ? ruleIndex : null; rec.followUpCount = 0; rec.sinceAt = now.toISOString();
+  } else {
+    if (rule.then === 'stop') rec.status = 'done';
+    else if (rule.then === 'wait') { rec.status = 'waiting'; rec.followUpCount = 0; rec.sinceAt = now.toISOString(); }
+    else rec.status = 'needs'; // 'askme' - same unclear-style card, per direct instruction
+    // "Also do" runs immediately whenever this rule resolves WITHOUT
+    // waiting further for an attachment - e.g. a rule whose matching
+    // reply itself already carried the document ("Documents received" ->
+    // save + update the sheet in the same breath, no waiting needed).
+    await runRuleAlsoDo(rule, rec, workflow, now);
+  }
+  if (!isMailRecord(rec) && rec.status !== 'waiting' && rec.status !== 'waitingAttachments') await syncOpenPhone(rec.waPhone, false);
   return replyText;
+}
+
+// PHASE 5 (2026-11) - "Also do" (a rule's own flat, independent green
+// box - never nested under `then`, runs alongside whatever `then`
+// already decided): "Save attachments to a Drive folder" + "Update the
+// sheet". Both off/null by default (rule.alsoDo absent or {} is a pure
+// no-op, zero behaviour change for every rule saved before this phase).
+// Called from TWO places by design - see finishWorkflowRule's own
+// comment above: immediately when a rule resolves without waiting
+// further, and again once a deferred `waitForAttachments` wait actually
+// resolves - each call is independently best-effort (a Drive/Sheets
+// failure here notifies the owner but never un-resolves a record that
+// has already correctly replied to the sender).
+async function runRuleAlsoDo(rule, rec, workflow, now) {
+  const alsoDo = rule && rule.alsoDo;
+  if (!alsoDo) return;
+  const ctx = { row: rec.row, contact: rec.contact, runAt: now, extra: Object.assign({ Reply_Detail: rec.detail }, rec.details || {}) };
+  if (alsoDo.driveUpload && alsoDo.driveUpload.on && alsoDo.driveUpload.pathPattern) {
+    const files = await resolveRuleReplyAttachments({ messageId: rec.lastReplyMessageId, attachments: rec.lastReplyAttachments });
+    if (files && files.length) {
+      for (const f of files) {
+        try {
+          await uploadRuleAttachmentToDrive(alsoDo.driveUpload.pathPattern, f, ctx);
+        } catch (err) {
+          await getWhatsappAssistant().postOwnerNotification('⚠️ Workflow "' + workflow.subject + '": could not save an attachment to Drive for "' + rule.when + '" (' + ((rec.contact && rec.contact.name) || rec.key) + '): ' + err.message).catch(() => {});
+        }
+      }
+    }
+  }
+  if (alsoDo.sheetUpdate && alsoDo.sheetUpdate.on && alsoDo.sheetUpdate.column) {
+    try {
+      await writeRuleSheetUpdateCell(workflow.plan, rec, alsoDo.sheetUpdate, now);
+    } catch (err) {
+      await getWhatsappAssistant().postOwnerNotification('⚠️ Workflow "' + workflow.subject + '": could not update the sheet for "' + rule.when + '" (' + ((rec.contact && rec.contact.name) || rec.key) + '): ' + err.message).catch(() => {});
+    }
+  }
+}
+// Uploads ONE real attachment file into the owner's path pattern (e.g.
+// "Documents/{Month}/{Employee_Name}.pdf" - resolved via the SAME
+// placeholder mechanism every message body already uses, never a second
+// substitution engine), fenced through subhDriveGuard's own allowlist
+// guard exactly like letterSettingsService.js's Issued-Letters upload
+// (FY/Month subfolder chain, guardedGetOrCreateFolder then
+// guardedUploadFile) - never writes outside
+// subhDriveGuard.WORKFLOW_ATTACHMENTS_FOLDER_ID. The pattern's own
+// filename (the last path segment) REPLACES the attachment's original
+// filename when given (the owner's whole point in setting a pattern);
+// falls back to the real attachment filename if the resolved pattern has
+// no final segment.
+async function uploadRuleAttachmentToDrive(pathPattern, file, ctx) {
+  if (!subhDriveGuard.WORKFLOW_ATTACHMENTS_FOLDER_ID) throw new Error('Drive folder for workflow attachments is not configured (set SUBH_WORKFLOW_ATTACHMENTS_FOLDER_ID).');
+  if (!subhDriveAuth.isAuthenticated()) throw new Error('SUBH Drive is not connected yet - visit /subh-drive-auth to complete the one-time consent.');
+  const resolved = fillWorkflowPlaceholders(pathPattern, ctx);
+  const segments = String(resolved || '').split('/').map((s) => s.trim()).filter(Boolean);
+  const filename = segments.pop() || file.filename || 'attachment';
+  const drive = subhDriveAuth.getDriveClient();
+  let parentId = subhDriveGuard.WORKFLOW_ATTACHMENTS_FOLDER_ID;
+  for (const seg of segments) parentId = await subhDriveGuard.guardedGetOrCreateFolder(drive, parentId, seg);
+  await subhDriveGuard.guardedUploadFile(drive, parentId, filename, file.contentType || 'application/octet-stream', Readable.from(file.content));
+}
+// Writes ONE record's own sheet row (never a sheet-wide filter like
+// Phase 4's own top-level afterSend write - a rule resolves per-REPLY,
+// keyed to exactly one record's own real row number, captured on the
+// record at send time - see runWorkflow's own `record.sheetRowNumbers`
+// below) - same header-based-column-matching, write-only-after-
+// confirmed-success discipline as writeAfterSendCell above, reusing its
+// own wfColLetter/wfQuoteSheetRange/getSheetsWriteClient helpers
+// directly rather than a second, parallel implementation.
+async function writeRuleSheetUpdateCell(plan, rec, sheetUpdate, now) {
+  const rowNumbers = rec.sheetRowNumbers || [];
+  if (!rowNumbers.length || !plan.sheetId || !plan.sheetTab) throw new Error('this record has no known sheet row to update (not a sheet-sourced workflow, or the row could not be matched)');
+  const sheets = sheetsAuth.getSheetsReadOnlyClient();
+  const res = await sheets.spreadsheets.values.get({ spreadsheetId: plan.sheetId, range: wfQuoteSheetRange(plan.sheetTab, 'A1:ZZ1'), valueRenderOption: 'FORMATTED_VALUE' });
+  const headers = (res.data.values && res.data.values[0] || []).map((h) => String(h || '').trim());
+  const colIdx = headers.indexOf(sheetUpdate.column);
+  if (colIdx === -1) throw new Error('column "' + sheetUpdate.column + '" was not found in the sheet');
+  const value = fillWorkflowPlaceholders(sheetUpdate.value == null ? '' : String(sheetUpdate.value), { row: rec.row, contact: rec.contact, runAt: now, extra: Object.assign({ Reply_Detail: rec.detail }, rec.details || {}) });
+  const data = [...new Set(rowNumbers)].map((rn) => ({ range: wfQuoteSheetRange(plan.sheetTab, wfColLetter(colIdx) + rn), values: [[value]] }));
+  const writeClient = sheetsAuth.getSheetsWriteClient();
+  await writeClient.spreadsheets.values.batchUpdate({ spreadsheetId: plan.sheetId, requestBody: { valueInputOption: 'RAW', data } });
 }
 
 // The single entry point both Phase 4 (mail) and Phase 5 (WhatsApp)
@@ -1760,19 +2037,49 @@ async function finishWorkflowRule(workflow, run, rec, rule, now) {
 // gets a card instead - never a generic auto-reply) - delivering it is
 // the caller's own job (a mail reply in the same thread, or returned
 // straight from a WhatsApp decideAutoReply call).
-async function processWorkflowReply(workflow, run, rec, replyText, senderLabel, now = new Date()) {
+// `attachments` (PHASE 5, 2026-11, additive - every existing caller
+// omits it, which is identical to `{}`/no attachments at all, so this is
+// a pure no-op addition for every call site from before this phase) -
+// `{messageId, attachments}` metadata for the CURRENT reply being
+// processed, mail-channel only today (see this phase's own report for
+// why WhatsApp attachment access isn't wired through to here yet - a
+// WhatsApp call site simply never has this to pass, which is exactly the
+// same as passing `{}`). Captured onto the record (rec.lastReplyAttachments/
+// lastReplyMessageId) on EVERY new reply, overwritten each time - "the
+// attachment(s) arrived on the matched reply ITSELF", never an older one.
+async function processWorkflowReply(workflow, run, rec, replyText, senderLabel, now = new Date(), attachments) {
   rec.history.push({ at: now.toISOString(), who: senderLabel || ((rec.contact && rec.contact.name) || rec.key), text: replyText });
+  rec.lastReplyMessageId = (attachments && attachments.messageId) || null;
+  rec.lastReplyAttachments = (attachments && attachments.attachments) || [];
+  // PHASE 5 (2026-11) - "Wait for attachments": a record parked here by
+  // an earlier rule's `then: 'waitForAttachments'` is waiting specifically
+  // for THIS kind of reply - a text-only reply (no attachment) never
+  // resolves it ("never silently treat a text-only reply as satisfying
+  // wait for attachments", per the approved spec) - it simply keeps
+  // waiting (no automatic re-prompt; the owner can still "Remind now"
+  // manually from the progress board, which falls back to the plan's
+  // general follow-up text). No model call at all on this branch - a
+  // presence check, nothing to classify.
+  if (rec.status === 'waitingAttachments') {
+    if (!rec.lastReplyAttachments.length) return null;
+    const waitRule = rec.waitRuleIndex != null ? (workflow.plan.rules || [])[rec.waitRuleIndex] : null;
+    rec.status = 'done'; rec.pendingApproval = null;
+    if (waitRule) await runRuleAlsoDo(waitRule, rec, workflow, now);
+    if (!isMailRecord(rec)) await syncOpenPhone(rec.waPhone, false);
+    return null;
+  }
   if (rec.status === 'asked' && rec.ruleIndex != null) {
     const rule = (workflow.plan.rules || [])[rec.ruleIndex];
     if (!rule) { rec.status = 'needs'; rec.pendingApproval = null; return null; }
     const extracted = await module.exports.callWorkflowTool(
       'A workflow asked the sender a follow-up question and is waiting for the answer.',
       replyText,
-      detailExtractionTool(fillWorkflowPlaceholders(rule.askQuestion || '', { row: rec.row, contact: rec.contact, runAt: now })).function
+      detailExtractionTool(fillWorkflowPlaceholders(rule.askQuestion || '', { row: rec.row, contact: rec.contact, runAt: now }), parseDetailFieldNames(rule.detailFields)).function
     );
+    if (extracted && extracted.details) mergeExtractedDetails(rec, extracted.details);
     if (extracted && !extracted.isUnclear && extracted.detail) {
       rec.detail = extracted.detail;
-      return finishWorkflowRule(workflow, run, rec, rule, now);
+      return finishWorkflowRule(workflow, run, rec, rule, now, rec.ruleIndex);
     }
     rec.status = 'needs'; rec.pendingApproval = null; rec.sinceAt = now.toISOString();
     return null;
@@ -1783,9 +2090,17 @@ async function processWorkflowReply(workflow, run, rec, replyText, senderLabel, 
     replyText,
     replyClassificationTool(rules).function
   );
+  if (classified && classified.details) mergeExtractedDetails(rec, classified.details);
   const ruleIndex = classified && typeof classified.ruleIndex === 'number' ? classified.ruleIndex : null;
   const rule = ruleIndex != null ? rules[ruleIndex] : null;
   if (!rule) { rec.status = 'needs'; rec.pendingApproval = null; rec.sinceAt = now.toISOString(); return null; }
+  // "First ask for a missing detail ... now asks only if the detail isn't
+  // already in the reply" - UNCHANGED behaviour, confirmed against the
+  // real code before this phase touched anything: classify_workflow_reply
+  // already tries to extract the SAME askDetail answer in this one call
+  // (`classified.detail`), so this gate already only asks when it's
+  // genuinely missing - a rule with no detailFields at all (every rule
+  // saved before this phase) reaches this exact same line, unchanged.
   if (rule.askDetail && !(classified && classified.detail)) {
     const askText = fillWorkflowPlaceholders(rule.askQuestion || '', { row: rec.row, contact: rec.contact, runAt: now });
     rec.history.push({ at: now.toISOString(), who: 'SUBH -> ' + ((rec.contact && rec.contact.name) || rec.key), text: askText });
@@ -1793,7 +2108,7 @@ async function processWorkflowReply(workflow, run, rec, replyText, senderLabel, 
     return askText;
   }
   if (rule.askDetail) rec.detail = classified.detail;
-  return finishWorkflowRule(workflow, run, rec, rule, now);
+  return finishWorkflowRule(workflow, run, rec, rule, now, ruleIndex);
 }
 
 // ---------------- Progress board manual actions (owner-triggered, same
@@ -1845,17 +2160,28 @@ async function approveSendWorkflowRecord(workflowId, runId, key) {
     const pending = rec.pendingApproval;
     const addrs = pending.addrs || [];
     if (addrs.length) {
-      const attachment = await buildRuleSendAttachment(pending.sendDocument, rec.row, now, rec.detail, workflow.subject);
-      for (const addr of addrs) await sendOneWorkflowMessage({ to: pending.sendToLabel, addr, subject: pending.sendSubject, body: pending.sendBody, table: null, tableColumns: [], attachment });
+      // PHASE 5 (2026-11) - same singular/plural attachment split as
+      // finishWorkflowRule's own real-time send (see its comment) -
+      // 'attachmentsFromReply' can resolve to multiple real files.
+      const attachmentResult = await buildRuleSendAttachment(pending.sendDocument, rec.row, now, rec.detail, workflow.subject, { messageId: rec.lastReplyMessageId, attachments: rec.lastReplyAttachments });
+      const attachment = Array.isArray(attachmentResult) ? null : attachmentResult;
+      const attachmentsArr = Array.isArray(attachmentResult) ? attachmentResult : null;
+      for (const addr of addrs) await sendOneWorkflowMessage({ to: pending.sendToLabel, addr, subject: pending.sendSubject, body: pending.sendBody, table: null, tableColumns: [], attachment, attachments: attachmentsArr });
       rec.history.push({ at: now.toISOString(), who: 'SUBH -> ' + pending.sendToLabel, text: pending.sendSubject + ' - ' + pending.sendBody });
     } else {
       rec.history.push({ at: now.toISOString(), who: 'SUBH', text: 'Could not send - no valid contact for ' + pending.sendTo + '.' });
     }
     rec.pendingApproval = null;
-    if (pending.ruleThen === 'stop') rec.status = 'done';
-    else if (pending.ruleThen === 'wait') { rec.status = 'waiting'; rec.followUpCount = 0; rec.sinceAt = now.toISOString(); }
-    else rec.status = 'done';
-    if (!isMailRecord(rec) && rec.status !== 'waiting') await syncOpenPhone(rec.waPhone, false);
+    const rule = pending.ruleIndex != null ? (workflow.plan.rules || [])[pending.ruleIndex] : null;
+    if (pending.ruleThen === RULE_THEN_WAIT_FOR_ATTACHMENTS) {
+      rec.status = 'waitingAttachments'; rec.waitRuleIndex = pending.ruleIndex != null ? pending.ruleIndex : null; rec.followUpCount = 0; rec.sinceAt = now.toISOString();
+    } else {
+      if (pending.ruleThen === 'stop') rec.status = 'done';
+      else if (pending.ruleThen === 'wait') { rec.status = 'waiting'; rec.followUpCount = 0; rec.sinceAt = now.toISOString(); }
+      else rec.status = 'done';
+      if (rule) await runRuleAlsoDo(rule, rec, workflow, now);
+    }
+    if (!isMailRecord(rec) && rec.status !== 'waiting' && rec.status !== 'waitingAttachments') await syncOpenPhone(rec.waPhone, false);
     return { ok: true };
   });
 }
@@ -1875,7 +2201,7 @@ async function resolveUnclearWorkflowRecord(workflowId, runId, key, ruleIndex) {
   return withRecord(workflowId, runId, key, async (workflow, run, rec, now) => {
     const rule = (workflow.plan.rules || [])[ruleIndex];
     if (!rule) return { ok: false, error: 'That rule no longer exists.' };
-    await finishWorkflowRule(workflow, run, rec, rule, now);
+    await finishWorkflowRule(workflow, run, rec, rule, now, ruleIndex);
     return { ok: true };
   });
 }
@@ -1900,7 +2226,10 @@ async function checkWorkflowMailReplies(now = new Date()) {
     if (!run) continue;
     let changed = false;
     for (const rec of run.records) {
-      if (!isMailRecord(rec) || !['waiting', 'followed', 'asked'].includes(rec.status)) continue;
+      // PHASE 5 (2026-11) - 'waitingAttachments' added so a mail record
+      // parked waiting specifically for an attachment keeps being
+      // checked for a NEW reply (which might finally carry one).
+      if (!isMailRecord(rec) || !['waiting', 'followed', 'asked', 'waitingAttachments'].includes(rec.status)) continue;
       checked++;
       try {
         if (!cachedSignedInAddress) cachedSignedInAddress = await gmailService.getSignedInAddress().catch(() => null);
@@ -1914,7 +2243,7 @@ async function checkWorkflowMailReplies(now = new Date()) {
           const m = /<([^>]+)>/.exec(msg.from || '');
           const fromEmail = (m ? m[1] : msg.from || '').toLowerCase();
           if (cachedSignedInAddress && fromEmail === cachedSignedInAddress.toLowerCase()) continue; // our own sent message in this same thread
-          const replyText = await processWorkflowReply(w, run, rec, msg.bodyText, (rec.contact && rec.contact.name) || fromEmail, now);
+          const replyText = await processWorkflowReply(w, run, rec, msg.bodyText, (rec.contact && rec.contact.name) || fromEmail, now, { messageId: msg.id, attachments: msg.attachments || [] });
           if (replyText) await gmailService.sendReply({ messageId: id, replyText }).catch((err) => { rec.history.push({ at: now.toISOString(), who: 'SUBH', text: 'Could not send the reply: ' + err.message }); });
           processed++; changed = true;
         }
@@ -1941,7 +2270,13 @@ async function findOpenWorkflowRecordByPhone(phone) {
     if (w.status !== 'active' || !w.lastRunId) continue;
     const run = await getRun(w.id, w.lastRunId);
     if (!run) continue;
-    const rec = run.records.find((r) => r.waPhone === phone && ['waiting', 'followed', 'asked'].includes(r.status));
+    // PHASE 5 (2026-11) - 'waitingAttachments' added so a WhatsApp
+    // record waiting specifically for an attachment is still routed here
+    // (a text-only reply still won't resolve it - see
+    // processWorkflowReply's own 'waitingAttachments' branch - but it
+    // must still reach that branch rather than fall through to the
+    // normal engine while nominally "open").
+    const rec = run.records.find((r) => r.waPhone === phone && ['waiting', 'followed', 'asked', 'waitingAttachments'].includes(r.status));
     if (rec) return { workflow: w, run, rec };
   }
   return null;
@@ -2013,5 +2348,10 @@ module.exports = {
   effectiveFollowUpSettings, isFollowUpTimingReady, buildFollowUpLiveExample,
   // PHASE 4 (2026-11) - "Sheet options" + companyAccountsTeam + outsideEmails.
   workflowSheetPlanDependencies, workflowCheckSheetDependencies,
-  loadSheetRowNumberMap, loadSecondSheetData, writeAfterSendCell
+  loadSheetRowNumberMap, loadSecondSheetData, writeAfterSendCell,
+  // PHASE 5 (2026-11) - Details-from-reply, new To/sendDocument/then
+  // options, Also do (Drive save, sheet update), Wait for attachments.
+  RULE_SEND_TO_EXTRA_TARGETS, RULE_SEND_DOCUMENT_ATTACHMENTS_FROM_REPLY, RULE_THEN_WAIT_FOR_ATTACHMENTS,
+  parseDetailFieldNames, mergeExtractedDetails, buildRuleSendAttachment,
+  resolveRuleReplyAttachments, runRuleAlsoDo, uploadRuleAttachmentToDrive, writeRuleSheetUpdateCell
 };

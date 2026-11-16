@@ -44,6 +44,7 @@ const DETERMINISTIC_SUITES = [
   'check-workflow-v2-lock.js',
   'check-workflow-v2-phase3.js',
   'check-workflow-v2-phase4.js',
+  'check-workflow-v2-phase5.js',
   'check-mail-compose.js',
   'check-whatsapp-engine.js',
   'check-full-store-backup.js',
@@ -60,7 +61,7 @@ const DETERMINISTIC_SUITES = [
 // covers the new "Integrations"/"Together We Can" page - a different
 // surface from check-subh-panel-ui.js's SUBH assistant panel, kept as its
 // own separate script rather than growing that already very large file.
-const UI_CHECKS = ['check-subh-panel-ui.js', 'check-integrations-ui.js', 'check-mail-compose-ui.js', 'check-hi-insurance-queue-ui.js', 'check-workflow-v2-lock-ui.js', 'check-workflow-v2-phase3-ui.js', 'check-workflow-v2-phase4-ui.js'];
+const UI_CHECKS = ['check-subh-panel-ui.js', 'check-integrations-ui.js', 'check-mail-compose-ui.js', 'check-hi-insurance-queue-ui.js', 'check-workflow-v2-lock-ui.js', 'check-workflow-v2-phase3-ui.js', 'check-workflow-v2-phase4-ui.js', 'check-workflow-v2-phase5-ui.js'];
 
 // A non-zero exit does not always mean the suite's own checks failed - a
 // known, pre-existing, harmless Node/libuv issue on Windows

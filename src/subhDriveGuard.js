@@ -34,6 +34,17 @@
 
 const LETTER_TEMPLATES_FOLDER_ID = process.env.SUBH_LETTER_TEMPLATES_FOLDER_ID || '1ecugXqFBrNTvFDPxgQnZBq8ueItQduTW';
 const ISSUED_LETTERS_FOLDER_ID = process.env.SUBH_ISSUED_LETTERS_FOLDER_ID || '1uRYzSXURXoMi6kC8MmuKlruhFHvZqF8r';
+// Workflow Phase 5 (2026-11) - "Save attachments to a Drive folder" (a
+// rule's own Also-do box) needs its OWN allowlisted root, never the
+// Letter Templates tree above (unrelated owner-created folder, wrong
+// purpose) - unlike that one, this root has no known real folder id yet,
+// so it's deliberately NOT defaulted to a hardcoded id: unset means the
+// feature refuses with a clear "not configured" error (workflowService.js's
+// own uploadRuleAttachmentToDrive) rather than guessing or silently
+// no-op'ing. Set SUBH_WORKFLOW_ATTACHMENTS_FOLDER_ID in the Alcove Deploy
+// dashboard to a real Drive folder id shared with SUBH's own Drive
+// identity (subhDriveAuth) before any real upload can run.
+const WORKFLOW_ATTACHMENTS_FOLDER_ID = process.env.SUBH_WORKFLOW_ATTACHMENTS_FOLDER_ID || null;
 
 // ISSUE 3(a) (2026-11), live bug fix - the ONLY names SUBH's own code ever
 // gives a temp Drive-template copy (driveTemplateGenerationService.js's
@@ -57,7 +68,7 @@ const SUBH_TEMP_COPY_NAMES = ['SUBH generated letter (temp)', 'SUBH temp placeho
 // Seeded with the two known-safe roots; grows ONLY as this module itself
 // confirms/creates a folder that is a direct child of an already-allowed
 // one - never from anything a caller merely claims is safe.
-const allowedFolderIds = new Set([LETTER_TEMPLATES_FOLDER_ID, ISSUED_LETTERS_FOLDER_ID]);
+const allowedFolderIds = new Set([LETTER_TEMPLATES_FOLDER_ID, ISSUED_LETTERS_FOLDER_ID].concat(WORKFLOW_ATTACHMENTS_FOLDER_ID ? [WORKFLOW_ATTACHMENTS_FOLDER_ID] : []));
 // File ids this module created itself, this process run (temp template
 // copies, uploaded PDFs) - the ONLY ids guardedExport/guardedBatchUpdate/
 // guardedDeleteOwned will ever act on. In-memory only, by design: a file
@@ -217,7 +228,7 @@ async function guardedUploadFile(drive, parentId, name, mimeType, bodyStream) {
 }
 
 module.exports = {
-  LETTER_TEMPLATES_FOLDER_ID, ISSUED_LETTERS_FOLDER_ID, SUBH_TEMP_COPY_NAMES,
+  LETTER_TEMPLATES_FOLDER_ID, ISSUED_LETTERS_FOLDER_ID, WORKFLOW_ATTACHMENTS_FOLDER_ID, SUBH_TEMP_COPY_NAMES,
   guardedCopyTemplate, guardedExport, guardedBatchUpdate, guardedDeleteOwned,
   guardedGetOrCreateFolder, guardedUploadFile, guardedDeleteManifestFile, guardedDownloadFile
 };

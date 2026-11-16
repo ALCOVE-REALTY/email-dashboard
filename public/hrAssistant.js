@@ -7621,7 +7621,16 @@
     'Proti maser 1 tarikh oi maser pending probation confirmation gulo protita employee-r Reporting Manager ke alada mail korbe, ar HR team-er 4 jon ke confirmation letter-er PDF soho ekta list mail. 2 din-e reply na ele follow-up. Approved hole "Noted with thanks", extension hole koto mash jene employee ke Extension of Probation Period mail.'
   ];
   const WF_PLACEHOLDERS = ['{Employee_No}', '{Employee_Name}', '{Designation}', '{Department}', '{Manager_Name}', '{Current_Month}', '{Current_Year}'];
-  const WF_SEND_TO_LABELS = { self: 'The employee', manager: 'The Reporting Manager', hr: 'HR team', accounts: 'Accounts team' };
+  // PHASE 5 (2026-11) - "companyAccountsTeam"/"anyEmail" added, text
+  // only, no icons (owner's own explicit note) - 'anyEmail' also reveals
+  // a free-typed email field (rule.sendToEmail) when selected.
+  const WF_SEND_TO_LABELS = { self: 'The employee', manager: 'The Reporting Manager', hr: 'HR team', accounts: 'Accounts team', companyAccountsTeam: "Each Company's Accounts Team (Company details)", anyEmail: 'Any email' };
+  // PHASE 5 (2026-11) - client-side mirror of workflowService.js's own
+  // parseDetailFieldNames (comma-separated -> trimmed, deduped-by-nothing
+  // array) - used only to render the Summary panel's own "(reads: ...)"
+  // line; the actual stored value is always the raw string, same as
+  // every other free-text rule field.
+  function parseWfDetailFieldNames(raw) { return String(raw || '').split(',').map((s) => s.trim()).filter(Boolean); }
   // TASK 2 (2026-11), direct instruction ("Letter types cleanup"): the 4
   // built-in letters are gone - both the Section 6 "Template" dropdown
   // (wfDocsTpl) and a rule's own "Attach a document" dropdown now list
@@ -8442,6 +8451,12 @@
           '<div class="wf-auto-summary-line">🔁 Follow up every ' + (wfFuDays ? wfFuDays.value : 2) + ' day(s), up to ' + (wfFuMax ? wfFuMax.value : 2) + ' time(s)' + wfSmartFollowUpSummarySuffix(f) + '</div>' +
           (f.skipToNextWorkingDay ? '<div class="wf-auto-summary-line">📅 Runs on the next working day if it falls on a Sunday/holiday</div>' : '') +
           '<div class="wf-auto-summary-line">🤖 ' + wfRules.length + ' reply rule(s)</div>' +
+          // PHASE 5 (2026-11), owner's own "if trivial, extend Summary"
+          // judgment call (same convention as Phase 4 above) - one line
+          // each, only when actually used by at least one rule.
+          (wfRules.some((r) => parseWfDetailFieldNames(r.detailFields).length) ? '<div class="wf-auto-summary-line">🔎 reads: ' + escapeHtml(Array.from(new Set(wfRules.flatMap((r) => parseWfDetailFieldNames(r.detailFields)))).join(', ')) + '</div>' : '') +
+          (wfRules.some((r) => r.then === WF_THEN_WAIT_FOR_ATTACHMENTS) ? '<div class="wf-auto-summary-line">📎 at least one rule will wait for attachments</div>' : '') +
+          (wfRules.some((r) => r.alsoDo && ((r.alsoDo.driveUpload && r.alsoDo.driveUpload.on) || (r.alsoDo.sheetUpdate && r.alsoDo.sheetUpdate.on))) ? '<div class="wf-auto-summary-line">✅ also save to Drive &amp; update the sheet</div>' : '') +
           '<div class="wf-auto-summary-line">' + describeScheduleRule(f) + ' · next run <b>' + escapeHtml(data.nextRunAt ? wfWhen(data.nextRunAt) : '—') + '</b></div>' +
           '<div class="wf-auto-summary-line">Next run would send <b>' + ((data.sent || []).length) + '</b> first message(s).</div>';
       }
@@ -8451,11 +8466,44 @@
   ['wfFuDays', 'wfFuMax', 'wfDocsTpl', 'wfDocsWhere', 'wfSkipToNextWorkingDay', 'wfFuWorkingDaysOnly', 'wfFuFixedTimeOn', 'wfFuFixedTime', 'wfFuMentionMissing'].forEach((id) => { const el = document.getElementById(id); if (el) el.addEventListener('change', wfSync); });
 
   // ---------- Rules (Section 8) ----------
+  // PHASE 5 (2026-11) - "attachmentsFromReply" appended to the real
+  // Drive-template list (never a permanent entry in wfTemplateOptionsList
+  // itself, which is also the Section 6 "Template" dropdown's own live
+  // list and must stay template-keys-only).
+  const WF_SEND_DOCUMENT_ATTACHMENTS_FROM_REPLY = 'attachmentsFromReply';
+  const WF_THEN_WAIT_FOR_ATTACHMENTS = 'waitForAttachments';
   function wfRenderRuleFields(r, i) {
+    const alsoDo = r.alsoDo || {};
+    const driveUpload = alsoDo.driveUpload || {};
+    const sheetUpdate = alsoDo.sheetUpdate || {};
+    // "Update the sheet" is ONE text field in the UI ("e.g. Status =
+    // Done", matching the approved design reference exactly) - parsed
+    // into the stored {column, value} shape on every input (see the
+    // 'alsoSheetUpdateText' input handler below); re-render it from
+    // those same two fields so a reload/edit shows the identical text.
+    const sheetUpdateText = sheetUpdate.column ? (sheetUpdate.column + (sheetUpdate.value ? ' = ' + sheetUpdate.value : ' =')) : '';
     return '<div class="wf-auto-rule-card"><div class="wf-auto-rule-head"><span>Rule ' + (i + 1) + '</span><button type="button" class="wf-auto-cond-rm" data-rmrule="' + i + '" aria-label="Remove rule">×</button></div>' +
       '<label class="wf-rem-field">If the reply means<input type="text" data-r="' + i + '" data-k="when" value="' + escapeHtml(r.when || '') + '" placeholder="e.g. Approved / confirmed" autocomplete="off"></label>' +
+      // PHASE 5 (2026-11) - "Details — take from the reply" (owner's own
+      // approved design reference wording/placement) - a single comma-
+      // separated field-names text input (rule.detailFields), matching
+      // the design sample's own `take` field exactly; parsed into a clean
+      // array only where the engine needs it
+      // (workflowService.parseDetailFieldNames). Reuses the Phase 3
+      // .wf-nf-box/.wf-nf-title/.wf-nf-badge green-box classes, never new
+      // CSS.
+      '<div class="wf-nf-box"><div class="wf-nf-title">🔎 Details — take from the reply <span class="wf-nf-badge">NEW</span></div>' +
+      '<input type="text" data-r="' + i + '" data-k="detailFields" value="' + escapeHtml(r.detailFields || '') + '" placeholder="e.g. amount, reference no., date" autocomplete="off" style="margin-top:8px">' +
+      '<div class="wf-auto-hint">SUBH reads them from the reply → use as {Amount}, {Reference}, {Date}… in the next messages.</div></div>' +
       '<label class="wf-auto-check"><input type="checkbox" data-r="' + i + '" data-k="askDetail_on" ' + (r.askDetail ? 'checked' : '') + '> First ask for a missing detail</label>' +
       (r.askDetail ? (
+        // PHASE 5 (2026-11) - owner's own wording: "now asks only if the
+        // detail isn't already in the reply" - this is the EXISTING
+        // behaviour (classify_workflow_reply already tries to extract the
+        // same answer in the same breath, workflowService.js's
+        // processWorkflowReply), just called out here so it's visible in
+        // the UI next to the checkbox it describes.
+        '<div class="wf-auto-hint" style="color:var(--wi-green-700);font-weight:700">Now asks only if the detail isn\'t already in the reply.</div>' +
         '<div class="wf-rem-field-row"><label class="wf-rem-field">Detail<input type="text" data-r="' + i + '" data-k="askDetail" value="' + escapeHtml(r.askDetail || '') + '" placeholder="e.g. number of months" autocomplete="off"></label>' +
         '<label class="wf-rem-field">Follow up after (days)<input type="number" min="1" data-r="' + i + '" data-k="askFollowUpDays" value="' + (r.askFollowUpDays || '') + '" placeholder="default"></label></div>' +
         '<label class="wf-rem-field">SUBH asks<textarea data-r="' + i + '" data-k="askQuestion" class="wf-auto-body" style="min-height:70px" autocomplete="off">' + escapeHtml(r.askQuestion || '') + '</textarea></label>' +
@@ -8475,13 +8523,25 @@
       '<label class="wf-auto-check"><input type="checkbox" data-r="' + i + '" data-k="sendTo_on" ' + (r.sendTo ? 'checked' : '') + '> Then send a message to someone</label>' +
       (r.sendTo ? (
         '<label class="wf-rem-field">To<select data-r="' + i + '" data-k="sendTo">' + Object.keys(WF_SEND_TO_LABELS).map((v) => '<option value="' + v + '" ' + (r.sendTo === v ? 'selected' : '') + '>' + WF_SEND_TO_LABELS[v] + '</option>').join('') + '</select></label>' +
+        // PHASE 5 (2026-11) - "Any email" reveals a free-typed address
+        // field (rule.sendToEmail) - text only, no icon, per owner's note.
+        (r.sendTo === 'anyEmail' ? '<label class="wf-rem-field">Email address<input type="email" data-r="' + i + '" data-k="sendToEmail" value="' + escapeHtml(r.sendToEmail || '') + '" placeholder="name@company.com" autocomplete="off"></label>' : '') +
         '<label class="wf-rem-field">Subject<input type="text" data-r="' + i + '" data-k="sendSubject" value="' + escapeHtml(r.sendSubject || '') + '" autocomplete="off"></label>' +
         '<label class="wf-rem-field">Body<textarea data-r="' + i + '" data-k="sendBody" class="wf-auto-body" style="min-height:90px" autocomplete="off">' + escapeHtml(r.sendBody || '') + '</textarea></label>' +
-        '<div class="wf-auto-hint">{Reply_Detail} = what they told SUBH (only filled when "ask for a missing detail" above is used).</div>' +
-        '<label class="wf-rem-field">Attach a document<select data-r="' + i + '" data-k="sendDocument"><option value="">None</option>' + wfTemplateOptionsList.map((t) => '<option value="' + escapeHtml(t.key) + '" ' + (r.sendDocument === t.key ? 'selected' : '') + '>' + escapeHtml(t.label) + '</option>').join('') + '</select></label>' +
+        '<div class="wf-auto-hint">{Reply_Detail} = what they told SUBH (only filled when "ask for a missing detail" above is used). Any name from "Details — take from the reply" above is also usable, e.g. {Amount}.</div>' +
+        '<label class="wf-rem-field">Attach a document<select data-r="' + i + '" data-k="sendDocument"><option value="">None</option>' + wfTemplateOptionsList.map((t) => '<option value="' + escapeHtml(t.key) + '" ' + (r.sendDocument === t.key ? 'selected' : '') + '>' + escapeHtml(t.label) + '</option>').join('') + '<option value="' + WF_SEND_DOCUMENT_ATTACHMENTS_FROM_REPLY + '" ' + (r.sendDocument === WF_SEND_DOCUMENT_ATTACHMENTS_FROM_REPLY ? 'selected' : '') + '>Attachments from the reply (forward)</option></select></label>' +
         '<label class="wf-auto-check"><input type="checkbox" data-r="' + i + '" data-k="askMeFirst" ' + (r.askMeFirst ? 'checked' : '') + '> Ask me before sending this message</label>'
       ) : '') +
-      '<label class="wf-rem-field">Then<select data-r="' + i + '" data-k="then"><option value="stop" ' + (r.then === 'stop' ? 'selected' : '') + '>Done for this record</option><option value="wait" ' + (r.then === 'wait' ? 'selected' : '') + '>Keep waiting (follow up again)</option><option value="askme" ' + (r.then === 'askme' ? 'selected' : '') + '>Ask me</option></select></label>' +
+      '<label class="wf-rem-field">Then<select data-r="' + i + '" data-k="then"><option value="stop" ' + (r.then === 'stop' ? 'selected' : '') + '>Done for this record</option><option value="wait" ' + (r.then === 'wait' ? 'selected' : '') + '>Keep waiting (follow up again)</option><option value="askme" ' + (r.then === 'askme' ? 'selected' : '') + '>Ask me</option><option value="' + WF_THEN_WAIT_FOR_ATTACHMENTS + '" ' + (r.then === WF_THEN_WAIT_FOR_ATTACHMENTS ? 'selected' : '') + '>Wait for attachments (e.g. documents)</option></select></label>' +
+      // PHASE 5 (2026-11) - "Also do" green box - flat, independent of
+      // `then` (never nested under it - nesting/"Next stage" is
+      // explicitly Phase 6, not built here). Both off by default.
+      '<div class="wf-nf-box"><div class="wf-nf-title">Also do <span class="wf-nf-badge">NEW</span></div>' +
+      '<label class="wf-auto-check"><input type="checkbox" data-r="' + i + '" data-k="alsoDoDriveOn" ' + (driveUpload.on ? 'checked' : '') + '> Save attachments to a Drive folder</label>' +
+      (driveUpload.on ? '<input type="text" data-r="' + i + '" data-k="alsoDoDrivePath" value="' + escapeHtml(driveUpload.pathPattern || '') + '" placeholder="e.g. Documents/{Month}/{Employee_Name}.pdf" autocomplete="off" style="margin-top:8px">' : '') +
+      '<label class="wf-auto-check"><input type="checkbox" data-r="' + i + '" data-k="alsoDoSheetOn" ' + (sheetUpdate.on ? 'checked' : '') + '> Update the sheet</label>' +
+      (sheetUpdate.on ? '<input type="text" data-r="' + i + '" data-k="alsoDoSheetText" value="' + escapeHtml(sheetUpdateText) + '" placeholder="e.g. Status = Done" autocomplete="off" style="margin-top:8px">' : '') +
+      '</div>' +
       '</div>';
   }
   function renderWfRules() {
@@ -8497,8 +8557,29 @@
       if (t.dataset.k === 'askFollowUpWorkingDaysOnly') { rule.askFollowUpWorkingDaysOnly = t.checked; wfSync(); return; }
       if (t.dataset.k === 'askFollowUpMentionMissing') { rule.askFollowUpMentionMissing = t.checked; wfSync(); return; }
       if (t.dataset.k === 'askFollowUpFixedTimeOn') { rule.askFollowUpFixedTimeOfDay = t.checked ? (rule.askFollowUpFixedTimeOfDay || '10:00') : null; renderWfRules(); wfSync(); return; }
-      if (t.dataset.k === 'sendTo_on') { rule.sendTo = t.checked ? 'self' : null; if (!t.checked) { rule.sendSubject = null; rule.sendBody = null; rule.sendDocument = null; rule.askMeFirst = false; } renderWfRules(); wfSync(); return; }
+      if (t.dataset.k === 'sendTo_on') { rule.sendTo = t.checked ? 'self' : null; if (!t.checked) { rule.sendSubject = null; rule.sendBody = null; rule.sendDocument = null; rule.askMeFirst = false; rule.sendToEmail = null; } renderWfRules(); wfSync(); return; }
+      // PHASE 5 (2026-11) - the To <select> itself (not the checkbox
+      // above) now needs a re-render too: switching to/from 'anyEmail'
+      // shows/hides its own email field, and switching AWAY from it
+      // clears any previously-typed address rather than leaving it
+      // silently stored but unused.
+      if (t.dataset.k === 'sendTo') { rule.sendTo = t.value; if (t.value !== 'anyEmail') rule.sendToEmail = null; renderWfRules(); wfSync(); if (wfPlan) renderWfUnderstanding(); return; }
       if (t.dataset.k === 'askMeFirst') { rule.askMeFirst = t.checked; wfSync(); return; }
+      // PHASE 5 (2026-11) - "Also do" checkboxes, same checkbox-derives-
+      // from-value convention as every other box here: turning one OFF
+      // clears its own fields (never leaves a stale path/column saved
+      // but invisible), turning one ON seeds an empty, off... no, ON
+      // object so the conditional input below actually renders.
+      if (t.dataset.k === 'alsoDoDriveOn') {
+        rule.alsoDo = rule.alsoDo || {};
+        rule.alsoDo.driveUpload = t.checked ? { on: true, pathPattern: (rule.alsoDo.driveUpload && rule.alsoDo.driveUpload.pathPattern) || '' } : null;
+        renderWfRules(); wfSync(); return;
+      }
+      if (t.dataset.k === 'alsoDoSheetOn') {
+        rule.alsoDo = rule.alsoDo || {};
+        rule.alsoDo.sheetUpdate = t.checked ? { on: true, column: (rule.alsoDo.sheetUpdate && rule.alsoDo.sheetUpdate.column) || '', value: (rule.alsoDo.sheetUpdate && rule.alsoDo.sheetUpdate.value) || '' } : null;
+        renderWfRules(); wfSync(); return;
+      }
       rule[t.dataset.k] = t.value;
       wfSync();
       if (wfPlan) renderWfUnderstanding();
@@ -8506,11 +8587,33 @@
     wfRulesEl.addEventListener('input', (e) => {
       const t = e.target, i = t.dataset.r; if (i == null || t.type === 'checkbox' || t.tagName === 'SELECT') return;
       const rule = wfRules[+i];
-      if (t.dataset.k === 'askDetail') rule.askDetail = t.value; else rule[t.dataset.k] = t.value;
+      if (t.dataset.k === 'askDetail') { rule.askDetail = t.value; return; }
+      // PHASE 5 (2026-11) - "Details — take from the reply" is a plain
+      // comma-separated string field, same free-text convention as
+      // askDetail above - stored exactly as typed, parsed into a clean
+      // array only where the engine needs it.
+      if (t.dataset.k === 'detailFields') { rule.detailFields = t.value; return; }
+      if (t.dataset.k === 'sendToEmail') { rule.sendToEmail = t.value; return; }
+      if (t.dataset.k === 'alsoDoDrivePath') { rule.alsoDo = rule.alsoDo || {}; rule.alsoDo.driveUpload = rule.alsoDo.driveUpload || { on: true }; rule.alsoDo.driveUpload.pathPattern = t.value; return; }
+      // "Update the sheet" - ONE free-text field ("Status = Done",
+      // matching the approved design reference exactly), split on the
+      // FIRST '=' into {column, value} - the actual stored/engine shape
+      // (workflowService.js's own alsoDo.sheetUpdate = {column, value,
+      // on}). An in-progress edit with no '=' yet (or an empty value
+      // after it) simply leaves column/value as whatever's been typed so
+      // far - validated for real only at Save (wfValidate below).
+      if (t.dataset.k === 'alsoDoSheetText') {
+        rule.alsoDo = rule.alsoDo || {}; rule.alsoDo.sheetUpdate = rule.alsoDo.sheetUpdate || { on: true };
+        const eq = t.value.indexOf('=');
+        rule.alsoDo.sheetUpdate.column = (eq === -1 ? t.value : t.value.slice(0, eq)).trim();
+        rule.alsoDo.sheetUpdate.value = eq === -1 ? '' : t.value.slice(eq + 1).trim();
+        return;
+      }
+      rule[t.dataset.k] = t.value;
     });
     wfRulesEl.addEventListener('click', (e) => { const b = e.target.closest('[data-rmrule]'); if (!b) return; wfRules.splice(+b.dataset.rmrule, 1); renderWfRules(); wfSync(); });
   }
-  if (wfAddRuleBtn) wfAddRuleBtn.addEventListener('click', () => { wfRules.push({ when: '', askDetail: null, askQuestion: null, askFollowUpDays: null, askFollowUpWorkingDaysOnly: null, askFollowUpFixedTimeOfDay: null, askFollowUpMentionMissing: null, replyText: '', sendTo: null, sendSubject: null, sendBody: null, sendDocument: null, askMeFirst: false, then: 'stop' }); renderWfRules(); wfSync(); });
+  if (wfAddRuleBtn) wfAddRuleBtn.addEventListener('click', () => { wfRules.push({ when: '', detailFields: '', askDetail: null, askQuestion: null, askFollowUpDays: null, askFollowUpWorkingDaysOnly: null, askFollowUpFixedTimeOfDay: null, askFollowUpMentionMissing: null, replyText: '', sendTo: null, sendToEmail: null, sendSubject: null, sendBody: null, sendDocument: null, askMeFirst: false, then: 'stop', alsoDo: null }); renderWfRules(); wfSync(); });
 
   // ---------- Ask SUBH ----------
   if (wfAskExamples) wfAskExamples.addEventListener('click', (e) => { const b = e.target.closest('[data-ex]'); if (!b) return; wfAsk.value = WF_EXAMPLES[+b.dataset.ex]; wfDoAsk(); });
@@ -8633,7 +8736,16 @@
       '<b>By:</b> ' + (f.mediator === 'mail' ? 'Mail' : 'WhatsApp') + (f.table ? ' · table ' + (f.tablePlacement === 'pdf' ? 'as ' + (f.attachmentFormat === 'excel' ? 'Excel' : 'PDF') + ' attachment' : 'in the message') : ''),
       '<b>When:</b> ' + escapeHtml(describeScheduleRule(f)) + ', first run ' + escapeHtml(wfLastPreview && wfLastPreview.nextRunAt ? wfWhen(wfLastPreview.nextRunAt) : '—'),
       '🔁 No reply in <b>' + (wfFuDays ? wfFuDays.value : 2) + ' day(s)</b> → follow up (max ' + (wfFuMax ? wfFuMax.value : 2) + '), then alert you',
-      ...wfRules.map((r) => (r.askDetail ? '⏳' : '✅') + ' "' + escapeHtml(r.when || '(unnamed rule)') + '" → ' + (r.askDetail ? 'ask for ' + escapeHtml(r.askDetail) + ' → ' : '') + '"' + escapeHtml((r.replyText || '').slice(0, 60)) + (((r.replyText || '').length > 60) ? '…' : '') + '"' + (r.sendTo ? ' → mail to ' + (WF_SEND_TO_LABELS[r.sendTo] || r.sendTo) + (r.askMeFirst ? ' (asks you first)' : '') : '') + ' → ' + (r.then === 'stop' ? 'done' : r.then === 'wait' ? 'keep waiting' : 'ask you')),
+      // PHASE 5 (2026-11) - mentions "Details — take from the reply"/
+      // "Also do" when used (same low-risk "if trivial" judgment call
+      // Phases 3/4 made for their own new boxes), and the new
+      // "Wait for attachments" then-value.
+      ...wfRules.map((r) => (r.askDetail ? '⏳' : '✅') + ' "' + escapeHtml(r.when || '(unnamed rule)') + '"' +
+        (parseWfDetailFieldNames(r.detailFields).length ? ' (reads: ' + escapeHtml(parseWfDetailFieldNames(r.detailFields).join(', ')) + ')' : '') +
+        ' → ' + (r.askDetail ? 'ask for ' + escapeHtml(r.askDetail) + ' → ' : '') + '"' + escapeHtml((r.replyText || '').slice(0, 60)) + (((r.replyText || '').length > 60) ? '…' : '') + '"' +
+        (r.sendTo ? ' → mail to ' + (r.sendTo === 'anyEmail' ? escapeHtml(r.sendToEmail || 'any email') : (WF_SEND_TO_LABELS[r.sendTo] || r.sendTo)) + (r.askMeFirst ? ' (asks you first)' : '') : '') +
+        ' → ' + (r.then === 'stop' ? 'done' : r.then === 'wait' ? 'keep waiting' : r.then === WF_THEN_WAIT_FOR_ATTACHMENTS ? 'wait for attachments' : 'ask you') +
+        (((r.alsoDo && r.alsoDo.driveUpload && r.alsoDo.driveUpload.on) || (r.alsoDo && r.alsoDo.sheetUpdate && r.alsoDo.sheetUpdate.on)) ? ' + also ' + [r.alsoDo.driveUpload && r.alsoDo.driveUpload.on ? 'save to Drive' : null, r.alsoDo.sheetUpdate && r.alsoDo.sheetUpdate.on ? 'update the sheet' : null].filter(Boolean).join(' & ') : '')),
       '❓ Unclear reply → a card for you'
     ];
     wfUnderstand.innerHTML = '<div class="wf-auto-und"><h3>SUBH understood' + (wfConfirmed ? ' <span class="ok">✓ confirmed</span>' : '') + '</h3><ul>' + lines.map((l) => '<li>' + l + '</li>').join('') +
@@ -8833,6 +8945,12 @@
     if (wfPlan && wfPlan.source === 'sheet' && !wfPlan.sheetColumns) { showWfToast('Load the Google Sheet first.', 'warning'); ok = false; }
     if (!wfRules.length) { showWfToast('Add at least one reply rule.', 'warning'); ok = false; }
     if (wfRules.some((r) => !r.when || !r.replyText)) { showWfToast('Every rule needs "what it means" and "SUBH replies" filled in.', 'warning'); ok = false; }
+    // PHASE 5 (2026-11) - new per-rule fields that need SOMETHING typed
+    // once their own checkbox/dropdown is on, same "Every rule needs..."
+    // validation convention as the line above.
+    if (wfRules.some((r) => r.sendTo === 'anyEmail' && !(r.sendToEmail || '').trim())) { showWfToast('Add the email address for "Any email" on every rule that uses it.', 'warning'); ok = false; }
+    if (wfRules.some((r) => r.alsoDo && r.alsoDo.driveUpload && r.alsoDo.driveUpload.on && !(r.alsoDo.driveUpload.pathPattern || '').trim())) { showWfToast('Add the Drive folder path pattern for "Save attachments to a Drive folder" on every rule that uses it.', 'warning'); ok = false; }
+    if (wfRules.some((r) => r.alsoDo && r.alsoDo.sheetUpdate && r.alsoDo.sheetUpdate.on && !(r.alsoDo.sheetUpdate.column || '').trim())) { showWfToast('"Update the sheet" needs a column (e.g. "Status = Done") on every rule that uses it.', 'warning'); ok = false; }
     if (wfCcField.getChips().some((e) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e))) { showWfToast('One of the CC addresses doesn\'t look like a valid email.', 'warning'); ok = false; }
     if (wfAlsoOn && wfAlsoOn.checked) {
       if (!wfAlsoToField.getChips().length) { showWfToast('Add at least one "Also send" recipient.', 'warning'); ok = false; }
@@ -8859,7 +8977,11 @@
   if (wfCancelBtn) wfCancelBtn.addEventListener('click', navBack);
 
   // ---------- Progress board (detail page) ----------
-  const WF_STATE_LABELS = { sent: ['Sent', 's-pending'], waiting: ['Waiting', 's-pending'], followed: ['Followed up', 's-pending'], asked: ['Detail asked', 's-paused'], needs: ['Needs you', 's-red'], done: ['Done ✓', 's-active'], noreply: ['No reply — needs you', 's-red'], stopped: ['Stopped', 's-paused'], skipped: ['Skipped', 's-paused'] };
+  // PHASE 5 (2026-11) - 'waitingAttachments' added ("Wait for
+  // attachments" - a record waiting specifically for a later reply that
+  // carries a real attachment; falls into the SAME generic "Stop" action
+  // as 'waiting'/'followed' below, no special button needed).
+  const WF_STATE_LABELS = { sent: ['Sent', 's-pending'], waiting: ['Waiting', 's-pending'], followed: ['Followed up', 's-pending'], asked: ['Detail asked', 's-paused'], waitingAttachments: ['Waiting for attachment', 's-paused'], needs: ['Needs you', 's-red'], done: ['Done ✓', 's-active'], noreply: ['No reply — needs you', 's-red'], stopped: ['Stopped', 's-paused'], skipped: ['Skipped', 's-paused'] };
   function wfRecordName(rec) { return (rec.row && (rec.row['Employee_Name'] || rec.row['Name'])) || rec.key || '—'; }
   async function openWorkflowDetail(id) {
     setPanelView('workflowDetail');
@@ -8897,7 +9019,7 @@
     const c = (k) => rows.filter((x) => x.status === k).length;
     if (wfDetailCounts) {
       wfDetailCounts.innerHTML = [
-        ['Waiting', c('waiting') + c('sent')], ['Followed up', c('followed')], ['Detail asked', c('asked')], ['Done', c('done')],
+        ['Waiting', c('waiting') + c('sent')], ['Followed up', c('followed')], ['Detail asked', c('asked')], ['Waiting for attachment', c('waitingAttachments')], ['Done', c('done')],
         ['Needs you', c('needs') + c('noreply'), true]
       ].map(([l, n, red]) => '<span class="cp' + (red && n ? ' red' : '') + '">' + l + ' <b>' + n + '</b></span>').join('');
     }

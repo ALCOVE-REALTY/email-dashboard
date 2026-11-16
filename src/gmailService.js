@@ -372,6 +372,24 @@ function stripHtml(html) {
     .trim();
 }
 
+// Walks a message payload's part tree collecting real ATTACHMENT parts
+// only (a part with its own `filename` AND a `body.attachmentId` - an
+// inline body part, e.g. the plain-text/HTML content findBodyPart above
+// already reads, never has an attachmentId) - metadata only (no bytes),
+// so a normal reply with no attachment costs nothing extra to read.
+// Workflow Phase 5 (2026-11) - "Attachments from the reply (forward)" /
+// "Wait for attachments" both need to know what arrived on a reply
+// without downloading every attachment on every poll.
+function findAttachmentParts(payload, acc) {
+  const out = acc || [];
+  if (!payload) return out;
+  if (payload.filename && payload.body && payload.body.attachmentId) {
+    out.push({ filename: payload.filename, mimeType: payload.mimeType || 'application/octet-stream', attachmentId: payload.body.attachmentId, size: payload.body.size || 0 });
+  }
+  if (payload.parts) payload.parts.forEach((p) => findAttachmentParts(p, out));
+  return out;
+}
+
 async function getFullMessage(id) {
   const client = gmail();
   const res = await client.users.messages.get({
@@ -398,8 +416,27 @@ async function getFullMessage(id) {
     subject: headerValue(headers, 'Subject') || '(no subject)',
     from: headerValue(headers, 'From'),
     date: headerValue(headers, 'Date'),
-    bodyText
+    bodyText,
+    // Additive (2026-11) - every existing caller destructures the fields
+    // it already knew about and ignores this one, so adding it changes
+    // nothing for them; `[]` whenever the message carries no real
+    // attachment part.
+    attachments: findAttachmentParts(res.data.payload)
   };
+}
+
+// Downloads ONE attachment's real bytes by its own attachmentId (from
+// getFullMessage's `attachments` metadata above) - never guessed/
+// refetched from anywhere else, always the exact part that arrived on
+// that exact message. Workflow Phase 5 (2026-11) - "Attachments from the
+// reply (forward)" / "Save attachments to a Drive folder" both forward
+// these same real bytes, never regenerate anything.
+async function downloadAttachmentData(messageId, attachmentId) {
+  const client = gmail();
+  const res = await client.users.messages.attachments.get({ userId: 'me', messageId, id: attachmentId });
+  const data = res.data && res.data.data;
+  if (!data) return null;
+  return Buffer.from(data.replace(/-/g, '+').replace(/_/g, '/'), 'base64');
 }
 
 function encodeHeaderText(text) {
@@ -602,6 +639,7 @@ module.exports = {
   getMessagesByCategory,
   listMessageIds,
   getFullMessage,
+  downloadAttachmentData,
   getSignedInAddress,
   sendReply,
   trashMessage,
