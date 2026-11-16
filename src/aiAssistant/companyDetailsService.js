@@ -27,7 +27,15 @@ function getClient() {
 
 const COMPANY_DETAILS_PREFIX = 'subh-company-details:';
 const LETTER_LOGO_KEY = 'subh-letter-logo';
-const BLANK_DETAILS = { code: '', address: '', cin: '', phone: '', email: '', website: '' };
+// PHASE 2 (2026-11), direct instruction - "accountsEmails[] (new field,
+// existing fields unchanged)": additive only, same as every other
+// optional field here. A record saved before this field existed (or any
+// future record that simply never sets it) must read back as `[]`, never
+// throw - BLANK_DETAILS is only ever spread via blankDetails() below
+// (never referenced directly), so every record gets its OWN fresh array,
+// not a shared reference that a later mutation could leak across records.
+const BLANK_DETAILS = { code: '', address: '', cin: '', phone: '', email: '', website: '', accountsEmails: [] };
+function blankDetails() { return Object.assign({}, BLANK_DETAILS, { accountsEmails: [] }); }
 
 // PART A (2026-11), direct instruction, URGENT DATA LOSS fix - audit log
 // for every write/reattach/ambiguous-match event on this store (time,
@@ -162,8 +170,28 @@ async function listCompanyDetails({ forceRefresh } = {}) {
   const companies = await getCompanyNamesFromHr({ forceRefresh });
   return Promise.all(companies.map(async (company) => {
     const saved = await getCompanyDetails(company);
-    return Object.assign({ company }, BLANK_DETAILS, saved || {});
+    return Object.assign({ company }, blankDetails(), saved || {});
   }));
+}
+// PHASE 2 (2026-11), direct instruction - accountsEmails[] is a plain
+// array of trimmed, non-blank email strings, de-duplicated case-
+// insensitively (same convention as the mail-compose chip fields this
+// reuses on the UI side) - never validated against an email regex, same
+// deliberately-permissive treatment the existing `email` field already
+// gets (free text, no format gate).
+function cleanAccountsEmails(value) {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set();
+  const out = [];
+  for (const raw of value) {
+    const trimmed = String(raw || '').trim();
+    if (!trimmed) continue;
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(trimmed);
+  }
+  return out;
 }
 async function saveCompanyDetails(company, fields) {
   const redis = getClient();
@@ -178,6 +206,7 @@ async function saveCompanyDetails(company, fields) {
     phone: String((fields && fields.phone) || '').trim(),
     email: String((fields && fields.email) || '').trim(),
     website: String((fields && fields.website) || '').trim(),
+    accountsEmails: cleanAccountsEmails(fields && fields.accountsEmails),
     updatedAt: Date.now()
   };
   const key = COMPANY_DETAILS_PREFIX + company;
@@ -195,7 +224,8 @@ async function saveCompanyDetails(company, fields) {
     const raw = await redis.get(key);
     verified = raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : null;
   } catch (err) { /* verified stays null - treated as a failed verification below */ }
-  if (!verified || verified.code !== toSave.code || verified.address !== toSave.address) {
+  if (!verified || verified.code !== toSave.code || verified.address !== toSave.address ||
+      JSON.stringify(verified.accountsEmails || []) !== JSON.stringify(toSave.accountsEmails)) {
     return { ok: false, error: 'Save could not be verified - please try again.' };
   }
   await logCompanyDetailsAudit({ action: 'saved', company, before: before ? Object.assign({}, before) : null, after: Object.assign({}, toSave), source: 'owner-ui' });

@@ -193,6 +193,84 @@ async function main() {
     });
 
     console.log('='.repeat(70));
+    console.log('PHASE 2 (2026-11), direct instruction - accountsEmails[]: additive field, existing fields unchanged, a record missing it reads as []');
+    console.log('='.repeat(70));
+    await checkAsync('a never-saved company\'s accountsEmails reads back as [] (never undefined/crashes)', async () => {
+      const list = await companyDetailsService.listCompanyDetails();
+      const subh = list.find((i) => i.company === 'Subh Ventures Pvt Ltd');
+      return Array.isArray(subh.accountsEmails) && subh.accountsEmails.length === 0;
+    });
+    await checkAsync('saveCompanyDetails round-trips accountsEmails, existing fields unaffected', async () => {
+      const saveResult = await companyDetailsService.saveCompanyDetails('Alcove Realty Pvt Ltd', {
+        code: 'ARPL', address: '123 HO Street, Kolkata', cin: 'U12345WB2015PTC000001', phone: '033-1234-5678', email: 'hr@alcoverealty.in', website: 'https://alcoverealty.in',
+        accountsEmails: ['accounts@alcoverealty.in', 'finance@alcoverealty.in']
+      });
+      const fetched = await companyDetailsService.getCompanyDetails('Alcove Realty Pvt Ltd');
+      return saveResult.ok === true &&
+        JSON.stringify(saveResult.item.accountsEmails) === JSON.stringify(['accounts@alcoverealty.in', 'finance@alcoverealty.in']) &&
+        fetched.code === 'ARPL' && fetched.address === '123 HO Street, Kolkata' && // existing fields untouched
+        JSON.stringify(fetched.accountsEmails) === JSON.stringify(['accounts@alcoverealty.in', 'finance@alcoverealty.in']);
+    });
+    await checkAsync('a record saved BEFORE accountsEmails existed (simulated: no field in the saved JSON at all) reads back as [], never crashes', async () => {
+      // Simulate a pre-existing legacy record missing the field entirely by
+      // writing directly under the exact same key convention this service
+      // uses, bypassing saveCompanyDetails (which would always include it).
+      const { Redis } = require('@upstash/redis');
+      const legacyClient = new Redis({ url: process.env.KV_REST_API_URL, token: process.env.KV_REST_API_TOKEN });
+      await legacyClient.set('subh-company-details:Subh Ventures Pvt Ltd', JSON.stringify({ company: 'Subh Ventures Pvt Ltd', code: 'SVPL-LEGACY', address: '', cin: '', phone: '', email: '', website: '', updatedAt: Date.now() }));
+      const fetched = await companyDetailsService.getCompanyDetails('Subh Ventures Pvt Ltd');
+      const list = await companyDetailsService.listCompanyDetails();
+      const subh = list.find((i) => i.company === 'Subh Ventures Pvt Ltd');
+      return fetched.code === 'SVPL-LEGACY' && !('accountsEmails' in fetched) &&
+        Array.isArray(subh.accountsEmails) && subh.accountsEmails.length === 0;
+    });
+    await checkAsync('accountsEmails is de-duplicated case-insensitively and blank entries are dropped on save', async () => {
+      const saveResult = await companyDetailsService.saveCompanyDetails('Subh Ventures Pvt Ltd', {
+        code: 'SVPL', accountsEmails: ['Accounts@Example.com', ' ', 'accounts@example.com', '', 'finance@example.com']
+      });
+      return saveResult.ok === true && JSON.stringify(saveResult.item.accountsEmails) === JSON.stringify(['Accounts@Example.com', 'finance@example.com']);
+    });
+    await checkAsync('saveCompanyDetails records an audit entry that includes the new accountsEmails field (rides the SAME company-details audit log, no separate group needed)', async () => {
+      const log = await companyDetailsService.listCompanyDetailsAudit(50);
+      const entry = log.find((e) => e.action === 'saved' && e.company === 'Subh Ventures Pvt Ltd' && e.after && JSON.stringify(e.after.accountsEmails) === JSON.stringify(['Accounts@Example.com', 'finance@example.com']));
+      return Boolean(entry);
+    });
+
+    console.log('='.repeat(70));
+    console.log('Owner-gating: the company-details routes (src/workforceRoutes.js), same pattern as every other owner route - accountsEmails rides the SAME existing POST route, no new route to gate');
+    console.log('='.repeat(70));
+    {
+      const origOwnerEmail = process.env.SUBH_MEMORY_OWNER_EMAIL;
+      process.env.SUBH_MEMORY_OWNER_EMAIL = 'owner@company-details-test.local';
+      const OWNER = 'owner@company-details-test.local';
+      const NON_OWNER = 'random.person@example.com';
+      const workforceRoutes = require('../src/workforceRoutes');
+      function findRouteHandler(router, method, routePath) {
+        for (const layer of router.stack) {
+          if (layer.route && layer.route.path === routePath && layer.route.methods[method]) {
+            return layer.route.stack[layer.route.stack.length - 1].handle;
+          }
+        }
+        throw new Error('route not found: ' + method + ' ' + routePath);
+      }
+      function fakeRes() {
+        return { statusCode: 200, _json: null, status(code) { this.statusCode = code; return this; }, json(obj) { this._json = obj; return this; } };
+      }
+      async function callRoute(method, routePath, { body, params, email } = {}) {
+        const handler = findRouteHandler(workforceRoutes, method, routePath);
+        const req = { body: body || {}, query: {}, params: params || {}, hrUser: { email: email || '' } };
+        const res = fakeRes();
+        await handler(req, res);
+        return { status: res.statusCode, body: res._json };
+      }
+      await checkAsync('GET /hr-assistant/company-details - a non-owner gets 403', async () => (await callRoute('get', '/hr-assistant/company-details', { email: NON_OWNER })).status === 403);
+      await checkAsync('GET /hr-assistant/company-details - the owner is let through (never 403)', async () => (await callRoute('get', '/hr-assistant/company-details', { email: OWNER })).status !== 403);
+      await checkAsync('POST /hr-assistant/company-details/:company - a non-owner gets 403', async () => (await callRoute('post', '/hr-assistant/company-details/:company', { email: NON_OWNER, params: { company: 'Alcove Realty Pvt Ltd' }, body: { code: 'ARPL', accountsEmails: ['x@example.com'] } })).status === 403);
+      await checkAsync('POST /hr-assistant/company-details/:company - the owner is let through (never 403)', async () => (await callRoute('post', '/hr-assistant/company-details/:company', { email: OWNER, params: { company: 'Alcove Realty Pvt Ltd' }, body: { code: 'ARPL', accountsEmails: ['x@example.com'] } })).status !== 403);
+      if (origOwnerEmail === undefined) delete process.env.SUBH_MEMORY_OWNER_EMAIL; else process.env.SUBH_MEMORY_OWNER_EMAIL = origOwnerEmail;
+    }
+
+    console.log('='.repeat(70));
     console.log('isAvailable() reflects whether a store is configured');
     console.log('='.repeat(70));
     check('isAvailable() is true under the test bootstrap\'s fake store', companyDetailsService.isAvailable() === true);

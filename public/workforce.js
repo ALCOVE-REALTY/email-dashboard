@@ -575,6 +575,13 @@ if (subhSettingsHistoryBtn) {
     if (window.__hrAssistantOpenSettingsHistory) window.__hrAssistantOpenSettingsHistory();
   });
 }
+// Holidays (PHASE 2, 2026-11) - same entry pattern as above.
+const subhSettingsHolidaysBtn = document.getElementById('subhSettingsHolidaysBtn');
+if (subhSettingsHolidaysBtn) {
+  subhSettingsHolidaysBtn.addEventListener('click', () => {
+    if (window.__hrAssistantOpenHolidays) window.__hrAssistantOpenHolidays();
+  });
+}
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && !wfDrawer.hidden) closeDrawer();
 });

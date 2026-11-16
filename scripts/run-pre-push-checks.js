@@ -50,7 +50,8 @@ const DETERMINISTIC_SUITES = [
   'check-settings-health.js',
   'check-settings-history.js',
   'check-together-we-can.js',
-  'check-hi-insurance-queue.js'
+  'check-hi-insurance-queue.js',
+  'check-holidays.js'
 ];
 // Headless Playwright UI checks (also deterministic/mocked - no real
 // Claude/Drive calls). check-integrations-ui.js (2026-11, new feature)

@@ -38,6 +38,7 @@ const fileStorage = require('./fileStorage');
 const whatsapp = require('./whatsappService');
 const redisHealth = require('./redisHealth');
 const togetherWeCanService = require('./aiAssistant/togetherWeCanService');
+const holidaysService = require('./aiAssistant/holidaysService');
 
 const router = express.Router();
 
@@ -3275,6 +3276,43 @@ router.post('/hr-assistant/letter-logo', async (req, res) => {
     const result = await companyDetailsService.saveLetterLogo({ dataUrl, contentType });
     if (!result.ok) return res.status(400).json({ error: result.error });
     res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PHASE 2 (2026-11), direct instruction - "Holidays": a new, owner-only
+// store. Sundays are always a holiday (computed server-side by
+// holidaysService.isSunday/isHoliday, never stored); owner-added specific
+// dates are the only thing persisted - same isOwner gating convention as
+// every other owner-only route above. Nothing else in this app reads this
+// store yet (wiring it into the Workflow schedule/follow-up logic is a
+// later phase) - this is data-management only.
+router.get('/hr-assistant/holidays', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    res.json({ items: await holidaysService.listHolidayDates() });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+router.post('/hr-assistant/holidays', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const { date, label } = req.body || {};
+    const result = await holidaysService.addHoliday({ date, label });
+    if (!result.ok) return res.status(400).json({ error: result.error });
+    res.json({ ok: true, items: result.items });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+router.delete('/hr-assistant/holidays/:date', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const result = await holidaysService.removeHoliday(decodeURIComponent(req.params.date));
+    if (!result.ok) return res.status(400).json({ error: result.error });
+    res.json({ ok: true, items: result.items });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

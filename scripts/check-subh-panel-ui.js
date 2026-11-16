@@ -634,10 +634,13 @@ async function checkRealTopbarFrame(page, pageLabel) {
   // its own comment) - this pattern must match that too, not just the
   // bare path, or the real request falls through to the real network and
   // the test hangs/fails on a 404 instead of hitting this mock.
+  // PHASE 2 (2026-11), direct instruction - Alcove's fake record carries
+  // one saved accountsEmails entry, so the edit sheet's chip field has
+  // something real to pre-fill and assert against below.
   await page.route('**/api/workforce/hr-assistant/company-details**', (route) => {
     const items = [
-      { company: 'Alcove Realty Pvt Ltd', code: 'ARPL', address: '123 HO Street', cin: 'U12345WB2015PTC000001', phone: '033-1234-5678', email: 'hr@alcoverealty.in', website: 'https://alcoverealty.in' },
-      { company: 'Subh Ventures Pvt Ltd', code: '', address: '', cin: '', phone: '', email: '', website: '' }
+      { company: 'Alcove Realty Pvt Ltd', code: 'ARPL', address: '123 HO Street', cin: 'U12345WB2015PTC000001', phone: '033-1234-5678', email: 'hr@alcoverealty.in', website: 'https://alcoverealty.in', accountsEmails: ['accounts@alcoverealty.in'] },
+      { company: 'Subh Ventures Pvt Ltd', code: '', address: '', cin: '', phone: '', email: '', website: '', accountsEmails: [] }
     ];
     route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items, logo: null }) });
   });
@@ -657,15 +660,126 @@ async function checkRealTopbarFrame(page, pageLabel) {
   check('Company details: edit sheet opens for the tapped card', await page.locator('#hrCompanyDetailSheet').isVisible());
   const codeVal = await page.locator('#hrCompanyCodeInput').inputValue().catch(() => null);
   check('Company details: edit sheet pre-fills the saved company code', codeVal === 'ARPL', 'got: ' + JSON.stringify(codeVal));
+  // PHASE 2 (2026-11), direct instruction - accountsEmails[]: the chip
+  // field (createMailChipField, the SAME component the mail compose To/Cc
+  // fields use) pre-fills the saved email as a real removable chip, typing
+  // + Enter adds a new one, and Save actually POSTs accountsEmails in the
+  // request body - not just a UI state check.
+  const accountsEmailsChipTexts = await page.locator('#hrCompanyAccountsEmailsChipInput .wf-mail-chip span').allTextContents();
+  check('Company details: Accounts emails chip field pre-fills the saved email as a real chip', accountsEmailsChipTexts.includes('accounts@alcoverealty.in'), 'got: ' + JSON.stringify(accountsEmailsChipTexts));
+  await page.click('#hrCompanyAccountsEmailsInput');
+  await page.keyboard.type('finance@alcoverealty.in');
+  await page.keyboard.press('Enter');
+  await page.waitForTimeout(100);
+  const accountsEmailsChipTextsAfterAdd = await page.locator('#hrCompanyAccountsEmailsChipInput .wf-mail-chip span').allTextContents();
+  check('Company details: typing an email + Enter adds a second chip', accountsEmailsChipTextsAfterAdd.includes('finance@alcoverealty.in') && accountsEmailsChipTextsAfterAdd.length === 2, 'got: ' + JSON.stringify(accountsEmailsChipTextsAfterAdd));
+  let savedCompanyDetailsBody = null;
+  await page.route('**/api/workforce/hr-assistant/company-details/**', (route) => {
+    if (route.request().method() !== 'POST') return route.fallback();
+    savedCompanyDetailsBody = route.request().postDataJSON();
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, item: Object.assign({ company: 'Alcove Realty Pvt Ltd' }, savedCompanyDetailsBody) }) });
+  });
+  await page.click('#hrCompanyDetailSheetSaveBtn');
+  await page.waitForTimeout(650);
+  check('Company details: Save actually POSTs accountsEmails with both chips, in order', Boolean(savedCompanyDetailsBody) && JSON.stringify(savedCompanyDetailsBody.accountsEmails) === JSON.stringify(['accounts@alcoverealty.in', 'finance@alcoverealty.in']), 'got: ' + JSON.stringify(savedCompanyDetailsBody));
   const companyErrAfter = consoleErrors.length + pageErrors.length;
-  check('Company details: no JS error was thrown opening the page or the edit sheet', companyErrAfter === companyErrBefore,
+  check('Company details: no JS error was thrown opening the page, the edit sheet, or saving accountsEmails', companyErrAfter === companyErrBefore,
     'new errors: ' + JSON.stringify(consoleErrors.slice(companyErrBefore).concat(pageErrors.slice(companyErrBefore))));
   // The edit sheet is a fixed-position overlay OUTSIDE the panel's own
   // hidden-toggle (same as every other wf-rem-sheet in this app) - closing
   // the panel does not close it, and leaving it open intercepts every
   // subsequent click at this same screen position in later test blocks.
-  await page.click('#hrCompanyDetailSheetCloseBtn');
+  // Save's own success path already closes the sheet (closeCompanyDetailSheet) -
+  // confirm that happened rather than forcing it via the Close button, so
+  // this genuinely exercises the real save-then-close flow.
   await page.waitForTimeout(350);
+  check('Company details: the edit sheet closes itself after a successful Save', !(await page.locator('#hrCompanyDetailSheet').isVisible()));
+
+  // PHASE 2 (2026-11), direct instruction - "Holidays" settings page:
+  // opened the same way the real "SUBH Settings" dashboard tile opens it
+  // (window.__hrAssistantOpenHolidays), asserts the owner-added list
+  // renders, the Sundays note is computed correctly for THIS month (same
+  // algorithm, computed independently here rather than hardcoded, so this
+  // never silently rots across a month boundary), add-a-date actually
+  // POSTs, and delete actually DELETEs (through the real confirm dialog,
+  // not a browser-native confirm() - this app has none).
+  {
+    const now = new Date();
+    const expectedSundays = [];
+    const d = new Date(now.getFullYear(), now.getMonth(), 1);
+    while (d.getMonth() === now.getMonth()) {
+      if (d.getDay() === 0) expectedSundays.push(d.getDate());
+      d.setDate(d.getDate() + 1);
+    }
+    // Stateful fixture (mirrors real server behavior) - GET always
+    // reflects whatever POST/DELETE have done so far this test, since the
+    // real app re-fetches the list via a plain GET after every save
+    // (pageDataCache.holidays = null -> loadHolidaysPage()) rather than
+    // trusting the mutation response's own echoed body.
+    let holidayItems = [{ date: '2026-12-25', label: 'Christmas' }];
+    let addedHolidayBody = null;
+    let deletedHolidayPath = null;
+    await page.route('**/api/workforce/hr-assistant/holidays', (route) => {
+      const method = route.request().method();
+      if (method === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: holidayItems }) });
+      if (method === 'POST') {
+        addedHolidayBody = route.request().postDataJSON();
+        holidayItems = holidayItems.concat([{ date: addedHolidayBody.date, label: addedHolidayBody.label || '' }]);
+        return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, items: holidayItems }) });
+      }
+      return route.fallback();
+    });
+    await page.route('**/api/workforce/hr-assistant/holidays/**', (route) => {
+      if (route.request().method() !== 'DELETE') return route.fallback();
+      deletedHolidayPath = route.request().url();
+      const deletedDate = decodeURIComponent(deletedHolidayPath.split('/holidays/')[1] || '');
+      holidayItems = holidayItems.filter((h) => h.date !== deletedDate);
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, items: holidayItems }) });
+    });
+    await page.evaluate(() => { if (window.__hrAssistantClosePanel) window.__hrAssistantClosePanel(); });
+    await page.waitForTimeout(100);
+    const holidaysErrBefore = consoleErrors.length + pageErrors.length;
+    await page.evaluate(() => { window.__hrAssistantOpenHolidays(); });
+    await page.waitForTimeout(250);
+    check('Holidays page opens (not a blank page)', await page.locator('#hrHolidaysPage').isVisible());
+    await checkRealTopbarFrame(page, 'Holidays');
+    const holidaysHeadTitle = await page.locator('#hrCommsHeadTitle').textContent().catch(() => null);
+    check('Holidays: header title reads "Holidays"', (holidaysHeadTitle || '').trim() === 'Holidays', 'got: ' + JSON.stringify(holidaysHeadTitle));
+    const sundayNoteText = await page.locator('#hrHolidaysSundayNote').textContent().catch(() => '');
+    check('Holidays: Sunday note says Sundays are always a holiday, computed (never stored)', /Sundays are always a holiday/.test(sundayNoteText || ''), 'got: ' + JSON.stringify(sundayNoteText));
+    check('Holidays: Sunday note lists exactly this month\'s real Sunday dates', expectedSundays.every((n) => (sundayNoteText || '').includes(String(n))), 'expected ' + JSON.stringify(expectedSundays) + ' in: ' + JSON.stringify(sundayNoteText));
+    const holidayRowCount = await page.locator('#hrHolidaysList [data-date]').count();
+    check('Holidays: the owner-added fake holiday renders as a row', holidayRowCount === 1, 'got: ' + holidayRowCount);
+    const holidayRowText = await page.locator('#hrHolidaysList [data-date="2026-12-25"]').textContent().catch(() => '');
+    check('Holidays: the row shows both the date and the label', /Christmas/.test(holidayRowText || ''), 'got: ' + JSON.stringify(holidayRowText));
+
+    // Add a date - a real POST through the real sheet, not a UI-state-only check.
+    await page.click('#hrHolidayAddBtn');
+    await page.waitForTimeout(350);
+    check('Holidays: "+ Add" opens the add-holiday sheet', await page.locator('#hrHolidaySheet').isVisible());
+    await page.fill('#hrHolidayDateInput', '2026-10-02');
+    await page.fill('#hrHolidayLabelInput', 'Gandhi Jayanti');
+    await page.click('#hrHolidaySheetSaveBtn');
+    await page.waitForTimeout(650);
+    check('Holidays: Save actually POSTs the new date + label', Boolean(addedHolidayBody) && addedHolidayBody.date === '2026-10-02' && addedHolidayBody.label === 'Gandhi Jayanti', 'got: ' + JSON.stringify(addedHolidayBody));
+    await page.waitForTimeout(350);
+    const holidayRowCountAfterAdd = await page.locator('#hrHolidaysList [data-date]').count();
+    check('Holidays: the list re-renders with the newly added date (2 rows now)', holidayRowCountAfterAdd === 2, 'got: ' + holidayRowCountAfterAdd);
+
+    // Delete a date - through the real (non-native) confirm dialog.
+    await page.click('#hrHolidaysList [data-date="2026-12-25"] [data-action="delete-holiday"]');
+    await page.waitForTimeout(250);
+    check('Holidays: tapping Delete opens the real confirm dialog (never a native confirm())', await page.locator('.wf-confirm-overlay.open').isVisible());
+    await page.click('.wf-confirm-overlay [data-confirm-ok]');
+    await page.waitForTimeout(650);
+    check('Holidays: confirming actually sends a DELETE for that exact date', Boolean(deletedHolidayPath) && deletedHolidayPath.includes('2026-12-25'), 'got: ' + JSON.stringify(deletedHolidayPath));
+    const holidayRowCountAfterDelete = await page.locator('#hrHolidaysList [data-date]').count();
+    check('Holidays: the deleted row is gone from the list (1 row left)', holidayRowCountAfterDelete === 1 && (await page.locator('#hrHolidaysList [data-date="2026-12-25"]').count()) === 0, 'got: ' + holidayRowCountAfterDelete);
+
+    const holidaysErrAfter = consoleErrors.length + pageErrors.length;
+    check('Holidays: no JS error was thrown opening the page, adding, or deleting a date', holidaysErrAfter === holidaysErrBefore,
+      'new errors: ' + JSON.stringify(consoleErrors.slice(holidaysErrBefore).concat(pageErrors.slice(holidaysErrBefore))));
+  }
 
   // TASK 1(c) (2026-11), direct instruction - "Letter settings" page:
   // opened the same way the real "SUBH Settings" dashboard tile opens it

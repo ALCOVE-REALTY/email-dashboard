@@ -36,7 +36,8 @@ const GROUP_LABELS = {
   'drive-template-mapping': 'Drive template field mappings',
   'site-alias': 'Site names',
   'dept-alias': 'Department names',
-  'reply-template': 'Saved reply templates'
+  'reply-template': 'Saved reply templates',
+  'holidays': 'Holidays' // PHASE 2 (2026-11), direct instruction
 };
 // The logo's audit entries only ever hold metadata (hadLogo,
 // contentType) - the actual image bytes are deliberately never kept in
@@ -149,6 +150,16 @@ async function restoreEntry(entry) {
       if (entry.before) return { ok: true, item: await whatsappAssistant.saveReplyTemplate(entry.before) };
       const deleted = await whatsappAssistant.deleteReplyTemplate(entry.id);
       return { ok: deleted };
+    }
+    // PHASE 2 (2026-11), direct instruction - Holidays is a single-key
+    // whole-list store (see holidaysService.js's own comment on why), so
+    // its "before" is always the ENTIRE previous list, restored via the
+    // SAME saveHolidayList() primitive a manual add/remove ultimately
+    // calls too - not a special restore-only code path.
+    case 'holidays': {
+      const holidaysService = require('./holidaysService');
+      if (!entry.before) return { ok: false, error: 'There is no earlier list to restore to - this was the first save.' };
+      return holidaysService.saveHolidayList(entry.before, { source: 'restore' });
     }
     default:
       return { ok: false, error: 'Unknown settings group: ' + group };

@@ -209,6 +209,11 @@
   const companyEmailInput = document.getElementById('hrCompanyEmailInput');
   const companyWebsiteInput = document.getElementById('hrCompanyWebsiteInput');
   const companyDetailSheetErr = document.getElementById('hrCompanyDetailSheetErr');
+  // PHASE 2 (2026-11), direct instruction - accountsEmails[]: reuses
+  // createMailChipField (defined in public/workforce.js, loaded before
+  // this file - already the exact same convention autoCcField/wfCcField/
+  // wfAlsoToField below use), never a new chip widget.
+  const companyAccountsEmailsField = createMailChipField('hrCompanyAccountsEmailsChipInput', 'hrCompanyAccountsEmailsInput', 'hrCompanyAccountsEmailsSuggest');
   // Letter settings (TASK 1c, 2026-11) - Ref No. format, letter codes,
   // counters, Letter Register link.
   const letterSettingsPage = document.getElementById('hrLetterSettingsPage');
@@ -279,6 +284,20 @@
   const settingsHistoryRestoreSheet = document.getElementById('hrSettingsHistoryRestoreSheet');
   const settingsHistoryRestoreCloseBtn = document.getElementById('hrSettingsHistoryRestoreCloseBtn');
   const settingsHistoryRestoreBody = document.getElementById('hrSettingsHistoryRestoreBody');
+  // PHASE 2 (2026-11), direct instruction - "Holidays": Sundays always
+  // off (computed, shown read-only) + a flat list of owner-added dates.
+  const holidaysPage = document.getElementById('hrHolidaysPage');
+  const holidaysSundayNote = document.getElementById('hrHolidaysSundayNote');
+  const holidaysList = document.getElementById('hrHolidaysList');
+  const holidayAddBtn = document.getElementById('hrHolidayAddBtn');
+  const holidaySheetBackdrop = document.getElementById('hrHolidaySheetBackdrop');
+  const holidaySheet = document.getElementById('hrHolidaySheet');
+  const holidaySheetCloseBtn = document.getElementById('hrHolidaySheetCloseBtn');
+  const holidaySheetCancelBtn = document.getElementById('hrHolidaySheetCancelBtn');
+  const holidaySheetSaveBtn = document.getElementById('hrHolidaySheetSaveBtn');
+  const holidayDateInput = document.getElementById('hrHolidayDateInput');
+  const holidayLabelInput = document.getElementById('hrHolidayLabelInput');
+  const holidaySheetErr = document.getElementById('hrHolidaySheetErr');
   const convoPage = document.getElementById('hrConvoPage');
   const convoThread = document.getElementById('hrConvoThread');
   const convoActions = document.getElementById('hrConvoActions');
@@ -1606,7 +1625,7 @@
   // renderable data for the others; every path still re-fetches fresh
   // data in the background and re-renders when it lands, so nothing here
   // is ever more than one poll cycle stale.
-  const pageDataCache = { comms: null, commsAt: 0, reminders: new Map(), automations: null, openFlows: null, convos: new Map(), siteAliases: null, deptAliases: null, companyDetails: null, letterSettings: null, letterFields: new Map(), history: null, dataBackups: null, settingsHistory: null };
+  const pageDataCache = { comms: null, commsAt: 0, reminders: new Map(), automations: null, openFlows: null, convos: new Map(), siteAliases: null, deptAliases: null, companyDetails: null, letterSettings: null, letterFields: new Map(), history: null, dataBackups: null, settingsHistory: null, holidays: null };
   // Bumped by invalidateReminderCache (every reminder mutation - done/
   // undo/cancel/snooze/create/edit). Any reminders fetch in flight when a
   // mutation happens captures remMutationSeq at send time and checks it
@@ -1929,6 +1948,7 @@
     else if (entry.type === 'dataBackups') showDataBackups();
     else if (entry.type === 'aiUsage') showAiUsage();
     else if (entry.type === 'settingsHistory') showSettingsHistory();
+    else if (entry.type === 'holidays') showHolidays();
     else if (entry.type === 'actionNeeded') showActionNeeded();
     else if (entry.type === 'conversation') openConversationPage(entry.chatId);
     else if (entry.type === 'reminders') { activeRemFilter = entry.filter; setPanelView('reminders'); loadRemindersPage(entry.filter); }
@@ -1987,11 +2007,12 @@
     const isAiUsage = view === 'aiUsage';
     const isDataBackups = view === 'dataBackups';
     const isSettingsHistory = view === 'settingsHistory'; // TASK 3 (2026-11)
+    const isHolidays = view === 'holidays'; // PHASE 2 (2026-11), direct instruction
     // Page frame (2026-11, direct instruction; reworked same day) - the 7
-    // SUBH-Settings sub-pages, and ONLY these, show the REAL #wfTopbar
-    // above the normal back-button+heading row (see
+    // SUBH-Settings sub-pages (now 8, with Holidays), and ONLY these, show
+    // the REAL #wfTopbar above the normal back-button+heading row (see
     // relocateRealTopbarForSettingsSubpage's own comment above).
-    const isSettingsSubpage = isSiteAliases || isDeptAliases || isCompanyDetails || isLetterSettings || isAiUsage || isDataBackups || isSettingsHistory;
+    const isSettingsSubpage = isSiteAliases || isDeptAliases || isCompanyDetails || isLetterSettings || isAiUsage || isDataBackups || isSettingsHistory || isHolidays;
     const isActionNeeded = view === 'actionNeeded';
     const isAutoList = view === 'automationList';
     const isAutomation = view === 'automation';
@@ -2035,6 +2056,7 @@
     if (aiUsagePage) aiUsagePage.hidden = !isAiUsage;
     if (dataBackupsPage) dataBackupsPage.hidden = !isDataBackups;
     if (settingsHistoryPage) settingsHistoryPage.hidden = !isSettingsHistory;
+    if (holidaysPage) holidaysPage.hidden = !isHolidays;
     if (actionNeededPage) actionNeededPage.hidden = !isActionNeeded;
     if (autoListPage) autoListPage.hidden = !isAutoList;
     if (autoPage) autoPage.hidden = !isAutomation;
@@ -2148,6 +2170,14 @@
       if (commsHeadIcon) commsHeadIcon.innerHTML = '';
       if (commsHeadTitle) commsHeadTitle.textContent = 'Settings history';
       if (commsHeadSubtitle) commsHeadSubtitle.textContent = 'Every change to owner settings, with Restore';
+      if (commsHeadBadge) commsHeadBadge.hidden = true;
+    } else if (isHolidays) {
+      // Item 3 (2026-11), direct instruction - channel-neutral settings page, never a WhatsApp icon (or ANY icon bubble).
+      if (commsHeadIcon) commsHeadIcon.style.display = 'none';
+      if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon';
+      if (commsHeadIcon) commsHeadIcon.innerHTML = '';
+      if (commsHeadTitle) commsHeadTitle.textContent = 'Holidays';
+      if (commsHeadSubtitle) commsHeadSubtitle.textContent = 'Sundays always off, plus the dates you add';
       if (commsHeadBadge) commsHeadBadge.hidden = true;
     } else if (isActionNeeded) {
       if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon whatsapp';
@@ -3438,6 +3468,12 @@
           const r = await fetch('/api/workforce/hr-assistant/settings-history').then((res) => res.json());
           pageDataCache.settingsHistory = { items: r.items || [] };
         } catch (err) { /* best effort - a real page open will just fetch fresh */ }
+      })(),
+      (async () => {
+        try {
+          const r = await fetch('/api/workforce/hr-assistant/holidays').then((res) => res.json());
+          pageDataCache.holidays = { items: r.items || [] };
+        } catch (err) { /* best effort - a real page open will just fetch fresh */ }
       })()
     ]);
   }
@@ -3599,6 +3635,7 @@
     if (companyPhoneInput) companyPhoneInput.value = item.phone || '';
     if (companyEmailInput) companyEmailInput.value = item.email || '';
     if (companyWebsiteInput) companyWebsiteInput.value = item.website || '';
+    companyAccountsEmailsField.setChips(item.accountsEmails || []);
     if (companyDetailSheetErr) { companyDetailSheetErr.textContent = ''; companyDetailSheetErr.classList.add('hidden'); }
     companyDetailSheetBackdrop.hidden = false;
     companyDetailSheet.hidden = false;
@@ -3623,7 +3660,8 @@
         cin: (companyCinInput.value || '').trim(),
         phone: (companyPhoneInput.value || '').trim(),
         email: (companyEmailInput.value || '').trim(),
-        website: (companyWebsiteInput.value || '').trim()
+        website: (companyWebsiteInput.value || '').trim(),
+        accountsEmails: companyAccountsEmailsField.getChips()
       };
       await runButtonAction(companyDetailSheetSaveBtn, () => postJsonOrThrow('/api/workforce/hr-assistant/company-details/' + encodeURIComponent(companyDetailSheetCompany), fields), () => {
         closeCompanyDetailSheet();
@@ -3650,6 +3688,122 @@
         }
       };
       reader.readAsDataURL(file);
+    });
+  }
+
+  // PHASE 2 (2026-11), direct instruction - "Holidays": Sundays always
+  // off (computed client-side here too, same plain calendar-date logic
+  // as holidaysService.isSunday - never sent to the server just to find
+  // out which days of THIS month are Sundays), plus a flat list of
+  // owner-added dates with their own "+ Add"/Delete. No bulk-edit sheet
+  // (unlike Site/Department names' alias groups) - a holiday has no
+  // group to rename, just add one date or delete one date.
+  function thisMonthSundaysLabel(now) {
+    const d = new Date(now.getFullYear(), now.getMonth(), 1);
+    const sundays = [];
+    while (d.getMonth() === now.getMonth()) {
+      if (d.getDay() === 0) sundays.push(d.getDate());
+      d.setDate(d.getDate() + 1);
+    }
+    const monthName = now.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+    return sundays.length
+      ? 'Sundays are always a holiday (computed automatically, never stored). This month (' + monthName + '): ' + sundays.join(', ') + '.'
+      : 'Sundays are always a holiday (computed automatically, never stored).';
+  }
+  function formatHolidayDate(dateStr) {
+    try {
+      return new Date(dateStr + 'T00:00:00Z').toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
+    } catch (err) { return dateStr; }
+  }
+  function holidayRowHtml(item) {
+    return '<div class="wf-site-alias-chip" data-date="' + escapeHtml(item.date) + '" style="width:100%;justify-content:space-between">' +
+      '<span>' + escapeHtml(formatHolidayDate(item.date)) + (item.label ? ' - ' + escapeHtml(item.label) : '') + '</span>' +
+      '<button type="button" class="wf-site-alias-chip-delete" data-action="delete-holiday" aria-label="Delete this holiday">' +
+        '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>' +
+      '</button>' +
+    '</div>';
+  }
+  function renderHolidaysPage(items) {
+    if (holidaysSundayNote) holidaysSundayNote.textContent = thisMonthSundaysLabel(new Date());
+    if (!holidaysList) return;
+    if (!items.length) { holidaysList.innerHTML = '<div class="wf-rem-empty">No holiday dates added yet.</div>'; return; }
+    holidaysList.innerHTML = items.map(holidayRowHtml).join('');
+    holidaysList.querySelectorAll('[data-action="delete-holiday"]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const row = btn.closest('[data-date]');
+        const date = row.dataset.date;
+        if (!(await showConfirmDialog('Delete this holiday?', { confirmLabel: 'Delete' }))) return;
+        await runButtonAction(btn, () => fetch('/api/workforce/hr-assistant/holidays/' + encodeURIComponent(date), { method: 'DELETE' }).then((res) => res.json()), () => {
+          row.remove();
+          showActionToast('Holiday deleted');
+          pageDataCache.holidays = null; // a mutation just happened - never serve the stale cached list again
+          if (!holidaysList.querySelector('[data-date]')) holidaysList.innerHTML = '<div class="wf-rem-empty">No holiday dates added yet.</div>';
+        });
+      });
+    });
+  }
+  async function loadHolidaysPage() {
+    if (!holidaysList) return;
+    const cached = pageDataCache.holidays;
+    if (cached) renderHolidaysPage(cached.items);
+    else holidaysList.innerHTML = '<div class="wf-skeleton-list"><div class="wf-skeleton-row"></div><div class="wf-skeleton-row"></div></div>';
+    try {
+      const r = await fetch('/api/workforce/hr-assistant/holidays').then((res) => res.json());
+      const items = r.items || [];
+      pageDataCache.holidays = { items };
+      renderHolidaysPage(items);
+    } catch (err) {
+      if (!cached) holidaysList.innerHTML = '<div class="wf-rem-empty">Could not load holidays.</div>';
+    }
+  }
+  function showHolidays() {
+    setPanelView('holidays');
+    loadHolidaysPage();
+  }
+  window.__hrAssistantOpenHolidays = function () {
+    const wasOpen = typeof panel !== 'undefined' && !panel.hidden;
+    if (!wasOpen && typeof openPanel === 'function') {
+      openPanel();
+      navStack = [{ type: 'holidays' }];
+    } else {
+      pushNav({ type: 'holidays' });
+    }
+    showHolidays();
+  };
+  function closeHolidaySheet() {
+    holidaySheetBackdrop.classList.remove('open');
+    holidaySheet.classList.remove('open');
+    setTimeout(() => { holidaySheetBackdrop.hidden = true; holidaySheet.hidden = true; }, 320);
+  }
+  function openHolidaySheet() {
+    if (holidayDateInput) holidayDateInput.value = '';
+    if (holidayLabelInput) holidayLabelInput.value = '';
+    if (holidaySheetErr) { holidaySheetErr.textContent = ''; holidaySheetErr.classList.add('hidden'); }
+    holidaySheetBackdrop.hidden = false;
+    holidaySheet.hidden = false;
+    void holidaySheet.offsetHeight;
+    holidaySheetBackdrop.classList.add('open');
+    holidaySheet.classList.add('open');
+  }
+  if (holidayAddBtn) holidayAddBtn.addEventListener('click', openHolidaySheet);
+  if (holidaySheetCloseBtn) holidaySheetCloseBtn.addEventListener('click', closeHolidaySheet);
+  if (holidaySheetCancelBtn) holidaySheetCancelBtn.addEventListener('click', closeHolidaySheet);
+  if (holidaySheetBackdrop) holidaySheetBackdrop.addEventListener('click', closeHolidaySheet);
+  if (holidaySheetSaveBtn) {
+    holidaySheetSaveBtn.addEventListener('click', async () => {
+      const date = (holidayDateInput.value || '').trim();
+      if (!date) {
+        if (holidaySheetErr) { holidaySheetErr.textContent = 'Date is required.'; holidaySheetErr.classList.remove('hidden'); }
+        return;
+      }
+      if (holidaySheetErr) { holidaySheetErr.textContent = ''; holidaySheetErr.classList.add('hidden'); }
+      const label = (holidayLabelInput.value || '').trim();
+      await runButtonAction(holidaySheetSaveBtn, () => postJsonOrThrow('/api/workforce/hr-assistant/holidays', { date, label }), () => {
+        closeHolidaySheet();
+        showProToast({ title: 'Holiday added', type: 'success' });
+        pageDataCache.holidays = null; // a mutation just happened - never serve the stale cached list again
+        if (panelView === 'holidays') loadHolidaysPage();
+      }, { resetAfterSuccess: true });
     });
   }
 
@@ -8704,6 +8858,7 @@
     hrLetterSettingsPage: () => loadLetterSettingsPage(),
     hrDataBackupsPage: () => loadDataBackupsPage(),
     hrSettingsHistoryPage: () => loadSettingsHistoryPage(),
+    hrHolidaysPage: () => loadHolidaysPage(),
     hrConvoPage: () => reloadConversation()
   };
   Object.keys(WF_PTR_REFRESH_BY_ID).forEach((id) => {
