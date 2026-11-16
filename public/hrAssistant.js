@@ -7684,6 +7684,7 @@
   const wfEmpList = document.getElementById('wfEmpList');
   const wfRecHint = document.getElementById('wfRecHint');
   const wfMedSeg = document.getElementById('wfMedSeg');
+  const wfMedWaAttachWarn = document.getElementById('wfMedWaAttachWarn');
   const wfMailSubjWrap = document.getElementById('wfMailSubjWrap');
   const wfMailSubj = document.getElementById('wfMailSubj');
   const wfBody = document.getElementById('wfBody');
@@ -8248,7 +8249,10 @@
     // Task 12 (2026-11) - see Automated Tasks' own identical comment.
     // Task 19 (2026-11) - !b.dataset.v also guards against wfAttachDropdown's
     // own PDF/Excel buttons (data-fmt, not data-v) nested inside wfPlaceSeg.
-    seg.addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b || !b.dataset.v) return; wfSetSeg(seg, b.dataset.v); if (seg === wfRepSeg) wfScheduleExtra = { monthDays: null, lastDayOfMonth: false }; wfSync(); if (wfPlan) renderWfUnderstanding(); });
+    // PHASE 5.1 (2026-11) - switching the mediator must re-render the rule
+    // cards live (never just on initial load) so the WA-disabled
+    // attachment options/hints above react immediately.
+    seg.addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b || !b.dataset.v) return; wfSetSeg(seg, b.dataset.v); if (seg === wfRepSeg) wfScheduleExtra = { monthDays: null, lastDayOfMonth: false }; if (seg === wfMedSeg) renderWfRules(); wfSync(); if (wfPlan) renderWfUnderstanding(); });
   });
   if (wfAttachBtn) {
     wfAttachBtn.addEventListener('click', () => {
@@ -8383,6 +8387,21 @@
     if (wfPdfBtn) wfPdfBtn.disabled = f.mediator === 'wa';
     if (wfPdfWaNote) wfPdfWaNote.textContent = f.mediator === 'wa' ? "The WhatsApp gateway doesn't support file attachments yet - the table will go in the message body instead." : '';
     if (f.mediator === 'wa' && wfSegVal(wfPlaceSeg) === 'pdf') wfSetSeg(wfPlaceSeg, 'body');
+    // PHASE 5.1 (2026-11) - live, impossible-to-miss banner near the
+    // mediator toggle whenever a WA-mediated workflow already has one of
+    // the 3 attachment-only options set (a saved WA workflow opened for
+    // edit, or a Mail workflow switched to WA after already having one
+    // set) - recomputed every wfSync(), so it reacts the instant the
+    // owner flips the mediator, never just on initial load. Warning only
+    // - never strips/blocks anything, the owner can still save this way.
+    if (wfMedWaAttachWarn) {
+      const waAttachIssues = wfMediatorAttachmentIssues(f.mediator, wfRules);
+      wfMedWaAttachWarn.classList.toggle('hidden', !waAttachIssues.length);
+      if (waAttachIssues.length) {
+        const optionNames = Array.from(new Set(waAttachIssues.map((x) => x.option)));
+        wfMedWaAttachWarn.textContent = '⚠ WhatsApp doesn\'t support attachments yet - "' + optionNames.join('", "') + '" won\'t work until this is Mail.';
+      }
+    }
     if (wfAlsoWrap) wfAlsoWrap.classList.toggle('hidden', !(wfAlsoOn && wfAlsoOn.checked));
     if (wfDocsWrap) wfDocsWrap.classList.toggle('hidden', !(wfDocsOn && wfDocsOn.checked));
     const day = f.date ? new Date(f.date + 'T00:00:00Z').getUTCDate() : null;
@@ -8472,7 +8491,27 @@
   // list and must stay template-keys-only).
   const WF_SEND_DOCUMENT_ATTACHMENTS_FROM_REPLY = 'attachmentsFromReply';
   const WF_THEN_WAIT_FOR_ATTACHMENTS = 'waitForAttachments';
+  // PHASE 5.1 (2026-11), direct instruction - "WhatsApp mediator: don't
+  // leave rules that can never finish." A WhatsApp reply's own attachments
+  // never reach this engine (handleIncomingMedia routes WA media to a
+  // completely separate flow, workflowService.js never sees it - a
+  // WA-mediated rule using one of these 3 options would just wait
+  // forever). The actual warning-trigger logic lives in the ONE shared
+  // helper, public/wfMediatorGuard.js (window.wfMediatorGuard), loaded
+  // before this file (see workforce.html) specifically so the SAME
+  // function backs both this UI (disabling the controls live in
+  // wfRenderRuleFields below, the live banner in wfSync, and the Save/
+  // Preview warnings on wfSaveBtn/wfPreviewBtn) and a Node-side
+  // deterministic test with zero browser involved
+  // (scripts/check-workflow-v2-wa-mediator-guard.js) - never duplicated
+  // logic. Mail-mediated workflows never call this with mediator !== 'wa',
+  // so this is a WA-only additive guard, zero behaviour change for Mail.
+  const WF_MEDIATOR_ATTACH_HINT = (window.wfMediatorGuard && window.wfMediatorGuard.HINT) || 'Mail only for now';
+  function wfMediatorAttachmentIssues(mediator, rules) {
+    return window.wfMediatorGuard ? window.wfMediatorGuard.mediatorAttachmentIssues(mediator, rules) : [];
+  }
   function wfRenderRuleFields(r, i) {
+    const isWaMediator = wfSegVal(wfMedSeg) === 'wa';
     const alsoDo = r.alsoDo || {};
     const driveUpload = alsoDo.driveUpload || {};
     const sheetUpdate = alsoDo.sheetUpdate || {};
@@ -8529,16 +8568,19 @@
         '<label class="wf-rem-field">Subject<input type="text" data-r="' + i + '" data-k="sendSubject" value="' + escapeHtml(r.sendSubject || '') + '" autocomplete="off"></label>' +
         '<label class="wf-rem-field">Body<textarea data-r="' + i + '" data-k="sendBody" class="wf-auto-body" style="min-height:90px" autocomplete="off">' + escapeHtml(r.sendBody || '') + '</textarea></label>' +
         '<div class="wf-auto-hint">{Reply_Detail} = what they told SUBH (only filled when "ask for a missing detail" above is used). Any name from "Details — take from the reply" above is also usable, e.g. {Amount}.</div>' +
-        '<label class="wf-rem-field">Attach a document<select data-r="' + i + '" data-k="sendDocument"><option value="">None</option>' + wfTemplateOptionsList.map((t) => '<option value="' + escapeHtml(t.key) + '" ' + (r.sendDocument === t.key ? 'selected' : '') + '>' + escapeHtml(t.label) + '</option>').join('') + '<option value="' + WF_SEND_DOCUMENT_ATTACHMENTS_FROM_REPLY + '" ' + (r.sendDocument === WF_SEND_DOCUMENT_ATTACHMENTS_FROM_REPLY ? 'selected' : '') + '>Attachments from the reply (forward)</option></select></label>' +
+        '<label class="wf-rem-field">Attach a document<select data-r="' + i + '" data-k="sendDocument"><option value="">None</option>' + wfTemplateOptionsList.map((t) => '<option value="' + escapeHtml(t.key) + '" ' + (r.sendDocument === t.key ? 'selected' : '') + '>' + escapeHtml(t.label) + '</option>').join('') + '<option value="' + WF_SEND_DOCUMENT_ATTACHMENTS_FROM_REPLY + '" ' + (r.sendDocument === WF_SEND_DOCUMENT_ATTACHMENTS_FROM_REPLY ? 'selected' : '') + (isWaMediator ? ' disabled' : '') + '>Attachments from the reply (forward)</option></select></label>' +
+        (isWaMediator ? '<div class="wf-auto-hint" data-wa-mediator-hint="attachmentsFromReply">' + WF_MEDIATOR_ATTACH_HINT + '</div>' : '') +
         '<label class="wf-auto-check"><input type="checkbox" data-r="' + i + '" data-k="askMeFirst" ' + (r.askMeFirst ? 'checked' : '') + '> Ask me before sending this message</label>'
       ) : '') +
-      '<label class="wf-rem-field">Then<select data-r="' + i + '" data-k="then"><option value="stop" ' + (r.then === 'stop' ? 'selected' : '') + '>Done for this record</option><option value="wait" ' + (r.then === 'wait' ? 'selected' : '') + '>Keep waiting (follow up again)</option><option value="askme" ' + (r.then === 'askme' ? 'selected' : '') + '>Ask me</option><option value="' + WF_THEN_WAIT_FOR_ATTACHMENTS + '" ' + (r.then === WF_THEN_WAIT_FOR_ATTACHMENTS ? 'selected' : '') + '>Wait for attachments (e.g. documents)</option></select></label>' +
+      '<label class="wf-rem-field">Then<select data-r="' + i + '" data-k="then"><option value="stop" ' + (r.then === 'stop' ? 'selected' : '') + '>Done for this record</option><option value="wait" ' + (r.then === 'wait' ? 'selected' : '') + '>Keep waiting (follow up again)</option><option value="askme" ' + (r.then === 'askme' ? 'selected' : '') + '>Ask me</option><option value="' + WF_THEN_WAIT_FOR_ATTACHMENTS + '" ' + (r.then === WF_THEN_WAIT_FOR_ATTACHMENTS ? 'selected' : '') + (isWaMediator ? ' disabled' : '') + '>Wait for attachments (e.g. documents)</option></select></label>' +
+      (isWaMediator ? '<div class="wf-auto-hint" data-wa-mediator-hint="waitForAttachments">' + WF_MEDIATOR_ATTACH_HINT + '</div>' : '') +
       // PHASE 5 (2026-11) - "Also do" green box - flat, independent of
       // `then` (never nested under it - nesting/"Next stage" is
       // explicitly Phase 6, not built here). Both off by default.
       '<div class="wf-nf-box"><div class="wf-nf-title">Also do <span class="wf-nf-badge">NEW</span></div>' +
-      '<label class="wf-auto-check"><input type="checkbox" data-r="' + i + '" data-k="alsoDoDriveOn" ' + (driveUpload.on ? 'checked' : '') + '> Save attachments to a Drive folder</label>' +
-      (driveUpload.on ? '<input type="text" data-r="' + i + '" data-k="alsoDoDrivePath" value="' + escapeHtml(driveUpload.pathPattern || '') + '" placeholder="e.g. Documents/{Month}/{Employee_Name}.pdf" autocomplete="off" style="margin-top:8px">' : '') +
+      '<label class="wf-auto-check"><input type="checkbox" data-r="' + i + '" data-k="alsoDoDriveOn" ' + (driveUpload.on ? 'checked' : '') + (isWaMediator ? ' disabled' : '') + '> Save attachments to a Drive folder</label>' +
+      (isWaMediator ? '<div class="wf-auto-hint" data-wa-mediator-hint="driveUpload">' + WF_MEDIATOR_ATTACH_HINT + '</div>' : '') +
+      (driveUpload.on ? '<input type="text" data-r="' + i + '" data-k="alsoDoDrivePath" value="' + escapeHtml(driveUpload.pathPattern || '') + '" placeholder="e.g. Documents/{Month}/{Employee_Name}.pdf" autocomplete="off" style="margin-top:8px"' + (isWaMediator ? ' disabled' : '') + '>' : '') +
       '<label class="wf-auto-check"><input type="checkbox" data-r="' + i + '" data-k="alsoDoSheetOn" ' + (sheetUpdate.on ? 'checked' : '') + '> Update the sheet</label>' +
       (sheetUpdate.on ? '<input type="text" data-r="' + i + '" data-k="alsoDoSheetText" value="' + escapeHtml(sheetUpdateText) + '" placeholder="e.g. Status = Done" autocomplete="off" style="margin-top:8px">' : '') +
       '</div>' +
@@ -8793,7 +8835,14 @@
   }
   if (wfPreviewCloseBtn) wfPreviewCloseBtn.addEventListener('click', wfClosePreview);
   if (wfPreviewBackdrop) wfPreviewBackdrop.addEventListener('click', wfClosePreview);
-  if (wfPreviewBtn) wfPreviewBtn.addEventListener('click', async () => { wfSync(); await wfRefreshSummary(); if (wfLastPreview) wfRenderPreviewBody(wfLastPreview, 'Preview — next run'); });
+  if (wfPreviewBtn) wfPreviewBtn.addEventListener('click', async () => {
+    wfSync();
+    // PHASE 5.1 (2026-11) - WhatsApp mediator guard: warn (never block) on
+    // Preview too, same shared helper as Save below and the live banner.
+    const waPreviewIssues = wfMediatorAttachmentIssues(wfReadForm().mediator, wfRules);
+    if (waPreviewIssues.length) showWfToast('⚠ WhatsApp doesn\'t support attachments yet - this preview won\'t reflect "' + Array.from(new Set(waPreviewIssues.map((x) => x.option))).join('", "') + '".', 'warning');
+    await wfRefreshSummary(); if (wfLastPreview) wfRenderPreviewBody(wfLastPreview, 'Preview — next run');
+  });
   // Task 20 (2026-11) LIVE BUG FIX, direct instruction: real PDF instead
   // of a placeholder text string - fetches the actual generated PDF
   // (exactly the file that will be attached) and renders it inline.
@@ -8962,6 +9011,12 @@
     wfSync();
     const f = wfReadForm();
     if (!wfValidate(f)) return;
+    // PHASE 5.1 (2026-11) - WhatsApp mediator guard: warn (never block) on
+    // Save too - the owner can still choose to save it this way (e.g.
+    // preparing for later WA media support), they just need to clearly
+    // know it won't work yet. Never strips/clears the rule's own settings.
+    const waSaveIssues = wfMediatorAttachmentIssues(f.mediator, wfRules);
+    if (waSaveIssues.length) showWfToast('⚠ WhatsApp doesn\'t support attachments yet - saving anyway, but "' + Array.from(new Set(waSaveIssues.map((x) => x.option))).join('", "') + '" won\'t work until this is Mail.', 'warning');
     const plan = wfBuildPlanFromForm(f);
     const schedule = { date: f.date, time: f.time, repeat: f.repeat, every: f.every, unit: f.unit, weekdays: f.weekdays, monthDays: f.monthDays, lastDayOfMonth: f.lastDayOfMonth, skipToNextWorkingDay: f.skipToNextWorkingDay };
     const payload = { subject: f.subject, originalAsk: (wfAsk && wfAsk.value || '').trim(), plan, excludedKeys: Array.from(wfExcluded), schedule };

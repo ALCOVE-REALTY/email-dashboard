@@ -1215,6 +1215,7 @@
           <div class="wf-auto-sechead"><span class="wf-auto-num">4</span> What message?</div>
           <label class="wf-rem-field"><span class="wf-auto-label">Mediator <span class="wf-auto-req">*</span></span></label>
           <div class="wf-auto-seg" id="wfMedSeg"><button type="button" data-v="mail" class="on">✉️ Mail</button><button type="button" data-v="wa">💬 WhatsApp</button></div>
+          <div class="wf-auto-skip hidden" id="wfMedWaAttachWarn"></div>
           <div id="wfMailSubjWrap">
             <label class="wf-rem-field">Mail subject<input type="text" id="wfMailSubj" autocomplete="off" /></label>
           </div>
@@ -3618,6 +3619,10 @@
 
   <script src="vendor/chart.js/chart.umd.js"></script>
   <script src="workforce.js?v=254"></script>
+  <!-- PHASE 5.1 (2026-11) - WhatsApp mediator guard shared helper, loaded
+       BEFORE hrAssistant.js so window.wfMediatorGuard is ready by the time
+       hrAssistant.js's own setup code runs. See public/wfMediatorGuard.js. -->
+  <script src="wfMediatorGuard.js?v=1"></script>
   <script src="hrAssistant.js?v=7"></script>
   <script src="workforce-ui-enhance.js?v=1"></script>
   <script src="js/wi-motion.js?v=3"></script>
