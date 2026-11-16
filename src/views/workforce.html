@@ -1108,6 +1108,44 @@
             <div class="wf-auto-err hidden" id="wfSheetMsg"></div>
             <div id="wfSheetInfo"></div>
           </div>
+
+          <!-- PHASE 4 (2026-11) - "Sheet options": a second sheet/tab read
+               in the same run (fields only - what reads it is Phase 7's
+               job), "Only rows where" and "After sending, update" (header-
+               based, never a hardcoded column letter). All off/empty by
+               default = today's exact single-sheet behaviour. Wording/
+               placement matched to docs/design/workflow-v2-sample.html's
+               own "Sheet options" box (the second-sheet sub-fields are
+               split into a link + a tab name here, for genuine function -
+               the sample's own single combined text field is demo-only
+               behaviour, deliberately not copied). -->
+          <div class="wf-nf-box" id="wfSheetOptionsBox">
+            <div class="wf-nf-title">Sheet options <span class="wf-nf-badge">NEW</span></div>
+            <div id="wfSheet2Wrap" class="hidden" style="margin-top:8px">
+              <label class="wf-rem-field">Another sheet / tab
+                <div class="wf-auto-row-gap">
+                  <input type="text" id="wfSheet2Url" placeholder="Sheet link (leave blank to use the same sheet)" style="flex:1" autocomplete="off" />
+                  <input type="text" id="wfSheet2Tab" placeholder="Tab name" style="flex:1" autocomplete="off" />
+                </div>
+              </label>
+            </div>
+            <button type="button" class="wf-ai-action-btn outline small" id="wfSheet2Btn" style="margin-top:10px">+ Add another sheet / tab</button>
+            <label class="wf-rem-field" style="margin-top:10px">Only rows where
+              <div class="wf-rem-field-row">
+                <select id="wfOnlyWhereCol"><option value="">— all rows —</option></select>
+                <input type="text" id="wfOnlyWhereVal" placeholder="e.g. Pending" autocomplete="off" />
+              </div>
+            </label>
+            <label class="wf-rem-field" style="margin-top:10px">After sending, update
+              <div class="wf-rem-field-row">
+                <select id="wfAfterSendCol"><option value="">— don't update —</option></select>
+                <input type="text" id="wfAfterSendVal" placeholder="e.g. Sent" autocomplete="off" />
+              </div>
+            </label>
+            <label class="wf-auto-check"><input type="checkbox" id="wfAfterSendDate"> Also write today's date (e.g. "Sent On")</label>
+            <div class="wf-auto-hint">So the same rows are never sent twice.</div>
+          </div>
+
           <div class="wf-auto-chips" id="wfAskExamples"></div>
           <button type="button" class="wf-ai-action-btn download" id="wfAskBtn" style="margin-top:8px">✨ Ask SUBH</button>
           <div class="wf-auto-hint">Write in Banglish, English or Hinglish. SUBH shows what it understood — nothing is saved until you say it's right.</div>
@@ -1144,6 +1182,24 @@
               <span class="wf-auto-hint" id="wfSelCount" style="margin-left:auto">0 selected</span>
             </div>
             <div class="wf-auto-emplist" id="wfEmpList"></div>
+
+            <!-- PHASE 4 (2026-11) - "Outside emails": only inside Selected
+                 people (never shown for Person from the data, since this
+                 whole wfSelWrap container is already hidden for that
+                 mode) - reuses createMailChipField, the SAME chip widget
+                 as Cc/Also-send-To/accountsEmails, never a new one.
+                 Wording matched to docs/design/workflow-v2-sample.html's
+                 own "Outside emails" box. -->
+            <div class="wf-nf-box" id="wfOutsideEmailsBox">
+              <div class="wf-nf-title">Outside emails <span class="wf-nf-badge">NEW</span></div>
+              <div class="wf-mail-field" style="margin:8px 0 0">
+                <div class="wf-mail-chip-input" id="wfOutsideChipInput">
+                  <input type="text" id="wfOutsideInput" autocomplete="off" placeholder="Type an email and press Enter (e.g. vendor, client)" />
+                </div>
+                <ul class="wf-mail-suggest" id="wfOutsideSuggest" hidden></ul>
+              </div>
+              <div class="wf-auto-hint">For people outside the HR data — e.g. a vendor, client or agency. Gets the same message. Saved with the workflow.</div>
+            </div>
           </div>
           <div class="wf-auto-hint" id="wfRecHint" style="margin-top:10px"></div>
           <div class="wf-mail-field" style="margin-top:12px;margin-bottom:0">

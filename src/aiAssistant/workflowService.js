@@ -31,6 +31,13 @@ const driveTemplatesService = require('./driveTemplatesService');
 const driveTemplateFieldsService = require('./driveTemplateFieldsService');
 const driveTemplateGenerationService = require('./driveTemplateGenerationService');
 const aiUsageLog = require('./aiUsageLog');
+// PHASE 4 (2026-11) - "Sheet options" (second sheet/tab, row filter,
+// after-send column write). Deliberately NOT destructured (same reasoning
+// as insuranceService.js/togetherWeCanService.js's own identical comment)
+// so a test's `sheetsAuth.getSheetsWriteClient = fakeFn` monkey-patch is
+// always seen - always call sheetsAuth.getSheetsReadOnlyClient()/
+// getSheetsWriteClient() through this live module reference.
+const sheetsAuth = require('../sheetsAuth');
 // Required lazily (inside the functions that need it, never at module
 // load) specifically because Phase 5 has whatsappAssistant.js require
 // THIS file back (its own early-tier "might this reply be for an open
@@ -634,6 +641,195 @@ async function previewWorkflowDocument(plan, now) {
   return { ok: true, buffer: result.buffer, filename: workflowDocFileName(template, row), usedSample };
 }
 
+// ---------------- PHASE 4 (2026-11): "Sheet options" - a second sheet/
+// tab read in the same run, an "Only rows where" filter, and an
+// "After sending, update <column>" write-back - plus "Each Company's
+// Accounts Team" recipient resolution and "Outside emails" for Selected
+// people. All additive/off-by-default (absent plan.sheetOptions means
+// today's exact single-sheet, no-filter, no-write-back behaviour).
+// Deliberately NOT built by modifying automationService.js (shared with
+// Automated Tasks, which has none of these fields) - every helper below
+// is its own small, read-only-by-default re-implementation, following
+// the SAME conventions already established elsewhere in this app
+// (header-based column lookup, never a hardcoded column letter - see
+// insuranceService.js's own colLetter/locateOrProvisionQueueColumns; a
+// service-account read/write client split - see sheetsAuth.js). ----------------
+
+// 0-based column index -> spreadsheet column letter ("A", "Z", "AA", ...) -
+// byte-for-byte the same algorithm as insuranceService.js's own colLetter,
+// duplicated here rather than exported from a file this feature has no
+// other reason to depend on.
+function wfColLetter(idx) {
+  let n = idx + 1;
+  let s = '';
+  while (n > 0) {
+    const rem = (n - 1) % 26;
+    s = String.fromCharCode(65 + rem) + s;
+    n = Math.floor((n - 1) / 26);
+  }
+  return s;
+}
+function wfQuoteSheetRange(tab, a1) { return "'" + String(tab).replace(/'/g, "''") + "'!" + a1; }
+// Byte-for-byte the same flexible date parser as automationService.js's
+// own (unexported) parseFlexibleDate - duplicated ONLY so
+// loadSheetRowNumberMap below can build a row object that is identical,
+// field for field, to what automationService.loadSheetRows itself
+// produces for the SAME sheet row (needed so automationService.rowKey()
+// of the two can ever match up - see that function's own comment).
+function wfParseFlexibleDate(raw) {
+  if (raw == null || raw === '') return null;
+  if (raw instanceof Date) return raw;
+  const s = String(raw).trim();
+  const dmy = s.match(/^(\d{1,2})-([A-Za-z]{3,})-(\d{2,4})$/);
+  if (dmy) {
+    const months = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+    const mi = months.indexOf(dmy[2].slice(0, 3).toLowerCase());
+    if (mi >= 0) {
+      let y = Number(dmy[3]); if (dmy[3].length === 2) y = y <= 49 ? 2000 + y : 1900 + y;
+      const d = new Date(Date.UTC(y, mi, Number(dmy[1])));
+      return isNaN(d.getTime()) ? null : d;
+    }
+  }
+  const iso = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (iso) { const d = new Date(Date.UTC(+iso[1], +iso[2] - 1, +iso[3])); return isNaN(d.getTime()) ? null : d; }
+  const parsed = new Date(s);
+  return isNaN(parsed.getTime()) ? null : parsed;
+}
+// Every column this plan's OWN Phase 4 fields depend on, delegating
+// everything else (conds/sort/tableColumns/the existing recCol-as-sheet-
+// column case) to automationService.sheetPlanDependencies UNCHANGED -
+// except recCol is swapped to 'self' first when it's 'companyAccountsTeam'
+// (a keyword, never a real sheet column - automationService's own
+// function would otherwise require a literal "companyAccountsTeam"
+// column to exist, which is wrong). companyAccountsTeam instead needs a
+// real 'Company' column on the row to look up Company details against.
+function workflowSheetPlanDependencies(plan) {
+  const sanitized = plan.recCol === 'companyAccountsTeam' ? Object.assign({}, plan, { recCol: 'self' }) : plan;
+  const needed = new Set(automationService.sheetPlanDependencies(sanitized));
+  if (plan.rec === 'column' && plan.recCol === 'companyAccountsTeam') needed.add('Company');
+  const so = plan.sheetOptions || {};
+  if (so.onlyWhere && so.onlyWhere.column) needed.add(so.onlyWhere.column);
+  if (so.afterSend && so.afterSend.column) needed.add(so.afterSend.column);
+  return Array.from(needed);
+}
+function workflowCheckSheetDependencies(plan, liveHeaders) {
+  const liveSet = new Set(liveHeaders);
+  for (const col of workflowSheetPlanDependencies(plan)) {
+    if (!liveSet.has(col)) return { ok: false, reason: 'column "' + col + '" is missing from the sheet (renamed or removed)' };
+  }
+  return { ok: true };
+}
+// Maps automationService.rowKey(row) -> that row's absolute sheet row
+// number (1-based; the header row is row 1, so the first data row is 2) -
+// needed ONLY for the "After sending, update" write-back, which must
+// target a specific real row. automationService.loadSheetRows itself
+// deliberately never tracks this (no existing caller needs it), so this
+// is a fresh, read-only re-read of the SAME primary sheet/tab, built to
+// produce byte-identical per-row objects (same header-driven field
+// parsing, including the special date-column handling) so rowKey() of a
+// row here and of the SAME row as matchedRows/loadSheetRows produced it
+// can ever agree - `__rowNumber__` is tracked OUTSIDE the row object
+// itself (in the map, not as a field on it) so it never changes what
+// rowKey() sees. Two sheet rows that happen to share one rowKey (the
+// same accepted, pre-existing limitation rowKey() has everywhere else in
+// this app) resolve to whichever of them was read last - never a crash.
+async function loadSheetRowNumberMap(plan) {
+  const map = new Map();
+  if (!plan.sheetId || !plan.sheetTab) return map;
+  const sheets = sheetsAuth.getSheetsReadOnlyClient();
+  const res = await sheets.spreadsheets.values.get({ spreadsheetId: plan.sheetId, range: wfQuoteSheetRange(plan.sheetTab, 'A1:ZZ10000'), valueRenderOption: 'FORMATTED_VALUE' });
+  const values = res.data.values || [];
+  if (values.length < 2) return map;
+  const headers = values[0].map((h) => String(h || '').trim()).filter(Boolean);
+  const dateCols = new Set(headers.filter((h) => /date/i.test(h)));
+  values.slice(1).forEach((r, i) => {
+    if (!r.some((c) => String(c || '').trim())) return;
+    const row = {};
+    headers.forEach((h, idx) => {
+      const raw = r[idx] == null ? '' : String(r[idx]).trim();
+      if (dateCols.has(h)) { row[h] = wfParseFlexibleDate(raw); row['__raw__' + h] = raw; }
+      else row[h] = raw;
+    });
+    map.set(automationService.rowKey(row), i + 2);
+  });
+  return map;
+}
+// Best-effort read of the "Sheet options" second sheet/tab
+// (plan.sheetOptions.secondSheet = {url, tab}) - header-based, same
+// convention as every other sheet read in this app, never a hardcoded
+// column letter. An empty/blank url re-reads the SAME spreadsheet as the
+// primary sheet (plan.sheetId) under a different tab; a url that parses
+// to a different spreadsheet id reads that one instead. Never throws -
+// a bad link/missing access/unreadable tab comes back as
+// `{ ok: false, error }` and the caller (buildWorkflowMessages) simply
+// omits `secondSheet` data from the run rather than blocking the whole
+// run on it, since how this data gets USED (a lookup/join in a
+// placeholder or rule) is explicitly Phase 7's own job - Phase 4's job is
+// only to prove the engine can read it when configured.
+async function loadSecondSheetData(secondSheet, primarySheetId) {
+  if (!secondSheet || !secondSheet.tab) return null;
+  if (!sheetsAuth.hasServiceAccount()) return { ok: false, error: 'Google Sheets access is not configured on this server.' };
+  let sheetId = primarySheetId || null;
+  if (secondSheet.url && String(secondSheet.url).trim()) {
+    const m = String(secondSheet.url).match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+    if (!m) return { ok: false, error: 'Second sheet link is not a valid Google Sheets link.' };
+    sheetId = m[1];
+  }
+  if (!sheetId) return { ok: false, error: 'No sheet to read the second tab from.' };
+  try {
+    const sheets = sheetsAuth.getSheetsReadOnlyClient();
+    const res = await sheets.spreadsheets.values.get({ spreadsheetId: sheetId, range: wfQuoteSheetRange(secondSheet.tab, 'A1:ZZ10000'), valueRenderOption: 'FORMATTED_VALUE' });
+    const values = res.data.values || [];
+    const headers = (values[0] || []).map((h) => String(h || '').trim()).filter(Boolean);
+    if (!headers.length) return { ok: false, error: 'Tab "' + secondSheet.tab + '" is empty or has no header row.' };
+    const rows = values.slice(1).filter((r) => r.some((c) => String(c || '').trim())).map((r) => {
+      const row = {};
+      headers.forEach((h, i) => { row[h] = r[i] == null ? '' : String(r[i]).trim(); });
+      return row;
+    });
+    return { ok: true, headers, rows };
+  } catch (err) {
+    return { ok: false, error: 'Could not read the second sheet/tab (' + err.message + ').' };
+  }
+}
+// Writes the "After sending, update <column>" cell(s) - ONLY ever called
+// with row numbers whose message already sent successfully (see
+// runWorkflow below: "write only after confirmed success", the same
+// discipline insuranceService.js's own markAdditionsSent/writeStatusCells
+// already follow for the Health Insurance queue). `headers` is the SAME
+// live header read buildWorkflowMessages already did for this run - never
+// a second network read just to locate the column. Never auto-creates a
+// missing column on the owner's own arbitrary workflow sheet (unlike
+// insuranceService.js's own locateOrProvisionQueueColumns, which only
+// ever touches this app's OWN internal operational sheet) - a configured
+// column/date-column that isn't actually in the sheet is reported to the
+// caller (which notifies the owner) rather than silently restructuring
+// their sheet.
+async function writeAfterSendCell(plan, headers, rowNumbers, afterSend, now) {
+  if (!rowNumbers || !rowNumbers.length || !afterSend || !afterSend.column) return;
+  const colIdx = headers.indexOf(afterSend.column);
+  if (colIdx === -1) throw new Error('column "' + afterSend.column + '" was not found in the sheet');
+  const dateColIdx = afterSend.alsoWriteDate ? headers.indexOf('Sent On') : -1;
+  const data = [];
+  const uniqueRowNumbers = [...new Set(rowNumbers)];
+  uniqueRowNumbers.forEach((rn) => {
+    data.push({ range: wfQuoteSheetRange(plan.sheetTab, wfColLetter(colIdx) + rn), values: [[afterSend.value == null ? '' : String(afterSend.value)]] });
+    if (dateColIdx !== -1) data.push({ range: wfQuoteSheetRange(plan.sheetTab, wfColLetter(dateColIdx) + rn), values: [[now.toISOString().slice(0, 10)]] });
+  });
+  // The main status write still goes out even when "Also write today's
+  // date" was requested but no "Sent On" column exists to write it into -
+  // the owner's explicit "Sent" mark is the more important of the two,
+  // and it would be wrong for a missing OPTIONAL date column to silently
+  // block the main write too. The missing-date-column problem is still
+  // surfaced (thrown AFTER the real write below) so the caller can tell
+  // the owner, rather than this failing silently forever.
+  const sheets = sheetsAuth.getSheetsWriteClient();
+  await sheets.spreadsheets.values.batchUpdate({ spreadsheetId: plan.sheetId, requestBody: { valueInputOption: 'RAW', data } });
+  if (afterSend.alsoWriteDate && dateColIdx === -1) {
+    throw new Error('wrote "' + afterSend.column + '", but no "Sent On" column exists in the sheet to also write today\'s date');
+  }
+}
+
 // `isRealSend` (TASK 1(c), 2026-11) decides whether a letter's Ref No. is
 // actually assigned (consuming a real number, only for the genuine run
 // path in runWorkflow) or just the fixed preview placeholder text (every
@@ -645,11 +841,38 @@ async function buildWorkflowMessages(workflow, runAt, isRealSend) {
     const live = await automationService.getSheetLiveHeaders(plan);
     if (!live.ok) return { sent: [], skipped: [], rows: [], blocked: { reason: live.error } };
     liveSheetHeaders = live.headers;
-    const dep = automationService.checkSheetDependencies(plan, liveSheetHeaders);
+    const dep = workflowCheckSheetDependencies(plan, liveSheetHeaders);
     if (!dep.ok) return { sent: [], skipped: [], rows: [], blocked: { reason: dep.reason } };
     if (plan.sheetUseAllColumns) plan = Object.assign({}, plan, { tableColumns: liveSheetHeaders });
   }
-  const rows = await automationService.matchedRows(plan, workflow.excludedKeys, runAt);
+  let rows = await automationService.matchedRows(plan, workflow.excludedKeys, runAt);
+  // PHASE 4 (2026-11) - "Only rows where <column> = <value>", applied
+  // AFTER the existing conds/match filtering above, on the SAME header-
+  // keyed row object matchedRows already produced (never a hardcoded
+  // column letter) - absent/unset is a no-op, today's exact behaviour.
+  // Case-insensitive, same convention as automationService.testCond's own
+  // 'is' operator.
+  const sheetOptions = plan.sheetOptions || null;
+  if (plan.source === 'sheet' && sheetOptions && sheetOptions.onlyWhere && sheetOptions.onlyWhere.column) {
+    const { column, value } = sheetOptions.onlyWhere;
+    rows = rows.filter((r) => String(r[column] == null ? '' : r[column]).toLowerCase() === String(value == null ? '' : value).toLowerCase().trim());
+  }
+  // PHASE 4 (2026-11) - "Add another sheet / tab": best-effort, never
+  // blocks the run (see loadSecondSheetData's own comment) - how this
+  // data gets consumed (a lookup/join) is explicitly Phase 7's job; this
+  // just proves the engine can read it when configured.
+  let secondSheet = null;
+  if (plan.source === 'sheet' && sheetOptions && sheetOptions.secondSheet) {
+    secondSheet = await loadSecondSheetData(sheetOptions.secondSheet, plan.sheetId).catch((err) => ({ ok: false, error: err.message }));
+  }
+  // PHASE 4 (2026-11) - "After sending, update <column>": needs each
+  // sent message's own absolute sheet row number, which matchedRows'
+  // output never carries - built ONCE per run (only when actually
+  // configured) and attached to each sent message below.
+  let sheetRowNumberByKey = null;
+  if (plan.source === 'sheet' && sheetOptions && sheetOptions.afterSend && sheetOptions.afterSend.column) {
+    sheetRowNumberByKey = await loadSheetRowNumberMap(plan).catch(() => null); // best-effort - a failure here just skips the write-back for this run, never blocks sending
+  }
   const sent = [];
   const skipped = [];
   function tableRowsFor(row) {
@@ -666,7 +889,17 @@ async function buildWorkflowMessages(workflow, runAt, isRealSend) {
   // so letters sent together are rows the owner can filter together in
   // the Letter Register, each still with its own PDF link.
   const batch = workflow.subject + ' · ' + runAt.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC' });
-  async function push(contact, row, who, key) {
+  // PHASE 4 (2026-11) - `extraRows`, when given (the "Each Company's
+  // Accounts Team" grouped case below), is every row this ONE message
+  // covers - the table (when plan.table is on) then holds all of them,
+  // never just the first; `row` stays the single representative row
+  // used for subject/body placeholders (same "pick a representative
+  // record" posture previewWorkflowDocument's own sample fallback
+  // already uses) and for the single-row document-attachment case,
+  // unchanged from before this phase. Every pre-existing caller passes
+  // no `extraRows`, so `rowsForTable` is always exactly `[row]` there -
+  // byte-identical to before this phase existed.
+  async function push(contact, row, who, key, extraRows) {
     const name = (contact && contact.name) || '—';
     if (!automationService.contactOk(contact, plan.mediator)) {
       skipped.push({ who: name, reason: 'no valid ' + (plan.mediator === 'mail' ? 'email' : 'phone') + (row ? ' (for ' + automationService.rowName(row) + ')' : ''), key: key || null });
@@ -696,16 +929,52 @@ async function buildWorkflowMessages(workflow, runAt, isRealSend) {
         if (isRealSend) await getWhatsappAssistant().postOwnerNotification('⚠️ Could not generate the ' + plan.docs.template + ' letter for ' + automationService.rowName(row) + ' in "' + workflow.subject + '": ' + err.message).catch(() => {});
       }
     }
+    const rowsForTable = (extraRows && extraRows.length) ? extraRows : (row ? [row] : []);
+    const sheetRowNumbers = sheetRowNumberByKey
+      ? rowsForTable.map((r) => sheetRowNumberByKey.get(automationService.rowKey(r))).filter((n) => n != null)
+      : [];
     sent.push({
       to: name, addr: plan.mediator === 'mail' ? contact.email : contact.phone, contact,
       subject: fillWorkflowPlaceholders(plan.mailSubject, { row, contact, runAt }),
       body: fillWorkflowPlaceholders(plan.body, { row, contact, runAt }),
-      table: row ? (plan.table ? [tableRowsFor(row)] : null) : null,
+      table: rowsForTable.length ? (plan.table ? rowsForTable.map(tableRowsFor) : null) : null,
       tableColumns: plan.tableColumns || [], tablePlacement: plan.tablePlacement || 'body', attachmentFormat: plan.attachmentFormat || 'pdf',
-      who: who || null, key: key || null, row: row || null, attachment
+      who: who || null, key: key || null, row: row || null,
+      // PHASE 4 (2026-11) - sheet row number(s) this message covers, for
+      // the "After sending, update <column>" write-back only - empty
+      // whenever that option isn't configured (sheetRowNumberByKey stays
+      // null), so this is a pure no-op addition for every workflow that
+      // doesn't use it.
+      sheetRowNumbers,
+      attachment
     });
   }
-  if (plan.rec === 'column') {
+  if (plan.rec === 'column' && plan.recCol === 'companyAccountsTeam') {
+    // PHASE 4 (2026-11), owner's own wording - "one message PER COMPANY
+    // (not one message to everyone)": group matching rows by their real
+    // 'Company' value, resolve each company's accountsEmails[] via Phase
+    // 2's companyDetailsService, and send ONE message per company with
+    // that company's own emails as To. A row with no Company value, or a
+    // company with no accountsEmails[] set, is skipped CLEANLY (reported
+    // in `skipped`, never a crash, never silently dropped).
+    const byCompany = new Map();
+    for (const r of rows) {
+      const company = String(r['Company'] || '').trim();
+      if (!company) { skipped.push({ who: automationService.rowName(r), reason: 'no Company value on this row', key: automationService.rowKey(r) }); continue; }
+      if (!byCompany.has(company)) byCompany.set(company, []);
+      byCompany.get(company).push(r);
+    }
+    for (const [company, companyRows] of byCompany) {
+      const details = await companyDetailsService.getCompanyDetails(company);
+      const emails = (details && details.accountsEmails) || [];
+      if (!emails.length) {
+        skipped.push({ who: company + ' Accounts Team', reason: 'no Accounts emails set for "' + company + '" in Company details', key: 'company:' + company });
+        continue;
+      }
+      const contact = { name: company + ' Accounts Team', email: emails.join(', '), phone: '' };
+      await push(contact, companyRows[0], company + ' Accounts Team', 'company:' + company, companyRows);
+    }
+  } else if (plan.rec === 'column') {
     for (const r of rows) {
       const key = automationService.rowKey(r);
       const contact = await automationService.personContact(plan, r, plan.recCol);
@@ -716,6 +985,14 @@ async function buildWorkflowMessages(workflow, runAt, isRealSend) {
     const { employees } = await employeeService.getEmployeeData();
     const people = employees.filter((e) => (plan.selectedEmployeeIds || []).includes(e.employeeId)).map((e) => ({ name: e.name, email: e.email, phone: e.contactNumber }));
     (plan.selectedRawEmails || []).forEach((email) => people.push({ name: email, email, phone: '' }));
+    // PHASE 4 (2026-11) - "Outside emails": chip-entered extra recipients
+    // for "Selected people" mode, ALWAYS included alongside the already-
+    // resolved people above (never replacing them) - merged into this
+    // SAME recipients list, so they get the identical message treatment
+    // (own message, real To address) as any other raw email already
+    // entered. Never consulted for "Person from the data" mode (the
+    // `if` above already means this branch is Selected-people-only).
+    (plan.outsideEmails || []).forEach((email) => { if (email) people.push({ name: email, email, phone: '' }); });
     if (plan.group === 'each' && plan.source !== 'none') {
       for (const r of rows) for (const p of people) await push(p, r, automationService.rowName(r), automationService.rowKey(r));
     } else {
@@ -746,7 +1023,7 @@ async function buildWorkflowMessages(workflow, runAt, isRealSend) {
     }
   }
   const taggedRows = rows.map((r) => Object.assign({ _key: automationService.rowKey(r) }, r));
-  return { sent, skipped, rows: taggedRows, alsoMessage, liveSheetHeaders };
+  return { sent, skipped, rows: taggedRows, alsoMessage, liveSheetHeaders, secondSheet };
 }
 
 // ---------------- Ask -> plan NLU (Claude, authoring time only - the
@@ -1119,7 +1396,7 @@ async function runWorkflow(id, { isTest = false, testTo = null } = {}, now = new
   if (!(await acquireRunLock(id, now))) return { ok: false, error: 'Already running.' };
   try {
     const runAt = now;
-    const { sent, skipped, alsoMessage, rows, blocked } = await buildWorkflowMessages(workflow, runAt, !isTest);
+    const { sent, skipped, alsoMessage, rows, blocked, liveSheetHeaders } = await buildWorkflowMessages(workflow, runAt, !isTest);
     if (blocked) {
       if (!isTest) {
         await getWhatsappAssistant().postOwnerNotification('⚠️ Workflow "' + workflow.subject + '" could not run: ' + blocked.reason + '.').catch(() => {});
@@ -1138,6 +1415,13 @@ async function runWorkflow(id, { isTest = false, testTo = null } = {}, now = new
     }
     const runId = newRunId();
     const records = [];
+    // PHASE 4 (2026-11) - "After sending, update <column>": rowNumbers are
+    // only ever collected from a message that actually sent ("write only
+    // after confirmed success" - same discipline insuranceService.js's
+    // own markAdditionsSent/writeStatusCells already follow for the
+    // Health Insurance queue). A message whose send fails contributes
+    // nothing here, so its row(s) are never written.
+    const afterSendRowNumbers = [];
     for (const m of sent) {
       const result = await sendOneWorkflowMessage(m);
       await new Promise((resolve) => setTimeout(resolve, 300));
@@ -1152,6 +1436,15 @@ async function runWorkflow(id, { isTest = false, testTo = null } = {}, now = new
       };
       records.push(record);
       if (!isMail && record.status === 'waiting') await syncOpenPhone(record.waPhone, true);
+      if (result.status === 'sent' && m.sheetRowNumbers && m.sheetRowNumbers.length) afterSendRowNumbers.push(...m.sheetRowNumbers);
+    }
+    const afterSend = workflow.plan.sheetOptions && workflow.plan.sheetOptions.afterSend;
+    if (afterSendRowNumbers.length && afterSend && afterSend.column && liveSheetHeaders) {
+      try {
+        await writeAfterSendCell(workflow.plan, liveSheetHeaders, afterSendRowNumbers, afterSend, runAt);
+      } catch (err) {
+        await getWhatsappAssistant().postOwnerNotification('⚠️ Workflow "' + workflow.subject + '": messages sent, but could not update the sheet afterward (' + err.message + ').').catch(() => {});
+      }
     }
     skipped.forEach((s) => {
       records.push({
@@ -1717,5 +2010,8 @@ module.exports = {
   previewWorkflowDocument, buildWorkflowDocumentBuffer, workflowDocFileName,
   // PHASE 3 (2026-11) - working-day schedule/follow-up helpers.
   advanceNextRunToWorkingDay, computeWorkflowNextRun, ensureWorkflowNotTooSoon,
-  effectiveFollowUpSettings, isFollowUpTimingReady, buildFollowUpLiveExample
+  effectiveFollowUpSettings, isFollowUpTimingReady, buildFollowUpLiveExample,
+  // PHASE 4 (2026-11) - "Sheet options" + companyAccountsTeam + outsideEmails.
+  workflowSheetPlanDependencies, workflowCheckSheetDependencies,
+  loadSheetRowNumberMap, loadSecondSheetData, writeAfterSendCell
 };

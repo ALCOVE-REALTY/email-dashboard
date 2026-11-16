@@ -7652,6 +7652,16 @@
   const wfSheetShareEmail = document.getElementById('wfSheetShareEmail');
   const wfSheetShareCopyBtn = document.getElementById('wfSheetShareCopyBtn');
   const wfSheetInfo = document.getElementById('wfSheetInfo');
+  // PHASE 4 (2026-11) - "Sheet options" green box.
+  const wfSheet2Btn = document.getElementById('wfSheet2Btn');
+  const wfSheet2Wrap = document.getElementById('wfSheet2Wrap');
+  const wfSheet2Url = document.getElementById('wfSheet2Url');
+  const wfSheet2Tab = document.getElementById('wfSheet2Tab');
+  const wfOnlyWhereCol = document.getElementById('wfOnlyWhereCol');
+  const wfOnlyWhereVal = document.getElementById('wfOnlyWhereVal');
+  const wfAfterSendCol = document.getElementById('wfAfterSendCol');
+  const wfAfterSendVal = document.getElementById('wfAfterSendVal');
+  const wfAfterSendDate = document.getElementById('wfAfterSendDate');
   const wfGroupCard = document.getElementById('wfGroupCard');
   const wfGroupSeg = document.getElementById('wfGroupSeg');
   const wfRecSeg = document.getElementById('wfRecSeg');
@@ -7737,6 +7747,9 @@
   // is the same search-and-select chip widget as Cc, never the old HR
   // team/Accounts team dropdown.
   const wfAlsoToField = createMailChipField('wfAlsoToChipInput', 'wfAlsoToInput', 'wfAlsoToSuggest');
+  // PHASE 4 (2026-11) - "Outside emails" (Selected people only) - the
+  // SAME reused chip widget, never a 5th one built from scratch.
+  const wfOutsideField = createMailChipField('wfOutsideChipInput', 'wfOutsideInput', 'wfOutsideSuggest');
 
   function showWfToast(text, type) { showProToast({ title: text, type: type || 'success', anchor: 'top' }); }
   const WF_TOAST_ERR = { toastFn: (msg) => showWfToast(msg, 'error') };
@@ -7919,7 +7932,17 @@
     if (wfFuMentionMissing) wfFuMentionMissing.checked = false;
     wfCcField.reset();
     if (wfEmpSearch) wfEmpSearch.value = '';
+    // PHASE 4 (2026-11) - "Sheet options" + "Outside emails", all off/
+    // empty by default = today's exact behaviour.
+    if (wfSheet2Wrap) wfSheet2Wrap.classList.add('hidden');
+    if (wfSheet2Url) wfSheet2Url.value = '';
+    if (wfSheet2Tab) wfSheet2Tab.value = '';
+    if (wfOnlyWhereVal) wfOnlyWhereVal.value = '';
+    if (wfAfterSendVal) wfAfterSendVal.value = '';
+    if (wfAfterSendDate) wfAfterSendDate.checked = false;
+    wfOutsideField.reset();
     renderWfRecCols();
+    renderWfSheetOptionCols();
     renderWfRules();
   }
   function wfPopulateForm(w) {
@@ -7983,6 +8006,24 @@
     if (wfRecCol) wfRecCol.value = w.plan.recCol || 'reportingManager';
     renderWfCols();
     renderWfEmpList();
+    // PHASE 4 (2026-11) - "Sheet options" + "Outside emails".
+    const so = w.plan.sheetOptions || {};
+    if (so.secondSheet && (so.secondSheet.url || so.secondSheet.tab)) {
+      if (wfSheet2Wrap) wfSheet2Wrap.classList.remove('hidden');
+      if (wfSheet2Url) wfSheet2Url.value = so.secondSheet.url || '';
+      if (wfSheet2Tab) wfSheet2Tab.value = so.secondSheet.tab || '';
+    } else {
+      if (wfSheet2Wrap) wfSheet2Wrap.classList.add('hidden');
+      if (wfSheet2Url) wfSheet2Url.value = '';
+      if (wfSheet2Tab) wfSheet2Tab.value = '';
+    }
+    renderWfSheetOptionCols();
+    if (wfOnlyWhereCol) wfOnlyWhereCol.value = (so.onlyWhere && so.onlyWhere.column) || '';
+    if (wfOnlyWhereVal) wfOnlyWhereVal.value = (so.onlyWhere && so.onlyWhere.value) || '';
+    if (wfAfterSendCol) wfAfterSendCol.value = (so.afterSend && so.afterSend.column) || '';
+    if (wfAfterSendVal) wfAfterSendVal.value = (so.afterSend && so.afterSend.value) || '';
+    if (wfAfterSendDate) wfAfterSendDate.checked = Boolean(so.afterSend && so.afterSend.alsoWriteDate);
+    wfOutsideField.setChips(Array.isArray(w.plan.outsideEmails) ? w.plan.outsideEmails : []);
     renderWfRules();
     renderWfUnderstanding();
   }
@@ -8121,7 +8162,35 @@
     const opts = (wfPlan && wfPlan.source === 'sheet')
       ? [['self', 'This row (Email / Phone column)']].concat((wfPlan.sheetColumns || []).filter((c) => !/^(email|phone|e-?mail|contact|mobile)/i.test(c) && !/date/i.test(c)).map((c) => [c, c]))
       : AUTO_EMP_PERSON_COLS;
-    wfRecCol.innerHTML = opts.map(([v, l]) => '<option value="' + escapeHtml(v) + '">' + escapeHtml(l) + '</option>').join('');
+    // PHASE 4 (2026-11) - "Each Company's Accounts Team (Company details)",
+    // text only (no icon, per direct instruction) - appended to
+    // WORKFLOW'S OWN copy of this option list only. Deliberately never
+    // added to AUTO_EMP_PERSON_COLS itself, which Automated Tasks' own
+    // identical-LOOKING dropdown (renderAutoRecCols, same file) also
+    // reads from - that feature has no such option today and must never
+    // gain one as a side effect of this change.
+    const withAccountsTeam = opts.concat([['companyAccountsTeam', "Each Company's Accounts Team (Company details)"]]);
+    const prevVal = wfRecCol.value;
+    wfRecCol.innerHTML = withAccountsTeam.map(([v, l]) => '<option value="' + escapeHtml(v) + '">' + escapeHtml(l) + '</option>').join('');
+    if (withAccountsTeam.some(([v]) => v === prevVal)) wfRecCol.value = prevVal;
+  }
+  // PHASE 4 (2026-11) - "Only rows where"/"After sending, update" column
+  // dropdowns - populated from the ALREADY-loaded sheet's real headers,
+  // the SAME mechanism (wfPlan.sheetColumns) renderWfCols/renderWfRecCols
+  // already use for their own Field-mapping-style column dropdowns. Empty
+  // (just the one placeholder option) whenever no sheet is loaded.
+  function renderWfSheetOptionCols() {
+    const cols = (wfPlan && wfPlan.source === 'sheet') ? (wfPlan.sheetColumns || []) : [];
+    if (wfOnlyWhereCol) {
+      const cur = wfOnlyWhereCol.value;
+      wfOnlyWhereCol.innerHTML = '<option value="">— all rows —</option>' + cols.map((c) => '<option value="' + escapeHtml(c) + '">' + escapeHtml(c) + '</option>').join('');
+      if (cols.includes(cur)) wfOnlyWhereCol.value = cur;
+    }
+    if (wfAfterSendCol) {
+      const cur2 = wfAfterSendCol.value;
+      wfAfterSendCol.innerHTML = '<option value="">— don\'t update —</option>' + cols.map((c) => '<option value="' + escapeHtml(c) + '">' + escapeHtml(c) + '</option>').join('');
+      if (cols.includes(cur2)) wfAfterSendCol.value = cur2;
+    }
   }
   function renderWfEmpList() {
     if (!wfEmpList || !autoEmployeesCache) return;
@@ -8202,11 +8271,23 @@
   if (wfTableToggle) wfTableToggle.addEventListener('change', wfSync);
   if (wfAlsoOn) wfAlsoOn.addEventListener('change', wfSync);
   if (wfDocsOn) wfDocsOn.addEventListener('change', wfSync);
-  [wfSubject, wfMailSubj, wfBody, wfAlsoSubj, wfAlsoBody, wfFuDays, wfFuMax, wfFuBody, wfDate, wfTime, wfEvery].forEach((el) => { if (el) el.addEventListener('input', wfSync); });
+  [wfSubject, wfMailSubj, wfBody, wfAlsoSubj, wfAlsoBody, wfFuDays, wfFuMax, wfFuBody, wfDate, wfTime, wfEvery, wfSheet2Url, wfSheet2Tab, wfOnlyWhereVal, wfAfterSendVal].forEach((el) => { if (el) el.addEventListener('input', wfSync); });
   if (document.getElementById('wfCcInput')) document.getElementById('wfCcInput').addEventListener('input', wfSync);
   if (document.getElementById('wfCcChipInput')) document.getElementById('wfCcChipInput').addEventListener('click', () => setTimeout(wfSync, 0));
   if (document.getElementById('wfAlsoToInput')) document.getElementById('wfAlsoToInput').addEventListener('input', wfSync);
   if (document.getElementById('wfAlsoToChipInput')) document.getElementById('wfAlsoToChipInput').addEventListener('click', () => setTimeout(wfSync, 0));
+  // PHASE 4 (2026-11) - "Sheet options" + "Outside emails" wiring.
+  if (wfOnlyWhereCol) wfOnlyWhereCol.addEventListener('change', wfSync);
+  if (wfAfterSendCol) wfAfterSendCol.addEventListener('change', wfSync);
+  if (wfAfterSendDate) wfAfterSendDate.addEventListener('change', wfSync);
+  if (wfSheet2Btn) wfSheet2Btn.addEventListener('click', () => {
+    if (!wfSheet2Wrap) return;
+    wfSheet2Wrap.classList.toggle('hidden');
+    if (wfSheet2Wrap.classList.contains('hidden')) { if (wfSheet2Url) wfSheet2Url.value = ''; if (wfSheet2Tab) wfSheet2Tab.value = ''; }
+    wfSync();
+  });
+  if (document.getElementById('wfOutsideInput')) document.getElementById('wfOutsideInput').addEventListener('input', wfSync);
+  if (document.getElementById('wfOutsideChipInput')) document.getElementById('wfOutsideChipInput').addEventListener('click', () => setTimeout(wfSync, 0));
 
   function wfReadForm() {
     return {
@@ -8254,6 +8335,23 @@
         // PHASE 3 (2026-11) - "Smarter follow-ups", off/empty by default.
         workingDaysOnly: f.fuWorkingDaysOnly, fixedTimeOfDay: f.fuFixedTimeOfDay, mentionMissing: f.fuMentionMissing
       },
+      // PHASE 4 (2026-11) - "Sheet options", all off/empty by default
+      // (null/null/null) = today's exact single-sheet, no-filter, no-
+      // write-back behaviour, matching workflowService.js's own
+      // documented plan.sheetOptions shape.
+      sheetOptions: {
+        secondSheet: (wfSheet2Wrap && !wfSheet2Wrap.classList.contains('hidden') && ((wfSheet2Url && wfSheet2Url.value.trim()) || (wfSheet2Tab && wfSheet2Tab.value.trim())))
+          ? { url: (wfSheet2Url && wfSheet2Url.value.trim()) || null, tab: (wfSheet2Tab && wfSheet2Tab.value.trim()) || null }
+          : null,
+        onlyWhere: (wfOnlyWhereCol && wfOnlyWhereCol.value) ? { column: wfOnlyWhereCol.value, value: wfOnlyWhereVal ? wfOnlyWhereVal.value : '' } : null,
+        afterSend: (wfAfterSendCol && wfAfterSendCol.value) ? { column: wfAfterSendCol.value, value: wfAfterSendVal ? wfAfterSendVal.value : '', alsoWriteDate: Boolean(wfAfterSendDate && wfAfterSendDate.checked) } : null
+      },
+      // PHASE 4 (2026-11) - "Outside emails" (Selected people only) -
+      // saved regardless of the CURRENT mode (so switching back and
+      // forth never loses the chips), but the engine only ever reads
+      // this in the "Selected people" branch (see workflowService.js's
+      // own comment on this exact point).
+      outsideEmails: wfOutsideField.getChips(),
       rules: JSON.parse(JSON.stringify(wfRules))
     });
   }
@@ -8321,15 +8419,26 @@
         };
         wfFuLiveExample.innerHTML = steps.length ? '<b>Live example:</b> ' + steps.map(fmtStep).join(' → ') : '';
       }
-      const RECCOL_SHORT = { reportingDoer: 'HOD', reportingManager: 'Manager', self: 'the employee' };
+      // PHASE 4 (2026-11) - "companyAccountsTeam", short label for the
+      // Summary line, same RECCOL_SHORT map as every other recCol value.
+      const RECCOL_SHORT = { reportingDoer: 'HOD', reportingManager: 'Manager', self: 'the employee', companyAccountsTeam: "each company's Accounts Team" };
       const recTxt = f.rec === 'column' ? 'the person in "' + (RECCOL_SHORT[f.recCol] || f.recCol || '') + '"' : wfSelected.size + ' selected';
       if (data.blocked) {
         wfSummary.innerHTML = '<div class="wf-auto-summary-title">Summary</div><div class="wf-auto-summary-line" style="color:var(--wi-red-700);font-weight:800;white-space:normal">⚠ Can\'t run right now: ' + escapeHtml(data.blocked.reason) + '</div>';
       } else {
+        // PHASE 4 (2026-11), owner's own instruction ("if trivial, extend
+        // Summary now") - one line each, only when actually used; the
+        // AI-driven fill-from-text / Preview sheet's own rendering of
+        // these stays Phase 7's job.
+        const outsideCount = wfOutsideField.getChips().length;
         wfSummary.innerHTML = '<div class="wf-auto-summary-title">Summary</div>' +
           '<div class="wf-auto-summary-line">' + (wfConfirmed ? '✓ Plan confirmed' : '⚠ Ask SUBH and confirm the plan first') + '</div>' +
           '<div class="wf-auto-summary-line">' + (f.mediator === 'mail' ? '✉️ Mail' : '💬 WhatsApp') + ' → ' + escapeHtml(recTxt) + (f.cc ? ' (+ CC)' : '') + '</div>' +
           (data.alsoMessage ? '<div class="wf-auto-summary-line">+ 1 mail → ' + escapeHtml(data.alsoMessage.to) + '</div>' : '') +
+          (f.rec === 'selected' && outsideCount ? '<div class="wf-auto-summary-line">+ ' + outsideCount + ' outside email(s)</div>' : '') +
+          (plan.sheetOptions && plan.sheetOptions.secondSheet ? '<div class="wf-auto-summary-line">📑 Also reads a second sheet/tab</div>' : '') +
+          (plan.sheetOptions && plan.sheetOptions.onlyWhere && plan.sheetOptions.onlyWhere.column ? '<div class="wf-auto-summary-line">🔎 Only rows where ' + escapeHtml(plan.sheetOptions.onlyWhere.column) + ' = ' + escapeHtml(plan.sheetOptions.onlyWhere.value || '') + '</div>' : '') +
+          (plan.sheetOptions && plan.sheetOptions.afterSend && plan.sheetOptions.afterSend.column ? '<div class="wf-auto-summary-line">✅ After sending, updates ' + escapeHtml(plan.sheetOptions.afterSend.column) + '</div>' : '') +
           '<div class="wf-auto-summary-line">🔁 Follow up every ' + (wfFuDays ? wfFuDays.value : 2) + ' day(s), up to ' + (wfFuMax ? wfFuMax.value : 2) + ' time(s)' + wfSmartFollowUpSummarySuffix(f) + '</div>' +
           (f.skipToNextWorkingDay ? '<div class="wf-auto-summary-line">📅 Runs on the next working day if it falls on a Sunday/holiday</div>' : '') +
           '<div class="wf-auto-summary-line">🤖 ' + wfRules.length + ' reply rule(s)</div>' +
@@ -8459,6 +8568,11 @@
       if (wfRecCol) wfRecCol.value = draft.plan.recCol || 'reportingManager';
       renderWfCols();
       renderWfEmpList();
+      // PHASE 4 (2026-11) - Ask SUBH never fills these fields itself
+      // (explicitly Phase 7's own job) - just keep the dropdowns in sync
+      // with whatever sheet the draft resolved to, same as every other
+      // column dropdown on this page.
+      renderWfSheetOptionCols();
       renderWfRules();
       renderWfSheetInfo();
       wfSync();
@@ -8484,7 +8598,7 @@
     if (!wfPlan) wfPlan = { source: 'sheet', conds: [], match: 'all' };
     wfPlan.source = 'sheet'; wfPlan.sheetUrl = wfSheetContext.sheetUrl; wfPlan.sheetId = wfSheetContext.sheetId;
     wfPlan.sheetTab = tab.title; wfPlan.sheetColumns = tab.headers; wfTableCols = [...tab.headers];
-    renderWfSheetInfo(); renderWfRecCols(); renderWfCols(); wfSync();
+    renderWfSheetInfo(); renderWfRecCols(); renderWfCols(); renderWfSheetOptionCols(); wfSync();
     if (wfPlan) renderWfUnderstanding();
   });
   if (wfSheetLoadBtn) wfSheetLoadBtn.addEventListener('click', async () => {
@@ -8498,7 +8612,7 @@
         if (!wfPlan) wfPlan = { source: 'sheet', conds: [], match: 'all' };
         wfPlan.source = 'sheet'; wfPlan.sheetUrl = url; wfPlan.sheetId = r.sheetId;
         wfPlan.sheetTab = r.tabs[0].title; wfPlan.sheetColumns = r.tabs[0].headers; wfTableCols = [...r.tabs[0].headers];
-        renderWfRecCols(); renderWfCols();
+        renderWfRecCols(); renderWfCols(); renderWfSheetOptionCols();
       }
       renderWfSheetInfo(); wfSync();
       if (wfPlan) renderWfUnderstanding();
