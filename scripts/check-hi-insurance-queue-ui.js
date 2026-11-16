@@ -115,9 +115,20 @@ function check(label, ok, detail) {
   await page.route('**/api/insurance/additions/mail-defaults', (route) => {
     route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ to: 'mediclaim@co.test', cc: 'hr@co.test', subject: 'Request', text: 'Dear Sir/Madam,', hasAttachment: true, defaultFormat: 'pdf' }) });
   });
+  // Flaky-test fix (2026-11, direct instruction) - same one-shot-gate
+  // pattern as yesterday's Sync Now/Save/Resend fixes (commit 1cac09b):
+  // a fixed setTimeout(200) here raced a fixed page.waitForTimeout(80) at
+  // the test site under system load. Holds the send-mail POST until the
+  // test proves the "Sending…" busy state really rendered, never a
+  // sleep. The click handler (public/workforce.js's mailComposeSendBtn
+  // listener) sets that text SYNCHRONOUSLY before calling fetch(), so
+  // page.waitForRequest() alone is sufficient proof it's already set -
+  // same reasoning already confirmed correct for the Resend button fix.
+  let releaseSendMail;
+  const sendMailGate = new Promise((resolve) => { releaseSendMail = resolve; });
   await page.route('**/api/insurance/additions/send-mail', async (route) => {
     sendMailCallCount++;
-    await new Promise((resolve) => setTimeout(resolve, 200)); // observable "Sending..." state
+    await sendMailGate;
     const pending = pendingAdditionsItems();
     if (!pending.length) { route.fulfill({ status: 400, contentType: 'application/json', body: JSON.stringify({ error: 'No pending addition requests to send.' }) }); return; }
     const batchId = 'ADD-TEST-' + (nextBatchSeq++);
@@ -251,8 +262,12 @@ function check(label, ok, detail) {
   await page.waitForTimeout(250);
   check('Send Mail popup opens with the real default recipients pre-filled', (await page.locator('#mailToChipInput').textContent() || '').includes('mediclaim@co.test'));
   const sendClick = page.click('#mailComposeSendBtn');
-  await page.waitForTimeout(80);
+  // Deterministic: the real request has been sent, so the synchronous
+  // "Sending…" text-set (which happens before fetch() in the click
+  // handler) is guaranteed to have already run - never a fixed sleep.
+  await page.waitForRequest('**/api/insurance/additions/send-mail');
   check('Send button shows "Sending..." while the mail is in flight', (await page.locator('#mailComposeSendBtn span').textContent() || '').toLowerCase().includes('sending'));
+  releaseSendMail(); // busy-state is proven - let the held mock response land
   await sendClick;
   await page.waitForTimeout(1500); // popup auto-closes ~1.2s after a successful send
   check('Exactly 1 real send happened', sendMailCallCount === 1);

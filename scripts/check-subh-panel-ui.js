@@ -406,7 +406,19 @@ async function checkRealTopbarFrame(page, pageLabel) {
   await page.click('#wfDocsOn');
   await page.waitForTimeout(150);
   await page.click('#wfDocsPreviewBtn');
-  await page.waitForTimeout(1500); // pdf.js's own lazy module load + render
+  // Flaky-test fix (2026-11, direct instruction) - a fixed
+  // waitForTimeout(1500) here raced pdf.js's own lazy module-load +
+  // parse + render under full parallel system load (reproduced live: 2/2
+  // failures in the full run-pre-push-checks.js batch, 2/2 passes alone)
+  // - 1500ms isn't always enough once 20+ other suites are competing for
+  // CPU. There's no network request to hold here (the delay is pdf.js's
+  // own client-side work, not a mocked fetch), so the fix is to wait for
+  // the actual completion condition - a rendered canvas with real pixel
+  // dimensions - deterministically, never a fixed sleep.
+  await page.waitForFunction(() => {
+    const canvas = document.querySelector('.wf-auto-doc-preview canvas');
+    return Boolean(canvas && canvas.width > 0 && canvas.height > 0);
+  }, { timeout: 15000 });
   const docPreview = await page.evaluate(() => {
     const box = document.querySelector('.wf-auto-doc-preview');
     const canvases = box ? box.querySelectorAll('canvas') : [];

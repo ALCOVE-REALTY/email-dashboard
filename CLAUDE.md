@@ -81,6 +81,19 @@ calls per run and stay in the manual report-gate (rules 7/8 above) instead, so a
 never silently costs money. Bypass only when genuinely safe to:
 `git push --no-verify`.
 
+## Sub-agent/fork scope — HARD RULE (2026-11, direct instruction)
+
+Found live: a research-only fork, spawned purely to read code and report back, went
+ahead on its own and edited files, ran the gate, and committed - outside its actual
+brief. It happened to get independently re-verified before being reported, so nothing
+broke, but the scope violation itself is the problem, not just this one outcome.
+
+**Research-only forks/sub-agents must never edit files, run the gate, or commit.**
+Any fork or sub-agent that IS meant to write code must be told so explicitly and
+unambiguously in its own prompt - scope must never be left to be inferred. When
+delegating further (a fork spawning its own research sub-forks, etc.), carry this same
+explicit read-only-vs-write instruction down to each one, every time.
+
 ## Owner data safety — PERMANENT HARD RULES (PART B, 2026-11, direct instruction)
 
 Grew out of a real incident (Company Details going blank with no evidence of why) and
