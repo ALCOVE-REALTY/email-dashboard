@@ -8798,11 +8798,28 @@
       if (wfRecCol) wfRecCol.value = draft.plan.recCol || 'reportingManager';
       renderWfCols();
       renderWfEmpList();
-      // PHASE 4 (2026-11) - Ask SUBH never fills these fields itself
-      // (explicitly Phase 7's own job) - just keep the dropdowns in sync
-      // with whatever sheet the draft resolved to, same as every other
-      // column dropdown on this page.
+      // PHASE 7 (2026-11) - Ask SUBH now DOES fill these fields when the
+      // model resolved them - same population logic wfPopulateForm (EDIT
+      // mode) already uses for the identical plan.sheetOptions/
+      // outsideEmails shape, just applied to a freshly drafted plan
+      // instead of a saved one.
+      const soDraft = draft.plan.sheetOptions || {};
+      if (soDraft.secondSheet && (soDraft.secondSheet.url || soDraft.secondSheet.tab)) {
+        if (wfSheet2Wrap) wfSheet2Wrap.classList.remove('hidden');
+        if (wfSheet2Url) wfSheet2Url.value = soDraft.secondSheet.url || '';
+        if (wfSheet2Tab) wfSheet2Tab.value = soDraft.secondSheet.tab || '';
+      } else {
+        if (wfSheet2Wrap) wfSheet2Wrap.classList.add('hidden');
+        if (wfSheet2Url) wfSheet2Url.value = '';
+        if (wfSheet2Tab) wfSheet2Tab.value = '';
+      }
       renderWfSheetOptionCols();
+      if (wfOnlyWhereCol) wfOnlyWhereCol.value = (soDraft.onlyWhere && soDraft.onlyWhere.column) || '';
+      if (wfOnlyWhereVal) wfOnlyWhereVal.value = (soDraft.onlyWhere && soDraft.onlyWhere.value) || '';
+      if (wfAfterSendCol) wfAfterSendCol.value = (soDraft.afterSend && soDraft.afterSend.column) || '';
+      if (wfAfterSendVal) wfAfterSendVal.value = (soDraft.afterSend && soDraft.afterSend.value) || '';
+      if (wfAfterSendDate) wfAfterSendDate.checked = Boolean(soDraft.afterSend && soDraft.afterSend.alsoWriteDate);
+      wfOutsideField.setChips(Array.isArray(draft.plan.outsideEmails) ? draft.plan.outsideEmails : []);
       renderWfRules();
       renderWfSheetInfo();
       wfSync();
@@ -8853,26 +8870,50 @@
     if (!wfUnderstand) return;
     if (!wfPlan) { wfUnderstand.innerHTML = ''; return; }
     const f = wfReadForm();
+    // PHASE 7 (2026-11) - a freshly-built plan from the LIVE form (same
+    // helper Summary/Preview already use), so "SUBH understood" reflects
+    // the CURRENT sheet-options/outside-emails state too, never a stale
+    // snapshot from whenever Ask SUBH last ran - same freshness Summary
+    // already had for these exact fields.
+    const plan = wfBuildPlanFromForm(f);
     const isSheetSrc = wfPlan.source === 'sheet';
     const srcLabel = isSheetSrc ? (wfSheetContext ? wfSheetContext.fileName : 'Custom Google Sheet') + (wfPlan.sheetTab ? ' → tab "' + wfPlan.sheetTab + '"' : '') : (AUTO_SOURCE_LABELS[wfPlan.source] || 'Data');
     const namedRecipients = [...(autoEmployeesCache || []).filter((e) => wfSelected.has(e.employeeId)).map((e) => e.name), ...(wfPlan.selectedRawEmails || [])];
-    const recTxt = f.rec === 'column' ? (f.recCol === 'self' ? 'each person themself' : 'each row\'s own ' + (wfRecCol && wfRecCol.selectedOptions[0] ? wfRecCol.selectedOptions[0].textContent : f.recCol)) : (namedRecipients.join(', ') || '—');
+    // PHASE 7 (2026-11) - "companyAccountsTeam" gets its own plain-English
+    // label here too (same RECCOL_SHORT idea Summary already has), rather
+    // than falling into the generic "each row's own <column label>"
+    // phrasing, which read oddly for this one fixed-keyword value.
+    const recTxt = f.rec === 'column'
+      ? (f.recCol === 'self' ? 'each person themself' : f.recCol === 'companyAccountsTeam' ? 'each company\'s own Accounts Team' : 'each row\'s own ' + (wfRecCol && wfRecCol.selectedOptions[0] ? wfRecCol.selectedOptions[0].textContent : f.recCol))
+      : (namedRecipients.join(', ') || '—');
+    const outsideCount = (plan.rec === 'selected' && Array.isArray(plan.outsideEmails)) ? plan.outsideEmails.length : 0;
+    const so = plan.sheetOptions || {};
     const lines = [
       '<b>Who:</b> ' + escapeHtml(srcLabel),
-      '<b>Sends to:</b> ' + escapeHtml(recTxt) + (f.group === 'each' ? ' — one separate message per row' : ' — one combined list'),
+      '<b>Sends to:</b> ' + escapeHtml(recTxt) + (f.group === 'each' ? ' — one separate message per row' : ' — one combined list') + (outsideCount ? ' + ' + outsideCount + ' outside email(s)' : ''),
       '<b>By:</b> ' + (f.mediator === 'mail' ? 'Mail' : 'WhatsApp') + (f.table ? ' · table ' + (f.tablePlacement === 'pdf' ? 'as ' + (f.attachmentFormat === 'excel' ? 'Excel' : 'PDF') + ' attachment' : 'in the message') : ''),
-      '<b>When:</b> ' + escapeHtml(describeScheduleRule(f)) + ', first run ' + escapeHtml(wfLastPreview && wfLastPreview.nextRunAt ? wfWhen(wfLastPreview.nextRunAt) : '—'),
-      '🔁 No reply in <b>' + (wfFuDays ? wfFuDays.value : 2) + ' day(s)</b> → follow up (max ' + (wfFuMax ? wfFuMax.value : 2) + '), then alert you',
+      '<b>When:</b> ' + escapeHtml(describeScheduleRule(f)) + ', first run ' + escapeHtml(wfLastPreview && wfLastPreview.nextRunAt ? wfWhen(wfLastPreview.nextRunAt) : '—') +
+        (f.skipToNextWorkingDay ? ' (moves to the next working day if it falls on a Sunday/holiday)' : ''),
+      '🔁 No reply in <b>' + (wfFuDays ? wfFuDays.value : 2) + ' day(s)</b> → follow up (max ' + (wfFuMax ? wfFuMax.value : 2) + '), then alert you' + wfSmartFollowUpSummarySuffix(f),
+      // PHASE 4 (2026-11) - "Sheet options" (second sheet/tab, row
+      // filter, after-send update), same "only when actually set"
+      // discipline Summary already uses for these.
+      ...(so.secondSheet ? ['📑 Also reads a second sheet/tab'] : []),
+      ...(so.onlyWhere && so.onlyWhere.column ? ['🔎 Only rows where ' + escapeHtml(so.onlyWhere.column) + ' = ' + escapeHtml(so.onlyWhere.value || '')] : []),
+      ...(so.afterSend && so.afterSend.column ? ['✅ After sending, updates ' + escapeHtml(so.afterSend.column)] : []),
       // PHASE 5 (2026-11) - mentions "Details — take from the reply"/
       // "Also do" when used (same low-risk "if trivial" judgment call
       // Phases 3/4 made for their own new boxes), and the new
       // "Wait for attachments" then-value.
+      // PHASE 7 (2026-11) - also mentions a "Next stage" (Phase 6) when a
+      // rule opens one, same "only when used" discipline.
       ...wfRules.map((r) => (r.askDetail ? '⏳' : '✅') + ' "' + escapeHtml(r.when || '(unnamed rule)') + '"' +
         (parseWfDetailFieldNames(r.detailFields).length ? ' (reads: ' + escapeHtml(parseWfDetailFieldNames(r.detailFields).join(', ')) + ')' : '') +
         ' → ' + (r.askDetail ? 'ask for ' + escapeHtml(r.askDetail) + ' → ' : '') + '"' + escapeHtml((r.replyText || '').slice(0, 60)) + (((r.replyText || '').length > 60) ? '…' : '') + '"' +
-        (r.sendTo ? ' → mail to ' + (r.sendTo === 'anyEmail' ? escapeHtml(r.sendToEmail || 'any email') : (WF_SEND_TO_LABELS[r.sendTo] || r.sendTo)) + (r.askMeFirst ? ' (asks you first)' : '') : '') +
+        (r.sendTo ? ' → mail to ' + (r.sendTo === 'anyEmail' ? escapeHtml(r.sendToEmail || 'any email') : (WF_SEND_TO_LABELS[r.sendTo] || r.sendTo)) + (r.sendDocument === WF_SEND_DOCUMENT_ATTACHMENTS_FROM_REPLY ? ' (forwards their attachment)' : '') + (r.askMeFirst ? ' (asks you first)' : '') : '') +
         ' → ' + (r.then === 'stop' ? 'done' : r.then === 'wait' ? 'keep waiting' : r.then === WF_THEN_WAIT_FOR_ATTACHMENTS ? 'wait for attachments' : 'ask you') +
-        (((r.alsoDo && r.alsoDo.driveUpload && r.alsoDo.driveUpload.on) || (r.alsoDo && r.alsoDo.sheetUpdate && r.alsoDo.sheetUpdate.on)) ? ' + also ' + [r.alsoDo.driveUpload && r.alsoDo.driveUpload.on ? 'save to Drive' : null, r.alsoDo.sheetUpdate && r.alsoDo.sheetUpdate.on ? 'update the sheet' : null].filter(Boolean).join(' & ') : '')),
+        (((r.alsoDo && r.alsoDo.driveUpload && r.alsoDo.driveUpload.on) || (r.alsoDo && r.alsoDo.sheetUpdate && r.alsoDo.sheetUpdate.on)) ? ' + also ' + [r.alsoDo.driveUpload && r.alsoDo.driveUpload.on ? 'save to Drive' : null, r.alsoDo.sheetUpdate && r.alsoDo.sheetUpdate.on ? 'update the sheet' : null].filter(Boolean).join(' & ') : '') +
+        ((r.nextStageOn && (r.sub || []).length) ? ' + opens a "Next stage" with ' + r.sub.length + ' rule(s) for their reply' : '')),
       '❓ Unclear reply → a card for you'
     ];
     wfUnderstand.innerHTML = '<div class="wf-auto-und"><h3>SUBH understood' + (wfConfirmed ? ' <span class="ok">✓ confirmed</span>' : '') + '</h3><ul>' + lines.map((l) => '<li>' + l + '</li>').join('') +

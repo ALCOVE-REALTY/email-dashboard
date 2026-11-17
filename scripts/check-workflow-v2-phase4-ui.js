@@ -128,7 +128,19 @@ const SAVED_WORKFLOW = {
   });
   const askDraft = {
     ok: true, subject: 'Phase 4 sheet options',
-    plan: Object.assign({}, SAVED_WORKFLOW.plan, { rec: 'column', recCol: 'self', selectedEmployeeIds: [], selectedRawEmails: [], outsideEmails: [] }),
+    // PHASE 7 (2026-11) fixture correction (test-only, zero assertion
+    // changes): sheetOptions is reset to "nothing resolved" here for the
+    // exact same reason rec/recCol/selectedEmployeeIds/selectedRawEmails/
+    // outsideEmails already are above - this mock represents a FRESH
+    // Ask SUBH draft, never the saved workflow's own leftover sheet
+    // options. Before Phase 7, Ask SUBH never read plan.sheetOptions at
+    // all, so leaving it un-reset here was harmless; now that it DOES
+    // (by design - the whole point of this phase), the un-reset value
+    // would wrongly reveal/pre-fill the "second sheet" box, colliding
+    // with this test's own later manual "+ Add another sheet / tab"
+    // steps below (which still assume a clean, untouched state at this
+    // point) - never a real product behaviour change.
+    plan: Object.assign({}, SAVED_WORKFLOW.plan, { rec: 'column', recCol: 'self', selectedEmployeeIds: [], selectedRawEmails: [], outsideEmails: [], sheetOptions: { secondSheet: null, onlyWhere: null, afterSend: null } }),
     schedule: SAVED_WORKFLOW.schedule
   };
   await page.route('**/api/workforce/hr-assistant/workflows/ask', (route) => {

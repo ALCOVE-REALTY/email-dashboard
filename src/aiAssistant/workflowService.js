@@ -1148,6 +1148,14 @@ const MODEL = process.env.CLAUDE_MODEL_MAIN;
 
 const DOCUMENT_TEMPLATES = ['confirmation', 'extension', 'experience', 'relieving'];
 const SEND_TO_TARGETS = ['self', 'manager', 'hr', 'accounts'];
+// PHASE 7 (2026-11) - a plain-text email address, as literally given, for
+// `rule.sendToEmail`/plan-level "outside emails" NLU extraction. Never
+// used to invent/guess an address - only to recognize one the ask's own
+// text already contains. A separate local redefinition from
+// resolveAlsoSendNames' own EMAIL_RE below, same convention
+// automationService.js's own draftPlanFromParsed already uses (a local
+// const per call site, never a cross-file shared regex).
+const WF_EMAIL_RE = /^\S+@\S+\.\S+$/;
 // PHASE 5 (2026-11) - per-rule-only "To" extras (manually configured in
 // the Create Workflow UI, never AI-drafted - drafting these from plain
 // text is explicitly Phase 7's job, not this phase's). Kept SEPARATE
@@ -1267,6 +1275,49 @@ function templateKeys(templateOptions) {
   return templateChoices(templateOptions).map((t) => t.key);
 }
 
+// PHASE 7 (2026-11) - one rule's own schema, built twice: once for a
+// TOP-LEVEL rule (nested=false, gains `nextStageOn`/`sub`) and once for a
+// "Next stage" sub-rule (nested=true, gains the reply-in-thread "To"
+// option instead, and never recurses further - the hard 2-level cap is
+// enforced in the SCHEMA itself here, never left to the model to respect
+// on its own, and re-enforced in code by sanitizeWorkflowRules/draftRule
+// below). Never invent a column/person/email that isn't in the ask's own
+// text - every field below says so in its own description.
+function workflowRuleItemSchema(templateEnum, templateListText, nested) {
+  const sendToEnum = SEND_TO_TARGETS.concat(RULE_SEND_TO_EXTRA_TARGETS).concat(nested ? [RULE_SEND_TO_REPLY_IN_THREAD] : []);
+  const sendDocumentEnum = templateEnum.concat([RULE_SEND_DOCUMENT_ATTACHMENTS_FROM_REPLY]);
+  const thenEnum = ['stop', 'wait', 'askme', RULE_THEN_WAIT_FOR_ATTACHMENTS];
+  const properties = {
+    when: { type: 'string', description: 'A short description of what this kind of reply MEANS, in the owner\'s own words (e.g. "Approved / confirmed", "Extension of the probation period"). Judged by the model at reply time by MEANING, never a keyword list.' },
+    detailFields: { type: 'string', description: 'Only if the owner names SPECIFIC piece(s) of information SUBH should read directly OUT of this reply when it arrives (e.g. "note the amount and UTR from their reply" -> "amount, UTR"), comma-separated, exactly as named. This is different from askDetail below (which means SUBH must ASK a question FIRST, before any reply exists to read from) - the two can combine (ask first, then also watch for named fields in whatever reply comes). Omit entirely when the ask doesn\'t name specific fields to pull out of the reply.' },
+    askDetail: { type: 'string', description: 'Only if, before replying, SUBH must first ask the sender for ONE missing piece of information (e.g. "number of months", "the pending assets"). Omit entirely when this reply needs no further detail.' },
+    askQuestion: { type: 'string', description: 'Required when askDetail is set - the exact question SUBH asks, in professional English, using {Employee_Name}/{Manager_Name}/other real column placeholders as needed.' },
+    askFollowUpDays: { type: 'number', description: 'Only when askDetail is set and a follow-up period for THIS specific question was mentioned - otherwise omit (defaults to the task\'s own follow-up days).' },
+    askFollowUpWorkingDaysOnly: { type: 'boolean', description: 'Only when askDetail is set and the ask explicitly says THIS question\'s own follow-up should only happen on working days (e.g. "only business days" said specifically about asking for this detail). Omit/false otherwise - never assumed from a general mention elsewhere.' },
+    askFollowUpFixedTimeOfDay: { type: 'string', description: 'Only when askDetail is set and a SPECIFIC time of day was mentioned for THIS question\'s own follow-up (HH:MM, 24-hour). Omit entirely when no specific time was stated - never guess one.' },
+    askFollowUpMentionMissing: { type: 'boolean', description: 'Only when askDetail is set and the ask explicitly says the follow-up should mention/remind what is still missing. Omit/false otherwise.' },
+    replyText: { type: 'string', description: 'What SUBH replies with once this rule is matched (and the detail, if any, is known), in professional English, placeholders allowed.' },
+    sendTo: { type: 'string', enum: sendToEnum, description: 'Only if a FURTHER message should be sent once this rule resolves - "self" the employee, "manager" their Reporting Manager, "hr" the HR team, "accounts" the (single, fixed) Accounts team, "companyAccountsTeam" for "each company\'s OWN Accounts Team" mentions (looked up per-record via that record\'s own Company, same as the plan-level recipient option of the same name - never the same thing as the plain, single "accounts" team), "anyEmail" when a literal email address is named (set sendToEmail too).' + (nested ? ' A sub-rule (a "Next stage" reply-handler) also allows "' + RULE_SEND_TO_REPLY_IN_THREAD + '" when the ask says to reply back IN THE SAME ORIGINAL THREAD/CONVERSATION rather than start a new message.' : '') + ' Omit entirely if no further message is sent.' },
+    sendToEmail: { type: 'string', description: 'Required when sendTo is "anyEmail" - the literal email address named in the ask, exactly as given. Omit otherwise.' },
+    sendSubject: { type: 'string', description: 'Required when sendTo is set - the further message\'s subject (mail) or omit for WhatsApp.' },
+    sendBody: { type: 'string', description: 'Required when sendTo is set - the further message\'s body, placeholders allowed including {Reply_Detail} (what the sender told SUBH, when askDetail was used) and any name from detailFields above (e.g. {amount}).' },
+    sendDocument: { type: 'string', enum: sendDocumentEnum, description: 'Set this whenever the further message IS a named letter (one of the 4 built-ins, or a template from the SUBH Letter Templates Drive folder) rather than just a plain notice - e.g. "extension hole ... employee ke Extension of Probation Period mail" means generate and attach the real Extension of Probation letter, not merely tell them about it in sendBody. Match the ask\'s own template name against the real options below and use its exact key. Use "' + RULE_SEND_DOCUMENT_ATTACHMENTS_FROM_REPLY + '" instead when the ask says to forward/save the SENDER\'S OWN attachment(s) from their reply (e.g. "unar attachment ta forward kore dao", "save their attachment") rather than generate a letter. sendBody still carries a short covering note either way. Available templates: ' + templateListText + '. Omit when no letter/attachment should be sent, or when the ask names a template matching none of these (explain that in `unclear` instead of guessing).' },
+    askMeFirst: { type: 'boolean', description: 'true only if the owner should approve this further message before it actually sends (e.g. "ask me first", "let me check before sending"). Defaults to false.' },
+    then: { type: 'string', enum: thenEnum, description: '"stop" if this record is done once this rule resolves (the default for most rules), "wait" if SUBH should keep waiting/following up afterward (e.g. "will share later"), "askme" if the owner should decide what happens next, "' + RULE_THEN_WAIT_FOR_ATTACHMENTS + '" if SUBH should specifically keep waiting for a LATER reply that carries an attachment/document (e.g. "attachment na pawa porjonto wait korbe").' },
+    alsoSaveToDriveOn: { type: 'boolean', description: 'true only if the ask explicitly says to save the sender\'s attachment(s) to a Drive folder once this rule resolves. Defaults to false.' },
+    alsoSaveToDrivePath: { type: 'string', description: 'Required when alsoSaveToDriveOn is true AND a specific folder/path pattern was actually named (e.g. "Documents/{Month}/{Employee_Name} e save koro" -> "Documents/{Month}/{Employee_Name}.pdf"), placeholders allowed. Omit alsoSaveToDriveOn entirely (never set it true alone) when no real path/pattern was stated - never invent one.' },
+    alsoUpdateSheetOn: { type: 'boolean', description: 'true only if the ask explicitly says to update/mark a column on the sheet once this rule resolves. Defaults to false.' },
+    alsoUpdateSheetColumn: { type: 'string', description: 'Required when alsoUpdateSheetOn is true AND a specific column was actually named (e.g. "Status column ta Done kore dibe" -> "Status"). Omit alsoUpdateSheetOn entirely (never set it true alone) when no real column was named - never invent one; this is free text (not validated against the loaded sheet, same as every other "Also do" field).' },
+    alsoUpdateSheetValue: { type: 'string', description: 'Only when alsoUpdateSheetColumn is set - the value to write, exactly as stated (e.g. "Done"). Omit when no value was stated.' }
+  };
+  const required = ['when', 'replyText', 'then'];
+  if (!nested) {
+    properties.nextStageOn = { type: 'boolean', description: 'true ONLY when, after describing this rule\'s own reply/further-message, the ask goes on to describe a GENUINELY SEPARATE, SECOND round of waiting-for-and-handling a reply - to THIS rule\'s own outgoing message, not a brand new unrelated workflow (e.g. "...ar jokhon tara UTR confirm korbe, SAME thread-e reply dibe ar tader attachment save korbe" describes a second stage: first something is sent, THEN SUBH waits again for a reply to THAT and handles it with its own rule(s)). This is NOT the same as simply sending a further message on THIS rule (sendTo/sendBody above) - that is a single message with no more waiting afterward. When the ask is ambiguous about a genuinely new round of waiting, or never clearly describes one, leave this false/omitted and `sub` empty - never guessed.' };
+    properties.sub = { type: 'array', items: workflowRuleItemSchema(templateEnum, templateListText, true), description: 'Required when nextStageOn is true - one entry per distinct kind of reply to THIS rule\'s own outgoing message, same shape as a top-level rule (minus nextStageOn/sub themselves - only one extra "Next stage" level is ever supported).' };
+  }
+  return { type: 'object', properties, required };
+}
+
 function workflowPlanTool(departmentNames, sheetContext, templateOptions) {
   const base = automationService.automationPlanTool
     ? automationService.automationPlanTool(departmentNames, sheetContext)
@@ -1278,31 +1329,44 @@ function workflowPlanTool(departmentNames, sheetContext, templateOptions) {
   const templates = templateChoices(templateOptions);
   const templateEnum = templates.map((t) => t.key);
   const templateListText = templates.map((t) => t.key + ' — ' + t.label).join('; ');
-  const ruleItem = {
-    type: 'object',
-    properties: {
-      when: { type: 'string', description: 'A short description of what this kind of reply MEANS, in the owner\'s own words (e.g. "Approved / confirmed", "Extension of the probation period"). Judged by the model at reply time by MEANING, never a keyword list.' },
-      askDetail: { type: 'string', description: 'Only if, before replying, SUBH must first ask the sender for ONE missing piece of information (e.g. "number of months", "the pending assets"). Omit entirely when this reply needs no further detail.' },
-      askQuestion: { type: 'string', description: 'Required when askDetail is set - the exact question SUBH asks, in professional English, using {Employee_Name}/{Manager_Name}/other real column placeholders as needed.' },
-      askFollowUpDays: { type: 'number', description: 'Only when askDetail is set and a follow-up period for THIS specific question was mentioned - otherwise omit (defaults to the task\'s own follow-up days).' },
-      replyText: { type: 'string', description: 'What SUBH replies with once this rule is matched (and the detail, if any, is known), in professional English, placeholders allowed.' },
-      sendTo: { type: 'string', enum: SEND_TO_TARGETS, description: 'Only if a FURTHER message should be sent once this rule resolves - "self" the employee, "manager" their Reporting Manager, "hr" the HR team, "accounts" the Accounts team. Omit entirely if no further message is sent.' },
-      sendSubject: { type: 'string', description: 'Required when sendTo is set - the further message\'s subject (mail) or omit for WhatsApp.' },
-      sendBody: { type: 'string', description: 'Required when sendTo is set - the further message\'s body, placeholders allowed including {Reply_Detail} (what the sender told SUBH, when askDetail was used).' },
-      sendDocument: { type: 'string', enum: templateEnum, description: 'Set this whenever the further message IS a named letter (one of the 4 built-ins, or a template from the SUBH Letter Templates Drive folder) rather than just a plain notice - e.g. "extension hole ... employee ke Extension of Probation Period mail" means generate and attach the real Extension of Probation letter, not merely tell them about it in sendBody. Match the ask\'s own template name against the real options below and use its exact key. sendBody still carries a short covering note either way. Available templates: ' + templateListText + '. Omit when no letter should be attached, or when the ask names a template matching none of these (explain that in `unclear` instead of guessing).' },
-      askMeFirst: { type: 'boolean', description: 'true only if the owner should approve this further message before it actually sends (e.g. "ask me first", "let me check before sending"). Defaults to false.' },
-      then: { type: 'string', enum: ['stop', 'wait', 'askme'], description: '"stop" if this record is done once this rule resolves (the default for most rules), "wait" if SUBH should keep waiting/following up afterward (e.g. "will share later"), "askme" if the owner should decide what happens next.' }
-    },
-    required: ['when', 'replyText', 'then']
-  };
+  const ruleItem = workflowRuleItemSchema(templateEnum, templateListText, false);
+  // PHASE 7 (2026-11) - plan-level fields deferred from Phases 3/4: never
+  // widens automationService's own automationPlanTool (Automated Tasks
+  // has none of these - recCol is OVERRIDDEN here, workflow-only, never
+  // mutating the base function's own enum).
+  const baseRecCol = base && base.function.parameters.properties.recCol;
+  const recColOverride = Object.assign({}, baseRecCol, {
+    enum: (baseRecCol ? baseRecCol.enum : ['reportingDoer', 'reportingManager', 'self']).concat(['companyAccountsTeam']),
+    description: (baseRecCol ? baseRecCol.description : '') + ' "companyAccountsTeam" for "each company\'s OWN Accounts Team"/"protita company-r nijer Accounts team" mentions (resolved per-record via that record\'s own Company, in Company details - never the plan-level equivalent of a single fixed team).'
+  });
+  // PHASE 7 (2026-11), live-observed real-model behaviour fix: the base
+  // `unclear` field (automationPlanTool's own, inherited unchanged above)
+  // was being used by the model to note harmless FYI/defaults ("mail body
+  // wording used as given", "schedule not stated - defaults apply") as if
+  // they were blocking - and automationService.draftPlanFromParsed's own
+  // short-circuit (`if (parsed.unclear.length) return {ok:false}`,
+  // shared/unchanged, never touched here) treats ANY non-empty `unclear`
+  // as fatal, wrongly failing an otherwise-perfectly-fine draft. The
+  // system prompt above also reinforces this, but repeating it directly
+  // on the field the model actually fills is the more reliable fix -
+  // same belt-and-suspenders convention as every other doubled-up
+  // "never guess" instruction in this tool. Never changes
+  // automationService.js's own base field/Automated Tasks' behaviour -
+  // this OVERRIDES the property only for workflow_plan's own copy.
+  const baseUnclear = base && base.function.parameters.properties.unclear;
+  const unclearOverride = Object.assign({}, baseUnclear, {
+    description: (baseUnclear ? baseUnclear.description : '') + ' This is a hard STOP, never a soft FYI note - do NOT add an entry just to mention a default will be used, that a value is "used as given/as stated", that a detail wasn\'t elaborated further, or any other assumption that does not actually block drafting a working plan. Leave this a genuinely empty array whenever the ask already gives enough to produce a sensible workflow.'
+  });
   return {
     type: 'function',
     function: {
       name: 'workflow_plan',
-      description: 'Read an HR manager\'s description of a multi-step workflow (send a message, follow up if there\'s no reply, read and act on each reply) and extract its structured intent. Never invent a department, person, column name, tab name or data field that isn\'t given in context - if genuinely unclear or unsupported, list it in `unclear` instead of guessing.' + sheetHint,
+      description: 'Read an HR manager\'s description of a multi-step workflow (send a message, follow up if there\'s no reply, read and act on each reply) and extract its structured intent. Never invent a department, person, column name, tab name, email address or data field that isn\'t given in context - if genuinely unclear or unsupported, list it in `unclear` instead of guessing.' + sheetHint,
       parameters: {
         type: 'object',
         properties: Object.assign({}, base ? base.function.parameters.properties : {}, {
+          recCol: recColOverride,
+          unclear: unclearOverride,
           alsoSendOn: { type: 'boolean', description: 'true only if ONE MORE message (e.g. a summary to a team) should be sent on every run, alongside the per-record messages. Defaults to false.' },
           alsoSendTo: { type: 'array', items: { type: 'string' }, description: 'Required when alsoSendOn is true - the exact people this message goes to, each either a real person\'s name (matched against the real directory) or a raw email address. If the ask only names a GROUP without saying who its actual members are (e.g. "HR team-er 4 jon ke" without naming those 4 people), leave this empty and explain in `unclear` instead of guessing who.' },
           alsoSendSubject: { type: 'string', description: 'Required when alsoSendOn is true.' },
@@ -1315,6 +1379,18 @@ function workflowPlanTool(departmentNames, sheetContext, templateOptions) {
           followUpDays: { type: 'number', description: 'How many days to wait before following up when there is no reply. Defaults to 2.' },
           followUpMax: { type: 'number', description: 'Maximum number of follow-ups before SUBH alerts the owner. Defaults to 2.' },
           followUpBody: { type: 'string', description: 'The follow-up message, sent in the same thread, placeholders allowed. If not stated, a short generic reminder is used.' },
+          followUpWorkingDaysOnly: { type: 'boolean', description: 'true only when the ask explicitly says follow-ups in general should only happen on working days (business days, never weekends/holidays). Omit/false otherwise.' },
+          followUpFixedTimeRaw: { type: 'string', description: 'Only when a SPECIFIC time of day was mentioned for follow-ups in general (HH:MM, 24-hour). Omit entirely when no specific time was stated - never guess one.' },
+          followUpMentionMissing: { type: 'boolean', description: 'true only when the ask explicitly says follow-ups in general should mention/remind what is still missing/pending. Omit/false otherwise.' },
+          skipToNextWorkingDay: { type: 'boolean', description: 'true only when the ask explicitly says the schedule itself should move to the next working day whenever it would otherwise fall on a Sunday/holiday (e.g. "Sunday hole porer working day e cholbe", "if it lands on a holiday, run the next working day instead"). Omit/false otherwise - never assumed.' },
+          outsideEmailsRaw: { type: 'array', items: { type: 'string' }, description: 'Only when rec=selected - any literal outside/external email address(es) explicitly named to also receive the message (e.g. a vendor\'s/insurer\'s own email), exactly as given. Omit entirely when none is mentioned - never invent one.' },
+          sheetOnlyWhereColumnHint: { type: 'string', description: 'Only for source=sheet - a simple row filter naming or clearly implying ONE existing loaded column that must equal one value, applied on top of any other filter already described (e.g. "only pending rows" when a real "Status" column is loaded -> "Status"). Matched against the real loaded columns afterward - omit entirely when no such column genuinely exists among them, never guess one that isn\'t there.' },
+          sheetOnlyWhereValue: { type: 'string', description: 'Required when sheetOnlyWhereColumnHint is set - the value that column must equal, exactly as stated (e.g. "Pending").' },
+          sheetAfterSendColumnHint: { type: 'string', description: 'Only for source=sheet - when the ask says to update/mark ONE existing loaded column AFTER successfully sending (e.g. "mark them Sent after", "pathanor por Status ta Sent kore debe" -> "Status"). Matched against the real loaded columns afterward - omit entirely when no such column genuinely exists among them, never guess one that isn\'t there.' },
+          sheetAfterSendValue: { type: 'string', description: 'Required when sheetAfterSendColumnHint is set - the value to write, exactly as stated (e.g. "Sent").' },
+          sheetAfterSendAlsoWriteDate: { type: 'boolean', description: 'Only when sheetAfterSendColumnHint is set - true only if the ask also explicitly says to write today\'s date (e.g. into a "Sent On" column). Omit/false otherwise.' },
+          sheetSecondUrl: { type: 'string', description: 'Only when the ask explicitly names a SECOND, DIFFERENT Google Sheet to also read in the same run (e.g. a lookup/reference list) AND gives a real Google Sheets link (https://docs.google.com/spreadsheets/...) - exactly as given, never invented. Omit when the ask mentions a second tab of the SAME sheet rather than a different spreadsheet (leave this blank, set sheetSecondTab only), or when no real link is given at all.' },
+          sheetSecondTab: { type: 'string', description: 'Only alongside sheetSecondUrl, or alone when the ask means a second TAB of the SAME currently-loaded sheet - the tab name mentioned, exactly as given (free text; not validated against anything, since this second sheet/tab isn\'t loaded yet). Omit entirely when no second sheet/tab is mentioned at all.' },
           rules: { type: 'array', items: ruleItem, description: 'One entry per distinct kind of reply the owner described - what it means, how SUBH should respond, and what (if anything) happens next. At least one rule is required for a workflow (a workflow with no reply-handling at all is just an Automated Task).' }
         }),
         required: (base ? base.function.parameters.required : []).concat(['rules'])
@@ -1336,7 +1412,7 @@ async function parseWorkflowAsk(text, sheetContext, templateOptions) {
       model: MODEL, max_tokens: 2048,
       tools: [{ name: toolDef.name, description: toolDef.description, input_schema: toolDef.parameters }],
       tool_choice: { type: 'auto' },
-      system: [{ type: 'text', text: 'Parse an HR manager\'s description of a multi-step WORKFLOW: a first message (mail/WhatsApp) to each matching record or a fixed list of people, an optional second "also send" message (e.g. a summary to a team), optional generated letters, follow-ups when there is no reply, and a set of RULES describing what each kind of reply means and what SUBH should do about it (reply, optionally ask for one missing detail first, optionally send a further message, then stop/keep waiting/ask the owner). The built-in data sources, period/filter/table/sort semantics, and scheduling are identical to the existing Automated Task feature. Banglish/Hinglish/English are all expected. Never guess a column, tab, person, or department that isn\'t given - list it in unclear instead. Every workflow needs at least one rule - if the ask describes no reply-handling at all, say so in unclear.' }],
+      system: [{ type: 'text', text: 'Parse an HR manager\'s description of a multi-step WORKFLOW: a first message (mail/WhatsApp) to each matching record or a fixed list of people, an optional second "also send" message (e.g. a summary to a team), optional generated letters, follow-ups when there is no reply, and a set of RULES describing what each kind of reply means and what SUBH should do about it (reply, optionally ask for one missing detail first, optionally send a further message, then stop/keep waiting/ask the owner). The built-in data sources, period/filter/table/sort semantics, and scheduling are identical to the existing Automated Task feature. Banglish/Hinglish/English are all expected. Never guess a column, tab, person, or department that isn\'t given - list it in unclear instead. Every workflow needs at least one rule - if the ask describes no reply-handling at all, say so in unclear. IMPORTANT, `unclear` is ONLY for something genuinely REQUIRED to run this workflow that is missing with no sensible default (e.g. no rule at all, no recipient, an unresolvable name/column) - it is a hard STOP, never a soft note. Do NOT add an `unclear` entry just to mention that a default will apply, that a value is "used as given/as stated", that a detail wasn\'t elaborated further, or any other FYI/assumption that doesn\'t actually block drafting a working plan - leave `unclear` a genuinely empty array whenever the ask already gives enough to produce a sensible, working workflow, exactly as every field\'s own "omit/defaults apply" wording throughout this tool already allows.' }],
       messages: [{ role: 'user', content: text }]
     })
   });
@@ -1385,26 +1461,81 @@ async function resolveAlsoSendNames(names, employees) {
 // draftPlanFromParsed's own column/people resolution) and pushing a
 // specific, named problem into `unclear` for anything required but
 // missing - never silently dropped.
-function draftRule(raw, index, unclear, templateOptions) {
+// PHASE 7 (2026-11) - `opts.nested` is true only while drafting a "Next
+// stage" sub-rule (called from the top-level pass below) - gates which
+// sendTo values are accepted (RULE_SEND_TO_REPLY_IN_THREAD, nested-only)
+// and, crucially, whether nextStageOn/sub are even looked at (never for a
+// nested call - a sub-rule's own raw.nextStageOn/raw.sub, however they
+// got there, are simply never read, enforcing the hard 2-level cap
+// structurally here too, not just in the tool schema/sanitizeWorkflowRules).
+function draftRule(raw, index, unclear, templateOptions, opts) {
+  const nested = Boolean(opts && opts.nested);
+  const label = (nested ? 'next-stage rule ' : 'rule ') + (index + 1);
   const when = String((raw && raw.when) || '').trim();
-  if (!when) { unclear.push('rule ' + (index + 1) + ': what this reply means'); return null; }
+  if (!when) { unclear.push(label + ': what this reply means'); return null; }
   const replyText = String((raw && raw.replyText) || '').trim();
-  if (!replyText) { unclear.push('rule ' + (index + 1) + ' ("' + when + '"): what SUBH should reply'); return null; }
+  if (!replyText) { unclear.push(label + ' ("' + when + '"): what SUBH should reply'); return null; }
   const askDetail = raw && raw.askDetail ? String(raw.askDetail).trim() : null;
   const askQuestion = askDetail ? String((raw && raw.askQuestion) || '').trim() : null;
-  if (askDetail && !askQuestion) { unclear.push('rule ' + (index + 1) + ' ("' + when + '"): what SUBH should ask for "' + askDetail + '"'); return null; }
-  const sendTo = raw && SEND_TO_TARGETS.includes(raw.sendTo) ? raw.sendTo : null;
+  if (askDetail && !askQuestion) { unclear.push(label + ' ("' + when + '"): what SUBH should ask for "' + askDetail + '"'); return null; }
+  // PHASE 7 (2026-11) - "Details — take from the reply" (Phase 5 shape) -
+  // a plain comma-separated string, free text, no validation (same as
+  // the manual UI's own text field for this).
+  const detailFields = raw && raw.detailFields ? String(raw.detailFields).trim() : null;
+  const sendToTargets = SEND_TO_TARGETS.concat(RULE_SEND_TO_EXTRA_TARGETS).concat(nested ? [RULE_SEND_TO_REPLY_IN_THREAD] : []);
+  const sendTo = raw && sendToTargets.includes(raw.sendTo) ? raw.sendTo : null;
+  let sendToEmail = null;
+  if (sendTo === 'anyEmail') {
+    const email = String((raw && raw.sendToEmail) || '').trim();
+    if (!WF_EMAIL_RE.test(email)) { unclear.push(label + ' ("' + when + '"): which email address the further message goes to'); return null; }
+    sendToEmail = email;
+  }
   const sendSubject = sendTo ? String((raw && raw.sendSubject) || '').trim() : null;
   const sendBody = sendTo ? String((raw && raw.sendBody) || '').trim() : null;
-  if (sendTo && !sendBody) { unclear.push('rule ' + (index + 1) + ' ("' + when + '"): the body of the further message to send'); return null; }
-  const sendDocument = sendTo && raw && templateKeys(templateOptions).includes(raw.sendDocument) ? raw.sendDocument : null;
-  const then = raw && ['stop', 'wait', 'askme'].includes(raw.then) ? raw.then : 'stop';
-  return {
-    when, askDetail, askQuestion,
+  if (sendTo && !sendBody) { unclear.push(label + ' ("' + when + '"): the body of the further message to send'); return null; }
+  const sendDocumentChoices = templateKeys(templateOptions).concat([RULE_SEND_DOCUMENT_ATTACHMENTS_FROM_REPLY]);
+  const sendDocument = sendTo && raw && sendDocumentChoices.includes(raw.sendDocument) ? raw.sendDocument : null;
+  const thenChoices = ['stop', 'wait', 'askme', RULE_THEN_WAIT_FOR_ATTACHMENTS];
+  const then = raw && thenChoices.includes(raw.then) ? raw.then : 'stop';
+  // PHASE 7 (2026-11) - rule-level follow-up refinements (Phase 3 shape),
+  // only meaningful alongside askDetail (same as the manual UI, which
+  // only shows these controls once "First ask for a missing detail" is
+  // on) - never set without it.
+  const askFollowUpWorkingDaysOnly = askDetail ? Boolean(raw && raw.askFollowUpWorkingDaysOnly) : null;
+  const askFollowUpFixedTimeOfDay = askDetail && raw && /^\d{1,2}:\d{2}$/.test(String(raw.askFollowUpFixedTimeOfDay || '')) ? raw.askFollowUpFixedTimeOfDay : null;
+  const askFollowUpMentionMissing = askDetail ? Boolean(raw && raw.askFollowUpMentionMissing) : null;
+  // PHASE 7 (2026-11) - "Also do" (Phase 5 shape) - only turned on when
+  // the model ALSO gave the one real detail each needs (a path pattern /
+  // a column name) - never a half-configured box the owner would have to
+  // notice and fill in manually; omitted (not guessed) otherwise.
+  let alsoDo = null;
+  if (raw) {
+    const drivePath = String(raw.alsoSaveToDrivePath || '').trim();
+    const sheetCol = String(raw.alsoUpdateSheetColumn || '').trim();
+    if (raw.alsoSaveToDriveOn && drivePath) { alsoDo = alsoDo || {}; alsoDo.driveUpload = { on: true, pathPattern: drivePath }; }
+    if (raw.alsoUpdateSheetOn && sheetCol) { alsoDo = alsoDo || {}; alsoDo.sheetUpdate = { on: true, column: sheetCol, value: String(raw.alsoUpdateSheetValue || '').trim() }; }
+  }
+  const rule = {
+    when, detailFields, askDetail, askQuestion,
     askFollowUpDays: askDetail && Number(raw.askFollowUpDays) > 0 ? Number(raw.askFollowUpDays) : null,
-    replyText, sendTo, sendSubject: sendSubject || null, sendBody: sendBody || null, sendDocument,
-    askMeFirst: Boolean(raw && raw.askMeFirst), then
+    askFollowUpWorkingDaysOnly, askFollowUpFixedTimeOfDay, askFollowUpMentionMissing,
+    replyText, sendTo, sendToEmail, sendSubject: sendSubject || null, sendBody: sendBody || null, sendDocument,
+    askMeFirst: Boolean(raw && raw.askMeFirst), then, alsoDo
   };
+  // PHASE 7 (2026-11) - "Next stage" (Phase 6 shape), top-level rules
+  // only. A sub-rule is drafted through this SAME function, recursively,
+  // with nested=true - which, by construction above, never looks at its
+  // OWN nextStageOn/sub again (the hard 2-level cap, enforced here in
+  // code, not just left to sanitizeWorkflowRules/the tool schema).
+  if (!nested && raw && raw.nextStageOn && Array.isArray(raw.sub) && raw.sub.length) {
+    const subRules = [];
+    raw.sub.forEach((sr, j) => {
+      const built = draftRule(sr, j, unclear, templateOptions, { nested: true });
+      if (built) subRules.push(built);
+    });
+    if (subRules.length) { rule.nextStageOn = true; rule.sub = subRules; }
+  }
+  return rule;
 }
 
 // Turns a raw parsed intent (above) into a full, concrete draft plan.
@@ -1465,14 +1596,62 @@ async function draftWorkflowPlanFromParsed(parsed, now, sheetContext, templateOp
   const followUp = {
     days: Number(parsed.followUpDays) > 0 ? Number(parsed.followUpDays) : 2,
     max: Number(parsed.followUpMax) > 0 ? Number(parsed.followUpMax) : 2,
-    body: String(parsed.followUpBody || '').trim() || ('Dear {Manager_Name},\n\nThis is a gentle reminder - we are waiting for your reply on ' + followUpTopic + '.\n\nThank you.')
+    body: String(parsed.followUpBody || '').trim() || ('Dear {Manager_Name},\n\nThis is a gentle reminder - we are waiting for your reply on ' + followUpTopic + '.\n\nThank you.'),
+    // PHASE 7 (2026-11) - "Smarter follow-ups" plan-level refinements
+    // (Phase 3 shape) - fixedTimeOfDay only accepted as a real HH:MM,
+    // never guessed; the other two are plain booleans.
+    workingDaysOnly: Boolean(parsed.followUpWorkingDaysOnly),
+    fixedTimeOfDay: /^\d{1,2}:\d{2}$/.test(String(parsed.followUpFixedTimeRaw || '')) ? parsed.followUpFixedTimeRaw : null,
+    mentionMissing: Boolean(parsed.followUpMentionMissing)
   };
+
+  // PHASE 7 (2026-11) - "Outside emails" (Phase 4 shape), Selected-people
+  // mode only (same restriction the engine itself already enforces - see
+  // buildWorkflowMessages' own comment) - only literal, email-shaped
+  // strings are ever kept; anything else is silently dropped (additive,
+  // optional field - never blocks the whole plan over a malformed extra).
+  const outsideEmails = (parsed.outsideEmailsRaw || []).map((e) => String(e || '').trim()).filter((e) => WF_EMAIL_RE.test(e));
+
+  // PHASE 7 (2026-11) - "Sheet options" (Phase 4 shape) - column hints are
+  // ALWAYS resolved against the REAL loaded sheet's own headers
+  // (base.plan.sheetColumns, set by automationService.draftPlanFromParsed
+  // above from the live-loaded sheetContext) using the SAME
+  // resolveFuzzyOneOf every other sheet-column field in this app already
+  // uses - never the model's own guess accepted blindly. A hint that
+  // doesn't match any real column is simply left unresolved (omitted,
+  // never pushed to `unclear` - this whole feature is additive/optional,
+  // so a miss here must never block an otherwise-good plan).
+  let sheetOptions = null;
+  if (base.plan && base.plan.source === 'sheet' && Array.isArray(base.plan.sheetColumns) && base.plan.sheetColumns.length) {
+    const cols = base.plan.sheetColumns;
+    const onlyWhereCol = parsed.sheetOnlyWhereColumnHint ? automationService.resolveFuzzyOneOf(parsed.sheetOnlyWhereColumnHint, cols) : null;
+    const afterSendCol = parsed.sheetAfterSendColumnHint ? automationService.resolveFuzzyOneOf(parsed.sheetAfterSendColumnHint, cols) : null;
+    const onlyWhere = onlyWhereCol ? { column: onlyWhereCol, value: String(parsed.sheetOnlyWhereValue || '').trim() } : null;
+    const afterSend = afterSendCol ? { column: afterSendCol, value: String(parsed.sheetAfterSendValue || '').trim(), alsoWriteDate: Boolean(parsed.sheetAfterSendAlsoWriteDate) } : null;
+    // A second sheet/tab is never validated against anything (it isn't
+    // loaded) - same posture the manual "Second sheet/tab" text fields
+    // already have (resolved best-effort at RUN time by
+    // loadSecondSheetData, which itself never blocks a run on a bad
+    // link). Only a literal, real-looking Sheets link is kept for `url`
+    // - a stated but malformed link is treated as no second sheet at all
+    // (never silently reinterpreted as "read a different tab of the
+    // SAME sheet", which would be a different, unintended meaning).
+    const secondTab = String(parsed.sheetSecondTab || '').trim();
+    const secondUrlRaw = String(parsed.sheetSecondUrl || '').trim();
+    const secondUrlOk = !secondUrlRaw || /\/spreadsheets\/d\/[a-zA-Z0-9-_]+/.test(secondUrlRaw);
+    const secondSheet = secondTab && secondUrlOk ? { url: secondUrlRaw, tab: secondTab } : null;
+    if (onlyWhere || afterSend || secondSheet) sheetOptions = { secondSheet, onlyWhere, afterSend };
+  }
 
   if (unclear.length) return { ok: false, unclear };
   return {
     ok: true,
-    plan: Object.assign({}, base.plan, { also, docs, followUp, rules }),
-    schedule: base.schedule,
+    // sanitizeWorkflowRules defensively re-strips any nextStageOn/sub a
+    // sub-rule might somehow carry - belt and suspenders alongside
+    // draftRule's own nested flag already never reading those fields off
+    // a sub-rule in the first place.
+    plan: Object.assign({}, base.plan, { also, docs, followUp, rules: sanitizeWorkflowRules(rules) }, outsideEmails.length ? { outsideEmails } : null, sheetOptions ? { sheetOptions } : null),
+    schedule: Object.assign({}, base.schedule, { skipToNextWorkingDay: Boolean(parsed.skipToNextWorkingDay) }),
     subject: base.subject
   };
 }
