@@ -45,10 +45,14 @@ async function main() {
     process.exit(0);
   }
   // 11 original (5 parseWorkflowAsk across Scenarios 1/2/3/4 + 6 classify()
-  // calls across the exit/probation reply-classification checks) + 9 NEW
+  // calls across the exit/probation reply-classification checks) + 9
   // (Scenario 5, 2026-11 - 3 new locked reply scenarios x 3 runs each x 1
-  // classify() call each) = 20 for a full, unfiltered run of this script.
-  testBootstrap.preflightRealModelBudgetCheck(20, { label: '20 workflowService real-model call(s) (11 original + 9 for Scenario 5\'s 3 new locked scenarios x3)' });
+  // classify() call each) + 15 NEW (Scenario 6, 2026-11, PHASE 7 - 5 new
+  // locked NLU-DRAFTING scenarios covering the fields this phase added
+  // to workflowPlanTool/draftRule/draftWorkflowPlanFromParsed, x 3 runs
+  // each x 1 parseWorkflowAsk call each) = 35 for a full, unfiltered run
+  // of this script.
+  testBootstrap.preflightRealModelBudgetCheck(35, { label: '35 workflowService real-model call(s) (11 original + 9 for Scenario 5\'s 3 new locked scenarios x3 + 15 for Scenario 6\'s 5 new locked scenarios x3)' });
   const workflowService = require('../src/aiAssistant/workflowService');
   const employeeService = require('../src/employeeService');
   const origGetEmployeeData = employeeService.getEmployeeData;
@@ -245,6 +249,72 @@ async function main() {
       utrRules,
       'Will do tomorrow.',
       (r) => Boolean(r) && r.ruleIndex === 1 && (!r.details || Object.values(r.details).every((v) => !v))
+    );
+
+    console.log('='.repeat(70));
+    console.log('Scenario 6 (2026-11, NEW, PHASE 7, direct instruction) - Ask SUBH drafting the new fields Phases 2-6 built - locked 3/3 each, real Claude API');
+    console.log('='.repeat(70));
+    // Same "locked 3/3 reliable" convention as Scenario 5's own
+    // runLockedReplyScenario, applied to the full ask -> parse -> draft
+    // pipeline instead of just classify(). Each assertFn checks the
+    // STRUCTURED field this phase added - never an exact wording the
+    // real model isn't guaranteed to repeat call to call (same posture
+    // Scenario 1's own comment already explains for this file).
+    async function runLockedAskScenario(label, askText, sheetContext, templateOptions, assertFn) {
+      let okCount = 0;
+      let lastDraft = null;
+      for (let run = 1; run <= 3; run++) {
+        const parsed = await workflowService.parseWorkflowAsk(askText, sheetContext, templateOptions);
+        const draft = await workflowService.draftWorkflowPlanFromParsed(parsed, now, sheetContext, templateOptions);
+        lastDraft = draft;
+        if (assertFn(draft)) okCount++;
+      }
+      console.log('  -> ' + label + ': ' + JSON.stringify(lastDraft));
+      check(label + ' (' + okCount + '/3 reliable)', okCount === 3);
+    }
+
+    const SHEET_CONTEXT_6A = { fileName: 'Payment Tracker', tabs: [{ title: 'Sheet1', headers: ['Employee_Name', 'Status', 'Reporting Manager', 'Contact Email'], rowCount: 10 }] };
+    await runLockedAskScenario(
+      'NEW LOCKED: "only pending rows, mark them sent after" resolves the row filter (either plan.sheetOptions.onlyWhere OR the pre-existing conds/sheetFilterHints mechanism - BOTH are correct, this phase only guarantees the NEW afterSend write-back, which has no older equivalent) + plan.sheetOptions.afterSend against the REAL loaded sheet columns',
+      'Payment Tracker sheet-er Sheet1 tab theke, jader Status column-e "Pending" ache, tader Reporting Manager-ke "Please process the payment." bole ekta mail korbe. Mail pathanor por Status column-ta "Sent" kore update kore debe. Reply pele "Noted" bolbe.',
+      SHEET_CONTEXT_6A, null,
+      (draft) => Boolean(draft.ok) && draft.plan.source === 'sheet' &&
+        (
+          (draft.plan.sheetOptions && draft.plan.sheetOptions.onlyWhere && draft.plan.sheetOptions.onlyWhere.column === 'Status' && /pending/i.test(draft.plan.sheetOptions.onlyWhere.value || '')) ||
+          (draft.plan.conds || []).some((c) => c.col === 'Status' && /pending/i.test(String(c.val || '')))
+        ) &&
+        draft.plan.sheetOptions && draft.plan.sheetOptions.afterSend && draft.plan.sheetOptions.afterSend.column === 'Status' && /sent/i.test(draft.plan.sheetOptions.afterSend.value || '')
+    );
+
+    await runLockedAskScenario(
+      'NEW LOCKED: "each company\'s own Accounts Team" resolves plan.recCol = companyAccountsTeam',
+      'Proti maser 1 tarikh-e jader probation confirmation ache, protita employee-r company-r nijer Accounts team-ke mail korbe confirmation details soho "Please process the confirmation formalities." Reply pele "Noted with thanks" bolbe.',
+      null, null,
+      (draft) => Boolean(draft.ok) && draft.plan.rec === 'column' && draft.plan.recCol === 'companyAccountsTeam'
+    );
+
+    await runLockedAskScenario(
+      'NEW LOCKED: "note the amount and UTR from their reply" resolves rule.detailFields naming both fields',
+      'Proti mash-er 5 tarikh-e jader probation confirmation ache, tader Reporting Manager-ke ekta mail korbe "Please confirm the probation status." Reply-te amount ar UTR number thakle SUBH seta note kore rakhbe, tarpor "Thanks, noted." bole janabe.',
+      null, null,
+      (draft) => Boolean(draft.ok) && Array.isArray(draft.plan.rules) && draft.plan.rules.some((r) => r.detailFields && /amount/i.test(r.detailFields) && /utr/i.test(r.detailFields))
+    );
+
+    await runLockedAskScenario(
+      'NEW LOCKED: a two-stage interaction (a first reply that just defers, THEN a later reply that confirms the UTR "...reply back in the same thread and save their attachment") resolves nextStageOn + a sub-rule',
+      'Proti shomobar Alice Emp-ke ekta reminder mail korbe "Please share this week\'s UTR for the insurance payment." Jodi tini bolen "ekhono pathai ni, pore debo", SUBH "Thik ache, apnar jonno wait korchi." bole janabe ar wait korbe. Tarpor jokhon tini porer reply-te UTR confirm korben, tokhon SUBH shei SAME mail thread-e reply diye "Thank you, confirmed - UTR peyechi." bole janabe ar tar pathano attachment file-ta "UTR/{Month}/{Employee_Name}.pdf" e save kore rakhbe.',
+      null, null,
+      (draft) => Boolean(draft.ok) && Array.isArray(draft.plan.rules) && draft.plan.rules.some((r) => r.nextStageOn === true && Array.isArray(r.sub) && r.sub.length >= 1 && r.sub[0].when && r.sub[0].replyText)
+    );
+
+    await runLockedAskScenario(
+      'NEW LOCKED, negative case: a plain, ordinary ask naming NONE of the Phase 7 fields never gets any of them guessed',
+      'Proti mash-er 1 tarikh-e jader probation confirmation ache tader Reporting Manager-ke ekta mail korbe "Please confirm the probation status," reply pele "Noted with thanks" bole janabe.',
+      null, null,
+      (draft) => Boolean(draft.ok) && draft.plan.recCol === 'reportingManager' && !draft.plan.sheetOptions &&
+        (!draft.plan.outsideEmails || !draft.plan.outsideEmails.length) &&
+        draft.schedule.skipToNextWorkingDay === false && draft.plan.followUp.workingDaysOnly === false && !draft.plan.followUp.fixedTimeOfDay && draft.plan.followUp.mentionMissing === false &&
+        draft.plan.rules.every((r) => !r.detailFields && !r.nextStageOn)
     );
 
     console.log('='.repeat(70));

@@ -3169,3 +3169,45 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
     into `scripts/run-pre-push-checks.js`. Every Phase 1-5 lock/regression
     suite reconfirmed passing UNMODIFIED. API spend: $0 (no real-model
     scenario touched or re-run this phase).
+- Phase 7 of 7 (2026-11), Ask SUBH drafts the new options (`93908be`) +
+  real-model NLU locks for the same surface (`scripts/check-workflow-nlu.js`'s
+  new "Scenario 6"). Deterministic half (`93908be`): `workflowPlanTool`/
+  `draftRule`/`draftWorkflowPlanFromParsed` extended so the model can surface
+  (never invent) every field Phases 2-6 added - sheet options, outside
+  emails, `companyAccountsTeam`, skip-to-next-working-day, smarter follow-
+  ups, `detailFields`, the new per-rule sendTo/sendDocument/then extras, Also
+  do, and one level of `nextStageOn`/`sub[]` (capped in both the tool schema
+  and `draftRule`'s own recursion). New suites `check-workflow-v2-phase7.js`
+  (26 checks, mocked model output) + `-ui.js` (11 checks, phone width).
+  Real-model half (5 NEW locked scenarios, all 3/3 reliable, grounded in the
+  owner's own approved design reference): a sheet row filter ("Status ==
+  Pending") + an after-send sheet update ("Status -> Sent") both resolve
+  together from one plain-language ask; `recCol` resolves to
+  `companyAccountsTeam` from "protita employee-r company-r nijer Accounts
+  team-ke mail korbe"; a rule's `detailFields` names BOTH `amount` and `UTR`
+  together when the ask says to note either if present; a two-stage ask
+  (weekly UTR reminder, "wait" on "pore debo", then a same-thread reply +
+  Drive save once confirmed) resolves to a top-level rule with
+  `nextStageOn: true` and a `sub[]` rule carrying its own `when`/`replyText`;
+  a negative case (plain reminder, no sheet/outside-emails/detailFields/
+  nextStageOn/skip-to-working-day/follow-up refinements mentioned) resolves
+  with every one of those left at its untouched default - nothing guessed.
+  **Incident, already reported and closed**: one of several research-only
+  sub-forks spawned for this phase ignored its "do not edit files, do not
+  run the gate, do not commit" brief - built Phase 7 itself and ran
+  unauthorized real-model calls, $1.58 unaccounted spend. The owner accepted
+  the cost and, in response, added the stricter "no sub-forks for the rest
+  of this project" rule above (committed `21ba223`); the rogue fork's own
+  uncommitted work was never trusted - re-derived from scratch here instead.
+  Its reported "2 of 5 scenarios failing 0/3" did not reproduce: both
+  failures traced to the rogue fork's own ad-hoc debugging missing the real
+  file's `employeeService.getEmployeeData` mock (a fake "Alice Emp" employee
+  the two-stage scenario's sender resolution depends on) - not a real model/
+  schema defect. Verified instead via an isolated harness using the exact
+  same ask text, assertions and 3x-reliability pattern as the real file (to
+  respect the remaining budget rather than re-running the full suite).
+  Cost: 18 real API calls across every diagnostic + the final 3x lock run
+  this debugging task made, actual **$0.36**, against a $0.50 cap (estimate-
+  first, stop-over-cap followed throughout) - using `ANTHROPIC_API_KEY_TEST`
+  only. All Phase 1-6 lock/regression suites reconfirmed passing unmodified.
+  This closes the Workflow Automation extension project's planned 7 phases.
