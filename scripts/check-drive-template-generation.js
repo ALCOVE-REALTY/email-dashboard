@@ -82,6 +82,27 @@ async function main() {
   }
 
   console.log('='.repeat(70));
+  console.log('LIVE BUG FIX (2026-11), direct instruction, item 7 - "Date: {Date}" dropped to the line below Ref No. in the generated PDF: the template pushed Date right with tabs/spaces, which overflowed once a real-length Ref No. got long enough. The template itself has been fixed (a single right-aligned tab stop) - this proves the GENERATION CODE never does anything that could cause this independently of the template: every placeholder substitution is a pure replaceAllText request (never one that could touch paragraph-level formatting like tab stops/alignment), and no resolved value (especially Ref No./Date) ever contains a stray tab or newline that would itself force a line break.');
+  console.log('='.repeat(70));
+  freshStubs();
+  try {
+    const longRefNoMapping = { '{Ref_No}': { source: 'ref_no' }, '{Date}': { source: 'today' } };
+    const longRefNoCtx = { row, companyDetails: { code: 'ARPL' }, refNo: 'ARPL/HR/CONF/2026-27/0013', now: new Date('2026-11-17T00:00:00.000Z') };
+    const result = await genService.generateDriveTemplateLetter('src-file-1', driveTemplatesService.GOOGLE_DOC_MIME, longRefNoMapping, ['{Ref_No}', '{Date}'], longRefNoCtx);
+    check('generation succeeds with a real-length Ref No. (matching the live incident, e.g. ARPL/HR/CONF/2026-27/0013)', result.ok === true);
+    const requests = batchUpdateCalls[0].resource.requests;
+    check('EVERY request sent to fill placeholders is a pure replaceAllText - never a request type that could alter paragraph-level formatting (tab stops/alignment/runs)', requests.length > 0 && requests.every((r) => Object.keys(r).length === 1 && Object.prototype.hasOwnProperty.call(r, 'replaceAllText')));
+    const refNoValue = requests.find((r) => r.replaceAllText.containsText.text === '{Ref_No}').replaceAllText.replaceText;
+    const dateValue = requests.find((r) => r.replaceAllText.containsText.text === '{Date}').replaceAllText.replaceText;
+    check('the resolved Ref No. matches the real long value exactly, no truncation/reformatting', refNoValue === 'ARPL/HR/CONF/2026-27/0013');
+    check('the resolved Date value exists and is non-empty', Boolean(dateValue));
+    check('neither Ref No. nor Date resolves to a value containing a tab/newline - our own fill can never itself force a line break, independent of the template\'s own tab-stop authoring', !/[\t\n\r]/.test(refNoValue) && !/[\t\n\r]/.test(dateValue));
+  } finally {
+    subhDriveAuth.getDriveClient = origGetDriveClient;
+    subhDriveAuth.getDocsClient = origGetDocsClient;
+  }
+
+  console.log('='.repeat(70));
   console.log('A missing/unresolvable value holds the WHOLE letter - never copies, never sends with a blank');
   console.log('='.repeat(70));
   freshStubs();
