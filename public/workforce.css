@@ -709,7 +709,9 @@ body {
   background: none;
   border: 0;
   padding: 0;
-  margin: -6px 0 12px;
+  /* LIVE BUG FIX (2026-11), direct instruction, item 3 - a little more
+     room before the first card below it (was 12px). */
+  margin: -6px 0 20px;
   font: inherit;
   font-size: 0.8rem;
   font-weight: 600;

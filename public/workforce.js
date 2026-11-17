@@ -4193,7 +4193,24 @@ document.getElementById('sendHiExitsMail').addEventListener('click', () => {
     defaultsUrl: '/api/insurance/exits/mail-defaults',
     sendUrl: '/api/insurance/exits/send-mail',
     sendBody: {},
-    onSent: () => { loadHiExitsView(); }
+    // LIVE BUG FIX (2026-11), direct instruction, item 3 - exits/send-mail
+    // always sends EVERY currently-pending row in one email (no per-row
+    // selection exists here), so a successful send means the whole
+    // current list just moved to Sent history - known for certain, client
+    // side, the instant Send succeeds. Clears the list/count directly
+    // instead of loadHiExitsView()'s spinner-then-refetch, which felt like
+    // a page refresh. On failure this callback is never called at all
+    // (openMailCompose only calls onSent after a successful send), so the
+    // list stays exactly as it was - unchanged from before this fix.
+    onSent: () => {
+      hiExitsAllItems = [];
+      hiExitsRawRows = [];
+      document.getElementById('hiExitsSearch').value = '';
+      document.getElementById('hiExitsDeptFilter').value = '';
+      document.getElementById('hiExitsDesigFilter').value = '';
+      document.getElementById('hiExitsStatusFilter').value = '';
+      renderHiExitsList(hiExitsAllItems);
+    }
   });
 });
 
@@ -4328,7 +4345,20 @@ document.getElementById('sendHiAdditionsMail').addEventListener('click', () => {
     defaultsUrl: '/api/insurance/additions/mail-defaults',
     sendUrl: '/api/insurance/additions/send-mail',
     sendBody: {},
-    onSent: () => { loadHiAdditionsView(); }
+    // LIVE BUG FIX (2026-11), direct instruction, item 3 - same reasoning
+    // as sendHiExitsMail's own onSent above: additions/send-mail always
+    // sends every currently-pending row in one email, so the whole
+    // current list just moved to Sent history - clear it instantly,
+    // client-side, instead of loadHiAdditionsView()'s spinner-then-refetch.
+    onSent: () => {
+      hiAdditionsAllItems = [];
+      hiAdditionsRawRows = [];
+      document.getElementById('hiAdditionsSearch').value = '';
+      document.getElementById('hiAdditionsDeptFilter').value = '';
+      document.getElementById('hiAdditionsDesigFilter').value = '';
+      document.getElementById('hiAdditionsStatusFilter').value = '';
+      renderHiAdditionsList(hiAdditionsAllItems);
+    }
   });
 });
 

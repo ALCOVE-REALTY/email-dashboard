@@ -107,7 +107,9 @@ function check(label, ok, detail) {
     return batches.sort((a, b) => b.batchId.localeCompare(a.batchId));
   }
 
+  let additionsGetCallCount = 0;
   await page.route('**/api/insurance/additions', (route) => {
+    additionsGetCallCount++;
     const items = pendingAdditionsItems();
     route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ total: items.length, items, rawRows: items }) });
   });
@@ -172,6 +174,40 @@ function check(label, ok, detail) {
     route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, movedCount: 1 }) });
   });
 
+  // LIVE BUG FIX (2026-11), direct instruction, item 3 - Pending Exits'
+  // own mocked state, declared here (BEFORE the bundle mock below, which
+  // must read it live) so its onSent instant-update fix gets exercised
+  // too, mirroring Additions' own mocked state above.
+  const EXITS_PEOPLE = [
+    { employeeId: 'X1', name: 'Delta Four', department: 'Admin', designation: 'Executive', status: 'ACTIVE', familyCount: 0 },
+    { employeeId: 'X2', name: 'Epsilon Five', department: 'Finance', designation: 'Officer', status: 'ACTIVE', familyCount: 2 }
+  ];
+  let exitsState = { X1: 'Pending', X2: 'Pending' };
+  function pendingExitsItems() { return EXITS_PEOPLE.filter((p) => exitsState[p.employeeId] === 'Pending'); }
+  let exitsGetCallCount = 0;
+  await page.route('**/api/insurance/exits/pending', (route) => {
+    exitsGetCallCount++;
+    const items = pendingExitsItems();
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ total: items.length, items, rawRows: items }) });
+  });
+  await page.route('**/api/insurance/exits/mail-defaults', (route) => {
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ to: 'mediclaim@co.test', cc: 'hr@co.test', subject: 'Exits', text: 'Dear Sir/Madam,', hasAttachment: true, defaultFormat: 'pdf' }) });
+  });
+  let exitsSendMailCallCount = 0;
+  let releaseExitsSendMail;
+  const exitsSendMailGate = new Promise((resolve) => { releaseExitsSendMail = resolve; });
+  await page.route('**/api/insurance/exits/send-mail', async (route) => {
+    exitsSendMailCallCount++;
+    await exitsSendMailGate;
+    const pending = pendingExitsItems();
+    if (!pending.length) { route.fulfill({ status: 400, contentType: 'application/json', body: JSON.stringify({ error: 'No pending exits to send.' }) }); return; }
+    pending.forEach((p) => { exitsState[p.employeeId] = 'Sent'; });
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, sentTo: 'mediclaim@co.test', cc: 'hr@co.test', recordCount: pending.length, batchId: 'EXIT-TEST-1' }) });
+  });
+  await page.route('**/api/insurance/exits/sent-history', (route) => {
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ batches: [] }) });
+  });
+
   await page.route('**/api/insurance/summary', (route) => {
     const pendingCount = pendingAdditionsItems().length;
     route.fulfill({
@@ -202,13 +238,20 @@ function check(label, ok, detail) {
   // REAL route's shape for every field the dashboard actually prefetches.
   await page.route('**/api/insurance/health-insurance-bundle', (route) => {
     const pendingItems = pendingAdditionsItems();
+    // LIVE BUG FIX (2026-11), direct instruction, item 3 - mirrors the
+    // SAME prefetch-cache rule the comment above already documents for
+    // `additions`: this must reflect the real live Exits fixture too, or
+    // the drill-down page's own prefetch cache gets stuck at a stale 0
+    // from page load, regardless of what exits/pending's own dedicated
+    // mock below would otherwise return.
+    const pendingExitsNow = pendingExitsItems();
     route.fulfill({
       status: 200, contentType: 'application/json', body: JSON.stringify({
         coveredEmployees: { total: 0, items: [] },
         familyMembers: { total: 0, items: [] },
         totalInsuredLives: { total: 0, items: [] },
         exits: { total: 0, items: [], rawRows: [] },
-        pendingExits: { total: 0, items: [], rawRows: [] },
+        pendingExits: { total: pendingExitsNow.length, items: pendingExitsNow, rawRows: pendingExitsNow },
         additions: { total: pendingItems.length, items: pendingItems, rawRows: pendingItems },
         policyInfo: { fields: [], values: {}, renewal: { hasDates: false, daysRemaining: null, progressPct: null, startDate: null, endDate: null } },
         familyPremiumBreakdown: { groups: {} },
@@ -258,6 +301,7 @@ function check(label, ok, detail) {
 
   // ---- Send Mail: spinner -> sends only Pending -> list drops to 0 ----
   const sendBtnTextBefore = await page.locator('#sendHiAdditionsMail span').textContent();
+  const additionsGetCallCountBeforeSend = additionsGetCallCount;
   await page.click('#sendHiAdditionsMail');
   await page.waitForTimeout(250);
   check('Send Mail popup opens with the real default recipients pre-filled', (await page.locator('#mailToChipInput').textContent() || '').includes('mediclaim@co.test'));
@@ -273,6 +317,11 @@ function check(label, ok, detail) {
   check('Exactly 1 real send happened', sendMailCallCount === 1);
   check('New Addition Requests count drops from 3 to 0 immediately after sending (the "6 -> 0" behavior)', (await page.locator('#hiAdditionsTotalCount').textContent()) === '0');
   check('The list itself is now empty', await page.locator('#hiAdditionsList li[data-employee-id]').count() === 0);
+  // LIVE BUG FIX (2026-11), direct instruction, item 3 - the count/list
+  // update above must be INSTANT, client-side (onSent clearing the local
+  // arrays directly) - never a spinner-then-refetch of GET /additions,
+  // which felt like a page refresh. Proves no new GET happened.
+  check('...and that update happened WITHOUT re-fetching GET /api/insurance/additions (never a "page refresh")', additionsGetCallCount === additionsGetCallCountBeforeSend, 'before: ' + additionsGetCallCountBeforeSend + ', after: ' + additionsGetCallCount);
 
   // ---- Sent history: now shows 1 batch card with the right count/recipients ----
   await page.click('#hiAdditionsSentHistoryLink');
@@ -324,6 +373,57 @@ function check(label, ok, detail) {
 
   const errorsAfter = consoleErrors.length + pageErrors.length;
   check('No JS error was thrown through the whole New Addition Requests / Sent-history flow', errorsAfter === errorsBefore, 'new errors: ' + JSON.stringify(consoleErrors.concat(pageErrors)));
+
+  // ============================================================
+  // LIVE BUG FIX (2026-11), direct instruction, item 3 - Pending Exits'
+  // own Send Mail button gets the SAME instant client-side update as
+  // Additions above (public/workforce.js's sendHiExitsMail onSent). Its
+  // mocked state/routes were declared earlier (before the bundle mock,
+  // which must read it live) - this is just the page interaction/asserts.
+  // ============================================================
+  // The Additions flow above left the "Sent history" overlay open (closed
+  // its own detail sub-view via Resend, but never its own Close button).
+  if (await page.locator('#hiSentHistoryOverlay').isVisible().catch(() => false)) {
+    await page.click('#hiSentHistoryCloseBtn');
+    await page.waitForTimeout(250);
+  }
+  await page.click('#menuBtn');
+  await page.waitForTimeout(150);
+  await page.click('[data-view="healthInsurance"]');
+  await page.waitForTimeout(300);
+  await page.click('[data-kpi="hiExits"]');
+  await page.waitForTimeout(300);
+  check('Pending Exits page opens', await page.locator('#hiExitsView').isVisible());
+  check('Pending Exits list shows the 2 fixture people', await page.locator('#hiExitsList li[data-employee-id]').count() === 2);
+  // Deterministic: waits for the data-wi-enter entrance animation to
+  // actually finish (its own transform settles to "none") before reading
+  // layout positions, rather than a fixed sleep racing it.
+  await page.waitForFunction(() => {
+    const link = document.getElementById('hiExitsSentHistoryLink');
+    return Boolean(link) && getComputedStyle(link).transform === 'none';
+  }, { timeout: 5000 });
+  check('Pending Exits spacing: there is now more room between the "Sent history" link and the first card below it', await page.evaluate(() => {
+    const link = document.getElementById('hiExitsSentHistoryLink');
+    const firstCard = document.querySelector('#hiExitsList li[data-employee-id]');
+    if (!link || !firstCard) return false;
+    return (firstCard.getBoundingClientRect().top - link.getBoundingClientRect().bottom) >= 10;
+  }));
+
+  const exitsGetCallCountBeforeSend = exitsGetCallCount;
+  await page.click('#sendHiExitsMail');
+  await page.waitForTimeout(250);
+  const exitsSendClick = page.click('#mailComposeSendBtn');
+  await page.waitForRequest('**/api/insurance/exits/send-mail');
+  releaseExitsSendMail();
+  await exitsSendClick;
+  await page.waitForTimeout(1500);
+  check('Exactly 1 real Exits send happened', exitsSendMailCallCount === 1);
+  check('Pending Exits count drops from 2 to 0 immediately after sending', (await page.locator('#hiExitsTotalCount').textContent()) === '0');
+  check('The Pending Exits list itself is now empty', await page.locator('#hiExitsList li[data-employee-id]').count() === 0);
+  check('...and that update happened WITHOUT re-fetching GET /api/insurance/exits/pending (never a "page refresh")', exitsGetCallCount === exitsGetCallCountBeforeSend, 'before: ' + exitsGetCallCountBeforeSend + ', after: ' + exitsGetCallCount);
+
+  const errorsAfterExits = consoleErrors.length + pageErrors.length;
+  check('No JS error was thrown through the Pending Exits Send Mail flow', errorsAfterExits === errorsAfter, 'new errors: ' + JSON.stringify(consoleErrors.concat(pageErrors).slice(errorsAfter)));
 
   await browser.close();
   server.close();
