@@ -108,7 +108,7 @@ function check(label, ok, detail) {
 // 5 real, FUNCTIONAL elements (hamburger, wordmark text, refresh, SUBH
 // button, profile photo) are visible, AND that the element currently
 // showing really is #wfTopbar itself (same id), not a second copy.
-async function checkRealTopbarFrame(page, pageLabel) {
+async function checkRealTopbarFrame(page, pageLabel, baseline) {
   const topbar = page.locator('#wfTopbar');
   const insidePanel = await page.evaluate(() => {
     const t = document.getElementById('wfTopbar');
@@ -123,6 +123,25 @@ async function checkRealTopbarFrame(page, pageLabel) {
     await page.locator('#refreshBtn').isVisible() &&
     await page.locator('#hrAssistantBtn').isVisible() &&
     await page.locator('#profileAvatar').isVisible());
+  // LIVE BUG FIX (2026-11), direct instruction, item 6 - the header was
+  // cut off at the sides/cramped on these sub-pages (a real CSS bug: its
+  // own padding was being silently overridden by a later, equal-
+  // specificity rule, zeroing its side padding). Proven fixed by
+  // comparing actual pixel positions against a real ☰ menu section's own
+  // topbar at 384px (the baseline captured once, before the SUBH panel
+  // ever opened), not just "is visible" - every one of these must now be
+  // byte-for-byte identical, never just close.
+  if (baseline) {
+    const rects = await page.evaluate(() => ({
+      menuBtn: document.getElementById('menuBtn').getBoundingClientRect(),
+      profile: document.getElementById('profileAvatar').getBoundingClientRect(),
+      wordmark: document.querySelector('.wf-wordmark').getBoundingClientRect()
+    }));
+    const same = (a, b) => Math.abs(a.x - b.x) < 0.5 && Math.abs(a.y - b.y) < 0.5 && Math.abs(a.width - b.width) < 0.5 && Math.abs(a.height - b.height) < 0.5;
+    check(pageLabel + ': header box positions (hamburger/profile/wordmark) are IDENTICAL to a real ☰ menu section\'s own topbar at 384px, never just close',
+      same(rects.menuBtn, baseline.menuBtn) && same(rects.profile, baseline.profile) && same(rects.wordmark, baseline.wordmark),
+      'got: ' + JSON.stringify(rects) + ' vs baseline: ' + JSON.stringify(baseline));
+  }
 }
 
 (async () => {
@@ -186,6 +205,25 @@ async function checkRealTopbarFrame(page, pageLabel) {
 
   await page.goto(base + '/workforce.html', { waitUntil: 'domcontentloaded' });
   await page.waitForTimeout(500); // let the page's own startup prefetches settle
+
+  // LIVE BUG FIX (2026-11), direct instruction, item 6 - baseline capture,
+  // per the user's own suggested check: "compare the header box positions
+  // with another menu section at 384px - identical." Taken from a real,
+  // ordinary ☰ menu section (Org Chart) BEFORE the SUBH panel ever opens
+  // (the real #wfTopbar is still in its normal .wf-shell position here) -
+  // checkRealTopbarFrame below compares every SUBH-Settings sub-page's
+  // relocated topbar against this exact baseline, not an assumed value.
+  await page.click('#menuBtn');
+  await page.waitForTimeout(150);
+  await page.click('[data-view="orgChart"]');
+  await page.waitForTimeout(300);
+  const topbarBaseline = await page.evaluate(() => ({
+    menuBtn: document.getElementById('menuBtn').getBoundingClientRect(),
+    profile: document.getElementById('profileAvatar').getBoundingClientRect(),
+    wordmark: document.querySelector('.wf-wordmark').getBoundingClientRect()
+  }));
+  await page.click('#orgChartView [data-back]');
+  await page.waitForTimeout(250);
 
   const errorsBeforePanel = consoleErrors.length + pageErrors.length;
 
@@ -627,14 +665,14 @@ async function checkRealTopbarFrame(page, pageLabel) {
   await page.evaluate(() => { window.__hrAssistantOpenSiteAliases(); });
   await page.waitForTimeout(250);
   check('Site names page opens (not a blank page)', await page.locator('#hrSiteAliasesPage').isVisible());
-  await checkRealTopbarFrame(page, 'Site names');
+  await checkRealTopbarFrame(page, 'Site names', topbarBaseline);
 
   await page.evaluate(() => { if (window.__hrAssistantClosePanel) window.__hrAssistantClosePanel(); });
   await page.waitForTimeout(100);
   await page.evaluate(() => { window.__hrAssistantOpenDeptAliases(); });
   await page.waitForTimeout(250);
   check('Department names page opens (not a blank page)', await page.locator('#hrDeptAliasesPage').isVisible());
-  await checkRealTopbarFrame(page, 'Department names');
+  await checkRealTopbarFrame(page, 'Department names', topbarBaseline);
 
   // TASK 1(e) (2026-11), direct instruction - "Company details" settings
   // page: opened the same way the real "SUBH Settings" dashboard tile
@@ -662,7 +700,7 @@ async function checkRealTopbarFrame(page, pageLabel) {
   await page.evaluate(() => { window.__hrAssistantOpenCompanyDetails(); });
   await page.waitForTimeout(250);
   check('Company details page opens (not a blank page)', await page.locator('#hrCompanyDetailsPage').isVisible());
-  await checkRealTopbarFrame(page, 'Company details');
+  await checkRealTopbarFrame(page, 'Company details', topbarBaseline);
   const companyHeadTitle = await page.locator('#hrCommsHeadTitle').textContent().catch(() => null);
   check('Company details: header title reads "Company details"', (companyHeadTitle || '').trim() === 'Company details', 'got: ' + JSON.stringify(companyHeadTitle));
   const companyCards = await page.locator('#hrCompanyDetailsList [data-company]').count();
@@ -754,7 +792,7 @@ async function checkRealTopbarFrame(page, pageLabel) {
     await page.evaluate(() => { window.__hrAssistantOpenHolidays(); });
     await page.waitForTimeout(250);
     check('Holidays page opens (not a blank page)', await page.locator('#hrHolidaysPage').isVisible());
-    await checkRealTopbarFrame(page, 'Holidays');
+    await checkRealTopbarFrame(page, 'Holidays', topbarBaseline);
     const holidaysHeadTitle = await page.locator('#hrCommsHeadTitle').textContent().catch(() => null);
     check('Holidays: header title reads "Holidays"', (holidaysHeadTitle || '').trim() === 'Holidays', 'got: ' + JSON.stringify(holidaysHeadTitle));
     const sundayNoteText = await page.locator('#hrHolidaysSundayNote').textContent().catch(() => '');
@@ -912,7 +950,7 @@ async function checkRealTopbarFrame(page, pageLabel) {
   // reworked same day) - every SUBH-Settings sub-page shows the REAL
   // #wfTopbar above its own heading/back-button row, and never a WhatsApp
   // icon bubble.
-  await checkRealTopbarFrame(page, 'Letter settings');
+  await checkRealTopbarFrame(page, 'Letter settings', topbarBaseline);
   check('Letter settings: no WhatsApp icon between the back button and the heading', !(await page.locator('#hrCommsHeadIcon').isVisible()));
   // Functional proof (2026-11), not just "visible" - the real hamburger
   // button on the relocated #wfTopbar actually opens the real drawer (same
@@ -1309,7 +1347,7 @@ async function checkRealTopbarFrame(page, pageLabel) {
   await page.evaluate(() => { window.__hrAssistantOpenAiUsage(); });
   await page.waitForTimeout(250);
   check('AI usage page opens (not a blank page)', await page.locator('#hrAiUsagePage').isVisible());
-  await checkRealTopbarFrame(page, 'AI usage');
+  await checkRealTopbarFrame(page, 'AI usage', topbarBaseline);
   check('AI usage: no WhatsApp icon between the back button and the heading', !(await page.locator('#hrCommsHeadIcon').isVisible()));
   const aiUsageChipsBox = await page.locator('#hrAiUsageChips').boundingBox();
   const aiUsagePageBox = await page.locator('#hrAiUsagePage').boundingBox();
@@ -1416,7 +1454,7 @@ async function checkRealTopbarFrame(page, pageLabel) {
   await page.evaluate(() => { window.__hrAssistantOpenDataBackups(); });
   await page.waitForTimeout(250);
   check('Data & backups page opens (not a blank page)', await page.locator('#hrDataBackupsPage').isVisible());
-  await checkRealTopbarFrame(page, 'Data & backups');
+  await checkRealTopbarFrame(page, 'Data & backups', topbarBaseline);
   check('Data & backups: no WhatsApp icon between the back button and the heading', !(await page.locator('#hrCommsHeadIcon').isVisible()));
   // Two small UI fixes (2026-11, direct instruction, 384px): "Backup now"
   // needs real breathing room below the page header (it has no section-
@@ -1509,7 +1547,7 @@ async function checkRealTopbarFrame(page, pageLabel) {
   await page.evaluate(() => { window.__hrAssistantOpenSettingsHistory(); });
   await page.waitForTimeout(250);
   check('Settings history page opens (not a blank page)', await page.locator('#hrSettingsHistoryPage').isVisible());
-  await checkRealTopbarFrame(page, 'Settings history');
+  await checkRealTopbarFrame(page, 'Settings history', topbarBaseline);
   check('Settings history: no WhatsApp icon between the back button and the heading', !(await page.locator('#hrCommsHeadIcon').isVisible()));
   const historyHeadTitle = await page.locator('#hrCommsHeadTitle').textContent().catch(() => null);
   check('Settings history: header title reads "Settings history"', (historyHeadTitle || '').trim() === 'Settings history', 'got: ' + JSON.stringify(historyHeadTitle));

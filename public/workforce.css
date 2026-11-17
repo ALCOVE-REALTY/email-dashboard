@@ -3254,12 +3254,29 @@ body:not(.printing-org-chart) .org-chart-cards-row + .org-chart-branch-connector
 /* Page frame fix (2026-11, direct instruction) - the real #wfTopbar (see
    workforce.html's own comment) gets this ONE style change only while
    hrAssistant.js has relocated it to the top of .wf-ai-panel for a SUBH
-   Settings sub-page: same padding/background the old top-bar replica div
-   used to carry, flex-shrink:0 so the scrollable panel content below
+   Settings sub-page: flex-shrink:0 so the scrollable panel content below
    (flex:1 areas) never squeezes it. Removed again the moment the real
-   element is moved back out to .wf-shell. */
-.wf-topbar--in-settings-panel {
-  padding: 14px 20px 0;
+   element is moved back out to .wf-shell.
+   LIVE BUG FIX (2026-11), direct instruction, item 6 - the padding here
+   was being completely overridden by css/wi-theme.css's LATER, equal-
+   specificity plain `.wf-topbar { padding: 6px 0; }` rule (same file
+   loads after this one - with a tied single-class specificity, the
+   later declaration wins for every property it sets), so the topbar
+   actually rendered with ZERO side padding and only 6px on top,
+   regardless of what this rule said - hamburger/profile photo touching
+   the screen edges, header cramped against the top. Fixed two ways: (1)
+   the selector is now compound (.wf-topbar.wf-topbar--in-settings-panel)
+   so it always wins on specificity, never on file order; (2) the values
+   themselves now match the REAL menu-section topbar's own measured box
+   model exactly (confirmed via a headless 384px comparison, not
+   assumed) - .wf-shell's own real padding is 16px sides (not 20px) with
+   a 12px gap before the topbar even starts, which .wf-topbar's own 6px
+   top padding then sits inside - reproduced here as margin-top:12px
+   (the "gap before") + padding-top:6px (the topbar's own internal
+   padding, same as every other page), never a flat guessed value. */
+.wf-topbar.wf-topbar--in-settings-panel {
+  padding: 6px 16px 0;
+  margin-top: 12px;
   margin-bottom: 0;
   flex-shrink: 0;
   background: var(--paper);
