@@ -3262,6 +3262,23 @@ router.post('/hr-assistant/new-sites/confirm', async (req, res) => {
   }
 });
 
+// LIVE BUG FIX (2026-11), direct instruction, item 5 - "Decline" next to
+// "Confirm": same shape as /confirm above, minus aliasWords (never saves
+// an alias) - whatsappAssistant.declineNewSite both removes the card and
+// marks the site "known" so it's never suggested again.
+router.post('/hr-assistant/new-sites/decline', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const { siteValue } = req.body || {};
+    if (!siteValue) return res.status(400).json({ error: 'siteValue is required' });
+    const ok = await whatsappAssistant.declineNewSite(siteValue);
+    if (!ok) return res.status(500).json({ error: 'Could not decline this site.' });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Department names - full parity with the site-names routes above, per
 // direct instruction (2026-10-30): "QC" etc. need the same owner-editable
 // alias + auto-detection treatment department values already lacked.
@@ -3317,6 +3334,21 @@ router.post('/hr-assistant/new-depts/confirm', async (req, res) => {
     if (!deptValue) return res.status(400).json({ error: 'deptValue is required' });
     const ok = await whatsappAssistant.confirmNewDept(deptValue, Array.isArray(aliasWords) ? aliasWords : []);
     if (!ok) return res.status(500).json({ error: 'Could not confirm this department.' });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// LIVE BUG FIX (2026-11), direct instruction, item 5 - same as the Site
+// names decline route above.
+router.post('/hr-assistant/new-depts/decline', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const { deptValue } = req.body || {};
+    if (!deptValue) return res.status(400).json({ error: 'deptValue is required' });
+    const ok = await whatsappAssistant.declineNewDept(deptValue);
+    if (!ok) return res.status(500).json({ error: 'Could not decline this department.' });
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.message });

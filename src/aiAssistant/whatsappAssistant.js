@@ -5044,6 +5044,22 @@ async function confirmNewSite(siteValue, aliasWords) {
   await refreshSiteAliasCacheNow();
   return true;
 }
+// LIVE BUG FIX (2026-11), direct instruction, item 5 - "Decline" next to
+// "Confirm": removes the card immediately and never suggests this exact
+// site name again (added to the SAME "known" set confirmNewSite uses, so
+// the next scanForNewSites() skips it entirely) - but unlike Confirm, no
+// alias is ever saved, so the owner's own "+ Add" flow is untouched and
+// still free to add this site with aliases manually later.
+async function declineNewSite(siteValue) {
+  const redis = getClient();
+  if (!redis) return false;
+  try {
+    await redis.sadd(SITE_KNOWN_VALUES_KEY, siteValue);
+    await redis.del(NEW_SITE_FOUND_PREFIX + normalizeForMatch(siteValue));
+    await redis.srem(NEW_SITE_FOUND_IDS_KEY, normalizeForMatch(siteValue));
+  } catch (err) { return false; }
+  return true;
+}
 // Direct instruction (2026-10-28) - these exact 5 groups, confirmed by
 // Subhodeep after reviewing the real distinct-location list. Seeded as
 // CODE (not a one-off script writing straight to the production store,
@@ -5229,6 +5245,19 @@ async function confirmNewDept(deptValue, aliasWords) {
     if (alias && alias.trim()) await saveDeptAlias({ alias: alias.trim(), deptValue, confirmed: true });
   }
   await refreshDeptAliasCacheNow();
+  return true;
+}
+// LIVE BUG FIX (2026-11), direct instruction, item 5 - same reasoning as
+// declineNewSite above: removes the card immediately and never suggests
+// this exact department name again, without saving any alias.
+async function declineNewDept(deptValue) {
+  const redis = getClient();
+  if (!redis) return false;
+  try {
+    await redis.sadd(DEPT_KNOWN_VALUES_KEY, deptValue);
+    await redis.del(NEW_DEPT_FOUND_PREFIX + normalizeForMatch(deptValue));
+    await redis.srem(NEW_DEPT_FOUND_IDS_KEY, normalizeForMatch(deptValue));
+  } catch (err) { return false; }
   return true;
 }
 // Direct instruction (2026-10-30), confirmed against the real distinct
@@ -14663,6 +14692,7 @@ module.exports = {
   scanForNewSites,
   listNewSitesFound,
   confirmNewSite,
+  declineNewSite,
   ensureDefaultSiteAliasesSeeded,
   refreshSiteAliasCacheNow,
   saveDeptAlias,
@@ -14672,6 +14702,7 @@ module.exports = {
   scanForNewDepts,
   listNewDeptsFound,
   confirmNewDept,
+  declineNewDept,
   ensureDefaultDeptAliasesSeeded,
   refreshDeptAliasCacheNow,
   resolveDeptAliasValues,

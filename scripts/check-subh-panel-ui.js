@@ -793,6 +793,64 @@ async function checkRealTopbarFrame(page, pageLabel) {
       'new errors: ' + JSON.stringify(consoleErrors.slice(holidaysErrBefore).concat(pageErrors.slice(holidaysErrBefore))));
   }
 
+  // LIVE BUG FIX (2026-11), direct instruction, item 5 - Site names'
+  // "New site found" card gets a "Decline" button next to "Confirm":
+  // removes the card immediately (posts to the real decline route) and
+  // never offers it again - distinct from Confirm, which also saves an
+  // alias. Same for Department names.
+  {
+    await page.route('**/api/workforce/hr-assistant/site-aliases', (route) => {
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: [] }) });
+    });
+    await page.route('**/api/workforce/hr-assistant/new-sites', (route) => {
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: [{ siteValue: 'Fake-New-Site', suggestedAliases: ['Fake New'] }] }) });
+    });
+    let declineSiteBody = null;
+    await page.route('**/api/workforce/hr-assistant/new-sites/decline', (route) => {
+      declineSiteBody = route.request().postDataJSON();
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true }) });
+    });
+    const siteErrBefore = consoleErrors.length + pageErrors.length;
+    await page.evaluate(() => { if (window.__hrAssistantClosePanel) window.__hrAssistantClosePanel(); });
+    await page.waitForTimeout(100);
+    await page.evaluate(() => { window.__hrAssistantOpenSiteAliases(); });
+    await page.waitForTimeout(300);
+    check('Site names: the "New site found" card shows BOTH Decline and Confirm buttons', await page.locator('#hrNewSitesList [data-action="decline"]').isVisible() && await page.locator('#hrNewSitesList [data-action="confirm"]').isVisible());
+    await page.locator('#hrNewSitesList [data-action="decline"]').click();
+    await page.waitForTimeout(900); // runButtonAction's own success delay + the row's own close transition
+    check('Site names: Decline posts the real siteValue to the real decline route', Boolean(declineSiteBody) && declineSiteBody.siteValue === 'Fake-New-Site', 'got: ' + JSON.stringify(declineSiteBody));
+    check('Site names: the card is gone from the list after declining', await page.locator('#hrNewSitesList [data-site]').count() === 0);
+    const siteErrAfter = consoleErrors.length + pageErrors.length;
+    check('Site names: no JS error was thrown opening the page or declining a new site', siteErrAfter === siteErrBefore,
+      'new errors: ' + JSON.stringify(consoleErrors.slice(siteErrBefore).concat(pageErrors.slice(siteErrBefore))));
+  }
+  {
+    await page.route('**/api/workforce/hr-assistant/dept-aliases', (route) => {
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: [] }) });
+    });
+    await page.route('**/api/workforce/hr-assistant/new-depts', (route) => {
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: [{ deptValue: 'Fake New Dept', suggestedAliases: [] }] }) });
+    });
+    let declineDeptBody = null;
+    await page.route('**/api/workforce/hr-assistant/new-depts/decline', (route) => {
+      declineDeptBody = route.request().postDataJSON();
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true }) });
+    });
+    const deptErrBefore = consoleErrors.length + pageErrors.length;
+    await page.evaluate(() => { if (window.__hrAssistantClosePanel) window.__hrAssistantClosePanel(); });
+    await page.waitForTimeout(100);
+    await page.evaluate(() => { window.__hrAssistantOpenDeptAliases(); });
+    await page.waitForTimeout(300);
+    check('Department names: the "New department found" card shows BOTH Decline and Confirm buttons', await page.locator('#hrNewDeptsList [data-action="decline"]').isVisible() && await page.locator('#hrNewDeptsList [data-action="confirm"]').isVisible());
+    await page.locator('#hrNewDeptsList [data-action="decline"]').click();
+    await page.waitForTimeout(900);
+    check('Department names: Decline posts the real deptValue to the real decline route', Boolean(declineDeptBody) && declineDeptBody.deptValue === 'Fake New Dept', 'got: ' + JSON.stringify(declineDeptBody));
+    check('Department names: the card is gone from the list after declining', await page.locator('#hrNewDeptsList [data-dept]').count() === 0);
+    const deptErrAfter = consoleErrors.length + pageErrors.length;
+    check('Department names: no JS error was thrown opening the page or declining a new department', deptErrAfter === deptErrBefore,
+      'new errors: ' + JSON.stringify(consoleErrors.slice(deptErrBefore).concat(pageErrors.slice(deptErrBefore))));
+  }
+
   // TASK 1(c) (2026-11), direct instruction - "Letter settings" page:
   // opened the same way the real "SUBH Settings" dashboard tile opens it
   // (window.__hrAssistantOpenLetterSettings), asserts the Ref No. format

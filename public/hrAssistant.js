@@ -3098,7 +3098,10 @@
       '<div class="wf-auto-task-subject">New site found: ' + escapeHtml(item.siteValue) + '</div>' +
       '<label class="wf-rem-field"><span>Aliases (edit if needed, comma-separated - leave blank if none needed)</span>' +
       '<input type="text" data-role="new-site-aliases" value="' + escapeHtml(suggested) + '" /></label>' +
-      '<div class="wf-auto-actions"><button type="button" class="plain" data-action="confirm">Confirm</button></div></div>';
+      // LIVE BUG FIX (2026-11), direct instruction, item 5 - "Decline" next
+      // to "Confirm": removes the card immediately, never suggested again
+      // (still addable later via "+ Add").
+      '<div class="wf-auto-actions"><button type="button" class="plain" data-action="decline">Decline</button><button type="button" class="plain" data-action="confirm">Confirm</button></div></div>';
   }
   // Task 2 (2026-10-31) - stale-while-revalidate, same pattern as every
   // other hot page in this panel: render instantly from cache (warmed by
@@ -3117,6 +3120,18 @@
             await runButtonAction(btn, () => postJsonOrThrow('/api/workforce/hr-assistant/new-sites/confirm', { siteValue, aliasWords }), () => {
               closeRowWithToast(card, { title: 'Site confirmed', type: 'success' });
               pageDataCache.siteAliases = null; // a mutation just happened - never serve the stale cached count/list again
+              loadSiteAliasesBadge();
+            });
+          });
+        });
+        // LIVE BUG FIX (2026-11), direct instruction, item 5 - "Decline".
+        newSitesList.querySelectorAll('[data-action="decline"]').forEach((btn) => {
+          btn.addEventListener('click', async () => {
+            const card = btn.closest('[data-site]');
+            const siteValue = card.dataset.site;
+            await runButtonAction(btn, () => postJsonOrThrow('/api/workforce/hr-assistant/new-sites/decline', { siteValue }), () => {
+              closeRowWithToast(card, { title: 'Site declined - won\'t be suggested again', type: 'success' });
+              pageDataCache.siteAliases = null;
               loadSiteAliasesBadge();
             });
           });
@@ -3309,7 +3324,9 @@
       '<div class="wf-auto-task-subject">New department found: ' + escapeHtml(item.deptValue) + '</div>' +
       '<label class="wf-rem-field"><span>Aliases (edit if needed, comma-separated - leave blank if none needed)</span>' +
       '<input type="text" data-role="new-dept-aliases" value="' + escapeHtml(suggested) + '" /></label>' +
-      '<div class="wf-auto-actions"><button type="button" class="plain" data-action="confirm">Confirm</button></div></div>';
+      // LIVE BUG FIX (2026-11), direct instruction, item 5 - same "Decline"
+      // button as Site names above.
+      '<div class="wf-auto-actions"><button type="button" class="plain" data-action="decline">Decline</button><button type="button" class="plain" data-action="confirm">Confirm</button></div></div>';
   }
   // Task 2 (2026-10-31) - same stale-while-revalidate treatment as
   // renderSiteAliasesPage above.
@@ -3325,6 +3342,18 @@
             await runButtonAction(btn, () => postJsonOrThrow('/api/workforce/hr-assistant/new-depts/confirm', { deptValue, aliasWords }), () => {
               closeRowWithToast(card, { title: 'Department confirmed', type: 'success' });
               pageDataCache.deptAliases = null; // a mutation just happened - never serve the stale cached count/list again
+              loadDeptAliasesBadge();
+            });
+          });
+        });
+        // LIVE BUG FIX (2026-11), direct instruction, item 5 - "Decline".
+        newDeptsList.querySelectorAll('[data-action="decline"]').forEach((btn) => {
+          btn.addEventListener('click', async () => {
+            const card = btn.closest('[data-dept]');
+            const deptValue = card.dataset.dept;
+            await runButtonAction(btn, () => postJsonOrThrow('/api/workforce/hr-assistant/new-depts/decline', { deptValue }), () => {
+              closeRowWithToast(card, { title: 'Department declined - won\'t be suggested again', type: 'success' });
+              pageDataCache.deptAliases = null;
               loadDeptAliasesBadge();
             });
           });

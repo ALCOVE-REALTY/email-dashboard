@@ -5579,6 +5579,48 @@ async function checkAsyncRealModel(label, fn) {
     }
   });
 
+  // LIVE BUG FIX (2026-11), direct instruction, item 5 - "Decline" next to
+  // "Confirm": same shape as the confirm test above, but proves the
+  // DIFFERENCE - the card is gone and never re-flagged, exactly like
+  // Confirm, but NO alias is ever saved (the owner's own "+ Add" flow
+  // stays free to add this site manually later).
+  await checkAsync('LOCKED SCENARIO: declineNewSite() removes the card and never re-flags that value, but saves NO alias (unlike confirmNewSite)', async () => {
+    const unknownValue = 'Brand-New-Decline-Site-' + Date.now();
+    const origGetData = employeeService.getEmployeeData;
+    await whatsappAssistant.scanForNewSites();
+    const empMock = { employees: [{ location: unknownValue }, { location: 'SRM-Site' }] };
+    employeeService.getEmployeeData = async () => empMock;
+    try {
+      const flagged = await whatsappAssistant.scanForNewSites();
+      if (!flagged.some((f) => f.siteValue === unknownValue)) return false;
+      await whatsappAssistant.declineNewSite(unknownValue);
+      const afterDecline = await whatsappAssistant.scanForNewSites();
+      const stillFlagged = afterDecline.some((f) => f.siteValue === unknownValue);
+      const noAliasSaved = !(await whatsappAssistant.listSiteAliases()).some((a) => a.siteValue === unknownValue);
+      return !stillFlagged && noAliasSaved;
+    } finally {
+      employeeService.getEmployeeData = origGetData;
+    }
+  });
+  await checkAsync('LOCKED SCENARIO: declineNewDept() - same guarantee as declineNewSite above, for Department names', async () => {
+    const unknownValue = 'Brand-New-Decline-Dept-' + Date.now();
+    const origGetData = employeeService.getEmployeeData;
+    await whatsappAssistant.scanForNewDepts();
+    const empMock = { employees: [{ department: unknownValue }, { department: 'HR DEPT' }] };
+    employeeService.getEmployeeData = async () => empMock;
+    try {
+      const flagged = await whatsappAssistant.scanForNewDepts();
+      if (!flagged.some((f) => f.deptValue === unknownValue)) return false;
+      await whatsappAssistant.declineNewDept(unknownValue);
+      const afterDecline = await whatsappAssistant.scanForNewDepts();
+      const stillFlagged = afterDecline.some((f) => f.deptValue === unknownValue);
+      const noAliasSaved = !(await whatsappAssistant.listDeptAliases()).some((a) => a.deptValue === unknownValue);
+      return !stillFlagged && noAliasSaved;
+    } finally {
+      employeeService.getEmployeeData = origGetData;
+    }
+  });
+
   // --- Item 1: CV/job-application messages and media-only messages always get acknowledged ---
   check('looksLikeCvMessage recognizes the exact replayed CV text', whatsappAssistant.looksLikeCvMessage('Good morning, Sir. I have shared my CV for a suitable position in your company. Kindly review my CV and let me know if there is any suitable vacancy. Thank you, Sir.'));
   check('looksLikeCvMessage does NOT misfire on an ordinary greeting', !whatsappAssistant.looksLikeCvMessage('Good morning Sir, kemon achen?'));
