@@ -3930,20 +3930,14 @@
       }
     });
   }
-  // Pre-fills the picker with whoever "Send test to me" would currently
-  // default to, the moment the Letter Settings page itself loads - the
-  // field is never blank on first open, shown as a chip immediately
-  // (ISSUE 2(a)). Best-effort: a failure here just leaves the field
-  // blank, and Send Test still falls back to the server's own default
-  // (no employeeId sent) exactly as before this picker existed.
-  async function initLetterTestEmployeePicker() {
-    if (!letterTestEmployeeInput) return;
-    try {
-      const data = await fetch('/api/workforce/hr-assistant/letter-settings/employee-picker').then((r) => r.json());
-      const match = (data.results || []).find((e) => e.employeeId === data.defaultEmployeeId);
-      if (match) selectLetterTestEmployee(match);
-    } catch (err) { /* best effort */ }
-  }
+  // LIVE BUG FIX (2026-11), direct instruction, item 4 - this used to
+  // pre-fill the picker with whoever "Send test to me" would default to,
+  // the moment the page loaded (so it was never actually empty, and
+  // sometimes silently picked someone like "Suman Kotal" the owner never
+  // chose). Removed entirely, per direct instruction: the field now stays
+  // EMPTY until the owner actively picks someone - see runSendTestLetter's
+  // own "pick an employee first" guard below for what happens if they
+  // try to send without picking.
 
   // Field mapping review (2026-11, direct instruction) - per Drive
   // template: SUBH proposes a source for every placeholder (via
@@ -3995,6 +3989,14 @@
     }).catch(() => {}); // error already rendered inline by openPdfPreviewSheet
   }
   async function runSendTestLetter(btn, templateKey, letterLabel) {
+    // LIVE BUG FIX (2026-11), direct instruction, item 4 - with the
+    // auto-default removed above, "Send test to me" must refuse up front
+    // (never silently falling back to the server's own default employee)
+    // when nobody has actually been picked.
+    if (!letterTestEmployeeSelectedId) {
+      showActionToast('Pick an employee first', null, 'error');
+      return;
+    }
     await runButtonAction(btn, () => postJsonOrThrow('/api/workforce/hr-assistant/letter-settings/send-test-letter', {
       templateKey, employeeId: letterTestEmployeeSelectedId || undefined
     }), (result) => {
@@ -4384,7 +4386,6 @@
       pageDataCache.letterSettings = data;
       renderLetterSettingsPage(data);
       prefetchLetterTemplateFields(data.letterTypes || []);
-      initLetterTestEmployeePicker();
     } catch (err) {
       if (!cached) letterCodesList.innerHTML = '<div class="wf-rem-empty">Could not load letter settings.</div>';
     }

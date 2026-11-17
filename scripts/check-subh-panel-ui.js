@@ -829,6 +829,27 @@ async function checkRealTopbarFrame(page, pageLabel) {
   check('Letter settings page opens (not a blank page)', await page.locator('#hrLetterSettingsPage').isVisible());
   const letterHeadTitle = await page.locator('#hrCommsHeadTitle').textContent().catch(() => null);
   check('Letter settings: header title reads "Letter settings"', (letterHeadTitle || '').trim() === 'Letter settings', 'got: ' + JSON.stringify(letterHeadTitle));
+  // LIVE BUG FIX (2026-11), direct instruction, item 4 - checked HERE, on
+  // this page's first, genuinely fresh open (before anything below ever
+  // picks an employee for the "Fields + Send test" flow) - the picker
+  // used to pre-fill with the server's own default (sometimes silently
+  // auto-selecting someone like "Suman Kotal" the owner never chose). It
+  // must start EMPTY every time, and "Send test to me" must refuse up
+  // front when nobody has been picked, never falling back to a default.
+  const letterPickerStartsEmpty = await page.locator('#hrLetterTestEmployeeChipInput .wf-mail-chip').count();
+  check('Test employee picker: starts EMPTY on page load - no default chip, ever', letterPickerStartsEmpty === 0, 'got ' + letterPickerStartsEmpty + ' chip(s)');
+  check('Test employee picker: the text input is visible (not hidden behind a default chip)', await page.locator('#hrLetterTestEmployeeInput').isVisible());
+  let noPickSendTestBody = null;
+  await page.route('**/api/workforce/hr-assistant/letter-settings/send-test-letter', (route) => {
+    noPickSendTestBody = route.request().postDataJSON();
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, employeeName: 'Should Not Send', employeeCode: 'X', refNo: 'X', filename: 'x.pdf', pdfBase64: FAKE_PDF_BASE64 }) });
+  });
+  const noPickErrBefore = consoleErrors.length + pageErrors.length;
+  await page.locator('#hrLetterCodesList [data-letter-type] [data-action="send-test-letter"]').first().click();
+  await page.waitForTimeout(400);
+  const noPickToastText = await page.locator('.wf-pro-toast').last().textContent().catch(() => null);
+  check('Test employee picker: "Send test to me" with nobody picked shows "Pick an employee first", never sends', (noPickToastText || '').includes('Pick an employee first') && noPickSendTestBody === null, 'got toast: ' + JSON.stringify(noPickToastText) + ', sentBody: ' + JSON.stringify(noPickSendTestBody));
+  check('Test employee picker: no JS error from the "pick an employee first" guard', (consoleErrors.length + pageErrors.length) === noPickErrBefore);
   // Page frame + no WhatsApp icon (2026-11, direct instruction; page frame
   // reworked same day) - every SUBH-Settings sub-page shows the REAL
   // #wfTopbar above its own heading/back-button row, and never a WhatsApp
@@ -987,6 +1008,18 @@ async function checkRealTopbarFrame(page, pageLabel) {
   check('Letter settings, Fields: Save closes the sheet', await page.locator('#hrFieldMappingSheet').isHidden());
   const fieldsStatusAfterSave = await driveCard.locator('[data-role="letter-fields-status"]').textContent().catch(() => null);
   check('Letter settings, Fields: the card refreshes to show the new mapped count after Save', (fieldsStatusAfterSave || '').includes('2/2 mapped'), 'got: ' + JSON.stringify(fieldsStatusAfterSave));
+  // LIVE BUG FIX (2026-11), direct instruction, item 4 - the picker no
+  // longer auto-defaults, so this flow must actually pick an employee
+  // before Send Test can do anything (the dedicated picker fixture/
+  // checks for this field live further down this file - this is just a
+  // minimal, local mock so THIS earlier flow can pick someone too).
+  await page.route('**/api/workforce/hr-assistant/letter-settings/employee-picker**', (route) => {
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ results: [{ employeeId: 'FAKE1', name: 'Fake Employee', company: 'Alcove Realty Pvt Ltd', eligible: true, reason: null }], defaultEmployeeId: null }) });
+  });
+  await page.locator('#hrLetterTestEmployeeInput').fill('Fake');
+  await page.waitForTimeout(250);
+  await page.locator('#hrLetterTestEmployeeSuggest li').first().click();
+  await page.waitForTimeout(150);
   const sendTestBtn = driveCard.locator('[data-action="send-test-letter"]');
   await sendTestBtn.click();
   // LIVE BUG FIX (2026-11) - 150ms was shorter than the CSS transition
@@ -1157,10 +1190,13 @@ async function checkRealTopbarFrame(page, pageLabel) {
   });
   await page.evaluate(() => window.__hrAssistantOpenLetterSettings && window.__hrAssistantOpenLetterSettings());
   await page.waitForTimeout(300);
-  const pickerDefaultChipText = await page.locator('#hrLetterTestEmployeeChipInput .wf-mail-chip').textContent().catch(() => null);
-  check('Test employee picker: pre-fills with the server\'s own default on page load, shown as a chip, never blank', (pickerDefaultChipText || '').includes('Default Pick'), 'got: ' + JSON.stringify(pickerDefaultChipText));
-  const inputHiddenWithDefaultChip = await page.locator('#hrLetterTestEmployeeInput').isHidden().catch(() => false);
-  check('Test employee picker: the text input is hidden while a chip is shown', inputHiddenWithDefaultChip);
+  // Note: the "starts empty on page load" / "no pick -> refuses" checks
+  // for this picker are covered earlier in this file (right after Letter
+  // Settings' own very first, genuinely fresh open, before anything else
+  // has picked an employee) - this continuous session has already picked
+  // "Fake Employee" for the Fields/Send-test flow above, so a chip is
+  // legitimately expected to still be showing here (that's correct,
+  // sticky-until-cleared behavior, not a regression).
   // Item 3 (2026-11), direct instruction, live correction - a real
   // magnifying-glass search icon (same look as Employee Data's #wfSearch /
   // Org Chart's enhanced-select search box), scoped to ONLY this picker.
@@ -1169,8 +1205,9 @@ async function checkRealTopbarFrame(page, pageLabel) {
   const testEmpChipInputBox = await page.locator('#hrLetterTestEmployeeChipInput').boundingBox();
   check('Test employee picker: the icon sits inside the search box, not overlapping the text/chips', Boolean(testEmpIconBox) && Boolean(testEmpChipInputBox) && testEmpIconBox.x > testEmpChipInputBox.x && testEmpIconBox.x < testEmpChipInputBox.x + testEmpChipInputBox.width);
   check('The icon is scoped to ONLY this one picker - every other chip-input field in the app (e.g. ipWhatsapp\'s employee picker) is untouched', await page.locator('.wf-mail-field-search-icon').count() === 1);
-  // Clear the default chip first - the input only reappears (and can be
-  // typed into) once there's no chip, same as every other chip field.
+  // Clear the chip left over from the earlier Fields/Send-test flow - the
+  // input only reappears (and can be typed into) once there's no chip,
+  // same as every other chip field.
   await page.locator('#hrLetterTestEmployeeChipInput .wf-mail-chip button').click();
   await page.waitForTimeout(150);
   check('Test employee picker: clearing the chip (×) brings the input back, empty', await page.locator('#hrLetterTestEmployeeInput').isVisible() && await page.locator('#hrLetterTestEmployeeChipInput .wf-mail-chip').count() === 0);
