@@ -7625,6 +7625,14 @@
   // only, no icons (owner's own explicit note) - 'anyEmail' also reveals
   // a free-typed email field (rule.sendToEmail) when selected.
   const WF_SEND_TO_LABELS = { self: 'The employee', manager: 'The Reporting Manager', hr: 'HR team', accounts: 'Accounts team', companyAccountsTeam: "Each Company's Accounts Team (Company details)", anyEmail: 'Any email' };
+  // PHASE 6 (2026-11) - "Reply in the original mail thread" - a NESTED
+  // ("Their reply") rule's own "To" gains this one extra option (matches
+  // the owner's own approved design reference, docs/design/workflow-v2-sample.html,
+  // SEND_TO_SUB = [['thread', '...'], ...SEND_TO] - listed FIRST, never
+  // merged into WF_SEND_TO_LABELS itself since a TOP-LEVEL rule never
+  // offers it).
+  const WF_SEND_TO_REPLY_IN_THREAD = 'replyInOriginalThread';
+  const WF_SEND_TO_LABELS_NESTED = Object.assign({ replyInOriginalThread: 'Reply in the original mail thread' }, WF_SEND_TO_LABELS);
   // PHASE 5 (2026-11) - client-side mirror of workflowService.js's own
   // parseDetailFieldNames (comma-separated -> trimmed, deduped-by-nothing
   // array) - used only to render the Summary panel's own "(reads: ...)"
@@ -8365,7 +8373,14 @@
       // this in the "Selected people" branch (see workflowService.js's
       // own comment on this exact point).
       outsideEmails: wfOutsideField.getChips(),
-      rules: JSON.parse(JSON.stringify(wfRules))
+      // PHASE 6 (2026-11) - hard 2-level cap for "Next stage", stripped
+      // here too (client-side) as well as server-side
+      // (workflowService.sanitizeWorkflowRules) - a sub-rule's own
+      // nextStageOn/sub, if somehow present, is never sent at all.
+      rules: JSON.parse(JSON.stringify(wfRules)).map((r) => {
+        if (Array.isArray(r.sub)) r.sub = r.sub.map((sr) => { delete sr.nextStageOn; delete sr.sub; return sr; });
+        return r;
+      })
     });
   }
   function wfSync() {
@@ -8476,6 +8491,8 @@
           (wfRules.some((r) => parseWfDetailFieldNames(r.detailFields).length) ? '<div class="wf-auto-summary-line">🔎 reads: ' + escapeHtml(Array.from(new Set(wfRules.flatMap((r) => parseWfDetailFieldNames(r.detailFields)))).join(', ')) + '</div>' : '') +
           (wfRules.some((r) => r.then === WF_THEN_WAIT_FOR_ATTACHMENTS) ? '<div class="wf-auto-summary-line">📎 at least one rule will wait for attachments</div>' : '') +
           (wfRules.some((r) => r.alsoDo && ((r.alsoDo.driveUpload && r.alsoDo.driveUpload.on) || (r.alsoDo.sheetUpdate && r.alsoDo.sheetUpdate.on))) ? '<div class="wf-auto-summary-line">✅ also save to Drive &amp; update the sheet</div>' : '') +
+          // PHASE 6 (2026-11), same "if trivial, extend Summary" judgment call.
+          (wfRules.some((r) => r.nextStageOn && (r.sub || []).length) ? '<div class="wf-auto-summary-line">🔁 at least one rule opens a "Next stage" for their reply</div>' : '') +
           '<div class="wf-auto-summary-line">' + describeScheduleRule(f) + ' · next run <b>' + escapeHtml(data.nextRunAt ? wfWhen(data.nextRunAt) : '—') + '</b></div>' +
           '<div class="wf-auto-summary-line">Next run would send <b>' + ((data.sent || []).length) + '</b> first message(s).</div>';
       }
@@ -8510,7 +8527,23 @@
   function wfMediatorAttachmentIssues(mediator, rules) {
     return window.wfMediatorGuard ? window.wfMediatorGuard.mediatorAttachmentIssues(mediator, rules) : [];
   }
-  function wfRenderRuleFields(r, i) {
+  // PHASE 6 (2026-11) - shared rule-editor render/read/validate helper,
+  // reused a SECOND time for `.sub[]` ("Next stage" -> nested rules for
+  // their reply) rather than duplicated: `subIndex` is null/undefined for
+  // a top-level rule, or the sub-rule's own index within its parent's
+  // `.sub[]` when nested. Every field attribute carries BOTH `data-r`
+  // (the TOP-level rule index, same meaning as before this phase) and,
+  // when nested, `data-sub` (the sub-rule index) - the change/input
+  // listeners below resolve the right object from these two together
+  // (wfResolveRule). A nested rule gets the FULL rule-editor surface
+  // Phase 5/5.1 already built (detailFields/sendTo/sendDocument/then/
+  // alsoDo, same WA-mediator guard) MINUS `nextStageOn`/`sub` themselves
+  // (the hard 2-level cap - the "Next stage" box below is only ever
+  // rendered when `subIndex == null`) PLUS one extra "To" option only a
+  // nested rule gets ("Reply in the original mail thread").
+  function wfRenderRuleFields(r, i, subIndex, label) {
+    const nested = subIndex != null;
+    const attr = (k) => 'data-r="' + i + '" data-k="' + k + '"' + (nested ? ' data-sub="' + subIndex + '"' : '');
     const isWaMediator = wfSegVal(wfMedSeg) === 'wa';
     const alsoDo = r.alsoDo || {};
     const driveUpload = alsoDo.driveUpload || {};
@@ -8521,8 +8554,10 @@
     // 'alsoSheetUpdateText' input handler below); re-render it from
     // those same two fields so a reload/edit shows the identical text.
     const sheetUpdateText = sheetUpdate.column ? (sheetUpdate.column + (sheetUpdate.value ? ' = ' + sheetUpdate.value : ' =')) : '';
-    return '<div class="wf-auto-rule-card"><div class="wf-auto-rule-head"><span>Rule ' + (i + 1) + '</span><button type="button" class="wf-auto-cond-rm" data-rmrule="' + i + '" aria-label="Remove rule">×</button></div>' +
-      '<label class="wf-rem-field">If the reply means<input type="text" data-r="' + i + '" data-k="when" value="' + escapeHtml(r.when || '') + '" placeholder="e.g. Approved / confirmed" autocomplete="off"></label>' +
+    const sendToLabels = nested ? WF_SEND_TO_LABELS_NESTED : WF_SEND_TO_LABELS;
+    const rmBtn = nested ? '<button type="button" class="wf-auto-cond-rm" data-rmsub="' + i + '.' + subIndex + '" aria-label="Remove rule">×</button>' : '<button type="button" class="wf-auto-cond-rm" data-rmrule="' + i + '" aria-label="Remove rule">×</button>';
+    return '<div class="wf-auto-rule-card' + (nested ? ' nested' : '') + '"><div class="wf-auto-rule-head"><span>' + escapeHtml(label || ('Rule ' + (i + 1))) + '</span>' + rmBtn + '</div>' +
+      '<label class="wf-rem-field">If the reply means<input type="text" ' + attr('when') + ' value="' + escapeHtml(r.when || '') + '" placeholder="e.g. Approved / confirmed" autocomplete="off"></label>' +
       // PHASE 5 (2026-11) - "Details — take from the reply" (owner's own
       // approved design reference wording/placement) - a single comma-
       // separated field-names text input (rule.detailFields), matching
@@ -8532,9 +8567,9 @@
       // .wf-nf-box/.wf-nf-title/.wf-nf-badge green-box classes, never new
       // CSS.
       '<div class="wf-nf-box"><div class="wf-nf-title">🔎 Details — take from the reply <span class="wf-nf-badge">NEW</span></div>' +
-      '<input type="text" data-r="' + i + '" data-k="detailFields" value="' + escapeHtml(r.detailFields || '') + '" placeholder="e.g. amount, reference no., date" autocomplete="off" style="margin-top:8px">' +
+      '<input type="text" ' + attr('detailFields') + ' value="' + escapeHtml(r.detailFields || '') + '" placeholder="e.g. amount, reference no., date" autocomplete="off" style="margin-top:8px">' +
       '<div class="wf-auto-hint">SUBH reads them from the reply → use as {Amount}, {Reference}, {Date}… in the next messages.</div></div>' +
-      '<label class="wf-auto-check"><input type="checkbox" data-r="' + i + '" data-k="askDetail_on" ' + (r.askDetail ? 'checked' : '') + '> First ask for a missing detail</label>' +
+      '<label class="wf-auto-check"><input type="checkbox" ' + attr('askDetail_on') + ' ' + (r.askDetail ? 'checked' : '') + '> First ask for a missing detail</label>' +
       (r.askDetail ? (
         // PHASE 5 (2026-11) - owner's own wording: "now asks only if the
         // detail isn't already in the reply" - this is the EXISTING
@@ -8543,57 +8578,86 @@
         // processWorkflowReply), just called out here so it's visible in
         // the UI next to the checkbox it describes.
         '<div class="wf-auto-hint" style="color:var(--wi-green-700);font-weight:700">Now asks only if the detail isn\'t already in the reply.</div>' +
-        '<div class="wf-rem-field-row"><label class="wf-rem-field">Detail<input type="text" data-r="' + i + '" data-k="askDetail" value="' + escapeHtml(r.askDetail || '') + '" placeholder="e.g. number of months" autocomplete="off"></label>' +
-        '<label class="wf-rem-field">Follow up after (days)<input type="number" min="1" data-r="' + i + '" data-k="askFollowUpDays" value="' + (r.askFollowUpDays || '') + '" placeholder="default"></label></div>' +
-        '<label class="wf-rem-field">SUBH asks<textarea data-r="' + i + '" data-k="askQuestion" class="wf-auto-body" style="min-height:70px" autocomplete="off">' + escapeHtml(r.askQuestion || '') + '</textarea></label>' +
+        '<div class="wf-rem-field-row"><label class="wf-rem-field">Detail<input type="text" ' + attr('askDetail') + ' value="' + escapeHtml(r.askDetail || '') + '" placeholder="e.g. number of months" autocomplete="off"></label>' +
+        '<label class="wf-rem-field">Follow up after (days)<input type="number" min="1" ' + attr('askFollowUpDays') + ' value="' + (r.askFollowUpDays || '') + '" placeholder="default"></label></div>' +
+        '<label class="wf-rem-field">SUBH asks<textarea ' + attr('askQuestion') + ' class="wf-auto-body" style="min-height:70px" autocomplete="off">' + escapeHtml(r.askQuestion || '') + '</textarea></label>' +
         // PHASE 3 (2026-11) - "Same options apply to a rule's own Follow
         // up after (days)" (owner's own wording) - mirrors the plan-level
         // "Smarter follow-ups" box's 3 options for THIS rule's own
         // cadence; unset (the default for every rule) falls back to the
         // plan-level setting (effectiveFollowUpSettings in workflowService.js).
         '<div class="wf-rem-field-row" style="margin-top:4px">' +
-        '<label class="wf-auto-check"><input type="checkbox" data-r="' + i + '" data-k="askFollowUpWorkingDaysOnly" ' + (r.askFollowUpWorkingDaysOnly ? 'checked' : '') + '> Working days only</label>' +
-        '<label class="wf-auto-check"><input type="checkbox" data-r="' + i + '" data-k="askFollowUpFixedTimeOn" ' + (r.askFollowUpFixedTimeOfDay ? 'checked' : '') + '> Fixed time</label>' +
+        '<label class="wf-auto-check"><input type="checkbox" ' + attr('askFollowUpWorkingDaysOnly') + ' ' + (r.askFollowUpWorkingDaysOnly ? 'checked' : '') + '> Working days only</label>' +
+        '<label class="wf-auto-check"><input type="checkbox" ' + attr('askFollowUpFixedTimeOn') + ' ' + (r.askFollowUpFixedTimeOfDay ? 'checked' : '') + '> Fixed time</label>' +
         '</div>' +
-        (r.askFollowUpFixedTimeOfDay ? '<label class="wf-rem-field">Time<input type="time" data-r="' + i + '" data-k="askFollowUpFixedTimeOfDay" value="' + escapeHtml(r.askFollowUpFixedTimeOfDay) + '"></label>' : '') +
-        '<label class="wf-auto-check"><input type="checkbox" data-r="' + i + '" data-k="askFollowUpMentionMissing" ' + (r.askFollowUpMentionMissing ? 'checked' : '') + '> Mention what\'s still missing</label>'
+        (r.askFollowUpFixedTimeOfDay ? '<label class="wf-rem-field">Time<input type="time" ' + attr('askFollowUpFixedTimeOfDay') + ' value="' + escapeHtml(r.askFollowUpFixedTimeOfDay) + '"></label>' : '') +
+        '<label class="wf-auto-check"><input type="checkbox" ' + attr('askFollowUpMentionMissing') + ' ' + (r.askFollowUpMentionMissing ? 'checked' : '') + '> Mention what\'s still missing</label>'
       ) : '') +
-      '<label class="wf-rem-field">SUBH replies<textarea data-r="' + i + '" data-k="replyText" class="wf-auto-body" style="min-height:60px" autocomplete="off">' + escapeHtml(r.replyText || '') + '</textarea></label>' +
-      '<label class="wf-auto-check"><input type="checkbox" data-r="' + i + '" data-k="sendTo_on" ' + (r.sendTo ? 'checked' : '') + '> Then send a message to someone</label>' +
+      '<label class="wf-rem-field">SUBH replies<textarea ' + attr('replyText') + ' class="wf-auto-body" style="min-height:60px" autocomplete="off">' + escapeHtml(r.replyText || '') + '</textarea></label>' +
+      '<label class="wf-auto-check"><input type="checkbox" ' + attr('sendTo_on') + ' ' + (r.sendTo ? 'checked' : '') + '> Then send a message to someone</label>' +
       (r.sendTo ? (
-        '<label class="wf-rem-field">To<select data-r="' + i + '" data-k="sendTo">' + Object.keys(WF_SEND_TO_LABELS).map((v) => '<option value="' + v + '" ' + (r.sendTo === v ? 'selected' : '') + '>' + WF_SEND_TO_LABELS[v] + '</option>').join('') + '</select></label>' +
+        '<label class="wf-rem-field">To<select ' + attr('sendTo') + '>' + Object.keys(sendToLabels).map((v) => '<option value="' + v + '" ' + (r.sendTo === v ? 'selected' : '') + '>' + sendToLabels[v] + '</option>').join('') + '</select></label>' +
         // PHASE 5 (2026-11) - "Any email" reveals a free-typed address
         // field (rule.sendToEmail) - text only, no icon, per owner's note.
-        (r.sendTo === 'anyEmail' ? '<label class="wf-rem-field">Email address<input type="email" data-r="' + i + '" data-k="sendToEmail" value="' + escapeHtml(r.sendToEmail || '') + '" placeholder="name@company.com" autocomplete="off"></label>' : '') +
-        '<label class="wf-rem-field">Subject<input type="text" data-r="' + i + '" data-k="sendSubject" value="' + escapeHtml(r.sendSubject || '') + '" autocomplete="off"></label>' +
-        '<label class="wf-rem-field">Body<textarea data-r="' + i + '" data-k="sendBody" class="wf-auto-body" style="min-height:90px" autocomplete="off">' + escapeHtml(r.sendBody || '') + '</textarea></label>' +
+        (r.sendTo === 'anyEmail' ? '<label class="wf-rem-field">Email address<input type="email" ' + attr('sendToEmail') + ' value="' + escapeHtml(r.sendToEmail || '') + '" placeholder="name@company.com" autocomplete="off"></label>' : '') +
+        '<label class="wf-rem-field">Subject<input type="text" ' + attr('sendSubject') + ' value="' + escapeHtml(r.sendSubject || '') + '" autocomplete="off"></label>' +
+        '<label class="wf-rem-field">Body<textarea ' + attr('sendBody') + ' class="wf-auto-body" style="min-height:90px" autocomplete="off">' + escapeHtml(r.sendBody || '') + '</textarea></label>' +
         '<div class="wf-auto-hint">{Reply_Detail} = what they told SUBH (only filled when "ask for a missing detail" above is used). Any name from "Details — take from the reply" above is also usable, e.g. {Amount}.</div>' +
-        '<label class="wf-rem-field">Attach a document<select data-r="' + i + '" data-k="sendDocument"><option value="">None</option>' + wfTemplateOptionsList.map((t) => '<option value="' + escapeHtml(t.key) + '" ' + (r.sendDocument === t.key ? 'selected' : '') + '>' + escapeHtml(t.label) + '</option>').join('') + '<option value="' + WF_SEND_DOCUMENT_ATTACHMENTS_FROM_REPLY + '" ' + (r.sendDocument === WF_SEND_DOCUMENT_ATTACHMENTS_FROM_REPLY ? 'selected' : '') + (isWaMediator ? ' disabled' : '') + '>Attachments from the reply (forward)</option></select></label>' +
+        '<label class="wf-rem-field">Attach a document<select ' + attr('sendDocument') + '><option value="">None</option>' + wfTemplateOptionsList.map((t) => '<option value="' + escapeHtml(t.key) + '" ' + (r.sendDocument === t.key ? 'selected' : '') + '>' + escapeHtml(t.label) + '</option>').join('') + '<option value="' + WF_SEND_DOCUMENT_ATTACHMENTS_FROM_REPLY + '" ' + (r.sendDocument === WF_SEND_DOCUMENT_ATTACHMENTS_FROM_REPLY ? 'selected' : '') + (isWaMediator ? ' disabled' : '') + '>Attachments from the reply (forward)</option></select></label>' +
         (isWaMediator ? '<div class="wf-auto-hint" data-wa-mediator-hint="attachmentsFromReply">' + WF_MEDIATOR_ATTACH_HINT + '</div>' : '') +
-        '<label class="wf-auto-check"><input type="checkbox" data-r="' + i + '" data-k="askMeFirst" ' + (r.askMeFirst ? 'checked' : '') + '> Ask me before sending this message</label>'
+        // PHASE 6 (2026-11) - "Next stage" (top-level rules only, matching
+        // the owner's own approved design reference's exact placement -
+        // right after "Attach a document", before "Ask me before sending
+        // this message"). A nested rule never shows this - the hard
+        // 2-level cap.
+        (nested ? '' : (
+          '<div class="wf-nf-box"><div class="wf-nf-title">Next stage <span class="wf-nf-badge">NEW</span></div>' +
+          '<label class="wf-auto-check"><input type="checkbox" data-r="' + i + '" data-k="nextStageOn" ' + (r.nextStageOn ? 'checked' : '') + '> Wait for their reply → rules for their reply</label>' +
+          (r.nextStageOn ? (
+            (r.sub || []).map((sr, j) => wfRenderRuleFields(sr, i, j, '↳ Their reply ' + (j + 1))).join('') +
+            '<button type="button" class="wf-ai-action-btn outline" data-addsub="' + i + '" style="margin-top:10px">+ Add rule for their reply</button>' +
+            '<div class="wf-auto-hint">Two levels max: rules for their reply can\'t open another stage.</div>'
+          ) : '') +
+          '</div>'
+        )) +
+        '<label class="wf-auto-check"><input type="checkbox" ' + attr('askMeFirst') + ' ' + (r.askMeFirst ? 'checked' : '') + '> Ask me before sending this message</label>'
       ) : '') +
-      '<label class="wf-rem-field">Then<select data-r="' + i + '" data-k="then"><option value="stop" ' + (r.then === 'stop' ? 'selected' : '') + '>Done for this record</option><option value="wait" ' + (r.then === 'wait' ? 'selected' : '') + '>Keep waiting (follow up again)</option><option value="askme" ' + (r.then === 'askme' ? 'selected' : '') + '>Ask me</option><option value="' + WF_THEN_WAIT_FOR_ATTACHMENTS + '" ' + (r.then === WF_THEN_WAIT_FOR_ATTACHMENTS ? 'selected' : '') + (isWaMediator ? ' disabled' : '') + '>Wait for attachments (e.g. documents)</option></select></label>' +
+      '<label class="wf-rem-field">Then<select ' + attr('then') + '><option value="stop" ' + (r.then === 'stop' ? 'selected' : '') + '>Done for this record</option><option value="wait" ' + (r.then === 'wait' ? 'selected' : '') + '>Keep waiting (follow up again)</option><option value="askme" ' + (r.then === 'askme' ? 'selected' : '') + '>Ask me</option><option value="' + WF_THEN_WAIT_FOR_ATTACHMENTS + '" ' + (r.then === WF_THEN_WAIT_FOR_ATTACHMENTS ? 'selected' : '') + (isWaMediator ? ' disabled' : '') + '>Wait for attachments (e.g. documents)</option></select></label>' +
       (isWaMediator ? '<div class="wf-auto-hint" data-wa-mediator-hint="waitForAttachments">' + WF_MEDIATOR_ATTACH_HINT + '</div>' : '') +
       // PHASE 5 (2026-11) - "Also do" green box - flat, independent of
-      // `then` (never nested under it - nesting/"Next stage" is
-      // explicitly Phase 6, not built here). Both off by default.
+      // `then` (never nested under it). Both off by default.
       '<div class="wf-nf-box"><div class="wf-nf-title">Also do <span class="wf-nf-badge">NEW</span></div>' +
-      '<label class="wf-auto-check"><input type="checkbox" data-r="' + i + '" data-k="alsoDoDriveOn" ' + (driveUpload.on ? 'checked' : '') + (isWaMediator ? ' disabled' : '') + '> Save attachments to a Drive folder</label>' +
+      '<label class="wf-auto-check"><input type="checkbox" ' + attr('alsoDoDriveOn') + ' ' + (driveUpload.on ? 'checked' : '') + (isWaMediator ? ' disabled' : '') + '> Save attachments to a Drive folder</label>' +
       (isWaMediator ? '<div class="wf-auto-hint" data-wa-mediator-hint="driveUpload">' + WF_MEDIATOR_ATTACH_HINT + '</div>' : '') +
-      (driveUpload.on ? '<input type="text" data-r="' + i + '" data-k="alsoDoDrivePath" value="' + escapeHtml(driveUpload.pathPattern || '') + '" placeholder="e.g. Documents/{Month}/{Employee_Name}.pdf" autocomplete="off" style="margin-top:8px"' + (isWaMediator ? ' disabled' : '') + '>' : '') +
-      '<label class="wf-auto-check"><input type="checkbox" data-r="' + i + '" data-k="alsoDoSheetOn" ' + (sheetUpdate.on ? 'checked' : '') + '> Update the sheet</label>' +
-      (sheetUpdate.on ? '<input type="text" data-r="' + i + '" data-k="alsoDoSheetText" value="' + escapeHtml(sheetUpdateText) + '" placeholder="e.g. Status = Done" autocomplete="off" style="margin-top:8px">' : '') +
+      (driveUpload.on ? '<input type="text" ' + attr('alsoDoDrivePath') + ' value="' + escapeHtml(driveUpload.pathPattern || '') + '" placeholder="e.g. Documents/{Month}/{Employee_Name}.pdf" autocomplete="off" style="margin-top:8px"' + (isWaMediator ? ' disabled' : '') + '>' : '') +
+      '<label class="wf-auto-check"><input type="checkbox" ' + attr('alsoDoSheetOn') + ' ' + (sheetUpdate.on ? 'checked' : '') + '> Update the sheet</label>' +
+      (sheetUpdate.on ? '<input type="text" ' + attr('alsoDoSheetText') + ' value="' + escapeHtml(sheetUpdateText) + '" placeholder="e.g. Status = Done" autocomplete="off" style="margin-top:8px">' : '') +
       '</div>' +
       '</div>';
   }
   function renderWfRules() {
     if (!wfRulesEl) return;
-    wfRulesEl.innerHTML = wfRules.length ? wfRules.map(wfRenderRuleFields).join('') : '<div class="wf-auto-hint" style="margin-top:8px">No rules yet — add one for each kind of reply.</div>';
+    wfRulesEl.innerHTML = wfRules.length ? wfRules.map((r, i) => wfRenderRuleFields(r, i, null, 'Rule ' + (i + 1))).join('') : '<div class="wf-auto-hint" style="margin-top:8px">No rules yet — add one for each kind of reply.</div>';
+  }
+  // PHASE 6 (2026-11) - resolves the rule object a change/input event
+  // actually targets: the TOP-level rule (`data-r` only) or one of its
+  // `.sub[]` entries (`data-r` + `data-sub` together) - the ONE place
+  // every field handler below goes through, so a nested field never
+  // accidentally writes onto the wrong rule.
+  function wfResolveRule(t) {
+    const i = t.dataset.r; if (i == null) return null;
+    const top = wfRules[+i]; if (!top) return null;
+    if (t.dataset.sub == null) return top;
+    top.sub = top.sub || [];
+    return top.sub[+t.dataset.sub] || null;
+  }
+  function wfNewRuleObject() {
+    return { when: '', detailFields: '', askDetail: null, askQuestion: null, askFollowUpDays: null, askFollowUpWorkingDaysOnly: null, askFollowUpFixedTimeOfDay: null, askFollowUpMentionMissing: null, replyText: '', sendTo: null, sendToEmail: null, sendSubject: null, sendBody: null, sendDocument: null, askMeFirst: false, then: 'stop', alsoDo: null };
   }
   if (wfRulesEl) {
     wfRulesEl.addEventListener('change', (e) => {
       const t = e.target, i = t.dataset.r; if (i == null) return;
-      const rule = wfRules[+i];
+      const rule = wfResolveRule(t); if (!rule) return;
       if (t.dataset.k === 'askDetail_on') { rule.askDetail = t.checked ? (rule.askDetail || ' ') : null; if (!t.checked) { rule.askQuestion = null; rule.askFollowUpDays = null; rule.askFollowUpWorkingDaysOnly = null; rule.askFollowUpFixedTimeOfDay = null; rule.askFollowUpMentionMissing = null; } renderWfRules(); wfSync(); return; }
       // PHASE 3 (2026-11) - rule-level "Smarter follow-ups" companions, same checkbox-derives-from-value convention as askDetail_on/sendTo_on above.
       if (t.dataset.k === 'askFollowUpWorkingDaysOnly') { rule.askFollowUpWorkingDaysOnly = t.checked; wfSync(); return; }
@@ -8607,6 +8671,9 @@
       // silently stored but unused.
       if (t.dataset.k === 'sendTo') { rule.sendTo = t.value; if (t.value !== 'anyEmail') rule.sendToEmail = null; renderWfRules(); wfSync(); if (wfPlan) renderWfUnderstanding(); return; }
       if (t.dataset.k === 'askMeFirst') { rule.askMeFirst = t.checked; wfSync(); return; }
+      // PHASE 6 (2026-11) - "Next stage" checkbox (top-level rules only -
+      // never reaches a sub-rule, which never renders this control).
+      if (t.dataset.k === 'nextStageOn') { rule.nextStageOn = t.checked; if (t.checked) rule.sub = rule.sub || []; renderWfRules(); wfSync(); return; }
       // PHASE 5 (2026-11) - "Also do" checkboxes, same checkbox-derives-
       // from-value convention as every other box here: turning one OFF
       // clears its own fields (never leaves a stale path/column saved
@@ -8628,7 +8695,7 @@
     });
     wfRulesEl.addEventListener('input', (e) => {
       const t = e.target, i = t.dataset.r; if (i == null || t.type === 'checkbox' || t.tagName === 'SELECT') return;
-      const rule = wfRules[+i];
+      const rule = wfResolveRule(t); if (!rule) return;
       if (t.dataset.k === 'askDetail') { rule.askDetail = t.value; return; }
       // PHASE 5 (2026-11) - "Details — take from the reply" is a plain
       // comma-separated string field, same free-text convention as
@@ -8653,9 +8720,27 @@
       }
       rule[t.dataset.k] = t.value;
     });
-    wfRulesEl.addEventListener('click', (e) => { const b = e.target.closest('[data-rmrule]'); if (!b) return; wfRules.splice(+b.dataset.rmrule, 1); renderWfRules(); wfSync(); });
+    wfRulesEl.addEventListener('click', (e) => {
+      const rmRule = e.target.closest('[data-rmrule]');
+      if (rmRule) { wfRules.splice(+rmRule.dataset.rmrule, 1); renderWfRules(); wfSync(); return; }
+      // PHASE 6 (2026-11) - "+ Add rule for their reply" / removing one.
+      const addSub = e.target.closest('[data-addsub]');
+      if (addSub) {
+        const rule = wfRules[+addSub.dataset.addsub]; if (!rule) return;
+        rule.sub = rule.sub || [];
+        rule.sub.push(wfNewRuleObject());
+        renderWfRules(); wfSync(); return;
+      }
+      const rmSub = e.target.closest('[data-rmsub]');
+      if (rmSub) {
+        const parts = rmSub.dataset.rmsub.split('.');
+        const rule = wfRules[+parts[0]];
+        if (rule && Array.isArray(rule.sub)) rule.sub.splice(+parts[1], 1);
+        renderWfRules(); wfSync();
+      }
+    });
   }
-  if (wfAddRuleBtn) wfAddRuleBtn.addEventListener('click', () => { wfRules.push({ when: '', detailFields: '', askDetail: null, askQuestion: null, askFollowUpDays: null, askFollowUpWorkingDaysOnly: null, askFollowUpFixedTimeOfDay: null, askFollowUpMentionMissing: null, replyText: '', sendTo: null, sendToEmail: null, sendSubject: null, sendBody: null, sendDocument: null, askMeFirst: false, then: 'stop', alsoDo: null }); renderWfRules(); wfSync(); });
+  if (wfAddRuleBtn) wfAddRuleBtn.addEventListener('click', () => { wfRules.push(Object.assign(wfNewRuleObject(), { nextStageOn: false, sub: [] })); renderWfRules(); wfSync(); });
 
   // ---------- Ask SUBH ----------
   if (wfAskExamples) wfAskExamples.addEventListener('click', (e) => { const b = e.target.closest('[data-ex]'); if (!b) return; wfAsk.value = WF_EXAMPLES[+b.dataset.ex]; wfDoAsk(); });
@@ -8977,6 +9062,11 @@
       showWfToast(msg, status === 'sent' ? 'success' : 'warning');
     }, { resetAfterSuccess: true, toastFn: WF_TOAST_ERR.toastFn });
   });
+  // PHASE 6 (2026-11) - every rule AND every sub-rule (nested "their
+  // reply" rules), flattened one level - used so the SAME validation
+  // rules Phase 5 already wrote for top-level rules also apply to
+  // sub-rules, without duplicating each check.
+  function wfAllRulesFlat() { return wfRules.concat(wfRules.flatMap((r) => r.sub || [])); }
   function wfValidate(f) {
     let ok = true;
     if (wfSubjErr) wfSubjErr.classList.toggle('hidden', Boolean(f.subject));
@@ -8993,13 +9083,18 @@
     if (f.table && !wfTableCols.length) { showWfToast('Pick at least one table column.', 'warning'); ok = false; }
     if (wfPlan && wfPlan.source === 'sheet' && !wfPlan.sheetColumns) { showWfToast('Load the Google Sheet first.', 'warning'); ok = false; }
     if (!wfRules.length) { showWfToast('Add at least one reply rule.', 'warning'); ok = false; }
-    if (wfRules.some((r) => !r.when || !r.replyText)) { showWfToast('Every rule needs "what it means" and "SUBH replies" filled in.', 'warning'); ok = false; }
+    // PHASE 6 (2026-11) - wfAllRulesFlat() (top-level rules + every
+    // "Next stage" sub-rule) replaces the bare wfRules.some(...) for
+    // every one of these - the same "Every rule needs..." validation now
+    // applies identically to a nested rule.
+    if (wfAllRulesFlat().some((r) => !r.when || !r.replyText)) { showWfToast('Every rule needs "what it means" and "SUBH replies" filled in.', 'warning'); ok = false; }
+    if (wfRules.some((r) => r.nextStageOn && !(r.sub || []).length)) { showWfToast('"Wait for their reply" needs at least one rule for their reply.', 'warning'); ok = false; }
     // PHASE 5 (2026-11) - new per-rule fields that need SOMETHING typed
     // once their own checkbox/dropdown is on, same "Every rule needs..."
     // validation convention as the line above.
-    if (wfRules.some((r) => r.sendTo === 'anyEmail' && !(r.sendToEmail || '').trim())) { showWfToast('Add the email address for "Any email" on every rule that uses it.', 'warning'); ok = false; }
-    if (wfRules.some((r) => r.alsoDo && r.alsoDo.driveUpload && r.alsoDo.driveUpload.on && !(r.alsoDo.driveUpload.pathPattern || '').trim())) { showWfToast('Add the Drive folder path pattern for "Save attachments to a Drive folder" on every rule that uses it.', 'warning'); ok = false; }
-    if (wfRules.some((r) => r.alsoDo && r.alsoDo.sheetUpdate && r.alsoDo.sheetUpdate.on && !(r.alsoDo.sheetUpdate.column || '').trim())) { showWfToast('"Update the sheet" needs a column (e.g. "Status = Done") on every rule that uses it.', 'warning'); ok = false; }
+    if (wfAllRulesFlat().some((r) => r.sendTo === 'anyEmail' && !(r.sendToEmail || '').trim())) { showWfToast('Add the email address for "Any email" on every rule that uses it.', 'warning'); ok = false; }
+    if (wfAllRulesFlat().some((r) => r.alsoDo && r.alsoDo.driveUpload && r.alsoDo.driveUpload.on && !(r.alsoDo.driveUpload.pathPattern || '').trim())) { showWfToast('Add the Drive folder path pattern for "Save attachments to a Drive folder" on every rule that uses it.', 'warning'); ok = false; }
+    if (wfAllRulesFlat().some((r) => r.alsoDo && r.alsoDo.sheetUpdate && r.alsoDo.sheetUpdate.on && !(r.alsoDo.sheetUpdate.column || '').trim())) { showWfToast('"Update the sheet" needs a column (e.g. "Status = Done") on every rule that uses it.', 'warning'); ok = false; }
     if (wfCcField.getChips().some((e) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e))) { showWfToast('One of the CC addresses doesn\'t look like a valid email.', 'warning'); ok = false; }
     if (wfAlsoOn && wfAlsoOn.checked) {
       if (!wfAlsoToField.getChips().length) { showWfToast('Add at least one "Also send" recipient.', 'warning'); ok = false; }
@@ -9038,6 +9133,12 @@
   // as 'waiting'/'followed' below, no special button needed).
   const WF_STATE_LABELS = { sent: ['Sent', 's-pending'], waiting: ['Waiting', 's-pending'], followed: ['Followed up', 's-pending'], asked: ['Detail asked', 's-paused'], waitingAttachments: ['Waiting for attachment', 's-paused'], needs: ['Needs you', 's-red'], done: ['Done ✓', 's-active'], noreply: ['No reply — needs you', 's-red'], stopped: ['Stopped', 's-paused'], skipped: ['Skipped', 's-paused'] };
   function wfRecordName(rec) { return (rec.row && (rec.row['Employee_Name'] || rec.row['Name'])) || rec.key || '—'; }
+  // PHASE 6 (2026-11) - client-side mirror of workflowService.isRecordFullyDone/
+  // isStageTerminal - a record only reads as fully done once its own
+  // top-level status AND (if any) its stage's status are BOTH terminal.
+  const WF_TERMINAL_STATUSES = ['done', 'stopped', 'skipped'];
+  function wfIsStageTerminal(stage) { return !stage || WF_TERMINAL_STATUSES.includes(stage.status); }
+  function wfIsRecordFullyDone(rec) { return WF_TERMINAL_STATUSES.includes(rec.status) && wfIsStageTerminal(rec.stage); }
   async function openWorkflowDetail(id) {
     setPanelView('workflowDetail');
     try {
@@ -9072,10 +9173,15 @@
     }
     const rows = (wfDetailRun && wfDetailRun.records) || [];
     const c = (k) => rows.filter((x) => x.status === k).length;
+    // PHASE 6 (2026-11) - a stuck STAGE is counted separately from a
+    // stuck PARENT - the two can coexist on the same record.
+    const stageNeedsCount = rows.filter((x) => x.stage && (x.stage.status === 'needs' || x.stage.status === 'noreply')).length;
+    const fullyDoneCount = rows.filter(wfIsRecordFullyDone).length;
     if (wfDetailCounts) {
       wfDetailCounts.innerHTML = [
-        ['Waiting', c('waiting') + c('sent')], ['Followed up', c('followed')], ['Detail asked', c('asked')], ['Waiting for attachment', c('waitingAttachments')], ['Done', c('done')],
-        ['Needs you', c('needs') + c('noreply'), true]
+        ['Waiting', c('waiting') + c('sent')], ['Followed up', c('followed')], ['Detail asked', c('asked')], ['Waiting for attachment', c('waitingAttachments')], ['Done', fullyDoneCount],
+        ['Needs you', c('needs') + c('noreply'), true],
+        ['Their reply needs you', stageNeedsCount, true]
       ].map(([l, n, red]) => '<span class="cp' + (red && n ? ' red' : '') + '">' + l + ' <b>' + n + '</b></span>').join('');
     }
     if (wfDetailAlsoLog) wfDetailAlsoLog.textContent = (wfDetailRun && wfDetailRun.alsoLog) ? wfDetailRun.alsoLog : '';
@@ -9101,9 +9207,29 @@
       else if (rec.status === 'noreply') act = '<button type="button" class="wf-send-mail-btn" data-da2="remind" data-i="' + i + '">Send another reminder</button><button type="button" class="wf-send-mail-btn" data-da2="stop" data-i="' + i + '">Stop</button>';
       else if (!['done', 'stopped', 'skipped'].includes(rec.status)) act = '<button type="button" class="wf-send-mail-btn" data-da2="stop" data-i="' + i + '">Stop</button>';
       const hist = (rec.history || []).map((h) => '<div><b>' + escapeHtml(h.who) + ':</b> ' + escapeHtml((h.text || '').slice(0, 220)) + '</div>').join('');
+      // PHASE 6 (2026-11) - "Next stage" ("their reply") - its OWN status
+      // chip and action buttons, rendered alongside (never instead of)
+      // the parent's own - a record can have a stuck parent AND a stuck
+      // stage at the SAME time, each needing its own action.
+      let stageBlock = '';
+      if (rec.stage) {
+        const [slab, scls] = WF_STATE_LABELS[rec.stage.status] || ['—', 's-pending'];
+        let sact = '';
+        if (rec.stage.status === 'needs' && rec.stage.pendingApproval) sact = '<button type="button" class="wf-send-mail-btn" data-da3="sendok" data-i="' + i + '">Approve &amp; send</button><button type="button" class="wf-send-mail-btn" data-da3="decline" data-i="' + i + '">Decline</button>';
+        else if (rec.stage.status === 'needs') {
+          const parentRule = rules[rec.stage.ruleIndex];
+          const subRules = (parentRule && parentRule.sub) || [];
+          sact = subRules.map((sr, k) => '<button type="button" class="wf-send-mail-btn" data-da3="pickrule" data-i="' + i + '" data-k="' + k + '">' + escapeHtml(sr.when || ('Rule ' + (k + 1))) + '</button>').join('') +
+            '<button type="button" class="wf-send-mail-btn" data-da3="markdone" data-i="' + i + '">Mark done</button><button type="button" class="wf-send-mail-btn" data-da3="stop" data-i="' + i + '">Stop</button>';
+        } else if (rec.stage.status === 'noreply') sact = '<button type="button" class="wf-send-mail-btn" data-da3="remind" data-i="' + i + '">Send another reminder</button><button type="button" class="wf-send-mail-btn" data-da3="stop" data-i="' + i + '">Stop</button>';
+        else if (!wfIsStageTerminal(rec.stage)) sact = '<button type="button" class="wf-send-mail-btn" data-da3="stop" data-i="' + i + '">Stop</button>';
+        stageBlock = '<div class="wf-auto-task-head" style="margin-top:8px;border-top:1px dashed var(--wi-border,#ddd);padding-top:8px">' +
+          '<div style="flex:1;min-width:0"><div class="wf-auto-task-subject">↳ Their reply</div></div><span class="status ' + scls + '">' + slab + '</span></div>' +
+          '<div class="wf-auto-actions">' + sact + '</div>';
+      }
       return '<div class="wf-auto-task-card"><div class="wf-auto-task-head"><div style="flex:1;min-width:0"><div class="wf-auto-task-subject">' + escapeHtml(wfRecordName(rec)) + '</div>' +
         '<div class="wf-auto-hint">first mail to ' + escapeHtml((rec.contact && rec.contact.name) || '—') + (rec.followUpCount ? ' · follow-ups ' + rec.followUpCount : '') + '</div></div><span class="status ' + cls + '">' + lab + '</span></div>' +
-        lastReplySnippet + '<div class="hist">' + hist + '</div><div class="wf-auto-actions">' + act + '</div></div>';
+        lastReplySnippet + '<div class="hist">' + hist + '</div><div class="wf-auto-actions">' + act + '</div>' + stageBlock + '</div>';
     }).join('');
   }
   if (wfDetailActions) wfDetailActions.addEventListener('click', async (e) => {
@@ -9127,6 +9253,21 @@
     if (action === 'stop') { await runButtonAction(b, () => postJsonOrThrow(base + '/stop', {}), () => { showWfToast('Stopped.'); wfLoadDetail(); }, WF_TOAST_ERR); return; }
     if (action === 'remind') { await runButtonAction(b, () => postJsonOrThrow(base + '/remind', {}), () => { showWfToast('Reminder sent.'); wfLoadDetail(); }, WF_TOAST_ERR); return; }
     if (action === 'pickrule') { await runButtonAction(b, () => postJsonOrThrow(base + '/resolve-unclear', { ruleIndex: +b.dataset.k }), () => { showWfToast('Resolved ✓'); wfLoadDetail(); }, WF_TOAST_ERR); return; }
+  });
+  // PHASE 6 (2026-11) - the SAME 6 actions, for a record's own STAGE
+  // ("their reply") - separate `data-da3` buttons calling the separate
+  // `/stage-*` routes, never the parent-level `/*` routes above.
+  if (wfDetailRows) wfDetailRows.addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-da3]'); if (!b || !wfDetailRun) return;
+    const rec = wfDetailRun.records[+b.dataset.i]; if (!rec) return;
+    const action = b.dataset.da3;
+    const base = '/api/workforce/hr-assistant/workflows/' + encodeURIComponent(wfDetailWorkflow.id) + '/runs/' + encodeURIComponent(wfDetailRun.id) + '/records/' + encodeURIComponent(rec.key);
+    if (action === 'sendok') { await runButtonAction(b, () => postJsonOrThrow(base + '/stage-approve-send', {}), () => { showWfToast('Sent ✓'); wfLoadDetail(); }, WF_TOAST_ERR); return; }
+    if (action === 'decline') { await runButtonAction(b, () => postJsonOrThrow(base + '/stage-decline', {}), () => { showWfToast('Declined - nothing was sent.'); wfLoadDetail(); }, WF_TOAST_ERR); return; }
+    if (action === 'markdone') { await runButtonAction(b, () => postJsonOrThrow(base + '/stage-mark-done', {}), () => { showWfToast('Marked done.'); wfLoadDetail(); }, WF_TOAST_ERR); return; }
+    if (action === 'stop') { await runButtonAction(b, () => postJsonOrThrow(base + '/stage-stop', {}), () => { showWfToast('Stopped.'); wfLoadDetail(); }, WF_TOAST_ERR); return; }
+    if (action === 'remind') { await runButtonAction(b, () => postJsonOrThrow(base + '/stage-remind', {}), () => { showWfToast('Reminder sent.'); wfLoadDetail(); }, WF_TOAST_ERR); return; }
+    if (action === 'pickrule') { await runButtonAction(b, () => postJsonOrThrow(base + '/stage-resolve-unclear', { ruleIndex: +b.dataset.k }), () => { showWfToast('Resolved ✓'); wfLoadDetail(); }, WF_TOAST_ERR); return; }
   });
 
   // ---------- Pull-to-refresh (Task 2, 2026-11) ----------

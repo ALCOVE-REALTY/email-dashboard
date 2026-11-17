@@ -2569,6 +2569,9 @@ router.post('/hr-assistant/workflows', async (req, res) => {
     if (!subject || !String(subject).trim()) return res.status(400).json({ error: 'Workflow Subject is required.' });
     if (!plan || !schedule || !schedule.date || !schedule.time) return res.status(400).json({ error: 'A confirmed plan and schedule are required.' });
     if (!plan.rules || !plan.rules.length) return res.status(400).json({ error: 'Add at least one reply rule.' });
+    // PHASE 6 (2026-11) - hard 2-level cap for "Next stage", enforced
+    // server-side regardless of what the UI sent.
+    plan.rules = workflowService.sanitizeWorkflowRules(plan.rules);
     const record = workflowService.newWorkflow({ subject: String(subject).trim(), originalAsk, plan, excludedKeys: excludedKeys || [], schedule, now, createdBy: req.hrUser.email });
     // PHASE 3 (2026-11) - workflowService.ensureWorkflowNotTooSoon mirrors
     // automationService.ensureNotTooSoon byte-for-byte whenever
@@ -2594,7 +2597,12 @@ router.post('/hr-assistant/workflows/:id', async (req, res) => {
     const { subject, originalAsk, plan, excludedKeys, schedule } = req.body || {};
     if (subject !== undefined) existing.subject = subject;
     if (originalAsk !== undefined) existing.originalAsk = originalAsk;
-    if (plan !== undefined) existing.plan = plan;
+    if (plan !== undefined) {
+      // PHASE 6 (2026-11) - hard 2-level cap for "Next stage", enforced
+      // server-side regardless of what the UI sent.
+      if (plan.rules) plan.rules = workflowService.sanitizeWorkflowRules(plan.rules);
+      existing.plan = plan;
+    }
     if (excludedKeys !== undefined) existing.excludedKeys = excludedKeys;
     let scheduleAdjustedTo = null;
     if (schedule !== undefined) {
@@ -2791,6 +2799,61 @@ router.post('/hr-assistant/workflows/:id/runs/:runId/records/:key/resolve-unclea
     const { ruleIndex } = req.body || {};
     if (typeof ruleIndex !== 'number') return res.status(400).json({ error: 'ruleIndex is required.' });
     const result = await workflowService.resolveUnclearWorkflowRecord(req.params.id, req.params.runId, req.params.key, ruleIndex);
+    if (!result.ok) return res.status(400).json(result);
+    res.json(result);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// PHASE 6 (2026-11) - the SAME 6 actions above, for a record's own STAGE
+// (rec.stage, "Next stage" / "their reply") instead of the parent - never
+// the same endpoint, since a record can have BOTH a stuck parent AND a
+// stuck stage needing a DIFFERENT action at the same time.
+router.post('/hr-assistant/workflows/:id/runs/:runId/records/:key/stage-stop', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const result = await workflowService.stopWorkflowStage(req.params.id, req.params.runId, req.params.key);
+    if (!result.ok) return res.status(400).json(result);
+    res.json(result);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+router.post('/hr-assistant/workflows/:id/runs/:runId/records/:key/stage-mark-done', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const result = await workflowService.markWorkflowStageDone(req.params.id, req.params.runId, req.params.key);
+    if (!result.ok) return res.status(400).json(result);
+    res.json(result);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+router.post('/hr-assistant/workflows/:id/runs/:runId/records/:key/stage-remind', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const result = await workflowService.remindWorkflowStageNow(req.params.id, req.params.runId, req.params.key);
+    if (!result.ok) return res.status(400).json(result);
+    res.json(result);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+router.post('/hr-assistant/workflows/:id/runs/:runId/records/:key/stage-approve-send', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const result = await workflowService.approveSendWorkflowStage(req.params.id, req.params.runId, req.params.key);
+    if (!result.ok) return res.status(400).json(result);
+    res.json(result);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+router.post('/hr-assistant/workflows/:id/runs/:runId/records/:key/stage-decline', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const result = await workflowService.declineWorkflowStageApproval(req.params.id, req.params.runId, req.params.key);
+    if (!result.ok) return res.status(400).json(result);
+    res.json(result);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+router.post('/hr-assistant/workflows/:id/runs/:runId/records/:key/stage-resolve-unclear', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const { ruleIndex } = req.body || {};
+    if (typeof ruleIndex !== 'number') return res.status(400).json({ error: 'ruleIndex is required.' });
+    const result = await workflowService.resolveUnclearWorkflowStage(req.params.id, req.params.runId, req.params.key, ruleIndex);
     if (!result.ok) return res.status(400).json(result);
     res.json(result);
   } catch (err) { res.status(500).json({ error: err.message }); }

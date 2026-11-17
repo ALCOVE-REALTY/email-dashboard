@@ -39,15 +39,29 @@
   // uses one of the 3 attachment-only options. Otherwise one entry per
   // (rule, option) match: { rule: <index>, option: <label> }. mediator must
   // be the EXACT plan.mediator value ('mail'/'wa' - see automationService.js's
-  // own mediator enum, never the literal 'whatsapp').
+  // own mediator enum, never the literal 'whatsapp'). PHASE 6 (2026-11) -
+  // also recurses into each top-level rule's own `sub` (nested "Next
+  // stage" rules) - same 3 options, same guard, "applies identically to
+  // sub-rules" per the owner's own instruction. A sub-rule's own issue
+  // names its rule as "<topIndex>.sub.<subIndex>" (a STRING, never
+  // confused with a top-level rule's own plain number index) - existing
+  // callers only ever read `.option`, so this is purely additive and
+  // never changes a top-level-only result (confirmed by this file's own
+  // locked test suite, scripts/check-workflow-v2-wa-mediator-guard.js,
+  // which has no sub-rules in any of its fixtures).
+  function scanOne(issues, r, label) {
+    if (!r) return;
+    if (r.sendDocument === ATTACHMENTS_FROM_REPLY) issues.push({ rule: label, option: OPTION_LABELS.sendDocument });
+    if (r.then === WAIT_FOR_ATTACHMENTS) issues.push({ rule: label, option: OPTION_LABELS.then });
+    if (r.alsoDo && r.alsoDo.driveUpload && r.alsoDo.driveUpload.on) issues.push({ rule: label, option: OPTION_LABELS.driveUpload });
+  }
   function mediatorAttachmentIssues(mediator, rules) {
     if (mediator !== 'wa') return [];
     var issues = [];
     (rules || []).forEach(function (r, i) {
       if (!r) return;
-      if (r.sendDocument === ATTACHMENTS_FROM_REPLY) issues.push({ rule: i, option: OPTION_LABELS.sendDocument });
-      if (r.then === WAIT_FOR_ATTACHMENTS) issues.push({ rule: i, option: OPTION_LABELS.then });
-      if (r.alsoDo && r.alsoDo.driveUpload && r.alsoDo.driveUpload.on) issues.push({ rule: i, option: OPTION_LABELS.driveUpload });
+      scanOne(issues, r, i);
+      (r.sub || []).forEach(function (sr, j) { scanOne(issues, sr, i + '.sub.' + j); });
     });
     return issues;
   }

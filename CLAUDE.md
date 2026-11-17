@@ -3061,3 +3061,103 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
   `ANTHROPIC_API_KEY_TEST` only (confirmed set, never the live key used).
   Preflight for a full, unfiltered future run of this script is now 20
   calls (11 original + 9 new).
+- Phase 6 of 7 (2026-11), "Next stage" - a top-level-only green box
+  ("Wait for their reply → rules for their reply") that opens a SECOND,
+  independent small state machine on a record (`rec.stage`), never
+  replacing or overwriting `rec.status`/`rec.ruleIndex`/etc., which keep
+  their exact pre-existing meaning. `rec.stage = {ruleIndex, subIndex,
+  status, followUpCount, sinceAt, pendingApproval, threadId, messageId}`
+  spawns in `finishWorkflowRule` the moment a top-level rule with
+  `nextStageOn` + at least one `sub[]` rule resolves (via `then`,
+  unconditionally alongside it) - `target === rec` guards this so a
+  sub-rule's own (hand-edited/stripped) `nextStageOn`/`sub` can never
+  spawn a 3rd level. `sanitizeWorkflowRules` (called from both the create
+  and update workflow routes) strips a sub-rule's own `nextStageOn`/`sub`
+  server-side too - defense in depth alongside the client's own strip in
+  `wfBuildPlanFromForm`.
+  - **Dispatch**: `processWorkflowReply` checks for an open stage FIRST,
+    via `dispatchTargetIsStage(rec, replyOrigin)` - resolved by WHICH
+    REAL THREAD a reply came in on whenever the caller knows (the new
+    `replyOrigin` param, `'parent'`/`'stage'`, passed by
+    `checkWorkflowMailReplies` when it scans the stage's own distinct
+    Gmail thread - see below), falling back to a content-based heuristic
+    (does the parent's own `waitingAttachments` reply actually carry an
+    attachment right now?) only when the stage shares the SAME thread as
+    its parent, or for WhatsApp (no thread concept at all). This is what
+    makes "the parent's own waitForAttachments can still resolve
+    normally while the attachments arrive early" work correctly even
+    when the stage ALSO has its own `then: 'waitForAttachments'` on a
+    separate thread.
+  - **A stage's own Gmail thread**: when a `nextStageOn` rule's `sendTo`
+    sends a FRESH message to someone other than the sender (e.g. "Each
+    Company's Accounts Team"), that message's own `threadId`/`messageId`
+    is captured onto `rec.stage` (`finishWorkflowRule`'s
+    `sentToThreadHint`, also wired into `approveSendWorkflowRecord` for
+    the askMeFirst+nextStageOn combo) - `checkWorkflowMailReplies` then
+    polls BOTH `rec.threadId` and (when distinct) `rec.stage.threadId`
+    per record, each with its own `processedMessageIds` list
+    (`rec.stage.processedMessageIds`). A stage with no `sendTo` at all
+    simply shares `rec.threadId` - never double-scanned.
+  - **Nested rules** reuse the FULL rule-editor surface (Phase 4/5's
+    `detailFields`/`sendTo`/`sendDocument`/`then`/`alsoDo`, same WA
+    mediator guard - `public/wfMediatorGuard.js`'s
+    `mediatorAttachmentIssues` now also recurses into `rule.sub[]`,
+    labelling an issue there `"<rule>.sub.<sub>"`, a STRING, never
+    confused with a top-level rule's own plain-number label) plus one
+    nested-only "To" value, `replyInOriginalThread` ("Reply in the
+    original mail thread" - back to the FIRST recipient, via
+    `gmailService.sendReply({messageId: rec.messageId, ...})`, same
+    mechanism the sender's own top-level auto-reply already uses) -
+    never `nextStageOn`/`sub` themselves (the hard 2-level cap).
+    `public/hrAssistant.js`'s `wfRenderRuleFields(r, i, subIndex, label)`
+    is the SAME function called a second time for `.sub[]`, addressed via
+    a `data-sub` attribute alongside the existing `data-r`
+    (`wfResolveRule` resolves either). UI placement matches the owner's
+    own approved design reference exactly: the "Next stage" box sits
+    inside "Then send a message to someone" (after "Attach a document",
+    before "Ask me before sending this message") - only for a top-level
+    rule.
+  - **Completion**: `isRecordFullyDone(rec)` (a record's own top-level
+    status AND, if any, its stage's status must BOTH be terminal -
+    `done`/`stopped`/`skipped`) replaces a bare `rec.status` check
+    wherever a record's "is this finished" question is asked -
+    `public/hrAssistant.js`'s progress board (client-side mirror,
+    `wfIsRecordFullyDone`) and its own "Done" count tile. A stage never
+    reads `rec.status` as "done" by itself.
+  - **Follow-up pause/resume**: `advanceFollowUps` splits into
+    `tickParentFollowUp`/`tickStageFollowUp`, run independently per
+    record each tick - while a stage is open, `tickParentFollowUp` is
+    SKIPPED ENTIRELY (no send, no count, no escalation for the parent);
+    `tickStageFollowUp` always runs on its own clock
+    (`effectiveStageFollowUpSettings`'s 3-level fallback: sub-rule's own
+    `askFollowUp*` -> parent rule's own -> plan-level, one level deeper
+    than the existing 2-level `effectiveFollowUpSettings`). The MOMENT a
+    stage closes (inside the stage-dispatch branch, right after
+    `finishWorkflowRule`/the extraction/classify path resolves it), if
+    the parent's own status is still non-terminal, `rec.sinceAt` resets
+    to NOW - a fresh clock, never a retroactive catch-up.
+  - **Cards**: `listWorkflowActionNeededItems` adds a 4th, independent
+    check per record (`rec.stage.status === 'needs'/'noreply'` ->
+    `workflow_stage_askme`/`workflow_stage_unclear`/`workflow_stage_noreply`)
+    - never folded into the existing 3 (which only ever read
+    `rec.status`) - both a parent-level and a stage-level card can exist
+    simultaneously for the SAME record. The progress board
+    (`public/hrAssistant.js`) renders a "↳ Their reply" sub-block with
+    its OWN status chip and action buttons (`data-da3`, 6 new
+    `/stage-*` routes in `workforceRoutes.js` backed by 6 new
+    `*WorkflowStage` functions in `workflowService.js`, mirroring the
+    parent-level 6 exactly).
+  - **Impact-check finding, fixed before locking**: `buildWorkflowMessages`'s
+    `needsSheetRowNumbers` gate (decides whether `rec.sheetRowNumbers` is
+    even populated, which a rule's own "Also do: Update the sheet"
+    depends on) only ever scanned top-level `plan.rules` for
+    `alsoDo.sheetUpdate.on` - a sub-rule's own identical setting was
+    silently never detected, so a stage's "Update the sheet" would always
+    throw "no known sheet row". Fixed (`ruleUsesSheetUpdate` now also
+    scans `rule.sub[]`) and covered by this phase's own test
+    (`check-workflow-v2-phase6.js`'s "Sub-rule capabilities" section).
+  - Deterministic suite `check-workflow-v2-phase6.js` (26 checks) +
+    headless UI `check-workflow-v2-phase6-ui.js` (19 checks), both wired
+    into `scripts/run-pre-push-checks.js`. Every Phase 1-5 lock/regression
+    suite reconfirmed passing UNMODIFIED. API spend: $0 (no real-model
+    scenario touched or re-run this phase).

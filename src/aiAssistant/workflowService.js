@@ -292,6 +292,27 @@ function effectiveFollowUpSettings(rec, rule, workflow) {
     mentionMissing: Boolean(useRuleLevel && rule.askFollowUpMentionMissing != null ? rule.askFollowUpMentionMissing : planFu.mentionMissing)
   };
 }
+// PHASE 6 (2026-11) - the SAME 3-level fallback for a STAGE's own
+// follow-up: the sub-rule's own askFollowUp* companions (only while the
+// stage is actually `asked`, same `useLevel` gating as effectiveFollowUpSettings's
+// own rule-level check) -> the PARENT rule's own (always eligible,
+// whether or not the stage happens to be `asked` right now) -> plan-level
+// `followUp`. One level deeper than effectiveFollowUpSettings, never
+// re-implemented from scratch - same 3 fields, same shape.
+function effectiveStageFollowUpSettings(rec, parentRule, subRule, workflow) {
+  const planFu = (workflow && workflow.plan && workflow.plan.followUp) || {};
+  const useSubLevel = Boolean(rec && rec.stage && rec.stage.status === 'asked' && subRule);
+  function pick(subVal, parentVal, planVal) {
+    if (useSubLevel && subVal != null) return subVal;
+    if (parentRule && parentVal != null) return parentVal;
+    return planVal;
+  }
+  return {
+    workingDaysOnly: Boolean(pick(subRule && subRule.askFollowUpWorkingDaysOnly, parentRule && parentRule.askFollowUpWorkingDaysOnly, planFu.workingDaysOnly)),
+    fixedTimeOfDay: pick(subRule && subRule.askFollowUpFixedTimeOfDay, parentRule && parentRule.askFollowUpFixedTimeOfDay, planFu.fixedTimeOfDay) || null,
+    mentionMissing: Boolean(pick(subRule && subRule.askFollowUpMentionMissing, parentRule && parentRule.askFollowUpMentionMissing, planFu.mentionMissing))
+  };
+}
 // true once a due follow-up is actually allowed to fire RIGHT NOW, given
 // its effective settings - working-days-only defers past a Sunday/
 // holiday (the follow-up still happens, just on the next tick that finds
@@ -940,9 +961,19 @@ async function buildWorkflowMessages(workflow, runAt, isRealSend) {
   // reads rec.sheetRowNumbers, set from this map below), independently of
   // whether the top-level afterSend option is ever used on the same plan.
   let sheetRowNumberByKey = null;
+  // PHASE 6 (2026-11) - a "Next stage" sub-rule's own "Also do: Update
+  // the sheet" needs this SAME per-record row number too (it reads the
+  // identical rec.sheetRowNumbers writeRuleSheetUpdateCell already uses
+  // for a top-level rule) - checked via ruleUsesSheetUpdate's own
+  // one-level-deep `sub` scan, never duplicated as a second flat check.
+  function ruleUsesSheetUpdate(r) {
+    if (!r) return false;
+    if (r.alsoDo && r.alsoDo.sheetUpdate && r.alsoDo.sheetUpdate.on && r.alsoDo.sheetUpdate.column) return true;
+    return (r.sub || []).some((sr) => sr && sr.alsoDo && sr.alsoDo.sheetUpdate && sr.alsoDo.sheetUpdate.on && sr.alsoDo.sheetUpdate.column);
+  }
   const needsSheetRowNumbers = plan.source === 'sheet' && (
     (sheetOptions && sheetOptions.afterSend && sheetOptions.afterSend.column) ||
-    (plan.rules || []).some((r) => r && r.alsoDo && r.alsoDo.sheetUpdate && r.alsoDo.sheetUpdate.on && r.alsoDo.sheetUpdate.column)
+    (plan.rules || []).some(ruleUsesSheetUpdate)
   );
   if (needsSheetRowNumbers) {
     sheetRowNumberByKey = await loadSheetRowNumberMap(plan).catch(() => null); // best-effort - a failure here just skips the write-back for this run, never blocks sending
@@ -1135,6 +1166,48 @@ const RULE_SEND_DOCUMENT_ATTACHMENTS_FROM_REPLY = 'attachmentsFromReply';
 // waits specifically for a LATER reply that carries a real attachment;
 // see the 'waitingAttachments' record status below.
 const RULE_THEN_WAIT_FOR_ATTACHMENTS = 'waitForAttachments';
+// PHASE 6 (2026-11) - "Next stage": a NESTED rule's own "To" gains one
+// extra option a top-level rule never has - reply back into the SAME
+// Gmail thread the record's own first message belongs to (rec.messageId),
+// e.g. "UTR shared" -> acknowledge the insurer in their own thread. Kept
+// separate from SEND_TO_TARGETS/RULE_SEND_TO_EXTRA_TARGETS for the exact
+// same reason those two are already kept apart (never widens the NLU
+// tool's own enum - drafting this from plain text is not this phase's
+// job either).
+const RULE_SEND_TO_REPLY_IN_THREAD = 'replyInOriginalThread';
+// A record/stage's own state machine never reads as "finished" while any
+// of these statuses is active - shared by rec.status AND rec.stage.status
+// (same vocabulary, see this phase's own report). Used by
+// isRecordFullyDone/isRecordOpenForReplies below - the ONE place either
+// idea is defined, never re-derived ad hoc at a call site.
+const TERMINAL_STATUSES = new Set(['done', 'stopped', 'skipped']);
+function isStageTerminal(stage) { return Boolean(!stage || TERMINAL_STATUSES.has(stage.status)); }
+// PHASE 6 (2026-11) - "Completion is a conjunction, computed not read" -
+// a record only reads as fully done once its own top-level status AND
+// (if any) its stage's status are BOTH terminal. Used everywhere a
+// record's status is surfaced for an "is this finished" purpose (the
+// Progress board's own action buttons, listWorkflowActionNeededItems) -
+// see this phase's report for the exact call sites.
+function isRecordFullyDone(rec) {
+  if (!rec) return false;
+  if (!TERMINAL_STATUSES.has(rec.status)) return false;
+  return isStageTerminal(rec.stage);
+}
+// A record stays "open" for an incoming reply to be routed through
+// processWorkflowReply at all whenever EITHER its own top-level status is
+// one of the usual open ones OR it has an open stage - a stage can still
+// be waiting on a reply long after the PARENT conversation itself has
+// already resolved (`then: 'stop'` + `nextStageOn`), so gating purely on
+// rec.status (the pre-Phase-6 check everywhere this is used) would stop
+// scanning/routing for that record's stage entirely. Never widens who a
+// WhatsApp reply is routed to and never changes mail-thread SELECTION -
+// only whether a record is considered "still worth checking" at all.
+const REPLY_OPEN_STATUSES = new Set(['waiting', 'followed', 'asked', 'waitingAttachments']);
+function isRecordOpenForReplies(rec) {
+  if (!rec) return false;
+  if (REPLY_OPEN_STATUSES.has(rec.status)) return true;
+  return Boolean(rec.stage && !isStageTerminal(rec.stage));
+}
 // `rule.detailFields` is a single comma-separated STRING of field names
 // (e.g. "amount, reference no., date") - matching the owner's own approved
 // design reference (docs/design/workflow-v2-sample.html's `take` field)
@@ -1148,6 +1221,25 @@ const RULE_THEN_WAIT_FOR_ATTACHMENTS = 'waitForAttachments';
 // blank field name.
 function parseDetailFieldNames(raw) {
   return String(raw || '').split(',').map((s) => s.trim()).filter(Boolean);
+}
+// PHASE 6 (2026-11) - the hard 2-level cap for "Next stage", enforced in
+// CODE, never left to the UI alone: a sub-rule's own `nextStageOn`/`sub`
+// (hand-edited JSON, a future UI bug, ...) is always stripped here before
+// a workflow is ever saved - the ONE place both the create and update
+// workflow routes funnel plan.rules through. A rule with no `sub` at all
+// (every rule saved before this phase) is returned byte-identical.
+function sanitizeWorkflowRules(rules) {
+  return (rules || []).map((r) => {
+    if (!r || !Array.isArray(r.sub)) return r;
+    const sub = r.sub.map((sr) => {
+      if (!sr) return sr;
+      const clean = Object.assign({}, sr);
+      delete clean.nextStageOn;
+      delete clean.sub;
+      return clean;
+    });
+    return Object.assign({}, r, { sub });
+  });
 }
 
 // Closing the "Ask SUBH can't pick a Drive template by name" gap
@@ -1668,6 +1760,24 @@ async function listWorkflowActionNeededItems() {
         const ts = new Date(rec.sinceAt || Date.now()).getTime() || Date.now();
         items.push({ kind: 'workflow_noreply', category: 'automations', chatId: rec.waPhone || null, name: 'No reply — ' + w.subject + ' (' + ((rec.row && rec.row['Employee_Name']) || rec.key) + ')', ts, ageMs: Math.max(0, Date.now() - ts), data: { id: w.id, runId: run.id, key: rec.key } });
       }
+      // PHASE 6 (2026-11) - a stuck STAGE gets its OWN card, distinct from
+      // (and allowed to coexist alongside) a parent-level card on the
+      // SAME record - never folded into the 3 checks above, which only
+      // ever read rec.status/rec.pendingApproval.
+      if (rec.stage && (rec.stage.status === 'needs' || rec.stage.status === 'noreply')) {
+        const who = (rec.row && rec.row['Employee_Name']) || rec.key;
+        if (rec.stage.status === 'needs' && rec.stage.pendingApproval) {
+          const ts = new Date(rec.stage.sinceAt || Date.now()).getTime() || Date.now();
+          items.push({ kind: 'workflow_stage_askme', category: 'automations', chatId: rec.waPhone || null, name: 'Approve message — ' + w.subject + ' (' + who + ' · their reply)', ts, ageMs: Math.max(0, Date.now() - ts), data: { id: w.id, runId: run.id, key: rec.key, subject: rec.stage.pendingApproval.sendSubject, body: rec.stage.pendingApproval.sendBody } });
+        } else if (rec.stage.status === 'needs') {
+          const ts = new Date(rec.stage.sinceAt || Date.now()).getTime() || Date.now();
+          const lastReply = rec.history.slice().reverse().find((h) => h.who !== 'SUBH' && !h.who.startsWith('SUBH '));
+          items.push({ kind: 'workflow_stage_unclear', category: 'automations', chatId: rec.waPhone || null, name: 'Their reply unclear — ' + w.subject + ' (' + who + ' · their reply)', ts, ageMs: Math.max(0, Date.now() - ts), data: { id: w.id, runId: run.id, key: rec.key, replyText: lastReply && lastReply.text } });
+        } else {
+          const ts = new Date(rec.stage.sinceAt || Date.now()).getTime() || Date.now();
+          items.push({ kind: 'workflow_stage_noreply', category: 'automations', chatId: rec.waPhone || null, name: 'No reply (their reply) — ' + w.subject + ' (' + who + ')', ts, ageMs: Math.max(0, Date.now() - ts), data: { id: w.id, runId: run.id, key: rec.key } });
+        }
+      }
     }
   }
   return items;
@@ -1694,6 +1804,98 @@ async function sendFollowUpMessage(rec, text) {
 // askFollowUpDays when set, never the workflow's general follow-up
 // period (per the approved spec - a specific question can have its own
 // reminder cadence).
+// PHASE 6 (2026-11) - the PARENT's own follow-up tick, extracted
+// byte-for-byte from the pre-Phase-6 body of advanceFollowUps below so it
+// can be SKIPPED ENTIRELY (never called at all, not even to find it's not
+// due yet) whenever the record has an open stage - "while any stage item
+// of that record is open, the parent conversation's follow-ups are
+// PAUSED - no send, no followUpCount increment, no escalation/
+// Action-needed card for the PARENT conversation specifically" (owner's
+// own exact wording). Returns `{changed, advanced, alerted}` instead of
+// mutating shared counters/continuing a loop, so the caller can combine
+// this with the new stage tick below per record. Behaviour is otherwise
+// UNCHANGED from before this phase - every Phase 1-5 lock scenario (no
+// rec.stage at all) reaches this exact same code, unconditionally.
+async function tickParentFollowUp(w, rec, now) {
+  if (!['waiting', 'followed', 'asked'].includes(rec.status)) return { changed: false };
+  const rule = rec.ruleIndex != null ? (w.plan.rules || [])[rec.ruleIndex] : null;
+  const gapDays = (rec.status === 'asked' && rule && rule.askFollowUpDays) || (w.plan.followUp && w.plan.followUp.days) || 2;
+  const maxFu = (w.plan.followUp && w.plan.followUp.max) || 2;
+  const sinceMs = now.getTime() - new Date(rec.sinceAt).getTime();
+  if (sinceMs < gapDays * 86400000) return { changed: false };
+  // PHASE 3 (2026-11) "Smarter follow-ups" - workingDaysOnly/
+  // fixedTimeOfDay gate BOTH the regular follow-up send below AND
+  // this max-reached alert, per the owner's own worked example
+  // ("...Mon → no reply next working day → Action-needed card" - the
+  // final alert itself lands on the next WORKING day too, not the
+  // instant the gap elapses). Neither setting on (today's default
+  // for every workflow) -> isFollowUpTimingReady returns true
+  // immediately with zero extra lookups, so this tick behaves
+  // exactly as before Phase 3 existed.
+  const fuSettings = effectiveFollowUpSettings(rec, rule, w);
+  if ((fuSettings.workingDaysOnly || fuSettings.fixedTimeOfDay) && !(await isFollowUpTimingReady(now, fuSettings))) return { changed: false }; // deferred, not lost - re-checked next tick
+  if (rec.followUpCount >= maxFu) {
+    rec.status = 'noreply';
+    rec.history.push({ at: now.toISOString(), who: 'SUBH', text: 'No reply after ' + maxFu + ' follow-up(s) - alerted the owner.' });
+    await getWhatsappAssistant().postOwnerNotification('⚠️ Workflow "' + w.subject + '": no reply from ' + ((rec.contact && rec.contact.name) || rec.key) + ' after ' + maxFu + ' follow-up(s).').catch(() => {});
+    if (!isMailRecord(rec)) await syncOpenPhone(rec.waPhone, false);
+    return { changed: true, alerted: true };
+  }
+  let text = (rec.status === 'asked' && rule)
+    ? fillWorkflowPlaceholders(rule.askQuestion || (w.plan.followUp && w.plan.followUp.body) || '', { row: rec.row, contact: rec.contact, runAt: now })
+    : fillWorkflowPlaceholders((w.plan.followUp && w.plan.followUp.body) || '', { row: rec.row, contact: rec.contact, runAt: now });
+  // "Mention what's still missing" - reuses the SAME askDetail
+  // context a rule's own "ask for a missing detail" already defines,
+  // never a new invented concept; a plain no-reply follow-up (no
+  // active askDetail) has no "missing detail" concept today, so
+  // there's nothing to add there and the text is left unchanged.
+  if (fuSettings.mentionMissing && rec.status === 'asked' && rule && rule.askDetail) {
+    text += '\n\nWe are still waiting for: ' + rule.askDetail + '.';
+  }
+  const result = await sendFollowUpMessage(rec, text);
+  if (!result.ok) { rec.history.push({ at: now.toISOString(), who: 'SUBH', text: 'Could not send follow-up: ' + (result.error || 'unknown error') }); return { changed: true }; }
+  rec.followUpCount++; rec.sinceAt = now.toISOString();
+  if (rec.status === 'waiting') rec.status = 'followed';
+  rec.history.push({ at: now.toISOString(), who: 'SUBH -> ' + ((rec.contact && rec.contact.name) || rec.key), text });
+  return { changed: true, advanced: true };
+}
+// PHASE 6 (2026-11) - the STAGE's own independent follow-up tick -
+// EXACT same shape as tickParentFollowUp above, resolved against
+// rec.stage.sinceAt/followUpCount instead of the record's own, using the
+// 3-level fallback (effectiveStageFollowUpSettings) for the 3 "Smarter
+// follow-ups" companions and gapDays alike. Never gated on rec.status at
+// all - a stage ticks on its own clock regardless of whatever the parent
+// conversation's own status currently is (this is exactly what lets the
+// parent's own waitForAttachments stay paused while this keeps going).
+async function tickStageFollowUp(w, rec, now) {
+  if (!rec.stage || !['waiting', 'asked'].includes(rec.stage.status)) return { changed: false };
+  const parentRule = (w.plan.rules || [])[rec.stage.ruleIndex];
+  const subRules = (parentRule && parentRule.sub) || [];
+  const subRule = rec.stage.subIndex != null ? subRules[rec.stage.subIndex] : null;
+  const gapDays = (rec.stage.status === 'asked' && subRule && subRule.askFollowUpDays) || (parentRule && parentRule.askFollowUpDays) || (w.plan.followUp && w.plan.followUp.days) || 2;
+  const maxFu = (w.plan.followUp && w.plan.followUp.max) || 2;
+  const sinceMs = now.getTime() - new Date(rec.stage.sinceAt).getTime();
+  if (sinceMs < gapDays * 86400000) return { changed: false };
+  const fuSettings = effectiveStageFollowUpSettings(rec, parentRule, subRule, w);
+  if ((fuSettings.workingDaysOnly || fuSettings.fixedTimeOfDay) && !(await isFollowUpTimingReady(now, fuSettings))) return { changed: false };
+  if (rec.stage.followUpCount >= maxFu) {
+    rec.stage.status = 'noreply';
+    rec.history.push({ at: now.toISOString(), who: 'SUBH', text: 'No reply to the follow-up stage after ' + maxFu + ' follow-up(s) - alerted the owner.' });
+    await getWhatsappAssistant().postOwnerNotification('⚠️ Workflow "' + w.subject + '": no reply to the follow-up stage for ' + ((rec.contact && rec.contact.name) || rec.key) + ' after ' + maxFu + ' follow-up(s).').catch(() => {});
+    return { changed: true, alerted: true };
+  }
+  let text = (rec.stage.status === 'asked' && subRule)
+    ? fillWorkflowPlaceholders(subRule.askQuestion || (w.plan.followUp && w.plan.followUp.body) || '', { row: rec.row, contact: rec.contact, runAt: now })
+    : fillWorkflowPlaceholders((w.plan.followUp && w.plan.followUp.body) || '', { row: rec.row, contact: rec.contact, runAt: now });
+  if (fuSettings.mentionMissing && rec.stage.status === 'asked' && subRule && subRule.askDetail) {
+    text += '\n\nWe are still waiting for: ' + subRule.askDetail + '.';
+  }
+  const result = await sendFollowUpMessage(rec, text);
+  if (!result.ok) { rec.history.push({ at: now.toISOString(), who: 'SUBH', text: 'Could not send the stage follow-up: ' + (result.error || 'unknown error') }); return { changed: true }; }
+  rec.stage.followUpCount++; rec.stage.sinceAt = now.toISOString();
+  rec.history.push({ at: now.toISOString(), who: 'SUBH -> ' + ((rec.contact && rec.contact.name) || rec.key) + ' (their reply)', text });
+  return { changed: true, advanced: true };
+}
 async function advanceFollowUps(now = new Date()) {
   const workflows = await listRawWorkflows();
   let advanced = 0, alerted = 0;
@@ -1703,47 +1905,17 @@ async function advanceFollowUps(now = new Date()) {
     if (!run) continue;
     let changed = false;
     for (const rec of run.records) {
-      if (!['waiting', 'followed', 'asked'].includes(rec.status)) continue;
-      const rule = rec.ruleIndex != null ? (w.plan.rules || [])[rec.ruleIndex] : null;
-      const gapDays = (rec.status === 'asked' && rule && rule.askFollowUpDays) || (w.plan.followUp && w.plan.followUp.days) || 2;
-      const maxFu = (w.plan.followUp && w.plan.followUp.max) || 2;
-      const sinceMs = now.getTime() - new Date(rec.sinceAt).getTime();
-      if (sinceMs < gapDays * 86400000) continue;
-      // PHASE 3 (2026-11) "Smarter follow-ups" - workingDaysOnly/
-      // fixedTimeOfDay gate BOTH the regular follow-up send below AND
-      // this max-reached alert, per the owner's own worked example
-      // ("...Mon → no reply next working day → Action-needed card" - the
-      // final alert itself lands on the next WORKING day too, not the
-      // instant the gap elapses). Neither setting on (today's default
-      // for every workflow) -> isFollowUpTimingReady returns true
-      // immediately with zero extra lookups, so this tick behaves
-      // exactly as before Phase 3 existed.
-      const fuSettings = effectiveFollowUpSettings(rec, rule, w);
-      if ((fuSettings.workingDaysOnly || fuSettings.fixedTimeOfDay) && !(await isFollowUpTimingReady(now, fuSettings))) continue; // deferred, not lost - re-checked next tick
-      if (rec.followUpCount >= maxFu) {
-        rec.status = 'noreply';
-        rec.history.push({ at: now.toISOString(), who: 'SUBH', text: 'No reply after ' + maxFu + ' follow-up(s) - alerted the owner.' });
-        await getWhatsappAssistant().postOwnerNotification('⚠️ Workflow "' + w.subject + '": no reply from ' + ((rec.contact && rec.contact.name) || rec.key) + ' after ' + maxFu + ' follow-up(s).').catch(() => {});
-        if (!isMailRecord(rec)) await syncOpenPhone(rec.waPhone, false);
-        alerted++; changed = true; continue;
+      // PHASE 6 (2026-11) - pause/resume precedence: while a stage is
+      // open, the parent's own tick is skipped ENTIRELY this round (see
+      // tickParentFollowUp's own comment) - the stage's own tick below
+      // always runs independently, unaffected either way.
+      const stageOpen = Boolean(rec.stage && !isStageTerminal(rec.stage));
+      if (!stageOpen) {
+        const r1 = await tickParentFollowUp(w, rec, now);
+        if (r1.changed) { changed = true; if (r1.advanced) advanced++; if (r1.alerted) alerted++; }
       }
-      let text = (rec.status === 'asked' && rule)
-        ? fillWorkflowPlaceholders(rule.askQuestion || (w.plan.followUp && w.plan.followUp.body) || '', { row: rec.row, contact: rec.contact, runAt: now })
-        : fillWorkflowPlaceholders((w.plan.followUp && w.plan.followUp.body) || '', { row: rec.row, contact: rec.contact, runAt: now });
-      // "Mention what's still missing" - reuses the SAME askDetail
-      // context a rule's own "ask for a missing detail" already defines,
-      // never a new invented concept; a plain no-reply follow-up (no
-      // active askDetail) has no "missing detail" concept today, so
-      // there's nothing to add there and the text is left unchanged.
-      if (fuSettings.mentionMissing && rec.status === 'asked' && rule && rule.askDetail) {
-        text += '\n\nWe are still waiting for: ' + rule.askDetail + '.';
-      }
-      const result = await sendFollowUpMessage(rec, text);
-      if (!result.ok) { rec.history.push({ at: now.toISOString(), who: 'SUBH', text: 'Could not send follow-up: ' + (result.error || 'unknown error') }); changed = true; continue; }
-      rec.followUpCount++; rec.sinceAt = now.toISOString();
-      if (rec.status === 'waiting') rec.status = 'followed';
-      rec.history.push({ at: now.toISOString(), who: 'SUBH -> ' + ((rec.contact && rec.contact.name) || rec.key), text });
-      advanced++; changed = true;
+      const r2 = await tickStageFollowUp(w, rec, now);
+      if (r2.changed) { changed = true; if (r2.advanced) advanced++; if (r2.alerted) alerted++; }
     }
     if (changed) { run.updatedAt = now.toISOString(); await saveRun(w.id, run); }
   }
@@ -1885,42 +2057,94 @@ async function callWorkflowTool(systemText, userText, toolDef) {
 // them used `then: 'waitForAttachments'` before this phase) simply omits
 // it - `undefined` is fine, since it is only ever read back on that one
 // new branch.
-async function finishWorkflowRule(workflow, run, rec, rule, now, ruleIndex) {
+// `target` (PHASE 6, 2026-11, additive) - WHERE the status-machine fields
+// (status/pendingApproval/followUpCount/sinceAt/waitRuleIndex) actually
+// get written: every pre-Phase-6 call site omits it, which defaults to
+// `rec` itself (byte-identical to before this phase). The new stage
+// dispatch in processWorkflowReply passes `rec.stage` instead, so a
+// sub-rule's own resolution writes into the STAGE's own small state
+// machine, never the parent's - `rec.history`/`rec.detail`/`rec.details`
+// stay shared either way (one real conversation's own captured facts,
+// usable by placeholders on both levels). `target === rec` is also how
+// this function tells "am I resolving a TOP-LEVEL rule" (only then can a
+// NEW stage ever be spawned below) from "am I already resolving a
+// STAGE's own sub-rule" (where `rule.nextStageOn`/`rule.sub`, if somehow
+// present on a hand-edited sub-rule, are never acted on - the hard
+// 2-level cap, enforced here in code, not just by the UI never offering
+// the controls).
+async function finishWorkflowRule(workflow, run, rec, rule, now, ruleIndex, target) {
+  target = target || rec;
   const ctx = { row: rec.row, contact: rec.contact, runAt: now, extra: Object.assign({ Reply_Detail: rec.detail }, rec.details || {}) };
   let replyText = null;
   if (rule.replyText) {
     replyText = fillWorkflowPlaceholders(rule.replyText, ctx);
     rec.history.push({ at: now.toISOString(), who: 'SUBH -> ' + ((rec.contact && rec.contact.name) || rec.key), text: replyText });
   }
+  // PHASE 6 (2026-11) - captures the thread/message id a stage's own
+  // FIRST "send a message to someone" actually went out on, so a later
+  // reply to THAT message (a different thread than rec's own, e.g. "Each
+  // Company's Accounts Team") can still be found - see
+  // checkWorkflowMailReplies's own comment. Stays null whenever this
+  // rule has no `sendTo` at all, or sends back into the original thread
+  // (replyInOriginalThread) - both cases simply share rec's own thread,
+  // never a second one to track.
+  let sentToThreadHint = null;
   if (rule.sendTo) {
-    const targets = (await resolveSendTarget(rule.sendTo, workflow.plan, rec.row, rec.contact, rule.sendToEmail)).filter((c) => automationService.contactOk(c, 'mail'));
-    const toLabel = targets.map((c) => c.name).join(', ') || (SEND_TO_TARGETS.includes(rule.sendTo) || RULE_SEND_TO_EXTRA_TARGETS.includes(rule.sendTo) ? rule.sendTo : '—');
-    const pending = {
-      sendTo: rule.sendTo, sendToLabel: toLabel, addrs: targets.map((c) => c.email),
-      sendSubject: fillWorkflowPlaceholders(rule.sendSubject, ctx), sendBody: fillWorkflowPlaceholders(rule.sendBody, ctx),
-      sendDocument: rule.sendDocument || null, ruleThen: rule.then, ruleIndex: ruleIndex != null ? ruleIndex : null
-    };
-    if (rule.askMeFirst) {
-      rec.status = 'needs'; rec.pendingApproval = pending; rec.sinceAt = now.toISOString();
-      return replyText;
-    }
-    if (targets.length) {
-      // PHASE 5 (2026-11) - "Attachments from the reply (forward)" can
-      // resolve to MULTIPLE real files (Array.isArray), unlike the 4
-      // letter templates above (always a single generated document) -
-      // sendOneWorkflowMessage already supports both shapes (singular
-      // `attachment` / plural `attachments`), so both are passed through
-      // and it picks whichever one is actually populated.
-      const attachmentResult = await buildRuleSendAttachment(pending.sendDocument, rec.row, now, rec.detail, workflow.subject, { messageId: rec.lastReplyMessageId, attachments: rec.lastReplyAttachments });
-      const attachment = Array.isArray(attachmentResult) ? null : attachmentResult;
-      const attachments = Array.isArray(attachmentResult) ? attachmentResult : null;
-      for (const t of targets) await sendOneWorkflowMessage({ to: t.name, addr: t.email, subject: pending.sendSubject, body: pending.sendBody, table: null, tableColumns: [], attachment, attachments });
-      rec.history.push({ at: now.toISOString(), who: 'SUBH -> ' + toLabel, text: pending.sendSubject + ' - ' + pending.sendBody });
+    if (rule.sendTo === RULE_SEND_TO_REPLY_IN_THREAD) {
+      // PHASE 6 (2026-11) - "Reply in the original mail thread" (nested
+      // rules only) - the SAME mechanism as the sender's own top-level
+      // auto-reply (gmailService.sendReply against rec.messageId, "back
+      // to the first recipient" per the owner's own wording), never a
+      // fresh send to a resolved target.
+      const sendBody = fillWorkflowPlaceholders(rule.sendBody, ctx);
+      const pending = { sendTo: rule.sendTo, sendToLabel: 'Reply in the original mail thread', addrs: [], sendSubject: null, sendBody, sendDocument: null, ruleThen: rule.then, ruleIndex: ruleIndex != null ? ruleIndex : null };
+      if (rule.askMeFirst) {
+        target.status = 'needs'; target.pendingApproval = pending; target.sinceAt = now.toISOString();
+        return replyText;
+      }
+      if (isMailRecord(rec) && rec.messageId) {
+        try {
+          await gmailService.sendReply({ messageId: rec.messageId, replyText: sendBody });
+          rec.history.push({ at: now.toISOString(), who: 'SUBH -> ' + ((rec.contact && rec.contact.name) || rec.key) + ' (original thread)', text: sendBody });
+        } catch (err) {
+          rec.history.push({ at: now.toISOString(), who: 'SUBH', text: 'Could not reply in the original thread: ' + err.message });
+        }
+      } else {
+        rec.history.push({ at: now.toISOString(), who: 'SUBH', text: 'Could not reply in the original thread - this record has no mail thread.' });
+      }
     } else {
-      rec.history.push({ at: now.toISOString(), who: 'SUBH', text: 'Could not send the follow-up message - no valid contact for ' + rule.sendTo + '.' });
+      const targets = (await resolveSendTarget(rule.sendTo, workflow.plan, rec.row, rec.contact, rule.sendToEmail)).filter((c) => automationService.contactOk(c, 'mail'));
+      const toLabel = targets.map((c) => c.name).join(', ') || (SEND_TO_TARGETS.includes(rule.sendTo) || RULE_SEND_TO_EXTRA_TARGETS.includes(rule.sendTo) ? rule.sendTo : '—');
+      const pending = {
+        sendTo: rule.sendTo, sendToLabel: toLabel, addrs: targets.map((c) => c.email),
+        sendSubject: fillWorkflowPlaceholders(rule.sendSubject, ctx), sendBody: fillWorkflowPlaceholders(rule.sendBody, ctx),
+        sendDocument: rule.sendDocument || null, ruleThen: rule.then, ruleIndex: ruleIndex != null ? ruleIndex : null
+      };
+      if (rule.askMeFirst) {
+        target.status = 'needs'; target.pendingApproval = pending; target.sinceAt = now.toISOString();
+        return replyText;
+      }
+      if (targets.length) {
+        // PHASE 5 (2026-11) - "Attachments from the reply (forward)" can
+        // resolve to MULTIPLE real files (Array.isArray), unlike the 4
+        // letter templates above (always a single generated document) -
+        // sendOneWorkflowMessage already supports both shapes (singular
+        // `attachment` / plural `attachments`), so both are passed through
+        // and it picks whichever one is actually populated.
+        const attachmentResult = await buildRuleSendAttachment(pending.sendDocument, rec.row, now, rec.detail, workflow.subject, { messageId: rec.lastReplyMessageId, attachments: rec.lastReplyAttachments });
+        const attachment = Array.isArray(attachmentResult) ? null : attachmentResult;
+        const attachments = Array.isArray(attachmentResult) ? attachmentResult : null;
+        const sendResults = [];
+        for (const t of targets) sendResults.push(await sendOneWorkflowMessage({ to: t.name, addr: t.email, subject: pending.sendSubject, body: pending.sendBody, table: null, tableColumns: [], attachment, attachments }));
+        rec.history.push({ at: now.toISOString(), who: 'SUBH -> ' + toLabel, text: pending.sendSubject + ' - ' + pending.sendBody });
+        const firstSent = sendResults.find((r) => r && r.status === 'sent' && r.threadId);
+        if (firstSent) sentToThreadHint = { threadId: firstSent.threadId, messageId: firstSent.messageId || null };
+      } else {
+        rec.history.push({ at: now.toISOString(), who: 'SUBH', text: 'Could not send the follow-up message - no valid contact for ' + rule.sendTo + '.' });
+      }
     }
   }
-  rec.pendingApproval = rec.pendingApproval || null;
+  target.pendingApproval = target.pendingApproval || null;
   // PHASE 5 (2026-11) - "Wait for attachments": a NEW `then` branch,
   // deliberately checked before stop/wait/askme below (mutually
   // exclusive with all three, exactly like they already are with each
@@ -1931,18 +2155,27 @@ async function finishWorkflowRule(workflow, run, rec, rule, now, ruleIndex) {
   // here, since the attachment this rule cares about typically hasn't
   // arrived yet - see this phase's report for the full reasoning.
   if (rule.then === RULE_THEN_WAIT_FOR_ATTACHMENTS) {
-    rec.status = 'waitingAttachments'; rec.waitRuleIndex = ruleIndex != null ? ruleIndex : null; rec.followUpCount = 0; rec.sinceAt = now.toISOString();
+    target.status = 'waitingAttachments'; target.waitRuleIndex = ruleIndex != null ? ruleIndex : null; target.followUpCount = 0; target.sinceAt = now.toISOString();
   } else {
-    if (rule.then === 'stop') rec.status = 'done';
-    else if (rule.then === 'wait') { rec.status = 'waiting'; rec.followUpCount = 0; rec.sinceAt = now.toISOString(); }
-    else rec.status = 'needs'; // 'askme' - same unclear-style card, per direct instruction
+    if (rule.then === 'stop') target.status = 'done';
+    else if (rule.then === 'wait') { target.status = 'waiting'; target.followUpCount = 0; target.sinceAt = now.toISOString(); }
+    else target.status = 'needs'; // 'askme' - same unclear-style card, per direct instruction
     // "Also do" runs immediately whenever this rule resolves WITHOUT
     // waiting further for an attachment - e.g. a rule whose matching
     // reply itself already carried the document ("Documents received" ->
     // save + update the sheet in the same breath, no waiting needed).
     await runRuleAlsoDo(rule, rec, workflow, now);
   }
-  if (!isMailRecord(rec) && rec.status !== 'waiting' && rec.status !== 'waitingAttachments') await syncOpenPhone(rec.waPhone, false);
+  // PHASE 6 (2026-11) - "Next stage": spawn rec.stage UNCONDITIONALLY
+  // alongside whichever `then` branch fired above (never instead of it) -
+  // ONLY for a genuinely top-level rule resolution (`target === rec`,
+  // never while already resolving a stage's own sub-rule - the hard
+  // 2-level cap).
+  if (target === rec && rule.nextStageOn && (rule.sub || []).length) {
+    rec.stage = { ruleIndex: ruleIndex != null ? ruleIndex : null, subIndex: null, status: 'waiting', followUpCount: 0, sinceAt: now.toISOString(), pendingApproval: null };
+    if (sentToThreadHint) { rec.stage.threadId = sentToThreadHint.threadId; rec.stage.messageId = sentToThreadHint.messageId; }
+  }
+  if (!isMailRecord(rec) && !isRecordOpenForReplies(rec)) await syncOpenPhone(rec.waPhone, false);
   return replyText;
 }
 
@@ -2047,10 +2280,95 @@ async function writeRuleSheetUpdateCell(plan, rec, sheetUpdate, now) {
 // same as passing `{}`). Captured onto the record (rec.lastReplyAttachments/
 // lastReplyMessageId) on EVERY new reply, overwritten each time - "the
 // attachment(s) arrived on the matched reply ITSELF", never an older one.
-async function processWorkflowReply(workflow, run, rec, replyText, senderLabel, now = new Date(), attachments) {
+// `replyOrigin` (PHASE 6, 2026-11, additive - every existing caller omits
+// it) - 'parent' or 'stage' when the CALLER already knows, definitively,
+// which real Gmail thread this reply came in on (checkWorkflowMailReplies
+// knows this exactly, since it scans the parent's own thread and a
+// stage's own distinct thread as two separate, named entries - see its
+// own comment); omitted (undefined) when the caller has no thread concept
+// at all (every WhatsApp call site - there is no "thread", just one
+// phone's one ongoing conversation) or when a stage shares the SAME
+// thread as its parent (no `sendTo` of its own). dispatchTarget() below
+// uses this to resolve the owner's own exact precedence rule
+// ("if the attachments arrive early, the parent resolves normally")
+// correctly even when the stage's own conversation happens to ALSO be
+// carrying real attachments on its own separate thread (e.g. a sub-rule
+// with its own `then: 'waitForAttachments'`) - thread identity decides
+// whenever it's known; only when it genuinely isn't (shared thread, or
+// WhatsApp) does this fall back to the content-based (attachment-
+// presence) heuristic.
+function dispatchTargetIsStage(rec, replyOrigin) {
+  if (!rec.stage || isStageTerminal(rec.stage)) return false;
+  const stageHasDistinctThread = Boolean(rec.stage.threadId && rec.stage.threadId !== rec.threadId);
+  if (stageHasDistinctThread && replyOrigin) return replyOrigin === 'stage';
+  const parentWaitingWithAttachmentNow = rec.status === 'waitingAttachments' && (rec.lastReplyAttachments || []).length > 0;
+  return !parentWaitingWithAttachmentNow;
+}
+async function processWorkflowReply(workflow, run, rec, replyText, senderLabel, now = new Date(), attachments, replyOrigin) {
   rec.history.push({ at: now.toISOString(), who: senderLabel || ((rec.contact && rec.contact.name) || rec.key), text: replyText });
   rec.lastReplyMessageId = (attachments && attachments.messageId) || null;
   rec.lastReplyAttachments = (attachments && attachments.attachments) || [];
+  // PHASE 6 (2026-11) - stage dispatch, checked FIRST - see
+  // dispatchTargetIsStage's own comment for the full precedence rule
+  // ("if the attachments arrive early, the parent resolves normally",
+  // resolved by THREAD when the caller knows it, by content only when it
+  // doesn't).
+  if (dispatchTargetIsStage(rec, replyOrigin)) {
+    const parentRule = (workflow.plan.rules || [])[rec.stage.ruleIndex];
+    const subRules = (parentRule && parentRule.sub) || [];
+    let resultText = null;
+    if (rec.stage.status === 'waitingAttachments') {
+      // Same "never silently treat a text-only reply as satisfying wait
+      // for attachments" rule as the parent's own, resolved against
+      // rec.stage instead.
+      if (!rec.lastReplyAttachments.length) return null;
+      const waitSub = rec.stage.waitRuleIndex != null ? subRules[rec.stage.waitRuleIndex] : null;
+      rec.stage.status = 'done'; rec.stage.pendingApproval = null;
+      if (waitSub) await runRuleAlsoDo(waitSub, rec, workflow, now);
+    } else if (rec.stage.status === 'asked' && rec.stage.subIndex != null && subRules[rec.stage.subIndex]) {
+      const subRule = subRules[rec.stage.subIndex];
+      const extracted = await module.exports.callWorkflowTool(
+        'An automated workflow\'s own follow-up stage asked the sender a question and is waiting for the answer.',
+        replyText,
+        detailExtractionTool(fillWorkflowPlaceholders(subRule.askQuestion || '', { row: rec.row, contact: rec.contact, runAt: now }), parseDetailFieldNames(subRule.detailFields)).function
+      );
+      if (extracted && extracted.details) mergeExtractedDetails(rec, extracted.details);
+      if (extracted && !extracted.isUnclear && extracted.detail) {
+        rec.detail = extracted.detail;
+        resultText = await finishWorkflowRule(workflow, run, rec, subRule, now, rec.stage.subIndex, rec.stage);
+      } else {
+        rec.stage.status = 'needs'; rec.stage.pendingApproval = null; rec.stage.sinceAt = now.toISOString();
+      }
+    } else {
+      const classified = await module.exports.callWorkflowTool(
+        'An automated workflow\'s own follow-up stage sent a question to this sender and is now reading their reply.',
+        replyText,
+        replyClassificationTool(subRules).function
+      );
+      if (classified && classified.details) mergeExtractedDetails(rec, classified.details);
+      const subIndex = classified && typeof classified.ruleIndex === 'number' ? classified.ruleIndex : null;
+      const subRule = subIndex != null ? subRules[subIndex] : null;
+      if (!subRule) {
+        rec.stage.status = 'needs'; rec.stage.pendingApproval = null; rec.stage.sinceAt = now.toISOString();
+      } else if (subRule.askDetail && !(classified && classified.detail)) {
+        const askText = fillWorkflowPlaceholders(subRule.askQuestion || '', { row: rec.row, contact: rec.contact, runAt: now });
+        rec.history.push({ at: now.toISOString(), who: 'SUBH -> ' + ((rec.contact && rec.contact.name) || rec.key), text: askText });
+        rec.stage.status = 'asked'; rec.stage.subIndex = subIndex; rec.stage.followUpCount = 0; rec.stage.sinceAt = now.toISOString();
+        resultText = askText;
+      } else {
+        if (subRule.askDetail) rec.detail = classified.detail;
+        resultText = await finishWorkflowRule(workflow, run, rec, subRule, now, subIndex, rec.stage);
+      }
+    }
+    // PHASE 6 (2026-11) - "the moment a stage transitions to terminal,
+    // if the parent record's own status is still non-terminal, reset
+    // rec.sinceAt = now" - restarts the parent's OWN gap-day follow-up
+    // clock fresh from right now, never a retroactive catch-up for
+    // however long the stage was open.
+    if (isStageTerminal(rec.stage) && !TERMINAL_STATUSES.has(rec.status)) rec.sinceAt = now.toISOString();
+    if (!isMailRecord(rec) && !isRecordOpenForReplies(rec)) await syncOpenPhone(rec.waPhone, false);
+    return resultText;
+  }
   // PHASE 5 (2026-11) - "Wait for attachments": a record parked here by
   // an earlier rule's `then: 'waitForAttachments'` is waiting specifically
   // for THIS kind of reply - a text-only reply (no attachment) never
@@ -2158,18 +2476,35 @@ async function approveSendWorkflowRecord(workflowId, runId, key) {
   return withRecord(workflowId, runId, key, async (workflow, run, rec, now) => {
     if (rec.status !== 'needs' || !rec.pendingApproval) return { ok: false, error: 'Nothing pending for this record.' };
     const pending = rec.pendingApproval;
-    const addrs = pending.addrs || [];
-    if (addrs.length) {
-      // PHASE 5 (2026-11) - same singular/plural attachment split as
-      // finishWorkflowRule's own real-time send (see its comment) -
-      // 'attachmentsFromReply' can resolve to multiple real files.
-      const attachmentResult = await buildRuleSendAttachment(pending.sendDocument, rec.row, now, rec.detail, workflow.subject, { messageId: rec.lastReplyMessageId, attachments: rec.lastReplyAttachments });
-      const attachment = Array.isArray(attachmentResult) ? null : attachmentResult;
-      const attachmentsArr = Array.isArray(attachmentResult) ? attachmentResult : null;
-      for (const addr of addrs) await sendOneWorkflowMessage({ to: pending.sendToLabel, addr, subject: pending.sendSubject, body: pending.sendBody, table: null, tableColumns: [], attachment, attachments: attachmentsArr });
-      rec.history.push({ at: now.toISOString(), who: 'SUBH -> ' + pending.sendToLabel, text: pending.sendSubject + ' - ' + pending.sendBody });
+    let sentToThreadHint = null;
+    if (pending.sendTo === RULE_SEND_TO_REPLY_IN_THREAD) {
+      if (isMailRecord(rec) && rec.messageId) {
+        try {
+          await gmailService.sendReply({ messageId: rec.messageId, replyText: pending.sendBody });
+          rec.history.push({ at: now.toISOString(), who: 'SUBH -> ' + ((rec.contact && rec.contact.name) || rec.key) + ' (original thread)', text: pending.sendBody });
+        } catch (err) {
+          rec.history.push({ at: now.toISOString(), who: 'SUBH', text: 'Could not reply in the original thread: ' + err.message });
+        }
+      } else {
+        rec.history.push({ at: now.toISOString(), who: 'SUBH', text: 'Could not reply in the original thread - this record has no mail thread.' });
+      }
     } else {
-      rec.history.push({ at: now.toISOString(), who: 'SUBH', text: 'Could not send - no valid contact for ' + pending.sendTo + '.' });
+      const addrs = pending.addrs || [];
+      if (addrs.length) {
+        // PHASE 5 (2026-11) - same singular/plural attachment split as
+        // finishWorkflowRule's own real-time send (see its comment) -
+        // 'attachmentsFromReply' can resolve to multiple real files.
+        const attachmentResult = await buildRuleSendAttachment(pending.sendDocument, rec.row, now, rec.detail, workflow.subject, { messageId: rec.lastReplyMessageId, attachments: rec.lastReplyAttachments });
+        const attachment = Array.isArray(attachmentResult) ? null : attachmentResult;
+        const attachmentsArr = Array.isArray(attachmentResult) ? attachmentResult : null;
+        const sendResults = [];
+        for (const addr of addrs) sendResults.push(await sendOneWorkflowMessage({ to: pending.sendToLabel, addr, subject: pending.sendSubject, body: pending.sendBody, table: null, tableColumns: [], attachment, attachments: attachmentsArr }));
+        rec.history.push({ at: now.toISOString(), who: 'SUBH -> ' + pending.sendToLabel, text: pending.sendSubject + ' - ' + pending.sendBody });
+        const firstSent = sendResults.find((r) => r && r.status === 'sent' && r.threadId);
+        if (firstSent) sentToThreadHint = { threadId: firstSent.threadId, messageId: firstSent.messageId || null };
+      } else {
+        rec.history.push({ at: now.toISOString(), who: 'SUBH', text: 'Could not send - no valid contact for ' + pending.sendTo + '.' });
+      }
     }
     rec.pendingApproval = null;
     const rule = pending.ruleIndex != null ? (workflow.plan.rules || [])[pending.ruleIndex] : null;
@@ -2181,7 +2516,18 @@ async function approveSendWorkflowRecord(workflowId, runId, key) {
       else rec.status = 'done';
       if (rule) await runRuleAlsoDo(rule, rec, workflow, now);
     }
-    if (!isMailRecord(rec) && rec.status !== 'waiting' && rec.status !== 'waitingAttachments') await syncOpenPhone(rec.waPhone, false);
+    // PHASE 6 (2026-11) - "Next stage" + "Ask me before sending this
+    // message" (askMeFirst) on the SAME top-level rule: the stage could
+    // not spawn at the time the rule first resolved (finishWorkflowRule
+    // returned early, before `then` was even evaluated, to wait for this
+    // exact approval) - spawn it now that the message has actually gone
+    // out (or been attempted), same shape/thread-capture as
+    // finishWorkflowRule's own spawn below it.
+    if (rule && rule.nextStageOn && (rule.sub || []).length) {
+      rec.stage = { ruleIndex: pending.ruleIndex != null ? pending.ruleIndex : null, subIndex: null, status: 'waiting', followUpCount: 0, sinceAt: now.toISOString(), pendingApproval: null };
+      if (sentToThreadHint) { rec.stage.threadId = sentToThreadHint.threadId; rec.stage.messageId = sentToThreadHint.messageId; }
+    }
+    if (!isMailRecord(rec) && !isRecordOpenForReplies(rec)) await syncOpenPhone(rec.waPhone, false);
     return { ok: true };
   });
 }
@@ -2202,6 +2548,117 @@ async function resolveUnclearWorkflowRecord(workflowId, runId, key, ruleIndex) {
     const rule = (workflow.plan.rules || [])[ruleIndex];
     if (!rule) return { ok: false, error: 'That rule no longer exists.' };
     await finishWorkflowRule(workflow, run, rec, rule, now, ruleIndex);
+    return { ok: true };
+  });
+}
+
+// ---------------- PHASE 6 (2026-11) - the SAME 6 progress-board manual
+// actions above, but for a record's own STAGE (rec.stage) instead of the
+// parent - the owner can act on a stuck stage even while the parent
+// conversation is still open (or already closed), never confused with
+// the parent-level actions above which always read/write rec.* directly.
+// Every one of these is a no-op ({ ok:false }) when the record has no
+// stage at all - never crashes on a record from before this phase.
+function stageSinceAtResetIfParentOpen(rec, now) {
+  if (!TERMINAL_STATUSES.has(rec.status)) rec.sinceAt = now.toISOString();
+}
+async function stopWorkflowStage(workflowId, runId, key) {
+  return withRecord(workflowId, runId, key, async (workflow, run, rec, now) => {
+    if (!rec.stage) return { ok: false, error: 'This record has no follow-up stage.' };
+    rec.stage.status = 'stopped'; rec.stage.pendingApproval = null;
+    rec.history.push({ at: now.toISOString(), who: 'SUBH', text: 'Stage (their reply) stopped by you.' });
+    stageSinceAtResetIfParentOpen(rec, now);
+    if (!isMailRecord(rec) && !isRecordOpenForReplies(rec)) await syncOpenPhone(rec.waPhone, false);
+  });
+}
+async function markWorkflowStageDone(workflowId, runId, key) {
+  return withRecord(workflowId, runId, key, async (workflow, run, rec, now) => {
+    if (!rec.stage) return { ok: false, error: 'This record has no follow-up stage.' };
+    rec.stage.status = 'done'; rec.stage.pendingApproval = null;
+    rec.history.push({ at: now.toISOString(), who: 'SUBH', text: 'Stage (their reply) marked done by you.' });
+    stageSinceAtResetIfParentOpen(rec, now);
+    if (!isMailRecord(rec) && !isRecordOpenForReplies(rec)) await syncOpenPhone(rec.waPhone, false);
+  });
+}
+async function remindWorkflowStageNow(workflowId, runId, key) {
+  return withRecord(workflowId, runId, key, async (workflow, run, rec, now) => {
+    if (!rec.stage) return { ok: false, error: 'This record has no follow-up stage.' };
+    const parentRule = (workflow.plan.rules || [])[rec.stage.ruleIndex];
+    const subRules = (parentRule && parentRule.sub) || [];
+    const subRule = rec.stage.subIndex != null ? subRules[rec.stage.subIndex] : null;
+    const text = (rec.stage.status === 'asked' && subRule)
+      ? fillWorkflowPlaceholders(subRule.askQuestion || '', { row: rec.row, contact: rec.contact, runAt: now })
+      : fillWorkflowPlaceholders((workflow.plan.followUp && workflow.plan.followUp.body) || '', { row: rec.row, contact: rec.contact, runAt: now });
+    const result = await sendFollowUpMessage(rec, text);
+    if (!result.ok) return { ok: false, error: result.error || 'Could not send.' };
+    rec.stage.followUpCount++; rec.stage.sinceAt = now.toISOString();
+    if (rec.stage.status === 'noreply') rec.stage.status = 'waiting';
+    rec.history.push({ at: now.toISOString(), who: 'SUBH -> ' + ((rec.contact && rec.contact.name) || rec.key) + ' (their reply)', text });
+    return { ok: true };
+  });
+}
+async function approveSendWorkflowStage(workflowId, runId, key) {
+  return withRecord(workflowId, runId, key, async (workflow, run, rec, now) => {
+    if (!rec.stage || rec.stage.status !== 'needs' || !rec.stage.pendingApproval) return { ok: false, error: 'Nothing pending for this stage.' };
+    const pending = rec.stage.pendingApproval;
+    if (pending.sendTo === RULE_SEND_TO_REPLY_IN_THREAD) {
+      if (isMailRecord(rec) && rec.messageId) {
+        try {
+          await gmailService.sendReply({ messageId: rec.messageId, replyText: pending.sendBody });
+          rec.history.push({ at: now.toISOString(), who: 'SUBH -> ' + ((rec.contact && rec.contact.name) || rec.key) + ' (original thread)', text: pending.sendBody });
+        } catch (err) {
+          rec.history.push({ at: now.toISOString(), who: 'SUBH', text: 'Could not reply in the original thread: ' + err.message });
+        }
+      } else {
+        rec.history.push({ at: now.toISOString(), who: 'SUBH', text: 'Could not reply in the original thread - this record has no mail thread.' });
+      }
+    } else {
+      const addrs = pending.addrs || [];
+      if (addrs.length) {
+        const attachmentResult = await buildRuleSendAttachment(pending.sendDocument, rec.row, now, rec.detail, workflow.subject, { messageId: rec.lastReplyMessageId, attachments: rec.lastReplyAttachments });
+        const attachment = Array.isArray(attachmentResult) ? null : attachmentResult;
+        const attachmentsArr = Array.isArray(attachmentResult) ? attachmentResult : null;
+        for (const addr of addrs) await sendOneWorkflowMessage({ to: pending.sendToLabel, addr, subject: pending.sendSubject, body: pending.sendBody, table: null, tableColumns: [], attachment, attachments: attachmentsArr });
+        rec.history.push({ at: now.toISOString(), who: 'SUBH -> ' + pending.sendToLabel, text: pending.sendSubject + ' - ' + pending.sendBody });
+      } else {
+        rec.history.push({ at: now.toISOString(), who: 'SUBH', text: 'Could not send - no valid contact for ' + pending.sendTo + '.' });
+      }
+    }
+    rec.stage.pendingApproval = null;
+    const parentRule = (workflow.plan.rules || [])[rec.stage.ruleIndex];
+    const subRules = (parentRule && parentRule.sub) || [];
+    const subRule = pending.ruleIndex != null ? subRules[pending.ruleIndex] : null;
+    if (pending.ruleThen === RULE_THEN_WAIT_FOR_ATTACHMENTS) {
+      rec.stage.status = 'waitingAttachments'; rec.stage.waitRuleIndex = pending.ruleIndex != null ? pending.ruleIndex : null; rec.stage.followUpCount = 0; rec.stage.sinceAt = now.toISOString();
+    } else {
+      if (pending.ruleThen === 'stop') rec.stage.status = 'done';
+      else if (pending.ruleThen === 'wait') { rec.stage.status = 'waiting'; rec.stage.followUpCount = 0; rec.stage.sinceAt = now.toISOString(); }
+      else rec.stage.status = 'done';
+      if (subRule) await runRuleAlsoDo(subRule, rec, workflow, now);
+    }
+    stageSinceAtResetIfParentOpen(rec, now);
+    if (!isMailRecord(rec) && !isRecordOpenForReplies(rec)) await syncOpenPhone(rec.waPhone, false);
+    return { ok: true };
+  });
+}
+async function declineWorkflowStageApproval(workflowId, runId, key) {
+  return withRecord(workflowId, runId, key, async (workflow, run, rec, now) => {
+    if (!rec.stage || rec.stage.status !== 'needs' || !rec.stage.pendingApproval) return { ok: false, error: 'Nothing pending for this stage.' };
+    rec.stage.pendingApproval = null; rec.stage.status = 'stopped';
+    rec.history.push({ at: now.toISOString(), who: 'SUBH', text: 'Stage (their reply) declined by you - the further message was never sent.' });
+    stageSinceAtResetIfParentOpen(rec, now);
+    if (!isMailRecord(rec) && !isRecordOpenForReplies(rec)) await syncOpenPhone(rec.waPhone, false);
+    return { ok: true };
+  });
+}
+async function resolveUnclearWorkflowStage(workflowId, runId, key, subRuleIndex) {
+  return withRecord(workflowId, runId, key, async (workflow, run, rec, now) => {
+    if (!rec.stage) return { ok: false, error: 'This record has no follow-up stage.' };
+    const parentRule = (workflow.plan.rules || [])[rec.stage.ruleIndex];
+    const subRule = parentRule && (parentRule.sub || [])[subRuleIndex];
+    if (!subRule) return { ok: false, error: 'That rule no longer exists.' };
+    await finishWorkflowRule(workflow, run, rec, subRule, now, subRuleIndex, rec.stage);
+    stageSinceAtResetIfParentOpen(rec, now);
     return { ok: true };
   });
 }
@@ -2229,25 +2686,58 @@ async function checkWorkflowMailReplies(now = new Date()) {
       // PHASE 5 (2026-11) - 'waitingAttachments' added so a mail record
       // parked waiting specifically for an attachment keeps being
       // checked for a NEW reply (which might finally carry one).
-      if (!isMailRecord(rec) || !['waiting', 'followed', 'asked', 'waitingAttachments'].includes(rec.status)) continue;
+      // PHASE 6 (2026-11) - isRecordOpenForReplies replaces the bare
+      // status check - a record whose own top-level status has already
+      // gone terminal (`then: 'stop'` fired) can still have an OPEN
+      // stage waiting on its own reply, so its thread(s) must keep being
+      // scanned. Still gated on isMailRecord(rec) here (a WA record with
+      // NO mail-thread stage has nothing for this mail-only scan to find
+      // either way - see findOpenWorkflowRecordByPhone for the WA side),
+      // EXCEPT a WA record that happens to have spawned a mail-tracked
+      // stage (a sub-rule's own "send a message to someone" always goes
+      // out by mail, regardless of the parent workflow's own mediator -
+      // see resolveSendTarget) - that stage's own thread still needs
+      // scanning even though the record itself is WA, not mail.
+      const stageThreadId = rec.stage && rec.stage.threadId;
+      if (!isRecordOpenForReplies(rec)) continue;
+      if (!isMailRecord(rec) && !stageThreadId) continue;
       checked++;
       try {
         if (!cachedSignedInAddress) cachedSignedInAddress = await gmailService.getSignedInAddress().catch(() => null);
-        const ids = (await gmailService.listMessageIds('threadId:' + rec.threadId, 20)) || [];
-        const seen = new Set(rec.processedMessageIds || [rec.messageId]);
-        const newIds = ids.map((x) => x.id).filter((id) => !seen.has(id));
-        for (const id of newIds) {
-          seen.add(id);
-          const msg = await gmailService.getFullMessage(id).catch(() => null);
-          if (!msg) continue;
-          const m = /<([^>]+)>/.exec(msg.from || '');
-          const fromEmail = (m ? m[1] : msg.from || '').toLowerCase();
-          if (cachedSignedInAddress && fromEmail === cachedSignedInAddress.toLowerCase()) continue; // our own sent message in this same thread
-          const replyText = await processWorkflowReply(w, run, rec, msg.bodyText, (rec.contact && rec.contact.name) || fromEmail, now, { messageId: msg.id, attachments: msg.attachments || [] });
-          if (replyText) await gmailService.sendReply({ messageId: id, replyText }).catch((err) => { rec.history.push({ at: now.toISOString(), who: 'SUBH', text: 'Could not send the reply: ' + err.message }); });
-          processed++; changed = true;
+        // PHASE 6 (2026-11) - a stage whose own trigger message went to a
+        // DIFFERENT recipient (e.g. "Each Company's Accounts Team") lives
+        // in its own, separate Gmail thread (rec.stage.threadId) -
+        // scanned ALONGSIDE the record's own original thread, never
+        // instead of it (the parent's own thread can still resolve
+        // independently - e.g. the real e-cards attachment arriving
+        // early - see processWorkflowReply's own precedence comment). A
+        // stage with no distinct send target at all (nextStageOn with no
+        // sendTo, or sendTo="replyInOriginalThread") simply shares
+        // rec.threadId and is never scanned twice.
+        const threadsToScan = [];
+        if (isMailRecord(rec)) threadsToScan.push({ threadId: rec.threadId, owner: rec, seenKey: 'processedMessageIds', fallbackSeed: rec.messageId, origin: 'parent' });
+        if (stageThreadId && stageThreadId !== rec.threadId) threadsToScan.push({ threadId: stageThreadId, owner: rec.stage, seenKey: 'processedMessageIds', fallbackSeed: rec.stage.messageId, origin: 'stage' });
+        for (const t of threadsToScan) {
+          const ids = (await gmailService.listMessageIds('threadId:' + t.threadId, 20)) || [];
+          const seen = new Set(t.owner[t.seenKey] || (t.fallbackSeed ? [t.fallbackSeed] : []));
+          const newIds = ids.map((x) => x.id).filter((id) => !seen.has(id));
+          for (const id of newIds) {
+            seen.add(id);
+            const msg = await gmailService.getFullMessage(id).catch(() => null);
+            if (!msg) continue;
+            const m = /<([^>]+)>/.exec(msg.from || '');
+            const fromEmail = (m ? m[1] : msg.from || '').toLowerCase();
+            if (cachedSignedInAddress && fromEmail === cachedSignedInAddress.toLowerCase()) continue; // our own sent message in this same thread
+            // PHASE 6 (2026-11) - `t.origin` ('parent'/'stage') tells
+            // processWorkflowReply definitively which real thread this
+            // reply came in on, whenever the stage has a genuinely
+            // distinct thread of its own - see dispatchTargetIsStage.
+            const replyText = await processWorkflowReply(w, run, rec, msg.bodyText, (rec.contact && rec.contact.name) || fromEmail, now, { messageId: msg.id, attachments: msg.attachments || [] }, t.origin);
+            if (replyText) await gmailService.sendReply({ messageId: id, replyText }).catch((err) => { rec.history.push({ at: now.toISOString(), who: 'SUBH', text: 'Could not send the reply: ' + err.message }); });
+            processed++; changed = true;
+          }
+          t.owner[t.seenKey] = Array.from(seen);
         }
-        rec.processedMessageIds = Array.from(seen);
       } catch (err) { /* best effort, per record - never blocks another record or workflow */ }
     }
     if (changed) { run.updatedAt = now.toISOString(); await saveRun(w.id, run); }
@@ -2275,8 +2765,14 @@ async function findOpenWorkflowRecordByPhone(phone) {
     // (a text-only reply still won't resolve it - see
     // processWorkflowReply's own 'waitingAttachments' branch - but it
     // must still reach that branch rather than fall through to the
-    // normal engine while nominally "open").
-    const rec = run.records.find((r) => r.waPhone === phone && ['waiting', 'followed', 'asked', 'waitingAttachments'].includes(r.status));
+    // normal engine while nominally "open"). PHASE 6 (2026-11) -
+    // isRecordOpenForReplies replaces the bare status list so a record
+    // whose own top-level conversation already resolved (`then: 'stop'`)
+    // but still has an OPEN stage keeps being found here too - a stage
+    // with no distinct mail thread of its own (the common WA case: a
+    // nextStageOn rule with no "send to someone") simply continues this
+    // SAME phone conversation.
+    const rec = run.records.find((r) => r.waPhone === phone && isRecordOpenForReplies(r));
     if (rec) return { workflow: w, run, rec };
   }
   return null;
@@ -2313,9 +2809,27 @@ async function handlePossibleWorkflowReply(phone, text) {
   const open = await findOpenWorkflowRecordByPhone(phone);
   if (!open) return null;
   const { workflow, run, rec } = open;
-  const pendingQuestion = rec.status === 'asked' && rec.ruleIndex != null
-    ? fillWorkflowPlaceholders(((workflow.plan.rules || [])[rec.ruleIndex] || {}).askQuestion || '', { row: rec.row, contact: rec.contact })
-    : fillWorkflowPlaceholders(workflow.plan.body || '', { row: rec.row, contact: rec.contact });
+  // PHASE 6 (2026-11) - when a stage is open (and the parent's own
+  // top-level status isn't itself still actively asking something), the
+  // "what is this workflow waiting on" question shown to the relevance
+  // check should describe the STAGE's own pending question, never the
+  // parent's original first message - otherwise a genuinely-relevant
+  // stage reply could read as unrelated to a stale, already-resolved
+  // "pendingQuestion".
+  const stageOpen = Boolean(rec.stage && !isStageTerminal(rec.stage));
+  let pendingQuestion;
+  if (rec.status === 'asked' && rec.ruleIndex != null) {
+    pendingQuestion = fillWorkflowPlaceholders(((workflow.plan.rules || [])[rec.ruleIndex] || {}).askQuestion || '', { row: rec.row, contact: rec.contact });
+  } else if (stageOpen) {
+    const parentRule = (workflow.plan.rules || [])[rec.stage.ruleIndex];
+    const subRules = (parentRule && parentRule.sub) || [];
+    const subRule = rec.stage.status === 'asked' && rec.stage.subIndex != null ? subRules[rec.stage.subIndex] : null;
+    pendingQuestion = subRule
+      ? fillWorkflowPlaceholders(subRule.askQuestion || '', { row: rec.row, contact: rec.contact })
+      : fillWorkflowPlaceholders(workflow.plan.body || '', { row: rec.row, contact: rec.contact });
+  } else {
+    pendingQuestion = fillWorkflowPlaceholders(workflow.plan.body || '', { row: rec.row, contact: rec.contact });
+  }
   const isRelevant = await isWorkflowReplyRelevant(text, pendingQuestion);
   if (!isRelevant) return null;
   const now = new Date();
@@ -2353,5 +2867,15 @@ module.exports = {
   // options, Also do (Drive save, sheet update), Wait for attachments.
   RULE_SEND_TO_EXTRA_TARGETS, RULE_SEND_DOCUMENT_ATTACHMENTS_FROM_REPLY, RULE_THEN_WAIT_FOR_ATTACHMENTS,
   parseDetailFieldNames, mergeExtractedDetails, buildRuleSendAttachment,
-  resolveRuleReplyAttachments, runRuleAlsoDo, uploadRuleAttachmentToDrive, writeRuleSheetUpdateCell
+  resolveRuleReplyAttachments, runRuleAlsoDo, uploadRuleAttachmentToDrive, writeRuleSheetUpdateCell,
+  // PHASE 6 (2026-11) - "Next stage" (nested reply rules): completion
+  // helpers, the stage's own 3-level follow-up fallback, the nested-only
+  // "Reply in the original mail thread" sendTo value, and the stage's own
+  // progress-board manual actions (mirroring the parent-level ones above).
+  RULE_SEND_TO_REPLY_IN_THREAD, TERMINAL_STATUSES,
+  isRecordFullyDone, isRecordOpenForReplies, isStageTerminal, effectiveStageFollowUpSettings,
+  tickParentFollowUp, tickStageFollowUp,
+  stopWorkflowStage, markWorkflowStageDone, remindWorkflowStageNow,
+  approveSendWorkflowStage, declineWorkflowStageApproval, resolveUnclearWorkflowStage,
+  sanitizeWorkflowRules
 };
