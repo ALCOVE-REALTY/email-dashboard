@@ -2333,6 +2333,22 @@ const EXTRA_INFO_WAITING_STATUS = {
   hinglish: (waitingOnName) => 'Aur ' + waitingOnName + ' ke confirmation ka wait kar raha hoon, jawaab milte hi aapko bata dunga.',
   english: (waitingOnName) => "And I'm waiting for " + waitingOnName + "'s confirmation - I'll let you know as soon as I hear back."
 };
+// LIVE BUG FIX (2026-11), direct instruction, item 1 - a DIFFERENT tail
+// for the exact case where SUBH has just sent the manager a CORRECTION
+// (see classifyAwaitingManagerExtraInfo below) - deliberately its own
+// short prefix (no "Subhodeep-ke janiye dicchi" clause, which doesn't fit
+// this situation) rather than reusing EXTRA_INFO_NOTE_PREFIX/
+// EXTRA_INFO_WAITING_STATUS above.
+const EXTRA_INFO_CORRECTION_NOTE_PREFIX = {
+  banglish: 'Ami apnar ei bishoy-ta-o note kore nilam. ',
+  hinglish: 'Maine aapki yeh baat bhi note kar li hai. ',
+  english: "I've noted this as well. "
+};
+const EXTRA_INFO_CORRECTION_SENT_TO_SENDER = {
+  banglish: (thirdPartyName) => 'Ar ' + thirdPartyName + '-ke pathano confirmation-er message-o update kore pathiye dicchi, uttor pelei apnake janacchi.',
+  hinglish: (thirdPartyName) => 'Aur ' + thirdPartyName + ' ko bheja gaya confirmation message bhi update karke bhej raha hoon, jawaab milte hi aapko bata dunga.',
+  english: (thirdPartyName) => "And I'm sending " + thirdPartyName + " an updated confirmation message too - I'll let you know as soon as I hear back."
+};
 const IDENTITY_LINE_LEADING_RE = /^(Ami SUBH, Subhodeep-er HR Assistant\.|Main SUBH hoon, Subhodeep ka HR Assistant\.|I'm SUBH, Subhodeep's HR Assistant\.)\s*/;
 function stripLeadingIdentityLine(text) {
   return String(text || '').replace(IDENTITY_LINE_LEADING_RE, '');
@@ -7026,6 +7042,18 @@ const HR_CONFIRMATION_TO_MANAGER = {
   hinglish: (requesterRef, summary) => 'Aapse ek baat confirm karni thi, isliye message kiya. Thodi der pehle ' + requesterRef + ' se mujhe message mila hai ki ' + summary + '. Kya yeh aapki taraf se confirm hai?',
   english: (requesterRef, summary) => "I need a quick confirmation from you, so I'm reaching out. A little while ago I received a message from " + requesterRef + " saying that " + summary + ". Can you confirm this?"
 };
+// LIVE BUG FIX (2026-11), direct instruction, item 1 - sent to the SAME
+// manager, on top of an already-pending HR_CONFIRMATION_TO_MANAGER ask,
+// when the sender corrects a core detail (date/type/time) of that exact
+// matter before the manager has answered. `clause` is
+// classifyAwaitingManagerExtraInfo's own correctionSummaryLocalized with
+// its `{Date}` placeholder already filled - see
+// sendHrConfirmationCorrectionToManager.
+const HR_CONFIRMATION_CORRECTION_TO_MANAGER = {
+  banglish: (requesterRef, clause) => 'Ektu age je message pathiyechhilam, seta update: ' + requesterRef + ' ' + clause + ' Eta ki apnar theke confirm?',
+  hinglish: (requesterRef, clause) => 'Thodi der pehle jo message bheja tha, usme update: ' + requesterRef + ' ' + clause + ' Kya yeh aapki taraf se confirm hai?',
+  english: (requesterRef, clause) => 'An update to the message I sent a little while ago: ' + requesterRef + ' ' + clause + ' Can you confirm this?'
+};
 const HR_CONFIRMATION_MANAGER_THANKS_YES = {
   banglish: 'Apnar confirmation-er jonno onek dhonnobad.',
   hinglish: 'Aapke confirmation ke liye bahut dhanyavaad.',
@@ -7040,6 +7068,17 @@ const HR_CONFIRMATION_SENDER_RESULT_YES = {
   banglish: (thirdPartyName) => thirdPartyName + '-er sathe kotha hoye geche, uni apnar ei bishoy-ta confirm korechhen. Ebar ami puro bishoy-ta Subhodeep-ke janiye dicchi.',
   hinglish: (thirdPartyName) => thirdPartyName + ' se baat ho gayi hai, unhone aapki yeh baat confirm kar di hai. Ab main poori baat Subhodeep ko bata raha hoon.',
   english: (thirdPartyName) => "I've spoken with " + thirdPartyName + " and they've confirmed this. I'm now letting Subhodeep know the full details."
+};
+// LIVE BUG FIX (2026-11), direct instruction, item 1 part 2 - a manager
+// reply that confirms WITH a corrected date ("Friday na Thursday
+// confirmed") must tell the sender the date actually confirmed, never the
+// generic "confirmed this" wording that would silently drop the
+// correction. `datePhrase` is the resolved, calendar-correct phrase (e.g.
+// "Thursday (19 November)") - see buildCorrectedDatePhraseForResult.
+const HR_CONFIRMATION_SENDER_RESULT_YES_CORRECTED = {
+  banglish: (thirdPartyName, datePhrase, topicLabel) => thirdPartyName + ' ' + datePhrase + '-er ' + (topicLabel || 'bishoy-ta') + ' confirm korechhen. Ebar ami puro bishoy-ta Subhodeep-ke janiye dicchi.',
+  hinglish: (thirdPartyName, datePhrase, topicLabel) => thirdPartyName + ' ne ' + datePhrase + ' ke liye ' + (topicLabel || 'is baat ko') + ' confirm kar diya hai. Ab main poori baat Subhodeep ko bata raha hoon.',
+  english: (thirdPartyName, datePhrase, topicLabel) => thirdPartyName + ' has confirmed the ' + (topicLabel || 'matter') + ' for ' + datePhrase + '. I\'m now letting Subhodeep know the full details.'
 };
 const HR_CONFIRMATION_SENDER_RESULT_NO = {
   banglish: (thirdPartyName) => thirdPartyName + '-er sathe kotha hoye geche, uni ei bishoy-ta confirm korenni. Ami puro bishoy-ta Subhodeep-ke janiye dicchi, uni apnar sathe jogajog korben.',
@@ -7334,6 +7373,19 @@ async function sendHrConfirmationMessageToManager(confirmationId) {
     confirmation.thirdPartyPhone, lang
   );
   return sendRawHrConfirmationTextToManager(confirmation.thirdPartyPhone, confirmation.thirdPartyName, text, '[HR confirmation request: ' + confirmation.summary + ']');
+}
+// LIVE BUG FIX (2026-11), direct instruction, item 1 - sends a correction
+// to an ALREADY-PENDING manager-confirmation ask (the sender corrected a
+// core detail after the manager was already asked), reusing the exact
+// same draft-mode/log/disclosure-line path every other manager-facing
+// send in this flow already uses. `correctionClause` is
+// classifyAwaitingManagerExtraInfo's own correctionSummaryLocalized, with
+// its `{Date}` placeholder already filled in by the caller.
+async function sendHrConfirmationCorrectionToManager(confirmation, correctionClause) {
+  const requesterRef = requesterRefFor(confirmation.senderName, confirmation.senderPhone);
+  const tmpl = HR_CONFIRMATION_CORRECTION_TO_MANAGER[confirmation.lang] || HR_CONFIRMATION_CORRECTION_TO_MANAGER.english;
+  const text = await prependDisclosureIfNeeded(tmpl(requesterRef, correctionClause), confirmation.thirdPartyPhone, confirmation.lang);
+  return sendRawHrConfirmationTextToManager(confirmation.thirdPartyPhone, confirmation.thirdPartyName, text, '[HR confirmation correction: ' + confirmation.summary + ']');
 }
 // LIVE BUG FIX (2026-11), direct instruction, BUG 2(a) - a manager with
 // 2+ currently open ('awaiting_manager') confirmations gets ONE combined
@@ -8234,7 +8286,8 @@ function managerConfirmationReplyTool() {
               type: 'object',
               properties: {
                 index: { type: 'number', description: 'The 1-based item number exactly as listed in the prompt.' },
-                verdict: { type: 'string', enum: ['yes', 'no', 'unknown'], description: '"unknown" if this reply does not address this specific item at all, or if a bare yes/no in the reply genuinely does not make clear WHICH item(s) it is for - never guess which one.' }
+                verdict: { type: 'string', enum: ['yes', 'no', 'unknown'], description: 'LIVE BUG FIX (2026-11): "yes" if the manager confirms this item is happening/true - including when they ALSO correct a date/day FIRST (e.g. "Friday na, Thursday confirmed" means CONFIRMED for Thursday, "yes" - the correction is a correction to WHEN, never by itself a refusal, unless they go on to actually deny/refuse the item). "no" if they deny/refuse this item (with or without a corrected date). "unknown" if this reply does not address this specific item at all, or if a bare yes/no in the reply genuinely does not make clear WHICH item(s) it is for - never guess which one.' },
+                correctedDateRaw: { type: 'string', description: 'Only if the manager mentioned a DIFFERENT date/day than what was originally asked for this item (a correction, e.g. "Friday na Thursday", "not the 20th, the 19th") - the corrected date reference, transcribed EXACTLY as they said it ("Thursday", "19", "19 November") - never computed or resolved yourself, that is done in code afterwards. Omit entirely if they did not mention any date correction for this item.' }
               },
               required: ['index', 'verdict']
             },
@@ -8256,15 +8309,36 @@ async function classifyManagerConfirmationReply(text, items) {
     return await callClaudeForcedTool(apiKey, DRAFT_MODEL, [{ role: 'system', content: systemPrompt }, { role: 'user', content: text }], toolDef.name, toolDef);
   } catch (err) { return null; }
 }
-async function resolveOneHrConfirmationAnswer(confirmation, answer) {
+// LIVE BUG FIX (2026-11), direct instruction, item 1 part 2 - resolves a
+// corrected date reference the model picked up on the manager's reply
+// (classifyManagerConfirmationReply's own correctedDateRaw) into the
+// SAME calendar-correct, human phrase used everywhere else in this flow -
+// never computed by the model itself. Ambiguous/unresolvable input (or no
+// correction at all) returns null, which falls back to the plain,
+// uncorrected result wording - never a guessed or malformed date.
+function buildCorrectedDatePhraseForResult(correctedDateRaw, lang) {
+  if (!correctedDateRaw) return null;
+  const resolved = resolveHrNoteDate(correctedDateRaw, Date.now());
+  if (!resolved || resolved.ambiguous) return null;
+  return formatHrNoteDatePhrase(resolved, lang) || null;
+}
+async function resolveOneHrConfirmationAnswer(confirmation, answer, correctedDateRaw) {
   const originalMessageDate = new Date(confirmation.originalMessageAt || confirmation.createdAt || Date.now());
   const daysSinceOriginal = calendarDaysBetweenIst(originalMessageDate, new Date());
   const resultPrefix = buildHrConfirmationResultDayPrefix(confirmation.lang, confirmation.topicLabel, daysSinceOriginal, originalMessageDate);
   if (answer === 'yes') {
     await updateHrConfirmation(confirmation.id, { status: 'confirmed', resolvedAt: Date.now() });
     await closeHrConfirmationReminder(confirmation.reminderId);
-    await sendHrConfirmationResultToSender(confirmation, resultPrefix + (HR_CONFIRMATION_SENDER_RESULT_YES[confirmation.lang] || HR_CONFIRMATION_SENDER_RESULT_YES.english)(confirmation.thirdPartyName));
-    await postHrConfirmationOwnerRecord(confirmation, 'Yes (confirmed)');
+    // LIVE BUG FIX (2026-11), direct instruction - a reply that confirms
+    // WITH a corrected date ("Friday na Thursday confirmed") must tell the
+    // sender the date actually confirmed, never the generic "confirmed
+    // this" wording, which would silently drop the correction.
+    const correctedPhrase = buildCorrectedDatePhraseForResult(correctedDateRaw, confirmation.lang);
+    const resultText = correctedPhrase
+      ? (HR_CONFIRMATION_SENDER_RESULT_YES_CORRECTED[confirmation.lang] || HR_CONFIRMATION_SENDER_RESULT_YES_CORRECTED.english)(confirmation.thirdPartyName, correctedPhrase, confirmation.topicLabel)
+      : (HR_CONFIRMATION_SENDER_RESULT_YES[confirmation.lang] || HR_CONFIRMATION_SENDER_RESULT_YES.english)(confirmation.thirdPartyName);
+    await sendHrConfirmationResultToSender(confirmation, resultPrefix + resultText);
+    await postHrConfirmationOwnerRecord(confirmation, 'Yes (confirmed)' + (correctedPhrase ? ' - corrected date: ' + correctedPhrase : ''));
   } else {
     await updateHrConfirmation(confirmation.id, { status: 'declined', resolvedAt: Date.now() });
     await closeHrConfirmationReminder(confirmation.reminderId);
@@ -8336,10 +8410,10 @@ async function handleMultiHrConfirmationManagerReply({ phone, text, lang, pendin
         (modelResult.verdicts || []).forEach((v) => {
           if (v.verdict !== 'yes' && v.verdict !== 'no') return;
           const item = sorted[v.index - 1];
-          if (item && stillOpenIds.has(item.id)) modelAnswers.push({ confirmation: item, answer: v.verdict });
+          if (item && stillOpenIds.has(item.id)) modelAnswers.push({ confirmation: item, answer: v.verdict, correctedDateRaw: v.correctedDateRaw });
         });
         if (modelAnswers.length) {
-          for (const { confirmation, answer } of modelAnswers) await resolveOneHrConfirmationAnswer(confirmation, answer);
+          for (const { confirmation, answer, correctedDateRaw } of modelAnswers) await resolveOneHrConfirmationAnswer(confirmation, answer, correctedDateRaw);
           const modelResolvedIds = new Set(modelAnswers.map((a) => a.confirmation.id));
           remaining = remaining.filter((c) => !modelResolvedIds.has(c.id));
           totalResolvedCount += modelAnswers.length;
@@ -8440,11 +8514,11 @@ async function handleHrConfirmationManagerReply({ phone, text, lang, pendingConf
     }
     const verdict = (modelResult.verdicts || []).find((v) => v.index === 1);
     if (verdict && verdict.verdict === 'yes') {
-      await resolveOneHrConfirmationAnswer(confirmation, 'yes');
+      await resolveOneHrConfirmationAnswer(confirmation, 'yes', verdict.correctedDateRaw);
       return { case: 'acknowledged', replyText: HR_CONFIRMATION_MANAGER_THANKS_YES[replyLang] || HR_CONFIRMATION_MANAGER_THANKS_YES.english, summaryForOwner: null, lang: replyLang };
     }
     if (verdict && verdict.verdict === 'no') {
-      await resolveOneHrConfirmationAnswer(confirmation, 'no');
+      await resolveOneHrConfirmationAnswer(confirmation, 'no', verdict.correctedDateRaw);
       return { case: 'acknowledged', replyText: HR_CONFIRMATION_MANAGER_THANKS_NO[replyLang] || HR_CONFIRMATION_MANAGER_THANKS_NO.english, summaryForOwner: null, lang: replyLang };
     }
   }
@@ -10465,6 +10539,56 @@ async function classifyExtraInfoOnly(text, context) {
   return { hasExtraInfo: Boolean(input.hasExtraInfo), extraInfoNote: (input.hasExtraInfo && input.extraInfoNote) || null };
 }
 
+// LIVE BUG FIX (2026-11), direct instruction, item 1 - used ONLY at the
+// "sender awaiting manager confirmation" call site (never the other two
+// classifyExtraInfoOnly call sites - their own "which X"/"who told you"
+// pending-question shapes have no corresponding manager-ask text to
+// correct, so they are left exactly as-is). classifyExtraInfoOnly itself
+// had no way to express "this message CORRECTS the exact matter already
+// sent to the manager" - it could only say "more detail" (hasExtraInfo)
+// or "new matter" (false), so a genuine date/type/time change got the
+// same generic "noted, still waiting" reply as any unrelated remark, and
+// the manager kept being asked to confirm the OLD, wrong detail (the live
+// Tathagata/Subrata Das bug). One merged tool call (not two) decides
+// between a correction, ordinary extra info, or neither - the ordinary
+// extra-info branch keeps classifyExtraInfoOnly's own proven judgment
+// criteria unchanged.
+function classifyAwaitingManagerExtraInfoTool() {
+  return {
+    type: 'function',
+    function: {
+      name: 'classify_awaiting_manager_extra_info',
+      description: 'SUBH already sent a manager this exact message, asking them to confirm an HR matter for the sender (given verbatim in the system prompt), and is still waiting on their reply. The sender has now sent a NEW message. Decide: (1) does it CORRECT a core detail (the date/day, the type of leave/request, or the time) of that exact matter - e.g. "the leave application isn\'t for Friday, make it Thursday" - or (2) does it add real information about the SAME matter without changing any core detail already asked about (more context, a reason, a related fact), or (3) neither (small talk, or a genuinely new/unrelated matter).',
+      parameters: {
+        type: 'object',
+        properties: {
+          isDetailCorrection: { type: 'boolean', description: 'true ONLY if this message changes a core detail (date/day, leave/request type, or time) of the exact matter already sent to the manager - a genuine correction/update, never true at the same time as hasExtraInfo.' },
+          correctionDateRaw: { type: 'string', description: 'Required only when isDetailCorrection is true AND the correction involves a new date/day - the sender\'s own raw date reference for the CORRECTED date, transcribed EXACTLY as they said it (e.g. "Thursday", "19 November", "kal") - never computed or resolved yourself. Omit if the correction is not about the date.' },
+          correctionSummaryLocalized: { type: 'string', description: 'Required only when isDetailCorrection is true - ONE short, natural sentence, in the SAME language as the matter text given in the system prompt, structured as "<the OLD detail being replaced, copied verbatim from that given text> noy/nahi/not, <the NEW corrected detail>" (or the natural equivalent in that language) - e.g. given a matter text containing "Friday (20 November)" and the sender now saying "Leave application ta friday noi Thursday korun", write (Banglish) "Friday (20 November) noy, {Date} chhutti nite chaichhen." For the NEW date, write the literal placeholder token `{Date}` in its place (never the actual date words) - code fills it in afterwards. No leading subject/name (the sender\'s own name is already stated immediately before this sentence by the caller) - end with a period.' },
+          hasExtraInfo: { type: 'boolean', description: 'true ONLY if isDetailCorrection is false AND the message adds real information about the SAME matter already being waited on (more detail, a reason, a related fact) - never true together with isDetailCorrection. False for closing remarks, small talk, or a message raising a genuinely new/unrelated HR matter.' },
+          extraInfoNote: { type: 'string', description: 'Required only when hasExtraInfo is true - a short, neutral one-sentence summary (in English) of that information.' }
+        },
+        required: ['isDetailCorrection', 'hasExtraInfo']
+      }
+    }
+  };
+}
+async function classifyAwaitingManagerExtraInfo(text, matterText, thirdPartyName) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey || !DRAFT_MODEL) return { isDetailCorrection: false, hasExtraInfo: false };
+  const toolDef = classifyAwaitingManagerExtraInfoTool().function;
+  const systemPrompt = 'SUBH already sent ' + thirdPartyName + ' this exact message, asking them to confirm a matter for the sender: "' + matterText + '". A new message has just arrived from the SAME sender.';
+  const input = await callClaudeForcedTool(apiKey, DRAFT_MODEL, [{ role: 'system', content: systemPrompt }, { role: 'user', content: text }], toolDef.name, toolDef).catch(() => null);
+  if (!input) return { isDetailCorrection: false, hasExtraInfo: false };
+  return {
+    isDetailCorrection: Boolean(input.isDetailCorrection),
+    correctionDateRaw: (input.isDetailCorrection && input.correctionDateRaw) || null,
+    correctionSummaryLocalized: (input.isDetailCorrection && input.correctionSummaryLocalized) || null,
+    hasExtraInfo: Boolean(!input.isDetailCorrection && input.hasExtraInfo),
+    extraInfoNote: (!input.isDetailCorrection && input.hasExtraInfo && input.extraInfoNote) || null
+  };
+}
+
 function classifyTool() {
   return {
     type: 'function',
@@ -11886,10 +12010,26 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
     // ever being folded into a long-forgotten one.
     const awaitingIsRecent = awaiting && (Date.now() - (awaiting.createdAt || awaiting.originalMessageAt || 0)) < 24 * 60 * 60 * 1000;
     if (awaiting && awaitingIsRecent && !isClosingMessage(text)) {
-      const verdict = await classifyExtraInfoOnly(text, { topicLabel: awaiting.topicLabel || awaiting.summary, thirdPartyName: awaiting.thirdPartyName }).catch(() => ({ hasExtraInfo: false, extraInfoNote: null }));
+      const waitingLang = awaiting.lang || await detectLangSmart(text, history);
+      const matterText = summaryForSentence(awaiting.summaryLocalized || awaiting.summary);
+      const verdict = await classifyAwaitingManagerExtraInfo(text, matterText, awaiting.thirdPartyName).catch(() => ({ isDetailCorrection: false, hasExtraInfo: false }));
+      // LIVE BUG FIX (2026-11), direct instruction, item 1 - a genuine
+      // correction to the matter already sent to the manager actually
+      // updates the ask (a NEW message to the manager with the corrected
+      // detail), never just a generic "noted" note like ordinary extra
+      // info below.
+      if (verdict.isDetailCorrection && verdict.correctionSummaryLocalized) {
+        const resolved = verdict.correctionDateRaw ? resolveHrNoteDate(verdict.correctionDateRaw, Date.now()) : null;
+        const datePhrase = (resolved && !resolved.ambiguous) ? formatHrNoteDatePhrase(resolved, waitingLang) : null;
+        const clause = fillHrNoteDatePlaceholder(verdict.correctionSummaryLocalized, datePhrase);
+        await sendHrConfirmationCorrectionToManager(awaiting, clause);
+        await recordExtraInfoNote(phone, senderLabel, clause, 'correction sent to ' + awaiting.thirdPartyName);
+        const prefix = EXTRA_INFO_CORRECTION_NOTE_PREFIX[waitingLang] || EXTRA_INFO_CORRECTION_NOTE_PREFIX.english;
+        const tailFn = EXTRA_INFO_CORRECTION_SENT_TO_SENDER[waitingLang] || EXTRA_INFO_CORRECTION_SENT_TO_SENDER.english;
+        return { case: 'acknowledged', replyText: prefix + tailFn(awaiting.thirdPartyName), summaryForOwner: null, lang: waitingLang };
+      }
       if (verdict.hasExtraInfo) {
         await recordExtraInfoNote(phone, senderLabel, verdict.extraInfoNote || text, 'waiting on ' + awaiting.thirdPartyName + '\'s confirmation');
-        const waitingLang = awaiting.lang || await detectLangSmart(text, history);
         const prefix = EXTRA_INFO_NOTE_PREFIX[waitingLang] || EXTRA_INFO_NOTE_PREFIX.english;
         const statusFn = EXTRA_INFO_WAITING_STATUS[waitingLang] || EXTRA_INFO_WAITING_STATUS.english;
         return { case: 'acknowledged', replyText: prefix + statusFn(awaiting.thirdPartyName), summaryForOwner: null, lang: waitingLang };

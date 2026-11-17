@@ -164,6 +164,70 @@ scenario('C: a genuinely separate-topic message arriving while a manager confirm
     await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
   }
 });
+// --- item 1 (2026-11) LIVE BUG FIX, the real Tathagata/Subrata Das
+// incident - a message correcting the date of a matter ALREADY sent to
+// the manager used to get the same generic "noted, still waiting" reply
+// as any other extra context, and the manager was never told anything
+// had changed (part a); separately, a manager reply that confirmed WITH a
+// corrected date read as a flat denial of the original date (part b).
+// classifyAwaitingManagerExtraInfo/managerConfirmationReplyTool's new
+// correctedDateRaw field fix both. These replay the exact reported
+// phrasing against the REAL model, 3x each. Note: scenario C immediately
+// above is RE-RUN as part of this same task (SCENARIO_FILTER can't easily
+// combine "item 1" and "C:" in one pass, so it's run as its own small
+// extra pass) since it shares the same call site (classifyAwaitingManagerExtraInfo
+// now stands in for the old classifyExtraInfoOnly there) and must still
+// correctly treat a genuinely unrelated message as neither a correction
+// nor extra info.
+scenario('LIVE BUG FIX item 1(a): a correction to the SAME matter already sent to the manager ("friday noi Thursday korun") actually updates the manager\'s ask, never just a generic "noted" note', async () => {
+  const phone = '910000003101';
+  await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
+  try {
+    const oldDatePhrase = whatsappAssistant.formatHrNoteDatePhrase(whatsappAssistant.resolveHrNoteDate('Friday', Date.now()), 'banglish');
+    const confirmationId = await whatsappAssistant.saveHrConfirmation({
+      senderPhone: phone, senderName: 'Tathagata', summary: 'wants leave on ' + oldDatePhrase,
+      summaryLocalized: 'apni onake ' + oldDatePhrase + ' chhutti newar approval diyechhen.', lang: 'banglish',
+      thirdPartyPhone: TANMOY_MONDAL_PHONE, thirdPartyName: 'Tanmoy Mondal', thirdPartyDepartment: 'Civil',
+      topicLabel: 'chhutti', status: 'awaiting_manager', createdAt: Date.now(), remindedAt: null, escalatedAt: null, reminderId: null
+    });
+    const beforeTs = Date.now();
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'Tathagata', firstName: 'Tathagata', text: 'Leave application ta friday noi Thursday korun', isGroup: false, history: [] });
+    const confirmation = await whatsappAssistant.getHrConfirmation(confirmationId);
+    if (confirmation.status !== 'awaiting_manager') return { pass: false, detail: 'expected the confirmation to stay awaiting_manager (not resolved by the sender\'s own message), got ' + confirmation.status };
+    const log = await whatsappAssistant.listInboxLog(20);
+    const mgrEntry = log.filter((e) => e.chatId === TANMOY_MONDAL_PHONE && e.case === 'hr_confirmation_sent' && (e.sentAt || 0) >= beforeTs).sort((a, b) => (b.sentAt || 0) - (a.sentAt || 0))[0];
+    if (!mgrEntry) return { pass: false, detail: 'no correction message reached the manager - fell back to a generic note instead; sender reply was: ' + d.replyText };
+    if (!/thursday/i.test(mgrEntry.sentText)) return { pass: false, detail: 'manager correction message missing the corrected day: ' + mgrEntry.sentText };
+    if (!d.replyText || !/update/i.test(d.replyText)) return { pass: false, detail: 'sender was not told a correction had been sent: ' + d.replyText };
+    return { pass: true, detail: 'manager correction sent: ' + mgrEntry.sentText + ' | sender reply: ' + d.replyText };
+  } finally {
+    await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
+  }
+});
+scenario('LIVE BUG FIX item 1(b): a manager reply that confirms WITH a corrected date ("Friday na Thursday confirmed") is CONFIRMED for the corrected date, never read as a flat denial', async () => {
+  const phone = '910000003102';
+  await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
+  try {
+    const oldDatePhrase = whatsappAssistant.formatHrNoteDatePhrase(whatsappAssistant.resolveHrNoteDate('Friday', Date.now()), 'banglish');
+    const confirmationId = await whatsappAssistant.saveHrConfirmation({
+      senderPhone: phone, senderName: 'Tathagata', summary: 'wants leave on ' + oldDatePhrase,
+      summaryLocalized: 'apni onake ' + oldDatePhrase + ' chhutti newar approval diyechhen.', lang: 'banglish',
+      thirdPartyPhone: TANMOY_MONDAL_PHONE, thirdPartyName: 'Tanmoy Mondal', thirdPartyDepartment: 'Civil',
+      topicLabel: 'chhutti', status: 'awaiting_manager', createdAt: Date.now(), remindedAt: null, escalatedAt: null, reminderId: null
+    });
+    const d = await whatsappAssistant.decideAutoReply({ phone: TANMOY_MONDAL_PHONE, name: 'Tanmoy Mondal', firstName: 'Tanmoy', text: 'Friday na, Thursday confirmed', isGroup: false, history: [] });
+    const confirmation = await whatsappAssistant.getHrConfirmation(confirmationId);
+    if (confirmation.status !== 'confirmed') return { pass: false, detail: 'expected CONFIRMED (a date correction is a correction to WHEN, never by itself a refusal), got ' + confirmation.status };
+    const log = await whatsappAssistant.listInboxLog(20);
+    const senderEntry = log.filter((e) => e.chatId === phone && e.case === 'hr_confirmation_result').sort((a, b) => (b.sentAt || 0) - (a.sentAt || 0))[0];
+    if (!senderEntry) return { pass: false, detail: 'no result reached the sender' };
+    if (!/thursday/i.test(senderEntry.sentText)) return { pass: false, detail: 'sender result missing the corrected day: ' + senderEntry.sentText };
+    if (/confirm korenni|did not confirm|confirm nahi/i.test(senderEntry.sentText)) return { pass: false, detail: 'sender result wrongly reads as a denial: ' + senderEntry.sentText };
+    return { pass: true, detail: 'manager reply: ' + d.replyText + ' | sender result: ' + senderEntry.sentText };
+  } finally {
+    await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
+  }
+});
 // Fixed 2026-10-25 (cross-topic contamination, STEP1/2) - uses REAL
 // accumulated conversation history (matching production's actual calling
 // convention, unlike most of this file's own `history: []` checks) since

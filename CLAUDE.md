@@ -3211,3 +3211,42 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
   first, stop-over-cap followed throughout) - using `ANTHROPIC_API_KEY_TEST`
   only. All Phase 1-6 lock/regression suites reconfirmed passing unmodified.
   This closes the Workflow Automation extension project's planned 7 phases.
+- Live issues batch (2026-11), item 1 - attendance flow, two related live
+  bugs (sender Tathagata / manager Subrata Das incident). Root cause: (a)
+  a message correcting the date/type/time of a matter ALREADY sent to the
+  manager (`findSenderAwaitingManagerConfirmation`'s own "Case C" branch)
+  only ever had a generic "noted, still waiting" reply available
+  (`classifyExtraInfoOnly` could say "more detail" or "new matter", never
+  "this is a correction") - the manager kept being asked about the OLD,
+  wrong detail; (b) `managerConfirmationReplyTool`'s verdict enum had no
+  way to express "confirmed, but for a different date" - a reply like
+  "Friday na Thursday confirmed" read as a flat "no" on Friday. Fixed with
+  two scoped additions, both reusing the EXISTING `resolveHrNoteDate`/
+  `formatHrNoteDatePhrase`/`fillHrNoteDatePlaceholder` explicit-date
+  pipeline (never a second, independent date guess): a new merged
+  classifier `classifyAwaitingManagerExtraInfo` (used ONLY at the Case C
+  call site - the other two `classifyExtraInfoOnly` call sites are
+  untouched) that decides between a correction / ordinary extra info /
+  neither in ONE model call, and a new optional `correctedDateRaw` field
+  on `manager_confirmation_reply`'s own verdict items. A correction sends
+  the manager a NEW message (`HR_CONFIRMATION_CORRECTION_TO_MANAGER`,
+  `sendHrConfirmationCorrectionToManager`) and tells the sender an update
+  was sent; a manager confirmation with a corrected date gets a dedicated
+  result template (`HR_CONFIRMATION_SENDER_RESULT_YES_CORRECTED`) naming
+  the actual confirmed date - both fall back gracefully (the plain,
+  pre-existing wording) whenever the date doesn't resolve, never a crash
+  or a literal `{Date}` leaking out. 5 new deterministic tests in
+  `check-whatsapp-engine.js` (scripted model stubs, incl. 2 explicit
+  byte-for-byte regression locks proving the untouched/no-correction case
+  is unchanged) + the full 37-suite gate, all clean.
+  Locked scenarios (`scripts/check-whatsapp-scenarios.js`, real model,
+  3/3 each): item 1(a) - "Leave application ta friday noi Thursday korun"
+  while a manager ask is pending actually updates the manager's message
+  with the resolved day, never a generic note; item 1(b) - "Friday na,
+  Thursday confirmed" resolves CONFIRMED for the corrected day, never a
+  denial. The pre-existing Scenario C (an unrelated off-topic message
+  while a confirmation is pending stays unlinked) was re-run 3x since it
+  shares the same call site - still reliable, no regression.
+  Cost: estimated $0.18 (2 new scenarios) + $0.09 (Scenario C recheck) =
+  $0.27 before running; actual **$0.0263 + $0.1270 = $0.1533**, using
+  `ANTHROPIC_API_KEY_TEST` only.

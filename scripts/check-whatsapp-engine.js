@@ -100,6 +100,16 @@ let managerConfirmationModelResponse = () => ({ verdicts: [], isDeferred: false 
 function resetManagerConfirmationModelResponse() {
   managerConfirmationModelResponse = () => ({ verdicts: [], isDeferred: false });
 }
+// LIVE BUG FIX (2026-11), direct instruction, item 1 - same scripted-stub
+// pattern as managerConfirmationModelResponse above, for the NEW
+// classify_awaiting_manager_extra_info tool (sender-side correction
+// detection at the "awaiting manager confirmation" call site). Default
+// response preserves pre-existing behavior exactly (no correction, no
+// extra info) unless a test overrides it immediately before use.
+let awaitingManagerExtraInfoModelResponse = () => ({ isDetailCorrection: false, hasExtraInfo: false });
+function resetAwaitingManagerExtraInfoModelResponse() {
+  awaitingManagerExtraInfoModelResponse = () => ({ isDetailCorrection: false, hasExtraInfo: false });
+}
 function installManagerConfirmationModelStub() {
   const originalFetch = global.fetch;
   global.fetch = async (url, opts) => {
@@ -108,6 +118,10 @@ function installManagerConfirmationModelStub() {
       try { body = JSON.parse(opts.body); } catch (err) { body = null; }
       if (body && Array.isArray(body.tools) && body.tools[0] && body.tools[0].name === 'manager_confirmation_reply') {
         const result = managerConfirmationModelResponse(body);
+        return { ok: true, json: async () => ({ content: result ? [{ type: 'tool_use', input: result }] : [] }) };
+      }
+      if (body && Array.isArray(body.tools) && body.tools[0] && body.tools[0].name === 'classify_awaiting_manager_extra_info') {
+        const result = awaitingManagerExtraInfoModelResponse(body);
         return { ok: true, json: async () => ({ content: result ? [{ type: 'tool_use', input: result }] : [] }) };
       }
     }
@@ -5167,6 +5181,79 @@ async function checkAsyncRealModel(label, fn) {
     const ok = Boolean(d.replyText) && after.status === 'confirmed';
     resetManagerConfirmationModelResponse();
     await cleanupHrFlowArtifacts(MULTI_MGR_PHONE, SINGLE_SENDER2);
+    return ok;
+  });
+  console.log('='.repeat(70));
+  console.log('LIVE BUG FIX (2026-11), direct instruction, item 1 part 2 - the real "Friday na Thursday confirmed" incident: a manager reply that confirms WITH a corrected date used to read as a flat denial (the deterministic/model verdict had no way to express a correction)');
+  console.log('='.repeat(70));
+  await checkAsync('item 1(b), scripted model: a manager reply that confirms WITH a corrected date ("yes" verdict + correctedDateRaw) is CONFIRMED, and the sender is told the CORRECTED date, never the generic "confirmed this" wording', async () => {
+    const CORR_SENDER = '910000003201';
+    await cleanupHrFlowArtifacts(MULTI_MGR_PHONE, CORR_SENDER);
+    const oldDatePhrase = whatsappAssistant.formatHrNoteDatePhrase(whatsappAssistant.resolveHrNoteDate('Friday', Date.now()), 'banglish');
+    const id = await whatsappAssistant.saveHrConfirmation({ senderPhone: CORR_SENDER, senderName: 'CorrSender', summary: 'wants leave on ' + oldDatePhrase, summaryLocalized: 'apni onake ' + oldDatePhrase + ' chhutti newar approval diyechhen.', lang: 'banglish', thirdPartyPhone: MULTI_MGR_PHONE, thirdPartyName: 'Biye 73', thirdPartyDepartment: 'Site', topicLabel: 'chhutti', status: 'awaiting_manager', createdAt: Date.now(), remindedAt: null, escalatedAt: null, reminderId: null });
+    managerConfirmationModelResponse = () => ({ verdicts: [{ index: 1, verdict: 'yes', correctedDateRaw: 'Thursday' }], isDeferred: false });
+    const d = await whatsappAssistant.decideAutoReply({ phone: MULTI_MGR_PHONE, name: 'Biye 73', firstName: 'Biye', text: 'Friday na, Thursday confirmed', isGroup: false, history: [] });
+    const after = await whatsappAssistant.getHrConfirmation(id);
+    const senderEntry = (await whatsappAssistant.listInboxLog(50)).filter((e) => e.chatId === CORR_SENDER && e.case === 'hr_confirmation_result').sort((a, b) => (b.sentAt || 0) - (a.sentAt || 0))[0];
+    const ok = Boolean(d.replyText) && after.status === 'confirmed' && Boolean(senderEntry) && /thursday/i.test(senderEntry.sentText) && !/confirm korenni/i.test(senderEntry.sentText);
+    resetManagerConfirmationModelResponse();
+    await cleanupHrFlowArtifacts(MULTI_MGR_PHONE, CORR_SENDER);
+    return ok;
+  });
+  await checkAsync('item 1(b) REGRESSION: a plain "yes" verdict with NO correctedDateRaw still produces the EXACT pre-existing sender result text, byte for byte - zero behavior change for the untouched case', async () => {
+    const PLAIN_SENDER = '910000003202';
+    await cleanupHrFlowArtifacts(MULTI_MGR_PHONE, PLAIN_SENDER);
+    const id = await whatsappAssistant.saveHrConfirmation({ senderPhone: PLAIN_SENDER, senderName: 'PlainSender', summary: 'half day asbe', summaryLocalized: 'PlainSender kal half day asbe', lang: 'banglish', thirdPartyPhone: MULTI_MGR_PHONE, thirdPartyName: 'Biye 73', thirdPartyDepartment: 'Site', status: 'awaiting_manager', createdAt: Date.now(), remindedAt: null, escalatedAt: null, reminderId: null });
+    managerConfirmationModelResponse = () => ({ verdicts: [{ index: 1, verdict: 'yes' }], isDeferred: false });
+    await whatsappAssistant.decideAutoReply({ phone: MULTI_MGR_PHONE, name: 'Biye 73', firstName: 'Biye', text: 'Hmm thik ache, allow kore dilam', isGroup: false, history: [] });
+    const senderEntry = (await whatsappAssistant.listInboxLog(50)).filter((e) => e.chatId === PLAIN_SENDER && e.case === 'hr_confirmation_result').sort((a, b) => (b.sentAt || 0) - (a.sentAt || 0))[0];
+    const expectedTail = 'Biye 73-er sathe kotha hoye geche, uni apnar ei bishoy-ta confirm korechhen. Ebar ami puro bishoy-ta Subhodeep-ke janiye dicchi.';
+    const ok = Boolean(senderEntry) && senderEntry.sentText.endsWith(expectedTail);
+    resetManagerConfirmationModelResponse();
+    await cleanupHrFlowArtifacts(MULTI_MGR_PHONE, PLAIN_SENDER);
+    return ok;
+  });
+  await checkAsync('item 1(b) SAFETY: an unresolvable correctedDateRaw ("sometime next week maybe") falls back gracefully to the plain confirmed wording - never a crash, never a literal "{Date}" leaking into the sent text', async () => {
+    const AMBIG_SENDER = '910000003203';
+    await cleanupHrFlowArtifacts(MULTI_MGR_PHONE, AMBIG_SENDER);
+    const id = await whatsappAssistant.saveHrConfirmation({ senderPhone: AMBIG_SENDER, senderName: 'AmbigSender', summary: 'half day asbe', summaryLocalized: 'AmbigSender kal half day asbe', lang: 'banglish', thirdPartyPhone: MULTI_MGR_PHONE, thirdPartyName: 'Biye 73', thirdPartyDepartment: 'Site', status: 'awaiting_manager', createdAt: Date.now(), remindedAt: null, escalatedAt: null, reminderId: null });
+    managerConfirmationModelResponse = () => ({ verdicts: [{ index: 1, verdict: 'yes', correctedDateRaw: 'sometime next week maybe' }], isDeferred: false });
+    const d = await whatsappAssistant.decideAutoReply({ phone: MULTI_MGR_PHONE, name: 'Biye 73', firstName: 'Biye', text: 'confirmed, but not sure exactly when', isGroup: false, history: [] });
+    const after = await whatsappAssistant.getHrConfirmation(id);
+    const senderEntry = (await whatsappAssistant.listInboxLog(50)).filter((e) => e.chatId === AMBIG_SENDER && e.case === 'hr_confirmation_result').sort((a, b) => (b.sentAt || 0) - (a.sentAt || 0))[0];
+    const ok = Boolean(d.replyText) && after.status === 'confirmed' && Boolean(senderEntry) && !senderEntry.sentText.includes('{Date}');
+    resetManagerConfirmationModelResponse();
+    await cleanupHrFlowArtifacts(MULTI_MGR_PHONE, AMBIG_SENDER);
+    return ok;
+  });
+  console.log('='.repeat(70));
+  console.log('LIVE BUG FIX (2026-11), direct instruction, item 1 part 1 - the real Tathagata/Subrata Das incident: a message correcting the date of a matter ALREADY sent to the manager used to get the same generic "noted, still waiting" reply as any other extra context');
+  console.log('='.repeat(70));
+  await checkAsync('item 1(a), scripted model: a correction to the SAME matter already sent to the manager actually updates the manager\'s ask with the resolved date, never just a generic "noted" note', async () => {
+    const CORR_PHONE = '910000003204';
+    await cleanupHrFlowArtifacts(CORR_PHONE, MULTI_MGR_PHONE);
+    const oldDatePhrase = whatsappAssistant.formatHrNoteDatePhrase(whatsappAssistant.resolveHrNoteDate('Friday', Date.now()), 'banglish');
+    await whatsappAssistant.saveHrConfirmation({ senderPhone: CORR_PHONE, senderName: 'Tathagata', summary: 'wants leave on ' + oldDatePhrase, summaryLocalized: 'apni onake ' + oldDatePhrase + ' chhutti newar approval diyechhen.', lang: 'banglish', thirdPartyPhone: MULTI_MGR_PHONE, thirdPartyName: 'Biye 73', thirdPartyDepartment: 'Site', topicLabel: 'chhutti', status: 'awaiting_manager', createdAt: Date.now(), remindedAt: null, escalatedAt: null, reminderId: null });
+    awaitingManagerExtraInfoModelResponse = () => ({ isDetailCorrection: true, correctionDateRaw: 'Thursday', correctionSummaryLocalized: oldDatePhrase + ' noy, {Date} chhutti nite chaichhen.', hasExtraInfo: false });
+    const beforeTs = Date.now();
+    const d = await whatsappAssistant.decideAutoReply({ phone: CORR_PHONE, name: 'Tathagata', firstName: 'Tathagata', text: 'Leave application ta friday noi Thursday korun', isGroup: false, history: [] });
+    const mgrEntry = (await whatsappAssistant.listInboxLog(50)).filter((e) => e.chatId === MULTI_MGR_PHONE && e.case === 'hr_confirmation_sent' && (e.sentAt || 0) >= beforeTs).sort((a, b) => (b.sentAt || 0) - (a.sentAt || 0))[0];
+    const confirmation = (await whatsappAssistant.listAllHrConfirmations()).find((c) => c.senderPhone === CORR_PHONE);
+    const ok = Boolean(mgrEntry) && /thursday/i.test(mgrEntry.sentText) && !mgrEntry.sentText.includes('{Date}') && mgrEntry.sentText.includes('Eta ki apnar theke confirm?') && Boolean(d.replyText) && /update/i.test(d.replyText) && confirmation.status === 'awaiting_manager';
+    resetAwaitingManagerExtraInfoModelResponse();
+    await cleanupHrFlowArtifacts(CORR_PHONE, MULTI_MGR_PHONE);
+    return ok;
+  });
+  await checkAsync('item 1(a) REGRESSION: ordinary extra info (not a correction) still gets the EXACT pre-existing "noted, still waiting" reply - the old Case C behavior is fully preserved for the non-correction case', async () => {
+    const EXTRA_PHONE = '910000003205';
+    await cleanupHrFlowArtifacts(EXTRA_PHONE, MULTI_MGR_PHONE);
+    await whatsappAssistant.saveHrConfirmation({ senderPhone: EXTRA_PHONE, senderName: 'ExtraInfoSender', summary: 'half day asbe', summaryLocalized: 'ExtraInfoSender kal half day asbe', lang: 'banglish', thirdPartyPhone: MULTI_MGR_PHONE, thirdPartyName: 'Biye 73', thirdPartyDepartment: 'Site', status: 'awaiting_manager', createdAt: Date.now(), remindedAt: null, escalatedAt: null, reminderId: null });
+    awaitingManagerExtraInfoModelResponse = () => ({ isDetailCorrection: false, hasExtraInfo: true, extraInfoNote: 'mentioned a related reason' });
+    const d = await whatsappAssistant.decideAutoReply({ phone: EXTRA_PHONE, name: 'ExtraInfoSender', firstName: 'ExtraInfoSender', text: 'Ar ekta kotha, amar ekta medical appointment-o ache sheidin', isGroup: false, history: [] });
+    const expected = 'Ami apnar ei bishoy-ta-o note kore nilam, Subhodeep-ke janiye dicchi. Ar Biye 73-er confirmation-er opekkha korchhi, uttor pelei apnake janacchi.';
+    const ok = Boolean(d.replyText) && d.replyText.endsWith(expected);
+    resetAwaitingManagerExtraInfoModelResponse();
+    await cleanupHrFlowArtifacts(EXTRA_PHONE, MULTI_MGR_PHONE);
     return ok;
   });
   console.log('='.repeat(70));
