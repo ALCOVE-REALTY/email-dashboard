@@ -8934,7 +8934,14 @@
     }
     const sent = data.sent || [], skipped = data.skipped || [];
     function msgHtml(m, label) {
-      let body = '<div class="wf-auto-msg"><div class="to">' + label + ' To: ' + escapeHtml(m.to) + ' &lt;' + escapeHtml(m.addr) + '&gt;</div>';
+      // LIVE BUG FIX (2026-11), direct instruction, item 2 - the Also-send
+      // message has no separate "name" concept (it's a chip-entered email
+      // list), so the backend sets both `to` and `addr` to the SAME joined
+      // string - showing both literally duplicated the addresses ("To: a,
+      // b, c <a, b, c>"). Only append the "<addr>" part when it actually
+      // differs from `to` - every ordinary message (name != email) renders
+      // exactly as before.
+      let body = '<div class="wf-auto-msg"><div class="to">' + label + ' To: ' + escapeHtml(m.to) + (m.addr && m.addr !== m.to ? ' &lt;' + escapeHtml(m.addr) + '&gt;' : '') + '</div>';
       if (m.subject) body += '<div class="subj">Subject: ' + escapeHtml(m.subject) + '</div>';
       body += '<pre>' + escapeHtml(m.body) + '</pre>';
       if (m.table && m.table.length && m.tablePlacement !== 'pdf') body += '<div class="wf-auto-tbl"><table><tr>' + m.tableColumns.map((c) => '<th>' + escapeHtml(c) + '</th>').join('') + '</tr>' + m.table.map((r) => '<tr>' + m.tableColumns.map((c) => '<td>' + escapeHtml(r[c] == null ? '—' : String(r[c])) + '</td>').join('') + '</tr>').join('') + '</table></div>';
@@ -8944,6 +8951,16 @@
         // wfSubject.value already uses on this exact line.
         const isExcelPreview = wfAttachFormatVal() === 'excel';
         body += '<div class="wf-auto-pdf"><div class="wf-auto-pdf-name">📎 ' + escapeHtml((wfSubject.value || 'Report') + (m.who ? '-' + m.who : '') + (isExcelPreview ? '.xlsx' : '.pdf')) + '</div></div>';
+      }
+      // LIVE BUG FIX (2026-11), direct instruction, item 2 - "Attach the
+      // generated documents" (plan.also.docs) already sends this message's
+      // real attachments down as m.attachments[] (workflowService.js's own
+      // buildWorkflowMessages) - Preview simply never read it. Shows the
+      // first filename, plus a total count whenever there's more than one
+      // (e.g. "12 files)"), the same way the first messages already show
+      // theirs via the block above.
+      if (m.attachments && m.attachments.length) {
+        body += '<div class="wf-auto-pdf"><div class="wf-auto-pdf-name">📎 ' + escapeHtml(m.attachments[0].filename) + (m.attachments.length > 1 ? ' … (' + m.attachments.length + ' files)' : '') + '</div></div>';
       }
       return body + '</div>';
     }

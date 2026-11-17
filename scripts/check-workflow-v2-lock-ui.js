@@ -140,7 +140,21 @@ const SAVED_WORKFLOW = {
   });
   const previewResponse = {
     sent: [{ to: 'Hema HOD', addr: 'hema@co.test', subject: 'Probation Confirmation of Alice Emp', body: 'Dear Sir/Madam,\n\nKindly confirm the probation confirmation of Alice Emp.' }],
-    skipped: [], nextRunAt: '2026-12-01T04:30:00.000Z'
+    skipped: [], nextRunAt: '2026-12-01T04:30:00.000Z',
+    // LIVE BUG FIX (2026-11), direct instruction, item 2 - a realistic
+    // Also-send message: `to`/`addr` are the SAME joined email list (no
+    // separate "name" exists for a chip-entered address list, unlike the
+    // first message above), and `attachments` carries every generated
+    // document this run would attach - exactly the shape
+    // workflowService.js's own buildWorkflowMessages sends.
+    alsoMessage: {
+      to: 'accounts@co.test, hr@co.test', addr: 'accounts@co.test, hr@co.test',
+      subject: 'Confirmation letters batch', body: "Attached are this run's confirmation letters.",
+      attachments: [
+        { filename: 'Confirmation-Letter-Kishor-Kumar-Daga.pdf' },
+        { filename: 'Confirmation-Letter-Alice-Emp.pdf' }
+      ]
+    }
   };
   await page.route('**/api/workforce/hr-assistant/workflows/preview', (route) => {
     route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(previewResponse) });
@@ -288,6 +302,13 @@ const SAVED_WORKFLOW = {
   check('"Preview" (EDIT mode, real #wfPreviewBtn) opens the preview sheet with the mocked /workflows/preview response\'s own real message text rendered', previewState.sheetVisible && previewState.bodyText.includes('Hema HOD') && previewState.bodyText.includes('Kindly confirm the probation confirmation of Alice Emp'), 'got: ' + JSON.stringify(previewState));
   const errAfterPreview = consoleErrors.length + pageErrors.length;
   check('Preview: no JS error was thrown', errAfterPreview === errBeforePreview, 'new errors: ' + JSON.stringify(consoleErrors.slice(errBeforePreview).concat(pageErrors.slice(errBeforePreview))));
+  // LIVE BUG FIX (2026-11), direct instruction, item 2 - the Also-send
+  // message's To line must show the chip-entered addresses ONCE (never
+  // duplicated as "To: a, b <a, b>"), and must list every attachment it
+  // will carry (the "Attach the generated documents" option).
+  const alsoPreviewHtml = await page.evaluate(() => (document.getElementById('hrWorkflowPreviewBody') || {}).innerHTML || '');
+  check('Preview: the Also-send message\'s "To:" line shows the addresses ONCE, never duplicated ("To: a, b <a, b>")', !alsoPreviewHtml.includes('&lt;accounts@co.test') && alsoPreviewHtml.includes('To: accounts@co.test, hr@co.test</div>'), 'got: ' + alsoPreviewHtml);
+  check('Preview: the Also-send message lists its generated-document attachments (first filename + total count)', alsoPreviewHtml.includes('📎 Confirmation-Letter-Kishor-Kumar-Daga.pdf') && alsoPreviewHtml.includes('(2 files)'), 'got: ' + alsoPreviewHtml);
   await page.click('#hrWorkflowPreviewCloseBtn');
   await page.waitForTimeout(350);
 
