@@ -478,7 +478,12 @@ Centralized in `scripts/testBootstrap.js`, used by every `check-*.js` script:
    `ANTHROPIC_API_KEY_TEST` only, even when `RUN_REAL_MODEL=1`. No
    `ANTHROPIC_API_KEY_TEST` configured → real-model checks are skipped with a clear
    message, never a silent fallback to the live key's quota/billing. Set it in
-   `.env.local` to actually run a real-model check.
+   `.env.local` to actually run a real-model check. **Claude/an agent must NEVER set
+   `ANTHROPIC_API_KEY_TEST` itself, and never copy the live key's value into it** -
+   only Subhodeep decides that, and only he sets it (2026-11, direct instruction: he
+   set it to the same value as the live key himself, since the provider only issued
+   one key - explicit, one-time, his own action; this is not a standing license for
+   Claude to do the same copy on his behalf next time a test key is "missing").
 4. **`check-whatsapp-scenarios.js` is real-model-only by design** - a bare run (or
    `RUN_REAL_MODEL=1` with no usable test key) prints one clear message and exits
    before attempting a single scenario, rather than "running" all of them and
