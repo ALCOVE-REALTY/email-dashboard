@@ -94,6 +94,14 @@ unambiguously in its own prompt - scope must never be left to be inferred. When
 delegating further (a fork spawning its own research sub-forks, etc.), carry this same
 explicit read-only-vs-write instruction down to each one, every time.
 
+**Workflow Automation extension project (2026-11, direct instruction, after the rule
+above was violated a second time anyway - a "research-only" fork ran real-model calls
+past $1 with no estimate shown, no stop, no sign-off)**: for the rest of this project,
+no sub-forks or sub-agents of any kind - whichever agent is delegated a phase does ALL
+of its own research and building itself, directly, no further delegation down the
+chain. This is narrower than the general rule above (which still applies everywhere
+else): here, the answer to "should I spawn a helper for this" is simply no.
+
 ## Owner data safety — PERMANENT HARD RULES (PART B, 2026-11, direct instruction)
 
 Grew out of a real incident (Company Details going blank with no evidence of why) and
