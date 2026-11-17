@@ -451,6 +451,29 @@
     document.body.style.width = '';
     window.scrollTo(0, savedScrollY);
   }
+  // LIVE BUG FIX (2026-11), direct instruction, item 8 - lockBodyScroll
+  // makes <body> ITSELF position:fixed for as long as the panel is open
+  // at all, regardless of which view is showing - this is what was still
+  // trapping the 7 SUBH-Settings sub-pages' doc-scroll mode (see
+  // workforce.css's #hrAssistantPanel:has(...) rules): even once the
+  // panel itself stopped being fixed, its ANCESTOR (body) still was, so
+  // the real document still couldn't grow/scroll. Toggled from
+  // setPanelView alongside relocateRealTopbarForSettingsSubpage, only on
+  // an actual transition (never redundantly on every re-render of the
+  // same view) - entering one of these pages releases the lock so the
+  // real document can scroll (and Chrome's native pull-to-refresh can
+  // reach it); leaving re-applies it, exactly restoring every other
+  // panel page's existing fixed-overlay/keyboard-nudge protection.
+  let bodyLockSuspendedForSettingsSubpage = false;
+  function setBodyLockSuspendedForSettingsSubpage(active) {
+    if (active && !bodyLockSuspendedForSettingsSubpage) {
+      unlockBodyScroll();
+      bodyLockSuspendedForSettingsSubpage = true;
+    } else if (!active && bodyLockSuspendedForSettingsSubpage) {
+      lockBodyScroll();
+      bodyLockSuspendedForSettingsSubpage = false;
+    }
+  }
 
   // Keyboard handling, 2nd attempt - the viewport meta now carries
   // interactive-widget=resizes-content (see workforce.html), which on a
@@ -1582,6 +1605,7 @@
     // disappears, or the real dashboard underneath would be left with no
     // top bar at all. A no-op if it's already there.
     relocateRealTopbarForSettingsSubpage(false);
+    bodyLockSuspendedForSettingsSubpage = false; // same "closePanel can fire directly from a settings sub-page" edge case as the topbar reset above
     panel.hidden = true;
     unlockBodyScroll();
     if (window.visualViewport) {
@@ -2037,6 +2061,14 @@
     // `hidden` being set. An inline style always wins regardless of
     // specificity ties, so this toggles style.display directly instead.
     relocateRealTopbarForSettingsSubpage(isSettingsSubpage);
+    setBodyLockSuspendedForSettingsSubpage(isSettingsSubpage);
+    // LIVE BUG FIX (2026-11), direct instruction, item 8 - entering doc-
+    // scroll mode (see workforce.css's #hrAssistantPanel:has(...) rules)
+    // hides every other dashboard section, which can leave the real
+    // document scrolled to wherever it happened to be before - same
+    // "a fresh page starts at the top" reset every other page navigation
+    // already gets.
+    if (isSettingsSubpage) window.scrollTo(0, 0);
     if (todayUpdatesCard) todayUpdatesCard.hidden = !isHome;
     messagesEl.hidden = !isHome;
     if (commsHubPage) commsHubPage.hidden = !isCommsHub;
@@ -9451,6 +9483,16 @@
   // form (#hrAutoPage) and a single reminder's own detail page are
   // intentionally NOT included - mid-edit content should never be
   // silently replaced by a pull gesture.
+  // LIVE BUG FIX (2026-11), direct instruction, item 8 - the 7 SUBH-
+  // Settings sub-pages (hrSiteAliasesPage/hrDeptAliasesPage/
+  // hrCompanyDetailsPage/hrLetterSettingsPage/hrDataBackupsPage/
+  // hrSettingsHistoryPage/hrHolidaysPage - hrAiUsagePage was never in this
+  // list to begin with) are deliberately REMOVED from here: this custom
+  // gesture must never fire on them at all, so Chrome's own native
+  // pull-to-refresh can reach them instead (see workforce.css's own
+  // matching #hrAssistantPanel:has(...) doc-scroll rules - leaving the
+  // listener attached here would keep calling preventDefault() on a
+  // downward drag and block the native gesture regardless of that CSS).
   const WF_PTR_REFRESH_BY_ID = {
     hrAssistantMessages: () => pollCommsSummary(),
     hrHubPage: () => showHub(),
@@ -9463,13 +9505,6 @@
     hrAttendanceRequestsPage: () => loadAttendanceRequests(),
     hrActionNeededPage: () => loadActionNeeded(),
     hrTemplatesPage: () => loadTemplatesPage(),
-    hrSiteAliasesPage: () => loadSiteAliasesPage(),
-    hrDeptAliasesPage: () => loadDeptAliasesPage(),
-    hrCompanyDetailsPage: () => loadCompanyDetailsPage(),
-    hrLetterSettingsPage: () => loadLetterSettingsPage(),
-    hrDataBackupsPage: () => loadDataBackupsPage(),
-    hrSettingsHistoryPage: () => loadSettingsHistoryPage(),
-    hrHolidaysPage: () => loadHolidaysPage(),
     hrConvoPage: () => reloadConversation()
   };
   Object.keys(WF_PTR_REFRESH_BY_ID).forEach((id) => {

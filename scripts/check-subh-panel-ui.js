@@ -1623,6 +1623,85 @@ async function checkRealTopbarFrame(page, pageLabel, baseline) {
   check('ISSUE 4: no JS error was thrown prefetching or opening any of the 3 previously-cold pages', prefetchErrAfter === prefetchErrBefore,
     'new errors: ' + JSON.stringify(consoleErrors.slice(prefetchErrBefore).concat(pageErrors.slice(prefetchErrBefore))));
 
+  // LIVE BUG FIX (2026-11), direct instruction, item 8 - SUBH-Settings
+  // sub-pages must pull-to-refresh like every other software page:
+  // Chrome's own native gesture, never the custom one. Playwright can't
+  // literally trigger Chrome's own browser-chrome pull-to-refresh UI, so
+  // this proves the actual precondition it depends on instead: the real
+  // document genuinely scrolls (body is NOT position:fixed, the custom
+  // gesture's own indicator was never attached here, and a real
+  // window.scrollTo in the middle of the page actually moves it) -
+  // exactly what was broken before (two separate, compounding causes:
+  // the panel's own fixed overlay AND <body> itself also being pinned
+  // fixed for as long as the panel is open at all, regardless of page).
+  console.log('='.repeat(70));
+  console.log('item 8 - native pull-to-refresh preconditions on a SUBH-Settings sub-page (vs. an ordinary panel page, which must be completely unaffected)');
+  console.log('='.repeat(70));
+  // Same "dashboard's own staggered prefetch, unrelated to the SUBH
+  // panel" exception the file's own closing info block already documents
+  // (identical message, "Cannot read properties of undefined (reading
+  // 'all')") - re-opening the panel below can retrigger one more
+  // instance of that same pre-existing, already-dismissed background
+  // error; excluded from this block's own "no NEW error" check below via
+  // a before/after count of everything ELSE, rather than a brittle
+  // hardcoded total.
+  const DASHBOARD_PREFETCH_ERR_RE = /Cannot read properties of undefined \(reading 'all'\)/;
+  const relevantErrCountBefore = consoleErrors.concat(pageErrors).filter((e) => !DASHBOARD_PREFETCH_ERR_RE.test(e)).length;
+  await page.evaluate(() => { window.__hrAssistantOpenLetterSettings && window.__hrAssistantOpenLetterSettings(); });
+  await page.waitForTimeout(400);
+  const settingsScrollState = await page.evaluate(() => ({
+    bodyPosition: getComputedStyle(document.body).position,
+    panelPosition: getComputedStyle(document.getElementById('hrAssistantPanel')).position,
+    hasCustomIndicator: Boolean(document.getElementById('hrLetterSettingsPage').querySelector('.wf-ptr-indicator')),
+    docScrollHeight: document.documentElement.scrollHeight,
+    windowInnerHeight: window.innerHeight
+  }));
+  check('Letter settings: <body> is NOT position:fixed while this page is open (the real document can grow/scroll)', settingsScrollState.bodyPosition !== 'fixed', 'got: ' + JSON.stringify(settingsScrollState));
+  check('Letter settings: #hrAssistantPanel is NOT position:fixed either (joined normal document flow)', settingsScrollState.panelPosition !== 'fixed', 'got: ' + JSON.stringify(settingsScrollState));
+  check('Letter settings: the custom pull-to-refresh indicator was never attached to this page', !settingsScrollState.hasCustomIndicator);
+  check('Letter settings: the real document is now actually taller than the viewport (something real to scroll)', settingsScrollState.docScrollHeight > settingsScrollState.windowInnerHeight, 'got: ' + JSON.stringify(settingsScrollState));
+  await page.evaluate(() => window.scrollTo(0, 150));
+  await page.waitForTimeout(100);
+  const scrollYAfterManualScroll = await page.evaluate(() => window.scrollY);
+  check('Letter settings: a normal scroll in the middle of the page actually moves the real document (nothing is blocking it)', scrollYAfterManualScroll > 0, 'got scrollY: ' + scrollYAfterManualScroll);
+  await page.evaluate(() => window.scrollTo(0, 0));
+
+  // Leaving the settings sub-page (closing and reopening fresh, same
+  // "fresh panel open every time" convention every other check in this
+  // file already uses rather than relying on back-navigation state) must
+  // restore the EXACT pre-existing fixed-overlay protection for Home and
+  // every other page - never left permanently unlocked.
+  await page.evaluate(() => { if (window.__hrAssistantClosePanel) window.__hrAssistantClosePanel(); });
+  await page.waitForTimeout(150);
+  await page.click('#hrAssistantBtn');
+  await page.waitForTimeout(200);
+  const homeScrollState = await page.evaluate(() => ({
+    bodyPosition: getComputedStyle(document.body).position,
+    panelPosition: getComputedStyle(document.getElementById('hrAssistantPanel')).position
+  }));
+  check('Fresh panel open (Home): <body> is position:fixed again - the pre-existing overlay/keyboard-nudge protection is restored, never left permanently unlocked', homeScrollState.bodyPosition === 'fixed', 'got: ' + JSON.stringify(homeScrollState));
+  check('Fresh panel open (Home): #hrAssistantPanel is position:fixed again too', homeScrollState.panelPosition === 'fixed', 'got: ' + JSON.stringify(homeScrollState));
+
+  // Regression guard: an ORDINARY panel page (Reminders) must be
+  // completely unaffected - still the custom gesture, still a fixed
+  // body/panel, exactly as before this fix. Same Home -> Hub -> Reminders
+  // route as every other check in this file.
+  await page.click('#hrTodayUpdatesCard');
+  await page.waitForTimeout(200);
+  await page.click('#hrHubRemindersTile');
+  await page.waitForTimeout(300);
+  const remindersScrollState = await page.evaluate(() => ({
+    bodyPosition: getComputedStyle(document.body).position,
+    hasCustomIndicator: Boolean(document.getElementById('hrRemPage') && document.getElementById('hrRemPage').querySelector('.wf-ptr-indicator'))
+  }));
+  check('Reminders (an ordinary page): <body> is STILL position:fixed - this fix never touches any page outside the 7 settings sub-pages', remindersScrollState.bodyPosition === 'fixed', 'got: ' + JSON.stringify(remindersScrollState));
+  check('Reminders: still has its OWN custom pull-to-refresh indicator, untouched', remindersScrollState.hasCustomIndicator, 'got: ' + JSON.stringify(remindersScrollState));
+  const relevantErrCountAfter = consoleErrors.concat(pageErrors).filter((e) => !DASHBOARD_PREFETCH_ERR_RE.test(e)).length;
+  check('item 8: no JS error was thrown through the whole doc-scroll/body-lock toggle flow', relevantErrCountAfter === relevantErrCountBefore,
+    'got: ' + JSON.stringify(consoleErrors.concat(pageErrors).filter((e) => !DASHBOARD_PREFETCH_ERR_RE.test(e))));
+  await page.evaluate(() => { if (window.__hrAssistantClosePanel) window.__hrAssistantClosePanel(); });
+  await page.waitForTimeout(150);
+
   // Informational only, never a failure here: workforce.js's own main
   // dashboard (unrelated to the SUBH panel this check targets) fires its
   // own staggered prefetch of several analytics endpoints on load, each
