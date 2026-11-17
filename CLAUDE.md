@@ -3024,3 +3024,40 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
   scenario run this task made (2 full unfiltered runs plus the filtered
   3x/debug runs while fixing): see this batch's own commit message for
   the total.
+- Phase 5.1 (2026-11), real-model NLU locks for "Details — take from the
+  reply" (`scripts/check-workflow-nlu.js`'s new "Scenario 5") - confirms
+  Phase 5's `replyClassificationTool`/`rule.detailFields` schema change
+  actually works end to end against the real model, both the positive
+  (extracts exactly what's stated) and the negative (never hallucinates a
+  value that isn't) case. Re-ran the 2 scenarios Phase 5's own schema
+  change affects (Scenario 1/probation and Scenario 3/exit handover - the
+  only two that call `replyClassificationTool`; Scenario 2/pending-
+  documents and Scenario 4/Drive-template-by-name never call it, so
+  weren't re-run) 1x each - both still 100% clean, no regression. 3 NEW
+  locked scenarios added permanently, 3/3 reliable each, grounded in the
+  owner's own approved design reference (`docs/design/workflow-v2-sample.html`):
+  - a "No/insufficient CD balance" rule (`detailFields: 'amount'`) given
+    "CD balance is short - please arrange a transfer of Rs. 45,000 to top
+    it up." correctly classifies to that rule and extracts
+    `details.amount` ("Rs. 45,000" every run), never leaving it unasked.
+  - a "UTR details shared" rule (`detailFields: 'UTR no., amount, date'`)
+    given "Transferred Rs. 45,000 on 14th November, UTR
+    HDFC0001234567890." correctly classifies to that rule and extracts
+    all three (`details['UTR no.']`/`amount`/`date`) together, in the
+    same breath, every run.
+  - that SAME UTR rule's sibling "No UTR yet / will share later" rule
+    given "Will do tomorrow." correctly classifies to the WAITING rule
+    instead and extracts NOTHING AT ALL (no `details` object at all, not
+    even an empty one) - proving the model never hallucinates a UTR/
+    amount/date into those still-schema-available slots just because the
+    classify call's tool schema pools `detailFields` across every rule
+    passed in, not only the one that ends up matching. "AI understands,
+    code speaks" holds for a genuinely negative case too.
+  Cost gate followed exactly: pre-flight estimate (2 affected existing
+  scenarios x1 = 8 calls + 3 new scenarios x3 runs x1 call = 9 calls = 17
+  calls x $0.02/call heuristic = $0.34, well under the $1 ceiling, shown
+  before running anything) matched the suite's own post-run report
+  exactly - **17 real API calls, actual cost $0.3400** - using
+  `ANTHROPIC_API_KEY_TEST` only (confirmed set, never the live key used).
+  Preflight for a full, unfiltered future run of this script is now 20
+  calls (11 original + 9 new).

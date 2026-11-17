@@ -44,7 +44,11 @@ async function main() {
     testBootstrap.printRealApiCostLine({ count: 0, costUsd: 0 });
     process.exit(0);
   }
-  testBootstrap.preflightRealModelBudgetCheck(11, { label: '11 workflowService real-model call(s)' });
+  // 11 original (5 parseWorkflowAsk across Scenarios 1/2/3/4 + 6 classify()
+  // calls across the exit/probation reply-classification checks) + 9 NEW
+  // (Scenario 5, 2026-11 - 3 new locked reply scenarios x 3 runs each x 1
+  // classify() call each) = 20 for a full, unfiltered run of this script.
+  testBootstrap.preflightRealModelBudgetCheck(20, { label: '20 workflowService real-model call(s) (11 original + 9 for Scenario 5\'s 3 new locked scenarios x3)' });
   const workflowService = require('../src/aiAssistant/workflowService');
   const employeeService = require('../src/employeeService');
   const origGetEmployeeData = employeeService.getEmployeeData;
@@ -181,6 +185,67 @@ async function main() {
       const p3 = await classify(rules, 'Extension needed, let me check the exact number of months and get back.');
       check('probation scenario: extension WITHOUT the number yet classifies the rule but extracts no detail (so SUBH asks the follow-up question instead of guessing)', p3 && p3.ruleIndex === extIdx && !p3.detail);
     }
+
+    console.log('='.repeat(70));
+    console.log('Scenario 5 (2026-11, NEW, direct instruction) - "Details — take from the reply" (Phase 5, rule.detailFields) reply classification - locked 3/3 each, real Claude API');
+    console.log('='.repeat(70));
+    // Real-world shapes from the owner's own approved design reference
+    // (docs/design/workflow-v2-sample.html) - a "No/insufficient CD
+    // balance" rule asking for an amount, and a "UTR details shared" rule
+    // asking for UTR no./amount/date, plus its own negative sibling ("No
+    // UTR in it yet, e.g. 'will do tomorrow'") that must extract NOTHING -
+    // the AI must never guess/hallucinate a UTR that isn't actually
+    // there, even though the SAME classify call's schema still exposes
+    // those fields globally (replyClassificationTool pools detailFields
+    // across every rule passed in, not just the one that ends up
+    // matching - the real test of this negative case).
+    const cdBalanceRules = [
+      { when: 'No / insufficient CD balance', detailFields: 'amount', sendTo: 'accounts', sendSubject: 'CD balance top-up needed', sendBody: 'Please transfer Rs.{amount} to top up the CD balance.', replyText: 'Noted, following up with Accounts.', then: 'wait' },
+      { when: 'CD balance is sufficient / all good', replyText: 'Noted with thanks.', then: 'stop' }
+    ];
+    const utrRules = [
+      { when: 'UTR details shared', detailFields: 'UTR no., amount, date', replyText: 'Thanks, received - UTR {UTR no.}, Rs.{amount}, dated {date}.', then: 'stop' },
+      { when: 'No UTR yet / will share later', replyText: 'Noted, will follow up again.', then: 'wait' }
+    ];
+    // Runs the SAME real classify() call 3 times, requiring ALL 3 to
+    // satisfy assertFn - the "locked 3/3 reliable" convention this repo
+    // already uses for check-whatsapp-scenarios.js, applied here since
+    // this script has no SCENARIO_RUNS loop of its own.
+    async function runLockedReplyScenario(label, rules, replyText, assertFn) {
+      let okCount = 0;
+      let lastResult = null;
+      for (let run = 1; run <= 3; run++) {
+        const result = await classify(rules, replyText);
+        lastResult = result;
+        if (assertFn(result)) okCount++;
+      }
+      console.log('  -> ' + label + ': ' + JSON.stringify(lastResult));
+      check(label + ' (' + okCount + '/3 reliable)', okCount === 3);
+    }
+
+    await runLockedReplyScenario(
+      'NEW LOCKED: a CD-balance reply with an amount extracts it',
+      cdBalanceRules,
+      'CD balance is short - please arrange a transfer of Rs. 45,000 to top it up.',
+      (r) => Boolean(r) && r.ruleIndex === 0 && r.details && typeof r.details.amount === 'string' && /45,?000/.test(r.details.amount)
+    );
+
+    await runLockedReplyScenario(
+      'NEW LOCKED: an Accounts reply with UTR + amount + date extracts all three',
+      utrRules,
+      'Transferred Rs. 45,000 on 14th November, UTR HDFC0001234567890.',
+      (r) => Boolean(r) && r.ruleIndex === 0 && r.details &&
+        typeof r.details['UTR no.'] === 'string' && /HDFC0001234567890/.test(r.details['UTR no.']) &&
+        typeof r.details.amount === 'string' && /45,?000/.test(r.details.amount) &&
+        typeof r.details.date === 'string' && r.details.date.length > 0
+    );
+
+    await runLockedReplyScenario(
+      'NEW LOCKED: "no UTR in it" (e.g. "will do tomorrow") extracts NOTHING - never a hallucinated UTR',
+      utrRules,
+      'Will do tomorrow.',
+      (r) => Boolean(r) && r.ruleIndex === 1 && (!r.details || Object.values(r.details).every((v) => !v))
+    );
 
     console.log('='.repeat(70));
     console.log(pass + '/' + (pass + fail) + ' passed' + (fail ? ', ' + fail + ' FAILED' : ''));
