@@ -482,6 +482,21 @@ Centralized in `scripts/testBootstrap.js`, used by every `check-*.js` script:
    calls: N · cost $X`, including `N=0` - via `printRealApiCostLine(opts)`; a script
    with its own precise, token-based accounting (`check-whatsapp-scenarios.js`) passes
    its own `{count, costUsd}` instead of the heuristic default.
+   **The $1 is CUMULATIVE PER TASK, not per script invocation (2026-11, direct
+   instruction, after a live-bug-fix task ran the full `check-workflow-nlu.js` suite
+   three times plus several smaller diagnostics, $2.76 total actual spend, with no
+   step past the first $1 ever flagged or approved - each run's own preflight only
+   ever checked ITS OWN estimate against $1, never the running total for the task).**
+   Before any real-model run (full suite, filtered/scenario-only, or an ad-hoc
+   diagnostic script), add its estimated cost to every real-model spend already made
+   earlier in the SAME task/conversation; if that running total would cross $1, STOP
+   and ask Subhodeep before running it, even if the one script's own preflight would
+   pass on its own. This applies doubly to re-running a FULL, unfiltered suite (e.g.
+   re-verifying `check-workflow-nlu.js` end to end after a one-line fix) - never do
+   this more than once without explicit sign-off; prefer a smaller, targeted
+   diagnostic (a filtered scenario, or a throwaway `_tmp_diag_*.js` hitting only the
+   affected path) to re-check a fix, and only widen to the full suite once, with
+   permission, as the final pre-commit regression check.
 3. **Tests never use the live SUBH key, ever, by design** - they read
    `ANTHROPIC_API_KEY_TEST` only, even when `RUN_REAL_MODEL=1`. No
    `ANTHROPIC_API_KEY_TEST` configured → real-model checks are skipped with a clear
@@ -492,6 +507,11 @@ Centralized in `scripts/testBootstrap.js`, used by every `check-*.js` script:
    set it to the same value as the live key himself, since the provider only issued
    one key - explicit, one-time, his own action; this is not a standing license for
    Claude to do the same copy on his behalf next time a test key is "missing").
+   **Subhodeep removed `ANTHROPIC_API_KEY_TEST` from `.env` (2026-11) after the
+   cumulative-spend incident above, specifically so real-model runs stop by default**
+   - treat its absence as the normal state, not a problem to route around; ask him
+   when a real-model run is genuinely needed instead of prompting him to re-add it
+   as a reflex.
 4. **`check-whatsapp-scenarios.js` is real-model-only by design** - a bare run (or
    `RUN_REAL_MODEL=1` with no usable test key) prints one clear message and exits
    before attempting a single scenario, rather than "running" all of them and
@@ -3250,3 +3270,44 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
   Cost: estimated $0.18 (2 new scenarios) + $0.09 (Scenario C recheck) =
   $0.27 before running; actual **$0.0263 + $0.1270 = $0.1533**, using
   `ANTHROPIC_API_KEY_TEST` only.
+- Ask SUBH workflow-drafting live bug (2026-11) - a clearly-described 3-rule reply
+  workflow (Noted / CD-balance-with-a-next-stage-UTR-sub-rule / E-cards-attached)
+  kept coming back with the generic "Please tell me at least one rule for what
+  happens when someone replies" message, in both the owner's own Banglish and
+  English ask texts. Two real bugs stacked: (a) `parseWorkflowAsk`'s `max_tokens`
+  (2048) was shared with this model's own thinking tokens - confirmed live, a real
+  call spent 1002 of 2048 tokens on thinking alone, truncating the tool-call JSON
+  before `rules` was ever written; raised to 8192, plus `stop_reason: max_tokens`
+  detection so a genuine truncation gets its own specific message instead of being
+  mistaken for "no rules given", and the generic fallback now shows what WAS
+  understood from the rest of the ask; (b) `draftRule` rejected ANY rule with an
+  empty `replyText`, including the legitimate catch-all "ask the owner, send
+  nothing automatically" rule (`then: "askme"`) - found only while verifying fix
+  (a)'s reliability (the owner's own texts passed 2 of 3 real runs, purely on
+  whether the model happened to leave that one field empty, which is correct, or
+  invent a placeholder, which was incidentally accepted). Relaxed the check for
+  `askme` rules and clarified the `replyText` schema description so the model
+  reliably composes a short acknowledgment for every other rule. Locked the
+  owner's own exact Banglish and English ask texts as Scenario 7 in
+  `scripts/check-workflow-nlu.js`, 3/3 reliable each against the real model.
+  Committed `7147a7b`.
+  **Known, not-yet-fixed, unrelated flake observed during this task's own
+  verification runs**: Scenario 1's single-shot (non-3x) "also-send to the given
+  real people, with documents attached" check failed once across 3 full-suite
+  runs - the model returned `plan.also.docs: false` while `plan.docs.on: true` /
+  `attachTo: 'also'` on that one run. This is in `automationService.draftPlanFromParsed`
+  (the `also`/`docs` top-level fields), entirely untouched by this fix's changes to
+  `draftRule`/the rule-item schema - left open, not investigated further, per
+  direct instruction.
+  **Incident, cost rule violated (2026-11)**: this task's own verification burned
+  $2.76 actual real-model spend against the $1 cap - three FULL, unfiltered
+  `check-workflow-nlu.js` runs (one that genuinely needed re-running after each of
+  two real fixes, plus a third forced by a transient `ECONNRESET` mid-run) plus
+  three small throwaway diagnostics, none individually over $1 so none ever
+  tripped `preflightRealModelBudgetCheck`, but never summed against the task's
+  running total and never re-confirmed with Subhodeep once that total crossed $1.
+  He accepted the spend but tightened the rule in response (see "Cost gate" above:
+  the $1 cap is now explicitly CUMULATIVE per task, re-running a full unfiltered
+  suite more than once needs explicit sign-off, prefer a small targeted diagnostic
+  to re-check a fix) and removed `ANTHROPIC_API_KEY_TEST` from `.env` himself so
+  real-model runs stop by default until he's asked and re-adds it.
