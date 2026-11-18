@@ -388,326 +388,6 @@
         <div class="wf-rem-list" id="hrTemplatesList"></div>
       </div>
 
-      <!-- Task 2 (2026-10-28) - site aliases: an owner-editable map so a
-           colloquial site name ("Serampore", "Curve") matches the HR
-           Master's own data code for that site. "New sites found" surfaces
-           a location value never seen before (never today's already-known-
-           but-unaliased sites - those just match by their own name,
-           silently, forever) with auto-suggested aliases to Confirm/Edit.
-           Task 8 (2026-10-29) - reorganized into one card PER SITE VALUE
-           ("group"), listing that group's own aliases together, each with
-           its own Delete; a group's "Edit" bulk-replaces its alias list;
-           "+ Add" creates a new group (a site value + its initial aliases),
-           per direct instruction. -->
-      <div class="wf-comms-page" id="hrSiteAliasesPage" hidden>
-        <div class="wf-rem-list" id="hrNewSitesList"></div>
-        <!-- UI fix (2026-10-29): a little more breathing room below the
-             panel's own "Site names" title bar, matching the comfortable
-             spacing the new top-level SUBH Settings view's "Site names"
-             card now has below its title. -->
-        <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 4px 6px">
-          <span class="wf-ai-sheet-title" style="font-size:14px">Site names</span>
-          <button type="button" class="plain" id="hrSiteAliasAddBtn">+ Add</button>
-        </div>
-        <div class="wf-rem-list" id="hrSiteAliasesList"></div>
-      </div>
-
-      <div class="wf-ai-sheet-backdrop" id="hrSiteAliasSheetBackdrop" hidden></div>
-      <div class="wf-rem-sheet" id="hrSiteAliasSheet" hidden role="dialog" aria-label="Add or edit a site name group">
-        <div class="wf-ai-sheet-handle"></div>
-        <div class="wf-ai-sheet-head">
-          <button type="button" class="wf-ai-sheet-close" id="hrSiteAliasSheetCloseBtn" aria-label="Close">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-          </button>
-          <span class="wf-ai-sheet-title" id="hrSiteAliasSheetTitle">Add a new group</span>
-        </div>
-        <div class="wf-rem-sheet-body">
-          <label class="wf-rem-field"><span>Site value (as it appears in the HR Master)</span><input type="text" id="hrSiteAliasSiteValueInput" placeholder="e.g. SRM-Site" autocomplete="off" /></label>
-          <label class="wf-rem-field"><span>Colloquial names (comma-separated)</span><input type="text" id="hrSiteAliasInput" placeholder="e.g. Serampore, Srirampur" autocomplete="off" /></label>
-        </div>
-        <div class="wf-rem-sheet-foot">
-          <button type="button" class="wf-ai-action-btn outline" id="hrSiteAliasSheetCancelBtn">Cancel</button>
-          <button type="button" class="wf-ai-action-btn download" id="hrSiteAliasSheetSaveBtn"><span>Save</span></button>
-        </div>
-      </div>
-
-      <!-- Department names - full parity with Site names above, per direct
-           instruction (2026-10-30): "QC" etc. need the same owner-editable
-           alias + auto-detection of never-seen department values. Every
-           id below mirrors its Site names counterpart one-for-one. -->
-      <div class="wf-comms-page" id="hrDeptAliasesPage" hidden>
-        <div class="wf-rem-list" id="hrNewDeptsList"></div>
-        <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 4px 6px">
-          <span class="wf-ai-sheet-title" style="font-size:14px">Department names</span>
-          <button type="button" class="plain" id="hrDeptAliasAddBtn">+ Add</button>
-        </div>
-        <div class="wf-rem-list" id="hrDeptAliasesList"></div>
-      </div>
-
-      <div class="wf-ai-sheet-backdrop" id="hrDeptAliasSheetBackdrop" hidden></div>
-      <div class="wf-rem-sheet" id="hrDeptAliasSheet" hidden role="dialog" aria-label="Add or edit a department name group">
-        <div class="wf-ai-sheet-handle"></div>
-        <div class="wf-ai-sheet-head">
-          <button type="button" class="wf-ai-sheet-close" id="hrDeptAliasSheetCloseBtn" aria-label="Close">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-          </button>
-          <span class="wf-ai-sheet-title" id="hrDeptAliasSheetTitle">Add a new group</span>
-        </div>
-        <div class="wf-rem-sheet-body">
-          <label class="wf-rem-field"><span>Department value (as it appears in the HR Master)</span><input type="text" id="hrDeptAliasDeptValueInput" placeholder="e.g. QUALITY" autocomplete="off" /></label>
-          <label class="wf-rem-field"><span>Colloquial names (comma-separated)</span><input type="text" id="hrDeptAliasInput" placeholder="e.g. QC, Quality Control" autocomplete="off" /></label>
-        </div>
-        <div class="wf-rem-sheet-foot">
-          <button type="button" class="wf-ai-action-btn outline" id="hrDeptAliasSheetCancelBtn">Cancel</button>
-          <button type="button" class="wf-ai-action-btn download" id="hrDeptAliasSheetSaveBtn"><span>Save</span></button>
-        </div>
-      </div>
-
-      <!-- TASK 1(e) (2026-11), direct instruction - "Company details":
-           one card per real HR Company value (edit-only, never a separate
-           add/delete - cards come and go with the HR data), plus one
-           shared Letter logo at the top. -->
-      <div class="wf-comms-page" id="hrCompanyDetailsPage" hidden>
-        <div style="display:flex;align-items:center;justify-content:space-between;padding:4px 4px 6px">
-          <span class="wf-ai-sheet-title" style="font-size:14px">Letter logo</span>
-        </div>
-        <div class="wf-rem-list" id="hrLetterLogoRow"></div>
-        <input type="file" id="hrLetterLogoFileInput" accept="image/*" hidden />
-        <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 4px 6px">
-          <span class="wf-ai-sheet-title" style="font-size:14px">Company details</span>
-        </div>
-        <div class="wf-rem-list" id="hrCompanyDetailsList"></div>
-      </div>
-
-      <div class="wf-ai-sheet-backdrop" id="hrCompanyDetailSheetBackdrop" hidden></div>
-      <div class="wf-rem-sheet" id="hrCompanyDetailSheet" hidden role="dialog" aria-label="Edit company details">
-        <div class="wf-ai-sheet-handle"></div>
-        <div class="wf-ai-sheet-head">
-          <button type="button" class="wf-ai-sheet-close" id="hrCompanyDetailSheetCloseBtn" aria-label="Close">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-          </button>
-          <span class="wf-ai-sheet-title" id="hrCompanyDetailSheetTitle">Edit company</span>
-        </div>
-        <div class="wf-rem-sheet-body">
-          <label class="wf-rem-field"><span>Company code <span class="wf-auto-req">*</span></span><input type="text" id="hrCompanyCodeInput" maxlength="20" placeholder="e.g. ARPL" autocomplete="off" /></label>
-          <label class="wf-rem-field"><span>Registered address</span><textarea id="hrCompanyAddressInput" style="min-height:60px" autocomplete="off"></textarea></label>
-          <label class="wf-rem-field"><span>CIN / GSTIN</span><input type="text" id="hrCompanyCinInput" autocomplete="off" /></label>
-          <label class="wf-rem-field"><span>Phone</span><input type="text" id="hrCompanyPhoneInput" autocomplete="off" /></label>
-          <label class="wf-rem-field"><span>Email</span><input type="text" id="hrCompanyEmailInput" autocomplete="off" /></label>
-          <label class="wf-rem-field"><span>Website</span><input type="text" id="hrCompanyWebsiteInput" autocomplete="off" /></label>
-          <!-- PHASE 2 (2026-11), direct instruction - accountsEmails[]:
-               reuses the EXACT same chip-input component as the mail
-               compose To/Cc fields (createMailChipField, public/workforce.js)
-               and this very panel's own Also-To/Cc fields - same markup
-               shape (.wf-mail-field > .wf-mail-chip-input + its <input> +
-               the matching .wf-mail-suggest <ul>), never a new widget.
-               TASK 3 (2026-11), direct instruction - this box was missing
-               the .wf-mail-field wrapper every OTHER usage site has (it's
-               what makes .wf-mail-suggest's position:absolute anchor
-               correctly) - without it, a chip could sit inside the box
-               while another spilled outside it. Also made directoryOnly
-               (employees only, no outside emails - see createMailChipField). -->
-          <div class="wf-mail-field" style="margin-top:0;margin-bottom:0">
-            <span class="wf-mail-field-label" style="text-transform:none">Accounts emails</span>
-            <div class="wf-mail-chip-input" id="hrCompanyAccountsEmailsChipInput">
-              <input type="text" id="hrCompanyAccountsEmailsInput" autocomplete="off" placeholder="Add email..." />
-            </div>
-            <ul class="wf-mail-suggest" id="hrCompanyAccountsEmailsSuggest" hidden></ul>
-          </div>
-          <div class="wf-auto-err hidden" id="hrCompanyDetailSheetErr"></div>
-        </div>
-        <div class="wf-rem-sheet-foot">
-          <button type="button" class="wf-ai-action-btn outline" id="hrCompanyDetailSheetCancelBtn">Cancel</button>
-          <button type="button" class="wf-ai-action-btn download" id="hrCompanyDetailSheetSaveBtn"><span>Save</span></button>
-        </div>
-      </div>
-
-      <!-- TASK 1(c) (2026-11), direct instruction - "Letter settings". -->
-      <div class="wf-comms-page" id="hrLetterSettingsPage" hidden>
-        <div style="display:flex;align-items:center;justify-content:space-between;padding:4px 4px 6px">
-          <span class="wf-ai-sheet-title" style="font-size:14px">Reference number format</span>
-        </div>
-        <label class="wf-rem-field" style="padding:0 4px">
-          <span>Format (must include {Serial})</span>
-          <input type="text" id="hrLetterRefFormatInput" autocomplete="off" />
-        </label>
-        <div class="wf-auto-hint" id="hrLetterRefFormatPreview" style="padding:4px 4px 0"></div>
-        <div id="hrLetterRefFormatChips" style="display:flex;flex-wrap:wrap;gap:6px;padding:8px 4px"></div>
-        <div class="wf-auto-err hidden" id="hrLetterRefFormatErr" style="padding:0 4px"></div>
-        <div style="padding:6px 4px 0">
-          <button type="button" class="wf-ai-action-btn download" id="hrLetterRefFormatSaveBtn"><span>Save format</span></button>
-        </div>
-
-        <!-- PART C item 3 (2026-11), direct instruction - "Test employee"
-             picker: who "Send test to me" uses, shared by every letter
-             type's own Send-test button below (one picker, not one per
-             card - it's about WHICH employee's data to test with,
-             independent of which template). -->
-        <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 4px 6px">
-          <span class="wf-ai-sheet-title" style="font-size:14px">Test employee</span>
-        </div>
-        <!-- Task 4(a) (2026-11), direct instruction - the hint line and
-             search bar were sitting far below the title: each was its
-             own flex child of .wf-comms-page (gap:16px BETWEEN every
-             child), so title->hint and hint->search bar each paid that
-             16px gap separately. Wrapped in ONE outer div so they're a
-             SINGLE flex child - title->content is now exactly one 16px
-             gap, same as every other section on this page (e.g.
-             Reference number format's title->field). -->
-        <div style="padding:0 4px">
-          <div class="wf-auto-hint" style="padding:0 0 4px">Used by every "Send test to me" button below.</div>
-          <!-- ISSUE 2(a) (2026-11), direct instruction - same
-               search-and-select chip widget as every other employee
-               search in this app (e.g. Create Workflow's "Also send" To
-               field, createMailChipField in workforce.js): typing shows
-               a dropdown of matches, tapping one shows the pick as a
-               removable chip instead of plain input text. -->
-          <!-- Item 3 (2026-11), direct instruction, reworked same day (live
-               correction) - "must also be exactly the same as the
-               Organization Chart search box - same component, look and
-               dropdown behaviour; only ACTIVE employees; tap to select."
-               Investigated live: Org Chart's real searchable control is the
-               app's global select-enhancer (workforce-ui-enhance.js,
-               reused verbatim for Field mapping above, item 2) - but that
-               component only works over a small, already-fully-fetched
-               option list; this picker searches the REAL employee
-               directory (hundreds of people) with a PER-CANDIDATE
-               eligibility reason computed server-side on each keystroke
-               (see workforceRoutes.js's own comment on this exact route -
-               pre-fetching everyone up front to feed a <select> would
-               redo the sequential-eligibility-check slowness that route
-               was already rewritten to avoid). .wf-mail-suggest (this
-               picker's existing mechanism, already used by the ipWhatsapp
-               employee picker) is the right component for a server-driven
-               search like this - kept, not replaced. The one genuine,
-               confirmed visual gap against Org Chart/Employee Data's own
-               search boxes was the missing magnifying-glass icon, added
-               below (scoped to this ONE picker, not every .wf-mail-chip-
-               input app-wide - Send Mail's To/Cc fields are untouched). -->
-          <div class="wf-mail-field" style="margin:0">
-            <svg class="wf-mail-field-search-icon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="var(--muted)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-            <div class="wf-mail-chip-input" id="hrLetterTestEmployeeChipInput">
-              <input type="text" id="hrLetterTestEmployeeInput" autocomplete="off" placeholder="Search by name or employee code…" />
-            </div>
-            <ul id="hrLetterTestEmployeeSuggest" class="wf-mail-suggest" hidden></ul>
-          </div>
-        </div>
-        <div class="wf-auto-err hidden" id="hrLetterTestEmployeeErr" style="padding:4px 4px 0"></div>
-
-        <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 4px 6px">
-          <span class="wf-ai-sheet-title" style="font-size:14px">Letter codes</span>
-        </div>
-        <!-- TASK 2 (2026-11), direct instruction - "Two templates use CONF
-             - they share one serial": shown only when 2+ templates
-             currently share a code. -->
-        <div id="hrLetterDuplicateCodeWarnings"></div>
-        <div class="wf-rem-list" id="hrLetterCodesList"></div>
-
-        <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 4px 6px">
-          <span class="wf-ai-sheet-title" style="font-size:14px">Counters (current financial year)</span>
-        </div>
-        <div class="wf-rem-list" id="hrLetterCountersList"></div>
-
-        <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 4px 6px">
-          <span class="wf-ai-sheet-title" style="font-size:14px">Letter Register</span>
-        </div>
-        <div class="wf-rem-list" id="hrLetterRegisterRow"></div>
-
-        <!-- TASK 2 (2026-11), direct instruction - "if any saved workflow/
-             task still points to a built-in letter, list them for me":
-             only rendered when non-empty. -->
-        <div id="hrLetterMissingTemplatesSection" hidden>
-          <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 4px 6px">
-            <span class="wf-ai-sheet-title" style="font-size:14px">Needs a template picked</span>
-          </div>
-          <div class="wf-rem-list" id="hrLetterMissingTemplatesList"></div>
-        </div>
-      </div>
-
-      <!-- AI usage (2026-11), direct instruction - read-only: real-time
-           spend from src/aiAssistant/aiUsageLog.js, today/this week/this
-           month, live vs. tests, by feature. -->
-      <div class="wf-comms-page" id="hrAiUsagePage" hidden>
-        <div class="wf-rem-chips" id="hrAiUsageChips">
-          <button type="button" class="wf-rem-chip" data-range="today" aria-pressed="true">Today</button>
-          <button type="button" class="wf-rem-chip" data-range="week" aria-pressed="false">This week</button>
-          <button type="button" class="wf-rem-chip" data-range="month" aria-pressed="false">This month</button>
-        </div>
-        <!-- TASK 2 (2026-11), direct instruction - on its own line, same
-             chip style as the row above (a plain flex row would just
-             squeeze a 4th chip into the same line). -->
-        <div class="wf-rem-chips" id="hrAiUsageChipsYear">
-          <button type="button" class="wf-rem-chip" data-range="year" aria-pressed="false">This year</button>
-        </div>
-        <div style="display:flex;gap:10px;padding:14px 4px 6px">
-          <div style="flex:1;background:var(--wi-surface-2,rgba(0,0,0,.04));border-radius:12px;padding:10px 12px">
-            <div class="wf-auto-hint" style="margin:0">Live</div>
-            <div id="hrAiUsageLiveTotal" style="font-size:18px;font-weight:600">$0.00</div>
-          </div>
-          <div style="flex:1;background:var(--wi-surface-2,rgba(0,0,0,.04));border-radius:12px;padding:10px 12px">
-            <div class="wf-auto-hint" style="margin:0">Tests</div>
-            <div id="hrAiUsageTestTotal" style="font-size:18px;font-weight:600">$0.00</div>
-          </div>
-          <div style="flex:1;background:var(--wi-surface-2,rgba(0,0,0,.04));border-radius:12px;padding:10px 12px">
-            <div class="wf-auto-hint" style="margin:0">Total</div>
-            <div id="hrAiUsageGrandTotal" style="font-size:18px;font-weight:600">$0.00</div>
-          </div>
-        </div>
-        <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 4px 6px">
-          <span class="wf-ai-sheet-title" style="font-size:14px">By feature</span>
-        </div>
-        <div class="wf-rem-list" id="hrAiUsageFeatureList"></div>
-      </div>
-
-      <!-- Data & backups (item 4, 2026-11), direct instruction - Backup
-           now, "last night's backup" status, recent backups, Restore
-           from backup (preview -> confirm, additive-only - never
-           deletes a key that isn't in the backup file). -->
-      <div class="wf-comms-page" id="hrDataBackupsPage" hidden>
-        <div style="padding:4px 4px 10px">
-          <button type="button" class="wf-ai-action-btn download" id="hrBackupNowBtn"><span>Backup now</span></button>
-          <div id="hrBackupNowResult" class="wf-auto-hint" style="margin-top:8px"></div>
-        </div>
-        <div id="hrBackupDailyStatus" class="wf-auto-hint" style="padding:0 4px 10px"></div>
-        <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 4px 6px">
-          <span class="wf-ai-sheet-title" style="font-size:14px">Recent backups</span>
-        </div>
-        <div class="wf-rem-list" id="hrBackupRecentList"></div>
-      </div>
-
-      <div class="wf-ai-sheet-backdrop" id="hrBackupRestoreBackdrop" hidden></div>
-      <div class="wf-rem-sheet wf-auto-preview-sheet" id="hrBackupRestoreSheet" hidden role="dialog" aria-label="Restore from backup">
-        <div class="wf-ai-sheet-handle"></div>
-        <div class="wf-ai-sheet-head">
-          <button type="button" class="wf-ai-sheet-close" id="hrBackupRestoreCloseBtn" aria-label="Close">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-          </button>
-          <span class="wf-ai-sheet-title" id="hrBackupRestoreTitle">Restore from backup</span>
-        </div>
-        <div class="wf-rem-sheet-body" id="hrBackupRestoreBody"></div>
-      </div>
-
-      <!-- Settings history (TASK 3, 2026-11; ISSUE 3(b), 2026-11, direct
-           instruction - filter chips removed: one single list of every
-           write/delete to owner settings (settingsAuditLog.js's ~9 shared
-           stores + company-details' own earlier audit list), newest
-           first, with Restore per change. -->
-      <div class="wf-comms-page" id="hrSettingsHistoryPage" hidden>
-        <div class="wf-rem-list" id="hrSettingsHistoryList"></div>
-      </div>
-
-      <div class="wf-ai-sheet-backdrop" id="hrSettingsHistoryRestoreBackdrop" hidden></div>
-      <div class="wf-rem-sheet wf-auto-preview-sheet" id="hrSettingsHistoryRestoreSheet" hidden role="dialog" aria-label="Restore this change">
-        <div class="wf-ai-sheet-handle"></div>
-        <div class="wf-ai-sheet-head">
-          <button type="button" class="wf-ai-sheet-close" id="hrSettingsHistoryRestoreCloseBtn" aria-label="Close">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-          </button>
-          <span class="wf-ai-sheet-title">Restore this change</span>
-        </div>
-        <div class="wf-rem-sheet-body" id="hrSettingsHistoryRestoreBody"></div>
-      </div>
-
       <!-- PHASE 2 (2026-11), direct instruction - "Holidays": Sundays are
            always a holiday (computed, shown here read-only, never an
            input), plus a flat list of owner-added specific dates with
@@ -743,46 +423,7 @@
         </div>
       </div>
 
-      <div class="wf-ai-sheet-backdrop" id="hrLetterCounterSheetBackdrop" hidden></div>
-      <div class="wf-rem-sheet" id="hrLetterCounterSheet" hidden role="dialog" aria-label="Edit counter">
-        <div class="wf-ai-sheet-handle"></div>
-        <div class="wf-ai-sheet-head">
-          <button type="button" class="wf-ai-sheet-close" id="hrLetterCounterSheetCloseBtn" aria-label="Close">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-          </button>
-          <span class="wf-ai-sheet-title" id="hrLetterCounterSheetTitle">Edit counter</span>
-        </div>
-        <div class="wf-rem-sheet-body">
-          <label class="wf-rem-field"><span>Next number to issue</span><input type="number" min="1" step="1" id="hrLetterCounterNextInput" autocomplete="off" /></label>
-          <div class="wf-auto-err hidden" id="hrLetterCounterSheetErr"></div>
-        </div>
-        <div class="wf-rem-sheet-foot">
-          <button type="button" class="wf-ai-action-btn outline" id="hrLetterCounterSheetCancelBtn">Cancel</button>
-          <button type="button" class="wf-ai-action-btn download" id="hrLetterCounterSheetSaveBtn"><span>Save</span></button>
-        </div>
-      </div>
 
-      <!-- Field mapping review (2026-11), direct instruction - per Drive
-           template: SUBH proposes a source for every placeholder, the
-           owner reviews/changes and saves. Opened from the template's own
-           "Fields" button, or automatically by "Send test to me" when no
-           mapping is saved yet (pre-filled with the same proposal). -->
-      <div class="wf-ai-sheet-backdrop" id="hrFieldMappingSheetBackdrop" hidden></div>
-      <div class="wf-rem-sheet" id="hrFieldMappingSheet" hidden role="dialog" aria-label="Review field mapping">
-        <div class="wf-ai-sheet-handle"></div>
-        <div class="wf-ai-sheet-head">
-          <button type="button" class="wf-ai-sheet-close" id="hrFieldMappingSheetCloseBtn" aria-label="Close">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-          </button>
-          <span class="wf-ai-sheet-title" id="hrFieldMappingSheetTitle">Review fields</span>
-        </div>
-        <div class="wf-rem-sheet-body" id="hrFieldMappingList" style="max-height:50vh;overflow-y:auto"></div>
-        <div class="wf-auto-err hidden" id="hrFieldMappingSheetErr" style="padding:0 16px"></div>
-        <div class="wf-rem-sheet-foot">
-          <button type="button" class="wf-ai-action-btn outline" id="hrFieldMappingSheetCancelBtn">Cancel</button>
-          <button type="button" class="wf-ai-action-btn download" id="hrFieldMappingSheetSaveBtn"><span>Save</span></button>
-        </div>
-      </div>
 
       <!-- Save/Edit template sheet - same bottom-sheet pattern as the
            Reminders Add/Edit sheet. Opened either from "Save as template"
@@ -1416,19 +1057,6 @@
         <button type="button" class="wf-rem-add-btn outline" id="wfCancelBtn" style="width:100%;margin-top:10px">Cancel</button>
       </div>
 
-      <!-- Workflow preview/document-preview sheets - same bottom-sheet
-           pattern as hrAutoPreviewSheet. -->
-      <div class="wf-ai-sheet-backdrop" id="hrWorkflowPreviewBackdrop" hidden></div>
-      <div class="wf-rem-sheet wf-auto-preview-sheet" id="hrWorkflowPreviewSheet" hidden role="dialog" aria-label="Preview">
-        <div class="wf-ai-sheet-handle"></div>
-        <div class="wf-ai-sheet-head">
-          <button type="button" class="wf-ai-sheet-close" id="hrWorkflowPreviewCloseBtn" aria-label="Close">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-          </button>
-          <span class="wf-ai-sheet-title" id="hrWorkflowPreviewTitle">Preview</span>
-        </div>
-        <div class="wf-rem-sheet-body" id="hrWorkflowPreviewBody"></div>
-      </div>
 
       <!-- SUBH Automate Workflow - progress board (detail page). Same
            design/CSS family as Attendance Requests (wf-comms-page, filter
@@ -1479,20 +1107,6 @@
         </div>
       </div>
 
-      <!-- UI fix (2026-10-29): the old black-pill toast (#hrRemToast) is
-           removed entirely - EVERY toast across SUBH (Action needed,
-           Important WhatsApp, conversation, Open flows, Templates,
-           Reminders, Automated Tasks, SUBH Settings, Site names, hub pages)
-           now routes through this ONE shared "professional" toast
-           component (white card, shadow, rounded corners, coloured
-           accent+icon, ~3s auto-dismiss, stacked). Positioned bottom-center
-           above the assistant input bar by default; the Automated Tasks
-           pages (where the input bar is hidden and Save/Preview/Send test
-           sit at the bottom of the page instead) ask for the top-anchored
-           variant via showProToast's anchor:'top' - same markup/styling/
-           behaviour either way, just repositioned (see .anchor-top in
-           wi-theme.css). -->
-      <div class="wf-pro-toast-stack" id="wfProToastStack" aria-live="polite"></div>
 
       <!-- Automated Task preview - every message a run would send right
            now (To/Subject/body/table-or-PDF-name, red skip lines), same
@@ -3371,6 +2985,415 @@
     </div>
 
     <!-- Profile -->
+    <!-- TASK 4 (2026-11), direct instruction - the 7 SUBH Settings
+         sub-pages (Site names/Department names/Company details/Letter
+         settings/AI usage/Data & backups/Settings history) moved out of
+         the SUBH panel into normal top-level views, same page shell as
+         every other menu page (.wf-page-head with a back button + h2).
+         All logic/data/save-confirm-decline behaviour is unchanged -
+         only the markup moved; each page's own JS (hrAssistant.js) still
+         populates these same element ids. Each back button is fixed to
+         SUBH Settings (data-back-to-subh-settings, wired in
+         workforce.js), not the generic [data-back] chain, since these
+         pages can be reached from more than one place (SUBH Settings'
+         own tiles, or directly from an "Action Needed" card for AI
+         usage/Data & backups) and must always land back on SUBH
+         Settings regardless of entry point. Holidays stays inside the
+         panel, untouched - it was never part of this move. -->
+    <section id="siteAliasesView" class="wf-view" hidden>
+      <div class="wf-page-head" data-wi-enter="block">
+        <button class="wf-icon-btn" data-back-to-subh-settings aria-label="Back to SUBH Settings">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        </button>
+        <h2>Site names</h2>
+      </div>
+      <!-- Task 2 (2026-10-28) - site aliases: an owner-editable map so a
+           colloquial site name ("Serampore", "Curve") matches the HR
+           Master's own data code for that site. "New sites found" surfaces
+           a location value never seen before (never today's already-known-
+           but-unaliased sites - those just match by their own name,
+           silently, forever) with auto-suggested aliases to Confirm/Edit.
+           Task 8 (2026-10-29) - reorganized into one card PER SITE VALUE
+           ("group"), listing that group's own aliases together, each with
+           its own Delete; a group's "Edit" bulk-replaces its alias list;
+           "+ Add" creates a new group (a site value + its initial aliases),
+           per direct instruction. -->
+      <div class="wf-comms-page" id="hrSiteAliasesPage">
+        <div class="wf-rem-list" id="hrNewSitesList"></div>
+        <!-- UI fix (2026-10-29): a little more breathing room below the
+             panel's own "Site names" title bar, matching the comfortable
+             spacing the new top-level SUBH Settings view's "Site names"
+             card now has below its title. -->
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 4px 6px">
+          <span class="wf-ai-sheet-title" style="font-size:14px">Site names</span>
+          <button type="button" class="plain" id="hrSiteAliasAddBtn">+ Add</button>
+        </div>
+        <div class="wf-rem-list" id="hrSiteAliasesList"></div>
+      </div>
+
+      <div class="wf-ai-sheet-backdrop" id="hrSiteAliasSheetBackdrop" hidden></div>
+      <div class="wf-rem-sheet" id="hrSiteAliasSheet" hidden role="dialog" aria-label="Add or edit a site name group">
+        <div class="wf-ai-sheet-handle"></div>
+        <div class="wf-ai-sheet-head">
+          <button type="button" class="wf-ai-sheet-close" id="hrSiteAliasSheetCloseBtn" aria-label="Close">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+          <span class="wf-ai-sheet-title" id="hrSiteAliasSheetTitle">Add a new group</span>
+        </div>
+        <div class="wf-rem-sheet-body">
+          <label class="wf-rem-field"><span>Site value (as it appears in the HR Master)</span><input type="text" id="hrSiteAliasSiteValueInput" placeholder="e.g. SRM-Site" autocomplete="off" /></label>
+          <label class="wf-rem-field"><span>Colloquial names (comma-separated)</span><input type="text" id="hrSiteAliasInput" placeholder="e.g. Serampore, Srirampur" autocomplete="off" /></label>
+        </div>
+        <div class="wf-rem-sheet-foot">
+          <button type="button" class="wf-ai-action-btn outline" id="hrSiteAliasSheetCancelBtn">Cancel</button>
+          <button type="button" class="wf-ai-action-btn download" id="hrSiteAliasSheetSaveBtn"><span>Save</span></button>
+        </div>
+      </div>
+    </section>
+
+    <section id="deptAliasesView" class="wf-view" hidden>
+      <div class="wf-page-head" data-wi-enter="block">
+        <button class="wf-icon-btn" data-back-to-subh-settings aria-label="Back to SUBH Settings">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        </button>
+        <h2>Department names</h2>
+      </div>
+      <!-- Department names - full parity with Site names above, per direct
+           instruction (2026-10-30): "QC" etc. need the same owner-editable
+           alias + auto-detection of never-seen department values. Every
+           id below mirrors its Site names counterpart one-for-one. -->
+      <div class="wf-comms-page" id="hrDeptAliasesPage">
+        <div class="wf-rem-list" id="hrNewDeptsList"></div>
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 4px 6px">
+          <span class="wf-ai-sheet-title" style="font-size:14px">Department names</span>
+          <button type="button" class="plain" id="hrDeptAliasAddBtn">+ Add</button>
+        </div>
+        <div class="wf-rem-list" id="hrDeptAliasesList"></div>
+      </div>
+
+      <div class="wf-ai-sheet-backdrop" id="hrDeptAliasSheetBackdrop" hidden></div>
+      <div class="wf-rem-sheet" id="hrDeptAliasSheet" hidden role="dialog" aria-label="Add or edit a department name group">
+        <div class="wf-ai-sheet-handle"></div>
+        <div class="wf-ai-sheet-head">
+          <button type="button" class="wf-ai-sheet-close" id="hrDeptAliasSheetCloseBtn" aria-label="Close">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+          <span class="wf-ai-sheet-title" id="hrDeptAliasSheetTitle">Add a new group</span>
+        </div>
+        <div class="wf-rem-sheet-body">
+          <label class="wf-rem-field"><span>Department value (as it appears in the HR Master)</span><input type="text" id="hrDeptAliasDeptValueInput" placeholder="e.g. QUALITY" autocomplete="off" /></label>
+          <label class="wf-rem-field"><span>Colloquial names (comma-separated)</span><input type="text" id="hrDeptAliasInput" placeholder="e.g. QC, Quality Control" autocomplete="off" /></label>
+        </div>
+        <div class="wf-rem-sheet-foot">
+          <button type="button" class="wf-ai-action-btn outline" id="hrDeptAliasSheetCancelBtn">Cancel</button>
+          <button type="button" class="wf-ai-action-btn download" id="hrDeptAliasSheetSaveBtn"><span>Save</span></button>
+        </div>
+      </div>
+    </section>
+
+    <section id="companyDetailsView" class="wf-view" hidden>
+      <div class="wf-page-head" data-wi-enter="block">
+        <button class="wf-icon-btn" data-back-to-subh-settings aria-label="Back to SUBH Settings">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        </button>
+        <h2>Company details</h2>
+      </div>
+      <!-- TASK 1(e) (2026-11), direct instruction - "Company details":
+           one card per real HR Company value (edit-only, never a separate
+           add/delete - cards come and go with the HR data), plus one
+           shared Letter logo at the top. -->
+      <div class="wf-comms-page" id="hrCompanyDetailsPage">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:4px 4px 6px">
+          <span class="wf-ai-sheet-title" style="font-size:14px">Letter logo</span>
+        </div>
+        <div class="wf-rem-list" id="hrLetterLogoRow"></div>
+        <input type="file" id="hrLetterLogoFileInput" accept="image/*" hidden />
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 4px 6px">
+          <span class="wf-ai-sheet-title" style="font-size:14px">Company details</span>
+        </div>
+        <div class="wf-rem-list" id="hrCompanyDetailsList"></div>
+      </div>
+
+      <div class="wf-ai-sheet-backdrop" id="hrCompanyDetailSheetBackdrop" hidden></div>
+      <div class="wf-rem-sheet" id="hrCompanyDetailSheet" hidden role="dialog" aria-label="Edit company details">
+        <div class="wf-ai-sheet-handle"></div>
+        <div class="wf-ai-sheet-head">
+          <button type="button" class="wf-ai-sheet-close" id="hrCompanyDetailSheetCloseBtn" aria-label="Close">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+          <span class="wf-ai-sheet-title" id="hrCompanyDetailSheetTitle">Edit company</span>
+        </div>
+        <div class="wf-rem-sheet-body">
+          <label class="wf-rem-field"><span>Company code <span class="wf-auto-req">*</span></span><input type="text" id="hrCompanyCodeInput" maxlength="20" placeholder="e.g. ARPL" autocomplete="off" /></label>
+          <label class="wf-rem-field"><span>Registered address</span><textarea id="hrCompanyAddressInput" style="min-height:60px" autocomplete="off"></textarea></label>
+          <label class="wf-rem-field"><span>CIN / GSTIN</span><input type="text" id="hrCompanyCinInput" autocomplete="off" /></label>
+          <label class="wf-rem-field"><span>Phone</span><input type="text" id="hrCompanyPhoneInput" autocomplete="off" /></label>
+          <label class="wf-rem-field"><span>Email</span><input type="text" id="hrCompanyEmailInput" autocomplete="off" /></label>
+          <label class="wf-rem-field"><span>Website</span><input type="text" id="hrCompanyWebsiteInput" autocomplete="off" /></label>
+          <!-- PHASE 2 (2026-11), direct instruction - accountsEmails[]:
+               reuses the EXACT same chip-input component as the mail
+               compose To/Cc fields (createMailChipField, public/workforce.js)
+               and this very panel's own Also-To/Cc fields - same markup
+               shape (.wf-mail-field > .wf-mail-chip-input + its <input> +
+               the matching .wf-mail-suggest <ul>), never a new widget.
+               TASK 3 (2026-11), direct instruction - this box was missing
+               the .wf-mail-field wrapper every OTHER usage site has (it's
+               what makes .wf-mail-suggest's position:absolute anchor
+               correctly) - without it, a chip could sit inside the box
+               while another spilled outside it. Also made directoryOnly
+               (employees only, no outside emails - see createMailChipField). -->
+          <div class="wf-mail-field" style="margin-top:0;margin-bottom:0">
+            <span class="wf-mail-field-label" style="text-transform:none">Accounts emails</span>
+            <div class="wf-mail-chip-input" id="hrCompanyAccountsEmailsChipInput">
+              <input type="text" id="hrCompanyAccountsEmailsInput" autocomplete="off" placeholder="Add email..." />
+            </div>
+            <ul class="wf-mail-suggest" id="hrCompanyAccountsEmailsSuggest" hidden></ul>
+          </div>
+          <div class="wf-auto-err hidden" id="hrCompanyDetailSheetErr"></div>
+        </div>
+        <div class="wf-rem-sheet-foot">
+          <button type="button" class="wf-ai-action-btn outline" id="hrCompanyDetailSheetCancelBtn">Cancel</button>
+          <button type="button" class="wf-ai-action-btn download" id="hrCompanyDetailSheetSaveBtn"><span>Save</span></button>
+        </div>
+      </div>
+    </section>
+
+    <section id="letterSettingsView" class="wf-view" hidden>
+      <div class="wf-page-head" data-wi-enter="block">
+        <button class="wf-icon-btn" data-back-to-subh-settings aria-label="Back to SUBH Settings">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        </button>
+        <h2>Letter settings</h2>
+      </div>
+      <!-- TASK 1(c) (2026-11), direct instruction - "Letter settings". -->
+      <div class="wf-comms-page" id="hrLetterSettingsPage">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:4px 4px 6px">
+          <span class="wf-ai-sheet-title" style="font-size:14px">Reference number format</span>
+        </div>
+        <label class="wf-rem-field" style="padding:0 4px">
+          <span>Format (must include {Serial})</span>
+          <input type="text" id="hrLetterRefFormatInput" autocomplete="off" />
+        </label>
+        <div class="wf-auto-hint" id="hrLetterRefFormatPreview" style="padding:4px 4px 0"></div>
+        <div id="hrLetterRefFormatChips" style="display:flex;flex-wrap:wrap;gap:6px;padding:8px 4px"></div>
+        <div class="wf-auto-err hidden" id="hrLetterRefFormatErr" style="padding:0 4px"></div>
+        <div style="padding:6px 4px 0">
+          <button type="button" class="wf-ai-action-btn download" id="hrLetterRefFormatSaveBtn"><span>Save format</span></button>
+        </div>
+
+        <!-- PART C item 3 (2026-11), direct instruction - "Test employee"
+             picker: who "Send test to me" uses, shared by every letter
+             type's own Send-test button below (one picker, not one per
+             card - it's about WHICH employee's data to test with,
+             independent of which template). -->
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 4px 6px">
+          <span class="wf-ai-sheet-title" style="font-size:14px">Test employee</span>
+        </div>
+        <!-- Task 4(a) (2026-11), direct instruction - the hint line and
+             search bar were sitting far below the title: each was its
+             own flex child of .wf-comms-page (gap:16px BETWEEN every
+             child), so title->hint and hint->search bar each paid that
+             16px gap separately. Wrapped in ONE outer div so they're a
+             SINGLE flex child - title->content is now exactly one 16px
+             gap, same as every other section on this page (e.g.
+             Reference number format's title->field). -->
+        <div style="padding:0 4px">
+          <div class="wf-auto-hint" style="padding:0 0 4px">Used by every "Send test to me" button below.</div>
+          <!-- ISSUE 2(a) (2026-11), direct instruction - same
+               search-and-select chip widget as every other employee
+               search in this app (e.g. Create Workflow's "Also send" To
+               field, createMailChipField in workforce.js): typing shows
+               a dropdown of matches, tapping one shows the pick as a
+               removable chip instead of plain input text. -->
+          <!-- Item 3 (2026-11), direct instruction, reworked same day (live
+               correction) - "must also be exactly the same as the
+               Organization Chart search box - same component, look and
+               dropdown behaviour; only ACTIVE employees; tap to select."
+               Investigated live: Org Chart's real searchable control is the
+               app's global select-enhancer (workforce-ui-enhance.js,
+               reused verbatim for Field mapping above, item 2) - but that
+               component only works over a small, already-fully-fetched
+               option list; this picker searches the REAL employee
+               directory (hundreds of people) with a PER-CANDIDATE
+               eligibility reason computed server-side on each keystroke
+               (see workforceRoutes.js's own comment on this exact route -
+               pre-fetching everyone up front to feed a <select> would
+               redo the sequential-eligibility-check slowness that route
+               was already rewritten to avoid). .wf-mail-suggest (this
+               picker's existing mechanism, already used by the ipWhatsapp
+               employee picker) is the right component for a server-driven
+               search like this - kept, not replaced. The one genuine,
+               confirmed visual gap against Org Chart/Employee Data's own
+               search boxes was the missing magnifying-glass icon, added
+               below (scoped to this ONE picker, not every .wf-mail-chip-
+               input app-wide - Send Mail's To/Cc fields are untouched). -->
+          <div class="wf-mail-field" style="margin:0">
+            <svg class="wf-mail-field-search-icon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="var(--muted)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <div class="wf-mail-chip-input" id="hrLetterTestEmployeeChipInput">
+              <input type="text" id="hrLetterTestEmployeeInput" autocomplete="off" placeholder="Search by name or employee code…" />
+            </div>
+            <ul id="hrLetterTestEmployeeSuggest" class="wf-mail-suggest" hidden></ul>
+          </div>
+        </div>
+        <div class="wf-auto-err hidden" id="hrLetterTestEmployeeErr" style="padding:4px 4px 0"></div>
+
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 4px 6px">
+          <span class="wf-ai-sheet-title" style="font-size:14px">Letter codes</span>
+        </div>
+        <!-- TASK 2 (2026-11), direct instruction - "Two templates use CONF
+             - they share one serial": shown only when 2+ templates
+             currently share a code. -->
+        <div id="hrLetterDuplicateCodeWarnings"></div>
+        <div class="wf-rem-list" id="hrLetterCodesList"></div>
+
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 4px 6px">
+          <span class="wf-ai-sheet-title" style="font-size:14px">Counters (current financial year)</span>
+        </div>
+        <div class="wf-rem-list" id="hrLetterCountersList"></div>
+
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 4px 6px">
+          <span class="wf-ai-sheet-title" style="font-size:14px">Letter Register</span>
+        </div>
+        <div class="wf-rem-list" id="hrLetterRegisterRow"></div>
+
+        <!-- TASK 2 (2026-11), direct instruction - "if any saved workflow/
+             task still points to a built-in letter, list them for me":
+             only rendered when non-empty. -->
+        <div id="hrLetterMissingTemplatesSection" hidden>
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 4px 6px">
+            <span class="wf-ai-sheet-title" style="font-size:14px">Needs a template picked</span>
+          </div>
+          <div class="wf-rem-list" id="hrLetterMissingTemplatesList"></div>
+        </div>
+      </div>
+      <div class="wf-ai-sheet-backdrop" id="hrLetterCounterSheetBackdrop" hidden></div>
+      <div class="wf-rem-sheet" id="hrLetterCounterSheet" hidden role="dialog" aria-label="Edit counter">
+        <div class="wf-ai-sheet-handle"></div>
+        <div class="wf-ai-sheet-head">
+          <button type="button" class="wf-ai-sheet-close" id="hrLetterCounterSheetCloseBtn" aria-label="Close">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+          <span class="wf-ai-sheet-title" id="hrLetterCounterSheetTitle">Edit counter</span>
+        </div>
+        <div class="wf-rem-sheet-body">
+          <label class="wf-rem-field"><span>Next number to issue</span><input type="number" min="1" step="1" id="hrLetterCounterNextInput" autocomplete="off" /></label>
+          <div class="wf-auto-err hidden" id="hrLetterCounterSheetErr"></div>
+        </div>
+        <div class="wf-rem-sheet-foot">
+          <button type="button" class="wf-ai-action-btn outline" id="hrLetterCounterSheetCancelBtn">Cancel</button>
+          <button type="button" class="wf-ai-action-btn download" id="hrLetterCounterSheetSaveBtn"><span>Save</span></button>
+        </div>
+      </div>
+    </section>
+
+    <section id="aiUsageView" class="wf-view" hidden>
+      <div class="wf-page-head" data-wi-enter="block">
+        <button class="wf-icon-btn" data-back-to-subh-settings aria-label="Back to SUBH Settings">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        </button>
+        <h2>AI usage</h2>
+      </div>
+      <!-- AI usage (2026-11), direct instruction - read-only: real-time
+           spend from src/aiAssistant/aiUsageLog.js, today/this week/this
+           month, live vs. tests, by feature. -->
+      <div class="wf-comms-page" id="hrAiUsagePage">
+        <div class="wf-rem-chips" id="hrAiUsageChips">
+          <button type="button" class="wf-rem-chip" data-range="today" aria-pressed="true">Today</button>
+          <button type="button" class="wf-rem-chip" data-range="week" aria-pressed="false">This week</button>
+          <button type="button" class="wf-rem-chip" data-range="month" aria-pressed="false">This month</button>
+        </div>
+        <!-- TASK 2 (2026-11), direct instruction - on its own line, same
+             chip style as the row above (a plain flex row would just
+             squeeze a 4th chip into the same line). -->
+        <div class="wf-rem-chips" id="hrAiUsageChipsYear">
+          <button type="button" class="wf-rem-chip" data-range="year" aria-pressed="false">This year</button>
+        </div>
+        <div style="display:flex;gap:10px;padding:14px 4px 6px">
+          <div style="flex:1;background:var(--wi-surface-2,rgba(0,0,0,.04));border-radius:12px;padding:10px 12px">
+            <div class="wf-auto-hint" style="margin:0">Live</div>
+            <div id="hrAiUsageLiveTotal" style="font-size:18px;font-weight:600">$0.00</div>
+          </div>
+          <div style="flex:1;background:var(--wi-surface-2,rgba(0,0,0,.04));border-radius:12px;padding:10px 12px">
+            <div class="wf-auto-hint" style="margin:0">Tests</div>
+            <div id="hrAiUsageTestTotal" style="font-size:18px;font-weight:600">$0.00</div>
+          </div>
+          <div style="flex:1;background:var(--wi-surface-2,rgba(0,0,0,.04));border-radius:12px;padding:10px 12px">
+            <div class="wf-auto-hint" style="margin:0">Total</div>
+            <div id="hrAiUsageGrandTotal" style="font-size:18px;font-weight:600">$0.00</div>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 4px 6px">
+          <span class="wf-ai-sheet-title" style="font-size:14px">By feature</span>
+        </div>
+        <div class="wf-rem-list" id="hrAiUsageFeatureList"></div>
+      </div>
+    </section>
+
+    <section id="dataBackupsView" class="wf-view" hidden>
+      <div class="wf-page-head" data-wi-enter="block">
+        <button class="wf-icon-btn" data-back-to-subh-settings aria-label="Back to SUBH Settings">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        </button>
+        <h2>Data & backups</h2>
+      </div>
+      <!-- Data & backups (item 4, 2026-11), direct instruction - Backup
+           now, "last night's backup" status, recent backups, Restore
+           from backup (preview -> confirm, additive-only - never
+           deletes a key that isn't in the backup file). -->
+      <div class="wf-comms-page" id="hrDataBackupsPage">
+        <div style="padding:4px 4px 10px">
+          <button type="button" class="wf-ai-action-btn download" id="hrBackupNowBtn"><span>Backup now</span></button>
+          <div id="hrBackupNowResult" class="wf-auto-hint" style="margin-top:8px"></div>
+        </div>
+        <div id="hrBackupDailyStatus" class="wf-auto-hint" style="padding:0 4px 10px"></div>
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 4px 6px">
+          <span class="wf-ai-sheet-title" style="font-size:14px">Recent backups</span>
+        </div>
+        <div class="wf-rem-list" id="hrBackupRecentList"></div>
+      </div>
+
+      <div class="wf-ai-sheet-backdrop" id="hrBackupRestoreBackdrop" hidden></div>
+      <div class="wf-rem-sheet wf-auto-preview-sheet" id="hrBackupRestoreSheet" hidden role="dialog" aria-label="Restore from backup">
+        <div class="wf-ai-sheet-handle"></div>
+        <div class="wf-ai-sheet-head">
+          <button type="button" class="wf-ai-sheet-close" id="hrBackupRestoreCloseBtn" aria-label="Close">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+          <span class="wf-ai-sheet-title" id="hrBackupRestoreTitle">Restore from backup</span>
+        </div>
+        <div class="wf-rem-sheet-body" id="hrBackupRestoreBody"></div>
+      </div>
+    </section>
+
+    <section id="settingsHistoryView" class="wf-view" hidden>
+      <div class="wf-page-head" data-wi-enter="block">
+        <button class="wf-icon-btn" data-back-to-subh-settings aria-label="Back to SUBH Settings">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        </button>
+        <h2>Settings history</h2>
+      </div>
+      <!-- Settings history (TASK 3, 2026-11; ISSUE 3(b), 2026-11, direct
+           instruction - filter chips removed: one single list of every
+           write/delete to owner settings (settingsAuditLog.js's ~9 shared
+           stores + company-details' own earlier audit list), newest
+           first, with Restore per change. -->
+      <div class="wf-comms-page" id="hrSettingsHistoryPage">
+        <div class="wf-rem-list" id="hrSettingsHistoryList"></div>
+      </div>
+
+      <div class="wf-ai-sheet-backdrop" id="hrSettingsHistoryRestoreBackdrop" hidden></div>
+      <div class="wf-rem-sheet wf-auto-preview-sheet" id="hrSettingsHistoryRestoreSheet" hidden role="dialog" aria-label="Restore this change">
+        <div class="wf-ai-sheet-handle"></div>
+        <div class="wf-ai-sheet-head">
+          <button type="button" class="wf-ai-sheet-close" id="hrSettingsHistoryRestoreCloseBtn" aria-label="Close">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+          <span class="wf-ai-sheet-title">Restore this change</span>
+        </div>
+        <div class="wf-rem-sheet-body" id="hrSettingsHistoryRestoreBody"></div>
+      </div>
+    </section>
+
     <section id="profileView" class="wf-view" hidden>
       <div class="wf-page-head" data-wi-enter="block">
         <button class="wf-icon-btn" data-back aria-label="Back to Dashboard">
@@ -3394,6 +3417,64 @@
         </button>
       </div>
     </section>
+  </div>
+
+  <!-- Workflow preview/document-preview sheets - same bottom-sheet
+       pattern as hrAutoPreviewSheet. -->
+  <div class="wf-ai-sheet-backdrop" id="hrWorkflowPreviewBackdrop" hidden></div>
+  <div class="wf-rem-sheet wf-auto-preview-sheet" id="hrWorkflowPreviewSheet" hidden role="dialog" aria-label="Preview">
+    <div class="wf-ai-sheet-handle"></div>
+    <div class="wf-ai-sheet-head">
+      <button type="button" class="wf-ai-sheet-close" id="hrWorkflowPreviewCloseBtn" aria-label="Close">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+      <span class="wf-ai-sheet-title" id="hrWorkflowPreviewTitle">Preview</span>
+    </div>
+    <div class="wf-rem-sheet-body" id="hrWorkflowPreviewBody"></div>
+  </div>
+
+  <!-- UI fix (2026-10-29): the old black-pill toast (#hrRemToast) is
+       removed entirely - EVERY toast across SUBH (Action needed,
+       Important WhatsApp, conversation, Open flows, Templates,
+       Reminders, Automated Tasks, SUBH Settings, Site names, hub pages)
+       now routes through this ONE shared "professional" toast
+       component (white card, shadow, rounded corners, coloured
+       accent+icon, ~3s auto-dismiss, stacked). Positioned bottom-center
+       above the assistant input bar by default; the Automated Tasks
+       pages (where the input bar is hidden and Save/Preview/Send test
+       sit at the bottom of the page instead) ask for the top-anchored
+       variant via showProToast's anchor:'top' - same markup/styling/
+       behaviour either way, just repositioned (see .anchor-top in
+       wi-theme.css). -->
+  <div class="wf-pro-toast-stack" id="wfProToastStack" aria-live="polite"></div>
+
+  <!-- Field mapping review (2026-11), direct instruction - per Drive
+       template: SUBH proposes a source for every placeholder, the
+       owner reviews/changes and saves. Opened from the template's own
+       "Fields" button, or automatically by "Send test to me" when no
+       mapping is saved yet (pre-filled with the same proposal).
+       TASK 4 (2026-11), direct instruction - moved out of the SUBH panel
+       to a top-level sibling of .wf-shell: this sheet is shared by Create
+       Workflow (still inside the panel) AND Letter settings (now a
+       top-level .wf-view) - sitting inside the panel kept it invisible
+       whenever Letter settings opened it, since the panel itself is
+       closed/hidden on that page now, and a position:fixed descendant of
+       a hidden ancestor still never renders. -->
+  <div class="wf-ai-sheet-backdrop" id="hrFieldMappingSheetBackdrop" hidden></div>
+  <div class="wf-rem-sheet" id="hrFieldMappingSheet" hidden role="dialog" aria-label="Review field mapping">
+    <div class="wf-ai-sheet-handle"></div>
+    <div class="wf-ai-sheet-head">
+      <button type="button" class="wf-ai-sheet-close" id="hrFieldMappingSheetCloseBtn" aria-label="Close">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+      <span class="wf-ai-sheet-title" id="hrFieldMappingSheetTitle">Review fields</span>
+    </div>
+    <div class="wf-rem-sheet-body" id="hrFieldMappingList" style="max-height:50vh;overflow-y:auto"></div>
+    <div class="wf-auto-err hidden" id="hrFieldMappingSheetErr" style="padding:0 16px"></div>
+    <div class="wf-rem-sheet-foot">
+      <button type="button" class="wf-ai-action-btn outline" id="hrFieldMappingSheetCancelBtn">Cancel</button>
+      <button type="button" class="wf-ai-action-btn download" id="hrFieldMappingSheetSaveBtn"><span>Save</span></button>
+    </div>
   </div>
 
   <!-- Shared "Send Mail" compose popup (Doer Management, Insights Birthday

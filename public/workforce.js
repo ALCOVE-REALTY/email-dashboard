@@ -30,7 +30,8 @@ const wfDrawerBackdrop = document.getElementById('wfDrawerBackdrop');
 const menuBtn = document.getElementById('menuBtn');
 const VIEWS = [
   'overview', 'directory', 'joining', 'exit', 'attrition', 'tenure', 'movement', 'insights', 'quality',
-  'departmentFull', 'locationFull', 'movementDetail', 'doerManagement', 'orgChart', 'healthInsurance', 'coveredEmployees', 'hiAdditions', 'hiExits', 'hiTotalExits', 'hiFamilyMembers', 'hiTotalLives', 'hiPolicyInfo', 'hiFamilyPremium', 'hiAnnualPremium', 'ageDistribution', 'genderDistribution', 'collarDistribution', 'companyDistribution', 'subhSettings', 'integrations', 'profile', 'letterForm', 'letterSuccess', 'letterGenerator', 'interviewPanel'
+  'departmentFull', 'locationFull', 'movementDetail', 'doerManagement', 'orgChart', 'healthInsurance', 'coveredEmployees', 'hiAdditions', 'hiExits', 'hiTotalExits', 'hiFamilyMembers', 'hiTotalLives', 'hiPolicyInfo', 'hiFamilyPremium', 'hiAnnualPremium', 'ageDistribution', 'genderDistribution', 'collarDistribution', 'companyDistribution', 'subhSettings', 'integrations', 'profile', 'letterForm', 'letterSuccess', 'letterGenerator', 'interviewPanel',
+  'siteAliases', 'deptAliases', 'companyDetails', 'letterSettings', 'aiUsage', 'dataBackups', 'settingsHistory'
 ];
 const viewEls = Object.fromEntries(VIEWS.map((v) => [v, document.getElementById(v + 'View')]));
 
@@ -582,6 +583,20 @@ if (subhSettingsHolidaysBtn) {
     if (window.__hrAssistantOpenHolidays) window.__hrAssistantOpenHolidays();
   });
 }
+// TASK 4 (2026-11), direct instruction - the 7 Settings sub-pages (Site
+// names, Department names, Company details, Letter settings, AI usage,
+// Data & backups, Settings history) are now normal top-level views, each
+// reached from SUBH Settings (or, for AI usage/Data & backups, directly
+// from an "Action Needed" card). Their own back button always returns to
+// SUBH Settings specifically, regardless of how the sub-page was reached -
+// a fixed destination, not the generic [data-back]/viewHistory chain
+// (every one of these views is entered with resetHistory:true for exactly
+// this reason). SUBH Settings' own back button is untouched: it's only
+// ever reached via the drawer, which already resets viewHistory today, so
+// resetting it again here changes nothing about where ITS back button goes.
+document.querySelectorAll('[data-back-to-subh-settings]').forEach((btn) => {
+  btn.addEventListener('click', () => setView('subhSettings', { resetHistory: true }));
+});
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && !wfDrawer.hidden) closeDrawer();
 });

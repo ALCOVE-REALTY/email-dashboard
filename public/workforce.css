@@ -3296,10 +3296,7 @@ body:not(.printing-org-chart) .org-chart-cards-row + .org-chart-branch-connector
    default here, so .wf-shell's own padding does the ENTIRE job, exactly
    like it already does for every ordinary page. */
 #hrAssistantPanel:has(
-  #hrSiteAliasesPage:not([hidden]), #hrDeptAliasesPage:not([hidden]),
-  #hrCompanyDetailsPage:not([hidden]), #hrLetterSettingsPage:not([hidden]),
-  #hrAiUsagePage:not([hidden]), #hrDataBackupsPage:not([hidden]),
-  #hrSettingsHistoryPage:not([hidden]), #hrHolidaysPage:not([hidden])
+  #hrHolidaysPage:not([hidden])
 ) .wf-topbar.wf-topbar--in-settings-panel {
   padding: 6px 0 0;
   margin-top: 0;
@@ -3429,45 +3426,43 @@ body:not(.printing-org-chart) .org-chart-cards-row + .org-chart-branch-connector
 .wf-ptr-indicator.wf-ptr-spinning svg { animation: wfPtrSpin .8s linear infinite; }
 @keyframes wfPtrSpin { to { transform: rotate(360deg); } }
 
-/* LIVE BUG FIX (2026-11), direct instruction, item 8 - the 7 SUBH-Settings
-   sub-pages (Site names/Department names/Company details/Letter settings/
-   AI usage/Data & backups/Settings history) must pull-to-refresh like
-   every other software page: Chrome's OWN native gesture, not the custom
-   one above (see hrAssistant.js's own WF_PTR_REFRESH_BY_ID - these 7 ids
-   are deliberately absent from it now, so the custom touchstart/touchmove/
-   touchend listeners are never attached to them at all). For Chrome's
-   native gesture to actually reach them, the real <body> has to be the one
-   scrolling - impossible while they sit inside .wf-ai-panel's own fixed,
-   full-screen overlay with its own internal overflow:auto (see that rule's
-   own comment on why it exists for every OTHER page). This scopes a
-   doc-scroll mode to ONLY these 8 ids (:has() - no new JS state needed,
-   driven by the exact same [hidden] toggling setPanelView already does):
-   the panel joins normal document flow instead of staying fixed, its own
-   inner scroll container stops clipping/scrolling, and every OTHER
-   dashboard section underneath is hidden so it doesn't show through once
-   the panel is no longer an opaque fixed overlay covering it. Every other
-   page's own pull-to-refresh/panel behavior is completely untouched - the
-   :has() condition simply never matches them. */
-#hrSiteAliasesPage, #hrDeptAliasesPage, #hrCompanyDetailsPage, #hrLetterSettingsPage,
-#hrAiUsagePage, #hrDataBackupsPage, #hrSettingsHistoryPage, #hrHolidaysPage {
+/* LIVE BUG FIX (2026-11), direct instruction, item 8 - Holidays must
+   pull-to-refresh like every other software page: Chrome's OWN native
+   gesture, not the custom one above (see hrAssistant.js's own
+   WF_PTR_REFRESH_BY_ID - this id is deliberately absent from it, so the
+   custom touchstart/touchmove/touchend listeners are never attached to it
+   at all). For Chrome's native gesture to actually reach it, the real
+   <body> has to be the one scrolling - impossible while it sits inside
+   .wf-ai-panel's own fixed, full-screen overlay with its own internal
+   overflow:auto (see that rule's own comment on why it exists for every
+   OTHER page). This scopes a doc-scroll mode to ONLY this one id (:has() -
+   no new JS state needed, driven by the exact same [hidden] toggling
+   setPanelView already does): the panel joins normal document flow instead
+   of staying fixed, its own inner scroll container stops clipping/
+   scrolling, and every OTHER dashboard section underneath is hidden so it
+   doesn't show through once the panel is no longer an opaque fixed overlay
+   covering it. Every other page's own pull-to-refresh/panel behavior is
+   completely untouched - the :has() condition simply never matches them.
+   TASK 4 (2026-11), direct instruction - the other 7 ids this rule set
+   used to also list (Site names/Department names/Company details/Letter
+   settings/AI usage/Data & backups/Settings history) moved out to normal
+   top-level .wf-view pages (see workforce.html) with native document
+   scroll by default, so they never needed this doc-scroll-mode escape
+   hatch in the first place; trimmed down to Holidays, the one page still
+   living inside the panel. */
+#hrHolidaysPage {
   overflow-y: visible;
   flex: none;
 }
 #hrAssistantPanel:has(
-  #hrSiteAliasesPage:not([hidden]), #hrDeptAliasesPage:not([hidden]),
-  #hrCompanyDetailsPage:not([hidden]), #hrLetterSettingsPage:not([hidden]),
-  #hrAiUsagePage:not([hidden]), #hrDataBackupsPage:not([hidden]),
-  #hrSettingsHistoryPage:not([hidden]), #hrHolidaysPage:not([hidden])
+  #hrHolidaysPage:not([hidden])
 ) {
   position: static;
   overflow: visible;
   overscroll-behavior: auto;
 }
 .wf-shell:has(#hrAssistantPanel:has(
-  #hrSiteAliasesPage:not([hidden]), #hrDeptAliasesPage:not([hidden]),
-  #hrCompanyDetailsPage:not([hidden]), #hrLetterSettingsPage:not([hidden]),
-  #hrAiUsagePage:not([hidden]), #hrDataBackupsPage:not([hidden]),
-  #hrSettingsHistoryPage:not([hidden]), #hrHolidaysPage:not([hidden])
+  #hrHolidaysPage:not([hidden])
 )) > .wf-view {
   display: none;
 }

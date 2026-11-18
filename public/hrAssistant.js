@@ -164,7 +164,9 @@
   const templateVersionsNote = document.getElementById('hrTemplateVersionsNote');
   // Task 2 (2026-10-28) - site aliases + new site detection
   const siteAliasesBadge = document.getElementById('hrSiteAliasesBadge');
-  const siteAliasesPage = document.getElementById('hrSiteAliasesPage');
+  // TASK 4 (2026-11) - siteAliasesPage (the OLD panel-page container ref)
+  // removed: that page moved out of the panel into its own top-level
+  // view, no longer toggled via setPanelView at all.
   const siteAliasesList = document.getElementById('hrSiteAliasesList');
   const newSitesList = document.getElementById('hrNewSitesList');
   const siteAliasAddBtn = document.getElementById('hrSiteAliasAddBtn');
@@ -178,7 +180,8 @@
   const siteAliasSheetTitle = document.getElementById('hrSiteAliasSheetTitle');
   // Department names - full parity with site aliases above (2026-10-30)
   const deptAliasesBadge = document.getElementById('hrDeptAliasesBadge');
-  const deptAliasesPage = document.getElementById('hrDeptAliasesPage');
+  // TASK 4 (2026-11) - deptAliasesPage removed, same reasoning as
+  // siteAliasesPage above.
   const deptAliasesList = document.getElementById('hrDeptAliasesList');
   const newDeptsList = document.getElementById('hrNewDeptsList');
   const deptAliasAddBtn = document.getElementById('hrDeptAliasAddBtn');
@@ -192,7 +195,8 @@
   const deptAliasSheetTitle = document.getElementById('hrDeptAliasSheetTitle');
   // Company details (TASK 1e, 2026-11) - flat list, no alias-groups: one
   // card per real HR Company value, edit-only.
-  const companyDetailsPage = document.getElementById('hrCompanyDetailsPage');
+  // TASK 4 (2026-11) - companyDetailsPage removed, same reasoning as
+  // siteAliasesPage above.
   const companyDetailsList = document.getElementById('hrCompanyDetailsList');
   const letterLogoRow = document.getElementById('hrLetterLogoRow');
   const letterLogoFileInput = document.getElementById('hrLetterLogoFileInput');
@@ -218,7 +222,8 @@
   const companyAccountsEmailsField = createMailChipField('hrCompanyAccountsEmailsChipInput', 'hrCompanyAccountsEmailsInput', 'hrCompanyAccountsEmailsSuggest', { directoryOnly: true });
   // Letter settings (TASK 1c, 2026-11) - Ref No. format, letter codes,
   // counters, Letter Register link.
-  const letterSettingsPage = document.getElementById('hrLetterSettingsPage');
+  // TASK 4 (2026-11) - letterSettingsPage removed, same reasoning as
+  // siteAliasesPage above.
   const letterRefFormatInput = document.getElementById('hrLetterRefFormatInput');
   const letterRefFormatPreview = document.getElementById('hrLetterRefFormatPreview');
   const letterRefFormatChips = document.getElementById('hrLetterRefFormatChips');
@@ -262,7 +267,8 @@
   const fieldMappingList = document.getElementById('hrFieldMappingList');
   const fieldMappingSheetErr = document.getElementById('hrFieldMappingSheetErr');
   // AI usage (2026-11, direct instruction) - read-only spend summary.
-  const aiUsagePage = document.getElementById('hrAiUsagePage');
+  // TASK 4 (2026-11) - aiUsagePage removed, same reasoning as
+  // siteAliasesPage above.
   const aiUsageChips = document.getElementById('hrAiUsageChips');
   const aiUsageChipsYear = document.getElementById('hrAiUsageChipsYear'); // TASK 2 (2026-11) - "This year", its own row
   const aiUsageLiveTotal = document.getElementById('hrAiUsageLiveTotal');
@@ -271,7 +277,8 @@
   const aiUsageFeatureList = document.getElementById('hrAiUsageFeatureList');
   // Data & backups (item 4, 2026-11) - Backup now, recent backups,
   // Restore from backup.
-  const dataBackupsPage = document.getElementById('hrDataBackupsPage');
+  // TASK 4 (2026-11) - dataBackupsPage removed, same reasoning as
+  // siteAliasesPage above.
   const backupNowBtn = document.getElementById('hrBackupNowBtn');
   const backupNowResult = document.getElementById('hrBackupNowResult');
   const backupDailyStatus = document.getElementById('hrBackupDailyStatus');
@@ -282,7 +289,8 @@
   const backupRestoreTitle = document.getElementById('hrBackupRestoreTitle');
   const backupRestoreBody = document.getElementById('hrBackupRestoreBody');
   // Settings history (TASK 3, 2026-11, direct instruction).
-  const settingsHistoryPage = document.getElementById('hrSettingsHistoryPage');
+  // TASK 4 (2026-11) - settingsHistoryPage removed, same reasoning as
+  // siteAliasesPage above.
   const settingsHistoryList = document.getElementById('hrSettingsHistoryList');
   const settingsHistoryRestoreBackdrop = document.getElementById('hrSettingsHistoryRestoreBackdrop');
   const settingsHistoryRestoreSheet = document.getElementById('hrSettingsHistoryRestoreSheet');
@@ -1978,13 +1986,12 @@
     else if (entry.type === 'openFlows') showOpenFlows();
     else if (entry.type === 'attendanceRequests') showAttendanceRequests();
     else if (entry.type === 'templates') showTemplates();
-    else if (entry.type === 'siteAliases') showSiteAliases();
-    else if (entry.type === 'deptAliases') showDeptAliases();
-    else if (entry.type === 'companyDetails') showCompanyDetails();
-    else if (entry.type === 'letterSettings') showLetterSettings();
-    else if (entry.type === 'dataBackups') showDataBackups();
-    else if (entry.type === 'aiUsage') showAiUsage();
-    else if (entry.type === 'settingsHistory') showSettingsHistory();
+    // TASK 4 (2026-11), direct instruction - the 7 siteAliases/deptAliases/
+    // companyDetails/letterSettings/dataBackups/aiUsage/settingsHistory
+    // branches that used to be here are gone: those pages moved out of the
+    // panel entirely (see __hrAssistantOpenSiteAliases and its siblings
+    // above) and navStack can never contain one of their old `type`
+    // values again. 'holidays' stays - that page did NOT move.
     else if (entry.type === 'holidays') showHolidays();
     else if (entry.type === 'actionNeeded') showActionNeeded();
     else if (entry.type === 'conversation') openConversationPage(entry.chatId);
@@ -2037,19 +2044,18 @@
     const isOpenFlows = view === 'openFlows';
     const isAttendanceRequests = view === 'attendanceRequests';
     const isTemplates = view === 'templates';
-    const isSiteAliases = view === 'siteAliases';
-    const isDeptAliases = view === 'deptAliases';
-    const isCompanyDetails = view === 'companyDetails';
-    const isLetterSettings = view === 'letterSettings';
-    const isAiUsage = view === 'aiUsage';
-    const isDataBackups = view === 'dataBackups';
-    const isSettingsHistory = view === 'settingsHistory'; // TASK 3 (2026-11)
+    // TASK 4 (2026-11), direct instruction - siteAliases/deptAliases/
+    // companyDetails/letterSettings/aiUsage/dataBackups/settingsHistory
+    // moved OUT of the panel entirely (normal top-level views now - see
+    // __hrAssistantOpenSiteAliases and its siblings) - setPanelView can
+    // never be called with any of their old view names again, so their
+    // own isXxx flags are gone. Holidays did NOT move - it still shows
+    // the real #wfTopbar + doc-scroll mode exactly as before.
     const isHolidays = view === 'holidays'; // PHASE 2 (2026-11), direct instruction
-    // Page frame (2026-11, direct instruction; reworked same day) - the 7
-    // SUBH-Settings sub-pages (now 8, with Holidays), and ONLY these, show
-    // the REAL #wfTopbar above the normal back-button+heading row (see
-    // relocateRealTopbarForSettingsSubpage's own comment above).
-    const isSettingsSubpage = isSiteAliases || isDeptAliases || isCompanyDetails || isLetterSettings || isAiUsage || isDataBackups || isSettingsHistory || isHolidays;
+    // Page frame (2026-11, direct instruction) - Holidays, and ONLY it
+    // now, shows the REAL #wfTopbar above the normal back-button+heading
+    // row (see relocateRealTopbarForSettingsSubpage's own comment above).
+    const isSettingsSubpage = isHolidays;
     const isActionNeeded = view === 'actionNeeded';
     const isAutoList = view === 'automationList';
     const isAutomation = view === 'automation';
@@ -2094,13 +2100,16 @@
     if (openFlowsPage) openFlowsPage.hidden = !isOpenFlows;
     if (attnPage) attnPage.hidden = !isAttendanceRequests;
     if (templatesPage) templatesPage.hidden = !isTemplates;
-    if (siteAliasesPage) siteAliasesPage.hidden = !isSiteAliases;
-    if (deptAliasesPage) deptAliasesPage.hidden = !isDeptAliases;
-    if (companyDetailsPage) companyDetailsPage.hidden = !isCompanyDetails;
-    if (letterSettingsPage) letterSettingsPage.hidden = !isLetterSettings;
-    if (aiUsagePage) aiUsagePage.hidden = !isAiUsage;
-    if (dataBackupsPage) dataBackupsPage.hidden = !isDataBackups;
-    if (settingsHistoryPage) settingsHistoryPage.hidden = !isSettingsHistory;
+    // TASK 4 (2026-11) - the 7 siteAliasesPage/deptAliasesPage/
+    // companyDetailsPage/letterSettingsPage/aiUsagePage/dataBackupsPage/
+    // settingsHistoryPage .hidden toggles that used to be here are gone:
+    // those elements moved out of the panel into their own top-level
+    // .wf-view sections (now controlled by setView/viewEls instead) -
+    // leaving a stale "force hidden whenever this isn't the active PANEL
+    // view" toggle here would have permanently hidden their content the
+    // moment any other panel view was shown, even while their own
+    // top-level wrapper was visible. Holidays stays - it's still a panel
+    // page.
     if (holidaysPage) holidaysPage.hidden = !isHolidays;
     if (actionNeededPage) actionNeededPage.hidden = !isActionNeeded;
     if (autoListPage) autoListPage.hidden = !isAutoList;
@@ -2159,62 +2168,6 @@
       if (commsHeadIcon) commsHeadIcon.innerHTML = WHATSAPP_SVG;
       if (commsHeadTitle) commsHeadTitle.textContent = 'Templates';
       if (commsHeadSubtitle) commsHeadSubtitle.textContent = 'Saved fixed replies for recurring topics';
-      if (commsHeadBadge) commsHeadBadge.hidden = true;
-    } else if (isSiteAliases) {
-      // Item 3 (2026-11), direct instruction - channel-neutral settings page, never a WhatsApp icon (or ANY icon bubble).
-      if (commsHeadIcon) commsHeadIcon.style.display = 'none';
-      if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon';
-      if (commsHeadIcon) commsHeadIcon.innerHTML = '';
-      if (commsHeadTitle) commsHeadTitle.textContent = 'Site names';
-      if (commsHeadSubtitle) commsHeadSubtitle.textContent = 'Colloquial site names matched to the HR Master';
-      if (commsHeadBadge) commsHeadBadge.hidden = true;
-    } else if (isDeptAliases) {
-      // Item 3 (2026-11), direct instruction - channel-neutral settings page, never a WhatsApp icon (or ANY icon bubble).
-      if (commsHeadIcon) commsHeadIcon.style.display = 'none';
-      if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon';
-      if (commsHeadIcon) commsHeadIcon.innerHTML = '';
-      if (commsHeadTitle) commsHeadTitle.textContent = 'Department names';
-      if (commsHeadSubtitle) commsHeadSubtitle.textContent = 'Colloquial department names matched to the HR Master';
-      if (commsHeadBadge) commsHeadBadge.hidden = true;
-    } else if (isCompanyDetails) {
-      // Item 3 (2026-11), direct instruction - channel-neutral settings page, never a WhatsApp icon (or ANY icon bubble).
-      if (commsHeadIcon) commsHeadIcon.style.display = 'none';
-      if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon';
-      if (commsHeadIcon) commsHeadIcon.innerHTML = '';
-      if (commsHeadTitle) commsHeadTitle.textContent = 'Company details';
-      if (commsHeadSubtitle) commsHeadSubtitle.textContent = 'Code, address, CIN/GSTIN, contact + the letter logo';
-      if (commsHeadBadge) commsHeadBadge.hidden = true;
-    } else if (isLetterSettings) {
-      // Item 3 (2026-11), direct instruction - channel-neutral settings page, never a WhatsApp icon (or ANY icon bubble).
-      if (commsHeadIcon) commsHeadIcon.style.display = 'none';
-      if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon';
-      if (commsHeadIcon) commsHeadIcon.innerHTML = '';
-      if (commsHeadTitle) commsHeadTitle.textContent = 'Letter settings';
-      if (commsHeadSubtitle) commsHeadSubtitle.textContent = 'Reference number format, letter codes + counters';
-      if (commsHeadBadge) commsHeadBadge.hidden = true;
-    } else if (isAiUsage) {
-      // Item 3 (2026-11), direct instruction - channel-neutral settings page, never a WhatsApp icon (or ANY icon bubble).
-      if (commsHeadIcon) commsHeadIcon.style.display = 'none';
-      if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon';
-      if (commsHeadIcon) commsHeadIcon.innerHTML = '';
-      if (commsHeadTitle) commsHeadTitle.textContent = 'AI usage';
-      if (commsHeadSubtitle) commsHeadSubtitle.textContent = 'Spend today/this week/this month, live vs. tests';
-      if (commsHeadBadge) commsHeadBadge.hidden = true;
-    } else if (isDataBackups) {
-      // Item 3 (2026-11), direct instruction - channel-neutral settings page, never a WhatsApp icon (or ANY icon bubble).
-      if (commsHeadIcon) commsHeadIcon.style.display = 'none';
-      if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon';
-      if (commsHeadIcon) commsHeadIcon.innerHTML = '';
-      if (commsHeadTitle) commsHeadTitle.textContent = 'Data & backups';
-      if (commsHeadSubtitle) commsHeadSubtitle.textContent = 'Backup now, recent backups, restore from backup';
-      if (commsHeadBadge) commsHeadBadge.hidden = true;
-    } else if (isSettingsHistory) {
-      // Item 3 (2026-11), direct instruction - channel-neutral settings page, never a WhatsApp icon (or ANY icon bubble).
-      if (commsHeadIcon) commsHeadIcon.style.display = 'none';
-      if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon';
-      if (commsHeadIcon) commsHeadIcon.innerHTML = '';
-      if (commsHeadTitle) commsHeadTitle.textContent = 'Settings history';
-      if (commsHeadSubtitle) commsHeadSubtitle.textContent = 'Every change to owner settings, with Restore';
       if (commsHeadBadge) commsHeadBadge.hidden = true;
     } else if (isHolidays) {
       // Item 3 (2026-11), direct instruction - channel-neutral settings page, never a WhatsApp icon (or ANY icon bubble).
@@ -3256,32 +3209,37 @@
       setCountBadge(siteAliasesBadge, (r.items || []).length);
     } catch (err) { /* best effort */ }
   }
-  function showSiteAliases() {
-    setPanelView('siteAliases');
-    loadSiteAliasesPage();
-  }
+  // TASK 4 (2026-11) - showSiteAliases() removed: it's dead code now that
+  // __hrAssistantOpenSiteAliases calls loadSiteAliasesPage() directly and
+  // nothing else ever called this (setPanelView('siteAliases') can never
+  // be reached again).
   // UI fix (2026-10-29) - "SUBH Settings" moved OUT of the SUBH panel's own
   // page system into a normal ☰-menu dashboard view (see workforce.js) -
   // same layout/header/back-behaviour as every other drawer item, no chat
   // input bar. That view's own "Site names" card opens the panel straight
   // to Site names - the panel's former intermediate "SUBH Settings" page
   // is gone, so this is now the one way in from outside the panel.
+  // TASK 4 (2026-11), direct instruction - this page moved OUT of the SUBH
+  // panel entirely into a normal top-level view (siteAliasesView, same
+  // shell as every other menu page). Its own back button is a dedicated
+  // [data-back-to-subh-settings] (wired in workforce.js), fixed to SUBH
+  // Settings regardless of entry point - not the generic [data-back]/
+  // viewHistory chain, since this page can also be reached from places
+  // other than SUBH Settings' own tiles. This function's own NAME is kept
+  // (other code still calls it by name) - only its implementation changes.
+  // closePanel(true): this page never does its own history.pushState (no
+  // panel involvement left at all), so closePanel's internal history.go(-
+  // navStack.length) rewind must be skipped (the `true` arg is the same
+  // "fromPopstate" skip closePanel already honors for a close triggered by
+  // real browser back nav) - LIVE BUG FIX found while verifying this task:
+  // calling it unguarded corrupted browser history after opening any 2 of
+  // these pages back to back with no real panel open in between (navStack
+  // resets to length 1, never 0, so the NEXT unrelated close call replayed
+  // the same rewind against history it never actually pushed).
   window.__hrAssistantOpenSiteAliases = function () {
-    const wasOpen = typeof panel !== 'undefined' && !panel.hidden;
-    if (!wasOpen && typeof openPanel === 'function') {
-      // UI fix (2026-10-30), live bug: openPanel() already resets navStack
-      // to [home] and plants one history entry for it - pushNav-ing
-      // siteAliases ON TOP of that left a single back tap landing on the
-      // panel's own Home view (never actually visited) instead of closing
-      // the panel straight back to wherever it was opened from (SUBH
-      // Settings). Replacing that base entry in place (no extra push)
-      // makes one back tap do exactly that.
-      openPanel();
-      navStack = [{ type: 'siteAliases' }];
-    } else {
-      pushNav({ type: 'siteAliases' });
-    }
-    showSiteAliases();
+    if (window.__hrAssistantClosePanel) window.__hrAssistantClosePanel(true);
+    if (window.setView) window.setView('siteAliases', { resetHistory: true });
+    loadSiteAliasesPage();
   };
   // Lets the new top-level "SUBH Settings" dashboard view (workforce.js)
   // refresh the "new sites pending" badge on its OWN "Site names" card -
@@ -3552,23 +3510,20 @@
     ]);
   }
   window.__hrAssistantPrefetchSubhSettings = prefetchSubhSettingsAll;
-  function showDeptAliases() {
-    setPanelView('deptAliases');
-    loadDeptAliasesPage();
-  }
+  // TASK 4 (2026-11) - showDeptAliases() removed, same dead-code reasoning
+  // as showSiteAliases above.
   // Opened from the top-level "SUBH Settings" dashboard view's own
   // "Department names" card (see workforce.js) - same pattern as
   // __hrAssistantOpenSiteAliases.
+  // TASK 4 (2026-11), direct instruction - same move-out-of-the-panel
+  // rewrite as __hrAssistantOpenSiteAliases above.
+  // LIVE BUG FIX (2026-11) - closePanel(true): see
+  // window.__hrAssistantOpenSiteAliases's own comment above for why the
+  // skip-the-history-rewind argument is required here.
   window.__hrAssistantOpenDeptAliases = function () {
-    const wasOpen = typeof panel !== 'undefined' && !panel.hidden;
-    if (!wasOpen && typeof openPanel === 'function') {
-      // Same back-navigation fix as __hrAssistantOpenSiteAliases above.
-      openPanel();
-      navStack = [{ type: 'deptAliases' }];
-    } else {
-      pushNav({ type: 'deptAliases' });
-    }
-    showDeptAliases();
+    if (window.__hrAssistantClosePanel) window.__hrAssistantClosePanel(true);
+    if (window.setView) window.setView('deptAliases', { resetHistory: true });
+    loadDeptAliasesPage();
   };
   window.__hrAssistantRefreshDeptAliasesBadge = loadDeptAliasesBadge;
   function closeDeptAliasSheet() {
@@ -3677,22 +3632,18 @@
       if (!cached) companyDetailsList.innerHTML = '<div class="wf-rem-empty">Could not load company details.</div>';
     }
   }
-  function showCompanyDetails() {
-    setPanelView('companyDetails');
-    loadCompanyDetailsPage();
-  }
+  // TASK 4 (2026-11) - showCompanyDetails() removed, same dead-code
+  // reasoning as showSiteAliases above.
   // Opened from the top-level "SUBH Settings" dashboard view's own
   // "Company details" card (see workforce.js) - same pattern as
   // __hrAssistantOpenSiteAliases/__hrAssistantOpenDeptAliases.
+  // TASK 4 (2026-11), direct instruction - same move-out-of-the-panel
+  // rewrite as __hrAssistantOpenSiteAliases above. LIVE BUG FIX (2026-11) -
+  // closePanel(true): see that same function's own comment for why.
   window.__hrAssistantOpenCompanyDetails = function () {
-    const wasOpen = typeof panel !== 'undefined' && !panel.hidden;
-    if (!wasOpen && typeof openPanel === 'function') {
-      openPanel();
-      navStack = [{ type: 'companyDetails' }];
-    } else {
-      pushNav({ type: 'companyDetails' });
-    }
-    showCompanyDetails();
+    if (window.__hrAssistantClosePanel) window.__hrAssistantClosePanel(true);
+    if (window.setView) window.setView('companyDetails', { resetHistory: true });
+    loadCompanyDetailsPage();
   };
   function closeCompanyDetailSheet() {
     companyDetailSheetBackdrop.classList.remove('open');
@@ -4483,19 +4434,15 @@
         .catch(() => {});
     });
   }
-  function showLetterSettings() {
-    setPanelView('letterSettings');
-    loadLetterSettingsPage();
-  }
+  // TASK 4 (2026-11) - showLetterSettings() removed, same dead-code
+  // reasoning as showSiteAliases above.
+  // TASK 4 (2026-11), direct instruction - same move-out-of-the-panel
+  // rewrite as __hrAssistantOpenSiteAliases above. LIVE BUG FIX (2026-11) -
+  // closePanel(true): see that same function's own comment for why.
   window.__hrAssistantOpenLetterSettings = function () {
-    const wasOpen = typeof panel !== 'undefined' && !panel.hidden;
-    if (!wasOpen && typeof openPanel === 'function') {
-      openPanel();
-      navStack = [{ type: 'letterSettings' }];
-    } else {
-      pushNav({ type: 'letterSettings' });
-    }
-    showLetterSettings();
+    if (window.__hrAssistantClosePanel) window.__hrAssistantClosePanel(true);
+    if (window.setView) window.setView('letterSettings', { resetHistory: true });
+    loadLetterSettingsPage();
   };
 
   // AI usage (2026-11, direct instruction) - read-only: today/this week/
@@ -4552,19 +4499,15 @@
   }
   if (aiUsageChips) aiUsageChips.addEventListener('click', onAiUsageChipClick);
   if (aiUsageChipsYear) aiUsageChipsYear.addEventListener('click', onAiUsageChipClick);
-  function showAiUsage() {
-    setPanelView('aiUsage');
-    loadAiUsagePage();
-  }
+  // TASK 4 (2026-11) - showAiUsage() removed, same dead-code reasoning as
+  // showSiteAliases above.
+  // TASK 4 (2026-11), direct instruction - same move-out-of-the-panel
+  // rewrite as __hrAssistantOpenSiteAliases above. LIVE BUG FIX (2026-11) -
+  // closePanel(true): see that same function's own comment for why.
   window.__hrAssistantOpenAiUsage = function () {
-    const wasOpen = typeof panel !== 'undefined' && !panel.hidden;
-    if (!wasOpen && typeof openPanel === 'function') {
-      openPanel();
-      navStack = [{ type: 'aiUsage' }];
-    } else {
-      pushNav({ type: 'aiUsage' });
-    }
-    showAiUsage();
+    if (window.__hrAssistantClosePanel) window.__hrAssistantClosePanel(true);
+    if (window.setView) window.setView('aiUsage', { resetHistory: true });
+    loadAiUsagePage();
   };
 
   // Data & backups (item 4, 2026-11), direct instruction - Backup now
@@ -4620,23 +4563,22 @@
       if (!cached) backupRecentList.innerHTML = '<div class="wf-rem-empty">Could not load backups.</div>';
     }
   }
-  function showDataBackups() {
-    setPanelView('dataBackups');
-    if (backupNowResult) backupNowResult.innerHTML = '';
-    loadDataBackupsPage();
-  }
+  // TASK 4 (2026-11) - showDataBackups() removed, same dead-code
+  // reasoning as showSiteAliases above (its backupNowResult reset moved
+  // into __hrAssistantOpenDataBackups directly).
   // Opened from the top-level "SUBH Settings" dashboard view's own
   // "Data & backups" card (see public/workforce.js) - same pattern as
   // __hrAssistantOpenCompanyDetails/__hrAssistantOpenAiUsage.
+  // TASK 4 (2026-11), direct instruction - same move-out-of-the-panel
+  // rewrite as __hrAssistantOpenSiteAliases above (keeps showDataBackups'
+  // own backupNowResult reset, the one extra line this page had).
+  // LIVE BUG FIX (2026-11) - closePanel(true): see that same function's
+  // own comment for why.
   window.__hrAssistantOpenDataBackups = function () {
-    const wasOpen = typeof panel !== 'undefined' && !panel.hidden;
-    if (!wasOpen && typeof openPanel === 'function') {
-      openPanel();
-      navStack = [{ type: 'dataBackups' }];
-    } else {
-      pushNav({ type: 'dataBackups' });
-    }
-    showDataBackups();
+    if (window.__hrAssistantClosePanel) window.__hrAssistantClosePanel(true);
+    if (window.setView) window.setView('dataBackups', { resetHistory: true });
+    if (backupNowResult) backupNowResult.innerHTML = '';
+    loadDataBackupsPage();
   };
 
   // Settings history (TASK 3, 2026-11, direct instruction) - every
@@ -4713,19 +4655,15 @@
       if (!cached) settingsHistoryList.innerHTML = '<div class="wf-rem-empty">Could not load settings history.</div>';
     }
   }
-  function showSettingsHistory() {
-    setPanelView('settingsHistory');
-    loadSettingsHistoryPage();
-  }
+  // TASK 4 (2026-11) - showSettingsHistory() removed, same dead-code
+  // reasoning as showSiteAliases above.
+  // TASK 4 (2026-11), direct instruction - same move-out-of-the-panel
+  // rewrite as __hrAssistantOpenSiteAliases above. LIVE BUG FIX (2026-11) -
+  // closePanel(true): see that same function's own comment for why.
   window.__hrAssistantOpenSettingsHistory = function () {
-    const wasOpen = typeof panel !== 'undefined' && !panel.hidden;
-    if (!wasOpen && typeof openPanel === 'function') {
-      openPanel();
-      navStack = [{ type: 'settingsHistory' }];
-    } else {
-      pushNav({ type: 'settingsHistory' });
-    }
-    showSettingsHistory();
+    if (window.__hrAssistantClosePanel) window.__hrAssistantClosePanel(true);
+    if (window.setView) window.setView('settingsHistory', { resetHistory: true });
+    loadSettingsHistoryPage();
   };
   function closeSettingsHistoryRestoreSheet() {
     if (settingsHistoryRestoreBackdrop) settingsHistoryRestoreBackdrop.classList.remove('open');
@@ -5064,7 +5002,18 @@
   }
   function wireActionNeededAiUsageCard(card) {
     const openBtn = card.querySelector('[data-open-ai-usage]');
-    if (openBtn) openBtn.addEventListener('click', () => { pushNav({ type: 'aiUsage' }); showAiUsage(); });
+    // TASK 4 (2026-11), direct instruction - reached from deep inside the
+    // panel's own Action-Needed card, a second entry point into the same
+    // top-level AI usage view __hrAssistantOpenAiUsage opens - its own
+    // [data-back-to-subh-settings] button still always returns to SUBH
+    // Settings regardless of entry point (see that function's own
+    // comment). closePanel(true): same LIVE BUG FIX as there - skips
+    // closePanel's history.go rewind, which this page never pushed.
+    if (openBtn) openBtn.addEventListener('click', () => {
+      if (window.__hrAssistantClosePanel) window.__hrAssistantClosePanel(true);
+      if (window.setView) window.setView('aiUsage', { resetHistory: true });
+      loadAiUsagePage();
+    });
   }
   // Live request (2026-11, direct instruction) - every system/automated
   // alert (nightly backup failure, a settings group going empty,

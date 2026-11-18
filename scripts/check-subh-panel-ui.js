@@ -144,6 +144,55 @@ async function checkRealTopbarFrame(page, pageLabel, baseline) {
   }
 }
 
+// TASK 4 (2026-11), direct instruction - the 7 SUBH-Settings sub-pages
+// (Site names/Department names/Company details/Letter settings/AI usage/
+// Data & backups/Settings history) moved OUT of the panel into normal
+// top-level .wf-view pages, so they no longer relocate the real #wfTopbar
+// (that mechanism is Holidays-only now, still covered by
+// checkRealTopbarFrame above). Asserts the opposite of that function: the
+// real #wfTopbar stays exactly where every other top-level page keeps it
+// (inside .wf-shell, never inside #hrAssistantPanel, which must be closed/
+// hidden), still pixel-identical to the real ☰ menu baseline, AND that the
+// page's own generic .wf-page-head (back button + h2) rendered with the
+// right title - the SAME shell every other menu page uses, not a replica.
+async function checkTopLevelSettingsSubpageFrame(page, pageLabel, viewId, baseline) {
+  const frame = await page.evaluate(() => {
+    const t = document.getElementById('wfTopbar');
+    const p = document.getElementById('hrAssistantPanel');
+    const shell = document.querySelector('.wf-shell');
+    return {
+      topbarInShell: Boolean(t && shell && shell.contains(t) && !(p && p.contains(t))),
+      panelHidden: Boolean(p && p.hidden)
+    };
+  });
+  check(pageLabel + ': the real #wfTopbar stayed in .wf-shell (never relocated into the SUBH panel) and the panel itself is closed',
+    frame.topbarInShell && frame.panelHidden, 'got: ' + JSON.stringify(frame));
+  check(pageLabel + ': real top bar is visible with all 5 elements (hamburger, wordmark, refresh, SUBH button, profile photo)',
+    await page.locator('#wfTopbar').isVisible() &&
+    await page.locator('#menuBtn').isVisible() &&
+    (await page.locator('.wf-wordmark').first().textContent() || '').includes('Workforce') &&
+    await page.locator('#refreshBtn').isVisible() &&
+    await page.locator('#hrAssistantBtn').isVisible() &&
+    await page.locator('#profileAvatar').isVisible());
+  if (baseline) {
+    const rects = await page.evaluate(() => ({
+      menuBtn: document.getElementById('menuBtn').getBoundingClientRect(),
+      profile: document.getElementById('profileAvatar').getBoundingClientRect(),
+      wordmark: document.querySelector('.wf-wordmark').getBoundingClientRect()
+    }));
+    const same = (a, b) => Math.abs(a.x - b.x) < 0.5 && Math.abs(a.y - b.y) < 0.5 && Math.abs(a.width - b.width) < 0.5 && Math.abs(a.height - b.height) < 0.5;
+    check(pageLabel + ': header box positions (hamburger/profile/wordmark) are IDENTICAL to a real ☰ menu section\'s own topbar at 384px, never just close',
+      same(rects.menuBtn, baseline.menuBtn) && same(rects.profile, baseline.profile) && same(rects.wordmark, baseline.wordmark),
+      'got: ' + JSON.stringify(rects) + ' vs baseline: ' + JSON.stringify(baseline));
+  }
+  const viewSel = '#' + viewId + 'View';
+  check(pageLabel + ': its own top-level view (' + viewSel + ') is visible', await page.locator(viewSel).isVisible());
+  const headTitle = (await page.locator(viewSel + ' .wf-page-head h2').textContent().catch(() => null) || '').trim();
+  check(pageLabel + ': its own page-head title reads "' + pageLabel + '"', headTitle === pageLabel, 'got: ' + JSON.stringify(headTitle));
+  check(pageLabel + ': its back button is fixed to SUBH Settings, not the generic [data-back]',
+    await page.locator(viewSel + ' [data-back-to-subh-settings]').count() === 1 && await page.locator(viewSel + ' [data-back]').count() === 0);
+}
+
 (async () => {
   const server = await startStaticServer();
   const port = server.address().port;
@@ -655,24 +704,26 @@ async function checkRealTopbarFrame(page, pageLabel, baseline) {
     actionNeededErrAfter === actionNeededErrBefore,
     'new errors: ' + JSON.stringify(consoleErrors.slice(actionNeededErrBefore).concat(pageErrors.slice(actionNeededErrBefore))));
 
-  // Page frame fix (2026-11) - Site names and Department names are 2 of
-  // the 7 SUBH-Settings sub-pages too; opened directly the same way the
-  // real SUBH Settings hub opens them, just to confirm the relocated real
-  // top bar reaches these 2 as well (not just the 4 already covered by
-  // their own, more detailed sections below).
-  await page.evaluate(() => { if (window.__hrAssistantClosePanel) window.__hrAssistantClosePanel(); });
-  await page.waitForTimeout(100);
+  // TASK 4 (2026-11), direct instruction - Site names and Department names
+  // are 2 of the 7 SUBH-Settings sub-pages that moved to normal top-level
+  // views; opened directly the same way the real SUBH Settings hub opens
+  // them, just to confirm the new page frame reaches these 2 as well (not
+  // just the 4 already covered by their own, more detailed sections below).
+  // NOTE: no explicit closePanel() call before these - window.__hrAssistantOpenXxx
+  // already closes the panel as its own first step (see hrAssistant.js); an
+  // EXTRA close call right before it is not just redundant but actively
+  // breaks navigation here - closePanel()'s own history.go(-navStack.length)
+  // fires again against a navStack already reset to length 1 by the FIRST
+  // close, walking real browser history back past this page entirely.
   await page.evaluate(() => { window.__hrAssistantOpenSiteAliases(); });
   await page.waitForTimeout(250);
   check('Site names page opens (not a blank page)', await page.locator('#hrSiteAliasesPage').isVisible());
-  await checkRealTopbarFrame(page, 'Site names', topbarBaseline);
+  await checkTopLevelSettingsSubpageFrame(page, 'Site names', 'siteAliases', topbarBaseline);
 
-  await page.evaluate(() => { if (window.__hrAssistantClosePanel) window.__hrAssistantClosePanel(); });
-  await page.waitForTimeout(100);
   await page.evaluate(() => { window.__hrAssistantOpenDeptAliases(); });
   await page.waitForTimeout(250);
   check('Department names page opens (not a blank page)', await page.locator('#hrDeptAliasesPage').isVisible());
-  await checkRealTopbarFrame(page, 'Department names', topbarBaseline);
+  await checkTopLevelSettingsSubpageFrame(page, 'Department names', 'deptAliases', topbarBaseline);
 
   // TASK 1(e) (2026-11), direct instruction - "Company details" settings
   // page: opened the same way the real "SUBH Settings" dashboard tile
@@ -694,15 +745,18 @@ async function checkRealTopbarFrame(page, pageLabel, baseline) {
     ];
     route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items, logo: null }) });
   });
-  await page.evaluate(() => { if (window.__hrAssistantClosePanel) window.__hrAssistantClosePanel(); });
-  await page.waitForTimeout(100);
+  // NOTE: no explicit closePanel() here - see the Site names section above
+  // for why an extra close call right before one of these open-functions
+  // actively breaks navigation.
   const companyErrBefore = consoleErrors.length + pageErrors.length;
   await page.evaluate(() => { window.__hrAssistantOpenCompanyDetails(); });
   await page.waitForTimeout(250);
   check('Company details page opens (not a blank page)', await page.locator('#hrCompanyDetailsPage').isVisible());
-  await checkRealTopbarFrame(page, 'Company details', topbarBaseline);
-  const companyHeadTitle = await page.locator('#hrCommsHeadTitle').textContent().catch(() => null);
-  check('Company details: header title reads "Company details"', (companyHeadTitle || '').trim() === 'Company details', 'got: ' + JSON.stringify(companyHeadTitle));
+  // TASK 4 (2026-11), direct instruction - the page's title now lives in
+  // its own top-level .wf-page-head h2 (asserted by the frame check
+  // below), not the panel's #hrCommsHeadTitle - this page no longer
+  // renders inside the panel at all.
+  await checkTopLevelSettingsSubpageFrame(page, 'Company details', 'companyDetails', topbarBaseline);
   const companyCards = await page.locator('#hrCompanyDetailsList [data-company]').count();
   check('Company details: both fake companies render as cards', companyCards === 2, 'got: ' + companyCards);
   await page.click('#hrCompanyDetailsList [data-company="Alcove Realty Pvt Ltd"] [data-action="edit-company"]');
@@ -889,8 +943,11 @@ async function checkRealTopbarFrame(page, pageLabel, baseline) {
       route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true }) });
     });
     const deptErrBefore = consoleErrors.length + pageErrors.length;
-    await page.evaluate(() => { if (window.__hrAssistantClosePanel) window.__hrAssistantClosePanel(); });
-    await page.waitForTimeout(100);
+    // NOTE: no explicit closePanel() here - the panel is already closed
+    // from the Site names block above (its own open-function already
+    // closed it); see the Site names section further up for why an extra
+    // close call right before one of these open-functions, with the panel
+    // already closed, actively breaks navigation.
     await page.evaluate(() => { window.__hrAssistantOpenDeptAliases(); });
     await page.waitForTimeout(300);
     check('Department names: the "New department found" card shows BOTH Decline and Confirm buttons', await page.locator('#hrNewDeptsList [data-action="decline"]').isVisible() && await page.locator('#hrNewDeptsList [data-action="confirm"]').isVisible());
@@ -931,14 +988,14 @@ async function checkRealTopbarFrame(page, pageLabel, baseline) {
       })
     });
   });
-  await page.evaluate(() => { if (window.__hrAssistantClosePanel) window.__hrAssistantClosePanel(); });
-  await page.waitForTimeout(100);
+  // NOTE: no explicit closePanel() here - see the Site names section above.
   const letterErrBefore = consoleErrors.length + pageErrors.length;
   await page.evaluate(() => { window.__hrAssistantOpenLetterSettings(); });
   await page.waitForTimeout(250);
   check('Letter settings page opens (not a blank page)', await page.locator('#hrLetterSettingsPage').isVisible());
-  const letterHeadTitle = await page.locator('#hrCommsHeadTitle').textContent().catch(() => null);
-  check('Letter settings: header title reads "Letter settings"', (letterHeadTitle || '').trim() === 'Letter settings', 'got: ' + JSON.stringify(letterHeadTitle));
+  // TASK 4 (2026-11), direct instruction - title now lives in this page's
+  // own top-level .wf-page-head h2 (asserted by the frame check below),
+  // not the panel's #hrCommsHeadTitle.
   // LIVE BUG FIX (2026-11), direct instruction, item 4 - checked HERE, on
   // this page's first, genuinely fresh open (before anything below ever
   // picks an employee for the "Fields + Send test" flow) - the picker
@@ -960,12 +1017,13 @@ async function checkRealTopbarFrame(page, pageLabel, baseline) {
   const noPickToastText = await page.locator('.wf-pro-toast').last().textContent().catch(() => null);
   check('Test employee picker: "Send test to me" with nobody picked shows "Pick an employee first", never sends', (noPickToastText || '').includes('Pick an employee first') && noPickSendTestBody === null, 'got toast: ' + JSON.stringify(noPickToastText) + ', sentBody: ' + JSON.stringify(noPickSendTestBody));
   check('Test employee picker: no JS error from the "pick an employee first" guard', (consoleErrors.length + pageErrors.length) === noPickErrBefore);
-  // Page frame + no WhatsApp icon (2026-11, direct instruction; page frame
-  // reworked same day) - every SUBH-Settings sub-page shows the REAL
-  // #wfTopbar above its own heading/back-button row, and never a WhatsApp
-  // icon bubble.
-  await checkRealTopbarFrame(page, 'Letter settings', topbarBaseline);
-  check('Letter settings: no WhatsApp icon between the back button and the heading', !(await page.locator('#hrCommsHeadIcon').isVisible()));
+  // TASK 4 (2026-11), direct instruction - page frame check (real #wfTopbar
+  // stays in .wf-shell, page's own .wf-page-head has the right title), plus
+  // "no WhatsApp icon" is now checked against the generic .wf-page-head
+  // itself (back button + h2 only, never an icon slot) rather than the
+  // panel's own #hrCommsHeadIcon, which this page no longer renders at all.
+  await checkTopLevelSettingsSubpageFrame(page, 'Letter settings', 'letterSettings', topbarBaseline);
+  check('Letter settings: no icon bubble between the back button and the heading', await page.locator('#letterSettingsView .wf-page-head').evaluate((el) => el.children.length) === 2);
   // Functional proof (2026-11), not just "visible" - the real hamburger
   // button on the relocated #wfTopbar actually opens the real drawer (same
   // element, same listener - this would be impossible on a replica with
@@ -1355,14 +1413,13 @@ async function checkRealTopbarFrame(page, pageLabel, baseline) {
       })
     });
   });
-  await page.evaluate(() => { if (window.__hrAssistantClosePanel) window.__hrAssistantClosePanel(); });
-  await page.waitForTimeout(100);
+  // NOTE: no explicit closePanel() here - see the Site names section above.
   const aiUsageErrBefore = consoleErrors.length + pageErrors.length;
   await page.evaluate(() => { window.__hrAssistantOpenAiUsage(); });
   await page.waitForTimeout(250);
   check('AI usage page opens (not a blank page)', await page.locator('#hrAiUsagePage').isVisible());
-  await checkRealTopbarFrame(page, 'AI usage', topbarBaseline);
-  check('AI usage: no WhatsApp icon between the back button and the heading', !(await page.locator('#hrCommsHeadIcon').isVisible()));
+  await checkTopLevelSettingsSubpageFrame(page, 'AI usage', 'aiUsage', topbarBaseline);
+  check('AI usage: no icon bubble between the back button and the heading', await page.locator('#aiUsageView .wf-page-head').evaluate((el) => el.children.length) === 2);
   const aiUsageChipsBox = await page.locator('#hrAiUsageChips').boundingBox();
   const aiUsagePageBox = await page.locator('#hrAiUsagePage').boundingBox();
   const aiUsageTopGap = (aiUsageChipsBox && aiUsagePageBox) ? (aiUsageChipsBox.y - aiUsagePageBox.y) : null;
@@ -1462,14 +1519,13 @@ async function checkRealTopbarFrame(page, pageLabel, baseline) {
     });
   });
 
-  await page.evaluate(() => { if (window.__hrAssistantClosePanel) window.__hrAssistantClosePanel(); });
-  await page.waitForTimeout(100);
+  // NOTE: no explicit closePanel() here - see the Site names section above.
   const backupsErrBefore = consoleErrors.length + pageErrors.length;
   await page.evaluate(() => { window.__hrAssistantOpenDataBackups(); });
   await page.waitForTimeout(250);
   check('Data & backups page opens (not a blank page)', await page.locator('#hrDataBackupsPage').isVisible());
-  await checkRealTopbarFrame(page, 'Data & backups', topbarBaseline);
-  check('Data & backups: no WhatsApp icon between the back button and the heading', !(await page.locator('#hrCommsHeadIcon').isVisible()));
+  await checkTopLevelSettingsSubpageFrame(page, 'Data & backups', 'dataBackups', topbarBaseline);
+  check('Data & backups: no icon bubble between the back button and the heading', await page.locator('#dataBackupsView .wf-page-head').evaluate((el) => el.children.length) === 2);
   // Two small UI fixes (2026-11, direct instruction, 384px): "Backup now"
   // needs real breathing room below the page header (it has no section-
   // title row above it, unlike Company details/Letter settings), and
@@ -1478,8 +1534,6 @@ async function checkRealTopbarFrame(page, pageLabel, baseline) {
   const backupsPageBox = await page.locator('#hrDataBackupsPage').boundingBox();
   const backupNowTopGap = (backupNowBox && backupsPageBox) ? (backupNowBox.y - backupsPageBox.y) : null;
   check('Data & backups: "Backup now" sits with real breathing room below the page top, not jammed under the header (TASK 1, 2026-11 - raised further, 18px was still too close)', typeof backupNowTopGap === 'number' && backupNowTopGap >= 32, 'got topGap: ' + backupNowTopGap);
-  const backupsHeadTitle = await page.locator('#hrCommsHeadTitle').textContent().catch(() => null);
-  check('Data & backups: header title reads "Data & backups"', (backupsHeadTitle || '').trim() === 'Data & backups', 'got: ' + JSON.stringify(backupsHeadTitle));
   const recentCards = await page.locator('#hrBackupRecentList [data-file-id]').count();
   check('Data & backups: both fake recent backups render as rows', recentCards === 2, 'got: ' + recentCards);
   const dailyStatusText = await page.locator('#hrBackupDailyStatus').textContent().catch(() => null);
@@ -1555,16 +1609,13 @@ async function checkRealTopbarFrame(page, pageLabel, baseline) {
     lastHistoryRestoreBody = JSON.parse(route.request().postData() || '{}');
     route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, item: { code: 'ARPL1' } }) });
   });
-  await page.evaluate(() => { if (window.__hrAssistantClosePanel) window.__hrAssistantClosePanel(); });
-  await page.waitForTimeout(100);
+  // NOTE: no explicit closePanel() here - see the Site names section above.
   const historyErrBefore = consoleErrors.length + pageErrors.length;
   await page.evaluate(() => { window.__hrAssistantOpenSettingsHistory(); });
   await page.waitForTimeout(250);
   check('Settings history page opens (not a blank page)', await page.locator('#hrSettingsHistoryPage').isVisible());
-  await checkRealTopbarFrame(page, 'Settings history', topbarBaseline);
-  check('Settings history: no WhatsApp icon between the back button and the heading', !(await page.locator('#hrCommsHeadIcon').isVisible()));
-  const historyHeadTitle = await page.locator('#hrCommsHeadTitle').textContent().catch(() => null);
-  check('Settings history: header title reads "Settings history"', (historyHeadTitle || '').trim() === 'Settings history', 'got: ' + JSON.stringify(historyHeadTitle));
+  await checkTopLevelSettingsSubpageFrame(page, 'Settings history', 'settingsHistory', topbarBaseline);
+  check('Settings history: no icon bubble between the back button and the heading', await page.locator('#settingsHistoryView .wf-page-head').evaluate((el) => el.children.length) === 2);
   check('ISSUE 3(b): the filter chips are GONE from this page', await page.locator('#hrSettingsHistoryChips').count() === 0);
   const historyCards = await page.locator('#hrSettingsHistoryList [data-history-idx]').count();
   check('Settings history: ALL 3 fake history entries render as ONE single list (no filtering)', historyCards === 3, 'got: ' + historyCards);
@@ -1607,8 +1658,10 @@ async function checkRealTopbarFrame(page, pageLabel, baseline) {
   // missing pages and assert the skeleton is NEVER shown even for an
   // instant - real content renders synchronously from the now-warm
   // cache, exactly like the other 4 tiles already did.
-  await page.evaluate(() => { if (window.__hrAssistantClosePanel) window.__hrAssistantClosePanel(); });
-  await page.waitForTimeout(100);
+  // NOTE: no explicit closePanel() calls through this block - see the
+  // Site names section above for why an extra close call right before
+  // (or after, with nothing reopening it) one of these open-functions,
+  // with the panel already closed, actively breaks navigation.
   const prefetchErrBefore = consoleErrors.length + pageErrors.length;
   await page.evaluate(() => window.__hrAssistantPrefetchSubhSettings());
   const aiUsageAfterPrefetch = await page.evaluate(() => {
@@ -1617,21 +1670,18 @@ async function checkRealTopbarFrame(page, pageLabel, baseline) {
     return { hasSkeleton: Boolean(el && el.querySelector('.wf-skeleton-list')), text: el ? el.textContent : null };
   });
   check('ISSUE 4: AI usage renders instantly from the hub-level prefetch - no skeleton ever shown, not even a flash', !aiUsageAfterPrefetch.hasSkeleton, 'got: ' + JSON.stringify(aiUsageAfterPrefetch));
-  await page.evaluate(() => { if (window.__hrAssistantClosePanel) window.__hrAssistantClosePanel(); });
   const backupsAfterPrefetch = await page.evaluate(() => {
     window.__hrAssistantOpenDataBackups();
     const el = document.getElementById('hrBackupRecentList');
     return { hasSkeleton: Boolean(el && el.querySelector('.wf-skeleton-list')), text: el ? el.textContent : null };
   });
   check('ISSUE 4: Data & backups renders instantly from the hub-level prefetch - no skeleton ever shown', !backupsAfterPrefetch.hasSkeleton, 'got: ' + JSON.stringify(backupsAfterPrefetch));
-  await page.evaluate(() => { if (window.__hrAssistantClosePanel) window.__hrAssistantClosePanel(); });
   const historyAfterPrefetch = await page.evaluate(() => {
     window.__hrAssistantOpenSettingsHistory();
     const el = document.getElementById('hrSettingsHistoryList');
     return { hasSkeleton: Boolean(el && el.querySelector('.wf-skeleton-list')), text: el ? el.textContent : null };
   });
   check('ISSUE 4: Settings history renders instantly from the hub-level prefetch - no skeleton ever shown', !historyAfterPrefetch.hasSkeleton, 'got: ' + JSON.stringify(historyAfterPrefetch));
-  await page.evaluate(() => { if (window.__hrAssistantClosePanel) window.__hrAssistantClosePanel(); });
   await page.waitForTimeout(150);
   const prefetchErrAfter = consoleErrors.length + pageErrors.length;
   check('ISSUE 4: no JS error was thrown prefetching or opening any of the 3 previously-cold pages', prefetchErrAfter === prefetchErrBefore,
@@ -1644,10 +1694,14 @@ async function checkRealTopbarFrame(page, pageLabel, baseline) {
   // this proves the actual precondition it depends on instead: the real
   // document genuinely scrolls (body is NOT position:fixed, the custom
   // gesture's own indicator was never attached here, and a real
-  // window.scrollTo in the middle of the page actually moves it) -
-  // exactly what was broken before (two separate, compounding causes:
-  // the panel's own fixed overlay AND <body> itself also being pinned
-  // fixed for as long as the panel is open at all, regardless of page).
+  // window.scrollTo in the middle of the page actually moves it).
+  // TASK 4 (2026-11), direct instruction - re-verified after the full
+  // restructure: Letter settings is now a normal top-level .wf-view page
+  // reached by CLOSING the SUBH panel first (window.__hrAssistantClosePanel)
+  // and switching the view, exactly like every other menu page - so the
+  // panel itself must be genuinely CLOSED (hidden), not "joined normal
+  // document flow" as it was in the old in-panel design this block used
+  // to test.
   console.log('='.repeat(70));
   console.log('item 8 - native pull-to-refresh preconditions on a SUBH-Settings sub-page (vs. an ordinary panel page, which must be completely unaffected)');
   console.log('='.repeat(70));
@@ -1665,13 +1719,13 @@ async function checkRealTopbarFrame(page, pageLabel, baseline) {
   await page.waitForTimeout(400);
   const settingsScrollState = await page.evaluate(() => ({
     bodyPosition: getComputedStyle(document.body).position,
-    panelPosition: getComputedStyle(document.getElementById('hrAssistantPanel')).position,
+    panelHidden: document.getElementById('hrAssistantPanel').hidden,
     hasCustomIndicator: Boolean(document.getElementById('hrLetterSettingsPage').querySelector('.wf-ptr-indicator')),
     docScrollHeight: document.documentElement.scrollHeight,
     windowInnerHeight: window.innerHeight
   }));
   check('Letter settings: <body> is NOT position:fixed while this page is open (the real document can grow/scroll)', settingsScrollState.bodyPosition !== 'fixed', 'got: ' + JSON.stringify(settingsScrollState));
-  check('Letter settings: #hrAssistantPanel is NOT position:fixed either (joined normal document flow)', settingsScrollState.panelPosition !== 'fixed', 'got: ' + JSON.stringify(settingsScrollState));
+  check('Letter settings: #hrAssistantPanel is genuinely CLOSED (hidden), not just "joined normal document flow"', settingsScrollState.panelHidden === true, 'got: ' + JSON.stringify(settingsScrollState));
   check('Letter settings: the custom pull-to-refresh indicator was never attached to this page', !settingsScrollState.hasCustomIndicator);
   check('Letter settings: the real document is now actually taller than the viewport (something real to scroll)', settingsScrollState.docScrollHeight > settingsScrollState.windowInnerHeight, 'got: ' + JSON.stringify(settingsScrollState));
   await page.evaluate(() => window.scrollTo(0, 150));
@@ -1685,8 +1739,10 @@ async function checkRealTopbarFrame(page, pageLabel, baseline) {
   // file already uses rather than relying on back-navigation state) must
   // restore the EXACT pre-existing fixed-overlay protection for Home and
   // every other page - never left permanently unlocked.
-  await page.evaluate(() => { if (window.__hrAssistantClosePanel) window.__hrAssistantClosePanel(); });
-  await page.waitForTimeout(150);
+  // NOTE: no explicit closePanel() here - the panel is already closed
+  // from Letter settings' own open-function above (see the Site names
+  // section further up for why); clicking the FAB below opens it fresh
+  // regardless of whether it was already closed.
   await page.click('#hrAssistantBtn');
   await page.waitForTimeout(200);
   const homeScrollState = await page.evaluate(() => ({
