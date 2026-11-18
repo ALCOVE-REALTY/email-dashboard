@@ -1312,9 +1312,22 @@ async function parseAutomationAsk(text, sheetContext) {
     headers: { 'x-api-key': apiKey, 'anthropic-version': CLAUDE_ANTHROPIC_VERSION, 'content-type': 'application/json' },
     body: JSON.stringify({
       model: MODEL, max_tokens: 1024,
-      tools: [{ name: toolDef.name, description: toolDef.description, input_schema: toolDef.parameters }],
+      // PERF/COST FIX (2026-11), direct instruction - prompt caching, the
+      // one lever of the 3 found with zero accuracy risk: this tool
+      // definition is ~90% of the whole request and identical call-to-call
+      // whenever the department list and loaded sheet haven't changed
+      // (the common case - re-asking/refining within the same editing
+      // session). cache_control here marks "cache everything up through
+      // this tool" - a cache hit on a later call bills its cached
+      // portion at 0.1x normal input price instead of 1x (aiUsageLog.js's
+      // own estimateCostUsd already prices cacheReadTokens/cacheWriteTokens
+      // this way - built for exactly this, never wired up until now).
+      // Output/accuracy are completely unaffected - caching only changes
+      // how input tokens are billed and fetched, never what the model
+      // sees or returns.
+      tools: [{ name: toolDef.name, description: toolDef.description, input_schema: toolDef.parameters, cache_control: { type: 'ephemeral' } }],
       tool_choice: { type: 'auto' },
-      system: [{ type: 'text', text: 'Parse an HR manager\'s description of a recurring automated HR task (mail/WhatsApp to HODs, confirmations, birthdays, a custom Google Sheet, etc). The built-in data sources are: Employee Master (all employees), Probation Confirmations, Birthdays, Exits (currently inactive employees), or no data at all (a fixed message) - plus any Google Sheet named in the tool description above, if one is loaded. Banglish/Hinglish/English are all expected. Pay close attention to: the period meant relative to the run date (this/next/previous month, next N days, the exact run day, or a fixed month regardless of year); whether a list/table of records with specific columns is wanted (for a sheet, "the same list"/no mention at all means ALL of its columns, in the sheet\'s own order); any requested filter or sort order; and any requested display format for a date column (e.g. no year shown). Never guess a column, tab or person that isn\'t given - list it in unclear instead.' }],
+      system: [{ type: 'text', text: 'Parse an HR manager\'s description of a recurring automated HR task (mail/WhatsApp to HODs, confirmations, birthdays, a custom Google Sheet, etc). The built-in data sources are: Employee Master (all employees), Probation Confirmations, Birthdays, Exits (currently inactive employees), or no data at all (a fixed message) - plus any Google Sheet named in the tool description above, if one is loaded. Banglish/Hinglish/English are all expected. Pay close attention to: the period meant relative to the run date (this/next/previous month, next N days, the exact run day, or a fixed month regardless of year); whether a list/table of records with specific columns is wanted (for a sheet, "the same list"/no mention at all means ALL of its columns, in the sheet\'s own order); any requested filter or sort order; and any requested display format for a date column (e.g. no year shown). Never guess a column, tab or person that isn\'t given - list it in unclear instead.', cache_control: { type: 'ephemeral' } }],
       messages: [{ role: 'user', content: text }]
     })
   });
