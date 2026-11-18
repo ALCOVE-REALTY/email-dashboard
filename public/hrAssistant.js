@@ -398,6 +398,15 @@
   const autoCustomUnit = document.getElementById('autoCustomUnit');
   const autoWeekdaysSeg = document.getElementById('autoWeekdaysSeg');
   const autoRepRule = document.getElementById('autoRepRule');
+  // TASK 1 (2026-11), direct instruction - "Sheet options"/"Outside
+  // emails"/"Working day" parity port from Create Workflow.
+  const autoOnlyWhereCol = document.getElementById('autoOnlyWhereCol');
+  const autoOnlyWhereVal = document.getElementById('autoOnlyWhereVal');
+  const autoAfterSendCol = document.getElementById('autoAfterSendCol');
+  const autoAfterSendVal = document.getElementById('autoAfterSendVal');
+  const autoAfterSendDate = document.getElementById('autoAfterSendDate');
+  const autoSkipToNextWorkingDay = document.getElementById('autoSkipToNextWorkingDay');
+  const autoScheduleNextRun = document.getElementById('autoScheduleNextRun');
   const autoSummary = document.getElementById('autoSummary');
   const autoPreviewBtn = document.getElementById('autoPreviewBtn');
   const autoTestBtn = document.getElementById('autoTestBtn');
@@ -6832,6 +6841,9 @@
   // master address, or type+Enter a raw email. A dedicated instance, never
   // the Send Mail popup's own mailCcField/mailToField.
   const autoCcField = createMailChipField('autoCcChipInput', 'autoCcInput', 'autoCcSuggest');
+  // TASK 1 (2026-11), direct instruction - "Outside emails" parity port,
+  // same noDirectory reasoning as Create Workflow's own wfOutsideField.
+  const autoOutsideField = createMailChipField('autoOutsideChipInput', 'autoOutsideInput', 'autoOutsideSuggest', { noDirectory: true });
 
   // Task 2: Automated Tasks' own toast is now a thin wrapper around the
   // one shared showProToast component (top-anchored, since these two
@@ -7038,8 +7050,19 @@
     if (autoCustomUnit) autoCustomUnit.value = 'months';
     if (autoWeekdaysSeg) renderWeekdaySeg(autoWeekdaysSeg, []);
     autoCcField.reset();
+    // TASK 1 (2026-11), direct instruction - "Sheet options"/"Outside
+    // emails"/"Working day", all off/empty by default = today's exact
+    // behaviour, same discipline Create Workflow's own Phase 4 addition
+    // already followed.
+    if (autoOnlyWhereVal) autoOnlyWhereVal.value = '';
+    if (autoAfterSendVal) autoAfterSendVal.value = '';
+    if (autoAfterSendDate) autoAfterSendDate.checked = false;
+    autoOutsideField.reset();
+    if (autoSkipToNextWorkingDay) autoSkipToNextWorkingDay.checked = false;
+    if (autoScheduleNextRun) autoScheduleNextRun.textContent = '';
     if (autoEmpSearch) autoEmpSearch.value = '';
     renderAutoRecCols();
+    renderAutoSheetOptionCols();
   }
   function autoPopulateForm(t) {
     autoEditingId = t.id;
@@ -7068,6 +7091,17 @@
     if (autoCustomUnit) autoCustomUnit.value = t.schedule.unit || 'months';
     if (autoWeekdaysSeg) renderWeekdaySeg(autoWeekdaysSeg, t.schedule.weekdays || []);
     autoCcField.setChips((t.plan.cc || '').split(',').map((s) => s.trim()).filter(Boolean));
+    // TASK 1 (2026-11), direct instruction - "Sheet options"/"Outside
+    // emails"/"Working day" parity port.
+    const so = t.plan.sheetOptions || {};
+    renderAutoSheetOptionCols();
+    if (autoOnlyWhereCol) autoOnlyWhereCol.value = (so.onlyWhere && so.onlyWhere.column) || '';
+    if (autoOnlyWhereVal) autoOnlyWhereVal.value = (so.onlyWhere && so.onlyWhere.value) || '';
+    if (autoAfterSendCol) autoAfterSendCol.value = (so.afterSend && so.afterSend.column) || '';
+    if (autoAfterSendVal) autoAfterSendVal.value = (so.afterSend && so.afterSend.value) || '';
+    if (autoAfterSendDate) autoAfterSendDate.checked = Boolean(so.afterSend && so.afterSend.alsoWriteDate);
+    autoOutsideField.setChips(Array.isArray(t.plan.outsideEmails) ? t.plan.outsideEmails : []);
+    if (autoSkipToNextWorkingDay) autoSkipToNextWorkingDay.checked = Boolean(t.schedule.skipToNextWorkingDay);
     autoSheetContext = null; // this editing session doesn't have a fresh multi-tab listing yet - tap Load again to refresh/change tab
     if (t.plan.source === 'sheet') {
       if (autoSheetUrl) autoSheetUrl.value = t.plan.sheetUrl || '';
@@ -7132,6 +7166,21 @@
       ? [['self', 'This row (Email / Phone column)']].concat((autoPlan.sheetColumns || []).filter((c) => !/^(email|phone|e-?mail|contact|mobile)/i.test(c) && !/date/i.test(c)).map((c) => [c, c]))
       : AUTO_EMP_PERSON_COLS;
     autoRecCol.innerHTML = opts.map(([v, l]) => '<option value="' + escapeHtml(v) + '">' + escapeHtml(l) + '</option>').join('');
+  }
+  // TASK 1 (2026-11), direct instruction - "Sheet options" column pickers,
+  // parity port of Create Workflow's own renderWfSheetOptionCols.
+  function renderAutoSheetOptionCols() {
+    const cols = (autoPlan && autoPlan.source === 'sheet') ? (autoPlan.sheetColumns || []) : [];
+    if (autoOnlyWhereCol) {
+      const cur = autoOnlyWhereCol.value;
+      autoOnlyWhereCol.innerHTML = '<option value="">— all rows —</option>' + cols.map((c) => '<option value="' + escapeHtml(c) + '">' + escapeHtml(c) + '</option>').join('');
+      if (cols.includes(cur)) autoOnlyWhereCol.value = cur;
+    }
+    if (autoAfterSendCol) {
+      const cur2 = autoAfterSendCol.value;
+      autoAfterSendCol.innerHTML = '<option value="">— don\'t update —</option>' + cols.map((c) => '<option value="' + escapeHtml(c) + '">' + escapeHtml(c) + '</option>').join('');
+      if (cols.includes(cur2)) autoAfterSendCol.value = cur2;
+    }
   }
   function renderAutoEmpList() {
     if (!autoEmpList || !autoEmployeesCache) return;
@@ -7234,9 +7283,17 @@
   });
   if (autoRecCol) autoRecCol.addEventListener('change', () => { autoSync(); if (autoPlan) renderAutoUnderstanding(); });
   if (autoTableToggle) autoTableToggle.addEventListener('change', autoSync);
-  [autoSubject, autoMailSubj, autoBody, autoDate, autoTime, autoEvery].forEach((el) => { if (el) el.addEventListener('input', autoSync); });
+  [autoSubject, autoMailSubj, autoBody, autoDate, autoTime, autoEvery, autoOnlyWhereVal, autoAfterSendVal].forEach((el) => { if (el) el.addEventListener('input', autoSync); });
   document.getElementById('autoCcInput').addEventListener('input', autoSync);
   document.getElementById('autoCcChipInput').addEventListener('click', () => setTimeout(autoSync, 0)); // chip add/remove happens on click (Enter/comma go through the same input events too, but a suggestion click does not)
+  // TASK 1 (2026-11), direct instruction - "Sheet options"/"Outside
+  // emails"/"Working day" wiring, parity port of Create Workflow's own.
+  if (autoOnlyWhereCol) autoOnlyWhereCol.addEventListener('change', autoSync);
+  if (autoAfterSendCol) autoAfterSendCol.addEventListener('change', autoSync);
+  if (autoAfterSendDate) autoAfterSendDate.addEventListener('change', autoSync);
+  if (autoSkipToNextWorkingDay) autoSkipToNextWorkingDay.addEventListener('change', autoSync);
+  if (document.getElementById('autoOutsideInput')) document.getElementById('autoOutsideInput').addEventListener('input', autoSync);
+  if (document.getElementById('autoOutsideChipInput')) document.getElementById('autoOutsideChipInput').addEventListener('click', () => setTimeout(autoSync, 0));
 
   function autoReadForm() {
     return {
@@ -7259,6 +7316,9 @@
       weekdays: getWeekdaySegValues(autoWeekdaysSeg),
       monthDays: autoScheduleExtra.monthDays,
       lastDayOfMonth: autoScheduleExtra.lastDayOfMonth,
+      // TASK 1 (2026-11), direct instruction - "Working day", off by
+      // default, today's behaviour unchanged.
+      skipToNextWorkingDay: Boolean(autoSkipToNextWorkingDay && autoSkipToNextWorkingDay.checked),
       cc: autoCcField.getChips().join(', ')
     };
   }
@@ -7268,7 +7328,20 @@
       group: f.group, rec: f.rec, recCol: f.recCol, selectedEmployeeIds: Array.from(autoSelected),
       mediator: f.mediator, mailSubject: f.mailSubject, body: f.body, cc: f.cc || null,
       table: f.table, tableColumns: [...autoTableCols], tablePlacement: f.mediator === 'wa' ? 'body' : f.tablePlacement,
-      attachmentFormat: f.attachmentFormat || 'pdf'
+      attachmentFormat: f.attachmentFormat || 'pdf',
+      // TASK 1 (2026-11), direct instruction - "Sheet options", all off/
+      // empty by default (null/null) = today's exact single-sheet, no-
+      // filter, no-write-back behaviour, matching automationService.js's
+      // own documented plan.sheetOptions shape.
+      sheetOptions: {
+        onlyWhere: (autoOnlyWhereCol && autoOnlyWhereCol.value) ? { column: autoOnlyWhereCol.value, value: autoOnlyWhereVal ? autoOnlyWhereVal.value : '' } : null,
+        afterSend: (autoAfterSendCol && autoAfterSendCol.value) ? { column: autoAfterSendCol.value, value: autoAfterSendVal ? autoAfterSendVal.value : '', alsoWriteDate: Boolean(autoAfterSendDate && autoAfterSendDate.checked) } : null
+      },
+      // TASK 1 (2026-11), direct instruction - "Outside emails" (Selected
+      // people only) - saved regardless of the CURRENT mode (so switching
+      // back and forth never loses the chips), but the engine only ever
+      // reads this in the "Selected people" branch.
+      outsideEmails: autoOutsideField.getChips()
     });
   }
   let autoSyncTimer = null;
@@ -7304,11 +7377,24 @@
     if (!autoSummary || !autoPlan) return;
     const f = autoReadForm();
     const plan = autoBuildPlanFromForm(f);
-    const schedule = { date: f.date, time: f.time, repeat: f.repeat, every: f.every, unit: f.unit, weekdays: f.weekdays, monthDays: f.monthDays, lastDayOfMonth: f.lastDayOfMonth };
+    const schedule = { date: f.date, time: f.time, repeat: f.repeat, every: f.every, unit: f.unit, weekdays: f.weekdays, monthDays: f.monthDays, lastDayOfMonth: f.lastDayOfMonth, skipToNextWorkingDay: f.skipToNextWorkingDay };
     try {
       const resp = await fetch('/api/workforce/hr-assistant/automations/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ plan, excludedKeys: Array.from(autoExcluded), schedule }) });
       const data = await resp.json();
       autoLastPreview = data;
+      // TASK 1 (2026-11), direct instruction - Schedule's own "Next run:"
+      // live preview, parity port of Create Workflow's own
+      // wfScheduleNextRun - built from the SAME real /preview response the
+      // Summary panel already uses, shows the moved-from date only when
+      // the flag actually moved something.
+      if (autoScheduleNextRun) {
+        if (!data.nextRunAt) { autoScheduleNextRun.textContent = ''; }
+        else {
+          const moved = data.rawNextRunAt && data.rawNextRunAt !== data.nextRunAt;
+          autoScheduleNextRun.innerHTML = 'Next run: <b>' + escapeHtml(wfWhen(data.nextRunAt)) + '</b>' +
+            (moved ? ' <span class="wf-nf-moved">(Sunday/holiday → moved from ' + escapeHtml(wfWhen(data.rawNextRunAt)) + ')</span>' : '');
+        }
+      }
       const srcLabel = plan.source === 'sheet' ? 'Custom Google Sheet' : (AUTO_SOURCE_LABELS[plan.source] || 'Data');
       // Short labels only in THIS compact box - the fuller dropdown option
       // text ("Reporting DOER") is what made this line wrap on a phone;
@@ -7368,11 +7454,24 @@
       autoEvery.value = draft.schedule.every || 2;
       if (autoCustomUnit) autoCustomUnit.value = draft.schedule.unit || 'months';
       if (autoWeekdaysSeg) renderWeekdaySeg(autoWeekdaysSeg, draft.schedule.weekdays || []);
+      // TASK 1 (2026-11), direct instruction - "Sheet options"/"Outside
+      // emails"/"Working day" - same population logic autoPopulateForm
+      // (EDIT mode) already uses for the identical plan.sheetOptions/
+      // outsideEmails shape, just applied to a freshly drafted plan.
+      if (autoSkipToNextWorkingDay) autoSkipToNextWorkingDay.checked = Boolean(draft.schedule.skipToNextWorkingDay);
       renderAutoRecCols();
       if (autoRecCol) autoRecCol.value = draft.plan.recCol || 'reportingDoer';
       renderAutoCols();
       renderAutoEmpList();
       renderAutoSheetInfo();
+      const soDraft = draft.plan.sheetOptions || {};
+      renderAutoSheetOptionCols();
+      if (autoOnlyWhereCol) autoOnlyWhereCol.value = (soDraft.onlyWhere && soDraft.onlyWhere.column) || '';
+      if (autoOnlyWhereVal) autoOnlyWhereVal.value = (soDraft.onlyWhere && soDraft.onlyWhere.value) || '';
+      if (autoAfterSendCol) autoAfterSendCol.value = (soDraft.afterSend && soDraft.afterSend.column) || '';
+      if (autoAfterSendVal) autoAfterSendVal.value = (soDraft.afterSend && soDraft.afterSend.value) || '';
+      if (autoAfterSendDate) autoAfterSendDate.checked = Boolean(soDraft.afterSend && soDraft.afterSend.alsoWriteDate);
+      autoOutsideField.setChips(Array.isArray(draft.plan.outsideEmails) ? draft.plan.outsideEmails : []);
       autoSync();
       renderAutoUnderstanding();
     }, { resetAfterSuccess: true, toastFn: AUTO_TOAST_ERR.toastFn });
@@ -7432,7 +7531,7 @@
     // is missing"). Defaults to every column in this tab, same as the
     // server's own "Ask SUBH" default for a fresh sheet plan.
     autoTableCols = [...tab.headers];
-    renderAutoSheetInfo(); renderAutoRecCols(); renderAutoCols(); autoSync();
+    renderAutoSheetInfo(); renderAutoRecCols(); renderAutoCols(); renderAutoSheetOptionCols(); autoSync();
     if (autoPlan) renderAutoUnderstanding();
   });
 
@@ -7452,7 +7551,7 @@
         // Live bug fix (2026-10-30) - see the identical reset in the
         // multi-tab picker's own click handler above for why.
         autoTableCols = [...r.tabs[0].headers];
-        renderAutoRecCols(); renderAutoCols();
+        renderAutoRecCols(); renderAutoCols(); renderAutoSheetOptionCols();
       }
       renderAutoSheetInfo();
       autoSync();
@@ -7665,7 +7764,7 @@
     const f = autoReadForm();
     if (!autoValidate(f)) return;
     const plan = autoBuildPlanFromForm(f);
-    const schedule = { date: f.date, time: f.time, repeat: f.repeat, every: f.every, unit: f.unit, weekdays: f.weekdays, monthDays: f.monthDays, lastDayOfMonth: f.lastDayOfMonth };
+    const schedule = { date: f.date, time: f.time, repeat: f.repeat, every: f.every, unit: f.unit, weekdays: f.weekdays, monthDays: f.monthDays, lastDayOfMonth: f.lastDayOfMonth, skipToNextWorkingDay: f.skipToNextWorkingDay };
     const payload = { subject: f.subject, originalAsk: (autoAsk && autoAsk.value || '').trim(), plan, excludedKeys: Array.from(autoExcluded), schedule };
     const url = autoEditingId ? '/api/workforce/hr-assistant/automations/' + encodeURIComponent(autoEditingId) : '/api/workforce/hr-assistant/automations';
     await runButtonAction(autoSaveBtn, () => postJsonOrThrow(url, payload), (result) => {

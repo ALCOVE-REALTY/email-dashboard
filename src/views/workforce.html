@@ -973,6 +973,29 @@
             <div class="wf-auto-err hidden" id="autoSheetMsg"></div>
             <div id="autoSheetInfo"></div>
           </div>
+          <!-- TASK 1 (2026-11), direct instruction - "Sheet options" parity
+               port from Create Workflow's own wfSheetOptionsBox, the
+               UPDATED version already approved there: no "Another sheet /
+               tab" fields/button (Task 8 removed those), no "NEW" pill
+               (Task 9 removed it) - "Only rows where"/"After sending,
+               update"/"Also write today's date" only. -->
+          <div class="wf-nf-box" id="autoSheetOptionsBox">
+            <div class="wf-nf-title">Sheet options</div>
+            <label class="wf-rem-field" style="margin-top:10px">Only rows where
+              <div class="wf-rem-field-row">
+                <select id="autoOnlyWhereCol"><option value="">— all rows —</option></select>
+                <input type="text" id="autoOnlyWhereVal" placeholder="e.g. Pending" autocomplete="off" />
+              </div>
+            </label>
+            <label class="wf-rem-field" style="margin-top:10px">After sending, update
+              <div class="wf-rem-field-row">
+                <select id="autoAfterSendCol"><option value="">— don't update —</option></select>
+                <input type="text" id="autoAfterSendVal" placeholder="e.g. Sent" autocomplete="off" />
+              </div>
+            </label>
+            <label class="wf-auto-check"><input type="checkbox" id="autoAfterSendDate"> Also write today's date (e.g. "Sent On")</label>
+            <div class="wf-auto-hint">So the same rows are never sent twice.</div>
+          </div>
           <div class="wf-auto-chips" id="autoAskExamples"></div>
           <button type="button" class="wf-ai-action-btn download" id="autoAskBtn" style="margin-top:8px">✨ Ask SUBH</button>
           <div class="wf-auto-hint">Write in Banglish, English or Hinglish. SUBH shows what it understood — nothing is saved until you say it's right.</div>
@@ -1009,6 +1032,20 @@
               <span class="wf-auto-hint" id="autoSelCount" style="margin-left:auto">0 selected</span>
             </div>
             <div class="wf-auto-emplist" id="autoEmpList"></div>
+            <!-- TASK 1 (2026-11), direct instruction - "Outside emails"
+                 parity port from Create Workflow's own wfOutsideEmailsBox,
+                 the UPDATED version already approved there: chip-style,
+                 no directory dropdown (Task 2), no "NEW" pill (Task 9). -->
+            <div class="wf-nf-box" id="autoOutsideEmailsBox">
+              <div class="wf-nf-title">Outside emails</div>
+              <div class="wf-mail-field" style="margin:8px 0 0">
+                <div class="wf-mail-chip-input" id="autoOutsideChipInput">
+                  <input type="text" id="autoOutsideInput" autocomplete="off" placeholder="Type an email and press Enter (e.g. vendor, client)" />
+                </div>
+                <ul class="wf-mail-suggest" id="autoOutsideSuggest" hidden></ul>
+              </div>
+              <div class="wf-auto-hint">For people outside the HR data — e.g. a vendor, client or agency. Gets the same message. Saved with the task.</div>
+            </div>
           </div>
           <div class="wf-auto-hint" id="autoRecHint" style="margin-top:10px"></div>
           <div class="wf-mail-field" style="margin-top:12px;margin-bottom:0">
@@ -1061,6 +1098,15 @@
           <div id="autoCustomWrap" class="hidden wf-auto-row-gap" style="margin-top:10px">Every <input type="number" id="autoEvery" min="1" max="365" value="2" style="width:70px" /> <select id="autoCustomUnit"><option value="days">days</option><option value="weeks">weeks</option><option value="months" selected>months</option></select></div>
           <div class="wf-auto-seg hidden" id="autoWeekdaysSeg" style="margin-top:10px"></div>
           <div class="wf-auto-hint" id="autoRepRule"></div>
+          <!-- TASK 1 (2026-11), direct instruction - "Working day" parity
+               port from Create Workflow's own wfScheduleWorkingDayBox
+               (no "NEW" pill - Task 9 already removed it there). -->
+          <div class="wf-nf-box" id="autoScheduleWorkingDayBox">
+            <div class="wf-nf-title">Working day</div>
+            <label class="wf-auto-check"><input type="checkbox" id="autoSkipToNextWorkingDay"> If it falls on a Sunday/holiday → run on the next working day</label>
+            <div class="wf-auto-hint">Unticked = runs on the date even if it's a Sunday.</div>
+            <div class="wf-nf-next-run" id="autoScheduleNextRun"></div>
+          </div>
         </div>
 
         <div class="wf-auto-card wf-auto-summary" id="autoSummary"></div>

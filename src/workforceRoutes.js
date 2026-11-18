@@ -2281,9 +2281,16 @@ router.post('/hr-assistant/automations/preview', async (req, res) => {
     const { plan, excludedKeys, schedule } = req.body || {};
     if (!plan) return res.status(400).json({ error: 'plan is required' });
     const now = new Date();
-    const runAt = automationService.computeNextRun(schedule, now);
+    // TASK 1 (2026-11) - rawNextRunAt is the UNADJUSTED value (today's
+    // exact behaviour); runAt additionally advances past a Sunday/holiday
+    // ONLY when schedule.skipToNextWorkingDay is set - same
+    // raw-vs-skip-aware pair the Workflow preview route above already
+    // returns, so Create Automated Task's own "Working day" box can show
+    // "moved from X" only when something genuinely moved.
+    const rawNextRunAt = automationService.computeNextRun(schedule, now);
+    const runAt = await automationService.computeAutomationNextRun(schedule, now);
     const result = await automationService.buildMessages({ plan, excludedKeys: excludedKeys || [] }, runAt ? new Date(runAt) : now);
-    res.json({ ...result, nextRunAt: runAt });
+    res.json({ ...result, nextRunAt: runAt, rawNextRunAt });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -2301,7 +2308,10 @@ router.post('/hr-assistant/automations', async (req, res) => {
     // drifted to within 2 minutes of firing (or already passed) since it
     // was first put together - moved to the next valid occurrence here,
     // and the owner is told so via scheduleAdjustedTo (never silently).
-    const safeNextRunAt = automationService.ensureNotTooSoon(schedule, now);
+    // TASK 1 (2026-11) - ensureAutomationNotTooSoon additionally respects
+    // schedule.skipToNextWorkingDay (off/absent = byte-identical to
+    // ensureNotTooSoon, see its own comment).
+    const safeNextRunAt = await automationService.ensureAutomationNotTooSoon(schedule, now);
     const scheduleAdjustedTo = safeNextRunAt !== record.nextRunAt ? safeNextRunAt : null;
     record.nextRunAt = safeNextRunAt;
     await automationService.saveAutomation(record);
@@ -2326,8 +2336,10 @@ router.post('/hr-assistant/automations/:id', async (req, res) => {
     if (schedule !== undefined) {
       existing.schedule = schedule;
       // Task 9d (2026-11) - same Save-time re-check as creation above.
+      // TASK 1 (2026-11) - ensureAutomationNotTooSoon, same skip-aware
+      // reasoning as the create route above.
       const rawNextRunAt = automationService.computeNextRun(schedule, now);
-      existing.nextRunAt = automationService.ensureNotTooSoon(schedule, now);
+      existing.nextRunAt = await automationService.ensureAutomationNotTooSoon(schedule, now);
       scheduleAdjustedTo = existing.nextRunAt !== rawNextRunAt ? existing.nextRunAt : null;
       existing.pendingMissedRun = null;
       // Task 11 (2026-11) - editing a "Completed" (one-shot already run)

@@ -20,6 +20,11 @@ const tableExcelReport = require('../tableExcelReport');
 const sheetsAuth = require('../sheetsAuth');
 const redisHealth = require('../redisHealth');
 const aiUsageLog = require('./aiUsageLog');
+// TASK 1 (2026-11), direct instruction - parity port from workflowService.js:
+// "Sheet options" (onlyWhere/afterSend), "Outside emails", and "Working day"
+// (skipToNextWorkingDay). holidaysService is the single source of truth for
+// the holiday check (isHoliday/isSunday) - never a second holiday store.
+const holidaysService = require('./holidaysService');
 
 const AUTOMATION_PREFIX = 'subh-automation:';
 const AUTOMATION_IDS_KEY = 'subh-automation-ids';
@@ -183,6 +188,19 @@ function parseSheetId(url) {
   return m ? m[1] : null;
 }
 function quoteSheetRange(tab, a1) { return "'" + String(tab).replace(/'/g, "''") + "'!" + a1; }
+// TASK 1 (2026-11) - needed only for the new "After sending, update"
+// write-back (writeAfterSendCell below) - byte-for-byte the same as
+// workflowService.js's own wfColLetter.
+function colLetter(idx) {
+  let n = idx + 1;
+  let s = '';
+  while (n > 0) {
+    const rem = (n - 1) % 26;
+    s = String.fromCharCode(65 + rem) + s;
+    n = Math.floor((n - 1) / 26);
+  }
+  return s;
+}
 function isPermissionError(err) { return /permission|forbidden|403|does not have access/i.test(String((err && err.message) || '')); }
 // Task 9 (2026-10-31) - button-speed fix: a sensible timeout plus exactly
 // one automatic retry on a first-try transient failure, the same
@@ -294,6 +312,12 @@ function sheetPlanDependencies(plan) {
   if (plan.sort && plan.sort.col) needed.add(plan.sort.col);
   if (plan.rec === 'column' && plan.recCol && plan.recCol !== 'self') needed.add(plan.recCol);
   if (!plan.sheetUseAllColumns) (plan.tableColumns || []).forEach((c) => needed.add(c));
+  // TASK 1 (2026-11) - "Sheet options" (onlyWhere/afterSend), parity with
+  // workflowService.js's own workflowSheetPlanDependencies wrapper, added
+  // directly here since Automated Tasks has no separate wrapper file.
+  const so = plan.sheetOptions || {};
+  if (so.onlyWhere && so.onlyWhere.column) needed.add(so.onlyWhere.column);
+  if (so.afterSend && so.afterSend.column) needed.add(so.afterSend.column);
   return Array.from(needed);
 }
 function checkSheetDependencies(plan, liveHeaders) {
@@ -324,6 +348,69 @@ async function loadSheetRows(plan) {
     });
     return row;
   });
+}
+// TASK 1 (2026-11), direct instruction - "After sending, update" write-
+// back needs the ABSOLUTE sheet row number for each matched row (1-based,
+// header row is row 1) - loadSheetRows itself deliberately never tracks
+// this (no existing caller needs it). A fresh, read-only re-read of the
+// SAME primary sheet/tab, built to produce byte-identical per-row objects
+// to loadSheetRows's own (so rowKey() of a row here and of the SAME row
+// as matchedRows produced it can ever agree) - parity port of
+// workflowService.js's own loadSheetRowNumberMap. `__rowNumber__` is
+// tracked OUTSIDE the row object (in the returned Map, not as a field on
+// it) so it never changes what rowKey() sees.
+async function loadSheetRowNumberMap(plan) {
+  const map = new Map();
+  if (!plan.sheetId || !plan.sheetTab) return map;
+  const sheets = sheetsAuth.getSheetsReadOnlyClient();
+  const res = await callSheetsWithRetry(() => sheets.spreadsheets.values.get({ spreadsheetId: plan.sheetId, range: quoteSheetRange(plan.sheetTab, 'A1:ZZ10000'), valueRenderOption: 'FORMATTED_VALUE' }), 'Sheet rows (row numbers)');
+  const values = res.data.values || [];
+  if (values.length < 2) return map;
+  const headers = values[0].map((h) => String(h || '').trim()).filter(Boolean);
+  const dateCols = new Set(headers.filter((h) => /date/i.test(h)));
+  values.slice(1).forEach((r, i) => {
+    if (!r.some((c) => String(c || '').trim())) return;
+    const row = {};
+    headers.forEach((h, idx) => {
+      const raw = r[idx] == null ? '' : String(r[idx]).trim();
+      if (dateCols.has(h)) { row[h] = parseFlexibleDate(raw); row['__raw__' + h] = raw; }
+      else row[h] = raw;
+    });
+    map.set(rowKey(row), i + 2);
+  });
+  return map;
+}
+// Writes the "After sending, update <column>" cell(s) - ONLY ever called
+// with row numbers whose message already sent successfully ("write only
+// after confirmed success" - see runAutomation below). `headers` is the
+// SAME live header read buildMessages already did for this run - never a
+// second network read just to locate the column. Never auto-creates a
+// missing column on the owner's own arbitrary sheet - a configured column/
+// date-column that isn't actually in the sheet is reported to the caller
+// (which notifies the owner) rather than silently restructuring their
+// sheet. Parity port of workflowService.js's own writeAfterSendCell.
+async function writeAfterSendCell(plan, headers, rowNumbers, afterSend, now) {
+  if (!rowNumbers || !rowNumbers.length || !afterSend || !afterSend.column) return;
+  const colIdx = headers.indexOf(afterSend.column);
+  if (colIdx === -1) throw new Error('column "' + afterSend.column + '" was not found in the sheet');
+  const dateColIdx = afterSend.alsoWriteDate ? headers.indexOf('Sent On') : -1;
+  const data = [];
+  const uniqueRowNumbers = [...new Set(rowNumbers)];
+  uniqueRowNumbers.forEach((rn) => {
+    data.push({ range: quoteSheetRange(plan.sheetTab, colLetter(colIdx) + rn), values: [[afterSend.value == null ? '' : String(afterSend.value)]] });
+    if (dateColIdx !== -1) data.push({ range: quoteSheetRange(plan.sheetTab, colLetter(dateColIdx) + rn), values: [[now.toISOString().slice(0, 10)]] });
+  });
+  // The main status write still goes out even when "Also write today's
+  // date" was requested but no "Sent On" column exists to write it into -
+  // the owner's explicit "Sent" mark is the more important of the two. The
+  // missing-date-column problem is still surfaced (thrown AFTER the real
+  // write below) so the caller can tell the owner, rather than this
+  // failing silently forever.
+  const sheets = sheetsAuth.getSheetsWriteClient();
+  await callSheetsWithRetry(() => sheets.spreadsheets.values.batchUpdate({ spreadsheetId: plan.sheetId, requestBody: { valueInputOption: 'RAW', data } }), 'Sheet write-back');
+  if (afterSend.alsoWriteDate && dateColIdx === -1) {
+    throw new Error('wrote "' + afterSend.column + '", but no "Sent On" column exists in the sheet to also write today\'s date');
+  }
 }
 function sheetDateColumns(columns) { return new Set((columns || []).filter((h) => /date/i.test(h))); }
 function sheetPersonCols(columns) {
@@ -644,23 +731,48 @@ async function buildMessages(automation, runAt) {
     // explicit tableColumns are untouched - checked above instead).
     if (plan.sheetUseAllColumns) plan = Object.assign({}, plan, { tableColumns: liveSheetHeaders });
   }
-  const rows = await matchedRows(plan, automation.excludedKeys, runAt);
+  let rows = await matchedRows(plan, automation.excludedKeys, runAt);
+  // TASK 1 (2026-11), direct instruction - "Sheet options" row filter
+  // ("Only rows where <column> = <value>"), parity with workflowService.js's
+  // own sheetOptions.onlyWhere (applied at the exact same point: right
+  // after matchedRows, before anything else - preview/test/real run all
+  // go through this ONE buildMessages call, so they can never disagree).
+  // Same case-insensitive/trimmed semantics as the existing 'is' operator
+  // in testCond above - additive only, never applied when unset.
+  const onlyWhere = plan.sheetOptions && plan.sheetOptions.onlyWhere;
+  if (onlyWhere && onlyWhere.column) {
+    const needle = String(onlyWhere.value == null ? '' : onlyWhere.value).toLowerCase().trim();
+    rows = rows.filter((r) => String(r[onlyWhere.column] == null ? '' : r[onlyWhere.column]).toLowerCase().trim() === needle);
+  }
   const sent = [];
   const skipped = [];
+  // TASK 1 (2026-11), direct instruction - "After sending, update"
+  // write-back needs each message's own covered sheet row number(s),
+  // tracked on the message itself (sheetRowNumbers below) so runAutomation
+  // can collect them AFTER confirming each send actually succeeded - parity
+  // with workflowService.js's own sheetRowNumberByKey/sheetRowNumbers.
+  // Only ever read (one extra network call) when afterSend is genuinely
+  // configured - a pure no-op for every task that doesn't use this.
+  const afterSend = plan.sheetOptions && plan.sheetOptions.afterSend;
+  const sheetRowNumberByKey = (afterSend && afterSend.column && plan.source === 'sheet') ? await loadSheetRowNumberMap(plan) : null;
   function push(contact, row, tableRows, who, key) {
     const name = (contact && contact.name) || '—';
     if (!contactOk(contact, plan.mediator)) {
       skipped.push({ who: name, reason: 'no valid ' + (plan.mediator === 'mail' ? 'email' : 'phone') + (row ? ' (for ' + rowName(row) + ')' : ''), key: key || null });
       return;
     }
-    const rawTable = plan.table && plan.tableColumns && plan.tableColumns.length ? (tableRows || (row ? [row] : [])) : null;
+    const rowsForWriteback = tableRows || (row ? [row] : []);
+    const sheetRowNumbers = sheetRowNumberByKey
+      ? rowsForWriteback.map((r) => sheetRowNumberByKey.get(rowKey(r))).filter((n) => n != null)
+      : [];
+    const rawTable = plan.table && plan.tableColumns && plan.tableColumns.length ? rowsForWriteback : null;
     sent.push({
       to: name, addr: plan.mediator === 'mail' ? contact.email : contact.phone,
       subject: fillPlaceholders(plan.mailSubject, row, runAt),
       body: fillPlaceholders(plan.body, row, runAt),
       table: rawTable ? rawTable.map((r) => formatTableRow(r, plan.tableColumns, plan, runAt)) : null,
       tableColumns: plan.tableColumns || [], tablePlacement: plan.tablePlacement || 'body',
-      who: who || null, key: key || null
+      who: who || null, key: key || null, sheetRowNumbers
     });
   }
   if (plan.rec === 'column') {
@@ -677,6 +789,11 @@ async function buildMessages(automation, runAt) {
     // master (e.g. an external stakeholder) - added alongside, never
     // instead of, the resolved employee list.
     (plan.selectedRawEmails || []).forEach((email) => people.push({ name: email, email, phone: '' }));
+    // TASK 1 (2026-11), direct instruction - "Outside emails", parity with
+    // workflowService.js's own plan.outsideEmails: a SEPARATE UI box from
+    // the above, but the identical merge behavior - always ADDED alongside
+    // the resolved employee list, never replacing it.
+    (plan.outsideEmails || []).forEach((email) => { if (email) people.push({ name: email, email, phone: '' }); });
     if (plan.group === 'each' && plan.source !== 'none') {
       for (const r of rows) for (const p of people) push(p, r, null, rowName(r), rowKey(r));
     } else {
@@ -849,6 +966,55 @@ function ensureNotTooSoon(schedule, now) {
   return computeNextRun(schedule, new Date(now.getTime() + SAVE_MIN_LEAD_MS));
 }
 
+// TASK 1 (2026-11), direct instruction - "Working day" (schedule.
+// skipToNextWorkingDay), parity port of workflowService.js's own
+// advanceNextRunToWorkingDay/computeWorkflowNextRun/ensureWorkflowNotTooSoon
+// (byte-for-byte the same approach, using this file's OWN istParts/
+// istWallClockToUtc directly since they already live here - no cross-file
+// call needed the way workflowService.js's copy requires). computeNextRun
+// itself stays completely UNCHANGED (still the single source of the real
+// repeat-cadence math) - these wrap it, never modify it, so every EXISTING
+// caller of computeNextRun/ensureNotTooSoon (every one already in this
+// file, plus workforceRoutes.js's automation resume route, deliberately
+// left as-is for the exact same reason workflowService.js's own resume
+// route still calls the plain, non-skip-aware version too) keeps behaving
+// exactly as before.
+const WORKING_DAY_ADVANCE_GUARD = 14; // same finite bound as workflowService.js's own copy
+function automationIstDateStringOf(date) {
+  const p = istParts(date);
+  return String(p.year).padStart(4, '0') + '-' + String(p.month).padStart(2, '0') + '-' + String(p.day).padStart(2, '0');
+}
+async function advanceNextRunToWorkingDay(nextRunAtIso) {
+  if (!nextRunAtIso) return nextRunAtIso;
+  let dt = new Date(nextRunAtIso);
+  let guard = 0;
+  while (guard++ < WORKING_DAY_ADVANCE_GUARD) {
+    const nonWorking = await holidaysService.isHoliday(automationIstDateStringOf(dt));
+    if (!nonWorking) return dt.toISOString();
+    const p = istParts(dt);
+    dt = istWallClockToUtc(p.year, p.month - 1, p.day + 1, p.hour, p.minute);
+  }
+  return dt.toISOString();
+}
+// The ONE place an automated task's own nextRunAt is computed when
+// skipToNextWorkingDay matters - wraps computeNextRun (untouched) and,
+// ONLY when schedule.skipToNextWorkingDay is explicitly true, advances
+// past a Sunday/holiday. Off/absent (today's default, and every already-
+// saved task) returns computeNextRun's own value completely unchanged -
+// no holiday lookup even attempted.
+async function computeAutomationNextRun(schedule, now) {
+  const base = computeNextRun(schedule, now);
+  if (!base || !schedule || !schedule.skipToNextWorkingDay) return base;
+  return advanceNextRunToWorkingDay(base);
+}
+const AUTOMATION_SAVE_MIN_LEAD_MS = SAVE_MIN_LEAD_MS;
+async function ensureAutomationNotTooSoon(schedule, now) {
+  const nextRunAt = await computeAutomationNextRun(schedule, now);
+  if (!nextRunAt) return nextRunAt;
+  if (new Date(nextRunAt).getTime() - now.getTime() >= AUTOMATION_SAVE_MIN_LEAD_MS) return nextRunAt;
+  return computeAutomationNextRun(schedule, new Date(now.getTime() + AUTOMATION_SAVE_MIN_LEAD_MS));
+}
+
 // ---------------- Sending ----------------
 async function sendOneMessage(automation, msg, runAt) {
   const plan = automation.plan;
@@ -928,7 +1094,7 @@ async function runAutomation(id, { isTest = false, testTo = null } = {}, now = n
       if (!isTest) {
         await whatsappAssistant.postOwnerNotification('⚠️ Automated task "' + automation.subject + '" could not run: ' + blocked.reason + '.').catch(() => {});
         automation.history = [{ runAt: runAt.toISOString(), sentCount: 0, skippedCount: 0, results: [], note: 'Blocked: ' + blocked.reason }, ...(automation.history || [])].slice(0, 20);
-        automation.nextRunAt = computeNextRun(automation.schedule, new Date(runAt.getTime() + 1000));
+        automation.nextRunAt = await computeAutomationNextRun(automation.schedule, new Date(runAt.getTime() + 1000));
         automation.updatedAt = runAt.toISOString();
         await saveAutomation(automation);
       }
@@ -943,18 +1109,35 @@ async function runAutomation(id, { isTest = false, testTo = null } = {}, now = n
       return { ok: true, sentCount: results.filter((r) => r.status === 'sent').length, skippedCount: 0, results };
     }
     const results = [];
+    // TASK 1 (2026-11), direct instruction - "After sending, update":
+    // collected ONLY from messages whose send ACTUALLY succeeded - "write
+    // only after confirmed success", same discipline workflowService.js's
+    // own afterSendRowNumbers follows (and, further back, the one
+    // insuranceService.js's markAdditionsSent/writeStatusCells already use
+    // for the Health Insurance queue).
+    const afterSendRowNumbers = [];
     for (const m of sent) {
-      results.push(await sendOneMessage(automation, m, runAt));
+      const result = await sendOneMessage(automation, m, runAt);
+      results.push(result);
+      if (result.status === 'sent' && m.sheetRowNumbers && m.sheetRowNumbers.length) afterSendRowNumbers.push(...m.sheetRowNumbers);
       // Small gap between sends - same "never hammer the gateway/Gmail"
       // principle as whatsappService.js's own send queue.
       await new Promise((resolve) => setTimeout(resolve, 300));
+    }
+    const afterSend = automation.plan.sheetOptions && automation.plan.sheetOptions.afterSend;
+    if (afterSendRowNumbers.length && afterSend && afterSend.column && liveSheetHeaders) {
+      try {
+        await writeAfterSendCell(automation.plan, liveSheetHeaders, afterSendRowNumbers, afterSend, runAt);
+      } catch (err) {
+        await whatsappAssistant.postOwnerNotification('⚠️ Automated task "' + automation.subject + '" sent, but could not update the sheet afterwards: ' + err.message).catch(() => {});
+      }
     }
     const sentCount = results.filter((r) => r.status === 'sent').length;
     const skippedCount = skipped.length + results.filter((r) => r.status !== 'sent').length;
     automation.history = [{ runAt: runAt.toISOString(), sentCount, skippedCount, results: results.concat(skipped.map((s) => ({ to: s.who, status: 'skipped', error: s.reason }))) }, ...(automation.history || [])].slice(0, 20);
     automation.lastRun = { at: runAt.toISOString(), sentCount, skippedCount };
     automation.pendingMissedRun = null;
-    automation.nextRunAt = computeNextRun(automation.schedule, new Date(runAt.getTime() + 1000));
+    automation.nextRunAt = await computeAutomationNextRun(automation.schedule, new Date(runAt.getTime() + 1000));
     automation.updatedAt = runAt.toISOString();
     if (!automation.nextRunAt && isOneShotSchedule(automation.schedule)) automation.status = 'completed';
     // "Same as the sheet" tasks: once per REAL change, tell the owner the
@@ -1002,7 +1185,7 @@ async function runDueAutomations(now = new Date()) {
     if (dueMs > MISSED_RUN_THRESHOLD_MS) {
       if (a.pendingMissedRun && a.pendingMissedRun.scheduledFor === a.nextRunAt) continue; // already flagged, waiting on the owner
       a.pendingMissedRun = { scheduledFor: a.nextRunAt, discoveredAt: now.toISOString() };
-      a.nextRunAt = computeNextRun(a.schedule, new Date(now.getTime() + 1000));
+      a.nextRunAt = await computeAutomationNextRun(a.schedule, new Date(now.getTime() + 1000));
       a.updatedAt = now.toISOString();
       await saveAutomation(a);
       await whatsappAssistant.postOwnerNotification('⚠️ Automated task "' + a.subject + '" missed its scheduled run (' + new Date(a.pendingMissedRun.scheduledFor).toLocaleString('en-GB', { timeZone: 'Asia/Kolkata' }) + ') - open Automated Tasks to Send or Skip it.').catch(() => {});
@@ -1091,6 +1274,17 @@ function automationPlanTool(departmentNames, sheetContext) {
             description: 'Only if a specific display was requested for a date column - "no year mentioned"/"only day and month" -> DD Mon; a literal day-month-year numeric format -> DD-MM-YYYY; the full month name with year -> DD Month YYYY; for an annual date (like DOB) shown as if it fell in THIS RUN\'S own reported period (e.g. "year shown as 2026"/"as if this year"/a worked example like "24-07-1998 ke 24-07-2026 dekhabe") -> DD-MM-ReportedYear, never a literal year the model picks itself.'
           },
           subjectHint: { type: 'string', description: 'A short mail-subject-style phrase for what this task is about, in English.' },
+          // TASK 1 (2026-11), direct instruction - "Sheet options"/"Outside
+          // emails"/"Working day" parity port, descriptions copied nearly
+          // verbatim from workflowService.js's own identically-named fields
+          // so the two features understand these concepts the same way.
+          skipToNextWorkingDay: { type: 'boolean', description: 'true only when the ask explicitly says the schedule itself should move to the next working day whenever it would otherwise fall on a Sunday/holiday (e.g. "Sunday hole porer working day e cholbe", "if it lands on a holiday, run the next working day instead"). Omit/false otherwise - never assumed.' },
+          outsideEmailsRaw: { type: 'array', items: { type: 'string' }, description: 'Only when rec=selected - any literal outside/external email address(es) explicitly named to also receive the message (e.g. a vendor\'s/insurer\'s own email), exactly as given. Omit entirely when none is mentioned - never invent one.' },
+          sheetOnlyWhereColumnHint: { type: 'string', description: 'Only for source=sheet - a simple row filter naming or clearly implying ONE existing loaded column that must equal one value, applied on top of any other filter already described (e.g. "only pending rows" when a real "Status" column is loaded -> "Status"). Matched against the real loaded columns afterward - omit entirely when no such column genuinely exists among them, never guess one that isn\'t there.' },
+          sheetOnlyWhereValue: { type: 'string', description: 'Required when sheetOnlyWhereColumnHint is set - the value that column must equal, exactly as stated (e.g. "Pending").' },
+          sheetAfterSendColumnHint: { type: 'string', description: 'Only for source=sheet - when the ask says to update/mark ONE existing loaded column AFTER successfully sending (e.g. "mark them Sent after", "pathanor por Status ta Sent kore debe" -> "Status"). Matched against the real loaded columns afterward - omit entirely when no such column genuinely exists among them, never guess one that isn\'t there.' },
+          sheetAfterSendValue: { type: 'string', description: 'Required when sheetAfterSendColumnHint is set - the value to write, exactly as stated (e.g. "Sent").' },
+          sheetAfterSendAlsoWriteDate: { type: 'boolean', description: 'Only when sheetAfterSendColumnHint is set - true only if the ask also explicitly says to write today\'s date (e.g. into a "Sent On" column). Omit/false otherwise.' },
           unclear: { type: 'array', items: { type: 'string' }, description: 'Short, specific descriptions of anything genuinely required but not stated or not resolvable from real data (e.g. "which people or data this is about", "who should receive it", "a department name that doesn\'t match any real department", "a column named X that doesn\'t exist in the data"). Empty array if everything needed is resolved.' }
         },
         required: ['unclear']
@@ -1219,6 +1413,21 @@ async function draftPlanFromParsed(parsed, now, sheetContext) {
       else unclear.push('a column named "' + f.columnHint + '" to filter by (not found in tab "' + sheetTab + '")');
     }
   }
+  // TASK 1 (2026-11), direct instruction - "Sheet options" (onlyWhere/
+  // afterSend), parity port of workflowService.js's own resolution
+  // (workflowService.js:1687-1690) - same resolveAnyColumn column lookup
+  // every other sheet-column hint on this page already uses. A hint that
+  // doesn't match any real column is simply left unresolved (omitted,
+  // never pushed to `unclear`) - this whole feature is additive/optional,
+  // so a miss here must never block an otherwise-good plan (same posture
+  // workflowService.js's own identical comment documents).
+  let onlyWhere = null, afterSend = null;
+  if (isSheet && sheetTab) {
+    const onlyWhereCol = parsed.sheetOnlyWhereColumnHint ? resolveAnyColumn(parsed.sheetOnlyWhereColumnHint) : null;
+    const afterSendCol = parsed.sheetAfterSendColumnHint ? resolveAnyColumn(parsed.sheetAfterSendColumnHint) : null;
+    onlyWhere = onlyWhereCol ? { column: onlyWhereCol, value: String(parsed.sheetOnlyWhereValue || '').trim() } : null;
+    afterSend = afterSendCol ? { column: afterSendCol, value: String(parsed.sheetAfterSendValue || '').trim(), alsoWriteDate: Boolean(parsed.sheetAfterSendAlsoWriteDate) } : null;
+  }
   let rec = parsed.rec || null, recCol = parsed.recCol || null, selectedEmployeeIds = [], selectedRawEmails = [];
   const unresolvedPeople = [];
   const ambiguousPeople = [];
@@ -1252,6 +1461,11 @@ async function draftPlanFromParsed(parsed, now, sheetContext) {
     ...ambiguousPeople.map((a) => 'which "' + a.name + '" you mean (' + a.candidates + ')')
   );
   if (!rec) unclear.push('who should receive it (their HOD/Reporting Manager/themself, or named people)');
+  // TASK 1 (2026-11), direct instruction - "Outside emails", parity port
+  // of workflowService.js's own outsideEmailsRaw resolution
+  // (workflowService.js:1673) - only when rec=selected, same gating as
+  // selectedRawEmails above.
+  const outsideEmails = rec === 'selected' ? (parsed.outsideEmailsRaw || []).map((e) => String(e || '').trim()).filter((e) => EMAIL_RE.test(e)) : [];
 
   // Table columns. A sheet automation shares its data by definition, so it
   // defaults to a table of ALL of the chosen tab's own columns, in the
@@ -1432,7 +1646,7 @@ async function draftPlanFromParsed(parsed, now, sheetContext) {
   };
   return {
     ok: true,
-    plan: {
+    plan: Object.assign({
       source,
       sheetUrl: isSheet ? ((sheetContext && sheetContext.sheetUrl) || null) : null,
       sheetId: isSheet ? ((sheetContext && sheetContext.sheetId) || null) : null,
@@ -1446,7 +1660,19 @@ async function draftPlanFromParsed(parsed, now, sheetContext) {
       body: bodyTemplates[source] || 'Dear {Employee_Name},\n\n',
       table, tableColumns, tablePlacement: parsed.wantsPdf ? 'pdf' : 'body', attachmentFormat: 'pdf'
     },
-    schedule: { date: scheduleDate.toISOString().slice(0, 10), time, repeat, every, unit, weekdays, monthDays, lastDayOfMonth: lastDayOfMonthFlag || undefined },
+    // TASK 1 (2026-11), direct instruction - "Sheet options"/"Outside
+    // emails" parity port. Omitted ENTIRELY (never set to a truthy-but-
+    // empty object/array) when nothing resolved - workflowService.js's
+    // OWN draftWorkflowPlanFromParsed delegates to this function as its
+    // "base" plan and only ever ADDS its own sheetOptions/outsideEmails
+    // conditionally on TOP of it (never overwriting with null) - so a
+    // truthy-but-empty object here would leak through as if Workflow
+    // itself had set it, even when it hadn't (confirmed live:
+    // scripts/check-workflow-v2-phase7.js's own "sheetOptions is simply
+    // absent" lock broke before this fix).
+    (onlyWhere || afterSend) ? { sheetOptions: { onlyWhere, afterSend } } : null,
+    outsideEmails.length ? { outsideEmails } : null),
+    schedule: { date: scheduleDate.toISOString().slice(0, 10), time, repeat, every, unit, weekdays, monthDays, lastDayOfMonth: lastDayOfMonthFlag || undefined, skipToNextWorkingDay: Boolean(parsed.skipToNextWorkingDay) },
     subject: parsed.subjectHint || { confirmations: 'Confirmation mail to HODs', birthdays: 'Birthday wishes', master: 'Notice to employees', exits: 'Exits update', sheet: (isSheet && sheetTab ? 'Data from ' + sheetTab : 'Reminder'), none: 'Reminder' }[source]
   };
 }
@@ -1460,6 +1686,11 @@ module.exports = {
   runAutomation, runDueAutomations, resolveMissedRun,
   parseAutomationAsk, draftPlanFromParsed, automationPlanTool,
   MISSED_RUN_THRESHOLD_MS, WEEKDAY_NAMES,
+  // TASK 1 (2026-11), direct instruction - "Sheet options"/"Outside
+  // emails"/"Working day" parity port exports (routes + the deterministic
+  // test suite need these directly).
+  loadSheetRowNumberMap, writeAfterSendCell, colLetter,
+  computeAutomationNextRun, ensureAutomationNotTooSoon, advanceNextRunToWorkingDay,
   // PHASE 3 (2026-11, Workflow Automation extension) - additive exports
   // only, never wired into this file's OWN calling behaviour (Automated
   // Tasks keeps using computeNextRun/ensureNotTooSoon exactly as before -

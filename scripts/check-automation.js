@@ -84,6 +84,23 @@ function makeFakeSheetsClient(scenario) {
     }
   };
 }
+// TASK 1 (2026-11), direct instruction - "After sending, update" write-back
+// test support: a separate fake WRITE client (sheetsAuth.getSheetsWriteClient
+// is never used for anything else) that just records every batchUpdate call
+// into `writes` (an array the test passes in) rather than touching any real
+// sheet - never a real network call.
+function makeFakeSheetsWriteClient(writes) {
+  return {
+    spreadsheets: {
+      values: {
+        batchUpdate: async ({ spreadsheetId, requestBody }) => {
+          writes.push({ spreadsheetId, data: requestBody.data });
+          return { data: {} };
+        }
+      }
+    }
+  };
+}
 
 async function main() {
   await require('./testBootstrap').setupTestEnvironment();
@@ -93,6 +110,7 @@ async function main() {
   const whatsapp = require('../src/whatsappService');
   const whatsappAssistant = require('../src/aiAssistant/whatsappAssistant');
   const sheetsAuth = require('../src/sheetsAuth');
+  const holidaysService = require('../src/aiAssistant/holidaysService');
 
   const now = new Date('2026-10-15T06:00:00.000Z'); // simulated clock throughout - October, IST ~11:30am
   const createdIds = [];
@@ -934,6 +952,139 @@ async function main() {
         msg.attachment.contentType === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' && msg.attachment.filename.endsWith('.xlsx') &&
         Buffer.isBuffer(msg.attachment.content) && msg.attachment.content.length > 0;
     });
+
+    console.log('='.repeat(70));
+    console.log('TASK 1 (2026-11), direct instruction - parity port from workflowService.js: "Sheet options" (onlyWhere/afterSend), "Outside emails", "Working day" (skipToNextWorkingDay)');
+    console.log('='.repeat(70));
+    {
+      const origGetSheetsReadOnlyClient2 = sheetsAuth.getSheetsReadOnlyClient;
+      const origGetSheetsWriteClient = sheetsAuth.getSheetsWriteClient;
+      const origHasServiceAccount2 = sheetsAuth.hasServiceAccount;
+      sheetsAuth.hasServiceAccount = () => true;
+      const task1Scenario = {
+        fileName: 'Task1 Sheet',
+        tabs: [{ title: 'Data', values: [
+          ['Name', 'Status', 'Email'],
+          ['Alice', 'Pending', 'alice@co.test'],
+          ['Bob', 'Sent', 'bob@co.test'],
+          ['Carol', 'Pending', 'carol@co.test']
+        ] }]
+      };
+      sheetsAuth.getSheetsReadOnlyClient = () => makeFakeSheetsClient(task1Scenario);
+      let writeCalls = [];
+      sheetsAuth.getSheetsWriteClient = () => makeFakeSheetsWriteClient(writeCalls);
+      try {
+        const basePlan = {
+          source: 'sheet', sheetUrl: 'https://docs.google.com/spreadsheets/d/FAKE1/edit', sheetId: 'FAKE1', sheetTab: 'Data',
+          sheetColumns: ['Name', 'Status', 'Email'], sheetUseAllColumns: false,
+          conds: [], match: 'all', group: 'each', rec: 'column', recCol: 'self',
+          selectedEmployeeIds: [], selectedRawEmails: [],
+          mediator: 'mail', mailSubject: 'Reminder', body: 'Hi {Name}', table: false, tableColumns: [],
+          sheetOptions: { onlyWhere: null, afterSend: null }, outsideEmails: []
+        };
+        await checkAsync('onlyWhere: "Only rows where Status = Pending" filters buildMessages down to just the matching rows (Alice + Carol, never Bob)', async () => {
+          const plan = Object.assign({}, basePlan, { sheetOptions: { onlyWhere: { column: 'Status', value: 'Pending' }, afterSend: null } });
+          const result = await automationService.buildMessages({ plan, excludedKeys: [] }, now);
+          return result.sent.length === 2 && result.sent.every((m) => m.to === 'Alice' || m.to === 'Carol') && !result.sent.some((m) => m.to === 'Bob');
+        });
+        await checkAsync('onlyWhere unset: every row still matches, same as before this phase (no regression to the no-filter case)', async () => {
+          const result = await automationService.buildMessages({ plan: basePlan, excludedKeys: [] }, now);
+          return result.sent.length === 3;
+        });
+        await checkAsync('afterSend: a REAL run writes "Sent" into the Status column, ONLY for rows whose message actually sent, using the real sheet row numbers (Alice=row2, Carol=row4 - never Bob=row3)', async () => {
+          writeCalls = [];
+          sheetsAuth.getSheetsWriteClient = () => makeFakeSheetsWriteClient(writeCalls);
+          const plan = Object.assign({}, basePlan, { sheetOptions: { onlyWhere: { column: 'Status', value: 'Pending' }, afterSend: { column: 'Status', value: 'Sent', alsoWriteDate: false } } });
+          const rec = await create({ subject: 'Write-back task', plan, excludedKeys: [], schedule: { date: '2026-12-20', time: '10:00', repeat: 'none' } });
+          const result = await automationService.runAutomation(rec.id, {}, now);
+          if (!result.ok || !writeCalls.length) return false;
+          const ranges = writeCalls[0].data.map((d) => d.range);
+          return result.sentCount === 2 && ranges.includes("'Data'!B2") && ranges.includes("'Data'!B4") && !ranges.includes("'Data'!B3") &&
+            writeCalls[0].data.every((d) => d.values[0][0] === 'Sent');
+        });
+        await checkAsync('afterSend + alsoWriteDate: ALSO writes today\'s date into a real "Sent On" column when one exists', async () => {
+          writeCalls = [];
+          sheetsAuth.getSheetsWriteClient = () => makeFakeSheetsWriteClient(writeCalls);
+          const dateScenario = { fileName: 'Task1 Sheet', tabs: [{ title: 'Data', values: [
+            ['Name', 'Status', 'Email', 'Sent On'],
+            ['Alice', 'Pending', 'alice@co.test', '']
+          ] }] };
+          sheetsAuth.getSheetsReadOnlyClient = () => makeFakeSheetsClient(dateScenario);
+          const plan = Object.assign({}, basePlan, {
+            sheetColumns: ['Name', 'Status', 'Email', 'Sent On'],
+            sheetOptions: { onlyWhere: null, afterSend: { column: 'Status', value: 'Sent', alsoWriteDate: true } }
+          });
+          const rec = await create({ subject: 'Write-back + date task', plan, excludedKeys: [], schedule: { date: '2026-12-20', time: '10:00', repeat: 'none' } });
+          const result = await automationService.runAutomation(rec.id, {}, now);
+          sheetsAuth.getSheetsReadOnlyClient = () => makeFakeSheetsClient(task1Scenario);
+          if (!result.ok || !writeCalls.length) return false;
+          const ranges = writeCalls[0].data.map((d) => d.range);
+          return ranges.includes("'Data'!B2") && ranges.includes("'Data'!D2") && writeCalls[0].data.find((d) => d.range === "'Data'!D2").values[0][0] === now.toISOString().slice(0, 10);
+        });
+        await checkAsync('afterSend: a task with NO write-back configured never calls the write client at all (pure no-op, every pre-existing task unaffected)', async () => {
+          writeCalls = [];
+          sheetsAuth.getSheetsWriteClient = () => makeFakeSheetsWriteClient(writeCalls);
+          const rec = await create({ subject: 'No write-back task', plan: basePlan, excludedKeys: [], schedule: { date: '2026-12-20', time: '10:00', repeat: 'none' } });
+          const result = await automationService.runAutomation(rec.id, {}, now);
+          return result.ok && writeCalls.length === 0;
+        });
+      } finally {
+        sheetsAuth.getSheetsReadOnlyClient = origGetSheetsReadOnlyClient2;
+        sheetsAuth.getSheetsWriteClient = origGetSheetsWriteClient;
+        sheetsAuth.hasServiceAccount = origHasServiceAccount2;
+      }
+
+      await checkAsync('outsideEmails: a raw external address is ALWAYS added alongside resolved employees (selectedEmployeeIds), never replacing them', async () => {
+        const plan = {
+          source: 'none', conds: [], match: 'all', group: 'list', rec: 'selected', recCol: null,
+          selectedEmployeeIds: ['E1'], selectedRawEmails: [], outsideEmails: ['vendor@outside.test'],
+          mediator: 'mail', mailSubject: 'Notice', body: 'Hi all', table: false, tableColumns: [],
+          sheetOptions: { onlyWhere: null, afterSend: null }
+        };
+        const result = await automationService.buildMessages({ plan, excludedKeys: [] }, now);
+        return result.sent.length === 2 && result.sent.some((m) => m.addr === 'alice@co.test') && result.sent.some((m) => m.addr === 'vendor@outside.test');
+      });
+      await checkAsync('outsideEmails: omitted/empty is a pure no-op, same as before this phase', async () => {
+        const plan = {
+          source: 'none', conds: [], match: 'all', group: 'list', rec: 'selected', recCol: null,
+          selectedEmployeeIds: ['E1'], selectedRawEmails: [],
+          mediator: 'mail', mailSubject: 'Notice', body: 'Hi all', table: false, tableColumns: []
+        };
+        const result = await automationService.buildMessages({ plan, excludedKeys: [] }, now);
+        return result.sent.length === 1 && result.sent[0].addr === 'alice@co.test';
+      });
+
+      console.log('='.repeat(70));
+      console.log('"Working day" (schedule.skipToNextWorkingDay)');
+      console.log('='.repeat(70));
+      const origIsHoliday = holidaysService.isHoliday;
+      try {
+        // holidaysService.isHoliday is monkey-patched here (not real
+        // calendar/Sunday logic - that's holidaysService's own job, tested
+        // separately) to simulate TWO consecutive non-working days
+        // (2026-10-18 and -19), so a schedule landing on the first of them
+        // must skip BOTH and land on 2026-10-20.
+        holidaysService.isHoliday = async (dateStr) => dateStr === '2026-10-18' || dateStr === '2026-10-19';
+        await checkAsync('skipToNextWorkingDay=true: a run landing on Sunday+a held holiday advances to the next real working day (Tue 20th), same wall-clock time', async () => {
+          const schedule = { date: '2026-10-18', time: '10:00', repeat: 'once', skipToNextWorkingDay: true };
+          const result = await automationService.computeAutomationNextRun(schedule, now);
+          return Boolean(result) && new Date(result).toISOString().startsWith('2026-10-20');
+        });
+        await checkAsync('skipToNextWorkingDay=false/absent: byte-identical to plain computeNextRun - never even attempts a holiday lookup (the OFF path, today\'s default for every pre-existing task)', async () => {
+          const schedule = { date: '2026-10-18', time: '10:00', repeat: 'once' };
+          const plain = automationService.computeNextRun(schedule, now);
+          const wrapped = await automationService.computeAutomationNextRun(schedule, now);
+          return plain === wrapped && new Date(plain).toISOString().startsWith('2026-10-18');
+        });
+        await checkAsync('ensureAutomationNotTooSoon: respects skipToNextWorkingDay too (same 2-minute-lead nudge as ensureNotTooSoon, just skip-aware)', async () => {
+          const schedule = { date: '2026-10-18', time: '10:00', repeat: 'once', skipToNextWorkingDay: true };
+          const result = await automationService.ensureAutomationNotTooSoon(schedule, now);
+          return Boolean(result) && new Date(result).toISOString().startsWith('2026-10-20');
+        });
+      } finally {
+        holidaysService.isHoliday = origIsHoliday;
+      }
+    }
 
     console.log('='.repeat(70));
     console.log(pass + '/' + (pass + fail) + ' passed' + (fail ? ', ' + fail + ' FAILED' : ''));
