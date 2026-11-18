@@ -8629,7 +8629,7 @@
       // .wf-nf-box/.wf-nf-title/.wf-nf-badge green-box classes, never new
       // CSS.
       '<div class="wf-nf-box"><div class="wf-nf-title">🔎 Details — take from the reply</div>' +
-      '<input type="text" ' + attr('detailFields') + ' value="' + escapeHtml(r.detailFields || '') + '" placeholder="e.g. amount, reference no., date" autocomplete="off" style="margin-top:8px">' +
+      '<input type="text" ' + attr('detailFields') + ' value="' + escapeHtml(r.detailFields || '') + '" placeholder="e.g. amount, reference no., date" autocomplete="off" style="margin-top:8px;width:100%;box-sizing:border-box">' +
       '<div class="wf-auto-hint">SUBH reads them from the reply → use as {Amount}, {Reference}, {Date}… in the next messages.</div></div>' +
       '<label class="wf-auto-check"><input type="checkbox" ' + attr('askDetail_on') + ' ' + (r.askDetail ? 'checked' : '') + '> First ask for a missing detail</label>' +
       (r.askDetail ? (
