@@ -8628,7 +8628,7 @@
       // (workflowService.parseDetailFieldNames). Reuses the Phase 3
       // .wf-nf-box/.wf-nf-title/.wf-nf-badge green-box classes, never new
       // CSS.
-      '<div class="wf-nf-box"><div class="wf-nf-title">🔎 Details — take from the reply <span class="wf-nf-badge">NEW</span></div>' +
+      '<div class="wf-nf-box"><div class="wf-nf-title">🔎 Details — take from the reply</div>' +
       '<input type="text" ' + attr('detailFields') + ' value="' + escapeHtml(r.detailFields || '') + '" placeholder="e.g. amount, reference no., date" autocomplete="off" style="margin-top:8px">' +
       '<div class="wf-auto-hint">SUBH reads them from the reply → use as {Amount}, {Reference}, {Date}… in the next messages.</div></div>' +
       '<label class="wf-auto-check"><input type="checkbox" ' + attr('askDetail_on') + ' ' + (r.askDetail ? 'checked' : '') + '> First ask for a missing detail</label>' +
@@ -8673,7 +8673,7 @@
         // this message"). A nested rule never shows this - the hard
         // 2-level cap.
         (nested ? '' : (
-          '<div class="wf-nf-box"><div class="wf-nf-title">Next stage <span class="wf-nf-badge">NEW</span></div>' +
+          '<div class="wf-nf-box"><div class="wf-nf-title">Next stage</div>' +
           '<label class="wf-auto-check"><input type="checkbox" data-r="' + i + '" data-k="nextStageOn" ' + (r.nextStageOn ? 'checked' : '') + '> Wait for their reply → rules for their reply</label>' +
           (r.nextStageOn ? (
             (r.sub || []).map((sr, j) => wfRenderRuleFields(sr, i, j, '↳ Their reply ' + (j + 1))).join('') +
@@ -8688,7 +8688,7 @@
       (isWaMediator ? '<div class="wf-auto-hint" data-wa-mediator-hint="waitForAttachments">' + WF_MEDIATOR_ATTACH_HINT + '</div>' : '') +
       // PHASE 5 (2026-11) - "Also do" green box - flat, independent of
       // `then` (never nested under it). Both off by default.
-      '<div class="wf-nf-box"><div class="wf-nf-title">Also do <span class="wf-nf-badge">NEW</span></div>' +
+      '<div class="wf-nf-box"><div class="wf-nf-title">Also do</div>' +
       '<label class="wf-auto-check"><input type="checkbox" ' + attr('alsoDoDriveOn') + ' ' + (driveUpload.on ? 'checked' : '') + (isWaMediator ? ' disabled' : '') + '> Save attachments to a Drive folder</label>' +
       (isWaMediator ? '<div class="wf-auto-hint" data-wa-mediator-hint="driveUpload">' + WF_MEDIATOR_ATTACH_HINT + '</div>' : '') +
       (driveUpload.on ? '<input type="text" ' + attr('alsoDoDrivePath') + ' value="' + escapeHtml(driveUpload.pathPattern || '') + '" placeholder="e.g. Documents/{Month}/{Employee_Name}.pdf" autocomplete="off" style="margin-top:8px"' + (isWaMediator ? ' disabled' : '') + '>' : '') +
