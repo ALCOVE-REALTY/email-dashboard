@@ -7069,6 +7069,14 @@
     // whatever employee list is already cached (or a skeleton, cold) -
     // and the employee fetch/render happens in the background after.
     if (t) autoPopulateForm(t); else autoResetForm();
+    // LIVE BUG FIX (2026-11), direct instruction - re-derive the Load
+    // button's own tick/disabled state from whatever autoResetForm/
+    // autoPopulateForm just put in the box (autoResetButtonState above
+    // already ran, but unconditionally enables it - this corrects that to
+    // "disabled only while the box is actually empty", matching a fresh
+    // Create as much as an Edit that opens with an existing link already
+    // in the box).
+    autoSyncSheetLoadBtnState();
     // Task 14 (2026-11) LIVE BUG FIX: after a failed save, autoSubjErr/
     // autoAskErr stay visible (set true by the validation check on Save,
     // see validateAutoForm below) until the NEXT save attempt explicitly
@@ -7437,9 +7445,17 @@
     setTimeout(() => { autoSheetShareCopyBtn.textContent = 'Copy'; autoSheetShareCopyBtn.classList.remove('copied'); }, 1800);
   });
 
+  // LIVE BUG FIX (2026-11), direct instruction - the box's current text no
+  // longer matching the sheet autoSheetContext was actually loaded from is
+  // the ONE real signal for "stale, tap Load again" - checked fresh here
+  // (not cached in a flag) so pasting the SAME link back makes the tick/
+  // info reappear without a reload, per direct instruction.
+  function autoSheetUrlMatchesLoaded() {
+    return Boolean(autoSheetContext) && (autoSheetUrl && autoSheetUrl.value || '').trim() === autoSheetContext.sheetUrl;
+  }
   function renderAutoSheetInfo() {
     if (!autoSheetInfo) return;
-    if (!autoSheetContext) { autoSheetInfo.innerHTML = ''; return; }
+    if (!autoSheetUrlMatchesLoaded()) { autoSheetInfo.innerHTML = ''; return; }
     const chosenTab = autoPlan && autoPlan.source === 'sheet' ? autoPlan.sheetTab : null;
     autoSheetInfo.innerHTML = '<div class="wf-auto-sheet-file">✓ ' + escapeHtml(autoSheetContext.fileName) + '</div>' +
       autoSheetContext.tabs.map((t) => (
@@ -7469,11 +7485,45 @@
     if (autoPlan) renderAutoUnderstanding();
   });
 
+  // LIVE BUG FIX (2026-11), direct instruction - TASK 7's own fix never
+  // actually worked: it only cleared autoSheetContext and re-rendered the
+  // info panel, but the green tick/disabled state lives entirely on the
+  // BUTTON's own classList (is-success, set by runButtonAction on a
+  // successful Load) - something neither that code nor runButtonAction
+  // itself ever resets on its own (runButtonAction's own "stays disabled+
+  // green" default is deliberate for buttons whose row disappears right
+  // after; this one's row/page does NOT disappear). So the tick/disabled
+  // state was permanently stuck after the FIRST successful Load, on every
+  // platform - never actually a mobile-only event issue. Fixed by making
+  // the button's own visual state a pure function of "does the box's
+  // current text match what's actually loaded", re-derived on every input
+  // event (autoSheetUrlMatchesLoaded above), instead of a one-way class
+  // the original fix forgot to ever reverse.
+  function autoSyncSheetLoadBtnState() {
+    if (!autoSheetLoadBtn) return;
+    autoSheetLoadBtn.classList.remove('is-loading', 'is-error');
+    const url = (autoSheetUrl && autoSheetUrl.value || '').trim();
+    if (autoSheetUrlMatchesLoaded()) {
+      autoSheetLoadBtn.classList.add('is-success');
+      autoSheetLoadBtn.disabled = true;
+    } else {
+      autoSheetLoadBtn.classList.remove('is-success');
+      autoSheetLoadBtn.disabled = !url;
+    }
+  }
   if (autoSheetLoadBtn) autoSheetLoadBtn.addEventListener('click', async () => {
     loadServiceAccountEmailOnce();
     const url = (autoSheetUrl && autoSheetUrl.value || '').trim();
     if (autoSheetMsg) autoSheetMsg.classList.add('hidden');
     if (!/docs\.google\.com\/spreadsheets/.test(url)) { if (autoSheetMsg) { autoSheetMsg.textContent = 'Paste a Google Sheet link first.'; autoSheetMsg.classList.remove('hidden'); } return; }
+    // Direct instruction - loading a NEW link fully replaces the old sheet;
+    // any column selection the new sheet doesn't have gets silently reset
+    // to empty by renderAutoSheetOptionCols/renderAutoRecCols below (their
+    // own rebuild-from-the-new-column-list never re-selects a value that
+    // isn't in it) - captured here, before that happens, just to show a
+    // short note when it actually drops something real.
+    const prevOnlyWhereCol = autoOnlyWhereCol ? autoOnlyWhereCol.value : '';
+    const prevAfterSendCol = autoAfterSendCol ? autoAfterSendCol.value : '';
     await runButtonAction(autoSheetLoadBtn, () => postJsonOrThrow('/api/workforce/hr-assistant/automations/load-sheet', { sheetUrl: url }), (r) => {
       autoSheetContext = { sheetUrl: url, sheetId: r.sheetId, fileName: r.fileName, tabs: r.tabs };
       // A single tab auto-selects itself - no reason to make the owner
@@ -7486,22 +7536,28 @@
         // multi-tab picker's own click handler above for why.
         autoTableCols = [...r.tabs[0].headers];
         renderAutoRecCols(); renderAutoCols(); renderAutoSheetOptionCols();
+        const newCols = r.tabs[0].headers;
+        const droppedCol = (prevOnlyWhereCol && !newCols.includes(prevOnlyWhereCol)) || (prevAfterSendCol && !newCols.includes(prevAfterSendCol));
+        if (droppedCol && autoSheetMsg) { autoSheetMsg.textContent = 'Loaded. Some column selections from the old sheet weren\'t found here and were cleared.'; autoSheetMsg.classList.remove('hidden'); }
       }
       renderAutoSheetInfo();
+      autoSyncSheetLoadBtnState();
       autoSync();
       if (autoPlan) renderAutoUnderstanding();
     }, { toastFn: (msg) => { if (autoSheetMsg) { autoSheetMsg.textContent = msg; autoSheetMsg.classList.remove('hidden'); } else showAutoToast(msg, 'error'); } });
   });
-  // TASK 7 (2026-11), direct instruction - editing the link after a
-  // successful Load used to leave the green tick/file info showing stale
-  // (autoSheetContext was never cleared), so there was no way to tell the
-  // edit had "taken" until tapping Load again silently replaced it.
-  // Clearing it immediately on input means the tick genuinely reflects
-  // "not loaded yet" until the NEW Load succeeds and shows it again.
+  // TASK 7 (2026-11) + its LIVE BUG FIX (2026-11), direct instruction -
+  // any change to the box's text (typing, paste, clear, select-all+
+  // delete, a tapped keyboard suggestion - 'input' fires for all of these
+  // on every browser, desktop and mobile alike) re-derives the button's
+  // tick/disabled state and the info panel together, from whatever the
+  // box actually holds right now - never a one-way flag. Pasting the
+  // SAME link back makes both reappear without reloading; emptying the
+  // box or typing a different one reverts to a plain, enabled Load
+  // (disabled only while the box is empty).
   if (autoSheetUrl) autoSheetUrl.addEventListener('input', () => {
-    if (!autoSheetContext) return;
-    autoSheetContext = null;
     renderAutoSheetInfo();
+    autoSyncSheetLoadBtnState();
   });
 
   // Plain-words description of the plan's date condition, e.g. "next
@@ -8320,6 +8376,12 @@
     // documented) now runs AFTER the page is visible, filling the form in
     // (via wfPopulateForm(w) for an edit) once each step lands.
     wfResetForm();
+    // LIVE BUG FIX (2026-11), direct instruction - re-derive the Load
+    // button's own tick/disabled state (the box is empty right after this
+    // wfResetForm(), whether this is a fresh Create or the first instant
+    // of an Edit - wfPopulateForm fills the real saved link in later,
+    // inside the async chain below, where it gets synced again).
+    wfSyncSheetLoadBtnState();
     if (wfSubjErr) wfSubjErr.classList.add('hidden');
     if (wfAskErr) wfAskErr.classList.add('hidden');
     if (!wfAskExamples.dataset.wired) { wfAskExamples.innerHTML = WF_EXAMPLES.map((x, i) => '<button type="button" data-ex="' + i + '">' + escapeHtml(x) + '</button>').join(''); wfAskExamples.dataset.wired = '1'; }
@@ -8338,6 +8400,7 @@
       // otherwise re-open showing the wrong (first) template selected.
       await loadWfDocsTemplateOptions();
       if (w) wfPopulateForm(w); else wfResetForm();
+      wfSyncSheetLoadBtnState();
       wfSync();
       // Drive-template field mapping, same reasoning as loadWfDocsTemplateOptions's
       // own comment - must run AFTER wfDocsTpl.value is actually set above.
@@ -8990,9 +9053,16 @@
     wfSheetShareCopyBtn.textContent = 'Copied ✓'; wfSheetShareCopyBtn.classList.add('copied');
     setTimeout(() => { wfSheetShareCopyBtn.textContent = 'Copy'; wfSheetShareCopyBtn.classList.remove('copied'); }, 1800);
   });
+  // LIVE BUG FIX (2026-11), direct instruction - same "does the box's
+  // current text actually match what's loaded" check as
+  // autoSheetUrlMatchesLoaded above, so pasting the SAME link back shows
+  // the tick/info again without reloading.
+  function wfSheetUrlMatchesLoaded() {
+    return Boolean(wfSheetContext) && (wfSheetUrl && wfSheetUrl.value || '').trim() === wfSheetContext.sheetUrl;
+  }
   function renderWfSheetInfo() {
     if (!wfSheetInfo) return;
-    if (!wfSheetContext) { wfSheetInfo.innerHTML = ''; return; }
+    if (!wfSheetUrlMatchesLoaded()) { wfSheetInfo.innerHTML = ''; return; }
     const chosenTab = wfPlan && wfPlan.source === 'sheet' ? wfPlan.sheetTab : null;
     wfSheetInfo.innerHTML = '<div class="wf-auto-sheet-file">✓ ' + escapeHtml(wfSheetContext.fileName) + '</div>' +
       wfSheetContext.tabs.map((t) => ('<div class="wf-auto-sheet-tab' + (t.title === chosenTab ? ' on' : '') + '" data-tab="' + escapeHtml(t.title) + '"><div class="title">' + escapeHtml(t.title) + (t.title === chosenTab ? ' ✓' : '') + '</div><div class="meta">' + t.rowCount + ' row(s) · ' + (t.headers.length ? escapeHtml(t.headers.join(', ')) : 'no columns found') + '</div></div>')).join('');
@@ -9006,11 +9076,33 @@
     renderWfSheetInfo(); renderWfRecCols(); renderWfCols(); renderWfSheetOptionCols(); wfSync();
     if (wfPlan) renderWfUnderstanding();
   });
+  // LIVE BUG FIX (2026-11), direct instruction - same fix/same reasoning
+  // as autoSyncSheetLoadBtnState above: the tick/disabled state is the
+  // Load BUTTON's own classList, which TASK 7's original fix never
+  // touched - only re-rendering the info panel. Now re-derived on every
+  // input event from whatever the box actually holds.
+  function wfSyncSheetLoadBtnState() {
+    if (!wfSheetLoadBtn) return;
+    wfSheetLoadBtn.classList.remove('is-loading', 'is-error');
+    const url = (wfSheetUrl && wfSheetUrl.value || '').trim();
+    if (wfSheetUrlMatchesLoaded()) {
+      wfSheetLoadBtn.classList.add('is-success');
+      wfSheetLoadBtn.disabled = true;
+    } else {
+      wfSheetLoadBtn.classList.remove('is-success');
+      wfSheetLoadBtn.disabled = !url;
+    }
+  }
   if (wfSheetLoadBtn) wfSheetLoadBtn.addEventListener('click', async () => {
     loadServiceAccountEmailOnce();
     const url = (wfSheetUrl && wfSheetUrl.value || '').trim();
     if (wfSheetMsg) wfSheetMsg.classList.add('hidden');
     if (!/docs\.google\.com\/spreadsheets/.test(url)) { if (wfSheetMsg) { wfSheetMsg.textContent = 'Paste a Google Sheet link first.'; wfSheetMsg.classList.remove('hidden'); } return; }
+    // Direct instruction - same "note when a stale column selection gets
+    // dropped by the new sheet" as Create Automated Task's own Load
+    // handler above.
+    const prevOnlyWhereCol = wfOnlyWhereCol ? wfOnlyWhereCol.value : '';
+    const prevAfterSendCol = wfAfterSendCol ? wfAfterSendCol.value : '';
     await runButtonAction(wfSheetLoadBtn, () => postJsonOrThrow('/api/workforce/hr-assistant/workflows/load-sheet', { sheetUrl: url }), (r) => {
       wfSheetContext = { sheetUrl: url, sheetId: r.sheetId, fileName: r.fileName, tabs: r.tabs };
       if (r.tabs.length === 1) {
@@ -9018,18 +9110,21 @@
         wfPlan.source = 'sheet'; wfPlan.sheetUrl = url; wfPlan.sheetId = r.sheetId;
         wfPlan.sheetTab = r.tabs[0].title; wfPlan.sheetColumns = r.tabs[0].headers; wfTableCols = [...r.tabs[0].headers];
         renderWfRecCols(); renderWfCols(); renderWfSheetOptionCols();
+        const newCols = r.tabs[0].headers;
+        const droppedCol = (prevOnlyWhereCol && !newCols.includes(prevOnlyWhereCol)) || (prevAfterSendCol && !newCols.includes(prevAfterSendCol));
+        if (droppedCol && wfSheetMsg) { wfSheetMsg.textContent = 'Loaded. Some column selections from the old sheet weren\'t found here and were cleared.'; wfSheetMsg.classList.remove('hidden'); }
       }
-      renderWfSheetInfo(); wfSync();
+      renderWfSheetInfo(); wfSyncSheetLoadBtnState(); wfSync();
       if (wfPlan) renderWfUnderstanding();
     }, { toastFn: (msg) => { if (wfSheetMsg) { wfSheetMsg.textContent = msg; wfSheetMsg.classList.remove('hidden'); } else showWfToast(msg, 'error'); } });
   });
-  // TASK 7 (2026-11), direct instruction - same fix as Create Automated
-  // Task's own autoSheetUrl (see its comment): editing the link after a
-  // successful Load used to leave the green tick/file info showing stale.
+  // TASK 7 (2026-11) + its LIVE BUG FIX (2026-11), direct instruction -
+  // same "re-derive both the info panel and the button's tick/disabled
+  // state from whatever the box actually holds, on every input event" as
+  // Create Automated Task's own autoSheetUrl listener above.
   if (wfSheetUrl) wfSheetUrl.addEventListener('input', () => {
-    if (!wfSheetContext) return;
-    wfSheetContext = null;
     renderWfSheetInfo();
+    wfSyncSheetLoadBtnState();
   });
 
   function renderWfUnderstanding() {
