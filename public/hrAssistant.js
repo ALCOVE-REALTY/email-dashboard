@@ -6789,29 +6789,53 @@
   }
   function autoRepeatLabel(t) { return describeScheduleRule(t.schedule); }
   function autoWhen(iso) { return iso ? new Date(iso).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' }) : '—'; }
+  // PERF FIX (2026-11), direct instruction - factored the per-item markup
+  // out of renderAutomationList so a single card can be re-rendered in
+  // place (patchAutomationCard below) after Approve/Pause/Resume/Run now,
+  // instead of re-fetching and rebuilding the WHOLE list for a one-row
+  // change. `data-card-id` on the outer wrapper is new (purely additive -
+  // nothing else reads/depends on its absence) so that single card can be
+  // found and replaced directly.
+  function automationCardHtml(t) {
+    const srcLabel = t.plan.source === 'sheet' ? 'Custom Google Sheet' : (AUTO_SOURCE_LABELS[t.plan.source] || 'Data');
+    const missed = t.pendingMissedRun ? '<div class="wf-auto-missed">⚠ Missed run (' + escapeHtml(autoWhen(t.pendingMissedRun.scheduledFor)) + ') — send now?<div class="wf-auto-actions"><button type="button" class="primary wf-card-action-btn" data-a="missed-send" data-id="' + escapeHtml(t.id) + '">Send</button><button type="button" class="plain wf-card-action-btn" data-a="missed-skip" data-id="' + escapeHtml(t.id) + '">Skip</button></div></div>' : '';
+    return '<div class="wf-auto-task-card" data-card-id="' + escapeHtml(t.id) + '">' +
+      '<div class="wf-auto-task-head"><div style="flex:1;min-width:0">' +
+        '<div class="wf-auto-task-subject">' + escapeHtml(t.subject) + '</div>' +
+        '<div class="wf-auto-hint">' + escapeHtml(srcLabel) + '</div>' +
+        '<div class="wf-auto-hint">' + (t.plan.mediator === 'mail' ? '✉️ Mail' : '💬 WhatsApp') + ' · ' + escapeHtml(autoRepeatLabel(t)) + ' · ' + escapeHtml(autoRecLabel(t)) + '</div>' +
+        '<div class="wf-auto-hint">Next: <b>' + (t.status === 'paused' ? '— (paused)' : escapeHtml(autoWhen(t.nextRunAt))) + '</b>' + (t.lastRun ? ' · Last run: ' + escapeHtml(autoWhen(t.lastRun.at)) + ' · ' + t.lastRun.sentCount + ' sent, ' + t.lastRun.skippedCount + ' skipped' : '') + '</div>' +
+      '</div>' + autoStatusPill(t) + '</div>' +
+      missed +
+      '<div class="wf-auto-actions">' +
+        (t.status === 'pending_approval' ? '<button type="button" class="primary wf-card-action-btn" data-a="approve" data-id="' + escapeHtml(t.id) + '">Approve first run</button>' : '') +
+        '<button type="button" class="plain wf-card-action-btn" data-a="preview" data-id="' + escapeHtml(t.id) + '">Preview</button>' +
+        '<button type="button" class="plain wf-card-action-btn" data-a="run" data-id="' + escapeHtml(t.id) + '">Run now</button>' +
+        '<button type="button" class="plain wf-card-action-btn" data-a="edit" data-id="' + escapeHtml(t.id) + '">Edit</button>' +
+        (t.status === 'paused' ? '<button type="button" class="plain wf-card-action-btn" data-a="resume" data-id="' + escapeHtml(t.id) + '">Resume</button>' : (t.status === 'active' ? '<button type="button" class="plain wf-card-action-btn" data-a="pause" data-id="' + escapeHtml(t.id) + '">Pause</button>' : '')) +
+        '<button type="button" class="danger wf-card-action-btn" data-a="delete" data-id="' + escapeHtml(t.id) + '">Delete</button>' +
+      '</div></div>';
+  }
   function renderAutomationList(items) {
     if (!autoList) return;
     if (!items.length) { autoList.innerHTML = '<div class="wf-rem-empty">No automated tasks yet.<br>Tap "New Automated Task" to create one.</div>'; return; }
-    autoList.innerHTML = items.map((t) => {
-      const srcLabel = t.plan.source === 'sheet' ? 'Custom Google Sheet' : (AUTO_SOURCE_LABELS[t.plan.source] || 'Data');
-      const missed = t.pendingMissedRun ? '<div class="wf-auto-missed">⚠ Missed run (' + escapeHtml(autoWhen(t.pendingMissedRun.scheduledFor)) + ') — send now?<div class="wf-auto-actions"><button type="button" class="primary" data-a="missed-send" data-id="' + escapeHtml(t.id) + '">Send</button><button type="button" class="plain" data-a="missed-skip" data-id="' + escapeHtml(t.id) + '">Skip</button></div></div>' : '';
-      return '<div class="wf-auto-task-card">' +
-        '<div class="wf-auto-task-head"><div style="flex:1;min-width:0">' +
-          '<div class="wf-auto-task-subject">' + escapeHtml(t.subject) + '</div>' +
-          '<div class="wf-auto-hint">' + escapeHtml(srcLabel) + '</div>' +
-          '<div class="wf-auto-hint">' + (t.plan.mediator === 'mail' ? '✉️ Mail' : '💬 WhatsApp') + ' · ' + escapeHtml(autoRepeatLabel(t)) + ' · ' + escapeHtml(autoRecLabel(t)) + '</div>' +
-          '<div class="wf-auto-hint">Next: <b>' + (t.status === 'paused' ? '— (paused)' : escapeHtml(autoWhen(t.nextRunAt))) + '</b>' + (t.lastRun ? ' · Last run: ' + escapeHtml(autoWhen(t.lastRun.at)) + ' · ' + t.lastRun.sentCount + ' sent, ' + t.lastRun.skippedCount + ' skipped' : '') + '</div>' +
-        '</div>' + autoStatusPill(t) + '</div>' +
-        missed +
-        '<div class="wf-auto-actions">' +
-          (t.status === 'pending_approval' ? '<button type="button" class="primary" data-a="approve" data-id="' + escapeHtml(t.id) + '">Approve first run</button>' : '') +
-          '<button type="button" class="plain" data-a="preview" data-id="' + escapeHtml(t.id) + '">Preview</button>' +
-          '<button type="button" class="plain" data-a="run" data-id="' + escapeHtml(t.id) + '">Run now</button>' +
-          '<button type="button" class="plain" data-a="edit" data-id="' + escapeHtml(t.id) + '">Edit</button>' +
-          (t.status === 'paused' ? '<button type="button" class="plain" data-a="resume" data-id="' + escapeHtml(t.id) + '">Resume</button>' : (t.status === 'active' ? '<button type="button" class="plain" data-a="pause" data-id="' + escapeHtml(t.id) + '">Pause</button>' : '')) +
-          '<button type="button" class="danger" data-a="delete" data-id="' + escapeHtml(t.id) + '">Delete</button>' +
-        '</div></div>';
-    }).join('');
+    autoList.innerHTML = items.map(automationCardHtml).join('');
+  }
+  // Replaces exactly ONE card's DOM node with freshly-built HTML from its
+  // updated item - never a full list refetch+rerender for a one-row
+  // change (Approve/Pause/Resume/Run now all have the real, already-
+  // mutated item in hand from their own POST response, so this needs no
+  // extra network call either). Falls back to the full reload only if the
+  // card genuinely isn't in the DOM yet (shouldn't happen in practice).
+  function patchAutomationCard(item) {
+    if (pageDataCache.automations) {
+      const idx = pageDataCache.automations.findIndex((x) => x.id === item.id);
+      if (idx !== -1) pageDataCache.automations[idx] = item;
+    }
+    const card = autoList && autoList.querySelector('[data-card-id="' + CSS.escape(item.id) + '"]');
+    if (!card) { loadAutomationsBadgeAndList(true); return; }
+    card.outerHTML = automationCardHtml(item);
+    if (pageDataCache.automations) setCountBadge(autoTasksBadge, pageDataCache.automations.filter((t) => t.status === 'active' || t.status === 'pending_approval').length, { allowZero: true });
   }
   // Stale-while-revalidate (speed fix, same convention as loadCommsPage) -
   // the list used to only ever fetch fresh, so re-opening it always left
@@ -6857,21 +6881,35 @@
         }, (t) => { pushNav({ type: 'automation', task: t }); openAutomationCreate(t); }, { resetAfterSuccess: true, toastFn: AUTO_TOAST_ERR.toastFn });
         return;
       }
-      if (action === 'approve') { await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/automations/' + encodeURIComponent(id) + '/approve', {}), () => { showAutoToast('First run approved — it will send automatically at its scheduled time.'); loadAutomationsBadgeAndList(true); }, AUTO_TOAST_ERR); return; }
-      if (action === 'pause') { await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/automations/' + encodeURIComponent(id) + '/pause', {}), () => { showAutoToast('Paused — no future sends.'); loadAutomationsBadgeAndList(true); }, AUTO_TOAST_ERR); return; }
-      if (action === 'resume') { await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/automations/' + encodeURIComponent(id) + '/resume', {}), () => { showAutoToast('Resumed.'); loadAutomationsBadgeAndList(true); }, AUTO_TOAST_ERR); return; }
+      // PERF FIX (2026-11), direct instruction - approve/pause/resume/run/
+      // missed-send/missed-skip all now patch just their own card from the
+      // updated item their own POST response already carries
+      // (patchAutomationCard above), instead of re-fetching and rebuilding
+      // the whole list for a one-row change.
+      if (action === 'approve') { await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/automations/' + encodeURIComponent(id) + '/approve', {}), (r) => { showAutoToast('First run approved — it will send automatically at its scheduled time.'); patchAutomationCard(r.item); }, AUTO_TOAST_ERR); return; }
+      if (action === 'pause') { await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/automations/' + encodeURIComponent(id) + '/pause', {}), (r) => { showAutoToast('Paused — no future sends.'); patchAutomationCard(r.item); }, AUTO_TOAST_ERR); return; }
+      if (action === 'resume') { await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/automations/' + encodeURIComponent(id) + '/resume', {}), (r) => { showAutoToast('Resumed.'); patchAutomationCard(r.item); }, AUTO_TOAST_ERR); return; }
       if (action === 'run') {
         if (!(await showConfirmDialog('Run this task now? It will really send to everyone who matches, right now.', { confirmLabel: 'Run now' }))) return;
-        await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/automations/' + encodeURIComponent(id) + '/run-now', {}), (r) => { showAutoToast('Run complete: ' + (r.sentCount || 0) + ' sent, ' + (r.skippedCount || 0) + ' skipped.'); loadAutomationsBadgeAndList(true); }, AUTO_TOAST_ERR);
+        await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/automations/' + encodeURIComponent(id) + '/run-now', {}), (r) => { showAutoToast('Run complete: ' + (r.sentCount || 0) + ' sent, ' + (r.skippedCount || 0) + ' skipped.'); if (r.item) patchAutomationCard(r.item); else loadAutomationsBadgeAndList(true); }, AUTO_TOAST_ERR);
         return;
       }
       if (action === 'delete') {
         if (!(await showConfirmDialog('Delete this automated task? This can\'t be undone.', { confirmLabel: 'Delete' }))) return;
-        await runButtonAction(b, () => fetchDeleteAutomation(id), () => { showAutoToast('Deleted.'); loadAutomationsBadgeAndList(true); }, AUTO_TOAST_ERR);
+        // Same proven "fade+collapse in place, no refetch" pattern as
+        // every other card-delete in this file (see dismissCard's own
+        // comment) - just also splices pageDataCache so a later cache-
+        // first render never resurrects the deleted row.
+        await runButtonAction(b, () => fetchDeleteAutomation(id), () => {
+          showAutoToast('Deleted.');
+          if (pageDataCache.automations) pageDataCache.automations = pageDataCache.automations.filter((x) => x.id !== id);
+          dismissCard(b.closest('.wf-auto-task-card'));
+          if (pageDataCache.automations) setCountBadge(autoTasksBadge, pageDataCache.automations.filter((t) => t.status === 'active' || t.status === 'pending_approval').length, { allowZero: true });
+        }, AUTO_TOAST_ERR);
         return;
       }
-      if (action === 'missed-send') { await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/automations/' + encodeURIComponent(id) + '/missed-run/send', {}), (r) => { showAutoToast('Sent: ' + (r.sentCount || 0) + ' sent, ' + (r.skippedCount || 0) + ' skipped.'); loadAutomationsBadgeAndList(true); }, AUTO_TOAST_ERR); return; }
-      if (action === 'missed-skip') { await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/automations/' + encodeURIComponent(id) + '/missed-run/skip', {}), () => { showAutoToast('Skipped.'); loadAutomationsBadgeAndList(true); }, AUTO_TOAST_ERR); return; }
+      if (action === 'missed-send') { await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/automations/' + encodeURIComponent(id) + '/missed-run/send', {}), (r) => { showAutoToast('Sent: ' + (r.sentCount || 0) + ' sent, ' + (r.skippedCount || 0) + ' skipped.'); if (r.item) patchAutomationCard(r.item); else loadAutomationsBadgeAndList(true); }, AUTO_TOAST_ERR); return; }
+      if (action === 'missed-skip') { await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/automations/' + encodeURIComponent(id) + '/missed-run/skip', {}), (r) => { showAutoToast('Skipped.'); patchAutomationCard(r.item); }, AUTO_TOAST_ERR); return; }
     });
   }
   // DELETE has no body to send via postJsonOrThrow's POST-only helper -
@@ -7018,13 +7056,18 @@
     btn.disabled = false;
     btn.classList.remove('is-loading', 'is-success', 'is-error');
   }
-  async function openAutomationCreate(t) {
+  function openAutomationCreate(t) {
     autoResetButtonState(autoSaveBtn);
     autoResetButtonState(autoTestBtn);
     autoResetButtonState(autoAskBtn);
     autoResetButtonState(autoSheetLoadBtn);
-    await fetchAutoEmployees();
-    loadServiceAccountEmailOnce();
+    // PERF FIX (2026-11), direct instruction - this used to `await
+    // fetchAutoEmployees()` before setPanelView ever ran, so the page sat
+    // on the old screen for a full network round trip (or longer, cold)
+    // every single open. setPanelView now fires FIRST - the page appears
+    // instantly with the form already populated from local data and
+    // whatever employee list is already cached (or a skeleton, cold) -
+    // and the employee fetch/render happens in the background after.
     if (t) autoPopulateForm(t); else autoResetForm();
     // Task 14 (2026-11) LIVE BUG FIX: after a failed save, autoSubjErr/
     // autoAskErr stay visible (set true by the validation check on Save,
@@ -7043,9 +7086,12 @@
       autoPlaceholders.innerHTML = AUTO_PLACEHOLDERS.map((p) => '<button type="button" data-p="' + escapeHtml(p) + '">' + escapeHtml(p) + '</button>').join('');
       autoPlaceholders.dataset.wired = '1';
     }
-    renderAutoEmpList();
+    if (autoEmpList && !autoEmployeesCache) autoEmpList.innerHTML = '<div class="wf-skeleton-list"><div class="wf-skeleton-row"></div><div class="wf-skeleton-row"></div></div>';
+    else renderAutoEmpList();
     autoSync();
     setPanelView('automation');
+    fetchAutoEmployees().then(() => { renderAutoEmpList(); autoSync(); });
+    loadServiceAccountEmailOnce();
   }
 
   function renderAutoRecCols() {
@@ -7586,6 +7632,14 @@
   if (autoPreviewBackdrop) autoPreviewBackdrop.addEventListener('click', autoClosePreview);
   if (autoPreviewBtn) autoPreviewBtn.addEventListener('click', async () => {
     autoSync();
+    // PERF FIX (2026-11), direct instruction - same fix as Workflow's own
+    // wfPreviewBtn handler above: open the sheet with a loading skeleton
+    // immediately instead of staying invisible for the whole
+    // /automations/preview round trip.
+    if (autoPreviewTitle) autoPreviewTitle.textContent = 'Preview — next run';
+    if (autoPreviewBody) autoPreviewBody.innerHTML = '<div class="wf-rem-empty">Generating…</div>';
+    if (autoPreviewBackdrop) autoPreviewBackdrop.hidden = false;
+    if (autoPreviewSheet) { autoPreviewSheet.hidden = false; requestAnimationFrame(() => autoPreviewSheet.classList.add('open')); }
     await autoRefreshSummary();
     if (autoLastPreview) autoRenderPreviewBody(autoLastPreview, 'Preview — next run');
   });
@@ -7898,27 +7952,47 @@
     if (f.fuMentionMissing) bits.push('mentions what\'s missing');
     return bits.length ? ' (' + bits.join(', ') + ')' : '';
   }
+  // PERF FIX (2026-11), direct instruction - same per-item extraction as
+  // automationCardHtml above, so a single card can be patched in place
+  // after Approve/Pause/Resume/Run now instead of a full list
+  // refetch+rebuild. Reuses the outer card's existing data-open="<id>"
+  // (already there for the Progress-on-card-tap behavior) as the lookup
+  // key - no new attribute needed.
+  function workflowCardHtml(w) {
+    const missed = w.pendingMissedRun ? '<div class="wf-auto-missed">⚠ Missed run (' + escapeHtml(wfWhen(w.pendingMissedRun.scheduledFor)) + ') — send now?<div class="wf-auto-actions"><button type="button" class="primary wf-card-action-btn" data-a="missed-send" data-id="' + escapeHtml(w.id) + '">Send</button><button type="button" class="plain wf-card-action-btn" data-a="missed-skip" data-id="' + escapeHtml(w.id) + '">Skip</button></div></div>' : '';
+    return '<div class="wf-auto-task-card" data-open="' + escapeHtml(w.id) + '">' +
+      '<div class="wf-auto-task-head"><div style="flex:1;min-width:0">' +
+        '<div class="wf-auto-task-subject">' + escapeHtml(w.subject) + '</div>' +
+        '<div class="wf-auto-hint">' + (w.plan.mediator === 'mail' ? '✉️ Mail' : '💬 WhatsApp') + ' · ' + escapeHtml(wfRepeatLabel(w)) + ' · ' + (w.plan.rules || []).length + ' rule(s)</div>' +
+        '<div class="wf-auto-hint">Next: <b>' + (w.status === 'paused' ? '— (paused)' : escapeHtml(wfWhen(w.nextRunAt))) + '</b></div>' +
+      '</div>' + wfStatusPill(w) + '</div>' +
+      missed +
+      '<div class="wf-auto-actions">' +
+        (w.status === 'pending_approval' ? '<button type="button" class="primary wf-card-action-btn" data-a="approve" data-id="' + escapeHtml(w.id) + '">Approve first run</button>' : '') +
+        '<button type="button" class="plain wf-card-action-btn" data-a="open" data-id="' + escapeHtml(w.id) + '">Progress</button>' +
+        '<button type="button" class="plain wf-card-action-btn" data-a="run" data-id="' + escapeHtml(w.id) + '">Run now</button>' +
+        '<button type="button" class="plain wf-card-action-btn" data-a="edit" data-id="' + escapeHtml(w.id) + '">Edit</button>' +
+        (w.status === 'paused' ? '<button type="button" class="plain wf-card-action-btn" data-a="resume" data-id="' + escapeHtml(w.id) + '">Resume</button>' : (w.status === 'active' ? '<button type="button" class="plain wf-card-action-btn" data-a="pause" data-id="' + escapeHtml(w.id) + '">Pause</button>' : '')) +
+        '<button type="button" class="danger wf-card-action-btn" data-a="delete" data-id="' + escapeHtml(w.id) + '">Delete</button>' +
+      '</div></div>';
+  }
   function renderWorkflowList(items) {
     if (!wfList) return;
     if (!items.length) { wfList.innerHTML = '<div class="wf-rem-empty">No workflows yet.<br>Tap "New Workflow" to create one.</div>'; return; }
-    wfList.innerHTML = items.map((w) => {
-      const missed = w.pendingMissedRun ? '<div class="wf-auto-missed">⚠ Missed run (' + escapeHtml(wfWhen(w.pendingMissedRun.scheduledFor)) + ') — send now?<div class="wf-auto-actions"><button type="button" class="primary" data-a="missed-send" data-id="' + escapeHtml(w.id) + '">Send</button><button type="button" class="plain" data-a="missed-skip" data-id="' + escapeHtml(w.id) + '">Skip</button></div></div>' : '';
-      return '<div class="wf-auto-task-card" data-open="' + escapeHtml(w.id) + '">' +
-        '<div class="wf-auto-task-head"><div style="flex:1;min-width:0">' +
-          '<div class="wf-auto-task-subject">' + escapeHtml(w.subject) + '</div>' +
-          '<div class="wf-auto-hint">' + (w.plan.mediator === 'mail' ? '✉️ Mail' : '💬 WhatsApp') + ' · ' + escapeHtml(wfRepeatLabel(w)) + ' · ' + (w.plan.rules || []).length + ' rule(s)</div>' +
-          '<div class="wf-auto-hint">Next: <b>' + (w.status === 'paused' ? '— (paused)' : escapeHtml(wfWhen(w.nextRunAt))) + '</b></div>' +
-        '</div>' + wfStatusPill(w) + '</div>' +
-        missed +
-        '<div class="wf-auto-actions">' +
-          (w.status === 'pending_approval' ? '<button type="button" class="primary" data-a="approve" data-id="' + escapeHtml(w.id) + '">Approve first run</button>' : '') +
-          '<button type="button" class="plain" data-a="open" data-id="' + escapeHtml(w.id) + '">Progress</button>' +
-          '<button type="button" class="plain" data-a="run" data-id="' + escapeHtml(w.id) + '">Run now</button>' +
-          '<button type="button" class="plain" data-a="edit" data-id="' + escapeHtml(w.id) + '">Edit</button>' +
-          (w.status === 'paused' ? '<button type="button" class="plain" data-a="resume" data-id="' + escapeHtml(w.id) + '">Resume</button>' : (w.status === 'active' ? '<button type="button" class="plain" data-a="pause" data-id="' + escapeHtml(w.id) + '">Pause</button>' : '')) +
-          '<button type="button" class="danger" data-a="delete" data-id="' + escapeHtml(w.id) + '">Delete</button>' +
-        '</div></div>';
-    }).join('');
+    wfList.innerHTML = items.map(workflowCardHtml).join('');
+  }
+  // Same reasoning as patchAutomationCard above - replaces exactly ONE
+  // card from its already-updated item (the POST response Approve/Pause/
+  // Resume/Run now already carry), never a full list refetch+rerender.
+  function patchWorkflowCard(item) {
+    if (pageDataCache.workflows) {
+      const idx = pageDataCache.workflows.findIndex((x) => x.id === item.id);
+      if (idx !== -1) pageDataCache.workflows[idx] = item;
+    }
+    const card = wfList && wfList.querySelector('[data-open="' + CSS.escape(item.id) + '"]');
+    if (!card) { loadWorkflowsBadgeAndList(true); return; }
+    card.outerHTML = workflowCardHtml(item);
+    if (pageDataCache.workflows) setCountBadge(wfTasksBadge, pageDataCache.workflows.filter((w) => w.status === 'active' || w.status === 'pending_approval').length, { allowZero: true });
   }
   async function loadWorkflowsBadgeAndList(renderList) {
     if (renderList && pageDataCache.workflows) renderWorkflowList(pageDataCache.workflows);
@@ -7954,21 +8028,35 @@
       const id = b.dataset.id, action = b.dataset.a;
       if (action === 'open') { await runButtonAction(b, async () => { const items = pageDataCache.workflows || await loadWorkflowsBadgeAndList(false); const w = items.find((x) => x.id === id); if (!w) throw new Error('Could not load that workflow.'); return w; }, (w) => { pushNav({ type: 'workflowDetail', id: w.id }); openWorkflowDetail(w.id); }, { resetAfterSuccess: true, toastFn: WF_TOAST_ERR.toastFn }); return; }
       if (action === 'edit') { await runButtonAction(b, async () => { const items = pageDataCache.workflows || await loadWorkflowsBadgeAndList(false); const w = items.find((x) => x.id === id); if (!w) throw new Error('Could not load that workflow.'); return w; }, (w) => { pushNav({ type: 'workflow', task: w }); openWorkflowCreate(w); }, { resetAfterSuccess: true, toastFn: WF_TOAST_ERR.toastFn }); return; }
-      if (action === 'approve') { await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/workflows/' + encodeURIComponent(id) + '/approve', {}), () => { showWfToast('First run approved — it will send automatically at its scheduled time.'); loadWorkflowsBadgeAndList(true); }, WF_TOAST_ERR); return; }
-      if (action === 'pause') { await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/workflows/' + encodeURIComponent(id) + '/pause', {}), () => { showWfToast('Paused — no future sends.'); loadWorkflowsBadgeAndList(true); }, WF_TOAST_ERR); return; }
-      if (action === 'resume') { await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/workflows/' + encodeURIComponent(id) + '/resume', {}), () => { showWfToast('Resumed.'); loadWorkflowsBadgeAndList(true); }, WF_TOAST_ERR); return; }
+      // PERF FIX (2026-11), direct instruction - same "patch just this one
+      // card from the item the POST response already carries" fix as
+      // renderAutomationList's own click handler above, instead of a full
+      // list refetch+rebuild for a one-row change. `r.item` is absent only
+      // for the rare "not found"/"already running" edge cases, where
+      // nothing actually changed - falls back to a full reload only then.
+      if (action === 'approve') { await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/workflows/' + encodeURIComponent(id) + '/approve', {}), (r) => { showWfToast('First run approved — it will send automatically at its scheduled time.'); patchWorkflowCard(r.item); }, WF_TOAST_ERR); return; }
+      if (action === 'pause') { await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/workflows/' + encodeURIComponent(id) + '/pause', {}), (r) => { showWfToast('Paused — no future sends.'); patchWorkflowCard(r.item); }, WF_TOAST_ERR); return; }
+      if (action === 'resume') { await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/workflows/' + encodeURIComponent(id) + '/resume', {}), (r) => { showWfToast('Resumed.'); patchWorkflowCard(r.item); }, WF_TOAST_ERR); return; }
       if (action === 'run') {
         if (!(await showConfirmDialog('Run this workflow now? It will really send to everyone who matches, right now.', { confirmLabel: 'Run now' }))) return;
-        await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/workflows/' + encodeURIComponent(id) + '/run-now', {}), (r) => { showWfToast(r.ok ? ('Run complete: ' + (r.sentCount || 0) + ' sent, ' + (r.skippedCount || 0) + ' skipped.') : (r.error || 'Could not run.'), r.ok ? 'success' : 'error'); loadWorkflowsBadgeAndList(true); }, WF_TOAST_ERR);
+        await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/workflows/' + encodeURIComponent(id) + '/run-now', {}), (r) => {
+          showWfToast(r.ok ? ('Run complete: ' + (r.sentCount || 0) + ' sent, ' + (r.skippedCount || 0) + ' skipped.') : (r.error || 'Could not run.'), r.ok ? 'success' : 'error');
+          if (r.item) patchWorkflowCard(r.item); else loadWorkflowsBadgeAndList(true);
+        }, WF_TOAST_ERR);
         return;
       }
       if (action === 'delete') {
         if (!(await showConfirmDialog('Delete this workflow? This can\'t be undone.', { confirmLabel: 'Delete' }))) return;
-        await runButtonAction(b, () => fetchDeleteWorkflow(id), () => { showWfToast('Deleted.'); loadWorkflowsBadgeAndList(true); }, WF_TOAST_ERR);
+        await runButtonAction(b, () => fetchDeleteWorkflow(id), () => {
+          showWfToast('Deleted.');
+          if (pageDataCache.workflows) pageDataCache.workflows = pageDataCache.workflows.filter((x) => x.id !== id);
+          dismissCard(b.closest('.wf-auto-task-card'));
+          if (pageDataCache.workflows) setCountBadge(wfTasksBadge, pageDataCache.workflows.filter((w) => w.status === 'active' || w.status === 'pending_approval').length, { allowZero: true });
+        }, WF_TOAST_ERR);
         return;
       }
-      if (action === 'missed-send') { await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/workflows/' + encodeURIComponent(id) + '/missed-run/send', {}), (r) => { showWfToast('Sent: ' + (r.sentCount || 0) + ' sent, ' + (r.skippedCount || 0) + ' skipped.'); loadWorkflowsBadgeAndList(true); }, WF_TOAST_ERR); return; }
-      if (action === 'missed-skip') { await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/workflows/' + encodeURIComponent(id) + '/missed-run/skip', {}), () => { showWfToast('Skipped.'); loadWorkflowsBadgeAndList(true); }, WF_TOAST_ERR); return; }
+      if (action === 'missed-send') { await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/workflows/' + encodeURIComponent(id) + '/missed-run/send', {}), (r) => { showWfToast('Sent: ' + (r.sentCount || 0) + ' sent, ' + (r.skippedCount || 0) + ' skipped.'); if (r.item) patchWorkflowCard(r.item); else loadWorkflowsBadgeAndList(true); }, WF_TOAST_ERR); return; }
+      if (action === 'missed-skip') { await runButtonAction(b, () => postJsonOrThrow('/api/workforce/hr-assistant/workflows/' + encodeURIComponent(id) + '/missed-run/skip', {}), (r) => { showWfToast('Skipped.'); patchWorkflowCard(r.item); }, WF_TOAST_ERR); return; }
     });
   }
 
@@ -8217,26 +8305,44 @@
       }, { resetAfterSuccess: true });
     });
   }
-  async function openWorkflowCreate(w) {
+  function openWorkflowCreate(w) {
     wfResetButtonState(wfSaveBtn); wfResetButtonState(wfTestBtn); wfResetButtonState(wfAskBtn); wfResetButtonState(wfSheetLoadBtn);
-    await fetchAutoEmployees();
-    loadServiceAccountEmailOnce().then((email) => { if (wfSheetShareEmail) wfSheetShareEmail.textContent = email; });
-    // Must finish BEFORE wfPopulateForm/wfResetForm below, since they set
-    // wfDocsTpl.value - a <select> silently ignores a value with no
-    // matching <option> yet, so a saved Drive-template workflow would
-    // otherwise re-open showing the wrong (first) template selected.
-    await loadWfDocsTemplateOptions();
-    if (w) wfPopulateForm(w); else wfResetForm();
+    // PERF FIX (2026-11), direct instruction - this used to await 3
+    // sequential fetches (employees, Drive templates, field mapping)
+    // before setPanelView ever ran, so the page sat on the old screen for
+    // the whole chain every single open - the worst offender of the 4
+    // slow-open paths reported. setPanelView now fires synchronously,
+    // right after a cheap, local wfResetForm() clears any stale data left
+    // over from a previous open (so the page shows a clean/skeleton state
+    // instantly, never someone else's old workflow) - the real async
+    // chain below (unchanged in content or order - same dropdown-value-
+    // before-options-exist ordering constraint the old comments already
+    // documented) now runs AFTER the page is visible, filling the form in
+    // (via wfPopulateForm(w) for an edit) once each step lands.
+    wfResetForm();
     if (wfSubjErr) wfSubjErr.classList.add('hidden');
     if (wfAskErr) wfAskErr.classList.add('hidden');
     if (!wfAskExamples.dataset.wired) { wfAskExamples.innerHTML = WF_EXAMPLES.map((x, i) => '<button type="button" data-ex="' + i + '">' + escapeHtml(x) + '</button>').join(''); wfAskExamples.dataset.wired = '1'; }
     if (!wfPlaceholders.dataset.wired) { wfPlaceholders.innerHTML = WF_PLACEHOLDERS.map((p) => '<button type="button" data-p="' + escapeHtml(p) + '">' + escapeHtml(p) + '</button>').join(''); wfPlaceholders.dataset.wired = '1'; }
-    renderWfEmpList();
+    if (wfEmpList && !autoEmployeesCache) wfEmpList.innerHTML = '<div class="wf-skeleton-list"><div class="wf-skeleton-row"></div><div class="wf-skeleton-row"></div></div>';
+    else renderWfEmpList();
     wfSync();
-    // Drive-template field mapping, same reasoning as loadWfDocsTemplateOptions's
-    // own comment - must run AFTER wfDocsTpl.value is actually set above.
-    await loadWfDocsMapping();
     setPanelView('workflow');
+    (async () => {
+      await fetchAutoEmployees();
+      renderWfEmpList();
+      loadServiceAccountEmailOnce().then((email) => { if (wfSheetShareEmail) wfSheetShareEmail.textContent = email; });
+      // Must finish BEFORE wfPopulateForm/wfResetForm below, since they set
+      // wfDocsTpl.value - a <select> silently ignores a value with no
+      // matching <option> yet, so a saved Drive-template workflow would
+      // otherwise re-open showing the wrong (first) template selected.
+      await loadWfDocsTemplateOptions();
+      if (w) wfPopulateForm(w); else wfResetForm();
+      wfSync();
+      // Drive-template field mapping, same reasoning as loadWfDocsTemplateOptions's
+      // own comment - must run AFTER wfDocsTpl.value is actually set above.
+      await loadWfDocsMapping();
+    })();
   }
   function renderWfRecCols() {
     if (!wfRecCol) return;
@@ -9044,6 +9150,17 @@
     // Preview too, same shared helper as Save below and the live banner.
     const waPreviewIssues = wfMediatorAttachmentIssues(wfReadForm().mediator, wfRules);
     if (waPreviewIssues.length) showWfToast('⚠ WhatsApp doesn\'t support attachments yet - this preview won\'t reflect "' + Array.from(new Set(waPreviewIssues.map((x) => x.option))).join('", "') + '".', 'warning');
+    // PERF FIX (2026-11), direct instruction - the sheet used to stay
+    // completely invisible for the whole /workflows/preview round trip
+    // (wfRenderPreviewBody, the only thing that un-hides it, was only ever
+    // called AFTER awaiting wfRefreshSummary). Open it immediately with a
+    // loading skeleton - same pattern openPdfPreviewSheet already uses
+    // below - then let wfRenderPreviewBody overwrite the body once the
+    // real data lands; its own hidden/open toggle is then just a no-op.
+    if (wfPreviewTitle) wfPreviewTitle.textContent = 'Preview — next run';
+    if (wfPreviewBody) wfPreviewBody.innerHTML = '<div class="wf-rem-empty">Generating…</div>';
+    if (wfPreviewBackdrop) wfPreviewBackdrop.hidden = false;
+    if (wfPreviewSheet) { wfPreviewSheet.hidden = false; requestAnimationFrame(() => wfPreviewSheet.classList.add('open')); }
     await wfRefreshSummary(); if (wfLastPreview) wfRenderPreviewBody(wfLastPreview, 'Preview — next run');
   });
   // Task 20 (2026-11) LIVE BUG FIX, direct instruction: real PDF instead

@@ -1098,7 +1098,10 @@ async function runAutomation(id, { isTest = false, testTo = null } = {}, now = n
         automation.updatedAt = runAt.toISOString();
         await saveAutomation(automation);
       }
-      return { ok: false, error: blocked.reason };
+      // PERF FIX (2026-11), direct instruction - same `item` addition as
+      // the success path below, since this branch also mutates/saves the
+      // automation (nextRunAt moves on even when blocked).
+      return { ok: false, error: blocked.reason, item: automation };
     }
     if (isTest) {
       const target = testTo;
@@ -1157,7 +1160,11 @@ async function runAutomation(id, { isTest = false, testTo = null } = {}, now = n
       }
     }
     await saveAutomation(automation);
-    return { ok: true, sentCount, skippedCount, results };
+    // PERF FIX (2026-11), direct instruction - the updated item (already
+    // in hand, already saved) rides along on this same response so the
+    // "Run now" button's own success handler can patch just its one card
+    // in place instead of re-fetching the whole list for a one-row change.
+    return { ok: true, sentCount, skippedCount, results, item: automation };
   } finally {
     await releaseRunLock(id);
   }
@@ -1209,7 +1216,9 @@ async function resolveMissedRun(id, action, now = new Date()) {
   automation.updatedAt = now.toISOString();
   if (!automation.nextRunAt && isOneShotSchedule(automation.schedule)) automation.status = 'completed';
   await saveAutomation(automation);
-  return { ok: true, skipped: true };
+  // PERF FIX (2026-11), direct instruction - same reasoning as runAutomation's
+  // own `item` addition above, for the missed-run "Skip" path.
+  return { ok: true, skipped: true, item: automation };
 }
 
 // ---------------- Plan extraction (mirrors reminderService.js's own

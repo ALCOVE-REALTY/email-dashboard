@@ -1846,7 +1846,10 @@ async function runWorkflow(id, { isTest = false, testTo = null } = {}, now = new
         workflow.updatedAt = runAt.toISOString();
         await saveWorkflow(workflow);
       }
-      return { ok: false, error: blocked.reason };
+      // PERF FIX (2026-11), direct instruction - same `item` addition as
+      // the success path below, since this branch also mutates/saves the
+      // workflow (nextRunAt moves on even when blocked).
+      return { ok: false, error: blocked.reason, item: workflow };
     }
     if (isTest) {
       const results = [];
@@ -1916,7 +1919,10 @@ async function runWorkflow(id, { isTest = false, testTo = null } = {}, now = new
     workflow.updatedAt = runAt.toISOString();
     if (!workflow.nextRunAt && automationService.isOneShotSchedule(workflow.schedule)) workflow.status = 'completed';
     await saveWorkflow(workflow);
-    return { ok: true, runId, sentCount, skippedCount: records.length - sentCount };
+    // PERF FIX (2026-11), direct instruction - same reasoning as
+    // automationService.js's own runAutomation `item` addition: lets
+    // "Run now" patch just its one card in place, no extra list fetch.
+    return { ok: true, runId, sentCount, skippedCount: records.length - sentCount, item: workflow };
   } finally {
     await releaseRunLock(id);
   }
@@ -1962,7 +1968,9 @@ async function resolveMissedRun(id, action, now = new Date()) {
   }
   if (!workflow.nextRunAt && automationService.isOneShotSchedule(workflow.schedule)) workflow.status = 'completed';
   await saveWorkflow(workflow);
-  return { ok: true, skipped: true };
+  // PERF FIX (2026-11), direct instruction - same reasoning as
+  // automationService.js's own resolveMissedRun `item` addition.
+  return { ok: true, skipped: true, item: workflow };
 }
 
 // ---------------- Action needed (merged into the existing /action-needed
