@@ -968,6 +968,56 @@ function wfKeepSuggestAboveKeyboard(suggestEl, anchorEl) {
 }
 window.wfKeepSuggestAboveKeyboard = wfKeepSuggestAboveKeyboard;
 
+// TASK 6 (2026-11), direct instruction - Letter settings' own "Test
+// employee" search dropdown was going invisible/empty while the on-screen
+// keyboard was open. Root cause: wfKeepSuggestAboveKeyboard above only
+// flips top/bottom on a position:absolute element anchored to its
+// .wf-mail-field parent - still clipped by any scrolling ancestor's own
+// content-height clipping, the EXACT SAME root cause
+// workforce-ui-enhance.js's own positionList() comment describes for the
+// Organization Chart search box (fixed positioning, anchored to the
+// input's own on-screen rect, escapes any scrolling ancestor entirely -
+// a fixed element is clipped only by the viewport). This ports that
+// technique to the SAME suggestEl this picker already has, as a
+// SEPARATE function so wfKeepSuggestAboveKeyboard and its other caller
+// (ipWhatsappEmployeeSuggest, unrelated to this bug) are never touched.
+function wfKeepSuggestFixedAboveKeyboard(suggestEl, anchorEl) {
+  if (!suggestEl || !anchorEl) return function () {};
+  function reposition() {
+    if (suggestEl.hidden) return;
+    const vv = window.visualViewport;
+    const r = anchorEl.getBoundingClientRect();
+    const keyboardOverlap = vv ? Math.max(0, window.innerHeight - (vv.height + vv.offsetTop)) : 0;
+    const spaceBelow = window.innerHeight - r.bottom - keyboardOverlap;
+    const spaceAbove = r.top - (vv ? vv.offsetTop : 0);
+    suggestEl.style.position = 'fixed';
+    suggestEl.style.left = r.left + 'px';
+    suggestEl.style.width = r.width + 'px';
+    suggestEl.style.right = 'auto';
+    if (spaceBelow < 160) {
+      suggestEl.style.top = 'auto';
+      suggestEl.style.bottom = (window.innerHeight - r.top + 4) + 'px';
+      suggestEl.style.maxHeight = Math.max(100, spaceAbove - 8) + 'px';
+    } else {
+      suggestEl.style.bottom = 'auto';
+      suggestEl.style.top = (r.bottom + 4) + 'px';
+      suggestEl.style.maxHeight = Math.max(100, spaceBelow - 8) + 'px';
+    }
+  }
+  // Re-anchor on scroll/resize instead of hiding - same "keep it open and
+  // correctly placed" reasoning as positionList's own comment (a phone
+  // keyboard opening fires resize/scroll exactly when the list needs to
+  // reposition, not disappear).
+  window.addEventListener('scroll', reposition, true);
+  window.addEventListener('resize', reposition, true);
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', reposition);
+    window.visualViewport.addEventListener('scroll', reposition);
+  }
+  return reposition;
+}
+window.wfKeepSuggestFixedAboveKeyboard = wfKeepSuggestFixedAboveKeyboard;
+
 // "Field mapping" (2026-11, new feature; reworked same day, items 2+3 live
 // correction) - one row per API field, each picking ONE value from the
 // LIVE row-4 headers (a small, fully-known, already-fetched list - never

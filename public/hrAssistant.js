@@ -226,13 +226,15 @@
   const letterRefFormatSaveBtn = document.getElementById('hrLetterRefFormatSaveBtn');
   const letterTestEmployeeInput = document.getElementById('hrLetterTestEmployeeInput');
   const letterTestEmployeeSuggest = document.getElementById('hrLetterTestEmployeeSuggest');
-  // Item 7(a) (2026-11), direct instruction - the SAME shared keyboard-
-  // avoidance fix public/workforce.js's own ipWhatsapp/Field-mapping
-  // pickers use (window.wfKeepSuggestAboveKeyboard - workforce.js loads
-  // before this file, so it's always defined by the time any real
-  // picker interaction happens), never a second copy of this logic.
-  const letterTestEmployeeReposition = window.wfKeepSuggestAboveKeyboard
-    ? window.wfKeepSuggestAboveKeyboard(letterTestEmployeeSuggest, letterTestEmployeeInput)
+  // TASK 6 (2026-11), direct instruction - switched from
+  // wfKeepSuggestAboveKeyboard to wfKeepSuggestFixedAboveKeyboard (same
+  // file, see its own comment): the dropdown was going invisible while
+  // the keyboard was open, same root cause as the Organization Chart
+  // search box used to have before it moved to fixed positioning - this
+  // reuses that exact technique. ipWhatsappEmployeeSuggest (the other
+  // caller of the OLD function) is untouched.
+  const letterTestEmployeeReposition = window.wfKeepSuggestFixedAboveKeyboard
+    ? window.wfKeepSuggestFixedAboveKeyboard(letterTestEmployeeSuggest, letterTestEmployeeInput)
     : function () {};
   const letterTestEmployeeErr = document.getElementById('hrLetterTestEmployeeErr');
   const letterTestEmployeeChipInput = document.getElementById('hrLetterTestEmployeeChipInput');
