@@ -1522,6 +1522,172 @@ scenario('Task 2: a real ACTIVE employee (Radha) asking her own department\'s HO
     await cleanupHrDataQueryArtifacts(RADHA_PHONE);
   }
 });
+// ============================================================
+// LIVE BUG FIX (2026-11), HOD-vs-Doer rule, direct instruction. Live
+// incident: "Admin Srm dept. Kon doer er under a?" (asking which Reporting
+// Doer the Administration (Srm) department is under) was misread as a
+// "hod" question and answered with the WRONG person (the department's
+// HOD/reportingManager, Nabo Nath Jha) instead of its real Reporting Doer
+// (Saurabh Baid) - because "reportingDoer" did not exist as an option at
+// all. Fixed with a 3-way rule, decided by the model (never a code-side
+// regex/keyword list over the raw message): sender explicitly names the
+// Doer -> read the Doer column; sender explicitly names the HOD -> read
+// the HOD column; sender names neither -> DEFAULT to HOD (never Doer,
+// never ask which is meant). Applies to both a department (returnType
+// "hod"/"reportingDoer") and a named person (personLookupFieldLabel
+// "reporting manager"/"reporting doer").
+//
+// Every expected answer below is computed via the SAME deterministic
+// code the real feature uses (whatsappAssistant.buildHrDataQueryAnswer /
+// the real APPROVAL_FIELD_ALIASES templates) against the REAL live
+// employee directory fetched fresh in each scenario - never a hand-typed
+// literal name - so these scenarios can never drift from reality the way
+// a hardcoded headcount/name could (see this file's own
+// fixtureEmployeeData comment for the exact prior incident this guards
+// against), and so a regression in buildHrDataQueryAnswer/the alias
+// templates themselves would show up as the SAME wrong value on both
+// sides, not a false pass.
+// SCENARIO_FILTER="HOD-vs-Doer rule" selects just these 7.
+// ============================================================
+scenario('LIVE BUG FIX (2026-11), HOD-vs-Doer rule - EXACT live message: "Admin Srm dept. Kon doer er under a?" resolves to the real Reporting Doer (sender explicitly named "doer"), never the HOD - this is the exact live incident (previously wrongly answered with the HOD, Nabo Nath Jha)', async () => {
+  const phone = '910000002330';
+  await cleanupHrDataQueryArtifacts(phone);
+  try {
+    const { employees } = await employeeService.getEmployeeData();
+    const realDept = Array.from(new Set(employees.map((e) => e.department))).find((dep) => /administration/i.test(dep || '') && /srm/i.test(dep || ''));
+    if (!realDept) return { pass: false, detail: 'live data had no real "Administration (Srm)"-style department to compare against - cannot verify this scenario right now' };
+    const expected = whatsappAssistant.buildHrDataQueryAnswer(employees, { returnType: 'reportingDoer', resolvedDepartment: realDept }, 'banglish').outgoingText;
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenHodDoer1', firstName: 'ScenHodDoer1', text: 'Admin Srm dept. Kon doer er under a?', isGroup: false, history: [] });
+    if (d.case !== 'data_holding') return { pass: false, detail: 'expected case=data_holding, got: ' + d.case + ' text=' + d.replyText };
+    const approval = pendingApprovalFor(await whatsappAssistant.listPendingApprovals(), phone);
+    if (!approval || approval.preparedReplyText !== expected) return { pass: false, detail: 'expected the real Reporting Doer answer "' + expected + '", got: ' + JSON.stringify(approval && approval.preparedReplyText) };
+    return { pass: true, detail: 'correct Reporting Doer answer: ' + approval.preparedReplyText };
+  } finally {
+    await cleanupHrDataQueryArtifacts(phone);
+  }
+});
+scenario('LIVE BUG FIX (2026-11), HOD-vs-Doer rule - "Admin srm dept er reporting doer ke?" (same department, explicit "reporting doer" phrasing) resolves to the same real Reporting Doer', async () => {
+  const phone = '910000002331';
+  await cleanupHrDataQueryArtifacts(phone);
+  try {
+    const { employees } = await employeeService.getEmployeeData();
+    const realDept = Array.from(new Set(employees.map((e) => e.department))).find((dep) => /administration/i.test(dep || '') && /srm/i.test(dep || ''));
+    if (!realDept) return { pass: false, detail: 'live data had no real "Administration (Srm)"-style department to compare against - cannot verify this scenario right now' };
+    const expected = whatsappAssistant.buildHrDataQueryAnswer(employees, { returnType: 'reportingDoer', resolvedDepartment: realDept }, 'banglish').outgoingText;
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenHodDoer2', firstName: 'ScenHodDoer2', text: 'Admin srm dept er reporting doer ke?', isGroup: false, history: [] });
+    if (d.case !== 'data_holding') return { pass: false, detail: 'expected case=data_holding, got: ' + d.case + ' text=' + d.replyText };
+    const approval = pendingApprovalFor(await whatsappAssistant.listPendingApprovals(), phone);
+    if (!approval || approval.preparedReplyText !== expected) return { pass: false, detail: 'expected the real Reporting Doer answer "' + expected + '", got: ' + JSON.stringify(approval && approval.preparedReplyText) };
+    return { pass: true, detail: 'correct Reporting Doer answer: ' + approval.preparedReplyText };
+  } finally {
+    await cleanupHrDataQueryArtifacts(phone);
+  }
+});
+scenario('LIVE BUG FIX (2026-11), HOD-vs-Doer rule - person-level: "Subhodeep kon doer ke report kore?" (explicit "doer") resolves to Subhodeep\'s own real Reporting Doer, confirming the person first (same alwaysConfirm behavior the existing "reporting manager" alias already has)', async () => {
+  const phone = '910000002332';
+  await cleanupHrDataQueryArtifacts(phone);
+  try {
+    const { employees } = await employeeService.getEmployeeData();
+    const real = employees.find((e) => e.employeeId === 'AR000356');
+    if (!real || !real.reportingDoer) return { pass: false, detail: 'live data had no real Reporting Doer on file for Subhodeep (AR000356) - cannot verify this scenario right now' };
+    const d1 = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenHodDoer3', firstName: 'ScenHodDoer3', text: 'Subhodeep kon doer ke report kore?', isGroup: false, history: [] });
+    const expectedConfirm = 'Apni ki ' + real.name + ' (' + whatsappAssistant.naturalizeDirectoryValue(real.department) + ')-er kotha bolchhen?';
+    if (d1.case !== 'acknowledged' || coreText(d1.replyText) !== expectedConfirm) return { pass: false, detail: 'expected the exact confirm question "' + expectedConfirm + '", got (case=' + d1.case + '): ' + d1.replyText };
+    const d2 = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenHodDoer3', firstName: 'ScenHodDoer3', text: 'Haa', isGroup: false, history: [] });
+    if (d2.case !== 'data_holding') return { pass: false, detail: 'expected case=data_holding after confirming, got: ' + d2.case + ' text=' + d2.replyText };
+    const approval = pendingApprovalFor(await whatsappAssistant.listPendingApprovals(), phone);
+    const expectedAny = [
+      real.name + '-er reporting doer holen ' + real.reportingDoer + '.',
+      real.name + ' ka reporting doer ' + real.reportingDoer + ' hain.',
+      real.name + "'s reporting doer is " + real.reportingDoer + '.'
+    ];
+    if (!approval || !expectedAny.includes(approval.preparedReplyText)) return { pass: false, detail: 'expected one of ' + JSON.stringify(expectedAny) + ', got: ' + JSON.stringify(approval && approval.preparedReplyText) };
+    return { pass: true, detail: 'confirmed then answered correctly: ' + approval.preparedReplyText };
+  } finally {
+    await cleanupHrDataQueryArtifacts(phone);
+  }
+});
+scenario('LIVE BUG FIX (2026-11), HOD-vs-Doer rule - person-level: "Subhodeep kon HOD er under a?" (explicit "HOD") resolves to Subhodeep\'s own real reporting manager/HOD, same wording the existing "Subhodeep HR kake report kore?" scenario already locks', async () => {
+  const phone = '910000002333';
+  await cleanupHrDataQueryArtifacts(phone);
+  try {
+    const { employees } = await employeeService.getEmployeeData();
+    const real = employees.find((e) => e.employeeId === 'AR000356');
+    if (!real || !real.reportingManager) return { pass: false, detail: 'live data had no real reporting manager on file for Subhodeep (AR000356) - cannot verify this scenario right now' };
+    const d1 = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenHodDoer4', firstName: 'ScenHodDoer4', text: 'Subhodeep kon HOD er under a?', isGroup: false, history: [] });
+    const expectedConfirm = 'Apni ki ' + real.name + ' (' + whatsappAssistant.naturalizeDirectoryValue(real.department) + ')-er kotha bolchhen?';
+    if (d1.case !== 'acknowledged' || coreText(d1.replyText) !== expectedConfirm) return { pass: false, detail: 'expected the exact confirm question "' + expectedConfirm + '", got (case=' + d1.case + '): ' + d1.replyText };
+    const d2 = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenHodDoer4', firstName: 'ScenHodDoer4', text: 'Haa', isGroup: false, history: [] });
+    if (d2.case !== 'data_holding') return { pass: false, detail: 'expected case=data_holding after confirming, got: ' + d2.case + ' text=' + d2.replyText };
+    const approval = pendingApprovalFor(await whatsappAssistant.listPendingApprovals(), phone);
+    const expectedAny = [
+      real.name + '-er reporting manager holen ' + real.reportingManager + '.',
+      real.name + ' ke reporting manager ' + real.reportingManager + ' hain.',
+      real.name + "'s reporting manager is " + real.reportingManager + '.'
+    ];
+    if (!approval || !expectedAny.includes(approval.preparedReplyText)) return { pass: false, detail: 'expected one of ' + JSON.stringify(expectedAny) + ', got: ' + JSON.stringify(approval && approval.preparedReplyText) };
+    return { pass: true, detail: 'confirmed then answered correctly: ' + approval.preparedReplyText };
+  } finally {
+    await cleanupHrDataQueryArtifacts(phone);
+  }
+});
+scenario('LIVE BUG FIX (2026-11), HOD-vs-Doer rule - person-level DEFAULT: "Subhodeep kar under a?" (names NEITHER Doer nor HOD) defaults to the HOD/reporting-manager answer, never Reporting Doer and never a clarifying question', async () => {
+  const phone = '910000002334';
+  await cleanupHrDataQueryArtifacts(phone);
+  try {
+    const { employees } = await employeeService.getEmployeeData();
+    const real = employees.find((e) => e.employeeId === 'AR000356');
+    if (!real || !real.reportingManager) return { pass: false, detail: 'live data had no real reporting manager on file for Subhodeep (AR000356) - cannot verify this scenario right now' };
+    const d1 = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenHodDoer5', firstName: 'ScenHodDoer5', text: 'Subhodeep kar under a?', isGroup: false, history: [] });
+    const expectedConfirm = 'Apni ki ' + real.name + ' (' + whatsappAssistant.naturalizeDirectoryValue(real.department) + ')-er kotha bolchhen?';
+    if (d1.case !== 'acknowledged' || coreText(d1.replyText) !== expectedConfirm) return { pass: false, detail: 'expected the exact confirm question "' + expectedConfirm + '", got (case=' + d1.case + '): ' + d1.replyText };
+    const d2 = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenHodDoer5', firstName: 'ScenHodDoer5', text: 'Haa', isGroup: false, history: [] });
+    if (d2.case !== 'data_holding') return { pass: false, detail: 'expected case=data_holding after confirming, got: ' + d2.case + ' text=' + d2.replyText };
+    const approval = pendingApprovalFor(await whatsappAssistant.listPendingApprovals(), phone);
+    const expectedAny = [
+      real.name + '-er reporting manager holen ' + real.reportingManager + '.',
+      real.name + ' ke reporting manager ' + real.reportingManager + ' hain.',
+      real.name + "'s reporting manager is " + real.reportingManager + '.'
+    ];
+    if (!approval || !expectedAny.includes(approval.preparedReplyText)) return { pass: false, detail: 'expected the DEFAULT HOD answer, one of ' + JSON.stringify(expectedAny) + ', got: ' + JSON.stringify(approval && approval.preparedReplyText) };
+    return { pass: true, detail: 'correctly defaulted to HOD: ' + approval.preparedReplyText };
+  } finally {
+    await cleanupHrDataQueryArtifacts(phone);
+  }
+});
+scenario('LIVE BUG FIX (2026-11), HOD-vs-Doer rule - department-level DEFAULT: "Admin Srm dept. kar under a?" (names NEITHER Doer nor HOD) defaults to the HOD answer, never Reporting Doer', async () => {
+  const phone = '910000002335';
+  await cleanupHrDataQueryArtifacts(phone);
+  try {
+    const { employees } = await employeeService.getEmployeeData();
+    const realDept = Array.from(new Set(employees.map((e) => e.department))).find((dep) => /administration/i.test(dep || '') && /srm/i.test(dep || ''));
+    if (!realDept) return { pass: false, detail: 'live data had no real "Administration (Srm)"-style department to compare against - cannot verify this scenario right now' };
+    const expected = whatsappAssistant.buildHrDataQueryAnswer(employees, { returnType: 'hod', resolvedDepartment: realDept }, 'banglish').outgoingText;
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenHodDoer6', firstName: 'ScenHodDoer6', text: 'Admin Srm dept. kar under a?', isGroup: false, history: [] });
+    if (d.case !== 'data_holding') return { pass: false, detail: 'expected case=data_holding, got: ' + d.case + ' text=' + d.replyText };
+    const approval = pendingApprovalFor(await whatsappAssistant.listPendingApprovals(), phone);
+    if (!approval || approval.preparedReplyText !== expected) return { pass: false, detail: 'expected the DEFAULT HOD answer "' + expected + '", got: ' + JSON.stringify(approval && approval.preparedReplyText) };
+    return { pass: true, detail: 'correctly defaulted to HOD: ' + approval.preparedReplyText };
+  } finally {
+    await cleanupHrDataQueryArtifacts(phone);
+  }
+});
+scenario('LIVE BUG FIX (2026-11), HOD-vs-Doer rule - a REAL department with 2 distinct Reporting Doers ("ACCOUNTS") lists all of them, exactly the way a multi-HOD department is already handled', async () => {
+  const phone = '910000002336';
+  await cleanupHrDataQueryArtifacts(phone);
+  try {
+    const { employees } = await employeeService.getEmployeeData();
+    const expected = whatsappAssistant.buildHrDataQueryAnswer(employees, { returnType: 'reportingDoer', resolvedDepartment: 'ACCOUNTS' }, 'banglish').outgoingText;
+    if (!/\n2\)/.test(expected)) return { pass: false, detail: 'live data no longer has 2+ distinct Reporting Doers in ACCOUNTS - cannot verify this scenario right now (expected: ' + expected + ')' };
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenHodDoer7', firstName: 'ScenHodDoer7', text: 'Accounts dept er reporting doer ke?', isGroup: false, history: [] });
+    if (d.case !== 'data_holding') return { pass: false, detail: 'expected case=data_holding, got: ' + d.case + ' text=' + d.replyText };
+    const approval = pendingApprovalFor(await whatsappAssistant.listPendingApprovals(), phone);
+    if (!approval || approval.preparedReplyText !== expected) return { pass: false, detail: 'expected the real multi-Doer breakdown "' + expected + '", got: ' + JSON.stringify(approval && approval.preparedReplyText) };
+    return { pass: true, detail: 'correct multi-Doer breakdown: ' + approval.preparedReplyText };
+  } finally {
+    await cleanupHrDataQueryArtifacts(phone);
+  }
+});
 scenario('Task 2: an UNKNOWN number (not a registered employee) asking someone\'s OFFICIAL email still goes to a normal approval card, with the real official address (never the personal one) prepared for the owner', async () => {
   const phone = '910000002311';
   await cleanupHrDataQueryArtifacts(phone);

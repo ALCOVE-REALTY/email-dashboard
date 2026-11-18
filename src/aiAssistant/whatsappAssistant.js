@@ -3952,6 +3952,35 @@ const HR_QUERY_HOD_MULTI = {
     deptLabel + ' has ' + breakdown.length + ' HODs:\n' +
     breakdown.map((b, i) => (i + 1) + ') ' + b.name + ' (' + b.count + ')').join('\n')
 };
+// LIVE BUG FIX (2026-11), direct instruction: a department-level "which
+// Doer is this department under" question ("Admin Srm dept. Kon doer er
+// under a?") was being misread as a "who is the HOD" question - there is
+// no "reportingDoer" returnType for the model to pick, so it fell back to
+// the closest one it had ("hod"), answering with the wrong person (the
+// Reporting Manager/HOD field, not the Reporting Doer field the sender
+// actually asked about). These two templates are the "reportingDoer"
+// counterpart of HR_QUERY_HOD_SINGLE/HR_QUERY_HOD_MULTI immediately
+// above, same shape, reading computeDoerBreakdown's reportingDoer-based
+// breakdown instead of computeHodBreakdown's reportingManager-based one -
+// never a second, independent sharing-tier rule (see buildHrDataQueryAnswer's
+// own 'reportingDoer' branch, which reuses the exact same officialEligible
+// pattern as the plain name-only 'hod' answer).
+const HR_QUERY_REPORTING_DOER_SINGLE = {
+  banglish: (deptLabel, doerName) => deptLabel + '-er Reporting Doer holen ' + doerName + '.',
+  hinglish: (deptLabel, doerName) => deptLabel + ' ka Reporting Doer ' + doerName + ' hain.',
+  english: (deptLabel, doerName) => 'The Reporting Doer of ' + deptLabel + ' is ' + doerName + '.'
+};
+const HR_QUERY_REPORTING_DOER_MULTI = {
+  banglish: (deptLabel, breakdown) =>
+    deptLabel + '-e total ' + countLabelObjects(breakdown.length, 'banglish') + ' Reporting Doer achen:\n' +
+    breakdown.map((b, i) => (i + 1) + ') ' + b.name + ' (' + b.count + ' jon)').join('\n'),
+  hinglish: (deptLabel, breakdown) =>
+    deptLabel + ' mein total ' + breakdown.length + ' Reporting Doer hain:\n' +
+    breakdown.map((b, i) => (i + 1) + ') ' + b.name + ' (' + b.count + ' log)').join('\n'),
+  english: (deptLabel, breakdown) =>
+    deptLabel + ' has ' + breakdown.length + ' Reporting Doers:\n' +
+    breakdown.map((b, i) => (i + 1) + ') ' + b.name + ' (' + b.count + ')').join('\n')
+};
 // Live bug fix (2026-10-30), direct instruction: a sender can ask for the
 // HOD's employee code/number ALONGSIDE their name in the same message
 // ("QC HOD emp code ar nam dao") - handled via hodIncludeEmpCode on the
@@ -4173,6 +4202,23 @@ function computeHodBreakdown(employees) {
   }
   return Array.from(counts.entries()).map(([hodName, count]) => ({ name: hodName, count })).sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
 }
+// LIVE BUG FIX (2026-11) - the "which Reporting Doer is this department
+// under" counterpart of computeHodBreakdown above. A deliberately separate
+// function (not a shared `field` parameter on computeHodBreakdown) so this
+// fix can never change computeHodBreakdown's own behavior - reads
+// e.reportingDoer, a genuinely different real sheet column from
+// e.reportingManager (confirmed in employeeService.js's own COLS mapping:
+// reportingManager is the sheet's "HOD-1" column, reportingDoer is the
+// sheet's actual "Reporting DOER" column).
+function computeDoerBreakdown(employees) {
+  const counts = new Map();
+  for (const e of employees) {
+    const doer = (e.reportingDoer || '').trim();
+    if (!doer) continue;
+    counts.set(doer, (counts.get(doer) || 0) + 1);
+  }
+  return Array.from(counts.entries()).map(([doerName, count]) => ({ name: doerName, count })).sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+}
 // The sender's OWN term is used for the scope label where one exists
 // (e.g. "Duets", not whatever internal site value it resolved to) - both
 // the owner and the sender recognize their own wording; the resolved
@@ -4379,6 +4425,38 @@ function buildHrDataQueryAnswer(employees, query, lang) {
     }
     return { outgoingText, dataRequestSummary: deptLabel + ' - HOD', officialEligible: officialEligible && Boolean(rows.length), matchCount };
   }
+  // LIVE BUG FIX (2026-11), direct instruction - "which Reporting Doer is
+  // this department under" ("Admin Srm dept. Kon doer er under a?",
+  // "Admin srm dept er reporting doer ke?") is a genuinely different
+  // question from 'hod' above (a different real sheet column - see
+  // computeDoerBreakdown's own comment), now its own distinct returnType
+  // rather than falling through to the closest thing the model HAD
+  // ('hod'), which answered with the wrong person entirely. Same shape as
+  // 'hod' (no-match / single / multi), deliberately WITHOUT an emp-code/
+  // contact-number field combo (never asked for here, so never added -
+  // no needsHodChoice-style disambiguation needed either). Name-only
+  // answer, so officialEligible is unconditionally true once there's a
+  // match - the EXACT SAME sharing tier a plain name-only 'hod' answer
+  // already gets above, never a new/separate sharing rule.
+  if (query.returnType === 'reportingDoer') {
+    const deptLabel = departmentLabelWithSuffix(query.resolvedDepartment || query.department || '');
+    let outgoingText;
+    let matchCount = 0;
+    if (!rows.length) {
+      outgoingText = (HR_QUERY_NO_MATCH[lang] || HR_QUERY_NO_MATCH.english)(deptLabel, 'Reporting Doer');
+    } else {
+      const breakdown = computeDoerBreakdown(rows);
+      matchCount = breakdown.length;
+      if (!breakdown.length) {
+        outgoingText = (HR_QUERY_NO_MATCH[lang] || HR_QUERY_NO_MATCH.english)(deptLabel, 'Reporting Doer');
+      } else if (breakdown.length === 1) {
+        outgoingText = (HR_QUERY_REPORTING_DOER_SINGLE[lang] || HR_QUERY_REPORTING_DOER_SINGLE.english)(deptLabel, breakdown[0].name);
+      } else {
+        outgoingText = (HR_QUERY_REPORTING_DOER_MULTI[lang] || HR_QUERY_REPORTING_DOER_MULTI.english)(deptLabel, breakdown);
+      }
+    }
+    return { outgoingText, dataRequestSummary: deptLabel + ' - Reporting Doer', officialEligible: Boolean(rows.length), matchCount };
+  }
   const scopeLabel = buildScopeLabel(query);
   // Task 3 (2026-11) - "only direct reporting"/"out of N, who is direct"
   // follow-up - see HR_QUERY_DIRECT_REPORT_INTRO's own comment. A no-op
@@ -4521,11 +4599,11 @@ function hrDataQueryTool() {
         type: 'object',
         properties: {
           returnType: {
-            type: 'string', enum: ['list', 'count', 'hod', 'hodByDepartment'],
-            description: '"list" for a roster of matching employees (e.g. "welder list dao", "Tanmoy Mondal-er under-e kara achen?"). "count" for just a headcount ("koto jon"/"how many"). "hod" for ONE DEPARTMENT\'s own HOD(s) ("HR dept er HOD ke?", "Admin dept er HOD ke?") - requires a department. "hodByDepartment" for a COMPANY-WIDE, dept-wise HOD listing ("dept wise HOD list dao", "shob department er HOD ke ke?", "Need all dept. Wise HOD name") - one line per department, names only, never use "hod" with no department for this case. Never "hod"/"hodByDepartment" for one named individual\'s own manager (that is a different, existing flow - see personLookupName/personLookupField elsewhere).'
+            type: 'string', enum: ['list', 'count', 'hod', 'hodByDepartment', 'reportingDoer'],
+            description: '"list" for a roster of matching employees (e.g. "welder list dao", "Tanmoy Mondal-er under-e kara achen?"). "count" for just a headcount ("koto jon"/"how many"). "hodByDepartment" for a COMPANY-WIDE, dept-wise HOD listing ("dept wise HOD list dao", "shob department er HOD ke ke?", "Need all dept. Wise HOD name") - one line per department, names only, never use "hod" with no department for this case. "hod" vs "reportingDoer" - ONE DEPARTMENT\'s own HOD(s) vs Reporting Doer(s), two DIFFERENT real fields - apply this 3-way rule by what the sender actually said, deciding by MEANING not a fixed keyword list: (1) sender explicitly names the Doer/Reporting Doer ("Admin Srm dept. Kon doer er under a?", "Admin srm dept er reporting doer ke?", "<dept> kon doer-er under e?", "<dept> is under which doer") -> "reportingDoer". (2) sender explicitly names the HOD ("HR dept er HOD ke?", "Admin dept er HOD ke?", "<dept> kon HOD er under e?") -> "hod". (3) sender names NEITHER, just a plain "under"/"reports to" question about the department with no HOD/Doer word at all ("Admin Srm dept. kar under a?") -> DEFAULT to "hod" (never reportingDoer, never ask which one is meant). LIVE BUG this fixes: "Admin Srm dept. Kon doer er under a?" (case 1, Doer explicitly named) used to be misread as "hod" and answered with the wrong person entirely, because "reportingDoer" did not exist as an option at all. Both "hod" and "reportingDoer" require a department. Never "hod"/"hodByDepartment"/"reportingDoer" for one named individual\'s own manager (that is a different, existing flow with the SAME 3-way rule - see personLookupName/personLookupField elsewhere).'
           },
           designation: { type: 'string', description: 'The role/title keyword as a single canonical English word (e.g. "welder" for "welder"/"welding"/a misspelling of either, "engineer" for "engineers"/"engg") - omit if no role was named.' },
-          department: { type: 'string', description: 'The department name or a distinctive substring of it, exactly as the sender said it (e.g. "Administration", "HR", "Admin") - omit if none was named. Required when returnType is "hod", never set for "hodByDepartment".' },
+          department: { type: 'string', description: 'The department name or a distinctive substring of it, exactly as the sender said it (e.g. "Administration", "HR", "Admin") - omit if none was named. Required when returnType is "hod" or "reportingDoer", never set for "hodByDepartment".' },
           location: { type: 'string', description: 'The site/location name or a distinctive substring, EXACTLY as the sender said it, never translated or normalized - e.g. "Duets", "Triveni Mall". Site aliases/nicknames are resolved separately from these exact words. Omit if none was named.' },
           company: { type: 'string', description: 'The company name or a distinctive substring, if one was named - omit otherwise.' },
           reportingManagerName: { type: 'string', description: 'A manager/HOD\'s name, ONLY when the question filters BY who people report to (e.g. "Tanmoy Mondal-er under-e kara achen?" = people reporting to Tanmoy Mondal) - omit otherwise.' },
@@ -5348,7 +5426,12 @@ function mapAndNarrowByDepartment(matched, departmentNames, departmentHint) {
     // field was silently missing from every candidate here, so
     // queuePersonFieldApproval always read it as "not on file" and never
     // created an approval at all).
-    reportingManager: e.reportingManager
+    reportingManager: e.reportingManager,
+    // LIVE BUG FIX (2026-11) - the new "reporting doer" other_field alias
+    // (see APPROVAL_FIELD_ALIASES below) needs this carried through too,
+    // same reason reportingManager was added above: a candidate missing
+    // this field would always read as "not on file" and never resolve.
+    reportingDoer: e.reportingDoer
   }));
   if (!departmentHint) return withDept;
   // A department hint narrows but never eliminates a real candidate - if
@@ -5750,6 +5833,34 @@ const APPROVAL_FIELD_ALIASES = [
       banglish: (name, value) => name + '-er reporting manager holen ' + value + '.',
       hinglish: (name, value) => name + ' ke reporting manager ' + value + ' hain.',
       english: (name, value) => name + "'s reporting manager is " + value + '.'
+    }
+  },
+  // LIVE BUG FIX (2026-11), direct instruction - the person-level
+  // counterpart of the department-level "hod" vs "reportingDoer" rule
+  // above: when the sender explicitly names the Doer/Reporting Doer
+  // ("Subhodeep kon doer er under a?", "Subhodeep kon doer ke report
+  // kore?"), the classifier sets personLookupFieldLabel to "reporting
+  // doer" (a NEW, distinct label - see personLookupFieldLabel's own
+  // description) rather than the existing "reporting manager" label the
+  // alias right above matches, so this one fires instead, reading
+  // c.reportingDoer (a genuinely different real sheet column - see
+  // computeDoerBreakdown's own comment in the department-level code).
+  // When the sender names the HOD, or names neither (defaults to HOD per
+  // the 3-way rule), the model keeps emitting "reporting manager" exactly
+  // as before - the alias above still handles that case unchanged, so
+  // the existing "Subhodeep HR kake report kore?" locked scenario's
+  // behavior and wording are untouched by this addition.
+  {
+    key: 'reportingDoer',
+    match: /\bdoer\b/i,
+    label: { banglish: 'reporting doer', hinglish: 'reporting doer', english: 'reporting doer' },
+    getValue: (c) => c.reportingDoer || null,
+    alwaysConfirm: true,
+    official: true,
+    outgoingLine: {
+      banglish: (name, value) => name + '-er reporting doer holen ' + value + '.',
+      hinglish: (name, value) => name + ' ka reporting doer ' + value + ' hain.',
+      english: (name, value) => name + "'s reporting doer is " + value + '.'
     }
   }
 ];
@@ -10669,8 +10780,8 @@ function classifyTool() {
           wantsData: { type: 'boolean', description: 'true ONLY if they are asking for actual HR/employee data from the company database - counts, lists, names, headcounts, birthdays, who reports to whom, department lists, or any field (even just a phone number) about a named employee, etc. false for a question about their OWN situation (their own letter/salary/attendance), a policy question, an informing message, or small talk - those go through the normal topic/memory/noting path instead, never this one. Judge this from THIS message alone, read as a complete, self-contained question - true for a plain "who is <name>?"/"<name> ke?" even if the conversation history separately discussed a different name or an unresolved earlier question (e.g. a name mentioned while confirming who gave an instruction). Never classify a self-contained new "who is X" question as a continuation of an unrelated, unresolved exchange from history just because a similar-sounding name or topic appeared earlier - that history-leak is a known failure mode. Only let history change this when THIS message is a genuine elliptical fragment that cannot stand alone without it (e.g. a bare "?", "tar ki holo", a pronoun with no antecedent in the message itself).' },
           dataRequestSummary: { type: 'string', description: 'Required only when wantsData is true - restate exactly what data they are asking for, in plain English, e.g. "current list of engineers", "headcount under Yashaswi Shroff", "Ayan Das\'s contact number". Omit when wantsData is false.' },
           personLookupName: { type: 'string', description: 'ONLY when wantsData is true AND the request is for ONE specific field about ONE named person (e.g. "Ayan Das er contact number ta dao", "R amake Ayan Das HR er contact no. ta debe?") - the person\'s name EXACTLY as given in THIS message, first name alone is fine (e.g. "Ayan"). NEVER guess, complete, or expand the name using an earlier message in the conversation history - if THIS message only says "Ayan", output "Ayan", even if an earlier message in this same chat was about a specific "Ayan Biswas" or "Ayan Das". Only carry a name forward from history when the sender explicitly refers back to the same person ("tar", "oi jon-er", "same person", "ওই person", "usi ka") - in that case output the name history already resolved. Omit entirely for any aggregate/list/count/headcount request (e.g. "engineers list", "headcount under X", "who reports to X") - those are never about one person\'s own personal field and must NOT set this.' },
-          personLookupField: { type: 'string', enum: ['contact_number', 'general_details', 'other_field', 'forbidden_pii'], description: 'Required when personLookupName is given. "contact_number" ONLY for their phone/contact/mobile/WhatsApp number. "general_details" ONLY for their full name, designation/role, department, or how long they\'ve been with the company (tenure) - these are not sensitive and never need approval. "other_field" for any other single personal field that is NOT one of the 9 forbidden heads listed under "forbidden_pii" below - e.g. employee code/employee ID/emp no., mail id/personal email, emergency contact, OR that named person\'s OWN reporting manager/HOD (e.g. "Subhodeep HR kake report kore?", "Subhodeep HR-er manager ke?", "X-er HOD ke?" - set personLookupFieldLabel to "reporting manager" for this one); when you choose "other_field" you MUST also set personLookupFieldLabel. Never use "other_field" for a DEPARTMENT\'s own HOD question with no specific person named (e.g. "HR dept er HOD ke?") - that has no personLookupName at all, see wantsData\'s own description. "forbidden_pii" ONLY for exactly these 9 heads, nothing else: Aadhaar, PAN, bank account/IFSC, salary/CTC, UAN number, ESIC/ESI number, home/permanent/present address, date of birth, blood group - these are NEVER shared regardless of approval. Employee code/ID is NOT forbidden_pii - it is always "other_field", never guess otherwise. When unsure whether a field is genuinely one of these exact 9 heads (e.g. a bank-related term you don\'t recognize) vs. a clearly different field (employee code, designation, location, tenure, etc.), choose "forbidden_pii" only for the genuinely ambiguous bank/salary-shaped case - never for something plainly unrelated like employee code.' },
-          personLookupFieldLabel: { type: 'string', description: 'Required when personLookupField is "other_field" - name the specific field asked about, in a few words (e.g. "employee code", "mail id", "emergency contact", "reporting manager"). Omit otherwise.' },
+          personLookupField: { type: 'string', enum: ['contact_number', 'general_details', 'other_field', 'forbidden_pii'], description: 'Required when personLookupName is given. "contact_number" ONLY for their phone/contact/mobile/WhatsApp number. "general_details" ONLY for their full name, designation/role, department, or how long they\'ve been with the company (tenure) - these are not sensitive and never need approval. "other_field" for any other single personal field that is NOT one of the 9 forbidden heads listed under "forbidden_pii" below - e.g. employee code/employee ID/emp no., mail id/personal email, emergency contact, OR that named person\'s OWN HOD/Reporting Doer (see personLookupFieldLabel\'s own description for the HOD-vs-Doer rule); when you choose "other_field" you MUST also set personLookupFieldLabel. Never use "other_field" for a DEPARTMENT\'s own HOD/Reporting Doer question with no specific person named (e.g. "HR dept er HOD ke?") - that has no personLookupName at all, see wantsData\'s own description. "forbidden_pii" ONLY for exactly these 9 heads, nothing else: Aadhaar, PAN, bank account/IFSC, salary/CTC, UAN number, ESIC/ESI number, home/permanent/present address, date of birth, blood group - these are NEVER shared regardless of approval. Employee code/ID is NOT forbidden_pii - it is always "other_field", never guess otherwise. When unsure whether a field is genuinely one of these exact 9 heads (e.g. a bank-related term you don\'t recognize) vs. a clearly different field (employee code, designation, location, tenure, etc.), choose "forbidden_pii" only for the genuinely ambiguous bank/salary-shaped case - never for something plainly unrelated like employee code.' },
+          personLookupFieldLabel: { type: 'string', description: 'Required when personLookupField is "other_field" - name the specific field asked about, in a few words (e.g. "employee code", "mail id", "emergency contact"). For that named person\'s OWN HOD/Reporting Doer specifically, decide by the SAME 3-way rule as the department-level version (see returnType\'s own description), by meaning not a fixed keyword list: (1) sender explicitly names the Doer/Reporting Doer ("Subhodeep kon doer er under a?", "Subhodeep kon doer ke report kore?") -> label "reporting doer". (2) sender explicitly names the HOD ("Subhodeep kon HOD er under a?") -> label "reporting manager". (3) sender names NEITHER, a plain "under"/"reports to" question with no HOD/Doer word at all ("Subhodeep kar under a?", "Subhodeep kake report kore?", "Subhodeep HR kake report kore?", "Subhodeep HR-er manager ke?", "X-er HOD ke?") -> DEFAULT to label "reporting manager" (never "reporting doer", never ask which one is meant). Omit personLookupFieldLabel entirely when personLookupField is not "other_field".' },
           personLookupExtraFields: {
             type: 'array',
             description: 'Live bug fix (2026-11) - when the SAME message asks for MORE THAN ONE field about the SAME named person ("X-er contact no & employee code ki?", "X ar Y", "X, Y"), personLookupField/personLookupFieldLabel above capture only the FIRST field - every ADDITIONAL field goes here, one entry per field, same enum/label rules as above. NEVER drop a field: a message naming two or more fields about one person must have exactly (N-1) entries here for its N total fields. Omit entirely (or leave empty) when only one field was asked for - this is the common case.',
@@ -14595,6 +14706,7 @@ module.exports = {
   resolveDepartmentOptions,
   filterEmployeesForHrQuery,
   computeHodBreakdown,
+  computeDoerBreakdown,
   buildHrDataQueryAnswer,
   resolveDojRelativeRange,
   istTodayAsUtcMidnight,

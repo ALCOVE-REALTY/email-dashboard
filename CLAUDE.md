@@ -788,7 +788,9 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
   unchanged): **OFFICIAL** - exactly 15 fields (Employee Code, Name,
   Designation, Department, Collar Type, Gender, Location, Company Location,
   Company, Reporting Manager/HOD, DOJ, Tenure, Total Years of Experience,
-  Email ID personal/official) - answered DIRECTLY, no approval, when the
+  Email ID personal/official) - plus Reporting Doer, added under this SAME
+  tier (2026-11, HOD-vs-Doer rule below) - never a separate/new sharing
+  rule of its own - answered DIRECTLY, no approval, when the
   SENDER is themselves a current ACTIVE employee (`isSenderActiveEmployee`,
   `findEmployeeByPhone`) and the answer names at most 20 people
   (`buildHrDataQueryAnswer`'s own `matchCount`); **OTHER NON-SENSITIVE**
@@ -3311,3 +3313,69 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
   suite more than once needs explicit sign-off, prefer a small targeted diagnostic
   to re-check a fix) and removed `ANTHROPIC_API_KEY_TEST` from `.env` himself so
   real-model runs stop by default until he's asked and re-adds it.
+
+### HOD vs Reporting Doer vs default - STANDING RULE (2026-11, direct instruction)
+
+Live incident: "Admin Srm dept. Kon doer er under a?" (asking which Reporting Doer
+the Administration (Srm) department falls under) was misread as a "hod" question
+and answered with the WRONG person - the department's HOD (Nabo Nath Jha) instead
+of its real Reporting Doer (Saurabh Baid) - because no "reportingDoer" option
+existed at all, so the model fell back to the closest thing it had. HOD
+(`reportingManager`, the sheet's "HOD-1" column) and Reporting Doer
+(`reportingDoer`, the sheet's actual "Reporting DOER" column) are two genuinely
+different real fields (confirmed in `employeeService.js`'s own `COLS` mapping) -
+never the same fact under two names.
+
+**The rule, for BOTH a department and a named person, decided by the model by
+MEANING, never a code-side regex/keyword list over the raw message:**
+1. Sender explicitly names the Doer/Reporting Doer ("kon doer er under",
+   "reporting doer ke", any phrasing/language) -> read the Reporting Doer column.
+2. Sender explicitly names the HOD ("kon HOD er under", "HOD ke") -> read the HOD
+   column.
+3. Sender names NEITHER (a plain "kar under a?"/"kake report kore?"/"under whom"
+   question) -> **DEFAULT to HOD**, never Reporting Doer, never a clarifying
+   question asking which is meant.
+
+**Where this lives in code** (`src/aiAssistant/whatsappAssistant.js`):
+- Department-level: `extract_hr_data_query` tool's `returnType` enum gained
+  `"reportingDoer"` alongside the existing `"hod"`/`"hodByDepartment"` - the
+  model picks one of the three per the rule above (its own schema description
+  spells out the rule and the exact live-bug phrasing). `buildHrDataQueryAnswer`
+  got a new, fully additive `"reportingDoer"` branch (never touching the
+  existing `"hod"` branch) using a new `computeDoerBreakdown` (mirrors
+  `computeHodBreakdown`, reads `reportingDoer` instead of `reportingManager` -
+  a deliberately SEPARATE function so this fix could never change
+  `computeHodBreakdown`'s own behavior) and two new templates
+  (`HR_QUERY_REPORTING_DOER_SINGLE`/`_MULTI`), same no-match/single/multi shape
+  "hod" already has, same multi-value list-all-of-them behavior a multi-HOD
+  department already gets.
+- Person-level: `personLookupField`'s `"other_field"` + `personLookupFieldLabel`
+  gained a second possible label, `"reporting doer"`, alongside the existing
+  `"reporting manager"` (which still covers both the explicit-HOD case AND the
+  default-neither case, unchanged - rule 3's default was already its existing
+  behavior, just made explicit in its own schema description now). A NEW
+  `APPROVAL_FIELD_ALIASES` entry (`key: 'reportingDoer'`, `match: /\bdoer\b/i`)
+  reads `c.reportingDoer`, added ALONGSIDE the existing `reportingManager` alias
+  without editing it at all - the two resolve to different aliases/fields and
+  never collide. `mapAndNarrowByDepartment`'s candidate projection now carries
+  `reportingDoer` through too (same reason `reportingManager` needed this fix
+  back in Task 2, 2026-10-29).
+- Sharing tier: Reporting Doer sits in the SAME official tier Reporting
+  Manager/HOD already has (see the three-tier rule above) - `officialEligible`
+  on the new branch/alias follows the exact same pattern, never a new/separate
+  sharing rule.
+
+**Tests**: 8 new deterministic checks in `check-whatsapp-engine.js`
+(`computeDoerBreakdown`, the `"reportingDoer"` branch's no-match/single/multi
+shape, the alias-label resolution split, `reportingDoer` carried through the
+person candidate projection) - all free, zero real-model calls. 7 new real-model
+locked scenarios in `check-whatsapp-scenarios.js` (`SCENARIO_FILTER="HOD-vs-Doer
+rule"` selects them), covering: the exact live message (department, Doer); same
+department, "reporting doer ke?" phrasing; person-level explicit Doer
+("Subhodeep kon doer ke report kore?"); person-level explicit HOD; person-level
+default (names neither); department-level default; and a REAL department with 2
+distinct Doers (ACCOUNTS: Saurabh Baid, Archana Shroff) listing both. All 7
+locked 3/3 reliable against the real model, and all 6 pre-existing HOD-related
+scenarios reconfirmed still passing (1x each, precisely filtered to avoid
+double-charging the new 7) - actual combined real-model cost for this whole fix:
+**$0.5091** (test key: `ANTHROPIC_API_KEY_TEST`, never the live key).

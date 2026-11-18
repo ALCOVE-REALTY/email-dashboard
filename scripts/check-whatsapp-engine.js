@@ -814,6 +814,14 @@ async function checkAsyncRealModel(label, fn) {
   check('Task 7: resolveApprovalFieldAliasByLabel recognizes "employee code"/"emp id"/"employee number" -> employeeId', ['employee code', 'emp id', 'employee number', 'emp code'].every((t) => (whatsappAssistant.resolveApprovalFieldAliasByLabel(t) || {}).key === 'employeeId'));
   check('Task 7: resolveApprovalFieldAliasByLabel now returns null for address/DOB/UAN/ESIC/blood group - these 9 heads are hard-blocked before an alias is ever consulted, the old approval-gated aliases are gone', ['address', 'date of birth', 'UAN number', 'ESIC number', 'blood group'].every((t) => whatsappAssistant.resolveApprovalFieldAliasByLabel(t) === null));
   check('resolveApprovalFieldAliasByLabel returns null for an unrecognized field (e.g. "passport number") - never guesses a field', whatsappAssistant.resolveApprovalFieldAliasByLabel('passport number') === null);
+  // LIVE BUG FIX (2026-11), direct instruction - the person-level HOD vs
+  // Reporting Doer 3-way rule needs these two labels to resolve to two
+  // DIFFERENT aliases/fields, never collapsing into one - "reporting
+  // doer" must hit the NEW reportingDoer alias, while "reporting
+  // manager"/"HOD" (the existing default/explicit-HOD labels) must keep
+  // hitting the pre-existing reportingManager alias exactly as before.
+  check('resolveApprovalFieldAliasByLabel: "reporting doer" resolves to the NEW reportingDoer alias, never the existing reportingManager one', (whatsappAssistant.resolveApprovalFieldAliasByLabel('reporting doer') || {}).key === 'reportingDoer');
+  check('resolveApprovalFieldAliasByLabel: "reporting manager"/"HOD" still resolve to the EXISTING reportingManager alias, unchanged by the new reportingDoer alias being added alongside it', ['reporting manager', 'HOD', 'manager'].every((t) => (whatsappAssistant.resolveApprovalFieldAliasByLabel(t) || {}).key === 'reportingManager'));
   await checkAsync('a mislabeled "other_field" request whose label actually says "bank account number" is STILL hard-blocked, regardless of personField - a structural safety net, never trusting the classifier alone', async () => {
     const d = await whatsappAssistant.handlePersonLookupRequest({ phone: LIVE_REVIEW_TEST_PHONE, name: 'Test', lang: 'banglish', personName: 'Ayan Das', personField: 'other_field', personFieldLabel: 'bank account number', department: null, text: 'Ayan Das er bank account number dao', history: [] });
     return d.case === 'acknowledged' && d.replyText.includes('Onno karo gopon tottho');
@@ -7072,13 +7080,18 @@ async function checkAsyncRealModel(label, fn) {
   console.log('Task 2 (2026-10-29), "AI understands, code computes" - general HR-data query engine: pure, model-free query functions over a small fake roster (never the real sheet - deterministic, exact-text assertions)');
   console.log('='.repeat(70));
   const FAKE_HR_QUERY_EMPLOYEES = [
-    { name: 'Alice Welder', designation: 'Welder', department: 'Civil', location: 'Ballygunge', company: 'Alcove', reportingManager: 'Tanmoy Mondal', status: 'ACTIVE' },
-    { name: 'Bob Welder', designation: 'Sr Welder', department: 'Civil', location: 'Ballygunge', company: 'Alcove', reportingManager: 'Tanmoy Mondal', status: 'ACTIVE' },
-    { name: 'Carol Engineer', designation: 'Engineer', department: 'Civil', location: 'Srirampur', company: 'Alcove', reportingManager: 'Radha Biswas', status: 'ACTIVE' },
-    { name: 'Dave Welder', designation: 'Welder', department: 'Civil', location: 'Ballygunge', company: 'Alcove', reportingManager: 'Tanmoy Mondal', status: 'INACTIVE' },
+    // LIVE BUG FIX (2026-11) - reportingDoer added to a few of these (a
+    // genuinely different real field from reportingManager, see
+    // computeDoerBreakdown's own comment) for the new "reportingDoer"
+    // returnType's deterministic tests below, without touching any
+    // existing employee's existing fields/values or any existing check.
+    { name: 'Alice Welder', designation: 'Welder', department: 'Civil', location: 'Ballygunge', company: 'Alcove', reportingManager: 'Tanmoy Mondal', reportingDoer: 'Doer One', status: 'ACTIVE' },
+    { name: 'Bob Welder', designation: 'Sr Welder', department: 'Civil', location: 'Ballygunge', company: 'Alcove', reportingManager: 'Tanmoy Mondal', reportingDoer: 'Doer One', status: 'ACTIVE' },
+    { name: 'Carol Engineer', designation: 'Engineer', department: 'Civil', location: 'Srirampur', company: 'Alcove', reportingManager: 'Radha Biswas', reportingDoer: 'Doer Two', status: 'ACTIVE' },
+    { name: 'Dave Welder', designation: 'Welder', department: 'Civil', location: 'Ballygunge', company: 'Alcove', reportingManager: 'Tanmoy Mondal', reportingDoer: 'Doer One', status: 'INACTIVE' },
     { name: 'Eve Hr', designation: 'Executive', department: 'HR Dept', location: 'HO', company: 'Alcove', reportingManager: 'Radha Biswas', status: 'ACTIVE' },
     { name: 'Frank Hr', designation: 'Manager', department: 'HR Dept', location: 'HO', company: 'Alcove', reportingManager: 'Radha Biswas', status: 'ACTIVE' },
-    { name: 'Grace Admin', designation: 'Executive', department: 'Administration Srm', location: 'Srirampur', company: 'Alcove', reportingManager: 'X Manager', status: 'ACTIVE' },
+    { name: 'Grace Admin', designation: 'Executive', department: 'Administration Srm', location: 'Srirampur', company: 'Alcove', reportingManager: 'X Manager', reportingDoer: 'Solo Doer', status: 'ACTIVE' },
     { name: 'Hank Admin', designation: 'Executive', department: 'Administration HO', location: 'HO', company: 'Alcove', reportingManager: 'Y Manager', status: 'ACTIVE' },
     { name: 'Ivy Admin', designation: 'Executive', department: 'Administration HO', location: 'HO', company: 'Alcove', reportingManager: 'Y Manager', status: 'ACTIVE' },
     { name: 'Jack Admin', designation: 'Executive', department: 'Administration HO', location: 'HO', company: 'Alcove', reportingManager: 'Z Manager', status: 'ACTIVE' }
@@ -7107,6 +7120,13 @@ async function checkAsyncRealModel(label, fn) {
     const { matches } = await whatsappAssistant.findPersonLookupMatches('Subhodeep Kundu Chowdhury', null);
     const subhodeep = matches.find((m) => m.employeeId === 'AR000356');
     return Boolean(subhodeep) && subhodeep.reportingManager === 'Radha Biswas Bhattacharjee';
+  });
+  await checkAsync('LIVE BUG FIX (2026-11): findPersonLookupMatches carries reportingDoer through its candidate projection too, same reason reportingManager was added above - the new "reporting doer" other_field alias needs this field on every candidate, never missing', async () => {
+    const { employees } = await employeeService.getEmployeeData();
+    const real = employees.find((e) => e.employeeId === 'AR000356');
+    const { matches } = await whatsappAssistant.findPersonLookupMatches('Subhodeep Kundu Chowdhury', null);
+    const subhodeep = matches.find((m) => m.employeeId === 'AR000356');
+    return Boolean(subhodeep) && Boolean(real) && subhodeep.reportingDoer === real.reportingDoer;
   });
   check('filterEmployeesForHrQuery: a designation filter ("welder") matches both "Welder" and "Sr Welder" (word-boundary, not just exact), defaults to ACTIVE only (excludes the INACTIVE welder)', (() => {
     const rows = whatsappAssistant.filterEmployeesForHrQuery(FAKE_HR_QUERY_EMPLOYEES, { designation: 'welder' });
@@ -7156,6 +7176,35 @@ async function checkAsyncRealModel(label, fn) {
   check('buildHrDataQueryAnswer: a "hod" query matching no one at all (empty department) also gets the "no one found" sentence, never a crash on an empty breakdown', (() => {
     const { outgoingText } = whatsappAssistant.buildHrDataQueryAnswer([], { returnType: 'hod', department: 'Nonexistent' }, 'banglish');
     return outgoingText === 'Nonexistent department-e kono HOD pawa jayni.';
+  })());
+  // LIVE BUG FIX (2026-11), direct instruction - "reportingDoer" deterministic
+  // tests, exact mirror of the "hod" tests above (computeHodBreakdown /
+  // "hod" single / "hod" multi / "hod" no-match), proving the new field
+  // and returnType never drift from reportingManager/"hod"'s own already-
+  // locked behavior, and never collide with it (Civil department has BOTH
+  // a 2-distinct-HOD breakdown via reportingManager and a 2-distinct-Doer
+  // breakdown via reportingDoer, independently, from the SAME active rows).
+  check('computeDoerBreakdown: groups by reportingDoer (NOT reportingManager), counts, and sorts by count DESC', (() => {
+    const civilActive = whatsappAssistant.filterEmployeesForHrQuery(FAKE_HR_QUERY_EMPLOYEES, { department: 'Civil' });
+    const breakdown = whatsappAssistant.computeDoerBreakdown(civilActive);
+    return breakdown.length === 2 && breakdown[0].name === 'Doer One' && breakdown[0].count === 2 && breakdown[1].name === 'Doer Two' && breakdown[1].count === 1;
+  })());
+  check('buildHrDataQueryAnswer: returnType "reportingDoer" with exactly ONE distinct Doer produces the exact locked single-Doer sentence (a DIFFERENT sentence/field from the "hod" one for the SAME department)', (() => {
+    const { outgoingText } = whatsappAssistant.buildHrDataQueryAnswer(FAKE_HR_QUERY_EMPLOYEES, { returnType: 'reportingDoer', resolvedDepartment: 'Administration Srm' }, 'banglish');
+    return outgoingText === 'Administration Srm department-er Reporting Doer holen Solo Doer.';
+  })());
+  check('buildHrDataQueryAnswer: returnType "reportingDoer" with MULTIPLE distinct Doers produces the exact locked numbered multi-Doer sentence, with counts, sorted by count DESC', (() => {
+    const { outgoingText } = whatsappAssistant.buildHrDataQueryAnswer(FAKE_HR_QUERY_EMPLOYEES, { returnType: 'reportingDoer', resolvedDepartment: 'Civil' }, 'banglish');
+    return outgoingText === 'Civil department-e total duti Reporting Doer achen:\n1) Doer One (2 jon)\n2) Doer Two (1 jon)';
+  })());
+  check('buildHrDataQueryAnswer: a "reportingDoer" query matching no one at all (empty department) gets the "no one found" sentence naming Reporting Doer, never a crash on an empty breakdown', (() => {
+    const { outgoingText } = whatsappAssistant.buildHrDataQueryAnswer([], { returnType: 'reportingDoer', department: 'Nonexistent' }, 'banglish');
+    return outgoingText === 'Nonexistent department-e kono Reporting Doer pawa jayni.';
+  })());
+  check('buildHrDataQueryAnswer: "hod" and "reportingDoer" never answer with each other\'s field for the SAME department - Administration Srm\'s HOD (X Manager) and its Reporting Doer (Solo Doer) are two different real people/fields, both correctly resolved independently', (() => {
+    const hodAnswer = whatsappAssistant.buildHrDataQueryAnswer(FAKE_HR_QUERY_EMPLOYEES, { returnType: 'hod', resolvedDepartment: 'Administration Srm' }, 'banglish').outgoingText;
+    const doerAnswer = whatsappAssistant.buildHrDataQueryAnswer(FAKE_HR_QUERY_EMPLOYEES, { returnType: 'reportingDoer', resolvedDepartment: 'Administration Srm' }, 'banglish').outgoingText;
+    return hodAnswer === 'Administration Srm department-er HOD holen X Manager.' && doerAnswer === 'Administration Srm department-er Reporting Doer holen Solo Doer.' && hodAnswer !== doerAnswer;
   })());
   await checkAsync('resolveSiteAliasValues: a CONFIRMED site alias resolves a colloquial term to its real site value(s); an unconfirmed (not-yet-reviewed) alias is never applied', async () => {
     const alias1 = await whatsappAssistant.saveSiteAlias({ alias: 'TestColloquialSiteName', siteValue: 'Real-Test-Site-Value', confirmed: true });
