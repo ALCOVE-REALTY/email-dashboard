@@ -7732,10 +7732,6 @@
   const wfSheetShareCopyBtn = document.getElementById('wfSheetShareCopyBtn');
   const wfSheetInfo = document.getElementById('wfSheetInfo');
   // PHASE 4 (2026-11) - "Sheet options" green box.
-  const wfSheet2Btn = document.getElementById('wfSheet2Btn');
-  const wfSheet2Wrap = document.getElementById('wfSheet2Wrap');
-  const wfSheet2Url = document.getElementById('wfSheet2Url');
-  const wfSheet2Tab = document.getElementById('wfSheet2Tab');
   const wfOnlyWhereCol = document.getElementById('wfOnlyWhereCol');
   const wfOnlyWhereVal = document.getElementById('wfOnlyWhereVal');
   const wfAfterSendCol = document.getElementById('wfAfterSendCol');
@@ -7836,6 +7832,14 @@
 
   let wfEditingId = null;
   let wfPlan = null;
+  // TASK 8 (2026-11), direct instruction - "Another sheet / tab" UI (inputs
+  // + "+ Add another sheet / tab" button) was removed from the Sheet
+  // options box, but an ALREADY-SAVED workflow using it must keep working;
+  // this remembers whatever secondSheet value was loaded (from an existing
+  // saved workflow, or from Ask SUBH's own freshly drafted plan) so wfSave
+  // can pass it straight through unchanged, with no UI left to edit or
+  // clear it - never re-derived from the now-removed DOM elements.
+  let wfLoadedSecondSheet = null;
   // Task 12 (2026-11) - same Ask-SUBH-only pass-through as Automated
   // Tasks' own autoScheduleExtra (see its comment).
   let wfScheduleExtra = { monthDays: null, lastDayOfMonth: false };
@@ -8014,9 +8018,7 @@
     if (wfEmpSearch) wfEmpSearch.value = '';
     // PHASE 4 (2026-11) - "Sheet options" + "Outside emails", all off/
     // empty by default = today's exact behaviour.
-    if (wfSheet2Wrap) wfSheet2Wrap.classList.add('hidden');
-    if (wfSheet2Url) wfSheet2Url.value = '';
-    if (wfSheet2Tab) wfSheet2Tab.value = '';
+    wfLoadedSecondSheet = null;
     if (wfOnlyWhereVal) wfOnlyWhereVal.value = '';
     if (wfAfterSendVal) wfAfterSendVal.value = '';
     if (wfAfterSendDate) wfAfterSendDate.checked = false;
@@ -8088,15 +8090,9 @@
     renderWfEmpList();
     // PHASE 4 (2026-11) - "Sheet options" + "Outside emails".
     const so = w.plan.sheetOptions || {};
-    if (so.secondSheet && (so.secondSheet.url || so.secondSheet.tab)) {
-      if (wfSheet2Wrap) wfSheet2Wrap.classList.remove('hidden');
-      if (wfSheet2Url) wfSheet2Url.value = so.secondSheet.url || '';
-      if (wfSheet2Tab) wfSheet2Tab.value = so.secondSheet.tab || '';
-    } else {
-      if (wfSheet2Wrap) wfSheet2Wrap.classList.add('hidden');
-      if (wfSheet2Url) wfSheet2Url.value = '';
-      if (wfSheet2Tab) wfSheet2Tab.value = '';
-    }
+    // TASK 8 (2026-11) - remembered as-is, no UI left to edit/clear it -
+    // see wfLoadedSecondSheet's own comment.
+    wfLoadedSecondSheet = (so.secondSheet && (so.secondSheet.url || so.secondSheet.tab)) ? so.secondSheet : null;
     renderWfSheetOptionCols();
     if (wfOnlyWhereCol) wfOnlyWhereCol.value = (so.onlyWhere && so.onlyWhere.column) || '';
     if (wfOnlyWhereVal) wfOnlyWhereVal.value = (so.onlyWhere && so.onlyWhere.value) || '';
@@ -8354,7 +8350,7 @@
   if (wfTableToggle) wfTableToggle.addEventListener('change', wfSync);
   if (wfAlsoOn) wfAlsoOn.addEventListener('change', wfSync);
   if (wfDocsOn) wfDocsOn.addEventListener('change', wfSync);
-  [wfSubject, wfMailSubj, wfBody, wfAlsoSubj, wfAlsoBody, wfFuDays, wfFuMax, wfFuBody, wfDate, wfTime, wfEvery, wfSheet2Url, wfSheet2Tab, wfOnlyWhereVal, wfAfterSendVal].forEach((el) => { if (el) el.addEventListener('input', wfSync); });
+  [wfSubject, wfMailSubj, wfBody, wfAlsoSubj, wfAlsoBody, wfFuDays, wfFuMax, wfFuBody, wfDate, wfTime, wfEvery, wfOnlyWhereVal, wfAfterSendVal].forEach((el) => { if (el) el.addEventListener('input', wfSync); });
   if (document.getElementById('wfCcInput')) document.getElementById('wfCcInput').addEventListener('input', wfSync);
   if (document.getElementById('wfCcChipInput')) document.getElementById('wfCcChipInput').addEventListener('click', () => setTimeout(wfSync, 0));
   if (document.getElementById('wfAlsoToInput')) document.getElementById('wfAlsoToInput').addEventListener('input', wfSync);
@@ -8363,12 +8359,6 @@
   if (wfOnlyWhereCol) wfOnlyWhereCol.addEventListener('change', wfSync);
   if (wfAfterSendCol) wfAfterSendCol.addEventListener('change', wfSync);
   if (wfAfterSendDate) wfAfterSendDate.addEventListener('change', wfSync);
-  if (wfSheet2Btn) wfSheet2Btn.addEventListener('click', () => {
-    if (!wfSheet2Wrap) return;
-    wfSheet2Wrap.classList.toggle('hidden');
-    if (wfSheet2Wrap.classList.contains('hidden')) { if (wfSheet2Url) wfSheet2Url.value = ''; if (wfSheet2Tab) wfSheet2Tab.value = ''; }
-    wfSync();
-  });
   if (document.getElementById('wfOutsideInput')) document.getElementById('wfOutsideInput').addEventListener('input', wfSync);
   if (document.getElementById('wfOutsideChipInput')) document.getElementById('wfOutsideChipInput').addEventListener('click', () => setTimeout(wfSync, 0));
 
@@ -8423,9 +8413,10 @@
       // write-back behaviour, matching workflowService.js's own
       // documented plan.sheetOptions shape.
       sheetOptions: {
-        secondSheet: (wfSheet2Wrap && !wfSheet2Wrap.classList.contains('hidden') && ((wfSheet2Url && wfSheet2Url.value.trim()) || (wfSheet2Tab && wfSheet2Tab.value.trim())))
-          ? { url: (wfSheet2Url && wfSheet2Url.value.trim()) || null, tab: (wfSheet2Tab && wfSheet2Tab.value.trim()) || null }
-          : null,
+        // TASK 8 (2026-11) - no UI left to set/change this (see
+        // wfLoadedSecondSheet's own comment) - passed through exactly as
+        // loaded, never re-derived from DOM elements that no longer exist.
+        secondSheet: wfLoadedSecondSheet || null,
         onlyWhere: (wfOnlyWhereCol && wfOnlyWhereCol.value) ? { column: wfOnlyWhereCol.value, value: wfOnlyWhereVal ? wfOnlyWhereVal.value : '' } : null,
         afterSend: (wfAfterSendCol && wfAfterSendCol.value) ? { column: wfAfterSendCol.value, value: wfAfterSendVal ? wfAfterSendVal.value : '', alsoWriteDate: Boolean(wfAfterSendDate && wfAfterSendDate.checked) } : null
       },
@@ -8866,15 +8857,9 @@
       // outsideEmails shape, just applied to a freshly drafted plan
       // instead of a saved one.
       const soDraft = draft.plan.sheetOptions || {};
-      if (soDraft.secondSheet && (soDraft.secondSheet.url || soDraft.secondSheet.tab)) {
-        if (wfSheet2Wrap) wfSheet2Wrap.classList.remove('hidden');
-        if (wfSheet2Url) wfSheet2Url.value = soDraft.secondSheet.url || '';
-        if (wfSheet2Tab) wfSheet2Tab.value = soDraft.secondSheet.tab || '';
-      } else {
-        if (wfSheet2Wrap) wfSheet2Wrap.classList.add('hidden');
-        if (wfSheet2Url) wfSheet2Url.value = '';
-        if (wfSheet2Tab) wfSheet2Tab.value = '';
-      }
+      // TASK 8 (2026-11) - remembered as-is, no UI left to edit/clear it -
+      // see wfLoadedSecondSheet's own comment.
+      wfLoadedSecondSheet = (soDraft.secondSheet && (soDraft.secondSheet.url || soDraft.secondSheet.tab)) ? soDraft.secondSheet : null;
       renderWfSheetOptionCols();
       if (wfOnlyWhereCol) wfOnlyWhereCol.value = (soDraft.onlyWhere && soDraft.onlyWhere.column) || '';
       if (wfOnlyWhereVal) wfOnlyWhereVal.value = (soDraft.onlyWhere && soDraft.onlyWhere.value) || '';

@@ -187,19 +187,16 @@ const SAVED_WORKFLOW = {
   check('fresh create: "Sheet options" box exists, OFF/empty by default, matching the design reference\'s exact wording', await page.evaluate(() => {
     const box = document.getElementById('wfSheetOptionsBox');
     return Boolean(box) && box.textContent.includes('Sheet options') &&
-      box.textContent.includes('+ Add another sheet / tab') &&
       box.textContent.includes('Only rows where') &&
       box.textContent.includes('After sending, update') &&
       box.textContent.includes("Also write today's date");
   }));
-
-  const sheet2WrapHiddenInitially = await page.locator('#wfSheet2Wrap').isVisible();
-  check('"Another sheet / tab" sub-fields start hidden until "+ Add another sheet / tab" is tapped', !sheet2WrapHiddenInitially);
-  await page.click('#wfSheet2Btn');
-  const sheet2WrapNowVisible = await page.locator('#wfSheet2Wrap').isVisible();
-  check('tapping "+ Add another sheet / tab" reveals the link + tab-name inputs', sheet2WrapNowVisible);
-  await page.click('#wfSheet2Btn'); // collapse it back for the rest of this run
-  await page.waitForTimeout(50);
+  // TASK 8 (2026-11), direct instruction - the "Another sheet / tab"
+  // sub-fields + "+ Add another sheet / tab" button were removed from
+  // this box entirely (UI-only change; an already-saved workflow using a
+  // second sheet/tab still round-trips correctly - see the EDIT-mode
+  // save check near the bottom of this file).
+  check('"Another sheet / tab" UI (wfSheet2Wrap/wfSheet2Btn) no longer exists on the page', await page.evaluate(() => !document.getElementById('wfSheet2Wrap') && !document.getElementById('wfSheet2Btn') && !document.getElementById('wfSheet2Url') && !document.getElementById('wfSheet2Tab')));
 
   check('default "Who receives?" mode is "Person from the data" - "Outside emails" box is genuinely HIDDEN (not just empty)', !(await page.locator('#wfOutsideEmailsBox').isVisible()));
 
@@ -232,8 +229,6 @@ const SAVED_WORKFLOW = {
   await page.selectOption('#wfAfterSendCol', 'Status');
   await page.fill('#wfAfterSendVal', 'Sent');
   await page.check('#wfAfterSendDate');
-  await page.click('#wfSheet2Btn');
-  await page.fill('#wfSheet2Tab', 'Extra');
   await page.waitForTimeout(100);
 
   await page.click('#wfRecSeg [data-v="selected"]');
@@ -254,11 +249,16 @@ const SAVED_WORKFLOW = {
 
   await page.click('#wfSaveBtn');
   await page.waitForTimeout(950);
-  check('Save (fresh create) POSTs plan.sheetOptions through (onlyWhere/afterSend/secondSheet) + plan.outsideEmails',
+  // TASK 8 (2026-11) - no UI left to SET a secondSheet on a fresh create
+  // (there was never a drafted one here either - askDraft resets
+  // sheetOptions to "nothing resolved", see its own comment above), so it
+  // must stay null; the EDIT-mode round trip below proves an EXISTING
+  // secondSheet still survives with no UI to touch it.
+  check('Save (fresh create) POSTs plan.sheetOptions through (onlyWhere/afterSend, secondSheet stays null with no UI to set it) + plan.outsideEmails',
     Boolean(saveCallBody) &&
     saveCallBody.plan.sheetOptions && saveCallBody.plan.sheetOptions.onlyWhere && saveCallBody.plan.sheetOptions.onlyWhere.column === 'Status' && saveCallBody.plan.sheetOptions.onlyWhere.value === 'Pending' &&
     saveCallBody.plan.sheetOptions.afterSend && saveCallBody.plan.sheetOptions.afterSend.column === 'Status' && saveCallBody.plan.sheetOptions.afterSend.value === 'Sent' && saveCallBody.plan.sheetOptions.afterSend.alsoWriteDate === true &&
-    saveCallBody.plan.sheetOptions.secondSheet && saveCallBody.plan.sheetOptions.secondSheet.tab === 'Extra' &&
+    !saveCallBody.plan.sheetOptions.secondSheet &&
     Array.isArray(saveCallBody.plan.outsideEmails) && saveCallBody.plan.outsideEmails.includes('vendor@outside.example.com'),
     'got: ' + JSON.stringify(saveCallBody && saveCallBody.plan && { sheetOptions: saveCallBody.plan.sheetOptions, outsideEmails: saveCallBody.plan.outsideEmails }));
 
@@ -277,8 +277,6 @@ const SAVED_WORKFLOW = {
     recMode: document.querySelector('#wfRecSeg button.on') ? document.querySelector('#wfRecSeg button.on').dataset.v : null,
     outsideVisible: (() => { const el = document.getElementById('wfOutsideEmailsBox'); return Boolean(el && el.offsetParent !== null); })(),
     outsideChips: (document.getElementById('wfOutsideChipInput') || {}).textContent || '',
-    sheet2Visible: (() => { const el = document.getElementById('wfSheet2Wrap'); return Boolean(el && el.offsetParent !== null); })(),
-    sheet2Tab: document.getElementById('wfSheet2Tab') ? document.getElementById('wfSheet2Tab').value : null,
     onlyWhereCol: document.getElementById('wfOnlyWhereCol') ? document.getElementById('wfOnlyWhereCol').value : null,
     onlyWhereVal: document.getElementById('wfOnlyWhereVal') ? document.getElementById('wfOnlyWhereVal').value : null,
     afterSendCol: document.getElementById('wfAfterSendCol') ? document.getElementById('wfAfterSendCol').value : null,
@@ -286,7 +284,7 @@ const SAVED_WORKFLOW = {
     afterSendDate: document.getElementById('wfAfterSendDate') ? document.getElementById('wfAfterSendDate').checked : null
   }));
   check('EDIT mode (wfPopulateForm): "Selected people" mode re-populates, and "Outside emails" is visible with its saved chip', editState.recMode === 'selected' && editState.outsideVisible && /vendor@outside\.example\.com/.test(editState.outsideChips), 'got: ' + JSON.stringify(editState));
-  check('EDIT mode: "Sheet options" re-populates - second sheet/tab revealed with its saved tab name, Only-where/After-send columns+values all set', editState.sheet2Visible && editState.sheet2Tab === 'Extra' && editState.onlyWhereCol === 'Status' && editState.onlyWhereVal === 'Pending' && editState.afterSendCol === 'Status' && editState.afterSendVal === 'Sent' && editState.afterSendDate === true, 'got: ' + JSON.stringify(editState));
+  check('EDIT mode: "Sheet options" re-populates - Only-where/After-send columns+values all set (no UI for secondSheet any more - its round trip is proved via the save payload below instead)', editState.onlyWhereCol === 'Status' && editState.onlyWhereVal === 'Pending' && editState.afterSendCol === 'Status' && editState.afterSendVal === 'Sent' && editState.afterSendDate === true, 'got: ' + JSON.stringify(editState));
   const errAfterEdit = consoleErrors.length + pageErrors.length;
   check('Opening EDIT mode with every Phase 4 field populated: no JS error was thrown', errAfterEdit === errBeforeEdit, 'new errors: ' + JSON.stringify(consoleErrors.concat(pageErrors)));
 
@@ -312,6 +310,11 @@ const SAVED_WORKFLOW = {
     Array.isArray(updateCallBody.plan.outsideEmails) && updateCallBody.plan.outsideEmails.includes('vendor@outside.example.com') &&
     updateCallBody.plan.sheetOptions && updateCallBody.plan.sheetOptions.afterSend && updateCallBody.plan.sheetOptions.afterSend.column === 'Status',
     'got: ' + JSON.stringify(updateCallBody && updateCallBody.plan && { sheetOptions: updateCallBody.plan.sheetOptions, outsideEmails: updateCallBody.plan.outsideEmails }));
+  // TASK 8 (2026-11), direct instruction - the actual requirement: an
+  // ALREADY-SAVED workflow's secondSheet (SAVED_WORKFLOW's own
+  // sheetOptions.secondSheet.tab === 'Extra') must still round-trip
+  // through an EDIT + Save with ZERO UI ever touching it (wfLoadedSecondSheet).
+  check('Save (EDIT mode) also still carries SAVED_WORKFLOW\'s own pre-existing secondSheet through UNCHANGED, with no UI left to edit/clear it', Boolean(updateCallBody) && updateCallBody.plan.sheetOptions.secondSheet && updateCallBody.plan.sheetOptions.secondSheet.tab === 'Extra', 'got: ' + JSON.stringify(updateCallBody && updateCallBody.plan.sheetOptions));
   const errAfterUpdate = consoleErrors.length + pageErrors.length;
   check('Save (EDIT mode, round trip): no JS error was thrown', errAfterUpdate === errBeforeUpdate, 'new errors: ' + JSON.stringify(consoleErrors.concat(pageErrors)));
 

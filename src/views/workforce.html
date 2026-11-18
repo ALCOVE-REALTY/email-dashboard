@@ -1109,27 +1109,18 @@
             <div id="wfSheetInfo"></div>
           </div>
 
-          <!-- PHASE 4 (2026-11) - "Sheet options": a second sheet/tab read
-               in the same run (fields only - what reads it is Phase 7's
-               job), "Only rows where" and "After sending, update" (header-
-               based, never a hardcoded column letter). All off/empty by
-               default = today's exact single-sheet behaviour. Wording/
-               placement matched to docs/design/workflow-v2-sample.html's
-               own "Sheet options" box (the second-sheet sub-fields are
-               split into a link + a tab name here, for genuine function -
-               the sample's own single combined text field is demo-only
-               behaviour, deliberately not copied). -->
+          <!-- PHASE 4 (2026-11) - "Sheet options": "Only rows where" and
+               "After sending, update" (header-based, never a hardcoded
+               column letter). All off/empty by default = today's exact
+               single-sheet behaviour. TASK 8 (2026-11), direct instruction:
+               the "Another sheet / tab" fields + "+ Add another sheet / tab"
+               button were removed from here - an already-saved workflow
+               using a second sheet/tab keeps working (wfLoadedSecondSheet
+               in hrAssistant.js passes its plan.sheetOptions.secondSheet
+               straight through on save, unchanged, with no UI left to
+               edit/clear it). -->
           <div class="wf-nf-box" id="wfSheetOptionsBox">
             <div class="wf-nf-title">Sheet options</div>
-            <div id="wfSheet2Wrap" class="hidden" style="margin-top:8px">
-              <label class="wf-rem-field">Another sheet / tab
-                <div class="wf-auto-row-gap">
-                  <input type="text" id="wfSheet2Url" placeholder="Sheet link (leave blank to use the same sheet)" style="flex:1" autocomplete="off" />
-                  <input type="text" id="wfSheet2Tab" placeholder="Tab name" style="flex:1" autocomplete="off" />
-                </div>
-              </label>
-            </div>
-            <button type="button" class="wf-ai-action-btn outline small" id="wfSheet2Btn" style="margin-top:10px">+ Add another sheet / tab</button>
             <label class="wf-rem-field" style="margin-top:10px">Only rows where
               <div class="wf-rem-field-row">
                 <select id="wfOnlyWhereCol"><option value="">— all rows —</option></select>

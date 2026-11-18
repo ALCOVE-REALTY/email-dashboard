@@ -170,10 +170,13 @@ function check(label, ok, detail) {
     onlyWhereVal: document.getElementById('wfOnlyWhereVal').value,
     afterSendCol: document.getElementById('wfAfterSendCol').value,
     afterSendVal: document.getElementById('wfAfterSendVal').value,
-    afterSendDate: document.getElementById('wfAfterSendDate').checked,
-    sheet2Visible: !document.getElementById('wfSheet2Wrap').classList.contains('hidden'),
-    sheet2Tab: document.getElementById('wfSheet2Tab').value
-  })).then((v) => v.onlyWhereCol === 'Status' && v.onlyWhereVal === 'Pending' && v.afterSendCol === 'Status' && v.afterSendVal === 'Sent' && v.afterSendDate === true && v.sheet2Visible && v.sheet2Tab === 'Lookup'));
+    afterSendDate: document.getElementById('wfAfterSendDate').checked
+  })).then((v) => v.onlyWhereCol === 'Status' && v.onlyWhereVal === 'Pending' && v.afterSendCol === 'Status' && v.afterSendVal === 'Sent' && v.afterSendDate === true));
+  // TASK 8 (2026-11), direct instruction - the "Another sheet / tab" UI
+  // (wfSheet2Wrap/wfSheet2Tab) was removed from the Sheet options box;
+  // the drafted plan's secondSheet is now only ever remembered in JS
+  // (wfLoadedSecondSheet) and passed through unchanged on save - verified
+  // below at the actual save-payload check instead of via now-removed DOM.
 
   check('"Send to the person in" dropdown is set to companyAccountsTeam', await page.$eval('#wfRecCol', (el) => el.value) === 'companyAccountsTeam');
   check('"Runs on the next working day" (skipToNextWorkingDay) checkbox is now ticked from the draft', await page.$eval('#wfSkipToNextWorkingDay', (el) => el.checked) === true);
@@ -192,6 +195,10 @@ function check(label, ok, detail) {
   await page.click('#wfSaveBtn');
   await page.waitForTimeout(700); // runButtonAction's own success animation
   check('Save (fresh create, scenario 1) POSTs with the drafted sheetOptions/recCol/skipToNextWorkingDay/nextStage all carried through', Boolean(saveCallBody) && saveCallBody.plan.recCol === 'companyAccountsTeam' && saveCallBody.plan.sheetOptions.onlyWhere.column === 'Status' && saveCallBody.schedule.skipToNextWorkingDay === true && saveCallBody.plan.rules[0].nextStageOn === true && saveCallBody.plan.rules[0].sub.length === 1, JSON.stringify(saveCallBody && saveCallBody.plan));
+  // TASK 8 (2026-11), direct instruction - no UI left to set/clear
+  // secondSheet, but a drafted (or already-saved) secondSheet must still
+  // pass through to save unchanged (wfLoadedSecondSheet).
+  check('Save (fresh create, scenario 1) also carries the drafted secondSheet through unchanged, with no UI left to edit/clear it', Boolean(saveCallBody) && saveCallBody.plan.sheetOptions.secondSheet && saveCallBody.plan.sheetOptions.secondSheet.tab === 'Lookup', JSON.stringify(saveCallBody && saveCallBody.plan.sheetOptions));
   const errAfterSave1 = consoleErrors.length + pageErrors.length;
   check('Scenario 1 Save: no JS error was thrown', errAfterSave1 === errAfterAsk1, 'new errors: ' + JSON.stringify(consoleErrors.concat(pageErrors)));
 
