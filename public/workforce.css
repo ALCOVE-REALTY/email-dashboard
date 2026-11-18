@@ -2893,6 +2893,11 @@ body:not(.printing-org-chart) .org-chart-cards-row + .org-chart-branch-connector
   cursor: text;
 }
 .wf-mail-chip-input:focus-within { border-color: var(--accent); }
+/* TASK 2/3 (2026-11) - same brief-invalid-flash convention as
+   .wf-ip-whatsapp-phone-input.invalid above, applied here for a rejected
+   chip (bad email format for "noDirectory" fields, or no matching
+   employee for "directoryOnly" fields - see createMailChipField). */
+.wf-mail-chip-input.invalid { border-color: var(--important); }
 .wf-mail-chip-input input {
   flex: 1;
   min-width: 80px;

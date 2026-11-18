@@ -712,17 +712,31 @@ async function checkRealTopbarFrame(page, pageLabel, baseline) {
   check('Company details: edit sheet pre-fills the saved company code', codeVal === 'ARPL', 'got: ' + JSON.stringify(codeVal));
   // PHASE 2 (2026-11), direct instruction - accountsEmails[]: the chip
   // field (createMailChipField, the SAME component the mail compose To/Cc
-  // fields use) pre-fills the saved email as a real removable chip, typing
-  // + Enter adds a new one, and Save actually POSTs accountsEmails in the
-  // request body - not just a UI state check.
+  // fields use) pre-fills the saved email as a real removable chip, and
+  // Save actually POSTs accountsEmails in the request body - not just a
+  // UI state check.
+  // TASK 3 (2026-11), direct instruction - "employees from the employee
+  // list only, no outside emails": this field is now directoryOnly - a
+  // raw typed address that matches no real employee must be REJECTED
+  // (never added as a free-typed chip, unlike Cc/Also-send-To/Outside
+  // emails), and only a genuine directory match may become a chip.
+  // Reuses the SAME mail-directory mock set up earlier in this same test
+  // run (line ~409 above: Hema HOD <hema@co.test>, Rohit HOD <rohit@co.test>) -
+  // getMailDirectory() caches its result for the rest of this page session.
   const accountsEmailsChipTexts = await page.locator('#hrCompanyAccountsEmailsChipInput .wf-mail-chip span').allTextContents();
   check('Company details: Accounts emails chip field pre-fills the saved email as a real chip', accountsEmailsChipTexts.includes('accounts@alcoverealty.in'), 'got: ' + JSON.stringify(accountsEmailsChipTexts));
   await page.click('#hrCompanyAccountsEmailsInput');
   await page.keyboard.type('finance@alcoverealty.in');
   await page.keyboard.press('Enter');
   await page.waitForTimeout(100);
+  const accountsEmailsChipTextsAfterBadTyped = await page.locator('#hrCompanyAccountsEmailsChipInput .wf-mail-chip span').allTextContents();
+  check('Company details: typing a non-employee email + Enter is REJECTED, never added as a free-typed chip (directoryOnly)', !accountsEmailsChipTextsAfterBadTyped.includes('finance@alcoverealty.in') && accountsEmailsChipTextsAfterBadTyped.length === 1, 'got: ' + JSON.stringify(accountsEmailsChipTextsAfterBadTyped));
+  await page.fill('#hrCompanyAccountsEmailsInput', 'Hema');
+  await page.waitForTimeout(200);
+  await page.click('#hrCompanyAccountsEmailsSuggest li[data-email="hema@co.test"]');
+  await page.waitForTimeout(100);
   const accountsEmailsChipTextsAfterAdd = await page.locator('#hrCompanyAccountsEmailsChipInput .wf-mail-chip span').allTextContents();
-  check('Company details: typing an email + Enter adds a second chip', accountsEmailsChipTextsAfterAdd.includes('finance@alcoverealty.in') && accountsEmailsChipTextsAfterAdd.length === 2, 'got: ' + JSON.stringify(accountsEmailsChipTextsAfterAdd));
+  check('Company details: picking a REAL employee from the directory adds a second chip', accountsEmailsChipTextsAfterAdd.includes('hema@co.test') && accountsEmailsChipTextsAfterAdd.length === 2, 'got: ' + JSON.stringify(accountsEmailsChipTextsAfterAdd));
   let savedCompanyDetailsBody = null;
   await page.route('**/api/workforce/hr-assistant/company-details/**', (route) => {
     if (route.request().method() !== 'POST') return route.fallback();
@@ -731,7 +745,7 @@ async function checkRealTopbarFrame(page, pageLabel, baseline) {
   });
   await page.click('#hrCompanyDetailSheetSaveBtn');
   await page.waitForTimeout(650);
-  check('Company details: Save actually POSTs accountsEmails with both chips, in order', Boolean(savedCompanyDetailsBody) && JSON.stringify(savedCompanyDetailsBody.accountsEmails) === JSON.stringify(['accounts@alcoverealty.in', 'finance@alcoverealty.in']), 'got: ' + JSON.stringify(savedCompanyDetailsBody));
+  check('Company details: Save actually POSTs accountsEmails with both chips, in order (the rejected typed address never made it in)', Boolean(savedCompanyDetailsBody) && JSON.stringify(savedCompanyDetailsBody.accountsEmails) === JSON.stringify(['accounts@alcoverealty.in', 'hema@co.test']), 'got: ' + JSON.stringify(savedCompanyDetailsBody));
   const companyErrAfter = consoleErrors.length + pageErrors.length;
   check('Company details: no JS error was thrown opening the page, the edit sheet, or saving accountsEmails', companyErrAfter === companyErrBefore,
     'new errors: ' + JSON.stringify(consoleErrors.slice(companyErrBefore).concat(pageErrors.slice(companyErrBefore))));

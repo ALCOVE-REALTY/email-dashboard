@@ -499,13 +499,21 @@
                reuses the EXACT same chip-input component as the mail
                compose To/Cc fields (createMailChipField, public/workforce.js)
                and this very panel's own Also-To/Cc fields - same markup
-               shape (.wf-mail-chip-input + its <input> + the matching
-               .wf-mail-suggest <ul>), never a new widget. -->
-          <label class="wf-rem-field"><span>Accounts emails</span></label>
-          <div class="wf-mail-chip-input" id="hrCompanyAccountsEmailsChipInput" style="margin:0 4px">
-            <input type="text" id="hrCompanyAccountsEmailsInput" autocomplete="off" placeholder="Add email..." />
+               shape (.wf-mail-field > .wf-mail-chip-input + its <input> +
+               the matching .wf-mail-suggest <ul>), never a new widget.
+               TASK 3 (2026-11), direct instruction - this box was missing
+               the .wf-mail-field wrapper every OTHER usage site has (it's
+               what makes .wf-mail-suggest's position:absolute anchor
+               correctly) - without it, a chip could sit inside the box
+               while another spilled outside it. Also made directoryOnly
+               (employees only, no outside emails - see createMailChipField). -->
+          <div class="wf-mail-field" style="margin-top:0;margin-bottom:0">
+            <span class="wf-mail-field-label" style="text-transform:none">Accounts emails</span>
+            <div class="wf-mail-chip-input" id="hrCompanyAccountsEmailsChipInput">
+              <input type="text" id="hrCompanyAccountsEmailsInput" autocomplete="off" placeholder="Add email..." />
+            </div>
+            <ul class="wf-mail-suggest" id="hrCompanyAccountsEmailsSuggest" hidden></ul>
           </div>
-          <ul class="wf-mail-suggest" id="hrCompanyAccountsEmailsSuggest" hidden></ul>
           <div class="wf-auto-err hidden" id="hrCompanyDetailSheetErr"></div>
         </div>
         <div class="wf-rem-sheet-foot">

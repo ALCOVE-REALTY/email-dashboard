@@ -213,7 +213,9 @@
   // createMailChipField (defined in public/workforce.js, loaded before
   // this file - already the exact same convention autoCcField/wfCcField/
   // wfAlsoToField below use), never a new chip widget.
-  const companyAccountsEmailsField = createMailChipField('hrCompanyAccountsEmailsChipInput', 'hrCompanyAccountsEmailsInput', 'hrCompanyAccountsEmailsSuggest');
+  // TASK 3 (2026-11), direct instruction - Accounts emails selects from
+  // the employee list only, never an outside/free-typed address.
+  const companyAccountsEmailsField = createMailChipField('hrCompanyAccountsEmailsChipInput', 'hrCompanyAccountsEmailsInput', 'hrCompanyAccountsEmailsSuggest', { directoryOnly: true });
   // Letter settings (TASK 1c, 2026-11) - Ref No. format, letter codes,
   // counters, Letter Register link.
   const letterSettingsPage = document.getElementById('hrLetterSettingsPage');
@@ -7836,7 +7838,10 @@
   const wfAlsoToField = createMailChipField('wfAlsoToChipInput', 'wfAlsoToInput', 'wfAlsoToSuggest');
   // PHASE 4 (2026-11) - "Outside emails" (Selected people only) - the
   // SAME reused chip widget, never a 5th one built from scratch.
-  const wfOutsideField = createMailChipField('wfOutsideChipInput', 'wfOutsideInput', 'wfOutsideSuggest');
+  // TASK 2 (2026-11), direct instruction - Outside emails will never match
+  // an employee, so the directory dropdown is skipped entirely here; typed
+  // text is validated as an email by format only.
+  const wfOutsideField = createMailChipField('wfOutsideChipInput', 'wfOutsideInput', 'wfOutsideSuggest', { noDirectory: true });
 
   function showWfToast(text, type) { showProToast({ title: text, type: type || 'success', anchor: 'top' }); }
   const WF_TOAST_ERR = { toastFn: (msg) => showWfToast(msg, 'error') };

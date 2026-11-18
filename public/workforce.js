@@ -6662,16 +6662,36 @@ function getMailDirectory() {
   return mailDirectoryPromise;
 }
 
+// Same shape as the server's own WF_EMAIL_RE (workflowService.js) - kept
+// deliberately simple/consistent, not a full RFC 5322 validator.
+const MAIL_CHIP_EMAIL_RE = /^\S+@\S+\.\S+$/;
+
 // One of these per field (To/Cc) - a text input that turns each picked (or
 // typed-and-confirmed) address into a removable chip, with a live search
 // dropdown against getMailDirectory() while typing. Mirrors Gmail's own
 // To/Cc behavior: type a couple of letters of a name or address, pick from
 // the list, or just type a full address and press Enter/comma.
-function createMailChipField(containerId, inputId, suggestId) {
+// opts (TASK 2/3, 2026-11, direct instruction) - both default to today's
+// exact behaviour for every existing field (Cc, Also-send-To, Letter-test-
+// employee, base Send-Mail To/Cc):
+//   noDirectory: true - never fetch/show the employee-directory dropdown
+//     at all (Outside emails will never match an employee); Enter just
+//     validates the typed text as an email BY FORMAT and adds it, or
+//     rejects it with a brief "invalid" flash.
+//   directoryOnly: true - the opposite: only a REAL employee-directory
+//     match may become a chip, by exact email, never a free-typed address
+//     (Accounts emails, employees only, no outside emails).
+function createMailChipField(containerId, inputId, suggestId, opts) {
+  opts = opts || {};
   const container = document.getElementById(containerId);
   const input = document.getElementById(inputId);
   const suggestEl = document.getElementById(suggestId);
   let chips = [];
+
+  function flashInvalid() {
+    container.classList.add('invalid');
+    setTimeout(() => container.classList.remove('invalid'), 1200);
+  }
 
   function renderChips() {
     container.querySelectorAll('.wf-mail-chip').forEach((el) => el.remove());
@@ -6692,12 +6712,19 @@ function createMailChipField(containerId, inputId, suggestId) {
     suggestEl.innerHTML = '';
   }
 
-  function addChip(email) {
+  async function addChip(email) {
     const clean = String(email || '').trim();
     if (!clean || chips.some((e) => e.toLowerCase() === clean.toLowerCase())) {
       input.value = '';
       hideSuggest();
       return;
+    }
+    if (opts.noDirectory && !MAIL_CHIP_EMAIL_RE.test(clean)) { flashInvalid(); return; }
+    if (opts.directoryOnly) {
+      let directory;
+      try { directory = await getMailDirectory(); } catch { directory = []; }
+      const match = directory.some((c) => c.email.toLowerCase() === clean.toLowerCase());
+      if (!match) { flashInvalid(); return; }
     }
     chips.push(clean);
     input.value = '';
@@ -6706,6 +6733,7 @@ function createMailChipField(containerId, inputId, suggestId) {
   }
 
   async function showSuggest() {
+    if (opts.noDirectory) { hideSuggest(); return; }
     const needle = input.value.trim().toLowerCase();
     if (!needle) { hideSuggest(); return; }
     let directory;
@@ -6731,7 +6759,7 @@ function createMailChipField(containerId, inputId, suggestId) {
             '</li>'
           ))
           .join('')
-      : '<li class="empty">No matches - press Enter to add "' + escapeHtml(input.value.trim()) + '" as typed</li>';
+      : (opts.directoryOnly ? '<li class="empty">No matching employee</li>' : '<li class="empty">No matches - press Enter to add "' + escapeHtml(input.value.trim()) + '" as typed</li>');
     suggestEl.hidden = false;
   }
 
