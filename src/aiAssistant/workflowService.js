@@ -1296,7 +1296,7 @@ function workflowRuleItemSchema(templateEnum, templateListText, nested) {
     askFollowUpWorkingDaysOnly: { type: 'boolean', description: 'Only when askDetail is set and the ask explicitly says THIS question\'s own follow-up should only happen on working days (e.g. "only business days" said specifically about asking for this detail). Omit/false otherwise - never assumed from a general mention elsewhere.' },
     askFollowUpFixedTimeOfDay: { type: 'string', description: 'Only when askDetail is set and a SPECIFIC time of day was mentioned for THIS question\'s own follow-up (HH:MM, 24-hour). Omit entirely when no specific time was stated - never guess one.' },
     askFollowUpMentionMissing: { type: 'boolean', description: 'Only when askDetail is set and the ask explicitly says the follow-up should mention/remind what is still missing. Omit/false otherwise.' },
-    replyText: { type: 'string', description: 'What SUBH replies with once this rule is matched (and the detail, if any, is known), in professional English, placeholders allowed.' },
+    replyText: { type: 'string', description: 'What SUBH replies with once this rule is matched (and the detail, if any, is known), in professional English, placeholders allowed. Always compose a short, sensible acknowledgment here even when the ask does not literally dictate the exact wording (e.g. a brief "Thank you, noted." style line fitting the rule\'s own meaning and any further message being sent) - leave this empty ONLY when `then` is "askme" (no auto-reply at all; the owner decides).' },
     sendTo: { type: 'string', enum: sendToEnum, description: 'Only if a FURTHER message should be sent once this rule resolves - "self" the employee, "manager" their Reporting Manager, "hr" the HR team, "accounts" the (single, fixed) Accounts team, "companyAccountsTeam" for "each company\'s OWN Accounts Team" mentions (looked up per-record via that record\'s own Company, same as the plan-level recipient option of the same name - never the same thing as the plain, single "accounts" team), "anyEmail" when a literal email address is named (set sendToEmail too).' + (nested ? ' A sub-rule (a "Next stage" reply-handler) also allows "' + RULE_SEND_TO_REPLY_IN_THREAD + '" when the ask says to reply back IN THE SAME ORIGINAL THREAD/CONVERSATION rather than start a new message.' : '') + ' Omit entirely if no further message is sent.' },
     sendToEmail: { type: 'string', description: 'Required when sendTo is "anyEmail" - the literal email address named in the ask, exactly as given. Omit otherwise.' },
     sendSubject: { type: 'string', description: 'Required when sendTo is set - the further message\'s subject (mail) or omit for WhatsApp.' },
@@ -1409,7 +1409,20 @@ async function parseWorkflowAsk(text, sheetContext, templateOptions) {
     method: 'POST',
     headers: { 'x-api-key': apiKey, 'anthropic-version': CLAUDE_ANTHROPIC_VERSION, 'content-type': 'application/json' },
     body: JSON.stringify({
-      model: MODEL, max_tokens: 2048,
+      // LIVE BUG FIX (2026-11), direct instruction - root cause of "Please
+      // tell me at least one rule..." firing even when the ask clearly
+      // described several: max_tokens was 2048, but this model's own
+      // thinking tokens count against that SAME budget (confirmed live -
+      // a real multi-rule+next-stage ask spent 1002 of 2048 tokens on
+      // thinking alone, leaving too little room to finish the tool-call
+      // JSON before hitting the cap - `rules` never got written at all,
+      // which is exactly what a genuinely rule-less ask also looks like
+      // to the code below). Raised well past what even a long multi-rule
+      // plan (3+ rules, one with a nested "Next stage") needs - see
+      // stop_reason handling below, which detects this exact failure mode
+      // if it ever recurs instead of silently mistaking it for "no rules
+      // given".
+      model: MODEL, max_tokens: 8192,
       tools: [{ name: toolDef.name, description: toolDef.description, input_schema: toolDef.parameters }],
       tool_choice: { type: 'auto' },
       system: [{ type: 'text', text: 'Parse an HR manager\'s description of a multi-step WORKFLOW: a first message (mail/WhatsApp) to each matching record or a fixed list of people, an optional second "also send" message (e.g. a summary to a team), optional generated letters, follow-ups when there is no reply, and a set of RULES describing what each kind of reply means and what SUBH should do about it (reply, optionally ask for one missing detail first, optionally send a further message, then stop/keep waiting/ask the owner). The built-in data sources, period/filter/table/sort semantics, and scheduling are identical to the existing Automated Task feature. Banglish/Hinglish/English are all expected. Never guess a column, tab, person, or department that isn\'t given - list it in unclear instead. Every workflow needs at least one rule - if the ask describes no reply-handling at all, say so in unclear. IMPORTANT, `unclear` is ONLY for something genuinely REQUIRED to run this workflow that is missing with no sensible default (e.g. no rule at all, no recipient, an unresolvable name/column) - it is a hard STOP, never a soft note. Do NOT add an `unclear` entry just to mention that a default will apply, that a value is "used as given/as stated", that a detail wasn\'t elaborated further, or any other FYI/assumption that doesn\'t actually block drafting a working plan - leave `unclear` a genuinely empty array whenever the ask already gives enough to produce a sensible, working workflow, exactly as every field\'s own "omit/defaults apply" wording throughout this tool already allows.' }],
@@ -1425,7 +1438,17 @@ async function parseWorkflowAsk(text, sheetContext, templateOptions) {
     isTest: Boolean(process.env.AI_USAGE_IS_TEST)
   }).catch(() => {});
   const block = (data.content || []).find((b) => b && b.type === 'tool_use');
-  return block ? block.input : { unclear: ['Could not understand that - please try rephrasing'] };
+  if (!block) return { unclear: ['Could not understand that - please try rephrasing'] };
+  // LIVE BUG FIX (2026-11), direct instruction - if the response was STILL
+  // cut off by max_tokens despite the higher ceiling above (an even longer
+  // ask than anything seen so far), mark it so draftWorkflowPlanFromParsed
+  // can give a specific, actionable "too long/complex" message instead of
+  // silently treating a truncated `rules` array the same as a genuinely
+  // rule-less ask. `__truncated` is never a real field this tool's own
+  // schema could produce, so it can never collide with anything the model
+  // legitimately returns.
+  if (data.stop_reason === 'max_tokens') block.input.__truncated = true;
+  return block.input;
 }
 
 // TASK 5(c) (2026-11), direct instruction - resolves the "also send"
@@ -1474,7 +1497,19 @@ function draftRule(raw, index, unclear, templateOptions, opts) {
   const when = String((raw && raw.when) || '').trim();
   if (!when) { unclear.push(label + ': what this reply means'); return null; }
   const replyText = String((raw && raw.replyText) || '').trim();
-  if (!replyText) { unclear.push(label + ' ("' + when + '"): what SUBH should reply'); return null; }
+  // LIVE BUG FIX (2026-11), direct instruction - a catch-all "ask the
+  // owner, don't auto-reply" rule (then: "askme") legitimately has NO
+  // reply text (e.g. "onyo kono uttor ele amake card dekhabe, kichu
+  // pathabe na" / "anything else: card to me, send nothing") - the code
+  // below already handles a null replyText on an askme rule correctly
+  // (no auto-send, just a card). Rejecting it here as "missing" made this
+  // specific rule flaky from run to run purely on whether the model
+  // happened to leave replyText empty (correct) or invent a placeholder
+  // (incidentally accepted) - confirmed live: the owner's own 3-rule
+  // mediclaim ask failed validation on 1 of 3 real runs for exactly this
+  // reason, never a truncation issue. Still required for every other
+  // `then` value, where a reply genuinely is expected.
+  if (!replyText && !(raw && raw.then === 'askme')) { unclear.push(label + ' ("' + when + '"): what SUBH should reply'); return null; }
   const askDetail = raw && raw.askDetail ? String(raw.askDetail).trim() : null;
   const askQuestion = askDetail ? String((raw && raw.askQuestion) || '').trim() : null;
   if (askDetail && !askQuestion) { unclear.push(label + ' ("' + when + '"): what SUBH should ask for "' + askDetail + '"'); return null; }
@@ -1554,7 +1589,32 @@ async function draftWorkflowPlanFromParsed(parsed, now, sheetContext, templateOp
     const rule = draftRule(r, i, unclear, templateOptions);
     if (rule) rules.push(rule);
   });
-  if (!rules.length && !unclear.length) unclear.push('at least one rule for what happens when someone replies');
+  // LIVE BUG FIX (2026-11), direct instruction - this used to be one flat,
+  // uninformative message no matter WHY rules came back empty, even when
+  // the ask plainly described several. Two real causes, two specific
+  // messages:
+  if (!rules.length && !unclear.length) {
+    if (parsed.__truncated) {
+      // The model's own response was cut off by max_tokens before it ever
+      // reached `rules` in the tool-call JSON (see parseWorkflowAsk's own
+      // comment) - a genuinely different problem from "no rules given",
+      // and a genuinely different fix (shorten the ask), so it gets its
+      // own wording rather than the generic one below.
+      unclear.push('your workflow description was too long/complex for SUBH to finish understanding in one go (it ran out of room partway through the reply rules) - try shortening the rules, splitting a "next stage" into a separate follow-up ask, or sending it again');
+    } else {
+      // Show what WAS extracted from the rest of the ask, so it's clear
+      // this is specifically the rules that came back empty, not the
+      // whole request failing silently - never just the bare generic line
+      // with no way to tell the two apart.
+      const understood = [];
+      if (parsed.subjectHint) understood.push('subject "' + parsed.subjectHint + '"');
+      if (parsed.mediator) understood.push('via ' + parsed.mediator);
+      if (parsed.source) understood.push('source: ' + parsed.source);
+      if (parsed.repeat) understood.push('repeat: ' + parsed.repeat);
+      const summary = understood.length ? (' (SUBH did understand the rest of the ask: ' + understood.join(', ') + ' - only the reply rules came back empty)') : '';
+      unclear.push('at least one rule for what happens when someone replies' + summary);
+    }
+  }
 
   let also = { on: false, to: [], subject: null, body: null, table: false, docs: false };
   if (parsed.alsoSendOn) {

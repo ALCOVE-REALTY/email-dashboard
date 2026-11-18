@@ -47,12 +47,14 @@ async function main() {
   // 11 original (5 parseWorkflowAsk across Scenarios 1/2/3/4 + 6 classify()
   // calls across the exit/probation reply-classification checks) + 9
   // (Scenario 5, 2026-11 - 3 new locked reply scenarios x 3 runs each x 1
-  // classify() call each) + 15 NEW (Scenario 6, 2026-11, PHASE 7 - 5 new
+  // classify() call each) + 15 (Scenario 6, 2026-11, PHASE 7 - 5 new
   // locked NLU-DRAFTING scenarios covering the fields this phase added
   // to workflowPlanTool/draftRule/draftWorkflowPlanFromParsed, x 3 runs
-  // each x 1 parseWorkflowAsk call each) = 35 for a full, unfiltered run
-  // of this script.
-  testBootstrap.preflightRealModelBudgetCheck(35, { label: '35 workflowService real-model call(s) (11 original + 9 for Scenario 5\'s 3 new locked scenarios x3 + 15 for Scenario 6\'s 5 new locked scenarios x3)' });
+  // each x 1 parseWorkflowAsk call each) + 6 NEW (Scenario 7, 2026-11,
+  // LIVE BUG FIX - 2 new locked scenarios, the owner's own exact Banglish
+  // and English ask texts, x 3 runs each x 1 parseWorkflowAsk call each)
+  // = 41 for a full, unfiltered run of this script.
+  testBootstrap.preflightRealModelBudgetCheck(41, { label: '41 workflowService real-model call(s) (11 original + 9 for Scenario 5\'s 3 new locked scenarios x3 + 15 for Scenario 6\'s 5 new locked scenarios x3 + 6 for Scenario 7\'s 2 new locked scenarios x3)' });
   const workflowService = require('../src/aiAssistant/workflowService');
   const employeeService = require('../src/employeeService');
   const origGetEmployeeData = employeeService.getEmployeeData;
@@ -315,6 +317,37 @@ async function main() {
         (!draft.plan.outsideEmails || !draft.plan.outsideEmails.length) &&
         draft.schedule.skipToNextWorkingDay === false && draft.plan.followUp.workingDaysOnly === false && !draft.plan.followUp.fixedTimeOfDay && draft.plan.followUp.mentionMissing === false &&
         draft.plan.rules.every((r) => !r.detailFields && !r.nextStageOn)
+    );
+
+    console.log('='.repeat(70));
+    console.log('Scenario 7 (2026-11, NEW, LIVE BUG FIX) - a real multi-rule ask with a nested "Next stage" used to come back "Please tell me at least one rule..." even though it clearly described 3+ - root cause: max_tokens (2048) was too tight once this model\'s own thinking tokens (confirmed live: 1002 of 2048 on one real run) ate into the SAME budget, truncating the tool-call JSON before it ever reached `rules`. Fixed by raising max_tokens (8192) and detecting a genuine stop_reason=max_tokens truncation separately from a real "no rules" case. Locked here with the owner\'s own EXACT verbatim ask texts (Banglish and English), both describing the same 3-rule mediclaim-endorsement workflow with a nested next-stage sub-rule under rule 2.');
+    console.log('='.repeat(70));
+    const SHEET_CONTEXT_MEDICLAIM = { fileName: 'Mediclaim Tracker', tabs: [{ title: 'Addition', headers: ['Employee_Name', 'Company', 'Status', 'Date'], rowCount: 20 }] };
+    // Structural assertion only (never exact wording - same posture every
+    // other Scenario in this file already uses): at least 3 rules
+    // resolved, one meaning "Noted/accepted", one meaning "CD balance"
+    // WITH nextStageOn + a real sub-rule (the exact regression this fix
+    // closes), one meaning "E-cards attached".
+    function assertMediclaimDraft(draft) {
+      if (!draft.ok || !Array.isArray(draft.plan.rules) || draft.plan.rules.length < 3) return false;
+      const notedRule = draft.plan.rules.find((r) => /noted|accept/i.test(r.when || ''));
+      const cdBalanceRule = draft.plan.rules.find((r) => /cd balance/i.test(r.when || ''));
+      const ecardRule = draft.plan.rules.find((r) => /e-?card/i.test(r.when || ''));
+      return Boolean(notedRule) && Boolean(ecardRule) &&
+        Boolean(cdBalanceRule) && cdBalanceRule.nextStageOn === true && Array.isArray(cdBalanceRule.sub) && cdBalanceRule.sub.length >= 1 &&
+        cdBalanceRule.sub.some((s) => s.when && s.replyText);
+    }
+    await runLockedAskScenario(
+      'NEW LOCKED (LIVE BUG FIX), owner\'s own exact BANGLISH text - 3 reply rules (Noted / CD balance with a next-stage UTR sub-rule / E-cards attached) all resolve, never the generic "at least one rule" fallback',
+      'Proti maser 10 tarikh 10 tay (Sunday/chhuti hole porer kaj-er din) Addition sheet-er Status = Pending row-gulo ekta combined list kore Excel attachment soho subhodeep@alcoverealty.in e mail korbe, pathanor por Status = Sent ar tarikh likhbe. Uttor na ele 1 working day por por 3 bar 10 tay reminder, ki baki ta mention korbe, tarpor amake card.\nUttor ele:\n1) "Noted" ba endorsement accepted bolle -> "Noted with thanks. Kindly share the e-card(s) of the new members at the earliest." reply diye e-card attachment-er opekkha korbe.\n2) CD balance nei / kom bolle -> company ar amount (protita company) tule nebe -> subhodeep@alcoverealty.in e mail: "Dear Accounts Team, As confirmed by the mediclaim insurer, there is no CD balance available in {Company}\'s CD account. Kindly top up Rs.{Amount} in the CD account and share the UTR details at the earliest." -> tar uttor-er opekkha. Oi uttor-e UTR thakle -> UTR no., amount, date tule original mail thread-e reply: "Please find the UTR details: UTR {UTR}, Rs.{Amount}, dated {Date}. Please share the e-card(s) of the new members at the earliest." ar uttor-er attachment forward korbe, tarpor e-card-er opekkha. UTR na thakle (jemon "kal korbo") opekkha chalie jabe.\n3) E-card PDF attach kore pathale -> Drive-er E-cards/{FY}/{Month}/{Company}/ folder-e save korbe ar Status = E-card received likhbe.\nOnyo kono uttor ele amake card dekhabe, kichu pathabe na.',
+      SHEET_CONTEXT_MEDICLAIM, null,
+      assertMediclaimDraft
+    );
+    await runLockedAskScenario(
+      'NEW LOCKED (LIVE BUG FIX), owner\'s own exact ENGLISH text - same 3 reply rules, same guarantee',
+      'On the 10th of every month at 10:00 (next working day if Sunday/holiday), mail the Addition sheet rows with Status = Pending as one combined list with an Excel attachment to subhodeep@alcoverealty.in; after sending set Status = Sent and write the date. No reply: follow up after 1 working day, max 3, at 10:00, mention what\'s missing, then alert me.\nReply rules:\nRule 1 - reply means "Noted / accepted": reply "Noted with thanks. Kindly share the e-card(s) of the new members at the earliest." and wait for attachments.\nRule 2 - reply means "No / insufficient CD balance": take details company, amount; send to subhodeep@alcoverealty.in: "Dear Accounts Team, As confirmed by the mediclaim insurer, there is no CD balance available in {Company}\'s CD account. Kindly top up Rs.{Amount} in the CD account and share the UTR details at the earliest." Wait for their reply. Their reply "UTR shared": take UTR, amount, date; reply in the original mail thread "Please find the UTR details: UTR {UTR}, Rs.{Amount}, dated {Date}. Please share the e-card(s) of the new members at the earliest." and forward the attachments from the reply; then wait for attachments. Their reply "no UTR yet": keep waiting.\nRule 3 - reply means "E-cards attached": save attachments to Drive E-cards/{FY}/{Month}/{Company}/ and update the sheet Status = E-card received.\nAnything else: card to me, send nothing.',
+      SHEET_CONTEXT_MEDICLAIM, null,
+      assertMediclaimDraft
     );
 
     console.log('='.repeat(70));
