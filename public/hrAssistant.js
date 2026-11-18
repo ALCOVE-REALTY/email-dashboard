@@ -74,36 +74,13 @@
   const commsHeadTitle = document.getElementById('hrCommsHeadTitle');
   const commsHeadSubtitle = document.getElementById('hrCommsHeadSubtitle');
   const commsHeadBadge = document.getElementById('hrCommsHeadBadge');
-  // "SUBH Settings" page frame (2026-11, direct instruction; reworked same
-  // day after a live correction - the owner's actual complaint was that the
-  // first version was only a visual replica with no working buttons).
-  // #wfTopbar is the ONE real app top bar (see its own comment in
-  // workforce.html) - relocateRealTopbarForSettingsSubpage() below
-  // physically moves that SAME element in and out of this panel, never
-  // copies it, so every button on it (hamburger, refresh, SUBH, profile
-  // photo) stays fully functional while a settings sub-page is shown.
-  const realTopbar = document.getElementById('wfTopbar');
-  const realTopbarHomeAnchor = document.getElementById('wfTopbarHomeAnchor');
-  // Moves #wfTopbar to the top of this panel (active=true, for one of the 7
-  // SUBH-Settings sub-pages) or back to its normal spot in .wf-shell
-  // (active=false, right before realTopbarHomeAnchor - every other page,
-  // and whenever the panel itself closes). A DOM move (appendChild/
-  // insertBefore) keeps every existing event listener intact - this is
-  // the real element, not a clone - and is a no-op if it's already where
-  // it needs to be, so calling it repeatedly (e.g. on every setPanelView)
-  // is always safe.
-  function relocateRealTopbarForSettingsSubpage(active) {
-    if (!realTopbar) return;
-    if (active) {
-      if (realTopbar.parentElement !== panel) panel.insertBefore(realTopbar, panel.firstChild);
-      realTopbar.classList.add('wf-topbar--in-settings-panel');
-    } else {
-      if (realTopbar.parentElement === panel && realTopbarHomeAnchor && realTopbarHomeAnchor.parentNode) {
-        realTopbarHomeAnchor.parentNode.insertBefore(realTopbar, realTopbarHomeAnchor);
-      }
-      realTopbar.classList.remove('wf-topbar--in-settings-panel');
-    }
-  }
+  // TASK 4 (2026-11) + its follow-up, direct instruction - the "SUBH
+  // Settings" page frame (relocateRealTopbarForSettingsSubpage(),
+  // setBodyLockSuspendedForSettingsSubpage(), realTopbar/
+  // realTopbarHomeAnchor) is gone: all 8 settings sub-pages are now normal
+  // top-level .wf-view pages reached by closing this panel first, so
+  // #wfTopbar never needs to be physically relocated into it anymore - it
+  // always stays in its one normal spot in .wf-shell.
   const todayUpdatesCard = document.getElementById('hrTodayUpdatesCard');
   const todayUpdatesBadge = document.getElementById('hrTodayUpdatesBadge');
   // Task 4 (2026-10-28) - Important Communications hub: a hub page (two
@@ -298,7 +275,6 @@
   const settingsHistoryRestoreBody = document.getElementById('hrSettingsHistoryRestoreBody');
   // PHASE 2 (2026-11), direct instruction - "Holidays": Sundays always
   // off (computed, shown read-only) + a flat list of owner-added dates.
-  const holidaysPage = document.getElementById('hrHolidaysPage');
   const holidaysSundayNote = document.getElementById('hrHolidaysSundayNote');
   const holidaysList = document.getElementById('hrHolidaysList');
   const holidayAddBtn = document.getElementById('hrHolidayAddBtn');
@@ -472,29 +448,12 @@
     document.body.style.width = '';
     window.scrollTo(0, savedScrollY);
   }
-  // LIVE BUG FIX (2026-11), direct instruction, item 8 - lockBodyScroll
-  // makes <body> ITSELF position:fixed for as long as the panel is open
-  // at all, regardless of which view is showing - this is what was still
-  // trapping the 7 SUBH-Settings sub-pages' doc-scroll mode (see
-  // workforce.css's #hrAssistantPanel:has(...) rules): even once the
-  // panel itself stopped being fixed, its ANCESTOR (body) still was, so
-  // the real document still couldn't grow/scroll. Toggled from
-  // setPanelView alongside relocateRealTopbarForSettingsSubpage, only on
-  // an actual transition (never redundantly on every re-render of the
-  // same view) - entering one of these pages releases the lock so the
-  // real document can scroll (and Chrome's native pull-to-refresh can
-  // reach it); leaving re-applies it, exactly restoring every other
-  // panel page's existing fixed-overlay/keyboard-nudge protection.
-  let bodyLockSuspendedForSettingsSubpage = false;
-  function setBodyLockSuspendedForSettingsSubpage(active) {
-    if (active && !bodyLockSuspendedForSettingsSubpage) {
-      unlockBodyScroll();
-      bodyLockSuspendedForSettingsSubpage = true;
-    } else if (!active && bodyLockSuspendedForSettingsSubpage) {
-      lockBodyScroll();
-      bodyLockSuspendedForSettingsSubpage = false;
-    }
-  }
+  // TASK 4 (2026-11) + its follow-up, direct instruction -
+  // setBodyLockSuspendedForSettingsSubpage()/bodyLockSuspendedForSettingsSubpage
+  // are gone: all 8 settings sub-pages are now normal top-level .wf-view
+  // pages reached by closing this panel first, so <body>'s own fixed-
+  // overlay lock is never suspended for them - they get native document
+  // scroll the same way every other top-level page always has.
 
   // Keyboard handling, 2nd attempt - the viewport meta now carries
   // interactive-widget=resizes-content (see workforce.html), which on a
@@ -1618,15 +1577,6 @@
   // opened from. Only a direct close (the X button, or navBack() finding
   // nothing left to pop) still owns an un-consumed history entry to unwind.
   function closePanel(fromPopstate) {
-    // Page frame (2026-11) - closePanel can fire directly from a hardware
-    // back press/gesture while a SUBH-Settings sub-page is showing
-    // (navBack()/the popstate handler both call this straight through when
-    // navStack is down to just 'home', skipping setPanelView entirely) -
-    // #wfTopbar must always be put back in .wf-shell before the panel
-    // disappears, or the real dashboard underneath would be left with no
-    // top bar at all. A no-op if it's already there.
-    relocateRealTopbarForSettingsSubpage(false);
-    bodyLockSuspendedForSettingsSubpage = false; // same "closePanel can fire directly from a settings sub-page" edge case as the topbar reset above
     panel.hidden = true;
     unlockBodyScroll();
     if (window.visualViewport) {
@@ -1986,13 +1936,12 @@
     else if (entry.type === 'openFlows') showOpenFlows();
     else if (entry.type === 'attendanceRequests') showAttendanceRequests();
     else if (entry.type === 'templates') showTemplates();
-    // TASK 4 (2026-11), direct instruction - the 7 siteAliases/deptAliases/
-    // companyDetails/letterSettings/dataBackups/aiUsage/settingsHistory
-    // branches that used to be here are gone: those pages moved out of the
-    // panel entirely (see __hrAssistantOpenSiteAliases and its siblings
-    // above) and navStack can never contain one of their old `type`
-    // values again. 'holidays' stays - that page did NOT move.
-    else if (entry.type === 'holidays') showHolidays();
+    // TASK 4 (2026-11) + its follow-up, direct instruction - the 8
+    // siteAliases/deptAliases/companyDetails/letterSettings/dataBackups/
+    // aiUsage/settingsHistory/holidays branches that used to be here are
+    // gone: all 8 pages moved out of the panel entirely (see
+    // __hrAssistantOpenSiteAliases and its siblings above) and navStack
+    // can never contain one of their old `type` values again.
     else if (entry.type === 'actionNeeded') showActionNeeded();
     else if (entry.type === 'conversation') openConversationPage(entry.chatId);
     else if (entry.type === 'reminders') { activeRemFilter = entry.filter; setPanelView('reminders'); loadRemindersPage(entry.filter); }
@@ -2045,17 +1994,12 @@
     const isAttendanceRequests = view === 'attendanceRequests';
     const isTemplates = view === 'templates';
     // TASK 4 (2026-11), direct instruction - siteAliases/deptAliases/
-    // companyDetails/letterSettings/aiUsage/dataBackups/settingsHistory
-    // moved OUT of the panel entirely (normal top-level views now - see
-    // __hrAssistantOpenSiteAliases and its siblings) - setPanelView can
-    // never be called with any of their old view names again, so their
-    // own isXxx flags are gone. Holidays did NOT move - it still shows
-    // the real #wfTopbar + doc-scroll mode exactly as before.
-    const isHolidays = view === 'holidays'; // PHASE 2 (2026-11), direct instruction
-    // Page frame (2026-11, direct instruction) - Holidays, and ONLY it
-    // now, shows the REAL #wfTopbar above the normal back-button+heading
-    // row (see relocateRealTopbarForSettingsSubpage's own comment above).
-    const isSettingsSubpage = isHolidays;
+    // companyDetails/letterSettings/aiUsage/dataBackups/settingsHistory/
+    // holidays moved OUT of the panel entirely (normal top-level views now
+    // - see __hrAssistantOpenSiteAliases and its siblings) - setPanelView
+    // can never be called with any of their old view names again, so
+    // their own isXxx flags, the relocate-the-real-topbar mechanism, and
+    // the doc-scroll-mode escape hatch are all gone.
     const isActionNeeded = view === 'actionNeeded';
     const isAutoList = view === 'automationList';
     const isAutomation = view === 'automation';
@@ -2079,15 +2023,6 @@
     // cascade, so it wins, leaving the element visibly displayed despite
     // `hidden` being set. An inline style always wins regardless of
     // specificity ties, so this toggles style.display directly instead.
-    relocateRealTopbarForSettingsSubpage(isSettingsSubpage);
-    setBodyLockSuspendedForSettingsSubpage(isSettingsSubpage);
-    // LIVE BUG FIX (2026-11), direct instruction, item 8 - entering doc-
-    // scroll mode (see workforce.css's #hrAssistantPanel:has(...) rules)
-    // hides every other dashboard section, which can leave the real
-    // document scrolled to wherever it happened to be before - same
-    // "a fresh page starts at the top" reset every other page navigation
-    // already gets.
-    if (isSettingsSubpage) window.scrollTo(0, 0);
     if (todayUpdatesCard) todayUpdatesCard.hidden = !isHome;
     messagesEl.hidden = !isHome;
     if (commsHubPage) commsHubPage.hidden = !isCommsHub;
@@ -2100,17 +2035,15 @@
     if (openFlowsPage) openFlowsPage.hidden = !isOpenFlows;
     if (attnPage) attnPage.hidden = !isAttendanceRequests;
     if (templatesPage) templatesPage.hidden = !isTemplates;
-    // TASK 4 (2026-11) - the 7 siteAliasesPage/deptAliasesPage/
-    // companyDetailsPage/letterSettingsPage/aiUsagePage/dataBackupsPage/
-    // settingsHistoryPage .hidden toggles that used to be here are gone:
-    // those elements moved out of the panel into their own top-level
-    // .wf-view sections (now controlled by setView/viewEls instead) -
-    // leaving a stale "force hidden whenever this isn't the active PANEL
-    // view" toggle here would have permanently hidden their content the
-    // moment any other panel view was shown, even while their own
-    // top-level wrapper was visible. Holidays stays - it's still a panel
-    // page.
-    if (holidaysPage) holidaysPage.hidden = !isHolidays;
+    // TASK 4 (2026-11) + its follow-up - the 8 siteAliasesPage/
+    // deptAliasesPage/companyDetailsPage/letterSettingsPage/aiUsagePage/
+    // dataBackupsPage/settingsHistoryPage/holidaysPage .hidden toggles
+    // that used to be here are gone: those elements moved out of the
+    // panel into their own top-level .wf-view sections (now controlled by
+    // setView/viewEls instead) - leaving a stale "force hidden whenever
+    // this isn't the active PANEL view" toggle here would have
+    // permanently hidden their content the moment any other panel view
+    // was shown, even while their own top-level wrapper was visible.
     if (actionNeededPage) actionNeededPage.hidden = !isActionNeeded;
     if (autoListPage) autoListPage.hidden = !isAutoList;
     if (autoPage) autoPage.hidden = !isAutomation;
@@ -2168,14 +2101,6 @@
       if (commsHeadIcon) commsHeadIcon.innerHTML = WHATSAPP_SVG;
       if (commsHeadTitle) commsHeadTitle.textContent = 'Templates';
       if (commsHeadSubtitle) commsHeadSubtitle.textContent = 'Saved fixed replies for recurring topics';
-      if (commsHeadBadge) commsHeadBadge.hidden = true;
-    } else if (isHolidays) {
-      // Item 3 (2026-11), direct instruction - channel-neutral settings page, never a WhatsApp icon (or ANY icon bubble).
-      if (commsHeadIcon) commsHeadIcon.style.display = 'none';
-      if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon';
-      if (commsHeadIcon) commsHeadIcon.innerHTML = '';
-      if (commsHeadTitle) commsHeadTitle.textContent = 'Holidays';
-      if (commsHeadSubtitle) commsHeadSubtitle.textContent = 'Sundays always off, plus the dates you add';
       if (commsHeadBadge) commsHeadBadge.hidden = true;
     } else if (isActionNeeded) {
       if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon whatsapp';
@@ -3297,7 +3222,12 @@
         closeSiteAliasSheet();
         showProToast({ title: siteAliasSheetState.mode === 'edit' ? 'Group updated' : 'Group added', type: 'success' });
         pageDataCache.siteAliases = null; // a mutation just happened - never serve the stale cached list again
-        if (panelView === 'siteAliases') loadSiteAliasesPage();
+        // LIVE BUG FIX (2026-11) - this sheet can only be open while its
+        // own top-level siteAliasesView is showing (TASK 4 moved the page
+        // out of the panel), so the stale `panelView === 'siteAliases'`
+        // guard here never matched again and silently stopped refreshing
+        // the list after Save. Always reload instead.
+        loadSiteAliasesPage();
       }, { resetAfterSuccess: true });
     });
   }
@@ -3568,7 +3498,9 @@
         closeDeptAliasSheet();
         showProToast({ title: deptAliasSheetState.mode === 'edit' ? 'Group updated' : 'Group added', type: 'success' });
         pageDataCache.deptAliases = null; // a mutation just happened - never serve the stale cached list again
-        if (panelView === 'deptAliases') loadDeptAliasesPage();
+        // LIVE BUG FIX (2026-11) - same stale-panelView-guard fix as
+        // Site names' own save handler above.
+        loadDeptAliasesPage();
       }, { resetAfterSuccess: true });
     });
   }
@@ -3692,7 +3624,9 @@
         closeCompanyDetailSheet();
         showProToast({ title: 'Company details saved', type: 'success' });
         pageDataCache.companyDetails = null; // a mutation just happened - never serve the stale cached list again
-        if (panelView === 'companyDetails') loadCompanyDetailsPage();
+        // LIVE BUG FIX (2026-11) - same stale-panelView-guard fix as
+        // Site names' own save handler above.
+        loadCompanyDetailsPage();
       }, { resetAfterSuccess: true });
     });
   }
@@ -3707,7 +3641,7 @@
           await postJsonOrThrow('/api/workforce/hr-assistant/letter-logo', { dataUrl: reader.result, contentType: file.type || null });
           showProToast({ title: 'Letter logo updated', type: 'success' });
           pageDataCache.companyDetails = null; // a mutation just happened - never serve the stale cached logo again
-          if (panelView === 'companyDetails') loadCompanyDetailsPage();
+          loadCompanyDetailsPage();
         } catch (err) {
           showActionToast((err && err.message) || 'Could not upload the logo.', null, 'error');
         }
@@ -3781,19 +3715,16 @@
       if (!cached) holidaysList.innerHTML = '<div class="wf-rem-empty">Could not load holidays.</div>';
     }
   }
-  function showHolidays() {
-    setPanelView('holidays');
-    loadHolidaysPage();
-  }
+  // TASK 4 FOLLOW-UP (2026-11), direct instruction - "if it's listed under
+  // SUBH Settings, move it too": Holidays moves out of the panel into a
+  // normal top-level view (holidaysView), same move as the 7 pages above -
+  // showHolidays()/the old openPanel()+navStack branching are gone, same
+  // dead-code reasoning as __hrAssistantOpenSiteAliases's own rewrite.
+  // closePanel(true): same LIVE BUG FIX as every other open-function above.
   window.__hrAssistantOpenHolidays = function () {
-    const wasOpen = typeof panel !== 'undefined' && !panel.hidden;
-    if (!wasOpen && typeof openPanel === 'function') {
-      openPanel();
-      navStack = [{ type: 'holidays' }];
-    } else {
-      pushNav({ type: 'holidays' });
-    }
-    showHolidays();
+    if (window.__hrAssistantClosePanel) window.__hrAssistantClosePanel(true);
+    if (window.setView) window.setView('holidays', { resetHistory: true });
+    loadHolidaysPage();
   };
   function closeHolidaySheet() {
     holidaySheetBackdrop.classList.remove('open');
@@ -3827,7 +3758,9 @@
         closeHolidaySheet();
         showProToast({ title: 'Holiday added', type: 'success' });
         pageDataCache.holidays = null; // a mutation just happened - never serve the stale cached list again
-        if (panelView === 'holidays') loadHolidaysPage();
+        // LIVE BUG FIX (2026-11) - same stale-panelView-guard fix as
+        // Site names' own save handler (see its comment).
+        loadHolidaysPage();
       }, { resetAfterSuccess: true });
     });
   }
@@ -4691,7 +4624,9 @@
           settingsHistoryRestoreBody.innerHTML = '<div class="wf-auto-hint">✓ Restored.</div>';
           showActionToast('Restored');
           pageDataCache.settingsHistory = null;
-          if (panelView === 'settingsHistory') loadSettingsHistoryPage();
+          // LIVE BUG FIX (2026-11) - same stale-panelView-guard fix as
+          // Site names' own save handler, see its comment above.
+          loadSettingsHistoryPage();
         }, { toastFn: (msg) => showActionToast(msg, null, 'error') });
       });
     }
@@ -4720,7 +4655,9 @@
             (result.driveLink ? ' - <a href="' + escapeHtml(result.driveLink) + '" target="_blank" rel="noopener">Open in Drive</a>' : '');
         }
         pageDataCache.dataBackups = null; // a new backup just happened - never serve the stale cached list/status again
-        if (panelView === 'dataBackups') loadDataBackupsPage();
+        // LIVE BUG FIX (2026-11) - same stale-panelView-guard fix as
+        // Site names' own save handler above.
+        loadDataBackupsPage();
       }, { resetAfterSuccess: true, toastFn: (msg) => { if (backupNowResult) backupNowResult.innerHTML = '⚠ ' + escapeHtml(msg); } });
     });
   }
@@ -4823,7 +4760,9 @@
         closeLetterCounterSheet();
         showProToast({ title: 'Counter updated', type: 'success' });
         pageDataCache.letterSettings = null;
-        if (panelView === 'letterSettings') loadLetterSettingsPage();
+        // LIVE BUG FIX (2026-11) - same stale-panelView-guard fix as
+        // Site names' own save handler above.
+        loadLetterSettingsPage();
       }, { resetAfterSuccess: true });
     });
   }
@@ -9542,16 +9481,16 @@
   // form (#hrAutoPage) and a single reminder's own detail page are
   // intentionally NOT included - mid-edit content should never be
   // silently replaced by a pull gesture.
-  // LIVE BUG FIX (2026-11), direct instruction, item 8 - the 7 SUBH-
+  // LIVE BUG FIX (2026-11), direct instruction, item 8 - the 8 SUBH-
   // Settings sub-pages (hrSiteAliasesPage/hrDeptAliasesPage/
   // hrCompanyDetailsPage/hrLetterSettingsPage/hrDataBackupsPage/
   // hrSettingsHistoryPage/hrHolidaysPage - hrAiUsagePage was never in this
   // list to begin with) are deliberately REMOVED from here: this custom
   // gesture must never fire on them at all, so Chrome's own native
-  // pull-to-refresh can reach them instead (see workforce.css's own
-  // matching #hrAssistantPanel:has(...) doc-scroll rules - leaving the
-  // listener attached here would keep calling preventDefault() on a
-  // downward drag and block the native gesture regardless of that CSS).
+  // pull-to-refresh can reach them instead. TASK 4 (2026-11) + its
+  // follow-up moved all 8 out to normal top-level .wf-view pages, which
+  // already get native document scroll by default - this map stays
+  // exactly as it was (none of the 8 were ever in it to remove).
   const WF_PTR_REFRESH_BY_ID = {
     hrAssistantMessages: () => pollCommsSummary(),
     hrHubPage: () => showHub(),

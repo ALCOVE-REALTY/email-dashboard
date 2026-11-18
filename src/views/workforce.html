@@ -13,20 +13,14 @@
   <div class="wf-shell">
     <!-- Page frame fix (2026-11, direct instruction) - this is the ONE real
          top bar (hamburger, wordmark, refresh, SUBH button, profile photo).
-         It is reused verbatim, never copied: when a SUBH Settings sub-page
-         (Site names/Department names/Company details/Letter settings/AI
-         usage/Data & backups/Settings history) is shown inside the SUBH
-         assistant panel (a true full-screen overlay that covers this bar -
-         see .wf-ai-panel in workforce.css), hrAssistant.js's
-         relocateRealTopbarForSettingsSubpage() physically moves THIS SAME
-         DOM node (id="wfTopbar", listeners and all) to the top of the
-         panel's content for the duration of that sub-page, then moves it
-         back here (right before #wfTopbarHomeAnchor) the moment the panel
-         leaves that sub-page or closes - so every button stays fully
-         functional (same element, same listeners) and no second replica
-         markup exists anywhere. See workforce.css's
-         .wf-topbar--in-settings-panel for its only in-panel style change
-         (matching padding/background), and hrAssistant.js's own comment. -->
+         TASK 4 (2026-11) + its follow-up, direct instruction - all 8 SUBH
+         Settings sub-pages (Site names/Department names/Company details/
+         Letter settings/AI usage/Data & backups/Settings history/Holidays)
+         are now normal top-level .wf-view pages reached by closing the
+         SUBH panel first, so this bar is always visible in its one normal
+         spot here - the relocate-into-the-panel mechanism this comment
+         used to describe (and the #wfTopbarHomeAnchor marker it moved
+         back to) is gone; nothing moves this element anymore. -->
     <header class="wf-topbar" id="wfTopbar">
       <div class="wf-brand">
         <button class="wf-icon-btn" id="menuBtn" title="Menu" aria-label="Open menu" aria-expanded="false">
@@ -45,11 +39,6 @@
         <input type="file" id="profilePhotoInput" accept="image/*" hidden />
       </div>
     </header>
-    <!-- Restore anchor (2026-11) - #wfTopbar is always re-inserted right
-         before this marker when it is not showing inside a SUBH Settings
-         sub-page, so it always lands back in its exact original spot. -->
-    <div id="wfTopbarHomeAnchor" hidden aria-hidden="true"></div>
-
     <div class="wf-drawer-backdrop" id="wfDrawerBackdrop" hidden></div>
     <nav class="wf-drawer" id="wfDrawer" hidden aria-label="Menu">
       <div class="wf-drawer-head">
@@ -387,43 +376,6 @@
       <div class="wf-comms-page" id="hrTemplatesPage" hidden>
         <div class="wf-rem-list" id="hrTemplatesList"></div>
       </div>
-
-      <!-- PHASE 2 (2026-11), direct instruction - "Holidays": Sundays are
-           always a holiday (computed, shown here read-only, never an
-           input), plus a flat list of owner-added specific dates with
-           their own "+ Add"/Delete, same list-settings shape as Site
-           names/Department names above (minus the alias-grouping, since a
-           holiday has no groups to bulk-edit). -->
-      <div class="wf-comms-page" id="hrHolidaysPage" hidden>
-        <div class="wf-auto-hint" id="hrHolidaysSundayNote" style="padding:4px 4px 0"></div>
-        <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 4px 6px">
-          <span class="wf-ai-sheet-title" style="font-size:14px">Added holidays</span>
-          <button type="button" class="plain" id="hrHolidayAddBtn">+ Add</button>
-        </div>
-        <div class="wf-rem-list" id="hrHolidaysList"></div>
-      </div>
-
-      <div class="wf-ai-sheet-backdrop" id="hrHolidaySheetBackdrop" hidden></div>
-      <div class="wf-rem-sheet" id="hrHolidaySheet" hidden role="dialog" aria-label="Add a holiday date">
-        <div class="wf-ai-sheet-handle"></div>
-        <div class="wf-ai-sheet-head">
-          <button type="button" class="wf-ai-sheet-close" id="hrHolidaySheetCloseBtn" aria-label="Close">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-          </button>
-          <span class="wf-ai-sheet-title">Add a holiday</span>
-        </div>
-        <div class="wf-rem-sheet-body">
-          <label class="wf-rem-field"><span>Date</span><input type="date" id="hrHolidayDateInput" autocomplete="off" /></label>
-          <label class="wf-rem-field"><span>Label (optional)</span><input type="text" id="hrHolidayLabelInput" placeholder="e.g. Diwali" autocomplete="off" /></label>
-          <div class="wf-auto-err hidden" id="hrHolidaySheetErr"></div>
-        </div>
-        <div class="wf-rem-sheet-foot">
-          <button type="button" class="wf-ai-action-btn outline" id="hrHolidaySheetCancelBtn">Cancel</button>
-          <button type="button" class="wf-ai-action-btn download" id="hrHolidaySheetSaveBtn"><span>Save</span></button>
-        </div>
-      </div>
-
-
 
       <!-- Save/Edit template sheet - same bottom-sheet pattern as the
            Reminders Add/Edit sheet. Opened either from "Save as template"
@@ -3391,6 +3343,49 @@
           <span class="wf-ai-sheet-title">Restore this change</span>
         </div>
         <div class="wf-rem-sheet-body" id="hrSettingsHistoryRestoreBody"></div>
+      </div>
+    </section>
+
+    <section id="holidaysView" class="wf-view" hidden>
+      <div class="wf-page-head" data-wi-enter="block">
+        <button class="wf-icon-btn" data-back-to-subh-settings aria-label="Back to SUBH Settings">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        </button>
+        <h2>Holidays</h2>
+      </div>
+      <!-- PHASE 2 (2026-11), direct instruction - "Holidays": Sundays are
+           always a holiday (computed, shown here read-only, never an
+           input), plus a flat list of owner-added specific dates with
+           their own "+ Add"/Delete, same list-settings shape as Site
+           names/Department names above (minus the alias-grouping, since a
+           holiday has no groups to bulk-edit). -->
+      <div class="wf-comms-page" id="hrHolidaysPage">
+        <div class="wf-auto-hint" id="hrHolidaysSundayNote" style="padding:4px 4px 0"></div>
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 4px 6px">
+          <span class="wf-ai-sheet-title" style="font-size:14px">Added holidays</span>
+          <button type="button" class="plain" id="hrHolidayAddBtn">+ Add</button>
+        </div>
+        <div class="wf-rem-list" id="hrHolidaysList"></div>
+      </div>
+
+      <div class="wf-ai-sheet-backdrop" id="hrHolidaySheetBackdrop" hidden></div>
+      <div class="wf-rem-sheet" id="hrHolidaySheet" hidden role="dialog" aria-label="Add a holiday date">
+        <div class="wf-ai-sheet-handle"></div>
+        <div class="wf-ai-sheet-head">
+          <button type="button" class="wf-ai-sheet-close" id="hrHolidaySheetCloseBtn" aria-label="Close">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+          <span class="wf-ai-sheet-title">Add a holiday</span>
+        </div>
+        <div class="wf-rem-sheet-body">
+          <label class="wf-rem-field"><span>Date</span><input type="date" id="hrHolidayDateInput" autocomplete="off" /></label>
+          <label class="wf-rem-field"><span>Label (optional)</span><input type="text" id="hrHolidayLabelInput" placeholder="e.g. Diwali" autocomplete="off" /></label>
+          <div class="wf-auto-err hidden" id="hrHolidaySheetErr"></div>
+        </div>
+        <div class="wf-rem-sheet-foot">
+          <button type="button" class="wf-ai-action-btn outline" id="hrHolidaySheetCancelBtn">Cancel</button>
+          <button type="button" class="wf-ai-action-btn download" id="hrHolidaySheetSaveBtn"><span>Save</span></button>
+        </div>
       </div>
     </section>
 

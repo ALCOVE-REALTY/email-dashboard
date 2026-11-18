@@ -3256,51 +3256,12 @@ body:not(.printing-org-chart) .org-chart-cards-row + .org-chart-branch-connector
    with window.visualViewport so the bottom edge tracks the visible
    viewport (above the on-screen keyboard) rather than the full layout
    viewport (behind it). */
-/* Page frame fix (2026-11, direct instruction) - the real #wfTopbar (see
-   workforce.html's own comment) gets this ONE style change only while
-   hrAssistant.js has relocated it to the top of .wf-ai-panel for a SUBH
-   Settings sub-page: flex-shrink:0 so the scrollable panel content below
-   (flex:1 areas) never squeezes it. Removed again the moment the real
-   element is moved back out to .wf-shell.
-   LIVE BUG FIX (2026-11), direct instruction, item 6 - the padding here
-   was being completely overridden by css/wi-theme.css's LATER, equal-
-   specificity plain `.wf-topbar { padding: 6px 0; }` rule (same file
-   loads after this one - with a tied single-class specificity, the
-   later declaration wins for every property it sets), so the topbar
-   actually rendered with ZERO side padding and only 6px on top,
-   regardless of what this rule said - hamburger/profile photo touching
-   the screen edges, header cramped against the top. Fixed two ways: (1)
-   the selector is now compound (.wf-topbar.wf-topbar--in-settings-panel)
-   so it always wins on specificity, never on file order; (2) the values
-   themselves now match the REAL menu-section topbar's own measured box
-   model exactly (confirmed via a headless 384px comparison, not
-   assumed) - .wf-shell's own real padding is 16px sides (not 20px) with
-   a 12px gap before the topbar even starts, which .wf-topbar's own 6px
-   top padding then sits inside - reproduced here as margin-top:12px
-   (the "gap before") + padding-top:6px (the topbar's own internal
-   padding, same as every other page), never a flat guessed value. */
-.wf-topbar.wf-topbar--in-settings-panel {
-  padding: 6px 16px 0;
-  margin-top: 12px;
-  margin-bottom: 0;
-  flex-shrink: 0;
-  background: var(--paper);
-}
-/* LIVE BUG FIX (2026-11), direct instruction, item 8 - in doc-scroll mode
-   (see the #hrAssistantPanel:has(...) rules below) the panel sits INSIDE
-   .wf-shell's own flow instead of escaping it via position:fixed, so
-   .wf-shell's own 16px-side/12px-top padding now actually applies to it -
-   the compensating padding/margin above (added for item 6, when the
-   panel still ignored .wf-shell's padding entirely as a fixed overlay)
-   would otherwise double up with it. Reset back to the plain .wf-topbar
-   default here, so .wf-shell's own padding does the ENTIRE job, exactly
-   like it already does for every ordinary page. */
-#hrAssistantPanel:has(
-  #hrHolidaysPage:not([hidden])
-) .wf-topbar.wf-topbar--in-settings-panel {
-  padding: 6px 0 0;
-  margin-top: 0;
-}
+/* TASK 4 (2026-11) follow-up, direct instruction - Holidays (the last page
+   still using the relocate-the-real-topbar-into-the-panel mechanism this
+   rule, and relocateRealTopbarForSettingsSubpage() in hrAssistant.js,
+   existed for) moved out to a normal top-level .wf-view page too, same as
+   the other 7 before it - nothing adds .wf-topbar--in-settings-panel to
+   #wfTopbar anymore, so both rules that keyed off it are removed. */
 
 .wf-ai-panel[hidden] { display: none; }
 .wf-ai-panel {
@@ -3426,46 +3387,12 @@ body:not(.printing-org-chart) .org-chart-cards-row + .org-chart-branch-connector
 .wf-ptr-indicator.wf-ptr-spinning svg { animation: wfPtrSpin .8s linear infinite; }
 @keyframes wfPtrSpin { to { transform: rotate(360deg); } }
 
-/* LIVE BUG FIX (2026-11), direct instruction, item 8 - Holidays must
-   pull-to-refresh like every other software page: Chrome's OWN native
-   gesture, not the custom one above (see hrAssistant.js's own
-   WF_PTR_REFRESH_BY_ID - this id is deliberately absent from it, so the
-   custom touchstart/touchmove/touchend listeners are never attached to it
-   at all). For Chrome's native gesture to actually reach it, the real
-   <body> has to be the one scrolling - impossible while it sits inside
-   .wf-ai-panel's own fixed, full-screen overlay with its own internal
-   overflow:auto (see that rule's own comment on why it exists for every
-   OTHER page). This scopes a doc-scroll mode to ONLY this one id (:has() -
-   no new JS state needed, driven by the exact same [hidden] toggling
-   setPanelView already does): the panel joins normal document flow instead
-   of staying fixed, its own inner scroll container stops clipping/
-   scrolling, and every OTHER dashboard section underneath is hidden so it
-   doesn't show through once the panel is no longer an opaque fixed overlay
-   covering it. Every other page's own pull-to-refresh/panel behavior is
-   completely untouched - the :has() condition simply never matches them.
-   TASK 4 (2026-11), direct instruction - the other 7 ids this rule set
-   used to also list (Site names/Department names/Company details/Letter
-   settings/AI usage/Data & backups/Settings history) moved out to normal
-   top-level .wf-view pages (see workforce.html) with native document
-   scroll by default, so they never needed this doc-scroll-mode escape
-   hatch in the first place; trimmed down to Holidays, the one page still
-   living inside the panel. */
-#hrHolidaysPage {
-  overflow-y: visible;
-  flex: none;
-}
-#hrAssistantPanel:has(
-  #hrHolidaysPage:not([hidden])
-) {
-  position: static;
-  overflow: visible;
-  overscroll-behavior: auto;
-}
-.wf-shell:has(#hrAssistantPanel:has(
-  #hrHolidaysPage:not([hidden])
-)) > .wf-view {
-  display: none;
-}
+/* TASK 4 (2026-11) follow-up, direct instruction - Holidays, the one page
+   this doc-scroll-mode escape hatch was trimmed down to, has now also
+   moved out to a normal top-level .wf-view page (see workforce.html),
+   with native document scroll by default like the 7 before it - it never
+   needs this escape hatch either now, so the rule set (and the matching
+   #hrHolidaysPage overflow/flex reset above it) is removed entirely. */
 
 .wf-ai-welcome {
   display: flex;

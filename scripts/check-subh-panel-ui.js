@@ -102,59 +102,19 @@ function check(label, ok, detail) {
   else { fail++; failures.push(label + (detail ? ' -- ' + detail : '')); console.log('[FAIL] ' + label + (detail ? ' -- ' + detail : '')); }
 }
 
-// Page frame fix (2026-11, direct instruction, reworked same day) - the
-// real #wfTopbar element (never a replica/copy) is relocated to the top of
-// #hrAssistantPanel for exactly the 7 SUBH-Settings sub-pages. Asserts all
-// 5 real, FUNCTIONAL elements (hamburger, wordmark text, refresh, SUBH
-// button, profile photo) are visible, AND that the element currently
-// showing really is #wfTopbar itself (same id), not a second copy.
-async function checkRealTopbarFrame(page, pageLabel, baseline) {
-  const topbar = page.locator('#wfTopbar');
-  const insidePanel = await page.evaluate(() => {
-    const t = document.getElementById('wfTopbar');
-    const p = document.getElementById('hrAssistantPanel');
-    return Boolean(t && p && p.contains(t));
-  });
-  check(pageLabel + ': the REAL #wfTopbar (not a replica) is relocated inside the SUBH panel', insidePanel);
-  check(pageLabel + ': real top bar is visible with all 5 elements (hamburger, wordmark, refresh, SUBH button, profile photo)',
-    await topbar.isVisible() &&
-    await page.locator('#menuBtn').isVisible() &&
-    (await page.locator('.wf-wordmark').first().textContent() || '').includes('Workforce') &&
-    await page.locator('#refreshBtn').isVisible() &&
-    await page.locator('#hrAssistantBtn').isVisible() &&
-    await page.locator('#profileAvatar').isVisible());
-  // LIVE BUG FIX (2026-11), direct instruction, item 6 - the header was
-  // cut off at the sides/cramped on these sub-pages (a real CSS bug: its
-  // own padding was being silently overridden by a later, equal-
-  // specificity rule, zeroing its side padding). Proven fixed by
-  // comparing actual pixel positions against a real ☰ menu section's own
-  // topbar at 384px (the baseline captured once, before the SUBH panel
-  // ever opened), not just "is visible" - every one of these must now be
-  // byte-for-byte identical, never just close.
-  if (baseline) {
-    const rects = await page.evaluate(() => ({
-      menuBtn: document.getElementById('menuBtn').getBoundingClientRect(),
-      profile: document.getElementById('profileAvatar').getBoundingClientRect(),
-      wordmark: document.querySelector('.wf-wordmark').getBoundingClientRect()
-    }));
-    const same = (a, b) => Math.abs(a.x - b.x) < 0.5 && Math.abs(a.y - b.y) < 0.5 && Math.abs(a.width - b.width) < 0.5 && Math.abs(a.height - b.height) < 0.5;
-    check(pageLabel + ': header box positions (hamburger/profile/wordmark) are IDENTICAL to a real ☰ menu section\'s own topbar at 384px, never just close',
-      same(rects.menuBtn, baseline.menuBtn) && same(rects.profile, baseline.profile) && same(rects.wordmark, baseline.wordmark),
-      'got: ' + JSON.stringify(rects) + ' vs baseline: ' + JSON.stringify(baseline));
-  }
-}
-
-// TASK 4 (2026-11), direct instruction - the 7 SUBH-Settings sub-pages
-// (Site names/Department names/Company details/Letter settings/AI usage/
-// Data & backups/Settings history) moved OUT of the panel into normal
-// top-level .wf-view pages, so they no longer relocate the real #wfTopbar
-// (that mechanism is Holidays-only now, still covered by
-// checkRealTopbarFrame above). Asserts the opposite of that function: the
-// real #wfTopbar stays exactly where every other top-level page keeps it
-// (inside .wf-shell, never inside #hrAssistantPanel, which must be closed/
-// hidden), still pixel-identical to the real ☰ menu baseline, AND that the
-// page's own generic .wf-page-head (back button + h2) rendered with the
-// right title - the SAME shell every other menu page uses, not a replica.
+// TASK 4 (2026-11) + its follow-up, direct instruction - all 8 SUBH-
+// Settings sub-pages (Site names/Department names/Company details/Letter
+// settings/AI usage/Data & backups/Settings history/Holidays) moved OUT of
+// the panel into normal top-level .wf-view pages, so none of them relocate
+// the real #wfTopbar into the panel anymore (the old
+// relocateRealTopbarForSettingsSubpage()-based checkRealTopbarFrame this
+// function replaced is gone, along with that mechanism itself in
+// hrAssistant.js). Asserts the real #wfTopbar stays exactly where every
+// other top-level page keeps it (inside .wf-shell, never inside
+// #hrAssistantPanel, which must be closed/hidden), still pixel-identical to
+// the real ☰ menu baseline, AND that the page's own generic .wf-page-head
+// (back button + h2) rendered with the right title - the SAME shell every
+// other menu page uses, not a replica.
 async function checkTopLevelSettingsSubpageFrame(page, pageLabel, viewId, baseline) {
   const frame = await page.evaluate(() => {
     const t = document.getElementById('wfTopbar');
@@ -260,8 +220,8 @@ async function checkTopLevelSettingsSubpageFrame(page, pageLabel, viewId, baseli
   // with another menu section at 384px - identical." Taken from a real,
   // ordinary ☰ menu section (Org Chart) BEFORE the SUBH panel ever opens
   // (the real #wfTopbar is still in its normal .wf-shell position here) -
-  // checkRealTopbarFrame below compares every SUBH-Settings sub-page's
-  // relocated topbar against this exact baseline, not an assumed value.
+  // checkTopLevelSettingsSubpageFrame below compares every SUBH-Settings
+  // sub-page's own topbar against this exact baseline, not an assumed value.
   await page.click('#menuBtn');
   await page.waitForTimeout(150);
   await page.click('[data-view="orgChart"]');
@@ -854,15 +814,18 @@ async function checkTopLevelSettingsSubpageFrame(page, pageLabel, viewId, baseli
       holidayItems = holidayItems.filter((h) => h.date !== deletedDate);
       route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, items: holidayItems }) });
     });
-    await page.evaluate(() => { if (window.__hrAssistantClosePanel) window.__hrAssistantClosePanel(); });
-    await page.waitForTimeout(100);
+    // NOTE: no explicit closePanel() here - see the Site names section
+    // further up for why an extra close call right before one of these
+    // open-functions, with the panel already closed (from Company
+    // details' own open-function above), actively breaks navigation.
     const holidaysErrBefore = consoleErrors.length + pageErrors.length;
     await page.evaluate(() => { window.__hrAssistantOpenHolidays(); });
     await page.waitForTimeout(250);
     check('Holidays page opens (not a blank page)', await page.locator('#hrHolidaysPage').isVisible());
-    await checkRealTopbarFrame(page, 'Holidays', topbarBaseline);
-    const holidaysHeadTitle = await page.locator('#hrCommsHeadTitle').textContent().catch(() => null);
-    check('Holidays: header title reads "Holidays"', (holidaysHeadTitle || '').trim() === 'Holidays', 'got: ' + JSON.stringify(holidaysHeadTitle));
+    // TASK 4 (2026-11) follow-up, direct instruction - Holidays moved out
+    // to a normal top-level view too, same as the other 7 - same frame
+    // check, title now asserted via its own .wf-page-head h2.
+    await checkTopLevelSettingsSubpageFrame(page, 'Holidays', 'holidays', topbarBaseline);
     const sundayNoteText = await page.locator('#hrHolidaysSundayNote').textContent().catch(() => '');
     check('Holidays: Sunday note says Sundays are always a holiday, computed (never stored)', /Sundays are always a holiday/.test(sundayNoteText || ''), 'got: ' + JSON.stringify(sundayNoteText));
     check('Holidays: Sunday note lists exactly this month\'s real Sunday dates', expectedSundays.every((n) => (sundayNoteText || '').includes(String(n))), 'expected ' + JSON.stringify(expectedSundays) + ' in: ' + JSON.stringify(sundayNoteText));
