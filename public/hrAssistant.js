@@ -7455,6 +7455,17 @@
       if (autoPlan) renderAutoUnderstanding();
     }, { toastFn: (msg) => { if (autoSheetMsg) { autoSheetMsg.textContent = msg; autoSheetMsg.classList.remove('hidden'); } else showAutoToast(msg, 'error'); } });
   });
+  // TASK 7 (2026-11), direct instruction - editing the link after a
+  // successful Load used to leave the green tick/file info showing stale
+  // (autoSheetContext was never cleared), so there was no way to tell the
+  // edit had "taken" until tapping Load again silently replaced it.
+  // Clearing it immediately on input means the tick genuinely reflects
+  // "not loaded yet" until the NEW Load succeeds and shows it again.
+  if (autoSheetUrl) autoSheetUrl.addEventListener('input', () => {
+    if (!autoSheetContext) return;
+    autoSheetContext = null;
+    renderAutoSheetInfo();
+  });
 
   // Plain-words description of the plan's date condition, e.g. "next
   // month — November for the 30 Oct run" - the exact phrasing the owner
@@ -8911,6 +8922,14 @@
       renderWfSheetInfo(); wfSync();
       if (wfPlan) renderWfUnderstanding();
     }, { toastFn: (msg) => { if (wfSheetMsg) { wfSheetMsg.textContent = msg; wfSheetMsg.classList.remove('hidden'); } else showWfToast(msg, 'error'); } });
+  });
+  // TASK 7 (2026-11), direct instruction - same fix as Create Automated
+  // Task's own autoSheetUrl (see its comment): editing the link after a
+  // successful Load used to leave the green tick/file info showing stale.
+  if (wfSheetUrl) wfSheetUrl.addEventListener('input', () => {
+    if (!wfSheetContext) return;
+    wfSheetContext = null;
+    renderWfSheetInfo();
   });
 
   function renderWfUnderstanding() {
