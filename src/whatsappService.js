@@ -160,6 +160,72 @@ async function sendWhatsAppMessage(phone, message) {
   });
 }
 
+// ---------------- Document sending (PART B, 2026-11, direct instruction) ----------------
+// Method B of the gateway's own documented upload contract - a real FILE
+// (not just text), via multipart/form-data: to_number, type=document,
+// file=@<file>, to the SAME /uploadMedia path style as sendMessage's own
+// /sendMessage, on the SAME product/phone id. Native FormData/Blob (Node
+// 18+, confirmed available in this runtime) - no new dependency, fetch
+// sets the multipart boundary header itself whenever the body is a
+// FormData instance, which must NEVER be overridden with an explicit
+// Content-Type here. The caption field name (sent as "message", mirroring
+// sendMessage's own field) is NOT yet confirmed against the real gateway
+// - unconfirmed until this is actually exercised against it; a wrong
+// field name would at worst mean the document arrives with no caption,
+// never a failed send, so this is safe to ship ahead of that
+// confirmation. Receiving files (handleIncomingMedia, in
+// whatsappAssistant.js) is a completely separate, untouched flow - this
+// is outbound sending only.
+// 30s - a real file upload reasonably takes longer than a plain text
+// send (SEND_MESSAGE_TIMEOUT_MS, 20s), but still bounded for the same
+// reason: a hung gateway call must never leave an owner-triggered send
+// stuck forever with no result.
+const SEND_DOCUMENT_TIMEOUT_MS = 30000;
+async function sendWhatsAppDocumentOnce(phone, fileBuffer, filename, caption) {
+  const to_number = normalizePhone(phone);
+  if (!/^\d{11,15}$/.test(to_number)) {
+    return { ok: false, error: "Enter a valid WhatsApp number (10 digits, or with country code)." };
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), SEND_DOCUMENT_TIMEOUT_MS);
+  try {
+    const form = new FormData();
+    form.append('to_number', to_number);
+    form.append('type', 'document');
+    if (caption) form.append('message', caption);
+    form.append('file', new Blob([fileBuffer]), filename);
+    const res = await fetch(apiBase() + '/uploadMedia', {
+      method: 'POST',
+      headers: { 'x-maytapi-key': requireToken() },
+      body: form,
+      signal: controller.signal
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.success === false) {
+      return { ok: false, error: data.message || 'Could not send the WhatsApp document.', gatewayResponse: data };
+    }
+    const gatewayMessageId = data.messageId || data.message_id || data.id || (data.data && (data.data.id || data.data.messageId)) || null;
+    return { ok: true, gatewayMessageId, gatewayResponse: data };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+// Same shape as sendWhatsAppMessage - one retry after a short delay,
+// serialized through the SAME global send queue (the gateway's single
+// underlying WhatsApp session is shared across text and document sends
+// alike, so a document upload must queue behind/ahead of a text send the
+// same way two text sends already do, never run concurrently with one).
+async function sendWhatsAppDocument(phone, fileBuffer, filename, caption) {
+  return enqueueSend(async () => {
+    const first = await sendWhatsAppDocumentOnce(phone, fileBuffer, filename, caption);
+    if (first.ok) return first;
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    return sendWhatsAppDocumentOnce(phone, fileBuffer, filename, caption);
+  });
+}
+
 // ---------------- Typing presence (reply-latency/human-like request) ----------------
 // NOT confirmed to exist on the live gateway - probed directly against
 // the real deployed server (POST, harmless no-op either way, no WhatsApp
@@ -345,4 +411,4 @@ async function getConnectionStatus() {
   }
 }
 
-module.exports = { sendWhatsAppMessage, sendPresence, normalizePhone, isSyntheticTestPhone, listChats, listMessages, isGroupChat, isIgnoredBroadcastType, isValidPhoneNumber, isLikelyLid, getConnectionStatus };
+module.exports = { sendWhatsAppMessage, sendWhatsAppDocument, sendPresence, normalizePhone, isSyntheticTestPhone, listChats, listMessages, isGroupChat, isIgnoredBroadcastType, isValidPhoneNumber, isLikelyLid, getConnectionStatus };

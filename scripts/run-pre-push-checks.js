@@ -33,6 +33,7 @@ const { spawn } = require('child_process');
 
 const DETERMINISTIC_SUITES = [
   'check-data-access.js',
+  'check-whatsapp-document-send.js',
   'check-company-details.js',
   'check-ai-usage-log.js',
   'check-letter-settings.js',
@@ -65,7 +66,7 @@ const DETERMINISTIC_SUITES = [
 // covers the new "Integrations"/"Together We Can" page - a different
 // surface from check-subh-panel-ui.js's SUBH assistant panel, kept as its
 // own separate script rather than growing that already very large file.
-const UI_CHECKS = ['check-subh-panel-ui.js', 'check-integrations-ui.js', 'check-mail-compose-ui.js', 'check-hi-insurance-queue-ui.js', 'check-workflow-v2-lock-ui.js', 'check-workflow-v2-phase3-ui.js', 'check-workflow-v2-phase4-ui.js', 'check-workflow-v2-phase5-ui.js', 'check-workflow-v2-wa-mediator-guard-ui.js', 'check-workflow-v2-phase6-ui.js', 'check-workflow-v2-phase7-ui.js', 'check-sheet-link-reload.js', 'check-data-access-ui.js'];
+const UI_CHECKS = ['check-subh-panel-ui.js', 'check-integrations-ui.js', 'check-mail-compose-ui.js', 'check-hi-insurance-queue-ui.js', 'check-workflow-v2-lock-ui.js', 'check-workflow-v2-phase3-ui.js', 'check-workflow-v2-phase4-ui.js', 'check-workflow-v2-phase5-ui.js', 'check-workflow-v2-wa-mediator-guard-ui.js', 'check-workflow-v2-phase6-ui.js', 'check-workflow-v2-phase7-ui.js', 'check-sheet-link-reload.js', 'check-data-access-ui.js', 'check-whatsapp-document-send-ui.js'];
 
 // A non-zero exit does not always mean the suite's own checks failed - a
 // known, pre-existing, harmless Node/libuv issue on Windows

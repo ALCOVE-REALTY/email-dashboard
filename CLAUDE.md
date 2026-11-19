@@ -3333,9 +3333,12 @@ A 3-part, 5-phase feature, built in order, one commit per phase:
   This unmatched-number rule applies ONLY to data requests (`classification.wantsData`)
   - job applications, CVs, vacancy enquiries and every other existing flow are
   classified entirely separately upstream and are never touched by it.
-- **Part B (WhatsApp document sending)**: a `sendWhatsAppDocument`-style helper
-  (Method B multipart upload to the existing gateway) + an owner-only "send test
-  file to my WhatsApp" feature. Not yet built (phase 3).
+- **Part B (WhatsApp document sending)**: `whatsapp.sendWhatsAppDocument` (Method B
+  multipart upload - `to_number`/`type=document`/`file` fields, native FormData/Blob,
+  same retry-once/global-send-queue shape as `sendWhatsAppMessage`) + an owner-only
+  "Send test file to my WhatsApp" page under SUBH Settings ("WhatsApp documents").
+  Built in phase 3 - see below. Receiving files (`handleIncomingMedia`) is a
+  completely separate, untouched flow.
 - **Part C (reports/counts from chat)**: "AI understands, code speaks" - the model
   only turns a message into a structured query (filters/grouping/columns/output
   type); code runs it against live data and builds the reply/file. Not yet built
@@ -3363,6 +3366,33 @@ contact-number-only gate until Part C's reports engine (phase 4/5) touches it
 anyway. `general_details` (designation/department/tenure bundle) is also
 deliberately left unwired to the table in this phase - splitting an already-atomic
 3-field official bundle into 3 independently-gated sends was never asked for.
+
+**Phase 2 follow-up fix** (own commit): a real-model validation run (Example 6/7/8/
+10 + someone else's Aadhaar + an unknown number's CV + "<name>-er DOB dao", 1x each,
+$0.24 total) caught a live bug - the classifier's schema told the model to OMIT the
+field label for `forbidden_pii`, so DOB/address/blood group could never actually
+resolve via the label-matching path and were wrongly hard-blocked. Fixed with a
+deterministic keyword-detector fallback (`detectSensitiveIdFieldKeyword` against the
+raw text, primary field only) - re-validated 7/7 after the fix. Schema then updated
+(separate commit) to always require the label for `forbidden_pii` too, same as
+`other_field` - the keyword fallback stays in place for when the model still omits
+it, never removed.
+
+**Phase 3** (this commit): `src/whatsappService.js` gains `sendWhatsAppDocument(Once)`
+- same shape as the existing `sendWhatsAppMessage(Once)` (20s→30s timeout, one retry,
+same global `enqueueSend` FIFO queue so a document upload can never run concurrently
+with a text send on the gateway's one WhatsApp session). The caption field name
+(sent as `message`, mirroring `sendMessage`'s own field) is UNCONFIRMED against the
+real gateway - worst case on a wrong name is a document with no caption, never a
+failed send. New owner-only route `POST /hr-assistant/whatsapp/send-test-document`
+and "WhatsApp documents" page under SUBH Settings - resolves the owner's own number
+via `SUBH_OWNER_WHATSAPP_NUMBER` (override) then `employeeService.
+findOwnerEmployeeRecord()` (exact same resolution order as the existing
+`/automations/:id/send-test` route), sends a small fixed test PDF (`buildTablePdfBuffer`,
+reused as-is, no new PDF code). A single-step action, not a two-step preview-then-send
+like Letter settings' own send-test - there is nothing variable to preview here (the
+same file every time), so a preview step would add nothing. Never touches
+`handleIncomingMedia` (receiving files stays completely separate, for later).
 
 **Lock scenarios** (owner-authored, in "sender message → SUBH process → reply"
 format, 2026-11 - these are the authoritative examples for Part A phase 2 and for

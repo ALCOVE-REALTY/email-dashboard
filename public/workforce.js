@@ -31,7 +31,7 @@ const menuBtn = document.getElementById('menuBtn');
 const VIEWS = [
   'overview', 'directory', 'joining', 'exit', 'attrition', 'tenure', 'movement', 'insights', 'quality',
   'departmentFull', 'locationFull', 'movementDetail', 'doerManagement', 'orgChart', 'healthInsurance', 'coveredEmployees', 'hiAdditions', 'hiExits', 'hiTotalExits', 'hiFamilyMembers', 'hiTotalLives', 'hiPolicyInfo', 'hiFamilyPremium', 'hiAnnualPremium', 'ageDistribution', 'genderDistribution', 'collarDistribution', 'companyDistribution', 'subhSettings', 'integrations', 'profile', 'letterForm', 'letterSuccess', 'letterGenerator', 'interviewPanel',
-  'siteAliases', 'deptAliases', 'companyDetails', 'letterSettings', 'aiUsage', 'dataBackups', 'settingsHistory', 'holidays', 'dataAccess'
+  'siteAliases', 'deptAliases', 'companyDetails', 'letterSettings', 'aiUsage', 'dataBackups', 'settingsHistory', 'holidays', 'dataAccess', 'whatsappDocuments'
 ];
 const viewEls = Object.fromEntries(VIEWS.map((v) => [v, document.getElementById(v + 'View')]));
 
@@ -588,6 +588,13 @@ const subhSettingsDataAccessBtn = document.getElementById('subhSettingsDataAcces
 if (subhSettingsDataAccessBtn) {
   subhSettingsDataAccessBtn.addEventListener('click', () => {
     if (window.__hrAssistantOpenDataAccess) window.__hrAssistantOpenDataAccess();
+  });
+}
+// WhatsApp documents (PART B phase 3, 2026-11) - same entry pattern as above.
+const subhSettingsWhatsappDocsBtn = document.getElementById('subhSettingsWhatsappDocsBtn');
+if (subhSettingsWhatsappDocsBtn) {
+  subhSettingsWhatsappDocsBtn.addEventListener('click', () => {
+    if (window.__hrAssistantOpenWhatsappDocuments) window.__hrAssistantOpenWhatsappDocuments();
   });
 }
 // TASK 4 (2026-11), direct instruction - the 7 Settings sub-pages (Site

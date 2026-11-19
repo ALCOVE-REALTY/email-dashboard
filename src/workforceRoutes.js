@@ -2981,6 +2981,47 @@ router.post('/hr-assistant/data-access-notices/:id/dismiss', async (req, res) =>
   }
 });
 
+// Part B phase 3 (2026-11), direct instruction - the first real test of
+// WhatsApp DOCUMENT sending (not just text): a small, fixed PDF to the
+// OWNER'S OWN registered WhatsApp number, never anyone else - there is
+// nothing variable to preview here (same file every time), so this is a
+// single owner-only action, not a two-step preview-then-send. Resolution
+// order for "the owner's own WhatsApp number" mirrors the existing
+// automation send-test route exactly (see '/automations/:id/send-test'
+// above): SUBH_OWNER_WHATSAPP_NUMBER (explicit override) first, then the
+// owner's own real employee record's contact number
+// (employeeService.findOwnerEmployeeRecord(), the owner's real email,
+// never req.hrUser.email's shared/role address). 400 (route-level error,
+// a genuine setup problem) when neither resolves; a real send failure
+// (gateway down, bad number format) comes back as a normal 200 {ok:false,
+// error} instead, same convention as the automation send-test route's own
+// runAutomation result. Receiving files (handleIncomingMedia) is a
+// completely separate, untouched flow.
+router.post('/hr-assistant/whatsapp/send-test-document', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    let to = process.env.SUBH_OWNER_WHATSAPP_NUMBER;
+    if (!to) {
+      const ownerRecord = await employeeService.findOwnerEmployeeRecord().catch(() => null);
+      to = ownerRecord && ownerRecord.contactNumber;
+    }
+    if (!to) return res.status(400).json({ error: 'Could not find your own WhatsApp number - check your HR record has a contact number on file, or set SUBH_OWNER_WHATSAPP_NUMBER.' });
+    const now = new Date();
+    const buffer = await buildTablePdfBuffer({
+      title: 'SUBH WhatsApp Document Test',
+      subtitle: now.toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
+      columns: ['Message'],
+      rows: [['If you can see this file on WhatsApp, document sending from SUBH is working.']],
+      landscape: false
+    });
+    const filename = 'SUBH-WhatsApp-Test-' + now.toISOString().slice(0, 10) + '.pdf';
+    const result = await whatsapp.sendWhatsAppDocument(to, buffer, filename, 'SUBH WhatsApp document test');
+    res.json(Object.assign({ to }, result));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Task 16/18 (2026-11) - Action-needed card for a message auto-recovery
 // (see recoverStuckIncomingMessages) could not resolve on its own.
 // Dismissing it clears the underlying burst buffer too (see

@@ -289,6 +289,11 @@
   // PART A phase 1 (2026-11), direct instruction - "Data access":
   // Official/Personal/Restricted per real HR head, tap a chip to change.
   const dataAccessList = document.getElementById('hrDataAccessList');
+  // PART B phase 3 (2026-11), direct instruction - "WhatsApp documents":
+  // one owner-only test button, sends a small fixed PDF to the owner's
+  // own WhatsApp number only.
+  const hrWhatsappSendTestDocBtn = document.getElementById('hrWhatsappSendTestDocBtn');
+  const hrWhatsappSendTestDocResult = document.getElementById('hrWhatsappSendTestDocResult');
   const convoPage = document.getElementById('hrConvoPage');
   const convoThread = document.getElementById('hrConvoThread');
   const convoActions = document.getElementById('hrConvoActions');
@@ -3817,6 +3822,32 @@
         card.outerHTML = dataAccessRowHtml((r.items || []).find((x) => x.key === key) || { key, label: card.querySelector('.wf-auto-task-subject').textContent, tier });
         showActionToast('Saved');
       }, { resetAfterSuccess: true, toastFn: (msg) => showActionToast(msg, null, 'error') });
+    });
+  }
+
+  // PART B phase 3 (2026-11), direct instruction - "WhatsApp documents":
+  // sends a small fixed test PDF to the owner's own registered WhatsApp
+  // number (resolved server-side), never to anyone else. requestFn itself
+  // throws on a send failure (not just a route-level error) so
+  // runButtonAction's own error styling/toast correctly reflects a real
+  // send failure, not only a 4xx/5xx.
+  window.__hrAssistantOpenWhatsappDocuments = function () {
+    if (window.__hrAssistantClosePanel) window.__hrAssistantClosePanel(true);
+    if (window.setView) window.setView('whatsappDocuments', { resetHistory: true });
+  };
+  if (hrWhatsappSendTestDocBtn) {
+    hrWhatsappSendTestDocBtn.addEventListener('click', async () => {
+      if (hrWhatsappSendTestDocResult) hrWhatsappSendTestDocResult.textContent = '';
+      await runButtonAction(hrWhatsappSendTestDocBtn, async () => {
+        const r = await postJsonOrThrow('/api/workforce/hr-assistant/whatsapp/send-test-document', {});
+        if (!r.ok) throw new Error(r.error || 'Could not send the test file.');
+        return r;
+      }, (r) => {
+        if (hrWhatsappSendTestDocResult) hrWhatsappSendTestDocResult.textContent = 'Sent to ' + (r.to || 'your WhatsApp number') + ' ✓ - check your WhatsApp.';
+      }, {
+        resetAfterSuccess: true,
+        toastFn: (msg) => { if (hrWhatsappSendTestDocResult) hrWhatsappSendTestDocResult.textContent = 'Failed: ' + msg; else showActionToast(msg, null, 'error'); }
+      });
     });
   }
 

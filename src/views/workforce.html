@@ -2812,6 +2812,22 @@
             <svg class="wf-hub-tile-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
           </span>
         </button>
+        <!-- "WhatsApp documents" (PART B phase 3, 2026-11), direct
+             instruction - the new send-a-document-to-WhatsApp capability's
+             own owner-only test page. Same compact-tile entry pattern as
+             every other SUBH Settings page above. -->
+        <button type="button" class="wf-hub-tile wf-hub-tile--compact" id="subhSettingsWhatsappDocsBtn" style="margin-top:10px">
+          <span class="wf-hub-tile-icon comms">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+          </span>
+          <span class="wf-hub-tile-main">
+            <span class="wf-hub-tile-title">WhatsApp documents</span>
+            <span class="wf-hub-tile-sub">Send a test file to your own WhatsApp</span>
+          </span>
+          <span class="wf-hub-tile-end">
+            <svg class="wf-hub-tile-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+          </span>
+        </button>
       </div>
     </section>
 
@@ -3420,6 +3436,27 @@
       </div>
       <div class="wf-auto-hint" style="padding:4px 4px 10px">Official: shared directly with any verified employee. Personal: needs your approval when it's about someone else (own data is always direct). Restricted: own data direct, never shared about someone else - not even via an approval card.</div>
       <div class="wf-rem-list" id="hrDataAccessList"></div>
+    </section>
+
+    <!-- "WhatsApp documents" (PART B phase 3, 2026-11), direct
+         instruction - sending an actual FILE (not just text) to WhatsApp,
+         via the gateway's multipart upload endpoint. This first test only
+         ever sends to the owner's OWN number (never anyone else), a
+         small fixed test PDF, so there is nothing to preview that varies
+         - one button, one result. Receiving files is a separate,
+         untouched flow (handleIncomingMedia). -->
+    <section id="whatsappDocumentsView" class="wf-view" hidden>
+      <div class="wf-page-head" data-wi-enter="block">
+        <button class="wf-icon-btn" data-back-to-subh-settings aria-label="Back to SUBH Settings">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        </button>
+        <h2>WhatsApp documents</h2>
+      </div>
+      <div class="wf-auto-hint" style="padding:4px 4px 10px">Sends a small test PDF to your own registered WhatsApp number, to confirm SUBH can push a real file (not just a text message) through the gateway. Never sends to anyone else.</div>
+      <div class="wf-panel" style="margin:0 12px" data-wi-enter="block">
+        <button type="button" class="primary" id="hrWhatsappSendTestDocBtn" style="width:100%">Send test file to my WhatsApp</button>
+        <div id="hrWhatsappSendTestDocResult" class="wf-auto-hint" style="margin-top:10px"></div>
+      </div>
     </section>
 
     <section id="profileView" class="wf-view" hidden>
