@@ -144,6 +144,113 @@ async function main() {
   });
 
   console.log('='.repeat(70));
+  console.log('checkReplyPipeline false-alarm exclusions (2026-11, direct instruction, before pushing d9bd073) - "no false alarms... only real should-have-replied-but-didn\'t cases count"');
+  console.log('='.repeat(70));
+  const origIsNeverAuto = whatsappAssistant.isNeverAuto;
+  const origListPendingApprovals = whatsappAssistant.listPendingApprovals;
+  const origListOpenHrNoteFlows = whatsappAssistant.listOpenHrNoteFlows;
+  const origFindSenderAwaitingManagerConfirmation = whatsappAssistant.findSenderAwaitingManagerConfirmation;
+  const origIsSenderKnownEmployee = whatsappAssistant.isSenderKnownEmployee;
+  const origHasUnregisteredRefusalBeenSentToday = whatsappAssistant.hasUnregisteredRefusalBeenSentToday;
+  function restoreAllMocks() {
+    whatsapp.listMessages = origListMessages;
+    whatsappAssistant.listInboxLog = origListInboxLog;
+    whatsappAssistant.isNeverAuto = origIsNeverAuto;
+    whatsappAssistant.listPendingApprovals = origListPendingApprovals;
+    whatsappAssistant.listOpenHrNoteFlows = origListOpenHrNoteFlows;
+    whatsappAssistant.findSenderAwaitingManagerConfirmation = origFindSenderAwaitingManagerConfirmation;
+    whatsappAssistant.isSenderKnownEmployee = origIsSenderKnownEmployee;
+    whatsappAssistant.hasUnregisteredRefusalBeenSentToday = origHasUnregisteredRefusalBeenSentToday;
+  }
+  // Every exclusion test below uses the SAME otherwise-genuinely-stuck
+  // shape as the real-incident test above (20 min old, no reply in the
+  // inbox log) - proving the exclusion itself is what flips the verdict,
+  // not a weaker base case.
+  await checkAsync('a never-auto-reply contact\'s stuck-looking message is excluded (held for the owner\'s own manual reply, by design)', async () => {
+    const now = Date.now();
+    whatsapp.listMessages = async () => [{ direction: 'incoming', recipient: '919999999999', created_at: new Date(now - 20 * 60 * 1000).toISOString() }];
+    whatsappAssistant.listInboxLog = async () => [];
+    whatsappAssistant.isNeverAuto = async () => true;
+    const monitor = freshMonitor();
+    const result = await monitor.checkReplyPipeline();
+    restoreAllMocks();
+    return result.ok === true && /never-auto-reply/.test(result.excludedReason || '');
+  });
+  await checkAsync('a sender with a pending owner approval card is excluded (already got a holding reply, real answer awaits the owner)', async () => {
+    const now = Date.now();
+    whatsapp.listMessages = async () => [{ direction: 'incoming', recipient: '919999999999', created_at: new Date(now - 20 * 60 * 1000).toISOString() }];
+    whatsappAssistant.listInboxLog = async () => [];
+    whatsappAssistant.listPendingApprovals = async () => [{ phone: '919999999999' }];
+    const monitor = freshMonitor();
+    const result = await monitor.checkReplyPipeline();
+    restoreAllMocks();
+    return result.ok === true && /approval/.test(result.excludedReason || '');
+  });
+  await checkAsync('a sender with an open HR-note flow (STEP1/2) is excluded (same "waiting on a card" shape)', async () => {
+    const now = Date.now();
+    whatsapp.listMessages = async () => [{ direction: 'incoming', recipient: '919999999999', created_at: new Date(now - 20 * 60 * 1000).toISOString() }];
+    whatsappAssistant.listInboxLog = async () => [];
+    whatsappAssistant.listOpenHrNoteFlows = async () => [{ phone: '919999999999' }];
+    const monitor = freshMonitor();
+    const result = await monitor.checkReplyPipeline();
+    restoreAllMocks();
+    return result.ok === true && /approval/.test(result.excludedReason || '');
+  });
+  await checkAsync('a sender still awaiting their manager\'s confirmation reply is excluded', async () => {
+    const now = Date.now();
+    whatsapp.listMessages = async () => [{ direction: 'incoming', recipient: '919999999999', created_at: new Date(now - 20 * 60 * 1000).toISOString() }];
+    whatsappAssistant.listInboxLog = async () => [];
+    whatsappAssistant.findSenderAwaitingManagerConfirmation = async () => ({ status: 'awaiting_manager' });
+    const monitor = freshMonitor();
+    const result = await monitor.checkReplyPipeline();
+    restoreAllMocks();
+    return result.ok === true && /approval/.test(result.excludedReason || '');
+  });
+  await checkAsync('an unregistered sender\'s REPEAT message, after the day\'s one refusal already went out, is excluded', async () => {
+    const now = Date.now();
+    whatsapp.listMessages = async () => [{ direction: 'incoming', recipient: '919999999999', created_at: new Date(now - 20 * 60 * 1000).toISOString() }];
+    whatsappAssistant.listInboxLog = async () => [];
+    whatsappAssistant.isSenderKnownEmployee = async () => false;
+    whatsappAssistant.hasUnregisteredRefusalBeenSentToday = async () => true;
+    const monitor = freshMonitor();
+    const result = await monitor.checkReplyPipeline();
+    restoreAllMocks();
+    return result.ok === true && /unregistered/.test(result.excludedReason || '');
+  });
+  await checkAsync('an unregistered sender\'s FIRST message of the day (refusal NOT yet sent) still correctly alarms - this is a real bug shape, never excluded', async () => {
+    const now = Date.now();
+    whatsapp.listMessages = async () => [{ direction: 'incoming', recipient: '919999999999', created_at: new Date(now - 20 * 60 * 1000).toISOString() }];
+    whatsappAssistant.listInboxLog = async () => [];
+    whatsappAssistant.isSenderKnownEmployee = async () => false;
+    whatsappAssistant.hasUnregisteredRefusalBeenSentToday = async () => false;
+    const monitor = freshMonitor();
+    const result = await monitor.checkReplyPipeline();
+    restoreAllMocks();
+    return result.ok === false;
+  });
+  await checkAsync('a pure acknowledgement ("ok"/"thanks", logged outcome:"automatic") is excluded', async () => {
+    const now = Date.now();
+    whatsapp.listMessages = async () => [{ direction: 'incoming', recipient: '919999999999', created_at: new Date(now - 20 * 60 * 1000).toISOString() }];
+    whatsappAssistant.listInboxLog = async () => [{ chatId: '919999999999', outcome: 'automatic', ts: now - 19 * 60 * 1000 }];
+    const monitor = freshMonitor();
+    const result = await monitor.checkReplyPipeline();
+    restoreAllMocks();
+    return result.ok === true && /acknowledgement/.test(result.excludedReason || '');
+  });
+  await checkAsync('a message the owner already replied to MANUALLY from the phone (an outgoing message in the gateway feed itself) is excluded - never double-reply, never a false alarm either', async () => {
+    const now = Date.now();
+    whatsapp.listMessages = async () => [
+      { direction: 'incoming', recipient: '919999999999', created_at: new Date(now - 20 * 60 * 1000).toISOString() },
+      { direction: 'outgoing', recipient: '919999999999', created_at: new Date(now - 10 * 60 * 1000).toISOString() }
+    ];
+    whatsappAssistant.listInboxLog = async () => [];
+    const monitor = freshMonitor();
+    const result = await monitor.checkReplyPipeline();
+    restoreAllMocks();
+    return result.ok === true;
+  });
+
+  console.log('='.repeat(70));
   console.log('runHealthCheck - end to end: the Action-needed slot, the dual-channel alert, and the alert-spam debounce');
   console.log('='.repeat(70));
   const origSendWhatsAppMessage = whatsapp.sendWhatsAppMessage;

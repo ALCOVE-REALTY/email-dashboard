@@ -97,6 +97,13 @@ async function cleanupHrFlowArtifacts(...phones) {
     // flakiness but was actually a missing test-cleanup gap. Exported as
     // clearIntroducedToday - was simply never called here before.
     await whatsappAssistant.clearIntroducedToday(p, new Date()).catch(() => {});
+    // Same class of test-cleanup gap as directly above (direct
+    // instruction, 2026-11) - the UNREGISTERED SENDER scenarios' own
+    // "once per conversation day" refusal-dedup otherwise correctly
+    // suppresses runs 2/3 of the SAME scenario against the SAME phone,
+    // which looked like real-model flakiness (got: null) but was this
+    // suite reusing one phone across repeated runs, never a real bug.
+    await whatsappAssistant.clearUnregisteredRefusalSentToday(p, whatsappAssistant.istDayKeyOf(new Date())).catch(() => {});
   }
 }
 
@@ -2242,6 +2249,80 @@ scenario('Explicit-date (new): a day-word CONTRADICTING an explicit date in the 
     return { pass: true, detail: 'asked on contradiction, then resolved correctly: ' + confirmations[0].summaryLocalized };
   } finally {
     await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
+  }
+});
+
+// --- UNREGISTERED SENDER handling (2026-11, direct instruction, rule 7
+// "real-model lock scenarios") - the 5 named scenarios, verbatim phrasing
+// from the spec. REFUSAL_RE matches any of the 3 fixed-language
+// UNMATCHED_SENDER_DATA_REPLY texts by their distinguishing first
+// sentence (never the full text - the model picks the sender's detected
+// language, not a fixed one).
+const UNMATCHED_SENDER_REFUSAL_RE = /not registered in our HR database|HR database-e registered na|HR database mein registered nahi/i;
+const SCEN_UNREG_PHONE_1 = '910000000960';
+const SCEN_UNREG_PHONE_2 = '910000000961';
+const SCEN_UNREG_PHONE_3 = '910000000962';
+const SCEN_UNREG_PHONE_4 = '910000000963';
+const SCEN_TEST_NUMBER_PHONE = '910000000964';
+scenario('UNREGISTERED 1: an unregistered number asking "Subhodeep k?" (who is Subhodeep - HR data about a named person) gets the fixed refusal, never real data', async () => {
+  const phone = SCEN_UNREG_PHONE_1;
+  await cleanupHrFlowArtifacts(phone);
+  try {
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenUnreg1', firstName: 'ScenUnreg1', text: 'Subhodeep k?', isGroup: false, history: [] });
+    if (!d.replyText || !UNMATCHED_SENDER_REFUSAL_RE.test(d.replyText)) return { pass: false, detail: 'expected the fixed unregistered-number refusal, got: ' + d.replyText };
+    return { pass: true, detail: 'refused: ' + d.replyText };
+  } finally {
+    await cleanupHrFlowArtifacts(phone);
+  }
+});
+scenario('UNREGISTERED 2: an unregistered number asking "amar salary slip ta pathao" (a personal document, not wantsData) gets the fixed refusal too - requiresRegisteredSender is broader than wantsData on purpose', async () => {
+  const phone = SCEN_UNREG_PHONE_2;
+  await cleanupHrFlowArtifacts(phone);
+  try {
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenUnreg2', firstName: 'ScenUnreg2', text: 'amar salary slip ta pathao', isGroup: false, history: [] });
+    if (!d.replyText || !UNMATCHED_SENDER_REFUSAL_RE.test(d.replyText)) return { pass: false, detail: 'expected the fixed unregistered-number refusal, got: ' + d.replyText };
+    return { pass: true, detail: 'refused: ' + d.replyText };
+  } finally {
+    await cleanupHrFlowArtifacts(phone);
+  }
+});
+scenario('UNREGISTERED 3: an unregistered number asking "leave policy ki?" (a general policy question, no specific employee data) gets a normal answer, never the refusal', async () => {
+  const phone = SCEN_UNREG_PHONE_3;
+  await cleanupHrFlowArtifacts(phone);
+  try {
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenUnreg3', firstName: 'ScenUnreg3', text: 'leave policy ki?', isGroup: false, history: [] });
+    if (!d.replyText) return { pass: false, detail: 'expected a real answer, got no reply at all' };
+    if (UNMATCHED_SENDER_REFUSAL_RE.test(d.replyText)) return { pass: false, detail: 'a general policy question was wrongly refused: ' + d.replyText };
+    return { pass: true, detail: 'answered normally: ' + d.replyText };
+  } finally {
+    await cleanupHrFlowArtifacts(phone);
+  }
+});
+scenario('UNREGISTERED 4: an unregistered number informing "kal ami leave nebo" (their own leave, an attendance matter) goes through the leave flow exactly as before, never the refusal', async () => {
+  const phone = SCEN_UNREG_PHONE_4;
+  await cleanupHrFlowArtifacts(phone);
+  try {
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenUnreg4', firstName: 'ScenUnreg4', text: 'kal ami leave nebo', isGroup: false, history: [] });
+    if (!d.replyText) return { pass: false, detail: 'expected a real leave-flow acknowledgement, got no reply at all' };
+    if (UNMATCHED_SENDER_REFUSAL_RE.test(d.replyText)) return { pass: false, detail: 'an attendance/leave matter was wrongly refused: ' + d.replyText };
+    return { pass: true, detail: 'leave flow reached normally: ' + d.replyText };
+  } finally {
+    await cleanupHrFlowArtifacts(phone);
+  }
+});
+scenario('UNREGISTERED 5: a configured SUBH_TEST_NUMBERS entry asking "Subhodeep k?" is answered normally, as the owner - never the unregistered refusal', async () => {
+  const phone = SCEN_TEST_NUMBER_PHONE;
+  await cleanupHrFlowArtifacts(phone);
+  const savedTestNumbers = process.env.SUBH_TEST_NUMBERS;
+  process.env.SUBH_TEST_NUMBERS = phone;
+  try {
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenTestNum', firstName: 'ScenTestNum', text: 'Subhodeep k?', isGroup: false, history: [] });
+    if (!d.replyText) return { pass: false, detail: 'expected a real answer (treated as the owner), got no reply at all' };
+    if (UNMATCHED_SENDER_REFUSAL_RE.test(d.replyText)) return { pass: false, detail: 'a configured test number was wrongly refused as unregistered: ' + d.replyText };
+    return { pass: true, detail: 'answered normally as the owner: ' + d.replyText };
+  } finally {
+    if (savedTestNumbers === undefined) delete process.env.SUBH_TEST_NUMBERS; else process.env.SUBH_TEST_NUMBERS = savedTestNumbers;
+    await cleanupHrFlowArtifacts(phone);
   }
 });
 

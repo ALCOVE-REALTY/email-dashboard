@@ -5014,9 +5014,15 @@
   function actionNeededDataAccessNoticeCardHtml(item) {
     const isUnmatched = item.data.kind === 'unmatched_sender';
     const title = isUnmatched ? 'Unregistered number asked for HR data' : 'Restricted field request refused';
+    // Rule 6 (2026-11) - repeated messages from the same unregistered
+    // number are merged server-side (upsertUnmatchedSenderNotice) into
+    // this one record's own growing count/message, rather than a new
+    // card per message - shown here as a small "× N" badge, latest
+    // message text already in item.data.message.
+    const repeatBadge = (isUnmatched && item.data.count > 1) ? ' <span class="wi-count-badge neutral">× ' + Number(item.data.count) + '</span>' : '';
     return '<div class="wf-auto-task-card" data-chat-id="' + escapeHtml(item.chatId) + '" data-data-access-notice-id="' + escapeHtml(item.data.id) + '">' +
       '<div class="wf-action-needed-card-head">' +
-        '<span class="wf-auto-task-subject">' + escapeHtml(senderDisplay(item.name, item.chatId)) + '</span>' +
+        '<span class="wf-auto-task-subject">' + escapeHtml(senderDisplay(item.name, item.chatId)) + repeatBadge + '</span>' +
         '<button type="button" class="wf-action-needed-openchat" data-open-chat="' + escapeHtml(item.chatId) + '">Open chat ›</button>' +
       '</div>' +
       '<div class="wf-auto-hint">' + escapeHtml(title) + (item.data.fieldLabel ? ' (' + escapeHtml(item.data.fieldLabel) + ')' : '') + '</div>' +

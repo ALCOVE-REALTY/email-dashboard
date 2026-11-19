@@ -75,6 +75,40 @@ async function checkGateway() {
 }
 
 const STUCK_REPLY_THRESHOLD_MS = 15 * 60 * 1000;
+// False-alarm fix (2026-11, direct instruction, before pushing d9bd073) -
+// "make sure the check ignores messages where SUBH intentionally doesn't
+// reply." Only runs once the OLD global check below has already decided
+// the latest incoming message looks stuck - this is strictly additive,
+// so every one of the 5 existing deterministic checkReplyPipeline tests
+// (empty feed / replied-after / genuinely stuck / too-soon / group
+// message) keeps passing unchanged. Each reason here reads the SAME
+// durable app-level state decideAutoReplyCore/pollOnce itself uses -
+// never a guess - so this can't drift from what the real pipeline
+// actually decided. Fails CLOSED on any error (never excludes on a
+// thrown/timed-out check) - a broken exclusion check must never mask a
+// real incident.
+async function stuckExclusionReason(phone, whatsappAssistant) {
+  try {
+    if (await whatsappAssistant.isNeverAuto(phone)) return 'a never-auto-reply contact (held for the owner\'s own manual reply, by design)';
+  } catch (err) { /* fail closed */ }
+  try {
+    const norm = whatsapp.normalizePhone(phone);
+    const approvals = await whatsappAssistant.listPendingApprovals();
+    if (approvals.some((a) => whatsapp.normalizePhone(a.phone) === norm)) return 'waiting on an owner approval/Action-needed card';
+    const openFlows = await whatsappAssistant.listOpenHrNoteFlows();
+    if (openFlows.some((f) => whatsapp.normalizePhone(f.phone) === norm)) return 'waiting on an owner approval/Action-needed card';
+    if (await whatsappAssistant.findSenderAwaitingManagerConfirmation(phone)) return 'waiting on an owner approval/Action-needed card';
+  } catch (err) { /* fail closed */ }
+  try {
+    if (!(await whatsappAssistant.isSenderKnownEmployee(phone))) {
+      const dayKey = whatsappAssistant.istDayKeyOf(new Date());
+      if (await whatsappAssistant.hasUnregisteredRefusalBeenSentToday(phone, dayKey)) {
+        return 'unregistered-sender repeat message - today\'s one refusal was already sent';
+      }
+    }
+  } catch (err) { /* fail closed */ }
+  return null;
+}
 async function checkReplyPipeline() {
   try {
     // Read straight from the gateway's OWN feed, never the app's inbox
@@ -90,10 +124,42 @@ async function checkReplyPipeline() {
     const inboxLog = await withTimeout(whatsappAssistant.listInboxLog(50), HEALTH_CHECK_TIMEOUT_MS);
     const lastReplyAt = inboxLog.reduce((max, e) => (e.sentAt && e.sentAt > max ? e.sentAt : max), 0);
     const ageMs = Date.now() - lastIncomingAt;
-    const stuck = ageMs >= STUCK_REPLY_THRESHOLD_MS && lastReplyAt < lastIncomingAt;
+    let stuck = ageMs >= STUCK_REPLY_THRESHOLD_MS && lastReplyAt < lastIncomingAt;
+    let excludedReason = null;
+    if (stuck) {
+      // Spec: "messages I replied to manually" - a manual send from the
+      // owner's own phone shows up in this SAME gateway feed as an
+      // outgoing message, regardless of whether it went through SUBH's
+      // own auto-reply code at all, so it's checked directly against the
+      // feed rather than any app-level log that only SUBH's own sends
+      // ever write to.
+      const stuckMessage = incoming.find((m) => (m.created_at ? new Date(m.created_at).getTime() : 0) === lastIncomingAt);
+      const stuckPhone = stuckMessage ? stuckMessage.recipient : null;
+      const hasManualReplyAfter = stuckPhone && feed.some((m) => m.direction === 'outgoing' && whatsapp.normalizePhone(m.recipient) === whatsapp.normalizePhone(stuckPhone) && (m.created_at ? new Date(m.created_at).getTime() : 0) > lastIncomingAt);
+      if (hasManualReplyAfter) {
+        stuck = false;
+      } else if (stuckPhone) {
+        // Spec: "pure acknowledgements" - SUBH's own pipeline already
+        // decided no reply was needed for THIS message (outcome
+        // 'automatic', logged by decideAutoReplyCore's own
+        // replyNeeded===false check) - the most recent inbox-log entry
+        // for this exact chat is the authoritative record of that
+        // decision.
+        const chatEntries = inboxLog.filter((e) => e.chatId && whatsapp.normalizePhone(e.chatId) === whatsapp.normalizePhone(stuckPhone));
+        const latestChatEntry = chatEntries.reduce((latest, e) => (!latest || (e.ts || 0) > (latest.ts || 0) ? e : latest), null);
+        if (latestChatEntry && latestChatEntry.outcome === 'automatic') {
+          stuck = false;
+          excludedReason = 'a pure acknowledgement message SUBH correctly never replies to';
+        } else {
+          excludedReason = await stuckExclusionReason(stuckPhone, whatsappAssistant);
+          if (excludedReason) stuck = false;
+        }
+      }
+    }
     return {
       ok: !stuck,
       error: stuck ? ('a message arrived ' + Math.round(ageMs / 60000) + ' min ago and still has no reply sent since') : null,
+      excludedReason: excludedReason || undefined,
       lastIncomingAt, lastReplyAt: lastReplyAt || null
     };
   } catch (err) {

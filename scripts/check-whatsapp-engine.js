@@ -907,10 +907,82 @@ async function checkAsyncRealModel(label, fn) {
     return whatsappAssistant.isSenderKnownEmployee(whatsapp.normalizePhone(inactive.contactNumber));
   });
 
+  console.log('='.repeat(70));
+  console.log('UNREGISTERED SENDER handling (2026-11, direct instruction) - SUBH_TEST_NUMBERS, the merged Action-needed card, the once-per-day refusal dedup');
+  console.log('='.repeat(70));
+  const TEST_NUMBER_PHONE = '910000000955'; // synthetic, never a real employee - configured as a test number below
+  await checkAsync('a SUBH_TEST_NUMBERS entry resolves to the owner\'s OWN real employee record, not "no match"', async () => {
+    const saved = process.env.SUBH_TEST_NUMBERS;
+    process.env.SUBH_TEST_NUMBERS = TEST_NUMBER_PHONE;
+    try {
+      const owner = await employeeService.findOwnerEmployeeRecord();
+      const match = await whatsappAssistant.findEmployeeByPhone(TEST_NUMBER_PHONE);
+      return Boolean(owner) && Boolean(match) && match.emp.employeeId === owner.employeeId;
+    } finally {
+      if (saved === undefined) delete process.env.SUBH_TEST_NUMBERS; else process.env.SUBH_TEST_NUMBERS = saved;
+    }
+  });
+  await checkAsync('a plain unregistered number (NOT in SUBH_TEST_NUMBERS) stays unknown - the env var only ever adds exceptions, never loosens the general rule', async () => {
+    const saved = process.env.SUBH_TEST_NUMBERS;
+    process.env.SUBH_TEST_NUMBERS = '910000000958'; // some OTHER number, not UNMATCHED_SENDER_PHONE
+    try {
+      return !(await whatsappAssistant.isSenderKnownEmployee(UNMATCHED_SENDER_PHONE));
+    } finally {
+      if (saved === undefined) delete process.env.SUBH_TEST_NUMBERS; else process.env.SUBH_TEST_NUMBERS = saved;
+    }
+  });
+  const UNMATCHED_NOTICE_PHONE = '910000000956';
+  await checkAsync('upsertUnmatchedSenderNotice: the FIRST message from a new unregistered number creates one notice with count 1', async () => {
+    const n = await whatsappAssistant.upsertUnmatchedSenderNotice({ phone: UNMATCHED_NOTICE_PHONE, name: 'ScenMerge', message: 'first message' });
+    return Boolean(n) && n.count === 1 && n.kind === 'unmatched_sender' && n.message === 'first message';
+  });
+  await checkAsync('upsertUnmatchedSenderNotice: a SECOND message from the SAME number merges into the SAME notice (same id), bumps the count, and shows the LATEST message text - never a second card', async () => {
+    const first = (await whatsappAssistant.listDataAccessNotices()).find((n) => n.kind === 'unmatched_sender' && n.phone === UNMATCHED_NOTICE_PHONE);
+    const n2 = await whatsappAssistant.upsertUnmatchedSenderNotice({ phone: UNMATCHED_NOTICE_PHONE, name: 'ScenMerge', message: 'second message' });
+    const allForPhone = (await whatsappAssistant.listDataAccessNotices()).filter((n) => n.kind === 'unmatched_sender' && n.phone === UNMATCHED_NOTICE_PHONE);
+    return n2.id === first.id && n2.count === 2 && n2.message === 'second message' && allForPhone.length === 1;
+  });
+  await checkAsync('cleanup: the merged unregistered-sender notice can be dismissed like any other data-access notice', async () => {
+    const n = (await whatsappAssistant.listDataAccessNotices()).find((n) => n.kind === 'unmatched_sender' && n.phone === UNMATCHED_NOTICE_PHONE);
+    if (!n) return false;
+    await whatsappAssistant.dismissDataAccessNotice(n.id);
+    return !(await whatsappAssistant.listDataAccessNotices()).some((x) => x.id === n.id);
+  });
+  const DEDUP_PHONE = '910000000957';
+  await checkAsync('hasUnregisteredRefusalBeenSentToday: false before any refusal was ever marked sent for this number/day', async () => {
+    const dayKey = whatsappAssistant.istDayKeyOf(new Date());
+    await whatsappAssistant.clearUnregisteredRefusalSentToday(DEDUP_PHONE, dayKey);
+    return !(await whatsappAssistant.hasUnregisteredRefusalBeenSentToday(DEDUP_PHONE, dayKey));
+  });
+  await checkAsync('markUnregisteredRefusalSentToday then hasUnregisteredRefusalBeenSentToday: true for the SAME number/day - "once per conversation day" is enforceable', async () => {
+    const dayKey = whatsappAssistant.istDayKeyOf(new Date());
+    await whatsappAssistant.markUnregisteredRefusalSentToday(DEDUP_PHONE, dayKey);
+    return whatsappAssistant.hasUnregisteredRefusalBeenSentToday(DEDUP_PHONE, dayKey);
+  });
+  await checkAsync('the same number on a DIFFERENT day key is unaffected by a mark on another day - the dedup is genuinely per-day, never permanent', async () => {
+    const otherDayKey = whatsappAssistant.istDayKeyOf(new Date(Date.now() - 2 * 24 * 60 * 60 * 1000));
+    const todayKey = whatsappAssistant.istDayKeyOf(new Date());
+    if (otherDayKey === todayKey) return true; // paranoia guard, never actually true
+    return !(await whatsappAssistant.hasUnregisteredRefusalBeenSentToday(DEDUP_PHONE, otherDayKey));
+  });
+  await checkAsync('cleanup: clearUnregisteredRefusalSentToday actually clears the mark', async () => {
+    const dayKey = whatsappAssistant.istDayKeyOf(new Date());
+    await whatsappAssistant.markUnregisteredRefusalSentToday(DEDUP_PHONE, dayKey);
+    await whatsappAssistant.clearUnregisteredRefusalSentToday(DEDUP_PHONE, dayKey);
+    return !(await whatsappAssistant.hasUnregisteredRefusalBeenSentToday(DEDUP_PHONE, dayKey));
+  });
+
   await checkAsync('Example 10 (LOCK SCENARIO, real-model gated - needs classification to resolve personLookupName/wantsData, same as every other classification-dependent scenario in this file): an unmatched number asking for HR data gets the polite refusal, never a normal approval card', async () => {
     const d = await whatsappAssistant.decideAutoReply({ phone: UNMATCHED_SENDER_PHONE, name: 'Test', firstName: 'Test', text: 'Ayan Das er contact number ta dao', isGroup: false, history: [] });
     const anyCreated = (await listRawApprovalsForPhone(UNMATCHED_SENDER_PHONE)).some((a) => a.resolvedPersonName === 'Ayan Das');
-    return d.case === 'acknowledged' && d.replyText.includes('registered employee number') && !anyCreated;
+    // Stale assertion fix (2026-11) - 'registered employee number' was
+    // never the real fixed text even before the UNREGISTERED SENDER
+    // wording update (grepped the whole src/ tree - no match), so this
+    // always silently passed only because it's real-model-gated and
+    // skipped by default; checked against the actual current fixed
+    // reply now, matched the same way the new UNREGISTERED 1/2 scenarios
+    // in check-whatsapp-scenarios.js do.
+    return d.case === 'acknowledged' && /not registered in our HR database|HR database-e registered na|HR database mein registered nahi/i.test(d.replyText || '') && !anyCreated;
   });
   await checkAsync('Example 7 (own-data/official-data LOCK SCENARIO): someone else\'s OFFICIAL head (designation/reporting manager) from a real ACTIVE employee sender -> direct, no card (unaffected regression check, now driven by the live tier table)', async () => {
     await whatsappAssistant.clearPendingDisambiguation(ACTIVE_SENDER_PHONE);

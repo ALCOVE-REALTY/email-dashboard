@@ -3326,6 +3326,57 @@ async function listDataAccessNotices() {
     return records.filter(Boolean).sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
   } catch (err) { return []; }
 }
+// Direct instruction (2026-11) - repeated messages from the SAME
+// unregistered number must merge into ONE card (latest message on top +
+// a running count), never a fresh near-identical card per message. Only
+// for kind:'unmatched_sender' - the Restricted-tier refusal
+// (flagDataAccessNotice's own other caller) is a different, genuinely
+// one-off-per-request situation and is left exactly as it was. The
+// list here is naturally small (open incidents at any one time), so a
+// linear scan over it is the simplest correct approach - never worth a
+// second phone-indexed key just for this.
+async function upsertUnmatchedSenderNotice({ phone, name, message }) {
+  const redis = getClient();
+  if (!redis) return null;
+  try {
+    const ids = (await redis.smembers(DATA_ACCESS_NOTICE_IDS_KEY)) || [];
+    for (const id of ids) {
+      const existing = await getDataAccessNotice(id);
+      if (existing && existing.kind === 'unmatched_sender' && existing.phone === phone) {
+        const updated = Object.assign({}, existing, { message, name: name || existing.name, count: (existing.count || 1) + 1, lastSeenAt: Date.now() });
+        await redis.set(DATA_ACCESS_NOTICE_PREFIX + id, JSON.stringify(updated));
+        return updated;
+      }
+    }
+  } catch (err) { return null; }
+  return flagDataAccessNotice({ phone, name, kind: 'unmatched_sender', fieldLabel: null, message, count: 1 });
+}
+// Direct instruction (2026-11) - "once is enough": the fixed refusal
+// reply itself is sent at most once per unregistered number per IST
+// calendar day (the card above still updates every time regardless -
+// this only gates the chat REPLY). A plain TTL'd key (~26h, so a day
+// that starts late never gets cut off early by a bare 24h window) -
+// never needs manual cleanup.
+const UNREGISTERED_REFUSAL_SENT_PREFIX = 'wa-unreg-refusal-sent:';
+async function hasUnregisteredRefusalBeenSentToday(phone, dayKey) {
+  const redis = getClient();
+  if (!redis) return false;
+  try { return Boolean(await redis.get(UNREGISTERED_REFUSAL_SENT_PREFIX + phone + ':' + dayKey)); } catch (err) { return false; }
+}
+async function markUnregisteredRefusalSentToday(phone, dayKey) {
+  const redis = getClient();
+  if (!redis) return;
+  try { await redis.set(UNREGISTERED_REFUSAL_SENT_PREFIX + phone + ':' + dayKey, '1', { ex: 26 * 60 * 60 }); } catch (err) { /* best effort */ }
+}
+// Test-only helper (same convention as clearPendingHrNoteFlow/
+// clearPendingDisambiguation etc.) - lets a real-model scenario re-run
+// the SAME sender's FIRST message of the day repeatedly without the
+// previous run's own "already sent today" mark leaking across runs.
+async function clearUnregisteredRefusalSentToday(phone, dayKey) {
+  const redis = getClient();
+  if (!redis) return;
+  try { await redis.del(UNREGISTERED_REFUSAL_SENT_PREFIX + phone + ':' + dayKey); } catch (err) { /* best effort */ }
+}
 async function dismissDataAccessNotice(id) {
   const redis = getClient();
   if (!redis) return false;
@@ -3378,15 +3429,23 @@ async function isSenderKnownEmployee(phone) {
   const match = await findEmployeeByPhone(phone).catch(() => null);
   return Boolean(match);
 }
-// Direct instruction - the exact Bangla given for a DATA request (never a
-// job application/CV/vacancy enquiry/other existing flow - those are
+// Direct instruction (2026-11, FINAL fixed wording - replaces the
+// earlier single-line version, supersedes the earlier Part A phase 2
+// text too) - from a WhatsApp number that doesn't match any employee
+// record (and isn't a configured SUBH_TEST_NUMBERS entry - those are
+// treated as the owner, see findEmployeeByPhone), for a message asking
+// for HR database data OR a personal document (never a job application/
+// CV/vacancy enquiry/attendance matter/general question - those are
 // classified entirely separately upstream and never reach this reply,
-// see decideAutoReplyCore's own wantsData gate) from a WhatsApp number
-// that doesn't match any employee record.
+// see decideAutoReplyCore's own requiresRegisteredSender gate). Exact
+// text, no AI rewording - sent verbatim by language, English as the
+// fallback when detection is unsure. Hinglish is my own translation
+// (only English/Banglish were given directly) - same meaning, same
+// tone, same two-line shape.
 const UNMATCHED_SENDER_DATA_REPLY = {
-  banglish: 'Dukkhito, ei tottho shudhu registered employee number theke share kora jay.',
-  hinglish: 'Maaf kijiye, yeh jaankari sirf registered employee number se hi share ki jaati hai.',
-  english: 'Sorry, this information can only be shared with a registered employee number.'
+  banglish: "Apni je number theke message korechhen, seta amader HR database-e registered na, tai HR-related data deya ba request process kora jacche na. Onugroho kore sorasori HR team-er sathe jogajog kore bishoy-ta solve korun.\nApni jodi Alcove-er employee hon ar apnar number bodle thake, HR-ke apnar notun number update korte bolun.",
+  hinglish: "Aap jis number se message kar rahe hain, woh hamare HR database mein registered nahi hai, isliye HR-related data dena ya request process karna sambhav nahi hai. Kripya seedhe HR team se sampark karke matter solve karein.\nAgar aap Alcove ke employee hain aur aapka number badal gaya hai, toh HR se apna naya number update karne ko kahein.",
+  english: "The number you're messaging from is not registered in our HR database, so I can't share HR data or process this request. Please contact the HR team directly to resolve this.\nIf you are an Alcove employee and your number has changed, please ask HR to update your registered number."
 };
 // Task 16 (2026-11) LIVE BUG FIX - direct instruction, from the real live
 // incident (917278793115, 2026-11-04 14:42: "Mdo dept. HOD emp code dao"
@@ -10022,6 +10081,20 @@ async function classify(phone, messageText) {
   return 'official';
 }
 
+// Direct instruction (2026-11) - test numbers (SUBH_TEST_NUMBERS, comma-
+// separated env var) are treated EXACTLY as the owner's own registered
+// number, for every single consumer of findEmployeeByPhone below (the
+// own-data fast path, isSenderActiveEmployee/isSenderKnownEmployee, the
+// person-lookup own-name exception, ...) - one change here covers all
+// of them, rather than a parallel check at every call site. Resolved via
+// employeeService.findOwnerEmployeeRecord() - the SAME already-hardened
+// resolution a real past incident needed (a shared/login email matching
+// the WRONG employee's own directory row) - never a hardcoded employee
+// id, so this can never drift from whoever the app actually considers
+// "the owner" elsewhere.
+function parseTestNumbers() {
+  return String(process.env.SUBH_TEST_NUMBERS || '').split(',').map((p) => whatsapp.normalizePhone(p.trim())).filter(Boolean);
+}
 // Matches a 1:1 sender to their OWN real employee record by PHONE NUMBER
 // only - never by a name the message text might contain - so a real
 // fact lookup (see buildSelfFacts) can never be pointed at the wrong
@@ -10031,6 +10104,10 @@ async function classify(phone, messageText) {
 async function findEmployeeByPhone(phone) {
   const normalized = whatsapp.normalizePhone(phone);
   const { employees, departmentNames, doerNames } = await employeeService.getEmployeeData();
+  if (normalized && parseTestNumbers().includes(normalized)) {
+    const owner = await employeeService.findOwnerEmployeeRecord().catch(() => null);
+    if (owner) return { emp: owner, departmentNames, doerNames };
+  }
   const emp = employees.find((e) => e.contactNumber && whatsapp.normalizePhone(e.contactNumber) === normalized);
   return emp ? { emp, departmentNames, doerNames } : null;
 }
@@ -11101,6 +11178,7 @@ function classifyTool() {
           hrNotificationThirdPartyHint: { type: 'string', description: 'Optional - a department/site/designation hint for the third party named above, if one was given (e.g. "Srirampur site"). Omit if none was mentioned.' },
           hrNotificationInvolvesThirdParty: { type: 'boolean', description: 'Required when isHrNotification is true - true whenever SOMEONE ELSE (a manager/supervisor) needs to confirm this, even if not yet named: this includes hrNotificationActionKind "instruction" (someone TOLD the sender to do something, e.g. "Ajke amake duty korte bola hoyechhe"), "approval" (someone ALLOWED/GRANTED the sender something they asked for - WFH, leave, a half-day, late coming - e.g. "Ajke ami bari theke kaj korchi"/"Kalke chuti nebo" DOES need a third party: someone approved or will approve it, even though the sender initiated it themselves), and "neutral" (unclear who, but someone is still involved). Set false ONLY for hrNotificationActionKind "sudden" (a sudden/emergency report - handled by asking separately whether the sender informed their manager, not by this field) or for a genuinely solo notice with no approval/instruction concept at all (e.g. a salary/bank-account update, a work-location change with nothing to confirm).' },
           wantsData: { type: 'boolean', description: 'true ONLY if they are asking for actual HR/employee data from the company database - counts, lists, names, headcounts, birthdays, who reports to whom, department lists, or any field (even just a phone number) about a named employee, etc. false for a question about their OWN situation (their own letter/salary/attendance), a policy question, an informing message, or small talk - those go through the normal topic/memory/noting path instead, never this one. Judge this from THIS message alone, read as a complete, self-contained question - true for a plain "who is <name>?"/"<name> ke?" even if the conversation history separately discussed a different name or an unresolved earlier question (e.g. a name mentioned while confirming who gave an instruction). Never classify a self-contained new "who is X" question as a continuation of an unrelated, unresolved exchange from history just because a similar-sounding name or topic appeared earlier - that history-leak is a known failure mode. Only let history change this when THIS message is a genuine elliptical fragment that cannot stand alone without it (e.g. a bare "?", "tar ki holo", a pronoun with no antecedent in the message itself).' },
+          requiresRegisteredSender: { type: 'boolean', description: 'Direct instruction (2026-11) - true whenever answering this message would mean sharing HR database data OR a personal document/record (salary slip, payslip, Form 16, offer/appointment letter, attendance report, or any other document tied to an employee), about ANYONE - including the sender\'s own situation (unlike wantsData above, which explicitly excludes "their own letter/salary"). This is broader than wantsData on purpose: it also covers a document request wantsData itself is never set true for. false for an attendance/leave/late-coming/WFH/duty-change matter (that is isHrNotification\'s own job, handled completely separately) and false for a general policy/informational question with no specific employee data or document being asked for (leave policy in general, holiday list, office timing, general attendance rules, small talk, etc.) - those get an ordinary answer regardless of who is asking. When genuinely unsure whether a message is asking for employee data/a document versus a general question, choose true - never guess toward exposing something.' },
           dataRequestSummary: { type: 'string', description: 'Required only when wantsData is true - restate exactly what data they are asking for, in plain English, e.g. "current list of engineers", "headcount under Yashaswi Shroff", "Ayan Das\'s contact number". Omit when wantsData is false.' },
           personLookupName: { type: 'string', description: 'ONLY when wantsData is true AND the request is for ONE specific field about ONE named person (e.g. "Ayan Das er contact number ta dao", "R amake Ayan Das HR er contact no. ta debe?") - the person\'s name EXACTLY as given in THIS message, first name alone is fine (e.g. "Ayan"). NEVER guess, complete, or expand the name using an earlier message in the conversation history - if THIS message only says "Ayan", output "Ayan", even if an earlier message in this same chat was about a specific "Ayan Biswas" or "Ayan Das". Only carry a name forward from history when the sender explicitly refers back to the same person ("tar", "oi jon-er", "same person", "ওই person", "usi ka") - in that case output the name history already resolved. Omit entirely for any aggregate/list/count/headcount request (e.g. "engineers list", "headcount under X", "who reports to X") - those are never about one person\'s own personal field and must NOT set this.' },
           personLookupField: { type: 'string', enum: ['contact_number', 'general_details', 'other_field', 'forbidden_pii'], description: 'Required when personLookupName is given. "contact_number" ONLY for their phone/contact/mobile/WhatsApp number. "general_details" ONLY for their full name, designation/role, department, or how long they\'ve been with the company (tenure) - these are not sensitive and never need approval. "other_field" for any other single personal field that is NOT one of the 9 forbidden heads listed under "forbidden_pii" below - e.g. employee code/employee ID/emp no., mail id/personal email, emergency contact, OR that named person\'s OWN HOD/Reporting Doer (see personLookupFieldLabel\'s own description for the HOD-vs-Doer rule). Never use "other_field" for a DEPARTMENT\'s own HOD/Reporting Doer question with no specific person named (e.g. "HR dept er HOD ke?") - that has no personLookupName at all, see wantsData\'s own description. "forbidden_pii" ONLY for exactly these 9 heads, nothing else: Aadhaar, PAN, bank account/IFSC, salary/CTC, UAN number, ESIC/ESI number, home/permanent/present address, date of birth, blood group - these are NEVER shared regardless of approval. Employee code/ID is NOT forbidden_pii - it is always "other_field", never guess otherwise. When unsure whether a field is genuinely one of these exact 9 heads (e.g. a bank-related term you don\'t recognize) vs. a clearly different field (employee code, designation, location, tenure, etc.), choose "forbidden_pii" only for the genuinely ambiguous bank/salary-shaped case - never for something plainly unrelated like employee code. Whether you choose "other_field" OR "forbidden_pii", you MUST also set personLookupFieldLabel naming which exact field it is (see its own description) - which specific one of the 9 forbidden_pii heads was asked for genuinely matters downstream, even though every one of them is always refused the same way as far as you need to know.' },
@@ -11141,7 +11219,7 @@ function formatHistoryBlock(history) {
 // silently drop a real human message; the worst case is a generic
 // holding reply going out when a sharper one would have been nicer, not
 // silence.
-const CLASSIFY_FALLBACK = { intent: 'other', language: 'english', topic: 'none', topicLabel: 'general conversation', replyNeeded: true, wantsData: false, isTimingQuestion: false, hrTopicArea: 'none', isHrNotification: false, isJobApplication: false, isVacancyEnquiry: false, vacancyEnquiryPosition: null };
+const CLASSIFY_FALLBACK = { intent: 'other', language: 'english', topic: 'none', topicLabel: 'general conversation', replyNeeded: true, wantsData: false, requiresRegisteredSender: false, isTimingQuestion: false, hrTopicArea: 'none', isHrNotification: false, isJobApplication: false, isVacancyEnquiry: false, vacancyEnquiryPosition: null };
 async function classifyOfficialMessage(text, history) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error('whatsappAssistant.classifyOfficialMessage called without ANTHROPIC_API_KEY set');
@@ -12600,6 +12678,47 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
     return handleHrNotificationStart({ phone, name: senderLabel, lang, text, history, classification });
   }
 
+  // Direct instruction (2026-11) - UNREGISTERED SENDER handling rule 2:
+  // requiresRegisteredSender is broader than wantsData on purpose (also
+  // covers a personal-document request - e.g. "amar salary slip ta
+  // pathao" - which wantsData itself is never true for, see its own
+  // classifier description). Checked BEFORE wantsData's own, narrower
+  // gate below, so a document request from an unregistered sender is
+  // never missed; the OLD, narrower check still sitting inside the
+  // wantsData block below is deliberately left in place as a second,
+  // redundant safety net ("don't change anything else"). Rule 3/4: this
+  // is false for an attendance/leave matter (isHrNotification, handled
+  // above) and false for a general question, so neither flow is ever
+  // affected by this gate, for registered and unregistered senders
+  // alike.
+  if (!isGroup && classification.requiresRegisteredSender) {
+    const lang = classification.language || detectLang(text);
+    if (!(await isSenderKnownEmployee(phone))) {
+      const noticeMessage = senderLabel + ' (' + phone + ') HR data/document chaiche ("' + String(text || '').slice(0, 160) + '"), kintu eta kono registered employee-r number na - refuse kora holo.';
+      // Rule 6 - repeated messages from the SAME unregistered number
+      // merge into ONE card (latest message + a running count), never a
+      // fresh card per message; the owner is pinged only once, when the
+      // card is first raised, never again for every later repeat.
+      const notice = await upsertUnmatchedSenderNotice({ phone, name: senderLabel || null, message: noticeMessage });
+      if (notice && notice.count === 1) {
+        await postOwnerNotification('⚠️ ' + senderLabel + ' (' + phone + ') HR data/document chaiche kintu eta kono registered employee-r number na - refuse kora holo, SUBH kichu pathay ni.').catch(() => {});
+      }
+      // Rule 6 - "don't send the refusal again for every message within
+      // the same conversation day - once is enough." The card above
+      // still updates every time regardless; only the chat REPLY is
+      // gated. A silent 'acknowledged'/null here is the same no-reply
+      // shape every other silent-ack case in this function already
+      // returns (e.g. the emoji-only/closing-ack replies above) - never
+      // logged to the inbox log, same as those.
+      const dayKey = istDayKeyOf(new Date());
+      if (await hasUnregisteredRefusalBeenSentToday(phone, dayKey)) {
+        return { case: 'acknowledged', replyText: null, summaryForOwner: null, lang };
+      }
+      await markUnregisteredRefusalSentToday(phone, dayKey);
+      return { case: 'acknowledged', replyText: UNMATCHED_SENDER_DATA_REPLY[lang] || UNMATCHED_SENDER_DATA_REPLY.english, summaryForOwner: null, lang };
+    }
+  }
+
   // Spec point 6 - a request for real HR/employee data NEVER gets
   // answered directly on WhatsApp, always a holding reply + the owner's
   // explicit approval first.
@@ -12614,7 +12733,12 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
     // about themselves" either way. Scoped to wantsData ONLY - job
     // applications/CVs/vacancy enquiries/every other existing flow are
     // classified entirely separately upstream and never reach this
-    // check (direct instruction: "applies only to DATA requests").
+    // check (direct instruction: "applies only to DATA requests"). In
+    // practice this is now a redundant second safety net - the broader
+    // requiresRegisteredSender gate above already caught every
+    // unregistered sender asking for data before this point is ever
+    // reached - kept exactly as it was regardless ("don't change
+    // anything else").
     if (!(await isSenderKnownEmployee(phone))) {
       await flagDataAccessNotice({ phone, name: senderLabel || null, kind: 'unmatched_sender', fieldLabel: null, message: senderLabel + ' (' + phone + ') HR data chaiche ("' + String(text || '').slice(0, 160) + '"), kintu eta kono registered employee-r number na - refuse kora holo, SUBH kichu pathay ni.' });
       await postOwnerNotification('⚠️ ' + senderLabel + ' (' + phone + ') HR data chaiche kintu eta kono registered employee-r number na - refuse kora holo, SUBH kichu pathay ni.');
@@ -15033,6 +15157,11 @@ module.exports = {
   getSystemHealthAlert,
   clearSystemHealthAlert,
   isSenderKnownEmployee,
+  findSenderAwaitingManagerConfirmation,
+  upsertUnmatchedSenderNotice,
+  hasUnregisteredRefusalBeenSentToday,
+  markUnregisteredRefusalSentToday,
+  clearUnregisteredRefusalSentToday,
   isFieldAliasOfficialNow,
   isFieldAliasRestrictedNow,
   resolveFieldAccessTier,
