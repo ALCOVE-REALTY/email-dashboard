@@ -60,15 +60,33 @@ function isStrongPassword(password) {
   return p.length >= 8 && /[A-Z]/.test(p) && /[a-z]/.test(p) && /[0-9]/.test(p) && /[^A-Za-z0-9]/.test(p);
 }
 
-async function getUser(email) {
+// LIVE BUG FIX (2026-11, direct instruction - production incident) - the
+// store being unreachable (missing/overwritten KV_REST_API_URL/
+// KV_REST_API_TOKEN or UPSTASH_REDIS_REST_URL/UPSTASH_REDIS_REST_TOKEN,
+// or a real connection/auth failure talking to Upstash) used to return
+// the exact same `null` as "this email genuinely has no account" - a
+// login attempt during an outage got told "No account found for this
+// email. Please sign up first." instead of a message that points at the
+// real problem. getUserResult tells the two apart; getUser (below) stays
+// as the old, simpler null-either-way wrapper for every OTHER caller in
+// this file, where that distinction has never mattered (they already
+// treat "couldn't tell" and "not found" the same way, which is fine for
+// a background signup/admin check - only the real LOGIN path, where a
+// human is staring at an error message, needs to know which one it was).
+async function getUserResult(email) {
   const redis = getClient();
-  if (!redis) return null;
+  if (!redis) return { ok: false, reason: 'unavailable' };
   try {
-    return (await redis.get(userKey(email))) || null;
+    const value = await redis.get(userKey(email));
+    return { ok: true, user: value || null };
   } catch (err) {
     console.error('[hr-user-store] getUser failed:', err.message);
-    return null;
+    return { ok: false, reason: 'unavailable' };
   }
+}
+async function getUser(email) {
+  const result = await getUserResult(email);
+  return result.ok ? result.user : null;
 }
 
 // Returns the new user record, or an { error } object - 'exists_pending'/
@@ -168,11 +186,19 @@ function isBootstrapAdmin(email) {
 // otherwise { ok: false, reason } so the route can tell "wrong password"
 // apart from "not approved yet" apart from "no such account".
 async function verifyLogin(email, password) {
-  let user = await getUser(email);
+  const lookup = await getUserResult(email);
+  // LIVE BUG FIX (2026-11) - 'unavailable' is returned here FIRST, before
+  // ever reaching the "!user -> no_account" check below, so a store
+  // outage can never be mistaken for a genuinely missing account -
+  // server.js's own route maps this reason to "Can't reach server,
+  // please try again.", never the "no account" text.
+  if (!lookup.ok) return { ok: false, reason: 'unavailable' };
+  let user = lookup.user;
   if (user && user.status === 'pending' && isBootstrapAdmin(email)) {
     console.log('[hr-user-store] HR_BOOTSTRAP_ADMIN auto-approving ' + normalizeEmail(email) + ' - remove this env var now that it has been used.');
     await setStatus(email, 'approved');
-    user = await getUser(email);
+    const refetch = await getUserResult(email);
+    if (refetch.ok) user = refetch.user;
   }
   if (!user) return { ok: false, reason: 'no_account' };
   if (user.status !== 'approved') return { ok: false, reason: user.status === 'denied' ? 'denied' : 'pending' };

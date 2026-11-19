@@ -34,6 +34,7 @@ const { spawn } = require('child_process');
 const DETERMINISTIC_SUITES = [
   'check-data-access.js',
   'check-whatsapp-document-send.js',
+  'check-hr-login.js',
   'check-company-details.js',
   'check-ai-usage-log.js',
   'check-letter-settings.js',

@@ -317,6 +317,14 @@ app.post('/api/hr-auth/login', async (req, res) => {
   }
   const result = await hrUserStore.verifyLogin(email, password);
   if (!result.ok) {
+    // LIVE BUG FIX (2026-11, direct instruction - production incident) -
+    // the user database being unreachable (missing/overwritten env var,
+    // a real connection/auth failure) used to come back indistinguishable
+    // from "this email has no account" (hrUserStore.getUser returned
+    // null either way) - checked FIRST, before recordFailedLogin, so an
+    // outage never counts against the real person's login-attempt rate
+    // limit either (not their fault, never their penalty).
+    if (result.reason === 'unavailable') return res.status(503).json({ error: "Can't reach server, please try again." });
     hrAuth.recordFailedLogin(req, res, email);
     if (result.reason === 'no_account') return res.status(401).json({ error: 'No account found for this email. Please sign up first.' });
     if (result.reason === 'pending') return res.status(403).json({ error: 'Your access request is still waiting for approval.' });
