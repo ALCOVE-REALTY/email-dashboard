@@ -286,12 +286,34 @@ async function main() {
   });
 
   console.log('='.repeat(70));
-  console.log('Owner-only route: /hr-assistant/whatsapp/send-test-document');
+  console.log('Owner-only routes: /hr-assistant/whatsapp/send-test-document/start + /status/:jobId');
   console.log('='.repeat(70));
-  const unauthorized = await callRoute(workforceRoutes, 'post', '/hr-assistant/whatsapp/send-test-document', { email: 'not-the-owner@example.com' });
-  check('blocked for a non-owner', unauthorized.status === 403);
+  // LIVE BUG FIX (2026-11) - this was ONE synchronous route awaiting the
+  // whole gateway upload before responding, which started failing live
+  // with a browser-side "Failed to fetch" (something in the real network
+  // path cut the connection before the ~62s-worst-case response ever
+  // landed). Split into start (near-instant) + status (polled) - same
+  // background-job pattern fullStoreBackupService.js already uses for
+  // the exact same class of bug. whatsappDocTestJob's background runner
+  // is fire-and-forget (never awaited by the route) - these tests poll
+  // getJob() directly (not the HTTP route) to wait for it to settle,
+  // since nothing mocked here has any real delay.
+  const whatsappDocTestJob = require('../src/aiAssistant/whatsappDocTestJob');
+  async function waitForJobSettled(jobId) {
+    for (let i = 0; i < 50; i++) {
+      const job = await whatsappDocTestJob.getJob(jobId);
+      if (job && job.status !== 'running') return job;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    throw new Error('job ' + jobId + ' never settled');
+  }
+  const unauthorized = await callRoute(workforceRoutes, 'post', '/hr-assistant/whatsapp/send-test-document/start', { email: 'not-the-owner@example.com' });
+  check('start is blocked for a non-owner', unauthorized.status === 403);
+  const unauthorizedStatus = await callRoute(workforceRoutes, 'get', '/hr-assistant/whatsapp/send-test-document/status/:jobId', { params: { jobId: 'whatever' }, email: 'not-the-owner@example.com' });
+  check('status is blocked for a non-owner', unauthorizedStatus.status === 403);
+  check('a bogus job id 404s instead of crashing', (await callRoute(workforceRoutes, 'get', '/hr-assistant/whatsapp/send-test-document/status/:jobId', { params: { jobId: 'not-a-real-job' }, email: OWNER_EMAIL })).status === 404);
 
-  await checkAsync('resolves the owner\'s own number via SUBH_OWNER_WHATSAPP_NUMBER when set, in preference to the employee record', async () => {
+  await checkAsync('resolves the owner\'s own number via SUBH_OWNER_WHATSAPP_NUMBER when set, in preference to the employee record, and the job ends up done', async () => {
     const originalEnv = process.env.SUBH_OWNER_WHATSAPP_NUMBER;
     process.env.SUBH_OWNER_WHATSAPP_NUMBER = '919876543210';
     const origFindOwner = employeeService.findOwnerEmployeeRecord;
@@ -300,8 +322,10 @@ async function main() {
     let sentTo = null, sentBuffer = null;
     whatsapp.sendWhatsAppDocument = async (phone, buf) => { sentTo = phone; sentBuffer = buf; return { ok: true, gatewayMessageId: 'TEST1' }; };
     try {
-      const r = await callRoute(workforceRoutes, 'post', '/hr-assistant/whatsapp/send-test-document', { email: OWNER_EMAIL });
-      return r.status === 200 && r.body.ok === true && r.body.to === '919876543210' && sentTo === '919876543210' && Buffer.isBuffer(sentBuffer) && sentBuffer.length > 0;
+      const started = await callRoute(workforceRoutes, 'post', '/hr-assistant/whatsapp/send-test-document/start', { email: OWNER_EMAIL });
+      if (started.status !== 200 || !started.body.jobId) return false;
+      const job = await waitForJobSettled(started.body.jobId);
+      return job.status === 'done' && job.result.to === '919876543210' && sentTo === '919876543210' && Buffer.isBuffer(sentBuffer) && sentBuffer.length > 0;
     } finally {
       if (originalEnv === undefined) delete process.env.SUBH_OWNER_WHATSAPP_NUMBER; else process.env.SUBH_OWNER_WHATSAPP_NUMBER = originalEnv;
       employeeService.findOwnerEmployeeRecord = origFindOwner;
@@ -317,34 +341,51 @@ async function main() {
     let sentTo = null;
     whatsapp.sendWhatsAppDocument = async (phone) => { sentTo = phone; return { ok: true, gatewayMessageId: 'TEST2' }; };
     try {
-      const r = await callRoute(workforceRoutes, 'post', '/hr-assistant/whatsapp/send-test-document', { email: OWNER_EMAIL });
-      return r.status === 200 && r.body.to === '919876500000' && sentTo === '919876500000';
+      const started = await callRoute(workforceRoutes, 'post', '/hr-assistant/whatsapp/send-test-document/start', { email: OWNER_EMAIL });
+      const job = await waitForJobSettled(started.body.jobId);
+      return job.status === 'done' && job.result.to === '919876500000' && sentTo === '919876500000';
     } finally {
       if (originalEnv === undefined) delete process.env.SUBH_OWNER_WHATSAPP_NUMBER; else process.env.SUBH_OWNER_WHATSAPP_NUMBER = originalEnv;
       employeeService.findOwnerEmployeeRecord = origFindOwner;
       whatsapp.sendWhatsAppDocument = origSend;
     }
   });
-  await checkAsync('400 (a real setup problem, never a 500) when neither SUBH_OWNER_WHATSAPP_NUMBER nor a real employee record resolves', async () => {
+  await checkAsync('400 (a real setup problem, never a 500) when neither SUBH_OWNER_WHATSAPP_NUMBER nor a real employee record resolves - fails BEFORE a job is even created', async () => {
     const originalEnv = process.env.SUBH_OWNER_WHATSAPP_NUMBER;
     delete process.env.SUBH_OWNER_WHATSAPP_NUMBER;
     const origFindOwner = employeeService.findOwnerEmployeeRecord;
     employeeService.findOwnerEmployeeRecord = async () => null;
     try {
-      const r = await callRoute(workforceRoutes, 'post', '/hr-assistant/whatsapp/send-test-document', { email: OWNER_EMAIL });
-      return r.status === 400 && /SUBH_OWNER_WHATSAPP_NUMBER/.test(r.body.error);
+      const r = await callRoute(workforceRoutes, 'post', '/hr-assistant/whatsapp/send-test-document/start', { email: OWNER_EMAIL });
+      return r.status === 400 && /SUBH_OWNER_WHATSAPP_NUMBER/.test(r.body.error) && !r.body.jobId;
     } finally {
       if (originalEnv === undefined) delete process.env.SUBH_OWNER_WHATSAPP_NUMBER; else process.env.SUBH_OWNER_WHATSAPP_NUMBER = originalEnv;
       employeeService.findOwnerEmployeeRecord = origFindOwner;
     }
   });
-  await checkAsync('a real SEND failure comes back as a normal 200 {ok:false, error}, never a 500 - the route itself didn\'t break, the send did', async () => {
+  await checkAsync('a real SEND failure settles the job as failed (never crashes the background runner), with the gateway\'s own plain-language reason', async () => {
     process.env.SUBH_OWNER_WHATSAPP_NUMBER = '919876543210';
     const origSend = whatsapp.sendWhatsAppDocument;
     whatsapp.sendWhatsAppDocument = async () => ({ ok: false, error: 'gateway unreachable' });
     try {
-      const r = await callRoute(workforceRoutes, 'post', '/hr-assistant/whatsapp/send-test-document', { email: OWNER_EMAIL });
-      return r.status === 200 && r.body.ok === false && r.body.error === 'gateway unreachable';
+      const started = await callRoute(workforceRoutes, 'post', '/hr-assistant/whatsapp/send-test-document/start', { email: OWNER_EMAIL });
+      const job = await waitForJobSettled(started.body.jobId);
+      return job.status === 'failed' && job.error === 'gateway unreachable';
+    } finally {
+      delete process.env.SUBH_OWNER_WHATSAPP_NUMBER;
+      whatsapp.sendWhatsAppDocument = origSend;
+    }
+  });
+  await checkAsync('the start route itself responds almost immediately even when the gateway call is slow - the whole point of this fix', async () => {
+    process.env.SUBH_OWNER_WHATSAPP_NUMBER = '919876543210';
+    const origSend = whatsapp.sendWhatsAppDocument;
+    whatsapp.sendWhatsAppDocument = () => new Promise((resolve) => setTimeout(() => resolve({ ok: true, gatewayMessageId: 'SLOW1' }), 2000));
+    try {
+      const t0 = Date.now();
+      const started = await callRoute(workforceRoutes, 'post', '/hr-assistant/whatsapp/send-test-document/start', { email: OWNER_EMAIL });
+      const elapsed = Date.now() - t0;
+      const job = await waitForJobSettled(started.body.jobId); // let the background job actually finish before the next test reuses the mock
+      return elapsed < 500 && job.status === 'done';
     } finally {
       delete process.env.SUBH_OWNER_WHATSAPP_NUMBER;
       whatsapp.sendWhatsAppDocument = origSend;

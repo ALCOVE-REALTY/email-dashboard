@@ -71,20 +71,33 @@ function waitFor(page, fn, timeoutMs) {
     page.on('console', (msg) => { if (msg.type() === 'error' && !/Failed to load resource/.test(msg.text())) consoleErrors.push(msg.text()); });
     page.on('pageerror', (err) => { if (!/Cannot read properties of undefined \(reading 'all'\)/.test(err.message)) pageErrors.push(err.message); });
 
-    let sendTestResponse = { ok: true, to: '919876543210', gatewayMessageId: 'TEST-MSG-1' };
-    let sendTestCallCount = 0;
+    // LIVE BUG FIX (2026-11) - the real route used to be ONE request that
+    // awaited the whole gateway upload, which started failing live with a
+    // browser-side "Failed to fetch" (something in the real network path
+    // cut the connection before the server's ~62s-worst-case response
+    // ever landed). Now split into start (near-instant) + status (polled
+    // by the button's own code, ~1.5s apart) - the mock below simulates
+    // that: start always responds fast; status reports 'running' for the
+    // first poll (so the fleeting is-loading state is actually observable
+    // - a same-tick mock would make it disappear before the test can look
+    // for it) then settles to jobOutcome.
+    let jobOutcome = { status: 'done', result: { to: '919876543210', gatewayMessageId: 'TEST-MSG-1' } };
+    let startCallCount = 0;
+    let pollCountForCurrentJob = 0;
     await page.route('**/api/**', async (route) => {
       const method = route.request().method();
       const url = route.request().url();
-      if (url.includes('/whatsapp/send-test-document')) {
-        sendTestCallCount++;
-        // Deliberately delayed (not instant) - a same-tick mock response
-        // can resolve faster than Playwright's own click-action latency,
-        // which would make the fleeting is-loading state disappear before
-        // the test ever gets to look for it. This has no bearing on the
-        // real gateway, which is never this fast anyway.
-        await new Promise((resolve) => setTimeout(resolve, 500));
-        route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(sendTestResponse) });
+      if (url.includes('/whatsapp/send-test-document/start')) {
+        startCallCount++;
+        pollCountForCurrentJob = 0;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ jobId: 'test-job-' + startCallCount }) });
+        return;
+      }
+      if (url.includes('/whatsapp/send-test-document/status/')) {
+        pollCountForCurrentJob++;
+        const body = pollCountForCurrentJob < 2 ? { status: 'running' } : jobOutcome;
+        route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
         return;
       }
       if (method !== 'GET') { route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true }) }); return; }
@@ -124,17 +137,17 @@ function waitFor(page, fn, timeoutMs) {
     await page.evaluate(() => { const b = document.getElementById('hrWhatsappSendTestDocBtn'); b.click(); b.click(); });
     await waitFor(page, () => document.getElementById('hrWhatsappSendTestDocBtn').classList.contains('is-success'));
     check('shows the green tick once the gateway confirms the send (is-success, same as every other Settings action button)', true);
-    check('a same-tick double tap while already sending only ever fires ONE real request - runButtonAction\'s own re-entrancy guard', sendTestCallCount === 1);
+    check('a same-tick double tap while already sending only ever fires ONE real "start" request - runButtonAction\'s own re-entrancy guard', startCallCount === 1);
     check('the result area shows NO text on success - the tick itself is the confirmation', ((await page.locator('#hrWhatsappSendTestDocResult').textContent()) || '').trim() === '');
     await waitFor(page, () => !document.getElementById('hrWhatsappSendTestDocBtn').classList.contains('is-success'));
     check('returns to the normal, re-clickable button about ~2s after success (the standard 550ms tick-hold plus this action\'s own slightly longer confirmation) - never stuck green', await page.locator('#hrWhatsappSendTestDocBtn').isEnabled());
 
-    // Now simulate a real SEND failure (not a route error) - the route
-    // still returns 200, just {ok:false, error}, exactly as a genuine
-    // network-level failure now comes back (classifyWhatsAppNetworkError,
-    // see whatsappService.js) - a short, plain-language reason, never the
-    // raw "fetch failed"/a Node error string.
-    sendTestResponse = { ok: false, error: "Couldn't reach the WhatsApp gateway - try again." };
+    // Now simulate a real SEND failure (not a route error) - the job
+    // settles as 'failed', exactly as a genuine network-level failure now
+    // comes back (classifyWhatsAppNetworkError, see whatsappService.js) -
+    // a short, plain-language reason, never the raw "fetch failed"/a Node
+    // error string.
+    jobOutcome = { status: 'failed', error: "Couldn't reach the WhatsApp gateway - try again." };
     await page.click('#hrWhatsappSendTestDocBtn');
     await waitFor(page, () => document.getElementById('hrWhatsappSendTestDocBtn').classList.contains('is-error'));
     const failText = await page.locator('#hrWhatsappSendTestDocResult').textContent();

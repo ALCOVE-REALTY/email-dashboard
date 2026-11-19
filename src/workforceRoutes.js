@@ -25,6 +25,7 @@ const aiUsageLog = require('./aiAssistant/aiUsageLog');
 const companyDetailsService = require('./aiAssistant/companyDetailsService');
 const storeHealthDiag = require('./aiAssistant/storeHealthDiag');
 const fullStoreBackupService = require('./aiAssistant/fullStoreBackupService');
+const whatsappDocTestJob = require('./aiAssistant/whatsappDocTestJob');
 const settingsHealthCheck = require('./aiAssistant/settingsHealthCheck');
 const settingsHistoryService = require('./aiAssistant/settingsHistoryService');
 const letterSettingsService = require('./aiAssistant/letterSettingsService');
@@ -2994,42 +2995,41 @@ router.post('/hr-assistant/system-health-alert/dismiss', async (req, res) => {
   }
 });
 
-// Part B phase 3 (2026-11), direct instruction - the first real test of
-// WhatsApp DOCUMENT sending (not just text): a small, fixed PDF to the
-// OWNER'S OWN registered WhatsApp number, never anyone else - there is
-// nothing variable to preview here (same file every time), so this is a
-// single owner-only action, not a two-step preview-then-send. Resolution
-// order for "the owner's own WhatsApp number" mirrors the existing
-// automation send-test route exactly (see '/automations/:id/send-test'
-// above): SUBH_OWNER_WHATSAPP_NUMBER (explicit override) first, then the
-// owner's own real employee record's contact number
-// (employeeService.findOwnerEmployeeRecord(), the owner's real email,
-// never req.hrUser.email's shared/role address). 400 (route-level error,
-// a genuine setup problem) when neither resolves; a real send failure
-// (gateway down, bad number format) comes back as a normal 200 {ok:false,
-// error} instead, same convention as the automation send-test route's own
-// runAutomation result. Receiving files (handleIncomingMedia) is a
-// completely separate, untouched flow.
-router.post('/hr-assistant/whatsapp/send-test-document', async (req, res) => {
+// Part B phase 3 (2026-11, direct instruction), LIVE BUG FIX (2026-11) -
+// the first real test of WhatsApp DOCUMENT sending (not just text): a
+// small, fixed PDF to the OWNER'S OWN registered WhatsApp number, never
+// anyone else. This used to be ONE synchronous route awaiting the whole
+// gateway upload (+ its own one retry) before responding - up to ~62s -
+// which started failing live with a browser-side "Failed to fetch" (no
+// response reached the browser at all, something in the real network path
+// between the browser and this app cut the connection before the server
+// finished). Split into start+status, same background-job pattern
+// fullStoreBackupService.js already uses for the exact same class of bug
+// (see whatsappDocTestJob.js's own comment) - the route returns almost
+// immediately with a job id; the owner's own button polls the status
+// route until done/failed. Resolution order for "the owner's own WhatsApp
+// number" (done inside startSendTestDocumentJob, fast - a genuine setup
+// problem surfaces as a normal 400 right away, never silently lost in the
+// background) mirrors the existing automation send-test route exactly:
+// SUBH_OWNER_WHATSAPP_NUMBER (explicit override) first, then the owner's
+// own real employee record's contact number. Receiving files
+// (handleIncomingMedia) is a completely separate, untouched flow.
+router.post('/hr-assistant/whatsapp/send-test-document/start', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
   try {
-    let to = process.env.SUBH_OWNER_WHATSAPP_NUMBER;
-    if (!to) {
-      const ownerRecord = await employeeService.findOwnerEmployeeRecord().catch(() => null);
-      to = ownerRecord && ownerRecord.contactNumber;
-    }
-    if (!to) return res.status(400).json({ error: 'Could not find your own WhatsApp number - check your HR record has a contact number on file, or set SUBH_OWNER_WHATSAPP_NUMBER.' });
-    const now = new Date();
-    const buffer = await buildTablePdfBuffer({
-      title: 'SUBH WhatsApp Document Test',
-      subtitle: now.toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
-      columns: ['Message'],
-      rows: [['If you can see this file on WhatsApp, document sending from SUBH is working.']],
-      landscape: false
-    });
-    const filename = 'SUBH-WhatsApp-Test-' + now.toISOString().slice(0, 10) + '.pdf';
-    const result = await whatsapp.sendWhatsAppDocument(to, buffer, filename, 'SUBH WhatsApp document test');
-    res.json(Object.assign({ to }, result));
+    const result = await whatsappDocTestJob.startSendTestDocumentJob();
+    if (!result.ok) return res.status(400).json({ error: result.error });
+    res.json({ jobId: result.jobId });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+router.get('/hr-assistant/whatsapp/send-test-document/status/:jobId', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const job = await whatsappDocTestJob.getJob(req.params.jobId);
+    if (!job) return res.status(404).json({ error: 'No job found with that id (it may have expired).' });
+    res.json(job);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

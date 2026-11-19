@@ -1639,7 +1639,14 @@
   // renderable data for the others; every path still re-fetches fresh
   // data in the background and re-renders when it lands, so nothing here
   // is ever more than one poll cycle stale.
-  const pageDataCache = { comms: null, commsAt: 0, reminders: new Map(), automations: null, openFlows: null, convos: new Map(), siteAliases: null, deptAliases: null, companyDetails: null, letterSettings: null, letterFields: new Map(), history: null, dataBackups: null, settingsHistory: null, holidays: null, dataAccess: null };
+  // SPEED FIX (2026-11, direct instruction) - workflows/waAllFirst/attn/
+  // templates/workflowDetail are the new cache keys added while widening
+  // the "every SUBH section page opens instantly" fix beyond SUBH
+  // Settings to the Today's Updates -> Reminders/Important Communications
+  // tree (see CLAUDE.md's own standing rule); workflows itself pre-dates
+  // this pass (already read/written elsewhere) but was never listed here -
+  // added purely for documentation, no behaviour change.
+  const pageDataCache = { comms: null, commsAt: 0, reminders: new Map(), automations: null, workflows: null, openFlows: null, convos: new Map(), siteAliases: null, deptAliases: null, companyDetails: null, letterSettings: null, letterFields: new Map(), history: null, dataBackups: null, settingsHistory: null, holidays: null, dataAccess: null, waAllFirst: null, attn: new Map(), templates: null, workflowDetail: new Map() };
   // Bumped by invalidateReminderCache (every reminder mutation - done/
   // undo/cancel/snooze/create/edit). Any reminders fetch in flight when a
   // mutation happens captures remMutationSeq at send time and checks it
@@ -2378,11 +2385,30 @@
     const r = await fetch('/api/workforce/hr-assistant/whatsapp-all-conversations?' + qs.toString());
     return r.json();
   }
+  // SPEED FIX (2026-11, direct instruction) - a plain (no search) open of
+  // this page used to ALWAYS blank the list and block on a fresh fetch
+  // before any row could paint, even though the previous visit's first
+  // page is almost always still perfectly good. Caches just that one
+  // default page (pageDataCache.waAllFirst) and renders it instantly on a
+  // warm cache; a real search query (waAllQuery non-empty) is completely
+  // unaffected - it still always starts blank and fetches fresh, per the
+  // existing direct instruction (Task 3, 2026-10-31) that a stale SEARCH
+  // result must never carry over between visits. Always still fetches
+  // fresh in the background and quietly replaces the cached render when
+  // it lands - same stale-while-revalidate convention as every other list
+  // in this file.
   async function loadWaAllFirstPage() {
     const myRequestId = ++waAllRequestId;
     waAllLoading = true;
     waAllOffset = 0;
-    waAllItems = [];
+    const cached = !waAllQuery ? pageDataCache.waAllFirst : null;
+    if (cached) {
+      waAllItems = cached.items;
+      waAllOffset = waAllItems.length;
+      waAllHasMore = cached.hasMore;
+    } else {
+      waAllItems = [];
+    }
     renderWaAllList();
     try {
       const data = await fetchWaAllPage(0);
@@ -2390,8 +2416,9 @@
       waAllItems = data.items || [];
       waAllOffset = waAllItems.length;
       waAllHasMore = Boolean(data.hasMore);
+      if (!waAllQuery) pageDataCache.waAllFirst = { items: waAllItems, hasMore: waAllHasMore };
     } catch (err) {
-      waAllHasMore = false;
+      if (!cached) waAllHasMore = false; // keep showing the still-valid cached render otherwise
     } finally {
       waAllLoading = false;
       renderWaAllList();
@@ -2726,28 +2753,50 @@
       });
     });
   }
+  // Extracted (speed fix) so the same "apply this response's chips/count
+  // label/list" logic can run either from a warm cache (instantly) or
+  // from a fresh fetch (below) - never duplicated.
+  function applyAttnData(data) {
+    if (attnStatusChips) {
+      attnStatusChips.querySelectorAll('.wf-rem-chip').forEach((chip) => {
+        const c = (data.counts || {})[chip.dataset.status] || 0;
+        const countEl = chip.querySelector('.wf-rem-chip-count');
+        if (countEl) countEl.textContent = c;
+      });
+    }
+    if (attnCountLabel) {
+      const label = attnState.status === 'all' ? 'total' : attnState.status.replace('_', ' ');
+      attnCountLabel.textContent = (data.items || []).length + ' ' + label;
+    }
+    renderAttnList(data.items || []);
+  }
+  // SPEED FIX (2026-11, direct instruction) - this used to ALWAYS show a
+  // skeleton and block on a fresh fetch before any content could paint,
+  // for every filter combination, every single time. Caches the last
+  // response per exact filter combo (month+type+status) and renders it
+  // instantly on a warm cache - same stale-while-revalidate convention as
+  // every other list in this file; always still fetches fresh in the
+  // background and quietly reconciles if the owner hasn't since switched
+  // to a different month/type/status.
   async function loadAttendanceRequests() {
     if (!attnList) return;
     populateAttnMonthSelect();
+    const cacheKey = attnState.month + '|' + attnState.type + '|' + attnState.status;
     const qs = new URLSearchParams({ month: attnState.month, type: attnState.type, status: attnState.status });
-    attnList.innerHTML = '<div class="wf-skeleton-list"><div class="wf-skeleton-row"></div><div class="wf-skeleton-row"></div></div>';
+    const cached = pageDataCache.attn.get(cacheKey);
+    if (cached) applyAttnData(cached);
+    else attnList.innerHTML = '<div class="wf-skeleton-list"><div class="wf-skeleton-row"></div><div class="wf-skeleton-row"></div></div>';
     try {
       const resp = await fetch('/api/workforce/hr-assistant/attendance-requests?' + qs.toString());
       const data = await resp.json();
-      if (attnStatusChips) {
-        attnStatusChips.querySelectorAll('.wf-rem-chip').forEach((chip) => {
-          const c = (data.counts || {})[chip.dataset.status] || 0;
-          const countEl = chip.querySelector('.wf-rem-chip-count');
-          if (countEl) countEl.textContent = c;
-        });
-      }
-      if (attnCountLabel) {
-        const label = attnState.status === 'all' ? 'total' : attnState.status.replace('_', ' ');
-        attnCountLabel.textContent = (data.items || []).length + ' ' + label;
-      }
-      renderAttnList(data.items || []);
+      pageDataCache.attn.set(cacheKey, data);
+      // The owner may have already switched month/type/status while this
+      // was in flight - a stale response for the OLD combo must never
+      // paint over whatever's now showing for the new one.
+      if (cacheKey !== attnState.month + '|' + attnState.type + '|' + attnState.status) return;
+      applyAttnData(data);
     } catch (err) {
-      attnList.innerHTML = '<div class="wf-rem-empty">Could not load attendance requests.</div>';
+      if (!cached) attnList.innerHTML = '<div class="wf-rem-empty">Could not load attendance requests.</div>';
     }
   }
   if (attnMonthSelect) attnMonthSelect.addEventListener('change', () => { attnState.month = attnMonthSelect.value; loadAttendanceRequests(); });
@@ -2969,40 +3018,54 @@
         '<button type="button" class="danger" data-action="delete">Delete</button>' +
       '</div></div>';
   }
+  // Extracted (speed fix) so the real list can be painted either from a
+  // warm pageDataCache.templates (instantly) or from a fresh fetch below -
+  // never duplicated between the two.
+  function renderTemplatesList(items) {
+    if (!templatesList) return;
+    if (!items.length) { templatesList.innerHTML = '<div class="wf-rem-empty">No saved templates yet. Use "Save as template" on any SUBH reply in a WhatsApp conversation.</div>'; return; }
+    templatesList.innerHTML = items.map(templateRowHtml).join('');
+    templatesList.querySelectorAll('[data-action="toggle"]').forEach((cb) => {
+      cb.addEventListener('change', async () => {
+        const id = cb.closest('[data-id]').dataset.id;
+        try {
+          await postJsonOrThrow('/api/workforce/hr-assistant/reply-templates/' + encodeURIComponent(id) + '/toggle', { enabled: cb.checked });
+        } catch (err) { cb.checked = !cb.checked; showActionToast(err.message || 'Could not update - try again.', null, 'error'); }
+      });
+    });
+    templatesList.querySelectorAll('[data-action="edit"]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const id = btn.closest('[data-id]').dataset.id;
+        const existing = items.find((t) => t.id === id);
+        if (existing) openTemplateSheet(existing);
+      });
+    });
+    templatesList.querySelectorAll('[data-action="delete"]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const id = btn.closest('[data-id]').dataset.id;
+        if (!(await showConfirmDialog('Delete this template? Future messages on this topic will go back to getting a model-written reply.', { confirmLabel: 'Delete' }))) return;
+        await runButtonAction(btn, () => fetch('/api/workforce/hr-assistant/reply-templates/' + encodeURIComponent(id), { method: 'DELETE' }).then((res) => res.json()), () => {
+          closeRowWithToast(btn.closest('.wf-auto-task-card'), { title: 'Template deleted', type: 'success' });
+        });
+      });
+    });
+  }
+  // SPEED FIX (2026-11, direct instruction) - this used to ALWAYS show a
+  // skeleton and block on a fresh fetch before any content could paint.
+  // Same stale-while-revalidate convention as every other list in this
+  // file: render pageDataCache.templates instantly if warm, then always
+  // still fetch fresh in the background and reconcile.
   async function loadTemplatesPage() {
     if (!templatesList) return;
-    templatesList.innerHTML = '<div class="wf-skeleton-list"><div class="wf-skeleton-row"></div><div class="wf-skeleton-row"></div></div>';
+    if (pageDataCache.templates) renderTemplatesList(pageDataCache.templates);
+    else templatesList.innerHTML = '<div class="wf-skeleton-list"><div class="wf-skeleton-row"></div><div class="wf-skeleton-row"></div></div>';
     try {
       const r = await fetch('/api/workforce/hr-assistant/reply-templates').then((res) => res.json());
       const items = r.items || [];
-      if (!items.length) { templatesList.innerHTML = '<div class="wf-rem-empty">No saved templates yet. Use "Save as template" on any SUBH reply in a WhatsApp conversation.</div>'; return; }
-      templatesList.innerHTML = items.map(templateRowHtml).join('');
-      templatesList.querySelectorAll('[data-action="toggle"]').forEach((cb) => {
-        cb.addEventListener('change', async () => {
-          const id = cb.closest('[data-id]').dataset.id;
-          try {
-            await postJsonOrThrow('/api/workforce/hr-assistant/reply-templates/' + encodeURIComponent(id) + '/toggle', { enabled: cb.checked });
-          } catch (err) { cb.checked = !cb.checked; showActionToast(err.message || 'Could not update - try again.', null, 'error'); }
-        });
-      });
-      templatesList.querySelectorAll('[data-action="edit"]').forEach((btn) => {
-        btn.addEventListener('click', () => {
-          const id = btn.closest('[data-id]').dataset.id;
-          const existing = items.find((t) => t.id === id);
-          if (existing) openTemplateSheet(existing);
-        });
-      });
-      templatesList.querySelectorAll('[data-action="delete"]').forEach((btn) => {
-        btn.addEventListener('click', async () => {
-          const id = btn.closest('[data-id]').dataset.id;
-          if (!(await showConfirmDialog('Delete this template? Future messages on this topic will go back to getting a model-written reply.', { confirmLabel: 'Delete' }))) return;
-          await runButtonAction(btn, () => fetch('/api/workforce/hr-assistant/reply-templates/' + encodeURIComponent(id), { method: 'DELETE' }).then((res) => res.json()), () => {
-            closeRowWithToast(btn.closest('.wf-auto-task-card'), { title: 'Template deleted', type: 'success' });
-          });
-        });
-      });
+      pageDataCache.templates = items;
+      if (panelView === 'templates') renderTemplatesList(items);
     } catch (err) {
-      templatesList.innerHTML = '<div class="wf-rem-empty">Could not load templates.</div>';
+      if (!pageDataCache.templates) templatesList.innerHTML = '<div class="wf-rem-empty">Could not load templates.</div>';
     }
   }
   function showTemplates() {
@@ -4037,17 +4100,34 @@
     if (window.__hrAssistantClosePanel) window.__hrAssistantClosePanel(true);
     if (window.setView) window.setView('whatsappDocuments', { resetHistory: true });
   };
+  // LIVE BUG FIX (2026-11) - this used to be ONE request awaiting the
+  // whole gateway upload synchronously, which started failing live with a
+  // browser-side "Failed to fetch" (something in the real network path
+  // cut the connection before the server could respond, up to ~62s in).
+  // Same fix as fullStoreBackupService's own background job: start the
+  // job (near-instant response), then poll its status - the button's own
+  // spinner/tick timing (below) is unaffected, since runButtonAction
+  // treats "start + poll until done" as one requestFn exactly like it
+  // already treated the single old request.
+  async function pollWhatsappDocTestJobUntilDone(jobId) {
+    for (let i = 0; i < 80; i++) { // ~2 min ceiling at 1.5s/poll
+      const job = await fetch('/api/workforce/hr-assistant/whatsapp/send-test-document/status/' + encodeURIComponent(jobId)).then((res) => res.json());
+      if (job.status === 'done') return job;
+      if (job.status === 'failed') throw new Error(job.error || "Couldn't reach the WhatsApp gateway - try again.");
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+    }
+    throw new Error('WhatsApp gateway didn\'t respond in time - try again.');
+  }
   if (hrWhatsappSendTestDocBtn) {
     hrWhatsappSendTestDocBtn.addEventListener('click', async () => {
       await runButtonAction(hrWhatsappSendTestDocBtn, async () => {
-        const r = await postJsonOrThrow('/api/workforce/hr-assistant/whatsapp/send-test-document', {});
         // Direct instruction - the server already translates a real send
         // failure into a short, plain-language reason (e.g. "Couldn't
         // reach the WhatsApp gateway - try again.") - never the raw
         // "fetch failed"/a Node error string. See
         // classifyWhatsAppNetworkError in whatsappService.js.
-        if (!r.ok) throw new Error(r.error || "Couldn't reach the WhatsApp gateway - try again.");
-        return r;
+        const started = await postJsonOrThrow('/api/workforce/hr-assistant/whatsapp/send-test-document/start', {});
+        return pollWhatsappDocTestJobUntilDone(started.jobId);
       }, async () => {
         // Clears any earlier failure text the instant a retry succeeds,
         // and holds the tick a little longer than runButtonAction's own
@@ -5546,6 +5626,11 @@
     wireNeverAutoToggles(card);
   }
   let actionNeededItemsCache = [];
+  // SPEED FIX (2026-11, direct instruction) - distinguishes "never loaded
+  // yet this session" from "loaded, and genuinely empty", so showActionNeeded
+  // below knows whether actionNeededItemsCache is real data worth painting
+  // immediately or just its unset default.
+  let actionNeededLoadedOnce = false;
   // Task 6 (2026-10-29) - LIVE BUG: this rebuilt the ENTIRE list's innerHTML
   // (tearing down and recreating every card + re-attaching every listener)
   // on every single 12s poll tick while this page was open, REGARDLESS of
@@ -5589,6 +5674,7 @@
     try {
       const r = await fetch('/api/workforce/hr-assistant/action-needed').then((res) => res.json());
       actionNeededItemsCache = r.items || [];
+      actionNeededLoadedOnce = true;
       setCountBadge(actionNeededBadge, actionNeededItemsCache.length);
       if (panelView === 'actionNeeded') renderActionNeeded();
     } catch (err) { /* keep showing whatever was last known */ }
@@ -5596,8 +5682,19 @@
   // Called from the 12s comms poll (live refresh, Task 6 requirement) and
   // right after any action-needed card's own action succeeds.
   function refreshActionNeeded() { loadActionNeeded(); }
+  // SPEED FIX (2026-11, direct instruction) - actionNeededItemsCache is
+  // already kept warm continuously by the 12s comms poll above (which
+  // calls loadActionNeeded() unconditionally, regardless of which page is
+  // actually on screen, and fires immediately on panel/script load too),
+  // so by the time this page is actually tapped into the data is very
+  // likely already sitting there - this used to ignore that and always
+  // block on a fresh fetch before painting anything. Renders the warm
+  // cache instantly now; the fetch below still always runs in the
+  // background to correct it if anything changed since.
   function showActionNeeded() {
     setPanelView('actionNeeded');
+    if (actionNeededLoadedOnce) renderActionNeeded();
+    else if (actionNeededList) actionNeededList.innerHTML = '<div class="wf-skeleton-list"><div class="wf-skeleton-row"></div><div class="wf-skeleton-row"></div></div>';
     loadActionNeeded();
   }
   if (actionNeededBtn) actionNeededBtn.addEventListener('click', () => { pushNav({ type: 'actionNeeded' }); showActionNeeded(); });
@@ -6798,6 +6895,16 @@
     setPanelView('reminders');
     loadRemindersPage('today');
     loadAutomationsBadgeAndList(false);
+    // SPEED FIX (2026-11, direct instruction) - same exact bug shape as
+    // the earlier Data access fix (29a1f14): loadWorkflowsBadgeAndList's
+    // own openWorkflowList() already has the correct cache-first shape
+    // (render pageDataCache.workflows instantly if warm, else skeleton),
+    // but nothing ever warmed pageDataCache.workflows before the owner
+    // actually tapped "Automated Workflows" - automations got warmed
+    // here (the line above) the moment Reminders opened, workflows never
+    // did, so Automated Workflows alone always paid a full live round
+    // trip on first tap. Mirrors the line above exactly.
+    loadWorkflowsBadgeAndList(false);
   }
   if (remChips) {
     remChips.addEventListener('click', (e) => {
@@ -9849,10 +9956,21 @@
       const w = await (pageDataCache.workflows || []).find((x) => x.id === id) || await (async () => { const items = await loadWorkflowsBadgeAndList(false); return items.find((x) => x.id === id); })();
       wfDetailWorkflow = w;
     } catch (err) { wfDetailWorkflow = null; }
+    // SPEED FIX (2026-11, direct instruction) - the counts/rows area used
+    // to always stay blank until wfLoadDetail's own live fetch resolved,
+    // even on a workflow whose detail was already opened earlier this
+    // session. Renders the last-known run for this workflow instantly if
+    // one is cached, else a skeleton - same stale-while-revalidate
+    // convention as every other list in this file; wfLoadDetail below
+    // always still fetches fresh and reconciles.
+    const cachedDetail = wfDetailWorkflow && pageDataCache.workflowDetail.get(wfDetailWorkflow.id);
+    if (cachedDetail) { wfDetailRun = cachedDetail.run; renderWfDetail(); }
+    else if (wfDetailRows) wfDetailRows.innerHTML = '<div class="wf-skeleton-list"><div class="wf-skeleton-row"></div><div class="wf-skeleton-row"></div></div>';
     await wfLoadDetail();
   }
   async function wfLoadDetail() {
     if (!wfDetailWorkflow) return;
+    const idAtStart = wfDetailWorkflow.id;
     if (wfDetailTitle) wfDetailTitle.textContent = wfDetailWorkflow.subject;
     try {
       const [wResp, runsResp] = await Promise.all([
@@ -9861,7 +9979,12 @@
       ]);
       wfDetailWorkflow = (wResp.items || []).find((x) => x.id === wfDetailWorkflow.id) || wfDetailWorkflow;
       wfDetailRun = (runsResp.items || [])[0] || null;
+      pageDataCache.workflowDetail.set(idAtStart, { run: wfDetailRun });
     } catch (err) { /* keep showing whatever was last known */ }
+    // Never paint a resolved fetch for a workflow the owner has since
+    // navigated away from (a different page, or a different workflow's
+    // detail opened in the meantime).
+    if (panelView !== 'workflowDetail' || !wfDetailWorkflow || wfDetailWorkflow.id !== idAtStart) return;
     renderWfDetail();
   }
   function renderWfDetail() {
