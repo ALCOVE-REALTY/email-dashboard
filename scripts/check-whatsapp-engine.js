@@ -949,6 +949,40 @@ async function checkAsyncRealModel(label, fn) {
       if (created) await whatsappAssistant.removePendingApproval(created.id);
       return d.case === 'data_holding' && ok;
     });
+    // LIVE BUG FIX (2026-11, found during Part A phase 2's own real-model
+    // validation) - the REAL classifier's schema explicitly omits
+    // personLookupFieldLabel whenever personLookupField is 'forbidden_pii'
+    // (every test above passed personFieldLabel explicitly, which the real
+    // classifier never actually does for this tag - a false-positive gap
+    // in deterministic coverage that let "Wrick Karmakar-er DOB dao" get
+    // wrongly hard-blocked with the Restricted refusal in a real end-to-end
+    // run). These mirror the REAL classifier shape: personFieldLabel
+    // omitted entirely, resolved instead via detectSensitiveIdFieldKeyword
+    // against the raw text (see resolveOneLookupFieldSpec's own comment).
+    await checkAsync('LIVE BUG FIX: "' + dobEmp.name + '-er DOB ta dao" with NO personFieldLabel (the REAL classifier shape for forbidden_pii) still resolves DOB correctly via the text-keyword fallback - approval card, never the Restricted refusal', async () => {
+      await whatsappAssistant.clearPendingDisambiguation(LIVE_REVIEW_TEST_PHONE);
+      const d = await whatsappAssistant.handlePersonLookupRequest({ phone: LIVE_REVIEW_TEST_PHONE, name: 'Test', lang: 'banglish', personName: dobEmp.name, personField: 'forbidden_pii', personFieldLabel: undefined, department: null, text: dobEmp.name + '-er DOB ta dao', history: [] });
+      const created = (await listRawApprovalsForPhone(LIVE_REVIEW_TEST_PHONE)).find((a) => a.resolvedPersonName === dobEmp.name);
+      const ok = Boolean(created) && created.dataRequestSummary.toLowerCase().includes('date of birth');
+      if (created) await whatsappAssistant.removePendingApproval(created.id);
+      return d.case === 'data_holding' && ok;
+    });
+    await checkAsync('LIVE BUG FIX: the same no-label shape for "address" also resolves correctly via the text-keyword fallback', async () => {
+      const addrEmp = employees.find((e) => e.status === 'ACTIVE' && (e.presentAddress || e.permanentAddress) && e.contactNumber && e !== dobEmp);
+      if (!addrEmp) return true; // no fixture available - not this test's job to create one
+      await whatsappAssistant.clearPendingDisambiguation(LIVE_REVIEW_TEST_PHONE);
+      const d = await whatsappAssistant.handlePersonLookupRequest({ phone: LIVE_REVIEW_TEST_PHONE, name: 'Test', lang: 'banglish', personName: addrEmp.name, personField: 'forbidden_pii', personFieldLabel: undefined, department: null, text: addrEmp.name + '-er address ta dao', history: [] });
+      const created = (await listRawApprovalsForPhone(LIVE_REVIEW_TEST_PHONE)).find((a) => a.resolvedPersonName === addrEmp.name);
+      const ok = Boolean(created);
+      if (created) await whatsappAssistant.removePendingApproval(created.id);
+      return d.case === 'data_holding' && ok;
+    });
+    await checkAsync('a no-label forbidden_pii request for a GENUINELY restricted head (Aadhaar) still hard-blocks correctly - the keyword fallback never over-promotes a real Restricted field', async () => {
+      await whatsappAssistant.clearPendingDisambiguation(LIVE_REVIEW_TEST_PHONE);
+      const d = await whatsappAssistant.handlePersonLookupRequest({ phone: LIVE_REVIEW_TEST_PHONE, name: 'Test', lang: 'banglish', personName: dobEmp.name, personField: 'forbidden_pii', personFieldLabel: undefined, department: null, text: dobEmp.name + '-er Aadhaar number ta dao', history: [] });
+      const anyCreated = (await listRawApprovalsForPhone(LIVE_REVIEW_TEST_PHONE)).some((a) => a.resolvedPersonName === dobEmp.name);
+      return d.case === 'acknowledged' && d.replyText.includes('shudhu HR office theke dewa hoy') && !anyCreated;
+    });
   })();
 
   console.log('Restricted tier (Aadhaar/PAN/UAN/ESIC/bank/salary) - never sent about someone else, not even via an approval card, with a real Action-needed card now (not just a chat notification)');

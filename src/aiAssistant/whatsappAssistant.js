@@ -6274,7 +6274,7 @@ const COMBINED_POSSESSIVE = {
 // in the same multi-field request (e.g. "contact no & employee code"
 // must never have its contact_number half reclassified just because the
 // raw text also contains the words "employee code" for the OTHER field).
-function resolveOneLookupFieldSpec(tag, rawLabel, isEmployeeCodeRequest) {
+function resolveOneLookupFieldSpec(tag, rawLabel, isEmployeeCodeRequest, textForKeywordFallback) {
   let effectiveTag = tag;
   let fieldAlias = effectiveTag === 'other_field' ? resolveApprovalFieldAliasByLabel(rawLabel) : null;
   if (isEmployeeCodeRequest && (effectiveTag === 'forbidden_pii' || (effectiveTag === 'other_field' && !fieldAlias))) {
@@ -6292,7 +6292,29 @@ function resolveOneLookupFieldSpec(tag, rawLabel, isEmployeeCodeRequest) {
   // resolve to no fieldAlias, still hard-blocked by the line below,
   // exactly as before.
   if (effectiveTag === 'forbidden_pii' && !fieldAlias) {
-    const promoted = resolveApprovalFieldAliasByLabel(rawLabel);
+    let promoted = resolveApprovalFieldAliasByLabel(rawLabel);
+    // LIVE BUG FIX (2026-11, found during Part A phase 2's own real-model
+    // validation) - the classifier's own schema explicitly says to OMIT
+    // personLookupFieldLabel whenever personLookupField is 'forbidden_pii'
+    // (made sense under the OLD system, where every one of the 9 heads was
+    // hard-blocked regardless of which one - no label was ever needed).
+    // rawLabel is therefore reliably undefined here now, so DOB/address/
+    // blood group could never actually resolve via the label path above -
+    // "Wrick Karmakar-er DOB dao" was wrongly hard-blocked with the
+    // Restricted refusal instead of the correct Personal-tier approval
+    // card. Falls back to the SAME deterministic keyword detector the
+    // pre-classification pronoun fast path already trusts
+    // (detectSensitiveIdFieldKeyword) against the raw message text -
+    // structural, never another model call, never guessing at a field the
+    // text doesn't actually name. Scoped to the PRIMARY field only
+    // (textForKeywordFallback is only ever passed for fieldSpecs[0]) - a
+    // combined multi-field forbidden_pii request with no clean per-field
+    // label still safely hard-blocks entirely, rather than risking the
+    // wrong keyword matching the wrong field.
+    if (!promoted && textForKeywordFallback) {
+      const keyword = detectSensitiveIdFieldKeyword(textForKeywordFallback);
+      if (keyword) promoted = resolveApprovalFieldAliasByKey(keyword);
+    }
     if (promoted) { effectiveTag = 'other_field'; fieldAlias = promoted; }
   }
   const isHardBlocked = (effectiveTag === 'forbidden_pii' && !fieldAlias) ||
@@ -6414,7 +6436,7 @@ async function handlePersonLookupRequest({ phone, name, lang, personName, person
   // below (personField/fieldAlias/otherFieldLabel aliased straight from
   // fieldSpecs[0] - byte-identical wording/behavior).
   const fieldSpecs = [{ tag: personField, label: personFieldLabel }, ...(extraFields || [])]
-    .map((f) => resolveOneLookupFieldSpec(f.tag || f.field, f.label || f.fieldLabel, isEmployeeCodeRequest));
+    .map((f, idx) => resolveOneLookupFieldSpec(f.tag || f.field, f.label || f.fieldLabel, isEmployeeCodeRequest, idx === 0 ? text : null));
   personField = fieldSpecs[0].tag;
   const fieldAlias = fieldSpecs[0].fieldAlias;
   // Own-name exception (direct example given: "Subhodeep er Aadhaar
