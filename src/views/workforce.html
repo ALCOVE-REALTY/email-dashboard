@@ -2809,6 +2809,7 @@
             <span class="wf-hub-tile-sub">Official / Personal / Restricted, per HR head</span>
           </span>
           <span class="wf-hub-tile-end">
+            <span class="wf-hub-tile-badge wi-count-badge danger" id="hrDataAccessBadge" hidden></span>
             <svg class="wf-hub-tile-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
           </span>
         </button>
@@ -3435,7 +3436,39 @@
         <h2>Data access</h2>
       </div>
       <div class="wf-auto-hint" style="padding:4px 4px 10px">Official: shared directly with any verified employee. Personal: needs your approval when it's about someone else (own data is always direct). Restricted: own data direct, never shared about someone else - not even via an approval card.</div>
+      <!-- TASK 2 (2026-11), direct instruction - "+Add head"/"New head
+           found": same "cards at top, + Add button, main list below"
+           layout as Site names/Department names above, so a new real HR
+           Master column (useful or junk, all of it) can be classified -
+           never auto-added/removed, point a. -->
+      <div class="wf-rem-list" id="hrNewHeadsFoundList"></div>
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 4px 6px">
+        <span class="wf-ai-sheet-title" style="font-size:14px">Data access</span>
+        <button type="button" class="plain" id="hrAddHeadBtn">+ Add head</button>
+      </div>
       <div class="wf-rem-list" id="hrDataAccessList"></div>
+
+      <div class="wf-ai-sheet-backdrop" id="hrAddHeadSheetBackdrop" hidden></div>
+      <div class="wf-rem-sheet" id="hrAddHeadSheet" hidden role="dialog" aria-label="Add a head">
+        <div class="wf-ai-sheet-handle"></div>
+        <div class="wf-ai-sheet-head">
+          <button type="button" class="wf-ai-sheet-close" id="hrAddHeadSheetCloseBtn" aria-label="Close">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+          <span class="wf-ai-sheet-title">Add a head</span>
+        </div>
+        <div class="wf-rem-sheet-body">
+          <label class="wf-rem-field"><span>HR Master column (useful or junk, every column not already in the list)</span>
+            <select id="hrAddHeadSelect"></select>
+          </label>
+          <div class="wf-auto-hint" id="hrAddHeadEmptyHint" hidden>Every HR Master column is already in the list.</div>
+          <div class="wf-auto-hint">Added with the default Personal tier - change it afterward with the chips.</div>
+        </div>
+        <div class="wf-rem-sheet-foot">
+          <button type="button" class="wf-ai-action-btn outline" id="hrAddHeadCancelBtn">Cancel</button>
+          <button type="button" class="wf-ai-action-btn download" id="hrAddHeadSaveBtn"><span>Add</span></button>
+        </div>
+      </div>
     </section>
 
     <!-- "WhatsApp documents" (PART B phase 3, 2026-11), direct

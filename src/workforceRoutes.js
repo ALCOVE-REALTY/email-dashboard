@@ -3533,6 +3533,69 @@ router.post('/hr-assistant/data-access/:key', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+// TASK 2 (2026-11), direct instruction - "+Add head"/"New head found".
+// Same split as the existing site-aliases/new-sites pair: the plain
+// heads list above stays a pure Redis read (never blocks the page
+// open); these 2 GET routes are the ONLY ones that touch the live HR
+// Master sheet, and only when the owner actually opens "+Add head" or
+// the new-heads scan, never on a plain page load.
+router.get('/hr-assistant/data-access/new-heads', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    res.json(await dataAccessService.scanDataAccessHeads());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+router.get('/hr-assistant/data-access/addable-heads', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    res.json({ items: await dataAccessService.listAddableHeads() });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+router.post('/hr-assistant/data-access/new-heads/:id/confirm', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const result = await dataAccessService.confirmNewHead(req.params.id, (req.body || {}).tier);
+    if (!result.ok) return res.status(400).json({ error: result.error });
+    res.json({ ok: true, items: result.items });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+router.post('/hr-assistant/data-access/new-heads/:id/decline', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const result = await dataAccessService.declineNewHead(req.params.id);
+    if (!result.ok) return res.status(400).json({ error: result.error });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+router.post('/hr-assistant/data-access/heads', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const { colIndex, header, tier } = req.body || {};
+    const result = await dataAccessService.addHeadManually(colIndex, header, tier);
+    if (!result.ok) return res.status(400).json({ error: result.error });
+    res.json({ ok: true, items: result.items });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+router.delete('/hr-assistant/data-access/heads/:key', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const result = await dataAccessService.removeHead(req.params.key);
+    if (!result.ok) return res.status(400).json({ error: result.error });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // TASK 1(b)/(c) (2026-11), direct instruction - "Letter settings": Ref No.
 // format (with a live preview + tap-to-insert chips), a code + display

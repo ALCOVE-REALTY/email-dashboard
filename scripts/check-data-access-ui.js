@@ -41,8 +41,15 @@ const FAKE_ITEMS = [
   { key: 'employeeId', label: 'Employee Code', tier: 'official', isDerived: false, defaultTier: 'official' },
   { key: 'dob', label: 'Date of Birth', tier: 'personal', isDerived: false, defaultTier: 'personal' },
   { key: 'aadhar', label: 'Aadhaar', tier: 'restricted', isDerived: false, defaultTier: 'restricted' },
-  { key: 'confirmationDate', label: 'Confirmation Date', tier: 'official', isDerived: true, defaultTier: 'official' }
+  { key: 'confirmationDate', label: 'Confirmation Date', tier: 'official', isDerived: true, defaultTier: 'official' },
+  // TASK 2 (2026-11) - a dynamic (owner-added) head already flagged "not
+  // found in HR Master", so the Remove-button path is testable without
+  // having to replay the whole add->rename lifecycle through the UI.
+  { key: 'col_99', label: 'Old Column', tier: 'personal', isDerived: false, isDynamic: true, defaultTier: 'personal' }
 ];
+const FAKE_HEADS_NOT_FOUND = [{ key: 'col_99', label: 'Old Column', colIndex: 99, sourceHeader: 'Old Column' }];
+const FAKE_NEW_HEADS_FOUND = [{ id: 'nh1', colIndex: 50, header: 'Favourite Festival', flaggedAt: Date.now() }];
+const FAKE_ADDABLE_HEADS = [{ colIndex: 50, header: 'Favourite Festival' }, { colIndex: 51, header: 'Some Junk Column' }];
 
 (async () => {
   const server = await startStaticServer();
@@ -55,11 +62,61 @@ const FAKE_ITEMS = [
   page.on('pageerror', (err) => { if (!/Cannot read properties of undefined \(reading 'all'\)/.test(err.message)) pageErrors.push(err.message); });
 
   let items = FAKE_ITEMS.map((x) => Object.assign({}, x));
+  let headsNotFound = FAKE_HEADS_NOT_FOUND.map((x) => Object.assign({}, x));
+  let newHeadsFound = FAKE_NEW_HEADS_FOUND.map((x) => Object.assign({}, x));
+  let addableHeads = FAKE_ADDABLE_HEADS.map((x) => Object.assign({}, x));
   let postedBody = null;
+  let lastConfirmedTier = null;
+  // Most-specific URL patterns checked FIRST - '/data-access/new-heads/'
+  // and '/data-access/heads' both contain '/data-access/' as a substring,
+  // so the OLD single-catch-all check (fixed length/order bug, found
+  // while extending this test) would have silently mismatched every new
+  // route onto the old tier-POST branch.
   await page.route('**/api/**', (route) => {
     const method = route.request().method();
     const url = route.request().url();
-    if (url.includes('/hr-assistant/data-access/')) {
+    if (url.includes('/data-access/new-heads/') && url.endsWith('/confirm')) {
+      postedBody = route.request().postDataJSON();
+      lastConfirmedTier = postedBody.tier;
+      const found = newHeadsFound.find((h) => url.includes('/new-heads/' + h.id + '/'));
+      newHeadsFound = newHeadsFound.filter((h) => h !== found);
+      if (found) {
+        items.push({ key: 'col_' + found.colIndex, label: found.header, tier: postedBody.tier, isDerived: false, isDynamic: true, defaultTier: 'personal' });
+        addableHeads = addableHeads.filter((c) => c.colIndex !== found.colIndex);
+      }
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, items }) });
+      return;
+    }
+    if (url.includes('/data-access/new-heads/') && url.endsWith('/decline')) {
+      const found = newHeadsFound.find((h) => url.includes('/new-heads/' + h.id + '/'));
+      newHeadsFound = newHeadsFound.filter((h) => h !== found);
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true }) });
+      return;
+    }
+    if (url.includes('/data-access/new-heads')) { // GET - the scan itself
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ newHeadsFound, headsNotFound }) });
+      return;
+    }
+    if (url.includes('/data-access/addable-heads')) { // GET
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: addableHeads }) });
+      return;
+    }
+    if (method === 'DELETE' && url.includes('/data-access/heads/')) { // Remove
+      const key = decodeURIComponent(url.split('/data-access/heads/')[1].split('?')[0]);
+      items = items.filter((x) => x.key !== key);
+      headsNotFound = headsNotFound.filter((h) => h.key !== key);
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true }) });
+      return;
+    }
+    if (method === 'POST' && /\/data-access\/heads($|\?)/.test(url)) { // "+Add head" manual add
+      postedBody = route.request().postDataJSON();
+      const key = 'col_' + postedBody.colIndex;
+      items.push({ key, label: postedBody.header, tier: postedBody.tier, isDerived: false, isDynamic: true, defaultTier: 'personal' });
+      addableHeads = addableHeads.filter((c) => String(c.colIndex) !== String(postedBody.colIndex));
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, items }) });
+      return;
+    }
+    if (url.includes('/hr-assistant/data-access/')) { // existing tier-change POST
       postedBody = route.request().postDataJSON();
       const key = decodeURIComponent(url.split('/data-access/')[1].split('?')[0]);
       const idx = items.findIndex((x) => x.key === key);
@@ -92,7 +149,7 @@ const FAKE_ITEMS = [
   check('its own page-head title reads "Data access"', (await page.locator('#dataAccessView .wf-page-head h2').textContent()) === 'Data access');
   check('its back button is fixed to SUBH Settings, not the generic [data-back]', await page.locator('#dataAccessView [data-back-to-subh-settings]').count() === 1 && await page.locator('#dataAccessView [data-back]').count() === 0);
 
-  check('all 4 fake heads render as rows', await page.locator('#hrDataAccessList [data-head-key]').count() === 4);
+  check('all 5 fake heads render as rows', await page.locator('#hrDataAccessList [data-head-key]').count() === 5);
   const employeeIdOfficialPressed = await page.locator('[data-head-key="employeeId"] [data-tier="official"]').getAttribute('aria-pressed');
   check('Employee Code shows Official as the pressed/active chip', employeeIdOfficialPressed === 'true');
   const aadharRestrictedPressed = await page.locator('[data-head-key="aadhar"] [data-tier="restricted"]').getAttribute('aria-pressed');
@@ -113,6 +170,41 @@ const FAKE_ITEMS = [
   await page.click('[data-head-key="employeeId"] [data-tier="official"]');
   await page.waitForTimeout(300);
   check('tapping the already-active tier is a no-op (no POST fired)', postedBody === null);
+
+  console.log('-'.repeat(70));
+  console.log('TASK 2 (2026-11) - "Head not found" + Remove, "New head found" + Confirm/Decline, "+Add head"');
+  console.log('-'.repeat(70));
+  check('a dynamic head missing from the live sheet shows "Head not found in HR Master"', /Head not found in HR Master/.test(await page.locator('[data-head-key="col_99"]').textContent()));
+  check('that row also shows a Remove button', await page.locator('[data-head-key="col_99"] [data-action="remove-head"]').count() === 1);
+  check('the "New head found" card for "Favourite Festival" is shown', /New head found: Favourite Festival/.test(await page.locator('#hrNewHeadsFoundList').textContent()));
+  check('its tier chips default to Personal', await page.locator('[data-new-head-id="nh1"] [data-tier="personal"]').getAttribute('aria-pressed') === 'true');
+
+  // Pick Official on the new-head card, then Confirm.
+  await page.click('[data-new-head-id="nh1"] [data-tier="official"]');
+  await page.click('[data-new-head-id="nh1"] [data-action="confirm"]');
+  await page.waitForTimeout(900);
+  check('Confirm POSTs the CHOSEN tier (official), not the Personal default', lastConfirmedTier === 'official');
+  check('the new-head card is gone after Confirm', await page.locator('[data-new-head-id="nh1"]').count() === 0);
+  check('the confirmed head now appears as a real row with the chosen tier', await page.locator('[data-head-key="col_50"] [data-tier="official"]').getAttribute('aria-pressed') === 'true');
+
+  // "+Add head": open the sheet, pick the one remaining addable column, Add.
+  await page.click('#hrAddHeadBtn');
+  await page.waitForTimeout(300);
+  check('the Add-head sheet opens', await page.locator('#hrAddHeadSheet').evaluate((el) => el.classList.contains('open')));
+  check('the dropdown offers the remaining addable column ("Some Junk Column") - "Favourite Festival" is gone, it\'s already a head now', (await page.locator('#hrAddHeadSelect option').allTextContents()).includes('Some Junk Column') && !(await page.locator('#hrAddHeadSelect option').allTextContents()).includes('Favourite Festival'));
+  await page.selectOption('#hrAddHeadSelect', { label: 'Some Junk Column' });
+  await page.click('#hrAddHeadSaveBtn');
+  await page.waitForTimeout(900);
+  check('Add head POSTs with the default Personal tier (point b)', postedBody && postedBody.tier === 'personal' && String(postedBody.colIndex) === '51');
+  check('the sheet closes after a successful add', await page.locator('#hrAddHeadSheet').evaluate((el) => !el.classList.contains('open')));
+  check('the newly-added head ("useful or junk, all of them") now appears as a real row', await page.locator('[data-head-key="col_51"]').count() === 1);
+
+  // Remove the "not found" dynamic head.
+  await page.click('[data-head-key="col_99"] [data-action="remove-head"]');
+  await page.waitForTimeout(150);
+  await page.click('[data-confirm-ok]');
+  await page.waitForTimeout(600);
+  check('Remove actually deletes the row', await page.locator('[data-head-key="col_99"]').count() === 0);
 
   const errAfter = { c: consoleErrors.length, p: pageErrors.length };
   check('no JS error was thrown through the whole scenario', errAfter.c === errBefore.c && errAfter.p === errBefore.p,

@@ -700,6 +700,10 @@ function setView(view, opts = {}) {
     // own Site names page fetch already uses.
     if (window.__hrAssistantRefreshSiteAliasesBadge) window.__hrAssistantRefreshSiteAliasesBadge();
     if (window.__hrAssistantRefreshDeptAliasesBadge) window.__hrAssistantRefreshDeptAliasesBadge();
+    // TASK 2 (2026-11), direct instruction - same "pending new X" red
+    // badge convention as Site/Department names above, for pending "new
+    // head found" cards.
+    if (window.__hrAssistantRefreshDataAccessBadge) window.__hrAssistantRefreshDataAccessBadge();
   }
   if (view === 'integrations') {
     // Item 4(a) (2026-11), direct instruction - "Integrations opens a LIST

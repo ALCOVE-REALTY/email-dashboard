@@ -702,5 +702,16 @@ module.exports = {
   isDirectorName,
   resolveBareDojYear,
   fuzzyMatchEmployeesByName,
-  CACHE_TTL_MS
+  CACHE_TTL_MS,
+  // Data access "+Add head"/"New head found" (2026-11, direct
+  // instruction) - dataAccessService.js needs to know which live sheet
+  // column indexes are ALREADY a known head (the 28 static ones below),
+  // so it can diff the sheet's real header row against them. SHEET_ID/
+  // TAB_NAME/DATA_START_ROW exported for the same reason (reading row
+  // DATA_START_ROW-1, the real header row, from this SAME sheet/tab -
+  // never a second, possibly-drifting copy of these constants).
+  COLS,
+  SHEET_ID,
+  TAB_NAME,
+  DATA_START_ROW
 };

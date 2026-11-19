@@ -289,6 +289,17 @@
   // PART A phase 1 (2026-11), direct instruction - "Data access":
   // Official/Personal/Restricted per real HR head, tap a chip to change.
   const dataAccessList = document.getElementById('hrDataAccessList');
+  // TASK 2 (2026-11), direct instruction - "+Add head"/"New head found".
+  const dataAccessBadge = document.getElementById('hrDataAccessBadge');
+  const newHeadsFoundList = document.getElementById('hrNewHeadsFoundList');
+  const addHeadBtn = document.getElementById('hrAddHeadBtn');
+  const addHeadSheetBackdrop = document.getElementById('hrAddHeadSheetBackdrop');
+  const addHeadSheet = document.getElementById('hrAddHeadSheet');
+  const addHeadSheetCloseBtn = document.getElementById('hrAddHeadSheetCloseBtn');
+  const addHeadCancelBtn = document.getElementById('hrAddHeadCancelBtn');
+  const addHeadSaveBtn = document.getElementById('hrAddHeadSaveBtn');
+  const addHeadSelect = document.getElementById('hrAddHeadSelect');
+  const addHeadEmptyHint = document.getElementById('hrAddHeadEmptyHint');
   // PART B phase 3 (2026-11), direct instruction - "WhatsApp documents":
   // one owner-only test button, sends a small fixed PDF to the owner's
   // own WhatsApp number only.
@@ -3451,11 +3462,18 @@
       // shape - every OTHER section was warm by the time the owner tapped
       // in, so Data access alone always paid a full live round trip. Same
       // shape as every block above: pageDataCache.dataAccess is exactly
-      // what loadDataAccessPage() itself reads/writes.
+      // what loadDataAccessPage() itself reads/writes. TASK 2 (2026-11,
+      // direct instruction) widened this to also warm the "new heads"
+      // scan (its own live-sheet read, the slower of the two) in the
+      // SAME parallel warm-up, never a second round trip paid later.
       (async () => {
         try {
-          const r = await fetch('/api/workforce/hr-assistant/data-access').then((res) => res.json());
-          pageDataCache.dataAccess = r.items || [];
+          const [r, newHeadsResp] = await Promise.all([
+            fetch('/api/workforce/hr-assistant/data-access').then((res) => res.json()),
+            fetch('/api/workforce/hr-assistant/data-access/new-heads').then((res) => res.json())
+          ]);
+          pageDataCache.dataAccess = { items: r.items || [], newHeadsFound: newHeadsResp.newHeadsFound || [], headsNotFound: newHeadsResp.headsNotFound || [] };
+          loadDataAccessBadge();
         } catch (err) { /* best effort - a real page open will just fetch fresh */ }
       })()
     ]);
@@ -3794,28 +3812,73 @@
   // (that's phase 2) - this page cannot change anything about how SUBH
   // actually answers a WhatsApp sender today.
   const DATA_ACCESS_TIER_LABELS = { official: 'Official', personal: 'Personal', restricted: 'Restricted' };
-  function dataAccessRowHtml(item) {
+  // TASK 2 (2026-11), direct instruction - point (f): make a tier change
+  // feel instant. optimisticTier (when given) is the chip the owner JUST
+  // tapped, rendered pre-selected right away - the real render (after the
+  // save resolves) always wins since it fully replaces this markup, so a
+  // failed save can never leave a wrongly-selected chip behind (the error
+  // path below re-renders with the ORIGINAL tier, never this guess).
+  function dataAccessRowHtml(item, headsNotFound, optimisticTier) {
+    const notFound = (headsNotFound || []).find((h) => h.key === item.key);
+    const effectiveTier = optimisticTier || item.tier;
     return '<div class="wf-auto-task-card" data-head-key="' + escapeHtml(item.key) + '">' +
       '<div class="wf-auto-task-subject">' + escapeHtml(item.label) + (item.isDerived ? ' <small style="font-weight:400;opacity:.65">(derived, not a raw HR column)</small>' : '') + '</div>' +
       '<div class="wf-rem-chips" style="margin-top:8px">' +
-        ['official', 'personal', 'restricted'].map((t) => '<button type="button" class="wf-rem-chip wf-card-action-btn" data-tier="' + t + '" aria-pressed="' + (item.tier === t ? 'true' : 'false') + '">' + DATA_ACCESS_TIER_LABELS[t] + '</button>').join('') +
+        ['official', 'personal', 'restricted'].map((t) => '<button type="button" class="wf-rem-chip wf-card-action-btn" data-tier="' + t + '" aria-pressed="' + (effectiveTier === t ? 'true' : 'false') + '">' + DATA_ACCESS_TIER_LABELS[t] + '</button>').join('') +
       '</div>' +
+      (notFound ? (
+        '<div class="wf-auto-hint" style="color:var(--wi-red-700);font-weight:700;margin-top:6px">Head not found in HR Master (was "' + escapeHtml(notFound.sourceHeader) + '")</div>' +
+        '<div class="wf-auto-actions"><button type="button" class="plain" data-action="remove-head" style="color:var(--wi-red-700)">Remove</button></div>'
+      ) : '') +
     '</div>';
+  }
+  // "New head found" card - mirrors newSiteCardHtml's own shape (see its
+  // comment), but with a tier CHOICE (default Personal, point c) instead
+  // of an alias text field.
+  function newHeadFoundCardHtml(item) {
+    return '<div class="wf-auto-task-card" data-new-head-id="' + escapeHtml(item.id) + '">' +
+      '<div class="wf-auto-task-subject">New head found: ' + escapeHtml(item.header) + '</div>' +
+      '<div class="wf-rem-chips" style="margin-top:8px">' +
+        ['official', 'personal', 'restricted'].map((t) => '<button type="button" class="wf-rem-chip" data-tier="' + t + '" aria-pressed="' + (t === 'personal' ? 'true' : 'false') + '">' + DATA_ACCESS_TIER_LABELS[t] + '</button>').join('') +
+      '</div>' +
+      '<div class="wf-auto-actions"><button type="button" class="plain" data-action="decline">Decline</button><button type="button" class="plain" data-action="confirm">Confirm</button></div></div>';
+  }
+  function renderDataAccessPage(items, newHeadsFound) {
+    if (newHeadsFoundList) newHeadsFoundList.innerHTML = (newHeadsFound || []).length ? newHeadsFound.map(newHeadFoundCardHtml).join('') : '';
+    dataAccessList.innerHTML = items.map((item) => dataAccessRowHtml(item, (pageDataCache.dataAccess || {}).headsNotFound)).join('');
   }
   async function loadDataAccessPage() {
     if (!dataAccessList) return;
     const cached = pageDataCache.dataAccess;
-    if (cached) dataAccessList.innerHTML = cached.map(dataAccessRowHtml).join('');
-    else dataAccessList.innerHTML = '<div class="wf-skeleton-list"><div class="wf-skeleton-row"></div><div class="wf-skeleton-row"></div></div>';
+    if (cached) renderDataAccessPage(cached.items, cached.newHeadsFound);
+    else {
+      dataAccessList.innerHTML = '<div class="wf-skeleton-list"><div class="wf-skeleton-row"></div><div class="wf-skeleton-row"></div></div>';
+      if (newHeadsFoundList) newHeadsFoundList.innerHTML = '';
+    }
     try {
-      const r = await fetch('/api/workforce/hr-assistant/data-access').then((res) => res.json());
+      const [r, newHeadsResp] = await Promise.all([
+        fetch('/api/workforce/hr-assistant/data-access').then((res) => res.json()),
+        fetch('/api/workforce/hr-assistant/data-access/new-heads').then((res) => res.json())
+      ]);
       const items = r.items || [];
-      pageDataCache.dataAccess = items;
-      dataAccessList.innerHTML = items.map(dataAccessRowHtml).join('');
+      const newHeadsFound = newHeadsResp.newHeadsFound || [];
+      const headsNotFound = newHeadsResp.headsNotFound || [];
+      pageDataCache.dataAccess = { items, newHeadsFound, headsNotFound };
+      renderDataAccessPage(items, newHeadsFound);
+      loadDataAccessBadge();
     } catch (err) {
       if (!cached) dataAccessList.innerHTML = '<div class="wf-rem-empty">Could not load the data access list.</div>';
     }
   }
+  async function loadDataAccessBadge() {
+    if (!dataAccessBadge) return;
+    if (pageDataCache.dataAccess) { setCountBadge(dataAccessBadge, pageDataCache.dataAccess.newHeadsFound.length); return; }
+    try {
+      const r = await fetch('/api/workforce/hr-assistant/data-access/new-heads').then((res) => res.json());
+      setCountBadge(dataAccessBadge, (r.newHeadsFound || []).length);
+    } catch (err) { /* best effort */ }
+  }
+  window.__hrAssistantRefreshDataAccessBadge = loadDataAccessBadge;
   window.__hrAssistantOpenDataAccess = function () {
     if (window.__hrAssistantClosePanel) window.__hrAssistantClosePanel(true);
     if (window.setView) window.setView('dataAccess', { resetHistory: true });
@@ -3823,6 +3886,18 @@
   };
   if (dataAccessList) {
     dataAccessList.addEventListener('click', async (e) => {
+      const removeBtn = e.target.closest('[data-action="remove-head"]');
+      if (removeBtn) {
+        const card = removeBtn.closest('[data-head-key]');
+        const key = card.dataset.headKey;
+        if (!(await showConfirmDialog('Remove this head? It will no longer be classified.', { confirmLabel: 'Remove' }))) return;
+        await runButtonAction(removeBtn, () => fetch('/api/workforce/hr-assistant/data-access/heads/' + encodeURIComponent(key), { method: 'DELETE' }).then((res) => res.json()), () => {
+          card.remove();
+          pageDataCache.dataAccess = null;
+          showActionToast('Removed');
+        }, { toastFn: (msg) => showActionToast(msg, null, 'error') });
+        return;
+      }
       const btn = e.target.closest('[data-tier]');
       if (!btn) return;
       const card = btn.closest('[data-head-key]');
@@ -3830,10 +3905,113 @@
       const key = card.dataset.headKey;
       const tier = btn.dataset.tier;
       if (btn.getAttribute('aria-pressed') === 'true') return; // already this tier - nothing to save
-      await runButtonAction(btn, () => postJsonOrThrow('/api/workforce/hr-assistant/data-access/' + encodeURIComponent(key), { tier }), (r) => {
-        pageDataCache.dataAccess = r.items || null;
-        card.outerHTML = dataAccessRowHtml((r.items || []).find((x) => x.key === key) || { key, label: card.querySelector('.wf-auto-task-subject').textContent, tier });
+      // Point (f) - optimistic: the tapped chip looks selected IMMEDIATELY,
+      // before the save even starts (never waits for the server to decide
+      // what the row should look like). On failure, the card is rebuilt
+      // back to the tier it had BEFORE this tap (originalTier, captured
+      // now) - the toastFn below runs exactly on that failure path.
+      const originalTier = (card.querySelector('[data-tier][aria-pressed="true"]') || {}).dataset ? card.querySelector('[data-tier][aria-pressed="true"]').dataset.tier : null;
+      const label = card.querySelector('.wf-auto-task-subject').textContent;
+      const headsNotFound = (pageDataCache.dataAccess || {}).headsNotFound;
+      card.outerHTML = dataAccessRowHtml({ key, label }, headsNotFound, tier);
+      const newCard = dataAccessList.querySelector('[data-head-key="' + CSS.escape(key) + '"]');
+      const newBtn = newCard ? newCard.querySelector('[data-tier="' + tier + '"]') : null;
+      await runButtonAction(newBtn || btn, () => postJsonOrThrow('/api/workforce/hr-assistant/data-access/' + encodeURIComponent(key), { tier }), (r) => {
+        pageDataCache.dataAccess = pageDataCache.dataAccess ? Object.assign({}, pageDataCache.dataAccess, { items: r.items || [] }) : { items: r.items || [], newHeadsFound: [], headsNotFound: [] };
+        const freshCard = dataAccessList.querySelector('[data-head-key="' + CSS.escape(key) + '"]');
+        if (freshCard) freshCard.outerHTML = dataAccessRowHtml((r.items || []).find((x) => x.key === key) || { key, label, tier }, pageDataCache.dataAccess.headsNotFound);
         showActionToast('Saved');
+      }, { resetAfterSuccess: true, toastFn: (msg) => {
+        showActionToast(msg, null, 'error');
+        const staleCard = dataAccessList.querySelector('[data-head-key="' + CSS.escape(key) + '"]');
+        if (staleCard) staleCard.outerHTML = dataAccessRowHtml({ key, label }, headsNotFound, originalTier);
+      } });
+    });
+  }
+  if (newHeadsFoundList) {
+    newHeadsFoundList.addEventListener('click', async (e) => {
+      const card = e.target.closest('[data-new-head-id]');
+      if (!card) return;
+      const id = card.dataset.newHeadId;
+      const confirmBtn = e.target.closest('[data-action="confirm"]');
+      const declineBtn = e.target.closest('[data-action="decline"]');
+      if (confirmBtn) {
+        const pressedChip = card.querySelector('[data-tier][aria-pressed="true"]');
+        const tier = pressedChip ? pressedChip.dataset.tier : 'personal';
+        await runButtonAction(confirmBtn, () => postJsonOrThrow('/api/workforce/hr-assistant/data-access/new-heads/' + encodeURIComponent(id) + '/confirm', { tier }), () => {
+          closeRowWithToast(card, { title: 'Head added ✓', type: 'success' });
+          pageDataCache.dataAccess = null;
+          // Unlike Decline (nothing else to show), Confirm creates a brand
+          // new real head - the main list below must pick it up too, not
+          // just the badge.
+          loadDataAccessPage();
+          loadDataAccessBadge();
+        }, { toastFn: (msg) => showActionToast(msg, null, 'error') });
+        return;
+      }
+      if (declineBtn) {
+        await runButtonAction(declineBtn, () => postJsonOrThrow('/api/workforce/hr-assistant/data-access/new-heads/' + encodeURIComponent(id) + '/decline', {}), () => {
+          closeRowWithToast(card, { title: 'Declined - won\'t be suggested again', type: 'success' });
+          pageDataCache.dataAccess = null;
+          loadDataAccessBadge();
+        }, { toastFn: (msg) => showActionToast(msg, null, 'error') });
+        return;
+      }
+      const tierBtn = e.target.closest('[data-tier]');
+      if (tierBtn) card.querySelectorAll('[data-tier]').forEach((b) => b.setAttribute('aria-pressed', b === tierBtn ? 'true' : 'false'));
+    });
+  }
+  // "+Add head" sheet - the dropdown is the SAME searchable-select
+  // component as the Organization Chart search box/Field mapping's own
+  // picker (a native <select>, auto-wrapped by the global enhancer in
+  // workforce-ui-enhance.js) - per direct instruction, reused verbatim,
+  // never a new widget. The <select> element itself stays in the DOM
+  // permanently (already wrapped at page load); only its <option>s are
+  // swapped per open - the enhancer's own per-select MutationObserver
+  // keeps its popup list in sync with that automatically.
+  function openAddHeadSheet() {
+    if (!addHeadSheet) return;
+    addHeadSheetBackdrop.hidden = false;
+    addHeadSheet.hidden = false;
+    void addHeadSheet.offsetHeight;
+    addHeadSheetBackdrop.classList.add('open');
+    addHeadSheet.classList.add('open');
+    addHeadSelect.innerHTML = '<option value="">Loading…</option>';
+    addHeadEmptyHint.hidden = true;
+    fetch('/api/workforce/hr-assistant/data-access/addable-heads').then((res) => res.json()).then((r) => {
+      const items = r.items || [];
+      if (!items.length) {
+        addHeadSelect.innerHTML = '';
+        addHeadEmptyHint.hidden = false;
+        return;
+      }
+      addHeadSelect.innerHTML = items.map((c) => '<option value="' + escapeHtml(String(c.colIndex)) + '" data-header="' + escapeHtml(c.header) + '">' + escapeHtml(c.header) + '</option>').join('');
+    }).catch(() => {
+      addHeadSelect.innerHTML = '';
+      addHeadEmptyHint.hidden = false;
+      addHeadEmptyHint.textContent = 'Could not load HR Master columns.';
+    });
+  }
+  function closeAddHeadSheet() {
+    if (!addHeadSheet) return;
+    addHeadSheetBackdrop.classList.remove('open'); addHeadSheet.classList.remove('open');
+    setTimeout(() => { addHeadSheetBackdrop.hidden = true; addHeadSheet.hidden = true; }, 320);
+  }
+  if (addHeadBtn) addHeadBtn.addEventListener('click', openAddHeadSheet);
+  if (addHeadSheetCloseBtn) addHeadSheetCloseBtn.addEventListener('click', closeAddHeadSheet);
+  if (addHeadCancelBtn) addHeadCancelBtn.addEventListener('click', closeAddHeadSheet);
+  if (addHeadSheetBackdrop) addHeadSheetBackdrop.addEventListener('click', closeAddHeadSheet);
+  if (addHeadSaveBtn) {
+    addHeadSaveBtn.addEventListener('click', async () => {
+      const option = addHeadSelect.options[addHeadSelect.selectedIndex];
+      if (!option || !option.value) { showActionToast('Pick a column first.', null, 'error'); return; }
+      const colIndex = option.value;
+      const header = option.dataset.header || option.textContent;
+      await runButtonAction(addHeadSaveBtn, () => postJsonOrThrow('/api/workforce/hr-assistant/data-access/heads', { colIndex, header, tier: 'personal' }), () => {
+        closeAddHeadSheet();
+        showActionToast('Added ✓');
+        pageDataCache.dataAccess = null;
+        loadDataAccessPage();
       }, { resetAfterSuccess: true, toastFn: (msg) => showActionToast(msg, null, 'error') });
     });
   }
