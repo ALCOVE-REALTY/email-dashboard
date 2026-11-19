@@ -2386,6 +2386,11 @@ body { background: var(--wi-bg); }
 
 /* List page card */
 .wf-auto-task-card { border-radius: var(--wi-r-card); box-shadow: var(--wi-sh-card); background: var(--wi-surface); padding: 14px; margin-bottom: 10px; }
+/* System health alert (2026-11, direct instruction - "show a red
+   Action-needed card") - the one card in this inbox styled as an
+   explicit failure, reusing the SAME red tokens the is-error button
+   state already uses elsewhere in this file. */
+.wf-auto-task-card--critical { border-left: 4px solid var(--wi-red-700); background: var(--wi-red-50); }
 .wf-auto-task-head { display: flex; gap: 8px; align-items: flex-start; }
 .wf-auto-task-subject { font-weight: 800; font-size: 0.88rem; color: var(--wi-ink); }
 .wf-auto-task-status { flex-shrink: 0; font-size: 0.64rem; font-weight: 800; padding: 3px 8px; border-radius: 999px; white-space: nowrap; }

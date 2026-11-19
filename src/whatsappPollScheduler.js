@@ -16,6 +16,7 @@ const aiUsageLog = require('./aiAssistant/aiUsageLog');
 const fullStoreBackupService = require('./aiAssistant/fullStoreBackupService');
 const settingsHealthCheck = require('./aiAssistant/settingsHealthCheck');
 const togetherWeCanService = require('./aiAssistant/togetherWeCanService');
+const systemHealthMonitor = require('./aiAssistant/systemHealthMonitor');
 
 // Lowered 60 -> 15 after a real live incident: a reply that should have
 // gone out within ~60s took minutes, partly because the base poll
@@ -83,6 +84,12 @@ const SEND_FLUSH_MS = 2 * 1000;
 // auto-send flush out above (instead of just lowering this whole tick)
 // keeps that same cost saving intact.
 const AUTOSEND_FLUSH_MS = 30 * 1000;
+// LIVE INCIDENT FOLLOW-UP (2026-11, direct instruction) - KV/gateway/
+// reply-pipeline health check, its own independent 2-minute tick (see
+// systemHealthMonitor.js's own comment for why this exists and why it
+// alerts over WhatsApp+email rather than only the usual KV-backed
+// mechanisms).
+const HEALTH_CHECK_MS = 2 * 60 * 1000;
 
 function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval, log = console } = {}) {
   if (process.env.WHATSAPP_ASSISTANT_SCHEDULER !== '1') {
@@ -382,7 +389,24 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
     }
   }, AUTOSEND_FLUSH_MS);
 
-  return { stop: () => { clearInterval(autosendInterval); clearInterval(sendFlushInterval); } };
+  // System health check - its own independent tick, deliberately NOT
+  // folded into the maintenance tick above: a health check that itself
+  // depends on everything else in that tick running first would be a
+  // weaker check than one that runs completely on its own schedule.
+  let healthChecking = false;
+  const healthCheckInterval = setIntervalFn(async () => {
+    if (healthChecking) return;
+    healthChecking = true;
+    try {
+      const result = await systemHealthMonitor.runHealthCheck();
+      if (!result.ok) log.error('[whatsapp-assistant] HEALTH CHECK FAILED: ' + result.failures.join(' | ') + (result.alertSent ? ' (alert sent)' : ' (already alerted recently)'));
+    } catch (err) {
+      log.error('[whatsapp-assistant] health check itself threw: ' + err.message);
+    }
+    healthChecking = false;
+  }, HEALTH_CHECK_MS);
+
+  return { stop: () => { clearInterval(autosendInterval); clearInterval(sendFlushInterval); clearInterval(healthCheckInterval); } };
 }
 
 module.exports = { start };

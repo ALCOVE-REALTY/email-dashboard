@@ -5039,6 +5039,36 @@
       });
     });
   }
+  // System health alert (2026-11, direct instruction) - KV/gateway/
+  // reply-pipeline check (systemHealthMonitor.js, every 2 min). The ONE
+  // card in this whole inbox styled as an explicit red/critical alert
+  // (wf-auto-task-card--critical, see wi-theme.css) - direct instruction:
+  // "show a red Action-needed card". No chat behind it, so no "Open
+  // chat" button - just the failure list + Dismiss (which simply clears
+  // the current slot; the monitor's own next tick re-raises it if it's
+  // still failing).
+  function actionNeededSystemHealthCardHtml(item) {
+    const failures = (item.data.failures || []).map((f) => '<div class="wf-auto-hint">' + escapeHtml(f) + '</div>').join('');
+    return '<div class="wf-auto-task-card wf-auto-task-card--critical" data-health-alert="1">' +
+      '<div class="wf-action-needed-card-head">' +
+        '<span class="wf-auto-task-subject">🚨 SUBH health check failed</span>' +
+      '</div>' +
+      failures +
+      '<div class="wf-auto-hint">' + actionNeededAgeLabel(item.ageMs) + ' ago</div>' +
+      '<div class="wf-auto-actions">' +
+        '<button type="button" class="plain" data-health-action="dismiss">Dismiss</button>' +
+      '</div>' +
+    '</div>';
+  }
+  function wireActionNeededSystemHealthCard(card) {
+    const dismissBtn = card.querySelector('[data-health-action="dismiss"]');
+    if (dismissBtn) dismissBtn.addEventListener('click', async () => {
+      await runButtonAction(dismissBtn, () => postJsonOrThrow('/api/workforce/hr-assistant/system-health-alert/dismiss', {}), () => {
+        closeRowWithToast(card, { title: 'Dismissed', type: 'success' });
+        refreshActionNeeded();
+      });
+    });
+  }
   // Task 16/18 (2026-11) - a message auto-recovery (see
   // recoverStuckIncomingMessages server-side) could not resolve on its
   // own. No real action to take beyond seeing the stuck text and either
@@ -5224,6 +5254,7 @@
     if (item.kind === 'automation_missed_run' || item.kind === 'automation_first_run') return actionNeededAutomationCardHtml(item);
     if (item.kind === 'hr_note_escalated') return actionNeededHrNoteEscalatedCardHtml(item);
     if (item.kind === 'data_access_notice') return actionNeededDataAccessNoticeCardHtml(item);
+    if (item.kind === 'system_health_alert') return actionNeededSystemHealthCardHtml(item);
     if (item.kind === 'stuck_incoming') return actionNeededStuckIncomingCardHtml(item);
     if (item.kind === 'ai_usage_alert') return actionNeededAiUsageCardHtml(item);
     if (item.kind === 'daily_backup_failed') return actionNeededBackupFailedCardHtml(item);
@@ -5243,6 +5274,7 @@
     if (card.dataset.automationId) { wireActionNeededAutomationCard(card); return; }
     if (card.dataset.escalationId) { wireActionNeededHrNoteEscalatedCard(card); return; }
     if (card.dataset.dataAccessNoticeId) { wireActionNeededDataAccessNoticeCard(card); return; }
+    if (card.dataset.healthAlert) { wireActionNeededSystemHealthCard(card); return; }
     if (card.dataset.stuckId) { wireActionNeededStuckIncomingCard(card); return; }
     if (card.dataset.aiUsageAlert) { wireActionNeededAiUsageCard(card); return; }
     if (card.dataset.backupFailed) { wireActionNeededBackupFailedCard(card); return; }

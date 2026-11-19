@@ -2980,6 +2980,19 @@ router.post('/hr-assistant/data-access-notices/:id/dismiss', async (req, res) =>
     res.status(500).json({ error: err.message });
   }
 });
+// System health alert (2026-11, direct instruction) - the one Action-
+// needed card systemHealthMonitor.js's 2-minute check raises; dismissing
+// it just clears the current slot (the SAME function the monitor itself
+// calls once everything passes again) - never actionable beyond that.
+router.post('/hr-assistant/system-health-alert/dismiss', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    await whatsappAssistant.clearSystemHealthAlert();
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // Part B phase 3 (2026-11), direct instruction - the first real test of
 // WhatsApp DOCUMENT sending (not just text): a small, fixed PDF to the

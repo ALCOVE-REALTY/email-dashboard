@@ -755,10 +755,10 @@ async function listActionableWhatsappItems() {
 // (approve & send / edit / reject) is a decision, so it joins "approvals";
 // a received document needing review is closest to "data_requests".
 async function listActionNeededItems() {
-  const [approvals, drafts, docs, hrConfirmations, hrNoteEscalations, stuckIncoming, dataAccessNotices] = await Promise.all([
+  const [approvals, drafts, docs, hrConfirmations, hrNoteEscalations, stuckIncoming, dataAccessNotices, healthAlert] = await Promise.all([
     listPendingApprovals(), listPendingDrafts(),
     documentRequests.listPendingReceived(), listAllHrConfirmations(), listHrNoteEscalations(), listStuckIncomingMessages(),
-    listDataAccessNotices()
+    listDataAccessNotices(), getSystemHealthAlert()
   ]);
   const ambiguousConfirmations = hrConfirmations.filter((c) => c.status === 'ambiguous_owner_review');
   const raw = [];
@@ -781,6 +781,11 @@ async function listActionNeededItems() {
   // data-request refusal (see RESTRICTED_FIELD_BLOCK_REPLY/
   // UNMATCHED_SENDER_DATA_REPLY) - never actionable, informational only.
   dataAccessNotices.forEach((n) => raw.push({ kind: 'data_access_notice', category: 'data_requests', chatId: whatsapp.normalizePhone(n.phone), name: n.name, ts: n.createdAt || 0, data: n }));
+  // System health alert (2026-11, direct instruction) - KV/gateway/
+  // reply-pipeline check, see systemHealthMonitor.js. No single sender
+  // behind this one (chatId: '' - never null, so downstream
+  // normalizePhone/findEmployeeByPhone calls on it stay harmless no-ops).
+  if (healthAlert) raw.push({ kind: 'system_health_alert', category: 'data_requests', chatId: '', name: 'System health', ts: healthAlert.createdAt || 0, data: healthAlert });
   // Performance fix (2026-10-30): isNeverAuto(item.chatId) used to run as
   // its own SISMEMBER round trip PER item inside this map - this function
   // backs the Action-needed poll that fires every ~12s regardless of which
@@ -3329,6 +3334,35 @@ async function dismissDataAccessNotice(id) {
     await redis.srem(DATA_ACCESS_NOTICE_IDS_KEY, id);
   } catch (err) { return false; }
   return true;
+}
+
+// ---------------- System health alert (2026-11, direct instruction) ----------------
+// A SINGLE slot (never an accumulating list like the data-access
+// notices above) - systemHealthMonitor.js's own 2-minute check
+// overwrites this every tick while something is failing and clears it
+// the moment everything passes again, so the Action-needed page always
+// shows AT MOST one of these, reflecting the CURRENT state, never a
+// pile of near-identical stale cards from a long outage.
+const SYSTEM_HEALTH_ALERT_KEY = 'subh-health-alert';
+async function setSystemHealthAlert(data) {
+  const redis = getClient();
+  if (!redis) return null;
+  const record = Object.assign({ createdAt: Date.now() }, data);
+  try { await redis.set(SYSTEM_HEALTH_ALERT_KEY, JSON.stringify(record)); } catch (err) { return null; }
+  return record;
+}
+async function getSystemHealthAlert() {
+  const redis = getClient();
+  if (!redis) return null;
+  try {
+    const raw = await redis.get(SYSTEM_HEALTH_ALERT_KEY);
+    return raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : null;
+  } catch (err) { return null; }
+}
+async function clearSystemHealthAlert() {
+  const redis = getClient();
+  if (!redis) return;
+  try { await redis.del(SYSTEM_HEALTH_ALERT_KEY); } catch (err) { /* best effort */ }
 }
 // Status-agnostic (unlike isSenderActiveEmployee, which requires ACTIVE
 // for the official-tier direct-send gate) - "is this phone number
@@ -14995,6 +15029,9 @@ module.exports = {
   listDataAccessNotices,
   dismissDataAccessNotice,
   flagDataAccessNotice,
+  setSystemHealthAlert,
+  getSystemHealthAlert,
+  clearSystemHealthAlert,
   isSenderKnownEmployee,
   isFieldAliasOfficialNow,
   isFieldAliasRestrictedNow,
