@@ -286,6 +286,9 @@
   const holidayDateInput = document.getElementById('hrHolidayDateInput');
   const holidayLabelInput = document.getElementById('hrHolidayLabelInput');
   const holidaySheetErr = document.getElementById('hrHolidaySheetErr');
+  // PART A phase 1 (2026-11), direct instruction - "Data access":
+  // Official/Personal/Restricted per real HR head, tap a chip to change.
+  const dataAccessList = document.getElementById('hrDataAccessList');
   const convoPage = document.getElementById('hrConvoPage');
   const convoThread = document.getElementById('hrConvoThread');
   const convoActions = document.getElementById('hrConvoActions');
@@ -1620,7 +1623,7 @@
   // renderable data for the others; every path still re-fetches fresh
   // data in the background and re-renders when it lands, so nothing here
   // is ever more than one poll cycle stale.
-  const pageDataCache = { comms: null, commsAt: 0, reminders: new Map(), automations: null, openFlows: null, convos: new Map(), siteAliases: null, deptAliases: null, companyDetails: null, letterSettings: null, letterFields: new Map(), history: null, dataBackups: null, settingsHistory: null, holidays: null };
+  const pageDataCache = { comms: null, commsAt: 0, reminders: new Map(), automations: null, openFlows: null, convos: new Map(), siteAliases: null, deptAliases: null, companyDetails: null, letterSettings: null, letterFields: new Map(), history: null, dataBackups: null, settingsHistory: null, holidays: null, dataAccess: null };
   // Bumped by invalidateReminderCache (every reminder mutation - done/
   // undo/cancel/snooze/create/edit). Any reminders fetch in flight when a
   // mutation happens captures remMutationSeq at send time and checks it
@@ -3762,6 +3765,58 @@
         // Site names' own save handler (see its comment).
         loadHolidaysPage();
       }, { resetAfterSuccess: true });
+    });
+  }
+
+  // "Data access" (PART A phase 1, 2026-11), direct instruction -
+  // Official/Personal/Restricted per real HR head, tap a chip to change
+  // (no separate Save step - each tap is its own immediate save, same
+  // "tap to change" the owner asked for). This page is data + UI only;
+  // nothing in the real WhatsApp decision pipeline reads this list yet
+  // (that's phase 2) - this page cannot change anything about how SUBH
+  // actually answers a WhatsApp sender today.
+  const DATA_ACCESS_TIER_LABELS = { official: 'Official', personal: 'Personal', restricted: 'Restricted' };
+  function dataAccessRowHtml(item) {
+    return '<div class="wf-auto-task-card" data-head-key="' + escapeHtml(item.key) + '">' +
+      '<div class="wf-auto-task-subject">' + escapeHtml(item.label) + (item.isDerived ? ' <small style="font-weight:400;opacity:.65">(derived, not a raw HR column)</small>' : '') + '</div>' +
+      '<div class="wf-rem-chips" style="margin-top:8px">' +
+        ['official', 'personal', 'restricted'].map((t) => '<button type="button" class="wf-rem-chip wf-card-action-btn" data-tier="' + t + '" aria-pressed="' + (item.tier === t ? 'true' : 'false') + '">' + DATA_ACCESS_TIER_LABELS[t] + '</button>').join('') +
+      '</div>' +
+    '</div>';
+  }
+  async function loadDataAccessPage() {
+    if (!dataAccessList) return;
+    const cached = pageDataCache.dataAccess;
+    if (cached) dataAccessList.innerHTML = cached.map(dataAccessRowHtml).join('');
+    else dataAccessList.innerHTML = '<div class="wf-skeleton-list"><div class="wf-skeleton-row"></div><div class="wf-skeleton-row"></div></div>';
+    try {
+      const r = await fetch('/api/workforce/hr-assistant/data-access').then((res) => res.json());
+      const items = r.items || [];
+      pageDataCache.dataAccess = items;
+      dataAccessList.innerHTML = items.map(dataAccessRowHtml).join('');
+    } catch (err) {
+      if (!cached) dataAccessList.innerHTML = '<div class="wf-rem-empty">Could not load the data access list.</div>';
+    }
+  }
+  window.__hrAssistantOpenDataAccess = function () {
+    if (window.__hrAssistantClosePanel) window.__hrAssistantClosePanel(true);
+    if (window.setView) window.setView('dataAccess', { resetHistory: true });
+    loadDataAccessPage();
+  };
+  if (dataAccessList) {
+    dataAccessList.addEventListener('click', async (e) => {
+      const btn = e.target.closest('[data-tier]');
+      if (!btn) return;
+      const card = btn.closest('[data-head-key]');
+      if (!card) return;
+      const key = card.dataset.headKey;
+      const tier = btn.dataset.tier;
+      if (btn.getAttribute('aria-pressed') === 'true') return; // already this tier - nothing to save
+      await runButtonAction(btn, () => postJsonOrThrow('/api/workforce/hr-assistant/data-access/' + encodeURIComponent(key), { tier }), (r) => {
+        pageDataCache.dataAccess = r.items || null;
+        card.outerHTML = dataAccessRowHtml((r.items || []).find((x) => x.key === key) || { key, label: card.querySelector('.wf-auto-task-subject').textContent, tier });
+        showActionToast('Saved');
+      }, { resetAfterSuccess: true, toastFn: (msg) => showActionToast(msg, null, 'error') });
     });
   }
 

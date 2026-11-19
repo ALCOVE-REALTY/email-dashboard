@@ -39,6 +39,7 @@ const whatsapp = require('./whatsappService');
 const redisHealth = require('./redisHealth');
 const togetherWeCanService = require('./aiAssistant/togetherWeCanService');
 const holidaysService = require('./aiAssistant/holidaysService');
+const dataAccessService = require('./aiAssistant/dataAccessService');
 
 const router = express.Router();
 
@@ -3435,6 +3436,29 @@ router.delete('/hr-assistant/holidays/:date', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
   try {
     const result = await holidaysService.removeHoliday(decodeURIComponent(req.params.date));
+    if (!result.ok) return res.status(400).json({ error: result.error });
+    res.json({ ok: true, items: result.items });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// "Data access" (PART A phase 1, 2026-11), direct instruction - the
+// owner-editable Official/Personal/Restricted classification page. This
+// phase is data + UI only - nothing in the real WhatsApp pipeline reads
+// this yet (that's phase 2).
+router.get('/hr-assistant/data-access', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    res.json({ items: await dataAccessService.listDataAccessHeads() });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+router.post('/hr-assistant/data-access/:key', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const result = await dataAccessService.setHeadTier(req.params.key, (req.body || {}).tier);
     if (!result.ok) return res.status(400).json({ error: result.error });
     res.json({ ok: true, items: result.items });
   } catch (err) {

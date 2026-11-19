@@ -31,7 +31,7 @@ const menuBtn = document.getElementById('menuBtn');
 const VIEWS = [
   'overview', 'directory', 'joining', 'exit', 'attrition', 'tenure', 'movement', 'insights', 'quality',
   'departmentFull', 'locationFull', 'movementDetail', 'doerManagement', 'orgChart', 'healthInsurance', 'coveredEmployees', 'hiAdditions', 'hiExits', 'hiTotalExits', 'hiFamilyMembers', 'hiTotalLives', 'hiPolicyInfo', 'hiFamilyPremium', 'hiAnnualPremium', 'ageDistribution', 'genderDistribution', 'collarDistribution', 'companyDistribution', 'subhSettings', 'integrations', 'profile', 'letterForm', 'letterSuccess', 'letterGenerator', 'interviewPanel',
-  'siteAliases', 'deptAliases', 'companyDetails', 'letterSettings', 'aiUsage', 'dataBackups', 'settingsHistory', 'holidays'
+  'siteAliases', 'deptAliases', 'companyDetails', 'letterSettings', 'aiUsage', 'dataBackups', 'settingsHistory', 'holidays', 'dataAccess'
 ];
 const viewEls = Object.fromEntries(VIEWS.map((v) => [v, document.getElementById(v + 'View')]));
 
@@ -581,6 +581,13 @@ const subhSettingsHolidaysBtn = document.getElementById('subhSettingsHolidaysBtn
 if (subhSettingsHolidaysBtn) {
   subhSettingsHolidaysBtn.addEventListener('click', () => {
     if (window.__hrAssistantOpenHolidays) window.__hrAssistantOpenHolidays();
+  });
+}
+// Data access (PART A phase 1, 2026-11) - same entry pattern as above.
+const subhSettingsDataAccessBtn = document.getElementById('subhSettingsDataAccessBtn');
+if (subhSettingsDataAccessBtn) {
+  subhSettingsDataAccessBtn.addEventListener('click', () => {
+    if (window.__hrAssistantOpenDataAccess) window.__hrAssistantOpenDataAccess();
   });
 }
 // TASK 4 (2026-11), direct instruction - the 7 Settings sub-pages (Site

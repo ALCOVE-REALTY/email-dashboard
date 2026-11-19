@@ -2796,6 +2796,22 @@
             <svg class="wf-hub-tile-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
           </span>
         </button>
+        <!-- "Data access" (PART A phase 1, 2026-11), direct instruction -
+             Official/Personal/Restricted classification for every real HR
+             head, owner-editable. Same compact-tile entry pattern as
+             every other SUBH Settings page above. -->
+        <button type="button" class="wf-hub-tile wf-hub-tile--compact" id="subhSettingsDataAccessBtn" style="margin-top:10px">
+          <span class="wf-hub-tile-icon comms">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+          </span>
+          <span class="wf-hub-tile-main">
+            <span class="wf-hub-tile-title">Data access</span>
+            <span class="wf-hub-tile-sub">Official / Personal / Restricted, per HR head</span>
+          </span>
+          <span class="wf-hub-tile-end">
+            <svg class="wf-hub-tile-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+          </span>
+        </button>
       </div>
     </section>
 
@@ -3387,6 +3403,23 @@
           <button type="button" class="wf-ai-action-btn download" id="hrHolidaySheetSaveBtn"><span>Save</span></button>
         </div>
       </div>
+    </section>
+
+    <!-- "Data access" (PART A phase 1, 2026-11), direct instruction - one
+         row per real HR head, a 3-way Official/Personal/Restricted chip
+         picker per row (tap a chip to set it immediately - no separate
+         Save step, same "tap to change" the owner asked for). This phase
+         is data + UI only - nothing in the real WhatsApp decision
+         pipeline reads this list yet. -->
+    <section id="dataAccessView" class="wf-view" hidden>
+      <div class="wf-page-head" data-wi-enter="block">
+        <button class="wf-icon-btn" data-back-to-subh-settings aria-label="Back to SUBH Settings">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        </button>
+        <h2>Data access</h2>
+      </div>
+      <div class="wf-auto-hint" style="padding:4px 4px 10px">Official: shared directly with any verified employee. Personal: needs your approval when it's about someone else (own data is always direct). Restricted: own data direct, never shared about someone else - not even via an approval card.</div>
+      <div class="wf-rem-list" id="hrDataAccessList"></div>
     </section>
 
     <section id="profileView" class="wf-view" hidden>

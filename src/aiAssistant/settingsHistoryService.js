@@ -16,6 +16,7 @@ const settingsAuditLog = require('./settingsAuditLog');
 const companyDetailsService = require('./companyDetailsService');
 const letterSettingsService = require('./letterSettingsService');
 const driveTemplateFieldsService = require('./driveTemplateFieldsService');
+const dataAccessService = require('./dataAccessService');
 // whatsappAssistant.js is required lazily, inside the 3 restore cases
 // that need it - this is a genuinely huge file with many requires of
 // its own; deferring avoids loading it at all for every OTHER restore
@@ -37,7 +38,8 @@ const GROUP_LABELS = {
   'site-alias': 'Site names',
   'dept-alias': 'Department names',
   'reply-template': 'Saved reply templates',
-  'holidays': 'Holidays' // PHASE 2 (2026-11), direct instruction
+  'holidays': 'Holidays', // PHASE 2 (2026-11), direct instruction
+  'data-access': 'Data access' // PART A phase 1 (2026-11), direct instruction
 };
 // The logo's audit entries only ever hold metadata (hadLogo,
 // contentType) - the actual image bytes are deliberately never kept in
@@ -160,6 +162,14 @@ async function restoreEntry(entry) {
       const holidaysService = require('./holidaysService');
       if (!entry.before) return { ok: false, error: 'There is no earlier list to restore to - this was the first save.' };
       return holidaysService.saveHolidayList(entry.before, { source: 'restore' });
+    }
+    // PART A phase 1 (2026-11), direct instruction - each entry's
+    // `before` is that ONE head's own previous tier (setHeadTier's own
+    // no-op-if-unchanged guard means an entry only ever exists for a
+    // real change, so `before` is always a genuine prior tier here).
+    case 'data-access': {
+      if (!entry.before) return { ok: false, error: 'There is no earlier tier to restore to.' };
+      return dataAccessService.setHeadTier(entry.key, entry.before, { source: 'restore' });
     }
     default:
       return { ok: false, error: 'Unknown settings group: ' + group };
