@@ -3314,6 +3314,157 @@ blocks the pass/fail gate - every other scenario must pass 3/3 before a commit.
   to re-check a fix) and removed `ANTHROPIC_API_KEY_TEST` from `.env` himself so
   real-model runs stop by default until he's asked and re-adds it.
 
+### Part A/B/C - access policy, WhatsApp document sending, reports/counts from chat (2026-11, direct instruction)
+
+A 3-part, 5-phase feature, built in order, one commit per phase:
+
+- **Part A (access policy)**: every HR head is classified Official / Personal /
+  Restricted (owner-editable "Data access" page under SUBH Settings, backed by
+  `src/aiAssistant/dataAccessService.js`). Own data (any tier) → always direct, no
+  card - unchanged from before this feature. Someone else's Official data → direct
+  when the sender is a current ACTIVE employee, else an ordinary approval card.
+  Someone else's Personal data → always an approval card. Someone else's Restricted
+  data (Aadhaar/PAN/UAN/ESIC, +bank/salary if those columns ever appear) → NEVER
+  sent, not even via an approval card - a polite refusal + a real Action-needed card
+  for the owner (`listDataAccessNotices`/`data_access_notice` kind, NOT the old
+  chat-only `postOwnerNotification`-only precedent). A sender whose WhatsApp number
+  doesn't match ANY employee record (active or not) gets no data at all for a DATA
+  request specifically - polite refusal + the same kind of Action-needed card.
+  This unmatched-number rule applies ONLY to data requests (`classification.wantsData`)
+  - job applications, CVs, vacancy enquiries and every other existing flow are
+  classified entirely separately upstream and are never touched by it.
+- **Part B (WhatsApp document sending)**: a `sendWhatsAppDocument`-style helper
+  (Method B multipart upload to the existing gateway) + an owner-only "send test
+  file to my WhatsApp" feature. Not yet built (phase 3).
+- **Part C (reports/counts from chat)**: "AI understands, code speaks" - the model
+  only turns a message into a structured query (filters/grouping/columns/output
+  type); code runs it against live data and builds the reply/file. Not yet built
+  (phases 4-5) - the pre-existing `handleHrDataQueryRequest`/`buildHrDataQueryAnswer`
+  (counts/HOD-wise lists) is the closest existing building block and will likely be
+  extended/folded into this rather than rebuilt from scratch.
+
+**Phase 1** (committed `ce36061`): the Data access page itself - 30 real HR heads,
+owner-editable Official/Personal/Restricted, Settings History integration. Zero
+behaviour change to the live WhatsApp pipeline from this phase alone.
+
+**Phase 2** (this commit): wired the Data access table into the real pipeline
+(`handlePersonLookupRequest`/`resolveConfirmedPersonLookup`/`resolveCombinedPersonFields`/
+the disambiguation-continuation branch, plus the new unmatched-number gate at the
+`classification.wantsData` chokepoint) - replacing the old static
+`FORBIDDEN_PII_LABELS`/`APPROVAL_FIELD_ALIASES`'s `official:true` flags/
+`HARD_BLOCKED_PERSON_FIELD_RE`-driven hard block. Deliberate, confirmed behaviour
+change: DOB/address/blood group move from hard-blocked to Personal-tier
+(approval-gated) for a third party - only Aadhaar/PAN/UAN/ESIC (+bank/salary) stay
+hard-blocked (Restricted), per the owner's own explicit classification decisions
+(see the commit message for the full list of confirmed discrepancy resolutions).
+Legacy aggregate-query path (`buildHrDataQueryAnswer`'s HOD/headcount answers) is
+deliberately NOT wired to the Data access table yet - it keeps its own hardcoded
+contact-number-only gate until Part C's reports engine (phase 4/5) touches it
+anyway. `general_details` (designation/department/tenure bundle) is also
+deliberately left unwired to the table in this phase - splitting an already-atomic
+3-field official bundle into 3 independently-gated sends was never asked for.
+
+**Lock scenarios** (owner-authored, in "sender message → SUBH process → reply"
+format, 2026-11 - these are the authoritative examples for Part A phase 2 and for
+Part C's reports engine once built; Examples 1-5/9 need Part C and are not yet
+testable):
+
+- **Example 1 - list for two locations, columns not given.**
+  Sender: "Amake Sangam & Triveni er staff list dao"
+  SUBH process: understands → type = staff list, targets = 2 sites (Sangam → "New
+  Kolkata – Sangam B", Triveni → "Plot A" via Site names), status = Active
+  (default), columns = not given → ask.
+  SUBH: "Report-e kon kon column chai? (jemon Emp Code, Name, Designation, Dept.,
+  DOJ, Reporting DOER) — 'default' likhle ei column-gulo debo."
+  Sender: "Emp code, Name, Designation, Dept., DOJ, Doer name"
+  SUBH process: maps "Doer name" → Reporting DOER column; filters Status = Active +
+  Location = Sangam B → table in that column order with Sl. No. + total count; same
+  for Plot A; renders 2 PDFs (default format).
+  SUBH: "Report ready kore pathacchi…" (only if it takes >10 s) → sends
+  "Sangam-B-Active-Staff-19-Nov-2026.pdf" (caption: "Sangam B — Active staff · 42")
+  → sends "Plot-A-Active-Staff-19-Nov-2026.pdf" (caption: "Plot A (Triveni) — Active
+  staff · 37"). Total time ≤ 60 s.
+
+- **Example 2 - same report as Excel.**
+  Sender: "Ei duto Excel e din"
+  SUBH process: same two reports, same filters/columns, no new question; renders
+  .xlsx; remembers this sender prefers Excel next time.
+  SUBH: sends "Sangam-B-Active-Staff-19-Nov-2026.xlsx" and
+  "Plot-A-Active-Staff-19-Nov-2026.xlsx".
+
+- **Example 3 - complex grouped report by company code.**
+  Sender: "ADLLP er Doer wise & HOD wise report din"
+  SUBH process: company code ADLLP → "Alcove Developers LLP" (Company details);
+  status Active; columns not given → ask.
+  SUBH: "Report-e kon kon column chai? … 'default' likhle …"
+  Sender: "Emp Code, Name, Designation, Dept., DOJ"
+  SUBH process: filter Active + Company = Alcove Developers LLP → distinct
+  Reporting DOERs (e.g. X, Y, Z) → under each DOER the distinct HODs (X: A, B, C;
+  Y: D, E, F, G; Z: H, I, J) → under each HOD the staff rows.
+  PDF layout: "Alcove Developers LLP — Active staff (Doer-wise & HOD-wise) · 19 Nov
+  2026" → per DOER → per HOD table (Sl. No., Emp Code, Name, Designation, Dept.,
+  DOJ) + "Count: N" → "Subtotal (DOER): N" → "Grand total: N".
+  SUBH: sends "ADLLP-Doer-HOD-wise-Active-Staff-19-Nov-2026.pdf" (caption: "Alcove
+  Developers LLP — Doer-wise & HOD-wise · 43 staff"). ≤ 60 s, max 90 s.
+
+- **Example 4 - count only (no file).**
+  Sender: "Plot B te koto jon engineer ache?"
+  SUBH process: count-only → Active + Location = Sangam B + Designation contains
+  Engineer → number.
+  SUBH: "Sangam B (Plot B)-te ekhon 12 jon Active engineer achhen."
+  Sender: "ADLLP te HOD wise koto jon?"
+  SUBH: "Alcove Developers LLP — Active staff HOD-wise: A 6 · B 4 · C 3 · D 5 · … ·
+  Mot 43 jon." (text only, no PDF)
+
+- **Example 5 - another status asked.**
+  Sender: "ACPL er inactive staff list Excel e dao, Emp Code, Name, DOJ, DOL"
+  SUBH process: status = Inactive (asked, so not the default); company ACPL;
+  columns given; format Excel.
+  SUBH: sends "ACPL-Inactive-Staff-19-Nov-2026.xlsx".
+
+- **Example 6 - own data (personal, no card).** [Tested: deterministic, via the
+  existing own-sensitive-data exception, unaffected by phase 2]
+  Sender (Tapas, number in HR database): "Amar PAN number ar DOB ta bolben?"
+  SUBH process: about the sender himself → allowed directly.
+  SUBH: "Apnar PAN: ABCDE1234F · DOB: 12 Mar 1990."
+
+- **Example 7 - someone else's official data (no card).** [Tested:
+  `check-whatsapp-engine.js`, "Example 7 ... LOCK SCENARIO"]
+  Sender: "Rina Saha-r designation ar reporting manager ke?"
+  SUBH: "Rina Saha — Designation: Executive · Reporting Manager: Radha Biswas
+  Bhattacharjee."
+
+- **Example 8 - someone else's personal data (approval card).** [Tested:
+  `check-whatsapp-engine.js`, "Example 8 ... LOCK SCENARIO"]
+  Sender: "Rina Saha-r phone number ta dao"
+  SUBH process: personal head of another person → approval card to owner, nothing
+  sent yet.
+  SUBH: "Ami apnar request-ta note kore nilam, Subhodeep-er approval pele
+  janacchi." → after I approve the card → sends the number.
+
+- **Example 9 - report that includes others' personal heads.**
+  Sender: "HR department er staff der contact number soho list dao"
+  SUBH process: Contact No is personal for other people → build the file but hold
+  it → approval card ("HR dept list with Contact No — 9 staff").
+  SUBH: "Report-ta ready, Subhodeep-er approval pele pathacchi." → sent only after
+  approval.
+
+- **Example 10 - unknown number.** [Tested: `check-whatsapp-engine.js`, real-model
+  gated LOCK SCENARIO, `[skip]` without a test key - same convention as every other
+  classification-dependent scenario in this file]
+  Sender (number not in HR database): "Duets e koto jon staff?"
+  SUBH: "Dukkhito, ei tottho shudhu registered employee number theke share kora
+  jay." + Action-needed card to me.
+
+- **Someone else's Aadhaar → refused + card, no approval option.** [Tested:
+  `check-whatsapp-engine.js`, "LOCK SCENARIO: someone else's Aadhaar..."] Same as
+  Example 8's shape but Restricted tier instead of Personal - the refusal is final,
+  never an approvable card.
+
+- **Unknown number sending a CV → existing application template unchanged.** Not a
+  data request (`classification.isJobApplication`/`looksLikeCvMessage`, checked
+  BEFORE the `wantsData` gate) - the unmatched-number rule never reaches it.
+
 ### HOD vs Reporting Doer vs default - STANDING RULE (2026-11, direct instruction)
 
 Live incident: "Admin Srm dept. Kon doer er under a?" (asking which Reporting Doer

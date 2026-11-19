@@ -2966,6 +2966,20 @@ router.post('/hr-assistant/hr-note-escalations/:id/dismiss', async (req, res) =>
     res.status(500).json({ error: err.message });
   }
 });
+// Part A phase 2 - Action-needed card for a Restricted-tier refusal or an
+// unmatched-number data-request refusal (see RESTRICTED_FIELD_BLOCK_REPLY/
+// UNMATCHED_SENDER_DATA_REPLY in whatsappAssistant.js) - never actionable,
+// just acknowledges it was seen, same shape as every other dismiss route
+// in this section.
+router.post('/hr-assistant/data-access-notices/:id/dismiss', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    await whatsappAssistant.dismissDataAccessNotice(req.params.id);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // Task 16/18 (2026-11) - Action-needed card for a message auto-recovery
 // (see recoverStuckIncomingMessages) could not resolve on its own.

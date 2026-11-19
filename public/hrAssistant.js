@@ -4951,6 +4951,41 @@
       });
     });
   }
+  // Part A phase 2 (2026-11, direct instruction) - a Restricted-tier
+  // refusal ("someone else's Aadhaar/PAN/bank/salary/UAN/ESI - never
+  // sent, not even via an approval card") or an unmatched-number data
+  // request refusal ("sender's number isn't a registered employee") -
+  // never actionable (nothing was ever prepared to send), just
+  // informational with a Dismiss button, same shape as every other FYI
+  // card in this inbox.
+  function actionNeededDataAccessNoticeCardHtml(item) {
+    const isUnmatched = item.data.kind === 'unmatched_sender';
+    const title = isUnmatched ? 'Unregistered number asked for HR data' : 'Restricted field request refused';
+    return '<div class="wf-auto-task-card" data-chat-id="' + escapeHtml(item.chatId) + '" data-data-access-notice-id="' + escapeHtml(item.data.id) + '">' +
+      '<div class="wf-action-needed-card-head">' +
+        '<span class="wf-auto-task-subject">' + escapeHtml(senderDisplay(item.name, item.chatId)) + '</span>' +
+        '<button type="button" class="wf-action-needed-openchat" data-open-chat="' + escapeHtml(item.chatId) + '">Open chat ›</button>' +
+      '</div>' +
+      '<div class="wf-auto-hint">' + escapeHtml(title) + (item.data.fieldLabel ? ' (' + escapeHtml(item.data.fieldLabel) + ')' : '') + '</div>' +
+      '<div class="wf-auto-hint">' + escapeHtml(item.data.message || '') + '</div>' +
+      '<div class="wf-auto-hint">' + actionNeededAgeLabel(item.ageMs) + ' ago</div>' +
+      '<div class="wf-auto-actions">' +
+        '<button type="button" class="plain" data-data-access-notice-action="dismiss">Dismiss</button>' +
+      '</div>' +
+    '</div>';
+  }
+  function wireActionNeededDataAccessNoticeCard(card) {
+    const openChatBtn = card.querySelector('[data-open-chat]');
+    if (openChatBtn) openChatBtn.addEventListener('click', () => { pushNav({ type: 'conversation', chatId: card.dataset.chatId }); openConversationPage(card.dataset.chatId); });
+    const id = card.dataset.dataAccessNoticeId;
+    const dismissBtn = card.querySelector('[data-data-access-notice-action="dismiss"]');
+    if (dismissBtn) dismissBtn.addEventListener('click', async () => {
+      await runButtonAction(dismissBtn, () => postJsonOrThrow('/api/workforce/hr-assistant/data-access-notices/' + encodeURIComponent(id) + '/dismiss', {}), () => {
+        closeRowWithToast(card, { title: 'Dismissed', type: 'success' });
+        refreshActionNeeded();
+      });
+    });
+  }
   // Task 16/18 (2026-11) - a message auto-recovery (see
   // recoverStuckIncomingMessages server-side) could not resolve on its
   // own. No real action to take beyond seeing the stuck text and either
@@ -5135,6 +5170,7 @@
   function actionNeededCardHtml(item) {
     if (item.kind === 'automation_missed_run' || item.kind === 'automation_first_run') return actionNeededAutomationCardHtml(item);
     if (item.kind === 'hr_note_escalated') return actionNeededHrNoteEscalatedCardHtml(item);
+    if (item.kind === 'data_access_notice') return actionNeededDataAccessNoticeCardHtml(item);
     if (item.kind === 'stuck_incoming') return actionNeededStuckIncomingCardHtml(item);
     if (item.kind === 'ai_usage_alert') return actionNeededAiUsageCardHtml(item);
     if (item.kind === 'daily_backup_failed') return actionNeededBackupFailedCardHtml(item);
@@ -5153,6 +5189,7 @@
   function wireActionNeededCard(card, chatId) {
     if (card.dataset.automationId) { wireActionNeededAutomationCard(card); return; }
     if (card.dataset.escalationId) { wireActionNeededHrNoteEscalatedCard(card); return; }
+    if (card.dataset.dataAccessNoticeId) { wireActionNeededDataAccessNoticeCard(card); return; }
     if (card.dataset.stuckId) { wireActionNeededStuckIncomingCard(card); return; }
     if (card.dataset.aiUsageAlert) { wireActionNeededAiUsageCard(card); return; }
     if (card.dataset.backupFailed) { wireActionNeededBackupFailedCard(card); return; }

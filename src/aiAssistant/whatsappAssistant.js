@@ -88,6 +88,14 @@ const tools = require('./tools');
 const memoryService = require('./memoryService');
 const documentRequests = require('./documentRequests');
 const settingsAuditLog = require('./settingsAuditLog');
+// Part A phase 2 (2026-11, direct instruction) - the owner-editable
+// Official/Personal/Restricted classification (src/aiAssistant/
+// dataAccessService.js) now DRIVES the real gating decisions below
+// (replacing the old static official:true alias flags and the broader
+// hard-block list), instead of just sitting in its own Settings page
+// unused (phase 1). No circular require - dataAccessService only needs
+// settingsAuditLog, already required above either way.
+const dataAccessService = require('./dataAccessService');
 
 const LAST_SEEN_PREFIX = 'wa-last-seen:';
 const DRAFT_KEY = 'wa-pending-drafts';
@@ -747,9 +755,10 @@ async function listActionableWhatsappItems() {
 // (approve & send / edit / reject) is a decision, so it joins "approvals";
 // a received document needing review is closest to "data_requests".
 async function listActionNeededItems() {
-  const [approvals, drafts, docs, hrConfirmations, hrNoteEscalations, stuckIncoming] = await Promise.all([
+  const [approvals, drafts, docs, hrConfirmations, hrNoteEscalations, stuckIncoming, dataAccessNotices] = await Promise.all([
     listPendingApprovals(), listPendingDrafts(),
-    documentRequests.listPendingReceived(), listAllHrConfirmations(), listHrNoteEscalations(), listStuckIncomingMessages()
+    documentRequests.listPendingReceived(), listAllHrConfirmations(), listHrNoteEscalations(), listStuckIncomingMessages(),
+    listDataAccessNotices()
   ]);
   const ambiguousConfirmations = hrConfirmations.filter((c) => c.status === 'ambiguous_owner_review');
   const raw = [];
@@ -768,6 +777,10 @@ async function listActionNeededItems() {
   // Closest existing category fit is "data_requests" (an unanswered
   // incoming message), still shown under "All" regardless.
   stuckIncoming.forEach((s) => raw.push({ kind: 'stuck_incoming', category: 'data_requests', chatId: whatsapp.normalizePhone(s.phone), name: s.name, ts: s.firstSeenAt || s.detectedAt || 0, data: s }));
+  // Part A phase 2 - a Restricted-tier refusal or an unmatched-number
+  // data-request refusal (see RESTRICTED_FIELD_BLOCK_REPLY/
+  // UNMATCHED_SENDER_DATA_REPLY) - never actionable, informational only.
+  dataAccessNotices.forEach((n) => raw.push({ kind: 'data_access_notice', category: 'data_requests', chatId: whatsapp.normalizePhone(n.phone), name: n.name, ts: n.createdAt || 0, data: n }));
   // Performance fix (2026-10-30): isNeverAuto(item.chatId) used to run as
   // its own SISMEMBER round trip PER item inside this map - this function
   // backs the Action-needed poll that fires every ~12s regardless of which
@@ -3265,6 +3278,82 @@ async function dismissHrNoteEscalation(id) {
   } catch (err) { return false; }
   return true;
 }
+// ---------------- Part A phase 2: data-access notice cards ----------------
+// A plain CRUD store, same shape/pattern as the HR-note escalation store
+// right above, for the two refusals the owner's direct instruction says
+// must surface as a real Action-needed card (not just a chat-style
+// postOwnerNotification, which is the weaker pre-existing precedent the
+// old Aadhaar/PAN hard block used) - never actionable (no Send/Approve;
+// the whole point is nothing was ever prepared to send), just
+// informational with a Dismiss button, same as every other "FYI" card in
+// this inbox.
+const DATA_ACCESS_NOTICE_PREFIX = 'subh-data-access-notice:';
+const DATA_ACCESS_NOTICE_IDS_KEY = 'subh-data-access-notice-ids';
+function newDataAccessNoticeId() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+async function flagDataAccessNotice(data) {
+  const redis = getClient();
+  if (!redis) return null;
+  const id = newDataAccessNoticeId();
+  const record = Object.assign({ id, createdAt: Date.now() }, data);
+  try {
+    await redis.set(DATA_ACCESS_NOTICE_PREFIX + id, JSON.stringify(record));
+    await redis.sadd(DATA_ACCESS_NOTICE_IDS_KEY, id);
+  } catch (err) { return null; }
+  return record;
+}
+async function getDataAccessNotice(id) {
+  const redis = getClient();
+  if (!redis) return null;
+  try {
+    const raw = await redis.get(DATA_ACCESS_NOTICE_PREFIX + id);
+    return raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : null;
+  } catch (err) { return null; }
+}
+async function listDataAccessNotices() {
+  const redis = getClient();
+  if (!redis) return [];
+  try {
+    const ids = await redis.smembers(DATA_ACCESS_NOTICE_IDS_KEY);
+    if (!ids || !ids.length) return [];
+    const records = await Promise.all(ids.map((id) => getDataAccessNotice(id)));
+    return records.filter(Boolean).sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+  } catch (err) { return []; }
+}
+async function dismissDataAccessNotice(id) {
+  const redis = getClient();
+  if (!redis) return false;
+  try {
+    await redis.del(DATA_ACCESS_NOTICE_PREFIX + id);
+    await redis.srem(DATA_ACCESS_NOTICE_IDS_KEY, id);
+  } catch (err) { return false; }
+  return true;
+}
+// Status-agnostic (unlike isSenderActiveEmployee, which requires ACTIVE
+// for the official-tier direct-send gate) - "is this phone number
+// registered to ANY employee at all, active or not" is the real question
+// for the unmatched-number rule (direct instruction: "sender's WhatsApp
+// number must match an employee; if not -> no data"), since an
+// INACTIVE/notice-period record is still a real, known identity, just
+// one with its own separate existing treatment elsewhere (see
+// replyInactiveEmployee) - never conflated with a genuinely unknown
+// number.
+async function isSenderKnownEmployee(phone) {
+  if (!phone) return false;
+  const match = await findEmployeeByPhone(phone).catch(() => null);
+  return Boolean(match);
+}
+// Direct instruction - the exact Bangla given for a DATA request (never a
+// job application/CV/vacancy enquiry/other existing flow - those are
+// classified entirely separately upstream and never reach this reply,
+// see decideAutoReplyCore's own wantsData gate) from a WhatsApp number
+// that doesn't match any employee record.
+const UNMATCHED_SENDER_DATA_REPLY = {
+  banglish: 'Dukkhito, ei tottho shudhu registered employee number theke share kora jay.',
+  hinglish: 'Maaf kijiye, yeh jaankari sirf registered employee number se hi share ki jaati hai.',
+  english: 'Sorry, this information can only be shared with a registered employee number.'
+};
 // Task 16 (2026-11) LIVE BUG FIX - direct instruction, from the real live
 // incident (917278793115, 2026-11-04 14:42: "Mdo dept. HOD emp code dao"
 // got no reply at all and never showed in the conversation, while the
@@ -3630,16 +3719,19 @@ async function resolveConfirmedPersonLookup({ phone, name, candidate, isInactive
   }
   if (personField === 'other_field') {
     const fieldAlias = resolveApprovalFieldAliasByKey(fieldAliasKey);
-    if (fieldAlias && fieldAlias.official && await isSenderActiveEmployee(phone)) {
-      const sent = await sendOfficialFieldDirect({ phone, requesterLabel: name, candidate, lang, hadTypo, fieldAlias });
-      if (sent) return { case: 'acknowledged', replyText: sent, summaryForOwner: null, lang };
-    } else if (fieldAlias) {
-      await queuePersonFieldApproval({ phone, requesterLabel: name, candidate, lang, hadTypo, fieldAlias });
+    if (fieldAlias) {
+      const resolved = await resolveSingleFieldForThirdParty({ phone, requesterLabel: name, candidate, lang, hadTypo, fieldAlias, isContactNumber: false });
+      if (resolved.outcome === 'restricted') return { case: 'acknowledged', replyText: RESTRICTED_FIELD_BLOCK_REPLY[lang] || RESTRICTED_FIELD_BLOCK_REPLY.english, summaryForOwner: null, lang };
+      if (resolved.outcome === 'sent') return { case: 'acknowledged', replyText: resolved.replyText, summaryForOwner: null, lang };
     }
     return { case: 'data_holding', replyText: dataRequestHoldingReply(lang, history, new Date()), summaryForOwner: null, lang };
   }
   // contact_number (default/only remaining value)
-  await queuePersonContactApproval({ phone, requesterLabel: name, candidate, lang, hadTypo });
+  {
+    const resolved = await resolveSingleFieldForThirdParty({ phone, requesterLabel: name, candidate, lang, hadTypo, fieldAlias: null, isContactNumber: true });
+    if (resolved.outcome === 'restricted') return { case: 'acknowledged', replyText: RESTRICTED_FIELD_BLOCK_REPLY[lang] || RESTRICTED_FIELD_BLOCK_REPLY.english, summaryForOwner: null, lang };
+    if (resolved.outcome === 'sent') return { case: 'acknowledged', replyText: resolved.replyText, summaryForOwner: null, lang };
+  }
   return { case: 'data_holding', replyText: dataRequestHoldingReply(lang, history, new Date()), summaryForOwner: null, lang };
 }
 const CONTACT_NUMBER_LINE = {
@@ -5673,6 +5765,56 @@ async function queuePersonContactApproval({ phone, requesterLabel, candidate, la
     requesterLabel + ' (' + phone + ') ' + candidate.name + ' (' + candidate.department + statusNote + ')-er contact number chaichhe.' + typoNote + ' Je message jabe: \'' + outgoingText + '\'. Pathabo?'
   );
 }
+// Part A phase 2 - Contact Number's own OFFICIAL-tier direct-send,
+// mirroring sendOfficialFieldDirect's shape exactly. Contact Number
+// defaults to Personal (same approval-always behaviour as before), but
+// the owner can now reclassify it to Official via the Data access page -
+// this is what makes that reclassification actually take effect, same
+// "no value on record -> null, caller falls back to the normal holding
+// reply" contract as sendOfficialFieldDirect.
+async function sendContactNumberDirect({ phone, requesterLabel, candidate, lang, hadTypo }) {
+  if (!candidate.contactNumber) {
+    await postOwnerNotification(candidate.name + ' (' + candidate.department + ')-er contact number record-e nei.');
+    return null;
+  }
+  const outgoingText = (CONTACT_NUMBER_LINE[lang] || CONTACT_NUMBER_LINE.english)(candidate.name, candidate.contactNumber);
+  const typoNote = hadTypo ? ' [sender-er deya naam-er banan-e typo chhilo, eta closest match]' : '';
+  await postOwnerNotification(
+    requesterLabel + ' (' + phone + ') ' + candidate.name + '-er contact number (Data access-e Official hisebe classify kora) jigges korechhe.' + typoNote + ' Approval chara e direct reply gechhe: \'' + outgoingText + '\''
+  );
+  return outgoingText;
+}
+// Part A phase 2 - the one shared 3-way decision (Restricted/Official/
+// Personal) for ONE confirmed candidate + ONE requested field
+// (contact_number OR an other_field alias), reused by every call site
+// that used to duplicate the old official:true + isSenderActiveEmployee
+// check: handlePersonLookupRequest's own current.length===1 branch,
+// resolveConfirmedPersonLookup (same request confirmed a turn later),
+// and the disambiguation-continuation branch. Returns exactly one of:
+// { outcome: 'restricted' } (refused, Action-needed card already
+// flagged), { outcome: 'sent', replyText } (already sent + owner told),
+// or { outcome: 'queued' } (an ordinary approval card already queued,
+// caller replies with the normal holding reply) - never leaves the
+// decision half-made.
+async function resolveSingleFieldForThirdParty({ phone, requesterLabel, candidate, lang, hadTypo, fieldAlias, isContactNumber }) {
+  const dataAccessKey = isContactNumber ? 'contactNumber' : fieldAliasAccessKey(fieldAlias);
+  const tier = await resolveFieldAccessTier(dataAccessKey);
+  const fieldLabelForNotice = isContactNumber ? (CONTACT_NUMBER_FIELD_WORD[lang] || CONTACT_NUMBER_FIELD_WORD.english) : (fieldAlias.label[lang] || fieldAlias.label.english);
+  if (tier === 'restricted') {
+    await flagDataAccessNotice({ phone, name: candidate.name, kind: 'restricted_refused', fieldLabel: fieldLabelForNotice, message: requesterLabel + ' (' + phone + ') ' + candidate.name + '-er ' + fieldLabelForNotice + ' (restricted field, Data access-e set kora) chaichhe - kakhono pathano hoy na, approval card o toiri hoyni.' });
+    await postOwnerNotification('⛔ ' + requesterLabel + ' (' + phone + ') ' + candidate.name + '-er ' + fieldLabelForNotice + ' chaichhe - restricted field (Data access-e set kora), refuse kora holo.');
+    return { outcome: 'restricted' };
+  }
+  if (tier === 'official' && await isSenderActiveEmployee(phone)) {
+    const sentDirect = isContactNumber
+      ? await sendContactNumberDirect({ phone, requesterLabel, candidate, lang, hadTypo })
+      : await sendOfficialFieldDirect({ phone, requesterLabel, candidate, lang, hadTypo, fieldAlias });
+    if (sentDirect) return { outcome: 'sent', replyText: sentDirect };
+  }
+  if (isContactNumber) await queuePersonContactApproval({ phone, requesterLabel, candidate, lang, hadTypo });
+  else await queuePersonFieldApproval({ phone, requesterLabel, candidate, lang, hadTypo, fieldAlias });
+  return { outcome: 'queued' };
+}
 
 // ---------------- "Other field" approval-gated lookups (live review item 5) ----------------
 // Aadhaar/PAN/bank account/salary are the ONLY personal fields that are
@@ -5706,19 +5848,20 @@ function formatOtherFieldValue(key, value) {
   }
   return value;
 }
-// Task 2 (2026-10-31) - `official: true` marks a field as one of the 15
-// OFFICIAL fields (exact list: Employee Code, Name, Designation,
-// Department, Collar Type, Gender, Location, Company Location, Company,
-// Reporting Manager/HOD, DOJ, Tenure, Total Years of Experience, Email ID
-// (personal), Email ID (official)). An official field resolves DIRECTLY
-// (no approval) when the sender is themselves a current ACTIVE employee -
-// see handlePersonLookupRequest's isSenderActiveEmployee check - exactly
-// like general_details (designation/department/tenure) already did;
-// every other field here (emergency contact, ...) stays approval-gated
-// for every sender, same as before. Name/Designation/Department/Tenure
-// aren't separate aliases - they're answered together as a bundle by the
-// pre-existing general_details branch, which gets its own identical
-// active-sender gate.
+// Part A phase 2 (2026-11, direct instruction) - each alias's gating
+// tier (Official/Personal/Restricted) is no longer a static flag on the
+// object below; it's read LIVE from the owner's own Data access table
+// (dataAccessService.getTierMap(), via resolveFieldAccessTier/
+// isFieldAliasOfficialNow/isFieldAliasRestrictedNow above) keyed by
+// `dataAccessKey` (falling back to `key` when the two match). Official
+// resolves DIRECTLY (no approval) only when the sender is themselves a
+// current ACTIVE employee (isSenderActiveEmployee) - exactly like
+// general_details (designation/department/tenure, intentionally NOT
+// wired to this table in this phase - see resolveFieldSpecAccessTier's
+// own comment) already did. Personal stays approval-gated for every
+// sender, same as before. Restricted is never sent at all, not even via
+// approval - see the isHardBlockedField branch in
+// handlePersonLookupRequest.
 const APPROVAL_FIELD_ALIASES = [
   // Checked BEFORE the generic "company" alias below, so "company
   // location" is never swallowed by the plain /\bcompany\b/i match.
@@ -5726,29 +5869,26 @@ const APPROVAL_FIELD_ALIASES = [
     key: 'companyLocation',
     match: /company\s*location/i,
     label: { banglish: 'company location', hinglish: 'company location', english: 'company location' },
-    getValue: (c) => c.companyLocation || null,
-    official: true
+    getValue: (c) => c.companyLocation || null
   },
   {
     key: 'company',
     match: /\bcompany\b/i,
     label: { banglish: 'company', hinglish: 'company', english: 'company' },
-    getValue: (c) => c.company || null,
-    official: true
+    getValue: (c) => c.company || null
   },
   {
     key: 'collarType',
     match: /collar/i,
     label: { banglish: 'collar type', hinglish: 'collar type', english: 'collar type' },
     getValue: (c) => employeeService.formatCollar(c.groupD) || null,
-    official: true
+    dataAccessKey: 'groupD'
   },
   {
     key: 'gender',
     match: /\bgender\b/i,
     label: { banglish: 'gender', hinglish: 'gender', english: 'gender' },
-    getValue: (c) => c.gender || null,
-    official: true
+    getValue: (c) => c.gender || null
   },
   // Checked BEFORE "company location" would be a mismatch here since that
   // alias is already earlier in this list and claims the match first.
@@ -5756,22 +5896,19 @@ const APPROVAL_FIELD_ALIASES = [
     key: 'location',
     match: /\blocation\b|\bsite\b|\bposted\b/i,
     label: { banglish: 'location', hinglish: 'location', english: 'location' },
-    getValue: (c) => c.location || null,
-    official: true
+    getValue: (c) => c.location || null
   },
   {
     key: 'doj',
     match: /\bdoj\b|date\s*of\s*join|joining\s*date/i,
     label: { banglish: 'date of joining', hinglish: 'date of joining', english: 'date of joining' },
-    getValue: (c) => formatOtherFieldValue('doj', c.doj),
-    official: true
+    getValue: (c) => formatOtherFieldValue('doj', c.doj)
   },
   {
     key: 'totalExperience',
     match: /total.*(experience|exp)\b|years?\s*of\s*experience/i,
     label: { banglish: 'total years of experience', hinglish: 'total years of experience', english: 'total years of experience' },
-    getValue: (c) => c.totalExperience || null,
-    official: true
+    getValue: (c) => c.totalExperience || null
   },
   // Checked BEFORE the generic "mail" alias below, so "official email" is
   // never swallowed by the generic fallback.
@@ -5780,23 +5917,76 @@ const APPROVAL_FIELD_ALIASES = [
     match: /official.*mail|mail.*official|company.*mail/i,
     label: { banglish: 'official mail id', hinglish: 'official mail id', english: 'official email' },
     getValue: (c) => c.email || null,
-    official: true
+    dataAccessKey: 'email'
   },
-  // Generic/unqualified "mail id" - both underlying fields (personal and
-  // official email) are official, so either one resolving here is still
-  // within the official tier.
+  // Phase 2 (Part A access policy) - split out from the old generic
+  // "mail id" alias below, which used to resolve emailPersonal FIRST and
+  // treat the result as official either way - silently leaking a
+  // THIRD PARTY's personal email without ever going through approval.
+  // Personal Email is now its own Personal-tier head (per direct
+  // instruction): only an explicitly-qualified "personal mail" request
+  // ever reaches it; the bare/unqualified alias right below never reads
+  // emailPersonal at all anymore.
+  {
+    key: 'emailPersonal',
+    match: /personal.*mail|mail.*personal/i,
+    label: { banglish: 'personal mail id', hinglish: 'personal mail id', english: 'personal email' },
+    getValue: (c) => c.emailPersonal || null,
+    dataAccessKey: 'emailPersonal'
+  },
+  // Generic/unqualified "mail id" - defaults to the OFFICIAL email only
+  // (the safe direction - see the emailPersonal split above). Checked
+  // AFTER both qualified aliases above, so "official mail"/"personal
+  // mail" are never swallowed by this one.
   {
     key: 'email',
     match: /mail|e-?mail/i,
     label: { banglish: 'mail id', hinglish: 'mail id', english: 'email address' },
-    getValue: (c) => c.emailPersonal || c.email || null,
-    official: true
+    getValue: (c) => c.email || null,
+    dataAccessKey: 'email'
   },
   {
     key: 'emergencyContact',
     match: /emergency/i,
     label: { banglish: 'emergency contact', hinglish: 'emergency contact', english: 'emergency contact' },
-    getValue: (c) => c.emergencyContactNumber || c.emergencyContactName || null
+    getValue: (c) => c.emergencyContactNumber || c.emergencyContactName || null,
+    dataAccessKey: 'emergencyContactNumber'
+  },
+  // Phase 2 (Part A access policy) - these 3 used to be unconditionally
+  // hard-blocked (see the old FORBIDDEN_PII_LABELS/HARD_BLOCKED_PERSON_
+  // FIELD_RE-driven block, still used elsewhere for a DIFFERENT purpose -
+  // see RESTRICTED_KEYWORD note below). Per direct instruction, DOB/
+  // address/blood group are now Personal-tier, owner-reclassifiable, same
+  // approval-card treatment as any other Personal field - never hard-
+  // blocked anymore. resolveOneLookupFieldSpec below promotes a
+  // classifier 'forbidden_pii' tag to 'other_field' whenever it resolves
+  // to one of these three; Aadhaar/PAN/bank/salary/UAN/ESI never match
+  // any alias here, so they still fall through to the hard block,
+  // completely unchanged.
+  {
+    key: 'dob',
+    match: /date\s*of\s*birth|\bdob\b|\bbirthday\b/i,
+    label: { banglish: 'date of birth', hinglish: 'date of birth', english: 'date of birth' },
+    getValue: (c) => formatOtherFieldValue('dob', c.dob),
+    dataAccessKey: 'dob'
+  },
+  {
+    key: 'address',
+    match: /\baddress\b|\bthikana\b|\bpata\b/i,
+    label: { banglish: 'address', hinglish: 'address', english: 'address' },
+    // Both address fields default to the same tier (Personal) - if the
+    // owner ever splits them apart, present address's own tier decides
+    // this alias's gating (same pragmatic single-key choice the pre-
+    // existing OWN_SENSITIVE_ID_VALUE.address getter already makes).
+    getValue: (c) => c.presentAddress || c.permanentAddress || null,
+    dataAccessKey: 'presentAddress'
+  },
+  {
+    key: 'bloodGroup',
+    match: /blood\s*group/i,
+    label: { banglish: 'blood group', hinglish: 'blood group', english: 'blood group' },
+    getValue: (c) => c.bloodGroup || null,
+    dataAccessKey: 'bloodGroup'
   },
   // Task 7 (2026-10-31) - live bug fix: an employee-code request for a
   // THIRD PARTY was wrongly hard-blocked because no category ever
@@ -5810,8 +6000,7 @@ const APPROVAL_FIELD_ALIASES = [
     key: 'employeeId',
     match: EMPLOYEE_CODE_FIELD_RE,
     label: { banglish: 'employee code', hinglish: 'employee code', english: 'employee code' },
-    getValue: (c) => c.employeeId || null,
-    official: true
+    getValue: (c) => c.employeeId || null
   },
   // Task 2 (2026-10-29) - one named person's OWN reporting manager/HOD
   // ("Subhodeep HR kake report kore?"). alwaysConfirm (see
@@ -5828,7 +6017,6 @@ const APPROVAL_FIELD_ALIASES = [
     label: { banglish: 'reporting manager', hinglish: 'reporting manager', english: 'reporting manager' },
     getValue: (c) => c.reportingManager || null,
     alwaysConfirm: true,
-    official: true,
     outgoingLine: {
       banglish: (name, value) => name + '-er reporting manager holen ' + value + '.',
       hinglish: (name, value) => name + ' ke reporting manager ' + value + ' hain.',
@@ -5856,7 +6044,6 @@ const APPROVAL_FIELD_ALIASES = [
     label: { banglish: 'reporting doer', hinglish: 'reporting doer', english: 'reporting doer' },
     getValue: (c) => c.reportingDoer || null,
     alwaysConfirm: true,
-    official: true,
     outgoingLine: {
       banglish: (name, value) => name + '-er reporting doer holen ' + value + '.',
       hinglish: (name, value) => name + ' ka reporting doer ' + value + ' hain.',
@@ -5871,6 +6058,59 @@ function resolveApprovalFieldAliasByLabel(label) {
 function resolveApprovalFieldAliasByKey(key) {
   return APPROVAL_FIELD_ALIASES.find((a) => a.key === key) || null;
 }
+// ---------------- Part A phase 2: live tier lookups ----------------
+// The single place every third-party field-gating decision below reads
+// the owner's Data access table (never a hardcoded list anymore). Fails
+// toward 'personal' on any lookup problem (missing key, Redis down) -
+// the SAME safe direction dataAccessService.getTierMap()/effectiveTier
+// already fail toward, never toward 'official' (which would wrongly
+// auto-send) or 'restricted' (which would wrongly refuse a third party's
+// own routine approval-gated request).
+async function resolveFieldAccessTier(dataAccessKey) {
+  if (!dataAccessKey) return 'official'; // only ever reached for the general_details bundle below, which this phase deliberately leaves alone - see its own comment
+  try {
+    const tierMap = await dataAccessService.getTierMap();
+    return tierMap[dataAccessKey] || 'personal';
+  } catch (err) { return 'personal'; }
+}
+function fieldAliasAccessKey(fieldAlias) {
+  return fieldAlias ? (fieldAlias.dataAccessKey || fieldAlias.key) : null;
+}
+async function isFieldAliasOfficialNow(fieldAlias) {
+  if (!fieldAlias) return false;
+  return (await resolveFieldAccessTier(fieldAliasAccessKey(fieldAlias))) === 'official';
+}
+async function isFieldAliasRestrictedNow(fieldAlias) {
+  if (!fieldAlias) return false;
+  return (await resolveFieldAccessTier(fieldAliasAccessKey(fieldAlias))) === 'restricted';
+}
+// One field spec's live tier - contact_number maps to the 'contactNumber'
+// head (today's default 'personal', same approval-always behaviour as
+// before unless the owner reclassifies it); general_details (designation/
+// department/tenure bundle) is NOT read from the table in this phase -
+// direct instruction covered only re-wiring the fields that already had
+// their own individual alias/hard-block treatment, and splitting an
+// already-atomic 3-field official bundle into 3 independently-gated
+// sends was never asked for and would be new scope, not a wiring change.
+async function resolveFieldSpecAccessTier(spec) {
+  if (spec.tag === 'contact_number') return resolveFieldAccessTier('contactNumber');
+  if (spec.tag === 'general_details') return 'official';
+  return resolveFieldAccessTier(fieldAliasAccessKey(spec.fieldAlias));
+}
+// Polite refusal for a RESTRICTED-tier field about anyone other than the
+// sender themself - never sent, not even via an approval card (direct
+// instruction: "someone else's -> never sent, not even via an approval
+// card"). Deliberately different wording from PII_BLOCK_REPLY (which
+// stays as the own-request-but-unauthorized fallback in
+// handleOwnSensitiveIdRequest) and from UNMATCHED_SENDER_DATA_REPLY
+// below (a different scenario - the sender themselves isn't recognized
+// at all) - the exact Bangla given directly: "ei tottho shudhu HR office
+// theke dewa hoy."
+const RESTRICTED_FIELD_BLOCK_REPLY = {
+  banglish: 'Dukkhito, ei tottho shudhu HR office theke dewa hoy. Ei bishoye sahajyo lagle sorasori HR office-e jogajog korun.',
+  hinglish: 'Maaf kijiye, yeh jaankari sirf HR office se di jaati hai. Is baare mein madad chahiye to seedhe HR office se sampark karein.',
+  english: 'This information is only given out by the HR office directly. Please contact the HR office for any help with this.'
+};
 // Task 2 (2026-10-31) - the OFFICIAL tier's sender gate: a direct (no
 // approval) reply for one of the 15 official fields is only ever allowed
 // when the sender's OWN WhatsApp number matches a current ACTIVE employee
@@ -6041,8 +6281,21 @@ function resolveOneLookupFieldSpec(tag, rawLabel, isEmployeeCodeRequest) {
     effectiveTag = 'other_field';
     fieldAlias = resolveApprovalFieldAliasByKey('employeeId');
   }
-  const isHardBlocked = effectiveTag === 'forbidden_pii' ||
-    HARD_BLOCKED_PERSON_FIELD_RE.test(rawLabel || '') ||
+  // Part A phase 2 (direct instruction) - the classifier's 'forbidden_pii'
+  // tag used to mean an automatic hard block for all 9 of the old
+  // FORBIDDEN_PII_LABELS heads. DOB/address/blood group are real aliases
+  // now (see APPROVAL_FIELD_ALIASES) - Personal tier by default, owner-
+  // reclassifiable - so a label that resolves to one of THOSE is promoted
+  // to an ordinary other_field and flows into the normal official/
+  // personal/restricted branch below instead. Aadhaar/PAN/bank/salary/
+  // UAN/ESI never match any alias here, so they're unaffected - still
+  // resolve to no fieldAlias, still hard-blocked by the line below,
+  // exactly as before.
+  if (effectiveTag === 'forbidden_pii' && !fieldAlias) {
+    const promoted = resolveApprovalFieldAliasByLabel(rawLabel);
+    if (promoted) { effectiveTag = 'other_field'; fieldAlias = promoted; }
+  }
+  const isHardBlocked = (effectiveTag === 'forbidden_pii' && !fieldAlias) ||
     (effectiveTag === 'other_field' && !fieldAlias);
   return { tag: effectiveTag, fieldAlias, isHardBlocked, rawLabel: rawLabel || null };
 }
@@ -6058,11 +6311,6 @@ function lookupSpecLabel(spec, lang) {
   if (spec.tag === 'contact_number') return CONTACT_NUMBER_FIELD_WORD[lang] || CONTACT_NUMBER_FIELD_WORD.english;
   if (spec.tag === 'general_details') return GENERAL_DETAILS_FIELD_WORD[lang] || GENERAL_DETAILS_FIELD_WORD.english;
   return spec.fieldAlias ? (spec.fieldAlias.label[lang] || spec.fieldAlias.label.english) : (spec.rawLabel || 'field');
-}
-function lookupSpecIsOfficial(spec) {
-  if (spec.tag === 'contact_number') return false;
-  if (spec.tag === 'general_details') return true;
-  return Boolean(spec.fieldAlias && spec.fieldAlias.official);
 }
 function lookupSpecValue(spec, candidate) {
   if (spec.tag === 'contact_number') return candidate.contactNumber || null;
@@ -6099,7 +6347,19 @@ function joinFieldLabelsForOwner(fieldSpecs, lang) {
 async function resolveCombinedPersonFields({ phone, requesterLabel, candidate, fieldSpecs, lang, hadTypo, history }) {
   const labelsJoined = joinFieldLabelsForOwner(fieldSpecs, lang);
   const typoNote = hadTypo ? ' [sender-er deya naam-er banan-e typo chhilo, eta closest match]' : '';
-  if (fieldSpecs.every(lookupSpecIsOfficial) && await isSenderActiveEmployee(phone)) {
+  // Part A phase 2 - "strictest tier wins" (this file's own pre-existing
+  // philosophy for a mixed request, see the fieldSpecs module comment
+  // above): if ANY requested field is Restricted, the WHOLE combined
+  // request is refused outright - never a partial send, never an
+  // approval card for the rest while silently dropping the restricted
+  // one.
+  const tiers = await Promise.all(fieldSpecs.map(resolveFieldSpecAccessTier));
+  if (tiers.some((t) => t === 'restricted')) {
+    await flagDataAccessNotice({ phone, name: candidate.name, kind: 'restricted_refused', fieldLabel: labelsJoined, message: requesterLabel + ' (' + phone + ') ' + candidate.name + '-er ' + labelsJoined + ' (restricted field shomoy) chaichhe - eta kakhono pathano hoy na, approval card o toiri hoyni.' });
+    await postOwnerNotification('⛔ ' + requesterLabel + ' (' + phone + ') ' + candidate.name + '-er ' + labelsJoined + ' chaichhe - ei request-e restricted field royeche, tai pura request-i refuse kora holo, kichu pathano hoyni.');
+    return { case: 'acknowledged', replyText: RESTRICTED_FIELD_BLOCK_REPLY[lang] || RESTRICTED_FIELD_BLOCK_REPLY.english, summaryForOwner: null, lang };
+  }
+  if (tiers.every((t) => t === 'official') && await isSenderActiveEmployee(phone)) {
     const combinedLine = buildCombinedFieldsLine(candidate, fieldSpecs, lang, hadTypo, new Date());
     await postOwnerNotification(requesterLabel + ' (' + phone + ') ' + candidate.name + '-er ' + labelsJoined + ' jigges korechhe.' + typoNote + ' Approval chara e direct reply gechhe: \'' + combinedLine + '\'');
     return { case: 'acknowledged', replyText: combinedLine, summaryForOwner: null, lang };
@@ -6119,14 +6379,20 @@ async function resolveCombinedPersonFields({ phone, requesterLabel, candidate, f
 }
 
 async function handlePersonLookupRequest({ phone, name, lang, personName, personField, personFieldLabel, extraFields, department, text, history }) {
-  // Task 7 (2026-10-31): exactly 9 heads (Aadhaar/PAN/bank details/
-  // salary/UAN/ESI/address/DOB/blood group) are ever hard-blocked now,
+  // Part A phase 2 (2026-11, direct instruction - supersedes the old
+  // Task 7 comment this replaces): only genuinely RESTRICTED heads
+  // (Aadhaar/PAN/bank details/salary/UAN/ESI) are ever hard-blocked now,
   // regardless of which personField value the classifier actually picked
   // - a structural safety net (same philosophy as textHasForbiddenField/
   // cardHasForbiddenField elsewhere in this file), so a mislabeled
-  // "other_field" request can never leak one of these. An "other_field"
-  // whose label we don't recognize at all is refused the SAME way, rather
-  // than guessing at an unvalidated employee field.
+  // "other_field" request can never leak one of these. DOB/address/blood
+  // group used to be hard-blocked here too; they're Personal-tier
+  // aliases now (resolveOneLookupFieldSpec promotes them out of
+  // 'forbidden_pii' before this point) and flow into the normal
+  // official/personal/restricted branch below instead. An "other_field"
+  // (or an unresolved forbidden_pii label) we don't recognize at all is
+  // refused the SAME way, rather than guessing at an unvalidated
+  // employee field.
   //
   // Live bug fix: employee code/ID was wrongly falling into this hard
   // block too - the classifier's own schema never mentioned it in any
@@ -6151,37 +6417,45 @@ async function handlePersonLookupRequest({ phone, name, lang, personName, person
     .map((f) => resolveOneLookupFieldSpec(f.tag || f.field, f.label || f.fieldLabel, isEmployeeCodeRequest));
   personField = fieldSpecs[0].tag;
   const fieldAlias = fieldSpecs[0].fieldAlias;
-  const isHardBlockedField = fieldSpecs.some((s) => s.isHardBlocked);
-  if (isHardBlockedField) {
-    // Own-name exception (direct example given: "Subhodeep er Aadhaar
-    // chai" when the sender himself IS Subhodeep) - referring to yourself
-    // in the THIRD PERSON, by your own registered name, is the same
-    // self-request as "amar Aadhaar chai" (see detectOwnSensitiveIdRequest
-    // above decideAutoReplyCore), just not caught by that pronoun-only
-    // check since no "amar/my" was said. Applies to all 9 forbidden heads
-    // (ownField below), and ONLY when the named person resolves to the
-    // EXACT SAME employee record the sender's own phone already matches -
-    // the identical whole-word+fuzzy resolution every other
-    // personLookupName case already uses, never a looser match just
-    // because this is the sensitive path. Any other name (even a real,
-    // exact-match employee who just isn't the sender) still falls straight
-    // through to the hard block below, completely unchanged.
-    const ownField = detectSensitiveIdFieldKeyword(text);
-    if (ownField && phone) {
-      const { matches: ownNameMatches } = await findPersonLookupMatches(personName, department);
-      const activeOwnNameMatches = ownNameMatches.filter((e) => e.status === 'ACTIVE');
-      if (activeOwnNameMatches.length === 1) {
-        const senderMatch = await findEmployeeByPhone(phone).catch(() => null);
-        if (senderMatch && senderMatch.emp.status === 'ACTIVE' && senderMatch.emp.employeeId === activeOwnNameMatches[0].employeeId) {
-          return handleOwnSensitiveIdRequest({ phone, lang, field: ownField, history });
-        }
+  // Own-name exception (direct example given: "Subhodeep er Aadhaar
+  // chai" when the sender himself IS Subhodeep) - referring to yourself
+  // in the THIRD PERSON, by your own registered name, is the same
+  // self-request as "amar Aadhaar chai" (see detectOwnSensitiveIdRequest
+  // above decideAutoReplyCore), just not caught by that pronoun-only
+  // check since no "amar/my" was said. Part A phase 2 (direct
+  // instruction: "Own data (any head, official or personal) -> direct, no
+  // card") - checked UNCONDITIONALLY now, before the hard-block check
+  // below, so it also covers DOB/address/blood group (no longer hard-
+  // blocked for a THIRD party, but still own-data-direct exactly like
+  // Aadhaar/PAN/UAN/ESI always were). ONLY when the named person resolves
+  // to the EXACT SAME employee record the sender's own phone already
+  // matches - the identical whole-word+fuzzy resolution every other
+  // personLookupName case already uses, never a looser match just
+  // because this is the sensitive path. Any other name (even a real,
+  // exact-match employee who just isn't the sender) falls straight
+  // through to the normal pipeline below, unaffected.
+  const ownField = detectSensitiveIdFieldKeyword(text);
+  if (ownField && phone) {
+    const { matches: ownNameMatches } = await findPersonLookupMatches(personName, department);
+    const activeOwnNameMatches = ownNameMatches.filter((e) => e.status === 'ACTIVE');
+    if (activeOwnNameMatches.length === 1) {
+      const senderMatch = await findEmployeeByPhone(phone).catch(() => null);
+      if (senderMatch && senderMatch.emp.status === 'ACTIVE' && senderMatch.emp.employeeId === activeOwnNameMatches[0].employeeId) {
+        return handleOwnSensitiveIdRequest({ phone, lang, field: ownField, history });
       }
     }
+  }
+  const isHardBlockedField = fieldSpecs.some((s) => s.isHardBlocked);
+  if (isHardBlockedField) {
     // Hard block - no approval loop at all, this can never be sent
-    // regardless of what the owner says (spec point 1). Unaffected by
-    // fuzzy matching - this gate runs before any name resolution.
-    await postOwnerNotification('⚠️ ' + name + ' (' + phone + ') ' + (personName || 'ekjon employee') + '-er sensitive personal data (Aadhaar/PAN/bank/salary/UAN/ESI/address/DOB/blood group type) chaiche - WhatsApp-e block kora holo, kichu pathano hoyni.');
-    return { case: 'acknowledged', replyText: PII_BLOCK_REPLY[lang] || PII_BLOCK_REPLY.english, summaryForOwner: null, lang };
+    // regardless of what the owner says (Restricted tier: never sent,
+    // not even via an approval card). Unaffected by fuzzy matching - this
+    // gate runs before any name resolution. Surfaced as a real
+    // Action-needed card now (direct instruction), not just a chat
+    // notification.
+    await flagDataAccessNotice({ phone, name: personName || null, kind: 'restricted_refused', fieldLabel: fieldSpecs.map((s) => s.rawLabel || 'field').join(' ar '), message: name + ' (' + phone + ') ' + (personName || 'ekjon employee') + '-er restricted personal data (Aadhaar/PAN/bank/salary/UAN/ESI) chaiche - WhatsApp-e block kora holo, kichu pathano hoyni, approval card o toiri hoyni.' });
+    await postOwnerNotification('⛔ ' + name + ' (' + phone + ') ' + (personName || 'ekjon employee') + '-er restricted personal data (Aadhaar/PAN/bank/salary/UAN/ESI type) chaiche - WhatsApp-e block kora holo, kichu pathano hoyni.');
+    return { case: 'acknowledged', replyText: RESTRICTED_FIELD_BLOCK_REPLY[lang] || RESTRICTED_FIELD_BLOCK_REPLY.english, summaryForOwner: null, lang };
   }
   const otherFieldLabel = fieldAlias ? (fieldAlias.label[lang] || fieldAlias.label.english) : null;
 
@@ -6318,25 +6592,18 @@ async function handlePersonLookupRequest({ phone, name, lang, personName, person
   const pendingFieldTag = isOtherField ? 'other_field' : 'contact_number';
   const fieldKindForQuestion = isOtherField ? otherFieldLabel : 'contact_number';
   if (current.length === 1) {
-    if (isOtherField) {
-      // Task 2 (2026-10-31) - OFFICIAL tier: direct, no approval, when the
-      // fieldAlias is one of the 15 official fields AND the sender is a
-      // current ACTIVE employee. Falls through to the ordinary approval
-      // card for everyone else, or when the official field simply has no
-      // value on record (sendOfficialFieldDirect returns null for that -
-      // same "nothing to send" outcome queuePersonFieldApproval's own
-      // missing-value branch already has).
-      const isOfficialDirectEligible = Boolean(fieldAlias && fieldAlias.official) && await isSenderActiveEmployee(phone);
-      const sentDirect = isOfficialDirectEligible
-        ? await sendOfficialFieldDirect({ phone, requesterLabel: name, candidate: current[0], lang, hadTypo, fieldAlias })
-        : null;
-      if (sentDirect) return { case: 'acknowledged', replyText: sentDirect, summaryForOwner: null, lang };
-      if (!isOfficialDirectEligible) {
-        await queuePersonFieldApproval({ phone, requesterLabel: name, candidate: current[0], lang, hadTypo, fieldAlias });
-      }
-    } else {
-      await queuePersonContactApproval({ phone, requesterLabel: name, candidate: current[0], lang, hadTypo });
-    }
+    // Part A phase 2 - live Restricted/Official/Personal decision (see
+    // resolveSingleFieldForThirdParty's own comment), replacing the old
+    // static official:true + isSenderActiveEmployee check for BOTH
+    // other_field and contact_number (contact_number never had an
+    // official-direct path at all before - it does now, if the owner
+    // ever reclassifies it).
+    const resolved = await resolveSingleFieldForThirdParty({
+      phone, requesterLabel: name, candidate: current[0], lang, hadTypo,
+      fieldAlias: isOtherField ? fieldAlias : null, isContactNumber: !isOtherField
+    });
+    if (resolved.outcome === 'restricted') return { case: 'acknowledged', replyText: RESTRICTED_FIELD_BLOCK_REPLY[lang] || RESTRICTED_FIELD_BLOCK_REPLY.english, summaryForOwner: null, lang };
+    if (resolved.outcome === 'sent') return { case: 'acknowledged', replyText: resolved.replyText, summaryForOwner: null, lang };
   } else {
     await savePendingDisambiguation(phone, { candidates: current, lang, hadTypo, attempts: 1, pendingField: pendingFieldTag, fieldAliasKey: fieldAlias ? fieldAlias.key : null });
     await postOwnerNotification(current.length + ' jon "' + personName + '" (' + (otherFieldLabel || 'contact number') + ') match korche - sender-ke jigges kora hocche kon jon: ' + current.map((c) => c.name + ' (' + c.department + ')').join(', ') + '.');
@@ -12024,22 +12291,27 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
             lang: pendingDisambig.lang, hadTypo: pendingDisambig.hadTypo, history
           });
         } else if (pendingDisambig.pendingField === 'contact_number') {
-          await queuePersonContactApproval({ phone, requesterLabel: senderLabel, candidate: resolved, lang: pendingDisambig.lang, hadTypo: pendingDisambig.hadTypo });
-          finalized = { case: 'data_holding', replyText: dataRequestHoldingReply(pendingDisambig.lang, history, new Date()), summaryForOwner: null };
+          const resolvedField = await resolveSingleFieldForThirdParty({ phone, requesterLabel: senderLabel, candidate: resolved, lang: pendingDisambig.lang, hadTypo: pendingDisambig.hadTypo, fieldAlias: null, isContactNumber: true });
+          finalized = resolvedField.outcome === 'restricted'
+            ? { case: 'acknowledged', replyText: RESTRICTED_FIELD_BLOCK_REPLY[pendingDisambig.lang] || RESTRICTED_FIELD_BLOCK_REPLY.english, summaryForOwner: null, lang: pendingDisambig.lang }
+            : resolvedField.outcome === 'sent'
+              ? { case: 'acknowledged', replyText: resolvedField.replyText, summaryForOwner: null, lang: pendingDisambig.lang }
+              : { case: 'data_holding', replyText: dataRequestHoldingReply(pendingDisambig.lang, history, new Date()), summaryForOwner: null };
         } else if (pendingDisambig.pendingField === 'other_field') {
           const fieldAlias = resolveApprovalFieldAliasByKey(pendingDisambig.fieldAliasKey);
-          // Task 2 (2026-10-31) - same OFFICIAL-tier direct-send gate as
-          // handlePersonLookupRequest's own current.length===1 branch;
+          // Part A phase 2 - same live Restricted/Official/Personal gate
+          // as handlePersonLookupRequest's own current.length===1 branch;
           // this is the SAME request, just resolved one turn later once
           // the sender picked who they meant, so it must behave
           // identically rather than always falling back to an approval.
-          if (fieldAlias && fieldAlias.official && await isSenderActiveEmployee(phone)) {
-            const sent = await sendOfficialFieldDirect({ phone, requesterLabel: senderLabel, candidate: resolved, lang: pendingDisambig.lang, hadTypo: pendingDisambig.hadTypo, fieldAlias });
-            finalized = sent
-              ? { case: 'acknowledged', replyText: sent, summaryForOwner: null, lang: pendingDisambig.lang }
-              : { case: 'data_holding', replyText: dataRequestHoldingReply(pendingDisambig.lang, history, new Date()), summaryForOwner: null };
+          if (fieldAlias) {
+            const resolvedField = await resolveSingleFieldForThirdParty({ phone, requesterLabel: senderLabel, candidate: resolved, lang: pendingDisambig.lang, hadTypo: pendingDisambig.hadTypo, fieldAlias, isContactNumber: false });
+            finalized = resolvedField.outcome === 'restricted'
+              ? { case: 'acknowledged', replyText: RESTRICTED_FIELD_BLOCK_REPLY[pendingDisambig.lang] || RESTRICTED_FIELD_BLOCK_REPLY.english, summaryForOwner: null, lang: pendingDisambig.lang }
+              : resolvedField.outcome === 'sent'
+                ? { case: 'acknowledged', replyText: resolvedField.replyText, summaryForOwner: null, lang: pendingDisambig.lang }
+                : { case: 'data_holding', replyText: dataRequestHoldingReply(pendingDisambig.lang, history, new Date()), summaryForOwner: null };
           } else {
-            if (fieldAlias) await queuePersonFieldApproval({ phone, requesterLabel: senderLabel, candidate: resolved, lang: pendingDisambig.lang, hadTypo: pendingDisambig.hadTypo, fieldAlias });
             finalized = { case: 'data_holding', replyText: dataRequestHoldingReply(pendingDisambig.lang, history, new Date()), summaryForOwner: null };
           }
         } else if (await isSenderActiveEmployee(phone)) {
@@ -12277,6 +12549,21 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
   // explicit approval first.
   if (!isGroup && classification.wantsData) {
     const lang = classification.language || detectLang(text);
+    // Part A phase 2 (direct instruction) - "sender's WhatsApp number
+    // must match an employee; if not -> no data, polite reply + Action-
+    // needed card." Checked FIRST, before either data-request sub-path
+    // below (one named person's field, or a general list/count/HOD
+    // query) - own-vs-someone-else only means anything once the sender's
+    // identity is known, and a genuinely unknown number is never "asking
+    // about themselves" either way. Scoped to wantsData ONLY - job
+    // applications/CVs/vacancy enquiries/every other existing flow are
+    // classified entirely separately upstream and never reach this
+    // check (direct instruction: "applies only to DATA requests").
+    if (!(await isSenderKnownEmployee(phone))) {
+      await flagDataAccessNotice({ phone, name: senderLabel || null, kind: 'unmatched_sender', fieldLabel: null, message: senderLabel + ' (' + phone + ') HR data chaiche ("' + String(text || '').slice(0, 160) + '"), kintu eta kono registered employee-r number na - refuse kora holo, SUBH kichu pathay ni.' });
+      await postOwnerNotification('⚠️ ' + senderLabel + ' (' + phone + ') HR data chaiche kintu eta kono registered employee-r number na - refuse kora holo, SUBH kichu pathay ni.');
+      return { case: 'acknowledged', replyText: UNMATCHED_SENDER_DATA_REPLY[lang] || UNMATCHED_SENDER_DATA_REPLY.english, summaryForOwner: null, lang };
+    }
     // A request for ONE field about ONE named person (e.g. "Ayan Das er
     // contact number") NEVER goes through the general AI tool-calling
     // pipeline - found live that it does, it can match the WRONG person
@@ -14683,6 +14970,18 @@ module.exports = {
   resolveHrNoteEscalation,
   dismissHrNoteEscalation,
   flagHrNoteApprovalEscalation,
+  listDataAccessNotices,
+  dismissDataAccessNotice,
+  flagDataAccessNotice,
+  isSenderKnownEmployee,
+  isFieldAliasOfficialNow,
+  isFieldAliasRestrictedNow,
+  resolveFieldAccessTier,
+  resolveFieldSpecAccessTier,
+  resolveSingleFieldForThirdParty,
+  resolveCombinedPersonFields,
+  UNMATCHED_SENDER_DATA_REPLY,
+  RESTRICTED_FIELD_BLOCK_REPLY,
   listStuckIncomingMessages,
   dismissStuckIncomingMessage,
   recoverStuckIncomingMessages,

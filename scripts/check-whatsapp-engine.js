@@ -451,17 +451,17 @@ async function checkAsyncRealModel(label, fn) {
         await cleanupOwnIdTestArtifacts();
       }
     });
-    await checkAsync('a DIFFERENT real employee\'s name, from the same sender ("Ayan Das er Aadhaar..." while sending as Ayan Biswas) - never treated as self, still refused with the new polite wording', async () => {
+    await checkAsync('a DIFFERENT real employee\'s name, from the same sender ("Ayan Das er Aadhaar..." while sending as Ayan Biswas) - never treated as self, still refused (Part A phase 2: the Restricted-tier refusal wording)', async () => {
       const decision = await whatsappAssistant.decideAutoReply({ phone: OWN_ID_REAL_PHONE, name: ownIdEmp.name, firstName: ownIdEmp.name.split(' ')[0], text: 'Ayan Das er Aadhaar number ta dao', isGroup: false, history: [] });
       const approvals = await whatsappAssistant.listPendingApprovals();
       const anyCreated = approvals.some((a) => a.sensitiveIdRequest && a.phone === OWN_ID_REAL_PHONE);
-      return decision.case === 'acknowledged' && decision.replyText.includes('Onno karo gopon tottho') && !anyCreated;
+      return decision.case === 'acknowledged' && decision.replyText.includes('shudhu HR office theke dewa hoy') && !anyCreated;
     });
-    await checkAsync('someone ELSE\'s Aadhaar (same sender, different name) is refused - no approval, existing PII block unchanged', async () => {
+    await checkAsync('someone ELSE\'s Aadhaar (same sender, different name) is refused - no approval, Restricted-tier block unchanged', async () => {
       const decision = await whatsappAssistant.decideAutoReply({ phone: OWN_ID_REAL_PHONE, name: ownIdEmp.name, firstName: ownIdEmp.name.split(' ')[0], text: 'Ayan Das er Aadhaar number ta dao', isGroup: false, history: [] });
       const approvals = await whatsappAssistant.listPendingApprovals();
       const anyCreated = approvals.some((a) => a.sensitiveIdRequest && a.phone === OWN_ID_REAL_PHONE);
-      return decision.case === 'acknowledged' && decision.replyText.includes('Onno karo gopon tottho') && !anyCreated;
+      return decision.case === 'acknowledged' && decision.replyText.includes('shudhu HR office theke dewa hoy') && !anyCreated;
     });
     const OWN_ID_UNREGISTERED_PHONE = '910000000798';
     await checkAsync('own Aadhaar from an UNREGISTERED number is refused - the phone-match gate is the real authorization, never the text alone', async () => {
@@ -809,10 +809,12 @@ async function checkAsyncRealModel(label, fn) {
   console.log('='.repeat(70));
   check('HARD_BLOCKED_PERSON_FIELD_RE matches all 9 forbidden heads + synonyms', ['aadhaar number', 'PAN card', 'bank account number', 'IFSC code', 'salary slip', 'CTC details', 'UAN number', 'ESIC number', 'ESI number', 'address', 'date of birth', 'blood group'].every((t) => whatsappAssistant.HARD_BLOCKED_PERSON_FIELD_RE.test(t)));
   check('HARD_BLOCKED_PERSON_FIELD_RE does NOT match any of the still-shareable fields', ['mail id', 'emergency contact', 'employee code', 'reporting manager', 'designation', 'department'].every((t) => !whatsappAssistant.HARD_BLOCKED_PERSON_FIELD_RE.test(t)));
-  check('resolveApprovalFieldAliasByLabel recognizes "mail id"/"email address" -> email', ['mail id', 'email address', 'personal email'].every((t) => (whatsappAssistant.resolveApprovalFieldAliasByLabel(t) || {}).key === 'email'));
+  check('resolveApprovalFieldAliasByLabel recognizes "mail id"/"email address" -> email (official, generic/unqualified default)', ['mail id', 'email address'].every((t) => (whatsappAssistant.resolveApprovalFieldAliasByLabel(t) || {}).key === 'email'));
+  check('Part A phase 2: "personal email"/"personal mail" now resolves to its OWN alias (emailPersonal, Personal tier) - no longer conflated with the official "mail id" default', (whatsappAssistant.resolveApprovalFieldAliasByLabel('personal email') || {}).key === 'emailPersonal' && (whatsappAssistant.resolveApprovalFieldAliasByLabel('personal mail') || {}).key === 'emailPersonal');
   check('resolveApprovalFieldAliasByLabel recognizes "emergency contact" -> emergencyContact', (whatsappAssistant.resolveApprovalFieldAliasByLabel('emergency contact') || {}).key === 'emergencyContact');
   check('Task 7: resolveApprovalFieldAliasByLabel recognizes "employee code"/"emp id"/"employee number" -> employeeId', ['employee code', 'emp id', 'employee number', 'emp code'].every((t) => (whatsappAssistant.resolveApprovalFieldAliasByLabel(t) || {}).key === 'employeeId'));
-  check('Task 7: resolveApprovalFieldAliasByLabel now returns null for address/DOB/UAN/ESIC/blood group - these 9 heads are hard-blocked before an alias is ever consulted, the old approval-gated aliases are gone', ['address', 'date of birth', 'UAN number', 'ESIC number', 'blood group'].every((t) => whatsappAssistant.resolveApprovalFieldAliasByLabel(t) === null));
+  check('Part A phase 2: resolveApprovalFieldAliasByLabel now resolves address/DOB/blood group to real aliases (Personal tier by default, owner-reclassifiable) - no longer hard-blocked for a third party, per direct instruction', ['address', 'date of birth', 'blood group'].every((t) => whatsappAssistant.resolveApprovalFieldAliasByLabel(t) !== null));
+  check('UAN/ESIC still return null - never promoted out of the Restricted hard block (no alias exists for them)', ['UAN number', 'ESIC number'].every((t) => whatsappAssistant.resolveApprovalFieldAliasByLabel(t) === null));
   check('resolveApprovalFieldAliasByLabel returns null for an unrecognized field (e.g. "passport number") - never guesses a field', whatsappAssistant.resolveApprovalFieldAliasByLabel('passport number') === null);
   // LIVE BUG FIX (2026-11), direct instruction - the person-level HOD vs
   // Reporting Doer 3-way rule needs these two labels to resolve to two
@@ -824,11 +826,11 @@ async function checkAsyncRealModel(label, fn) {
   check('resolveApprovalFieldAliasByLabel: "reporting manager"/"HOD" still resolve to the EXISTING reportingManager alias, unchanged by the new reportingDoer alias being added alongside it', ['reporting manager', 'HOD', 'manager'].every((t) => (whatsappAssistant.resolveApprovalFieldAliasByLabel(t) || {}).key === 'reportingManager'));
   await checkAsync('a mislabeled "other_field" request whose label actually says "bank account number" is STILL hard-blocked, regardless of personField - a structural safety net, never trusting the classifier alone', async () => {
     const d = await whatsappAssistant.handlePersonLookupRequest({ phone: LIVE_REVIEW_TEST_PHONE, name: 'Test', lang: 'banglish', personName: 'Ayan Das', personField: 'other_field', personFieldLabel: 'bank account number', department: null, text: 'Ayan Das er bank account number dao', history: [] });
-    return d.case === 'acknowledged' && d.replyText.includes('Onno karo gopon tottho');
+    return d.case === 'acknowledged' && d.replyText.includes('shudhu HR office theke dewa hoy');
   });
   await checkAsync('an "other_field" request with a genuinely unrecognized label (e.g. "passport number") is refused the same safe way - never an arbitrary unvalidated field lookup', async () => {
     const d = await whatsappAssistant.handlePersonLookupRequest({ phone: LIVE_REVIEW_TEST_PHONE, name: 'Test', lang: 'english', personName: 'Ayan Das', personField: 'other_field', personFieldLabel: 'passport number', department: null, text: 'what is Ayan Das passport number', history: [] });
-    return d.case === 'acknowledged' && d.replyText.includes("can't share someone else's confidential information");
+    return d.case === 'acknowledged' && d.replyText.includes('only given out by the HR office directly');
   });
   await checkAsync('"Ayan Das mail id dao" (single exact match, other_field) creates ONE normal approval naming the field and the person, with the real email visible to the owner only', async () => {
     const d = await whatsappAssistant.handlePersonLookupRequest({ phone: LIVE_REVIEW_TEST_PHONE, name: 'Test', lang: 'banglish', personName: 'Ayan Das', personField: 'other_field', personFieldLabel: 'mail id', department: null, text: 'Ayan Das mail id dao', history: [] });
@@ -845,9 +847,9 @@ async function checkAsyncRealModel(label, fn) {
     await whatsappAssistant.clearPendingDisambiguation(LIVE_REVIEW_TEST_PHONE).catch(() => {});
     return ok;
   });
-  await checkAsync('PII_BLOCK_REPLY (new live-review wording) names the field examples and points to the HR office, in all 3 languages', async () => {
+  await checkAsync('RESTRICTED_FIELD_BLOCK_REPLY (Part A phase 2 - direct instruction wording, deliberately field-agnostic now) points to the HR office, in all 3 languages', async () => {
     const d = await whatsappAssistant.handlePersonLookupRequest({ phone: LIVE_REVIEW_TEST_PHONE, name: 'Test', lang: 'hinglish', personName: 'Ayan Das', personField: 'forbidden_pii', department: null, text: 'Ayan Das ka Aadhaar number batao', history: [] });
-    return d.case === 'acknowledged' && d.replyText.includes('HR office se sampark karein') && d.replyText.includes('Aadhaar');
+    return d.case === 'acknowledged' && d.replyText.includes('HR office se sampark karein');
   });
 
   console.log('='.repeat(70));
@@ -875,7 +877,7 @@ async function checkAsyncRealModel(label, fn) {
   await checkAsync('LOCKED: someone else\'s PAN -> refused, no card, regardless of an employee-code-shaped word anywhere nearby', async () => {
     const d = await whatsappAssistant.handlePersonLookupRequest({ phone: LIVE_REVIEW_TEST_PHONE, name: 'Test', lang: 'banglish', personName: 'Ayan Das', personField: 'forbidden_pii', department: null, text: 'Ayan Das er PAN number ta dao', history: [] });
     const anyCreated = (await listRawApprovalsForPhone(LIVE_REVIEW_TEST_PHONE)).some((a) => a.resolvedPersonName === 'Ayan Das');
-    return d.case === 'acknowledged' && d.replyText.includes('Onno karo gopon tottho') && !anyCreated;
+    return d.case === 'acknowledged' && d.replyText.includes('shudhu HR office theke dewa hoy') && !anyCreated;
   });
   await checkAsync('LOCKED: someone else\'s contact number -> unaffected regression check, still a normal approval card', async () => {
     const d = await whatsappAssistant.handlePersonLookupRequest({ phone: LIVE_REVIEW_TEST_PHONE, name: 'Test', lang: 'banglish', personName: 'Ayan Das', personField: 'contact_number', department: null, text: 'Ayan Das er contact number ta dao', history: [] });
@@ -887,7 +889,134 @@ async function checkAsyncRealModel(label, fn) {
   await checkAsync('an employee-code-shaped word combined with a genuinely forbidden head in the SAME message (e.g. also asking for salary) is still fully hard-blocked - the override only ever fires when NOTHING forbidden is also present', async () => {
     const d = await whatsappAssistant.handlePersonLookupRequest({ phone: LIVE_REVIEW_TEST_PHONE, name: 'Test', lang: 'banglish', personName: 'Ayan Das', personField: 'forbidden_pii', department: null, text: 'Ayan Das er employee code ar salary dujonto dao', history: [] });
     const anyCreated = (await listRawApprovalsForPhone(LIVE_REVIEW_TEST_PHONE)).some((a) => a.resolvedPersonName === 'Ayan Das');
-    return d.case === 'acknowledged' && d.replyText.includes('Onno karo gopon tottho') && !anyCreated;
+    return d.case === 'acknowledged' && d.replyText.includes('shudhu HR office theke dewa hoy') && !anyCreated;
+  });
+
+  console.log('='.repeat(70));
+  console.log('Part A phase 2 (2026-11, direct instruction) - the Data access table now DRIVES the real decision pipeline (own/official/personal/restricted/unmatched-number), replacing the old static lists');
+  console.log('='.repeat(70));
+  const dataAccessService = require('../src/aiAssistant/dataAccessService');
+  const ACTIVE_SENDER_PHONE = '919230964121'; // Radha Biswas Bhattacharjee - real, ACTIVE
+  const UNMATCHED_SENDER_PHONE = '910000000951'; // synthetic, never a real employee
+  await checkAsync('isSenderKnownEmployee: a real ACTIVE employee\'s own number is known', async () => whatsappAssistant.isSenderKnownEmployee(ACTIVE_SENDER_PHONE));
+  await checkAsync('isSenderKnownEmployee: a genuinely unregistered (synthetic test) number is NOT known', async () => !(await whatsappAssistant.isSenderKnownEmployee(UNMATCHED_SENDER_PHONE)));
+  await checkAsync('isSenderKnownEmployee: an INACTIVE real employee is still "known" (status-agnostic - the unmatched-number rule is about identity, not employment status)', async () => {
+    const { employees } = await employeeService.getEmployeeData();
+    const inactive = employees.find((e) => e.status === 'INACTIVE' && e.contactNumber);
+    if (!inactive) return true; // no inactive test fixture available - not this test's job to create one
+    return whatsappAssistant.isSenderKnownEmployee(whatsapp.normalizePhone(inactive.contactNumber));
+  });
+
+  await checkAsync('Example 10 (LOCK SCENARIO, real-model gated - needs classification to resolve personLookupName/wantsData, same as every other classification-dependent scenario in this file): an unmatched number asking for HR data gets the polite refusal, never a normal approval card', async () => {
+    const d = await whatsappAssistant.decideAutoReply({ phone: UNMATCHED_SENDER_PHONE, name: 'Test', firstName: 'Test', text: 'Ayan Das er contact number ta dao', isGroup: false, history: [] });
+    const anyCreated = (await listRawApprovalsForPhone(UNMATCHED_SENDER_PHONE)).some((a) => a.resolvedPersonName === 'Ayan Das');
+    return d.case === 'acknowledged' && d.replyText.includes('registered employee number') && !anyCreated;
+  });
+  await checkAsync('Example 7 (own-data/official-data LOCK SCENARIO): someone else\'s OFFICIAL head (designation/reporting manager) from a real ACTIVE employee sender -> direct, no card (unaffected regression check, now driven by the live tier table)', async () => {
+    await whatsappAssistant.clearPendingDisambiguation(ACTIVE_SENDER_PHONE);
+    const d = await whatsappAssistant.handlePersonLookupRequest({ phone: ACTIVE_SENDER_PHONE, name: 'Radha', lang: 'banglish', personName: 'Ayan Das', personField: 'other_field', personFieldLabel: 'employee code', department: null, text: 'Ayan Das er employee code ta dao', history: [] });
+    const anyCreated = (await listRawApprovalsForPhone(ACTIVE_SENDER_PHONE)).some((a) => a.resolvedPersonName === 'Ayan Das');
+    return d.case === 'acknowledged' && d.replyText.includes('Ayan Das') && !anyCreated;
+  });
+  await checkAsync('Example 8 (LOCK SCENARIO): someone else\'s PERSONAL head (contact number) from a real ACTIVE employee sender -> approval card, never direct, nothing sent yet', async () => {
+    await whatsappAssistant.clearPendingDisambiguation(ACTIVE_SENDER_PHONE);
+    const d = await whatsappAssistant.handlePersonLookupRequest({ phone: ACTIVE_SENDER_PHONE, name: 'Radha', lang: 'banglish', personName: 'Ayan Das', personField: 'contact_number', department: null, text: 'Ayan Das er contact number ta dao', history: [] });
+    const created = (await listRawApprovalsForPhone(ACTIVE_SENDER_PHONE)).find((a) => a.resolvedPersonName === 'Ayan Das');
+    const ok = Boolean(created) && created.dataRequestSummary.toLowerCase().includes('contact number');
+    if (created) await whatsappAssistant.removePendingApproval(created.id);
+    return d.case === 'data_holding' && ok;
+  });
+
+  console.log('Deliberate loosening (direct instruction): DOB/address/blood group move from hard-blocked to Personal-tier (approval-gated), no longer refused outright for a third party');
+  await (async () => {
+    const { employees } = await employeeService.getEmployeeData();
+    const dobEmp = employees.find((e) => e.status === 'ACTIVE' && e.dob && e.contactNumber && e.name !== 'Ayan Das');
+    check('setup: a real ACTIVE employee with a DOB on file exists, for the loosening tests below', Boolean(dobEmp));
+    if (!dobEmp) return;
+    await checkAsync('"' + dobEmp.name + '-er DOB ta dao" (someone else\'s date of birth) NO LONGER hard-blocked - resolves to a normal approval card (Personal tier), nothing sent yet', async () => {
+      await whatsappAssistant.clearPendingDisambiguation(LIVE_REVIEW_TEST_PHONE);
+      const d = await whatsappAssistant.handlePersonLookupRequest({ phone: LIVE_REVIEW_TEST_PHONE, name: 'Test', lang: 'banglish', personName: dobEmp.name, personField: 'forbidden_pii', personFieldLabel: 'date of birth', department: null, text: dobEmp.name + '-er date of birth ta dao', history: [] });
+      const created = (await listRawApprovalsForPhone(LIVE_REVIEW_TEST_PHONE)).find((a) => a.resolvedPersonName === dobEmp.name);
+      const ok = Boolean(created) && created.dataRequestSummary.toLowerCase().includes('date of birth');
+      if (created) await whatsappAssistant.removePendingApproval(created.id);
+      return d.case === 'data_holding' && ok;
+    });
+    await checkAsync('the SAME DOB request from a real ACTIVE employee sender STILL goes through approval (DOB defaults to Personal, not Official - active-sender status alone never bypasses a Personal-tier field)', async () => {
+      await whatsappAssistant.clearPendingDisambiguation(ACTIVE_SENDER_PHONE);
+      const d = await whatsappAssistant.handlePersonLookupRequest({ phone: ACTIVE_SENDER_PHONE, name: 'Radha', lang: 'banglish', personName: dobEmp.name, personField: 'forbidden_pii', personFieldLabel: 'date of birth', department: null, text: dobEmp.name + '-er date of birth ta dao', history: [] });
+      const created = (await listRawApprovalsForPhone(ACTIVE_SENDER_PHONE)).find((a) => a.resolvedPersonName === dobEmp.name);
+      const ok = Boolean(created);
+      if (created) await whatsappAssistant.removePendingApproval(created.id);
+      return d.case === 'data_holding' && ok;
+    });
+  })();
+
+  console.log('Restricted tier (Aadhaar/PAN/UAN/ESIC/bank/salary) - never sent about someone else, not even via an approval card, with a real Action-needed card now (not just a chat notification)');
+  await checkAsync('LOCK SCENARIO: someone else\'s Aadhaar -> refused + a real data-access-notice card created (not just a chat notification), no approval record anywhere', async () => {
+    const before = await whatsappAssistant.listDataAccessNotices();
+    const d = await whatsappAssistant.handlePersonLookupRequest({ phone: LIVE_REVIEW_TEST_PHONE, name: 'Test', lang: 'banglish', personName: 'Ayan Das', personField: 'forbidden_pii', department: null, text: 'Ayan Das er Aadhaar number ta dao', history: [] });
+    const anyCreated = (await listRawApprovalsForPhone(LIVE_REVIEW_TEST_PHONE)).some((a) => a.resolvedPersonName === 'Ayan Das');
+    const after = await whatsappAssistant.listDataAccessNotices();
+    const newNotice = after.find((n) => !before.some((b) => b.id === n.id));
+    const ok = d.case === 'acknowledged' && d.replyText.includes('shudhu HR office theke dewa hoy') && !anyCreated && Boolean(newNotice) && newNotice.kind === 'restricted_refused';
+    if (newNotice) await whatsappAssistant.dismissDataAccessNotice(newNotice.id);
+    return ok;
+  });
+  await checkAsync('dismissDataAccessNotice actually removes it from the Action-needed list', async () => {
+    const notice = await whatsappAssistant.flagDataAccessNotice({ phone: '910000000952', name: 'Test', kind: 'restricted_refused', fieldLabel: 'Aadhaar', message: 'test notice' });
+    const before = await whatsappAssistant.listDataAccessNotices();
+    await whatsappAssistant.dismissDataAccessNotice(notice.id);
+    const after = await whatsappAssistant.listDataAccessNotices();
+    return before.some((n) => n.id === notice.id) && !after.some((n) => n.id === notice.id);
+  });
+  await checkAsync('listActionNeededItems surfaces a data_access_notice as its own kind, category data_requests, with its own id/message intact', async () => {
+    const notice = await whatsappAssistant.flagDataAccessNotice({ phone: '910000000953', name: 'ActionNeededTest', kind: 'unmatched_sender', fieldLabel: null, message: 'test unmatched sender notice' });
+    const items = await whatsappAssistant.listActionNeededItems();
+    const found = items.find((i) => i.kind === 'data_access_notice' && i.data && i.data.id === notice.id);
+    await whatsappAssistant.dismissDataAccessNotice(notice.id);
+    return Boolean(found) && found.category === 'data_requests' && found.data.kind === 'unmatched_sender' && found.data.message === 'test unmatched sender notice';
+  });
+
+  console.log('Owner-reclassification: the Data access table (dataAccessService.setHeadTier) actually changes live WhatsApp behaviour, not just the Settings page');
+  await checkAsync('reclassifying "contactNumber" to Official makes it resolve DIRECTLY for a real ACTIVE employee sender (today\'s default is Personal/approval-always) - then reset back to Personal', async () => {
+    try {
+      await dataAccessService.setHeadTier('contactNumber', 'official');
+      await whatsappAssistant.clearPendingDisambiguation(ACTIVE_SENDER_PHONE);
+      const d = await whatsappAssistant.handlePersonLookupRequest({ phone: ACTIVE_SENDER_PHONE, name: 'Radha', lang: 'banglish', personName: 'Ayan Das', personField: 'contact_number', department: null, text: 'Ayan Das er contact number ta dao', history: [] });
+      const anyCreated = (await listRawApprovalsForPhone(ACTIVE_SENDER_PHONE)).some((a) => a.resolvedPersonName === 'Ayan Das');
+      return d.case === 'acknowledged' && d.replyText.includes('Ayan Das') && !anyCreated;
+    } finally {
+      await dataAccessService.setHeadTier('contactNumber', 'personal');
+    }
+  });
+  await checkAsync('reclassifying "company" to Restricted makes it refused outright (never sent, not even via approval) even from a real ACTIVE employee sender - then reset back to Official', async () => {
+    try {
+      await dataAccessService.setHeadTier('company', 'restricted');
+      await whatsappAssistant.clearPendingDisambiguation(ACTIVE_SENDER_PHONE);
+      const d = await whatsappAssistant.handlePersonLookupRequest({ phone: ACTIVE_SENDER_PHONE, name: 'Radha', lang: 'banglish', personName: 'Ayan Das', personField: 'other_field', personFieldLabel: 'company', department: null, text: 'Ayan Das kon company te', history: [] });
+      const anyCreated = (await listRawApprovalsForPhone(ACTIVE_SENDER_PHONE)).some((a) => a.resolvedPersonName === 'Ayan Das');
+      const notices = await whatsappAssistant.listDataAccessNotices();
+      const newNotice = notices.find((n) => n.phone === ACTIVE_SENDER_PHONE || (n.message && n.message.includes('Ayan Das')));
+      const ok = d.case === 'acknowledged' && d.replyText.includes('shudhu HR office theke dewa hoy') && !anyCreated;
+      if (newNotice) await whatsappAssistant.dismissDataAccessNotice(newNotice.id).catch(() => {});
+      return ok;
+    } finally {
+      await dataAccessService.setHeadTier('company', 'official');
+    }
+  });
+  await checkAsync('a 2-field combined request where ONE field is Restricted (company, temporarily reclassified) refuses the WHOLE request - "strictest tier wins" extended to Restricted, never a partial send', async () => {
+    try {
+      await dataAccessService.setHeadTier('company', 'restricted');
+      const d = await whatsappAssistant.handlePersonLookupRequest({
+        phone: LIVE_REVIEW_TEST_PHONE, name: 'Test', lang: 'banglish', personName: 'Ayan Das',
+        personField: 'other_field', personFieldLabel: 'employee code', extraFields: [{ field: 'other_field', fieldLabel: 'company' }],
+        department: null, text: 'Ayan Das er employee code ar company dao', history: []
+      });
+      const anyCreated = (await listRawApprovalsForPhone(LIVE_REVIEW_TEST_PHONE)).some((a) => a.resolvedPersonName === 'Ayan Das');
+      return d.case === 'acknowledged' && d.replyText.includes('shudhu HR office theke dewa hoy') && !anyCreated;
+    } finally {
+      await dataAccessService.setHeadTier('company', 'official');
+    }
   });
 
   console.log('='.repeat(70));
@@ -959,7 +1088,7 @@ async function checkAsyncRealModel(label, fn) {
       department: null, text: 'Ayan Das er contact no ar salary koto', history: []
     });
     const anyCreated = (await listRawApprovalsForPhone(LIVE_REVIEW_TEST_PHONE)).some((a) => a.resolvedPersonName === 'Ayan Das');
-    return d.case === 'acknowledged' && d.replyText.includes('Onno karo gopon tottho') && !anyCreated;
+    return d.case === 'acknowledged' && d.replyText.includes('shudhu HR office theke dewa hoy') && !anyCreated;
   });
 
   console.log('='.repeat(70));
@@ -7837,24 +7966,30 @@ async function checkAsyncRealModel(label, fn) {
   console.log('='.repeat(70));
   console.log('Task 2 (2026-10-31): the three-tier data-sharing rule - OFFICIAL fields (15 named fields) resolve directly for a current ACTIVE employee sender, otherwise (or for a >20-person list) they stay approval-gated, exactly like every other field already does');
   console.log('='.repeat(70));
-  check('every new official field alias resolves by label, and is flagged official:true', (() => {
+  await checkAsync('Part A phase 2: every new official field alias resolves by label, and its LIVE tier (dataAccessService.getTierMap(), default) resolves to official - no longer a static official:true flag', async () => {
     const keys = { 'company location': 'companyLocation', company: 'company', collar: 'collarType', gender: 'gender', location: 'location', 'date of joining': 'doj', 'total years of experience': 'totalExperience' };
-    return Object.entries(keys).every(([label, key]) => {
+    for (const [label, key] of Object.entries(keys)) {
       const a = whatsappAssistant.resolveApprovalFieldAliasByLabel(label);
-      return a && a.key === key && a.official === true;
-    });
-  })());
+      if (!a || a.key !== key) return false;
+      const tier = await whatsappAssistant.resolveFieldAccessTier(a.dataAccessKey || a.key);
+      if (tier !== 'official') return false;
+    }
+    return true;
+  });
   check('"company location" resolves to companyLocation, never swallowed by the plain "company" alias (ordering fix)', (whatsappAssistant.resolveApprovalFieldAliasByLabel('company location') || {}).key === 'companyLocation');
   check('"official email" resolves to the dedicated emailOfficial alias, not the generic email one', (whatsappAssistant.resolveApprovalFieldAliasByLabel('official email') || {}).key === 'emailOfficial');
-  check('a generic "mail id" (no official/personal qualifier) still resolves to the generic email alias, also official:true', (() => {
+  await checkAsync('a generic "mail id" (no official/personal qualifier) still resolves to the generic email alias, defaulting to the Official tier (reads c.email only now, never emailPersonal - see the Part A phase 2 split)', async () => {
     const a = whatsappAssistant.resolveApprovalFieldAliasByLabel('mail id');
-    return a && a.key === 'email' && a.official === true;
-  })());
-  check('emergencyContact and employeeId stay as before: emergencyContact is NOT official, employeeId IS (Task 7\'s own fix, now also official)', (() => {
+    if (!a || a.key !== 'email') return false;
+    return (await whatsappAssistant.resolveFieldAccessTier(a.dataAccessKey || a.key)) === 'official';
+  });
+  await checkAsync('emergencyContact and employeeId stay as before: emergencyContact defaults to Personal, employeeId defaults to Official (Task 7\'s own fix, now driven by the Data access table\'s own defaults)', async () => {
     const emergency = whatsappAssistant.resolveApprovalFieldAliasByLabel('emergency contact');
     const empId = whatsappAssistant.resolveApprovalFieldAliasByLabel('employee code');
-    return emergency && !emergency.official && empId && empId.official === true;
-  })());
+    const emergencyTier = emergency && await whatsappAssistant.resolveFieldAccessTier(emergency.dataAccessKey || emergency.key);
+    const empIdTier = empId && await whatsappAssistant.resolveFieldAccessTier(empId.dataAccessKey || empId.key);
+    return emergencyTier === 'personal' && empIdTier === 'official';
+  });
   await checkAsync('an official field (employee code) about someone else, from a sender who IS a real ACTIVE employee, is sent DIRECTLY - no approval card', async () => {
     const phone = '919230964121'; // Radha Biswas Bhattacharjee - real, ACTIVE (see check-whatsapp-scenarios.js)
     await whatsappAssistant.clearPendingDisambiguation(phone);
