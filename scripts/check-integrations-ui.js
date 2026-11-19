@@ -284,6 +284,16 @@ function check(label, ok, detail) {
   await syncClick;
   await page.waitForSelector('#twcSyncNowBtn .spinner', { state: 'detached' }); // deterministic: wait for it to actually finish, never a fixed sleep
   check('Sync Now button returns to its normal (non-busy) state after success', await page.locator('#twcSyncNowBtn').isEnabled() && (await page.locator('#twcSyncNowBtn').textContent()) === syncBtnTextBefore);
+  // LIVE BUG FIX (2026-11, direct instruction) - the spinner finishing
+  // doesn't guarantee the toast has already rendered its FINAL text (it
+  // can be shown fractionally later in the same success chain) - reading
+  // it immediately raced the toast's own render under a loaded machine/
+  // full parallel gate. Waits for the real condition (the toast's own
+  // text already contains what this check asserts), never a fixed sleep.
+  await page.waitForFunction(() => {
+    const el = document.querySelector('.wf-pro-toast:last-of-type') || Array.from(document.querySelectorAll('.wf-pro-toast')).pop();
+    return Boolean(el && el.textContent && el.textContent.includes('Synced') && el.textContent.includes('3 employees') && el.textContent.includes('1 changed'));
+  }, null, { timeout: 15000 });
   const toastText = await page.locator('.wf-pro-toast').last().textContent().catch(() => null);
   check('Success toast names the counts and changed-since-last-sync figure', (toastText || '').includes('Synced') && (toastText || '').includes('3 employees') && (toastText || '').includes('1 changed'));
   const historyText = await page.locator('#twcHistoryList').textContent().catch(() => null);

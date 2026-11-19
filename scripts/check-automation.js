@@ -75,7 +75,28 @@ function makeFakeSheetsClient(scenario) {
           const tabName = m ? m[1].replace(/''/g, "'") : null;
           const tab = (scenario.tabs || []).find((t) => t.title === tabName);
           if (!tab) throw new Error('Unable to parse range: ' + range);
-          if (tab.delayMs) await new Promise((resolve) => setTimeout(resolve, tab.delayMs));
+          // LIVE BUG FIX (2026-11, direct instruction) - the old delayMs
+          // (a real setTimeout) proved parallelism only by comparing
+          // elapsed wall-clock time against a fixed millisecond budget,
+          // which the full parallel gate (many suites competing for CPU)
+          // could legitimately blow through without the real code being
+          // sequential at all - a genuinely flaky assertion, not a real
+          // regression signal. useGate proves the SAME property
+          // structurally instead, with zero timing dependency: every tab
+          // using it records itself as "started" and then blocks on one
+          // shared promise the test controls - a sequential
+          // implementation could only ever get ONE tab into `started`
+          // before the whole chain deadlocks waiting on a gate nothing
+          // released yet, while a real parallel one gets every tab into
+          // `started` almost immediately, long before the test releases
+          // the gate. delayMs itself is kept for any other scenario that
+          // still wants a real (small, non-assertion-bearing) delay.
+          if (tab.useGate && scenario.concurrencyGate) {
+            scenario.concurrencyGate.started.push(tabName);
+            await scenario.concurrencyGate.releasePromise;
+          } else if (tab.delayMs) {
+            await new Promise((resolve) => setTimeout(resolve, tab.delayMs));
+          }
           if (tab.failOnce && !failOnceUsed.has(tabName)) { failOnceUsed.add(tabName); throw new Error('ECONNRESET - transient network blip'); }
           if (tab.accessError) throw new Error(tab.accessError);
           return { data: { values: tab.values } };
@@ -208,12 +229,23 @@ async function main() {
         const blank = info.tabs.find((t) => t.title === 'Blank');
         return info.ok && Boolean(blank) && blank.rowCount === 0 && blank.headers.length === 0;
       });
-      await checkAsync('Task 9 (2026-10-31), button-speed fix: tabs are fetched in PARALLEL, not one at a time - 5 tabs each simulating a 200ms read finish in well under their sum (1000ms), proving this is not a sequential loop', async () => {
-        sheetsScenario = { fileName: 'Many Tabs', tabs: ['A', 'B', 'C', 'D', 'E'].map((t) => ({ title: t, values: sheetValues(1), delayMs: 200 })) };
-        const t0 = Date.now();
-        const info = await automationService.loadSheetInfo('https://docs.google.com/spreadsheets/d/TESTID123/edit');
-        const elapsed = Date.now() - t0;
-        return info.ok && info.tabs.length === 5 && elapsed < 700;
+      await checkAsync('Task 9 (2026-10-31), button-speed fix: tabs are fetched in PARALLEL, not one at a time - proved structurally (every tab reaches a shared gate before any of them is released), never by comparing elapsed wall-clock time against a fixed budget (flaky under a loaded machine/full parallel gate - not a real regression signal)', async () => {
+        let releaseGate;
+        const releasePromise = new Promise((resolve) => { releaseGate = resolve; });
+        const concurrencyGate = { started: [], releasePromise };
+        sheetsScenario = { fileName: 'Many Tabs', tabs: ['A', 'B', 'C', 'D', 'E'].map((t) => ({ title: t, values: sheetValues(1), useGate: true })), concurrencyGate };
+        const infoPromise = automationService.loadSheetInfo('https://docs.google.com/spreadsheets/d/TESTID123/edit');
+        // Lets the microtask/immediate queue drain enough for every
+        // concurrently-kicked-off read to reach the gate - a generous
+        // cap (200 ticks), never a real timer; a genuinely parallel
+        // implementation reaches all 5 within a handful of ticks
+        // regardless of how loaded the machine is, since nothing here
+        // depends on real elapsed time at all.
+        for (let i = 0; i < 200 && concurrencyGate.started.length < 5; i++) await new Promise((resolve) => setImmediate(resolve));
+        const startedBeforeRelease = concurrencyGate.started.length;
+        releaseGate();
+        const info = await infoPromise;
+        return info.ok && info.tabs.length === 5 && startedBeforeRelease === 5;
       });
       await checkAsync('Task 9 (2026-10-31), button-speed fix: a tab whose FIRST read fails with a transient (non-permission) error is automatically retried once and recovers - never shown to the owner as empty/unreadable for a one-off network blip', async () => {
         sheetsScenario = { fileName: 'Flaky Sheet', tabs: [{ title: 'Addition', values: sheetValues(3), failOnce: true }] };
