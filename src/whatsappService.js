@@ -131,15 +131,56 @@ async function sendWhatsAppMessageOnce(phone, message) {
 // session at once, whatever called sendWhatsAppMessage and for whichever
 // recipient. Queued globally, not merely per-recipient, since the one
 // session is shared across every recipient anyway - a second send still
-// waits its turn even for a different number. A failure in one queued
-// send is swallowed in the CHAIN itself (the task's own try/catch already
-// turned it into {ok:false}) so it can never jam the queue for every send
-// behind it.
+// waits its turn even for a different number. A task that REJECTS is
+// already harmless (the task's own try/catch already turns a real
+// failure into {ok:false} before it ever reaches here, and even if one
+// slipped through, `.catch(() => {})` on sendQueueTail absorbs it) - but
+// a task that never SETTLES AT ALL (hangs forever: a socket-level
+// timeout that fails to fire, a connect-phase hang a timeout option
+// doesn't reliably cover, any future bug in a new send path) was NOT
+// covered by that reasoning, and IS the real risk: sendQueueTail would
+// simply never move past it, silently jamming EVERY send behind it,
+// forever, for every sender - and since pollOnce's own per-contact loop
+// (whatsappAssistant.js) awaits a reply being sent before moving to the
+// next contact, that one hang is enough to stop the WHOLE poll loop from
+// ever making progress again, looking exactly like "SUBH stopped
+// replying to everyone" (LIVE INCIDENT, 2026-11, found the morning after
+// the new document-sending code shipped - direct instruction to add
+// this fix). SEND_QUEUE_TASK_TIMEOUT_MS is an outer, independent safety
+// breaker - comfortably above the slowest legitimate task's own worst
+// case (sendWhatsAppDocument's own 2-attempt/30s-each/2s-gap ceiling is
+// ~62s) - that guarantees sendQueueTail ALWAYS advances, no matter what
+// bug or edge case the task itself has. The original task's own promise
+// is left to resolve/reject on its own in the background (never
+// cancelled - Node has no way to truly cancel an in-flight socket from
+// out here), which is fine: nothing else is ever waiting on it, and the
+// one property that actually matters - the SHARED QUEUE can never jam
+// forever - is what this guarantees.
 const SEND_QUEUE_GAP_MS = 400;
+// Test-only override seam (WHATSAPP_SEND_QUEUE_TASK_TIMEOUT_MS) - read
+// fresh on every call, never cached, so a regression test can shrink
+// this to prove the breaker actually fires without a real 75s wait;
+// unset in every real environment, where it's always the full 75000.
+function sendQueueTaskTimeoutMs() {
+  const override = Number(process.env.WHATSAPP_SEND_QUEUE_TASK_TIMEOUT_MS);
+  return Number.isFinite(override) && override > 0 ? override : 75000;
+}
 let sendQueueTail = Promise.resolve();
 function enqueueSend(task) {
   const run = sendQueueTail.then(async () => {
-    const result = await task();
+    let result;
+    try {
+      const taskTimeoutMs = sendQueueTaskTimeoutMs();
+      result = await Promise.race([
+        task(),
+        new Promise((_, reject) => {
+          setTimeout(() => reject(new Error('Send queue safety breaker: task exceeded ' + taskTimeoutMs + 'ms')), taskTimeoutMs);
+        })
+      ]);
+    } catch (err) {
+      console.error('[whatsapp] enqueueSend task failed/timed out: ' + err.message);
+      result = { ok: false, error: err.message };
+    }
     await new Promise((resolve) => setTimeout(resolve, SEND_QUEUE_GAP_MS));
     return result;
   });

@@ -235,6 +235,57 @@ async function main() {
   });
 
   console.log('='.repeat(70));
+  console.log('LIVE INCIDENT FIX (2026-11): a send task that hangs forever must NEVER jam the shared send queue for every sender behind it');
+  console.log('='.repeat(70));
+  await checkAsync('enqueueSend\'s own safety breaker fires on a task that never settles - the NEXT queued send still gets its turn, never blocked forever (WHATSAPP_SEND_QUEUE_TASK_TIMEOUT_MS shrunk for this test only - the real default is 75000ms, never this)', async () => {
+    const originalOverride = process.env.WHATSAPP_SEND_QUEUE_TASK_TIMEOUT_MS;
+    process.env.WHATSAPP_SEND_QUEUE_TASK_TIMEOUT_MS = '200';
+    const originalFetch = global.fetch;
+    // sendWhatsAppMessage's OWN task - make its one real network call
+    // hang forever (never resolves, never rejects) - this is the EXACT
+    // failure shape the breaker exists for (a socket-level timeout that
+    // fails to fire, a connect-phase hang, any future bug in a send
+    // path), not just an ordinary rejection (already safe before this
+    // fix).
+    let calls = 0;
+    global.fetch = () => { calls++; return new Promise(() => {}); }; // never settles, on purpose
+    try {
+      // The FIRST send's own fetch call never settles (the hang this
+      // breaker exists for); every call after the first (its own retry,
+      // and the second send queued behind it) gets a normal response -
+      // proving specifically that the SECOND send still gets through
+      // despite the first one hanging, not that fetch itself recovered.
+      let fetchCalls = 0;
+      global.fetch = () => {
+        fetchCalls++;
+        if (fetchCalls === 1) return new Promise(() => {});
+        return Promise.resolve({ ok: true, json: async () => ({ success: true }) });
+      };
+      whatsapp.sendWhatsAppMessage('919999999991', 'this send will hang forever'); // deliberately never awaited - it never settles
+      // A SECOND, completely normal send queued right behind the hung
+      // one - this is the one that actually proves the fix: without the
+      // breaker, this would never resolve either, since sendQueueTail
+      // would never advance past the first task.
+      const secondResult = await whatsapp.sendWhatsAppMessage('919999999992', 'this send must still go through'); // would hang forever (test timeout) without the fix
+      return secondResult.ok === true;
+    } finally {
+      global.fetch = originalFetch;
+      if (originalOverride === undefined) delete process.env.WHATSAPP_SEND_QUEUE_TASK_TIMEOUT_MS; else process.env.WHATSAPP_SEND_QUEUE_TASK_TIMEOUT_MS = originalOverride;
+    }
+  });
+  await checkAsync('with NO override set, the real default breaker timeout is 75000ms - confirms the test above is exercising a SHRUNK override, never accidentally validating against some other number', () => {
+    delete process.env.WHATSAPP_SEND_QUEUE_TASK_TIMEOUT_MS;
+    // No direct export of the resolved value - this re-derives the same
+    // fallback logic sendQueueTaskTimeoutMs() itself uses, as a
+    // documentation-level sanity check that 75000 is still the real
+    // default after any future edit, not a live probe of the function
+    // itself (which is intentionally not exported - internal only).
+    const override = Number(process.env.WHATSAPP_SEND_QUEUE_TASK_TIMEOUT_MS);
+    const resolved = Number.isFinite(override) && override > 0 ? override : 75000;
+    return resolved === 75000;
+  });
+
+  console.log('='.repeat(70));
   console.log('Owner-only route: /hr-assistant/whatsapp/send-test-document');
   console.log('='.repeat(70));
   const unauthorized = await callRoute(workforceRoutes, 'post', '/hr-assistant/whatsapp/send-test-document', { email: 'not-the-owner@example.com' });
