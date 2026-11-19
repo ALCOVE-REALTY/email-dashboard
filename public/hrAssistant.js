@@ -3444,6 +3444,19 @@
           const r = await fetch('/api/workforce/hr-assistant/holidays').then((res) => res.json());
           pageDataCache.holidays = { items: r.items || [] };
         } catch (err) { /* best effort - a real page open will just fetch fresh */ }
+      })(),
+      // SPEED FIX (2026-11, direct instruction) - Data access was the one
+      // SUBH Settings section missing from this warm-up list, even though
+      // loadDataAccessPage() itself already has the correct cache-first
+      // shape - every OTHER section was warm by the time the owner tapped
+      // in, so Data access alone always paid a full live round trip. Same
+      // shape as every block above: pageDataCache.dataAccess is exactly
+      // what loadDataAccessPage() itself reads/writes.
+      (async () => {
+        try {
+          const r = await fetch('/api/workforce/hr-assistant/data-access').then((res) => res.json());
+          pageDataCache.dataAccess = r.items || [];
+        } catch (err) { /* best effort - a real page open will just fetch fresh */ }
       })()
     ]);
   }

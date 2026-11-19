@@ -102,6 +102,32 @@ of its own research and building itself, directly, no further delegation down th
 chain. This is narrower than the general rule above (which still applies everywhere
 else): here, the answer to "should I spawn a helper for this" is simply no.
 
+## SUBH Settings pages open instantly — STANDING RULE (2026-11, direct instruction)
+
+Found live: opening "Data access" from SUBH Settings took noticeably longer than every
+other section. Root cause - `prefetchSubhSettingsAll()` (`public/hrAssistant.js`), fired
+the instant the SUBH Settings hub view opens, warms `pageDataCache` for every section
+EXCEPT Data access, so that one section alone always paid a full live round trip on
+first tap, even though its own `loadDataAccessPage()` already had the correct cache-
+first shape. Fixed by adding the missing prefetch block - not by restructuring the page
+itself (the earlier "Create Workflow" speed fix's shell-first/IIFE pattern does not apply
+here; that fix was for a page that had no cache-first shape at all yet).
+
+**Every SUBH Settings section page (current and future) must open instantly**: its shell
+(header, page title) visible synchronously on tap, content rendered from
+`pageDataCache` immediately if warm, a real fetch only ever happening in the
+background to refresh it - never a blocking fetch before first paint. Any new section
+added to SUBH Settings must: (1) have its own `pageDataCache.<key>` entry and a
+cache-first `load<X>Page()` matching every existing one's shape, and (2) be added to
+`prefetchSubhSettingsAll()`'s own warm-up list.
+
+Enforced by `scripts/check-settings-pages-open-speed.js` (headless UI check, part of the
+normal pre-push gate) - fails if any SUBH Settings page takes longer than ~300ms (a wide
+margin above the real cached-path cost, which measures in the tens of ms) to show its
+shell and first real content, against a simulated 500ms network delay. A new section
+that violates this rule breaks the gate automatically; it is not something to remember
+to check by hand.
+
 ## Owner data safety — PERMANENT HARD RULES (PART B, 2026-11, direct instruction)
 
 Grew out of a real incident (Company Details going blank with no evidence of why) and
