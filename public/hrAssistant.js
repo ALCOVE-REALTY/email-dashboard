@@ -3829,24 +3829,46 @@
   // sends a small fixed test PDF to the owner's own registered WhatsApp
   // number (resolved server-side), never to anyone else. requestFn itself
   // throws on a send failure (not just a route-level error) so
-  // runButtonAction's own error styling/toast correctly reflects a real
-  // send failure, not only a 4xx/5xx.
+  // runButtonAction's own standard spinner/tick/error styling applies to
+  // a real send failure too, not only a 4xx/5xx - the SAME button
+  // treatment every other Settings action button uses (Backup now, Sync
+  // data now, ...), never a bespoke one. Double-tap is already blocked by
+  // runButtonAction itself (ignores a click while .is-loading is set).
+  // LIVE BUG FIX (2026-11) - the button previously had class="primary",
+  // which matches NO CSS rule anywhere in this app (confirmed by reading
+  // every stylesheet) - it rendered as a bare, unstyled native <button>,
+  // and its spinner/tick never applied either, since that CSS is scoped
+  // to .wf-convo-action-btn/.wf-ai-action-btn/.wf-rem-add-btn/
+  // .wf-card-action-btn specifically (see wi-theme.css's own comment).
+  // Fixed in the HTML (class="wf-ai-action-btn", the same class every
+  // other standalone Settings action button already uses).
   window.__hrAssistantOpenWhatsappDocuments = function () {
     if (window.__hrAssistantClosePanel) window.__hrAssistantClosePanel(true);
     if (window.setView) window.setView('whatsappDocuments', { resetHistory: true });
   };
   if (hrWhatsappSendTestDocBtn) {
     hrWhatsappSendTestDocBtn.addEventListener('click', async () => {
-      if (hrWhatsappSendTestDocResult) hrWhatsappSendTestDocResult.textContent = '';
       await runButtonAction(hrWhatsappSendTestDocBtn, async () => {
         const r = await postJsonOrThrow('/api/workforce/hr-assistant/whatsapp/send-test-document', {});
-        if (!r.ok) throw new Error(r.error || 'Could not send the test file.');
+        // Direct instruction - the server already translates a real send
+        // failure into a short, plain-language reason (e.g. "Couldn't
+        // reach the WhatsApp gateway - try again.") - never the raw
+        // "fetch failed"/a Node error string. See
+        // classifyWhatsAppNetworkError in whatsappService.js.
+        if (!r.ok) throw new Error(r.error || "Couldn't reach the WhatsApp gateway - try again.");
         return r;
-      }, (r) => {
-        if (hrWhatsappSendTestDocResult) hrWhatsappSendTestDocResult.textContent = 'Sent to ' + (r.to || 'your WhatsApp number') + ' ✓ - check your WhatsApp.';
+      }, async () => {
+        // Clears any earlier failure text the instant a retry succeeds,
+        // and holds the tick a little longer than runButtonAction's own
+        // standard 550ms (direct instruction: "~2s" total) - this is the
+        // ONE confirmation that a real external WhatsApp message actually
+        // went out, worth a slightly more deliberate pause than an
+        // ordinary settings save.
+        if (hrWhatsappSendTestDocResult) hrWhatsappSendTestDocResult.textContent = '';
+        await new Promise((resolve) => setTimeout(resolve, 1450));
       }, {
         resetAfterSuccess: true,
-        toastFn: (msg) => { if (hrWhatsappSendTestDocResult) hrWhatsappSendTestDocResult.textContent = 'Failed: ' + msg; else showActionToast(msg, null, 'error'); }
+        toastFn: (msg) => { if (hrWhatsappSendTestDocResult) hrWhatsappSendTestDocResult.textContent = msg; else showActionToast(msg, null, 'error'); }
       });
     });
   }

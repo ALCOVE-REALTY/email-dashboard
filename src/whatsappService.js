@@ -4,6 +4,12 @@
 // link directly to their phone. Contract confirmed against the live
 // endpoint's own validation errors (x-maytapi-key header; to_number +
 // message in the body) since no written API docs were available.
+// https/http/crypto - used by the document-sending block below (hand-
+// built multipart body over the plain core module, deliberately not
+// fetch+FormData - see that block's own comment).
+const https = require('https');
+const http = require('http');
+const crypto = require('crypto');
 const WHATSAPP_API_BASE = process.env.WHATSAPP_API_BASE || 'https://tools.alcoverealty.in/whatsapp';
 const WHATSAPP_PRODUCT_ID = process.env.WHATSAPP_PRODUCT_ID || 'my-product-id';
 const WHATSAPP_PHONE_ID = process.env.WHATSAPP_PHONE_ID || 'c570dea1-899e-4c09-9746-45a088967178';
@@ -164,52 +170,140 @@ async function sendWhatsAppMessage(phone, message) {
 // Method B of the gateway's own documented upload contract - a real FILE
 // (not just text), via multipart/form-data: to_number, type=document,
 // file=@<file>, to the SAME /uploadMedia path style as sendMessage's own
-// /sendMessage, on the SAME product/phone id. Native FormData/Blob (Node
-// 18+, confirmed available in this runtime) - no new dependency, fetch
-// sets the multipart boundary header itself whenever the body is a
-// FormData instance, which must NEVER be overridden with an explicit
-// Content-Type here. The caption field name (sent as "message", mirroring
-// sendMessage's own field) is NOT yet confirmed against the real gateway
-// - unconfirmed until this is actually exercised against it; a wrong
-// field name would at worst mean the document arrives with no caption,
-// never a failed send, so this is safe to ship ahead of that
-// confirmation. Receiving files (handleIncomingMedia, in
-// whatsappAssistant.js) is a completely separate, untouched flow - this
-// is outbound sending only.
+// /sendMessage, on the SAME product/phone id.
+//
+// LIVE BUG FIX (2026-11) - the first version of this used fetch + native
+// FormData/Blob, which failed live with a bare, network-level "fetch
+// failed" (never even reaching a clean HTTP response - no 4xx/5xx from
+// the gateway, which text sendMessage, same host, confirmed reachable).
+// Rewritten to build the multipart body BY HAND and send it over Node's
+// plain `https`/`http` core module instead - this removes undici's
+// fetch+FormData body-construction path entirely (a much newer, less
+// battle-tested code path than a hand-built multipart body over a plain
+// core-module request, and the one part of this call genuinely different
+// from sendMessage's own JSON request), which is the most likely real
+// cause on this app's serverless (Vercel) deployment - a Content-Length/
+// chunked-encoding mismatch or an undici FormData quirk hitting the
+// gateway's reverse proxy would surface exactly as a connection-level
+// failure, never a clean HTTP error. If this still fails live, the
+// SPECIFIC error code logged below (ENOTFOUND/ECONNREFUSED/ECONNRESET/
+// ETIMEDOUT/a TLS code) tells us whether it's DNS, connection, TLS, or a
+// timeout - ask the gateway's own IT/ops to confirm, from their side,
+// that /uploadMedia (a) exists at this exact path under
+// /api/<product-id>/<phone-id>/, (b) accepts the same x-maytapi-key
+// header as /sendMessage, and (c) the real field name for an
+// accompanying caption (sent here as "message", mirroring sendMessage's
+// own field - UNCONFIRMED; worst case on a wrong name is a document with
+// no caption, never a failed send) - and, if it still fails after this
+// fix, ask them to check their own access/reverse-proxy logs for an
+// inbound request to that path around the time of the test, to see
+// whether it ever arrives at all. Receiving files (handleIncomingMedia,
+// in whatsappAssistant.js) is a completely separate, untouched flow -
+// this is outbound sending only.
 // 30s - a real file upload reasonably takes longer than a plain text
 // send (SEND_MESSAGE_TIMEOUT_MS, 20s), but still bounded for the same
 // reason: a hung gateway call must never leave an owner-triggered send
 // stuck forever with no result.
 const SEND_DOCUMENT_TIMEOUT_MS = 30000;
+// Hand-built multipart/form-data body (text fields + one file field),
+// posted over the plain `https`/`http` core module - deliberately NOT
+// fetch+FormData (see the block comment above). Resolves {statusCode,
+// body} on any real HTTP response (even a 4xx/5xx - never rejects for
+// that); rejects only for a genuine network-level failure (DNS/connect/
+// TLS/reset) or the timeout, with the real Node error object (its own
+// .code is the specific, actionable one) passed through unchanged.
+function postMultipart(url, headers, fields, fileField, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const boundary = '----SubhWaBoundary' + crypto.randomBytes(16).toString('hex');
+    const CRLF = '\r\n';
+    const chunks = [];
+    for (const [name, value] of Object.entries(fields)) {
+      chunks.push(Buffer.from('--' + boundary + CRLF + 'Content-Disposition: form-data; name="' + name + '"' + CRLF + CRLF + value + CRLF));
+    }
+    chunks.push(Buffer.from(
+      '--' + boundary + CRLF +
+      'Content-Disposition: form-data; name="' + fileField.name + '"; filename="' + fileField.filename + '"' + CRLF +
+      'Content-Type: ' + (fileField.contentType || 'application/octet-stream') + CRLF + CRLF
+    ));
+    chunks.push(fileField.buffer);
+    chunks.push(Buffer.from(CRLF + '--' + boundary + '--' + CRLF));
+    const body = Buffer.concat(chunks);
+
+    let parsed;
+    try { parsed = new URL(url); } catch (err) { reject(err); return; }
+    const lib = parsed.protocol === 'http:' ? http : https;
+    const req = lib.request(parsed, {
+      method: 'POST',
+      headers: Object.assign({}, headers, {
+        'Content-Type': 'multipart/form-data; boundary=' + boundary,
+        'Content-Length': body.length
+      }),
+      timeout: timeoutMs
+    }, (res) => {
+      const resChunks = [];
+      res.on('data', (c) => resChunks.push(c));
+      res.on('end', () => resolve({ statusCode: res.statusCode, body: Buffer.concat(resChunks).toString('utf8') }));
+    });
+    req.on('timeout', () => { const e = new Error('Request timed out'); e.code = 'ETIMEDOUT'; req.destroy(e); });
+    req.on('error', (err) => reject(err));
+    req.write(body);
+    req.end();
+  });
+}
+// Maps a raw network-level failure (never a clean gateway HTTP response -
+// those are handled separately in sendWhatsAppDocumentOnce) to a short,
+// specific, PLAIN-LANGUAGE reason for the owner-facing UI - direct
+// instruction: never the raw "fetch failed"/Node error text. The real
+// error object (code/message) is still logged server-side in full - see
+// the console.error right before this is called - so a real diagnosis
+// never loses information, it just never reaches the UI as a wall of
+// technical text.
+function classifyWhatsAppNetworkError(err) {
+  const code = (err && err.code) || '';
+  if (code === 'ETIMEDOUT' || err.name === 'AbortError' || /timed out/i.test((err && err.message) || '')) {
+    return 'The WhatsApp gateway took too long to respond - try again.';
+  }
+  if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') {
+    return "Couldn't reach the WhatsApp gateway (address not found) - try again.";
+  }
+  if (/CERT|SSL|TLS|EPROTO/i.test(code)) {
+    return "Couldn't securely connect to the WhatsApp gateway - try again.";
+  }
+  // ECONNREFUSED/ECONNRESET/EPIPE/ENETUNREACH and anything else
+  // unrecognized all read the same to a non-technical owner - "couldn't
+  // reach it" is accurate for every one of these.
+  return "Couldn't reach the WhatsApp gateway - try again.";
+}
 async function sendWhatsAppDocumentOnce(phone, fileBuffer, filename, caption) {
   const to_number = normalizePhone(phone);
   if (!/^\d{11,15}$/.test(to_number)) {
     return { ok: false, error: "Enter a valid WhatsApp number (10 digits, or with country code)." };
   }
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), SEND_DOCUMENT_TIMEOUT_MS);
+  const url = apiBase() + '/uploadMedia';
+  const fields = { to_number, type: 'document' };
+  if (caption) fields.message = caption;
   try {
-    const form = new FormData();
-    form.append('to_number', to_number);
-    form.append('type', 'document');
-    if (caption) form.append('message', caption);
-    form.append('file', new Blob([fileBuffer]), filename);
-    const res = await fetch(apiBase() + '/uploadMedia', {
-      method: 'POST',
-      headers: { 'x-maytapi-key': requireToken() },
-      body: form,
-      signal: controller.signal
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || data.success === false) {
-      return { ok: false, error: data.message || 'Could not send the WhatsApp document.', gatewayResponse: data };
+    const res = await postMultipart(url, { 'x-maytapi-key': requireToken() }, fields, { name: 'file', filename, buffer: fileBuffer, contentType: 'application/pdf' }, SEND_DOCUMENT_TIMEOUT_MS);
+    let data = {};
+    try { data = JSON.parse(res.body); } catch (err) { /* non-JSON response - data stays {} */ }
+    if (res.statusCode < 200 || res.statusCode >= 300 || data.success === false) {
+      // A real HTTP response from the gateway (even an error one) is
+      // never a mystery - log it in full (no token in this, only the
+      // gateway's own reply) and surface its own message directly, same
+      // convention sendMessage already uses for this case.
+      console.error('[whatsapp] uploadMedia rejected: url=' + url + ' status=' + res.statusCode + ' body=' + res.body.slice(0, 500));
+      return { ok: false, error: data.message || ('WhatsApp gateway rejected the file (status ' + res.statusCode + ').'), gatewayResponse: data, httpStatus: res.statusCode };
     }
     const gatewayMessageId = data.messageId || data.message_id || data.id || (data.data && (data.data.id || data.data.messageId)) || null;
     return { ok: true, gatewayMessageId, gatewayResponse: data };
   } catch (err) {
-    return { ok: false, error: err.message };
-  } finally {
-    clearTimeout(timer);
+    // Network-level failure - never reached a real HTTP response at all.
+    // Logged in full server-side (URL + the real error code/message -
+    // never the token) for a real diagnosis; the owner-facing error is
+    // the short, plain-language translation above.
+    const code = err.code || (err.cause && err.cause.code) || 'unknown';
+    console.error('[whatsapp] uploadMedia network failure: url=' + url + ' code=' + code + ' message=' + err.message);
+    return { ok: false, error: classifyWhatsAppNetworkError(err), debugCode: code, debugMessage: err.message };
   }
 }
 // Same shape as sendWhatsAppMessage - one retry after a short delay,
@@ -411,4 +505,4 @@ async function getConnectionStatus() {
   }
 }
 
-module.exports = { sendWhatsAppMessage, sendWhatsAppDocument, sendPresence, normalizePhone, isSyntheticTestPhone, listChats, listMessages, isGroupChat, isIgnoredBroadcastType, isValidPhoneNumber, isLikelyLid, getConnectionStatus };
+module.exports = { sendWhatsAppMessage, sendWhatsAppDocument, classifyWhatsAppNetworkError, sendPresence, normalizePhone, isSyntheticTestPhone, listChats, listMessages, isGroupChat, isIgnoredBroadcastType, isValidPhoneNumber, isLikelyLid, getConnectionStatus };

@@ -28,6 +28,77 @@ async function checkAsync(label, fn) {
   }
 }
 
+// LIVE BUG FIX (2026-11) - sendWhatsAppDocumentOnce was rewritten from
+// fetch+FormData to a hand-built multipart body over the plain `https`/
+// `http` core module (see whatsappService.js's own comment - the fetch
+// version failed live with a bare "fetch failed", never even reaching a
+// clean HTTP response). These tests mock https.request directly instead
+// of global.fetch now, since fetch is no longer called at all for this
+// path. parseMultipartBody below re-parses what was actually written to
+// the mocked request, so a test can assert on the REAL bytes sent, not
+// just that "something" was sent.
+const EventEmitter = require('events');
+// postMultipart calls lib.request(url, options, callback) - this mock
+// replaces https.request/http.request with a fake ClientRequest-like
+// EventEmitter: req.write() captures every chunk written (so a test can
+// re-parse the real multipart bytes sent), req.end() either emits
+// 'error' (networkError) or invokes `callback(res)` with a fake response
+// that emits 'data'/'end' with the configured status/body - the exact
+// two outcomes postMultipart's own promise distinguishes.
+function mockRequestFactory({ statusCode, bodyText, networkError, onRequest }) {
+  return (urlOrOptions, optionsOrCallback, maybeCallback) => {
+    const options = maybeCallback ? optionsOrCallback : {};
+    const callback = maybeCallback || optionsOrCallback;
+    const req = new EventEmitter();
+    let written = Buffer.alloc(0);
+    req.write = (chunk) => { written = Buffer.concat([written, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)]); return true; };
+    req.setTimeout = () => {};
+    req.destroy = (err) => { process.nextTick(() => req.emit('error', err || new Error('destroyed'))); };
+    req.end = () => {
+      if (onRequest) onRequest({ url: urlOrOptions, options, body: written });
+      if (networkError) { process.nextTick(() => req.emit('error', networkError)); return; }
+      process.nextTick(() => {
+        const res = new EventEmitter();
+        res.statusCode = statusCode;
+        if (typeof callback === 'function') callback(res);
+        process.nextTick(() => {
+          if (bodyText) res.emit('data', Buffer.from(bodyText));
+          res.emit('end');
+        });
+      });
+    };
+    return req;
+  };
+}
+// Minimal multipart/form-data parser, good enough to verify what
+// postMultipart actually built - not a general-purpose parser.
+function parseMultipartBody(buffer, contentTypeHeader) {
+  const boundaryMatch = /boundary=([^;]+)/.exec(contentTypeHeader || '');
+  const boundary = boundaryMatch ? boundaryMatch[1] : null;
+  const fields = {};
+  let file = null;
+  if (!boundary) return { fields, file };
+  const text = buffer.toString('latin1');
+  const parts = text.split('--' + boundary).slice(1, -1); // drop preamble + the closing "--"
+  for (const rawPart of parts) {
+    const part = rawPart.replace(/^\r\n/, '');
+    const headerEnd = part.indexOf('\r\n\r\n');
+    if (headerEnd === -1) continue;
+    const headerBlock = part.slice(0, headerEnd);
+    const bodyBlock = part.slice(headerEnd + 4).replace(/\r\n$/, '');
+    const nameMatch = /name="([^"]+)"/.exec(headerBlock);
+    const filenameMatch = /filename="([^"]+)"/.exec(headerBlock);
+    const ctMatch = /Content-Type:\s*([^\r\n]+)/i.exec(headerBlock);
+    if (!nameMatch) continue;
+    if (filenameMatch) {
+      file = { name: nameMatch[1], filename: filenameMatch[1], contentType: ctMatch ? ctMatch[1] : null, buffer: Buffer.from(bodyBlock, 'latin1') };
+    } else {
+      fields[nameMatch[1]] = bodyBlock;
+    }
+  }
+  return { fields, file };
+}
+
 function findRouteHandler(router, method, routePath) {
   for (const layer of router.stack) {
     if (layer.route && layer.route.path === routePath && layer.route.methods[method]) {
@@ -60,92 +131,107 @@ async function main() {
   console.log('='.repeat(70));
   console.log('sendWhatsAppDocument(Once) - multipart body shape, retry, failure handling');
   console.log('='.repeat(70));
-  await checkAsync('sends the EXACT multipart fields the gateway contract specifies: to_number, type=document, file, plus the caption as "message"', async () => {
-    const originalFetch = global.fetch;
-    let capturedUrl = null, capturedForm = null, capturedHeaders = null;
-    global.fetch = async (url, opts) => {
-      capturedUrl = url; capturedForm = opts.body; capturedHeaders = opts.headers;
-      return { ok: true, json: async () => ({ success: true, messageId: 'MSG123' }) };
-    };
+  const https = require('https');
+  await checkAsync('sends the EXACT multipart fields the gateway contract specifies: to_number, type=document, file, plus the caption as "message" - real bytes re-parsed from what was actually written to the request', async () => {
+    const original = https.request;
+    let captured = null;
+    https.request = mockRequestFactory({ statusCode: 200, bodyText: JSON.stringify({ success: true, messageId: 'MSG123' }), onRequest: (c) => { captured = c; } });
     try {
       const result = await whatsapp.sendWhatsAppDocument('919999999999', Buffer.from('fake pdf bytes'), 'test.pdf', 'a test caption');
-      const to_number = capturedForm.get('to_number');
-      const type = capturedForm.get('type');
-      const message = capturedForm.get('message');
-      const file = capturedForm.get('file');
+      const { fields, file } = parseMultipartBody(captured.body, captured.options.headers['Content-Type']);
       return result.ok === true && result.gatewayMessageId === 'MSG123' &&
-        String(capturedUrl).includes('/uploadMedia') &&
-        to_number === '919999999999' && type === 'document' && message === 'a test caption' &&
-        Boolean(file) && file.name === 'test.pdf' &&
-        capturedHeaders['x-maytapi-key'] === process.env.WHATSAPP_TOKEN &&
-        !('Content-Type' in capturedHeaders); // never manually set - fetch must set its own multipart boundary
+        String(captured.url).includes('/uploadMedia') &&
+        fields.to_number === '919999999999' && fields.type === 'document' && fields.message === 'a test caption' &&
+        Boolean(file) && file.name === 'file' && file.filename === 'test.pdf' && file.buffer.toString() === 'fake pdf bytes' &&
+        captured.options.headers['x-maytapi-key'] === process.env.WHATSAPP_TOKEN &&
+        captured.options.headers['Content-Length'] === captured.body.length;
     } finally {
-      global.fetch = originalFetch;
+      https.request = original;
     }
   });
   await checkAsync('omits the "message" field entirely when no caption is given - never sends an empty caption', async () => {
-    const originalFetch = global.fetch;
-    let capturedForm = null;
-    global.fetch = async (url, opts) => { capturedForm = opts.body; return { ok: true, json: async () => ({ success: true }) }; };
+    const original = https.request;
+    let captured = null;
+    https.request = mockRequestFactory({ statusCode: 200, bodyText: JSON.stringify({ success: true }), onRequest: (c) => { captured = c; } });
     try {
       await whatsapp.sendWhatsAppDocument('919999999999', Buffer.from('x'), 'f.pdf', null);
-      return capturedForm.get('message') === null;
+      const { fields } = parseMultipartBody(captured.body, captured.options.headers['Content-Type']);
+      return !('message' in fields);
     } finally {
-      global.fetch = originalFetch;
+      https.request = original;
     }
   });
-  await checkAsync('an invalid phone number is refused WITHOUT ever calling fetch - the same validation sendWhatsAppMessage already does', async () => {
-    const originalFetch = global.fetch;
+  await checkAsync('an invalid phone number is refused WITHOUT ever opening a connection - the same validation sendWhatsAppMessage already does', async () => {
+    const original = https.request;
     let called = false;
-    global.fetch = async () => { called = true; return { ok: true, json: async () => ({}) }; };
+    https.request = mockRequestFactory({ statusCode: 200, bodyText: '{}', onRequest: () => { called = true; } });
     try {
       const result = await whatsapp.sendWhatsAppDocument('123', Buffer.from('x'), 'f.pdf', null);
       return result.ok === false && !called;
     } finally {
-      global.fetch = originalFetch;
+      https.request = original;
     }
   });
   await checkAsync('retries exactly once on a transient failure before giving up (same contract as sendWhatsAppMessage)', async () => {
-    const originalFetch = global.fetch;
+    const original = https.request;
     let calls = 0;
-    global.fetch = async () => { calls++; if (calls === 1) throw new Error('simulated transient network failure'); return { ok: true, json: async () => ({ success: true }) }; };
+    https.request = (...args) => {
+      calls++;
+      const factory = calls === 1
+        ? mockRequestFactory({ networkError: Object.assign(new Error('simulated transient network failure'), { code: 'ECONNRESET' }) })
+        : mockRequestFactory({ statusCode: 200, bodyText: JSON.stringify({ success: true }) });
+      return factory(...args);
+    };
     try {
       const result = await whatsapp.sendWhatsAppDocument('919999999999', Buffer.from('x'), 'f.pdf', null);
       return result.ok === true && calls === 2;
     } finally {
-      global.fetch = originalFetch;
+      https.request = original;
     }
   });
-  await checkAsync('still reports failure (after exactly 2 attempts, never more) when every attempt fails', async () => {
-    const originalFetch = global.fetch;
+  await checkAsync('still reports failure (after exactly 2 attempts, never more) when every attempt fails, with the SHORT PLAIN-LANGUAGE reason, never the raw Node error text', async () => {
+    const original = https.request;
     let calls = 0;
-    global.fetch = async () => { calls++; throw new Error('simulated permanent network failure'); };
+    https.request = (...args) => { calls++; return mockRequestFactory({ networkError: Object.assign(new Error('simulated permanent network failure'), { code: 'ECONNREFUSED' }) })(...args); };
     try {
       const result = await whatsapp.sendWhatsAppDocument('919999999999', Buffer.from('x'), 'f.pdf', null);
-      return result.ok === false && calls === 2;
+      return result.ok === false && calls === 2 &&
+        result.error === "Couldn't reach the WhatsApp gateway - try again." &&
+        result.debugCode === 'ECONNREFUSED'; // the real code stays available for diagnosis, just never shown to the owner as the headline message
     } finally {
-      global.fetch = originalFetch;
+      https.request = original;
     }
   });
   await checkAsync('a non-ok gateway HTTP response is reported as a failure with the gateway\'s own response attached, never thrown', async () => {
-    const originalFetch = global.fetch;
-    global.fetch = async () => ({ ok: false, json: async () => ({ message: 'unsupported file type' }) });
+    const original = https.request;
+    https.request = mockRequestFactory({ statusCode: 415, bodyText: JSON.stringify({ message: 'unsupported file type' }) });
     try {
       const result = await whatsapp.sendWhatsAppDocument('919999999999', Buffer.from('x'), 'f.pdf', null);
-      return result.ok === false && result.error === 'unsupported file type' && result.gatewayResponse.message === 'unsupported file type';
+      return result.ok === false && result.error === 'unsupported file type' && result.gatewayResponse.message === 'unsupported file type' && result.httpStatus === 415;
     } finally {
-      global.fetch = originalFetch;
+      https.request = original;
     }
   });
-  await checkAsync('never throws even when fetch itself throws synchronously (network failure) - returns {ok:false} instead, same safety net as sendWhatsAppMessage', async () => {
-    const originalFetch = global.fetch;
-    global.fetch = async () => { throw new Error('ECONNRESET'); };
+  await checkAsync('never throws even on a genuine network-level failure (DNS/connect/reset) - returns {ok:false} with a plain-language reason instead, same safety net as sendWhatsAppMessage', async () => {
+    const original = https.request;
+    https.request = mockRequestFactory({ networkError: Object.assign(new Error('getaddrinfo ENOTFOUND tools.alcoverealty.in'), { code: 'ENOTFOUND' }) });
     try {
       const result = await whatsapp.sendWhatsAppDocument('910000000790', Buffer.from('x'), 'f.pdf', null);
-      return result.ok === false && typeof result.error === 'string';
+      return result.ok === false && typeof result.error === 'string' && !/fetch failed|ENOTFOUND/.test(result.error);
     } finally {
-      global.fetch = originalFetch;
+      https.request = original;
     }
+  });
+  await checkAsync('classifyWhatsAppNetworkError maps each known Node error code to its own short, plain-language reason - never the raw code/message', () => {
+    const cases = [
+      [{ code: 'ETIMEDOUT' }, 'took too long'],
+      [{ code: 'ENOTFOUND' }, "couldn't reach"],
+      [{ code: 'EAI_AGAIN' }, "couldn't reach"],
+      [{ code: 'ECONNREFUSED' }, "couldn't reach"],
+      [{ code: 'ECONNRESET' }, "couldn't reach"],
+      [{ code: 'CERT_HAS_EXPIRED' }, 'securely connect']
+    ];
+    return cases.every(([err, expectedSubstring]) => whatsapp.classifyWhatsAppNetworkError(Object.assign(new Error('x'), err)).toLowerCase().includes(expectedSubstring));
   });
 
   console.log('='.repeat(70));

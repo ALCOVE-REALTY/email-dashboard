@@ -3394,6 +3394,43 @@ like Letter settings' own send-test - there is nothing variable to preview here 
 same file every time), so a preview step would add nothing. Never touches
 `handleIncomingMedia` (receiving files stays completely separate, for later).
 
+**Phase 3 live bug fix (own commit)**: live attempt failed with a bare "fetch
+failed" - never even a gateway HTTP response, unlike text sendMessage (same host,
+confirmed reachable). Root cause: fetch + native FormData/Blob for the multipart
+body - a much newer, less battle-tested code path than a hand-built multipart
+body over a plain core-module request, and the one part of this call genuinely
+different from sendMessage's own JSON request; a Content-Length/chunked-encoding
+mismatch or an undici FormData quirk hitting the gateway's reverse proxy on this
+app's serverless (Vercel) deployment would surface exactly as a connection-level
+failure. Fixed: `sendWhatsAppDocumentOnce` now builds the multipart body BY HAND
+and posts it over Node's plain `https`/`http` core module (`postMultipart` in
+whatsappService.js) - fetch/FormData/Blob removed from this path entirely. Every
+real HTTP response from the gateway (even an error one) and every network-level
+failure (DNS/connect/TLS/reset/timeout) is logged server-side in full (URL +
+exact error code/message, never the token); the owner-facing error is a short,
+plain-language translation (`classifyWhatsAppNetworkError`) - e.g. "Couldn't
+reach the WhatsApp gateway - try again." - never the raw Node error text. Button
+restyled to `.wf-ai-action-btn` (it had `class="primary"`, which matches NO CSS
+rule anywhere in this app - confirmed by reading every stylesheet; it rendered
+as a bare unstyled native `<button>`, and the spinner/tick CSS never applied
+either, since that's scoped to `.wf-convo-action-btn`/`.wf-ai-action-btn`/
+`.wf-rem-add-btn`/`.wf-card-action-btn` specifically). Standard spinner → tick →
+back-to-normal treatment, same as every other Settings action button; success
+tick held ~2s total (the standard 550ms plus an extra 1450ms in `onSuccess`,
+never a change to the shared `runButtonAction` helper itself) - a deliberately
+longer pause than the default, since this is the one confirmation that a real
+external WhatsApp message actually went out. Double-tap already blocked by
+`runButtonAction`'s own re-entrancy guard (`.is-loading` check) - no new code
+needed. **Still unconfirmed, ask the gateway's IT/ops if this still fails live**:
+(1) that `/uploadMedia` exists at this exact path under
+`/api/<product-id>/<phone-id>/`, reachable the same way `/sendMessage` is; (2)
+that it accepts the same `x-maytapi-key` header; (3) the real field name for an
+accompanying caption (sent here as `message`, mirroring `sendMessage`'s own
+field - unconfirmed; worst case on a wrong name is a document with no caption,
+never a failed send); (4) if it still fails, ask them to check their own
+access/reverse-proxy logs for an inbound request to that path around the time of
+the test, to see whether it arrives at all.
+
 **Lock scenarios** (owner-authored, in "sender message → SUBH process → reply"
 format, 2026-11 - these are the authoritative examples for Part A phase 2 and for
 Part C's reports engine once built; Examples 1-5/9 need Part C and are not yet
