@@ -9108,6 +9108,171 @@ async function checkAsyncRealModel(label, fn) {
     return Boolean(record) && typeof record.requestDates === 'string' && record.requestDatesResolved !== true;
   });
 
+  console.log('='.repeat(70));
+  console.log('confirmOrRecoverSend/processDueDeliveryChecks - ROBUSTNESS PASS: auto-recovery, late-confirmation dedup, evidence log, dual-channel alert - DATA-DRIVEN (no background timers at all, so a test can never leak a stray one into a later, unrelated test)');
+  console.log('='.repeat(70));
+  const origListMessagesForVerify = whatsapp.listMessages;
+  const origSendWhatsAppMessageForRecover = whatsapp.sendWhatsAppMessage;
+  const origGmailSendMailForRecover = require('../src/gmailService').sendMail;
+  // Zero delay - confirmOrRecoverSend's own `checkAt` lands at-or-before
+  // "now" the instant driveDeliveryChecks calls processDueDeliveryChecks,
+  // so every check runs the moment it's asked to, deterministically, with
+  // no real wait and no timer of any kind ever created.
+  process.env.WHATSAPP_SEND_VERIFY_DELAY_MS = '0';
+  process.env.WHATSAPP_SEND_RECOVERY_GAP_MS = '0';
+  // Confirmed live flake: an EARLIER, unrelated test elsewhere in this
+  // huge suite that exercises a real-send success path also schedules a
+  // delivery check (sendOrReportAutoReply -> confirmOrRecoverSend) - and
+  // nothing in THAT test's own flow ever calls processDueDeliveryChecks()
+  // to drain it, since only this block does. Left unchecked, dozens of
+  // such orphaned entries accumulate over the file's ~900 other checks,
+  // and the FIRST call to driveDeliveryChecksToCompletion() below would
+  // sweep up every single one of them alongside its own record - took
+  // 20+ real seconds once observed, blowing well past this harness's own
+  // 15s per-check watchdog. Starting from a clean slate here keeps this
+  // block's own timing entirely self-contained, regardless of what ran
+  // before it.
+  await whatsappAssistant.clearAllPendingDeliveryChecks();
+  function outgoingAt(text, sentAt) { return { direction: 'outgoing', recipient: '0', content: { text }, created_at: new Date(sentAt + 500).toISOString() }; }
+  // Drives the scheduled check (and any resend-and-reschedule it causes)
+  // all the way to a final outcome, by calling the SAME explicit tick
+  // function the real scheduler calls - up to a small safety cap so a
+  // genuine bug (an infinite reschedule loop) fails the test instead of
+  // hanging it forever.
+  async function driveDeliveryChecksToCompletion(maxTicks) {
+    for (let i = 0; i < (maxTicks || 5); i++) {
+      const result = await whatsappAssistant.processDueDeliveryChecks();
+      if (!result.processed) return;
+    }
+  }
+  try {
+    // Defensive default (every test below that doesn't itself need to
+    // count/inspect resends still keeps this) - the shared Redis store
+    // used by this whole process can carry a STALE wa-pending-delivery-
+    // check record left behind by some EARLIER, unrelated test elsewhere
+    // in this very file that exercised a real-send success path (which
+    // now also calls confirmOrRecoverSend) - processDueDeliveryChecks()
+    // below has no way to know that record isn't "mine", and would try
+    // to resend it for real if sendWhatsAppMessage were left unmocked,
+    // hanging on a genuine network call until its own 20s timeout (past
+    // this harness's own 15s watchdog - confirmed live, the exact cause
+    // of a very real flake this block itself introduced). A fast, always-
+    // present fallback here means a stray stale record can only ever hit
+    // this harmless mock, never the real network, however it got here.
+    // Same reasoning for listMessages - it has no timeout of its own at
+    // all (confirmed in whatsappService.js - unlike sendMessage/status),
+    // so a stray stale record's feed-check hitting the REAL unmocked
+    // version against an unreachable test gateway could hang forever,
+    // not just 20s. Neither default is ever restored to the true
+    // original until the very end of this whole block.
+    const defaultListMessagesMock = async () => [];
+    const defaultSendWhatsAppMessageMock = async () => ({ ok: true });
+    whatsapp.listMessages = defaultListMessagesMock;
+    whatsapp.sendWhatsAppMessage = defaultSendWhatsAppMessageMock;
+    await checkAsync('confirmed on the very first feed check -> delivered, no resend, no alert, evidence shows confirmed:true', async () => {
+      const sentAt = Date.now();
+      whatsapp.listMessages = async () => [outgoingAt('Hello back', sentAt)];
+      const notifBefore = (await whatsappAssistant.listOwnerNotifications()).length;
+      await whatsappAssistant.confirmOrRecoverSend({ chatId: '919999992001', name: 'ConfirmFirst', replyText: 'Hello back', sentAt });
+      await driveDeliveryChecksToCompletion();
+      const notifAfter = (await whatsappAssistant.listOwnerNotifications()).length;
+      whatsapp.listMessages = defaultListMessagesMock;
+      const evidence = await whatsappAssistant.listDeliveryEvidence(50);
+      const mine = evidence.find((e) => e.chatId === '919999992001');
+      return notifAfter === notifBefore && Boolean(mine) && mine.confirmed === true && mine.attempts.length === 1;
+    });
+    await checkAsync('a LATE confirmation - missing on the first check (so one automatic resend goes out), but then found confirmed on the very next check - accepted as delivered, never a second resend, never an alert', async () => {
+      const sentAt = Date.now();
+      let call = 0;
+      let resendCalls = 0;
+      whatsapp.listMessages = async () => { call++; return call <= 1 ? [] : [outgoingAt('Confirmed after resend', Date.now())]; };
+      whatsapp.sendWhatsAppMessage = async () => { resendCalls++; return { ok: true, gatewayMessageId: 'RESEND1', httpStatus: 200 }; };
+      const notifBefore = (await whatsappAssistant.listOwnerNotifications()).length;
+      await whatsappAssistant.confirmOrRecoverSend({ chatId: '919999992003', name: 'ConfirmAfterResend', replyText: 'Confirmed after resend', sentAt });
+      await driveDeliveryChecksToCompletion();
+      const notifAfter = (await whatsappAssistant.listOwnerNotifications()).length;
+      whatsapp.listMessages = defaultListMessagesMock;
+      whatsapp.sendWhatsAppMessage = defaultSendWhatsAppMessageMock;
+      const evidence = await whatsappAssistant.listDeliveryEvidence(50);
+      const mine = evidence.find((e) => e.chatId === '919999992003');
+      return notifAfter === notifBefore && resendCalls === 1 && Boolean(mine) && mine.finalOutcome === 'delivered_after_retry' && mine.attempts.length === 2;
+    });
+    await checkAsync('NEVER confirmed anywhere -> exactly 2 automatic resends, then (and only then) not_delivered + the conversation bubble flips + a REAL dual-channel owner alert (WhatsApp + email), with the full evidence trail for IT', async () => {
+      const sentAt = Date.now();
+      let resendCalls = 0;
+      let waAlertCalls = 0;
+      let emailAlertCalls = 0;
+      whatsapp.listMessages = async () => []; // never, ever shows up
+      whatsapp.sendWhatsAppMessage = async (phone, text) => {
+        if (/could not confirm delivery/i.test(text) || /Not delivered/i.test(text)) { waAlertCalls++; return { ok: true }; }
+        resendCalls++;
+        return { ok: true, gatewayMessageId: 'RESEND' + resendCalls, httpStatus: 200 };
+      };
+      require('../src/gmailService').sendMail = async () => { emailAlertCalls++; return { id: 'test' }; };
+      process.env.SUBH_OWNER_WHATSAPP_NUMBER = '919876543210';
+      process.env.HR_ADMIN_EMAIL = 'owner@delivery-test.local';
+      const before = await whatsappAssistant.listInboxLog(50);
+      try {
+        await whatsappAssistant.confirmOrRecoverSend({ chatId: '919999992004', name: 'NeverConfirmed', replyText: 'Will this ever land?', sentAt });
+        await driveDeliveryChecksToCompletion();
+      } finally {
+        whatsapp.listMessages = defaultListMessagesMock;
+        whatsapp.sendWhatsAppMessage = defaultSendWhatsAppMessageMock;
+        require('../src/gmailService').sendMail = origGmailSendMailForRecover;
+        delete process.env.SUBH_OWNER_WHATSAPP_NUMBER;
+        delete process.env.HR_ADMIN_EMAIL;
+      }
+      const after = await whatsappAssistant.listInboxLog(50);
+      const newNotDelivered = after.filter((e) => e.chatId === '919999992004' && e.outcome === 'not_delivered');
+      const evidence = await whatsappAssistant.listDeliveryEvidence(50);
+      const mine = evidence.find((e) => e.chatId === '919999992004');
+      return resendCalls === 2 && waAlertCalls === 1 && emailAlertCalls === 1 &&
+        newNotDelivered.length === before.filter((e) => e.chatId === '919999992004' && e.outcome === 'not_delivered').length + 1 &&
+        Boolean(mine) && mine.finalOutcome === 'not_delivered' && mine.confirmed === false && mine.attempts.length === 3;
+    });
+    await checkAsync('a feed-read failure during the very first check fails closed - never resends, never alarms, just an inconclusive evidence record', async () => {
+      const sentAt = Date.now();
+      let resendCalls = 0;
+      whatsapp.listMessages = async () => { throw new Error('simulated gateway read failure'); };
+      whatsapp.sendWhatsAppMessage = async () => { resendCalls++; return { ok: true }; };
+      const notifBefore = (await whatsappAssistant.listOwnerNotifications()).length;
+      await whatsappAssistant.confirmOrRecoverSend({ chatId: '919999992005', name: 'VerifyErr', replyText: 'anything', sentAt });
+      await driveDeliveryChecksToCompletion();
+      const notifAfter = (await whatsappAssistant.listOwnerNotifications()).length;
+      whatsapp.listMessages = defaultListMessagesMock;
+      whatsapp.sendWhatsAppMessage = defaultSendWhatsAppMessageMock;
+      const evidence = await whatsappAssistant.listDeliveryEvidence(50);
+      const mine = evidence.find((e) => e.chatId === '919999992005');
+      return notifAfter === notifBefore && resendCalls === 0 && Boolean(mine) && mine.finalOutcome === 'unconfirmed_check_failed';
+    });
+    await checkAsync('a long reply sent in multiple chunks is correctly matched by its FIRST chunk alone - never a false resend/alarm just because the feed never shows the full text as one message', async () => {
+      const sentAt = Date.now();
+      let resendCalls = 0;
+      const longReply = 'A'.repeat(2000);
+      whatsapp.listMessages = async () => [outgoingAt(longReply.slice(0, 1400), sentAt)];
+      whatsapp.sendWhatsAppMessage = async () => { resendCalls++; return { ok: true }; };
+      await whatsappAssistant.confirmOrRecoverSend({ chatId: '919999992006', name: 'VerifyChunked', replyText: longReply, sentAt });
+      await driveDeliveryChecksToCompletion();
+      whatsapp.listMessages = defaultListMessagesMock;
+      whatsapp.sendWhatsAppMessage = defaultSendWhatsAppMessageMock;
+      return resendCalls === 0;
+    });
+    await checkAsync('an empty replyText is a no-op, never schedules a check, never calls the feed at all', async () => {
+      let calls = 0;
+      whatsapp.listMessages = async () => { calls++; return []; };
+      await whatsappAssistant.confirmOrRecoverSend({ chatId: '919999992007', name: 'VerifyEmpty', replyText: null, sentAt: Date.now() });
+      await driveDeliveryChecksToCompletion();
+      whatsapp.listMessages = defaultListMessagesMock;
+      return calls === 0;
+    });
+  } finally {
+    whatsapp.listMessages = origListMessagesForVerify;
+    whatsapp.sendWhatsAppMessage = origSendWhatsAppMessageForRecover;
+    require('../src/gmailService').sendMail = origGmailSendMailForRecover;
+    delete process.env.WHATSAPP_SEND_VERIFY_DELAY_MS;
+    delete process.env.WHATSAPP_SEND_RECOVERY_GAP_MS;
+  }
+
   console.log(pass + '/' + (pass + fail) + ' passed' + (fail ? ', ' + fail + ' FAILED' : ''));
   if (failures.length) {
     console.log('Failed checks:');

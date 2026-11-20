@@ -6138,7 +6138,10 @@
   function buildConvoMsgBubbleHtml(m) {
     return '<div class="wf-convo-msg ' + (m.direction === 'out' ? 'out' : 'in') + '">' +
       '<span class="wf-convo-msg-bubble">' + escapeHtml(m.text) + '</span>' +
-      (m.direction === 'out' && CONVO_NOT_DELIVERED_OUTCOMES.includes(m.outcome) ? '<span class="wf-convo-msg-failed">Not delivered</span>' : '') +
+      (m.direction === 'out' && CONVO_NOT_DELIVERED_OUTCOMES.includes(m.outcome) ?
+        '<span class="wf-convo-msg-failed">Not delivered</span>' +
+        '<button type="button" class="wf-convo-msg-resend" data-text="' + escapeHtml(m.text) + '">Resend</button>'
+        : '') +
       // Task 1 NEW EVIDENCE (2026-10-29) - the safety-net skip
       // (isStaleRepeatedMessage) never auto-replies, so this is the only
       // visible sign the message arrived at all - shown right on it,
@@ -6160,6 +6163,38 @@
   let convoOlderOffset = 0;
   let convoHasMoreOlder = true;
   let convoLoadingOlder = false;
+  // Resend button (2026-11, direct instruction) - a direct manual resend
+  // of the exact text already shown on a "Not delivered" bubble. Not
+  // destructive (never deletes/overwrites anything), so no confirm sheet
+  // first - just resend and toast the result, same as every other quick
+  // action in this panel.
+  async function resendConvoMessage(btn) {
+    if (!activeConvoChatId || btn.disabled) return;
+    const text = btn.dataset.text;
+    btn.disabled = true;
+    const originalLabel = btn.textContent;
+    btn.textContent = 'Resending…';
+    try {
+      const resp = await fetch('/api/workforce/hr-assistant/whatsapp-resend', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chatId: activeConvoChatId, text, name: commsHeadTitle ? commsHeadTitle.textContent : activeConvoChatId })
+      });
+      const data = await resp.json();
+      if (data && data.ok) {
+        showActionToast('Resent - checking delivery…');
+        await reloadConversation();
+      } else {
+        showActionToast('Resend failed: ' + ((data && data.error) || 'unknown error'));
+        btn.disabled = false;
+        btn.textContent = originalLabel;
+      }
+    } catch (err) {
+      showActionToast('Resend failed: ' + err.message);
+      btn.disabled = false;
+      btn.textContent = originalLabel;
+    }
+  }
   function renderConvoThread(convo) {
     if (commsHeadTitle) commsHeadTitle.textContent = convo.name || convo.chatId;
     const status = convoStatusLine(convo.lastOutcome);
@@ -6175,6 +6210,9 @@
       if (convoPage) convoPage.scrollTop = convoPage.scrollHeight;
       convoThread.querySelectorAll('.wf-convo-msg-save-template').forEach((btn) => {
         btn.addEventListener('click', () => openTemplateSheetFromReply(btn.dataset.text));
+      });
+      convoThread.querySelectorAll('.wf-convo-msg-resend').forEach((btn) => {
+        btn.addEventListener('click', () => resendConvoMessage(btn));
       });
     }
     // A fresh page's worth of messages (not an in-place no-op re-render)
@@ -6223,6 +6261,9 @@
       convoThread.insertAdjacentHTML('afterbegin', items.map(buildConvoMsgBubbleHtml).join(''));
       convoThread.querySelectorAll('.wf-convo-msg-save-template').forEach((btn) => {
         if (!btn.dataset.wired) { btn.dataset.wired = '1'; btn.addEventListener('click', () => openTemplateSheetFromReply(btn.dataset.text)); }
+      });
+      convoThread.querySelectorAll('.wf-convo-msg-resend').forEach((btn) => {
+        if (!btn.dataset.wired) { btn.dataset.wired = '1'; btn.addEventListener('click', () => resendConvoMessage(btn)); }
       });
       convoPage.scrollTop = prevScrollTop + (convoPage.scrollHeight - prevScrollHeight);
       // Keep the cached thread in sync so navigating away and back shows

@@ -2902,6 +2902,35 @@ router.get('/hr-assistant/whatsapp-conversation/:chatId/older', async (req, res)
   }
 });
 
+// Resend button (2026-11, direct instruction - "Resend button... already
+// agreed") - for a bubble already shown as "Not delivered" (outcome
+// send_failed/not_delivered) in the conversation UI. This is a direct,
+// manual resend of the EXACT text already shown on that bubble - never
+// re-runs any decision, never re-classifies, never asks the model for
+// anything new - the owner has already read the text and just wants it
+// to actually go out. Goes through the SAME confirmOrRecoverSend
+// auto-recovery/evidence-log pipeline as every other real send, so a
+// manual resend gets exactly the same delivery guarantee as an automatic
+// one.
+router.post('/hr-assistant/whatsapp-resend', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const { chatId, text, name } = req.body || {};
+    if (!chatId || !text) return res.status(400).json({ error: 'chatId and text are required.' });
+    const sendResult = await whatsappAssistant.sendWhatsAppChunked(chatId, text);
+    const sentAt = Date.now();
+    if (sendResult.ok) {
+      await whatsappAssistant.logInboxEvent({ chatId, name: name || chatId, isGroup: false, messageSummary: text.slice(0, 160), aCase: 'manual_resend', sentText: text, outcome: 'sent', sentAt, gatewayMessageId: sendResult.gatewayMessageId || null });
+      whatsappAssistant.confirmOrRecoverSend({ chatId, name: name || chatId, replyText: text, sentAt, gatewayMessageId: sendResult.gatewayMessageId, httpStatus: sendResult.httpStatus }).catch(() => {});
+      return res.json({ ok: true });
+    }
+    await whatsappAssistant.logInboxEvent({ chatId, name: name || chatId, isGroup: false, messageSummary: text.slice(0, 160), aCase: 'manual_resend', sentText: text, outcome: 'not_delivered', sentAt });
+    res.json({ ok: false, error: sendResult.error || 'Could not send.' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.post('/hr-assistant/whatsapp-approval', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
   try {

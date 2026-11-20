@@ -199,6 +199,44 @@ async function checkSchedulerHeartbeat() {
   }
 }
 
+// LIVE INCIDENT (2026-11, direct instruction - "Health monitor: also
+// alert on failed/undelivered sends") - checkReplyPipeline above only
+// catches a message with NO reply attempt at all; a reply that WAS
+// attempted, retried, and still ultimately failed (outcome:'not_delivered'
+// in the inbox log - see sendOrReportAutoReply's own final-failure branch)
+// already shows a red mark in the WhatsApp section and alerts the owner
+// once via postOwnerNotification, but had no presence in this health
+// check at all - a sustained run of failures (e.g. the gateway session
+// genuinely down) would not, by itself, ever surface here the way a KV/
+// gateway-connection/reply-pipeline problem does.
+const FAILED_SEND_LOOKBACK_MS = 30 * 60 * 1000;
+// Robustness pass (2026-11, direct instruction) - 3+ unconfirmed sends in
+// this same 30-minute window is treated as a PATTERN (likely the gateway
+// itself, not one-off bad luck on a single recipient) and gets its own,
+// more actionable line pointing the owner straight at the (separately
+// shipped) Delivery log export - a single isolated failure still alerts,
+// just without this extra framing.
+const FAILED_SEND_PATTERN_THRESHOLD = 3;
+async function checkFailedSends() {
+  try {
+    const whatsappAssistant = require('./whatsappAssistant');
+    const log = await withTimeout(whatsappAssistant.listInboxLog(50), HEALTH_CHECK_TIMEOUT_MS);
+    const now = Date.now();
+    const recent = log.filter((e) => e.outcome === 'not_delivered' && e.ts && (now - e.ts) < FAILED_SEND_LOOKBACK_MS);
+    if (!recent.length) return { ok: true };
+    const isPattern = recent.length >= FAILED_SEND_PATTERN_THRESHOLD;
+    return {
+      ok: false,
+      error: recent.length + ' message(s) could not be delivered in the last 30 minutes (most recent: ' + (recent[0].name || recent[0].chatId) + ')' +
+        (isPattern ? ' - looks like a WhatsApp gateway issue, share the Delivery log export with IT.' : ''),
+      count: recent.length,
+      isPattern
+    };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
 // Same resolution order as the existing /automations/:id/send-test and
 // /whatsapp/send-test-document routes - SUBH_OWNER_WHATSAPP_NUMBER first,
 // then the owner's own real employee record.
@@ -243,12 +281,13 @@ let lastAlertSentAt = 0;
 let wasFailingLastTick = false;
 
 async function runHealthCheck() {
-  const [kv, gateway, replyPipeline, schedulerHeartbeat] = await Promise.all([checkKv(), checkGateway(), checkReplyPipeline(), checkSchedulerHeartbeat()]);
+  const [kv, gateway, replyPipeline, schedulerHeartbeat, failedSends] = await Promise.all([checkKv(), checkGateway(), checkReplyPipeline(), checkSchedulerHeartbeat(), checkFailedSends()]);
   const failures = [];
   if (!kv.ok) failures.push('Data store (subh-store/KV) unreachable: ' + kv.error);
   if (!gateway.ok) failures.push('WhatsApp gateway session problem: ' + gateway.error);
   if (!replyPipeline.ok) failures.push('Reply pipeline stuck: ' + replyPipeline.error);
   if (!schedulerHeartbeat.ok) failures.push('WhatsApp poll loop appears stopped: ' + schedulerHeartbeat.error);
+  if (!failedSends.ok) failures.push('WhatsApp send failures: ' + failedSends.error);
   const isFailing = failures.length > 0;
   const now = Date.now();
 
@@ -275,7 +314,7 @@ async function runHealthCheck() {
   }
   wasFailingLastTick = isFailing;
 
-  return { ok: !isFailing, failures, kv, gateway, replyPipeline, schedulerHeartbeat, alertSent };
+  return { ok: !isFailing, failures, kv, gateway, replyPipeline, schedulerHeartbeat, failedSends, alertSent };
 }
 
-module.exports = { runHealthCheck, checkKv, checkGateway, checkReplyPipeline, checkSchedulerHeartbeat };
+module.exports = { runHealthCheck, checkKv, checkGateway, checkReplyPipeline, checkSchedulerHeartbeat, checkFailedSends };

@@ -13,6 +13,27 @@
 // warning so it's never done by accident.
 require('dotenv').config({ path: '.env.local' });
 require('dotenv').config();
+// Direct instruction (2026-11) - the owner keeps ANTHROPIC_API_KEY_TEST
+// (added only for the duration of a real-model run, removed right after,
+// per the $1 cumulative cost-cap rule) in the PARENT folder's .env (one
+// level above this project), not this project's own .env/.env.local.
+// CONFIRMED that parent file also holds the REAL production KV_REST_
+// API_URL/UPSTASH_REDIS_REST_* (among other things this project's own
+// env files deliberately omit so a bare test run can never see them) -
+// a blanket dotenv.config() against that whole file would silently pull
+// those in too, defeating the local-fake-store default below and this
+// file's own REFUSING-TO-RUN guard's entire purpose. Parsed with
+// dotenv.parse (never dotenv.config) and ONLY this one named var is ever
+// copied across, and only when this project's own env files didn't
+// already set it - everything else in that file is left untouched here.
+try {
+  const fs = require('fs');
+  const parentEnvPath = require('path').join(__dirname, '..', '..', '.env');
+  if (!process.env.ANTHROPIC_API_KEY_TEST && fs.existsSync(parentEnvPath)) {
+    const parsed = require('dotenv').parse(fs.readFileSync(parentEnvPath));
+    if (parsed.ANTHROPIC_API_KEY_TEST) process.env.ANTHROPIC_API_KEY_TEST = parsed.ANTHROPIC_API_KEY_TEST;
+  }
+} catch (err) { /* best effort - never block a test run over this */ }
 
 const REDIS_ENV_VARS = ['KV_REST_API_URL', 'KV_REST_API_TOKEN', 'UPSTASH_REDIS_REST_URL', 'UPSTASH_REDIS_REST_TOKEN'];
 
@@ -152,6 +173,20 @@ function printRealApiCostLine(opts) {
 }
 
 async function setupTestEnvironment() {
+  // Robustness pass (2026-11, direct instruction) - whatsappAssistant.js's
+  // confirmOrRecoverSend fires fire-and-forget from the main real-send
+  // path (sendOrReportAutoReply), with REAL default delays (4s initial
+  // check + up to 30s per resend gap) unless overridden. Any test
+  // anywhere in the suite that exercises a successful real send would
+  // otherwise leave one of these running in the background for up to
+  // ~75s total, well past that test's own completion - a LATER,
+  // unrelated test that mocks whatsapp.listMessages/sendWhatsAppMessage
+  // for its own purposes could then have its mocks hijacked when that
+  // stray timer finally fires. Defaulted small here, globally, for every
+  // suite - a script that genuinely needs to assert the real production
+  // default (none currently do) can still override this itself.
+  if (process.env.WHATSAPP_SEND_VERIFY_DELAY_MS === undefined) process.env.WHATSAPP_SEND_VERIFY_DELAY_MS = '50';
+  if (process.env.WHATSAPP_SEND_RECOVERY_GAP_MS === undefined) process.env.WHATSAPP_SEND_RECOVERY_GAP_MS = '50';
   usableTestKey = setupApiKey();
   installModelCallGate(shouldSkipRealModel());
   // AI usage log (2026-11, direct instruction) - marks every real call

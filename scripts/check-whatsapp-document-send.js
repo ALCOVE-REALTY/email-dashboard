@@ -402,6 +402,47 @@ async function main() {
     }
   });
 
+  console.log('='.repeat(70));
+  console.log('Owner-only route: /hr-assistant/whatsapp-resend - the Resend button behind a "Not delivered" bubble');
+  console.log('='.repeat(70));
+  const whatsappAssistantForResend = require('../src/aiAssistant/whatsappAssistant');
+  const origSendWhatsAppMessageForResend = whatsapp.sendWhatsAppMessage;
+  process.env.WHATSAPP_SEND_VERIFY_DELAY_MS = '5';
+  try {
+    check('blocked for a non-owner', (await callRoute(workforceRoutes, 'post', '/hr-assistant/whatsapp-resend', { body: { chatId: '919999991234', text: 'hi' }, email: 'not-the-owner@example.com' })).status === 403);
+    check('400 when chatId or text is missing', (await callRoute(workforceRoutes, 'post', '/hr-assistant/whatsapp-resend', { body: { chatId: '919999991234' }, email: OWNER_EMAIL })).status === 400);
+    await checkAsync('a successful resend logs a fresh "sent" inbox entry and returns ok:true', async () => {
+      whatsapp.sendWhatsAppMessage = async () => ({ ok: true, gatewayMessageId: 'RESENT1', httpStatus: 200 });
+      const before = await whatsappAssistantForResend.listInboxLog(50);
+      const result = await callRoute(workforceRoutes, 'post', '/hr-assistant/whatsapp-resend', { body: { chatId: '919999991235', text: 'resend me', name: 'ResendOk' }, email: OWNER_EMAIL });
+      whatsapp.sendWhatsAppMessage = origSendWhatsAppMessageForResend;
+      const after = await whatsappAssistantForResend.listInboxLog(50);
+      const newSent = after.filter((e) => e.chatId === '919999991235' && e.outcome === 'sent');
+      return result.status === 200 && result.body.ok === true && newSent.length === before.filter((e) => e.chatId === '919999991235' && e.outcome === 'sent').length + 1;
+    });
+    await checkAsync('a failed resend logs not_delivered and returns ok:false with the gateway\'s own error', async () => {
+      whatsapp.sendWhatsAppMessage = async () => ({ ok: false, error: 'simulated resend failure' });
+      const result = await callRoute(workforceRoutes, 'post', '/hr-assistant/whatsapp-resend', { body: { chatId: '919999991236', text: 'resend me too', name: 'ResendFail' }, email: OWNER_EMAIL });
+      whatsapp.sendWhatsAppMessage = origSendWhatsAppMessageForResend;
+      return result.status === 200 && result.body.ok === false && /simulated resend failure/.test(result.body.error);
+    });
+  } finally {
+    whatsapp.sendWhatsAppMessage = origSendWhatsAppMessageForResend;
+    delete process.env.WHATSAPP_SEND_VERIFY_DELAY_MS;
+  }
+
+  console.log('='.repeat(70));
+  console.log('Manager-reminder silent-failure fix - a failed single-item nudge now alerts the owner instead of vanishing with zero trace');
+  console.log('='.repeat(70));
+  check('sendHrConfirmationMessageToManagerCombined\'s single-item-reminder branch now checks sendWhatsAppChunked\'s result and alerts the owner on failure, instead of discarding it - source-level, since constructing a full valid pending-confirmation fixture is covered by check-whatsapp-engine.js\'s own HR-confirmation tests, not this file', (() => {
+    const fs = require('fs');
+    const src = fs.readFileSync(require.resolve('../src/aiAssistant/whatsappAssistant.js'), 'utf8');
+    const fnMatch = src.match(/async function sendHrConfirmationMessageToManagerCombined\([\s\S]*?\n\}/);
+    if (!fnMatch) return false;
+    const branchMatch = fnMatch[0].match(/isReminder, single item[\s\S]*?\n  \}/);
+    return Boolean(branchMatch) && /if \(sendResult\.ok\)/.test(branchMatch[0]) && /else/.test(branchMatch[0]) && /postOwnerNotification/.test(branchMatch[0]);
+  })());
+
   if (origOwnerEmail === undefined) delete process.env.SUBH_MEMORY_OWNER_EMAIL; else process.env.SUBH_MEMORY_OWNER_EMAIL = origOwnerEmail;
 
   console.log('='.repeat(70));

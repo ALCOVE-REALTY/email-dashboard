@@ -105,8 +105,11 @@ async function sendWhatsAppMessageOnce(phone, message) {
       // Delivery tracking (direct instruction, live incident) - the full
       // gateway response is kept on a failure too, not just the message
       // string, so a real investigation can see exactly what the gateway
-      // itself said rather than our own one-line summary of it.
-      return { ok: false, error: data.message || 'Could not send the WhatsApp message.', gatewayResponse: data };
+      // itself said rather than our own one-line summary of it. httpStatus
+      // (2026-11, direct instruction - "evidence log for IT") - the raw
+      // HTTP status alongside the parsed body, for an external IT team
+      // who may want it without parsing gatewayResponse themselves.
+      return { ok: false, error: data.message || 'Could not send the WhatsApp message.', gatewayResponse: data, httpStatus: res.status };
     }
     // Delivery tracking - this gateway's response shape for a successful
     // send has never been confirmed in writing (no API docs exist for
@@ -115,7 +118,7 @@ async function sendWhatsAppMessageOnce(phone, message) {
     // null) for later correlation if the gateway is ever found to expose
     // a real delivery-status lookup by this id.
     const gatewayMessageId = data.messageId || data.message_id || data.id || (data.data && (data.data.id || data.data.messageId)) || null;
-    return { ok: true, gatewayMessageId, gatewayResponse: data };
+    return { ok: true, gatewayMessageId, gatewayResponse: data, httpStatus: res.status };
   } catch (err) {
     return { ok: false, error: err.message };
   } finally {

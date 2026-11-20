@@ -268,6 +268,19 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
     } catch (err) {
       log.error('[whatsapp-assistant] auto-send flush failed: ' + err.message);
     }
+    // Robustness pass (2026-11, direct instruction) - the delivery-
+    // confirmation/auto-recovery check-and-resend cycle, own independent
+    // try/catch so a failure here can never affect the auto-send flush
+    // right above (or vice versa). Same fast tick as the auto-send flush
+    // itself - these checks are cheap (one feed read, occasionally one
+    // resend) and reply-latency-sensitive in the same way a real resend
+    // is.
+    try {
+      const result = await whatsappAssistant.processDueDeliveryChecks();
+      if (result.processed) log.log('[whatsapp-assistant] delivery check flush: ' + JSON.stringify(result));
+    } catch (err) {
+      log.error('[whatsapp-assistant] delivery check flush failed: ' + err.message);
+    }
     sendingFlush = false;
   }, SEND_FLUSH_MS);
 

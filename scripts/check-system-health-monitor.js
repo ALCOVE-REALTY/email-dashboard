@@ -284,6 +284,64 @@ async function main() {
   });
 
   console.log('='.repeat(70));
+  console.log('checkFailedSends - LIVE INCIDENT: a message shown as sent/retried-to-death that never actually reached WhatsApp');
+  console.log('='.repeat(70));
+  const origListInboxLogForFailedSends = whatsappAssistant.listInboxLog;
+  await checkAsync('no recent not_delivered entries at all -> ok:true', async () => {
+    whatsappAssistant.listInboxLog = async () => [];
+    const monitor = freshMonitor();
+    const result = await monitor.checkFailedSends();
+    whatsappAssistant.listInboxLog = origListInboxLogForFailedSends;
+    return result.ok === true;
+  });
+  await checkAsync('a single not_delivered entry from 5 minutes ago (within the 30-min lookback) -> ok:false, names the recipient and count, no pattern framing for just one', async () => {
+    const now = Date.now();
+    whatsappAssistant.listInboxLog = async () => [{ outcome: 'not_delivered', name: 'Test Recipient', chatId: '919999999999', ts: now - 5 * 60 * 1000 }];
+    const monitor = freshMonitor();
+    const result = await monitor.checkFailedSends();
+    whatsappAssistant.listInboxLog = origListInboxLogForFailedSends;
+    return result.ok === false && result.count === 1 && result.isPattern === false && /Test Recipient/.test(result.error) && !/gateway issue/.test(result.error);
+  });
+  await checkAsync('a not_delivered entry from 35 minutes ago (outside the 30-min lookback) -> ok:true, never alarms on an old, already-handled failure', async () => {
+    const now = Date.now();
+    whatsappAssistant.listInboxLog = async () => [{ outcome: 'not_delivered', name: 'Old Failure', chatId: '919999999998', ts: now - 35 * 60 * 1000 }];
+    const monitor = freshMonitor();
+    const result = await monitor.checkFailedSends();
+    whatsappAssistant.listInboxLog = origListInboxLogForFailedSends;
+    return result.ok === true;
+  });
+  await checkAsync('3+ not_delivered entries within 30 minutes -> flagged as a PATTERN with the exact "looks like a WhatsApp gateway issue" line pointing at the Delivery log export', async () => {
+    const now = Date.now();
+    whatsappAssistant.listInboxLog = async () => [
+      { outcome: 'not_delivered', name: 'Recipient A', chatId: '919999999991', ts: now - 2 * 60 * 1000 },
+      { outcome: 'not_delivered', name: 'Recipient B', chatId: '919999999992', ts: now - 10 * 60 * 1000 },
+      { outcome: 'not_delivered', name: 'Recipient C', chatId: '919999999993', ts: now - 20 * 60 * 1000 }
+    ];
+    const monitor = freshMonitor();
+    const result = await monitor.checkFailedSends();
+    whatsappAssistant.listInboxLog = origListInboxLogForFailedSends;
+    return result.ok === false && result.count === 3 && result.isPattern === true && /gateway issue/.test(result.error) && /Delivery log export/.test(result.error);
+  });
+  await checkAsync('other recent outcomes (sent/send_failed - the latter is only the interim retry-pending state) never trip this check, only the final not_delivered does', async () => {
+    const now = Date.now();
+    whatsappAssistant.listInboxLog = async () => [
+      { outcome: 'sent', name: 'Fine', chatId: '919999999997', ts: now - 2 * 60 * 1000 },
+      { outcome: 'send_failed', name: 'Still Retrying', chatId: '919999999996', ts: now - 1 * 60 * 1000 }
+    ];
+    const monitor = freshMonitor();
+    const result = await monitor.checkFailedSends();
+    whatsappAssistant.listInboxLog = origListInboxLogForFailedSends;
+    return result.ok === true;
+  });
+  await checkAsync('listInboxLog itself throwing reports ok:false, never throws', async () => {
+    whatsappAssistant.listInboxLog = async () => { throw new Error('simulated KV failure'); };
+    const monitor = freshMonitor();
+    const result = await monitor.checkFailedSends();
+    whatsappAssistant.listInboxLog = origListInboxLogForFailedSends;
+    return result.ok === false && result.error === 'simulated KV failure';
+  });
+
+  console.log('='.repeat(70));
   console.log('runHealthCheck - end to end: the Action-needed slot, the dual-channel alert, and the alert-spam debounce');
   console.log('='.repeat(70));
   const origSendWhatsAppMessage = whatsapp.sendWhatsAppMessage;

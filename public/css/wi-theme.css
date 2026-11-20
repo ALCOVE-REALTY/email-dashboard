@@ -1790,6 +1790,15 @@ body { background: var(--wi-bg); }
   font-size: 0.66rem; font-weight: 700; cursor: pointer; padding: 1px 2px; opacity: .75;
 }
 .wf-convo-msg-save-template:active { opacity: 1; }
+/* Resend button (2026-11, direct instruction) - sits right next to the
+   red "Not delivered" tag it belongs to, same red tone so the two read
+   as one unit, never confused with the neutral "Save as template" link. */
+.wf-convo-msg-resend {
+  align-self: flex-end; border: none; background: none; color: var(--wi-red-700); font-family: inherit;
+  font-size: 0.66rem; font-weight: 700; cursor: pointer; padding: 1px 2px; margin-top: 2px;
+}
+.wf-convo-msg-resend:active { opacity: .7; }
+.wf-convo-msg-resend:disabled { opacity: .5; cursor: default; }
 
 /* Task 6 - "Action needed" unified inbox */
 .wf-action-needed-chips { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 14px; }

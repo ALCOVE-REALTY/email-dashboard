@@ -1730,6 +1730,261 @@ const LATENCY_ALERT_THRESHOLD_MS = 30 * 1000;
 // gateway hiccup that doesn't clear in 2s sometimes still clears within
 // under a minute.
 const RESEND_RETRY_DELAY_MS = 60 * 1000;
+// LIVE INCIDENT (2026-11, direct instruction - "SUBH shows TWO replies
+// sent... but on the sender's phone only the greeting arrived") - the
+// gateway's own /sendMessage response reporting success is not, by
+// itself, proof the message actually reached WhatsApp: a reply was logged
+// outcome:'sent' (a real success response, gatewayMessageId and all) and
+// never arrived. /messages is this gateway's own outgoing feed - already
+// used as ground truth elsewhere in this file (hasManualReplyAfter,
+// checkReplyPipeline) - so a genuinely delivered message should show up
+// there within a few seconds. Checked AFTER the 'sent' outcome is already
+// logged, fire-and-forget (never awaited by its caller) - this never
+// slows down, blocks, or changes the result of a real send; it only adds
+// a loud alert for the exact "gateway said yes but it wasn't real" shape
+// this incident showed, which nothing else in this file could otherwise
+// ever detect. Delay is a test-only override seam, same convention as
+// WHATSAPP_POLL_ONCE_TIMEOUT_MS - unset in every real environment.
+function sendVerifyDelayMs() {
+  const override = Number(process.env.WHATSAPP_SEND_VERIFY_DELAY_MS);
+  return Number.isFinite(override) && override >= 0 ? override : 4000;
+}
+// Robustness pass (2026-11, direct instruction - "make OUR side fully
+// robust... even if the gateway misbehaves, replies still reach people,
+// I'm alerted immediately, and I have evidence to show IT later") -
+// MAX_RECOVERY_ATTEMPTS automatic RESENDS (never just an alert) before
+// giving up, each with an increasing gap, each re-checking the feed
+// FIRST so a late confirmation (the original send landing slower than
+// our own check window, or an earlier resend landing after we'd already
+// moved on) can never turn into a duplicate. Test-only override seam,
+// same convention as every other timing constant in this file.
+const MAX_RECOVERY_ATTEMPTS = 2;
+const RECOVERY_GAP_MS = [10000, 30000];
+function recoveryGapMs(attemptIndex) {
+  const override = Number(process.env.WHATSAPP_SEND_RECOVERY_GAP_MS);
+  if (Number.isFinite(override) && override >= 0) return override;
+  return RECOVERY_GAP_MS[attemptIndex] !== undefined ? RECOVERY_GAP_MS[attemptIndex] : RECOVERY_GAP_MS[RECOVERY_GAP_MS.length - 1];
+}
+// A long reply is sent in multiple chunks (sendWhatsAppChunked) - the
+// feed then shows several separate outgoing messages, none of them equal
+// to the FULL replyText. Chunking always starts from the first character,
+// so the first chunk is always an exact PREFIX of the full text - checked
+// either direction (exact match for a short, single-chunk reply; prefix
+// match for a long, multi-chunk one) so this never false-alarms on a long
+// reply that genuinely went out fine.
+function feedShowsText(feed, replyText, notBeforeMs) {
+  const target = replyText.trim();
+  return feed.some((m) => {
+    if (m.direction !== 'outgoing' || !m.content || typeof m.content.text !== 'string') return false;
+    if (!m.created_at || new Date(m.created_at).getTime() < notBeforeMs - 3000) return false;
+    const sent = m.content.text.trim();
+    return sent === target || target.startsWith(sent) || sent.startsWith(target);
+  });
+}
+// Evidence log (direct instruction, point 4 - "for every outgoing
+// message store time, to-number, our message text, gateway HTTP status,
+// gateway response/message id, confirmation result, retries... for IT").
+// Deliberately a SEPARATE store from wa-inbox-log (which drives the
+// conversation thread UI and the Action-needed/health-monitor machinery
+// already built on its own fixed outcome vocabulary) - every retry here
+// would otherwise show up as its own confusing extra bubble in the real
+// conversation. The conversation/health-monitor surfaces only ever see
+// the FINAL result (a normal 'sent' entry if ever confirmed, or one
+// 'not_delivered' entry if every attempt failed) - this store is the
+// full, honest timeline underneath that, for an external IT team.
+const DELIVERY_EVIDENCE_PREFIX = 'wa-delivery-evidence:';
+const DELIVERY_EVIDENCE_IDS_KEY = 'wa-delivery-evidence-ids';
+const DELIVERY_EVIDENCE_TTL_SECONDS = 90 * 24 * 60 * 60;
+async function recordDeliveryEvidence(record) {
+  const redis = getClient();
+  if (!redis) return;
+  try {
+    await redis.set(DELIVERY_EVIDENCE_PREFIX + record.id, JSON.stringify(record), { ex: DELIVERY_EVIDENCE_TTL_SECONDS });
+    await redis.zadd(DELIVERY_EVIDENCE_IDS_KEY, { score: record.sentAt, member: record.id });
+  } catch (err) { /* best effort - never block real delivery handling over a logging failure */ }
+}
+async function listDeliveryEvidence(limit = 500) {
+  const redis = getClient();
+  if (!redis) return [];
+  return redisHealth.guardedRead(async () => {
+    // Sorted newest-first in JS, never relying on a backend's own `rev`
+    // support (confirmed directly: this repo's own local fake Upstash
+    // store used by the test suite does not implement it at all - plain
+    // ascending order regardless) - correct against either backend.
+    const flat = (await redis.zrange(DELIVERY_EVIDENCE_IDS_KEY, 0, -1, { withScores: true })) || [];
+    const pairs = [];
+    for (let i = 0; i < flat.length; i += 2) pairs.push([flat[i], Number(flat[i + 1])]);
+    pairs.sort((a, b) => b[1] - a[1]);
+    const ids = pairs.slice(0, Math.max(0, limit)).map(([id]) => id);
+    if (!ids.length) return [];
+    const raws = await Promise.all(ids.map((id) => redis.get(DELIVERY_EVIDENCE_PREFIX + id)));
+    return raws.map((r) => { try { return r ? (typeof r === 'string' ? JSON.parse(r) : r) : null; } catch (e) { return null; } }).filter(Boolean);
+  }, []);
+}
+// Dual-channel owner alert (point 2 - "red Action-needed card + owner
+// alert (WhatsApp + email)") - postOwnerNotification alone (what every
+// OTHER failure path in this file already calls) only ever writes to the
+// in-app notifications feed, never a real WhatsApp ping or email; this
+// adds both real channels on top of it for the one case that's bad
+// enough to actively page the owner, not just show up next time they
+// open the app. Same resolution order as systemHealthMonitor.js's own
+// resolveOwnerContact/sendAlert - kept as its own small copy here rather
+// than a cross-require, since systemHealthMonitor.js already lazily
+// requires THIS file (a require back the other way would be circular).
+async function alertOwnerDualChannel(text) {
+  await postOwnerNotification(text).catch(() => {});
+  try {
+    let phone = process.env.SUBH_OWNER_WHATSAPP_NUMBER || null;
+    if (!phone) {
+      const rec = await employeeService.findOwnerEmployeeRecord().catch(() => null);
+      phone = (rec && rec.contactNumber) || null;
+    }
+    if (phone) await whatsapp.sendWhatsAppMessage(phone, text).catch(() => {});
+  } catch (err) { /* best effort */ }
+  try {
+    const email = process.env.HR_ADMIN_EMAIL || process.env.SUBH_MEMORY_OWNER_EMAIL || null;
+    if (email) {
+      const gmailService = require('../gmailService');
+      await gmailService.sendMail({ to: email, subject: '🚨 SUBH WhatsApp delivery failure', text }).catch(() => {});
+    }
+  } catch (err) { /* best effort */ }
+}
+// Data-driven scheduling, NEVER a raw setTimeout-based background loop
+// (redesigned 2026-11, direct instruction - a flake surfaced in the
+// full pre-push gate traced to exactly that first design: a fire-and-
+// forget setTimeout chain left running past the end of whichever test
+// happened to trigger a real send, which could still be "in flight"
+// and call back into whatsapp.listMessages/sendWhatsAppMessage during a
+// LATER, unrelated test that had since reassigned those same shared
+// mocks for its own purposes - same class of hazard this file's own
+// enqueueSend/pollOnce breakers exist to prevent, just via timers
+// outliving a test instead of outliving a request). Mirrors this file's
+// own existing wa-pending-autosend pattern exactly: scheduling a check
+// is pure data (one Redis hash + one ZSET entry, by `checkAt`), and the
+// check only ever actually RUNS when something explicitly calls
+// processDueDeliveryChecks() - the scheduler's own SEND_FLUSH_MS tick in
+// production, or a test calling it directly, deterministically, with no
+// hidden timer anywhere. Still checked AFTER the 'sent' outcome is
+// already logged, still never slows down or changes the result of the
+// real send that just happened (confirmOrRecoverSend itself is now just
+// a fast, synchronous-ish schedule write).
+const DELIVERY_CHECK_PREFIX = 'wa-pending-delivery-check:';
+const DELIVERY_CHECK_ZSET = 'wa-pending-delivery-check-ids';
+async function scheduleDeliveryCheck(record) {
+  const redis = getClient();
+  if (!redis) return;
+  try {
+    await redis.set(DELIVERY_CHECK_PREFIX + record.id, JSON.stringify(record));
+    await redis.zadd(DELIVERY_CHECK_ZSET, { score: record.checkAt, member: record.id });
+  } catch (err) { /* best effort - a failed schedule just means this one check is missed, not a crash */ }
+}
+async function confirmOrRecoverSend({ chatId, name, replyText, sentAt, gatewayMessageId, httpStatus }) {
+  if (!replyText) return;
+  const id = chatId + ':' + sentAt + ':' + Math.random().toString(36).slice(2, 8);
+  await scheduleDeliveryCheck({
+    id, chatId, name, replyText, sentAt, currentSentAt: sentAt, attempt: 0,
+    attempts: [{ at: sentAt, httpStatus: httpStatus || null, gatewayMessageId: gatewayMessageId || null }],
+    checkAt: Date.now() + sendVerifyDelayMs()
+  });
+}
+// One check, for one pending record - checking the feed ONCE right now
+// (whenever this due entry is actually picked up by the tick below)
+// serves as BOTH the periodic re-check AND the "did a late confirmation
+// already land" dedup check before any resend, collapsed into the same
+// step - a duplicate send can never happen without the feed first being
+// re-checked and found still missing.
+async function runOneDeliveryCheck(record) {
+  let landed = false;
+  try {
+    const feed = await whatsapp.listMessages(record.chatId, 15);
+    landed = feedShowsText(feed, record.replyText, record.currentSentAt);
+  } catch (err) {
+    // A feed-read failure here must never itself raise a false alarm or
+    // trigger a possibly-unnecessary resend - fails closed, logged as
+    // inconclusive rather than either confirmed or failed. The pending
+    // check is simply dropped (already removed from the ZSET by the
+    // caller before this ran) rather than retried - a transient feed
+    // outage right at this one moment is rare enough that losing this
+    // one check's own re-verification is an acceptable tradeoff against
+    // retrying forever on a broken feed read.
+    console.error('[whatsapp] send-verify: could not check outgoing feed for ' + record.chatId + ': ' + err.message);
+    await recordDeliveryEvidence({ id: record.id, chatId: record.chatId, name: record.name, textPreview: record.replyText.slice(0, 100), sentAt: record.sentAt, attempts: record.attempts, confirmed: null, finalOutcome: 'unconfirmed_check_failed' });
+    return;
+  }
+  if (landed) {
+    await recordDeliveryEvidence({ id: record.id, chatId: record.chatId, name: record.name, textPreview: record.replyText.slice(0, 100), sentAt: record.sentAt, attempts: record.attempts, confirmed: true, finalOutcome: record.attempt > 0 ? 'delivered_after_retry' : 'delivered' });
+    return;
+  }
+  if (record.attempt >= MAX_RECOVERY_ATTEMPTS) {
+    await recordDeliveryEvidence({ id: record.id, chatId: record.chatId, name: record.name, textPreview: record.replyText.slice(0, 100), sentAt: record.sentAt, attempts: record.attempts, confirmed: false, finalOutcome: 'not_delivered' });
+    await logInboxEvent({ chatId: record.chatId, name: record.name, isGroup: false, messageSummary: record.replyText.slice(0, 160), aCase: 'delivery_recovery', sentText: record.replyText, outcome: 'not_delivered', sentAt: record.currentSentAt });
+    await alertOwnerDualChannel(
+      '🚨 Could not confirm delivery to ' + record.name + ' after ' + (record.attempt + 1) + ' attempt(s) - shown as "Not delivered" in the WhatsApp section: "' + record.replyText.slice(0, 160) + '"'
+    );
+    return;
+  }
+  const resendResult = await sendWhatsAppChunked(record.chatId, record.replyText);
+  const newAttempt = record.attempt + 1;
+  const newSentAt = Date.now();
+  const attempts = record.attempts.concat([{ at: newSentAt, httpStatus: resendResult.httpStatus || null, gatewayMessageId: resendResult.gatewayMessageId || null, error: resendResult.error || null, resendAttempt: newAttempt }]);
+  await scheduleDeliveryCheck({
+    id: record.id, chatId: record.chatId, name: record.name, replyText: record.replyText,
+    sentAt: record.sentAt, currentSentAt: newSentAt, attempt: newAttempt, attempts,
+    checkAt: Date.now() + recoveryGapMs(newAttempt - 1)
+  });
+}
+// The flush tick (same ZREM-to-claim pattern as processDueAutoSends, so
+// two overlapping scheduler instances can never both process the same
+// due check) - called from whatsappPollScheduler.js's own fast
+// SEND_FLUSH_MS tick in production, or directly by a test.
+async function processDueDeliveryChecks() {
+  const redis = getClient();
+  if (!redis) return { processed: 0 };
+  const now = Date.now();
+  const due = (await redisHealth.guardedRead(() => redis.zrange(DELIVERY_CHECK_ZSET, 0, now, { byScore: true }), [])) || [];
+  let processed = 0;
+  for (const id of due) {
+    const claimed = await redis.zrem(DELIVERY_CHECK_ZSET, id).catch(() => 0);
+    if (!claimed) continue;
+    let record;
+    try {
+      const raw = await redis.get(DELIVERY_CHECK_PREFIX + id);
+      record = raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : null;
+    } catch (err) { record = null; }
+    await redis.del(DELIVERY_CHECK_PREFIX + id).catch(() => {});
+    if (!record) continue;
+    processed++;
+    try {
+      await runOneDeliveryCheck(record);
+    } catch (err) {
+      console.error('[whatsapp] delivery check crashed for ' + record.chatId + ': ' + err.message);
+    }
+  }
+  return { processed };
+}
+// Test-only utility (named clearAll... to match this file's own existing
+// test-cleanup convention, e.g. clearPendingHrNoteFlow/clearSystemHealth
+// Alert) - NOT used by any production code path. In a real deployment
+// the scheduler tick processes a pending delivery check within seconds
+// of it being scheduled, so a backlog never meaningfully builds up; in a
+// single long-running test PROCESS, any earlier test that exercises a
+// real-send success path also schedules one of these (via
+// sendOrReportAutoReply -> confirmOrRecoverSend) and nothing else in
+// that process ever calls processDueDeliveryChecks() to drain it -
+// confirmed live as a real flake: a later test's own call swept up a
+// large accumulated backlog along with its own record, taking 20+
+// real seconds to process every orphaned entry and blowing well past
+// this suite's own 15s per-check watchdog. Lets a test start from a
+// clean slate instead.
+async function clearAllPendingDeliveryChecks() {
+  const redis = getClient();
+  if (!redis) return;
+  try {
+    const ids = (await redis.zrange(DELIVERY_CHECK_ZSET, 0, -1)) || [];
+    await Promise.all(ids.map((id) => redis.del(DELIVERY_CHECK_PREFIX + id).catch(() => {})));
+    await redis.del(DELIVERY_CHECK_ZSET).catch(() => {});
+  } catch (err) { /* best effort */ }
+}
 async function sendOrReportAutoReply(entry) {
   const realSendEnabled = isRealSendAllowedFor(entry.chatId);
   const who = (entry.isGroup ? 'group ' : '') + entry.name;
@@ -1894,6 +2149,7 @@ async function sendOrReportAutoReply(entry) {
       await alertIfSlow(sentAt);
       await logAutoReplyEvent({ senderType: entry.isGroup ? 'group' : 'direct', aCase: entry.case, memoryId: entry.memoryId, action: 'sent' });
       await logInboxEvent({ chatId: entry.chatId, name: entry.name, isGroup: entry.isGroup, messageSummary: entry.summaryForOwner, aCase: entry.case, sentText: entry.replyText, outcome: 'sent', intent: entry.intent, hrTopicArea: entry.hrTopicArea, ...timeline, sentAt, gatewayMessageId: sendResult.gatewayMessageId || null });
+      if (!entry.isGroup) confirmOrRecoverSend({ chatId: entry.chatId, name: who, replyText: entry.replyText, sentAt, gatewayMessageId: sendResult.gatewayMessageId, httpStatus: sendResult.httpStatus }).catch(() => {});
     } else if (!entry.isRetry && !entry.isGroup) {
       // Delivery tracking (live incident, 917278793115: two sends were
       // logged as a failure with no further attempt and no clearly visible
@@ -2816,7 +3072,17 @@ async function prepareAndQueueDataApproval({ phone, name, text, dataRequestSumma
     // than being left hanging on the earlier "checking" holding reply.
     await postOwnerNotification('⚠️ ' + name + ' (' + phone + ') ' + dataRequestSummary + ' chaiche - ei request-e sensitive personal data (PII) laage, tai WhatsApp-e block kora holo, kichu pathano hoyni.');
     if (isRealSendAllowedFor(phone)) {
-      await sendWhatsAppChunked(phone, PII_BLOCK_REPLY[lang] || PII_BLOCK_REPLY.english);
+      // LIVE BUG FIX (2026-11, direct instruction - "every incoming
+      // message must end in exactly one visible outcome... never a false
+      // sent") - this result used to be discarded entirely: a failed send
+      // here left the sender with no reply at all and nothing anywhere to
+      // show it, since this whole function already runs fire-and-forget
+      // from decideAutoReply (its own holding reply, not this one, is
+      // what the sender actually saw go out).
+      const refusalSend = await sendWhatsAppChunked(phone, PII_BLOCK_REPLY[lang] || PII_BLOCK_REPLY.english);
+      if (!refusalSend.ok) {
+        await postOwnerNotification('⚠️ Could not deliver the PII-refusal reply to ' + name + ' (' + phone + '): ' + (refusalSend.error || 'unknown error') + ' - please check/resend manually.');
+      }
     }
     return;
   }
@@ -7937,8 +8203,16 @@ async function sendHrConfirmationMessageToManagerCombined(managerPhone, isRemind
       managerPhone, only.lang
     );
     if (isRealSendAllowedFor(managerPhone)) {
+      // LIVE BUG FIX (2026-11, direct instruction - "manager-reminder
+      // silent-failure fix") - a failed reminder nudge used to be
+      // discarded entirely here: no inbox-log trace, no owner alert,
+      // nothing to show the manager was never actually re-pinged.
       const sendResult = await sendWhatsAppChunked(managerPhone, text);
-      if (sendResult.ok) await appendConvoHistory(managerPhone, 'out', text);
+      if (sendResult.ok) {
+        await appendConvoHistory(managerPhone, 'out', text);
+      } else {
+        await postOwnerNotification('⚠️ Could not deliver a reminder nudge to ' + managerPhone + ': ' + (sendResult.error || 'unknown error') + ' - please check/resend manually.');
+      }
     }
     return { ok: true };
   }
@@ -9244,12 +9518,19 @@ async function sendWhatsAppChunked(phone, text) {
     chunks.push(rest.slice(0, cut));
     rest = rest.slice(cut).replace(/^\s+/, '');
   }
+  let lastResult = { ok: true };
   for (let i = 0; i < chunks.length; i++) {
     const result = await whatsapp.sendWhatsAppMessage(phone, chunks[i]);
     if (!result.ok) return result;
+    lastResult = result;
     if (i < chunks.length - 1) await new Promise((resolve) => setTimeout(resolve, 800));
   }
-  return { ok: true };
+  // Evidence log (2026-11, direct instruction) - carry the LAST chunk's
+  // own gatewayMessageId/httpStatus/gatewayResponse through instead of
+  // discarding them (a plain {ok:true} used to lose this for every
+  // multi-chunk send, the one case evidence for IT matters most for -
+  // long replies are exactly the ones worth a real paper trail).
+  return { ok: true, gatewayMessageId: lastResult.gatewayMessageId || null, httpStatus: lastResult.httpStatus || null, gatewayResponse: lastResult.gatewayResponse || null };
 }
 
 const DATA_REJECT_REPLY = {
@@ -15145,6 +15426,11 @@ module.exports = {
   logAutoReplyEvent,
   logInboxEvent,
   listInboxLog,
+  confirmOrRecoverSend,
+  processDueDeliveryChecks,
+  clearAllPendingDeliveryChecks,
+  listDeliveryEvidence,
+  alertOwnerDualChannel,
   archiveOldInboxLogEntriesIfNeeded,
   MAX_INBOX_LOG,
   ARCHIVE_BATCH_THRESHOLD,
