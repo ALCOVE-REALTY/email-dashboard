@@ -35,6 +35,7 @@ async function main() {
   const origRecordError = whatsappAssistant.recordSchedulerError;
   const origRecordHeartbeat = whatsappAssistant.recordSchedulerHeartbeat;
   const origCatchUp = whatsappAssistant.catchUpAfterGap;
+  const origCheckAndPostDailySummary = whatsappAssistant.checkAndPostDailySummary;
 
   const recordedErrors = [];
   let pollOnceCallCount = 0;
@@ -68,6 +69,7 @@ async function main() {
     whatsappAssistant.recordSchedulerError = origRecordError;
     whatsappAssistant.recordSchedulerHeartbeat = origRecordHeartbeat;
     whatsappAssistant.catchUpAfterGap = origCatchUp;
+    whatsappAssistant.checkAndPostDailySummary = origCheckAndPostDailySummary;
     delete process.env.WHATSAPP_POLL_ONCE_TIMEOUT_MS;
     delete process.env.WHATSAPP_ASSISTANT_SCHEDULER;
     delete process.env.WHATSAPP_POLL_INTERVAL_SECONDS;
@@ -105,6 +107,32 @@ async function main() {
     const callsBefore = pollOnceCallCount;
     await new Promise((resolve) => setTimeout(resolve, 400));
     check('after pollOnce() stops hanging, later ticks still proceed normally', pollOnceCallCount > callsBefore, 'before: ' + callsBefore + ', after: ' + pollOnceCallCount);
+
+    // LIVE INCIDENT (2026-11, direct instruction) - "never overlap (one
+    // at a time each)". The autosend/maintenance tick (~15 sequential
+    // jobs: reminder sync, Automated Tasks, Together We Can sync, ...)
+    // had no overlap guard at all, unlike sendFlushInterval/
+    // healthCheckInterval right next to it - fakeSetInterval above never
+    // fires its callback on its own, so this invokes the CAPTURED
+    // maintenance-tick function directly, twice without awaiting the
+    // first, proving the `maintenanceTicking` flag actually blocks a
+    // second concurrent run instead of letting both execute together.
+    const maintenanceEntry = fakeHeavyIntervals.find((e) => e.ms === 30 * 1000);
+    check('the maintenance (autosend/background-jobs) tick was registered with its real 30s interval', Boolean(maintenanceEntry));
+    let dailySummaryCallCount = 0;
+    let releaseDailySummary;
+    const dailySummaryGate = new Promise((resolve) => { releaseDailySummary = resolve; });
+    whatsappAssistant.checkAndPostDailySummary = async () => { dailySummaryCallCount++; await dailySummaryGate; };
+    const firstMaintenanceRun = maintenanceEntry.fn(); // never awaited - simulates setInterval firing again before this resolves
+    await new Promise((resolve) => setTimeout(resolve, 20)); // let the first run actually start and block on the gate
+    const secondMaintenanceRun = maintenanceEntry.fn(); // a second "tick" while the first is still in flight
+    await secondMaintenanceRun; // the guard makes this an instant no-op - must not wait on the gate
+    check('a second maintenance tick firing while the first is still running is skipped outright (never overlaps)', dailySummaryCallCount === 1, 'calls while first still in flight: ' + dailySummaryCallCount);
+    releaseDailySummary();
+    await firstMaintenanceRun;
+    const thirdMaintenanceRun = maintenanceEntry.fn();
+    await thirdMaintenanceRun;
+    check('once the first maintenance tick finishes, a later tick runs normally again (the guard resets, never stuck "running" forever)', dailySummaryCallCount === 2, 'calls after first finished: ' + dailySummaryCallCount);
 
     if (handle && handle.stop) handle.stop();
   }

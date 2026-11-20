@@ -665,6 +665,40 @@ async function checkAsyncRealModel(label, fn) {
   });
 
   console.log('='.repeat(70));
+  console.log('LIVE INCIDENT (2026-11, direct instruction) - "When there is only one match (and it\'s the owner asking about themselves), answer directly - don\'t ask". Scoped strictly to the SENDER\'s own resolved record, never widening item 6\'s confirm-first rule for anyone else');
+  console.log('='.repeat(70));
+  const SELF_MATCH_TEST_PHONE = '910000000969'; // synthetic, mapped to the owner via SUBH_TEST_NUMBERS below
+  await checkAsync('setup: "Subhodeep" currently matches exactly ONE real employee (the owner, ACTIVE) - required for the self-match test below', async () => {
+    const { matches } = await whatsappAssistant.findPersonLookupMatches('Subhodeep', null);
+    return matches.length === 1 && matches[0].status === 'ACTIVE' && matches[0].name.includes('Subhodeep');
+  });
+  await checkAsync('a SUBH_TEST_NUMBERS sender asking a first-name-only question about THEMSELVES ("Subhodeep er department ki") gets answered directly - never "Apni ki ...-er kotha bolchhen?"', async () => {
+    const saved = process.env.SUBH_TEST_NUMBERS;
+    process.env.SUBH_TEST_NUMBERS = SELF_MATCH_TEST_PHONE;
+    await whatsappAssistant.clearPendingNameConfirm(SELF_MATCH_TEST_PHONE).catch(() => {});
+    try {
+      const d = await whatsappAssistant.handlePersonLookupRequest({ phone: SELF_MATCH_TEST_PHONE, name: 'Test', lang: 'banglish', personName: 'Subhodeep', personField: 'general_details', department: null, text: 'Subhodeep er department ki', history: [] });
+      const pending = await whatsappAssistant.getPendingNameConfirm(SELF_MATCH_TEST_PHONE);
+      return d.case === 'acknowledged' && !d.replyText.includes('Apni ki') && d.replyText.includes('Subhodeep Kundu Chowdhury') && pending === null;
+    } finally {
+      if (saved === undefined) delete process.env.SUBH_TEST_NUMBERS; else process.env.SUBH_TEST_NUMBERS = saved;
+    }
+  });
+  await checkAsync('the SAME SUBH_TEST_NUMBERS sender asking about a DIFFERENT first-name-only person ("Tausif") still gets the normal item-6 confirm question - the bypass is scoped to the SELF match only, never widened to "any known sender"', async () => {
+    const saved = process.env.SUBH_TEST_NUMBERS;
+    process.env.SUBH_TEST_NUMBERS = SELF_MATCH_TEST_PHONE;
+    await whatsappAssistant.clearPendingNameConfirm(SELF_MATCH_TEST_PHONE).catch(() => {});
+    try {
+      const d = await whatsappAssistant.handlePersonLookupRequest({ phone: SELF_MATCH_TEST_PHONE, name: 'Test', lang: 'banglish', personName: 'Tausif', personField: 'general_details', department: null, text: 'Tausif kon department e', history: [] });
+      const pending = await whatsappAssistant.getPendingNameConfirm(SELF_MATCH_TEST_PHONE);
+      await whatsappAssistant.clearPendingNameConfirm(SELF_MATCH_TEST_PHONE).catch(() => {});
+      return d.case === 'acknowledged' && d.replyText.includes('Apni ki') && Boolean(pending);
+    } finally {
+      if (saved === undefined) delete process.env.SUBH_TEST_NUMBERS; else process.env.SUBH_TEST_NUMBERS = saved;
+    }
+  });
+
+  console.log('='.repeat(70));
   console.log('LIVE TEST FIXES item 1: every common yes/no spelling answering SUBH\'s own first-name-only confirm question resolves - never the free-form AI drafter');
   console.log('='.repeat(70));
   await whatsappAssistant.clearPendingNameConfirm(LIVE_REVIEW_TEST_PHONE).catch(() => {});
@@ -3015,7 +3049,14 @@ async function checkAsyncRealModel(label, fn) {
     for (const id of ids) {
       const raw = await redis.get('wa-pending-autosend:' + id);
       const entry = typeof raw === 'string' ? JSON.parse(raw) : raw;
-      if (entry && entry.chatId === chatId) {
+      // String-coerced comparison (LIVE INCIDENT, 2026-11 fix) - a phone
+      // number round-tripped through this fake store's own JSON storage
+      // can come back as a JS number rather than the original string
+      // (same reason several existing assertions elsewhere in this file
+      // already compare via String(...) rather than strict ===) - a
+      // strict === here silently never matched for some callers, which
+      // just meant the real 2-4s delay had to elapse by sheer luck.
+      if (entry && String(entry.chatId) === String(chatId)) {
         await redis.zadd('wa-pending-autosend-zset', { score: Date.now() - 1000, member: id });
       }
     }
@@ -3866,6 +3907,25 @@ async function checkAsyncRealModel(label, fn) {
     // test is actually checking (the recovery mechanism itself).
     await whatsappAssistant.saveBurstBuffer(phone, { messages: [{ text: 'Thank you', arrivedAt: firstSeenAt }], firstSeenAt, name: 'Recovery Test', firstName: 'Recovery' });
     const result = await whatsappAssistant.recoverStuckIncomingMessages(now);
+    // LIVE INCIDENT (2026-11) fix - appendConvoHistory now only ever
+    // happens inside sendOrReportAutoReply's own real-send-success
+    // branch (see that function's own comment), which only runs once
+    // processDueAutoSends actually flushes the 2-4s-delayed queue entry
+    // scheduleAutoSend wrote - same forceAutosendDue+flush pattern every
+    // other delayed-send test in this suite already uses, never a real
+    // sleep. And since that branch is now gated on a REAL send (never a
+    // draft), WHATSAPP_ASSISTANT_REAL_SEND must be on here too, or this
+    // "a real reply goes out" test would just log a draft_mode entry and
+    // never see an 'out' bubble - same save/restore convention as every
+    // other real-send test in this suite.
+    const savedRealSend = process.env.WHATSAPP_ASSISTANT_REAL_SEND;
+    const originalSendWhatsAppMessage = whatsapp.sendWhatsAppMessage;
+    process.env.WHATSAPP_ASSISTANT_REAL_SEND = '1';
+    whatsapp.sendWhatsAppMessage = async () => ({ ok: true, gatewayMessageId: 'test-recovery-send', httpStatus: 200 });
+    await forceAutosendDue(phone);
+    await whatsappAssistant.processDueAutoSends();
+    if (savedRealSend === undefined) delete process.env.WHATSAPP_ASSISTANT_REAL_SEND; else process.env.WHATSAPP_ASSISTANT_REAL_SEND = savedRealSend;
+    whatsapp.sendWhatsAppMessage = originalSendWhatsAppMessage;
     const history = await whatsappAssistant.getConvoHistory(phone, 10);
     const outEntry = history.find((h) => h.direction === 'out');
     const log = await whatsappAssistant.listStuckRecoveryLog(20);
@@ -3964,6 +4024,17 @@ async function checkAsyncRealModel(label, fn) {
     // of the SAME apology line, not a different behavior).
     await whatsappAssistant.saveBurstBuffer(phone, { messages: [{ text: 'Amar attendance thik ache kina bolben?', arrivedAt: firstSeenAt }], firstSeenAt, name: 'Apology Test', firstName: 'Apology' });
     await whatsappAssistant.recoverStuckIncomingMessages(now);
+    // Same forceAutosendDue+flush+real-send-mock as the recovery test
+    // above - the reply only lands in convo history once the delayed
+    // queue is flushed through a REAL (mocked) send.
+    const savedRealSend = process.env.WHATSAPP_ASSISTANT_REAL_SEND;
+    const originalSendWhatsAppMessage = whatsapp.sendWhatsAppMessage;
+    process.env.WHATSAPP_ASSISTANT_REAL_SEND = '1';
+    whatsapp.sendWhatsAppMessage = async () => ({ ok: true, gatewayMessageId: 'test-apology-send', httpStatus: 200 });
+    await forceAutosendDue(phone);
+    await whatsappAssistant.processDueAutoSends();
+    if (savedRealSend === undefined) delete process.env.WHATSAPP_ASSISTANT_REAL_SEND; else process.env.WHATSAPP_ASSISTANT_REAL_SEND = savedRealSend;
+    whatsapp.sendWhatsAppMessage = originalSendWhatsAppMessage;
     const history = await whatsappAssistant.getConvoHistory(phone, 10);
     const outEntry = history.find((h) => h.direction === 'out');
     return Boolean(outEntry) && outEntry.text.startsWith('Derite reply korar jonno dukkhito.');
@@ -3976,6 +4047,15 @@ async function checkAsyncRealModel(label, fn) {
     const firstSeenAt = now - 2 * 60 * 1000 - 5000; // just over the 2-min recovery threshold, well under 5 min
     await whatsappAssistant.saveBurstBuffer(phone, { messages: [{ text: 'Amar attendance thik ache kina bolben?', arrivedAt: firstSeenAt }], firstSeenAt, name: 'No Apology Test', firstName: 'NoApology' });
     await whatsappAssistant.recoverStuckIncomingMessages(now);
+    // Same forceAutosendDue+flush+real-send-mock as the recovery test above.
+    const savedRealSend = process.env.WHATSAPP_ASSISTANT_REAL_SEND;
+    const originalSendWhatsAppMessage = whatsapp.sendWhatsAppMessage;
+    process.env.WHATSAPP_ASSISTANT_REAL_SEND = '1';
+    whatsapp.sendWhatsAppMessage = async () => ({ ok: true, gatewayMessageId: 'test-no-apology-send', httpStatus: 200 });
+    await forceAutosendDue(phone);
+    await whatsappAssistant.processDueAutoSends();
+    if (savedRealSend === undefined) delete process.env.WHATSAPP_ASSISTANT_REAL_SEND; else process.env.WHATSAPP_ASSISTANT_REAL_SEND = savedRealSend;
+    whatsapp.sendWhatsAppMessage = originalSendWhatsAppMessage;
     const history = await whatsappAssistant.getConvoHistory(phone, 10);
     const outEntry = history.find((h) => h.direction === 'out');
     return Boolean(outEntry) && !outEntry.text.startsWith('Derite reply korar jonno dukkhito.') && !outEntry.text.startsWith('Sorry for the late reply.');

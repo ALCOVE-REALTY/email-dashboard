@@ -1845,7 +1845,9 @@ body { background: var(--wi-bg); }
 .wf-dlog-resend-btn { border: none; background: var(--wi-primary-50); color: var(--wi-primary-700); }
 .wf-dlog-resend-btn:disabled { opacity: .6; cursor: default; }
 .wf-dlog-open-chat-btn { border: 1.5px solid var(--wi-border-2); background: var(--wi-surface); color: var(--wi-ink); }
-.wf-dlog-older-loading { display: flex; justify-content: center; padding: 12px 0; }
+.wf-dlog-older-loading { display: flex; justify-content: center; align-items: center; padding: 12px 0; }
+.wf-dlog-older-text { font-size: 0.8rem; font-weight: 600; color: var(--wi-muted); }
+.wf-dlog-older-retry { border: 1.5px solid var(--wi-border-2); background: var(--wi-surface); color: var(--wi-primary-700); font-size: 0.8rem; font-weight: 700; padding: 6px 14px; border-radius: 999px; }
 .wf-dlog-export-format-row { display: flex; gap: 16px; margin-top: 12px; }
 .wf-dlog-export-format-opt { display: flex; align-items: center; gap: 6px; font-size: 0.82rem; font-weight: 700; color: var(--wi-ink); }
 

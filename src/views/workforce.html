@@ -425,7 +425,11 @@
           </span>
         </div>
         <div class="wf-dlog-list" id="hrDlogList"></div>
-        <div class="wf-dlog-older-loading" id="hrDlogOlderLoading" hidden><div class="spinner spinner-sm"></div></div>
+        <div class="wf-dlog-older-loading" id="hrDlogOlderLoading" hidden>
+          <div class="spinner spinner-sm" id="hrDlogOlderSpinner"></div>
+          <span class="wf-dlog-older-text" id="hrDlogOlderText" hidden>No more messages</span>
+          <button type="button" class="wf-dlog-older-retry" id="hrDlogOlderRetryBtn" hidden>Retry</button>
+        </div>
       </div>
       <div class="wf-ai-sheet-backdrop" id="hrDlogExportBackdrop" hidden></div>
       <div class="wf-ai-sheet" id="hrDlogExportSheet" hidden>
@@ -3400,6 +3404,33 @@
            from backup (preview -> confirm, additive-only - never
            deletes a key that isn't in the backup file). -->
       <div class="wf-comms-page" id="hrDataBackupsPage">
+        <!-- System health card (2026-11, direct instruction) - "Alcove
+             Deploy has no CPU/memory/restart graphs... show them on a
+             small System health card so I can see them on my phone."
+             Pure read of systemHealthMonitor.js's own once-a-minute
+             in-memory sample - see GET /hr-assistant/system-health. -->
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:4px 4px 6px">
+          <span class="wf-ai-sheet-title" style="font-size:14px">System health</span>
+        </div>
+        <div class="wf-dlog-stats" id="hrSystemHealthCard" style="flex-wrap:wrap">
+          <div class="wf-dlog-stat-card">
+            <span class="wf-dlog-stat-label">Event-loop lag</span>
+            <span class="wf-dlog-stat-value" id="hrHealthLag">—</span>
+          </div>
+          <div class="wf-dlog-stat-card">
+            <span class="wf-dlog-stat-label">Memory (RSS)</span>
+            <span class="wf-dlog-stat-value" id="hrHealthMem">—</span>
+          </div>
+          <div class="wf-dlog-stat-card">
+            <span class="wf-dlog-stat-label">Uptime</span>
+            <span class="wf-dlog-stat-value" id="hrHealthUptime">—</span>
+          </div>
+          <div class="wf-dlog-stat-card">
+            <span class="wf-dlog-stat-label">KV p95</span>
+            <span class="wf-dlog-stat-value" id="hrHealthKv">—</span>
+          </div>
+        </div>
+        <div class="wf-auto-hint" id="hrHealthUpdatedAt" style="padding:4px 4px 12px"></div>
         <div style="padding:4px 4px 10px">
           <button type="button" class="wf-ai-action-btn download" id="hrBackupNowBtn"><span>Backup now</span></button>
           <div id="hrBackupNowResult" class="wf-auto-hint" style="margin-top:8px"></div>

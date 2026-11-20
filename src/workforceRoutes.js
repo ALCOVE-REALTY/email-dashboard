@@ -22,6 +22,7 @@ const reminderService = require('./aiAssistant/reminderService');
 const automationService = require('./aiAssistant/automationService');
 const workflowService = require('./aiAssistant/workflowService');
 const aiUsageLog = require('./aiAssistant/aiUsageLog');
+const systemHealthMonitor = require('./aiAssistant/systemHealthMonitor');
 const companyDetailsService = require('./aiAssistant/companyDetailsService');
 const storeHealthDiag = require('./aiAssistant/storeHealthDiag');
 const fullStoreBackupService = require('./aiAssistant/fullStoreBackupService');
@@ -1855,13 +1856,28 @@ router.post('/hr-assistant/backups/:fileId/restore', async (req, res) => {
 // Today/this-week/this-month totals (live vs. tests) + a by-feature
 // breakdown, backed by src/aiAssistant/aiUsageLog.js's own day-keyed
 // Redis log (every real call across all 7 call sites that make one).
+// LIVE INCIDENT (2026-11, direct instruction) - "Every API must answer
+// within a few seconds with valid JSON... never hang." getUsageSummary()
+// is normally a single fast Redis GET (see aiUsageLog's own comment),
+// but under real KV pressure (the listDeliveryEvidence fix above is the
+// main cause this was traced to) even that single call could stall for
+// a long time with nothing here to time it out - the page would then
+// just spin until the platform's OWN timeout eventually killed the
+// request. A timed-out/errored read now returns a valid, zeroed summary
+// with stale:true in a few seconds instead, so the page can render
+// something rather than hang.
+const EMPTY_AI_USAGE_BUCKET = { liveUsd: 0, testUsd: 0, totalUsd: 0, liveCalls: 0, testCalls: 0, totalCalls: 0, byFeature: [] };
+const AI_USAGE_TIMEOUT_MS = 6000;
 router.get('/hr-assistant/ai-usage', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
   try {
-    const summary = await aiUsageLog.getUsageSummary();
+    const summary = await withTimeout(aiUsageLog.getUsageSummary(), AI_USAGE_TIMEOUT_MS, 'AI usage read timed out');
     res.json(summary);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.json({
+      stale: true, error: err.message,
+      today: EMPTY_AI_USAGE_BUCKET, week: EMPTY_AI_USAGE_BUCKET, month: EMPTY_AI_USAGE_BUCKET, year: EMPTY_AI_USAGE_BUCKET
+    });
   }
 });
 
@@ -2933,6 +2949,14 @@ router.post('/hr-assistant/whatsapp-resend', async (req, res) => {
 
 // Delivery log (Pass 2, direct instruction) - list + badge count, owner
 // only, reading straight from the evidence log Pass 1 already writes.
+// LIVE INCIDENT (2026-11, direct instruction) - same "never hang, always
+// valid JSON within a few seconds" fix as the AI usage route above. This
+// route's own bottom-of-page infinite-scroll spinner used to have no way
+// to know the difference between "still loading" and "the request died"
+// - a timed-out/errored read now comes back fast with hasMore:false and
+// stale:true so the frontend can show a Retry instead of spinning
+// forever (see hrAssistant.js's own loadDeliveryLogPage fix).
+const DELIVERY_LOG_TIMEOUT_MS = 6000;
 router.get('/hr-assistant/delivery-log', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
   try {
@@ -2940,16 +2964,17 @@ router.get('/hr-assistant/delivery-log', async (req, res) => {
     const date = /^\d{4}-\d{2}-\d{2}$/.test(req.query.date) ? req.query.date : undefined;
     const offset = parseInt(req.query.offset, 10) || 0;
     const limit = Math.min(parseInt(req.query.limit, 10) || 20, 100);
-    const result = await whatsappAssistant.queryDeliveryEvidence({ filter, date, offset, limit });
+    const result = await withTimeout(whatsappAssistant.queryDeliveryEvidence({ filter, date, offset, limit }), DELIVERY_LOG_TIMEOUT_MS, 'Delivery log read timed out');
     res.json(result);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.json({ items: [], hasMore: false, total: 0, stats: { deliveredCount: 0, notDeliveredCount: 0 }, stale: true, error: err.message });
   }
 });
 router.get('/hr-assistant/delivery-log/badge', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) return res.json({ notDeliveredToday: 0 });
   try {
-    res.json({ notDeliveredToday: await whatsappAssistant.countNotDeliveredToday() });
+    const count = await withTimeout(whatsappAssistant.countNotDeliveredToday(), DELIVERY_LOG_TIMEOUT_MS, 'Delivery log badge timed out');
+    res.json({ notDeliveredToday: count });
   } catch (err) {
     res.json({ notDeliveredToday: 0 });
   }
@@ -3089,6 +3114,30 @@ router.post('/hr-assistant/system-health-alert/dismiss', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+// AI fallback alert (2026-11, direct instruction) - dismissing just
+// clears the current slot, same convention as the system health alert
+// dismiss right above (whatsappAssistant.js's own comment explains why a
+// single overwritten slot is enough).
+router.post('/hr-assistant/ai-fallback-alert/dismiss', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    await whatsappAssistant.clearAiFallbackAlert();
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+// System health metrics card (2026-11, direct instruction - "Alcove
+// Deploy has no CPU/memory/restart graphs... show them on a small
+// System health card so I can see them on my phone"). A pure in-memory
+// read of whatever systemHealthMonitor.js's own once-a-minute sampler
+// last recorded (see its own comment) - never triggers a fresh KV/
+// gateway check itself, so viewing this card can never add to the load
+// it's there to help diagnose.
+router.get('/hr-assistant/system-health', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  res.json({ metrics: systemHealthMonitor.getLatestMetrics() });
 });
 
 // Part B phase 3 (2026-11, direct instruction), LIVE BUG FIX (2026-11) -

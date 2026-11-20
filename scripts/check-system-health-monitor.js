@@ -425,6 +425,94 @@ async function main() {
   });
 
   console.log('='.repeat(70));
+  console.log('checkKvLatency / checkEventLoopLag / checkAiFallbackStreak - LIVE INCIDENT (2026-11), direct instruction - "slow KV (p95 above a threshold), event-loop lag, AI call failures (alert after 3 in a row)"');
+  console.log('='.repeat(70));
+  await checkAsync('checkKvLatency with no samples yet reports ok:true (never a false alarm before the first real check has run)', async () => {
+    const monitor = freshMonitor();
+    const result = await monitor.checkKvLatency();
+    return result.ok === true;
+  });
+  await checkAsync('checkKvLatency reports ok:false once the p95 of recent checkKv latencies crosses the threshold', async () => {
+    const monitor = freshMonitor();
+    for (let i = 0; i < 10; i++) monitor.recordKvLatency(2000); // well over the 1500ms default
+    const result = await monitor.checkKvLatency();
+    return result.ok === false && /KV p95 latency/.test(result.error) && result.p95 === 2000;
+  });
+  await checkAsync('checkKvLatency stays ok:true for normal, fast latencies', async () => {
+    const monitor = freshMonitor();
+    [40, 55, 60, 48, 52].forEach((ms) => monitor.recordKvLatency(ms));
+    const result = await monitor.checkKvLatency();
+    return result.ok === true;
+  });
+  await checkAsync('checkEventLoopLag with no metrics sample yet reports ok:true', async () => {
+    const monitor = freshMonitor();
+    const result = await monitor.checkEventLoopLag();
+    return result.ok === true;
+  });
+  await checkAsync('getAutoReplyFallbackStreak starts at 0 with nothing recorded', async () => {
+    // Deliberately NOT a require-cache reload (unlike freshMonitor() for
+    // systemHealthMonitor) - this module is shared with the rest of this
+    // suite via the one `whatsappAssistant` reference captured at the top
+    // of main(); reloading it fresh here would leave systemHealthMonitor's
+    // own lazy require('./whatsappAssistant') pointing at a DIFFERENT
+    // module instance than this test's own mock reassignments below.
+    return whatsappAssistant.getAutoReplyFallbackStreak() === 0;
+  });
+  await checkAsync('checkAiFallbackStreak reports ok:false once 3+ fallbacks have fired recently - the real "AI call failures" signal', async () => {
+    const monitor = freshMonitor();
+    const origGetStreak = whatsappAssistant.getAutoReplyFallbackStreak;
+    whatsappAssistant.getAutoReplyFallbackStreak = () => 3;
+    const result = await monitor.checkAiFallbackStreak();
+    whatsappAssistant.getAutoReplyFallbackStreak = origGetStreak;
+    return result.ok === false && /3 AI reply failures/.test(result.error);
+  });
+  await checkAsync('checkAiFallbackStreak stays ok:true under the 3-in-a-row threshold', async () => {
+    const monitor = freshMonitor();
+    const origGetStreak = whatsappAssistant.getAutoReplyFallbackStreak;
+    whatsappAssistant.getAutoReplyFallbackStreak = () => 1;
+    const result = await monitor.checkAiFallbackStreak();
+    whatsappAssistant.getAutoReplyFallbackStreak = origGetStreak;
+    return result.ok === true;
+  });
+  await checkAsync('runHealthCheck includes the 3 new checks in its own result shape without breaking the existing failure/recovery behavior', async () => {
+    const monitor = freshMonitor();
+    whatsapp.getConnectionStatus = async () => ({ connected: true, status: 'connected' });
+    whatsapp.listMessages = async () => [];
+    await whatsappAssistant.recordSchedulerHeartbeat('test-commit-2');
+    const result = await monitor.runHealthCheck();
+    whatsapp.getConnectionStatus = origGetConnectionStatus;
+    whatsapp.listMessages = origListMessages;
+    await whatsappAssistant.clearSystemHealthAlert().catch(() => {});
+    return result.ok === true && Boolean(result.kvLatency) && Boolean(result.eventLoopLag) && Boolean(result.aiFallbackStreak);
+  });
+
+  console.log('='.repeat(70));
+  console.log('AI fallback alert (2026-11, direct instruction) - "raise a red Action-needed card + owner alert every time [the fallback] is used"');
+  console.log('='.repeat(70));
+  await checkAsync('setAiFallbackAlert writes a durable record with a running count, getAiFallbackAlert reads it back', async () => {
+    await whatsappAssistant.clearAiFallbackAlert();
+    await whatsappAssistant.setAiFallbackAlert({ contactName: 'Test Contact', lang: 'banglish', replyText: 'fallback text' });
+    const second = await whatsappAssistant.setAiFallbackAlert({ contactName: 'Test Contact 2', lang: 'english', replyText: 'fallback text 2' });
+    const read = await whatsappAssistant.getAiFallbackAlert();
+    await whatsappAssistant.clearAiFallbackAlert();
+    return second.count === 2 && read.count === 2 && read.contactName === 'Test Contact 2' && typeof read.firstFiredAt === 'number' && typeof read.lastFiredAt === 'number';
+  });
+  await checkAsync('once set, listActionNeededItems surfaces it as its own kind (ai_fallback_alert)', async () => {
+    await whatsappAssistant.clearAiFallbackAlert();
+    await whatsappAssistant.setAiFallbackAlert({ contactName: 'Card Test Contact', lang: 'hinglish' });
+    const items = await whatsappAssistant.listActionNeededItems();
+    const found = items.find((i) => i.kind === 'ai_fallback_alert');
+    await whatsappAssistant.clearAiFallbackAlert();
+    return Boolean(found) && found.category === 'data_requests' && found.data.contactName === 'Card Test Contact';
+  });
+  await checkAsync('once dismissed/cleared, listActionNeededItems no longer shows the AI fallback card', async () => {
+    await whatsappAssistant.setAiFallbackAlert({ contactName: 'x' });
+    await whatsappAssistant.clearAiFallbackAlert();
+    const items = await whatsappAssistant.listActionNeededItems();
+    return !items.some((i) => i.kind === 'ai_fallback_alert');
+  });
+
+  console.log('='.repeat(70));
   console.log(pass + '/' + (pass + fail) + ' passed');
   if (fail) { console.log('Failed checks:'); failures.forEach((f) => console.log(' - ' + f)); }
   console.log('='.repeat(70));

@@ -149,6 +149,9 @@
   const deliveryLogDateInput = document.getElementById('hrDlogDateInput');
   const deliveryLogList = document.getElementById('hrDlogList');
   const deliveryLogOlderLoading = document.getElementById('hrDlogOlderLoading');
+  const deliveryLogOlderSpinner = document.getElementById('hrDlogOlderSpinner');
+  const deliveryLogOlderText = document.getElementById('hrDlogOlderText');
+  const deliveryLogOlderRetryBtn = document.getElementById('hrDlogOlderRetryBtn');
   const deliveryLogExportBackdrop = document.getElementById('hrDlogExportBackdrop');
   const deliveryLogExportSheet = document.getElementById('hrDlogExportSheet');
   const deliveryLogExportFrom = document.getElementById('hrDlogExportFrom');
@@ -278,6 +281,11 @@
   const backupNowResult = document.getElementById('hrBackupNowResult');
   const backupDailyStatus = document.getElementById('hrBackupDailyStatus');
   const backupRecentList = document.getElementById('hrBackupRecentList');
+  const healthLagEl = document.getElementById('hrHealthLag');
+  const healthMemEl = document.getElementById('hrHealthMem');
+  const healthUptimeEl = document.getElementById('hrHealthUptime');
+  const healthKvEl = document.getElementById('hrHealthKv');
+  const healthUpdatedAtEl = document.getElementById('hrHealthUpdatedAt');
   const backupRestoreBackdrop = document.getElementById('hrBackupRestoreBackdrop');
   const backupRestoreSheet = document.getElementById('hrBackupRestoreSheet');
   const backupRestoreCloseBtn = document.getElementById('hrBackupRestoreCloseBtn');
@@ -3186,17 +3194,64 @@
       });
     });
   }
+  // LIVE INCIDENT (2026-11, direct instruction) - "The loading spinner at
+  // the bottom never stops. When there's nothing more to load, hide it
+  // (show 'No more messages'); if loading fails, show a Retry." The
+  // spinner only ever used to get hidden in `finally` once the request
+  // SETTLED - if the backend request hung (no server-side timeout existed
+  // before this same incident's fix to the delivery-log route), it just
+  // sat there indefinitely. The server now always answers within a few
+  // seconds either way, and this renders the three real end states
+  // (loading / end-of-list / retry) instead of only ever showing a
+  // spinner or silently nothing.
+  function setDlogOlderState(state) {
+    if (!deliveryLogOlderLoading) return;
+    deliveryLogOlderLoading.hidden = state === 'hidden';
+    if (deliveryLogOlderSpinner) deliveryLogOlderSpinner.hidden = state !== 'loading';
+    if (deliveryLogOlderText) deliveryLogOlderText.hidden = state !== 'end';
+    if (deliveryLogOlderRetryBtn) deliveryLogOlderRetryBtn.hidden = state !== 'retry';
+  }
+  if (deliveryLogOlderRetryBtn) deliveryLogOlderRetryBtn.addEventListener('click', () => {
+    // A stale fallback response (workforceRoutes.js's own timeout path)
+    // reports hasMore:false like a genuine end-of-list - force it back
+    // to true so the normal "more to load" guard doesn't just no-op the
+    // retry tap.
+    dlogHasMore = true;
+    loadDeliveryLogPage(false);
+  });
+  // LIVE INCIDENT (2026-11, direct instruction) - "Opening the Delivery
+  // log must be instant: page, stat cards and the latest cards appear
+  // immediately on tap from cache... same rule as all other pages." Only
+  // the default view (today, filter 'all') is persisted - the one the
+  // owner actually lands on by tapping the icon; a filtered/dated view
+  // always goes straight to a live fetch, same as before.
+  function isDlogDefaultView() { return dlogFilter === 'all' && !dlogDate; }
   async function loadDeliveryLogPage(reset) {
     if (reset) { dlogOffset = 0; dlogHasMore = true; }
     if (dlogLoading || (!dlogHasMore && !reset)) return;
+    const usingDefaultView = isDlogDefaultView();
+    let renderedFromCache = false;
+    if (reset && usingDefaultView && deliveryLogList) {
+      const cached = readPersistedCache('delivery-log-today');
+      if (cached) {
+        deliveryLogList.innerHTML = (cached.items || []).map(buildDlogCardHtml).join('') || '<div class="wf-comms-empty">No messages for this date.</div>';
+        wireDlogCardButtons(deliveryLogList);
+        if (cached.stats) renderDlogStats(cached.stats, null);
+        renderedFromCache = true;
+      }
+    }
     dlogLoading = true;
-    if (!reset && deliveryLogOlderLoading) deliveryLogOlderLoading.hidden = false;
+    if (!reset) setDlogOlderState('loading');
     try {
       const params = new URLSearchParams({ filter: dlogFilter, offset: String(dlogOffset), limit: '20' });
       if (dlogDate) params.set('date', dlogDate);
       const resp = await fetch('/api/workforce/hr-assistant/delivery-log?' + params.toString());
       const data = await resp.json();
       if (panelView !== 'deliveryLog') return; // navigated away meanwhile
+      // A timed-out/erroring read (stale:true, workforceRoutes.js's own
+      // fallback) must never blank out a good cached view the owner is
+      // already looking at - leave it exactly as rendered from cache.
+      if (data && data.stale && renderedFromCache) { setDlogOlderState('retry'); return; }
       const items = (data && data.items) || [];
       dlogHasMore = Boolean(data && data.hasMore);
       dlogOffset += items.length;
@@ -3207,11 +3262,17 @@
         wireDlogCardButtons(deliveryLogList);
       }
       if (data && data.stats) renderDlogStats(data.stats, dlogDate);
+      if (reset && usingDefaultView && !(data && data.stale)) writePersistedCache('delivery-log-today', { items, stats: data && data.stats });
+      // A timed-out/erroring read (workforceRoutes.js's own fallback)
+      // comes back as valid JSON with stale:true and hasMore:false -
+      // never a thrown error here - so that path needs its own explicit
+      // Retry too, not just the genuine "reached the end" case.
+      setDlogOlderState(dlogHasMore ? 'hidden' : (data && data.stale ? 'retry' : 'end'));
     } catch (err) {
-      if (reset && deliveryLogList) deliveryLogList.innerHTML = '<div class="wf-comms-empty">Could not load the delivery log.</div>';
+      if (reset && deliveryLogList && !renderedFromCache) deliveryLogList.innerHTML = '<div class="wf-comms-empty">Could not load the delivery log.</div>';
+      if (!reset || renderedFromCache) setDlogOlderState('retry');
     } finally {
       dlogLoading = false;
-      if (deliveryLogOlderLoading) deliveryLogOlderLoading.hidden = true;
     }
   }
   function showDeliveryLog() {
@@ -5003,6 +5064,31 @@
     loadLetterSettingsPage();
   };
 
+  // LIVE INCIDENT (2026-11, direct instruction) - "keep a persistent
+  // cache in the browser (versioned) for every menu page's last data...
+  // pages show instantly even after a hard refresh." Every page's own
+  // "render from cache instantly" cache (pageDataCache, aiUsageSummaryCache
+  // et al.) is an in-memory JS variable only - it already makes the SECOND
+  // open of a page in the same tab instant, but a hard refresh wipes it,
+  // which is exactly when the owner is most likely to hit a slow/failing
+  // server underneath (the real incident this traces to). This tiny
+  // versioned localStorage wrapper is the missing persistence layer - a
+  // bad/old/corrupt entry (or a private-browsing tab that throws on
+  // access) just falls through to the existing live-fetch-with-skeleton
+  // behavior, never a hard failure. Applied first to AI usage + the
+  // Delivery log stat cards (the two pages named in the incident); other
+  // menu pages' own in-memory caches are unchanged for now.
+  const PERSISTED_CACHE_VERSION = 'v1';
+  function readPersistedCache(key) {
+    try {
+      const raw = localStorage.getItem('subh-cache-' + PERSISTED_CACHE_VERSION + '-' + key);
+      return raw ? JSON.parse(raw) : null;
+    } catch (err) { return null; }
+  }
+  function writePersistedCache(key, value) {
+    try { localStorage.setItem('subh-cache-' + PERSISTED_CACHE_VERSION + '-' + key, JSON.stringify(value)); } catch (err) { /* private tab, quota, etc - fine to skip */ }
+  }
+
   // AI usage (2026-11, direct instruction) - read-only: today/this week/
   // this month totals (live vs. tests) + a by-feature breakdown, from
   // GET /hr-assistant/ai-usage (src/aiAssistant/aiUsageLog.js).
@@ -5030,11 +5116,17 @@
   }
   async function loadAiUsagePage() {
     if (!aiUsageFeatureList) return;
+    if (!aiUsageSummaryCache) aiUsageSummaryCache = readPersistedCache('ai-usage');
     if (aiUsageSummaryCache) renderAiUsageRange(aiUsageSummaryCache, activeAiUsageRange);
     else aiUsageFeatureList.innerHTML = '<div class="wf-skeleton-list"><div class="wf-skeleton-row"></div><div class="wf-skeleton-row"></div></div>';
     try {
       const summary = await fetch('/api/workforce/hr-assistant/ai-usage').then((res) => res.json());
+      // The route's own timeout/error fallback is valid JSON with
+      // stale:true - a real refresh, never thrown here, so it must not
+      // overwrite a GOOD persisted cache with an all-zero one.
+      if (summary && summary.stale && aiUsageSummaryCache) { renderAiUsageRange(aiUsageSummaryCache, activeAiUsageRange); return; }
       aiUsageSummaryCache = summary;
+      if (!summary || !summary.stale) writePersistedCache('ai-usage', summary);
       renderAiUsageRange(summary, activeAiUsageRange);
     } catch (err) {
       if (!aiUsageSummaryCache) aiUsageFeatureList.innerHTML = '<div class="wf-rem-empty">Could not load AI usage.</div>';
@@ -5107,7 +5199,37 @@
       btn.addEventListener('click', () => openBackupRestoreSheet(btn.closest('[data-file-id]').dataset.fileId));
     });
   }
+  // System health card (2026-11, direct instruction) - a tiny, independent
+  // fetch (never blocks or is blocked by the backups list above) of
+  // whatever systemHealthMonitor.js's own once-a-minute sampler last
+  // recorded. "—" placeholders stay as-is if the server has no sample
+  // yet (e.g. the scheduler process hasn't started, or under a minute
+  // since it did) rather than showing a misleading zero.
+  function msLabel(ms) { return typeof ms === 'number' ? Math.round(ms) + 'ms' : '—'; }
+  function uptimeLabel(sec) {
+    if (typeof sec !== 'number') return '—';
+    const d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600), m = Math.floor((sec % 3600) / 60);
+    if (d > 0) return d + 'd ' + h + 'h';
+    if (h > 0) return h + 'h ' + m + 'm';
+    return m + 'm';
+  }
+  async function loadSystemHealthCard() {
+    if (!healthLagEl) return;
+    try {
+      const data = await fetch('/api/workforce/hr-assistant/system-health').then((res) => res.json());
+      const m = data && data.metrics;
+      if (!m) { if (healthUpdatedAtEl) healthUpdatedAtEl.textContent = 'No sample yet.'; return; }
+      healthLagEl.textContent = msLabel(m.eventLoopLagMs);
+      if (healthMemEl) healthMemEl.textContent = typeof m.rssMb === 'number' ? m.rssMb + ' MB' : '—';
+      if (healthUptimeEl) healthUptimeEl.textContent = uptimeLabel(m.uptimeSec);
+      if (healthKvEl) healthKvEl.textContent = msLabel(m.kvLatencyP95Ms);
+      if (healthUpdatedAtEl) healthUpdatedAtEl.textContent = 'Updated ' + actionNeededAgeLabel(Date.now() - m.ts) + ' ago';
+    } catch (err) {
+      if (healthUpdatedAtEl) healthUpdatedAtEl.textContent = 'Could not load system health.';
+    }
+  }
   async function loadDataBackupsPage() {
+    loadSystemHealthCard();
     if (!backupRecentList) return;
     const cached = pageDataCache.dataBackups;
     if (cached) { renderBackupRecentList(cached.recent); renderBackupDailyStatus(cached.dailyState); }
@@ -5592,6 +5714,33 @@
       });
     });
   }
+  // LIVE INCIDENT (2026-11, direct instruction) - "raise a red Action-
+  // needed card... every time [the fallback] is used". Same shape as the
+  // system health card above - this fires separately (SUBH's own reply
+  // pipeline threw and sent AUTOREPLY_ERROR_FALLBACK instead of a real
+  // reply), distinct from a KV/gateway/scheduler check failing.
+  function actionNeededAiFallbackCardHtml(item) {
+    const d = item.data || {};
+    return '<div class="wf-auto-task-card wf-auto-task-card--critical" data-ai-fallback-alert="1">' +
+      '<div class="wf-action-needed-card-head">' +
+        '<span class="wf-auto-task-subject">🚨 SUBH sent a fallback reply instead of a real one</span>' +
+      '</div>' +
+      '<div class="wf-auto-hint">Latest: ' + escapeHtml(d.contactName || 'a contact') + (d.lang ? ' (' + escapeHtml(d.lang) + ')' : '') + '</div>' +
+      '<div class="wf-auto-hint">' + (d.count || 1) + ' time' + ((d.count || 1) === 1 ? '' : 's') + ' since this started' + ' · ' + actionNeededAgeLabel(item.ageMs) + ' ago</div>' +
+      '<div class="wf-auto-actions">' +
+        '<button type="button" class="plain" data-ai-fallback-action="dismiss">Dismiss</button>' +
+      '</div>' +
+    '</div>';
+  }
+  function wireActionNeededAiFallbackCard(card) {
+    const dismissBtn = card.querySelector('[data-ai-fallback-action="dismiss"]');
+    if (dismissBtn) dismissBtn.addEventListener('click', async () => {
+      await runButtonAction(dismissBtn, () => postJsonOrThrow('/api/workforce/hr-assistant/ai-fallback-alert/dismiss', {}), () => {
+        closeRowWithToast(card, { title: 'Dismissed', type: 'success' });
+        refreshActionNeeded();
+      });
+    });
+  }
   // Task 16/18 (2026-11) - a message auto-recovery (see
   // recoverStuckIncomingMessages server-side) could not resolve on its
   // own. No real action to take beyond seeing the stuck text and either
@@ -5778,6 +5927,7 @@
     if (item.kind === 'hr_note_escalated') return actionNeededHrNoteEscalatedCardHtml(item);
     if (item.kind === 'data_access_notice') return actionNeededDataAccessNoticeCardHtml(item);
     if (item.kind === 'system_health_alert') return actionNeededSystemHealthCardHtml(item);
+    if (item.kind === 'ai_fallback_alert') return actionNeededAiFallbackCardHtml(item);
     if (item.kind === 'stuck_incoming') return actionNeededStuckIncomingCardHtml(item);
     if (item.kind === 'ai_usage_alert') return actionNeededAiUsageCardHtml(item);
     if (item.kind === 'daily_backup_failed') return actionNeededBackupFailedCardHtml(item);
@@ -5798,6 +5948,7 @@
     if (card.dataset.escalationId) { wireActionNeededHrNoteEscalatedCard(card); return; }
     if (card.dataset.dataAccessNoticeId) { wireActionNeededDataAccessNoticeCard(card); return; }
     if (card.dataset.healthAlert) { wireActionNeededSystemHealthCard(card); return; }
+    if (card.dataset.aiFallbackAlert) { wireActionNeededAiFallbackCard(card); return; }
     if (card.dataset.stuckId) { wireActionNeededStuckIncomingCard(card); return; }
     if (card.dataset.aiUsageAlert) { wireActionNeededAiUsageCard(card); return; }
     if (card.dataset.backupFailed) { wireActionNeededBackupFailedCard(card); return; }

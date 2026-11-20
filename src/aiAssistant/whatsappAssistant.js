@@ -755,10 +755,10 @@ async function listActionableWhatsappItems() {
 // (approve & send / edit / reject) is a decision, so it joins "approvals";
 // a received document needing review is closest to "data_requests".
 async function listActionNeededItems() {
-  const [approvals, drafts, docs, hrConfirmations, hrNoteEscalations, stuckIncoming, dataAccessNotices, healthAlert] = await Promise.all([
+  const [approvals, drafts, docs, hrConfirmations, hrNoteEscalations, stuckIncoming, dataAccessNotices, healthAlert, aiFallbackAlert] = await Promise.all([
     listPendingApprovals(), listPendingDrafts(),
     documentRequests.listPendingReceived(), listAllHrConfirmations(), listHrNoteEscalations(), listStuckIncomingMessages(),
-    listDataAccessNotices(), getSystemHealthAlert()
+    listDataAccessNotices(), getSystemHealthAlert(), getAiFallbackAlert()
   ]);
   const ambiguousConfirmations = hrConfirmations.filter((c) => c.status === 'ambiguous_owner_review');
   const raw = [];
@@ -786,6 +786,10 @@ async function listActionNeededItems() {
   // behind this one (chatId: '' - never null, so downstream
   // normalizePhone/findEmployeeByPhone calls on it stay harmless no-ops).
   if (healthAlert) raw.push({ kind: 'system_health_alert', category: 'data_requests', chatId: '', name: 'System health', ts: healthAlert.createdAt || 0, data: healthAlert });
+  // AI fallback alert (2026-11, direct instruction - "raise a red
+  // Action-needed card... every time [the fallback] is used"). Same
+  // no-single-sender shape as the system health alert right above.
+  if (aiFallbackAlert) raw.push({ kind: 'ai_fallback_alert', category: 'data_requests', chatId: '', name: 'AI reply failures', ts: aiFallbackAlert.lastFiredAt || aiFallbackAlert.firstFiredAt || 0, data: aiFallbackAlert });
   // Performance fix (2026-10-30): isNeverAuto(item.chatId) used to run as
   // its own SISMEMBER round trip PER item inside this map - this function
   // backs the Action-needed poll that fires every ~12s regardless of which
@@ -1795,12 +1799,42 @@ function feedShowsText(feed, replyText, notBeforeMs) {
 const DELIVERY_EVIDENCE_PREFIX = 'wa-delivery-evidence:';
 const DELIVERY_EVIDENCE_IDS_KEY = 'wa-delivery-evidence-ids';
 const DELIVERY_EVIDENCE_TTL_SECONDS = 90 * 24 * 60 * 60;
+// LIVE INCIDENT (2026-11, direct instruction - "SUBH is failing to
+// generate replies live") - this ZSET had no ceiling at all: every real
+// confirmed send, resend and final failure adds a member, forever, and
+// listDeliveryEvidence's own "sort newest-first in JS" approach (needed
+// because the local fake store's own zrange doesn't support `rev` - see
+// its own comment) ALWAYS fetches the WHOLE set first, every single
+// call - including countNotDeliveredToday's own badge poll, which rides
+// the same ~12s cycle as the comms-summary poll on EVERY page, not just
+// the Delivery log. On real production traffic this set grows every
+// day, uncapped, so that one "cheap" read gets slower and heavier over
+// time, competing for the SAME Redis instance decideAutoReplyCore's own
+// many per-message lookups depend on - a very plausible, code-confirmed
+// contributor to exactly the kind of live instability reported (KV
+// pressure/latency surfacing as an exception somewhere else entirely).
+// Trimmed to a bounded ceiling on every write, same "find the oldest
+// excess via a bounded zrange, delete them" shape as wa-inbox-log's own
+// archive/trim step - a bounded-by-rank zrange call costs the same
+// regardless of how large the set has grown, so this is safe to run on
+// every single write, not just occasionally.
+const DELIVERY_EVIDENCE_MAX_ENTRIES = 3000;
+async function trimDeliveryEvidenceIfNeeded(redis) {
+  try {
+    const ids = (await redis.zrange(DELIVERY_EVIDENCE_IDS_KEY, 0, DELIVERY_EVIDENCE_MAX_ENTRIES)) || [];
+    if (ids.length <= DELIVERY_EVIDENCE_MAX_ENTRIES) return;
+    const excess = ids.slice(0, ids.length - DELIVERY_EVIDENCE_MAX_ENTRIES);
+    await Promise.all(excess.map((id) => redis.del(DELIVERY_EVIDENCE_PREFIX + id).catch(() => {})));
+    await Promise.all(excess.map((id) => redis.zrem(DELIVERY_EVIDENCE_IDS_KEY, id).catch(() => {})));
+  } catch (err) { /* best effort - never block real delivery handling over a trim failure */ }
+}
 async function recordDeliveryEvidence(record) {
   const redis = getClient();
   if (!redis) return;
   try {
     await redis.set(DELIVERY_EVIDENCE_PREFIX + record.id, JSON.stringify(record), { ex: DELIVERY_EVIDENCE_TTL_SECONDS });
     await redis.zadd(DELIVERY_EVIDENCE_IDS_KEY, { score: record.sentAt, member: record.id });
+    await trimDeliveryEvidenceIfNeeded(redis);
   } catch (err) { /* best effort - never block real delivery handling over a logging failure */ }
 }
 async function listDeliveryEvidence(limit = 500) {
@@ -1817,7 +1851,25 @@ async function listDeliveryEvidence(limit = 500) {
     pairs.sort((a, b) => b[1] - a[1]);
     const ids = pairs.slice(0, Math.max(0, limit)).map(([id]) => id);
     if (!ids.length) return [];
-    const raws = await Promise.all(ids.map((id) => redis.get(DELIVERY_EVIDENCE_PREFIX + id)));
+    // LIVE INCIDENT (2026-11, direct instruction - "find the common
+    // cause" of fallback replies + AI usage not loading + slow pages +
+    // the delivery-log spinner never stopping) - this used to be
+    // `Promise.all(ids.map((id) => redis.get(...)))`, i.e. up to
+    // DELIVERY_EVIDENCE_MAX_ENTRIES (3000) SEPARATE Upstash REST round
+    // trips on every single call, including countNotDeliveredToday's own
+    // ~12s badge poll that rides on EVERY page, not just the Delivery
+    // log. That is the real smoking gun the earlier trim-only fix (above)
+    // missed: trimming the ZSET bounds the COUNT but each entry still
+    // paid its own HTTP round trip, so thousands of concurrent requests
+    // hit Upstash every ~12s, starving every other KV read in the app
+    // (the AI reply pipeline's own lookups, the AI usage aggregate GET,
+    // every SUBH Settings page's own data) of latency/quota - exactly the
+    // "AI call never even reached Claude, usage shows $0.00, pages crawl"
+    // pattern reported. Every OTHER multi-key read in this codebase
+    // already uses one batched `redis.mget(...)` (reminderService.js,
+    // memoryService.js, workflowService.js, etc.) - this was the one
+    // outlier. One batched call now, regardless of how many ids.
+    const raws = await redis.mget(...ids.map((id) => DELIVERY_EVIDENCE_PREFIX + id));
     return raws.map((r) => { try { return r ? (typeof r === 'string' ? JSON.parse(r) : r) : null; } catch (e) { return null; } }).filter(Boolean);
   }, []);
 }
@@ -2245,6 +2297,16 @@ async function sendOrReportAutoReply(entry) {
     // (or fails to), success or not.
     if (!entry.isGroup && entry.typingStartedAt) fireAndForgetPresence(entry.chatId, 'paused');
     if (sendResult.ok) {
+      // LIVE INCIDENT (2026-11, direct instruction - "no reply may
+      // appear in the chat as sent unless it went through [the tracked
+      // send]") - appendConvoHistory used to run eagerly at DECISION
+      // time, in every turn-handler, well before this point - before
+      // scheduleAutoSend even queued it, let alone before this real
+      // gateway send actually confirmed anything. It now only ever
+      // happens here, gated on the gateway genuinely reporting success,
+      // the same moment 'sent' is logged and confirmOrRecoverSend starts
+      // verifying it - never before, never anywhere else.
+      await appendConvoHistory(entry.chatId, 'out', entry.replyText);
       await postOwnerNotification('✓ Auto-replied to ' + who + ' at ' + timeLabel + ': "' + entry.replyText + '"');
       await alertIfSlow(sentAt);
       await logAutoReplyEvent({ senderType: entry.isGroup ? 'group' : 'direct', aCase: entry.case, memoryId: entry.memoryId, action: 'sent' });
@@ -2395,6 +2457,13 @@ async function resolveFollowupsForMemory(memory) {
       continue;
     }
     await appendConvoHistory(f.chatId, 'out', replyText);
+    // LIVE INCIDENT (2026-11, direct instruction - "route ALL outgoing
+    // send paths through the single tracked send") - this proactive
+    // follow-up send had its own gate (never appended unless sendResult.ok)
+    // but no evidence-log/delivery-check coverage at all until now.
+    const sentAt = Date.now();
+    await logInboxEvent({ chatId: f.chatId, name: f.name, isGroup: false, messageSummary: (f.summary || '').slice(0, 160), aCase: 'proactive_followup', sentText: replyText, outcome: 'sent', sentAt, gatewayMessageId: sendResult.gatewayMessageId || null });
+    confirmOrRecoverSend({ chatId: f.chatId, name: f.name || f.chatId, replyText, sentAt, gatewayMessageId: sendResult.gatewayMessageId, httpStatus: sendResult.httpStatus }).catch(() => {});
     await clearOpenFollowup(f.chatId);
     await resetFollowupCount(f.chatId);
     await logInboxEvent({ chatId: f.chatId, name: f.name, isGroup: false, messageSummary: '[proactive follow-up: ' + memory.topic + ']', aCase: 'memory', sentText: replyText, outcome: 'sent', sentAt: Date.now() });
@@ -3780,6 +3849,55 @@ async function clearSystemHealthAlert() {
   const redis = getClient();
   if (!redis) return;
   try { await redis.del(SYSTEM_HEALTH_ALERT_KEY); } catch (err) { /* best effort */ }
+}
+
+// ---------------- AI fallback alert (2026-11, direct instruction - "raise
+// a red Action-needed card + owner alert every time [the fallback] is
+// used, so I know replies are failing") ----------------
+// Same single-slot/overwrite-on-each-fire shape as the system health
+// alert above (a pile of near-identical cards from a bad run is never
+// more useful than the latest one + a running count) - durable across a
+// restart, unlike the in-memory fallback-streak counter in
+// getAutoReplyFallbackStreak (that one only ever feeds the health
+// monitor's 3-in-10-min threshold; this is the per-event "it happened"
+// record the owner actually asked to see and be paged about).
+const AI_FALLBACK_ALERT_KEY = 'subh-ai-fallback-alert';
+async function setAiFallbackAlert(data) {
+  const redis = getClient();
+  if (!redis) return null;
+  let record;
+  try {
+    const existingRaw = await redis.get(AI_FALLBACK_ALERT_KEY);
+    const existing = existingRaw ? (typeof existingRaw === 'string' ? JSON.parse(existingRaw) : existingRaw) : null;
+    record = Object.assign({ firstFiredAt: (existing && existing.firstFiredAt) || Date.now(), count: (existing && existing.count) || 0 }, data, { lastFiredAt: Date.now() });
+    record.count += 1;
+    await redis.set(AI_FALLBACK_ALERT_KEY, JSON.stringify(record));
+  } catch (err) { return null; }
+  return record;
+}
+async function getAiFallbackAlert() {
+  const redis = getClient();
+  if (!redis) return null;
+  try {
+    const raw = await redis.get(AI_FALLBACK_ALERT_KEY);
+    return raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : null;
+  } catch (err) { return null; }
+}
+async function clearAiFallbackAlert() {
+  const redis = getClient();
+  if (!redis) return;
+  try { await redis.del(AI_FALLBACK_ALERT_KEY); } catch (err) { /* best effort */ }
+}
+// Fire-and-forget on purpose (called synchronously from inside
+// recordAutoReplyFallbackFired, itself called from several turn handlers
+// that never await it) - a slow/failed Redis write or alert send must
+// never add latency to, or break, the real fallback reply already being
+// sent to the sender.
+function raiseAiFallbackAlert(contactName, lang, replyText) {
+  const text = '⚠️ SUBH could not generate a real reply for ' + (contactName || 'a contact') +
+    ' and sent the fallback message instead (language: ' + lang + '). Check AI usage / server logs - replies may be failing right now.';
+  setAiFallbackAlert({ contactName: contactName || null, lang: lang || null, replyText: replyText || null }).catch(() => {});
+  alertOwnerDualChannel(text).catch(() => {});
 }
 // Status-agnostic (unlike isSenderActiveEmployee, which requires ACTIVE
 // for the official-tier direct-send gate) - "is this phone number
@@ -6995,6 +7113,28 @@ async function handlePersonLookupRequest({ phone, name, lang, personName, person
     const soleMatch = current[0] || inactive[0];
     if (isFirstNameOnly(personName, soleMatch.name)) {
       const isInactiveCandidate = inactive.length === 1;
+      // LIVE BUG FIX (2026-11, direct instruction - "When there is only
+      // one match (and it's the owner asking about themselves), answer
+      // directly - don't ask") - the sender's OWN resolved employee
+      // record (same phone match findEmployeeByPhone/own_record already
+      // uses, including the SUBH_TEST_NUMBERS->owner resolution) is
+      // compared against the sole match: if they're the SAME person,
+      // there is no real ambiguity a confirm-question could ever resolve
+      // (the sender cannot possibly mean anyone but themselves), so this
+      // answers immediately instead of asking "Apni ki <name>-er kotha
+      // bolchhen?". Every OTHER first-name-only single match (a
+      // DIFFERENT employee) still confirms exactly as before - this
+      // never widens beyond the self-match case live review item 6's
+      // own confirm-first rule was never meant to gate.
+      if (!isInactiveCandidate) {
+        const selfRecord = await findEmployeeByPhone(phone).catch(() => null);
+        if (selfRecord && selfRecord.emp && selfRecord.emp.employeeId === soleMatch.employeeId) {
+          return resolveConfirmedPersonLookup({
+            phone, name, candidate: soleMatch, isInactive: false, personField, fieldAliasKey: fieldAlias ? fieldAlias.key : null,
+            fieldSpecsRaw: fieldSpecs.length > 1 ? fieldSpecs.map(lookupSpecToRaw) : undefined, lang, hadTypo, history
+          });
+        }
+      }
       await savePendingNameConfirm(phone, Object.assign(
         { candidate: soleMatch, isInactive: isInactiveCandidate, personField, fieldAliasKey: fieldAlias ? fieldAlias.key : null, lang, hadTypo },
         fieldSpecs.length > 1 ? { fieldSpecsRaw: fieldSpecs.map(lookupSpecToRaw) } : null
@@ -7639,6 +7779,11 @@ async function resendPendingHrNoteFlowNudge(phone) {
   const sendResult = await sendWhatsAppChunked(normalized, disclosed);
   if (!sendResult.ok) return sendResult;
   await appendConvoHistory(normalized, 'out', disclosed);
+  // LIVE INCIDENT (2026-11, direct instruction - "route ALL outgoing
+  // send paths through the single tracked send").
+  const sentAt = Date.now();
+  await logInboxEvent({ chatId: normalized, name: hrFlow.name || normalized, isGroup: false, messageSummary: topic, aCase: 'hr_note_reminder', sentText: disclosed, outcome: 'sent', sentAt, gatewayMessageId: sendResult.gatewayMessageId || null });
+  confirmOrRecoverSend({ chatId: normalized, name: hrFlow.name || normalized, replyText: disclosed, sentAt, gatewayMessageId: sendResult.gatewayMessageId, httpStatus: sendResult.httpStatus }).catch(() => {});
   return { ok: true };
 }
 // LIVE FIX (917278793115) - finalizeHrNoteThirdParty's safety escalation
@@ -8248,7 +8393,11 @@ async function sendRawHrConfirmationTextToManager(managerPhone, managerName, tex
     return sendResult;
   }
   await appendConvoHistory(managerPhone, 'out', text);
-  await logInboxEvent({ chatId: managerPhone, name: managerName, isGroup: false, messageSummary: logSummary, aCase: 'hr_confirmation_sent', sentText: text, outcome: 'sent', sentAt: Date.now() });
+  const sentAt = Date.now();
+  await logInboxEvent({ chatId: managerPhone, name: managerName, isGroup: false, messageSummary: logSummary, aCase: 'hr_confirmation_sent', sentText: text, outcome: 'sent', sentAt, gatewayMessageId: sendResult.gatewayMessageId || null });
+  // LIVE INCIDENT (2026-11, direct instruction - "route ALL outgoing
+  // send paths through the single tracked send").
+  confirmOrRecoverSend({ chatId: managerPhone, name: managerName, replyText: text, sentAt, gatewayMessageId: sendResult.gatewayMessageId, httpStatus: sendResult.httpStatus }).catch(() => {});
   return { ok: true };
 }
 async function sendHrConfirmationMessageToManager(confirmationId) {
@@ -8310,6 +8459,12 @@ async function sendHrConfirmationMessageToManagerCombined(managerPhone, isRemind
       const sendResult = await sendWhatsAppChunked(managerPhone, text);
       if (sendResult.ok) {
         await appendConvoHistory(managerPhone, 'out', text);
+        // LIVE INCIDENT (2026-11, direct instruction - "route ALL
+        // outgoing send paths through the single tracked send") - this
+        // was genuinely never logged to the inbox at all before now.
+        const sentAt = Date.now();
+        await logInboxEvent({ chatId: managerPhone, name: only.thirdPartyName || managerPhone, isGroup: false, messageSummary: only.summary, aCase: 'hr_confirmation_reminder', sentText: text, outcome: 'sent', sentAt, gatewayMessageId: sendResult.gatewayMessageId || null });
+        confirmOrRecoverSend({ chatId: managerPhone, name: only.thirdPartyName || managerPhone, replyText: text, sentAt, gatewayMessageId: sendResult.gatewayMessageId, httpStatus: sendResult.httpStatus }).catch(() => {});
       } else {
         await postOwnerNotification('⚠️ Could not deliver a reminder nudge to ' + managerPhone + ': ' + (sendResult.error || 'unknown error') + ' - please check/resend manually.');
       }
@@ -8357,7 +8512,9 @@ async function sendHrConfirmationResultToSender(confirmation, outcomeText) {
     return;
   }
   await appendConvoHistory(confirmation.senderPhone, 'out', outcomeText);
-  await logInboxEvent({ chatId: confirmation.senderPhone, name: confirmation.senderName, isGroup: false, messageSummary: '[HR confirmation result: ' + confirmation.summary + ']', aCase: 'hr_confirmation_result', sentText: outcomeText, outcome: 'sent', sentAt: Date.now() });
+  const sentAt = Date.now();
+  await logInboxEvent({ chatId: confirmation.senderPhone, name: confirmation.senderName, isGroup: false, messageSummary: '[HR confirmation result: ' + confirmation.summary + ']', aCase: 'hr_confirmation_result', sentText: outcomeText, outcome: 'sent', sentAt, gatewayMessageId: sendResult.gatewayMessageId || null });
+  confirmOrRecoverSend({ chatId: confirmation.senderPhone, name: confirmation.senderName || confirmation.senderPhone, replyText: outcomeText, sentAt, gatewayMessageId: sendResult.gatewayMessageId, httpStatus: sendResult.httpStatus }).catch(() => {});
 }
 
 // STEP 6 - Task 3b (2026-11) LIVE BUG FIX: this used to also create a
@@ -9474,6 +9631,9 @@ async function resolveAmbiguousHrConfirmation(id, decision) {
       const sendResult = await sendWhatsAppChunked(confirmation.thirdPartyPhone, disclosed);
       if (!sendResult.ok) return { ok: false, error: sendResult.error };
       await appendConvoHistory(confirmation.thirdPartyPhone, 'out', disclosed);
+      const sentAt = Date.now();
+      await logInboxEvent({ chatId: confirmation.thirdPartyPhone, name: confirmation.thirdPartyName, isGroup: false, messageSummary: '[HR confirmation: asking manager again] ' + confirmation.summary, aCase: 'hr_confirmation_ask_again', sentText: disclosed, outcome: 'sent', sentAt, gatewayMessageId: sendResult.gatewayMessageId || null });
+      confirmOrRecoverSend({ chatId: confirmation.thirdPartyPhone, name: confirmation.thirdPartyName || confirmation.thirdPartyPhone, replyText: disclosed, sentAt, gatewayMessageId: sendResult.gatewayMessageId, httpStatus: sendResult.httpStatus }).catch(() => {});
     }
     await updateHrConfirmation(id, { status: 'awaiting_manager', unclearAttempts: 0, unclearTexts: [] });
     return { ok: true };
@@ -9752,7 +9912,9 @@ async function executeApprovalSend(approval, editInstruction, selectedIndex, edi
     return approval.name + '-ke pathate giye error holo: ' + sendResult.error;
   }
   await appendConvoHistory(approval.phone, 'out', auditText);
-  await logInboxEvent({ chatId: approval.phone, name: approval.name, isGroup: false, messageSummary: '[data request: ' + logSummary + ']', aCase: 'data_approved', sentText: auditText, outcome: 'sent', sentAt: Date.now() });
+  const sentAt = Date.now();
+  await logInboxEvent({ chatId: approval.phone, name: approval.name, isGroup: false, messageSummary: '[data request: ' + logSummary + ']', aCase: 'data_approved', sentText: auditText, outcome: 'sent', sentAt, gatewayMessageId: sendResult.gatewayMessageId || null });
+  confirmOrRecoverSend({ chatId: approval.phone, name: approval.name || approval.phone, replyText: auditText, sentAt, gatewayMessageId: sendResult.gatewayMessageId, httpStatus: sendResult.httpStatus }).catch(() => {});
   return '✓ ' + approval.name + '-ke "' + logSummary + '" pathano holo.';
 }
 async function executeApprovalReject(approval) {
@@ -9766,8 +9928,12 @@ async function executeApprovalReject(approval) {
     return '[DRAFT MODE] ' + approval.name + '-ke reject reply pathano hoto: "' + replyText + '"';
   }
   const sendResult = await sendWhatsAppChunked(approval.phone, replyText);
-  if (sendResult.ok) await appendConvoHistory(approval.phone, 'out', replyText);
-  await logInboxEvent({ chatId: approval.phone, name: approval.name, isGroup: false, messageSummary: '[data request: ' + approval.dataRequestSummary + ']', aCase: 'data_rejected', sentText: replyText, outcome: sendResult.ok ? 'sent' : 'send_failed', sentAt: Date.now() });
+  const sentAt = Date.now();
+  if (sendResult.ok) {
+    await appendConvoHistory(approval.phone, 'out', replyText);
+    confirmOrRecoverSend({ chatId: approval.phone, name: approval.name || approval.phone, replyText, sentAt, gatewayMessageId: sendResult.gatewayMessageId, httpStatus: sendResult.httpStatus }).catch(() => {});
+  }
+  await logInboxEvent({ chatId: approval.phone, name: approval.name, isGroup: false, messageSummary: '[data request: ' + approval.dataRequestSummary + ']', aCase: 'data_rejected', sentText: replyText, outcome: sendResult.ok ? 'sent' : 'send_failed', sentAt, gatewayMessageId: sendResult.gatewayMessageId || null });
   if (!sendResult.ok) {
     await postOwnerNotification('⚠️ ' + approval.name + ' (' + approval.phone + ')-ke reject reply pathate giye error holo (retry-o fail hoyeche): ' + sendResult.error);
   }
@@ -12525,6 +12691,29 @@ const AUTOREPLY_ERROR_FALLBACK = {
   hinglish: 'Aapka message mil gaya. Abhi reply taiyar karne mein thodi dikkat ho rahi hai, Subhodeep ko turant bata raha hoon - jaldi personally update milega.',
   english: "I've received your message. I'm having trouble preparing a reply right now, so I've let Subhodeep know directly - you'll get a personal update shortly."
 };
+// LIVE INCIDENT (2026-11, direct instruction - "health monitor: alert on
+// AI call failures after 3 in a row") - in-memory only (this fires from
+// the same long-running scheduler process that generates replies, same
+// "don't depend on the thing that might be down" posture as
+// systemHealthMonitor.js's own re-alert debounce). A true strict
+// "3 consecutive" count would need a reset wired into every successful
+// decideAutoReply return path across this file's several turn handlers -
+// a sliding 10-minute WINDOW of fallback timestamps is the safer,
+// equally actionable proxy: 3+ fallbacks in 10 minutes means something
+// is genuinely wrong right now, not one unlucky call sandwiched between
+// two fine ones.
+const AUTOREPLY_FALLBACK_WINDOW_MS = 10 * 60 * 1000;
+let autoReplyFallbackTimestamps = [];
+function recordAutoReplyFallbackFired() {
+  const now = Date.now();
+  autoReplyFallbackTimestamps.push(now);
+  autoReplyFallbackTimestamps = autoReplyFallbackTimestamps.filter((ts) => now - ts < AUTOREPLY_FALLBACK_WINDOW_MS);
+}
+function getAutoReplyFallbackStreak() {
+  const now = Date.now();
+  autoReplyFallbackTimestamps = autoReplyFallbackTimestamps.filter((ts) => now - ts < AUTOREPLY_FALLBACK_WINDOW_MS);
+  return autoReplyFallbackTimestamps.length;
+}
 
 // LIVE BUG FIX (2026-11, direct instruction) - a request naming one of
 // these specific, unambiguous document/credential types is NEVER an
@@ -14278,10 +14467,13 @@ async function actOnCatchupTurn({ contactId, name, firstName, text, arrivedAt, s
     decision = await decideAutoReply({ phone: contactId, name, firstName, text, isGroup: false, history: history.slice(-10) });
   } catch (err) {
     console.error('[whatsapp] catch-up decideAutoReply threw for ' + contactId + ':', err);
+    recordAutoReplyFallbackFired();
     const lang = detectLang(text);
+    const fallbackReplyText = AUTOREPLY_ERROR_FALLBACK[lang] || AUTOREPLY_ERROR_FALLBACK.english;
+    raiseAiFallbackAlert(name, lang, fallbackReplyText);
     decision = {
       case: 'holding',
-      replyText: AUTOREPLY_ERROR_FALLBACK[lang] || AUTOREPLY_ERROR_FALLBACK.english,
+      replyText: fallbackReplyText,
       summaryForOwner: '[auto-reply error, generic fallback sent] ' + text.slice(0, 160)
     };
     await postOwnerNotification(
@@ -14306,7 +14498,16 @@ async function actOnCatchupTurn({ contactId, name, firstName, text, arrivedAt, s
     return { answered: false };
   }
   if (decision && decision.replyText) {
-    await appendConvoHistory(contactId, 'out', decision.replyText);
+    // LIVE INCIDENT (2026-11, direct instruction - "no reply may appear
+    // in the chat as sent unless it went through [the tracked send]") -
+    // this used to append to convo history HERE, the instant a decision
+    // was made - before scheduleAutoSend even queued it, let alone
+    // before any real gateway send happened. A message could (and did,
+    // live) show as a normal "out" bubble in the conversation while the
+    // real send later failed, got diverted as stale, or simply never
+    // ran - with no trace in the Delivery log either. appendConvoHistory
+    // now only ever happens inside sendOrReportAutoReply's own real-
+    // send-success branch, gated on the gateway actually confirming it.
     if (await isNeverAuto(contactId)) {
       await savePendingDraft({ type: 'direct', contactId, name, messagePreview: text.slice(0, 200), draftReply: decision.replyText, createdAt: Date.now() });
       await postOwnerNotification(name + ' (never-auto list) asked (catch-up): ' + text.slice(0, 160) + ' — draft ready, your review needed');
@@ -14353,10 +14554,13 @@ async function actOnStuckRecoveryTurn({ contactId, name, firstName, text, firstS
     decision = await decideAutoReply({ phone: contactId, name, firstName, text, isGroup: false, history: history.slice(-10) });
   } catch (err) {
     console.error('[whatsapp] stuck-recovery decideAutoReply threw for ' + contactId + ':', err);
+    recordAutoReplyFallbackFired();
     const lang = detectLang(text);
+    const fallbackReplyText = AUTOREPLY_ERROR_FALLBACK[lang] || AUTOREPLY_ERROR_FALLBACK.english;
+    raiseAiFallbackAlert(name, lang, fallbackReplyText);
     decision = {
       case: 'holding',
-      replyText: AUTOREPLY_ERROR_FALLBACK[lang] || AUTOREPLY_ERROR_FALLBACK.english,
+      replyText: fallbackReplyText,
       summaryForOwner: '[auto-reply error, generic fallback sent] ' + text.slice(0, 160)
     };
     await postOwnerNotification(
@@ -14373,7 +14577,9 @@ async function actOnStuckRecoveryTurn({ contactId, name, firstName, text, firstS
     return { answered: false };
   }
   if (decision && decision.replyText) {
-    await appendConvoHistory(contactId, 'out', decision.replyText);
+    // Same LIVE INCIDENT fix as actOnCatchupTurn's own identical comment
+    // above - appendConvoHistory now only ever happens inside
+    // sendOrReportAutoReply's own real-send-success branch.
     // Never-auto contacts are already filtered out by the caller before
     // this function is ever reached (they go straight to a stuck_incoming
     // card per direct instruction, never a pending draft here too) - this
@@ -14605,7 +14811,9 @@ async function resumeStuckPendingQuestionsOnStartup() {
       });
       await storeMessageText(contactId, lastIncoming.id, currentText);
       if (decision && decision.replyText) {
-        await appendConvoHistory(contactId, 'out', decision.replyText);
+        // Same LIVE INCIDENT fix as every other turn-handler's own
+        // comment - never append eagerly here, only inside
+        // sendOrReportAutoReply's own real-send-success branch.
         // A flow-step resume (the sender just EDITED an already-handled
         // message, resolving an open pending question) - exempt from the
         // freshness gate per direct instruction; the guard above (only an
@@ -14852,10 +15060,13 @@ async function pollOnce() {
       decision = await decideAutoReply({ phone: contactId, name, firstName, text, isGroup: false, history: history.slice(-10) });
     } catch (err) {
       console.error('[whatsapp] decideAutoReply threw for ' + contactId + ':', err);
+      recordAutoReplyFallbackFired();
       const lang = detectLang(text);
+      const fallbackReplyText = AUTOREPLY_ERROR_FALLBACK[lang] || AUTOREPLY_ERROR_FALLBACK.english;
+      raiseAiFallbackAlert(name, lang, fallbackReplyText);
       decision = {
         case: 'holding',
-        replyText: AUTOREPLY_ERROR_FALLBACK[lang] || AUTOREPLY_ERROR_FALLBACK.english,
+        replyText: fallbackReplyText,
         summaryForOwner: '[auto-reply error, generic fallback sent] ' + text.slice(0, 160)
       };
       await postOwnerNotification(
@@ -14876,7 +15087,10 @@ async function pollOnce() {
       // same turn started (item 2: "stop it if no reply will be sent").
       if (typingStartedAt) fireAndForgetPresence(contactId, 'paused');
     } else if (decision && decision.replyText) {
-      await appendConvoHistory(contactId, 'out', decision.replyText);
+      // Same LIVE INCIDENT fix as actOnCatchupTurn's own comment -
+      // appendConvoHistory now only ever happens inside
+      // sendOrReportAutoReply's own real-send-success branch, never
+      // eagerly here at decision time.
       if (await isNeverAuto(contactId)) {
         // Spec item 3: decided normally, but never auto-sent - back into
         // the old manual pending-draft flow + a notification, same as
@@ -15116,7 +15330,9 @@ async function pollOnce() {
           await actOnOfficialTurn(turnParams);
         } catch (err2) {
           console.error('[whatsapp] actOnOfficialTurn threw again for ' + contactId + ' after a retry - sending a generic fallback reply:', err2);
+          recordAutoReplyFallbackFired();
           const lang = detectLang(combinedText);
+          raiseAiFallbackAlert(buffer.name, lang, AUTOREPLY_ERROR_FALLBACK[lang] || AUTOREPLY_ERROR_FALLBACK.english);
           await scheduleAutoSend({
             chatId: contactId, isGroup: false, name: buffer.name,
             replyText: AUTOREPLY_ERROR_FALLBACK[lang] || AUTOREPLY_ERROR_FALLBACK.english,
@@ -15135,7 +15351,9 @@ async function pollOnce() {
       results.errors.push({ contact: contactId, message: err.message });
       const fallbackText = buffer && Array.isArray(buffer.messages) ? combineBurstText(buffer.messages) : '';
       if (buffer) {
+        recordAutoReplyFallbackFired();
         const lang = fallbackText ? detectLang(fallbackText) : 'english';
+        raiseAiFallbackAlert(buffer.name, lang, AUTOREPLY_ERROR_FALLBACK[lang] || AUTOREPLY_ERROR_FALLBACK.english);
         await scheduleAutoSend({
           chatId: contactId, isGroup: false, name: buffer.name,
           replyText: AUTOREPLY_ERROR_FALLBACK[lang] || AUTOREPLY_ERROR_FALLBACK.english,
@@ -15175,7 +15393,12 @@ async function pollOnce() {
         await appendConvoHistory(groupId, 'in', text);
         const decision = await decideAutoReply({ phone: null, name, text, isGroup: true, history: groupHistory.slice(-10) }).catch(() => null);
         if (decision && decision.replyText) {
-          await appendConvoHistory(groupId, 'out', decision.replyText);
+          // Same LIVE INCIDENT fix as the 1:1 turn-handlers' own comment -
+          // never append eagerly here; real group sending isn't
+          // implemented yet (sendOrReportAutoReply's own group branch
+          // always reports ok:false), so nothing is ever appended for a
+          // group reply at all right now - consistent with "never shown
+          // as sent unless it really went through."
           await scheduleAutoSend({
             chatId: groupId, isGroup: true, name,
             replyText: decision.replyText, case: decision.case, memoryId: decision.memoryId || null,
@@ -15459,6 +15682,7 @@ async function validateModelReply(replyText, lang, groundingText) {
 module.exports = {
   isAvailable,
   pollOnce,
+  getAutoReplyFallbackStreak,
   PII_BLOCK_REPLY,
   detectOwnSensitiveIdRequest,
   detectSensitiveIdFieldKeyword,
@@ -15623,6 +15847,9 @@ module.exports = {
   dismissDataAccessNotice,
   flagDataAccessNotice,
   setSystemHealthAlert,
+  setAiFallbackAlert,
+  getAiFallbackAlert,
+  clearAiFallbackAlert,
   getSystemHealthAlert,
   clearSystemHealthAlert,
   isSenderKnownEmployee,

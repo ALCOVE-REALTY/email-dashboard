@@ -284,7 +284,35 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
     sendingFlush = false;
   }, SEND_FLUSH_MS);
 
+  // LIVE INCIDENT (2026-11, direct instruction) - this tick runs ~15
+  // sequential jobs (reminder sync, HR nudges, Automated Tasks,
+  // Automate Workflow, AI usage alert, workflow follow-ups/mail-reply
+  // checks, inbox-log archive, stuck-message recovery, daily backup,
+  // settings health check, Together We Can sync) and had grown heavier
+  // over time as each one was added - unlike sendFlushInterval
+  // (sendingFlush) and healthCheckInterval (healthChecking) right below,
+  // it had NO overlap guard: setInterval fires on its own clock
+  // regardless of whether the previous tick's callback promise has
+  // resolved, so once the full chain ever took longer than
+  // AUTOSEND_FLUSH_MS (30s) - entirely plausible with a Gmail thread
+  // search, a Drive backup upload and an external Together We Can sync
+  // all on the same tick - overlapping runs would stack without bound,
+  // each firing its own burst of KV reads/writes and external calls
+  // concurrently, compounding the KV pressure described in
+  // listDeliveryEvidence's own comment above. Same belt-and-suspenders
+  // boolean-flag pattern as its two siblings.
+  let maintenanceTicking = false;
   const autosendInterval = setIntervalFn(async () => {
+    if (maintenanceTicking) return;
+    maintenanceTicking = true;
+    try {
+      await runMaintenanceTick(log);
+    } finally {
+      maintenanceTicking = false;
+    }
+  }, AUTOSEND_FLUSH_MS);
+
+  async function runMaintenanceTick(log) {
     // Same tick also carries the daily 9:30 IST summary check (spec item
     // 4, a one-a-day no-op the rest of the time) and the document
     // retention sweep (spec 5d) - both are cheap, idempotent checks, no
@@ -445,12 +473,20 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
     } catch (err) {
       log.error('[together-we-can] daily auto-sync check failed: ' + err.message);
     }
-  }, AUTOSEND_FLUSH_MS);
+  }
 
   // System health check - its own independent tick, deliberately NOT
   // folded into the maintenance tick above: a health check that itself
   // depends on everything else in that tick running first would be a
   // weaker check than one that runs completely on its own schedule.
+  // LIVE INCIDENT (2026-11, direct instruction) - "Alcove Deploy has no
+  // CPU/memory/restart graphs... log event-loop lag, memory, uptime and
+  // KV call timings every minute." Its own self-contained tick, see
+  // systemHealthMonitor.js's own comment - never folded into any other
+  // interval here, so it can't be affected by (or add to) the load those
+  // are already dealing with.
+  const metricsLogInterval = systemHealthMonitor.startMetricsLog(log);
+
   let healthChecking = false;
   const healthCheckInterval = setIntervalFn(async () => {
     if (healthChecking) return;
@@ -464,7 +500,7 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
     healthChecking = false;
   }, HEALTH_CHECK_MS);
 
-  return { stop: () => { clearInterval(autosendInterval); clearInterval(sendFlushInterval); clearInterval(healthCheckInterval); } };
+  return { stop: () => { clearInterval(autosendInterval); clearInterval(sendFlushInterval); clearInterval(healthCheckInterval); clearInterval(metricsLogInterval); } };
 }
 
 module.exports = { start };

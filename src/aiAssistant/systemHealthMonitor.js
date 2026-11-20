@@ -34,6 +34,69 @@ function withTimeout(promise, ms) {
   ]);
 }
 
+// LIVE INCIDENT (2026-11, direct instruction) - "Alcove Deploy has no
+// CPU/memory/restart graphs... measure it from inside the app: log
+// event-loop lag, memory, uptime and KV call timings every minute, and
+// show them on a small System health card." In-memory only, same
+// "survives a restart just fine, a restart IS the reset" posture as
+// systemHealthMonitor's own alert debounce above - this is diagnostic
+// data for right-now, not a durable record.
+const METRICS_LOG_EVERY_MS = 60 * 1000;
+const KV_LATENCY_SAMPLE_CAP = 50; // ~100 min of history at the 2-min health-check cadence
+let kvLatencySamplesMs = [];
+let latestMetrics = null;
+
+// Standard "schedule a trivial callback, measure how long it actually
+// took to fire" lag probe (same idea libraries like toobusy-js use) -
+// a free/idle event loop fires setImmediate in under ~1ms; a busy/
+// congested one (thousands of pending callbacks/promises queued ahead of
+// it, e.g. from an overlapping-jobs bug) takes measurably longer. Cheap
+// enough to run every minute forever.
+function measureEventLoopLagMs() {
+  return new Promise((resolve) => {
+    const start = process.hrtime.bigint();
+    setImmediate(() => resolve(Number(process.hrtime.bigint() - start) / 1e6));
+  });
+}
+
+function recordKvLatency(ms) {
+  kvLatencySamplesMs.push(ms);
+  if (kvLatencySamplesMs.length > KV_LATENCY_SAMPLE_CAP) kvLatencySamplesMs = kvLatencySamplesMs.slice(-KV_LATENCY_SAMPLE_CAP);
+}
+function kvLatencyP95Ms() {
+  if (!kvLatencySamplesMs.length) return null;
+  const sorted = kvLatencySamplesMs.slice().sort((a, b) => a - b);
+  const idx = Math.min(sorted.length - 1, Math.ceil(sorted.length * 0.95) - 1);
+  return Math.round(sorted[idx]);
+}
+
+// One self-contained 60s tick - deliberately separate from every other
+// interval in whatsappPollScheduler.js (no jobs, no KV writes of its
+// own beyond the occasional read below) so it can never itself add to
+// the KV-pressure problem it exists to help diagnose.
+function startMetricsLog(log = console) {
+  return setInterval(async () => {
+    try {
+      const eventLoopLagMs = await measureEventLoopLagMs();
+      const mem = process.memoryUsage();
+      latestMetrics = {
+        ts: Date.now(),
+        eventLoopLagMs: Math.round(eventLoopLagMs * 10) / 10,
+        rssMb: Math.round(mem.rss / 1024 / 1024 * 10) / 10,
+        heapUsedMb: Math.round(mem.heapUsed / 1024 / 1024 * 10) / 10,
+        uptimeSec: Math.round(process.uptime()),
+        kvLatencyP95Ms: kvLatencyP95Ms(),
+        kvLatencySampleCount: kvLatencySamplesMs.length
+      };
+      log.log('[system-health] lag=' + latestMetrics.eventLoopLagMs + 'ms rss=' + latestMetrics.rssMb + 'MB heap=' + latestMetrics.heapUsedMb +
+        'MB uptime=' + latestMetrics.uptimeSec + 's kvP95=' + (latestMetrics.kvLatencyP95Ms === null ? 'n/a' : latestMetrics.kvLatencyP95Ms + 'ms'));
+    } catch (err) {
+      log.error('[system-health] metrics sample failed: ' + err.message);
+    }
+  }, METRICS_LOG_EVERY_MS).unref();
+}
+function getLatestMetrics() { return latestMetrics; }
+
 // A fresh, raw client - deliberately NOT whatsappAssistant.js's own
 // lazily-cached one, so this always re-resolves the CURRENT env vars
 // rather than a client built once at an earlier (possibly different)
@@ -49,12 +112,51 @@ const KV_PING_KEY = 'subh-health-check-ping';
 async function checkKv() {
   const redis = getRawRedisClient();
   if (!redis) return { ok: false, error: 'KV_REST_API_URL/KV_REST_API_TOKEN (or UPSTASH_REDIS_REST_URL/UPSTASH_REDIS_REST_TOKEN) not configured' };
+  const startedAt = Date.now();
   try {
     const value = 'ping-' + Date.now();
     await withTimeout(redis.set(KV_PING_KEY, value), HEALTH_CHECK_TIMEOUT_MS);
     const readBack = await withTimeout(redis.get(KV_PING_KEY), HEALTH_CHECK_TIMEOUT_MS);
+    recordKvLatency(Date.now() - startedAt);
     if (readBack !== value) return { ok: false, error: 'wrote a value and read back something else - store is reachable but not behaving correctly' };
     return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
+// LIVE INCIDENT (2026-11, direct instruction) - "Add to the health
+// monitor: slow KV (p95 above a threshold), event-loop lag, AI call
+// failures (alert after 3 in a row)." Thresholds configurable, sane
+// defaults chosen well above the normal ~50-300ms Upstash REST round
+// trip / sub-ms idle event-loop lag this app sees in practice, so these
+// only fire on a genuine problem, not routine jitter.
+const KV_P95_ALERT_MS = Number(process.env.SUBH_KV_P95_ALERT_MS) || 1500;
+const EVENT_LOOP_LAG_ALERT_MS = Number(process.env.SUBH_EVENT_LOOP_LAG_ALERT_MS) || 500;
+const AI_FALLBACK_STREAK_ALERT_COUNT = 3;
+async function checkKvLatency() {
+  const p95 = kvLatencyP95Ms();
+  if (p95 === null) return { ok: true, note: 'no KV latency samples yet' };
+  if (p95 > KV_P95_ALERT_MS) return { ok: false, error: 'KV p95 latency is ' + p95 + 'ms (over ' + sampleCountNote() + ', threshold ' + KV_P95_ALERT_MS + 'ms)', p95 };
+  return { ok: true, p95 };
+}
+function sampleCountNote() { return kvLatencySamplesMs.length + ' recent check' + (kvLatencySamplesMs.length === 1 ? '' : 's'); }
+async function checkEventLoopLag() {
+  const metrics = getLatestMetrics();
+  if (!metrics) return { ok: true, note: 'no event-loop lag sample yet' };
+  if (metrics.eventLoopLagMs > EVENT_LOOP_LAG_ALERT_MS) {
+    return { ok: false, error: 'event-loop lag is ' + metrics.eventLoopLagMs + 'ms (threshold ' + EVENT_LOOP_LAG_ALERT_MS + 'ms) - the server is struggling to keep up', lagMs: metrics.eventLoopLagMs };
+  }
+  return { ok: true, lagMs: metrics.eventLoopLagMs };
+}
+async function checkAiFallbackStreak() {
+  try {
+    const whatsappAssistant = require('./whatsappAssistant');
+    const streak = whatsappAssistant.getAutoReplyFallbackStreak();
+    if (streak >= AI_FALLBACK_STREAK_ALERT_COUNT) {
+      return { ok: false, error: streak + ' AI reply failures (fallback text sent) in the last 10 minutes - replies are not being generated normally', streak };
+    }
+    return { ok: true, streak };
   } catch (err) {
     return { ok: false, error: err.message };
   }
@@ -281,13 +383,19 @@ let lastAlertSentAt = 0;
 let wasFailingLastTick = false;
 
 async function runHealthCheck() {
-  const [kv, gateway, replyPipeline, schedulerHeartbeat, failedSends] = await Promise.all([checkKv(), checkGateway(), checkReplyPipeline(), checkSchedulerHeartbeat(), checkFailedSends()]);
+  const [kv, gateway, replyPipeline, schedulerHeartbeat, failedSends, kvLatency, eventLoopLag, aiFallbackStreak] = await Promise.all([
+    checkKv(), checkGateway(), checkReplyPipeline(), checkSchedulerHeartbeat(), checkFailedSends(),
+    checkKvLatency(), checkEventLoopLag(), checkAiFallbackStreak()
+  ]);
   const failures = [];
   if (!kv.ok) failures.push('Data store (subh-store/KV) unreachable: ' + kv.error);
   if (!gateway.ok) failures.push('WhatsApp gateway session problem: ' + gateway.error);
   if (!replyPipeline.ok) failures.push('Reply pipeline stuck: ' + replyPipeline.error);
   if (!schedulerHeartbeat.ok) failures.push('WhatsApp poll loop appears stopped: ' + schedulerHeartbeat.error);
   if (!failedSends.ok) failures.push('WhatsApp send failures: ' + failedSends.error);
+  if (!kvLatency.ok) failures.push(kvLatency.error);
+  if (!eventLoopLag.ok) failures.push(eventLoopLag.error);
+  if (!aiFallbackStreak.ok) failures.push(aiFallbackStreak.error);
   const isFailing = failures.length > 0;
   const now = Date.now();
 
@@ -314,7 +422,10 @@ async function runHealthCheck() {
   }
   wasFailingLastTick = isFailing;
 
-  return { ok: !isFailing, failures, kv, gateway, replyPipeline, schedulerHeartbeat, failedSends, alertSent };
+  return { ok: !isFailing, failures, kv, gateway, replyPipeline, schedulerHeartbeat, failedSends, kvLatency, eventLoopLag, aiFallbackStreak, alertSent };
 }
 
-module.exports = { runHealthCheck, checkKv, checkGateway, checkReplyPipeline, checkSchedulerHeartbeat, checkFailedSends };
+module.exports = {
+  runHealthCheck, checkKv, checkGateway, checkReplyPipeline, checkSchedulerHeartbeat, checkFailedSends,
+  checkKvLatency, checkEventLoopLag, checkAiFallbackStreak, startMetricsLog, getLatestMetrics, recordKvLatency, kvLatencyP95Ms
+};
