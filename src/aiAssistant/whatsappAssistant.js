@@ -3809,9 +3809,9 @@ async function isSenderKnownEmployee(phone) {
 // (only English/Banglish were given directly) - same meaning, same
 // tone, same two-line shape.
 const UNMATCHED_SENDER_DATA_REPLY = {
-  banglish: "Apni je number theke message korechhen, seta amader HR database-e registered na, tai HR-related data deya ba request process kora jacche na. Onugroho kore sorasori HR team-er sathe jogajog kore bishoy-ta solve korun.\nApni jodi Alcove-er employee hon ar apnar number bodle thake, HR-ke apnar notun number update korte bolun.",
-  hinglish: "Aap jis number se message kar rahe hain, woh hamare HR database mein registered nahi hai, isliye HR-related data dena ya request process karna sambhav nahi hai. Kripya seedhe HR team se sampark karke matter solve karein.\nAgar aap Alcove ke employee hain aur aapka number badal gaya hai, toh HR se apna naya number update karne ko kahein.",
-  english: "The number you're messaging from is not registered in our HR database, so I can't share HR data or process this request. Please contact the HR team directly to resolve this.\nIf you are an Alcove employee and your number has changed, please ask HR to update your registered number."
+  banglish: "Dukkhito, apni je number theke message korechhen, seta amader HR database-e registered na, tai HR-related data deya ba request process kora jacche na. Onugroho kore sorasori HR team-er sathe jogajog kore bishoy-ta solve korun.\nApni jodi Alcove-er employee hon ar apnar number bodle thake, HR-ke apnar notun number update korte bolun.",
+  hinglish: "Maaf kijiye, aap jis number se message kar rahe hain, woh hamare HR database mein registered nahi hai, isliye HR-related data dena ya request process karna sambhav nahi hai. Kripya seedhe HR team se sampark karke matter solve karein.\nAgar aap Alcove ke employee hain aur aapka number badal gaya hai, toh HR se apna naya number update karne ko kahein.",
+  english: "Sorry, the number you're messaging from is not registered in our HR database, so I can't share HR data or process this request. Please contact the HR team directly to resolve this.\nIf you are an Alcove employee and your number has changed, please ask HR to update your registered number."
 };
 // Task 16 (2026-11) LIVE BUG FIX - direct instruction, from the real live
 // incident (917278793115, 2026-11-04 14:42: "Mdo dept. HOD emp code dao"

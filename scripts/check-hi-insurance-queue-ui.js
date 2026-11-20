@@ -325,7 +325,14 @@ function check(label, ok, detail) {
 
   // ---- Sent history: now shows 1 batch card with the right count/recipients ----
   await page.click('#hiAdditionsSentHistoryLink');
-  await page.waitForTimeout(250);
+  // FLAKY-TEST FIX (2026-11) - a fixed 250ms wait raced the real fetch+
+  // render under machine load (confirmed flaky: failed once, passed on an
+  // immediate solo retry - the exact "CPU contention, not a product bug"
+  // shape already documented elsewhere in this suite). Waits for the real
+  // rendered state instead, no sleep: the card itself appearing (up to a
+  // generous 3s), or the loop below times out and the check correctly
+  // fails on an ACTUAL empty state, never a timing coincidence.
+  await page.locator('#hiSentHistoryList li[data-batch-id]').first().waitFor({ state: 'attached', timeout: 3000 }).catch(() => {});
   check('Sent history now shows exactly 1 batch card (never the raw empty state any more)', await page.locator('#hiSentHistoryList li[data-batch-id]').count() === 1);
   const batchCardText = await page.locator('#hiSentHistoryList li[data-batch-id]').textContent();
   check('The batch card names the real recipient and the right count', (batchCardText || '').includes('3 people') && (batchCardText || '').includes('mediclaim@co.test'));
