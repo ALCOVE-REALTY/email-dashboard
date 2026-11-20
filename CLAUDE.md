@@ -137,31 +137,56 @@ do any part of it, research-only or otherwise. This supersedes the general rule 
 project specifically: here, the answer to "should I spawn a helper for this" is always
 no, full stop.
 
-## SUBH Settings pages open instantly — STANDING RULE (2026-11, direct instruction)
+## Every SUBH section page opens instantly — STANDING RULE (2026-11, direct instruction)
 
-Found live: opening "Data access" from SUBH Settings took noticeably longer than every
-other section. Root cause - `prefetchSubhSettingsAll()` (`public/hrAssistant.js`), fired
-the instant the SUBH Settings hub view opens, warms `pageDataCache` for every section
-EXCEPT Data access, so that one section alone always paid a full live round trip on
-first tap, even though its own `loadDataAccessPage()` already had the correct cache-
-first shape. Fixed by adding the missing prefetch block - not by restructuring the page
-itself (the earlier "Create Workflow" speed fix's shell-first/IIFE pattern does not apply
-here; that fix was for a page that had no cache-first shape at all yet).
+Originally scoped to SUBH Settings alone (opening "Data access" there took noticeably
+longer than every other section - root cause: `prefetchSubhSettingsAll()`
+(`public/hrAssistant.js`), fired the instant the SUBH Settings hub view opens, warmed
+`pageDataCache` for every section EXCEPT Data access, so that one section alone always
+paid a full live round trip on first tap, even though its own `loadDataAccessPage()`
+already had the correct cache-first shape - fixed by adding the missing prefetch block,
+not by restructuring the page, since the earlier "Create Workflow" speed fix's shell-
+first/IIFE pattern is for a page with no cache-first shape at all yet, which this wasn't).
 
-**Every SUBH Settings section page (current and future) must open instantly**: its shell
-(header, page title) visible synchronously on tap, content rendered from
-`pageDataCache` immediately if warm, a real fetch only ever happening in the
-background to refresh it - never a blocking fetch before first paint. Any new section
-added to SUBH Settings must: (1) have its own `pageDataCache.<key>` entry and a
-cache-first `load<X>Page()` matching every existing one's shape, and (2) be added to
-`prefetchSubhSettingsAll()`'s own warm-up list.
+Widened (2026-11, direct instruction) after the exact same bug shape turned up again,
+independently, in 4 more places in the Today's Updates tree (Automated Workflows list -
+missing from its section's own warm-up, same as Data access; Attendance Requests/
+Templates/WhatsApp-conversations-list - never had a cache-first shape at all, same as
+the pre-fix "Create Workflow"; Action needed - the cache was already kept warm by the
+12s comms poll, but the page's own open path never read it before re-blocking on a
+fresh fetch anyway). **This rule is not SUBH-Settings-specific - it applies to every SUBH
+section page, current and future, anywhere in the panel** (SUBH Settings, Today's
+Updates -> Reminders/Important Communications and everything reachable from each, and
+any section added later): its shell (header, page title) visible synchronously on tap,
+content rendered from a cache immediately if warm, a real fetch only ever happening in
+the background to refresh it - never a blocking fetch before first paint. Any new
+section/page added anywhere in the SUBH panel must: (1) have its own cache entry and a
+cache-first `load<X>Page()`/`show<X>()` matching every existing one's shape, and (2) be
+added to whatever ambient warm-up already exists one hub level up (`prefetchSubhSettingsAll()`
+for Settings; `showReminders()`'s own list of fire-and-forget calls for Reminders'
+sub-pages; `loadCommsPage()`'s own list for Important Communications' sub-pages) - or a
+new one started, following that same convention, if this is the first page at that level.
 
-Enforced by `scripts/check-settings-pages-open-speed.js` (headless UI check, part of the
-normal pre-push gate) - fails if any SUBH Settings page takes longer than ~300ms (a wide
-margin above the real cached-path cost, which measures in the tens of ms) to show its
-shell and first real content, against a simulated 500ms network delay. A new section
-that violates this rule breaks the gate automatically; it is not something to remember
-to check by hand.
+A genuinely per-ITEM detail page (a single saved workflow's Progress board, one WhatsApp
+conversation thread) is the one deliberate exception to the ~300ms gate below, not to the
+rule itself: it must still have the correct cache-first shape (instant on a REPEAT open),
+but a truly first-ever open of a specific item can't be ambiently prewarmed the way a
+shared list view can, so there's nothing stable to gate at a fixed budget.
+
+Enforced by `scripts/check-subh-pages-open-speed.js` (headless UI check, run via
+`npm run check:perf` - deliberately NOT part of the blocking pre-push gate, see that
+script's own GATE HARDENING comment and run-pre-push-checks.js's GATE SCOPE comment for
+why a page-open timing number must never block a push; originally
+`check-settings-pages-open-speed.js`, renamed when widened beyond Settings) - reports
+(and, when run with its own real numbers in hand, flags) any gated SUBH section page
+that takes longer than ~300ms (a wide margin above the real cached-path cost, which
+measures in the tens of ms on an otherwise-idle machine) to show its shell and first
+real content, against a simulated 500ms network delay. A new page/section must be added
+to this script's own PAGES array (see its header comment for the one narrow,
+explicitly-reasoned exception: a per-item detail page, same as the paragraph above) -
+run it by hand (or in CI without a human waiting on it) after any change that touches
+page-open behavior; a real regression here is still a real regression, just never a
+reason to block someone's push over a single noisy number.
 
 ## Owner data safety — PERMANENT HARD RULES (PART B, 2026-11, direct instruction)
 

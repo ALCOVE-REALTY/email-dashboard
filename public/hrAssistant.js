@@ -5714,6 +5714,19 @@
     refreshAttnBadge(); // fire-and-forget, independent of the mails/WhatsApp render below
     loadSiteAliasesBadge(); // fire-and-forget, same reasoning
     loadDeptAliasesBadge(); // fire-and-forget, same reasoning
+    // SPEED FIX (2026-11, direct instruction) - same "fire-and-forget the
+    // instant Important Communications opens" convention as the 3 lines
+    // above, warming the 3 sub-pages one tap further in (WhatsApp/
+    // Attendance Requests/Templates) that otherwise each always paid a
+    // full live round trip on first tap even after gaining a cache-first
+    // shape - same bug shape as the original Data access fix, just one
+    // hub level deeper. All 3 reuse their own page's real load function
+    // (never a separate fetch path) and are safe to run while that page
+    // is hidden - exactly how loadAutomationsBadgeAndList(false) already
+    // warms Automated Tasks from showReminders().
+    loadWaAllFirstPage();
+    loadAttendanceRequests();
+    loadTemplatesPage();
     if (pageDataCache.comms) renderCommsData(pageDataCache.comms);
     let data;
     try {
