@@ -639,6 +639,40 @@ async function checkTopLevelSettingsSubpageFrame(page, pageLabel, viewId, baseli
   await page.waitForTimeout(150);
   await page.click('#hrCommsHubWaTile');
   await page.waitForTimeout(150);
+  // Delivery log (Robustness pass, Pass 2, 2026-11, direct instruction) -
+  // smoke test: the icon opens the page, the header/stat cards/chips/
+  // list render from a real (mocked) response, and the badge reflects a
+  // real not-delivered count. Mocked here (not the real backend) since
+  // this is a headless-UI check of the PAGE, not the API - the
+  // deterministic suite (check-whatsapp-engine.js) already covers
+  // queryDeliveryEvidence's own filtering/stats logic directly.
+  const dlogMockSentAt = Date.now() - 5 * 60 * 1000;
+  await page.route('**/api/workforce/hr-assistant/delivery-log?*', (route) => {
+    route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify({
+        items: [
+          { id: 'd1', chatId: '919999990001', name: 'Swattik Chatterjee', text: 'Apni ki Tathagata Sengupta (Mdo Dept.)-er kotha bolchhen?', sentAt: dlogMockSentAt, status: 'Not delivered', statusTone: 'red', detailLine: '12:36 · Gateway: 200 OK · Not in gateway feed · 2 retries failed', notDelivered: true, retried: true },
+          { id: 'd2', chatId: '919999990001', name: 'Swattik Chatterjee', text: "Hello! I'm SUBH, Subhodeep's HR Assistant...", sentAt: dlogMockSentAt - 60000, status: 'Delivered', statusTone: 'green', detailLine: '12:35 · Gateway: 200 OK · Confirmed in gateway feed', notDelivered: false, retried: false }
+        ],
+        hasMore: false, total: 2, stats: { deliveredCount: 46, notDeliveredCount: 1 }
+      })
+    });
+  });
+  await page.route('**/api/workforce/hr-assistant/delivery-log/badge', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ notDeliveredToday: 1 }) }));
+  await page.click('#hrDeliveryLogBtn');
+  await page.waitForTimeout(300);
+  check('Delivery log page opens with the right header title', (await page.locator('#hrCommsHeadTitle').textContent()).trim() === 'Delivery log');
+  check('Delivery log: export icon is visible in the header for this page', await page.locator('#hrCommsHeadExportBtn').isVisible());
+  check('Delivery log: "Delivered today" stat shows the real mocked count', (await page.locator('#hrDlogDeliveredCount').textContent()).trim() === '46');
+  check('Delivery log: "Not delivered" stat shows the real mocked count', (await page.locator('#hrDlogNotDeliveredCount').textContent()).trim() === '1');
+  const dlogListText = await page.locator('#hrDlogList').textContent();
+  check('Delivery log: a Not delivered card shows its real message text and detail line', dlogListText.includes('Tathagata Sengupta') && dlogListText.includes('2 retries failed'));
+  check('Delivery log: a Delivered card shows "Confirmed in gateway feed"', dlogListText.includes('Confirmed in gateway feed'));
+  check('Delivery log: the Not delivered card has a visible Resend button', await page.locator('.wf-dlog-card.not-delivered .wf-dlog-resend-btn').isVisible());
+  await page.click('#hrCommsBackBtn');
+  await page.waitForTimeout(200);
+  check('Delivery log: back button returns to Conversations without a blank page', await page.locator('#hrCommsWaAllPage').isVisible());
+
   const actionNeededErrBefore = consoleErrors.length + pageErrors.length;
   await page.click('#hrActionNeededBtn');
   await page.waitForTimeout(300);

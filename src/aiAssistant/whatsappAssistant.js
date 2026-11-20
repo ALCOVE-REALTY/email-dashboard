@@ -1821,6 +1821,106 @@ async function listDeliveryEvidence(limit = 500) {
     return raws.map((r) => { try { return r ? (typeof r === 'string' ? JSON.parse(r) : r) : null; } catch (e) { return null; } }).filter(Boolean);
   }, []);
 }
+// Delivery log page (Pass 2, direct instruction) - a single, honest
+// per-message presentation built from the SAME evidence records IT
+// written, never a second source of truth. "Not delivered" also covers
+// unconfirmed_check_failed (a feed-read error mid-verification) - we
+// genuinely don't know if it landed, so it's shown and resendable like
+// any other unconfirmed case rather than silently assumed fine.
+const DELIVERY_LOG_NOT_DELIVERED_OUTCOMES = ['not_delivered', 'unconfirmed_check_failed'];
+function deliveryLogStatus(record) {
+  if (DELIVERY_LOG_NOT_DELIVERED_OUTCOMES.includes(record.finalOutcome)) return { pill: 'Not delivered', tone: 'red' };
+  if (record.attempts.length <= 1) return { pill: 'Delivered', tone: 'green' };
+  const tryNum = record.attempts.length; // 2 attempts (1 resend) = "2nd try", 3 attempts = "3rd try"
+  const ordinal = tryNum === 2 ? '2nd' : tryNum === 3 ? '3rd' : (tryNum + 'th');
+  return { pill: 'Delivered (' + ordinal + ' try)', tone: 'amber' };
+}
+function formatIstTime(ms) {
+  return new Date(ms).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' });
+}
+function deliveryLogDetailLine(record) {
+  const timeStr = formatIstTime(record.sentAt);
+  const gatewayStatus = record.attempts[0] && record.attempts[0].httpStatus ? record.attempts[0].httpStatus + ' OK' : 'unknown';
+  if (record.attempts.length <= 1) {
+    if (record.confirmed === true) return timeStr + ' · Gateway: ' + gatewayStatus + ' · Confirmed in gateway feed';
+    if (record.confirmed === false) return timeStr + ' · Gateway: ' + gatewayStatus + ' · Not in gateway feed';
+    return timeStr + ' · Gateway: ' + gatewayStatus + ' · Could not check delivery status';
+  }
+  if (!record.confirmed) {
+    return timeStr + ' · Gateway: ' + gatewayStatus + ' · Not in gateway feed · ' + (record.attempts.length - 1) + ' retries failed';
+  }
+  const chain = ['1st try not confirmed'];
+  for (let i = 1; i < record.attempts.length; i++) {
+    const isLast = i === record.attempts.length - 1;
+    chain.push('Resent ' + formatIstTime(record.attempts[i].at) + (isLast ? ' → Confirmed' : ' → still not confirmed'));
+  }
+  return timeStr + ' · ' + chain.join(' → ');
+}
+function toDeliveryLogItem(record) {
+  const status = deliveryLogStatus(record);
+  return {
+    id: record.id, chatId: record.chatId, name: record.name,
+    text: record.textPreview, sentAt: record.sentAt,
+    status: status.pill, statusTone: status.tone,
+    detailLine: deliveryLogDetailLine(record),
+    notDelivered: DELIVERY_LOG_NOT_DELIVERED_OUTCOMES.includes(record.finalOutcome),
+    retried: record.attempts.length > 1,
+    httpStatus: (record.attempts[0] && record.attempts[0].httpStatus) || null,
+    gatewayMessageId: (record.attempts[0] && record.attempts[0].gatewayMessageId) || null,
+    confirmed: record.confirmed,
+    retryCount: record.attempts.length - 1
+  };
+}
+// filter: 'all' | 'not_delivered' | 'retried'. date: an IST day key
+// ("YYYY-MM-DD") - defaults to today IST. Stats are always computed for
+// the WHOLE requested date, independent of `filter`, since the two stat
+// cards (point 2) show the day's totals regardless of which chip is
+// selected.
+async function queryDeliveryEvidence({ filter, date, offset, limit } = {}) {
+  const dayKey = date || istDayKeyOf(new Date());
+  const all = await listDeliveryEvidence(5000);
+  const sameDay = all.filter((r) => istDayKeyOf(new Date(r.sentAt)) === dayKey);
+  const deliveredCount = sameDay.filter((r) => !DELIVERY_LOG_NOT_DELIVERED_OUTCOMES.includes(r.finalOutcome)).length;
+  const notDeliveredCount = sameDay.filter((r) => DELIVERY_LOG_NOT_DELIVERED_OUTCOMES.includes(r.finalOutcome)).length;
+  let filtered = sameDay;
+  if (filter === 'not_delivered') filtered = sameDay.filter((r) => DELIVERY_LOG_NOT_DELIVERED_OUTCOMES.includes(r.finalOutcome));
+  else if (filter === 'retried') filtered = sameDay.filter((r) => r.attempts.length > 1);
+  const start = Math.max(0, offset || 0);
+  const end = start + Math.max(1, limit || 20);
+  const page = filtered.slice(start, end).map(toDeliveryLogItem);
+  return { items: page, hasMore: filtered.length > end, total: filtered.length, stats: { deliveredCount, notDeliveredCount } };
+}
+// Owner-only, for the icon badge (point: red count badge when there are
+// Not delivered messages today) - a thin wrapper so the route doesn't
+// need to know the underlying evidence shape at all.
+async function countNotDeliveredToday() {
+  const result = await queryDeliveryEvidence({ filter: 'not_delivered', date: istDayKeyOf(new Date()), offset: 0, limit: 1 });
+  return result.stats.notDeliveredCount;
+}
+// Export for IT (point 4) - every field named in the request, for an
+// arbitrary inclusive date range (never just "today"). Deliberately a
+// flat list of plain objects (no pill/tone formatting) - the two export
+// builders below render it their own way, and a raw field like
+// httpStatus/gatewayMessageId is exactly what an external IT team wants
+// over a human-friendly pill.
+async function listDeliveryEvidenceForExport(dateFromKey, dateToKey) {
+  const all = await listDeliveryEvidence(5000);
+  return all
+    .filter((r) => {
+      const key = istDayKeyOf(new Date(r.sentAt));
+      return key >= dateFromKey && key <= dateToKey;
+    })
+    .map((r) => ({
+      time: new Date(r.sentAt).toLocaleString('en-GB', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
+      name: r.name, chatId: r.chatId, text: r.textPreview,
+      status: deliveryLogStatus(r).pill,
+      httpStatus: (r.attempts[0] && r.attempts[0].httpStatus) || '',
+      gatewayMessageId: (r.attempts[0] && r.attempts[0].gatewayMessageId) || '',
+      confirmed: r.confirmed === true ? 'Yes' : r.confirmed === false ? 'No' : 'Unknown',
+      retryCount: r.attempts.length - 1,
+      retryTimes: r.attempts.slice(1).map((a) => formatIstTime(a.at)).join('; ')
+    }));
+}
 // Dual-channel owner alert (point 2 - "red Action-needed card + owner
 // alert (WhatsApp + email)") - postOwnerNotification alone (what every
 // OTHER failure path in this file already calls) only ever writes to the
@@ -15429,6 +15529,9 @@ module.exports = {
   confirmOrRecoverSend,
   processDueDeliveryChecks,
   clearAllPendingDeliveryChecks,
+  queryDeliveryEvidence,
+  countNotDeliveredToday,
+  listDeliveryEvidenceForExport,
   listDeliveryEvidence,
   alertOwnerDualChannel,
   archiveOldInboxLogEntriesIfNeeded,

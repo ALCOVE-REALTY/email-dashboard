@@ -108,7 +108,16 @@ function findRouteHandler(router, method, routePath) {
   throw new Error('route not found: ' + method + ' ' + routePath);
 }
 function fakeRes() {
-  return { statusCode: 200, _json: null, status(code) { this.statusCode = code; return this; }, json(obj) { this._json = obj; return this; } };
+  return {
+    statusCode: 200, _json: null, _headers: {}, _sentBody: undefined,
+    status(code) { this.statusCode = code; return this; },
+    json(obj) { this._json = obj; return this; },
+    // Delivery log export route (Pass 2) uses setHeader/send directly
+    // (CSV/PDF, never res.json) - added here, local to this file only.
+    setHeader(name, value) { this._headers[name] = value; return this; },
+    set(name, value) { this._headers[name] = value; return this; },
+    send(body) { this._sentBody = body; return this; }
+  };
 }
 async function callRoute(router, method, routePath, { body, params, email } = {}) {
   const handler = findRouteHandler(router, method, routePath);
@@ -430,6 +439,30 @@ async function main() {
     whatsapp.sendWhatsAppMessage = origSendWhatsAppMessageForResend;
     delete process.env.WHATSAPP_SEND_VERIFY_DELAY_MS;
   }
+
+  console.log('='.repeat(70));
+  console.log('Delivery log routes (Pass 2) - owner gating, bad-input handling, and export content-type/filename');
+  console.log('='.repeat(70));
+  check('GET /hr-assistant/delivery-log blocked for a non-owner', (await callRoute(workforceRoutes, 'get', '/hr-assistant/delivery-log', { email: 'not-the-owner@example.com' })).status === 403);
+  check('GET /hr-assistant/delivery-log/badge never errors for a non-owner, just reports 0', (await callRoute(workforceRoutes, 'get', '/hr-assistant/delivery-log/badge', { email: 'not-the-owner@example.com' })).body.notDeliveredToday === 0);
+  await checkAsync('GET /hr-assistant/delivery-log (owner) returns the real shape: items, hasMore, stats', async () => {
+    const result = await callRoute(workforceRoutes, 'get', '/hr-assistant/delivery-log', { email: OWNER_EMAIL });
+    return result.status === 200 && Array.isArray(result.body.items) && typeof result.body.hasMore === 'boolean' &&
+      typeof result.body.stats.deliveredCount === 'number' && typeof result.body.stats.notDeliveredCount === 'number';
+  });
+  check('POST /hr-assistant/delivery-log/export blocked for a non-owner', (async () => (await callRoute(workforceRoutes, 'post', '/hr-assistant/delivery-log/export', { body: { dateFrom: '2026-11-01', dateTo: '2026-11-01', format: 'csv' }, email: 'not-the-owner@example.com' })).status === 403)());
+  await checkAsync('POST /hr-assistant/delivery-log/export (owner): bad dates/format are rejected with 400, never a 500', async () => {
+    const r1 = await callRoute(workforceRoutes, 'post', '/hr-assistant/delivery-log/export', { body: { dateFrom: 'not-a-date', dateTo: '2026-11-01', format: 'csv' }, email: OWNER_EMAIL });
+    const r2 = await callRoute(workforceRoutes, 'post', '/hr-assistant/delivery-log/export', { body: { dateFrom: '2026-11-01', dateTo: '2026-11-01', format: 'xlsx' }, email: OWNER_EMAIL });
+    return r1.status === 400 && r2.status === 400;
+  });
+  await checkAsync('POST /hr-assistant/delivery-log/export (owner, CSV): real content-type and a sensible filename, body starts with the exact header row', async () => {
+    const res = fakeRes();
+    const handler = findRouteHandler(workforceRoutes, 'post', '/hr-assistant/delivery-log/export');
+    await handler({ body: { dateFrom: '2026-11-01', dateTo: '2026-11-01', format: 'csv' }, hrUser: { email: OWNER_EMAIL } }, res);
+    return res._headers['Content-Type'] === 'text/csv' && /filename="Delivery_Log_2026-11-01\.csv"/.test(res._headers['Content-Disposition']) &&
+      String(res._sentBody || res._json).startsWith('Time,Contact Name,Number');
+  });
 
   console.log('='.repeat(70));
   console.log('Manager-reminder silent-failure fix - a failed single-item nudge now alerts the owner instead of vanishing with zero trace');

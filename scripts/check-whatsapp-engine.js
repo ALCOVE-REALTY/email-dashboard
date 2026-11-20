@@ -9265,6 +9265,63 @@ async function checkAsyncRealModel(label, fn) {
       whatsapp.listMessages = defaultListMessagesMock;
       return calls === 0;
     });
+
+    console.log('='.repeat(70));
+    console.log('queryDeliveryEvidence/countNotDeliveredToday/listDeliveryEvidenceForExport - Delivery log page (Pass 2)');
+    console.log('='.repeat(70));
+    await checkAsync('queryDeliveryEvidence: filter "all" vs "not_delivered" vs "retried" each return exactly the right subset, with correct today stats regardless of filter', async () => {
+      await whatsappAssistant.clearAllPendingDeliveryChecks();
+      const now = Date.now();
+      // Delivered immediately (attempts=1).
+      whatsapp.listMessages = async () => [outgoingAt('Dlog delivered now', now)];
+      await whatsappAssistant.confirmOrRecoverSend({ chatId: '919999993001', name: 'DlogA', replyText: 'Dlog delivered now', sentAt: now });
+      await driveDeliveryChecksToCompletion();
+      // Delivered after exactly one resend (attempts=2, "retried").
+      let call = 0;
+      whatsapp.listMessages = async () => { call++; return call <= 1 ? [] : [outgoingAt('Dlog delivered after retry', Date.now())]; };
+      whatsapp.sendWhatsAppMessage = async () => ({ ok: true, gatewayMessageId: 'DLOG-RESEND', httpStatus: 200 });
+      await whatsappAssistant.confirmOrRecoverSend({ chatId: '919999993002', name: 'DlogB', replyText: 'Dlog delivered after retry', sentAt: Date.now() });
+      await driveDeliveryChecksToCompletion();
+      // Never delivered (not_delivered, also "retried").
+      whatsapp.listMessages = defaultListMessagesMock; // never shows up
+      whatsapp.sendWhatsAppMessage = defaultSendWhatsAppMessageMock;
+      await whatsappAssistant.confirmOrRecoverSend({ chatId: '919999993003', name: 'DlogC', replyText: 'Dlog never delivered', sentAt: Date.now() });
+      await driveDeliveryChecksToCompletion();
+      whatsapp.listMessages = defaultListMessagesMock;
+      whatsapp.sendWhatsAppMessage = defaultSendWhatsAppMessageMock;
+
+      const all = await whatsappAssistant.queryDeliveryEvidence({ filter: 'all', offset: 0, limit: 50 });
+      const notDelivered = await whatsappAssistant.queryDeliveryEvidence({ filter: 'not_delivered', offset: 0, limit: 50 });
+      const retried = await whatsappAssistant.queryDeliveryEvidence({ filter: 'retried', offset: 0, limit: 50 });
+      const mine = (items) => items.filter((i) => ['919999993001', '919999993002', '919999993003'].includes(i.chatId));
+      const allMine = mine(all.items);
+      const notDeliveredMine = mine(notDelivered.items);
+      const retriedMine = mine(retried.items);
+      return allMine.length === 3 &&
+        notDeliveredMine.length === 1 && notDeliveredMine[0].chatId === '919999993003' && notDeliveredMine[0].status === 'Not delivered' &&
+        retriedMine.length === 2 && retriedMine.every((i) => ['919999993002', '919999993003'].includes(i.chatId)) &&
+        allMine.find((i) => i.chatId === '919999993002').status === 'Delivered (2nd try)' &&
+        all.stats.deliveredCount >= 2 && all.stats.notDeliveredCount >= 1; // "today" totals include other same-day records too, never an exact-equality assumption
+    });
+    await checkAsync('queryDeliveryEvidence: pagination (offset/limit/hasMore) actually slices the filtered list, never the whole day', async () => {
+      const page1 = await whatsappAssistant.queryDeliveryEvidence({ filter: 'all', offset: 0, limit: 1 });
+      return page1.items.length === 1 && page1.hasMore === true && page1.total >= 2;
+    });
+    await checkAsync('countNotDeliveredToday reflects the SAME not_delivered count queryDeliveryEvidence itself reports for today', async () => {
+      const viaQuery = (await whatsappAssistant.queryDeliveryEvidence({ filter: 'not_delivered', offset: 0, limit: 1 })).stats.notDeliveredCount;
+      const viaCount = await whatsappAssistant.countNotDeliveredToday();
+      return viaCount === viaQuery && viaCount >= 1;
+    });
+    await checkAsync('listDeliveryEvidenceForExport: date-range filtering excludes a record scheduled outside the range, and the row shape carries every field IT needs', async () => {
+      const todayKey = whatsappAssistant.istDayKeyOf(new Date());
+      const rows = await whatsappAssistant.listDeliveryEvidenceForExport(todayKey, todayKey);
+      const mine = rows.find((r) => r.chatId === '919999993003');
+      const yesterdayKey = whatsappAssistant.istDayKeyOf(new Date(Date.now() - 24 * 60 * 60 * 1000));
+      const excluded = await whatsappAssistant.listDeliveryEvidenceForExport(yesterdayKey, yesterdayKey);
+      return Boolean(mine) && mine.status === 'Not delivered' && mine.retryCount === 2 && mine.confirmed === 'No' &&
+        typeof mine.time === 'string' && typeof mine.httpStatus !== 'undefined' &&
+        !excluded.some((r) => r.chatId === '919999993003');
+    });
   } finally {
     whatsapp.listMessages = origListMessagesForVerify;
     whatsapp.sendWhatsAppMessage = origSendWhatsAppMessageForRecover;

@@ -137,6 +137,24 @@
   const templateReplyEnglishInput = document.getElementById('hrTemplateReplyEnglish');
   const templateReplyBanglishInput = document.getElementById('hrTemplateReplyBanglish');
   const templateReplyHinglishInput = document.getElementById('hrTemplateReplyHinglish');
+  // Delivery log (Robustness pass, Pass 2, 2026-11, direct instruction)
+  const deliveryLogBtn = document.getElementById('hrDeliveryLogBtn');
+  const deliveryLogBadge = document.getElementById('hrDeliveryLogBadge');
+  const deliveryLogPage = document.getElementById('hrDeliveryLogPage');
+  const deliveryLogDeliveredLabel = document.getElementById('hrDlogDeliveredLabel');
+  const deliveryLogDeliveredCount = document.getElementById('hrDlogDeliveredCount');
+  const deliveryLogNotDeliveredCount = document.getElementById('hrDlogNotDeliveredCount');
+  const deliveryLogChips = document.getElementById('hrDlogChips');
+  const deliveryLogDateChipLabel = document.getElementById('hrDlogDateChipLabel');
+  const deliveryLogDateInput = document.getElementById('hrDlogDateInput');
+  const deliveryLogList = document.getElementById('hrDlogList');
+  const deliveryLogOlderLoading = document.getElementById('hrDlogOlderLoading');
+  const deliveryLogExportBackdrop = document.getElementById('hrDlogExportBackdrop');
+  const deliveryLogExportSheet = document.getElementById('hrDlogExportSheet');
+  const deliveryLogExportFrom = document.getElementById('hrDlogExportFrom');
+  const deliveryLogExportTo = document.getElementById('hrDlogExportTo');
+  const deliveryLogExportBtn = document.getElementById('hrDlogExportBtn');
+  const commsHeadExportBtn = document.getElementById('hrCommsHeadExportBtn');
   const templateGenerateBtn = document.getElementById('hrTemplateGenerateBtn');
   const templateVersionsNote = document.getElementById('hrTemplateVersionsNote');
   // Task 2 (2026-10-28) - site aliases + new site detection
@@ -1800,6 +1818,10 @@
     // Task 6 - "live 12s refresh": the badge count stays current everywhere,
     // and the page itself re-renders when it's the one actually on screen.
     loadActionNeeded();
+    // Delivery log badge - same cadence, own small endpoint (not part of
+    // communications-summary's own payload).
+    refreshDeliveryLogBadge();
+    if (panelView === 'deliveryLog') loadDeliveryLogPage(true);
   }
   // Prefetches the reminders list alongside the comms poll (same cadence,
   // same "fire immediately on panel open" moment) purely to warm
@@ -1962,6 +1984,7 @@
     else if (entry.type === 'openFlows') showOpenFlows();
     else if (entry.type === 'attendanceRequests') showAttendanceRequests();
     else if (entry.type === 'templates') showTemplates();
+    else if (entry.type === 'deliveryLog') showDeliveryLog();
     // TASK 4 (2026-11) + its follow-up, direct instruction - the 8
     // siteAliases/deptAliases/companyDetails/letterSettings/dataBackups/
     // aiUsage/settingsHistory/holidays branches that used to be here are
@@ -2019,6 +2042,7 @@
     const isOpenFlows = view === 'openFlows';
     const isAttendanceRequests = view === 'attendanceRequests';
     const isTemplates = view === 'templates';
+    const isDeliveryLog = view === 'deliveryLog';
     // TASK 4 (2026-11), direct instruction - siteAliases/deptAliases/
     // companyDetails/letterSettings/aiUsage/dataBackups/settingsHistory/
     // holidays moved OUT of the panel entirely (normal top-level views now
@@ -2061,6 +2085,11 @@
     if (openFlowsPage) openFlowsPage.hidden = !isOpenFlows;
     if (attnPage) attnPage.hidden = !isAttendanceRequests;
     if (templatesPage) templatesPage.hidden = !isTemplates;
+    if (deliveryLogPage) deliveryLogPage.hidden = !isDeliveryLog;
+    // Export icon only ever shows for this one page's own header - every
+    // other branch below never touches it, so it must be forced off by
+    // default and only this page's own branch turns it back on.
+    if (commsHeadExportBtn) commsHeadExportBtn.hidden = !isDeliveryLog;
     // TASK 4 (2026-11) + its follow-up - the 8 siteAliasesPage/
     // deptAliasesPage/companyDetailsPage/letterSettingsPage/aiUsagePage/
     // dataBackupsPage/settingsHistoryPage/holidaysPage .hidden toggles
@@ -2127,6 +2156,12 @@
       if (commsHeadIcon) commsHeadIcon.innerHTML = WHATSAPP_SVG;
       if (commsHeadTitle) commsHeadTitle.textContent = 'Templates';
       if (commsHeadSubtitle) commsHeadSubtitle.textContent = 'Saved fixed replies for recurring topics';
+      if (commsHeadBadge) commsHeadBadge.hidden = true;
+    } else if (isDeliveryLog) {
+      if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon whatsapp';
+      if (commsHeadIcon) commsHeadIcon.innerHTML = WHATSAPP_SVG;
+      if (commsHeadTitle) commsHeadTitle.textContent = 'Delivery log';
+      if (commsHeadSubtitle) commsHeadSubtitle.textContent = '';
       if (commsHeadBadge) commsHeadBadge.hidden = true;
     } else if (isActionNeeded) {
       if (commsHeadIcon) commsHeadIcon.className = 'wf-comms-head-icon whatsapp';
@@ -3073,6 +3108,217 @@
     loadTemplatesPage();
   }
   if (templatesBtn) templatesBtn.addEventListener('click', () => { pushNav({ type: 'templates' }); showTemplates(); });
+
+  // Delivery log (Robustness pass, Pass 2, 2026-11, direct instruction) -
+  // "instant load (shell + cached data first, background refresh)", same
+  // pageDataCache convention as every other page here (e.g. Templates
+  // above). State kept module-local, reset only when the filter/date
+  // actually changes - reopening the page without changing either shows
+  // the same list instantly from cache while a background refresh runs.
+  let dlogFilter = 'all';
+  let dlogDate = null; // null = today (IST) - resolved server-side
+  let dlogOffset = 0;
+  let dlogHasMore = true;
+  let dlogLoading = false;
+  function todayIstDateInputValue() {
+    return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }); // en-CA => YYYY-MM-DD
+  }
+  function dlogPillClass(tone) { return tone === 'red' ? 'red' : tone === 'amber' ? 'amber' : 'green'; }
+  function buildDlogCardHtml(item) {
+    return '<div class="wf-dlog-card' + (item.notDelivered ? ' not-delivered' : '') + '" data-id="' + escapeHtml(item.id) + '" data-chat-id="' + escapeHtml(item.chatId) + '">' +
+      '<div class="wf-dlog-card-top">' +
+        '<span class="wf-dlog-card-name">' + escapeHtml(item.name || item.chatId) + '</span>' +
+        '<span class="wf-dlog-pill ' + dlogPillClass(item.statusTone) + '">' + escapeHtml(item.status) + '</span>' +
+      '</div>' +
+      '<div class="wf-dlog-card-text">&ldquo;' + escapeHtml(item.text) + '&rdquo;</div>' +
+      '<div class="wf-dlog-card-detail">' + escapeHtml(item.detailLine) + '</div>' +
+      (item.notDelivered
+        ? '<div class="wf-dlog-card-actions">' +
+            '<button type="button" class="wf-dlog-resend-btn" data-text="' + escapeHtml(item.text) + '">↻ Resend</button>' +
+            '<button type="button" class="wf-dlog-open-chat-btn">Open chat</button>' +
+          '</div>'
+        : '') +
+    '</div>';
+  }
+  function renderDlogStats(stats, dateKey) {
+    const isToday = !dateKey || dateKey === todayIstDateInputValue();
+    if (deliveryLogDeliveredLabel) deliveryLogDeliveredLabel.textContent = isToday ? 'Delivered today' : 'Delivered';
+    if (deliveryLogDeliveredCount) deliveryLogDeliveredCount.textContent = String(stats.deliveredCount);
+    if (deliveryLogNotDeliveredCount) deliveryLogNotDeliveredCount.textContent = String(stats.notDeliveredCount);
+  }
+  function wireDlogCardButtons(container) {
+    container.querySelectorAll('.wf-dlog-resend-btn').forEach((btn) => {
+      if (btn.dataset.wired) return;
+      btn.dataset.wired = '1';
+      btn.addEventListener('click', async () => {
+        const card = btn.closest('.wf-dlog-card');
+        if (!card || btn.disabled) return;
+        btn.disabled = true;
+        const original = btn.textContent;
+        btn.textContent = 'Resending…';
+        try {
+          const resp = await fetch('/api/workforce/hr-assistant/whatsapp-resend', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chatId: card.dataset.chatId, text: btn.dataset.text, name: card.querySelector('.wf-dlog-card-name').textContent })
+          });
+          const data = await resp.json();
+          if (data && data.ok) {
+            showActionToast('Resent - checking delivery…');
+            loadDeliveryLogPage(true);
+          } else {
+            showActionToast('Resend failed: ' + ((data && data.error) || 'unknown error'));
+            btn.disabled = false; btn.textContent = original;
+          }
+        } catch (err) {
+          showActionToast('Resend failed: ' + err.message);
+          btn.disabled = false; btn.textContent = original;
+        }
+      });
+    });
+    container.querySelectorAll('.wf-dlog-open-chat-btn').forEach((btn) => {
+      if (btn.dataset.wired) return;
+      btn.dataset.wired = '1';
+      btn.addEventListener('click', () => {
+        const card = btn.closest('.wf-dlog-card');
+        if (!card) return;
+        pushNav({ type: 'conversation', chatId: card.dataset.chatId });
+        openConversationPage(card.dataset.chatId);
+      });
+    });
+  }
+  async function loadDeliveryLogPage(reset) {
+    if (reset) { dlogOffset = 0; dlogHasMore = true; }
+    if (dlogLoading || (!dlogHasMore && !reset)) return;
+    dlogLoading = true;
+    if (!reset && deliveryLogOlderLoading) deliveryLogOlderLoading.hidden = false;
+    try {
+      const params = new URLSearchParams({ filter: dlogFilter, offset: String(dlogOffset), limit: '20' });
+      if (dlogDate) params.set('date', dlogDate);
+      const resp = await fetch('/api/workforce/hr-assistant/delivery-log?' + params.toString());
+      const data = await resp.json();
+      if (panelView !== 'deliveryLog') return; // navigated away meanwhile
+      const items = (data && data.items) || [];
+      dlogHasMore = Boolean(data && data.hasMore);
+      dlogOffset += items.length;
+      const html = items.map(buildDlogCardHtml).join('');
+      if (deliveryLogList) {
+        if (reset) deliveryLogList.innerHTML = html || '<div class="wf-comms-empty">No messages for this date.</div>';
+        else deliveryLogList.insertAdjacentHTML('beforeend', html);
+        wireDlogCardButtons(deliveryLogList);
+      }
+      if (data && data.stats) renderDlogStats(data.stats, dlogDate);
+    } catch (err) {
+      if (reset && deliveryLogList) deliveryLogList.innerHTML = '<div class="wf-comms-empty">Could not load the delivery log.</div>';
+    } finally {
+      dlogLoading = false;
+      if (deliveryLogOlderLoading) deliveryLogOlderLoading.hidden = true;
+    }
+  }
+  function showDeliveryLog() {
+    setPanelView('deliveryLog');
+    loadDeliveryLogPage(true);
+  }
+  if (deliveryLogBtn) deliveryLogBtn.addEventListener('click', () => { pushNav({ type: 'deliveryLog' }); showDeliveryLog(); });
+  // Point 6, direct instruction - "red marks in chats link directly to
+  // the matching card" (opens the page pre-filtered to Not delivered;
+  // see buildConvoMsgBubbleHtml's own comment for why a literal per-
+  // message deep link isn't meaningful here).
+  function openDeliveryLogFilteredToNotDelivered() {
+    dlogFilter = 'not_delivered';
+    dlogDate = null;
+    if (deliveryLogChips) {
+      deliveryLogChips.querySelectorAll('.wf-rem-chip[data-filter]').forEach((c) => c.setAttribute('aria-pressed', c.dataset.filter === 'not_delivered' ? 'true' : 'false'));
+    }
+    if (deliveryLogDateChipLabel) deliveryLogDateChipLabel.textContent = 'Today';
+    pushNav({ type: 'deliveryLog' });
+    showDeliveryLog();
+  }
+  if (deliveryLogPage) {
+    deliveryLogPage.addEventListener('scroll', () => {
+      if (panelView !== 'deliveryLog') return;
+      if (deliveryLogPage.scrollHeight - deliveryLogPage.scrollTop - deliveryLogPage.clientHeight < 200) loadDeliveryLogPage(false);
+    });
+  }
+  if (deliveryLogChips) {
+    deliveryLogChips.querySelectorAll('.wf-rem-chip[data-filter]').forEach((chip) => {
+      chip.addEventListener('click', () => {
+        deliveryLogChips.querySelectorAll('.wf-rem-chip[data-filter]').forEach((c) => c.setAttribute('aria-pressed', c === chip ? 'true' : 'false'));
+        dlogFilter = chip.dataset.filter;
+        loadDeliveryLogPage(true);
+      });
+    });
+  }
+  if (deliveryLogDateInput) {
+    deliveryLogDateInput.addEventListener('change', () => {
+      const val = deliveryLogDateInput.value;
+      if (!val) return;
+      dlogDate = val;
+      const isToday = val === todayIstDateInputValue();
+      if (deliveryLogDateChipLabel) deliveryLogDateChipLabel.textContent = isToday ? 'Today' : new Date(val + 'T00:00:00').toLocaleDateString('en-GB', { day: '2-digit', month: 'short' });
+      loadDeliveryLogPage(true);
+    });
+  }
+  // Export for IT - date range + format sheet, same bottom-sheet
+  // backdrop/open-close convention as the Template sheet above.
+  function openDlogExportSheet() {
+    if (deliveryLogExportFrom) deliveryLogExportFrom.value = dlogDate || todayIstDateInputValue();
+    if (deliveryLogExportTo) deliveryLogExportTo.value = dlogDate || todayIstDateInputValue();
+    if (deliveryLogExportBackdrop) deliveryLogExportBackdrop.hidden = false;
+    if (deliveryLogExportSheet) deliveryLogExportSheet.hidden = false;
+  }
+  function closeDlogExportSheet() {
+    if (deliveryLogExportBackdrop) deliveryLogExportBackdrop.hidden = true;
+    if (deliveryLogExportSheet) deliveryLogExportSheet.hidden = true;
+  }
+  if (commsHeadExportBtn) commsHeadExportBtn.addEventListener('click', openDlogExportSheet);
+  if (deliveryLogExportBackdrop) deliveryLogExportBackdrop.addEventListener('click', closeDlogExportSheet);
+  if (deliveryLogExportBtn) {
+    deliveryLogExportBtn.addEventListener('click', async () => {
+      if (deliveryLogExportBtn.disabled) return; // double-tap guard
+      const dateFrom = deliveryLogExportFrom ? deliveryLogExportFrom.value : '';
+      const dateTo = deliveryLogExportTo ? deliveryLogExportTo.value : '';
+      const format = (deliveryLogExportSheet && deliveryLogExportSheet.querySelector('input[name="hrDlogExportFormat"]:checked') || {}).value || 'csv';
+      if (!dateFrom || !dateTo) return;
+      deliveryLogExportBtn.disabled = true;
+      const original = deliveryLogExportBtn.textContent;
+      deliveryLogExportBtn.textContent = 'Exporting…';
+      try {
+        const resp = await fetch('/api/workforce/hr-assistant/delivery-log/export', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ dateFrom, dateTo, format })
+        });
+        if (!resp.ok) { const err = await resp.json().catch(() => ({})); throw new Error(err.error || 'Export failed'); }
+        const blob = await resp.blob();
+        const disposition = resp.headers.get('Content-Disposition') || '';
+        const match = /filename="([^"]+)"/.exec(disposition);
+        const filename = match ? match[1] : ('Delivery_Log.' + format);
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
+        window.URL.revokeObjectURL(url);
+        deliveryLogExportBtn.textContent = '✓ Exported';
+        setTimeout(closeDlogExportSheet, 700);
+      } catch (err) {
+        showActionToast('Export failed: ' + err.message);
+      } finally {
+        setTimeout(() => { deliveryLogExportBtn.disabled = false; deliveryLogExportBtn.textContent = original; }, 800);
+      }
+    });
+  }
+  // Badge (red count of today's not-delivered messages) - polled on the
+  // SAME cycle as every other panel badge (pollActionableSummary below
+  // already runs every ~12s regardless of which page is open).
+  async function refreshDeliveryLogBadge() {
+    try {
+      const resp = await fetch('/api/workforce/hr-assistant/delivery-log/badge');
+      const data = await resp.json();
+      const n = (data && data.notDeliveredToday) || 0;
+      if (deliveryLogBadge) {
+        deliveryLogBadge.hidden = n <= 0;
+        deliveryLogBadge.textContent = String(n);
+      }
+    } catch (err) { /* best effort - badge just stays at its last known value */ }
+  }
 
   // Task 2 (2026-10-28) - site aliases + new site detection.
   // Task 8 (2026-10-29) - ONE card per GROUP (site value), per direct
@@ -6139,7 +6385,13 @@
     return '<div class="wf-convo-msg ' + (m.direction === 'out' ? 'out' : 'in') + '">' +
       '<span class="wf-convo-msg-bubble">' + escapeHtml(m.text) + '</span>' +
       (m.direction === 'out' && CONVO_NOT_DELIVERED_OUTCOMES.includes(m.outcome) ?
-        '<span class="wf-convo-msg-failed">Not delivered</span>' +
+        // Pass 2, direct instruction point 6 - "red marks in chats link
+        // directly to the matching card" (the Delivery log page). A real
+        // per-message deep link isn't meaningful here (the evidence log
+        // is keyed separately from this inbox-log entry) - opens the page
+        // pre-filtered to Not delivered instead, which is where this
+        // exact message's own card lives.
+        '<button type="button" class="wf-convo-msg-failed" title="Open Delivery log">Not delivered</button>' +
         '<button type="button" class="wf-convo-msg-resend" data-text="' + escapeHtml(m.text) + '">Resend</button>'
         : '') +
       // Task 1 NEW EVIDENCE (2026-10-29) - the safety-net skip
@@ -6214,6 +6466,9 @@
       convoThread.querySelectorAll('.wf-convo-msg-resend').forEach((btn) => {
         btn.addEventListener('click', () => resendConvoMessage(btn));
       });
+      convoThread.querySelectorAll('.wf-convo-msg-failed').forEach((btn) => {
+        btn.addEventListener('click', () => openDeliveryLogFilteredToNotDelivered());
+      });
     }
     // A fresh page's worth of messages (not an in-place no-op re-render)
     // - reset older-message pagination for whatever chat this is. Only
@@ -6264,6 +6519,9 @@
       });
       convoThread.querySelectorAll('.wf-convo-msg-resend').forEach((btn) => {
         if (!btn.dataset.wired) { btn.dataset.wired = '1'; btn.addEventListener('click', () => resendConvoMessage(btn)); }
+      });
+      convoThread.querySelectorAll('.wf-convo-msg-failed').forEach((btn) => {
+        if (!btn.dataset.wired) { btn.dataset.wired = '1'; btn.addEventListener('click', () => openDeliveryLogFilteredToNotDelivered()); }
       });
       convoPage.scrollTop = prevScrollTop + (convoPage.scrollHeight - prevScrollHeight);
       // Keep the cached thread in sync so navigating away and back shows

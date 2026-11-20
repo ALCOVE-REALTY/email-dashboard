@@ -1775,7 +1775,9 @@ body { background: var(--wi-bg); }
 .wf-convo-msg-failed {
   font-size: 0.64rem; font-weight: 700; color: var(--wi-red-700); background: var(--wi-red-50);
   padding: 2px 7px; border-radius: 8px; margin-top: 2px;
+  border: none; font-family: inherit; cursor: pointer; align-self: flex-end;
 }
+.wf-convo-msg-failed:active { opacity: .7; }
 /* Task 1 NEW EVIDENCE (2026-10-29) - the safety-net "stale repeat" skip
    flag on an incoming bubble - neutral/informational (yellow), never red
    like the outgoing failure tag above, since nothing went wrong here. */
@@ -1799,6 +1801,53 @@ body { background: var(--wi-bg); }
 }
 .wf-convo-msg-resend:active { opacity: .7; }
 .wf-convo-msg-resend:disabled { opacity: .5; cursor: default; }
+
+/* Delivery log (Robustness pass, Pass 2, 2026-11, direct instruction) */
+.wf-dlog-stats { display: flex; gap: 10px; padding: 2px 2px 0; }
+.wf-dlog-stat-card {
+  flex: 1; background: var(--wi-surface); border: 1.5px solid var(--wi-border-2); border-radius: var(--wi-r-card);
+  padding: 12px 14px; display: flex; flex-direction: column; gap: 4px;
+}
+.wf-dlog-stat-label { font-size: 0.72rem; font-weight: 700; color: var(--wi-muted); }
+.wf-dlog-stat-value { font-size: 1.6rem; font-weight: 800; }
+.wf-dlog-stat-value.success { color: var(--wi-green-700); }
+.wf-dlog-stat-value.danger { color: var(--wi-red-700); }
+/* The native date input is a SIBLING of the chip button inside this
+   wrapper (an <input> can't legally nest inside a <button>) - position:
+   relative lives on the wrapper so the input's inset:0 below is
+   contained to just this one chip's own box, never the whole page
+   (confirmed live: without this wrapper, the input had no positioned
+   ancestor at all and expanded to cover the entire viewport, silently
+   intercepting every click, including the page's own back button). */
+.wf-dlog-date-chip-wrap { position: relative; flex: 0 0 auto; display: inline-flex; }
+.wf-dlog-date-input {
+  position: absolute; inset: 0; opacity: 0; width: 100%; height: 100%; border: none; padding: 0; margin: 0; cursor: pointer;
+}
+.wf-dlog-list { display: flex; flex-direction: column; gap: 10px; padding: 4px 2px 10px; }
+.wf-dlog-card {
+  background: var(--wi-surface); border: 1.5px solid var(--wi-border-2); border-radius: var(--wi-r-card);
+  padding: 12px 14px; display: flex; flex-direction: column; gap: 6px;
+}
+.wf-dlog-card.not-delivered { border: 1.5px solid var(--wi-red); background: var(--wi-red-50); }
+.wf-dlog-card-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.wf-dlog-card-name { font-size: 0.86rem; font-weight: 800; color: var(--wi-ink); }
+.wf-dlog-pill { flex: 0 0 auto; border-radius: var(--wi-r-pill); padding: 3px 10px; font-size: 0.68rem; font-weight: 800; white-space: nowrap; }
+.wf-dlog-pill.red { background: var(--wi-red-50); color: var(--wi-red-700); }
+.wf-dlog-pill.green { background: var(--wi-green-pill); color: var(--wi-green-700); }
+.wf-dlog-pill.amber { background: var(--wi-yellow-50); color: var(--wi-yellow-700); }
+.wf-dlog-card-text { font-size: 0.8rem; color: var(--wi-muted); font-style: italic; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.wf-dlog-card-detail { font-size: 0.68rem; color: var(--wi-faint); }
+.wf-dlog-card-actions { display: flex; gap: 8px; margin-top: 2px; }
+.wf-dlog-resend-btn, .wf-dlog-open-chat-btn {
+  height: 30px; padding: 0 14px; border-radius: 999px; font-size: 0.72rem; font-weight: 800; cursor: pointer; font-family: inherit;
+  display: inline-flex; align-items: center; gap: 5px;
+}
+.wf-dlog-resend-btn { border: none; background: var(--wi-primary-50); color: var(--wi-primary-700); }
+.wf-dlog-resend-btn:disabled { opacity: .6; cursor: default; }
+.wf-dlog-open-chat-btn { border: 1.5px solid var(--wi-border-2); background: var(--wi-surface); color: var(--wi-ink); }
+.wf-dlog-older-loading { display: flex; justify-content: center; padding: 12px 0; }
+.wf-dlog-export-format-row { display: flex; gap: 16px; margin-top: 12px; }
+.wf-dlog-export-format-opt { display: flex; align-items: center; gap: 6px; font-size: 0.82rem; font-weight: 700; color: var(--wi-ink); }
 
 /* Task 6 - "Action needed" unified inbox */
 .wf-action-needed-chips { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 14px; }

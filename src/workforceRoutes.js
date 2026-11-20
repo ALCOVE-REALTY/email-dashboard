@@ -2931,6 +2931,73 @@ router.post('/hr-assistant/whatsapp-resend', async (req, res) => {
   }
 });
 
+// Delivery log (Pass 2, direct instruction) - list + badge count, owner
+// only, reading straight from the evidence log Pass 1 already writes.
+router.get('/hr-assistant/delivery-log', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const filter = ['not_delivered', 'retried'].includes(req.query.filter) ? req.query.filter : 'all';
+    const date = /^\d{4}-\d{2}-\d{2}$/.test(req.query.date) ? req.query.date : undefined;
+    const offset = parseInt(req.query.offset, 10) || 0;
+    const limit = Math.min(parseInt(req.query.limit, 10) || 20, 100);
+    const result = await whatsappAssistant.queryDeliveryEvidence({ filter, date, offset, limit });
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+router.get('/hr-assistant/delivery-log/badge', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.json({ notDeliveredToday: 0 });
+  try {
+    res.json({ notDeliveredToday: await whatsappAssistant.countNotDeliveredToday() });
+  } catch (err) {
+    res.json({ notDeliveredToday: 0 });
+  }
+});
+// Export for IT (point 4) - CSV built by hand (no CSV library used
+// anywhere else in this codebase, and the fields here are simple enough
+// not to need one - commas/quotes in message text are escaped per the
+// standard RFC 4180 double-quote rule); PDF reuses buildTablePdfBuffer,
+// same convention as every other report export in this file.
+function csvEscape(value) {
+  const s = String(value === undefined || value === null ? '' : value);
+  return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+router.post('/hr-assistant/delivery-log/export', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const { dateFrom, dateTo, format } = req.body || {};
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dateFrom) || !/^\d{4}-\d{2}-\d{2}$/.test(dateTo)) {
+      return res.status(400).json({ error: 'dateFrom and dateTo (YYYY-MM-DD) are required.' });
+    }
+    if (format !== 'csv' && format !== 'pdf') return res.status(400).json({ error: 'format must be "csv" or "pdf".' });
+    const rows = await whatsappAssistant.listDeliveryEvidenceForExport(dateFrom, dateTo);
+    const rangeLabel = dateFrom === dateTo ? dateFrom : dateFrom + '_to_' + dateTo;
+    if (format === 'csv') {
+      const columns = ['Time', 'Contact Name', 'Number', 'Message (first 100 chars)', 'Status', 'Gateway HTTP Status', 'Gateway Message ID', 'Feed Confirmed', 'Retry Count', 'Retry Times'];
+      const lines = [columns.join(',')].concat(rows.map((r) => [r.time, r.name, r.chatId, r.text, r.status, r.httpStatus, r.gatewayMessageId, r.confirmed, r.retryCount, r.retryTimes].map(csvEscape).join(',')));
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', 'attachment; filename="Delivery_Log_' + rangeLabel + '.csv"');
+      return res.send(lines.join('\r\n'));
+    }
+    const pdfBuffer = await buildTablePdfBuffer({
+      title: 'WhatsApp Delivery Log',
+      subtitle: rangeLabel.replace(/_to_/, ' to ') + ' · ' + rows.length + ' message' + (rows.length === 1 ? '' : 's') + ' · Generated ' +
+        new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
+      columns: ['Time', 'Contact', 'Number', 'Message', 'Status', 'HTTP', 'Gateway ID', 'Confirmed', 'Retries'],
+      rows: rows.length
+        ? rows.map((r) => [r.time, r.name, r.chatId, r.text, r.status, String(r.httpStatus || '—'), r.gatewayMessageId || '—', r.confirmed, String(r.retryCount)])
+        : [['No messages in this date range', '', '', '', '', '', '', '', '']],
+      landscape: true
+    });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'attachment; filename="Delivery_Log_' + rangeLabel + '.pdf"');
+    res.send(pdfBuffer);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.post('/hr-assistant/whatsapp-approval', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
   try {
