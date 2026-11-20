@@ -135,6 +135,12 @@ async function checkTopLevelSettingsSubpageFrame(page, pageLabel, viewId, baseli
     await page.locator('#hrAssistantBtn').isVisible() &&
     await page.locator('#profileAvatar').isVisible());
   if (baseline) {
+    // Same document.fonts.ready wait as the baseline capture above - see
+    // its own comment. Without this, the webfont could still be mid-load
+    // HERE even though it was already loaded (or vice versa) when the
+    // baseline was captured, which is exactly the race that made this
+    // check flaky.
+    await page.evaluate(() => document.fonts.ready);
     const rects = await page.evaluate(() => ({
       menuBtn: document.getElementById('menuBtn').getBoundingClientRect(),
       profile: document.getElementById('profileAvatar').getBoundingClientRect(),
@@ -226,6 +232,16 @@ async function checkTopLevelSettingsSubpageFrame(page, pageLabel, viewId, baseli
   await page.waitForTimeout(150);
   await page.click('[data-view="orgChart"]');
   await page.waitForTimeout(300);
+  // LIVE BUG FIX (2026-11, direct instruction) - the flaky-tests.md entry
+  // this fixes: '.wf-wordmark' measured a DIFFERENT width here than at
+  // the comparison site below, purely because the custom webfont hadn't
+  // finished loading yet at one of the two capture points (a fallback-
+  // font glyph width, not the real one) - a fixed sleep before this
+  // never actually waited for the real condition. document.fonts.ready
+  // is the real, deterministic signal; waiting for it at BOTH capture
+  // sites (here and inside checkTopLevelSettingsSubpageFrame below)
+  // means neither one can ever race the other again.
+  await page.evaluate(() => document.fonts.ready);
   const topbarBaseline = await page.evaluate(() => ({
     menuBtn: document.getElementById('menuBtn').getBoundingClientRect(),
     profile: document.getElementById('profileAvatar').getBoundingClientRect(),
