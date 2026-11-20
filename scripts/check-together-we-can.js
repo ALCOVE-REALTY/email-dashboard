@@ -40,9 +40,9 @@ function fakeRes() {
     json(obj) { this._json = obj; return this; }
   };
 }
-async function callRoute(router, method, path, { body, query, email } = {}) {
+async function callRoute(router, method, path, { body, query, params, email } = {}) {
   const handler = findRouteHandler(router, method, path);
-  const req = { body: body || {}, query: query || {}, hrUser: { email: email || '' } };
+  const req = { body: body || {}, query: query || {}, params: params || {}, hrUser: { email: email || '' } };
   const res = fakeRes();
   await handler(req, res);
   return { status: res.statusCode, body: res._json };
@@ -113,7 +113,13 @@ async function main() {
 
   let currentFixtureRows = MAIN_FIXTURE;
   sheetsAuth.getSheetsReadOnlyClient = () => makeFakeSheetsClient(currentFixtureRows);
-  function setFixture(rows) { currentFixtureRows = rows; togetherWeCanService._clearCacheForTest(); }
+  // _clearHeaderCacheForTest too (2026-11, direct instruction - the
+  // header-cache fix for the Field mapping page) - getHeaderList() now
+  // has its OWN independent in-process cache (never routed through
+  // locateColumns/fetchAndParseSheet, same reasoning as before), so a
+  // fixture swap must clear it too or a later test in this same process
+  // could see STALE headers from an earlier fixture.
+  function setFixture(rows) { currentFixtureRows = rows; togetherWeCanService._clearCacheForTest(); togetherWeCanService._clearHeaderCacheForTest(); }
 
   // ---- global.fetch mock - intercepts ONLY calls to TWC_API_URL; every
   // other fetch (the fake Upstash Redis REST client's own HTTP calls)
@@ -564,7 +570,81 @@ async function main() {
       const res = await callRoute(workforceRoutes, 'get', '/hr-assistant/together-we-can/field-mapping', { email: OWNER });
       const headerRowValues = MAIN_FIXTURE[0].filter(Boolean);
       return res.status === 200 && res.body.mapping.empCode === 'Emp Code' &&
-        headerRowValues.every((h) => res.body.headers.includes(h));
+        headerRowValues.every((h) => res.body.headers.includes(h)) &&
+        res.body.headersStale === false && res.body.headersError === null;
+    });
+
+    console.log('='.repeat(70));
+    console.log('getHeaderList cache/timeout/fallback (LIVE BUG FIX, 2026-11) - the field-mapping page must never block on, or crash from, a slow/broken live header read');
+    console.log('='.repeat(70));
+    await checkAsync('a SECOND call within the cache window never touches the live sheet again - served instantly from cache', async () => {
+      setFixture(MAIN_FIXTURE);
+      let liveCalls = 0;
+      sheetsAuth.getSheetsReadOnlyClient = () => ({ spreadsheets: { values: { get: async () => { liveCalls++; return { data: { values: [MAIN_FIXTURE[0]] } }; } } } });
+      await togetherWeCanService.getHeaderList(); // primes the cache (first-ever call)
+      const before = liveCalls;
+      const result = await togetherWeCanService.getHeaderList();
+      sheetsAuth.getSheetsReadOnlyClient = () => makeFakeSheetsClient(currentFixtureRows);
+      return liveCalls === before && result.stale === false && result.headers.includes('Emp Code');
+    });
+    await checkAsync('forceRefresh:true always re-fetches live, even with a fresh cache already present', async () => {
+      setFixture(MAIN_FIXTURE);
+      let liveCalls = 0;
+      sheetsAuth.getSheetsReadOnlyClient = () => ({ spreadsheets: { values: { get: async () => { liveCalls++; return { data: { values: [MAIN_FIXTURE[0]] } }; } } } });
+      await togetherWeCanService.getHeaderList();
+      const before = liveCalls;
+      await togetherWeCanService.getHeaderList({ forceRefresh: true });
+      sheetsAuth.getSheetsReadOnlyClient = () => makeFakeSheetsClient(currentFixtureRows);
+      return liveCalls === before + 1;
+    });
+    await checkAsync('the VERY FIRST call ever (no cache yet) on a live read that fails reports a clear error and an empty header list, never throws', async () => {
+      togetherWeCanService._clearHeaderCacheForTest();
+      sheetsAuth.getSheetsReadOnlyClient = () => ({ spreadsheets: { values: { get: async () => { throw new Error('simulated Sheets API failure'); } } } });
+      const result = await togetherWeCanService.getHeaderList();
+      sheetsAuth.getSheetsReadOnlyClient = () => makeFakeSheetsClient(currentFixtureRows);
+      setFixture(MAIN_FIXTURE);
+      return Array.isArray(result.headers) && result.headers.length === 0 && result.stale === true && /simulated Sheets API failure/.test(result.error);
+    });
+    await checkAsync('a live read that hangs forever is cut off by the timeout seam (shrunk for this test only - the real default is 8000ms, never this), never left hanging indefinitely', async () => {
+      togetherWeCanService._clearHeaderCacheForTest();
+      const originalEnv = process.env.TWC_HEADER_FETCH_TIMEOUT_MS;
+      process.env.TWC_HEADER_FETCH_TIMEOUT_MS = '150';
+      sheetsAuth.getSheetsReadOnlyClient = () => ({ spreadsheets: { values: { get: () => new Promise(() => {}) } } }); // never resolves, on purpose
+      const t0 = Date.now();
+      const result = await togetherWeCanService.getHeaderList();
+      const elapsedMs = Date.now() - t0;
+      sheetsAuth.getSheetsReadOnlyClient = () => makeFakeSheetsClient(currentFixtureRows);
+      setFixture(MAIN_FIXTURE);
+      if (originalEnv === undefined) delete process.env.TWC_HEADER_FETCH_TIMEOUT_MS; else process.env.TWC_HEADER_FETCH_TIMEOUT_MS = originalEnv;
+      return result.stale === true && /timed out/.test(result.error || '') && elapsedMs < 2000;
+    });
+    await checkAsync('forceRefresh:true (the Retry button\'s own path) on a live failure never throws either - falls back to whatever cache already existed instead of wiping it out', async () => {
+      setFixture(MAIN_FIXTURE);
+      await togetherWeCanService.getHeaderList(); // primes a real, good cache
+      sheetsAuth.getSheetsReadOnlyClient = () => ({ spreadsheets: { values: { get: async () => { throw new Error('simulated Sheets API failure'); } } } });
+      const result = await togetherWeCanService.getHeaderList({ forceRefresh: true });
+      sheetsAuth.getSheetsReadOnlyClient = () => makeFakeSheetsClient(currentFixtureRows);
+      setFixture(MAIN_FIXTURE);
+      return result.stale === true && /simulated Sheets API failure/.test(result.error) && result.headers.includes('Emp Code'); // the OLD good cache, not wiped
+    });
+    await checkAsync('GET field-mapping?refreshHeaders=1 forces a genuinely fresh read (the Retry button), never just re-serving the same stale cache', async () => {
+      setFixture(MAIN_FIXTURE);
+      let liveCalls = 0;
+      sheetsAuth.getSheetsReadOnlyClient = () => ({ spreadsheets: { values: { get: async () => { liveCalls++; return { data: { values: [MAIN_FIXTURE[0]] } }; } } } });
+      await callRoute(workforceRoutes, 'get', '/hr-assistant/together-we-can/field-mapping', { email: OWNER });
+      const before = liveCalls;
+      await callRoute(workforceRoutes, 'get', '/hr-assistant/together-we-can/field-mapping', { email: OWNER, query: { refreshHeaders: '1' } });
+      sheetsAuth.getSheetsReadOnlyClient = () => makeFakeSheetsClient(currentFixtureRows);
+      return liveCalls === before + 1;
+    });
+    await checkAsync('GET field-mapping route: a live header-read failure never breaks the route - the saved mapping still comes back, valid JSON, with a plain-language headersError field', async () => {
+      togetherWeCanService._clearHeaderCacheForTest();
+      sheetsAuth.getSheetsReadOnlyClient = () => ({ spreadsheets: { values: { get: async () => { throw new Error('simulated Sheets API failure'); } } } });
+      const res = await callRoute(workforceRoutes, 'get', '/hr-assistant/together-we-can/field-mapping', { email: OWNER });
+      sheetsAuth.getSheetsReadOnlyClient = () => makeFakeSheetsClient(currentFixtureRows);
+      setFixture(MAIN_FIXTURE);
+      return res.status === 200 && res.body.mapping.empCode === 'Emp Code' && Array.isArray(res.body.headers) && res.body.headers.length === 0 &&
+        res.body.headersStale === true && /simulated Sheets API failure/.test(res.body.headersError || '');
     });
 
     await checkAsync('mapping ROUND-TRIP: picking a different real header via the field-mapping route is saved, and Preview/Sync then resolve through it (not the old one)', async () => {
@@ -619,6 +699,51 @@ async function main() {
     await togetherWeCanService.sendFullSync({ triggeredBy: 'post-field-mapping-cleanup' });
 
     console.log('='.repeat(70));
+    console.log('Preview/Sync now background jobs (2026-11, direct instruction) - "runs as a background job with status polling... so the connection is never cut"');
+    console.log('='.repeat(70));
+    async function pollTestJob(jobId) {
+      for (let i = 0; i < 50; i++) {
+        const job = await togetherWeCanService.getJob(jobId);
+        if (job && job.status !== 'running') return job;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      throw new Error('job ' + jobId + ' never settled');
+    }
+    await checkAsync('POST preview/start + GET preview/status: the job completes with the real preview result (same shape the old synchronous route returned)', async () => {
+      setFixture(MAIN_FIXTURE);
+      const startRes = await callRoute(workforceRoutes, 'post', '/hr-assistant/together-we-can/preview/start', { email: OWNER });
+      const job = await pollTestJob(startRes.body.jobId);
+      return job.status === 'done' && job.result.employeeCount === 4 && typeof job.result.counts.ACTIVE === 'number';
+    });
+    await checkAsync('GET preview/status route applies the SAME employee-name enrichment the old synchronous GET /preview route already did', async () => {
+      setFixture(MAIN_FIXTURE);
+      const startRes = await callRoute(workforceRoutes, 'post', '/hr-assistant/together-we-can/preview/start', { email: OWNER });
+      let job;
+      for (let i = 0; i < 50; i++) {
+        const statusRes = await callRoute(workforceRoutes, 'get', '/hr-assistant/together-we-can/preview/status/:jobId', { params: { jobId: startRes.body.jobId }, email: OWNER });
+        job = statusRes.body;
+        if (job.status !== 'running') break;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      return job.status === 'done' && Array.isArray(job.result.changedSinceLastSync.items);
+    });
+    await checkAsync('GET preview/status for a bogus job id 404s instead of crashing', async () => {
+      const res = await callRoute(workforceRoutes, 'get', '/hr-assistant/together-we-can/preview/status/:jobId', { params: { jobId: 'not-a-real-job' }, email: OWNER });
+      return res.status === 404;
+    });
+    await checkAsync('POST sync-now/start + GET sync-now/status: the job completes with the real sync result (same shape the old synchronous route returned)', async () => {
+      setFixture(MAIN_FIXTURE);
+      const startRes = await callRoute(workforceRoutes, 'post', '/hr-assistant/together-we-can/sync-now/start', { email: OWNER });
+      const job = await pollTestJob(startRes.body.jobId);
+      await togetherWeCanService.sendFullSync({ triggeredBy: 'job-test-cleanup' }); // settle the Action-needed card back to clean, same as every other test in this file
+      return job.status === 'done' && job.result.ok === true && job.result.employeeCount === 4;
+    });
+    await checkAsync('GET sync-now/status for a bogus job id 404s instead of crashing', async () => {
+      const res = await callRoute(workforceRoutes, 'get', '/hr-assistant/together-we-can/sync-now/status/:jobId', { params: { jobId: 'not-a-real-job' }, email: OWNER });
+      return res.status === 404;
+    });
+
+    console.log('='.repeat(70));
     console.log('Owner-gating: every "Together We Can" route, same pattern as the rest of this codebase');
     console.log('='.repeat(70));
     fetchScript = null;
@@ -632,15 +757,20 @@ async function main() {
       { method: 'post', path: '/hr-assistant/together-we-can/field-mapping', body: { empCode: 'Emp Code', status: 'Status', hodId: 'HOD-1 ID', reportingDoerId: 'Reporting Doer Id' } },
       { method: 'get', path: '/hr-assistant/together-we-can/settings' },
       { method: 'post', path: '/hr-assistant/together-we-can/settings', body: { enabled: false, time: '21:00' } },
-      { method: 'get', path: '/hr-assistant/together-we-can/employees' }
+      { method: 'get', path: '/hr-assistant/together-we-can/employees' },
+      // Background-job routes (Preview/Sync now, 2026-11, direct instruction)
+      { method: 'post', path: '/hr-assistant/together-we-can/preview/start' },
+      { method: 'get', path: '/hr-assistant/together-we-can/preview/status/:jobId', params: { jobId: 'bogus' } },
+      { method: 'post', path: '/hr-assistant/together-we-can/sync-now/start' },
+      { method: 'get', path: '/hr-assistant/together-we-can/sync-now/status/:jobId', params: { jobId: 'bogus' } }
     ];
     for (const r of OWNER_ROUTES) {
       await checkAsync(r.method.toUpperCase() + ' ' + r.path + ' - a non-owner gets 403', async () => {
-        const res = await callRoute(workforceRoutes, r.method, r.path, { body: r.body, email: NON_OWNER });
+        const res = await callRoute(workforceRoutes, r.method, r.path, { body: r.body, params: r.params, email: NON_OWNER });
         return res.status === 403;
       });
       await checkAsync(r.method.toUpperCase() + ' ' + r.path + ' - the owner is let through (never 403)', async () => {
-        const res = await callRoute(workforceRoutes, r.method, r.path, { body: r.body, email: OWNER });
+        const res = await callRoute(workforceRoutes, r.method, r.path, { body: r.body, params: r.params, email: OWNER });
         return res.status !== 403;
       });
     }

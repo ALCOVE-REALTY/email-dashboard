@@ -3010,7 +3010,14 @@
           </div>
           <div class="wf-auto-hint" style="padding:0 0 6px">Which real Employee_Master column (row 4) each field reads from. Pick again here if a column is ever renamed - no code change needed.</div>
           <div id="twcFieldMappingRows" style="display:flex;flex-direction:column;gap:10px"></div>
-          <div class="wf-auto-err hidden" id="twcFieldMappingErr" style="padding:4px 0 0"></div>
+          <!-- LIVE BUG FIX (2026-11, direct instruction) - a live header-
+               read failure now shows this plain-language line + Retry
+               (never the raw "Failed to execute 'json'..." browser error)
+               while the saved mapping above stays fully usable regardless. -->
+          <div class="wf-auto-err hidden" id="twcFieldMappingErr" style="padding:4px 0 0;display:flex;align-items:center;gap:10px;justify-content:space-between">
+            <span id="twcFieldMappingErrText"></span>
+            <button type="button" class="wf-ai-action-btn outline" id="twcFieldMappingRetryBtn" style="flex:0 0 auto;height:28px;padding:0 12px;font-size:12px"><span>Retry</span></button>
+          </div>
           <div style="margin-top:10px">
             <button type="button" class="wf-ai-action-btn outline" id="twcSaveFieldMappingBtn"><span>Save field mapping</span></button>
           </div>

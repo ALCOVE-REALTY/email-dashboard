@@ -137,32 +137,55 @@ function check(label, ok, detail) {
     }];
     route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ history }) });
   });
-  await page.route('**/api/workforce/hr-assistant/together-we-can/preview', (route) => {
+  // LIVE BUG FIX (2026-11, direct instruction) - Preview and Sync now are
+  // now background jobs (start + status polling, like Backup now/WhatsApp
+  // documents, "so the connection is never cut") - mocked as such below,
+  // never the old single synchronous route.
+  await page.route('**/api/workforce/hr-assistant/together-we-can/preview/start', (route) => {
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ jobId: 'preview-job-1' }) });
+  });
+  await page.route('**/api/workforce/hr-assistant/together-we-can/preview/status/*', (route) => {
     route.fulfill({
       status: 200, contentType: 'application/json', body: JSON.stringify({
-        employeeCount: 3,
-        counts: { ACTIVE: 2, INACTIVE: 1, 'NOTICE PERIOD': 0 },
-        warnings: [
-          { type: 'missing_hod', empCode: 'AR002', message: 'AR002: missing HOD ID.' },
-          { type: 'unknown_status', empCode: 'AR005', message: 'AR005: unknown status value "Weird" - row not sent.' }
-        ],
-        changedSinceLastSync: { count: 1, items: [{ empCode: 'AR001', kind: 'changed', message: 'AR001: status ACTIVE -> INACTIVE' }] }
+        status: 'done', result: {
+          employeeCount: 3,
+          counts: { ACTIVE: 2, INACTIVE: 1, 'NOTICE PERIOD': 0 },
+          warnings: [
+            { type: 'missing_hod', empCode: 'AR002', message: 'AR002: missing HOD ID.' },
+            { type: 'unknown_status', empCode: 'AR005', message: 'AR005: unknown status value "Weird" - row not sent.' }
+          ],
+          changedSinceLastSync: { count: 1, items: [{ empCode: 'AR001', kind: 'changed', message: 'AR001: status ACTIVE -> INACTIVE' }] }
+        }
       })
     });
   });
   // Flaky-test fix (2026-11, direct instruction) - same one-shot-gate
   // pattern as the settings-save mock below: holds here until the test
   // proves the spinner really rendered (page.waitForSelector, never a
-  // fixed sleep), so there is no timing window to race under load.
+  // fixed sleep), so there is no timing window to race under load. Now
+  // gates the STATUS poll's response (the start call itself is always
+  // fast - a real job start is just a Redis write) - the first poll
+  // reports "running" until released, proving the spinner persists
+  // across at least one real poll cycle, never just the initial click.
   let releaseSyncNow;
   const syncNowGate = new Promise((resolve) => { releaseSyncNow = resolve; });
-  await page.route('**/api/workforce/hr-assistant/together-we-can/sync-now', async (route) => {
-    await syncNowGate;
-    hasSyncedOnce = true;
+  let syncJobReleased = false;
+  await page.route('**/api/workforce/hr-assistant/together-we-can/sync-now/start', (route) => {
+    syncJobReleased = false;
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ jobId: 'sync-job-1' }) });
+  });
+  await page.route('**/api/workforce/hr-assistant/together-we-can/sync-now/status/*', async (route) => {
+    if (!syncJobReleased) {
+      await syncNowGate;
+      hasSyncedOnce = true;
+      syncJobReleased = true;
+    }
     route.fulfill({
       status: 200, contentType: 'application/json', body: JSON.stringify({
-        ok: true, employeeCount: 3, counts: { ACTIVE: 2, INACTIVE: 1, 'NOTICE PERIOD': 0 },
-        changedSinceLastSync: 1, mode: 'single', httpStatus: 200, responseBodyText: 'OK', batches: [], warnings: []
+        status: 'done', result: {
+          ok: true, employeeCount: 3, counts: { ACTIVE: 2, INACTIVE: 1, 'NOTICE PERIOD': 0 },
+          changedSinceLastSync: 1, mode: 'single', httpStatus: 200, responseBodyText: 'OK', batches: [], warnings: []
+        }
       })
     });
   });
@@ -275,7 +298,7 @@ function check(label, ok, detail) {
   // Deterministic: wait for the real request to land, then for the
   // spinner to actually be in the DOM - never a fixed sleep (see the gate
   // on the sync-now mock above), so this can't race under load.
-  await page.waitForRequest('**/api/workforce/hr-assistant/together-we-can/sync-now');
+  await page.waitForRequest('**/api/workforce/hr-assistant/together-we-can/sync-now/status/*');
   await page.waitForSelector('#twcSyncNowBtn .spinner');
   check('Sync Now button shows a spinner and is disabled while the sync is in flight', await page.locator('#twcSyncNowBtn .spinner').count() > 0 && await page.locator('#twcSyncNowBtn').isDisabled());
   // Second tap while busy is ignored - clicking again must not throw or double-fire.
@@ -334,13 +357,18 @@ function check(label, ok, detail) {
   await page.route('**/api/workforce/hr-assistant/together-we-can/failure', (route) => {
     route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ failure: failureRecord }) });
   });
-  await page.route('**/api/workforce/hr-assistant/together-we-can/sync-now', (route) => {
+  await page.route('**/api/workforce/hr-assistant/together-we-can/sync-now/start', (route) => {
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ jobId: 'sync-job-a' }) });
+  });
+  await page.route('**/api/workforce/hr-assistant/together-we-can/sync-now/status/*', (route) => {
     failureRecord = { reason: 'Batch send failed for rows 1-4 (HTTP 500): internal server error at Together We Can', httpStatus: 500, responseBodyText: 'internal server error at Together We Can', triggeredBy: 'manual:test', at: new Date().toISOString() };
     route.fulfill({
       status: 200, contentType: 'application/json', body: JSON.stringify({
-        ok: false, employeeCount: 4, counts: { ACTIVE: 2, INACTIVE: 1, 'NOTICE PERIOD': 1 }, changedSinceLastSync: 1,
-        mode: 'batched', reason: failureRecord.reason, httpStatus: 500, responseBodyText: 'internal server error at Together We Can',
-        batches: [{ startIndex: 0, endIndex: 3, ok: false, status: 500, bodyText: 'internal server error at Together We Can' }], warnings: []
+        status: 'done', result: {
+          ok: false, employeeCount: 4, counts: { ACTIVE: 2, INACTIVE: 1, 'NOTICE PERIOD': 1 }, changedSinceLastSync: 1,
+          mode: 'batched', reason: failureRecord.reason, httpStatus: 500, responseBodyText: 'internal server error at Together We Can',
+          batches: [{ startIndex: 0, endIndex: 3, ok: false, status: 500, bodyText: 'internal server error at Together We Can' }], warnings: []
+        }
       })
     });
   });
@@ -367,12 +395,17 @@ function check(label, ok, detail) {
   // Scenario B: tapping Retry re-runs the exact same sync - on success this
   // time, the banner must clear and the normal success toast/history must
   // appear, same as a fresh "Sync data now" tap.
-  await page.route('**/api/workforce/hr-assistant/together-we-can/sync-now', (route) => {
+  await page.route('**/api/workforce/hr-assistant/together-we-can/sync-now/start', (route) => {
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ jobId: 'sync-job-b' }) });
+  });
+  await page.route('**/api/workforce/hr-assistant/together-we-can/sync-now/status/*', (route) => {
     failureRecord = null;
     route.fulfill({
       status: 200, contentType: 'application/json', body: JSON.stringify({
-        ok: true, employeeCount: 4, counts: { ACTIVE: 2, INACTIVE: 1, 'NOTICE PERIOD': 1 }, changedSinceLastSync: 0,
-        mode: 'single', httpStatus: 200, responseBodyText: 'OK', batches: [], warnings: []
+        status: 'done', result: {
+          ok: true, employeeCount: 4, counts: { ACTIVE: 2, INACTIVE: 1, 'NOTICE PERIOD': 1 }, changedSinceLastSync: 0,
+          mode: 'single', httpStatus: 200, responseBodyText: 'OK', batches: [], warnings: []
+        }
       })
     });
   });
@@ -384,13 +417,18 @@ function check(label, ok, detail) {
 
   // Scenario C: TWC_API_URL missing on the server - the real shape
   // togetherWeCanService.js produces when postRows finds no URL configured.
-  await page.route('**/api/workforce/hr-assistant/together-we-can/sync-now', (route) => {
+  await page.route('**/api/workforce/hr-assistant/together-we-can/sync-now/start', (route) => {
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ jobId: 'sync-job-c' }) });
+  });
+  await page.route('**/api/workforce/hr-assistant/together-we-can/sync-now/status/*', (route) => {
     failureRecord = { reason: 'Batch send failed for rows 1-4 (HTTP network error): TWC_API_URL is not configured.', httpStatus: null, responseBodyText: null, triggeredBy: 'manual:test', at: new Date().toISOString() };
     route.fulfill({
       status: 200, contentType: 'application/json', body: JSON.stringify({
-        ok: false, employeeCount: 4, counts: { ACTIVE: 2, INACTIVE: 1, 'NOTICE PERIOD': 1 }, changedSinceLastSync: 0,
-        mode: 'batched', reason: failureRecord.reason, httpStatus: null, responseBodyText: null,
-        batches: [{ startIndex: 0, endIndex: 3, ok: false, status: null, bodyText: 'TWC_API_URL is not configured.' }], warnings: []
+        status: 'done', result: {
+          ok: false, employeeCount: 4, counts: { ACTIVE: 2, INACTIVE: 1, 'NOTICE PERIOD': 1 }, changedSinceLastSync: 0,
+          mode: 'batched', reason: failureRecord.reason, httpStatus: null, responseBodyText: null,
+          batches: [{ startIndex: 0, endIndex: 3, ok: false, status: null, bodyText: 'TWC_API_URL is not configured.' }], warnings: []
+        }
       })
     });
   });
@@ -400,22 +438,22 @@ function check(label, ok, detail) {
   check('A missing TWC_API_URL on the server shows a clear, specific error toast (never a silent no-op)', (missingUrlToastText || '').includes('TWC_API_URL is not configured'));
   check('The Action-needed banner names the missing-URL reason', (await page.locator('#twcFailureText').textContent() || '').includes('TWC_API_URL is not configured'));
 
-  // Scenario D: a client-side TIMEOUT - the server never responds at all;
-  // Playwright's clock is faked so the frontend's real 60s AbortController
-  // fires without this test actually waiting 60 real seconds.
-  await page.clock.install({ time: Date.now() });
-  await page.route('**/api/workforce/hr-assistant/together-we-can/sync-now', () => { /* never calls route.fulfill/continue - simulates a hung request */ });
+  // Scenario D (REWORKED, 2026-11, direct instruction) - Sync now no
+  // longer has a client-side abort/give-up timeout at all: it's a
+  // background job the server keeps running regardless of this one
+  // connection, polled for its real status ("so the connection is never
+  // cut" - that 60s client-side AbortController this scenario used to
+  // test is exactly the mechanism removed by this fix). The one place a
+  // FAST failure can still happen client-side is the initial start call
+  // itself (a plain Redis write, never slow) - tested here instead.
+  await page.route('**/api/workforce/hr-assistant/together-we-can/sync-now/start', (route) => {
+    route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'Could not start the sync - no store configured.' }) });
+  });
   await page.click('#twcSyncNowBtn');
-  await page.waitForTimeout(50);
-  check('Sync Now shows its spinner while the request is hung', await page.locator('#twcSyncNowBtn .spinner').count() > 0);
-  await page.clock.fastForward(61000); // instantly advance past the 60s client-side timeout
   await page.waitForTimeout(300);
-  const timeoutToastText = await page.locator('.wf-pro-toast').last().textContent().catch(() => null);
-  check('A hung request times out at 60s with a clear "timed out" toast, never spinning forever', (timeoutToastText || '').toLowerCase().includes('timed out'));
-  check('Sync Now button recovers from a timeout (never stuck busy forever)', await page.locator('#twcSyncNowBtn').isEnabled());
-  // No clock.uninstall() in this Playwright version - resumeing real time
-  // isn't needed for the remaining checks below (plain clicks/fills and
-  // page.waitForTimeout, which is a Node-side wait, not a page JS timer).
+  const startFailToastText = await page.locator('.wf-pro-toast').last().textContent().catch(() => null);
+  check('A failure starting the sync job shows a clear error toast, never a silent no-op or an unhandled rejection', (startFailToastText || '').toLowerCase().includes('could not start the sync'));
+  check('Sync Now button recovers after a failed start (never stuck busy forever)', await page.locator('#twcSyncNowBtn').isEnabled());
 
   // Item 5 (2026-11), direct instruction - "Test with one employee" is
   // removed from this page entirely; confirm it's genuinely gone.

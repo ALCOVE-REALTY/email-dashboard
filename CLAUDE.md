@@ -188,6 +188,42 @@ run it by hand (or in CI without a human waiting on it) after any change that to
 page-open behavior; a real regression here is still a real regression, just never a
 reason to block someone's push over a single noisy number.
 
+**Widened again (2026-11, direct instruction) to every menu page in the app, not only
+the SUBH panel** - after the exact same bug shape (a page's own live, uncached,
+no-timeout read blocking its whole response) turned up a third time, independently, in
+Integrations -> Together We Can's Field mapping page: `GET .../field-mapping` awaited a
+fast Redis read AND a slow live Google Sheets header read together, so the fast half was
+held hostage by the slow one, and with no timeout at all a slow read could run long
+enough for a reverse proxy to cut the connection mid-response - the browser then sees a
+truncated/empty body, which surfaces as a raw `fetch`/`.json()` parse error, never a
+clean failure. Fixed the same way as every earlier instance of this shape: an
+in-process cache (serve instantly, even if stale; refresh in the background) + an
+explicit timeout around the one live call, with a test-only override env var seam
+matching this codebase's own standing convention. **The rule itself now applies
+everywhere, not just the SUBH panel**: every menu page's shell + already-saved/cached
+content must render instantly and never block on a live external read (sheet/API) to
+show it; a live value that still needs fetching loads quietly in the background and
+updates the page in place once it lands. Two more requirements that go with this,
+stated explicitly here because they weren't yet written down anywhere before this
+incident: **(a)** every API route must always return valid JSON, on success or failure
+alike - a route that can throw past its own `try/catch`, or that can be cut off
+mid-response by something upstream, is the structural root of a raw-parse-error bug
+like this one; **(b)** the browser-side code calling it must never surface that raw
+error text to the person using the app - a failed/stale fetch shows a short,
+plain-language line (what happened, in words a non-engineer would understand) with a
+Retry action, while whatever was already on screen (saved/cached data) stays fully
+usable. A page whose only slow work is a write/send the owner explicitly triggered
+(not a page-open read) follows the OTHER standing pattern already established for
+exactly this ("Backup now", WhatsApp document sending): a start + status-polling
+background job, so the real work can finish even if the one connection that kicked it
+off gets cut, with the button's own busy-state tied to the poll, not the original
+request. `scripts/check-subh-pages-open-speed.js` still only measures the SUBH panel's
+own pages (its navigation method is specific to that panel's hub/button structure) -
+extending it (or a sibling script using the same method) to non-SUBH menu pages like
+Integrations is a real, explicitly tracked follow-up, not done as part of this fix;
+until then, this written rule is the standard a reviewer checks a new non-SUBH page
+against by hand.
+
 ## Owner data safety — PERMANENT HARD RULES (PART B, 2026-11, direct instruction)
 
 Grew out of a real incident (Company Details going blank with no evidence of why) and

@@ -4364,6 +4364,59 @@ router.post('/hr-assistant/together-we-can/sync-now', async (req, res) => {
   }
 });
 
+// Background-job versions of Preview/Sync now (2026-11, direct
+// instruction) - "long work runs as a background job with status
+// polling like Backup now / WhatsApp documents so the connection is
+// never cut." Same start+status shape as diag/full-backup and whatsapp/
+// send-test-document above; the synchronous GET /preview and POST
+// /sync-now routes above are left exactly as they were (still used
+// as-is by the daily auto-sync tick and any other direct caller) -
+// these are additive, new entry points for the owner's own buttons.
+router.post('/hr-assistant/together-we-can/preview/start', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    res.json(await togetherWeCanService.startPreviewJob());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+router.get('/hr-assistant/together-we-can/preview/status/:jobId', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    let job = await togetherWeCanService.getJob(req.params.jobId);
+    if (!job) return res.status(404).json({ error: 'No preview job found with that id (it may have expired).' });
+    // Same employee-name enrichment the synchronous GET /preview route
+    // already applies - done here, once, on the way out, rather than
+    // inside the job runner (which has no reason to know about this
+    // route-level presentation concern).
+    if (job.status === 'done' && job.result) {
+      const nameMap = await twcEmployeeNameMap();
+      job = Object.assign({}, job, { result: twcEnrichPreview(job.result, nameMap) });
+    }
+    res.json(job);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+router.post('/hr-assistant/together-we-can/sync-now/start', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    res.json(await togetherWeCanService.startSyncJob({ triggeredBy: 'manual:' + req.hrUser.email }));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+router.get('/hr-assistant/together-we-can/sync-now/status/:jobId', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const job = await togetherWeCanService.getJob(req.params.jobId);
+    if (!job) return res.status(404).json({ error: 'No sync job found with that id (it may have expired).' });
+    res.json(job);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.post('/hr-assistant/together-we-can/test-one', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
   try {
@@ -4411,14 +4464,24 @@ router.get('/hr-assistant/together-we-can/failure', async (req, res) => {
 // API fields reads from, owner-editable from a dropdown of the LIVE row-4
 // headers (getHeaderList is mapping-independent, so this works even while
 // the currently-saved mapping is broken - exactly this bug's own repro).
+// LIVE BUG FIX (2026-11, direct instruction) - getFieldMapping() (fast,
+// Redis-only) and getHeaderList() (now cached/backgrounded, see its own
+// comment) are still fetched together, but neither can block the other
+// from landing, and getHeaderList() itself never throws anymore (it
+// reports a failure in its own return value instead) - this route now
+// always returns valid JSON with the saved mapping intact, even on a
+// live-sheet read failure.
+// ?refreshHeaders=1 - the Field mapping page's own Retry button, after a
+// failed/stale header load - forces a genuinely fresh live read instead
+// of re-serving the same cached (possibly empty) result.
 router.get('/hr-assistant/together-we-can/field-mapping', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
   try {
-    const [mapping, headers] = await Promise.all([
+    const [mapping, headerResult] = await Promise.all([
       togetherWeCanService.getFieldMapping(),
-      togetherWeCanService.getHeaderList()
+      togetherWeCanService.getHeaderList({ forceRefresh: req.query.refreshHeaders === '1' })
     ]);
-    res.json({ mapping, headers });
+    res.json({ mapping, headers: headerResult.headers, headersStale: headerResult.stale, headersError: headerResult.error || null });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

@@ -1101,15 +1101,41 @@ function twcFieldMappingValue(key) {
   const select = document.querySelector('select[data-twc-field="' + key + '"]');
   return select ? select.value : '';
 }
-async function twcLoadFieldMapping() {
+// LIVE BUG FIX (2026-11, direct instruction - "Field mapping takes a long
+// time to load, then shows a raw JSON parse error") - the saved mapping
+// (from cache/KV server-side) renders immediately regardless of whether
+// the live header list came back fresh, stale, or failed outright; a
+// header-load problem only ever shows as a plain-language line + Retry,
+// never a raw browser error, and the saved mapping stays fully usable
+// either way. forceRefresh=true is the Retry button's own call.
+async function twcLoadFieldMapping(forceRefresh) {
+  const errEl = document.getElementById('twcFieldMappingErr');
+  const errText = document.getElementById('twcFieldMappingErrText');
   try {
-    const data = await fetchJson('/api/workforce/hr-assistant/together-we-can/field-mapping');
+    const url = '/api/workforce/hr-assistant/together-we-can/field-mapping' + (forceRefresh ? '?refreshHeaders=1' : '');
+    const data = await fetchJson(url);
     twcRenderFieldMapping(data.mapping || {}, data.headers || []);
+    if (data.headersError) {
+      errText.textContent = "Couldn't load the latest sheet columns — showing saved mapping. " + (data.headers && data.headers.length ? '(showing the last known list)' : '');
+      errEl.classList.remove('hidden');
+    } else {
+      errEl.classList.add('hidden');
+    }
   } catch (err) {
-    const errEl = document.getElementById('twcFieldMappingErr');
-    errEl.textContent = 'Could not load the live sheet headers: ' + err.message;
+    // The route itself always returns valid JSON now (see workforceRoutes.js) -
+    // this catch only ever fires on a genuine network-level failure
+    // (offline, DNS, etc.), still shown in the same plain-language way,
+    // never the raw error.message text.
+    errText.textContent = "Couldn't load the field mapping right now. Check your connection and retry.";
     errEl.classList.remove('hidden');
   }
+}
+const twcFieldMappingRetryBtn = document.getElementById('twcFieldMappingRetryBtn');
+if (twcFieldMappingRetryBtn) {
+  twcFieldMappingRetryBtn.addEventListener('click', () => {
+    twcSetBtnBusy(twcFieldMappingRetryBtn, 'Retrying…');
+    twcLoadFieldMapping(true).finally(() => { twcFieldMappingRetryBtn.innerHTML = '<span>Retry</span>'; });
+  });
 }
 
 // Item 4(a) (2026-11), direct instruction - "Integrations opens a LIST page
@@ -1160,17 +1186,20 @@ async function loadIntegrationsListStatus() {
   } catch (err) { /* leave whatever was last shown */ }
 }
 
+// LIVE BUG FIX (2026-11, direct instruction) - these 4 calls used to run
+// strictly one after another, so a slow/stuck one (field-mapping's own
+// live header read, before its cache fix above) held up every sibling
+// piece behind it in the chain, even though each is otherwise completely
+// independent. Fired in parallel now - each piece still renders itself
+// the moment its OWN call resolves, exactly as before, just never
+// waiting on an unrelated one first.
 async function loadTwcDetail() {
-  try {
-    const settings = await fetchJson('/api/workforce/hr-assistant/together-we-can/settings');
-    twcShowAutoSync(settings);
-  } catch (err) { /* leave defaults */ }
-  try {
-    const data = await fetchJson('/api/workforce/hr-assistant/together-we-can/history');
-    twcRenderHistory(data.history || []);
-  } catch (err) { /* leave "No syncs yet" placeholder */ }
-  await twcLoadAndRenderFailure();
-  await twcLoadFieldMapping();
+  await Promise.all([
+    fetchJson('/api/workforce/hr-assistant/together-we-can/settings').then(twcShowAutoSync).catch(() => { /* leave defaults */ }),
+    fetchJson('/api/workforce/hr-assistant/together-we-can/history').then((data) => twcRenderHistory(data.history || [])).catch(() => { /* leave "No syncs yet" placeholder */ }),
+    twcLoadAndRenderFailure(),
+    twcLoadFieldMapping()
+  ]);
 }
 
 const twcSaveFieldMappingBtn = document.getElementById('twcSaveFieldMappingBtn');
@@ -1201,6 +1230,25 @@ if (twcSaveFieldMappingBtn) {
   });
 }
 
+// LIVE BUG FIX (2026-11, direct instruction) - "Preview / Sync data now:
+// long work runs as a background job with status polling like Backup
+// now / WhatsApp documents so the connection is never cut." Both read
+// the live sheet (Sync also makes the real external HTTP push) - the
+// same class of "slow enough a reverse proxy might cut the connection"
+// risk this session already found and fixed once elsewhere. A plain
+// start-then-poll helper, self-contained here (this page's own script,
+// never assuming load order against hrAssistant.js's identical-looking
+// helper for Backup now).
+async function twcPollJobUntilDone(statusUrlBase, jobId) {
+  for (let i = 0; i < 200; i++) {
+    const job = await fetchJson(statusUrlBase + encodeURIComponent(jobId));
+    if (job.status === 'done') return job;
+    if (job.status === 'failed') throw new Error(job.error || 'The job failed.');
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+  }
+  throw new Error('This is taking longer than expected - check back shortly.');
+}
+
 const twcPreviewBtn = document.getElementById('twcPreviewBtn');
 if (twcPreviewBtn) {
   twcPreviewBtn.addEventListener('click', async () => {
@@ -1208,10 +1256,11 @@ if (twcPreviewBtn) {
     twcBusy = true;
     twcSetBtnBusy(twcPreviewBtn, 'Previewing…');
     try {
-      const res = await twcFetchWithTimeout('/api/workforce/hr-assistant/together-we-can/preview');
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Preview failed.');
-      twcRenderPreview(data);
+      const startRes = await fetch('/api/workforce/hr-assistant/together-we-can/preview/start', { method: 'POST' });
+      const started = await startRes.json();
+      if (!startRes.ok) throw new Error(started.error || 'Could not start the preview.');
+      const data = await twcPollJobUntilDone('/api/workforce/hr-assistant/together-we-can/preview/status/', started.jobId);
+      twcRenderPreview(data.result);
     } catch (err) {
       twcToast('Preview failed: ' + err.message, 'error');
     } finally {
@@ -1230,9 +1279,11 @@ async function twcRunSync(btn) {
   twcBusy = true;
   twcSetBtnBusy(btn, 'Syncing…');
   try {
-    const res = await twcFetchWithTimeout('/api/workforce/hr-assistant/together-we-can/sync-now', { method: 'POST' });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Sync failed.');
+    const startRes = await fetch('/api/workforce/hr-assistant/together-we-can/sync-now/start', { method: 'POST' });
+    const started = await startRes.json();
+    if (!startRes.ok) throw new Error(started.error || 'Could not start the sync.');
+    const job = await twcPollJobUntilDone('/api/workforce/hr-assistant/together-we-can/sync-now/status/', started.jobId);
+    const data = job.result;
     if (!data.ok) {
       // data.reason is always set now (sendFullSync never throws without
       // one - see togetherWeCanService.js) - covers 0-rows-sent, a batch

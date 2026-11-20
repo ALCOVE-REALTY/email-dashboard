@@ -178,17 +178,95 @@ async function getRawSheetRows({ forceRefresh = false } = {}) {
   return cache.rows;
 }
 
-// For the "Field mapping" picker's header dropdown - a tiny, ALWAYS-fresh,
-// mapping-INDEPENDENT read of just the raw header row (never routed
-// through locateColumns/fetchAndParseSheet, which would throw if the
-// CURRENT saved mapping is broken - exactly the live bug this feature
-// exists to let the owner fix). A single-row range is cheap enough that
-// this intentionally has no cache of its own.
-async function getHeaderList() {
-  const sheets = sheetsAuth.getSheetsReadOnlyClient();
-  const res = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `'${TAB_NAME}'!A${HEADER_ROW}:BC${HEADER_ROW}` });
-  const headerRow = (res.data.values || [])[0] || [];
-  return headerRow.map(cleanCell).filter(Boolean);
+// LIVE BUG FIX (2026-11, direct instruction - "Field mapping takes a long
+// time to load, then shows a raw JSON parse error") - this was previously
+// an ALWAYS-live, uncached, no-timeout read, on the theory that "a
+// single-row range is cheap enough" not to need one. Found live that it
+// isn't reliably cheap: a slow/hanging read here blocked the WHOLE field-
+// mapping route (it also awaits the fast, Redis-only getFieldMapping() in
+// the same Promise.all), and with no timeout at all, a slow read could run
+// long enough for a reverse proxy to cut the connection mid-response -
+// the browser then gets a truncated/empty body, which is exactly the
+// "Unexpected end of JSON input" error reported (fetch's own .json() on a
+// non-JSON/empty body). Same cache/background-refresh shape as
+// getRawSheetRows() above (an in-process cache, independent of that
+// function's own rows/mapping cache - this must still work even while the
+// CURRENT saved mapping is broken, the exact live bug this feature exists
+// to let the owner fix, so it can never be routed through
+// locateColumns/fetchAndParseSheet). Timestamped logging on every attempt,
+// per direct instruction.
+let headerCache = { headers: null, fetchedAt: 0 };
+let headerInFlight = null;
+// Test-only override seam, same convention as every other timeout in
+// this codebase (e.g. WHATSAPP_POLL_ONCE_TIMEOUT_MS) - unset in every
+// real environment, where it's always the full 8000ms.
+function headerFetchTimeoutMs() {
+  const override = Number(process.env.TWC_HEADER_FETCH_TIMEOUT_MS);
+  return Number.isFinite(override) && override > 0 ? override : 8000;
+}
+function withTimeout(promise, ms, label) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => { const t = setTimeout(() => reject(new Error(label + ' timed out after ' + ms + 'ms')), ms); if (t.unref) t.unref(); })
+  ]);
+}
+async function fetchHeaderListLive() {
+  const t0 = Date.now();
+  console.error('[together-we-can] header fetch starting');
+  try {
+    const sheets = sheetsAuth.getSheetsReadOnlyClient();
+    const res = await withTimeout(
+      sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `'${TAB_NAME}'!A${HEADER_ROW}:BC${HEADER_ROW}` }),
+      headerFetchTimeoutMs(), 'HR Master header read'
+    );
+    const headerRow = (res.data.values || [])[0] || [];
+    const headers = headerRow.map(cleanCell).filter(Boolean);
+    console.error('[together-we-can] header fetch ok in ' + (Date.now() - t0) + 'ms, ' + headers.length + ' headers');
+    return headers;
+  } catch (err) {
+    console.error('[together-we-can] header fetch FAILED after ' + (Date.now() - t0) + 'ms: ' + err.message + (err.cause ? ' cause=' + JSON.stringify(err.cause) : ''));
+    throw err;
+  }
+}
+// Exposed for tests only - same convention as this file's own
+// _clearCacheForTest (used for the separate rows/mapping cache).
+function _clearHeaderCacheForTest() { headerCache = { headers: null, fetchedAt: 0 }; headerInFlight = null; }
+async function getHeaderList({ forceRefresh = false } = {}) {
+  if (forceRefresh) {
+    // This IS the Retry button's own path (after an earlier failure) -
+    // it must never itself throw a raw error back up to the route. A
+    // failed retry keeps whatever cache already existed (never wipes out
+    // a working, if stale, header list just because one retry failed) -
+    // only an empty list if there was genuinely never any cache at all.
+    try {
+      const headers = await fetchHeaderListLive();
+      headerCache = { headers, fetchedAt: Date.now() };
+      return { headers, stale: false, error: null };
+    } catch (err) {
+      return { headers: headerCache.headers || [], stale: true, error: err.message };
+    }
+  }
+  const hasCache = Boolean(headerCache.headers);
+  if (!hasCache) {
+    // Never been fetched at all (fresh process) - this ONE time has to
+    // wait on a real read, same as before; every call after this is
+    // instant from cache.
+    try {
+      const headers = await fetchHeaderListLive();
+      headerCache = { headers, fetchedAt: Date.now() };
+      return { headers, stale: false, error: null };
+    } catch (err) {
+      return { headers: [], stale: true, error: err.message };
+    }
+  }
+  const isStale = Date.now() - headerCache.fetchedAt >= CACHE_TTL_MS;
+  if (isStale && !headerInFlight) {
+    headerInFlight = fetchHeaderListLive()
+      .then((headers) => { headerCache = { headers, fetchedAt: Date.now() }; })
+      .catch((err) => { console.error('[together-we-can] background header refresh failed: ' + err.message); })
+      .finally(() => { headerInFlight = null; });
+  }
+  return { headers: headerCache.headers, stale: isStale, error: null };
 }
 
 // Exposed for tests only - clears the in-process cache so a test can
@@ -609,6 +687,79 @@ async function sendFullSync({ triggeredBy = 'manual' } = {}) {
   return Object.assign({}, entry, { warnings, diff });
 }
 
+// Background-job wrapping for Preview/Sync now (2026-11, direct
+// instruction) - "long work runs as a background job with status
+// polling like Backup now / WhatsApp documents so the connection is
+// never cut." Both buildPreview({forceRefresh:true}) and sendFullSync
+// read the live sheet (and sendFullSync also makes the real external
+// HTTP push) - exactly the class of "slow enough that a reverse proxy
+// might cut the connection before it finishes" risk this same session
+// already found and fixed once for WhatsApp document sending and the
+// full-store backup. Same start/status job shape as those two features
+// (src/aiAssistant/whatsappDocTestJob.js/fullStoreBackupService.js),
+// kept here rather than a new file since this module already owns
+// everything the job needs to call.
+const JOB_PREFIX = 'twc-job:';
+const JOB_TTL_SECONDS = 10 * 60; // same as whatsappDocTestJob.js - a short-lived UI polling handle, never a durable record
+async function saveJob(job) {
+  const redis = getRedis();
+  if (!redis) return;
+  await redis.set(JOB_PREFIX + job.id, JSON.stringify(job), { ex: JOB_TTL_SECONDS });
+}
+async function getJob(jobId) {
+  const redis = getRedis();
+  if (!redis) return null;
+  const raw = await redis.get(JOB_PREFIX + jobId);
+  if (!raw) return null;
+  try { return typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (err) { return null; }
+}
+async function finishJob(jobId, { status, result, error }) {
+  const job = await getJob(jobId);
+  if (!job) return;
+  job.status = status;
+  job.result = result || null;
+  job.error = error || null;
+  job.completedAt = new Date().toISOString();
+  await saveJob(job);
+}
+function newJobId() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
+
+async function startPreviewJob() {
+  const jobId = newJobId();
+  await saveJob({ id: jobId, status: 'running', startedAt: new Date().toISOString(), completedAt: null, result: null, error: null });
+  runPreviewJobInBackground(jobId).catch((err) => { console.error('[together-we-can] preview job ' + jobId + ' crashed: ' + err.message); });
+  return { jobId };
+}
+async function runPreviewJobInBackground(jobId) {
+  try {
+    // The raw preview only - employee-name enrichment (twcEnrichPreview/
+    // twcEmployeeNameMap) stays in workforceRoutes.js where it already
+    // lives, applied by the status route on the way out, same as the
+    // existing GET /preview route already does. Keeps this job runner
+    // from needing to duplicate or reach into route-local helpers.
+    const preview = await buildPreview({ forceRefresh: true });
+    await finishJob(jobId, { status: 'done', result: preview });
+  } catch (err) {
+    await finishJob(jobId, { status: 'failed', error: err.message });
+  }
+}
+async function startSyncJob({ triggeredBy } = {}) {
+  const jobId = newJobId();
+  await saveJob({ id: jobId, status: 'running', startedAt: new Date().toISOString(), completedAt: null, result: null, error: null });
+  runSyncJobInBackground(jobId, triggeredBy).catch((err) => { console.error('[together-we-can] sync job ' + jobId + ' crashed: ' + err.message); });
+  return { jobId };
+}
+async function runSyncJobInBackground(jobId, triggeredBy) {
+  try {
+    const result = await sendFullSync({ triggeredBy: triggeredBy || 'manual' });
+    await finishJob(jobId, { status: 'done', result });
+  } catch (err) {
+    // sendFullSync itself never throws (see its own comment) - this is
+    // only a genuine, unexpected crash, still never left unresolved.
+    await finishJob(jobId, { status: 'failed', error: err.message });
+  }
+}
+
 // Real-send, single employee, exactly as the sheet has it right now - a
 // deliberate owner-initiated endpoint check, never mocked in live usage.
 async function sendTestOne({ employeeId }) {
@@ -711,11 +862,15 @@ module.exports = {
   getFieldMapping,
   saveFieldMapping,
   getHeaderList,
+  startPreviewJob,
+  startSyncJob,
+  getJob,
   normalizeStatus,
   normalizeHeaderText,
   isSheetErrorValue,
   CANONICAL_STATUSES,
   DEFAULT_FIELD_MAPPING,
   BATCH_SIZE,
-  _clearCacheForTest
+  _clearCacheForTest,
+  _clearHeaderCacheForTest
 };
