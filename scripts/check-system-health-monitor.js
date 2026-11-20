@@ -251,6 +251,39 @@ async function main() {
   });
 
   console.log('='.repeat(70));
+  console.log('checkSchedulerHeartbeat - LIVE INCIDENT FOLLOW-UP: a hung poll loop that still "looks" alive from the other 3 checks alone');
+  console.log('='.repeat(70));
+  const origGetSchedulerHeartbeat = whatsappAssistant.getSchedulerHeartbeat;
+  await checkAsync('no heartbeat ever recorded (fresh deploy / scheduler never started) -> ok:false with a clear reason', async () => {
+    whatsappAssistant.getSchedulerHeartbeat = async () => null;
+    const monitor = freshMonitor();
+    const result = await monitor.checkSchedulerHeartbeat();
+    whatsappAssistant.getSchedulerHeartbeat = origGetSchedulerHeartbeat;
+    return result.ok === false && /never have started/.test(result.error);
+  });
+  await checkAsync('a heartbeat written 30s ago (well within the normal write cadence) -> ok:true', async () => {
+    whatsappAssistant.getSchedulerHeartbeat = async () => ({ ts: Date.now() - 30 * 1000, commitId: 'abc1234' });
+    const monitor = freshMonitor();
+    const result = await monitor.checkSchedulerHeartbeat();
+    whatsappAssistant.getSchedulerHeartbeat = origGetSchedulerHeartbeat;
+    return result.ok === true;
+  });
+  await checkAsync('a heartbeat stale by 5 minutes (past the 3-minute staleness tolerance) -> ok:false, names the stuck commit - this is the exact hung-loop shape', async () => {
+    whatsappAssistant.getSchedulerHeartbeat = async () => ({ ts: Date.now() - 5 * 60 * 1000, commitId: 'deadbee' });
+    const monitor = freshMonitor();
+    const result = await monitor.checkSchedulerHeartbeat();
+    whatsappAssistant.getSchedulerHeartbeat = origGetSchedulerHeartbeat;
+    return result.ok === false && /stopped advancing/.test(result.error) && /deadbee/.test(result.error);
+  });
+  await checkAsync('getSchedulerHeartbeat itself throwing (e.g. KV unreachable) reports ok:false, never throws', async () => {
+    whatsappAssistant.getSchedulerHeartbeat = async () => { throw new Error('simulated KV failure'); };
+    const monitor = freshMonitor();
+    const result = await monitor.checkSchedulerHeartbeat();
+    whatsappAssistant.getSchedulerHeartbeat = origGetSchedulerHeartbeat;
+    return result.ok === false && result.error === 'simulated KV failure';
+  });
+
+  console.log('='.repeat(70));
   console.log('runHealthCheck - end to end: the Action-needed slot, the dual-channel alert, and the alert-spam debounce');
   console.log('='.repeat(70));
   const origSendWhatsAppMessage = whatsapp.sendWhatsAppMessage;
@@ -293,6 +326,11 @@ async function main() {
       // testing the wrong thing.
       whatsapp.getConnectionStatus = async () => ({ connected: true, status: 'connected' });
       REDIS_ENV_VARS.forEach((k) => { if (savedEnv[k] !== undefined) process.env[k] = savedEnv[k]; });
+      // checkSchedulerHeartbeat (added alongside the other 3 checks) needs
+      // a fresh heartbeat too, or "recovered" would stay ok:false forever
+      // on this check alone, regardless of the other 3 - a real run would
+      // have the scheduler itself writing this every tick.
+      await whatsappAssistant.recordSchedulerHeartbeat('test-commit');
       const recovered = await monitor.runHealthCheck();
       await checkAsync('once everything passes again, runHealthCheck reports ok:true and clears the Action-needed slot', async () => {
         const healthAlertAfterRecovery = await whatsappAssistant.getSystemHealthAlert();

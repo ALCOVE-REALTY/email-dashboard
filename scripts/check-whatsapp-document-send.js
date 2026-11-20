@@ -299,8 +299,18 @@ async function main() {
   // getJob() directly (not the HTTP route) to wait for it to settle,
   // since nothing mocked here has any real delay.
   const whatsappDocTestJob = require('../src/aiAssistant/whatsappDocTestJob');
+  // FLAKY-TEST FIX (2026-11) - the "slow gateway" test below simulates a
+  // fixed 2000ms gateway delay. A 50x20ms=1000ms nominal poll budget looks
+  // comfortably short of that, but each iteration also pays a real
+  // round-trip to the (local, fake) Redis store, and under load that
+  // overhead can push the ACTUAL elapsed time close enough to 2000ms to
+  // race it - confirmed flaky (1/5 solo reruns failed here with "never
+  // settled", at the exact borderline). 200x20ms=4000ms gives a wide,
+  // deterministic margin over any simulated delay used in this file
+  // (2000ms) without slowing down the normal fast-settling cases at all -
+  // the loop still returns the instant status stops being 'running'.
   async function waitForJobSettled(jobId) {
-    for (let i = 0; i < 50; i++) {
+    for (let i = 0; i < 200; i++) {
       const job = await whatsappDocTestJob.getJob(jobId);
       if (job && job.status !== 'running') return job;
       await new Promise((resolve) => setTimeout(resolve, 20));

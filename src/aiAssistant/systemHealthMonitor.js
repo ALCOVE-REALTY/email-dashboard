@@ -167,6 +167,38 @@ async function checkReplyPipeline() {
   }
 }
 
+// LIVE INCIDENT FOLLOW-UP (2026-11, direct instruction - "SUBH stopped
+// receiving WhatsApp messages") - a real structural gap: checkKv/
+// checkGateway/checkReplyPipeline above all assume the poll loop is
+// still able to run its OWN checks; if the loop itself is genuinely
+// HUNG (see whatsappPollScheduler.js's own withPollOnceTimeout comment -
+// the overlap guard's `polling` flag never resets once pollOnce() never
+// settles), none of those three would ever catch it, since the only
+// thing that would have noticed is the frozen loop itself. The scheduler
+// heartbeat is written by the recursive tick chain on every tick
+// (routinely, every few ticks) INDEPENDENT of whether pollOnce succeeds
+// - if IT stops advancing, the loop has genuinely stopped, regardless of
+// gateway/KV/traffic state. Same staleness-tolerance convention as the
+// existing in-app whatsappAssistantStatus diagnostic's own pollStale
+// check - 3 minutes is comfortably above the routine ~20-60s write
+// cadence at any realistic poll interval, so this only fires on a
+// genuine stop, never a normal gap between routine writes.
+const SCHEDULER_HEARTBEAT_STALE_MS = 3 * 60 * 1000;
+async function checkSchedulerHeartbeat() {
+  try {
+    const whatsappAssistant = require('./whatsappAssistant');
+    const heartbeat = await withTimeout(whatsappAssistant.getSchedulerHeartbeat(), HEALTH_CHECK_TIMEOUT_MS);
+    if (!heartbeat) return { ok: false, error: 'no scheduler heartbeat recorded yet - the poll loop may never have started' };
+    const ageMs = Date.now() - heartbeat.ts;
+    if (ageMs > SCHEDULER_HEARTBEAT_STALE_MS) {
+      return { ok: false, error: 'last heartbeat was ' + Math.round(ageMs / 1000) + 's ago (commit ' + (heartbeat.commitId || 'unknown') + ') - the poll loop appears to have stopped advancing' };
+    }
+    return { ok: true, ageMs, commitId: heartbeat.commitId };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
 // Same resolution order as the existing /automations/:id/send-test and
 // /whatsapp/send-test-document routes - SUBH_OWNER_WHATSAPP_NUMBER first,
 // then the owner's own real employee record.
@@ -211,11 +243,12 @@ let lastAlertSentAt = 0;
 let wasFailingLastTick = false;
 
 async function runHealthCheck() {
-  const [kv, gateway, replyPipeline] = await Promise.all([checkKv(), checkGateway(), checkReplyPipeline()]);
+  const [kv, gateway, replyPipeline, schedulerHeartbeat] = await Promise.all([checkKv(), checkGateway(), checkReplyPipeline(), checkSchedulerHeartbeat()]);
   const failures = [];
   if (!kv.ok) failures.push('Data store (subh-store/KV) unreachable: ' + kv.error);
   if (!gateway.ok) failures.push('WhatsApp gateway session problem: ' + gateway.error);
   if (!replyPipeline.ok) failures.push('Reply pipeline stuck: ' + replyPipeline.error);
+  if (!schedulerHeartbeat.ok) failures.push('WhatsApp poll loop appears stopped: ' + schedulerHeartbeat.error);
   const isFailing = failures.length > 0;
   const now = Date.now();
 
@@ -242,7 +275,7 @@ async function runHealthCheck() {
   }
   wasFailingLastTick = isFailing;
 
-  return { ok: !isFailing, failures, kv, gateway, replyPipeline, alertSent };
+  return { ok: !isFailing, failures, kv, gateway, replyPipeline, schedulerHeartbeat, alertSent };
 }
 
-module.exports = { runHealthCheck, checkKv, checkGateway, checkReplyPipeline };
+module.exports = { runHealthCheck, checkKv, checkGateway, checkReplyPipeline, checkSchedulerHeartbeat };

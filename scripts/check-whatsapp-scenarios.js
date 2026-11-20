@@ -2325,6 +2325,40 @@ scenario('UNREGISTERED 5: a configured SUBH_TEST_NUMBERS entry asking "Subhodeep
     await cleanupHrFlowArtifacts(phone);
   }
 });
+// LIVE INCIDENT (2026-11, direct instruction) - "SUBH receives messages
+// but doesn't reply": a real test-number message asking for BOTH the HOD
+// (reportingManager) and the Doer (reportingDoer) got no reply and no
+// card at all, live. Root cause (see buildSelfFacts/decideAutoReplyCore's
+// own comments in whatsappAssistant.js) - "reporting manager" was already
+// a documented own_record topic in the classify() tool's own schema, but
+// buildSelfFacts never actually had it in its fact whitelist, so
+// generateDraft had nothing to answer with for the HOD half of the
+// question and the old code had no fallback for that gap. Real owner
+// record, real resolved HOD/Doer names - never hardcoded, so this can't
+// silently go stale if the owner's own record changes.
+scenario('OWNRECORD 1: a configured SUBH_TEST_NUMBERS entry asking "<owner> er HOD & Doer er nam ki?" gets a reply naming BOTH the real HOD and the real Doer - the exact live incident shape', async () => {
+  const phone = SCEN_TEST_NUMBER_PHONE;
+  await cleanupHrFlowArtifacts(phone);
+  const savedTestNumbers = process.env.SUBH_TEST_NUMBERS;
+  process.env.SUBH_TEST_NUMBERS = phone;
+  try {
+    const owner = await employeeService.findOwnerEmployeeRecord();
+    if (!owner) return { pass: false, detail: 'no owner employee record resolvable at all - cannot run this scenario' };
+    const { reportingManagerNames, doerNames } = await employeeService.getEmployeeData();
+    const hod = (reportingManagerNames.get(owner.reportingManagerKey) || owner.reportingManager || '').trim();
+    const doer = (doerNames.get(owner.reportingDoerKey) || owner.reportingDoer || '').trim();
+    if (!hod || !doer) return { pass: false, detail: 'owner record is missing a real reportingManager/reportingDoer to assert against (hod=' + JSON.stringify(hod) + ', doer=' + JSON.stringify(doer) + ') - fix the real data, not this test' };
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenOwnRecord', firstName: 'ScenOwnRecord', text: owner.name + ' er HOD & Doer er nam ki?', isGroup: false, history: [] });
+    if (!d.replyText) return { pass: false, detail: 'got NO reply at all - this is the exact live incident (silent, no card)' };
+    const hasHod = d.replyText.includes(hod);
+    const hasDoer = d.replyText.includes(doer);
+    if (!hasHod || !hasDoer) return { pass: false, detail: 'reply missing ' + (!hasHod ? 'HOD (' + hod + ')' : '') + (!hasHod && !hasDoer ? ' and ' : '') + (!hasDoer ? 'Doer (' + doer + ')' : '') + ' - got: ' + d.replyText };
+    return { pass: true, detail: 'named both HOD (' + hod + ') and Doer (' + doer + '): ' + d.replyText };
+  } finally {
+    if (savedTestNumbers === undefined) delete process.env.SUBH_TEST_NUMBERS; else process.env.SUBH_TEST_NUMBERS = savedTestNumbers;
+    await cleanupHrFlowArtifacts(phone);
+  }
+});
 
 const APPROX_USD_PER_MTOK_INPUT = 3;
 const APPROX_USD_PER_MTOK_OUTPUT = 15;

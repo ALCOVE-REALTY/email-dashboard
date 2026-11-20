@@ -9706,6 +9706,22 @@ async function recordSchedulerHeartbeat(commitId) {
   if (!redis) return;
   try { await redis.set(SCHEDULER_HEARTBEAT_KEY, JSON.stringify({ ts: Date.now(), commitId })); } catch (err) { /* best effort */ }
 }
+// Read side for the heartbeat above - used by whatsappAssistantStatus's
+// own in-app diagnostic AND (2026-11, direct instruction - "SUBH stopped
+// receiving WhatsApp messages") systemHealthMonitor.js's own new scheduler-
+// heartbeat check: a poll loop that's genuinely HUNG (not just a slow
+// gateway) never gets a chance to run its own gateway/reply-pipeline
+// checks again either, so this is the one signal that stays meaningful
+// even then - it's written by the scheduler's own recursive tick chain,
+// never by anything the hang itself could be blocking.
+async function getSchedulerHeartbeat() {
+  const redis = getClient();
+  if (!redis) return null;
+  try {
+    const raw = await redis.get(SCHEDULER_HEARTBEAT_KEY);
+    return raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : null;
+  } catch (err) { return null; }
+}
 // Found necessary live: the heartbeat above proved the scheduler was
 // ticking, but wa-last-seen and wa-gateway-status both stayed frozen -
 // meaning pollOnce/checkGatewayConnection were failing on every tick,
@@ -10103,34 +10119,45 @@ function parseTestNumbers() {
 // only - there's no record to safely attach facts to).
 async function findEmployeeByPhone(phone) {
   const normalized = whatsapp.normalizePhone(phone);
-  const { employees, departmentNames, doerNames } = await employeeService.getEmployeeData();
+  const { employees, departmentNames, doerNames, reportingManagerNames } = await employeeService.getEmployeeData();
   if (normalized && parseTestNumbers().includes(normalized)) {
     const owner = await employeeService.findOwnerEmployeeRecord().catch(() => null);
-    if (owner) return { emp: owner, departmentNames, doerNames };
+    if (owner) return { emp: owner, departmentNames, doerNames, reportingManagerNames };
   }
   const emp = employees.find((e) => e.contactNumber && whatsapp.normalizePhone(e.contactNumber) === normalized);
-  return emp ? { emp, departmentNames, doerNames } : null;
+  return emp ? { emp, departmentNames, doerNames, reportingManagerNames } : null;
 }
 
 // 1:1 only (see pollOnce - groups never call this, sender is never
 // identified there). Builds a STRICTLY WHITELISTED fact object for the
-// sender's own record - only the 5 topics explicitly agreed (joining
-// date, probation/confirmation due date, department, reporting DOER,
-// insurance coverage status) ever go in here, nothing else: never
-// contactNumber/personalEmail/bloodGroup/emergencyContact/address/
-// aadhar/pan (those are PII, out of scope for a draft regardless of
-// whose record it is), never salary/premium/sum-insured figures
-// (insuranceStatusByEmployeeId's own shape already excludes these), and
-// never any field belonging to anyone other than this one matched
-// employee. This is enforced by only ever reading these specific
-// fields onto the returned object - not by asking the AI nicely not to
-// mention the rest of what's in the real employee record.
+// sender's own record - only the 6 topics explicitly agreed (joining
+// date, probation/confirmation due date, department, reporting manager
+// (HOD), reporting DOER, insurance coverage status) ever go in here,
+// nothing else: never contactNumber/personalEmail/bloodGroup/
+// emergencyContact/address/aadhar/pan (those are PII, out of scope for
+// a draft regardless of whose record it is), never salary/premium/sum-
+// insured figures (insuranceStatusByEmployeeId's own shape already
+// excludes these), and never any field belonging to anyone other than
+// this one matched employee. This is enforced by only ever reading
+// these specific fields onto the returned object - not by asking the
+// AI nicely not to mention the rest of what's in the real employee
+// record.
+// LIVE BUG FIX (2026-11) - "reporting manager" was already listed as a
+// valid `own_record` topic in the classify() tool's own field
+// description (the model correctly classified "<name> er HOD & Doer er
+// nam ki?" as own_record on that basis) but was never actually in this
+// whitelist - generateDraft was given reportingDoer but no HOD fact at
+// all for a question explicitly asking for both, and the resulting
+// gap/silence downstream (decideAutoReplyCore's own own_record branch
+// has its own safety net for this now too) meant the sender got no
+// reply and no card, with nothing to show it had even been attempted.
 async function buildSelfFacts(phone) {
   const found = await findEmployeeByPhone(phone);
   if (!found) return null;
-  const { emp, departmentNames, doerNames } = found;
+  const { emp, departmentNames, doerNames, reportingManagerNames } = found;
   const facts = {
     department: departmentNames.get(emp.departmentKey) || emp.department || null,
+    reportingManager: (reportingManagerNames && reportingManagerNames.get(emp.reportingManagerKey)) || emp.reportingManager || null,
     reportingDoer: doerNames.get(emp.reportingDoerKey) || emp.reportingDoer || null,
     joiningDate: emp.doj ? emp.doj.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : null
   };
@@ -12805,8 +12832,20 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
     const selfFacts = await buildSelfFacts(phone).catch(() => null);
     if (selfFacts) {
       const replyText = await generateDraft(senderLabel, text, undefined, selfFacts);
-      await resetFollowupCount(phone);
-      return { case: 'own_record', replyText, summaryForOwner: text.slice(0, 160) };
+      // LIVE BUG FIX (2026-11) - "a logged incoming message must ALWAYS
+      // end in exactly one outcome" (direct instruction): actOnOfficialTurn's
+      // own dispatch only ever sends/drafts when case==='automatic' OR
+      // replyText is truthy - returning this case with a falsy replyText
+      // (an empty/missing AI response, whatever the cause) would silently
+      // disappear with no reply, no card, no trace at all. Falls through
+      // to the general conversational reply path below instead, which
+      // still produces a real answer, rather than trusting one AI call to
+      // never come back empty.
+      if (replyText) {
+        await resetFollowupCount(phone);
+        return { case: 'own_record', replyText, summaryForOwner: text.slice(0, 160) };
+      }
+      console.error('[whatsapp] own_record draft came back empty for ' + phone + ' (text: ' + text.slice(0, 80) + ') - falling through to the general reply path instead of going silent');
     }
   }
 
@@ -13903,6 +13942,12 @@ async function actOnCatchupTurn({ contactId, name, firstName, text, arrivedAt, s
     });
     return { answered: true };
   }
+  // LIVE BUG FIX (2026-11, direct instruction) - same gap/fix as
+  // actOnOfficialTurn's own new trailing else (see its comment): decision
+  // truthy, not automatic, but replyText falsy used to return silently
+  // here too, with no trace at all.
+  console.error('[whatsapp] catch-up turn produced no reply for ' + contactId + ' - decision case: ' + (decision ? decision.case : '(no decision)') + ', text: ' + text.slice(0, 80));
+  await logInboxEvent({ chatId: contactId, name, isGroup: false, messageSummary: text, aCase: decision ? decision.case : null, sentText: null, outcome: 'skipped_silent_decision', arrivedAt, seenAt });
   return { answered: false };
 }
 // Task 18 (2026-11), direct instruction: close copy of actOnCatchupTurn
@@ -13969,6 +14014,10 @@ async function actOnStuckRecoveryTurn({ contactId, name, firstName, text, firstS
     });
     return { answered: true };
   }
+  // LIVE BUG FIX (2026-11, direct instruction) - same gap/fix as
+  // actOnOfficialTurn's own new trailing else (see its comment).
+  console.error('[whatsapp] stuck-recovery turn produced no reply for ' + contactId + ' - decision case: ' + (decision ? decision.case : '(no decision)') + ', text: ' + text.slice(0, 80));
+  await logInboxEvent({ chatId: contactId, name, isGroup: false, messageSummary: text, aCase: decision ? decision.case : null, sentText: null, outcome: 'skipped_silent_decision', arrivedAt: firstSeenAt, seenAt: now });
   return { answered: false };
 }
 // Task 18 (2026-11), direct instruction - the 2-minute safety net (Task
@@ -14315,7 +14364,20 @@ async function catchUpAfterGap(trigger) {
 
 async function pollOnce() {
   const feed = await whatsapp.listMessages(null, POLL_FEED_LIMIT);
-  const results = { checked: 0, official: 0, personal: 0, groupMessagesScanned: 0, groupMentionsFound: 0, skippedBlockedGroups: 0, scheduled: 0, errors: [] };
+  // LIVE INCIDENT FOLLOW-UP (2026-11, direct instruction - "every
+  // incoming message logged... before any filtering, so nothing
+  // disappears silently") - this raw count (every incoming message the
+  // gateway's own feed returned this tick, BEFORE type/broadcast/LID
+  // filtering below) is printed by the scheduler's own per-tick log line
+  // (whatsappPollScheduler.js: '[whatsapp-assistant] poll (tick N): ' +
+  // JSON.stringify(result)) regardless of what happens to each one
+  // afterward - a real, cheap trail in Alcove Deploy's own logs that a
+  // future filtering bug (a new type/condition wrongly matching real
+  // messages) would show up in immediately: this count staying high
+  // while results.checked/official/personal stay at 0 would be the
+  // smoking gun, visible without needing to touch a single UI card.
+  const rawIncomingSeen = feed.filter((m) => m.direction === 'incoming').length;
+  const results = { checked: 0, official: 0, personal: 0, groupMessagesScanned: 0, groupMentionsFound: 0, skippedBlockedGroups: 0, scheduled: 0, rawIncomingSeen, errors: [] };
   const autoReplyOn = await isAutoReplyEnabled();
 
   const byContact = new Map();
@@ -14459,10 +14521,27 @@ async function pollOnce() {
         });
         results.scheduled++;
       }
+    } else {
+      // LIVE BUG FIX (2026-11, direct instruction - "a logged incoming
+      // message must ALWAYS end in exactly one outcome... never silent")
+      // - the exact gap that let the HOD+Doer incident vanish without a
+      // trace: `decision` truthy, case !== 'automatic', but replyText
+      // falsy (an intentional silent-ack design elsewhere in
+      // decideAutoReplyCore, OR - as that incident showed - a genuine bug
+      // nothing else happened to catch). Either way this is now ALWAYS
+      // logged with the real case name as the explicit reason, visible in
+      // the WhatsApp section, instead of nothing happening at all. Never
+      // changes behavior (still no reply sent, by design, for the
+      // legitimate silent-ack cases this also covers) - only ever adds
+      // the missing trace.
+      console.error('[whatsapp] turn produced no reply for ' + contactId + ' - decision case: ' + (decision ? decision.case : '(no decision)') + ', text: ' + text.slice(0, 80));
+      await logInboxEvent({ chatId: contactId, name, isGroup: false, messageSummary: text, aCase: decision ? decision.case : null, sentText: null, outcome: 'skipped_silent_decision', arrivedAt, seenAt, typingStartedAt });
+      if (typingStartedAt) fireAndForgetPresence(contactId, 'paused');
     }
     console.log('[whatsapp] turn timeline ' + contactId + ': arrived ' + new Date(arrivedAt).toISOString() +
       (typingStartedAt ? ' -> typing ' + new Date(typingStartedAt).toISOString() : ' -> no typing shown') +
-      ' -> decided ' + new Date(seenAt).toISOString() + ' (' + Math.round((seenAt - arrivedAt) / 1000) + 's)');
+      ' -> decided ' + new Date(seenAt).toISOString() + ' (' + Math.round((seenAt - arrivedAt) / 1000) + 's)' +
+      ' -> outcome: ' + (decision ? decision.case + (decision.replyText ? ' (reply)' : ' (no reply)') : 'no decision'));
   }
 
   for (const [contactId, messages] of byContact) {
@@ -15056,6 +15135,7 @@ module.exports = {
   gatewayStatusSummary,
   buildAutoReplyStatusReply,
   recordSchedulerHeartbeat,
+  getSchedulerHeartbeat,
   recordSchedulerError,
   savePendingDraft,
   listPendingDrafts,

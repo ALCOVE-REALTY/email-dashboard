@@ -91,6 +91,43 @@ const AUTOSEND_FLUSH_MS = 30 * 1000;
 // mechanisms).
 const HEALTH_CHECK_MS = 2 * 60 * 1000;
 
+// LIVE INCIDENT FOLLOW-UP (2026-11, direct instruction - "SUBH stopped
+// receiving WhatsApp messages") - the `polling` overlap guard above only
+// gets reset to `false` AFTER `pollOnce()` resolves or rejects; if
+// `pollOnce()` itself ever genuinely HANGS (an await that never settles,
+// not merely a slow one), `polling` stays `true` forever and every later
+// tick just reschedules without ever doing real work again - the loop
+// LOOKS alive (the recursive setTimer chain keeps firing) while silently
+// never polling again, which reads exactly like "SUBH stopped replying"
+// from the outside, with zero trace in wa-scheduler-last-error (it's
+// never reached). Same outer-breaker pattern whatsappService.js's own
+// enqueueSend already uses for a single send - comfortably above any
+// legitimate pollOnce duration (feed fetch + N AI decisions in the worst
+// case a burst of due messages all flush in one tick), but still finite,
+// so a genuine hang can never freeze the loop permanently. Test-only
+// override seam, same convention as WHATSAPP_SEND_QUEUE_TASK_TIMEOUT_MS.
+function pollOnceTimeoutMs() {
+  const override = Number(process.env.WHATSAPP_POLL_ONCE_TIMEOUT_MS);
+  return Number.isFinite(override) && override > 0 ? override : 120000;
+}
+function withPollOnceTimeout(promise) {
+  const timeoutMs = pollOnceTimeoutMs();
+  // Abandoning `promise` in the background (once the race below settles
+  // via the timeout) must never create an unhandled-rejection crash if
+  // it eventually rejects on its own, well after this tick has already
+  // moved on - this silent catch is attached to the REAL promise
+  // directly (never to the race itself, which still rejects normally for
+  // the timeout case below).
+  promise.catch(() => {});
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      const timer = setTimeout(() => reject(new Error('pollOnce exceeded ' + timeoutMs + 'ms - safety breaker fired')), timeoutMs);
+      if (timer.unref) timer.unref(); // never keeps the process alive on its own
+    })
+  ]);
+}
+
 function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval, log = console } = {}) {
   if (process.env.WHATSAPP_ASSISTANT_SCHEDULER !== '1') {
     // Exact value (not just "it's off") - found necessary live after a
@@ -137,7 +174,15 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
     // regardless of this flag, every tick.
     const writeRoutineStatus = tickCount === 1 || tickCount % HEARTBEAT_WRITE_EVERY_N_TICKS === 0;
     try {
-      const result = await whatsappAssistant.pollOnce();
+      // withPollOnceTimeout: see its own comment above - guarantees this
+      // tick (and therefore `polling`/the whole recursive chain) always
+      // moves on, even if pollOnce() itself never settles. The real
+      // pollOnce() call is left running in the background on a timeout
+      // (Node has no way to truly cancel an in-flight async function from
+      // out here, same as enqueueSend's own documented limitation) - if
+      // it eventually does resolve, its result is simply never awaited
+      // by anything, which is safe: nothing here depends on that.
+      const result = await withPollOnceTimeout(whatsappAssistant.pollOnce());
       consecutiveErrors = 0;
       log.log('[whatsapp-assistant] poll (tick ' + tickCount + '): ' + JSON.stringify(result));
       if (writeRoutineStatus) await whatsappAssistant.recordSchedulerError('poll', null).catch(() => {});
