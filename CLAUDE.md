@@ -81,6 +81,39 @@ calls per run and stay in the manual report-gate (rules 7/8 above) instead, so a
 never silently costs money. Bypass only when genuinely safe to:
 `git push --no-verify`.
 
+## Pre-push gate hardening — STANDING RULE (2026-11, direct instruction)
+
+Found live: a newly-added/changed test flaked under the FULL parallel gate (passed
+alone, failed when run alongside everything else) - CPU contention from many
+concurrent headless Chromium instances, not a code bug. `scripts/run-pre-push-checks.js`
+now caps headless-Playwright (UI_CHECKS) suites to a bounded concurrency pool (currently
+4 at a time) instead of running all of them at once; the deterministic (non-browser)
+suites stay fully parallel. On top of that: any suite that fails its first run is
+re-run ALONE, once - a pass on that lone retry means flaky, not broken, and does NOT
+block the push, but is logged to `scripts/flaky-tests.md` (with the failure output) and
+called out in the gate's own summary. **Every entry in `scripts/flaky-tests.md` must be
+fixed before starting any new work** - it is a real, non-deterministic bug (test or app),
+never something to leave sitting there. A suite that fails both the first run and the
+solo retry is a real failure and blocks the push as normal.
+
+**A new or changed test may only be committed after the FULL parallel gate
+(`npm run check:all` / `node scripts/run-pre-push-checks.js`) passes 3 CONSECUTIVE times
+in a row** - never just the one suite run alone, which is exactly what let the
+contention-sensitivity above go unnoticed the first time. A test that needs this proof
+must itself be genuinely deterministic to pass 3 times reliably: no fixed sleeps, no
+wall-clock thresholds, no live-data dependencies - wait for real states (a selector,
+`networkidle`, a controlled promise/gate) instead. **Speed/performance checks (page-open
+timing) and any live-data diagnostic do not belong in the blocking gate at all** - a
+timing number is inherently sensitive to whatever else is running on the machine at that
+moment (confirmed live: page-open timing varying ~150ms-1000ms on the exact same code,
+purely from unrelated CPU load), and a live-data check's own pass/fail can drift for
+reasons that have nothing to do with the change being pushed. Both run separately,
+reporting their numbers without ever blocking a push: `npm run check:perf` for page-open
+timing (`scripts/check-subh-pages-open-speed.js`), `npm run check:live` for any future
+live-data diagnostic (none exists in the blocking gate today, per its own GATE SCOPE
+comment in run-pre-push-checks.js - next one added should start life as its own
+check:live script, never folded into check:all).
+
 ## Sub-agent/fork scope — HARD RULE (2026-11, direct instruction)
 
 Found live: a research-only fork, spawned purely to read code and report back, went
@@ -94,13 +127,15 @@ unambiguously in its own prompt - scope must never be left to be inferred. When
 delegating further (a fork spawning its own research sub-forks, etc.), carry this same
 explicit read-only-vs-write instruction down to each one, every time.
 
-**Workflow Automation extension project (2026-11, direct instruction, after the rule
-above was violated a second time anyway - a "research-only" fork ran real-model calls
-past $1 with no estimate shown, no stop, no sign-off)**: for the rest of this project,
-no sub-forks or sub-agents of any kind - whichever agent is delegated a phase does ALL
-of its own research and building itself, directly, no further delegation down the
-chain. This is narrower than the general rule above (which still applies everywhere
-else): here, the answer to "should I spawn a helper for this" is simply no.
+**No sub-agents/background agents of any kind, anywhere in this project (2026-11, direct
+instruction, widened from an earlier Workflow-Automation-only scope after a background
+agent kept editing files and was about to commit unreviewed work with no owner
+sign-off)**: whichever agent is working on this project does ALL of its own research
+and building itself, directly - never spawning a fork, sub-agent, or background agent to
+do any part of it, research-only or otherwise. This supersedes the general rule above
+(which allowed a properly-scoped, explicitly-briefed write-capable fork) for this
+project specifically: here, the answer to "should I spawn a helper for this" is always
+no, full stop.
 
 ## SUBH Settings pages open instantly — STANDING RULE (2026-11, direct instruction)
 

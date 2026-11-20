@@ -1,0 +1,51 @@
+# Flaky tests
+
+Suites that failed once but passed on an immediate lone solo re-run during the
+pre-push gate (scripts/run-pre-push-checks.js) - the push was NOT blocked, but every
+entry here is a real, non-deterministic test (or app) bug that must be fixed before
+any new work starts (CLAUDE.md standing rule). Remove a suite's own section once it
+stops flaking.
+
+## check-subh-panel-ui.js
+Flaked on 2026-11-20T06:03:57.710Z - failed once, passed on a lone solo retry.
+```
+[ok] ISSUE 3(b): the filter chips are GONE from this page
+[ok] Settings history: ALL 3 fake history entries render as ONE single list (no filtering)
+[ok] ISSUE 3(b): the list starts a little below the page heading, not touching it (same spacing as other settings pages)
+[ok] Settings history: a restorable entry (company details) shows a Restore button; a non-restorable one (letter logo - image bytes never kept in history) does not
+[ok] ISSUE 3(a): the system-correction entry is clearly labelled as such, with its plain-language reason shown
+[ok] ISSUE 3(a): the system-correction entry never offers a Restore button
+[ok] Settings history: tapping Restore opens the preview sheet showing the change
+[ok] Settings history: the preview sheet names the group and the before/after change
+[ok] Settings history: "Confirm restore" posts the EXACT history entry (group + before/after), not a re-derived guess
+[ok] Settings history: shows the real restored confirmation once done
+[ok] Settings history: no JS error was thrown through opening, filtering, previewing or confirming a restore
+[ok] ISSUE 4: AI usage renders instantly from the hub-level prefetch - no skeleton ever shown, not even a flash
+[ok] ISSUE 4: Data & backups renders instantly from the hub-level prefetch - no skeleton ever shown
+[ok] ISSUE 4: Settings history renders instantly from the hub-level prefetch - no skeleton ever shown
+[ok] ISSUE 4: no JS error was thrown prefetching or opening any of the 3 previously-cold pages
+======================================================================
+item 8 - native pull-to-refresh preconditions on a SUBH-Settings sub-page (vs. an ordinary panel page, which must be completely unaffected)
+======================================================================
+[ok] Letter settings: <body> is NOT position:fixed while this page is open (the real document can grow/scroll)
+[ok] Letter settings: #hrAssistantPanel is genuinely CLOSED (hidden), not just "joined normal document flow"
+[ok] Letter settings: the custom pull-to-refresh indicator was never attached to this page
+[ok] Letter settings: the real document is now actually taller than the viewport (something real to scroll)
+[ok] Letter settings: a normal scroll in the middle of the page actually moves the real document (nothing is blocking it)
+[ok] Fresh panel open (Home): <body> is position:fixed again - the pre-existing overlay/keyboard-nudge protection is restored, never left permanently unlocked
+[ok] Fresh panel open (Home): #hrAssistantPanel is position:fixed again too
+[ok] Reminders (an ordinary page): <body> is STILL position:fixed - this fix never touches any page outside the 7 settings sub-pages
+[ok] Reminders: still has its OWN custom pull-to-refresh indicator, untouched
+[ok] item 8: no JS error was thrown through the whole doc-scroll/body-lock toggle flow
+[info] 1 pre-existing page-load error(s) from the main dashboard (unrelated to the SUBH panel, not counted as a failure): ["Failed to load resource: the server responded with a status of 404 (Not Found)","Failed to load resource: the server responded with a status of 400 (Bad Request)","Cannot read properties of undefined (reading 'all')","Cannot read properties of undefined (reading 'all')","Cannot read properties of undefined (reading 'all')","Cannot read properties of undefined (reading 'all')","Cannot read properties of undefined (reading 'all')","Cannot read properties of undefined (reading 'all')","Cannot read properties of undefined (reading 'all')"]
+257/265 passed, 8 FAILED
+Failed checks:
+ - Site names: header box positions (hamburger/profile/wordmark) are IDENTICAL to a real ☰ menu section's own topbar at 384px, never just close -- got: {"menuBtn":{"x":16,"y":18,"width":38,"height":38,"top":18,"right":54,"bottom":56,"left":16},"profile":{"x":330,"y":18,"width":38,"height":38,"top":18,"right":368,"bottom":56,"left":330},"wordmark":{"x":68,"y":19.375,"width":93.1875,"height":35.25,"top":19.375,"right":161.1875,"bottom":54.625,"left":68}} vs baseline: {"menuBtn":{"x":16,"y":18,"width":38,"height":38,"top":18,"right":54,"bottom":56,"left":16},"profile":{"x":330,"y":18,"width":38,"height":38,"top":18,"right":368,"bottom":56,"left":330},"wordmark":{"x":68,"y":19.375,"width":96.703125,"height":35.25,"top":19.375,"right":164.703125,"bottom":54.625,"left":68}}
+ - Department names: header box positions (hamburger/profile/wordmark) are IDENTICAL to a real ☰ menu section's own topbar at 384px, never just close -- got: {"menuBtn":{"x":16,"y":18,"width":38,"height":38,"top":18,"right":54,"bottom":56,"left":16},"profile":{"x":330,"y":18,"width":38,"height":38,"top":18,"right":368,"bottom":56,"left":330},"wordmark":{"x":68,"y":19.375,"width":93.1875,"height":35.25,"top":19.375,"right":161.1875,"bottom":54.625,"left":68}} vs baseline: {"menuBtn":{"x":16,"y":18,"width":38,"height":38,"top":18,"right":54,"bottom":56,"left":16},"profile":{"x":330,"y":18,"width":38,"height":38,"top":18,"right":368,"bottom":56,"left":330},"wordmark":{"x":68,"y":19.375,"width":96.703125,"height":35.25,"top":19.375,"right":164.703125,"bottom":54.625,"left":68}}
+ - Company details: header box positions (hamburger/profile/wordmark) are IDENTICAL to a real ☰ menu section's own topbar at 384px, never just close -- got: {"menuBtn":{"x":16,"y":18,"width":38,"height":38,"top":18,"right":54,"bottom":56,"left":16},"profile":{"x":330,"y":18,"width":38,"height":38,"top":18,"right":368,"bottom":56,"left":330},"wordmark":{"x":68,"y":19.375,"width":93.1875,"height":35.25,"top":19.375,"right":161.1875,"bottom":54.625,"left":68}} vs baseline: {"menuBtn":{"x":16,"y":18,"width":38,"height":38,"top":18,"right":54,"bottom":56,"left":16},"profile":{"x":330,"y":18,"width":38,"height":38,"top":18,"right":368,"bottom":56,"left":330},"wordmark":{"x":68,"y":19.375,"width":96.703125,"height":35.25,"top":19.375,"right":164.703125,"bottom":54.625,"left":68}}
+ - Holidays: header box positions (hamburger/profile/wordmark) are IDENTICAL to a real ☰ menu section's own topbar at 384px, never just close -- got: {"menuBtn":{"x":16,"y":18,"width":38,"height":38,"top":18,"right":54,"bottom":56,"left":16},"profile":{"x":330,"y":18,"width":38,"height":38,"top":18,"right":368,"bottom":56,"left":330},"wordmark":{"x":68,"y":19.375,"width":93.1875,"height":35.25,"top":19.375,"right":161.1875,"bottom":54.625,"left":68}} vs baseline: {"menuBtn":{"x":16,"y":18,"width":38,"height":38,"top":18,"right":54,"bottom":56,"left":16},"profile":{"x":330,"y":18,"width":38,"height":38,"top":18,"right":368,"bottom":56,"left":330},"wordmark":{"x":68,"y":19.375,"width":96.703125,"height":35.25,"top":19.375,"right":164.703125,"bottom":54.625,"left":68}}
+ - Letter settings: header box positions (hamburger/profile/wordmark) are IDENTICAL to a real ☰ menu section's own topbar at 384px, never just close -- got: {"menuBtn":{"x":16,"y":18,"width":38,"height":38,"top":18,"right":54,"bottom":56,"left":16},"profile":{"x":330,"y":18,"width":38,"height":38,"top":18,"right":368,"bottom":56,"left":330},"wordmark":{"x":68,"y":19.375,"width":93.1875,"height":35.25,"top":19.375,"right":161.1875,"bottom":54.625,"left":68}} vs baseline: {"menuBtn":{"x":16,"y":18,"width":38,"height":38,"top":18,"right":54,"bottom":56,"left":16},"profile":{"x":330,"y":18,"width":38,"height":38,"top":18,"right":368,"bottom":56,"left":330},"wordmark":{"x":68,"y":19.375,"width":96.703125,"height":35.25,"top":19.375,"right":164.703125,"bottom":54.625,"left":68}}
+ - AI usage: header box positions (hamburger/profile/wordmark) are IDENTICAL to a real ☰ menu section's own topbar at 384px, never just close -- got: {"menuBtn":{"x":16,"y":18,"width":38,"height":38,"top":18,"right":54,"bottom":56,"left":16},"profile":{"x":330,"y":18,"width":38,"height":38,"top":18,"right":368,"bottom":56,"left":330},"wordmark":{"x":68,"y":19.375,"width":93.1875,"height":35.25,"top":19.375,"right":161.1875,"bottom":54.625,"left":68}} vs baseline: {"menuBtn":{"x":16,"y":18,"width":38,"height":38,"top":18,"right":54,"bottom":56,"left":16},"profile":{"x":330,"y":18,"width":38,"height":38,"top":18,"right":368,"bottom":56,"left":330},"wordmark":{"x":68,"y":19.375,"width":96.703125,"height":35.25,"top":19.375,"right":164.703125,"bottom":54.625,"left":68}}
+ - Data & backups: header box positions (hamburger/profile/wordmark) are IDENTICAL to a real ☰ menu section's own topbar at 384px, never just close -- got: {"menuBtn":{"x":16,"y":18,"width":38,"height":38,"top":18,"right":54,"bottom":56,"left":16},"profile":{"x":330,"y":18,"width":38,"height":38,"top":18,"right":368,"bottom":56,"left":330},"wordmark":{"x":68,"y":19.375,"width":93.1875,"height":35.25,"top":19.375,"right":161.1875,"bottom":54.625,"left":68}} vs baseline: {"menuBtn":{"x":16,"y":18,"width":38,"height":38,"top":18,"right":54,"bottom":56,"left":16},"profile":{"x":330,"y":18,"width":38,"height":38,"top":18,"right":368,"bottom":56,"left":330},"wordmark":{"x":68,"y":19.375,"width":96.703125,"height":35.25,"top":19.375,"right":164.703125,"bottom":54.625,"left":68}}
+ - Settings history: header box positions (hamburger/profile/wordmark) are IDENTICAL to a real ☰ menu section's own topbar at 384px, never just close -- got: {"menuBtn":{"x":16,"y":18,"width":38,"height":38,"top":18,"right":54,"bottom":56,"left":16},"profile":{"x":330,"y":18,"width":38,"height":38,"top":18,"right":368,"bottom":56,"left":330},"wordmark":{"x":68,"y":19.375,"width":93.1875,"height":35.25,"top":19.375,"right":161.1875,"bottom":54.625,"left":68}} vs baseline: {"menuBtn":{"x":16,"y":18,"width":38,"height":38,"top":18,"right":54,"bottom":56,"left":16},"profile":{"x":330,"y":18,"width":38,"height":38,"top":18,"right":368,"bottom":56,"left":330},"wordmark":{"x":68,"y":19.375,"width":96.703125,"height":35.25,"top":19.375,"right":164.703125,"bottom":54.625,"left":68}}
+```
