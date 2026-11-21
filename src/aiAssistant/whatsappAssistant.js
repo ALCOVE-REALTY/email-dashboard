@@ -10971,6 +10971,94 @@ async function recordSchedulerError(source, message) {
   } catch (err) { /* best effort */ }
 }
 
+// LIVE INCIDENT (2026-11, direct instruction) - "Is the process
+// restarting? Log a startup line with time + reason, count restarts per
+// day, show last start time on the System health card." A DURABLE,
+// IST-day-keyed counter (survives the very restart it's counting,
+// unlike every other diagnostic in this module, which is fine resetting
+// on restart) plus the last-shutdown's own best-effort reason, written
+// by the process-exit hooks below BEFORE it dies - the one piece of
+// "why" an in-process restart counter could otherwise never know on its
+// own (a fresh process has no memory of what killed the one before it).
+const PROCESS_START_KEY = 'wa-scheduler-last-start';
+const PROCESS_START_COUNT_PREFIX = 'wa-scheduler-start-count:';
+const PROCESS_SHUTDOWN_REASON_KEY = 'wa-scheduler-last-shutdown-reason';
+async function recordProcessStart(commitId) {
+  const redis = getClient();
+  if (!redis) return null;
+  const dayKey = istDayKeyOf(new Date());
+  try {
+    const previousShutdownReason = await redis.get(PROCESS_SHUTDOWN_REASON_KEY).catch(() => null);
+    await redis.set(PROCESS_START_KEY, JSON.stringify({ ts: Date.now(), commitId, previousShutdownReason: previousShutdownReason || null }));
+    await redis.del(PROCESS_SHUTDOWN_REASON_KEY).catch(() => {});
+    const count = await redis.incr(PROCESS_START_COUNT_PREFIX + dayKey);
+    await redis.expire(PROCESS_START_COUNT_PREFIX + dayKey, 3 * 24 * 60 * 60).catch(() => {});
+    return { startsToday: count, previousShutdownReason: previousShutdownReason || null };
+  } catch (err) { return null; }
+}
+async function getProcessStartInfo() {
+  const redis = getClient();
+  if (!redis) return null;
+  try {
+    const raw = await redis.get(PROCESS_START_KEY);
+    const last = raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : null;
+    const countRaw = await redis.get(PROCESS_START_COUNT_PREFIX + istDayKeyOf(new Date()));
+    return { last, startsToday: Number(countRaw) || 0 };
+  } catch (err) { return null; }
+}
+// Best-effort - a genuine crash (uncaughtException/unhandledRejection) or
+// an orchestrator-sent termination signal (SIGTERM/SIGINT, e.g. Docker
+// stopping the container for a redeploy or a restart policy) writes WHY
+// here before the process goes down, so the NEXT start (recordProcessStart
+// above) can report it. Fire-and-forget on purpose - this must never
+// delay or prevent the actual shutdown/crash, and may simply not land in
+// time under a hard kill (e.g. SIGKILL, which can't be hooked at all) -
+// that's an acceptable gap, not a bug to chase further.
+async function recordShutdownReason(reason) {
+  const redis = getClient();
+  if (!redis) return;
+  try { await redis.set(PROCESS_SHUTDOWN_REASON_KEY, String(reason).slice(0, 500), { ex: 7 * 24 * 60 * 60 }); } catch (err) { /* best effort */ }
+}
+// A bounded best-effort write before actually exiting - never lets a
+// slow/hung KV call delay shutdown beyond this, well inside any
+// orchestrator's own grace period before a harder SIGKILL.
+function recordShutdownReasonBounded(reason, boundMs) {
+  return Promise.race([
+    recordShutdownReason(reason).catch(() => {}),
+    new Promise((resolve) => setTimeout(resolve, boundMs || 3000))
+  ]);
+}
+function installProcessExitDiagnostics(log) {
+  // Node's default behavior for BOTH of these (uncaughtException,
+  // unhandledRejection) is to crash the process - attaching a listener
+  // at all REPLACES that default, so this must explicitly call
+  // process.exit() itself afterward, or a genuine crash would instead
+  // leave the process silently limping on in an unknown state forever
+  // (the opposite of "log a reason and restart cleanly").
+  process.on('uncaughtException', async (err) => {
+    log.error('[whatsapp-assistant] UNCAUGHT EXCEPTION (process exiting): ' + err.message);
+    await recordShutdownReasonBounded('uncaughtException: ' + err.message);
+    process.exit(1);
+  });
+  process.on('unhandledRejection', async (reason) => {
+    const message = (reason && reason.message) || String(reason);
+    log.error('[whatsapp-assistant] UNHANDLED REJECTION (process exiting): ' + message);
+    await recordShutdownReasonBounded('unhandledRejection: ' + message);
+    process.exit(1);
+  });
+  // Same reasoning for SIGTERM/SIGINT - attaching a listener suppresses
+  // Node's own default immediate-terminate behavior, so this must still
+  // actually exit afterward (a redeploy/restart sending SIGTERM expects
+  // the process to actually stop, not quietly ignore the signal).
+  ['SIGTERM', 'SIGINT'].forEach((signal) => {
+    process.on(signal, async () => {
+      log.log('[whatsapp-assistant] received ' + signal + ' - process stopping (likely a redeploy or restart)');
+      await recordShutdownReasonBounded(signal + ' received (likely a redeploy or restart)');
+      process.exit(0);
+    });
+  });
+}
+
 // ---------------- Owner-only WhatsApp inbox summary (AI tool) ----------------
 // Backs the in-app check_memory-style tool the owner asks natural
 // questions to ("WhatsApp-e kono important message esheche?", "kar
@@ -16598,6 +16686,10 @@ module.exports = {
   recordSchedulerHeartbeat,
   getSchedulerHeartbeat,
   recordSchedulerError,
+  recordProcessStart,
+  getProcessStartInfo,
+  installProcessExitDiagnostics,
+  recordShutdownReason,
   savePendingDraft,
   listPendingDrafts,
   removePendingDraft,

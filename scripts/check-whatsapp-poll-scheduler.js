@@ -135,6 +135,95 @@ async function main() {
     check('once the first maintenance tick finishes, a later tick runs normally again (the guard resets, never stuck "running" forever)', dailySummaryCallCount === 2, 'calls after first finished: ' + dailySummaryCallCount);
 
     if (handle && handle.stop) handle.stop();
+
+    // LIVE INCIDENT (2026-11, direct instruction) - "every scheduled job
+    // runs reliably and independently, with timeouts and no overlap - one
+    // stuck job must never block the others." runMaintenanceJob is the
+    // new per-job wrapper every job in runMaintenanceTick now goes
+    // through - tested directly here (never through the full start()/
+    // tick machinery, which would mean a real 60s wait for the shared
+    // default timeout) since it's exported standalone for exactly this.
+    const noopLog2 = { log: () => {}, error: () => {} };
+    await checkJobTimeoutNeverBlocksOthers();
+    await checkJobBackoffThenRecovery();
+    await checkJobHeartbeatFields();
+
+    async function checkJobTimeoutNeverBlocksOthers() {
+      const jobName = 'test-hung-job-' + Date.now();
+      const otherJobName = 'test-other-job-' + Date.now();
+      const hungJob = () => new Promise(() => {}); // never resolves/rejects
+      let otherJobRan = false;
+      const otherJob = async () => { otherJobRan = true; return 'ok'; };
+      const start = Date.now();
+      const result = await scheduler.runMaintenanceJob(noopLog2, jobName, hungJob, { timeoutMs: 100 });
+      const elapsedMs = Date.now() - start;
+      check('a hung job (never resolves) is abandoned at its OWN timeout, never the caller\'s own default', result === null && elapsedMs < 1000, 'elapsed: ' + elapsedMs + 'ms');
+      await scheduler.runMaintenanceJob(noopLog2, otherJobName, otherJob);
+      check('a DIFFERENT job right after a hung one still runs normally - one stuck job never blocks another', otherJobRan === true);
+      const heartbeats = scheduler.getJobHeartbeats();
+      const hungHeartbeat = heartbeats.find((h) => h.name === jobName);
+      check('the hung job\'s own heartbeat records the real timeout error, not a silent failure', Boolean(hungHeartbeat && hungHeartbeat.lastError && /exceeded 100ms/.test(hungHeartbeat.lastError)), JSON.stringify(hungHeartbeat));
+    }
+
+    async function checkJobBackoffThenRecovery() {
+      const jobName = 'test-backoff-job-' + Date.now();
+      let callCount = 0;
+      const failingJob = async () => { callCount++; throw new Error('simulated job failure'); };
+      await scheduler.runMaintenanceJob(noopLog2, jobName, failingJob, { timeoutMs: 1000 });
+      check('a failing job is actually called and its failure is recorded (call 1)', callCount === 1);
+      // Immediately after failing once, this SAME job is backing off -
+      // calling it again right away must NOT invoke the underlying
+      // function at all (same 2x-cap backoff philosophy as the main
+      // poll's own consecutiveErrors/backoffMultiplier).
+      await scheduler.runMaintenanceJob(noopLog2, jobName, failingJob, { timeoutMs: 1000 });
+      check('immediately after a failure, the SAME job is skipped entirely (backing off) - the underlying function is never even called again yet', callCount === 1, 'calls: ' + callCount);
+      const heartbeatMidBackoff = scheduler.getJobHeartbeats().find((h) => h.name === jobName);
+      check('the heartbeat records a real backoffUntil timestamp in the future while backing off', Boolean(heartbeatMidBackoff && heartbeatMidBackoff.backoffUntil && heartbeatMidBackoff.backoffUntil > Date.now()));
+      // A DIFFERENT job (never touched by this one's own backoff) runs
+      // normally the whole time - backoff is per-job, never global.
+      let unrelatedJobRan = false;
+      await scheduler.runMaintenanceJob(noopLog2, 'test-unrelated-job-' + Date.now(), async () => { unrelatedJobRan = true; });
+      check('an unrelated job is completely unaffected by another job\'s own backoff', unrelatedJobRan === true);
+    }
+
+    async function checkJobHeartbeatFields() {
+      const jobName = 'test-success-job-' + Date.now();
+      const beforeCall = Date.now();
+      await scheduler.runMaintenanceJob(noopLog2, jobName, async () => { await new Promise((r) => setTimeout(r, 15)); return 'done'; });
+      const heartbeat = scheduler.getJobHeartbeats().find((h) => h.name === jobName);
+      check('a successful job records lastStartAt/lastEndAt/lastDurationMs/lastSuccessAt, with lastError null and consecutiveFailures reset to 0',
+        Boolean(heartbeat) && heartbeat.lastStartAt >= beforeCall && heartbeat.lastEndAt >= heartbeat.lastStartAt &&
+        heartbeat.lastDurationMs >= 10 && heartbeat.lastError === null && heartbeat.consecutiveFailures === 0 && Boolean(heartbeat.lastSuccessAt),
+        JSON.stringify(heartbeat));
+    }
+
+    // LIVE INCIDENT (2026-11, direct instruction) - "log a startup line
+    // with time + reason, count restarts per day, show last start time."
+    // recordProcessStart/getProcessStartInfo are DURABLE (KV-backed,
+    // deliberately surviving the very restart they're counting) - tested
+    // directly against the real functions (no mock needed, the fake
+    // Upstash store from testBootstrap already isolates this run).
+    await checkProcessStartTracking();
+    async function checkProcessStartTracking() {
+      const before = await whatsappAssistant.getProcessStartInfo();
+      const startsBefore = (before && before.startsToday) || 0;
+      const info1 = await whatsappAssistant.recordProcessStart('abc1234');
+      check('recordProcessStart returns the incremented today-count', Boolean(info1) && info1.startsToday === startsBefore + 1, JSON.stringify(info1));
+      const after1 = await whatsappAssistant.getProcessStartInfo();
+      check('getProcessStartInfo reflects the same start just recorded (commit id, same count)', Boolean(after1 && after1.last && after1.last.commitId === 'abc1234' && after1.startsToday === startsBefore + 1));
+      // A shutdown reason recorded before the NEXT start surfaces on that
+      // next start's own result - the one piece of "why" a fresh process
+      // has no memory of on its own.
+      await whatsappAssistant.recordShutdownReason('SIGTERM received (likely a redeploy or restart)').catch(() => {});
+      const info2 = await whatsappAssistant.recordProcessStart('def5678');
+      check('a shutdown reason recorded before this start surfaces as previousShutdownReason', Boolean(info2 && info2.previousShutdownReason && /SIGTERM/.test(info2.previousShutdownReason)), JSON.stringify(info2));
+      check('restarts-today keeps incrementing across multiple starts in the same IST day', info2.startsToday === startsBefore + 2);
+      // The shutdown-reason key is consumed (deleted) the moment a start
+      // reports it - a LATER start with no NEW reason recorded in between
+      // must show previousShutdownReason: null, never repeat the old one.
+      const info3 = await whatsappAssistant.recordProcessStart('ghi9999');
+      check('a later start with no NEW shutdown reason recorded shows previousShutdownReason: null - the earlier one was consumed, never repeated', Boolean(info3) && info3.previousShutdownReason === null, JSON.stringify(info3));
+    }
   }
 
   console.log('='.repeat(70));

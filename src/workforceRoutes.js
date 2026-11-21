@@ -15,6 +15,7 @@ const aiRateLimiter = require('./aiAssistant/rateLimiter');
 const toolCallLog = require('./aiAssistant/toolCallLog');
 const chatHistoryService = require('./chatHistoryService');
 const whatsappAssistant = require('./aiAssistant/whatsappAssistant');
+const whatsappPollScheduler = require('./whatsappPollScheduler');
 const attendanceRequestService = require('./aiAssistant/attendanceRequestService');
 const memoryService = require('./aiAssistant/memoryService');
 const documentRequests = require('./aiAssistant/documentRequests');
@@ -3166,7 +3167,18 @@ router.post('/hr-assistant/ai-fallback-alert/dismiss', async (req, res) => {
 // it's there to help diagnose.
 router.get('/hr-assistant/system-health', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
-  res.json({ metrics: systemHealthMonitor.getLatestMetrics() });
+  // LIVE INCIDENT (2026-11, direct instruction) - "Is the process
+  // restarting?... show last start time on the System health card" /
+  // "show each job's last successful run on the System health card" -
+  // processStart is a real KV read (durable, survives the restart it's
+  // counting); jobHeartbeats is a pure in-memory read of whatever this
+  // SAME process's own maintenance tick last recorded (see
+  // whatsappPollScheduler.js's own runMaintenanceJob) - neither one
+  // triggers a fresh check itself, same "viewing this card never adds to
+  // the load it's there to help diagnose" rule the metrics sampler above
+  // already follows.
+  const processStart = await whatsappAssistant.getProcessStartInfo().catch(() => null);
+  res.json({ metrics: systemHealthMonitor.getLatestMetrics(), processStart, jobHeartbeats: whatsappPollScheduler.getJobHeartbeats() });
 });
 
 // Part B phase 3 (2026-11, direct instruction), LIVE BUG FIX (2026-11) -

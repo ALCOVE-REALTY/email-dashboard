@@ -129,6 +129,64 @@ function withPollOnceTimeout(promise) {
   ]);
 }
 
+// LIVE INCIDENT (2026-11, direct instruction) - "every scheduled job...
+// runs reliably and independently, with timeouts and no overlap - one
+// stuck job must never block the others." The maintenance tick (19 jobs
+// now, grown from the original ~13) already had a TICK-level overlap
+// guard (maintenanceTicking below) but NO per-job timeout at all - a
+// genuinely hung job (a slow/stuck Gmail search, Drive upload, or
+// external Together We Can call, none of them reply-latency-sensitive
+// but all real network calls with no timeout of their own) would never
+// let `runMaintenanceTick`'s own sequential await chain reach anything
+// AFTER it - exactly the same "silently dead forever" failure mode
+// withPollOnceTimeout above already protects the main poll from, just
+// never applied to this tick's own jobs. Each job gets its own timeout
+// (abandoning - never cancelling, Node can't truly cancel an in-flight
+// async call - the real promise in the background on a timeout, same
+// convention as withPollOnceTimeout) and the SAME 2x-capped backoff
+// philosophy the main poll's own consecutiveErrors/backoffMultiplier
+// already uses, keyed per job name so one failing job backing off never
+// affects any other job's own schedule. Heartbeat state (last run start/
+// end/duration/error) is exposed via getJobHeartbeats() for the System
+// health card (point 4 - "show each job's last successful run") - in-
+// memory only, same "resets on restart, that's fine" posture as every
+// other diagnostic in this app.
+const JOB_DEFAULT_TIMEOUT_MS = 60 * 1000;
+const jobHeartbeats = new Map();
+function getJobHeartbeats() {
+  return Array.from(jobHeartbeats.entries()).map(([name, h]) => Object.assign({ name }, h));
+}
+async function runMaintenanceJob(log, name, fn, { timeoutMs } = {}) {
+  const effectiveTimeoutMs = timeoutMs || JOB_DEFAULT_TIMEOUT_MS;
+  const existing = jobHeartbeats.get(name) || { consecutiveFailures: 0, lastSuccessAt: null };
+  const now = Date.now();
+  if (existing.backoffUntil && now < existing.backoffUntil) return null; // still backing off this one job - every other job on this tick is unaffected
+  const startedAt = Date.now();
+  let timer;
+  const timeoutPromise = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(name + ' exceeded ' + effectiveTimeoutMs + 'ms - safety breaker fired')), effectiveTimeoutMs);
+    if (timer.unref) timer.unref();
+  });
+  const jobPromise = Promise.resolve().then(fn);
+  jobPromise.catch(() => {}); // never an unhandled rejection if it resolves late, after the timeout already won the race below
+  try {
+    const result = await Promise.race([jobPromise, timeoutPromise]);
+    clearTimeout(timer);
+    const endedAt = Date.now();
+    jobHeartbeats.set(name, { lastStartAt: startedAt, lastEndAt: endedAt, lastDurationMs: endedAt - startedAt, lastError: null, lastSuccessAt: endedAt, consecutiveFailures: 0, backoffUntil: null });
+    return result;
+  } catch (err) {
+    clearTimeout(timer);
+    const endedAt = Date.now();
+    const failures = (existing.consecutiveFailures || 0) + 1;
+    const backoffMultiplier = Math.min(2 ** failures, 2);
+    const backoffUntil = endedAt + AUTOSEND_FLUSH_MS * backoffMultiplier;
+    jobHeartbeats.set(name, { lastStartAt: startedAt, lastEndAt: endedAt, lastDurationMs: endedAt - startedAt, lastError: err.message, lastSuccessAt: existing.lastSuccessAt || null, consecutiveFailures: failures, backoffUntil });
+    log.error('[whatsapp-assistant] ' + name + ' failed: ' + err.message);
+    return null;
+  }
+}
+
 function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval, log = console } = {}) {
   if (process.env.WHATSAPP_ASSISTANT_SCHEDULER !== '1') {
     // Exact value (not just "it's off") - found necessary live after a
@@ -153,6 +211,21 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
   });
 
   const commitId = getCommitId();
+
+  // LIVE INCIDENT (2026-11, direct instruction) - "log a startup line with
+  // time + reason, count restarts per day, show last start time on the
+  // System health card." Also hooks process-level exit diagnostics
+  // (crash/signal) so the NEXT start can report what likely killed the
+  // last one - the one piece of "why" a fresh process has no memory of
+  // on its own.
+  whatsappAssistant.installProcessExitDiagnostics(log);
+  whatsappAssistant.recordProcessStart(commitId).then((info) => {
+    const prevReason = info && info.previousShutdownReason;
+    log.log('[whatsapp-assistant] PROCESS START at ' + new Date().toISOString() + ', commit ' + commitId +
+      (info ? ', start #' + info.startsToday + ' today' : '') +
+      (prevReason ? ' (previous process ended: ' + prevReason + ')' : ''));
+  }).catch((err) => log.error('[whatsapp-assistant] recordProcessStart failed: ' + err.message));
+
   let consecutiveErrors = 0;
   let tickCount = 0;
   // Belt-and-suspenders overlap guard - the recursive setTimer pattern
@@ -314,20 +387,22 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
   }, AUTOSEND_FLUSH_MS);
 
   async function runMaintenanceTick(log) {
+    // LIVE INCIDENT (2026-11, direct instruction) - every job below now
+    // runs through runMaintenanceJob (timeout + per-job backoff +
+    // heartbeat, see its own comment above) instead of a bare try/catch -
+    // business logic and existing log messages are UNCHANGED, only the
+    // execution wrapper is new. Most jobs use the shared 60s default; the
+    // 4 jobs with a REAL external network call that can legitimately take
+    // longer (Gmail search, Google Drive upload, an external sync) get an
+    // explicit longer timeout based on what their own existing comments
+    // already say they do, never a guess.
+
     // Same tick also carries the daily 9:30 IST summary check (spec item
     // 4, a one-a-day no-op the rest of the time) and the document
     // retention sweep (spec 5d) - both are cheap, idempotent checks, no
     // reason for either to need its own separate timer.
-    try {
-      await whatsappAssistant.checkAndPostDailySummary();
-    } catch (err) {
-      log.error('[whatsapp-assistant] daily summary check failed: ' + err.message);
-    }
-    try {
-      await documentRequests.runRetentionSweep();
-    } catch (err) {
-      log.error('[whatsapp-assistant] document retention sweep failed: ' + err.message);
-    }
+    await runMaintenanceJob(log, 'daily summary check', () => whatsappAssistant.checkAndPostDailySummary());
+    await runMaintenanceJob(log, 'document retention sweep', () => documentRequests.runRetentionSweep());
     // SUBH Reminders (Phase 2, speed fix) - auto-creating/closing reminders
     // from the 4 tracked sources (WhatsApp follow-ups, pending approvals,
     // received documents, expiring memories) used to run on every single
@@ -337,38 +412,22 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
     // same already-running 10s tick - the Reminders page and
     // communications-summary just do a fast read of whatever this last
     // produced (up to ~10s stale, same as every other check in this tick).
-    try {
-      await reminderService.syncAutoCreatedReminders(new Date());
-    } catch (err) {
-      log.error('[whatsapp-assistant] reminder sync failed: ' + err.message);
-    }
+    await runMaintenanceJob(log, 'reminder sync', () => reminderService.syncAutoCreatedReminders(new Date()));
     // Optional WhatsApp-to-self channel, off by default - purely the
     // extra "also ping me on WhatsApp" channel on top of the in-app
     // banner/badge (which is computed lazily on each communications-
     // summary poll, from whatever the sync step above last produced).
-    try {
-      const result = await reminderService.sendDueWhatsappReminders(new Date());
-      if (result.sent) log.log('[whatsapp-assistant] reminder WhatsApp send: ' + JSON.stringify(result));
-    } catch (err) {
-      log.error('[whatsapp-assistant] reminder WhatsApp send failed: ' + err.message);
-    }
+    const whatsappReminderResult = await runMaintenanceJob(log, 'reminder WhatsApp send', () => reminderService.sendDueWhatsappReminders(new Date()));
+    if (whatsappReminderResult && whatsappReminderResult.sent) log.log('[whatsapp-assistant] reminder WhatsApp send: ' + JSON.stringify(whatsappReminderResult));
     // Live review item 4 (HR noting + confirmation flow) - a manager with
     // no answer after 3 working hours gets one reminder; still nothing by
     // end of day escalates to the owner. Same cheap, idempotent-check
     // philosophy as every other job on this tick.
-    try {
-      await whatsappAssistant.checkHrConfirmationNudges(new Date());
-    } catch (err) {
-      log.error('[whatsapp-assistant] HR confirmation nudge check failed: ' + err.message);
-    }
+    await runMaintenanceJob(log, 'HR confirmation nudge check', () => whatsappAssistant.checkHrConfirmationNudges(new Date()));
     // Point 2 (employee side), direct instruction (2026-11), Commit 3 of
     // 3 - a sender who hasn't named the approver yet gets ONE short
     // reminder after 1 working hour.
-    try {
-      await whatsappAssistant.checkHrNoteSenderReminders(new Date());
-    } catch (err) {
-      log.error('[whatsapp-assistant] HR-note sender reminder check failed: ' + err.message);
-    }
+    await runMaintenanceJob(log, 'HR-note sender reminder check', () => whatsappAssistant.checkHrNoteSenderReminders(new Date()));
     // LIVE INCIDENT (2026-11, direct instruction) - "requests whose date
     // has passed... or that have waited beyond the end of that working
     // day for the employee's answer close automatically... never
@@ -376,98 +435,64 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
     // philosophy as every other job on this tick - a record only ever
     // closes once (derivedStatus already excludes anything not
     // 'in_progress' from being checked again).
-    try {
-      const result = await attendanceRequestService.closeStaleRecords(Date.now());
-      if (result.closed) log.log('[whatsapp-assistant] attendance request stale sweep: closed ' + result.closed);
-    } catch (err) {
-      log.error('[whatsapp-assistant] attendance request stale sweep failed: ' + err.message);
-    }
+    const staleSweepResult = await runMaintenanceJob(log, 'attendance request stale sweep', () => attendanceRequestService.closeStaleRecords(Date.now()));
+    if (staleSweepResult && staleSweepResult.closed) log.log('[whatsapp-assistant] attendance request stale sweep: closed ' + staleSweepResult.closed);
     // Direct instruction (2026-11) - monthly attendance cutoff: a request
     // still waiting on the MANAGER past its own cutoff (the first 24th
     // on/after the event date) moves to "Unconfirmed - HR to decide"
     // instead of staying open forever or being auto-closed.
-    try {
-      const result = await attendanceRequestService.closeToHrDecideIfPastCutoff(Date.now());
-      if (result.closed) log.log('[whatsapp-assistant] attendance request cutoff sweep: moved ' + result.closed + ' to HR-to-decide');
-    } catch (err) {
-      log.error('[whatsapp-assistant] attendance request cutoff sweep failed: ' + err.message);
-    }
+    const cutoffSweepResult = await runMaintenanceJob(log, 'attendance request cutoff sweep', () => attendanceRequestService.closeToHrDecideIfPastCutoff(Date.now()));
+    if (cutoffSweepResult && cutoffSweepResult.closed) log.log('[whatsapp-assistant] attendance request cutoff sweep: moved ' + cutoffSweepResult.closed + ' to HR-to-decide');
     // Direct instruction (2026-11) - the 22nd-morning owner summary of
     // requests nearing this month's 24th cutoff. Self-guarded (only acts
     // on the 22nd, once per day via its own SET-NX lock), so calling it
     // every tick like every other job here is harmless.
-    try {
-      await attendanceRequestService.sendCutoffApproachingSummaryIfDue(Date.now());
-    } catch (err) {
-      log.error('[whatsapp-assistant] attendance cutoff-approaching summary failed: ' + err.message);
-    }
+    await runMaintenanceJob(log, 'attendance cutoff-approaching summary', () => attendanceRequestService.sendCutoffApproachingSummaryIfDue(Date.now()));
     // SUBH Automated Tasks - runs any active task whose schedule is due,
     // deterministically against current data (no AI at run time). Same
     // cheap, idempotent-check philosophy as every other job on this tick -
     // a run that's actually due still only fires once (automationService's
     // own Redis lock), and one that's stuck waiting on a missed-run
     // Send/Skip decision is never auto-sent.
-    try {
-      const result = await automationService.runDueAutomations(new Date());
-      if (result.ran || result.missed) log.log('[whatsapp-assistant] automation check: ' + JSON.stringify(result));
-    } catch (err) {
-      log.error('[whatsapp-assistant] automation run failed: ' + err.message);
-    }
+    const automationResult = await runMaintenanceJob(log, 'automation check', () => automationService.runDueAutomations(new Date()));
+    if (automationResult && (automationResult.ran || automationResult.missed)) log.log('[whatsapp-assistant] automation check: ' + JSON.stringify(automationResult));
     // SUBH Automate Workflow - same philosophy as the Automated Tasks job
     // right above (its own Redis lock, missed-run Send/Skip, deterministic
     // against current data), in its own independent try/catch so a failure
     // here can never affect Automated Tasks or anything else on this tick.
-    try {
-      const result = await workflowService.runDueWorkflows(new Date());
-      if (result.ran || result.missed) log.log('[whatsapp-assistant] workflow check: ' + JSON.stringify(result));
-    } catch (err) {
-      log.error('[whatsapp-assistant] workflow run failed: ' + err.message);
-    }
+    const workflowRunResult = await runMaintenanceJob(log, 'workflow check', () => workflowService.runDueWorkflows(new Date()));
+    if (workflowRunResult && (workflowRunResult.ran || workflowRunResult.missed)) log.log('[whatsapp-assistant] workflow check: ' + JSON.stringify(workflowRunResult));
     // AI usage daily spend alert (2026-11, direct instruction) - alert
     // only, never stops or degrades AI. Fires at most once per day (see
     // aiUsageLog.checkDailyAlertDue's own flag), as a toast (owner
     // notification) - the "Action needed" card itself reads the same
     // fired-alert flag directly (src/workforceRoutes.js), so nothing else
     // needs to happen here.
-    try {
-      const dueUsd = await aiUsageLog.checkDailyAlertDue(new Date());
-      if (typeof dueUsd === 'number') {
-        const threshold = Number(process.env.SUBH_DAILY_AI_ALERT_USD) || aiUsageLog.DEFAULT_DAILY_ALERT_USD;
-        await whatsappAssistant.postOwnerNotification(
-          '💰 Today\'s live AI spend ($' + dueUsd.toFixed(2) + ') has passed the $' + threshold + ' alert threshold - see Action needed / SUBH Settings > AI usage.'
-        ).catch(() => {});
-      }
-    } catch (err) {
-      log.error('[whatsapp-assistant] AI usage alert check failed: ' + err.message);
+    const dueUsd = await runMaintenanceJob(log, 'AI usage alert check', () => aiUsageLog.checkDailyAlertDue(new Date()));
+    if (typeof dueUsd === 'number') {
+      const threshold = Number(process.env.SUBH_DAILY_AI_ALERT_USD) || aiUsageLog.DEFAULT_DAILY_ALERT_USD;
+      await whatsappAssistant.postOwnerNotification(
+        '💰 Today\'s live AI spend ($' + dueUsd.toFixed(2) + ') has passed the $' + threshold + ' alert threshold - see Action needed / SUBH Settings > AI usage.'
+      ).catch(() => {});
     }
     // Workflow follow-ups (its own independent try/catch, same tick) -
     // advances any open record whose own follow-up gap has elapsed.
-    try {
-      const result = await workflowService.advanceFollowUps(new Date());
-      if (result.advanced || result.alerted) log.log('[whatsapp-assistant] workflow follow-up check: ' + JSON.stringify(result));
-    } catch (err) {
-      log.error('[whatsapp-assistant] workflow follow-up check failed: ' + err.message);
-    }
-    // Workflow mail-reply detection (its own independent try/catch) -
-    // searches each open mail record's own Gmail thread for a NEW reply.
-    try {
-      const result = await workflowService.checkWorkflowMailReplies(new Date());
-      if (result.checked || result.processed) log.log('[whatsapp-assistant] workflow mail-reply check: ' + JSON.stringify(result));
-    } catch (err) {
-      log.error('[whatsapp-assistant] workflow mail-reply check failed: ' + err.message);
-    }
+    const followUpsResult = await runMaintenanceJob(log, 'workflow follow-up check', () => workflowService.advanceFollowUps(new Date()));
+    if (followUpsResult && (followUpsResult.advanced || followUpsResult.alerted)) log.log('[whatsapp-assistant] workflow follow-up check: ' + JSON.stringify(followUpsResult));
+    // Workflow mail-reply detection - searches each open mail record's own
+    // Gmail thread for a NEW reply, a REAL external call per open record -
+    // its own longer timeout (2 min), never the 60s shared default.
+    const mailReplyResult = await runMaintenanceJob(log, 'workflow mail-reply check', () => workflowService.checkWorkflowMailReplies(new Date()), { timeoutMs: 2 * 60 * 1000 });
+    if (mailReplyResult && (mailReplyResult.checked || mailReplyResult.processed)) log.log('[whatsapp-assistant] workflow mail-reply check: ' + JSON.stringify(mailReplyResult));
     // Task 3 archiving (2026-10-31) - the wa-inbox-log retention cap: once
     // it's grown a batch past MAX_INBOX_LOG, archive the oldest excess to
     // Google Drive (SUBH Documents/Archive/WhatsApp/<month>) and only then
     // trim Redis back down - see whatsappAssistant.js's own comment. A
     // single LLEN on every tick when there's nothing to do; the real work
-    // (a Drive round trip) only runs once there's an actual batch.
-    try {
-      const result = await whatsappAssistant.archiveOldInboxLogEntriesIfNeeded();
-      if (result.archived) log.log('[whatsapp-assistant] inbox-log archived ' + result.archived + ' old entries to Drive');
-    } catch (err) {
-      log.error('[whatsapp-assistant] inbox-log archive failed: ' + err.message);
-    }
+    // (a Drive round trip) only runs once there's an actual batch - its own
+    // longer timeout (3 min), never the 60s shared default.
+    const archiveResult = await runMaintenanceJob(log, 'inbox-log archive', () => whatsappAssistant.archiveOldInboxLogEntriesIfNeeded(), { timeoutMs: 3 * 60 * 1000 });
+    if (archiveResult && archiveResult.archived) log.log('[whatsapp-assistant] inbox-log archived ' + archiveResult.archived + ' old entries to Drive');
     // Task 16 (2026-11), changed to AUTO-RECOVERY by Task 18 (2026-11)
     // direct instruction: any incoming message that gets neither a reply
     // nor a deliberate no-reply decision within 2 minutes is re-processed
@@ -475,45 +500,29 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
     // independent try/catch, same philosophy as every other job on this
     // tick) - a card is raised only as a last resort. See
     // recoverStuckIncomingMessages's own comment.
-    try {
-      const result = await whatsappAssistant.recoverStuckIncomingMessages(new Date());
-      if (result.recovered || result.failed || result.flagged) log.log('[whatsapp-assistant] stuck message recovery: ' + JSON.stringify(result));
-    } catch (err) {
-      log.error('[whatsapp-assistant] stuck message recovery failed: ' + err.message);
-    }
+    const recoveryResult = await runMaintenanceJob(log, 'stuck message recovery', () => whatsappAssistant.recoverStuckIncomingMessages(new Date()));
+    if (recoveryResult && (recoveryResult.recovered || recoveryResult.failed || recoveryResult.flagged)) log.log('[whatsapp-assistant] stuck message recovery: ' + JSON.stringify(recoveryResult));
     // Daily automatic full-store backup (PART B, 2026-11, direct
     // instruction) - a cheap idempotent window+date check the rest of
     // the time; the real work (export + Drive upload) only runs inside
     // the 02:00-05:00 IST window, at most 3 times, 30 min apart - see
     // fullStoreBackupService.checkDailyBackup's own comment. Its own
-    // independent try/catch, same philosophy as every other job here -
-    // a failure here can never affect anything else on this tick.
-    try {
-      await fullStoreBackupService.checkDailyBackup();
-    } catch (err) {
-      log.error('[whatsapp-assistant] daily backup check failed: ' + err.message);
-    }
+    // longer timeout (5 min, a real full export + Drive upload) - never
+    // the 60s shared default, which would falsely abandon a real,
+    // legitimately-slow backup that's genuinely still working.
+    await runMaintenanceJob(log, 'daily backup check', () => fullStoreBackupService.checkDailyBackup(), { timeoutMs: 5 * 60 * 1000 });
     // Settings health check, once a day (PART B item 4) - the startup
     // check above covers "after deploy"; this covers a process that
     // stays up for many days without restarting. Same cheap idempotent
     // date-flag gate as every other daily check on this tick.
-    try {
-      await settingsHealthCheck.checkSettingsHealthDaily();
-    } catch (err) {
-      log.error('[whatsapp-assistant] settings health check failed: ' + err.message);
-    }
+    await runMaintenanceJob(log, 'settings health check', () => settingsHealthCheck.checkSettingsHealthDaily());
     // "Together We Can" optional daily auto-sync (2026-11, new feature) -
-    // its own independent try/catch, same philosophy as every other job
-    // on this tick - a failure here can never affect anything else on
-    // this tick (WhatsApp/SUBH assistant included). Off by default
+    // a REAL external API call when actually enabled - its own longer
+    // timeout (2 min), never the 60s shared default. Off by default
     // (togetherWeCanService.checkDailyAutoSync itself no-ops instantly
     // unless the owner has explicitly enabled it in Integrations).
-    try {
-      const result = await togetherWeCanService.checkDailyAutoSync(new Date());
-      if (!result.skipped) log.log('[together-we-can] daily auto-sync: ' + JSON.stringify(result.result));
-    } catch (err) {
-      log.error('[together-we-can] daily auto-sync check failed: ' + err.message);
-    }
+    const twcResult = await runMaintenanceJob(log, 'Together We Can daily auto-sync', () => togetherWeCanService.checkDailyAutoSync(new Date()), { timeoutMs: 2 * 60 * 1000 });
+    if (twcResult && !twcResult.skipped) log.log('[together-we-can] daily auto-sync: ' + JSON.stringify(twcResult.result));
   }
 
   // System health check - its own independent tick, deliberately NOT
@@ -544,4 +553,4 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
   return { stop: () => { clearInterval(autosendInterval); clearInterval(sendFlushInterval); clearInterval(healthCheckInterval); clearInterval(metricsLogInterval); } };
 }
 
-module.exports = { start };
+module.exports = { start, getJobHeartbeats, runMaintenanceJob };
