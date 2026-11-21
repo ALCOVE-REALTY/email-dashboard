@@ -8479,6 +8479,27 @@ async function checkAsyncRealModel(label, fn) {
     const noMatch = await whatsappAssistant.listAllWhatsappConversationsPage({ offset: 0, limit: 30, query: marker + 'NOPE' });
     return noMatch.items.length === 0 && noMatch.hasMore === false;
   });
+  await checkAsync('LIVE INCIDENT (2026-11), direct instruction, point 2 - the incremental per-conversation summary index: a LATER purely-outgoing event (e.g. a reminder nudge, no arrivedAt at all) never erases an EARLIER genuine incoming message\'s own timestamp - lastGenuineIncomingAt only ever grows, it is never overwritten by whatever the latest event happens to be', async () => {
+    const phone = '910000002410';
+    const t1 = Date.now();
+    await whatsappAssistant.logInboxEvent({ chatId: phone, name: null, isGroup: false, messageSummary: 'genuine incoming', aCase: 'acknowledged', sentText: 'first reply', outcome: 'sent', arrivedAt: t1 });
+    await new Promise((r) => setTimeout(r, 5));
+    // A later event with NO arrivedAt at all (exactly what a proactive
+    // nudge/reminder/owner-record log entry looks like - purely outgoing,
+    // never a real incoming message from the sender).
+    await whatsappAssistant.logInboxEvent({ chatId: phone, name: null, isGroup: false, messageSummary: 'later outgoing-only nudge', aCase: 'acknowledged', sentText: 'a later nudge', outcome: 'sent' });
+    const rows = await whatsappAssistant.listConvoSummaryRows();
+    const row = rows.find((r) => r.chatId === whatsapp.normalizePhone(phone));
+    // row.arrivedAt carries lastGenuineIncomingAt (see listConvoSummaryRows'
+    // own comment) - must still be t1, and the row's own latest-event
+    // fields (sentText/ts) must reflect the SECOND, later event.
+    return Boolean(row) && row.arrivedAt === t1 && row.sentText === 'a later nudge';
+  });
+  await checkAsync('LIVE INCIDENT (2026-11), direct instruction, point 2 - backfillConvoSummaryIndexIfNeeded is idempotent: a second call is a genuine no-op (skipped), never a second full reprocessing of the inbox log', async () => {
+    const first = await whatsappAssistant.backfillConvoSummaryIndexIfNeeded();
+    const second = await whatsappAssistant.backfillConvoSummaryIndexIfNeeded();
+    return second && second.skipped === true;
+  });
 
   console.log('='.repeat(70));
   console.log('Task 3 archiving (2026-10-31): wa-inbox-log entries are archived to Google Drive before they are ever trimmed, never silently deleted at the retention cap');

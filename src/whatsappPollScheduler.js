@@ -243,6 +243,17 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
     log.error('[whatsapp-assistant] startup settings health check failed: ' + err.message);
   });
 
+  // LIVE INCIDENT (2026-11), direct instruction, point 2 - one-time,
+  // idempotent backfill of the incremental per-conversation summary
+  // index (see WA_CONVO_SUMMARY_KEY's own comment in whatsappAssistant.js)
+  // from whatever the existing inbox log already holds. Guarded by its
+  // own durable flag, so this is a genuine no-op on every normal restart
+  // after the first one - fire-and-forget, never blocks the scheduler
+  // from starting.
+  whatsappAssistant.backfillConvoSummaryIndexIfNeeded().then((result) => {
+    if (result && !result.skipped) log.log('[whatsapp-assistant] conversation summary index backfilled: ' + JSON.stringify(result));
+  }).catch((err) => log.error('[whatsapp-assistant] conversation summary index backfill failed: ' + err.message));
+
   const commitId = getCommitId();
 
   // LIVE INCIDENT (2026-11, direct instruction) - "log a startup line with

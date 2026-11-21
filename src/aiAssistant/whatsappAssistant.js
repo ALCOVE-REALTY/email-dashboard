@@ -144,6 +144,30 @@ const INBOX_LOG_KEY = 'wa-inbox-log';
 const MAX_INBOX_LOG = 20000;
 const ARCHIVE_BATCH_THRESHOLD = 500;
 const INBOX_LOG_HARD_CEILING = MAX_INBOX_LOG + ARCHIVE_BATCH_THRESHOLD + 500;
+// LIVE INCIDENT (2026-11), direct instruction, point 2 - "incremental
+// dashboard index (per-conversation, sorted summary, read only latest
+// N)". listAllWhatsappConversationsPage's own documented root cause
+// (see its comment) is that every single load re-reads and re-merges
+// the WHOLE inbox log (up to 20,000 raw entries) from scratch - this is
+// the fix: ONE row per known chat (never one row per message), kept
+// current incrementally by logInboxEvent (the single existing write
+// path every inbox event already goes through) instead of recomputed by
+// scanning the growing log on every read. A chat's row is only ever
+// REPLACED by a strictly newer event for that same chat (logInboxEvent
+// calls are real-time, so "the newest call so far" is always correct),
+// except lastGenuineIncomingAt, which is its own running MAX across
+// every event ever seen for that chat (needed for the dismiss/un-hide
+// rule below, which cares about the latest REAL incoming message, not
+// necessarily the latest event of any kind - e.g. a later purely
+// outgoing event must never erase an earlier genuine incoming one).
+const WA_CONVO_SUMMARY_KEY = 'wa-convo-summary';
+const WA_CONVO_SUMMARY_BACKFILLED_KEY = 'wa-convo-summary-backfilled';
+// Hoisted from mergeRecentWhatsappConversations's own local copy (still
+// used there) - also needed here, in logInboxEvent, to decide whether
+// THIS event counts as a genuine incoming message for the per-chat
+// lastGenuineIncomingAt running max. Single shared definition, never two
+// copies that could drift apart.
+const NON_GENUINE_INCOMING_OUTCOMES = new Set(['skipped_duplicate', 'skipped_possible_loop', 'skipped_repeated_message']);
 const NEVER_AUTO_KEY = 'wa-never-auto-list';
 const DAILY_SUMMARY_DATE_KEY = 'subh-daily-summary-date';
 const GATEWAY_STATUS_KEY = 'wa-gateway-status';
@@ -957,7 +981,6 @@ function mergeRecentWhatsappConversations(needsYou, recentLog, nowTs, windowMs, 
   // a genuinely new message either, so they're excluded the same way a
   // pure status update (which never reaches logInboxEvent at all) already
   // is by not having arrivedAt set.
-  const NON_GENUINE_INCOMING_OUTCOMES = new Set(['skipped_duplicate', 'skipped_possible_loop', 'skipped_repeated_message']);
   const lastGenuineIncomingTsByChat = new Map();
   for (const e of recentLog) {
     if (!e.arrivedAt || NON_GENUINE_INCOMING_OUTCOMES.has(e.outcome)) continue;
@@ -1088,9 +1111,24 @@ async function listAllWhatsappConversationsPage({ offset, limit, query } = {}) {
   const safeOffset = Math.max(0, Number(offset) || 0);
   const safeLimit = Math.min(200, Math.max(1, Number(limit) || 30));
   try {
-    const [approvals, drafts, docs, recentLog, hrConfirmations, dismissedByChat, { employees }] = await Promise.all([
+    // LIVE INCIDENT (2026-11), direct instruction, point 2 - this used to
+    // be listInboxLog(MAX_INBOX_LOG), a full re-read + re-merge of up to
+    // 20,000 raw log entries on EVERY load of this page (see this
+    // function's own history/comment below) - now the incrementally-
+    // maintained per-chat summary index (one row per chat, kept current
+    // by logInboxEvent itself). Self-healing fallback: an empty index on
+    // a fresh deploy (before the one-time backfill has run) or a genuine
+    // read hiccup still falls back to the old full-scan method rather
+    // than ever silently showing an empty/wrong list.
+    let recentLog = await listConvoSummaryRows();
+    let usedFallback = false;
+    if (!recentLog.length) {
+      recentLog = await listInboxLog(MAX_INBOX_LOG);
+      usedFallback = true;
+    }
+    const [approvals, drafts, docs, hrConfirmations, dismissedByChat, { employees }] = await Promise.all([
       listPendingApprovals(), listPendingDrafts(), documentRequests.listPendingReceived(),
-      listInboxLog(MAX_INBOX_LOG), listAllHrConfirmations(), listCommsDismissed(), employeeService.getEmployeeData()
+      listAllHrConfirmations(), listCommsDismissed(), employeeService.getEmployeeData()
     ]);
     const needsYou = buildActionableWhatsappItems(approvals, drafts, docs, recentLog, hrConfirmations, employees);
     let rows = mergeRecentWhatsappConversations(needsYou, recentLog, Date.now(), Infinity, dismissedByChat, employees);
@@ -1103,7 +1141,8 @@ async function listAllWhatsappConversationsPage({ offset, limit, query } = {}) {
     const newestMs = rows.length ? rows[0].lastMessageTime : null;
     console.log('[whatsapp] conversations list load: ' + (Date.now() - startedAt) + 'ms, '
       + rows.length + ' total rows (' + page.length + ' returned), newest message: '
-      + (newestMs ? new Date(newestMs).toISOString() : 'none') + ', offset=' + safeOffset);
+      + (newestMs ? new Date(newestMs).toISOString() : 'none') + ', offset=' + safeOffset
+      + (usedFallback ? ', USED FALLBACK (summary index empty)' : ', via summary index'));
     return { items: page, hasMore: safeOffset + safeLimit < rows.length, total: rows.length };
   } catch (err) {
     console.error('[whatsapp] conversations list load FAILED after ' + (Date.now() - startedAt) + 'ms: ' + err.message);
@@ -1399,7 +1438,77 @@ async function logInboxEvent({ chatId, name, isGroup, messageSummary, aCase, sen
     // down-to-MAX_INBOX_LOG happens in archiveOldInboxLogEntriesIfNeeded,
     // AFTER the excess is safely archived to Drive, not here.
     await redis.ltrim(INBOX_LOG_KEY, 0, INBOX_LOG_HARD_CEILING - 1);
+    await updateConvoSummaryRow(redis, entry).catch(() => {});
   } catch (err) { /* best effort */ }
+}
+// LIVE INCIDENT (2026-11), direct instruction, point 2 - see
+// WA_CONVO_SUMMARY_KEY's own comment above. One extra HGET+HSET per real
+// inbox event (never per dashboard poll) - cheap, since real message
+// exchanges happen far less often than this list is loaded/polled.
+async function updateConvoSummaryRow(redis, entry) {
+  const key = whatsapp.normalizePhone(entry.chatId);
+  const existingRaw = await redis.hget(WA_CONVO_SUMMARY_KEY, key);
+  const existing = existingRaw ? (typeof existingRaw === 'string' ? JSON.parse(existingRaw) : existingRaw) : null;
+  const isGenuineIncoming = Boolean(entry.arrivedAt) && !NON_GENUINE_INCOMING_OUTCOMES.has(entry.outcome);
+  const priorGenuineIncomingAt = (existing && existing.lastGenuineIncomingAt) || 0;
+  const lastGenuineIncomingAt = isGenuineIncoming ? Math.max(entry.arrivedAt, priorGenuineIncomingAt) : priorGenuineIncomingAt;
+  const row = {
+    chatId: key, ts: entry.ts,
+    sentText: entry.sentText, messageSummary: entry.messageSummary,
+    outcome: entry.outcome, case: entry.case,
+    lastGenuineIncomingAt: lastGenuineIncomingAt || undefined
+  };
+  await redis.hset(WA_CONVO_SUMMARY_KEY, { [key]: JSON.stringify(row) });
+}
+// Read side of the index above - one row per known chat, newest-event
+// fields only (never the raw per-message log). Shaped to feed STRAIGHT
+// into mergeRecentWhatsappConversations exactly like a recentLog array
+// would (chatId/ts/sentText/messageSummary/outcome/case/arrivedAt), so
+// that function itself needed zero changes - arrivedAt here carries the
+// chat's own running lastGenuineIncomingAt (the only thing
+// mergeRecentWhatsappConversations actually reads that field for).
+async function listConvoSummaryRows() {
+  const redis = getClient();
+  if (!redis) return [];
+  return redisHealth.guardedRead(async () => {
+    const raw = await redis.hgetall(WA_CONVO_SUMMARY_KEY);
+    if (!raw) return [];
+    return Object.keys(raw).map((k) => {
+      try {
+        const row = typeof raw[k] === 'string' ? JSON.parse(raw[k]) : raw[k];
+        return {
+          chatId: row.chatId, ts: row.ts, sentText: row.sentText, messageSummary: row.messageSummary,
+          outcome: row.outcome, case: row.case, arrivedAt: row.lastGenuineIncomingAt || undefined
+        };
+      } catch (err) { return null; }
+    }).filter(Boolean);
+  }, []);
+}
+// One-time, idempotent backfill from the existing raw inbox log - the
+// exact same per-chat "keep only the newest event, but track
+// lastGenuineIncomingAt as a running max" reduction updateConvoSummaryRow
+// already does incrementally, just run once over history instead of per
+// event. Guarded by a durable flag so a normal restart never re-pays this
+// one-time cost; safe to re-run manually (fully recomputes from
+// scratch, never partially) if the index is ever suspected stale/wrong.
+async function backfillConvoSummaryIndexIfNeeded() {
+  const redis = getClient();
+  if (!redis) return { skipped: true };
+  try {
+    const already = await redis.get(WA_CONVO_SUMMARY_BACKFILLED_KEY);
+    if (already) return { skipped: true };
+    const entries = await listInboxLog(MAX_INBOX_LOG);
+    // Oldest-first, so each chat's row ends up reflecting its true latest
+    // event once this loop finishes (listInboxLog returns newest-first).
+    const chronological = entries.slice().reverse();
+    for (const entry of chronological) {
+      await updateConvoSummaryRow(redis, entry).catch(() => {});
+    }
+    await redis.set(WA_CONVO_SUMMARY_BACKFILLED_KEY, String(Date.now()));
+    return { skipped: false, processed: chronological.length };
+  } catch (err) {
+    return { skipped: true, error: err.message };
+  }
 }
 async function listInboxLog(limit = 500) {
   const redis = getClient();
@@ -16828,6 +16937,8 @@ module.exports = {
   listRecentWhatsappConversations,
   getWhatsappVisibilitySnapshot,
   listAllWhatsappConversationsPage,
+  listConvoSummaryRows,
+  backfillConvoSummaryIndexIfNeeded,
   dismissWhatsappItem,
   markCommsRowDismissed,
   listCommsDismissed,
