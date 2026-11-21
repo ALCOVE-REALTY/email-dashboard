@@ -402,15 +402,13 @@ async function closeRecord(id) {
 // open underneath (the same gap point 1's manual-Close fix addresses).
 // Called from whatsappPollScheduler.js's own maintenance tick, same
 // cheap-idempotent-check-every-tick philosophy as every other job there.
-const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
-function istEndOfWorkingDay(ts) {
-  const reminderService = require('./reminderService');
-  const { year, month, day } = reminderService.istParts(new Date(ts));
-  // End of the IST CALENDAR day (23:59 IST) - "that working day" means
-  // the day the wait started on, not a fixed business-hours cutoff; a
-  // request filed at 20:00 still gets until midnight that same day
-  // before it's considered stale, never cut short mid-evening.
-  return Date.UTC(year, month - 1, day, 23, 59, 0) - IST_OFFSET_MS;
+// Direct instruction (2026-11) - "one working-hours window everywhere":
+// reuses whatsappAssistant's own isPastEndOfDayIst (09:30-19:00 IST)
+// instead of this file's own separate 23:59 cutoff, so the employee-side
+// "no reply by end of that working day" rule means the exact same "end
+// of day" as every other piece of attendance-confirmation timing.
+function isPastEndOfWorkingDay(ts, now) {
+  return require('./whatsappAssistant').isPastEndOfDayIst(new Date(ts), new Date(now));
 }
 // `onlyIds` - test-only scoping seam (production/the scheduler always
 // omits it, sweeping every record): lets a test check this sweep's logic
@@ -423,14 +421,21 @@ async function closeStaleRecords(now, onlyIds) {
   let closed = 0;
   for (const record of all) {
     if (derivedStatus(record) !== 'in_progress') continue;
+    const waiting = waitingOnLabel(record);
     let reason = null;
-    if (record.requestDateEndTs && now > record.requestDateEndTs) {
+    // Direct instruction (2026-11) - a request still waiting on the
+    // MANAGER is never auto-closed just because the event date passed
+    // (approval can come after the leave date) - it stays open until the
+    // monthly attendance cutoff instead (see the cutoff sweep, a
+    // separate follow-up). Only a request NOT waiting on the manager
+    // (waiting on the sender, or already past that stage with no
+    // manager wait recorded) still closes on date-passed.
+    if (waiting && waiting.who === 'manager') {
+      // left open - the cutoff sweep (commit 2) is what resolves this.
+    } else if (record.requestDateEndTs && now > record.requestDateEndTs) {
       reason = 'date_passed';
-    } else {
-      const waiting = waitingOnLabel(record);
-      if (waiting && waiting.who === 'sender' && waiting.since && now > istEndOfWorkingDay(waiting.since)) {
-        reason = 'no_reply_by_end_of_day';
-      }
+    } else if (waiting && waiting.who === 'sender' && waiting.since && isPastEndOfWorkingDay(waiting.since, now)) {
+      reason = 'no_reply_by_end_of_day';
     }
     if (!reason) continue;
     await closeRealFlowState(record);

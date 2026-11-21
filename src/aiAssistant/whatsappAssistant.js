@@ -761,11 +761,18 @@ async function listActionNeededItems() {
     listDataAccessNotices(), getSystemHealthAlert(), getAiFallbackAlert()
   ]);
   const ambiguousConfirmations = hrConfirmations.filter((c) => c.status === 'ambiguous_owner_review');
+  // Direct instruction (2026-11) - the new manager-confirmation escalation
+  // (no reply by end of the NEXT working day, see checkHrConfirmationNudges)
+  // gets its own red Action-needed card, same shape as the ambiguous-
+  // review one just above, reusing the SAME already-fetched
+  // hrConfirmations list (no extra query).
+  const escalatedConfirmations = hrConfirmations.filter((c) => c.status === 'awaiting_manager' && c.escalatedAt);
   const raw = [];
   approvals.forEach((a) => raw.push({ kind: 'approval', category: 'data_requests', chatId: whatsapp.normalizePhone(a.phone), name: a.name, ts: a.createdAt || 0, data: a }));
   drafts.forEach((d) => raw.push({ kind: 'draft', category: 'approvals', chatId: whatsapp.normalizePhone(d.contactId), name: d.name, ts: d.createdAt || 0, data: d }));
   docs.forEach((d) => raw.push({ kind: 'document', category: 'data_requests', chatId: whatsapp.normalizePhone(d.phone), name: null, ts: d.receivedAt || 0, data: d }));
   ambiguousConfirmations.forEach((c) => raw.push({ kind: 'hr_confirmation_ambiguous', category: 'approvals', chatId: whatsapp.normalizePhone(c.thirdPartyPhone), name: c.thirdPartyName, ts: c.ambiguousAt || c.createdAt || 0, data: c }));
+  escalatedConfirmations.forEach((c) => raw.push({ kind: 'hr_confirmation_manager_escalated', category: 'approvals', chatId: whatsapp.normalizePhone(c.thirdPartyPhone), name: c.thirdPartyName, ts: c.escalatedAt || c.createdAt || 0, data: c }));
   // Task 2 (2026-10-28) - the sender said something was approved/
   // instructed but, even after 2 re-asks, never managed to say by whom;
   // the owner resolves it by typing the real name in, same as the sender
@@ -2110,7 +2117,7 @@ async function reconcileTodaysDeliveryEvidence() {
 // resolveOwnerContact/sendAlert - kept as its own small copy here rather
 // than a cross-require, since systemHealthMonitor.js already lazily
 // requires THIS file (a require back the other way would be circular).
-async function alertOwnerDualChannel(text) {
+async function alertOwnerDualChannel(text, subject) {
   await postOwnerNotification(text).catch(() => {});
   try {
     let phone = process.env.SUBH_OWNER_WHATSAPP_NUMBER || null;
@@ -2124,7 +2131,7 @@ async function alertOwnerDualChannel(text) {
     const email = process.env.HR_ADMIN_EMAIL || process.env.SUBH_MEMORY_OWNER_EMAIL || null;
     if (email) {
       const gmailService = require('../gmailService');
-      await gmailService.sendMail({ to: email, subject: '🚨 SUBH WhatsApp delivery failure', text }).catch(() => {});
+      await gmailService.sendMail({ to: email, subject: subject || '🚨 SUBH WhatsApp delivery failure', text }).catch(() => {});
     }
   } catch (err) { /* best effort */ }
 }
@@ -8901,7 +8908,7 @@ async function resolveHrNoteThirdParty({ phone, name, lang, personName, departme
     // about, their answer IS the confirmation - finalize directly instead
     // of asking the identical question again.
     if (previousCandidateId && soleMatch.employeeId && soleMatch.employeeId === previousCandidateId) {
-      return finalizeHrNoteThirdParty({ phone, senderName: name, lang, candidate: soleMatch, summary, summaryLocalized, topicLabel, createdAt: originalCreatedAt, history });
+      return finalizeHrNoteThirdParty({ phone, senderName: name, lang, candidate: soleMatch, summary, summaryLocalized, topicLabel, createdAt: originalCreatedAt, history, datePhrase });
     }
     // Live review (2026-10-26) - a stated hint fitting NONE of the real
     // name-matches (active or inactive) must never be silently dropped just
@@ -8921,14 +8928,14 @@ async function resolveHrNoteThirdParty({ phone, name, lang, personName, departme
     const fn = HR_NOTE_CONFIRM_QUESTION[lang] || HR_NOTE_CONFIRM_QUESTION.english;
     return { case: 'acknowledged', replyText: fn(soleMatch.name, soleMatch.department, actionWord), summaryForOwner: null, lang };
   }
-  return finalizeHrNoteThirdParty({ phone, senderName: name, lang, candidate: soleMatch, summary, summaryLocalized, topicLabel, createdAt: originalCreatedAt, history });
+  return finalizeHrNoteThirdParty({ phone, senderName: name, lang, candidate: soleMatch, summary, summaryLocalized, topicLabel, createdAt: originalCreatedAt, history, datePhrase });
 }
 
 // The third party is now resolved to exactly one ACTIVE employee - run
 // the safety gate, then either message them (STEP 4) or escalate to the
 // owner, and reply to the ORIGINAL sender with STEP 3's thank-you. Always
 // the FINAL step of a flow - the only place that ever clears it for good.
-async function finalizeHrNoteThirdParty({ phone, senderName, lang, candidate, summary, summaryLocalized, topicLabel, createdAt, history }) {
+async function finalizeHrNoteThirdParty({ phone, senderName, lang, candidate, summary, summaryLocalized, topicLabel, createdAt, history, datePhrase }) {
   // LIVE FIX (917278793115) - checked FIRST, and separately from the
   // other safety conditions below: a genuine duplicate (same manager,
   // same matter already pending) is normal, expected behavior, not an
@@ -8976,8 +8983,8 @@ async function finalizeHrNoteThirdParty({ phone, senderName, lang, candidate, su
   const confirmationId = await saveHrConfirmation({
     senderPhone: whatsapp.normalizePhone(phone), senderName, summary, summaryLocalized, lang,
     thirdPartyPhone: whatsapp.normalizePhone(candidate.contactNumber), thirdPartyName: candidate.name, thirdPartyDepartment: candidate.department,
-    topicLabel: topicLabel || null, originalMessageAt: createdAt || Date.now(),
-    status: 'awaiting_manager', createdAt: Date.now(), remindedAt: null, escalatedAt: null, reminderId: null
+    topicLabel: topicLabel || null, datePhrase: datePhrase || null, originalMessageAt: createdAt || Date.now(),
+    status: 'awaiting_manager', createdAt: Date.now(), remindedAt: null, reminder2At: null, escalatedAt: null, reminderId: null
   });
   // Task 6 (2026-11) - Attendance Requests page, Step 3 "Manager asked".
   attendanceRequestService.recordStep3ManagerAsked(phone, confirmationId).catch(() => {});
@@ -9289,7 +9296,7 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
       await recordExtraInfoNote(phone, name, disambigVerdict.extraInfoNote || text, 'the "which ' + queryNameForClassify + '" question');
     }
     if (resolved) {
-      const finalized = await finalizeHrNoteThirdParty({ phone, senderName: name, lang, candidate: resolved, summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, createdAt: hrFlow.createdAt, history });
+      const finalized = await finalizeHrNoteThirdParty({ phone, senderName: name, lang, candidate: resolved, summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, createdAt: hrFlow.createdAt, history, datePhrase: hrFlow.datePhrase });
       // Case B.
       if (disambigVerdict.hasExtraInfo && finalized && finalized.replyText) {
         return Object.assign({}, finalized, { replyText: wrapWithExtraInfoNote(lang, finalized.replyText) });
@@ -9376,7 +9383,7 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
     const burstHasExtraLines = burstLines.length > 1;
     const pendingQuestionLabel = (NAME_CONFIRM_QUESTION[lang] || NAME_CONFIRM_QUESTION.english)(hrFlow.candidate.name, hrFlow.candidate.department);
     if (isYesAnswer(t) || burstLines.some((l) => isYesAnswer(l))) {
-      const finalized = await finalizeHrNoteThirdParty({ phone, senderName: name, lang, candidate: hrFlow.candidate, summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, createdAt: hrFlow.createdAt, history });
+      const finalized = await finalizeHrNoteThirdParty({ phone, senderName: name, lang, candidate: hrFlow.candidate, summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, createdAt: hrFlow.createdAt, history, datePhrase: hrFlow.datePhrase });
       // Case B - the other line(s) in the burst are extra info alongside
       // the yes. Task 5 (2026-10-28), live flakiness fix - this used to
       // ALSO ask the model whether that other line was a genuinely
@@ -9958,11 +9965,19 @@ async function resolveAmbiguousHrConfirmation(id, decision) {
   return { ok: false, error: 'Unknown decision - expected confirmed, declined or ask_again.' };
 }
 
-// STEP 6 (second half) - no answer in 3 working hours -> one reminder;
-// still nothing by end of day -> escalate. Working hours: 09:30-18:30 IST,
-// every day (no holiday calendar) - a simple, documented default; wired
-// into whatsappPollScheduler.js's existing 30s tick, same as every other
-// periodic SUBH check.
+// STEP 6 (second half), attendance-confirmation reminders - ONE
+// consolidated working-hours definition (2026-11, direct instruction),
+// used for every piece of timing math here: elapsed-time counting,
+// "can we actually send right now", end-of-day/end-of-next-working-day
+// cutoffs, and finding the next working day. Replaces two previously
+// separate, intentionally-different windows this file used to keep
+// (workingHoursElapsedSince's old 09:30-18:30 "every day" measure vs
+// isHrNudgeSendableNowIst's 09:30-19:00 Sunday-excluded send gate) with
+// one: 09:30-19:00 IST, Monday-Saturday, excluding any date in the
+// Holidays list (SUBH Settings, holidaysService.js). holidaysService's
+// own isHoliday() already treats every Sunday as a holiday internally,
+// so that's the ONE source of truth for "is this a working day" - never
+// a second, separate Sunday check anywhere in this block.
 // Reuses reminderService's own istParts (exported) rather than
 // reinventing IST-calendar-day arithmetic - istDateToUtc itself is tiny
 // and not worth exporting just for this, so it's duplicated here exactly.
@@ -9971,21 +9986,45 @@ function istWallClockToUtc(year, month, day, hour, minute) {
   return new Date(Date.UTC(year, month - 1, day, hour, minute, 0) - HR_NUDGE_IST_OFFSET_MS);
 }
 function workingHoursWindowForIstDay(year, month, day) {
-  return { start: istWallClockToUtc(year, month, day, 9, 30), end: istWallClockToUtc(year, month, day, 18, 30) };
+  return { start: istWallClockToUtc(year, month, day, 9, 30), end: istWallClockToUtc(year, month, day, 19, 0) };
+}
+function istCalendarDateKey(year, month, day) {
+  return String(year).padStart(4, '0') + '-' + String(month).padStart(2, '0') + '-' + String(day).padStart(2, '0');
+}
+// Fetched ONCE per caller (checkHrConfirmationNudges fetches it once per
+// tick, never per-day-inside-a-loop or per-confirmation) and passed
+// through - the Holidays list is tiny and rarely changes, so one read per
+// call is plenty; every function below that needs it accepts an optional
+// pre-fetched set for exactly this reason, falling back to fetching its
+// own if a caller (a test, most often) doesn't have one handy.
+async function fetchHolidayDateSet() {
+  const holidaysService = require('./holidaysService');
+  const list = await holidaysService.listHolidayDates().catch(() => []);
+  return new Set(list.map((h) => h.date));
+}
+function isWorkingDaySync(year, month, day, holidaySet) {
+  const dayOfWeek = new Date(Date.UTC(year, month - 1, day)).getUTCDay(); // 0 = Sunday
+  if (dayOfWeek === 0) return false;
+  return !holidaySet.has(istCalendarDateKey(year, month, day));
 }
 // Minutes of actual WORKING-HOURS time between fromDate and now - time
-// outside 09:30-18:30 IST on any day doesn't count, so "3 working hours"
-// after a 17:00 message doesn't fire in the middle of the night.
-function workingHoursElapsedSince(fromDate, now) {
+// outside 09:30-19:00 IST, or any Sunday/Holidays-list date, never counts
+// toward the elapsed total (so "3 working hours" after a Friday-evening
+// message doesn't fire in the middle of a Sunday, and never fires on a
+// day the Holidays list marks off).
+async function workingHoursElapsedSince(fromDate, now, holidaySet) {
   if (now <= fromDate) return 0;
+  const set = holidaySet || await fetchHolidayDateSet();
   const reminderService = require('./reminderService');
   let { year, month, day } = reminderService.istParts(fromDate);
   let elapsedMs = 0;
-  for (let guard = 0; guard < 30; guard++) {
+  for (let guard = 0; guard < 45; guard++) {
     const { start, end } = workingHoursWindowForIstDay(year, month, day);
-    const overlapStart = start > fromDate ? start : fromDate;
-    const overlapEnd = end < now ? end : now;
-    if (overlapEnd > overlapStart) elapsedMs += overlapEnd.getTime() - overlapStart.getTime();
+    if (isWorkingDaySync(year, month, day, set)) {
+      const overlapStart = start > fromDate ? start : fromDate;
+      const overlapEnd = end < now ? end : now;
+      if (overlapEnd > overlapStart) elapsedMs += overlapEnd.getTime() - overlapStart.getTime();
+    }
     if (end >= now) break;
     const nextParts = reminderService.istParts(new Date(istWallClockToUtc(year, month, day, 12, 0).getTime() + 24 * 60 * 60 * 1000));
     year = nextParts.year; month = nextParts.month; day = nextParts.day;
@@ -9993,44 +10032,82 @@ function workingHoursElapsedSince(fromDate, now) {
   return Math.round(elapsedMs / 60000);
 }
 // "End of day" means the SAME IST calendar day fromDate fell on, at its
-// 18:30 cutoff - matches the spec's "still nothing by end of day ->
-// escalate" (the day the notification happened, not an arbitrary 24h cap).
+// 19:00 cutoff - the employee-side rule ("still no answer by end of that
+// working day -> Closed, no reply") still means that exact day; only the
+// MANAGER-side escalation moved to "end of the NEXT working day" (direct
+// instruction, 2026-11) - see isPastEndOfNextWorkingDayIst below.
 function isPastEndOfDayIst(fromDate, now) {
   const reminderService = require('./reminderService');
   const { year, month, day } = reminderService.istParts(fromDate);
   const { end } = workingHoursWindowForIstDay(year, month, day);
   return now >= end;
 }
-// LIVE BUG FIX (2026-11), direct instruction, BUG 2(a) "re-asks also
-// combined" - grouped by manager so a manager with several pending items
-// gets ONE combined end-of-day escalation notice and ONE combined 3-hour
-// re-ask (via sendHrConfirmationMessageToManagerCombined, which restates
-// the FULL currently-open list, never just the ones that happen to be due
-// this tick) - never a separate send per item, the live bug's second
-// symptom (3 separate re-asks 16:54-16:57 for the same manager). A
-// manager with exactly ONE pending item behaves byte-for-byte as before
-// this fix (see sendHrConfirmationMessageToManagerCombined's own
-// single-item branch) - these two tests' own single-manager scenarios are
-// unaffected.
-// LIVE BUG FIX (2026-11), direct instruction - the Sourav Majumder
-// incident (a reminder/escalation sent on a Saturday - a working day, not
-// itself a violation, but the user separately asked for this window to
-// be made explicit and enforced): a manager's WhatsApp must only ever be
-// SENT a reminder/re-ask within 09:30-19:00 IST, never on a Sunday, never
-// at night - deliberately separate from workingHoursElapsedSince's own
-// (more conservative, 09:30-18:30) measure of how much of a day counts
-// toward the 3-hour threshold. A reminder that becomes due outside this
-// window simply waits for the next in-window tick, never marked
-// remindedAt until it actually sends - delayed, never skipped.
-function isHrNudgeSendableNowIst(now) {
+// Advances to the next WORKING day's calendar date (skips Sunday and any
+// Holidays-list date) - used by both the manager's "Reminder 2" (fires at
+// 10:00 AM on this day) and the escalation cutoff (end of THIS day).
+async function nextWorkingIstDay(year, month, day, holidaySet) {
+  const set = holidaySet || await fetchHolidayDateSet();
+  const reminderService = require('./reminderService');
+  let y = year, m = month, d = day;
+  for (let guard = 0; guard < 14; guard++) {
+    const nextParts = reminderService.istParts(new Date(istWallClockToUtc(y, m, d, 12, 0).getTime() + 24 * 60 * 60 * 1000));
+    y = nextParts.year; m = nextParts.month; d = nextParts.day;
+    if (isWorkingDaySync(y, m, d, set)) return { year: y, month: m, day: d };
+  }
+  return { year: y, month: m, day: d }; // safety fallback - 14 real calendar days with no working day never happens in practice
+}
+// Direct instruction (2026-11) - manager Reminder 2 (the last one): fires
+// at 10:00 AM IST on the next working day after the request was created.
+async function nextWorkingDay10AmIst(fromDate, holidaySet) {
+  const set = holidaySet || await fetchHolidayDateSet();
+  const reminderService = require('./reminderService');
+  const { year, month, day } = reminderService.istParts(fromDate);
+  const next = await nextWorkingIstDay(year, month, day, set);
+  return istWallClockToUtc(next.year, next.month, next.day, 10, 0);
+}
+// Direct instruction (2026-11) - manager-side HR escalation: no reply by
+// the end of the NEXT working day after the request was created (NOT the
+// same day any more - that's the one piece of "end of day" that changed).
+async function isPastEndOfNextWorkingDayIst(fromDate, now, holidaySet) {
+  const set = holidaySet || await fetchHolidayDateSet();
+  const reminderService = require('./reminderService');
+  const { year, month, day } = reminderService.istParts(fromDate);
+  const next = await nextWorkingIstDay(year, month, day, set);
+  const { end } = workingHoursWindowForIstDay(next.year, next.month, next.day);
+  return now >= end;
+}
+// A manager's WhatsApp must only ever be SENT a reminder/re-ask within
+// 09:30-19:00 IST on a real working day (never Sunday, never a Holidays-
+// list date, never outside those hours) - a reminder/escalation that
+// becomes due outside this window simply waits for the next in-window
+// tick, never marked as sent until it actually sends - delayed, never
+// skipped.
+async function isHrNudgeSendableNowIst(now, holidaySet) {
+  const set = holidaySet || await fetchHolidayDateSet();
   const reminderService = require('./reminderService');
   const { year, month, day, hour, minute } = reminderService.istParts(now);
-  const dayOfWeek = new Date(Date.UTC(year, month - 1, day)).getUTCDay(); // 0 = Sunday
-  if (dayOfWeek === 0) return false;
+  if (!isWorkingDaySync(year, month, day, set)) return false;
   const minutesOfDay = hour * 60 + minute;
   return minutesOfDay >= 9 * 60 + 30 && minutesOfDay < 19 * 60;
 }
+// Direct instruction (2026-11) - new professional reminder/escalation
+// cadence, replacing the old single-reminder/same-day-escalation one:
+//   Reminder 1 (unchanged trigger): 3 working hours elapsed, no answer.
+//   Reminder 2 (last, NEW): next working day, 10:00 AM - only after
+//     Reminder 1 already went out and the manager still hasn't answered.
+//     No more reminders after this one.
+//   Escalation (NEW timing): no reply by end of the NEXT working day ->
+//     once-only red Action-needed card (see listActionNeededItems's
+//     hr_confirmation_manager_escalated entry) + a real dual-channel
+//     (WhatsApp + email) alert, exact fixed wording per item.
+// Grouped by manager throughout (LIVE BUG FIX, 2026-11, BUG 2(a) "re-asks
+// also combined") so a manager with several pending items gets ONE
+// combined send/escalation, never a separate one per item - a manager
+// with exactly ONE pending item behaves byte-for-byte as a single-item
+// send always did (see sendHrConfirmationMessageToManagerCombined's own
+// single-item branch).
 async function checkHrConfirmationNudges(now) {
+  const holidaySet = await fetchHolidayDateSet();
   const all = await listAllHrConfirmations();
   const pending = all.filter((c) => c.status === 'awaiting_manager');
   const byManager = new Map();
@@ -10040,23 +10117,37 @@ async function checkHrConfirmationNudges(now) {
     byManager.get(key).push(c);
   }
   for (const [managerPhone, group] of byManager) {
-    const toEscalate = group.filter((c) => isPastEndOfDayIst(new Date(c.createdAt), now) && !c.escalatedAt);
+    const toEscalate = [];
+    for (const c of group) {
+      if (!c.escalatedAt && await isPastEndOfNextWorkingDayIst(new Date(c.createdAt), now, holidaySet)) toEscalate.push(c);
+    }
     if (toEscalate.length) {
-      const list = sortPendingForDisplay(toEscalate).map((c) => senderNameAndPhone(c.senderName, c.senderPhone) + ': "' + c.summary + '"').join('; ');
-      await postOwnerNotification(
-        '⚠️ HR confirmation still pending end of day — manager ' + group[0].thirdPartyName + ' (' + group[0].thirdPartyDepartment + ') has not answered: ' + list + '. Please follow up directly.'
+      const lines = sortPendingForDisplay(toEscalate).map((c) =>
+        'Manager ' + c.thirdPartyName + ' hasn\'t confirmed ' + String(c.senderName || 'the sender').split(' ')[0] + '\'s '
+        + (c.topicLabel || 'attendance matter') + ' for ' + (c.datePhrase || 'the requested date') + ' — please follow up directly.'
       );
+      await alertOwnerDualChannel(lines.join('\n'), '🚨 SUBH: manager confirmation overdue').catch(() => {});
       for (const c of toEscalate) await updateHrConfirmation(c.id, { escalatedAt: Date.now() });
     }
     const notEscalated = group.filter((c) => !toEscalate.includes(c));
-    const dueForReminder = notEscalated.filter((c) => !c.remindedAt && workingHoursElapsedSince(new Date(c.createdAt), now) >= 180);
+    const dueForReminder1 = [];
+    for (const c of notEscalated) {
+      if (!c.remindedAt && await workingHoursElapsedSince(new Date(c.createdAt), now, holidaySet) >= 180) dueForReminder1.push(c);
+    }
+    const dueForReminder2 = [];
+    for (const c of notEscalated) {
+      if (c.remindedAt && !c.reminder2At && now >= await nextWorkingDay10AmIst(new Date(c.createdAt), holidaySet)) dueForReminder2.push(c);
+    }
+    const dueNow = dueForReminder1.concat(dueForReminder2);
     // LIVE BUG FIX (2026-11), direct instruction - never actually SEND a
-    // manager reminder outside 09:30-19:00 IST or on a Sunday. Not marked
-    // remindedAt when skipped, so it fires on the next in-window tick
-    // instead - delayed, never dropped.
-    if (dueForReminder.length && isHrNudgeSendableNowIst(now)) {
+    // manager reminder outside 09:30-19:00 IST, on a Sunday, or on a
+    // Holidays-list date. Not marked remindedAt/reminder2At when skipped,
+    // so it fires on the next in-window tick instead - delayed, never
+    // dropped.
+    if (dueNow.length && await isHrNudgeSendableNowIst(now, holidaySet)) {
       await sendHrConfirmationMessageToManagerCombined(managerPhone, true);
-      for (const c of dueForReminder) await updateHrConfirmation(c.id, { remindedAt: Date.now() });
+      for (const c of dueForReminder1) await updateHrConfirmation(c.id, { remindedAt: Date.now() });
+      for (const c of dueForReminder2) await updateHrConfirmation(c.id, { reminder2At: Date.now() });
     }
   }
 }
@@ -16405,6 +16496,10 @@ module.exports = {
   hasOwnReplyAfter,
   workingHoursElapsedSince,
   isPastEndOfDayIst,
+  nextWorkingIstDay,
+  nextWorkingDay10AmIst,
+  isPastEndOfNextWorkingDayIst,
+  fetchHolidayDateSet,
   extractPersonReference,
   HR_FLOW_CONTEXT_CLARIFY,
   SENIOR_DESIGNATION_RE,

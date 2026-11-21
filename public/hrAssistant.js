@@ -6071,9 +6071,30 @@
       }, { toastFn: (msg) => showActionToast(msg, null, 'error') });
     });
   }
+  // Direct instruction (2026-11) - manager-confirmation escalation (no
+  // reply by end of the NEXT working day). Read-only/informational, no
+  // owner action needed beyond following up with the manager directly -
+  // it clears itself automatically once the manager actually replies
+  // (confirmed/rejected moves the confirmation's status away from
+  // awaiting_manager, which is exactly what this list is filtered on),
+  // so there's deliberately no Dismiss button here, unlike the other
+  // escalation-style cards that stay stuck until the owner resolves them.
+  function actionNeededHrConfirmationManagerEscalatedCardHtml(item) {
+    const c = item.data;
+    const employeeFirstName = String(c.senderName || 'The sender').split(' ')[0];
+    return '<div class="wf-auto-task-card" data-chat-id="' + escapeHtml(item.chatId) + '">' +
+      '<div class="wf-action-needed-card-head">' +
+        '<span class="wf-auto-task-subject">⚠️ Manager hasn\'t confirmed: ' + escapeHtml(item.name || item.chatId) + '</span>' +
+        '<button type="button" class="wf-action-needed-openchat" data-open-chat="' + escapeHtml(item.chatId) + '">Open chat ›</button>' +
+      '</div>' +
+      '<div class="wf-auto-hint">' + escapeHtml(employeeFirstName) + '\'s ' + escapeHtml(c.topicLabel || 'attendance matter') + (c.datePhrase ? ' for ' + escapeHtml(c.datePhrase) : '') + '</div>' +
+      '<div class="wf-auto-hint">Escalated ' + actionNeededAgeLabel(item.ageMs) + ' ago - please follow up directly</div>' +
+    '</div>';
+  }
   function actionNeededCardHtml(item) {
     if (item.kind === 'automation_missed_run' || item.kind === 'automation_first_run') return actionNeededAutomationCardHtml(item);
     if (item.kind === 'hr_note_escalated') return actionNeededHrNoteEscalatedCardHtml(item);
+    if (item.kind === 'hr_confirmation_manager_escalated') return actionNeededHrConfirmationManagerEscalatedCardHtml(item);
     if (item.kind === 'data_access_notice') return actionNeededDataAccessNoticeCardHtml(item);
     if (item.kind === 'system_health_alert') return actionNeededSystemHealthCardHtml(item);
     if (item.kind === 'ai_fallback_alert') return actionNeededAiFallbackCardHtml(item);

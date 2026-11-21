@@ -2191,18 +2191,31 @@ async function checkAsyncRealModel(label, fn) {
   console.log('='.repeat(70));
   console.log('LIVE REVIEW round 3, item 4 STEP 6: working-hours nudge (3h) and end-of-day escalation');
   console.log('='.repeat(70));
-  check('workingHoursElapsedSince counts only 09:30-18:30 IST time, never overnight hours', (() => {
+  // LIVE INCIDENT (2026-11, direct instruction) - "one working-hours window
+  // everywhere": the window moved from 09:30-18:30 to 09:30-19:00 IST,
+  // Monday-Saturday, excluding any Holidays-list date - these timing
+  // helpers are now holiday-aware and therefore async (see
+  // fetchHolidayDateSet's own comment).
+  await checkAsync('workingHoursElapsedSince counts only 09:30-19:00 IST time, never overnight hours', async () => {
     const from = new Date('2026-10-20T11:00:00+05:30'); // 11:00 IST
     const now = new Date('2026-10-20T15:00:00+05:30'); // same day, 15:00 IST - 4 real hours, all within working hours
-    return whatsappAssistant.workingHoursElapsedSince(from, now) === 240;
-  })());
-  check('workingHoursElapsedSince excludes the overnight gap between two working days', (() => {
-    const from = new Date('2026-10-20T17:00:00+05:30'); // 17:00 IST day 1 (1.5h left that day)
+    return (await whatsappAssistant.workingHoursElapsedSince(from, now)) === 240;
+  });
+  await checkAsync('workingHoursElapsedSince excludes the overnight gap between two working days', async () => {
+    const from = new Date('2026-10-20T17:00:00+05:30'); // 17:00 IST day 1 (2h left that day, 09:30-19:00 window)
     const now = new Date('2026-10-21T11:00:00+05:30'); // 11:00 IST day 2 (1.5h elapsed that day)
-    return whatsappAssistant.workingHoursElapsedSince(from, now) === 180; // 90 + 90, never the ~18 real hours in between
-  })());
-  check('isPastEndOfDayIst is true once 18:30 IST has passed on the day the notification happened', whatsappAssistant.isPastEndOfDayIst(new Date('2026-10-20T11:00:00+05:30'), new Date('2026-10-20T18:31:00+05:30')));
-  check('isPastEndOfDayIst is false before that day\'s 18:30 IST cutoff', !whatsappAssistant.isPastEndOfDayIst(new Date('2026-10-20T11:00:00+05:30'), new Date('2026-10-20T18:00:00+05:30')));
+    return (await whatsappAssistant.workingHoursElapsedSince(from, now)) === 210; // 120 + 90, never the ~18 real hours in between
+  });
+  await checkAsync('workingHoursElapsedSince never counts a Sunday or a Holidays-list date toward the elapsed total', async () => {
+    // 2026-10-24 is a Saturday, 2026-10-25 is a Sunday - from Saturday
+    // 17:00 to Monday 11:00 should count ONLY Saturday's remaining 2h
+    // (17:00-19:00) + Monday's 1.5h (09:30-11:00), never Sunday at all.
+    const from = new Date('2026-10-24T17:00:00+05:30');
+    const now = new Date('2026-10-26T11:00:00+05:30');
+    return (await whatsappAssistant.workingHoursElapsedSince(from, now)) === 210;
+  });
+  check('isPastEndOfDayIst is true once 19:00 IST has passed on the day the notification happened', whatsappAssistant.isPastEndOfDayIst(new Date('2026-10-20T11:00:00+05:30'), new Date('2026-10-20T19:01:00+05:30')));
+  check('isPastEndOfDayIst is false before that day\'s 19:00 IST cutoff', !whatsappAssistant.isPastEndOfDayIst(new Date('2026-10-20T11:00:00+05:30'), new Date('2026-10-20T18:45:00+05:30')));
   await checkAsync('checkHrConfirmationNudges sends exactly ONE reminder once 3 working hours have elapsed with no answer, and never re-sends on a later tick', async () => {
     const HR_SENDER_NUDGE = '910000000874';
     const id = await whatsappAssistant.saveHrConfirmation({
@@ -2219,21 +2232,61 @@ async function checkAsyncRealModel(label, fn) {
     await whatsappAssistant.removeHrConfirmation(id);
     return remindedOnce && neverReminderTwice;
   });
-  await checkAsync('checkHrConfirmationNudges escalates to the owner once past end of day with still no answer, and never escalates twice', async () => {
+  // LIVE INCIDENT (2026-11, direct instruction) - new professional
+  // reminder/escalation cadence: Reminder 1 unchanged (3 working hours),
+  // Reminder 2 (NEW, last) at 10:00 AM the next working day, and
+  // escalation moved from "same day" to "end of the NEXT working day" -
+  // 2026-10-20 is a Tuesday, so its next working day is Wednesday
+  // 2026-10-21 (no Sunday/holiday in between).
+  await checkAsync('checkHrConfirmationNudges: the full new cadence - Reminder 1 (3 working hours), Reminder 2 (next working day 10:00 AM, only after Reminder 1), then escalation at end of the NEXT working day - never before, never twice', async () => {
     const HR_SENDER_ESC = '910000000875';
     const id = await whatsappAssistant.saveHrConfirmation({
-      senderPhone: HR_SENDER_ESC, senderName: 'SenderEsc', summary: 'test escalation', summaryLocalized: 'test escalation',
+      senderPhone: HR_SENDER_ESC, senderName: 'Sender Esc', summary: 'test escalation', summaryLocalized: 'test escalation', topicLabel: 'leave', datePhrase: '21 October',
       lang: 'english', thirdPartyPhone: TANMOY_MONDAL_PHONE, thirdPartyName: 'Tanmoy Mondal', thirdPartyDepartment: 'Civil',
-      status: 'awaiting_manager', createdAt: new Date('2026-10-20T09:30:00+05:30').getTime(), remindedAt: null, escalatedAt: null, reminderId: null
+      status: 'awaiting_manager', createdAt: new Date('2026-10-20T09:30:00+05:30').getTime(), remindedAt: null, reminder2At: null, escalatedAt: null, reminderId: null
     });
-    await whatsappAssistant.checkHrConfirmationNudges(new Date('2026-10-20T19:00:00+05:30')); // past that day's 18:30 cutoff
-    const after1 = await whatsappAssistant.getHrConfirmation(id);
-    const escalatedOnce = Boolean(after1.escalatedAt);
-    await whatsappAssistant.checkHrConfirmationNudges(new Date('2026-10-21T10:00:00+05:30')); // next day - should NOT escalate again
-    const after2 = await whatsappAssistant.getHrConfirmation(id);
-    const neverEscalatedTwice = after2.escalatedAt === after1.escalatedAt;
+    // Still Tuesday, before 3 working hours - nothing yet.
+    await whatsappAssistant.checkHrConfirmationNudges(new Date('2026-10-20T11:00:00+05:30'));
+    const early = await whatsappAssistant.getHrConfirmation(id);
+    const nothingYet = !early.remindedAt && !early.reminder2At && !early.escalatedAt;
+    // 3.5 working hours in - Reminder 1 fires, once.
+    await whatsappAssistant.checkHrConfirmationNudges(new Date('2026-10-20T13:00:00+05:30'));
+    const afterR1 = await whatsappAssistant.getHrConfirmation(id);
+    const reminder1Fired = Boolean(afterR1.remindedAt) && !afterR1.reminder2At && !afterR1.escalatedAt;
+    // Still Tuesday afternoon - Reminder 2 must NOT fire yet (not the next working day).
+    await whatsappAssistant.checkHrConfirmationNudges(new Date('2026-10-20T17:00:00+05:30'));
+    const stillTuesday = await whatsappAssistant.getHrConfirmation(id);
+    const noReminder2Yet = !stillTuesday.reminder2At;
+    // Wednesday 10:00 AM - Reminder 2 fires, once, no escalation yet (not past 19:00 Wednesday).
+    await whatsappAssistant.checkHrConfirmationNudges(new Date('2026-10-21T10:00:00+05:30'));
+    const afterR2 = await whatsappAssistant.getHrConfirmation(id);
+    const reminder2Fired = Boolean(afterR2.reminder2At) && !afterR2.escalatedAt;
+    // Wednesday 19:01 - past end of the NEXT working day - escalates, once.
+    await whatsappAssistant.checkHrConfirmationNudges(new Date('2026-10-21T19:01:00+05:30'));
+    const afterEsc = await whatsappAssistant.getHrConfirmation(id);
+    const escalatedOnce = Boolean(afterEsc.escalatedAt);
+    await whatsappAssistant.checkHrConfirmationNudges(new Date('2026-10-22T10:00:00+05:30'));
+    const afterEsc2 = await whatsappAssistant.getHrConfirmation(id);
+    const neverEscalatedTwice = afterEsc2.escalatedAt === afterEsc.escalatedAt;
     await whatsappAssistant.removeHrConfirmation(id);
-    return escalatedOnce && neverEscalatedTwice;
+    return nothingYet && reminder1Fired && noReminder2Yet && reminder2Fired && escalatedOnce && neverEscalatedTwice;
+  });
+  await checkAsync('checkHrConfirmationNudges escalation posts the exact fixed wording ("Manager <name> hasn\'t confirmed <employee>\'s <type> for <date> — please follow up directly") and raises a red Action-needed card that clears once the manager actually replies', async () => {
+    const HR_SENDER_ESC2 = '910000000876';
+    const id = await whatsappAssistant.saveHrConfirmation({
+      senderPhone: HR_SENDER_ESC2, senderName: 'Priya Sharma', summary: 'half day tomorrow', summaryLocalized: 'half day tomorrow', topicLabel: 'half-day', datePhrase: '22 October',
+      lang: 'english', thirdPartyPhone: TANMOY_MONDAL_PHONE, thirdPartyName: 'Tanmoy Mondal', thirdPartyDepartment: 'Civil',
+      status: 'awaiting_manager', createdAt: new Date('2026-10-20T09:30:00+05:30').getTime(), remindedAt: Date.now(), reminder2At: Date.now(), escalatedAt: null, reminderId: null
+    });
+    const notifBefore = (await whatsappAssistant.listOwnerNotifications()).length;
+    await whatsappAssistant.checkHrConfirmationNudges(new Date('2026-10-21T19:01:00+05:30'));
+    const notifAfter = await whatsappAssistant.listOwnerNotifications();
+    const posted = notifAfter.find((n) => n.text.includes("Manager Tanmoy Mondal hasn't confirmed Priya's half-day for 22 October — please follow up directly."));
+    const cardBefore = (await whatsappAssistant.listActionNeededItems()).find((i) => i.kind === 'hr_confirmation_manager_escalated' && i.data.id === id);
+    await whatsappAssistant.updateHrConfirmation(id, { status: 'confirmed' });
+    const cardAfter = (await whatsappAssistant.listActionNeededItems()).find((i) => i.kind === 'hr_confirmation_manager_escalated' && i.data.id === id);
+    await whatsappAssistant.removeHrConfirmation(id);
+    return notifAfter.length > notifBefore && Boolean(posted) && Boolean(cardBefore) && !cardAfter;
   });
 
   console.log('='.repeat(70));
@@ -8981,13 +9034,28 @@ async function checkAsyncRealModel(label, fn) {
     }
   });
 
-  console.log('(d) Sourav Majumder incident, part 2: a manager reminder/re-ask is only ever SENT within 09:30-19:00 IST, never on a Sunday');
-  check('isHrNudgeSendableNowIst is false just before 09:30 IST', !whatsappAssistant.isHrNudgeSendableNowIst(new Date('2026-11-02T09:29:00+05:30')));
-  check('isHrNudgeSendableNowIst is true at exactly 09:30 IST', whatsappAssistant.isHrNudgeSendableNowIst(new Date('2026-11-02T09:30:00+05:30')));
-  check('isHrNudgeSendableNowIst is true at 18:59 IST', whatsappAssistant.isHrNudgeSendableNowIst(new Date('2026-11-02T18:59:00+05:30')));
-  check('isHrNudgeSendableNowIst is false at 19:00 IST (the window ends here, not 18:30)', !whatsappAssistant.isHrNudgeSendableNowIst(new Date('2026-11-02T19:00:00+05:30')));
-  check('isHrNudgeSendableNowIst is false on a Sunday, even at a normal working hour', !whatsappAssistant.isHrNudgeSendableNowIst(new Date('2026-11-01T12:00:00+05:30')));
-  check('isHrNudgeSendableNowIst is true on a Saturday (a normal working day, unaffected - the Nov-7 incident was a Saturday, not itself a window violation)', whatsappAssistant.isHrNudgeSendableNowIst(new Date('2026-11-07T12:00:00+05:30')));
+  console.log('(d) Sourav Majumder incident, part 2: a manager reminder/re-ask is only ever SENT within 09:30-19:00 IST, never on a Sunday or a Holidays-list date');
+  // LIVE INCIDENT (2026-11, direct instruction) - isHrNudgeSendableNowIst
+  // is now async (holiday-aware) - these used to be bare `check(...)`
+  // calls against the function's OWN return value, which (now a Promise)
+  // is always truthy, silently passing the 3 "is true" assertions as a
+  // false positive and always failing the negated "is false" ones. All 6
+  // now go through checkAsync with a real await.
+  await checkAsync('isHrNudgeSendableNowIst is false just before 09:30 IST', async () => !(await whatsappAssistant.isHrNudgeSendableNowIst(new Date('2026-11-02T09:29:00+05:30'))));
+  await checkAsync('isHrNudgeSendableNowIst is true at exactly 09:30 IST', async () => await whatsappAssistant.isHrNudgeSendableNowIst(new Date('2026-11-02T09:30:00+05:30')));
+  await checkAsync('isHrNudgeSendableNowIst is true at 18:59 IST', async () => await whatsappAssistant.isHrNudgeSendableNowIst(new Date('2026-11-02T18:59:00+05:30')));
+  await checkAsync('isHrNudgeSendableNowIst is false at 19:00 IST (the window ends here, not 18:30)', async () => !(await whatsappAssistant.isHrNudgeSendableNowIst(new Date('2026-11-02T19:00:00+05:30'))));
+  await checkAsync('isHrNudgeSendableNowIst is false on a Sunday, even at a normal working hour', async () => !(await whatsappAssistant.isHrNudgeSendableNowIst(new Date('2026-11-01T12:00:00+05:30'))));
+  await checkAsync('isHrNudgeSendableNowIst is true on a Saturday (a normal working day, unaffected - the Nov-7 incident was a Saturday, not itself a window violation)', async () => await whatsappAssistant.isHrNudgeSendableNowIst(new Date('2026-11-07T12:00:00+05:30')));
+  await checkAsync('isHrNudgeSendableNowIst is false on a Holidays-list date, even at a normal working hour on a weekday', async () => {
+    const holidaysService = require('../src/aiAssistant/holidaysService');
+    await holidaysService.addHoliday({ date: '2026-11-04', label: 'Test holiday' });
+    try {
+      return !(await whatsappAssistant.isHrNudgeSendableNowIst(new Date('2026-11-04T12:00:00+05:30')));
+    } finally {
+      await holidaysService.removeHoliday('2026-11-04').catch(() => {});
+    }
+  });
   await checkAsync('checkHrConfirmationNudges never actually SENDS a due reminder outside 09:30-19:00 IST - it waits for the next in-window tick instead of skipping it entirely', async () => {
     const HR_SENDER_NIGHT = '910000001350';
     const id = await whatsappAssistant.saveHrConfirmation({
@@ -9367,6 +9435,19 @@ async function checkAsyncRealModel(label, fn) {
     const result = await attendanceRequestService.closeStaleRecords(Date.now(), [id]);
     const record = await attendanceRequestService.getRecord(id);
     return result.closed === 1 && attendanceRequestService.derivedStatus(record) === 'stale_closed' && record.staleCloseReason === 'no_reply_by_end_of_day';
+  });
+  await checkAsync('LIVE INCIDENT (2026-11), direct instruction, clarification 1 - a record waiting on the MANAGER is never auto-closed just because the event date passed (approval can come after the leave date) - stays "in_progress" until the monthly cutoff instead, unlike a sender-waiting record with the same passed date', async () => {
+    const attendanceRequestService = require('../src/aiAssistant/attendanceRequestService');
+    const phone = '919812300007';
+    const confirmationId = await whatsappAssistant.saveHrConfirmation({ status: 'awaiting_manager', senderPhone: phone, senderName: 'Manager Wait Test', thirdPartyPhone: '919812399998', thirdPartyName: 'Some Other Manager', summary: 'leave yesterday', createdAt: Date.now() - 2 * 24 * 60 * 60 * 1000 });
+    const id = await attendanceRequestService.recordStep1Received({ phone, senderName: 'Manager Wait Test', summary: 'leave yesterday', topicLabel: 'leave', receivedAt: Date.now() - 2 * 24 * 60 * 60 * 1000 });
+    await attendanceRequestService.recordStep2ApproverNamed(phone, { name: 'Some Other Manager', contactNumber: '919812399998' });
+    await attendanceRequestService.recordStep3ManagerAsked(phone, confirmationId);
+    await attendanceRequestService.updateRecord(id, { requestDateEndTs: Date.now() - 24 * 60 * 60 * 1000 }); // yesterday
+    const result = await attendanceRequestService.closeStaleRecords(Date.now(), [id]);
+    const record = await attendanceRequestService.getRecord(id);
+    await whatsappAssistant.removeHrConfirmation(confirmationId);
+    return result.closed === 0 && attendanceRequestService.derivedStatus(record) === 'in_progress';
   });
   await checkAsync('closeStaleRecords: a genuinely recent, still-active record (received minutes ago, no resolved date yet) is left completely untouched - never a false auto-close', async () => {
     const attendanceRequestService = require('../src/aiAssistant/attendanceRequestService');
