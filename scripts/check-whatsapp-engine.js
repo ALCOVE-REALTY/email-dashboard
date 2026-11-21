@@ -3348,6 +3348,34 @@ async function checkAsyncRealModel(label, fn) {
       await cleanupCatchupFixtures(CATCHUP_NO_APOLOGY);
     }
   });
+  await checkAsync('LIVE INCIDENT (2026-11), direct instruction, point 5 (forward-looking only) - "after any outage/restart, a backlog of unreplied messages is handled with the existing freshness rules" - a SECOND catch-up pass for the SAME still-unresolved stale sender (simulating a second restart before the owner has acted on the first one) never creates a second reminder/owner-alert for the same backlog - the message id is already marked handled after the first pass, so it is never re-flagged', async () => {
+    const now = Date.now();
+    const CATCHUP_RESTART_DEDUP = '910000000904';
+    await whatsappAssistant.setLastSeenId(CATCHUP_RESTART_DEDUP, 500);
+    const originalListMessages = whatsapp.listMessages;
+    // The gateway keeps reporting the SAME one old (past the 30-min cutoff)
+    // message on both passes - exactly what a real gateway would show if
+    // nothing new arrived between two restarts.
+    whatsapp.listMessages = async (contactId) => (contactId === CATCHUP_RESTART_DEDUP
+      ? [{ id: 501, direction: 'incoming', type: 'text', content: { text: 'Ajke ami aste parbo na, sorry.' }, created_at: new Date(now - 60 * 60000).toISOString() }]
+      : []);
+    try {
+      const reminderService = require('../src/aiAssistant/reminderService');
+      return await withCatchupHarness(90 * 60000, async () => {
+        const result1 = await whatsappAssistant.catchUpAfterGap('startup');
+        const remindersAfterFirst = (await reminderService.listRawReminders()).filter((r) => r.sourceRef === CATCHUP_RESTART_DEDUP && r.sourceType === 'missed_while_disconnected');
+        // Simulates a SECOND restart right after, with the owner having
+        // taken no action yet - the exact scenario this check exists for.
+        const result2 = await whatsappAssistant.catchUpAfterGap('startup');
+        const remindersAfterSecond = (await reminderService.listRawReminders()).filter((r) => r.sourceRef === CATCHUP_RESTART_DEDUP && r.sourceType === 'missed_while_disconnected');
+        return result1.needsYouSenders === 1 && remindersAfterFirst.length === 1
+          && result2.needsYouSenders === 0 && remindersAfterSecond.length === 1;
+      });
+    } finally {
+      whatsapp.listMessages = originalListMessages;
+      await cleanupCatchupFixtures(CATCHUP_RESTART_DEDUP);
+    }
+  });
   await checkAsync('CORRECTION: the SAME 10-30 min apology also applies to the normal delayed-send queue (not just a combined catch-up backlog) - a decision that sits queued 15 minutes before finally being flushed opens with the exact apology line', async () => {
     const phone = '910000000903';
     const now = Date.now();
@@ -9492,8 +9520,18 @@ async function checkAsyncRealModel(label, fn) {
   await checkAsync('closeStaleRecords: a genuinely recent, still-active record (received minutes ago, no resolved date yet) is left completely untouched - never a false auto-close', async () => {
     const attendanceRequestService = require('../src/aiAssistant/attendanceRequestService');
     const phone = '919812300006';
-    const id = await attendanceRequestService.recordStep1Received({ phone, senderName: 'Fresh Test', summary: 'leave tomorrow', topicLabel: 'leave', receivedAt: Date.now() - 5 * 60 * 1000 });
-    await attendanceRequestService.closeStaleRecords(Date.now(), [id]);
+    // Fixed, safely mid-working-day synthetic "now" (2026-01-06 is a
+    // Tuesday, well before any real holiday-list data and far from both
+    // the 9:30 start and 19:00 end cutoffs) - using the REAL Date.now()
+    // here made this test time-of-day-dependent: it started failing for
+    // real, every run, once the suite happened to run within ~5-10
+    // minutes of the actual 7pm IST working-hours cutoff (receivedAt "5
+    // min ago" then falls on the wrong side of isPastEndOfWorkingDay for
+    // TODAY's real calendar day) - never a CPU-contention flake, a
+    // genuine latent bug in the test's own choice of timestamp.
+    const safeNow = whatsappAssistant.istWallClockToUtc(2026, 1, 6, 14, 0).getTime();
+    const id = await attendanceRequestService.recordStep1Received({ phone, senderName: 'Fresh Test', summary: 'leave tomorrow', topicLabel: 'leave', receivedAt: safeNow - 5 * 60 * 1000 });
+    await attendanceRequestService.closeStaleRecords(safeNow, [id]);
     const record = await attendanceRequestService.getRecord(id);
     return attendanceRequestService.derivedStatus(record) === 'in_progress';
   });
