@@ -679,6 +679,25 @@ async function checkTopLevelSettingsSubpageFrame(page, pageLabel, viewId, baseli
   const waAllStaleText = await page.locator('#hrCommsWaAllList').textContent();
   check('Conversations list: a timed-out/erroring refresh keeps the real rows visible with a distinct "Couldn\'t update, Retry" banner - never blanked to "Nothing pending" just because the retry happened to fail',
     waAllStaleText.includes('Real Conversation One') && waAllStaleText.includes("Couldn't update") && !waAllStaleText.includes('Nothing pending'));
+  // LIVE INCIDENT (2026-11), direct instruction, point 7 - "Retry must
+  // actually re-fetch with backoff." The mock keeps returning stale for
+  // every call beyond the first, so each Retry tap here is a genuine
+  // repeated failure - the SECOND retry tap (first recorded failure
+  // already on the books) must wait a visible ~1s backoff before its own
+  // network call actually fires, never an instant re-hit.
+  await page.click('#hrWaAllRetryBtn');
+  await page.waitForTimeout(300);
+  const callCountAfterFirstRetry = waAllConvCallCount;
+  check('Conversations list retry: the first retry tap (no prior recorded failure) re-fetches promptly, with no artificial delay', callCountAfterFirstRetry >= 3);
+  await page.click('#hrWaAllRetryBtn');
+  await page.waitForTimeout(400);
+  const callCountShortlyAfterSecondRetry = waAllConvCallCount;
+  check('Conversations list retry: the SECOND consecutive retry tap backs off - its own network call has NOT fired yet just 400ms in',
+    callCountShortlyAfterSecondRetry === callCountAfterFirstRetry);
+  await page.waitForTimeout(1000);
+  const callCountAfterBackoffWindow = waAllConvCallCount;
+  check('Conversations list retry: that SAME backed-off retry does eventually actually re-fetch once its backoff window passes',
+    callCountAfterBackoffWindow > callCountShortlyAfterSecondRetry);
   await page.unroute('**/api/workforce/hr-assistant/whatsapp-all-conversations?*');
   await page.waitForTimeout(150);
   // Delivery log (Robustness pass, Pass 2, 2026-11, direct instruction) -

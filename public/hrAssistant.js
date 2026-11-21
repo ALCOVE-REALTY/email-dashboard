@@ -1714,6 +1714,32 @@
   // via .set()/.clear()), so they're persisted at their own small number
   // of call sites instead (see persistMapCache below).
   const PERSISTED_PAGE_DATA_KEYS = ['siteAliases', 'deptAliases', 'companyDetails', 'letterSettings', 'dataBackups', 'settingsHistory', 'holidays', 'dataAccess', 'automations', 'workflows', 'openFlows', 'waAllFirst', 'templates', 'comms'];
+  // LIVE INCIDENT (2026-11), direct instruction, point 7 - "Retry must
+  // actually re-fetch with backoff." Every Retry button before this just
+  // re-called its own loader immediately, every tap, regardless of how
+  // many times it had already just failed - indistinguishable from
+  // "broken" if the underlying cause (e.g. KV contention) is still live,
+  // since an instant re-hit is likely to fail instantly again too. One
+  // shared helper, one counter per distinct retry key: each consecutive
+  // failure for the SAME key waits longer before the real re-fetch even
+  // starts (1s, 2s, 4s, capped at 8s), and the counter resets to zero the
+  // moment that key's own retry actually succeeds. The caller's button
+  // is expected to show its own "Retrying..." state for the duration -
+  // this helper only owns the timing/counter, never the DOM.
+  const retryBackoffState = new Map(); // key -> consecutive failure count
+  async function retryWithBackoff(key, fn) {
+    const failures = retryBackoffState.get(key) || 0;
+    const delayMs = failures > 0 ? Math.min(1000 * 2 ** (failures - 1), 8000) : 0;
+    if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
+    try {
+      const result = await fn();
+      retryBackoffState.set(key, 0);
+      return result;
+    } catch (err) {
+      retryBackoffState.set(key, failures + 1);
+      throw err;
+    }
+  }
   const pageDataCache = new Proxy({ comms: null, commsAt: 0, reminders: new Map(), automations: null, workflows: null, openFlows: null, convos: new Map(), siteAliases: null, deptAliases: null, companyDetails: null, letterSettings: null, letterFields: new Map(), history: null, dataBackups: null, settingsHistory: null, holidays: null, dataAccess: null, waAllFirst: null, attn: new Map(), templates: null, workflowDetail: new Map() }, {
     set(target, prop, value) {
       target[prop] = value;
@@ -2484,7 +2510,16 @@
   let waAllStale = false;
   function wireWaAllRetryBtn() {
     const btn = document.getElementById('hrWaAllRetryBtn');
-    if (btn) btn.addEventListener('click', () => loadWaAllFirstPage());
+    if (btn) btn.addEventListener('click', () => {
+      // Point 7 - visible feedback for the backoff delay itself (never a
+      // silent no-op click while a repeated failure is being backed off).
+      btn.disabled = true;
+      btn.textContent = 'Retrying…';
+      retryWithBackoff('waAll', async () => {
+        await loadWaAllFirstPage();
+        if (waAllStale) throw new Error('Conversations list retry still stale');
+      }).catch(() => {}); // loadWaAllFirstPage's own render already shows the retry banner again
+    });
   }
   function renderWaAllList() {
     if (!commsWaAllList) return;
@@ -3363,7 +3398,19 @@
     // to true so the normal "more to load" guard doesn't just no-op the
     // retry tap.
     dlogHasMore = true;
-    loadDeliveryLogPage(false);
+    deliveryLogOlderRetryBtn.disabled = true;
+    const originalLabel = deliveryLogOlderRetryBtn.textContent;
+    deliveryLogOlderRetryBtn.textContent = 'Retrying…';
+    // Point 7 - loadDeliveryLogPage never throws (its own try/catch is
+    // fully internal, signaling failure only via setDlogOlderState), so
+    // "did THIS retry still fail" is read back from the resulting button
+    // visibility state right after it resolves.
+    retryWithBackoff('dlogOlder', async () => {
+      await loadDeliveryLogPage(false);
+      if (deliveryLogOlderRetryBtn && !deliveryLogOlderRetryBtn.hidden) throw new Error('Delivery log retry still failing');
+    }).catch(() => {}).finally(() => {
+      if (deliveryLogOlderRetryBtn) { deliveryLogOlderRetryBtn.disabled = false; deliveryLogOlderRetryBtn.textContent = originalLabel; }
+    });
   });
   // LIVE INCIDENT (2026-11, direct instruction) - "Opening the Delivery
   // log must be instant: page, stat cards and the latest cards appear
@@ -3414,7 +3461,19 @@
         if (deliveryLogList) {
           deliveryLogList.innerHTML = '<div class="wf-comms-empty">Couldn\'t load the delivery log for this date. <button type="button" class="wf-link-btn" id="hrDlogRetryInlineBtn">Retry</button></div>';
           const retryBtn = document.getElementById('hrDlogRetryInlineBtn');
-          if (retryBtn) retryBtn.addEventListener('click', () => loadDeliveryLogPage(true));
+          if (retryBtn) retryBtn.addEventListener('click', () => {
+            retryBtn.disabled = true;
+            retryBtn.textContent = 'Retrying…';
+            // loadDeliveryLogPage never throws (fully internal try/catch) -
+            // this id only ever exists inside the stale-fallback branch
+            // itself, so its continued presence right after the call is
+            // what proves this SAME retry failed again (a success replaces
+            // this whole block with real content instead).
+            retryWithBackoff('dlogInline', async () => {
+              await loadDeliveryLogPage(true);
+              if (document.getElementById('hrDlogRetryInlineBtn')) throw new Error('Delivery log retry still failing');
+            }).catch(() => {});
+          });
         }
         setDlogOlderState('retry');
         return;
