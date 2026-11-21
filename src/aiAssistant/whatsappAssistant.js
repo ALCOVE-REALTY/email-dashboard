@@ -9601,8 +9601,20 @@ async function handleHrNotificationStart({ phone, name, lang, text, history, cla
   // never back through here), so this can never double-create a record
   // for the same flow. Purely additive - a failure here never affects
   // the real flow (handleHrNotificationStart's own reply/behavior is
-  // completely unchanged either way).
-  require('./attendanceRequestService').recordStep1Received({ phone, senderName: name, summary, topicLabel, receivedAt: createdAt }).catch(() => {});
+  // completely unchanged either way), so errors are still swallowed -
+  // only ERRORS are non-fatal, the WRITE itself is no longer fire-and-
+  // forget.
+  // LIVE BUG FIX (2026-11), found while building/running the duplicate-
+  // request LOCKED real-model scenarios - this used to be fire-and-forget
+  // (no await), racing the VERY NEXT lines below (resolveHrNoteDate ->
+  // recordDateResolved), which read back the "most recent record for this
+  // phone" index key this call writes. Under real network timing, that
+  // read could beat this write, silently resolving the date onto the
+  // WRONG (stale) record or finding no record at all - this is what made
+  // the duplicate-request merge intermittently fail to even reach its own
+  // check. Now awaited - the record this message creates is guaranteed to
+  // exist, under the right phone, before anything below needs it.
+  await require('./attendanceRequestService').recordStep1Received({ phone, senderName: name, summary, topicLabel, receivedAt: createdAt }).catch(() => {});
   await postOwnerNotification(name + ' (' + phone + ') HR-bishoy janiyechhen: "' + summary + '". Note kora holo.');
 
   // Explicit-date task (2026-11), direct instruction - resolved BEFORE any

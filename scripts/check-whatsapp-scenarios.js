@@ -107,6 +107,31 @@ async function cleanupHrFlowArtifacts(...phones) {
   }
 }
 
+// LIVE INCIDENT (2026-11), direct instruction, URGENT CLASSIFIER scenarios -
+// cleanupHrFlowArtifacts above never touches attendanceRequestService's
+// own "record" store (a separate store, no delete function exists in
+// production - never needed there, records only ever close/cancel) -
+// found live when a cross-run record leak made runs 2/3 of a 3x reliability
+// scenario see leftover records from run 1, producing false "which
+// request"/duplicate-count failures that were really a test cleanup gap,
+// never a real classifier bug. Test-only, raw-redis (same convention this
+// file already uses elsewhere for direct store access).
+async function cleanupAttendanceRecordsForPhone(phone) {
+  try {
+    const { Redis } = require('@upstash/redis');
+    const redis = new Redis({ url: process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL, token: process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN });
+    const attendanceRequestService = require('../src/aiAssistant/attendanceRequestService');
+    const normalized = whatsapp.normalizePhone(phone);
+    const all = await attendanceRequestService.listAllRecords();
+    for (const r of all) {
+      if (r.senderPhone === normalized) {
+        await redis.del('attendance-request:' + r.id);
+        await redis.srem('attendance-request-ids', r.id);
+      }
+    }
+  } catch (err) { /* best effort */ }
+}
+
 async function backdateHrConfirmationOriginal(senderPhone, ms) {
   const confirmation = (await whatsappAssistant.listAllHrConfirmations()).find((c) => c.senderPhone === senderPhone && c.status === 'awaiting_manager');
   if (!confirmation) return;
@@ -1296,7 +1321,18 @@ scenario('HRQUERY: "Admin dept er HOD ke?" -> ambiguous (3 real departments) -> 
 // real model (classify_department_choice) understanding the short form
 // against the real options actually offered, never a keyword list.
 scenario('HRQUERY: "Admin dept er HOD ke?" -> ambiguous -> "Admin Ho" (short form, not a bare option word) correctly resolves to Administration (Ho), never a re-ask', async () => {
-  const phone = '910000002337';
+  // LIVE BUG FIX (2026-11), direct instruction - "whether a sender is
+  // registered is decided by code, not the model": the original synthetic
+  // '910000002337' fixture deterministically fails isSenderKnownEmployee
+  // (confirmed directly, no API call needed - see
+  // check-sender-registration.js), so this HRQUERY (wantsData) message
+  // hit the code-level unregistered-sender refusal before ever reaching
+  // the department-choice classifier this scenario actually tests - never
+  // a model/classifier regression. TANMOY_MONDAL_PHONE is a real, ACTIVE
+  // directory record (confirmed registered the same deterministic way),
+  // reused here purely as a known-good SENDER identity - unrelated to its
+  // own use elsewhere in this file as a third-party APPROVER.
+  const phone = TANMOY_MONDAL_PHONE;
   await cleanupHrDataQueryArtifacts(phone);
   try {
     const d1 = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenHrQAdminHo', firstName: 'ScenHrQAdminHo', text: 'Admin dept er HOD ke?', isGroup: false, history: [] });
@@ -2424,6 +2460,138 @@ scenario('OWNRECORD 1: a configured SUBH_TEST_NUMBERS entry asking "<owner> er H
   } finally {
     if (savedTestNumbers === undefined) delete process.env.SUBH_TEST_NUMBERS; else process.env.SUBH_TEST_NUMBERS = savedTestNumbers;
     await cleanupHrFlowArtifacts(phone);
+  }
+});
+
+// --- URGENT CLASSIFIER (2026-11), direct instruction - locked real-model
+// scenarios for the 3 classifiers added during the urgent incident
+// response (follow-up/which-request, duplicate-request period, manager-
+// reply relevance), so a future change to any of them is caught by this
+// gate too, not just the fake-stubbed suite in check-whatsapp-engine.js.
+// Named with a shared "URGENT CLASSIFIER" prefix so
+// SCENARIO_FILTER="URGENT CLASSIFIER" runs just these. ---
+scenario('URGENT CLASSIFIER 1a: exactly ONE open attendance request - a real status follow-up question resolves DIRECTLY, never mistaken for "which request" or a new event', async () => {
+  const phone = '910000002601';
+  await cleanupHrFlowArtifacts(phone);
+  await cleanupAttendanceRecordsForPhone(phone);
+  try {
+    const attendanceRequestService = require('../src/aiAssistant/attendanceRequestService');
+    await attendanceRequestService.recordStep1Received({ phone, senderName: 'ScenFollowUp1', summary: 'leave tomorrow', topicLabel: 'leave', receivedAt: Date.now() - 2 * 60 * 60 * 1000 });
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenFollowUp1', firstName: 'ScenFollowUp1', text: 'amar chutir ki holo, SUBH?', isGroup: false, history: [] });
+    if (!d.replyText) return { pass: false, detail: 'expected a direct status reply, got no reply at all' };
+    if (/\b1\)/.test(d.replyText)) return { pass: false, detail: 'wrongly asked a numbered "which request" question despite only ONE open request: ' + d.replyText };
+    return { pass: true, detail: 'resolved directly: ' + d.replyText };
+  } finally {
+    await cleanupHrFlowArtifacts(phone);
+    await cleanupAttendanceRecordsForPhone(phone);
+  }
+});
+scenario('URGENT CLASSIFIER 1b BOUNDARY: sender has an open attendance request, but this message describes a genuinely NEW, separate attendance event - never mistaken for a follow-up on the old one (clarification 3)', async () => {
+  const phone = '910000002603';
+  await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
+  await cleanupAttendanceRecordsForPhone(phone);
+  try {
+    const attendanceRequestService = require('../src/aiAssistant/attendanceRequestService');
+    await attendanceRequestService.recordStep1Received({ phone, senderName: 'ScenFollowUp3', summary: 'leave on 10 December', topicLabel: 'leave', receivedAt: Date.now() - 2 * 60 * 60 * 1000 });
+    const monthKey = attendanceRequestService.monthKeyOf(Date.now());
+    const before = (await attendanceRequestService.listForMonth(monthKey)).filter((r) => r.senderPhone === whatsapp.normalizePhone(phone)).length;
+    await whatsappAssistant.decideAutoReply({ phone, name: 'ScenFollowUp3', firstName: 'ScenFollowUp3', text: 'Ajke amake deri kore aste bola hoyechhe, Tanmoy Mondal bolechhen.', isGroup: false, history: [] });
+    const after = (await attendanceRequestService.listForMonth(monthKey)).filter((r) => r.senderPhone === whatsapp.normalizePhone(phone)).length;
+    if (after <= before) return { pass: false, detail: 'a genuinely new attendance event was wrongly swallowed as a follow-up on the old request - no new record created (before=' + before + ', after=' + after + ')' };
+    return { pass: true, detail: 'correctly started its own new flow (before=' + before + ', after=' + after + ')' };
+  } finally {
+    await cleanupHrFlowArtifacts(phone, TANMOY_MONDAL_PHONE);
+    await cleanupAttendanceRecordsForPhone(phone);
+  }
+});
+// LIVE INCIDENT (2026-11), direct instruction - a duplicate/update merge
+// still creates a throwaway record first (the real STEP1 pipeline always
+// runs before the duplicate-check can even compare it against the
+// existing one - see findDuplicateOrUpdateCandidate's own (phone,
+// thisRecordId, now) signature), then immediately cancels/merges IT -
+// so the right assertion is never "same total row count" (a correct
+// merge still adds one cancelled row), but "exactly one row for this
+// phone is NOT cancelled, and it's still the ORIGINAL record's own id."
+scenario('URGENT CLASSIFIER 2a: the SAME sender, SAME resolved date, a genuine duplicate in completely different wording - merged into the EXISTING record (a new throwaway record is cancelled, never left open as a second one)', async () => {
+  const phone = '910000002611';
+  await cleanupHrFlowArtifacts(phone);
+  await cleanupAttendanceRecordsForPhone(phone);
+  try {
+    const attendanceRequestService = require('../src/aiAssistant/attendanceRequestService');
+    const originalId = await attendanceRequestService.recordStep1Received({ phone, senderName: 'ScenDup1', summary: 'full day leave on 22 November', topicLabel: 'leave', receivedAt: Date.now() - 60 * 60 * 1000 });
+    await attendanceRequestService.recordDateResolved(phone, '22 November', whatsappAssistant.istWallClockToUtc(2026, 11, 22, 23, 59).getTime());
+    const monthKey = attendanceRequestService.monthKeyOf(Date.now());
+    const d = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenDup1', firstName: 'ScenDup1', text: '22 November amar ekta full day leave ache, seta janiye rakhlam', isGroup: false, history: [] });
+    const records = (await attendanceRequestService.listForMonth(monthKey)).filter((r) => r.senderPhone === whatsapp.normalizePhone(phone));
+    const stillOpen = records.filter((r) => r.status !== 'cancelled');
+    if (stillOpen.length !== 1 || stillOpen[0].id !== originalId) return { pass: false, detail: 'expected exactly ONE non-cancelled record (the ORIGINAL), got: ' + JSON.stringify(records.map((r) => ({ id: r.id, status: r.status, mergedIntoId: r.mergedIntoId }))) };
+    if (!d.replyText) return { pass: false, detail: 'expected the fixed "already received" reply, got no reply at all' };
+    return { pass: true, detail: 'correctly merged as duplicate, original record ' + originalId + ' survives: ' + d.replyText };
+  } finally {
+    await cleanupHrFlowArtifacts(phone);
+    await cleanupAttendanceRecordsForPhone(phone);
+  }
+});
+scenario('URGENT CLASSIFIER 2b: SAME sender, SAME date, period narrowed from "full day" to a specific half - the EXISTING (original) record is UPDATED in place, never left as a second open duplicate', async () => {
+  const phone = '910000002612';
+  await cleanupHrFlowArtifacts(phone);
+  await cleanupAttendanceRecordsForPhone(phone);
+  try {
+    const attendanceRequestService = require('../src/aiAssistant/attendanceRequestService');
+    const originalId = await attendanceRequestService.recordStep1Received({ phone, senderName: 'ScenDup2', summary: 'full day leave on 23 November', topicLabel: 'leave', receivedAt: Date.now() - 60 * 60 * 1000 });
+    await attendanceRequestService.recordDateResolved(phone, '23 November', whatsappAssistant.istWallClockToUtc(2026, 11, 23, 23, 59).getTime());
+    const monthKey = attendanceRequestService.monthKeyOf(Date.now());
+    await whatsappAssistant.decideAutoReply({ phone, name: 'ScenDup2', firstName: 'ScenDup2', text: '23 November-ta full day na, sudhu 2nd half-e chuti lagbe', isGroup: false, history: [] });
+    const records = (await attendanceRequestService.listForMonth(monthKey)).filter((r) => r.senderPhone === whatsapp.normalizePhone(phone));
+    const stillOpen = records.filter((r) => r.status !== 'cancelled');
+    if (stillOpen.length !== 1 || stillOpen[0].id !== originalId) return { pass: false, detail: 'expected exactly ONE non-cancelled record (the ORIGINAL, updated in place), got: ' + JSON.stringify(records.map((r) => ({ id: r.id, status: r.status, period: r.period }))) };
+    if (stillOpen[0].period === 'full day') return { pass: false, detail: 'expected the existing record\'s period to be updated away from "full day", got: ' + stillOpen[0].period };
+    return { pass: true, detail: 'correctly updated the existing record\'s period to: ' + stillOpen[0].period };
+  } finally {
+    await cleanupHrFlowArtifacts(phone);
+    await cleanupAttendanceRecordsForPhone(phone);
+  }
+});
+scenario('URGENT CLASSIFIER 3a: a manager with a pending confirmation sends a completely UNRELATED message (contains a password) - never treated as a reply to the confirmation, which stays untouched', async () => {
+  const senderPhone = '910000002621';
+  const managerPhone = TANMOY_MONDAL_PHONE;
+  await cleanupHrFlowArtifacts(senderPhone, managerPhone);
+  let confirmationId = null;
+  try {
+    confirmationId = await whatsappAssistant.saveHrConfirmation({
+      senderPhone, senderName: 'ScenRelevance1', summary: 'leave approval for tomorrow', summaryLocalized: 'leave approval for tomorrow', topicLabel: 'leave', datePhrase: 'tomorrow',
+      lang: 'english', thirdPartyPhone: managerPhone, thirdPartyName: 'Tanmoy Mondal', thirdPartyDepartment: 'Civil (Plot-B) Structure',
+      status: 'awaiting_manager', createdAt: Date.now(), remindedAt: null, escalatedAt: null, reminderId: null
+    });
+    await whatsappAssistant.decideAutoReply({ phone: managerPhone, name: 'Tanmoy Mondal', firstName: 'Tanmoy', text: 'my email is tanmoy@example.com password is Secret123', isGroup: false, history: [] });
+    const after = await whatsappAssistant.getHrConfirmation(confirmationId);
+    if (after.status !== 'awaiting_manager') return { pass: false, detail: 'confirmation status changed (' + after.status + ') - the unrelated message was wrongly treated as a reply' };
+    if (after.unclearTexts && after.unclearTexts.length) return { pass: false, detail: 'the unrelated message was wrongly recorded as an "unclear reply": ' + JSON.stringify(after.unclearTexts) };
+    return { pass: true, detail: 'correctly left the confirmation untouched (status still awaiting_manager, no unclearTexts)' };
+  } finally {
+    if (confirmationId) await whatsappAssistant.removeHrConfirmation(confirmationId).catch(() => {});
+    await cleanupHrFlowArtifacts(senderPhone, managerPhone);
+  }
+});
+scenario('URGENT CLASSIFIER 3b: a manager with a pending confirmation replies "?" - a genuinely unclear but RELEVANT answer attempt - gets the full-detail re-ask, never silently dropped or instantly marked unclear', async () => {
+  const senderPhone = '910000002622';
+  const managerPhone = TANMOY_MONDAL_PHONE;
+  await cleanupHrFlowArtifacts(senderPhone, managerPhone);
+  let confirmationId = null;
+  try {
+    confirmationId = await whatsappAssistant.saveHrConfirmation({
+      senderPhone, senderName: 'ScenRelevance2', summary: 'leave approval for tomorrow', summaryLocalized: 'leave approval for tomorrow', topicLabel: 'leave', datePhrase: 'tomorrow',
+      lang: 'english', thirdPartyPhone: managerPhone, thirdPartyName: 'Tanmoy Mondal', thirdPartyDepartment: 'Civil (Plot-B) Structure',
+      status: 'awaiting_manager', createdAt: Date.now(), remindedAt: null, escalatedAt: null, reminderId: null
+    });
+    const d = await whatsappAssistant.decideAutoReply({ phone: managerPhone, name: 'Tanmoy Mondal', firstName: 'Tanmoy', text: '?', isGroup: false, history: [] });
+    const after = await whatsappAssistant.getHrConfirmation(confirmationId);
+    if (after.status !== 'awaiting_manager') return { pass: false, detail: 'confirmation left awaiting_manager status unexpectedly (' + after.status + ')' };
+    if (!d.replyText || !/scenrelevance2/i.test(d.replyText)) return { pass: false, detail: 'expected a re-ask naming the employee, got: ' + JSON.stringify(d) };
+    return { pass: true, detail: 'correctly re-asked with full details: ' + d.replyText };
+  } finally {
+    if (confirmationId) await whatsappAssistant.removeHrConfirmation(confirmationId).catch(() => {});
+    await cleanupHrFlowArtifacts(senderPhone, managerPhone);
   }
 });
 

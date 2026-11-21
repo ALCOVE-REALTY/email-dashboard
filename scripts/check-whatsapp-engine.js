@@ -1054,6 +1054,19 @@ async function checkAsyncRealModel(label, fn) {
     if (!inactive) return true; // no inactive test fixture available - not this test's job to create one
     return whatsappAssistant.isSenderKnownEmployee(whatsapp.normalizePhone(inactive.contactNumber));
   });
+  // LIVE BUG FIX (2026-11), direct instruction - "whether a sender is
+  // registered is decided by code, not the model": the "Admin Ho" real-
+  // model scenario (check-whatsapp-scenarios.js) used a synthetic phone
+  // that deterministically failed this exact check, which meant the
+  // whole scenario failed on the code-level unregistered-sender refusal
+  // before the department-choice classifier it was actually testing ever
+  // ran - a test-fixture bug, never a real classifier regression, found
+  // and confirmed for free (no API call) this same way. Fixed to reuse
+  // TANMOY_MONDAL_PHONE instead - this check locks that choice in, so a
+  // future change to the real directory that deactivates/removes this
+  // record fails HERE, clearly, rather than as a confusing real-model
+  // scenario failure that looks like a classifier bug.
+  await checkAsync('isSenderKnownEmployee: Tanmoy Mondal\'s real number (919593446948) is known - locks in the real-model "Admin Ho" scenario\'s own sender fixture choice', async () => whatsappAssistant.isSenderKnownEmployee('919593446948'));
 
   console.log('='.repeat(70));
   console.log('UNREGISTERED SENDER handling (2026-11, direct instruction) - SUBH_TEST_NUMBERS, the merged Action-needed card, the once-per-day refusal dedup');
