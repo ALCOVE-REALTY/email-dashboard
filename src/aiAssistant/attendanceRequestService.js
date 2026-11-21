@@ -62,6 +62,26 @@ function classifyRequestType(topicLabel, summary) {
   for (const c of REQUEST_TYPE_CATEGORIES) { if (c.re.test(text)) return c.label; }
   return 'Other';
 }
+// Direct instruction (2026-11), Commit 3 - "period (full day / 1st half /
+// 2nd half)" for the follow-up "which request"/"still pending" fixed
+// texts. Same regex-based, best-effort style as classifyRequestType/
+// extractRequestDates just above (never the live classifier tool, same
+// reasoning as that function's own comment) - good enough for a display
+// label. A real model-based period classifier (no keyword list) is
+// Commit 4's own explicit scope (duplicate-request matching needs it for
+// real decisions, not just display) - this stays simple until then; the
+// field name/shape is the same, so Commit 4 only ever REPLACES how this
+// gets set, never what reads it.
+const SECOND_HALF_RE = /\b(2nd|second)\b[^.]{0,15}half|half[^.]{0,15}\b(2nd|second)\b/i;
+const FIRST_HALF_RE = /\b(1st|first)\b[^.]{0,15}half|half[^.]{0,15}\b(1st|first)\b/i;
+const HALF_DAY_RE = /half.?[- ]?day/i;
+function classifyRequestPeriod(topicLabel, summary) {
+  const text = String(topicLabel || '') + ' ' + String(summary || '');
+  if (SECOND_HALF_RE.test(text)) return '2nd half';
+  if (FIRST_HALF_RE.test(text)) return '1st half';
+  if (HALF_DAY_RE.test(text)) return '1st half'; // a bare "half day" with no 1st/2nd specified - a documented default, never a guess trusted for anything but this display label
+  return 'full day';
+}
 
 // Best-effort date-phrase extraction from the sender's own free-text
 // summary - this flow has no structured date field anywhere upstream
@@ -165,6 +185,7 @@ async function recordStep1Received({ phone, senderName, summary, topicLabel, rec
     id, employeeName, employeeId, department,
     requestType: classifyRequestType(topicLabel, summary),
     requestDates: extractRequestDates(summary, receivedAt),
+    period: classifyRequestPeriod(topicLabel, summary),
     senderPhone: normalizedPhone,
     receivedAt,
     approverNamedAt: null, approverName: null, approverPhone: null,
@@ -306,6 +327,55 @@ function waitingOnLabel(record) {
   if (!record.approverNamedAt) return { who: 'sender', name: record.employeeName, since: record.receivedAt };
   if (!record.managerAskedAt) return { who: 'manager', name: record.approverName, since: record.approverNamedAt };
   return { who: 'manager', name: record.approverName, since: record.managerAskedAt };
+}
+
+// Direct instruction (2026-11), Commit 3 - every request this sender has
+// that a genuine follow-up question ("ki holo?", "approve hoyeche?")
+// could plausibly be about: anything still open (in_progress,
+// unconfirmed_hr_decide) regardless of age, PLUS anything already
+// decided (completed/cancelled) within a generous recent window (60
+// days - comfortably covers "this cycle plus a bit", never unbounded
+// history). Newest first, same convention as every other list here.
+const FOLLOWUP_RECENT_WINDOW_MS = 60 * 24 * 60 * 60 * 1000;
+async function listOpenOrRecentForSender(phone, now) {
+  now = now || Date.now();
+  const whatsapp = require('../whatsappService');
+  const normalized = whatsapp.normalizePhone(phone);
+  const all = await listAllRecords();
+  return all
+    .filter((r) => whatsapp.normalizePhone(r.senderPhone) === normalized)
+    .filter((r) => {
+      const status = derivedStatus(r);
+      if (status === 'in_progress' || status === 'unconfirmed_hr_decide') return true;
+      if ((status === 'completed' || status === 'cancelled') && now - r.receivedAt <= FOLLOWUP_RECENT_WINDOW_MS) return true;
+      return false;
+    })
+    .sort((a, b) => b.receivedAt - a.receivedAt);
+}
+// Point 9c, direct instruction - "Log the follow-up on the card" - a
+// small, capped append-only trail (never a separate store), same
+// lightweight convention as this file's own history-free design
+// elsewhere (nothing here keeps unbounded history on a single record).
+const MAX_FOLLOWUPS_LOGGED = 10;
+async function recordFollowUp(id, { at, remindedManager } = {}) {
+  const record = await getRecord(id);
+  if (!record) return null;
+  const entry = { at: at || Date.now(), remindedManager: Boolean(remindedManager) };
+  const followUps = (record.followUps || []).concat([entry]).slice(-MAX_FOLLOWUPS_LOGGED);
+  return updateRecord(id, { followUps, lastFollowUpAt: entry.at });
+}
+// A fresh manager reminder triggered by an employee follow-up is capped
+// at "at most one such follow-up reminder per request per working day" -
+// checked against the record's own last FOLLOW-UP-triggered reminder
+// (lastFollowUpManagerReminderAt), deliberately separate from the normal
+// Reminder 1/2 cadence's own remindedAt/reminder2At fields, since this is
+// allowed to fire even after Reminder 2 already went out.
+function canSendFollowUpManagerReminderToday(record, now) {
+  if (!record.lastFollowUpManagerReminderAt) return true;
+  const reminderService = require('./reminderService');
+  const last = reminderService.istParts(new Date(record.lastFollowUpManagerReminderAt));
+  const current = reminderService.istParts(new Date(now));
+  return !(last.year === current.year && last.month === current.month && last.day === current.day);
 }
 
 // ---------------- Listing / filtering ----------------
@@ -607,6 +677,7 @@ async function backfillFromExisting() {
       employeeId: (emp && emp.employeeId) || null, department: (emp && emp.department) || null,
       requestType: classifyRequestType(c.topicLabel, c.summary),
       requestDates: extractRequestDates(c.summary, receivedAt),
+      period: classifyRequestPeriod(c.topicLabel, c.summary),
       senderPhone: normalized,
       receivedAt,
       approverNamedAt: c.createdAt || receivedAt, approverName: c.thirdPartyName || null, approverPhone: c.thirdPartyPhone || null,
@@ -641,6 +712,7 @@ async function backfillFromExisting() {
       employeeName: (emp && emp.name) || null, employeeId: (emp && emp.employeeId) || null, department: (emp && emp.department) || null,
       requestType: classifyRequestType(f.topicLabel, f.summary),
       requestDates: extractRequestDates(f.summary, receivedAt),
+      period: classifyRequestPeriod(f.topicLabel, f.summary),
       senderPhone: normalized,
       receivedAt,
       approverNamedAt: (f.candidate && f.candidate.name) ? receivedAt : null,
@@ -685,5 +757,6 @@ module.exports = {
   listForMonth, remindRecord, closeRecord, closeStaleRecords, backfillFromExisting,
   exportColumns, exportRows,
   attendanceCutoffTsForEventTs, closeToHrDecideIfPastCutoff, resolveHrToDecideRecord, sendCutoffApproachingSummaryIfDue,
+  classifyRequestPeriod, listOpenOrRecentForSender, recordFollowUp, canSendFollowUpManagerReminderToday,
   REQUEST_TYPE_CATEGORIES
 };

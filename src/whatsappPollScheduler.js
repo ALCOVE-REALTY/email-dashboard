@@ -361,6 +361,14 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
     } catch (err) {
       log.error('[whatsapp-assistant] HR confirmation nudge check failed: ' + err.message);
     }
+    // Point 2 (employee side), direct instruction (2026-11), Commit 3 of
+    // 3 - a sender who hasn't named the approver yet gets ONE short
+    // reminder after 1 working hour.
+    try {
+      await whatsappAssistant.checkHrNoteSenderReminders(new Date());
+    } catch (err) {
+      log.error('[whatsapp-assistant] HR-note sender reminder check failed: ' + err.message);
+    }
     // LIVE INCIDENT (2026-11, direct instruction) - "requests whose date
     // has passed... or that have waited beyond the end of that working
     // day for the employee's answer close automatically... never

@@ -120,6 +120,22 @@ let departmentChoiceModelResponse = () => ({});
 function resetDepartmentChoiceModelResponse() {
   departmentChoiceModelResponse = () => ({});
 }
+// Commit 3 of 3 (2026-11, direct instruction) - same scripted-stub
+// pattern, for the two NEW attendance follow-up tools. Default responses
+// preserve the pre-existing "nothing to do with this" fallback unless a
+// test overrides them immediately before use.
+let attendanceFollowUpModelResponse = () => ({ isFollowUp: false });
+function resetAttendanceFollowUpModelResponse() {
+  attendanceFollowUpModelResponse = () => ({ isFollowUp: false });
+}
+let attendanceRequestChoiceModelResponse = () => ({});
+function resetAttendanceRequestChoiceModelResponse() {
+  attendanceRequestChoiceModelResponse = () => ({});
+}
+// Small convenience wrapper so the Commit 3 tests below don't each need
+// their own local require() line, same module every other test in this
+// file already reaches via its own local const.
+function attendanceRequestServiceForTest() { return require('../src/aiAssistant/attendanceRequestService'); }
 function installManagerConfirmationModelStub() {
   const originalFetch = global.fetch;
   global.fetch = async (url, opts) => {
@@ -136,6 +152,14 @@ function installManagerConfirmationModelStub() {
       }
       if (body && Array.isArray(body.tools) && body.tools[0] && body.tools[0].name === 'classify_department_choice') {
         const result = departmentChoiceModelResponse(body);
+        return { ok: true, json: async () => ({ content: result ? [{ type: 'tool_use', input: result }] : [] }) };
+      }
+      if (body && Array.isArray(body.tools) && body.tools[0] && body.tools[0].name === 'classify_attendance_follow_up') {
+        const result = attendanceFollowUpModelResponse(body);
+        return { ok: true, json: async () => ({ content: result ? [{ type: 'tool_use', input: result }] : [] }) };
+      }
+      if (body && Array.isArray(body.tools) && body.tools[0] && body.tools[0].name === 'classify_attendance_request_choice') {
+        const result = attendanceRequestChoiceModelResponse(body);
         return { ok: true, json: async () => ({ content: result ? [{ type: 'tool_use', input: result }] : [] }) };
       }
     }
@@ -9580,6 +9604,163 @@ async function checkAsyncRealModel(label, fn) {
     const attendanceRequestService = require('../src/aiAssistant/attendanceRequestService');
     const result = await attendanceRequestService.sendCutoffApproachingSummaryIfDue(istEod(2026, 11, 23));
     return result.sent === false;
+  });
+
+  console.log('='.repeat(70));
+  console.log('LIVE INCIDENT (2026-11), direct instruction, Commit 3 - employee-side reminder + attendance follow-up ("which request", fresh manager reminder, status replies)');
+  console.log('='.repeat(70));
+  await checkAsync('checkHrNoteSenderReminders: a STEP1/2 flow (sender hasn\'t named the approver yet) gets exactly ONE short reminder once 1 working hour has elapsed, in the flow\'s own language, and never a second one', async () => {
+    const phone = '919812300020';
+    await whatsappAssistant.clearPendingHrNoteFlow(phone).catch(() => {});
+    await whatsappAssistant.savePendingHrNoteFlow(phone, { summary: 'leave tomorrow', summaryLocalized: 'leave tomorrow', topicLabel: 'leave', lang: 'banglish', createdAt: istEod(2026, 11, 10) - 23 * 60 * 60 * 1000, step: 'awaiting_name' });
+    // 1.5 working hours after creation, same working day (10 Nov 09:30 + 1.5h).
+    await whatsappAssistant.checkHrNoteSenderReminders(whatsappAssistant.istWallClockToUtc(2026, 11, 10, 11, 0));
+    const after1 = await whatsappAssistant.getPendingHrNoteFlow(phone);
+    const remindedOnce = Boolean(after1 && after1.senderReminderSentAt) && after1.step === 'awaiting_name';
+    await whatsappAssistant.checkHrNoteSenderReminders(whatsappAssistant.istWallClockToUtc(2026, 11, 10, 15, 0));
+    const after2 = await whatsappAssistant.getPendingHrNoteFlow(phone);
+    const neverTwice = after2.senderReminderSentAt === after1.senderReminderSentAt;
+    await whatsappAssistant.clearPendingHrNoteFlow(phone).catch(() => {});
+    return remindedOnce && neverTwice;
+  });
+  await checkAsync('checkHrNoteSenderReminders: never fires before 1 working hour has elapsed, and never fires outside working hours even once elapsed', async () => {
+    const phone = '919812300021';
+    await whatsappAssistant.clearPendingHrNoteFlow(phone).catch(() => {});
+    await whatsappAssistant.savePendingHrNoteFlow(phone, { summary: 'leave tomorrow', summaryLocalized: 'leave tomorrow', topicLabel: 'leave', lang: 'english', createdAt: whatsappAssistant.istWallClockToUtc(2026, 11, 10, 9, 30), step: 'awaiting_name' });
+    await whatsappAssistant.checkHrNoteSenderReminders(whatsappAssistant.istWallClockToUtc(2026, 11, 10, 10, 0)); // only 30 min in
+    const tooSoon = await whatsappAssistant.getPendingHrNoteFlow(phone);
+    const notYet = !tooSoon.senderReminderSentAt;
+    await whatsappAssistant.checkHrNoteSenderReminders(whatsappAssistant.istWallClockToUtc(2026, 11, 10, 20, 0)); // 1h+ elapsed but past 19:00
+    const afterHours = await whatsappAssistant.getPendingHrNoteFlow(phone);
+    const stillNotSent = !afterHours.senderReminderSentAt;
+    await whatsappAssistant.clearPendingHrNoteFlow(phone).catch(() => {});
+    return notYet && stillNotSent;
+  });
+  await checkAsync('classifyAttendanceFollowUp BOUNDARY (direct instruction, clarification 3) - a message the model correctly judges as a NEW attendance event (isFollowUp:false) falls all the way through, even though the sender has an open request - never mistaken for a status check on the old one', async () => {
+    const origFetch = installManagerConfirmationModelStub();
+    attendanceFollowUpModelResponse = () => ({ isFollowUp: false });
+    try {
+      const phone = '919812300022';
+      await attendanceRequestServiceForTest().recordStep1Received({ phone, senderName: 'Boundary Test', summary: 'leave tomorrow', topicLabel: 'leave', receivedAt: Date.now() - 2 * 60 * 60 * 1000 });
+      const d = await whatsappAssistant.decideAutoReply({ phone, name: 'Boundary Test', firstName: 'Boundary', text: 'Porshu asbo na', isGroup: false, history: [] });
+      // Not swallowed as a follow-up reply - none of the fixed follow-up texts appear.
+      const isFollowUpText = d.replyText && (d.replyText.includes('already') || d.replyText.includes('still being reviewed') || d.replyText.includes('now closed'));
+      return !isFollowUpText;
+    } finally {
+      global.fetch = origFetch;
+      resetAttendanceFollowUpModelResponse();
+    }
+  });
+  await checkAsync('attendance follow-up: exactly ONE open request -> a status question resolves DIRECTLY to it, no "which request" disambiguation needed', async () => {
+    const origFetch = installManagerConfirmationModelStub();
+    attendanceFollowUpModelResponse = () => ({ isFollowUp: true });
+    try {
+      const phone = '919812300023';
+      const confirmationId = await whatsappAssistant.saveHrConfirmation({ status: 'awaiting_manager', senderPhone: phone, senderName: 'OneOpen Test', thirdPartyPhone: '919812399991', thirdPartyName: 'OneOpen Manager', summary: 'leave', lang: 'english', createdAt: Date.now() });
+      const id = await attendanceRequestServiceForTest().recordStep1Received({ phone, senderName: 'OneOpen Test', summary: 'leave', topicLabel: 'leave', receivedAt: Date.now() });
+      await attendanceRequestServiceForTest().recordStep2ApproverNamed(phone, { name: 'OneOpen Manager', contactNumber: '919812399991' });
+      await attendanceRequestServiceForTest().recordStep3ManagerAsked(phone, confirmationId);
+      const d = await whatsappAssistant.decideAutoReply({ phone, name: 'OneOpen Test', firstName: 'OneOpen', text: 'What happened to my leave request?', isGroup: false, history: [] });
+      const record = await attendanceRequestServiceForTest().getRecord(id);
+      await whatsappAssistant.removeHrConfirmation(confirmationId);
+      const ok = !d.replyText.includes('Which one') && !d.replyText.includes('kontar bishoye') && d.replyText.includes('following up with OneOpen Manager');
+      return ok && record.followUps && record.followUps.length === 1;
+    } finally {
+      global.fetch = origFetch;
+      resetAttendanceFollowUpModelResponse();
+    }
+  });
+  await checkAsync('attendance follow-up: TWO open requests, no date/period in the message -> SUBH asks "which request" (numbered, date+period+type), and answering with a number resolves to the right one', async () => {
+    const origFetch = installManagerConfirmationModelStub();
+    attendanceFollowUpModelResponse = () => ({ isFollowUp: true }); // no matchedIndex - genuinely needs disambiguation
+    try {
+      const phone = '919812300024';
+      const confA = await whatsappAssistant.saveHrConfirmation({ status: 'awaiting_manager', senderPhone: phone, senderName: 'TwoOpen Test', thirdPartyPhone: '919812399990', thirdPartyName: 'TwoOpen Manager', summary: 'leave', lang: 'english', createdAt: Date.now() - 2 * 60 * 60 * 1000 });
+      const idA = await attendanceRequestServiceForTest().recordStep1Received({ phone, senderName: 'TwoOpen Test', summary: 'leave on 20 Nov', topicLabel: 'leave', receivedAt: Date.now() - 2 * 60 * 60 * 1000 });
+      await attendanceRequestServiceForTest().recordStep2ApproverNamed(phone, { name: 'TwoOpen Manager', contactNumber: '919812399990' });
+      await attendanceRequestServiceForTest().recordStep3ManagerAsked(phone, confA);
+      const confB = await whatsappAssistant.saveHrConfirmation({ status: 'awaiting_manager', senderPhone: phone, senderName: 'TwoOpen Test', thirdPartyPhone: '919812399990', thirdPartyName: 'TwoOpen Manager', summary: 'half day', createdAt: Date.now() - 1 * 60 * 60 * 1000 });
+      const idB = await attendanceRequestServiceForTest().recordStep1Received({ phone, senderName: 'TwoOpen Test', summary: 'half day 2nd half on 22 Nov', topicLabel: 'half-day', receivedAt: Date.now() - 1 * 60 * 60 * 1000 });
+      await attendanceRequestServiceForTest().recordStep2ApproverNamed(phone, { name: 'TwoOpen Manager', contactNumber: '919812399990' });
+      await attendanceRequestServiceForTest().recordStep3ManagerAsked(phone, confB);
+      const d1 = await whatsappAssistant.decideAutoReply({ phone, name: 'TwoOpen Test', firstName: 'TwoOpen', text: 'What happened to my applications?', isGroup: false, history: [] });
+      const askedWhich = d1.replyText.includes('more than one pending attendance request') && d1.replyText.includes('1)') && d1.replyText.includes('2)');
+      const d2 = await whatsappAssistant.decideAutoReply({ phone, name: 'TwoOpen Test', firstName: 'TwoOpen', text: '2', isGroup: false, history: [] });
+      const resolvedToB = d2.replyText.includes('TwoOpen Manager');
+      await whatsappAssistant.removeHrConfirmation(confA);
+      await whatsappAssistant.removeHrConfirmation(confB);
+      return askedWhich && resolvedToB;
+    } finally {
+      global.fetch = origFetch;
+      resetAttendanceFollowUpModelResponse();
+    }
+  });
+  await checkAsync('attendance follow-up: "still pending" sends a FRESH manager reminder (even past Reminder 2) and the sender gets the exact fixed "still pending" wording - but a SECOND follow-up the SAME day gets the reply again without a second reminder', async () => {
+    const origFetch = installManagerConfirmationModelStub();
+    attendanceFollowUpModelResponse = () => ({ isFollowUp: true, matchedIndex: 1 });
+    try {
+      const phone = '919812300025';
+      const confirmationId = await whatsappAssistant.saveHrConfirmation({ status: 'awaiting_manager', senderPhone: phone, senderName: 'FreshRemind Test', thirdPartyPhone: '919812399989', thirdPartyName: 'FreshRemind Manager', summary: 'leave', lang: 'english', createdAt: Date.now(), remindedAt: Date.now(), reminder2At: Date.now() });
+      const id = await attendanceRequestServiceForTest().recordStep1Received({ phone, senderName: 'FreshRemind Test', summary: 'leave on 25 Nov', topicLabel: 'leave', receivedAt: Date.now() });
+      await attendanceRequestServiceForTest().recordStep2ApproverNamed(phone, { name: 'FreshRemind Manager', contactNumber: '919812399989' });
+      await attendanceRequestServiceForTest().recordStep3ManagerAsked(phone, confirmationId);
+      const d1 = await whatsappAssistant.decideAutoReply({ phone, name: 'FreshRemind Test', firstName: 'FreshRemind', text: 'Has it been approved?', isGroup: false, history: [] });
+      const record1 = await attendanceRequestServiceForTest().getRecord(id);
+      const firstRemindedManager = Boolean(record1.lastFollowUpManagerReminderAt) && record1.followUps[0].remindedManager === true;
+      const d2 = await whatsappAssistant.decideAutoReply({ phone, name: 'FreshRemind Test', firstName: 'FreshRemind', text: 'Has it been approved?', isGroup: false, history: [] });
+      const record2 = await attendanceRequestServiceForTest().getRecord(id);
+      const secondNoNewReminder = record2.lastFollowUpManagerReminderAt === record1.lastFollowUpManagerReminderAt && record2.followUps[1].remindedManager === false;
+      await whatsappAssistant.removeHrConfirmation(confirmationId);
+      return firstRemindedManager && secondNoNewReminder && d1.replyText.includes('following up with FreshRemind Manager') && d2.replyText.includes('following up with FreshRemind Manager');
+    } finally {
+      global.fetch = origFetch;
+      resetAttendanceFollowUpModelResponse();
+    }
+  });
+  await checkAsync('attendance follow-up: an ALREADY-DECIDED request gets the real status reply (no manager reminder attempted)', async () => {
+    const origFetch = installManagerConfirmationModelStub();
+    attendanceFollowUpModelResponse = () => ({ isFollowUp: true, matchedIndex: 1 });
+    try {
+      const phone = '919812300026';
+      const id = await attendanceRequestServiceForTest().recordStep1Received({ phone, senderName: 'Decided Test', summary: 'leave on 18 Nov', topicLabel: 'leave', receivedAt: Date.now() - 3 * 24 * 60 * 60 * 1000 });
+      await attendanceRequestServiceForTest().recordStep2ApproverNamed(phone, { name: 'Decided Manager', contactNumber: '919812399988' });
+      await attendanceRequestServiceForTest().updateRecord(id, { status: 'completed', managerDecision: 'confirmed' });
+      const d = await whatsappAssistant.decideAutoReply({ phone, name: 'Decided Test', firstName: 'Decided', text: 'What happened to my leave?', isGroup: false, history: [] });
+      const record = await attendanceRequestServiceForTest().getRecord(id);
+      return d.replyText.includes('already confirmed by Decided Manager') && !record.lastFollowUpManagerReminderAt;
+    } finally {
+      global.fetch = origFetch;
+      resetAttendanceFollowUpModelResponse();
+    }
+  });
+  await checkAsync('attendance follow-up: "Unconfirmed - HR to decide" gets the HR-reviewing reply and an owner notification, never a manager reminder', async () => {
+    const origFetch = installManagerConfirmationModelStub();
+    attendanceFollowUpModelResponse = () => ({ isFollowUp: true, matchedIndex: 1 });
+    try {
+      const phone = '919812300027';
+      const id = await attendanceRequestServiceForTest().recordStep1Received({ phone, senderName: 'HrDecide Followup Test', summary: 'leave on 5 Nov', topicLabel: 'leave', receivedAt: Date.now() - 20 * 24 * 60 * 60 * 1000 });
+      await attendanceRequestServiceForTest().updateRecord(id, { status: 'unconfirmed_hr_decide' });
+      const d = await whatsappAssistant.decideAutoReply({ phone, name: 'HrDecide Followup Test', firstName: 'HrDecide', text: 'What happened to my leave?', isGroup: false, history: [] });
+      const record = await attendanceRequestServiceForTest().getRecord(id);
+      return d.replyText.includes('reviewed by Subhodeep directly') && !record.lastFollowUpManagerReminderAt;
+    } finally {
+      global.fetch = origFetch;
+      resetAttendanceFollowUpModelResponse();
+    }
+  });
+  await checkAsync('attendance follow-up: a CLOSED request with no real decision (manually Closed / stale_closed) gets an honest "closed" reply, never a false confirmed/declined claim', async () => {
+    const origFetch = installManagerConfirmationModelStub();
+    attendanceFollowUpModelResponse = () => ({ isFollowUp: true, matchedIndex: 1 });
+    try {
+      const phone = '919812300028';
+      const id = await attendanceRequestServiceForTest().recordStep1Received({ phone, senderName: 'ClosedNoDecision Test', summary: 'leave on 2 Nov', topicLabel: 'leave', receivedAt: Date.now() - 10 * 24 * 60 * 60 * 1000 });
+      await attendanceRequestServiceForTest().updateRecord(id, { status: 'cancelled' }); // manually Closed, never a real decision
+      const d = await whatsappAssistant.decideAutoReply({ phone, name: 'ClosedNoDecision Test', firstName: 'ClosedNoDecision', text: 'What happened to my leave?', isGroup: false, history: [] });
+      return d.replyText.includes('now closed') && !d.replyText.includes('confirmed') && !d.replyText.includes('declined');
+    } finally {
+      global.fetch = origFetch;
+      resetAttendanceFollowUpModelResponse();
+    }
   });
   await checkAsync('LIVE INCIDENT (2026-11), direct instruction, point 3 - a genuinely new/unrelated message arriving during the "awaiting_manager_informed" step (the live-cited "Ami kal 2nd half a asbo na") used to always get the dead-end HR_FLOW_CONTEXT_CLARIFY line and never create its own card; this step now shares the same handleUnclearFlowReply/handleUnresolvedPersonReference fallthrough its sibling step (awaiting_approval_obtained) already had - returns null (never cleared, falls through to start its own new flow) instead of swallowing the message', async () => {
     const phone = '919812300008';

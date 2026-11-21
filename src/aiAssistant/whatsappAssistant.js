@@ -7838,6 +7838,128 @@ async function listAllHrConfirmations() {
     return raws.map((raw) => { try { return typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (err) { return null; } }).filter(Boolean);
   } catch (err) { return []; }
 }
+// ---------------- Attendance follow-up (2026-11, direct instruction, Commit 3 of 3) ----------------
+// Point 9's own exact fixed texts ({date}/{period} filled in by code,
+// never AI-reworded). Hinglish periods are the ONE place "1st half"/
+// "2nd half" (the stored, canonical record.period values) get a
+// different surface form ("pehla half"/"doosra half") - every other
+// language keeps them literal.
+function periodDisplayLabel(period, lang) {
+  if (lang === 'hinglish') {
+    if (period === '1st half') return 'pehla half';
+    if (period === '2nd half') return 'doosra half';
+  }
+  return period || 'full day';
+}
+function attendanceFollowUpListHtml(candidates, lang) {
+  return candidates.map((c, i) => (i + 1) + ') ' + c.requestDates + ' (' + periodDisplayLabel(c.period, lang) + ') – ' + c.requestType).join('\n');
+}
+const ATTENDANCE_FOLLOWUP_WHICH_REQUEST = {
+  english: (candidates) => 'You have more than one pending attendance request. Which one are you asking about?\n' + attendanceFollowUpListHtml(candidates, 'english') + '\nPlease reply with the number or the date.',
+  banglish: (candidates) => 'Apnar ekadhik attendance request ekhono pending ache. Apni kontar bishoye jante chaichhen?\n' + attendanceFollowUpListHtml(candidates, 'banglish') + '\nNumber ba tarikh-ta likhe uttor din.',
+  hinglish: (candidates) => 'Aapki ek se zyada attendance requests abhi pending hain. Aap kis request ke baare mein pooch rahe hain?\n' + attendanceFollowUpListHtml(candidates, 'hinglish') + '\nKripya number ya date likh kar batayein.'
+};
+const ATTENDANCE_FOLLOWUP_STILL_PENDING = {
+  english: (date, periodLabel, manager) => "Sorry to hear you're still waiting for confirmation of your earlier application for " + date + ' (' + periodLabel + '). I\'m following up with ' + manager + ' and will update you as soon as possible.',
+  banglish: (date, periodLabel, manager) => 'Dukkhito je apni ekhono ' + date + ' (' + periodLabel + ')-er ager application-er confirmation-er opekkha korchhen. Ami ' + manager + '-er sathe kotha bole joto taratari somvob apnake janacchi.',
+  hinglish: (date, periodLabel, manager) => 'Maaf kijiye ki aap abhi bhi ' + date + ' (' + periodLabel + ') ki pichhli application ke confirmation ka intezaar kar rahe hain. Main ' + manager + ' se baat karke jald se jald aapko batata hoon.'
+};
+// Not given exact fixed wording by the spec (point 9b only says "tell the
+// employee the actual status" / "reply that HR is reviewing it") -
+// written in the same tone/register as the fixed texts above.
+const ATTENDANCE_FOLLOWUP_ALREADY_DECIDED = {
+  english: (date, periodLabel, confirmed, manager) => 'Your application for ' + date + ' (' + periodLabel + ') was already ' + (confirmed ? 'confirmed' : 'not confirmed') + ' by ' + manager + '.',
+  banglish: (date, periodLabel, confirmed, manager) => date + ' (' + periodLabel + ')-er apnar application ' + manager + ' ' + (confirmed ? 'confirm kore diyechhen' : 'confirm korenni') + '.',
+  hinglish: (date, periodLabel, confirmed, manager) => date + ' (' + periodLabel + ') ke liye aapki application ' + manager + ' ne ' + (confirmed ? 'confirm kar di hai' : 'confirm nahi ki hai') + '.'
+};
+const ATTENDANCE_FOLLOWUP_HR_DECIDE = {
+  english: "This one is still being reviewed by Subhodeep directly (the manager didn't confirm it in time). I'll update you once it's decided.",
+  banglish: 'Eta ekhono Subhodeep direct review korchhen (manager shomoy moto confirm korenni). Decide hole apnake janiye debo.',
+  hinglish: 'Isko abhi Subhodeep khud directly dekh rahe hain (manager ne samay par confirm nahi kiya). Decide hone par aapko bata dunga.'
+};
+const ATTENDANCE_FOLLOWUP_CLOSED_NO_DECISION = {
+  english: "That request is now closed. If you still need this looked at, please let me know and I'll start a fresh one.",
+  banglish: 'Oi request-ta ekhon closed. Abar dorkar hole janaben, notun kore note kore nebo.',
+  hinglish: 'Woh request ab closed hai. Agar phir bhi zarurat ho toh bataiye, main nayi shuru kar dunga.'
+};
+const ATTENDANCE_FOLLOWUP_STILL_NEED_APPROVER = {
+  english: 'I still need to know who approved/was informed about this before I can follow up — could you let me know?',
+  banglish: 'Eta ke approve korechhen ba janiyechhen, seta ekhono jana hoyni - ektu bolben?',
+  hinglish: 'Isko kisne approve kiya ya kisko bataya gaya, yeh abhi pata nahi chala - zara bata denge?'
+};
+const ATTENDANCE_FOLLOWUP_COULDNT_TELL = {
+  english: "I couldn't quite tell which request you meant - I've let Subhodeep know, he'll follow up directly.",
+  banglish: 'Kontar kotha bolchhen bujhte parlam na - Subhodeep-ke janiye dicchi, uni direct dekhben.',
+  hinglish: 'Samajh nahi paya aap kaunsi request ke baare mein pooch rahe hain - Subhodeep ko bata raha hoon, woh directly dekh lenge.'
+};
+const ATTENDANCE_FOLLOWUP_PENDING_PREFIX = 'wa-attn-followup-pending:';
+const ATTENDANCE_FOLLOWUP_PENDING_TTL_SECONDS = 15 * 60;
+async function saveAttendanceFollowUpPending(phone, data) {
+  const redis = getClient();
+  if (!redis) return;
+  const toSave = Object.assign({}, data, { lastTouchedAt: Date.now() });
+  try {
+    await redis.set(ATTENDANCE_FOLLOWUP_PENDING_PREFIX + whatsapp.normalizePhone(phone), JSON.stringify(toSave), { ex: ATTENDANCE_FOLLOWUP_PENDING_TTL_SECONDS });
+  } catch (err) { /* best effort */ }
+}
+async function getAttendanceFollowUpPending(phone) {
+  const redis = getClient();
+  if (!redis) return null;
+  try {
+    const raw = await redis.get(ATTENDANCE_FOLLOWUP_PENDING_PREFIX + whatsapp.normalizePhone(phone));
+    return raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : null;
+  } catch (err) { return null; }
+}
+async function clearAttendanceFollowUpPending(phone) {
+  const redis = getClient();
+  if (!redis) return;
+  try { await redis.del(ATTENDANCE_FOLLOWUP_PENDING_PREFIX + whatsapp.normalizePhone(phone)); } catch (err) { /* best effort */ }
+}
+// Point 9b - the actual reply once a follow-up has resolved to exactly
+// ONE request. Branches on the record's REAL recorded decision fields
+// (managerDecision/hrDecision), never the raw status string alone -
+// 'cancelled' is ambiguous on its own (it means both "HR rejected it" AND
+// "the owner manually Closed it with no real decision"), so only a
+// genuine decision ever claims confirmed/declined; anything closed with
+// no decision gets its own honest, non-committal reply instead.
+async function replyToAttendanceFollowUp({ phone, senderLabel, record, lang }) {
+  const attendanceRequestService = require('./attendanceRequestService');
+  const periodLabel = periodDisplayLabel(record.period, lang);
+  const managerName = record.approverName || 'the manager';
+  if (record.hrDecision || record.managerDecision === 'confirmed' || record.managerDecision === 'declined') {
+    const confirmed = record.hrDecision ? record.hrDecision === 'approved' : record.managerDecision === 'confirmed';
+    const fn = ATTENDANCE_FOLLOWUP_ALREADY_DECIDED[lang] || ATTENDANCE_FOLLOWUP_ALREADY_DECIDED.english;
+    await attendanceRequestService.recordFollowUp(record.id, { remindedManager: false }).catch(() => {});
+    return { case: 'acknowledged', replyText: fn(record.requestDates, periodLabel, confirmed, managerName), summaryForOwner: null, lang };
+  }
+  const status = attendanceRequestService.derivedStatus(record);
+  if (status === 'unconfirmed_hr_decide') {
+    await postOwnerNotification(senderNameAndPhone(senderLabel, phone) + ' follow-up korechhen tar ' + record.requestDates + ' (' + periodLabel + ') request niye, ja ekhono apnar HR decision-er opekkhay ache.').catch(() => {});
+    await attendanceRequestService.recordFollowUp(record.id, { remindedManager: false }).catch(() => {});
+    return { case: 'acknowledged', replyText: ATTENDANCE_FOLLOWUP_HR_DECIDE[lang] || ATTENDANCE_FOLLOWUP_HR_DECIDE.english, summaryForOwner: null, lang };
+  }
+  if (status === 'stale_closed' || status === 'cancelled') {
+    await attendanceRequestService.recordFollowUp(record.id, { remindedManager: false }).catch(() => {});
+    return { case: 'acknowledged', replyText: ATTENDANCE_FOLLOWUP_CLOSED_NO_DECISION[lang] || ATTENDANCE_FOLLOWUP_CLOSED_NO_DECISION.english, summaryForOwner: null, lang };
+  }
+  const waiting = attendanceRequestService.waitingOnLabel(record);
+  if (waiting && waiting.who === 'manager') {
+    let remindedManager = false;
+    if (record.linkedConfirmationId && record.approverPhone && attendanceRequestService.canSendFollowUpManagerReminderToday(record, Date.now())) {
+      await sendHrConfirmationMessageToManagerCombined(record.approverPhone, true).catch(() => {});
+      await attendanceRequestService.updateRecord(record.id, { lastFollowUpManagerReminderAt: Date.now() }).catch(() => {});
+      remindedManager = true;
+    }
+    await attendanceRequestService.recordFollowUp(record.id, { remindedManager }).catch(() => {});
+    const fn = ATTENDANCE_FOLLOWUP_STILL_PENDING[lang] || ATTENDANCE_FOLLOWUP_STILL_PENDING.english;
+    return { case: 'acknowledged', replyText: fn(record.requestDates, periodLabel, managerName), summaryForOwner: null, lang };
+  }
+  // Waiting on the SENDER themselves (hasn't named the approver yet) - a
+  // follow-up here just re-asks, never silently dropped.
+  await attendanceRequestService.recordFollowUp(record.id, { remindedManager: false }).catch(() => {});
+  return { case: 'acknowledged', replyText: ATTENDANCE_FOLLOWUP_STILL_NEED_APPROVER[lang] || ATTENDANCE_FOLLOWUP_STILL_NEED_APPROVER.english, summaryForOwner: null, lang };
+}
+
 // Direct instruction, case C - is this phone the ORIGINAL SENDER of an
 // HR-note matter that's still waiting on someone else (a manager's
 // confirmation, or the owner's own review of an unclear reply)? Used only
@@ -10182,6 +10304,45 @@ async function checkHrConfirmationNudges(now) {
   }
 }
 
+// Point 2 (employee side), direct instruction (2026-11) - "Reminder: 1
+// working hour later, once, short and polite, in the sender's language."
+// Reuses listOpenHrNoteFlows - the SAME durable index the Open Flows
+// owner UI already reads - rather than a parallel tracking mechanism. A
+// flow with no senderReminderSentAt yet, 1 working hour elapsed since it
+// opened, gets ONE short reminder here; never a second (the flow's own
+// end-of-day close, see attendanceRequestService's closeStaleRecords,
+// is what happens if the sender still never answers).
+const HR_NOTE_SENDER_REMINDER = {
+  banglish: 'Ektu reminder dilam - ke eta approve korechhen ba janiyechhen, seta janale SUBH egiye nite parbe.',
+  hinglish: 'Thoda reminder - kisne ye approve kiya ya kisko bataya gaya, yeh bata denge toh SUBH aage badh sakta hai.',
+  english: 'Just a quick reminder - if you can let me know who approved/was informed about this, I can move things forward.'
+};
+async function checkHrNoteSenderReminders(now) {
+  const holidaySet = await fetchHolidayDateSet();
+  if (!(await isHrNudgeSendableNowIst(now, holidaySet))) return; // never outside working hours/Sunday/a Holidays-list date
+  const flows = await listOpenHrNoteFlows();
+  for (const flow of flows) {
+    if (flow.senderReminderSentAt) continue;
+    const since = flow.createdAt || flow.lastTouchedAt;
+    if (!since) continue;
+    if ((await workingHoursElapsedSince(new Date(since), new Date(now), holidaySet)) < 60) continue;
+    const lang = flow.lang || 'english';
+    const text = HR_NOTE_SENDER_REMINDER[lang] || HR_NOTE_SENDER_REMINDER.english;
+    if (isRealSendAllowedFor(flow.phone)) {
+      const sendResult = await sendWhatsAppChunked(flow.phone, text);
+      if (sendResult.ok) {
+        await appendConvoHistory(flow.phone, 'out', text);
+        const sentAt = Date.now();
+        await logInboxEvent({ chatId: flow.phone, name: null, isGroup: false, messageSummary: '[HR-note sender reminder]', aCase: 'hr_note_sender_reminder', sentText: text, outcome: 'sent', sentAt, gatewayMessageId: sendResult.gatewayMessageId || null });
+        confirmOrRecoverSend({ chatId: flow.phone, name: flow.phone, replyText: text, sentAt, gatewayMessageId: sendResult.gatewayMessageId, httpStatus: sendResult.httpStatus }).catch(() => {});
+      }
+    }
+    const flowData = Object.assign({}, flow);
+    delete flowData.phone;
+    await savePendingHrNoteFlow(flow.phone, Object.assign(flowData, { senderReminderSentAt: Date.now() }));
+  }
+}
+
 // Sends over multiple messages when the real answer is too long for one
 // WhatsApp message - no confirmed document/PDF-send contract for this
 // gateway (only plain text sendMessage exists, see whatsappService.js),
@@ -12098,6 +12259,78 @@ async function classifyDepartmentChoice(text, options, departmentHint) {
   return (idx >= 0 && idx < options.length) ? options[idx] : null;
 }
 
+// Direct instruction (2026-11), Commit 3 - attendance follow-up (point 9):
+// "a status question about an earlier request is NOT a duplicate/new
+// request - the model decides, code does the matching." This is the
+// single most important boundary in this whole feature: a message that
+// itself DESCRIBES a new attendance event (even one near an existing
+// request's own date) must always come back isFollowUp:false, free to
+// start its own new flow - never swallowed as a status check on an old
+// one. Covered by dedicated boundary tests.
+function classifyAttendanceFollowUpTool() {
+  return {
+    type: 'function',
+    function: {
+      name: 'classify_attendance_follow_up',
+      description: 'The sender has one or more earlier attendance requests already on file (listed in the system prompt, each numbered with its date/period/type/status). Decide whether THIS message is a follow-up STATUS QUESTION asking about the outcome/progress of one of those EARLIER requests (e.g. "ki holo amar leave-ta?", "approve hoyeche?", "22 tarikh-er application-er update ki?") - as opposed to a message describing a NEW, separate attendance event of its own (even one on a similar or nearby date, or naming the same manager), which must always be isFollowUp:false so it is free to start its own new flow. Judge by what THIS message is doing, never by whether a status-sounding word appears.',
+      parameters: {
+        type: 'object',
+        properties: {
+          isFollowUp: { type: 'boolean', description: 'true ONLY for a genuine status/outcome question about an EXISTING, already-filed request. false for anything else - a new attendance request/event, a general question, small talk, or anything unrelated.' },
+          matchedIndex: { type: 'integer', description: 'If isFollowUp is true AND the message itself clearly identifies (by date and/or period) which numbered request it means, the 1-based number of that request. Omit this field entirely otherwise (isFollowUp false, or genuinely unclear which one among several) - never guess.' }
+        },
+        required: ['isFollowUp']
+      }
+    }
+  };
+}
+function attendanceCandidateLabel(c) {
+  return (c.requestDates || '') + ' (' + (c.period || 'full day') + ') - ' + (c.requestType || 'attendance') + ' [' + (c.derivedStatus || c.status || 'in_progress') + ']';
+}
+async function classifyAttendanceFollowUp(text, candidates) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey || !DRAFT_MODEL) return { isFollowUp: false };
+  const toolDef = classifyAttendanceFollowUpTool().function;
+  const list = candidates.map((c, i) => (i + 1) + ') ' + attendanceCandidateLabel(c)).join('; ');
+  const systemPrompt = 'The sender has these earlier attendance request(s) on file: ' + list + '.';
+  const input = await callClaudeForcedTool(apiKey, DRAFT_MODEL, [{ role: 'system', content: systemPrompt }, { role: 'user', content: text }], toolDef.name, toolDef).catch(() => null);
+  if (!input) return { isFollowUp: false };
+  return {
+    isFollowUp: Boolean(input.isFollowUp),
+    matchedIndex: (input.isFollowUp && typeof input.matchedIndex === 'number') ? Math.trunc(input.matchedIndex) : null
+  };
+}
+// Resolves the ANSWER to "which request do you mean?" (point 9a) -
+// mirrors classifyDepartmentChoice's own pattern exactly (a closed choice
+// among the numbered candidates actually offered, never free-form).
+function classifyAttendanceRequestChoiceTool() {
+  return {
+    type: 'function',
+    function: {
+      name: 'classify_attendance_request_choice',
+      description: 'SUBH asked the sender which of several earlier attendance requests (listed as a numbered list in the system prompt, each with its date/period/type) they mean. Decide which numbered request this reply identifies - by date, period, type, or any combination (e.g. "22 tarikh", "2nd half wala", "oi leave-r ta").',
+      parameters: {
+        type: 'object',
+        properties: {
+          chosenRequestNumber: { type: 'integer', description: 'The 1-based number of the request the sender means. Omit this field entirely if it genuinely does not clearly match any one request - never guess.' }
+        },
+        required: []
+      }
+    }
+  };
+}
+async function classifyAttendanceRequestChoice(text, candidates) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey || !DRAFT_MODEL) return null;
+  const toolDef = classifyAttendanceRequestChoiceTool().function;
+  const list = candidates.map((c, i) => (i + 1) + ') ' + attendanceCandidateLabel(c)).join('; ');
+  const systemPrompt = 'SUBH asked which of these earlier attendance requests the sender means: ' + list + '.';
+  const input = await callClaudeForcedTool(apiKey, DRAFT_MODEL, [{ role: 'system', content: systemPrompt }, { role: 'user', content: text }], toolDef.name, toolDef).catch(() => null);
+  if (!input || typeof input.chosenRequestNumber !== 'number') return null;
+  const idx = Math.trunc(input.chosenRequestNumber) - 1;
+  return (idx >= 0 && idx < candidates.length) ? candidates[idx] : null;
+}
+
 // Direct instruction, case C - generic version of the same extra-info
 // judgment above, for when there's no "pending question" to weigh an
 // answer attempt against at all (the sender's own part of the flow is
@@ -13614,6 +13847,46 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
     }
   }
 
+  // Direct instruction (2026-11), Commit 3 of 3 - answering SUBH's own
+  // "which attendance request?" question (point 9a). Checked BEFORE case
+  // C below so an answer here is never mistaken for extra-info on
+  // whatever the manager is separately waiting on.
+  if (!isGroup && phone) {
+    const pendingFollowup = await getAttendanceFollowUpPending(phone).catch(() => null);
+    if (pendingFollowup && Array.isArray(pendingFollowup.candidateIds) && pendingFollowup.candidateIds.length) {
+      const attendanceRequestService = require('./attendanceRequestService');
+      const followupCandidates = (await Promise.all(pendingFollowup.candidateIds.map((id) => attendanceRequestService.getRecord(id)))).filter(Boolean);
+      if (followupCandidates.length) {
+        const t = text.trim();
+        let picked = null;
+        const numMatch = t.match(/^(\d+)[.)]?\b/);
+        if (numMatch) {
+          const idx = parseInt(numMatch[1], 10) - 1;
+          if (idx >= 0 && idx < followupCandidates.length) picked = followupCandidates[idx];
+        }
+        if (!picked) {
+          const ordinalIdx = matchOrdinalIndex(t);
+          if (ordinalIdx !== null && ordinalIdx < followupCandidates.length) picked = followupCandidates[ordinalIdx];
+        }
+        if (!picked) picked = await classifyAttendanceRequestChoice(t, followupCandidates).catch(() => null);
+        if (picked) {
+          await clearAttendanceFollowUpPending(phone);
+          return await replyToAttendanceFollowUp({ phone, senderLabel, record: picked, lang: pendingFollowup.lang });
+        }
+        const attempts = pendingFollowup.attempts || 1;
+        if (attempts < MAX_DISAMBIGUATION_ATTEMPTS) {
+          await saveAttendanceFollowUpPending(phone, Object.assign({}, pendingFollowup, { attempts: attempts + 1 }));
+          const fn = ATTENDANCE_FOLLOWUP_WHICH_REQUEST[pendingFollowup.lang] || ATTENDANCE_FOLLOWUP_WHICH_REQUEST.english;
+          return { case: 'acknowledged', replyText: fn(followupCandidates), summaryForOwner: null, lang: pendingFollowup.lang };
+        }
+        await clearAttendanceFollowUpPending(phone);
+        await postOwnerNotification(senderNameAndPhone(senderLabel, phone) + ' ekta ager attendance request niye follow-up korechhen, kintu SUBH bujhte parini konta - apni direct dekhun.').catch(() => {});
+        return { case: 'acknowledged', replyText: ATTENDANCE_FOLLOWUP_COULDNT_TELL[pendingFollowup.lang] || ATTENDANCE_FOLLOWUP_COULDNT_TELL.english, summaryForOwner: null, lang: pendingFollowup.lang };
+      }
+      await clearAttendanceFollowUpPending(phone);
+    }
+  }
+
   // Direct instruction, case C - the sender's OWN part of an HR-note flow
   // is already done (nothing above is pending for them any more) but
   // something else - most commonly a manager's confirmation - is still
@@ -13655,6 +13928,33 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
         const prefix = EXTRA_INFO_NOTE_PREFIX[waitingLang] || EXTRA_INFO_NOTE_PREFIX.english;
         const statusFn = EXTRA_INFO_WAITING_STATUS[waitingLang] || EXTRA_INFO_WAITING_STATUS.english;
         return { case: 'acknowledged', replyText: prefix + statusFn(awaiting.thirdPartyName), summaryForOwner: null, lang: waitingLang };
+      }
+    }
+  }
+
+  // Direct instruction (2026-11), Commit 3 of 3 - a genuine follow-up/
+  // status question about an EARLIER attendance request (point 9), when
+  // nothing above already claimed this message. Never fires for a
+  // message that describes a NEW attendance event of its own - the model
+  // is instructed accordingly (see classifyAttendanceFollowUp's own
+  // description) and this exact boundary has its own dedicated tests.
+  if (!isGroup && phone && !isClosingMessage(text)) {
+    const attendanceRequestService = require('./attendanceRequestService');
+    const openOrRecent = await attendanceRequestService.listOpenOrRecentForSender(phone, Date.now()).catch(() => []);
+    if (openOrRecent.length) {
+      const followUpLang = await detectLangSmart(text, history);
+      const verdict = await classifyAttendanceFollowUp(text, openOrRecent).catch(() => ({ isFollowUp: false }));
+      if (verdict.isFollowUp) {
+        let matched = null;
+        if (typeof verdict.matchedIndex === 'number') {
+          const idx = verdict.matchedIndex - 1;
+          if (idx >= 0 && idx < openOrRecent.length) matched = openOrRecent[idx];
+        }
+        if (!matched && openOrRecent.length === 1) matched = openOrRecent[0];
+        if (matched) return await replyToAttendanceFollowUp({ phone, senderLabel, record: matched, lang: followUpLang });
+        await saveAttendanceFollowUpPending(phone, { candidateIds: openOrRecent.map((r) => r.id), lang: followUpLang, attempts: 1 });
+        const fn = ATTENDANCE_FOLLOWUP_WHICH_REQUEST[followUpLang] || ATTENDANCE_FOLLOWUP_WHICH_REQUEST.english;
+        return { case: 'acknowledged', replyText: fn(openOrRecent), summaryForOwner: null, lang: followUpLang };
       }
     }
   }
@@ -16491,6 +16791,21 @@ module.exports = {
   handleHrConfirmationManagerReply,
   resolveAmbiguousHrConfirmation,
   resolveHrToDecideConfirmation,
+  checkHrNoteSenderReminders,
+  classifyAttendanceFollowUp,
+  classifyAttendanceRequestChoice,
+  replyToAttendanceFollowUp,
+  periodDisplayLabel,
+  saveAttendanceFollowUpPending,
+  getAttendanceFollowUpPending,
+  clearAttendanceFollowUpPending,
+  ATTENDANCE_FOLLOWUP_WHICH_REQUEST,
+  ATTENDANCE_FOLLOWUP_STILL_PENDING,
+  ATTENDANCE_FOLLOWUP_ALREADY_DECIDED,
+  ATTENDANCE_FOLLOWUP_HR_DECIDE,
+  ATTENDANCE_FOLLOWUP_CLOSED_NO_DECISION,
+  ATTENDANCE_FOLLOWUP_STILL_NEED_APPROVER,
+  ATTENDANCE_FOLLOWUP_COULDNT_TELL,
   normalizeBengaliNamePhonetics,
   findEmployeesByPhoneticNameMatch,
   checkHrConfirmationNudges,
