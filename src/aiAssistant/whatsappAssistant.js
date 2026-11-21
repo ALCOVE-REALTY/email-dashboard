@@ -1769,19 +1769,67 @@ function recoveryGapMs(attemptIndex) {
   if (Number.isFinite(override) && override >= 0) return override;
   return RECOVERY_GAP_MS[attemptIndex] !== undefined ? RECOVERY_GAP_MS[attemptIndex] : RECOVERY_GAP_MS[RECOVERY_GAP_MS.length - 1];
 }
-// A long reply is sent in multiple chunks (sendWhatsAppChunked) - the
-// feed then shows several separate outgoing messages, none of them equal
-// to the FULL replyText. Chunking always starts from the first character,
-// so the first chunk is always an exact PREFIX of the full text - checked
-// either direction (exact match for a short, single-chunk reply; prefix
-// match for a long, multi-chunk one) so this never false-alarms on a long
-// reply that genuinely went out fine.
-function feedShowsText(feed, replyText, notBeforeMs) {
-  const target = replyText.trim();
-  return feed.some((m) => {
+// LIVE INCIDENT (2026-11, direct instruction - "false 'Not delivered'
+// causes DUPLICATE replies live... every reply was delivered 3 times")
+// - root-caused to two compounding gaps in this function, both now
+// fixed:
+//   1. Exact-string matching only, with no normalization at all. A real
+//      WhatsApp/gateway echo can differ from what we sent in ways that
+//      carry no meaning (smart-quote/Unicode normalization, a stray
+//      zero-width character, \r\n vs \n, doubled/trailing whitespace) -
+//      any one of these silently flips a genuinely-delivered message to
+//      "not found", which is exactly the shape this incident showed
+//      (every single check across 3 attempts missing a message that DID
+//      arrive, not just one unlucky check). Both sides are now run
+//      through the SAME normalization (Unicode NFC, all whitespace
+//      collapsed to single spaces, zero-width characters stripped,
+//      trimmed) before comparing.
+//   2. No attempt at all to match by the gateway's own message id, even
+//      though the send response's gatewayMessageId is already captured
+//      and stored on every attempt - text-only matching is exactly what
+//      a busy/duplicated conversation (this incident's own test window)
+//      breaks hardest, since a text match can accidentally latch onto
+//      (or, after enough duplicates, get confused among) several near-
+//      identical outgoing messages. Tried FIRST now, against every
+//      plausible field name this gateway might echo a message's own id
+//      under (never confirmed in writing which one, if any, Maytapi's
+//      own /messages feed actually uses for this - same "try every
+//      plausible name, never guess just one" posture this file's own
+//      send-response parsing already uses for gatewayMessageId itself) -
+//      falls through to the normalized-text check below whenever none
+//      of them are present, so this can only ever ADD a more reliable
+//      match, never remove the existing one.
+// Also widened separately (see the two call sites) - the feed window
+// (message count) and the pre-send grace period, since a busy
+// conversation during a live incident like this one can easily push the
+// real message further back, or arrive with more clock skew, than the
+// previous narrow window tolerated.
+function normalizeFeedText(s) {
+  return String(s || '')
+    .normalize('NFC')
+    .replace(/[​-‍﻿]/g, '') // zero-width space/joiner/BOM
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+function feedMessageGatewayId(m) {
+  return m.messageId || m.message_id || m.whatsappMessageId || m.whatsapp_message_id || m.wamid || m.msgId || m.msg_id || null;
+}
+function feedShowsText(feed, replyText, notBeforeMs, gatewayMessageId) {
+  const outgoing = feed.filter((m) => {
     if (m.direction !== 'outgoing' || !m.content || typeof m.content.text !== 'string') return false;
-    if (!m.created_at || new Date(m.created_at).getTime() < notBeforeMs - 3000) return false;
-    const sent = m.content.text.trim();
+    // Widened from 3s to 15s (direct instruction - "feed lag... wait long
+    // enough") - a real round trip to the gateway and back, plus any
+    // clock skew between our server and the gateway's own reported
+    // created_at, can plausibly exceed a 3s grace window, especially
+    // under the kind of rapid-fire burst this incident's own test showed.
+    return m.created_at && new Date(m.created_at).getTime() >= notBeforeMs - 15000;
+  });
+  if (gatewayMessageId) {
+    if (outgoing.some((m) => feedMessageGatewayId(m) === gatewayMessageId)) return true;
+  }
+  const target = normalizeFeedText(replyText);
+  return outgoing.some((m) => {
+    const sent = normalizeFeedText(m.content.text);
     return sent === target || target.startsWith(sent) || sent.startsWith(target);
   });
 }
@@ -1875,12 +1923,18 @@ async function listDeliveryEvidence(limit = 500) {
 }
 // Delivery log page (Pass 2, direct instruction) - a single, honest
 // per-message presentation built from the SAME evidence records IT
-// written, never a second source of truth. "Not delivered" also covers
-// unconfirmed_check_failed (a feed-read error mid-verification) - we
-// genuinely don't know if it landed, so it's shown and resendable like
-// any other unconfirmed case rather than silently assumed fine.
-const DELIVERY_LOG_NOT_DELIVERED_OUTCOMES = ['not_delivered', 'unconfirmed_check_failed'];
+// written, never a second source of truth.
+// LIVE INCIDENT (2026-11, direct instruction) fix - a feed-check
+// failure/timeout used to be folded into "Not delivered" here
+// (unconfirmed_check_failed) - a real false alarm, since the real send
+// already succeeded (200 OK) and this state means only "couldn't
+// re-verify it", never "confirmed missing". It is its own outcome now
+// (sent_unconfirmed, shown as "Sent (gateway OK)") and is deliberately
+// NOT in this list - only a send that was actually retried and still
+// never confirmed (not_delivered) counts as a real delivery failure.
+const DELIVERY_LOG_NOT_DELIVERED_OUTCOMES = ['not_delivered'];
 function deliveryLogStatus(record) {
+  if (record.finalOutcome === 'sent_unconfirmed') return { pill: 'Sent (gateway OK)', tone: 'amber' };
   if (DELIVERY_LOG_NOT_DELIVERED_OUTCOMES.includes(record.finalOutcome)) return { pill: 'Not delivered', tone: 'red' };
   if (record.attempts.length <= 1) return { pill: 'Delivered', tone: 'green' };
   const tryNum = record.attempts.length; // 2 attempts (1 resend) = "2nd try", 3 attempts = "3rd try"
@@ -1896,7 +1950,7 @@ function deliveryLogDetailLine(record) {
   if (record.attempts.length <= 1) {
     if (record.confirmed === true) return timeStr + ' · Gateway: ' + gatewayStatus + ' · Confirmed in gateway feed';
     if (record.confirmed === false) return timeStr + ' · Gateway: ' + gatewayStatus + ' · Not in gateway feed';
-    return timeStr + ' · Gateway: ' + gatewayStatus + ' · Could not check delivery status';
+    return timeStr + ' · Gateway: ' + gatewayStatus + ' · Could not re-verify (feed check failed/timed out) - not resent';
   }
   if (!record.confirmed) {
     return timeStr + ' · Gateway: ' + gatewayStatus + ' · Not in gateway feed · ' + (record.attempts.length - 1) + ' retries failed';
@@ -1973,6 +2027,44 @@ async function listDeliveryEvidenceForExport(dateFromKey, dateToKey) {
       retryTimes: r.attempts.slice(1).map((a) => formatIstTime(a.at)).join('; ')
     }));
 }
+// LIVE INCIDENT (2026-11, direct instruction) - "correct today's
+// wrongly-marked entries if possible." Re-checks every one of TODAY's
+// evidence records currently shown as a real delivery failure
+// (not_delivered) or the OLD pre-fix "couldn't verify" state
+// (unconfirmed_check_failed - no longer produced going forward, but
+// live records written before this fix still carry it) against the
+// gateway feed using the SAME, now-fixed feedShowsText - if the message
+// genuinely IS found now, the record is corrected in place rather than
+// left showing a false "Not delivered". Deliberately time-limited by
+// its own nature (never claimed otherwise): the feed window this checks
+// is still bounded (DELIVERY_CHECK_FEED_LIMIT messages, ~last few
+// minutes typically) - the longer this runs after the fact, the more
+// likely the real message has since scrolled out of even the widened
+// window, in which case the record is correctly left as-is rather than
+// guessed at. Owner-triggered (never automatic) - see the
+// /delivery-log/reconcile-today route.
+async function reconcileTodaysDeliveryEvidence() {
+  const todayKey = istDayKeyOf(new Date());
+  const all = await listDeliveryEvidence(5000);
+  const candidates = all.filter((r) => istDayKeyOf(new Date(r.sentAt)) === todayKey && ['not_delivered', 'unconfirmed_check_failed'].includes(r.finalOutcome));
+  let corrected = 0;
+  for (const record of candidates) {
+    try {
+      const lastAttempt = record.attempts[record.attempts.length - 1];
+      const feed = await whatsapp.listMessages(record.chatId, DELIVERY_CHECK_FEED_LIMIT);
+      const landed = feedShowsText(feed, record.textPreview, lastAttempt ? lastAttempt.at : record.sentAt, lastAttempt ? lastAttempt.gatewayMessageId : null);
+      if (landed) {
+        await recordDeliveryEvidence({
+          id: record.id, chatId: record.chatId, name: record.name, textPreview: record.textPreview,
+          sentAt: record.sentAt, attempts: record.attempts, confirmed: true,
+          finalOutcome: 'delivered_corrected', correctedAt: Date.now()
+        });
+        corrected++;
+      }
+    } catch (err) { /* best effort - leave this one record as-is, never guess */ }
+  }
+  return { checked: candidates.length, corrected };
+}
 // Dual-channel owner alert (point 2 - "red Action-needed card + owner
 // alert (WhatsApp + email)") - postOwnerNotification alone (what every
 // OTHER failure path in this file already calls) only ever writes to the
@@ -2039,6 +2131,36 @@ async function confirmOrRecoverSend({ chatId, name, replyText, sentAt, gatewayMe
     checkAt: Date.now() + sendVerifyDelayMs()
   });
 }
+// LIVE INCIDENT (2026-11, direct instruction) - "if the check itself is
+// uncertain (feed call failed, timed out, or returned nothing usable),
+// do NOT resend; mark 'Sent (gateway OK)' and raise a warning instead."
+// No timeout existed on the feed call at all before this - a hung
+// gateway call would have sat here indefinitely, blocking this one
+// check (though never the shared SEND_FLUSH_MS tick itself, since each
+// due check is processed one at a time by whatever calls this). Same
+// test-only override seam convention as WHATSAPP_POLL_ONCE_TIMEOUT_MS.
+function deliveryCheckFeedTimeoutMs() {
+  const override = Number(process.env.WHATSAPP_DELIVERY_CHECK_TIMEOUT_MS);
+  return Number.isFinite(override) && override >= 0 ? override : 8000;
+}
+function withDeliveryCheckTimeout(promise) {
+  const ms = deliveryCheckFeedTimeoutMs();
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      const timer = setTimeout(() => reject(new Error('feed check timed out after ' + ms + 'ms')), ms);
+      if (timer.unref) timer.unref();
+    })
+  ]);
+}
+// Widened from 15 - direct instruction ("wait long enough / look far
+// enough back in the feed"). A busy conversation (several incoming test
+// messages plus SUBH's own replies, exactly this incident's own test
+// shape) can easily push the message this check is looking for further
+// back than a narrow window tolerates, especially on a LATER recovery
+// attempt (10-30s after the first), by which point more messages may
+// have arrived in between.
+const DELIVERY_CHECK_FEED_LIMIT = 50;
 // One check, for one pending record - checking the feed ONCE right now
 // (whenever this due entry is actually picked up by the tick below)
 // serves as BOTH the periodic re-check AND the "did a late confirmation
@@ -2048,19 +2170,33 @@ async function confirmOrRecoverSend({ chatId, name, replyText, sentAt, gatewayMe
 async function runOneDeliveryCheck(record) {
   let landed = false;
   try {
-    const feed = await whatsapp.listMessages(record.chatId, 15);
-    landed = feedShowsText(feed, record.replyText, record.currentSentAt);
+    const feed = await withDeliveryCheckTimeout(whatsapp.listMessages(record.chatId, DELIVERY_CHECK_FEED_LIMIT));
+    // feedMessageGatewayId's own field-name guesses may never actually
+    // match anything this gateway's /messages feed returns (its real
+    // shape for this is unconfirmed - see feedShowsText's own comment);
+    // when that's true this is simply never used and the normalized-text
+    // match below is what actually matters - this can only ever ADD a
+    // more reliable signal on top of it, never take one away.
+    const latestGatewayId = record.attempts.length ? record.attempts[record.attempts.length - 1].gatewayMessageId : null;
+    landed = feedShowsText(feed, record.replyText, record.currentSentAt, latestGatewayId);
   } catch (err) {
-    // A feed-read failure here must never itself raise a false alarm or
-    // trigger a possibly-unnecessary resend - fails closed, logged as
-    // inconclusive rather than either confirmed or failed. The pending
-    // check is simply dropped (already removed from the ZSET by the
-    // caller before this ran) rather than retried - a transient feed
-    // outage right at this one moment is rare enough that losing this
-    // one check's own re-verification is an acceptable tradeoff against
-    // retrying forever on a broken feed read.
+    // LIVE INCIDENT fix - this used to mark 'unconfirmed_check_failed',
+    // which DELIVERY_LOG_NOT_DELIVERED_OUTCOMES treats as "Not delivered"
+    // in the Delivery log (a real false alarm the owner would see and
+    // might act on), and never actually warned the owner at all (a
+    // console.error only, invisible outside server logs). A feed-read
+    // failure/timeout here is NEVER confident evidence either way - the
+    // message almost certainly DID go out (the real send already
+    // succeeded, with a 200 OK, before this check ever runs) and must
+    // never be resent on nothing more than "couldn't check" - so this
+    // now marks the honest "we sent it, gateway said OK, we just
+    // couldn't re-verify it" state and stops here (no resend, same as
+    // before), with a real owner-visible warning this time.
     console.error('[whatsapp] send-verify: could not check outgoing feed for ' + record.chatId + ': ' + err.message);
-    await recordDeliveryEvidence({ id: record.id, chatId: record.chatId, name: record.name, textPreview: record.replyText.slice(0, 100), sentAt: record.sentAt, attempts: record.attempts, confirmed: null, finalOutcome: 'unconfirmed_check_failed' });
+    await recordDeliveryEvidence({ id: record.id, chatId: record.chatId, name: record.name, textPreview: record.replyText.slice(0, 100), sentAt: record.sentAt, attempts: record.attempts, confirmed: null, finalOutcome: 'sent_unconfirmed' });
+    await postOwnerNotification(
+      '⚠️ Could not re-verify delivery to ' + record.name + ' (gateway feed check failed/timed out) - the message was sent (gateway OK) and was NOT resent. Shown as "Sent (gateway OK)" in the WhatsApp section: "' + record.replyText.slice(0, 160) + '"'
+    ).catch(() => {});
     return;
   }
   if (landed) {
@@ -4271,7 +4407,7 @@ async function clearPendingNameConfirm(phone) {
 // single match would have gotten - shared by handlePersonLookupRequest's
 // own direct path and the "yes" branch of a confirmed first-name-only
 // lookup, so the two can never silently diverge.
-async function resolveConfirmedPersonLookup({ phone, name, candidate, isInactive, personField, fieldAliasKey, fieldSpecsRaw, lang, hadTypo, history }) {
+async function resolveConfirmedPersonLookup({ phone, name, candidate, isInactive, personField, fieldAliasKey, rawLabel, fieldSpecsRaw, lang, hadTypo, history }) {
   if (isInactive) {
     await replyInactiveEmployee({ phone, requesterLabel: name, candidate, lang });
     return { case: 'acknowledged', replyText: (INACTIVE_EMPLOYEE_REPLY[lang] || INACTIVE_EMPLOYEE_REPLY.english)(candidate.name, candidate.gender), summaryForOwner: null, lang };
@@ -4297,7 +4433,7 @@ async function resolveConfirmedPersonLookup({ phone, name, candidate, isInactive
   if (personField === 'other_field') {
     const fieldAlias = resolveApprovalFieldAliasByKey(fieldAliasKey);
     if (fieldAlias) {
-      const resolved = await resolveSingleFieldForThirdParty({ phone, requesterLabel: name, candidate, lang, hadTypo, fieldAlias, isContactNumber: false });
+      const resolved = await resolveSingleFieldForThirdParty({ phone, requesterLabel: name, candidate, lang, hadTypo, fieldAlias: withResolvedLabel(fieldAlias, rawLabel), isContactNumber: false });
       if (resolved.outcome === 'restricted') return { case: 'acknowledged', replyText: RESTRICTED_FIELD_BLOCK_REPLY[lang] || RESTRICTED_FIELD_BLOCK_REPLY.english, summaryForOwner: null, lang };
       if (resolved.outcome === 'sent') return { case: 'acknowledged', replyText: resolved.replyText, summaryForOwner: null, lang };
     }
@@ -4587,6 +4723,25 @@ const DEPARTMENT_DISAMBIGUATION_QUESTION = {
     'There are ' + options.length + ' departments named ' + name + ' at our company:\n' +
     options.map((o, i) => (i + 1) + ') ' + naturalizeDirectoryValue(o)).join('\n') +
     '\nWhich one do you mean?'
+};
+// LIVE INCIDENT FIX (2026-11, direct instruction) - this question used to
+// repeat the IDENTICAL full numbered list forever on every unresolved
+// reply, with no attempt cap and no escalation - a genuinely stuck
+// exchange (a reply the matcher can't resolve, e.g. an ordinal word it
+// didn't understand) looped on the sender with no way out, exactly the
+// same class of bug already fixed for the HR-note flow's own person
+// disambiguation (see MAX_DISAMBIGUATION_ATTEMPTS/DISAMBIGUATION_SHORT_RETRY
+// above). Mirrors that fix: a short retry after the first attempt, then
+// gives up gracefully and tells the owner once the cap is hit.
+const DEPARTMENT_DISAMBIGUATION_SHORT_RETRY = {
+  banglish: (name, options) => 'Kon ' + name + '-er kotha bolchhen — ' + joinNumbersNaturally(options.length, 'banglish') + '?',
+  hinglish: (name, options) => 'Kaunse ' + name + ' ki baat kar rahe hain — ' + joinNumbersNaturally(options.length, 'hinglish') + '?',
+  english: (name, options) => 'Which ' + name + ' do you mean — ' + joinNumbersNaturally(options.length, 'english') + '?'
+};
+const HR_QUERY_DEPARTMENT_UNRESOLVED = {
+  banglish: 'Thik bujhte parlam na, Subhodeep-ke janiye dicchi - uni direct dekhben.',
+  hinglish: 'Samajh nahi paya, Subhodeep ko bata raha hoon - woh direct dekh lenge.',
+  english: "Couldn't quite tell which one - I've let Subhodeep know, he'll follow up directly."
 };
 const HR_QUERY_NO_MATCH = {
   banglish: (scope, role) => (scope ? scope + '-e kono ' : 'Kono ') + role + ' pawa jayni.',
@@ -5657,10 +5812,35 @@ async function continueHrDataQueryFlow({ phone, name, text, pending }) {
     const idx = parseInt(numMatch[1], 10) - 1;
     if (idx >= 0 && idx < options.length) picked = options[idx];
   }
+  // LIVE INCIDENT FIX (2026-11, direct instruction) - an ordinal-word reply
+  // ("2nd option", "dwitiyo ta") had no handler at all here, unlike the
+  // sibling person-disambiguation flow (resolveDisambiguationReply, which
+  // already calls matchOrdinalIndex) - it fell straight through to the
+  // hint-word matcher, which a bare ordinal word can never satisfy, and
+  // looped forever on the identical question. Reuses the same helper.
+  if (!picked) {
+    const ordinalIdx = matchOrdinalIndex(t);
+    if (ordinalIdx !== null && ordinalIdx < options.length) picked = options[ordinalIdx];
+  }
   if (!picked) picked = options.find((o) => departmentHintMatchesWithPrefix(o, t)) || null;
   if (!picked) {
-    const fn = DEPARTMENT_DISAMBIGUATION_QUESTION[lang] || DEPARTMENT_DISAMBIGUATION_QUESTION.english;
-    return { case: 'acknowledged', replyText: fn(pending.departmentHint, options), summaryForOwner: null, lang };
+    // LIVE INCIDENT FIX (2026-11, direct instruction) - this used to
+    // re-send the IDENTICAL full numbered list forever with no cap, the
+    // one place in this file's whole disambiguation family without the
+    // MAX_DISAMBIGUATION_ATTEMPTS escalation every other one already has.
+    // Now matches that pattern exactly: a short retry after the first
+    // miss, then a graceful owner handoff instead of an infinite loop.
+    const attempts = pending.attempts || 1;
+    if (attempts < MAX_DISAMBIGUATION_ATTEMPTS) {
+      await savePendingHrDataQuery(phone, Object.assign({}, pending, { attempts: attempts + 1 }));
+      const replyText = attempts === 1
+        ? (DEPARTMENT_DISAMBIGUATION_QUESTION[lang] || DEPARTMENT_DISAMBIGUATION_QUESTION.english)(pending.departmentHint, options)
+        : (DEPARTMENT_DISAMBIGUATION_SHORT_RETRY[lang] || DEPARTMENT_DISAMBIGUATION_SHORT_RETRY.english)(pending.departmentHint, options);
+      return { case: 'acknowledged', replyText, summaryForOwner: null, lang };
+    }
+    await clearPendingHrDataQuery(phone);
+    await postOwnerNotification(senderNameAndPhone(name, phone) + ' "' + (pending.departmentHint || '') + '" department niye jigges korechhilen kintu kontar kotha bolchhen bojha jayni (' + attempts + ' bar jigges kora hoyeche) - apni direct handle korun.').catch(() => {});
+    return { case: 'acknowledged', replyText: HR_QUERY_DEPARTMENT_UNRESOLVED[lang] || HR_QUERY_DEPARTMENT_UNRESOLVED.english, summaryForOwner: null, lang };
   }
   await clearPendingHrDataQuery(phone);
   const query = Object.assign({}, pending.query, { resolvedDepartment: picked });
@@ -6588,6 +6768,17 @@ const APPROVAL_FIELD_ALIASES = [
   // hint, since a manager/HOD fact reads as more consequential than a
   // private field like an email or DOB. outgoingLine overrides the
   // generic "name-er field: value" colon format with a real sentence.
+  // LIVE INCIDENT (2026-11, direct instruction) - "HOD and Reporting
+  // Manager are the same field (same column, same meaning). Use the
+  // sender's own term in the reply." label stays the fixed 'reporting
+  // manager' (used for owner-facing notifications and alias matching,
+  // unchanged) - outgoingLine now takes a 3rd argument, the resolved
+  // display term ("HOD" or "Reporting Manager", computed by
+  // reportingManagerDisplayLabel below from the classifier's OWN
+  // rawLabel - see that function's own comment for why this is "the
+  // model decides, code fills the label", never a keyword list over the
+  // sender's raw message) - every call site threads it through from
+  // fieldAlias.resolvedRawLabel (see withResolvedLabel below).
   {
     key: 'reportingManager',
     match: /report(s|ing)?\s*(to|manager)|\bmanager\b|\bhod\b/i,
@@ -6595,9 +6786,9 @@ const APPROVAL_FIELD_ALIASES = [
     getValue: (c) => c.reportingManager || null,
     alwaysConfirm: true,
     outgoingLine: {
-      banglish: (name, value) => name + '-er reporting manager holen ' + value + '.',
-      hinglish: (name, value) => name + ' ke reporting manager ' + value + ' hain.',
-      english: (name, value) => name + "'s reporting manager is " + value + '.'
+      banglish: (name, value, term) => name + '-er ' + term + ' holen ' + value + '.',
+      hinglish: (name, value, term) => name + ' ke ' + term + ' ' + value + ' hain.',
+      english: (name, value, term) => name + "'s " + term + ' is ' + value + '.'
     }
   },
   // LIVE BUG FIX (2026-11), direct instruction - the person-level
@@ -6634,6 +6825,35 @@ function resolveApprovalFieldAliasByLabel(label) {
 }
 function resolveApprovalFieldAliasByKey(key) {
   return APPROVAL_FIELD_ALIASES.find((a) => a.key === key) || null;
+}
+// LIVE INCIDENT (2026-11, direct instruction) - "HOD and Reporting
+// Manager are the same field... use the sender's own term... the model
+// decides which term the sender used (no keyword list); code fills the
+// label." The classifier's own personLookupFieldLabel is instructed
+// (see the wantsData tool schema) to emit EXACTLY one of two literal
+// strings for this field - "HOD" when the sender said HOD, "reporting
+// manager" when the sender said manager/reporting manager, and "HOD"
+// again as the default when the sender used neither word. This is an
+// EXACT comparison against the model's own clean, closed-set decision,
+// never a regex/keyword scan over the sender's own raw message text (the
+// thing actually being avoided) - the model already did the
+// interpreting; this just reads its answer.
+function reportingManagerDisplayLabel(rawLabel) {
+  return /manager/i.test(String(rawLabel || '')) ? 'Reporting Manager' : 'HOD';
+}
+// Attaches the sender's own rawLabel (as resolvedRawLabel) onto a COPY of
+// a resolved fieldAlias, never mutating the shared APPROVAL_FIELD_ALIASES
+// entry itself (reused across every request) - every call site that
+// resolves a fieldAlias from a rawLabel wraps it with this, so
+// queuePersonFieldApproval/sendOfficialFieldDirect/lookupSpecLabel can
+// all read fieldAlias.resolvedRawLabel uniformly regardless of which of
+// the several lookup paths (direct/confirm-then-resolve/disambiguate-
+// then-resolve/combined-fields) produced it. A no-op for every alias
+// OTHER than reportingManager - only that one's outgoingLine/label
+// resolution actually reads resolvedRawLabel.
+function withResolvedLabel(fieldAlias, rawLabel) {
+  if (!fieldAlias) return fieldAlias;
+  return Object.assign({}, fieldAlias, { resolvedRawLabel: rawLabel });
 }
 // ---------------- Part A phase 2: live tier lookups ----------------
 // The single place every third-party field-gating decision below reads
@@ -6713,9 +6933,12 @@ async function queuePersonFieldApproval({ phone, requesterLabel, candidate, lang
   // Task 2 (2026-10-29) - a field alias may define its own outgoingLine
   // (a real sentence, e.g. reporting manager's "X-er reporting manager
   // holen Y.") instead of the generic "name-er field: value" colon format
-  // every other other_field uses.
+  // every other other_field uses. LIVE INCIDENT fix - the 3rd argument is
+  // the sender's own HOD/Reporting Manager term (see
+  // reportingManagerDisplayLabel) when this alias is reportingManager;
+  // harmlessly unused by every other alias's own outgoingLine.
   const outgoingText = fieldAlias.outgoingLine
-    ? (fieldAlias.outgoingLine[lang] || fieldAlias.outgoingLine.english)(candidate.name, value)
+    ? (fieldAlias.outgoingLine[lang] || fieldAlias.outgoingLine.english)(candidate.name, value, reportingManagerDisplayLabel(fieldAlias.resolvedRawLabel))
     : (OTHER_FIELD_LINE[lang] || OTHER_FIELD_LINE.english)(candidate.name, fieldLabel, value);
   const dataRequestSummary = candidate.name + ' (' + candidate.department + ') - ' + fieldLabel;
   await savePendingApproval({
@@ -6747,7 +6970,7 @@ async function sendOfficialFieldDirect({ phone, requesterLabel, candidate, lang,
     return null;
   }
   const outgoingText = fieldAlias.outgoingLine
-    ? (fieldAlias.outgoingLine[lang] || fieldAlias.outgoingLine.english)(candidate.name, value)
+    ? (fieldAlias.outgoingLine[lang] || fieldAlias.outgoingLine.english)(candidate.name, value, reportingManagerDisplayLabel(fieldAlias.resolvedRawLabel))
     : (OTHER_FIELD_LINE[lang] || OTHER_FIELD_LINE.english)(candidate.name, fieldLabel, value);
   const typoNote = hadTypo ? ' [sender-er deya naam-er banan-e typo chhilo, eta closest match]' : '';
   await postOwnerNotification(
@@ -6909,6 +7132,11 @@ function lookupSpecToRaw(spec) {
 function lookupSpecLabel(spec, lang) {
   if (spec.tag === 'contact_number') return CONTACT_NUMBER_FIELD_WORD[lang] || CONTACT_NUMBER_FIELD_WORD.english;
   if (spec.tag === 'general_details') return GENERAL_DETAILS_FIELD_WORD[lang] || GENERAL_DETAILS_FIELD_WORD.english;
+  // LIVE INCIDENT (2026-11, direct instruction) - the combined-fields
+  // ("Doer k? HOD k?") rendering of reportingManager uses the sender's
+  // own HOD/Reporting Manager term too, same as the single-field
+  // outgoingLine path - see reportingManagerDisplayLabel's own comment.
+  if (spec.fieldAlias && spec.fieldAlias.key === 'reportingManager') return reportingManagerDisplayLabel(spec.rawLabel);
   return spec.fieldAlias ? (spec.fieldAlias.label[lang] || spec.fieldAlias.label.english) : (spec.rawLabel || 'field');
 }
 function lookupSpecValue(spec, candidate) {
@@ -7131,13 +7359,14 @@ async function handlePersonLookupRequest({ phone, name, lang, personName, person
         if (selfRecord && selfRecord.emp && selfRecord.emp.employeeId === soleMatch.employeeId) {
           return resolveConfirmedPersonLookup({
             phone, name, candidate: soleMatch, isInactive: false, personField, fieldAliasKey: fieldAlias ? fieldAlias.key : null,
+            rawLabel: fieldSpecs.length === 1 ? fieldSpecs[0].rawLabel : undefined,
             fieldSpecsRaw: fieldSpecs.length > 1 ? fieldSpecs.map(lookupSpecToRaw) : undefined, lang, hadTypo, history
           });
         }
       }
       await savePendingNameConfirm(phone, Object.assign(
         { candidate: soleMatch, isInactive: isInactiveCandidate, personField, fieldAliasKey: fieldAlias ? fieldAlias.key : null, lang, hadTypo },
-        fieldSpecs.length > 1 ? { fieldSpecsRaw: fieldSpecs.map(lookupSpecToRaw) } : null
+        fieldSpecs.length > 1 ? { fieldSpecsRaw: fieldSpecs.map(lookupSpecToRaw) } : { rawLabel: fieldSpecs[0].rawLabel }
       ));
       await postOwnerNotification(
         name + ' (' + phone + ') "' + personName + '" bolechhe (shudhu first name) - ' + soleMatch.name + ' (' + soleMatch.department + ')' +
@@ -7221,12 +7450,16 @@ async function handlePersonLookupRequest({ phone, name, lang, personName, person
     // ever reclassifies it).
     const resolved = await resolveSingleFieldForThirdParty({
       phone, requesterLabel: name, candidate: current[0], lang, hadTypo,
-      fieldAlias: isOtherField ? fieldAlias : null, isContactNumber: !isOtherField
+      fieldAlias: isOtherField ? withResolvedLabel(fieldAlias, fieldSpecs[0].rawLabel) : null, isContactNumber: !isOtherField
     });
     if (resolved.outcome === 'restricted') return { case: 'acknowledged', replyText: RESTRICTED_FIELD_BLOCK_REPLY[lang] || RESTRICTED_FIELD_BLOCK_REPLY.english, summaryForOwner: null, lang };
     if (resolved.outcome === 'sent') return { case: 'acknowledged', replyText: resolved.replyText, summaryForOwner: null, lang };
   } else {
-    await savePendingDisambiguation(phone, { candidates: current, lang, hadTypo, attempts: 1, pendingField: pendingFieldTag, fieldAliasKey: fieldAlias ? fieldAlias.key : null });
+    // LIVE INCIDENT (2026-11, direct instruction) - rawLabel carried
+    // through disambiguation too, so the eventual resolution (once the
+    // sender picks who they meant) still uses THEIR OWN HOD/Reporting
+    // Manager term rather than losing it across this extra turn.
+    await savePendingDisambiguation(phone, { candidates: current, lang, hadTypo, attempts: 1, pendingField: pendingFieldTag, fieldAliasKey: fieldAlias ? fieldAlias.key : null, rawLabel: fieldSpecs[0].rawLabel });
     await postOwnerNotification(current.length + ' jon "' + personName + '" (' + (otherFieldLabel || 'contact number') + ') match korche - sender-ke jigges kora hocche kon jon: ' + current.map((c) => c.name + ' (' + c.department + ')').join(', ') + '.');
     const queryName = current[0].name.split(' ')[0];
     const note = hadTypo ? (TYPO_NOTE[lang] || TYPO_NOTE.english) : '';
@@ -7329,29 +7562,48 @@ function calendarDaysBetweenIst(d1, d2) {
 // actual flow left, e.g. after natural TTL expiry, is just removed from
 // the set the next time it's listed, never treated as an error).
 const HR_NOTE_FLOW_PHONES_KEY = 'wa-hr-note-flow-phones';
+// LIVE INCIDENT (2026-11, direct instruction) - "use the same identity
+// everywhere so cards, flows and replies match." Normalized HERE,
+// centrally, inside the 3 functions every caller already goes through to
+// read/write/clear this state - regardless of whatever raw phone shape a
+// given caller happens to pass (the gateway feed's own msg.recipient,
+// which this file's OTHER identity-sensitive stores like
+// attendanceRequestService already normalize on their own side), the
+// actual Redis key is now always the SAME normalized value, so a close
+// issued against one representation can never silently miss a flow
+// saved under a different-looking one.
 async function savePendingHrNoteFlow(phone, data) {
   const redis = getClient();
   if (!redis) return;
+  const normalized = whatsapp.normalizePhone(phone);
   const toSave = Object.assign({}, data, { lastTouchedAt: Date.now() });
   try {
-    await redis.set(PENDING_HR_NOTE_FLOW_PREFIX + phone, JSON.stringify(toSave), { ex: HR_NOTE_FLOW_TTL_SECONDS });
-    await redis.sadd(HR_NOTE_FLOW_PHONES_KEY, phone);
+    await redis.set(PENDING_HR_NOTE_FLOW_PREFIX + normalized, JSON.stringify(toSave), { ex: HR_NOTE_FLOW_TTL_SECONDS });
+    await redis.sadd(HR_NOTE_FLOW_PHONES_KEY, normalized);
   } catch (err) { /* best effort */ }
 }
 async function getPendingHrNoteFlow(phone) {
   const redis = getClient();
   if (!redis) return null;
   try {
-    const raw = await redis.get(PENDING_HR_NOTE_FLOW_PREFIX + phone);
+    const raw = await redis.get(PENDING_HR_NOTE_FLOW_PREFIX + whatsapp.normalizePhone(phone));
     return raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : null;
   } catch (err) { return null; }
 }
 async function clearPendingHrNoteFlow(phone) {
   const redis = getClient();
   if (!redis) return;
+  const normalized = whatsapp.normalizePhone(phone);
   try {
-    await redis.del(PENDING_HR_NOTE_FLOW_PREFIX + phone);
-    await redis.srem(HR_NOTE_FLOW_PHONES_KEY, phone);
+    await redis.del(PENDING_HR_NOTE_FLOW_PREFIX + normalized);
+    await redis.srem(HR_NOTE_FLOW_PHONES_KEY, normalized);
+    // Best-effort cleanup of a key saved under the UN-normalized phone
+    // before this fix (a pre-existing live flow) - never required for
+    // correctness going forward, just avoids one stale leftover key.
+    if (normalized !== String(phone)) {
+      await redis.del(PENDING_HR_NOTE_FLOW_PREFIX + phone).catch(() => {});
+      await redis.srem(HR_NOTE_FLOW_PHONES_KEY, phone).catch(() => {});
+    }
   } catch (err) { /* best effort */ }
 }
 // Every currently-open HR-note flow (STEP 1/2 - awaiting a name,
@@ -8028,6 +8280,18 @@ function formatHrNoteCalendarDate(resolved) {
       : (fmtDate(resolved.start.m, resolved.start.d) + '–' + fmtDate(resolved.end.m, resolved.end.d));
   }
   return fmtDate(resolved.m, resolved.d);
+}
+// LIVE INCIDENT (2026-11, direct instruction) - "requests whose date has
+// passed... close automatically." The real resolved end-of-day instant
+// (IST) for this matter - the LATER end for a range, since the whole
+// matter is only truly "in the past" once that end has gone by. Computed
+// here, once, from the same real y/m/d resolveHrNoteDate already
+// produced (never re-parsed later from the human-readable display
+// string, which can be a no-year/range phrase not safely reversible).
+function hrNoteResolvedEndOfDayTs(resolved) {
+  if (!resolved || resolved.ambiguous) return null;
+  const end = resolved.range ? resolved.end : resolved;
+  return istWallClockToUtc(end.y, end.m, end.d, 23, 59).getTime();
 }
 function formatHrNoteDatePhrase(resolved, lang) {
   if (!resolved || resolved.ambiguous) return '';
@@ -8771,7 +9035,7 @@ async function handleHrNotificationStart({ phone, name, lang, text, history, cla
   }
   const datePhrase = formatHrNoteDatePhrase(dateResolved, lang);
   summaryLocalized = fillHrNoteDatePlaceholder(summaryLocalized, datePhrase);
-  require('./attendanceRequestService').recordDateResolved(phone, formatHrNoteCalendarDate(dateResolved)).catch(() => {});
+  require('./attendanceRequestService').recordDateResolved(phone, formatHrNoteCalendarDate(dateResolved), hrNoteResolvedEndOfDayTs(dateResolved)).catch(() => {});
   return continueHrNoteAfterDateResolved({ phone, name, lang, history, summary, summaryLocalized, topicLabel, actionPhrase, actionKind, createdAt, datePhrase, thirdPartyName, thirdPartyHint, involvesThirdParty, approvalGranted });
 }
 
@@ -8869,7 +9133,7 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
     }
     const datePhrase = formatHrNoteDatePhrase(resolved, lang);
     const summaryLocalized = fillHrNoteDatePlaceholder(hrFlow.summaryLocalized, datePhrase);
-    require('./attendanceRequestService').recordDateResolved(phone, formatHrNoteCalendarDate(resolved)).catch(() => {});
+    require('./attendanceRequestService').recordDateResolved(phone, formatHrNoteCalendarDate(resolved), hrNoteResolvedEndOfDayTs(resolved)).catch(() => {});
     return continueHrNoteAfterDateResolved({
       phone, name, lang, history, summary: hrFlow.summary, summaryLocalized, topicLabel: hrFlow.topicLabel,
       actionPhrase: hrFlow.actionPhrase, actionKind: hrFlow.actionKind, createdAt: hrFlow.createdAt, datePhrase,
@@ -8887,9 +9151,19 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
   // flow).
   if (hrFlow.step === 'awaiting_manager_informed') {
     const t = text.trim();
-    const extracted = await extractPersonReference(t, { pendingQuestionLabel: HR_NOTE_SUDDEN_ASK_MANAGER_INFORMED[lang] || HR_NOTE_SUDDEN_ASK_MANAGER_INFORMED.english, history });
+    const pendingQuestionLabel = HR_NOTE_SUDDEN_ASK_MANAGER_INFORMED[lang] || HR_NOTE_SUDDEN_ASK_MANAGER_INFORMED.english;
+    const extracted = await extractPersonReference(t, { pendingQuestionLabel, history });
+    // LIVE INCIDENT FIX (2026-11, direct instruction, Attendance Requests
+    // point 3) - this step used to answer isAmbiguous AND every other
+    // unresolved reply with the same dead-end HR_FLOW_CONTEXT_CLARIFY line,
+    // unlike its sibling step below (awaiting_approval_obtained) which
+    // already uses handleUnclearFlowReply/handleUnresolvedPersonReference.
+    // That meant a genuinely new, unrelated HR request arriving here (e.g.
+    // "Ami kal 2nd half a asbo na") got silently swallowed as "didn't
+    // understand" instead of falling through to start its own new flow/card.
+    // Now matches the sibling step exactly.
     if (extracted.isAmbiguous) {
-      return { case: 'acknowledged', replyText: HR_FLOW_CONTEXT_CLARIFY[lang] || HR_FLOW_CONTEXT_CLARIFY.english, summaryForOwner: null, lang };
+      return handleUnclearFlowReply({ phone, name, hrFlow, lang });
     }
     if (extracted.personName) {
       const rephrased = fillHrNoteDatePlaceholder(enforceSuddenInformingVerb(await rephraseForThirdParty(hrFlow.summary, 'sudden', lang), lang), hrFlow.datePhrase);
@@ -8903,7 +9177,7 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
       await savePendingHrNoteFlow(phone, { summary: hrFlow.summary, summaryLocalized: hrFlow.summaryLocalized, topicLabel: hrFlow.topicLabel, actionPhrase: hrFlow.actionPhrase, lang, createdAt: hrFlow.createdAt, actionKind: 'sudden', datePhrase: hrFlow.datePhrase, step: 'awaiting_name' });
       return { case: 'acknowledged', replyText: HR_NOTE_ASK_NAME_ONLY[lang] || HR_NOTE_ASK_NAME_ONLY.english, summaryForOwner: null, lang };
     }
-    return { case: 'acknowledged', replyText: HR_FLOW_CONTEXT_CLARIFY[lang] || HR_FLOW_CONTEXT_CLARIFY.english, summaryForOwner: null, lang };
+    return handleUnresolvedPersonReference({ phone, name, hrFlow, lang, extracted, stepQuestion: pendingQuestionLabel });
   }
   // WFH/leave/half-day/off-day-duty FIX - "approval", not yet granted:
   // has the sender actually obtained it? A name given (even combined
@@ -11756,7 +12030,7 @@ function classifyTool() {
           dataRequestSummary: { type: 'string', description: 'Required only when wantsData is true - restate exactly what data they are asking for, in plain English, e.g. "current list of engineers", "headcount under Yashaswi Shroff", "Ayan Das\'s contact number". Omit when wantsData is false.' },
           personLookupName: { type: 'string', description: 'ONLY when wantsData is true AND the request is for ONE specific field about ONE named person (e.g. "Ayan Das er contact number ta dao", "R amake Ayan Das HR er contact no. ta debe?") - the person\'s name EXACTLY as given in THIS message, first name alone is fine (e.g. "Ayan"). NEVER guess, complete, or expand the name using an earlier message in the conversation history - if THIS message only says "Ayan", output "Ayan", even if an earlier message in this same chat was about a specific "Ayan Biswas" or "Ayan Das". Only carry a name forward from history when the sender explicitly refers back to the same person ("tar", "oi jon-er", "same person", "ওই person", "usi ka") - in that case output the name history already resolved. Omit entirely for any aggregate/list/count/headcount request (e.g. "engineers list", "headcount under X", "who reports to X") - those are never about one person\'s own personal field and must NOT set this.' },
           personLookupField: { type: 'string', enum: ['contact_number', 'general_details', 'other_field', 'forbidden_pii'], description: 'Required when personLookupName is given. "contact_number" ONLY for their phone/contact/mobile/WhatsApp number. "general_details" ONLY for their full name, designation/role, department, or how long they\'ve been with the company (tenure) - these are not sensitive and never need approval. "other_field" for any other single personal field that is NOT one of the 9 forbidden heads listed under "forbidden_pii" below - e.g. employee code/employee ID/emp no., mail id/personal email, emergency contact, OR that named person\'s OWN HOD/Reporting Doer (see personLookupFieldLabel\'s own description for the HOD-vs-Doer rule). Never use "other_field" for a DEPARTMENT\'s own HOD/Reporting Doer question with no specific person named (e.g. "HR dept er HOD ke?") - that has no personLookupName at all, see wantsData\'s own description. "forbidden_pii" ONLY for exactly these 9 heads, nothing else: Aadhaar, PAN, bank account/IFSC, salary/CTC, UAN number, ESIC/ESI number, home/permanent/present address, date of birth, blood group - these are NEVER shared regardless of approval. Employee code/ID is NOT forbidden_pii - it is always "other_field", never guess otherwise. When unsure whether a field is genuinely one of these exact 9 heads (e.g. a bank-related term you don\'t recognize) vs. a clearly different field (employee code, designation, location, tenure, etc.), choose "forbidden_pii" only for the genuinely ambiguous bank/salary-shaped case - never for something plainly unrelated like employee code. Whether you choose "other_field" OR "forbidden_pii", you MUST also set personLookupFieldLabel naming which exact field it is (see its own description) - which specific one of the 9 forbidden_pii heads was asked for genuinely matters downstream, even though every one of them is always refused the same way as far as you need to know.' },
-          personLookupFieldLabel: { type: 'string', description: 'Required whenever personLookupField is "other_field" OR "forbidden_pii" - name the specific field asked about, in a few words (e.g. "employee code", "mail id", "emergency contact", "Aadhaar", "PAN", "bank account", "UAN", "ESIC", "address", "date of birth", "blood group"). For that named person\'s OWN HOD/Reporting Doer specifically, decide by the SAME 3-way rule as the department-level version (see returnType\'s own description), by meaning not a fixed keyword list: (1) sender explicitly names the Doer/Reporting Doer ("Subhodeep kon doer er under a?", "Subhodeep kon doer ke report kore?") -> label "reporting doer". (2) sender explicitly names the HOD ("Subhodeep kon HOD er under a?") -> label "reporting manager". (3) sender names NEITHER, a plain "under"/"reports to" question with no HOD/Doer word at all ("Subhodeep kar under a?", "Subhodeep kake report kore?", "Subhodeep HR kake report kore?", "Subhodeep HR-er manager ke?", "X-er HOD ke?") -> DEFAULT to label "reporting manager" (never "reporting doer", never ask which one is meant). Omit personLookupFieldLabel only when personLookupField is "contact_number" or "general_details" - the field is already fully specified by the tag itself there, nothing more to name.' },
+          personLookupFieldLabel: { type: 'string', description: 'Required whenever personLookupField is "other_field" OR "forbidden_pii" - name the specific field asked about, in a few words (e.g. "employee code", "mail id", "emergency contact", "Aadhaar", "PAN", "bank account", "UAN", "ESIC", "address", "date of birth", "blood group"). For that named person\'s OWN HOD/Reporting Manager/Reporting Doer specifically (HOD and Reporting Manager are the SAME underlying field - only the reply WORDING differs, by meaning not a fixed keyword list): (1) sender explicitly names the Doer/Reporting Doer ("Subhodeep kon doer er under a?", "Subhodeep kon doer ke report kore?") -> label EXACTLY "reporting doer". (2) sender explicitly says HOD ("Subhodeep kon HOD er under a?", "X-er HOD ke?") -> label EXACTLY "HOD" (this exact casing/spelling, not "reporting manager"). (3) sender explicitly says manager/reporting manager ("Subhodeep ke report kore?" is NOT this case - only when the word manager/reporting-manager itself is used, e.g. "X-er reporting manager ke?", "X-er manager ke?") -> label EXACTLY "reporting manager". (4) sender names NONE of HOD/Doer/manager - a plain "under"/"reports to" question with no such word at all ("Subhodeep kar under a?", "Subhodeep kake report kore?", "Subhodeep HR kake report kore?") -> DEFAULT to label EXACTLY "HOD" (never "reporting manager", never "reporting doer", never ask which one is meant). Omit personLookupFieldLabel only when personLookupField is "contact_number" or "general_details" - the field is already fully specified by the tag itself there, nothing more to name.' },
           personLookupExtraFields: {
             type: 'array',
             description: 'Live bug fix (2026-11) - when the SAME message asks for MORE THAN ONE field about the SAME named person ("X-er contact no & employee code ki?", "X ar Y", "X, Y"), personLookupField/personLookupFieldLabel above capture only the FIRST field - every ADDITIONAL field goes here, one entry per field, same enum/label rules as above. NEVER drop a field: a message naming two or more fields about one person must have exactly (N-1) entries here for its N total fields. Omit entirely (or leave empty) when only one field was asked for - this is the common case.',
@@ -12958,7 +13232,7 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
         await clearPendingNameConfirm(phone);
         return resolveConfirmedPersonLookup({
           phone, name: senderLabel, candidate: pendingConfirm.candidate, isInactive: Boolean(pendingConfirm.isInactive),
-          personField: pendingConfirm.personField, fieldAliasKey: pendingConfirm.fieldAliasKey, fieldSpecsRaw: pendingConfirm.fieldSpecsRaw,
+          personField: pendingConfirm.personField, fieldAliasKey: pendingConfirm.fieldAliasKey, rawLabel: pendingConfirm.rawLabel, fieldSpecsRaw: pendingConfirm.fieldSpecsRaw,
           lang: pendingConfirm.lang, hadTypo: pendingConfirm.hadTypo, history
         });
       }
@@ -13036,7 +13310,7 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
           // the sender picked who they meant, so it must behave
           // identically rather than always falling back to an approval.
           if (fieldAlias) {
-            const resolvedField = await resolveSingleFieldForThirdParty({ phone, requesterLabel: senderLabel, candidate: resolved, lang: pendingDisambig.lang, hadTypo: pendingDisambig.hadTypo, fieldAlias, isContactNumber: false });
+            const resolvedField = await resolveSingleFieldForThirdParty({ phone, requesterLabel: senderLabel, candidate: resolved, lang: pendingDisambig.lang, hadTypo: pendingDisambig.hadTypo, fieldAlias: withResolvedLabel(fieldAlias, pendingDisambig.rawLabel), isContactNumber: false });
             finalized = resolvedField.outcome === 'restricted'
               ? { case: 'acknowledged', replyText: RESTRICTED_FIELD_BLOCK_REPLY[pendingDisambig.lang] || RESTRICTED_FIELD_BLOCK_REPLY.english, summaryForOwner: null, lang: pendingDisambig.lang }
               : resolvedField.outcome === 'sent'
@@ -15756,6 +16030,7 @@ module.exports = {
   queryDeliveryEvidence,
   countNotDeliveredToday,
   listDeliveryEvidenceForExport,
+  reconcileTodaysDeliveryEvidence,
   listDeliveryEvidence,
   alertOwnerDualChannel,
   archiveOldInboxLogEntriesIfNeeded,
@@ -15887,6 +16162,7 @@ module.exports = {
   // employee array, never fetch it themselves).
   resolveSiteAliasValues,
   resolveDepartmentOptions,
+  HR_QUERY_DEPARTMENT_UNRESOLVED,
   filterEmployeesForHrQuery,
   computeHodBreakdown,
   computeDoerBreakdown,
@@ -15956,6 +16232,7 @@ module.exports = {
   PERSON_REFERENCE_BACKREF_RE,
   HARD_BLOCKED_PERSON_FIELD_RE,
   resolveApprovalFieldAliasByLabel,
+  reportingManagerDisplayLabel,
   resolveApprovalFieldAliasByKey,
   // Exported for scripts/check-whatsapp-engine.js only - live review item
   // 4, the HR noting + confirmation flow.

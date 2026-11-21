@@ -1298,12 +1298,16 @@ scenario('HRQUERY: "Subhodeep HR kake report kore?" - ALWAYS confirms the person
     const d2 = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenHrQ5', firstName: 'ScenHrQ5', text: 'Haa', isGroup: false, history: [] });
     if (d2.case !== 'data_holding') return { pass: false, detail: 'expected case=data_holding after confirming, got: ' + d2.case + ' text=' + d2.replyText };
     const approval = pendingApprovalFor(await whatsappAssistant.listPendingApprovals(), phone);
-    const expected = "Subhodeep Kundu Chowdhury's reporting manager is Radha Biswas Bhattacharjee.";
+    // LIVE INCIDENT (2026-11, direct instruction) - "HOD and Reporting
+    // Manager are the same field... sender uses neither -> default label
+    // HOD" - "kake report kore" names neither HOD nor manager, so this
+    // now expects "HOD", never the old default "reporting manager".
+    const expected = "Subhodeep Kundu Chowdhury's HOD is Radha Biswas Bhattacharjee.";
     // Language may legitimately vary turn to turn (independent classify
     // calls) - accept any of the 3 exact templates for this one field.
     const expectedAny = [
-      'Subhodeep Kundu Chowdhury-er reporting manager holen Radha Biswas Bhattacharjee.',
-      'Subhodeep Kundu Chowdhury ke reporting manager Radha Biswas Bhattacharjee hain.',
+      'Subhodeep Kundu Chowdhury-er HOD holen Radha Biswas Bhattacharjee.',
+      'Subhodeep Kundu Chowdhury ke HOD Radha Biswas Bhattacharjee hain.',
       expected
     ];
     if (!approval || !expectedAny.includes(approval.preparedReplyText)) return { pass: false, detail: 'expected one of ' + JSON.stringify(expectedAny) + ', got: ' + JSON.stringify(approval && approval.preparedReplyText) };
@@ -1627,10 +1631,13 @@ scenario('LIVE BUG FIX (2026-11), HOD-vs-Doer rule - person-level: "Subhodeep ko
     const d2 = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenHodDoer4', firstName: 'ScenHodDoer4', text: 'Haa', isGroup: false, history: [] });
     if (d2.case !== 'data_holding') return { pass: false, detail: 'expected case=data_holding after confirming, got: ' + d2.case + ' text=' + d2.replyText };
     const approval = pendingApprovalFor(await whatsappAssistant.listPendingApprovals(), phone);
+    // LIVE INCIDENT (2026-11, direct instruction) - "sender says HOD ->
+    // reply says HOD" - this is now the whole point (it used to wrongly
+    // say "reporting manager" even for an explicit "HOD" ask).
     const expectedAny = [
-      real.name + '-er reporting manager holen ' + real.reportingManager + '.',
-      real.name + ' ke reporting manager ' + real.reportingManager + ' hain.',
-      real.name + "'s reporting manager is " + real.reportingManager + '.'
+      real.name + '-er HOD holen ' + real.reportingManager + '.',
+      real.name + ' ke HOD ' + real.reportingManager + ' hain.',
+      real.name + "'s HOD is " + real.reportingManager + '.'
     ];
     if (!approval || !expectedAny.includes(approval.preparedReplyText)) return { pass: false, detail: 'expected one of ' + JSON.stringify(expectedAny) + ', got: ' + JSON.stringify(approval && approval.preparedReplyText) };
     return { pass: true, detail: 'confirmed then answered correctly: ' + approval.preparedReplyText };
@@ -1651,13 +1658,47 @@ scenario('LIVE BUG FIX (2026-11), HOD-vs-Doer rule - person-level DEFAULT: "Subh
     const d2 = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenHodDoer5', firstName: 'ScenHodDoer5', text: 'Haa', isGroup: false, history: [] });
     if (d2.case !== 'data_holding') return { pass: false, detail: 'expected case=data_holding after confirming, got: ' + d2.case + ' text=' + d2.replyText };
     const approval = pendingApprovalFor(await whatsappAssistant.listPendingApprovals(), phone);
+    // LIVE INCIDENT (2026-11, direct instruction) - "sender uses neither
+    // -> default label HOD" (changed from the old default "reporting
+    // manager").
     const expectedAny = [
-      real.name + '-er reporting manager holen ' + real.reportingManager + '.',
-      real.name + ' ke reporting manager ' + real.reportingManager + ' hain.',
-      real.name + "'s reporting manager is " + real.reportingManager + '.'
+      real.name + '-er HOD holen ' + real.reportingManager + '.',
+      real.name + ' ke HOD ' + real.reportingManager + ' hain.',
+      real.name + "'s HOD is " + real.reportingManager + '.'
     ];
     if (!approval || !expectedAny.includes(approval.preparedReplyText)) return { pass: false, detail: 'expected the DEFAULT HOD answer, one of ' + JSON.stringify(expectedAny) + ', got: ' + JSON.stringify(approval && approval.preparedReplyText) };
     return { pass: true, detail: 'correctly defaulted to HOD: ' + approval.preparedReplyText };
+  } finally {
+    await cleanupHrDataQueryArtifacts(phone);
+  }
+});
+// LIVE INCIDENT (2026-11, direct instruction) - "HOD and Reporting
+// Manager are the same field... sender says reporting manager/manager ->
+// reply says Reporting Manager." The 3rd of the 3 wording cases (HOD
+// explicit and the neither-used default are already locked above) - the
+// one case the OLD system never distinguished from the default at all
+// (both used to say "reporting manager" either way), so this is the one
+// genuinely new real-model behavior this fix adds.
+scenario('LIVE INCIDENT (2026-11), direct instruction - person-level: "Subhodeep er reporting manager ke?" (explicit "manager"/"reporting manager") answers with "Reporting Manager", never "HOD"', async () => {
+  const phone = '910000002336';
+  await cleanupHrDataQueryArtifacts(phone);
+  try {
+    const { employees } = await employeeService.getEmployeeData();
+    const real = employees.find((e) => e.employeeId === 'AR000356');
+    if (!real || !real.reportingManager) return { pass: false, detail: 'live data had no real reporting manager on file for Subhodeep (AR000356) - cannot verify this scenario right now' };
+    const d1 = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenHodMgr1', firstName: 'ScenHodMgr1', text: 'Subhodeep er reporting manager ke?', isGroup: false, history: [] });
+    const expectedConfirm = 'Apni ki ' + real.name + ' (' + whatsappAssistant.naturalizeDirectoryValue(real.department) + ')-er kotha bolchhen?';
+    if (d1.case !== 'acknowledged' || coreText(d1.replyText) !== expectedConfirm) return { pass: false, detail: 'expected the exact confirm question "' + expectedConfirm + '", got (case=' + d1.case + '): ' + d1.replyText };
+    const d2 = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenHodMgr1', firstName: 'ScenHodMgr1', text: 'Haa', isGroup: false, history: [] });
+    if (d2.case !== 'data_holding') return { pass: false, detail: 'expected case=data_holding after confirming, got: ' + d2.case + ' text=' + d2.replyText };
+    const approval = pendingApprovalFor(await whatsappAssistant.listPendingApprovals(), phone);
+    const expectedAny = [
+      real.name + '-er Reporting Manager holen ' + real.reportingManager + '.',
+      real.name + ' ke Reporting Manager ' + real.reportingManager + ' hain.',
+      real.name + "'s Reporting Manager is " + real.reportingManager + '.'
+    ];
+    if (!approval || !expectedAny.includes(approval.preparedReplyText)) return { pass: false, detail: 'expected one of ' + JSON.stringify(expectedAny) + ', got: ' + JSON.stringify(approval && approval.preparedReplyText) };
+    return { pass: true, detail: 'confirmed then answered correctly: ' + approval.preparedReplyText };
   } finally {
     await cleanupHrDataQueryArtifacts(phone);
   }

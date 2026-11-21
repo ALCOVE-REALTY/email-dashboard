@@ -1850,6 +1850,7 @@ body { background: var(--wi-bg); }
 .wf-dlog-older-retry { border: 1.5px solid var(--wi-border-2); background: var(--wi-surface); color: var(--wi-primary-700); font-size: 0.8rem; font-weight: 700; padding: 6px 14px; border-radius: 999px; }
 .wf-dlog-export-format-row { display: flex; gap: 16px; margin-top: 12px; }
 .wf-dlog-export-format-opt { display: flex; align-items: center; gap: 6px; font-size: 0.82rem; font-weight: 700; color: var(--wi-ink); }
+.wf-dlog-reconcile-btn { display: block; width: 100%; margin: 2px 0 10px; padding: 8px 10px; border: 1.5px dashed var(--wi-border-2); background: transparent; color: var(--wi-primary-700); font-size: 0.78rem; font-weight: 700; border-radius: 10px; text-align: center; }
 
 /* Task 6 - "Action needed" unified inbox */
 .wf-action-needed-chips { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 14px; }

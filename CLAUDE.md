@@ -3693,7 +3693,21 @@ MEANING, never a code-side regex/keyword list over the raw message:**
   gained a second possible label, `"reporting doer"`, alongside the existing
   `"reporting manager"` (which still covers both the explicit-HOD case AND the
   default-neither case, unchanged - rule 3's default was already its existing
-  behavior, just made explicit in its own schema description now). A NEW
+  behavior, just made explicit in its own schema description now). **UPDATE
+  (2026-11, direct instruction, live incident - "HOD and Reporting Manager are
+  the same field... use the sender's own term in the reply")**: the single
+  `"reporting manager"` label above was itself wrong for the explicit-HOD case -
+  it always rendered the word "reporting manager" even when the sender said
+  "HOD". Split into two literal labels the model now emits directly (never a
+  code-side keyword scan over the sender's raw text): `"HOD"` for the explicit-
+  HOD case AND the default-neither case (default changed from "reporting
+  manager" to "HOD"), `"reporting manager"` only when the sender explicitly
+  said manager/reporting manager. `reportingManagerDisplayLabel(rawLabel)`
+  turns that into the literal display term ("HOD" or "Reporting Manager"),
+  threaded onto a per-call copy of the alias (`withResolvedLabel`, never
+  mutating the shared `APPROVAL_FIELD_ALIASES` entry) through every lookup
+  path (direct/confirm-then-resolve/disambiguate-then-resolve/combined-fields)
+  so `outgoingLine`/`lookupSpecLabel` render the sender's own term. A NEW
   `APPROVAL_FIELD_ALIASES` entry (`key: 'reportingDoer'`, `match: /\bdoer\b/i`)
   reads `c.reportingDoer`, added ALONGSIDE the existing `reportingManager` alias
   without editing it at all - the two resolve to different aliases/fields and

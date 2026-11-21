@@ -412,6 +412,11 @@
             <span class="wf-dlog-stat-value danger" id="hrDlogNotDeliveredCount">0</span>
           </div>
         </div>
+        <!-- LIVE INCIDENT (2026-11, direct instruction) - "correct
+             today's wrongly-marked entries if possible". Re-checks the
+             real gateway feed for today's flagged entries and fixes any
+             that actually did arrive. -->
+        <button type="button" class="wf-dlog-reconcile-btn" id="hrDlogReconcileBtn">Re-check today's flagged entries</button>
         <div class="wf-rem-chips" id="hrDlogChips">
           <button type="button" class="wf-rem-chip" data-filter="all" aria-pressed="true">All</button>
           <button type="button" class="wf-rem-chip" data-filter="not_delivered" aria-pressed="false">Not delivered</button>

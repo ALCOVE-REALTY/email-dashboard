@@ -663,12 +663,53 @@ async function checkTopLevelSettingsSubpageFrame(page, pageLabel, viewId, baseli
   await page.waitForTimeout(300);
   check('Delivery log page opens with the right header title', (await page.locator('#hrCommsHeadTitle').textContent()).trim() === 'Delivery log');
   check('Delivery log: export icon is visible in the header for this page', await page.locator('#hrCommsHeadExportBtn').isVisible());
+  // LIVE INCIDENT (2026-11, direct instruction) - "the download icon does
+  // nothing on tap": openDlogExportSheet only ever toggled the `hidden`
+  // attribute, never the `.open` class .wf-ai-sheet/.wf-ai-sheet-backdrop
+  // both need (workforce.css keeps them at opacity:0/translateY(100%)
+  // until `.open` is added) - isVisible() alone doesn't catch this (it
+  // ignores opacity/transform), so this asserts the `open` class itself
+  // actually lands on both elements after a real tap, and that closing it
+  // (via the backdrop) removes it again.
+  await page.click('#hrCommsHeadExportBtn');
+  await page.waitForTimeout(100);
+  check('Delivery log: tapping the export icon actually opens the sheet (the .open class lands on both the sheet and its backdrop, not just the hidden attribute)',
+    await page.locator('#hrDlogExportSheet').evaluate((el) => el.classList.contains('open'))
+    && await page.locator('#hrDlogExportBackdrop').evaluate((el) => el.classList.contains('open')));
+  await page.click('#hrDlogExportBackdrop');
+  await page.waitForTimeout(400);
+  check('Delivery log: tapping the backdrop closes the export sheet again (.open removed)',
+    !(await page.locator('#hrDlogExportSheet').evaluate((el) => el.classList.contains('open'))));
   check('Delivery log: "Delivered today" stat shows the real mocked count', (await page.locator('#hrDlogDeliveredCount').textContent()).trim() === '46');
   check('Delivery log: "Not delivered" stat shows the real mocked count', (await page.locator('#hrDlogNotDeliveredCount').textContent()).trim() === '1');
   const dlogListText = await page.locator('#hrDlogList').textContent();
   check('Delivery log: a Not delivered card shows its real message text and detail line', dlogListText.includes('Tathagata Sengupta') && dlogListText.includes('2 retries failed'));
   check('Delivery log: a Delivered card shows "Confirmed in gateway feed"', dlogListText.includes('Confirmed in gateway feed'));
   check('Delivery log: the Not delivered card has a visible Resend button', await page.locator('.wf-dlog-card.not-delivered .wf-dlog-resend-btn').isVisible());
+  // LIVE INCIDENT (2026-11, direct instruction) - "20 Nov shows empty
+  // although it had cards yesterday": a timed-out/erroring read
+  // (workforceRoutes.js's own stale:true fallback) used to render
+  // IDENTICALLY to a genuinely empty day whenever there was no cache to
+  // fall back to - always true for a date-filtered view. Re-routes the
+  // SAME endpoint to the exact stale:true shape the route's own catch
+  // produces, then switches to a different date, and asserts the distinct
+  // "couldn't load" retry message appears instead of "No messages for
+  // this date" (which must only ever mean a REAL empty day).
+  await page.route('**/api/workforce/hr-assistant/delivery-log?*', (route) => {
+    route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify({
+        items: [], hasMore: false, total: 0, stats: { deliveredCount: 0, notDeliveredCount: 0 }, stale: true, error: 'Delivery log read timed out'
+      })
+    });
+  });
+  await page.evaluate(() => {
+    const input = document.getElementById('hrDlogDateInput');
+    if (input) { input.value = '2026-11-20'; input.dispatchEvent(new Event('change', { bubbles: true })); }
+  });
+  await page.waitForTimeout(300);
+  const dlogStaleListText = await page.locator('#hrDlogList').textContent();
+  check('Delivery log: a timed-out/erroring read on a date-filtered view shows a distinct "couldn\'t load, retry" message - never the same "No messages for this date" text a genuinely empty day gets',
+    dlogStaleListText.includes('Retry') && !dlogStaleListText.includes('No messages for this date'));
   await page.click('#hrCommsBackBtn');
   await page.waitForTimeout(200);
   check('Delivery log: back button returns to Conversations without a blank page', await page.locator('#hrCommsWaAllPage').isVisible());

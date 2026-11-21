@@ -168,8 +168,29 @@ const TODAY_PAGES = [
   // task's fix was showActionNeeded() actually READING that warm cache
   // instead of still blocking on a fresh fetch first.
   { name: 'Action needed', setup: WA_ALL_SETUP, tapSel: '#hrActionNeededBtn', viewId: 'hrActionNeededPage', listId: 'hrActionNeededList' },
-  { name: 'Templates', setup: WA_ALL_SETUP, tapSel: '#hrTemplatesBtn', viewId: 'hrTemplatesPage', listId: 'hrTemplatesList' }
+  { name: 'Templates', setup: WA_ALL_SETUP, tapSel: '#hrTemplatesBtn', viewId: 'hrTemplatesPage', listId: 'hrTemplatesList' },
+  // Added (2026-11, direct instruction - "extend the open-speed check to
+  // all menu pages") - was missing from this file entirely even though
+  // every other WA_ALL_SETUP sibling (Templates/Attendance Requests/
+  // Action needed) was already covered.
+  { name: 'Delivery log', setup: WA_ALL_SETUP, tapSel: '#hrDeliveryLogBtn', viewId: 'hrDeliveryLogPage', listId: 'hrDlogList' }
 ];
+
+// LIVE INCIDENT follow-up (2026-11, direct instruction) - "persistent
+// cache... same pattern as AI usage / Delivery log" for every SUBH
+// Settings/Today's Updates page. Every page above already proves it
+// opens instantly once ambiently prefetched/warmed WITHIN one tab
+// session - that was always true before this pass (the in-memory
+// pageDataCache/aiUsageSummaryCache caches). What's NEW is surviving a
+// HARD REFRESH (a fresh page load, in-memory caches wiped, nothing
+// ambiently prefetched yet) - RELOAD_PAGES lists every page whose
+// persisted (localStorage) cache should make even a refresh-then-
+// immediately-tap open instantly, straight from cold. Excludes the two
+// Create-Automated-Task/Create-Workflow pages (contentExempt above,
+// unchanged reason: their own employee directory is never cached by
+// design) since there is nothing persisted for them to prove.
+const RELOAD_SETTINGS_PAGES = SETTINGS_PAGES;
+const RELOAD_TODAY_PAGES = TODAY_PAGES.filter((p) => !p.contentExempt);
 
 // A single real workflow row (list + its own /runs response) - lets
 // "Automated Workflows" render a real card, confirming the list page
@@ -299,6 +320,86 @@ async function measureOneTodayPage(browser, base, pageDef) {
   return { shellMs, contentMs };
 }
 
+// LIVE INCIDENT follow-up (2026-11, direct instruction) - "persistent
+// cache... for every menu page... so pages show instantly even after a
+// hard refresh." Opens the page once for real (so its own live fetch
+// genuinely lands and writes the persisted/localStorage cache), reloads
+// the SAME browser context (localStorage survives a reload, same origin,
+// unlike a brand-new context), then repeats the tap sequence WITHOUT
+// waiting for the network to go idle this time - the mocked API still
+// takes the full NETWORK_DELAY_MS, so a pass here can only mean the page
+// actually rendered from the persisted cache, never from a lucky-fast
+// live fetch.
+async function measureSettingsPageAfterReload(browser, base, pageDef) {
+  const context = await browser.newContext({ viewport: { width: 384, height: 800 } });
+  const page = await context.newPage();
+  await mockRoutes(page);
+  async function openIt() {
+    await page.click('#menuBtn');
+    await page.waitForSelector('[data-view="subhSettings"]', { state: 'visible' });
+    await page.click('[data-view="subhSettings"]');
+    await page.waitForSelector('#' + pageDef.btnId, { state: 'visible' });
+  }
+  await page.goto(base + '/workforce.html', { waitUntil: 'domcontentloaded' });
+  await openIt();
+  await page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {});
+  await page.click('#' + pageDef.btnId);
+  // Let the real content actually land once, for real, before refreshing.
+  await waitForMs(page, { t0: await page.evaluate(() => performance.now()), viewId: pageDef.viewId, listId: pageDef.listId, mode: 'content' });
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await openIt();
+  const t0 = await page.evaluate(() => performance.now());
+  // A raw DOM click (never page.click()) for THIS specific measured tap -
+  // found live, investigating this exact test: with prefetchSubhSettingsAll's
+  // own (mocked) fetches deliberately still in flight (the whole point of
+  // this pass - no networkidle wait beforehand), their badge/count updates
+  // landing nearby kept making Playwright's own actionability wait
+  // ("is this element done moving/settling?") repeatedly defer the click's
+  // dispatch - exactly the SAME page.click()-sensitivity already documented
+  // in this file's own MACHINE-LOAD SENSITIVITY comment for Reminders/
+  // WhatsApp conversations, just hit far more broadly here since this pass
+  // deliberately skips the wait that normally shields every other
+  // measurement in this file from it. Confirmed directly: the product code
+  // itself renders from the persisted cache in ~17ms; only page.click()'s
+  // own wait was ever slow. A raw dispatch still exercises the exact same
+  // click handler a real tap would, just without Playwright's own
+  // stability heuristic in the way of what this is actually measuring.
+  await page.evaluate((id) => document.getElementById(id).click(), pageDef.btnId);
+  const shellMs = await waitForMs(page, { t0, viewId: pageDef.viewId, listId: pageDef.listId, mode: 'shell' });
+  const contentMs = await waitForMs(page, { t0, viewId: pageDef.viewId, listId: pageDef.listId, mode: 'content' });
+  await context.close();
+  return { shellMs, contentMs };
+}
+async function measureTodayPageAfterReload(browser, base, pageDef) {
+  const context = await browser.newContext({ viewport: { width: 384, height: 800 } });
+  const page = await context.newPage();
+  await mockRoutes(page);
+  async function openIt() {
+    if (pageDef.idleAfterGoto) await page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {});
+    for (const sel of pageDef.setup) {
+      await page.waitForSelector(sel, { state: 'visible' });
+      await page.click(sel);
+    }
+  }
+  await page.goto(base + '/workforce.html', { waitUntil: 'domcontentloaded' });
+  await openIt();
+  await page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {});
+  await page.waitForSelector(pageDef.tapSel, { state: 'visible' });
+  await page.click(pageDef.tapSel);
+  await waitForMs(page, { t0: await page.evaluate(() => performance.now()), viewId: pageDef.viewId, listId: pageDef.listId, mode: 'content' });
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await openIt();
+  await page.waitForSelector(pageDef.tapSel, { state: 'visible' });
+  const t0 = await page.evaluate(() => performance.now());
+  // Raw DOM click for this measured tap - see measureSettingsPageAfterReload's
+  // own comment for why (same page.click() actionability-wait sensitivity).
+  await page.evaluate((sel) => document.querySelector(sel).click(), pageDef.tapSel);
+  const shellMs = await waitForMs(page, { t0, viewId: pageDef.viewId, listId: pageDef.listId, mode: 'shell' });
+  const contentMs = await waitForMs(page, { t0, viewId: pageDef.viewId, listId: pageDef.listId, mode: 'content' });
+  await context.close();
+  return { shellMs, contentMs };
+}
+
 (async () => {
   const server = await startStaticServer();
   const base = 'http://127.0.0.1:' + server.address().port;
@@ -326,6 +427,28 @@ async function measureOneTodayPage(browser, base, pageDef) {
       if (!pageDef.contentExempt) {
         check(pageDef.name + ': first real content visible within ' + SHELL_AND_CONTENT_BUDGET_MS + 'ms on every run (no blocking fetch before first paint)', worstContent >= 0 && worstContent <= SHELL_AND_CONTENT_BUDGET_MS, 'worst: ' + Math.round(worstContent) + 'ms');
       }
+    }
+
+    // LIVE INCIDENT follow-up (2026-11, direct instruction) - "survives a
+    // hard refresh" pass. A single run per page (not RUNS=3) - this is a
+    // binary signal (rendered from the persisted cache vs. waited on the
+    // still-500ms-delayed mocked live fetch), far less sensitive to
+    // incidental machine load than the live-race timings above, so one
+    // run is already a reliable proof either way.
+    console.log('-'.repeat(70));
+    console.log('After a hard refresh (reload, same browser context - localStorage survives, in-memory caches do not)');
+    console.log('-'.repeat(70));
+    for (const pageDef of RELOAD_SETTINGS_PAGES) {
+      const r = await measureSettingsPageAfterReload(browser, base, pageDef);
+      console.log(pageDef.name + ' (after refresh): shell ' + Math.round(r.shellMs) + 'ms, content ' + Math.round(r.contentMs) + 'ms');
+      check(pageDef.name + ': shell visible within ' + SHELL_AND_CONTENT_BUDGET_MS + 'ms after a hard refresh', r.shellMs >= 0 && r.shellMs <= SHELL_AND_CONTENT_BUDGET_MS, 'got: ' + Math.round(r.shellMs) + 'ms');
+      check(pageDef.name + ': first real content visible within ' + SHELL_AND_CONTENT_BUDGET_MS + 'ms after a hard refresh (rendered from the PERSISTED cache, not the still-delayed live fetch)', r.contentMs >= 0 && r.contentMs <= SHELL_AND_CONTENT_BUDGET_MS, 'got: ' + Math.round(r.contentMs) + 'ms');
+    }
+    for (const pageDef of RELOAD_TODAY_PAGES) {
+      const r = await measureTodayPageAfterReload(browser, base, pageDef);
+      console.log(pageDef.name + ' (after refresh): shell ' + Math.round(r.shellMs) + 'ms, content ' + Math.round(r.contentMs) + 'ms');
+      check(pageDef.name + ': shell visible within ' + SHELL_AND_CONTENT_BUDGET_MS + 'ms after a hard refresh', r.shellMs >= 0 && r.shellMs <= SHELL_AND_CONTENT_BUDGET_MS, 'got: ' + Math.round(r.shellMs) + 'ms');
+      check(pageDef.name + ': first real content visible within ' + SHELL_AND_CONTENT_BUDGET_MS + 'ms after a hard refresh (rendered from the PERSISTED cache, not the still-delayed live fetch)', r.contentMs >= 0 && r.contentMs <= SHELL_AND_CONTENT_BUDGET_MS, 'got: ' + Math.round(r.contentMs) + 'ms');
     }
   } finally {
     await browser.close();

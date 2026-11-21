@@ -17,6 +17,7 @@ const fullStoreBackupService = require('./aiAssistant/fullStoreBackupService');
 const settingsHealthCheck = require('./aiAssistant/settingsHealthCheck');
 const togetherWeCanService = require('./aiAssistant/togetherWeCanService');
 const systemHealthMonitor = require('./aiAssistant/systemHealthMonitor');
+const attendanceRequestService = require('./aiAssistant/attendanceRequestService');
 
 // Lowered 60 -> 15 after a real live incident: a reply that should have
 // gone out within ~60s took minutes, partly because the base poll
@@ -359,6 +360,19 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
       await whatsappAssistant.checkHrConfirmationNudges(new Date());
     } catch (err) {
       log.error('[whatsapp-assistant] HR confirmation nudge check failed: ' + err.message);
+    }
+    // LIVE INCIDENT (2026-11, direct instruction) - "requests whose date
+    // has passed... or that have waited beyond the end of that working
+    // day for the employee's answer close automatically... never
+    // mentioned again in replies." Same cheap, idempotent-check
+    // philosophy as every other job on this tick - a record only ever
+    // closes once (derivedStatus already excludes anything not
+    // 'in_progress' from being checked again).
+    try {
+      const result = await attendanceRequestService.closeStaleRecords(Date.now());
+      if (result.closed) log.log('[whatsapp-assistant] attendance request stale sweep: closed ' + result.closed);
+    } catch (err) {
+      log.error('[whatsapp-assistant] attendance request stale sweep failed: ' + err.message);
     }
     // SUBH Automated Tasks - runs any active task whose schedule is due,
     // deterministically against current data (no AI at run time). Same

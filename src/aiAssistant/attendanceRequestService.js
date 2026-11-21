@@ -133,7 +133,6 @@ async function listAllRecords() {
 // note-flow state machine as `createdAt`, so it is already the true
 // "Received" instant, not re-derived here).
 async function recordStep1Received({ phone, senderName, summary, topicLabel, receivedAt }) {
-  const employeeService = require('../employeeService');
   const whatsapp = require('../whatsappService');
   // Task 1 (2026-11) LIVE BUG FIX: senderName can be the literal
   // placeholder "The sender" (whatsappAssistant's own generic fallback
@@ -146,10 +145,19 @@ async function recordStep1Received({ phone, senderName, summary, topicLabel, rec
   let employeeName = (senderName && senderName !== 'The sender') ? senderName : null;
   let employeeId = null, department = null;
   try {
-    const { employees } = await employeeService.getEmployeeData();
-    const normalized = whatsapp.normalizePhone(phone);
-    const emp = employees.find((e) => e.contactNumber && whatsapp.normalizePhone(e.contactNumber) === normalized);
-    if (emp) { employeeName = emp.name; employeeId = emp.employeeId || null; department = emp.department || null; }
+    // LIVE INCIDENT (2026-11, direct instruction) - "use the same
+    // identity everywhere so cards, flows and replies match." This used
+    // to be its own plain contactNumber lookup here, which never knew
+    // about SUBH_TEST_NUMBERS - a request from the owner's own TEST
+    // number (not his real registered contactNumber) resolved to NO
+    // employee at all here, even though the rest of the pipeline
+    // (findEmployeeByPhone, used throughout whatsappAssistant.js)
+    // already correctly resolves that same test number to the owner's
+    // real record. Reuses that SAME function directly now, so this
+    // card's own identity can never drift from what the real flow
+    // already decided the sender is.
+    const found = await require('./whatsappAssistant').findEmployeeByPhone(phone).catch(() => null);
+    if (found && found.emp) { employeeName = found.emp.name; employeeId = found.emp.employeeId || null; department = found.emp.department || null; }
   } catch (err) { /* best effort - the sender's own classified name still shows */ }
   const id = newId();
   const normalizedPhone = whatsapp.normalizePhone(phone);
@@ -179,7 +187,16 @@ async function recordStep1Received({ phone, senderName, summary, topicLabel, rec
 // independent guess. Additive/backward-compatible: a record this is never
 // called for (every flow that predates this feature) simply keeps its
 // original regex-guessed requestDates forever, exactly as before.
-async function recordDateResolved(phone, requestDatesDisplay) {
+// LIVE INCIDENT (2026-11, direct instruction) - "requests whose date has
+// passed... close automatically." requestDateEndTs (added here, additive
+// - a record from before this fix simply has none and is never auto-
+// closed on this criterion) is the real resolved date's own END-of-day
+// instant, computed ONCE by the caller (whatsappAssistant.js's own
+// resolveHrNoteDate output, which already has the real y/m/d - see that
+// call site's own comment) - never re-parsed from the human-readable
+// requestDatesDisplay string here, which can be a range/no-year "D Mon"
+// phrase not safely reversible back into an exact instant.
+async function recordDateResolved(phone, requestDatesDisplay, requestDateEndTs) {
   if (!requestDatesDisplay) return null;
   const whatsapp = require('../whatsappService');
   const redis = getClient();
@@ -188,7 +205,7 @@ async function recordDateResolved(phone, requestDatesDisplay) {
   let id;
   try { id = await redis.get(BY_NOTEFLOW_PHONE_PREFIX + normalized); } catch (err) { return null; }
   if (!id) return null;
-  await updateRecord(id, { requestDates: requestDatesDisplay, requestDatesResolved: true });
+  await updateRecord(id, { requestDates: requestDatesDisplay, requestDatesResolved: true, requestDateEndTs: requestDateEndTs || null });
   return id;
 }
 // Step 2 - called from finalizeHrNoteThirdParty, the single point where
@@ -258,11 +275,15 @@ async function recordStep4And5Decision(confirmationId, decision) {
 
 // ---------------- Derived status (for display/filtering) ----------------
 // 'completed' is set directly by recordStep4And5Decision; 'cancelled' by
-// recordBlockedAtApprover or an explicit owner Close; everything else is
-// derived here so "Expired" never needs its own background sweep.
+// recordBlockedAtApprover or an explicit owner Close; 'stale_closed' by
+// closeStaleRecords (2026-11, direct instruction - "close automatically...
+// never mentioned again") - a THIRD, distinct terminal state so the card
+// can honestly say "Closed – no reply" rather than the owner-initiated
+// "Cancelled" wording; everything else is derived here so "Expired" never
+// needs its own background sweep.
 const EXPIRE_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
 function derivedStatus(record) {
-  if (record.status === 'completed' || record.status === 'cancelled') return record.status;
+  if (record.status === 'completed' || record.status === 'cancelled' || record.status === 'stale_closed') return record.status;
   if (record.managerAskedAt && Date.now() - record.managerAskedAt > EXPIRE_AFTER_MS) return 'expired';
   return 'in_progress';
 }
@@ -270,6 +291,7 @@ function currentStepLabel(record) {
   const status = derivedStatus(record);
   if (status === 'completed') return 'Employee informed';
   if (status === 'cancelled') return 'Cancelled';
+  if (status === 'stale_closed') return 'Closed – no reply';
   if (status === 'expired') return 'Expired';
   if (!record.approverNamedAt) return 'Approver named';
   if (!record.managerAskedAt) return 'Manager asked';
@@ -327,11 +349,95 @@ async function remindRecord(id) {
 }
 
 // ---------------- Close (owner-triggered, manual) ----------------
+// LIVE INCIDENT (2026-11, direct instruction) - "Close on this page does
+// not clear the flow state SUBH's WhatsApp pipeline uses... make it ONE
+// source of truth." This used to only ever update THIS audit record -
+// attendanceRequestService is explicitly documented (see this file's own
+// header) as "a NEW, additive log... otherwise completely independent"
+// from the real HR-note-flow/confirmation state machine, so the real
+// flow (PENDING_HR_NOTE_FLOW_PREFIX / the hrConfirmation record) stayed
+// open, and the reply pipeline kept treating the sender as still having
+// an unanswered question or a manager still being waited on - exactly
+// the "Ar apni ager proshno-r uttor ekhono denni..." symptom reported.
+// Closing a card here now ALSO closes whichever real state it's linked
+// to, via the SAME functions the (separate) "Open flows" owner UI
+// already uses for this - never a second, duplicated close
+// implementation. Both calls are safe no-ops if that state is already
+// gone (natural resolution, a prior close, or TTL expiry), so this is
+// safe to attempt unconditionally regardless of the record's own current
+// status.
+// Shared by both the owner's manual Close and the automatic stale sweep
+// below - the ONE place that actually closes the real underlying state,
+// never duplicated.
+async function closeRealFlowState(record) {
+  const whatsappAssistant = require('./whatsappAssistant');
+  if (record.linkedConfirmationId) {
+    await whatsappAssistant.closeOpenHrConfirmation(record.linkedConfirmationId).catch(() => {});
+  } else if (record.senderPhone) {
+    await whatsappAssistant.closeOpenHrNoteFlow(record.senderPhone).catch(() => {});
+  }
+}
 async function closeRecord(id) {
   const record = await getRecord(id);
   if (!record) return { ok: false, error: 'That request no longer exists.' };
+  await closeRealFlowState(record);
   await updateRecord(id, { status: 'cancelled' });
   return { ok: true };
+}
+// ---------------- Stale auto-close (2026-11, direct instruction) ----------------
+// "requests whose date has passed... or that have waited beyond the end
+// of that working day for the employee's answer close automatically
+// (status 'Closed – no reply') and are never mentioned again in
+// replies." Two independent criteria, either one closes a record:
+//   1. requestDateEndTs (the real resolved event date's own end-of-day
+//      instant - see hrNoteResolvedEndOfDayTs in whatsappAssistant.js)
+//      has passed. Only set for a record whose date was ever actually
+//      resolved - a record with no resolved date is never auto-closed on
+//      this criterion (never guessed).
+//   2. Still waiting on the SENDER's own answer (waitingOnLabel.who ===
+//      'sender' - approver not yet named) past the end of the IST
+//      working day the wait began on.
+// Reuses closeRealFlowState so a stale-closed record is REALLY closed in
+// the pipeline too, never just relabeled here while the real flow stays
+// open underneath (the same gap point 1's manual-Close fix addresses).
+// Called from whatsappPollScheduler.js's own maintenance tick, same
+// cheap-idempotent-check-every-tick philosophy as every other job there.
+const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+function istEndOfWorkingDay(ts) {
+  const reminderService = require('./reminderService');
+  const { year, month, day } = reminderService.istParts(new Date(ts));
+  // End of the IST CALENDAR day (23:59 IST) - "that working day" means
+  // the day the wait started on, not a fixed business-hours cutoff; a
+  // request filed at 20:00 still gets until midnight that same day
+  // before it's considered stale, never cut short mid-evening.
+  return Date.UTC(year, month - 1, day, 23, 59, 0) - IST_OFFSET_MS;
+}
+// `onlyIds` - test-only scoping seam (production/the scheduler always
+// omits it, sweeping every record): lets a test check this sweep's logic
+// against just ITS OWN fixture record(s) without risking a side effect
+// on some OTHER, unrelated test's own attendance-request/HR-note-flow
+// fixture elsewhere in this same huge shared-store test suite.
+async function closeStaleRecords(now, onlyIds) {
+  now = now || Date.now();
+  const all = onlyIds ? (await Promise.all(onlyIds.map(getRecord))).filter(Boolean) : await listAllRecords();
+  let closed = 0;
+  for (const record of all) {
+    if (derivedStatus(record) !== 'in_progress') continue;
+    let reason = null;
+    if (record.requestDateEndTs && now > record.requestDateEndTs) {
+      reason = 'date_passed';
+    } else {
+      const waiting = waitingOnLabel(record);
+      if (waiting && waiting.who === 'sender' && waiting.since && now > istEndOfWorkingDay(waiting.since)) {
+        reason = 'no_reply_by_end_of_day';
+      }
+    }
+    if (!reason) continue;
+    await closeRealFlowState(record);
+    await updateRecord(record.id, { status: 'stale_closed', staleCloseReason: reason });
+    closed++;
+  }
+  return { closed };
 }
 
 // ---------------- Backfill from existing flows in the store ----------------
@@ -449,7 +555,7 @@ module.exports = {
   saveRecord, getRecord, updateRecord, listAllRecords,
   recordStep1Received, recordDateResolved, recordStep2ApproverNamed, recordStep3ManagerAsked, recordBlockedAtApprover, recordStep4And5Decision,
   derivedStatus, currentStepLabel, waitingOnLabel, monthKeyOf,
-  listForMonth, remindRecord, closeRecord, backfillFromExisting,
+  listForMonth, remindRecord, closeRecord, closeStaleRecords, backfillFromExisting,
   exportColumns, exportRows,
   REQUEST_TYPE_CATEGORIES
 };

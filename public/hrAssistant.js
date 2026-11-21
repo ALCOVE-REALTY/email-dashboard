@@ -152,6 +152,7 @@
   const deliveryLogOlderSpinner = document.getElementById('hrDlogOlderSpinner');
   const deliveryLogOlderText = document.getElementById('hrDlogOlderText');
   const deliveryLogOlderRetryBtn = document.getElementById('hrDlogOlderRetryBtn');
+  const deliveryLogReconcileBtn = document.getElementById('hrDlogReconcileBtn');
   const deliveryLogExportBackdrop = document.getElementById('hrDlogExportBackdrop');
   const deliveryLogExportSheet = document.getElementById('hrDlogExportSheet');
   const deliveryLogExportFrom = document.getElementById('hrDlogExportFrom');
@@ -1672,7 +1673,77 @@
   // tree (see CLAUDE.md's own standing rule); workflows itself pre-dates
   // this pass (already read/written elsewhere) but was never listed here -
   // added purely for documentation, no behaviour change.
-  const pageDataCache = { comms: null, commsAt: 0, reminders: new Map(), automations: null, workflows: null, openFlows: null, convos: new Map(), siteAliases: null, deptAliases: null, companyDetails: null, letterSettings: null, letterFields: new Map(), history: null, dataBackups: null, settingsHistory: null, holidays: null, dataAccess: null, waAllFirst: null, attn: new Map(), templates: null, workflowDetail: new Map() };
+  // LIVE INCIDENT (2026-11, direct instruction) - "keep a persistent
+  // cache in the browser (versioned) for every menu page's last data...
+  // pages show instantly even after a hard refresh." pageDataCache (and
+  // aiUsageSummaryCache) already make the SECOND open of a page in the
+  // same tab instant - a hard refresh wipes them, which is exactly when
+  // the owner is most likely to hit a slow/failing server underneath
+  // (the real incident this traces to). This tiny versioned localStorage
+  // wrapper is the missing persistence layer - a bad/old/corrupt entry
+  // (or a private-browsing tab that throws on access) just falls through
+  // to the existing live-fetch-with-skeleton behavior, never a hard
+  // failure.
+  const PERSISTED_CACHE_VERSION = 'v1';
+  function readPersistedCache(key) {
+    try {
+      const raw = localStorage.getItem('subh-cache-' + PERSISTED_CACHE_VERSION + '-' + key);
+      return raw ? JSON.parse(raw) : null;
+    } catch (err) { return null; }
+  }
+  function writePersistedCache(key, value) {
+    try { localStorage.setItem('subh-cache-' + PERSISTED_CACHE_VERSION + '-' + key, JSON.stringify(value)); } catch (err) { /* private tab, quota, etc - fine to skip */ }
+  }
+  function clearPersistedCache(key) {
+    try { localStorage.removeItem('subh-cache-' + PERSISTED_CACHE_VERSION + '-' + key); } catch (err) { /* fine to skip */ }
+  }
+  // SPEED FIX (2026-11, direct instruction) - "same pattern... for all
+  // menu pages / SUBH Settings sections". Every one of pageDataCache's
+  // own PLAIN (JSON-serializable, non-Map) fields already gets written
+  // the instant a fresh fetch resolves, and explicitly nulled out the
+  // instant a mutation makes it stale (see each call site's own "never
+  // serve the stale cached list again" comment) - wrapping the whole
+  // object in a Proxy persists/clears automatically at every one of
+  // those EXISTING assignment sites, with no risk of a future one being
+  // missed. Map-valued fields (reminders/convos/letterFields/attn/
+  // workflowDetail) are NOT auto-persisted here - a `pageDataCache.x = `
+  // assignment never happens for those (code mutates the Map in place
+  // via .set()/.clear()), so they're persisted at their own small number
+  // of call sites instead (see persistMapCache below).
+  const PERSISTED_PAGE_DATA_KEYS = ['siteAliases', 'deptAliases', 'companyDetails', 'letterSettings', 'dataBackups', 'settingsHistory', 'holidays', 'dataAccess', 'automations', 'workflows', 'openFlows', 'waAllFirst', 'templates', 'comms'];
+  const pageDataCache = new Proxy({ comms: null, commsAt: 0, reminders: new Map(), automations: null, workflows: null, openFlows: null, convos: new Map(), siteAliases: null, deptAliases: null, companyDetails: null, letterSettings: null, letterFields: new Map(), history: null, dataBackups: null, settingsHistory: null, holidays: null, dataAccess: null, waAllFirst: null, attn: new Map(), templates: null, workflowDetail: new Map() }, {
+    set(target, prop, value) {
+      target[prop] = value;
+      if (PERSISTED_PAGE_DATA_KEYS.indexOf(prop) !== -1) {
+        if (value === null || value === undefined) clearPersistedCache(prop);
+        else writePersistedCache(prop, value);
+      }
+      return true;
+    }
+  });
+  // Pre-seeds every persisted field BEFORE any live fetch starts - so a
+  // tap straight into a settings/Today's-Updates page immediately after
+  // a hard refresh (before prefetchSubhSettingsAll/pollCommsSummary even
+  // resolve once) still renders last-known content instantly instead of
+  // a skeleton. Each load*Page()'s own existing cache-first check
+  // (`if (cached) render(cached) else skeleton`) picks this up with no
+  // changes of its own needed.
+  PERSISTED_PAGE_DATA_KEYS.forEach((key) => {
+    const cached = readPersistedCache(key);
+    if (cached !== null) pageDataCache[key] = cached;
+  });
+  // Map-valued caches (reminders/attn) - serialized as a plain array of
+  // [key, value] entries, since Map itself isn't JSON-serializable.
+  // Called explicitly at each Map's own small number of .set()/.clear()
+  // call sites, never automatically (the outer Proxy above can't see
+  // into a Map's own mutations).
+  function persistMapCache(name, map) { writePersistedCache(name, Array.from(map.entries())); }
+  function hydrateMapCache(name, map) {
+    const entries = readPersistedCache(name);
+    if (Array.isArray(entries)) entries.forEach(([k, v]) => map.set(k, v));
+  }
+  hydrateMapCache('reminders', pageDataCache.reminders);
+  hydrateMapCache('attn', pageDataCache.attn);
   // Bumped by invalidateReminderCache (every reminder mutation - done/
   // undo/cancel/snooze/create/edit). Any reminders fetch in flight when a
   // mutation happens captures remMutationSeq at send time and checks it
@@ -1691,6 +1762,7 @@
   function invalidateReminderCache() {
     remMutationSeq++;
     pageDataCache.reminders.clear();
+    clearPersistedCache('reminders'); // never serve the stale persisted list again
     pageDataCache.comms = null;
   }
 
@@ -1854,6 +1926,7 @@
         const at = Date.now();
         pageDataCache.reminders.set('everything', { data, at });
         pageDataCache.reminders.set('today', { data: { items: bucketReminders(data.items, 'today', new Date()), counts: data.counts }, at });
+        persistMapCache('reminders', pageDataCache.reminders);
       }
     } catch (err) { /* best effort - a real page open will just fetch fresh */ }
   }
@@ -2251,7 +2324,7 @@
     // cache, before the fresh fetch a moment later corrected it. Cleared
     // here too so the cache agrees with the server from this instant on,
     // not just after the next poll/fetch happens to land.
-    if (pageDataCache.comms) pageDataCache.comms.systemNotices = [];
+    if (pageDataCache.comms) { pageDataCache.comms.systemNotices = []; writePersistedCache('comms', pageDataCache.comms); }
     try {
       await fetch('/api/workforce/hr-assistant/subh-notifications/dismiss', { method: 'POST' });
     } catch (err) { /* best effort - it'll just show again next load */ }
@@ -2833,6 +2906,7 @@
       const resp = await fetch('/api/workforce/hr-assistant/attendance-requests?' + qs.toString());
       const data = await resp.json();
       pageDataCache.attn.set(cacheKey, data);
+      persistMapCache('attn', pageDataCache.attn);
       // The owner may have already switched month/type/status while this
       // was in flight - a stale response for the OLD combo must never
       // paint over whatever's now showing for the new one.
@@ -3252,6 +3326,27 @@
       // fallback) must never blank out a good cached view the owner is
       // already looking at - leave it exactly as rendered from cache.
       if (data && data.stale && renderedFromCache) { setDlogOlderState('retry'); return; }
+      // LIVE INCIDENT FIX (2026-11, direct instruction) - "20 Nov shows
+      // empty although it had cards yesterday": a stale:true fallback
+      // (workforceRoutes.js's own 6s-timeout catch) used to fall straight
+      // through to the normal render path whenever there was no cache to
+      // fall back to (always true for a date-filtered view, since the
+      // persisted cache only ever covers today/filter=all) - rendering an
+      // empty items:[] list and zeroed stats, visually IDENTICAL to "this
+      // day genuinely has zero records". A real transient KV/timeout
+      // failure must never look like a real empty day - shown as its own
+      // distinct, explicit retry state instead, same principle as the
+      // Conversations list fix (point 3): "No messages" only when the
+      // server really returns zero.
+      if (reset && data && data.stale) {
+        if (deliveryLogList) {
+          deliveryLogList.innerHTML = '<div class="wf-comms-empty">Couldn\'t load the delivery log for this date. <button type="button" class="wf-link-btn" id="hrDlogRetryInlineBtn">Retry</button></div>';
+          const retryBtn = document.getElementById('hrDlogRetryInlineBtn');
+          if (retryBtn) retryBtn.addEventListener('click', () => loadDeliveryLogPage(true));
+        }
+        setDlogOlderState('retry');
+        return;
+      }
       const items = (data && data.items) || [];
       dlogHasMore = Boolean(data && data.hasMore);
       dlogOffset += items.length;
@@ -3280,6 +3375,20 @@
     loadDeliveryLogPage(true);
   }
   if (deliveryLogBtn) deliveryLogBtn.addEventListener('click', () => { pushNav({ type: 'deliveryLog' }); showDeliveryLog(); });
+  // LIVE INCIDENT (2026-11, direct instruction) - "correct today's
+  // wrongly-marked entries if possible" - owner-triggered re-check
+  // against the real gateway feed (never automatic), then reloads the
+  // list so any correction shows immediately.
+  if (deliveryLogReconcileBtn) {
+    deliveryLogReconcileBtn.addEventListener('click', async () => {
+      await runButtonAction(deliveryLogReconcileBtn, () => postJsonOrThrow('/api/workforce/hr-assistant/delivery-log/reconcile-today', {}), (result) => {
+        const checked = (result && result.checked) || 0;
+        const corrected = (result && result.corrected) || 0;
+        showActionToast(checked === 0 ? 'No flagged entries from today' : corrected > 0 ? 'Corrected ' + corrected + ' of ' + checked + ' flagged entries' : 'Checked ' + checked + ' - still not confirmed');
+        loadDeliveryLogPage(true);
+      }, { toastFn: (msg) => showActionToast(msg, null, 'error') });
+    });
+  }
   // Point 6, direct instruction - "red marks in chats link directly to
   // the matching card" (opens the page pre-filtered to Not delivered;
   // see buildConvoMsgBubbleHtml's own comment for why a literal per-
@@ -3321,15 +3430,35 @@
   }
   // Export for IT - date range + format sheet, same bottom-sheet
   // backdrop/open-close convention as the Template sheet above.
+  // LIVE INCIDENT FIX (2026-11, direct instruction) - "the download icon
+  // does nothing on tap": this only ever toggled the `hidden` attribute,
+  // never the `.open` class every sibling sheet in this file also adds
+  // (see openTemplateSheet*/closeTemplateSheet above) - .wf-ai-sheet and
+  // .wf-ai-sheet-backdrop both sit at opacity:0/translateY(100%) until
+  // `.open` is added (workforce.css), so removing `hidden` alone left an
+  // INVISIBLE, full-screen backdrop sitting over the whole page (still
+  // receiving taps, just never shown) while the sheet itself stayed
+  // transformed off-screen - every subsequent tap on the page silently
+  // hit that invisible backdrop instead of whatever was underneath it,
+  // exactly matching "does nothing on tap". void ...offsetHeight forces
+  // a layout flush before adding `.open` so the slide-up transition
+  // actually plays, same as the Template sheet's own open function.
   function openDlogExportSheet() {
     if (deliveryLogExportFrom) deliveryLogExportFrom.value = dlogDate || todayIstDateInputValue();
     if (deliveryLogExportTo) deliveryLogExportTo.value = dlogDate || todayIstDateInputValue();
     if (deliveryLogExportBackdrop) deliveryLogExportBackdrop.hidden = false;
     if (deliveryLogExportSheet) deliveryLogExportSheet.hidden = false;
+    if (deliveryLogExportSheet) void deliveryLogExportSheet.offsetHeight;
+    if (deliveryLogExportBackdrop) deliveryLogExportBackdrop.classList.add('open');
+    if (deliveryLogExportSheet) deliveryLogExportSheet.classList.add('open');
   }
   function closeDlogExportSheet() {
-    if (deliveryLogExportBackdrop) deliveryLogExportBackdrop.hidden = true;
-    if (deliveryLogExportSheet) deliveryLogExportSheet.hidden = true;
+    if (deliveryLogExportBackdrop) deliveryLogExportBackdrop.classList.remove('open');
+    if (deliveryLogExportSheet) deliveryLogExportSheet.classList.remove('open');
+    setTimeout(() => {
+      if (deliveryLogExportBackdrop) deliveryLogExportBackdrop.hidden = true;
+      if (deliveryLogExportSheet) deliveryLogExportSheet.hidden = true;
+    }, 320);
   }
   if (commsHeadExportBtn) commsHeadExportBtn.addEventListener('click', openDlogExportSheet);
   if (deliveryLogExportBackdrop) deliveryLogExportBackdrop.addEventListener('click', closeDlogExportSheet);
@@ -3806,6 +3935,14 @@
       (async () => {
         try {
           aiUsageSummaryCache = await fetch('/api/workforce/hr-assistant/ai-usage').then((res) => res.json());
+          // SPEED FIX (2026-11, direct instruction) - aiUsageSummaryCache
+          // is a bare variable, not a pageDataCache field, so it never
+          // got the Proxy's automatic persist the other 8 blocks here get
+          // for free - persisted explicitly here so a hard refresh right
+          // after this prefetch (before loadAiUsagePage's own later
+          // fetch would otherwise persist it) still has something to
+          // render from instantly.
+          if (aiUsageSummaryCache && !aiUsageSummaryCache.stale) writePersistedCache('ai-usage', aiUsageSummaryCache);
         } catch (err) { /* best effort - a real page open will just fetch fresh */ }
       })(),
       (async () => {
@@ -5063,31 +5200,6 @@
     if (window.setView) window.setView('letterSettings', { resetHistory: true });
     loadLetterSettingsPage();
   };
-
-  // LIVE INCIDENT (2026-11, direct instruction) - "keep a persistent
-  // cache in the browser (versioned) for every menu page's last data...
-  // pages show instantly even after a hard refresh." Every page's own
-  // "render from cache instantly" cache (pageDataCache, aiUsageSummaryCache
-  // et al.) is an in-memory JS variable only - it already makes the SECOND
-  // open of a page in the same tab instant, but a hard refresh wipes it,
-  // which is exactly when the owner is most likely to hit a slow/failing
-  // server underneath (the real incident this traces to). This tiny
-  // versioned localStorage wrapper is the missing persistence layer - a
-  // bad/old/corrupt entry (or a private-browsing tab that throws on
-  // access) just falls through to the existing live-fetch-with-skeleton
-  // behavior, never a hard failure. Applied first to AI usage + the
-  // Delivery log stat cards (the two pages named in the incident); other
-  // menu pages' own in-memory caches are unchanged for now.
-  const PERSISTED_CACHE_VERSION = 'v1';
-  function readPersistedCache(key) {
-    try {
-      const raw = localStorage.getItem('subh-cache-' + PERSISTED_CACHE_VERSION + '-' + key);
-      return raw ? JSON.parse(raw) : null;
-    } catch (err) { return null; }
-  }
-  function writePersistedCache(key, value) {
-    try { localStorage.setItem('subh-cache-' + PERSISTED_CACHE_VERSION + '-' + key, JSON.stringify(value)); } catch (err) { /* private tab, quota, etc - fine to skip */ }
-  }
 
   // AI usage (2026-11, direct instruction) - read-only: today/this week/
   // this month totals (live vs. tests) + a by-feature breakdown, from
@@ -6914,7 +7026,7 @@
       comms = commsResp;
       pageDataCache.comms = commsResp;
       pageDataCache.commsAt = Date.now();
-      if (remMutationSeq === seqAtStart) pageDataCache.reminders.set('today', { data: remResp, at: Date.now() });
+      if (remMutationSeq === seqAtStart) { pageDataCache.reminders.set('today', { data: remResp, at: Date.now() }); persistMapCache('reminders', pageDataCache.reminders); }
       remCounts = remResp.counts || remCounts;
     } catch (err) {
       if (pageDataCache.comms || cachedRem) return; // keep the still-valid cached render
@@ -7034,6 +7146,7 @@
       const resp = await fetch('/api/workforce/hr-assistant/reminders?filter=everything');
       const data = await resp.json();
       pageDataCache.reminders.set('everything', { data, at: Date.now() });
+      persistMapCache('reminders', pageDataCache.reminders);
       remItemsById = new Map((data.items || []).map((r) => [r.id, r]));
       setCountBadge(commsHeadBadge, data.counts.all);
       setCountBadge(remCompletedBadge, data.counts.todayCompleted || 0);
@@ -7344,7 +7457,7 @@
     try {
       const resp = await fetch('/api/workforce/hr-assistant/reminders?filter=everything');
       data = await resp.json();
-      if (remMutationSeq === seqAtStart) pageDataCache.reminders.set('everything', { data, at: Date.now() });
+      if (remMutationSeq === seqAtStart) { pageDataCache.reminders.set('everything', { data, at: Date.now() }); persistMapCache('reminders', pageDataCache.reminders); }
     } catch (err) {
       if (cached) return; // keep showing the still-valid cached render
       data = { items: [], counts: { all: 0, today: 0, upcoming: 0, completed: 0, todayCompleted: 0 } };
@@ -10675,7 +10788,17 @@
     hrAttendanceRequestsPage: () => loadAttendanceRequests(),
     hrActionNeededPage: () => loadActionNeeded(),
     hrTemplatesPage: () => loadTemplatesPage(),
-    hrConvoPage: () => reloadConversation()
+    hrConvoPage: () => reloadConversation(),
+    // LIVE INCIDENT (2026-11, direct instruction) - "pull-to-refresh...
+    // must work like other pages" - Delivery log is a .wf-comms-page
+    // sibling of every other page already in this map (WhatsApp
+    // conversations/Attendance Requests/Action needed/Templates) but was
+    // simply never added when it shipped, so this gesture silently did
+    // nothing on it (and, being a panel sub-page rather than a top-level
+    // .wf-view, Chrome's own native pull-to-refresh can't reach it
+    // either - this custom gesture IS the "pull to refresh" for pages
+    // shaped like this one).
+    hrDeliveryLogPage: () => loadDeliveryLogPage(true)
   };
   Object.keys(WF_PTR_REFRESH_BY_ID).forEach((id) => {
     const el = document.getElementById(id);

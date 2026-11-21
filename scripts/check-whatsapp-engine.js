@@ -858,6 +858,57 @@ async function checkAsyncRealModel(label, fn) {
   // hitting the pre-existing reportingManager alias exactly as before.
   check('resolveApprovalFieldAliasByLabel: "reporting doer" resolves to the NEW reportingDoer alias, never the existing reportingManager one', (whatsappAssistant.resolveApprovalFieldAliasByLabel('reporting doer') || {}).key === 'reportingDoer');
   check('resolveApprovalFieldAliasByLabel: "reporting manager"/"HOD" still resolve to the EXISTING reportingManager alias, unchanged by the new reportingDoer alias being added alongside it', ['reporting manager', 'HOD', 'manager'].every((t) => (whatsappAssistant.resolveApprovalFieldAliasByLabel(t) || {}).key === 'reportingManager'));
+  // LIVE INCIDENT (2026-11, direct instruction) - "HOD and Reporting
+  // Manager are the same field... use the sender's own term in the
+  // reply." reportingManagerDisplayLabel is the one place that decision
+  // actually turns into display text - all 3 cases the classifier's own
+  // schema instructs it to emit (see personLookupFieldLabel's own
+  // description): explicit "HOD", explicit "reporting manager", and the
+  // DEFAULT (sender used neither) which the schema instructs the model
+  // to ALSO emit as "HOD" - this third check (an empty/undefined label,
+  // standing in for "the model somehow sent nothing") proves the code-
+  // side fallback independently still lands on "HOD" too, never
+  // "Reporting Manager", so the default is correct even if that upstream
+  // instruction were ever violated.
+  check('reportingManagerDisplayLabel("HOD") -> "HOD" (sender explicitly said HOD)', whatsappAssistant.reportingManagerDisplayLabel('HOD') === 'HOD');
+  check('reportingManagerDisplayLabel("reporting manager") -> "Reporting Manager" (sender explicitly said manager/reporting manager)', whatsappAssistant.reportingManagerDisplayLabel('reporting manager') === 'Reporting Manager');
+  check('reportingManagerDisplayLabel(undefined) -> "HOD" (the default when the sender used neither term - never "Reporting Manager")', whatsappAssistant.reportingManagerDisplayLabel(undefined) === 'HOD' && whatsappAssistant.reportingManagerDisplayLabel('') === 'HOD');
+  await checkAsync('LIVE INCIDENT (2026-11), direct instruction - end to end: the sender says "HOD" -> the real reply names "HOD", never "Reporting Manager"', async () => {
+    const saved = process.env.SUBH_TEST_NUMBERS;
+    process.env.SUBH_TEST_NUMBERS = SELF_MATCH_TEST_PHONE;
+    await whatsappAssistant.clearPendingNameConfirm(SELF_MATCH_TEST_PHONE).catch(() => {});
+    try {
+      const d = await whatsappAssistant.handlePersonLookupRequest({ phone: SELF_MATCH_TEST_PHONE, name: 'Test', lang: 'english', personName: 'Subhodeep', personField: 'other_field', personFieldLabel: 'HOD', department: null, text: 'Subhodeep kon HOD er under a?', history: [] });
+      return d.case === 'acknowledged' && /\bHOD\b/.test(d.replyText) && !/reporting manager/i.test(d.replyText) && d.replyText.includes('Radha Biswas Bhattacharjee');
+    } finally {
+      if (saved === undefined) delete process.env.SUBH_TEST_NUMBERS; else process.env.SUBH_TEST_NUMBERS = saved;
+    }
+  });
+  await checkAsync('LIVE INCIDENT (2026-11), direct instruction - end to end: the sender says "reporting manager" -> the real reply names "Reporting Manager", never "HOD"', async () => {
+    const saved = process.env.SUBH_TEST_NUMBERS;
+    process.env.SUBH_TEST_NUMBERS = SELF_MATCH_TEST_PHONE;
+    await whatsappAssistant.clearPendingNameConfirm(SELF_MATCH_TEST_PHONE).catch(() => {});
+    try {
+      const d = await whatsappAssistant.handlePersonLookupRequest({ phone: SELF_MATCH_TEST_PHONE, name: 'Test', lang: 'english', personName: 'Subhodeep', personField: 'other_field', personFieldLabel: 'reporting manager', department: null, text: 'Subhodeep er reporting manager ke?', history: [] });
+      return d.case === 'acknowledged' && d.replyText.includes('Reporting Manager') && !/\bHOD\b/.test(d.replyText) && d.replyText.includes('Radha Biswas Bhattacharjee');
+    } finally {
+      if (saved === undefined) delete process.env.SUBH_TEST_NUMBERS; else process.env.SUBH_TEST_NUMBERS = saved;
+    }
+  });
+  await checkAsync('LIVE INCIDENT (2026-11), direct instruction - end to end: the sender names NEITHER term (a plain "under"/"reports to" question) -> the real reply defaults to "HOD", matching personLookupFieldLabel\'s own updated default', async () => {
+    const saved = process.env.SUBH_TEST_NUMBERS;
+    process.env.SUBH_TEST_NUMBERS = SELF_MATCH_TEST_PHONE;
+    await whatsappAssistant.clearPendingNameConfirm(SELF_MATCH_TEST_PHONE).catch(() => {});
+    try {
+      // Per the updated schema, the classifier itself emits "HOD" as the
+      // label for this default/neither case - this test exercises that
+      // exact classifier output, proving the reply it produces says "HOD".
+      const d = await whatsappAssistant.handlePersonLookupRequest({ phone: SELF_MATCH_TEST_PHONE, name: 'Test', lang: 'english', personName: 'Subhodeep', personField: 'other_field', personFieldLabel: 'HOD', department: null, text: 'Subhodeep kake report kore?', history: [] });
+      return d.case === 'acknowledged' && /\bHOD\b/.test(d.replyText) && !/reporting manager/i.test(d.replyText);
+    } finally {
+      if (saved === undefined) delete process.env.SUBH_TEST_NUMBERS; else process.env.SUBH_TEST_NUMBERS = saved;
+    }
+  });
   await checkAsync('a mislabeled "other_field" request whose label actually says "bank account number" is STILL hard-blocked, regardless of personField - a structural safety net, never trusting the classifier alone', async () => {
     const d = await whatsappAssistant.handlePersonLookupRequest({ phone: LIVE_REVIEW_TEST_PHONE, name: 'Test', lang: 'banglish', personName: 'Ayan Das', personField: 'other_field', personFieldLabel: 'bank account number', department: null, text: 'Ayan Das er bank account number dao', history: [] });
     return d.case === 'acknowledged' && d.replyText.includes('shudhu HR office theke dewa hoy');
@@ -7615,6 +7666,34 @@ async function checkAsyncRealModel(label, fn) {
     await whatsappAssistant.clearPendingHrDataQuery(phone).catch(() => {});
     return ok;
   });
+  await checkAsync('LIVE INCIDENT (2026-11), direct instruction, point 1 - picking an option by ORDINAL WORD ("second option") resolves it, same as the sibling person-disambiguation flow already does - this reply shape used to match nothing and re-ask forever', async () => {
+    const phone = '919999000097';
+    await whatsappAssistant.clearPendingHrDataQuery(phone).catch(() => {});
+    await whatsappAssistant.savePendingHrDataQuery(phone, { query: { returnType: 'hod' }, lang: 'english', departmentOptions: ['Administration (Ho)', 'Administration (Srpl)', 'Administration (Srm)'], departmentHint: 'Administration' });
+    const pending = await whatsappAssistant.getPendingHrDataQuery(phone);
+    const d = await whatsappAssistant.continueHrDataQueryFlow({ phone, name: 'Tester', text: 'second option', pending });
+    const stillPending = await whatsappAssistant.getPendingHrDataQuery(phone);
+    return d.case === 'data_holding' && !stillPending;
+  });
+  await checkAsync('LIVE INCIDENT (2026-11), direct instruction, point 1 - repeated unresolved replies to the department-choice question never loop forever: attempt 2 gets a DIFFERENT (short) retry text, and after MAX_DISAMBIGUATION_ATTEMPTS the flow gives up gracefully and notifies the owner, instead of re-sending the identical full list forever', async () => {
+    const phone = '919999000098';
+    await whatsappAssistant.clearPendingHrDataQuery(phone).catch(() => {});
+    await whatsappAssistant.savePendingHrDataQuery(phone, { query: { returnType: 'hod' }, lang: 'english', departmentOptions: ['Administration (Ho)', 'Administration (Srpl)', 'Administration (Srm)'], departmentHint: 'Administration' });
+    const notifBefore = (await whatsappAssistant.listOwnerNotifications()).length;
+    const pending1 = await whatsappAssistant.getPendingHrDataQuery(phone);
+    const d1 = await whatsappAssistant.continueHrDataQueryFlow({ phone, name: 'Tester', text: 'blah blah unrelated', pending: pending1 });
+    const pending2 = await whatsappAssistant.getPendingHrDataQuery(phone);
+    const d2 = await whatsappAssistant.continueHrDataQueryFlow({ phone, name: 'Tester', text: 'blah blah unrelated', pending: pending2 });
+    const pending3 = await whatsappAssistant.getPendingHrDataQuery(phone);
+    const d3 = await whatsappAssistant.continueHrDataQueryFlow({ phone, name: 'Tester', text: 'blah blah unrelated', pending: pending3 });
+    const stillPendingAfter3rd = await whatsappAssistant.getPendingHrDataQuery(phone);
+    const notifAfter = (await whatsappAssistant.listOwnerNotifications()).length;
+    return d1.replyText.includes('Administration')
+      && d2.replyText !== d1.replyText
+      && d3.replyText === whatsappAssistant.HR_QUERY_DEPARTMENT_UNRESOLVED.english
+      && stillPendingAfter3rd === null
+      && notifAfter > notifBefore;
+  });
   await checkAsync('LIVE ISSUE FIX (Task 3b, 2026-10-31): a SECOND, genuinely different data request from the same sender while an earlier one is still pending gets its OWN separate approval, never silently dropped - runHrDataQueryAndQueue no longer refuses to queue a second approval for a phone that already has one pending', async () => {
     const phone = '919999000097';
     const approvalsBefore = await whatsappAssistant.listPendingApprovals();
@@ -9189,6 +9268,98 @@ async function checkAsyncRealModel(label, fn) {
   });
 
   console.log('='.repeat(70));
+  console.log('LIVE INCIDENT (2026-11), direct instruction - Attendance Requests page: Close must close the REAL flow too (one source of truth), consistent phone identity, and stale requests auto-close');
+  console.log('='.repeat(70));
+  await checkAsync('LIVE INCIDENT (2026-11), direct instruction, point 2 - a request from a SUBH_TEST_NUMBERS test number resolves the card\'s own employee identity (name/code/department) to the OWNER\'s real record, same as the rest of the pipeline already does via findEmployeeByPhone - never left blank just because it is not the owner\'s literal registered contactNumber', async () => {
+    const attendanceRequestService = require('../src/aiAssistant/attendanceRequestService');
+    const testPhone = '919812300099';
+    const saved = process.env.SUBH_TEST_NUMBERS;
+    process.env.SUBH_TEST_NUMBERS = testPhone;
+    try {
+      const id = await attendanceRequestService.recordStep1Received({ phone: testPhone, senderName: 'Test', summary: 'leave tomorrow', topicLabel: 'leave', receivedAt: Date.now() });
+      const record = await attendanceRequestService.getRecord(id);
+      return Boolean(record) && record.employeeName === 'Subhodeep Kundu Chowdhury' && Boolean(record.employeeId);
+    } finally {
+      if (saved === undefined) delete process.env.SUBH_TEST_NUMBERS; else process.env.SUBH_TEST_NUMBERS = saved;
+    }
+  });
+  await checkAsync('closeRecord on a STEP1/2 record (not yet linked to a confirmation) also clears the real pending HR-note flow - a later message from this sender is never again treated as "still waiting on an earlier question"', async () => {
+    const attendanceRequestService = require('../src/aiAssistant/attendanceRequestService');
+    const phone = '919812300001';
+    await whatsappAssistant.clearPendingHrNoteFlow(phone).catch(() => {});
+    await whatsappAssistant.savePendingHrNoteFlow(phone, { summary: 'leave tomorrow', summaryLocalized: 'leave tomorrow', topicLabel: 'leave', lang: 'english', createdAt: Date.now(), step: 'awaiting_name' });
+    const id = await attendanceRequestService.recordStep1Received({ phone, senderName: 'Close Test One', summary: 'leave tomorrow', topicLabel: 'leave', receivedAt: Date.now() });
+    const beforeClose = await whatsappAssistant.getPendingHrNoteFlow(phone);
+    const result = await attendanceRequestService.closeRecord(id);
+    const afterClose = await whatsappAssistant.getPendingHrNoteFlow(phone);
+    const record = await attendanceRequestService.getRecord(id);
+    return result.ok === true && Boolean(beforeClose) && afterClose === null && attendanceRequestService.derivedStatus(record) === 'cancelled';
+  });
+  await checkAsync('closeRecord on a STEP3+ record (linked to a live hrConfirmation awaiting the manager) also cancels that real confirmation and its reminder - never just the audit record', async () => {
+    const attendanceRequestService = require('../src/aiAssistant/attendanceRequestService');
+    const phone = '919812300002';
+    const confirmationId = await whatsappAssistant.saveHrConfirmation({ status: 'awaiting_manager', senderPhone: phone, senderName: 'Close Test Two', thirdPartyPhone: '919812399999', thirdPartyName: 'Some Manager', summary: 'half day tomorrow', createdAt: Date.now() });
+    const id = await attendanceRequestService.recordStep1Received({ phone, senderName: 'Close Test Two', summary: 'half day tomorrow', topicLabel: 'half-day', receivedAt: Date.now() });
+    await attendanceRequestService.recordStep3ManagerAsked(phone, confirmationId);
+    const result = await attendanceRequestService.closeRecord(id);
+    const confirmation = await whatsappAssistant.getHrConfirmation(confirmationId);
+    const record = await attendanceRequestService.getRecord(id);
+    return result.ok === true && confirmation.status === 'cancelled' && attendanceRequestService.derivedStatus(record) === 'cancelled';
+  });
+  await checkAsync('LIVE INCIDENT, direct instruction, point 2 - "use the same identity everywhere": savePendingHrNoteFlow/getPendingHrNoteFlow/clearPendingHrNoteFlow all normalize the phone internally, so a flow saved under one raw shape is still found/cleared via any other equivalent shape', async () => {
+    const rawShape = '09812300003'; // 11-digit, leading 0
+    const normalizedShape = whatsapp.normalizePhone(rawShape); // '919812300003'
+    await whatsappAssistant.clearPendingHrNoteFlow(rawShape).catch(() => {});
+    await whatsappAssistant.clearPendingHrNoteFlow(normalizedShape).catch(() => {});
+    await whatsappAssistant.savePendingHrNoteFlow(rawShape, { summary: 'test', summaryLocalized: 'test', topicLabel: 'leave', lang: 'english', createdAt: Date.now(), step: 'awaiting_name' });
+    const foundViaNormalized = await whatsappAssistant.getPendingHrNoteFlow(normalizedShape);
+    await whatsappAssistant.clearPendingHrNoteFlow(normalizedShape);
+    const goneViaRaw = await whatsappAssistant.getPendingHrNoteFlow(rawShape);
+    return Boolean(foundViaNormalized) && foundViaNormalized.summary === 'test' && goneViaRaw === null;
+  });
+  await checkAsync('closeStaleRecords: a record whose resolved event date has already passed auto-closes as "stale_closed" ("Closed – no reply"), and the real flow state is cleared too', async () => {
+    const attendanceRequestService = require('../src/aiAssistant/attendanceRequestService');
+    const phone = '919812300004';
+    await whatsappAssistant.clearPendingHrNoteFlow(phone).catch(() => {});
+    await whatsappAssistant.savePendingHrNoteFlow(phone, { summary: 'leave', summaryLocalized: 'leave', topicLabel: 'leave', lang: 'english', createdAt: Date.now(), step: 'awaiting_manager_informed' });
+    const id = await attendanceRequestService.recordStep1Received({ phone, senderName: 'Stale Date Test', summary: 'leave', topicLabel: 'leave', receivedAt: Date.now() - 2 * 24 * 60 * 60 * 1000 });
+    await attendanceRequestService.updateRecord(id, { requestDateEndTs: Date.now() - 24 * 60 * 60 * 1000 }); // yesterday
+    const result = await attendanceRequestService.closeStaleRecords(Date.now(), [id]);
+    const record = await attendanceRequestService.getRecord(id);
+    const flowAfter = await whatsappAssistant.getPendingHrNoteFlow(phone);
+    return result.closed === 1 && attendanceRequestService.derivedStatus(record) === 'stale_closed' && attendanceRequestService.currentStepLabel(record) === 'Closed – no reply' && flowAfter === null;
+  });
+  await checkAsync('closeStaleRecords: a record still waiting on the SENDER (no approver named yet) whose own received day has already ended auto-closes, even with no resolved date at all', async () => {
+    const attendanceRequestService = require('../src/aiAssistant/attendanceRequestService');
+    const phone = '919812300005';
+    const twoDaysAgo = Date.now() - 2 * 24 * 60 * 60 * 1000;
+    const id = await attendanceRequestService.recordStep1Received({ phone, senderName: 'Stale NoReply Test', summary: 'late today', topicLabel: 'late', receivedAt: twoDaysAgo });
+    const result = await attendanceRequestService.closeStaleRecords(Date.now(), [id]);
+    const record = await attendanceRequestService.getRecord(id);
+    return result.closed === 1 && attendanceRequestService.derivedStatus(record) === 'stale_closed' && record.staleCloseReason === 'no_reply_by_end_of_day';
+  });
+  await checkAsync('closeStaleRecords: a genuinely recent, still-active record (received minutes ago, no resolved date yet) is left completely untouched - never a false auto-close', async () => {
+    const attendanceRequestService = require('../src/aiAssistant/attendanceRequestService');
+    const phone = '919812300006';
+    const id = await attendanceRequestService.recordStep1Received({ phone, senderName: 'Fresh Test', summary: 'leave tomorrow', topicLabel: 'leave', receivedAt: Date.now() - 5 * 60 * 1000 });
+    await attendanceRequestService.closeStaleRecords(Date.now(), [id]);
+    const record = await attendanceRequestService.getRecord(id);
+    return attendanceRequestService.derivedStatus(record) === 'in_progress';
+  });
+  await checkAsync('LIVE INCIDENT (2026-11), direct instruction, point 3 - a genuinely new/unrelated message arriving during the "awaiting_manager_informed" step (the live-cited "Ami kal 2nd half a asbo na") used to always get the dead-end HR_FLOW_CONTEXT_CLARIFY line and never create its own card; this step now shares the same handleUnclearFlowReply/handleUnresolvedPersonReference fallthrough its sibling step (awaiting_approval_obtained) already had - returns null (never cleared, falls through to start its own new flow) instead of swallowing the message', async () => {
+    const phone = '919812300008';
+    await whatsappAssistant.clearPendingHrNoteFlow(phone).catch(() => {});
+    const hrFlow = { summary: 'half day today', summaryLocalized: 'half day today', topicLabel: 'half-day', actionPhrase: 'half day', lang: 'banglish', createdAt: Date.now(), actionKind: 'sudden', datePhrase: 'aaj', step: 'awaiting_manager_informed' };
+    const result = await whatsappAssistant.continueHrNoteFlow({ phone, name: 'Sender', text: 'Ami kal 2nd half a asbo na', history: [], hrFlow });
+    const flowAfter = await whatsappAssistant.getPendingHrNoteFlow(phone);
+    return result === null && Boolean(flowAfter) && flowAfter.step === 'awaiting_manager_informed';
+  });
+  await checkAsync('cleanup (point 3 test)', async () => {
+    await whatsappAssistant.clearPendingHrNoteFlow('919812300008').catch(() => {});
+    return true;
+  });
+
+  console.log('='.repeat(70));
   console.log('confirmOrRecoverSend/processDueDeliveryChecks - ROBUSTNESS PASS: auto-recovery, late-confirmation dedup, evidence log, dual-channel alert - DATA-DRIVEN (no background timers at all, so a test can never leak a stray one into a later, unrelated test)');
   console.log('='.repeat(70));
   const origListMessagesForVerify = whatsapp.listMessages;
@@ -9310,7 +9481,7 @@ async function checkAsyncRealModel(label, fn) {
         newNotDelivered.length === before.filter((e) => e.chatId === '919999992004' && e.outcome === 'not_delivered').length + 1 &&
         Boolean(mine) && mine.finalOutcome === 'not_delivered' && mine.confirmed === false && mine.attempts.length === 3;
     });
-    await checkAsync('a feed-read failure during the very first check fails closed - never resends, never alarms, just an inconclusive evidence record', async () => {
+    await checkAsync('LIVE INCIDENT (2026-11) fix - a feed-read failure during the very first check fails closed (never resends) AND now raises a real owner-visible warning, marked "sent_unconfirmed" (shown as "Sent (gateway OK)"), never the old "unconfirmed_check_failed" that looked like a false "Not delivered"', async () => {
       const sentAt = Date.now();
       let resendCalls = 0;
       whatsapp.listMessages = async () => { throw new Error('simulated gateway read failure'); };
@@ -9318,12 +9489,123 @@ async function checkAsyncRealModel(label, fn) {
       const notifBefore = (await whatsappAssistant.listOwnerNotifications()).length;
       await whatsappAssistant.confirmOrRecoverSend({ chatId: '919999992005', name: 'VerifyErr', replyText: 'anything', sentAt });
       await driveDeliveryChecksToCompletion();
-      const notifAfter = (await whatsappAssistant.listOwnerNotifications()).length;
+      const notifications = await whatsappAssistant.listOwnerNotifications();
       whatsapp.listMessages = defaultListMessagesMock;
       whatsapp.sendWhatsAppMessage = defaultSendWhatsAppMessageMock;
       const evidence = await whatsappAssistant.listDeliveryEvidence(50);
       const mine = evidence.find((e) => e.chatId === '919999992005');
-      return notifAfter === notifBefore && resendCalls === 0 && Boolean(mine) && mine.finalOutcome === 'unconfirmed_check_failed';
+      const warned = notifications.some((n) => /could not re-verify delivery/i.test(n.text || '') && /VerifyErr/.test(n.text || ''));
+      return notifications.length === notifBefore + 1 && warned && resendCalls === 0 && Boolean(mine) && mine.finalOutcome === 'sent_unconfirmed' && mine.confirmed === null;
+    });
+    await checkAsync('LIVE INCIDENT (2026-11) fix - a feed-read failure never shows as "Not delivered" in the Delivery log - it is its own distinct "Sent (gateway OK)" pill, not in DELIVERY_LOG_NOT_DELIVERED_OUTCOMES', async () => {
+      const sentAt = Date.now();
+      whatsapp.listMessages = async () => { throw new Error('simulated gateway read failure'); };
+      whatsapp.sendWhatsAppMessage = defaultSendWhatsAppMessageMock;
+      await whatsappAssistant.confirmOrRecoverSend({ chatId: '919999992015', name: 'SentUnconfirmedDlog', replyText: 'dlog check text', sentAt });
+      await driveDeliveryChecksToCompletion();
+      whatsapp.listMessages = defaultListMessagesMock;
+      const result = await whatsappAssistant.queryDeliveryEvidence({ filter: 'all', offset: 0, limit: 200 });
+      const mine = result.items.find((i) => i.chatId === '919999992015');
+      const notDeliveredResult = await whatsappAssistant.queryDeliveryEvidence({ filter: 'not_delivered', offset: 0, limit: 200 });
+      const inNotDelivered = notDeliveredResult.items.some((i) => i.chatId === '919999992015');
+      return Boolean(mine) && mine.status === 'Sent (gateway OK)' && mine.notDelivered === false && !inNotDelivered;
+    });
+    await checkAsync('LIVE INCIDENT (2026-11), direct instruction - matching by the gateway\'s own message id (when the feed echoes it) confirms delivery even if the echoed text differs entirely - never a false "not found" purely from a text mismatch', async () => {
+      const sentAt = Date.now();
+      let resendCalls = 0;
+      // Feed entry's text is unrelated/garbled on purpose - only the
+      // gateway message id should be what confirms this.
+      whatsapp.listMessages = async () => [{ direction: 'outgoing', recipient: '0', content: { text: 'totally different text, never matches by content' }, messageId: 'GWID-MATCH-123', created_at: new Date(sentAt + 500).toISOString() }];
+      whatsapp.sendWhatsAppMessage = async () => { resendCalls++; return { ok: true }; };
+      await whatsappAssistant.confirmOrRecoverSend({ chatId: '919999992016', name: 'GatewayIdMatch', replyText: 'the real reply text', sentAt, gatewayMessageId: 'GWID-MATCH-123', httpStatus: 200 });
+      await driveDeliveryChecksToCompletion();
+      whatsapp.listMessages = defaultListMessagesMock;
+      whatsapp.sendWhatsAppMessage = defaultSendWhatsAppMessageMock;
+      const evidence = await whatsappAssistant.listDeliveryEvidence(50);
+      const mine = evidence.find((e) => e.chatId === '919999992016');
+      return resendCalls === 0 && Boolean(mine) && mine.confirmed === true;
+    });
+    await checkAsync('LIVE INCIDENT (2026-11), direct instruction - normalized text matching tolerates whitespace/line-break/zero-width differences between what we sent and what the feed echoes back - never a false "not found" from harmless formatting noise', async () => {
+      const sentAt = Date.now();
+      let resendCalls = 0;
+      const sentText = 'Line one\nLine two  with   extra spaces';
+      // Feed echoes it back with different whitespace/line-break shape and
+      // a stray zero-width space - same meaningful content. The zero-
+      // width char sits NEXT TO a real space (never replacing one) so
+      // stripping it still leaves "Line one", not "Lineone".
+      const echoedText = 'Line​ one \r\n Line two with extra spaces  ';
+      whatsapp.listMessages = async () => [outgoingAt(echoedText, sentAt)];
+      whatsapp.sendWhatsAppMessage = async () => { resendCalls++; return { ok: true }; };
+      await whatsappAssistant.confirmOrRecoverSend({ chatId: '919999992017', name: 'NormalizedMatch', replyText: sentText, sentAt });
+      await driveDeliveryChecksToCompletion();
+      whatsapp.listMessages = defaultListMessagesMock;
+      whatsapp.sendWhatsAppMessage = defaultSendWhatsAppMessageMock;
+      const evidence = await whatsappAssistant.listDeliveryEvidence(50);
+      const mine = evidence.find((e) => e.chatId === '919999992017');
+      return resendCalls === 0 && Boolean(mine) && mine.confirmed === true;
+    });
+    await checkAsync('LIVE INCIDENT (2026-11), direct instruction - the widened feed window (15s grace, 50 messages) still correctly ignores a message from well BEFORE this send (a coincidental text match from an unrelated, much older message) - never a false positive just because the window got wider', async () => {
+      const sentAt = Date.now();
+      let resendCalls = 0;
+      // An outgoing message with the SAME text but from 2 minutes before
+      // this send - must never count as confirming THIS send.
+      whatsapp.listMessages = async () => [outgoingAt('coincidental old text', sentAt - 2 * 60 * 1000)];
+      whatsapp.sendWhatsAppMessage = async () => { resendCalls++; return { ok: true, gatewayMessageId: 'R1', httpStatus: 200 }; };
+      await whatsappAssistant.confirmOrRecoverSend({ chatId: '919999992018', name: 'OldCoincidence', replyText: 'coincidental old text', sentAt });
+      await driveDeliveryChecksToCompletion();
+      whatsapp.listMessages = defaultListMessagesMock;
+      whatsapp.sendWhatsAppMessage = defaultSendWhatsAppMessageMock;
+      const evidence = await whatsappAssistant.listDeliveryEvidence(50);
+      const mine = evidence.find((e) => e.chatId === '919999992018');
+      // Never confirmed by the stale old message - resends happen (same
+      // existing "never confirmed anywhere" shape), proving the time
+      // window still correctly excludes it despite being wider now.
+      return resendCalls > 0 && Boolean(mine) && mine.confirmed === false;
+    });
+    await checkAsync('LIVE INCIDENT (2026-11), direct instruction - a feed check that TIMES OUT (never resolves) is treated exactly like a feed-read failure - sent_unconfirmed, a warning, never a resend', async () => {
+      const sentAt = Date.now();
+      let resendCalls = 0;
+      const savedTimeout = process.env.WHATSAPP_DELIVERY_CHECK_TIMEOUT_MS;
+      process.env.WHATSAPP_DELIVERY_CHECK_TIMEOUT_MS = '50';
+      whatsapp.listMessages = () => new Promise(() => {}); // never resolves/rejects
+      whatsapp.sendWhatsAppMessage = async () => { resendCalls++; return { ok: true }; };
+      try {
+        await whatsappAssistant.confirmOrRecoverSend({ chatId: '919999992019', name: 'TimeoutCheck', replyText: 'anything', sentAt });
+        await driveDeliveryChecksToCompletion();
+      } finally {
+        if (savedTimeout === undefined) delete process.env.WHATSAPP_DELIVERY_CHECK_TIMEOUT_MS; else process.env.WHATSAPP_DELIVERY_CHECK_TIMEOUT_MS = savedTimeout;
+        whatsapp.listMessages = defaultListMessagesMock;
+        whatsapp.sendWhatsAppMessage = defaultSendWhatsAppMessageMock;
+      }
+      const evidence = await whatsappAssistant.listDeliveryEvidence(50);
+      const mine = evidence.find((e) => e.chatId === '919999992019');
+      return resendCalls === 0 && Boolean(mine) && mine.finalOutcome === 'sent_unconfirmed';
+    });
+    await checkAsync('LIVE INCIDENT (2026-11), direct instruction - a resend attempt whose OWN send call fails (real send error) still keeps retrying up to the normal cap, never gets stuck or silently drops the message', async () => {
+      const sentAt = Date.now();
+      let sendCalls = 0;
+      whatsapp.listMessages = async () => []; // never confirmed
+      // Same distinguish-the-owner-alert-call-by-text convention as the
+      // existing "NEVER confirmed anywhere" test above - alertOwnerDualChannel's
+      // own WhatsApp-alert channel calls this SAME mocked function once
+      // the recovery cap is hit, which must never be miscounted as a
+      // third resend attempt.
+      whatsapp.sendWhatsAppMessage = async (phone, text) => {
+        if (/could not confirm delivery/i.test(text || '')) return { ok: true };
+        sendCalls++;
+        // The FIRST resend attempt's own send genuinely fails (real send
+        // error, not a feed-check uncertainty) - the second must still
+        // be attempted, proving a failed resend doesn't abandon recovery.
+        if (sendCalls === 1) return { ok: false, error: 'simulated send failure' };
+        return { ok: true, gatewayMessageId: 'R' + sendCalls, httpStatus: 200 };
+      };
+      await whatsappAssistant.confirmOrRecoverSend({ chatId: '919999992020', name: 'ResendFailsOnce', replyText: 'retry me', sentAt });
+      await driveDeliveryChecksToCompletion();
+      whatsapp.listMessages = defaultListMessagesMock;
+      whatsapp.sendWhatsAppMessage = defaultSendWhatsAppMessageMock;
+      const evidence = await whatsappAssistant.listDeliveryEvidence(50);
+      const mine = evidence.find((e) => e.chatId === '919999992020');
+      return sendCalls === 2 && Boolean(mine) && mine.finalOutcome === 'not_delivered' && mine.attempts.some((a) => a.error === 'simulated send failure');
     });
     await checkAsync('a long reply sent in multiple chunks is correctly matched by its FIRST chunk alone - never a false resend/alarm just because the feed never shows the full text as one message', async () => {
       const sentAt = Date.now();

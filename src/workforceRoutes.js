@@ -3022,6 +3022,20 @@ router.post('/hr-assistant/delivery-log/export', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+// LIVE INCIDENT (2026-11, direct instruction) - "correct today's
+// wrongly-marked entries if possible." Owner-triggered (never automatic -
+// this re-checks the real gateway feed, which is only worth paying for
+// when the owner actually wants it) from a button on the Delivery log
+// page itself.
+router.post('/hr-assistant/delivery-log/reconcile-today', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const result = await whatsappAssistant.reconcileTodaysDeliveryEvidence();
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 router.post('/hr-assistant/whatsapp-approval', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
