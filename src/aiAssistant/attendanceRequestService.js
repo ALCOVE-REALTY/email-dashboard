@@ -283,7 +283,7 @@ async function recordStep4And5Decision(confirmationId, decision) {
 // needs its own background sweep.
 const EXPIRE_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
 function derivedStatus(record) {
-  if (record.status === 'completed' || record.status === 'cancelled' || record.status === 'stale_closed') return record.status;
+  if (record.status === 'completed' || record.status === 'cancelled' || record.status === 'stale_closed' || record.status === 'unconfirmed_hr_decide') return record.status;
   if (record.managerAskedAt && Date.now() - record.managerAskedAt > EXPIRE_AFTER_MS) return 'expired';
   return 'in_progress';
 }
@@ -292,6 +292,7 @@ function currentStepLabel(record) {
   if (status === 'completed') return 'Employee informed';
   if (status === 'cancelled') return 'Cancelled';
   if (status === 'stale_closed') return 'Closed – no reply';
+  if (status === 'unconfirmed_hr_decide') return 'Unconfirmed – HR to decide';
   if (status === 'expired') return 'Expired';
   if (!record.approverNamedAt) return 'Approver named';
   if (!record.managerAskedAt) return 'Manager asked';
@@ -319,6 +320,7 @@ async function listForMonth(monthKey, { type, statusFilter } = {}) {
   rows = rows.map((r) => Object.assign({}, r, { derivedStatus: derivedStatus(r) }));
   if (statusFilter === 'in_progress') rows = rows.filter((r) => r.derivedStatus === 'in_progress');
   else if (statusFilter === 'completed') rows = rows.filter((r) => r.derivedStatus === 'completed');
+  else if (statusFilter === 'hr_decide') rows = rows.filter((r) => r.derivedStatus === 'unconfirmed_hr_decide');
   // 'all' (default) - no further filtering, every status shown.
   rows.sort((a, b) => b.receivedAt - a.receivedAt);
   return rows;
@@ -431,7 +433,11 @@ async function closeStaleRecords(now, onlyIds) {
     // (waiting on the sender, or already past that stage with no
     // manager wait recorded) still closes on date-passed.
     if (waiting && waiting.who === 'manager') {
-      // left open - the cutoff sweep (commit 2) is what resolves this.
+      // Direct instruction (2026-11) - once this specific request's own
+      // cutoff has passed, it moves to "Unconfirmed - HR to decide"
+      // instead (see closeToHrDecideIfPastCutoff below) - never
+      // stale_closed, since the owner still has a real decision to make.
+      continue;
     } else if (record.requestDateEndTs && now > record.requestDateEndTs) {
       reason = 'date_passed';
     } else if (waiting && waiting.who === 'sender' && waiting.since && isPastEndOfWorkingDay(waiting.since, now)) {
@@ -443,6 +449,122 @@ async function closeStaleRecords(now, onlyIds) {
     closed++;
   }
   return { closed };
+}
+
+// ---------------- Monthly attendance cutoff (2026-11, direct instruction) ----------------
+// "The cutoff is the first 24th on or after the event date (event on 10
+// Dec -> 24 Dec; event on 27 Dec -> 24 Jan)." Takes the event's own
+// already-resolved end-of-day instant (requestDateEndTs - a real,
+// calendar-correct IST instant, never re-derived from a display string -
+// see hrNoteResolvedEndOfDayTs's own comment in whatsappAssistant.js) and
+// returns the cutoff as that SAME kind of instant (24th, 23:59 IST),
+// reusing whatsappAssistant's own istWallClockToUtc rather than a second,
+// separate IST-arithmetic implementation.
+function attendanceCutoffTsForEventTs(eventEndTs) {
+  const reminderService = require('./reminderService');
+  const whatsappAssistant = require('./whatsappAssistant');
+  const { year, month, day } = reminderService.istParts(new Date(eventEndTs));
+  const cutoffMonth = day <= 24 ? month : month + 1;
+  const cutoffYear = cutoffMonth > 12 ? year + 1 : year;
+  const normalizedMonth = cutoffMonth > 12 ? cutoffMonth - 12 : cutoffMonth;
+  return whatsappAssistant.istWallClockToUtc(cutoffYear, normalizedMonth, 24, 23, 59).getTime();
+}
+// Direct instruction (2026-11) - a request still waiting on the MANAGER
+// past its own cutoff moves to "unconfirmed_hr_decide" (NOT stale_closed
+// - this is still actionable, the owner decides Approved/Rejected
+// manually from the Attendance Requests page's "HR to decide" filter).
+// The underlying hrConfirmation also moves off 'awaiting_manager' (to
+// 'hr_to_decide') so checkHrConfirmationNudges' own reminder/escalation
+// sweep naturally stops touching it - never a second, separate "don't
+// nudge this one any more" flag to keep in sync. A request with no
+// resolved date at all (requestDateEndTs never set) has no cutoff to
+// compute and is left untouched here, same "never guessed" rule
+// closeStaleRecords' own date_passed check already follows.
+async function closeToHrDecideIfPastCutoff(now, onlyIds) {
+  now = now || Date.now();
+  const all = onlyIds ? (await Promise.all(onlyIds.map(getRecord))).filter(Boolean) : await listAllRecords();
+  let closed = 0;
+  for (const record of all) {
+    if (derivedStatus(record) !== 'in_progress') continue;
+    const waiting = waitingOnLabel(record);
+    if (!waiting || waiting.who !== 'manager' || !record.requestDateEndTs) continue;
+    if (now <= attendanceCutoffTsForEventTs(record.requestDateEndTs)) continue;
+    if (record.linkedConfirmationId) {
+      await require('./whatsappAssistant').updateHrConfirmation(record.linkedConfirmationId, { status: 'hr_to_decide' }).catch(() => {});
+    }
+    await updateRecord(record.id, { status: 'unconfirmed_hr_decide' });
+    closed++;
+  }
+  return { closed };
+}
+// The owner's own Approved/Rejected decision from the "HR to decide"
+// filter - keyed by the ATTENDANCE record id (the page the owner is
+// actually acting from), resolves the LINKED hrConfirmation via
+// whatsappAssistant's own resolveHrToDecideConfirmation (single source of
+// truth for the sender-facing wording/owner record), then reflects the
+// same decision onto this record. informEmployee is the owner's own
+// explicit per-decision choice, never automatic.
+async function resolveHrToDecideRecord(id, decision, informEmployee) {
+  const record = await getRecord(id);
+  if (!record) return { ok: false, error: 'That request no longer exists.' };
+  if (record.status !== 'unconfirmed_hr_decide') return { ok: false, error: 'That request is not waiting on an HR decision.' };
+  const result = await require('./whatsappAssistant').resolveHrToDecideConfirmation(record.linkedConfirmationId, decision, informEmployee);
+  if (!result.ok) return result;
+  await updateRecord(id, { status: decision === 'approved' ? 'completed' : 'cancelled', hrDecidedAt: Date.now(), hrDecision: decision, employeeInformed: Boolean(informEmployee) });
+  return { ok: true };
+}
+// Direct instruction (2026-11) - "on the morning of the 22nd, send me one
+// summary: all requests still waiting for manager confirmation before
+// THIS cutoff (employee, type, date, manager, days waiting)". Scoped to
+// records whose cutoff is specifically the UPCOMING one (this month's
+// 24th, since this only ever fires on the 22nd) - a request whose cutoff
+// is further out (e.g. an event just after the 24th, cutoff next month)
+// is correctly left out of today's summary, it'll get its own on ITS
+// 22nd. A SET-NX lock per IST day (same convention as
+// dailySnapshotScheduler.js's own claimDay) makes this safe to call from
+// every tick without ever sending the summary twice in one day.
+const CUTOFF_SUMMARY_LOCK_PREFIX = 'subh-attn-cutoff-summary:';
+async function claimCutoffSummaryForToday(dayKey) {
+  const redis = getClient();
+  if (!redis) return true;
+  try {
+    const res = await redis.set(CUTOFF_SUMMARY_LOCK_PREFIX + dayKey, '1', { nx: true, ex: 3 * 24 * 60 * 60 });
+    return res === 'OK';
+  } catch (err) { return false; }
+}
+// `onlyIds` - same test-only scoping seam as closeStaleRecords/
+// closeToHrDecideIfPastCutoff above (production/the scheduler always
+// omits it): without it, a test here would also sweep up every OTHER
+// test's own manager-waiting fixture elsewhere in this huge shared-store
+// suite that happens to share a cutoff month/day.
+async function sendCutoffApproachingSummaryIfDue(now, onlyIds) {
+  now = now || Date.now();
+  const reminderService = require('./reminderService');
+  const { year, month, day } = reminderService.istParts(new Date(now));
+  if (day !== 22) return { sent: false };
+  const dayKey = String(year).padStart(4, '0') + '-' + String(month).padStart(2, '0') + '-' + String(day).padStart(2, '0');
+  if (!(await claimCutoffSummaryForToday(dayKey))) return { sent: false };
+  const all = onlyIds ? (await Promise.all(onlyIds.map(getRecord))).filter(Boolean) : await listAllRecords();
+  const due = [];
+  for (const record of all) {
+    if (derivedStatus(record) !== 'in_progress') continue;
+    const waiting = waitingOnLabel(record);
+    if (!waiting || waiting.who !== 'manager' || !record.requestDateEndTs) continue;
+    const cutoff = attendanceCutoffTsForEventTs(record.requestDateEndTs);
+    const cutoffParts = reminderService.istParts(new Date(cutoff));
+    if (cutoffParts.year === year && cutoffParts.month === month && cutoffParts.day === 24) due.push(record);
+  }
+  if (!due.length) return { sent: false, count: 0 };
+  const lines = due.map((r) => {
+    const w = waitingOnLabel(r);
+    const firstName = r.employeeName ? String(r.employeeName).trim().split(/\s+/)[0] : r.senderPhone;
+    const daysWaiting = Math.max(0, Math.round((now - (w.since || r.receivedAt)) / (24 * 60 * 60 * 1000)));
+    return '- ' + firstName + ' (' + (r.requestType || 'attendance') + ', ' + (r.requestDates || '') + ', manager ' + (r.approverName || 'unknown') + ', waiting ' + daysWaiting + ' day(s))';
+  });
+  const linkLine = process.env.PUBLIC_BASE_URL ? ('\n\n' + process.env.PUBLIC_BASE_URL.replace(/\/$/, '') + '/workforce (SUBH -> Attendance requests -> "HR to decide" after the 24th)') : '';
+  const text = due.length + ' attendance request(s) still await manager confirmation before this month\'s 24th cutoff:\n' + lines.join('\n') + linkLine;
+  await require('./whatsappAssistant').alertOwnerDualChannel(text, '📋 SUBH: attendance requests nearing the monthly cutoff').catch(() => {});
+  return { sent: true, count: due.length };
 }
 
 // ---------------- Backfill from existing flows in the store ----------------
@@ -562,5 +684,6 @@ module.exports = {
   derivedStatus, currentStepLabel, waitingOnLabel, monthKeyOf,
   listForMonth, remindRecord, closeRecord, closeStaleRecords, backfillFromExisting,
   exportColumns, exportRows,
+  attendanceCutoffTsForEventTs, closeToHrDecideIfPastCutoff, resolveHrToDecideRecord, sendCutoffApproachingSummaryIfDue,
   REQUEST_TYPE_CATEGORIES
 };

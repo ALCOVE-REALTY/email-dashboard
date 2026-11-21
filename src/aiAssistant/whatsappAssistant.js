@@ -9965,6 +9965,36 @@ async function resolveAmbiguousHrConfirmation(id, decision) {
   return { ok: false, error: 'Unknown decision - expected confirmed, declined or ask_again.' };
 }
 
+// Direct instruction (2026-11) - the attendance cutoff (commit 2 of the
+// new attendance-confirmation spec): a confirmation that reached its
+// monthly cutoff (24th) with the manager still never having answered
+// moves here ('hr_to_decide', set by attendanceRequestService's own
+// cutoff sweep) - the owner decides Approved/Rejected directly, from the
+// Attendance Requests page's new "HR to decide" filter, never from the
+// manager's own reply any more. Deliberately NOT the same function as
+// resolveAmbiguousHrConfirmation above (that one is for an UNCLEAR
+// manager reply, always notifies the sender, and uses different wording)
+// - this is a manager who never replied at all, and informing the
+// employee is the owner's own explicit choice each time, never automatic.
+async function resolveHrToDecideConfirmation(id, decision, informEmployee) {
+  if (!id) return { ok: false, error: 'No linked confirmation.' };
+  const confirmation = await getHrConfirmation(id);
+  if (!confirmation) return { ok: false, error: 'That confirmation is no longer pending.' };
+  if (confirmation.status !== 'hr_to_decide') return { ok: false, error: 'That confirmation is not waiting on an HR decision.' };
+  if (decision !== 'approved' && decision !== 'rejected') return { ok: false, error: 'Unknown decision - expected approved or rejected.' };
+  const isApproved = decision === 'approved';
+  await updateHrConfirmation(id, { status: isApproved ? 'confirmed' : 'declined', resolvedAt: Date.now() });
+  await closeHrConfirmationReminder(confirmation.reminderId);
+  if (informEmployee) {
+    const resultFn = isApproved
+      ? (HR_CONFIRMATION_SENDER_RESULT_YES[confirmation.lang] || HR_CONFIRMATION_SENDER_RESULT_YES.english)
+      : (HR_CONFIRMATION_SENDER_RESULT_NO[confirmation.lang] || HR_CONFIRMATION_SENDER_RESULT_NO.english);
+    await sendHrConfirmationResultToSender(confirmation, resultFn(confirmation.thirdPartyName));
+  }
+  await postHrConfirmationOwnerRecord(confirmation, (isApproved ? 'Yes' : 'No') + ' (decided by HR directly - manager never confirmed by the attendance cutoff)');
+  return { ok: true };
+}
+
 // STEP 6 (second half), attendance-confirmation reminders - ONE
 // consolidated working-hours definition (2026-11, direct instruction),
 // used for every piece of timing math here: elapsed-time counting,
@@ -16460,6 +16490,7 @@ module.exports = {
   continueHrNoteFlow,
   handleHrConfirmationManagerReply,
   resolveAmbiguousHrConfirmation,
+  resolveHrToDecideConfirmation,
   normalizeBengaliNamePhonetics,
   findEmployeesByPhoneticNameMatch,
   checkHrConfirmationNudges,
@@ -16496,6 +16527,7 @@ module.exports = {
   hasOwnReplyAfter,
   workingHoursElapsedSince,
   isPastEndOfDayIst,
+  istWallClockToUtc,
   nextWorkingIstDay,
   nextWorkingDay10AmIst,
   isPastEndOfNextWorkingDayIst,

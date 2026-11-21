@@ -3281,7 +3281,8 @@ router.get('/hr-assistant/attendance-requests', async (req, res) => {
     const counts = {
       all: monthRows.length,
       in_progress: monthRows.filter((r) => r.derivedStatus === 'in_progress').length,
-      completed: monthRows.filter((r) => r.derivedStatus === 'completed').length
+      completed: monthRows.filter((r) => r.derivedStatus === 'completed').length,
+      unconfirmed_hr_decide: monthRows.filter((r) => r.derivedStatus === 'unconfirmed_hr_decide').length
     };
     const typeCounts = {};
     monthRows.forEach((r) => { typeCounts[r.requestType] = (typeCounts[r.requestType] || 0) + 1; });
@@ -3318,6 +3319,25 @@ router.post('/hr-assistant/attendance-requests/:id/close', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
   try {
     const result = await attendanceRequestService.closeRecord(req.params.id);
+    if (!result.ok) return res.status(400).json({ error: result.error });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Direct instruction (2026-11) - the owner's own Approved/Rejected
+// decision for a request that reached its monthly cutoff with the
+// manager never having answered ("HR to decide"). informEmployee is the
+// owner's own explicit per-decision choice (the UI's own checkbox),
+// never automatic.
+router.post('/hr-assistant/attendance-requests/:id/hr-decide', async (req, res) => {
+  if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  try {
+    const decision = req.body && req.body.decision;
+    if (decision !== 'approved' && decision !== 'rejected') return res.status(400).json({ error: 'decision must be "approved" or "rejected".' });
+    const informEmployee = Boolean(req.body && req.body.informEmployee);
+    const result = await attendanceRequestService.resolveHrToDecideRecord(req.params.id, decision, informEmployee);
     if (!result.ok) return res.status(400).json({ error: result.error });
     res.json({ ok: true });
   } catch (err) {

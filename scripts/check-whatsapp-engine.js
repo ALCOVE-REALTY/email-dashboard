@@ -2278,15 +2278,19 @@ async function checkAsyncRealModel(label, fn) {
       lang: 'english', thirdPartyPhone: TANMOY_MONDAL_PHONE, thirdPartyName: 'Tanmoy Mondal', thirdPartyDepartment: 'Civil',
       status: 'awaiting_manager', createdAt: new Date('2026-10-20T09:30:00+05:30').getTime(), remindedAt: Date.now(), reminder2At: Date.now(), escalatedAt: null, reminderId: null
     });
-    const notifBefore = (await whatsappAssistant.listOwnerNotifications()).length;
     await whatsappAssistant.checkHrConfirmationNudges(new Date('2026-10-21T19:01:00+05:30'));
     const notifAfter = await whatsappAssistant.listOwnerNotifications();
+    // Boolean(posted) alone (not a notification-list length comparison)
+    // is the robust check here - OWNER_NOTIFICATIONS_KEY is capped at
+    // MAX_NOTIFICATIONS and shared across this whole huge suite, so a
+    // length comparison can silently pass OR fail depending purely on
+    // how many earlier tests already filled the list toward its cap.
     const posted = notifAfter.find((n) => n.text.includes("Manager Tanmoy Mondal hasn't confirmed Priya's half-day for 22 October — please follow up directly."));
     const cardBefore = (await whatsappAssistant.listActionNeededItems()).find((i) => i.kind === 'hr_confirmation_manager_escalated' && i.data.id === id);
     await whatsappAssistant.updateHrConfirmation(id, { status: 'confirmed' });
     const cardAfter = (await whatsappAssistant.listActionNeededItems()).find((i) => i.kind === 'hr_confirmation_manager_escalated' && i.data.id === id);
     await whatsappAssistant.removeHrConfirmation(id);
-    return notifAfter.length > notifBefore && Boolean(posted) && Boolean(cardBefore) && !cardAfter;
+    return Boolean(posted) && Boolean(cardBefore) && !cardAfter;
   });
 
   console.log('='.repeat(70));
@@ -9456,6 +9460,126 @@ async function checkAsyncRealModel(label, fn) {
     await attendanceRequestService.closeStaleRecords(Date.now(), [id]);
     const record = await attendanceRequestService.getRecord(id);
     return attendanceRequestService.derivedStatus(record) === 'in_progress';
+  });
+
+  console.log('='.repeat(70));
+  console.log('LIVE INCIDENT (2026-11), direct instruction, Commit 2 - monthly attendance cutoff ("HR to decide")');
+  console.log('='.repeat(70));
+  function istEod(y, m, d) { return whatsappAssistant.istWallClockToUtc(y, m, d, 23, 59).getTime(); }
+  check('attendanceCutoffTsForEventTs: event on 10 Dec -> cutoff is 24 Dec (same month)', (() => {
+    const attendanceRequestService = require('../src/aiAssistant/attendanceRequestService');
+    return attendanceRequestService.attendanceCutoffTsForEventTs(istEod(2026, 12, 10)) === istEod(2026, 12, 24);
+  })());
+  check('attendanceCutoffTsForEventTs: event on 27 Dec -> cutoff rolls to 24 Jan (next month, next year)', (() => {
+    const attendanceRequestService = require('../src/aiAssistant/attendanceRequestService');
+    return attendanceRequestService.attendanceCutoffTsForEventTs(istEod(2026, 12, 27)) === istEod(2027, 1, 24);
+  })());
+  check('attendanceCutoffTsForEventTs: event ON the 24th itself -> cutoff is that SAME day (day <= 24 is still "same month")', (() => {
+    const attendanceRequestService = require('../src/aiAssistant/attendanceRequestService');
+    return attendanceRequestService.attendanceCutoffTsForEventTs(istEod(2026, 11, 24)) === istEod(2026, 11, 24);
+  })());
+  await checkAsync('closeToHrDecideIfPastCutoff: a record still waiting on the MANAGER, past its own cutoff, moves to "unconfirmed_hr_decide" - and the linked hrConfirmation moves to "hr_to_decide" so checkHrConfirmationNudges stops touching it', async () => {
+    const attendanceRequestService = require('../src/aiAssistant/attendanceRequestService');
+    const phone = '919812300009';
+    const confirmationId = await whatsappAssistant.saveHrConfirmation({ status: 'awaiting_manager', senderPhone: phone, senderName: 'Cutoff Test', thirdPartyPhone: '919812399997', thirdPartyName: 'Cutoff Manager', summary: 'leave', createdAt: istEod(2026, 11, 10) });
+    const id = await attendanceRequestService.recordStep1Received({ phone, senderName: 'Cutoff Test', summary: 'leave', topicLabel: 'leave', receivedAt: istEod(2026, 11, 10) });
+    await attendanceRequestService.recordStep2ApproverNamed(phone, { name: 'Cutoff Manager', contactNumber: '919812399997' });
+    await attendanceRequestService.recordStep3ManagerAsked(phone, confirmationId);
+    await attendanceRequestService.updateRecord(id, { requestDateEndTs: istEod(2026, 11, 10) }); // cutoff = 24 Nov
+    const result = await attendanceRequestService.closeToHrDecideIfPastCutoff(istEod(2026, 11, 25), [id]); // past the 24th
+    const record = await attendanceRequestService.getRecord(id);
+    const confirmation = await whatsappAssistant.getHrConfirmation(confirmationId);
+    await whatsappAssistant.removeHrConfirmation(confirmationId);
+    return result.closed === 1 && attendanceRequestService.derivedStatus(record) === 'unconfirmed_hr_decide'
+      && attendanceRequestService.currentStepLabel(record) === 'Unconfirmed – HR to decide'
+      && confirmation.status === 'hr_to_decide';
+  });
+  await checkAsync('closeToHrDecideIfPastCutoff: the SAME setup but checked BEFORE the cutoff - left completely untouched, still in_progress, confirmation still awaiting_manager', async () => {
+    const attendanceRequestService = require('../src/aiAssistant/attendanceRequestService');
+    const phone = '919812300010';
+    const confirmationId = await whatsappAssistant.saveHrConfirmation({ status: 'awaiting_manager', senderPhone: phone, senderName: 'Cutoff Test 2', thirdPartyPhone: '919812399996', thirdPartyName: 'Cutoff Manager 2', summary: 'leave', createdAt: istEod(2026, 11, 10) });
+    const id = await attendanceRequestService.recordStep1Received({ phone, senderName: 'Cutoff Test 2', summary: 'leave', topicLabel: 'leave', receivedAt: istEod(2026, 11, 10) });
+    await attendanceRequestService.recordStep2ApproverNamed(phone, { name: 'Cutoff Manager 2', contactNumber: '919812399996' });
+    await attendanceRequestService.recordStep3ManagerAsked(phone, confirmationId);
+    await attendanceRequestService.updateRecord(id, { requestDateEndTs: istEod(2026, 11, 10) }); // cutoff = 24 Nov
+    const result = await attendanceRequestService.closeToHrDecideIfPastCutoff(istEod(2026, 11, 20), [id]); // before the 24th
+    const record = await attendanceRequestService.getRecord(id);
+    const confirmation = await whatsappAssistant.getHrConfirmation(confirmationId);
+    await whatsappAssistant.removeHrConfirmation(confirmationId);
+    return result.closed === 0 && attendanceRequestService.derivedStatus(record) === 'in_progress' && confirmation.status === 'awaiting_manager';
+  });
+  await checkAsync('resolveHrToDecideRecord: Approve + informEmployee true -> record completed, confirmation confirmed, AND the sender result message was actually attempted (inbox log entry for this phone/case exists)', async () => {
+    const attendanceRequestService = require('../src/aiAssistant/attendanceRequestService');
+    const phone = '919812300011';
+    const confirmationId = await whatsappAssistant.saveHrConfirmation({ status: 'hr_to_decide', senderPhone: phone, senderName: 'HR Decide Approve Test', thirdPartyPhone: '919812399995', thirdPartyName: 'HR Decide Manager', summary: 'leave', lang: 'english', createdAt: Date.now() });
+    const id = await attendanceRequestService.recordStep1Received({ phone, senderName: 'HR Decide Approve Test', summary: 'leave', topicLabel: 'leave', receivedAt: Date.now() });
+    await attendanceRequestService.recordStep2ApproverNamed(phone, { name: 'HR Decide Manager', contactNumber: '919812399995' });
+    await attendanceRequestService.recordStep3ManagerAsked(phone, confirmationId);
+    await attendanceRequestService.updateRecord(id, { status: 'unconfirmed_hr_decide' });
+    const result = await attendanceRequestService.resolveHrToDecideRecord(id, 'approved', true);
+    const record = await attendanceRequestService.getRecord(id);
+    const confirmation = await whatsappAssistant.getHrConfirmation(confirmationId);
+    const log = await whatsappAssistant.listInboxLog(500);
+    const informed = log.some((e) => e.chatId === phone && e.case === 'hr_confirmation_result');
+    await whatsappAssistant.removeHrConfirmation(confirmationId);
+    return result.ok === true && attendanceRequestService.derivedStatus(record) === 'completed' && record.employeeInformed === true
+      && confirmation.status === 'confirmed' && informed;
+  });
+  await checkAsync('resolveHrToDecideRecord: Reject + informEmployee FALSE -> record cancelled, confirmation declined, and the sender is NEVER notified (no inbox log entry for this phone/case at all)', async () => {
+    const attendanceRequestService = require('../src/aiAssistant/attendanceRequestService');
+    const phone = '919812300012';
+    const confirmationId = await whatsappAssistant.saveHrConfirmation({ status: 'hr_to_decide', senderPhone: phone, senderName: 'HR Decide Reject Test', thirdPartyPhone: '919812399994', thirdPartyName: 'HR Decide Manager 2', summary: 'leave', lang: 'english', createdAt: Date.now() });
+    const id = await attendanceRequestService.recordStep1Received({ phone, senderName: 'HR Decide Reject Test', summary: 'leave', topicLabel: 'leave', receivedAt: Date.now() });
+    await attendanceRequestService.recordStep2ApproverNamed(phone, { name: 'HR Decide Manager 2', contactNumber: '919812399994' });
+    await attendanceRequestService.recordStep3ManagerAsked(phone, confirmationId);
+    await attendanceRequestService.updateRecord(id, { status: 'unconfirmed_hr_decide' });
+    const result = await attendanceRequestService.resolveHrToDecideRecord(id, 'rejected', false);
+    const record = await attendanceRequestService.getRecord(id);
+    const confirmation = await whatsappAssistant.getHrConfirmation(confirmationId);
+    const log = await whatsappAssistant.listInboxLog(500);
+    const neverInformed = !log.some((e) => e.chatId === phone && e.case === 'hr_confirmation_result');
+    await whatsappAssistant.removeHrConfirmation(confirmationId);
+    return result.ok === true && attendanceRequestService.derivedStatus(record) === 'cancelled' && record.employeeInformed === false
+      && confirmation.status === 'declined' && neverInformed;
+  });
+  await checkAsync('resolveHrToDecideRecord: refuses a record that is NOT actually "unconfirmed_hr_decide" (e.g. still in_progress) - never lets the owner decide something that hasn\'t reached that state', async () => {
+    const attendanceRequestService = require('../src/aiAssistant/attendanceRequestService');
+    const phone = '919812300013';
+    const id = await attendanceRequestService.recordStep1Received({ phone, senderName: 'Not Yet Test', summary: 'leave', topicLabel: 'leave', receivedAt: Date.now() });
+    const result = await attendanceRequestService.resolveHrToDecideRecord(id, 'approved', false);
+    return result.ok === false && Boolean(result.error);
+  });
+  await checkAsync('sendCutoffApproachingSummaryIfDue: fires on the 22nd, lists a record whose cutoff IS this month\'s 24th, never one whose cutoff is a different month, and never fires twice the same day', async () => {
+    const attendanceRequestService = require('../src/aiAssistant/attendanceRequestService');
+    const phoneDue = '919812300014';
+    const phoneNotDue = '919812300015';
+    // Due: event 10 Nov -> cutoff 24 Nov (the UPCOMING one on this 22-Nov check).
+    const idDue = await attendanceRequestService.recordStep1Received({ phone: phoneDue, senderName: 'DueEmployee CutoffSummary', summary: 'leave', topicLabel: 'leave', receivedAt: istEod(2026, 11, 10) });
+    await attendanceRequestService.recordStep2ApproverNamed(phoneDue, { name: 'Summary Manager', contactNumber: '919812399993' });
+    await attendanceRequestService.recordStep3ManagerAsked(phoneDue, 'fake-conf-id-due');
+    await attendanceRequestService.updateRecord(idDue, { requestDateEndTs: istEod(2026, 11, 10) });
+    // Not due: event 30 Nov -> cutoff 24 Dec (a DIFFERENT month's cutoff).
+    const idNotDue = await attendanceRequestService.recordStep1Received({ phone: phoneNotDue, senderName: 'NotDueEmployee CutoffSummary', summary: 'leave', topicLabel: 'leave', receivedAt: istEod(2026, 11, 30) });
+    await attendanceRequestService.recordStep2ApproverNamed(phoneNotDue, { name: 'Summary Manager 2', contactNumber: '919812399992' });
+    await attendanceRequestService.recordStep3ManagerAsked(phoneNotDue, 'fake-conf-id-notdue');
+    await attendanceRequestService.updateRecord(idNotDue, { requestDateEndTs: istEod(2026, 11, 30) });
+    const result1 = await attendanceRequestService.sendCutoffApproachingSummaryIfDue(istEod(2026, 11, 22), [idDue, idNotDue]);
+    const notifAfterFirst = await whatsappAssistant.listOwnerNotifications();
+    const posted = notifAfterFirst.find((n) => n.text.includes('DueEmployee') && !n.text.includes('NotDueEmployee'));
+    // result2.sent === false (the SET-NX lock refuses a second claim for
+    // the same day) is itself the real "never twice" guarantee - a plain
+    // notification-list length comparison is fragile here regardless
+    // (OWNER_NOTIFICATIONS_KEY is capped at MAX_NOTIFICATIONS and shared
+    // across this whole huge suite, so by this point in the file the list
+    // may already be at its cap, where pushing a new entry trims the
+    // oldest rather than growing the length at all).
+    const result2 = await attendanceRequestService.sendCutoffApproachingSummaryIfDue(istEod(2026, 11, 22) + 60000, [idDue, idNotDue]); // same day, later
+    return result1.sent === true && result1.count === 1 && Boolean(posted) && result2.sent === false;
+  });
+  await checkAsync('sendCutoffApproachingSummaryIfDue: a no-op on any day that is NOT the 22nd, even with due records sitting there', async () => {
+    const attendanceRequestService = require('../src/aiAssistant/attendanceRequestService');
+    const result = await attendanceRequestService.sendCutoffApproachingSummaryIfDue(istEod(2026, 11, 23));
+    return result.sent === false;
   });
   await checkAsync('LIVE INCIDENT (2026-11), direct instruction, point 3 - a genuinely new/unrelated message arriving during the "awaiting_manager_informed" step (the live-cited "Ami kal 2nd half a asbo na") used to always get the dead-end HR_FLOW_CONTEXT_CLARIFY line and never create its own card; this step now shares the same handleUnclearFlowReply/handleUnresolvedPersonReference fallthrough its sibling step (awaiting_approval_obtained) already had - returns null (never cleared, falls through to start its own new flow) instead of swallowing the message', async () => {
     const phone = '919812300008';

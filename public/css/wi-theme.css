@@ -2533,6 +2533,9 @@ body { background: var(--wi-bg); }
 .wf-attn-status-line.waiting { color: var(--wi-yellow-700); }
 .wf-attn-status-line.done { color: var(--wi-green-700); }
 .wf-attn-status-line.expired, .wf-attn-status-line.cancelled { color: var(--wi-red-700); }
+/* Direct instruction (2026-11) - "HR to decide": Inform-employee checkbox
+   sits between the status line and the Approve/Reject actions. */
+.wf-attn-inform-row { display: flex; align-items: center; gap: 6px; font-size: 0.74rem; font-weight: 600; color: var(--wi-muted); margin-top: 8px; }
 .wf-attn-action-btn {
   height: 32px; padding: 0 14px; border-radius: 10px; border: none; font-size: 0.72rem; font-weight: 800; cursor: pointer;
   font-family: inherit; background: var(--wi-primary); color: #FFFFFF;

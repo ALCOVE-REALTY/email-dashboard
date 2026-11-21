@@ -2829,7 +2829,7 @@
   // 3 state classes, same "done/current/pending" convention the rest of
   // this app's step-style UI already uses).
   function attnProgressHtml(item) {
-    const stepIndex = { 'Received': 0, 'Approver named': 1, 'Manager asked': 2, 'Manager confirmed/denied': 3, 'Employee informed': 4, 'Expired': 2, 'Cancelled': -1 }[item.currentStep];
+    const stepIndex = { 'Received': 0, 'Approver named': 1, 'Manager asked': 2, 'Manager confirmed/denied': 3, 'Employee informed': 4, 'Expired': 2, 'Unconfirmed – HR to decide': 2, 'Cancelled': -1 }[item.currentStep];
     const completedUpTo = item.status === 'completed' ? 4 : (stepIndex === -1 ? -1 : stepIndex);
     return '<div class="wf-attn-progress">' + ATTN_STEP_ORDER.map((label, i) => {
       const dotState = completedUpTo < 0 ? 'cancelled' : i < completedUpTo ? 'done' : i === completedUpTo ? 'current' : 'pending';
@@ -2842,6 +2842,7 @@
       return '<span class="wf-attn-status-line done">✓ ' + decision + ' by ' + escapeHtml(item.approverName || 'the manager') + ' · employee informed ' + attnDateTime(item.employeeInformedAt) + '</span>';
     }
     if (item.status === 'expired') return '<span class="wf-attn-status-line expired">⚠ Expired — no manager reply in 7 days</span>';
+    if (item.status === 'unconfirmed_hr_decide') return '<span class="wf-attn-status-line expired">⚠ Manager never confirmed by the monthly cutoff — your decision needed</span>';
     if (item.status === 'cancelled') return '<span class="wf-attn-status-line cancelled">Cancelled</span>';
     const w = item.waitingOn;
     if (!w) return '';
@@ -2861,6 +2862,11 @@
       const badgeClass = { 'Leave': 'leave', 'Half-day': 'halfday', 'Late': 'late', 'WFH': 'wfh', 'Early leave': 'early', 'Comp-off': 'compoff', 'Duty change': 'duty', 'Other': 'other', 'Regularisation': 'reg' }[it.requestType] || 'other';
       const canRemind = it.status === 'in_progress';
       const canClose = it.status === 'in_progress' || it.status === 'expired';
+      // Direct instruction (2026-11) - "HR to decide": the owner marks
+      // Approved/Rejected directly here (manager never answered by the
+      // cutoff), with "Inform employee" as their own explicit per-
+      // decision choice - never sent automatically.
+      const canHrDecide = it.status === 'unconfirmed_hr_decide';
       // Task 1 (2026-11) LIVE BUG FIX: used to show the raw employeeName
       // (which can be the literal "The sender" placeholder) - the SAME
       // shared "Name · Number" formatter every other WhatsApp-derived
@@ -2877,6 +2883,12 @@
         (canRemind || canClose ? '<div class="wf-open-flow-actions">' +
           (canRemind ? '<button type="button" class="wf-attn-action-btn wf-attn-remind-btn" data-id="' + escapeHtml(it.id) + '">Remind</button>' : '') +
           (canClose ? '<button type="button" class="wf-attn-action-btn outline wf-attn-close-btn" data-id="' + escapeHtml(it.id) + '">Close</button>' : '') +
+          '</div>' : '') +
+        (canHrDecide ?
+          '<label class="wf-attn-inform-row"><input type="checkbox" class="wf-attn-inform-checkbox" data-id="' + escapeHtml(it.id) + '" /> Inform employee</label>' +
+          '<div class="wf-open-flow-actions">' +
+            '<button type="button" class="wf-attn-action-btn wf-attn-hr-decide-btn" data-id="' + escapeHtml(it.id) + '" data-decision="approved">Approve</button>' +
+            '<button type="button" class="wf-attn-action-btn outline wf-attn-hr-decide-btn" data-id="' + escapeHtml(it.id) + '" data-decision="rejected">Reject</button>' +
           '</div>' : '') +
       '</div>'; // Task 14 (2026-11) LIVE BUG FIX - this card's own OUTER div was never closed, so the browser's HTML error-recovery nested every next card inside the previous one (box inside box inside box, narrower each time, labels squashed) instead of a flat list of same-width cards.
     }).join('');
@@ -2902,6 +2914,26 @@
           loadAttendanceRequests();
         } catch (err) {
           showProToast({ title: err.message || 'Could not close the request', type: 'error' });
+        }
+      });
+    });
+    // Direct instruction (2026-11) - "HR to decide": Approve/Reject,
+    // with "Inform employee" read fresh from its own checkbox at click
+    // time (the owner's explicit per-decision choice, never automatic).
+    attnList.querySelectorAll('.wf-attn-hr-decide-btn').forEach((btn) => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const decision = btn.dataset.decision;
+        const verb = decision === 'approved' ? 'Approve' : 'Reject';
+        if (!(await showConfirmDialog(verb + ' this attendance request? The manager never confirmed it by the monthly cutoff.'))) return;
+        const checkbox = attnList.querySelector('.wf-attn-inform-checkbox[data-id="' + CSS.escape(btn.dataset.id) + '"]');
+        const informEmployee = Boolean(checkbox && checkbox.checked);
+        try {
+          await postJsonOrThrow('/api/workforce/hr-assistant/attendance-requests/' + encodeURIComponent(btn.dataset.id) + '/hr-decide', { decision, informEmployee });
+          showProToast({ title: verb + 'd' + (informEmployee ? ' · employee informed' : '') });
+          loadAttendanceRequests();
+        } catch (err) {
+          showProToast({ title: err.message || 'Could not record the decision', type: 'error' });
         }
       });
     });

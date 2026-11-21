@@ -374,6 +374,25 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
     } catch (err) {
       log.error('[whatsapp-assistant] attendance request stale sweep failed: ' + err.message);
     }
+    // Direct instruction (2026-11) - monthly attendance cutoff: a request
+    // still waiting on the MANAGER past its own cutoff (the first 24th
+    // on/after the event date) moves to "Unconfirmed - HR to decide"
+    // instead of staying open forever or being auto-closed.
+    try {
+      const result = await attendanceRequestService.closeToHrDecideIfPastCutoff(Date.now());
+      if (result.closed) log.log('[whatsapp-assistant] attendance request cutoff sweep: moved ' + result.closed + ' to HR-to-decide');
+    } catch (err) {
+      log.error('[whatsapp-assistant] attendance request cutoff sweep failed: ' + err.message);
+    }
+    // Direct instruction (2026-11) - the 22nd-morning owner summary of
+    // requests nearing this month's 24th cutoff. Self-guarded (only acts
+    // on the 22nd, once per day via its own SET-NX lock), so calling it
+    // every tick like every other job here is harmless.
+    try {
+      await attendanceRequestService.sendCutoffApproachingSummaryIfDue(Date.now());
+    } catch (err) {
+      log.error('[whatsapp-assistant] attendance cutoff-approaching summary failed: ' + err.message);
+    }
     // SUBH Automated Tasks - runs any active task whose schedule is due,
     // deterministically against current data (no AI at run time). Same
     // cheap, idempotent-check philosophy as every other job on this tick -
