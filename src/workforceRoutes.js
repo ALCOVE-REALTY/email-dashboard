@@ -2019,49 +2019,64 @@ router.post('/hr-assistant/whatsapp-list', async (req, res) => {
 // never an error (the Home badge and Communications page simply show
 // nothing for a non-owner, same convention as every other owner-only
 // surface here).
+// LIVE INCIDENT (2026-11), direct instruction, point 3 - this is the
+// single MOST frequently-hit dashboard route (every panel's own ~12s
+// poll, regardless of which page is open) and, until now, the one real
+// gap in this file's own "never hang, always valid JSON" pattern already
+// used everywhere else (AI usage/Conversations/Delivery log) - it had NO
+// timeout and NO try/catch at all, so a single slow dependency here would
+// have hung the single most-polled request in the app indefinitely.
+const COMMS_SUMMARY_TIMEOUT_MS = 6000;
 router.get('/hr-assistant/communications-summary', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) {
     return res.json({ importantMailsCount: 0, whatsappItems: [], importantWhatsappCount: 0, systemNotices: [], remindersPendingCount: 0, remindersDueNow: [] });
   }
   const now = new Date();
-  // Speed fix: one shared reminder snapshot (getDashboardSnapshot) instead
-  // of two separate reminderService calls (dueReminders + listReminders)
-  // that each independently re-fetched the full reminder list.
-  const [waSnapshot, systemNotices, reminderSnapshot, authAlerts] = await Promise.all([
-    whatsappAssistant.getWhatsappVisibilitySnapshot(now),
-    whatsappAssistant.listSystemNotices(),
-    reminderService.getDashboardSnapshot(now),
-    hrAuthAlerts.listAuthAlerts()
-  ]);
-  const reminderCounts = reminderSnapshot.counts;
-  // The Redis-outage notice (if any) is tracked in-process, never in
-  // Redis itself (see redisHealth's own comment) - prepended here rather
-  // than going through postOwnerNotification/listSystemNotices, since
-  // those themselves depend on the very thing that might be down.
-  const redisNotice = redisHealth.currentNotice();
-  const allNotices = [...(redisNotice ? [redisNotice] : []), ...authAlerts, ...systemNotices];
-  res.json({
-    importantMailsCount: 0, // Phase 3
-    // whatsappItems: the main Important Communications page - needs-you
-    // (any age) + resolved conversations with activity in the last 24h.
-    // Task 3 (2026-10-31) - the Important WhatsApp page's own full,
-    // infinite-scrolling list is fetched separately now (see
-    // GET /hr-assistant/whatsapp-all-conversations below), only while that
-    // page is actually open, instead of being computed on every poll of
-    // this endpoint whether or not anyone is looking at it.
-    whatsappItems: waSnapshot.recentItems,
-    // Badge/header counts only ever reflect needs-you items, regardless of
-    // which page is currently on screen - never the resolved-conversation
-    // rows mixed in for live visibility.
-    importantWhatsappCount: waSnapshot.needsYouCount,
-    systemNotices: allNotices,
-    // Home's badge = pending reminders + needs-you WhatsApp items (+ mails
-    // later) per spec - the TOTAL pending count.
-    // Task 5 (2026-10-29) - remindersDueNow (the "Due now" summary banner's
-    // own data) is removed per direct instruction; the Reminders list
-    // below already shows everything due.
-    remindersPendingCount: reminderCounts.all
-  });
+  const fallback = { importantMailsCount: 0, whatsappItems: [], importantWhatsappCount: 0, systemNotices: [], remindersPendingCount: 0, remindersDueNow: [] };
+  try {
+    // Speed fix: one shared reminder snapshot (getDashboardSnapshot) instead
+    // of two separate reminderService calls (dueReminders + listReminders)
+    // that each independently re-fetched the full reminder list.
+    const [waSnapshot, systemNotices, reminderSnapshot, authAlerts] = await withTimeout(Promise.all([
+      whatsappAssistant.getWhatsappVisibilitySnapshot(now),
+      whatsappAssistant.listSystemNotices(),
+      reminderService.getDashboardSnapshot(now),
+      hrAuthAlerts.listAuthAlerts()
+    ]), COMMS_SUMMARY_TIMEOUT_MS, 'Communications summary read timed out');
+    const reminderCounts = reminderSnapshot.counts;
+    // The Redis-outage notice (if any) is tracked in-process, never in
+    // Redis itself (see redisHealth's own comment) - prepended here rather
+    // than going through postOwnerNotification/listSystemNotices, since
+    // those themselves depend on the very thing that might be down.
+    const redisNotice = redisHealth.currentNotice();
+    const allNotices = [...(redisNotice ? [redisNotice] : []), ...authAlerts, ...systemNotices];
+    const payload = {
+      importantMailsCount: 0, // Phase 3
+      // whatsappItems: the main Important Communications page - needs-you
+      // (any age) + resolved conversations with activity in the last 24h.
+      // Task 3 (2026-10-31) - the Important WhatsApp page's own full,
+      // infinite-scrolling list is fetched separately now (see
+      // GET /hr-assistant/whatsapp-all-conversations below), only while that
+      // page is actually open, instead of being computed on every poll of
+      // this endpoint whether or not anyone is looking at it.
+      whatsappItems: waSnapshot.recentItems,
+      // Badge/header counts only ever reflect needs-you items, regardless of
+      // which page is currently on screen - never the resolved-conversation
+      // rows mixed in for live visibility.
+      importantWhatsappCount: waSnapshot.needsYouCount,
+      systemNotices: allNotices,
+      // Home's badge = pending reminders + needs-you WhatsApp items (+ mails
+      // later) per spec - the TOTAL pending count.
+      // Task 5 (2026-10-29) - remindersDueNow (the "Due now" summary banner's
+      // own data) is removed per direct instruction; the Reminders list
+      // below already shows everything due.
+      remindersPendingCount: reminderCounts.all
+    };
+    cacheGoodDashboardResponse('communications-summary', payload);
+    res.json(payload);
+  } catch (err) {
+    res.json(staleDashboardResponseOr('communications-summary', fallback, err));
+  }
 });
 
 // Task 3 (2026-10-31) - the Important WhatsApp page's own data: ALL
@@ -2083,15 +2098,25 @@ router.get('/hr-assistant/communications-summary', async (req, res) => {
 const WHATSAPP_ALL_CONVERSATIONS_TIMEOUT_MS = 8000;
 router.get('/hr-assistant/whatsapp-all-conversations', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  const offset = parseInt(req.query.offset, 10) || 0;
+  const limit = parseInt(req.query.limit, 10) || 30;
   try {
-    const offset = parseInt(req.query.offset, 10) || 0;
-    const limit = parseInt(req.query.limit, 10) || 30;
     const result = await withTimeout(
       whatsappAssistant.listAllWhatsappConversationsPage({ offset, limit, query: req.query.q }),
       WHATSAPP_ALL_CONVERSATIONS_TIMEOUT_MS, 'Conversations list read timed out'
     );
+    // Point 3 (2026-11), direct instruction - "cached answers for
+    // dashboard": only the FIRST page of an unfiltered (no search) load is
+    // cached - that's the one real "open the page" case this is for; a
+    // search query or a later scroll page falling back to an unrelated
+    // cached page would be actively misleading, so those simply get the
+    // existing empty-shell fallback on failure, unchanged.
+    if (!req.query.q && offset === 0) cacheGoodDashboardResponse('whatsapp-all-conversations', result);
     res.json(result);
   } catch (err) {
+    if (!req.query.q && offset === 0) {
+      return res.json(staleDashboardResponseOr('whatsapp-all-conversations', { items: [], hasMore: false, total: 0 }, err));
+    }
     res.json({ items: [], hasMore: false, total: 0, stale: true, error: err.message });
   }
 });
@@ -2975,14 +3000,23 @@ router.post('/hr-assistant/whatsapp-resend', async (req, res) => {
 const DELIVERY_LOG_TIMEOUT_MS = 6000;
 router.get('/hr-assistant/delivery-log', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
+  const filter = ['not_delivered', 'retried'].includes(req.query.filter) ? req.query.filter : 'all';
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(req.query.date) ? req.query.date : undefined;
+  const offset = parseInt(req.query.offset, 10) || 0;
+  const limit = Math.min(parseInt(req.query.limit, 10) || 20, 100);
+  // Point 3 (2026-11), direct instruction - "cached answers for
+  // dashboard": cached per filter+date (the real dimensions the owner
+  // actually switches between), first page only, same reasoning as the
+  // Conversations list above.
+  const cacheKey = 'delivery-log:' + filter + ':' + (date || 'all');
   try {
-    const filter = ['not_delivered', 'retried'].includes(req.query.filter) ? req.query.filter : 'all';
-    const date = /^\d{4}-\d{2}-\d{2}$/.test(req.query.date) ? req.query.date : undefined;
-    const offset = parseInt(req.query.offset, 10) || 0;
-    const limit = Math.min(parseInt(req.query.limit, 10) || 20, 100);
     const result = await withTimeout(whatsappAssistant.queryDeliveryEvidence({ filter, date, offset, limit }), DELIVERY_LOG_TIMEOUT_MS, 'Delivery log read timed out');
+    if (offset === 0) cacheGoodDashboardResponse(cacheKey, result);
     res.json(result);
   } catch (err) {
+    if (offset === 0) {
+      return res.json(staleDashboardResponseOr(cacheKey, { items: [], hasMore: false, total: 0, stats: { deliveredCount: 0, notDeliveredCount: 0 } }, err));
+    }
     res.json({ items: [], hasMore: false, total: 0, stats: { deliveredCount: 0, notDeliveredCount: 0 }, stale: true, error: err.message });
   }
 });
@@ -4036,6 +4070,25 @@ function withTimeout(promise, ms, message) {
   });
   return Promise.race([Promise.resolve(promise), timeout]).finally(() => clearTimeout(timer));
 }
+// LIVE INCIDENT (2026-11), direct instruction, point 3 - "short timeouts/
+// cached answers for dashboard". withTimeout above already stops a slow
+// dashboard read from hanging, but every route that uses it still fell
+// back to an EMPTY shell (items: [], stale: true) on a timeout/error -
+// correctly non-misleading, but needless: the owner's phone would show
+// "nothing here" instead of the last real answer it already had a moment
+// ago. In-memory only (same "resets on restart, that's fine" posture as
+// every other diagnostic in this app) - never a correctness concern since
+// every cached payload is always marked stale:true with its own real age,
+// never presented as fresh.
+const DASHBOARD_LAST_GOOD_CACHE = new Map();
+function cacheGoodDashboardResponse(key, payload) {
+  DASHBOARD_LAST_GOOD_CACHE.set(key, { payload, ts: Date.now() });
+}
+function staleDashboardResponseOr(key, fallback, err) {
+  const entry = DASHBOARD_LAST_GOOD_CACHE.get(key);
+  if (!entry) return Object.assign({}, fallback, { stale: true, error: err.message });
+  return Object.assign({}, entry.payload, { stale: true, staleAgeMs: Date.now() - entry.ts, error: err.message });
+}
 // Resolves WHICH template/mapping/employee a "Send test to me" preview
 // or email step is for - one place so the two steps can never disagree.
 // Never touches `res` - returns {ok:true, tpl, mapping, chosen,
@@ -4654,3 +4707,9 @@ module.exports = router;
 // the real 30s production constant - no test ever actually waits 30s for
 // this) without needing a real hung Drive/Gmail call to prove it works.
 module.exports.withTimeout = withTimeout;
+// Point 3 (2026-11), direct instruction - exported ONLY for
+// scripts/check-letter-settings.js to unit-test the shared "cached
+// answers for dashboard" mechanism directly, same convention as
+// withTimeout right above.
+module.exports.cacheGoodDashboardResponse = cacheGoodDashboardResponse;
+module.exports.staleDashboardResponseOr = staleDashboardResponseOr;

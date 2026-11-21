@@ -629,6 +629,29 @@ async function main() {
         return err.message === 'real failure' && !err.isTimeout;
       }
     });
+
+    console.log('-'.repeat(70));
+    console.log('LIVE INCIDENT (2026-11), direct instruction, point 3 - the shared "cached answers for dashboard" mechanism: a slow/failed read serves the last REAL answer (marked stale, with its own age), never an empty shell, when one is available');
+    console.log('-'.repeat(70));
+    check('staleDashboardResponseOr: no cached entry for this key yet -> falls back to the given empty-shell default, still marked stale with the real error', (() => {
+      const key = 'test-key-never-cached-' + Date.now();
+      const result = workforceRoutes.staleDashboardResponseOr(key, { items: [], total: 0 }, new Error('simulated read timeout'));
+      return result.stale === true && result.error === 'simulated read timeout' && result.items.length === 0 && result.total === 0;
+    })());
+    check('staleDashboardResponseOr: a PREVIOUSLY cached good answer is served instead of the empty-shell default, marked stale with a real, non-negative age', (() => {
+      const key = 'test-key-cached-' + Date.now();
+      workforceRoutes.cacheGoodDashboardResponse(key, { items: [{ id: 1 }, { id: 2 }], total: 2 });
+      const result = workforceRoutes.staleDashboardResponseOr(key, { items: [], total: 0 }, new Error('simulated read timeout'));
+      return result.stale === true && result.items.length === 2 && result.total === 2
+        && typeof result.staleAgeMs === 'number' && result.staleAgeMs >= 0 && result.error === 'simulated read timeout';
+    })());
+    check('staleDashboardResponseOr: a LATER good answer overwrites the earlier cached one for the same key (never serves a stale-on-stale answer once a fresh read has actually succeeded)', (() => {
+      const key = 'test-key-overwrite-' + Date.now();
+      workforceRoutes.cacheGoodDashboardResponse(key, { items: [{ id: 'old' }], total: 1 });
+      workforceRoutes.cacheGoodDashboardResponse(key, { items: [{ id: 'new1' }, { id: 'new2' }], total: 2 });
+      const result = workforceRoutes.staleDashboardResponseOr(key, { items: [], total: 0 }, new Error('x'));
+      return result.items.length === 2 && result.items[0].id === 'new1';
+    })());
   } finally {
     memoryService.isOwner = origIsOwner;
     employeeService.getEmployeeData = origGetEmployeeData2;
