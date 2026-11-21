@@ -357,10 +357,14 @@ async function listOpenOrRecentForSender(phone, now) {
 // lightweight convention as this file's own history-free design
 // elsewhere (nothing here keeps unbounded history on a single record).
 const MAX_FOLLOWUPS_LOGGED = 10;
-async function recordFollowUp(id, { at, remindedManager } = {}) {
+// `kind` (direct instruction, Commit 4) - defaults to 'status_question'
+// (Commit 3's own follow-up questions); Commit 4 also logs
+// 'repeat_message' (a pure duplicate, point 2) and 'period_updated'
+// (point 4) through this SAME log, never a parallel one.
+async function recordFollowUp(id, { at, remindedManager, kind } = {}) {
   const record = await getRecord(id);
   if (!record) return null;
-  const entry = { at: at || Date.now(), remindedManager: Boolean(remindedManager) };
+  const entry = { at: at || Date.now(), remindedManager: Boolean(remindedManager), kind: kind || 'status_question' };
   const followUps = (record.followUps || []).concat([entry]).slice(-MAX_FOLLOWUPS_LOGGED);
   return updateRecord(id, { followUps, lastFollowUpAt: entry.at });
 }
@@ -376,6 +380,67 @@ function canSendFollowUpManagerReminderToday(record, now) {
   const last = reminderService.istParts(new Date(record.lastFollowUpManagerReminderAt));
   const current = reminderService.istParts(new Date(now));
   return !(last.year === current.year && last.month === current.month && last.day === current.day);
+}
+
+// ---------------- Duplicate-request handling (2026-11, direct instruction, Commit 4) ----------------
+// "one card per sender + date + period + type." Two periods are the
+// SAME underlying request (a correction, point 4) when one of them is
+// 'full day' (a full-day declaration narrows to/expands from either
+// half without becoming a genuinely different request) - two DISJOINT
+// halves ('1st half' vs '2nd half', point 3's own example) are real,
+// separate requests, never merged.
+function periodRelationship(oldPeriod, newPeriod) {
+  if (oldPeriod === newPeriod) return 'same';
+  if (oldPeriod === 'full day' || newPeriod === 'full day') return 'update';
+  return 'different';
+}
+// Direct instruction, point 5 - "A closed / 'Closed – no reply' / 'HR to
+// decide' card for the same date+period does not count as a duplicate."
+// Only a record still genuinely active (in_progress) or one that reached
+// a REAL decision (completed) counts - matches the raw STORED status,
+// never the derived display label (so a 7+-day-old "Expired" in_progress
+// record - a display-only state, see derivedStatus - still counts here,
+// exactly as it should: it's still really in_progress underneath).
+const DUPLICATE_COUNTING_STATUSES = ['in_progress', 'completed'];
+async function findDuplicateOrUpdateCandidate(phone, thisRecordId, now) {
+  const whatsapp = require('../whatsappService');
+  const reminderService = require('./reminderService');
+  const normalized = whatsapp.normalizePhone(phone);
+  const thisRecord = await getRecord(thisRecordId);
+  if (!thisRecord || !thisRecord.requestDateEndTs) return null; // no resolved date yet - nothing to match against (never guessed)
+  const thisDay = reminderService.istParts(new Date(thisRecord.requestDateEndTs));
+  const all = await listAllRecords();
+  for (const r of all) {
+    if (r.id === thisRecordId) continue;
+    if (whatsapp.normalizePhone(r.senderPhone) !== normalized) continue;
+    if (!DUPLICATE_COUNTING_STATUSES.includes(r.status)) continue;
+    if (!r.requestDateEndTs) continue;
+    const rDay = reminderService.istParts(new Date(r.requestDateEndTs));
+    if (rDay.year !== thisDay.year || rDay.month !== thisDay.month || rDay.day !== thisDay.day) continue;
+    const relationship = periodRelationship(r.period, thisRecord.period);
+    if (relationship === 'same' || relationship === 'update') return { record: r, relationship };
+  }
+  return null;
+}
+// The just-created record for THIS message (recordStep1Received already
+// ran unconditionally, before the date was even resolved - see
+// whatsappAssistant.js's own comment on why) turns out to duplicate/
+// update an EARLIER, still-relevant one. The throwaway record is closed
+// and points at what it merged into (kept for audit, never deleted); the
+// REAL card the owner sees is always the original, older one - a repeat
+// message never creates a second card, and an update never orphans the
+// original's own already-in-progress approver/manager flow.
+async function mergeDuplicateIntoExisting(thisRecordId, existingRecord, relationship) {
+  const thisRecord = await getRecord(thisRecordId);
+  if (!thisRecord) return;
+  await closeRealFlowState(thisRecord).catch(() => {});
+  await updateRecord(thisRecordId, { status: 'cancelled', staleCloseReason: relationship === 'same' ? 'merged_duplicate' : 'merged_update', mergedIntoId: existingRecord.id });
+  if (relationship === 'same') {
+    await recordFollowUp(existingRecord.id, { kind: 'repeat_message' });
+  } else {
+    await updateRecord(existingRecord.id, { requestDates: thisRecord.requestDates, period: thisRecord.period, periodUpdatedAt: Date.now() });
+    await recordFollowUp(existingRecord.id, { kind: 'period_updated' });
+  }
 }
 
 // ---------------- Listing / filtering ----------------
@@ -758,5 +823,6 @@ module.exports = {
   exportColumns, exportRows,
   attendanceCutoffTsForEventTs, closeToHrDecideIfPastCutoff, resolveHrToDecideRecord, sendCutoffApproachingSummaryIfDue,
   classifyRequestPeriod, listOpenOrRecentForSender, recordFollowUp, canSendFollowUpManagerReminderToday,
+  periodRelationship, findDuplicateOrUpdateCandidate, mergeDuplicateIntoExisting,
   REQUEST_TYPE_CATEGORIES
 };

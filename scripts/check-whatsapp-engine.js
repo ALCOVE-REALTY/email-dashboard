@@ -132,6 +132,14 @@ let attendanceRequestChoiceModelResponse = () => ({});
 function resetAttendanceRequestChoiceModelResponse() {
   attendanceRequestChoiceModelResponse = () => ({});
 }
+// Commit 4 (2026-11, direct instruction) - same scripted-stub pattern,
+// for the NEW classify_attendance_period tool. Default ('full day')
+// matches attendanceRequestService's own regex fallback default, so a
+// test that never overrides this gets the same result either way.
+let attendancePeriodModelResponse = () => ({ period: 'full day' });
+function resetAttendancePeriodModelResponse() {
+  attendancePeriodModelResponse = () => ({ period: 'full day' });
+}
 // Small convenience wrapper so the Commit 3 tests below don't each need
 // their own local require() line, same module every other test in this
 // file already reaches via its own local const.
@@ -160,6 +168,10 @@ function installManagerConfirmationModelStub() {
       }
       if (body && Array.isArray(body.tools) && body.tools[0] && body.tools[0].name === 'classify_attendance_request_choice') {
         const result = attendanceRequestChoiceModelResponse(body);
+        return { ok: true, json: async () => ({ content: result ? [{ type: 'tool_use', input: result }] : [] }) };
+      }
+      if (body && Array.isArray(body.tools) && body.tools[0] && body.tools[0].name === 'classify_attendance_period') {
+        const result = attendancePeriodModelResponse(body);
         return { ok: true, json: async () => ({ content: result ? [{ type: 'tool_use', input: result }] : [] }) };
       }
     }
@@ -9762,6 +9774,113 @@ async function checkAsyncRealModel(label, fn) {
       resetAttendanceFollowUpModelResponse();
     }
   });
+
+  console.log('='.repeat(70));
+  console.log('LIVE INCIDENT (2026-11), direct instruction, Commit 4 - duplicate-request handling ("one card per sender + date + period + type")');
+  console.log('='.repeat(70));
+  function attnEod(y, m, d) { return whatsappAssistant.istWallClockToUtc(y, m, d, 23, 59).getTime(); }
+  async function startAttendanceMessage(phone, summary, topicLabel, dateY, dateM, dateD, lang) {
+    const attendanceRequestService = attendanceRequestServiceForTest();
+    const id = await attendanceRequestService.recordStep1Received({ phone, senderName: 'Dup Test', summary, topicLabel, receivedAt: Date.now() });
+    await attendanceRequestService.recordDateResolved(phone, dateD + ' ' + ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][dateM - 1] + ' ' + dateY, attnEod(dateY, dateM, dateD));
+    const d = await whatsappAssistant.continueHrNoteAfterDateResolved({
+      phone, name: 'Dup Test', lang: lang || 'english', history: [], summary, summaryLocalized: summary, topicLabel,
+      actionPhrase: topicLabel, actionKind: 'neutral', createdAt: Date.now(), datePhrase: dateD + ' November', involvesThirdParty: true, thisRecordId: id
+    });
+    return { id, d };
+  }
+  await checkAsync('duplicate-request handling, point 2 - the SAME sender, SAME date+period (completely different wording) -> NO new card, the ORIGINAL card gets a "repeat_message" note, and the sender gets the EXACT fixed "already received" reply', async () => {
+    const origFetch = installManagerConfirmationModelStub();
+    attendancePeriodModelResponse = () => ({ period: 'full day' });
+    try {
+      const attendanceRequestService = attendanceRequestServiceForTest();
+      const phone = '919812300030';
+      const first = await startAttendanceMessage(phone, 'leave on 25 Nov', 'leave', 2026, 11, 25);
+      const second = await startAttendanceMessage(phone, 'I will be on leave the 25th, please note', 'leave', 2026, 11, 25);
+      const recordA = await attendanceRequestService.getRecord(first.id);
+      const recordB = await attendanceRequestService.getRecord(second.id);
+      const expectedReply = whatsappAssistant.ATTENDANCE_DUPLICATE_ALREADY_RECEIVED.english('25 November', 'full day');
+      return second.d.replyText === expectedReply && recordB.status === 'cancelled' && recordB.mergedIntoId === first.id
+        && Array.isArray(recordA.followUps) && recordA.followUps.length === 1 && recordA.followUps[0].kind === 'repeat_message'
+        && recordA.status === 'in_progress';
+    } finally {
+      global.fetch = origFetch;
+      resetAttendancePeriodModelResponse();
+    }
+  });
+  await checkAsync('duplicate-request handling, point 3(a) - a DIFFERENT date -> a genuinely NEW card, never merged into the earlier one', async () => {
+    const origFetch = installManagerConfirmationModelStub();
+    attendancePeriodModelResponse = () => ({ period: 'full day' });
+    try {
+      const attendanceRequestService = attendanceRequestServiceForTest();
+      const phone = '919812300031';
+      const first = await startAttendanceMessage(phone, 'leave on 25 Nov', 'leave', 2026, 11, 25);
+      const second = await startAttendanceMessage(phone, 'leave on 26 Nov', 'leave', 2026, 11, 26);
+      const recordA = await attendanceRequestService.getRecord(first.id);
+      const recordB = await attendanceRequestService.getRecord(second.id);
+      return recordB.status === 'in_progress' && !recordB.mergedIntoId && recordA.status === 'in_progress'
+        && !second.d.replyText.includes('already been received');
+    } finally {
+      global.fetch = origFetch;
+      resetAttendancePeriodModelResponse();
+    }
+  });
+  await checkAsync('duplicate-request handling, point 3(b) - the SAME date but a genuinely DIFFERENT, non-overlapping period (1st half vs 2nd half, the spec\'s own example) -> a NEW card, never merged/updated', async () => {
+    const origFetch = installManagerConfirmationModelStub();
+    try {
+      const attendanceRequestService = attendanceRequestServiceForTest();
+      const phone = '919812300032';
+      attendancePeriodModelResponse = () => ({ period: '2nd half' });
+      const first = await startAttendanceMessage(phone, 'half day on 25 Nov, 2nd half', 'half-day', 2026, 11, 25);
+      attendancePeriodModelResponse = () => ({ period: '1st half' });
+      const second = await startAttendanceMessage(phone, 'half day on 25 Nov, 1st half', 'half-day', 2026, 11, 25);
+      const recordA = await attendanceRequestService.getRecord(first.id);
+      const recordB = await attendanceRequestService.getRecord(second.id);
+      return recordA.period === '2nd half' && recordB.period === '1st half'
+        && recordB.status === 'in_progress' && !recordB.mergedIntoId
+        && !second.d.replyText.includes('already been received') && !second.d.replyText.includes("I've updated");
+    } finally {
+      global.fetch = origFetch;
+      resetAttendancePeriodModelResponse();
+    }
+  });
+  await checkAsync('duplicate-request handling, point 4 - SAME date, period CHANGED from "full day" to "2nd half" -> the EXISTING card is UPDATED (never a duplicate card), and SUBH confirms the change briefly', async () => {
+    const origFetch = installManagerConfirmationModelStub();
+    try {
+      const attendanceRequestService = attendanceRequestServiceForTest();
+      const phone = '919812300033';
+      attendancePeriodModelResponse = () => ({ period: 'full day' });
+      const first = await startAttendanceMessage(phone, 'leave on 25 Nov', 'leave', 2026, 11, 25);
+      attendancePeriodModelResponse = () => ({ period: '2nd half' });
+      const second = await startAttendanceMessage(phone, 'actually only 2nd half on 25 Nov', 'leave', 2026, 11, 25);
+      const recordA = await attendanceRequestService.getRecord(first.id);
+      const recordB = await attendanceRequestService.getRecord(second.id);
+      const expectedReply = whatsappAssistant.ATTENDANCE_DUPLICATE_UPDATED.english('25 November', '2nd half');
+      return second.d.replyText === expectedReply && recordB.status === 'cancelled' && recordB.mergedIntoId === first.id
+        && recordA.period === '2nd half' && Boolean(recordA.periodUpdatedAt)
+        && Array.isArray(recordA.followUps) && recordA.followUps[0].kind === 'period_updated';
+    } finally {
+      global.fetch = origFetch;
+      resetAttendancePeriodModelResponse();
+    }
+  });
+  await checkAsync('duplicate-request handling, point 5 - a CLOSED/"Closed – no reply" card for the same date+period does NOT count as a duplicate -> a repeat message creates a genuinely NEW card', async () => {
+    const origFetch = installManagerConfirmationModelStub();
+    attendancePeriodModelResponse = () => ({ period: 'full day' });
+    try {
+      const attendanceRequestService = attendanceRequestServiceForTest();
+      const phone = '919812300034';
+      const first = await startAttendanceMessage(phone, 'leave on 25 Nov', 'leave', 2026, 11, 25);
+      await attendanceRequestService.updateRecord(first.id, { status: 'stale_closed', staleCloseReason: 'no_reply_by_end_of_day' });
+      const second = await startAttendanceMessage(phone, 'leave on 25 Nov again', 'leave', 2026, 11, 25);
+      const recordB = await attendanceRequestService.getRecord(second.id);
+      return recordB.status === 'in_progress' && !recordB.mergedIntoId && !second.d.replyText.includes('already been received');
+    } finally {
+      global.fetch = origFetch;
+      resetAttendancePeriodModelResponse();
+    }
+  });
+
   await checkAsync('LIVE INCIDENT (2026-11), direct instruction, point 3 - a genuinely new/unrelated message arriving during the "awaiting_manager_informed" step (the live-cited "Ami kal 2nd half a asbo na") used to always get the dead-end HR_FLOW_CONTEXT_CLARIFY line and never create its own card; this step now shares the same handleUnclearFlowReply/handleUnresolvedPersonReference fallthrough its sibling step (awaiting_approval_obtained) already had - returns null (never cleared, falls through to start its own new flow) instead of swallowing the message', async () => {
     const phone = '919812300008';
     await whatsappAssistant.clearPendingHrNoteFlow(phone).catch(() => {});

@@ -7851,6 +7851,58 @@ function periodDisplayLabel(period, lang) {
   }
   return period || 'full day';
 }
+// ---------------- Duplicate-request handling (2026-11, direct instruction, Commit 4) ----------------
+// Direct instruction, point 7 - "the model decides type, date and period
+// from the message... no keyword lists." A real model classifier (as
+// opposed to attendanceRequestService's own classifyRequestPeriod, a
+// simple regex-based BEST-EFFORT guess used only for the record's own
+// initial display label, same "guess now, overwrite with the real
+// resolved value later" pattern requestDates/recordDateResolved already
+// established) - called ONLY here, once per genuinely new HR-
+// notification message (never on every message, unlike the follow-up
+// classifier), since this decision is what duplicate-matching actually
+// depends on. Falls back to the simple regex guess on any API failure -
+// never blocks the real flow over a classification hiccup.
+function classifyAttendancePeriodTool() {
+  return {
+    type: 'function',
+    function: {
+      name: 'classify_attendance_period',
+      description: 'For this attendance message, decide which part of the day it covers: the WHOLE day (a full day off/WFH/late/etc.), or only the FIRST half of the day, or only the SECOND half of the day.',
+      parameters: {
+        type: 'object',
+        properties: {
+          period: { type: 'string', enum: ['full day', '1st half', '2nd half'], description: 'Which part of the day this specific message covers.' }
+        },
+        required: ['period']
+      }
+    }
+  };
+}
+async function classifyAttendancePeriodByModel(topicLabel, summary) {
+  const attendanceRequestService = require('./attendanceRequestService');
+  const fallback = () => attendanceRequestService.classifyRequestPeriod(topicLabel, summary);
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey || !DRAFT_MODEL) return fallback();
+  const toolDef = classifyAttendancePeriodTool().function;
+  const systemPrompt = 'Classify which part of the day this attendance message covers.';
+  const input = await callClaudeForcedTool(apiKey, DRAFT_MODEL, [{ role: 'system', content: systemPrompt }, { role: 'user', content: (topicLabel || '') + ' - ' + (summary || '') }], toolDef.name, toolDef).catch(() => null);
+  if (!input || !['full day', '1st half', '2nd half'].includes(input.period)) return fallback();
+  return input.period;
+}
+// Point 2's own exact fixed text (a pure repeat - same date, same period).
+const ATTENDANCE_DUPLICATE_ALREADY_RECEIVED = {
+  english: (date, periodLabel) => 'Thank you for your message. Your attendance request for ' + date + ' (' + periodLabel + ') has already been received and is being processed. If you need any other help, please let me know.',
+  banglish: (date, periodLabel) => 'Dhonnobad apnar message-er jonno. ' + date + ' (' + periodLabel + ')-er jonno apnar attendance request agei peyechhi, seta process kora hocche. Onno kono sahajjo lagle janaben.',
+  hinglish: (date, periodLabel) => 'Aapke message ke liye dhanyavaad. ' + date + ' (' + periodLabel + ') ke liye aapki attendance request pehle hi mil chuki hai aur process ki ja rahi hai. Kisi aur madad ki zarurat ho toh batayein.'
+};
+// Point 4 - not given exact fixed wording by the spec ("SUBH confirms the
+// change briefly") - same tone/register as the fixed texts above.
+const ATTENDANCE_DUPLICATE_UPDATED = {
+  english: (date, periodLabel) => "Got it - I've updated your attendance request for " + date + ' to ' + periodLabel + '.',
+  banglish: (date, periodLabel) => date + '-er jonno apnar attendance request ekhon ' + periodLabel + ' hisebe update kora holo.',
+  hinglish: (date, periodLabel) => date + ' ke liye aapki attendance request ab ' + periodLabel + ' update kar di gayi hai.'
+};
 function attendanceFollowUpListHtml(candidates, lang) {
   return candidates.map((c, i) => (i + 1) + ') ' + c.requestDates + ' (' + periodDisplayLabel(c.period, lang) + ') – ' + c.requestType).join('\n');
 }
@@ -9207,8 +9259,13 @@ async function handleHrNotificationStart({ phone, name, lang, text, history, cla
   }
   const datePhrase = formatHrNoteDatePhrase(dateResolved, lang);
   summaryLocalized = fillHrNoteDatePlaceholder(summaryLocalized, datePhrase);
-  require('./attendanceRequestService').recordDateResolved(phone, formatHrNoteCalendarDate(dateResolved), hrNoteResolvedEndOfDayTs(dateResolved)).catch(() => {});
-  return continueHrNoteAfterDateResolved({ phone, name, lang, history, summary, summaryLocalized, topicLabel, actionPhrase, actionKind, createdAt, datePhrase, thirdPartyName, thirdPartyHint, involvesThirdParty, approvalGranted });
+  // Direct instruction (2026-11), Commit 4 - awaited (not fire-and-forget
+  // any more) so its own return value (the record this message's own
+  // Step 1 already created) can be threaded into the duplicate-request
+  // check below - the ONE place both the record id AND the resolved date
+  // are both finally known together.
+  const thisRecordId = await require('./attendanceRequestService').recordDateResolved(phone, formatHrNoteCalendarDate(dateResolved), hrNoteResolvedEndOfDayTs(dateResolved)).catch(() => null);
+  return continueHrNoteAfterDateResolved({ phone, name, lang, history, summary, summaryLocalized, topicLabel, actionPhrase, actionKind, createdAt, datePhrase, thirdPartyName, thirdPartyHint, involvesThirdParty, approvalGranted, thisRecordId });
 }
 
 // Factored out of handleHrNotificationStart (explicit-date task, 2026-11) so
@@ -9219,7 +9276,27 @@ async function handleHrNotificationStart({ phone, name, lang, text, history, cla
 // ALREADY had its `{Date}` placeholder substituted (or never had one) -
 // everything from here on is exactly the pre-existing sudden/approval/
 // third-party logic, unchanged in behavior.
-async function continueHrNoteAfterDateResolved({ phone, name, lang, history, summary, summaryLocalized, topicLabel, actionPhrase, actionKind, createdAt, datePhrase, thirdPartyName, thirdPartyHint, involvesThirdParty, approvalGranted }) {
+async function continueHrNoteAfterDateResolved({ phone, name, lang, history, summary, summaryLocalized, topicLabel, actionPhrase, actionKind, createdAt, datePhrase, thirdPartyName, thirdPartyHint, involvesThirdParty, approvalGranted, thisRecordId }) {
+  // Direct instruction (2026-11), Commit 4 - duplicate-request handling:
+  // "one card per sender + date + period + type", checked HERE - the
+  // earliest point date AND period are both known. The model classifies
+  // period fresh (point 7 - no keyword list); thisRecordId's own regex-
+  // guessed period (set at Step 1, before the date even resolved) is
+  // overwritten with this real value either way, duplicate or not.
+  if (thisRecordId) {
+    const attendanceRequestService = require('./attendanceRequestService');
+    const period = await classifyAttendancePeriodByModel(topicLabel, summary).catch(() => 'full day');
+    await attendanceRequestService.updateRecord(thisRecordId, { period }).catch(() => {});
+    const dup = await attendanceRequestService.findDuplicateOrUpdateCandidate(phone, thisRecordId, Date.now()).catch(() => null);
+    if (dup) {
+      await attendanceRequestService.mergeDuplicateIntoExisting(thisRecordId, dup.record, dup.relationship).catch(() => {});
+      const periodLabel = periodDisplayLabel(dup.relationship === 'same' ? dup.record.period : period, lang);
+      const fn = dup.relationship === 'same'
+        ? (ATTENDANCE_DUPLICATE_ALREADY_RECEIVED[lang] || ATTENDANCE_DUPLICATE_ALREADY_RECEIVED.english)
+        : (ATTENDANCE_DUPLICATE_UPDATED[lang] || ATTENDANCE_DUPLICATE_UPDATED.english);
+      return { case: 'acknowledged', replyText: fn(datePhrase, periodLabel), summaryForOwner: null, lang };
+    }
+  }
   // WFH/leave/half-day/off-day-duty FIX, "sudden" - a sudden/emergency
   // report has no instruction/approval framing at all; SUBH never assumes
   // a manager is involved, it asks first. A manager already named in the
@@ -9305,12 +9382,12 @@ async function continueHrNoteFlow({ phone, name, text, history, hrFlow }) {
     }
     const datePhrase = formatHrNoteDatePhrase(resolved, lang);
     const summaryLocalized = fillHrNoteDatePlaceholder(hrFlow.summaryLocalized, datePhrase);
-    require('./attendanceRequestService').recordDateResolved(phone, formatHrNoteCalendarDate(resolved), hrNoteResolvedEndOfDayTs(resolved)).catch(() => {});
+    const thisRecordId = await require('./attendanceRequestService').recordDateResolved(phone, formatHrNoteCalendarDate(resolved), hrNoteResolvedEndOfDayTs(resolved)).catch(() => null);
     return continueHrNoteAfterDateResolved({
       phone, name, lang, history, summary: hrFlow.summary, summaryLocalized, topicLabel: hrFlow.topicLabel,
       actionPhrase: hrFlow.actionPhrase, actionKind: hrFlow.actionKind, createdAt: hrFlow.createdAt, datePhrase,
       thirdPartyName: hrFlow.thirdPartyName, thirdPartyHint: hrFlow.thirdPartyHint,
-      involvesThirdParty: hrFlow.involvesThirdParty, approvalGranted: hrFlow.approvalGranted
+      involvesThirdParty: hrFlow.involvesThirdParty, approvalGranted: hrFlow.approvalGranted, thisRecordId
     });
   }
   // WFH/leave/half-day/off-day-duty FIX - "sudden": did the sender also
@@ -16806,6 +16883,9 @@ module.exports = {
   ATTENDANCE_FOLLOWUP_CLOSED_NO_DECISION,
   ATTENDANCE_FOLLOWUP_STILL_NEED_APPROVER,
   ATTENDANCE_FOLLOWUP_COULDNT_TELL,
+  classifyAttendancePeriodByModel,
+  ATTENDANCE_DUPLICATE_ALREADY_RECEIVED,
+  ATTENDANCE_DUPLICATE_UPDATED,
   normalizeBengaliNamePhonetics,
   findEmployeesByPhoneticNameMatch,
   checkHrConfirmationNudges,
