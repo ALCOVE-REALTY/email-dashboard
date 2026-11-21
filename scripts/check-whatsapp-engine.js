@@ -2383,13 +2383,20 @@ async function checkAsyncRealModel(label, fn) {
   });
 
   console.log('='.repeat(70));
-  console.log('LIVE TEST FIXES item 3: the manager confirmation message is phrased ACTIVELY as what the manager told the sender ("apni onake ... bolechhen"), never passively, and always opens with the identity line on its first message of the day (the live bug: this side-effect send used to skip the identity line entirely)');
+  console.log('LIVE TEST FIXES item 3: the manager confirmation message always opens with the identity line on its first message of the day (the live bug: this side-effect send used to skip the identity line entirely)');
   console.log('='.repeat(70));
-  await checkAsync('a fresh HR-confirmation send to a manager with NO prior conversation today opens with the identity line and phrases the summary actively ("apni onake")', async () => {
+  // LIVE INCIDENT (2026-11), direct instruction - the first manager ask
+  // used to be built from a free-text `summary` sentence (checked here
+  // for "apni onake...") which never said WHO or WHICH DATE - the exact
+  // root cause of a manager replying "?" to it. Now built from the same
+  // structured employee/type/date/period fields the reminders use -
+  // this test is rewritten to check THOSE are present instead.
+  await checkAsync('a fresh HR-confirmation send to a manager with NO prior conversation today opens with the identity line and states the employee/type/date/period (never a vague free-text summary)', async () => {
     const senderPhone = '910000000910';
     const managerPhone = '910000000911';
     const id = await whatsappAssistant.saveHrConfirmation({
-      senderPhone, senderName: 'Sender', summary: 'told to work today instead of off day', summaryLocalized: 'apni onake ajke duty korte bolechhen, ar er bodole onno din chhutti nite bolechhen',
+      senderPhone, senderName: 'Sender', summary: 'reached office late today', summaryLocalized: 'ajke office pouchote deri hoyeche',
+      topicLabel: 'late', datePhrase: '22 November',
       lang: 'banglish', thirdPartyPhone: managerPhone, thirdPartyName: 'Test Manager', thirdPartyDepartment: 'HR',
       status: 'awaiting_manager', createdAt: Date.now(), remindedAt: null, escalatedAt: null, reminderId: null
     });
@@ -2397,8 +2404,10 @@ async function checkAsyncRealModel(label, fn) {
     const log = await whatsappAssistant.listInboxLog(10);
     const entry = log.find((e) => e.chatId === managerPhone && e.case === 'hr_confirmation_sent');
     const ok = Boolean(entry) && entry.sentText.startsWith('Ami SUBH, Subhodeep-er HR Assistant.')
-      && entry.sentText.includes('apni onake ajke duty korte bolechhen')
-      && !entry.sentText.includes('bola hoyechhe');
+      && entry.sentText.includes('Sender')
+      && entry.sentText.includes('22 November')
+      && entry.sentText.includes('late coming')
+      && entry.sentText.includes('Yes ba No');
     await whatsappAssistant.removeHrConfirmation(id);
     return ok;
   });

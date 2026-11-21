@@ -8058,6 +8058,71 @@ function periodDisplayLabel(period, lang) {
   }
   return period || 'full day';
 }
+// Direct instruction (2026-11) - "every reminder must say which request
+// it is about: type, date, period (and the employee for manager
+// reminders)... {type} = leave / half-day / late coming / early leave /
+// WFH / comp-off / duty change (same English words in every language)."
+// Maps attendanceRequestService's own classifyRequestType labels (used
+// everywhere else - exports, the Attendance Requests list) to this exact
+// inline phrasing, never a second, independent vocabulary.
+const REQUEST_TYPE_DISPLAY_PHRASE = {
+  'Leave': 'leave', 'Half-day': 'half-day', 'Late': 'late coming', 'Early leave': 'early leave',
+  'WFH': 'WFH', 'Comp-off': 'comp-off', 'Duty change': 'duty change',
+  'Second-half joining': 'second-half joining', 'Regularisation': 'regularisation'
+};
+function typeDisplayPhrase(requestType) {
+  return REQUEST_TYPE_DISPLAY_PHRASE[requestType] || 'attendance';
+}
+// Direct instruction (2026-11) - the ONE shared field-resolver behind
+// every manager/employee-facing attendance message that must "say which
+// request it is about" (reminders, the first manager ask, the unclear-
+// retry). Prefers the real attendanceRequestService record (resolved
+// date, classified type/period, employeeId) when a confirmationId links
+// to one; falls back to re-deriving type/period from the same raw
+// topicLabel/summary the record itself was built from (identical
+// classifiers, same result, no extra round trip) for the employee-side
+// reminder, which fires BEFORE a manager - and so a linked confirmation -
+// ever exists.
+// LIVE INCIDENT (2026-11), direct instruction - this deliberately never
+// calls findEmployeeByPhone/employeeService.getEmployeeData() (a real,
+// sometimes-slow network read, cached only 2 minutes - this suite alone
+// runs ~4-5 minutes, so SOME call mid-run is always liable to hit a cold
+// cache). Root-caused live: this function's own timeout wrapper
+// (checkAsync) cannot actually cancel a slow promise (same documented
+// Node limitation as withPollOnceTimeout/runMaintenanceJob elsewhere in
+// this codebase) - an orphaned slow fetch here kept running in the
+// background and starved whichever UNRELATED tests happened to run next
+// on the same single-threaded event loop, which is exactly why fixing
+// ONE test's own fixture also silently "fixed" several other, seemingly
+// unrelated timeouts in the same run. employeeId (empcode) is cosmetic
+// (the template already omits its parenthetical when absent) - never
+// worth a live network call for. In real production this is a non-issue
+// regardless: recordStep1Received already resolves and stores
+// employeeId/employeeName on the record itself at creation time via its
+// own findEmployeeByPhone call, so the linked record almost always
+// already has both by the time any message here gets built.
+async function resolveAttendanceTextFields({ topicLabel, summary, datePhrase, confirmationId, senderName }) {
+  const attendanceRequestService = require('./attendanceRequestService');
+  let record = null;
+  if (confirmationId) record = await attendanceRequestService.getRecordByConfirmationId(confirmationId).catch(() => null);
+  const requestType = (record && record.requestType) || attendanceRequestService.classifyRequestType(topicLabel, summary);
+  const period = (record && record.period) || attendanceRequestService.classifyRequestPeriod(topicLabel, summary);
+  const date = (record && record.requestDates) || datePhrase || null;
+  const employeeName = (record && record.employeeName) || (senderName && senderName !== 'The sender' ? senderName : null);
+  const empcode = (record && record.employeeId) || null;
+  return { employee: employeeName || 'The employee', empcode, type: typeDisplayPhrase(requestType), period, date: date || 'the requested date' };
+}
+// The ONE shared lead-in clause ("X (code) has requested Y for Z
+// (period)...") every manager-facing attendance message below builds on -
+// a single place these 3 languages can never drift apart between the
+// first ask, reminders, and the unclear-retry.
+function managerConfirmationLeadIn(lang, fields) {
+  const empPart = fields.employee + (fields.empcode ? ' (' + fields.empcode + ')' : '');
+  const periodText = periodDisplayLabel(fields.period, lang);
+  if (lang === 'banglish') return empPart + ' ' + fields.date + ' (' + periodText + ')-er jonno ' + fields.type + '-er request korechhen, ar approver hisebe apnar naam diyechhen';
+  if (lang === 'hinglish') return empPart + ' ne ' + fields.date + ' (' + periodText + ') ke liye ' + fields.type + ' ki request ki hai aur approver ke roop mein aapka naam diya hai';
+  return empPart + ' has requested ' + fields.type + ' for ' + fields.date + ' (' + periodText + ') and named you as the approver';
+}
 // ---------------- Duplicate-request handling (2026-11, direct instruction, Commit 4) ----------------
 // Direct instruction, point 7 - "the model decides type, date and period
 // from the message... no keyword lists." A real model classifier (as
@@ -8765,10 +8830,27 @@ const HR_NOTE_ASK_WHICH_DATE = {
   english: 'Could you tell me the exact date this is for? (e.g. "15 November" or "tomorrow")'
 };
 
+// LIVE INCIDENT (2026-11), direct instruction - the original free-text
+// version of this (built from a natural-language `summary` sentence)
+// never said WHO or WHICH DATE, only the free-text matter itself - the
+// exact root cause of a manager replying "?" to "Ektu nishchit kore
+// bolben - apni onake kalke chhutti newar approval diyechhen, eta ki
+// thik?" (no name, no date in the question at all). Now built from
+// managerConfirmationLeadIn - the SAME structured employee/type/date/
+// period clause the reminders use - never a re-derived free sentence.
 const HR_CONFIRMATION_TO_MANAGER = {
-  banglish: (requesterRef, summary) => 'Apnar theke ekta bishoye confirmation proyojon, tai apnake message korlam. Kichukkhon age ' + requesterRef + ' theke amar kache message esechhe je ' + summary + '. Eta ki apnar theke confirm?',
-  hinglish: (requesterRef, summary) => 'Aapse ek baat confirm karni thi, isliye message kiya. Thodi der pehle ' + requesterRef + ' se mujhe message mila hai ki ' + summary + '. Kya yeh aapki taraf se confirm hai?',
-  english: (requesterRef, summary) => "I need a quick confirmation from you, so I'm reaching out. A little while ago I received a message from " + requesterRef + " saying that " + summary + ". Can you confirm this?"
+  banglish: (fields) => managerConfirmationLeadIn('banglish', fields) + '. Apni approve korechhen kina, Yes ba No likhe janale ami ' + fields.employee + '-ke janiye dite parbo.',
+  hinglish: (fields) => managerConfirmationLeadIn('hinglish', fields) + '. Kripya Yes ya No likh kar confirm karein, taaki main ' + fields.employee + ' ko bata sakun.',
+  english: (fields) => managerConfirmationLeadIn('english', fields) + '. Please reply Yes or No to confirm, so I can update ' + fields.employee + '.'
+};
+// Direct instruction (2026-11) - "used for Reminder 1, Reminder 2 and
+// the employee-follow-up reminder" - exact fixed text, always first
+// person, never "SUBH". Same lead-in as the first ask above, with the
+// "Reminder:" opener.
+const HR_CONFIRMATION_MANAGER_REMINDER = {
+  banglish: (fields) => 'Reminder: ' + managerConfirmationLeadIn('banglish', fields) + '. Apni approve korechhen kina, Yes ba No likhe janale ami ' + fields.employee + '-ke janiye dite parbo.',
+  hinglish: (fields) => 'Reminder: ' + managerConfirmationLeadIn('hinglish', fields) + '. Kripya Yes ya No likh kar confirm karein, taaki main ' + fields.employee + ' ko bata sakun.',
+  english: (fields) => 'Reminder: ' + managerConfirmationLeadIn('english', fields) + '. Please reply Yes or No to confirm, so I can update ' + fields.employee + '.'
 };
 // LIVE BUG FIX (2026-11), direct instruction, item 1 - sent to the SAME
 // manager, on top of an already-pending HR_CONFIRMATION_TO_MANAGER ask,
@@ -8832,10 +8914,17 @@ const HR_CONFIRMATION_MANAGER_DEFER_ACK = {
   hinglish: 'Theek hai, aap dekh kar bata dijiyega.',
   english: 'Okay, please let me know once you have checked.'
 };
+// LIVE INCIDENT (2026-11), direct instruction - the original free-text
+// version of this ("Ektu nishchit kore bolben - apni onake kalke chhutti
+// newar approval diyechhen, eta ki thik?") never said WHO or WHICH DATE
+// either - a manager with no other context literally could not tell what
+// was being asked, and replied "?". Rebuilt on the SAME structured
+// lead-in as the first ask/reminders above - this is the "asks again
+// once with the full details" retry (point 2c).
 const HR_CONFIRMATION_MANAGER_UNCLEAR_RETRY = {
-  banglish: (summary) => 'Ektu nishchit kore bolben - ' + summary + ', eta ki thik?',
-  hinglish: (summary) => 'Thoda spasht kar denge - ' + summary + ', kya yeh sahi hai?',
-  english: (summary) => 'Could you confirm clearly - ' + summary + ' - is that right?'
+  banglish: (fields) => 'Apnar age-r reply-ta thik bujhte parini. Nishchit kori - ' + managerConfirmationLeadIn('banglish', fields) + '. Apni Yes na No likhe janale bhalo hoy.',
+  hinglish: (fields) => 'Aapka pichla reply samajh nahi paya. Confirm karte hain - ' + managerConfirmationLeadIn('hinglish', fields) + '. Kripya Yes ya No likh kar bataiye.',
+  english: (fields) => "Sorry, I couldn't quite understand your last reply. Just to confirm - " + managerConfirmationLeadIn('english', fields) + '. Please reply Yes or No.'
 };
 // After ONE clarifying question still doesn't resolve to a clear yes/no,
 // SUBH stops asking (never a third identical/near-identical retry) and
@@ -9099,9 +9188,12 @@ async function sendHrConfirmationMessageToManager(confirmationId) {
   const confirmation = await getHrConfirmation(confirmationId);
   if (!confirmation) return { ok: false, error: 'confirmation record not found' };
   const lang = confirmation.lang;
-  const requesterRef = requesterRefFor(confirmation.senderName, confirmation.senderPhone);
+  const fields = await resolveAttendanceTextFields({
+    phone: confirmation.senderPhone, topicLabel: confirmation.topicLabel, summary: confirmation.summary,
+    datePhrase: confirmation.datePhrase, confirmationId: confirmation.id, senderName: confirmation.senderName
+  });
   const text = await prependDisclosureIfNeeded(
-    (HR_CONFIRMATION_TO_MANAGER[lang] || HR_CONFIRMATION_TO_MANAGER.english)(requesterRef, summaryForSentence(confirmation.summaryLocalized || confirmation.summary)),
+    (HR_CONFIRMATION_TO_MANAGER[lang] || HR_CONFIRMATION_TO_MANAGER.english)(fields),
     confirmation.thirdPartyPhone, lang
   );
   return sendRawHrConfirmationTextToManager(confirmation.thirdPartyPhone, confirmation.thirdPartyName, text, '[HR confirmation request: ' + confirmation.summary + ']');
@@ -9138,12 +9230,19 @@ async function sendHrConfirmationMessageToManagerCombined(managerPhone, isRemind
   if (!pending.length) return { ok: true };
   if (pending.length === 1 && !isReminder) return sendHrConfirmationMessageToManager(pending[0].id);
   if (pending.length === 1) {
-    // isReminder, single item - identical to the ORIGINAL (pre-combining)
-    // single-item reminder text/send in checkHrConfirmationNudges, never
-    // logged to the inbox (unchanged from before this fix).
+    // isReminder, single item - this is Reminder 1, Reminder 2, AND the
+    // employee-follow-up fresh reminder (all 3 call this same function
+    // with isReminder=true - see checkHrConfirmationNudges and
+    // continueHrNoteAfterDateResolved's follow-up branch). Direct
+    // instruction (2026-11): the fixed HR_CONFIRMATION_MANAGER_REMINDER
+    // text, never the unclear-retry wording this used to reuse.
     const only = pending[0];
+    const fields = await resolveAttendanceTextFields({
+      phone: only.senderPhone, topicLabel: only.topicLabel, summary: only.summary,
+      datePhrase: only.datePhrase, confirmationId: only.id, senderName: only.senderName
+    });
     const text = await prependDisclosureIfNeeded(
-      (HR_CONFIRMATION_MANAGER_UNCLEAR_RETRY[only.lang] || HR_CONFIRMATION_MANAGER_UNCLEAR_RETRY.english)(summaryForSentence(only.summaryLocalized || only.summary)),
+      (HR_CONFIRMATION_MANAGER_REMINDER[only.lang] || HR_CONFIRMATION_MANAGER_REMINDER.english)(fields),
       managerPhone, only.lang
     );
     if (isRealSendAllowedFor(managerPhone)) {
@@ -10320,7 +10419,11 @@ async function handleHrConfirmationManagerReply({ phone, text, lang, pendingConf
     return { case: 'acknowledged', replyText: HR_CONFIRMATION_MANAGER_THANKS_UNCLEAR[replyLang] || HR_CONFIRMATION_MANAGER_THANKS_UNCLEAR.english, summaryForOwner: null, lang: replyLang };
   }
   await updateHrConfirmation(confirmation.id, { unclearAttempts: unclearAttempts + 1, unclearTexts });
-  return { case: 'acknowledged', replyText: (HR_CONFIRMATION_MANAGER_UNCLEAR_RETRY[replyLang] || HR_CONFIRMATION_MANAGER_UNCLEAR_RETRY.english)(summaryForSentence(confirmation.summaryLocalized || confirmation.summary)), summaryForOwner: null, lang: replyLang };
+  const unclearRetryFields = await resolveAttendanceTextFields({
+    phone: confirmation.senderPhone, topicLabel: confirmation.topicLabel, summary: confirmation.summary,
+    datePhrase: confirmation.datePhrase, confirmationId: confirmation.id, senderName: confirmation.senderName
+  });
+  return { case: 'acknowledged', replyText: (HR_CONFIRMATION_MANAGER_UNCLEAR_RETRY[replyLang] || HR_CONFIRMATION_MANAGER_UNCLEAR_RETRY.english)(unclearRetryFields), summaryForOwner: null, lang: replyLang };
 }
 
 // Owner's own decision on an 'ambiguous_owner_review' confirmation - the
@@ -10596,10 +10699,15 @@ async function checkHrConfirmationNudges(now) {
 // opened, gets ONE short reminder here; never a second (the flow's own
 // end-of-day close, see attendanceRequestService's closeStaleRecords,
 // is what happens if the sender still never answers).
+// LIVE INCIDENT (2026-11), direct instruction - the original free-text
+// version of this never said which request it was about at all (no
+// type/date/period) - exact fixed text now, always first person, never
+// "SUBH", built from the SAME structured fields the manager-facing
+// templates use.
 const HR_NOTE_SENDER_REMINDER = {
-  banglish: 'Ektu reminder dilam - ke eta approve korechhen ba janiyechhen, seta janale SUBH egiye nite parbe.',
-  hinglish: 'Thoda reminder - kisne ye approve kiya ya kisko bataya gaya, yeh bata denge toh SUBH aage badh sakta hai.',
-  english: 'Just a quick reminder - if you can let me know who approved/was informed about this, I can move things forward.'
+  banglish: (fields) => 'Reminder: apni ' + fields.date + ' (' + periodDisplayLabel(fields.period, 'banglish') + ')-er ' + fields.type + '-er jonno je request diyechhilen, seta ke approve korechhen (ba kake janiyechhen), tar naam-ta ekhono pai-ni. Naam-ta janale ami apnar request-ta egiye niye jete parbo.',
+  hinglish: (fields) => 'Reminder: aapne ' + fields.date + ' (' + periodDisplayLabel(fields.period, 'hinglish') + ') ke ' + fields.type + ' ke liye jo request di thi, use kisne approve kiya (ya aapne kise bataya), unka naam abhi tak nahi mila. Naam bata dein, toh main aapki request aage badha dunga.',
+  english: (fields) => 'Reminder: for your ' + fields.type + ' request for ' + fields.date + ' (' + periodDisplayLabel(fields.period, 'english') + '), I still need the name of the person who approved it (or whom you informed). Once you share the name, I\'ll take your request forward.'
 };
 async function checkHrNoteSenderReminders(now) {
   const holidaySet = await fetchHolidayDateSet();
@@ -10609,9 +10717,29 @@ async function checkHrNoteSenderReminders(now) {
     if (flow.senderReminderSentAt) continue;
     const since = flow.createdAt || flow.lastTouchedAt;
     if (!since) continue;
+    // LIVE INCIDENT (2026-11), direct instruction - "make sure reminders
+    // only go for requests created after this feature went live, and old
+    // open requests are closed instead of reminded." Root cause: this
+    // flow and attendanceRequestService's own RECORD for the same
+    // request are two independently-tracked structures - closeStaleRecords
+    // already closes the record as "Closed - no reply" at end of its own
+    // working day, but NEVER clears this flow too (confirmed: it has no
+    // call into this file at all), so a flow from BEFORE this reminder
+    // ever existed just sat open forever, "60+ working minutes elapsed"
+    // trivially true, and fired a reminder the first time this job ever
+    // ran - exactly the live incident. Checking end-of-day FIRST (and
+    // closing instead of reminding) fixes this for any old flow
+    // unconditionally, with no separate hardcoded launch-date cutoff
+    // needed: a request old enough to predate this feature is, by
+    // definition, also already past its own single day's cutoff.
+    if (isPastEndOfDayIst(new Date(since), new Date(now))) {
+      await clearPendingHrNoteFlow(flow.phone).catch(() => {});
+      continue;
+    }
     if ((await workingHoursElapsedSince(new Date(since), new Date(now), holidaySet)) < 60) continue;
     const lang = flow.lang || 'english';
-    const text = HR_NOTE_SENDER_REMINDER[lang] || HR_NOTE_SENDER_REMINDER.english;
+    const fields = await resolveAttendanceTextFields({ phone: flow.phone, topicLabel: flow.topicLabel, summary: flow.summary, datePhrase: flow.datePhrase });
+    const text = (HR_NOTE_SENDER_REMINDER[lang] || HR_NOTE_SENDER_REMINDER.english)(fields);
     if (isRealSendAllowedFor(flow.phone)) {
       const sendResult = await sendWhatsAppChunked(flow.phone, text);
       if (sendResult.ok) {

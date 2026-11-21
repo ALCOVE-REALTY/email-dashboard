@@ -265,6 +265,20 @@ async function recordStep3ManagerAsked(phone, confirmationId) {
     await redis.set(BY_CONFIRMATION_PREFIX + confirmationId, id);
   } catch (err) { /* best effort */ }
 }
+// Direct instruction (2026-11) - the manager-facing text (first ask,
+// reminders, unclear-retry) needs the record's own employeeId/requestType/
+// period, which only live on THIS record, never on the hrConfirmation
+// itself (see whatsappAssistant.js's own saveHrConfirmation call site -
+// senderName/topicLabel/datePhrase only). Reuses the SAME reverse index
+// recordStep3ManagerAsked just stamped, read-only, never creates one.
+async function getRecordByConfirmationId(confirmationId) {
+  const redis = getClient();
+  if (!redis) return null;
+  try {
+    const id = await redis.get(BY_CONFIRMATION_PREFIX + confirmationId);
+    return id ? await getRecord(id) : null;
+  } catch (err) { return null; }
+}
 // Block/escalation case (finalizeHrNoteThirdParty's own safety gate - no
 // contact number on file, senior designation, never-auto, or
 // confirmations disabled) - the flow never reaches a manager at all, so
@@ -817,7 +831,7 @@ function exportRows(records) {
 module.exports = {
   classifyRequestType, extractRequestDates,
   saveRecord, getRecord, updateRecord, listAllRecords,
-  recordStep1Received, recordDateResolved, recordStep2ApproverNamed, recordStep3ManagerAsked, recordBlockedAtApprover, recordStep4And5Decision,
+  recordStep1Received, recordDateResolved, recordStep2ApproverNamed, recordStep3ManagerAsked, recordBlockedAtApprover, recordStep4And5Decision, getRecordByConfirmationId,
   derivedStatus, currentStepLabel, waitingOnLabel, monthKeyOf,
   listForMonth, remindRecord, closeRecord, closeStaleRecords, backfillFromExisting,
   exportColumns, exportRows,
