@@ -254,6 +254,15 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
     if (result && !result.skipped) log.log('[whatsapp-assistant] conversation summary index backfilled: ' + JSON.stringify(result));
   }).catch((err) => log.error('[whatsapp-assistant] conversation summary index backfill failed: ' + err.message));
 
+  // LIVE INCIDENT (2026-11), direct instruction, point 2(c) - "mask the
+  // existing one too" - a one-time, idempotent, self-healing cleanup of
+  // any password/OTP/card-number text already stored in unclearTexts
+  // before this fix existed. Same fire-and-forget startup pattern as the
+  // backfill right above.
+  whatsappAssistant.maskExistingUnclearTextsIfNeeded().then((result) => {
+    if (result && !result.skipped) log.log('[whatsapp-assistant] existing unclear-reply texts masked: ' + JSON.stringify(result));
+  }).catch((err) => log.error('[whatsapp-assistant] existing unclear-reply text masking failed: ' + err.message));
+
   const commitId = getCommitId();
 
   // LIVE INCIDENT (2026-11, direct instruction) - "log a startup line with

@@ -140,6 +140,15 @@ let attendancePeriodModelResponse = () => ({ period: 'full day' });
 function resetAttendancePeriodModelResponse() {
   attendancePeriodModelResponse = () => ({ period: 'full day' });
 }
+// LIVE INCIDENT (2026-11), direct instruction, point 2(b) - same
+// scripted-stub pattern, for the NEW classify_manager_reply_relevance
+// tool. Default ('relevant') matches the real function's own fail-open
+// default, so a test that never overrides this gets the same result
+// either way.
+let managerReplyRelevanceModelResponse = () => ({ verdict: 'relevant' });
+function resetManagerReplyRelevanceModelResponse() {
+  managerReplyRelevanceModelResponse = () => ({ verdict: 'relevant' });
+}
 // Small convenience wrapper so the Commit 3 tests below don't each need
 // their own local require() line, same module every other test in this
 // file already reaches via its own local const.
@@ -172,6 +181,10 @@ function installManagerConfirmationModelStub() {
       }
       if (body && Array.isArray(body.tools) && body.tools[0] && body.tools[0].name === 'classify_attendance_period') {
         const result = attendancePeriodModelResponse(body);
+        return { ok: true, json: async () => ({ content: result ? [{ type: 'tool_use', input: result }] : [] }) };
+      }
+      if (body && Array.isArray(body.tools) && body.tools[0] && body.tools[0].name === 'classify_manager_reply_relevance') {
+        const result = managerReplyRelevanceModelResponse(body);
         return { ok: true, json: async () => ({ content: result ? [{ type: 'tool_use', input: result }] : [] }) };
       }
     }
@@ -2307,7 +2320,7 @@ async function checkAsyncRealModel(label, fn) {
     await whatsappAssistant.removeHrConfirmation(id);
     return nothingYet && reminder1Fired && noReminder2Yet && reminder2Fired && escalatedOnce && neverEscalatedTwice;
   });
-  await checkAsync('checkHrConfirmationNudges escalation posts the exact fixed wording ("Manager <name> hasn\'t confirmed <employee>\'s <type> for <date> — please follow up directly") and raises a red Action-needed card that clears once the manager actually replies', async () => {
+  await checkAsync('checkHrConfirmationNudges escalation posts the exact fixed wording ("Manager <name> hasn\'t confirmed <employee>\'s <type> for <date> — please follow up directly") - the WhatsApp/email alert to the owner is unchanged; LIVE INCIDENT (2026-11), direct instruction, point 1 - it no longer raises its own red Action-needed card at all (moved onto the matching Attendance Requests card instead, read directly from the SAME escalatedAt/status fields this test also checks)', async () => {
     const HR_SENDER_ESC2 = '910000000876';
     const id = await whatsappAssistant.saveHrConfirmation({
       senderPhone: HR_SENDER_ESC2, senderName: 'Priya Sharma', summary: 'half day tomorrow', summaryLocalized: 'half day tomorrow', topicLabel: 'half-day', datePhrase: '22 October',
@@ -2322,11 +2335,18 @@ async function checkAsyncRealModel(label, fn) {
     // length comparison can silently pass OR fail depending purely on
     // how many earlier tests already filled the list toward its cap.
     const posted = notifAfter.find((n) => n.text.includes("Manager Tanmoy Mondal hasn't confirmed Priya's half-day for 22 October — please follow up directly."));
+    // The Attendance Requests route (workforceRoutes.js) builds its own
+    // "Escalated" pill from exactly these two fields - verified directly
+    // here rather than via a live HTTP call, matching this file's own
+    // service-layer testing convention.
+    const confirmationAfterEscalation = await whatsappAssistant.getHrConfirmation(id);
+    const wouldShowEscalatedPill = confirmationAfterEscalation.status === 'awaiting_manager' && Boolean(confirmationAfterEscalation.escalatedAt);
     const cardBefore = (await whatsappAssistant.listActionNeededItems()).find((i) => i.kind === 'hr_confirmation_manager_escalated' && i.data.id === id);
     await whatsappAssistant.updateHrConfirmation(id, { status: 'confirmed' });
-    const cardAfter = (await whatsappAssistant.listActionNeededItems()).find((i) => i.kind === 'hr_confirmation_manager_escalated' && i.data.id === id);
+    const confirmationAfterReply = await whatsappAssistant.getHrConfirmation(id);
+    const wouldStillShowPillAfterReply = confirmationAfterReply.status === 'awaiting_manager' && Boolean(confirmationAfterReply.escalatedAt);
     await whatsappAssistant.removeHrConfirmation(id);
-    return Boolean(posted) && Boolean(cardBefore) && !cardAfter;
+    return Boolean(posted) && wouldShowEscalatedPill && cardBefore === undefined && !wouldStillShowPillAfterReply;
   });
 
   console.log('='.repeat(70));
@@ -7435,18 +7455,104 @@ async function checkAsyncRealModel(label, fn) {
       await whatsappAssistant.removePendingApproval(id);
     }
   });
-  await checkAsync('LIVE BUG FIX: an ambiguous HR-confirmation card from listActionNeededItems() carries .name (the manager\'s name) - the raw record only has thirdPartyName, which rendered as "undefined\'s reply is unclear" on the Action-needed page', async () => {
+  // LIVE INCIDENT (2026-11), direct instruction, point 2(b) - this card
+  // no longer appears in listActionNeededItems() at all (moved onto the
+  // Attendance Requests page - see that section's own tests); it is
+  // still fully surfaced on the manager's own conversation page
+  // (getWhatsappConversation), completely independently of
+  // listActionNeededItems - this test now checks THAT real surface
+  // instead, preserving the original regression it was written for
+  // (the manager's name must never render as "undefined").
+  await checkAsync('LIVE BUG FIX: an ambiguous HR-confirmation card from getWhatsappConversation() carries .name (the manager\'s name) - the raw record only has thirdPartyName, which rendered as "undefined\'s reply is unclear" before this fix', async () => {
+    const managerPhone = TANMOY_MONDAL_PHONE; // a real, ACTIVE directory record - itemLabel() only ever trusts a current active-employee match, never the raw stored thirdPartyName of a non-employee number
     const id = await whatsappAssistant.saveHrConfirmation({
-      status: 'ambiguous_owner_review', thirdPartyPhone: '919999000079', thirdPartyName: 'Tanmoy Manager',
+      status: 'ambiguous_owner_review', thirdPartyPhone: managerPhone, thirdPartyName: 'Tanmoy Mondal',
       senderPhone: '919999000080', senderName: 'Test Sender', summary: 'WFH approval', unclearTexts: ['hmm', 'accha'],
       createdAt: Date.now(), ambiguousAt: Date.now()
     });
     try {
-      const items = await whatsappAssistant.listActionNeededItems();
-      const item = items.find((it) => it.kind === 'hr_confirmation_ambiguous' && it.chatId === whatsapp.normalizePhone('919999000079'));
-      return Boolean(item) && item.data.name === 'Tanmoy Manager' && item.data.summary === 'WFH approval' && item.data.unclearTexts.length === 2;
+      const convo = await whatsappAssistant.getWhatsappConversation(managerPhone);
+      const item = (convo.ambiguousHrConfirmations || []).find((it) => it.id === id);
+      return Boolean(item) && item.name === 'Tanmoy Mondal' && item.summary === 'WFH approval' && item.unclearTexts.length === 2;
     } finally {
       await whatsappAssistant.removeHrConfirmation(id);
+    }
+  });
+
+  console.log('='.repeat(70));
+  console.log('LIVE INCIDENT (2026-11), direct instruction, point 2 - Abhijit Nandi: a manager\'s new message must be checked for relevance before being attached to a pending confirmation, and sensitive text (password/OTP/card number) must never be stored or shown unmasked');
+  console.log('='.repeat(70));
+  check('maskSensitiveText: a labeled password value is masked, the label kept for context', whatsappAssistant.maskSensitiveText('my email is abc@x.com, password is Hunter2!') === 'my email is abc@x.com, password - ••••••');
+  check('maskSensitiveText: "pwd" and "pin" labels (different casing) are also masked', whatsappAssistant.maskSensitiveText('PWD: Secret99') === 'PWD - ••••••' && whatsappAssistant.maskSensitiveText('pin is 4821') === 'pin - ••••••');
+  check('maskSensitiveText: an OTP value is masked', whatsappAssistant.maskSensitiveText('your otp is 482917') === 'your otp - ••••••');
+  check('maskSensitiveText: a bare 16-digit card number is masked whole, even with spaces', whatsappAssistant.maskSensitiveText('card: 4111 2222 3333 4444') === 'card: ••••••••••••');
+  check('maskSensitiveText: a normal 10-digit Indian phone number is left completely untouched (never mistaken for a card number)', whatsappAssistant.maskSensitiveText('call me on 9830012345') === 'call me on 9830012345');
+  check('maskSensitiveText: ordinary text with no sensitive content passes through unchanged', whatsappAssistant.maskSensitiveText('yes, approved for tomorrow') === 'yes, approved for tomorrow');
+  check('maskSensitiveText: already-masked text is left as-is on a second pass (idempotent)', whatsappAssistant.maskSensitiveText('password - ••••••') === 'password - ••••••');
+  await checkAsync('maskExistingUnclearTextsIfNeeded: masks sensitive text already stored in unclearTexts from before this fix existed, and is idempotent (a second call is a genuine no-op)', async () => {
+    const id = await whatsappAssistant.saveHrConfirmation({
+      status: 'ambiguous_owner_review', thirdPartyPhone: '919999000090', thirdPartyName: 'Legacy Manager',
+      senderPhone: '919999000091', senderName: 'Legacy Sender', summary: 'leave approval',
+      unclearTexts: ['my password is Secret123', '?'],
+      createdAt: Date.now(), ambiguousAt: Date.now()
+    });
+    try {
+      const first = await whatsappAssistant.maskExistingUnclearTextsIfNeeded();
+      const after = await whatsappAssistant.getHrConfirmation(id);
+      const second = await whatsappAssistant.maskExistingUnclearTextsIfNeeded();
+      return Boolean(first) && after.unclearTexts[0] === 'my password - ••••••' && after.unclearTexts[1] === '?' && second && second.skipped === true;
+    } finally {
+      await whatsappAssistant.removeHrConfirmation(id);
+    }
+  });
+  await checkAsync('classifyManagerReplyRelevance: an unrelated message (e.g. containing a password) from a manager with a pending confirmation is classified "unrelated" and never gets attached to it - goes through the normal flow instead', async () => {
+    const managerPhone = '919999000092';
+    const id = await whatsappAssistant.saveHrConfirmation({
+      status: 'awaiting_manager', thirdPartyPhone: managerPhone, thirdPartyName: 'Abhijit Test Manager',
+      senderPhone: '919999000093', senderName: 'Test Sender', summary: 'leave approval tomorrow', topicLabel: 'leave', datePhrase: 'tomorrow',
+      lang: 'english', createdAt: Date.now(), remindedAt: null, escalatedAt: null, reminderId: null
+    });
+    const origFetch = installManagerConfirmationModelStub();
+    managerReplyRelevanceModelResponse = () => ({ verdict: 'unrelated' });
+    try {
+      const pending = await whatsappAssistant.listPendingHrConfirmationsForPhone(managerPhone);
+      const relevance = await whatsappAssistant.classifyManagerReplyRelevance('myemail@x.com password is Secret123', pending);
+      const unchangedAfter = await whatsappAssistant.getHrConfirmation(id);
+      return relevance === 'unrelated' && unchangedAfter.status === 'awaiting_manager' && !unchangedAfter.unclearTexts;
+    } finally {
+      global.fetch = origFetch;
+      resetManagerReplyRelevanceModelResponse();
+      await whatsappAssistant.removeHrConfirmation(id);
+    }
+  });
+  await checkAsync('classifyManagerReplyRelevance: a genuine (if unclear) answer attempt like "?" is classified "relevant" - still goes to the normal unclear-retry flow with full details, never silently dropped', async () => {
+    const managerPhone = '919999000094';
+    const id = await whatsappAssistant.saveHrConfirmation({
+      status: 'awaiting_manager', thirdPartyPhone: managerPhone, thirdPartyName: 'Abhijit Test Manager 2',
+      senderPhone: '919999000095', senderName: 'Test Sender Two', summary: 'leave approval tomorrow', topicLabel: 'leave', datePhrase: 'tomorrow',
+      lang: 'english', createdAt: Date.now(), remindedAt: null, escalatedAt: null, reminderId: null
+    });
+    const origFetch = installManagerConfirmationModelStub();
+    managerReplyRelevanceModelResponse = () => ({ verdict: 'relevant' });
+    try {
+      const pending = await whatsappAssistant.listPendingHrConfirmationsForPhone(managerPhone);
+      const relevance = await whatsappAssistant.classifyManagerReplyRelevance('?', pending);
+      return relevance === 'relevant';
+    } finally {
+      global.fetch = origFetch;
+      resetManagerReplyRelevanceModelResponse();
+      await whatsappAssistant.removeHrConfirmation(id);
+    }
+  });
+  await checkAsync('classifyManagerReplyRelevance fails SAFE (defaults to "relevant", the old behavior) on a malformed/unusable model response, never regressing below what existed before this fix', async () => {
+    const origFetch = installManagerConfirmationModelStub();
+    managerReplyRelevanceModelResponse = () => ({ verdict: 'not_a_real_verdict' });
+    try {
+      const relevance = await whatsappAssistant.classifyManagerReplyRelevance('anything', [{ senderName: 'X', topicLabel: 'leave' }]);
+      return relevance === 'relevant';
+    } finally {
+      global.fetch = origFetch;
+      resetManagerReplyRelevanceModelResponse();
     }
   });
   await checkAsync('REGRESSION: a pending draft item from listActionNeededItems() still carries draftReply/contactId/type correctly after the shared-shaping refactor', async () => {

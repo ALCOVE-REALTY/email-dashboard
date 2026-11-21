@@ -2893,6 +2893,18 @@
     const who = w.who === 'sender' ? (firstName || item.senderPhone) + ' to name the approver' : (w.name || 'the manager') + "'s reply";
     return '<span class="wf-attn-status-line waiting">' + OPEN_FLOWS_WAITING_ON_ICON + ' Waiting for ' + escapeHtml(who) + ' · ' + since + '</span>';
   }
+  // LIVE INCIDENT (2026-11), direct instruction, point 1 - "an escalated
+  // request shows a red 'Escalated' pill... clears when the manager
+  // replies, when I Close the request, or when it moves to 'HR to
+  // decide' at the 24th cutoff." it.escalatedAt itself is only ever set
+  // by the backend while the linked confirmation is still genuinely
+  // 'awaiting_manager' (see GET /hr-assistant/attendance-requests) - a
+  // reply, a Close, or the cutoff all move that status away on their
+  // own, so this pill already clears itself with no extra client logic.
+  function attnEscalatedPillHtml(it) {
+    if (!it.escalatedAt) return '';
+    return '<span class="wf-attn-escalated-pill">Escalated — Manager not responding · escalated ' + escapeHtml(attnDateTime(it.escalatedAt)) + '</span>';
+  }
   function renderAttnList(items) {
     if (!attnList) return;
     if (!items.length) { attnList.innerHTML = '<div class="wf-rem-empty">No attendance requests for this filter.</div>'; return; }
@@ -2918,6 +2930,7 @@
         '</div><span class="wf-attn-type-badge wf-attn-type-' + badgeClass + '">' + escapeHtml(it.requestType) + '</span></div>' +
         attnProgressHtml(it) +
         attnStatusLineHtml(it) +
+        attnEscalatedPillHtml(it) +
         (canRemind || canClose ? '<div class="wf-open-flow-actions">' +
           (canRemind ? '<button type="button" class="wf-attn-action-btn wf-attn-remind-btn" data-id="' + escapeHtml(it.id) + '">Remind</button>' : '') +
           (canClose ? '<button type="button" class="wf-attn-action-btn outline wf-attn-close-btn" data-id="' + escapeHtml(it.id) + '">Close</button>' : '') +
@@ -3087,12 +3100,18 @@
     const now = new Date();
     return now.getUTCFullYear() + '-' + String(now.getUTCMonth() + 1).padStart(2, '0');
   }
+  // LIVE INCIDENT (2026-11), direct instruction, point 1 - "the
+  // Attendance requests icon shows a red count of escalated requests."
+  // The badge element is already styled red/danger (it used to show the
+  // general in_progress count) - this is the one, more urgent number
+  // the owner actually needs to see at a glance now, from the SAME
+  // route's new escalatedCount field.
   async function refreshAttnBadge() {
     if (!openFlowsBadge) return;
     try {
       const resp = await fetch('/api/workforce/hr-assistant/attendance-requests?month=' + attnCurrentMonthKey() + '&status=in_progress');
       const data = await resp.json();
-      setCountBadge(openFlowsBadge, (data.counts && data.counts.in_progress) || 0);
+      setCountBadge(openFlowsBadge, data.escalatedCount || 0);
     } catch (err) { /* keep showing whatever was last known */ }
   }
   function showAttendanceRequests() {
@@ -6197,26 +6216,6 @@
       }, { toastFn: (msg) => showActionToast(msg, null, 'error') });
     });
   }
-  // Direct instruction (2026-11) - manager-confirmation escalation (no
-  // reply by end of the NEXT working day). Read-only/informational, no
-  // owner action needed beyond following up with the manager directly -
-  // it clears itself automatically once the manager actually replies
-  // (confirmed/rejected moves the confirmation's status away from
-  // awaiting_manager, which is exactly what this list is filtered on),
-  // so there's deliberately no Dismiss button here, unlike the other
-  // escalation-style cards that stay stuck until the owner resolves them.
-  function actionNeededHrConfirmationManagerEscalatedCardHtml(item) {
-    const c = item.data;
-    const employeeFirstName = String(c.senderName || 'The sender').split(' ')[0];
-    return '<div class="wf-auto-task-card" data-chat-id="' + escapeHtml(item.chatId) + '">' +
-      '<div class="wf-action-needed-card-head">' +
-        '<span class="wf-auto-task-subject">⚠️ Manager hasn\'t confirmed: ' + escapeHtml(item.name || item.chatId) + '</span>' +
-        '<button type="button" class="wf-action-needed-openchat" data-open-chat="' + escapeHtml(item.chatId) + '">Open chat ›</button>' +
-      '</div>' +
-      '<div class="wf-auto-hint">' + escapeHtml(employeeFirstName) + '\'s ' + escapeHtml(c.topicLabel || 'attendance matter') + (c.datePhrase ? ' for ' + escapeHtml(c.datePhrase) : '') + '</div>' +
-      '<div class="wf-auto-hint">Escalated ' + actionNeededAgeLabel(item.ageMs) + ' ago - please follow up directly</div>' +
-    '</div>';
-  }
   // Point 6 (2026-11), direct instruction - "60-second latency watchdog ->
   // red Action-needed card". Same self-clearing, no-Dismiss-button shape
   // as the escalated-confirmation card right above (the server-side
@@ -6236,7 +6235,6 @@
   function actionNeededCardHtml(item) {
     if (item.kind === 'automation_missed_run' || item.kind === 'automation_first_run') return actionNeededAutomationCardHtml(item);
     if (item.kind === 'hr_note_escalated') return actionNeededHrNoteEscalatedCardHtml(item);
-    if (item.kind === 'hr_confirmation_manager_escalated') return actionNeededHrConfirmationManagerEscalatedCardHtml(item);
     if (item.kind === 'reply_latency_watchdog') return actionNeededReplyLatencyWatchdogCardHtml(item);
     if (item.kind === 'data_access_notice') return actionNeededDataAccessNoticeCardHtml(item);
     if (item.kind === 'system_health_alert') return actionNeededSystemHealthCardHtml(item);

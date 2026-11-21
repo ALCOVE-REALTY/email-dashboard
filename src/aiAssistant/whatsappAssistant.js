@@ -793,24 +793,28 @@ async function listActionableWhatsappItems() {
 // (approve & send / edit / reject) is a decision, so it joins "approvals";
 // a received document needing review is closest to "data_requests".
 async function listActionNeededItems() {
-  const [approvals, drafts, docs, hrConfirmations, hrNoteEscalations, stuckIncoming, dataAccessNotices, healthAlert, aiFallbackAlert, latencyWatchdogItems] = await Promise.all([
+  const [approvals, drafts, docs, hrNoteEscalations, stuckIncoming, dataAccessNotices, healthAlert, aiFallbackAlert, latencyWatchdogItems] = await Promise.all([
     listPendingApprovals(), listPendingDrafts(),
-    documentRequests.listPendingReceived(), listAllHrConfirmations(), listHrNoteEscalations(), listStuckIncomingMessages(),
+    documentRequests.listPendingReceived(), listHrNoteEscalations(), listStuckIncomingMessages(),
     listDataAccessNotices(), getSystemHealthAlert(), getAiFallbackAlert(), listReplyLatencyWatchdogItems()
   ]);
-  const ambiguousConfirmations = hrConfirmations.filter((c) => c.status === 'ambiguous_owner_review');
-  // Direct instruction (2026-11) - the new manager-confirmation escalation
-  // (no reply by end of the NEXT working day, see checkHrConfirmationNudges)
-  // gets its own red Action-needed card, same shape as the ambiguous-
-  // review one just above, reusing the SAME already-fetched
-  // hrConfirmations list (no extra query).
-  const escalatedConfirmations = hrConfirmations.filter((c) => c.status === 'awaiting_manager' && c.escalatedAt);
+  // LIVE INCIDENT (2026-11), direct instruction, point 1 + point 2(b) -
+  // "attendance escalations belong on the Attendance requests page, not
+  // Action needed" / "that [unclear-reply] card also belongs on the
+  // Attendance requests page, not Action needed." Both kinds (escalated
+  // manager-confirmation, ambiguous/unclear manager reply) used to get
+  // their own red Action-needed cards here - removed; the SAME
+  // hrConfirmations data (escalatedAt/status) is now read back onto its
+  // matching card on the Attendance Requests page instead (see
+  // GET /hr-assistant/attendance-requests in workforceRoutes.js). Still
+  // fully resolvable exactly as before via the manager's own conversation
+  // page (getWhatsappConversation already surfaces ambiguousHrConfirmations
+  // there independently of this list) - nothing about HOW an ambiguous
+  // reply gets resolved changes, only WHERE it's surfaced for visibility.
   const raw = [];
   approvals.forEach((a) => raw.push({ kind: 'approval', category: 'data_requests', chatId: whatsapp.normalizePhone(a.phone), name: a.name, ts: a.createdAt || 0, data: a }));
   drafts.forEach((d) => raw.push({ kind: 'draft', category: 'approvals', chatId: whatsapp.normalizePhone(d.contactId), name: d.name, ts: d.createdAt || 0, data: d }));
   docs.forEach((d) => raw.push({ kind: 'document', category: 'data_requests', chatId: whatsapp.normalizePhone(d.phone), name: null, ts: d.receivedAt || 0, data: d }));
-  ambiguousConfirmations.forEach((c) => raw.push({ kind: 'hr_confirmation_ambiguous', category: 'approvals', chatId: whatsapp.normalizePhone(c.thirdPartyPhone), name: c.thirdPartyName, ts: c.ambiguousAt || c.createdAt || 0, data: c }));
-  escalatedConfirmations.forEach((c) => raw.push({ kind: 'hr_confirmation_manager_escalated', category: 'approvals', chatId: whatsapp.normalizePhone(c.thirdPartyPhone), name: c.thirdPartyName, ts: c.escalatedAt || c.createdAt || 0, data: c }));
   // Task 2 (2026-10-28) - the sender said something was approved/
   // instructed but, even after 2 re-asks, never managed to say by whom;
   // the owner resolves it by typing the real name in, same as the sender
@@ -1432,7 +1436,11 @@ async function logInboxEvent({ chatId, name, isGroup, messageSummary, aCase, sen
   try {
     const entry = {
       ts: Date.now(), chatId, name, isGroup: Boolean(isGroup),
-      messageSummary: (messageSummary || '').slice(0, 150),
+      // Point 2(c), direct instruction - messageSummary is built from the
+      // SENDER's own incoming text (never SUBH's own outgoing sentText
+      // below, which needs no masking) - this is what the Conversations
+      // list/Delivery log/exports all read back for their own previews.
+      messageSummary: maskSensitiveText((messageSummary || '').slice(0, 150)),
       case: aCase || null,
       sentText: sentText ? sentText.slice(0, 300) : null,
       outcome,
@@ -1687,8 +1695,12 @@ const FOLLOWUP_COUNT_PREFIX = 'wa-followup-count:';
 async function appendConvoHistory(chatId, direction, text) {
   const redis = getClient();
   if (!redis) return;
+  // Point 2(c) - only the INCOMING direction is ever user-supplied,
+  // unpredictable text; an outgoing message is always SUBH's own
+  // generated reply, never masked.
+  const storedText = direction === 'in' ? maskSensitiveText(text) : text;
   try {
-    await redis.lpush(CONVO_HISTORY_PREFIX + chatId, JSON.stringify({ ts: Date.now(), direction, text }));
+    await redis.lpush(CONVO_HISTORY_PREFIX + chatId, JSON.stringify({ ts: Date.now(), direction, text: storedText }));
     await redis.ltrim(CONVO_HISTORY_PREFIX + chatId, 0, CONVO_HISTORY_STORAGE_MAX - 1);
     await redis.expire(CONVO_HISTORY_PREFIX + chatId, CONVO_TTL_SECONDS);
   } catch (err) { /* best effort */ }
@@ -4597,6 +4609,57 @@ const HR_FLOW_UNRELATED_TOPIC_ACK = {
 // same reason every other variant here is explicit, not model-guessed.
 function collapseRepeatedLetters(s) {
   return String(s || '').replace(/([a-zA-Z])\1{2,}/g, '$1$1');
+}
+// LIVE INCIDENT (2026-11), direct instruction, point 2(c) - "never show
+// or store passwords / OTPs / card numbers in cards, logs, Delivery log
+// or exports - mask them." Applied at the few real storage choke points
+// (appendConvoHistory's incoming direction, logInboxEvent's own
+// messageSummary, and wherever a manager's reply text joins
+// unclearTexts) rather than at raw message ingestion, so classification
+// itself is never affected - only what gets STORED/SHOWN. A labeled
+// value ("password"/"pwd"/"otp"/"pin"/"verification code" followed by
+// its value) keeps the label for context but masks the value; a bare
+// 13-19 digit run (payment-card length - never a 10-digit Indian phone
+// number, which this deliberately leaves untouched) is masked whole.
+const SENSITIVE_LABELED_VALUE_RE = /\b(password|pwd|pass|otp|one[- ]?time[- ]?password|verification code|pin)\b\s*(?:is|:|=|-)?\s*([^\s,;]{3,})/gi;
+const SENSITIVE_CARD_NUMBER_RE = /\b(?:\d[ -]?){13,19}\b/g;
+function maskSensitiveText(text) {
+  if (!text) return text;
+  let masked = String(text).replace(SENSITIVE_LABELED_VALUE_RE, (match, label) => label + ' - ••••••');
+  masked = masked.replace(SENSITIVE_CARD_NUMBER_RE, '••••••••••••');
+  return masked;
+}
+// Point 2(c), direct instruction - "mask the existing one too." One-
+// time, idempotent cleanup of unclearTexts already stored before this
+// fix existed (e.g. the live Abhijit Nandi incident) - same guarded-
+// flag, self-healing pattern as backfillConvoSummaryIndexIfNeeded,
+// fired once at scheduler startup so this needs no live DB access or
+// manual run from either Subhodeep or me. Safe to re-run (never
+// double-masks - maskSensitiveText applied to already-masked text is a
+// no-op, since the mask output itself matches neither sensitive
+// pattern), but the flag still spares every later restart the full scan.
+const UNCLEAR_TEXTS_MASKED_FLAG_KEY = 'wa-unclear-texts-masked-v1';
+async function maskExistingUnclearTextsIfNeeded() {
+  const redis = getClient();
+  if (!redis) return { skipped: true };
+  try {
+    const already = await redis.get(UNCLEAR_TEXTS_MASKED_FLAG_KEY);
+    if (already) return { skipped: true };
+    const all = await listAllHrConfirmations();
+    let updated = 0;
+    for (const c of all) {
+      if (!c.unclearTexts || !c.unclearTexts.length) continue;
+      const maskedTexts = c.unclearTexts.map(maskSensitiveText);
+      if (JSON.stringify(maskedTexts) !== JSON.stringify(c.unclearTexts)) {
+        await updateHrConfirmation(c.id, { unclearTexts: maskedTexts });
+        updated++;
+      }
+    }
+    await redis.set(UNCLEAR_TEXTS_MASKED_FLAG_KEY, String(Date.now()));
+    return { skipped: false, updated };
+  } catch (err) {
+    return { skipped: true, error: err.message };
+  }
 }
 const NAME_CONFIRM_YES_RE = /^(haa|hya|hyan|ha|haan|hae|ho|yes|yeah|yep|ji|jee|thik(\s*ache)?|correct|approved|confirmed|ami\s+bol(echi|echilam|sechi|sechilam))\b/i;
 const NAME_CONFIRM_NO_RE = /^(na|naa|nahi|noi|no|nope|nah|not(\s*approved)?|ami\s+bol(ini|i\s*na(hi)?))\b/i;
@@ -10409,7 +10472,11 @@ async function handleHrConfirmationManagerReply({ phone, text, lang, pendingConf
   // after that, stop asking and hand it to the owner as a card (Confirmed /
   // Not confirmed / Ask again) instead of re-asking indefinitely.
   const unclearAttempts = confirmation.unclearAttempts || 0;
-  const unclearTexts = (confirmation.unclearTexts || []).concat([t]);
+  // Point 2(c), direct instruction - this is stored on the record itself
+  // (shown later on the "unclear" card and in the owner notification
+  // right below) - masked at the point of storage, same as every other
+  // incoming-text choke point in this file.
+  const unclearTexts = (confirmation.unclearTexts || []).concat([maskSensitiveText(t)]);
   if (unclearAttempts >= MAX_HR_CONFIRMATION_UNCLEAR_ATTEMPTS) {
     await updateHrConfirmation(confirmation.id, { status: 'ambiguous_owner_review', unclearAttempts: unclearAttempts + 1, unclearTexts, ambiguousAt: Date.now() });
     await postOwnerNotification(
@@ -12831,6 +12898,47 @@ async function classifyAttendanceRequestChoice(text, candidates) {
   return (idx >= 0 && idx < candidates.length) ? candidates[idx] : null;
 }
 
+// LIVE INCIDENT (2026-11), direct instruction, point 2(b) - "the model
+// must decide whether a manager's new message actually answers the
+// pending confirmation... unrelated messages go through the normal
+// flow, never attached to the confirmation." Root cause: the dispatch
+// site (further below, "a manager answering SUBH's own confirmation
+// question") used to route EVERY message from a manager with a pending
+// confirmation straight into the reply-resolution pipeline, with no
+// relevance check at all - the exact incident: an unrelated message (an
+// email id + password) got treated as "his unclear reply" to an old
+// leave confirmation. Same "model decides, code fills" shape as every
+// other classifier in this file - a narrow, closed verdict, never free
+// text - and fails OPEN (defaults to 'relevant', the OLD behavior) on
+// any API/parsing failure, so a transient model outage never regresses
+// below what existed before this fix.
+function classifyManagerReplyRelevanceTool() {
+  return {
+    type: 'function',
+    function: {
+      name: 'classify_manager_reply_relevance',
+      description: 'A manager was asked to confirm/deny one or more pending employee attendance requests (listed in the system prompt). The manager just sent a NEW message. Decide whether this message is actually about answering or discussing those pending request(s) - a yes/no/approval answer, a question about it, "let me check and get back", a correction to a date/detail, a genuinely unclear reply like "?" sent in response to being asked about it, etc. - as opposed to something completely unrelated to the pending request(s) (a different topic entirely, credentials/passwords/OTPs, a brand new unrelated request of their own, small talk). Judge by what the message is actually doing, never by its length or by whether it merely looks terse.',
+      parameters: {
+        type: 'object',
+        properties: {
+          verdict: { type: 'string', enum: ['relevant', 'unrelated'], description: '"relevant" if this message is at all about answering or discussing the pending confirmation(s). "unrelated" only when it is clearly about something else entirely.' }
+        },
+        required: ['verdict']
+      }
+    }
+  };
+}
+async function classifyManagerReplyRelevance(text, pendingConfirmations) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey || !DRAFT_MODEL) return 'relevant';
+  const toolDef = classifyManagerReplyRelevanceTool().function;
+  const list = pendingConfirmations.map((c, i) => (i + 1) + ') ' + (c.senderName || 'the sender') + "'s " + (c.topicLabel || 'attendance matter') + (c.datePhrase ? ' for ' + c.datePhrase : '')).join('; ');
+  const systemPrompt = 'This manager was asked to confirm/deny: ' + list + '.';
+  const input = await callClaudeForcedTool(apiKey, DRAFT_MODEL, [{ role: 'system', content: systemPrompt }, { role: 'user', content: text }], toolDef.name, toolDef).catch(() => null);
+  if (!input || (input.verdict !== 'relevant' && input.verdict !== 'unrelated')) return 'relevant';
+  return input.verdict;
+}
+
 // Direct instruction, case C - generic version of the same extra-info
 // judgment above, for when there's no "pending question" to weigh an
 // answer attempt against at all (the sender's own part of the flow is
@@ -14054,10 +14162,21 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
   // same reason every other pending-state check in this function is:
   // a bare "Haa"/"Na" only makes sense in light of the specific question
   // just asked, never the general classifier.
+  // LIVE INCIDENT (2026-11), direct instruction, point 2(b) - this used
+  // to route EVERY message from a manager with a pending confirmation
+  // straight into the reply-resolution pipeline unconditionally - see
+  // classifyManagerReplyRelevance's own comment for the exact incident
+  // this gate now prevents. An 'unrelated' verdict falls all the way
+  // through to every check below, completely unchanged - same
+  // fall-through convention the Automate Workflow check just below
+  // already uses for its own relevance gate.
   if (!isGroup && phone) {
     const pendingHrConfirmations = await listPendingHrConfirmationsForPhone(phone).catch(() => []);
     if (pendingHrConfirmations.length) {
-      return handleHrConfirmationManagerReply({ phone, text, lang: await detectLangSmart(text, history), pendingConfirmations: pendingHrConfirmations, history });
+      const relevance = await classifyManagerReplyRelevance(text, pendingHrConfirmations).catch(() => 'relevant');
+      if (relevance === 'relevant') {
+        return handleHrConfirmationManagerReply({ phone, text, lang: await detectLangSmart(text, history), pendingConfirmations: pendingHrConfirmations, history });
+      }
     }
   }
 
@@ -17169,6 +17288,10 @@ module.exports = {
   listAllWhatsappConversationsPage,
   listConvoSummaryRows,
   backfillConvoSummaryIndexIfNeeded,
+  maskSensitiveText,
+  maskExistingUnclearTextsIfNeeded,
+  classifyManagerReplyRelevance,
+  classifyManagerReplyRelevanceTool,
   markReplyPendingSince,
   clearReplyPending,
   checkReplyLatencyWatchdog,

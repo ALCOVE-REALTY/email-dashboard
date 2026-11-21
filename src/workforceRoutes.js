@@ -3334,17 +3334,32 @@ router.get('/hr-assistant/attendance-requests', async (req, res) => {
     monthRows.forEach((r) => { typeCounts[r.requestType] = (typeCounts[r.requestType] || 0) + 1; });
     let filtered = type === 'all' ? monthRows : monthRows.filter((r) => r.requestType === type);
     if (statusFilter !== 'all') filtered = filtered.filter((r) => r.derivedStatus === statusFilter);
-    const items = filtered.map((r) => ({
-      id: r.id, employeeName: r.employeeName, employeeId: r.employeeId, requestType: r.requestType,
-      requestDates: r.requestDates, receivedAt: r.receivedAt,
-      status: r.derivedStatus, currentStep: attendanceRequestService.currentStepLabel(r),
-      waitingOn: attendanceRequestService.waitingOnLabel(r),
-      managerDecision: r.managerDecision, managerDecisionAt: r.managerDecisionAt,
-      employeeInformedAt: r.employeeInformedAt, approverName: r.approverName,
-      senderPhone: r.senderPhone, lastReminderAt: r.lastReminderAt,
-      timeline: { receivedAt: r.receivedAt, approverNamedAt: r.approverNamedAt, managerAskedAt: r.managerAskedAt, managerDecisionAt: r.managerDecisionAt, employeeInformedAt: r.employeeInformedAt }
+    // LIVE INCIDENT (2026-11), direct instruction, point 1 - "escalations
+    // belong on the Attendance request card, not in Action needed." The
+    // escalation itself still only ever lives on the hrConfirmation
+    // record (escalatedAt, set by checkHrConfirmationNudges) - this is
+    // the ONE place that now reads it back onto its matching attendance
+    // card, instead of listActionNeededItems surfacing it as a separate
+    // card of its own (removed there - see whatsappAssistant.js).
+    const items = await Promise.all(filtered.map(async (r) => {
+      let escalatedAt = null;
+      if (r.linkedConfirmationId) {
+        const linked = await whatsappAssistant.getHrConfirmation(r.linkedConfirmationId).catch(() => null);
+        if (linked && linked.status === 'awaiting_manager' && linked.escalatedAt) escalatedAt = linked.escalatedAt;
+      }
+      return {
+        id: r.id, employeeName: r.employeeName, employeeId: r.employeeId, requestType: r.requestType,
+        requestDates: r.requestDates, receivedAt: r.receivedAt,
+        status: r.derivedStatus, currentStep: attendanceRequestService.currentStepLabel(r),
+        waitingOn: attendanceRequestService.waitingOnLabel(r),
+        managerDecision: r.managerDecision, managerDecisionAt: r.managerDecisionAt,
+        employeeInformedAt: r.employeeInformedAt, approverName: r.approverName,
+        senderPhone: r.senderPhone, lastReminderAt: r.lastReminderAt, escalatedAt,
+        timeline: { receivedAt: r.receivedAt, approverNamedAt: r.approverNamedAt, managerAskedAt: r.managerAskedAt, managerDecisionAt: r.managerDecisionAt, employeeInformedAt: r.employeeInformedAt }
+      };
     }));
-    res.json({ items, counts, typeCounts, month: monthKey });
+    const escalatedCount = items.filter((it) => it.escalatedAt).length;
+    res.json({ items, counts, typeCounts, month: monthKey, escalatedCount });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
