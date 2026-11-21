@@ -187,6 +187,39 @@ async function runMaintenanceJob(log, name, fn, { timeoutMs } = {}) {
   }
 }
 
+// Separate lanes (2026-11, direct instruction) - "did the 4 slow jobs move
+// to their own separate lanes as I approved?" runMaintenanceJob's own
+// per-job timeout already stops a hung slow job from hanging forever, but
+// AWAITING it still blocked every job after it in the tick for up to that
+// job's own timeout (5 minutes, for the backup check) - unacceptable for a
+// 30s tick whose whole point is fast, frequent jobs. These 4 (mail-reply/
+// Gmail check, inbox-log Drive archive, daily backup, Together We Can
+// sync) are fired WITHOUT awaiting them, so the rest of the tick's fast
+// jobs proceed immediately regardless of how long the slow one takes.
+// `jobInFlight` is the overlap guard a plain fire-and-forget would be
+// missing: runMaintenanceJob's own backoffUntil only applies once a run
+// has already finished, so without this, a job still running past the
+// next 30s tick would get started a SECOND time concurrently. The result-
+// dependent log line each of these jobs used to print right after its
+// `await` now runs inside `onResult`, once the backgrounded run settles.
+const jobInFlight = new Set();
+function runMaintenanceJobBackground(log, name, fn, opts, onResult) {
+  if (jobInFlight.has(name)) return; // previous run of this SAME job still in flight - skip this tick, never double-started
+  jobInFlight.add(name);
+  runMaintenanceJob(log, name, fn, opts)
+    .then((result) => {
+      jobInFlight.delete(name);
+      if (onResult) onResult(result);
+    })
+    .catch((err) => {
+      // runMaintenanceJob itself never rejects (it catches internally) -
+      // this is belt-and-suspenders only, same posture as jobPromise.catch
+      // above, so a logic error in onResult can never leave the lane stuck.
+      jobInFlight.delete(name);
+      log.error('[whatsapp-assistant] ' + name + ' background lane error: ' + err.message);
+    });
+}
+
 function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval, log = console } = {}) {
   if (process.env.WHATSAPP_ASSISTANT_SCHEDULER !== '1') {
     // Exact value (not just "it's off") - found necessary live after a
@@ -482,8 +515,9 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
     // Workflow mail-reply detection - searches each open mail record's own
     // Gmail thread for a NEW reply, a REAL external call per open record -
     // its own longer timeout (2 min), never the 60s shared default.
-    const mailReplyResult = await runMaintenanceJob(log, 'workflow mail-reply check', () => workflowService.checkWorkflowMailReplies(new Date()), { timeoutMs: 2 * 60 * 1000 });
-    if (mailReplyResult && (mailReplyResult.checked || mailReplyResult.processed)) log.log('[whatsapp-assistant] workflow mail-reply check: ' + JSON.stringify(mailReplyResult));
+    runMaintenanceJobBackground(log, 'workflow mail-reply check', () => workflowService.checkWorkflowMailReplies(new Date()), { timeoutMs: 2 * 60 * 1000 }, (mailReplyResult) => {
+      if (mailReplyResult && (mailReplyResult.checked || mailReplyResult.processed)) log.log('[whatsapp-assistant] workflow mail-reply check: ' + JSON.stringify(mailReplyResult));
+    });
     // Task 3 archiving (2026-10-31) - the wa-inbox-log retention cap: once
     // it's grown a batch past MAX_INBOX_LOG, archive the oldest excess to
     // Google Drive (SUBH Documents/Archive/WhatsApp/<month>) and only then
@@ -491,8 +525,9 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
     // single LLEN on every tick when there's nothing to do; the real work
     // (a Drive round trip) only runs once there's an actual batch - its own
     // longer timeout (3 min), never the 60s shared default.
-    const archiveResult = await runMaintenanceJob(log, 'inbox-log archive', () => whatsappAssistant.archiveOldInboxLogEntriesIfNeeded(), { timeoutMs: 3 * 60 * 1000 });
-    if (archiveResult && archiveResult.archived) log.log('[whatsapp-assistant] inbox-log archived ' + archiveResult.archived + ' old entries to Drive');
+    runMaintenanceJobBackground(log, 'inbox-log archive', () => whatsappAssistant.archiveOldInboxLogEntriesIfNeeded(), { timeoutMs: 3 * 60 * 1000 }, (archiveResult) => {
+      if (archiveResult && archiveResult.archived) log.log('[whatsapp-assistant] inbox-log archived ' + archiveResult.archived + ' old entries to Drive');
+    });
     // Task 16 (2026-11), changed to AUTO-RECOVERY by Task 18 (2026-11)
     // direct instruction: any incoming message that gets neither a reply
     // nor a deliberate no-reply decision within 2 minutes is re-processed
@@ -510,7 +545,7 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
     // longer timeout (5 min, a real full export + Drive upload) - never
     // the 60s shared default, which would falsely abandon a real,
     // legitimately-slow backup that's genuinely still working.
-    await runMaintenanceJob(log, 'daily backup check', () => fullStoreBackupService.checkDailyBackup(), { timeoutMs: 5 * 60 * 1000 });
+    runMaintenanceJobBackground(log, 'daily backup check', () => fullStoreBackupService.checkDailyBackup(), { timeoutMs: 5 * 60 * 1000 });
     // Settings health check, once a day (PART B item 4) - the startup
     // check above covers "after deploy"; this covers a process that
     // stays up for many days without restarting. Same cheap idempotent
@@ -521,8 +556,9 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
     // timeout (2 min), never the 60s shared default. Off by default
     // (togetherWeCanService.checkDailyAutoSync itself no-ops instantly
     // unless the owner has explicitly enabled it in Integrations).
-    const twcResult = await runMaintenanceJob(log, 'Together We Can daily auto-sync', () => togetherWeCanService.checkDailyAutoSync(new Date()), { timeoutMs: 2 * 60 * 1000 });
-    if (twcResult && !twcResult.skipped) log.log('[together-we-can] daily auto-sync: ' + JSON.stringify(twcResult.result));
+    runMaintenanceJobBackground(log, 'Together We Can daily auto-sync', () => togetherWeCanService.checkDailyAutoSync(new Date()), { timeoutMs: 2 * 60 * 1000 }, (twcResult) => {
+      if (twcResult && !twcResult.skipped) log.log('[together-we-can] daily auto-sync: ' + JSON.stringify(twcResult.result));
+    });
   }
 
   // System health check - its own independent tick, deliberately NOT
@@ -553,4 +589,4 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
   return { stop: () => { clearInterval(autosendInterval); clearInterval(sendFlushInterval); clearInterval(healthCheckInterval); clearInterval(metricsLogInterval); } };
 }
 
-module.exports = { start, getJobHeartbeats, runMaintenanceJob };
+module.exports = { start, getJobHeartbeats, runMaintenanceJob, runMaintenanceJobBackground };

@@ -3435,8 +3435,22 @@
             <span class="wf-dlog-stat-label">KV p95</span>
             <span class="wf-dlog-stat-value" id="hrHealthKv">—</span>
           </div>
+          <div class="wf-dlog-stat-card">
+            <span class="wf-dlog-stat-label">Restarts today</span>
+            <span class="wf-dlog-stat-value" id="hrHealthRestarts">—</span>
+          </div>
         </div>
-        <div class="wf-auto-hint" id="hrHealthUpdatedAt" style="padding:4px 4px 12px"></div>
+        <div class="wf-auto-hint" id="hrHealthUpdatedAt" style="padding:4px 4px 2px"></div>
+        <div class="wf-auto-hint" id="hrHealthProcessLine" style="padding:0 4px 12px"></div>
+        <!-- Maintenance-job heartbeats (2026-11, direct instruction) - "show
+             processStart and jobHeartbeats on the System health card, I can
+             only check on my phone." One row per job from runMaintenanceJob's
+             own in-memory heartbeat map (src/whatsappPollScheduler.js) - last
+             success age, and the last error if the most recent run failed. -->
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:4px 4px 6px">
+          <span class="wf-ai-sheet-title" style="font-size:14px">Maintenance jobs</span>
+        </div>
+        <div class="wf-rem-list" id="hrJobHeartbeatsList"></div>
         <div style="padding:4px 4px 10px">
           <button type="button" class="wf-ai-action-btn download" id="hrBackupNowBtn"><span>Backup now</span></button>
           <div id="hrBackupNowResult" class="wf-auto-hint" style="margin-top:8px"></div>

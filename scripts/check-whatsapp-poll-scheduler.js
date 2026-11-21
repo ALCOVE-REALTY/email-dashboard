@@ -147,6 +147,8 @@ async function main() {
     await checkJobTimeoutNeverBlocksOthers();
     await checkJobBackoffThenRecovery();
     await checkJobHeartbeatFields();
+    await checkBackgroundLaneDoesNotBlockTick();
+    await checkBackgroundLaneNeverDoubleRuns();
 
     async function checkJobTimeoutNeverBlocksOthers() {
       const jobName = 'test-hung-job-' + Date.now();
@@ -195,6 +197,55 @@ async function main() {
         Boolean(heartbeat) && heartbeat.lastStartAt >= beforeCall && heartbeat.lastEndAt >= heartbeat.lastStartAt &&
         heartbeat.lastDurationMs >= 10 && heartbeat.lastError === null && heartbeat.consecutiveFailures === 0 && Boolean(heartbeat.lastSuccessAt),
         JSON.stringify(heartbeat));
+    }
+
+    // LIVE INCIDENT (2026-11, direct instruction) - "did the 4 slow jobs
+    // (backup, inbox archive, Together We Can, Gmail checks) move to their
+    // own separate lanes as I approved?" runMaintenanceJobBackground is
+    // the wrapper that fires a job WITHOUT awaiting it, so a slow job
+    // never blocks the fast ones scheduled right after it in the same
+    // tick - tested directly here (never through the full 30s tick).
+    async function checkBackgroundLaneDoesNotBlockTick() {
+      const slowJobName = 'test-slow-lane-job-' + Date.now();
+      let slowJobResolved = false;
+      let releaseSlowJob;
+      const gate = new Promise((resolve) => { releaseSlowJob = resolve; });
+      const slowJob = async () => { await gate; slowJobResolved = true; return 'slow-done'; };
+      const startedAt = Date.now();
+      scheduler.runMaintenanceJobBackground(noopLog2, slowJobName, slowJob, { timeoutMs: 5000 });
+      const elapsedMs = Date.now() - startedAt;
+      check('firing a slow job in the background returns immediately - never awaits the job itself', elapsedMs < 50 && slowJobResolved === false, 'elapsed: ' + elapsedMs + 'ms');
+      releaseSlowJob();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      check('the backgrounded slow job does eventually run to completion on its own', slowJobResolved === true);
+      const heartbeat = scheduler.getJobHeartbeats().find((h) => h.name === slowJobName);
+      check('the backgrounded job still records a normal heartbeat once it finishes', Boolean(heartbeat && heartbeat.lastError === null && heartbeat.lastSuccessAt));
+    }
+
+    async function checkBackgroundLaneNeverDoubleRuns() {
+      const jobName = 'test-lane-overlap-job-' + Date.now();
+      let callCount = 0;
+      let releaseFirstCall;
+      const firstGate = new Promise((resolve) => { releaseFirstCall = resolve; });
+      const job = async () => {
+        callCount++;
+        if (callCount === 1) await firstGate;
+        return 'ok';
+      };
+      let onResultCallCount = 0;
+      scheduler.runMaintenanceJobBackground(noopLog2, jobName, job, { timeoutMs: 5000 }, () => { onResultCallCount++; });
+      await new Promise((resolve) => setTimeout(resolve, 10)); // let the first call actually start and block on the gate
+      scheduler.runMaintenanceJobBackground(noopLog2, jobName, job, { timeoutMs: 5000 }, () => { onResultCallCount++; }); // simulates the NEXT 30s tick firing while the first is still in flight
+      check('a second firing of the SAME job while the first is still in flight is skipped outright - never double-started', callCount === 1, 'calls: ' + callCount);
+      releaseFirstCall();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      check('once the first run finishes, its own onResult still fires exactly once', onResultCallCount === 1, 'onResult calls: ' + onResultCallCount);
+      // Now that the first run has finished (no longer in flight), a THIRD
+      // firing of the same job name must run normally again - the guard
+      // only blocks true overlap, it never permanently locks a job name out.
+      scheduler.runMaintenanceJobBackground(noopLog2, jobName, job, { timeoutMs: 5000 }, () => { onResultCallCount++; });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      check('after the in-flight run finishes, the same job name can run again normally (never permanently locked out)', callCount === 2, 'calls: ' + callCount);
     }
 
     // LIVE INCIDENT (2026-11, direct instruction) - "log a startup line

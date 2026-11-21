@@ -287,6 +287,9 @@
   const healthUptimeEl = document.getElementById('hrHealthUptime');
   const healthKvEl = document.getElementById('hrHealthKv');
   const healthUpdatedAtEl = document.getElementById('hrHealthUpdatedAt');
+  const healthRestartsEl = document.getElementById('hrHealthRestarts');
+  const healthProcessLineEl = document.getElementById('hrHealthProcessLine');
+  const jobHeartbeatsList = document.getElementById('hrJobHeartbeatsList');
   const backupRestoreBackdrop = document.getElementById('hrBackupRestoreBackdrop');
   const backupRestoreSheet = document.getElementById('hrBackupRestoreSheet');
   const backupRestoreCloseBtn = document.getElementById('hrBackupRestoreCloseBtn');
@@ -5394,11 +5397,43 @@
     if (h > 0) return h + 'h ' + m + 'm';
     return m + 'm';
   }
+  // Job-heartbeat + process-start rendering (2026-11, direct instruction) -
+  // "show processStart and jobHeartbeats on the System health card, I can
+  // only check on my phone." Both come back on the same system-health
+  // response the metrics above already use - see GET
+  // /hr-assistant/system-health (src/workforceRoutes.js).
+  function jobHeartbeatRowHtml(h) {
+    const failing = Boolean(h.lastError) && (!h.lastSuccessAt || (h.lastEndAt && h.lastEndAt > h.lastSuccessAt));
+    const successLine = h.lastSuccessAt ? ('Last success ' + actionNeededAgeLabel(Date.now() - h.lastSuccessAt) + ' ago') : 'Never succeeded yet';
+    const errorLine = failing ? ('<div class="wf-auto-hint" style="color:var(--wf-danger,#c0392b)">' + escapeHtml(h.lastError) + '</div>') : '';
+    return '<div class="wf-auto-task-card">' +
+      '<div class="wf-auto-task-head"><div style="flex:1;min-width:0">' +
+      '<div class="wf-auto-task-subject">' + escapeHtml(h.name) + '</div>' +
+      '<div class="wf-auto-hint">' + escapeHtml(successLine) + (h.consecutiveFailures ? (' · ' + h.consecutiveFailures + ' failure(s) in a row') : '') + '</div>' +
+      errorLine +
+      '</div></div></div>';
+  }
+  function renderJobHeartbeatsList(jobHeartbeats) {
+    if (!jobHeartbeatsList) return;
+    if (!jobHeartbeats || !jobHeartbeats.length) { jobHeartbeatsList.innerHTML = '<div class="wf-rem-empty">No sample yet.</div>'; return; }
+    jobHeartbeatsList.innerHTML = jobHeartbeats.map(jobHeartbeatRowHtml).join('');
+  }
+  function renderProcessStart(processStart) {
+    if (healthRestartsEl) healthRestartsEl.textContent = (processStart && typeof processStart.startsToday === 'number') ? String(processStart.startsToday) : '—';
+    if (!healthProcessLineEl) return;
+    if (!processStart || !processStart.last) { healthProcessLineEl.textContent = ''; return; }
+    const last = processStart.last;
+    let line = 'Process started ' + actionNeededAgeLabel(Date.now() - last.ts) + ' ago' + (last.commitId ? (', commit ' + last.commitId) : '');
+    if (last.previousShutdownReason) line += ' — previous stop: ' + last.previousShutdownReason;
+    healthProcessLineEl.textContent = line;
+  }
   async function loadSystemHealthCard() {
     if (!healthLagEl) return;
     try {
       const data = await fetch('/api/workforce/hr-assistant/system-health').then((res) => res.json());
       const m = data && data.metrics;
+      renderProcessStart(data && data.processStart);
+      renderJobHeartbeatsList(data && data.jobHeartbeats);
       if (!m) { if (healthUpdatedAtEl) healthUpdatedAtEl.textContent = 'No sample yet.'; return; }
       healthLagEl.textContent = msLabel(m.eventLoopLagMs);
       if (healthMemEl) healthMemEl.textContent = typeof m.rssMb === 'number' ? m.rssMb + ' MB' : '—';
