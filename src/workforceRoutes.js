@@ -2068,15 +2068,30 @@ router.get('/hr-assistant/communications-summary', async (req, res) => {
 // page size 30) and server-searched (q, over every conversation this
 // store still holds, never just whatever page happens to be loaded in
 // the browser). Same owner-only gate as communications-summary above.
+// LIVE INCIDENT (2026-11, direct instruction) - "Conversations list
+// sometimes shows only up to a stale date, sometimes completely empty,
+// then correct after several refreshes" - this had no timeout at all (a
+// slow read just hung) and a real failure came back as a bare 500 with
+// no items/hasMore fields; the frontend's own fetch call never checked
+// response.ok either, so that 500 was silently treated as a valid,
+// genuinely-empty success. Now mirrors the Delivery log route's own
+// pattern exactly: times out instead of hanging, and a timeout/error
+// returns 200 with an explicit stale:true shape the frontend can tell
+// apart from a real empty list - see listAllWhatsappConversationsPage's
+// own comment for the deeper cause (full root-cause analysis).
+const WHATSAPP_ALL_CONVERSATIONS_TIMEOUT_MS = 8000;
 router.get('/hr-assistant/whatsapp-all-conversations', async (req, res) => {
   if (!memoryService.isOwner(req.hrUser.email)) return res.status(403).json({ error: 'Not authorized.' });
   try {
     const offset = parseInt(req.query.offset, 10) || 0;
     const limit = parseInt(req.query.limit, 10) || 30;
-    const result = await whatsappAssistant.listAllWhatsappConversationsPage({ offset, limit, query: req.query.q });
+    const result = await withTimeout(
+      whatsappAssistant.listAllWhatsappConversationsPage({ offset, limit, query: req.query.q }),
+      WHATSAPP_ALL_CONVERSATIONS_TIMEOUT_MS, 'Conversations list read timed out'
+    );
     res.json(result);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.json({ items: [], hasMore: false, total: 0, stale: true, error: err.message });
   }
 });
 

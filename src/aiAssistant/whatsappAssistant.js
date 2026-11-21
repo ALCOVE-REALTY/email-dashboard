@@ -1054,19 +1054,54 @@ function waItemMatchesQuery(item, q) {
   if (digits && (item.chatId || '').includes(digits)) return true;
   return false;
 }
+// LIVE INCIDENT (2026-11, direct instruction) - "Conversations list
+// sometimes shows only up to a stale date, sometimes completely empty,
+// then correct after several refreshes - this has happened for WEEKS,
+// long before the persistent cache". Root cause: every single call here
+// reads the FULL inbox log (lrange 0..MAX_INBOX_LOG-1, up to 20,000 raw
+// entries) and re-merges it in JS from scratch - expensive on every poll,
+// and if ANY ONE of the 7 parallel reads below hits a transient KV
+// hiccup, Promise.all rejects the WHOLE call (one slow dependency takes
+// down the entire list, not just its own piece). That error used to
+// reach the route with no timeout and no distinct "couldn't load" shape,
+// and the frontend's own fetch never checked response.ok either - so a
+// genuine failure came back looking exactly like "this chat list is
+// really empty", which then overwrote the persisted cache with that
+// false-empty result. Logged here (ms, item count, newest message time,
+// any error) so a recurrence is actually diagnosable instead of
+// invisible, per direct instruction - "log each list load so the cause
+// is visible". The route wraps this in a timeout (see
+// GET /hr-assistant/whatsapp-all-conversations) and the frontend now
+// treats a stale/failed load as "keep showing what I have, offer Retry",
+// never a blank list - full incremental-index rework (avoiding the
+// 20,000-entry re-scan on every poll) is a larger follow-up, not done
+// here.
 async function listAllWhatsappConversationsPage({ offset, limit, query } = {}) {
+  const startedAt = Date.now();
   const safeOffset = Math.max(0, Number(offset) || 0);
   const safeLimit = Math.min(200, Math.max(1, Number(limit) || 30));
-  const [approvals, drafts, docs, recentLog, hrConfirmations, dismissedByChat, { employees }] = await Promise.all([
-    listPendingApprovals(), listPendingDrafts(), documentRequests.listPendingReceived(),
-    listInboxLog(MAX_INBOX_LOG), listAllHrConfirmations(), listCommsDismissed(), employeeService.getEmployeeData()
-  ]);
-  const needsYou = buildActionableWhatsappItems(approvals, drafts, docs, recentLog, hrConfirmations, employees);
-  let rows = mergeRecentWhatsappConversations(needsYou, recentLog, Date.now(), Infinity, dismissedByChat, employees);
-  const q = String(query || '').trim();
-  if (q) rows = rows.filter((it) => waItemMatchesQuery(it, q));
-  const page = rows.slice(safeOffset, safeOffset + safeLimit);
-  return { items: page, hasMore: safeOffset + safeLimit < rows.length, total: rows.length };
+  try {
+    const [approvals, drafts, docs, recentLog, hrConfirmations, dismissedByChat, { employees }] = await Promise.all([
+      listPendingApprovals(), listPendingDrafts(), documentRequests.listPendingReceived(),
+      listInboxLog(MAX_INBOX_LOG), listAllHrConfirmations(), listCommsDismissed(), employeeService.getEmployeeData()
+    ]);
+    const needsYou = buildActionableWhatsappItems(approvals, drafts, docs, recentLog, hrConfirmations, employees);
+    let rows = mergeRecentWhatsappConversations(needsYou, recentLog, Date.now(), Infinity, dismissedByChat, employees);
+    const q = String(query || '').trim();
+    if (q) rows = rows.filter((it) => waItemMatchesQuery(it, q));
+    const page = rows.slice(safeOffset, safeOffset + safeLimit);
+    // rows is already sorted newest-first (mergeRecentWhatsappConversations's
+    // own sort) - rows[0] is the newest without spreading a potentially
+    // large array into Math.max (risky at this list's real scale).
+    const newestMs = rows.length ? rows[0].lastMessageTime : null;
+    console.log('[whatsapp] conversations list load: ' + (Date.now() - startedAt) + 'ms, '
+      + rows.length + ' total rows (' + page.length + ' returned), newest message: '
+      + (newestMs ? new Date(newestMs).toISOString() : 'none') + ', offset=' + safeOffset);
+    return { items: page, hasMore: safeOffset + safeLimit < rows.length, total: rows.length };
+  } catch (err) {
+    console.error('[whatsapp] conversations list load FAILED after ' + (Date.now() - startedAt) + 'ms: ' + err.message);
+    throw err;
+  }
 }
 
 // Task 1 (2026-10-29) - per-chat "removed from Important WhatsApp" marker,
@@ -5822,7 +5857,15 @@ async function continueHrDataQueryFlow({ phone, name, text, pending }) {
     const ordinalIdx = matchOrdinalIndex(t);
     if (ordinalIdx !== null && ordinalIdx < options.length) picked = options[ordinalIdx];
   }
-  if (!picked) picked = options.find((o) => departmentHintMatchesWithPrefix(o, t)) || null;
+  // LIVE INCIDENT FIX (2026-11, direct instruction) - "Admin Ho" (a short
+  // form of "Administration (Ho)") failed to resolve: departmentHintMatches
+  // WithPrefix's fixed word-prefix rule is the wrong tool for a genuine
+  // short form/abbreviation/partial name - no fixed keyword/prefix rule
+  // can cover every way a person actually abbreviates something. Replaced
+  // with the model (classifyDepartmentChoice), a closed choice among the
+  // numbered options actually offered - never free-form, never a guess
+  // trusted beyond that list.
+  if (!picked) picked = await classifyDepartmentChoice(t, options, pending.departmentHint).catch(() => null);
   if (!picked) {
     // LIVE INCIDENT FIX (2026-11, direct instruction) - this used to
     // re-send the IDENTICAL full numbered list forever with no cap, the
@@ -11891,6 +11934,47 @@ async function classifyDisambiguationReply(text, context) {
     hasExtraInfo: Boolean(input.hasExtraInfo),
     extraInfoNote: (input.hasExtraInfo && input.extraInfoNote) || null
   };
+}
+
+// LIVE INCIDENT FIX (2026-11, direct instruction) - "Admin Ho" (a short
+// form of "Administration (Ho)") failed to resolve against the
+// department-choice options. Reusing departmentHintMatchesWithPrefix's
+// own word-prefix heuristic here was the wrong tool for a genuine short
+// form/partial/abbreviated name ("Admin Ho", "Ho" alone, "Srm", "SRPL
+// admin") - a fixed keyword/prefix rule can never cover every way a
+// person actually abbreviates something. Direct instruction: use the
+// model to understand this, never a keyword list - same "model decides,
+// code fills" convention as classifyDisambiguationReply just above (a
+// closed choice among the numbered options actually offered, nothing
+// free-form trusted from the model). Fails CLOSED (null) on any API
+// error or an unparseable/out-of-range choice - the caller's existing
+// retry/escalation path handles "couldn't resolve" exactly as before.
+function classifyDepartmentChoiceTool() {
+  return {
+    type: 'function',
+    function: {
+      name: 'classify_department_choice',
+      description: 'SUBH asked the sender which of several differently-named department/site variants (listed as a numbered list in the system prompt) they mean. Decide which numbered option this reply is choosing - including a short form, abbreviation, or partial name of one of them (e.g. "Admin Ho" or just "Ho" for "Administration (Ho)", "Srm" for "Administration (Srm)", words in a different order, a nickname/alias) - never only an exact literal match.',
+      parameters: {
+        type: 'object',
+        properties: {
+          chosenOptionNumber: { type: 'integer', description: 'The 1-based number of the option the sender means. Omit this field entirely if it genuinely does not clearly match any one option - never guess.' }
+        },
+        required: []
+      }
+    }
+  };
+}
+async function classifyDepartmentChoice(text, options, departmentHint) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey || !DRAFT_MODEL) return null;
+  const toolDef = classifyDepartmentChoiceTool().function;
+  const optionsLabel = options.map((o, i) => (i + 1) + ') ' + naturalizeDirectoryValue(o)).join(', ');
+  const systemPrompt = 'SUBH asked which "' + (departmentHint || '') + '" department/site the sender means - the options are: ' + optionsLabel + '.';
+  const input = await callClaudeForcedTool(apiKey, DRAFT_MODEL, [{ role: 'system', content: systemPrompt }, { role: 'user', content: text }], toolDef.name, toolDef).catch(() => null);
+  if (!input || typeof input.chosenOptionNumber !== 'number') return null;
+  const idx = Math.trunc(input.chosenOptionNumber) - 1;
+  return (idx >= 0 && idx < options.length) ? options[idx] : null;
 }
 
 // Direct instruction, case C - generic version of the same extra-info

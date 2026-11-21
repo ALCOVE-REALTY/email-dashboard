@@ -629,6 +629,34 @@ async function checkTopLevelSettingsSubpageFrame(page, pageLabel, viewId, baseli
     route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, employeeCount: 7, counts: { ACTIVE: 7, INACTIVE: 0, 'NOTICE PERIOD': 0 }, changedSinceLastSync: 0 }) });
   });
 
+  // LIVE INCIDENT (2026-11, direct instruction) - "Conversations list
+  // sometimes shows only up to a stale date, sometimes completely empty,
+  // then correct after several refreshes": a failed/timed-out read used to
+  // render IDENTICALLY to a genuinely empty list, and silently overwrote
+  // the persisted cache with that false-empty result. First serves a real
+  // 2-item success (establishing a good list/cache), then switches the
+  // SAME endpoint to the route's own stale:true fallback shape and
+  // re-triggers a load - asserts the real rows stay visible with a
+  // distinct Retry banner, never blanked to "Nothing pending".
+  let waAllConvCallCount = 0;
+  await page.route('**/api/workforce/hr-assistant/whatsapp-all-conversations?*', (route) => {
+    waAllConvCallCount++;
+    if (waAllConvCallCount === 1) {
+      route.fulfill({
+        status: 200, contentType: 'application/json', body: JSON.stringify({
+          items: [
+            { chatId: '919999990002', name: 'Real Conversation One', lastMessageText: 'Hello', lastMessageTime: Date.now() - 60000, needsYou: false },
+            { chatId: '919999990003', name: 'Real Conversation Two', lastMessageText: 'Thanks', lastMessageTime: Date.now() - 120000, needsYou: false }
+          ],
+          hasMore: false, total: 2
+        })
+      });
+    } else {
+      route.fulfill({
+        status: 200, contentType: 'application/json', body: JSON.stringify({ items: [], hasMore: false, total: 0, stale: true, error: 'Conversations list read timed out' })
+      });
+    }
+  });
   await page.evaluate(() => { if (window.__hrAssistantClosePanel) window.__hrAssistantClosePanel(); });
   await page.waitForTimeout(100);
   await page.click('#hrAssistantBtn');
@@ -638,6 +666,20 @@ async function checkTopLevelSettingsSubpageFrame(page, pageLabel, viewId, baseli
   await page.click('#hrHubCommsTile');
   await page.waitForTimeout(150);
   await page.click('#hrCommsHubWaTile');
+  await page.waitForTimeout(200);
+  const waAllFirstLoadText = await page.locator('#hrCommsWaAllList').textContent();
+  check('Conversations list: a real successful load shows the real rows', waAllFirstLoadText.includes('Real Conversation One') && waAllFirstLoadText.includes('Real Conversation Two'));
+  // Back out to the hub and re-enter (the tile that opens this page lives
+  // on the hub view, hidden while the waAll sub-page itself is open) -
+  // this re-triggers loadWaAllFirstPage(), landing on the mock's 2nd call.
+  await page.click('#hrCommsBackBtn');
+  await page.waitForTimeout(150);
+  await page.click('#hrCommsHubWaTile');
+  await page.waitForTimeout(200);
+  const waAllStaleText = await page.locator('#hrCommsWaAllList').textContent();
+  check('Conversations list: a timed-out/erroring refresh keeps the real rows visible with a distinct "Couldn\'t update, Retry" banner - never blanked to "Nothing pending" just because the retry happened to fail',
+    waAllStaleText.includes('Real Conversation One') && waAllStaleText.includes("Couldn't update") && !waAllStaleText.includes('Nothing pending'));
+  await page.unroute('**/api/workforce/hr-assistant/whatsapp-all-conversations?*');
   await page.waitForTimeout(150);
   // Delivery log (Robustness pass, Pass 2, 2026-11, direct instruction) -
   // smoke test: the icon opens the page, the header/stat cards/chips/

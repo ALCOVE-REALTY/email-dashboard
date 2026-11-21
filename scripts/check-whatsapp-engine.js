@@ -110,6 +110,16 @@ let awaitingManagerExtraInfoModelResponse = () => ({ isDetailCorrection: false, 
 function resetAwaitingManagerExtraInfoModelResponse() {
   awaitingManagerExtraInfoModelResponse = () => ({ isDetailCorrection: false, hasExtraInfo: false });
 }
+// LIVE INCIDENT FIX (2026-11, direct instruction) - same scripted-stub
+// pattern, for the NEW classify_department_choice tool (short-form/
+// partial-name department-option resolution, replacing the old fixed
+// keyword/prefix matcher - "Admin Ho" never matched anything). Default
+// response (no field returned = genuinely unresolved) preserves the
+// pre-existing "couldn't tell" fallback unless a test overrides it.
+let departmentChoiceModelResponse = () => ({});
+function resetDepartmentChoiceModelResponse() {
+  departmentChoiceModelResponse = () => ({});
+}
 function installManagerConfirmationModelStub() {
   const originalFetch = global.fetch;
   global.fetch = async (url, opts) => {
@@ -122,6 +132,10 @@ function installManagerConfirmationModelStub() {
       }
       if (body && Array.isArray(body.tools) && body.tools[0] && body.tools[0].name === 'classify_awaiting_manager_extra_info') {
         const result = awaitingManagerExtraInfoModelResponse(body);
+        return { ok: true, json: async () => ({ content: result ? [{ type: 'tool_use', input: result }] : [] }) };
+      }
+      if (body && Array.isArray(body.tools) && body.tools[0] && body.tools[0].name === 'classify_department_choice') {
+        const result = departmentChoiceModelResponse(body);
         return { ok: true, json: async () => ({ content: result ? [{ type: 'tool_use', input: result }] : [] }) };
       }
     }
@@ -7674,6 +7688,22 @@ async function checkAsyncRealModel(label, fn) {
     const d = await whatsappAssistant.continueHrDataQueryFlow({ phone, name: 'Tester', text: 'second option', pending });
     const stillPending = await whatsappAssistant.getPendingHrDataQuery(phone);
     return d.case === 'data_holding' && !stillPending;
+  });
+  await checkAsync('LIVE INCIDENT (2026-11), direct instruction - "Admin Ho" (a short form/abbreviation of "Administration (Ho)") resolves via the model (classify_department_choice), never a fixed keyword/prefix rule - the exact live-reported failure', async () => {
+    const origFetch = installManagerConfirmationModelStub();
+    departmentChoiceModelResponse = () => ({ chosenOptionNumber: 1 });
+    try {
+      const phone = '919999000099';
+      await whatsappAssistant.clearPendingHrDataQuery(phone).catch(() => {});
+      await whatsappAssistant.savePendingHrDataQuery(phone, { query: { returnType: 'hod' }, lang: 'english', departmentOptions: ['Administration (Ho)', 'Administration (Srpl)', 'Administration (Srm)'], departmentHint: 'Administration' });
+      const pending = await whatsappAssistant.getPendingHrDataQuery(phone);
+      const d = await whatsappAssistant.continueHrDataQueryFlow({ phone, name: 'Tester', text: 'Admin Ho', pending });
+      const stillPending = await whatsappAssistant.getPendingHrDataQuery(phone);
+      return d.case === 'data_holding' && !stillPending;
+    } finally {
+      global.fetch = origFetch;
+      resetDepartmentChoiceModelResponse();
+    }
   });
   await checkAsync('LIVE INCIDENT (2026-11), direct instruction, point 1 - repeated unresolved replies to the department-choice question never loop forever: attempt 2 gets a DIFFERENT (short) retry text, and after MAX_DISAMBIGUATION_ATTEMPTS the flow gives up gracefully and notifies the owner, instead of re-sending the identical full list forever', async () => {
     const phone = '919999000098';

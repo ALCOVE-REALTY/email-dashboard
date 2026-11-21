@@ -2472,15 +2472,34 @@
   // this - it appends instead, so scrolling to load older conversations
   // never rebuilds (and never visibly jumps/flickers) the rows already on
   // screen, per the "no jump" requirement.
+  // LIVE INCIDENT FIX (2026-11, direct instruction) - "No conversations"
+  // (or the search-no-match text) must only ever mean the server really
+  // returned zero - a failed/timed-out refresh is never allowed to render
+  // identically to that. true only for the duration of a failed load with
+  // nothing (cached or fresh) to show; cleared the moment any load
+  // succeeds.
+  let waAllStale = false;
+  function wireWaAllRetryBtn() {
+    const btn = document.getElementById('hrWaAllRetryBtn');
+    if (btn) btn.addEventListener('click', () => loadWaAllFirstPage());
+  }
   function renderWaAllList() {
     if (!commsWaAllList) return;
     if (!waAllItems.length) {
       commsWaAllList.innerHTML = waAllLoading
         ? '<div class="wf-skeleton-list"><div class="wf-skeleton-row"></div><div class="wf-skeleton-row"></div><div class="wf-skeleton-row"></div></div>'
-        : '<div class="wf-comms-empty">' + (waAllQuery ? 'No conversations match "' + escapeHtml(waAllQuery) + '".' : 'Nothing pending - all clear!') + '</div>';
+        : waAllStale
+          ? '<div class="wf-comms-empty">Couldn\'t load conversations. <button type="button" class="wf-link-btn" id="hrWaAllRetryBtn">Retry</button></div>'
+          : '<div class="wf-comms-empty">' + (waAllQuery ? 'No conversations match "' + escapeHtml(waAllQuery) + '".' : 'Nothing pending - all clear!') + '</div>';
+      wireWaAllRetryBtn();
       return;
     }
-    commsWaAllList.innerHTML = waAllItems.map((it, i) => buildWaRowHtml(it, i)).join('') + (waAllHasMore ? waAllLoadMoreRowHtml() : '');
+    // A failed refresh with a still-good cache/previous list visible keeps
+    // showing those real rows (never blanked), with a small retry banner
+    // on top rather than silently doing nothing or hiding the problem.
+    const staleBanner = (waAllStale && !waAllLoading) ? '<div class="wf-comms-stale-banner">Couldn\'t update the list. <button type="button" class="wf-link-btn" id="hrWaAllRetryBtn">Retry</button></div>' : '';
+    commsWaAllList.innerHTML = staleBanner + waAllItems.map((it, i) => buildWaRowHtml(it, i)).join('') + (waAllHasMore ? waAllLoadMoreRowHtml() : '');
+    wireWaAllRetryBtn();
     wireWaRows(commsWaAllList);
   }
   // Builds new rows in a detached wrapper and wires THEM ONLY, before
@@ -2495,11 +2514,20 @@
     while (wrapper.firstChild) frag.appendChild(wrapper.firstChild);
     return frag;
   }
+  // LIVE INCIDENT FIX (2026-11, direct instruction) - this never checked
+  // r.ok, and the route could return a bare 500 (now a 200 with
+  // stale:true instead, see workforceRoutes.js) - either way, a real
+  // backend failure used to parse fine as JSON and flow straight through
+  // as if it were a genuinely empty success. Both now throw, so the
+  // existing catch blocks below actually run instead of silently
+  // "succeeding" with nothing.
   async function fetchWaAllPage(offset) {
     const qs = new URLSearchParams({ offset: String(offset), limit: String(WA_ALL_PAGE_SIZE) });
     if (waAllQuery) qs.set('q', waAllQuery);
     const r = await fetch('/api/workforce/hr-assistant/whatsapp-all-conversations?' + qs.toString());
-    return r.json();
+    const data = await r.json();
+    if (!r.ok || data.stale) throw new Error((data && data.error) || 'Conversations list read failed');
+    return data;
   }
   // SPEED FIX (2026-11, direct instruction) - a plain (no search) open of
   // this page used to ALWAYS blank the list and block on a fresh fetch
@@ -2532,9 +2560,18 @@
       waAllItems = data.items || [];
       waAllOffset = waAllItems.length;
       waAllHasMore = Boolean(data.hasMore);
+      waAllStale = false;
       if (!waAllQuery) pageDataCache.waAllFirst = { items: waAllItems, hasMore: waAllHasMore };
     } catch (err) {
-      if (!cached) waAllHasMore = false; // keep showing the still-valid cached render otherwise
+      // LIVE INCIDENT FIX (2026-11, direct instruction) - a failed refresh
+      // must never replace a good cache/list with an empty one, and must
+      // never overwrite the persisted cache with this failure either
+      // (previously nothing stopped that - see fetchWaAllPage's own
+      // comment). waAllItems/pageDataCache.waAllFirst are both left
+      // exactly as they were; only the stale flag changes, so
+      // renderWaAllList shows a Retry banner instead of a blank/empty page.
+      waAllStale = true;
+      if (!cached) waAllHasMore = false; // nothing real to paginate from yet
     } finally {
       waAllLoading = false;
       renderWaAllList();

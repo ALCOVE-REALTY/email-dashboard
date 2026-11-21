@@ -1288,6 +1288,32 @@ scenario('HRQUERY: "Admin dept er HOD ke?" -> ambiguous (3 real departments) -> 
     await cleanupHrDataQueryArtifacts(phone);
   }
 });
+// LIVE INCIDENT (2026-11), direct instruction - the exact live-reported
+// failure: "Admin Ho" (a two-word SHORT FORM of "Administration (Ho)",
+// not a bare single-word option like "HO" above, and not an ordinal/
+// number either) used to never resolve - the fixed keyword/prefix
+// matcher this used to rely on couldn't handle it. Now resolved by the
+// real model (classify_department_choice) understanding the short form
+// against the real options actually offered, never a keyword list.
+scenario('HRQUERY: "Admin dept er HOD ke?" -> ambiguous -> "Admin Ho" (short form, not a bare option word) correctly resolves to Administration (Ho), never a re-ask', async () => {
+  const phone = '910000002337';
+  await cleanupHrDataQueryArtifacts(phone);
+  try {
+    const d1 = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenHrQAdminHo', firstName: 'ScenHrQAdminHo', text: 'Admin dept er HOD ke?', isGroup: false, history: [] });
+    if (d1.case !== 'acknowledged') return { pass: false, detail: 'expected the department-ambiguity question (case=acknowledged), got: ' + d1.case + ' text=' + d1.replyText };
+    if (!/administration/i.test(d1.replyText) || !/kontar kotha bolchhen/i.test(d1.replyText)) return { pass: false, detail: 'expected the department-disambiguation template, got: ' + d1.replyText };
+    const d2 = await whatsappAssistant.decideAutoReply({ phone, name: 'ScenHrQAdminHo', firstName: 'ScenHrQAdminHo', text: 'Admin Ho', isGroup: false, history: [] });
+    if (d2.case !== 'data_holding') return { pass: false, detail: 'expected case=data_holding after "Admin Ho" (not a re-ask), got: ' + d2.case + ' text=' + d2.replyText };
+    const approval = pendingApprovalFor(await whatsappAssistant.listPendingApprovals(), phone);
+    if (!approval || !approval.preparedReplyText) return { pass: false, detail: 'expected a queued approval, got: ' + JSON.stringify(approval) };
+    const text = approval.preparedReplyText;
+    if (!/HOD achen/i.test(text) || !/1\)/.test(text)) return { pass: false, detail: 'expected the real multi-HOD breakdown for Administration (Ho) specifically, got: ' + text };
+    if (!/samir roy chowdhury/i.test(text)) return { pass: false, detail: 'expected the real top HOD (Samir Roy Chowdhury) for Administration (Ho), got: ' + text };
+    return { pass: true, detail: '"Admin Ho" correctly resolved to Administration (Ho): ' + text.slice(0, 200) };
+  } finally {
+    await cleanupHrDataQueryArtifacts(phone);
+  }
+});
 scenario('HRQUERY: "Subhodeep HR kake report kore?" - ALWAYS confirms the person first (even with a department hint, unlike every other field), then the real reporting-manager answer', async () => {
   const phone = '910000002305';
   await cleanupHrDataQueryArtifacts(phone);

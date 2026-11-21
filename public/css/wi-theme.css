@@ -1755,6 +1755,15 @@ body { background: var(--wi-bg); }
 .wf-comms-empty {
   text-align: center; padding: 18px 10px; font-size: 0.78rem; font-weight: 600; color: var(--wi-faint);
 }
+/* LIVE INCIDENT (2026-11, direct instruction) - a failed/timed-out list
+   refresh must never look like "really empty"; this small banner sits
+   above the still-visible (possibly stale) cached rows with a Retry
+   affordance, distinct from .wf-comms-empty which only ever means a
+   genuine zero-result state. */
+.wf-comms-stale-banner {
+  text-align: center; padding: 8px 10px; font-size: 0.74rem; font-weight: 600;
+  color: var(--wi-yellow-700); background: var(--wi-yellow-50); border-radius: 10px; margin: 0 0 8px;
+}
 
 /* -- WhatsApp conversation detail -- */
 .wf-convo-page[hidden] { display: none; }
