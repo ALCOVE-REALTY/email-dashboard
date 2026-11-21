@@ -8502,6 +8502,61 @@ async function checkAsyncRealModel(label, fn) {
   });
 
   console.log('='.repeat(70));
+  console.log('LIVE INCIDENT (2026-11), direct instruction, point 6 - 60-second reply-latency watchdog (red Action-needed card + owner alert)');
+  console.log('='.repeat(70));
+  await checkAsync('a message marked pending under 60s ago is NOT flagged - still well within the normal reply window, never a false alarm', async () => {
+    const phone = '910000002420';
+    await whatsappAssistant.clearReplyPending(phone);
+    await whatsappAssistant.markReplyPendingSince(phone, 'Fresh Pending Test', Date.now() - 5000);
+    const result = await whatsappAssistant.checkReplyLatencyWatchdog(Date.now());
+    const items = await whatsappAssistant.listReplyLatencyWatchdogItems();
+    const mine = items.find((i) => i.chatId === whatsapp.normalizePhone(phone));
+    return mine === undefined;
+  });
+  await checkAsync('a message still unanswered past 60s IS flagged: appears as a reply_latency_watchdog Action-needed card and posts the owner alert with a real timeline', async () => {
+    const phone = '910000002421';
+    await whatsappAssistant.clearReplyPending(phone);
+    const arrivedAt = Date.now() - 65000; // 65s ago - past the 60s threshold
+    await whatsappAssistant.markReplyPendingSince(phone, 'Overdue Watchdog Test', arrivedAt);
+    await whatsappAssistant.checkReplyLatencyWatchdog(Date.now());
+    const card = (await whatsappAssistant.listActionNeededItems()).find((i) => i.kind === 'reply_latency_watchdog' && i.chatId === whatsapp.normalizePhone(phone));
+    const notifAfter = await whatsappAssistant.listOwnerNotifications();
+    const posted = notifAfter.find((n) => n.text.includes('Overdue Watchdog Test') && /60 seconds/.test(n.text));
+    return Boolean(card) && Boolean(posted);
+  });
+  await checkAsync('once flagged, a SECOND watchdog check for the SAME still-overdue message never re-alerts the owner a second time', async () => {
+    const phone = '910000002422';
+    await whatsappAssistant.clearReplyPending(phone);
+    await whatsappAssistant.markReplyPendingSince(phone, 'No Double Alert Test', Date.now() - 65000);
+    await whatsappAssistant.checkReplyLatencyWatchdog(Date.now());
+    const notifBeforeSecondCheck = (await whatsappAssistant.listOwnerNotifications()).filter((n) => n.text.includes('No Double Alert Test')).length;
+    await whatsappAssistant.checkReplyLatencyWatchdog(Date.now() + 5000); // a later tick, same message still overdue
+    const notifAfterSecondCheck = (await whatsappAssistant.listOwnerNotifications()).filter((n) => n.text.includes('No Double Alert Test')).length;
+    return notifBeforeSecondCheck === 1 && notifAfterSecondCheck === 1;
+  });
+  await checkAsync('the card clears the instant SUBH actually replies (logInboxEvent records ANY outcome for that chat) - never a manual dismiss needed', async () => {
+    const phone = '910000002423';
+    await whatsappAssistant.clearReplyPending(phone);
+    await whatsappAssistant.markReplyPendingSince(phone, 'Self Clearing Test', Date.now() - 65000);
+    await whatsappAssistant.checkReplyLatencyWatchdog(Date.now());
+    const cardBefore = (await whatsappAssistant.listActionNeededItems()).find((i) => i.kind === 'reply_latency_watchdog' && i.chatId === whatsapp.normalizePhone(phone));
+    await whatsappAssistant.logInboxEvent({ chatId: phone, name: 'Self Clearing Test', isGroup: false, messageSummary: 'the real reply', aCase: 'memory', sentText: 'answered', outcome: 'sent' });
+    const cardAfter = (await whatsappAssistant.listActionNeededItems()).find((i) => i.kind === 'reply_latency_watchdog' && i.chatId === whatsapp.normalizePhone(phone));
+    return Boolean(cardBefore) && cardAfter === undefined;
+  });
+  await checkAsync('markReplyPendingSince never resets the clock: a SECOND, later message arriving for the same chat while an earlier one is still unanswered keeps tracking the OLDER (earlier) arrivedAt, not the newer one', async () => {
+    const phone = '910000002424';
+    await whatsappAssistant.clearReplyPending(phone);
+    const earlierArrivedAt = Date.now() - 65000;
+    await whatsappAssistant.markReplyPendingSince(phone, 'Oldest Wins Test', earlierArrivedAt);
+    // A second, later message arrives while the first is still unanswered.
+    await whatsappAssistant.markReplyPendingSince(phone, 'Oldest Wins Test', Date.now() - 1000);
+    await whatsappAssistant.checkReplyLatencyWatchdog(Date.now());
+    const card = (await whatsappAssistant.listActionNeededItems()).find((i) => i.kind === 'reply_latency_watchdog' && i.chatId === whatsapp.normalizePhone(phone));
+    return Boolean(card) && Math.abs(card.data.arrivedAt - earlierArrivedAt) < 50;
+  });
+
+  console.log('='.repeat(70));
   console.log('Task 3 archiving (2026-10-31): wa-inbox-log entries are archived to Google Drive before they are ever trimmed, never silently deleted at the retention cap');
   console.log('='.repeat(70));
   // Shared by the 3 tests below. The fake Upstash server only implements

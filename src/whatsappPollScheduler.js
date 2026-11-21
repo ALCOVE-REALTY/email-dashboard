@@ -399,6 +399,17 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
     } catch (err) {
       log.error('[whatsapp-assistant] delivery check flush failed: ' + err.message);
     }
+    // Point 6 (2026-11), direct instruction - "60-second latency watchdog".
+    // Own independent try/catch, same fast tick as the two checks above -
+    // this is specifically what makes a 60s-overdue reply get caught
+    // within a few seconds of crossing the threshold, not up to 30s late
+    // on the slower maintenance tick.
+    try {
+      const result = await whatsappAssistant.checkReplyLatencyWatchdog(Date.now());
+      if (result.flagged) log.log('[whatsapp-assistant] reply latency watchdog: flagged ' + result.flagged);
+    } catch (err) {
+      log.error('[whatsapp-assistant] reply latency watchdog failed: ' + err.message);
+    }
     sendingFlush = false;
   }, SEND_FLUSH_MS);
 

@@ -6158,10 +6158,27 @@
       '<div class="wf-auto-hint">Escalated ' + actionNeededAgeLabel(item.ageMs) + ' ago - please follow up directly</div>' +
     '</div>';
   }
+  // Point 6 (2026-11), direct instruction - "60-second latency watchdog ->
+  // red Action-needed card". Same self-clearing, no-Dismiss-button shape
+  // as the escalated-confirmation card right above (the server-side
+  // marker disappears on its own the moment SUBH actually replies) -
+  // styled critical/red per the explicit ask, unlike that one.
+  function actionNeededReplyLatencyWatchdogCardHtml(item) {
+    const w = item.data || {};
+    const overdueSec = typeof w.arrivedAt === 'number' ? Math.max(0, Math.round((Date.now() - w.arrivedAt) / 1000)) : null;
+    return '<div class="wf-auto-task-card wf-auto-task-card--critical" data-chat-id="' + escapeHtml(item.chatId) + '">' +
+      '<div class="wf-action-needed-card-head">' +
+        '<span class="wf-auto-task-subject">🔴 No reply in 60+ seconds: ' + escapeHtml(item.name || item.chatId) + '</span>' +
+        '<button type="button" class="wf-action-needed-openchat" data-open-chat="' + escapeHtml(item.chatId) + '">Open chat ›</button>' +
+      '</div>' +
+      '<div class="wf-auto-hint">' + (overdueSec !== null ? ('Still unanswered ' + overdueSec + 's and counting') : 'Still unanswered') + '</div>' +
+    '</div>';
+  }
   function actionNeededCardHtml(item) {
     if (item.kind === 'automation_missed_run' || item.kind === 'automation_first_run') return actionNeededAutomationCardHtml(item);
     if (item.kind === 'hr_note_escalated') return actionNeededHrNoteEscalatedCardHtml(item);
     if (item.kind === 'hr_confirmation_manager_escalated') return actionNeededHrConfirmationManagerEscalatedCardHtml(item);
+    if (item.kind === 'reply_latency_watchdog') return actionNeededReplyLatencyWatchdogCardHtml(item);
     if (item.kind === 'data_access_notice') return actionNeededDataAccessNoticeCardHtml(item);
     if (item.kind === 'system_health_alert') return actionNeededSystemHealthCardHtml(item);
     if (item.kind === 'ai_fallback_alert') return actionNeededAiFallbackCardHtml(item);

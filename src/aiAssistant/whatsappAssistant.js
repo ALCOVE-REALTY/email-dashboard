@@ -168,6 +168,20 @@ const WA_CONVO_SUMMARY_BACKFILLED_KEY = 'wa-convo-summary-backfilled';
 // lastGenuineIncomingAt running max. Single shared definition, never two
 // copies that could drift apart.
 const NON_GENUINE_INCOMING_OUTCOMES = new Set(['skipped_duplicate', 'skipped_possible_loop', 'skipped_repeated_message']);
+// LIVE INCIDENT (2026-11), direct instruction, point 6 - "60-second
+// latency watchdog -> red Action-needed card + owner alert with
+// timeline." One marker per chat (the OLDEST still-unanswered message
+// for that chat - never overwritten by a later message arriving while
+// an earlier one is still pending), set when a real 1:1 turn starts
+// being processed and cleared the moment logInboxEvent records ANY
+// outcome for that chat (the single existing funnel every reply - or
+// decision not to reply - already goes through). A separate `flaggedAt`
+// field (set once, the first time the 60s threshold is crossed) is what
+// stops this from re-alerting the owner every single watchdog tick while
+// the same message stays overdue.
+const REPLY_PENDING_PREFIX = 'wa-reply-pending:';
+const REPLY_PENDING_IDS_KEY = 'wa-reply-pending-ids';
+const REPLY_WATCHDOG_THRESHOLD_MS = 60 * 1000;
 const NEVER_AUTO_KEY = 'wa-never-auto-list';
 const DAILY_SUMMARY_DATE_KEY = 'subh-daily-summary-date';
 const GATEWAY_STATUS_KEY = 'wa-gateway-status';
@@ -779,10 +793,10 @@ async function listActionableWhatsappItems() {
 // (approve & send / edit / reject) is a decision, so it joins "approvals";
 // a received document needing review is closest to "data_requests".
 async function listActionNeededItems() {
-  const [approvals, drafts, docs, hrConfirmations, hrNoteEscalations, stuckIncoming, dataAccessNotices, healthAlert, aiFallbackAlert] = await Promise.all([
+  const [approvals, drafts, docs, hrConfirmations, hrNoteEscalations, stuckIncoming, dataAccessNotices, healthAlert, aiFallbackAlert, latencyWatchdogItems] = await Promise.all([
     listPendingApprovals(), listPendingDrafts(),
     documentRequests.listPendingReceived(), listAllHrConfirmations(), listHrNoteEscalations(), listStuckIncomingMessages(),
-    listDataAccessNotices(), getSystemHealthAlert(), getAiFallbackAlert()
+    listDataAccessNotices(), getSystemHealthAlert(), getAiFallbackAlert(), listReplyLatencyWatchdogItems()
   ]);
   const ambiguousConfirmations = hrConfirmations.filter((c) => c.status === 'ambiguous_owner_review');
   // Direct instruction (2026-11) - the new manager-confirmation escalation
@@ -821,6 +835,12 @@ async function listActionNeededItems() {
   // Action-needed card... every time [the fallback] is used"). Same
   // no-single-sender shape as the system health alert right above.
   if (aiFallbackAlert) raw.push({ kind: 'ai_fallback_alert', category: 'data_requests', chatId: '', name: 'AI reply failures', ts: aiFallbackAlert.lastFiredAt || aiFallbackAlert.firstFiredAt || 0, data: aiFallbackAlert });
+  // Point 6 (2026-11), direct instruction - "60-second latency watchdog
+  // -> red Action-needed card". Self-clearing: the underlying marker
+  // (see checkReplyLatencyWatchdog) is removed the instant a real
+  // outcome is finally logged for that chat, so this card disappears on
+  // its own the moment SUBH actually replies - never a manual dismiss.
+  latencyWatchdogItems.forEach((w) => raw.push({ kind: 'reply_latency_watchdog', category: 'data_requests', chatId: w.chatId, name: w.name, ts: w.flaggedAt || w.arrivedAt, data: w }));
   // Performance fix (2026-10-30): isNeverAuto(item.chatId) used to run as
   // its own SISMEMBER round trip PER item inside this map - this function
   // backs the Action-needed poll that fires every ~12s regardless of which
@@ -1439,7 +1459,85 @@ async function logInboxEvent({ chatId, name, isGroup, messageSummary, aCase, sen
     // AFTER the excess is safely archived to Drive, not here.
     await redis.ltrim(INBOX_LOG_KEY, 0, INBOX_LOG_HARD_CEILING - 1);
     await updateConvoSummaryRow(redis, entry).catch(() => {});
+    // Point 6 - ANY outcome recorded for this chat means a decision was
+    // reached (sent, automatic, blocked, skipped - whatever it is, the
+    // pipeline is no longer silently sitting on it), so the watchdog
+    // marker clears here unconditionally, never gated on `outcome`.
+    await clearReplyPending(chatId).catch(() => {});
   } catch (err) { /* best effort */ }
+}
+// Point 6 - called wherever a real 1:1 turn FIRST starts being processed
+// (the burst buffer has just settled, before decideAutoReply even runs) -
+// see call sites' own comments. Never overwrites an existing, OLDER
+// pending marker for the same chat (a second message arriving while the
+// first is still unanswered must not reset the clock).
+async function markReplyPendingSince(chatId, name, arrivedAt) {
+  const redis = getClient();
+  if (!redis) return;
+  try {
+    const key = whatsapp.normalizePhone(chatId);
+    const existingRaw = await redis.get(REPLY_PENDING_PREFIX + key);
+    const existing = existingRaw ? (typeof existingRaw === 'string' ? JSON.parse(existingRaw) : existingRaw) : null;
+    if (existing && existing.arrivedAt <= arrivedAt) return;
+    await redis.set(REPLY_PENDING_PREFIX + key, JSON.stringify({ chatId: key, name, arrivedAt, flaggedAt: null }), { ex: 24 * 60 * 60 });
+    await redis.sadd(REPLY_PENDING_IDS_KEY, key);
+  } catch (err) { /* best effort */ }
+}
+async function clearReplyPending(chatId) {
+  const redis = getClient();
+  if (!redis) return;
+  const key = whatsapp.normalizePhone(chatId);
+  await redis.del(REPLY_PENDING_PREFIX + key);
+  await redis.srem(REPLY_PENDING_IDS_KEY, key);
+}
+// The watchdog tick itself - runs on the scheduler's own fast (~2-4s)
+// auto-send flush interval, never the slower 30s maintenance tick, so a
+// real 60s-overdue reply is actually caught within a few seconds of
+// crossing the threshold, not up to 30s late. Self-healing: a stale SET
+// membership whose own marker key has already expired/gone is quietly
+// dropped from the SET rather than treated as still-pending.
+async function checkReplyLatencyWatchdog(now) {
+  const redis = getClient();
+  if (!redis) return { flagged: 0 };
+  const ids = (await redis.smembers(REPLY_PENDING_IDS_KEY).catch(() => [])) || [];
+  let flagged = 0;
+  for (const chatId of ids) {
+    try {
+      const raw = await redis.get(REPLY_PENDING_PREFIX + chatId);
+      if (!raw) { await redis.srem(REPLY_PENDING_IDS_KEY, chatId).catch(() => {}); continue; }
+      const entry = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      if (now - entry.arrivedAt < REPLY_WATCHDOG_THRESHOLD_MS) continue;
+      if (entry.flaggedAt) continue; // already alerted once for this same overdue message
+      entry.flaggedAt = now;
+      await redis.set(REPLY_PENDING_PREFIX + chatId, JSON.stringify(entry), { ex: 24 * 60 * 60 });
+      const overdueSec = Math.round((now - entry.arrivedAt) / 1000);
+      await alertOwnerDualChannel(
+        '🔴 SUBH has not replied to ' + (entry.name || chatId) + ' (' + chatId + ') in over 60 seconds - arrived ' +
+        formatIstDateTime(entry.arrivedAt) + ', still unanswered ' + overdueSec + 's later.',
+        '🔴 SUBH: reply latency watchdog - 60s exceeded'
+      ).catch(() => {});
+      flagged++;
+    } catch (err) { /* one chat's own failure never stops the rest */ }
+  }
+  return { flagged };
+}
+// Feeds listActionNeededItems' own red card - only chats PAST the
+// threshold and already flagged (never a chat still inside its first 60
+// seconds, which is normal and expected, not an incident).
+async function listReplyLatencyWatchdogItems() {
+  const redis = getClient();
+  if (!redis) return [];
+  const ids = (await redis.smembers(REPLY_PENDING_IDS_KEY).catch(() => [])) || [];
+  const out = [];
+  for (const chatId of ids) {
+    try {
+      const raw = await redis.get(REPLY_PENDING_PREFIX + chatId);
+      if (!raw) continue;
+      const entry = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      if (entry.flaggedAt) out.push(entry);
+    } catch (err) { /* skip this one, never fail the whole list */ }
+  }
+  return out;
 }
 // LIVE INCIDENT (2026-11), direct instruction, point 2 - see
 // WA_CONVO_SUMMARY_KEY's own comment above. One extra HGET+HSET per real
@@ -16366,6 +16464,10 @@ async function pollOnce() {
         contactId, name: buffer.name, firstName: buffer.firstName, text: combinedText,
         arrivedAt: buffer.firstSeenAt, seenAt: now, typingStartedAt: buffer.typingStartedAt || null, results
       };
+      // Point 6 - starts the 60s watchdog clock here, the earliest point a
+      // real 1:1 turn is actually about to be acted on (never inside
+      // actOnOfficialTurn itself, so a throw/retry below doesn't delay it).
+      await markReplyPendingSince(contactId, buffer.name, buffer.firstSeenAt).catch(() => {});
       // Task 2 (2026-10-28), live bug (917278793115) - several real
       // messages in this exact incident got NO reply at all and no owner
       // alert. The burst buffer is already cleared by the time
@@ -16939,6 +17041,10 @@ module.exports = {
   listAllWhatsappConversationsPage,
   listConvoSummaryRows,
   backfillConvoSummaryIndexIfNeeded,
+  markReplyPendingSince,
+  clearReplyPending,
+  checkReplyLatencyWatchdog,
+  listReplyLatencyWatchdogItems,
   dismissWhatsappItem,
   markCommsRowDismissed,
   listCommsDismissed,
