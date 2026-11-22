@@ -90,6 +90,7 @@ const DETERMINISTIC_SUITES = [
   'check-workflow-v2-phase7.js',
   'check-mail-compose.js',
   'check-whatsapp-engine.js',
+  'check-whatsapp-gateway-v1.js',
   'check-full-store-backup.js',
   'check-settings-audit-log.js',
   'check-migration-helper.js',

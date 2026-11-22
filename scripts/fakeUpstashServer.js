@@ -164,6 +164,10 @@ function createStore() {
       const entry = get(args[0], now);
       return entry && entry.value.has(String(args[1])) ? 1 : 0;
     },
+    scard(args, now) {
+      const entry = get(args[0], now);
+      return entry ? entry.value.size : 0;
+    },
     lpush(args, now) {
       const [key, ...values] = args;
       const entry = ensure(key, 'list', now);

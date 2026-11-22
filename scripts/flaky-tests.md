@@ -58,3 +58,47 @@ retry" still runs hot on the tail of the just-finished 44-suite parallel load (p
 cleanup/GC still settling), so back-to-back "solo" isn't always truly idle - a later,
 genuinely-idle standalone run is the real tiebreaker, not just "did the retry fail
 too." Not connected to any change this session.)
+
+## check-whatsapp-engine.js
+Flaked on 2026-11-22T06:05:27.047Z - failed once, passed on a lone solo retry.
+```
+======================================================================
+[ok] duplicate-request handling, point 2 - the SAME sender, SAME date+period (completely different wording) -> NO new card, the ORIGINAL card gets a "repeat_message" note, and the sender gets the EXACT fixed "already received" reply
+[ok] duplicate-request handling, point 3(a) - a DIFFERENT date -> a genuinely NEW card, never merged into the earlier one
+[ok] duplicate-request handling, point 3(b) - the SAME date but a genuinely DIFFERENT, non-overlapping period (1st half vs 2nd half, the spec's own example) -> a NEW card, never merged/updated
+[ok] duplicate-request handling, point 4 - SAME date, period CHANGED from "full day" to "2nd half" -> the EXISTING card is UPDATED (never a duplicate card), and SUBH confirms the change briefly
+[ok] duplicate-request handling, point 5 - a CLOSED/"Closed – no reply" card for the same date+period does NOT count as a duplicate -> a repeat message creates a genuinely NEW card
+[ok] LIVE INCIDENT (2026-11), direct instruction, point 3 - a genuinely new/unrelated message arriving during the "awaiting_manager_informed" step (the live-cited "Ami kal 2nd half a asbo na") used to always get the dead-end HR_FLOW_CONTEXT_CLARIFY line and never create its own card; this step now shares the same handleUnclearFlowReply/handleUnresolvedPersonReference fallthrough its sibling step (awaiting_approval_obtained) already had - returns null (never cleared, falls through to start its own new flow) instead of swallowing the message
+[ok] cleanup (point 3 test)
+======================================================================
+confirmOrRecoverSend/processDueDeliveryChecks - ROBUSTNESS PASS: auto-recovery, late-confirmation dedup, evidence log, dual-channel alert - DATA-DRIVEN (no background timers at all, so a test can never leak a stray one into a later, unrelated test)
+======================================================================
+[ok] confirmed on the very first feed check -> delivered, no resend, no alert, evidence shows confirmed:true
+[ok] a LATE confirmation - missing on the first check (so one automatic resend goes out), but then found confirmed on the very next check - accepted as delivered, never a second resend, never an alert
+[ok] NEVER confirmed anywhere -> exactly 2 automatic resends, then (and only then) not_delivered + the conversation bubble flips + a REAL dual-channel owner alert (WhatsApp + email), with the full evidence trail for IT
+[whatsapp] send-verify: could not check outgoing feed for 919999992005: simulated gateway read failure
+[ok] LIVE INCIDENT (2026-11) fix - a feed-read failure during the very first check fails closed (never resends) AND now raises a real owner-visible warning, marked "sent_unconfirmed" (shown as "Sent (gateway OK)"), never the old "unconfirmed_check_failed" that looked like a false "Not delivered"
+[whatsapp] send-verify: could not check outgoing feed for 919999992015: simulated gateway read failure
+[ok] LIVE INCIDENT (2026-11) fix - a feed-read failure never shows as "Not delivered" in the Delivery log - it is its own distinct "Sent (gateway OK)" pill, not in DELIVERY_LOG_NOT_DELIVERED_OUTCOMES
+[ok] LIVE INCIDENT (2026-11), direct instruction - matching by the gateway's own message id (when the feed echoes it) confirms delivery even if the echoed text differs entirely - never a false "not found" purely from a text mismatch
+[ok] LIVE INCIDENT (2026-11), direct instruction - normalized text matching tolerates whitespace/line-break/zero-width differences between what we sent and what the feed echoes back - never a false "not found" from harmless formatting noise
+[ok] LIVE INCIDENT (2026-11), direct instruction - the widened feed window (15s grace, 50 messages) still correctly ignores a message from well BEFORE this send (a coincidental text match from an unrelated, much older message) - never a false positive just because the window got wider
+[whatsapp] send-verify: could not check outgoing feed for 919999992019: feed check timed out after 50ms
+[ok] LIVE INCIDENT (2026-11), direct instruction - a feed check that TIMES OUT (never resolves) is treated exactly like a feed-read failure - sent_unconfirmed, a warning, never a resend
+[ok] LIVE INCIDENT (2026-11), direct instruction - a resend attempt whose OWN send call fails (real send error) still keeps retrying up to the normal cap, never gets stuck or silently drops the message
+[ok] a long reply sent in multiple chunks is correctly matched by its FIRST chunk alone - never a false resend/alarm just because the feed never shows the full text as one message
+[ok] an empty replyText is a no-op, never schedules a check, never calls the feed at all
+======================================================================
+queryDeliveryEvidence/countNotDeliveredToday/listDeliveryEvidenceForExport - Delivery log page (Pass 2)
+======================================================================
+[ok] queryDeliveryEvidence: filter "all" vs "not_delivered" vs "retried" each return exactly the right subset, with correct today stats regardless of filter
+[ok] queryDeliveryEvidence: pagination (offset/limit/hasMore) actually slices the filtered list, never the whole day
+[ok] countNotDeliveredToday reflects the SAME not_delivered count queryDeliveryEvidence itself reports for today
+[ok] listDeliveryEvidenceForExport: date-range filtering excludes a record scheduled outside the range, and the row shape carries every field IT needs
+975/976 passed, 1 FAILED
+Failed checks:
+ - own name, THIRD PERSON ("Ayan Biswas er Aadhaar number ta dao" - sender IS Ayan Biswas) is treated the same as "amar" - sent DIRECTLY, never left pending (TIMED OUT after 15s)
+Skipped 157 real-model tests (run with RUN_REAL_MODEL=1 and ANTHROPIC_API_KEY_TEST set)
+Real API calls: 0 · cost $0.0000
+======================================================================
+```
