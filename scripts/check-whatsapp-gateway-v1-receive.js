@@ -207,6 +207,32 @@ async function main() {
     });
 
     console.log('='.repeat(70));
+    console.log('message.status events - delivery status tracking (Commit 3)');
+    console.log('='.repeat(70));
+    await checkAsync('processEvent: a message.status event is recorded (not kept as a conversation message) and getMessageStatus returns it', async () => {
+      const evt = { eventId: 'evid-status-1', event: 'message.status', data: { waKey: 'true_status_UNIQ1', id: 'ABC1', status: 'delivered', at: '2026-11-22T10:00:00.000Z' } };
+      const r = await receive.processEvent(evt);
+      const status = await receive.getMessageStatus('true_status_UNIQ1');
+      return r.kept === false && status && status.status === 'delivered';
+    });
+    await checkAsync('getMessageStatus: a later status event for the SAME waKey overwrites the earlier one (status only ever moves forward)', async () => {
+      await receive.processEvent({ eventId: 'evid-status-2a', event: 'message.status', data: { waKey: 'true_status_UNIQ2', status: 'sent' } });
+      await receive.processEvent({ eventId: 'evid-status-2b', event: 'message.status', data: { waKey: 'true_status_UNIQ2', status: 'delivered' } });
+      const status = await receive.getMessageStatus('true_status_UNIQ2');
+      return status.status === 'delivered';
+    });
+    await checkAsync('getMessageStatus: an unknown waKey (no status event ever seen) returns null, never throws', async () => {
+      const status = await receive.getMessageStatus('never-seen-this-waKey');
+      return status === null;
+    });
+    await checkAsync('processEvent: a message.received event whose own payload already carries a status is recorded via getMessageStatus too, not just via a dedicated message.status event', async () => {
+      const evt = { eventId: 'evid-status-3', event: 'message.received', data: { message: { waKey: 'true_status_UNIQ3', type: 'text', text: 'hi', chat: { kind: 'user' }, status: 'sent' } } };
+      await receive.processEvent(evt);
+      const status = await receive.getMessageStatus('true_status_UNIQ3');
+      return status && status.status === 'sent';
+    });
+
+    console.log('='.repeat(70));
     console.log('shouldIgnoreMessage / normalizeMessage');
     console.log('='.repeat(70));
     check('normalizeMessage: carries through the fields downstream code actually uses, defaults the rest safely', (() => {

@@ -513,6 +513,70 @@ async function main() {
   });
 
   console.log('='.repeat(70));
+  console.log('checkGatewayV1Session - new WhatsApp gateway session health (Commit 3, direct instruction)');
+  console.log('='.repeat(70));
+  const gatewayV1 = require('../src/whatsappGatewayV1');
+  const origGetNumberStatus = gatewayV1.getNumberStatus;
+  const origGetNumberHealth = gatewayV1.getNumberHealth;
+  function restoreGatewayV1() { gatewayV1.getNumberStatus = origGetNumberStatus; gatewayV1.getNumberHealth = origGetNumberHealth; }
+  await checkAsync('with WHATSAPP_GATEWAY not "new", reports ok:true without ever calling the gateway (true no-op)', async () => {
+    delete process.env.WHATSAPP_GATEWAY;
+    let called = false;
+    gatewayV1.getNumberStatus = async () => { called = true; return {}; };
+    try {
+      const monitor = freshMonitor();
+      const result = await monitor.checkGatewayV1Session();
+      return result.ok === true && called === false;
+    } finally { restoreGatewayV1(); }
+  });
+  await checkAsync('with the gateway enabled and a healthy status/health response, reports ok:true', async () => {
+    process.env.WHATSAPP_GATEWAY = 'new';
+    gatewayV1.getNumberStatus = async () => ({ status: 'active', connected: true });
+    gatewayV1.getNumberHealth = async () => ({ lastHour: { decryptionFailures: 0, duplicatesSuppressed: 3 } });
+    try {
+      const monitor = freshMonitor();
+      const result = await monitor.checkGatewayV1Session();
+      return result.ok === true && result.decryptionFailures === 0 && result.duplicatesSuppressed === 3;
+    } finally { restoreGatewayV1(); delete process.env.WHATSAPP_GATEWAY; }
+  });
+  await checkAsync('with the gateway enabled and status "relink_required", reports ok:false naming the bad status', async () => {
+    process.env.WHATSAPP_GATEWAY = 'new';
+    gatewayV1.getNumberStatus = async () => ({ status: 'relink_required', connected: false });
+    gatewayV1.getNumberHealth = async () => ({ lastHour: {} });
+    try {
+      const monitor = freshMonitor();
+      const result = await monitor.checkGatewayV1Session();
+      return result.ok === false && /relink_required/.test(result.error);
+    } finally { restoreGatewayV1(); delete process.env.WHATSAPP_GATEWAY; }
+  });
+  await checkAsync('with 1+ decryption failures in the last hour, reports ok:false even though status itself looks fine - the exact alert requested', async () => {
+    process.env.WHATSAPP_GATEWAY = 'new';
+    gatewayV1.getNumberStatus = async () => ({ status: 'active', connected: true });
+    gatewayV1.getNumberHealth = async () => ({ lastHour: { decryptionFailures: 2, duplicatesSuppressed: 0 } });
+    try {
+      const monitor = freshMonitor();
+      const result = await monitor.checkGatewayV1Session();
+      return result.ok === false && /2 message decryption failure/.test(result.error);
+    } finally { restoreGatewayV1(); delete process.env.WHATSAPP_GATEWAY; }
+  });
+  await checkAsync('a thrown/network error while enabled reports ok:false, never throws out of runHealthCheck', async () => {
+    process.env.WHATSAPP_GATEWAY = 'new';
+    gatewayV1.getNumberStatus = async () => { throw new Error('simulated network failure'); };
+    gatewayV1.getNumberHealth = async () => ({ lastHour: {} });
+    try {
+      const monitor = freshMonitor();
+      const result = await monitor.checkGatewayV1Session();
+      return result.ok === false && /simulated network failure/.test(result.error);
+    } finally { restoreGatewayV1(); delete process.env.WHATSAPP_GATEWAY; }
+  });
+  await checkAsync('runHealthCheck itself includes gatewayV1Session in its result and never crashes when the gateway is disabled', async () => {
+    delete process.env.WHATSAPP_GATEWAY;
+    const monitor = freshMonitor();
+    const result = await monitor.runHealthCheck();
+    return result.gatewayV1Session && result.gatewayV1Session.ok === true;
+  });
+
+  console.log('='.repeat(70));
   console.log(pass + '/' + (pass + fail) + ' passed');
   if (fail) { console.log('Failed checks:'); failures.forEach((f) => console.log(' - ' + f)); }
   console.log('='.repeat(70));

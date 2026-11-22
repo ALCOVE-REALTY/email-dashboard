@@ -25,6 +25,13 @@ const whatsapp = require('../whatsappService');
 const gmailService = require('../gmailService');
 const employeeService = require('../employeeService');
 const { Redis } = require('@upstash/redis');
+// New WhatsApp gateway (2026-11, direct instruction, Commit 3) - session
+// health (decryption failures, duplicates suppressed) is a true no-op
+// below until WHATSAPP_GATEWAY=new. Webhook registration status is a
+// separate, cheap local Redis read done directly by the system-health
+// route (workforceRoutes.js), not here.
+const gatewayModeV1 = require('../whatsappGatewayMode');
+const gatewayV1 = require('../whatsappGatewayV1');
 
 const HEALTH_CHECK_TIMEOUT_MS = 8000;
 function withTimeout(promise, ms) {
@@ -96,6 +103,15 @@ function startMetricsLog(log = console) {
   }, METRICS_LOG_EVERY_MS).unref();
 }
 function getLatestMetrics() { return latestMetrics; }
+
+// New WhatsApp gateway (2026-11, Commit 3) - the System health card's own
+// read (GET /hr-assistant/system-health) must never itself trigger a
+// fresh gateway call (same "viewing the card never adds load" rule as
+// metrics/jobHeartbeats above) - it just reads whatever runHealthCheck's
+// own 2-minute tick last found, exactly like checkGatewayV1Session's own
+// {ok, status, health, decryptionFailures, duplicatesSuppressed} shape.
+let latestGatewayV1Session = null;
+function getLatestGatewayV1Session() { return latestGatewayV1Session; }
 
 // A fresh, raw client - deliberately NOT whatsappAssistant.js's own
 // lazily-cached one, so this always re-resolves the CURRENT env vars
@@ -173,6 +189,44 @@ async function checkGateway() {
     return { ok: !explicitlyNotConnected, error: explicitlyNotConnected ? 'gateway reports disconnected' : null };
   } catch (err) {
     return { ok: false, error: err.message };
+  }
+}
+
+// New WhatsApp gateway (2026-11, direct instruction, Commit 3) - "show
+// decryption failures and duplicates suppressed (1h) on the System health
+// card, alert if decryption failures > 0." A true no-op (ok:true, nothing
+// fetched) when the new gateway isn't enabled, same posture as every
+// other new-gateway check added this migration.
+// GET /v1/numbers/{id}/health's own "last hour" field names were only
+// ever described in prose in the docs, never shown as a literal JSON
+// example - same "never assume one exact field name" caution this file's
+// own checkGateway() already uses for the OLD gateway's status shape, so
+// several plausible spellings/locations are tried rather than one guess.
+function readHealthCount(health, keys) {
+  if (!health) return 0;
+  const candidates = [health.lastHour, health.last_hour, health].filter(Boolean);
+  for (const obj of candidates) {
+    for (const k of keys) {
+      if (typeof obj[k] === 'number') return obj[k];
+    }
+  }
+  return 0;
+}
+async function checkGatewayV1Session() {
+  if (!gatewayModeV1.isNewGatewayEnabled()) return { ok: true, note: 'new gateway not enabled' };
+  try {
+    const [status, health] = await Promise.all([
+      withTimeout(gatewayV1.getNumberStatus(), HEALTH_CHECK_TIMEOUT_MS),
+      withTimeout(gatewayV1.getNumberHealth(), HEALTH_CHECK_TIMEOUT_MS)
+    ]);
+    const decryptionFailures = readHealthCount(health, ['decryptionFailures', 'decryption_failures', 'decryptFailures']);
+    const duplicatesSuppressed = readHealthCount(health, ['duplicatesSuppressed', 'redeliveriesSuppressed', 'redeliveries_suppressed', 'duplicates_suppressed']);
+    const badStatus = status && (status.status === 'relink_required' || status.status === 'disabled' || status.connected === false);
+    if (badStatus) return { ok: false, error: 'WhatsApp v1 gateway session problem: status is "' + (status && status.status) + '"', status, health, decryptionFailures, duplicatesSuppressed };
+    if (decryptionFailures > 0) return { ok: false, error: decryptionFailures + ' message decryption failure(s) in the last hour on the v1 gateway', status, health, decryptionFailures, duplicatesSuppressed };
+    return { ok: true, status, health, decryptionFailures, duplicatesSuppressed };
+  } catch (err) {
+    return { ok: false, error: 'WhatsApp v1 gateway health check failed: ' + err.message };
   }
 }
 
@@ -383,9 +437,9 @@ let lastAlertSentAt = 0;
 let wasFailingLastTick = false;
 
 async function runHealthCheck() {
-  const [kv, gateway, replyPipeline, schedulerHeartbeat, failedSends, kvLatency, eventLoopLag, aiFallbackStreak] = await Promise.all([
+  const [kv, gateway, replyPipeline, schedulerHeartbeat, failedSends, kvLatency, eventLoopLag, aiFallbackStreak, gatewayV1Session] = await Promise.all([
     checkKv(), checkGateway(), checkReplyPipeline(), checkSchedulerHeartbeat(), checkFailedSends(),
-    checkKvLatency(), checkEventLoopLag(), checkAiFallbackStreak()
+    checkKvLatency(), checkEventLoopLag(), checkAiFallbackStreak(), checkGatewayV1Session()
   ]);
   const failures = [];
   if (!kv.ok) failures.push('Data store (subh-store/KV) unreachable: ' + kv.error);
@@ -396,6 +450,8 @@ async function runHealthCheck() {
   if (!kvLatency.ok) failures.push(kvLatency.error);
   if (!eventLoopLag.ok) failures.push(eventLoopLag.error);
   if (!aiFallbackStreak.ok) failures.push(aiFallbackStreak.error);
+  if (!gatewayV1Session.ok) failures.push(gatewayV1Session.error);
+  latestGatewayV1Session = gatewayV1Session;
   const isFailing = failures.length > 0;
   const now = Date.now();
 
@@ -422,10 +478,10 @@ async function runHealthCheck() {
   }
   wasFailingLastTick = isFailing;
 
-  return { ok: !isFailing, failures, kv, gateway, replyPipeline, schedulerHeartbeat, failedSends, kvLatency, eventLoopLag, aiFallbackStreak, alertSent };
+  return { ok: !isFailing, failures, kv, gateway, replyPipeline, schedulerHeartbeat, failedSends, kvLatency, eventLoopLag, aiFallbackStreak, gatewayV1Session, alertSent };
 }
 
 module.exports = {
   runHealthCheck, checkKv, checkGateway, checkReplyPipeline, checkSchedulerHeartbeat, checkFailedSends,
-  checkKvLatency, checkEventLoopLag, checkAiFallbackStreak, startMetricsLog, getLatestMetrics, recordKvLatency, kvLatencyP95Ms
+  checkKvLatency, checkEventLoopLag, checkAiFallbackStreak, checkGatewayV1Session, getLatestGatewayV1Session, startMetricsLog, getLatestMetrics, recordKvLatency, kvLatencyP95Ms
 };

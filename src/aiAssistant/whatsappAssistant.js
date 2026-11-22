@@ -20,6 +20,12 @@ const fs = require('fs');
 const crypto = require('crypto');
 const aiUsageLog = require('./aiUsageLog');
 const whatsapp = require('../whatsappService');
+// New WhatsApp gateway (2026-11, direct instruction, Commit 3) - delivery
+// status lookup only, for detectDeliveryLanded below. Never the sending
+// path (that stays whatsappService.js/whatsapp above until a later,
+// separately-gated commit actually flips send call sites over).
+const gatewayModeV1 = require('../whatsappGatewayMode');
+const gatewayV1Receive = require('../whatsappGatewayV1Receive');
 // Off by default (reply-restoration request) - the gateway confirmed has
 // no route for this yet (every plausible endpoint name 404s), so until
 // it's actually added server-side, this feature is pure extra network
@@ -2383,11 +2389,16 @@ async function scheduleDeliveryCheck(record) {
     await redis.zadd(DELIVERY_CHECK_ZSET, { score: record.checkAt, member: record.id });
   } catch (err) { /* best effort - a failed schedule just means this one check is missed, not a crash */ }
 }
-async function confirmOrRecoverSend({ chatId, name, replyText, sentAt, gatewayMessageId, httpStatus }) {
+async function confirmOrRecoverSend({ chatId, name, replyText, sentAt, gatewayMessageId, waKey, httpStatus }) {
   if (!replyText) return;
   const id = chatId + ':' + sentAt + ':' + Math.random().toString(36).slice(2, 8);
   await scheduleDeliveryCheck({
     id, chatId, name, replyText, sentAt, currentSentAt: sentAt, attempt: 0,
+    // waKey (2026-11, Commit 3) - only ever populated once the actual
+    // send path is routed through the new gateway (a later, separately
+    // gated commit); whatsapp.sendWhatsAppMessage/sendWhatsAppChunked
+    // never return one today, so this is harmless plumbing until then.
+    waKey: waKey || null,
     attempts: [{ at: sentAt, httpStatus: httpStatus || null, gatewayMessageId: gatewayMessageId || null }],
     checkAt: Date.now() + sendVerifyDelayMs()
   });
@@ -2428,8 +2439,27 @@ const DELIVERY_CHECK_FEED_LIMIT = 50;
 // already land" dedup check before any resend, collapsed into the same
 // step - a duplicate send can never happen without the feed first being
 // re-checked and found still missing.
-async function runOneDeliveryCheck(record) {
-  let landed = false;
+// Commit 3 (2026-11, direct instruction) - "message.status events
+// replacing fuzzy text-matching when gateway=new." Isolated into its own
+// function so runOneDeliveryCheck's surrounding evidence/resend/alert
+// logic (below) stays completely shared between both gateways - only
+// HOW we learn whether a send landed differs. Returns one of
+// {result:'landed'}/{result:'not_landed'}/{result:'uncertain', reason}
+// (the old gateway's own feed-check-failed/timed-out wording is kept
+// byte-for-byte for 'uncertain' there, so every existing locked test for
+// that path is unaffected).
+async function detectDeliveryLanded(record) {
+  if (gatewayModeV1.isNewGatewayEnabled() && record.waKey) {
+    try {
+      const statusInfo = await gatewayV1Receive.getMessageStatus(record.waKey);
+      if (!statusInfo || !statusInfo.status) return { result: 'uncertain', reason: 'no delivery status received yet' };
+      if (statusInfo.status === 'failed') return { result: 'not_landed' };
+      if (statusInfo.status === 'sent' || statusInfo.status === 'delivered' || statusInfo.status === 'read') return { result: 'landed' };
+      return { result: 'not_landed' }; // queued/sending - not confirmed yet, same posture as "not found in the feed yet"
+    } catch (err) {
+      return { result: 'uncertain', reason: 'delivery status check failed' };
+    }
+  }
   try {
     const feed = await withDeliveryCheckTimeout(whatsapp.listMessages(record.chatId, DELIVERY_CHECK_FEED_LIMIT));
     // feedMessageGatewayId's own field-name guesses may never actually
@@ -2439,7 +2469,7 @@ async function runOneDeliveryCheck(record) {
     // match below is what actually matters - this can only ever ADD a
     // more reliable signal on top of it, never take one away.
     const latestGatewayId = record.attempts.length ? record.attempts[record.attempts.length - 1].gatewayMessageId : null;
-    landed = feedShowsText(feed, record.replyText, record.currentSentAt, latestGatewayId);
+    return { result: feedShowsText(feed, record.replyText, record.currentSentAt, latestGatewayId) ? 'landed' : 'not_landed' };
   } catch (err) {
     // LIVE INCIDENT fix - this used to mark 'unconfirmed_check_failed',
     // which DELIVERY_LOG_NOT_DELIVERED_OUTCOMES treats as "Not delivered"
@@ -2454,13 +2484,19 @@ async function runOneDeliveryCheck(record) {
     // couldn't re-verify it" state and stops here (no resend, same as
     // before), with a real owner-visible warning this time.
     console.error('[whatsapp] send-verify: could not check outgoing feed for ' + record.chatId + ': ' + err.message);
+    return { result: 'uncertain', reason: 'gateway feed check failed/timed out' };
+  }
+}
+async function runOneDeliveryCheck(record) {
+  const detection = await detectDeliveryLanded(record);
+  if (detection.result === 'uncertain') {
     await recordDeliveryEvidence({ id: record.id, chatId: record.chatId, name: record.name, textPreview: record.replyText.slice(0, 100), sentAt: record.sentAt, attempts: record.attempts, confirmed: null, finalOutcome: 'sent_unconfirmed' });
     await postOwnerNotification(
-      '⚠️ Could not re-verify delivery to ' + record.name + ' (gateway feed check failed/timed out) - the message was sent (gateway OK) and was NOT resent. Shown as "Sent (gateway OK)" in the WhatsApp section: "' + record.replyText.slice(0, 160) + '"'
+      '⚠️ Could not re-verify delivery to ' + record.name + ' (' + detection.reason + ') - the message was sent (gateway OK) and was NOT resent. Shown as "Sent (gateway OK)" in the WhatsApp section: "' + record.replyText.slice(0, 160) + '"'
     ).catch(() => {});
     return;
   }
-  if (landed) {
+  if (detection.result === 'landed') {
     await recordDeliveryEvidence({ id: record.id, chatId: record.chatId, name: record.name, textPreview: record.replyText.slice(0, 100), sentAt: record.sentAt, attempts: record.attempts, confirmed: true, finalOutcome: record.attempt > 0 ? 'delivered_after_retry' : 'delivered' });
     return;
   }
@@ -2479,6 +2515,10 @@ async function runOneDeliveryCheck(record) {
   await scheduleDeliveryCheck({
     id: record.id, chatId: record.chatId, name: record.name, replyText: record.replyText,
     sentAt: record.sentAt, currentSentAt: newSentAt, attempt: newAttempt, attempts,
+    // A resend gets its own new waKey (once sending genuinely goes
+    // through the new gateway) - the NEXT check must verify THAT one,
+    // never the stale original.
+    waKey: resendResult.waKey || record.waKey,
     checkAt: Date.now() + recoveryGapMs(newAttempt - 1)
   });
 }
@@ -2708,7 +2748,7 @@ async function sendOrReportAutoReply(entry) {
       await alertIfSlow(sentAt);
       await logAutoReplyEvent({ senderType: entry.isGroup ? 'group' : 'direct', aCase: entry.case, memoryId: entry.memoryId, action: 'sent' });
       await logInboxEvent({ chatId: entry.chatId, name: entry.name, isGroup: entry.isGroup, messageSummary: entry.summaryForOwner, aCase: entry.case, sentText: entry.replyText, outcome: 'sent', intent: entry.intent, hrTopicArea: entry.hrTopicArea, ...timeline, sentAt, gatewayMessageId: sendResult.gatewayMessageId || null });
-      if (!entry.isGroup) confirmOrRecoverSend({ chatId: entry.chatId, name: who, replyText: entry.replyText, sentAt, gatewayMessageId: sendResult.gatewayMessageId, httpStatus: sendResult.httpStatus }).catch(() => {});
+      if (!entry.isGroup) confirmOrRecoverSend({ chatId: entry.chatId, name: who, replyText: entry.replyText, sentAt, gatewayMessageId: sendResult.gatewayMessageId, waKey: sendResult.waKey, httpStatus: sendResult.httpStatus }).catch(() => {});
     } else if (!entry.isRetry && !entry.isGroup) {
       // Delivery tracking (live incident, 917278793115: two sends were
       // logged as a failure with no further attempt and no clearly visible
@@ -2860,7 +2900,7 @@ async function resolveFollowupsForMemory(memory) {
     // but no evidence-log/delivery-check coverage at all until now.
     const sentAt = Date.now();
     await logInboxEvent({ chatId: f.chatId, name: f.name, isGroup: false, messageSummary: (f.summary || '').slice(0, 160), aCase: 'proactive_followup', sentText: replyText, outcome: 'sent', sentAt, gatewayMessageId: sendResult.gatewayMessageId || null });
-    confirmOrRecoverSend({ chatId: f.chatId, name: f.name || f.chatId, replyText, sentAt, gatewayMessageId: sendResult.gatewayMessageId, httpStatus: sendResult.httpStatus }).catch(() => {});
+    confirmOrRecoverSend({ chatId: f.chatId, name: f.name || f.chatId, replyText, sentAt, gatewayMessageId: sendResult.gatewayMessageId, waKey: sendResult.waKey, httpStatus: sendResult.httpStatus }).catch(() => {});
     await clearOpenFollowup(f.chatId);
     await resetFollowupCount(f.chatId);
     await logInboxEvent({ chatId: f.chatId, name: f.name, isGroup: false, messageSummary: '[proactive follow-up: ' + memory.topic + ']', aCase: 'memory', sentText: replyText, outcome: 'sent', sentAt: Date.now() });
@@ -8594,7 +8634,7 @@ async function resendPendingHrNoteFlowNudge(phone) {
   // send paths through the single tracked send").
   const sentAt = Date.now();
   await logInboxEvent({ chatId: normalized, name: hrFlow.name || normalized, isGroup: false, messageSummary: topic, aCase: 'hr_note_reminder', sentText: disclosed, outcome: 'sent', sentAt, gatewayMessageId: sendResult.gatewayMessageId || null });
-  confirmOrRecoverSend({ chatId: normalized, name: hrFlow.name || normalized, replyText: disclosed, sentAt, gatewayMessageId: sendResult.gatewayMessageId, httpStatus: sendResult.httpStatus }).catch(() => {});
+  confirmOrRecoverSend({ chatId: normalized, name: hrFlow.name || normalized, replyText: disclosed, sentAt, gatewayMessageId: sendResult.gatewayMessageId, waKey: sendResult.waKey, httpStatus: sendResult.httpStatus }).catch(() => {});
   return { ok: true };
 }
 // LIVE FIX (917278793115) - finalizeHrNoteThirdParty's safety escalation
@@ -9244,7 +9284,7 @@ async function sendRawHrConfirmationTextToManager(managerPhone, managerName, tex
   await logInboxEvent({ chatId: managerPhone, name: managerName, isGroup: false, messageSummary: logSummary, aCase: 'hr_confirmation_sent', sentText: text, outcome: 'sent', sentAt, gatewayMessageId: sendResult.gatewayMessageId || null });
   // LIVE INCIDENT (2026-11, direct instruction - "route ALL outgoing
   // send paths through the single tracked send").
-  confirmOrRecoverSend({ chatId: managerPhone, name: managerName, replyText: text, sentAt, gatewayMessageId: sendResult.gatewayMessageId, httpStatus: sendResult.httpStatus }).catch(() => {});
+  confirmOrRecoverSend({ chatId: managerPhone, name: managerName, replyText: text, sentAt, gatewayMessageId: sendResult.gatewayMessageId, waKey: sendResult.waKey, httpStatus: sendResult.httpStatus }).catch(() => {});
   return { ok: true };
 }
 async function sendHrConfirmationMessageToManager(confirmationId) {
@@ -9321,7 +9361,7 @@ async function sendHrConfirmationMessageToManagerCombined(managerPhone, isRemind
         // was genuinely never logged to the inbox at all before now.
         const sentAt = Date.now();
         await logInboxEvent({ chatId: managerPhone, name: only.thirdPartyName || managerPhone, isGroup: false, messageSummary: only.summary, aCase: 'hr_confirmation_reminder', sentText: text, outcome: 'sent', sentAt, gatewayMessageId: sendResult.gatewayMessageId || null });
-        confirmOrRecoverSend({ chatId: managerPhone, name: only.thirdPartyName || managerPhone, replyText: text, sentAt, gatewayMessageId: sendResult.gatewayMessageId, httpStatus: sendResult.httpStatus }).catch(() => {});
+        confirmOrRecoverSend({ chatId: managerPhone, name: only.thirdPartyName || managerPhone, replyText: text, sentAt, gatewayMessageId: sendResult.gatewayMessageId, waKey: sendResult.waKey, httpStatus: sendResult.httpStatus }).catch(() => {});
       } else {
         await postOwnerNotification('⚠️ Could not deliver a reminder nudge to ' + managerPhone + ': ' + (sendResult.error || 'unknown error') + ' - please check/resend manually.');
       }
@@ -9371,7 +9411,7 @@ async function sendHrConfirmationResultToSender(confirmation, outcomeText) {
   await appendConvoHistory(confirmation.senderPhone, 'out', outcomeText);
   const sentAt = Date.now();
   await logInboxEvent({ chatId: confirmation.senderPhone, name: confirmation.senderName, isGroup: false, messageSummary: '[HR confirmation result: ' + confirmation.summary + ']', aCase: 'hr_confirmation_result', sentText: outcomeText, outcome: 'sent', sentAt, gatewayMessageId: sendResult.gatewayMessageId || null });
-  confirmOrRecoverSend({ chatId: confirmation.senderPhone, name: confirmation.senderName || confirmation.senderPhone, replyText: outcomeText, sentAt, gatewayMessageId: sendResult.gatewayMessageId, httpStatus: sendResult.httpStatus }).catch(() => {});
+  confirmOrRecoverSend({ chatId: confirmation.senderPhone, name: confirmation.senderName || confirmation.senderPhone, replyText: outcomeText, sentAt, gatewayMessageId: sendResult.gatewayMessageId, waKey: sendResult.waKey, httpStatus: sendResult.httpStatus }).catch(() => {});
 }
 
 // STEP 6 - Task 3b (2026-11) LIVE BUG FIX: this used to also create a
@@ -10545,7 +10585,7 @@ async function resolveAmbiguousHrConfirmation(id, decision) {
       await appendConvoHistory(confirmation.thirdPartyPhone, 'out', disclosed);
       const sentAt = Date.now();
       await logInboxEvent({ chatId: confirmation.thirdPartyPhone, name: confirmation.thirdPartyName, isGroup: false, messageSummary: '[HR confirmation: asking manager again] ' + confirmation.summary, aCase: 'hr_confirmation_ask_again', sentText: disclosed, outcome: 'sent', sentAt, gatewayMessageId: sendResult.gatewayMessageId || null });
-      confirmOrRecoverSend({ chatId: confirmation.thirdPartyPhone, name: confirmation.thirdPartyName || confirmation.thirdPartyPhone, replyText: disclosed, sentAt, gatewayMessageId: sendResult.gatewayMessageId, httpStatus: sendResult.httpStatus }).catch(() => {});
+      confirmOrRecoverSend({ chatId: confirmation.thirdPartyPhone, name: confirmation.thirdPartyName || confirmation.thirdPartyPhone, replyText: disclosed, sentAt, gatewayMessageId: sendResult.gatewayMessageId, waKey: sendResult.waKey, httpStatus: sendResult.httpStatus }).catch(() => {});
     }
     await updateHrConfirmation(id, { status: 'awaiting_manager', unclearAttempts: 0, unclearTexts: [] });
     return { ok: true };
@@ -10825,7 +10865,7 @@ async function checkHrNoteSenderReminders(now) {
         await appendConvoHistory(flow.phone, 'out', text);
         const sentAt = Date.now();
         await logInboxEvent({ chatId: flow.phone, name: null, isGroup: false, messageSummary: '[HR-note sender reminder]', aCase: 'hr_note_sender_reminder', sentText: text, outcome: 'sent', sentAt, gatewayMessageId: sendResult.gatewayMessageId || null });
-        confirmOrRecoverSend({ chatId: flow.phone, name: flow.phone, replyText: text, sentAt, gatewayMessageId: sendResult.gatewayMessageId, httpStatus: sendResult.httpStatus }).catch(() => {});
+        confirmOrRecoverSend({ chatId: flow.phone, name: flow.phone, replyText: text, sentAt, gatewayMessageId: sendResult.gatewayMessageId, waKey: sendResult.waKey, httpStatus: sendResult.httpStatus }).catch(() => {});
       }
     }
     const flowData = Object.assign({}, flow);
@@ -11004,7 +11044,7 @@ async function executeApprovalSend(approval, editInstruction, selectedIndex, edi
   await appendConvoHistory(approval.phone, 'out', auditText);
   const sentAt = Date.now();
   await logInboxEvent({ chatId: approval.phone, name: approval.name, isGroup: false, messageSummary: '[data request: ' + logSummary + ']', aCase: 'data_approved', sentText: auditText, outcome: 'sent', sentAt, gatewayMessageId: sendResult.gatewayMessageId || null });
-  confirmOrRecoverSend({ chatId: approval.phone, name: approval.name || approval.phone, replyText: auditText, sentAt, gatewayMessageId: sendResult.gatewayMessageId, httpStatus: sendResult.httpStatus }).catch(() => {});
+  confirmOrRecoverSend({ chatId: approval.phone, name: approval.name || approval.phone, replyText: auditText, sentAt, gatewayMessageId: sendResult.gatewayMessageId, waKey: sendResult.waKey, httpStatus: sendResult.httpStatus }).catch(() => {});
   return '✓ ' + approval.name + '-ke "' + logSummary + '" pathano holo.';
 }
 async function executeApprovalReject(approval) {
@@ -11021,7 +11061,7 @@ async function executeApprovalReject(approval) {
   const sentAt = Date.now();
   if (sendResult.ok) {
     await appendConvoHistory(approval.phone, 'out', replyText);
-    confirmOrRecoverSend({ chatId: approval.phone, name: approval.name || approval.phone, replyText, sentAt, gatewayMessageId: sendResult.gatewayMessageId, httpStatus: sendResult.httpStatus }).catch(() => {});
+    confirmOrRecoverSend({ chatId: approval.phone, name: approval.name || approval.phone, replyText, sentAt, gatewayMessageId: sendResult.gatewayMessageId, waKey: sendResult.waKey, httpStatus: sendResult.httpStatus }).catch(() => {});
   }
   await logInboxEvent({ chatId: approval.phone, name: approval.name, isGroup: false, messageSummary: '[data request: ' + approval.dataRequestSummary + ']', aCase: 'data_rejected', sentText: replyText, outcome: sendResult.ok ? 'sent' : 'send_failed', sentAt, gatewayMessageId: sendResult.gatewayMessageId || null });
   if (!sendResult.ok) {

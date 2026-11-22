@@ -233,6 +233,33 @@ async function listRecentInboundEvents(limit) {
   return (raw || []).map((r) => { try { return typeof r === 'string' ? JSON.parse(r) : r; } catch (err) { return null; } }).filter(Boolean);
 }
 
+// ---------------- Delivery status (message.status events) ----------------
+// Commit 3, direct instruction - "message.status events replacing fuzzy
+// text-matching when gateway=new." The gateway's own authoritative
+// queued->sending->sent->delivered->read (or failed) status per waKey,
+// durable so a caller (whatsappAssistant.js's delivery-check pipeline) can
+// look it up well after the event that reported it. Overwrites with
+// whatever is most recent - a message's status only ever moves forward.
+const MESSAGE_STATUS_TTL_SECONDS = 7 * 24 * 60 * 60;
+async function recordMessageStatus(waKey, statusInfo) {
+  const redis = gatewayV1.getRedisClient();
+  if (!redis || !waKey) return;
+  try {
+    await redis.set('wa-v1-message-status:' + waKey, JSON.stringify(statusInfo), { ex: MESSAGE_STATUS_TTL_SECONDS });
+  } catch (err) { /* best effort - a missed status update just means one delivery check stays uncertain */ }
+}
+async function getMessageStatus(waKey) {
+  const redis = gatewayV1.getRedisClient();
+  if (!redis || !waKey) return null;
+  try {
+    const raw = await redis.get('wa-v1-message-status:' + waKey);
+    if (!raw) return null;
+    return typeof raw === 'string' ? JSON.parse(raw) : raw;
+  } catch (err) {
+    return null;
+  }
+}
+
 // One event (from either the webhook or the /events poll) run through the
 // full dedup/ignore/normalize/log pipeline. Returns what happened, mainly
 // for tests and callers that want to know whether it was actually kept.
@@ -240,6 +267,10 @@ async function processEvent(evt) {
   if (evt && evt.eventId) {
     const dup = await isDuplicateEventDelivery(evt.eventId);
     if (dup) return { kept: false, reason: 'duplicate event delivery' };
+  }
+  if (evt && evt.event === 'message.status' && evt.data && evt.data.waKey) {
+    await recordMessageStatus(evt.data.waKey, { status: evt.data.status || null, reason: evt.data.reason || null, at: evt.data.at || null });
+    return { kept: false, reason: 'message.status recorded (not a conversation message)' };
   }
   const rawMessage = evt && evt.data && evt.data.message;
   if (!rawMessage) return { kept: false, reason: 'no message payload (not a message.received/updated event)' };
@@ -249,6 +280,11 @@ async function processEvent(evt) {
     const dup = await isDuplicateMessage(message.waKey);
     if (dup) return { kept: false, reason: 'duplicate waKey' };
   }
+  // A message carries its own current status too (section 2 of the docs -
+  // "status" on the message itself, for messages you sent) - record it the
+  // same way a dedicated message.status event would, so a delivery check
+  // can find it regardless of which event shape reported it first.
+  if (message.waKey && message.status) await recordMessageStatus(message.waKey, { status: message.status, reason: null, at: message.receivedAt || null });
   await recordInboundEvent({ event: evt && evt.event, message });
   return { kept: true, message };
 }
@@ -334,6 +370,7 @@ module.exports = {
   shouldIgnoreMessage,
   downloadMedia,
   processEvent,
+  getMessageStatus,
   handleWebhookRequest,
   pollEvents,
   listRecentInboundEvents,

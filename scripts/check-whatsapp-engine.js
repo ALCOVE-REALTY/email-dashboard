@@ -27,6 +27,8 @@ require('dotenv').config();
 const whatsappAssistant = require('../src/aiAssistant/whatsappAssistant');
 const attendanceRequestService = require('../src/aiAssistant/attendanceRequestService');
 const whatsapp = require('../src/whatsappService');
+const gatewayModeV1 = require('../src/whatsappGatewayMode');
+const gatewayV1Receive = require('../src/whatsappGatewayV1Receive');
 const employeeService = require('../src/employeeService');
 const inboxLogArchive = require('../src/inboxLogArchive');
 const memoryService = require('../src/aiAssistant/memoryService');
@@ -10208,6 +10210,83 @@ async function checkAsyncRealModel(label, fn) {
       const evidence = await whatsappAssistant.listDeliveryEvidence(50);
       const mine = evidence.find((e) => e.chatId === '919999992001');
       return notifAfter === notifBefore && Boolean(mine) && mine.confirmed === true && mine.attempts.length === 1;
+    });
+    console.log('— new WhatsApp gateway (v1) delivery-status branch (Commit 3, direct instruction) —');
+    await checkAsync('new gateway + a waKey whose message.status is "delivered" -> confirmed delivered, WITHOUT ever calling the old feed (whatsapp.listMessages)', async () => {
+      process.env.WHATSAPP_GATEWAY = 'new';
+      let feedCalled = false;
+      whatsapp.listMessages = async () => { feedCalled = true; return []; };
+      try {
+        const waKey = 'true_v1_delivered_UNIQ1';
+        await gatewayV1Receive.processEvent({ eventId: 'ev-v1-1', event: 'message.status', data: { waKey, status: 'delivered' } });
+        const sentAt = Date.now();
+        await whatsappAssistant.confirmOrRecoverSend({ chatId: '919999994001', name: 'V1Delivered', replyText: 'v1 gateway test', sentAt, waKey });
+        await driveDeliveryChecksToCompletion();
+        const evidence = await whatsappAssistant.listDeliveryEvidence(50);
+        const mine = evidence.find((e) => e.chatId === '919999994001');
+        return Boolean(mine) && mine.confirmed === true && mine.finalOutcome === 'delivered' && feedCalled === false;
+      } finally { delete process.env.WHATSAPP_GATEWAY; whatsapp.listMessages = defaultListMessagesMock; }
+    });
+    await checkAsync('new gateway + a waKey with NO status event seen yet -> treated the same as a feed-check failure: sent_unconfirmed, a warning, NEVER a resend', async () => {
+      process.env.WHATSAPP_GATEWAY = 'new';
+      let resent = false;
+      whatsapp.sendWhatsAppMessage = async () => { resent = true; return { ok: true }; };
+      try {
+        const waKey = 'true_v1_nostatus_UNIQ2';
+        const sentAt = Date.now();
+        await whatsappAssistant.confirmOrRecoverSend({ chatId: '919999994002', name: 'V1NoStatus', replyText: 'v1 gateway test 2', sentAt, waKey });
+        await driveDeliveryChecksToCompletion();
+        const evidence = await whatsappAssistant.listDeliveryEvidence(50);
+        const mine = evidence.find((e) => e.chatId === '919999994002');
+        return Boolean(mine) && mine.confirmed === null && mine.finalOutcome === 'sent_unconfirmed' && resent === false;
+      } finally { delete process.env.WHATSAPP_GATEWAY; whatsapp.sendWhatsAppMessage = defaultSendWhatsAppMessageMock; }
+    });
+    await checkAsync('new gateway + status "failed" -> NOT landed, goes through the normal resend/retry cycle exactly like the old gateway\'s "not found in feed" case', async () => {
+      process.env.WHATSAPP_GATEWAY = 'new';
+      whatsapp.sendWhatsAppMessage = async () => ({ ok: true, gatewayMessageId: 'RESEND-V1', httpStatus: 200 });
+      try {
+        const waKey = 'true_v1_failed_UNIQ3';
+        await gatewayV1Receive.processEvent({ eventId: 'ev-v1-3', event: 'message.status', data: { waKey, status: 'failed' } });
+        const sentAt = Date.now();
+        await whatsappAssistant.confirmOrRecoverSend({ chatId: '919999994003', name: 'V1Failed', replyText: 'v1 gateway test 3', sentAt, waKey });
+        await driveDeliveryChecksToCompletion();
+        const evidence = await whatsappAssistant.listDeliveryEvidence(50);
+        const mine = evidence.find((e) => e.chatId === '919999994003');
+        return Boolean(mine) && mine.confirmed === false && mine.finalOutcome === 'not_delivered' && mine.attempts.length > 1;
+      } finally { delete process.env.WHATSAPP_GATEWAY; whatsapp.sendWhatsAppMessage = defaultSendWhatsAppMessageMock; }
+    });
+    await checkAsync('new gateway + status "queued" on the first check, "delivered" by the second - accepted as delivered after one retry, never exhausts the cap', async () => {
+      process.env.WHATSAPP_GATEWAY = 'new';
+      whatsapp.sendWhatsAppMessage = async () => ({ ok: true, gatewayMessageId: 'RESEND-V1B', httpStatus: 200 });
+      try {
+        const waKey = 'true_v1_queued_then_delivered_UNIQ4';
+        await gatewayV1Receive.processEvent({ eventId: 'ev-v1-4a', event: 'message.status', data: { waKey, status: 'queued' } });
+        const sentAt = Date.now();
+        await whatsappAssistant.confirmOrRecoverSend({ chatId: '919999994004', name: 'V1QueuedThenDelivered', replyText: 'v1 gateway test 4', sentAt, waKey });
+        // First tick sees "queued" (not landed) and resends; before the
+        // SECOND tick runs, the gateway reports it delivered.
+        await whatsappAssistant.processDueDeliveryChecks();
+        await gatewayV1Receive.processEvent({ eventId: 'ev-v1-4b', event: 'message.status', data: { waKey, status: 'delivered' } });
+        await driveDeliveryChecksToCompletion();
+        const evidence = await whatsappAssistant.listDeliveryEvidence(50);
+        const mine = evidence.find((e) => e.chatId === '919999994004');
+        return Boolean(mine) && mine.confirmed === true && mine.finalOutcome === 'delivered_after_retry';
+      } finally { delete process.env.WHATSAPP_GATEWAY; whatsapp.sendWhatsAppMessage = defaultSendWhatsAppMessageMock; }
+    });
+    await checkAsync('old gateway (WHATSAPP_GATEWAY unset) with a waKey present is UNAFFECTED - still uses the feed/fuzzy-match path, not the status lookup', async () => {
+      delete process.env.WHATSAPP_GATEWAY;
+      let feedCalled = false;
+      const sentAt = Date.now();
+      whatsapp.listMessages = async () => { feedCalled = true; return [outgoingAt('old gateway still works', sentAt)]; };
+      try {
+        const waKey = 'true_v1_ignored_when_old_UNIQ5';
+        await gatewayV1Receive.processEvent({ eventId: 'ev-v1-5', event: 'message.status', data: { waKey, status: 'failed' } }); // would mean NOT landed if (wrongly) consulted
+        await whatsappAssistant.confirmOrRecoverSend({ chatId: '919999994005', name: 'OldGatewayStillWorks', replyText: 'old gateway still works', sentAt, waKey });
+        await driveDeliveryChecksToCompletion();
+        const evidence = await whatsappAssistant.listDeliveryEvidence(50);
+        const mine = evidence.find((e) => e.chatId === '919999994005');
+        return Boolean(mine) && mine.confirmed === true && feedCalled === true;
+      } finally { whatsapp.listMessages = defaultListMessagesMock; }
     });
     await checkAsync('a LATE confirmation - missing on the first check (so one automatic resend goes out), but then found confirmed on the very next check - accepted as delivered, never a second resend, never an alert', async () => {
       const sentAt = Date.now();

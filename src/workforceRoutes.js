@@ -3212,7 +3212,20 @@ router.get('/hr-assistant/system-health', async (req, res) => {
   // the load it's there to help diagnose" rule the metrics sampler above
   // already follows.
   const processStart = await whatsappAssistant.getProcessStartInfo().catch(() => null);
-  res.json({ metrics: systemHealthMonitor.getLatestMetrics(), processStart, jobHeartbeats: whatsappPollScheduler.getJobHeartbeats() });
+  // New WhatsApp gateway (2026-11, direct instruction, Commit 3) - a true
+  // no-op object when WHATSAPP_GATEWAY isn't "new" (gatewaySession stays
+  // null, webhookRegistered stays false), same "viewing the card never
+  // adds load" rule as everything else on this route: gatewaySession is
+  // whatever runHealthCheck's own 2-minute tick last found (never a fresh
+  // gateway call from this route), and the webhook registration read is a
+  // single local Redis GET, not a call to the gateway itself.
+  const webhookRegistration = await require('./whatsappGatewayV1Receive').getStoredWebhookRegistration().catch(() => null);
+  const gatewayV1Info = {
+    session: systemHealthMonitor.getLatestGatewayV1Session(),
+    webhookRegistered: Boolean(webhookRegistration),
+    webhookUrl: webhookRegistration ? webhookRegistration.url : null
+  };
+  res.json({ metrics: systemHealthMonitor.getLatestMetrics(), processStart, jobHeartbeats: whatsappPollScheduler.getJobHeartbeats(), gatewayV1: gatewayV1Info });
 });
 
 // Part B phase 3 (2026-11, direct instruction), LIVE BUG FIX (2026-11) -

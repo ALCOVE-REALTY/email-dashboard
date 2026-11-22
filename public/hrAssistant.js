@@ -290,6 +290,11 @@
   const healthRestartsEl = document.getElementById('hrHealthRestarts');
   const healthProcessLineEl = document.getElementById('hrHealthProcessLine');
   const jobHeartbeatsList = document.getElementById('hrJobHeartbeatsList');
+  const healthWaV1El = document.getElementById('hrHealthWaV1');
+  const healthWaV1StatusEl = document.getElementById('hrHealthWaV1Status');
+  const healthWaV1DecryptEl = document.getElementById('hrHealthWaV1Decrypt');
+  const healthWaV1DupesEl = document.getElementById('hrHealthWaV1Dupes');
+  const healthWaV1WebhookEl = document.getElementById('hrHealthWaV1Webhook');
   const backupRestoreBackdrop = document.getElementById('hrBackupRestoreBackdrop');
   const backupRestoreSheet = document.getElementById('hrBackupRestoreSheet');
   const backupRestoreCloseBtn = document.getElementById('hrBackupRestoreCloseBtn');
@@ -5505,6 +5510,20 @@
     if (last.previousShutdownReason) line += ' — previous stop: ' + last.previousShutdownReason;
     healthProcessLineEl.textContent = line;
   }
+  // New WhatsApp gateway (2026-11, direct instruction, Commit 3) - hidden
+  // entirely until gatewayV1.session actually comes back non-null (i.e.
+  // WHATSAPP_GATEWAY=new on the server) - zero visual change otherwise.
+  function renderGatewayV1Health(gatewayV1) {
+    if (!healthWaV1El) return;
+    const session = gatewayV1 && gatewayV1.session;
+    if (!session) { healthWaV1El.hidden = true; return; }
+    healthWaV1El.hidden = false;
+    const status = session.status;
+    if (healthWaV1StatusEl) healthWaV1StatusEl.textContent = (status && (status.status || (status.connected ? 'connected' : 'unknown'))) || '—';
+    if (healthWaV1DecryptEl) healthWaV1DecryptEl.textContent = typeof session.decryptionFailures === 'number' ? String(session.decryptionFailures) : '—';
+    if (healthWaV1DupesEl) healthWaV1DupesEl.textContent = typeof session.duplicatesSuppressed === 'number' ? String(session.duplicatesSuppressed) : '—';
+    if (healthWaV1WebhookEl) healthWaV1WebhookEl.textContent = gatewayV1.webhookRegistered ? 'Registered' : 'Not registered';
+  }
   async function loadSystemHealthCard() {
     if (!healthLagEl) return;
     try {
@@ -5512,6 +5531,7 @@
       const m = data && data.metrics;
       renderProcessStart(data && data.processStart);
       renderJobHeartbeatsList(data && data.jobHeartbeats);
+      renderGatewayV1Health(data && data.gatewayV1);
       if (!m) { if (healthUpdatedAtEl) healthUpdatedAtEl.textContent = 'No sample yet.'; return; }
       healthLagEl.textContent = msLabel(m.eventLoopLagMs);
       if (healthMemEl) healthMemEl.textContent = typeof m.rssMb === 'number' ? m.rssMb + ' MB' : '—';
