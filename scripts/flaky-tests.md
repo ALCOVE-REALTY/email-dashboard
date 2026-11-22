@@ -126,3 +126,18 @@ Failed checks:
  - enqueueBulkSend: a failed item in the batch is recorded as failed, never silently dropped - the rest of the batch still completes
 ======================================================================
 ```
+
+(check-whatsapp-engine.js flaked once on 2026-11-22T10:32:07.797Z - the SAME
+single checkHrConfirmationNudges cadence check TIMED OUT at its 15s cap, the
+3rd time this exact signature has occurred (2026-11-21T14:02, 2026-11-22T10:02,
+now this one) - nothing in Commit 5's call-site swap (whatsappAssistant.js/
+systemHealthMonitor.js/automationService.js/workflowService.js/
+reminderService.js/workforceRoutes.js/interviewPanelRoutes.js all now routing
+sends through whatsappGatewayFacade.js) touches checkHrConfirmationNudges or
+anything it depends on. Passed on its own lone solo retry. Removed per this
+file's own rule above - a timing/CPU-contention artifact, not a reproducible
+bug. Worth noting for whoever next has spare time: this SPECIFIC check has
+now flaked 3 times under full-parallel-gate load (nowhere else), suggesting
+its own margin is genuinely tighter than its siblings' - a candidate for a
+dedicated look if it keeps recurring, though out of scope for this
+migration.)

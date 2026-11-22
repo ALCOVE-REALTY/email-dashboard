@@ -22,7 +22,10 @@
 // second route the owner's own button polls for the result.
 const { Redis } = require('@upstash/redis');
 const employeeService = require('../employeeService');
-const whatsapp = require('../whatsappService');
+// New WhatsApp gateway (2026-11, direct instruction, Commit 5) - this
+// file only ever SENDS a document, so its require target moves to the
+// facade outright; old gateway behavior is unchanged.
+const whatsapp = require('../whatsappGatewayFacade');
 const { buildTablePdfBuffer } = require('../pdfReport');
 
 let client;

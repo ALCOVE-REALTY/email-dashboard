@@ -20,10 +20,17 @@ const fs = require('fs');
 const crypto = require('crypto');
 const aiUsageLog = require('./aiUsageLog');
 const whatsapp = require('../whatsappService');
-// New WhatsApp gateway (2026-11, direct instruction, Commit 3) - delivery
-// status lookup only, for detectDeliveryLanded below. Never the sending
-// path (that stays whatsappService.js/whatsapp above until a later,
-// separately-gated commit actually flips send call sites over).
+// New WhatsApp gateway (2026-11, direct instruction, Commit 5) - every
+// SEND/presence/connection-status call in this file goes through the
+// facade instead, which is the old client unchanged until
+// WHATSAPP_GATEWAY=new. `whatsapp` above is kept ONLY for listChats/
+// listMessages (old-gateway-shaped polling, no new-gateway equivalent -
+// see Commit 6) and the pure helpers (normalizePhone/isGroupChat/
+// isSyntheticTestPhone/isLikelyLid/isIgnoredBroadcastType), which the
+// facade itself re-exports unchanged anyway, so leaving their call sites
+// on `whatsapp` directly is equally correct and avoids a much larger
+// diff for zero behavior difference.
+const whatsappSend = require('../whatsappGatewayFacade');
 const gatewayModeV1 = require('../whatsappGatewayMode');
 const gatewayV1Receive = require('../whatsappGatewayV1Receive');
 // Off by default (reply-restoration request) - the gateway confirmed has
@@ -83,7 +90,7 @@ const SERVER_START_TS = Date.now();
 // gate right at the actual network call costs nothing and can't drift.
 function fireAndForgetPresence(phone, state) {
   if (!isTypingPresenceEnabled()) return;
-  whatsapp.sendPresence(phone, state).catch(() => {});
+  whatsappSend.sendPresence(phone, state).catch(() => {});
 }
 const redisHealth = require('../redisHealth');
 const employeeService = require('../employeeService');
@@ -2350,7 +2357,7 @@ async function alertOwnerDualChannel(text, subject) {
       const rec = await employeeService.findOwnerEmployeeRecord().catch(() => null);
       phone = (rec && rec.contactNumber) || null;
     }
-    if (phone) await whatsapp.sendWhatsAppMessage(phone, text).catch(() => {});
+    if (phone) await whatsappSend.sendWhatsAppMessage(phone, text).catch(() => {});
   } catch (err) { /* best effort */ }
   try {
     const email = process.env.HR_ADMIN_EMAIL || process.env.SUBH_MEMORY_OWNER_EMAIL || null;
@@ -10897,7 +10904,7 @@ const WHATSAPP_CHUNK_SIZE = 1400;
 async function sendWhatsAppChunked(phone, text) {
   if (await isNeverAuto(phone)) return { ok: false, blockedByNeverAuto: true, error: 'Auto-reply is off for this contact.' };
   const t = String(text || '');
-  if (t.length <= WHATSAPP_CHUNK_SIZE) return whatsapp.sendWhatsAppMessage(phone, t);
+  if (t.length <= WHATSAPP_CHUNK_SIZE) return whatsappSend.sendWhatsAppMessage(phone, t);
   const chunks = [];
   let rest = t;
   while (rest.length) {
@@ -10910,7 +10917,7 @@ async function sendWhatsAppChunked(phone, text) {
   }
   let lastResult = { ok: true };
   for (let i = 0; i < chunks.length; i++) {
-    const result = await whatsapp.sendWhatsAppMessage(phone, chunks[i]);
+    const result = await whatsappSend.sendWhatsAppMessage(phone, chunks[i]);
     if (!result.ok) return result;
     lastResult = result;
     if (i < chunks.length - 1) await new Promise((resolve) => setTimeout(resolve, 800));
@@ -10919,8 +10926,11 @@ async function sendWhatsAppChunked(phone, text) {
   // own gatewayMessageId/httpStatus/gatewayResponse through instead of
   // discarding them (a plain {ok:true} used to lose this for every
   // multi-chunk send, the one case evidence for IT matters most for -
-  // long replies are exactly the ones worth a real paper trail).
-  return { ok: true, gatewayMessageId: lastResult.gatewayMessageId || null, httpStatus: lastResult.httpStatus || null, gatewayResponse: lastResult.gatewayResponse || null };
+  // long replies are exactly the ones worth a real paper trail). waKey
+  // (2026-11, Commit 5) - same reasoning: a multi-chunk send on the new
+  // gateway must not silently lose the LAST chunk's waKey, or delivery-
+  // status tracking (Commit 3) would go blind for every long reply.
+  return { ok: true, gatewayMessageId: lastResult.gatewayMessageId || null, waKey: lastResult.waKey || null, httpStatus: lastResult.httpStatus || null, gatewayResponse: lastResult.gatewayResponse || null };
 }
 
 const DATA_REJECT_REPLY = {
@@ -11268,7 +11278,7 @@ async function checkGatewayConnection() {
   }
   let liveStatus;
   try {
-    liveStatus = await whatsapp.getConnectionStatus();
+    liveStatus = await whatsappSend.getConnectionStatus();
   } catch (err) {
     const { kind, detail } = classifyCheckError(err);
     const nextErrorCount = counters.consecutiveCheckErrors + 1;

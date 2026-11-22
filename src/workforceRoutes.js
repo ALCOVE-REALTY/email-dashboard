@@ -38,7 +38,11 @@ const sheetsAuth = require('./sheetsAuth');
 const hrAccountCommands = require('./hrAccountCommands');
 const hrAuthAlerts = require('./hrAuthAlerts');
 const fileStorage = require('./fileStorage');
-const whatsapp = require('./whatsappService');
+// New WhatsApp gateway (2026-11, direct instruction, Commit 5) - this
+// route's own `whatsapp` var is used only for a single send
+// (sendWhatsAppMessage, line ~1970), so its require target moves to the
+// facade outright; old gateway behavior is unchanged.
+const whatsapp = require('./whatsappGatewayFacade');
 const redisHealth = require('./redisHealth');
 const togetherWeCanService = require('./aiAssistant/togetherWeCanService');
 const holidaysService = require('./aiAssistant/holidaysService');

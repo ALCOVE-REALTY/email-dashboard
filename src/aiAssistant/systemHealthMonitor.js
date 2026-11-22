@@ -25,13 +25,19 @@ const whatsapp = require('../whatsappService');
 const gmailService = require('../gmailService');
 const employeeService = require('../employeeService');
 const { Redis } = require('@upstash/redis');
-// New WhatsApp gateway (2026-11, direct instruction, Commit 3) - session
-// health (decryption failures, duplicates suppressed) is a true no-op
-// below until WHATSAPP_GATEWAY=new. Webhook registration status is a
-// separate, cheap local Redis read done directly by the system-health
-// route (workforceRoutes.js), not here.
+// New WhatsApp gateway (2026-11, direct instruction, Commit 3/5) -
+// session health (decryption failures, duplicates suppressed) is a true
+// no-op below until WHATSAPP_GATEWAY=new. Webhook registration status is
+// a separate, cheap local Redis read done directly by the system-health
+// route (workforceRoutes.js), not here. whatsappSend (Commit 5) routes
+// checkGateway()'s own status read and the owner alert send through the
+// facade, so both correctly reflect/use the new gateway once enabled;
+// `whatsapp` above is kept only for listMessages (checkReplyPipeline,
+// old-gateway-specific, see Commit 7) and normalizePhone/isGroupChat
+// (pure, identical either way).
 const gatewayModeV1 = require('../whatsappGatewayMode');
 const gatewayV1 = require('../whatsappGatewayV1');
+const whatsappSend = require('../whatsappGatewayFacade');
 
 const HEALTH_CHECK_TIMEOUT_MS = 8000;
 function withTimeout(promise, ms) {
@@ -180,7 +186,7 @@ async function checkAiFallbackStreak() {
 
 async function checkGateway() {
   try {
-    const status = await withTimeout(whatsapp.getConnectionStatus(), HEALTH_CHECK_TIMEOUT_MS);
+    const status = await withTimeout(whatsappSend.getConnectionStatus(), HEALTH_CHECK_TIMEOUT_MS);
     // Never assume one exact field name - this gateway's real response
     // shape was never confirmed in writing (same caveat whatsappService.js
     // itself already carries elsewhere); only treat it as a FAILURE when
@@ -414,7 +420,7 @@ async function sendAlert(failureLines) {
   const { phone, email } = await resolveOwnerContact();
   const result = { whatsapp: null, email: null };
   if (phone) {
-    try { result.whatsapp = await whatsapp.sendWhatsAppMessage(phone, text); }
+    try { result.whatsapp = await whatsappSend.sendWhatsAppMessage(phone, text); }
     catch (err) { result.whatsapp = { ok: false, error: err.message }; }
   } else {
     result.whatsapp = { ok: false, error: 'no owner WhatsApp number configured' };

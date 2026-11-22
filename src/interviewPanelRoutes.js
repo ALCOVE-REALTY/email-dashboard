@@ -1,7 +1,10 @@
 const express = require('express');
 const interviewPanelService = require('./interviewPanelService');
 const { buildInterviewAssessmentPdf } = require('./interviewAssessmentPdf');
-const { sendWhatsAppMessage } = require('./whatsappService');
+// New WhatsApp gateway (2026-11, direct instruction, Commit 5) - this
+// file's only use of the old client is this one send, so it moves to
+// the facade outright; old gateway behavior is unchanged.
+const { sendWhatsAppMessage } = require('./whatsappGatewayFacade');
 const employeeService = require('./employeeService');
 
 const router = express.Router();

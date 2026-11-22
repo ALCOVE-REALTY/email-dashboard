@@ -21,7 +21,10 @@ const holidaysService = require('./holidaysService');
 const employeeService = require('../employeeService');
 const redisHealth = require('../redisHealth');
 const gmailService = require('../gmailService');
-const whatsapp = require('../whatsappService');
+// New WhatsApp gateway (2026-11, direct instruction, Commit 5) - this
+// file only ever SENDS, so its require target moves to the facade
+// outright; old gateway behavior is unchanged.
+const whatsapp = require('../whatsappGatewayFacade');
 const letterPdf = require('../letterPdf');
 const pdfReport = require('../pdfReport');
 const tableExcelReport = require('../tableExcelReport');

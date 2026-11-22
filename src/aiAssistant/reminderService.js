@@ -10,6 +10,11 @@
 // simulate a clock instead of waiting on real time.
 const { Redis } = require('@upstash/redis');
 const whatsapp = require('../whatsappService');
+// New WhatsApp gateway (2026-11, direct instruction, Commit 5) - only
+// the real send (line ~424) moves to the facade; `whatsapp` above stays
+// for listMessages (old-gateway-specific, see Commit 7) and
+// normalizePhone (pure, identical either way).
+const whatsappSend = require('../whatsappGatewayFacade');
 const whatsappAssistant = require('./whatsappAssistant');
 const memoryService = require('./memoryService');
 const employeeService = require('../employeeService');
@@ -421,7 +426,7 @@ async function sendDueWhatsappReminders(now) {
     const timeLabel = r.hasTime ? new Date(r.dueAt).toLocaleTimeString('en-GB', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' }) : '';
     const text = '⏰ Reminder: ' + r.title + (r.detail ? '\n' + r.detail : '') + (timeLabel ? '\n(' + timeLabel + ')' : '');
     if (!whatsappAssistant.isRealSendAllowedFor(target)) continue; // draft mode - in-app banner already covers it
-    const result = await whatsapp.sendWhatsAppMessage(target, text).catch((err) => ({ ok: false, error: err.message }));
+    const result = await whatsappSend.sendWhatsAppMessage(target, text).catch((err) => ({ ok: false, error: err.message }));
     if (result.ok) sent++;
   }
   return { sent, total: due.length };

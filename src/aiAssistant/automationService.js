@@ -10,7 +10,11 @@
 // calls `new Date()` internally - same testability convention as reminderService.js,
 // lets scripts/check-automation.js simulate a clock instead of waiting on real time.
 const { Redis } = require('@upstash/redis');
-const whatsapp = require('../whatsappService');
+// New WhatsApp gateway (2026-11, direct instruction, Commit 5) - this
+// file only ever SENDS (never polls/lists), so its require target moves
+// to the facade outright; old gateway behavior is byte-for-byte
+// unchanged (the facade passes straight through until WHATSAPP_GATEWAY=new).
+const whatsapp = require('../whatsappGatewayFacade');
 const whatsappAssistant = require('./whatsappAssistant');
 const employeeService = require('../employeeService');
 const workforceAnalytics = require('../workforceAnalytics');
