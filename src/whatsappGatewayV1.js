@@ -388,6 +388,12 @@ module.exports = {
   enqueueBulkSend, getBulkSendProgress,
   getNumberStatus, getNumberHealth,
   classifyNetworkError,
+  // Shared with the sibling receiving module (whatsappGatewayV1Receive.js,
+  // Commit 2) - both are new-gateway modules, so sharing this one small
+  // helper between them is NOT the "never edit the old client" isolation
+  // rule (that rule is only about src/whatsappService.js); it just avoids
+  // maintaining two copies of the same Redis-client-construction logic.
+  getRedisClient, authHeaders, numbersUrl,
   // Test-only seams (same convention as src/workforceRoutes.js's own
   // exported withTimeout) - never used by real callers.
   waitForSendSlot, rateWindowMs, rateMaxPerWindow, rateMinGapMs, dailyFirstContactCap,

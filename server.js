@@ -34,6 +34,22 @@ const { buildTablePdfBuffer } = require('./src/pdfReport');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// New WhatsApp gateway (2026-11, direct instruction) - the v1 webhook
+// route. MUST be registered (with express.raw, not express.json) BEFORE
+// the global express.json() below - X-Wa-Signature verification needs
+// the exact raw bytes the gateway signed, and once express.json() has
+// consumed the request stream for a path, there is no raw body left to
+// re-derive it from. Inert today: whatsappGatewayV1Receive's own handler
+// 404s immediately unless WHATSAPP_GATEWAY=new, so this has zero effect
+// on anything until the switch is flipped. Not behind hrAuth - the
+// gateway itself calls this, not a logged-in HR user; X-Wa-Signature is
+// this route's own auth.
+app.post(
+  require('./src/whatsappGatewayV1Receive').WEBHOOK_PATH,
+  express.raw({ type: '*/*', limit: '2mb' }),
+  (req, res) => { require('./src/whatsappGatewayV1Receive').handleWebhookRequest(req, res); }
+);
+
 // Task 1e (2026-11) - the "Letter logo" upload (Company details settings)
 // sends its image as a base64 data URL in a plain JSON body, same
 // no-multer/no-new-dependency convention already used for PDF bytes

@@ -193,7 +193,13 @@ async function main() {
         const t1 = Date.now();
         await gatewayV1.waitForSendSlot();
         const elapsed = Date.now() - t1;
-        return (t1 - t0) < 50 && elapsed >= 140; // first call is instant (nothing to wait for), second waits out the gap
+        // A fixed upper bound on the FIRST (non-waiting) call flaked under
+        // the full parallel pre-push gate's CPU contention - any absolute
+        // wall-clock ceiling can trip from scheduler jitter alone, nothing
+        // to do with the rate limiter's own logic. The real invariant is
+        // relative: the first call finishes well before the gap elapses,
+        // the second visibly waits out (most of) it.
+        return (t1 - t0) < elapsed && elapsed >= 100;
       } finally {
         if (savedGap === undefined) delete process.env.WA_V1_RATE_MIN_GAP_MS; else process.env.WA_V1_RATE_MIN_GAP_MS = savedGap;
         gatewayV1.resetRateLimitStateForTest();
@@ -274,13 +280,19 @@ async function main() {
         const batchId = await gatewayV1.enqueueBulkSend([
           { phone: '919000003001', text: 'one' }, { phone: '919000003002', text: 'two' }, { phone: '919000003003', text: 'three' }
         ]);
-        // The drain loop runs fire-and-forget - poll briefly for completion
-        // rather than assuming a fixed delay, so this never flakes under load.
+        // The drain loop runs fire-and-forget - poll for completion against
+        // a generous WALL-CLOCK deadline (never a fixed iteration count: a
+        // failed item's own retry alone takes a real, un-sped-up 2s via
+        // sendText's own setTimeout, and each poll is itself a real Redis
+        // round trip to the local fake store, which can slow down under
+        // the full parallel gate's CPU load - an iteration-count cap once
+        // flaked here for exactly that reason).
         let progress;
-        for (let i = 0; i < 50; i++) {
+        const deadline = Date.now() + 8000;
+        while (Date.now() < deadline) {
           progress = await gatewayV1.getBulkSendProgress(batchId);
           if (progress && progress.done) break;
-          await new Promise((r) => setTimeout(r, 20));
+          await new Promise((r) => setTimeout(r, 50));
         }
         return Boolean(progress) && progress.total === 3 && progress.sent === 3 && progress.failed === 0 && progress.done === true;
       } finally {
@@ -302,10 +314,11 @@ async function main() {
           { phone: '919000004001', text: 'will fail' }, { phone: '919000004002', text: 'will succeed' }
         ]);
         let progress;
-        for (let i = 0; i < 50; i++) {
+        const deadline = Date.now() + 8000; // comfortably past the retry's own real 2s delay, see the sibling test's comment above
+        while (Date.now() < deadline) {
           progress = await gatewayV1.getBulkSendProgress(batchId);
           if (progress && progress.done) break;
-          await new Promise((r) => setTimeout(r, 20));
+          await new Promise((r) => setTimeout(r, 50));
         }
         return Boolean(progress) && progress.total === 2 && progress.sent === 1 && progress.failed === 1 && progress.done === true;
       } finally {

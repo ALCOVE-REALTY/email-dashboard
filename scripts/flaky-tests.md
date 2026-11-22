@@ -102,3 +102,59 @@ Skipped 157 real-model tests (run with RUN_REAL_MODEL=1 and ANTHROPIC_API_KEY_TE
 Real API calls: 0 · cost $0.0000
 ======================================================================
 ```
+
+## check-whatsapp-gateway-v1.js
+Flaked on 2026-11-22T08:17:15.703Z on "enqueueBulkSend: a failed item in the
+batch is recorded as failed..." - NOT CPU-contention noise, a genuine bug in
+the test's own polling loop: it waited for bulk-send completion via a FIXED
+50-iteration cap (50 * 20ms sleep), but sendText's own retry-after-failure
+path has a real, un-sped-up `await new Promise(r => setTimeout(r, 2000))` -
+confirmed by direct instrumentation that this one test's batch genuinely
+takes ~2.2s wall-clock to finish even completely alone, let alone under the
+full parallel gate's extra Redis-round-trip latency. An iteration-count cap
+can run out before that fixed 2s delay even elapses once each poll's own
+round trip slows down under load. Fixed by replacing both bulk-send tests'
+polling loops with an 8s WALL-CLOCK deadline instead of a fixed iteration
+count - kept here (not removed) since, like the closeStaleRecords entry
+above, this was a real bug in test logic, not noise.
+```
+sendText - success, Idempotency-Key, retry-reuses-key, rejection
+======================================================================
+[ok] sendText: a successful send posts to /v1/numbers/{numberId}/messages with an Idempotency-Key header and returns the real waKey/id/status
+[ok] sendText: on a failed first attempt, the retry reuses the EXACT SAME Idempotency-Key - a retry can never double-send under the gateway's own idempotency contract
+[ok] sendText: with NO caller-supplied idempotencyKey at all, the retry still reuses whatever key sendTextOnce generated for the FIRST attempt - never two different auto-generated keys for the same logical send
+[ok] sendText: a real gateway rejection (4xx) is reported as a clean {ok:false, error} with the gateway's own message, never a thrown exception
+======================================================================
+sendDocument - url-based and base64-based media, caption
+======================================================================
+[ok] sendDocument: a url-based document send posts the right media/type/caption shape
+[ok] sendDocument: a base64-based document send carries media.base64 instead of media.url
+======================================================================
+Rate limiting - spacing and the per-minute window (point 3)
+======================================================================
+[ok] waitForSendSlot: enforces the minimum gap between consecutive sends
+[ok] waitForSendSlot: enforces the per-window cap - the (max+1)th call in a small window waits for the window to roll over
+======================================================================
+Daily first-time-contact cap (point 3 - "warn before a send that would exceed the daily limit")
+======================================================================
+[ok] wouldExceedDailyFirstContactCap: a genuinely new contact (never written to us, never sent to) is flagged as first-time, not yet over the cap
+[ok] recordContactMessaged + wouldExceedDailyFirstContactCap: once a contact has been sent to, they are no longer "first-time" on a later check
+[ok] markContactHasWrittenToUs: a contact who has written to us is NEVER counted as first-time, even before we ever send to them
+[ok] wouldExceedDailyFirstContactCap: flags wouldExceed=true once today's first-time count has reached the (overridden, small) cap
+======================================================================
+Bulk send queue (point 3 - "queue workflow/automation bulk sends, never drop, show progress")
+======================================================================
+[ok] enqueueBulkSend + getBulkSendProgress: a batch of 3 text sends all eventually show as sent, with correct progress at completion
+[FAIL] enqueueBulkSend: a failed item in the batch is recorded as failed, never silently dropped - the rest of the batch still completes 
+======================================================================
+Session health reads
+======================================================================
+[ok] getNumberStatus: reads GET /v1/numbers/{numberId} with the Bearer token, returns the real body
+[ok] getNumberHealth: reads GET /v1/numbers/{numberId}/health
+[ok] getNumberStatus: a non-OK HTTP response throws a clear error, never a silent/undefined result
+======================================================================
+23/24 passed
+Failed checks:
+ - enqueueBulkSend: a failed item in the batch is recorded as failed, never silently dropped - the rest of the batch still completes
+======================================================================
+```

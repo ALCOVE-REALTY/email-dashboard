@@ -263,6 +263,15 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
     if (result && !result.skipped) log.log('[whatsapp-assistant] existing unclear-reply texts masked: ' + JSON.stringify(result));
   }).catch((err) => log.error('[whatsapp-assistant] existing unclear-reply text masking failed: ' + err.message));
 
+  // New WhatsApp gateway (2026-11, direct instruction) - self-register our
+  // v1 webhook on every start. A true no-op today (isNewGatewayEnabled()
+  // is false everywhere real), and idempotent once it isn't (checks the
+  // gateway's own webhook list first, never creates a duplicate).
+  require('./whatsappGatewayV1Receive').registerWebhookIfNeeded().then((result) => {
+    if (result && result.ok) log.log('[whatsapp-gateway-v1] webhook ' + (result.alreadyRegistered ? 'already registered' : 'registered') + ': ' + result.webhookUrl);
+    else if (result && !result.skipped) log.error('[whatsapp-gateway-v1] webhook registration failed: ' + result.reason);
+  }).catch((err) => log.error('[whatsapp-gateway-v1] webhook registration failed: ' + err.message));
+
   const commitId = getCommitId();
 
   // LIVE INCIDENT (2026-11, direct instruction) - "log a startup line with
