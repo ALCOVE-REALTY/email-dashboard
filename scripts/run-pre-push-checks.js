@@ -92,6 +92,7 @@ const DETERMINISTIC_SUITES = [
   'check-whatsapp-engine.js',
   'check-whatsapp-gateway-v1.js',
   'check-whatsapp-gateway-v1-receive.js',
+  'check-whatsapp-gateway-facade.js',
   'check-full-store-backup.js',
   'check-settings-audit-log.js',
   'check-migration-helper.js',
