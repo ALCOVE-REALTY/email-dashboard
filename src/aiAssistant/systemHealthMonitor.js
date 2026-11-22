@@ -278,7 +278,7 @@ async function checkReplyPipeline() {
     // jamming the queue) freezes the poll loop BEFORE it ever logs
     // anything, so the inbox log itself would look merely quiet, not
     // stuck, if that were the only signal checked.
-    const feed = await withTimeout(whatsapp.listMessages(null, 30), HEALTH_CHECK_TIMEOUT_MS);
+    const feed = await withTimeout(whatsappSend.listMessages(null, 30), HEALTH_CHECK_TIMEOUT_MS);
     const incoming = feed.filter((m) => m.direction === 'incoming' && !whatsapp.isGroupChat(m.recipient));
     if (!incoming.length) return { ok: true, note: 'no recent incoming messages to judge' };
     const lastIncomingAt = Math.max(...incoming.map((m) => (m.created_at ? new Date(m.created_at).getTime() : 0)));

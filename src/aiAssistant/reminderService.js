@@ -327,7 +327,7 @@ async function syncAutoCreatedReminders(now) {
 
   const followups = await whatsappAssistant.listOpenFollowups();
   for (const f of followups) {
-    const manuallyReplied = await whatsapp.listMessages(f.chatId, 20)
+    const manuallyReplied = await whatsappSend.listMessages(f.chatId, 20)
       .then((msgs) => whatsappAssistant.hasManualReplyAfter(msgs, f.ts))
       .catch(() => false);
     if (manuallyReplied) await whatsappAssistant.clearOpenFollowup(f.chatId).catch(() => {});

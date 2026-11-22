@@ -286,6 +286,14 @@ async function processEvent(evt) {
   // can find it regardless of which event shape reported it first.
   if (message.waKey && message.status) await recordMessageStatus(message.waKey, { status: message.status, reason: null, at: message.receivedAt || null });
   await recordInboundEvent({ event: evt && evt.event, message });
+  // Commit 6 (direct instruction) - the old-gateway-shaped local feed
+  // (whatsappGatewayV1Feed.js), for pollOnce/catch-up/checkReplyPipeline.
+  // Lazily required to avoid a require cycle (that module requires this
+  // one, for downloadMedia). One write per kept message - never a scan,
+  // never a loop.
+  await require('./whatsappGatewayV1Feed').recordFromNormalizedMessage(message).catch((err) => {
+    console.error('[whatsapp-gateway-v1] failed to record feed entry for waKey ' + message.waKey + ': ' + err.message);
+  });
   return { kept: true, message };
 }
 

@@ -14,12 +14,11 @@
 // gateway send, which confirmOrRecoverSend (Commit 3) already knows how
 // to use when present and safely ignores when absent.
 //
-// Deliberately does NOT re-export listChats/listMessages - those are
-// old-gateway-shaped polling functions with no new-gateway equivalent
-// (see the new gateway's own event-sourced /events model); the few
-// callers that need them (whatsappAssistant.js's poll loop,
-// systemHealthMonitor.js's reply-pipeline check) keep requiring
-// whatsappService.js directly for those two functions only (Commit 6/7).
+// listChats/listMessages (Commit 6) - old gateway: unchanged passthrough.
+// New gateway: served from whatsappGatewayV1Feed.js, a local store built
+// specifically to answer this same query shape (see that file's own
+// header comment for why a direct translation isn't possible - the new
+// gateway has no per-contact, numeric-id-paginated query at all).
 const whatsapp = require('./whatsappService');
 const gatewayMode = require('./whatsappGatewayMode');
 const gatewayV1 = require('./whatsappGatewayV1');
@@ -95,8 +94,32 @@ async function getConnectionStatus() {
   return 'connected';
 }
 
+// listMessages(contactId, limit) -> old shape: a flat array of
+// {id, direction, type, recipient, created_at, content, message_id}.
+// contactId === null/undefined means the global recent-activity feed
+// (pollOnce's own main query); a real contactId means the per-contact
+// feed (fetchAllMessagesForCatchup's own query).
+async function listMessages(contactId, limit) {
+  if (!gatewayMode.isNewGatewayEnabled()) return whatsapp.listMessages(contactId, limit);
+  const feed = require('./whatsappGatewayV1Feed');
+  return contactId ? feed.listContactFeed(contactId, limit) : feed.listGlobalFeed(limit);
+}
+
+// listChats() -> old shape: [{contact, name}, ...], used only for a
+// cosmetic group-name lookup (groupNameFor). Groups never reach the new
+// gateway's own feed at all (shouldIgnoreMessage drops them before they
+// are ever recorded - "ignore group chats", direct instruction), so an
+// empty list here is correct, not a stub standing in for missing work -
+// groupNameFor's own caller already falls back to the raw id when a name
+// is missing, exactly as it does for any OTHER unresolved id today.
+async function listChats() {
+  if (!gatewayMode.isNewGatewayEnabled()) return whatsapp.listChats();
+  return [];
+}
+
 module.exports = {
   sendWhatsAppMessage, sendWhatsAppDocument, sendPresence, getConnectionStatus,
+  listMessages, listChats,
   classifyWhatsAppNetworkError, normalizePhone, isSyntheticTestPhone,
   isGroupChat, isIgnoredBroadcastType, isValidPhoneNumber, isLikelyLid
 };

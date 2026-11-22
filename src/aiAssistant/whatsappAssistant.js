@@ -20,16 +20,15 @@ const fs = require('fs');
 const crypto = require('crypto');
 const aiUsageLog = require('./aiUsageLog');
 const whatsapp = require('../whatsappService');
-// New WhatsApp gateway (2026-11, direct instruction, Commit 5) - every
-// SEND/presence/connection-status call in this file goes through the
-// facade instead, which is the old client unchanged until
-// WHATSAPP_GATEWAY=new. `whatsapp` above is kept ONLY for listChats/
-// listMessages (old-gateway-shaped polling, no new-gateway equivalent -
-// see Commit 6) and the pure helpers (normalizePhone/isGroupChat/
-// isSyntheticTestPhone/isLikelyLid/isIgnoredBroadcastType), which the
-// facade itself re-exports unchanged anyway, so leaving their call sites
-// on `whatsapp` directly is equally correct and avoids a much larger
-// diff for zero behavior difference.
+// New WhatsApp gateway (2026-11, direct instruction, Commits 5-6) - every
+// send/presence/connection-status/listMessages/listChats call in this
+// file goes through the facade instead, which is the old client
+// unchanged until WHATSAPP_GATEWAY=new. `whatsapp` above is kept only
+// for the pure helpers (normalizePhone/isGroupChat/isSyntheticTestPhone/
+// isLikelyLid/isIgnoredBroadcastType), which the facade itself re-
+// exports unchanged anyway, so leaving their call sites on `whatsapp`
+// directly is equally correct and avoids a much larger diff for zero
+// behavior difference.
 const whatsappSend = require('../whatsappGatewayFacade');
 const gatewayModeV1 = require('../whatsappGatewayMode');
 const gatewayV1Receive = require('../whatsappGatewayV1Receive');
@@ -488,10 +487,10 @@ async function isMyMention(text) {
 
 // ---------------- Group block list (chat-managed, by name) ----------------
 // "<group name> block koro" - groups aren't looked up by a number a
-// person would type, so this resolves a name (via whatsapp.listChats(),
+// person would type, so this resolves a name (via whatsappSend.listChats(),
 // read-only, cosmetic names only) to the group's own contact id.
 async function findGroupIdByName(groupName) {
-  const chats = await whatsapp.listChats();
+  const chats = await whatsappSend.listChats();
   const needle = String(groupName || '').toLowerCase().trim();
   const match = chats.find((c) => whatsapp.isGroupChat(c.contact) && String(c.name || '').toLowerCase().includes(needle));
   return match ? match.contact : null;
@@ -2325,7 +2324,7 @@ async function reconcileTodaysDeliveryEvidence() {
   for (const record of candidates) {
     try {
       const lastAttempt = record.attempts[record.attempts.length - 1];
-      const feed = await whatsapp.listMessages(record.chatId, DELIVERY_CHECK_FEED_LIMIT);
+      const feed = await whatsappSend.listMessages(record.chatId, DELIVERY_CHECK_FEED_LIMIT);
       const landed = feedShowsText(feed, record.textPreview, lastAttempt ? lastAttempt.at : record.sentAt, lastAttempt ? lastAttempt.gatewayMessageId : null);
       if (landed) {
         await recordDeliveryEvidence({
@@ -2468,7 +2467,7 @@ async function detectDeliveryLanded(record) {
     }
   }
   try {
-    const feed = await withDeliveryCheckTimeout(whatsapp.listMessages(record.chatId, DELIVERY_CHECK_FEED_LIMIT));
+    const feed = await withDeliveryCheckTimeout(whatsappSend.listMessages(record.chatId, DELIVERY_CHECK_FEED_LIMIT));
     // feedMessageGatewayId's own field-name guesses may never actually
     // match anything this gateway's /messages feed returns (its real
     // shape for this is unconfirmed - see feedShowsText's own comment);
@@ -2663,7 +2662,7 @@ async function sendOrReportAutoReply(entry) {
   if (!entry.isGroup && entry.arrivedAt) {
     let manuallyAnswered = false;
     try {
-      const recent = await whatsapp.listMessages(entry.chatId, 20);
+      const recent = await whatsappSend.listMessages(entry.chatId, 20);
       manuallyAnswered = hasManualReplyAfter(recent, entry.arrivedAt);
       // PART 2(f), direct instruction - piggyback on this SAME gateway
       // call (never a new one) to also capture the owner's own manual
@@ -11968,7 +11967,7 @@ let styleSampleCache = null;
 async function getRecentOutgoingStyleSamples() {
   if (styleSampleCache && Date.now() - styleSampleCache.fetchedAt < STYLE_CACHE_TTL_MS) return styleSampleCache.samples;
   try {
-    const feed = await whatsapp.listMessages(null, POLL_FEED_LIMIT);
+    const feed = await whatsappSend.listMessages(null, POLL_FEED_LIMIT);
     const { employees } = await employeeService.getEmployeeData();
     const isKnownEmployee = (recipient) => {
       const normalized = whatsapp.normalizePhone(recipient);
@@ -15895,7 +15894,7 @@ async function fetchAllMessagesForCatchup(contactId, lastSeenId) {
   let limit = 50;
   let messages = [];
   for (;;) {
-    messages = await whatsapp.listMessages(contactId, limit);
+    messages = await whatsappSend.listMessages(contactId, limit);
     const incoming = messages.filter((m) => m.direction === 'incoming');
     const oldestId = incoming.length ? Math.min(...incoming.map((m) => m.id)) : null;
     if (oldestId === null || oldestId <= lastSeenId || limit >= CATCHUP_FETCH_MAX_LIMIT) break;
@@ -16243,7 +16242,7 @@ async function resumeStuckPendingQuestionsOnStartup() {
     try {
       const pendingOpen = await hasOpenPendingQuestionState(contactId);
       if (!pendingOpen) continue;
-      const recent = await whatsapp.listMessages(contactId, 5);
+      const recent = await whatsappSend.listMessages(contactId, 5);
       const lastIncoming = (recent || []).filter((m) => m.direction === 'incoming').sort((a, b) => b.id - a.id)[0];
       if (!lastIncoming) continue;
       // Critical guard: a message this file has never actually handled
@@ -16412,7 +16411,7 @@ async function catchUpAfterGap(trigger) {
 }
 
 async function pollOnce() {
-  const feed = await whatsapp.listMessages(null, POLL_FEED_LIMIT);
+  const feed = await whatsappSend.listMessages(null, POLL_FEED_LIMIT);
   // LIVE INCIDENT FOLLOW-UP (2026-11, direct instruction - "every
   // incoming message logged... before any filtering, so nothing
   // disappears silently") - this raw count (every incoming message the
@@ -16476,7 +16475,7 @@ async function pollOnce() {
   async function groupNameFor(id) {
     if (!chatNames) {
       chatNames = new Map();
-      try { (await whatsapp.listChats()).forEach((c) => chatNames.set(c.contact, c.name)); } catch (err) { /* name is cosmetic only */ }
+      try { (await whatsappSend.listChats()).forEach((c) => chatNames.set(c.contact, c.name)); } catch (err) { /* name is cosmetic only */ }
     }
     return chatNames.get(id) || id;
   }
