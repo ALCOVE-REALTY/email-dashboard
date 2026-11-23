@@ -289,6 +289,7 @@
   const healthUpdatedAtEl = document.getElementById('hrHealthUpdatedAt');
   const healthRestartsEl = document.getElementById('hrHealthRestarts');
   const healthProcessLineEl = document.getElementById('hrHealthProcessLine');
+  const healthRecentShutdownsEl = document.getElementById('hrHealthRecentShutdowns');
   const jobHeartbeatsList = document.getElementById('hrJobHeartbeatsList');
   const healthWaV1El = document.getElementById('hrHealthWaV1');
   const healthWaV1StatusEl = document.getElementById('hrHealthWaV1Status');
@@ -5511,6 +5512,23 @@
     if (last.previousShutdownReason) line += ' — previous stop: ' + last.previousShutdownReason;
     healthProcessLineEl.textContent = line;
   }
+  // CRASH LOOP (2026-11-23), direct instruction - "show the last 5
+  // restarts with time, reason and uptime-before-death... a SIGTERM with
+  // no error = the host killed it - say so plainly."
+  function shutdownEntryLine(entry) {
+    const when = actionNeededAgeLabel(Date.now() - entry.at) + ' ago';
+    const aliveFor = typeof entry.uptimeMs === 'number' ? msLabel(entry.uptimeMs) : '—';
+    const mem = entry.memory ? (entry.memory.rssMb + ' MB RSS / ' + entry.memory.heapUsedMb + ' MB heap') : '—';
+    const plain = entry.kind === 'signal'
+      ? 'Host-initiated stop, no application error (deploy/restart/health check/memory limit)'
+      : entry.reason;
+    return when + ' — ' + plain + ' — was up ' + aliveFor + ' — ' + mem;
+  }
+  function renderRecentShutdowns(recentShutdowns) {
+    if (!healthRecentShutdownsEl) return;
+    if (!recentShutdowns || !recentShutdowns.length) { healthRecentShutdownsEl.textContent = ''; return; }
+    healthRecentShutdownsEl.textContent = 'Recent restarts:\n' + recentShutdowns.map(shutdownEntryLine).join('\n');
+  }
   // New WhatsApp gateway (2026-11, direct instruction, Commit 3; extended
   // 2026-11-23, LIVE INCIDENT, direct instruction - "Gateway diagnostics"
   // block). Shown whenever there is ANY sign the new gateway is
@@ -5561,6 +5579,7 @@
       const data = await fetch('/api/workforce/hr-assistant/system-health').then((res) => res.json());
       const m = data && data.metrics;
       try { renderProcessStart(data && data.processStart); } catch (err) { /* independent of the rest */ }
+      try { renderRecentShutdowns(data && data.recentShutdowns); } catch (err) { /* independent of the rest */ }
       try { renderJobHeartbeatsList(data && data.jobHeartbeats); } catch (err) { /* independent of the rest */ }
       // LIVE INCIDENT (2026-11-23) - moved AFTER the core metrics render
       // below (was before) and wrapped here too, on top of its own

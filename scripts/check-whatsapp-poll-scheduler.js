@@ -332,6 +332,59 @@ async function main() {
       const info3 = await whatsappAssistant.recordProcessStart('ghi9999');
       check('a later start with no NEW shutdown reason recorded shows previousShutdownReason: null - the earlier one was consumed, never repeated', Boolean(info3) && info3.previousShutdownReason === null, JSON.stringify(info3));
     }
+
+    // CRASH LOOP (2026-11-23), direct instruction - richer crash evidence
+    // (stack/uptime/memory, last 5 not just 1) plus "no unhandled
+    // rejection may kill the process: log it, alert me, keep running."
+    console.log('='.repeat(70));
+    console.log('CRASH LOOP (2026-11-23) fix - richer shutdown evidence + unhandledRejection no longer kills the process');
+    console.log('='.repeat(70));
+    await (async () => {
+      const noopLog3 = { log: () => {}, error: () => {} };
+      const beforeRejection = process.listeners('unhandledRejection').slice();
+      const beforeException = process.listeners('uncaughtException').slice();
+      const beforeSigterm = process.listeners('SIGTERM').slice();
+      const beforeSigint = process.listeners('SIGINT').slice();
+      whatsappAssistant.installProcessExitDiagnostics(noopLog3);
+      const rejectionListener = process.listeners('unhandledRejection').find((l) => !beforeRejection.includes(l));
+      const exceptionListener = process.listeners('uncaughtException').find((l) => !beforeException.includes(l));
+      const sigtermListener = process.listeners('SIGTERM').find((l) => !beforeSigterm.includes(l));
+      const origExit = process.exit;
+      let exitCalled = false, exitCode = null;
+      process.exit = (code) => { exitCalled = true; exitCode = code; };
+      try {
+        check('installProcessExitDiagnostics actually attached a NEW unhandledRejection listener', Boolean(rejectionListener));
+        await rejectionListener(new Error('simulated unhandled rejection for the crash-loop fix'));
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        check('an unhandled rejection does NOT call process.exit - the live reply pipeline must keep running', exitCalled === false, 'exitCalled=' + exitCalled);
+        const afterRejection = await whatsappAssistant.listRecentShutdowns(5);
+        check('the rejection is still recorded as non-fatal crash evidence, tagged kind:rejection, with uptime/memory captured', Boolean(afterRejection[0]) && afterRejection[0].kind === 'rejection' && /simulated unhandled rejection/.test(afterRejection[0].reason) && typeof afterRejection[0].uptimeMs === 'number' && Boolean(afterRejection[0].memory), JSON.stringify(afterRejection[0]));
+
+        exitCalled = false;
+        const err = new Error('simulated uncaught exception for the crash-loop fix');
+        await exceptionListener(err);
+        check('an uncaughtException still exits the process (unchanged - continuing after one risks acting on corrupted state)', exitCalled === true && exitCode === 1, 'exitCalled=' + exitCalled + ' code=' + exitCode);
+        const afterException = await whatsappAssistant.listRecentShutdowns(5);
+        check('the exception is recorded with its own stack captured, tagged kind:exception', Boolean(afterException[0]) && afterException[0].kind === 'exception' && Boolean(afterException[0].stack) && afterException[0].stack.includes('simulated uncaught exception'), JSON.stringify(afterException[0]));
+
+        exitCalled = false;
+        await sigtermListener();
+        check('a SIGTERM still exits cleanly (code 0, unchanged)', exitCalled === true && exitCode === 0, 'exitCalled=' + exitCalled + ' code=' + exitCode);
+        const afterSigterm = await whatsappAssistant.listRecentShutdowns(5);
+        check('a SIGTERM is recorded with kind:signal and NO stack - the card\'s own cue that this was not an application error, likely a host-initiated stop', Boolean(afterSigterm[0]) && afterSigterm[0].kind === 'signal' && !afterSigterm[0].stack, JSON.stringify(afterSigterm[0]));
+
+        check('listRecentShutdowns is capped (never grows unbounded) - at most 5 entries after many more than 5 were recorded', afterSigterm.length <= 5, 'length=' + afterSigterm.length);
+      } finally {
+        process.exit = origExit;
+        if (rejectionListener) process.removeListener('unhandledRejection', rejectionListener);
+        if (exceptionListener) process.removeListener('uncaughtException', exceptionListener);
+        ['SIGTERM', 'SIGINT'].forEach((sig) => {
+          const baseline = sig === 'SIGTERM' ? beforeSigterm : beforeSigint;
+          const added = process.listeners(sig).find((l) => !baseline.includes(l));
+          if (added) process.removeListener(sig, added);
+        });
+      }
+    })();
   }
 
   console.log('='.repeat(70));

@@ -141,3 +141,47 @@ now flaked 3 times under full-parallel-gate load (nowhere else), suggesting
 its own margin is genuinely tighter than its siblings' - a candidate for a
 dedicated look if it keeps recurring, though out of scope for this
 migration.)
+
+## check-subh-panel-ui.js
+Flaked on 2026-11-23T08:15:57.612Z - failed once, passed on a lone solo retry.
+```
+[ok] Settings history: the real #wfTopbar stayed in .wf-shell (never relocated into the SUBH panel) and the panel itself is closed
+[ok] Settings history: real top bar is visible with all 5 elements (hamburger, wordmark, refresh, SUBH button, profile photo)
+[ok] Settings history: header box positions (hamburger/profile/wordmark) are IDENTICAL to a real ☰ menu section's own topbar at 384px, never just close
+[ok] Settings history: its own top-level view (#settingsHistoryView) is visible
+[ok] Settings history: its own page-head title reads "Settings history"
+[ok] Settings history: its back button is fixed to SUBH Settings, not the generic [data-back]
+[ok] Settings history: no icon bubble between the back button and the heading
+[ok] ISSUE 3(b): the filter chips are GONE from this page
+[ok] Settings history: ALL 3 fake history entries render as ONE single list (no filtering)
+[ok] ISSUE 3(b): the list starts a little below the page heading, not touching it (same spacing as other settings pages)
+[ok] Settings history: a restorable entry (company details) shows a Restore button; a non-restorable one (letter logo - image bytes never kept in history) does not
+[ok] ISSUE 3(a): the system-correction entry is clearly labelled as such, with its plain-language reason shown
+[ok] ISSUE 3(a): the system-correction entry never offers a Restore button
+[ok] Settings history: tapping Restore opens the preview sheet showing the change
+[ok] Settings history: the preview sheet names the group and the before/after change
+[ok] Settings history: "Confirm restore" posts the EXACT history entry (group + before/after), not a re-derived guess
+[ok] Settings history: shows the real restored confirmation once done
+[ok] Settings history: no JS error was thrown through opening, filtering, previewing or confirming a restore
+[ok] ISSUE 4: AI usage renders instantly from the hub-level prefetch - no skeleton ever shown, not even a flash
+[ok] ISSUE 4: Data & backups renders instantly from the hub-level prefetch - no skeleton ever shown
+[ok] ISSUE 4: Settings history renders instantly from the hub-level prefetch - no skeleton ever shown
+[ok] ISSUE 4: no JS error was thrown prefetching or opening any of the 3 previously-cold pages
+======================================================================
+item 8 - native pull-to-refresh preconditions on a SUBH-Settings sub-page (vs. an ordinary panel page, which must be completely unaffected)
+======================================================================
+[ok] Letter settings: <body> is NOT position:fixed while this page is open (the real document can grow/scroll)
+[ok] Letter settings: #hrAssistantPanel is genuinely CLOSED (hidden), not just "joined normal document flow"
+[ok] Letter settings: the custom pull-to-refresh indicator was never attached to this page
+[ok] Letter settings: the real document is now actually taller than the viewport (something real to scroll)
+[ok] Letter settings: a normal scroll in the middle of the page actually moves the real document (nothing is blocking it)
+[ok] Fresh panel open (Home): <body> is position:fixed again - the pre-existing overlay/keyboard-nudge protection is restored, never left permanently unlocked
+[ok] Fresh panel open (Home): #hrAssistantPanel is position:fixed again too
+[ok] Reminders (an ordinary page): <body> is STILL position:fixed - this fix never touches any page outside the 7 settings sub-pages
+[ok] Reminders: still has its OWN custom pull-to-refresh indicator, untouched
+[ok] item 8: no JS error was thrown through the whole doc-scroll/body-lock toggle flow
+[info] 1 pre-existing page-load error(s) from the main dashboard (unrelated to the SUBH panel, not counted as a failure): ["Failed to load resource: the server responded with a status of 404 (Not Found)","Failed to load resource: the server responded with a status of 400 (Bad Request)","Cannot read properties of undefined (reading 'all')","Cannot read properties of undefined (reading 'all')","Cannot read properties of undefined (reading 'all')","Cannot read properties of undefined (reading 'all')","Cannot read properties of undefined (reading 'all')","Cannot read properties of undefined (reading 'all')","Cannot read properties of undefined (reading 'all')"]
+280/281 passed, 1 FAILED
+Failed checks:
+ - Letter settings: "Send test to me" REALLY shows a visible loading state while in flight (disabled + its text hidden via color:transparent, not just the class present in the DOM with no matching CSS) -- got: {"isLoading":false,"disabled":true,"color":"rgba(0, 0, 0, 0)"}
+```

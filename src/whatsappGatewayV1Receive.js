@@ -467,13 +467,33 @@ async function getPollDiagnostics() {
 // (confirmed by grepping the whole repo for its own name) - "polling as
 // a backup to the webhook" was never actually running. Now wired into
 // whatsappPollScheduler.js's fast SEND_FLUSH_MS tick (see that file).
+// CRASH LOOP (2026-11-23), root-caused directly - this loop had NO page
+// cap at all. A cold start (no cursor ever saved yet - exactly the state
+// right after this poller was first wired into the fast tick) begins at
+// after=0, meaning the very first call would try to walk the gateway's
+// ENTIRE historical event backlog in one unbounded `for(;;)` - downloading
+// and base64-embedding any media along the way - every ~2s tick, for as
+// long as it took. That is a real "full scan" (the thing this migration's
+// own feed store was explicitly built to avoid) and a plausible, severe
+// memory/CPU spike well within the window of "process started 0m ago,
+// dies again". Capped here the same way every other store in this
+// migration is capped: each CALL does bounded work and saves its cursor
+// progress after every page, so a capped-out call is picked up exactly
+// where it left off by the next tick - a large backlog now drains safely
+// over many small calls instead of one unbounded one.
+function pollEventsMaxPages() {
+  const o = Number(process.env.WA_V1_POLL_EVENTS_MAX_PAGES);
+  return Number.isFinite(o) && o > 0 ? o : 20; // 20 pages * 100/page = 2000 events/call, comfortably bounded
+}
 async function pollEvents() {
   if (!gatewayMode.isNewGatewayEnabled()) return { skipped: true };
   let base, numberId;
   try { ({ base, numberId } = gatewayV1.requireConfig()); } catch (err) { return { skipped: true, reason: err.message }; }
   let after = await getEventsCursor();
   let totalKept = 0, totalSeen = 0, pages = 0;
+  const maxPages = pollEventsMaxPages();
   try {
+    let truncated = false;
     for (;;) {
       const url = base + '/v1/numbers/' + numberId + '/events?after=' + encodeURIComponent(after) + '&limit=100';
       const res = await fetch(url, { headers: gatewayV1.authHeaders() });
@@ -489,9 +509,14 @@ async function pollEvents() {
       after = data.nextAfter != null ? data.nextAfter : after;
       await saveEventsCursor(after);
       if (!data.hasMore) break;
+      if (pages >= maxPages) {
+        truncated = true;
+        console.error('[whatsapp-gateway-v1] pollEvents hit its ' + maxPages + '-page cap with more still available (cursor ' + after + ') - continuing on the next tick rather than looping unbounded');
+        break;
+      }
     }
-    await recordPollDiagnostics({ ok: true, pages, totalSeen, totalKept, cursor: after, error: null });
-    return { ok: true, pages, totalSeen, totalKept, cursor: after };
+    await recordPollDiagnostics({ ok: true, pages, totalSeen, totalKept, cursor: after, truncated, error: null });
+    return { ok: true, pages, totalSeen, totalKept, cursor: after, truncated };
   } catch (err) {
     await recordPollDiagnostics({ ok: false, pages, totalSeen, totalKept, cursor: after, error: err.message });
     throw err;

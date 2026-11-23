@@ -39,16 +39,40 @@ function pollIntervalMs() {
 // log access to see why - this heartbeat's whole point is to answer
 // "did the live process even start the scheduler, and which commit" from
 // outside the process, via Redis alone.
+// CRASH LOOP (2026-11-23), direct instruction - "show the deployed
+// commit on the card instead of unknown." Confirmed live: neither
+// `git rev-parse` (no .git shipped with the build) nor any of the
+// platform-guess env vars below actually resolve on Alcove Deploy today.
+// Added a THIRD fallback - reading .git/HEAD directly off disk - in case
+// a future build ships the .git directory without the git binary itself
+// (execSync would still fail there, but this would not). If every
+// fallback still comes up empty, the real fix is on the deploy side: set
+// one of the env vars below (simplest: COMMIT_SHA) from the build's own
+// commit, e.g. `--build-arg COMMIT_SHA=$(git rev-parse HEAD)` plus
+// `ENV COMMIT_SHA=$COMMIT_SHA` in the Dockerfile. Either way 'unknown' is
+// still safe - the heartbeat's own TIMESTAMP alone already proves
+// liveness regardless of whether a commit id resolves.
+function getCommitIdFromGitDir() {
+  try {
+    const fs = require('fs');
+    const path = require('path');
+    const gitDir = path.join(__dirname, '..', '.git');
+    const headRaw = fs.readFileSync(path.join(gitDir, 'HEAD'), 'utf8').trim();
+    const refMatch = headRaw.match(/^ref:\s*(.+)$/);
+    const sha = refMatch
+      ? fs.readFileSync(path.join(gitDir, refMatch[1]), 'utf8').trim()
+      : headRaw;
+    return sha ? sha.slice(0, 7) : null;
+  } catch (err) {
+    return null;
+  }
+}
 function getCommitId() {
   try {
     return execSync('git rev-parse --short HEAD', { cwd: __dirname, stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
   } catch (err) {
-    // Found live: git rev-parse fails in the actual deployed container
-    // (no .git shipped with the build) - the platform-specific env vars
-    // below are a best-effort guess at what Alcove Deploy might set;
-    // 'unknown' is still fine, the heartbeat's own TIMESTAMP alone
-    // already proves liveness regardless of whether a commit id resolves.
-    return process.env.GIT_COMMIT || process.env.SOURCE_VERSION || process.env.RENDER_GIT_COMMIT ||
+    return getCommitIdFromGitDir() ||
+      process.env.GIT_COMMIT || process.env.SOURCE_VERSION || process.env.RENDER_GIT_COMMIT ||
       process.env.VERCEL_GIT_COMMIT_SHA || process.env.HEROKU_SLUG_COMMIT ||
       process.env.COMMIT_SHA || process.env.COMMIT_ID || process.env.DEPLOY_COMMIT ||
       process.env.BUILD_COMMIT || 'unknown';

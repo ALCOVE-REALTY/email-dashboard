@@ -458,6 +458,28 @@ async function main() {
         return result.ok === true && result.totalSeen === 1 && result.totalKept === 0;
       } finally { restoreFetch(); }
     });
+    await checkAsync('CRASH LOOP (2026-11-23), root-caused directly - pollEvents never loops unbounded even when the gateway keeps saying hasMore:true forever (the exact shape a large/stuck historical backlog would look like) - stops at the page cap, saves progress, and lets the NEXT call continue from there', async () => {
+      await receive.resetEventsCursorForTest();
+      const savedCap = process.env.WA_V1_POLL_EVENTS_MAX_PAGES;
+      process.env.WA_V1_POLL_EVENTS_MAX_PAGES = '3';
+      installFetchStub();
+      try {
+        // Exactly as many hasMore:true pages as the cap (3) - proves the
+        // loop stops BECAUSE of the cap, not because the queue ran out.
+        for (let i = 0; i < 3; i++) {
+          queueResponse(200, { events: [{ eventId: 'cap-evid-' + i, event: 'message.received', data: { message: { waKey: 'true_cap_UNIQ' + i, type: 'text', text: 'cap ' + i, chat: { kind: 'user' } } }, seq: i }], nextAfter: i + 1, hasMore: true });
+        }
+        const result = await receive.pollEvents();
+        const callsAfterFirst = fetchCalls.length;
+        queueResponse(200, { events: [], nextAfter: 100, hasMore: false });
+        const secondCallResult = await receive.pollEvents();
+        return result.ok === true && result.pages === 3 && result.truncated === true && callsAfterFirst === 3
+          && secondCallResult.ok === true && secondCallResult.truncated === false;
+      } finally {
+        if (savedCap === undefined) delete process.env.WA_V1_POLL_EVENTS_MAX_PAGES; else process.env.WA_V1_POLL_EVENTS_MAX_PAGES = savedCap;
+        restoreFetch();
+      }
+    });
     await checkAsync('pollEvents: skipped cleanly when the new gateway is not enabled - never calls the gateway at all', async () => {
       const saved = process.env.WHATSAPP_GATEWAY;
       process.env.WHATSAPP_GATEWAY = 'old';

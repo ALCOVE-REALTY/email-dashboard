@@ -11504,46 +11504,105 @@ async function getProcessStartInfo() {
 // delay or prevent the actual shutdown/crash, and may simply not land in
 // time under a hard kill (e.g. SIGKILL, which can't be hooked at all) -
 // that's an acceptable gap, not a bug to chase further.
-async function recordShutdownReason(reason) {
+// CRASH LOOP (2026-11-23), direct instruction - "Alcove Deploy has no
+// runtime logs I can see - the app must record its own crash evidence."
+// A bounded, durable history (last 5, not just the latest) of EVERY exit
+// path, each with the reason + first lines of any stack + uptime +
+// memory at the moment it was recorded - so a crash loop is diagnosable
+// entirely from the System health card, with zero server/log access.
+const PROCESS_SHUTDOWN_LOG_KEY = 'wa-scheduler-shutdown-log';
+const PROCESS_SHUTDOWN_LOG_CAP = 5;
+function captureProcessSnapshot() {
+  let memory = null;
+  try {
+    const m = process.memoryUsage();
+    memory = { rssMb: Math.round(m.rss / 1048576), heapUsedMb: Math.round(m.heapUsed / 1048576) };
+  } catch (err) { /* best effort - memoryUsage() is not expected to throw, but never let this block a shutdown record */ }
+  return { uptimeMs: Math.round(process.uptime() * 1000), memory };
+}
+// `extra.kind` ('exception'|'rejection'|'signal') lets the card tell a
+// real application crash apart from an external stop with NO error
+// attached at all - direct instruction: "a SIGTERM with no error = the
+// host killed it (health check / memory limit) - say so plainly."
+async function recordShutdownReason(reason, extra) {
   const redis = getClient();
   if (!redis) return;
-  try { await redis.set(PROCESS_SHUTDOWN_REASON_KEY, String(reason).slice(0, 500), { ex: 7 * 24 * 60 * 60 }); } catch (err) { /* best effort */ }
+  const snapshot = captureProcessSnapshot();
+  const entry = {
+    at: Date.now(),
+    reason: String(reason).slice(0, 500),
+    kind: (extra && extra.kind) || 'other',
+    stack: (extra && extra.stack) ? String(extra.stack).split('\n').slice(0, 5).join('\n').slice(0, 1200) : null,
+    uptimeMs: snapshot.uptimeMs,
+    memory: snapshot.memory
+  };
+  try {
+    // Unchanged plain-string shape (existing consumer: recordProcessStart's
+    // own previousShutdownReason) - the richer entry above lives only in
+    // the new bounded list, so nothing reading the old key breaks.
+    await redis.set(PROCESS_SHUTDOWN_REASON_KEY, entry.reason, { ex: 7 * 24 * 60 * 60 });
+    await redis.lpush(PROCESS_SHUTDOWN_LOG_KEY, JSON.stringify(entry));
+    await redis.ltrim(PROCESS_SHUTDOWN_LOG_KEY, 0, PROCESS_SHUTDOWN_LOG_CAP - 1);
+  } catch (err) { /* best effort */ }
+}
+async function listRecentShutdowns(limit) {
+  const redis = getClient();
+  if (!redis) return [];
+  try {
+    const raw = await redis.lrange(PROCESS_SHUTDOWN_LOG_KEY, 0, (limit || PROCESS_SHUTDOWN_LOG_CAP) - 1);
+    return (raw || []).map((r) => { try { return typeof r === 'string' ? JSON.parse(r) : r; } catch (err) { return null; } }).filter(Boolean);
+  } catch (err) { return []; }
 }
 // A bounded best-effort write before actually exiting - never lets a
 // slow/hung KV call delay shutdown beyond this, well inside any
 // orchestrator's own grace period before a harder SIGKILL.
-function recordShutdownReasonBounded(reason, boundMs) {
+function recordShutdownReasonBounded(reason, extra, boundMs) {
   return Promise.race([
-    recordShutdownReason(reason).catch(() => {}),
+    recordShutdownReason(reason, extra).catch(() => {}),
     new Promise((resolve) => setTimeout(resolve, boundMs || 3000))
   ]);
 }
 function installProcessExitDiagnostics(log) {
-  // Node's default behavior for BOTH of these (uncaughtException,
-  // unhandledRejection) is to crash the process - attaching a listener
-  // at all REPLACES that default, so this must explicitly call
-  // process.exit() itself afterward, or a genuine crash would instead
-  // leave the process silently limping on in an unknown state forever
-  // (the opposite of "log a reason and restart cleanly").
+  // Node's default behavior for uncaughtException is to crash the
+  // process - attaching a listener at all REPLACES that default, so this
+  // must explicitly call process.exit() itself afterward, or a genuine
+  // crash would instead leave the process silently limping on in an
+  // unknown, possibly-corrupted state forever (the opposite of "log a
+  // reason and restart cleanly").
   process.on('uncaughtException', async (err) => {
     log.error('[whatsapp-assistant] UNCAUGHT EXCEPTION (process exiting): ' + err.message);
-    await recordShutdownReasonBounded('uncaughtException: ' + err.message);
+    await recordShutdownReasonBounded('uncaughtException: ' + err.message, { stack: err.stack, kind: 'exception' });
     process.exit(1);
   });
+  // CRASH LOOP (2026-11-23), direct instruction - "no unhandled rejection
+  // may kill the process: log it, alert me, keep running." Unlike
+  // uncaughtException (continuing risks acting on state a thrown error
+  // left inconsistent, so exiting and letting the orchestrator restart
+  // cleanly is still right), a rejected promise nobody happened to await
+  // is routine in a codebase with this many independent fire-and-forget
+  // background calls - it must never, by itself, take the whole live
+  // reply pipeline down. Node's default for an unhandled rejection is
+  // ALSO to crash the process; attaching this listener suppresses that
+  // default, and this handler deliberately never calls process.exit().
   process.on('unhandledRejection', async (reason) => {
     const message = (reason && reason.message) || String(reason);
-    log.error('[whatsapp-assistant] UNHANDLED REJECTION (process exiting): ' + message);
-    await recordShutdownReasonBounded('unhandledRejection: ' + message);
-    process.exit(1);
+    const stack = reason && reason.stack;
+    log.error('[whatsapp-assistant] UNHANDLED REJECTION (logged, NOT exiting): ' + message);
+    await recordShutdownReasonBounded('unhandledRejection (non-fatal): ' + message, { stack, kind: 'rejection' }).catch(() => {});
+    postOwnerNotification('⚠️ An unhandled promise rejection occurred (' + message.slice(0, 200) + ') - logged, the process kept running. Check System health > recent restarts if this keeps happening.').catch(() => {});
   });
   // Same reasoning for SIGTERM/SIGINT - attaching a listener suppresses
   // Node's own default immediate-terminate behavior, so this must still
   // actually exit afterward (a redeploy/restart sending SIGTERM expects
-  // the process to actually stop, not quietly ignore the signal).
+  // the process to actually stop, not quietly ignore the signal). Our own
+  // code never sends itself SIGTERM/SIGINT - every occurrence comes from
+  // the host/orchestrator (a deploy, a restart policy, or a health-check/
+  // memory-limit kill), which is exactly why `kind: 'signal'` with no
+  // stack is the card's own cue that this was NOT an application error.
   ['SIGTERM', 'SIGINT'].forEach((signal) => {
     process.on(signal, async () => {
-      log.log('[whatsapp-assistant] received ' + signal + ' - process stopping (likely a redeploy or restart)');
-      await recordShutdownReasonBounded(signal + ' received (likely a redeploy or restart)');
+      log.log('[whatsapp-assistant] received ' + signal + ' - process stopping (likely a redeploy, restart, or host health check)');
+      await recordShutdownReasonBounded(signal + ' received (no application error - likely a redeploy, restart, or host health check/memory limit)', { kind: 'signal' });
       process.exit(0);
     });
   });
@@ -17238,6 +17297,7 @@ module.exports = {
   getProcessStartInfo,
   installProcessExitDiagnostics,
   recordShutdownReason,
+  listRecentShutdowns,
   savePendingDraft,
   listPendingDrafts,
   removePendingDraft,
