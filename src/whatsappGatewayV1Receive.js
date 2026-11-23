@@ -280,6 +280,29 @@ async function getMessageStatus(waKey) {
   }
 }
 
+// LIGHTER BACKUP POLLER (2026-11-23), direct instruction, point 4 -
+// "never download media during catch-up for messages older than the
+// freshness window - only for messages SUBH will actually process."
+// Matches the SAME 30-minute cutoff the rest of the app already uses for
+// "is this catch-up message still worth auto-handling at all"
+// (CATCHUP_STALE_THRESHOLD_MS in whatsappAssistant.js) - kept as its own
+// local constant here (not a cross-require) to avoid entangling this
+// module with whatsappAssistant.js's own require graph. Also avoids a
+// real, otherwise-guaranteed-to-fail network call: the gateway's own
+// media URLs expire after 15 minutes (see downloadMedia's own comment),
+// so attempting a download for anything past this window would just be a
+// wasted round trip to an already-expired link.
+function mediaFreshnessWindowMs() {
+  const o = Number(process.env.WA_V1_MEDIA_FRESHNESS_WINDOW_MS);
+  return Number.isFinite(o) && o > 0 ? o : 30 * 60 * 1000;
+}
+function isMessageWithinFreshnessWindow(message) {
+  const tsRaw = (message && (message.waTimestamp || message.receivedAt)) || null;
+  const ts = tsRaw ? new Date(tsRaw).getTime() : NaN;
+  if (!Number.isFinite(ts)) return true; // no timestamp at all - never block on an unknown age
+  return (Date.now() - ts) <= mediaFreshnessWindowMs();
+}
+
 // One event (from either the webhook or the /events poll) run through the
 // full dedup/ignore/normalize/log pipeline. Returns what happened, mainly
 // for tests and callers that want to know whether it was actually kept.
@@ -311,7 +334,7 @@ async function processEvent(evt) {
   // Lazily required to avoid a require cycle (that module requires this
   // one, for downloadMedia). One write per kept message - never a scan,
   // never a loop.
-  await require('./whatsappGatewayV1Feed').recordFromNormalizedMessage(message).catch((err) => {
+  await require('./whatsappGatewayV1Feed').recordFromNormalizedMessage(message, { skipMediaDownload: !isMessageWithinFreshnessWindow(message) }).catch((err) => {
     console.error('[whatsapp-gateway-v1] failed to record feed entry for waKey ' + message.waKey + ': ' + err.message);
   });
   return { kept: true, message };
@@ -427,11 +450,17 @@ async function handleWebhookRequest(req, res) {
 
 // ---------------- /events polling (backup / catch-up) ----------------
 const EVENTS_CURSOR_KEY = 'wa-v1-events-cursor';
+// LIGHTER BACKUP POLLER (2026-11-23), direct instruction, point 1 - a
+// cursor that was NEVER saved (a genuinely fresh setup, or the key
+// cleared) must be told apart from a real, already-advanced cursor value
+// of 0 - only the former means "never polled before, don't walk
+// history". Returns null for "never saved", a real number otherwise.
 async function getEventsCursor() {
   const redis = gatewayV1.getRedisClient();
-  if (!redis) return 0;
+  if (!redis) return null;
   const raw = await redis.get(EVENTS_CURSOR_KEY).catch(() => null);
-  return raw ? Number(raw) || 0 : 0;
+  if (raw === null || raw === undefined) return null;
+  return Number(raw) || 0;
 }
 async function saveEventsCursor(nextAfter) {
   const redis = gatewayV1.getRedisClient();
@@ -458,67 +487,68 @@ async function getPollDiagnostics() {
   } catch (err) { return null; }
 }
 
-// Pulls every event after the saved cursor, processes each through the
-// same pipeline the webhook uses, and only advances+saves the cursor once
-// a page has been fully processed - a crash mid-page just reprocesses
-// that page next time, which waKey/event-id dedup makes safe.
+// LIGHTER BACKUP POLLER (2026-11-23), direct instruction - "make the
+// backup poller as light as the old gateway was." One SMALL, bounded
+// batch per call (never a multi-page loop), the webhook stays the
+// primary path, and this just fills whatever gap is left:
+//
+// 1) Cold start (no cursor ever saved - a genuinely fresh setup, or the
+//    key cleared) - never walk history. The docs' own `since` param
+//    ("used only when `after` is not given, to choose where to start")
+//    starts the cursor at "now", skipping the account's entire past
+//    instead of the old CRASH LOOP's after=0 full-history walk. This
+//    never touches anything already written to the inbox log, the
+//    per-chat index, or this feed store - it only changes where NEW
+//    gateway events start being read from; existing conversation history
+//    is completely untouched either way.
+// 2) Normal runs - small batches only (WA_V1_POLL_EVENTS_LIMIT, 50-100),
+//    from the saved cursor. A crash mid-batch just reprocesses that
+//    batch next time, which waKey/event-id dedup makes safe.
+// 3) After a restart/deploy - the gap since the saved cursor is caught
+//    up the SAME way as any other gap: one small batch per call, relying
+//    on the scheduler's own ~2s cadence to drain it across many ticks,
+//    never one big blocking call.
+// 4) Media download during catch-up - see
+//    isMessageWithinFreshnessWindow/processEvent above.
+//
 // LIVE INCIDENT (2026-11-23) - this function existed and was fully
 // tested from Commit 2 onward but was NEVER actually scheduled anywhere
 // (confirmed by grepping the whole repo for its own name) - "polling as
 // a backup to the webhook" was never actually running. Now wired into
 // whatsappPollScheduler.js's fast SEND_FLUSH_MS tick (see that file).
-// CRASH LOOP (2026-11-23), root-caused directly - this loop had NO page
-// cap at all. A cold start (no cursor ever saved yet - exactly the state
-// right after this poller was first wired into the fast tick) begins at
-// after=0, meaning the very first call would try to walk the gateway's
-// ENTIRE historical event backlog in one unbounded `for(;;)` - downloading
-// and base64-embedding any media along the way - every ~2s tick, for as
-// long as it took. That is a real "full scan" (the thing this migration's
-// own feed store was explicitly built to avoid) and a plausible, severe
-// memory/CPU spike well within the window of "process started 0m ago,
-// dies again". Capped here the same way every other store in this
-// migration is capped: each CALL does bounded work and saves its cursor
-// progress after every page, so a capped-out call is picked up exactly
-// where it left off by the next tick - a large backlog now drains safely
-// over many small calls instead of one unbounded one.
-function pollEventsMaxPages() {
-  const o = Number(process.env.WA_V1_POLL_EVENTS_MAX_PAGES);
-  return Number.isFinite(o) && o > 0 ? o : 20; // 20 pages * 100/page = 2000 events/call, comfortably bounded
+function pollEventsBatchLimit() {
+  const o = Number(process.env.WA_V1_POLL_EVENTS_LIMIT);
+  return Number.isFinite(o) && o > 0 ? Math.min(o, 500) : 75; // 50-100 range, per direct instruction
 }
 async function pollEvents() {
   if (!gatewayMode.isNewGatewayEnabled()) return { skipped: true };
   let base, numberId;
   try { ({ base, numberId } = gatewayV1.requireConfig()); } catch (err) { return { skipped: true, reason: err.message }; }
-  let after = await getEventsCursor();
-  let totalKept = 0, totalSeen = 0, pages = 0;
-  const maxPages = pollEventsMaxPages();
+  const cursor = await getEventsCursor();
+  const isColdStart = cursor === null;
+  const limit = pollEventsBatchLimit();
+  let after = isColdStart ? null : cursor;
+  let totalKept = 0, totalSeen = 0;
   try {
-    let truncated = false;
-    for (;;) {
-      const url = base + '/v1/numbers/' + numberId + '/events?after=' + encodeURIComponent(after) + '&limit=100';
-      const res = await fetch(url, { headers: gatewayV1.authHeaders() });
-      if (!res.ok) throw new Error('GET /v1/numbers/{id}/events failed: ' + res.status);
-      const data = await res.json();
-      const events = data.events || [];
-      pages++;
-      for (const evt of events) {
-        totalSeen++;
-        const result = await processEvent(evt);
-        if (result.kept) totalKept++;
-      }
-      after = data.nextAfter != null ? data.nextAfter : after;
-      await saveEventsCursor(after);
-      if (!data.hasMore) break;
-      if (pages >= maxPages) {
-        truncated = true;
-        console.error('[whatsapp-gateway-v1] pollEvents hit its ' + maxPages + '-page cap with more still available (cursor ' + after + ') - continuing on the next tick rather than looping unbounded');
-        break;
-      }
+    const url = isColdStart
+      ? base + '/v1/numbers/' + numberId + '/events?since=' + encodeURIComponent(new Date().toISOString()) + '&limit=' + limit
+      : base + '/v1/numbers/' + numberId + '/events?after=' + encodeURIComponent(after) + '&limit=' + limit;
+    const res = await fetch(url, { headers: gatewayV1.authHeaders() });
+    if (!res.ok) throw new Error('GET /v1/numbers/{id}/events failed: ' + res.status);
+    const data = await res.json();
+    const events = data.events || [];
+    for (const evt of events) {
+      totalSeen++;
+      const result = await processEvent(evt);
+      if (result.kept) totalKept++;
     }
-    await recordPollDiagnostics({ ok: true, pages, totalSeen, totalKept, cursor: after, truncated, error: null });
-    return { ok: true, pages, totalSeen, totalKept, cursor: after, truncated };
+    after = data.nextAfter != null ? data.nextAfter : after;
+    await saveEventsCursor(after);
+    const hasMore = Boolean(data.hasMore);
+    await recordPollDiagnostics({ ok: true, pages: 1, totalSeen, totalKept, cursor: after, hasMore, coldStart: isColdStart, error: null });
+    return { ok: true, pages: 1, totalSeen, totalKept, cursor: after, hasMore, coldStart: isColdStart };
   } catch (err) {
-    await recordPollDiagnostics({ ok: false, pages, totalSeen, totalKept, cursor: after, error: err.message });
+    await recordPollDiagnostics({ ok: false, pages: 0, totalSeen, totalKept, cursor: after, error: err.message });
     throw err;
   }
 }
@@ -584,5 +614,12 @@ module.exports = {
   getPollDiagnostics,
   getGatewayDiagnostics,
   // Test-only seams
-  resetEventsCursorForTest() { return saveEventsCursor(0); }
+  // CLEARS the cursor entirely (simulates "never polled before" - the
+  // genuine cold-start state), not "set to 0" - those are now two
+  // different things (see getEventsCursor's own comment).
+  resetEventsCursorForTest() {
+    const redis = gatewayV1.getRedisClient();
+    return redis ? redis.del(EVENTS_CURSOR_KEY).catch(() => {}) : Promise.resolve();
+  },
+  setEventsCursorForTest(value) { return saveEventsCursor(value); }
 };

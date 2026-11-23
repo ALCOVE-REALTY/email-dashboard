@@ -59,13 +59,21 @@ async function nextFeedId() {
 // reads natively with no network call at all - satisfying every existing
 // consumer (extractMediaUrl -> plain fetch(mediaUrl)) without changing a
 // single line of that code.
-async function buildOldShapeContent(message) {
+// LIGHTER BACKUP POLLER (2026-11-23), direct instruction, point 4 -
+// `opts.skipMediaDownload` (set by processEvent for anything older than
+// the freshness window) skips the actual download entirely - the
+// message is still recorded (filename metadata intact), just with no
+// `content.url`, since a catch-up message that old is never one SUBH
+// would act on anyway, and its media URL has very likely already expired.
+async function buildOldShapeContent(message, opts) {
   const content = {};
   if (message.text) { content.text = message.text; content.caption = message.text; }
   if (message.media) {
     if (message.media.fileName) content.filename = message.media.fileName;
-    const dl = await gatewayV1Receive.downloadMedia(message).catch((err) => ({ ok: false, error: err.message }));
-    if (dl.ok) content.url = 'data:' + (dl.mimeType || 'application/octet-stream') + ';base64,' + dl.buffer.toString('base64');
+    if (!(opts && opts.skipMediaDownload)) {
+      const dl = await gatewayV1Receive.downloadMedia(message).catch((err) => ({ ok: false, error: err.message }));
+      if (dl.ok) content.url = 'data:' + (dl.mimeType || 'application/octet-stream') + ';base64,' + dl.buffer.toString('base64');
+    }
   }
   return content;
 }
@@ -83,7 +91,7 @@ async function buildOldShapeContent(message) {
 // expire, and the contact's own push+trim+expire - goes out together in
 // a single redis.pipeline().exec(), same convention this codebase's own
 // fullStoreBackupService.js already uses for its batched reads.
-async function recordFromNormalizedMessage(message) {
+async function recordFromNormalizedMessage(message, opts) {
   const redis = gatewayV1.getRedisClient();
   if (!redis || !message) return null;
   const id = await nextFeedId();
@@ -95,7 +103,7 @@ async function recordFromNormalizedMessage(message) {
     recipient,
     created_at: message.waTimestamp || message.receivedAt || new Date().toISOString(),
     message_id: message.id || message.waKey || null,
-    content: await buildOldShapeContent(message)
+    content: await buildOldShapeContent(message, opts)
   };
   const serialized = JSON.stringify(entry);
   const ttl = feedRetentionSeconds();

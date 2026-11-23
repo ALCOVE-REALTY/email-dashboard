@@ -233,6 +233,46 @@ async function main() {
     });
 
     console.log('='.repeat(70));
+    console.log('LIGHTER BACKUP POLLER (2026-11-23), point 4 - never download media for a catch-up message older than the freshness window');
+    console.log('='.repeat(70));
+    await checkAsync('processEvent: a FRESH message (within the freshness window) with media still gets it downloaded, content.url present', async () => {
+      installFetchStub();
+      try {
+        queueResponse(200, Buffer.from('FRESH-MEDIA-BYTES'));
+        const evt = { eventId: 'evid-media-fresh', event: 'message.received', data: { message: { waKey: 'true_media_fresh', type: 'image', waTimestamp: new Date().toISOString(), media: { url: process.env.WA_V1_BASE + '/v1/media/fresh', mimeType: 'image/jpeg', fileName: 'f.jpg' }, chat: { kind: 'user' } } } };
+        const r = await receive.processEvent(evt);
+        const feed = require('../src/whatsappGatewayV1Feed');
+        const rows = await feed.listGlobalFeed(5);
+        const entry = rows.find((row) => row.message_id === 'true_media_fresh');
+        return r.kept === true && Boolean(entry) && Boolean(entry.content.url) && entry.content.url.startsWith('data:');
+      } finally { restoreFetch(); }
+    });
+    await checkAsync('processEvent: a STALE catch-up message (older than WA_V1_MEDIA_FRESHNESS_WINDOW_MS) with media is recorded WITHOUT downloading it - no network call, no content.url, filename metadata still kept', async () => {
+      installFetchStub();
+      try {
+        const evt = { eventId: 'evid-media-stale', event: 'message.received', data: { message: { waKey: 'true_media_stale', type: 'image', waTimestamp: new Date(Date.now() - 60 * 60 * 1000).toISOString(), media: { url: process.env.WA_V1_BASE + '/v1/media/stale', mimeType: 'image/jpeg', fileName: 'old.jpg' }, chat: { kind: 'user' } } } };
+        const r = await receive.processEvent(evt);
+        const feed = require('../src/whatsappGatewayV1Feed');
+        const rows = await feed.listGlobalFeed(5);
+        const entry = rows.find((row) => row.message_id === 'true_media_stale');
+        return r.kept === true && Boolean(entry) && !entry.content.url && entry.content.filename === 'old.jpg' && fetchCalls.length === 0;
+      } finally { restoreFetch(); }
+    });
+    await checkAsync('WA_V1_MEDIA_FRESHNESS_WINDOW_MS overrides the default 30-minute cutoff', async () => {
+      const saved = process.env.WA_V1_MEDIA_FRESHNESS_WINDOW_MS;
+      process.env.WA_V1_MEDIA_FRESHNESS_WINDOW_MS = '1000'; // 1s - a message "5s old" is now stale under this override
+      installFetchStub();
+      try {
+        const evt = { eventId: 'evid-media-override', event: 'message.received', data: { message: { waKey: 'true_media_override', type: 'image', waTimestamp: new Date(Date.now() - 5000).toISOString(), media: { url: process.env.WA_V1_BASE + '/v1/media/override', mimeType: 'image/jpeg', fileName: 'o.jpg' }, chat: { kind: 'user' } } } };
+        await receive.processEvent(evt);
+        return fetchCalls.length === 0;
+      } finally {
+        restoreFetch();
+        if (saved === undefined) delete process.env.WA_V1_MEDIA_FRESHNESS_WINDOW_MS; else process.env.WA_V1_MEDIA_FRESHNESS_WINDOW_MS = saved;
+      }
+    });
+
+    console.log('='.repeat(70));
     console.log('shouldIgnoreMessage / normalizeMessage');
     console.log('='.repeat(70));
     check('normalizeMessage: carries through the fields downstream code actually uses, defaults the rest safely', (() => {
@@ -424,31 +464,56 @@ async function main() {
     console.log('='.repeat(70));
     console.log('pollEvents - backup/catch-up polling with a persisted cursor');
     console.log('='.repeat(70));
-    await checkAsync('pollEvents: pulls every page until hasMore is false, processes each event, and persists the final cursor', async () => {
+    await checkAsync('LIGHTER BACKUP POLLER (2026-11-23), direct instruction, point 1 - a cold start (no cursor EVER saved) never walks history: uses the docs\' own since=<now> param, never after=0, and never loops to a second page even if hasMore were true', async () => {
       await receive.resetEventsCursorForTest();
       installFetchStub();
       try {
         queueResponse(200, {
-          events: [
-            { eventId: 'poll-evid-1', event: 'message.received', data: { message: { waKey: 'true_poll_UNIQ1', type: 'text', text: 'poll 1', chat: { kind: 'user' } } }, seq: 10 },
-            { eventId: 'poll-evid-2', event: 'message.received', data: { message: { waKey: 'true_poll_UNIQ2', type: 'text', text: 'poll 2', chat: { kind: 'user' } } }, seq: 11 }
-          ],
-          nextAfter: 11, hasMore: true
-        });
-        queueResponse(200, {
-          events: [
-            { eventId: 'poll-evid-3', event: 'message.received', data: { message: { waKey: 'true_poll_UNIQ3', type: 'text', text: 'poll 3', chat: { kind: 'user' } } }, seq: 12 }
-          ],
-          nextAfter: 12, hasMore: false
+          events: [{ eventId: 'poll-evid-1', event: 'message.received', data: { message: { waKey: 'true_poll_UNIQ1', type: 'text', text: 'poll 1', chat: { kind: 'user' } } }, seq: 10 }],
+          nextAfter: 10, hasMore: true // deliberately true - proves pollEvents never multi-page-loops internally any more
         });
         const result = await receive.pollEvents();
         const log = await receive.listRecentInboundEvents(10);
         const firstUrl = fetchCalls[0].url;
-        const secondUrl = fetchCalls[1].url;
-        return result.ok === true && result.pages === 2 && result.totalSeen === 3 && result.totalKept === 3 && result.cursor === 12
-          && firstUrl.includes('after=0') && secondUrl.includes('after=11')
-          && log.some((e) => e.message.waKey === 'true_poll_UNIQ1') && log.some((e) => e.message.waKey === 'true_poll_UNIQ3');
+        return result.ok === true && result.pages === 1 && result.totalSeen === 1 && result.totalKept === 1 && result.cursor === 10
+          && result.hasMore === true && result.coldStart === true && fetchCalls.length === 1
+          && firstUrl.includes('since=') && !firstUrl.includes('after=')
+          && log.some((e) => e.message.waKey === 'true_poll_UNIQ1');
       } finally { restoreFetch(); }
+    });
+    await checkAsync('LIGHTER BACKUP POLLER (2026-11-23), point 3 - "catch up the gap in small batches across ticks, never one big call": a backlog left behind (hasMore:true) is drained ONE small batch per call, each call picking up exactly where the last saved cursor left off', async () => {
+      installFetchStub();
+      try {
+        queueResponse(200, { events: [{ eventId: 'poll-evid-2', event: 'message.received', data: { message: { waKey: 'true_poll_UNIQ2', type: 'text', text: 'poll 2', chat: { kind: 'user' } } }, seq: 11 }], nextAfter: 11, hasMore: true });
+        const tick1 = await receive.pollEvents();
+        const urlTick1 = fetchCalls[fetchCalls.length - 1].url;
+        queueResponse(200, { events: [{ eventId: 'poll-evid-3', event: 'message.received', data: { message: { waKey: 'true_poll_UNIQ3', type: 'text', text: 'poll 3', chat: { kind: 'user' } } }, seq: 12 }], nextAfter: 12, hasMore: false });
+        const tick2 = await receive.pollEvents();
+        const urlTick2 = fetchCalls[fetchCalls.length - 1].url;
+        return tick1.ok === true && tick1.coldStart === false && tick1.hasMore === true && tick1.cursor === 11 && urlTick1.includes('after=10')
+          && tick2.ok === true && tick2.hasMore === false && tick2.cursor === 12 && urlTick2.includes('after=11');
+      } finally { restoreFetch(); }
+    });
+    await checkAsync('LIGHTER BACKUP POLLER (2026-11-23), point 2 - normal batches request the small configured limit (50-100, default 75), never the old 100-fixed/multi-page shape', async () => {
+      installFetchStub();
+      try {
+        queueResponse(200, { events: [], nextAfter: 12, hasMore: false });
+        await receive.pollEvents();
+        return fetchCalls[fetchCalls.length - 1].url.includes('limit=75');
+      } finally { restoreFetch(); }
+    });
+    await checkAsync('WA_V1_POLL_EVENTS_LIMIT overrides the default batch size', async () => {
+      const saved = process.env.WA_V1_POLL_EVENTS_LIMIT;
+      process.env.WA_V1_POLL_EVENTS_LIMIT = '50';
+      installFetchStub();
+      try {
+        queueResponse(200, { events: [], nextAfter: 12, hasMore: false });
+        await receive.pollEvents();
+        return fetchCalls[fetchCalls.length - 1].url.includes('limit=50');
+      } finally {
+        if (saved === undefined) delete process.env.WA_V1_POLL_EVENTS_LIMIT; else process.env.WA_V1_POLL_EVENTS_LIMIT = saved;
+        restoreFetch();
+      }
     });
     await checkAsync('pollEvents: a SAME waKey seen again on a later poll (overlap with what the webhook already delivered) is deduped, never double-recorded', async () => {
       installFetchStub();
@@ -458,27 +523,23 @@ async function main() {
         return result.ok === true && result.totalSeen === 1 && result.totalKept === 0;
       } finally { restoreFetch(); }
     });
-    await checkAsync('CRASH LOOP (2026-11-23), root-caused directly - pollEvents never loops unbounded even when the gateway keeps saying hasMore:true forever (the exact shape a large/stuck historical backlog would look like) - stops at the page cap, saves progress, and lets the NEXT call continue from there', async () => {
+    await checkAsync('EXISTING CONVERSATION HISTORY (direct instruction) - a cold-start poll never deletes, hides or changes anything already in the feed store or inbox log - it only changes where NEW events start being read from', async () => {
+      const feed = require('../src/whatsappGatewayV1Feed');
+      await feed.recordFromNormalizedMessage({ waKey: 'true_preexisting_history_1', type: 'text', text: 'a message from long before this fix existed', chat: { kind: 'user', phone: '919999990001' }, fromMe: false, waTimestamp: new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString() });
+      const beforeContact = await feed.listContactFeed('919999990001', 50);
+      const preexistingEntry = beforeContact.find((e) => e.message_id === 'true_preexisting_history_1');
       await receive.resetEventsCursorForTest();
-      const savedCap = process.env.WA_V1_POLL_EVENTS_MAX_PAGES;
-      process.env.WA_V1_POLL_EVENTS_MAX_PAGES = '3';
       installFetchStub();
       try {
-        // Exactly as many hasMore:true pages as the cap (3) - proves the
-        // loop stops BECAUSE of the cap, not because the queue ran out.
-        for (let i = 0; i < 3; i++) {
-          queueResponse(200, { events: [{ eventId: 'cap-evid-' + i, event: 'message.received', data: { message: { waKey: 'true_cap_UNIQ' + i, type: 'text', text: 'cap ' + i, chat: { kind: 'user' } } }, seq: i }], nextAfter: i + 1, hasMore: true });
-        }
-        const result = await receive.pollEvents();
-        const callsAfterFirst = fetchCalls.length;
-        queueResponse(200, { events: [], nextAfter: 100, hasMore: false });
-        const secondCallResult = await receive.pollEvents();
-        return result.ok === true && result.pages === 3 && result.truncated === true && callsAfterFirst === 3
-          && secondCallResult.ok === true && secondCallResult.truncated === false;
-      } finally {
-        if (savedCap === undefined) delete process.env.WA_V1_POLL_EVENTS_MAX_PAGES; else process.env.WA_V1_POLL_EVENTS_MAX_PAGES = savedCap;
-        restoreFetch();
-      }
+        queueResponse(200, { events: [{ eventId: 'poll-evid-fresh', event: 'message.received', data: { message: { waKey: 'true_poll_fresh_after_history_check', type: 'text', text: 'brand new message', chat: { kind: 'user' } } }, seq: 20 }], nextAfter: 20, hasMore: false });
+        await receive.pollEvents();
+      } finally { restoreFetch(); }
+      const afterContact = await feed.listContactFeed('919999990001', 50);
+      const stillThere = afterContact.find((e) => e.message_id === 'true_preexisting_history_1');
+      const afterInboxLog = await receive.listRecentInboundEvents(50);
+      return Boolean(preexistingEntry) && Boolean(stillThere) &&
+        stillThere.content.text === preexistingEntry.content.text && stillThere.created_at === preexistingEntry.created_at &&
+        afterInboxLog.some((e) => e.message.waKey === 'true_poll_fresh_after_history_check');
     });
     await checkAsync('pollEvents: skipped cleanly when the new gateway is not enabled - never calls the gateway at all', async () => {
       const saved = process.env.WHATSAPP_GATEWAY;
