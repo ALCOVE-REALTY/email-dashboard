@@ -268,10 +268,114 @@ async function main() {
       const result = await receive.downloadMedia({ text: 'no media here' });
       return result.ok === false;
     });
+    await checkAsync('LIVE INCIDENT (2026-11-23) fix - a stalled media download times out (never hangs processEvent/the webhook ack forever) and is reported as a clean failure', async () => {
+      const saved = process.env.WA_V1_MEDIA_DOWNLOAD_TIMEOUT_MS;
+      process.env.WA_V1_MEDIA_DOWNLOAD_TIMEOUT_MS = '50';
+      installFetchStub();
+      try {
+        global.fetch = async (url, opts) => {
+          if (!String(url).startsWith(process.env.WA_V1_BASE)) return originalFetch(url, opts);
+          return new Promise((resolve, reject) => {
+            opts.signal.addEventListener('abort', () => { const e = new Error('aborted'); e.name = 'AbortError'; reject(e); });
+          }); // never resolves on its own - only the timeout's own abort can end this
+        };
+        const message = { media: { url: process.env.WA_V1_BASE + '/v1/media/stuck' } };
+        const t0 = Date.now();
+        const result = await receive.downloadMedia(message);
+        const ms = Date.now() - t0;
+        return result.ok === false && ms < 2000;
+      } finally {
+        restoreFetch();
+        if (saved === undefined) delete process.env.WA_V1_MEDIA_DOWNLOAD_TIMEOUT_MS; else process.env.WA_V1_MEDIA_DOWNLOAD_TIMEOUT_MS = saved;
+      }
+    });
+
+    console.log('='.repeat(70));
+    console.log('LIVE INCIDENT (2026-11-23), direct instruction - webhook-hit logging, poll diagnostics, gateway diagnostics aggregator');
+    console.log('='.repeat(70));
+    await checkAsync('every webhook hit is logged with its real outcome, most recent first', async () => {
+      await receive.recordWebhookHit('ok', 'message.received (kept)');
+      await receive.recordWebhookHit('bad_signature', 'signature mismatch');
+      const hits = await receive.listRecentWebhookHits(5);
+      return hits[0].outcome === 'bad_signature' && hits[1].outcome === 'ok' && hits[1].detail === 'message.received (kept)';
+    });
+    await checkAsync('handleWebhookRequest itself records a hit for EVERY outcome - not_enabled, bad signature, and a real success', async () => {
+      const savedGw = process.env.WHATSAPP_GATEWAY;
+      try {
+        delete process.env.WHATSAPP_GATEWAY;
+        await receive.handleWebhookRequest(fakeReq({}, Buffer.from('{}')), fakeRes());
+        process.env.WHATSAPP_GATEWAY = 'new';
+        const registration = await receive.getStoredWebhookRegistration();
+        const body = Buffer.from(JSON.stringify({ eventId: 'ev-hitlog-1', event: 'message.received', data: { message: { waKey: 'true_hitlog_1', fromMe: false, type: 'text', text: 'hi', chat: { kind: 'user', phone: '919000007001' } } } }));
+        const header = signBody(registration.secret, body);
+        await receive.handleWebhookRequest(fakeReq({ 'X-Wa-Signature': header, 'X-Wa-Event-Id': 'ev-hitlog-1' }, body), fakeRes());
+        const hits = await receive.listRecentWebhookHits(5);
+        return hits[0].outcome === 'ok' && hits[1].outcome === 'not_enabled';
+      } finally { if (savedGw === undefined) delete process.env.WHATSAPP_GATEWAY; else process.env.WHATSAPP_GATEWAY = savedGw; }
+    });
+    await checkAsync('pollEvents records poll diagnostics (last poll time, cursor, events seen/kept) on success', async () => {
+      await receive.resetEventsCursorForTest();
+      installFetchStub();
+      try {
+        queueResponse(200, { events: [{ eventId: 'diag-evt-1', event: 'message.received', data: { message: { waKey: 'true_diag_1', fromMe: false, type: 'text', text: 'x', chat: { kind: 'user', phone: '919000007002' } } }, seq: 1 }], nextAfter: 1, hasMore: false });
+        await receive.pollEvents();
+        const diag = await receive.getPollDiagnostics();
+        return diag.ok === true && diag.totalSeen === 1 && diag.totalKept === 1 && diag.cursor === 1 && diag.error === null;
+      } finally { restoreFetch(); }
+    });
+    await checkAsync('pollEvents records poll diagnostics with the real error on failure - never silently loses "why did polling fail"', async () => {
+      installFetchStub();
+      try {
+        queueResponse(500, { error: 'gateway error' });
+        await receive.pollEvents().catch(() => {});
+        const diag = await receive.getPollDiagnostics();
+        return diag.ok === false && /GET \/v1\/numbers.*events failed: 500/.test(diag.error);
+      } finally { restoreFetch(); }
+    });
+    await checkAsync('getGatewayDiagnostics aggregates webhook registration/secret presence, last hit, last poll, last feed activity - never throws even if one sub-read fails', async () => {
+      const diag = await receive.getGatewayDiagnostics();
+      return diag && typeof diag.webhookRegistered === 'boolean' && typeof diag.webhookSecretPresent === 'boolean'
+        && Object.prototype.hasOwnProperty.call(diag, 'lastWebhookHit') && Object.prototype.hasOwnProperty.call(diag, 'lastPoll')
+        && Object.prototype.hasOwnProperty.call(diag, 'lastMessageWrittenToFeed') && Object.prototype.hasOwnProperty.call(diag, 'lastMessageRepliedTo');
+    });
 
     console.log('='.repeat(70));
     console.log('handleWebhookRequest - the full Express handler, end to end');
     console.log('='.repeat(70));
+    await checkAsync('LIVE INCIDENT (2026-11-23) fix - IT\'s own diagnosis, reproduced directly: a hung underlying KV call (confirmed by IT as the real cause - even an EMPTY, UNSIGNED request hung) never leaves the webhook ack hanging forever. The handler still responds (500, triggering the gateway\'s own safe retry) within the configured deadline, never an open connection with no reply', async () => {
+      const saved = process.env.WA_V1_WEBHOOK_ACK_TIMEOUT_MS;
+      process.env.WA_V1_WEBHOOK_ACK_TIMEOUT_MS = '100';
+      const originalFetch = global.fetch;
+      // Simulates the underlying KV REST call (made by @upstash/redis's
+      // OWN client, which also uses global fetch) hanging forever -
+      // everything else (the fake gateway base, anything unrelated)
+      // passes straight through untouched.
+      global.fetch = async (url, opts) => {
+        const kvUrl = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
+        if (kvUrl && String(url).startsWith(kvUrl)) return new Promise(() => {});
+        return originalFetch(url, opts);
+      };
+      try {
+        const res = fakeRes();
+        const t0 = Date.now();
+        // Deliberately NOT awaited - matches exactly how server.js's own
+        // route registration calls this ((req, res) => { ...
+        // handleWebhookRequest(req, res); }, never awaited there either).
+        // The underlying hung KV call means handleWebhookRequest's OWN
+        // returned promise never settles either (same accepted "orphaned
+        // background promise" tradeoff this codebase's enqueueSend task
+        // breaker already makes) - what actually matters, and what this
+        // proves, is that the HTTP response itself goes out promptly via
+        // the internal timer regardless.
+        receive.handleWebhookRequest(fakeReq({}, Buffer.from('{}')), res).catch(() => {});
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        const ms = Date.now() - t0;
+        return res.statusCode === 500 && ms < 2000;
+      } finally {
+        global.fetch = originalFetch;
+        if (saved === undefined) delete process.env.WA_V1_WEBHOOK_ACK_TIMEOUT_MS; else process.env.WA_V1_WEBHOOK_ACK_TIMEOUT_MS = saved;
+      }
+    });
     await checkAsync('handleWebhookRequest: 404s when the new gateway is not enabled - never processes, never even checks the signature', async () => {
       const saved = process.env.WHATSAPP_GATEWAY;
       process.env.WHATSAPP_GATEWAY = 'old';

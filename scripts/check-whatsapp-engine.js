@@ -292,6 +292,59 @@ async function checkAsyncRealModel(label, fn) {
   // a lazy singleton, cached forever after its first real call, so this
   // being first guarantees every check in this file gets the fake store.
   await testBootstrap.setupTestEnvironment();
+  // LIVE INCIDENT (2026-11-23) - gmailService.sendMail has no test-
+  // environment guard of its own (confirmed by reading src/gmailService.js
+  // directly: it always makes a real `gmail().users.messages.send(...)`
+  // call) and, until now, had no file-wide default mock here either -
+  // only ONE later block (confirmOrRecoverSend/processDueDeliveryChecks,
+  // further down this file) temporarily swapped it in and back out for
+  // its own scope. Every OTHER check in this ~980-check file that
+  // happens to trigger a real owner alert (alertOwnerDualChannel/
+  // postOwnerNotification's own email channel - HR-confirmation
+  // escalation, the 60s reply-latency watchdog, the cutoff-approaching
+  // summary, etc.) was making a real, unmocked Gmail API call this whole
+  // time. Found live: 8 checks (none of which assert anything about the
+  // email itself) started intermittently exceeding their 15s cap -
+  // confirmed via direct instrumentation that a single real call is fast
+  // (under 1s) but NOT caused by any change in this session (reproduced
+  // identically after reverting today's own unrelated edits) - most
+  // consistent with accumulated real Gmail API pressure (token refresh/
+  // rate limiting) building up over this file's own ~980 checks. A
+  // file-wide default mock (every later block's own temporary swap still
+  // saves/restores around THIS default exactly as before - fully
+  // backward compatible) removes this entire class of flakiness, the
+  // same way whatsapp.sendWhatsAppMessage/listMessages already have
+  // their own file-wide defaults further down.
+  require('../src/gmailService').sendMail = async () => ({ id: 'test-mocked-send' });
+  // Same root cause, DIFFERENT fix, for the OLD WhatsApp gateway client -
+  // confirmed WHATSAPP_TOKEN IS configured in this environment (so
+  // requireToken() never throws fast), meaning any check that triggers a
+  // real owner alert BEFORE this file's own later file-wide
+  // whatsapp.sendWhatsAppMessage default (installed much further down,
+  // inside the confirmOrRecoverSend block) is reached makes a REAL
+  // network call to the old gateway today. Replacing
+  // whatsapp.sendWhatsAppMessage itself (tried first) broke 9 OTHER
+  // checks that specifically exercise sendWhatsAppMessage's own retry/
+  // failure/error-shape logic via their own global.fetch stubs - they
+  // need the REAL function body to run on top of a fetch they control,
+  // not a function-level bypass. The correct, narrower fix is a DEFAULT
+  // global.fetch interceptor scoped to ONLY the old gateway's own base
+  // URL - any test installing its own more specific fetch stub (the
+  // normal pattern throughout this file: save old global.fetch, install
+  // local stub, restore after) fully REPLACES global.fetch for its own
+  // duration, so this default only ever fires when nothing more specific
+  // is active, same layering every other file-wide default here already
+  // relies on. Every other URL (the fake Upstash store, Gmail, model
+  // calls) passes straight through, untouched.
+  (function installDefaultOldGatewayFetchGuard() {
+    const originalFetch = global.fetch;
+    const oldGatewayBase = (process.env.WHATSAPP_API_BASE_INTERNAL || process.env.WHATSAPP_API_BASE || 'https://tools.alcoverealty.in/whatsapp');
+    global.fetch = async (url, opts) => {
+      if (!String(url).startsWith(oldGatewayBase)) return originalFetch(url, opts);
+      if (String(url).includes('/uploadMedia')) return { ok: true, status: 200, json: async () => ({ success: true, messageId: 'test-mocked-upload' }) };
+      return { ok: true, status: 200, json: async () => ({ success: true, messageId: 'test-mocked-send' }) };
+    };
+  })();
   // 9 checkAsyncRealModel-tagged checks in this file - a known, bounded
   // count (unlike check-whatsapp-scenarios.js, this suite is mostly
   // deterministic by design, so this estimate is tight, not a rough

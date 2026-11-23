@@ -3224,10 +3224,21 @@ router.get('/hr-assistant/system-health', async (req, res) => {
   // gateway call from this route), and the webhook registration read is a
   // single local Redis GET, not a call to the gateway itself.
   const webhookRegistration = await require('./whatsappGatewayV1Receive').getStoredWebhookRegistration().catch(() => null);
+  // LIVE INCIDENT (2026-11-23, direct instruction) - "Gateway diagnostics"
+  // block. Deliberately its OWN try/catch, completely independent of
+  // everything above - a failure gathering this must never blank out the
+  // metrics/processStart/jobHeartbeats that already worked before this
+  // was added (getGatewayDiagnostics itself is already all-best-effort
+  // internally, but this is a second, outer safety net in case the
+  // module itself fails to load).
+  let gatewayV1Diagnostics = null;
+  try { gatewayV1Diagnostics = await require('./whatsappGatewayV1Receive').getGatewayDiagnostics(); }
+  catch (err) { gatewayV1Diagnostics = { error: err.message }; }
   const gatewayV1Info = {
     session: systemHealthMonitor.getLatestGatewayV1Session(),
     webhookRegistered: Boolean(webhookRegistration),
-    webhookUrl: webhookRegistration ? webhookRegistration.url : null
+    webhookUrl: webhookRegistration ? webhookRegistration.url : null,
+    diagnostics: gatewayV1Diagnostics
   };
   res.json({ metrics: systemHealthMonitor.getLatestMetrics(), processStart, jobHeartbeats: whatsappPollScheduler.getJobHeartbeats(), gatewayV1: gatewayV1Info });
 });

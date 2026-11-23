@@ -295,6 +295,7 @@
   const healthWaV1DecryptEl = document.getElementById('hrHealthWaV1Decrypt');
   const healthWaV1DupesEl = document.getElementById('hrHealthWaV1Dupes');
   const healthWaV1WebhookEl = document.getElementById('hrHealthWaV1Webhook');
+  const healthWaV1DiagEl = document.getElementById('hrHealthWaV1Diag');
   const backupRestoreBackdrop = document.getElementById('hrBackupRestoreBackdrop');
   const backupRestoreSheet = document.getElementById('hrBackupRestoreSheet');
   const backupRestoreCloseBtn = document.getElementById('hrBackupRestoreCloseBtn');
@@ -5510,36 +5511,74 @@
     if (last.previousShutdownReason) line += ' — previous stop: ' + last.previousShutdownReason;
     healthProcessLineEl.textContent = line;
   }
-  // New WhatsApp gateway (2026-11, direct instruction, Commit 3) - hidden
-  // entirely until gatewayV1.session actually comes back non-null (i.e.
-  // WHATSAPP_GATEWAY=new on the server) - zero visual change otherwise.
+  // New WhatsApp gateway (2026-11, direct instruction, Commit 3; extended
+  // 2026-11-23, LIVE INCIDENT, direct instruction - "Gateway diagnostics"
+  // block). Shown whenever there is ANY sign the new gateway is
+  // configured (a session result, a webhook registration, or a
+  // diagnostics object at all) - never gated on waiting for the 2-minute
+  // health-check tick alone, so this is visible within seconds of a
+  // restart, not up to 2 minutes later. Each row renders independently
+  // (try/catch per section) so one missing/odd field can never blank out
+  // the rest of the card.
+  function ageLabelOrDash(ts) { return ts ? (actionNeededAgeLabel(Date.now() - new Date(ts).getTime()) + ' ago') : '—'; }
   function renderGatewayV1Health(gatewayV1) {
     if (!healthWaV1El) return;
-    const session = gatewayV1 && gatewayV1.session;
-    if (!session) { healthWaV1El.hidden = true; return; }
-    healthWaV1El.hidden = false;
-    const status = session.status;
-    if (healthWaV1StatusEl) healthWaV1StatusEl.textContent = (status && (status.status || (status.connected ? 'connected' : 'unknown'))) || '—';
-    if (healthWaV1DecryptEl) healthWaV1DecryptEl.textContent = typeof session.decryptionFailures === 'number' ? String(session.decryptionFailures) : '—';
-    if (healthWaV1DupesEl) healthWaV1DupesEl.textContent = typeof session.duplicatesSuppressed === 'number' ? String(session.duplicatesSuppressed) : '—';
-    if (healthWaV1WebhookEl) healthWaV1WebhookEl.textContent = gatewayV1.webhookRegistered ? 'Registered' : 'Not registered';
+    try {
+      const session = gatewayV1 && gatewayV1.session;
+      const diag = gatewayV1 && gatewayV1.diagnostics;
+      const hasAnySignal = Boolean(session) || Boolean(gatewayV1 && gatewayV1.webhookRegistered) || Boolean(diag);
+      if (!hasAnySignal) { healthWaV1El.hidden = true; return; }
+      healthWaV1El.hidden = false;
+      const status = session && session.status;
+      if (healthWaV1StatusEl) healthWaV1StatusEl.textContent = (status && (status.status || (status.connected ? 'connected' : 'unknown'))) || '—';
+      if (healthWaV1DecryptEl) healthWaV1DecryptEl.textContent = (session && typeof session.decryptionFailures === 'number') ? String(session.decryptionFailures) : '—';
+      if (healthWaV1DupesEl) healthWaV1DupesEl.textContent = (session && typeof session.duplicatesSuppressed === 'number') ? String(session.duplicatesSuppressed) : '—';
+      if (healthWaV1WebhookEl) healthWaV1WebhookEl.textContent = gatewayV1.webhookRegistered ? 'Registered' : 'Not registered';
+    } catch (err) { /* the 4 stat cards above are best-effort - the diagnostics block below is independent */ }
+    try {
+      if (!healthWaV1DiagEl) return;
+      const diag = gatewayV1 && gatewayV1.diagnostics;
+      if (!diag) { healthWaV1DiagEl.textContent = 'No diagnostics yet.'; return; }
+      if (diag.error) { healthWaV1DiagEl.textContent = 'Diagnostics error: ' + diag.error; return; }
+      const hit = diag.lastWebhookHit;
+      const poll = diag.lastPoll;
+      const lines = [
+        'Webhook secret on file: ' + (diag.webhookSecretPresent ? 'yes' : 'no'),
+        'Last webhook hit: ' + (hit ? (ageLabelOrDash(hit.at) + ' — ' + hit.outcome + (hit.detail ? ' (' + hit.detail + ')' : '')) : 'never'),
+        'Last backup poll: ' + (poll ? (ageLabelOrDash(poll.at) + ' — ' + (poll.ok ? (poll.totalSeen + ' event(s) seen, ' + poll.totalKept + ' kept') : ('FAILED: ' + poll.error)) + ', cursor ' + poll.cursor) : 'never run'),
+        'Last message written to our feed: ' + (diag.lastMessageWrittenToFeed ? ageLabelOrDash(diag.lastMessageWrittenToFeed.at) : 'none'),
+        'Last reply sent (via feed): ' + (diag.lastMessageRepliedTo ? ageLabelOrDash(diag.lastMessageRepliedTo.at) : 'none'),
+        'Gateway\'s own last received/sent: ' + (diag.gatewayLastReceivedAt ? ageLabelOrDash(diag.gatewayLastReceivedAt) : '—') + ' / ' + (diag.gatewayLastSentAt ? ageLabelOrDash(diag.gatewayLastSentAt) : '—')
+      ];
+      healthWaV1DiagEl.textContent = lines.join('\n');
+    } catch (err) {
+      if (healthWaV1DiagEl) healthWaV1DiagEl.textContent = 'Could not render gateway diagnostics.';
+    }
   }
   async function loadSystemHealthCard() {
     if (!healthLagEl) return;
     try {
       const data = await fetch('/api/workforce/hr-assistant/system-health').then((res) => res.json());
       const m = data && data.metrics;
-      renderProcessStart(data && data.processStart);
-      renderJobHeartbeatsList(data && data.jobHeartbeats);
-      renderGatewayV1Health(data && data.gatewayV1);
-      if (!m) { if (healthUpdatedAtEl) healthUpdatedAtEl.textContent = 'No sample yet.'; return; }
-      healthLagEl.textContent = msLabel(m.eventLoopLagMs);
-      if (healthMemEl) healthMemEl.textContent = typeof m.rssMb === 'number' ? m.rssMb + ' MB' : '—';
-      if (healthUptimeEl) healthUptimeEl.textContent = uptimeLabel(m.uptimeSec);
-      if (healthKvEl) healthKvEl.textContent = msLabel(m.kvLatencyP95Ms);
-      if (healthUpdatedAtEl) healthUpdatedAtEl.textContent = 'Updated ' + actionNeededAgeLabel(Date.now() - m.ts) + ' ago';
+      try { renderProcessStart(data && data.processStart); } catch (err) { /* independent of the rest */ }
+      try { renderJobHeartbeatsList(data && data.jobHeartbeats); } catch (err) { /* independent of the rest */ }
+      // LIVE INCIDENT (2026-11-23) - moved AFTER the core metrics render
+      // below (was before) and wrapped here too, on top of its own
+      // internal try/catch, so a problem rendering the new gateway block
+      // can never prevent event-loop lag/memory/uptime/KV from showing,
+      // which is exactly what this card looked like when it went
+      // completely blank in production.
+      if (!m) { if (healthUpdatedAtEl) healthUpdatedAtEl.textContent = 'No sample yet.'; }
+      else {
+        healthLagEl.textContent = msLabel(m.eventLoopLagMs);
+        if (healthMemEl) healthMemEl.textContent = typeof m.rssMb === 'number' ? m.rssMb + ' MB' : '—';
+        if (healthUptimeEl) healthUptimeEl.textContent = uptimeLabel(m.uptimeSec);
+        if (healthKvEl) healthKvEl.textContent = msLabel(m.kvLatencyP95Ms);
+        if (healthUpdatedAtEl) healthUpdatedAtEl.textContent = 'Updated ' + actionNeededAgeLabel(Date.now() - m.ts) + ' ago';
+      }
+      try { renderGatewayV1Health(data && data.gatewayV1); } catch (err) { /* independent of the rest */ }
     } catch (err) {
-      if (healthUpdatedAtEl) healthUpdatedAtEl.textContent = 'Could not load system health.';
+      if (healthUpdatedAtEl) healthUpdatedAtEl.textContent = 'Could not load system health: ' + err.message;
     }
   }
   async function loadDataBackupsPage() {

@@ -26,6 +26,11 @@ async function main() {
   // Real default poll interval is 5s - far too slow for a short test;
   // this override seam already exists for exactly this purpose.
   process.env.WHATSAPP_POLL_INTERVAL_SECONDS = '0.05';
+  // Real default send-flush tick is 2s - also far too slow for this
+  // test's own ~1.3s total wait budget (LIVE INCIDENT, 2026-11-23 - this
+  // override seam did not exist before this fix, which is HOW
+  // pollEvents() being wired onto this tick went untested until now).
+  process.env.WHATSAPP_SEND_FLUSH_MS = '80';
 
   const whatsappAssistant = require('../src/aiAssistant/whatsappAssistant');
   const scheduler = require('../src/whatsappPollScheduler');
@@ -36,6 +41,10 @@ async function main() {
   const origRecordHeartbeat = whatsappAssistant.recordSchedulerHeartbeat;
   const origCatchUp = whatsappAssistant.catchUpAfterGap;
   const origCheckAndPostDailySummary = whatsappAssistant.checkAndPostDailySummary;
+  const gatewayV1Receive = require('../src/whatsappGatewayV1Receive');
+  const origPollEvents = gatewayV1Receive.pollEvents;
+  let pollEventsCallCount = 0;
+  gatewayV1Receive.pollEvents = async () => { pollEventsCallCount++; return { skipped: true }; };
 
   const recordedErrors = [];
   let pollOnceCallCount = 0;
@@ -70,9 +79,11 @@ async function main() {
     whatsappAssistant.recordSchedulerHeartbeat = origRecordHeartbeat;
     whatsappAssistant.catchUpAfterGap = origCatchUp;
     whatsappAssistant.checkAndPostDailySummary = origCheckAndPostDailySummary;
+    gatewayV1Receive.pollEvents = origPollEvents;
     delete process.env.WHATSAPP_POLL_ONCE_TIMEOUT_MS;
     delete process.env.WHATSAPP_ASSISTANT_SCHEDULER;
     delete process.env.WHATSAPP_POLL_INTERVAL_SECONDS;
+    delete process.env.WHATSAPP_SEND_FLUSH_MS;
   }
 
   async function checkAsync() {
@@ -92,6 +103,20 @@ async function main() {
     await new Promise((resolve) => setTimeout(resolve, 900));
 
     check('pollOnce() was actually called (the tick ran)', pollOnceCallCount >= 1, 'calls: ' + pollOnceCallCount);
+    // LIVE INCIDENT (2026-11-23, direct instruction) - pollEvents() (the
+    // new gateway's /events backup-polling, built in Commit 2) was never
+    // actually scheduled anywhere in the running app at all. Fixed by
+    // adding it to the fast sendFlushInterval tick, right alongside
+    // processDueAutoSends/processDueDeliveryChecks/checkReplyLatencyWatchdog.
+    // fakeSetInterval above captures EVERY setInterval call this file
+    // makes (not just the 30s/2min heavy ones), including this one - same
+    // manual-invoke pattern this file already uses for the maintenance
+    // tick right below, since none of these fake intervals ever fire on
+    // their own.
+    const sendFlushEntry = fakeHeavyIntervals.find((e) => e.ms === 80);
+    check('the send-flush tick (pollEvents\' own new home) was registered with the overridden 80ms interval', Boolean(sendFlushEntry));
+    if (sendFlushEntry) await sendFlushEntry.fn();
+    check('pollEvents() (new-gateway backup polling) is actually called by the scheduler\'s fast tick - was NEVER wired in before this fix', pollEventsCallCount >= 1, 'calls: ' + pollEventsCallCount);
     const breakerError = recordedErrors.find((e) => e.source === 'poll' && /safety breaker/.test(e.message || ''));
     check('the breaker fired and recorded a real error naming itself (not a silent hang)', Boolean(breakerError), 'recorded: ' + JSON.stringify(recordedErrors));
 

@@ -3468,6 +3468,15 @@
               <span class="wf-dlog-stat-value" id="hrHealthWaV1Webhook">—</span>
             </div>
           </div>
+          <!-- Gateway diagnostics (LIVE INCIDENT, 2026-11-23, direct
+               instruction) - never the secret value itself, just whether
+               one is on file, plus the last real activity on each path
+               (webhook hit, backup poll, feed write, reply sent) so a
+               stuck pipeline is diagnosable from this card alone. -->
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 4px 6px">
+            <span class="wf-ai-sheet-title" style="font-size:14px">Gateway diagnostics</span>
+          </div>
+          <div id="hrHealthWaV1Diag" class="wf-auto-hint" style="padding:0 4px 10px;white-space:pre-line"></div>
         </div>
         <!-- Maintenance-job heartbeats (2026-11, direct instruction) - "show
              processStart and jobHeartbeats on the System health card, I can

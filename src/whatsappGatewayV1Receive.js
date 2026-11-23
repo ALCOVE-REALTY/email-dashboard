@@ -198,16 +198,36 @@ function shouldIgnoreMessage(message) {
 // Callers needing a document/image MUST do this promptly after receiving
 // the message - this function does not retry past expiry (a 410 means the
 // caller needed to be faster, not something to paper over).
+// LIVE INCIDENT (2026-11-23) - this had NO timeout at all, unlike every
+// other network call this migration makes (sendText/sendDocument/
+// getNumberStatus/getNumberHealth all use AbortController). A single
+// stalled media download here would hang processEvent, which hangs
+// handleWebhookRequest, which never acks the gateway's own webhook
+// delivery - exactly the shape that produces a growing webhook backlog
+// (the gateway retries a delivery it never got a timely 2xx for). Same
+// 20s ceiling as sendText's own SEND_TIMEOUT_MS.
+// Env-override seam (same convention as every other timeout in this
+// migration, e.g. gatewayV1.js's rate-limit constants) - unset in every
+// real environment (always the real 20000 default), overridable only so
+// a test can prove the timeout actually fires without a real 20s wait.
+function mediaDownloadTimeoutMs() {
+  const o = Number(process.env.WA_V1_MEDIA_DOWNLOAD_TIMEOUT_MS);
+  return Number.isFinite(o) && o > 0 ? o : 20000;
+}
 async function downloadMedia(message) {
   const media = message && message.media;
   if (!media || !media.url) return { ok: false, error: 'no media URL on this message' };
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), mediaDownloadTimeoutMs());
   try {
-    const res = await fetch(media.url, { headers: gatewayV1.authHeaders() });
+    const res = await fetch(media.url, { headers: gatewayV1.authHeaders(), signal: controller.signal });
     if (!res.ok) return { ok: false, error: 'media download failed: ' + res.status, httpStatus: res.status };
     const buffer = Buffer.from(await res.arrayBuffer());
     return { ok: true, buffer, mimeType: media.mimeType || null, fileName: media.fileName || null, size: buffer.length };
   } catch (err) {
     return { ok: false, error: gatewayV1.classifyNetworkError(err) };
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -297,31 +317,112 @@ async function processEvent(evt) {
   return { kept: true, message };
 }
 
-// ---------------- Webhook HTTP handler ----------------
-// Expects req.body to be the RAW request Buffer (express.raw(), mounted
-// BEFORE the app's global express.json() in server.js - signature
-// verification needs the exact bytes the gateway signed, not a
-// re-serialized JSON.parse of them).
-async function handleWebhookRequest(req, res) {
-  if (!gatewayMode.isNewGatewayEnabled()) return res.status(404).json({ error: 'not_enabled' });
+// ---------------- Webhook hit log (LIVE INCIDENT, 2026-11-23, direct
+// instruction - "log every webhook hit with result") ----------------
+// Bounded, durable - every single hit, not just the latest, so a real
+// incident ("backlog = 2") can be diagnosed from OUR OWN record of what
+// actually happened on every delivery attempt, not guessed at from the
+// gateway's own dashboard alone.
+const WEBHOOK_HIT_LOG_KEY = 'wa-v1-webhook-hit-log';
+const WEBHOOK_HIT_LOG_CAP = 200;
+async function recordWebhookHit(outcome, detail) {
+  const redis = gatewayV1.getRedisClient();
+  if (!redis) return;
+  try {
+    await redis.lpush(WEBHOOK_HIT_LOG_KEY, JSON.stringify({ at: Date.now(), outcome, detail: detail || null }));
+    await redis.ltrim(WEBHOOK_HIT_LOG_KEY, 0, WEBHOOK_HIT_LOG_CAP - 1);
+  } catch (err) { /* best effort - never blocks the webhook ack on logging */ }
+}
+async function listRecentWebhookHits(limit) {
+  const redis = gatewayV1.getRedisClient();
+  if (!redis) return [];
+  const raw = await redis.lrange(WEBHOOK_HIT_LOG_KEY, 0, (limit || 20) - 1).catch(() => []);
+  return (raw || []).map((r) => { try { return typeof r === 'string' ? JSON.parse(r) : r; } catch (err) { return null; } }).filter(Boolean);
+}
+
+// LIVE INCIDENT (2026-11-23) - IT's own diagnosis, confirmed directly
+// against the code: an EMPTY, UNSIGNED test POST (no real gateway
+// payload at all) still hung for ~25s, while the gateway's own polling
+// of us kept answering in 54ms the whole time - "the stall is inside
+// workforce-intelligence's POST handling, not in what the gateway
+// sends." The only thing an empty/unsigned request does before this fix
+// is getStoredWebhookRegistration()'s own redis.get() call - which, like
+// almost every Redis call in this codebase, had NO timeout of its own at
+// all. A single slow/stuck KV round trip there would hang the ENTIRE ack
+// indefinitely, which is exactly what grows a webhook backlog (the
+// gateway retries a delivery it never got a timely 2xx for). Every
+// substantive step below now runs under one bounded deadline - if
+// anything hangs, we respond (never leave the connection open) instead
+// of silently waiting forever; a 500 here is safe and correct, since it
+// makes the gateway retry a delivery exactly the way it already retries
+// any other non-2xx response, and our own waKey/event-id dedup makes a
+// retried-and-now-successful redelivery a safe no-op.
+function webhookAckTimeoutMs() {
+  const o = Number(process.env.WA_V1_WEBHOOK_ACK_TIMEOUT_MS);
+  return Number.isFinite(o) && o > 0 ? o : 8000; // comfortably under the gateway's own 15s ack deadline
+}
+async function handleWebhookRequestBody(req) {
+  if (!gatewayMode.isNewGatewayEnabled()) {
+    await recordWebhookHit('not_enabled');
+    return { status: 404, body: { error: 'not_enabled' } };
+  }
   const rawBody = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body || '');
   const registration = await getStoredWebhookRegistration();
-  if (!registration || !registration.secret) return res.status(401).json({ error: 'no webhook secret on file' });
+  if (!registration || !registration.secret) {
+    await recordWebhookHit('error', 'no webhook secret on file');
+    return { status: 401, body: { error: 'no webhook secret on file' } };
+  }
   const verify = verifySignature(rawBody, req.get('X-Wa-Signature'), registration.secret);
-  if (!verify.ok) return res.status(401).json({ error: verify.reason });
+  if (!verify.ok) {
+    await recordWebhookHit('bad_signature', verify.reason);
+    return { status: 401, body: { error: verify.reason } };
+  }
 
   let evt;
-  try { evt = JSON.parse(rawBody.toString('utf8')); } catch (err) { return res.status(400).json({ error: 'invalid JSON body' }); }
+  try { evt = JSON.parse(rawBody.toString('utf8')); } catch (err) {
+    await recordWebhookHit('error', 'invalid JSON body');
+    return { status: 400, body: { error: 'invalid JSON body' } };
+  }
   evt.eventId = req.get('X-Wa-Event-Id') || evt.eventId;
   try {
-    await processEvent(evt);
+    const result = await processEvent(evt);
+    await recordWebhookHit('ok', (evt.event || 'unknown') + (result && result.kept ? ' (kept)' : ' (' + (result && result.reason) + ')'));
   } catch (err) {
     // Never fail the ack over our own processing error - the gateway
     // would otherwise retry a delivery that already reached us fine, for
     // up to 24h, over a bug on our side. Log and still 2xx.
     console.error('[whatsapp-gateway-v1] webhook processing error: ' + err.message);
+    await recordWebhookHit('error', err.message);
   }
-  res.status(200).json({ ok: true });
+  return { status: 200, body: { ok: true } };
+}
+// Expects req.body to be the RAW request Buffer (express.raw(), mounted
+// BEFORE the app's global express.json() in server.js - signature
+// verification needs the exact bytes the gateway signed, not a
+// re-serialized JSON.parse of them).
+async function handleWebhookRequest(req, res) {
+  const timeoutMs = webhookAckTimeoutMs();
+  let settled = false;
+  const timer = setTimeout(() => {
+    if (settled) return;
+    settled = true;
+    console.error('[whatsapp-gateway-v1] webhook ack timed out after ' + timeoutMs + 'ms - responding 500 so the gateway retries, rather than hanging the connection open');
+    recordWebhookHit('error', 'ack timed out after ' + timeoutMs + 'ms').catch(() => {});
+    res.status(500).json({ error: 'timed out' });
+  }, timeoutMs);
+  try {
+    const result = await handleWebhookRequestBody(req);
+    if (settled) return; // the timeout already answered - never write to an already-sent response
+    settled = true;
+    res.status(result.status).json(result.body);
+  } catch (err) {
+    if (settled) return;
+    settled = true;
+    console.error('[whatsapp-gateway-v1] webhook handler threw: ' + err.message);
+    res.status(500).json({ error: err.message });
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // ---------------- /events polling (backup / catch-up) ----------------
@@ -338,33 +439,101 @@ async function saveEventsCursor(nextAfter) {
   await redis.set(EVENTS_CURSOR_KEY, String(nextAfter));
 }
 
+// ---------------- Poll diagnostics (LIVE INCIDENT, 2026-11-23, direct
+// instruction - "show last poll time, cursor, events returned, last
+// error") ----------------
+const POLL_DIAGNOSTICS_KEY = 'wa-v1-poll-diagnostics';
+async function recordPollDiagnostics(info) {
+  const redis = gatewayV1.getRedisClient();
+  if (!redis) return;
+  try { await redis.set(POLL_DIAGNOSTICS_KEY, JSON.stringify(Object.assign({ at: Date.now() }, info))); } catch (err) { /* best effort */ }
+}
+async function getPollDiagnostics() {
+  const redis = gatewayV1.getRedisClient();
+  if (!redis) return null;
+  try {
+    const raw = await redis.get(POLL_DIAGNOSTICS_KEY);
+    if (!raw) return null;
+    return typeof raw === 'string' ? JSON.parse(raw) : raw;
+  } catch (err) { return null; }
+}
+
 // Pulls every event after the saved cursor, processes each through the
 // same pipeline the webhook uses, and only advances+saves the cursor once
 // a page has been fully processed - a crash mid-page just reprocesses
 // that page next time, which waKey/event-id dedup makes safe.
+// LIVE INCIDENT (2026-11-23) - this function existed and was fully
+// tested from Commit 2 onward but was NEVER actually scheduled anywhere
+// (confirmed by grepping the whole repo for its own name) - "polling as
+// a backup to the webhook" was never actually running. Now wired into
+// whatsappPollScheduler.js's fast SEND_FLUSH_MS tick (see that file).
 async function pollEvents() {
   if (!gatewayMode.isNewGatewayEnabled()) return { skipped: true };
   let base, numberId;
   try { ({ base, numberId } = gatewayV1.requireConfig()); } catch (err) { return { skipped: true, reason: err.message }; }
   let after = await getEventsCursor();
   let totalKept = 0, totalSeen = 0, pages = 0;
-  for (;;) {
-    const url = base + '/v1/numbers/' + numberId + '/events?after=' + encodeURIComponent(after) + '&limit=100';
-    const res = await fetch(url, { headers: gatewayV1.authHeaders() });
-    if (!res.ok) throw new Error('GET /v1/numbers/{id}/events failed: ' + res.status);
-    const data = await res.json();
-    const events = data.events || [];
-    pages++;
-    for (const evt of events) {
-      totalSeen++;
-      const result = await processEvent(evt);
-      if (result.kept) totalKept++;
+  try {
+    for (;;) {
+      const url = base + '/v1/numbers/' + numberId + '/events?after=' + encodeURIComponent(after) + '&limit=100';
+      const res = await fetch(url, { headers: gatewayV1.authHeaders() });
+      if (!res.ok) throw new Error('GET /v1/numbers/{id}/events failed: ' + res.status);
+      const data = await res.json();
+      const events = data.events || [];
+      pages++;
+      for (const evt of events) {
+        totalSeen++;
+        const result = await processEvent(evt);
+        if (result.kept) totalKept++;
+      }
+      after = data.nextAfter != null ? data.nextAfter : after;
+      await saveEventsCursor(after);
+      if (!data.hasMore) break;
     }
-    after = data.nextAfter != null ? data.nextAfter : after;
-    await saveEventsCursor(after);
-    if (!data.hasMore) break;
+    await recordPollDiagnostics({ ok: true, pages, totalSeen, totalKept, cursor: after, error: null });
+    return { ok: true, pages, totalSeen, totalKept, cursor: after };
+  } catch (err) {
+    await recordPollDiagnostics({ ok: false, pages, totalSeen, totalKept, cursor: after, error: err.message });
+    throw err;
   }
-  return { ok: true, pages, totalSeen, totalKept, cursor: after };
+}
+
+// ---------------- Gateway diagnostics (LIVE INCIDENT, 2026-11-23, direct
+// instruction) - one call, everything the System health card's new
+// "Gateway diagnostics" block needs, never a secret value, never throws
+// (every sub-read is independently best-effort so one failing piece can
+// never blank out the rest). ----------------
+async function getGatewayDiagnostics() {
+  const [registration, webhookHits, poll] = await Promise.all([
+    getStoredWebhookRegistration().catch(() => null),
+    listRecentWebhookHits(1).catch(() => []),
+    getPollDiagnostics().catch(() => null)
+  ]);
+  let lastFeedIncoming = null, lastFeedOutgoing = null;
+  try {
+    const feed = require('./whatsappGatewayV1Feed');
+    const rows = await feed.listGlobalFeed(50);
+    lastFeedIncoming = rows.find((r) => r.direction === 'incoming') || null;
+    lastFeedOutgoing = rows.find((r) => r.direction === 'outgoing') || null;
+  } catch (err) { /* best effort */ }
+  let gatewayHealth = null;
+  try { gatewayHealth = await gatewayV1.getNumberHealth(); } catch (err) { /* best effort */ }
+  const gh = gatewayHealth || {};
+  return {
+    webhookRegistered: Boolean(registration),
+    webhookSecretPresent: Boolean(registration && registration.secret),
+    webhookUrl: (registration && registration.url) || null,
+    lastWebhookHit: webhookHits[0] || null,
+    lastPoll: poll,
+    lastMessageWrittenToFeed: lastFeedIncoming ? { at: lastFeedIncoming.created_at, recipient: lastFeedIncoming.recipient } : null,
+    lastMessageRepliedTo: lastFeedOutgoing ? { at: lastFeedOutgoing.created_at, recipient: lastFeedOutgoing.recipient } : null,
+    // Field names unconfirmed against a real /health response (docs only
+    // describe these in prose, never a literal example) - same "try
+    // every plausible spelling" caution already used for decryption
+    // failures/duplicates suppressed above.
+    gatewayLastReceivedAt: gh.lastReceivedAt || gh.last_received_at || (gh.lastReceived) || null,
+    gatewayLastSentAt: gh.lastSentAt || gh.last_sent_at || (gh.lastSent) || null
+  };
 }
 
 module.exports = {
@@ -384,6 +553,10 @@ module.exports = {
   listRecentInboundEvents,
   isDuplicateEventDelivery,
   isDuplicateMessage,
+  recordWebhookHit,
+  listRecentWebhookHits,
+  getPollDiagnostics,
+  getGatewayDiagnostics,
   // Test-only seams
   resetEventsCursorForTest() { return saveEventsCursor(0); }
 };

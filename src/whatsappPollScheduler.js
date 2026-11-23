@@ -75,7 +75,15 @@ const HEARTBEAT_WRITE_EVERY_N_TICKS = 4;
 // dominates the whole budget - but it's also cheap (one Redis ZRANGE by
 // score, nothing else) so running it often costs nothing like the
 // heavier tick below would.
-const SEND_FLUSH_MS = 2 * 1000;
+// Env-override seam (2026-11-23, same convention as
+// WHATSAPP_POLL_INTERVAL_SECONDS/WHATSAPP_POLL_ONCE_TIMEOUT_MS just
+// above) - unset in every real environment (always the real 2000ms),
+// overridable only so a test can prove something on THIS tick actually
+// ran without a real 2s+ wait.
+function sendFlushMs() {
+  const o = Number(process.env.WHATSAPP_SEND_FLUSH_MS);
+  return Number.isFinite(o) && o > 0 ? o : 2 * 1000;
+}
 // The heavier maintenance work (reminder sync, document retention sweep,
 // daily-summary check, WhatsApp-reminder send) stays on its own slower
 // tick - widened 10s -> 30s in an earlier usage-reduction pass since this
@@ -428,8 +436,21 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
     } catch (err) {
       log.error('[whatsapp-assistant] reply latency watchdog failed: ' + err.message);
     }
+    // LIVE INCIDENT (2026-11-23, direct instruction) - "/events polling
+    // as a backup to the webhook" (built in Commit 2) was never actually
+    // scheduled anywhere - confirmed live when a real incoming message
+    // the webhook missed was ALSO never picked up by polling, simply
+    // because nothing ever called it. Same fast tick, own independent
+    // try/catch, a true no-op (skipped:true, no network call at all)
+    // whenever WHATSAPP_GATEWAY isn't "new".
+    try {
+      const result = await require('./whatsappGatewayV1Receive').pollEvents();
+      if (result && result.totalKept) log.log('[whatsapp-gateway-v1] events poll: ' + JSON.stringify(result));
+    } catch (err) {
+      log.error('[whatsapp-gateway-v1] events poll failed: ' + err.message);
+    }
     sendingFlush = false;
-  }, SEND_FLUSH_MS);
+  }, sendFlushMs());
 
   // LIVE INCIDENT (2026-11, direct instruction) - this tick runs ~15
   // sequential jobs (reminder sync, HR nudges, Automated Tasks,
