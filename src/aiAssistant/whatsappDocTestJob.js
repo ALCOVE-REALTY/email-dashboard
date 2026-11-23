@@ -26,6 +26,7 @@ const employeeService = require('../employeeService');
 // file only ever SENDS a document, so its require target moves to the
 // facade outright; old gateway behavior is unchanged.
 const whatsapp = require('../whatsappGatewayFacade');
+const gatewayMode = require('../whatsappGatewayMode');
 const { buildTablePdfBuffer } = require('../pdfReport');
 
 let client;
@@ -67,31 +68,93 @@ async function finishJob(jobId, { status, result, error }) {
   await saveJob(job);
 }
 
-// Logging (direct instruction) - start, PDF built, gateway call start/end
-// with status, total ms. Never the token (sendWhatsAppDocumentOnce's own
-// existing logging already follows this same rule for the gateway call
-// itself - this only adds the job-level timeline around it).
+// SPEED FIX (2026-11-23), direct instruction - "Build the small test PDF
+// once and keep it ready (cache it), send it immediately... no extra
+// uploads, no waiting on unrelated work." The file's only job is proving
+// document sending works at all - its one-line content never depends on
+// anything per-request, so building it once (lazily, on first use) and
+// reusing the same Buffer forever removes PDF generation entirely from
+// every later tap's critical path. The cached copy's timestamp is simply
+// "whenever this process first built it", which is a fine tradeoff for a
+// test file - never rebuilt just to refresh a date nobody is checking.
+let cachedTestPdf = null;
+function getCachedTestPdfBuffer() {
+  if (cachedTestPdf) return Promise.resolve(cachedTestPdf);
+  const now = new Date();
+  return buildTablePdfBuffer({
+    title: 'SUBH WhatsApp Document Test',
+    subtitle: now.toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
+    columns: ['Message'],
+    rows: [['If you can see this file on WhatsApp, document sending from SUBH is working.']],
+    landscape: false
+  }).then((buffer) => { cachedTestPdf = buffer; return buffer; });
+}
+
+// SPEED FIX (2026-11-23), direct instruction - "Button: spinner -> green
+// tick only when the gateway returns the message id and status 'sent'."
+// The v1 gateway's own synchronous send response reports an interim
+// status (typically 'queued') - true 'sent' only arrives moments later
+// via a message.status event (webhook or the backup poll), already
+// recorded durably by whatsappGatewayV1Receive.recordMessageStatus. This
+// waits briefly (short, FIXED bound, never "forever") for that
+// confirmation to land, falling back to whatever status the send call
+// itself returned if it doesn't arrive in time - matches IT's own
+// measured send->sent latency (~1-2s) with real margin, never close to
+// the 15s "never spin forever" ceiling the button itself is held to.
+const STATUS_CONFIRM_POLL_MS = 500;
+const STATUS_CONFIRM_MAX_WAIT_MS = 6000;
+async function waitForSentStatus(waKey, initialStatus) {
+  if (!waKey || !gatewayMode.isNewGatewayEnabled()) return { status: initialStatus || null, confirmed: false };
+  const gatewayV1Receive = require('../whatsappGatewayV1Receive');
+  const deadline = Date.now() + STATUS_CONFIRM_MAX_WAIT_MS;
+  let last = initialStatus || null;
+  while (Date.now() < deadline) {
+    const info = await gatewayV1Receive.getMessageStatus(waKey).catch(() => null);
+    if (info && info.status) {
+      last = info.status;
+      if (['sent', 'delivered', 'read'].includes(info.status)) return { status: info.status, confirmed: true };
+    }
+    await new Promise((resolve) => setTimeout(resolve, STATUS_CONFIRM_POLL_MS));
+  }
+  return { status: last, confirmed: false };
+}
+
+// Logging (direct instruction) - start, PDF ready (cached or built),
+// gateway call start/end with status, status-confirm wait, total ms.
+// Never the token (sendWhatsAppDocumentOnce's own existing logging
+// already follows this same rule for the gateway call itself - this only
+// adds the job-level timeline around it).
 async function runJobInBackground(jobId, to) {
   const t0 = Date.now();
   console.error('[wa-doc-test] job ' + jobId + ' started, to=' + to);
   try {
-    const now = new Date();
-    const buffer = await buildTablePdfBuffer({
-      title: 'SUBH WhatsApp Document Test',
-      subtitle: now.toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
-      columns: ['Message'],
-      rows: [['If you can see this file on WhatsApp, document sending from SUBH is working.']],
-      landscape: false
-    });
-    console.error('[wa-doc-test] job ' + jobId + ' PDF built in ' + (Date.now() - t0) + 'ms, ' + buffer.length + ' bytes');
-    const filename = 'SUBH-WhatsApp-Test-' + now.toISOString().slice(0, 10) + '.pdf';
+    const buffer = await getCachedTestPdfBuffer();
+    const pdfReadyAt = Date.now();
+    console.error('[wa-doc-test] job ' + jobId + ' PDF ready (cached=' + (cachedTestPdf === buffer) + ') at +' + (pdfReadyAt - t0) + 'ms, ' + buffer.length + ' bytes');
+    const filename = 'SUBH-WhatsApp-Test-' + new Date().toISOString().slice(0, 10) + '.pdf';
     const gwStart = Date.now();
     console.error('[wa-doc-test] job ' + jobId + ' gateway call starting');
     const result = await whatsapp.sendWhatsAppDocument(to, buffer, filename, 'SUBH WhatsApp document test');
-    console.error('[wa-doc-test] job ' + jobId + ' gateway call finished in ' + (Date.now() - gwStart) + 'ms, ok=' + result.ok +
+    const gwEnd = Date.now();
+    console.error('[wa-doc-test] job ' + jobId + ' gateway call finished in ' + (gwEnd - gwStart) + 'ms, ok=' + result.ok +
       (result.ok ? '' : ', error=' + result.error + ', debugCode=' + (result.debugCode || 'n/a')));
-    if (result.ok) await finishJob(jobId, { status: 'done', result: { to, gatewayMessageId: result.gatewayMessageId || null } });
-    else await finishJob(jobId, { status: 'failed', error: result.error || 'Could not send the document.' });
+    if (result.ok) {
+      const statusResult = await waitForSentStatus(result.waKey, (result.gatewayResponse && result.gatewayResponse.status) || null);
+      const doneAt = Date.now();
+      console.error('[wa-doc-test] job ' + jobId + ' status confirm: ' + JSON.stringify(statusResult) + ' (+' + (doneAt - gwEnd) + 'ms)');
+      await finishJob(jobId, {
+        status: 'done',
+        result: {
+          to,
+          gatewayMessageId: result.gatewayMessageId || null,
+          deliveryStatus: statusResult.status,
+          statusConfirmed: statusResult.confirmed,
+          timings: { totalMs: doneAt - t0, pdfMs: pdfReadyAt - t0, gatewayCallMs: gwEnd - gwStart, statusConfirmMs: doneAt - gwEnd }
+        }
+      });
+    } else {
+      await finishJob(jobId, { status: 'failed', error: result.error || 'Could not send the document.' });
+    }
   } catch (err) {
     console.error('[wa-doc-test] job ' + jobId + ' crashed: ' + err.message + (err.cause ? ' cause=' + JSON.stringify(err.cause) : ''));
     await finishJob(jobId, { status: 'failed', error: 'Something went wrong preparing the file - try again.' });

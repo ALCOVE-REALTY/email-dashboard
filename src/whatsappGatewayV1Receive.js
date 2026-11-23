@@ -572,6 +572,7 @@ module.exports = {
   shouldIgnoreMessage,
   downloadMedia,
   processEvent,
+  recordMessageStatus,
   getMessageStatus,
   handleWebhookRequest,
   pollEvents,

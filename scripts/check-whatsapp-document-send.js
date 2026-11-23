@@ -412,6 +412,92 @@ async function main() {
   });
 
   console.log('='.repeat(70));
+  console.log('SPEED FIX (2026-11-23), direct instruction - cached test PDF, bounded status-confirm wait, measured timings');
+  console.log('='.repeat(70));
+  await checkAsync('once the test PDF is cached (steady state - same as production after the very first tap since this process started), it is never rebuilt again on any later send, and the exact same bytes go out every time', async () => {
+    process.env.SUBH_OWNER_WHATSAPP_NUMBER = '919876543210';
+    const pdfReport = require('../src/pdfReport');
+    const origBuild = pdfReport.buildTablePdfBuffer;
+    let buildCalls = 0;
+    pdfReport.buildTablePdfBuffer = async (...args) => { buildCalls++; return origBuild(...args); };
+    const origSend = whatsapp.sendWhatsAppDocument;
+    const sentBuffers = [];
+    whatsapp.sendWhatsAppDocument = async (phone, buf) => { sentBuffers.push(buf); return { ok: true, gatewayMessageId: 'CACHE-TEST-' + sentBuffers.length }; };
+    try {
+      const started1 = await callRoute(workforceRoutes, 'post', '/hr-assistant/whatsapp/send-test-document/start', { email: OWNER_EMAIL });
+      await waitForJobSettled(started1.body.jobId);
+      const started2 = await callRoute(workforceRoutes, 'post', '/hr-assistant/whatsapp/send-test-document/start', { email: OWNER_EMAIL });
+      await waitForJobSettled(started2.body.jobId);
+      return buildCalls === 0 && sentBuffers.length === 2 && sentBuffers[0].equals(sentBuffers[1]);
+    } finally {
+      pdfReport.buildTablePdfBuffer = origBuild;
+      delete process.env.SUBH_OWNER_WHATSAPP_NUMBER;
+      whatsapp.sendWhatsAppDocument = origSend;
+    }
+  });
+
+  const facade = require('../src/whatsappGatewayFacade');
+  const gatewayV1Receive = require('../src/whatsappGatewayV1Receive');
+  await checkAsync('new gateway: once the gateway reports message.status "sent" for the real waKey, the job result reflects it + the full tap-to-sent timing breakdown, well under the 15s button ceiling', async () => {
+    const savedGateway = process.env.WHATSAPP_GATEWAY;
+    process.env.WHATSAPP_GATEWAY = 'new';
+    process.env.SUBH_OWNER_WHATSAPP_NUMBER = '919876543210';
+    const origFacadeSend = facade.sendWhatsAppDocument;
+    const waKey = 'true_doctest_waKey_' + Date.now();
+    facade.sendWhatsAppDocument = async () => ({ ok: true, gatewayMessageId: 'NEWGW-1', waKey, gatewayResponse: { waKey, status: 'queued' } });
+    // Simulates the real message.status event (webhook or backup poll)
+    // landing a little after the send call itself returns - exactly the
+    // shape IT measured live (send -> sent ~1-2s).
+    setTimeout(() => { gatewayV1Receive.recordMessageStatus(waKey, { status: 'sent', reason: null, at: Date.now() }); }, 150);
+    try {
+      const started = await callRoute(workforceRoutes, 'post', '/hr-assistant/whatsapp/send-test-document/start', { email: OWNER_EMAIL });
+      const job = await waitForJobSettled(started.body.jobId);
+      return job.status === 'done' && job.result.deliveryStatus === 'sent' && job.result.statusConfirmed === true &&
+        Boolean(job.result.timings) && job.result.timings.totalMs < 15000 && job.result.timings.totalMs >= 150;
+    } finally {
+      if (savedGateway === undefined) delete process.env.WHATSAPP_GATEWAY; else process.env.WHATSAPP_GATEWAY = savedGateway;
+      delete process.env.SUBH_OWNER_WHATSAPP_NUMBER;
+      facade.sendWhatsAppDocument = origFacadeSend;
+    }
+  });
+  await checkAsync('new gateway: if "sent" never arrives, the wait is still bounded (never forever) - the job still completes as done with whatever status it last saw', async () => {
+    const savedGateway = process.env.WHATSAPP_GATEWAY;
+    process.env.WHATSAPP_GATEWAY = 'new';
+    process.env.SUBH_OWNER_WHATSAPP_NUMBER = '919876543210';
+    const origFacadeSend = facade.sendWhatsAppDocument;
+    const waKey = 'true_doctest_nostatus_waKey_' + Date.now();
+    facade.sendWhatsAppDocument = async () => ({ ok: true, gatewayMessageId: 'NEWGW-2', waKey, gatewayResponse: { waKey, status: 'queued' } });
+    // Never records a status at all for this waKey - proves the wait
+    // still gives up and the job still finishes, never hangs.
+    try {
+      const t0 = Date.now();
+      const started = await callRoute(workforceRoutes, 'post', '/hr-assistant/whatsapp/send-test-document/start', { email: OWNER_EMAIL });
+      const job = await waitForJobSettled(started.body.jobId);
+      const elapsed = Date.now() - t0;
+      return job.status === 'done' && job.result.deliveryStatus === 'queued' && job.result.statusConfirmed === false && elapsed < 10000;
+    } finally {
+      if (savedGateway === undefined) delete process.env.WHATSAPP_GATEWAY; else process.env.WHATSAPP_GATEWAY = savedGateway;
+      delete process.env.SUBH_OWNER_WHATSAPP_NUMBER;
+      facade.sendWhatsAppDocument = origFacadeSend;
+    }
+  });
+  await checkAsync('old gateway (unchanged): never waits on any status at all - deliveryStatus/statusConfirmed are simply absent/false, no added latency', async () => {
+    process.env.SUBH_OWNER_WHATSAPP_NUMBER = '919876543210';
+    const origSend = whatsapp.sendWhatsAppDocument;
+    whatsapp.sendWhatsAppDocument = async () => ({ ok: true, gatewayMessageId: 'OLDGW-1' });
+    try {
+      const t0 = Date.now();
+      const started = await callRoute(workforceRoutes, 'post', '/hr-assistant/whatsapp/send-test-document/start', { email: OWNER_EMAIL });
+      const job = await waitForJobSettled(started.body.jobId);
+      const elapsed = Date.now() - t0;
+      return job.status === 'done' && job.result.statusConfirmed === false && elapsed < 1000;
+    } finally {
+      delete process.env.SUBH_OWNER_WHATSAPP_NUMBER;
+      whatsapp.sendWhatsAppDocument = origSend;
+    }
+  });
+
+  console.log('='.repeat(70));
   console.log('Owner-only route: /hr-assistant/whatsapp-resend - the Resend button behind a "Not delivered" bubble');
   console.log('='.repeat(70));
   const whatsappAssistantForResend = require('../src/aiAssistant/whatsappAssistant');

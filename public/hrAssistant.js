@@ -4710,12 +4710,20 @@
   // spinner/tick timing (below) is unaffected, since runButtonAction
   // treats "start + poll until done" as one requestFn exactly like it
   // already treated the single old request.
+  // SPEED FIX (2026-11-23), direct instruction - "tap to sent in a few
+  // seconds... on failure show the gateway's error in plain words within
+  // ~15s, never spin forever." The v1 gateway's own send + status-confirm
+  // normally finishes in a few seconds (see whatsappDocTestJob.js's own
+  // bounded wait); polling tighter (500ms, was 1500ms) and capping the
+  // ceiling at 15s (was ~2 minutes) matches both halves of that directly -
+  // a real success shows almost immediately, and a real failure is never
+  // hidden behind a near-two-minute wait.
   async function pollWhatsappDocTestJobUntilDone(jobId) {
-    for (let i = 0; i < 80; i++) { // ~2 min ceiling at 1.5s/poll
+    for (let i = 0; i < 30; i++) { // 15s ceiling at 500ms/poll
       const job = await fetch('/api/workforce/hr-assistant/whatsapp/send-test-document/status/' + encodeURIComponent(jobId)).then((res) => res.json());
       if (job.status === 'done') return job;
       if (job.status === 'failed') throw new Error(job.error || "Couldn't reach the WhatsApp gateway - try again.");
-      await new Promise((resolve) => setTimeout(resolve, 1500));
+      await new Promise((resolve) => setTimeout(resolve, 500));
     }
     throw new Error('WhatsApp gateway didn\'t respond in time - try again.');
   }
@@ -4729,14 +4737,24 @@
         // classifyWhatsAppNetworkError in whatsappService.js.
         const started = await postJsonOrThrow('/api/workforce/hr-assistant/whatsapp/send-test-document/start', {});
         return pollWhatsappDocTestJobUntilDone(started.jobId);
-      }, async () => {
+      }, async (job) => {
         // Clears any earlier failure text the instant a retry succeeds,
         // and holds the tick a little longer than runButtonAction's own
         // standard 550ms (direct instruction: "~2s" total) - this is the
         // ONE confirmation that a real external WhatsApp message actually
         // went out, worth a slightly more deliberate pause than an
         // ordinary settings save.
-        if (hrWhatsappSendTestDocResult) hrWhatsappSendTestDocResult.textContent = '';
+        if (hrWhatsappSendTestDocResult) {
+          // Direct instruction - "report the measured tap -> sent ->
+          // delivered times" - shown right on the button's own result
+          // line so every real tap self-reports its own timing, not just
+          // a one-off measurement.
+          const t = job && job.result && job.result.timings;
+          const statusLabel = job && job.result && job.result.deliveryStatus;
+          hrWhatsappSendTestDocResult.textContent = t
+            ? ('Sent in ' + (t.totalMs / 1000).toFixed(1) + 's' + (statusLabel ? ' - status: ' + statusLabel : ''))
+            : '';
+        }
         await new Promise((resolve) => setTimeout(resolve, 1450));
       }, {
         resetAfterSuccess: true,

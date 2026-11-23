@@ -81,7 +81,10 @@ function waitFor(page, fn, timeoutMs) {
     // first poll (so the fleeting is-loading state is actually observable
     // - a same-tick mock would make it disappear before the test can look
     // for it) then settles to jobOutcome.
-    let jobOutcome = { status: 'done', result: { to: '919876543210', gatewayMessageId: 'TEST-MSG-1' } };
+    // SPEED FIX (2026-11-23), direct instruction - "report the measured
+    // tap -> sent -> delivered times" - timings/deliveryStatus are new
+    // fields the real job now always includes on a successful send.
+    let jobOutcome = { status: 'done', result: { to: '919876543210', gatewayMessageId: 'TEST-MSG-1', deliveryStatus: 'sent', statusConfirmed: true, timings: { totalMs: 2300, pdfMs: 5, gatewayCallMs: 1200, statusConfirmMs: 1095 } } };
     let startCallCount = 0;
     let pollCountForCurrentJob = 0;
     await page.route('**/api/**', async (route) => {
@@ -138,7 +141,14 @@ function waitFor(page, fn, timeoutMs) {
     await waitFor(page, () => document.getElementById('hrWhatsappSendTestDocBtn').classList.contains('is-success'));
     check('shows the green tick once the gateway confirms the send (is-success, same as every other Settings action button)', true);
     check('a same-tick double tap while already sending only ever fires ONE real "start" request - runButtonAction\'s own re-entrancy guard', startCallCount === 1);
-    check('the result area shows NO text on success - the tick itself is the confirmation', ((await page.locator('#hrWhatsappSendTestDocResult').textContent()) || '').trim() === '');
+    // SPEED FIX (2026-11-23), direct instruction - "report the measured
+    // tap -> sent -> delivered times" - the result area now shows the
+    // real measured total time + delivery status on every successful tap,
+    // not just the tick alone. onSuccess (which sets this text) only runs
+    // AFTER runButtonAction's own 550ms tick-hold, so wait for the text to
+    // actually populate rather than racing it right after is-success.
+    await waitFor(page, () => (document.getElementById('hrWhatsappSendTestDocResult').textContent || '').trim() !== '');
+    check('the result area reports the measured send time + delivery status on success', ((await page.locator('#hrWhatsappSendTestDocResult').textContent()) || '').trim() === 'Sent in 2.3s - status: sent');
     await waitFor(page, () => !document.getElementById('hrWhatsappSendTestDocBtn').classList.contains('is-success'));
     check('returns to the normal, re-clickable button about ~2s after success (the standard 550ms tick-hold plus this action\'s own slightly longer confirmation) - never stuck green', await page.locator('#hrWhatsappSendTestDocBtn').isEnabled());
 
