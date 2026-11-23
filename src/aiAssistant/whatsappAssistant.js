@@ -108,6 +108,7 @@ const settingsAuditLog = require('./settingsAuditLog');
 // unused (phase 1). No circular require - dataAccessService only needs
 // settingsAuditLog, already required above either way.
 const dataAccessService = require('./dataAccessService');
+const hrReportService = require('./hrReportService');
 
 const LAST_SEEN_PREFIX = 'wa-last-seen:';
 const DRAFT_KEY = 'wa-pending-drafts';
@@ -14906,6 +14907,23 @@ async function decideAutoReplyCore({ phone, name, firstName, text, isGroup, hist
         text, history
       });
     }
+    // HR reports as WhatsApp documents (2026-11-23), direct instruction -
+    // "a message recognized as wanting a list/report/document goes
+    // through the new engine; anything it doesn't recognize falls
+    // through to the OLD engine exactly as before." Tried FIRST (own
+    // classification call, own column-question/approval flow); a null
+    // result (matchesReportIntent: false, or no API key configured)
+    // falls through to the existing handleHrDataQueryRequest below,
+    // completely unchanged.
+    const reportResult = await hrReportService.handleHrReportRequest({
+      phone, name: senderLabel, lang, text, history,
+      senderEmployee: (await findEmployeeByPhone(phone).catch(() => null) || {}).emp || null,
+      employees: (await employeeService.getEmployeeData()).employees
+    }).catch((err) => {
+      console.error('[whatsapp] hrReportService failed: ' + err.message);
+      return null;
+    });
+    if (reportResult) return reportResult;
     // Task 2 (2026-10-29), "AI understands, code computes" - a general
     // list/count/HOD query over the real directory (e.g. "welder list
     // dao", "HR dept er HOD ke?"), not one person's own field. Replaces
@@ -17338,6 +17356,13 @@ module.exports = {
   mergeRecentWhatsappConversations,
   firstNameOf,
   classify,
+  // HR reports feature (2026-11-23, direct instruction) - hrReportService.js
+  // needs these two already-generic, already-existing helpers (the exact
+  // same model/tool-calling convention extractHrDataQuery itself uses) to
+  // avoid duplicating a second copy of the raw Claude tool-call plumbing.
+  // Purely additive - two private helpers made reusable, nothing else changes.
+  callClaudeForcedTool,
+  formatHistoryBlock,
   detectLang,
   detectLangSmart,
   classifyLanguageViaModel,

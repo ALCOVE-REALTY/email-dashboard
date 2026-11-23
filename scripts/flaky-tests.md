@@ -143,9 +143,8 @@ dedicated look if it keeps recurring, though out of scope for this
 migration.)
 
 ## check-subh-panel-ui.js
-Flaked on 2026-11-23T08:15:57.612Z - failed once, passed on a lone solo retry.
+Flaked on 2026-11-23T10:31:56.125Z - failed once, passed on a lone solo retry.
 ```
-[ok] Settings history: the real #wfTopbar stayed in .wf-shell (never relocated into the SUBH panel) and the panel itself is closed
 [ok] Settings history: real top bar is visible with all 5 elements (hamburger, wordmark, refresh, SUBH button, profile photo)
 [ok] Settings history: header box positions (hamburger/profile/wordmark) are IDENTICAL to a real ☰ menu section's own topbar at 384px, never just close
 [ok] Settings history: its own top-level view (#settingsHistoryView) is visible
@@ -181,7 +180,52 @@ item 8 - native pull-to-refresh preconditions on a SUBH-Settings sub-page (vs. a
 [ok] Reminders: still has its OWN custom pull-to-refresh indicator, untouched
 [ok] item 8: no JS error was thrown through the whole doc-scroll/body-lock toggle flow
 [info] 1 pre-existing page-load error(s) from the main dashboard (unrelated to the SUBH panel, not counted as a failure): ["Failed to load resource: the server responded with a status of 404 (Not Found)","Failed to load resource: the server responded with a status of 400 (Bad Request)","Cannot read properties of undefined (reading 'all')","Cannot read properties of undefined (reading 'all')","Cannot read properties of undefined (reading 'all')","Cannot read properties of undefined (reading 'all')","Cannot read properties of undefined (reading 'all')","Cannot read properties of undefined (reading 'all')","Cannot read properties of undefined (reading 'all')"]
-280/281 passed, 1 FAILED
+279/281 passed, 2 FAILED
 Failed checks:
  - Letter settings: "Send test to me" REALLY shows a visible loading state while in flight (disabled + its text hidden via color:transparent, not just the class present in the DOM with no matching CSS) -- got: {"isLoading":false,"disabled":true,"color":"rgba(0, 0, 0, 0)"}
+ - Letter settings: "Send test to me" shows a REAL visible green success tick once the request resolves -- got: {"isSuccess":false,"bg":"rgb(238, 240, 255)"}
+```
+
+## check-whatsapp-engine.js
+Flaked on 2026-11-23T10:40:38.425Z - failed once, passed on a lone solo retry.
+```
+[ok] LIVE INCIDENT (2026-11), direct instruction, point 3 - a genuinely new/unrelated message arriving during the "awaiting_manager_informed" step (the live-cited "Ami kal 2nd half a asbo na") used to always get the dead-end HR_FLOW_CONTEXT_CLARIFY line and never create its own card; this step now shares the same handleUnclearFlowReply/handleUnresolvedPersonReference fallthrough its sibling step (awaiting_approval_obtained) already had - returns null (never cleared, falls through to start its own new flow) instead of swallowing the message
+[ok] cleanup (point 3 test)
+======================================================================
+confirmOrRecoverSend/processDueDeliveryChecks - ROBUSTNESS PASS: auto-recovery, late-confirmation dedup, evidence log, dual-channel alert - DATA-DRIVEN (no background timers at all, so a test can never leak a stray one into a later, unrelated test)
+======================================================================
+[ok] confirmed on the very first feed check -> delivered, no resend, no alert, evidence shows confirmed:true
+— new WhatsApp gateway (v1) delivery-status branch (Commit 3, direct instruction) —
+[ok] new gateway + a waKey whose message.status is "delivered" -> confirmed delivered, WITHOUT ever calling the old feed (whatsapp.listMessages)
+[ok] new gateway + a waKey with NO status event seen yet -> treated the same as a feed-check failure: sent_unconfirmed, a warning, NEVER a resend
+[ok] new gateway + status "failed" -> NOT landed, goes through the normal resend/retry cycle exactly like the old gateway's "not found in feed" case
+[ok] new gateway + status "queued" on the first check, "delivered" by the second - accepted as delivered after one retry, never exhausts the cap
+[ok] old gateway (WHATSAPP_GATEWAY unset) with a waKey present is UNAFFECTED - still uses the feed/fuzzy-match path, not the status lookup
+[ok] a LATE confirmation - missing on the first check (so one automatic resend goes out), but then found confirmed on the very next check - accepted as delivered, never a second resend, never an alert
+[ok] NEVER confirmed anywhere -> exactly 2 automatic resends, then (and only then) not_delivered + the conversation bubble flips + a REAL dual-channel owner alert (WhatsApp + email), with the full evidence trail for IT
+[whatsapp] send-verify: could not check outgoing feed for 919999992005: simulated gateway read failure
+[ok] LIVE INCIDENT (2026-11) fix - a feed-read failure during the very first check fails closed (never resends) AND now raises a real owner-visible warning, marked "sent_unconfirmed" (shown as "Sent (gateway OK)"), never the old "unconfirmed_check_failed" that looked like a false "Not delivered"
+[whatsapp] send-verify: could not check outgoing feed for 919999992015: simulated gateway read failure
+[ok] LIVE INCIDENT (2026-11) fix - a feed-read failure never shows as "Not delivered" in the Delivery log - it is its own distinct "Sent (gateway OK)" pill, not in DELIVERY_LOG_NOT_DELIVERED_OUTCOMES
+[ok] LIVE INCIDENT (2026-11), direct instruction - matching by the gateway's own message id (when the feed echoes it) confirms delivery even if the echoed text differs entirely - never a false "not found" purely from a text mismatch
+[ok] LIVE INCIDENT (2026-11), direct instruction - normalized text matching tolerates whitespace/line-break/zero-width differences between what we sent and what the feed echoes back - never a false "not found" from harmless formatting noise
+[ok] LIVE INCIDENT (2026-11), direct instruction - the widened feed window (15s grace, 50 messages) still correctly ignores a message from well BEFORE this send (a coincidental text match from an unrelated, much older message) - never a false positive just because the window got wider
+[whatsapp] send-verify: could not check outgoing feed for 919999992019: feed check timed out after 50ms
+[ok] LIVE INCIDENT (2026-11), direct instruction - a feed check that TIMES OUT (never resolves) is treated exactly like a feed-read failure - sent_unconfirmed, a warning, never a resend
+[ok] LIVE INCIDENT (2026-11), direct instruction - a resend attempt whose OWN send call fails (real send error) still keeps retrying up to the normal cap, never gets stuck or silently drops the message
+[ok] a long reply sent in multiple chunks is correctly matched by its FIRST chunk alone - never a false resend/alarm just because the feed never shows the full text as one message
+[ok] an empty replyText is a no-op, never schedules a check, never calls the feed at all
+======================================================================
+queryDeliveryEvidence/countNotDeliveredToday/listDeliveryEvidenceForExport - Delivery log page (Pass 2)
+======================================================================
+[ok] queryDeliveryEvidence: filter "all" vs "not_delivered" vs "retried" each return exactly the right subset, with correct today stats regardless of filter
+[ok] queryDeliveryEvidence: pagination (offset/limit/hasMore) actually slices the filtered list, never the whole day
+[ok] countNotDeliveredToday reflects the SAME not_delivered count queryDeliveryEvidence itself reports for today
+[ok] listDeliveryEvidenceForExport: date-range filtering excludes a record scheduled outside the range, and the row shape carries every field IT needs
+980/981 passed, 1 FAILED
+Failed checks:
+ - own name, THIRD PERSON ("Ayan Biswas er Aadhaar number ta dao" - sender IS Ayan Biswas) is treated the same as "amar" - sent DIRECTLY, never left pending (TIMED OUT after 15s)
+Skipped 157 real-model tests (run with RUN_REAL_MODEL=1 and ANTHROPIC_API_KEY_TEST set)
+Real API calls: 0 · cost $0.0000
+======================================================================
 ```
