@@ -119,6 +119,29 @@ function pollOnceTimeoutMs() {
   const override = Number(process.env.WHATSAPP_POLL_ONCE_TIMEOUT_MS);
   return Number.isFinite(override) && override > 0 ? override : 120000;
 }
+// LIVE INCIDENT (2026-11-23, direct instruction) - same breaker shape as
+// pollOnce's own above, sized for the new gateway's /events backup poll
+// specifically: its own underlying Redis calls (the cursor read/write)
+// had no timeout of their own, so a single stuck KV round trip there
+// could freeze this ENTIRE fast tick forever (sendingFlush would never
+// reset to false, silently stopping processDueAutoSends/
+// processDueDeliveryChecks/checkReplyLatencyWatchdog on this tick too,
+// not just pollEvents itself).
+function pollEventsTimeoutMs() {
+  const override = Number(process.env.WA_V1_POLL_EVENTS_TIMEOUT_MS);
+  return Number.isFinite(override) && override > 0 ? override : 10000;
+}
+function withPollEventsTimeout(promise) {
+  const timeoutMs = pollEventsTimeoutMs();
+  promise.catch(() => {});
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      const timer = setTimeout(() => reject(new Error('pollEvents exceeded ' + timeoutMs + 'ms - safety breaker fired')), timeoutMs);
+      if (timer.unref) timer.unref();
+    })
+  ]);
+}
 function withPollOnceTimeout(promise) {
   const timeoutMs = pollOnceTimeoutMs();
   // Abandoning `promise` in the background (once the race below settles
@@ -444,10 +467,21 @@ function start({ setTimer = setTimeout, setInterval: setIntervalFn = setInterval
     // try/catch, a true no-op (skipped:true, no network call at all)
     // whenever WHATSAPP_GATEWAY isn't "new".
     try {
-      const result = await require('./whatsappGatewayV1Receive').pollEvents();
+      const result = await withPollEventsTimeout(require('./whatsappGatewayV1Receive').pollEvents());
       if (result && result.totalKept) log.log('[whatsapp-gateway-v1] events poll: ' + JSON.stringify(result));
     } catch (err) {
       log.error('[whatsapp-gateway-v1] events poll failed: ' + err.message);
+    }
+    // Heartbeat (LIVE INCIDENT, 2026-11-23, direct instruction) - proves
+    // THIS tick is alive, independent of whether any of the 4 checks
+    // above found real work to do, same "written regardless of outcome"
+    // philosophy as the main poll tick's own heartbeat. Now that every
+    // task above is individually timeout-bounded, reaching this line is
+    // itself the guarantee this tick can no longer freeze forever.
+    try {
+      await whatsappAssistant.recordSendFlushHeartbeat();
+    } catch (err) {
+      log.error('[whatsapp-assistant] send-flush heartbeat write failed: ' + err.message);
     }
     sendingFlush = false;
   }, sendFlushMs());

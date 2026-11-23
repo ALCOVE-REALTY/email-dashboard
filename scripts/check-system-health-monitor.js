@@ -284,6 +284,44 @@ async function main() {
   });
 
   console.log('='.repeat(70));
+  console.log('checkSendFlushHeartbeat - LIVE INCIDENT (2026-11-23), direct instruction - a SEPARATE tick (processDueAutoSends/processDueDeliveryChecks/checkReplyLatencyWatchdog/the new gateway\'s /events poll) can freeze independently of the main poll loop above, and must be caught the same way');
+  console.log('='.repeat(70));
+  const origGetSendFlushHeartbeat = whatsappAssistant.getSendFlushHeartbeat;
+  await checkAsync('no send-flush heartbeat ever recorded -> ok:false with a clear reason', async () => {
+    whatsappAssistant.getSendFlushHeartbeat = async () => null;
+    const monitor = freshMonitor();
+    const result = await monitor.checkSendFlushHeartbeat();
+    whatsappAssistant.getSendFlushHeartbeat = origGetSendFlushHeartbeat;
+    return result.ok === false && /never have started/.test(result.error);
+  });
+  await checkAsync('a send-flush heartbeat written 5s ago (well within the ~2s tick cadence) -> ok:true', async () => {
+    whatsappAssistant.getSendFlushHeartbeat = async () => ({ ts: Date.now() - 5 * 1000 });
+    const monitor = freshMonitor();
+    const result = await monitor.checkSendFlushHeartbeat();
+    whatsappAssistant.getSendFlushHeartbeat = origGetSendFlushHeartbeat;
+    return result.ok === true;
+  });
+  await checkAsync('a send-flush heartbeat stale by 3 minutes (past the 2-minute staleness tolerance) -> ok:false - this is the exact shape IT reported live (the whole process stalled, not just the webhook)', async () => {
+    whatsappAssistant.getSendFlushHeartbeat = async () => ({ ts: Date.now() - 3 * 60 * 1000 });
+    const monitor = freshMonitor();
+    const result = await monitor.checkSendFlushHeartbeat();
+    whatsappAssistant.getSendFlushHeartbeat = origGetSendFlushHeartbeat;
+    return result.ok === false && /stopped advancing/.test(result.error);
+  });
+  await checkAsync('getSendFlushHeartbeat itself throwing reports ok:false, never throws', async () => {
+    whatsappAssistant.getSendFlushHeartbeat = async () => { throw new Error('simulated KV failure'); };
+    const monitor = freshMonitor();
+    const result = await monitor.checkSendFlushHeartbeat();
+    whatsappAssistant.getSendFlushHeartbeat = origGetSendFlushHeartbeat;
+    return result.ok === false && result.error === 'simulated KV failure';
+  });
+  await checkAsync('runHealthCheck itself includes sendFlushHeartbeat in its own result shape, alongside the existing schedulerHeartbeat', async () => {
+    const monitor = freshMonitor();
+    const result = await monitor.runHealthCheck();
+    return Object.prototype.hasOwnProperty.call(result, 'sendFlushHeartbeat');
+  });
+
+  console.log('='.repeat(70));
   console.log('checkFailedSends - LIVE INCIDENT: a message shown as sent/retried-to-death that never actually reached WhatsApp');
   console.log('='.repeat(70));
   const origListInboxLogForFailedSends = whatsappAssistant.listInboxLog;
@@ -389,6 +427,7 @@ async function main() {
       // on this check alone, regardless of the other 3 - a real run would
       // have the scheduler itself writing this every tick.
       await whatsappAssistant.recordSchedulerHeartbeat('test-commit');
+      await whatsappAssistant.recordSendFlushHeartbeat();
       const recovered = await monitor.runHealthCheck();
       await checkAsync('once everything passes again, runHealthCheck reports ok:true and clears the Action-needed slot', async () => {
         const healthAlertAfterRecovery = await whatsappAssistant.getSystemHealthAlert();
@@ -479,6 +518,7 @@ async function main() {
     whatsapp.getConnectionStatus = async () => ({ connected: true, status: 'connected' });
     whatsapp.listMessages = async () => [];
     await whatsappAssistant.recordSchedulerHeartbeat('test-commit-2');
+    await whatsappAssistant.recordSendFlushHeartbeat();
     const result = await monitor.runHealthCheck();
     whatsapp.getConnectionStatus = origGetConnectionStatus;
     whatsapp.listMessages = origListMessages;

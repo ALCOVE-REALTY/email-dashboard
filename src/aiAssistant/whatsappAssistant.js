@@ -11400,6 +11400,33 @@ async function recordSchedulerHeartbeat(commitId) {
 // checks again either, so this is the one signal that stays meaningful
 // even then - it's written by the scheduler's own recursive tick chain,
 // never by anything the hang itself could be blocking.
+// LIVE INCIDENT (2026-11-23, direct instruction - "make sure the process
+// can never stall globally again, and the health monitor alerts if it
+// does") - a SEPARATE heartbeat for the fast sendFlushInterval tick
+// (processDueAutoSends/processDueDeliveryChecks/checkReplyLatencyWatchdog/
+// the new gateway's pollEvents, in whatsappPollScheduler.js). The
+// EXISTING heartbeat above only ever proves the MAIN recursive poll tick
+// is alive - a completely independent setInterval, so a freeze isolated
+// to THIS tick (e.g. a hung Redis call on the new gateway's /events
+// cursor read, found live - see pollEvents' own wiring) would leave the
+// main heartbeat looking perfectly healthy while this entire tick
+// silently stopped doing anything, forever, invisible to
+// checkSchedulerHeartbeat. A sibling check (checkSendFlushHeartbeat,
+// systemHealthMonitor.js) watches THIS key the same way.
+const SEND_FLUSH_HEARTBEAT_KEY = 'wa-send-flush-heartbeat';
+async function recordSendFlushHeartbeat() {
+  const redis = getClient();
+  if (!redis) return;
+  try { await redis.set(SEND_FLUSH_HEARTBEAT_KEY, JSON.stringify({ ts: Date.now() })); } catch (err) { /* best effort */ }
+}
+async function getSendFlushHeartbeat() {
+  const redis = getClient();
+  if (!redis) return null;
+  try {
+    const raw = await redis.get(SEND_FLUSH_HEARTBEAT_KEY);
+    return raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : null;
+  } catch (err) { return null; }
+}
 async function getSchedulerHeartbeat() {
   const redis = getClient();
   if (!redis) return null;
@@ -17204,6 +17231,8 @@ module.exports = {
   buildAutoReplyStatusReply,
   recordSchedulerHeartbeat,
   getSchedulerHeartbeat,
+  recordSendFlushHeartbeat,
+  getSendFlushHeartbeat,
   recordSchedulerError,
   recordProcessStart,
   getProcessStartInfo,

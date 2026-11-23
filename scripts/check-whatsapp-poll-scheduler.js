@@ -117,6 +117,38 @@ async function main() {
     check('the send-flush tick (pollEvents\' own new home) was registered with the overridden 80ms interval', Boolean(sendFlushEntry));
     if (sendFlushEntry) await sendFlushEntry.fn();
     check('pollEvents() (new-gateway backup polling) is actually called by the scheduler\'s fast tick - was NEVER wired in before this fix', pollEventsCallCount >= 1, 'calls: ' + pollEventsCallCount);
+    // LIVE INCIDENT (2026-11-23, direct instruction - "make sure the
+    // process can never stall globally again") - pollEvents' own
+    // underlying Redis calls (the /events cursor read/write) had no
+    // timeout of their own; a single stuck KV round trip there could
+    // freeze this WHOLE fast tick forever (sendingFlush never resets,
+    // silently stopping processDueAutoSends/processDueDeliveryChecks/
+    // checkReplyLatencyWatchdog on this SAME tick too, not just
+    // pollEvents). Proven here directly: pollEvents() now genuinely
+    // never resolving still lets the tick complete (and run again) via
+    // its own WA_V1_POLL_EVENTS_TIMEOUT_MS breaker.
+    {
+      process.env.WA_V1_POLL_EVENTS_TIMEOUT_MS = '100';
+      gatewayV1Receive.pollEvents = () => new Promise(() => {}); // never resolves
+      let stuckTickResult = false;
+      try {
+        const heartbeatBefore = await whatsappAssistant.getSendFlushHeartbeat();
+        await sendFlushEntry.fn();
+        const heartbeatAfter = await whatsappAssistant.getSendFlushHeartbeat();
+        const heartbeatAdvanced = Boolean(heartbeatAfter) && (!heartbeatBefore || heartbeatAfter.ts > heartbeatBefore.ts);
+        // A later tick (a DIFFERENT logical "fire") still runs normally -
+        // the overlap guard (sendingFlush) must have reset to false.
+        gatewayV1Receive.pollEvents = async () => ({ skipped: true });
+        let laterRan = false;
+        const origAutoSends = whatsappAssistant.processDueAutoSends;
+        whatsappAssistant.processDueAutoSends = async () => { laterRan = true; return {}; };
+        try { await sendFlushEntry.fn(); } finally { whatsappAssistant.processDueAutoSends = origAutoSends; }
+        stuckTickResult = heartbeatAdvanced && laterRan;
+      } finally {
+        delete process.env.WA_V1_POLL_EVENTS_TIMEOUT_MS;
+      }
+      check('pollEvents() hanging forever (simulating the live incident\'s own stuck-KV-call shape) does NOT freeze the send-flush tick - it still completes, the heartbeat still gets written, and a LATER tick still runs normally', stuckTickResult);
+    }
     const breakerError = recordedErrors.find((e) => e.source === 'poll' && /safety breaker/.test(e.message || ''));
     check('the breaker fired and recorded a real error naming itself (not a silent hang)', Boolean(breakerError), 'recorded: ' + JSON.stringify(recordedErrors));
 

@@ -361,6 +361,38 @@ async function checkSchedulerHeartbeat() {
   }
 }
 
+// LIVE INCIDENT (2026-11-23, direct instruction - "make sure the process
+// can never stall globally again, and the health monitor alerts me if it
+// does"). Sibling check for the SEPARATE fast sendFlushInterval tick
+// (processDueAutoSends/processDueDeliveryChecks/checkReplyLatencyWatchdog/
+// the new gateway's /events backup poll) - a completely independent
+// setInterval from the main poll tick above, so a freeze isolated to
+// THIS one (confirmed possible live: the new gateway's own cursor-read
+// Redis call had no timeout, so a single stuck KV round trip could have
+// frozen this whole tick forever) would otherwise leave
+// checkSchedulerHeartbeat looking perfectly healthy while reply-latency
+// watchdog alerts, auto-sends and delivery checks silently stopped. This
+// tick runs every ~2s by default (SEND_FLUSH_MS/WHATSAPP_SEND_FLUSH_MS),
+// so 2 minutes of staleness is still a wide, generous margin (every task
+// on it is now individually timeout-bounded too, so reaching this check
+// stale at all would itself be a sign something upstream of this file is
+// wrong, e.g. the whole process stuck on synchronous work).
+const SEND_FLUSH_HEARTBEAT_STALE_MS = 2 * 60 * 1000;
+async function checkSendFlushHeartbeat() {
+  try {
+    const whatsappAssistant = require('./whatsappAssistant');
+    const heartbeat = await withTimeout(whatsappAssistant.getSendFlushHeartbeat(), HEALTH_CHECK_TIMEOUT_MS);
+    if (!heartbeat) return { ok: false, error: 'no send-flush heartbeat recorded yet - that tick may never have started' };
+    const ageMs = Date.now() - heartbeat.ts;
+    if (ageMs > SEND_FLUSH_HEARTBEAT_STALE_MS) {
+      return { ok: false, error: 'last send-flush heartbeat was ' + Math.round(ageMs / 1000) + 's ago - the auto-send/delivery-check/reply-watchdog/events-poll tick appears to have stopped advancing' };
+    }
+    return { ok: true, ageMs };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
 // LIVE INCIDENT (2026-11, direct instruction - "Health monitor: also
 // alert on failed/undelivered sends") - checkReplyPipeline above only
 // catches a message with NO reply attempt at all; a reply that WAS
@@ -443,8 +475,8 @@ let lastAlertSentAt = 0;
 let wasFailingLastTick = false;
 
 async function runHealthCheck() {
-  const [kv, gateway, replyPipeline, schedulerHeartbeat, failedSends, kvLatency, eventLoopLag, aiFallbackStreak, gatewayV1Session] = await Promise.all([
-    checkKv(), checkGateway(), checkReplyPipeline(), checkSchedulerHeartbeat(), checkFailedSends(),
+  const [kv, gateway, replyPipeline, schedulerHeartbeat, sendFlushHeartbeat, failedSends, kvLatency, eventLoopLag, aiFallbackStreak, gatewayV1Session] = await Promise.all([
+    checkKv(), checkGateway(), checkReplyPipeline(), checkSchedulerHeartbeat(), checkSendFlushHeartbeat(), checkFailedSends(),
     checkKvLatency(), checkEventLoopLag(), checkAiFallbackStreak(), checkGatewayV1Session()
   ]);
   const failures = [];
@@ -452,6 +484,7 @@ async function runHealthCheck() {
   if (!gateway.ok) failures.push('WhatsApp gateway session problem: ' + gateway.error);
   if (!replyPipeline.ok) failures.push('Reply pipeline stuck: ' + replyPipeline.error);
   if (!schedulerHeartbeat.ok) failures.push('WhatsApp poll loop appears stopped: ' + schedulerHeartbeat.error);
+  if (!sendFlushHeartbeat.ok) failures.push('WhatsApp fast send/delivery/events-poll tick appears stopped: ' + sendFlushHeartbeat.error);
   if (!failedSends.ok) failures.push('WhatsApp send failures: ' + failedSends.error);
   if (!kvLatency.ok) failures.push(kvLatency.error);
   if (!eventLoopLag.ok) failures.push(eventLoopLag.error);
@@ -484,10 +517,10 @@ async function runHealthCheck() {
   }
   wasFailingLastTick = isFailing;
 
-  return { ok: !isFailing, failures, kv, gateway, replyPipeline, schedulerHeartbeat, failedSends, kvLatency, eventLoopLag, aiFallbackStreak, gatewayV1Session, alertSent };
+  return { ok: !isFailing, failures, kv, gateway, replyPipeline, schedulerHeartbeat, sendFlushHeartbeat, failedSends, kvLatency, eventLoopLag, aiFallbackStreak, gatewayV1Session, alertSent };
 }
 
 module.exports = {
-  runHealthCheck, checkKv, checkGateway, checkReplyPipeline, checkSchedulerHeartbeat, checkFailedSends,
+  runHealthCheck, checkKv, checkGateway, checkReplyPipeline, checkSchedulerHeartbeat, checkSendFlushHeartbeat, checkFailedSends,
   checkKvLatency, checkEventLoopLag, checkAiFallbackStreak, checkGatewayV1Session, getLatestGatewayV1Session, startMetricsLog, getLatestMetrics, recordKvLatency, kvLatencyP95Ms
 };
