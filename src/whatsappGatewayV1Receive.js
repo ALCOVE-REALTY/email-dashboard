@@ -188,9 +188,35 @@ function normalizeMessage(raw) {
     status: raw.status || null
   };
 }
+// LIVE INCIDENT (2026-11-23), direct instruction - a genuine 1-to-1 test
+// message was silently dropped, logged only as the generic "ignored
+// (group or broadcast)", with no way to see WHICH real chat.kind value
+// actually triggered it ("Alcove Deploy has no runtime logs I can see" -
+// a console.error alone is useless here; this must be visible on the
+// System health card's own Gateway diagnostics block, which already
+// surfaces processEvent's returned `reason` string verbatim). Per the
+// docs (section 2), chat.kind is "user" for a normal 1-to-1 chat - this
+// check's own logic already matches that correctly; what was missing was
+// VISIBILITY into what the real payload's chat.kind actually was when
+// something unexpected got ignored.
+function maskIdentifier(raw) {
+  const s = String(raw || '');
+  if (!s) return '(none)';
+  if (s.length <= 4) return '*'.repeat(s.length);
+  return s.slice(0, 2) + '*'.repeat(Math.max(1, s.length - 6)) + s.slice(-4);
+}
+// Returns the specific ignore reason ('group'/'broadcast') or null if
+// this chat.kind is not one of the two kinds ever ignored - never
+// ignores on a missing/unrecognized kind (fails open, same posture as
+// every other "never assume one exact field/value" check in this file).
+function ignoreReasonForChatKind(chat) {
+  const kind = chat && chat.kind;
+  if (kind === 'group') return 'group';
+  if (kind === 'broadcast') return 'broadcast';
+  return null;
+}
 function shouldIgnoreMessage(message) {
-  const kind = message && message.chat && message.chat.kind;
-  return kind === 'group' || kind === 'broadcast';
+  return Boolean(ignoreReasonForChatKind(message && message.chat));
 }
 
 // ---------------- Media download ----------------
@@ -318,7 +344,13 @@ async function processEvent(evt) {
   const rawMessage = evt && evt.data && evt.data.message;
   if (!rawMessage) return { kept: false, reason: 'no message payload (not a message.received/updated event)' };
   const message = normalizeMessage(rawMessage);
-  if (shouldIgnoreMessage(message)) return { kept: false, reason: 'ignored (group or broadcast)' };
+  if (shouldIgnoreMessage(message)) {
+    const chat = message.chat || {};
+    const ignoreReason = ignoreReasonForChatKind(chat) || 'unknown';
+    const maskedId = maskIdentifier(chat.contactId || chat.phone || chat.lid);
+    console.error('[whatsapp-gateway-v1] ignored incoming message - chat.kind=' + (chat.kind === undefined ? '(missing)' : JSON.stringify(chat.kind)) + ', id=' + maskedId);
+    return { kept: false, reason: 'ignored (chat.kind=' + (chat.kind === undefined ? '(missing)' : chat.kind) + ', id=' + maskedId + ')' };
+  }
   if (message.waKey) {
     const dup = await isDuplicateMessage(message.waKey);
     if (dup) return { kept: false, reason: 'duplicate waKey' };
@@ -424,6 +456,13 @@ async function handleWebhookRequestBody(req) {
 // verification needs the exact bytes the gateway signed, not a
 // re-serialized JSON.parse of them).
 async function handleWebhookRequest(req, res) {
+  // CRASH LOOP (2026-11-23), direct instruction - a breadcrumb of "what
+  // was last happening" for the NEXT process start to report, in case
+  // this request is the last thing the process ever does (an
+  // uncatchable SIGKILL leaves no exception/signal to record otherwise).
+  // Lazily required (whatsappAssistant.js requires this module at its
+  // own top level) - fire-and-forget, never allowed to delay the ack.
+  require('./aiAssistant/whatsappAssistant').recordActivityBreadcrumb('webhook-request-start').catch(() => {});
   const timeoutMs = webhookAckTimeoutMs();
   let settled = false;
   const timer = setTimeout(() => {

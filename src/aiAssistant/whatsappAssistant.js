@@ -11497,17 +11497,46 @@ async function recordSchedulerError(source, message) {
 const PROCESS_START_KEY = 'wa-scheduler-last-start';
 const PROCESS_START_COUNT_PREFIX = 'wa-scheduler-start-count:';
 const PROCESS_SHUTDOWN_REASON_KEY = 'wa-scheduler-last-shutdown-reason';
+// LIVE INCIDENT (2026-11-23), direct instruction - "the crash loop isn't
+// fully fixed... read the Recent restarts records and tell me the real
+// cause." Every exit path we can CATCH (uncaughtException/
+// unhandledRejection/SIGTERM/SIGINT) already gets recorded, but a
+// restart with NONE of those recorded (an uncatchable SIGKILL - the host
+// itself killing the container, e.g. an OOM kill or a failed external
+// health check) leaves zero evidence today. This breadcrumb is a cheap,
+// best-effort "what were we last doing" marker - ONE write per real
+// inbound webhook (usage-proportional, never a fixed-interval tick, so
+// this can never contribute to the same quota pressure the scheduler's
+// OWN heartbeats were already throttled down to ~once/minute to avoid -
+// see HEARTBEAT_WRITE_EVERY_N_TICKS's own comment). It does not
+// (deliberately) cover the periodic poll/send-flush ticks at full
+// granularity for that same quota reason - this is a real, accepted
+// precision tradeoff, not an oversight.
+const ACTIVITY_BREADCRUMB_KEY = 'wa-last-activity-breadcrumb';
+async function recordActivityBreadcrumb(label) {
+  const redis = getClient();
+  if (!redis) return;
+  try { await redis.set(ACTIVITY_BREADCRUMB_KEY, JSON.stringify({ at: Date.now(), label })); } catch (err) { /* best effort */ }
+}
 async function recordProcessStart(commitId) {
   const redis = getClient();
   if (!redis) return null;
   const dayKey = istDayKeyOf(new Date());
   try {
     const previousShutdownReason = await redis.get(PROCESS_SHUTDOWN_REASON_KEY).catch(() => null);
-    await redis.set(PROCESS_START_KEY, JSON.stringify({ ts: Date.now(), commitId, previousShutdownReason: previousShutdownReason || null }));
+    const breadcrumbRaw = await redis.get(ACTIVITY_BREADCRUMB_KEY).catch(() => null);
+    let lastActivityBeforeThisStart = null;
+    if (breadcrumbRaw) {
+      try {
+        const parsed = typeof breadcrumbRaw === 'string' ? JSON.parse(breadcrumbRaw) : breadcrumbRaw;
+        if (parsed && parsed.label) lastActivityBeforeThisStart = { label: parsed.label, msBeforeThisStart: Date.now() - parsed.at };
+      } catch (err) { /* ignore a corrupted breadcrumb */ }
+    }
+    await redis.set(PROCESS_START_KEY, JSON.stringify({ ts: Date.now(), commitId, previousShutdownReason: previousShutdownReason || null, lastActivityBeforeThisStart }));
     await redis.del(PROCESS_SHUTDOWN_REASON_KEY).catch(() => {});
     const count = await redis.incr(PROCESS_START_COUNT_PREFIX + dayKey);
     await redis.expire(PROCESS_START_COUNT_PREFIX + dayKey, 3 * 24 * 60 * 60).catch(() => {});
-    return { startsToday: count, previousShutdownReason: previousShutdownReason || null };
+    return { startsToday: count, previousShutdownReason: previousShutdownReason || null, lastActivityBeforeThisStart };
   } catch (err) { return null; }
 }
 async function getProcessStartInfo() {
@@ -17340,6 +17369,7 @@ module.exports = {
   installProcessExitDiagnostics,
   recordShutdownReason,
   listRecentShutdowns,
+  recordActivityBreadcrumb,
   savePendingDraft,
   listPendingDrafts,
   removePendingDraft,

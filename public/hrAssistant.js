@@ -5528,6 +5528,14 @@
     const last = processStart.last;
     let line = 'Process started ' + actionNeededAgeLabel(Date.now() - last.ts) + ' ago' + (last.commitId ? (', commit ' + last.commitId) : '');
     if (last.previousShutdownReason) line += ' — previous stop: ' + last.previousShutdownReason;
+    // CRASH LOOP (2026-11-23), direct instruction - when NO catchable exit
+    // reason was recorded at all (an uncatchable SIGKILL - no exception/
+    // signal handler could have fired), this is the one remaining clue:
+    // what the process was last doing, shortly before it stopped existing.
+    else if (last.lastActivityBeforeThisStart) {
+      const a = last.lastActivityBeforeThisStart;
+      line += ' — no catchable exit reason recorded (likely SIGKILL) — last activity: ' + a.label + ' (' + Math.round(a.msBeforeThisStart / 1000) + 's before this start)';
+    }
     healthProcessLineEl.textContent = line;
   }
   // CRASH LOOP (2026-11-23), direct instruction - "show the last 5

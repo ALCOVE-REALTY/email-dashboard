@@ -333,6 +333,18 @@ async function main() {
       check('a later start with no NEW shutdown reason recorded shows previousShutdownReason: null - the earlier one was consumed, never repeated', Boolean(info3) && info3.previousShutdownReason === null, JSON.stringify(info3));
     }
 
+    // CRASH LOOP (2026-11-23), direct instruction - "an uncatchable
+    // SIGKILL leaves zero recorded evidence" - the activity breadcrumb is
+    // the one remaining clue for exactly that case.
+    await (async () => {
+      await whatsappAssistant.recordActivityBreadcrumb('webhook-request-start');
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      const info = await whatsappAssistant.recordProcessStart('breadcrumb-test');
+      check('recordProcessStart surfaces the last activity breadcrumb recorded before an uncatchable death, with a real elapsed time', Boolean(info && info.lastActivityBeforeThisStart) && info.lastActivityBeforeThisStart.label === 'webhook-request-start' && info.lastActivityBeforeThisStart.msBeforeThisStart >= 20, JSON.stringify(info));
+      const info2 = await whatsappAssistant.recordProcessStart('breadcrumb-test-2');
+      check('a later start with no NEW breadcrumb since the last start still re-reports the SAME last-known breadcrumb (never silently disappears) - acceptable: a stale breadcrumb is still better evidence than none, and a real incident is diagnosed from the FIRST start after it, not a much later one', Boolean(info2 && info2.lastActivityBeforeThisStart) && info2.lastActivityBeforeThisStart.label === 'webhook-request-start');
+    })();
+
     // CRASH LOOP (2026-11-23), direct instruction - richer crash evidence
     // (stack/uptime/memory, last 5 not just 1) plus "no unhandled
     // rejection may kill the process: log it, alert me, keep running."

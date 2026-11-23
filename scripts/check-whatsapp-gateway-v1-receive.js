@@ -200,6 +200,56 @@ async function main() {
       const r = await receive.processEvent(evt);
       return r.kept === false && /ignored/.test(r.reason);
     });
+    await checkAsync('LIVE INCIDENT (2026-11-23), direct instruction - a REAL-SHAPED 1-to-1 message (chat.kind: "user", per docs section 2) is NEVER ignored, and a masked phone never appears anywhere in its own outcome', async () => {
+      const evt = {
+        eventId: 'evid-121', event: 'message.received',
+        data: { message: {
+          waKey: 'false_919812345678@s.whatsapp.net_3EB0C4F1LIVE', id: '3EB0C4F1LIVE', type: 'text', text: 'Is the 3BHK still available?',
+          waTimestamp: '2026-11-23T06:15:21.000Z', receivedAt: '2026-11-23T06:15:22.104Z', isHistorySync: false,
+          chat: { contactId: 'c2b-real-contact-id', kind: 'user', phone: '919812345678', lid: null, savedName: null, pushName: 'Rahul Sharma', verifiedName: null, displayName: '~ Rahul Sharma' },
+          sender: { contactId: 'c2b-real-contact-id', kind: 'user', phone: '919812345678' }
+        } }
+      };
+      const r = await receive.processEvent(evt);
+      return r.kept === true && !r.reason;
+    });
+    await checkAsync('LIVE INCIDENT (2026-11-23) - a 1-to-1 chat identified only by its LID (phone hidden/masked by WhatsApp, "@lid" case) is ALSO never ignored - chat.kind is still "user", only the identifying field differs', async () => {
+      const evt = {
+        eventId: 'evid-122', event: 'message.received',
+        data: { message: {
+          waKey: 'false_123456789@lid_3EB0C4F1LID', id: '3EB0C4F1LID', type: 'text', text: 'hello',
+          chat: { contactId: 'c2b-lid-contact', kind: 'user', phone: null, lid: '123456789', savedName: null, pushName: 'Privacy Mode User', verifiedName: null, displayName: '~ Privacy Mode User' },
+          sender: { contactId: 'c2b-lid-contact', kind: 'user', phone: null, lid: '123456789' }
+        } }
+      };
+      const r = await receive.processEvent(evt);
+      return r.kept === true && !r.reason;
+    });
+    await checkAsync('LIVE INCIDENT (2026-11-23) - a group message IS ignored, and the returned reason names the REAL chat.kind + a MASKED id (never the full id/phone) - this is the exact visibility that was missing live ("ignored (group or broadcast)" told Subhodeep nothing about WHY)', async () => {
+      const evt = {
+        eventId: 'evid-123', event: 'message.received',
+        data: { message: { waKey: 'true_group_realshape', type: 'text', text: 'group msg', chat: { contactId: '919800011122-1234567890@g.us-style-id', kind: 'group', name: 'Site Team' } } }
+      };
+      const r = await receive.processEvent(evt);
+      return r.kept === false && /chat\.kind=group/.test(r.reason) && /id=/.test(r.reason) && !r.reason.includes('919800011122-1234567890@g.us-style-id');
+    });
+    await checkAsync('LIVE INCIDENT (2026-11-23) - a broadcast/status message IS ignored, reason names chat.kind=broadcast explicitly (never the generic old bucket)', async () => {
+      const evt = { eventId: 'evid-124', event: 'message.received', data: { message: { waKey: 'true_bcast_realshape', type: 'text', text: 'status update', chat: { kind: 'broadcast' } } } };
+      const r = await receive.processEvent(evt);
+      return r.kept === false && r.reason === 'ignored (chat.kind=broadcast, id=(none))';
+    });
+    await checkAsync('LIVE INCIDENT (2026-11-23) - an unrecognized/missing chat.kind is NEVER ignored (fails open, never silently drops a real message just because chat.kind is something this code has not seen before)', async () => {
+      const evt1 = { eventId: 'evid-125', event: 'message.received', data: { message: { waKey: 'true_nokind_realshape', type: 'text', text: 'no kind at all', chat: { contactId: 'abc', phone: '919000000999' } } } };
+      const r1 = await receive.processEvent(evt1);
+      const evt2 = { eventId: 'evid-126', event: 'message.received', data: { message: { waKey: 'true_weirdkind_realshape', type: 'text', text: 'a future kind SUBH has never seen', chat: { kind: 'newsletter', contactId: 'xyz' } } } };
+      const r2 = await receive.processEvent(evt2);
+      return r1.kept === true && r2.kept === true;
+    });
+    await checkAsync('maskIdentifier-style masking never leaks the real phone/contactId in a group/broadcast reason - spot check with a real-looking long phone number', async () => {
+      const evt = { eventId: 'evid-127', event: 'message.received', data: { message: { waKey: 'true_group_maskcheck', type: 'text', text: 'x', chat: { contactId: '919876543210', kind: 'group' } } } };
+      const r = await receive.processEvent(evt);
+      return r.kept === false && !r.reason.includes('919876543210') && /id=91\*+3210/.test(r.reason);
+    });
     await checkAsync('processEvent: a non-message event (e.g. number.status) is skipped cleanly, never thrown on', async () => {
       const evt = { eventId: 'evid-6', event: 'number.status', data: { numberId: 'fake-number-id', state: 'open' } };
       const r = await receive.processEvent(evt);
